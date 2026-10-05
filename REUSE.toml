@@ -1,0 +1,14 @@
+version = 1
+
+[[annotations]]
+path = ["assets/**", "geoblender/resources/**", "packaging/app_template/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 IMGA"
+SPDX-License-Identifier = "CC0-1.0"
+
+# Datos de terceros (los añade su spec; ejemplo de la 006, ADR-0019):
+# [[annotations]]
+# path = ["geoblender/thirdparty/proj/**"]
+# precedence = "override"
+# SPDX-FileCopyrightText = "Instituto Geográfico Nacional"
+# SPDX-License-Identifier = "CC-BY-4.0"

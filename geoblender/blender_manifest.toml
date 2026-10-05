@@ -1,0 +1,31 @@
+schema_version = "1.0.0"
+
+id = "geoblender"
+version = "0.1.0"
+name = "Geoblender"
+tagline = "Software minero para Blender: sondeos, bloques, diseño y planos"
+maintainer = "IMGA"
+type = "add-on"
+tags = ["Import-Export", "Mesh", "Object", "User Interface"]
+
+blender_version_min = "5.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 IMGA"]
+
+platforms = ["windows-x64"]
+
+wheels = []
+
+[permissions]
+files = "Leer y escribir proyectos, importar datos y exportar resultados"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.py[cod]",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "*.blend[0-9]",
+  "*.blend[0-9][0-9]",
+]

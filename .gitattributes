@@ -1,0 +1,47 @@
+# Normalizacion de finales de linea
+* text=auto eol=lf
+
+# Scripts que Windows debe leer con CRLF (p. ej. geoblender/adapters/mdb_reader.ps1,
+# packaging/Geoblender.cmd)
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+*.sh   text eol=lf
+
+# Binarios
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.svg   text eol=lf
+*.exe   binary
+*.dll   binary
+*.whl   binary
+*.zip   binary
+*.blend binary
+*.tif   binary
+*.tiff  binary
+*.npz   binary
+*.npy   binary
+*.parquet binary
+
+# Bases de datos: GeoPackage con sus ficheros de diario, DuckDB y Access.
+# Las pruebas las generan fuera del repositorio; si alguna se versiona, git
+# no debe tocar sus bytes.
+*.gpkg      binary
+*.gpkg-wal  binary
+*.gpkg-shm  binary
+*.duckdb    binary
+*.mdb       binary
+*.accdb     binary
+
+# Documentos ofimaticos: son zip por dentro. Sin esto git intentaria
+# normalizar finales de linea dentro del comprimido y lo corromperia.
+*.odt  binary
+*.ods  binary
+*.odp  binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.pdf  binary

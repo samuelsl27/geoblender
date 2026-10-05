@@ -1,0 +1,29 @@
+# EditorConfig de Geoblender: https://editorconfig.org
+# Coherente con .gitattributes. UTF-8 sin BOM: un blender_manifest.toml con BOM no valida.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.py]
+indent_size = 4
+max_line_length = 88
+
+# Scripts que Windows lee con CRLF (igual que en .gitattributes)
+[*.{ps1,bat,cmd}]
+end_of_line = crlf
+indent_size = 4
+
+[*.md]
+# Dos espacios al final de línea son un salto en Markdown
+trim_trailing_whitespace = false
+
+[{LICENSE,*.txt}]
+trim_trailing_whitespace = false
+insert_final_newline = false

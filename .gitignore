@@ -1,0 +1,53 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Compilacion de la extension de Blender ---
+# Se versiona el generador (tools/), no su salida.
+build/
+dist/
+*.zip
+
+# Ruedas de dependencias: se descargan con tools/ y no se versionan.
+geoblender/wheels/
+
+# --- Blender ---
+# Las copias de seguridad automaticas de Blender (.blend1, .blend2...)
+*.blend[0-9]
+*.blend[0-9][0-9]
+
+# --- Datos de proyectos de usuario y salidas de pruebas ---
+# Los datos de ejemplo pequenos viven en tests/data y SI se versionan.
+*.duckdb
+*.duckdb.wal
+tests/_out/
+logs/
+*.log
+
+# --- Sistema operativo y editores ---
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Ficheros de bloqueo de LibreOffice y Word
+.~lock.*#
+~$*
+
+# Configuracion local de agentes (la compartida si se versiona)
+.claude/settings.local.json
+
+# Ruedas de desarrollo extraidas para las pruebas (ADR-0015)
+.deps/
+
+# Preferencias personales de agentes
+CLAUDE.local.md

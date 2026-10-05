@@ -1,0 +1,13 @@
+schema_version = 1
+# Una tabla [[wheel]] por rueda (ADR-0002, ADR-0009):
+# name = "duckdb"            # nombre de distribución en PyPI
+# version = "1.5.7"          # versión exacta
+# filename = "duckdb-1.5.7-cp313-cp313-win_amd64.whl"
+# sha256 = "<64 hexadecimales>"
+# license = "MIT"            # SPDX: un id, o «A OR B», o «A AND B» (sin paréntesis)
+# bundled_licenses = []      # licencias de las bibliotecas nativas que trae la rueda (p. ej. en
+#                            # «<paquete>.libs/»), auditadas al fijarla (LIC-01)
+# target = "extension"       # "extension" → geoblender/wheels/ y .deps/site/; "dev" → solo .deps/site/
+# spec = "006"               # spec que la pide
+# adr = "ADR-NNNN"           # ADR que la aprueba (constitución, principio 4)
+# unmodified = true          # obligatorio y verdadero para LGPL-* y EUPL-1.2
