@@ -76,16 +76,22 @@ class SpdxHeaderTest(unittest.TestCase):
         self.assertEqual(_found({"a.py": b"\xef\xbb\xbf" + HEADER.encode()}), [])
 
     def test_ignored_files_not_checked(self) -> None:
-        """RF-001-18 / ARQ-12: lo excluido (``.gitignore``, Documentacion/) no cuenta."""
+        """RF-001-18 / ARQ-12: lo excluido (``.gitignore``, ``.git/``) no cuenta. En el
+        código, ``Documentacion/`` y ``Promts/`` ya no se excluyen (spec 007, RF-007-01:
+        REP-01 las señala, y sus ``.py`` se comprueban como los demás)."""
         found = _found(
             {
                 ".gitignore": "build/\n",
                 "build/generado.py": "x = 1\n",
+                ".git/hooks/gancho.py": "x = 1\n",
                 "Documentacion/prototipo.py": "x = 1\n",
                 "Promts/ejemplo.py": "x = 1\n",
             }
         )
-        self.assertEqual(found, [])
+        self.assertEqual(
+            found,
+            [("Documentacion/prototipo.py", 1, "ARQ-12"), ("Promts/ejemplo.py", 1, "ARQ-12")],
+        )
 
     def test_real_tree(self) -> None:
         """RF-001-18 / ARQ-12: todos los ``.py`` del repositorio llevan la cabecera."""
