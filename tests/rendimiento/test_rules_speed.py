@@ -3,9 +3,10 @@
 
 Se ejecuta con ``tools/check.py --rendimiento`` (Python de Blender). Genera en ``%TEMP%``
 un árbol con la forma de la extensión —raíz, paquetes de dominio, ``adapters``,
-``workers`` y ``bl`` con operadores y grupos de propiedades, más el manifiesto y los ADR
-reales— con 1 000 ficheros ``.py`` de 200 líneas, limpio para todas las reglas, y mide
-``rules.run_all`` en frío (ficheros nuevos: sin la caché de una pasada anterior).
+``workers`` y ``bl`` con operadores y grupos de propiedades, más el manifiesto y los
+``AGENTS.md`` y ``CLAUDE.md`` raíz reales— con 1 000 ficheros ``.py`` de 200 líneas,
+limpio para todas las reglas, y mide ``rules.run_all`` en frío (ficheros nuevos: sin la
+caché de una pasada anterior).
 """
 
 import shutil
@@ -216,6 +217,9 @@ def build_tree(root: Path) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(text.encode("utf-8"))
     shutil.copy2(ROOT / manifest.MANIFEST_RELPATH, root / manifest.MANIFEST_RELPATH)
+    # El AGENTS.md mínimo del código y su puntero (AGT-01 y AGT-03; spec 007, T16).
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        shutil.copy2(ROOT / name, root / name)
     return len(files)
 
 

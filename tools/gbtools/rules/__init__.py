@@ -15,7 +15,9 @@ lista vacía significa que el árbol bajo ``root`` cumple. Solo biblioteca está
   tiene ``docs/`` ni ``specs/``.
 
 ``layout`` llega con la spec 007: REP-02, la carpeta de la extensión con su nombre exacto
-(T04). ``specs`` (NOM-03) sale de ``naming`` en la T05.
+(T04), y REP-01, las entradas de la raíz del código (T15). ``specs`` (NOM-03) sale de
+``naming`` en la T05. La familia ``agents`` del código añade AGT-03, el ``AGENTS.md``
+mínimo (T16); la de la documentación es solo AGT-01 y AGT-02.
 
 ``suites`` llega con la convergencia de la spec 001: TST-01, carpetas de ``tests/`` sin
 ``__init__.py`` (T34); TST-02, ficheros de pruebas que su paso no carga (T43); TST-03,
@@ -47,7 +49,7 @@ FAMILIES: Mapping[str, Family] = {
     "naming": naming.check,
     "headers": headers.check,
     "text": text.check,
-    "agents": agents.check,
+    "agents": agents.check_code,
     "manifest": manifest.check,
     "suites": suites.check,
     "layout": layout.check,
