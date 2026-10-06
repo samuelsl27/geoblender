@@ -40,7 +40,7 @@ from enum import Enum
 from pathlib import Path
 
 from ..errors import DatabaseError, GeoblenderError, LockError, ProjectError
-from ..gpkg.connection import GpkgConnection
+from ..gpkg.connection import BUSY_TIMEOUT_MS, GpkgConnection
 from ..gpkg.header import SqliteHeader, read_header
 from ..gpkg.wal import WalOutcome, to_classic_journal
 from ..paths import DriveType, is_network_path
@@ -346,7 +346,7 @@ def _open_for_writing(
     wal_bytes: int | None = None
     try:
         if read_header(path).needs_recovery:
-            recovery = to_classic_journal(path)
+            recovery = to_classic_journal(path, timeout_s=BUSY_TIMEOUT_MS / 1000)
             if recovery.outcome is WalOutcome.BUSY:
                 raise _OpenAborted(
                     ReadOnlyCode.WAL_BUSY,
