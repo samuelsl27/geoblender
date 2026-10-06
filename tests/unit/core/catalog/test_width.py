@@ -97,6 +97,16 @@ class TopbarLevelTest(unittest.TestCase):
         self.assertAlmostEqual(width.topbar_width(Level.B, scale=1.25, titles_px=titles_px("es"),
                                                   k=self.k), widths[1] * 1.25)
 
+    def test_menu_button_width(self) -> None:
+        """RF-003-10 (BS §3, T18): el ancho explícito de un menú de texto es su título más
+        el relleno del botón (``menu_pad`` sin el espacio entre botones) y, en el nivel A,
+        el icono; con el espacio entre botones, suma lo que cuenta el modelo."""
+        k = self.k
+        self.assertAlmostEqual(width.menu_button_px(50.0, icon=False, k=k) + k.menu_gap,
+                               50.0 + k.menu_pad)
+        self.assertAlmostEqual(width.menu_button_px(50.0, icon=True, k=k)
+                               - width.menu_button_px(50.0, icon=False, k=k), k.title_icon)
+
 
 class QuickAccessFoldTest(unittest.TestCase):
     k = width.QuickAccessWidthConstants()

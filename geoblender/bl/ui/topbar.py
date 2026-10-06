@@ -10,8 +10,14 @@
   derecha, como BS §1, el conmutador [GB|B] con GB hundido, Disposición ▾, los menús de
   Blender plegados (≡), los 11 menús del flujo, Herramientas, Ayuda y el acceso rápido
   del proyecto (AR §2); con el área maximizada, también «Volver», como el original. El
-  bloque derecho (``draw_right``) no se toca. Nivel de la barra (BS §3): B (títulos) o, con
-  la preferencia «Iconos», D; el nivel automático lo calcula la T18.
+  bloque derecho (``draw_right``) no se toca.
+- **Nivel de la barra** (RF-003-10; BS §2.3 y §3; :func:`current_level`): el fijado en las
+  preferencias («Texto» = B, «Iconos» = D) o, en automático, el primero de A a E que cabe
+  junto al bloque derecho de Blender (``core.catalog.width.choose_topbar_level``) con los
+  títulos medidos con ``blf`` en el idioma de Geoblender (:func:`titles_px`, en caché por
+  idioma), la escala de la interfaz y las constantes de la versión de Blender
+  (``bl.compat``). Cada menú de texto lleva su ancho explícito (``ui_units_x``): en 5.2.1
+  un menú de cabecera con icono y texto recorta el título.
 - **Modo Blender**: el conmutador con B hundido, «Geoblender ▾» (los 13 menús) y todo lo
   que dibuja el original, con lo que otros complementos le añaden.
 
@@ -36,11 +42,19 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+import blf
 import bpy
 
 from ...core.catalog import Catalog
-from ...core.catalog.width import GEOBLENDER_MENU, HELP_MENU, TOOLS_MENU, Level
-from ...core.i18n import tr
+from ...core.catalog.width import (
+    GEOBLENDER_MENU,
+    HELP_MENU,
+    TOOLS_MENU,
+    Level,
+    choose_topbar_level,
+    menu_button_px,
+)
+from ...core.i18n import language, tr, translate
 from .. import compat
 from ..scene import project_session
 from . import gate
@@ -54,6 +68,9 @@ TOGGLE = "geoblender.ui_toggle_mode"
 LAYOUTS_PANEL = "GEOBLENDER_PT_ui_layouts"
 BLENDER_MENUS = "TOPBAR_MT_editor_menus"
 LOGO_TEXT = "GB"  # reserva del logotipo sin icono propio (II §1.4)
+# Niveles fijados por la preferencia «Títulos de la barra» (BS §3); AUTO, el automático.
+FORCED_LEVELS: dict[str, Level] = {"TEXT": Level.B, "ICONS": Level.D}
+UI_FONT_ID = 0  # la fuente de la interfaz en blf
 
 DrawLeft = Callable[[Any, Any], None]
 
@@ -64,6 +81,10 @@ class _State:
         self.compat: DrawLeft | None = None  # la función añadida en compatibilidad
         self.failed = False  # ya se registró un error de dibujo
         self.warned = False  # ya se avisó del modo de compatibilidad en esta sesión
+        self.titles: dict[str, dict[str, float]] = {}  # anchos blf por idioma (caché)
+        self.level_key: tuple[object, ...] | None = None  # última elección (caché)
+        self.level: Level = Level.B
+        self.override: Level | None = None  # nivel fijado por la medida (T19)
 
 
 _STATE = _State()
@@ -124,41 +145,94 @@ def draw_switcher(layout: Any, *, geoblender: bool) -> None:
     properties.target = "BLENDER"
 
 
-def level() -> Level:
-    """El nivel de la barra: D con la preferencia «Iconos»; si no, B (BS §3)."""
-    return Level.D if preference("topbar_titles", "AUTO") == "ICONS" else Level.B
+def titles_px(lang: str) -> dict[str, float]:
+    """Ancho ``blf`` a escala 1,0 (fuente de la interfaz, 11 pt) del título de cada menú
+    de la barra y de «Geoblender ▾» en el idioma ``lang`` (``"es"`` o ``"en"``), por clase
+    del menú (BS §2.3). En caché por idioma."""
+    cached = _STATE.titles.get(lang)
+    if cached is not None:
+        return cached
+    cat = catalog()
+    blf.size(UI_FONT_ID, compat.UI_FONT_POINTS)
+    found = {
+        menu_id: float(blf.dimensions(UI_FONT_ID, translate(lang, cat.commands[menu_id].label))[0])
+        for menu_id in (*cat.top_menus, GEOBLENDER_MENU)
+    }
+    _STATE.titles[lang] = found
+    return found
 
 
-def _top_menu(layout: Any, cat: Catalog, menu_id: str, *, icon: bool) -> None:
+def set_override(value: Level | None) -> None:
+    """Fija un nivel por encima de las preferencias (``None`` lo quita); solo para medir
+    la barra en la GUI (``tools/inblender/measure_topbar.py``, T19)."""
+    _STATE.override = value
+    _STATE.level_key = None
+
+
+def forced_level() -> Level | None:
+    """El nivel fijado (por la medida o por la preferencia «Títulos de la barra»), o
+    ``None`` en automático."""
+    if _STATE.override is not None:
+        return _STATE.override
+    return FORCED_LEVELS.get(str(preference("topbar_titles", "AUTO")))
+
+
+def current_level(context: Any) -> Level:
+    """El nivel de la barra para la región de ``context`` (RF-003-10): el fijado o el
+    primero de A a E que cabe en su anchura con la escala y el idioma activos; sin
+    anchura conocida, B."""
+    forced = forced_level()
+    if forced is not None:
+        return forced
+    width = float(getattr(getattr(context, "region", None), "width", 0) or 0)
+    if width <= 0:
+        return Level.B
+    lang, scale = language(), compat.ui_scale()
+    key = (lang, width, scale)
+    if key != _STATE.level_key:
+        _STATE.level = choose_topbar_level(region_width_px=width, scale=scale,
+                                           titles_px=titles_px(lang),
+                                           k=compat.topbar_width_constants())
+        _STATE.level_key = key
+    return _STATE.level
+
+
+def _top_menu(layout: Any, cat: Catalog, menu_id: str, *, icon: bool,
+              title: bool = True) -> None:
+    """Un menú de la barra: solo su icono, su título o (nivel A) los dos; con título, con
+    su ancho explícito (``ui_units_x``) para que no se recorte (BS §3)."""
     cmd = cat.commands[menu_id]
-    if icon:
+    if not title:
         layout.menu(menu_id, text="", **icon_kwargs(cmd))
-    else:
-        layout.menu(menu_id, text=text(cmd.label), translate=False)
+        return
+    row = layout.row(align=True)
+    row.ui_units_x = menu_button_px(titles_px(language())[menu_id], icon=icon,
+                                    k=compat.topbar_width_constants()) / compat.UI_UNIT_PX
+    kwargs = icon_kwargs(cmd) if icon else {}
+    row.menu(menu_id, text=text(cmd.label), translate=False, **kwargs)
 
 
 def draw_geoblender(layout: Any, context: Any, current: Level | None = None) -> None:
-    """La barra del modo Geoblender en el nivel ``current`` (BS §1 y §3)."""
+    """La barra del modo Geoblender en el nivel ``current`` (por defecto, el de
+    :func:`current_level`; BS §1 y §3)."""
     cat = catalog()
-    current = level() if current is None else current
+    current = current_level(context) if current is None else current
     draw_switcher(layout, geoblender=True)
-    if current is Level.E:
-        layout.menu(BLENDER_MENUS, text="", icon="COLLAPSEMENU")
-        layout.separator(type="LINE")
-        _top_menu(layout, cat, GEOBLENDER_MENU, icon=False)
-        return
     draw_command(layout, LAYOUTS_PANEL, context=context, icon_only=True, inline=True)
     layout.separator(type="LINE")
     layout.menu(BLENDER_MENUS, text="", icon="COLLAPSEMENU")
     layout.separator(type="LINE")
-    flow = [menu_id for menu_id in cat.top_menus if menu_id not in (TOOLS_MENU, HELP_MENU)]
-    row = layout.row(align=False)
-    for menu_id in flow:
-        _top_menu(row, cat, menu_id, icon=current is Level.D)
-    layout.separator(type="LINE")
-    compact = current in (Level.C, Level.D)
-    _top_menu(layout, cat, TOOLS_MENU, icon=compact)
-    _top_menu(layout, cat, HELP_MENU, icon=compact)
+    if current is Level.E:
+        _top_menu(layout, cat, GEOBLENDER_MENU, icon=False)
+    else:
+        flow = [menu_id for menu_id in cat.top_menus if menu_id not in (TOOLS_MENU, HELP_MENU)]
+        row = layout.row(align=False)
+        for menu_id in flow:
+            _top_menu(row, cat, menu_id, icon=current is Level.A, title=current is not Level.D)
+        layout.separator(type="LINE")
+        compact = current in (Level.C, Level.D)
+        _top_menu(layout, cat, TOOLS_MENU, icon=current is Level.A, title=not compact)
+        _top_menu(layout, cat, HELP_MENU, icon=False, title=not compact)
     layout.separator(type="LINE")
     row = layout.row(align=True)
     for item in cat.quick_access("project"):

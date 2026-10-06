@@ -60,6 +60,10 @@ class TopbarWidthConstants:
     """Constantes del modelo de la barra, en px a escala 1,0 (BS §2.3)."""
 
     menu_pad: float = 27.0  # un menú de texto: título blf + menu_pad
+    # De menu_pad, el espacio entre dos botones de la cabecera; el resto (15 px, 0,75
+    # unidades) es el relleno del botón. El ancho explícito de un menú de texto
+    # (ui_units_x, BS §3) es título + menu_pad − menu_gap.
+    menu_gap: float = 12.0
     title_icon: float = 21.0  # nivel A: lo que añade el icono de familia a un título
     icon_menu: float = 31.0  # un menú en icono (niveles C, D y E)
     fixed_b: float = 289.0  # conmutador, Disposición, ≡, acceso rápido y separadores (B)
@@ -130,6 +134,13 @@ def topbar_width(level: Level, *, scale: float, titles_px: Mapping[str, float],
     else:
         width = (geoblender + k.menu_pad) + k.fixed_b - k.version_compact
     return width * scale
+
+
+def menu_button_px(title_px: float, *, icon: bool, k: TopbarWidthConstants) -> float:
+    """Ancho explícito de un menú de texto de la barra a escala 1,0 (BS §3: con él, 5.2.1
+    no recorta el título): el título, el relleno del botón y, con icono (nivel A), el
+    icono."""
+    return title_px + k.menu_pad - k.menu_gap + (k.title_icon if icon else 0.0)
 
 
 def topbar_free_px(level: Level, *, region_width_px: float, scale: float,

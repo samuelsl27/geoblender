@@ -11,7 +11,8 @@ que se ponen a un *layout* (``enabled``, ``active``, ``alert``, ``ui_units_x``�
 Spec 003 (T01): cada elemento guarda además el estado **efectivo** de su *layout* al
 dibujarlo (``enabled`` y ``active`` de la fila y de todas sus madres, como en Blender: una
 fila desactivada desactiva lo de dentro), para comprobar que un comando no disponible se
-dibuja desactivado (RF-003-07). ``menu_pie`` devuelve, como ``row``, un *layout* hijo (los
+dibuja desactivado (RF-003-07), y el ``ui_units_x`` de su fila (T18: el ancho explícito de
+cada menú de texto de la barra). ``menu_pie`` devuelve, como ``row``, un *layout* hijo (los
 menús circulares de la 003). Los métodos de ``UILayout`` que no tiene a mano
 (``popover``, ``menu_contents``, ``template_ID_tabs``, ``operator_menu_enum``…) se anotan
 con su nombre como tipo, para dibujar sin error las cabeceras de Blender que sustituye o
@@ -42,6 +43,7 @@ class Item:
     alert: bool = False  # el layout estaba en alerta (``layout.alert = True``)
     enabled: bool = True  # el layout y todas sus madres estaban habilitados (spec 003)
     active: bool = True  # ídem con ``active`` (gris, pero se puede pulsar)
+    units_x: float = 0.0  # ``ui_units_x`` de su *layout* (0: el ancho natural; spec 003)
 
 
 class FakeLayout:
@@ -75,6 +77,7 @@ class FakeLayout:
         item.alert = bool(self.alert)
         item.enabled = self._effective("enabled")
         item.active = self._effective("active")
+        item.units_x = float(self.ui_units_x)
         self.items.append(item)
         return item
 
