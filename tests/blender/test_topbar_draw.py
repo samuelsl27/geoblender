@@ -13,6 +13,9 @@
 - RF-003-07, RF-003-08: lo no disponible, desactivado; con «Ocultar lo no disponible», fuera
   de los menús, pero los 13 menús de la barra siguen.
 - RF-003-24: instalar dos veces no envuelve dos veces y restaurar devuelve el mismo objeto.
+- RF-003-05 (T13): sin ``draw_left``, o con otra firma, el conmutador y «Geoblender ▾» se
+  añaden tras la Ayuda de Blender, el aviso sale una vez y deshabilitar deja la instantánea
+  idéntica.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -24,7 +27,7 @@ from types import ModuleType, SimpleNamespace
 import bpy
 
 from tests.support import blender_ext
-from tests.support.blender_ext import module_name
+from tests.support.blender_ext import fingerprint_diff, module_name, ui_snapshot
 from tests.support.fake_layout import FakeLayout, Item, draw
 
 TOGGLE = "geoblender.ui_toggle_mode"
@@ -39,7 +42,7 @@ def context(*, geoblender: bool, fullscreen: bool = False) -> SimpleNamespace:
     """Lo que leen la barra y los menús: el espacio de trabajo (su marca), la pantalla,
     el área, la ventana y la escena."""
     return SimpleNamespace(
-        workspace=SimpleNamespace(geoblender_mode=geoblender),
+        workspace=SimpleNamespace(geoblender_mode=geoblender, use_filter_by_owner=False),
         screen=SimpleNamespace(show_fullscreen=fullscreen, show_statusbar=True),
         area=SimpleNamespace(show_menus=True, type="TOPBAR"),
         region=SimpleNamespace(alignment="LEFT", width=1920),
@@ -193,6 +196,13 @@ class TopbarDrawTest(unittest.TestCase):
         self.assertEqual(len(menus), 13)
         self.assertTrue(all(i.text == "" and i.icon != "NONE" for i in menus))
 
+    def test_patchable_in_this_version(self) -> None:
+        """RF-003-05 (prueba por versión, ADR-0012): la barra de la versión instalada tiene
+        la forma que se sustituye, y la interfaz no está en modo de compatibilidad."""
+        compat = _module("bl.compat")
+        self.assertTrue(compat.topbar_patchable())
+        self.assertEqual(self.topbar.mode(), "patched")
+
     def test_install_twice_and_restore(self) -> None:
         """RF-003-24: instalar otra vez no envuelve dos veces; restaurar devuelve el mismo
         objeto original; volver a instalar lo deja como estaba."""
@@ -207,6 +217,61 @@ class TopbarDrawTest(unittest.TestCase):
         self.topbar.install()
         self.assertIs(self.topbar.original_of(header.draw_left), self.saved["draw_left"])
         self.assertTrue(self.topbar.is_installed())
+
+
+class TopbarCompatTest(unittest.TestCase):
+    """Respaldo de compatibilidad (RF-003-05; ADR-0012, técnica A; CW §5)."""
+
+    def setUp(self) -> None:
+        blender_ext.unload()
+        self.addCleanup(blender_ext.unload)
+        self.header = bpy.types.TOPBAR_HT_upper_bar
+        self.saved = {"draw_left": self.header.__dict__["draw_left"]}
+
+    def restore_header(self) -> None:
+        self.header.draw_left = self.saved["draw_left"]
+
+    def test_missing_draw_left(self) -> None:
+        """RF-003-05: una barra sin ``draw_left`` usa el respaldo."""
+        del self.header.draw_left
+        self.addCleanup(self.restore_header)
+        self.assertCompat()
+
+    def test_other_signature(self) -> None:
+        """RF-003-05: un ``draw_left`` con otra firma usa el respaldo."""
+
+        def draw_left(self: object, context: object, extra: object) -> None:
+            """Una versión de Blender con otra firma."""
+
+        self.header.draw_left = draw_left
+        self.addCleanup(self.restore_header)
+        self.assertCompat()
+
+    def assertCompat(self) -> None:
+        before = ui_snapshot()
+        blender_ext.enable()
+        topbar = _module("bl.ui.topbar")
+        session = _module("bl.scene.project_session")
+        self.assertEqual(topbar.mode(), "compat")
+        menus = bpy.types.TOPBAR_MT_editor_menus
+        for geoblender in (False, True):
+            layout = draw(menus, context(geoblender=geoblender))
+            targets = controls(layout)
+            after_help = targets[targets.index(("menu", "TOPBAR_MT_help")) + 1:]
+            self.assertEqual(after_help, [("operator", TOGGLE), ("operator", TOGGLE),
+                                          ("menu", "GEOBLENDER_MT_ui_geoblender")])
+            switch = [i for i in layout.items if i.target == TOGGLE]
+            self.assertEqual([i.options["depress"] for i in switch], [geoblender, not geoblender])
+        notice = "Interfaz de Geoblender en modo de compatibilidad"
+        self.assertEqual(session.notices().count(notice), 1)
+        topbar.install()
+        functions = getattr(menus.draw, "_draw_funcs", [])
+        self.assertEqual(sum(1 for f in functions if topbar.is_compat_function(f)), 1)
+        self.assertEqual(session.notices().count(notice), 1)
+        blender_ext.disable()
+        after = ui_snapshot()
+        if after != before:
+            self.fail("\n".join(fingerprint_diff(before, after)))
 
 
 def _exists(item: Item) -> bool:

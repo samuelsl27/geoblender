@@ -15,6 +15,13 @@
 - **Modo Blender**: el conmutador con B hundido, «Geoblender ▾» (los 13 menús) y todo lo
   que dibuja el original, con lo que otros complementos le añaden.
 
+**Respaldo de compatibilidad** (RF-003-05; ADR-0012, técnica A; CW §5): si la versión de
+Blender no tiene ``draw_left`` con la forma esperada (``bl.compat.topbar_patchable``), no
+se sustituye nada: se añade (``append``) a ``TOPBAR_MT_editor_menus`` el conmutador y
+«Geoblender ▾» tras la Ayuda de Blender, en los dos modos, y se avisa una vez por sesión
+«Interfaz de Geoblender en modo de compatibilidad» (en los avisos del proyecto y en el
+registro). :func:`mode` dice cuál está activo.
+
 **Idempotencia** (RF-003-24; CW §5): si ``draw_left`` ya es un envoltorio de Geoblender
 (tiene ``_gb_original``, también uno de un módulo anterior a un ``script.reload``), se
 toma el original de ahí y no se envuelve dos veces; si ``draw_left`` es de otro
@@ -34,12 +41,15 @@ import bpy
 from ...core.catalog import Catalog
 from ...core.catalog.width import GEOBLENDER_MENU, HELP_MENU, TOOLS_MENU, Level
 from ...core.i18n import tr
+from .. import compat
+from ..scene import project_session
 from . import gate
 from .commands import catalog, preference, text
 from .drawing import draw_command, icon_kwargs, native_icon
 
 LOGGER = logging.getLogger("geoblender.bl.ui.topbar")
 ORIGINAL_ATTR = "_gb_original"  # el draw_left original, en el propio envoltorio
+COMPAT_ATTR = "_gb_compat"  # marca de la función añadida en el respaldo de compatibilidad
 TOGGLE = "geoblender.ui_toggle_mode"
 LAYOUTS_PANEL = "GEOBLENDER_PT_ui_layouts"
 BLENDER_MENUS = "TOPBAR_MT_editor_menus"
@@ -51,7 +61,9 @@ DrawLeft = Callable[[Any, Any], None]
 class _State:
     def __init__(self) -> None:
         self.wrapper: DrawLeft | None = None  # el envoltorio instalado
+        self.compat: DrawLeft | None = None  # la función añadida en compatibilidad
         self.failed = False  # ya se registró un error de dibujo
+        self.warned = False  # ya se avisó del modo de compatibilidad en esta sesión
 
 
 _STATE = _State()
@@ -76,7 +88,21 @@ def is_wrapper(function: Any) -> bool:
 
 def is_installed() -> bool:
     """Verdadero si la barra superior dibuja ahora el envoltorio de este módulo."""
-    return _STATE.wrapper is not None and header().draw_left is _STATE.wrapper
+    return _STATE.wrapper is not None and getattr(header(), "draw_left", None) is _STATE.wrapper
+
+
+def is_compat_function(function: Any) -> bool:
+    """Verdadero si ``function`` es la que añade el respaldo de compatibilidad (de este
+    módulo o de uno anterior a una recarga)."""
+    return bool(getattr(function, COMPAT_ATTR, False))
+
+
+def mode() -> str:
+    """``"patched"`` (``draw_left`` sustituido), ``"compat"`` (respaldo) o ``""`` (sin
+    instalar)."""
+    if _STATE.wrapper is not None:
+        return "patched"
+    return "compat" if _STATE.compat is not None else ""
 
 
 # Dibujo -------------------------------------------------------------------------------
@@ -172,12 +198,45 @@ def _make_wrapper(original: DrawLeft) -> DrawLeft:
     return gb_draw_left
 
 
+def gb_compat_menus(self: Any, context: Any) -> None:
+    """Lo que añade el respaldo de compatibilidad tras la Ayuda de Blender: el conmutador
+    y «Geoblender ▾» (RF-003-05)."""
+    layout = self.layout
+    draw_switcher(
+        layout, geoblender=gate.is_geoblender_workspace(getattr(context, "workspace", None))
+    )
+    _top_menu(layout, catalog(), GEOBLENDER_MENU, icon=False)
+
+
+setattr(gb_compat_menus, COMPAT_ATTR, True)
+
+
 # Instalación --------------------------------------------------------------------------
+
+
+def _remove_compat_functions() -> None:
+    menus = getattr(bpy.types, compat.TOPBAR_MENUS)
+    for function in list(getattr(menus.draw, "_draw_funcs", None) or ()):
+        if is_compat_function(function):
+            menus.remove(function)
+
+
+def _install_compat() -> str:
+    _remove_compat_functions()  # también la de un módulo anterior a una recarga
+    getattr(bpy.types, compat.TOPBAR_MENUS).append(gb_compat_menus)
+    _STATE.compat = gb_compat_menus
+    if not _STATE.warned:
+        _STATE.warned = True
+        project_session.notify(tr("Geoblender interface in compatibility mode"))
+    return "compat"
 
 
 def install() -> str:
     """Sustituye ``draw_left`` por el envoltorio (una sola vez, también tras una recarga
-    o si otro complemento la sustituyó); devuelve ``"patched"``."""
+    o si otro complemento la sustituyó) y devuelve ``"patched"``; si la barra no tiene la
+    forma esperada, instala el respaldo de compatibilidad y devuelve ``"compat"``."""
+    if _STATE.compat is not None or not compat.topbar_patchable(header()):
+        return _install_compat()
     cls = header()
     current = cls.draw_left
     if _STATE.wrapper is not None and current is _STATE.wrapper:
@@ -190,12 +249,16 @@ def install() -> str:
 
 
 def restore() -> None:
-    """Vuelve a poner el ``draw_left`` original guardado en el envoltorio; si otro
-    complemento lo sustituyó después, deja el suyo (el envoltorio queda inactivo)."""
+    """Vuelve a poner el ``draw_left`` original guardado en el envoltorio (si otro
+    complemento lo sustituyó después, deja el suyo y el envoltorio queda inactivo) o
+    quita lo añadido por el respaldo de compatibilidad."""
+    if _STATE.compat is not None:
+        _remove_compat_functions()
+        _STATE.compat = None
     wrapper = _STATE.wrapper
     if wrapper is None:
         return
     cls = header()
-    if cls.draw_left is wrapper:
+    if getattr(cls, "draw_left", None) is wrapper:
         cls.draw_left = getattr(wrapper, ORIGINAL_ATTR)
     _STATE.wrapper = None

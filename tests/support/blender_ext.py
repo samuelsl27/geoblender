@@ -536,7 +536,10 @@ def state_fingerprint() -> dict[str, object]:
         "properties": properties,
         "handlers": handlers,
         "addon_keymaps": keymaps,
-        "topbar_draw_left": CallableRef.of(bpy.types.TOPBAR_HT_upper_bar.draw_left),
+        # Sin draw_left (la prueba del respaldo de compatibilidad, spec 003, T13), None.
+        "topbar_draw_left": CallableRef.of(
+            getattr(bpy.types.TOPBAR_HT_upper_bar, "draw_left", None)
+        ),
         "draw_funcs": draw_funcs,
         "timers": registered_timers(),
         "translations": registered_translations(EXTENSION_MODULES),
