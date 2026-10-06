@@ -339,6 +339,12 @@ def _licenses(ctx: Context) -> list[Run]:
     return [ctx.python("tools/check_licenses.py")]
 
 
+def _icons(ctx: Context) -> list[Run]:
+    """Paso «iconos» (spec 003, T30; RNF-003-09): fuentes SVG, PNG y manifiesto al día,
+    sin rasterizar (``tools/build_icons.py --check``)."""
+    return [ctx.python("tools/build_icons.py", "--check")]
+
+
 def _licenses_advice(ctx: Context, text: str) -> list[str]:
     """Si LIC-02 falla porque faltan ruedas o no coinciden (un clon o *worktree* nuevo),
     la orden exacta que las descarga (plan 001 §5.4.12)."""
@@ -394,7 +400,7 @@ def _docs_omit(ctx: Context) -> str | None:
 
 
 # Tabla de pasos (plan 001 §5.4.7). Las specs siguientes añaden el suyo en su lugar:
-# «iconos» (003) tras «licencias» y «motor» (004) tras «blender». Los opcionales se
+# «iconos» (003, T30) tras «licencias» y «motor» (004) tras «blender». Los opcionales se
 # ejecutan siempre después de los obligatorios (RF-001-10), en el orden de la tabla:
 # «arnés» (--completo; spec 001 0.6) el primero, tras «blender»; «documentación» (spec
 # 007, RF-007-14), el último.
@@ -402,6 +408,7 @@ STEPS: tuple[Step, ...] = (
     Step("unitarias", _unit),
     Step("referencia", _reference),
     Step("licencias", _licenses, advice=_licenses_advice),
+    Step("iconos", _icons),
     Step("manifiesto", _manifest),
     Step("blender", _blender),
     Step(HARNESS_STEP, _harness, option=OPTION_COMPLETE),

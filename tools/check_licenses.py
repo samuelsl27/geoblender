@@ -19,6 +19,9 @@ Se ejecuta con el Python de Blender desde la raíz del repositorio (órdenes en
   propia (``precedence = "override"``) con una licencia que no es CC0, su texto en
   ``LICENSES/`` y un ``LICENSE`` de carpeta igual a él; y no hay fuentes editables de
   activos (``.svg``, ``.xcf``, ``.psd``, ``.kra``, ``.ai``) dentro de ``geoblender/``.
+  Cada fuente SVG de ``assets/`` lleva además los metadatos RDF de CC0-1.0 de II §1.7
+  (``dc:rights`` «CC0-1.0», ``cc:license`` con la URL de CC0 y el autor «IMGA»; spec 003,
+  T30; ``gbtools.icons.license_problems``).
 
 Imprime cada incumplimiento como ``fichero:línea: [REGLA] mensaje``. Códigos de
 salida: 0 correcto, 1 algún incumplimiento, 2 error de uso o de entorno.
@@ -37,7 +40,7 @@ from collections.abc import Mapping, Sequence  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
-from gbtools import manifest, wheels  # noqa: E402
+from gbtools import icons, manifest, wheels  # noqa: E402
 from gbtools.findings import Finding, format_findings  # noqa: E402
 from gbtools.layout import (  # noqa: E402
     EXTENSION_DIR,
@@ -73,6 +76,7 @@ CC0_PATHS: tuple[str, ...] = (
     "packaging/app_template/**",
 )
 THIRDPARTY_ROOT = f"{THIRDPARTY_RELPATH}/"
+ASSETS_ROOT = "assets/"
 EXTENSION_ROOT = f"{EXTENSION_DIR}/"
 EDITABLE_SOURCE_SUFFIXES: frozenset[str] = frozenset(
     {".svg", ".xcf", ".psd", ".kra", ".ai"}
@@ -342,6 +346,25 @@ def _asset_folder_findings(root: Path, files: Sequence[str]) -> list[Finding]:
     return findings
 
 
+def _svg_license_findings(root: Path, files: Sequence[str]) -> list[Finding]:
+    """Cada fuente SVG de ``assets/`` lleva los metadatos CC0 de II §1.7 (spec 003)."""
+    findings: list[Finding] = []
+    for rel in files:
+        if not rel.startswith(ASSETS_ROOT) or not rel.lower().endswith(".svg"):
+            continue
+        try:
+            text = (root / rel).read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            findings.append(Finding(rel, 0, RULE_ASSETS, f"no se puede leer en UTF-8: {exc}"))
+            continue
+        findings.extend(
+            Finding(rel, 0, RULE_ASSETS,
+                    f"{problem}: los activos propios son CC0-1.0 (ADR-0002) y lo dicen")
+            for problem in icons.license_problems(text)
+        )
+    return findings
+
+
 def _thirdparty_findings(
     root: Path,
     folder: str,
@@ -478,6 +501,7 @@ def check_assets(root: Path) -> list[Finding]:
     annotations = _read_reuse(root, findings) or []
     files = [relpath(root, path) for path in iter_repo_files(root)]
     findings.extend(_asset_folder_findings(root, files))
+    findings.extend(_svg_license_findings(root, files))
 
     origins: dict[str, list[str]] = {}
     for rel in files:

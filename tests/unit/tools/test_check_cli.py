@@ -70,7 +70,7 @@ INSTALL = BlenderInstall(
     python=FAKE_BLENDER / "5.2" / "python" / "bin" / "python.exe",
     version=(5, 2, 1),
 )
-MANDATORY = ["unitarias", "referencia", "licencias", "manifiesto", "blender"]
+MANDATORY = ["unitarias", "referencia", "licencias", "iconos", "manifiesto", "blender"]
 # Una prueba que devuelve algo (``async def`` en un TestCase, o con ``yield``) es un
 # error y no solo un aviso (hallazgo F7 de la ronda 3; convergencia, T54).
 RETURN_VALUE_IS_ERROR = ("-W", "error:It is deprecated to return a value:DeprecationWarning")
@@ -111,6 +111,7 @@ DEFAULT_RESULTS: Mapping[str, tuple[int, str, str]] = {
     # casos» se prueba en una raíz temporal sin ellos (test_empty_reference_suite_ok).
     "referencia": (0, "", _unittest_output(2)),
     "licencias": (0, "Licencias (LIC-01 a LIC-04): correcto\n", ""),
+    "iconos": (0, "RESULTADO: correcto (0,0 s): 58 iconos con sus PNG y su manifiesto\n", ""),
     "manifiesto": (0, 'Success parsing TOML in "Geoblender"\n', ""),
     "blender": (
         0,
@@ -656,24 +657,16 @@ class StepsTest(unittest.TestCase):
         self.assertEqual(result.code, 1)
         self.assertNotIn("RESULTADO: VERDE", result.out)
 
-    def test_extra_step_slot(self) -> None:
-        """RF-001-06: otra spec añade un paso en su lugar de la tabla (p. ej. «iconos»
-        de la 003, tras «licencias») con los mismos estados y códigos."""
-
-        def icons(ctx: check.Context) -> list[check.Run]:
-            return [ctx.python("tools/build_icons.py", "--check")]
-
+    def test_icons_step(self) -> None:
+        """RF-001-06 (spec 003, T30): el paso «iconos» va en su lugar de la tabla, tras
+        «licencias», con ``tools/build_icons.py --check`` y los mismos estados y códigos."""
         names = [step.name for step in check.STEPS]
         self.assertEqual(names[: len(MANDATORY)], MANDATORY)
-        position = names.index("licencias") + 1
-        steps = (*check.STEPS[:position], check.Step("iconos", icons), *check.STEPS[position:])
-        runner = FakeRunner({"iconos": (0, "iconos: correcto\n", "")})
-        result = run_check(runner=runner, steps=steps)
+        self.assertEqual(names.index("iconos"), names.index("licencias") + 1)
+        runner = FakeRunner()
+        result = run_check(runner=runner)
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(
-            runner.steps(),
-            ["unitarias", "referencia", "licencias", "iconos", "manifiesto", "blender"],
-        )
+        self.assertEqual(runner.steps(), MANDATORY)
         self.assertEqual(
             runner.call("iconos").cmd,
             blender.python_cmd(INSTALL, "tools/build_icons.py", "--check"),
@@ -681,7 +674,7 @@ class StepsTest(unittest.TestCase):
         self.assertRegex(_step_line(result.out, "iconos"), r"^  correcto  iconos\s")
 
         runner = FakeRunner({"iconos": (1, "icons/a.png: hash distinto\n", "")})
-        result = run_check(runner=runner, steps=steps)
+        result = run_check(runner=runner)
         self.assertEqual(result.code, 1)
         self.assertIn("icons/a.png: hash distinto", result.out)
         self.assertIn("«iconos»", result.out.strip().splitlines()[-1])
