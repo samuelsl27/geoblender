@@ -14,7 +14,8 @@ API (la del plan 003 §5.3; la spec 003 la amplía con el catálogo de comandos)
   (:func:`translate`, en un idioma dado);
 - :func:`set_language` y :func:`language`: el idioma activo (``"es"`` o ``"en"``);
 - :func:`install`: añade traducciones (las del catálogo de comandos de la 003);
-- :func:`missing_translations`: los ``msgid`` sin traducción (en el fichero o pedidos);
+- :func:`missing_translations`: los ``msgid`` sin traducción (en el fichero o pedidos), y
+  :func:`untranslated`, los de una lista (la prueba de cobertura de la spec 003);
 - :func:`format_number` y :func:`format_xyz`: números y coordenadas **absolutas**
   (float64) en el formato del idioma: en español, coma decimal y espacio fino (sin
   ruptura) de miles (``X 736 512,34  Y 4 435 871,02``); en inglés, punto decimal, comas de
@@ -147,6 +148,15 @@ def missing_translations() -> list[str]:
     que se han pedido sin tenerla (constitución, principio 10)."""
     empty = {msgid for msgid, text in _table().items() if not text.strip()}
     return sorted(empty | _STATE.missing)
+
+
+def untranslated(msgids: Iterable[str]) -> list[str]:
+    """Los ``msgid`` de ``msgids`` sin traducción al español (ni en ``messages.toml`` ni
+    instalada): la prueba de cobertura de la spec 003 (RNF-003-08) exige que no haya
+    ninguno. No los anota en :func:`missing_translations`."""
+    table = _table()
+    return sorted({msgid for msgid in msgids
+                   if not (_STATE.installed.get(msgid) or table.get(msgid, "").strip())})
 
 
 def format_number(value: float, decimals: int) -> str:

@@ -372,7 +372,119 @@ es = "La vista «{view}» guardaba el render en «{path}», en otro volumen: su 
 ["The view «{view}» was saved with Blender's interface data (it could not be rewritten without it: {error}); save it again."]
 es = "La vista «{view}» se ha guardado con los datos de la interfaz de Blender (no se ha podido reescribir sin ellos: {error}); guárdela otra vez."
 
-# Estados de un comando (spec 003; BS §7.3; iconos-e-idioma.md §2.3) ------------------------
+# Interfaz (spec 003; iconos-e-idioma.md §2.3). Las etiquetas de los menús, los comandos y
+# los controles las da el catálogo de comandos (core/catalog), no este fichero.
+
+# Primera línea de cada menú del flujo (BS §6)
+
+["Step {n} of {total} · {stage}"]
+es = "Paso {n} de {total} · {stage}"
+
+# Estados de un comando (BS §7.3)
 
 ["Available in {entry}"]
 es = "Disponible en {entry}"
+
+["First {step} ({path})"]
+es = "Primero {step} ({path})"
+
+["{version} is in state {state}: create a revision or a new version"]
+es = "{version} está en estado {state}: cree una revisión o una versión nueva"
+
+["Input {name} changed since {revision}"]
+es = "La entrada {name} ha cambiado desde {revision}"
+
+["Needs the compute engine ({path})"]
+es = "Necesita el motor de cálculo ({path})"
+
+["Computing: {pct} %"]
+es = "Calculando: {pct} %"
+
+["Stale: {cause} changed"]
+es = "Obsoleto: cambió {cause}"
+
+["Its place: {path}"]
+es = "Su sitio: {path}"
+
+["Only in Geoblender mode (Ctrl+F10) or from Geoblender ▾"]
+es = "Solo en modo Geoblender (Ctrl+F10) o desde Geoblender ▾"
+
+# Estados de la versión y tipos de cifra: se guardan como los escribe ADR-0013 (VIGENTE,
+# MEDIDO…); la interfaz inglesa solo traduce la etiqueta (II §2.3).
+
+["DRAFT"]
+es = "BORRADOR"
+
+["CURRENT"]
+es = "VIGENTE"
+
+["SUPERSEDED"]
+es = "SUPERADO"
+
+["DISCARDED"]
+es = "DESCARTADO"
+
+["MEASURED"]
+es = "MEDIDO"
+
+["CALCULATED"]
+es = "CALCULADO"
+
+["ADOPTED"]
+es = "ADOPTADO"
+
+["ASSUMPTION"]
+es = "HIPÓTESIS"
+
+["MEA"]
+es = "MED"
+
+["CAL"]
+es = "CAL"
+
+["ADO"]
+es = "ADO"
+
+["ASM"]
+es = "HIP"
+
+# Barra de estado minera y avisos (AR §6; CW §3.1; RF-003-05, RF-003-28)
+
+["No project"]
+es = "Sin proyecto"
+
+["Cursor:"]
+es = "Cursor:"
+
+["Mouse:"]
+es = "Ratón:"
+
+["Snap: {mode}"]
+es = "Encaje: {mode}"
+
+["Section {name} · ±{front} | {step} m"]
+es = "Sección {name} · ±{front} | {step} m"
+
+["Clipping: {mode}"]
+es = "Recorte: {mode}"
+
+["Object: {name}"]
+es = "Objeto: {name}"
+
+["Slope {value} %"]
+es = "Pend. {value} %"
+
+["{n} jobs"]
+es = "{n} trabajos"
+
+["In use by {user} since {time}"]
+es = "En uso por {user} desde las {time}"
+
+["The view is removed; the data stay in the project. To retire them: Inventory ▸ Discard"]
+es = "Se elimina la vista; los datos siguen en el proyecto. Para retirarlos: Inventario ▸ Descartar"
+
+["The Geoblender workspace has been added to this file"]
+es = "Se ha añadido el espacio de trabajo Geoblender a este fichero"
+
+["Geoblender interface in compatibility mode"]
+es = "Interfaz de Geoblender en modo de compatibilidad"

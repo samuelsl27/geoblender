@@ -315,6 +315,24 @@ class Catalog:
             menu = owner.home
         return tuple(reversed(parts))
 
+    def msgids(self) -> list[str]:
+        """Todos los ``msgid`` del catálogo, con traducción o sin ella (RNF-003-08)."""
+        found: dict[str, None] = {}
+        for command in self.commands.values():
+            found.update(dict.fromkeys(filter(None, (command.label, command.description))))
+        for menu in self.menus.values():
+            found.update(dict.fromkeys(filter(None, (menu.stage, *(g.label for g in menu.groups)))))
+        for context in self.contexts.values():
+            for item in (*context.items, *context.icons):
+                if item.placeholder and item.placeholder[0]:
+                    found[item.placeholder[0]] = None
+        found.update(dict.fromkeys(filter(None, (m for m, _ in self.quick_access_groups.values()))))
+        found.update(dict.fromkeys(filter(None, (s.label for s in self.shortcut_list))))
+        found.update(dict.fromkeys(filter(None, (e.title for e in self.entries.values()))))
+        for layout in self.layouts:
+            found.update(dict.fromkeys(filter(None, (layout.label, layout.description))))
+        return list(found)
+
     def translations(self) -> dict[str, str]:
         """``msgid`` → español de todos los textos del catálogo (``core.i18n.install``)."""
         table: dict[str, str] = {}
