@@ -70,3 +70,8 @@ class GeoblenderError(Exception):
 
 class ValidationError(GeoblenderError):
     """Una entrada no válida (campo de un diálogo, dato del catálogo, ajuste)."""
+
+
+class GeometryError(GeoblenderError):
+    """Una geometría que Geoblender no escribe ni lee: vacía, de un tipo no admitido o
+    mal formada (``core.gpkg.wkb``)."""
