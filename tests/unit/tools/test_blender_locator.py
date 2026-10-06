@@ -16,6 +16,8 @@ El ejecutor de órdenes es simulado: ninguna prueba lanza Blender, salvo
 import os
 import subprocess
 import sys
+import threading
+import time
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
@@ -390,6 +392,37 @@ class CommandsTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 3)
         self.assertEqual(result.stdout.strip(), "ñandú")
+
+    def test_stop_all(self) -> None:
+        """RF-001-06 (spec 003, T40): ``stop_all`` termina las órdenes que ``run`` tiene
+        en marcha en otros hilos (las partes de un paso de ``tools/check.py`` al pulsar
+        Ctrl+C), que devuelven enseguida su código; después no queda ninguna anotada, y
+        sin órdenes en marcha no hace nada."""
+        blender.stop_all()
+        results: list[subprocess.CompletedProcess[str]] = []
+        sleeper = [sys.executable, "-B", "-s", "-c", "import time; time.sleep(60)"]
+        threads = [
+            threading.Thread(
+                target=lambda: results.append(blender.run(sleeper, timeout=120)),
+                daemon=True,
+            )
+            for _ in range(2)
+        ]
+        start = time.perf_counter()
+        for thread in threads:
+            thread.start()
+        deadline = time.perf_counter() + 30
+        while blender.running() < 2 and time.perf_counter() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(blender.running(), 2)
+        blender.stop_all()
+        for thread in threads:
+            thread.join(30)
+        self.assertLess(time.perf_counter() - start, 30)
+        self.assertEqual(len(results), 2)
+        for result in results:
+            self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(blender.running(), 0)
 
 
 if __name__ == "__main__":

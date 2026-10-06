@@ -158,3 +158,8 @@ vez. Lo de la spec 003 está probado sin la interfaz gráfica; falta verlo en la
   comprobación completa ya no necesita la documentación al lado: en el PC de referencia, con
   el código en su disco local, tarda unos 40 s con las pruebas de la publicación (antes,
   unos 48 s en la unidad de red, sin ellas).
+- `tools/check.py` reparte las pruebas unitarias en 4 procesos y las de Blender en 3
+  Blender que se ejecutan a la vez dentro de su paso (los pasos siguen uno tras otro), sin
+  quitar ni acortar ninguna: la comprobación de cada tarea pasa de unos 55 s a unos 25 s
+  en el PC de referencia. Cada prueba se ejecuta en una sola parte, y si las partes no
+  suman las pruebas que hay, el paso falla.

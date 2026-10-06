@@ -14,6 +14,8 @@ segundo plano, con ``tools/run_blender_tests.py`` y un perfil temporal
   pasa, 0 (control positivo); y el lanzador no da por buena una salida a mitad
   (``os._exit(0)``), una prueba que devuelve algo ni un fallo esperado.
 - RF-001-07: una carpeta sin pruebas no es un verde: código 1 y el motivo.
+- RNF-007-01, RF-001-06 (spec 003, T40): con ``--parte i/n``, el lanzador ejecuta solo
+  su parte y lo dice; entre todas las partes, cada prueba una vez.
 - RF-001-09: una ejecución real del lanzador (una prueba que habilita la extensión y
   guarda un ``.blend``) no crea ni cambia ningún fichero del repositorio (ignorados
   incluidos, salvo ``.git/``; ningún ``__pycache__``) ni del perfil de Blender del
@@ -88,7 +90,7 @@ tools_on_path()
 import build  # noqa: E402
 import check  # noqa: E402
 import dev_install  # noqa: E402
-from gbtools import manifest  # noqa: E402
+from gbtools import discovery, manifest, parts  # noqa: E402
 from gbtools.blender import BlenderInstall  # noqa: E402
 
 # La ejecución real de RealRunTest (RF-001-09): habilita la extensión real, como hacen las
@@ -271,6 +273,40 @@ class LauncherExitCodeTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, run_output(result))
         self.assertIn("Ran 2 tests", result.stderr)
+
+    def test_parts_cover_every_test_once(self) -> None:
+        """RNF-007-01, RF-001-06 (spec 003, T40): con ``--parte i/2``, cada Blender
+        escribe «PARTE i de 2: r de 3 pruebas» y su línea final con r, ejecuta solo los
+        módulos de su parte y, entre los dos, cada prueba una vez (las líneas cuadran);
+        un fichero sin cargar lo dice cada parte; y una parte que no es «i/n» da 2."""
+        files = {f"pruebas/test_{name}.py": PASSING for name in ("a", "b", "c")}
+        found: list[tuple[int, int, int, int] | None] = []
+        modules: list[str] = []
+        for part in (1, 2):
+            result = self.run_folder(files, parts.OPTION, f"{part}/2")
+            text = run_output(result)
+            self.assertEqual(result.returncode, 0, text)
+            line = parts.last_line(text)
+            found.append(line)
+            self.assertIsNotNone(line, text)
+            assert line is not None
+            self.assertEqual((line[0], line[1], line[3]), (part, 2, 3))
+            self.assertIn(discovery.launcher_end_line(line[2], 0), text)
+            loaded = sorted({name.split(".")[0] for name in discovery.loaded_in_output(text)})
+            self.assertEqual(len(loaded), line[2])
+            modules.extend(loaded)
+        self.assertEqual(sorted(modules), ["test_a", "test_b", "test_c"])
+        self.assertIsNone(parts.consistency(found, 2))
+
+        unloaded = {**files, "pruebas/sub/test_d.py": PASSING}
+        result = self.run_folder(unloaded, parts.OPTION, "2/2")
+        self.assertEqual(result.returncode, 1, run_output(result))
+        self.assertIn("PRUEBAS SIN CARGAR", result.stderr)
+
+        result = self.run_folder(files, parts.OPTION, "3/2")
+        self.assertEqual(result.returncode, 2, run_output(result))
+        self.assertIn(parts.OPTION, result.stderr)
+        self.assertNotIn("Ran ", run_output(result))
 
     def test_usage_errors_exit_2(self) -> None:
         """RF-001-07: una opción desconocida o una carpeta que no existe dan 2 sin

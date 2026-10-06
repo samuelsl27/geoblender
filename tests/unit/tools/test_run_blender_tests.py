@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Opciones del lanzador de las pruebas de Blender (``tools/run_blender_tests.py``),
+sin Blender (spec 003, T40).
+
+- RNF-007-01, RF-001-06: ``--parte i/n`` ejecuta solo la parte i de n de las pruebas
+  descubiertas (``gbtools.parts``), para que ``tools/check.py`` reparta las de Blender
+  en varios Blender a la vez; sin ella, todas, como siempre.
+- RF-001-07: una parte que no es «i/n» con 1 ≤ i ≤ n es un error de uso (código 2).
+
+Lo que hace dentro de Blender con la parte (la línea «PARTE i de n: …» y solo sus
+pruebas) lo prueba ``tests/arnes/test_harness_blender.py`` con el Blender real y, en
+cada comprobación, ``tools/check.py`` al cuadrar las partes del paso «blender».
+"""
+
+import unittest
+
+from tests.support.repo import ROOT, tools_on_path
+
+tools_on_path()
+
+import run_blender_tests  # noqa: E402
+from gbtools import parts  # noqa: E402
+
+
+class PartOptionTest(unittest.TestCase):
+    def test_without_part_runs_everything(self) -> None:
+        """RF-001-06: sin ``--parte``, la carpeta y el patrón de siempre y ninguna
+        parte."""
+        options = run_blender_tests.parse_args([])
+        self.assertEqual(options.folder, ROOT / "tests" / "blender")
+        self.assertEqual(options.pattern, "test_*.py")
+        self.assertIsNone(options.part)
+
+    def test_part(self) -> None:
+        """RNF-007-01: ``--parte 2/3`` y ``--parte=2/3``, con las demás opciones."""
+        for args in (
+            ["--carpeta", "tests/blender", "--parte", "2/3"],
+            ["--parte=2/3", "--carpeta", "tests/blender"],
+        ):
+            with self.subTest(argumentos=args):
+                options = run_blender_tests.parse_args(args)
+                self.assertEqual(options.part, (2, 3))
+                self.assertEqual(options.folder, ROOT / "tests" / "blender")
+        self.assertEqual(run_blender_tests.PART_OPTION, parts.OPTION)
+
+    def test_invalid_part(self) -> None:
+        """RF-001-07: una parte que no es «i/n» con 1 ≤ i ≤ n, o sin valor, es un error
+        de uso que dice el formato."""
+        for args in (["--parte", "0/2"], ["--parte", "3/2"], ["--parte", "x"], ["--parte"]):
+            with self.subTest(argumentos=args):
+                with self.assertRaises(run_blender_tests.UsageError) as caught:
+                    run_blender_tests.parse_args(args)
+                self.assertIn("--parte", str(caught.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

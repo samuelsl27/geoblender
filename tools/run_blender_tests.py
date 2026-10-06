@@ -13,6 +13,12 @@ Opciones (tras ``--``):
   relativa se toma desde la raíz del repositorio.
 - ``--patron PATRÓN``: patrón de los ficheros (por defecto ``test_*.py``; las
   mediciones de ``tests/rendimiento/blender`` usan ``perf_*.py``).
+- ``--parte i/n``: de las pruebas que descubre, ejecuta solo la parte i de n
+  (``gbtools.parts``: módulos enteros, repartidos por número de pruebas) y antes
+  escribe ``PARTE i de n: r de T pruebas``; ``tools/check.py`` reparte así las de
+  ``tests/blender`` en varios Blender a la vez, cada uno con su perfil temporal (spec
+  003, T40). Las comprobaciones de lo descubierto («NO HAY PRUEBAS», «PRUEBAS SIN
+  CARGAR») son sobre todas las pruebas.
 
 Pasos: copia ``geoblender/`` con las exclusiones del manifiesto a
 ``%TEMP%\\geoblender-pruebas-*\\geoblender``, la registra como repositorio de extensiones
@@ -76,15 +82,18 @@ TEMP_PREFIX = "geoblender-pruebas-"
 BYTECODE_DIR = "pyc"  # código compilado de la sesión, dentro de la carpeta temporal
 ENV_USER_RESOURCES = "BLENDER_USER_RESOURCES"
 
+PART_OPTION = "--parte"  # gbtools.parts.OPTION (lo comprueba una prueba)
+
 COMMAND = (
     "& $B -b --factory-startup --python-exit-code 1 --python tools/run_blender_tests.py "
-    "-- [--carpeta DIR] [--patron PATRÓN]"
+    "-- [--carpeta DIR] [--patron PATRÓN] [--parte i/n]"
 )
 USAGE = f"""Uso (dentro de Blender, desde la raíz del repositorio):
   {COMMAND}
 
   --carpeta DIR      carpeta de pruebas (por defecto {DEFAULT_FOLDER}; relativa a la raíz)
   --patron PATRÓN    patrón de los ficheros de prueba (por defecto {DEFAULT_PATTERN})
+  --parte i/n        solo la parte i de n de las pruebas (módulos enteros)
   --ayuda, -h        muestra esta ayuda"""
 
 
@@ -97,6 +106,7 @@ class Options:
     folder: Path
     pattern: str
     show_help: bool = False
+    part: tuple[int, int] | None = None  # (i, n) de --parte; None: todas
 
 
 def _script_args(argv: Sequence[str]) -> list[str]:
@@ -106,8 +116,9 @@ def _script_args(argv: Sequence[str]) -> list[str]:
 
 
 def parse_args(args: Sequence[str]) -> Options:
-    """Lee ``--carpeta`` y ``--patron``; lanza :class:`UsageError` si algo sobra o falta."""
-    values = {"--carpeta": DEFAULT_FOLDER, "--patron": DEFAULT_PATTERN}
+    """Lee ``--carpeta``, ``--patron`` y ``--parte``; lanza :class:`UsageError` si algo
+    sobra, falta o no vale."""
+    values = {"--carpeta": DEFAULT_FOLDER, "--patron": DEFAULT_PATTERN, PART_OPTION: ""}
     show_help = False
     pending = list(args)
     while pending:
@@ -128,7 +139,25 @@ def parse_args(args: Sequence[str]) -> Options:
     folder = Path(values["--carpeta"])
     if not folder.is_absolute():
         folder = ROOT / folder
-    return Options(folder=folder, pattern=values["--patron"], show_help=show_help)
+    part: tuple[int, int] | None = None
+    if values[PART_OPTION]:
+        _tools_on_path()
+        from gbtools import parts
+
+        try:
+            part = parts.parse(values[PART_OPTION])
+        except ValueError as exc:
+            raise UsageError(str(exc)) from None
+    return Options(
+        folder=folder, pattern=values["--patron"], show_help=show_help, part=part
+    )
+
+
+def _tools_on_path() -> None:
+    """``tools/`` y la raíz en ``sys.path``, para importar ``gbtools`` y ``tests``."""
+    for entry in (str(TOOLS_DIR), str(ROOT)):
+        if entry not in sys.path:
+            sys.path.insert(0, entry)
 
 
 def _inside(path: Path, folder: Path) -> bool:
@@ -228,6 +257,15 @@ def _run_tests(options: Options) -> tuple[int, int]:
     )
     missing = discovery.missing_modules(expected, _suite_modules(suite))
     count = suite.countTestCases()
+    if count != 0 and options.part is not None:
+        from gbtools import parts
+
+        suite, _total = parts.select(suite, *options.part)
+        print(
+            parts.line(*options.part, suite.countTestCases(), count),
+            file=sys.stderr,
+            flush=True,
+        )
     if count == 0:
         if missing:
             _report_unloaded(options, missing)
@@ -348,9 +386,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if options.show_help:
         print(USAGE)
         return 0
-    for entry in (str(TOOLS_DIR), str(ROOT)):
-        if entry not in sys.path:
-            sys.path.insert(0, entry)
+    _tools_on_path()
     if not os.environ.get(ENV_USER_RESOURCES):
         print(
             f"AVISO: {ENV_USER_RESOURCES} no está definida: Blender puede escribir en el "
