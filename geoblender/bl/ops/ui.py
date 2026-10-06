@@ -13,6 +13,9 @@
   (``name``, ``keep_open``) de Geoblender con ``wm.call_menu_pie`` y ``wm.call_panel``,
   que no saben del modo: sus atajos están en la Vista 3D, así que pasan por la puerta de
   modo (``bl.ui.gate``) y en modo Blender la tecla queda para Blender.
+- ``geoblender.ui_repair_interface`` (RF-003-24; CW §5): Ayuda ▸ Reparar la interfaz
+  (``bl.ui.repair``): la barra superior, una sola vez aunque otro complemento la haya
+  sustituido, y los atajos. Se puede pulsar siempre.
 
 ``bl_label`` y ``bl_description`` son los ``msgid`` del catálogo (contrato 1 del plan
 003); ``bl.ui.registry`` los pone en el idioma de Geoblender al registrar la interfaz.
@@ -109,9 +112,29 @@ class GEOBLENDER_OT_ui_call_panel(bpy.types.Operator):
         return self.execute(context)
 
 
+class GEOBLENDER_OT_ui_repair_interface(bpy.types.Operator):
+    """Install the top bar, the shortcuts and the icons again"""
+
+    bl_idname = "geoblender.ui_repair_interface"
+    bl_label = "Repair the interface"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    def execute(self, context: Any) -> set[str]:
+        from .. import ui  # diferido, como el conmutador
+
+        mode = ui.repair()
+        if mode == "compat":
+            self.report({"WARNING"}, tr("Geoblender interface in compatibility mode"))
+        else:
+            self.report({"INFO"}, tr("Geoblender interface repaired"))
+        return {"FINISHED"}
+
+
 # En orden de registro.
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_toggle_mode,
     GEOBLENDER_OT_ui_call_pie,
     GEOBLENDER_OT_ui_call_panel,
+    GEOBLENDER_OT_ui_repair_interface,
 )

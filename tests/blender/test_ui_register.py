@@ -13,12 +13,18 @@
   defecto).
 - RF-003-04, RF-003-19 (puerta de modo): lo lanzado desde una Vista 3D exige el modo
   Geoblender; desde fuera de la Vista 3D, no.
+- RF-003-23, RF-003-24 (T17): habilitar → conmutar → deshabilitar deja la instantánea
+  idéntica (salvo el espacio de trabajo anexado, que es del fichero); con los módulos
+  reimportados (``script.reload`` simulado) no se envuelve dos veces; si otro complemento
+  sustituye ``draw_left``, «Reparar la interfaz» lo envuelve una sola vez aunque se pulse
+  dos veces, y vuelve a poner los atajos que falten.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
 import importlib
 import unittest
+from collections.abc import Callable
 from types import ModuleType, SimpleNamespace
 
 import bpy
@@ -212,6 +218,95 @@ class UiRegisterCycleTest(unittest.TestCase):
             checked += 1
             self.assertEqual(cls.bl_label, cmd.label, cls.bl_idname)
         self.assertGreater(checked, 10)
+
+
+
+class RepairTest(unittest.TestCase):
+    """Ciclo, recarga y «Reparar la interfaz» (RF-003-23, RF-003-24; CW §5 y §8)."""
+
+    def setUp(self) -> None:
+        blender_ext.unload()
+        blender_ext.load_file()
+        self.addCleanup(blender_ext.unload)
+        self.addCleanup(blender_ext.load_file)
+        self.header = bpy.types.TOPBAR_HT_upper_bar
+        self.saved = {"draw_left": self.header.draw_left}
+        self.addCleanup(self.restore_header)  # también si una prueba falla a medias
+
+    def restore_header(self) -> None:
+        self.header.draw_left = self.saved["draw_left"]
+
+    def assertSameSnapshot(self, before: dict[str, object], *, allowed: tuple[str, ...] = ()
+                           ) -> None:
+        changes = [line for line in fingerprint_diff(before, ui_snapshot())
+                   if not line.startswith(allowed)]
+        self.assertEqual(changes, [])
+
+    def test_enable_toggle_disable(self) -> None:
+        """RF-003-23, CE-003-02: con el espacio de Geoblender ya en el fichero, habilitar,
+        conmutar ida y vuelta y deshabilitar deja la instantánea idéntica; sin él, solo
+        cambia la lista de espacios de trabajo (el anexado, que no se borra)."""
+        before = ui_snapshot()
+        blender_ext.enable()
+        self.assertEqual(bpy.ops.geoblender.ui_toggle_mode(), {"FINISHED"})
+        blender_ext.disable()
+        self.assertSameSnapshot(before, allowed=("workspaces:",))
+        self.assertIn("workspaces", "".join(fingerprint_diff(before, ui_snapshot())))
+        prepared = ui_snapshot()  # el fichero ya tiene el espacio de Geoblender
+        blender_ext.enable()
+        for target in ("GEOBLENDER", "BLENDER", "TOGGLE"):
+            bpy.ops.geoblender.ui_toggle_mode(target=target)
+        blender_ext.disable()
+        self.assertSameSnapshot(prepared)
+
+    def test_reload_does_not_wrap_twice(self) -> None:
+        """RF-003-24 (inv. 09 §16): con el módulo de la barra reimportado (su estado
+        perdido y el envoltorio anterior aún puesto), reparar instala un envoltorio sobre
+        el original de Blender, no sobre el anterior; deshabilitar devuelve el original."""
+        before = ui_snapshot()
+        blender_ext.enable()
+        topbar = _module("bl.ui.topbar")
+        old = self.header.draw_left
+        topbar = importlib.reload(topbar)
+        self.assertIs(self.header.draw_left, old)
+        self.assertEqual(bpy.ops.geoblender.ui_repair_interface(), {"FINISHED"})
+        new = self.header.draw_left
+        self.assertIsNot(new, old)
+        self.assertIs(topbar.original_of(new), self.saved["draw_left"])
+        blender_ext.disable()
+        self.assertIs(self.header.draw_left, self.saved["draw_left"])
+        self.assertSameSnapshot(before)
+
+    def test_repair_after_other_addon(self) -> None:
+        """RF-003-24: otro complemento sustituye ``draw_left`` después de Geoblender;
+        «Reparar la interfaz», dos veces seguidas, lo envuelve una sola vez; el envoltorio
+        anterior queda inactivo (delega en el original); al deshabilitar queda el del otro
+        complemento; y reparar vuelve a poner los atajos que falten."""
+        blender_ext.enable()
+        topbar = _module("bl.ui.topbar")
+        keymap = _module("bl.ui.keymap")
+        geoblender = self.header.draw_left
+        calls: list[str] = []
+
+        def other(self: object, context: object, previous: Callable[..., None] = geoblender
+                  ) -> None:
+            calls.append("other")
+            previous(self, context)
+
+        self.header.draw_left = other
+        km, item = keymap.registered_items()[-1]
+        km.keymap_items.remove(item)
+        for _ in range(2):
+            self.assertEqual(bpy.ops.geoblender.ui_repair_interface(), {"FINISHED"})
+        wrapper = self.header.draw_left
+        self.assertTrue(topbar.is_wrapper(wrapper))
+        self.assertIs(topbar.original_of(wrapper), other)
+        self.assertFalse(topbar.is_wrapper(topbar.original_of(wrapper)))
+        self.assertEqual(len(keymap.registered_items()), 49)
+        geoblender_items = [i for k, i in keymap.registered_items() if k.name == "3D View"]
+        self.assertTrue(all(i.idname.startswith("geoblender.") for i in geoblender_items))
+        blender_ext.disable()
+        self.assertIs(self.header.draw_left, other)
 
 
 if __name__ == "__main__":

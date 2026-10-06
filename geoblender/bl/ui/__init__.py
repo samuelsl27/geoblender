@@ -74,6 +74,20 @@ def register() -> None:
         raise
 
 
+def repair() -> str:
+    """Ayuda ▸ Reparar la interfaz (RF-003-24; CW §5): vuelve a sustituir ``draw_left`` si
+    ya no es el de Geoblender (lo pisó otro complemento o una recarga; nunca envuelve dos
+    veces), vuelve a poner los atajos del catálogo y recalcula la disponibilidad.
+    Idempotente. Devuelve el modo de la barra (``patched`` o ``compat``)."""
+    if not _UNDO:
+        return ""
+    mode = topbar.install()
+    keymap.unregister()
+    keymap.register()
+    commands.refresh()
+    return mode
+
+
 def unregister() -> None:
     """Deshace en orden inverso lo que hizo :func:`register`; sin registro previo, no
     hace nada. Si un paso falla, sigue con los demás y propaga el primer error."""
