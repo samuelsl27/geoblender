@@ -71,12 +71,19 @@ def _load(data_dir: str) -> Catalog:
     return load_catalog(Path(data_dir))
 
 
+@functools.cache
+def _default() -> Catalog:
+    return _load(str(DATA_DIR.resolve()))
+
+
 def load(data_dir: Path | None = None) -> Catalog:
     """El catálogo de ``data_dir`` (por defecto, el de la extensión), leído una sola vez
     por carpeta. Lo que no se pudo leer queda en ``load_issues`` y sale en
-    :func:`validate`."""
-    folder = DATA_DIR if data_dir is None else Path(data_dir)
-    return _load(str(folder.resolve()))
+    :func:`validate`. El de la extensión se pide al dibujar cada comando: se guarda sin
+    volver a resolver su ruta (``Path.resolve`` consulta el disco; spec 003, T35)."""
+    if data_dir is None:
+        return _default()
+    return _load(str(Path(data_dir).resolve()))
 
 
 def entry_text(cat: Catalog, entry: str, language: str) -> str:
