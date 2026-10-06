@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tipos del proyecto ``.gbproj`` (spec 002; plan 002 §5.1 y §5.3).
 
+- :class:`ProjectSettings`: lo que indica el usuario al crear un proyecto (nombre, CRS,
+  ventana de trabajo tecleada, paso de rejilla y Z0), por validar.
 - :class:`ProjectRecord`: la fila de ``gb_project``, la identidad y la georreferencia del
   proyecto tal como las guarda la base de datos, que es la fuente de verdad (la cabecera
   ``manifest.json`` es una copia legible que se reescribe desde ella).
@@ -14,7 +16,31 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 
-from ..georef.origin import GeoOrigin, Window
+from ..georef.crs import DEFAULT_HORIZONTAL_EPSG, DEFAULT_VERTICAL_EPSG
+from ..georef.origin import DEFAULT_GRID_STEP_M, GeoOrigin, Window
+
+
+@dataclass(frozen=True)
+class ProjectSettings:
+    """Lo que indica el usuario al crear un proyecto (RF-002-01, RF-002-23), sin validar:
+    lo valida ``core.project.create``.
+
+    ``window``: la ventana de trabajo tecleada, absoluta (xmin, ymin, xmax, ymax, en m),
+    antes de ampliarla a la unidad de alineación del paso. Por defecto, EPSG:25830 y
+    EPSG:5782 (spec 002, D-2); ``vcrs_epsg = None`` es una referencia vertical local, que
+    necesita ``vcrs_note``.
+    """
+
+    name: str
+    window: Window | tuple[float, float, float, float]
+    crs_epsg: int = DEFAULT_HORIZONTAL_EPSG
+    vcrs_epsg: int | None = DEFAULT_VERTICAL_EPSG
+    vcrs_note: str | None = None
+    grid_step_m: float = DEFAULT_GRID_STEP_M
+    z0: int = 0
+    code: str | None = None
+    client: str | None = None
+    description: str | None = None
 
 
 @dataclass(frozen=True)
