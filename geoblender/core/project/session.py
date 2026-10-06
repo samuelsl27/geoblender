@@ -29,6 +29,12 @@ leer y escribir:
   base de datos y libera el cerrojo, y solo si el cerrojo sigue siendo de esta sesión; en
   solo lectura no escribe nada en la carpeta del proyecto.
 
+Un proyecto de un esquema posterior que esta versión no sabe leer se abre **solo con la
+cabecera** (:attr:`Project.header_only`, RF-002-22): sin fila de ``gb_project``
+(``record`` es ``None``), con la identidad, el nombre, el CRS y el GeoOrigin de la
+cabecera, sin ventana de trabajo, y :meth:`Project.read` y :meth:`Project.reload` se
+niegan a abrir la base.
+
 Coordenadas: la ventana y el GeoOrigin del registro son absolutos (CRS del proyecto, m).
 """
 
@@ -105,7 +111,7 @@ class Project:
         self,
         *,
         root: Path,
-        record: ProjectRecord,
+        record: ProjectRecord | None,
         manifest: Manifest,
         session: SessionInfo,
         userdata: UserData,
@@ -129,36 +135,46 @@ class Project:
         self._notices: list[str] = []
         self._pending_wal: int | None = None
 
-    # Identidad y georreferencia ---------------------------------------------------
+    # Identidad y georreferencia (de la base; solo con la cabecera, de la cabecera) ----
+
+    @property
+    def header_only(self) -> bool:
+        """Verdadero si el proyecto se abrió solo con la cabecera: es de un esquema que
+        esta versión no sabe leer (RF-002-22)."""
+        return self.record is None
 
     @property
     def uid(self) -> str:
         """Identidad del proyecto (``gb_project.uid``)."""
-        return self.record.uid
+        return self.manifest.project_uid if self.record is None else self.record.uid
 
     @property
     def name(self) -> str:
         """Nombre visible."""
-        return self.record.name
+        return self.manifest.name if self.record is None else self.record.name
 
     @property
     def origin(self) -> GeoOrigin:
         """GeoOrigin en metros enteros."""
-        return self.record.origin
+        return self.manifest.origin if self.record is None else self.record.origin
 
     @property
-    def window(self) -> Window:
-        """Ventana de trabajo alineada, absoluta (m)."""
-        return self.record.window
+    def window(self) -> Window | None:
+        """Ventana de trabajo alineada, absoluta (m); ``None`` solo con la cabecera (no
+        la guarda)."""
+        return None if self.record is None else self.record.window
 
     @property
     def grid_step_m(self) -> float:
         """Paso de rejilla (m)."""
-        return float(self.record.grid_step_m)
+        step = self.manifest.grid_step_m if self.record is None else self.record.grid_step_m
+        return float(step)
 
     @property
     def schema_version(self) -> int:
         """Versión del esquema del proyecto."""
+        if self.record is None:
+            return self.manifest.schema_version
         return self.record.schema_version
 
     # Modo de apertura -------------------------------------------------------------
@@ -217,9 +233,23 @@ class Project:
 
     # Lectura y escritura ----------------------------------------------------------
 
+    def _require_database(self) -> None:
+        if self.record is None:
+            raise ProjectError(
+                "core.project_header_only",
+                "es de un esquema posterior que esta versión de Geoblender no sabe leer: solo "
+                "se puede ver su cabecera (nombre, CRS y GeoOrigin); ábralo con Geoblender "
+                f"{self.manifest.geoblender_version} o posterior",
+                obj=f"Proyecto «{self.name}»",
+                field="esquema",
+                value=self.manifest.schema_version,
+            )
+
     @contextmanager
     def read(self) -> Iterator[sqlite3.Connection]:
-        """Una conexión de solo lectura a la base del proyecto (se cierra al salir)."""
+        """Una conexión de solo lectura a la base del proyecto (se cierra al salir).
+        :class:`ProjectError` si solo se abrió la cabecera."""
+        self._require_database()
         db = GpkgConnection.open_read(self.database_path, self.private_dir())
         try:
             yield db.connection
@@ -355,11 +385,14 @@ class Project:
         return WriteAttempt(WriteState.DONE, value)
 
     def reload(self) -> ProjectRecord:
-        """Vuelve a leer la fila de ``gb_project``."""
+        """Vuelve a leer la fila de ``gb_project``. :class:`ProjectError` si solo se abrió
+        la cabecera."""
         with self.read() as conn:
             record = read_project(conn)
         if record is not None:
             self.record = record
+        if self.record is None:  # inalcanzable: read() ya lo ha rechazado
+            raise TypeError("el proyecto no tiene la fila de gb_project")
         return self.record
 
     # Cerrojo ----------------------------------------------------------------------

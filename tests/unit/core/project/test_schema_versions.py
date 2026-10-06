@@ -481,5 +481,136 @@ class MigrateTest(unittest.TestCase):
                 holder.close()
 
 
+NEWER_VERSION = "9.9.0"
+
+
+def _make_newer(env: Env, *, header_min_reader: int, db_min_reader: int, unreadable: bool = False) -> None:
+    """Simula un proyecto escrito por un Geoblender 9.9.0 con el esquema 99: la base y la
+    cabecera dicen esquema 99 y el mínimo de lectura indicado; con ``unreadable``, además,
+    ``gb_project`` ya no tiene las columnas del esquema 1 (esta versión no sabría leerla)."""
+    with gpkg.GpkgConnection.open_write(env.db) as db, db.transaction() as conn:
+        conn.execute(
+            "UPDATE gb_project SET schema_version = 99, min_reader_schema = ?, "
+            "last_written_with = ?",
+            (db_min_reader, NEWER_VERSION),
+        )
+    if unreadable:
+        conn = sqlite3.connect(env.db, isolation_level=None)
+        try:
+            conn.execute("ALTER TABLE gb_project RENAME COLUMN name TO project_name")
+            conn.execute("CREATE TABLE gb_figure (fid INTEGER PRIMARY KEY, value DOUBLE)")
+        finally:
+            conn.close()
+    path = env.root / "manifest.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.update(
+        schema_version=99, min_reader_schema=header_min_reader, geoblender_version=NEWER_VERSION
+    )
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+class NewerSchemaTest(unittest.TestCase):
+    def test_newer_schema_opens_read_only_with_the_needed_version(self) -> None:
+        """RF-002-13, RF-002-22: esquema 99 con ``min_reader_schema`` 1 → solo lectura
+        «esquema posterior» indicando qué versión de Geoblender hace falta; se puede leer
+        la base, y abrir, leer y cerrar no cambian ningún fichero."""
+        for want_write in (True, False):
+            with self.subTest(want_write=want_write), project_tmp() as tmp:
+                env = Env(tmp)
+                _make_newer(env, header_min_reader=1, db_min_reader=1)
+                before = _snapshot(env.parent)
+                inspection = open_mod.inspect_project(
+                    env.root, SESSION_B, env.userdata, clock=env.clock, pid_alive=env.pids
+                )
+                self.assertIs(inspection.schema, open_mod.SchemaRelation.NEWER)
+                result = env.open(want_write=want_write)
+                project = result.project
+                self.assertEqual(project.mode, model.OpenMode.READ_ONLY)
+                if want_write:
+                    self.assertEqual(project.read_only_reason, model.ReadOnlyCode.SCHEMA_NEWER)
+                    self.assertIn("esquema 99", result.status.message)
+                    self.assertIn(NEWER_VERSION, result.status.message)
+                self.assertFalse(project.header_only)
+                with project.read() as conn:
+                    self.assertEqual(schema.read_project(conn).schema_version, 99)
+                self.assertEqual(project.schema_version, 99)
+                project.close()
+                self.assertEqual(_snapshot(env.parent), before)
+
+    def test_unreadable_newer_schema_opens_only_the_header(self) -> None:
+        """RF-002-13, RF-002-22: esquema 99 con ``min_reader_schema`` 99 → solo lectura
+        limitada a la cabecera (nombre, CRS y GeoOrigin) con la versión que hace falta: la
+        base no se abre (sus tablas son de un esquema que esta versión no conoce), leerla
+        se rechaza, y abrir y cerrar no cambian ningún fichero."""
+        for want_write in (True, False):
+            with self.subTest(want_write=want_write), project_tmp() as tmp:
+                env = Env(tmp)
+                _make_newer(env, header_min_reader=99, db_min_reader=99, unreadable=True)
+                before = _snapshot(env.parent)
+                untouchable = mock.patch.object(
+                    gpkg.GpkgConnection, "open_read",
+                    side_effect=AssertionError("no se abre la base de un esquema que no se conoce"),
+                )
+                with untouchable:
+                    inspection = open_mod.inspect_project(
+                        env.root, SESSION_B, env.userdata, clock=env.clock, pid_alive=env.pids
+                    )
+                    result = env.open(want_write=want_write)
+                self.assertIs(inspection.schema, open_mod.SchemaRelation.HEADER_ONLY)
+                self.assertIsNone(inspection.record)
+                project = result.project
+                self.assertEqual(project.mode, model.OpenMode.READ_ONLY)
+                self.assertEqual(project.read_only_reason, model.ReadOnlyCode.SCHEMA_NEWER)
+                message = result.status.message
+                for text in ("esquema 99", NEWER_VERSION, "cabecera"):
+                    self.assertIn(text, message)
+                self.assertTrue(project.header_only)
+                self.assertIsNone(project.record)
+                self.assertEqual(project.uid, env.created.record.uid)
+                self.assertEqual(project.name, "Cantera Prueba")
+                self.assertEqual(project.origin.as_tuple(), (700_000, 4_400_000, 0))
+                self.assertEqual(project.manifest.crs_epsg, 25830)
+                self.assertEqual(project.manifest.vcrs_epsg, 5782)
+                self.assertEqual(project.schema_version, 99)
+                self.assertIsNone(project.window)
+                for action in (project.read().__enter__, project.reload):
+                    with self.assertRaises(errors.ProjectError) as caught:
+                        action()
+                    self.assertEqual(caught.exception.code, "core.project_header_only")
+                self.assertEqual(project.close(), ())
+                self.assertEqual(_snapshot(env.parent), before)
+
+    def test_minimum_reader_in_the_database_also_limits_to_the_header(self) -> None:
+        """RF-002-22: si la base (que manda) pide leer al menos el esquema 99 aunque la
+        cabecera no lo diga, también se abre solo la cabecera, sin cambiar nada."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            _make_newer(env, header_min_reader=1, db_min_reader=99)
+            before = _snapshot(env.parent)
+            result = env.open()
+            self.assertTrue(result.project.header_only)
+            self.assertEqual(result.project.read_only_reason, model.ReadOnlyCode.SCHEMA_NEWER)
+            result.project.close()
+            self.assertEqual(_snapshot(env.parent), before)
+
+    def test_a_newer_schema_is_never_migrated(self) -> None:
+        """RF-002-22: un esquema posterior no se migra (no hay migraciones hacia atrás) ni
+        se toca, se lea o no su base."""
+        for header_min_reader in (1, 99):
+            with self.subTest(min_reader=header_min_reader), project_tmp() as tmp:
+                env = Env(tmp)
+                _make_newer(
+                    env, header_min_reader=header_min_reader, db_min_reader=header_min_reader,
+                    unreadable=header_min_reader == 99,
+                )
+                before = _snapshot(env.parent)
+                with self.assertRaises(errors.ProjectError) as caught:
+                    list(migrations.migrate_steps(
+                        env.root, SESSION_B, env.userdata, clock=env.clock, pid_alive=env.pids
+                    ))
+                self.assertEqual(caught.exception.code, "core.migration_newer")
+                self.assertEqual(_snapshot(env.parent), before)
+
+
 if __name__ == "__main__":
     unittest.main()

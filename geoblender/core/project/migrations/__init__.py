@@ -339,6 +339,15 @@ def migrate_steps(
         stale_minutes=stale_minutes, network=network, drive_type=drive_type,
     )
     record = inspection.record
+    if record is None:  # solo cabecera: un esquema posterior que no se sabe leer
+        raise ProjectError(
+            "core.migration_newer",
+            "el proyecto es de un esquema posterior que esta versión de Geoblender no sabe "
+            "leer: no se migra hacia atrás; ábralo con una versión más moderna",
+            obj="Esquema del proyecto",
+            field="schema_version",
+            value=inspection.manifest.schema_version,
+        )
     current = record.schema_version
     chain = plan_migrations(current, goal, registry)
     if not chain:

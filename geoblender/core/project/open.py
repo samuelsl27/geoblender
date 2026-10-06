@@ -15,8 +15,14 @@ ya se había tomado.
    ``gb_project`` y las migraciones registradas.
 3. **Coherencia**: si la cabecera y la base difieren en identidad, CRS, GeoOrigin o
    esquema, no abre y muestra los dos valores (sin corregir ninguno).
-4. **Esquema**: igual, anterior (sin migrar: solo lectura, RF-002-20) o posterior (solo
-   lectura, RF-002-22).
+4. **Esquema**: igual, anterior (sin migrar: solo lectura, RF-002-20; quien acepta
+   migrar lo migra antes con ``core.project.migrations``) o posterior (solo lectura
+   indicando qué versión de Geoblender hace falta, RF-002-22). Si el esquema mínimo para
+   leer el proyecto (``min_reader_schema``) es posterior al de esta versión, solo se lee
+   la **cabecera**: la base ni se abre (leer tablas de un esquema que no se conoce podría
+   mostrar cifras erróneas) y el proyecto queda limitado a su nombre, CRS y GeoOrigin.
+   Lo dice la cabecera, sin abrir la base; si la cabecera no lo dice pero la base sí (la
+   base manda), también se queda en la cabecera.
 5. **Cerrojo** (:mod:`.lock`): libre, huérfano o propio → escritura; otra sesión → solo
    lectura con quién lo tiene (y la oferta de forzarlo si está caducado o reservado);
    forzar solo con el titular que vio el usuario (``force_holder``).
@@ -84,21 +90,32 @@ class SchemaRelation(Enum):
     SAME = "same"
     OLDER = "older"  # hay que migrarlo (RF-002-20)
     NEWER = "newer"  # solo lectura (RF-002-22)
+    HEADER_ONLY = "header_only"  # posterior y que no se sabe leer: solo la cabecera
 
 
 @dataclass(frozen=True)
 class ProjectInspection:
-    """Lo que se sabe de un proyecto sin escribir en él (fases 1 a 5)."""
+    """Lo que se sabe de un proyecto sin escribir en él (fases 1 a 5).
+
+    Con un esquema que esta versión no sabe leer (:attr:`header_only`), solo hay
+    cabecera: ``record`` es ``None`` y, si la base ni se abrió, también ``check`` y
+    ``header``.
+    """
 
     root: Path
     manifest: Manifest
-    record: ProjectRecord
+    record: ProjectRecord | None
     migrations: tuple[tuple[int, int], ...]
-    check: ManifestCheck
+    check: ManifestCheck | None
     schema: SchemaRelation
-    header: SqliteHeader
+    header: SqliteHeader | None
     lock: LockStatus
     network: bool
+
+    @property
+    def header_only(self) -> bool:
+        """Verdadero si solo se puede usar la cabecera (RF-002-22)."""
+        return self.schema is SchemaRelation.HEADER_ONLY
 
 
 def _project_name(root: Path) -> str:
@@ -215,15 +232,32 @@ def _inspect_steps(
     yield Progress(PHASES[0], 0, total, "Leyendo la cabecera del proyecto…")
     _require_folder(root)
     manifest = read_manifest(root)
-    yield Progress(PHASES[1], 1, total, "Leyendo la base de datos…")
-    header, record, migrations = _read_database(root, userdata.private_read_dir(session.session_uid))
-    yield Progress(PHASES[2], 2, total, "Comprobando la cabecera con la base de datos…")
-    check = compare(manifest, record, migrations)
-    error = check.error(record.name)
-    if error is not None:
-        raise error
-    yield Progress(PHASES[3], 3, total, "Comprobando la versión del esquema…")
-    relation = _schema_relation(record.schema_version)
+    record: ProjectRecord | None = None
+    migrations: tuple[tuple[int, int], ...] = ()
+    check: ManifestCheck | None = None
+    header: SqliteHeader | None = None
+    if manifest.min_reader_schema > SCHEMA_VERSION:
+        relation = SchemaRelation.HEADER_ONLY
+        yield Progress(
+            PHASES[1], 1, total,
+            "No se lee la base de datos: es de un esquema que esta versión no sabe leer",
+        )
+        yield Progress(PHASES[2], 2, total, "Solo se usa la cabecera del proyecto")
+        yield Progress(PHASES[3], 3, total, "Comprobando la versión del esquema…")
+    else:
+        yield Progress(PHASES[1], 1, total, "Leyendo la base de datos…")
+        header, record, migrations = _read_database(
+            root, userdata.private_read_dir(session.session_uid)
+        )
+        yield Progress(PHASES[2], 2, total, "Comprobando la cabecera con la base de datos…")
+        check = compare(manifest, record, migrations)
+        error = check.error(record.name)
+        if error is not None:
+            raise error
+        yield Progress(PHASES[3], 3, total, "Comprobando la versión del esquema…")
+        relation = _schema_relation(record.schema_version)
+        if record.min_reader_schema > SCHEMA_VERSION:  # la base manda
+            relation, record = SchemaRelation.HEADER_ONLY, None
     yield Progress(PHASES[4], 4, total, "Comprobando el cerrojo…")
     status = lockmod.inspect(
         root, session, clock=clock, pid_alive=alive, stale_minutes=stale_minutes
@@ -340,6 +374,8 @@ def _open_for_writing(
     clock: Clock,
 ) -> tuple[ProjectRecord, Manifest, list[str]]:
     """Fase 6 en escritura; :class:`_OpenAborted` si hay que quedarse en solo lectura."""
+    if inspection.record is None or inspection.check is None:
+        raise TypeError("solo se abre en escritura un proyecto cuya base se ha leído")
     root = inspection.root
     path = root / PROJECT_STORE
     warnings: list[str] = []
@@ -411,8 +447,10 @@ def open_steps(
     if inspection is None:
         raise TypeError("la inspección del proyecto no ha terminado con su resultado")
     warnings: list[str] = []
-    if inspection.check.status is ManifestStatus.REWRITE:
-        fields = ", ".join(item.field for item in inspection.check.differences)
+    check = inspection.check
+    rewrite = check is not None and check.status is ManifestStatus.REWRITE
+    if check is not None and rewrite and not inspection.header_only:
+        fields = ", ".join(item.field for item in check.differences)
         warnings.append(
             f"La cabecera difería de la base de datos en {fields}; manda la base de datos"
             + ("" if want_write else " (se regenerará al abrirlo en escritura)")
@@ -422,18 +460,28 @@ def open_steps(
     status: OpenStatus
     acquired: Acquired | None = None
     forced = False
-    if not want_write:
+    record, header = inspection.record, inspection.manifest
+    if inspection.header_only:
+        status = read_only_status(
+            ReadOnlyCode.SCHEMA_NEWER,
+            f"creado con una versión más moderna de Geoblender (esquema "
+            f"{header.schema_version}), que esta versión (esquema {SCHEMA_VERSION}) no sabe "
+            "leer: solo se muestra la cabecera (nombre, CRS y GeoOrigin); ábralo con "
+            f"Geoblender {header.geoblender_version} o posterior",
+        )
+    elif not want_write or record is None:
         status = read_only_status(ReadOnlyCode.REQUESTED, "abierto así a petición del usuario")
     elif inspection.schema is SchemaRelation.NEWER:
         status = read_only_status(
             ReadOnlyCode.SCHEMA_NEWER,
             f"creado con una versión más moderna de Geoblender (esquema "
-            f"{inspection.record.schema_version}; esta versión usa el {SCHEMA_VERSION})",
+            f"{record.schema_version}; esta versión usa el {SCHEMA_VERSION}): para escribir "
+            f"en él, ábralo con Geoblender {record.last_written_with} o posterior",
         )
     elif inspection.schema is SchemaRelation.OLDER:
         status = read_only_status(
             ReadOnlyCode.NOT_MIGRATED,
-            f"esquema {inspection.record.schema_version} sin migrar al {SCHEMA_VERSION}: "
+            f"esquema {record.schema_version} sin migrar al {SCHEMA_VERSION}: "
             "para escribir en él hay que migrarlo (antes se hace una copia completa junto "
             "al original)",
         )
@@ -448,7 +496,6 @@ def open_steps(
                 status = read_only_status(ReadOnlyCode.LOCKED, exc.reason)
             else:
                 status = _lock_read_only(inspection.lock)
-    record, header = inspection.record, inspection.manifest
     try:
         yield Progress(PHASES[5], 5, total, "Abriendo el proyecto…")
         if acquired is not None:
@@ -461,7 +508,9 @@ def open_steps(
                 lockmod.release(root, session, clock=clock)
                 acquired = None
                 status = read_only_status(aborted.code, aborted.detail)
-                log_event(EventKind.WRITE_FAILED, aborted.detail, project=record.uid)
+                log_event(
+                    EventKind.WRITE_FAILED, aborted.detail, project=header.project_uid
+                )
         project = Project(
             root=root,
             record=record,
@@ -475,7 +524,7 @@ def open_steps(
             stale_minutes=stale_minutes,
         )
         try:
-            userdata.add_recent(record.uid, record.name, root, format_utc(clock.now()))
+            userdata.add_recent(project.uid, project.name, root, format_utc(clock.now()))
         except (OSError, GeoblenderError):
             pass  # la lista de recientes es una comodidad del equipo
         result = OpenResult(project, status, tuple(warnings), inspection.lock)
