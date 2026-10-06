@@ -165,6 +165,33 @@ class LanguageTest(unittest.TestCase):
         self.ui_i18n.apply("es")
         self.assertEqual(half_width().name, "Semiancho")
 
+    def test_property_groups_after_restart(self) -> None:
+        """RF-003-20, RF-003-21 (T37; spec §8): las propiedades de los grupos (las
+        preferencias, la escena) se registran en el idioma de la última sesión: cambian al
+        reiniciar (aquí, deshabilitar y volver a habilitar) y vuelven a su texto al
+        desregistrar."""
+        props_ui = _module("bl.props.ui")
+        spanish = "Idioma de la interfaz de Geoblender, independiente del de Blender"
+        english = "Language of the Geoblender interface, independent of Blender's"
+
+        def description() -> str:
+            rna = props_ui.GEOBLENDER_PG_ui_preferences.bl_rna
+            return rna.properties["language"].description
+
+        self.assertEqual(description(), spanish)
+        self.assertEqual(props_ui.remembered_language(), "es")
+        self.ui_i18n.apply("en")
+        self.assertEqual(props_ui.remembered_language(), "en")
+        self.assertEqual(description(), spanish)  # hasta reiniciar
+        blender_ext.disable()
+        self.addCleanup(self.ui_i18n.apply, "es")
+        blender_ext.enable()
+        self.assertEqual(description(), english)
+        self.assertEqual(self.i18n.language(), "es")  # el de las preferencias
+        blender_ext.disable()
+        blender_ext.enable()
+        self.assertEqual(description(), spanish)
+
 
 if __name__ == "__main__":
     unittest.main()

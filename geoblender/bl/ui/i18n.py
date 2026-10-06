@@ -33,7 +33,7 @@ from typing import Any
 import bpy
 
 from ...core import i18n
-from ..props.ui import LANGUAGES
+from ..props.ui import LANGUAGES, remember_language
 from . import commands, core_panel, registry
 
 
@@ -57,6 +57,7 @@ def install() -> str:
     i18n.install(commands.catalog())
     language = preferred_language()
     i18n.set_language(language)
+    remember_language(language)
     return language
 
 
@@ -84,6 +85,7 @@ def apply(language: str) -> float:
     y devuelve lo que tardó, en ms."""
     start = time.perf_counter()
     i18n.set_language(language)
+    remember_language(language)  # los grupos de propiedades, al reiniciar
     registry.relabel()
     _relabel_core_panel()
     _redraw()

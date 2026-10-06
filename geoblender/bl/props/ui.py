@@ -18,10 +18,19 @@ RF-003-11, RF-003-21, RF-003-28; plan 003 §5.2; ADR-0012).
   texto o iconos; BS §3), fila de acceso rápido de la vista, «Ocultar lo no disponible»
   (BS §7.3) y barra de estado minera (AR §6).
 
+- :func:`remembered_language` y :func:`remember_language` (spec 003, T37; RF-003-20; II
+  §2.2): el idioma de Geoblender de la última sesión, en un fichero de la carpeta de datos
+  de la extensión (``ui/language``). Las preferencias no se pueden leer hasta que se
+  registra ``GeoblenderPreferences``, y los grupos de propiedades (el suyo incluido) se
+  registran antes: con él, sus nombres y descripciones salen en ese idioma «al reiniciar».
+  Lo escribe ``bl.ui.i18n`` cada vez que fija el idioma.
+
 Nada es animable (``options=set()``).
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import bpy
 from bpy.props import (
@@ -32,6 +41,10 @@ from bpy.props import (
     FloatVectorProperty,
     IntProperty,
 )
+
+from .. import ADDON_PACKAGE
+
+LANGUAGE_FILE = ("ui", "language")  # carpeta y fichero en los datos de la extensión
 
 # Nombre de la marca del modo en WorkSpace (API pública: la leen la plantilla y los scripts).
 WORKSPACE_PROPERTY = "geoblender_mode"
@@ -57,6 +70,34 @@ TOPBAR_TITLES_ITEMS = [
     ("TEXT", "Text", "Menu titles as text"),
     ("ICONS", "Icons", "Menu titles as icons"),
 ]
+
+
+def _language_path(create: bool) -> Path:
+    folder = bpy.utils.extension_path_user(ADDON_PACKAGE, path=LANGUAGE_FILE[0], create=create)
+    return Path(folder) / LANGUAGE_FILE[1]
+
+
+def remembered_language() -> str:
+    """El idioma de Geoblender de la última sesión (``"es"`` o ``"en"``; español si no se
+    sabe)."""
+    try:
+        value = _language_path(create=False).read_text(encoding="utf-8").strip()
+    except (OSError, ValueError, UnicodeDecodeError):
+        return "es"
+    return value if value in LANGUAGES.values() else "es"
+
+
+def remember_language(language: str) -> None:
+    """Guarda ``language`` (``"es"`` o ``"en"``) para la sesión siguiente; si no se puede,
+    no pasa nada (se usará el español)."""
+    if language not in LANGUAGES.values():
+        return
+    try:
+        path = _language_path(create=True)
+        if not path.is_file() or path.read_text(encoding="utf-8").strip() != language:
+            path.write_text(language, encoding="utf-8")
+    except (OSError, ValueError):
+        pass
 
 
 def _language_changed(group: object, context: object) -> None:

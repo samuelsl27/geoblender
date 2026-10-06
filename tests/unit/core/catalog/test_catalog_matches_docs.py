@@ -12,8 +12,8 @@ de BS §8.12–§8.14 (Comprobar ▸, Trabajos ▸, Disposición ▸, Datos ▾)
 línea de cada menú de la barra (paso, rama, icono propio y de reserva) sale del rótulo de
 su sección.
 
-Las diferencias con BS que el plan 003 aprobó y que la T37 escribe en BS (plan §11) están
-en :data:`APPROVED_ENTRIES`. Los menús que aún no están en el catálogo, en
+Las diferencias con BS que un plan aprueba antes de que se escriban en BS van en
+:data:`APPROVED_ENTRIES` (las del plan 003 ya las escribió la T37). Los menús que aún no están en el catálogo, en
 :data:`PENDING` (cada tarea T05–T07 quita los suyos; al final, ninguno).
 
 Sin la carpeta de la documentación, se omite con el recurso ``docs``.
@@ -35,17 +35,14 @@ PENDING: frozenset[str] = frozenset()
 # Accesos cruzados a comandos cuya casa es un menú pendiente: ninguno (T07).
 PENDING_REFS: frozenset[str] = frozenset()
 
-# Entradas aprobadas con el plan 003 que BS §8 aún no dice (las escribe la T37; plan §11):
-# Manual y Novedades pasan a R-13 (D-4).
-APPROVED_ENTRIES: dict[str, str] = {"ui_open_manual": "R-13", "ui_show_changelog": "R-13"}
+# Entradas aprobadas con un plan que BS §8 aún no dice: ninguna (la T37 escribió en BS las
+# del plan 003 §11, Manual y Novedades en R-13; D-4). identificador → entrada.
+APPROVED_ENTRIES: dict[str, str] = {}
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,
-# una definición); la T37 las corrige en BS. (menú, identificador) → campo de BS que se
-# toma de la casa.
-CROSS_ROW_DIFFERENCES: dict[tuple[str, str], str] = {
-    # §8.5 dice «D» y su casa, Importar ▸ (§8.14), «D·2p».
-    ("GEOBLENDER_MT_ui_blocks", "io_import_block_model"): "background",
-}
+# una definición): ninguna (la T37 corrigió el «D·2p» de ``io_import_block_model`` en
+# §8.5). (menú, identificador) → campo de BS que se toma de la casa.
+CROSS_ROW_DIFFERENCES: dict[tuple[str, str], str] = {}
 
 BRANCHES = {"común": "common", "rama de diseño": "design", "rama geológica": "geology",
             "convergencia": "convergence", "transversal": "transversal"}

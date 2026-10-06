@@ -12,9 +12,11 @@ de texto (constante o *f-string*) en
   ``EnumProperty``, en línea o en una constante ``*_ITEMS`` del módulo: se ven en el panel
   F9, en el mapa de teclado y en las descripciones emergentes),
 
-- y, en ``bl/ops/`` (spec 003, T33), el nombre y la descripción de las propiedades de los
-  operadores (``name=`` y ``description=`` de ``*Property``: ``bl.ui.registry`` las traduce
-  al cambiar de idioma y se ven en el panel F9 y en el mapa de teclado),
+- y (spec 003, T33 y T37) el nombre y la descripción de las propiedades de ``bpy.props``
+  (``name=`` y ``description=`` de ``*Property``): se ven en el panel F9, el mapa de
+  teclado, las preferencias y las descripciones emergentes; las de los operadores las
+  traduce ``bl.ui.registry`` al cambiar de idioma y las de los grupos de propiedades,
+  ``bl/props`` al registrarlos (``bl.registry.PropertyTranslator``),
 
 tiene que ser un ``msgid`` del catálogo: una etiqueta o descripción del catálogo de
 comandos (``core.catalog``) o un texto de ``core/i18n/messages.toml``, que es lo que tiene
@@ -153,12 +155,12 @@ class UiLiteralsTest(unittest.TestCase):
         self.assertGreater(count, 40, "los bl_label de los operadores reales se revisan")
 
     def test_operator_properties_in_the_catalog(self) -> None:
-        """RNF-003-08, RF-003-21 (T33): el nombre y la descripción de cada propiedad de un
-        operador de ``bl/ops/`` es un ``msgid`` con traducción; control positivo con una
-        sembrada."""
+        """RNF-003-08, RF-003-20, RF-003-21 (T33 y T37): el nombre y la descripción de cada
+        propiedad de ``bpy.props`` de ``bl/`` es un ``msgid`` con traducción; control
+        positivo con una sembrada."""
         msgids = known_msgids()
         found = [f"{rel}:{line}: {where} «{value}»"
-                 for rel, tree in _bl_trees() if rel.startswith("bl/ops/")
+                 for rel, tree in _bl_trees()
                  for line, where, value in property_texts(tree)
                  if value and value not in msgids]
         self.assertEqual(found, [])
