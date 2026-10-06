@@ -545,3 +545,40 @@ es = "Ventana"
 
 ["3D View"]
 es = "Vista 3D"
+
+# Preferencias de la interfaz (spec 003; RF-003-08, RF-003-10, RF-003-11, RF-003-21,
+# RF-003-28). «Interface», «Geoblender language», «Spanish» y «English» también son textos del
+# catálogo de comandos, con la misma traducción.
+
+["Interface"]
+es = "Interfaz"
+
+["Geoblender language"]
+es = "Idioma de Geoblender"
+
+["Spanish"]
+es = "Español"
+
+["English"]
+es = "English"
+
+["Top bar titles"]
+es = "Títulos de la barra"
+
+["Automatic"]
+es = "Automático"
+
+["Text"]
+es = "Texto"
+
+["Icons"]
+es = "Iconos"
+
+["Quick access row of the view"]
+es = "Fila de acceso rápido de la vista"
+
+["Hide what is not available yet"]
+es = "Ocultar lo no disponible"
+
+["Mining status bar"]
+es = "Barra de estado minera"

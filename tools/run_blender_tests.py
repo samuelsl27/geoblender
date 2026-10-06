@@ -73,6 +73,7 @@ EXTENSION_ID = "geoblender"
 REPO_NAME = "Geoblender (pruebas)"
 REPO_MODULE = "gb_tests"
 TEMP_PREFIX = "geoblender-pruebas-"
+BYTECODE_DIR = "pyc"  # código compilado de la sesión, dentro de la carpeta temporal
 ENV_USER_RESOURCES = "BLENDER_USER_RESOURCES"
 
 COMMAND = (
@@ -317,6 +318,21 @@ def _remove_repo(repo: object | None, temp: Path) -> list[str]:
     return problems
 
 
+def _cache_bytecode(temp: Path) -> None:
+    """Guarda el código compilado de lo que se importa durante las pruebas en la carpeta
+    temporal (``sys.pycache_prefix``), nunca junto a las fuentes: las pruebas que
+    descargan y vuelven a habilitar la extensión no la recompilan cada vez (spec 003,
+    T11), y no aparece ningún ``__pycache__`` en el repositorio."""
+    sys.pycache_prefix = str(temp / BYTECODE_DIR)
+    sys.dont_write_bytecode = False
+
+
+def _stop_caching_bytecode() -> None:
+    """Deshace :func:`_cache_bytecode`: sin código compilado, como al empezar."""
+    sys.dont_write_bytecode = True
+    sys.pycache_prefix = None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Ejecuta las pruebas de Blender; devuelve el código de salida."""
     try:
@@ -374,6 +390,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     code, count = 1, 0
     try:
         repo = _install_copy(manifest_data, temp)
+        _cache_bytecode(temp)
         os.environ[blender_ext.ENV_MODULE] = module
         # Lo que no se puede enumerar (temporizadores, manejadores de dibujo, previews,
         # suscripciones de msgbus) se anota desde ahora, y se buscan las traducciones de
@@ -389,6 +406,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         code, count = _run_tests(options)
     finally:
         problems = _disable_and_unload(module)
+        _stop_caching_bytecode()
         changes = _fingerprint_changes(baseline)
         blender_ext.untrack_registrations()
         blender_ext.EXTENSION_MODULES = ()
