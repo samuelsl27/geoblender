@@ -4,7 +4,7 @@ ADR-0015; RF-001-06, RF-001-07, RF-001-09).
 
 Se ejecuta con el Python de Blender, desde la raíz del repositorio::
 
-    & "C:\\Program Files\\Blender Foundation\\Blender 5.2\\5.2\\python\\bin\\python.exe" tools/check.py [--rendimiento] [--banco] [--documentacion]
+    & "C:\\Program Files\\Blender Foundation\\Blender 5.2\\5.2\\python\\bin\\python.exe" tools/check.py [--completo] [--rendimiento] [--banco] [--documentacion]
 
 1. Entorno: localiza Blender (``GEOBLENDER_BLENDER`` o la ruta por defecto) con la
    versión mínima del manifiesto, y exige que el intérprete sea el Python de ese Blender
@@ -15,15 +15,19 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    (``tests/referencia``; sin casos es correcto), «licencias»
    (``tools/check_licenses.py``), «manifiesto» (``blender --command extension
    validate``) y «blender» (``tools/run_blender_tests.py`` dentro de Blender, en segundo
-   plano, de fábrica, con ``--python-exit-code 1``). Solo si se piden, y después de los
-   obligatorios: «rendimiento» (``--rendimiento``: ``tests/rendimiento`` con el Python de
-   Blender y ``tests/rendimiento/blender/perf_*.py`` dentro de Blender), «banco»
-   (``--banco``: ``tools/bench_silvestre.py``; sin banco disponible, «omitido», que no es
-   un fallo) y «documentación» (``--documentacion``, spec 007, RF-007-14:
-   ``tools/check_docs.py`` sobre la documentación que encuentra ``repo.find_docs``, la
-   de ``GEOBLENDER_DOCS_DIR`` o la carpeta madre; si no hay o no se alcanza, «omitido»
-   con el motivo, que no es un fallo). Los pasos de Blender usan un perfil temporal en
-   ``%TEMP%``, que se borra al terminar.
+   plano, de fábrica, con ``--python-exit-code 1``). Con ``--completo``, justo después,
+   «arnés» (``tests/arnes`` como «unitarias»: las pruebas del propio arnés que lanzan
+   Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de la spec 002); sin la opción
+   no se ejecuta, y el resumen lo dice antes de ``RESULTADO``: la comprobación de cada
+   tarea va sin ella (RNF-001-01, ≤ 40 s) y ``tools/publish.py`` la pide siempre. Solo
+   si se piden, y después de los obligatorios: «rendimiento» (``--rendimiento``:
+   ``tests/rendimiento`` con el Python de Blender y ``tests/rendimiento/blender/perf_*.py``
+   dentro de Blender), «banco» (``--banco``: ``tools/bench_silvestre.py``; sin banco
+   disponible, «omitido», que no es un fallo) y «documentación» (``--documentacion``,
+   spec 007, RF-007-14: ``tools/check_docs.py`` sobre la documentación que encuentra
+   ``repo.find_docs``, la de ``GEOBLENDER_DOCS_DIR`` o la carpeta madre; si no hay o no
+   se alcanza, «omitido» con el motivo, que no es un fallo). Los pasos de Blender usan
+   un perfil temporal en ``%TEMP%``, que se borra al terminar.
 3. Resumen: una línea por paso (resultado, duración y pruebas), las pruebas omitidas por
    un recurso opcional (``[ENTORNO] <recurso>: <orden>``) agrupadas con la orden que lo
    instala, la salida entera de cada paso que falla y ``RESULTADO: VERDE``,
@@ -33,7 +37,10 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    está definida).
 
 No hay modo «solo una parte»: un verde parcial se confunde con el verde. Para iterar se
-ejecuta ``unittest`` directamente (órdenes en ``AGENTS.md``).
+ejecuta ``unittest`` directamente (órdenes en ``AGENTS.md``). ``--completo`` no es una
+parte: sin él se ejecutan todas las reglas y todas las pruebas de la extensión, dentro y
+fuera de Blender; solo quedan fuera las autopruebas del arnés que relanzan Blender entero,
+que prueban ``tools/`` y ``tests/support/`` y no la extensión (plan 001 §5.4.7).
 
 En los pasos con pruebas, un fichero de pruebas en disco que ``unittest`` no cargó (en
 una carpeta sin ``__init__.py``, con un nombre que no es un módulo válido o sin pruebas)
@@ -116,14 +123,22 @@ RESOURCES_RELPATH = "tests/support/resources.py"  # su lista cerrada de recursos
 RESOURCES_NAME = "RESOURCES"
 TEMP_PREFIX = "geoblender-check-"
 PROFILE_FOLDER = "perfil"
-STEP_TIMEOUT_S = 1800.0  # la comprobación entera tarda menos de 60 s (RNF-001-01)
+STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 40 s (RNF-001-01)
 LAUNCHER_RELPATH = "tools/run_blender_tests.py"
 UNITTEST_PATTERN = discovery.UNITTEST_PATTERN  # el de unittest discover sin «-p»
 LAUNCHER_PATTERN = "test_*.py"  # el del lanzador sin «--patron» (DEFAULT_PATTERN)
+OPTION_COMPLETE = layout.CHECK_COMPLETE_OPTION  # «--completo»: el paso «arnés»
 OPTION_PERFORMANCE = "--rendimiento"
 OPTION_BANK = "--banco"
 OPTION_DOCS = "--documentacion"
-OPTIONS: tuple[str, ...] = (OPTION_PERFORMANCE, OPTION_BANK, OPTION_DOCS)
+OPTIONS: tuple[str, ...] = (OPTION_COMPLETE, OPTION_PERFORMANCE, OPTION_BANK, OPTION_DOCS)
+HARNESS_STEP = "arnés"
+HARNESS_FOLDER = layout.HARNESS_TESTS_RELPATH
+NOT_COMPLETE = (
+    f"Sin {OPTION_COMPLETE}: no se han ejecutado las pruebas del arnés que lanzan Blender "
+    f"entero ({HARNESS_FOLDER}); las ejecuta tools/check.py {OPTION_COMPLETE}, y la "
+    "publicación (tools/publish.py) las pide siempre."
+)
 DOCS_STEP = "documentación"
 DOCS_RELPATH = "tools/check_docs.py"
 NO_DOCS = f"no hay documentación en la carpeta madre ni en {layout.ENV_DOCS_DIR}"
@@ -131,8 +146,11 @@ REPOSITORY = "repositorio"  # la línea del resumen si la comprobación cambió 
 REPOSITORY_SKIP = (".git",)  # lo cambia git, no la comprobación
 
 USAGE = """Uso (con el Python de Blender, desde la raíz del repositorio):
-  & "<Blender>\\5.2\\python\\bin\\python.exe" tools/check.py [--rendimiento] [--banco] [--documentacion]
+  & "<Blender>\\5.2\\python\\bin\\python.exe" tools/check.py [--completo] [--rendimiento] [--banco] [--documentacion]
 
+  --completo        añade, tras «blender», las pruebas del arnés que lanzan Blender
+                    entero (tests/arnes); la publicación (tools/publish.py) la pide
+                    siempre, y la comprobación de cada tarea va sin ella
   --rendimiento     añade las pruebas de rendimiento (también las de dentro de Blender)
   --banco           añade el banco privado de Silvestre (GEOBLENDER_SILVESTRE_DIR)
   --documentacion   añade la comprobación de la documentación (tools/check_docs.py en
@@ -168,7 +186,7 @@ class ManifestProblem(Exception):
 
 @dataclass(frozen=True)
 class Options:
-    flags: frozenset[str] = frozenset()  # opciones pedidas: --rendimiento, --banco
+    flags: frozenset[str] = frozenset()  # opciones pedidas: --completo, --rendimiento…
     show_help: bool = False
 
 
@@ -337,6 +355,12 @@ def _blender(ctx: Context) -> list[Run]:
     return [ctx.blender_tests("tests/blender")]
 
 
+def _harness(ctx: Context) -> list[Run]:
+    """Las pruebas del arnés que lanzan Blender entero (``--completo``); sin pruebas, o
+    con un fichero sin cargar, el paso falla como «unitarias» (RF-001-06, RF-001-07)."""
+    return [ctx.unittest(HARNESS_FOLDER)]
+
+
 def _performance(ctx: Context) -> list[Run]:
     return [
         ctx.unittest("tests/rendimiento", pattern="test_*.py", empty=NO_TESTS),
@@ -371,14 +395,16 @@ def _docs_omit(ctx: Context) -> str | None:
 
 # Tabla de pasos (plan 001 §5.4.7). Las specs siguientes añaden el suyo en su lugar:
 # «iconos» (003) tras «licencias» y «motor» (004) tras «blender». Los opcionales se
-# ejecutan siempre después de los obligatorios (RF-001-10); «documentación» (spec 007,
-# RF-007-14), el último.
+# ejecutan siempre después de los obligatorios (RF-001-10), en el orden de la tabla:
+# «arnés» (--completo; spec 001 0.6) el primero, tras «blender»; «documentación» (spec
+# 007, RF-007-14), el último.
 STEPS: tuple[Step, ...] = (
     Step("unitarias", _unit),
     Step("referencia", _reference),
     Step("licencias", _licenses, advice=_licenses_advice),
     Step("manifiesto", _manifest),
     Step("blender", _blender),
+    Step(HARNESS_STEP, _harness, option=OPTION_COMPLETE),
     Step("rendimiento", _performance, option=OPTION_PERFORMANCE),
     Step("banco", _bank, option=OPTION_BANK),
     Step(DOCS_STEP, _docs, option=OPTION_DOCS, omit=_docs_omit),
@@ -834,6 +860,16 @@ def _remove_tree(folder: Path, attempts: int = 5) -> None:
             time.sleep(0.2 * (attempt + 1))
 
 
+def not_complete_note(steps: Sequence[Step], flags: Collection[str]) -> str | None:
+    """La línea del resumen, antes de ``RESULTADO``, si la tabla tiene pasos de
+    ``--completo`` y no se pidió: esas pruebas no se han ejecutado y la publicación las
+    pide siempre (RF-001-06, spec 001 0.6). No es una omisión por un recurso: el
+    resultado no cambia."""
+    if OPTION_COMPLETE in flags or not any(s.option == OPTION_COMPLETE for s in steps):
+        return None
+    return NOT_COMPLETE
+
+
 def correct_command(python: Path | str) -> str:
     """La orden correcta, en PowerShell, desde la raíz del repositorio."""
     return f'& "{python}" tools/check.py'
@@ -955,6 +991,9 @@ def main(
             print(f"\n--- Salida del paso «{result.name}» ---")
             print(result.output)
             print(f"--- Fin de la salida del paso «{result.name}» ---")
+    note = not_complete_note(steps, options.flags)
+    if note is not None:
+        print(note)
     print(_verdict(results, time.perf_counter() - started))
     return 1 if any(result.status == STATUS_FAIL for result in results) else 0
 

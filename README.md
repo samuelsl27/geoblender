@@ -52,7 +52,7 @@ consentimiento explícito.
 | --- | --- |
 | `geoblender/` | La extensión (id `geoblender`): lo único que se empaqueta |
 | `tools/` | Herramientas de desarrollo, solo con la biblioteca estándar |
-| `tests/` | Pruebas unitarias, dentro de Blender, de referencia, de rendimiento y de los bancos privados |
+| `tests/` | Pruebas unitarias, dentro de Blender, del propio arnés (`tests/arnes`, con `--completo`), de referencia, de rendimiento y de los bancos privados |
 | `LICENSE`, `LICENSES/`, `REUSE.toml` | Licencia del código y licencias de los activos y de los datos de terceros |
 | `dist/`, `.deps/` | Salidas locales (el zip y las ruedas extraídas para las pruebas); no se versionan |
 
@@ -74,6 +74,7 @@ Desde la raíz de este repositorio, en PowerShell y siempre con el Python de Ble
 ```powershell
 $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe"
 & $PY -B tools/check.py          # comprobación completa: la definición de «verde»
+& $PY -B tools/check.py --completo  # además, las pruebas del arnés que lanzan Blender entero
 & $PY -B tools/check_docs.py     # comprobación de la documentación
 & $PY -B tools/dev_install.py    # instala la extensión en un perfil de Blender aislado
 & $PY -B tools/build.py          # valida el manifiesto y genera el zip en dist/
@@ -84,7 +85,7 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 
 | Orden | Opciones |
 | --- | --- |
-| `tools/check.py` | `--rendimiento` (requisitos de rendimiento, también dentro de Blender), `--banco` (bancos privados) y `--documentacion` (añade la comprobación de la documentación; sin ella, «omitido») |
+| `tools/check.py` | `--completo` (añade las pruebas del arnés que lanzan Blender entero, `tests/arnes`: la publicación las pide siempre), `--rendimiento` (requisitos de rendimiento, también dentro de Blender), `--banco` (bancos privados) y `--documentacion` (añade la comprobación de la documentación; sin ella, «omitido») |
 | `tools/check_docs.py` | `CARPETA` (la documentación, si no es la carpeta madre ni la de `GEOBLENDER_DOCS_DIR`) |
 | `tools/dev_install.py` | `--perfil CARPETA`, `--abrir` (Blender con interfaz) y `--desinstalar` |
 | `tools/build.py` | `--probar-instalacion` (instala el zip en un perfil limpio y lo desinstala) |
@@ -95,6 +96,8 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
+Sin `--completo` (la comprobación de cada tarea, en unos 40 s) no ejecuta las pruebas del
+propio arnés que lanzan Blender entero, y lo dice antes del resultado.
 
 ## Variables de entorno
 
@@ -128,7 +131,7 @@ del proyecto (la documentación, con este repositorio dentro) en el NAS, siempre
 carpeta `Geoblender` de la documentación, si alguno de los dos árboles no está limpio o en
 una rama, si el destino no vale (la carpeta del proyecto, la raíz de una unidad, la carpeta
 de expedientes de clientes…) o si la configuración de git lleva credenciales. Si todo está
-en orden, ejecuta `tools/check.py` y `tools/check_docs.py`, sube la rama actual con sus
+en orden, ejecuta `tools/check.py --completo` y `tools/check_docs.py`, sube la rama actual con sus
 etiquetas sin forzar y hace el espejo: copia solo lo que cambió y comprueba el resultado.
 
 El espejo **avisa y no borra**: guarda en `%LOCALAPPDATA%\Geoblender\espejo` el estado del

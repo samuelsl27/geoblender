@@ -45,9 +45,10 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
    cambiar durante las comprobaciones y la subida); si entonces para, el informe dice
    que se subió y que el destino sigue en el espejo anterior.
 8. Comprobaciones (RF-007-16), con el Python del Blender del manifiesto y desde la raíz
-   del código, con su salida en directo: ``tools/check.py`` (salvo con
-   ``--solo-espejo``) y siempre ``tools/check_docs.py <carpeta del proyecto>``; las dos
-   tienen que terminar con 0. Después se miran otra vez los árboles: las comprobaciones
+   del código, con su salida en directo: ``tools/check.py --completo`` (salvo con
+   ``--solo-espejo``; con las pruebas del arnés que lanzan Blender entero: nada se
+   publica sin la comprobación completa, spec 001 0.6, RF-001-06) y siempre
+   ``tools/check_docs.py <carpeta del proyecto>``; las dos tienen que terminar con 0. Después se miran otra vez los árboles: las comprobaciones
    no deben cambiar nada.
 9. Subida (RF-007-20, RF-007-21), salvo con ``--solo-espejo``: ``git push
    --follow-tags`` de la rama actual del código a la misma rama de ``origin``, nunca
@@ -134,8 +135,9 @@ DOSSIER_FOLDER = "an"
 _SEPARATORS = re.compile(r"[\\/]+")
 
 CHECK_SCRIPT = layout.CHECK_RELPATH
+CHECK_COMPLETE = layout.CHECK_COMPLETE_OPTION  # siempre (spec 001 0.6, RF-001-06)
 DOCS_CHECK_SCRIPT = "tools/check_docs.py"
-CHECK_TIMEOUT_S = 1800.0  # la comprobación completa tarda menos de 60 s
+CHECK_TIMEOUT_S = 1800.0  # con --completo, la comprobación tarda algo más de 1 min
 RESULT_PREFIX = "RESULTADO:"
 
 CODE_LABEL = "código"
@@ -718,7 +720,7 @@ class Publication:
                 f"{OPTION_MIRROR_ONLY}: el código no se comprueba ni se sube",
             )
         else:
-            self._run_check(STEP_CHECK, install, CHECK_SCRIPT)
+            self._run_check(STEP_CHECK, install, CHECK_SCRIPT, CHECK_COMPLETE)
         self._run_check(STEP_DOCS, install, DOCS_CHECK_SCRIPT, str(self.project))
         self.check_trees(after_checks=True)
 

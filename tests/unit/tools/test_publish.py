@@ -765,9 +765,11 @@ class ChecksTest(PublicationAssertions):
         self.assertIn("DOCUMENTACIÓN CON INCUMPLIMIENTOS (1)", outcome.out)
 
     def test_checks_commands(self) -> None:
-        """RF-007-16: las dos con el Python del Blender localizado (``-B -s -X utf8``),
-        desde la raíz del código: ``tools/check.py`` y ``tools/check_docs.py`` con la
-        carpeta del proyecto; después de los árboles, que se miran otra vez."""
+        """RF-007-16, RF-001-06 (spec 001 0.6): las dos con el Python del Blender
+        localizado (``-B -s -X utf8``), desde la raíz del código: ``tools/check.py
+        --completo`` (nada se publica sin las pruebas del arnés que lanzan Blender entero;
+        D-9 de la spec 002, T48) y ``tools/check_docs.py`` con la carpeta del proyecto;
+        después de los árboles, que se miran otra vez."""
         fake = FakeGit({("code", "push"): (1, "", "subida rechazada (prueba)\n")})
         with workspace() as space:
             outcome = run_publish(space, git_runner=fake)
@@ -776,6 +778,7 @@ class ChecksTest(PublicationAssertions):
         for cmd, cwd in outcome.checks.calls:
             self.assertEqual(cmd[:5], [str(INSTALL.python), "-B", "-s", "-X", "utf8"])
             self.assertEqual(cwd, project / CODE)
+        self.assertEqual(outcome.checks.calls[0][0][5:], ["tools/check.py", "--completo"])
         self.assertEqual(outcome.checks.calls[1][0][-1], str(project))
         self.assertEqual(len([c for c in fake.commands() if c.startswith("status")]), 4)
         self.assertIn("RESULTADO: VERDE (1,0 s)", outcome.out)

@@ -42,11 +42,15 @@ SESSION_B = make_session(
     session_uid="00000000-0000-4000-8000-000000000002", host="PC-PRUEBA-B", user="otra", pid=777
 )
 RACE_ROUNDS = 20
+RACE_READY = "listo"
+RACE_START_MARGIN_S = 0.2  # de la orden de salida al inicio de la primera ronda
 
 # Proceso hijo que intenta adquirir el cerrojo de cada carpeta a la vez que otro (la
-# ronda n empieza a la misma hora en los dos: inicio + n · 50 ms); da su resultado por una
-# línea de la salida y sigue vivo (su cerrojo no es huérfano) hasta que la prueba cierra su
-# entrada.
+# ronda n empieza a la misma hora en los dos: inicio + n · 50 ms). Dice «listo» cuando ha
+# cargado el núcleo y lee el inicio de su entrada: la prueba lo fija cuando los dos están
+# listos, en lugar de esperar 1,5 s fijos por si acaso (RNF-001-01; spec 002, T48). Da su
+# resultado por una línea de la salida y sigue vivo (su cerrojo no es huérfano) hasta que
+# la prueba cierra su entrada.
 RACER = r"""
 import json, sys, time
 ROUND_S = 0.05
@@ -58,9 +62,10 @@ lock = import_geoblender("core.project.lock")
 errors = import_geoblender("core.errors")
 sysinfo = import_geoblender("core.sysinfo")
 session = sysinfo.current_session("0.1.0")
-start = float(sys.argv[2])
+print("listo", flush=True)
+start = float(sys.stdin.readline())
 results = []
-for index, folder in enumerate(sys.argv[3:]):
+for index, folder in enumerate(sys.argv[2:]):
     while time.time() < start + index * ROUND_S:
         pass
     try:
@@ -212,10 +217,9 @@ class AcquireTest(unittest.TestCase):
                 folder = tmp / f"p{index:02d}.gbproj"
                 folder.mkdir()
                 folders.append(str(folder))
-            start = time.time() + 1.5
             racers = [
                 subprocess.Popen(
-                    [sys.executable, "-B", "-s", "-c", RACER, str(ROOT), repr(start), *folders],
+                    [sys.executable, "-B", "-s", "-c", RACER, str(ROOT), *folders],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -225,6 +229,14 @@ class AcquireTest(unittest.TestCase):
                 for _ in range(2)
             ]
             try:
+                for racer in racers:
+                    ready = racer.stdout.readline().strip()
+                    failed = racer.stderr.read() if racer.poll() is not None else ""
+                    self.assertEqual(ready, RACE_READY, failed)
+                start = time.time() + RACE_START_MARGIN_S
+                for racer in racers:
+                    racer.stdin.write(repr(start) + "\n")
+                    racer.stdin.flush()
                 reports = []
                 for racer in racers:
                     line = racer.stdout.readline()
