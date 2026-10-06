@@ -19,6 +19,10 @@ El ``CHECK`` del CRS vertical exige ``vcrs_note IS NOT NULL`` además de
 nula ``length`` da NULL, y SQLite solo rechaza un ``CHECK`` falso, no uno nulo; sin ello
 pasaría un vertical local sin descripción (spec 002, T08).
 
+La fila única de ``gb_project`` se escribe y se lee como ``core.project.model.
+ProjectRecord`` (:func:`insert_project`, :func:`read_project`), y las migraciones
+registradas, con :func:`read_migrations`.
+
 ``gb_writer()`` no es seguridad: evita que otro programa altere por error lo que solo
 gestiona Geoblender. Las capas de dominio siguen admitiendo ``ALTER TABLE`` desde
 cualquier programa. Un esquema publicado no cambia nunca: cualquier cambio sube
@@ -30,6 +34,7 @@ from __future__ import annotations
 import sqlite3
 
 from ..gpkg.base import register_internal_table
+from .model import ProjectRecord
 
 SCHEMA_VERSION = 1
 MIN_READER_SCHEMA = 1
@@ -167,3 +172,27 @@ def missing_objects(conn: sqlite3.Connection) -> list[str]:
     )
     expected = [f"table {table}" for table in _TABLES] + [f"trigger {name}" for name in TRIGGERS]
     return [item for item in expected if (item,) not in present]
+
+
+def insert_project(conn: sqlite3.Connection, record: ProjectRecord) -> None:
+    """Escribe la fila única de ``gb_project`` (en una transacción de una conexión de
+    escritura de Geoblender, que tiene ``gb_writer()``)."""
+    row = record.as_row()
+    names = ", ".join(row)
+    marks = ", ".join("?" for _ in row)
+    conn.execute(f"INSERT INTO gb_project ({names}) VALUES ({marks})", tuple(row.values()))
+
+
+def read_project(conn: sqlite3.Connection) -> ProjectRecord | None:
+    """La fila de ``gb_project`` como :class:`ProjectRecord`, o ``None`` si no la hay."""
+    columns = ProjectRecord.columns()
+    row = conn.execute(f"SELECT {', '.join(columns)} FROM gb_project").fetchone()
+    return None if row is None else ProjectRecord.from_row(dict(zip(columns, row, strict=True)))
+
+
+def read_migrations(conn: sqlite3.Connection) -> tuple[tuple[int, int], ...]:
+    """Las migraciones registradas en ``gb_schema_migration``, (de, a), en orden."""
+    rows = conn.execute(
+        "SELECT from_version, to_version FROM gb_schema_migration ORDER BY fid"
+    ).fetchall()
+    return tuple((int(low), int(high)) for low, high in rows)
