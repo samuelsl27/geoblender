@@ -33,7 +33,7 @@ from tests.support.resources import requires
 tools_on_path()
 
 import publish  # noqa: E402
-from gbtools import layout  # noqa: E402
+from gbtools import layout, safe_mirror  # noqa: E402
 from gbtools import repo as gbrepo  # noqa: E402
 from gbtools.blender import BlenderInstall, EnvironmentProblem  # noqa: E402
 
@@ -48,23 +48,21 @@ NOT_PUBLISHED = "RESULTADO: NO PUBLICADO"
 CHANGES = "RESULTADO: CAMBIOS EN EL DESTINO"
 
 # La carpeta del proyecto de prueba (texto UTF-8 y LF): la documentación y, dentro, el
-# código; cada uno con un .git mínimo escrito a mano (FakeGit responde por git).
+# código, cada uno con un .git mínimo escrito a mano (FakeGit responde por git). Solo lo
+# que la publicación necesita: cada fichero cuesta al escribirlo, compararlo y copiarlo
+# (RNF-007-01).
 DOCS_FILES: Mapping[str, str] = {
     layout.DOCS_MARKER: "# Constitución\n",
-    "README.md": "# Documentación de prueba\n",
-    ".gitignore": f"/{CODE}/\n",
-    ".git/HEAD": f"ref: refs/heads/{DOCS_BRANCH}\n",
     ".git/config": "[core]\n\tbare = false\n",
-    f".git/refs/heads/{DOCS_BRANCH}": f"{SHA_DOCS}\n",
 }
 CODE_FILES: Mapping[str, str] = {
     layout.MANIFEST_RELPATH: 'schema_version = "1.0.0"\nblender_version_min = "5.2.0"\n',
     layout.CHECK_RELPATH: SPDX,
-    "README.md": "# Código de prueba\n",
-    ".git/HEAD": f"ref: refs/heads/{CODE_BRANCH}\n",
     ".git/config": f'[core]\n\tbare = false\n[remote "origin"]\n\turl = {CODE_URL}\n',
-    f".git/refs/heads/{CODE_BRANCH}": f"{SHA_CODE}\n",
 }
+# Unas comprobaciones en rojo: las pruebas de los pasos de antes paran ahí, sin subir ni
+# hacer el espejo.
+STOP_AT_CHECK = (1, "RESULTADO: NO VERDE (prueba)\n")
 
 Answer = tuple[int, str] | tuple[int, str, str]
 CHECK_GREEN = "RESULTADO: VERDE (1,0 s)\n"
@@ -185,7 +183,8 @@ class FakeGit:
 def write_files(root: Path, files: Mapping[str, str]) -> None:
     for rel, text in files.items():
         path = root / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.parent.is_dir():
+            path.parent.mkdir(parents=True)
         path.write_bytes(text.encode("utf-8"))
 
 
@@ -261,6 +260,7 @@ def run_publish(
     checks: FakeChecks | None = None,
     locate: object = fake_locate,
     dest_option: bool = True,
+    mirror_hook: Callable[[str, str], None] | None = None,
 ) -> Outcome:
     """``publish.main`` con ``--destino`` = el destino de ``space`` (salvo que ``args``
     traiga otro, o sin él si no ``dest_option``), su entorno, el ejecutor de git
@@ -280,6 +280,7 @@ def run_publish(
             git_runner=fake if real_git is None else real_git,
             runner=checks,
             locate=locate,
+            mirror_hook=mirror_hook,
         )
     git_used = fake if real_git is None else None
     return Outcome(code, out.getvalue(), err.getvalue(), git_used, checks)
@@ -388,7 +389,7 @@ class StructureTest(PublicationAssertions):
             outcome = self.assertStopped(space, 2, environ=environ)
             self.assertIn(layout.ENV_DOCS_DIR, outcome.out)
             same = space.env(**{layout.ENV_DOCS_DIR: str(space.code / "..")})
-            outcome = run_publish(space, environ=same)
+            outcome = run_publish(space, environ=same, checks=FakeChecks(check=STOP_AT_CHECK))
             self.assertNotIn(layout.ENV_DOCS_DIR, outcome.out, outcome.text)
 
 
@@ -413,10 +414,10 @@ class DestinationTest(PublicationAssertions):
         with workspace() as space:
             missing = space.base / "no-existe"
             environ = space.env(**{layout.ENV_NAS_MIRROR: str(missing)})
-            outcome = run_publish(space, environ=environ)
+            outcome = run_publish(space, environ=environ, checks=FakeChecks(check=STOP_AT_CHECK))
             self.assertIn(f"correcto  {publish.STEP_DEST}", outcome.out, outcome.text)
             environ = space.env(**{layout.ENV_NAS_MIRROR: str(space.dest)})
-            outcome = run_publish(space, environ=environ, dest_option=False)
+            outcome = run_publish(space, environ=environ, dest_option=False, checks=FakeChecks(check=STOP_AT_CHECK))
             self.assertIn(f"correcto  {publish.STEP_DEST}", outcome.out, outcome.text)
             outcome = self.assertStopped(
                 space, 2, environ=space.env(**{layout.ENV_NAS_MIRROR: str(missing)}),
@@ -506,13 +507,13 @@ class DestinationTest(PublicationAssertions):
         """RF-007-18, RF-007-31: sin marcador, el primer espejo contra su foto sí vale;
         con marcador y estado, también."""
         with workspace() as space:
-            outcome = run_publish(space)
+            outcome = run_publish(space, checks=FakeChecks(check=STOP_AT_CHECK))
             self.assertIn(f"correcto  {publish.STEP_DEST}", outcome.out, outcome.text)
             self.assertIn("primer espejo", outcome.out)
         with workspace(photo=False) as space:
             write_files(space.dest, {layout.DOCS_MARKER: "x\n"})
             mirror.write_state(space.profile, space.dest)
-            outcome = run_publish(space)
+            outcome = run_publish(space, checks=FakeChecks(check=STOP_AT_CHECK))
             self.assertIn(f"correcto  {publish.STEP_DEST}", outcome.out, outcome.text)
             self.assertIn("estado del 05/10/2026 23:40", outcome.out)
 
@@ -596,7 +597,7 @@ class RemoteTest(PublicationAssertions):
     def test_remote_reported(self) -> None:
         """RF-007-23: el remoto, sin credenciales, va en el informe."""
         with workspace() as space:
-            outcome = run_publish(space)
+            outcome = run_publish(space, checks=FakeChecks(check=STOP_AT_CHECK))
         self.assertIn(f"correcto  {publish.STEP_REMOTE}", outcome.out)
         self.assertIn(CODE_URL, outcome.out)
 
@@ -729,7 +730,7 @@ class ChecksTest(PublicationAssertions):
         """RF-007-16: las dos con el Python del Blender localizado (``-B -s -X utf8``),
         desde la raíz del código: ``tools/check.py`` y ``tools/check_docs.py`` con la
         carpeta del proyecto; después de los árboles, que se miran otra vez."""
-        fake = FakeGit()
+        fake = FakeGit({("code", "push"): (1, "", "subida rechazada (prueba)\n")})
         with workspace() as space:
             outcome = run_publish(space, git_runner=fake)
             project = space.project
@@ -746,7 +747,8 @@ class ChecksTest(PublicationAssertions):
         """RF-007-16, RF-007-24: con ``--solo-espejo`` no se comprueba el código, pero sí
         la documentación."""
         with workspace() as space:
-            outcome = run_publish(space, publish.OPTION_MIRROR_ONLY)
+            checks = FakeChecks(docs=STOP_AT_CHECK)
+            outcome = run_publish(space, publish.OPTION_MIRROR_ONLY, checks=checks)
         self.assertEqual(outcome.checks.scripts(), ["tools/check_docs.py"])
         self.assertIn("omitido   comprobación", outcome.out)
 
@@ -885,6 +887,56 @@ class DestinationChangesTest(PublicationAssertions):
         self.assertIn(f"{CHANGES} (1)", outcome.out)
 
 
+class MirrorStepTest(PublicationAssertions):
+    """RF-007-22, RF-007-34: el espejo dentro de la publicación (plan 007 §5.4.5, paso
+    10; §5.4.8)."""
+
+    def test_mirror_copies_project(self) -> None:
+        """RF-007-22: tras subir, el destino (vacío, primer espejo) queda con los
+        ficheros de la carpeta del proyecto, los dos ``.git`` incluidos, y el informe
+        da los copiados."""
+        with workspace() as space:
+            outcome = run_publish(space)
+            copied = sorted(p.relative_to(space.dest).as_posix() for p in space.dest.rglob("*") if p.is_file())
+            source = sorted(p.relative_to(space.project).as_posix() for p in space.project.rglob("*") if p.is_file())
+        self.assertIn(f"correcto  {publish.STEP_MIRROR}", outcome.out, outcome.text)
+        self.assertEqual(copied, source)
+        self.assertIn(f"{len(source)} copiados", outcome.out)
+
+    def test_lock_present_exit_1(self) -> None:
+        """RF-007-22: con el cerrojo de otro espejo desde este PC a ese destino, código 1
+        antes de comparar, comprobar, subir o copiar; el cerrojo no se toca."""
+        with workspace() as space:
+            lock = safe_mirror.lock_file(space.dest, space.env())
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_bytes(b'{"quien": "otro"}')
+            outcome = self.assertStopped(space, 1)
+            self.assertEqual(lock.read_bytes(), b'{"quien": "otro"}')
+        self.assertIn("otro espejo en curso", outcome.out)
+        self.assertEqual(outcome.checks.calls, [])
+
+    def test_change_during_mirror_exit_3_after_push_reported(self) -> None:
+        """RF-007-34: un fichero que aparece en el destino mientras se copia no se toca:
+        código 3, sin guardar el estado; el informe dice que se subió y que el espejo
+        quedó a medias."""
+        with workspace() as space:
+            target = space.dest / layout.DOCS_MARKER
+
+            def hook(action: str, rel: str) -> None:
+                if (action, rel) == ("sustituir", layout.DOCS_MARKER):
+                    target.write_bytes(b"del NAS durante el espejo\n")
+
+            outcome = run_publish(space, mirror_hook=hook)
+            self.assertEqual(target.read_bytes(), b"del NAS durante el espejo\n")
+            state = safe_mirror.state_file(space.dest, space.env())
+            self.assertFalse(state.exists())
+        self.assertEqual(outcome.code, 3, outcome.text)
+        self.assertIn(f"PARADA    {publish.STEP_MIRROR}", outcome.out)
+        self.assertIn(f"Se subió {CODE_BRANCH} a origin", outcome.out)
+        self.assertIn("a medias", outcome.out)
+        self.assertIn(f"{CHANGES} (1)", outcome.out)
+
+
 class EnvironTest(unittest.TestCase):
     def test_main_always_with_environ(self) -> None:
         """Plan 007 §7.1: ninguna prueba llama a ``publish.main`` sin su entorno
@@ -927,6 +979,7 @@ class PublishedTest(unittest.TestCase):
     space: Workspace
     outcome: Outcome
     head: str
+    docs_head: str
     indexes: dict[Path, tuple[int, int]]
 
     @classmethod
@@ -939,6 +992,7 @@ class PublishedTest(unittest.TestCase):
             project.git(project.code, "commit", "-q", "-a", "-m", "segundo")
             project.git(project.code, "tag", "-a", cls.TAG, "-m", "versión de prueba")
             cls.head = project.git(project.code, "rev-parse", "HEAD").stdout.strip()
+            cls.docs_head = project.git(project.docs, "rev-parse", "HEAD").stdout.strip()
             cls.indexes = cls.index_stats()
             cls.outcome = run_publish(cls.space, real_git=project.runner())
         except BaseException:
@@ -957,6 +1011,19 @@ class PublishedTest(unittest.TestCase):
             info = (repo / ".git" / "index").stat()
             stats[repo] = (info.st_size, info.st_mtime_ns)
         return stats
+
+    def test_mirror_has_both_histories(self) -> None:
+        """RF-007-22: un clon hecho desde cada ``.git`` del destino tiene su historial:
+        la rama de cada repositorio en el commit del PC (el del código, con la etiqueta)."""
+        project = self.project
+        for rel, wanted in ((".", self.docs_head), (CODE, f"{self.TAG}^{{commit}}")):
+            with self.subTest(repositorio=rel), tempfile.TemporaryDirectory() as tmp:
+                clone = Path(tmp) / "clon"
+                source = str(self.space.dest / rel)
+                project.git(Path(tmp), "clone", "-q", "--no-checkout", source, str(clone))
+                found = project.git(clone, "rev-parse", "HEAD", wanted).stdout.split()
+                expected = self.docs_head if rel == "." else self.head
+                self.assertEqual(found, [expected, expected])
 
     def test_reads_keep_index(self) -> None:
         """RF-007-15 (plan §2.1, 16): las lecturas de git de la publicación no

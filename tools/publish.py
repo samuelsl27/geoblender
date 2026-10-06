@@ -45,6 +45,14 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
    --follow-tags`` de la rama actual del código a la misma rama de ``origin``, nunca
    forzada; si falla (rechazada, sin red o sin permiso), código 1 con el mensaje de git
    y sin espejo.
+10. Espejo (RF-007-22, RF-007-34; ``gbtools.safe_mirror.mirror``): solo lo que cambió,
+    los objetos de git antes que los ficheros y las referencias, los borrados al final,
+    cada copia a un temporal comprobado y solo si el fichero del destino sigue como se
+    comparó; si cambió, código 3 sin tocarlo. Lo excluido no se toca y nunca se borra
+    una carpeta con contenido.
+
+Un cerrojo en el perfil local impide dos espejos a la vez desde este PC al mismo destino
+(código 1): se toma antes de la comparación del paso 7 y se suelta al terminar.
 
 Las lecturas de git no toman cerrojos opcionales (``gbtools.git``): no reescriben
 ``.git/index``. Nadie publica salvo la persona que publica (D-15); un agente, solo si
@@ -97,6 +105,7 @@ STEP_TREES = "árboles"
 STEP_CHECK = "comprobación"
 STEP_DOCS = "documentación"
 STEP_PUSH = "subida"
+STEP_MIRROR = "espejo"
 
 # El primer componente bajo la raíz de una unidad, o el nombre del recurso, de la
 # carpeta de expedientes de clientes (solo lectura, siempre): nunca es un destino.
@@ -462,6 +471,9 @@ class Publication:
         self.source = safe_mirror.SourceTree()
         self.listing = safe_mirror.DestinationTree()
         self.observed: dict[str, safe_mirror.FileState] = {}
+        self.mirror_hook: safe_mirror.Hook | None = None
+        self.mirror_started = False
+        self.report: safe_mirror.MirrorReport | None = None
         self.started = time.perf_counter()
         self.step_started = self.started
 
@@ -705,28 +717,82 @@ class Publication:
         self.pushed = branch
         self.line(STATUS_OK, STEP_PUSH, f"{git.REMOTE} = {self.url}, {branch}")
 
+    # Paso 10: el espejo.
+    def mirror(self) -> None:
+        assert self.dest is not None and self.base is not None
+        self.mirror_started = True
+        try:
+            report = safe_mirror.mirror(
+                self.project,
+                self.dest,
+                self.source,
+                self.listing,
+                self.observed,
+                self.base,
+                self.environ,
+                hook=self.mirror_hook,
+            )
+        except safe_mirror.DestinationChanged as exc:
+            count = len(exc.changes)
+            raise Stop(
+                EXIT_CHANGES,
+                STEP_MIRROR,
+                f"el destino cambió durante el espejo: {exc}",
+                [*change_lines(exc.changes), *change_advice(exc.changes, self.dest, self.project)],
+                f"RESULTADO: CAMBIOS EN EL DESTINO ({count})",
+            ) from exc
+        except safe_mirror.MirrorError as exc:
+            raise Stop(EXIT_FAIL, STEP_MIRROR, str(exc)) from exc
+        except OSError as exc:
+            raise Stop(EXIT_FAIL, STEP_MIRROR, f"el espejo no pudo seguir: {exc}") from exc
+        self.report = report
+        excluded = ", ".join(report.excluded[:5]) + (" …" if len(report.excluded) > 5 else "")
+        detail = (
+            f"{len(report.copied)} copiados, {len(report.deleted)} borrados, "
+            f"{report.unchanged} sin cambios"
+        )
+        if report.renamed:
+            detail += f", {len(report.renamed)} renombrados (mayúsculas)"
+        if report.kept_folders:
+            detail += f"; carpetas con excluidos que se quedan: {', '.join(report.kept_folders)}"
+        detail += f"; excluidos en el destino: {excluded or 'ninguno'}"
+        self.line(STATUS_OK, STEP_MIRROR, detail)
+
     def run(self) -> int:
         self.check_structure()
         self.check_destination()
         self.check_remote()
         self.check_trees()
-        self.compare()
-        self.run_checks()
-        self.push()
-        self.compare(before_copy=True)
-        raise Stop(
-            EXIT_FAIL,
-            "publicación",
-            "la publicación aún no hace el espejo (spec 007, T26 a T28)",
-        )
+        assert self.dest is not None
+        try:
+            with safe_mirror.mirror_lock(self.dest, self.environ):
+                self.compare()
+                self.run_checks()
+                self.push()
+                self.compare(before_copy=True)
+                self.mirror()
+                raise Stop(
+                    EXIT_FAIL,
+                    "verificación",
+                    "la publicación aún no verifica el espejo ni guarda su estado (spec 007, "
+                    "T27)",
+                )
+        except safe_mirror.MirrorBusy as exc:
+            raise Stop(EXIT_FAIL, STEP_DEST, str(exc)) from exc
 
     def done_note(self) -> str:
-        """Qué se hizo antes de parar: nada, o la subida sin el espejo."""
-        if self.pushed is not None:
+        """Qué se hizo antes de parar: nada, la subida sin el espejo, o un espejo a
+        medias."""
+        pushed = (
+            f"Se subió {self.pushed} a {git.REMOTE}. " if self.pushed is not None else ""
+        )
+        if self.mirror_started:
             return (
-                f"Se subió {self.pushed} a {git.REMOTE}; no se ha copiado nada: el destino "
-                "sigue en el espejo anterior."
+                f"{pushed}El espejo quedó a medias: lo hecho está en el registro en curso y "
+                "el siguiente espejo lo reconoce; el estado no se ha guardado."
             )
+        if self.pushed is not None:
+            return f"{pushed}No se ha copiado nada: el destino sigue en el espejo anterior."
         return NOTHING_DONE
 
 
@@ -751,11 +817,13 @@ def main(
     git_runner: blender.Runner = blender.run,
     runner: blender.Runner | None = None,
     locate: Callable[..., blender.BlenderInstall] = blender.locate_blender,
+    mirror_hook: Callable[[str, str], None] | None = None,
 ) -> int:
     """Publica y devuelve el código de salida. Los parámetros con nombre solo los
     cambian las pruebas: la raíz del código, el entorno (``GEOBLENDER_NAS_ESPEJO``,
     ``GEOBLENDER_DOCS_DIR``, ``LOCALAPPDATA``), el ejecutor de git, el de las
-    comprobaciones y el localizador de Blender."""
+    comprobaciones, el localizador de Blender y un gancho que se llama durante el espejo
+    justo antes de tocar cada fichero del destino."""
     environ = os.environ if environ is None else environ
     try:
         options = parse_args(list(sys.argv[1:] if argv is None else argv))
@@ -782,6 +850,7 @@ def main(
         stream_run if runner is None else runner,
         locate,
     )
+    publication.mirror_hook = mirror_hook
     try:
         return publication.run()
     except Stop as stop:

@@ -39,17 +39,23 @@ todo el NAS.
 
 from __future__ import annotations
 
+import datetime
+import getpass
 import hashlib
 import json
 import os
+import platform
 import re
-from collections.abc import Iterable, Mapping
+import shutil
+import stat
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .ignore import IgnoreSpec
-from .layout import CODE_DIR_IN_DOCS, MIRROR_EXCLUDED, MIRROR_STATE_PARTS
+from .layout import CODE_DIR_IN_DOCS, MIRROR_EXCLUDED, MIRROR_STATE_PARTS, MIRROR_TEMP_SUFFIX
 
 FORMAT = 1
 KIND_STATE = "estado"
@@ -266,13 +272,46 @@ class DestinationTree:
 @dataclass
 class Pending:
     """Lo que iba a dejar un espejo en curso de este PC (rutas sin distinguir
-    mayúsculas): el sha256 de cada fichero, los borrados, sus temporales y las carpetas
-    que crea."""
+    mayúsculas): el sha256 de cada fichero (o los de varios espejos cortados seguidos),
+    los borrados, sus temporales y las carpetas que crea."""
 
-    files: dict[str, str] = field(default_factory=dict)
+    files: dict[str, set[str]] = field(default_factory=dict)
     deleted: set[str] = field(default_factory=set)
     temps: set[str] = field(default_factory=set)
     folders: set[str] = field(default_factory=set)
+
+
+class MirrorBusy(MirrorError):
+    """Otro espejo desde este PC a ese destino está en curso (o quedó su cerrojo)."""
+
+
+class DestinationChanged(MirrorError):
+    """Un fichero del destino cambió (o apareció) después de la comparación: no se ha
+    tocado (RF-007-34)."""
+
+    def __init__(self, message: str, changes: list[DestChange]) -> None:
+        super().__init__(message)
+        self.changes = changes
+
+
+@dataclass
+class MirrorReport:
+    """Lo que hizo un espejo, con rutas relativas y «/»: copiados (con el tamaño, la
+    fecha y el sha256 comprobados de su temporal, ``verified``), renombrados (solo
+    mayúsculas), borrados, sin cambios, carpetas creadas, quitadas y conservadas (no
+    vacías por lo excluido), lo excluido que tenía el destino y el orden de las copias
+    y los borrados."""
+
+    copied: list[str] = field(default_factory=list)
+    renamed: list[tuple[str, str]] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+    unchanged: int = 0
+    created_folders: list[str] = field(default_factory=list)
+    removed_folders: list[str] = field(default_factory=list)
+    kept_folders: list[str] = field(default_factory=list)
+    excluded: list[str] = field(default_factory=list)
+    verified: dict[str, FileState] = field(default_factory=dict)
+    order: list[tuple[str, str]] = field(default_factory=list)
 
 
 def fold(rel: str) -> str:
@@ -424,10 +463,14 @@ def load_pending(destination: Path, environ: Mapping[str, str]) -> Pending | Non
         rels = [*files, *(rel for item in lists for rel in item)]
         if not all(valid_rel(rel) for rel in rels):
             return None
+        shas = {
+            fold(rel): {value} if isinstance(value, str) else {str(sha) for sha in value}
+            for rel, value in files.items()
+        }
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
     deleted, temps, folders = ({fold(rel) for rel in item} for item in lists)
-    return Pending({fold(rel): str(sha) for rel, sha in files.items()}, deleted, temps, folders)
+    return Pending(shas, deleted, temps, folders)
 
 
 def _topmost(folders: Iterable[str]) -> list[str]:
@@ -481,7 +524,7 @@ def destination_changes(
             continue  # solo cambió la fecha
         if src.get(key) == state.sha256:
             continue  # el destino ya tiene lo del PC
-        if pend.files.get(key) == state.sha256 or key in pend.temps:
+        if state.sha256 in pend.files.get(key, ()) or key in pend.temps:
             continue  # lo dejó un espejo en curso de este PC
         changes.append(DestChange(rel, kind, in_git(rel)))
     known = {fold(rel) for rel in (*base.folders, *source.folders)} | pend.folders
@@ -514,3 +557,347 @@ def load_base(destination: Path, environ: Mapping[str, str]) -> MirrorState | No
         if real_destination(base.destination) == real:
             return base
     return None
+
+
+# --- El espejo (plan 007 §5.4.8; RF-007-22, RF-007-34) ---------------------------------
+
+LOCK_SUFFIX = ".lock"
+RENAME_MARK = ".renombrando"
+STAGE_OBJECTS, STAGE_WORK, STAGE_GIT, STAGE_REFS = 0, 1, 2, 3
+ACTION_COPY = "copiar"
+ACTION_DELETE = "borrar"
+HOOK_RENAME = "renombrar"
+HOOK_REPLACE = "sustituir"
+HOOK_DELETE = "borrar"
+
+Hook = Callable[[str, str], None]
+
+
+def who(environ: Mapping[str, str]) -> str:
+    """``usuario@equipo`` de quien hace el espejo."""
+    user = environ.get("USERNAME") or getpass.getuser()
+    host = environ.get("COMPUTERNAME") or platform.node()
+    return f"{user}@{host}"
+
+
+def now_text() -> str:
+    """La fecha y la hora locales, ``AAAA-MM-DDTHH:MM:SS``."""
+    return datetime.datetime.now().replace(microsecond=0).isoformat()
+
+
+def lock_file(destination: str | os.PathLike[str], environ: Mapping[str, str]) -> Path:
+    """El cerrojo del espejo a ``destination`` desde este PC (``…lock``)."""
+    key = destination_key(destination)
+    return state_dir(environ) / f"{STATE_PREFIX}{key}{LOCK_SUFFIX}"
+
+
+@contextmanager
+def mirror_lock(destination: Path, environ: Mapping[str, str]) -> Iterator[Path]:
+    """El cerrojo del espejo a ``destination`` (creación exclusiva, con usuario, equipo,
+    fecha y PID): si ya existe, :class:`MirrorBusy` sin tocarlo. Se quita al salir."""
+    path = lock_file(destination, environ)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    try:
+        handle = os.open(path, flags)
+    except FileExistsError:
+        try:
+            owner = path.read_bytes().decode("utf-8", "replace").strip()[:200]
+        except OSError:
+            owner = ""
+        raise MirrorBusy(
+            f"hay otro espejo en curso desde este PC a este destino, o uno interrumpido "
+            f"(cerrojo «{path}»: {owner}); si no hay ninguno en marcha, borre ese fichero "
+            "y repita"
+        ) from None
+    data = {
+        "quien": who(environ),
+        "pid": os.getpid(),
+        "desde": now_text(),
+        "destino": str(destination),
+    }
+    with os.fdopen(handle, "wb") as stream:
+        stream.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+    try:
+        yield path
+    finally:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def copy_stage(rel: str) -> int:
+    """En qué tanda se copia ``rel`` (plan 007 §5.4.8, paso 3): los objetos de git, los
+    ficheros de trabajo, el resto de cada ``.git`` y, al final, sus referencias
+    (``refs/``, ``packed-refs``, ``HEAD`` e ``index``). Así un corte a mitad nunca deja
+    una referencia que apunte a un objeto que no está."""
+    parts = [part.casefold() for part in rel.split("/")]
+    if GIT_FOLDER not in parts:
+        return STAGE_WORK
+    inner = parts[parts.index(GIT_FOLDER) + 1 :]
+    if inner[:1] == ["objects"]:
+        return STAGE_OBJECTS
+    if inner[:1] == ["refs"] or inner in (["packed-refs"], ["head"], ["index"]):
+        return STAGE_REFS
+    return STAGE_GIT
+
+
+def _copy_key(rel: str) -> tuple[int, int, str]:
+    """Orden de las copias: por tanda; en los paquetes, el ``.pack`` antes que su
+    ``.idx``, ``.rev`` o ``.bitmap``."""
+    pack_rank = 0 if rel.casefold().endswith(".pack") else 1
+    return copy_stage(rel), pack_rank, fold(rel)
+
+
+def _make_writable(path: Path) -> None:
+    """Quita el atributo de solo lectura (git lo pone a sus objetos) sin cambiar la
+    fecha del fichero."""
+    mode = os.stat(path, follow_symlinks=False).st_mode
+    if not mode & stat.S_IWRITE:
+        os.chmod(path, mode | stat.S_IWRITE)
+
+
+def _remove_file(path: Path) -> None:
+    """Borra un fichero propio (un temporal), también de solo lectura."""
+    try:
+        _make_writable(path)
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def _write_json(path: Path, data: Mapping[str, Any]) -> None:
+    """Escribe ``data`` en ``path`` (UTF-8) a través de un temporal: nunca queda a
+    medias."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_bytes(json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))
+    os.replace(temp, path)
+
+
+def _write_pending(
+    destination: Path,
+    environ: Mapping[str, str],
+    files: Mapping[str, str],
+    deleted: Iterable[str],
+    temps: Iterable[str],
+    folders: Iterable[str],
+) -> None:
+    """Escribe el registro del espejo en curso (antes de tocar el destino), con lo de
+    un registro anterior (un espejo cortado) que siga en él."""
+    previous = load_pending(destination, environ) or Pending()
+    shas: dict[str, set[str]] = {key: set(values) for key, values in previous.files.items()}
+    for rel, sha in files.items():
+        shas.setdefault(fold(rel), set()).add(sha)
+    data = {
+        "formato": FORMAT,
+        "tipo": KIND_PENDING,
+        "destino": str(destination),
+        "iniciado": now_text(),
+        "quien": who(environ),
+        "ficheros": {rel: sorted(values) for rel, values in sorted(shas.items())},
+        "borrados": sorted({*previous.deleted, *(fold(rel) for rel in deleted)}),
+        "temporales": sorted({*previous.temps, *(fold(rel) for rel in temps)}),
+        "carpetas": sorted({*previous.folders, *(fold(rel) for rel in folders)}),
+    }
+    _write_json(pending_file(destination, environ), data)
+
+
+class _Mirror:
+    """Un espejo en marcha: el plan, su ejecución y lo que va haciendo."""
+
+    def __init__(
+        self,
+        project: Path,
+        destination: Path,
+        source: SourceTree,
+        listing: DestinationTree,
+        observed: Mapping[str, FileState],
+        hook: Hook | None,
+    ) -> None:
+        self.project = Path(project)
+        self.dest = Path(destination)
+        self.source = source
+        self.observed = dict(observed)
+        self.hook: Hook = hook or (lambda _action, _rel: None)
+        self.report = MirrorReport(excluded=list(listing.excluded))
+        self.dest_files = {fold(rel): rel for rel in listing.files}
+        self.dest_folders = {fold(rel): rel for rel in listing.folders}
+
+    def expect(self, rel: str, state: FileState | None) -> None:
+        """Justo antes de tocarlo (RF-007-34): el fichero ``rel`` del destino sigue con
+        el tamaño y la fecha con que se comparó (``state``), o sigue sin existir
+        (``None``); si no, :class:`DestinationChanged` sin tocarlo."""
+        try:
+            info = os.stat(self.dest / rel, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if state is None and info is None:
+            return
+        if state is not None and info is not None:
+            if (info.st_size, info.st_mtime_ns) == (state.size, state.mtime_ns):
+                return
+        kind = NEW if state is None else (DELETED if info is None else CHANGED)
+        raise DestinationChanged(
+            f"«{rel}» cambió en el destino durante el espejo: no se ha tocado",
+            [DestChange(rel, kind, in_git(rel))],
+        )
+
+    def rename(self, current: str, rel: str, folder: bool = False) -> None:
+        """Renombra en dos pasos ``current`` a ``rel`` (solo cambian mayúsculas); un
+        fichero, solo si sigue como se comparó."""
+        self.hook(HOOK_RENAME, current)
+        if not folder:
+            self.expect(current, self.observed.get(current))
+        middle = self.dest / f"{current}{RENAME_MARK}{MIRROR_TEMP_SUFFIX}"
+        os.rename(self.dest / current, middle)
+        os.rename(middle, self.dest / rel)
+        self.report.renamed.append((current, rel))
+        if not folder and current in self.observed:
+            self.observed[rel] = self.observed.pop(current)
+
+    def copy(self, rel: str) -> None:
+        """Copia ``rel`` a un temporal en su carpeta, lo comprueba y, si el fichero del
+        destino sigue como se comparó, lo sustituye."""
+        sha = self.source.files[rel]
+        target = self.dest / rel
+        temp_rel = f"{rel}{MIRROR_TEMP_SUFFIX}"
+        temp = self.dest / temp_rel
+        self.make_folder(target.parent)
+        if os.path.lexists(temp):  # de un espejo cortado (lo reconoció la comparación)
+            leftover = self.dest_files.get(fold(temp_rel), temp_rel)
+            self.expect(leftover, self.observed.get(leftover))
+            _remove_file(temp)
+        for _attempt in range(2):
+            shutil.copy2(self.project / rel, temp)
+            if sha256_of(temp) == sha:
+                break
+            _remove_file(temp)
+        else:
+            raise MirrorError(
+                f"la copia de «{rel}» en el destino no tiene el sha256 del PC tras dos "
+                "intentos: no se ha sustituido; compruebe el destino y repita"
+            )
+        info = os.stat(temp, follow_symlinks=False)
+        verified = FileState(info.st_size, info.st_mtime_ns, sha)
+        self.hook(HOOK_REPLACE, rel)
+        exists = fold(rel) in self.dest_files
+        try:
+            self.expect(rel, self.observed.get(rel) if exists else None)
+        except DestinationChanged:
+            _remove_file(temp)
+            raise
+        if os.path.lexists(target):
+            _make_writable(target)
+        os.replace(temp, target)
+        self.report.copied.append(rel)
+        self.report.verified[rel] = verified
+        self.report.order.append((ACTION_COPY, rel))
+
+    def delete(self, rel: str) -> None:
+        """Borra ``rel`` del destino si sigue como se comparó (si ya no está, nada)."""
+        self.hook(HOOK_DELETE, rel)
+        path = self.dest / rel
+        if not os.path.lexists(path):
+            return
+        self.expect(rel, self.observed.get(rel))
+        _make_writable(path)
+        os.unlink(path)
+        self.report.deleted.append(rel)
+        self.report.order.append((ACTION_DELETE, rel))
+
+    def make_folder(self, folder: Path) -> None:
+        """Crea ``folder`` (y sus madres) en el destino si falta, y lo anota."""
+        missing = []
+        current = folder
+        while current != self.dest and not current.is_dir():
+            missing.append(current)
+            current = current.parent
+        for path in reversed(missing):
+            path.mkdir()
+            self.report.created_folders.append(path.relative_to(self.dest).as_posix())
+
+    def run(self, environ: Mapping[str, str]) -> MirrorReport:
+        source_keys = {fold(rel) for rel in self.source.files}
+        source_folders = {fold(rel): rel for rel in self.source.folders}
+        renames: dict[str, str] = {}
+        copies: list[str] = []
+        for rel, sha in self.source.files.items():
+            current = self.dest_files.get(fold(rel))
+            if current is not None and current.rsplit("/", 1)[-1] != rel.rsplit("/", 1)[-1]:
+                renames[rel] = current
+            seen = self.observed.get(current) if current is not None else None
+            if seen is not None and seen.sha256 == sha:
+                self.report.unchanged += 1
+            else:
+                copies.append(rel)
+        deletions = sorted(
+            (rel for key, rel in self.dest_files.items() if key not in source_keys), key=fold
+        )
+        folder_renames = sorted(
+            (
+                (self.dest_folders[key], rel)
+                for key, rel in source_folders.items()
+                if key in self.dest_folders
+                and self.dest_folders[key].rsplit("/", 1)[-1] != rel.rsplit("/", 1)[-1]
+            ),
+            key=lambda pair: pair[1].count("/"),
+        )
+        removable = [rel for key, rel in self.dest_folders.items() if key not in source_folders]
+        temps = [f"{rel}{MIRROR_TEMP_SUFFIX}" for rel in copies]
+        temps += [f"{old}{RENAME_MARK}{MIRROR_TEMP_SUFFIX}" for old in renames.values()]
+        temps += [f"{old}{RENAME_MARK}{MIRROR_TEMP_SUFFIX}" for old, _new in folder_renames]
+        new_folders = [rel for key, rel in source_folders.items() if key not in self.dest_folders]
+        copied = {rel: self.source.files[rel] for rel in copies}
+        _write_pending(self.dest, environ, copied, deletions, temps, new_folders)
+        for old, new in folder_renames:
+            self.rename(old, new, folder=True)
+        for rel in sorted({*copies, *renames}, key=_copy_key):
+            if rel in renames:
+                self.rename(renames[rel], rel)
+            if rel in copied:
+                self.copy(rel)
+        for rel in deletions:
+            self.delete(rel)
+        for rel in sorted(removable, key=lambda item: (-item.count("/"), fold(item))):
+            try:
+                os.rmdir(self.dest / rel)
+            except FileNotFoundError:
+                continue
+            except OSError:  # no está vacía: conserva algo excluido
+                self.report.kept_folders.append(rel)
+                continue
+            self.report.removed_folders.append(rel)
+        for rel in sorted(self.source.folders, key=fold):
+            self.make_folder(self.dest / rel)
+        return self.report
+
+
+def mirror(
+    project: Path,
+    destination: Path,
+    source: SourceTree,
+    listing: DestinationTree,
+    observed: Mapping[str, FileState],
+    base: MirrorState,
+    environ: Mapping[str, str],
+    hook: Hook | None = None,
+) -> MirrorReport:
+    """Deja ``destination`` igual que la carpeta del proyecto (plan 007 §5.4.8; RF-007-22
+    y RF-007-34), tras una comparación con ``base`` sin cambios del NAS: ``source``,
+    ``listing`` y ``observed`` son los de esa comparación.
+
+    Escribe antes el registro en curso y, en este orden: renombra lo que solo cambió de
+    mayúsculas (en dos pasos); copia los objetos de git (el ``.pack`` antes que su
+    ``.idx``), los ficheros de trabajo, el resto de cada ``.git`` y sus referencias;
+    borra lo que el PC ya no tiene; quita las carpetas que quedan vacías (``os.rmdir``,
+    nunca ``shutil.rmtree``) y crea las que faltan. Cada copia va a un temporal en su
+    carpeta que se lee de vuelta (sha256 del PC; si no, otra vez; a la segunda,
+    :class:`MirrorError`) y sustituye al fichero del destino solo si este sigue con el
+    tamaño y la fecha con que se comparó (o sigue sin existir): si no, no lo toca,
+    borra su temporal y lanza :class:`DestinationChanged`. Lo excluido nunca se crea,
+    cambia ni borra. ``hook(acción, ruta)`` (solo las pruebas) se llama justo antes de
+    mirar el fichero del destino que se va a renombrar, sustituir o borrar."""
+    del base  # la comparación ya la usó: el plan sale del origen y del destino
+    return _Mirror(project, destination, source, listing, observed, hook).run(environ)

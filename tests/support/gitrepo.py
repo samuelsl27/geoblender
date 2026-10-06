@@ -145,8 +145,19 @@ def remove_tree(folder: Path) -> None:
 def _write(root: Path, files: Mapping[str, str]) -> None:
     for rel, text in files.items():
         path = root / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.parent.is_dir():
+            path.parent.mkdir(parents=True)
         path.write_bytes(text.encode("utf-8"))
+
+
+def _remote_config(remote: Path) -> str:
+    """La parte de ``.git/config`` del código que dejan ``git remote add origin`` y
+    ``git push -u origin main``: el remoto y la rama que sigue."""
+    return (
+        f'[remote "origin"]\n\turl = {remote.as_posix()}\n'
+        "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+        f'[branch "{BRANCH}"]\n\tremote = origin\n\tmerge = refs/heads/{BRANCH}\n'
+    )
 
 
 @dataclass(frozen=True)
@@ -230,23 +241,40 @@ class GitTemplate:
         project.global_config.write_bytes(b"")
         _write(project.docs, DOCS_FILES)
         _write(project.code, CODE_FILES)
-        project.git(project.base, "init", "-q", "--bare", "-b", BRANCH, REMOTE_FOLDER)
         repos = ((project.docs, "docs: inicial"), (project.code, "chore: inicial"))
         for repo, message in repos:
             project.git(repo, "init", "-q", "-b", BRANCH)
             project.git(repo, "add", "-A")
             project.git(repo, "commit", "-q", "-m", message)
-        project.git(project.code, "remote", "add", "origin", project.remote.as_posix())
-        project.git(project.code, "push", "-q", "-u", "origin", BRANCH)
+        # El remoto desnudo con lo que dejaría «git push -u origin main»: los objetos y
+        # las referencias del código, y en el código su remoto y la rama que sigue. Se
+        # escribe en lugar de subir: la subida cuesta unos 0,2 s en Windows (RNF-007-01).
+        code_git, remote = project.code / ".git", project.remote
+        for name in ("objects", "refs"):
+            shutil.copytree(code_git / name, remote / name)
+        (remote / "HEAD").write_bytes(f"ref: refs/heads/{BRANCH}\n".encode())
+        (remote / "config").write_bytes(
+            b"[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = true\n"
+        )
+        branch_ref = (code_git / "refs" / "heads" / BRANCH).read_bytes()
+        _write(code_git, {f"refs/remotes/origin/{BRANCH}": branch_ref.decode("ascii")})
+        config = code_git / "config"
+        config.write_bytes(config.read_bytes() + _remote_config(remote).encode("utf-8"))
 
     def project(self) -> GitProject:
         """Una copia nueva de la plantilla, con el remoto del código en su propio remoto
-        desnudo (nunca en el de la plantilla)."""
+        desnudo (nunca en el de la plantilla): la dirección se cambia en el texto de su
+        ``.git/config`` (lo que haría ``git remote set-url``, sin lanzar git)."""
         base = Path(tempfile.mkdtemp(prefix="geoblender-git-")).resolve()
         copy = GitProject(base)
         try:
             shutil.copytree(self.base, base, dirs_exist_ok=True)
-            copy.git(copy.code, "remote", "set-url", "origin", copy.remote.as_posix())
+            config = copy.code / ".git" / "config"
+            text = config.read_bytes().decode("utf-8")
+            old, new = _remote_config(self.base / REMOTE_FOLDER), _remote_config(copy.remote)
+            if old not in text:
+                raise AssertionError(f"«{config}» no tiene el remoto de la plantilla")
+            config.write_bytes(text.replace(old, new).encode("utf-8"))
         except BaseException:
             remove_tree(base)
             raise

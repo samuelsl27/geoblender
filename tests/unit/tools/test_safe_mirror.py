@@ -10,6 +10,7 @@ Ninguna lee el perfil real del puesto ni toca el NAS.
 import json
 import os
 import shutil
+import stat
 import tempfile
 import unittest
 from collections.abc import Iterator
@@ -165,10 +166,8 @@ CODE = layout.CODE_DIR_IN_DOCS
 PROJECT: dict[str, str] = {
     layout.DOCS_MARKER: "# Constitución\n",
     "README.md": "# Documentación\n",
-    ".git/HEAD": "ref: refs/heads/main\n",
     ".git/objects/ab/cdef0123": "objeto\n",
     f"{CODE}/README.md": "# Código\n",
-    f"{CODE}/.git/HEAD": "ref: refs/heads/main\n",
     f"{CODE}/.git/index": "índice\n",
     f"{CODE}/{layout.EXTENSION_DIR}/__init__.py": "x = 1\n",
 }
@@ -187,7 +186,8 @@ class Mirrored:
     def write(self, root: Path, rel: str, text: str, shift_s: int = 0) -> Path:
         """Escribe ``text`` en ``root/rel`` y, con ``shift_s``, mueve su fecha."""
         path = root / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.parent.is_dir():
+            path.parent.mkdir(parents=True)
         before = path.stat().st_mtime_ns if path.exists() else None
         path.write_bytes(text.encode("utf-8"))
         if shift_s and before is not None:
@@ -206,20 +206,54 @@ class Mirrored:
     def kinds(self) -> list[tuple[str, str]]:
         return [(change.kind, change.path) for change in self.compare()[0]]
 
+    def mirror(self, hook: object = None) -> safe_mirror.MirrorReport:
+        """Compara (sin cambios del NAS) y hace el espejo, como la publicación."""
+        base = safe_mirror.load_base(self.dest, self.environ)
+        assert base is not None
+        source = safe_mirror.scan_source(self.project)
+        listing = safe_mirror.scan_destination(self.dest)
+        pending = safe_mirror.load_pending(self.dest, self.environ)
+        changes, observed = safe_mirror.destination_changes(
+            self.dest, base, source, listing, pending
+        )
+        assert not changes, changes
+        return safe_mirror.mirror(
+            self.project, self.dest, source, listing, observed, base, self.environ,
+            hook=hook,  # type: ignore[arg-type]
+        )
+
 
 @contextmanager
-def mirrored(files: dict[str, str] | None = None) -> Iterator[Mirrored]:
-    """La carpeta del proyecto ``files`` (por defecto, ``PROJECT``), su copia exacta
-    (tamaños y fechas incluidos) como destino y su estado."""
+def mirrored(files: dict[str, str] | None = None, empty: bool = False) -> Iterator[Mirrored]:
+    """La carpeta del proyecto ``files`` (por defecto, ``PROJECT``) y como destino su
+    copia exacta (tamaños y fechas incluidos) con su estado o, con ``empty``, una
+    carpeta vacía con su foto (el primer espejo)."""
     with places() as (dest, profile, environ):
         project = dest.parent / "proyecto"
         for rel, text in (files or PROJECT).items():
             path = project / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.parent.is_dir():
+                path.parent.mkdir(parents=True)
             path.write_bytes(text.encode("utf-8"))
-        shutil.copytree(project, dest, dirs_exist_ok=True)
-        mirror.write_state(profile, dest)
+        if empty:
+            mirror.write_photo(profile, dest, files={})
+        else:
+            shutil.copytree(project, dest, dirs_exist_ok=True)
+            mirror.write_state(profile, dest)
         yield Mirrored(project, dest, profile, environ)
+
+
+def tree_of(root: Path) -> dict[str, bytes]:
+    """Cada fichero bajo ``root`` con sus bytes (rutas con «/» y su mayúscula)."""
+    return {
+        (Path(current) / name).relative_to(root).as_posix(): (Path(current) / name).read_bytes()
+        for current, _dirs, files in os.walk(root)
+        for name in files
+    }
+
+
+class Interrupt(Exception):
+    """Un corte simulado del espejo (el NAS cae, se cierra la consola)."""
 
 
 class CompareTest(unittest.TestCase):
@@ -394,6 +428,273 @@ class CompareTest(unittest.TestCase):
         for excluded in ("dist/", f"{CODE}/.deps/", cache, "docs/b.pyc", "docs/THUMBS.DB"):
             self.assertIn(excluded, listing.excluded)
         self.assertNotIn("docs/plano.blend1", listing.files)
+
+
+PACKED = {
+    **PROJECT,
+    ".git/objects/pack/pack-1.pack": "paquete",
+    ".git/objects/pack/pack-1.idx": "índice del paquete",
+    ".git/objects/pack/pack-1.rev": "inverso",
+    ".git/refs/heads/main": "a" * 40 + "\n",
+    ".git/logs/HEAD": "registro\n",
+    f"{CODE}/.git/packed-refs": "# pack-refs\n",
+}
+
+
+class MirrorTest(unittest.TestCase):
+    """RF-007-22, RF-007-34: el espejo (plan 007 §5.4.8): solo lo que cambió, en un
+    orden que nunca deja un ``.git`` del destino incoherente, cada fichero a un temporal
+    comprobado y solo si el del destino sigue como se comparó; sin tocar lo excluido ni
+    borrar una carpeta con contenido."""
+
+    def test_mirror_whole_folder(self) -> None:
+        """RF-007-22: el primer espejo a un destino vacío deja exactamente los ficheros
+        y las carpetas de la carpeta del proyecto (también una vacía), con sus bytes y
+        sus fechas; el registro en curso dice lo que iba a dejar."""
+        with mirrored(empty=True) as m:
+            (m.project / ".git" / "refs" / "tags").mkdir(parents=True)
+            report = m.mirror()
+            self.assertEqual(tree_of(m.dest), tree_of(m.project))
+            self.assertTrue((m.dest / ".git" / "refs" / "tags").is_dir())
+            info, copy = (m.project / "README.md").stat(), (m.dest / "README.md").stat()
+            self.assertEqual(info.st_mtime_ns, copy.st_mtime_ns)
+            pending = safe_mirror.load_pending(m.dest, m.environ)
+            self.assertEqual(list(m.dest.rglob(f"*{layout.MIRROR_TEMP_SUFFIX}")), [])
+        self.assertEqual(sorted(report.copied), sorted(PROJECT))
+        assert pending is not None
+        self.assertEqual(set(pending.files), {rel.casefold() for rel in PROJECT})
+        self.assertEqual(report.verified["README.md"].mtime_ns, copy.st_mtime_ns)
+
+    def test_only_changes_copied(self) -> None:
+        """RF-007-22: con un fichero cambiado en el PC, solo ese se copia."""
+        with mirrored() as m:
+            m.write(m.project, "README.md", "# Documentación, 2\n")
+            report = m.mirror()
+            self.assertEqual(tree_of(m.dest), tree_of(m.project))
+        self.assertEqual(report.copied, ["README.md"])
+        self.assertEqual(report.unchanged, len(PROJECT) - 1)
+
+    def test_exclusions_never_touched(self) -> None:
+        """RF-007-22, D-17: lo excluido del destino sigue igual (bytes y fecha) y lo
+        excluido del PC no se copia."""
+        seeded = ("dist/geoblender-0.1.0.zip", "docs/Thumbs.db", f"{CODE}/.deps/site/x.txt")
+        with mirrored() as m:
+            for rel in seeded:
+                m.write(m.dest, rel, "del destino")
+            m.write(m.project, f"{CODE}/dist/geoblender-0.1.0.zip", "del PC")
+            m.write(m.project, "docs/~$borrador.docx", "del PC")
+            m.write(m.project, "README.md", "# Documentación, 2\n")
+            before = {rel: (m.dest / rel).stat().st_mtime_ns for rel in seeded}
+            m.mirror()
+            for rel in seeded:
+                self.assertEqual((m.dest / rel).read_bytes(), "del destino".encode())
+                self.assertEqual((m.dest / rel).stat().st_mtime_ns, before[rel])
+            self.assertFalse((m.dest / CODE / "dist").exists())
+            self.assertFalse((m.dest / "docs" / "~$borrador.docx").exists())
+
+    def test_exclusions_anchored_to_repo_roots(self) -> None:
+        """RF-007-22, D-17: ``dist/`` y ``.deps/`` solo se excluyen en la raíz de cada
+        repositorio; una carpeta de documentos que se llame así sí se refleja."""
+        with mirrored() as m:
+            m.write(m.project, "Documentacion/dist/informe.pdf", "informe")
+            m.write(m.project, f"{CODE}/{layout.EXTENSION_DIR}/.deps/nota.txt", "nota")
+            m.write(m.project, "dist/zip.zip", "zip")
+            report = m.mirror()
+            self.assertTrue((m.dest / "Documentacion" / "dist" / "informe.pdf").is_file())
+            self.assertFalse((m.dest / "dist").exists())
+        self.assertIn(f"{CODE}/{layout.EXTENSION_DIR}/.deps/nota.txt", report.copied)
+
+    def test_order_objects_files_refs_deletions(self) -> None:
+        """RF-007-22: primero los objetos de git, después los ficheros de trabajo, el
+        resto de cada ``.git``, sus referencias (``refs/``, ``packed-refs``, ``HEAD``,
+        ``index``) y al final los borrados."""
+        with mirrored(empty=True) as m:
+            m.write(m.project, "viejo.txt", "x")
+            first = m.mirror()
+            (m.project / "viejo.txt").unlink()
+            for rel, text in PACKED.items():
+                m.write(m.project, rel, text + "2")
+            mirror.write_state(m.profile, m.dest)
+            report = m.mirror()
+        self.assertIn(("copiar", "viejo.txt"), first.order)
+        stages = [safe_mirror.copy_stage(rel) if action == "copiar" else 4 for action, rel in report.order]
+        self.assertEqual(stages, sorted(stages), report.order)
+        self.assertEqual(report.order[-1], ("borrar", "viejo.txt"))
+        names = [rel for _action, rel in report.order]
+        self.assertLess(names.index(".git/objects/ab/cdef0123"), names.index("README.md"))
+        self.assertLess(names.index("README.md"), names.index(".git/logs/HEAD"))
+        self.assertLess(names.index(".git/logs/HEAD"), names.index(".git/refs/heads/main"))
+        self.assertLess(names.index(f"{CODE}/README.md"), names.index(f"{CODE}/.git/packed-refs"))
+
+    def test_pack_before_idx(self) -> None:
+        """RF-007-22: de cada paquete, el ``.pack`` antes que su ``.idx`` y su ``.rev``."""
+        with mirrored(PACKED, empty=True) as m:
+            names = [rel for _action, rel in m.mirror().order]
+        pack = names.index(".git/objects/pack/pack-1.pack")
+        self.assertLess(pack, names.index(".git/objects/pack/pack-1.idx"))
+        self.assertLess(pack, names.index(".git/objects/pack/pack-1.rev"))
+
+    def test_deletes_extra_and_empty_dirs(self) -> None:
+        """RF-007-22: lo que el PC ya no tiene se borra del destino, y su carpeta, si
+        queda vacía."""
+        with mirrored({**PROJECT, "viejo/a.txt": "x", "viejo/b/c.txt": "y"}) as m:
+            shutil.rmtree(m.project / "viejo")
+            report = m.mirror()
+            self.assertFalse((m.dest / "viejo").exists())
+        self.assertEqual(sorted(report.deleted), ["viejo/a.txt", "viejo/b/c.txt"])
+        self.assertEqual(report.removed_folders, ["viejo/b", "viejo"])
+
+    def test_only_empty_folders_removed(self) -> None:
+        """RF-007-22, RF-007-34: una carpeta que el PC ya no tiene pero que en el
+        destino conserva algo excluido no se borra (ni lo excluido)."""
+        with mirrored({**PROJECT, "viejo/a.txt": "x"}) as m:
+            m.write(m.dest, "viejo/Thumbs.db", "miniaturas")
+            shutil.rmtree(m.project / "viejo")
+            report = m.mirror()
+            self.assertEqual(os.listdir(m.dest / "viejo"), ["Thumbs.db"])
+        self.assertEqual(report.kept_folders, ["viejo"])
+
+    def test_case_only_rename_in_dest(self) -> None:
+        """RF-007-22: un fichero o una carpeta que en el PC solo cambió de mayúsculas se
+        renombra en el destino (en dos pasos), nunca se borra."""
+        with mirrored({**PROJECT, "docs/Nota.md": "nota\n", "informes/a.txt": "a\n"}) as m:
+            for old, new in (("docs/Nota.md", "docs/nota.md"), ("informes", "Informes")):
+                (m.project / old).rename(m.project / f"{new}.tmp")
+                (m.project / f"{new}.tmp").rename(m.project / new)
+            report = m.mirror()
+            self.assertIn("nota.md", os.listdir(m.dest / "docs"))
+            self.assertIn("Informes", os.listdir(m.dest))
+            self.assertEqual(tree_of(m.dest), tree_of(m.project))
+        self.assertEqual(report.deleted, [])
+        self.assertIn(("docs/Nota.md", "docs/nota.md"), report.renamed)
+
+    def test_read_only_objects_replaced(self) -> None:
+        """RF-007-22: git deja sus objetos de solo lectura: el espejo sustituye uno así
+        del destino y deja los suyos como en el PC."""
+        rel = ".git/objects/ab/cdef0123"
+        with mirrored() as m:
+            os.chmod(m.dest / rel, stat.S_IREAD)
+            m.write(m.project, rel, "objeto, 2\n")
+            os.chmod(m.project / rel, stat.S_IREAD)
+            m.mirror()
+            self.assertEqual((m.dest / rel).read_bytes(), "objeto, 2\n".encode())
+            self.assertFalse(os.stat(m.dest / rel).st_mode & stat.S_IWRITE)
+            for root in (m.dest, m.project):
+                os.chmod(root / rel, stat.S_IWRITE)
+
+    def test_lock_present_stops(self) -> None:
+        """RF-007-22: si ya hay un espejo en curso desde este PC a ese destino (su
+        cerrojo), otro no empieza; el cerrojo ajeno no se toca."""
+        with mirrored() as m:
+            with safe_mirror.mirror_lock(m.dest, m.environ) as lock:
+                with self.assertRaises(safe_mirror.MirrorBusy) as ctx:
+                    with safe_mirror.mirror_lock(m.dest, m.environ):
+                        pass
+                self.assertTrue(lock.exists())
+            self.assertFalse(lock.exists())
+        self.assertIn("otro espejo en curso", str(ctx.exception))
+
+    def test_dest_changed_during_copy_untouched(self) -> None:
+        """RF-007-34: un fichero del destino que cambia entre la comparación y su
+        sustitución no se toca (sigue con sus bytes y su fecha): para con
+        ``DestinationChanged`` y sin temporal."""
+        with mirrored() as m:
+            m.write(m.project, "README.md", "# Del PC\n")
+
+            def hook(action: str, rel: str) -> None:
+                if (action, rel) == ("sustituir", "README.md"):
+                    m.write(m.dest, rel, "# Del NAS, durante el espejo\n", shift_s=4)
+
+            with self.assertRaises(safe_mirror.DestinationChanged) as ctx:
+                m.mirror(hook)
+            self.assertEqual((m.dest / "README.md").read_bytes(), "# Del NAS, durante el espejo\n".encode())
+            self.assertEqual(list(m.dest.rglob(f"*{layout.MIRROR_TEMP_SUFFIX}")), [])
+        self.assertEqual([c.path for c in ctx.exception.changes], ["README.md"])
+
+    def test_dest_created_during_copy_untouched(self) -> None:
+        """RF-007-34: un fichero que aparece en el destino donde el espejo iba a crear
+        uno no se toca."""
+        with mirrored() as m:
+            m.write(m.project, "nuevo.txt", "del PC")
+
+            def hook(action: str, rel: str) -> None:
+                if (action, rel) == ("sustituir", "nuevo.txt"):
+                    m.write(m.dest, rel, "del NAS")
+
+            with self.assertRaises(safe_mirror.DestinationChanged):
+                m.mirror(hook)
+            self.assertEqual((m.dest / "nuevo.txt").read_bytes(), b"del NAS")
+
+    def test_dest_changed_before_delete_kept(self) -> None:
+        """RF-007-34: un fichero que el espejo iba a borrar y que cambia justo antes se
+        conserva."""
+        with mirrored({**PROJECT, "viejo.txt": "x"}) as m:
+            (m.project / "viejo.txt").unlink()
+
+            def hook(action: str, rel: str) -> None:
+                if (action, rel) == ("borrar", "viejo.txt"):
+                    m.write(m.dest, rel, "cambiado en el NAS", shift_s=2)
+
+            with self.assertRaises(safe_mirror.DestinationChanged):
+                m.mirror(hook)
+            self.assertEqual((m.dest / "viejo.txt").read_bytes(), b"cambiado en el NAS")
+
+    def test_temp_verified_before_replace(self) -> None:
+        """RF-007-34: la copia va a un temporal que se lee de vuelta: si su sha256 no es
+        el del PC, se copia otra vez; si sigue mal, el espejo para (``MirrorError``) sin
+        tocar el fichero del destino ni dejar el temporal."""
+        real_copy = shutil.copy2
+        calls: list[int] = []
+
+        def corrupt(times: int):
+            def copy(src: object, dst: object, *args: object, **kwargs: object) -> object:
+                result = real_copy(src, dst, *args, **kwargs)  # type: ignore[arg-type]
+                calls.append(1)
+                if len(calls) <= times:
+                    Path(dst).write_bytes(b"corrupto")  # type: ignore[arg-type]
+                return result
+            return copy
+
+        with mirrored() as m:
+            m.write(m.project, "README.md", "# Del PC\n")
+            with mock.patch("shutil.copy2", side_effect=corrupt(1)):
+                m.mirror()
+            self.assertEqual((m.dest / "README.md").read_bytes(), "# Del PC\n".encode())
+            calls.clear()
+            mirror.write_state(m.profile, m.dest)
+            safe_mirror.pending_file(m.dest, m.environ).unlink()
+            m.write(m.project, "README.md", "# Del PC, 2\n")
+            with mock.patch("shutil.copy2", side_effect=corrupt(2)):
+                with self.assertRaises(safe_mirror.MirrorError):
+                    m.mirror()
+            self.assertEqual((m.dest / "README.md").read_bytes(), "# Del PC\n".encode())
+            self.assertEqual(list(m.dest.rglob(f"*{layout.MIRROR_TEMP_SUFFIX}")), [])
+
+    def test_interrupted_temp_recognized(self) -> None:
+        """RF-007-34, RF-007-29: un espejo cortado deja lo ya copiado y un temporal; el
+        siguiente los reconoce (no son cambios del NAS), termina y no deja temporales."""
+        with mirrored(empty=True) as m:
+
+            def hook(action: str, rel: str) -> None:
+                if (action, rel) == ("sustituir", "README.md"):
+                    raise Interrupt()
+
+            with self.assertRaises(Interrupt):
+                m.mirror(hook)
+            temps = list(m.dest.rglob(f"*{layout.MIRROR_TEMP_SUFFIX}"))
+            self.assertEqual([path.name for path in temps], [f"README.md{layout.MIRROR_TEMP_SUFFIX}"])
+            self.assertEqual(m.kinds(), [])
+            m.mirror()
+            self.assertEqual(tree_of(m.dest), tree_of(m.project))
+
+    def test_never_rmtree(self) -> None:
+        """RF-007-34: el espejo nunca borra una carpeta con su contenido
+        (``shutil.rmtree``): solo ``os.rmdir`` de las vacías."""
+        with mirrored({**PROJECT, "viejo/a/b.txt": "x"}) as m:
+            shutil.rmtree(m.project / "viejo")
+            with mock.patch("shutil.rmtree", side_effect=AssertionError("rmtree")):
+                m.mirror()
+            self.assertFalse((m.dest / "viejo").exists())
 
 
 class SourceTest(unittest.TestCase):
