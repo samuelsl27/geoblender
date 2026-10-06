@@ -1055,6 +1055,47 @@ class ReportTest(PublicationAssertions):
         self.assertIn(f"{CHANGES} (1)", outcome.out)
 
 
+class MirrorOnlyTest(PublicationAssertions):
+    """RF-007-24: ``--solo-espejo``: todo salvo la comprobación del código y la subida, y
+    un aviso si la rama del código tiene commits que ``origin`` no tiene."""
+
+    def test_solo_espejo_no_push(self) -> None:
+        """RF-007-24: con ``--solo-espejo`` no se lanza ``git push`` ni se comprueba el
+        código; el espejo se hace, se comprueba, se guarda el estado y el resultado lo
+        dice."""
+        fake = FakeGit()
+        with workspace() as space:
+            outcome = run_publish(space, publish.OPTION_MIRROR_ONLY, git_runner=fake)
+            mirrored = safe_mirror.state_file(space.dest, space.env()).exists()
+        self.assertEqual(outcome.code, 0, outcome.text)
+        self.assertEqual([c for c in fake.commands() if c.startswith("push")], [])
+        self.assertEqual(outcome.checks.scripts(), ["tools/check_docs.py"])
+        self.assertIn(f"omitido   {publish.STEP_PUSH}", outcome.out)
+        self.assertIn(f"{CODE_BRANCH} está en origin", outcome.out)
+        self.assertRegex(outcome.out, r"RESULTADO: PUBLICADO \(solo espejo, \d+,\d s\)")
+        self.assertTrue(mirrored)
+
+    def test_solo_espejo_warns_unpushed(self) -> None:
+        """RF-007-24: si la rama del código tiene commits que ``refs/remotes/origin``
+        no tiene, o no hay esa referencia, un aviso (no un error): el espejo sigue."""
+        cases = (
+            ({("code", "rev-list --count"): (0, "2\n")}, "2 commits que origin no tiene"),
+            (
+                {("code", "rev-parse --verify --quiet refs/remotes/origin/"): (1, "")},
+                "no se sabe si origin tiene",
+            ),
+        )
+        for overrides, expected in cases:
+            with self.subTest(aviso=expected), workspace() as space:
+                outcome = run_publish(
+                    space, publish.OPTION_MIRROR_ONLY, git_runner=FakeGit(overrides)
+                )
+                self.assertEqual(outcome.code, 0, outcome.text)
+                self.assertIn(f"aviso     {publish.STEP_PUSH}", outcome.out)
+                self.assertIn(expected, outcome.out)
+                self.assertIn("sin subir", outcome.out)
+
+
 class EnvironTest(unittest.TestCase):
     def test_main_always_with_environ(self) -> None:
         """Plan 007 §7.1: ninguna prueba llama a ``publish.main`` sin su entorno

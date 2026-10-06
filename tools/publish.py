@@ -44,7 +44,9 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
 9. Subida (RF-007-20, RF-007-21), salvo con ``--solo-espejo``: ``git push
    --follow-tags`` de la rama actual del código a la misma rama de ``origin``, nunca
    forzada; si falla (rechazada, sin red o sin permiso), código 1 con el mensaje de git
-   y sin espejo.
+   y sin espejo. Con ``--solo-espejo`` (RF-007-24) no se sube: si la rama del código
+   tiene commits que ``refs/remotes/origin`` no tiene, o no hay esa referencia, un aviso
+   (no un error), y el resultado dice «solo espejo».
 10. Espejo (RF-007-22, RF-007-34; ``gbtools.safe_mirror.mirror``): solo lo que cambió,
     los objetos de git antes que los ficheros y las referencias, los borrados al final,
     cada copia a un temporal comprobado y solo si el fichero del destino sigue como se
@@ -104,6 +106,7 @@ STATUS_OK = "correcto"
 STATUS_FAIL = "fallo"
 STATUS_STOP = "PARADA"
 STATUS_SKIPPED = "omitido"
+STATUS_WARN = "aviso"
 
 STEP_STRUCTURE = "estructura"
 STEP_DEST = "destino"
@@ -704,9 +707,39 @@ class Publication:
         self._run_check(STEP_DOCS, install, DOCS_CHECK_SCRIPT, str(self.project))
         self.check_trees(after_checks=True)
 
+    # Paso 9 con --solo-espejo: sin subir, con un aviso si hay commits sin subir.
+    def warn_unpushed(self) -> None:
+        branch = self.branches.get(CODE_LABEL) or "?"
+        try:
+            ahead = git.ahead_of_remote(self.code, branch, runner=self.git_runner)
+        except git.GitProblem as exc:
+            ahead, reason = None, f": {exc}"
+        else:
+            reason = f" (no hay refs/remotes/{git.REMOTE}/{branch})"
+        if ahead == 0:
+            self.line(
+                STATUS_SKIPPED,
+                STEP_PUSH,
+                f"{OPTION_MIRROR_ONLY}: sin subir; {branch} está en {git.REMOTE} según el "
+                "repositorio",
+            )
+            return
+        if ahead is None:
+            message = f"no se sabe si {git.REMOTE} tiene la rama {branch}{reason}"
+        else:
+            noun = "1 commit" if ahead == 1 else f"{ahead} commits"
+            message = f"{branch} tiene {noun} que {git.REMOTE} no tiene (según el repositorio)"
+        self.line(
+            STATUS_WARN,
+            STEP_PUSH,
+            f"{OPTION_MIRROR_ONLY}: sin subir; {message}: súbalo con una publicación sin "
+            f"{OPTION_MIRROR_ONLY}",
+        )
+
     # Paso 9: la subida.
     def push(self) -> None:
         if self.options.mirror_only:
+            self.warn_unpushed()
             return
         branch = self.branches.get(CODE_LABEL)
         if branch is None:  # los árboles lo comprueban antes
@@ -842,7 +875,8 @@ class Publication:
                 self.verify_and_save()
         except safe_mirror.MirrorBusy as exc:
             raise Stop(EXIT_FAIL, STEP_DEST, str(exc)) from exc
-        print(f"RESULTADO: PUBLICADO ({self.elapsed()} s) en {self.dest}")
+        only = "solo espejo, " if self.options.mirror_only else ""
+        print(f"RESULTADO: PUBLICADO ({only}{self.elapsed()} s) en {self.dest}")
         return EXIT_OK
 
     def done_note(self) -> str:
