@@ -13,6 +13,12 @@
   (``name``, ``keep_open``) de Geoblender con ``wm.call_menu_pie`` y ``wm.call_panel``,
   que no saben del modo: sus atajos están en la Vista 3D, así que pasan por la puerta de
   modo (``bl.ui.gate``) y en modo Blender la tecla queda para Blender.
+- ``geoblender.ui_call_context_menu``, ``geoblender.ui_toggle_context_pin`` y
+  ``geoblender.ui_show_context_panel`` (internos; RF-003-17; PC §1): Mayús+Alt+B abre bajo el
+  cursor el menú «<Tipo> ▾» del contexto de la vista (sin tipo, «Herramientas»;
+  ``bl.ui.headers``), con la puerta de modo; la chincheta de la fila 1 fija o suelta el
+  contexto de esa Vista 3D; «Parámetros…» abre la barra lateral N de la Vista 3D de
+  destino en la pestaña del tipo.
 - ``geoblender.ui_set_view`` (RF-003-12; spec §6.1 y §7; BS §8.12; AR §4): pone la Vista
   3D de destino (``bl.ui.views.target_view3d``) en una vista minera (``view``), en
   ortográfica. Su ``bl_label`` es el del menú donde viven sus variantes («Vistas», regla de
@@ -161,6 +167,87 @@ class GEOBLENDER_OT_ui_call_panel(bpy.types.Operator):
 
     def invoke(self, context: Any, event: Any) -> set[str]:
         return self.execute(context)
+
+
+class GEOBLENDER_OT_ui_call_context_menu(bpy.types.Operator):
+    """Open under the cursor the menu of the type of the active object"""
+
+    bl_idname = "geoblender.ui_call_context_menu"
+    bl_label = "Menu of the active type"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return gate.poll(cls, context)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import headers
+
+        return bpy.ops.wm.call_menu(name=headers.context_menu_id(context))
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        return self.execute(context)
+
+
+class GEOBLENDER_OT_ui_toggle_context_pin(bpy.types.Operator):
+    """Keep the menu and the tab of the current item although the selection changes"""
+
+    bl_idname = "geoblender.ui_toggle_context_pin"
+    bl_label = "Pin the context"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        area = getattr(context, "area", None)
+        return area is not None and getattr(area, "type", "") == "VIEW_3D"
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import context as ui_context
+
+        ui_context.toggle_pin(context)
+        area = getattr(context, "area", None)
+        if area is not None:
+            area.tag_redraw()
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_ui_show_context_panel(bpy.types.Operator):
+    """Parameters of the active item"""
+
+    bl_idname = "geoblender.ui_show_context_panel"
+    bl_label = "Parameters…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        from ..ui import headers
+
+        if not gate.poll(cls, context) or not _poll_view3d(cls, context):
+            return False
+        if headers.context_spec(context)[0] is None:
+            cls.poll_message_set(tr("Select an item of Geoblender"))
+            return False
+        return True
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import commands, headers, views
+
+        target = views.target_view3d(context)
+        spec, _count = headers.context_spec(context)
+        if target is None or spec is None:
+            return {"CANCELLED"}
+        target.space.show_region_ui = True
+        tab = commands.text(commands.catalog().commands[spec.id].label)
+        for region in target.area.regions:
+            if region.type == "UI":
+                try:
+                    region.active_panel_category = tab
+                except (AttributeError, TypeError, ValueError):
+                    pass  # sin pestañas en la región, o la del tipo aún no existe
+        return {"FINISHED"}
 
 
 def _variant_description(idname: str, properties: Any) -> str:
@@ -564,6 +651,9 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_toggle_mode,
     GEOBLENDER_OT_ui_call_pie,
     GEOBLENDER_OT_ui_call_panel,
+    GEOBLENDER_OT_ui_call_context_menu,
+    GEOBLENDER_OT_ui_toggle_context_pin,
+    GEOBLENDER_OT_ui_show_context_panel,
     GEOBLENDER_OT_ui_set_view,
     GEOBLENDER_OT_ui_frame_work_window,
     GEOBLENDER_OT_ui_store_view,

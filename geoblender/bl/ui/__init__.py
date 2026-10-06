@@ -7,7 +7,9 @@ registrados: idioma (el catálogo de comandos en ``core.i18n`` y el idioma de la
 preferencias) → clases propias de la interfaz (los menús y la pestaña «Proyecto» de la
 spec 002) → catálogo (``registry``: menús generados por ``menus``, provisionales y
 textos) → sustitución de ``draw_left`` de la barra superior (``topbar``) → fila de
-acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → vistas
+acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → menú del tipo
+activo (``headers``: ``append`` a la fila 1 y al clic derecho de la Vista 3D y del
+Outliner) → vistas
 (``views``: el manejador ``load_post`` que olvida su estado de sesión) → disposiciones
 (``layouts``: las comprobaciones de Quitar y Restaurar y su manejador ``load_post``; al
 desregistrar, el temporizador de lo pendiente) → proveedores de
@@ -31,6 +33,7 @@ from . import (
     context,
     core_menus,
     core_panel,
+    headers,
     keymap,
     layouts,
     menus,
@@ -88,6 +91,7 @@ def register() -> None:
         (_register_catalog, registry.unregister),
         (_install_topbar, topbar.restore),
         (quick_access.install, quick_access.uninstall),
+        (headers.install, headers.uninstall),
         (views.register, views.unregister),
         (layouts.register, layouts.unregister),
         (lambda: None, context.clear),
@@ -112,6 +116,7 @@ def repair() -> str:
         return ""
     mode = topbar.install()
     quick_access.install()
+    headers.install()
     keymap.unregister()
     keymap.register()
     commands.refresh()

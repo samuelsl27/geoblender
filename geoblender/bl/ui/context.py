@@ -1,11 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Tipo del objeto activo y proveedores de la Leyenda y del Filtro de datos (spec 003;
-RF-003-09; plan 003 §5.3, contrato 6; BS §8.12, Consulta ▸; AR §3.1, n.º 26 y 27; PC §1).
+"""Tipo del objeto activo, chincheta del contexto y proveedores de la Leyenda y del Filtro
+de datos (spec 003; RF-003-09, RF-003-17; plan 003 §5.3, contrato 6; BS §8.12, Consulta ▸;
+AR §3.1, n.º 26 y 27; PC §1 y §4).
 
 - **Tipo activo** (:func:`active_kind`): el ``kind`` de ``Object.geoblender`` del objeto
   activo (``DRILLHOLES``, ``BLOCK_MODEL``…; PC §1). La propiedad la registra la 006
   (RF-006-29): hasta entonces se lee con tolerancia y, sin ella, ningún objeto es de un tipo
-  de Geoblender.
+  de Geoblender. La versión es una colección (``Collection.geoblender.version_id``, R-07;
+  :func:`collection_kind`).
+- **Contexto de una vista** (:func:`context_kind`, RF-003-17; PC §1 y §4): el tipo cuyo
+  menú «<Tipo> ▾» se ofrece en la fila 1, en el clic derecho y con Mayús+Alt+B: el fijado
+  con la **chincheta** de esa Vista 3D (:func:`toggle_pin`; por área y por sesión, se
+  olvida si su objeto desaparece) o, si no, «Selección (n)» (``SELECTION``) cuando los
+  objetos seleccionados son de varios tipos, o el tipo del objeto activo; sin ninguno,
+  "" (la fila 1 solo muestra «Herramientas ▾»).
 - **Proveedores** (contrato 6): cada spec que da contenido a la Leyenda o al Filtro de datos
   (005 para los sondeos, R-22 para el modelo de bloques…) registra el suyo para su tipo con
   :func:`register_legend_provider` y :func:`register_data_filter_provider`, y lo quita con
@@ -22,7 +30,7 @@ RF-003-09; plan 003 §5.3, contrato 6; BS §8.12, Consulta ▸; AR §3.1, n.º 2
   spec §8). Con él, la Leyenda lista sus campos (el vigente, hundido) y el Filtro muestra la
   expresión vigente, los campos y el botón que la edita.
 
-:func:`clear` olvida los proveedores al desregistrar la interfaz.
+:func:`clear` olvida los proveedores y las chinchetas al desregistrar la interfaz.
 """
 
 from __future__ import annotations
@@ -74,6 +82,21 @@ class DataFilterProvider(Protocol):
 
 _LEGEND: dict[str, LegendProvider] = {}
 _DATA_FILTER: dict[str, DataFilterProvider] = {}
+SELECTION_KIND = "SELECTION"  # «Selección (n) ▾» (PC §4)
+VERSION_KIND = "VERSION"  # la colección de una versión (PC §3.13)
+
+
+@dataclass(frozen=True)
+class Pin:
+    """Lo que fija la chincheta de una Vista 3D: el tipo, cuántos elementos y el objeto
+    (por nombre; si desaparece, la chincheta se suelta)."""
+
+    kind: str
+    count: int
+    object_name: str
+
+
+_PINS: dict[int, Pin] = {}  # por área (su puntero), en esta sesión
 
 
 def register_legend_provider(kind: str, provider: LegendProvider) -> None:
@@ -97,9 +120,10 @@ def unregister_data_filter_provider(kind: str) -> None:
 
 
 def clear() -> None:
-    """Olvida todos los proveedores (al desregistrar la interfaz)."""
+    """Olvida todos los proveedores y las chinchetas (al desregistrar la interfaz)."""
     _LEGEND.clear()
     _DATA_FILTER.clear()
+    _PINS.clear()
 
 
 def active_object(context: Any) -> Any:
@@ -114,8 +138,76 @@ def active_object(context: Any) -> Any:
 def active_kind(context: Any) -> str:
     """El tipo de Geoblender del objeto activo ("" si no tiene: sin objeto, sin la
     propiedad de la 006 o sin tipo)."""
-    data = getattr(active_object(context), KIND_PROPERTY, None)
+    return object_kind(active_object(context))
+
+
+def object_kind(obj: Any) -> str:
+    """El tipo de Geoblender de un objeto ("" si no tiene)."""
+    data = getattr(obj, KIND_PROPERTY, None)
     return str(getattr(data, "kind", "") or "")
+
+
+def collection_kind(collection: Any) -> str:
+    """``VERSION`` si la colección es la de una versión (``Collection.geoblender.version_id``,
+    R-07; con tolerancia, como el tipo de los objetos); si no, ""."""
+    data = getattr(collection, KIND_PROPERTY, None)
+    return VERSION_KIND if getattr(data, "version_id", "") else ""
+
+
+def _area_key(context: Any) -> int | None:
+    area = getattr(context, "area", None)
+    pointer = getattr(area, "as_pointer", None)
+    return int(pointer()) if callable(pointer) else None
+
+
+def _selection(context: Any) -> tuple[str, int]:
+    """(tipo, n) de lo seleccionado y activo, sin chincheta: ``SELECTION`` y cuántos si
+    hay varios tipos; el tipo activo si no; ("", 0) sin tipo activo."""
+    selected = getattr(context, "selected_objects", None) or ()
+    kinds = [kind for kind in (object_kind(obj) for obj in selected) if kind]
+    if len(set(kinds)) > 1:
+        return SELECTION_KIND, len(kinds)
+    kind = active_kind(context)
+    return (kind, max(1, len(kinds))) if kind else ("", 0)
+
+
+def pinned(context: Any) -> Pin | None:
+    """La chincheta de la Vista 3D de ``context`` (``None`` si no está fijada o si su
+    objeto ya no existe)."""
+    key = _area_key(context)
+    pin = _PINS.get(key) if key is not None else None
+    if pin is None:
+        return None
+    if pin.object_name and pin.object_name not in bpy.data.objects:
+        _PINS.pop(key, None)
+        return None
+    return pin
+
+
+def toggle_pin(context: Any) -> bool:
+    """Fija el contexto actual de la Vista 3D de ``context`` o lo suelta; devuelve si
+    queda fijado. Sin tipo que fijar, no hace nada."""
+    key = _area_key(context)
+    if key is None:
+        return False
+    if key in _PINS:
+        del _PINS[key]
+        return False
+    kind, count = _selection(context)
+    if not kind:
+        return False
+    obj = active_object(context)
+    _PINS[key] = Pin(kind, count, str(getattr(obj, "name", "") or ""))
+    return True
+
+
+def context_kind(context: Any) -> tuple[str, int]:
+    """(tipo, n) del menú contextual de la Vista 3D de ``context`` (RF-003-17): el fijado
+    con la chincheta o el de la selección; ("", 0) sin ninguno."""
+    pin = pinned(context)
+    if pin is not None:
+        return pin.kind, pin.count
+    return _selection(context)
 
 
 def legend_provider(context: Any) -> LegendProvider | None:

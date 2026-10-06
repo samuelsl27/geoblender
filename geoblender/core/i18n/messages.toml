@@ -649,3 +649,14 @@ es = "Se ha quitado la disposición «{name}»; los datos siguen en el fichero"
 
 ["The layout «{name}» has been restored"]
 es = "Se ha restaurado la disposición «{name}»"
+
+# Menú del tipo activo (spec 003, T26) -------------------------------------------------
+
+["Selection ({n})"]
+es = "Selección ({n})"
+
+["Geoblender · {kind}"]
+es = "Geoblender · {kind}"
+
+["Select an item of Geoblender"]
+es = "Seleccione un elemento de Geoblender"

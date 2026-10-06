@@ -85,6 +85,14 @@ _NATIVE_TOOL_SETTINGS_PX: dict[tuple[int, int], dict[str, float]] = {
     (5, 2): {"OBJECT": 160.0, "EDIT_MESH": 300.0, "EDIT_CURVE": 220.0},
 }
 NATIVE_TOOL_SETTINGS_OTHER_PX = 300.0  # cualquier otro modo (escultura, pintura…)
+# Fila 1 de la Vista 3D (spec 003; RF-003-17; PC §1), en px a escala 1,0: lo nativo (menús,
+# orientación, pivote, encaje, proporcional, visibilidad, superposiciones y sombreado) y lo
+# de Geoblender (Herramientas, el menú del tipo, 2 iconos y la chincheta), medidos en 5.2.1
+# (PC §1); lo que ahorran la chincheta y los 2 iconos (3 botones de icono) es una
+# estimación que se mide en la GUI (M14).
+_VIEW3D_ROW1_PX: dict[tuple[int, int], dict[str, float]] = {
+    (5, 2): {"native": 795.0, "full": 262.0, "pin_and_icons": 78.0},
+}
 
 
 def _by_version[T](table: dict[tuple[int, int], T]) -> T:
@@ -107,6 +115,12 @@ def native_tool_settings_px(mode: str) -> float:
     """Lo que ocupan en la fila 2 los ajustes nativos de la herramienta activa en el modo
     de Blender ``mode`` (``context.mode``: ``OBJECT``, ``EDIT_MESH``…), a escala 1,0."""
     return float(_by_version(_NATIVE_TOOL_SETTINGS_PX).get(mode, NATIVE_TOOL_SETTINGS_OTHER_PX))
+
+
+def view3d_row1_widths() -> dict[str, float]:
+    """Anchuras de la fila 1 de la Vista 3D de esta versión (``native``, ``full`` y
+    ``pin_and_icons``), a escala 1,0."""
+    return dict(_by_version(_VIEW3D_ROW1_PX))
 
 
 def ui_scale() -> float:
