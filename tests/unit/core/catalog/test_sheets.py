@@ -89,6 +89,19 @@ class SheetsTest(unittest.TestCase):
         self.assertEqual(english["Ctrl+F10"].columns[-1], "Window")
         self.assertEqual(english["Page Up"].columns[1], "Next section")
 
+    def test_shortcut_sheet_of_the_current_state(self) -> None:
+        """RF-003-27 (spec 003, T33): con los atajos tal como están ahora (uno cambiado por
+        la persona, otro quitado), la hoja dice esos y no los del catálogo."""
+        import dataclasses
+
+        current = list(self.cat.shortcuts())
+        current[0] = dataclasses.replace(current[0], event="F12", ctrl=False, shift=True)
+        del current[1]
+        rows = sheets.shortcut_rows(self.cat, "es", current)
+        self.assertEqual(len(rows), 48)
+        self.assertEqual(rows[0].columns[:2], ("Mayús+F12", "Conmutar Geoblender ⇄ Blender"))
+        self.assertNotIn("geoblender.core_refresh", [row.key for row in rows])
+
     def test_alias_and_glossary_sheets(self) -> None:
         """RF-003-27: los alias de F10 y los términos de otros programas con su término
         estándar, ordenados."""

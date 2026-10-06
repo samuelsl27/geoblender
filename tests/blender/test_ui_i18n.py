@@ -140,6 +140,31 @@ class LanguageTest(unittest.TestCase):
         self.assertIsNone(self.ui_i18n.pending())
         self.assertEqual(bpy.context.preferences.view.language, before)
 
+    def test_operator_properties_follow_the_language(self) -> None:
+        """RF-003-21 (T33): los nombres de las propiedades de los operadores (panel F9,
+        mapa de teclado) y de los elementos de sus enumerados cambian con el idioma, sin
+        reiniciar, con el contexto propio; los atajos con propiedades siguen igual."""
+        def half_width() -> bpy.types.Property:
+            return bpy.ops.geoblender.geo_set_clip_mode.get_rna_type().properties["half_width"]
+
+        def plan_item() -> str:
+            view = bpy.ops.geoblender.ui_set_view.get_rna_type().properties["view"]
+            return view.enum_items["PLAN"].name
+
+        self.assertEqual((half_width().name, half_width().translation_context),
+                         ("Semiancho", self.context))
+        self.assertEqual(plan_item(), "Planta")
+        self.assertEqual(half_width().default, 5.0)
+        slots = [item.properties.slot for _km, item in self.keymap.registered_items()
+                 if item.idname == "geoblender.ui_recall_view"]
+        self.ui_i18n.apply("en")
+        self.assertEqual(half_width().name, "Half width")
+        self.assertEqual(plan_item(), "Plan")
+        self.assertEqual([item.properties.slot for _km, item in self.keymap.registered_items()
+                          if item.idname == "geoblender.ui_recall_view"], slots)
+        self.ui_i18n.apply("es")
+        self.assertEqual(half_width().name, "Semiancho")
+
 
 if __name__ == "__main__":
     unittest.main()

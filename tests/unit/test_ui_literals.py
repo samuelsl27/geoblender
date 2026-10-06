@@ -12,6 +12,10 @@ de texto (constante o *f-string*) en
   ``EnumProperty``, en línea o en una constante ``*_ITEMS`` del módulo: se ven en el panel
   F9, en el mapa de teclado y en las descripciones emergentes),
 
+- y, en ``bl/ops/`` (spec 003, T33), el nombre y la descripción de las propiedades de los
+  operadores (``name=`` y ``description=`` de ``*Property``: ``bl.ui.registry`` las traduce
+  al cambiar de idioma y se ven en el panel F9 y en el mapa de teclado),
+
 tiene que ser un ``msgid`` del catálogo: una etiqueta o descripción del catálogo de
 comandos (``core.catalog``) o un texto de ``core/i18n/messages.toml``, que es lo que tiene
 traducción (los vacíos no cuentan). Una *f-string* nunca lo es. ``tests/unit/core/i18n/
@@ -112,6 +116,19 @@ def literals(tree: ast.AST) -> Iterator[tuple[int, str, str]]:
                     yield node.lineno, name, value
 
 
+def property_texts(tree: ast.AST) -> Iterator[tuple[int, str, str]]:
+    """(línea, sitio, texto) del nombre y la descripción literales de cada propiedad de
+    ``bpy.props`` (``EnumProperty(name="Mode", …)``)."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _function_name(node).endswith("Property"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg in ("name", "description"):
+                value = _text_of(keyword.value)
+                if value is not None:
+                    yield node.lineno, f"{_function_name(node)}({keyword.arg}=…)", value
+
+
 def outside_catalog(tree: ast.AST, msgids: frozenset[str]) -> list[tuple[int, str, str]]:
     """Los literales visibles que no son un ``msgid`` con traducción (los vacíos, sí)."""
     return [(line, where, value) for line, where, value in literals(tree)
@@ -134,6 +151,20 @@ class UiLiteralsTest(unittest.TestCase):
         self.assertEqual(found, [])
         count = sum(1 for _rel, tree in _bl_trees() for _ in literals(tree))
         self.assertGreater(count, 40, "los bl_label de los operadores reales se revisan")
+
+    def test_operator_properties_in_the_catalog(self) -> None:
+        """RNF-003-08, RF-003-21 (T33): el nombre y la descripción de cada propiedad de un
+        operador de ``bl/ops/`` es un ``msgid`` con traducción; control positivo con una
+        sembrada."""
+        msgids = known_msgids()
+        found = [f"{rel}:{line}: {where} «{value}»"
+                 for rel, tree in _bl_trees() if rel.startswith("bl/ops/")
+                 for line, where, value in property_texts(tree)
+                 if value and value not in msgids]
+        self.assertEqual(found, [])
+        seeded = ast.parse("x = FloatProperty(name='Semiancho raro', description='Half width')")
+        self.assertEqual([value for _line, _where, value in property_texts(seeded)
+                          if value not in msgids], ["Semiancho raro"])
 
     def test_detector_sees_seeded_literals(self) -> None:
         """Control positivo: un literal sembrado en cada sitio se detecta; un ``msgid``, un

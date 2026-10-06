@@ -15,7 +15,8 @@ campos y la suscripción de ``msgbus`` al cursor 3D, renovada en ``load_post``) 
 (``layouts``: las comprobaciones de Quitar y Restaurar y su manejador ``load_post``; al
 desregistrar, el temporizador de lo pendiente) → proveedores de
 la Leyenda y del Filtro de datos (``context``: al desregistrar, se olvidan) → línea de
-comandos (``command_line``: al desregistrar, olvida su última lista) → conmutador
+comandos (``command_line``: al desregistrar, olvida su última lista) → ayuda (``help``:
+al desregistrar, olvida la última página escrita) → conmutador
 (``switcher``: su manejador ``load_post``; al desregistrar, devuelve cada ventana en modo
 Geoblender a su espacio de Blender y retira su temporizador) → atajos del catálogo en el
 *keyconfig* de complementos (``keymap``). Cada paso
@@ -47,6 +48,7 @@ from . import (
     topbar,
     views,
 )
+from . import help as help_pages
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los menús y la pestaña «Proyecto» de core (spec 002) y los paneles reales de
@@ -93,6 +95,7 @@ def register() -> None:
         (layouts.register, layouts.unregister),
         (lambda: None, context.clear),
         (lambda: None, command_line.clear),
+        (lambda: None, help_pages.clear),
         (switcher.register, switcher.unregister),
         (keymap.register, keymap.unregister),
     )

@@ -78,11 +78,14 @@ def _label(cat: Catalog, key: str, language: str) -> str:
     return command.label if language == "en" else command.label_es
 
 
-def shortcut_rows(cat: Catalog, language: str) -> list[SheetRow]:
+def shortcut_rows(cat: Catalog, language: str,
+                  shortcuts: Sequence[Shortcut] | None = None) -> list[SheetRow]:
     """Una fila por atajo, en el orden del catálogo (el de AT §2): combinación, acción,
-    dónde está en la barra, entrada y mapa."""
+    dónde está en la barra, entrada y mapa. Con ``shortcuts``, los de esa lista (los
+    registrados tal como están ahora, con la combinación que les haya dado la persona;
+    ``bl.ui.keymap.current_shortcuts``) en lugar de los del catálogo."""
     rows: list[SheetRow] = []
-    for shortcut in cat.shortcuts():
+    for shortcut in cat.shortcuts() if shortcuts is None else shortcuts:
         command = cat.commands.get(shortcut.key)
         if command is not None:
             action = _label(cat, shortcut.key, language)

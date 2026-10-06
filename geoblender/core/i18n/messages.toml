@@ -744,3 +744,146 @@ es = "Nombre en español o en inglés, alias o entrada (R-38)"
 
 ["No command matches «{query}»"]
 es = "Ningún comando coincide con «{query}»"
+
+# Ayuda: hojas, diagnóstico y «Acerca de» (spec 003, T33; RF-003-27) --------------------
+
+["Printable version…"]
+es = "Versión imprimible…"
+
+["Page written in {path}"]
+es = "Página escrita en {path}"
+
+["Copy to the clipboard"]
+es = "Copiar al portapapeles"
+
+["Diagnostics copied to the clipboard"]
+es = "Diagnóstico copiado al portapapeles"
+
+["Extension"]
+es = "Extensión"
+
+["Top bar"]
+es = "Barra superior"
+
+["normal"]
+es = "normal"
+
+["compatibility mode"]
+es = "modo de compatibilidad"
+
+["replaced by another add-on (Help ▸ Repair the interface)"]
+es = "sustituida por otro complemento (Ayuda ▸ Reparar la interfaz)"
+
+["not installed"]
+es = "sin instalar"
+
+["Shortcuts"]
+es = "Atajos"
+
+["{n} of {total} registered"]
+es = "{n} de {total} registrados"
+
+["Conflicting shortcuts"]
+es = "Atajos en conflicto"
+
+["none"]
+es = "ninguno"
+
+["{n} of {total} loaded ({size} px)"]
+es = "{n} de {total} cargados ({size} px)"
+
+["{n} of {total} loaded"]
+es = "{n} de {total} cargados"
+
+["Blender language"]
+es = "Idioma de Blender"
+
+["Compute engine"]
+es = "Motor de cálculo"
+
+["Version {version}"]
+es = "Versión {version}"
+
+["Author"]
+es = "Autor"
+
+["Licence"]
+es = "Licencia"
+
+["Code GPL-3.0-or-later; icons, images and layouts CC0-1.0"]
+es = "Código GPL-3.0-or-later; iconos, imágenes y disposiciones CC0-1.0"
+
+["Third-party data"]
+es = "Datos de terceros"
+
+# Propiedades de los operadores (panel F9, ventanas de propiedades y mapa de teclado;
+# spec 003, T33: bl.ui.registry las traduce al cambiar de idioma) ----------------------
+
+["Folder where the project folder is created"]
+es = "Carpeta donde se crea la carpeta del proyecto"
+
+["Project name"]
+es = "Nombre del proyecto"
+
+["What the elevations refer to (local reference)"]
+es = "A qué se refieren las cotas (referencia local)"
+
+["Project folder"]
+es = "Carpeta del proyecto"
+
+["The <Name>.gbproj folder"]
+es = "La carpeta <Nombre>.gbproj"
+
+["Open without writing anything in the project"]
+es = "Abre sin escribir nada en el proyecto"
+
+["Why the window changes (recorded with the change)"]
+es = "Por qué cambia la ventana (se registra con el cambio)"
+
+["Folder for the local copy (empty: the one in the preferences, or the extension's user data)"]
+es = "Carpeta de la copia local (vacía: la de las preferencias o la de los datos de usuario de la extensión)"
+
+["Mode"]
+es = "Modo"
+
+["Half width"]
+es = "Semiancho"
+
+["Half width of the band, on each side of the plane through the 3D cursor"]
+es = "Semiancho de la banda, a cada lado del plano que pasa por el cursor 3D"
+
+["Target"]
+es = "Destino"
+
+["Menu"]
+es = "Menú"
+
+["Panel"]
+es = "Panel"
+
+["Keep open"]
+es = "Mantener abierto"
+
+["Slot"]
+es = "Ranura"
+
+["Field"]
+es = "Campo"
+
+["Expression"]
+es = "Expresión"
+
+["Layout"]
+es = "Disposición"
+
+["Workspace"]
+es = "Espacio de trabajo"
+
+["Printable"]
+es = "Imprimible"
+
+["Copy"]
+es = "Copiar"
+
+["Language"]
+es = "Idioma"

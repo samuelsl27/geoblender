@@ -61,6 +61,18 @@
   elegido (o el primer resultado) en la Vista 3D de destino o informa «Disponible en …» sin
   cambiar nada. Con ``query`` (un script, un atajo propio), no abre la ventana. Sin ``UNDO``:
   el comando elegido pone su propio paso de deshacer.
+- ``geoblender.ui_show_shortcuts``, ``ui_show_aliases`` y ``ui_show_glossary``
+  (RF-003-27; Ayuda): la hoja de atajos (los registrados, tal como están), de alias de F10 o
+  el glosario (``bl.ui.help``), en una ventana emergente con el botón de su versión
+  imprimible; con ``printable``, la página HTML en la carpeta de datos de la extensión,
+  abierta en el navegador. ``geoblender.ui_run_diagnostics`` (RF-003-27): el diagnóstico de
+  la instalación en una ventana emergente (sin interfaz, en la consola); con ``copy``, lo
+  copia al portapapeles. ``geoblender.ui_show_about``: versión, licencias y la atribución
+  de los datos de terceros. ``geoblender.ui_show_preferences``: abre Preferencias ▸
+  Complementos en Geoblender. ``geoblender.ui_set_language`` (RF-003-21; Ayuda ▸ Idioma de
+  Geoblender): fija la preferencia (cuyo ``update`` aplica el idioma en el siguiente ciclo,
+  ``bl.ui.i18n``) y la marca para que Blender la guarde. Ninguno cambia la escena: sin
+  ``UNDO``.
 - ``geoblender.ui_repair_interface`` (RF-003-24; CW §5): Ayuda ▸ Reparar la interfaz
   (``bl.ui.repair``): la barra superior, una sola vez aunque otro complemento la haya
   sustituido, y los atajos. Se puede pulsar siempre.
@@ -79,6 +91,7 @@ from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from ...core import catalog as core_catalog
 from ...core.errors import GeoblenderError
 from ...core.i18n import tr
+from ..props.ui import LANGUAGE_ITEMS, LANGUAGES
 from ..ui import gate
 
 TRANSLATION_CONTEXT = "Geoblender"
@@ -686,6 +699,169 @@ class GEOBLENDER_OT_ui_open_command_line(bpy.types.Operator):
         return outcome.status
 
 
+class _HelpSheet:
+    """Una hoja de ayuda (``bl.ui.help``): sin ``printable``, una ventana emergente con
+    la hoja y el botón de su versión imprimible; con él, la página HTML en la carpeta de
+    datos de la extensión, abierta en el navegador."""
+
+    kind = ""
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    printable: BoolProperty(name="Printable", default=False, options={"SKIP_SAVE"})  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        return self.execute(context)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import help as ui_help
+
+        if self.printable:
+            path = ui_help.write_sheet(self.kind)
+            if not ui_help.open_page(path):
+                self.report({"INFO"}, tr("Page written in {path}", path=str(path)))
+            return {"FINISHED"}
+        if bpy.app.background:
+            return {"FINISHED"}
+        return context.window_manager.invoke_popup(self, width=1000)
+
+    def draw(self, context: Any) -> None:
+        from ..ui import help as ui_help
+
+        layout = self.layout
+        ui_help.draw_sheet(layout, self.kind)
+        props = layout.operator(self.bl_idname, text=tr("Printable version…"),
+                                icon="FILE_TEXT", translate=False)
+        props.printable = True
+
+
+class GEOBLENDER_OT_ui_show_shortcuts(_HelpSheet, bpy.types.Operator):
+    """The shortcuts of Geoblender, printable"""
+
+    bl_idname = "geoblender.ui_show_shortcuts"
+    bl_label = "Shortcut sheet"
+    kind = "shortcuts"
+
+
+class GEOBLENDER_OT_ui_show_aliases(_HelpSheet, bpy.types.Operator):
+    """The aliases that the command line (F10) understands"""
+
+    bl_idname = "geoblender.ui_show_aliases"
+    bl_label = "Command line aliases"
+    kind = "aliases"
+
+
+class GEOBLENDER_OT_ui_show_glossary(_HelpSheet, bpy.types.Operator):
+    """Terms of RecMin and other programs and their standard term"""
+
+    bl_idname = "geoblender.ui_show_glossary"
+    bl_label = "Glossary"
+    kind = "glossary"
+
+
+class GEOBLENDER_OT_ui_run_diagnostics(bpy.types.Operator):
+    """Blender, extension, PROJ, compute engine, shortcuts and icons"""
+
+    bl_idname = "geoblender.ui_run_diagnostics"
+    bl_label = "Installation diagnostics"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    copy: BoolProperty(name="Copy", default=False, options={"SKIP_SAVE"})  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        return self.execute(context)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import help as ui_help
+
+        if self.copy:
+            context.window_manager.clipboard = ui_help.diagnostics_text()
+            self.report({"INFO"}, tr("Diagnostics copied to the clipboard"))
+            return {"FINISHED"}
+        if bpy.app.background:
+            print(ui_help.diagnostics_text())
+            return {"FINISHED"}
+        return context.window_manager.invoke_popup(self, width=720)
+
+    def draw(self, context: Any) -> None:
+        from ..ui import help as ui_help
+
+        layout = self.layout
+        ui_help.draw_rows(layout, self.bl_label, ui_help.diagnostics())
+        props = layout.operator(self.bl_idname, text=tr("Copy to the clipboard"),
+                                icon="COPYDOWN", translate=False)
+        props.copy = True
+
+
+class GEOBLENDER_OT_ui_show_about(bpy.types.Operator):
+    """Version, licence GPL-3.0-or-later and components"""
+
+    bl_idname = "geoblender.ui_show_about"
+    bl_label = "About Geoblender"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        return self.execute(context)
+
+    def execute(self, context: Any) -> set[str]:
+        if bpy.app.background:
+            return {"FINISHED"}
+        return context.window_manager.invoke_popup(self, width=720)
+
+    def draw(self, context: Any) -> None:
+        from ..ui import help as ui_help
+
+        ui_help.draw_rows(self.layout, self.bl_label, ui_help.about())
+
+
+class GEOBLENDER_OT_ui_show_preferences(bpy.types.Operator):
+    """Language, titles of the bar, quick access row and status bar"""
+
+    bl_idname = "geoblender.ui_show_preferences"
+    bl_label = "Geoblender preferences…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    def execute(self, context: Any) -> set[str]:
+        if not bpy.app.background:  # sin interfaz no hay ventana de preferencias
+            from .. import ADDON_PACKAGE
+
+            bpy.ops.preferences.addon_show(module=ADDON_PACKAGE)
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_ui_set_language(bpy.types.Operator):
+    """Language of the Geoblender interface, independent of the Blender one"""
+
+    bl_idname = "geoblender.ui_set_language"
+    bl_label = "Geoblender language"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    language: EnumProperty(name="Language", items=LANGUAGE_ITEMS, default="ES")  # type: ignore[valid-type]
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        return _variant_description(cls.bl_idname, properties)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import commands, i18n as ui_i18n
+
+        prefs = commands.preferences()
+        if prefs is None:
+            ui_i18n.schedule(LANGUAGES[self.language])
+            return {"FINISHED"}
+        if prefs.language != self.language:
+            prefs.language = self.language  # su update deja el cambio pendiente
+            try:
+                context.preferences.is_dirty = True  # Blender la guardará con las demás
+            except (AttributeError, TypeError):
+                pass
+        return {"FINISHED"}
+
+
 class GEOBLENDER_OT_ui_repair_interface(bpy.types.Operator):
     """Install the top bar, the shortcuts and the icons again"""
 
@@ -724,5 +900,12 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_remove_layout,
     GEOBLENDER_OT_ui_restore_layout,
     GEOBLENDER_OT_ui_open_command_line,
+    GEOBLENDER_OT_ui_show_shortcuts,
+    GEOBLENDER_OT_ui_show_aliases,
+    GEOBLENDER_OT_ui_show_glossary,
+    GEOBLENDER_OT_ui_run_diagnostics,
+    GEOBLENDER_OT_ui_show_about,
+    GEOBLENDER_OT_ui_show_preferences,
+    GEOBLENDER_OT_ui_set_language,
     GEOBLENDER_OT_ui_repair_interface,
 )

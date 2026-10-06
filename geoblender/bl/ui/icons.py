@@ -95,6 +95,12 @@ def loaded_size() -> int:
     return _STATE.size
 
 
+def loaded_count() -> int:
+    """Cuántos iconos propios hay cargados (0 sin cargar)."""
+    collection = _STATE.collection
+    return len(collection) if collection is not None else 0
+
+
 def preview(name: str) -> Any:
     """El ``ImagePreview`` de un icono propio cargado, o ``None``."""
     collection = _STATE.collection
