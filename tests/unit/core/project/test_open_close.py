@@ -374,5 +374,67 @@ class OpenDetailsTest(unittest.TestCase):
             self.assertTrue(hasattr(project, name), name)
 
 
+class RefreshHeaderTest(unittest.TestCase):
+    """``Project.refresh_header()``: la cabecera se reescribe desde la base al guardar la
+    vista (RF-002-07; plan 002 §5.4, ``save_post``)."""
+
+    def test_rewrites_header_from_database(self) -> None:
+        """RF-002-07: en escritura, una cabecera que difiere de la base (aquí, la fecha de
+        modificación) se reescribe desde la base y se devuelve ``True``; si ya coincide,
+        no se toca el fichero y se devuelve ``False``. El proyecto sigue en escritura."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            opened = env.created.project
+            path = env.root / "manifest.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["modified_at"] = "2020-01-01T00:00:00.000Z"
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            self.assertTrue(opened.refresh_header())
+            with gpkg.GpkgConnection.open_read(env.root / "project.gpkg") as db:
+                record = schema.read_project(db.connection)
+            self.assertEqual(manifest.read_manifest(env.root), manifest.manifest_from_record(record))
+            before = (path.read_bytes(), path.stat().st_mtime_ns)
+            self.assertFalse(opened.refresh_header())
+            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
+            self.assertTrue(opened.writable)
+            self.assertTrue((env.root / ".lock").exists())
+            opened.close()
+
+    def test_read_only_writes_nothing(self) -> None:
+        """RF-002-07, RF-002-13: en solo lectura no se escribe la cabecera."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            reader = env.open(SESSION_B).project
+            self.assertFalse(reader.writable)
+            path = env.root / "manifest.json"
+            before = (path.read_bytes(), path.stat().st_mtime_ns)
+            self.assertFalse(reader.refresh_header())
+            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
+            reader.close()
+            env.created.project.close()
+
+    def test_lost_lock_writes_nothing(self) -> None:
+        """RF-002-07, RF-002-12: si otra sesión se ha quedado el cerrojo, no se escribe la
+        cabecera, el proyecto pasa a solo lectura «cerrojo perdido» y se informa."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            opened = env.created.project
+            env.clock.advance(minutes=31)
+            seen = lock.inspect(env.root, SESSION_B, clock=env.clock, pid_alive=env.pids)
+            lock.force(env.root, SESSION_B, lock.LockMode.LOCAL, seen.holder, clock=env.clock,
+                       pid_alive=env.pids)
+            path = env.root / "manifest.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["modified_at"] = "2020-01-01T00:00:00.000Z"
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            before = path.read_bytes()
+            with self.assertLogs("geoblender.core.project", "WARNING"):
+                with self.assertRaises(errors.LockError):
+                    opened.refresh_header()
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(opened.read_only_reason, model.ReadOnlyCode.LOCK_LOST)
+            opened.close()
+
+
 if __name__ == "__main__":
     unittest.main()

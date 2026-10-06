@@ -17,6 +17,10 @@ formato-proyecto §1; plan 002 §5.4).
 - :func:`find_absolute_paths`: rutas absolutas (Windows, UNC, Linux o macOS) dentro de
   un valor (texto, listas, diccionarios), para comprobar que el proyecto no guarda
   ninguna (RF-002-18).
+- :func:`blend_relative_path`: la ruta del proyecto que guarda una escena de Blender,
+  relativa al ``.blend`` con el prefijo ``//`` de Blender (``//../`` desde ``scenes/``),
+  o vacía si no se puede expresar así (otro volumen, vista sin guardar): nunca absoluta
+  (RF-002-18, RF-002-28).
 """
 
 from __future__ import annotations
@@ -218,3 +222,25 @@ def find_absolute_paths(value: object) -> list[str]:
         elif isinstance(item, (list, tuple)):
             stack.extend(reversed(item))
     return found
+
+
+BLEND_RELATIVE_PREFIX = "//"  # Blender: «relativa a la carpeta del .blend»
+
+
+def blend_relative_path(target: Path, blend_file: Path | str | None) -> str:
+    """``target`` (una carpeta) relativa a la carpeta de ``blend_file``, con «/», el
+    prefijo ``//`` de Blender y la barra final (``//../`` para un ``.blend`` de
+    ``scenes/``; ``//`` si es la misma carpeta). Vacía si ``blend_file`` falta (vista sin
+    guardar) o está en otro volumen: nunca se devuelve una ruta absoluta (RF-002-18)."""
+    if blend_file is None or not os.fspath(blend_file):
+        return ""
+    folder = Path(blend_file).parent
+    if _volume(Path(target)) != _volume(folder):
+        return ""
+    try:
+        relative = os.path.relpath(os.fspath(target), os.fspath(folder))
+    except ValueError:  # otra unidad, en Windows
+        return ""
+    if relative == os.curdir:
+        return BLEND_RELATIVE_PREFIX
+    return f"{BLEND_RELATIVE_PREFIX}{PurePath(relative).as_posix()}/"

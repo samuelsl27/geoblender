@@ -34,10 +34,13 @@ class CoreScenePropsTestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         blender_ext.unload()
+        blender_ext.load_file()  # la escena de fábrica, sin restos de otra prueba
         self.tmp = Path(tempfile.mkdtemp(prefix="geoblender-t22-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        # Al terminar, primero se deshabilita (cierra el proyecto) y después la escena de
+        # fábrica, ya sin manejadores que la sincronicen.
+        self.addCleanup(blender_ext.load_file)
         self.addCleanup(blender_ext.unload)
-        self.addCleanup(blender_ext.load_file)  # la escena de fábrica, antes de deshabilitar
 
     def bl(self) -> object:
         return sys.modules[module_name() + ".bl"]

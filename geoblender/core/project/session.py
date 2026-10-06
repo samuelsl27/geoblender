@@ -25,6 +25,8 @@ leer y escribir:
 - :meth:`Project.cache_dir`: la única caché del proyecto, ``<proyecto>/cache/`` en disco
   local y escritura, y ``<datos de usuario>/cache/<uid>/`` en red o en solo lectura
   (ADR-0010).
+- :meth:`Project.refresh_header`: al guardar la vista, la cabecera se reescribe desde la
+  base de datos si difiere (RF-002-07), solo en escritura y con el cerrojo propio.
 - :meth:`Project.close`: en escritura, registra ``close``, reescribe la cabecera desde la
   base de datos y libera el cerrojo, y solo si el cerrojo sigue siendo de esta sesión; en
   solo lectura no escribe nada en la carpeta del proyecto.
@@ -60,7 +62,14 @@ from ..userdata import UserData
 from . import lock
 from .events import EventKind, log_event, record_event
 from .lock import DEFAULT_STALE_MINUTES, LockCheck, PidAlive
-from .manifest import PROJECT_STORE, Manifest, manifest_from_record, write_manifest
+from .manifest import (
+    PROJECT_STORE,
+    Manifest,
+    manifest_from_record,
+    manifest_path,
+    manifest_text,
+    write_manifest,
+)
 from .model import OpenMode, OpenStatus, ProjectRecord, ReadOnlyCode
 from .schema import read_project
 
@@ -394,6 +403,28 @@ class Project:
         if self.record is None:  # inalcanzable: read() ya lo ha rechazado
             raise TypeError("el proyecto no tiene la fila de gb_project")
         return self.record
+
+    def refresh_header(self) -> bool:
+        """Reescribe la cabecera desde la base de datos (al guardar la vista, RF-002-07) y
+        devuelve si la reescribió: solo en escritura, con el cerrojo de esta sesión y si
+        la cabecera difiere de la que sale de la base (si no, no se toca el fichero).
+        :class:`LockError` si el cerrojo ya no es de esta sesión (el proyecto pasa a solo
+        lectura sin escribir nada)."""
+        if not self.writable:
+            return False
+        self._require_lock()
+        record = self.reload()
+        header = manifest_from_record(record, previous=self.manifest)
+        try:
+            current = manifest_path(self.root).read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            current = None
+        if current == manifest_text(header):
+            self.manifest = header
+            return False
+        write_manifest(self.root, header, self.session.session_uid)
+        self.manifest = header
+        return True
 
     # Cerrojo ----------------------------------------------------------------------
 

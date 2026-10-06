@@ -207,5 +207,45 @@ class ProjectNameTest(unittest.TestCase):
                 self.assertIn(shown, str(caught.exception))
 
 
+class BlendRelativePathTest(unittest.TestCase):
+    """La ruta del proyecto que se guarda en una escena de Blender (spec 002, T23;
+    RF-002-18, RF-002-28): relativa al ``.blend`` con la notación de Blender (``//``) y
+    nunca absoluta."""
+
+    def test_relative_to_blend_folder(self) -> None:
+        """RF-002-18, RF-002-28: desde ``scenes/`` es ``//../``; desde una subcarpeta,
+        ``//../../``; desde la raíz del proyecto, ``//``; desde otra carpeta del mismo
+        volumen, la ruta relativa con «/» y la barra final."""
+        with project_tmp() as tmp:
+            root = tmp / "proyectos" / "Cantera.gbproj"
+            cases = (
+                (root / "scenes" / "principal.blend", "//../"),
+                (root / "scenes" / "sub" / "vista.blend", "//../../"),
+                (root / "vista.blend", "//"),
+                (tmp / "otra" / "vista.blend", "//../proyectos/Cantera.gbproj/"),
+            )
+            for blend, expected in cases:
+                with self.subTest(blend=blend.name, esperado=expected):
+                    found = paths.blend_relative_path(root, blend)
+                    self.assertEqual(found, expected)
+                    # «//» es el prefijo de Blender para «relativa al .blend».
+                    rest = found.removeprefix("//")
+                    self.assertFalse(os.path.isabs(rest) or ntpath.splitdrive(rest)[0], rest)
+                    self.assertEqual(paths.find_absolute_paths(rest), [])
+
+    def test_other_volume_or_unsaved_is_empty(self) -> None:
+        """RF-002-18: en otro volumen (otra unidad u otro servidor) o sin fichero (vista
+        sin guardar), la ruta queda vacía: nunca se guarda una absoluta."""
+        root = Path("C:/proyectos/Cantera.gbproj")
+        for blend in (
+            Path("D:/vistas/vista.blend"),
+            Path("//servidor/recurso/vista.blend"),
+            "",
+            None,
+        ):
+            with self.subTest(blend=blend):
+                self.assertEqual(paths.blend_relative_path(root, blend), "")
+
+
 if __name__ == "__main__":
     unittest.main()
