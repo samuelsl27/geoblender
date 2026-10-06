@@ -30,6 +30,17 @@ T22:
   dice «Guarde antes la vista n (Ctrl+Mayús+F…)»; invocada, informa eso y no cambia la
   vista.
 
+T23 (D-1):
+
+- RF-003-15: «Recorte ▸ Banda de la vista» con w = 5 m deja los planos de recorte de esa
+  región a ±5 m del cursor 3D, perpendiculares a la mirada (≤ 1 mm, también a ±8 km del
+  origen y en una vista oblicua); la otra Vista 3D no cambia; «Sin recorte» los quita; el
+  semiancho se ajusta con F9 (``REGISTER`` y ``UNDO``, de 0,1 a 1000 m); la caja nativa
+  (Alt+B) sustituye a la banda (spec §8).
+- RF-003-07 (D-1): los demás modos de recorte son de R-16: desactivados en Recorte ▸ y,
+  invocados, «Disponible en R-16 · …» sin cambiar nada; el menú Recorte ▾ está disponible
+  (tiene «Sin recorte» y «Banda de la vista»).
+
 Se ejecuta con ``tools/run_blender_tests.py``. Sin interfaz, la geometría de las áreas es
 la del fichero de fábrica (la Vista 3D de «Layout» es la mayor).
 """
@@ -397,6 +408,100 @@ class FrameAndSavedViewsTest(ViewsTestCase):
         with in_view(self.area):
             self.assertEqual(bpy.ops.geoblender.ui_recall_view(slot=4), {"CANCELLED"})
         self.assertEqual(self.rv3d(self.area).view_location, before)
+
+
+class ClipBandTest(ViewsTestCase):
+    """En modo Geoblender: Alt+0 (Sin recorte) está en la Vista 3D y pasa por la puerta."""
+
+    MAX_PLANE_M = 0.001
+
+    def setUp(self) -> None:
+        super().setUp()
+        window().workspace.geoblender_mode = True
+        self.addCleanup(lambda: setattr(window().workspace, "geoblender_mode", False))
+        self.big, self.small = self.second_view()
+        for area in (self.big, self.small):
+            self.rv3d(area).use_clip_planes = False
+
+    def side(self, plane: object, point: Vector) -> float:
+        a, b, c, d = plane
+        return a * point.x + b * point.y + c * point.z + d
+
+    def assertBand(self, area: bpy.types.Area, cursor: Vector, half: float) -> None:
+        """Los dos primeros planos a ±``half`` del cursor a lo largo de la mirada; lo de
+        dentro de la banda, visible (lado ≥ 0 de los seis planos), y lo de fuera, no."""
+        rv3d = self.rv3d(area)
+        self.assertTrue(rv3d.use_clip_planes)
+        planes = [tuple(plane) for plane in rv3d.clip_planes]
+        look = (rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))).normalized()
+        front, back = cursor + look * half, cursor - look * half
+        self.assertLessEqual(abs(self.side(planes[1], front)), self.MAX_PLANE_M)
+        self.assertLessEqual(abs(self.side(planes[0], back)), self.MAX_PLANE_M)
+        for inside in (cursor, cursor + look * (half - 0.01), cursor - look * (half - 0.01)):
+            self.assertTrue(all(self.side(plane, inside) >= 0 for plane in planes), inside)
+        for outside in (cursor + look * (half + 0.01), cursor - look * (half + 0.01)):
+            self.assertTrue(any(self.side(plane, outside) < 0 for plane in planes), outside)
+
+    def clip(self, area: bpy.types.Area, **properties: object) -> set[str]:
+        with in_view(area):
+            return bpy.ops.geoblender.geo_set_clip_mode(**properties)
+
+    def test_band_in_one_view(self) -> None:
+        """RF-003-15, CE-003-05: fijar el cursor, Mirando al este y Banda (w = 5 m): planos
+        a ±5 m del cursor solo en esa vista; «Sin recorte» (Alt+0) los quita."""
+        cursor = Vector((7999.123, -7999.877, 250.456))
+        bpy.context.scene.cursor.location = cursor
+        with in_view(self.big):
+            bpy.ops.geoblender.ui_set_view(view="EAST")
+        self.assertEqual(self.clip(self.big, mode="BAND", half_width=5.0), {"FINISHED"})
+        self.assertBand(self.big, cursor, 5.0)
+        self.assertFalse(self.rv3d(self.small).use_clip_planes)
+        self.assertEqual(self.views.clip_mode(self.rv3d(self.big)), "BAND")
+        self.assertEqual(self.clip(self.big, mode="NONE"), {"FINISHED"})
+        self.assertFalse(self.rv3d(self.big).use_clip_planes)
+        self.assertEqual(self.views.clip_mode(self.rv3d(self.big)), "NONE")
+
+    def test_oblique_view_and_f9(self) -> None:
+        """RF-003-15: en una isométrica la banda es perpendicular a la mirada; el semiancho
+        se ajusta con F9 (el operador se repite con otro valor) y vale de 0,1 a 1000 m."""
+        cursor = Vector((-7654.321, 7123.987, -150.789))
+        bpy.context.scene.cursor.location = cursor
+        with in_view(self.small):
+            bpy.ops.geoblender.ui_set_view(view="ISO_SW")
+        self.clip(self.small, mode="BAND", half_width=5.0)
+        self.assertBand(self.small, cursor, 5.0)
+        self.clip(self.small, mode="BAND", half_width=12.5)
+        self.assertBand(self.small, cursor, 12.5)
+        cls = bpy.types.GEOBLENDER_OT_geo_set_clip_mode
+        self.assertEqual(cls.bl_options & {"REGISTER", "UNDO"}, {"REGISTER", "UNDO"})
+        half = bpy.ops.geoblender.geo_set_clip_mode.get_rna_type().properties["half_width"]
+        self.assertEqual((round(half.hard_min, 3), half.hard_max, half.default), (0.1, 1000.0, 5.0))
+        self.assertFalse(self.rv3d(self.big).use_clip_planes)
+
+    def test_native_box_replaces_band(self) -> None:
+        """Spec §8: la caja de recorte de Blender (Alt+B) sustituye a la banda: el modo deja
+        de ser «Banda»."""
+        self.clip(self.big, mode="BAND", half_width=5.0)
+        rv3d = self.rv3d(self.big)
+        rv3d.clip_planes[0] = (0.0, 0.0, 1.0, 3.0)  # lo que haría Alt+B
+        self.assertEqual(self.views.clip_mode(rv3d), "BOX")
+
+    def test_other_modes_are_r16(self) -> None:
+        """RF-003-07 (D-1): Delante, Detrás y Banda atenuada son de R-16: desactivados en
+        Recorte ▸ e, invocados, no cambian nada; Recorte ▾ está disponible."""
+        ctx = SimpleNamespace(workspace=SimpleNamespace(geoblender_mode=True), area=self.big,
+                              scene=bpy.context.scene, space_data=None, window=window())
+        layout = draw(bpy.types.GEOBLENDER_MT_geo_clip, ctx)
+        modes = {item.properties.mode: item.enabled for item in layout.items
+                 if item.target == "geoblender.geo_set_clip_mode"}
+        self.assertEqual(modes, {"NONE": True, "FRONT": False, "BACK": False, "BAND": True,
+                                 "BAND_FADED": False})
+        commands = _module("bl.ui.commands")
+        self.assertTrue(commands.is_available("GEOBLENDER_MT_geo_clip"))
+        for mode in ("FRONT", "BACK", "BAND_FADED"):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.clip(self.big, mode=mode), {"CANCELLED"})
+                self.assertFalse(self.rv3d(self.big).use_clip_planes)
 
 
 if __name__ == "__main__":

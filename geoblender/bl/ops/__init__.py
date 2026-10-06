@@ -7,11 +7,11 @@ resultado.
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
-from . import core, ui
+from . import core, geo, ui
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
-# contrato 2): core (spec 002) y ui (spec 003).
-classes: tuple[type, ...] = (*core.classes, *ui.classes)
+# contrato 2): core (spec 002), ui y geo (spec 003; geo: el recorte de la vista, D-1).
+classes: tuple[type, ...] = (*core.classes, *ui.classes, *geo.classes)
 
 
 def register() -> None:

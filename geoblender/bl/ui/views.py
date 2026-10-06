@@ -31,6 +31,14 @@ AR §3.1 y §4).
   proyección. Recuperar una ranura vacía no aplica (:func:`recall_check`, registrada con
   ``commands.register_check``: el menú la dibuja desactivada y su descripción dice cómo
   guardarla).
+- **Banda de la vista** (:func:`set_band`, :func:`clear_clip`, :func:`clip_mode`;
+  RF-003-15; D-1; plan 003 §5.4, 8 y DT7): los planos de recorte de **esa** región
+  (``RegionView3D.clip_planes``, técnica verificada en el prototipo): con ``n`` la
+  dirección de mirada y ``p`` el cursor 3D (local), ``(n, −n·p + w)`` y ``(−n, n·p + w)``
+  dejan visible lo que cumple ``|n·(x − p)| ≤ w`` (Blender muestra el lado positivo de
+  cada plano), más cuatro planos lejanos que no recortan nada. Los planos quedan fijos en
+  el espacio aunque la vista gire. «Sin recorte» quita los planos. Si Blender pone otros
+  (la caja de Alt+B), el modo pasa a ``BOX``: la caja nativa sustituye a la banda.
 
 Coordenadas: ninguna absoluta en Blender; las vistas trabajan en las locales de la escena
 (la ventana de trabajo se convierte con la función única del núcleo, en float64).
@@ -95,9 +103,14 @@ class View3DTarget:
     space: Any
 
 
+CLIP_FAR_M = 1.0e7  # los cuatro planos que no recortan nada
+CLIP_TOLERANCE = 1e-3  # al comparar los planos puestos con los de la región (float32)
+
+
 class _State:
     def __init__(self) -> None:
         self.last: dict[int, int] = {}  # ventana → área de la última Vista 3D usada
+        self.bands: dict[int, tuple[tuple[float, ...], ...]] = {}  # región → planos puestos
 
 
 _STATE = _State()
@@ -147,8 +160,10 @@ def mark_used(target: View3DTarget) -> None:
 
 
 def forget() -> None:
-    """Olvida las Vistas 3D usadas (al cargar otro fichero o al desregistrar)."""
+    """Olvida las Vistas 3D usadas y las bandas puestas (al cargar otro fichero o al
+    desregistrar)."""
     _STATE.last.clear()
+    _STATE.bands.clear()
 
 
 @persistent
@@ -353,3 +368,60 @@ def recall_check(context: Any, cmd: Any) -> str:
         return ""
     scene = getattr(context, "scene", None) or bpy.context.scene
     return "" if saved_view(scene, slot) is not None else empty_slot_message(slot)
+
+
+# Banda de la vista (RF-003-15; D-1) ---------------------------------------------------------
+
+
+def band_planes(look: Vector, point: Vector, half_width: float
+                ) -> tuple[tuple[float, float, float, float], ...]:
+    """Los seis planos ``(a, b, c, d)`` de la banda de semiancho ``half_width`` alrededor
+    del plano que pasa por ``point`` perpendicular a ``look`` (se ve donde
+    ``a·x + b·y + c·z + d ≥ 0`` en los seis)."""
+    n = Vector(look).normalized()
+    offset = n.dot(Vector(point))
+    far = CLIP_FAR_M
+    return (
+        (n.x, n.y, n.z, -offset + half_width),
+        (-n.x, -n.y, -n.z, offset + half_width),
+        (0.0, 0.0, 1.0, far),
+        (0.0, 0.0, -1.0, far),
+        (1.0, 0.0, 0.0, far),
+        (-1.0, 0.0, 0.0, far),
+    )
+
+
+def set_band(target: View3DTarget, cursor: Any, half_width: float) -> None:
+    """Pone la banda de la vista en la región de destino, alrededor del cursor 3D."""
+    rv3d = target.rv3d
+    look = rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))
+    planes = band_planes(look, Vector(cursor), half_width)
+    rv3d.use_clip_planes = True
+    for index, plane in enumerate(planes):
+        rv3d.clip_planes[index] = plane
+    _STATE.bands[_pointer(rv3d)] = tuple(tuple(rv3d.clip_planes[i]) for i in range(len(planes)))
+    target.area.tag_redraw()
+    mark_used(target)
+
+
+def clear_clip(target: View3DTarget) -> None:
+    """«Sin recorte»: quita los planos de recorte de la región de destino."""
+    target.rv3d.use_clip_planes = False
+    _STATE.bands.pop(_pointer(target.rv3d), None)
+    target.area.tag_redraw()
+    mark_used(target)
+
+
+def clip_mode(rv3d: Any) -> str:
+    """El recorte de una región: ``NONE``, ``BAND`` (los planos que puso la banda) o
+    ``BOX`` (otros: la caja de Alt+B)."""
+    if not rv3d.use_clip_planes:
+        return "NONE"
+    expected = _STATE.bands.get(_pointer(rv3d))
+    if expected is None:
+        return "BOX"
+    current = [tuple(rv3d.clip_planes[i]) for i in range(len(expected))]
+    same = all(abs(a - b) <= CLIP_TOLERANCE * max(1.0, abs(b))
+               for plane, wanted in zip(current, expected, strict=True)
+               for a, b in zip(plane, wanted, strict=True))
+    return "BAND" if same else "BOX"
