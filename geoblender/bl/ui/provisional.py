@@ -16,7 +16,11 @@ en su lugar (``bl/ops``), sin provisional.
   del catálogo (``geoblender.ui_set_view?view=PLAN``): un enumerado si todos sus valores
   son identificadores en mayúsculas, un entero, un booleano o, si no, un texto.
 - **Menú** y **panel** (:func:`menu_class`, :func:`panel_class`): una sola línea
-  desactivada con el texto.
+  desactivada con el texto, que también lleva su descripción emergente
+  (:func:`class_description`; spec 003, T39). La misma nota, en otra línea, la pone
+  :func:`labels` en la descripción de **todo** menú o panel del catálogo que no está
+  disponible, sea provisional, generado o real: desactivados, un submenú o una ventana
+  emergente no se abren y la nota solo se lee allí.
 
 Los dibujos generados desde el catálogo ya los ponen desactivados (RF-003-07). Las clases
 llevan ``bl_translation_context = "Geoblender"`` y los textos en el idioma activo de
@@ -37,7 +41,15 @@ from ...core.catalog import Catalog, Command, unavailable_text
 from ...core.catalog.schema import PropValue, split_key
 from ...core.i18n import language
 from . import gate
-from .commands import PROVISIONAL_FLAG, TRANSLATION_CONTEXT, operator_class_name, text
+from .commands import (
+    PROVISIONAL_FLAG,
+    TRANSLATION_CONTEXT,
+    is_available,
+    operator_class_name,
+    text,
+    with_note,
+)
+from .drawing import draw_note
 
 _ENUM_VALUE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -155,8 +167,7 @@ def operator_class(cat: Catalog, idname: str) -> type:
     def description(cls: Any, context: Any, properties: Any) -> str:
         cmd = variant_for(cat, idname, properties) or base
         about = text(cmd.description) if cmd is not None else ""
-        note = message(cat, idname, properties)
-        return f"{about}\n{note}" if about and note else (about or note)
+        return with_note(about, message(cat, idname, properties))
 
     namespace: dict[str, Any] = {
         "__doc__": base.description if base is not None else "",
@@ -177,20 +188,27 @@ def operator_class(cat: Catalog, idname: str) -> type:
 
 def _draw_note(cat: Catalog, cmd: Command) -> Any:
     def draw(self: Any, context: Any) -> None:
-        row = self.layout.row()
-        row.enabled = False
-        row.label(text=unavailable_text(cat, cmd, language()), icon="INFO", translate=False)
+        draw_note(self.layout, unavailable_text(cat, cmd, language()))
 
     return draw
 
 
+def class_description(cat: Catalog, cmd: Command, *, available: bool) -> str:
+    """``bl_description`` de un menú o un panel en el idioma activo: la descripción del
+    comando y, si no está disponible, su «Disponible en …» en otra línea, como la de un
+    operador provisional (RF-003-07, CE-003-04; spec 003, T39)."""
+    about = text(cmd.description)
+    return about if available else with_note(about, unavailable_text(cat, cmd, language()))
+
+
 def menu_class(cat: Catalog, cmd: Command) -> type:
-    """La clase de un menú provisional: una línea desactivada con «Disponible en …»."""
+    """La clase de un menú provisional: una línea desactivada con «Disponible en …», que
+    también dice su descripción emergente."""
     namespace: dict[str, Any] = {
         "__doc__": cmd.description,
         "bl_idname": cmd.idname,
         "bl_label": text(cmd.label),
-        "bl_description": text(cmd.description),
+        "bl_description": class_description(cat, cmd, available=False),
         "bl_translation_context": TRANSLATION_CONTEXT,
         PROVISIONAL_FLAG: True,
         "draw": _draw_note(cat, cmd),
@@ -200,12 +218,12 @@ def menu_class(cat: Catalog, cmd: Command) -> type:
 
 def panel_class(cat: Catalog, cmd: Command) -> type:
     """La clase de un panel provisional (ventana emergente de la Vista 3D): una línea
-    desactivada con «Disponible en …»."""
+    desactivada con «Disponible en …», que también dice su descripción emergente."""
     namespace: dict[str, Any] = {
         "__doc__": cmd.description,
         "bl_idname": cmd.idname,
         "bl_label": text(cmd.label),
-        "bl_description": text(cmd.description),
+        "bl_description": class_description(cat, cmd, available=False),
         "bl_translation_context": TRANSLATION_CONTEXT,
         "bl_space_type": "VIEW_3D",
         "bl_region_type": "HEADER",
@@ -217,8 +235,17 @@ def panel_class(cat: Catalog, cmd: Command) -> type:
 
 def labels(cat: Catalog, idname: str) -> Mapping[str, str]:
     """``bl_label`` y ``bl_description`` de ``idname`` (operador, menú o panel) en el
-    idioma activo, según el catálogo."""
-    cmd = base_command(cat, idname) if "." in idname else cat.commands.get(idname)
+    idioma activo, según el catálogo. La de un menú o un panel no disponible lleva su
+    «Disponible en …» (:func:`class_description`); la de un operador, no: la añade su
+    ``description`` dinámica, que conoce la variante pedida."""
+    if "." in idname:
+        cmd = base_command(cat, idname)
+        if cmd is None:
+            return {}
+        return {"bl_label": text(cmd.label), "bl_description": text(cmd.description)}
+    cmd = cat.commands.get(idname)
     if cmd is None:
         return {}
-    return {"bl_label": text(cmd.label), "bl_description": text(cmd.description)}
+    available = is_available(cmd.key)
+    return {"bl_label": text(cmd.label),
+            "bl_description": class_description(cat, cmd, available=available)}

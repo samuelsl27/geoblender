@@ -7,6 +7,9 @@ RF-003-08; plan 003 §5.3; BS §7).
   Geoblender, nunca en el de Blender (ADR-0012 §4). ``core.i18n.tr`` es para los
   ``msgid`` literales de ``messages.toml``; las etiquetas y descripciones de los
   comandos llegan como variable y pasan por aquí;
+- :func:`unavailable_note` y :func:`with_note`: «Disponible en …» de un comando y su
+  descripción emergente con esa nota en otra línea (RF-003-07; spec 003, T39: también la
+  de los menús y paneles no disponibles, que no se abren);
 - :func:`registered_class`: la clase registrada de un operador (por su ``bl_idname``) o
   de un menú o un panel (por su clase);
 - :func:`is_available`: si un comando está **disponible** (BS §7.3): un nativo de
@@ -54,6 +57,18 @@ def catalog() -> core_catalog.Catalog:
 def text(msgid: str) -> str:
     """Un texto del catálogo en el idioma activo de Geoblender ("" si no hay)."""
     return translate(language(), msgid) if msgid else ""
+
+
+def unavailable_note(cmd: core_catalog.Command) -> str:
+    """«Disponible en <entrada · título>» de ``cmd`` en el idioma activo (RF-003-07)."""
+    return core_catalog.unavailable_text(catalog(), cmd, language())
+
+
+def with_note(about: str, note: str) -> str:
+    """La descripción emergente de un comando no disponible: su descripción y, en otra
+    línea, su «Disponible en …» (la misma en un operador, un menú y un panel; RF-003-07,
+    CE-003-04). Sin una de las dos, la otra."""
+    return f"{about}\n{note}" if about and note else (about or note)
 
 
 def operator_class_name(idname: str) -> str:

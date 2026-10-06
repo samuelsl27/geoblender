@@ -10,12 +10,16 @@ registrado las propiedades y los operadores reales. :func:`register`:
 2. genera un **provisional** (``bl/ui/provisional.py``) para cada ``bl_idname`` y cada
    menú o panel del catálogo que sigue sin clase registrada: nunca para uno que ya tiene
    la suya (un operador real de ``bl/ops`` no tiene provisional);
-3. pone a cada clase del catálogo (también a las reales) su ``bl_label`` y su
+3. calcula la disponibilidad de cada comando (``commands.refresh``), con todas las
+   clases ya registradas;
+4. pone a cada clase del catálogo (también a las reales) su ``bl_label`` y su
    ``bl_description`` en el idioma activo de Geoblender, con
    ``bl_translation_context = "Geoblender"``, y vuelve a registrar las que cambian
    (:func:`relabel`; cambiar ``bl_label`` sin volver a registrar no cambia el nombre,
-   plan 003 §5.4, 11);
-4. calcula la disponibilidad de cada comando (``commands.refresh``).
+   plan 003 §5.4, 11). La descripción de un menú o un panel **no disponible** lleva en
+   otra línea su «Disponible en …», como la de un operador provisional: desactivados, un
+   submenú o una ventana emergente no se abren y la nota solo se lee en su descripción
+   emergente (RF-003-07, CE-003-04; spec 003, T39).
 
 Al poner los textos, también traduce las **propiedades** de los operadores del catálogo
 (su nombre, su descripción y los nombres y descripciones de los elementos de un enumerado
@@ -86,8 +90,8 @@ def register(generated: Sequence[type] = ()) -> None:
                 cmd = cat.commands[name]
                 factory = provisional.panel_class if cmd.kind == "panel" else provisional.menu_class
                 _register(factory(cat, cmd))
+        commands.refresh()  # antes de los textos: un menú o panel no disponible lo dice
         relabel()
-        commands.refresh()
     except BaseException:
         unregister()
         raise
@@ -95,8 +99,9 @@ def register(generated: Sequence[type] = ()) -> None:
 
 def relabel() -> float:
     """Pone a cada clase registrada del catálogo su ``bl_label`` y su
-    ``bl_description`` en el idioma activo y vuelve a registrar las que cambian; devuelve
-    lo que tardó, en ms (RF-003-21; RNF-003-05). Los elementos del mapa de teclas
+    ``bl_description`` en el idioma activo (con «Disponible en …» la de un menú o un panel
+    no disponible) y vuelve a registrar las que cambian; devuelve lo que tardó, en ms
+    (RF-003-21, RF-003-07; RNF-003-05). Los elementos del mapa de teclas
     sobreviven al nuevo registro con el nombre nuevo: al terminar se actualizan los mapas
     (``keyconfigs.update``), para que sus propiedades apunten ya a los operadores nuevos
     (sin interfaz Blender no lo hace solo, y leerlas antes lo cerraba)."""

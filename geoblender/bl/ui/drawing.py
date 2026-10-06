@@ -10,6 +10,9 @@ disponible (BS §7.3) se dibuja **desactivado** dentro de una fila propia o, con
 no disponible», no se dibuja; si está disponible pero su comprobación dice que no es
 aplicable ahora (``commands.not_applicable``: una ranura de vista vacía), también se dibuja
 desactivado (RF-003-09). Un acceso cruzado ↗ lleva la marca delante de su etiqueta.
+Un submenú o una ventana emergente desactivados no se abren: su «Disponible en …» va en
+la descripción emergente de su clase (``bl.ui.registry``; spec 003, T39) y, por dentro,
+en la primera línea (:func:`draw_note`) para cuando se abren por otro camino.
 
 Cada comando lleva su icono propio (``bl/ui/icons.py``) o, si no se puede mostrar (sin
 interfaz gráfica, o sin su PNG), su reserva nativa, comprobada en el enumerado de iconos de
@@ -64,6 +67,15 @@ def property_owner(context: Any, path: str) -> tuple[Any, str]:
     if owner == "space_data":
         return context.space_data, name
     return context.scene, name
+
+
+def draw_note(layout: Any, note: str) -> None:
+    """La línea gris, no pulsable, «Disponible en …» con que empieza por dentro un menú o
+    un panel no disponible (RF-003-07): la de un provisional y la de un menú generado
+    que se puede abrir (el «<Tipo> ▾», el clic derecho, Mayús+Alt+B)."""
+    row = layout.row()
+    row.enabled = False
+    row.label(text=note, icon="INFO", translate=False)
 
 
 def _disabled(layout: Any, inline: bool) -> Any:

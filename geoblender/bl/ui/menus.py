@@ -15,7 +15,11 @@
 
 Cada elemento se dibuja con ``drawing.draw_command``, con la definición única de su
 comando: desactivado si no está disponible y omitido con «Ocultar lo no disponible»
-(nunca los 13 menús de la barra, que dibuja ``bl/ui/topbar.py``). Lo que aún no es un
+(nunca los 13 menús de la barra, que dibuja ``bl/ui/topbar.py``). Un menú generado que no
+está disponible (ninguno de sus elementos lo está) lleva su «Disponible en …» en la
+descripción emergente (``bl.ui.registry``) y, si se abre (el «<Tipo> ▾», el clic
+derecho, Mayús+Alt+B), en su primera línea, gris, tras «Paso n de 11» si la tiene; los
+menús circulares no: cada ranura ya lo dice en la suya (spec 003, T39). Lo que aún no es un
 comando (una propiedad del tipo en un menú contextual) se dibuja desactivado. Los menús
 dinámicos (proyectos recientes, versiones) y los que no tienen contenido no se generan
 aquí: tienen su clase real o su provisional.
@@ -30,8 +34,15 @@ import bpy
 
 from ...core.catalog import Catalog, Group, MenuItem
 from ...core.i18n import tr
-from .commands import TRANSLATION_CONTEXT, catalog, preference, text
-from .drawing import draw_command
+from .commands import (
+    TRANSLATION_CONTEXT,
+    catalog,
+    is_available,
+    preference,
+    text,
+    unavailable_note,
+)
+from .drawing import draw_command, draw_note
 
 STEPS_TOTAL = 11  # pasos del flujo (BS §5)
 
@@ -70,6 +81,16 @@ def _draw_groups(layout: Any, context: Any, groups: tuple[Group, ...], *, lead: 
             _draw_item(layout, context, item, hide)
 
 
+def _draw_unavailable(layout: Any, menu_id: str) -> bool:
+    """La línea gris «Disponible en …» de un menú no disponible que se ha abierto (por el
+    «<Tipo> ▾», el clic derecho, Mayús+Alt+B o ``wm.call_menu``; RF-003-07); verdadero si
+    la dibujó."""
+    if is_available(menu_id):
+        return False
+    draw_note(layout, unavailable_note(catalog().commands[menu_id]))
+    return True
+
+
 def _menu_draw(menu_id: str) -> Callable[[Any, Any], None]:
     def draw(self: Any, context: Any) -> None:
         cat = catalog()
@@ -81,7 +102,8 @@ def _menu_draw(menu_id: str) -> Callable[[Any, Any], None]:
             row = layout.row()
             row.active = False
             row.label(text=first, translate=False)
-        _draw_groups(layout, context, spec.groups, lead=bool(first), hide=hide)
+        note = _draw_unavailable(layout, menu_id)
+        _draw_groups(layout, context, spec.groups, lead=bool(first) or note, hide=hide)
 
     return draw
 
@@ -99,6 +121,8 @@ def _context_draw(kind: str) -> Callable[[Any, Any], None]:
     def draw(self: Any, context: Any) -> None:
         spec = catalog().contexts[kind]
         hide = bool(preference("hide_unavailable", False))
+        if _draw_unavailable(self.layout, spec.id):
+            self.layout.separator(type="LINE")
         for item in spec.items:
             _draw_item(self.layout, context, item, hide)
 
