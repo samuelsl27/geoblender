@@ -9,7 +9,8 @@ spec 002) → catálogo (``registry``: menús generados por ``menus``, provision
 textos) → sustitución de ``draw_left`` de la barra superior (``topbar``) → fila de
 acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → menú del tipo
 activo (``headers``: ``append`` a la fila 1 y al clic derecho de la Vista 3D y del
-Outliner) → vistas
+Outliner) → barra de estado minera (``statusbar``: un ``append`` a la barra de estado, sus
+campos y la suscripción de ``msgbus`` al cursor 3D, renovada en ``load_post``) → vistas
 (``views``: el manejador ``load_post`` que olvida su estado de sesión) → disposiciones
 (``layouts``: las comprobaciones de Quitar y Restaurar y su manejador ``load_post``; al
 desregistrar, el temporizador de lo pendiente) → proveedores de
@@ -39,6 +40,7 @@ from . import (
     menus,
     quick_access,
     registry,
+    statusbar,
     switcher,
     topbar,
     views,
@@ -92,6 +94,7 @@ def register() -> None:
         (_install_topbar, topbar.restore),
         (quick_access.install, quick_access.uninstall),
         (headers.install, headers.uninstall),
+        (statusbar.install, statusbar.uninstall),
         (views.register, views.unregister),
         (layouts.register, layouts.unregister),
         (lambda: None, context.clear),
@@ -117,6 +120,7 @@ def repair() -> str:
     mode = topbar.install()
     quick_access.install()
     headers.install()
+    statusbar.install()
     keymap.unregister()
     keymap.register()
     commands.refresh()

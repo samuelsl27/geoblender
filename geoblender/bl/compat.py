@@ -117,6 +117,12 @@ def native_tool_settings_px(mode: str) -> float:
     return float(_by_version(_NATIVE_TOOL_SETTINGS_PX).get(mode, NATIVE_TOOL_SETTINGS_OTHER_PX))
 
 
+# Barra de estado (spec 003; RF-003-28; AR §6): lo que dejan ocupado a escala 1,0 las ayudas
+# de teclado de la herramienta (izquierda) y la información de Blender (derecha) antes de los
+# campos de Geoblender. Estimación que se mide en la GUI (M15).
+STATUSBAR_RESERVED_PX = 480.0
+
+
 def view3d_row1_widths() -> dict[str, float]:
     """Anchuras de la fila 1 de la Vista 3D de esta versión (``native``, ``full`` y
     ``pin_and_icons``), a escala 1,0."""

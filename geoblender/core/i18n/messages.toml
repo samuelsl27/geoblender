@@ -660,3 +660,41 @@ es = "Geoblender · {kind}"
 
 ["Select an item of Geoblender"]
 es = "Seleccione un elemento de Geoblender"
+
+# Barra de estado minera (spec 003, T27) ------------------------------------------------
+
+["off"]
+es = "desactivado"
+
+["increment"]
+es = "incremento"
+
+["grid"]
+es = "rejilla"
+
+["vertex"]
+es = "vértice"
+
+["edge"]
+es = "arista"
+
+["face"]
+es = "cara"
+
+["nearest face"]
+es = "cara más cercana"
+
+["volume"]
+es = "volumen"
+
+["edge midpoint"]
+es = "punto medio de arista"
+
+["perpendicular"]
+es = "perpendicular"
+
+["band"]
+es = "banda"
+
+["box"]
+es = "caja"
