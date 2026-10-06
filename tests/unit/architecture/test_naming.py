@@ -177,13 +177,13 @@ class SpecFoldersTest(unittest.TestCase):
 
 class RunAllTest(unittest.TestCase):
     def test_families(self) -> None:
-        """RF-001-12 a RF-001-21, RF-001-06 (TST-01), RF-007-08 (REP-02) y RF-007-11:
-        ``run_all`` reúne todas las familias de reglas del código (ADR-01 y NOM-03 son de
-        la documentación)."""
+        """RF-001-12 a RF-001-21, RF-001-06 (TST-01), RF-007-08 (REP-02), RF-007-11 y
+        RF-002-25 (ARQ-14, ``georef``): ``run_all`` reúne todas las familias de reglas
+        del código (ADR-01 y NOM-03 son de la documentación)."""
         self.assertEqual(
             sorted(FAMILIES),
-            ["agents", "headers", "imports", "layout", "manifest", "naming", "platform",
-             "props", "suites", "text"],
+            ["agents", "georef", "headers", "imports", "layout", "manifest", "naming",
+             "platform", "props", "suites", "text"],
         )
 
     def test_real_tree(self) -> None:

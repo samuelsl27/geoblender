@@ -20,6 +20,9 @@ lista vacía significa que el árbol bajo ``root`` cumple. Solo biblioteca está
 ``naming`` en la T05. La familia ``agents`` del código añade AGT-03, el ``AGENTS.md``
 mínimo (T16); la de la documentación es solo AGT-01 y AGT-02.
 
+``georef`` llega con la spec 002 (T04): ARQ-14, la conversión absoluta ↔ local solo
+en ``core.georef.transform``.
+
 ``suites`` llega con la convergencia de la spec 001: TST-01, carpetas de ``tests/`` sin
 ``__init__.py`` (T34); TST-02, ficheros de pruebas que su paso no carga (T43); TST-03,
 métodos de un ``TestCase`` que citan un requisito y no empiezan por «test» (T44);
@@ -38,14 +41,15 @@ from pathlib import Path
 from .. import manifest
 from ..findings import Finding
 from ..layout import DOCS_EXCLUDED
-from . import adr, agents, headers, imports, layout, naming, platform, props, specs
-from . import suites, text
+from . import adr, agents, georef, headers, imports, layout, naming, platform, props
+from . import specs, suites, text
 
 Family = Callable[[Path], list[Finding]]
 
 FAMILIES: Mapping[str, Family] = {
     "imports": imports.check,
     "props": props.check,
+    "georef": georef.check,
     "platform": platform.check,
     "naming": naming.check,
     "headers": headers.check,

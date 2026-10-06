@@ -23,6 +23,13 @@ from .origin import (
     check_grid_step,
     choose_origin,
 )
+from .transform import (
+    PRECISION_LIMIT_M,
+    PrecisionReport,
+    local_to_world,
+    precision_report,
+    world_to_local,
+)
 
 __all__ = [
     "DEFAULT_GRID_STEP_M",
@@ -31,6 +38,8 @@ __all__ = [
     "CrsCatalog",
     "CrsRef",
     "GeoOrigin",
+    "PRECISION_LIMIT_M",
+    "PrecisionReport",
     "VerticalRef",
     "Window",
     "align_window",
@@ -38,4 +47,7 @@ __all__ = [
     "check_grid_step",
     "choose_origin",
     "load_catalog",
+    "local_to_world",
+    "precision_report",
+    "world_to_local",
 ]
