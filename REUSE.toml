@@ -6,7 +6,15 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 IMGA"
 SPDX-License-Identifier = "CC0-1.0"
 
-# Datos de terceros (los añade su spec; ejemplo de la 006, ADR-0019):
+# Datos de terceros sin modificar (ADR-0019): una anotación propia por carpeta.
+# Catálogo de CRS de la spec 002 (T02, D-8): extracto del EPSG Dataset de IOGP.
+[[annotations]]
+path = ["geoblender/thirdparty/epsg/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "IOGP (International Association of Oil and Gas Producers), EPSG Geodetic Parameter Dataset"
+SPDX-License-Identifier = "LicenseRef-EPSG-terms-of-use"
+
+# Ejemplo de la 006 (rejillas del IGN):
 # [[annotations]]
 # path = ["geoblender/thirdparty/proj/**"]
 # precedence = "override"

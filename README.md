@@ -76,6 +76,7 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 & $PY -B tools/dev_install.py    # instala la extensión en un perfil de Blender aislado
 & $PY -B tools/build.py          # valida el manifiesto y genera el zip en dist/
 & $PY -B tools/fetch_wheels.py   # descarga las ruedas fijadas (lo hace una persona)
+& $PY -B tools/gen_crs_catalog.py  # regenera el catálogo de CRS (GEOBLENDER_PROJ_BIN)
 & $PY -B tools/publish.py        # sube a GitHub y refleja en el NAS (solo quien publica)
 ```
 
@@ -86,6 +87,7 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 | `tools/dev_install.py` | `--perfil CARPETA`, `--abrir` (Blender con interfaz) y `--desinstalar` |
 | `tools/build.py` | `--probar-instalacion` (instala el zip en un perfil limpio y lo desinstala) |
 | `tools/fetch_wheels.py` | `--desde CARPETA` (almacén de ruedas, sin red) |
+| `tools/gen_crs_catalog.py` | `--comprobar` (genera en memoria y compara con el catálogo guardado, sin escribir) |
 | `tools/publish.py` | `--destino CARPETA` (si no, `GEOBLENDER_NAS_ESPEJO`), `--solo-espejo` (sin comprobar el código ni subirlo) y `--rehacer-estado` (ver abajo) |
 
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las

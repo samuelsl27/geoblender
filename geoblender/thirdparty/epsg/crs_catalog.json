@@ -1,0 +1,538 @@
+{
+  "format": "geoblender-crs-catalog",
+  "schema": 1,
+  "source": {
+    "dataset": "EPSG Geodetic Parameter Dataset",
+    "owner": "IOGP (International Association of Oil and Gas Producers)",
+    "url": "https://epsg.org",
+    "terms_of_use": "https://epsg.org/terms-of-use.html",
+    "epsg_version": "v12.029",
+    "epsg_date": "2025-10-02",
+    "proj_version": "9.8.1",
+    "proj_data_version": "1.24",
+    "generated_with": "tools/gen_crs_catalog.py: projinfo (PROJJSON, WKT2_2019, WKT1_GDAL) y cs2cs (ámbito proyectado)",
+    "attribution": "Contiene datos del EPSG Geodetic Parameter Dataset, propiedad de IOGP (International Association of Oil and Gas Producers), https://epsg.org. Extracto con los valores sin modificar (solo el formato WKT1/WKT2 que da projinfo); el ámbito proyectado (bounds) lo calcula Geoblender con PROJ."
+  },
+  "horizontal": [
+    {
+      "epsg": 25828,
+      "name": "ETRS89 / UTM zone 28N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4258,
+      "area": "Europe between 18°W and 12°W: Faroe Islands - offshore; Ireland - offshore; Jan Mayen - offshore; Portugal - offshore mainland; Spain - offshore mainland; United Kingdom (UKCS) - offshore.",
+      "bbox_lonlat": [
+        -16.1,
+        34.93,
+        -11.99,
+        72.44
+      ],
+      "bounds": [
+        399535,
+        3865280,
+        774946,
+        8040551
+      ],
+      "wkt2": "PROJCRS[\"ETRS89 / UTM zone 28N\",BASEGEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4258]],CONVERSION[\"UTM zone 28N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-15,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Pan-European conformal mapping at scales larger than 1:500,000, engineering survey and topographic mapping at all scales.\"],AREA[\"Europe between 18°W and 12°W: Faroe Islands - offshore; Ireland - offshore; Jan Mayen - offshore; Portugal - offshore mainland; Spain - offshore mainland; United Kingdom (UKCS) - offshore.\"],BBOX[34.93,-16.1,72.44,-11.99]],ID[\"EPSG\",25828]]",
+      "wkt1": "PROJCS[\"ETRS89 / UTM zone 28N\",GEOGCS[\"ETRS89\",DATUM[\"European_Terrestrial_Reference_System_1989\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6258\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4258\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-15],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"25828\"]]"
+    },
+    {
+      "epsg": 25829,
+      "name": "ETRS89 / UTM zone 29N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4258,
+      "area": "Europe between 12°W and 6°W: Faroe Islands - offshore; Ireland - offshore; Jan Mayen - onshore and offshore; Portugal - mainland - onshore and offshore; Spain - mainland - onshore and offshore; United Kingdom - UKCS offshore.",
+      "bbox_lonlat": [
+        -12.01,
+        34.91,
+        -6,
+        74.13
+      ],
+      "bounds": [
+        224988,
+        3863062,
+        774098,
+        8228863
+      ],
+      "wkt2": "PROJCRS[\"ETRS89 / UTM zone 29N\",BASEGEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4258]],CONVERSION[\"UTM zone 29N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-9,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Europe between 12°W and 6°W: Faroe Islands - offshore; Ireland - offshore; Jan Mayen - onshore and offshore; Portugal - mainland - onshore and offshore; Spain - mainland - onshore and offshore; United Kingdom - UKCS offshore.\"],BBOX[34.91,-12,74.13,-6]],USAGE[SCOPE[\"Pan-European conformal mapping at scales larger than 1:500,000.\"],AREA[\"Europe between 12°W and 6°W and approximately 34°50'N to 74°10'N.\"],BBOX[34.91,-12.01,74.13,-6]],ID[\"EPSG\",25829]]",
+      "wkt1": "PROJCS[\"ETRS89 / UTM zone 29N\",GEOGCS[\"ETRS89\",DATUM[\"European_Terrestrial_Reference_System_1989\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6258\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4258\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"25829\"]]"
+    },
+    {
+      "epsg": 25830,
+      "name": "ETRS89 / UTM zone 30N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4258,
+      "area": "Europe between 6°W and 0°W: Faroe Islands offshore; Ireland - offshore; Jan Mayen - offshore; Norway including Svalbard - offshore; Spain - mainland - onshore and offshore.",
+      "bbox_lonlat": [
+        -6.01,
+        35.26,
+        0.01,
+        80.49
+      ],
+      "bounds": [
+        226161,
+        3901876,
+        773839,
+        8937717
+      ],
+      "wkt2": "PROJCRS[\"ETRS89 / UTM zone 30N\",BASEGEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4258]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Europe between 6°W and 0°W: Faroe Islands offshore; Ireland - offshore; Jan Mayen - offshore; Norway including Svalbard - offshore; Spain - mainland - onshore and offshore.\"],BBOX[35.26,-6,80.49,0.01]],USAGE[SCOPE[\"Pan-European conformal mapping at scales larger than 1:500,000.\"],AREA[\"Europe between 6°W and 0°W and approximately 35°15'N to 80°30'N.\"],BBOX[35.26,-6.01,80.49,0]],ID[\"EPSG\",25830]]",
+      "wkt1": "PROJCS[\"ETRS89 / UTM zone 30N\",GEOGCS[\"ETRS89\",DATUM[\"European_Terrestrial_Reference_System_1989\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6258\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4258\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"25830\"]]"
+    },
+    {
+      "epsg": 25831,
+      "name": "ETRS89 / UTM zone 31N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4258,
+      "area": "Europe between 0°E and 6°E: Andorra; Denmark - offshore; Germany - offshore; Jan Mayen - offshore; Norway including Svalbard - onshore and offshore; Spain - mainland and Balearic islands - onshore and offshore.",
+      "bbox_lonlat": [
+        0,
+        37,
+        6.01,
+        82.45
+      ],
+      "bounds": [
+        233037,
+        4094872,
+        767853,
+        9156212
+      ],
+      "wkt2": "PROJCRS[\"ETRS89 / UTM zone 31N\",BASEGEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4258]],CONVERSION[\"UTM zone 31N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Europe between 0°E and 6°E: Andorra; Denmark - offshore; Germany - offshore; Jan Mayen - offshore; Norway including Svalbard - onshore and offshore; Spain - mainland and Balearic islands - onshore and offshore.\"],BBOX[37,0,82.45,6.01]],USAGE[SCOPE[\"Pan-European conformal mapping at scales larger than 1:500,000.\"],AREA[\"Europe between 0°E and 6°E and approximately 37°N to 82°27'N.\"],BBOX[37,0,82.45,6.01]],ID[\"EPSG\",25831]]",
+      "wkt1": "PROJCS[\"ETRS89 / UTM zone 31N\",GEOGCS[\"ETRS89\",DATUM[\"European_Terrestrial_Reference_System_1989\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6258\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4258\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"25831\"]]"
+    },
+    {
+      "epsg": 4082,
+      "name": "REGCAN95 / UTM zone 27N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4081,
+      "area": "Spain - Canary Islands - west of 18°W, onshore and offshore.",
+      "bbox_lonlat": [
+        -21.93,
+        24.6,
+        -18,
+        31.19
+      ],
+      "bounds": [
+        405849,
+        2720657,
+        803794,
+        3454538
+      ],
+      "wkt2": "PROJCRS[\"REGCAN95 / UTM zone 27N\",BASEGEOGCRS[\"REGCAN95\",DATUM[\"Red Geodesica de Canarias 1995\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4081]],CONVERSION[\"UTM zone 27N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-21,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Spain - Canary Islands - west of 18°W, onshore and offshore.\"],BBOX[24.6,-21.93,31.19,-18]],ID[\"EPSG\",4082]]",
+      "wkt1": "PROJCS[\"REGCAN95 / UTM zone 27N\",GEOGCS[\"REGCAN95\",DATUM[\"Red_Geodesica_de_Canarias_1995\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"1035\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4081\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-21],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"4082\"]]"
+    },
+    {
+      "epsg": 4083,
+      "name": "REGCAN95 / UTM zone 28N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4081,
+      "area": "Spain - Canary Islands - east of 18°W, onshore and offshore.",
+      "bbox_lonlat": [
+        -18,
+        25.25,
+        -11.75,
+        32.76
+      ],
+      "bounds": [
+        197797,
+        2792630,
+        827403,
+        3629358
+      ],
+      "wkt2": "PROJCRS[\"REGCAN95 / UTM zone 28N\",BASEGEOGCRS[\"REGCAN95\",DATUM[\"Red Geodesica de Canarias 1995\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4081]],CONVERSION[\"UTM zone 28N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-15,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Spain - Canary Islands - east of 18°W, onshore and offshore.\"],BBOX[25.25,-18,32.76,-11.75]],ID[\"EPSG\",4083]]",
+      "wkt1": "PROJCS[\"REGCAN95 / UTM zone 28N\",GEOGCS[\"REGCAN95\",DATUM[\"Red_Geodesica_de_Canarias_1995\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"1035\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4081\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-15],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"4083\"]]"
+    },
+    {
+      "epsg": 32628,
+      "name": "WGS 84 / UTM zone 28N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4326,
+      "area": "Between 18°W and 12°W, northern hemisphere between equator and 84°N, onshore and offshore. Gambia. Greenland. Guinea. Guinea-Bissau. Iceland. Ireland - offshore Porcupine Basin. Mauritania. Morocco. Senegal. Sierra Leone. Western Sahara.",
+      "bbox_lonlat": [
+        -18,
+        0,
+        -12,
+        84
+      ],
+      "bounds": [
+        166021,
+        0,
+        833979,
+        9329006
+      ],
+      "wkt2": "PROJCRS[\"WGS 84 / UTM zone 28N\",BASEGEOGCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[2.0]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 28N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-15,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Navigation and medium accuracy spatial referencing.\"],AREA[\"Between 18°W and 12°W, northern hemisphere between equator and 84°N, onshore and offshore. Gambia. Greenland. Guinea. Guinea-Bissau. Iceland. Ireland - offshore Porcupine Basin. Mauritania. Morocco. Senegal. Sierra Leone. Western Sahara.\"],BBOX[0,-18,84,-12]],ID[\"EPSG\",32628]]",
+      "wkt1": "PROJCS[\"WGS 84 / UTM zone 28N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-15],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32628\"]]"
+    },
+    {
+      "epsg": 32629,
+      "name": "WGS 84 / UTM zone 29N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4326,
+      "area": "Between 12°W and 6°W, northern hemisphere between equator and 84°N, onshore and offshore. Algeria. Côte D'Ivoire (Ivory Coast). Faroe Islands. Guinea. Ireland. Jan Mayen. Liberia, Mali. Mauritania. Morocco. Portugal. Sierra Leone. Spain. United Kingdom (UK). Western Sahara.",
+      "bbox_lonlat": [
+        -12.01,
+        0,
+        -6,
+        84.01
+      ],
+      "bounds": [
+        164907,
+        0,
+        833979,
+        9330127
+      ],
+      "wkt2": "PROJCRS[\"WGS 84 / UTM zone 29N\",BASEGEOGCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[2.0]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 29N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-9,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Navigation and medium accuracy spatial referencing.\"],AREA[\"Between 12°W and 6°W, northern hemisphere between equator and 84°N, onshore and offshore. Algeria. Côte D'Ivoire (Ivory Coast). Faroe Islands. Guinea. Ireland. Jan Mayen. Liberia, Mali. Mauritania. Morocco. Portugal. Sierra Leone. Spain. United Kingdom (UK). Western Sahara.\"],BBOX[0,-12.01,84.01,-6]],ID[\"EPSG\",32629]]",
+      "wkt1": "PROJCS[\"WGS 84 / UTM zone 29N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32629\"]]"
+    },
+    {
+      "epsg": 32630,
+      "name": "WGS 84 / UTM zone 30N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4326,
+      "area": "Between 6°W and 0°W, northern hemisphere between equator and 84°N, onshore and offshore. Algeria. Burkina Faso. Côte' Ivoire (Ivory Coast). Faroe Islands - offshore. France. Ghana. Gibraltar. Ireland - offshore Irish Sea. Mali. Mauritania. Morocco. Spain. United Kingdom (UK).",
+      "bbox_lonlat": [
+        -6,
+        0,
+        0,
+        84
+      ],
+      "bounds": [
+        166021,
+        0,
+        833979,
+        9329006
+      ],
+      "wkt2": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[2.0]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Navigation and medium accuracy spatial referencing.\"],AREA[\"Between 6°W and 0°W, northern hemisphere between equator and 84°N, onshore and offshore. Algeria. Burkina Faso. Côte' Ivoire (Ivory Coast). Faroe Islands - offshore. France. Ghana. Gibraltar. Ireland - offshore Irish Sea. Mali. Mauritania. Morocco. Spain. United Kingdom (UK).\"],BBOX[0,-6,84,0]],ID[\"EPSG\",32630]]",
+      "wkt1": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]"
+    },
+    {
+      "epsg": 32631,
+      "name": "WGS 84 / UTM zone 31N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4326,
+      "area": "Between 0°E and 6°E, northern hemisphere between equator and 84°N, onshore and offshore. Algeria. Andorra. Belgium. Benin. Burkina Faso. Denmark - North Sea. France. Germany - North Sea. Ghana. Luxembourg. Mali. Netherlands. Niger. Nigeria. Norway. Spain. Togo. United Kingdom (UK) - North Sea.",
+      "bbox_lonlat": [
+        0,
+        0,
+        6,
+        84
+      ],
+      "bounds": [
+        166021,
+        0,
+        833979,
+        9329006
+      ],
+      "wkt2": "PROJCRS[\"WGS 84 / UTM zone 31N\",BASEGEOGCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[2.0]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 31N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Navigation and medium accuracy spatial referencing.\"],AREA[\"Between 0°E and 6°E, northern hemisphere between equator and 84°N, onshore and offshore. Algeria. Andorra. Belgium. Benin. Burkina Faso. Denmark - North Sea. France. Germany - North Sea. Ghana. Luxembourg. Mali. Netherlands. Niger. Nigeria. Norway. Spain. Togo. United Kingdom (UK) - North Sea.\"],BBOX[0,0,84,6]],ID[\"EPSG\",32631]]",
+      "wkt1": "PROJCS[\"WGS 84 / UTM zone 31N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32631\"]]"
+    },
+    {
+      "epsg": 23029,
+      "name": "ED50 / UTM zone 29N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4230,
+      "area": "Europe - between 12°W and 6°W - Faroe Islands - onshore; Spain - mainland onshore; Ireland offshore.",
+      "bbox_lonlat": [
+        -12,
+        36.13,
+        -6,
+        62.41
+      ],
+      "bounds": [
+        230011,
+        3998431,
+        769989,
+        6923621
+      ],
+      "wkt2": "PROJCRS[\"ED50 / UTM zone 29N\",BASEGEOGCRS[\"ED50\",DATUM[\"European Datum 1950\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4230]],CONVERSION[\"UTM zone 29N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-9,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Europe - between 12°W and 6°W - Faroe Islands - onshore; Spain - mainland onshore; Ireland offshore.\"],BBOX[36.13,-12,62.41,-6]],ID[\"EPSG\",23029]]",
+      "wkt1": "PROJCS[\"ED50 / UTM zone 29N\",GEOGCS[\"ED50\",DATUM[\"European_Datum_1950\",SPHEROID[\"International 1924\",6378388,297,AUTHORITY[\"EPSG\",\"7022\"]],AUTHORITY[\"EPSG\",\"6230\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4230\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"23029\"]]"
+    },
+    {
+      "epsg": 23030,
+      "name": "ED50 / UTM zone 30N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4230,
+      "area": "Europe - between 6°W and 0°W - Channel Islands (Jersey, Guernsey); France offshore; Gibraltar; Ireland offshore; Norway including Svalbard - offshore; Spain - onshore; United Kingdom - UKCS offshore.",
+      "bbox_lonlat": [
+        -6,
+        35.26,
+        0.01,
+        80.49
+      ],
+      "bounds": [
+        227059,
+        3901938,
+        773851,
+        8937983
+      ],
+      "wkt2": "PROJCRS[\"ED50 / UTM zone 30N\",BASEGEOGCRS[\"ED50\",DATUM[\"European Datum 1950\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4230]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Europe - between 6°W and 0°W - Channel Islands (Jersey, Guernsey); France offshore; Gibraltar; Ireland offshore; Norway including Svalbard - offshore; Spain - onshore; United Kingdom - UKCS offshore.\"],BBOX[35.26,-6,80.49,0.01]],ID[\"EPSG\",23030]]",
+      "wkt1": "PROJCS[\"ED50 / UTM zone 30N\",GEOGCS[\"ED50\",DATUM[\"European_Datum_1950\",SPHEROID[\"International 1924\",6378388,297,AUTHORITY[\"EPSG\",\"7022\"]],AUTHORITY[\"EPSG\",\"6230\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4230\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"23030\"]]"
+    },
+    {
+      "epsg": 23031,
+      "name": "ED50 / UTM zone 31N",
+      "type": "projected",
+      "unit": "metre",
+      "axes": [
+        "E",
+        "N"
+      ],
+      "base_epsg": 4230,
+      "area": "Europe - between 0°E and 6°E - Andorra; Denmark (North Sea); France - offshore; Germany - offshore; Netherlands - offshore; Norway including Svalbard - onshore and offshore; Spain - onshore (mainland and Balearic Islands); United Kingdom - offshore UKCS.",
+      "bbox_lonlat": [
+        0,
+        38.56,
+        6,
+        82.45
+      ],
+      "bounds": [
+        238584,
+        4268022,
+        761416,
+        9156482
+      ],
+      "wkt2": "PROJCRS[\"ED50 / UTM zone 31N\",BASEGEOGCRS[\"ED50\",DATUM[\"European Datum 1950\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4230]],CONVERSION[\"UTM zone 31N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Europe - between 0°E and 6°E - Andorra; Denmark (North Sea); France - offshore; Germany - offshore; Netherlands - offshore; Norway including Svalbard - onshore and offshore; Spain - onshore (mainland and Balearic Islands); United Kingdom - offshore UKCS.\"],BBOX[38.56,0,82.45,6]],ID[\"EPSG\",23031]]",
+      "wkt1": "PROJCS[\"ED50 / UTM zone 31N\",GEOGCS[\"ED50\",DATUM[\"European_Datum_1950\",SPHEROID[\"International 1924\",6378388,297,AUTHORITY[\"EPSG\",\"7022\"]],AUTHORITY[\"EPSG\",\"6230\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4230\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"23031\"]]"
+    }
+  ],
+  "vertical": [
+    {
+      "epsg": 5782,
+      "name": "Alicante height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Gibraltar - onshore; Spain - mainland onshore.",
+      "bbox_lonlat": [
+        -9.37,
+        35.95,
+        3.39,
+        43.82
+      ],
+      "wkt2": "VERTCRS[\"Alicante height\",VDATUM[\"Alicante\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Gibraltar - onshore; Spain - mainland onshore.\"],BBOX[35.95,-9.37,43.82,3.39]],ID[\"EPSG\",5782]]",
+      "wkt1": "VERT_CS[\"Alicante height\",VERT_DATUM[\"Alicante\",2005,AUTHORITY[\"EPSG\",\"5180\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"5782\"]]"
+    },
+    {
+      "epsg": 9392,
+      "name": "Mallorca height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Balearic Islands - Mallorca onshore.",
+      "bbox_lonlat": [
+        2.23,
+        39.07,
+        3.55,
+        40.02
+      ],
+      "wkt2": "VERTCRS[\"Mallorca height\",VDATUM[\"Mallorca\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Balearic Islands - Mallorca onshore.\"],BBOX[39.07,2.23,40.02,3.55]],ID[\"EPSG\",9392]]",
+      "wkt1": "VERT_CS[\"Mallorca height\",VERT_DATUM[\"Mallorca\",2005,AUTHORITY[\"EPSG\",\"1275\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9392\"]]"
+    },
+    {
+      "epsg": 9393,
+      "name": "Menorca height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Balearic Islands - Menorca onshore.",
+      "bbox_lonlat": [
+        3.73,
+        39.75,
+        4.39,
+        40.15
+      ],
+      "wkt2": "VERTCRS[\"Menorca height\",VDATUM[\"Menorca\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Balearic Islands - Menorca onshore.\"],BBOX[39.75,3.73,40.15,4.39]],ID[\"EPSG\",9393]]",
+      "wkt1": "VERT_CS[\"Menorca height\",VERT_DATUM[\"Menorca\",2005,AUTHORITY[\"EPSG\",\"1276\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9393\"]]"
+    },
+    {
+      "epsg": 9394,
+      "name": "Ibiza height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Balearic Islands - Ibiza - onshore.",
+      "bbox_lonlat": [
+        1.12,
+        38.77,
+        1.68,
+        39.17
+      ],
+      "wkt2": "VERTCRS[\"Ibiza height\",VDATUM[\"Ibiza\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Balearic Islands - Ibiza - onshore.\"],BBOX[38.77,1.12,39.17,1.68]],ID[\"EPSG\",9394]]",
+      "wkt1": "VERT_CS[\"Ibiza height\",VERT_DATUM[\"Ibiza\",2005,AUTHORITY[\"EPSG\",\"1277\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9394\"]]"
+    },
+    {
+      "epsg": 9395,
+      "name": "Lanzarote height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Canary Islands - Lanzarote onshore.",
+      "bbox_lonlat": [
+        -13.95,
+        28.78,
+        -13.37,
+        29.47
+      ],
+      "wkt2": "VERTCRS[\"Lanzarote height\",VDATUM[\"Lanzarote\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Canary Islands - Lanzarote onshore.\"],BBOX[28.78,-13.95,29.47,-13.37]],ID[\"EPSG\",9395]]",
+      "wkt1": "VERT_CS[\"Lanzarote height\",VERT_DATUM[\"Lanzarote\",2005,AUTHORITY[\"EPSG\",\"1278\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9395\"]]"
+    },
+    {
+      "epsg": 9396,
+      "name": "Fuerteventura height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Canary Islands - Fuerteventura onshore.",
+      "bbox_lonlat": [
+        -14.58,
+        27.99,
+        -13.75,
+        28.81
+      ],
+      "wkt2": "VERTCRS[\"Fuerteventura height\",VDATUM[\"Fuerteventura\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Canary Islands - Fuerteventura onshore.\"],BBOX[27.99,-14.58,28.81,-13.75]],ID[\"EPSG\",9396]]",
+      "wkt1": "VERT_CS[\"Fuerteventura height\",VERT_DATUM[\"Fuerteventura\",2005,AUTHORITY[\"EPSG\",\"1279\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9396\"]]"
+    },
+    {
+      "epsg": 9397,
+      "name": "Gran Canaria height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Canary Islands - Gran Canaria onshore.",
+      "bbox_lonlat": [
+        -15.88,
+        27.68,
+        -15.31,
+        28.23
+      ],
+      "wkt2": "VERTCRS[\"Gran Canaria height\",VDATUM[\"Gran Canaria\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Canary Islands - Gran Canaria onshore.\"],BBOX[27.68,-15.88,28.23,-15.31]],ID[\"EPSG\",9397]]",
+      "wkt1": "VERT_CS[\"Gran Canaria height\",VERT_DATUM[\"Gran Canaria\",2005,AUTHORITY[\"EPSG\",\"1280\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9397\"]]"
+    },
+    {
+      "epsg": 9398,
+      "name": "Tenerife height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Canary Islands - Tenerife onshore.",
+      "bbox_lonlat": [
+        -16.96,
+        27.93,
+        -16.08,
+        28.63
+      ],
+      "wkt2": "VERTCRS[\"Tenerife height\",VDATUM[\"Tenerife\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Canary Islands - Tenerife onshore.\"],BBOX[27.93,-16.96,28.63,-16.08]],ID[\"EPSG\",9398]]",
+      "wkt1": "VERT_CS[\"Tenerife height\",VERT_DATUM[\"Tenerife\",2005,AUTHORITY[\"EPSG\",\"1281\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9398\"]]"
+    },
+    {
+      "epsg": 9399,
+      "name": "La Gomera height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Canary Islands - La Gomera onshore.",
+      "bbox_lonlat": [
+        -17.39,
+        27.95,
+        -17.03,
+        28.26
+      ],
+      "wkt2": "VERTCRS[\"La Gomera height\",VDATUM[\"La Gomera\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Canary Islands - La Gomera onshore.\"],BBOX[27.95,-17.39,28.26,-17.03]],ID[\"EPSG\",9399]]",
+      "wkt1": "VERT_CS[\"La Gomera height\",VERT_DATUM[\"La Gomera\",2005,AUTHORITY[\"EPSG\",\"1282\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9399\"]]"
+    },
+    {
+      "epsg": 9400,
+      "name": "La Palma height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Canary Islands - La Palma onshore.",
+      "bbox_lonlat": [
+        -18.06,
+        28.4,
+        -17.66,
+        28.9
+      ],
+      "wkt2": "VERTCRS[\"La Palma height\",VDATUM[\"La Palma\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Canary Islands - La Palma onshore.\"],BBOX[28.4,-18.06,28.9,-17.66]],ID[\"EPSG\",9400]]",
+      "wkt1": "VERT_CS[\"La Palma height\",VERT_DATUM[\"La Palma\",2005,AUTHORITY[\"EPSG\",\"1283\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9400\"]]"
+    },
+    {
+      "epsg": 9401,
+      "name": "El Hierro height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Canary Islands - El Hierro onshore.",
+      "bbox_lonlat": [
+        -18.22,
+        27.58,
+        -17.83,
+        27.9
+      ],
+      "wkt2": "VERTCRS[\"El Hierro height\",VDATUM[\"El Hierro\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Canary Islands - El Hierro onshore.\"],BBOX[27.58,-18.22,27.9,-17.83]],ID[\"EPSG\",9401]]",
+      "wkt1": "VERT_CS[\"El Hierro height\",VERT_DATUM[\"El Hierro\",2005,AUTHORITY[\"EPSG\",\"1284\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9401\"]]"
+    },
+    {
+      "epsg": 9402,
+      "name": "Ceuta 2 height",
+      "type": "vertical",
+      "unit": "metre",
+      "area": "Spain - Ceuta onshore.",
+      "bbox_lonlat": [
+        -5.4,
+        35.82,
+        -5.24,
+        35.97
+      ],
+      "wkt2": "VERTCRS[\"Ceuta 2 height\",VDATUM[\"Ceuta 2\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up,LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy, engineering survey, topographic mapping.\"],AREA[\"Spain - Ceuta onshore.\"],BBOX[35.82,-5.4,35.97,-5.24]],ID[\"EPSG\",9402]]",
+      "wkt1": "VERT_CS[\"Ceuta 2 height\",VERT_DATUM[\"Ceuta 2\",2005,AUTHORITY[\"EPSG\",\"1285\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"9402\"]]"
+    }
+  ]
+}
