@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Pestaña «Proyecto» de la Vista 3D (spec 002; RF-002-13, RF-002-30, RF-002-34; plan 002
-§5.5).
+"""Pestaña «Proyecto» de la Vista 3D (spec 002; RF-002-13, RF-002-30, RF-002-31,
+RF-002-32, RF-002-34; plan 002 §5.5).
 
 ``GEOBLENDER_PT_core_project`` (región lateral N, pestaña «Proyecto»): mientras hay un
 proyecto abierto, su nombre, el modo de apertura (y, en solo lectura, su motivo, siempre a
 la vista), el CRS horizontal y vertical, el GeoOrigin, la ventana de trabajo y el paso de
 rejilla (:func:`project_rows`, coordenadas con espacio fino de miles), el diario de la base
 («clásico»), si la vista está desfasada y los avisos pendientes; y los botones del
-proyecto. Sin proyecto, cómo crear o abrir uno.
+proyecto (en el original, sacar una copia local; en la copia, publicarla). Sin proyecto,
+cómo crear o abrir uno.
 
 Todos los textos pasan por ``core.i18n.tr``. La pestaña y el título se traducen al
 registrar (:func:`localize`): ``bl_category`` y ``bl_label`` son textos fijos de la clase.
@@ -141,6 +142,14 @@ class GEOBLENDER_PT_core_project(bpy.types.Panel):
                         icon="OBJECT_ORIGIN", translate=False)
         column.operator("geoblender.core_show_lock", text=tr("Project lock…"),
                         icon="LOCKED", translate=False)
+        if project.is_checkout:
+            column.operator("geoblender.core_publish_project",
+                            text=tr("Publish to the network…"), icon="NETWORK_DRIVE",
+                            translate=False)
+        else:
+            column.operator("geoblender.core_checkout_project",
+                            text=tr("Work on a local copy…"), icon="DISK_DRIVE",
+                            translate=False)
         column = layout.column(align=True)
         column.operator("geoblender.core_open_project", text=tr("Open project…"),
                         icon="FILE_FOLDER", translate=False)

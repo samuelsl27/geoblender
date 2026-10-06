@@ -29,6 +29,12 @@
   trabajo y con ella el GeoOrigin, con un motivo obligatorio
   (``core.project.Project.set_window``); las escenas pasan al origen nuevo y la vista
   queda desfasada; una ventana de más de ±8 km avisa con el error estimado.
+- ``geoblender.core_checkout_project`` (RF-002-31) y ``geoblender.core_publish_project``
+  (RF-002-32, RF-002-33): **modales** que avanzan ``checkout_steps`` y ``publish_steps``
+  (copias de carpetas enteras: un trozo de 8 MiB por paso, progreso en la barra de estado
+  y Esc cancela, RNF-002-06). Sacar la copia cierra antes el proyecto de la sesión (para
+  reservarlo) y deja abierta la copia; si se cancela o falla, vuelve a abrir el original.
+  Publicar deja abierto el publicado (si se pide); si no se puede, la copia sigue abierta.
 
 Sin ``UNDO`` en ``bl_options``: solo escriben en el proyecto y no crean objetos de la
 vista, y Ctrl+Z no puede deshacer el proyecto (regla provisional de R-10). No calculan:
@@ -62,11 +68,17 @@ from ...core.i18n import format_number, format_xyz, tr
 from ...core.numbers import parse_decimal
 from ...core.paths import is_within, next_free_path
 from ...core.project import migrations as migrations_mod
+from ...core.project.checkout import (
+    CheckoutResult,
+    PublishResult,
+    checkout_steps,
+    publish_steps,
+)
 from ...core.project.create import create_project
 from ...core.project.lock import LockInfo, LockState, LockStatus
 from ...core.project.lock import inspect as inspect_lock
 from ...core.project.migrations import MigrationResult, backup_path, migrate_steps
-from ...core.project.model import OpenResult, ProjectSettings, Progress
+from ...core.project.model import OpenResult, ProjectSettings, Progress, ReadOnlyCode
 from ...core.project.open import ProjectInspection, SchemaRelation, inspect_project, open_steps
 from ..scene import georef, project_session
 
@@ -922,6 +934,360 @@ class GEOBLENDER_OT_core_set_work_window(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Copia local y publicación -------------------------------------------------------------
+
+
+class _StepsModal:
+    """Lo común de los modales que avanzan un generador de pasos de ``core`` (copia local
+    y publicación): cada evento del temporizador (cada 0,05 s) avanza pasos durante, como
+    mucho, 0,1 s y actualiza el progreso; cada paso es un trozo de 8 MiB, así que el
+    progreso se mueve en mucho menos de 1 s también en red; Esc cierra el generador, que
+    cancela (RNF-002-06). ``progress_log`` guarda (hora, fase, hecho, total, mensaje) de
+    cada paso y ``report_log``, lo que se informó."""
+
+    STEP_BUDGET_S = 0.1
+    TIMER_INTERVAL_S = 0.05
+
+    def _start(self, context: bpy.types.Context, steps: Iterator[Progress]) -> None:
+        self._steps: Iterator[Progress] | None = steps
+        self.progress_log: list[tuple[float, str, int, int, str]] = []
+        self.report_log: list[str] = []
+        self.outcome: str | None = None
+        manager = context.window_manager
+        self._timer = manager.event_timer_add(self.TIMER_INTERVAL_S, window=context.window)
+        manager.modal_handler_add(self)
+        manager.progress_begin(0, 100)
+
+    def _report(self, level: set[str], text: str) -> None:
+        self.report(level, text)  # type: ignore[attr-defined]
+        if hasattr(self, "report_log"):
+            self.report_log.append(text)
+
+    def _status_text(self, step: Progress) -> str:
+        raise NotImplementedError
+
+    def _cancelled_text(self) -> str:
+        raise NotImplementedError
+
+    def _result(self, context: bpy.types.Context, step: Progress) -> set[str] | None:
+        """Lo que hace con el resultado de un paso; ``None`` si hay que seguir."""
+        raise NotImplementedError
+
+    def _after_stop(self, context: bpy.types.Context) -> None:
+        """Tras cancelar o fallar (por defecto, nada)."""
+
+    def _show(self, context: bpy.types.Context, step: Progress) -> None:
+        self.progress_log.append(
+            (time.perf_counter(), step.phase, step.done, step.total, step.message)
+        )
+        percent = int(100 * step.done / step.total) if step.total else 0
+        context.window_manager.progress_update(max(0, min(100, percent)))
+        if context.workspace is not None:
+            context.workspace.status_text_set(self._status_text(step))
+
+    def _cleanup(self, context: bpy.types.Context) -> None:
+        steps = getattr(self, "_steps", None)
+        self._steps = None
+        if steps is not None:
+            steps.close()  # cancelar: core no deja nada a medias
+        timer = getattr(self, "_timer", None)
+        self._timer = None
+        manager = context.window_manager
+        if timer is not None:
+            manager.event_timer_remove(timer)
+            manager.progress_end()
+        if context.workspace is not None:
+            context.workspace.status_text_set(None)
+
+    def _done(self, context: bpy.types.Context) -> set[str]:
+        self._steps = None  # terminado: nada que cancelar
+        self._cleanup(context)
+        self.outcome = "FINISHED"
+        return {"FINISHED"}
+
+    def _fail(self, context: bpy.types.Context, message: str) -> set[str]:
+        self._cleanup(context)
+        self._report({"ERROR"}, message)
+        self.outcome = "CANCELLED"
+        self._after_stop(context)
+        return {"CANCELLED"}
+
+    def modal(self, context: bpy.types.Context, event: Any) -> set[str]:
+        if getattr(self, "_steps", None) is None:
+            return {"CANCELLED"}
+        if event.type == "ESC":
+            self._cleanup(context)
+            self._report({"INFO"}, self._cancelled_text())
+            self.outcome = "CANCELLED"
+            self._after_stop(context)
+            return {"CANCELLED"}
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+        started = time.perf_counter()
+        try:
+            while True:
+                step = next(self._steps)  # type: ignore[arg-type]
+                self._show(context, step)
+                finished = self._result(context, step)
+                if finished is not None:
+                    return finished
+                if time.perf_counter() - started >= self.STEP_BUDGET_S:
+                    return {"RUNNING_MODAL"}
+        except GeoblenderError as exc:
+            return self._fail(context, exc.message)
+        except StopIteration:
+            return self._fail(context, tr("The operation did not finish with its result"))
+
+    def cancel(self, context: bpy.types.Context) -> None:
+        if getattr(self, "_steps", None) is not None:
+            self._cleanup(context)
+
+
+class GEOBLENDER_OT_core_checkout_project(_StepsModal, bpy.types.Operator):
+    """Work on a local copy: reserve the original, copy it to this computer and open the copy"""
+
+    bl_idname = "geoblender.core_checkout_project"
+    bl_label = "Work on a local copy…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    directory: StringProperty(  # type: ignore[valid-type]
+        name="Local copies folder",
+        description="Folder for the local copy (empty: the one in the preferences, or the "
+        "extension's user data)",
+        subtype="DIR_PATH",
+    )
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        project = project_session.current()
+        if project is None:
+            cls.poll_message_set(tr("No project is open"))
+            return False
+        if project.is_checkout:
+            cls.poll_message_set(
+                tr(
+                    "The open project is already a local copy: publish it with Project ▸ "
+                    "Local copy and network ▸ Publish to the network…"
+                )
+            )
+            return False
+        return True
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        if not self.directory:
+            self.directory = str(project_session.checkout_dir())
+        return context.window_manager.invoke_props_dialog(
+            self, width=640, translate=False, title=tr("Work on a local copy")
+        )
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        column = layout.column(align=True)
+        column.label(
+            text=tr(
+                "The original stays reserved for this copy until it is published: nobody "
+                "else can write to it."
+            ),
+            translate=False,
+        )
+        column.label(
+            text=tr("The project is closed, copied to this folder and the copy is opened:"),
+            translate=False,
+        )
+        layout.prop(self, "directory", text=tr("Local copies folder"), translate=False)
+
+    def _status_text(self, step: Progress) -> str:
+        return tr("Local copy · {phase}: {message}", phase=step.phase, message=step.message)
+
+    def _cancelled_text(self) -> str:
+        return tr(
+            "Local copy cancelled: no copy has been left and the original is no longer reserved"
+        )
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        project = project_session.current()
+        if project is None:
+            return {"CANCELLED"}
+        userdata = project_session.userdata()
+        dest = _folder(self.directory) if self.directory else project_session.checkout_dir()
+        if dest == userdata.checkouts_dir():
+            try:
+                dest.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self.report(
+                    {"ERROR"}, tr("Cannot create «{folder}»: {error}", folder=dest, error=exc)
+                )
+                return {"CANCELLED"}
+        self._original = project.root
+        self._read_only = project.read_only_reason is ReadOnlyCode.REQUESTED
+        for message in project_session.close():  # para reservarlo hay que soltarlo
+            self.report({"WARNING"}, message)
+        steps = checkout_steps(
+            self._original, dest, project_session.session(), userdata,
+            stale_minutes=project_session.stale_minutes(),
+        )
+        self._start(context, steps)
+        return {"RUNNING_MODAL"}
+
+    def _result(self, context: bpy.types.Context, step: Progress) -> set[str] | None:
+        result = step.result
+        if not isinstance(result, CheckoutResult):
+            return None
+        self._steps = None
+        self._cleanup(context)
+        closed = project_session.attach(result.opened.project)
+        self._report(
+            {"INFO"},
+            tr(
+                "Local copy of «{name}» open in «{folder}»: the original stays reserved until "
+                "you publish it",
+                name=result.opened.project.name,
+                folder=result.copy,
+            ),
+        )
+        for message in (*result.warnings, *result.opened.warnings, *closed):
+            self._report({"WARNING"}, message)
+        self.outcome = "FINISHED"
+        return {"FINISHED"}
+
+    def _after_stop(self, context: bpy.types.Context) -> None:
+        """El proyecto se cerró para reservarlo: se vuelve a abrir el original."""
+        original = getattr(self, "_original", None)
+        if original is None:
+            return
+        try:
+            bpy.ops.geoblender.core_open_project(
+                "EXEC_DEFAULT", directory=str(original), read_only=self._read_only
+            )
+        except RuntimeError as exc:
+            self._report(
+                {"WARNING"},
+                tr("The original «{path}» could not be opened again: {error}", path=original,
+                   error=exc),
+            )
+
+
+class GEOBLENDER_OT_core_publish_project(_StepsModal, bpy.types.Operator):
+    """Publish the local copy over its original (the original is kept as <Name>.gbproj.anterior)"""
+
+    bl_idname = "geoblender.core_publish_project"
+    bl_label = "Publish to the network…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    open_published: BoolProperty(  # type: ignore[valid-type]
+        name="Open the published project", default=True, options={"SKIP_SAVE"}
+    )
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        project = project_session.current()
+        if project is None:
+            cls.poll_message_set(tr("No project is open"))
+            return False
+        if not project.is_checkout:
+            cls.poll_message_set(
+                tr(
+                    "The open project is not a local copy: take one with Project ▸ Local copy "
+                    "and network ▸ Work on a local copy…"
+                )
+            )
+            return False
+        if not project.writable:
+            cls.poll_message_set(tr("Read-only project: {reason}", reason=project.status.message))
+            return False
+        return True
+
+    @staticmethod
+    def _original_path(project: Any) -> Path | None:
+        return project_session.userdata().checkout_original(project.uid)
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        return context.window_manager.invoke_props_dialog(
+            self, width=640, translate=False, title=tr("Publish to the network")
+        )
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        project = project_session.current()
+        original = None if project is None else self._original_path(project)
+        if original is None:
+            layout.label(
+                text=tr(
+                    "This computer does not know where the original of this copy is: it "
+                    "cannot be published from here."
+                ),
+                translate=False,
+            )
+            return
+        layout.label(
+            text=tr(
+                "The original «{original}» will be replaced by this copy; the current original "
+                "is kept as «{previous}» (only the last one is kept).",
+                original=original,
+                previous=f"{original.name}.anterior",
+            ),
+            translate=False,
+        )
+        layout.prop(self, "open_published", text=tr("Open the published project"),
+                    translate=False)
+
+    def _status_text(self, step: Progress) -> str:
+        return tr("Publishing · {phase}: {message}", phase=step.phase, message=step.message)
+
+    def _cancelled_text(self) -> str:
+        return tr("Publication cancelled: nothing has been replaced and the local copy stays open")
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        project = project_session.current()
+        if project is None or not project.is_checkout:
+            return {"CANCELLED"}
+        session, userdata = project_session.session(), project_session.userdata()
+        stale = project_session.stale_minutes()
+        steps: Iterator[Progress] = publish_steps(project, session, userdata, stale_minutes=stale)
+        original = self._original_path(project)
+        self._open_after = bool(self.open_published and original is not None)
+        if self._open_after and original is not None:
+            steps = _chain(steps, open_steps(original, session, userdata, stale_minutes=stale))
+        self._published: PublishResult | None = None
+        self._start(context, steps)
+        return {"RUNNING_MODAL"}
+
+    def _result(self, context: bpy.types.Context, step: Progress) -> set[str] | None:
+        result = step.result
+        if isinstance(result, PublishResult):
+            self._published = result
+            project_session.close()  # core ya cerró la copia: solo se suelta de la sesión
+            self._report(
+                {"INFO"},
+                tr(
+                    "Local copy published in «{original}»; the previous original is in "
+                    "«{previous}» and the local copy «{local}» can be deleted",
+                    original=result.original,
+                    previous=result.previous.name,
+                    local=result.local,
+                ),
+            )
+            for message in result.warnings:
+                self._report({"WARNING"}, message)
+            return None if self._open_after else self._done(context)
+        if isinstance(result, OpenResult):
+            self._steps = None
+            self._cleanup(context)
+            closed = project_session.attach(result.project)
+            status = result.status
+            self._report(
+                {"INFO"} if status.writable else {"WARNING"},
+                tr("Project «{name}»: {detail}", name=result.project.name, detail=status.message),
+            )
+            for message in (*result.warnings, *closed):
+                self._report({"WARNING"}, message)
+            self.outcome = "FINISHED"
+            return {"FINISHED"}
+        return None
+
+
 # Avisos -------------------------------------------------------------------------------
 
 
@@ -948,5 +1314,7 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_set_crs,
     GEOBLENDER_OT_core_show_geoorigin,
     GEOBLENDER_OT_core_set_work_window,
+    GEOBLENDER_OT_core_checkout_project,
+    GEOBLENDER_OT_core_publish_project,
     GEOBLENDER_OT_core_clear_notices,
 )

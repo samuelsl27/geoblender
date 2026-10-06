@@ -88,6 +88,17 @@ def stale_minutes() -> int:
     return int(value) if isinstance(value, int) and value > 0 else DEFAULT_STALE_MINUTES
 
 
+def checkout_dir() -> Path:
+    """La carpeta de las copias locales: la de las preferencias (``core.checkout_dir``) o,
+    si está vacía, ``checkouts/`` de los datos de usuario (spec 002, D-4). No la crea."""
+    addon = bpy.context.preferences.addons.get(ADDON_PACKAGE)
+    preferences = getattr(addon, "preferences", None)
+    value = getattr(getattr(preferences, "core", None), "checkout_dir", "")
+    if isinstance(value, str) and value.strip():
+        return Path(bpy.path.abspath(value))
+    return userdata().checkouts_dir()
+
+
 # Avisos -------------------------------------------------------------------------------
 
 

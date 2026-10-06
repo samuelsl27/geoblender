@@ -300,3 +300,68 @@ es = " y {count} más"
 
 ["The view «{view}» uses files with an absolute path that cannot be saved as relative (another volume or a linked library): {paths}; copy them next to the project if the view must work on another computer."]
 es = "La vista «{view}» usa ficheros con ruta absoluta que no se puede guardar relativa (otro volumen o biblioteca enlazada): {paths}; cópielos junto al proyecto si la vista tiene que servir en otro equipo."
+
+# Copia local y red (spec 002, T34) ------------------------------------------------------
+
+["Local copy and network"]
+es = "Copia local y red"
+
+["Work on a local copy…"]
+es = "Trabajar en copia local…"
+
+["Publish to the network…"]
+es = "Publicar en la red…"
+
+["Project lock (who holds it, release)…"]
+es = "Cerrojo del proyecto (quién lo tiene, liberar)…"
+
+["Work on a local copy"]
+es = "Trabajar en copia local"
+
+["Publish to the network"]
+es = "Publicar en la red"
+
+["The operation did not finish with its result"]
+es = "La operación no ha terminado con su resultado"
+
+["The open project is already a local copy: publish it with Project ▸ Local copy and network ▸ Publish to the network…"]
+es = "El proyecto abierto ya es una copia local: publíquela con Proyecto ▸ Copia local y red ▸ Publicar en la red…"
+
+["The open project is not a local copy: take one with Project ▸ Local copy and network ▸ Work on a local copy…"]
+es = "El proyecto abierto no es una copia local: saque una con Proyecto ▸ Copia local y red ▸ Trabajar en copia local…"
+
+["The original stays reserved for this copy until it is published: nobody else can write to it."]
+es = "El original queda reservado para esta copia hasta que se publique: nadie más podrá escribir en él."
+
+["The project is closed, copied to this folder and the copy is opened:"]
+es = "Se cierra el proyecto, se copia a esta carpeta y se abre la copia:"
+
+["Local copy · {phase}: {message}"]
+es = "Copia local · {phase}: {message}"
+
+["Publishing · {phase}: {message}"]
+es = "Publicación · {phase}: {message}"
+
+["Local copy cancelled: no copy has been left and the original is no longer reserved"]
+es = "Copia local cancelada: no queda ninguna copia y el original ya no está reservado"
+
+["Publication cancelled: nothing has been replaced and the local copy stays open"]
+es = "Publicación cancelada: no se ha sustituido nada y la copia local sigue abierta"
+
+["Local copy of «{name}» open in «{folder}»: the original stays reserved until you publish it"]
+es = "Copia local de «{name}» abierta en «{folder}»: el original queda reservado hasta que la publique"
+
+["The original «{path}» could not be opened again: {error}"]
+es = "No se ha podido volver a abrir el original «{path}»: {error}"
+
+["This computer does not know where the original of this copy is: it cannot be published from here."]
+es = "En este equipo no consta dónde está el original de esta copia: no se puede publicar desde aquí."
+
+["The original «{original}» will be replaced by this copy; the current original is kept as «{previous}» (only the last one is kept)."]
+es = "El original «{original}» se sustituirá por esta copia; el actual se conserva como «{previous}» (solo se guarda el último)."
+
+["Open the published project"]
+es = "Abrir el proyecto publicado"
+
+["Local copy published in «{original}»; the previous original is in «{previous}» and the local copy «{local}» can be deleted"]
+es = "Copia local publicada en «{original}»; el original anterior queda en «{previous}» y la copia local «{local}» se puede borrar"
