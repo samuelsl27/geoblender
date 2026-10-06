@@ -5,9 +5,10 @@ import io
 import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
-from tests.support import resources, trees
+from tests.support import qgis, resources, trees
 from tests.support.repo import EXTENSION_DIR, ROOT, TOOLS_DIR, tools_on_path
 
 RESOURCE = "recurso-de-prueba"
@@ -199,6 +200,78 @@ class FakeLayoutTest(unittest.TestCase):
         self.assertEqual((operator.target, operator.properties.directory),
                          ("geoblender.core_open_project", "x"))
         self.assertEqual(layout.of_kind("prop")[0].properties, 7)
+
+
+QGIS_TREE: dict[str, str] = {
+    "bin/ogrinfo.exe": "",
+    "apps/Python312/python.exe": "",
+    "apps/Python312/Lib/site-packages/osgeo/__init__.py": "",
+    "apps/Python312/Lib/site-packages/osgeo_utils/samples/validate_gpkg.py": "",
+}
+
+
+class QgisSupportTest(unittest.TestCase):
+    """``tests.support.qgis``: el GDAL de QGIS de las pruebas de compatibilidad (spec
+    002, T35)."""
+
+    def test_resource_is_declared_and_registered(self) -> None:
+        """RF-001-06: ``qgis`` está en la lista cerrada de recursos y tiene comprobación
+        registrada (sin ella, ``requires`` daría error en lugar de omitir)."""
+        self.assertIn(qgis.QGIS, resources.RESOURCES)
+        with unittest.mock.patch.dict(os.environ, {qgis.ENV_QGIS_DIR: ""}):
+            self.assertFalse(resources.is_available(qgis.QGIS))
+
+    def test_install_found_only_when_complete(self) -> None:
+        """RF-002-14: sin la variable, con una carpeta inexistente o sin alguno de
+        ``ogrinfo``, el Python, ``osgeo`` o ``validate_gpkg.py``, no hay instalación
+        (la prueba con GDAL se omite); completa, sí, con su Python de ``apps``."""
+        self.assertIsNone(qgis.find_install({}))
+        self.assertIsNone(qgis.find_install({qgis.ENV_QGIS_DIR: "  "}))
+        with trees.temp_tree(QGIS_TREE) as root:
+            environ = {qgis.ENV_QGIS_DIR: str(root)}
+            install = qgis.find_install(environ)
+            self.assertIsNotNone(install)
+            assert install is not None
+            self.assertEqual(install.python_home, root / "apps" / "Python312")
+            self.assertEqual(install.tool("ogrinfo"), root / "bin" / "ogrinfo.exe")
+            self.assertIsNone(qgis.find_install({qgis.ENV_QGIS_DIR: str(root / "no")}))
+        for missing in QGIS_TREE:
+            partial = {rel: text for rel, text in QGIS_TREE.items() if rel != missing}
+            with self.subTest(falta=missing), trees.temp_tree(partial) as root:
+                self.assertIsNone(qgis.find_install({qgis.ENV_QGIS_DIR: str(root)}))
+
+    def test_gdal_env_ignores_the_workstation_proj_and_python(self) -> None:
+        """RF-002-14 (Silvestre TOP-05): el entorno de GDAL es el de QGIS: su ``bin``
+        primero en ``PATH``, su ``PROJ_DATA`` y su ``GDAL_DATA``, su ``PYTHONHOME``, sin
+        ``.aux.xml``, sin ``__pycache__``, y sin el ``PROJ_LIB`` ni las demás variables
+        ``PROJ_*``, ``GDAL_*``, ``PYTHON*`` y ``OSGEO4W_*`` del puesto."""
+        base = {
+            "PROJ_LIB": "postgis",
+            "proj_network": "ON",
+            "GDAL_DATA": "otra",
+            "PYTHONPATH": "otra",
+            "PYTHONSTARTUP": "x.py",
+            "OSGEO4W_ROOT": "otra",
+            "PATH": "otra",
+            "SystemRoot": "W",
+            "TEMP": "temporal",
+        }
+        with trees.temp_tree(QGIS_TREE) as root:
+            install = qgis.find_install({qgis.ENV_QGIS_DIR: str(root)})
+            assert install is not None
+            env = qgis.gdal_env(install, base)
+        for name in ("PROJ_LIB", "proj_network", "PYTHONPATH", "PYTHONSTARTUP"):
+            with self.subTest(variable=name):
+                self.assertNotIn(name, env)
+        self.assertEqual(env["TEMP"], "temporal")
+        self.assertEqual(env["PATH"].split(os.pathsep)[0], str(root / "bin"))
+        self.assertNotIn("otra", env["PATH"])
+        self.assertEqual(env["PROJ_DATA"], str(root / "share" / "proj"))
+        self.assertEqual(env["GDAL_DATA"], str(root / "apps" / "gdal" / "share" / "gdal"))
+        self.assertEqual(env["OSGEO4W_ROOT"], str(root))
+        self.assertEqual(env["PYTHONHOME"], str(root / "apps" / "Python312"))
+        self.assertEqual(env["GDAL_PAM_ENABLED"], "NO")
+        self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
 
 
 if __name__ == "__main__":

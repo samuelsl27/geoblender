@@ -555,7 +555,7 @@ class StepsTest(unittest.TestCase):
         body = "\n".join(
             [
                 "test_pendiente (tests.unit.test_saltada.Saltada.test_pendiente)",
-                f"RF-001-06: doc. ... skipped '{SKIP_PREFIX} qgis: instale QGIS'",
+                f"RF-001-06: doc. ... skipped '{SKIP_PREFIX} futuro: instale el recurso'",
                 "test_nada (tests.unit.test_saltada.Saltada.test_nada) ... skipped "
                 f"'{SKIP_PREFIX} nada: nada'",
             ]
@@ -566,13 +566,13 @@ class StepsTest(unittest.TestCase):
         line = _step_line(result.out, "unitarias")
         self.assertTrue(line.lstrip().startswith("fallo"), line)
         self.assertIn("2 omisiones sin recurso", line)
-        for name in ("«qgis»", "«nada»", "tests/support/resources.py", "RESOURCES"):
+        for name in ("«futuro»", "«nada»", "tests/support/resources.py", "RESOURCES"):
             with self.subTest(texto=name):
                 self.assertIn(name, result.out)
         self.assertIn("tests.unit.test_saltada.Saltada.test_pendiente", result.out)
         self.assertNotIn("VERDE CON OMISIONES", result.out)
 
-        with _manifest_root(_resources_file("symlink", "qgis", "nada")) as tmp:
+        with _manifest_root(_resources_file("symlink", "futuro", "nada")) as tmp:
             result = run_check(runner=FakeRunner({"unitarias": (0, "", stderr)}), root=tmp)
         self.assertEqual(result.code, 0, result.out)
         self.assertIn("VERDE CON OMISIONES (2)", result.out)
