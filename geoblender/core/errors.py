@@ -75,3 +75,13 @@ class ValidationError(GeoblenderError):
 class GeometryError(GeoblenderError):
     """Una geometría que Geoblender no escribe ni lee: vacía, de un tipo no admitido o
     mal formada (``core.gpkg.wkb``)."""
+
+
+class DatabaseError(GeoblenderError):
+    """La base de datos del proyecto no se puede abrir, leer o escribir como hace falta
+    (no existe, no es SQLite, está en WAL, la conexión es de solo lectura…)."""
+
+
+class DatabaseBusyError(DatabaseError):
+    """Otro programa (QGIS, otra sesión) tiene la base de datos ocupada: la escritura no
+    esperó más de 0,2 s y no cambió nada; se puede reintentar."""

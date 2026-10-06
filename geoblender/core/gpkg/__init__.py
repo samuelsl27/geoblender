@@ -6,6 +6,17 @@
 clásico, nunca en WAL (ARQ-17): los proyectos de IMGA viven en una unidad de red.
 """
 
+from .connection import BUSY_TIMEOUT_MS, GpkgConnection, sqlite_uri
+from .header import SqliteHeader, read_header
 from .wkb import Geometry, decode_geometry, encode_geometry
 
-__all__ = ["Geometry", "decode_geometry", "encode_geometry"]
+__all__ = [
+    "BUSY_TIMEOUT_MS",
+    "Geometry",
+    "GpkgConnection",
+    "SqliteHeader",
+    "decode_geometry",
+    "encode_geometry",
+    "read_header",
+    "sqlite_uri",
+]
