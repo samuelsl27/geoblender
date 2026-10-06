@@ -22,6 +22,16 @@ Se escribe de forma atómica (:func:`write_manifest`): ``manifest.json.tmp-<sesi
 ``fsync`` y ``os.replace``; una escritura interrumpida deja la cabecera anterior intacta.
 Ninguna ruta absoluta: la de cada almacén es relativa a la raíz del proyecto (ADR-0006
 §5). El GeoOrigin, en metros enteros.
+
+**Claves desconocidas** (RF-002-05 de la spec 0.5; D-10 y D-13; plan 002 §5.2): Geoblender
+escribe exactamente los campos de formato-proyecto §2, pero una persona puede anotar en la
+cabecera, o la puede haber escrito otra versión. Una clave que no es del formato, en el
+primer nivel o dentro de ``crs``, ``crs.vertical``, ``geo_origin``, ``stores`` o
+``stores.project``, no impide abrir: se guarda con su ruta y su valor JSON tal cual
+(:class:`UnknownKey`, en :attr:`Manifest.extra`), la apertura avisa de ella
+(:func:`unknown_key_notice`) y cada regeneración desde la base de datos la conserva, en su
+objeto y después de las conocidas. Si la clave o su valor lleva una ruta absoluta, el
+aviso lo dice y no se escribe nunca: al regenerar la cabecera, se descarta (RF-002-18).
 """
 
 from __future__ import annotations
@@ -57,12 +67,75 @@ class ManifestStatus(Enum):
     INCONSISTENT = "inconsistent"  # identidad, CRS, origen o esquema: no abre
 
 
+# Las claves de cada objeto de la cabecera que son del formato (formato-proyecto §2); las
+# demás de esos objetos son desconocidas. ``stores.blocks`` es del formato (llega con
+# R-22): se conserva tal cual, como el contenido de ``inventory`` y ``checkout``.
+_KNOWN_KEYS: dict[str, tuple[str, ...]] = {
+    "": (
+        "format", "schema_version", "min_reader_schema", "geoblender_version",
+        "created_with", "project_uid", "name", "crs", "geo_origin", "grid_step_m",
+        "created_at", "modified_at", "stores", "inventory", "checkout",
+    ),
+    "crs": ("epsg", "name", "wkt", "vertical"),
+    "crs.vertical": ("epsg", "name", "note"),
+    "geo_origin": ("x0", "y0", "z0"),
+    "stores": ("project", "blocks"),
+    "stores.project": ("path", "gpkg_version"),
+}
+
+
+@dataclass(frozen=True)
+class UnknownKey:
+    """Una clave de la cabecera que no es de su formato (formato-proyecto §2): escrita a
+    mano o por otra versión de Geoblender (RF-002-05, D-10)."""
+
+    parent: str  # el objeto que la tiene: "" (primer nivel), "crs", "crs.vertical"…
+    key: str
+    value: Any  # su valor JSON, tal cual
+
+    @property
+    def path(self) -> str:
+        """Su ruta en la cabecera, como se muestra: ``nota``, ``crs.origen_datos``."""
+        return f"{self.parent}.{self.key}" if self.parent else self.key
+
+    @property
+    def absolute_paths(self) -> tuple[str, ...]:
+        """Las rutas absolutas que llevan su nombre o su valor (RF-002-18)."""
+        return tuple(find_absolute_paths({self.key: self.value}))
+
+    @property
+    def discarded(self) -> bool:
+        """Verdadero si lleva una ruta absoluta: no se escribe nunca en la cabecera y se
+        descarta al regenerarla (RF-002-18, D-13)."""
+        return bool(self.absolute_paths)
+
+
+def unknown_key_notice(item: UnknownKey) -> str:
+    """El aviso de una clave desconocida al abrir el proyecto (RF-002-05; D-10 y D-13)."""
+    head = f"La cabecera (manifest.json) tiene una clave que Geoblender no conoce: «{item.path}»"
+    if item.discarded:
+        return (
+            f"{head}; lleva una ruta absoluta ({item.absolute_paths[0]}) y la cabecera no "
+            "guarda rutas absolutas: se descarta al regenerarla (anótela sin la ruta si "
+            "quiere conservarla)"
+        )
+    return f"{head}; se conserva, con su valor, al regenerarla"
+
+
+def _object_at(data: dict[str, Any], parent: str) -> dict[str, Any] | None:
+    node: object = data
+    for part in parent.split(".") if parent else ():
+        node = node.get(part) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) else None
+
+
 @dataclass(frozen=True)
 class Manifest:
     """La cabecera del proyecto (esquema 1). Las claves del JSON están en :meth:`to_dict`.
 
     ``vcrs_epsg`` es ``None`` en una referencia vertical local, con ``vcrs_note``.
     ``checkout`` es la sección de una copia local de trabajo (``None`` en el original).
+    ``extra``, las claves que no son del formato, en el orden en que aparecen (D-10).
     """
 
     schema_version: int
@@ -84,9 +157,21 @@ class Manifest:
     stores: Mapping[str, Any] = field(default_factory=dict)
     inventory: tuple[Any, ...] = ()
     checkout: Mapping[str, Any] | None = None
+    extra: tuple[UnknownKey, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        """El JSON de la cabecera, con las claves en el orden de formato-proyecto §2."""
+        """El JSON de la cabecera, con las claves en el orden de formato-proyecto §2 y,
+        después de las conocidas de cada objeto, sus claves desconocidas en su orden (D-10),
+        salvo las que llevan una ruta absoluta, que no se escriben nunca (D-13)."""
+        data = self._known_dict()
+        for item in self.extra:
+            target = _object_at(data, item.parent)
+            if item.discarded or target is None or item.key in target:
+                continue
+            target[item.key] = _plain(item.value)
+        return data
+
+    def _known_dict(self) -> dict[str, Any]:
         return {
             "format": MANIFEST_FORMAT,
             "schema_version": self.schema_version,
@@ -217,6 +302,7 @@ def _is_absolute(text: str) -> bool:
 
 
 def _stores(data: object) -> dict[str, Any]:
+    """Los almacenes, solo con las claves del formato (las demás van a ``extra``)."""
     stores = _lookup(data, "stores")
     if not isinstance(stores, Mapping):
         raise _invalid("stores", stores, "debe ser un objeto con los almacenes")
@@ -228,7 +314,28 @@ def _stores(data: object) -> dict[str, Any]:
             "debe ser una ruta relativa a la raíz del proyecto (ADR-0006 §5)",
         )
     _text(data, "stores.project.gpkg_version")
-    return _plain(stores)
+    known = {key: _plain(value) for key, value in stores.items() if key in _KNOWN_KEYS["stores"]}
+    known["project"] = {
+        key: value for key, value in known["project"].items()
+        if key in _KNOWN_KEYS["stores.project"]
+    }
+    return known
+
+
+def _unknown_keys(data: Mapping[str, Any]) -> tuple[UnknownKey, ...]:
+    """Las claves que no son del formato, en el orden en que aparecen en la cabecera."""
+    found: list[UnknownKey] = []
+
+    def walk(node: Mapping[str, Any], parent: str) -> None:
+        for key, value in node.items():
+            child = f"{parent}.{key}" if parent else str(key)
+            if key not in _KNOWN_KEYS[parent]:
+                found.append(UnknownKey(parent, str(key), _plain(value)))
+            elif child in _KNOWN_KEYS and isinstance(value, Mapping):
+                walk(value, child)
+
+    walk(data, "")
+    return tuple(found)
 
 
 def _origin(data: object) -> GeoOrigin:
@@ -244,13 +351,12 @@ def parse_manifest(data: object) -> Manifest:
     """La cabecera de un JSON ya leído; :class:`ProjectError` con el campo (``crs``,
     ``geo_origin.x0``…) si falta algo obligatorio o un valor no vale.
 
-    Al escribir, la cabecera lleva exactamente los campos de formato-proyecto §2
-    (:meth:`Manifest.to_dict`; lo comprueba ``test_manifest``). **Pendiente de
-    implementar** (convergencia de la spec 002, T43 y T49): al leer, una clave que no es
-    de esa lista (editada a mano, o de otra versión) se acepta sin aviso y no se conserva
-    al regenerar la cabecera desde la base de datos. D-10 ya está decidida (06/10/2026:
-    se avisa de cada clave y se conserva al regenerar, RF-002-05 de la spec 0.4); lo hace
-    la T49, que espera la decisión de D-13 (una clave desconocida con una ruta absoluta)."""
+    Geoblender escribe exactamente los campos de formato-proyecto §2
+    (:meth:`Manifest.to_dict`; lo comprueba ``test_manifest``). Una clave que no es de esa
+    lista (editada a mano, o de otra versión) no es un error: queda en
+    :attr:`Manifest.extra` con su ruta y su valor, para avisar de ella al abrir y
+    conservarla al regenerar la cabecera, salvo si lleva una ruta absoluta (RF-002-05 de la
+    spec 0.5; D-10 y D-13; convergencia de la spec 002, T43 y T49)."""
     if not isinstance(data, Mapping):
         raise _invalid("(raíz)", type(data).__name__, "debe ser un objeto JSON")
     fmt = _lookup(data, "format")
@@ -306,6 +412,7 @@ def parse_manifest(data: object) -> Manifest:
         stores=_stores(data),
         inventory=tuple(_plain(inventory)),
         checkout=None if checkout is None else _plain(checkout),
+        extra=_unknown_keys(data),
     )
 
 
@@ -398,7 +505,8 @@ def write_manifest(root: Path, manifest: Manifest, session_uid: str) -> None:
 def manifest_from_record(record: ProjectRecord, *, previous: Manifest | None = None) -> Manifest:
     """La cabecera regenerada desde la fila de ``gb_project`` (la BD manda). De
     ``previous`` conserva lo que la base de datos no tiene: el inventario de lo congelado,
-    la sección ``checkout`` y los demás almacenes."""
+    la sección ``checkout``, los demás almacenes y las claves desconocidas, salvo las que
+    llevan una ruta absoluta, que se descartan (D-10 y D-13)."""
     stores: dict[str, Any] = dict(previous.stores) if previous is not None else {}
     stores["project"] = {"path": PROJECT_STORE, "gpkg_version": GPKG_VERSION}
     return Manifest(
@@ -421,6 +529,9 @@ def manifest_from_record(record: ProjectRecord, *, previous: Manifest | None = N
         stores=stores,
         inventory=() if previous is None else previous.inventory,
         checkout=None if previous is None else previous.checkout,
+        extra=() if previous is None else tuple(
+            item for item in previous.extra if not item.discarded
+        ),
     )
 
 

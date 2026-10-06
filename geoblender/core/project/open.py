@@ -8,7 +8,10 @@ operador modal la avanza con progreso. Cada fase es al menos un :class:`Progress
 recorrido sin pausas. Cerrar el generador antes del final (cancelar) libera el cerrojo si
 ya se había tomado.
 
-1. **Cabecera**: ``manifest.json`` legible y válida, o no abre (RF-002-05).
+1. **Cabecera**: ``manifest.json`` legible y válida, o no abre (RF-002-05). Una clave que
+   no es de su formato no lo impide: un aviso por clave, también en solo lectura, y su
+   línea en el registro técnico; la conservan las regeneraciones de la cabecera, salvo si
+   lleva una ruta absoluta, que se descarta (RF-002-05 de la spec 0.5; D-10 y D-13).
 2. **Base de datos**, sin escribir en el proyecto: ``project.gpkg`` en solo lectura (una
    base en WAL o con un diario caliente se lee en una copia privada de los datos de
    usuario: abrirla en el sitio crearía ``-wal`` y ``-shm`` junto a ella); su fila de
@@ -57,7 +60,7 @@ from ..sysinfo import SessionInfo, pid_alive
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
 from . import lock as lockmod
-from .events import EventKind, last_origin_move, log_event, record_event
+from .events import LOGGER, EventKind, last_origin_move, log_event, record_event
 from .lock import Acquired, LockInfo, LockMode, LockState, LockStatus, PidAlive
 from .manifest import (
     PROJECT_STORE,
@@ -68,6 +71,7 @@ from .manifest import (
     compare,
     manifest_from_record,
     read_manifest,
+    unknown_key_notice,
     write_manifest,
 )
 from .model import OpenMode, OpenResult, OpenStatus, ProjectRecord, Progress, ReadOnlyCode
@@ -459,6 +463,12 @@ def open_steps(
         warnings.append(
             f"La cabecera difería de la base de datos en {fields}; manda la base de datos"
             + ("" if want_write else " (se regenerará al abrirlo en escritura)")
+        )
+    for item in inspection.manifest.extra:  # claves que no son del formato (D-10, D-13)
+        notice = unknown_key_notice(item)
+        warnings.append(notice)
+        LOGGER.warning(
+            "manifest_unknown_key: %s (proyecto %s)", notice, inspection.manifest.project_uid
         )
     if inspection.manifest.checkout is not None:  # una copia local de trabajo (RF-002-31)
         mode = OpenMode.CHECKOUT

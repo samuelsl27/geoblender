@@ -53,7 +53,10 @@ interfaz de Blender, con QGIS abierto y con dos equipos a la vez.
   - **Abrir proyecto…**, **Abrir reciente** (los 10 últimos de cada equipo, guardados en el
     equipo y no en el proyecto), **Guardar** y **Cerrar proyecto**. Al abrir se comprueba que
     la cabecera y la base de datos coinciden en identidad, sistema de referencia y origen; si
-    no, no se abre y se muestran los dos valores. Un fichero de Blender con otra
+    no, no se abre y se muestran los dos valores. Una anotación hecha a mano en la cabecera
+    (`manifest.json`) con una clave que no es de su formato no impide abrirlo: se avisa de
+    ella y se conserva cada vez que Geoblender reescribe la cabecera, salvo si lleva una ruta
+    absoluta, que se descarta (el aviso lo dice). Un fichero de Blender con otra
     georreferencia avisa y no se usa.
   - **Un solo escritor.** Quien abre un proyecto que otra persona tiene abierto lo ve en
     solo lectura con su equipo, usuario y hora, y en solo lectura no se escribe nada en la

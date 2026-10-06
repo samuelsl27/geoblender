@@ -28,6 +28,12 @@ leer y escribir:
   (ADR-0010).
 - :meth:`Project.refresh_header`: al guardar la vista, la cabecera se reescribe desde la
   base de datos si difiere (RF-002-07), solo en escritura y con el cerrojo propio.
+- Cada regeneración de la cabecera (guardar, «Ventana de trabajo», cerrar) parte de
+  :attr:`Project.manifest`, que trae de la apertura las claves que no son del formato: las
+  vuelve a escribir, salvo las que llevan una ruta absoluta (RF-002-05 de la spec 0.5;
+  D-10 y D-13). La sesión guarda las de la apertura (plan 002 §5.2): una clave que se añada
+  a mano con el proyecto abierto en escritura no la conoce, y la regeneración siguiente no
+  la escribe.
 - :meth:`Project.set_window`: cambia la ventana de trabajo y con ella el GeoOrigin
   (RF-002-27): nuevo origen en la base y en la cabecera, evento ``move_origin`` con el
   motivo (obligatorio); ninguna coordenada absoluta guardada cambia. Si la cabecera no se
