@@ -17,7 +17,8 @@ progreso; cerrar el generador (``close()``) cancela.
 3. **Copia** en una carpeta temporal junto al destino (``<destino>.copiando-<uid>``), por
    trozos de 8 MiB: cada trozo es un paso (progreso cada ≤ 1 s y cancelación en ≤ 2 s
    también en red) y su sha256 se calcula a la vez que se escribe. Cada fichero se
-   escribe con ``fsync`` y conserva su fecha de modificación. Un fichero que retiene otro
+   escribe con ``fsync`` cada :data:`SYNC_BYTES` y al final (así el último no deja un
+   paso largo sin progreso) y conserva su fecha de modificación. Un fichero que retiene otro
    programa (antivirus, indexador) se reintenta :data:`RETRIES` veces cada
    :data:`RETRY_WAIT_S` s.
 4. **Comprobación**: se vuelve a leer la copia y sus huellas tienen que ser las del
@@ -48,6 +49,10 @@ from ..timeutil import SYSTEM_CLOCK, Clock
 from .model import Progress
 
 CHUNK_SIZE = 8 * 1024 * 1024  # 8 MiB por paso
+# Cada cuánto se fuerza a disco lo escrito de un fichero (fsync). Con un solo fsync al
+# final, el de un fichero de 192 MiB tardó 1,0–1,8 s en el PC de referencia tras escribir
+# varios GiB (spec 002, T36): un paso sin progreso de más de 1 s (RNF-002-06).
+SYNC_BYTES = 32 * 1024 * 1024
 SPACE_MARGIN = 0.10  # margen de espacio libre sobre el tamaño de la copia
 RETRIES = 3  # reintentos de un fichero retenido por otro programa
 RETRY_WAIT_S = 0.5
@@ -440,11 +445,17 @@ def _copy_file(
 ) -> Generator[Progress, None, FilePrint]:
     digest = hashlib.sha256()
     size = 0
+    unsynced = 0
     with _retrying(lambda: _open_source(source), clock) as reader, target.open("xb") as writer:
         while chunk := reader.read(chunk_size):
             writer.write(chunk)
             digest.update(chunk)
             size += len(chunk)
+            unsynced += len(chunk)
+            if unsynced >= SYNC_BYTES:  # el fsync final de un fichero grande no para
+                writer.flush()  # el progreso más de 1 s (RNF-002-06)
+                os.fsync(writer.fileno())
+                unsynced = 0
             yield Progress("copia", done + size, total, f"Copiando «{rel}»…")
         writer.flush()
         os.fsync(writer.fileno())

@@ -163,6 +163,33 @@ class CopyTreeTest(unittest.TestCase):
             self.assertTrue(all(step.result is None for step in steps[:-1]))
             self.assertTrue(all(step.message for step in steps))
 
+    def test_large_files_are_synced_as_they_are_copied(self) -> None:
+        """RNF-002-06: cada fichero se fuerza a disco (``fsync``) cada ``SYNC_BYTES``
+        mientras se copia y al terminar, en orden: el ``fsync`` final de un fichero
+        grande nunca tiene más de ``SYNC_BYTES`` pendientes, que con uno solo al final
+        dejaba un paso de más de 1 s sin progreso (1 GiB en el PC de referencia, T36)."""
+        synced: list[int] = []
+        real_fsync = os.fsync
+
+        def recording(fd: int) -> None:
+            synced.append(os.fstat(fd).st_size)
+            real_fsync(fd)
+
+        with project_tmp() as tmp:
+            tree = Tree(tmp)
+            sizes = [size for _rel, size in copytree._listing(tree.source, EXCLUDE)[1]]
+            every = 2 * CHUNK
+            with (
+                mock.patch.object(copytree, "SYNC_BYTES", every),
+                mock.patch.object(copytree.os, "fsync", recording),
+            ):
+                _run(tree.steps())
+        expected = [
+            mark for size in sizes for mark in [*range(every, size + 1, every), size]
+        ]
+        self.assertEqual(synced, expected)
+        self.assertGreater(len(synced), len(sizes))  # algún fichero se sincronizó a medias
+
     def test_altered_byte_in_the_copy_is_detected(self) -> None:
         """RF-002-20: si un byte de la copia no es el que se leyó del original (fallo de
         escritura), la comprobación final lo detecta: error con el fichero y sin copia
