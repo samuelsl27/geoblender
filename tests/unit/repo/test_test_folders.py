@@ -13,6 +13,7 @@ spec 001).
 - TST-08 (T60): ninguna prueba fuera de un ``TestCase`` (funciones ``test_…`` de módulo).
 """
 
+import functools
 import unittest
 from pathlib import Path
 
@@ -23,7 +24,7 @@ tools_on_path()
 
 import check  # noqa: E402
 from gbtools.blender import BlenderInstall  # noqa: E402
-from gbtools.findings import format_findings  # noqa: E402
+from gbtools.findings import Finding, format_findings  # noqa: E402
 from gbtools.rules import FAMILIES, suites  # noqa: E402
 
 SPDX = "# SPDX-License-Identifier: GPL-3.0-or-later\n"
@@ -38,6 +39,18 @@ PACKAGES = {
     "tests/unit/__init__.py": SPDX,
     "tests/blender/__init__.py": SPDX,
 }
+
+
+@functools.cache
+def _real_findings_cached() -> tuple[Finding, ...]:
+    return tuple(suites.check(ROOT))
+
+
+def _real_findings() -> list[Finding]:
+    """Lo que encuentran las reglas en el árbol real, recorrido una sola vez para todas
+    las pruebas del módulo (cada recorrido costaba 0,5 s: RNF-001-01; convergencia de la
+    spec 002, T39)."""
+    return list(_real_findings_cached())
 
 
 def _found(files: dict[str, str]) -> list[tuple[str, int, str]]:
@@ -96,7 +109,7 @@ class TestFoldersTest(unittest.TestCase):
     def test_real_tree(self) -> None:
         """RF-001-06 / TST-01: todas las carpetas de ``tests/`` del repositorio con
         ``.py`` tienen ``__init__.py``."""
-        findings = suites.check(ROOT)
+        findings = _real_findings()
         self.assertEqual(findings, [], "\n" + format_findings(findings))
 
 
@@ -403,7 +416,7 @@ class UnconditionalSkipTest(unittest.TestCase):
         ``if``) y las de ``requires`` no se señalan; ni el árbol real."""
         found = _found({**SUITES, "tests/unit/test_condicional.py": CONDITIONAL})
         self.assertEqual(found, [])
-        real = [f for f in suites.check(ROOT) if f.rule == "TST-04"]
+        real = [f for f in _real_findings() if f.rule == "TST-04"]
         self.assertEqual(real, [], "\n" + format_findings(real))
 
     def test_constant_conditions(self) -> None:
@@ -520,7 +533,7 @@ class DuplicateTestsTest(unittest.TestCase):
         función no se señalan; ni el árbol real."""
         found = _found({**SUITES, "tests/unit/test_no_doble.py": NOT_DUPLICATES})
         self.assertEqual(found, [])
-        real = [f for f in suites.check(ROOT) if f.rule == "TST-05"]
+        real = [f for f in _real_findings() if f.rule == "TST-05"]
         self.assertEqual(real, [], "\n" + format_findings(real))
 
 
@@ -581,7 +594,7 @@ class NotRunTestsTest(unittest.TestCase):
 
     def test_real_tree(self) -> None:
         """RF-001-06 / TST-06: el árbol real no tiene ninguna."""
-        real = [f for f in suites.check(ROOT) if f.rule == "TST-06"]
+        real = [f for f in _real_findings() if f.rule == "TST-06"]
         self.assertEqual(real, [], "\n" + format_findings(real))
 
 
@@ -669,7 +682,7 @@ class ExpectedFailureRuleTest(unittest.TestCase):
             }
         )
         self.assertEqual(found, [])
-        real = [f for f in suites.check(ROOT) if f.rule == "TST-07"]
+        real = [f for f in _real_findings() if f.rule == "TST-07"]
         self.assertEqual(real, [], "\n" + format_findings(real))
 
 
@@ -764,7 +777,7 @@ class OutsideTestCaseTest(unittest.TestCase):
             }
         )
         self.assertEqual(found, [])
-        real = [f for f in suites.check(ROOT) if f.rule == "TST-08"]
+        real = [f for f in _real_findings() if f.rule == "TST-08"]
         self.assertEqual(real, [], "\n" + format_findings(real))
 
 

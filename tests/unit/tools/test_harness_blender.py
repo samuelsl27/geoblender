@@ -8,9 +8,12 @@ Estas pruebas lanzan Blender de verdad, en segundo plano, con
   (en la prueba, al importarla o en el propio guion) da un código distinto de 0; una que
   pasa, 0 (control positivo).
 - RF-001-07: una carpeta sin pruebas no es un verde: código 1 y el motivo.
-- RF-001-09: una ejecución real de ``tests/blender`` no crea ni cambia ningún fichero del
-  repositorio (ignorados incluidos, salvo ``.git/``; ningún ``__pycache__``) ni del perfil
-  de Blender del usuario, y no deja la copia temporal de la extensión. Cada proceso que
+- RF-001-09: una ejecución real del lanzador (una prueba que habilita la extensión y
+  guarda un ``.blend``) no crea ni cambia ningún fichero del repositorio (ignorados
+  incluidos, salvo ``.git/``; ningún ``__pycache__``) ni del perfil de Blender del
+  usuario, y no deja la copia temporal de la extensión. La suite real (``tests/blender``)
+  la ejecuta el paso «blender» de ``tools/check.py`` con su foto del repositorio: aquí no
+  se repite (RNF-001-01; convergencia de la spec 002, T39). Cada proceso que
   lanzan estas pruebas (Blender o una orden de ``check.py``) tiene su propia carpeta
   temporal (``TMPDIR``, ``TEMP`` y ``TMP``), que se borra entera al terminar: lo que deje
   no se busca ni se borra en el ``%TEMP%`` compartido, donde otra comprobación que se
@@ -36,6 +39,7 @@ import contextlib
 import io
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -143,6 +147,29 @@ EXPECTED_FAILURE = SPDX + (
 )
 # La lista cerrada de recursos de una raíz temporal, con el de la omisión anterior (T47).
 RESOURCES_WITH_ENGINE = SPDX + 'RESOURCES: tuple[str, ...] = ("motor",)\n'
+# La ejecución real de RealRunTest (RF-001-09): habilita la extensión real, como hacen las
+# pruebas de tests/blender, guarda un .blend en una carpeta temporal (Blender anota sus
+# ficheros recientes en el perfil) y la deshabilita. La suite real la ejecuta el paso
+# «blender» de check.py, con la foto del repositorio (RNF-001-01; convergencia de la spec
+# 002, T39).
+REAL_RUN = SPDX + (
+    "import tempfile\n"
+    "import unittest\n"
+    "from pathlib import Path\n\n"
+    "import bpy\n\n"
+    "from tests.support import blender_ext\n\n\n"
+    "class Real(unittest.TestCase):\n"
+    "    def test_habilita_y_guarda(self):\n"
+    "        blender_ext.enable()\n"
+    "        try:\n"
+    "            with tempfile.TemporaryDirectory() as tmp:\n"
+    "                path = Path(tmp) / 'vista.blend'\n"
+    "                bpy.ops.wm.save_as_mainfile(filepath=str(path))\n"
+    "                self.assertTrue(path.is_file())\n"
+    "        finally:\n"
+    "            blender_ext.unload()\n"
+)
+REAL_RUN_FILES = {"pruebas/test_real.py": REAL_RUN}
 # Una prueba que solo habilita y deshabilita la extensión, sin mirar la huella.
 ENABLE_DISABLE = SPDX + (
     "import unittest\n\n"
@@ -585,7 +612,12 @@ class ExpectedFailureTest(unittest.TestCase):
 
 
 class RealRunTest(unittest.TestCase):
-    """Una ejecución real de ``tests/blender`` con fotos antes y después."""
+    """Una ejecución real del lanzador, con fotos antes y después: Blender con el perfil
+    temporal y la copia de la extensión, sobre una carpeta con una sola prueba que la
+    habilita, guarda un ``.blend`` y la deshabilita (:data:`REAL_RUN`). La suite real
+    (``tests/blender``) no se repite aquí: la ejecuta el paso «blender» de
+    ``tools/check.py``, cuya foto del repositorio cubre RF-001-09 para ella (RNF-001-01;
+    convergencia de la spec 002, T39)."""
 
     result: CompletedProcess[str]
     repo_before: dict[str, tuple[int, int]]
@@ -601,13 +633,17 @@ class RealRunTest(unittest.TestCase):
         cls.profile_before = _listing(_user_profile())
         # Lo que Blender deja en su carpeta temporal propia (convergencia, T61).
         cls.leftovers = []
-        cls.result = _run_in_blender(install, LAUNCHER, leftovers=cls.leftovers)
+        with temp_tree(REAL_RUN_FILES) as tmp:
+            cls.result = _run_in_blender(
+                install, LAUNCHER, "--carpeta", str(tmp / "pruebas"), leftovers=cls.leftovers
+            )
         cls.profile_after = _listing(_user_profile())
         cls.repo_after = _listing(ROOT)
 
-    def test_real_suite_passes(self) -> None:
-        """RF-001-06: la ejecución real de ``tests/blender`` termina con 0."""
+    def test_real_run_passes(self) -> None:
+        """RF-001-06: la ejecución real termina con 0 y ejecuta su prueba."""
         self.assertEqual(self.result.returncode, 0, _output(self.result))
+        self.assertIn("Ran 1 test", self.result.stderr)
         self.assertIn("OK", self.result.stderr)
 
     def test_no_new_pycache_in_repo(self) -> None:
@@ -626,11 +662,21 @@ class RealRunTest(unittest.TestCase):
         self.assertEqual(self.leftovers, [])
 
 
+# Los ficheros de tests/blender que lleva la copia con fugas: la prueba de registro real
+# y, antes que ella, una que habilita y deshabilita la extensión (RNF-001-01; T39).
+LEAKY_SUITE = ("__init__.py", "test_registration.py")
+LEAKY_CYCLE = "test_ciclo.py"
+
+
 def _leaky_copy(folder: Path) -> Path:
-    """Copia en ``folder`` del lanzador (con ``gbtools``), de ``tests/support``, de
-    ``tests/blender`` y de la extensión, con la raíz de la extensión cambiada por
-    :data:`LEAKY_ROOT` y el manifiesto real sin ruedas ni BOM (las fugas no dependen de
-    él: T56); devuelve el lanzador de la copia."""
+    """Copia en ``folder`` del lanzador (con ``gbtools``), de ``tests/support`` y de la
+    extensión, con la raíz de la extensión cambiada por :data:`LEAKY_ROOT` y el
+    manifiesto real sin ruedas ni BOM (las fugas no dependen de él: T56); devuelve el
+    lanzador de la copia. Su ``tests/blender`` lleva solo la prueba de registro real
+    (:data:`LEAKY_SUITE`) y, antes que ella, :data:`ENABLE_DISABLE` como
+    :data:`LEAKY_CYCLE`: así la extensión ya se ha habilitado y deshabilitado cuando llega
+    la prueba de registro, como en la suite entera, sin repetir las demás pruebas
+    (RNF-001-01; convergencia de la spec 002, T39)."""
     ignore = shutil.ignore_patterns("__pycache__", "*.py[cod]", "wheels")
     shutil.copytree(ROOT / "tools", folder / "tools", ignore=ignore)
     shutil.copytree(ROOT / EXT, folder / EXT, ignore=ignore)
@@ -639,8 +685,12 @@ def _leaky_copy(folder: Path) -> Path:
     )
     (folder / "tests").mkdir()
     shutil.copy2(ROOT / "tests" / "__init__.py", folder / "tests" / "__init__.py")
-    for sub in ("support", "blender"):
-        shutil.copytree(ROOT / "tests" / sub, folder / "tests" / sub, ignore=ignore)
+    shutil.copytree(ROOT / "tests" / "support", folder / "tests" / "support", ignore=ignore)
+    suite = folder / "tests" / "blender"
+    suite.mkdir()
+    for name in LEAKY_SUITE:
+        shutil.copy2(ROOT / "tests" / "blender" / name, suite / name)
+    (suite / LEAKY_CYCLE).write_bytes(ENABLE_DISABLE.encode("utf-8"))
     (folder / EXT / "__init__.py").write_bytes(LEAKY_ROOT.encode("utf-8"))
     return folder / "tools" / "run_blender_tests.py"
 
@@ -653,7 +703,8 @@ class SessionFingerprintTest(unittest.TestCase):
     pruebas de la clase leen tres lanzamientos de Blender, hechos una vez: la extensión
     real con una carpeta cuya única prueba habilita y deshabilita sin mirar la huella
     (control positivo), la copia con esa misma carpeta, y la copia con su
-    ``tests/blender`` (presupuesto de RNF-001-01; convergencia, T62)."""
+    ``tests/blender``, que lleva solo la prueba de registro real precedida de esa misma
+    prueba (presupuesto de RNF-001-01; convergencia, T62, y de la spec 002, T39)."""
 
     clean: CompletedProcess[str]
     folder: CompletedProcess[str]
@@ -684,9 +735,10 @@ class SessionFingerprintTest(unittest.TestCase):
 
     def test_registration_test_uses_session_baseline(self) -> None:
         """RF-001-05: con esa copia, la prueba de registro real (``tests/blender`` de la
-        copia) falla en ``test_disable_restores_fingerprint`` nombrando cada fuga:
-        compara con la huella del principio de la sesión y no con una tomada después de
-        que otra prueba habilitara la extensión (que ya tendría la fuga)."""
+        copia, donde otra prueba la habilita y deshabilita antes) falla en
+        ``test_disable_restores_fingerprint`` nombrando cada fuga: compara con la huella
+        del principio de la sesión y no con una tomada después de que otra prueba
+        habilitara la extensión (que ya tendría la fuga)."""
         self.assertNotEqual(self.suite.returncode, 0, _output(self.suite))
         self.assertIn("FAIL: test_disable_restores_fingerprint", self.suite.stderr)
         for leak in (
@@ -1044,6 +1096,65 @@ class ChildTempTest(unittest.TestCase):
         for env in seen:
             self.assertOwnTemp(env)
         self.assertNotEqual(seen[0]["TEMP"], seen[1]["TEMP"])
+
+
+class HarnessBudgetTest(unittest.TestCase):
+    """Las pruebas del arnés que lanzan Blender no recorren ``tests/blender`` entero: esa
+    suite la ejecuta el paso «blender» de ``tools/check.py``, y repetirla aquí dos veces
+    más costaba unos 70 s de cada comprobación (RNF-001-01; convergencia de la spec 002,
+    T39). Sin lanzar nada: ``_locate``, ``_run_in_blender`` y ``_listing`` se sustituyen
+    por unos que anotan lo que se lanzaría."""
+
+    def recorded_runs(self, test_class: type[unittest.TestCase]) -> list[tuple[str, ...]]:
+        """Llama a ``setUpClass`` de una subclase de ``test_class`` con los lanzamientos
+        sustituidos y devuelve, por lanzamiento, los argumentos tras el guion y los
+        ficheros de su carpeta de pruebas (``--carpeta``, o ``tests/blender`` junto al
+        lanzador)."""
+        runs: list[tuple[str, ...]] = []
+
+        def fake_run(
+            install: BlenderInstall, script: Path, *args: str, leftovers: list[str] | None = None
+        ) -> CompletedProcess[str]:
+            if "--carpeta" in args:
+                folder = Path(args[args.index("--carpeta") + 1])
+            else:
+                folder = Path(script).resolve().parents[1] / "tests" / "blender"
+            runs.append((*args, "|", *sorted(os.listdir(folder))))
+            return CompletedProcess([], 0, "", "")
+
+        probe = type("Sonda", (test_class,), {})
+        module = sys.modules[__name__]
+        with (
+            mock.patch.object(module, "_locate", return_value=FAKE_INSTALL),
+            mock.patch.object(module, "_run_in_blender", side_effect=fake_run),
+            mock.patch.object(module, "_listing", return_value={}),
+        ):
+            probe.setUpClass()  # type: ignore[attr-defined]
+        return runs
+
+    def test_real_run_uses_a_small_folder(self) -> None:
+        """RNF-001-01, RF-001-09: la ejecución real de ``RealRunTest`` es una sola, con
+        ``--carpeta`` y un único fichero de pruebas (habilita la extensión y guarda un
+        ``.blend``), no ``tests/blender`` entero."""
+        runs = self.recorded_runs(RealRunTest)
+        self.assertEqual(len(runs), 1, runs)
+        (run,) = runs
+        self.assertEqual(run[0], "--carpeta", run)
+        self.assertEqual(run[run.index("|") + 1 :], ("test_real.py",))
+
+    def test_fingerprint_suite_runs_only_registration(self) -> None:
+        """RNF-001-01, RF-001-05: la copia con fugas de ``SessionFingerprintTest`` lleva
+        en su ``tests/blender`` solo la prueba de registro real y una que habilita y
+        deshabilita antes que ella (así su huella de referencia sigue siendo la del
+        principio de la sesión), no la suite entera."""
+        runs = self.recorded_runs(SessionFingerprintTest)
+        self.assertEqual(len(runs), 3, runs)
+        suite = runs[2]
+        self.assertNotIn("--carpeta", suite)
+        self.assertEqual(
+            suite[suite.index("|") + 1 :],
+            ("__init__.py", "test_ciclo.py", "test_registration.py"),
+        )
 
 
 class ListingTest(unittest.TestCase):

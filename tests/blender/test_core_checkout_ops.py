@@ -12,11 +12,14 @@ RF-002-33; RNF-002-06; plan 002 §5.3; BS §8.1).
 - ``GEOBLENDER_MT_core_network`` («Copia local y red ▸») y el botón de la pestaña
   «Proyecto».
 
-RNF-002-06 con un proyecto sintético de 200 MB: el progreso se actualiza al menos cada
-segundo y Esc cancela en ≤ 2 s. En ``blender -b`` no hay bucle de eventos: las pruebas
-toman el modal de ``window.modal_operators`` y le pasan los eventos ``TIMER`` (seguidos,
-sin la espera de 0,05 s del temporizador) y ``ESC``, midiendo cuánto tarda cada llamada y
-el tiempo entre dos actualizaciones del progreso. Se ejecuta con
+En ``blender -b`` no hay bucle de eventos: las pruebas toman el modal de
+``window.modal_operators`` y le pasan los eventos ``TIMER`` (seguidos, sin la espera de
+0,05 s del temporizador) y ``ESC``. Esc a mitad de la copia se prueba con un proyecto de
+32 MiB y un paso por evento. La medida de RNF-002-06 dentro de Blender (200 MB: el
+progreso se actualiza al menos cada segundo y Esc cancela en ≤ 2 s) está en
+``tests/rendimiento/blender/perf_core_checkout_ops.py`` (``tools/check.py
+--rendimiento``), con las ayudas de :class:`CheckoutOpsTestCase`: aquí costaba unos 13 s
+de cada comprobación (RNF-001-01; convergencia, T39). Se ejecuta con
 ``tools/run_blender_tests.py``.
 """
 
@@ -43,6 +46,7 @@ from gbtools import manifest  # noqa: E402
 CONTEXT = manifest.load(ROOT / manifest.MANIFEST_RELPATH)["name"]
 WINDOW = (699_500.4, 4_399_500.6, 700_500.2, 4_400_500.9)
 BIG = 200 * 1024 * 1024  # el proyecto sintético de RNF-002-06 (spec 002, T34)
+SMALL = 32 * 1024 * 1024  # cuatro trozos de 8 MiB: Esc a mitad de la copia (T39)
 PROGRESS_GAP_S = 1.0
 ESCAPE_S = 2.0
 ORIGINAL = "Cantera Prueba.gbproj"
@@ -55,6 +59,11 @@ ESC = SimpleNamespace(type="ESC", value="PRESS")
 def ext(name: str) -> ModuleType:
     """El módulo ``name`` de la copia de pruebas de la extensión (ya importado)."""
     return sys.modules[f"{module_name()}.{name}"]
+
+
+def _seconds(value: float) -> str:
+    """Segundos con tres decimales y coma decimal (salida en español)."""
+    return f"{value:.3f}".replace(".", ",")
 
 
 def write_big(path: Path, size: int) -> None:
@@ -154,25 +163,50 @@ class CheckoutOpsTestCase(unittest.TestCase):
         state, _calls = self.drive(operator)
         self.assertEqual(state, {"FINISHED"})
 
-    def assert_progress(self, operator: object, calls: list[float]) -> None:
+    def assert_progress(self, operator: object, calls: list[float], label: str = "") -> None:
         """Comprueba que ninguna llamada del modal pasa de 1 s y que entre dos
-        actualizaciones del progreso no pasa más de 1 s."""
+        actualizaciones del progreso no pasa más de 1 s; con ``label``, escribe la línea
+        de medida que recoge ``tools/check.py --rendimiento``."""
         times = [entry[0] for entry in operator.progress_log]
         self.assertGreater(len(times), 10)
         gaps = [later - earlier for earlier, later in zip(times, times[1:])]
         self.assertLessEqual(max(gaps), PROGRESS_GAP_S, f"hueco máximo {max(gaps):.3f} s")
         self.assertLessEqual(max(calls), PROGRESS_GAP_S, f"llamada máxima {max(calls):.3f} s")
-        print(f"\n    {type(operator).__name__}: {len(times)} actualizaciones del progreso, hueco "
-              f"máximo {max(gaps):.3f} s, llamada máxima {max(calls):.3f} s")
+        if label:
+            print(
+                f"RNF-002-06: {label}: {len(times)} actualizaciones del progreso, hueco "
+                f"máximo {_seconds(max(gaps))} s, llamada más larga {_seconds(max(calls))} s "
+                f"(presupuesto {_seconds(PROGRESS_GAP_S)} s)",
+                file=sys.stderr,
+                flush=True,
+            )
 
-    def escape(self, operator: object) -> float:
+    def escape(self, operator: object, label: str = "") -> float:
+        """Esc al modal: cancela en ≤ 2 s; con ``label``, escribe la medida."""
         started = time.perf_counter()
         state = operator.modal(bpy.context, ESC)
         took = time.perf_counter() - started
         self.assertEqual(state, {"CANCELLED"})
         self.assertLessEqual(took, ESCAPE_S, f"Esc tardó {took:.3f} s")
-        print(f"    {type(operator).__name__}: Esc en {took:.3f} s")
+        if label:
+            print(
+                f"RNF-002-06: {label}: Esc en {_seconds(took)} s (presupuesto "
+                f"{_seconds(ESCAPE_S)} s)",
+                file=sys.stderr,
+                flush=True,
+            )
         return took
+
+    def start(self, idname: str, cls_name: str, *, one_step: bool = False, **props: object) -> object:
+        """Lanza el operador modal y lo devuelve sin avanzarlo; con ``one_step``, cada
+        evento avanza un solo paso (para llegar a la mitad de la copia de un proyecto
+        pequeño)."""
+        operator_fn = getattr(bpy.ops.geoblender, idname)
+        self.assertEqual(operator_fn("EXEC_DEFAULT", **props), {"RUNNING_MODAL"})
+        operator = self.running(getattr(self.ops, cls_name))
+        if one_step:
+            operator.STEP_BUDGET_S = 0.0
+        return operator
 
     @staticmethod
     def copy_phase_half(operator: object) -> bool:
@@ -281,21 +315,20 @@ class CheckoutPublishFlowTest(CheckoutOpsTestCase):
         self.assertEqual(sorted(p.name for p in self.parent.iterdir()), [ORIGINAL])
 
 
-class ProgressAndEscapeTest(CheckoutOpsTestCase):
-    def test_checkout_200mb_progress_and_escape(self) -> None:
-        """RNF-002-06, RF-002-31: sacar copia de un proyecto de 200 MB actualiza el
-        progreso al menos cada segundo; Esc a mitad de la copia cancela en ≤ 2 s sin dejar
-        copia ni reserva y vuelve a abrir el original; y la copia completa también da
-        progreso cada segundo."""
-        self.open_project(big=BIG)
-        self.assertEqual(
-            bpy.ops.geoblender.core_checkout_project("EXEC_DEFAULT", directory=str(self.copies)),
-            {"RUNNING_MODAL"},
-        )
-        operator = self.running(self.ops.GEOBLENDER_OT_core_checkout_project)
-        state, calls = self.drive(operator, until=self.copy_phase_half)
+class EscapeTest(CheckoutOpsTestCase):
+    """Esc a mitad de la copia, con un proyecto de 32 MiB y un paso por evento (la medida
+    con 200 MB, en ``tests/rendimiento/blender``; T39)."""
+
+    def test_checkout_escape_then_complete(self) -> None:
+        """RF-002-31, RNF-002-06: Esc a mitad de la copia de «Trabajar en copia local…»
+        cancela en ≤ 2 s sin dejar copia ni reserva y vuelve a abrir el original en
+        escritura; después, la copia completa termina con el progreso de cada paso y deja
+        abierta la copia."""
+        self.open_project(big=SMALL)
+        checkout = ("core_checkout_project", "GEOBLENDER_OT_core_checkout_project")
+        operator = self.start(*checkout, one_step=True, directory=str(self.copies))
+        state, _calls = self.drive(operator, until=self.copy_phase_half)
         self.assertEqual(state, {"RUNNING_MODAL"})
-        self.assert_progress(operator, calls)
         self.escape(operator)
         self.assertEqual(list(self.copies.iterdir()), [])
         self.assertEqual(operator.outcome, "CANCELLED")
@@ -304,40 +337,33 @@ class ProgressAndEscapeTest(CheckoutOpsTestCase):
         self.assertEqual(project.root, self.root)
         self.assertTrue(project.writable)
         self.assertIs(self.lock.read_holder(self.root).mode, self.lock.LockMode.LOCAL)
-        self.assertEqual(bpy.ops.geoblender.core_checkout_project(
-            "EXEC_DEFAULT", directory=str(self.copies)), {"RUNNING_MODAL"})
-        operator = self.running(self.ops.GEOBLENDER_OT_core_checkout_project)
-        state, calls = self.drive(operator)
+        operator = self.start(*checkout, one_step=True, directory=str(self.copies))
+        state, _calls = self.drive(operator)
         self.assertEqual(state, {"FINISHED"})
-        self.assert_progress(operator, calls)
+        phases = [entry[1] for entry in operator.progress_log]
+        self.assertGreater(phases.count("copia"), 3)
         self.assertIs(self.ps.current().mode, self.core.OpenMode.CHECKOUT)
 
-    def test_publish_200mb_progress_and_escape(self) -> None:
-        """RNF-002-06, RF-002-32: publicar una copia de 200 MB actualiza el progreso al
-        menos cada segundo; Esc a mitad de la copia a ``.publicando`` cancela en ≤ 2 s sin
-        sustituir nada (ni ``.publicando``, ni cambios en el original) y la copia sigue
-        abierta; la publicación completa también da progreso cada segundo."""
-        self.open_project(big=BIG)
+    def test_publish_escape_then_complete(self) -> None:
+        """RF-002-32, RNF-002-06: Esc a mitad de la copia a ``.publicando`` cancela en
+        ≤ 2 s sin sustituir nada (ni ``.publicando``, ni cambios en el original ni en su
+        reserva) y la copia sigue abierta; después, la publicación completa termina."""
+        self.open_project(big=SMALL)
         self.checkout()
         copy = self.ps.current()
         reservation = (self.root / ".lock").read_bytes()
-        self.assertEqual(bpy.ops.geoblender.core_publish_project(
-            "EXEC_DEFAULT", open_published=False), {"RUNNING_MODAL"})
-        operator = self.running(self.ops.GEOBLENDER_OT_core_publish_project)
-        state, calls = self.drive(operator, until=self.copy_phase_half)
+        publish = ("core_publish_project", "GEOBLENDER_OT_core_publish_project")
+        operator = self.start(*publish, one_step=True, open_published=False)
+        state, _calls = self.drive(operator, until=self.copy_phase_half)
         self.assertEqual(state, {"RUNNING_MODAL"})
-        self.assert_progress(operator, calls)
         self.escape(operator)
         self.assertEqual(sorted(p.name for p in self.parent.iterdir()), [ORIGINAL])
         self.assertEqual((self.root / ".lock").read_bytes(), reservation)
         self.assertIs(self.ps.current(), copy)
         self.assertTrue(copy.writable)
-        self.assertEqual(bpy.ops.geoblender.core_publish_project(
-            "EXEC_DEFAULT", open_published=False), {"RUNNING_MODAL"})
-        operator = self.running(self.ops.GEOBLENDER_OT_core_publish_project)
-        state, calls = self.drive(operator)
+        operator = self.start(*publish, one_step=True, open_published=False)
+        state, _calls = self.drive(operator)
         self.assertEqual(state, {"FINISHED"})
-        self.assert_progress(operator, calls)
         self.assertIsNone(self.ps.current())
         self.assertEqual(sorted(p.name for p in self.parent.iterdir()), [ORIGINAL, PREVIOUS])
 
