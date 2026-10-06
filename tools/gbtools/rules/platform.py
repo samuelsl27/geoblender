@@ -28,20 +28,36 @@ En ``geoblender/``, ``tools/`` y ``tests/``:
 
 - PLT-03: un módulo ``x.py`` y un paquete ``x/`` (con ``__init__.py``) en la misma
   carpeta: Python importa el paquete y oculta el módulo sin avisar.
+
+En todos los ficheros de texto del repositorio comprobado (spec 007, D-8):
+
 - EXP-01: texto con una ruta a los expedientes de clientes (unidad, dos puntos, barra,
   ``an`` y barra) o al NAS por IP (dos barras, invertidas, normales o mezcladas, una
-  IPv4 y una barra; las normales, desde la convergencia de la spec 001, T39).
+  IPv4 y una barra; las normales, desde la convergencia de la spec 001, T39). Desde la
+  spec 007 (RF-007-04; plan 007 §5.4.2), también la ruta de la documentación
+  (``repo.find_docs``: ``GEOBLENDER_DOCS_DIR`` o la carpeta madre) y la de
+  ``GEOBLENDER_NAS_ESPEJO`` si está definida, **sin la raíz**: sin la unidad (``X:\\``)
+  ni el recurso (``\\\\servidor\\recurso\\``), con los componentes unidos por cualquier
+  serie de barras y sin distinguir mayúsculas, así casa escrita con cualquier letra de
+  unidad, en UNC o sin raíz. Se usan el valor tal cual y, si tiene letra de unidad, su
+  ``os.path.realpath`` (una unidad de red da su UNC); un valor con menos de dos
+  componentes no se usa. El mensaje nombra de dónde sale la ruta, nunca la ruta: la regla
+  no lleva escrita la ruta que prohíbe.
 """
 
 from __future__ import annotations
 
 import ast
+import ntpath
+import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..findings import Finding
-from ..repo import is_text_file, iter_repo_files, relpath
+from ..layout import ENV_DOCS_DIR, ENV_NAS_MIRROR
+from ..repo import find_docs, is_text_file, iter_repo_files, relpath
 from . import pyast
 from .imports import EXTENSION, is_internal
 
@@ -80,6 +96,15 @@ DOSSIER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)\b[a-z]:[\\/]+an[\\/]"),
     re.compile(r"[\\/]{2}\d{1,3}(\.\d{1,3}){3}[\\/]"),
 )
+DOSSIER_MESSAGE = (
+    "contiene una ruta a los expedientes de clientes o al NAS: las rutas a datos reales "
+    "llegan por variable de entorno (GEOBLENDER_SILVESTRE_DIR…), nunca escritas (U4)"
+)
+# EXP-01 ampliada: una ruta prohibida con menos componentes (sin la raíz) no se usa.
+MIN_PATH_PARTS = 2
+ORIGIN_DOCS_VARIABLE = f"la carpeta de la documentación ({ENV_DOCS_DIR})"
+ORIGIN_DOCS_PARENT = "la carpeta madre del código (la documentación)"
+ORIGIN_NAS_MIRROR = f"la carpeta del espejo del NAS ({ENV_NAS_MIRROR})"
 SHADOW_SCOPES: tuple[str, ...] = (f"{EXTENSION}/", "tools/", "tests/")
 
 
@@ -440,32 +465,99 @@ def _shadowing(root: Path, rels: list[str]) -> list[Finding]:
     return findings
 
 
-def _dossier_paths(root: Path, paths: list[Path]) -> list[Finding]:
-    findings: list[Finding] = []
+@dataclass(frozen=True)
+class ForbiddenPath:
+    """Una ruta que el código no puede escribir (EXP-01 ampliada): de dónde sale y su
+    patrón sin la raíz. No guarda la ruta: el mensaje nunca la muestra."""
+
+    origin: str
+    pattern: re.Pattern[str]
+
+
+def rootless_parts(value: str) -> tuple[str, ...]:
+    """Los componentes de ``value`` sin la unidad (``X:\\``) ni el recurso
+    (``\\\\servidor\\recurso\\``), con cualquier barra."""
+    _drive, _root, tail = ntpath.splitroot(ntpath.normpath(value))
+    return tuple(part for part in re.split(r"[\\/]+", tail) if part and part != ".")
+
+
+def _forms(value: str) -> list[str]:
+    """``value`` y, si empieza por una letra de unidad, su ruta real (una unidad de red
+    da su UNC). Una ruta UNC no se resuelve: no hace falta, y resolver el nombre de un
+    servidor que no responde puede tardar."""
+    forms = [value]
+    drive = ntpath.splitroot(value)[0]
+    if len(drive) == 2 and drive[1] == ":":
+        try:
+            forms.append(os.path.realpath(value))
+        except (OSError, ValueError):
+            pass
+    return forms
+
+
+def forbidden_paths(root: Path, environ: Mapping[str, str]) -> list[ForbiddenPath]:
+    """Las rutas de la documentación (la de ``find_docs``: la variable o la carpeta
+    madre) y del espejo del NAS (``GEOBLENDER_NAS_ESPEJO``), como patrones sin la raíz y
+    sin distinguir mayúsculas (RF-007-04)."""
+    sources: list[tuple[str, str]] = []
+    docs_variable = environ.get(ENV_DOCS_DIR, "")
+    docs = find_docs(root, environ)
+    if docs is not None:
+        origin = ORIGIN_DOCS_VARIABLE if docs_variable else ORIGIN_DOCS_PARENT
+        sources.append((origin, str(docs)))
+        if docs_variable:
+            sources.append((origin, docs_variable))
+    nas = environ.get(ENV_NAS_MIRROR, "")
+    if nas:
+        sources.append((ORIGIN_NAS_MIRROR, nas))
+    found: dict[str, ForbiddenPath] = {}
+    for origin, value in sources:
+        for form in _forms(value):
+            parts = rootless_parts(form)
+            if len(parts) < MIN_PATH_PARTS:
+                continue
+            regex = r"[\\/]+".join(re.escape(part) for part in parts)
+            if regex.casefold() not in found:
+                pattern = re.compile(regex, re.IGNORECASE)
+                found[regex.casefold()] = ForbiddenPath(origin, pattern)
+    return list(found.values())
+
+
+def _forbidden_message(origin: str) -> str:
+    return (
+        f"contiene la ruta de {origin}, escrita con cualquier unidad o sin ella: el código "
+        "no nombra la carpeta de la documentación, la del proyecto ni la del NAS (spec "
+        f"007, RF-007-04). Quítela: la documentación se encuentra sola (la carpeta madre o "
+        f"{ENV_DOCS_DIR}) y el espejo llega por {ENV_NAS_MIRROR}"
+    )
+
+
+def _dossier_paths(
+    root: Path, paths: list[Path], forbidden: list[ForbiddenPath]
+) -> list[Finding]:
+    """EXP-01 en todos los ficheros de texto: una vez por línea y por mensaje."""
+    patterns = [(pattern, DOSSIER_MESSAGE) for pattern in DOSSIER_PATTERNS] + [
+        (item.pattern, _forbidden_message(item.origin)) for item in forbidden
+    ]
+    findings: set[Finding] = set()
     for path in paths:
+        if path.is_symlink() or not is_text_file(path):
+            continue
         rel = relpath(root, path)
-        if not rel.startswith(SHADOW_SCOPES) or path.is_symlink():
-            continue
-        if not is_text_file(path):
-            continue
         text = path.read_bytes().decode("utf-8", errors="replace")
-        for number, line in enumerate(text.split("\n"), start=1):
-            if any(pattern.search(line) for pattern in DOSSIER_PATTERNS):
-                findings.append(
-                    Finding(
-                        rel,
-                        number,
-                        RULE_DOSSIERS,
-                        "contiene una ruta a los expedientes de clientes o al NAS: "
-                        "las rutas a datos reales llegan por variable de entorno "
-                        "(GEOBLENDER_SILVESTRE_DIR…), nunca escritas (U4)",
-                    )
-                )
-    return findings
+        for pattern, message in patterns:
+            for match in pattern.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                findings.add(Finding(rel, line, RULE_DOSSIERS, message))
+    return sorted(findings)
 
 
-def check(root: Path) -> list[Finding]:
-    """Incumplimientos de PLT-01 a 03, ARQ-03, 09, 15, 16, 18, 19, EXP-01 y AST-01."""
+def check(root: Path, environ: Mapping[str, str] | None = None) -> list[Finding]:
+    """Incumplimientos de PLT-01 a 03, ARQ-03, 09, 15, 16, 18, 19, EXP-01 y AST-01.
+
+    ``environ`` (por defecto, el del proceso) da ``GEOBLENDER_DOCS_DIR`` y
+    ``GEOBLENDER_NAS_ESPEJO`` a EXP-01; las pruebas pasan el suyo."""
+    env = os.environ if environ is None else environ
     modules, findings = pyast.parse_modules(root, EXTENSION, EXTENSION)
     for module in modules:
         findings.extend(_bl_info(module))
@@ -476,5 +568,5 @@ def check(root: Path) -> list[Finding]:
     findings.extend(_preferences(modules))
     paths = list(iter_repo_files(root))
     findings.extend(_shadowing(root, [relpath(root, path) for path in paths]))
-    findings.extend(_dossier_paths(root, paths))
+    findings.extend(_dossier_paths(root, paths, forbidden_paths(root, env)))
     return sorted(findings)
