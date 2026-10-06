@@ -27,6 +27,9 @@ leer y escribir:
   (ADR-0010).
 - :meth:`Project.refresh_header`: al guardar la vista, la cabecera se reescribe desde la
   base de datos si difiere (RF-002-07), solo en escritura y con el cerrojo propio.
+- :meth:`Project.set_window`: cambia la ventana de trabajo y con ella el GeoOrigin
+  (RF-002-27): nuevo origen en la base y en la cabecera, evento ``move_origin`` con el
+  motivo (obligatorio); ninguna coordenada absoluta guardada cambia.
 - :meth:`Project.close`: en escritura, registra ``close``, reescribe la cabecera desde la
   base de datos y libera el cerrojo, y solo si el cerrojo sigue siendo de esta sesión; en
   solo lectura no escribe nada en la carpeta del proyecto.
@@ -51,11 +54,20 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from ..errors import DatabaseBusyError, DatabaseError, GeoblenderError, LockError, ProjectError
-from ..georef.origin import GeoOrigin, Window
+from ..errors import (
+    DatabaseBusyError,
+    DatabaseError,
+    GeoblenderError,
+    LockError,
+    ProjectError,
+    ValidationError,
+)
+from ..georef.crs import CrsCatalog, load_catalog
+from ..georef.origin import GeoOrigin, Window, align_window, check_grid_step, choose_origin
 from ..gpkg.connection import BUSY_TIMEOUT_MS, GpkgConnection
 from ..gpkg.header import read_header
 from ..gpkg.wal import WalOutcome, to_classic_journal
+from ..paths import find_absolute_paths
 from ..sysinfo import SessionInfo, pid_alive
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
@@ -425,6 +437,95 @@ class Project:
         write_manifest(self.root, header, self.session.session_uid)
         self.manifest = header
         return True
+
+    # Ventana de trabajo y GeoOrigin -------------------------------------------------
+
+    def set_window(
+        self,
+        window: Window | tuple[float, float, float, float],
+        grid_step_m: float,
+        z0: int,
+        reason: str,
+        *,
+        catalog: CrsCatalog | None = None,
+    ) -> GeoOrigin:
+        """Cambia la ventana de trabajo (absoluta, m) y con ella el GeoOrigin (RF-002-27):
+        la ventana se amplía a la unidad de alineación del paso y el origen nuevo es su
+        centro redondeado a 100 m (RF-002-24), con ``z0``. En una transacción se guardan el
+        origen, la ventana y el paso en ``gb_project`` y el evento ``move_origin`` con el
+        motivo y los dos orígenes; después, la cabecera. Ninguna coordenada absoluta
+        guardada cambia (el origen solo afecta a las vistas). Devuelve el origen nuevo.
+
+        :class:`ValidationError` sin motivo o con uno que lleva una ruta absoluta, o si la
+        ventana, el paso o ``z0`` no valen; :class:`ProjectError` en solo lectura;
+        :class:`LockError` sin el cerrojo. En todos esos casos no cambia nada."""
+        obj = f"Ventana de trabajo de «{self.name}»"
+        text = reason.strip() if isinstance(reason, str) else ""
+        if not text:
+            raise ValidationError(
+                "core.window_reason_required",
+                "hace falta un motivo: queda registrado con el cambio del GeoOrigin",
+                obj=obj,
+                field="motivo",
+                value=reason,
+            )
+        if find_absolute_paths(text):
+            raise ValidationError(
+                "core.window_reason_path",
+                "el motivo no puede llevar rutas absolutas (el proyecto no guarda ninguna)",
+                obj=obj,
+                field="motivo",
+                value=reason,
+            )
+        self._require_writable()
+        record = self.record
+        if record is None:  # inalcanzable: solo con la cabecera no se abre en escritura
+            raise TypeError("el proyecto no tiene la fila de gb_project")
+        from .create import check_window_inside  # create usa este módulo
+
+        step = check_grid_step(grid_step_m)
+        typed = window if isinstance(window, Window) else Window(*window)
+        aligned = align_window(typed, step)
+        crs = (load_catalog() if catalog is None else catalog).horizontal(record.crs_epsg)
+        check_window_inside(crs, typed, aligned)
+        origin = choose_origin(aligned, z0)
+        previous = record.origin
+        now = format_utc(self.clock.now())
+        message = (
+            f"Ventana de trabajo cambiada por {self.session.user_host}: GeoOrigin "
+            f"({previous.x0}; {previous.y0}; {previous.z0}) → ({origin.x0}; {origin.y0}; "
+            f"{origin.z0}), ventana ({aligned.xmin:.0f}; {aligned.ymin:.0f}) – "
+            f"({aligned.xmax:.0f}; {aligned.ymax:.0f}), paso {step:g} m. Motivo: {text}"
+        )
+        with self.write_transaction() as conn:
+            conn.execute(
+                "UPDATE gb_project SET origin_x = ?, origin_y = ?, origin_z = ?, "
+                "grid_step_m = ?, window_xmin = ?, window_ymin = ?, window_xmax = ?, "
+                "window_ymax = ?, modified_at = ?, last_written_with = ?",
+                (
+                    origin.x0, origin.y0, origin.z0, step,
+                    aligned.xmin, aligned.ymin, aligned.xmax, aligned.ymax,
+                    now, self.session.geoblender_version,
+                ),
+            )
+            record_event(
+                conn,
+                EventKind.MOVE_ORIGIN,
+                message,
+                session=self.session,
+                at=now,
+                data={
+                    "reason": text,
+                    "from": list(previous.as_tuple()),
+                    "to": list(origin.as_tuple()),
+                    "window": [aligned.xmin, aligned.ymin, aligned.xmax, aligned.ymax],
+                    "grid_step_m": step,
+                },
+            )
+        record = self.reload()
+        self.manifest = manifest_from_record(record, previous=self.manifest)
+        write_manifest(self.root, self.manifest, self.session.session_uid)
+        return record.origin
 
     # Cerrojo ----------------------------------------------------------------------
 

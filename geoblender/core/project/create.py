@@ -141,7 +141,10 @@ def _vertical(catalog: CrsCatalog, epsg: object, note: object) -> VerticalRef:
     return vertical
 
 
-def _check_inside(crs: CrsRef, typed: Window, aligned: Window) -> None:
+def check_window_inside(crs: CrsRef, typed: Window, aligned: Window) -> None:
+    """:class:`ValidationError` (campo «ventana») si la ventana ``aligned`` (la
+    tecleada, ``typed``, ampliada) no cae dentro del ámbito de ``crs``; lo usan crear
+    y cambiar la ventana de trabajo."""
     if crs.contains(aligned.xmin, aligned.ymin, aligned.xmax, aligned.ymax):
         return
     left, bottom, right, top = crs.bounds
@@ -172,7 +175,7 @@ def prepare(settings: ProjectSettings, catalog: CrsCatalog | None = None) -> Pre
     step = check_grid_step(settings.grid_step_m)
     typed = _window(settings.window)
     aligned = align_window(typed, step)
-    _check_inside(crs, typed, aligned)
+    check_window_inside(crs, typed, aligned)
     origin = choose_origin(aligned, settings.z0)
     return PreparedProject(
         name=name,

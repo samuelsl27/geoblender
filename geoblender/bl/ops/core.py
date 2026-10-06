@@ -19,6 +19,14 @@
   proyecto y propone «Guardar como» fuera de ella (spec §8).
 - ``geoblender.core_show_lock`` (RF-002-09, RF-002-10): quién tiene el cerrojo y, si está
   caducado o reservado, forzarlo con confirmación.
+- ``geoblender.core_set_crs`` (RF-002-23; en esta spec, solo consulta) y
+  ``geoblender.core_show_geoorigin`` (RF-002-24): el CRS horizontal y vertical, y el
+  GeoOrigin, la ventana y el paso del proyecto abierto (:func:`crs_lines`,
+  :func:`origin_lines`).
+- ``geoblender.core_set_work_window`` (RF-002-26, RF-002-27): cambia la ventana de
+  trabajo y con ella el GeoOrigin, con un motivo obligatorio
+  (``core.project.Project.set_window``); las escenas pasan al origen nuevo y la vista
+  queda desfasada; una ventana de más de ±8 km avisa con el error estimado.
 
 Sin ``UNDO`` en ``bl_options``: solo escriben en el proyecto y no crean objetos de la
 vista, y Ctrl+Z no puede deshacer el proyecto (regla provisional de R-10). No calculan:
@@ -44,6 +52,7 @@ from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 
 from ...core.errors import GeoblenderError, ValidationError
 from ...core.georef.crs import DEFAULT_HORIZONTAL_EPSG, DEFAULT_VERTICAL_EPSG, load_catalog
+from ...core.georef.transform import precision_report
 from ...core.numbers import parse_decimal
 from ...core.paths import is_within, next_free_path
 from ...core.project import migrations as migrations_mod
@@ -53,7 +62,7 @@ from ...core.project.lock import inspect as inspect_lock
 from ...core.project.migrations import MigrationResult, backup_path, migrate_steps
 from ...core.project.model import OpenResult, ProjectSettings, Progress
 from ...core.project.open import ProjectInspection, SchemaRelation, inspect_project, open_steps
-from ..scene import project_session
+from ..scene import georef, project_session
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 TRANSLATION_CONTEXT = "Geoblender"
@@ -629,6 +638,215 @@ class GEOBLENDER_OT_core_show_lock(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Sistema de referencia, GeoOrigin y ventana de trabajo --------------------------------
+
+_THIN_SPACE = "\u2009"  # espacio fino de miles
+
+
+def _whole(value: float) -> str:
+    """Un número en metros como lo lee una persona: miles con espacio fino y coma decimal
+    (``700 000``, ``4 400 500,9``)."""
+    if float(value).is_integer():
+        return f"{int(value):,d}".replace(",", _THIN_SPACE)
+    text = f"{value:,.3f}".rstrip("0").rstrip(".")
+    return text.replace(",", _THIN_SPACE).replace(".", ",")
+
+
+def _typed(value: float) -> str:
+    """Un número para volver a teclearlo en un diálogo (coma decimal, sin miles)."""
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.3f}".rstrip("0").replace(".", ",")
+
+
+def crs_lines(project: Any) -> list[str]:
+    """El CRS horizontal y vertical del proyecto (de su cabecera, que coincide con la
+    base), en español."""
+    header = project.manifest
+    lines = [f"CRS horizontal: EPSG:{header.crs_epsg} · {header.crs_name}"]
+    if header.vcrs_epsg is None:
+        lines.append(f"CRS vertical: {header.vcrs_name} · {header.vcrs_note or ''}".rstrip(" ·"))
+    else:
+        lines.append(f"CRS vertical: EPSG:{header.vcrs_epsg} · {header.vcrs_name}")
+    return lines
+
+
+def origin_lines(project: Any) -> list[str]:
+    """El GeoOrigin, la ventana de trabajo y el paso de rejilla del proyecto, en
+    español; sin ventana si solo se pudo leer la cabecera."""
+    origin = project.origin
+    lines = [
+        f"GeoOrigin: ({_whole(origin.x0)}; {_whole(origin.y0)}; {_whole(origin.z0)}) m"
+    ]
+    window = project.window
+    if window is None:
+        lines.append("Ventana de trabajo: no disponible (solo se ha leído la cabecera)")
+    else:
+        lines.append(
+            f"Ventana de trabajo: ({_whole(window.xmin)}; {_whole(window.ymin)}) – "
+            f"({_whole(window.xmax)}; {_whole(window.ymax)}) m"
+        )
+    lines.append(f"Paso de rejilla: {_whole(project.grid_step_m)} m")
+    return lines
+
+
+def _poll_project(cls: type, context: bpy.types.Context) -> bool:
+    if project_session.current() is None:
+        cls.poll_message_set("No hay ningún proyecto abierto")  # type: ignore[attr-defined]
+        return False
+    return True
+
+
+class GEOBLENDER_OT_core_set_crs(bpy.types.Operator):
+    """Coordinate reference system of the project (horizontal and vertical)"""
+
+    bl_idname = "geoblender.core_set_crs"
+    bl_label = "Coordinate reference system…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return _poll_project(cls, context)
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        return context.window_manager.invoke_props_dialog(self, width=520)
+
+    def draw(self, context: bpy.types.Context) -> None:
+        project = project_session.current()
+        column = self.layout.column(align=True)
+        for line in crs_lines(project) if project is not None else ():
+            column.label(text=line, translate=False)
+        column.label(
+            text="Cambiar el CRS de un proyecto con datos llegará más adelante (R-79)",
+            translate=False,
+        )
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        project = project_session.current()
+        if project is None:
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Proyecto «{project.name}»: " + "; ".join(crs_lines(project)))
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_core_show_geoorigin(bpy.types.Operator):
+    """Local origin (GeoOrigin) of the project: whole metres, read-only"""
+
+    bl_idname = "geoblender.core_show_geoorigin"
+    bl_label = "Local origin (GeoOrigin)…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return _poll_project(cls, context)
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        return context.window_manager.invoke_props_dialog(self, width=520)
+
+    def draw(self, context: bpy.types.Context) -> None:
+        project = project_session.current()
+        column = self.layout.column(align=True)
+        for line in origin_lines(project) if project is not None else ():
+            column.label(text=line, translate=False)
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        project = project_session.current()
+        if project is None:
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Proyecto «{project.name}»: " + "; ".join(origin_lines(project)))
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_core_set_work_window(bpy.types.Operator):
+    """Change the work window and, with it, the GeoOrigin (a reason is required)"""
+
+    bl_idname = "geoblender.core_set_work_window"
+    bl_label = "Work window and grid…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    xmin: StringProperty(name="X min (m)")  # type: ignore[valid-type]
+    ymin: StringProperty(name="Y min (m)")  # type: ignore[valid-type]
+    xmax: StringProperty(name="X max (m)")  # type: ignore[valid-type]
+    ymax: StringProperty(name="Y max (m)")  # type: ignore[valid-type]
+    grid_step: EnumProperty(  # type: ignore[valid-type]
+        name="Grid step", items=GRID_STEP_ITEMS, default="1.0"
+    )
+    z0: IntProperty(name="Z0 (m)", default=0)  # type: ignore[valid-type]
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the window changes (recorded with the change)"
+    )
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        if not _poll_project(cls, context):
+            return False
+        project = project_session.current()
+        if project is not None and not project.writable:
+            cls.poll_message_set(f"Proyecto en solo lectura: {project.status.message}")
+            return False
+        return True
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        project = project_session.current()
+        if project is not None and project.window is not None:
+            window = project.window
+            self.xmin, self.ymin = _typed(window.xmin), _typed(window.ymin)
+            self.xmax, self.ymax = _typed(window.xmax), _typed(window.ymax)
+            self.grid_step = f"{project.grid_step_m:.1f}"
+            self.z0 = project.origin.z0
+        return context.window_manager.invoke_props_dialog(self, width=560)
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        column = layout.column(align=True)
+        for corner in _CORNERS:
+            column.prop(self, corner)
+        layout.prop(self, "grid_step")
+        layout.prop(self, "z0")
+        layout.prop(self, "reason")
+        layout.label(
+            text="Las coordenadas guardadas no cambian; las vistas quedarán desfasadas",
+            translate=False,
+        )
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        project = project_session.current()
+        if project is None:
+            return {"CANCELLED"}
+        previous = project.origin
+        try:
+            window = tuple(
+                parse_decimal(getattr(self, corner), obj=_WINDOW_OBJ, field=corner)
+                for corner in _CORNERS
+            )
+            origin = project.set_window(
+                window, float(self.grid_step), int(self.z0), self.reason
+            )
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, exc.message)
+            return {"CANCELLED"}
+        georef.sync_scenes(project)
+        if origin != previous:
+            georef.mark_stale()
+        self.report(
+            {"INFO"},
+            f"Proyecto «{project.name}»: GeoOrigin ({_whole(previous.x0)}; "
+            f"{_whole(previous.y0)}; {_whole(previous.z0)}) → ({_whole(origin.x0)}; "
+            f"{_whole(origin.y0)}; {_whole(origin.z0)}); las vistas quedan desfasadas",
+        )
+        window_now = project.window
+        if window_now is not None:
+            precision = precision_report(window_now, origin)
+            if not precision.within_limit:
+                project_session.notify(precision.message)
+                self.report({"WARNING"}, precision.message)
+        return {"FINISHED"}
+
+
 # En orden de registro.
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_new_project,
@@ -636,4 +854,7 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_close_project,
     GEOBLENDER_OT_core_save_project,
     GEOBLENDER_OT_core_show_lock,
+    GEOBLENDER_OT_core_set_crs,
+    GEOBLENDER_OT_core_show_geoorigin,
+    GEOBLENDER_OT_core_set_work_window,
 )

@@ -15,6 +15,13 @@
 - RF-002-06: «Cerrar proyecto» libera el cerrojo.
 - ADR-0011: nombres ``GEOBLENDER_OT_core_<acción>`` y ``geoblender.core_<acción>``; sin
   ``UNDO`` (solo escriben en el proyecto y no crean objetos de la vista).
+- RF-002-23, RF-002-24 (T27): «Sistema de referencia…» (en esta spec, solo consulta) y
+  «Origen local…» muestran el CRS horizontal y vertical y el GeoOrigin del proyecto
+  abierto.
+- RF-002-27, RF-002-26 (T27): «Ventana de trabajo…» sin motivo se rechaza; con motivo, el
+  origen nuevo queda en la base, la cabecera y la escena, con el evento ``move_origin``,
+  las vistas desfasadas y ninguna coordenada absoluta guardada cambiada; una ventana de
+  más de ±8 km avisa con el error estimado.
 
 En ``blender -b`` no hay bucle de eventos: las pruebas de los modales los toman de
 ``window.modal_operators`` y les pasan los eventos ``TIMER`` y ``ESC``. Se ejecuta con
@@ -54,7 +61,16 @@ WINDOW_TEXT = {
 }
 WINDOW = (699_500.4, 4_399_500.6, 700_500.2, 4_400_500.9)
 ORIGIN = (700_000, 4_400_000, 0)
-OPERATORS = ("new_project", "open_project", "close_project", "show_lock")
+OPERATORS = (
+    "new_project", "open_project", "close_project", "save_project", "show_lock", "set_crs",
+    "show_geoorigin", "set_work_window",
+)
+MOVED_TEXT = {
+    "xmin": "700 500,4",
+    "ymin": "4399500,6",
+    "xmax": "701500.2",
+    "ymax": "4 400 500,9",
+}
 
 
 def ext(name: str) -> ModuleType:
@@ -398,6 +414,114 @@ class CloseProjectTest(OperatorsTestCase):
         self.assertEqual(self.events(root)[-1], "close")
         self.assertFalse(bpy.ops.geoblender.core_close_project.poll())
         self.assertFalse(bpy.ops.geoblender.core_show_lock.poll())
+
+
+class GeorefOperatorsTest(OperatorsTestCase):
+    def new_project(self) -> object:
+        result = bpy.ops.geoblender.core_new_project(
+            "EXEC_DEFAULT", directory=str(self.tmp), name="Cantera Prueba", **WINDOW_TEXT
+        )
+        self.assertEqual(result, {"FINISHED"})
+        return self.ps.current()
+
+    def add_layer(self, project: object) -> None:
+        """Una capa con coordenadas absolutas con milímetros, escrita por ``core``."""
+        base = ext("core.gpkg.base")
+        gpkg = ext("core.gpkg")
+        polygon = [[[(700_123.456, 4_400_987.654), (700_223.456, 4_400_987.654),
+                     (700_223.456, 4_401_087.654), (700_123.456, 4_400_987.654)]]]
+        with project.write_transaction() as conn:
+            base.create_feature_table(
+                conn, "gis_limites", "MULTIPOLYGON", 25830, False, [], identifier="Límites"
+            )
+            blob = gpkg.encode_geometry("MULTIPOLYGON", polygon, 25830, False)
+            conn.execute("INSERT INTO gis_limites (geom) VALUES (?)", (blob,))
+
+    def layer(self, root: Path) -> list[tuple]:
+        conn = sqlite3.connect(root / "project.gpkg")
+        try:
+            return conn.execute("SELECT fid, geom FROM gis_limites ORDER BY fid").fetchall()
+        finally:
+            conn.close()
+
+    def test_consult_crs_and_geoorigin(self) -> None:
+        """RF-002-23, RF-002-24: con un proyecto abierto, «Sistema de referencia…» y
+        «Origen local…» terminan y su texto da el CRS horizontal y vertical (código y
+        nombre) y el GeoOrigin con espacio fino de miles; sin proyecto no están
+        disponibles."""
+        self.new_project()
+        self.assertEqual(bpy.ops.geoblender.core_set_crs("EXEC_DEFAULT"), {"FINISHED"})
+        self.assertEqual(bpy.ops.geoblender.core_show_geoorigin("EXEC_DEFAULT"), {"FINISHED"})
+        crs_text = " ".join(self.ops.crs_lines(self.ps.current()))
+        self.assertIn("EPSG:25830", crs_text)
+        self.assertIn("ETRS89 / UTM zone 30N", crs_text)
+        self.assertIn("EPSG:5782", crs_text)
+        origin_text = " ".join(self.ops.origin_lines(self.ps.current()))
+        self.assertIn("700\u2009000; 4\u2009400\u2009000; 0", origin_text)
+        self.assertIn("699\u2009500", origin_text)
+        bpy.ops.geoblender.core_close_project("EXEC_DEFAULT")
+        self.assertFalse(bpy.ops.geoblender.core_set_crs.poll())
+        self.assertFalse(bpy.ops.geoblender.core_show_geoorigin.poll())
+        self.assertFalse(bpy.ops.geoblender.core_set_work_window.poll())
+
+    def test_window_change_requires_reason(self) -> None:
+        """RF-002-27: cambiar la ventana sin motivo se rechaza (el mensaje nombra el
+        motivo) y no cambia nada: ni el origen, ni la cabecera, ni hay evento."""
+        project = self.new_project()
+        header = (project.root / "manifest.json").read_bytes()
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_set_work_window("EXEC_DEFAULT", reason="  ", **MOVED_TEXT)
+        self.assertIn("motivo", str(caught.exception))
+        self.assertEqual((project.origin.x0, project.origin.y0), ORIGIN[:2])
+        self.assertEqual((project.root / "manifest.json").read_bytes(), header)
+        self.assertNotIn("move_origin", self.events(project.root))
+        self.assertEqual(bpy.context.scene.geoblender.origin_x, ORIGIN[0])
+
+    def test_window_change_moves_origin(self) -> None:
+        """RF-002-27: con motivo, el origen nuevo (701 000; 4 400 000; 0) queda en la base,
+        la cabecera y todas las escenas, hay un evento ``move_origin`` con el motivo, las
+        vistas quedan desfasadas y la capa con coordenadas absolutas no cambia ni un
+        byte."""
+        project = self.new_project()
+        bpy.data.scenes.new("Segunda")
+        self.add_layer(project)
+        before = self.layer(project.root)
+        result = bpy.ops.geoblender.core_set_work_window(
+            "EXEC_DEFAULT", reason="Ampliación hacia el este", **MOVED_TEXT
+        )
+        self.assertEqual(result, {"FINISHED"})
+        moved = (701_000, 4_400_000, 0)
+        record = project.reload()
+        self.assertEqual((record.origin_x, record.origin_y, record.origin_z), moved)
+        header = ext("core.project.manifest").read_manifest(project.root)
+        self.assertEqual(header.origin.as_tuple(), moved)
+        for scene in bpy.data.scenes:
+            props = scene.geoblender
+            self.assertEqual((props.origin_x, props.origin_y, props.origin_z), moved)
+            self.assertTrue(props.view_stale)
+        self.assertEqual(self.events(project.root)[-1], "move_origin")
+        self.assertEqual(self.layer(project.root), before)
+
+    def test_window_far_from_origin_warns(self) -> None:
+        """RF-002-26: una ventana de 20 × 20 km se acepta con un aviso de las esquinas a
+        más de 8 km del GeoOrigin y el error estimado en mm."""
+        self.new_project()
+        wide = {"xmin": "690000", "ymin": "4390000", "xmax": "710000", "ymax": "4410000"}
+        result = bpy.ops.geoblender.core_set_work_window(
+            "EXEC_DEFAULT", reason="Ventana regional", **wide
+        )
+        self.assertEqual(result, {"FINISHED"})
+        notices = self.ps.take_notices()
+        self.assertTrue(any("esquinas" in text and "mm" in text for text in notices), notices)
+
+    def test_read_only_cannot_change_window(self) -> None:
+        """RF-002-13, RF-002-27: con el proyecto en solo lectura, «Ventana de trabajo…» no
+        está disponible."""
+        root = self.create_closed(session=self.other_session())
+        self.run_open(directory=str(root))
+        self.assertFalse(self.ps.current().writable)
+        self.assertFalse(bpy.ops.geoblender.core_set_work_window.poll())
+        self.assertTrue(bpy.ops.geoblender.core_show_geoorigin.poll())
 
 
 if __name__ == "__main__":
