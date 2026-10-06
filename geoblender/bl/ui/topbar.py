@@ -57,7 +57,7 @@ from ...core.catalog.width import (
 from ...core.i18n import language, tr, translate
 from .. import compat
 from ..scene import project_session
-from . import gate
+from . import gate, quick_access
 from .commands import catalog, preference, text
 from .drawing import draw_command, icon_kwargs, native_icon
 
@@ -234,11 +234,7 @@ def draw_geoblender(layout: Any, context: Any, current: Level | None = None) -> 
         _top_menu(layout, cat, TOOLS_MENU, icon=current is Level.A, title=not compact)
         _top_menu(layout, cat, HELP_MENU, icon=False, title=not compact)
     layout.separator(type="LINE")
-    row = layout.row(align=True)
-    for item in cat.quick_access("project"):
-        if item.key in (TOGGLE, LAYOUTS_PANEL):
-            continue  # el conmutador y Disposición ▾ van al principio
-        draw_command(row, item.key, context=context, icon_only=True, inline=True)
+    quick_access.draw_project(layout, context, current)
     screen = getattr(context, "screen", None)
     if screen is not None and getattr(screen, "show_fullscreen", False):
         layout.operator("screen.back_to_previous", icon=native_icon("SCREEN_BACK"),

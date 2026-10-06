@@ -13,7 +13,10 @@ RF-003-08; plan 003 §5.3; BS §7).
   Blender, siempre; uno de Geoblender, si su entrada ya está entregada (``delivered`` en
   ``entries.toml``) y su clase registrada es la real, no la provisional. Así una variante
   de una entrada posterior (``geo_set_clip_mode?mode=FRONT``, R-16) sale no disponible
-  aunque el operador sea real. Se calcula una vez por registro (:func:`refresh`).
+  aunque el operador sea real. Un menú generado del catálogo cuya entrada aún no se ha
+  entregado está disponible si lo está alguno de sus elementos (Encaje ▾, de R-09, con el
+  conmutador nativo; Recorte ▾, de R-16, con «Sin recorte» y «Banda de la vista» de la
+  003). Se calcula una vez por registro (:func:`refresh`).
 """
 
 from __future__ import annotations
@@ -76,7 +79,12 @@ def _compute(cat: core_catalog.Catalog, cmd: core_catalog.Command) -> bool:
     if cmd.kind in NATIVE_KINDS or cmd.entry == "Blender":
         return True
     if not _delivered(cat, cmd.entry):
-        return False
+        spec = cat.menus.get(cmd.key) if cmd.kind == "menu" else None
+        if spec is None or is_provisional(registered_class(cmd.idname)):
+            return False
+        _AVAILABLE[cmd.key] = False  # mientras se mira dentro (un ciclo no lo hace disponible)
+        return any(is_available(item.key) for group in spec.groups for item in group.items
+                   if item.key is not None)
     cls = registered_class(cmd.idname)
     return cls is not None and not is_provisional(cls)
 

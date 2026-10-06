@@ -6,7 +6,8 @@ Orden de :func:`register` (CW §5; plan 003 §5.4, 1), con ``bl/props`` y ``bl/o
 registrados: idioma (el catálogo de comandos en ``core.i18n`` y el idioma de las
 preferencias) → clases propias de la interfaz (los menús y la pestaña «Proyecto» de la
 spec 002) → catálogo (``registry``: menús generados por ``menus``, provisionales y
-textos) → sustitución de ``draw_left`` de la barra superior (``topbar``) → conmutador
+textos) → sustitución de ``draw_left`` de la barra superior (``topbar``) → fila de
+acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → conmutador
 (``switcher``: su manejador ``load_post``; al desregistrar, devuelve cada ventana en modo
 Geoblender a su espacio de Blender y retira su temporizador) → atajos del catálogo en el
 *keyconfig* de complementos (``keymap``). Cada paso
@@ -21,11 +22,22 @@ from collections.abc import Callable
 from ...core import i18n
 from ..props.ui import LANGUAGES
 from ..registry import register_classes, unregister_classes
-from . import commands, core_menus, core_panel, keymap, menus, registry, switcher, topbar
+from . import (
+    commands,
+    core_menus,
+    core_panel,
+    keymap,
+    menus,
+    quick_access,
+    registry,
+    switcher,
+    topbar,
+)
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
-# contrato 2): los menús y la pestaña «Proyecto» de core (spec 002).
-classes: tuple[type, ...] = (*core_menus.classes, *core_panel.classes)
+# contrato 2): los menús y la pestaña «Proyecto» de core (spec 002) y los paneles reales de
+# la interfaz (spec 003).
+classes: tuple[type, ...] = (*core_menus.classes, *core_panel.classes, *quick_access.classes)
 
 _UNDO: list[Callable[[], None]] = []
 
@@ -62,6 +74,7 @@ def register() -> None:
         (_register_classes, lambda: unregister_classes(classes)),
         (_register_catalog, registry.unregister),
         (_install_topbar, topbar.restore),
+        (quick_access.install, quick_access.uninstall),
         (switcher.register, switcher.unregister),
         (keymap.register, keymap.unregister),
     )
@@ -82,6 +95,7 @@ def repair() -> str:
     if not _UNDO:
         return ""
     mode = topbar.install()
+    quick_access.install()
     keymap.unregister()
     keymap.register()
     commands.refresh()

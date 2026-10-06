@@ -588,5 +588,10 @@ es = "Barra de estado minera"
 ["Back to Previous"]
 es = "Volver"
 
+# Acceso rápido de la vista (spec 003; RF-003-11; AR §3.3): el botón de los plegados.
+
+["»"]
+es = "»"
+
 ["Geoblender interface repaired"]
 es = "Interfaz de Geoblender reparada"

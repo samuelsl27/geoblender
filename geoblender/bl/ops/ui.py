@@ -13,6 +13,10 @@
   (``name``, ``keep_open``) de Geoblender con ``wm.call_menu_pie`` y ``wm.call_panel``,
   que no saben del modo: sus atajos están en la Vista 3D, así que pasan por la puerta de
   modo (``bl.ui.gate``) y en modo Blender la tecla queda para Blender.
+- ``geoblender.ui_toggle_quick_access_row`` (RF-003-11; AR §3.3): Herramientas ▸
+  Disposición ▸ «Mostrar la fila de acceso rápido de la vista» (``bl.ui.quick_access``):
+  si la fila ya se ve, apaga la preferencia; si no, la enciende y muestra la fila 2 de las
+  Vistas 3D de la pantalla.
 - ``geoblender.ui_repair_interface`` (RF-003-24; CW §5): Ayuda ▸ Reparar la interfaz
   (``bl.ui.repair``): la barra superior, una sola vez aunque otro complemento la haya
   sustituido, y los atajos. Se puede pulsar siempre.
@@ -112,6 +116,25 @@ class GEOBLENDER_OT_ui_call_panel(bpy.types.Operator):
         return self.execute(context)
 
 
+class GEOBLENDER_OT_ui_toggle_quick_access_row(bpy.types.Operator):
+    """Show or hide row 2 of the 3D views"""
+
+    bl_idname = "geoblender.ui_toggle_quick_access_row"
+    bl_label = "Show the quick access row of the view"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return getattr(context, "screen", None) is not None
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import quick_access  # diferido, como el conmutador
+
+        quick_access.toggle_row(context)
+        return {"FINISHED"}
+
+
 class GEOBLENDER_OT_ui_repair_interface(bpy.types.Operator):
     """Install the top bar, the shortcuts and the icons again"""
 
@@ -136,5 +159,6 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_toggle_mode,
     GEOBLENDER_OT_ui_call_pie,
     GEOBLENDER_OT_ui_call_panel,
+    GEOBLENDER_OT_ui_toggle_quick_access_row,
     GEOBLENDER_OT_ui_repair_interface,
 )
