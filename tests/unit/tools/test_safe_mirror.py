@@ -26,6 +26,7 @@ from tests.support.resources import WINDOWS, WINDOWS_HINT, skip_reason
 tools_on_path()
 
 from gbtools import layout, safe_mirror  # noqa: E402
+from gbtools import repo as gbrepo  # noqa: E402
 
 SHA = "a" * 64
 
@@ -695,6 +696,126 @@ class MirrorTest(unittest.TestCase):
             with mock.patch("shutil.rmtree", side_effect=AssertionError("rmtree")):
                 m.mirror()
             self.assertFalse((m.dest / "viejo").exists())
+
+
+def mirror_and_verify(m: Mirrored) -> tuple[safe_mirror.MirrorReport, safe_mirror.Verification]:
+    """Compara, hace el espejo y lo verifica (sin guardar el estado)."""
+    base = safe_mirror.load_base(m.dest, m.environ)
+    assert base is not None
+    source = safe_mirror.scan_source(m.project)
+    listing = safe_mirror.scan_destination(m.dest)
+    pending = safe_mirror.load_pending(m.dest, m.environ)
+    changes, observed = safe_mirror.destination_changes(m.dest, base, source, listing, pending)
+    assert not changes, changes
+    report = safe_mirror.mirror(m.project, m.dest, source, listing, observed, base, m.environ)
+    return report, safe_mirror.verify(m.dest, source, report, observed)
+
+
+def save(m: Mirrored, verification: safe_mirror.Verification) -> None:
+    state = safe_mirror.new_state(m.dest, m.project, verification, {}, m.environ)
+    safe_mirror.save_state(m.dest, m.environ, state)
+
+
+class VerifyTest(unittest.TestCase):
+    """RF-007-23, RF-007-30: la comprobación del espejo (sin copiar ni borrar) y el
+    estado que se guarda: con lo comprobado, nunca con una lectura posterior."""
+
+    def test_verify_ok(self) -> None:
+        """RF-007-23: tras un espejo sin incidencias, cada fichero del PC está en el
+        destino con su sha256 (sin volver a leer los que no cambiaron de tamaño ni de
+        fecha) y no sobra nada."""
+        with mirrored(empty=True) as m:
+            report, verification = mirror_and_verify(m)
+        self.assertEqual((verification.problems, verification.changes), ([], []))
+        self.assertEqual(verification.identical, len(PROJECT))
+        self.assertEqual(verification.files["README.md"], report.verified["README.md"])
+
+    def test_verify_detects_difference(self) -> None:
+        """RF-007-23: un fichero que falta es un problema (código 1); uno con otro
+        contenido o uno que sobra (también una carpeta) es un cambio del NAS (código 3),
+        nunca algo que borrar."""
+        with mirrored(empty=True) as m:
+            base = safe_mirror.load_base(m.dest, m.environ)
+            assert base is not None
+            source = safe_mirror.scan_source(m.project)
+            listing = safe_mirror.scan_destination(m.dest)
+            _changes, observed = safe_mirror.destination_changes(m.dest, base, source, listing)
+            report = safe_mirror.mirror(m.project, m.dest, source, listing, observed, base, m.environ)
+            (m.dest / f"{CODE}/README.md").unlink()
+            m.write(m.dest, "README.md", "# Cambiado en el NAS tras copiarlo\n", shift_s=3)
+            m.write(m.dest, "docs/sobra.txt", "x")
+            (m.dest / "nueva").mkdir()
+            verification = safe_mirror.verify(m.dest, source, report, observed)
+        self.assertEqual(len(verification.problems), 1)
+        self.assertIn(f"{CODE}/README.md", verification.problems[0])
+        self.assertEqual(
+            [(c.kind, c.path) for c in verification.changes],
+            [
+                (safe_mirror.NEW, "docs/sobra.txt"),
+                (safe_mirror.NEW_FOLDER, "nueva"),
+                (safe_mirror.CHANGED, "README.md"),
+            ],
+        )
+
+    def test_verify_never_copies_or_deletes(self) -> None:
+        """RF-007-23: la comprobación solo lee: con diferencias, el destino sigue igual."""
+        with mirrored() as m:
+            report, _verification = mirror_and_verify(m)
+            m.write(m.dest, "docs/sobra.txt", "x")
+            before = gbrepo.snapshot(m.dest)
+            source = safe_mirror.scan_source(m.project)
+            with mock.patch("shutil.copy2", side_effect=AssertionError), mock.patch(
+                "os.unlink", side_effect=AssertionError
+            ), mock.patch("os.replace", side_effect=AssertionError):
+                safe_mirror.verify(m.dest, source, report, {})
+            self.assertEqual(gbrepo.snapshot_changes(before, gbrepo.snapshot(m.dest)), [])
+
+    def test_state_keeps_compared_stat(self) -> None:
+        """RF-007-30: el estado guarda el tamaño y la fecha con que se comprobó cada
+        sha256 (el del temporal de lo copiado; lo comparado de lo demás), no una
+        lectura posterior: un cambio hecho en el NAS justo después de comprobarlo se ve
+        en el espejo siguiente."""
+        with mirrored() as m:
+            m.write(m.project, "README.md", "# Del PC, 2\n")
+            report, verification = mirror_and_verify(m)
+            m.write(m.dest, "docs/constitution.md", "# Cambiada en el NAS tras comprobarla\n", shift_s=5)
+            save(m, verification)
+            state = safe_mirror.load_base(m.dest, m.environ)
+            self.assertEqual(m.kinds(), [(safe_mirror.CHANGED, "docs/constitution.md")])
+        assert state is not None
+        self.assertEqual(state.files["README.md"], report.verified["README.md"])
+        self.assertFalse(safe_mirror.pending_file(m.dest, m.environ).exists())
+
+    def test_state_records_folders(self) -> None:
+        """RF-007-30: el estado guarda las carpetas del destino (también las vacías):
+        una carpeta suya no es «nueva» en el espejo siguiente, y una creada después sí."""
+        with mirrored(empty=True) as m:
+            (m.project / ".git" / "refs" / "tags").mkdir(parents=True)
+            _report, verification = mirror_and_verify(m)
+            save(m, verification)
+            state = safe_mirror.load_base(m.dest, m.environ)
+            self.assertEqual(m.kinds(), [])
+            (m.dest / "Documentacion").mkdir()
+            self.assertEqual(m.kinds(), [(safe_mirror.NEW_FOLDER, "Documentacion")])
+        assert state is not None
+        self.assertIn(".git/refs/tags", state.folders)
+        self.assertFalse(state.photo)
+
+    def test_date_only_change_updates_state(self) -> None:
+        """RF-007-30: si en el destino solo cambió la fecha de un fichero, no se copia y
+        el estado guarda la fecha nueva: el espejo siguiente no lo vuelve a leer."""
+        with mirrored() as m:
+            path = m.dest / "README.md"
+            stamp = path.stat().st_mtime_ns + 6 * 10**9
+            os.utime(path, ns=(stamp, stamp))
+            report, verification = mirror_and_verify(m)
+            save(m, verification)
+            state = safe_mirror.load_base(m.dest, m.environ)
+            with mock.patch.object(safe_mirror, "observe", side_effect=AssertionError):
+                self.assertEqual(m.kinds(), [])
+        self.assertEqual(report.copied, [])
+        assert state is not None
+        self.assertEqual(state.files["README.md"].mtime_ns, stamp)
 
 
 class SourceTest(unittest.TestCase):

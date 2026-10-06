@@ -49,7 +49,14 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
     los objetos de git antes que los ficheros y las referencias, los borrados al final,
     cada copia a un temporal comprobado y solo si el fichero del destino sigue como se
     comparó; si cambió, código 3 sin tocarlo. Lo excluido no se toca y nunca se borra
-    una carpeta con contenido.
+    una carpeta con contenido. Después se comprueba el destino sin copiar ni borrar
+    (RF-007-23): cada fichero del PC con su sha256 (leído solo si su tamaño o su fecha
+    no son los comprobados), nada que sobre; y solo entonces se guarda el estado
+    (RF-007-30) con lo comprobado y se borra el registro en curso.
+
+El informe (RF-007-23) da la rama y el commit de cada repositorio, el remoto, los
+copiados, borrados y sin cambios, lo excluido que tiene el destino, el resultado
+(``RESULTADO: PUBLICADO (s) en <destino>``) y la duración.
 
 Un cerrojo en el perfil local impide dos espejos a la vez desde este PC al mismo destino
 (código 1): se toma antes de la comparación del paso 7 y se suelta al terminar.
@@ -106,6 +113,7 @@ STEP_CHECK = "comprobación"
 STEP_DOCS = "documentación"
 STEP_PUSH = "subida"
 STEP_MIRROR = "espejo"
+STEP_VERIFY = "verificación"
 
 # El primer componente bajo la raíz de una unidad, o el nombre del recurso, de la
 # carpeta de expedientes de clientes (solo lectura, siempre): nunca es un destino.
@@ -385,22 +393,25 @@ def _status_line(entry: str) -> str:
     return f"cambiado sin commit ({status.strip()}): {path}"
 
 
-def tree_problems(repo: Path, git_runner: blender.Runner) -> tuple[list[str], str | None]:
+def tree_problems(
+    repo: Path, git_runner: blender.Runner
+) -> tuple[list[str], git.TreeStatus | None]:
     """Lo que impide publicar desde el repositorio ``repo`` (RF-007-15): su ``.git``
     (fichero, ``alternates``), cambios sin commit y ficheros nuevos, operaciones a
-    medias y cerrojos, y HEAD fuera de una rama (vacía si está limpio); y su rama."""
+    medias y cerrojos, y HEAD fuera de una rama (vacía si está limpio); y su rama y su
+    commit (una sola orden de git, ``git.tree_status``)."""
     problem = git.git_dir_problem(repo)
     if problem is not None:
         return [problem], None
-    found = [_status_line(entry) for entry in git.dirty_entries(repo, runner=git_runner)]
+    status = git.tree_status(repo, runner=git_runner)
+    found = [_status_line(entry) for entry in status.entries]
     found += git.operations_in_progress(repo / ".git")
-    branch = git.current_branch(repo, runner=git_runner)
-    if branch is None:
+    if status.branch is None:
         found.append(
             "HEAD no está en ninguna rama (está separado): cambie a la rama que quiere "
             "publicar"
         )
-    return found, branch
+    return found, status
 
 
 def _seconds(value: float) -> str:
@@ -468,6 +479,7 @@ class Publication:
         self.url: str | None = None
         self.pushed: str | None = None  # la rama subida, si se subió
         self.branches: dict[str, str | None] = {}  # la rama de cada repositorio
+        self.commits: dict[str, str | None] = {}  # y su commit
         self.source = safe_mirror.SourceTree()
         self.listing = safe_mirror.DestinationTree()
         self.observed: dict[str, safe_mirror.FileState] = {}
@@ -614,9 +626,10 @@ class Publication:
         problems: list[str] = []
         try:
             for label, repo in ((CODE_LABEL, self.code), (DOCS_LABEL, self.project)):
-                found, branch = tree_problems(repo, self.git_runner)
+                found, status = tree_problems(repo, self.git_runner)
                 problems += [f"{label}: {item}" for item in found]
-                self.branches[label] = branch
+                self.branches[label] = status.branch if status is not None else None
+                self.commits[label] = status.commit if status is not None else None
             tracked = git.tracked_under(
                 self.project, layout.CODE_DIR_IN_DOCS, runner=self.git_runner
             )
@@ -639,7 +652,11 @@ class Publication:
                     "la operación a medias y repita."
             raise Stop(EXIT_FAIL, STEP_TREES, detail, [*problems, advice])
         if not after_checks:
-            self.line(STATUS_OK, STEP_TREES, "los dos limpios")
+            where = ", ".join(
+                f"{label} {self.branches[label]} {(self.commits[label] or 'sin commits')[:7]}"
+                for label in (CODE_LABEL, DOCS_LABEL)
+            )
+            self.line(STATUS_OK, STEP_TREES, f"los dos limpios: {where}")
 
     # Paso 8: comprobaciones.
     def _install(self) -> blender.BlenderInstall:
@@ -758,6 +775,57 @@ class Publication:
         detail += f"; excluidos en el destino: {excluded or 'ninguno'}"
         self.line(STATUS_OK, STEP_MIRROR, detail)
 
+    def repositories(self) -> dict[str, dict[str, str | None]]:
+        """La rama y el commit de cada repositorio (y el remoto del código) para el
+        estado: «.» es la documentación; la carpeta del código, el código."""
+        return {
+            ".": {"rama": self.branches.get(DOCS_LABEL), "commit": self.commits.get(DOCS_LABEL)},
+            layout.CODE_DIR_IN_DOCS: {
+                "rama": self.branches.get(CODE_LABEL),
+                "commit": self.commits.get(CODE_LABEL),
+                "origin": self.url,
+            },
+        }
+
+    # Paso 10 (fin): comprobación del espejo y estado.
+    def verify_and_save(self) -> None:
+        assert self.dest is not None and self.report is not None
+        try:
+            result = safe_mirror.verify(self.dest, self.source, self.report, self.observed)
+        except (safe_mirror.MirrorError, OSError) as exc:
+            raise Stop(EXIT_FAIL, STEP_VERIFY, f"no se pudo comprobar el destino: {exc}") from exc
+        if result.changes:
+            count = len(result.changes)
+            raise Stop(
+                EXIT_CHANGES,
+                STEP_VERIFY,
+                "el destino cambió durante el espejo: no se guarda el estado",
+                [
+                    *change_lines(result.changes),
+                    *change_advice(result.changes, self.dest, self.project),
+                ],
+                f"RESULTADO: CAMBIOS EN EL DESTINO ({count})",
+            )
+        if result.problems:
+            raise Stop(
+                EXIT_FAIL,
+                STEP_VERIFY,
+                "el destino no quedó igual que la carpeta del proyecto: no se guarda el estado",
+                [*result.problems, "Repita la publicación: el siguiente espejo lo corrige."],
+            )
+        state = safe_mirror.new_state(
+            self.dest, self.project, result, self.repositories(), self.environ
+        )
+        try:
+            safe_mirror.save_state(self.dest, self.environ, state)
+        except (safe_mirror.MirrorError, OSError) as exc:
+            raise Stop(EXIT_FAIL, STEP_VERIFY, f"no se pudo guardar el estado: {exc}") from exc
+        self.line(
+            STATUS_OK,
+            STEP_VERIFY,
+            f"{result.identical} idénticos, 0 sobrantes; estado guardado",
+        )
+
     def run(self) -> int:
         self.check_structure()
         self.check_destination()
@@ -771,14 +839,11 @@ class Publication:
                 self.push()
                 self.compare(before_copy=True)
                 self.mirror()
-                raise Stop(
-                    EXIT_FAIL,
-                    "verificación",
-                    "la publicación aún no verifica el espejo ni guarda su estado (spec 007, "
-                    "T27)",
-                )
+                self.verify_and_save()
         except safe_mirror.MirrorBusy as exc:
             raise Stop(EXIT_FAIL, STEP_DEST, str(exc)) from exc
+        print(f"RESULTADO: PUBLICADO ({self.elapsed()} s) en {self.dest}")
+        return EXIT_OK
 
     def done_note(self) -> str:
         """Qué se hizo antes de parar: nada, la subida sin el espejo, o un espejo a

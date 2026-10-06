@@ -901,3 +901,116 @@ def mirror(
     mirar el fichero del destino que se va a renombrar, sustituir o borrar."""
     del base  # la comparación ya la usó: el plan sale del origen y del destino
     return _Mirror(project, destination, source, listing, observed, hook).run(environ)
+
+
+# --- Comprobación y estado (plan 007 §5.4.8, pasos 4 y 5; RF-007-23, RF-007-30) ------
+
+
+@dataclass
+class Verification:
+    """El resultado de comprobar el destino tras el espejo: problemas (falta un
+    fichero, o difiere en mayúsculas: código 1), cambios del NAS (otro contenido, algo
+    que sobra: código 3), y lo que guardará el estado si no hay ninguno: cada fichero
+    con el tamaño, la fecha y el sha256 con que se comprobó, y las carpetas."""
+
+    problems: list[str] = field(default_factory=list)
+    changes: list[DestChange] = field(default_factory=list)
+    files: dict[str, FileState] = field(default_factory=dict)
+    folders: set[str] = field(default_factory=set)
+    identical: int = 0
+
+
+def verify(
+    destination: Path,
+    source: SourceTree,
+    report: MirrorReport,
+    observed: Mapping[str, FileState],
+) -> Verification:
+    """Comprueba el destino tras el espejo sin copiar ni borrar nada (RF-007-23): cada
+    fichero del PC debe estar, con su nombre exacto, y con el tamaño y la fecha con que
+    se comprobó (el de su temporal si se copió; el comparado si no); si no los tiene,
+    se lee su sha256, y si no es el del PC es un cambio del NAS. Un fichero o una
+    carpeta que no está en el PC (salvo una que el espejo dejó por tener algo
+    excluido) es un cambio del NAS, nunca un sobrante que borrar."""
+    destination = Path(destination)
+    listing = scan_destination(destination)
+    now = {fold(rel): (rel, stat) for rel, stat in listing.files.items()}
+    compared = {fold(rel): state for rel, state in observed.items()}
+    result = Verification(folders=set(listing.folders))
+    for rel, sha in source.files.items():
+        entry = now.get(fold(rel))
+        if entry is None:
+            result.problems.append(f"falta «{rel}» en el destino")
+            continue
+        name, stat = entry
+        if name != rel:
+            result.problems.append(f"«{name}» del destino debería llamarse «{rel}»")
+        expected = report.verified.get(rel) or compared.get(fold(rel))
+        if expected is not None and expected.sha256 == sha:
+            if stat == (expected.size, expected.mtime_ns):
+                result.files[name] = expected
+                result.identical += 1
+                continue
+        state = observe(destination / name)
+        if state is None or state.sha256 != sha:
+            result.changes.append(DestChange(name, CHANGED, in_git(name)))
+            continue
+        result.files[name] = state
+        result.identical += 1
+    source_keys = {fold(rel) for rel in source.files}
+    for key, (name, _stat) in now.items():
+        if key not in source_keys:
+            result.changes.append(DestChange(name, NEW, in_git(name)))
+    known = {fold(rel) for rel in (*source.folders, *report.kept_folders)}
+    unknown = [rel for rel in listing.folders if fold(rel) not in known]
+    result.changes += [DestChange(rel, NEW_FOLDER, in_git(rel)) for rel in _topmost(unknown)]
+    result.changes.sort(key=lambda change: fold(change.path))
+    return result
+
+
+def new_state(
+    destination: Path,
+    project: Path,
+    verification: Verification,
+    repos: Mapping[str, Any],
+    environ: Mapping[str, str],
+) -> MirrorState:
+    """El estado que deja un espejo comprobado: lo de ``verification`` (lo comprobado,
+    nunca una lectura posterior), los repositorios, quién y cuándo."""
+    return MirrorState(
+        destination=str(destination),
+        source=str(project),
+        taken=now_text(),
+        who=who(environ),
+        repos=dict(repos),
+        files=dict(verification.files),
+        folders=set(verification.folders),
+    )
+
+
+def save_state(destination: Path, environ: Mapping[str, str], state: MirrorState) -> Path:
+    """Guarda el estado del último espejo de ``destination`` (RF-007-30) en el perfil
+    local, a través de un temporal, y borra el registro en curso: el espejo terminó y
+    se comprobó. Devuelve el fichero del estado."""
+    data = {
+        "formato": FORMAT,
+        "tipo": KIND_STATE,
+        "destino": state.destination,
+        "destino_real": os.path.realpath(destination),
+        "origen": state.source,
+        "tomada": state.taken,
+        "quien": state.who,
+        "repositorios": state.repos,
+        "ficheros": {
+            rel: {"size": info.size, "mtime_ns": info.mtime_ns, "sha256": info.sha256}
+            for rel, info in sorted(state.files.items())
+        },
+        "carpetas": sorted(state.folders),
+    }
+    path = state_file(destination, environ)
+    _write_json(path, data)
+    try:
+        pending_file(destination, environ).unlink()
+    except FileNotFoundError:
+        pass
+    return path

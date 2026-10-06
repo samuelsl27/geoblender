@@ -18,6 +18,8 @@ ella: ni GitHub, ni el NAS, ni el estado real del espejo.
 import ast
 import contextlib
 import io
+import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -115,12 +117,43 @@ class FakeChecks:
         return [next(p for p in cmd if p.startswith("tools/")) for cmd, _cwd in self.calls]
 
 
+DETACHED = "(detached)"
+
+
+def status_v2(branch: str, commit: str, entries: str = "") -> str:
+    """La salida de ``git status --porcelain=v2 --branch -z --untracked-files=all`` con
+    ``branch`` (o ``DETACHED``), ``commit`` y unos cambios escritos en la forma corta
+    de v1 (``" M ruta"``, ``"R  nueva\\0vieja"``, ``"?? ruta"``, separados por NUL)."""
+    sha, modes = "e" * 40, "N... 100644 100644 100644"
+    lines = [f"# branch.oid {commit}", f"# branch.head {branch}"]
+    tokens = [token for token in entries.split("\0")]
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if not token:
+            continue
+        xy, path = token[:2], token[3:]
+        if xy == "??":
+            lines.append(f"? {path}")
+        elif xy[0] in "RC":
+            lines.append(f"2 {xy.replace(' ', '.')} {modes} {sha} {sha} R100 {path}")
+            lines.append(tokens[index])
+            index += 1
+        else:
+            lines.append(f"1 {xy.replace(' ', '.')} {modes} {sha} {sha} {path}")
+    return "\0".join(lines) + "\0"
+
+
 class FakeGit:
     """Ejecutor de git simulado: responde como git en la documentación («docs») o en el
     código («code», la carpeta ``CODE``), con respuestas por defecto de dos árboles
     limpios en una rama y las de ``overrides`` (``(repositorio o «*», prefijo de la
     orden)`` → ``(código, salida[, error])``, o una lista de respuestas que se dan por
-    orden, la última para siempre), y anota cada orden."""
+    orden, la última para siempre), y anota cada orden. La salida de ``status`` se da
+    con los cambios en la forma corta de v1 (``" M ruta"``): se responde en v2, con la
+    rama y el commit del repositorio (:func:`status_v2`); una que empieza por «#» va tal
+    cual."""
 
     def __init__(
         self, overrides: Mapping[tuple[str, str], Answer | list[Answer]] | None = None
@@ -173,6 +206,10 @@ class FakeGit:
                     answer = value
                     break
         code, out, err = (*answer, "")[:3]
+        if key.startswith("status") and not out.startswith("#"):
+            code_repo = repo == "code"
+            branch = CODE_BRANCH if code_repo else DOCS_BRANCH
+            out = status_v2(branch, SHA_CODE if code_repo else SHA_DOCS, out)
         return subprocess.CompletedProcess(parts, code, out, err)
 
     def commands(self, repo: str | None = None) -> list[str]:
@@ -659,7 +696,7 @@ class TreesTest(PublicationAssertions):
 
     def test_detached_head(self) -> None:
         """RF-007-15: HEAD separado de toda rama, en cualquiera de los dos."""
-        fake = FakeGit({("docs", "symbolic-ref"): (1, "")})
+        fake = FakeGit({("docs", "status"): (0, status_v2(DETACHED, SHA_DOCS))})
         with workspace() as space:
             self.assertTreeStop(space, "documentación", "rama", git_runner=fake)
 
@@ -697,7 +734,7 @@ class TreesTest(PublicationAssertions):
             outcome = self.assertTreeStop(
                 space, "código", "documentación", "README.md", "fusión", git_runner=fake
             )
-        reads = ("rev-parse", "symbolic-ref", "status", "config", "ls-files")
+        reads = ("rev-parse", "status", "config", "ls-files")
         for command in fake.commands():
             self.assertTrue(command.startswith(reads), command)
         self.assertIn("No se ha subido ni copiado nada", outcome.out)
@@ -937,6 +974,87 @@ class MirrorStepTest(PublicationAssertions):
         self.assertIn(f"{CHANGES} (1)", outcome.out)
 
 
+class ReportTest(PublicationAssertions):
+    """RF-007-23, RF-007-30: la comprobación del espejo, el estado y el informe (plan 007
+    §5.4.8, pasos 4 y 5; §5.5)."""
+
+    def test_report_fields(self) -> None:
+        """RF-007-23: el informe da la rama y el commit de cada repositorio, el remoto,
+        los copiados, borrados y sin cambios, las exclusiones halladas en el destino, la
+        verificación, el resultado, la duración y el destino."""
+        with workspace() as space:
+            write_files(space.dest, {"dist/viejo.zip": "zip"})
+            outcome = run_publish(space)
+            dest = space.dest
+        self.assertEqual(outcome.code, 0, outcome.text)
+        out = outcome.out
+        for text in (
+            f"{publish.CODE_LABEL} {CODE_BRANCH} {SHA_CODE[:7]}",
+            f"{publish.DOCS_LABEL} {DOCS_BRANCH} {SHA_DOCS[:7]}",
+            f"origin = {CODE_URL}",
+            f"{len(CODE_FILES) + len(DOCS_FILES)} copiados, 0 borrados, 0 sin cambios",
+            "excluidos en el destino: dist/",
+            f"correcto  {publish.STEP_VERIFY}",
+            "estado guardado",
+        ):
+            self.assertIn(text, out)
+        self.assertRegex(out, r"RESULTADO: PUBLICADO \(\d+,\d s\) en " + re.escape(str(dest)))
+
+    def test_state_written(self) -> None:
+        """RF-007-30: tras una publicación correcta, el estado del destino (en el perfil
+        local) tiene cada fichero con el tamaño, la fecha y el sha256 del destino, sus
+        carpetas, la rama y el commit de cada repositorio y el remoto; el registro en
+        curso y el cerrojo ya no están."""
+        with workspace() as space:
+            outcome = run_publish(space)
+            state = json.loads(safe_mirror.state_file(space.dest, space.env()).read_bytes())
+            files = mirror.describe(space.dest)
+            folders = mirror.folders_of(space.dest)
+            leftovers = [
+                path.exists()
+                for path in (
+                    safe_mirror.pending_file(space.dest, space.env()),
+                    safe_mirror.lock_file(space.dest, space.env()),
+                )
+            ]
+        self.assertEqual(outcome.code, 0, outcome.text)
+        self.assertEqual((state["formato"], state["tipo"]), (1, "estado"))
+        self.assertEqual(state["ficheros"], files)
+        self.assertEqual(sorted(state["carpetas"]), folders)
+        self.assertEqual(state["repositorios"][CODE], {"rama": CODE_BRANCH, "commit": SHA_CODE, "origin": CODE_URL})
+        self.assertEqual(state["repositorios"]["."], {"rama": DOCS_BRANCH, "commit": SHA_DOCS})
+        self.assertEqual(leftovers, [False, False])
+
+    def test_second_run_copies_nothing(self) -> None:
+        """RF-007-23: repetir la publicación sin cambios copia 0 ficheros y termina con
+        0; el estado nuevo sustituye al anterior."""
+        with workspace() as space:
+            first = run_publish(space)
+            second = run_publish(space)
+        self.assertEqual((first.code, second.code), (0, 0), second.text)
+        self.assertIn("estado del", second.out)
+        self.assertIn("0 copiados, 0 borrados", second.out)
+
+    def test_state_only_after_verify(self) -> None:
+        """RF-007-23, RF-007-34: si la comprobación del espejo ve una diferencia (un
+        fichero ya copiado cambió en el destino), código 3 y no se guarda el estado: el
+        siguiente espejo se compara con el anterior."""
+        with workspace() as space:
+            copied = space.dest / layout.DOCS_MARKER
+
+            def hook(action: str, rel: str) -> None:
+                if (action, rel) == ("sustituir", f"{CODE}/{layout.CHECK_RELPATH}"):
+                    copied.write_bytes(b"cambiada en el NAS tras copiarla\n")
+
+            outcome = run_publish(space, mirror_hook=hook)
+            state = safe_mirror.state_file(space.dest, space.env())
+            self.assertFalse(state.exists())
+            self.assertTrue(safe_mirror.pending_file(space.dest, space.env()).exists())
+        self.assertEqual(outcome.code, 3, outcome.text)
+        self.assertIn(f"PARADA    {publish.STEP_VERIFY}", outcome.out)
+        self.assertIn(f"{CHANGES} (1)", outcome.out)
+
+
 class EnvironTest(unittest.TestCase):
     def test_main_always_with_environ(self) -> None:
         """Plan 007 §7.1: ninguna prueba llama a ``publish.main`` sin su entorno
@@ -1029,6 +1147,32 @@ class PublishedTest(unittest.TestCase):
         """RF-007-15 (plan §2.1, 16): las lecturas de git de la publicación no
         reescriben el ``.git/index`` de ninguno de los dos repositorios."""
         self.assertEqual(self.index_stats(), self.indexes)
+
+    def test_read_only_git_keeps_index(self) -> None:
+        """RF-007-23, RF-007-30, RNF-007-04: con git de verdad, la publicación termina con
+        0 y deja el destino igual que la carpeta del proyecto, fichero a fichero; y
+        después nada de los dos ``.git`` ni del destino ha cambiado respecto al estado
+        guardado: otra publicación no copiaría nada (sin cambios del NAS ni sha256
+        distintos)."""
+        self.assertEqual(self.outcome.code, 0, self.outcome.text)
+        dest, project = mirror.describe(self.space.dest), mirror.describe(self.project.docs)
+        self.assertEqual(
+            {rel: info["sha256"] for rel, info in dest.items()},
+            {rel: info["sha256"] for rel, info in project.items()},
+        )
+        environ = self.space.env()
+        base = safe_mirror.load_base(self.space.dest, environ)
+        assert base is not None
+        self.assertFalse(base.photo)
+        source = safe_mirror.scan_source(self.project.docs)
+        listing = safe_mirror.scan_destination(self.space.dest)
+        changes, observed = safe_mirror.destination_changes(
+            self.space.dest, base, source, listing
+        )
+        self.assertEqual(changes, [])
+        to_copy = [rel for rel, sha in source.files.items() if observed[rel].sha256 != sha]
+        self.assertEqual(to_copy, [])
+        self.assertEqual(observed, base.files)
 
     def test_push_branch_and_tags(self) -> None:
         """RF-007-20: con git de verdad, un commit nuevo y una etiqueta anotada en el

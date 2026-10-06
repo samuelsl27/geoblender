@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .blender import Runner, run
@@ -170,6 +171,66 @@ def dirty_entries(root: Path, runner: Runner = run) -> list[str]:
         else:
             entries.append(f"{status} {path}")
     return entries
+
+
+@dataclass(frozen=True)
+class TreeStatus:
+    """Lo que dice ``git status`` de un repositorio: su rama (``None`` si HEAD está
+    separado), su commit (``None`` sin commits) y los cambios como en
+    :func:`dirty_entries`."""
+
+    branch: str | None
+    commit: str | None
+    entries: list[str]
+
+
+_DETACHED = "(detached)"
+_INITIAL = "(initial)"
+
+
+def _v2_status(xy: str) -> str:
+    """El estado ``XY`` de v2 (``.`` = sin cambio) como en v1 (espacio)."""
+    return xy.replace(".", " ")
+
+
+def tree_status(root: Path, runner: Runner = run) -> TreeStatus:
+    """Rama, commit y cambios de ``root`` en una sola orden (``git status
+    --porcelain=v2 --branch -z --untracked-files=all``, sin cerrojos opcionales): lo
+    mismo que :func:`current_branch`, :func:`head` y :func:`dirty_entries` con un
+    proceso de git en lugar de tres."""
+    args = ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]
+    tokens = _git(root, args, runner).stdout.split("\0")
+    branch: str | None = None
+    commit: str | None = None
+    entries: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if not token:
+            continue
+        if token.startswith("# branch.oid "):
+            value = token[len("# branch.oid ") :].strip()
+            commit = None if value == _INITIAL else value
+        elif token.startswith("# branch.head "):
+            value = token[len("# branch.head ") :].strip()
+            branch = None if value == _DETACHED else value
+        elif token.startswith("#"):
+            continue
+        elif token.startswith("1 "):
+            fields = token.split(" ", 8)
+            entries.append(f"{_v2_status(fields[1])} {fields[8]}")
+        elif token.startswith("2 "):
+            fields = token.split(" ", 9)
+            original = tokens[index] if index < len(tokens) else ""
+            index += 1
+            entries.append(f"{_v2_status(fields[1])} {fields[9]} (antes {original})")
+        elif token.startswith("u "):
+            fields = token.split(" ", 10)
+            entries.append(f"{_v2_status(fields[1])} {fields[10]}")
+        elif token.startswith("? "):
+            entries.append(f"?? {token[2:]}")
+    return TreeStatus(branch, commit, entries)
 
 
 def operations_in_progress(git_dir: Path) -> list[str]:

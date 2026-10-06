@@ -51,6 +51,9 @@ DATE = "2026-10-05T12:00:00+02:00"
 # repositorio y no la escribe ningún fichero.
 CONFIG: tuple[tuple[str, str], ...] = (
     ("init.defaultBranch", BRANCH),
+    # Sin la plantilla de git (los 16 ficheros de ejemplo de hooks/, info/exclude…):
+    # cada fichero de más cuesta al copiar, comparar y reflejar (RNF-007-01).
+    ("init.templateDir", ""),
     ("user.name", IDENTITY[0]),
     ("user.email", IDENTITY[1]),
     ("commit.gpgSign", "false"),

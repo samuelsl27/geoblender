@@ -141,6 +141,42 @@ class ReadsTest(unittest.TestCase):
         )
 
 
+class TreeStatusTest(unittest.TestCase):
+    """Rama, commit y cambios de un repositorio en una sola orden
+    (``git status --porcelain=v2 --branch -z``)."""
+
+    def test_tree_status_parsing(self) -> None:
+        """RF-007-15, RF-007-23: la rama (``None`` si HEAD está separado), el commit
+        (``None`` sin commits) y cada cambio como ``"XY ruta"`` (también un renombrado,
+        un conflicto y un fichero nuevo), con una sola orden sin cerrojos opcionales."""
+        sha = "a" * 40
+        modes = "N... 100644 100644 100644"
+        out = (
+            f"# branch.oid {sha}\0# branch.head main\0# branch.upstream origin/main\0"
+            "# branch.ab +1 -0\0"
+            f"1 .M {modes} {sha} {sha} docs/a.md\0"
+            f"2 R. {modes} {sha} {sha} R100 nuevo.md\0viejo.md\0"
+            f"u UU N... 100644 100644 100644 100644 {sha} {sha} {sha} conflicto.md\0"
+            "? sub/carpeta/x.txt\0"
+        )
+        runner = FakeGit({"status": (0, out)})
+        status = git.tree_status(Path("C:/x"), runner=runner)
+        self.assertEqual((status.branch, status.commit), ("main", sha))
+        self.assertEqual(
+            status.entries,
+            [" M docs/a.md", "R  nuevo.md (antes viejo.md)", "UU conflicto.md", "?? sub/carpeta/x.txt"],
+        )
+        command, env, _cwd, _timeout = runner.calls[0]
+        self.assertEqual(command[1:4], ["status", "--porcelain=v2", "--branch"])
+        self.assertEqual(env.get("GIT_OPTIONAL_LOCKS"), "0")
+        detached = "# branch.oid " + sha + "\0# branch.head (detached)\0"
+        status = git.tree_status(Path("."), runner=FakeGit({"status": (0, detached)}))
+        self.assertEqual((status.branch, status.commit, status.entries), (None, sha, []))
+        initial = "# branch.oid (initial)\0# branch.head main\0"
+        status = git.tree_status(Path("."), runner=FakeGit({"status": (0, initial)}))
+        self.assertEqual((status.branch, status.commit), ("main", None))
+
+
 class CredentialsTest(unittest.TestCase):
     """RF-007-19: credenciales en la dirección de ``origin`` o en el texto de un
     ``.git/config`` (sin lanzar git); el mensaje nunca muestra el secreto."""
@@ -280,14 +316,16 @@ class EndToEndTest(unittest.TestCase):
         project = self.project
         self.assertTrue((project.docs / "docs" / "constitution.md").is_file())
         self.assertEqual(project.code, project.docs / CODE_DIR_IN_DOCS)
+        commits = {}
         for repo in (project.docs, project.code):
             with self.subTest(repositorio=repo.name):
-                self.assertEqual(git.toplevel(repo, runner=self.run_git), repo.resolve())
                 self.assertIsNone(git.git_dir_problem(repo))
-                self.assertEqual(git.dirty_entries(repo, runner=self.run_git), [])
-                self.assertEqual(git.current_branch(repo, runner=self.run_git), "main")
+                status = git.tree_status(repo, runner=self.run_git)
+                self.assertEqual((status.branch, status.entries), ("main", []))
                 self.assertEqual(git.operations_in_progress(repo / ".git"), [])
+                commits[repo] = status.commit
         run_git = self.run_git
+        self.assertEqual(git.toplevel(project.code, runner=run_git), project.code.resolve())
         self.assertIsNone(git.remote_url(project.docs, runner=run_git))
         self.assertEqual(
             Path(git.remote_url(project.code, runner=run_git) or ""), project.remote
@@ -296,9 +334,8 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(
             git.tracked_under(project.docs, CODE_DIR_IN_DOCS, runner=run_git), []
         )
-        head = git.head(project.code, runner=run_git)
         remote_head = project.git(project.remote, "rev-parse", "refs/heads/main").stdout
-        self.assertEqual(head, remote_head.strip())
+        self.assertEqual(commits[project.code], remote_head.strip())
 
     def test_reads_do_not_rewrite_index(self) -> None:
         """RF-007-15 (plan §2.1, 16): con un fichero tocado (otra fecha, el mismo
@@ -310,8 +347,8 @@ class EndToEndTest(unittest.TestCase):
         before = index.stat()
         stamp = readme.stat().st_mtime_ns + 10**9
         os.utime(readme, ns=(stamp, stamp))
-        self.assertEqual(git.dirty_entries(project.code, runner=self.run_git), [])
-        git.head(project.code, runner=self.run_git)
+        clean = git.tree_status(project.code, runner=self.run_git)
+        self.assertEqual(clean.entries, [])
         after = index.stat()
         self.assertEqual(
             (after.st_size, after.st_mtime_ns), (before.st_size, before.st_mtime_ns)
@@ -322,10 +359,9 @@ class EndToEndTest(unittest.TestCase):
         readme.write_text("cambiado\n", encoding="utf-8")
         (project.code / "tools" / "nuevo").mkdir()
         (project.code / "tools" / "nuevo" / "a.py").write_text("x\n", encoding="utf-8")
-        self.assertEqual(
-            git.dirty_entries(project.code, runner=self.run_git),
-            [" M README.md", "?? tools/nuevo/a.py"],
-        )
+        status = git.tree_status(project.code, runner=self.run_git)
+        self.assertEqual(status.entries, [" M README.md", "?? tools/nuevo/a.py"])
+        self.assertEqual((status.branch, status.commit), ("main", clean.commit))
         project.git(project.code, "commit", "-q", "-a", "-m", "cambio")
         self.assertEqual(git.ahead_of_remote(project.code, "main", runner=self.run_git), 1)
 
