@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Cerrojo de un solo escritor, ``.lock`` (spec 002, T13; RF-002-04, RF-002-09; plan 002
-§5.4; formato-proyecto §5.2).
+"""Cerrojo de un solo escritor, ``.lock`` (spec 002, T13 y T14; RF-002-04, RF-002-09 a
+RF-002-12; plan 002 §5.4; formato-proyecto §5.2).
 
 Un proyecto lo escribe una sola sesión: la que crea ``.lock`` en exclusiva
 (``O_CREAT | O_EXCL``, atómico también sobre SMB), con su sesión, equipo, usuario,
@@ -10,14 +10,21 @@ proyecto en solo lectura con su equipo, usuario y hora. Un ``.lock`` que existe 
 se puede leer (vacío, JSON a medias) se relee 3 veces cada 100 ms y, si sigue así, cuenta
 como activo de titular desconocido: nunca como libre ni como huérfano. Liberar solo
 borra el cerrojo propio.
+
+Un cerrojo sin renovar más que el umbral (30 min por defecto) o que es la reserva de una
+copia local se puede forzar, con aviso y solo si sigue siendo el que vio el usuario. La
+sesión que lo tiene lo renueva cada 5 min reescribiéndolo en el sitio, sin truncarlo antes
+(otro equipo nunca lo ve vacío), y si otra lo forzó, la comprobación dice LOST.
 """
 
 import json
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.support.core_fixtures import FakeClock, FakePids, make_session, project_tmp
 from tests.support.package import import_geoblender
@@ -263,6 +270,208 @@ class ReleaseTest(unittest.TestCase):
         info = lock.LockInfo.new(SESSION_A, lock.LockMode.LOCAL, FakeClock())
         self.assertEqual(timeutil.parse_utc(info.started_at), FakeClock().now())
 
+
+class StaleAndForceTest(unittest.TestCase):
+    def test_stale_threshold(self) -> None:
+        """RF-002-10: el cerrojo de otra sesión sin renovar desde hace 29 min no se ofrece
+        forzar y desde hace 31 min sí (umbral de 30 min por defecto, configurable: con 10
+        min, a los 11); el aviso dice quién lo tenía, desde cuándo y qué se perderá."""
+        with project_tmp() as tmp:
+            clock = FakeClock()
+            _write_lock(tmp, SESSION_B)
+            clock.advance(minutes=29)
+            status = lock.inspect(tmp, SESSION_A, clock=clock, pid_alive=FakePids())
+            self.assertEqual(status.state, lock.LockState.ACTIVE)
+            self.assertFalse(status.can_force)
+            clock.advance(minutes=2)
+            status = lock.inspect(tmp, SESSION_A, clock=clock, pid_alive=FakePids())
+            self.assertEqual(status.state, lock.LockState.STALE)
+            self.assertTrue(status.can_force)
+            warning = status.force_warning()
+            for expected in ("otra", "PC-PRUEBA-B", "05/10/2026", "31 min", "perder"):
+                self.assertIn(expected, warning)
+            fresh = FakeClock()
+            _write_lock(tmp, SESSION_B, clock=fresh)
+            fresh.advance(minutes=11)
+            self.assertEqual(
+                lock.inspect(
+                    tmp, SESSION_A, clock=fresh, pid_alive=FakePids(), stale_minutes=10
+                ).state,
+                lock.LockState.STALE,
+            )
+            self.assertEqual(
+                lock.inspect(tmp, SESSION_A, clock=fresh, pid_alive=FakePids()).state,
+                lock.LockState.ACTIVE,
+            )
+
+    def test_stale_same_host_with_reused_pid(self) -> None:
+        """RF-002-10: un cerrojo del mismo equipo con el PID reutilizado por otro
+        programa cuenta como activo hasta que caduca su marca."""
+        with project_tmp() as tmp:
+            clock = FakeClock()
+            _write_lock(tmp, SESSION_A2)
+            alive = FakePids({SESSION_A2.pid})
+            clock.advance(minutes=29)
+            self.assertEqual(
+                lock.inspect(tmp, SESSION_A, clock=clock, pid_alive=alive).state,
+                lock.LockState.ACTIVE,
+            )
+            clock.advance(minutes=2)
+            self.assertEqual(
+                lock.inspect(tmp, SESSION_A, clock=clock, pid_alive=alive).state,
+                lock.LockState.STALE,
+            )
+
+    def test_force_requires_seen_holder(self) -> None:
+        """RF-002-10: forzar exige el titular que vio el usuario: si el cerrojo cambió
+        entre el aviso y la confirmación (p. ej. su sesión lo renovó), no se fuerza; uno
+        activo tampoco. Con el titular visto, se sustituye y se devuelve el anterior."""
+        with project_tmp() as tmp:
+            clock = FakeClock()
+            _write_lock(tmp, SESSION_B)
+            clock.advance(minutes=31)
+            seen = lock.inspect(tmp, SESSION_A, clock=clock, pid_alive=FakePids())
+            self.assertEqual(seen.state, lock.LockState.STALE)
+            renewed = _write_lock(tmp, SESSION_B, clock=clock)
+            with self.assertRaises(errors.LockError) as caught:
+                lock.force(
+                    tmp, SESSION_A, lock.LockMode.LOCAL, seen.holder, clock=clock,
+                    pid_alive=FakePids(),
+                )
+            self.assertEqual(caught.exception.code, "core.lock_not_forceable")
+            self.assertEqual((tmp / ".lock").read_bytes(), renewed)
+            clock.advance(minutes=31)
+            seen = lock.inspect(tmp, SESSION_A, clock=clock, pid_alive=FakePids())
+            other = lock.LockInfo.new(SESSION_A2, lock.LockMode.LOCAL, clock)
+            with self.assertRaises(errors.LockError) as caught:
+                lock.force(
+                    tmp, SESSION_A, lock.LockMode.LOCAL, other, clock=clock,
+                    pid_alive=FakePids(),
+                )
+            self.assertEqual(caught.exception.code, "core.lock_changed")
+            self.assertEqual((tmp / ".lock").read_bytes(), renewed)
+            acquired = lock.force(
+                tmp, SESSION_A, lock.LockMode.LOCAL, seen.holder, clock=clock,
+                pid_alive=FakePids(),
+            )
+            self.assertEqual(acquired.replaced, seen.holder)
+            holder = lock.read_holder(tmp, clock=clock)
+            self.assertEqual(holder.session_uid, SESSION_A.session_uid)
+
+    def test_checkout_reservation_is_forceable(self) -> None:
+        """RF-002-10: la reserva de una copia local es RESERVED aunque sea reciente o su
+        proceso haya terminado (nunca huérfana): no se adquiere sin más, se ofrece forzar
+        avisando de que la copia ya no se podrá publicar, y forzarla funciona."""
+        with project_tmp() as tmp:
+            clock = FakeClock()
+            _write_lock(tmp, SESSION_A2, mode="checkout")
+            clock.advance(minutes=1)
+            status = lock.inspect(tmp, SESSION_A, clock=clock, pid_alive=FakePids())
+            self.assertEqual(status.state, lock.LockState.RESERVED)
+            self.assertTrue(status.can_force)
+            self.assertIn("copia local", status.force_warning())
+            self.assertIn("publicar", status.force_warning())
+            with self.assertRaises(errors.LockError) as caught:
+                lock.acquire(
+                    tmp, SESSION_A, lock.LockMode.LOCAL, clock=clock, pid_alive=FakePids()
+                )
+            self.assertEqual(caught.exception.context["state"], "reserved")
+            acquired = lock.force(
+                tmp, SESSION_A, lock.LockMode.LOCAL, status.holder, clock=clock,
+                pid_alive=FakePids(),
+            )
+            self.assertEqual(acquired.replaced.mode, lock.LockMode.CHECKOUT)
+
+
+class HeartbeatTest(unittest.TestCase):
+    def test_heartbeat_renews_in_place(self) -> None:
+        """RF-002-11: la marca de actividad comprueba que el cerrojo sigue siendo de esta
+        sesión y lo renueva en el mismo fichero (misma longitud, mismo inicio)."""
+        with project_tmp() as tmp:
+            clock = FakeClock()
+            lock.acquire(tmp, SESSION_A, lock.LockMode.LOCAL, clock=clock, pid_alive=FakePids())
+            before = (tmp / ".lock").stat()
+            clock.advance(minutes=5)
+            self.assertEqual(lock.heartbeat(tmp, SESSION_A, clock=clock), lock.LockCheck.OK)
+            holder = lock.read_holder(tmp, clock=clock)
+            self.assertEqual(holder.heartbeat_at, "2026-10-05T08:17:44.000Z")
+            self.assertEqual(holder.started_at, "2026-10-05T08:12:44.000Z")
+            after = (tmp / ".lock").stat()
+            self.assertEqual(after.st_size, lock.LOCK_SIZE)
+            self.assertEqual(after.st_ino, before.st_ino)
+            clock.advance(minutes=29)
+            self.assertEqual(
+                lock.inspect(tmp, SESSION_B, clock=clock, pid_alive=FakePids()).state,
+                lock.LockState.ACTIVE,
+            )
+
+    def test_heartbeat_lost(self) -> None:
+        """RF-002-11, RF-002-12: si otra sesión forzó el cerrojo, o ya no está, o no se
+        puede leer, la comprobación devuelve LOST y no escribe nada."""
+        with project_tmp() as tmp:
+            clock = FakeClock()
+            lock.acquire(tmp, SESSION_A, lock.LockMode.LOCAL, clock=clock, pid_alive=FakePids())
+            clock.advance(minutes=31)
+            seen = lock.inspect(tmp, SESSION_B, clock=clock, pid_alive=FakePids())
+            lock.force(
+                tmp, SESSION_B, lock.LockMode.LOCAL, seen.holder, clock=clock,
+                pid_alive=FakePids(),
+            )
+            forced = (tmp / ".lock").read_bytes()
+            self.assertEqual(lock.heartbeat(tmp, SESSION_A, clock=clock), lock.LockCheck.LOST)
+            self.assertEqual((tmp / ".lock").read_bytes(), forced)
+            (tmp / ".lock").write_bytes(b"{ a medias")
+            self.assertEqual(lock.heartbeat(tmp, SESSION_A, clock=clock), lock.LockCheck.LOST)
+            self.assertEqual((tmp / ".lock").read_bytes(), b"{ a medias")
+            (tmp / ".lock").unlink()
+            self.assertEqual(lock.heartbeat(tmp, SESSION_A, clock=clock), lock.LockCheck.LOST)
+            self.assertFalse((tmp / ".lock").exists())
+
+    def test_heartbeat_io_error(self) -> None:
+        """RF-002-12: si renovar falla por un error de disco o de red, la comprobación
+        devuelve FAILED (no se sabe si el cerrojo sigue siendo nuestro)."""
+        with project_tmp() as tmp:
+            clock = FakeClock()
+            lock.acquire(tmp, SESSION_A, lock.LockMode.LOCAL, clock=clock, pid_alive=FakePids())
+            with mock.patch.object(lock, "_open_for_update", side_effect=OSError(64, "red")):
+                self.assertEqual(
+                    lock.heartbeat(tmp, SESSION_A, clock=clock), lock.LockCheck.FAILED
+                )
+
+    def test_concurrent_reader_never_sees_empty(self) -> None:
+        """RF-002-11: un lector que lee el cerrojo en bucle mientras se renueva 500 veces
+        nunca lo ve vacío ni a medias (la marca se reescribe sin truncar antes)."""
+        with project_tmp() as tmp:
+            clock = FakeClock()
+            lock.acquire(tmp, SESSION_A, lock.LockMode.LOCAL, clock=clock, pid_alive=FakePids())
+            target = tmp / ".lock"
+            stop = threading.Event()
+            seen = {"reads": 0, "bad": []}
+
+            def reader() -> None:
+                while not stop.is_set():
+                    with target.open("rb") as handle:
+                        content = handle.read()
+                    seen["reads"] += 1
+                    try:
+                        if lock.decode_lock(content).session_uid != SESSION_A.session_uid:
+                            seen["bad"].append(content[:60])
+                    except ValueError:
+                        seen["bad"].append(content[:60])
+
+            thread = threading.Thread(target=reader)
+            thread.start()
+            try:
+                for _ in range(500):
+                    clock.advance(seconds=1)
+                    self.assertEqual(
+                        lock.heartbeat(tmp, SESSION_A, clock=clock), lock.LockCheck.OK
+                    )
+            finally:
+                stop.set()
+                thread.join()
+            self.assertGreater(seen["reads"], 0)
+            self.assertEqual(seen["bad"], [])
 
 if __name__ == "__main__":
     unittest.main()
