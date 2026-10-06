@@ -144,18 +144,20 @@ def draw_view_row(self: Any, context: Any) -> None:
     result = fold(width, str(getattr(context, "mode", "OBJECT")))
     _STATE.folded[_area_key(getattr(context, "area", None))] = result.folded
     items = {item.key: item for item in catalog().quick_access("view")}
-    layout = self.layout
-    row = layout.row(align=True)
-    group = ""
+    outer = self.layout.row(align=False)
+    group: str | None = None
+    row = outer
     for key in result.visible:
         item = items[key]
-        if group and item.group != group:
-            row.separator(type="LINE")
-        group = item.group
+        if item.group != group:  # cada grupo, con sus botones juntos, tras una línea
+            if group is not None:
+                outer.separator(type="LINE")
+            row = outer.row(align=True)
+            group = item.group
         _draw_item(row, context, item, compact=key in result.compact)
     if result.more:
-        row.separator(type="LINE")
-        row.popover(MORE_PANEL, text=tr("»"), translate=False)
+        outer.separator(type="LINE")
+        outer.popover(MORE_PANEL, text=tr("»"), translate=False)
 
 
 class GEOBLENDER_PT_ui_quick_access_more(bpy.types.Panel):
