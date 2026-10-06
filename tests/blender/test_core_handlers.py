@@ -76,7 +76,9 @@ class HandlersTestCase(unittest.TestCase):
     def create(self, name: str = "Cantera Prueba", *, attach: bool = True) -> object:
         """Crea un proyecto con la sesión de este Blender y, si se pide, lo deja como el
         proyecto de la sesión."""
-        settings = self.core.ProjectSettings(name=name, window=WINDOW)
+        settings = self.core.ProjectSettings(
+            name=name, window=WINDOW, crs_epsg=25830, vcrs_epsg=5782
+        )
         result = self.core.create_project(
             self.tmp, settings, self.ps.session(), self.ps.userdata()
         )

@@ -22,7 +22,6 @@ from dataclasses import asdict, dataclass, fields
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from ..georef.crs import DEFAULT_HORIZONTAL_EPSG, DEFAULT_VERTICAL_EPSG
 from ..georef.origin import DEFAULT_GRID_STEP_M, GeoOrigin, Window
 
 if TYPE_CHECKING:
@@ -36,15 +35,18 @@ class ProjectSettings:
     lo valida ``core.project.create``.
 
     ``window``: la ventana de trabajo tecleada, absoluta (xmin, ymin, xmax, ymax, en m),
-    antes de ampliarla a la unidad de alineación del paso. Por defecto, EPSG:25830 y
-    EPSG:5782 (spec 002, D-2); ``vcrs_epsg = None`` es una referencia vertical local, que
+    antes de ampliarla a la unidad de alineación del paso. El CRS horizontal y el vertical
+    son **obligatorios**, sin valor por defecto: el dominio no los supone nunca
+    (constitución, principio 6). Quien propone EPSG:25830 y EPSG:5782 (spec 002, D-2;
+    RF-002-23) es el diálogo «Nuevo proyecto», con ``core.georef.crs.DEFAULT_*_EPSG``
+    (convergencia, T42). ``vcrs_epsg = None`` es una referencia vertical local, que
     necesita ``vcrs_note``.
     """
 
     name: str
     window: Window | tuple[float, float, float, float]
-    crs_epsg: int = DEFAULT_HORIZONTAL_EPSG
-    vcrs_epsg: int | None = DEFAULT_VERTICAL_EPSG
+    crs_epsg: int
+    vcrs_epsg: int | None
     vcrs_note: str | None = None
     grid_step_m: float = DEFAULT_GRID_STEP_M
     z0: int = 0

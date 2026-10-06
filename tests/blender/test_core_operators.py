@@ -122,7 +122,9 @@ class OperatorsTestCase(unittest.TestCase):
 
     def create_closed(self, name: str = "Cantera Prueba", session: object = None) -> Path:
         """Un proyecto creado con ``core`` y cerrado (o con el cerrojo de ``session``)."""
-        settings = self.core.ProjectSettings(name=name, window=WINDOW)
+        settings = self.core.ProjectSettings(
+            name=name, window=WINDOW, crs_epsg=25830, vcrs_epsg=5782
+        )
         owner = self.ps.session() if session is None else session
         result = self.core.create_project(self.tmp, settings, owner, self.ps.userdata())
         if session is None:

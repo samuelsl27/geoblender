@@ -7,7 +7,8 @@ Crear deja la carpeta ``<Nombre>.gbproj`` con ``manifest.json``, ``project.gpkg`
 ``exports/``, con el cerrojo de la sesión. Todo se crea en una carpeta temporal junto al
 destino y se renombra al final: un fallo en cualquier paso no deja ni el proyecto ni la
 temporal. Se valida antes de tocar el disco: nombre válido en Windows, CRS del catálogo
-(por defecto EPSG:25830 y EPSG:5782, o una referencia local con descripción), ventana no
+(siempre indicado: el diálogo propone EPSG:25830 y EPSG:5782; o una referencia local con
+descripción), ventana no
 vacía, con los ejes en su sitio y dentro del ámbito del CRS, paso de rejilla y Z0. La
 ventana se amplía a la unidad de alineación del paso y el GeoOrigin sale de su centro; si
 la ventana pasa de ±8 km del origen, se crea con aviso.
@@ -137,12 +138,18 @@ class CreateTest(unittest.TestCase):
             self.assertEqual(record.window, georef.Window(699_498.0, 4_399_500.0, 700_503.0, 4_400_502.0))
             self.assertEqual(record.origin.as_tuple(), (700_000, 4_400_000, -180))
 
-    def test_defaults_and_local_vertical(self) -> None:
-        """RF-002-23: sin indicar CRS se proponen EPSG:25830 y EPSG:5782; la referencia
-        vertical local se guarda con su descripción."""
-        settings = model.ProjectSettings(name="Por defecto", window=(699_500.0, 4_399_500.0,
-                                                                      700_500.0, 4_400_500.0))
-        self.assertEqual((settings.crs_epsg, settings.vcrs_epsg), (25830, 5782))
+    def test_crs_never_assumed_and_local_vertical(self) -> None:
+        """RF-002-23, RF-002-03: el dominio no supone el CRS (constitución, principio 6):
+        unos ajustes sin CRS horizontal o sin CRS vertical no se construyen; quien propone
+        EPSG:25830 y EPSG:5782 es el diálogo «Nuevo proyecto», con las constantes del
+        catálogo (convergencia, T42). La referencia vertical local se guarda con su
+        descripción."""
+        window = (699_500.0, 4_399_500.0, 700_500.0, 4_400_500.0)
+        for missing in ({}, {"crs_epsg": 25830}, {"vcrs_epsg": 5782}):
+            with self.subTest(dados=missing), self.assertRaises(TypeError):
+                model.ProjectSettings(name="Sin CRS", window=window, **missing)
+        crs = import_geoblender("core.georef.crs")
+        self.assertEqual((crs.DEFAULT_HORIZONTAL_EPSG, crs.DEFAULT_VERTICAL_EPSG), (25830, 5782))
         with project_tmp() as tmp:
             record = _make(tmp, vcrs_epsg=None, vcrs_note="NP-0 del plano 3").record
             self.assertEqual(
@@ -215,14 +222,17 @@ class RejectTest(unittest.TestCase):
 
     def test_invalid_settings_create_nothing(self) -> None:
         """RF-002-03: ejes invertidos (X e Y intercambiadas), ventana vacía, fuera del
-        ámbito del CRS, CRS fuera del catálogo o del tipo equivocado, vertical local sin
-        descripción, paso 0,3 o Z0 = 20 000 → rechazo con el campo y el valor, y no se
-        crea nada."""
+        ámbito del CRS, CRS que falta (``None``: nunca se supone EPSG:25830, principio 6;
+        convergencia, T42), que no es un código entero, fuera del catálogo o del tipo
+        equivocado, vertical local sin descripción, paso 0,3 o Z0 = 20 000 → rechazo con el
+        campo y el valor, y no se crea nada."""
         cases = [
             ("ventana", "4400000", {"window": (4_400_000.0, 700_000.0, 4_401_000.0, 701_000.0)}),
             ("xmin–xmax", "700500", {"window": (700_500.0, 4_399_500.0, 700_500.0, 4_400_500.0)}),
             ("ymin–ymax", "4400500", {"window": (699_500.0, 4_400_500.0, 700_500.0, 4_399_500.0)}),
             ("ventana", "100", {"window": (100.0, 4_399_500.0, 1_100.0, 4_400_500.0)}),
+            ("CRS horizontal", "vacío", {"crs_epsg": None}),
+            ("CRS horizontal", "25830", {"crs_epsg": "25830"}),
             ("CRS horizontal", "EPSG:4326", {"crs_epsg": 4326}),
             ("CRS horizontal", "EPSG:5782", {"crs_epsg": 5782}),
             ("CRS vertical", "EPSG:25830", {"vcrs_epsg": 25830}),

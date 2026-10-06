@@ -103,7 +103,9 @@ class CheckoutOpsTestCase(unittest.TestCase):
     def open_project(self, big: int = 0) -> object:
         """Crea «Cantera Prueba» (con un ráster de ``big`` bytes) y lo deja abierto en
         escritura en la sesión."""
-        settings = self.core.ProjectSettings(name="Cantera Prueba", window=WINDOW)
+        settings = self.core.ProjectSettings(
+            name="Cantera Prueba", window=WINDOW, crs_epsg=25830, vcrs_epsg=5782
+        )
         result = self.core.create_project(
             self.parent, settings, self.ps.session(), self.ps.userdata()
         )

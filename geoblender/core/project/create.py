@@ -6,9 +6,10 @@ Coordenadas: la ventana de trabajo es **absoluta** (CRS del proyecto, m, float64
 GeoOrigin, en metros enteros.
 
 1. **Validar sin tocar el disco** (:func:`prepare`): nombre válido en Windows; CRS
-   horizontal y vertical del catálogo propio (por defecto EPSG:25830 y EPSG:5782; o una
-   referencia local con descripción), nunca de la configuración de PROJ o GDAL del
-   equipo; paso de rejilla (0,5–5 m, múltiplo de 0,5); ventana no vacía y con los ejes en
+   horizontal y vertical del catálogo propio (los que se indiquen, nunca supuestos: el
+   diálogo propone EPSG:25830 y EPSG:5782; o una referencia local con descripción), nunca
+   de la configuración de PROJ o GDAL del equipo; paso de rejilla (0,5–5 m, múltiplo de
+   0,5); ventana no vacía y con los ejes en
    su sitio, ampliada hacia fuera a la unidad de alineación del paso y dentro del ámbito
    del CRS; GeoOrigin del centro de la ventana ampliada (empates hacia arriba) con Z0 en
    ±10 000 m. Un fallo es :class:`ValidationError` con el campo, el valor y el motivo, y
