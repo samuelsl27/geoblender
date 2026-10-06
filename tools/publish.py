@@ -22,6 +22,10 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
    comparación es el estado del último espejo de ese destino o, en el primero, su foto
    inicial (``gbtools.safe_mirror``); sin ninguno, o con un estado ilegible, código 2 y
    ``--rehacer-estado``.
+4. Remoto (RF-007-19): el código tiene ``origin``, y ni su dirección ni el texto de los
+   dos ``.git/config`` llevan credenciales (usuario con contraseña o token en una
+   dirección, también en una regla ``insteadOf``, o una cabecera ``extraHeader``): el
+   espejo copiaría los ``.git`` al NAS. Si no, código 2 sin mostrar el secreto.
 5. Árboles (RF-007-15), en los dos repositorios: ``.git`` propio (ni *worktree*
    enlazado ni ``alternates``), sin cambios sin commit ni ficheros nuevos sin ignorar,
    sin operaciones de git a medias ni cerrojos, HEAD en una rama; y la documentación no
@@ -78,6 +82,7 @@ STATUS_SKIPPED = "omitido"
 
 STEP_STRUCTURE = "estructura"
 STEP_DEST = "destino"
+STEP_REMOTE = "remoto"
 STEP_TREES = "árboles"
 STEP_CHECK = "comprobación"
 STEP_DOCS = "documentación"
@@ -387,6 +392,7 @@ class Publication:
         self.locate = locate
         self.dest: Path | None = None
         self.base: safe_mirror.MirrorState | None = None
+        self.url: str | None = None
         self.started = time.perf_counter()
         self.step_started = self.started
 
@@ -462,6 +468,39 @@ class Publication:
             STEP_DEST,
             base_text(base) if base is not None else "sin estado ni foto",
         )
+
+    # Paso 4: el remoto del código y las credenciales de los dos .git/config.
+    def check_remote(self) -> None:
+        try:
+            url = git.remote_url(self.code, runner=self.git_runner)
+        except git.GitProblem as exc:
+            raise Stop(EXIT_USAGE, STEP_REMOTE, str(exc)) from exc
+        if url is None:
+            raise Stop(
+                EXIT_USAGE,
+                STEP_REMOTE,
+                f"el código no tiene el remoto «{git.REMOTE}»: no hay a dónde subir",
+            )
+        for label, repo, address in (
+            (CODE_LABEL, self.code, url),
+            (DOCS_LABEL, self.project, None),
+        ):
+            try:
+                text = (repo / ".git" / "config").read_bytes().decode("utf-8", "replace")
+            except OSError:
+                text = ""
+            problem = git.credential_problem(address, text)
+            if problem is not None:
+                raise Stop(
+                    EXIT_USAGE,
+                    STEP_REMOTE,
+                    f"credenciales en la configuración de git de la {label}"
+                    if label == DOCS_LABEL
+                    else f"credenciales en la configuración de git del {label}",
+                    [f"{label}: {problem}"],
+                )
+        self.url = url
+        self.line(STATUS_OK, STEP_REMOTE, f"{git.REMOTE} = {url}; sin credenciales")
 
     # Paso 5: árboles (y otra vez tras las comprobaciones, que no deben cambiar nada).
     def check_trees(self, after_checks: bool = False) -> None:
@@ -542,12 +581,13 @@ class Publication:
     def run(self) -> int:
         self.check_structure()
         self.check_destination()
+        self.check_remote()
         self.check_trees()
         self.run_checks()
         raise Stop(
             EXIT_FAIL,
             "publicación",
-            "la publicación aún no sube ni hace el espejo (spec 007, T23 a T28)",
+            "la publicación aún no sube ni hace el espejo (spec 007, T24 a T28)",
         )
 
 

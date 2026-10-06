@@ -141,6 +141,78 @@ class ReadsTest(unittest.TestCase):
         )
 
 
+class CredentialsTest(unittest.TestCase):
+    """RF-007-19: credenciales en la dirección de ``origin`` o en el texto de un
+    ``.git/config`` (sin lanzar git); el mensaje nunca muestra el secreto."""
+
+    SECRET = "secreto-de-prueba"
+
+    def assertProblem(self, url: str | None, text: str, *expected: str) -> str:
+        problem = git.credential_problem(url, text)
+        self.assertIsNotNone(problem, (url, text))
+        assert problem is not None
+        self.assertNotIn(self.SECRET, problem)
+        for piece in expected:
+            self.assertIn(piece, problem)
+        return problem
+
+    def test_credentials_in_url(self) -> None:
+        """RF-007-19: usuario con contraseña (o token) en la dirección, o en http(s) un
+        usuario que no es «git» (un token puesto como usuario)."""
+        for url in (
+            f"https://usuario:{self.SECRET}@github.invalid/pruebas/codigo.git",
+            f"https://{self.SECRET}@github.invalid/pruebas/codigo.git",
+            f"http://usuario:{self.SECRET}@github.invalid/codigo",
+            f"ssh://git:{self.SECRET}@github.invalid/codigo.git",
+        ):
+            with self.subTest(direccion=url.replace(self.SECRET, "…")):
+                self.assertProblem(url, "", "origin")
+        for url in (
+            "https://github.invalid/pruebas/codigo.git",
+            "https://git@github.invalid/pruebas/codigo.git",
+            None,
+        ):
+            with self.subTest(direccion=url):
+                self.assertIsNone(git.credential_problem(url, ""))
+
+    def test_credentials_in_insteadof(self) -> None:
+        """RF-007-19: una regla ``url.<…>.insteadOf`` (o cualquier dirección del
+        ``.git/config``) con credenciales, con su línea."""
+        text = (
+            "[core]\n\tbare = false\n"
+            f'[url "https://usuario:{self.SECRET}@github.invalid/"]\n'
+            "\tinsteadOf = https://github.invalid/\n"
+        )
+        self.assertProblem(None, text, ".git/config", "línea 3")
+        value = f"[url \"https://github.invalid/\"]\n\tinsteadOf = https://x:{self.SECRET}@otro.invalid/\n"
+        self.assertProblem(None, value, "línea 2")
+        remote = f'[remote "origin"]\n\turl = https://{self.SECRET}@github.invalid/x.git\n'
+        self.assertProblem(None, remote, "línea 2")
+
+    def test_extraheader(self) -> None:
+        """RF-007-19: una cabecera de autorización (``http.extraHeader``, con o sin
+        dirección, con cualquier mayúscula)."""
+        for text in (
+            f'[http "https://github.invalid/"]\n\textraheader = AUTHORIZATION: basic {self.SECRET}\n',
+            f"[http]\n\textraHeader = Authorization: bearer {self.SECRET}\n",
+        ):
+            with self.subTest(texto=text.splitlines()[0]):
+                self.assertProblem(None, text, "línea 2", "cabecera")
+
+    def test_ssh_url_ok(self) -> None:
+        """RF-007-19: una dirección SSH con el usuario «git» (también la forma
+        ``git@servidor:ruta``) y una configuración normal no son credenciales."""
+        text = (
+            "[core]\n\trepositoryformatversion = 0\n"
+            '[remote "origin"]\n\turl = git@github.invalid:pruebas/codigo.git\n'
+            "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+            '[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n'
+        )
+        for url in ("git@github.invalid:pruebas/codigo.git", "ssh://git@github.invalid/x.git"):
+            with self.subTest(direccion=url):
+                self.assertIsNone(git.credential_problem(url, text))
+
+
 class GitDirTest(unittest.TestCase):
     """``.git`` y operaciones a medias, mirando ficheros (sin lanzar git)."""
 

@@ -200,6 +200,53 @@ def remote_url(root: Path, name: str = REMOTE, runner: Runner = run) -> str | No
     return url if result.returncode == 0 and url else None
 
 
+_URL_IN_TEXT = re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s\"'<>]+")
+_URL_PARTS = re.compile(r"(?i)^([a-z][a-z0-9+.\-]*)://([^/?#]*)")
+_EXTRA_HEADER = re.compile(r"(?i)^\s*extraheader\s*=")
+SSH_USER = "git"
+
+
+def _url_has_credentials(url: str) -> bool:
+    """Si ``url`` lleva un secreto: usuario con contraseña (o token) en cualquier
+    esquema, o, en http(s), un usuario que no es «git» (un token como usuario). La
+    forma ``git@servidor:ruta`` de SSH no tiene dónde llevar contraseña."""
+    match = _URL_PARTS.match(url.strip())
+    if match is None:
+        return False
+    scheme, authority = match.group(1).lower(), match.group(2)
+    if "@" not in authority:
+        return False
+    userinfo = authority.rsplit("@", 1)[0]
+    if ":" in userinfo:
+        return True
+    return scheme in ("http", "https") and userinfo.casefold() != SSH_USER
+
+
+def credential_problem(url: str | None, config_text: str) -> str | None:
+    """Dónde hay credenciales (RF-007-19), sin mostrarlas: en la dirección ``url`` (la
+    de ``origin``), o en cualquier dirección del texto de un ``.git/config``
+    (``remote.*.url``, ``url.<…>.insteadOf``…) o una cabecera ``http.*.extraHeader``,
+    con su línea. ``None`` si no hay. No lanza git: lee el texto."""
+    if url is not None and _url_has_credentials(url):
+        return (
+            "la dirección de «origin» lleva credenciales (usuario con contraseña o token): "
+            "quítelas (git remote set-url origin <dirección sin usuario>) y guárdelas en "
+            "el gestor de credenciales (gh auth setup-git)"
+        )
+    for number, line in enumerate(config_text.splitlines(), start=1):
+        if _EXTRA_HEADER.match(line):
+            return (
+                f".git/config, línea {number}: una cabecera de autorización "
+                "(http.extraHeader); quítela: el espejo copiaría el .git al NAS"
+            )
+        if any(_url_has_credentials(found) for found in _URL_IN_TEXT.findall(line)):
+            return (
+                f".git/config, línea {number}: una dirección con credenciales (usuario con "
+                "contraseña o token); quítelas: el espejo copiaría el .git al NAS"
+            )
+    return None
+
+
 def ahead_of_remote(root: Path, branch: str, runner: Runner = run) -> int | None:
     """Commits de ``branch`` que ``refs/remotes/origin/<branch>`` no tiene, según el
     repositorio (sin red); ``None`` si no hay esa referencia."""

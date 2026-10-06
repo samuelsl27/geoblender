@@ -528,6 +528,71 @@ class DestinationTest(PublicationAssertions):
         self.assertIn("no se puede leer", outcome.out)
 
 
+class RemoteTest(PublicationAssertions):
+    """RF-007-19: el remoto del código y las credenciales de los dos ``.git/config``
+    (plan 007 §5.4.5, paso 4): código 2 antes de subir nada, sin copiar ningún ``.git``
+    al destino y sin mostrar el secreto."""
+
+    SECRET = "secreto-de-prueba"
+
+    def assertCredentials(self, space: Workspace, **kwargs: object) -> Outcome:
+        outcome = self.assertStopped(space, 2, **kwargs)
+        self.assertIn(f"fallo     {publish.STEP_REMOTE}", outcome.out)
+        self.assertIn("credenciales", outcome.out)
+        self.assertNotIn(self.SECRET, outcome.text)
+        self.assertEqual(outcome.checks.calls, [])
+        self.assertEqual(list(space.dest.iterdir()), [])
+        return outcome
+
+    def test_credentials_in_code_url(self) -> None:
+        """RF-007-19: la dirección de ``origin`` del código lleva usuario y token."""
+        url = f"https://usuario:{self.SECRET}@github.invalid/pruebas/codigo.git"
+        config = f'[core]\n\tbare = false\n[remote "origin"]\n\turl = {url}\n'
+        fake = FakeGit({("code", "config --get remote.origin.url"): (0, f"{url}\n")})
+        with workspace(code={".git/config": config}) as space:
+            outcome = self.assertCredentials(space, git_runner=fake)
+        self.assertIn("origin", outcome.out)
+
+    def test_credentials_in_docs_config(self) -> None:
+        """RF-007-19: la configuración de la documentación (que el espejo copiaría al
+        NAS) tiene una regla ``insteadOf`` con credenciales."""
+        config = (
+            "[core]\n\tbare = false\n"
+            f'[url "https://usuario:{self.SECRET}@github.invalid/"]\n'
+            "\tinsteadOf = https://github.invalid/\n"
+        )
+        with workspace(docs={".git/config": config}) as space:
+            outcome = self.assertCredentials(space)
+        self.assertIn(publish.DOCS_LABEL, outcome.out)
+        self.assertIn("línea 3", outcome.out)
+
+    def test_credentials_no_copy(self) -> None:
+        """RF-007-19: una cabecera de autorización en el ``.git/config`` del código:
+        nada subido, nada copiado (el destino sigue vacío), ninguna comprobación."""
+        config = (
+            f'[core]\n\tbare = false\n[remote "origin"]\n\turl = {CODE_URL}\n'
+            f"[http]\n\textraheader = AUTHORIZATION: bearer {self.SECRET}\n"
+        )
+        with workspace(code={".git/config": config}) as space:
+            outcome = self.assertCredentials(space)
+        self.assertIn(publish.CODE_LABEL, outcome.out)
+
+    def test_origin_missing_exit_2(self) -> None:
+        """RF-007-20 (plan §5.4.5, paso 4): sin ``origin`` en el código no hay a dónde
+        subir: código 2."""
+        fake = FakeGit({("code", "config --get remote.origin.url"): (1, "")})
+        with workspace() as space:
+            outcome = self.assertStopped(space, 2, git_runner=fake)
+        self.assertIn("origin", outcome.out)
+
+    def test_remote_reported(self) -> None:
+        """RF-007-23: el remoto, sin credenciales, va en el informe."""
+        with workspace() as space:
+            outcome = run_publish(space)
+        self.assertIn(f"correcto  {publish.STEP_REMOTE}", outcome.out)
+        self.assertIn(CODE_URL, outcome.out)
+
+
 class TreesTest(PublicationAssertions):
     """RF-007-15: los dos árboles limpios, en una rama, sin operaciones a medias (plan
     007 §5.4.5, paso 5)."""
