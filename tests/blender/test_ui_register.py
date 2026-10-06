@@ -123,7 +123,7 @@ class EnabledUiTest(unittest.TestCase):
         before = _data_state()
         self.assertEqual(bpy.ops.geoblender.res_compute_volume_between_surfaces(),
                          {"CANCELLED"})
-        self.assertEqual(bpy.ops.geoblender.ui_set_view(view="PLAN"), {"CANCELLED"})
+        self.assertEqual(bpy.ops.geoblender.geo_new_section(mode="NORTH_SOUTH"), {"CANCELLED"})
         self.assertEqual(_data_state(), before)
         cls = self.commands.registered_class(VOLUME)
         reports: list[tuple[set[str], str]] = []

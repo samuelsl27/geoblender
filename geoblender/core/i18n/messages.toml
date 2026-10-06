@@ -588,6 +588,11 @@ es = "Barra de estado minera"
 ["Back to Previous"]
 es = "Volver"
 
+# Vistas (spec 003; RF-003-12 a RF-003-15; spec §7 y §8)
+
+["There is no 3D view in this window"]
+es = "No hay ninguna Vista 3D en esta ventana"
+
 # Acceso rápido de la vista (spec 003; RF-003-11; AR §3.3): el botón de los plegados.
 
 ["»"]

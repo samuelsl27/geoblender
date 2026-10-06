@@ -7,7 +7,8 @@ registrados: idioma (el catálogo de comandos en ``core.i18n`` y el idioma de la
 preferencias) → clases propias de la interfaz (los menús y la pestaña «Proyecto» de la
 spec 002) → catálogo (``registry``: menús generados por ``menus``, provisionales y
 textos) → sustitución de ``draw_left`` de la barra superior (``topbar``) → fila de
-acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → conmutador
+acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → vistas
+(``views``: el manejador ``load_post`` que olvida su estado de sesión) → conmutador
 (``switcher``: su manejador ``load_post``; al desregistrar, devuelve cada ventana en modo
 Geoblender a su espacio de Blender y retira su temporizador) → atajos del catálogo en el
 *keyconfig* de complementos (``keymap``). Cada paso
@@ -32,6 +33,7 @@ from . import (
     registry,
     switcher,
     topbar,
+    views,
 )
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
@@ -75,6 +77,7 @@ def register() -> None:
         (_register_catalog, registry.unregister),
         (_install_topbar, topbar.restore),
         (quick_access.install, quick_access.uninstall),
+        (views.register, views.unregister),
         (switcher.register, switcher.unregister),
         (keymap.register, keymap.unregister),
     )

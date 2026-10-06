@@ -13,6 +13,11 @@
   (``name``, ``keep_open``) de Geoblender con ``wm.call_menu_pie`` y ``wm.call_panel``,
   que no saben del modo: sus atajos están en la Vista 3D, así que pasan por la puerta de
   modo (``bl.ui.gate``) y en modo Blender la tecla queda para Blender.
+- ``geoblender.ui_set_view`` (RF-003-12; spec §6.1 y §7; BS §8.12; AR §4): pone la Vista
+  3D de destino (``bl.ui.views.target_view3d``) en una vista minera (``view``), en
+  ortográfica. Su ``bl_label`` es el del menú donde viven sus variantes («Vistas», regla de
+  ``bl.ui.provisional.base_command``) y su descripción emergente, la de la vista pedida.
+  Sin ninguna Vista 3D en la ventana, su ``poll`` falla y lo dice.
 - ``geoblender.ui_toggle_quick_access_row`` (RF-003-11; AR §3.3): Herramientas ▸
   Disposición ▸ «Mostrar la fila de acceso rápido de la vista» (``bl.ui.quick_access``):
   si la fila ya se ve, apaga la preferencia; si no, la enciende y muestra la fila 2 de las
@@ -36,6 +41,18 @@ from ...core.i18n import tr
 from ..ui import gate
 
 TRANSLATION_CONTEXT = "Geoblender"
+# Vistas mineras (spec §6.1): los nombres son las etiquetas del catálogo.
+VIEW_ITEMS = [
+    ("PLAN", "Plan", ""),
+    ("NORTH", "Looking north (E-W section)", ""),
+    ("SOUTH", "Looking south", ""),
+    ("EAST", "Looking east (N-S section)", ""),
+    ("WEST", "Looking west", ""),
+    ("ISO_NE", "Isometric NE", ""),
+    ("ISO_NW", "Isometric NW", ""),
+    ("ISO_SE", "Isometric SE", ""),
+    ("ISO_SW", "Isometric SW", ""),
+]
 TARGET_ITEMS = [
     ("TOGGLE", "Toggle", "Switch to the other interface"),
     ("GEOBLENDER", "Geoblender", "Switch to the Geoblender interface"),
@@ -116,6 +133,53 @@ class GEOBLENDER_OT_ui_call_panel(bpy.types.Operator):
         return self.execute(context)
 
 
+def _variant_description(idname: str, properties: Any) -> str:
+    """La descripción de la variante del catálogo con esas propiedades, en el idioma de
+    Geoblender."""
+    from ..ui import commands, provisional  # diferido, como el conmutador
+
+    cmd = provisional.variant_for(commands.catalog(), idname, properties)
+    return commands.text(cmd.description) if cmd is not None else ""
+
+
+def _poll_view3d(cls: Any, context: Any) -> bool:
+    """Hay una Vista 3D de destino; si no, lo dice."""
+    from ..ui import views
+
+    if views.target_view3d(context) is not None:
+        return True
+    cls.poll_message_set(tr("There is no 3D view in this window"))
+    return False
+
+
+class GEOBLENDER_OT_ui_set_view(bpy.types.Operator):
+    """Mining views, framing and saved views"""
+
+    bl_idname = "geoblender.ui_set_view"
+    bl_label = "Views"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    view: EnumProperty(name="View", items=VIEW_ITEMS, default="PLAN")  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _poll_view3d(cls, context)
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        return _variant_description(cls.bl_idname, properties)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import views
+
+        target = views.target_view3d(context)
+        if target is None:
+            return {"CANCELLED"}
+        views.set_view(target, self.view)
+        return {"FINISHED"}
+
+
 class GEOBLENDER_OT_ui_toggle_quick_access_row(bpy.types.Operator):
     """Show or hide row 2 of the 3D views"""
 
@@ -159,6 +223,7 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_toggle_mode,
     GEOBLENDER_OT_ui_call_pie,
     GEOBLENDER_OT_ui_call_panel,
+    GEOBLENDER_OT_ui_set_view,
     GEOBLENDER_OT_ui_toggle_quick_access_row,
     GEOBLENDER_OT_ui_repair_interface,
 )
