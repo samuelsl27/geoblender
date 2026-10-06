@@ -28,6 +28,7 @@ class Item:
     target: str = ""  # bl_idname del operador o del menú, o nombre de la propiedad
     properties: Any = None  # las propiedades del operador, que el draw rellena
     options: dict[str, Any] = field(default_factory=dict)
+    alert: bool = False  # el layout estaba en alerta (``layout.alert = True``)
 
 
 class FakeLayout:
@@ -44,6 +45,7 @@ class FakeLayout:
         self.operator_context = "INVOKE_DEFAULT"
 
     def _add(self, item: Item) -> Item:
+        item.alert = bool(self.alert)
         self.items.append(item)
         return item
 

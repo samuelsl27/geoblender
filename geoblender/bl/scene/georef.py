@@ -42,15 +42,13 @@ import bpy
 from bpy.app.handlers import persistent
 
 from ...core.errors import GeoblenderError
+from ...core.i18n import format_xyz, tr
 from ...core.paths import blend_relative_path, find_absolute_paths, is_within, same_volume
 from ..props.core import LOCAL_VERTICAL
 from . import project_session
 
 if TYPE_CHECKING:
     from ...core.project.session import Project
-
-_THIN_SPACE = "\u2009"  # espacio fino de miles
-
 
 @dataclass(frozen=True)
 class SceneGeoref:
@@ -70,13 +68,18 @@ class SceneGeoref:
         return self.crs_epsg, self.vcrs_epsg, self.origin
 
     def describe(self) -> str:
-        """«EPSG:25830 + EPSG:5782, GeoOrigin (700 000; 4 400 000; 0)», en español."""
+        """«EPSG:25830 + EPSG:5782, GeoOrigin X 700 000  Y 4 400 000  Z 0», en el idioma
+        de la interfaz."""
         if self.vcrs_epsg == LOCAL_VERTICAL:
-            vertical = "referencia local"
+            vertical = tr("local reference")
         else:
             vertical = f"EPSG:{self.vcrs_epsg}"
-        x, y, z = (f"{value:,d}".replace(",", _THIN_SPACE) for value in self.origin)
-        return f"EPSG:{self.crs_epsg} + {vertical}, GeoOrigin ({x}; {y}; {z})"
+        return tr(
+            "EPSG:{crs} + {vertical}, GeoOrigin {xyz}",
+            crs=self.crs_epsg,
+            vertical=vertical,
+            xyz=format_xyz(*self.origin, decimals=0),
+        )
 
 
 def project_georeference() -> SceneGeoref | None:
@@ -172,11 +175,13 @@ def file_project_uids() -> set[str]:
 
 
 def _view_name(filepath: object) -> str:
-    return Path(filepath).name if isinstance(filepath, str) and filepath else "sin guardar"
+    return Path(filepath).name if isinstance(filepath, str) and filepath else tr("unsaved")
 
 
 def _listed(georefs: list[SceneGeoref]) -> str:
-    return "; ".join(f"«{item.name}», {item.describe()}" for item in georefs)
+    return "; ".join(
+        tr("«{name}», {georef}", name=item.name, georef=item.describe()) for item in georefs
+    )
 
 
 def check_loaded_file(filepath: object = None) -> None:
@@ -191,9 +196,13 @@ def check_loaded_file(filepath: object = None) -> None:
         if found:
             mark_stale()
             project_session.notify(
-                f"La vista «{view}» es del proyecto {_listed(found)}, que no está abierto: "
-                "Geoblender no usa la georreferencia de la vista y la deja desfasada; abra "
-                "el proyecto para trabajar con ella."
+                tr(
+                    "The view «{view}» belongs to project {projects}, which is not open: "
+                    "Geoblender does not use its georeference and marks it out of date; open "
+                    "the project to work with it.",
+                    view=view,
+                    projects=_listed(found),
+                )
             )
         return
     expected = project_georeference()
@@ -204,27 +213,43 @@ def check_loaded_file(filepath: object = None) -> None:
         project_session.close()
         mark_stale()
         project_session.notify(
-            f"La vista «{view}» es de otro proyecto ({_listed(others)}), no del abierto "
-            f"(«{expected.name}», {expected.describe()}): se ha cerrado «{expected.name}» "
-            "y la vista queda desfasada; abra su proyecto para trabajar con ella."
+            tr(
+                "The view «{view}» belongs to another project ({projects}), not to the open "
+                "one («{name}», {georef}): «{name}» has been closed and the view is out of "
+                "date; open its project to work with it.",
+                view=view,
+                projects=_listed(others),
+                name=expected.name,
+                georef=expected.describe(),
+            )
         )
         return
     if not project.writable and is_within(filepath if isinstance(filepath, str) else None,
                                           project.root):
         project_session.notify(
-            f"El proyecto «{expected.name}» está en solo lectura ({project.status.message}): "
-            f"la vista «{view}» es de su carpeta y Ctrl+S la guardaría dentro del proyecto; "
-            "para conservar cambios, use Archivo ▸ Guardar como… fuera de la carpeta del "
-            "proyecto."
+            tr(
+                "The project «{name}» is read-only ({status}): the view «{view}» is in its "
+                "folder and Ctrl+S would save it inside the project; to keep changes, use "
+                "File ▸ Save As… outside the project folder.",
+                name=expected.name,
+                status=project.status.message,
+                view=view,
+            )
         )
     differing = [item for item in found if item.key != expected.key]
     if differing:
         mark_stale()
         shown = "; ".join(item.describe() for item in differing)
         project_session.notify(
-            f"La vista «{view}» tiene otra georreferencia que el proyecto «{expected.name}»: "
-            f"en la vista, {shown}; en el proyecto, {expected.describe()}. Se usa la del "
-            "proyecto y la vista queda desfasada: vuelva a cargar sus datos."
+            tr(
+                "The view «{view}» has another georeference than project «{name}»: in the "
+                "view, {view_georef}; in the project, {project_georef}. The project's is "
+                "used and the view is out of date: reload its data.",
+                view=view,
+                name=expected.name,
+                view_georef=shown,
+                project_georef=expected.describe(),
+            )
         )
     sync_scenes(project)
 
@@ -299,11 +324,16 @@ def on_save_pre(filepath: object = None, *_args: object) -> None:
     remaining = relativize_paths(Path(target))
     if remaining:
         shown = ", ".join(f"«{path}»" for path in remaining[:3])
-        more = f" y {len(remaining) - 3} más" if len(remaining) > 3 else ""
+        if len(remaining) > 3:
+            shown += tr(" and {count} more", count=len(remaining) - 3)
         project_session.notify(
-            f"La vista «{Path(target).name}» usa ficheros con ruta absoluta que no se puede "
-            f"guardar relativa (otro volumen o biblioteca enlazada): {shown}{more}; cópielos "
-            "junto al proyecto si la vista tiene que servir en otro equipo."
+            tr(
+                "The view «{view}» uses files with an absolute path that cannot be saved as "
+                "relative (another volume or a linked library): {paths}; copy them next to "
+                "the project if the view must work on another computer.",
+                view=Path(target).name,
+                paths=shown,
+            )
         )
 
 
@@ -319,7 +349,8 @@ def on_save_post(*_args: object) -> None:
         project_session.notify(exc.message)
     except OSError as exc:
         project_session.notify(
-            f"Proyecto «{project.name}»: no se ha podido actualizar la cabecera ({exc})."
+            tr("Project «{name}»: the header could not be updated ({error}).",
+               name=project.name, error=exc)
         )
 
 

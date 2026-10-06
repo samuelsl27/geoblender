@@ -38,6 +38,7 @@ from ...core.project.lock import DEFAULT_STALE_MINUTES, HEARTBEAT_INTERVAL_S
 from ...core.project.model import ReadOnlyCode
 from ...core.sysinfo import SessionInfo, current_session
 from ...core.userdata import UserData
+from ...core.i18n import tr
 from ...core.version import geoblender_version
 from .. import ADDON_PACKAGE
 
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from ...core.project.session import Project
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
+NOTICES_KEPT = 20  # avisos pendientes que se guardan (los más recientes)
 
 
 class _State:
@@ -92,6 +94,7 @@ def stale_minutes() -> int:
 def notify(message: str) -> None:
     """Deja un aviso para la interfaz y en el registro técnico."""
     _STATE.notices.append(message)
+    del _STATE.notices[:-NOTICES_KEPT]
     LOGGER.warning("%s", message)
 
 
@@ -159,12 +162,16 @@ def heartbeat() -> float | None:
         return float(HEARTBEAT_INTERVAL_S)
     if project.read_only_reason is ReadOnlyCode.LOCK_LOST:
         notify(
-            f"Proyecto «{project.name}»: el cerrojo ya no es de esta sesión (otra sesión lo "
-            "ha forzado o se ha borrado); el proyecto pasa a solo lectura y no se escribirá "
-            "nada más en él."
+            tr(
+                "Project «{name}»: the lock no longer belongs to this session (another "
+                "session forced it or it was deleted); the project is now read-only and "
+                "nothing more will be written to it.",
+                name=project.name,
+            )
         )
     else:
-        notify(f"Proyecto «{project.name}»: {project.status.message}.")
+        notify(tr("Project «{name}»: {detail}", name=project.name,
+                  detail=project.status.message))
     return None
 
 

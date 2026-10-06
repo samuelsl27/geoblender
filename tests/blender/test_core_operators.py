@@ -18,6 +18,12 @@
 - RF-002-23, RF-002-24 (T27): «Sistema de referencia…» (en esta spec, solo consulta) y
   «Origen local…» muestran el CRS horizontal y vertical y el GeoOrigin del proyecto
   abierto.
+- RF-002-34, RF-002-13, RF-002-30 (T28): la pestaña «Proyecto» de la Vista 3D (dibujada
+  con un *layout* simulado) muestra el nombre, el modo (y en solo lectura su motivo, en
+  alerta), el CRS horizontal y vertical, el GeoOrigin, la ventana y el paso, con espacio
+  fino de miles, en español y, si se cambia el idioma, en inglés; sin traducciones que
+  falten; y cada ruta de los datos de usuario sale de
+  ``extension_path_user(bl.ADDON_PACKAGE, …)``.
 - RF-002-27, RF-002-26 (T27): «Ventana de trabajo…» sin motivo se rechaza; con motivo, el
   origen nuevo queda en la base, la cabecera y la escena, con el evento ``move_origin``,
   las vistas desfasadas y ninguna coordenada absoluta guardada cambiada; una ventana de
@@ -43,6 +49,7 @@ import bpy
 
 from tests.support import blender_ext
 from tests.support.blender_ext import module_name
+from tests.support.fake_layout import draw
 from tests.support.repo import ROOT, tools_on_path
 
 tools_on_path()
@@ -457,8 +464,8 @@ class GeorefOperatorsTest(OperatorsTestCase):
         self.assertIn("ETRS89 / UTM zone 30N", crs_text)
         self.assertIn("EPSG:5782", crs_text)
         origin_text = " ".join(self.ops.origin_lines(self.ps.current()))
-        self.assertIn("700\u2009000; 4\u2009400\u2009000; 0", origin_text)
-        self.assertIn("699\u2009500", origin_text)
+        self.assertIn("X 700\u202f000  Y 4\u202f400\u202f000  Z 0", origin_text)
+        self.assertIn("699\u202f500", origin_text)
         bpy.ops.geoblender.core_close_project("EXEC_DEFAULT")
         self.assertFalse(bpy.ops.geoblender.core_set_crs.poll())
         self.assertFalse(bpy.ops.geoblender.core_show_geoorigin.poll())
@@ -522,6 +529,139 @@ class GeorefOperatorsTest(OperatorsTestCase):
         self.assertFalse(self.ps.current().writable)
         self.assertFalse(bpy.ops.geoblender.core_set_work_window.poll())
         self.assertTrue(bpy.ops.geoblender.core_show_geoorigin.poll())
+
+
+class PanelTest(OperatorsTestCase):
+    THIN = "\u202f"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.i18n = ext("core.i18n")
+        self.addCleanup(self.i18n.set_language, "es")
+        self.panel = ext("bl.ui.core_panel").GEOBLENDER_PT_core_project
+
+    def new_project(self) -> object:
+        bpy.ops.geoblender.core_new_project(
+            "EXEC_DEFAULT", directory=str(self.tmp), name="Cantera Prueba", **WINDOW_TEXT
+        )
+        return self.ps.current()
+
+    def test_panel_registered_in_project_tab(self) -> None:
+        """RF-002-34 (ADR-0011): ``GEOBLENDER_PT_core_project`` está registrado en la región
+        lateral de la Vista 3D, en la pestaña «Proyecto» (traducida al registrar)."""
+        self.assertTrue(self.panel.is_registered)
+        self.assertEqual((self.panel.bl_space_type, self.panel.bl_region_type), ("VIEW_3D", "UI"))
+        self.assertEqual(self.panel.bl_category, "Proyecto")
+        self.assertEqual(self.panel.bl_translation_context, CONTEXT)
+
+    def test_panel_shows_the_six_data(self) -> None:
+        """RF-002-34: con un proyecto abierto, el panel muestra su nombre, el modo, el CRS
+        horizontal y vertical, el GeoOrigin, la ventana de trabajo y el paso de rejilla,
+        con espacio fino de miles y coma decimal, el diario «clásico» y los botones del
+        proyecto; ningún texto se queda sin traducir."""
+        self.new_project()
+        layout = draw(self.panel, bpy.context)
+        texts = "\n".join(layout.texts())
+        thin = self.THIN
+        for expected in (
+            "Nombre: Cantera Prueba",
+            "Modo: escritura (disco local)",
+            "CRS horizontal: EPSG:25830 · ETRS89 / UTM zone 30N",
+            "CRS vertical: EPSG:5782",
+            f"GeoOrigin: X 700{thin}000  Y 4{thin}400{thin}000  Z 0 m",
+            f"Ventana de trabajo: X 699{thin}500 – 700{thin}501, Y 4{thin}399{thin}500 – "
+            f"4{thin}400{thin}501 m",
+            "Paso de rejilla: 1,0 m",
+            "Diario: clásico",
+        ):
+            with self.subTest(dato=expected):
+                self.assertIn(expected, texts)
+        operators = {item.target for item in layout.of_kind("operator")}
+        self.assertLessEqual(
+            {f"geoblender.core_{name}" for name in (
+                "save_project", "set_work_window", "set_crs", "show_geoorigin", "show_lock",
+                "open_project", "new_project", "close_project",
+            )},
+            operators,
+        )
+        self.assertEqual([m for m in self.i18n.missing_translations()], [])
+
+    def test_read_only_mode_with_reason_in_alert(self) -> None:
+        """RF-002-13: en solo lectura, el modo dice «solo lectura» con su motivo (quién lo
+        tiene) y se dibuja en alerta, siempre a la vista."""
+        root = self.create_closed(session=self.other_session())
+        self.run_open(directory=str(root))
+        layout = draw(self.panel, bpy.context)
+        (mode,) = [item for item in layout.of_kind("label") if item.text.startswith("Modo:")]
+        self.assertIn("solo lectura", mode.text)
+        self.assertIn("andres", mode.text)
+        self.assertTrue(mode.alert)
+
+    def test_english_interface(self) -> None:
+        """RF-002-34 (ADR-0012): con el idioma en inglés, los mismos datos en inglés y las
+        coordenadas sin separador de miles."""
+        self.new_project()
+        self.i18n.set_language("en")
+        texts = "\n".join(draw(self.panel, bpy.context).texts())
+        self.assertIn("Name: Cantera Prueba", texts)
+        self.assertIn("Mode: writing (local disk)", texts)
+        self.assertIn("GeoOrigin: X 700000  Y 4400000  Z 0 m", texts)
+        self.assertIn("Grid step: 1.0 m", texts)
+
+    def test_without_project_and_notices(self) -> None:
+        """RF-002-34, RF-002-29: sin proyecto, el panel lo dice y ofrece crear, abrir y los
+        recientes; un aviso pendiente (vista de un proyecto que no está abierto) se ve en
+        alerta y se descarta con su botón."""
+        project = self.new_project()
+        bpy.ops.geoblender.core_save_project("EXEC_DEFAULT")
+        blend = bpy.data.filepath
+        bpy.ops.geoblender.core_close_project("EXEC_DEFAULT")
+        self.ps.take_notices()
+        blender_ext.load_file(blend)
+        layout = draw(self.panel, bpy.context)
+        texts = layout.texts()
+        self.assertIn("No hay ningún proyecto abierto", texts)
+        self.assertIn("geoblender.core_new_project", {i.target for i in layout.of_kind("operator")})
+        self.assertIn("GEOBLENDER_MT_core_recent", {i.target for i in layout.of_kind("menu")})
+        alerts = [item.text for item in layout.items if item.alert and item.kind == "label"]
+        self.assertTrue(any(project.name in text for text in alerts), alerts)
+        self.assertEqual(bpy.ops.geoblender.core_clear_notices("EXEC_DEFAULT"), {"FINISHED"})
+        self.assertEqual(self.ps.notices(), ())
+
+    def test_user_data_paths_from_extension_path_user(self) -> None:
+        """RF-002-08, RF-002-13, RF-002-19, RF-002-30, RF-002-31 (plan 001 §2.1, 14): cada
+        ruta de los datos de usuario (recientes, rutas externas, copia local, cachés,
+        copias privadas y carpeta de copias) se resuelve con
+        ``extension_path_user(bl.ADDON_PACKAGE, …)`` sin error, y se puede escribir en
+        ella."""
+        package = ext("bl").ADDON_PACKAGE
+        userdata = self.ps.userdata()
+        root = Path(bpy.utils.extension_path_user(package))
+        self.assertEqual(Path(userdata.root), root)
+        uid = "00000000-0000-4000-8000-0000000000d1"
+        session = self.ps.session().session_uid
+        cases = {
+            "projects/recent.json": root / "projects" / "recent.json",
+            f"projects/{uid}/external_refs.json": userdata.project_dir(uid) / "external_refs.json",
+            f"projects/{uid}/checkout.json": userdata.project_dir(uid) / "checkout.json",
+            f"cache/{uid}": userdata.cache_dir(uid),
+            "cache/_sin_proyecto": userdata.no_project_cache_dir(),
+            f"readonly/{session}": userdata.private_read_dir(session),
+            "checkouts": userdata.checkouts_dir(),
+        }
+        for relative, expected in cases.items():
+            with self.subTest(ruta=relative):
+                folder = relative if "." not in Path(relative).name else str(Path(relative).parent)
+                resolved = Path(bpy.utils.extension_path_user(package, path=folder, create=True))
+                self.assertTrue(resolved.is_dir())
+                self.assertEqual(resolved / Path(relative).name if folder != relative else resolved,
+                                 expected)
+        userdata.add_recent(uid, "Prueba", self.tmp / "Prueba.gbproj", "2026-10-06T08:00:00.000Z")
+        userdata.set_external_ref(uid, "ref1", self.tmp / "otra" / "datos.gpkg")
+        userdata.set_checkout_record(uid, {"original": str(self.tmp / "Prueba.gbproj")})
+        for name in ("projects/recent.json", f"projects/{uid}/external_refs.json",
+                     f"projects/{uid}/checkout.json"):
+            self.assertTrue((root / name).is_file(), name)
 
 
 if __name__ == "__main__":

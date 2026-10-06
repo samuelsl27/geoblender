@@ -23,6 +23,8 @@
   ``geoblender.core_show_geoorigin`` (RF-002-24): el CRS horizontal y vertical, y el
   GeoOrigin, la ventana y el paso del proyecto abierto (:func:`crs_lines`,
   :func:`origin_lines`).
+- ``geoblender.core_clear_notices`` (interno): descarta los avisos pendientes que
+  muestra la pestaña «Proyecto».
 - ``geoblender.core_set_work_window`` (RF-002-26, RF-002-27): cambia la ventana de
   trabajo y con ella el GeoOrigin, con un motivo obligatorio
   (``core.project.Project.set_window``); las escenas pasan al origen nuevo y la vista
@@ -30,8 +32,11 @@
 
 Sin ``UNDO`` en ``bl_options``: solo escriben en el proyecto y no crean objetos de la
 vista, y Ctrl+Z no puede deshacer el proyecto (regla provisional de R-10). No calculan:
-validan la entrada, llaman a ``core`` y presentan el resultado. Los mensajes al usuario,
-en español con objeto, campo y valor (los de ``core`` ya lo son); la traza, al registro.
+validan la entrada, llaman a ``core`` y presentan el resultado. Los textos de la
+interfaz pasan por el catálogo de idioma (``core.i18n.tr``: ``msgid`` en inglés, español
+por defecto); los errores de ``core`` ya llegan en español con objeto, campo y valor; la
+traza, al registro. ``bl_label`` y ``bl_description`` son el ``msgid`` (los traduce al
+registrar la spec 003); los diálogos llevan su título traducido.
 
 En segundo plano (``blender -b``, scripts) no se muestran diálogos: se usan las
 propiedades tal como llegan, y forzar exige ``force_lock`` **y** el titular visto
@@ -53,6 +58,7 @@ from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from ...core.errors import GeoblenderError, ValidationError
 from ...core.georef.crs import DEFAULT_HORIZONTAL_EPSG, DEFAULT_VERTICAL_EPSG, load_catalog
 from ...core.georef.transform import precision_report
+from ...core.i18n import format_number, format_xyz, tr
 from ...core.numbers import parse_decimal
 from ...core.paths import is_within, next_free_path
 from ...core.project import migrations as migrations_mod
@@ -67,7 +73,6 @@ from ..scene import georef, project_session
 LOGGER = logging.getLogger("geoblender.bl.ops")
 TRANSLATION_CONTEXT = "Geoblender"
 LOCAL_VERTICAL_ID = "LOCAL"
-_WINDOW_OBJ = "Ventana de trabajo"
 _CORNERS = ("xmin", "ymin", "xmax", "ymax")
 
 
@@ -88,13 +93,17 @@ def _vertical_items() -> list[tuple[str, str, str]]:
         if ref.epsg is not None
     ]
     items.append(
-        (LOCAL_VERTICAL_ID, "Local reference", "Elevations referred to a local datum")
+        (
+            LOCAL_VERTICAL_ID,
+            tr("Local reference"),
+            tr("Elevations referred to a local datum, with its description"),
+        )
     )
     return items
 
 
 GRID_STEP_ITEMS: list[tuple[str, str, str]] = [
-    (f"{step:.1f}", f"{step:g} m", "") for step in (0.5 * n for n in range(1, 11))
+    (f"{step:.1f}", f"{format_number(step, 1)} m", "") for step in (0.5 * n for n in range(1, 11))
 ]
 HORIZONTAL_ITEMS = _horizontal_items()
 VERTICAL_ITEMS = _vertical_items()
@@ -110,6 +119,17 @@ def _same_folder(first: Path, second: Path) -> bool:
 def _folder(directory: str) -> Path:
     """La carpeta de una propiedad ``DIR_PATH`` (``//`` relativa al ``.blend``)."""
     return Path(bpy.path.abspath(directory)) if directory else Path()
+
+
+def _draw_window_fields(layout: Any, operator: Any) -> None:
+    """Las esquinas de la ventana, el paso de rejilla y Z0 de un diálogo."""
+    column = layout.column(align=True)
+    column.prop(operator, "xmin", text=tr("X min (m)"), translate=False)
+    column.prop(operator, "ymin", text=tr("Y min (m)"), translate=False)
+    column.prop(operator, "xmax", text=tr("X max (m)"), translate=False)
+    column.prop(operator, "ymax", text=tr("Y max (m)"), translate=False)
+    layout.prop(operator, "grid_step", text=tr("Grid step"), translate=False)
+    layout.prop(operator, "z0", text=tr("Z0 (m)"), translate=False)
 
 
 # Nuevo proyecto -----------------------------------------------------------------------
@@ -147,27 +167,28 @@ class GEOBLENDER_OT_core_new_project(bpy.types.Operator):
     z0: IntProperty(name="Z0 (m)", default=0)  # type: ignore[valid-type]
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
-        return context.window_manager.invoke_props_dialog(self, width=560)
+        return context.window_manager.invoke_props_dialog(
+            self, width=560, translate=False, title=tr("New project")
+        )
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         layout.use_property_split = True
-        layout.prop(self, "directory")
-        layout.prop(self, "name")
-        layout.prop(self, "crs_epsg")
-        layout.prop(self, "vcrs")
+        layout.prop(self, "directory", text=tr("Folder"), translate=False)
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "crs_epsg", text=tr("Horizontal CRS"), translate=False)
+        layout.prop(self, "vcrs", text=tr("Vertical CRS"), translate=False)
         if self.vcrs == LOCAL_VERTICAL_ID:
-            layout.prop(self, "vcrs_note")
-        column = layout.column(align=True)
-        for corner in _CORNERS:
-            column.prop(self, corner)
-        layout.prop(self, "grid_step")
-        layout.prop(self, "z0")
+            layout.prop(
+                self, "vcrs_note", text=tr("Description of the local reference"),
+                translate=False,
+            )
+        _draw_window_fields(layout, self)
 
     def settings(self) -> ProjectSettings:
         """Los ajustes del diálogo; :class:`ValidationError` si un número no lo es."""
         window = tuple(
-            parse_decimal(getattr(self, corner), obj=_WINDOW_OBJ, field=corner)
+            parse_decimal(getattr(self, corner), obj=tr("Work window"), field=corner)
             for corner in _CORNERS
         )
         local = self.vcrs == LOCAL_VERTICAL_ID
@@ -187,9 +208,9 @@ class GEOBLENDER_OT_core_new_project(bpy.types.Operator):
             if not self.directory:
                 raise ValidationError(
                     "core.project_parent_missing",
-                    "elija la carpeta donde se creará el proyecto",
-                    obj="Proyecto nuevo",
-                    field="carpeta",
+                    tr("choose the folder where the project will be created"),
+                    obj=tr("New project"),
+                    field=tr("folder"),
                     value=self.directory,
                 )
             result = create_project(
@@ -205,7 +226,11 @@ class GEOBLENDER_OT_core_new_project(bpy.types.Operator):
         closed = project_session.attach(result.project)
         self.report(
             {"INFO"},
-            f"Proyecto «{result.record.name}» creado: {result.project.status.message}",
+            tr(
+                "Project «{name}» created: {status}",
+                name=result.record.name,
+                status=result.project.status.message,
+            ),
         )
         for message in (*result.warnings, *closed):
             self.report({"WARNING"}, message)
@@ -264,15 +289,15 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         if not self.notice:
-            layout.prop(self, "read_only")
+            layout.prop(self, "read_only", text=tr("Read-only"), translate=False)
             return
         column = layout.column(align=True)
         for line in self.notice.splitlines():
             column.label(text=line, translate=False)
         if self.offer_force:
-            layout.prop(self, "force_lock")
+            layout.prop(self, "force_lock", text=tr("Force the lock"), translate=False)
         if self.offer_migration:
-            layout.prop(self, "accept_migration")
+            layout.prop(self, "accept_migration", text=tr("Migrate the project"), translate=False)
 
     def _prepare_dialog(self, inspection: ProjectInspection) -> None:
         """El texto y las casillas del diálogo de confirmación."""
@@ -281,18 +306,24 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
         self.offer_force = bool(status.can_force and status.holder is not None)
         if self.offer_force and status.holder is not None:
             self.seen_lock = json.dumps(status.holder.to_dict(), ensure_ascii=False)
-            lines.append(f"El cerrojo está caducado o reservado: {status.describe()}.")
+            lines.append(tr("The lock is stale or reserved: {holder}.", holder=status.describe()))
             lines.append(status.force_warning())
-            lines.append("Marque «Forzar el cerrojo» para abrirlo en escritura.")
+            lines.append(tr("Tick «Force the lock» to open it for writing."))
         self.offer_migration = self._migration_offered(inspection)
         if self.offer_migration and inspection.record is not None:
             backup = backup_path(inspection.root, inspection.record.schema_version)
             lines.append(
-                f"El proyecto es del esquema {inspection.record.schema_version}, anterior al de "
-                "esta versión de Geoblender: para escribir en él hay que migrarlo."
+                tr(
+                    "The project uses schema {old}, older than this version of Geoblender: "
+                    "to write to it, it must be migrated.",
+                    old=inspection.record.schema_version,
+                )
             )
-            lines.append(f"Antes se hará una copia completa junto al original: «{backup.name}».")
-            lines.append("Marque «Migrar el proyecto» para hacerlo; si no, se abre en solo lectura.")
+            lines.append(
+                tr("A full copy is made first, next to the original: «{backup}».",
+                   backup=backup.name)
+            )
+            lines.append(tr("Tick «Migrate the project» to do it; otherwise it opens read-only."))
         self.notice = "\n".join(lines)
 
     def _migration_offered(self, inspection: ProjectInspection) -> bool:
@@ -314,7 +345,9 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
         if needs_confirmation and not self.confirmed and not bpy.app.background:
             self.confirmed = True
             self._prepare_dialog(inspection)
-            return context.window_manager.invoke_props_dialog(self, width=640)
+            return context.window_manager.invoke_props_dialog(
+                self, width=640, translate=False, title=tr("Open project")
+            )
         current = project_session.current()
         if current is not None and _same_folder(current.root, path):
             for message in project_session.close():  # se vuelve a abrir el mismo
@@ -371,7 +404,10 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
         context.window_manager.progress_update(max(0, min(100, percent)))
         workspace = context.workspace
         if workspace is not None:
-            workspace.status_text_set(f"Abriendo el proyecto · {step.phase}: {step.message}")
+            workspace.status_text_set(
+                tr("Opening the project · {phase}: {message}", phase=step.phase,
+                   message=step.message)
+            )
 
     def _cleanup(self, context: bpy.types.Context) -> None:
         steps = getattr(self, "_steps", None)
@@ -394,14 +430,16 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
         status = result.status
         self._report(
             {"INFO"} if status.writable else {"WARNING"},
-            f"Proyecto «{result.project.name}»: {status.message}",
+            tr("Project «{name}»: {detail}", name=result.project.name, detail=status.message),
         )
         lock: LockStatus | None = result.lock_status
         if not status.writable and lock is not None and lock.can_force:
             self._report(
                 {"WARNING"},
-                "Se puede forzar el cerrojo desde Proyecto ▸ Cerrojo del proyecto…: "
-                + lock.force_warning(),
+                tr(
+                    "The lock can be forced from Project ▸ Project lock…: {warning}",
+                    warning=lock.force_warning(),
+                ),
             )
         for message in (*self._extra, *result.warnings, *closed):
             self._report({"WARNING"}, message)
@@ -419,7 +457,7 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
             return {"CANCELLED"}
         if event.type == "ESC":
             self._cleanup(context)
-            self._report({"INFO"}, "Apertura cancelada: no se ha abierto ningún proyecto")
+            self._report({"INFO"}, tr("Opening cancelled: no project has been opened"))
             self.outcome = "CANCELLED"
             return {"CANCELLED"}
         if event.type != "TIMER":
@@ -433,8 +471,13 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
                     self._extra.extend(step.result.warnings)
                     if step.result.backup is not None:
                         self._extra.append(
-                            f"Proyecto migrado del esquema {step.result.from_version} al "
-                            f"{step.result.to_version}; copia previa en «{step.result.backup.name}»"
+                            tr(
+                                "Project migrated from schema {old} to {new}; prior copy in "
+                                "«{backup}»",
+                                old=step.result.from_version,
+                                new=step.result.to_version,
+                                backup=step.result.backup.name,
+                            )
                         )
                 if isinstance(step.result, OpenResult):
                     return self._finish(context, step.result)
@@ -443,7 +486,9 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
         except GeoblenderError as exc:
             return self._fail(context, exc.message)
         except StopIteration:
-            return self._fail(context, "La apertura del proyecto no ha terminado con su resultado")
+            return self._fail(
+                context, tr("Opening the project did not finish with its result")
+            )
 
     def cancel(self, context: bpy.types.Context) -> None:
         if getattr(self, "_steps", None) is not None:
@@ -464,7 +509,7 @@ class GEOBLENDER_OT_core_close_project(bpy.types.Operator):
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
         if project_session.current() is None:
-            cls.poll_message_set("No hay ningún proyecto abierto")
+            cls.poll_message_set(tr("No project is open"))
             return False
         return True
 
@@ -474,7 +519,7 @@ class GEOBLENDER_OT_core_close_project(bpy.types.Operator):
             return {"CANCELLED"}
         name = project.name
         warnings = project_session.close()
-        self.report({"INFO"}, f"Proyecto «{name}» cerrado")
+        self.report({"INFO"}, tr("Project «{name}» closed", name=name))
         for message in warnings:
             self.report({"WARNING"}, message)
         return {"FINISHED"}
@@ -497,7 +542,7 @@ class GEOBLENDER_OT_core_save_project(bpy.types.Operator):
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
         if project_session.current() is None:
-            cls.poll_message_set("No hay ningún proyecto abierto")
+            cls.poll_message_set(tr("No project is open"))
             return False
         return True
 
@@ -509,9 +554,12 @@ class GEOBLENDER_OT_core_save_project(bpy.types.Operator):
         if not project.writable and (not current or is_within(current, project.root)):
             self.report(
                 {"WARNING"},
-                f"Proyecto «{project.name}» en solo lectura ({project.status.message}): la "
-                "vista no se guarda en la carpeta del proyecto; guárdela con Archivo ▸ "
-                "Guardar como… fuera de ella",
+                tr(
+                    "Project «{name}» is read-only ({status}): the view is not saved in the "
+                    "project folder; save it with File ▸ Save As… outside it",
+                    name=project.name,
+                    status=project.status.message,
+                ),
             )
             if not bpy.app.background:
                 suggested = project.root.parent / f"{project.name}.blend"
@@ -524,20 +572,25 @@ class GEOBLENDER_OT_core_save_project(bpy.types.Operator):
             try:
                 scenes.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
-                self.report({"ERROR"}, f"No se puede crear «{scenes}»: {exc}")
+                self.report(
+                    {"ERROR"}, tr("Cannot create «{folder}»: {error}", folder=scenes, error=exc)
+                )
                 return {"CANCELLED"}
             target = next_free_path(scenes, MAIN_VIEW, ".blend")
         try:
             bpy.ops.wm.save_as_mainfile(filepath=str(target), relative_remap=True)
         except RuntimeError as exc:
-            self.report({"ERROR"}, f"No se ha podido guardar la vista «{target}»: {exc}")
+            self.report(
+                {"ERROR"},
+                tr("The view could not be saved to «{path}»: {error}", path=target, error=exc),
+            )
             return {"CANCELLED"}
         shown = (
             target.relative_to(project.root).as_posix()
             if is_within(target, project.root)
             else str(target)
         )
-        self.report({"INFO"}, f"Vista guardada en «{shown}»")
+        self.report({"INFO"}, tr("View saved to «{path}»", path=shown))
         for message in project_session.take_notices():
             self.report({"WARNING"}, message)
         return {"FINISHED"}
@@ -564,7 +617,7 @@ class GEOBLENDER_OT_core_show_lock(bpy.types.Operator):
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
         if project_session.current() is None:
-            cls.poll_message_set("No hay ningún proyecto abierto")
+            cls.poll_message_set(tr("No project is open"))
             return False
         return True
 
@@ -582,27 +635,30 @@ class GEOBLENDER_OT_core_show_lock(bpy.types.Operator):
     def _describe(status: LockStatus) -> str:
         if status.state is LockState.OURS and status.holder is not None:
             holder = status.holder
-            return f"lo tiene esta sesión ({holder.user} en {holder.host})"
+            return tr("this session holds it ({user} on {host})", user=holder.user,
+                      host=holder.host)
         return status.describe()
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
         status = self._status()
         if status is None:
             return {"CANCELLED"}
-        lines = [f"Cerrojo: {self._describe(status)}."]
+        lines = [tr("Lock: {holder}.", holder=self._describe(status))]
         self.offer_force = bool(status.can_force and status.holder is not None)
         if self.offer_force and status.holder is not None:
             self.seen_lock = json.dumps(status.holder.to_dict(), ensure_ascii=False)
             lines.append(status.force_warning())
         self.notice = "\n".join(lines)
-        return context.window_manager.invoke_props_dialog(self, width=640)
+        return context.window_manager.invoke_props_dialog(
+            self, width=640, translate=False, title=tr("Project lock")
+        )
 
     def draw(self, context: bpy.types.Context) -> None:
         column = self.layout.column(align=True)
         for line in self.notice.splitlines():
             column.label(text=line, translate=False)
         if self.offer_force:
-            self.layout.prop(self, "force")
+            self.layout.prop(self, "force", text=tr("Force the lock"), translate=False)
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         project = project_session.current()
@@ -610,19 +666,26 @@ class GEOBLENDER_OT_core_show_lock(bpy.types.Operator):
         if project is None or status is None:
             return {"CANCELLED"}
         if not self.force:
-            self.report({"INFO"}, f"Proyecto «{project.name}»: {self._describe(status)}")
+            self.report(
+                {"INFO"},
+                tr("Project «{name}»: {detail}", name=project.name,
+                   detail=self._describe(status)),
+            )
             return {"FINISHED"}
         if not status.can_force:
             self.report(
                 {"WARNING"},
-                f"No se puede forzar el cerrojo de «{project.name}»: {self._describe(status)}",
+                tr("The lock of «{name}» cannot be forced: {holder}", name=project.name,
+                   holder=self._describe(status)),
             )
             return {"CANCELLED"}
         if not self.seen_lock:
             self.report(
                 {"ERROR"},
-                "Para forzar el cerrojo hay que ver antes quién lo tiene: abra "
-                "Proyecto ▸ Cerrojo del proyecto… y confirme",
+                tr(
+                    "To force the lock you must first see who holds it: open Project ▸ "
+                    "Project lock… and confirm"
+                ),
             )
             return {"CANCELLED"}
         root = project.root
@@ -640,16 +703,13 @@ class GEOBLENDER_OT_core_show_lock(bpy.types.Operator):
 
 # Sistema de referencia, GeoOrigin y ventana de trabajo --------------------------------
 
-_THIN_SPACE = "\u2009"  # espacio fino de miles
-
-
-def _whole(value: float) -> str:
-    """Un número en metros como lo lee una persona: miles con espacio fino y coma decimal
-    (``700 000``, ``4 400 500,9``)."""
+def _metres(value: float) -> str:
+    """Un número en metros en el formato del idioma: sin decimales si es entero; si no,
+    con los que tenga, hasta milímetros (``700 000``, ``4 400 500,9``)."""
     if float(value).is_integer():
-        return f"{int(value):,d}".replace(",", _THIN_SPACE)
-    text = f"{value:,.3f}".rstrip("0").rstrip(".")
-    return text.replace(",", _THIN_SPACE).replace(".", ",")
+        return format_number(value, 0)
+    decimals = len(f"{value:.3f}".rstrip("0").partition(".")[2])
+    return format_number(value, decimals)
 
 
 def _typed(value: float) -> str:
@@ -663,11 +723,13 @@ def crs_lines(project: Any) -> list[str]:
     """El CRS horizontal y vertical del proyecto (de su cabecera, que coincide con la
     base), en español."""
     header = project.manifest
-    lines = [f"CRS horizontal: EPSG:{header.crs_epsg} · {header.crs_name}"]
+    lines = [tr("Horizontal CRS: EPSG:{code} · {name}", code=header.crs_epsg,
+                name=header.crs_name)]
     if header.vcrs_epsg is None:
-        lines.append(f"CRS vertical: {header.vcrs_name} · {header.vcrs_note or ''}".rstrip(" ·"))
+        lines.append(tr("Vertical CRS: local reference · {note}", note=header.vcrs_note or ""))
     else:
-        lines.append(f"CRS vertical: EPSG:{header.vcrs_epsg} · {header.vcrs_name}")
+        lines.append(tr("Vertical CRS: EPSG:{code} · {name}", code=header.vcrs_epsg,
+                        name=header.vcrs_name))
     return lines
 
 
@@ -675,24 +737,25 @@ def origin_lines(project: Any) -> list[str]:
     """El GeoOrigin, la ventana de trabajo y el paso de rejilla del proyecto, en
     español; sin ventana si solo se pudo leer la cabecera."""
     origin = project.origin
-    lines = [
-        f"GeoOrigin: ({_whole(origin.x0)}; {_whole(origin.y0)}; {_whole(origin.z0)}) m"
-    ]
+    lines = [tr("GeoOrigin: {xyz} m", xyz=format_xyz(origin.x0, origin.y0, origin.z0, 0))]
     window = project.window
     if window is None:
-        lines.append("Ventana de trabajo: no disponible (solo se ha leído la cabecera)")
+        lines.append(tr("Work window: not available (only the header could be read)"))
     else:
         lines.append(
-            f"Ventana de trabajo: ({_whole(window.xmin)}; {_whole(window.ymin)}) – "
-            f"({_whole(window.xmax)}; {_whole(window.ymax)}) m"
+            tr(
+                "Work window: X {xmin} – {xmax}, Y {ymin} – {ymax} m",
+                xmin=_metres(window.xmin), xmax=_metres(window.xmax),
+                ymin=_metres(window.ymin), ymax=_metres(window.ymax),
+            )
         )
-    lines.append(f"Paso de rejilla: {_whole(project.grid_step_m)} m")
+    lines.append(tr("Grid step: {step} m", step=format_number(project.grid_step_m, 1)))
     return lines
 
 
 def _poll_project(cls: type, context: bpy.types.Context) -> bool:
     if project_session.current() is None:
-        cls.poll_message_set("No hay ningún proyecto abierto")  # type: ignore[attr-defined]
+        cls.poll_message_set(tr("No project is open"))  # type: ignore[attr-defined]
         return False
     return True
 
@@ -710,7 +773,9 @@ class GEOBLENDER_OT_core_set_crs(bpy.types.Operator):
         return _poll_project(cls, context)
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
-        return context.window_manager.invoke_props_dialog(self, width=520)
+        return context.window_manager.invoke_props_dialog(
+            self, width=520, translate=False, title=tr("Coordinate reference system")
+        )
 
     def draw(self, context: bpy.types.Context) -> None:
         project = project_session.current()
@@ -718,7 +783,7 @@ class GEOBLENDER_OT_core_set_crs(bpy.types.Operator):
         for line in crs_lines(project) if project is not None else ():
             column.label(text=line, translate=False)
         column.label(
-            text="Cambiar el CRS de un proyecto con datos llegará más adelante (R-79)",
+            text=tr("Changing the CRS of a project with data will come later (R-79)"),
             translate=False,
         )
 
@@ -726,7 +791,10 @@ class GEOBLENDER_OT_core_set_crs(bpy.types.Operator):
         project = project_session.current()
         if project is None:
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Proyecto «{project.name}»: " + "; ".join(crs_lines(project)))
+        self.report(
+            {"INFO"},
+            tr("Project «{name}»: {detail}", name=project.name, detail="; ".join(crs_lines(project))),
+        )
         return {"FINISHED"}
 
 
@@ -743,7 +811,9 @@ class GEOBLENDER_OT_core_show_geoorigin(bpy.types.Operator):
         return _poll_project(cls, context)
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
-        return context.window_manager.invoke_props_dialog(self, width=520)
+        return context.window_manager.invoke_props_dialog(
+            self, width=520, translate=False, title=tr("Local origin (GeoOrigin)")
+        )
 
     def draw(self, context: bpy.types.Context) -> None:
         project = project_session.current()
@@ -755,7 +825,11 @@ class GEOBLENDER_OT_core_show_geoorigin(bpy.types.Operator):
         project = project_session.current()
         if project is None:
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Proyecto «{project.name}»: " + "; ".join(origin_lines(project)))
+        self.report(
+            {"INFO"},
+            tr("Project «{name}»: {detail}", name=project.name,
+               detail="; ".join(origin_lines(project))),
+        )
         return {"FINISHED"}
 
 
@@ -785,7 +859,7 @@ class GEOBLENDER_OT_core_set_work_window(bpy.types.Operator):
             return False
         project = project_session.current()
         if project is not None and not project.writable:
-            cls.poll_message_set(f"Proyecto en solo lectura: {project.status.message}")
+            cls.poll_message_set(tr("Read-only project: {reason}", reason=project.status.message))
             return False
         return True
 
@@ -797,19 +871,17 @@ class GEOBLENDER_OT_core_set_work_window(bpy.types.Operator):
             self.xmax, self.ymax = _typed(window.xmax), _typed(window.ymax)
             self.grid_step = f"{project.grid_step_m:.1f}"
             self.z0 = project.origin.z0
-        return context.window_manager.invoke_props_dialog(self, width=560)
+        return context.window_manager.invoke_props_dialog(
+            self, width=560, translate=False, title=tr("Work window and grid")
+        )
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         layout.use_property_split = True
-        column = layout.column(align=True)
-        for corner in _CORNERS:
-            column.prop(self, corner)
-        layout.prop(self, "grid_step")
-        layout.prop(self, "z0")
-        layout.prop(self, "reason")
+        _draw_window_fields(layout, self)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
         layout.label(
-            text="Las coordenadas guardadas no cambian; las vistas quedarán desfasadas",
+            text=tr("The stored coordinates do not change; the views will be out of date"),
             translate=False,
         )
 
@@ -820,7 +892,7 @@ class GEOBLENDER_OT_core_set_work_window(bpy.types.Operator):
         previous = project.origin
         try:
             window = tuple(
-                parse_decimal(getattr(self, corner), obj=_WINDOW_OBJ, field=corner)
+                parse_decimal(getattr(self, corner), obj=tr("Work window"), field=corner)
                 for corner in _CORNERS
             )
             origin = project.set_window(
@@ -834,9 +906,12 @@ class GEOBLENDER_OT_core_set_work_window(bpy.types.Operator):
             georef.mark_stale()
         self.report(
             {"INFO"},
-            f"Proyecto «{project.name}»: GeoOrigin ({_whole(previous.x0)}; "
-            f"{_whole(previous.y0)}; {_whole(previous.z0)}) → ({_whole(origin.x0)}; "
-            f"{_whole(origin.y0)}; {_whole(origin.z0)}); las vistas quedan desfasadas",
+            tr(
+                "Project «{name}»: GeoOrigin {old} → {new}; the views are out of date",
+                name=project.name,
+                old=format_xyz(previous.x0, previous.y0, previous.z0, 0),
+                new=format_xyz(origin.x0, origin.y0, origin.z0, 0),
+            ),
         )
         window_now = project.window
         if window_now is not None:
@@ -844,6 +919,22 @@ class GEOBLENDER_OT_core_set_work_window(bpy.types.Operator):
             if not precision.within_limit:
                 project_session.notify(precision.message)
                 self.report({"WARNING"}, precision.message)
+        return {"FINISHED"}
+
+
+# Avisos -------------------------------------------------------------------------------
+
+
+class GEOBLENDER_OT_core_clear_notices(bpy.types.Operator):
+    """Dismiss the pending notices of the project"""
+
+    bl_idname = "geoblender.core_clear_notices"
+    bl_label = "Dismiss notices"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        project_session.take_notices()
         return {"FINISHED"}
 
 
@@ -857,4 +948,5 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_set_crs,
     GEOBLENDER_OT_core_show_geoorigin,
     GEOBLENDER_OT_core_set_work_window,
+    GEOBLENDER_OT_core_clear_notices,
 )

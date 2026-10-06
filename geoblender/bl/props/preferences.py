@@ -13,6 +13,7 @@ from __future__ import annotations
 import bpy
 from bpy.props import PointerProperty
 
+from ...core.i18n import tr
 from .. import ADDON_PACKAGE
 from .core import GEOBLENDER_PG_core_preferences
 
@@ -27,9 +28,14 @@ class GeoblenderPreferences(bpy.types.AddonPreferences):
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         column = layout.column()
-        column.label(text="Project", translate=False)
-        column.prop(self.core, "lock_stale_minutes")
-        column.prop(self.core, "checkout_dir")
+        column.label(text=tr("Project"), translate=False)
+        column.prop(
+            self.core, "lock_stale_minutes", text=tr("Stale lock after (min)"),
+            translate=False,
+        )
+        column.prop(
+            self.core, "checkout_dir", text=tr("Local copies folder"), translate=False
+        )
 
 
 # En orden de registro: los grupos (bl/props/core.py) ya están registrados antes.
