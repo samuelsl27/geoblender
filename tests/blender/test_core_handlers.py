@@ -14,6 +14,10 @@
   al desactivar no queda ningún manejador ni el temporizador.
 - RF-002-07: al guardar la vista con un proyecto en escritura, la cabecera se actualiza
   desde la base (``save_post``).
+- RF-002-29 (T24): un ``.blend`` con otra georreferencia que la del proyecto abierto, o con
+  la de un proyecto cuando no hay ninguno abierto, da un aviso con las dos y deja la vista
+  desfasada (``view_stale``); su georreferencia no se usa: la del proyecto abierto manda y,
+  sin proyecto, no hay georreferencia para ningún comando.
 
 En ``blender -b`` los temporizadores no se ejecutan: las pruebas llaman a la función del
 temporizador directamente (docs/trampas.md §3). Se ejecuta con
@@ -101,6 +105,9 @@ class HandlersTestCase(unittest.TestCase):
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         bpy.ops.wm.save_as_mainfile(filepath=str(path))
+
+    def stale(self) -> list[bool]:
+        return [scene.geoblender.view_stale for scene in bpy.data.scenes]
 
 
 class SceneSyncTest(HandlersTestCase):
@@ -247,12 +254,84 @@ class SessionLockTest(HandlersTestCase):
         self.assertFalse((other.root / ".lock").exists())
         project = self.create()
         self.assertTrue((project.root / ".lock").exists())
+        self.ps.take_notices()
         blender_ext.load_file(other_blend)
         self.assertIsNone(self.ps.current())
         self.assertTrue(project.closed)
         self.assertFalse((project.root / ".lock").exists())
         self.assertEqual(self.events(project.root)[-1], "close")
         self.assertFalse((other.root / ".lock").exists())
+        # RF-002-29: aviso con los dos proyectos y la vista desfasada.
+        self.assertEqual(self.stale(), [True])
+        (notice,) = self.ps.take_notices()
+        self.assertIn("«Otra»", notice)
+        self.assertIn("«Cantera Prueba»", notice)
+
+
+def _digits(text: str) -> str:
+    """``text`` sin espacios (también el fino de miles), para buscar cifras."""
+    return "".join(text.split()).replace(" ", "").replace(" ", "")
+
+
+class GeorefMismatchTest(HandlersTestCase):
+    def test_same_project_other_origin(self) -> None:
+        """RF-002-29: un ``.blend`` del mismo proyecto con otro GeoOrigin da un aviso con
+        los dos orígenes, deja la vista desfasada y sus escenas pasan a la georreferencia
+        del proyecto (la del fichero no se usa)."""
+        self.start()
+        project = self.create()
+        blend = project.root / "scenes" / "principal.blend"
+        self.save(blend)
+        self.ps.close()
+        bpy.context.scene.geoblender.origin_x = 700_100  # una vista de otro origen
+        self.save(blend)
+        reopened = self.core.open_project(project.root, self.ps.session(), self.ps.userdata())
+        self.ps.attach(reopened.project)
+        self.ps.take_notices()
+        blender_ext.load_file(blend)
+        self.assertIs(self.ps.current(), reopened.project)
+        self.assertEqual(self.stale(), [True])
+        self.assert_scenes_synced(reopened.project, "//../")
+        (notice,) = self.ps.take_notices()
+        self.assertIn("700100", _digits(notice))
+        self.assertIn("700000", _digits(notice))
+        self.assertIn("«Cantera Prueba»", notice)
+        found = self.georef.project_georeference()
+        self.assertEqual(found.origin, ORIGIN)
+
+    def test_same_georeference_is_quiet(self) -> None:
+        """RF-002-29: un ``.blend`` del mismo proyecto con su misma georreferencia no da
+        aviso ni deja la vista desfasada."""
+        self.start()
+        project = self.create()
+        blend = project.root / "scenes" / "principal.blend"
+        self.save(blend)
+        self.ps.take_notices()
+        blender_ext.load_file(blend)
+        self.assertEqual(self.ps.take_notices(), [])
+        self.assertEqual(self.stale(), [False])
+
+    def test_project_blend_without_open_project(self) -> None:
+        """RF-002-29: un ``.blend`` de un proyecto cuando no hay ninguno abierto da un aviso
+        con su georreferencia y deja la vista desfasada; su georreferencia no se usa: no
+        hay georreferencia de proyecto para ningún comando y no se abre ni se bloquea el
+        proyecto."""
+        self.start()
+        project = self.create()
+        blend = project.root / "scenes" / "principal.blend"
+        self.save(blend)
+        self.ps.close()
+        self.ps.take_notices()
+        blender_ext.load_file(blend)
+        self.assertIsNone(self.ps.current())
+        self.assertIsNone(self.georef.project_georeference())
+        self.assertFalse((project.root / ".lock").exists())
+        self.assertEqual(self.stale(), [True])
+        (notice,) = self.ps.take_notices()
+        self.assertIn("«Cantera Prueba»", notice)
+        self.assertIn("700000", _digits(notice))
+        props = bpy.context.scene.geoblender
+        self.assertEqual((props.origin_x, props.origin_y, props.origin_z), ORIGIN)
 
 
 if __name__ == "__main__":
