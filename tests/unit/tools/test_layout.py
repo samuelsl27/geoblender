@@ -185,13 +185,16 @@ class RulesSplitTest(unittest.TestCase):
     def test_rules_split(self) -> None:
         """RF-007-07, RF-007-11: el verde del código (``FAMILIES``) no lleva ADR-01 ni
         NOM-03, que pasan a la documentación: ``DOCS_FAMILIES`` (ADR-01, AGT-01 y AGT-02,
-        NOM-03 y TXT) y ``run_docs``, que no entra en la carpeta del código (con
+        NOM-03, TXT y REP-03) y ``run_docs``, que no entra en la carpeta del código (con
         cualquier mayúscula)."""
         from gbtools import rules
 
         self.assertNotIn("adr", rules.FAMILIES)
         self.assertNotIn("specs", rules.FAMILIES)
-        self.assertEqual(sorted(rules.DOCS_FAMILIES), ["adr", "agents", "specs", "text"])
+        self.assertNotIn("docs_repo", rules.FAMILIES)
+        self.assertEqual(
+            sorted(rules.DOCS_FAMILIES), ["adr", "agents", "docs_repo", "specs", "text"]
+        )
         code_folder = layout.CODE_DIR_IN_DOCS.lower()
         files = {
             "docs/constitution.md": "x\n",

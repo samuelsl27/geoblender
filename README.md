@@ -76,15 +76,17 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 & $PY -B tools/dev_install.py    # instala la extensión en un perfil de Blender aislado
 & $PY -B tools/build.py          # valida el manifiesto y genera el zip en dist/
 & $PY -B tools/fetch_wheels.py   # descarga las ruedas fijadas (lo hace una persona)
+& $PY -B tools/publish.py        # sube a GitHub y refleja en el NAS (solo quien publica)
 ```
 
 | Orden | Opciones |
 | --- | --- |
-| `tools/check.py` | `--rendimiento` (requisitos de rendimiento, también dentro de Blender) y `--banco` (bancos privados) |
+| `tools/check.py` | `--rendimiento` (requisitos de rendimiento, también dentro de Blender), `--banco` (bancos privados) y `--documentacion` (añade la comprobación de la documentación; sin ella, «omitido») |
 | `tools/check_docs.py` | `CARPETA` (la documentación, si no es la carpeta madre ni la de `GEOBLENDER_DOCS_DIR`) |
 | `tools/dev_install.py` | `--perfil CARPETA`, `--abrir` (Blender con interfaz) y `--desinstalar` |
 | `tools/build.py` | `--probar-instalacion` (instala el zip en un perfil limpio y lo desinstala) |
 | `tools/fetch_wheels.py` | `--desde CARPETA` (almacén de ruedas, sin red) |
+| `tools/publish.py` | `--destino CARPETA` (si no, `GEOBLENDER_NAS_ESPEJO`), `--solo-espejo` (sin comprobar el código ni subirlo) y `--rehacer-estado` (ver abajo) |
 
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
@@ -111,11 +113,28 @@ Todas son opcionales y empiezan por `GEOBLENDER_`.
 Las rutas a datos reales de clientes solo llegan por variables: nunca se escriben en el código
 ni se copian al repositorio, y se leen en solo lectura.
 
-## Quién publica
+## Quién publica, y cómo
 
 Una sola persona de IMGA sube el código a GitHub (repositorio privado) y refleja la carpeta
-del proyecto en el NAS, siempre con la orden de publicación de la spec 007
-(`tools/publish.py`, en desarrollo). Las demás trabajan en ramas y le entregan su trabajo.
+del proyecto (la documentación, con este repositorio dentro) en el NAS, siempre con
+`tools/publish.py` (spec 007). Las demás trabajan en ramas y le entregan su trabajo. Nunca
+`git push` a mano ni fusiones en la web de GitHub.
+
+`tools/publish.py` se niega (sin subir ni copiar nada) si este repositorio no está en la
+carpeta `Geoblender` de la documentación, si alguno de los dos árboles no está limpio o en
+una rama, si el destino no vale (la carpeta del proyecto, la raíz de una unidad, la carpeta
+de expedientes de clientes…) o si la configuración de git lleva credenciales. Si todo está
+en orden, ejecuta `tools/check.py` y `tools/check_docs.py`, sube la rama actual con sus
+etiquetas sin forzar y hace el espejo: copia solo lo que cambió y comprueba el resultado.
+
+El espejo **avisa y no borra**: guarda en `%LOCALAPPDATA%\Geoblender\espejo` el estado del
+último espejo de cada destino y, si desde entonces alguien creó, cambió o borró algo en el
+NAS, para con el código 3 (`CAMBIOS EN EL DESTINO`), lo lista y dice cómo traerlo al PC; no
+copia ni borra nada. `--rehacer-estado` toma el NAS como está solo si nada se pierde (por
+ejemplo, tras un `git status` lanzado allí, si el PC tiene todos sus commits).
+
+Códigos: 0 publicado, 1 árboles, comprobaciones, subida o espejo, 2 uso, estructura,
+destino o credenciales, 3 cambios en el destino.
 
 ## Licencia
 

@@ -4,7 +4,7 @@ ADR-0015; RF-001-06, RF-001-07, RF-001-09).
 
 Se ejecuta con el Python de Blender, desde la raíz del repositorio::
 
-    & "C:\\Program Files\\Blender Foundation\\Blender 5.2\\5.2\\python\\bin\\python.exe" tools/check.py [--rendimiento] [--banco]
+    & "C:\\Program Files\\Blender Foundation\\Blender 5.2\\5.2\\python\\bin\\python.exe" tools/check.py [--rendimiento] [--banco] [--documentacion]
 
 1. Entorno: localiza Blender (``GEOBLENDER_BLENDER`` o la ruta por defecto) con la
    versión mínima del manifiesto, y exige que el intérprete sea el Python de ese Blender
@@ -17,10 +17,13 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    validate``) y «blender» (``tools/run_blender_tests.py`` dentro de Blender, en segundo
    plano, de fábrica, con ``--python-exit-code 1``). Solo si se piden, y después de los
    obligatorios: «rendimiento» (``--rendimiento``: ``tests/rendimiento`` con el Python de
-   Blender y ``tests/rendimiento/blender/perf_*.py`` dentro de Blender) y «banco»
+   Blender y ``tests/rendimiento/blender/perf_*.py`` dentro de Blender), «banco»
    (``--banco``: ``tools/bench_silvestre.py``; sin banco disponible, «omitido», que no es
-   un fallo). Los pasos de Blender usan un perfil temporal en ``%TEMP%``, que se borra al
-   terminar.
+   un fallo) y «documentación» (``--documentacion``, spec 007, RF-007-14:
+   ``tools/check_docs.py`` sobre la documentación que encuentra ``repo.find_docs``, la
+   de ``GEOBLENDER_DOCS_DIR`` o la carpeta madre; si no hay o no se alcanza, «omitido»
+   con el motivo, que no es un fallo). Los pasos de Blender usan un perfil temporal en
+   ``%TEMP%``, que se borra al terminar.
 3. Resumen: una línea por paso (resultado, duración y pruebas), las pruebas omitidas por
    un recurso opcional (``[ENTORNO] <recurso>: <orden>``) agrupadas con la orden que lo
    instala, la salida entera de cada paso que falla y ``RESULTADO: VERDE``,
@@ -72,13 +75,14 @@ import sys
 sys.dont_write_bytecode = True  # sin __pycache__ en Z: (plan 001 §5.3)
 
 import ast  # noqa: E402
+import os  # noqa: E402
 import re  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
 import tomllib  # noqa: E402
-from collections.abc import Callable, Collection, Sequence  # noqa: E402
+from collections.abc import Callable, Collection, Mapping, Sequence  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -118,16 +122,22 @@ UNITTEST_PATTERN = discovery.UNITTEST_PATTERN  # el de unittest discover sin «-
 LAUNCHER_PATTERN = "test_*.py"  # el del lanzador sin «--patron» (DEFAULT_PATTERN)
 OPTION_PERFORMANCE = "--rendimiento"
 OPTION_BANK = "--banco"
-OPTIONS: tuple[str, ...] = (OPTION_PERFORMANCE, OPTION_BANK)
+OPTION_DOCS = "--documentacion"
+OPTIONS: tuple[str, ...] = (OPTION_PERFORMANCE, OPTION_BANK, OPTION_DOCS)
+DOCS_STEP = "documentación"
+DOCS_RELPATH = "tools/check_docs.py"
+NO_DOCS = f"no hay documentación en la carpeta madre ni en {layout.ENV_DOCS_DIR}"
 REPOSITORY = "repositorio"  # la línea del resumen si la comprobación cambió el árbol
 REPOSITORY_SKIP = (".git",)  # lo cambia git, no la comprobación
 
 USAGE = """Uso (con el Python de Blender, desde la raíz del repositorio):
-  & "<Blender>\\5.2\\python\\bin\\python.exe" tools/check.py [--rendimiento] [--banco]
+  & "<Blender>\\5.2\\python\\bin\\python.exe" tools/check.py [--rendimiento] [--banco] [--documentacion]
 
-  --rendimiento  añade las pruebas de rendimiento (también las de dentro de Blender)
-  --banco        añade el banco privado de Silvestre (GEOBLENDER_SILVESTRE_DIR)
-  --ayuda, -h    muestra esta ayuda
+  --rendimiento     añade las pruebas de rendimiento (también las de dentro de Blender)
+  --banco           añade el banco privado de Silvestre (GEOBLENDER_SILVESTRE_DIR)
+  --documentacion   añade la comprobación de la documentación (tools/check_docs.py en
+                    GEOBLENDER_DOCS_DIR o en la carpeta madre; sin ella, «omitido»)
+  --ayuda, -h       muestra esta ayuda
 
 Blender: GEOBLENDER_BLENDER (ruta a blender.exe o a su carpeta) o la ruta por defecto
 «C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe».
@@ -186,6 +196,12 @@ class Context:
     install: BlenderInstall
     profile: Path
     blender_modules: frozenset[str] = frozenset()
+    # Donde se busca la documentación (GEOBLENDER_DOCS_DIR); None: el del proceso.
+    environ: Mapping[str, str] | None = None
+
+    def docs_environ(self) -> Mapping[str, str]:
+        """El entorno en que se busca la documentación (``repo.find_docs``)."""
+        return os.environ if self.environ is None else self.environ
 
     def python_env(self) -> dict[str, str]:
         """Entorno del Python de Blender fuera de Blender (``gbtools.blender``)."""
@@ -247,13 +263,16 @@ class Context:
 @dataclass(frozen=True)
 class Step:
     """Un paso de la comprobación: su nombre, sus órdenes, si es opcional la opción que
-    lo pide (``None``: obligatorio) y, si falla, qué orden propone el resumen a partir
-    de su salida (``advice``)."""
+    lo pide (``None``: obligatorio), si falla, qué orden propone el resumen a partir de
+    su salida (``advice``) y, antes de ejecutar nada, si hay que omitirlo (``omit``
+    devuelve el motivo, o ``None``): un paso omitido no es un fallo, y el resumen lo
+    cuenta como omisión con su motivo."""
 
     name: str
     runs: Callable[[Context], Sequence[Run]]
     option: str | None = None
     advice: Callable[[Context, str], list[str]] | None = None
+    omit: Callable[[Context], str | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -329,9 +348,31 @@ def _bank(ctx: Context) -> list[Run]:
     return [ctx.python("tools/bench_silvestre.py", kind=KIND_BANK)]
 
 
+def _docs_folder(ctx: Context) -> tuple[Path | None, str | None]:
+    """La documentación que encuentra ``repo.find_docs`` desde la raíz del código, o el
+    motivo por el que no la hay (no hay carpeta, o no existe o no lo es)."""
+    found = repo.find_docs(ctx.root, ctx.docs_environ())
+    if found is None:
+        return None, NO_DOCS
+    try:
+        return repo.docs_root(found), None
+    except repo.DocsProblem as exc:
+        return None, str(exc)
+
+
+def _docs(ctx: Context) -> list[Run]:
+    folder, _reason = _docs_folder(ctx)
+    return [] if folder is None else [ctx.python(DOCS_RELPATH, str(folder))]
+
+
+def _docs_omit(ctx: Context) -> str | None:
+    return _docs_folder(ctx)[1]
+
+
 # Tabla de pasos (plan 001 §5.4.7). Las specs siguientes añaden el suyo en su lugar:
 # «iconos» (003) tras «licencias» y «motor» (004) tras «blender». Los opcionales se
-# ejecutan siempre después de los obligatorios (RF-001-10).
+# ejecutan siempre después de los obligatorios (RF-001-10); «documentación» (spec 007,
+# RF-007-14), el último.
 STEPS: tuple[Step, ...] = (
     Step("unitarias", _unit),
     Step("referencia", _reference),
@@ -340,6 +381,7 @@ STEPS: tuple[Step, ...] = (
     Step("blender", _blender),
     Step("rendimiento", _performance, option=OPTION_PERFORMANCE),
     Step("banco", _bank, option=OPTION_BANK),
+    Step(DOCS_STEP, _docs, option=OPTION_DOCS, omit=_docs_omit),
 )
 
 
@@ -672,8 +714,18 @@ def unloaded_files(run: Run, root: Path, text: str) -> list[str]:
 
 
 def execute_step(step: Step, ctx: Context, runner: blender.Runner) -> StepResult:
-    """Ejecuta las órdenes de ``step`` y reúne su resultado."""
+    """Ejecuta las órdenes de ``step`` y reúne su resultado; si ``step.omit`` da un
+    motivo, no ejecuta nada y el paso queda «omitido» con él."""
     start = time.perf_counter()
+    reason = step.omit(ctx) if step.omit is not None else None
+    if reason is not None:
+        return StepResult(
+            step.name,
+            STATUS_SKIPPED,
+            time.perf_counter() - start,
+            detail=[reason],
+            skipped=[Skip(f"el paso «{step.name}»", step.name, reason)],
+        )
     resources = known_resources(ctx.root)
     outcomes = [_execute(run, ctx.root, runner, resources) for run in step.runs(ctx)]
     seconds = time.perf_counter() - start
@@ -801,11 +853,14 @@ def main(
     executable: str | None = None,
     loaded_modules: Collection[str] | None = None,
     steps: Sequence[Step] = STEPS,
+    environ: Mapping[str, str] | None = None,
 ) -> int:
     """Ejecuta la comprobación completa y devuelve el código de salida.
 
     Los parámetros con nombre solo los cambian las pruebas: raíz, ejecutor de órdenes,
-    localizador de Blender, intérprete en uso, módulos cargados y tabla de pasos.
+    localizador de Blender, intérprete en uso, módulos cargados, tabla de pasos y el
+    entorno en que se busca la documentación (``GEOBLENDER_DOCS_DIR``; por defecto, el
+    del proceso).
     """
     started = time.perf_counter()
     executable = sys.executable if executable is None else executable
@@ -871,6 +926,7 @@ def main(
             install=install,
             profile=profile,
             blender_modules=imports.installation_modules(_scripts_dir(install)),
+            environ=environ,
         )
         # Foto del repositorio antes del primer paso, para compararla tras el último.
         snapshot_start = time.perf_counter()

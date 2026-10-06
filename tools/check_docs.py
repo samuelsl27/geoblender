@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La comprobación de la documentación de Geoblender (plan 007 §5.4.3; ADR-0023;
-RF-007-11 a RF-007-13).
+RF-007-11 a RF-007-13 y RF-007-28).
 
 Se ejecuta con el Python de Blender (solo usa la biblioteca estándar)::
 
@@ -14,7 +14,9 @@ Se ejecuta con el Python de Blender (solo usa la biblioteca estándar)::
 2. Las reglas de la documentación (``gbtools.rules.DOCS_FAMILIES``: ADR-01, AGT-01,
    AGT-02, NOM-03 y TXT-01 a 03) sobre sus ficheros, sin ``.git/``, ``Documentacion/``,
    ``Promts/``, la carpeta ``Geoblender/`` del código (con cualquier mayúscula) ni lo que
-   ignora su ``.gitignore`` (RF-007-11). REP-03 llega con la tarea 007/T18.
+   ignora su ``.gitignore`` (RF-007-11); y REP-03 (RF-007-28): ningún remoto en
+   ``.git/config`` (leído como texto, sin lanzar git) y ``Geoblender/`` ignorada en su
+   ``.gitignore``.
 3. No crea, cambia ni borra nada en la carpeta: una foto (rutas, tamaños y
    ``mtime_ns``, sin ``.git/`` ni la carpeta del código) antes y otra después; si
    difieren, «DOCUMENTACIÓN MODIFICADA» con la lista y código 1.

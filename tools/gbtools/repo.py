@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """El «repositorio comprobado»: los ficheros que miran las reglas (spec 001 §4.4).
 
-Todos los ficheros del repositorio salvo ``.git/``, ``Documentacion/`` y ``Promts/``
-(en la raíz; ``.git`` en cualquier nivel) y lo que excluye el ``.gitignore`` raíz. El
-recorrido no entra en enlaces simbólicos ni en puntos de reparación: los devuelve como
-ficheros para que la regla TXT-03 los señale.
+Todos los ficheros del repositorio salvo ``.git/`` (en cualquier nivel) y lo que excluye
+el ``.gitignore`` raíz. El repositorio de código no tiene ``Documentacion/`` ni
+``Promts/`` (spec 007: si aparecen, REP-01 las señala); la documentación las excluye con
+``layout.DOCS_EXCLUDED``. El recorrido no entra en enlaces simbólicos ni en puntos de
+reparación: los devuelve como ficheros para que la regla TXT-03 los señale.
 
 La raíz del repositorio de código (:func:`repo_root`, por sus marcadores) y la carpeta de
 la documentación (:func:`find_docs` y :func:`docs_root`; spec 007, RF-007-06, RF-007-12 y
@@ -25,7 +26,9 @@ from pathlib import Path
 from .ignore import IgnoreSpec
 from .layout import DOCS_MARKER, ENV_DOCS_DIR, ROOT_MARKERS
 
-ALWAYS_EXCLUDED: tuple[str, ...] = (".git", "Documentacion", "Promts")
+# Lo que el código nunca recorre (spec 007, T15: Documentacion/ y Promts/ pasaron a
+# layout.DOCS_EXCLUDED, que usa la documentación).
+ALWAYS_EXCLUDED: tuple[str, ...] = (".git",)
 
 # Extensiones binarias de .gitattributes (plan 001 §5.4.1); las copias de seguridad
 # .blend1, .blend2… se reconocen aparte.

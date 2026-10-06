@@ -2,8 +2,9 @@
 """Ficheros comprobados y patrones de exclusión (``gbtools.repo``, ``gbtools.ignore``).
 
 Las reglas del repositorio (RF-001-18 a RF-001-21) se aplican a todos los ficheros
-salvo ``.git/``, ``Documentacion/``, ``Promts/`` y lo que excluye ``.gitignore``
-(spec 001 §4.4).
+salvo ``.git/`` y lo que excluye ``.gitignore`` (spec 001 §4.4). ``Documentacion/`` y
+``Promts/`` solo las excluye la documentación (``layout.DOCS_EXCLUDED``; spec 007, T15):
+en el repositorio de código no existen, y si aparecen, REP-01 las señala.
 """
 
 import os
@@ -18,7 +19,7 @@ tools_on_path()
 from gbtools import repo as gbrepo  # noqa: E402
 from gbtools.findings import Finding, format_findings  # noqa: E402
 from gbtools.ignore import IgnoreSpec, UnsupportedPattern  # noqa: E402
-from gbtools.layout import MANIFEST_RELPATH, ROOT_MARKERS  # noqa: E402
+from gbtools.layout import DOCS_EXCLUDED, MANIFEST_RELPATH, ROOT_MARKERS  # noqa: E402
 from gbtools.repo import (  # noqa: E402
     ALWAYS_EXCLUDED,
     is_text_file,
@@ -131,8 +132,12 @@ class IgnoreSpecTest(unittest.TestCase):
 
 class IterRepoFilesTest(unittest.TestCase):
     def test_always_excluded_folders(self) -> None:
-        """RF-001-19: ``.git/``, ``Documentacion/`` y ``Promts/`` no se comprueban."""
-        self.assertEqual(ALWAYS_EXCLUDED, (".git", "Documentacion", "Promts"))
+        """RF-001-19, RF-007-01: en el código solo ``.git/`` (en cualquier nivel) no se
+        comprueba: ``Documentacion/`` y ``Promts/`` sí (REP-01 las señala). Las excluye
+        la documentación (``DOCS_EXCLUDED``), solo en su raíz, con la carpeta del
+        código."""
+        self.assertEqual(ALWAYS_EXCLUDED, (".git",))
+        self.assertLessEqual({".git", "Documentacion", "Promts"}, set(DOCS_EXCLUDED))
         files = {
             ".git/config": "[core]\n",
             "Documentacion/informe.md": "x\n",
@@ -142,14 +147,19 @@ class IterRepoFilesTest(unittest.TestCase):
             "otra/Documentacion/nota.md": "x\n",
             "otra/.git": "gitdir: ../.git\n",
         }
-        expected = [
+        code = [
             f"{EXT}/__init__.py",
+            "Documentacion/informe.md",
+            "Promts/encargo.md",
             "docs/constitution.md",
             "otra/Documentacion/nota.md",
         ]
+        docs = ["docs/constitution.md", "otra/Documentacion/nota.md"]
         with temp_tree(files) as root:
             # El orden depende de la mayúscula de la carpeta de la extensión.
-            self.assertEqual(sorted(_listed(root)), sorted(expected))
+            self.assertEqual(sorted(_listed(root)), sorted(code))
+            listed = [relpath(root, p) for p in iter_repo_files(root, DOCS_EXCLUDED)]
+            self.assertEqual(sorted(listed), docs)
 
     def test_gitignore_patterns_applied(self) -> None:
         """RF-001-19: se aplican los patrones del ``.gitignore``, con y sin ancla."""
@@ -179,7 +189,7 @@ class IterRepoFilesTest(unittest.TestCase):
                 _listed(root)
 
     def test_without_gitignore(self) -> None:
-        """RF-001-19: sin ``.gitignore`` solo se excluyen las tres carpetas fijas."""
+        """RF-001-19: sin ``.gitignore`` solo se excluye ``.git/``."""
         with temp_tree({"a/__pycache__/b.pyc": b"\x00", "c.txt": "x\n"}) as root:
             self.assertEqual(_listed(root), ["a/__pycache__/b.pyc", "c.txt"])
 
@@ -243,7 +253,7 @@ class RepoHelpersTest(unittest.TestCase):
             f"{EXT}/blender_manifest.toml": "x\n",
             "tools/check.py": "x\n",
             "tests/unit/test_a.py": "x\n",
-            "Documentacion/viejo.py": "x\n",
+            ".git/hooks/viejo.py": "x\n",
         }
         with temp_tree(files) as root:
             every = [relpath(root, p) for p in iter_py_files(root)]

@@ -5,18 +5,25 @@ PLT-01 (``bl_info``), PLT-02 (una sola ``AddonPreferences``), PLT-03 (módulo y 
 con el mismo nombre), ARQ-03 (raíz sin imports a nivel de módulo), ARQ-09 (imports
 internos relativos), ARQ-15 (rutas absolutas o de red en literales), ARQ-16 (pickle),
 ARQ-18 (``sys.path`` y ``pip``), ARQ-19 (hilos en ``bl/``) y EXP-01 (rutas a los
-expedientes de clientes o al NAS). Las rutas de EXP-01 se construyen por concatenación:
-el texto del repositorio nunca contiene el patrón.
+expedientes de clientes o al NAS; desde la spec 007, también la de la documentación y la
+del espejo del NAS, en todo el repositorio de código: RF-007-04). Las rutas de EXP-01 se
+construyen por concatenación o desde la carpeta temporal de la prueba: el texto del
+repositorio nunca contiene el patrón.
 """
 
+import ntpath
 import unittest
+from collections.abc import Callable, Mapping
+from pathlib import Path
 
 from tests.support.repo import EXT, ROOT, tools_on_path
 from tests.support.trees import temp_tree
 
 tools_on_path()
 
-from gbtools.findings import format_findings  # noqa: E402
+from gbtools.findings import Finding, format_findings  # noqa: E402
+from gbtools.layout import CODE_DIR_IN_DOCS, DOCS_MARKER, ENV_DOCS_DIR  # noqa: E402
+from gbtools.layout import ENV_NAS_MIRROR  # noqa: E402
 from gbtools.rules import platform  # noqa: E402
 
 SPDX = "# SPDX-License-Identifier: GPL-3.0-or-later\n"
@@ -37,8 +44,41 @@ def _found(files: dict[str, str]) -> list[tuple[str, int, str]]:
         for rel, text in files.items()
     }
     with temp_tree(tree) as root:
-        findings = platform.check(root)
+        findings = platform.check(root, environ={})
     return [(f.path, f.line, f.rule) for f in findings]
+
+
+Build = Callable[[Path], tuple[dict[str, str], Mapping[str, str]]]
+
+
+def _exp01(build: Build, code: str = "") -> list[Finding]:
+    """Los incumplimientos de EXP-01 de un árbol que ``build`` escribe a partir de su
+    carpeta temporal (ficheros y entorno; así las rutas prohibidas se construyen al
+    ejecutar y nunca se escriben en el repositorio). Con ``code``, el código está en esa
+    subcarpeta y la carpeta temporal hace de carpeta del proyecto."""
+    with temp_tree({}) as tmp:
+        base = tmp.resolve()
+        files, environ = build(base)
+        for rel, text in files.items():
+            path = base / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((SPDX + text if rel.endswith(".py") else text).encode("utf-8"))
+        root = base / code if code else base
+        return [f for f in platform.check(root, environ=environ) if f.rule == "EXP-01"]
+
+
+def _rootless(path: Path | str) -> str:
+    """La ruta sin la unidad ni el recurso (``Users\\x\\…``)."""
+    return ntpath.splitroot(str(path))[2]
+
+
+def _other_drive(path: Path) -> str:
+    """Otra letra de unidad que la de ``path``, con sus dos puntos."""
+    return "Y:" if not str(path).upper().startswith("Y:") else "X:"
+
+
+def _lines_of(findings: list[Finding]) -> list[tuple[str, int]]:
+    return [(f.path, f.line) for f in findings]
 
 
 class PlatformTest(unittest.TestCase):
@@ -353,14 +393,14 @@ class PlatformTest(unittest.TestCase):
 
     def test_dossier_path_in_tools(self) -> None:
         """RF-001-16 / EXP-01: una ruta a los expedientes de clientes o al NAS en
-        ``geoblender/``, ``tools/`` o ``tests/`` falla; en ``docs/``, no aplica."""
+        ``geoblender/``, ``tools/`` o ``tests/`` falla (desde la spec 007, también fuera
+        de ellas: ``test_dossier_path_in_docs_folder_fails``)."""
         found = _found(
             {
                 "tools/bench.py": f'DIR = r"{DOSSIER}"\n',
                 "tests/banco/silvestre/nota.txt": f"datos en {NAS}\\cu\n",
                 f"{EXT}/core/x.py": f"# antes en {DOSSIER_SLASH}\n",
                 "tools/ok.py": 'A = r"Z:' + BS + 'analisis"\n',
-                "docs/nota.md": f"Expedientes en {DOSSIER}\n",
             }
         )
         self.assertEqual(
@@ -454,6 +494,144 @@ class PlatformTest(unittest.TestCase):
         los expedientes)."""
         findings = platform.check(ROOT)
         self.assertEqual(findings, [], "\n" + format_findings(findings))
+
+
+class ExpandedExp01Test(unittest.TestCase):
+    """EXP-01 ampliada (spec 007, RF-007-04, D-8; plan 007 §5.4.2): todo el repositorio
+    de código, y también la ruta de la documentación (``GEOBLENDER_DOCS_DIR`` o la carpeta
+    madre) y la de ``GEOBLENDER_NAS_ESPEJO``, sin la raíz."""
+
+    def test_dossier_path_in_root_readme(self) -> None:
+        """RF-007-04 / EXP-01: los ficheros de la raíz (``README.md``, ``AGENTS.md``)
+        también se miran: una ruta a los expedientes o al NAS por IP falla."""
+        found = _found(
+            {
+                "README.md": f"Los datos de Silvestre están en {DOSSIER}\n",
+                "AGENTS.md": f"# Reglas\nEl NAS: {NAS}\n",
+                "CHANGELOG.md": "Sin rutas.\n",
+            }
+        )
+        self.assertEqual(found, [("AGENTS.md", 2, "EXP-01"), ("README.md", 1, "EXP-01")])
+
+    def test_dossier_path_in_docs_folder_fails(self) -> None:
+        """RF-007-04 / EXP-01: en el código, una carpeta ``docs/`` no queda fuera (antes
+        de la spec 007, «en docs/, no aplica»)."""
+        found = _found({"docs/nota.md": f"Expedientes en {DOSSIER}\n"})
+        self.assertEqual(found, [("docs/nota.md", 1, "EXP-01")])
+
+    def test_docs_dir_value(self) -> None:
+        """RF-007-04 / EXP-01: la ruta de ``GEOBLENDER_DOCS_DIR`` escrita en un fichero del
+        código falla nombrando la variable."""
+        def build(base: Path) -> tuple[dict[str, str], dict[str, str]]:
+            docs = base / "documentacion"
+            files = {
+                "tools/notas.txt": f"La documentación está en {docs}\n",
+                "README.md": "x\n",
+            }
+            return files, {ENV_DOCS_DIR: str(docs)}
+
+        findings = _exp01(build)
+        self.assertEqual(
+            _lines_of(findings), [("tools/notas.txt", 1)], format_findings(findings)
+        )
+        self.assertIn(ENV_DOCS_DIR, findings[0].message)
+
+    def test_docs_dir_other_drive_letter(self) -> None:
+        """RF-007-04 / EXP-01: la misma ruta con otra letra de unidad, con barras normales
+        o sin la raíz también falla."""
+        def build(base: Path) -> tuple[dict[str, str], dict[str, str]]:
+            docs = base / "documentacion"
+            rootless = _rootless(docs)
+            text = (
+                f"{_other_drive(docs)}{BS}{rootless}\n"
+                f"en {rootless.replace(BS, '/')}/specs\n"
+                "nada\n"
+            )
+            return {f"{EXT}/core/notas.md": text}, {ENV_DOCS_DIR: str(docs)}
+
+        findings = _exp01(build)
+        self.assertEqual(
+            _lines_of(findings), [(f"{EXT}/core/notas.md", 1), (f"{EXT}/core/notas.md", 2)]
+        )
+
+    def test_docs_dir_unc_form(self) -> None:
+        """RF-007-04 / EXP-01: la ruta escrita en forma UNC (``\\\\servidor\\recurso\\…``)
+        también falla: se compara sin la raíz."""
+        def build(base: Path) -> tuple[dict[str, str], dict[str, str]]:
+            docs = base / "documentacion"
+            unc = BS * 2 + "servidor" + BS + "recurso" + BS + _rootless(docs)
+            return {"tests/unit/notas.txt": f"copia en {unc}\n"}, {ENV_DOCS_DIR: str(docs)}
+
+        self.assertEqual(_lines_of(_exp01(build)), [("tests/unit/notas.txt", 1)])
+
+    def test_parent_docs_folder(self) -> None:
+        """RF-007-04 / EXP-01: sin la variable, la documentación es la carpeta madre del
+        código (con ``docs/constitution.md``): su ruta en un fichero del código falla
+        nombrando «la carpeta madre»."""
+        def build(base: Path) -> tuple[dict[str, str], dict[str, str]]:
+            files = {
+                DOCS_MARKER: "# Constitución\n",
+                f"{CODE_DIR_IN_DOCS}/tools/notas.txt": f"Las specs, en {base}{BS}specs\n",
+                f"{CODE_DIR_IN_DOCS}/README.md": "x\n",
+            }
+            return files, {}
+
+        findings = _exp01(build, CODE_DIR_IN_DOCS)
+        self.assertEqual(
+            _lines_of(findings), [("tools/notas.txt", 1)], format_findings(findings)
+        )
+        self.assertIn("la carpeta madre", findings[0].message)
+
+        def without_docs(base: Path) -> tuple[dict[str, str], dict[str, str]]:
+            files, environ = build(base)
+            del files[DOCS_MARKER]  # la carpeta madre no es la documentación
+            return files, environ
+
+        self.assertEqual(_exp01(without_docs, CODE_DIR_IN_DOCS), [])
+
+    def test_nas_mirror_value(self) -> None:
+        """RF-007-04 / EXP-01: la ruta de ``GEOBLENDER_NAS_ESPEJO`` (en UNC o con unidad)
+        escrita con otra raíz, o sin ella, falla nombrando la variable."""
+        unc = BS * 2 + "servidor" + BS + "recurso" + BS + "proyectos" + BS + "almacen"
+        drive = "W:" + BS + "proyectos" + BS + "almacen"
+        cases = ((unc, drive + BS + "Geo"), (drive, unc), (unc, "proyectos/almacen"))
+        for value, text in cases:
+            with self.subTest(valor=value, texto=text):
+
+                def build(
+                    base: Path, text: str = text, value: str = value
+                ) -> tuple[dict[str, str], dict[str, str]]:
+                    return {"tools/espejo.py": f"# destino: {text}\n"}, {ENV_NAS_MIRROR: value}
+
+                findings = _exp01(build)
+                self.assertEqual(_lines_of(findings), [("tools/espejo.py", 2)])
+                self.assertIn(ENV_NAS_MIRROR, findings[0].message)
+
+    def test_short_value_ignored(self) -> None:
+        """RF-007-04 / EXP-01: un valor con menos de dos componentes sin la raíz no se usa
+        (casaría con cualquier palabra)."""
+        short = BS * 2 + "servidor" + BS + "recurso" + BS + "almacen"
+        environ = {ENV_NAS_MIRROR: short, ENV_DOCS_DIR: "C:" + BS}
+        text = f"almacen{BS}x y C:{BS}almacen\n"
+        self.assertEqual(_exp01(lambda base: ({"tools/a.txt": text}, environ)), [])
+
+    def test_value_not_printed(self) -> None:
+        """RF-007-04 / EXP-01: el incumplimiento nombra de dónde sale la ruta, nunca la
+        ruta ni sus carpetas."""
+        nas = BS * 2 + "servidor" + BS + "recurso" + BS + "proyectos" + BS + "almacen"
+        seen: list[str] = []
+
+        def build(base: Path) -> tuple[dict[str, str], dict[str, str]]:
+            docs = base / "documentacion"
+            seen.extend([str(docs), _rootless(docs), base.name, "proyectos", "almacen"])
+            text = f"{docs}\nY:{BS}proyectos{BS}almacen\n"
+            return {"tools/a.txt": text}, {ENV_DOCS_DIR: str(docs), ENV_NAS_MIRROR: nas}
+
+        findings = _exp01(build)
+        self.assertEqual(_lines_of(findings), [("tools/a.txt", 1), ("tools/a.txt", 2)])
+        for finding in findings:
+            for value in seen:
+                self.assertNotIn(value.casefold(), str(finding).casefold())
 
 
 if __name__ == "__main__":

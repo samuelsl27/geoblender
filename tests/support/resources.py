@@ -23,7 +23,7 @@ fallo de su paso, porque esconde una prueba que no se ejecuta (convergencia de l
 
 Los recursos válidos son una lista cerrada, :data:`RESOURCES`: los de la plataforma
 (``symlink``, ``windows`` y ``blender``) y los que añada cada spec en su tarea, aquí y en
-su plan. ``tools/check.py`` la lee de este fichero (sin importarlo: solo biblioteca
+su plan (``git``, de la 007: lo registra ``tests.support.gitrepo``). ``tools/check.py`` la lee de este fichero (sin importarlo: solo biblioteca
 estándar, HER-01) y cuenta como omisión sin recurso, un fallo, cualquier «[ENTORNO]
 <recurso>» que no esté en ella: un recurso inventado (``skip_reason('nada', 'nada')``) o
 el de una spec que aún no lo ha declarado (convergencia de la spec 001, T47). Por eso
@@ -52,8 +52,9 @@ BLENDER = "blender"  # el motivo es el mensaje del localizador (gbtools.blender)
 
 # Lista cerrada de los recursos por los que se puede omitir una prueba: la lee
 # tools/check.py como texto (ast.literal_eval), así que solo textos literales. Cada spec
-# añade aquí el suyo (p. ej. «runtime» la 004, «ace» la 005, «qgis» la 002 y la 006).
-RESOURCES: tuple[str, ...] = ("symlink", "windows", "blender")
+# añade aquí el suyo (p. ej. «runtime» la 004, «ace» la 005, «qgis» la 002 y la 006;
+# «git» la 007, para las pruebas de la publicación).
+RESOURCES: tuple[str, ...] = ("symlink", "windows", "blender", "git")
 
 T = TypeVar("T")
 

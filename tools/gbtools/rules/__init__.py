@@ -9,13 +9,16 @@ lista vacía significa que el árbol bajo ``root`` cumple. Solo biblioteca está
   ``tools/check.py`` que no son reglas sobre ficheros (licencias, validación con
   Blender) tienen su propia orden.
 - ``DOCS_FAMILIES``, las de la documentación (ADR-01, AGT-01 y AGT-02, NOM-03 y TXT-01
-  a 03, sin ``.git/``, ``Documentacion/``, ``Promts/`` ni la carpeta del código), y
+  a 03, sin ``.git/``, ``Documentacion/``, ``Promts/`` ni la carpeta del código; y
+  REP-03, su configuración de git, desde la T18), y
   ``run_docs``: las ejecuta ``tools/check_docs.py`` (spec 007, RF-007-11). ADR-01 y
   NOM-03 dejaron el verde del código en la tarea 007/T05: el repositorio de código no
   tiene ``docs/`` ni ``specs/``.
 
 ``layout`` llega con la spec 007: REP-02, la carpeta de la extensión con su nombre exacto
-(T04). ``specs`` (NOM-03) sale de ``naming`` en la T05.
+(T04), y REP-01, las entradas de la raíz del código (T15). ``specs`` (NOM-03) sale de
+``naming`` en la T05. La familia ``agents`` del código añade AGT-03, el ``AGENTS.md``
+mínimo (T16); la de la documentación es solo AGT-01 y AGT-02.
 
 ``suites`` llega con la convergencia de la spec 001: TST-01, carpetas de ``tests/`` sin
 ``__init__.py`` (T34); TST-02, ficheros de pruebas que su paso no carga (T43); TST-03,
@@ -47,7 +50,7 @@ FAMILIES: Mapping[str, Family] = {
     "naming": naming.check,
     "headers": headers.check,
     "text": text.check,
-    "agents": agents.check,
+    "agents": agents.check_code,
     "manifest": manifest.check,
     "suites": suites.check,
     "layout": layout.check,
@@ -58,6 +61,7 @@ DOCS_FAMILIES: Mapping[str, Family] = {
     "agents": partial(agents.check, excluded=DOCS_EXCLUDED),
     "specs": specs.check,
     "text": partial(text.check, excluded=DOCS_EXCLUDED),
+    "docs_repo": layout.check_docs_repo,
 }
 
 
