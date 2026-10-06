@@ -28,6 +28,14 @@
   «Guarde antes la vista n (…)» y no cambia nada; su descripción emergente lo dice y los
   menús la dibujan desactivada.
 - Los tres tienen atajo en la Vista 3D: pasan por la puerta de modo (contrato 2).
+- ``geoblender.ui_edit_legend`` y ``geoblender.ui_edit_data_filter`` (RF-003-09; contrato
+  6; BS §8.12, Consulta ▸): la Leyenda y el Filtro de datos genéricos, con el proveedor
+  del tipo del objeto activo (``bl.ui.context``). Sin proveedor, su ``poll`` falla con
+  «Seleccione sondeos (005) o un modelo de bloques (R-22)». La Leyenda, sin ``field``,
+  abre su ventana emergente (la lista de campos); con él, lo aplica (un campo que no es
+  del tipo, no). El Filtro abre un diálogo con los campos y la expresión, y la aplica; si
+  el proveedor la rechaza, informa su motivo y no cambia nada. Lo que aplican cambia la
+  escena (colores, visibilidad): llevan ``UNDO``.
 - ``geoblender.ui_toggle_quick_access_row`` (RF-003-11; AR §3.3): Herramientas ▸
   Disposición ▸ «Mostrar la fila de acceso rápido de la vista» (``bl.ui.quick_access``):
   si la fila ya se ve, apaga la preferencia; si no, la enciende y muestra la fila 2 de las
@@ -47,6 +55,7 @@ from typing import Any
 import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 
+from ...core.errors import GeoblenderError
 from ...core.i18n import tr
 from ..ui import gate
 
@@ -288,6 +297,107 @@ class GEOBLENDER_OT_ui_recall_view(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _poll_provider(cls: Any, context: Any, provider: Any) -> bool:
+    """Hay proveedor para el tipo activo; si no, el paso previo (spec §8)."""
+    from ..ui import context as ui_context
+
+    if provider is not None:
+        return True
+    cls.poll_message_set(ui_context.no_provider_message())
+    return False
+
+
+class GEOBLENDER_OT_ui_edit_legend(bpy.types.Operator):
+    """Colour the items of the active type by one of their fields"""
+
+    bl_idname = "geoblender.ui_edit_legend"
+    bl_label = "Legend: colour by field…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "UNDO"}
+
+    field: StringProperty(name="Field", default="", options={"SKIP_SAVE"})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        from ..ui import context as ui_context
+
+        return _poll_provider(cls, context, ui_context.legend_provider(context))
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        from ..ui import context as ui_context
+
+        if not self.field:
+            return bpy.ops.wm.call_panel(name=ui_context.LEGEND_PANEL)
+        return self.execute(context)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import context as ui_context
+
+        provider = ui_context.legend_provider(context)
+        if provider is None or not self.field:
+            return {"CANCELLED"}
+        if self.field not in {field.id for field in provider.fields(context)}:
+            self.report({"ERROR"}, tr("The field «{field}» is not one of the active type",
+                                      field=self.field))
+            return {"CANCELLED"}
+        try:
+            provider.apply(context, self.field)
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, exc.message)
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_ui_edit_data_filter(bpy.types.Operator):
+    """Show only the items of the active type that meet an expression"""
+
+    bl_idname = "geoblender.ui_edit_data_filter"
+    bl_label = "Data filter by expression…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "UNDO"}
+
+    expression: StringProperty(name="Expression", default="")  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        from ..ui import context as ui_context
+
+        return _poll_provider(cls, context, ui_context.data_filter_provider(context))
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        from ..ui import context as ui_context
+
+        provider = ui_context.data_filter_provider(context)
+        if provider is not None:
+            self.expression = provider.current(context)
+        return context.window_manager.invoke_props_dialog(self, width=420, translate=False)
+
+    def draw(self, context: Any) -> None:
+        from ..ui import context as ui_context
+
+        layout = self.layout
+        provider = ui_context.data_filter_provider(context)
+        if provider is not None:
+            column = layout.column(align=True)
+            column.active = False
+            for field in provider.fields(context):
+                column.label(text=" · ".join((field.id, field.label)), translate=False)
+        layout.prop(self, "expression", text="", translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import context as ui_context
+
+        provider = ui_context.data_filter_provider(context)
+        if provider is None:
+            return {"CANCELLED"}
+        try:
+            provider.apply(context, self.expression)
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, exc.message)
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
 class GEOBLENDER_OT_ui_toggle_quick_access_row(bpy.types.Operator):
     """Show or hide row 2 of the 3D views"""
 
@@ -335,6 +445,8 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_frame_work_window,
     GEOBLENDER_OT_ui_store_view,
     GEOBLENDER_OT_ui_recall_view,
+    GEOBLENDER_OT_ui_edit_legend,
+    GEOBLENDER_OT_ui_edit_data_filter,
     GEOBLENDER_OT_ui_toggle_quick_access_row,
     GEOBLENDER_OT_ui_repair_interface,
 )

@@ -602,6 +602,17 @@ es = "Guarde antes la vista {n} ({shortcut})"
 ["View {n} saved"]
 es = "Vista {n} guardada"
 
+# Leyenda y Filtro de datos genéricos (spec 003; RF-003-09; spec §8; contrato 6)
+
+["Select drillholes (005) or a block model (R-22)"]
+es = "Seleccione sondeos (005) o un modelo de bloques (R-22)"
+
+["No filter"]
+es = "Sin filtro"
+
+["The field «{field}» is not one of the active type"]
+es = "El campo «{field}» no es del tipo activo"
+
 # Acceso rápido de la vista (spec 003; RF-003-11; AR §3.3): el botón de los plegados.
 
 ["»"]

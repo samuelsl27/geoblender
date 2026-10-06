@@ -8,7 +8,8 @@ preferencias) → clases propias de la interfaz (los menús y la pestaña «Proy
 spec 002) → catálogo (``registry``: menús generados por ``menus``, provisionales y
 textos) → sustitución de ``draw_left`` de la barra superior (``topbar``) → fila de
 acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → vistas
-(``views``: el manejador ``load_post`` que olvida su estado de sesión) → conmutador
+(``views``: el manejador ``load_post`` que olvida su estado de sesión) → proveedores de
+la Leyenda y del Filtro de datos (``context``: al desregistrar, se olvidan) → conmutador
 (``switcher``: su manejador ``load_post``; al desregistrar, devuelve cada ventana en modo
 Geoblender a su espacio de Blender y retira su temporizador) → atajos del catálogo en el
 *keyconfig* de complementos (``keymap``). Cada paso
@@ -25,6 +26,7 @@ from ..props.ui import LANGUAGES
 from ..registry import register_classes, unregister_classes
 from . import (
     commands,
+    context,
     core_menus,
     core_panel,
     keymap,
@@ -39,7 +41,12 @@ from . import (
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los menús y la pestaña «Proyecto» de core (spec 002) y los paneles reales de
 # la interfaz (spec 003).
-classes: tuple[type, ...] = (*core_menus.classes, *core_panel.classes, *quick_access.classes)
+classes: tuple[type, ...] = (
+    *core_menus.classes,
+    *core_panel.classes,
+    *quick_access.classes,
+    *context.classes,
+)
 
 _UNDO: list[Callable[[], None]] = []
 
@@ -78,6 +85,7 @@ def register() -> None:
         (_install_topbar, topbar.restore),
         (quick_access.install, quick_access.uninstall),
         (views.register, views.unregister),
+        (lambda: None, context.clear),
         (switcher.register, switcher.unregister),
         (keymap.register, keymap.unregister),
     )
