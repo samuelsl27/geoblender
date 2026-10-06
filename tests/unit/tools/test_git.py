@@ -4,7 +4,7 @@
 Las de interpretación usan un ejecutor simulado con respuestas fijas; las de extremo a
 extremo, una carpeta del proyecto temporal con la documentación, el código anidado y un
 remoto desnudo (``tests.support.gitrepo``), copiada de una plantilla que se construye
-una vez por clase, con la configuración de git aislada: ninguna lee la del usuario ni la
+una vez por proceso, con la configuración de git aislada: ninguna lee la del usuario ni la
 del sistema, y ninguna deja procesos de git en segundo plano (``gc.auto=0``,
 ``maintenance.auto=false``). Sin git, se omiten con ``[ENTORNO] git``.
 """
@@ -265,11 +265,7 @@ class EndToEndTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.template = gitrepo.GitTemplate()
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.template.close()
+        cls.template = gitrepo.shared_template()
 
     def setUp(self) -> None:
         self.project = self.template.project()

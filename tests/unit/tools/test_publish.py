@@ -775,6 +775,58 @@ class ChecksTest(PublicationAssertions):
         self.assertEqual(outcome.checks.calls, [])
 
 
+class PushTest(PublicationAssertions):
+    """RF-007-20, RF-007-21: la subida de la rama actual del código y sus etiquetas
+    anotadas, sin forzar (plan 007 §5.4.5, paso 9); si falla, sin espejo."""
+
+    def test_never_force(self) -> None:
+        """RF-007-20: una sola subida, de la rama actual a la misma rama de ``origin``,
+        con ``--follow-tags`` y sin ``--force``, ``--mirror``, ``--all``, ``--delete`` ni
+        un «+» en la referencia; después de las comprobaciones."""
+        fake = FakeGit()
+        with workspace() as space:
+            outcome = run_publish(space, git_runner=fake)
+        pushes = [cmd for cmd in fake.commands("code") if cmd.startswith("push")]
+        self.assertEqual(
+            pushes,
+            [f"push --follow-tags --porcelain origin refs/heads/{CODE_BRANCH}:refs/heads/{CODE_BRANCH}"],
+        )
+        self.assertEqual([c for c in fake.commands("docs") if c.startswith("push")], [])
+        for forbidden in ("--force", " -f", "--mirror", "--all", "--delete", " +"):
+            self.assertNotIn(forbidden, pushes[0])
+        self.assertIn(f"correcto  {publish.STEP_PUSH}", outcome.out, outcome.text)
+        self.assertEqual(outcome.checks.scripts(), ["tools/check.py", "tools/check_docs.py"])
+
+    def test_rejected_push_no_mirror(self) -> None:
+        """RF-007-21: la subida rechazada (la rama de ``origin`` avanzó): código 1 con el
+        mensaje de git, sin espejo (el destino, igual)."""
+        rejected = (
+            1, "To origen\n!\trefs/heads/main:refs/heads/main\t[rejected] (fetch first)\n",
+            "error: failed to push some refs to 'origen'\n",
+        )
+        fake = FakeGit({("code", "push"): rejected})
+        with workspace() as space:
+            before = gbrepo.snapshot(space.dest)
+            outcome = run_publish(space, git_runner=fake)
+            self.assertEqual(gbrepo.snapshot_changes(before, gbrepo.snapshot(space.dest)), [])
+        self.assertEqual(outcome.code, 1, outcome.text)
+        self.assertIn(f"fallo     {publish.STEP_PUSH}", outcome.out)
+        self.assertIn("[rejected] (fetch first)", outcome.out)
+        self.assertIn("failed to push some refs", outcome.out)
+        self.assertIn("sin espejo", outcome.out)
+
+    def test_unreachable_remote_no_mirror(self) -> None:
+        """RF-007-21: sin red o sin permiso: código 1 con el mensaje de git, sin espejo."""
+        failed = (128, "", "fatal: unable to access 'https://github.invalid/': Could not resolve host\n")
+        fake = FakeGit({("code", "push"): failed})
+        with workspace() as space:
+            outcome = run_publish(space, git_runner=fake)
+            self.assertEqual(list(space.dest.iterdir()), [])
+        self.assertEqual(outcome.code, 1, outcome.text)
+        self.assertIn("Could not resolve host", outcome.out)
+        self.assertIn("código 128", outcome.out)
+
+
 class EnvironTest(unittest.TestCase):
     def test_main_always_with_environ(self) -> None:
         """Plan 007 §7.1: ninguna prueba llama a ``publish.main`` sin su entorno
@@ -798,25 +850,19 @@ class EnvironTest(unittest.TestCase):
 
 @requires(gitrepo.GIT, gitrepo.GIT_HINT)
 class EndToEndTest(PublicationAssertions):
-    """Con git de verdad, sobre una copia de la plantilla de la clase."""
+    """Con git de verdad, sobre una copia de la plantilla (una por proceso,
+    ``gitrepo.shared_template``) para cada prueba."""
 
     template: gitrepo.GitTemplate
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.template = gitrepo.GitTemplate()
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.template.close()
+        cls.template = gitrepo.shared_template()
 
     def setUp(self) -> None:
         self.project = self.template.project()
         self.addCleanup(self.project.close)
-        self.space = Workspace(self.project.base)
-        self.space.dest.mkdir()
-        self.space.profile.mkdir()
-        mirror.write_photo(self.space.profile, self.space.dest, files={})
+        self.space = real_workspace(self.project)
 
     def publish(self, *args: str) -> Outcome:
         return run_publish(self.space, *args, real_git=self.project.runner())
@@ -841,6 +887,61 @@ class EndToEndTest(PublicationAssertions):
         self.assertEqual(self.remote_refs(), refs)
         self.assertEqual(gbrepo.snapshot_changes(before, gbrepo.snapshot(self.space.dest)), [])
         self.assertEqual((index.stat().st_size, index.stat().st_mtime_ns), index_before)
+
+
+def real_workspace(project: gitrepo.GitProject) -> Workspace:
+    """El :class:`Workspace` de una copia de la plantilla: su destino vacío con su foto
+    (el primer espejo) y su perfil local, junto a la carpeta del proyecto."""
+    space = Workspace(project.base)
+    space.dest.mkdir()
+    space.profile.mkdir()
+    mirror.write_photo(space.profile, space.dest, files={})
+    return space
+
+
+@requires(gitrepo.GIT, gitrepo.GIT_HINT)
+class PublishedTest(unittest.TestCase):
+    """Una publicación de verdad, hecha una vez por clase (``setUpClass``) sobre una
+    copia de la plantilla con un commit nuevo y una etiqueta anotada en el código; cada
+    prueba mira una parte de su resultado (RNF-007-01: una sola publicación con git)."""
+
+    TAG = "v0.1.0-prueba"
+    project: gitrepo.GitProject
+    space: Workspace
+    outcome: Outcome
+    head: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        project = gitrepo.shared_template().project()
+        cls.project = project
+        try:
+            cls.space = real_workspace(project)
+            (project.code / "README.md").write_text("# Código de prueba, 2\n", encoding="utf-8")
+            project.git(project.code, "commit", "-q", "-a", "-m", "segundo")
+            project.git(project.code, "tag", "-a", cls.TAG, "-m", "versión de prueba")
+            cls.head = project.git(project.code, "rev-parse", "HEAD").stdout.strip()
+            cls.outcome = run_publish(cls.space, real_git=project.runner())
+        except BaseException:
+            project.close()
+            raise
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.project.close()
+
+    def test_push_branch_and_tags(self) -> None:
+        """RF-007-20: con git de verdad, un commit nuevo y una etiqueta anotada en el
+        código: el remoto desnudo acaba con la rama en ese commit y con la etiqueta; la
+        documentación no tiene remoto y no se sube."""
+        project, outcome = self.project, self.outcome
+        self.assertIn(f"correcto  {publish.STEP_PUSH}", outcome.out, outcome.text)
+        listing = project.git(project.remote, "show-ref").stdout.splitlines()
+        refs = {name: sha for sha, name in (line.split(" ", 1) for line in listing)}
+        self.assertEqual(refs.get("refs/heads/main"), self.head)
+        tag = project.git(project.remote, "rev-parse", f"{self.TAG}^{{commit}}").stdout
+        self.assertEqual(tag.strip(), self.head)
+        self.assertNotIn(f"refs/heads/{DOCS_BRANCH}", refs)
 
 
 if __name__ == "__main__":

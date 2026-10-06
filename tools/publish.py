@@ -35,6 +35,10 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
    ``--solo-espejo``) y siempre ``tools/check_docs.py <carpeta del proyecto>``; las dos
    tienen que terminar con 0. Después se miran otra vez los árboles: las comprobaciones
    no deben cambiar nada.
+9. Subida (RF-007-20, RF-007-21), salvo con ``--solo-espejo``: ``git push
+   --follow-tags`` de la rama actual del código a la misma rama de ``origin``, nunca
+   forzada; si falla (rechazada, sin red o sin permiso), código 1 con el mensaje de git
+   y sin espejo.
 
 Las lecturas de git no toman cerrojos opcionales (``gbtools.git``): no reescriben
 ``.git/index``. Nadie publica salvo la persona que publica (D-15); un agente, solo si
@@ -86,6 +90,7 @@ STEP_REMOTE = "remoto"
 STEP_TREES = "árboles"
 STEP_CHECK = "comprobación"
 STEP_DOCS = "documentación"
+STEP_PUSH = "subida"
 
 # El primer componente bajo la raíz de una unidad, o el nombre del recurso, de la
 # carpeta de expedientes de clientes (solo lectura, siempre): nunca es un destino.
@@ -313,21 +318,22 @@ def _status_line(entry: str) -> str:
     return f"cambiado sin commit ({status.strip()}): {path}"
 
 
-def tree_problems(repo: Path, git_runner: blender.Runner) -> list[str]:
+def tree_problems(repo: Path, git_runner: blender.Runner) -> tuple[list[str], str | None]:
     """Lo que impide publicar desde el repositorio ``repo`` (RF-007-15): su ``.git``
     (fichero, ``alternates``), cambios sin commit y ficheros nuevos, operaciones a
-    medias y cerrojos, y HEAD fuera de una rama. Vacía si está limpio."""
+    medias y cerrojos, y HEAD fuera de una rama (vacía si está limpio); y su rama."""
     problem = git.git_dir_problem(repo)
     if problem is not None:
-        return [problem]
+        return [problem], None
     found = [_status_line(entry) for entry in git.dirty_entries(repo, runner=git_runner)]
     found += git.operations_in_progress(repo / ".git")
-    if git.current_branch(repo, runner=git_runner) is None:
+    branch = git.current_branch(repo, runner=git_runner)
+    if branch is None:
         found.append(
             "HEAD no está en ninguna rama (está separado): cambie a la rama que quiere "
             "publicar"
         )
-    return found
+    return found, branch
 
 
 def _seconds(value: float) -> str:
@@ -393,6 +399,8 @@ class Publication:
         self.dest: Path | None = None
         self.base: safe_mirror.MirrorState | None = None
         self.url: str | None = None
+        self.pushed: str | None = None  # la rama subida, si se subió
+        self.branches: dict[str, str | None] = {}  # la rama de cada repositorio
         self.started = time.perf_counter()
         self.step_started = self.started
 
@@ -507,7 +515,9 @@ class Publication:
         problems: list[str] = []
         try:
             for label, repo in ((CODE_LABEL, self.code), (DOCS_LABEL, self.project)):
-                problems += [f"{label}: {item}" for item in tree_problems(repo, self.git_runner)]
+                found, branch = tree_problems(repo, self.git_runner)
+                problems += [f"{label}: {item}" for item in found]
+                self.branches[label] = branch
             tracked = git.tracked_under(
                 self.project, layout.CODE_DIR_IN_DOCS, runner=self.git_runner
             )
@@ -578,17 +588,57 @@ class Publication:
         self._run_check(STEP_DOCS, install, DOCS_CHECK_SCRIPT, str(self.project))
         self.check_trees(after_checks=True)
 
+    # Paso 9: la subida.
+    def push(self) -> None:
+        if self.options.mirror_only:
+            return
+        branch = self.branches.get(CODE_LABEL)
+        if branch is None:  # los árboles lo comprueban antes
+            raise Stop(EXIT_FAIL, STEP_PUSH, "HEAD del código no está en ninguna rama")
+        try:
+            result = git.push(self.code, branch, runner=self.git_runner)
+        except git.GitProblem as exc:
+            raise Stop(EXIT_FAIL, STEP_PUSH, f"{exc}; sin espejo") from exc
+        if result.returncode != 0:
+            output = [
+                line.rstrip()
+                for line in f"{result.stdout or ''}\n{result.stderr or ''}".splitlines()
+                if line.strip()
+            ]
+            raise Stop(
+                EXIT_FAIL,
+                STEP_PUSH,
+                f"git push terminó con el código {result.returncode}; sin espejo",
+                [
+                    *output,
+                    "Si la rama de origin avanzó, traiga sus commits (git pull) y repita; "
+                    "nunca se fuerza la subida.",
+                ],
+            )
+        self.pushed = branch
+        self.line(STATUS_OK, STEP_PUSH, f"{git.REMOTE} = {self.url}, {branch}")
+
     def run(self) -> int:
         self.check_structure()
         self.check_destination()
         self.check_remote()
         self.check_trees()
         self.run_checks()
+        self.push()
         raise Stop(
             EXIT_FAIL,
             "publicación",
-            "la publicación aún no sube ni hace el espejo (spec 007, T24 a T28)",
+            "la publicación aún no hace el espejo (spec 007, T25 a T28)",
         )
+
+    def done_note(self) -> str:
+        """Qué se hizo antes de parar: nada, o la subida sin el espejo."""
+        if self.pushed is not None:
+            return (
+                f"Se subió {self.pushed} a {git.REMOTE}; no se ha copiado nada: el destino "
+                "sigue en el espejo anterior."
+            )
+        return NOTHING_DONE
 
 
 def _print_stop(stop: Stop, publication: Publication | None) -> None:
@@ -599,7 +649,7 @@ def _print_stop(stop: Stop, publication: Publication | None) -> None:
         print(f"  {status:<8}  {stop.step:<13}  ({stop.detail})")
     for item in stop.lines:
         print(f"    {item}")
-    print(f"  {NOTHING_DONE}")
+    print(f"  {publication.done_note() if publication is not None else NOTHING_DONE}")
     elapsed = publication.elapsed() if publication is not None else "0,0"
     print(f"RESULTADO: NO PUBLICADO ({elapsed} s): {stop.detail}")
 

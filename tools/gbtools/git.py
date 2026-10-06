@@ -247,6 +247,16 @@ def credential_problem(url: str | None, config_text: str) -> str | None:
     return None
 
 
+def push(root: Path, branch: str, runner: Runner = run) -> subprocess.CompletedProcess[str]:
+    """Sube la rama ``branch`` a la misma rama de ``origin`` con sus etiquetas anotadas
+    (``--follow-tags``), sin forzar: nunca ``--force``, ``--mirror``, ``--all`` ni una
+    referencia con «+» (RF-007-20). Devuelve el resultado de git, también si falla (la
+    publicación lo muestra); :class:`GitProblem` solo si no se puede lanzar."""
+    refspec = f"refs/heads/{branch}:refs/heads/{branch}"
+    args = ["push", "--follow-tags", "--porcelain", REMOTE, refspec]
+    return _git(root, args, runner, accept=tuple(range(256)), write=True)
+
+
 def ahead_of_remote(root: Path, branch: str, runner: Runner = run) -> int | None:
     """Commits de ``branch`` que ``refs/remotes/origin/<branch>`` no tiene, según el
     repositorio (sin red); ``None`` si no hay esa referencia."""

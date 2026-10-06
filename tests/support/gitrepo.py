@@ -4,8 +4,9 @@
 Una carpeta del proyecto como la del PC (la documentación, con su git y
 ``docs/constitution.md``, que ignora la carpeta del código; dentro, en ``Geoblender/``,
 el código, con su git) y un remoto desnudo, todo en ``%TEMP%``. Se construye una vez
-por clase (:class:`GitTemplate`) y cada prueba trabaja en una copia
-(:meth:`GitTemplate.project`), con el remoto del código apuntando a su propio remoto.
+por proceso (:func:`shared_template`, la primera clase que la pide; se borra al
+terminar) y cada prueba trabaja en una copia (:meth:`GitTemplate.project`), con el remoto
+del código apuntando a su propio remoto.
 
 La configuración de git está aislada (:func:`isolated_env`): ``GIT_CONFIG_GLOBAL`` es un
 fichero vacío de la copia, ``GIT_CONFIG_NOSYSTEM=1``, ``HOME`` y ``XDG_CONFIG_HOME`` en la
@@ -22,6 +23,7 @@ Sin git, las pruebas se omiten con el recurso ``git`` (:data:`GIT`,
 
 from __future__ import annotations
 
+import atexit
 import functools
 import os
 import shutil
@@ -73,7 +75,10 @@ DOCS_FILES: Mapping[str, str] = {
     ".gitignore": f"/{layout.CODE_DIR_IN_DOCS}/\n",
 }
 CODE_FILES: Mapping[str, str] = {
-    layout.MANIFEST_RELPATH: f'schema_version = "1.0.0"\nid = "{layout.EXTENSION_DIR}"\n',
+    layout.MANIFEST_RELPATH: (
+        f'schema_version = "1.0.0"\nid = "{layout.EXTENSION_DIR}"\n'
+        'blender_version_min = "5.2.0"\n'
+    ),
     f"{layout.EXTENSION_DIR}/__init__.py": SPDX,
     layout.CHECK_RELPATH: SPDX,
     "README.md": "# Código de prueba\n",
@@ -208,8 +213,9 @@ class GitProject:
 
 
 class GitTemplate:
-    """La carpeta del proyecto de prueba, construida una vez (``setUpClass``); cada
-    prueba trabaja en su copia (:meth:`project`). :meth:`close` la borra."""
+    """La carpeta del proyecto de prueba, construida una vez; cada prueba trabaja en su
+    copia (:meth:`project`). :meth:`close` la borra. Las clases de pruebas usan
+    :func:`shared_template` (una sola por proceso)."""
 
     def __init__(self) -> None:
         self.base = Path(tempfile.mkdtemp(prefix="geoblender-git-plantilla-")).resolve()
@@ -248,3 +254,22 @@ class GitTemplate:
 
     def close(self) -> None:
         remove_tree(self.base)
+
+
+@functools.lru_cache(maxsize=1)
+def shared_template() -> GitTemplate:
+    """La plantilla de este proceso: se construye la primera vez que la pide una clase
+    de pruebas (en su ``setUpClass``, ya con git disponible) y se borra al terminar el
+    proceso. Construirla cuesta unas 8 órdenes de git (unos 0,4 s en Windows): una sola
+    para todas las clases ahorra ese tiempo en cada una (RNF-007-01; plan 007 §7.1).
+    Nadie la cambia: cada prueba trabaja en su copia (:meth:`GitTemplate.project`)."""
+    template = GitTemplate()
+    atexit.register(_close_quietly, template)
+    return template
+
+
+def _close_quietly(template: GitTemplate) -> None:
+    try:
+        template.close()
+    except OSError:
+        pass
