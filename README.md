@@ -5,8 +5,10 @@ modelado geológico, modelo de bloques, optimización y diseño de cortas y cant
 cubicación, reservas, fases y planos. La desarrolla IMGA, consultora española de ingeniería
 de minas, para su propio trabajo de proyectos de explotación y restauración.
 
-> **Estado: Geoblender 0.1.0 se instala, todavía sin funciones mineras (spec 001).** Se
-> habilita y se desinstala sin dejar rastro, y `tools/check.py` comprueba todo el código.
+> **Estado: Geoblender 0.1.0 se instala (spec 001) y crea y abre proyectos `.gbproj` con su
+> sistema de referencia y su origen local (spec 002, pendiente de las comprobaciones con la
+> interfaz y con dos equipos), todavía sin funciones mineras.** Se habilita y se desinstala
+> sin dejar rastro, y `tools/check.py` comprueba todo el código.
 
 Este repositorio contiene **solo el código**. La documentación del proyecto (constitución,
 proceso de trabajo, decisiones de arquitectura, specs y trampas conocidas) es interna de IMGA
@@ -107,7 +109,7 @@ Todas son opcionales y empiezan por `GEOBLENDER_`.
 | `GEOBLENDER_WHEELHOUSE` | Almacén de ruedas del que `tools/fetch_wheels.py` copia sin red |
 | `GEOBLENDER_SILVESTRE_DIR` | Banco privado de Silvestre: solo lectura y solo con `--banco` |
 | `GEOBLENDER_RECMIN_BANK_DIR` | Banco privado de RecMin: solo lectura |
-| `GEOBLENDER_QGIS_DIR` | Instalación de QGIS (con su GDAL) para las pruebas de compatibilidad |
+| `GEOBLENDER_QGIS_DIR` | Instalación de QGIS 4.2 (la carpeta con `bin\ogrinfo.exe`) para las pruebas de compatibilidad del GeoPackage con su GDAL; sin ella se omiten con `[ENTORNO] qgis` |
 | `GEOBLENDER_NET_TEST_DIR` | Carpeta de red para las comprobaciones manuales; nunca en la carpeta de expedientes de clientes |
 | `GEOBLENDER_PROJ_BIN` | Carpeta con `projinfo` y `cs2cs`, para regenerar el catálogo de CRS |
 | `GEOBLENDER_TEST_RUNTIME_SITE` | Otra ubicación del motor de cálculo de pruebas |
