@@ -47,7 +47,7 @@ _STATIC: set[str] = set()
 # Idioma de Geoblender: ES (por defecto) o EN; core.i18n usa "es" y "en".
 LANGUAGES: dict[str, str] = {"ES": "es", "EN": "en"}
 LANGUAGE_ITEMS = [
-    ("ES", "Español", "Geoblender in Spanish"),
+    ("ES", "Spanish", "Geoblender in Spanish"),
     ("EN", "English", "Geoblender in English"),
 ]
 # Títulos de la barra superior (BS §3): automático (el primer nivel de A a E que cabe),

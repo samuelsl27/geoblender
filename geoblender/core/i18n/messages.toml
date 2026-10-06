@@ -698,3 +698,38 @@ es = "banda"
 
 ["box"]
 es = "caja"
+
+# Elementos de los enumerados (spec 003, T29: nombres y descripciones con traducción) ---
+
+["Toggle"]
+es = "Conmutar"
+
+["Switch to the other interface"]
+es = "Pasa a la otra interfaz"
+
+["Switch to the Geoblender interface"]
+es = "Pasa a la interfaz de Geoblender"
+
+["Switch to the Blender interface"]
+es = "Pasa a la interfaz de Blender"
+
+["Perspective"]
+es = "Perspectiva"
+
+["Perspective projection"]
+es = "Proyección en perspectiva"
+
+["Orthographic"]
+es = "Ortográfica"
+
+["Orthographic projection"]
+es = "Proyección ortográfica"
+
+["The first level that fits next to the right block of Blender"]
+es = "El primer nivel que cabe junto al bloque derecho de Blender"
+
+["Menu titles as text"]
+es = "Títulos de los menús como texto"
+
+["Menu titles as icons"]
+es = "Títulos de los menús como iconos"
