@@ -3,8 +3,8 @@
 idioma (spec 003). Se registra el último (plan 001 §5.3, contrato 2; plan 003 DT15).
 
 Orden de :func:`register` (CW §5; plan 003 §5.4, 1), con ``bl/props`` y ``bl/ops`` ya
-registrados: idioma (el catálogo de comandos en ``core.i18n`` y el idioma de las
-preferencias) → clases propias de la interfaz (los menús y la pestaña «Proyecto» de la
+registrados: idioma (``i18n``: el catálogo de comandos en ``core.i18n`` y el idioma de las
+preferencias; al desregistrar, el cambio de idioma pendiente) → clases propias de la interfaz (los menús y la pestaña «Proyecto» de la
 spec 002) → catálogo (``registry``: menús generados por ``menus``, provisionales y
 textos) → sustitución de ``draw_left`` de la barra superior (``topbar``) → fila de
 acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → menú del tipo
@@ -26,8 +26,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from ...core import i18n
-from ..props.ui import LANGUAGES
 from ..registry import register_classes, unregister_classes
 from . import (
     commands,
@@ -35,6 +33,7 @@ from . import (
     core_menus,
     core_panel,
     headers,
+    i18n,
     keymap,
     layouts,
     menus,
@@ -60,15 +59,6 @@ classes: tuple[type, ...] = (
 _UNDO: list[Callable[[], None]] = []
 
 
-def install_language() -> str:
-    """Instala los textos del catálogo de comandos y fija el idioma de Geoblender de las
-    preferencias (español si no se pueden leer); devuelve ``"es"`` o ``"en"``."""
-    i18n.install(commands.catalog())
-    language = LANGUAGES.get(str(commands.preference("language", "ES")), "es")
-    i18n.set_language(language)
-    return language
-
-
 def _register_classes() -> None:
     core_panel.localize()
     register_classes(classes)
@@ -88,7 +78,7 @@ def register() -> None:
     if _UNDO:
         return
     steps: tuple[tuple[Callable[[], object], Callable[[], None]], ...] = (
-        (install_language, lambda: None),
+        (i18n.install, i18n.cancel),
         (_register_classes, lambda: unregister_classes(classes)),
         (_register_catalog, registry.unregister),
         (_install_topbar, topbar.restore),

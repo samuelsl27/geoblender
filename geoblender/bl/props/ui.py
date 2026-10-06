@@ -13,7 +13,8 @@ RF-003-11, RF-003-21, RF-003-28; plan 003 §5.2; ADR-0012).
   ``.blend``, como las de Datamine (plan 003 DT6).
 - :class:`GEOBLENDER_PG_ui_preferences`: el grupo ``ui`` de la única
   ``GeoblenderPreferences`` (``bl/props/preferences.py``): idioma de Geoblender
-  (español por defecto, independiente del de Blender), títulos de la barra (automático,
+  (español por defecto, independiente del de Blender; al cambiarlo se aplica sin
+  reiniciar, ``bl.ui.i18n``), títulos de la barra (automático,
   texto o iconos; BS §3), fila de acceso rápido de la vista, «Ocultar lo no disponible»
   (BS §7.3) y barra de estado minera (AR §6).
 
@@ -58,6 +59,14 @@ TOPBAR_TITLES_ITEMS = [
 ]
 
 
+def _language_changed(group: object, context: object) -> None:
+    """Elegir el idioma de Geoblender lo aplica sin reiniciar, en el siguiente ciclo
+    (``bl.ui.i18n``; RF-003-21)."""
+    from ..ui import i18n  # diferido: bl/ui importa bl/props
+
+    i18n.on_preference_changed(group, context)
+
+
 class GEOBLENDER_PG_ui_preferences(bpy.types.PropertyGroup):
     """Preferencias de la interfaz de Geoblender (spec 003)."""
 
@@ -67,6 +76,7 @@ class GEOBLENDER_PG_ui_preferences(bpy.types.PropertyGroup):
         items=LANGUAGE_ITEMS,
         default="ES",
         options=_STATIC,
+        update=_language_changed,
     )
     topbar_titles: EnumProperty(  # type: ignore[valid-type]
         name="Top bar titles",
