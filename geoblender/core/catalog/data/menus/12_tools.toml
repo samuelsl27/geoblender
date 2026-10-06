@@ -1,0 +1,1529 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Herramientas (BS §8.12), con sus submenús Vistas, Sección, Dibujo, Edición de
+# polilíneas, Consulta, Comprobar, Trabajos y Disposición.
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_tools"
+label.en = "Tools"
+label.es = "Herramientas"
+description.en = "Views, section, drawing, query, checks, jobs and the interface"
+description.es = "Vistas, sección, dibujo, consulta, comprobaciones, trabajos y la interfaz"
+branch = "transversal"
+icon = "gb_menu_tools"
+icon_fallback = "TOOL_SETTINGS"
+
+# Ver y seccionar -----------------------------------------------------------------------
+[[menu.group]]
+label.en = "View and section"
+label.es = "Ver y seccionar"
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_ui_views"
+label.en = "Views"
+label.es = "Vistas"
+description.en = "Mining views, framing and saved views"
+description.es = "Vistas mineras, encuadre y vistas guardadas"
+entry = ""
+action = "S"
+frequency = 3
+icon = "gb_qat_views"
+icon_fallback = "VIEW_ORTHO"
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_view?view=PLAN"
+label.en = "Plan"
+label.es = "Planta"
+description.en = "Plan view from above, north up. In RecMin, view NE"
+description.es = "Vista en planta desde arriba, con el norte arriba. En RecMin, vista NE"
+entry = "003"
+action = "A"
+frequency = 3
+aliases = ["planta", "plan", "top"]
+jargon = [["RecMin", "NE"]]
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_view?view=NORTH"
+label.en = "Looking north (E-W section)"
+label.es = "Mirando al norte (sección E-O)"
+description.en = "Orthographic view looking north: the east-west section. In RecMin, view ZE"
+description.es = "Vista ortográfica mirando al norte: la sección este-oeste. En RecMin, vista ZE"
+entry = "003"
+action = "A"
+frequency = 3
+jargon = [["RecMin", "ZE"]]
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_view?view=SOUTH"
+label.en = "Looking south"
+label.es = "Mirando al sur"
+description.en = "Orthographic view looking south"
+description.es = "Vista ortográfica mirando al sur"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_view?view=EAST"
+label.en = "Looking east (N-S section)"
+label.es = "Mirando al este (sección N-S)"
+description.en = "Orthographic view looking east: the north-south section. In RecMin, view ZN"
+description.es = "Vista ortográfica mirando al este: la sección norte-sur. En RecMin, vista ZN"
+entry = "003"
+action = "A"
+frequency = 3
+jargon = [["RecMin", "ZN"]]
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_view?view=WEST"
+label.en = "Looking west"
+label.es = "Mirando al oeste"
+description.en = "Orthographic view looking west"
+description.es = "Vista ortográfica mirando al oeste"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "GEOBLENDER_MT_ui_views_iso"
+label.en = "Isometric"
+label.es = "Isométrica"
+description.en = "Isometric view from a corner: NE, NW, SE or SW"
+description.es = "Vista isométrica desde una esquina: NE, NO, SE o SO"
+entry = "003"
+action = "S"
+frequency = 2
+doc_id = ["ui_set_view"]
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_view?view=ISO_NE"
+label.en = "Isometric NE"
+label.es = "Isométrica NE"
+description.en = "Isometric view with the observer to the north-east"
+description.es = "Vista isométrica con el observador al nordeste"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_view?view=ISO_NW"
+label.en = "Isometric NW"
+label.es = "Isométrica NO"
+description.en = "Isometric view with the observer to the north-west"
+description.es = "Vista isométrica con el observador al noroeste"
+entry = "003"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_view?view=ISO_SE"
+label.en = "Isometric SE"
+label.es = "Isométrica SE"
+description.en = "Isometric view with the observer to the south-east"
+description.es = "Vista isométrica con el observador al sudeste"
+entry = "003"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_view?view=ISO_SW"
+label.en = "Isometric SW"
+label.es = "Isométrica SO"
+description.en = "Isometric view with the observer to the south-west"
+description.es = "Vista isométrica con el observador al sudoeste"
+entry = "003"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "view3d.view_persportho"
+label.en = "Perspective or orthographic"
+label.es = "Perspectiva u ortográfica"
+description.en = "Switch between perspective and orthographic projection (Numpad 5)"
+description.es = "Cambia entre la proyección en perspectiva y la ortográfica (Num 5)"
+entry = "Blender"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "geoblender.ui_frame_work_window"
+label.en = "Frame the work window"
+label.es = "Encuadrar la ventana de trabajo"
+description.en = "Show the whole work window of the project and adjust the clipping distance of the view"
+description.es = "Muestra entera la ventana de trabajo del proyecto y ajusta la distancia de recorte de la vista"
+entry = "003"
+action = "A"
+frequency = 3
+icon = "gb_qat_frame_window"
+icon_fallback = "ZOOM_ALL"
+aliases = ["encuadrar", "frame", "zoom"]
+
+[[menu.group.item.item]]
+key = "view3d.view_all"
+label.en = "Frame all"
+label.es = "Encuadrar todo"
+description.en = "Show everything in the scene (Home)"
+description.es = "Muestra todo lo de la escena (Inicio)"
+entry = "Blender"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "GEOBLENDER_MT_ui_store_view"
+label.en = "Save view"
+label.es = "Guardar vista"
+description.en = "Save the orientation, centre, distance and projection of the view in a slot"
+description.es = "Guarda la orientación, el centro, la distancia y la proyección de la vista en una ranura"
+entry = "003"
+action = "S"
+frequency = 2
+doc_id = ["ui_store_view"]
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_store_view?slot=1"
+label.en = "Save view 1"
+label.es = "Guardar vista 1"
+description.en = "Save the current view in slot 1"
+description.es = "Guarda la vista actual en la ranura 1"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_store_view?slot=2"
+label.en = "Save view 2"
+label.es = "Guardar vista 2"
+description.en = "Save the current view in slot 2"
+description.es = "Guarda la vista actual en la ranura 2"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_store_view?slot=3"
+label.en = "Save view 3"
+label.es = "Guardar vista 3"
+description.en = "Save the current view in slot 3"
+description.es = "Guarda la vista actual en la ranura 3"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_store_view?slot=4"
+label.en = "Save view 4"
+label.es = "Guardar vista 4"
+description.en = "Save the current view in slot 4"
+description.es = "Guarda la vista actual en la ranura 4"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "GEOBLENDER_MT_ui_recall_view"
+label.en = "Recall view"
+label.es = "Recuperar vista"
+description.en = "Restore a saved view: orientation, centre, distance and projection"
+description.es = "Restaura una vista guardada: orientación, centro, distancia y proyección"
+entry = "003"
+action = "S"
+frequency = 2
+doc_id = ["ui_recall_view"]
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_recall_view?slot=1"
+label.en = "Recall view 1"
+label.es = "Recuperar vista 1"
+description.en = "Restore the view saved in slot 1"
+description.es = "Restaura la vista guardada en la ranura 1"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_recall_view?slot=2"
+label.en = "Recall view 2"
+label.es = "Recuperar vista 2"
+description.en = "Restore the view saved in slot 2"
+description.es = "Restaura la vista guardada en la ranura 2"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_recall_view?slot=3"
+label.en = "Recall view 3"
+label.es = "Recuperar vista 3"
+description.en = "Restore the view saved in slot 3"
+description.es = "Restaura la vista guardada en la ranura 3"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_recall_view?slot=4"
+label.en = "Recall view 4"
+label.es = "Recuperar vista 4"
+description.en = "Restore the view saved in slot 4"
+description.es = "Restaura la vista guardada en la ranura 4"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "GEOBLENDER_MT_geo_vertical_exaggeration"
+label.en = "Vertical exaggeration"
+label.es = "Exageración vertical"
+description.en = "Vertical exaggeration of the view: ×1, ×2 or ×5"
+description.es = "Exageración vertical de la vista: ×1, ×2 o ×5"
+entry = "R-16"
+action = "S"
+frequency = 1
+doc_id = ["geo_set_vertical_exaggeration"]
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_set_vertical_exaggeration?factor=1"
+label.en = "Vertical exaggeration ×1"
+label.es = "Exageración vertical ×1"
+description.en = "Without vertical exaggeration"
+description.es = "Sin exageración vertical"
+entry = "R-16"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_set_vertical_exaggeration?factor=2"
+label.en = "Vertical exaggeration ×2"
+label.es = "Exageración vertical ×2"
+description.en = "Elevations doubled"
+description.es = "Cotas al doble"
+entry = "R-16"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_set_vertical_exaggeration?factor=5"
+label.en = "Vertical exaggeration ×5"
+label.es = "Exageración vertical ×5"
+description.en = "Elevations multiplied by five"
+description.es = "Cotas multiplicadas por cinco"
+entry = "R-16"
+action = "A"
+frequency = 1
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_geo_section"
+label.en = "Section"
+label.es = "Sección"
+description.en = "New section, step, band and clipping"
+description.es = "Sección nueva, paso, banda y recorte"
+entry = ""
+action = "S"
+frequency = 3
+
+[[menu.group.item.item]]
+key = "GEOBLENDER_MT_geo_new_section"
+label.en = "New section"
+label.es = "Nueva sección"
+description.en = "New section: horizontal, N-S, E-W, by points, by bench, along a polyline or through an object"
+description.es = "Nueva sección: horizontal, N-S, E-O, por puntos, por banco, sobre una polilínea o por un objeto"
+entry = "R-16"
+action = "S"
+frequency = 2
+icon = "gb_qat_section"
+icon_fallback = "MESH_PLANE"
+doc_id = ["geo_new_section"]
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_new_section?mode=HORIZONTAL"
+label.en = "Horizontal at an elevation…"
+label.es = "Horizontal a cota…"
+description.en = "Horizontal section at the chosen elevation"
+description.es = "Sección horizontal a la cota elegida"
+entry = "R-16"
+action = "D"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_new_section?mode=NORTH_SOUTH"
+label.en = "North-south"
+label.es = "Norte-sur"
+description.en = "North-south section through the 3D cursor"
+description.es = "Sección norte-sur por el cursor 3D"
+entry = "R-16"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_new_section?mode=EAST_WEST"
+label.en = "East-west"
+label.es = "Este-oeste"
+description.en = "East-west section through the 3D cursor"
+description.es = "Sección este-oeste por el cursor 3D"
+entry = "R-16"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_new_section?mode=TWO_POINTS"
+label.en = "Through two points"
+label.es = "Por dos puntos"
+description.en = "Vertical section through two points"
+description.es = "Sección vertical por dos puntos"
+entry = "R-16"
+action = "H"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_new_section?mode=THREE_POINTS"
+label.en = "Through three points"
+label.es = "Por tres puntos"
+description.en = "Section on the plane of three points"
+description.es = "Sección en el plano de tres puntos"
+entry = "R-16"
+action = "H"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_new_section?mode=BENCH"
+label.en = "By bench…"
+label.es = "Por banco…"
+description.en = "Horizontal section at the elevation of a bench"
+description.es = "Sección horizontal a la cota de un banco"
+entry = "R-16"
+action = "D"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_new_section?mode=PERPENDICULAR_TO_POLYLINE"
+label.en = "Perpendicular to a polyline"
+label.es = "Perpendicular a una polilínea"
+description.en = "Section perpendicular to a polyline at a point"
+description.es = "Sección perpendicular a una polilínea en un punto"
+entry = "R-16"
+action = "H"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_new_section?mode=ALONG_POLYLINE"
+label.en = "Folded along a polyline"
+label.es = "En quiebro a lo largo de una polilínea"
+description.en = "Folded section that follows a polyline"
+description.es = "Sección en quiebro que sigue una polilínea"
+entry = "R-16"
+action = "H"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_new_section?mode=THROUGH_OBJECT"
+label.en = "Through the active drillhole or object"
+label.es = "Por el sondeo u objeto activo"
+description.en = "Section through the active drillhole or object"
+description.es = "Sección por el sondeo o el objeto activo"
+entry = "R-16"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_new_section?mode=FROM_VIEW"
+label.en = "From the current view"
+label.es = "Desde la vista actual"
+description.en = "Section on the plane of the current view"
+description.es = "Sección en el plano de la vista actual"
+entry = "R-16"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.geo_step_section?direction=1"
+label.en = "Next section"
+label.es = "Sección siguiente"
+description.en = "Move the section one step forward, along its normal"
+description.es = "Avanza la sección un paso en el sentido de su normal"
+entry = "R-16"
+action = "A"
+frequency = 3
+icon_fallback = "TRIA_RIGHT"
+
+[[menu.group.item.item]]
+key = "geoblender.geo_step_section?direction=-1"
+label.en = "Previous section"
+label.es = "Sección anterior"
+description.en = "Move the section one step back"
+description.es = "Retrocede la sección un paso"
+entry = "R-16"
+action = "A"
+frequency = 3
+icon_fallback = "TRIA_LEFT"
+
+[[menu.group.item.item]]
+key = "geoblender.geo_step_section?direction=1&scope=SET"
+label.en = "Next in the named set"
+label.es = "Siguiente del conjunto con nombre"
+description.en = "Next section of the named section set"
+description.es = "Sección siguiente del conjunto de secciones con nombre"
+entry = "R-16"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.geo_step_section?direction=-1&scope=SET"
+label.en = "Previous in the named set"
+label.es = "Anterior del conjunto con nombre"
+description.en = "Previous section of the named section set"
+description.es = "Sección anterior del conjunto de secciones con nombre"
+entry = "R-16"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.geo_goto_section"
+label.en = "Go to section…"
+label.es = "Ir a la sección…"
+description.en = "Go to a section by its number, elevation or name"
+description.es = "Va a una sección por su número, su cota o su nombre"
+entry = "R-16"
+action = "D"
+frequency = 2
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "geoblender.geo_edit_band"
+label.en = "Section band…"
+label.es = "Banda de la sección…"
+description.en = "Front and back of the band and step between sections"
+description.es = "Delante y detrás de la banda y paso entre secciones"
+entry = "R-16"
+action = "D"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.geo_resize_band"
+label.en = "Widen or narrow the band"
+label.es = "Ensanchar o estrechar la banda"
+description.en = "Widen or narrow the band of the section"
+description.es = "Ensancha o estrecha la banda de la sección"
+entry = "R-16"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "GEOBLENDER_MT_geo_clip"
+label.en = "Clipping"
+label.es = "Recorte"
+description.en = "Clipping of the view: none, front, back, band or faded band"
+description.es = "Recorte de la vista: sin recorte, delante, detrás, banda o banda atenuada"
+entry = "R-16"
+action = "S"
+frequency = 2
+icon = "gb_qat_clip"
+icon_fallback = "CLIPUV_HLT"
+doc_id = ["geo_set_clip_mode", "geo_cycle_clip_mode"]
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_set_clip_mode?mode=NONE"
+label.en = "No clipping"
+label.es = "Sin recorte"
+description.en = "Show everything again in this view"
+description.es = "Vuelve a mostrar todo en esta vista"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_set_clip_mode?mode=FRONT"
+label.en = "Front"
+label.es = "Delante"
+description.en = "Hide what is in front of the section"
+description.es = "Oculta lo que está delante de la sección"
+entry = "R-16"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_set_clip_mode?mode=BACK"
+label.en = "Back"
+label.es = "Detrás"
+description.en = "Hide what is behind the section"
+description.es = "Oculta lo que está detrás de la sección"
+entry = "R-16"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_set_clip_mode?mode=BAND"
+label.en = "View band"
+label.es = "Banda de la vista"
+description.en = "Hide what is farther than ±w from the plane through the 3D cursor, across the view direction (F9 adjusts w)"
+description.es = "Oculta lo que está a más de ±w del plano que pasa por el cursor 3D, perpendicular a la mirada (F9 ajusta w)"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_set_clip_mode?mode=BAND_FADED"
+label.en = "Faded band"
+label.es = "Banda atenuada"
+description.en = "Show the band and fade what is outside it"
+description.es = "Muestra la banda y atenúa lo de fuera"
+entry = "R-16"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.geo_cycle_clip_mode"
+label.en = "Cycle the clipping mode"
+label.es = "Ciclo del modo de recorte"
+description.en = "Go to the next clipping mode"
+description.es = "Pasa al modo de recorte siguiente"
+entry = "R-16"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.geo_toggle_bench_clip"
+label.en = "Clip by bench"
+label.es = "Recorte por banco"
+description.en = "Show only some benches above and below the active one"
+description.es = "Muestra solo unos bancos por encima y por debajo del activo"
+entry = "R-16"
+action = "T"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.geo_align_view_to_section"
+label.en = "Align the view with the section"
+label.es = "Alinear la vista con la sección"
+description.en = "Look straight at the active section"
+description.es = "Mira de frente a la sección activa"
+entry = "R-16"
+action = "A"
+frequency = 3
+icon = "gb_qat_align_section"
+icon_fallback = "AXIS_FRONT"
+
+[[menu.group.item.item]]
+key = "geoblender.geo_link_view_to_section"
+label.en = "Link this view to the section"
+label.es = "Ligar esta vista a la sección"
+description.en = "The view follows the active section when it moves"
+description.es = "La vista sigue a la sección activa cuando se mueve"
+entry = "R-16"
+action = "T"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.geo_save_section"
+label.en = "Save the section with a name…"
+label.es = "Guardar la sección con nombre…"
+description.en = "Save the active section in a named set"
+description.es = "Guarda la sección activa en un conjunto con nombre"
+entry = "R-16"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "view3d.clip_border"
+label.en = "Clipping box"
+label.es = "Caja de recorte"
+description.en = "Blender clipping box (Alt+B)"
+description.es = "Caja de recorte de Blender (Alt+B)"
+entry = "Blender"
+action = "H"
+frequency = 1
+
+# Dibujar y editar ----------------------------------------------------------------------
+[[menu.group]]
+label.en = "Draw and edit"
+label.es = "Dibujar y editar"
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_ui_draw"
+label.en = "Drafting"
+label.es = "Dibujo"
+description.en = "New polylines, snapping, work plane and current object"
+description.es = "Polilíneas nuevas, encaje, plano de trabajo y objeto actual"
+entry = ""
+action = "S"
+frequency = 3
+
+[[menu.group.item.item]]
+key = "geoblender.ui_draw_polyline"
+label.en = "New polyline"
+label.es = "Nueva polilínea"
+description.en = "Draw a polyline point by point, with snapping and numeric input"
+description.es = "Dibuja una polilínea punto a punto, con encaje y entrada numérica"
+entry = "R-09"
+action = "H"
+frequency = 3
+icon = "gb_qat_polyline"
+icon_fallback = "CURVE_DATA"
+aliases = ["ns", "nueva", "polilínea", "polyline"]
+jargon = [["RecMin", "LIN"], ["Surpac", "string"]]
+
+[[menu.group.item.item]]
+key = "geoblender.ui_draw_polyline?closed=True"
+label.en = "New polygon"
+label.es = "Nuevo polígono"
+description.en = "Draw a closed polyline"
+description.es = "Dibuja una polilínea cerrada"
+entry = "R-09"
+action = "H"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.ui_draw_points"
+label.en = "New points"
+label.es = "Nuevos puntos"
+description.en = "Draw points with their elevation"
+description.es = "Dibuja puntos con su cota"
+entry = "R-09"
+action = "H"
+frequency = 2
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "GEOBLENDER_MT_ui_snap"
+label.en = "Snapping"
+label.es = "Encaje"
+description.en = "Snapping on or off and the mining snap targets"
+description.es = "Encaje sí o no y los objetivos de encaje mineros"
+entry = "R-09"
+action = "S"
+frequency = 3
+icon_fallback = "SNAP_ON"
+doc_id = ["ui_set_snap_target"]
+
+[[menu.group.item.item.item]]
+key = "tool_settings.use_snap"
+label.en = "Snapping on/off"
+label.es = "Encaje sí/no"
+description.en = "Snapping toggle of Blender; the Geoblender tools read it too"
+description.es = "Conmutador de encaje de Blender; las herramientas de Geoblender también lo leen"
+entry = "Blender"
+action = "T"
+frequency = 3
+icon_fallback = "SNAP_ON"
+jargon = [["RecMin", "Encajar"]]
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_snap_target?target=VERTEX"
+label.en = "Vertex"
+label.es = "Vértice"
+description.en = "Snap to the vertices"
+description.es = "Encaja en los vértices"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_snap_target?target=EDGE"
+label.en = "Edge"
+label.es = "Arista"
+description.en = "Snap to the edges"
+description.es = "Encaja en las aristas"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_snap_target?target=MIDPOINT"
+label.en = "Midpoint"
+label.es = "Punto medio"
+description.en = "Snap to the midpoint of the segments"
+description.es = "Encaja en el punto medio de los tramos"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_snap_target?target=PERPENDICULAR"
+label.en = "Perpendicular"
+label.es = "Perpendicular"
+description.en = "Snap perpendicular to a segment"
+description.es = "Encaja en perpendicular a un tramo"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_snap_target?target=SURFACE"
+label.en = "Surface"
+label.es = "Superficie"
+description.en = "Snap onto a surface"
+description.es = "Encaja sobre una superficie"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_snap_target?target=GRID"
+label.en = "Grid"
+label.es = "Rejilla"
+description.en = "Snap to the project grid"
+description.es = "Encaja en la rejilla del proyecto"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_snap_target?target=INTERSECTION"
+label.en = "Intersection"
+label.es = "Intersección"
+description.en = "Snap to the intersections of polylines"
+description.es = "Encaja en las intersecciones de polilíneas"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_snap_target?target=COLLAR"
+label.en = "Drillhole collar"
+label.es = "Boca de sondeo"
+description.en = "Snap to the collars of the drillholes"
+description.es = "Encaja en las bocas de los sondeos"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_snap_target?target=DRILLHOLE_CONTACT"
+label.en = "Drillhole contact"
+label.es = "Contacto de sondeo"
+description.en = "Snap to the contacts of the drillholes"
+description.es = "Encaja en los contactos de los sondeos"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_snap_target?target=CONTOUR"
+label.en = "Contour line"
+label.es = "Curva de nivel"
+description.en = "Snap to the contour lines"
+description.es = "Encaja en las curvas de nivel"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "GEOBLENDER_MT_ui_work_plane"
+label.en = "Work plane"
+label.es = "Plano de trabajo"
+description.en = "Plane on which the points are drawn: section, elevation, surface or view"
+description.es = "Plano en que se dibujan los puntos: sección, cota, superficie o vista"
+entry = "R-09"
+action = "S"
+frequency = 2
+icon_fallback = "MESH_GRID"
+doc_id = ["ui_set_work_plane"]
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_work_plane?mode=ACTIVE_SECTION"
+label.en = "Active section"
+label.es = "Sección activa"
+description.en = "Draw on the active section"
+description.es = "Dibuja sobre la sección activa"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_work_plane?mode=FIXED_ELEVATION"
+label.en = "Fixed elevation…"
+label.es = "Cota fija…"
+description.en = "Draw at a fixed elevation"
+description.es = "Dibuja a una cota fija"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_work_plane?mode=ON_SURFACE"
+label.en = "On a surface"
+label.es = "Sobre una superficie"
+description.en = "Draw on a surface"
+description.es = "Dibuja sobre una superficie"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.ui_set_work_plane?mode=VIEW_PLANE"
+label.en = "View plane"
+label.es = "Plano de la vista"
+description.en = "Draw on the plane of the view through the 3D cursor"
+description.es = "Dibuja en el plano de la vista que pasa por el cursor 3D"
+entry = "R-09"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_draw_gradient"
+label.en = "Digitizing grade…"
+label.es = "Pendiente de digitalización…"
+description.en = "Constant grade of what is drawn (%, 1:n or degrees)"
+description.es = "Pendiente constante de lo que se dibuja (%, 1:n o grados)"
+entry = "R-09"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_edit_current_object"
+label.en = "Current object…"
+label.es = "Objeto actual…"
+description.en = "Layer and attributes with which what is drawn is born. In Datamine, current object"
+description.es = "Capa y atributos con que nace lo dibujado. En Datamine, objeto actual"
+entry = "R-09"
+action = "P"
+frequency = 2
+jargon = [["Datamine", "Current Object"]]
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "geoblender.ui_edit_selection_filter"
+label.en = "Selection filter by type…"
+label.es = "Filtro de selección por tipo…"
+description.en = "Which types can be selected in the view"
+description.es = "Qué tipos se pueden seleccionar en la vista"
+entry = "R-09"
+action = "P"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.ui_assign_attributes"
+label.en = "Assign attributes to the selection…"
+label.es = "Asignar atributos a la selección…"
+description.en = "Set attributes of the selected items"
+description.es = "Fija atributos de los elementos seleccionados"
+entry = "R-09"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_move_to_current_object"
+label.en = "Move the selection to the current object"
+label.es = "Pasar la selección al objeto actual"
+description.en = "The selected items become part of the current object"
+description.es = "Los elementos seleccionados pasan a ser del objeto actual"
+entry = "R-09"
+action = "A"
+frequency = 1
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_gis_polyline_edit"
+label.en = "Polyline editing"
+label.es = "Edición de polilíneas"
+description.en = "Close, reverse, join, split, offset and drape polylines"
+description.es = "Cerrar, invertir, unir, partir, desplazar y proyectar polilíneas"
+entry = ""
+action = "S"
+frequency = 3
+icon = "gb_qat_polyline_edit"
+icon_fallback = "MOD_CURVE"
+
+[[menu.group.item.item]]
+key = "geoblender.gis_toggle_polyline_closed"
+label.en = "Close or open"
+label.es = "Cerrar o abrir"
+description.en = "Close an open polyline or open a closed one"
+description.es = "Cierra una polilínea abierta o abre una cerrada"
+entry = "R-09"
+action = "A"
+frequency = 2
+aliases = ["clo", "cerrar", "ost"]
+
+[[menu.group.item.item]]
+key = "geoblender.gis_reverse_polyline"
+label.en = "Reverse the direction"
+label.es = "Invertir el sentido"
+description.en = "Reverse the order of the vertices"
+description.es = "Invierte el orden de los vértices"
+entry = "R-09"
+action = "A"
+frequency = 2
+aliases = ["rev", "invertir"]
+
+[[menu.group.item.item]]
+key = "geoblender.gis_join_polylines"
+label.en = "Join"
+label.es = "Unir"
+description.en = "Join polylines that touch"
+description.es = "Une polilíneas que se tocan"
+entry = "R-09"
+action = "A"
+frequency = 2
+aliases = ["com", "unir"]
+
+[[menu.group.item.item]]
+key = "geoblender.gis_split_polyline"
+label.en = "Split"
+label.es = "Partir"
+description.en = "Split a polyline at a point"
+description.es = "Parte una polilínea en un punto"
+entry = "R-09"
+action = "H"
+frequency = 2
+aliases = ["bs", "partir"]
+
+[[menu.group.item.item]]
+key = "geoblender.gis_extend_polyline"
+label.en = "Extend to another polyline"
+label.es = "Extender hasta otra polilínea"
+description.en = "Lengthen a polyline until it meets another one"
+description.es = "Alarga una polilínea hasta que toque otra"
+entry = "R-09"
+action = "H"
+frequency = 1
+aliases = ["ext", "extender"]
+
+[[menu.group.item.item]]
+key = "geoblender.gis_trim_polyline"
+label.en = "Trim with another polyline or a perimeter"
+label.es = "Recortar con otra polilínea o un perímetro"
+description.en = "Remove the part beyond another polyline or a perimeter"
+description.es = "Quita la parte que pasa de otra polilínea o de un perímetro"
+entry = "R-09"
+action = "H"
+frequency = 1
+aliases = ["ctp", "recortar"]
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "geoblender.gis_densify_polyline"
+label.en = "Densify…"
+label.es = "Densificar…"
+description.en = "Add vertices at a maximum spacing"
+description.es = "Añade vértices a una separación máxima"
+entry = "R-09"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.gis_simplify_polyline"
+label.en = "Filter with tolerance…"
+label.es = "Filtrar con tolerancia…"
+description.en = "Remove vertices within a tolerance"
+description.es = "Quita vértices dentro de una tolerancia"
+entry = "R-09"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.gis_smooth_polyline"
+label.en = "Smooth…"
+label.es = "Suavizar…"
+description.en = "Smooth the vertices of the polyline"
+description.es = "Suaviza los vértices de la polilínea"
+entry = "R-09"
+action = "D"
+frequency = 1
+aliases = ["sms", "suavizar"]
+
+[[menu.group.item.item]]
+key = "geoblender.gis_offset_polyline"
+label.en = "Offset…"
+label.es = "Desplazar en paralelo…"
+description.en = "Parallel copy at a distance: berm, setback"
+description.es = "Copia paralela a una distancia: berma, retranqueo"
+entry = "R-09"
+action = "D"
+frequency = 2
+aliases = ["exp", "offset"]
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "geoblender.gis_drape_polyline"
+label.en = "Drape onto a surface"
+label.es = "Proyectar sobre una superficie"
+description.en = "Give the vertices the elevation of a surface"
+description.es = "Da a los vértices la cota de una superficie"
+entry = "R-09"
+action = "A"
+frequency = 2
+aliases = ["ptw", "drapear"]
+
+[[menu.group.item.item]]
+key = "geoblender.gis_project_polyline"
+label.en = "Bring to an elevation or a plane…"
+label.es = "Llevar a una cota o a un plano…"
+description.en = "Move the vertices to an elevation or a plane"
+description.es = "Lleva los vértices a una cota o a un plano"
+entry = "R-09"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.gis_grade_polyline"
+label.en = "Give a constant grade…"
+label.es = "Dar pendiente constante…"
+description.en = "Constant grade along the polyline"
+description.es = "Pendiente constante a lo largo de la polilínea"
+entry = "R-09"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "GEOBLENDER_MT_gis_boolean_polygons"
+label.en = "Polygon booleans"
+label.es = "Booleana de polígonos"
+description.en = "Union, intersection or difference of polygons"
+description.es = "Unión, intersección o diferencia de polígonos"
+entry = "R-09"
+action = "S"
+frequency = 1
+doc_id = ["gis_boolean_polygons"]
+
+[[menu.group.item.item.item]]
+key = "geoblender.gis_boolean_polygons?operation=UNION"
+label.en = "Union…"
+label.es = "Unión…"
+description.en = "Union of the selected polygons"
+description.es = "Unión de los polígonos seleccionados"
+entry = "R-09"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.gis_boolean_polygons?operation=INTERSECTION"
+label.en = "Intersection…"
+label.es = "Intersección…"
+description.en = "Intersection of the selected polygons"
+description.es = "Intersección de los polígonos seleccionados"
+entry = "R-09"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.gis_boolean_polygons?operation=DIFFERENCE"
+label.en = "Difference…"
+label.es = "Diferencia…"
+description.en = "The active polygon minus the other selected ones"
+description.es = "El polígono activo menos los demás seleccionados"
+entry = "R-09"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.gis_split_polygon"
+label.en = "Divide a polygon with a polyline"
+label.es = "Dividir un polígono con una polilínea"
+description.en = "Divide a polygon in two along a polyline"
+description.es = "Divide un polígono en dos a lo largo de una polilínea"
+entry = "R-09"
+action = "H"
+frequency = 1
+
+# Consultar y comprobar -----------------------------------------------------------------
+[[menu.group]]
+label.en = "Query and check"
+label.es = "Consultar y comprobar"
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_ui_query"
+label.en = "Query"
+label.es = "Consulta"
+description.en = "Identify, measure, profile, figures, legend and data filter"
+description.es = "Identificar, medir, perfil, cifras, leyenda y filtro de datos"
+entry = ""
+action = "S"
+frequency = 3
+
+[[menu.group.item.item]]
+key = "geoblender.ui_identify"
+label.en = "Identify"
+label.es = "Identificar"
+description.en = "Click an item to see its card from the project"
+description.es = "Clic en un elemento para ver su ficha del proyecto"
+entry = "R-09"
+action = "H"
+frequency = 3
+icon = "gb_qat_identify"
+icon_fallback = "EYEDROPPER"
+aliases = ["identificar", "identify", "qst", "consulta"]
+
+[[menu.group.item.item]]
+key = "geoblender.ui_measure"
+label.en = "Measure"
+label.es = "Medir"
+description.en = "3D and horizontal distance, bearing, dip, grade, height difference and area"
+description.es = "Distancia 3D y horizontal, rumbo, buzamiento, pendiente, desnivel y área"
+entry = "R-09"
+action = "H"
+frequency = 3
+icon = "gb_qat_measure"
+icon_fallback = "DRIVER_DISTANCE"
+aliases = ["medir", "measure", "distancia"]
+
+[[menu.group.item.item]]
+ref = "geoblender.gis_draw_profile"
+
+[[menu.group.item.item]]
+key = "geoblender.core_show_selection_figures"
+label.en = "Selection figures"
+label.es = "Cifras de la selección"
+description.en = "Area, perimeter, length, volume and tonnes of the selection, with type and provenance"
+description.es = "Área, perímetro, longitud, volumen y toneladas de la selección, con tipo y procedencia"
+entry = "R-07"
+action = "P"
+frequency = 3
+icon = "gb_qat_figures"
+icon_fallback = "LINENUMBERS_ON"
+
+[[menu.group.item.item]]
+key = "geoblender.ui_edit_legend"
+label.en = "Legend: colour by field…"
+label.es = "Leyenda: colorear por campo…"
+description.en = "Colour the items of the active type by one of their fields"
+description.es = "Colorea los elementos del tipo activo por uno de sus campos"
+entry = "003"
+action = "P"
+frequency = 2
+icon_fallback = "COLOR"
+
+[[menu.group.item.item]]
+key = "geoblender.ui_edit_data_filter"
+label.en = "Data filter by expression…"
+label.es = "Filtro de datos por expresión…"
+description.en = "Show only the items of the active type that meet an expression"
+description.es = "Muestra solo los elementos del tipo activo que cumplen una expresión"
+entry = "003"
+action = "P"
+frequency = 2
+icon_fallback = "FILTER"
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_core_checks"
+label.en = "Check"
+label.es = "Comprobar"
+description.en = "Checks of the active version and of the design"
+description.es = "Comprobaciones de la versión activa y del diseño"
+entry = ""
+action = "S"
+frequency = 3
+
+[[menu.group.item.item]]
+key = "geoblender.core_run_checks"
+label.en = "Check the active version"
+label.es = "Comprobar la versión activa"
+description.en = "Apply the acceptance criteria to the active version"
+description.es = "Aplica los criterios de aceptación a la versión activa"
+entry = "R-08"
+action = "A"
+background = true
+frequency = 3
+icon = "gb_qat_check"
+icon_fallback = "CHECKMARK"
+
+[[menu.group.item.item]]
+key = "geoblender.core_show_checks"
+label.en = "Checks panel"
+label.es = "Panel de comprobaciones"
+description.en = "Criteria met and not met, with «Go to»"
+description.es = "Criterios cumplidos y no cumplidos, con «Ir a»"
+entry = "R-08"
+action = "P"
+frequency = 2
+
+[[menu.group.item.item]]
+ref = "geoblender.des_check_rules"
+
+# Trabajar ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Work"
+label.es = "Trabajar"
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_jobs_menu"
+label.en = "Jobs"
+label.es = "Trabajos"
+description.en = "Background jobs and the compute engine"
+description.es = "Trabajos en segundo plano y motor de cálculo"
+entry = ""
+action = "S"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.jobs_show_jobs"
+label.en = "Background jobs"
+label.es = "Trabajos en segundo plano"
+description.en = "Running and finished jobs with their progress"
+description.es = "Trabajos en marcha y terminados, con su progreso"
+entry = "004"
+action = "P"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.jobs_cancel"
+label.en = "Cancel the active job"
+label.es = "Cancelar el trabajo activo"
+description.en = "Cancel the job that is running"
+description.es = "Cancela el trabajo que está en marcha"
+entry = "004"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.jobs_setup_runtime"
+label.en = "Compute engine…"
+label.es = "Motor de cálculo…"
+description.en = "Install, update, verify, repair or remove the compute engine, and its state"
+description.es = "Instalar, actualizar, verificar, reparar o quitar el motor de cálculo, y su estado"
+entry = "004"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.jobs_set_external_python"
+label.en = "External interpreter, for development…"
+label.es = "Intérprete externo, para desarrollo…"
+description.en = "Use an external Python for the workers (development)"
+description.es = "Usa un Python externo para los workers (desarrollo)"
+entry = "004"
+action = "D"
+frequency = 0
+
+[[menu.group.item.item]]
+key = "geoblender.jobs_run_selftest"
+label.en = "Self-test"
+label.es = "Autodiagnóstico"
+description.en = "Run a test job and check the compute engine"
+description.es = "Lanza un trabajo de prueba y comprueba el motor de cálculo"
+entry = "004"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.jobs_clean"
+label.en = "Clean finished jobs…"
+label.es = "Limpiar trabajos terminados…"
+description.en = "Delete the folders of the finished jobs"
+description.es = "Borra las carpetas de los trabajos terminados"
+entry = "004"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.ui_open_command_line"
+label.en = "Command line"
+label.es = "Línea de comandos"
+description.en = "Find any command by its name in Spanish or English, its alias or its entry"
+description.es = "Encuentra cualquier comando por su nombre en español o en inglés, su alias o su entrada"
+entry = "003"
+action = "D"
+frequency = 2
+icon_fallback = "CONSOLE"
+aliases = ["comandos", "commands"]
+
+[[menu.group.item]]
+key = "wm.search_menu"
+label.en = "Search"
+label.es = "Buscar"
+description.en = "Blender search in the menus (F3)"
+description.es = "Búsqueda de Blender en los menús (F3)"
+entry = "Blender"
+action = "D"
+frequency = 2
+icon_fallback = "VIEWZOOM"
+
+[[menu.group.item]]
+key = "screen.repeat_last"
+label.en = "Repeat the last one"
+label.es = "Repetir la última"
+description.en = "Repeat the last operation (Shift+R)"
+description.es = "Repite la última operación (Mayús+R)"
+entry = "Blender"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+key = "screen.redo_last"
+label.en = "Adjust the last operation"
+label.es = "Ajustar la última operación"
+description.en = "Adjust the parameters of the last operation (F9)"
+description.es = "Ajusta los parámetros de la última operación (F9)"
+entry = "Blender"
+action = "P"
+frequency = 2
+
+# Interfaz ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Interface"
+label.es = "Interfaz"
+
+[[menu.group.item]]
+key = "geoblender.ui_toggle_mode"
+label.en = "Switch Geoblender ⇄ Blender"
+label.es = "Conmutar Geoblender ⇄ Blender"
+description.en = "Switch this window between the Geoblender interface and the Blender one"
+description.es = "Cambia esta ventana entre la interfaz de Geoblender y la de Blender"
+entry = "003"
+action = "A"
+frequency = 3
+icon = "gb_logo"
+aliases = ["conmutar", "switch", "blender"]
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_ui_layouts"
+label.en = "Layouts"
+label.es = "Disposición"
+description.en = "Add, remove or restore the Geoblender layouts"
+description.es = "Añadir, quitar o restaurar las disposiciones de Geoblender"
+entry = "003"
+action = "S"
+frequency = 1
+icon_fallback = "WORKSPACE"
+
+[[menu.group.item.item]]
+key = "geoblender.ui_add_layout?layout=MAIN"
+label.en = "Geoblender"
+label.es = "Geoblender"
+description.en = "The main layout: Outliner, 3D view and Properties"
+description.es = "La disposición principal: Outliner, Vista 3D y Propiedades"
+entry = "003"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_add_layout?layout=SECTION_PLAN"
+label.en = "Section and plan"
+label.es = "Sección y planta"
+description.en = "Two 3D views side by side: free plan and linked section"
+description.es = "Dos Vistas 3D lado a lado: planta libre y sección ligada"
+entry = "003"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_add_layout?layout=DATA"
+label.en = "Data"
+label.es = "Datos"
+description.en = "3D view with the spreadsheet as attribute table"
+description.es = "Vista 3D con la hoja de cálculo como tabla de atributos"
+entry = "003"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_add_layout?layout=DESIGN_PROFILE"
+label.en = "Design and profile"
+label.es = "Diseño y perfil"
+description.en = "3D view and a second orthographic view along the profile axis"
+description.es = "Vista 3D y una segunda vista ortográfica alineada con el eje del perfil"
+entry = "003"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_add_layout?layout=PHASES"
+label.en = "Phases"
+label.es = "Fases"
+description.en = "3D view and a timeline with markers by period"
+description.es = "Vista 3D y una línea de tiempo con marcadores por periodo"
+entry = "003"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_add_layout?layout=VERSION_REVIEW"
+label.en = "Version review"
+label.es = "Revisión de versiones"
+description.en = "Two synchronized 3D views and a table of figures"
+description.es = "Dos Vistas 3D sincronizadas y una tabla de cifras"
+entry = "R-62"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_add_layout?layout=DRAWINGS"
+label.en = "Drawings"
+label.es = "Planos"
+description.en = "Orthographic camera view with the frame of the sheet"
+description.es = "Vista de cámara ortográfica con el marco de la hoja"
+entry = "R-57"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "geoblender.ui_remove_layout"
+label.en = "Remove this layout"
+label.es = "Quitar esta disposición"
+description.en = "Delete only this workspace, never data; the main one cannot be removed"
+description.es = "Borra solo este espacio de trabajo, nunca datos; la principal no se puede quitar"
+entry = "003"
+action = "A"
+frequency = 0
+
+[[menu.group.item.item]]
+key = "geoblender.ui_restore_layout"
+label.en = "Restore the layout"
+label.es = "Restaurar la disposición"
+description.en = "Append it again from the Geoblender resources"
+description.es = "La vuelve a anexar desde los recursos de Geoblender"
+entry = "003"
+action = "A"
+frequency = 0
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "geoblender.ui_toggle_quick_access_row"
+label.en = "Show the quick access row of the view"
+label.es = "Mostrar la fila de acceso rápido de la vista"
+description.en = "Show or hide row 2 of the 3D views"
+description.es = "Muestra u oculta la fila 2 de las Vistas 3D"
+entry = "003"
+action = "T"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.ui_edit_palette"
+label.en = "IMGA palette and styles…"
+label.es = "Paleta y estilos IMGA…"
+description.en = "Colours of lithologies, phases, states and haul roads"
+description.es = "Colores de litologías, fases, estados y pistas"
+entry = "R-60"
+action = "P"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.ui_show_preferences"
+label.en = "Geoblender preferences…"
+label.es = "Preferencias de Geoblender…"
+description.en = "Language, titles of the bar, quick access row and status bar"
+description.es = "Idioma, títulos de la barra, fila de acceso rápido y barra de estado"
+entry = "003"
+action = "P"
+frequency = 1
+icon_fallback = "PREFERENCES"

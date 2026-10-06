@@ -1,0 +1,260 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 11 de 11: Planos (BS §8.11).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_drawings"
+label.en = "Drawings"
+label.es = "Planos"
+description.en = "Scaled drawings with the IMGA title block, reports and data for the report"
+description.es = "Planos a escala con el cajetín de IMGA, informes y datos para la memoria"
+stage.en = "Drawings and deliverables"
+stage.es = "Planos y documentos de entrega"
+step = 11
+branch = "common"
+icon = "gb_menu_drawings"
+icon_fallback = "DOCUMENTS"
+
+# Plano ---------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Drawing"
+label.es = "Plano"
+
+[[menu.group.item]]
+key = "geoblender.plan_new_drawing"
+label.en = "New drawing from a template…"
+label.es = "Nuevo plano desde plantilla…"
+description.en = "Drawing with the IMGA title block at the chosen scale"
+description.es = "Plano con el cajetín de IMGA a la escala elegida"
+entry = "R-57"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_plan_drawing_list"
+label.en = "Drawings of the project"
+label.es = "Planos del proyecto"
+description.en = "The drawings of the project"
+description.es = "Los planos del proyecto"
+entry = "R-57"
+action = "S"
+frequency = 2
+dynamic = true
+
+[[menu.group.item]]
+key = "geoblender.plan_set_frame"
+label.en = "Frame and scale"
+label.es = "Encuadre y escala"
+description.en = "Frame of the drawing and its scale"
+description.es = "Encuadre del plano y su escala"
+entry = "R-57"
+action = "H"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.plan_edit_title_block"
+label.en = "Title block and drawing data…"
+label.es = "Cajetín y datos del plano…"
+description.en = "Data of the title block of the drawing"
+description.es = "Datos del cajetín del plano"
+entry = "R-57"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.plan_edit_content"
+label.en = "Content…"
+label.es = "Contenido…"
+description.en = "Layers, legend, grid, north arrow and scale bar"
+description.es = "Capas, leyenda, cuadrícula, norte y escala gráfica"
+entry = "R-57"
+action = "P"
+frequency = 2
+
+# Juegos de planos ----------------------------------------------------------------------
+[[menu.group]]
+label.en = "Drawing sets"
+label.es = "Juegos de planos"
+
+[[menu.group.item]]
+key = "geoblender.plan_create_drawing_set?set=EXPLOITATION"
+label.en = "Exploitation project drawings…"
+label.es = "Planos del proyecto de explotación…"
+description.en = "Drawing set of the exploitation project (ITC 07.1.02)"
+description.es = "Juego de planos del proyecto de explotación (ITC 07.1.02)"
+entry = "R-58"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.plan_create_drawing_set?set=ANNUAL_WORK_PLAN"
+label.en = "Annual work plan drawings…"
+label.es = "Planos del plan de labores…"
+description.en = "Drawing set of the annual work plan"
+description.es = "Juego de planos del plan de labores"
+entry = "R-58"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.plan_create_drawing_set?set=RECLAMATION"
+label.en = "Reclamation plan drawings…"
+label.es = "Planos del plan de restauración…"
+description.en = "Drawing set of the reclamation plan"
+description.es = "Juego de planos del plan de restauración"
+entry = "R-58"
+action = "D"
+frequency = 2
+
+# Salida --------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Output"
+label.es = "Salida"
+
+[[menu.group.item]]
+key = "geoblender.plan_preview_drawing"
+label.en = "Preview"
+label.es = "Vista previa"
+description.en = "Preview of the drawing as it will be printed"
+description.es = "Vista previa del plano tal como se imprimirá"
+entry = "R-57"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.plan_export_pdf"
+label.en = "Export PDF or SVG…"
+label.es = "Exportar PDF o SVG…"
+description.en = "The drawing to PDF or SVG at its scale"
+description.es = "El plano a PDF o SVG a su escala"
+entry = "R-57"
+action = "D"
+background = true
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.plan_export_dxf"
+label.en = "Export DXF…"
+label.es = "Exportar DXF…"
+description.en = "The drawing to DXF in paper space"
+description.es = "El plano a DXF en espacio papel"
+entry = "R-57"
+action = "D"
+frequency = 2
+
+# Documentos ----------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Documents"
+label.es = "Documentos"
+
+[[menu.group.item]]
+key = "geoblender.res_report_memory_data"
+label.en = "Data for the report…"
+label.es = "Datos para la memoria…"
+description.en = "Datum, value, unit, type and source of each figure of the report"
+description.es = "Dato, valor, unidad, tipo y fuente de cada cifra de la memoria"
+entry = "R-59"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.res_report_volumetrics"
+label.en = "Volumetrics report of the version…"
+label.es = "Informe de cubicación de la versión…"
+description.en = "Volumetrics report of the active version"
+description.es = "Informe de cubicación de la versión activa"
+entry = "R-59"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.res_report_annexes"
+label.en = "Calculation annexes…"
+label.es = "Anexos de cálculo…"
+description.en = "Annexes with the calculations of the version"
+description.es = "Anexos con los cálculos de la versión"
+entry = "R-59"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.res_report_version_sheet"
+label.en = "Version sheet"
+label.es = "Ficha de la versión"
+description.en = "Summary sheet of the version with its figures"
+description.es = "Ficha resumen de la versión con sus cifras"
+entry = "R-59"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.res_report_project_status"
+label.en = "Project status"
+label.es = "Estado del proyecto"
+description.en = "Status of the project, generated from the database"
+description.es = "Estado del proyecto, generado desde la base de datos"
+entry = "R-59"
+action = "A"
+frequency = 1
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_plan_documents_more"
+label.en = "Other documents"
+label.es = "Otros documentos"
+description.en = "Reclamation budget and plan, annual work plan data and resource statement"
+description.es = "Presupuesto y plan de restauración, datos del plan de labores y declaración de recursos"
+entry = ""
+action = "S"
+frequency = 2
+
+[[menu.group.item.item]]
+ref = "geoblender.des_show_reclamation_budget"
+
+[[menu.group.item.item]]
+ref = "geoblender.des_report_reclamation_plan"
+
+[[menu.group.item.item]]
+ref = "geoblender.res_report_annual_work_plan"
+
+[[menu.group.item.item]]
+ref = "geoblender.bm_declare_resources"
+
+# Revisión con la propiedad -------------------------------------------------------------
+[[menu.group]]
+label.en = "Review with the owner"
+label.es = "Revisión con la propiedad"
+
+[[menu.group.item]]
+key = "geoblender.io_capture_georeferenced_view"
+label.en = "Capture the georeferenced view…"
+label.es = "Capturar la vista georreferenciada…"
+description.en = "PNG of the view with its world file"
+description.es = "PNG de la vista con su world file"
+entry = "R-63"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.io_import_client_marks"
+label.en = "Bring back the client marks…"
+label.es = "Traer las marcas del cliente…"
+description.en = "Marks drawn by the client on a capture, back to the project"
+description.es = "Marcas dibujadas por el cliente en una captura, de vuelta al proyecto"
+entry = "R-63"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.io_register_sketch"
+label.en = "Register a sketch or a capture"
+label.es = "Registrar un croquis o una captura"
+description.en = "Georeference a sketch or a capture"
+description.es = "Georreferencia un croquis o una captura"
+entry = "R-63"
+action = "H"
+frequency = 1

@@ -28,30 +28,12 @@ from tests.support.package import import_geoblender
 
 catalog = import_geoblender("core.catalog")
 
-# Menús de BS §8 que aún no están en el catálogo: los añade la T07.
-PENDING: frozenset[str] = frozenset({
-    "GEOBLENDER_MT_ui_scheduling",
-    "GEOBLENDER_MT_ui_drawings",
-    "GEOBLENDER_MT_ui_tools",
-    "GEOBLENDER_MT_ui_views",
-    "GEOBLENDER_MT_geo_section",
-    "GEOBLENDER_MT_ui_draw",
-    "GEOBLENDER_MT_gis_polyline_edit",
-    "GEOBLENDER_MT_ui_query",
-    "GEOBLENDER_MT_core_checks",
-    "GEOBLENDER_MT_jobs_menu",
-    "GEOBLENDER_MT_ui_layouts",
-    "GEOBLENDER_MT_ui_help",
-})
+# Menús de BS §8 que aún no están en el catálogo (la T04 los listó y T05–T07 los fueron
+# quitando): ninguno.
+PENDING: frozenset[str] = frozenset()
 
-# Accesos cruzados a comandos cuya casa es un menú pendiente (la T07 los define; al final,
-# ninguno): la fila se compara cuando llega su casa.
-PENDING_REFS: frozenset[str] = frozenset({
-    "geoblender.res_create_phases_from_shells",
-    "geoblender.res_report_volumetrics",
-    "geoblender.res_report_memory_data",
-    "GEOBLENDER_MT_geo_new_section",
-})
+# Accesos cruzados a comandos cuya casa es un menú pendiente: ninguno (T07).
+PENDING_REFS: frozenset[str] = frozenset()
 
 # Entradas aprobadas con el plan 003 que BS §8 aún no dice (las escribe la T37; plan §11):
 # Manual y Novedades pasan a R-13 (D-4).
@@ -139,7 +121,9 @@ def catalog_view(kind: str, value: object, doc: bs_tables.DocRow) -> tuple:
     if kind == "missing":
         return ("missing", value)
     sub, cross, command = value
-    ids = command.doc_id or (short(command.idname),)
+    # BS lista un submenú de variantes por su operador en su casa y por su clase en un ↗
+    # (Geología ▸ ↗ Nueva sección ▸).
+    ids = command.doc_id if command.doc_id and not cross else (short(command.idname),)
     # La frecuencia de un acceso cruzado es la de ese sitio en BS; el comando tiene la de su
     # casa (una sola definición): en las filas ↗ se toma la de BS.
     frequency = doc.frequency if cross else command.frequency
@@ -223,7 +207,7 @@ class CatalogMatchesDocsTest(unittest.TestCase):
                 continue
             for doc, (kind, value, _) in zip(table.rows, self.rows.menu(table.menu),
                                              strict=False):
-                if kind != "command" or not value[2].doc_id or value[2].dynamic:
+                if kind != "command" or value[1] or not value[2].doc_id or value[2].dynamic:
                     continue
                 expected = bs_tables.list_count(doc.text)
                 content = self.cat.menus[value[2].key]
