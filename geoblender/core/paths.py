@@ -184,7 +184,9 @@ def make_external_ref(
     canonical: Canonical = canonical_path,
 ) -> ExternalRef:
     """La referencia de ``target`` para guardarla en el proyecto (RF-002-19); si está en
-    otro volumen, anota su ruta completa en ``userdata``."""
+    otro volumen, anota su ruta completa en ``userdata``. Solo usa la ruta: el fichero
+    del usuario no se abre ni cambia (constitución, principio 7; mismo sha256, tamaño y
+    fecha, lo comprueba ``test_paths``)."""
     full = canonical(Path(target))
     root = canonical(_anchor_root(project, userdata))
     ref_uid = new_uid()

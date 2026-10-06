@@ -13,6 +13,7 @@ ADR-0006 §5; formato-proyecto §1).
 - Un nombre de proyecto tiene que ser válido en Windows.
 """
 
+import hashlib
 import ntpath
 import os
 import unittest
@@ -40,6 +41,12 @@ class FakeProject:
 def _normalised(path: Path) -> Path:
     """Canonización sin tocar el disco ni la red (para rutas de otras unidades)."""
     return Path(ntpath.normpath(ntpath.abspath(str(path))))
+
+
+def _fingerprint(path: Path) -> tuple[str, int, int]:
+    """sha256, tamaño y ``mtime_ns`` de un fichero."""
+    stat = path.stat()
+    return hashlib.sha256(path.read_bytes()).hexdigest(), stat.st_size, stat.st_mtime_ns
 
 
 class NetworkPathTest(unittest.TestCase):
@@ -128,6 +135,39 @@ class ExternalRefTest(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn("mdt.tif", stored)
+
+    def test_source_file_untouched(self) -> None:
+        """RF-002-19 (constitución, principio 7: una operación no cambia el hash de sus
+        entradas): guardar y resolver la ubicación de un fichero del usuario no lo cambia:
+        mismo sha256, tamaño y ``mtime_ns`` antes y después, en el mismo volumen y en otro
+        (simulado con la canonización; el fichero es real) (convergencia, T44)."""
+        with project_tmp() as tmp:
+            root = tmp / "proyectos" / "P.gbproj"
+            root.mkdir(parents=True)
+            target = tmp / "cliente" / "datos" / "limites.gpkg"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"GPKG del cliente\n" * 64)
+            other_volume = Path("D:/datos/limites.gpkg")
+
+            def elsewhere(path: Path) -> Path:
+                if os.path.normcase(os.path.realpath(path)) == os.path.normcase(
+                    os.path.realpath(target)
+                ):
+                    return other_volume
+                return _normalised(path)
+
+            cases = (("mismo volumen", paths.canonical_path), ("otro volumen", elsewhere))
+            for name, canonical in cases:
+                with self.subTest(caso=name):
+                    before = _fingerprint(target)
+                    data = userdata_mod.UserData(tmp / f"datos-usuario-{len(name)}")
+                    project = FakeProject(UID, root)
+                    ref = paths.make_external_ref(target, project, data, canonical=canonical)
+                    resolved = paths.resolve_external_ref(ref, project, data, canonical=canonical)
+                    self.assertIsNotNone(resolved)
+                    self.assertEqual(_fingerprint(target), before)
+                    self.assertEqual(sorted(p.name for p in target.parent.iterdir()),
+                                     ["limites.gpkg"])
 
     def test_external_ref_is_relative_text(self) -> None:
         """RF-002-18: lo que se guarda en el proyecto (``anchor`` y ``path``) no contiene
