@@ -488,3 +488,60 @@ es = "Se ha añadido el espacio de trabajo Geoblender a este fichero"
 
 ["Geoblender interface in compatibility mode"]
 es = "Interfaz de Geoblender en modo de compatibilidad"
+
+# Hojas de ayuda: atajos, alias y glosario (spec 003; RF-003-27). Los títulos de las hojas de
+# alias y del glosario son las etiquetas de sus comandos en el catálogo.
+
+["Geoblender shortcuts"]
+es = "Atajos de Geoblender"
+
+["Shortcut"]
+es = "Atajo"
+
+["Action"]
+es = "Acción"
+
+["Where"]
+es = "Dónde"
+
+["Entry"]
+es = "Entrada"
+
+["Keymap"]
+es = "Mapa"
+
+["Alias"]
+es = "Alias"
+
+["Program"]
+es = "Programa"
+
+["Term"]
+es = "Término"
+
+["Standard term"]
+es = "Término estándar"
+
+["Shift"]
+es = "Mayús"
+
+["Page Up"]
+es = "RePág"
+
+["Page Down"]
+es = "AvPág"
+
+["Home"]
+es = "Inicio"
+
+["Numpad +"]
+es = "Num +"
+
+["Numpad −"]
+es = "Num −"
+
+["Window"]
+es = "Ventana"
+
+["3D View"]
+es = "Vista 3D"

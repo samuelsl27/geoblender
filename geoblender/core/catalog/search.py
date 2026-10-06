@@ -150,9 +150,12 @@ def _best(entry: _Entry, query: str, entry_query: str, language: str) -> tuple[f
     return best, field
 
 
-def path_text(cat: Catalog, key: str, language: str) -> str:
-    """La ruta del comando desde la barra en ``language`` («Cubicación ▸ Cubicar ▸ …»)."""
+def path_text(cat: Catalog, key: str, language: str, *, parent: bool = False) -> str:
+    """La ruta del comando desde la barra en ``language`` («Cubicación ▸ Cubicar ▸ …»);
+    con ``parent``, sin el propio comando (el menú y el grupo donde está)."""
     msgids = cat.path(key)
+    if parent:
+        msgids = msgids[:-1]
     if language == "en":
         return " ▸ ".join(msgids)
     table = cat.translations()
