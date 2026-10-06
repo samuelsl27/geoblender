@@ -150,6 +150,25 @@ class CreateTest(unittest.TestCase):
             self.assertEqual(record.window, georef.Window(699_498.0, 4_399_500.0, 700_503.0, 4_400_502.0))
             self.assertEqual(record.origin.as_tuple(), (700_000, 4_400_000, -180))
 
+    def test_origin_from_the_aligned_window(self) -> None:
+        """RF-002-24 (hueco de prueba I6 de la verificación; convergencia, T52): el
+        GeoOrigin sale del centro de la ventana ya ampliada, no de la tecleada. X de
+        700 000,0 a 700 099,6 con paso 1 → ventana 700 000–700 100, centro 700 050 y
+        X0 = 700 100 (con la tecleada, centro 700 049,8, saldría 700 000); con paso 1,5
+        (unidad de alineación 3 m) → 699 999–700 101 y X0 = 700 100. La cabecera lleva el
+        mismo origen."""
+        window = (700_000.0, 4_399_500.0, 700_099.6, 4_400_500.0)
+        expected = (700_100, 4_400_000, 0)
+        for step, aligned_x in ((1.0, (700_000.0, 700_100.0)), (1.5, (699_999.0, 700_101.0))):
+            with self.subTest(paso=step), project_tmp() as tmp:
+                result = _make(tmp, window=window, grid_step_m=step)
+                record = result.record
+                self.assertEqual((record.window_xmin, record.window_xmax), aligned_x)
+                self.assertEqual(record.origin.as_tuple(), expected)
+                header = manifest.read_manifest(result.root)
+                self.assertEqual(header.origin.as_tuple(), expected)
+                result.project.close()
+
     def test_crs_never_assumed_and_local_vertical(self) -> None:
         """RF-002-23, RF-002-03: el dominio no supone el CRS (constitución, principio 6):
         unos ajustes sin CRS horizontal o sin CRS vertical no se construyen; quien propone

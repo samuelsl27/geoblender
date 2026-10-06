@@ -142,6 +142,29 @@ class SetWindowTest(unittest.TestCase):
             self.assertEqual(record.window_xmax % 3, 0)
             env.project.close()
 
+    def test_origin_from_the_aligned_window(self) -> None:
+        """RF-002-24, RF-002-27 (hueco de prueba I6 de la verificación; convergencia, T52):
+        al cambiar la ventana, el origen nuevo sale del centro de la ventana ya ampliada, no
+        de la tecleada. X de 700 000,0 a 700 099,6 con paso 1 → 700 000–700 100 y
+        X0 = 700 100 (con la tecleada saldría 700 000, el origen de antes); con paso 1,5
+        (unidad de alineación 3 m) → 699 999–700 101 y X0 = 700 100. La base, la cabecera y
+        el evento ``move_origin`` llevan ese origen."""
+        typed = origin_mod.Window(700_000.0, 4_399_500.0, 700_099.6, 4_400_500.0)
+        expected = (700_100, 4_400_000, 0)
+        for step, aligned_x in ((1.0, (700_000.0, 700_100.0)), (1.5, (699_999.0, 700_101.0))):
+            with self.subTest(paso=step), project_tmp() as tmp:
+                env = Env(tmp)
+                moved = env.project.set_window(typed, step, 0, "Ventana de la prueba I6")
+                self.assertEqual(moved.as_tuple(), expected)
+                record = env.record()
+                self.assertEqual((record.window_xmin, record.window_xmax), aligned_x)
+                self.assertEqual(record.origin.as_tuple(), expected)
+                header = manifest_mod.read_manifest(env.root)
+                self.assertEqual(header.origin.as_tuple(), expected)
+                (event,) = env.events(events_mod.EventKind.MOVE_ORIGIN)
+                self.assertEqual(event.data["to"], list(expected))
+                env.project.close()
+
     def test_rejected_without_change(self) -> None:
         """RF-002-27, RF-002-03: sin motivo (vacío o en blanco), con un motivo que lleva una
         ruta absoluta, con la ventana fuera del ámbito del CRS, con un paso o una Z0 que no
