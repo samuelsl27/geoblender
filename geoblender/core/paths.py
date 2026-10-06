@@ -22,10 +22,11 @@ formato-proyecto §1; plan 002 §5.4).
   el primer nombre libre (``principal.blend``, ``principal-2.blend``…).
 - :func:`check_path_length`: el límite de rutas de Windows (MAX_PATH, 259 caracteres;
   247 para una carpeta), que Blender 5.2.1 no pasa aunque Windows admita rutas largas.
-  Límite declarado (T45): lo comprueban crear y copiar (copia previa, copia local y
-  publicación) para lo que crean; un proyecto que ya existe en una ruta demasiado larga
-  (movido a mano) se abre, pero sus escrituras fallan con su error de disco; y las specs
-  que escriban rutas más hondas dentro del proyecto comprueban las suyas.
+  Límite declarado (T45; pendiente de visto bueno de la persona, plan 002 §10): lo
+  comprueban crear y copiar (copia previa, copia local y publicación) para lo que crean;
+  un proyecto que ya existe en una ruta demasiado larga (movido a mano) se abre, pero sus
+  escrituras fallan con su error de disco; y las specs que escriban rutas más hondas
+  dentro del proyecto comprueban las suyas.
 - :func:`blend_relative_path`: la ruta del proyecto que guarda una escena de Blender,
   relativa al ``.blend`` con el prefijo ``//`` de Blender (``//../`` desde ``scenes/``),
   o vacía si no se puede expresar así (otro volumen, vista sin guardar): nunca absoluta

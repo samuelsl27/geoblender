@@ -245,11 +245,12 @@ def parse_manifest(data: object) -> Manifest:
     ``geo_origin.x0``…) si falta algo obligatorio o un valor no vale.
 
     Al escribir, la cabecera lleva exactamente los campos de formato-proyecto §2
-    (:meth:`Manifest.to_dict`; lo comprueba ``test_manifest``). **Límite declarado**
-    (convergencia de la spec 002, T43; duda D-10, pendiente de la persona): al leer, una
-    clave que no es de esa lista (editada a mano, o de otra versión) se acepta sin aviso y
-    no se conserva al regenerar la cabecera desde la base de datos. Si se rechaza, se
-    avisa o se conserva, lo decide la persona en la spec o en formato-proyecto."""
+    (:meth:`Manifest.to_dict`; lo comprueba ``test_manifest``). **Pendiente de
+    implementar** (convergencia de la spec 002, T43 y T49): al leer, una clave que no es
+    de esa lista (editada a mano, o de otra versión) se acepta sin aviso y no se conserva
+    al regenerar la cabecera desde la base de datos. D-10 ya está decidida (06/10/2026:
+    se avisa de cada clave y se conserva al regenerar, RF-002-05 de la spec 0.4); lo hace
+    la T49, que espera la decisión de D-13 (una clave desconocida con una ruta absoluta)."""
     if not isinstance(data, Mapping):
         raise _invalid("(raíz)", type(data).__name__, "debe ser un objeto JSON")
     fmt = _lookup(data, "format")
@@ -550,11 +551,13 @@ def compare(
     nada.
 
     Una diferencia de GeoOrigin que ese cambio explica (de = la cabecera, a = la base) se
-    regenera desde la base, como una migración (convergencia de la spec 002, T40): la
-    cabecera se queda con el origen anterior si no se pudo reescribir después de confirmar
-    «Ventana de trabajo». Límite declarado: también se regenera una cabecera del mismo
+    regenera desde la base, como una migración: la cabecera se queda con el origen
+    anterior si no se pudo reescribir después de confirmar «Ventana de trabajo». Es
+    RF-002-05 de la spec 0.4 (enmienda aprobada por Samuel, IMGA, el 06/10/2026, con lo
+    que hizo la convergencia, T40). También se regenera así una cabecera del mismo
     proyecto copiada de antes de ese cambio (la base manda y es la misma identidad y el
-    mismo CRS); una cabecera con otro origen sigue sin abrir."""
+    mismo CRS): límite aceptado con la enmienda (plan 002 §5.4 y §10). Una cabecera con
+    otro origen sigue sin abrir."""
     explained = _origin_explained(manifest, record, origin_move)
     differences: list[ManifestDifference] = []
     for name, from_header, from_db in _BLOCKING:

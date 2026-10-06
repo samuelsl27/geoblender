@@ -294,8 +294,8 @@ class CompareTest(unittest.TestCase):
         """RF-002-05, RF-002-27: una diferencia de GeoOrigin que explica el último cambio
         de ventana registrado (de = la cabecera, a = la BD) se regenera desde la BD
         (REWRITE), como una migración; si no la explica (otro origen en la cabecera o en
-        la BD, o sin cambio registrado), sigue siendo INCONSISTENT (convergencia,
-        T40)."""
+        la BD, o sin cambio registrado), sigue siendo INCONSISTENT (convergencia, T40;
+        RF-002-05 de la spec 0.4, enmienda aprobada el 06/10/2026)."""
         header = manifest.manifest_from_record(_record())
         moved = _record(origin_x=701_000, modified_at="2026-10-06T09:00:00.000Z")
         move = ((700_000, 4_400_000, 0), (701_000, 4_400_000, 0))

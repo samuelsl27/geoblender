@@ -224,7 +224,8 @@ HEADER_FAILURE = OSError(5, "red caída (simulada)")
 
 class HeaderFailureTest(unittest.TestCase):
     """La cabecera no se puede escribir después de confirmar el origen nuevo en la base
-    (convergencia, T40): la base manda y el proyecto sigue abriéndose."""
+    (convergencia, T40; RF-002-05 de la spec 0.4, enmienda aprobada el 06/10/2026): la
+    base manda y el proyecto sigue abriéndose."""
 
     def fail_header(self, env: Env) -> object:
         with (

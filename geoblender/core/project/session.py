@@ -32,11 +32,11 @@ leer y escribir:
   (RF-002-27): nuevo origen en la base y en la cabecera, evento ``move_origin`` con el
   motivo (obligatorio); ninguna coordenada absoluta guardada cambia. Si la cabecera no se
   puede escribir después de confirmar, la base manda: solo lectura con aviso, y la
-  cabecera se regenera al volver a abrirlo (T40).
+  cabecera se regenera al volver a abrirlo (T40; RF-002-05 de la spec 0.4).
 - :meth:`Project.close`: en escritura, registra ``close``, reescribe la cabecera desde la
   base de datos y libera el cerrojo, y solo si el cerrojo sigue siendo de esta sesión; en
   solo lectura no escribe nada en la carpeta del proyecto, salvo soltar el cerrojo propio
-  que quedó puesto al pasar a solo lectura por un fallo (T41).
+  que quedó puesto al pasar a solo lectura por un fallo (T41; RF-002-13 de la spec 0.4).
 
 Un proyecto de un esquema posterior que esta versión no sabe leer se abre **solo con la
 cabecera** (:attr:`Project.header_only`, RF-002-22): sin fila de ``gb_project``

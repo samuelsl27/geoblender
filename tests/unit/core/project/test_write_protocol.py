@@ -256,7 +256,10 @@ NETWORK_DOWN = OSError(64, "El nombre de red especificado ya no está disponible
 
 class HeartbeatFailureTest(unittest.TestCase):
     """Una marca de actividad que falla por la red no deja el cerrojo puesto
-    (convergencia, T41)."""
+    (convergencia, T41). Al cerrar en solo lectura tras un fallo, Geoblender borra su
+    propio cerrojo huérfano si sigue siendo de esta sesión, nunca uno ajeno: RF-002-13 de
+    la spec 0.4 (enmienda aprobada por Samuel, IMGA, el 06/10/2026, con lo que hizo la
+    T41)."""
 
     def other_opens_for_writing(self, project: object, tmp: Path) -> None:
         opened = open_mod.open_project(
@@ -266,10 +269,10 @@ class HeartbeatFailureTest(unittest.TestCase):
         opened.project.close()
 
     def test_failed_heartbeat_releases_the_lock(self) -> None:
-        """RF-002-11, RF-002-12: si la marca de actividad falla una vez (``FAILED``), el
-        proyecto pasa a solo lectura «fallo de escritura» con el motivo y suelta su
-        cerrojo en ese momento, como tras cualquier escritura fallida; otro equipo lo abre
-        después en escritura."""
+        """RF-002-11, RF-002-12, RF-002-13: si la marca de actividad falla una vez
+        (``FAILED``), el proyecto pasa a solo lectura «fallo de escritura» con el motivo y
+        suelta su cerrojo en ese momento, como tras cualquier escritura fallida; cerrar
+        después no escribe nada más; otro equipo lo abre después en escritura."""
         with project_tmp() as tmp:
             project, _clock = _created(tmp)
             with (
@@ -283,9 +286,10 @@ class HeartbeatFailureTest(unittest.TestCase):
             self.other_opens_for_writing(project, tmp)
 
     def test_close_releases_a_lock_left_by_a_failure(self) -> None:
-        """RF-002-06, RF-002-12: si al fallar la marca tampoco se pudo soltar el cerrojo
-        (sin red), al cerrar ya con red se suelta, aunque el proyecto esté en solo
-        lectura; otro equipo lo abre después en escritura."""
+        """RF-002-06, RF-002-12, RF-002-13 (enmienda de la spec 0.4): si al fallar la
+        marca tampoco se pudo soltar el cerrojo (sin red), al cerrar ya con red se borra,
+        aunque el proyecto esté en solo lectura, porque sigue siendo de esta sesión; otro
+        equipo lo abre después en escritura."""
         with project_tmp() as tmp:
             project, _clock = _created(tmp)
             with (
