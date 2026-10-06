@@ -20,6 +20,15 @@
   un menú de cabecera con icono y texto recorta el título.
 - **Modo Blender**: el conmutador con B hundido, «Geoblender ▾» (los 13 menús) y todo lo
   que dibuja el original, con lo que otros complementos le añaden.
+- **F3** (RF-003-02, RF-003-06, RF-003-07; convergencia, T41): la búsqueda de menús de
+  Blender 5.2.1 no lee la barra que se dibuja, sino ``TOPBAR_MT_editor_menus`` (y el menú
+  raíz del editor), aunque no se dibuje, y lo dibuja con el área donde se pulsó F3.
+  :func:`gb_search_menus`, añadida (``append``) a ``TOPBAR_MT_editor_menus``, dibuja
+  «Geoblender ▾» con cualquier área que no sea la barra superior (o sin área) y nada en
+  ella: F3 llega así a los 13 menús (y a «Conmutar», en Herramientas) en los dos modos, y
+  la barra y ≡, que se abre desde ella, no cambian. Se pone con el envoltorio y se quita
+  al restaurar; en el respaldo de compatibilidad no hace falta (su función ya dibuja
+  «Geoblender ▾» con cualquier área).
 
 **Respaldo de compatibilidad** (RF-003-05; ADR-0012, técnica A; CW §5): si la versión de
 Blender no tiene ``draw_left`` con la forma esperada (``bl.compat.topbar_patchable``), no
@@ -64,6 +73,8 @@ from .drawing import draw_command, icon_kwargs, native_icon
 LOGGER = logging.getLogger("geoblender.bl.ui.topbar")
 ORIGINAL_ATTR = "_gb_original"  # el draw_left original, en el propio envoltorio
 COMPAT_ATTR = "_gb_compat"  # marca de la función añadida en el respaldo de compatibilidad
+SEARCH_ATTR = "_gb_search"  # marca de la función que lleva «Geoblender ▾» a F3 (T41)
+TOPBAR_AREA = "TOPBAR"  # el tipo de área de la barra superior
 TOGGLE = "geoblender.ui_toggle_mode"
 LAYOUTS_PANEL = "GEOBLENDER_PT_ui_layouts"
 BLENDER_MENUS = "TOPBAR_MT_editor_menus"
@@ -116,6 +127,12 @@ def is_compat_function(function: Any) -> bool:
     """Verdadero si ``function`` es la que añade el respaldo de compatibilidad (de este
     módulo o de uno anterior a una recarga)."""
     return bool(getattr(function, COMPAT_ATTR, False))
+
+
+def is_search_function(function: Any) -> bool:
+    """Verdadero si ``function`` es la que lleva «Geoblender ▾» a F3 (de este módulo o de
+    uno anterior a una recarga)."""
+    return bool(getattr(function, SEARCH_ATTR, False))
 
 
 def mode() -> str:
@@ -281,18 +298,40 @@ def gb_compat_menus(self: Any, context: Any) -> None:
 setattr(gb_compat_menus, COMPAT_ATTR, True)
 
 
+def gb_search_menus(self: Any, context: Any) -> None:
+    """«Geoblender ▾» para F3 (T41): con un área que no es la barra superior (la de la
+    Vista 3D u otro editor donde se pulsó F3) o sin área; en la barra superior y en ≡,
+    nada."""
+    area = getattr(context, "area", None)
+    if area is not None and getattr(area, "type", "") == TOPBAR_AREA:
+        return
+    cmd = catalog().commands[GEOBLENDER_MENU]
+    self.layout.menu(GEOBLENDER_MENU, text=text(cmd.label), translate=False)
+
+
+setattr(gb_search_menus, SEARCH_ATTR, True)
+
+
 # Instalación --------------------------------------------------------------------------
 
 
-def _remove_compat_functions() -> None:
+def _remove_functions(marked: Callable[[Any], bool]) -> None:
+    """Quita de ``TOPBAR_MT_editor_menus`` las funciones añadidas que cumplen ``marked``
+    (también las de un módulo anterior a una recarga)."""
     menus = getattr(bpy.types, compat.TOPBAR_MENUS)
     for function in list(getattr(menus.draw, "_draw_funcs", None) or ()):
-        if is_compat_function(function):
+        if marked(function):
             menus.remove(function)
 
 
+def _install_search() -> None:
+    _remove_functions(is_search_function)
+    getattr(bpy.types, compat.TOPBAR_MENUS).append(gb_search_menus)
+
+
 def _install_compat() -> str:
-    _remove_compat_functions()  # también la de un módulo anterior a una recarga
+    _remove_functions(is_search_function)  # la del respaldo ya lleva «Geoblender ▾» a F3
+    _remove_functions(is_compat_function)
     getattr(bpy.types, compat.TOPBAR_MENUS).append(gb_compat_menus)
     _STATE.compat = gb_compat_menus
     if not _STATE.warned:
@@ -303,10 +342,12 @@ def _install_compat() -> str:
 
 def install() -> str:
     """Sustituye ``draw_left`` por el envoltorio (una sola vez, también tras una recarga
-    o si otro complemento la sustituyó) y devuelve ``"patched"``; si la barra no tiene la
-    forma esperada, instala el respaldo de compatibilidad y devuelve ``"compat"``."""
+    o si otro complemento la sustituyó), añade una vez :func:`gb_search_menus` y devuelve
+    ``"patched"``; si la barra no tiene la forma esperada, instala el respaldo de
+    compatibilidad y devuelve ``"compat"``."""
     if _STATE.compat is not None or not compat.topbar_patchable(header()):
         return _install_compat()
+    _install_search()
     cls = header()
     current = cls.draw_left
     if _STATE.wrapper is not None and current is _STATE.wrapper:
@@ -320,10 +361,12 @@ def install() -> str:
 
 def restore() -> None:
     """Vuelve a poner el ``draw_left`` original guardado en el envoltorio (si otro
-    complemento lo sustituyó después, deja el suyo y el envoltorio queda inactivo) o
-    quita lo añadido por el respaldo de compatibilidad."""
+    complemento lo sustituyó después, deja el suyo y el envoltorio queda inactivo) y
+    quita :func:`gb_search_menus`, o quita lo añadido por el respaldo de
+    compatibilidad."""
+    _remove_functions(is_search_function)
     if _STATE.compat is not None:
-        _remove_compat_functions()
+        _remove_functions(is_compat_function)
         _STATE.compat = None
     wrapper = _STATE.wrapper
     if wrapper is None:

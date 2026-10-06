@@ -16,6 +16,15 @@
 - RF-003-05 (T13): sin ``draw_left``, o con otra firma, el conmutador y «Geoblender ▾» se
   añaden tras la Ayuda de Blender, el aviso sale una vez y deshabilitar deja la instantánea
   idéntica.
+- RF-003-02, RF-003-06, RF-003-07 (T41, hallazgo D1 de la convergencia): F3 recorre
+  ``TOPBAR_MT_editor_menus`` aunque la barra no lo dibuje, con el área donde se pulsó;
+  lo añadido allí dibuja «Geoblender ▾» con un área que no es la barra superior (o sin
+  área) y nada en la barra ni en ≡, así que F3 llega a los 13 menús, a «Conmutar» y a lo
+  no disponible en los dos modos; desde una Vista 3D en modo Blender, «Conmutar» pasa el
+  ``poll`` y lo que tiene atajo de la Vista 3D sale desactivado con su explicación.
+- RF-003-23, RF-003-24 (T41): ese añadido queda una sola vez tras habilitar, reparar (dos
+  veces y tras una recarga del módulo) y conmutar, y deshabilitar lo quita; en el
+  respaldo de compatibilidad no se pone (su función ya lleva «Geoblender ▾» a F3).
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -38,13 +47,15 @@ def _module(name: str) -> ModuleType:
     return importlib.import_module(f"{module_name()}.{name}")
 
 
-def context(*, geoblender: bool, fullscreen: bool = False) -> SimpleNamespace:
+def context(*, geoblender: bool, fullscreen: bool = False,
+            area: str | None = "TOPBAR") -> SimpleNamespace:
     """Lo que leen la barra y los menús: el espacio de trabajo (su marca), la pantalla,
-    el área, la ventana y la escena."""
+    el área (por defecto, la barra superior; ``None``, sin área), la ventana y la
+    escena."""
     return SimpleNamespace(
         workspace=SimpleNamespace(geoblender_mode=geoblender, use_filter_by_owner=False),
         screen=SimpleNamespace(show_fullscreen=fullscreen, show_statusbar=True),
-        area=SimpleNamespace(show_menus=True, type="TOPBAR"),
+        area=None if area is None else SimpleNamespace(show_menus=True, type=area),
         region=SimpleNamespace(alignment="LEFT", width=1920),
         window=bpy.context.window_manager.windows[0],
         scene=bpy.context.scene,
@@ -218,6 +229,97 @@ class TopbarDrawTest(unittest.TestCase):
         self.assertIs(self.topbar.original_of(header.draw_left), self.saved["draw_left"])
         self.assertTrue(self.topbar.is_installed())
 
+    def test_search_menu_outside_topbar(self) -> None:
+        """RF-003-02, RF-003-06 (T41): lo añadido a ``TOPBAR_MT_editor_menus`` no dibuja
+        nada con el área de la barra superior (la barra en modo Blender y ≡, que se abre
+        desde ella) y dibuja «Geoblender ▾», con su título del catálogo, con cualquier
+        otra área o sin área (F3), en los dos modos."""
+        menus = bpy.types.TOPBAR_MT_editor_menus
+        for geoblender in (False, True):
+            layout = draw(menus, context(geoblender=geoblender))
+            self.assertEqual(after_blender_help(layout), [], geoblender)
+            for area in ("VIEW_3D", "OUTLINER", None):
+                layout = draw(menus, context(geoblender=geoblender, area=area))
+                added = after_blender_help(layout)
+                self.assertEqual(added, [("menu", "GEOBLENDER_MT_ui_geoblender")],
+                                 (geoblender, area))
+                item = layout.items[-1]
+                self.assertEqual(item.text, self.label("GEOBLENDER_MT_ui_geoblender"))
+                self.assertIs(item.options.get("translate"), False)
+
+    def test_search_reaches_every_menu(self) -> None:
+        """RF-003-02, RF-003-06, RF-003-07 (T41, D1): recorriendo los menús desde
+        ``TOPBAR_MT_editor_menus`` como F3 (con el área de una Vista 3D) se llega en los
+        dos modos a los 13 menús de la barra, a «Conmutar Geoblender ⇄ Blender» y a
+        «Cubicar» (no disponible, desactivado); con el área de la barra superior, a
+        ninguno de Geoblender."""
+        for geoblender in (False, True):
+            reached, operators = walk_search(context(geoblender=geoblender, area="VIEW_3D"))
+            self.assertLessEqual(set(self.cat.top_menus), reached, geoblender)
+            self.assertIn(True, operators[TOGGLE], geoblender)
+            self.assertEqual(operators[VOLUME], {False}, geoblender)
+            self.assertGreater(len(operators), 300)
+            reached, operators = walk_search(context(geoblender=geoblender))
+            self.assertEqual((reached, operators), (set(), {}), geoblender)
+
+    def test_search_from_view3d_in_blender_mode(self) -> None:
+        """RF-003-02, RF-003-19 (T41; spec §8, «Modo Blender, F3 lanzado sobre la Vista
+        3D»): con el contexto de una Vista 3D de una ventana en modo Blender, que es el
+        de F3 pulsado sobre ella, «Conmutar» pasa el ``poll`` y un comando con atajo de
+        la Vista 3D (Encuadrar la ventana de trabajo) no, con «Solo en modo Geoblender
+        (Ctrl+F10) o desde Geoblender ▾»."""
+        window = bpy.context.window_manager.windows[0]
+        area = next(a for a in window.screen.areas if a.type == "VIEW_3D")
+        region = next(r for r in area.regions if r.type == "WINDOW")
+        self.assertFalse(window.workspace.geoblender_mode)
+        with bpy.context.temp_override(window=window, area=area, region=region):
+            self.assertTrue(bpy.ops.geoblender.ui_toggle_mode.poll())
+            self.assertFalse(bpy.ops.geoblender.ui_frame_work_window.poll())
+            with self.assertRaisesRegex(RuntimeError, r"Solo en modo Geoblender \(Ctrl\+F10\)"):
+                bpy.ops.geoblender.ui_frame_work_window()
+
+
+class TopbarSearchCycleTest(unittest.TestCase):
+    """Lo añadido para F3 a lo largo del ciclo de la extensión (RF-003-23, RF-003-24; T41)."""
+
+    def setUp(self) -> None:
+        blender_ext.unload()
+        blender_ext.load_file()
+        self.addCleanup(blender_ext.unload)
+        self.addCleanup(blender_ext.load_file)
+
+    def count(self, topbar: ModuleType) -> int:
+        functions = getattr(bpy.types.TOPBAR_MT_editor_menus.draw, "_draw_funcs", ())
+        return sum(1 for function in functions if topbar.is_search_function(function))
+
+    def test_once_and_removed(self) -> None:
+        """RF-003-23, RF-003-24: una sola vez tras habilitar, instalar otra vez, reparar
+        dos veces, conmutar ida y vuelta y recargar el módulo y reparar (la del módulo
+        anterior se quita); deshabilitar la quita y deja la instantánea como antes."""
+        before = ui_snapshot()
+        blender_ext.enable()
+        topbar = _module("bl.ui.topbar")
+        self.assertEqual(self.count(topbar), 1)
+        topbar.install()
+        self.assertEqual(self.count(topbar), 1)
+        for _ in range(2):
+            self.assertEqual(bpy.ops.geoblender.ui_repair_interface(), {"FINISHED"})
+        self.assertEqual(self.count(topbar), 1)
+        for target in ("GEOBLENDER", "BLENDER", "TOGGLE"):
+            bpy.ops.geoblender.ui_toggle_mode(target=target)  # sin interfaz, cambio diferido
+        self.assertEqual(self.count(topbar), 1)
+        old = [f for f in bpy.types.TOPBAR_MT_editor_menus.draw._draw_funcs
+               if topbar.is_search_function(f)]
+        topbar = importlib.reload(topbar)
+        self.assertEqual(bpy.ops.geoblender.ui_repair_interface(), {"FINISHED"})
+        self.assertEqual(self.count(topbar), 1)
+        self.assertNotIn(old[0], bpy.types.TOPBAR_MT_editor_menus.draw._draw_funcs)
+        blender_ext.disable()
+        self.assertEqual(self.count(topbar), 0)
+        changes = [line for line in fingerprint_diff(before, ui_snapshot())
+                   if not line.startswith("workspaces:")]
+        self.assertEqual(changes, [])
+
 
 class TopbarCompatTest(unittest.TestCase):
     """Respaldo de compatibilidad (RF-003-05; ADR-0012, técnica A; CW §5)."""
@@ -267,11 +369,42 @@ class TopbarCompatTest(unittest.TestCase):
         topbar.install()
         functions = getattr(menus.draw, "_draw_funcs", [])
         self.assertEqual(sum(1 for f in functions if topbar.is_compat_function(f)), 1)
+        # T41: la función del respaldo ya lleva «Geoblender ▾» a F3; la de F3 no se pone.
+        self.assertFalse(any(topbar.is_search_function(f) for f in functions))
+        targets = controls(draw(menus, context(geoblender=False, area="VIEW_3D")))
+        self.assertEqual(targets.count(("menu", "GEOBLENDER_MT_ui_geoblender")), 1)
         self.assertEqual(session.notices().count(notice), 1)
         blender_ext.disable()
         after = ui_snapshot()
         if after != before:
             self.fail("\n".join(fingerprint_diff(before, after)))
+
+
+def after_blender_help(layout: FakeLayout) -> list[tuple[str, str]]:
+    """Lo dibujado en ``TOPBAR_MT_editor_menus`` tras la Ayuda de Blender."""
+    targets = controls(layout)
+    return targets[targets.index(("menu", "TOPBAR_MT_help")) + 1:]
+
+
+def walk_search(ctx: SimpleNamespace) -> tuple[set[str], dict[str, set[bool]]]:
+    """Recorre los menús de Geoblender que se alcanzan desde ``TOPBAR_MT_editor_menus``
+    con ``ctx``, como F3 (cada menú una vez; los de Blender no se abren): los menús
+    alcanzados y, por operador, si se dibujó habilitado."""
+    reached: set[str] = set()
+    operators: dict[str, set[bool]] = {}
+    pending = ["TOPBAR_MT_editor_menus"]
+    while pending:
+        layout = draw(getattr(bpy.types, pending.pop()), ctx)
+        for item in layout.items:
+            if item.kind == "operator":
+                operators.setdefault(item.target, set()).add(item.enabled)
+            elif (item.kind == "menu" and item.target.startswith("GEOBLENDER_MT_")
+                  and item.target not in reached):
+                reached.add(item.target)
+                pending.append(item.target)
+    operators = {key: value for key, value in operators.items()
+                 if key.startswith("geoblender.")}
+    return reached, operators
 
 
 def _exists(item: Item) -> bool:

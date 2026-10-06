@@ -25,8 +25,9 @@ vez. Lo de la spec 003 está probado sin la interfaz gráfica; falta verlo en la
   el acceso rápido del proyecto; en modo Blender, la barra de Blender entera con un menú
   «Geoblender ▾» delante. Están **todos los comandos del producto** (unos 390), también los que
   aún no existen: salen en gris y dicen «Disponible en …» (la spec o la entrada del roadmap que
-  los traerá); si se pulsan, lo dicen y no hacen nada. Si la ventana es estrecha, los títulos
-  pasan a iconos. Desactivar Geoblender deja Blender como estaba.
+  los traerá); si se pulsan, lo dicen y no hacen nada. La búsqueda de Blender (**F3**) los
+  encuentra en los dos modos, también «Conmutar Geoblender ⇄ Blender». Si la ventana es
+  estrecha, los títulos pasan a iconos. Desactivar Geoblender deja Blender como estaba.
   - **Acceso rápido de cada Vista 3D** (24 controles que se pliegan si no caben), **vistas
     mineras** (planta, secciones N-S y E-O, isométricas; menú circular Mayús+Alt+V),
     **encuadrar la ventana de trabajo**, **vistas guardadas** (Ctrl+Mayús+F5…F8 y

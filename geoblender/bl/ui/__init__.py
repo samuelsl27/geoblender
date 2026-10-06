@@ -6,7 +6,8 @@ Orden de :func:`register` (CW §5; plan 003 §5.4, 1), con ``bl/props`` y ``bl/o
 registrados: iconos propios (``icons``: una colección de ``bpy.utils.previews``) → idioma (``i18n``: el catálogo de comandos en ``core.i18n`` y el idioma de las
 preferencias; al desregistrar, el cambio de idioma pendiente) → clases propias de la interfaz (los menús y la pestaña «Proyecto» de la
 spec 002) → catálogo (``registry``: menús generados por ``menus``, provisionales y
-textos) → sustitución de ``draw_left`` de la barra superior (``topbar``) → fila de
+textos) → sustitución de ``draw_left`` de la barra superior (``topbar``, con el añadido a
+``TOPBAR_MT_editor_menus`` que lleva «Geoblender ▾» a la búsqueda F3) → fila de
 acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → menú del tipo
 activo (``headers``: ``append`` a la fila 1 y al clic derecho de la Vista 3D y del
 Outliner) → barra de estado minera (``statusbar``: un ``append`` a la barra de estado, sus
@@ -112,7 +113,8 @@ def repair() -> str:
     """Ayuda ▸ Reparar la interfaz (RF-003-24; CW §5): vuelve a cargar los iconos (con el
     tamaño de la escala de ahora), vuelve a sustituir ``draw_left`` si ya no es el de
     Geoblender (lo pisó otro complemento o una recarga; nunca envuelve dos veces), vuelve a
-    poner los añadidos y los atajos del catálogo y recalcula la disponibilidad.
+    poner los añadidos (también el de F3) y los atajos del catálogo y recalcula la
+    disponibilidad.
     Idempotente. Devuelve el modo de la barra (``patched`` o ``compat``)."""
     if not _UNDO:
         return ""
