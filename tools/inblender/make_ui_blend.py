@@ -44,7 +44,8 @@ from __future__ import annotations
 
 import sys
 
-sys.dont_write_bytecode = True  # sin __pycache__ en el repositorio
+if __name__ == "__main__":  # como guion: sin __pycache__ en el repositorio (importado por
+    sys.dont_write_bytecode = True  # una prueba, manda el lanzador de las pruebas)
 
 import importlib  # noqa: E402
 from pathlib import Path  # noqa: E402
