@@ -77,6 +77,11 @@ def _deep_folder(tmp: Path, length: int) -> Path:
     return folder
 
 
+def _compact(text: str) -> str:
+    """``text`` sin espacios (también el fino de miles), para buscar cifras."""
+    return "".join(text.split()).replace(" ", "").replace(" ", "")
+
+
 def _text_cells(path: Path) -> list[str]:
     conn = sqlite3.connect(path)
     try:
@@ -253,7 +258,7 @@ class RejectTest(unittest.TestCase):
 
     def test_invalid_settings_create_nothing(self) -> None:
         """RF-002-03: ejes invertidos (X e Y intercambiadas), ventana vacía, fuera del
-        ámbito del CRS, CRS que falta (``None``: nunca se supone EPSG:25830, principio 6;
+        ámbito del CRS y de su huso extendido (al norte de su ámbito), CRS que falta (``None``: nunca se supone EPSG:25830, principio 6;
         convergencia, T42), que no es un código entero, fuera del catálogo o del tipo
         equivocado, vertical local sin descripción, paso 0,3 o Z0 = 20 000 → rechazo con el
         campo y el valor, y no se crea nada."""
@@ -261,7 +266,13 @@ class RejectTest(unittest.TestCase):
             ("ventana", "4400000", {"window": (4_400_000.0, 700_000.0, 4_401_000.0, 701_000.0)}),
             ("xmin–xmax", "700500", {"window": (700_500.0, 4_399_500.0, 700_500.0, 4_400_500.0)}),
             ("ymin–ymax", "4400500", {"window": (699_500.0, 4_400_500.0, 700_500.0, 4_399_500.0)}),
-            ("ventana", "100", {"window": (100.0, 4_399_500.0, 1_100.0, 4_400_500.0)}),
+            # Al norte del ámbito de EPSG:25830 (80,49°), también fuera del huso extendido
+            # (D-12: solo se amplía la longitud).
+            (
+                "ventana",
+                "9500000",
+                {"window": (699_500.0, 9_500_000.0, 700_500.0, 9_501_000.0)},
+            ),
             ("CRS horizontal", "vacío", {"crs_epsg": None}),
             ("CRS horizontal", "25830", {"crs_epsg": "25830"}),
             ("CRS horizontal", "EPSG:4326", {"crs_epsg": 4326}),
@@ -279,23 +290,57 @@ class RejectTest(unittest.TestCase):
                 self._assert_rejected(tmp, field, value_text, **overrides)
 
     def test_crs_scope_at_the_east_edge_of_zone_30(self) -> None:
-        """RF-002-03, tal como está escrito (D-12 de la spec, pendiente de la persona):
-        una ventana fuera del ámbito EPSG del CRS se rechaza, también al este del huso 30
-        en Castellón, aunque la cartografía valenciana (ICV) se distribuye en EPSG:25830.
-        Vinaròs (E 794 582) cae fuera de la envolvente del catálogo para 25830 (X de
-        226 161 a 773 839 m) y se rechaza con ese ámbito; Castellón de la Plana
-        (E 751 770) entra. Si la persona decide un margen (huso extendido) o un aviso en
-        lugar del rechazo, esta prueba cambia con esa decisión (convergencia, T47)."""
-        with project_tmp() as tmp:
-            with self.assertRaises(errors.ValidationError) as caught:
-                _make(tmp, window=(794_000.0, 4_482_000.0, 795_000.0, 4_483_000.0))
-            self.assertEqual(caught.exception.code, "core.window_outside_crs")
-            self.assertEqual(caught.exception.field, "ventana")
-            self.assertIn("773 839", str(caught.exception))
-            self.assertEqual(list((tmp / "proyectos").iterdir()), [])
+        """RF-002-03 (D-12 de la spec 0.4; convergencia, T47 y T51): una ventana fuera del
+        ámbito EPSG del CRS pero dentro de su huso extendido (hasta 3° de longitud fuera
+        del huso) se crea con un aviso que dice cuánto se sale y la deformación de escala;
+        más allá, se rechaza como antes, sin crear nada. En EPSG:25830 (huso 30, de −6° a
+        0°), la cartografía valenciana (ICV) llega a Vinaròs: 794 000–795 000 ×
+        4 482 000–4 483 000 → creado con «0,48° al este del huso 30 (0°)» y «+671 ppm
+        (0,67 m por km)»; 1 007 000–1 008 000 × 4 500 000–4 501 000 → creado con 2,99° y
+        +2 778 ppm; 1 008 000–1 009 000 (3,0056° E) y Mahón (4,26° E) →
+        ``core.window_outside_crs`` en «ventana», que nombra el huso extendido; Castellón
+        de la Plana (dentro del ámbito) → creado sin aviso."""
+        accepted = (
+            (
+                (794_000.0, 4_482_000.0, 795_000.0, 4_483_000.0),
+                (
+                    "0,48°",
+                    "al este del huso 30 (0°)",
+                    "+671 ppm",
+                    "(0,67 m por km)",
+                    "EPSG:25830",
+                ),
+            ),
+            (
+                (1_007_000.0, 4_500_000.0, 1_008_000.0, 4_501_000.0),
+                ("2,99°", "al este del huso 30 (0°)", "+2778 ppm", "(2,78 m por km)"),
+            ),
+        )
+        for window, texts in accepted:
+            with self.subTest(ventana=window), project_tmp() as tmp:
+                result = _make(tmp, window=window)
+                (warning,) = result.warnings
+                for text in texts:
+                    self.assertIn(_compact(text), _compact(warning))
+                self.assertIn("huso extendido", warning)
+                self.assertTrue(result.project.writable)
+                result.project.close()
+        for window in (
+            (1_008_000.0, 4_500_000.0, 1_009_000.0, 4_501_000.0),
+            (1_121_000.0, 4_440_000.0, 1_122_000.0, 4_441_000.0),
+        ):
+            with self.subTest(ventana=window), project_tmp() as tmp:
+                with self.assertRaises(errors.ValidationError) as caught:
+                    _make(tmp, window=window)
+                self.assertEqual(caught.exception.code, "core.window_outside_crs")
+                self.assertEqual(caught.exception.field, "ventana")
+                self.assertIn("huso extendido", str(caught.exception))
+                self.assertIn("intercambiadas", str(caught.exception))
+                self.assertEqual(list((tmp / "proyectos").iterdir()), [])
         with project_tmp() as tmp:
             result = _make(tmp, window=(751_000.0, 4_429_000.0, 752_000.0, 4_430_000.0))
             self.assertEqual(result.record.origin.as_tuple()[:2], (751_500, 4_429_500))
+            self.assertEqual(result.warnings, ())
             result.project.close()
 
     def test_existing_destination(self) -> None:

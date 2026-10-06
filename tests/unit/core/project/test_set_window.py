@@ -165,6 +165,39 @@ class SetWindowTest(unittest.TestCase):
                 self.assertEqual(event.data["to"], list(expected))
                 env.project.close()
 
+    def test_extended_zone(self) -> None:
+        """RF-002-03, RF-002-27 (D-12 de la spec 0.4; convergencia, T51): cambiar la
+        ventana a una fuera del ámbito de EPSG:25830 pero dentro de su huso extendido
+        (Vinaròs, 0,48° al este del huso 30) se acepta y deja un aviso de la deformación
+        (``take_notices``: «+671 ppm», «0,67 m por km»); a una más allá (3,0056° al este del
+        huso), se rechaza en «ventana» sin cambiar nada; y a una dentro del ámbito
+        (Castellón de la Plana), sin aviso."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            before = env.state()
+            with self.assertRaises(errors.ValidationError) as caught:
+                env.project.set_window(
+                    origin_mod.Window(1_008_000.0, 4_500_000.0, 1_009_000.0, 4_501_000.0),
+                    1.0, 0, "Más allá del huso extendido",
+                )
+            self.assertEqual(caught.exception.code, "core.window_outside_crs")
+            self.assertEqual(caught.exception.field, "ventana")
+            self.assertEqual(env.state(), before)
+            self.assertEqual(env.project.take_notices(), [])
+            vinaros = origin_mod.Window(794_000.0, 4_482_000.0, 795_000.0, 4_483_000.0)
+            moved = env.project.set_window(vinaros, 1.0, 0, "Ampliación a Vinaròs")
+            self.assertEqual(moved.as_tuple(), (794_500, 4_482_500, 0))
+            (notice,) = env.project.take_notices()
+            compact = "".join(notice.split()).replace(" ", "")
+            for text in ("0,48°", "huso30(0°)", "+671ppm", "(0,67mporkm)"):
+                self.assertIn(text, compact)
+            self.assertIn("huso extendido", notice)
+            self.assertEqual(env.record().origin.as_tuple(), (794_500, 4_482_500, 0))
+            castellon = origin_mod.Window(751_000.0, 4_429_000.0, 752_000.0, 4_430_000.0)
+            env.project.set_window(castellon, 1.0, 0, "Vuelta a Castellón")
+            self.assertEqual(env.project.take_notices(), [])
+            env.project.close()
+
     def test_rejected_without_change(self) -> None:
         """RF-002-27, RF-002-03: sin motivo (vacío o en blanco), con un motivo que lleva una
         ruta absoluta, con la ventana fuera del ámbito del CRS, con un paso o una Z0 que no

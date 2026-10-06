@@ -632,6 +632,45 @@ class GeorefOperatorsTest(OperatorsTestCase):
         notices = self.ps.take_notices()
         self.assertTrue(any("esquinas" in text and "mm" in text for text in notices), notices)
 
+    def test_extended_zone_warns(self) -> None:
+        """RF-002-03, RF-002-27 (D-12; convergencia, T51): «Nuevo proyecto…» y «Ventana de
+        trabajo…» con una ventana fuera del ámbito de EPSG:25830 pero en su huso extendido
+        (Vinaròs) terminan y avisan de cuánto se sale del huso y de la deformación de
+        escala (el aviso queda también para la pestaña «Proyecto»); más allá del huso
+        extendido, no se crea nada y el mensaje nombra la ventana."""
+        vinaros = {"xmin": "794000", "ymin": "4482000", "xmax": "795000", "ymax": "4483000"}
+        self.ps.take_notices()
+        result = bpy.ops.geoblender.core_new_project(
+            "EXEC_DEFAULT", directory=str(self.tmp), name="Vinaros", **vinaros
+        )
+        self.assertEqual(result, {"FINISHED"})
+        (notice,) = self.ps.take_notices()
+        self.assertIn("0,48°", notice)
+        self.assertIn("+671 ppm", notice)
+        self.assertIn("huso extendido", notice)
+        self.assertEqual(self.ps.current().origin.as_tuple(), (794_500, 4_482_500, 0))
+
+        beyond = {"xmin": "1008000", "ymin": "4500000", "xmax": "1009000", "ymax": "4501000"}
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_new_project(
+                "EXEC_DEFAULT", directory=str(self.tmp), name="Mas alla", **beyond
+            )
+        self.assertIn("ventana", str(caught.exception))
+        self.assertIn("huso extendido", str(caught.exception))
+        self.assertFalse((self.tmp / "Mas alla.gbproj").exists())
+
+        self.new_project()
+        self.ps.take_notices()
+        result = bpy.ops.geoblender.core_set_work_window(
+            "EXEC_DEFAULT", reason="Ampliación a Vinaròs", **vinaros
+        )
+        self.assertEqual(result, {"FINISHED"})
+        notices = self.ps.take_notices()
+        self.assertTrue(
+            any("0,48°" in text and "+671 ppm" in text for text in notices), notices
+        )
+        self.assertEqual(bpy.context.scene.geoblender.origin_x, 794_500)
+
     def test_read_only_cannot_change_window(self) -> None:
         """RF-002-13, RF-002-27: con el proyecto en solo lectura, «Ventana de trabajo…» no
         está disponible."""

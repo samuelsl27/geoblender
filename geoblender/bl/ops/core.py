@@ -244,6 +244,11 @@ class GEOBLENDER_OT_core_new_project(bpy.types.Operator):
                 status=result.project.status.message,
             ),
         )
+        # Los avisos de la ventana (huso extendido, RF-002-03 y D-12; precisión, RF-002-26)
+        # quedan también para la pestaña «Proyecto»; los de cerrar el anterior ya los dejó
+        # project_session.close.
+        for message in result.warnings:
+            project_session.notify(message)
         for message in (*result.warnings, *closed):
             self.report({"WARNING"}, message)
         return {"FINISHED"}

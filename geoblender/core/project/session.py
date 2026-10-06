@@ -469,10 +469,13 @@ class Project:
         centro redondeado a 100 m (RF-002-24), con ``z0``. En una transacción se guardan el
         origen, la ventana y el paso en ``gb_project`` y el evento ``move_origin`` con el
         motivo y los dos orígenes; después, la cabecera. Ninguna coordenada absoluta
-        guardada cambia (el origen solo afecta a las vistas). Devuelve el origen nuevo.
+        guardada cambia (el origen solo afecta a las vistas). Devuelve el origen nuevo. Si
+        la ventana queda fuera del ámbito del CRS pero en su huso extendido, se acepta y el
+        aviso de la deformación de escala queda en :meth:`take_notices` (RF-002-03, D-12).
 
         :class:`ValidationError` sin motivo o con uno que lleva una ruta absoluta, o si la
-        ventana, el paso o ``z0`` no valen; :class:`ProjectError` en solo lectura;
+        ventana (también fuera del huso extendido), el paso o ``z0`` no valen;
+        :class:`ProjectError` en solo lectura;
         :class:`LockError` sin el cerrojo. En todos esos casos no cambia nada.
 
         Si la cabecera no se puede escribir **después** de confirmar la transacción (un
@@ -510,7 +513,7 @@ class Project:
         typed = window if isinstance(window, Window) else Window(*window)
         aligned = align_window(typed, step)
         crs = (load_catalog() if catalog is None else catalog).horizontal(record.crs_epsg)
-        check_window_inside(crs, typed, aligned)
+        scope = check_window_inside(crs, typed, aligned)
         origin = choose_origin(aligned, z0)
         previous = record.origin
         now = format_utc(self.clock.now())
@@ -554,6 +557,8 @@ class Project:
             window_xmax=aligned.xmax, window_ymax=aligned.ymax,
             modified_at=now, last_written_with=self.session.geoblender_version,
         )
+        if scope is not None:  # fuera del ámbito del CRS, en su huso extendido (D-12)
+            self._notices.append(f"Proyecto «{self.name}»: {scope.message}.")
         header = manifest_from_record(self.record, previous=self.manifest)
         try:
             write_manifest(self.root, header, self.session.session_uid)

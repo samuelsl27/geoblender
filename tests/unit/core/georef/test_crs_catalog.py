@@ -153,6 +153,55 @@ class CrsCatalogTest(unittest.TestCase):
                 self.assertLess(left, right)
                 self.assertLess(bottom, top)
 
+    def test_projection_and_geographic_scope(self) -> None:
+        """RF-002-03 (D-12; convergencia, T51): cada CRS horizontal lleva su ámbito
+        geográfico (``bbox_lonlat``: oeste, sur, este, norte, en grados) y los parámetros de
+        su transversa de Mercator leídos de su WKT1 (elipsoide, meridiano central, k0 y
+        falsos este y norte), con su huso UTM; un WKT1 que no es transversa de Mercator con
+        la latitud de origen en el ecuador deja el catálogo no válido."""
+        tm = import_geoblender("core.georef.tm")
+        expected = {
+            25830: ((6_378_137.0, 298.257222101, -3.0), 30, (-6.01, 35.26, 0.01, 80.49)),
+            25831: ((6_378_137.0, 298.257222101, 3.0), 31, (0.0, 37.0, 6.01, 82.45)),
+            4082: ((6_378_137.0, 298.257222101, -21.0), 27, (-21.93, 24.6, -18.0, 31.19)),
+            32628: ((6_378_137.0, 298.257223563, -15.0), 28, (-18.0, 0.0, -12.0, 84.0)),
+            23030: ((6_378_388.0, 297.0, -3.0), 30, (-6.0, 35.26, 0.01, 80.49)),
+        }
+        for ref in self.catalog.horizontals():
+            with self.subTest(code=ref.epsg):
+                projection = ref.projection
+                self.assertIsInstance(projection, tm.TransverseMercator)
+                self.assertEqual(
+                    (projection.k0, projection.fe, projection.fn), (0.9996, 500_000.0, 0.0)
+                )
+                self.assertEqual(ref.utm_zone, round((projection.lon0 + 183) / 6))
+                west, south, east, north = ref.bbox_lonlat
+                self.assertLess(west, east)
+                self.assertLess(south, north)
+                if ref.epsg in expected:
+                    ellipsoid, zone, bbox = expected[ref.epsg]
+                    self.assertEqual(
+                        (projection.a, projection.inv_f, projection.lon0), ellipsoid
+                    )
+                    self.assertEqual(ref.utm_zone, zone)
+                    self.assertEqual(ref.bbox_lonlat, bbox)
+        data = json.loads(crs.CATALOG_PATH.read_text(encoding="utf-8"))
+        wkt1 = data["horizontal"][2]["wkt1"]
+        for broken in (
+            wkt1.replace("Transverse_Mercator", "Lambert_Conformal_Conic_2SP"),
+            wkt1.replace('"latitude_of_origin",0', '"latitude_of_origin",40'),
+            wkt1.replace('"central_meridian",-3', '"meridiano",-3'),
+        ):
+            with self.subTest(wkt1=broken[:60]), tempfile.TemporaryDirectory() as tmp:
+                self.assertNotEqual(broken, wkt1)
+                changed = json.loads(json.dumps(data))
+                changed["horizontal"][2]["wkt1"] = broken
+                path = Path(tmp) / "crs_catalog.json"
+                path.write_text(json.dumps(changed), encoding="utf-8")
+                with self.assertRaises(errors.GeoblenderError) as caught:
+                    crs.read_catalog(path)
+                self.assertEqual(caught.exception.code, "core.crs_catalog_invalid")
+
     def test_local_vertical(self) -> None:
         """RF-002-23: «referencia local» con descripción obligatoria; sin ella, error con
         el campo."""

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Georreferencia del proyecto (spec 002; ADR-0005): catálogo de CRS horizontales y
-verticales, GeoOrigin y ventana de trabajo, y la única conversión absoluta ↔ local.
+verticales, GeoOrigin y ventana de trabajo, la única conversión absoluta ↔ local y la
+transversa de Mercator con la que se comprueba el huso extendido del CRS (D-12).
 
 Python puro (biblioteca estándar y numpy). Las transformaciones entre CRS no están aquí:
 necesitan pyproj y llegan con la spec 006 (``gis``).
@@ -23,6 +24,7 @@ from .origin import (
     check_grid_step,
     choose_origin,
 )
+from .tm import TransverseMercator, tm_forward, tm_inverse, tm_scale
 from .transform import (
     PRECISION_LIMIT_M,
     PrecisionReport,
@@ -40,6 +42,7 @@ __all__ = [
     "GeoOrigin",
     "PRECISION_LIMIT_M",
     "PrecisionReport",
+    "TransverseMercator",
     "VerticalRef",
     "Window",
     "align_window",
@@ -49,5 +52,8 @@ __all__ = [
     "load_catalog",
     "local_to_world",
     "precision_report",
+    "tm_forward",
+    "tm_inverse",
+    "tm_scale",
     "world_to_local",
 ]
