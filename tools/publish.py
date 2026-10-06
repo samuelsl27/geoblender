@@ -30,6 +30,12 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
    enlazado ni ``alternates``), sin cambios sin commit ni ficheros nuevos sin ignorar,
    sin operaciones de git a medias ni cerrojos, HEAD en una rama; y la documentación no
    versiona nada bajo ``Geoblender/`` (ni un *gitlink*).
+7. Comparación del destino con el estado (RF-007-29, «avisar y no borrar»): si alguien
+   creó, cambió o borró algo en el destino desde el último espejo (también una carpeta,
+   o dentro de un ``.git``), código 3 con la lista y cómo traer cada cosa al PC, sin
+   subir, copiar ni borrar nada. Se repite justo antes de copiar (el destino pudo
+   cambiar durante las comprobaciones y la subida); si entonces para, el informe dice
+   que se subió y que el destino sigue en el espejo anterior.
 8. Comprobaciones (RF-007-16), con el Python del Blender del manifiesto y desde la raíz
    del código, con su salida en directo: ``tools/check.py`` (salvo con
    ``--solo-espejo``) y siempre ``tools/check_docs.py <carpeta del proyecto>``; las dos
@@ -127,13 +133,19 @@ class Stop(Exception):
     lista de lo que hay que corregir."""
 
     def __init__(
-        self, code: int, step: str, detail: str, lines: Sequence[str] = ()
+        self,
+        code: int,
+        step: str,
+        detail: str,
+        lines: Sequence[str] = (),
+        result: str | None = None,
     ) -> None:
         super().__init__(detail)
         self.code = code
         self.step = step
         self.detail = detail
         self.lines = list(lines)
+        self.result = result  # la línea «RESULTADO: …», si no es la de no publicado
 
 
 @dataclass(frozen=True)
@@ -310,6 +322,52 @@ def base_text(base: safe_mirror.MirrorState) -> str:
     return f"estado del {_when(base.taken)}"
 
 
+def change_lines(changes: Sequence[safe_mirror.DestChange]) -> list[str]:
+    """Una línea por cambio del destino: tipo, ruta y repositorio (y si está en un
+    ``.git``)."""
+    lines = []
+    for change in changes:
+        where = change.repo + (", dentro de .git" if change.in_git else "")
+        lines.append(f"{change.kind:<14}{change.path:<44} {where}")
+    return lines
+
+
+def change_advice(
+    changes: Sequence[safe_mirror.DestChange], destination: Path, project: Path
+) -> list[str]:
+    """Cómo traer al PC cada tipo de cambio del destino (plan 007 §5.4.7)."""
+    advice = ["Qué hacer con cada uno, antes de repetir la publicación:"]
+    work = [c for c in changes if not c.in_git]
+    copied = [c for c in work if c.kind in (safe_mirror.NEW, safe_mirror.CHANGED)]
+    if copied:
+        rel = copied[0].path.replace("/", "\\")
+        advice.append(
+            f"- nuevo o cambiado: cópielo al PC (p. ej. Copy-Item -LiteralPath "
+            f'"{destination}\\{rel}" "{project}\\{rel}"; si el PC tiene otra versión, '
+            "compárelas antes con git diff --no-index y fusiónelas a mano), revíselo y "
+            "haga commit en su repositorio; o, si sobra, quítelo del destino a mano "
+            "(quien publica)."
+        )
+    if any(c.kind == safe_mirror.DELETED for c in work):
+        advice.append("- borrado: git rm en su repositorio del PC, o restáurelo en el destino.")
+    if any(c.kind == safe_mirror.NEW_FOLDER for c in work):
+        advice.append(
+            "- carpeta nueva: créela en el PC (con lo que tenga) o quítela del destino a mano."
+        )
+    for repo in sorted({c.repo for c in changes if c.in_git}):
+        code = repo == safe_mirror.REPO_CODE
+        local = project / layout.CODE_DIR_IN_DOCS if code else project
+        remote = destination / layout.CODE_DIR_IN_DOCS if code else destination
+        name = "el código" if code else "la documentación"
+        advice.append(
+            f"- dentro de .git: en el destino se usó git en {name}. Traiga sus commits, si "
+            f'los hay (git -C "{local}" fetch "{remote}" <rama>, con -c '
+            f"safe.directory=<ruta> si git lo pide), y después {OPTION_REBUILD}, que solo "
+            "acepta lo que el PC ya tiene."
+        )
+    return advice
+
+
 def _status_line(entry: str) -> str:
     """``"XY ruta"`` de ``git.dirty_entries`` en palabras."""
     status, _sep, path = entry.partition(" ")
@@ -401,6 +459,9 @@ class Publication:
         self.url: str | None = None
         self.pushed: str | None = None  # la rama subida, si se subió
         self.branches: dict[str, str | None] = {}  # la rama de cada repositorio
+        self.source = safe_mirror.SourceTree()
+        self.listing = safe_mirror.DestinationTree()
+        self.observed: dict[str, safe_mirror.FileState] = {}
         self.started = time.perf_counter()
         self.step_started = self.started
 
@@ -471,11 +532,37 @@ class Publication:
                 f"«{folder}»): {OPTION_REBUILD} lo rehace si nada del destino se pierde",
             )
         self.dest, self.base = dest, base
-        self.line(
-            STATUS_OK,
-            STEP_DEST,
-            base_text(base) if base is not None else "sin estado ni foto",
-        )
+
+    # Paso 7 (y 10, justo antes de copiar): el destino frente al estado.
+    def compare(self, before_copy: bool = False) -> None:
+        assert self.dest is not None and self.base is not None
+        try:
+            previous = self.source if before_copy else None
+            source = safe_mirror.scan_source(self.project, previous)
+            listing = safe_mirror.scan_destination(self.dest)
+            pending = safe_mirror.load_pending(self.dest, self.environ)
+            changes, observed = safe_mirror.destination_changes(
+                self.dest, self.base, source, listing, pending
+            )
+        except safe_mirror.MirrorError as exc:
+            raise Stop(EXIT_FAIL, STEP_DEST, str(exc)) from exc
+        except OSError as exc:
+            raise Stop(
+                EXIT_FAIL, STEP_DEST, f"no se pudo leer el destino o el proyecto: {exc}"
+            ) from exc
+        if changes:
+            count = len(changes)
+            noun = "1 cambio" if count == 1 else f"{count} cambios"
+            raise Stop(
+                EXIT_CHANGES,
+                STEP_DEST,
+                f"{noun} en el destino desde el último espejo",
+                [*change_lines(changes), *change_advice(changes, self.dest, self.project)],
+                f"RESULTADO: CAMBIOS EN EL DESTINO ({count})",
+            )
+        self.source, self.listing, self.observed = source, listing, observed
+        if not before_copy:
+            self.line(STATUS_OK, STEP_DEST, f"{base_text(self.base)}; 0 cambios en el destino")
 
     # Paso 4: el remoto del código y las credenciales de los dos .git/config.
     def check_remote(self) -> None:
@@ -623,12 +710,14 @@ class Publication:
         self.check_destination()
         self.check_remote()
         self.check_trees()
+        self.compare()
         self.run_checks()
         self.push()
+        self.compare(before_copy=True)
         raise Stop(
             EXIT_FAIL,
             "publicación",
-            "la publicación aún no hace el espejo (spec 007, T25 a T28)",
+            "la publicación aún no hace el espejo (spec 007, T26 a T28)",
         )
 
     def done_note(self) -> str:
@@ -651,7 +740,7 @@ def _print_stop(stop: Stop, publication: Publication | None) -> None:
         print(f"    {item}")
     print(f"  {publication.done_note() if publication is not None else NOTHING_DONE}")
     elapsed = publication.elapsed() if publication is not None else "0,0"
-    print(f"RESULTADO: NO PUBLICADO ({elapsed} s): {stop.detail}")
+    print(stop.result or f"RESULTADO: NO PUBLICADO ({elapsed} s): {stop.detail}")
 
 
 def main(

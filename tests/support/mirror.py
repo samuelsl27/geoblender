@@ -35,6 +35,11 @@ def sha256_of(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def sha256_of_text(text: str) -> str:
+    """El sha256 de ``text`` escrito en UTF-8 (como lo escriben las pruebas)."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def describe(folder: Path) -> dict[str, dict[str, Any]]:
     """Cada fichero bajo ``folder`` (rutas relativas con «/»): su tamaño, su
     ``mtime_ns`` y su sha256, como los guarda el estado."""

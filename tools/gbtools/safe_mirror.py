@@ -20,6 +20,21 @@ espejo``), fuera de los repositorios y del destino:
 Un estado que existe y no se puede leer no se sustituye por la foto
 (:class:`StateUnreadable`): la publicación remite a ``--rehacer-estado``. Las rutas del
 estado se validan (relativas, con «/», sin «..»): nunca se usan fuera del destino.
+
+**Comparación** (plan 007 §5.4.7, RF-007-29): el origen (:func:`scan_source`, el sha256
+de cada fichero de la carpeta del proyecto) y el destino (:func:`scan_destination`, el
+tamaño y la fecha de cada fichero, sin leerlo) se recorren sin lo excluido
+(``layout.MIRROR_EXCLUDED``, D-17) y sin seguir enlaces. :func:`destination_changes`
+compara el destino con la base **sin distinguir mayúsculas** (como NTFS y el recurso
+SMB): un fichero con el tamaño y la fecha del estado no ha cambiado; si difieren, se lee
+su sha256 (con su tamaño y fecha justo antes y justo después). Es un cambio del NAS
+(nuevo, cambiado, borrado, o una carpeta nueva aunque esté vacía o solo tenga
+excluidos) salvo que el destino ya tenga lo del PC (mismo sha256, o falte en los dos),
+solo haya cambiado la fecha, o sea lo que iba a dejar un espejo en curso de este PC
+(``estado-<clave>.en-curso.json``). Lo observado de cada fichero (tamaño, fecha y
+sha256 comprobados) es lo que el espejo mira otra vez antes de tocarlo. Límite
+declarado: un fichero editado en el NAS que conserva tamaño y fecha no se ve sin leer
+todo el NAS.
 """
 
 from __future__ import annotations
@@ -28,20 +43,37 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from .layout import MIRROR_STATE_PARTS
+from .ignore import IgnoreSpec
+from .layout import CODE_DIR_IN_DOCS, MIRROR_EXCLUDED, MIRROR_STATE_PARTS
 
 FORMAT = 1
 KIND_STATE = "estado"
+KIND_PENDING = "en-curso"
 STATE_PREFIX = "estado-"
+PENDING_SUFFIX = ".en-curso.json"
 PHOTO_GLOB = "foto-*.json"
 KEY_LENGTH = 16
 ENV_LOCAL_APPDATA = "LOCALAPPDATA"
+HASH_CHUNK = 1 << 20
+READ_ATTEMPTS = 3  # lecturas de un fichero que cambia mientras se lee su sha256
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+# Tipos de cambio del destino (RF-007-29) y repositorio de cada ruta.
+NEW = "nuevo"
+CHANGED = "cambiado"
+DELETED = "borrado"
+NEW_FOLDER = "carpeta nueva"
+REPO_CODE = "código"
+REPO_DOCS = "documentación"
+GIT_FOLDER = ".git"
+
+# Las exclusiones del espejo, sin distinguir mayúsculas (NTFS y SMB no las distinguen).
+_EXCLUDED = IgnoreSpec.from_lines(pattern.casefold() for pattern in MIRROR_EXCLUDED)
 
 
 class MirrorError(Exception):
@@ -193,6 +225,270 @@ def _read_photo(path: Path) -> MirrorState:
         photo=True,
         path=path,
     )
+
+
+@dataclass(frozen=True)
+class DestChange:
+    """Un cambio del destino desde el último espejo: su ruta (con «/» y su mayúscula),
+    su tipo (``NEW``, ``CHANGED``, ``DELETED`` o ``NEW_FOLDER``) y si está dentro de un
+    ``.git``."""
+
+    path: str
+    kind: str
+    in_git: bool
+
+    @property
+    def repo(self) -> str:
+        """El repositorio de la ruta: el código (su carpeta) o la documentación."""
+        return repo_of(self.path)
+
+
+@dataclass
+class SourceTree:
+    """La carpeta del proyecto, sin lo excluido: el sha256 de cada fichero, sus
+    carpetas (también las vacías) y el tamaño y la fecha con que se leyó cada sha256."""
+
+    files: dict[str, str] = field(default_factory=dict)
+    folders: set[str] = field(default_factory=set)
+    stats: dict[str, tuple[int, int]] = field(default_factory=dict)
+
+
+@dataclass
+class DestinationTree:
+    """El destino sin leer ningún fichero: tamaño y ``mtime_ns`` de cada uno, sus
+    carpetas y lo excluido que se encontró (las carpetas, con «/» final)."""
+
+    files: dict[str, tuple[int, int]] = field(default_factory=dict)
+    folders: set[str] = field(default_factory=set)
+    excluded: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Pending:
+    """Lo que iba a dejar un espejo en curso de este PC (rutas sin distinguir
+    mayúsculas): el sha256 de cada fichero, los borrados, sus temporales y las carpetas
+    que crea."""
+
+    files: dict[str, str] = field(default_factory=dict)
+    deleted: set[str] = field(default_factory=set)
+    temps: set[str] = field(default_factory=set)
+    folders: set[str] = field(default_factory=set)
+
+
+def fold(rel: str) -> str:
+    """La clave de una ruta sin distinguir mayúsculas."""
+    return rel.casefold()
+
+
+def in_git(rel: str) -> bool:
+    """Si la ruta está dentro de un ``.git`` (de cualquiera de los dos repositorios)."""
+    return any(part.casefold() == GIT_FOLDER for part in rel.split("/"))
+
+
+def repo_of(rel: str) -> str:
+    """``REPO_CODE`` si la ruta está en la carpeta del código; si no, ``REPO_DOCS``."""
+    first = rel.split("/", 1)[0]
+    return REPO_CODE if first.casefold() == CODE_DIR_IN_DOCS.casefold() else REPO_DOCS
+
+
+def is_excluded(rel: str, is_dir: bool = False) -> bool:
+    """Si el espejo deja fuera la ruta ``rel`` (o una carpeta suya): ni la copia, ni la
+    compara, ni la borra (D-17)."""
+    return _EXCLUDED.matches(fold(rel), is_dir)
+
+
+def sha256_of(path: Path) -> str:
+    """El sha256 de un fichero, leído por trozos."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(HASH_CHUNK), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def check_case_clashes(paths: Iterable[str]) -> None:
+    """:class:`MirrorError` si dos rutas solo difieren en mayúsculas: en NTFS y en el
+    recurso SMB serían el mismo fichero."""
+    seen: dict[str, str] = {}
+    for rel in sorted(paths):
+        other = seen.setdefault(fold(rel), rel)
+        if other != rel:
+            raise MirrorError(
+                f"«{other}» y «{rel}» solo difieren en mayúsculas: en el destino serían el "
+                "mismo fichero; renombre uno de los dos en el PC"
+            )
+
+
+def _walk(root: Path, links_allowed: bool) -> tuple[dict[str, os.stat_result], set[str], list[str]]:
+    """Recorre ``root`` sin seguir enlaces ni lo excluido: (ficheros con su ``lstat``,
+    carpetas, excluidos encontrados). Un enlace, si no se admite, es :class:`MirrorError`;
+    si se admite (el destino), cuenta como fichero."""
+    files: dict[str, os.stat_result] = {}
+    folders: set[str] = set()
+    excluded: list[str] = []
+    pending = [(Path(root), "")]
+    while pending:
+        current, prefix = pending.pop()
+        with os.scandir(current) as listing:
+            entries = sorted(listing, key=lambda entry: entry.name)
+        for entry in entries:
+            rel = prefix + entry.name
+            link = entry.is_symlink() or entry.is_junction()
+            is_dir = not link and entry.is_dir(follow_symlinks=False)
+            if _EXCLUDED.matches_entry(fold(rel), is_dir):
+                excluded.append(rel + "/" if is_dir else rel)
+                continue
+            if link and not links_allowed:
+                raise MirrorError(
+                    f"«{rel}» es un enlace simbólico o una unión en la carpeta del "
+                    "proyecto: el espejo no copia enlaces (el NAS es un recurso SMB); "
+                    "sustitúyalo por el fichero o la carpeta real"
+                )
+            if is_dir:
+                folders.add(rel)
+                pending.append((Path(entry.path), rel + "/"))
+            else:
+                files[rel] = entry.stat(follow_symlinks=False)
+    return files, folders, sorted(excluded)
+
+
+def scan_source(project: Path, previous: SourceTree | None = None) -> SourceTree:
+    """La carpeta del proyecto (RF-007-22): el sha256 de cada fichero, los dos ``.git``
+    incluidos, y sus carpetas, sin lo excluido. Con ``previous`` (un recorrido anterior
+    de la misma publicación), el sha256 de un fichero con el mismo tamaño y la misma
+    fecha no se vuelve a leer (el espejo comprueba igualmente cada copia contra el
+    fichero). Un enlace, o dos rutas que solo difieren en mayúsculas, es
+    :class:`MirrorError`."""
+    files, folders, _excluded = _walk(project, links_allowed=False)
+    check_case_clashes([*files, *folders])
+    tree = SourceTree(folders=folders)
+    for rel, info in files.items():
+        stat = (info.st_size, info.st_mtime_ns)
+        known = previous.files.get(rel) if previous is not None else None
+        if known is not None and previous is not None and previous.stats.get(rel) == stat:
+            tree.files[rel] = known
+        else:
+            tree.files[rel] = sha256_of(Path(project) / rel)
+        tree.stats[rel] = stat
+    return tree
+
+
+def scan_destination(destination: Path) -> DestinationTree:
+    """El destino sin leer ningún fichero: tamaño y fecha de cada uno, sus carpetas y lo
+    excluido que tiene (RF-007-23: el informe lo nombra)."""
+    files, folders, excluded = _walk(destination, links_allowed=True)
+    return DestinationTree(
+        {rel: (info.st_size, info.st_mtime_ns) for rel, info in files.items()},
+        folders,
+        excluded,
+    )
+
+
+def observe(path: Path) -> FileState | None:
+    """El tamaño, la fecha y el sha256 de un fichero del destino, con el tamaño y la
+    fecha leídos justo antes y justo después del sha256 (si no coinciden, otra vez; a
+    la tercera, o si desaparece, ``None``: está cambiando)."""
+    for _attempt in range(READ_ATTEMPTS):
+        try:
+            before = os.stat(path, follow_symlinks=False)
+            digest = sha256_of(path)
+            after = os.stat(path, follow_symlinks=False)
+        except OSError:
+            return None
+        if (before.st_size, before.st_mtime_ns) == (after.st_size, after.st_mtime_ns):
+            return FileState(after.st_size, after.st_mtime_ns, digest)
+    return None
+
+
+def pending_file(destination: str | os.PathLike[str], environ: Mapping[str, str]) -> Path:
+    """El registro del espejo en curso de ``destination`` (``…en-curso.json``)."""
+    key = destination_key(destination)
+    return state_dir(environ) / f"{STATE_PREFIX}{key}{PENDING_SUFFIX}"
+
+
+def load_pending(destination: Path, environ: Mapping[str, str]) -> Pending | None:
+    """El registro de un espejo en curso (o interrumpido) de este PC a ``destination``;
+    ``None`` si no hay o no se puede leer (entonces lo que dejó cuenta como cambio del
+    NAS: se para, nunca se pierde nada)."""
+    path = pending_file(destination, environ)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_bytes().decode("utf-8"))
+        if data.get("formato") != FORMAT or data.get("tipo") != KIND_PENDING:
+            return None
+        files = data["ficheros"]
+        lists = [data[key] for key in ("borrados", "temporales", "carpetas")]
+        if not isinstance(files, dict) or not all(isinstance(item, list) for item in lists):
+            return None
+        rels = [*files, *(rel for item in lists for rel in item)]
+        if not all(valid_rel(rel) for rel in rels):
+            return None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    deleted, temps, folders = ({fold(rel) for rel in item} for item in lists)
+    return Pending({fold(rel): str(sha) for rel, sha in files.items()}, deleted, temps, folders)
+
+
+def _topmost(folders: Iterable[str]) -> list[str]:
+    """De unas carpetas, las que no están dentro de otra de ellas."""
+    chosen = sorted(folders, key=lambda rel: (rel.count("/"), fold(rel)))
+    keys: set[str] = set()
+    result: list[str] = []
+    for rel in chosen:
+        parts = fold(rel).split("/")
+        if any("/".join(parts[:depth]) in keys for depth in range(1, len(parts))):
+            continue
+        keys.add(fold(rel))
+        result.append(rel)
+    return result
+
+
+def destination_changes(
+    destination: Path,
+    base: MirrorState,
+    source: SourceTree,
+    listing: DestinationTree,
+    pending: Pending | None = None,
+) -> tuple[list[DestChange], dict[str, FileState]]:
+    """Los cambios del destino respecto a ``base`` (plan 007 §5.4.7; RF-007-29),
+    ordenados por ruta, y lo observado de cada fichero del destino (por su ruta en el
+    destino): lo del estado si no cambió su tamaño ni su fecha, o lo leído ahora."""
+    pend = pending or Pending()
+    src = {fold(rel): sha for rel, sha in source.files.items()}
+    old = {fold(rel): (rel, info) for rel, info in base.files.items() if not is_excluded(rel)}
+    now = {fold(rel): (rel, stat) for rel, stat in listing.files.items()}
+    changes: list[DestChange] = []
+    observed: dict[str, FileState] = {}
+    for key in sorted(set(old) | set(now)):
+        if key not in now:
+            rel = old[key][0]
+            if key in src and key not in pend.deleted:
+                changes.append(DestChange(rel, DELETED, in_git(rel)))
+            continue
+        rel, stat = now[key]
+        before = old.get(key)
+        if before is not None and stat == (before[1].size, before[1].mtime_ns):
+            observed[rel] = before[1]
+            continue
+        state = observe(Path(destination) / rel)
+        kind = CHANGED if before is not None else NEW
+        if state is None:
+            changes.append(DestChange(rel, kind, in_git(rel)))
+            continue
+        observed[rel] = state
+        if before is not None and state.sha256 == before[1].sha256:
+            continue  # solo cambió la fecha
+        if src.get(key) == state.sha256:
+            continue  # el destino ya tiene lo del PC
+        if pend.files.get(key) == state.sha256 or key in pend.temps:
+            continue  # lo dejó un espejo en curso de este PC
+        changes.append(DestChange(rel, kind, in_git(rel)))
+    known = {fold(rel) for rel in (*base.folders, *source.folders)} | pend.folders
+    unknown = [rel for rel in listing.folders if fold(rel) not in known]
+    changes += [DestChange(rel, NEW_FOLDER, in_git(rel)) for rel in _topmost(unknown)]
+    changes.sort(key=lambda change: fold(change.path))
+    return changes, observed
 
 
 def load_base(destination: Path, environ: Mapping[str, str]) -> MirrorState | None:

@@ -7,7 +7,7 @@ suyo) y un ejecutor de git simulado (:class:`FakeGit`) que responde como git sin
 lanzarlo: así cuestan milisegundos (RNF-007-01). Las de extremo a extremo
 (:class:`EndToEndTest`) usan git de verdad sobre una copia de la plantilla de
 ``tests.support.gitrepo`` (la documentación, el código anidado y un remoto desnudo en
-``%TEMP%``), construida una vez por clase, con la configuración de git aislada.
+``%TEMP%``), construida una vez por proceso, con la configuración de git aislada.
 
 Ninguna prueba lee ``GEOBLENDER_NAS_ESPEJO``, ``GEOBLENDER_DOCS_DIR`` ni ``LOCALAPPDATA``
 del puesto: cada una pasa su entorno a ``publish.main`` (``test_main_always_with_environ``
@@ -22,7 +22,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,6 +45,7 @@ CODE_BRANCH = "main"
 CODE_URL = "https://github.invalid/pruebas/codigo.git"
 SPDX = "# SPDX-License-Identifier: GPL-3.0-or-later\n"
 NOT_PUBLISHED = "RESULTADO: NO PUBLICADO"
+CHANGES = "RESULTADO: CAMBIOS EN EL DESTINO"
 
 # La carpeta del proyecto de prueba (texto UTF-8 y LF): la documentación y, dentro, el
 # código; cada uno con un .git mínimo escrito a mano (FakeGit responde por git).
@@ -87,9 +88,13 @@ class FakeChecks:
     su carpeta de trabajo."""
 
     def __init__(
-        self, check: tuple[int, str] = (0, CHECK_GREEN), docs: tuple[int, str] = (0, DOCS_GREEN)
+        self,
+        check: tuple[int, str] = (0, CHECK_GREEN),
+        docs: tuple[int, str] = (0, DOCS_GREEN),
+        during_check: Callable[[], None] | None = None,
     ) -> None:
         self.check, self.docs = check, docs
+        self.during_check = during_check  # lo que pasa mientras corre tools/check.py
         self.calls: list[tuple[list[str], Path | None]] = []
 
     def __call__(
@@ -102,7 +107,10 @@ class FakeChecks:
     ) -> subprocess.CompletedProcess[str]:
         parts = [str(part) for part in cmd]
         self.calls.append((parts, cwd))
-        code, out = self.docs if "tools/check_docs.py" in parts else self.check
+        is_docs = "tools/check_docs.py" in parts
+        if not is_docs and self.during_check is not None:
+            self.during_check()
+        code, out = self.docs if is_docs else self.check
         return subprocess.CompletedProcess(parts, code, out, "")
 
     def scripts(self) -> list[str]:
@@ -287,7 +295,7 @@ class PublicationAssertions(unittest.TestCase):
         before = gbrepo.snapshot(space.dest)
         outcome = run_publish(space, *args, **kwargs)  # type: ignore[arg-type]
         self.assertEqual(outcome.code, code, outcome.text)
-        self.assertIn(NOT_PUBLISHED, outcome.out)
+        self.assertIn(CHANGES if code == 3 else NOT_PUBLISHED, outcome.out)
         self.assertNotIn("RESULTADO: PUBLICADO", outcome.out)
         if outcome.git is not None:
             self.assertFalse(
@@ -827,6 +835,56 @@ class PushTest(PublicationAssertions):
         self.assertIn("código 128", outcome.out)
 
 
+class DestinationChangesTest(PublicationAssertions):
+    """RF-007-29: si el destino cambió desde el último espejo, código 3 con la lista y
+    cómo traer cada cambio al PC, sin subir, copiar ni borrar nada (plan 007 §5.4.5,
+    paso 7, y otra vez justo antes de copiar)."""
+
+    def test_dest_changes_exit_3_nothing_pushed(self) -> None:
+        """RF-007-29: un fichero nuevo en el destino (no estaba en la foto): código 3
+        antes de las comprobaciones y de la subida, con su tipo, su ruta, su
+        repositorio y cómo traerlo; el destino, igual."""
+        with workspace() as space:
+            write_files(space.dest, {"nota.txt": "del NAS\n"})
+            outcome = self.assertStopped(space, 3)
+            dest, project = space.dest, space.project
+        self.assertIn(f"PARADA    {publish.STEP_DEST}", outcome.out)
+        self.assertIn("1 cambio en el destino desde el último espejo", outcome.out)
+        self.assertRegex(outcome.out, r"nuevo +nota\.txt +documentación")
+        self.assertIn(f'Copy-Item -LiteralPath "{dest}\\nota.txt" "{project}\\nota.txt"', outcome.out)
+        self.assertIn("git diff --no-index", outcome.out)
+        self.assertIn(f"{CHANGES} (1)", outcome.out)
+        self.assertIn("No se ha subido ni copiado nada", outcome.out)
+        self.assertEqual(outcome.checks.calls, [])
+
+    def test_dest_git_change_advice(self) -> None:
+        """RF-007-29, RF-007-32: un cambio dentro de un ``.git`` del destino (alguien usó
+        git allí): marcado como tal, y cómo traer sus commits y rehacer el estado."""
+        with workspace() as space:
+            write_files(space.dest, {f"{CODE}/.git/index": "índice del NAS\n"})
+            outcome = self.assertStopped(space, 3)
+        self.assertRegex(outcome.out, r"nuevo +" + CODE + r"/\.git/index +código, dentro de \.git")
+        self.assertIn("fetch", outcome.out)
+        self.assertIn(publish.OPTION_REBUILD, outcome.out)
+
+    def test_dest_changed_before_copy(self) -> None:
+        """RF-007-29: el destino cambia durante las comprobaciones (después de la
+        primera comparación): la segunda, justo antes de copiar, lo ve: código 3; la
+        subida ya se hizo y el informe lo dice; no se copia nada."""
+        with workspace() as space:
+            late = space.dest / "tarde.txt"
+            checks = FakeChecks(during_check=lambda: late.write_bytes(b"durante\n"))
+            outcome = run_publish(space, checks=checks)
+            listing = sorted(path.name for path in space.dest.iterdir())
+        self.assertEqual(outcome.code, 3, outcome.text)
+        self.assertEqual(listing, ["tarde.txt"])
+        self.assertIn(f"correcto  {publish.STEP_PUSH}", outcome.out)
+        self.assertRegex(outcome.out, r"nuevo +tarde\.txt")
+        self.assertIn(f"Se subió {CODE_BRANCH} a origin", outcome.out)
+        self.assertIn("sigue en el espejo anterior", outcome.out)
+        self.assertIn(f"{CHANGES} (1)", outcome.out)
+
+
 class EnvironTest(unittest.TestCase):
     def test_main_always_with_environ(self) -> None:
         """Plan 007 §7.1: ninguna prueba llama a ``publish.main`` sin su entorno
@@ -846,47 +904,6 @@ class EnvironTest(unittest.TestCase):
         for call in calls:
             with self.subTest(linea=call.lineno):
                 self.assertIn("environ", {keyword.arg for keyword in call.keywords})
-
-
-@requires(gitrepo.GIT, gitrepo.GIT_HINT)
-class EndToEndTest(PublicationAssertions):
-    """Con git de verdad, sobre una copia de la plantilla (una por proceso,
-    ``gitrepo.shared_template``) para cada prueba."""
-
-    template: gitrepo.GitTemplate
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.template = gitrepo.shared_template()
-
-    def setUp(self) -> None:
-        self.project = self.template.project()
-        self.addCleanup(self.project.close)
-        self.space = real_workspace(self.project)
-
-    def publish(self, *args: str) -> Outcome:
-        return run_publish(self.space, *args, real_git=self.project.runner())
-
-    def remote_refs(self) -> str:
-        return self.project.git(self.project.remote, "show-ref").stdout
-
-    def test_dirty_trees_with_git(self) -> None:
-        """RF-007-15: con git de verdad, un cambio sin commit en el código y un fichero
-        nuevo en la documentación: código 1 con los dos, sin subir (el remoto, igual) ni
-        tocar el destino; las lecturas no reescriben ``.git/index``."""
-        (self.project.code / "README.md").write_text("cambiado\n", encoding="utf-8")
-        (self.project.docs / "nota.txt").write_text("x\n", encoding="utf-8")
-        index = self.project.code / ".git" / "index"
-        index_before = (index.stat().st_size, index.stat().st_mtime_ns)
-        refs = self.remote_refs()
-        before = gbrepo.snapshot(self.space.dest)
-        outcome = self.publish()
-        self.assertEqual(outcome.code, 1, outcome.text)
-        for text in ("código", "README.md", "documentación", "nota.txt"):
-            self.assertIn(text, outcome.out)
-        self.assertEqual(self.remote_refs(), refs)
-        self.assertEqual(gbrepo.snapshot_changes(before, gbrepo.snapshot(self.space.dest)), [])
-        self.assertEqual((index.stat().st_size, index.stat().st_mtime_ns), index_before)
 
 
 def real_workspace(project: gitrepo.GitProject) -> Workspace:
@@ -910,6 +927,7 @@ class PublishedTest(unittest.TestCase):
     space: Workspace
     outcome: Outcome
     head: str
+    indexes: dict[Path, tuple[int, int]]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -921,6 +939,7 @@ class PublishedTest(unittest.TestCase):
             project.git(project.code, "commit", "-q", "-a", "-m", "segundo")
             project.git(project.code, "tag", "-a", cls.TAG, "-m", "versión de prueba")
             cls.head = project.git(project.code, "rev-parse", "HEAD").stdout.strip()
+            cls.indexes = cls.index_stats()
             cls.outcome = run_publish(cls.space, real_git=project.runner())
         except BaseException:
             project.close()
@@ -929,6 +948,20 @@ class PublishedTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.project.close()
+
+    @classmethod
+    def index_stats(cls) -> dict[Path, tuple[int, int]]:
+        """Tamaño y fecha del ``.git/index`` de los dos repositorios."""
+        stats = {}
+        for repo in (cls.project.docs, cls.project.code):
+            info = (repo / ".git" / "index").stat()
+            stats[repo] = (info.st_size, info.st_mtime_ns)
+        return stats
+
+    def test_reads_keep_index(self) -> None:
+        """RF-007-15 (plan §2.1, 16): las lecturas de git de la publicación no
+        reescriben el ``.git/index`` de ninguno de los dos repositorios."""
+        self.assertEqual(self.index_stats(), self.indexes)
 
     def test_push_branch_and_tags(self) -> None:
         """RF-007-20: con git de verdad, un commit nuevo y una etiqueta anotada en el
