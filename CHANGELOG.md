@@ -19,16 +19,24 @@ interfaz de Blender, con QGIS abierto y con dos equipos a la vez.
 - **Proyectos de Geoblender** (spec 002). Un proyecto es una carpeta `<Nombre>.gbproj` que
   se copia, se archiva y se publica entera: su base de datos (`project.gpkg`, un GeoPackage
   que QGIS abre directamente) es la fuente de verdad, y los ficheros de Blender son vistas
-  que se guardan en `scenes/` con rutas relativas. En la pestaña **«Proyecto»** de la Vista
-  3D (tecla N) se ven siempre el nombre, el modo (escritura, red, copia local o solo
+  que se guardan en `scenes/` con rutas relativas, sin los datos de la interfaz de Blender
+  y con la salida de render en la carpeta de la vista (también con Ctrl+S): no llevan
+  ninguna ruta del equipo ni el nombre de usuario. Al abrir una, Blender conserva su
+  interfaz, muestra la primera escena y avisa «Library file, loading empty scene»: los
+  datos se cargan igual. En la pestaña **«Proyecto»** de la Vista 3D (tecla N) se ven
+  siempre el nombre, el modo (escritura, red, copia local o solo
   lectura, con su motivo), los sistemas de referencia, el origen local, la ventana de
   trabajo y el paso de rejilla, con los botones del proyecto.
   - **Nuevo proyecto…**: nombre, carpeta, sistema de referencia horizontal (por defecto
     ETRS89 / UTM zona 30N, EPSG:25830) y vertical (por defecto altitudes de Alicante,
     EPSG:5782, o una referencia local con su descripción), ventana de trabajo (coordenadas
-    con coma o punto decimal), paso de rejilla (de 0,5 a 5 m) y Z0. Se rechaza con el campo y
-    el valor una ventana con X e Y intercambiadas, fuera del huso o vacía, un nombre que
-    Windows no admite y una carpeta tan larga que Blender no podría usar las rutas del
+    con coma o punto decimal), paso de rejilla (de 0,5 a 5 m) y Z0. Una ventana fuera del
+    ámbito de su sistema de referencia, pero a 3° de longitud o menos de su huso UTM (como
+    Vinaròs, Benicarló o Peñíscola en EPSG:25830, la de la cartografía valenciana), se
+    admite con un aviso de cuánto se sale del huso y de la deformación de escala (en
+    Vinaròs, +671 ppm: 0,67 m por km). Se rechaza con el campo y el valor una ventana con X
+    e Y intercambiadas, más allá de ese huso extendido o vacía, un nombre que Windows no
+    admite y una carpeta tan larga que Blender no podría usar las rutas del
     proyecto (más de 259 caracteres: se dice la ruta y el límite); nunca queda una carpeta a
     medias. El sistema de referencia nunca se supone: el diálogo lo propone y, si falta, no
     se crea el proyecto. Los sistemas de referencia salen de
@@ -39,7 +47,9 @@ interfaz de Blender, con QGIS abierto y con dos equipos a la vez.
     0,5 mm). Si la ventana se aleja más de 8 km del origen, se avisa con las esquinas y el
     error estimado.
     **Ventana de trabajo…** cambia la ventana, el paso y el origen con un motivo
-    obligatorio: no toca ninguna coordenada guardada y marca las vistas como desfasadas.
+    obligatorio (y el mismo aviso del huso extendido): no toca ninguna coordenada guardada
+    y marca las vistas como desfasadas; deshacer (Ctrl+Z) no deshace el cambio y las deja
+    desfasadas.
   - **Abrir proyecto…**, **Abrir reciente** (los 10 últimos de cada equipo, guardados en el
     equipo y no en el proyecto), **Guardar** y **Cerrar proyecto**. Al abrir se comprueba que
     la cabecera y la base de datos coinciden en identidad, sistema de referencia y origen; si
