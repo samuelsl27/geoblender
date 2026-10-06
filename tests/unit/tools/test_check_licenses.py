@@ -576,12 +576,17 @@ def _assets_found(
     files: Mapping[str, str | bytes], *, reuse: str | None = None, cc0: bool = True
 ) -> list[Finding]:
     """LIC-04 sobre un árbol con el texto CC0 y el ``REUSE.toml`` reales (o ``reuse``)
-    más ``files``."""
+    más ``files``. Van también los demás textos reales de ``LICENSES/``, que nombran las
+    anotaciones de datos de terceros del ``REUSE.toml`` real (desde la spec 002, T02, la
+    de ``thirdparty/epsg/``); un texto que no se usa no es un incumplimiento."""
     tree: dict[str, str | bytes] = {
         "REUSE.toml": reuse
         if reuse is not None
         else (ROOT / "REUSE.toml").read_bytes()
     }
+    for text in sorted((ROOT / "LICENSES").glob("*.txt")):
+        if f"LICENSES/{text.name}" != CC0_RELPATH:
+            tree[f"LICENSES/{text.name}"] = text.read_bytes()
     if cc0:
         tree[CC0_RELPATH] = (ROOT / CC0_RELPATH).read_bytes()
     tree.update(files)

@@ -9,7 +9,8 @@ sin avisar.
   ``tests/``.
 - TST-02 (T43): en una carpeta de pruebas, todo ``.py`` salvo ``__init__.py`` casa con
   el patrón con que la carga su paso (``SUITE_PATTERNS``: ``test*.py`` en
-  ``tests/unit``, ``tests/referencia`` y ``tests/banco``; ``test_*.py`` en
+  ``tests/unit``, ``tests/arnes`` (``--completo``; spec 001 0.6), ``tests/referencia`` y
+  ``tests/banco``; ``test_*.py`` en
   ``tests/blender`` y ``tests/rendimiento``; ``perf_*.py`` en
   ``tests/rendimiento/blender``) y es un nombre de módulo válido; y no hay ``.py`` en
   ``tests/`` fuera de esas carpetas, de ``tests/support/`` (las ayudas) y de
@@ -105,6 +106,7 @@ SUITE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("tests/rendimiento/", "test_*.py"),
     ("tests/blender/", "test_*.py"),
     ("tests/unit/", UNITTEST_PATTERN),
+    ("tests/arnes/", UNITTEST_PATTERN),
     ("tests/referencia/", UNITTEST_PATTERN),
     ("tests/banco/", UNITTEST_PATTERN),
 )

@@ -26,6 +26,10 @@
 - RF-007-14 (spec 007, T18): con ``--documentacion``, tras los obligatorios y los demás
   opcionales, ``tools/check_docs.py`` sobre la documentación que encuentra
   ``repo.find_docs``; sin documentación, «omitido» con el motivo, sin ser un fallo.
+- RF-001-06, RF-001-07 (spec 001 0.6; spec 002, D-9 y T48): con ``--completo``, tras
+  «blender», el paso «arnés» (``unittest`` de ``tests/arnes``, las pruebas del arnés que
+  lanzan Blender entero), en el que «sin pruebas» o un fichero sin cargar son un fallo;
+  sin la opción no se ejecuta, y el resumen lo dice antes de ``RESULTADO``.
 
 Ninguna prueba lanza Blender ni Python: el ejecutor simulado anota cada orden y
 devuelve una salida fija por paso; en los pasos con pruebas que terminan con 0, la
@@ -102,7 +106,10 @@ DEFAULT_RESULTS: Mapping[str, tuple[int, str, str]] = {
             217, body="test_a (tests.unit.test_a.A.test_a)\nRF-001-01: doc. ... ok"
         ),
     ),
-    "referencia": (5, "", NO_TESTS),
+    # Desde la spec 002 (T03) el repositorio tiene casos de referencia: por defecto el
+    # paso los carga (el ejecutor simulado nombra los módulos que hay en disco). «Sin
+    # casos» se prueba en una raíz temporal sin ellos (test_empty_reference_suite_ok).
+    "referencia": (0, "", _unittest_output(2)),
     "licencias": (0, "Licencias (LIC-01 a LIC-04): correcto\n", ""),
     "manifiesto": (0, 'Success parsing TOML in "Geoblender"\n', ""),
     "blender": (
@@ -136,8 +143,11 @@ DEFAULT_RESULTS: Mapping[str, tuple[int, str, str]] = {
         "RESULTADO: DOCUMENTACIÓN CORRECTA (6 ficheros, 0,0 s)\n",
         "",
     ),
+    "arnés": (0, "", _unittest_output(23)),
 }
 OPTIONAL = ["rendimiento", "rendimiento-blender", "banco"]
+HARNESS = "arnés"  # el paso de --completo (spec 001 0.6; spec 002, T48)
+NOT_COMPLETE_NOTE = "--completo"  # la línea del resumen sin --completo la nombra
 DOCS_STEP = "documentación"
 NO_DOCS = f"no hay documentación en la carpeta madre ni en {ENV_DOCS_DIR}"
 
@@ -165,11 +175,19 @@ def step_of(cmd: Sequence[str]) -> str:
             "tests/unit": "unitarias",
             "tests/referencia": "referencia",
             "tests/rendimiento": "rendimiento",
+            "tests/arnes": HARNESS,
         }[folder]
     raise AssertionError(f"orden inesperada: {parts}")
 
 
-TEST_STEPS = ("unitarias", "referencia", "rendimiento", "blender", "rendimiento-blender")
+TEST_STEPS = (
+    "unitarias",
+    "referencia",
+    "rendimiento",
+    "blender",
+    "rendimiento-blender",
+    HARNESS,
+)
 
 
 def suite_of(step: str, cmd: Sequence[str]) -> tuple[str, str]:
@@ -465,7 +483,7 @@ class StepsTest(unittest.TestCase):
                     _step_line(result.out, name), rf"^  correcto  {name}\s+\d+,\d s"
                 )
         self.assertIn("(217 pruebas)", _step_line(result.out, "unitarias"))
-        self.assertIn("(sin casos)", _step_line(result.out, "referencia"))
+        self.assertIn("(2 pruebas)", _step_line(result.out, "referencia"))
         self.assertIn("(12 pruebas)", _step_line(result.out, "blender"))
         self.assertRegex(lines[-1], r"^RESULTADO: VERDE \(\d+,\d s\)$")
         self.assertNotIn("Ran 217", result.out)
@@ -552,7 +570,7 @@ class StepsTest(unittest.TestCase):
         body = "\n".join(
             [
                 "test_pendiente (tests.unit.test_saltada.Saltada.test_pendiente)",
-                f"RF-001-06: doc. ... skipped '{SKIP_PREFIX} qgis: instale QGIS'",
+                f"RF-001-06: doc. ... skipped '{SKIP_PREFIX} futuro: instale el recurso'",
                 "test_nada (tests.unit.test_saltada.Saltada.test_nada) ... skipped "
                 f"'{SKIP_PREFIX} nada: nada'",
             ]
@@ -563,13 +581,13 @@ class StepsTest(unittest.TestCase):
         line = _step_line(result.out, "unitarias")
         self.assertTrue(line.lstrip().startswith("fallo"), line)
         self.assertIn("2 omisiones sin recurso", line)
-        for name in ("«qgis»", "«nada»", "tests/support/resources.py", "RESOURCES"):
+        for name in ("«futuro»", "«nada»", "tests/support/resources.py", "RESOURCES"):
             with self.subTest(texto=name):
                 self.assertIn(name, result.out)
         self.assertIn("tests.unit.test_saltada.Saltada.test_pendiente", result.out)
         self.assertNotIn("VERDE CON OMISIONES", result.out)
 
-        with _manifest_root(_resources_file("symlink", "qgis", "nada")) as tmp:
+        with _manifest_root(_resources_file("symlink", "futuro", "nada")) as tmp:
             result = run_check(runner=FakeRunner({"unitarias": (0, "", stderr)}), root=tmp)
         self.assertEqual(result.code, 0, result.out)
         self.assertIn("VERDE CON OMISIONES (2)", result.out)
@@ -682,9 +700,12 @@ class SuitesTest(unittest.TestCase):
 
     def test_empty_reference_suite_ok(self) -> None:
         """RF-001-07: ``tests/referencia`` sin casos (código 5) es correcto, «sin
-        casos»; con casos que fallan, fallo."""
-        result = run_check()
-        self.assertEqual(result.code, 0)
+        casos»; con casos que fallan, fallo. Sin casos, en una raíz temporal: el
+        repositorio real los tiene desde la spec 002."""
+        with _manifest_root() as tmp:
+            empty = FakeRunner({"referencia": (5, "", NO_TESTS)})
+            result = run_check(runner=empty, root=tmp)
+        self.assertEqual(result.code, 0, result.out)
         self.assertIn("(sin casos)", _step_line(result.out, "referencia"))
         failing = _unittest_output(2, "FAILED (failures=1)", "FAIL: test_volumen")
         result = run_check(runner=FakeRunner({"referencia": (1, "", failing)}))
@@ -775,7 +796,11 @@ class UnloadedFilesTest(unittest.TestCase):
         una carpeta sin ``__init__.py``) pone su paso en fallo aunque la orden termine
         con 0, y la salida lo nombra: en «unitarias» y en «blender»."""
         runner = FakeRunner(
-            {"unitarias": (0, "", self.UNIT), "blender": (0, "", self.BLENDER)},
+            {
+                "unitarias": (0, "", self.UNIT),
+                "blender": (0, "", self.BLENDER),
+                "referencia": (5, "", NO_TESTS),
+            },
             loaded=False,
         )
         with _manifest_root(self.FILES) as tmp:
@@ -801,6 +826,7 @@ class UnloadedFilesTest(unittest.TestCase):
             {
                 "unitarias": (0, "", self.UNIT),
                 "blender": (0, "", self.BLENDER),
+                "referencia": (5, "", NO_TESTS),
                 "rendimiento": (5, "", NO_TESTS),
                 "rendimiento-blender": (1, "", "NO HAY PRUEBAS en «x»\n"),
             },
@@ -932,7 +958,9 @@ class SummaryTest(unittest.TestCase):
         line = _step_line(result.out, "referencia")
         self.assertTrue(line.lstrip().startswith("fallo"), line)
         self.assertNotIn("sin casos", line)
-        result = run_check()
+        with _manifest_root() as tmp:
+            empty = FakeRunner({"referencia": (5, "", NO_TESTS)})
+            result = run_check(runner=empty, root=tmp)
         self.assertIn("(sin casos)", _step_line(result.out, "referencia"))
 
 
@@ -1288,6 +1316,133 @@ class OptionalStepsTest(unittest.TestCase):
         result = run_check("--rendimiento", "--banco", runner=runner, steps=steps)
         self.assertEqual(result.code, 0, result.out)
         self.assertEqual(runner.steps(), [*MANDATORY, "iconos", *OPTIONAL])
+
+
+class CompleteStepTest(unittest.TestCase):
+    """RF-001-06, RF-001-07 (spec 001 0.6): el paso «arnés» de ``--completo``, con las
+    pruebas del arnés que lanzan Blender entero (``tests/arnes``). La comprobación de cada
+    tarea no lo ejecuta y lo dice; la publicación lo pide siempre (D-9 de la spec 002;
+    T48)."""
+
+    def _note_lines(self, out: str) -> list[str]:
+        return [line for line in out.splitlines() if NOT_COMPLETE_NOTE in line]
+
+    def test_without_completo_no_harness_and_summary_says_so(self) -> None:
+        """RF-001-06: sin ``--completo``, solo los pasos obligatorios (ningún «arnés») y,
+        justo antes de ``RESULTADO``, una línea que dice que no se han ejecutado las
+        pruebas del arnés que lanzan Blender entero (``tests/arnes``), que las ejecuta
+        ``--completo`` y que la publicación las pide siempre. El resultado sigue siendo
+        «VERDE»: no es una omisión por un recurso."""
+        result = run_check()
+        self.assertEqual(result.code, 0, result.out)
+        self.assertEqual(result.runner.steps(), MANDATORY)
+        self.assertNotRegex(result.out, rf"(?m)^  \S+\s+{HARNESS}\s")
+        self.assertNotIn("--completo", result.out.splitlines()[0])
+        lines = result.out.strip().splitlines()
+        self.assertRegex(lines[-1], r"^RESULTADO: VERDE \(\d+,\d s\)$")
+        (note,) = self._note_lines(result.out)
+        self.assertEqual(lines[-2], note)
+        for text in ("no se han ejecutado", "tests/arnes", "Blender entero", "publicación"):
+            with self.subTest(texto=text):
+                self.assertIn(text, note)
+
+        # También cuando la comprobación no es verde.
+        failing = FakeRunner({"licencias": (1, "LIC-01\n", "")})
+        result = run_check(runner=failing)
+        lines = result.out.strip().splitlines()
+        self.assertRegex(lines[-1], r"^RESULTADO: NO VERDE ")
+        self.assertEqual(lines[-2], self._note_lines(result.out)[0])
+
+    def test_completo_runs_harness_after_blender(self) -> None:
+        """RF-001-06: con ``--completo``, el paso «arnés» va justo después de «blender»
+        (y antes de los opcionales pedidos), con ``unittest discover -v`` de
+        ``tests/arnes`` como «unitarias», desde la raíz; su línea lleva el número de
+        pruebas, la cabecera nombra la opción y el resumen ya no dice que falten."""
+        result = run_check("--completo")
+        self.assertEqual(result.code, 0, result.out)
+        runner = result.runner
+        self.assertEqual(runner.steps(), [*MANDATORY, HARNESS])
+        call = runner.call(HARNESS)
+        self.assertEqual(
+            call.cmd,
+            blender.python_cmd(
+                INSTALL,
+                *RETURN_VALUE_IS_ERROR,
+                "-m",
+                "unittest",
+                "discover",
+                "-v",
+                "-s",
+                "tests/arnes",
+                "-t",
+                ".",
+            ),
+        )
+        self.assertEqual(call.cwd, ROOT)
+        self.assertEqual(call.env["PYTHONPATH"], _python_env()["PYTHONPATH"])
+        self.assertRegex(
+            _step_line(result.out, HARNESS), rf"^  correcto  {HARNESS}\s+\d+,\d s  \(23 pruebas\)$"
+        )
+        self.assertIn("--completo", result.out.splitlines()[0])
+        self.assertNotIn("no se han ejecutado", result.out)
+        self.assertRegex(result.out.strip().splitlines()[-1], r"^RESULTADO: VERDE \(")
+
+        result = run_check("--rendimiento", "--completo", "--banco")
+        self.assertEqual(result.code, 0, result.out)
+        self.assertEqual(result.runner.steps(), [*MANDATORY, HARNESS, *OPTIONAL])
+
+        options = {step.name: step.option for step in check.STEPS}
+        self.assertEqual(options[HARNESS], "--completo")
+
+    def test_completo_failures(self) -> None:
+        """RF-001-06, RF-001-07: con ``--completo``, una prueba del arnés que falla, una
+        carpeta ``tests/arnes`` sin pruebas (código 5 de ``unittest``) o un fichero de
+        ``tests/arnes`` que ``unittest`` no cargó ponen el paso en fallo («NO VERDE»)."""
+        red = _unittest_output(23, "FAILED (failures=1)", "FAIL: test_failing_test_exit_nonzero")
+        result = run_check("--completo", runner=FakeRunner({HARNESS: (1, "", red)}))
+        self.assertEqual(result.code, 1, result.out)
+        self.assertTrue(_step_line(result.out, HARNESS).lstrip().startswith("fallo"))
+        self.assertIn("FAIL: test_failing_test_exit_nonzero", result.out)
+        self.assertIn(f"«{HARNESS}»", result.out.strip().splitlines()[-1])
+
+        result = run_check("--completo", runner=FakeRunner({HARNESS: (5, "", NO_TESTS)}))
+        self.assertEqual(result.code, 1, result.out)
+        line = _step_line(result.out, HARNESS)
+        self.assertTrue(line.lstrip().startswith("fallo"), line)
+        self.assertIn("sin pruebas", line)
+
+        files = {
+            "tests/__init__.py": SPDX,
+            "tests/arnes/__init__.py": SPDX,
+            "tests/arnes/test_lanzador.py": SPDX,
+            "tests/arnes/otra/test_falla.py": SPDX,
+        }
+        loaded = _unittest_output(
+            1, body="test_x (tests.arnes.test_lanzador.L.test_x) ... ok"
+        )
+        runner = FakeRunner(
+            {
+                "unitarias": (0, "", _unittest_output(1)),
+                "referencia": (5, "", NO_TESTS),
+                "blender": (0, "", _launcher_output(1)),
+                HARNESS: (0, "", loaded),
+            },
+            loaded=False,
+        )
+        with _manifest_root(files) as tmp:
+            result = run_check("--completo", runner=runner, root=tmp)
+        self.assertEqual(result.code, 1, result.out)
+        line = _step_line(result.out, HARNESS)
+        self.assertTrue(line.lstrip().startswith("fallo"), line)
+        self.assertIn("1 fichero sin cargar", line)
+        self.assertIn("tests/arnes/otra/test_falla.py", result.out)
+
+    def test_usage_names_completo(self) -> None:
+        """RF-001-06: la ayuda explica ``--completo``."""
+        result = run_check("--ayuda")
+        self.assertEqual(result.code, 0)
+        self.assertIn("--completo", result.out)
+        self.assertIn("tests/arnes", result.out)
 
 
 class DocsStepTest(unittest.TestCase):

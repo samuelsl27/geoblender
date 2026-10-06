@@ -21,7 +21,7 @@ Desde la raíz de este repositorio, en PowerShell, siempre con el Python de Blen
 
 ```powershell
 $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe"
-& $PY -B tools/check.py          # el «verde»; --rendimiento, --banco, --documentacion
+& $PY -B tools/check.py          # el «verde»; --completo (al publicar), --rendimiento, --banco, --documentacion
 # Solo las unitarias, para iterar (no sustituye a check.py)
 $env:PYTHONPATH = "$PWD\.deps\site"; & $PY -B -s -X utf8 -m unittest discover -s tests/unit -t .
 & $PY -B tools/check_docs.py     # la documentación (carpeta madre o GEOBLENDER_DOCS_DIR)

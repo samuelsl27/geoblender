@@ -7,10 +7,11 @@ resultado.
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
+from . import core
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
-# contrato 2); vacía hasta que una spec añada la primera.
-classes: tuple[type, ...] = ()
+# contrato 2): core (spec 002).
+classes: tuple[type, ...] = (*core.classes,)
 
 
 def register() -> None:

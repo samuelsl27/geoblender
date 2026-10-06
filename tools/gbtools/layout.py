@@ -34,6 +34,11 @@ ASSET_ROOTS: tuple[str, ...] = (
 # depende de ningún fichero de la documentación.
 CHECK_RELPATH = "tools/check.py"
 ROOT_MARKERS: tuple[str, ...] = (MANIFEST_RELPATH, CHECK_RELPATH)
+# La opción de ``tools/check.py`` que añade las pruebas del arnés que lanzan Blender
+# entero (``tests/arnes``); ``tools/publish.py`` la pide siempre (spec 001 0.6,
+# RF-001-06; D-9 de la spec 002).
+CHECK_COMPLETE_OPTION = "--completo"
+HARNESS_TESTS_RELPATH = "tests/arnes"
 
 # REP-01: las únicas entradas de la raíz del repositorio de código (con su mayúscula).
 CODE_ROOT_ENTRIES: frozenset[str] = frozenset(

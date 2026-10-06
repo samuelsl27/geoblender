@@ -13,7 +13,7 @@
 
 Ninguna prueba lanza Blender (ejecutor y lanzador simulados) ni toca una unidad de red:
 el tipo de unidad lo da una función simulada. La prueba con el Blender real está en
-``test_harness_blender.py``.
+``tests/arnes/test_harness_blender.py`` (``tools/check.py --completo``).
 """
 
 import contextlib

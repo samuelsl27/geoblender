@@ -5,8 +5,10 @@ modelado geológico, modelo de bloques, optimización y diseño de cortas y cant
 cubicación, reservas, fases y planos. La desarrolla IMGA, consultora española de ingeniería
 de minas, para su propio trabajo de proyectos de explotación y restauración.
 
-> **Estado: Geoblender 0.1.0 se instala, todavía sin funciones mineras (spec 001).** Se
-> habilita y se desinstala sin dejar rastro, y `tools/check.py` comprueba todo el código.
+> **Estado: Geoblender 0.1.0 se instala (spec 001) y crea y abre proyectos `.gbproj` con su
+> sistema de referencia y su origen local (spec 002, pendiente de las comprobaciones con la
+> interfaz y con dos equipos), todavía sin funciones mineras.** Se habilita y se desinstala
+> sin dejar rastro, y `tools/check.py` comprueba todo el código.
 
 Este repositorio contiene **solo el código**. La documentación del proyecto (constitución,
 proceso de trabajo, decisiones de arquitectura, specs y trampas conocidas) es interna de IMGA
@@ -50,7 +52,7 @@ consentimiento explícito.
 | --- | --- |
 | `geoblender/` | La extensión (id `geoblender`): lo único que se empaqueta |
 | `tools/` | Herramientas de desarrollo, solo con la biblioteca estándar |
-| `tests/` | Pruebas unitarias, dentro de Blender, de referencia, de rendimiento y de los bancos privados |
+| `tests/` | Pruebas unitarias, dentro de Blender, del propio arnés (`tests/arnes`, con `--completo`), de referencia, de rendimiento y de los bancos privados |
 | `LICENSE`, `LICENSES/`, `REUSE.toml` | Licencia del código y licencias de los activos y de los datos de terceros |
 | `dist/`, `.deps/` | Salidas locales (el zip y las ruedas extraídas para las pruebas); no se versionan |
 
@@ -72,25 +74,30 @@ Desde la raíz de este repositorio, en PowerShell y siempre con el Python de Ble
 ```powershell
 $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe"
 & $PY -B tools/check.py          # comprobación completa: la definición de «verde»
+& $PY -B tools/check.py --completo  # además, las pruebas del arnés que lanzan Blender entero
 & $PY -B tools/check_docs.py     # comprobación de la documentación
 & $PY -B tools/dev_install.py    # instala la extensión en un perfil de Blender aislado
 & $PY -B tools/build.py          # valida el manifiesto y genera el zip en dist/
 & $PY -B tools/fetch_wheels.py   # descarga las ruedas fijadas (lo hace una persona)
+& $PY -B tools/gen_crs_catalog.py  # regenera el catálogo de CRS (GEOBLENDER_PROJ_BIN)
 & $PY -B tools/publish.py        # sube a GitHub y refleja en el NAS (solo quien publica)
 ```
 
 | Orden | Opciones |
 | --- | --- |
-| `tools/check.py` | `--rendimiento` (requisitos de rendimiento, también dentro de Blender), `--banco` (bancos privados) y `--documentacion` (añade la comprobación de la documentación; sin ella, «omitido») |
+| `tools/check.py` | `--completo` (añade las pruebas del arnés que lanzan Blender entero, `tests/arnes`: la publicación las pide siempre), `--rendimiento` (requisitos de rendimiento, también dentro de Blender), `--banco` (bancos privados) y `--documentacion` (añade la comprobación de la documentación; sin ella, «omitido») |
 | `tools/check_docs.py` | `CARPETA` (la documentación, si no es la carpeta madre ni la de `GEOBLENDER_DOCS_DIR`) |
 | `tools/dev_install.py` | `--perfil CARPETA`, `--abrir` (Blender con interfaz) y `--desinstalar` |
 | `tools/build.py` | `--probar-instalacion` (instala el zip en un perfil limpio y lo desinstala) |
 | `tools/fetch_wheels.py` | `--desde CARPETA` (almacén de ruedas, sin red) |
+| `tools/gen_crs_catalog.py` | `--comprobar` (genera en memoria y compara con el catálogo guardado, sin escribir) |
 | `tools/publish.py` | `--destino CARPETA` (si no, `GEOBLENDER_NAS_ESPEJO`), `--solo-espejo` (sin comprobar el código ni subirlo) y `--rehacer-estado` (ver abajo) |
 
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
+Sin `--completo` (la comprobación de cada tarea, en unos 40 s) no ejecuta las pruebas del
+propio arnés que lanzan Blender entero, y lo dice antes del resultado.
 
 ## Variables de entorno
 
@@ -105,7 +112,7 @@ Todas son opcionales y empiezan por `GEOBLENDER_`.
 | `GEOBLENDER_WHEELHOUSE` | Almacén de ruedas del que `tools/fetch_wheels.py` copia sin red |
 | `GEOBLENDER_SILVESTRE_DIR` | Banco privado de Silvestre: solo lectura y solo con `--banco` |
 | `GEOBLENDER_RECMIN_BANK_DIR` | Banco privado de RecMin: solo lectura |
-| `GEOBLENDER_QGIS_DIR` | Instalación de QGIS (con su GDAL) para las pruebas de compatibilidad |
+| `GEOBLENDER_QGIS_DIR` | Instalación de QGIS 4.2 (la carpeta con `bin\ogrinfo.exe`) para las pruebas de compatibilidad del GeoPackage con su GDAL; sin ella se omiten con `[ENTORNO] qgis` |
 | `GEOBLENDER_NET_TEST_DIR` | Carpeta de red para las comprobaciones manuales; nunca en la carpeta de expedientes de clientes |
 | `GEOBLENDER_PROJ_BIN` | Carpeta con `projinfo` y `cs2cs`, para regenerar el catálogo de CRS |
 | `GEOBLENDER_TEST_RUNTIME_SITE` | Otra ubicación del motor de cálculo de pruebas |
@@ -124,7 +131,7 @@ del proyecto (la documentación, con este repositorio dentro) en el NAS, siempre
 carpeta `Geoblender` de la documentación, si alguno de los dos árboles no está limpio o en
 una rama, si el destino no vale (la carpeta del proyecto, la raíz de una unidad, la carpeta
 de expedientes de clientes…) o si la configuración de git lleva credenciales. Si todo está
-en orden, ejecuta `tools/check.py` y `tools/check_docs.py`, sube la rama actual con sus
+en orden, ejecuta `tools/check.py --completo` y `tools/check_docs.py`, sube la rama actual con sus
 etiquetas sin forzar y hace el espejo: copia solo lo que cambió y comprueba el resultado.
 
 El espejo **avisa y no borra**: guarda en `%LOCALAPPDATA%\Geoblender\espejo` el estado del

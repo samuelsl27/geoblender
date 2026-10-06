@@ -1,0 +1,373 @@
+# Catálogo de idioma de Geoblender: msgid en inglés (es también la versión inglesa) y su
+# traducción al español. Forma: ["msgid"] con es = "texto"; los marcadores {nombre} son los
+# de str.format y tienen que ser los mismos en los dos (spec 002, T28; iconos-e-idioma.md §2).
+# Las etiquetas de los comandos de la barra las añade el catálogo de comandos (spec 003).
+
+# Pestaña «Proyecto» (spec 002) --------------------------------------------------------
+
+["Project"]
+es = "Proyecto"
+
+["No project is open"]
+es = "No hay ningún proyecto abierto"
+
+["Name: {name}"]
+es = "Nombre: {name}"
+
+["Mode: {mode}"]
+es = "Modo: {mode}"
+
+["Mode: read-only: {reason}"]
+es = "Modo: solo lectura: {reason}"
+
+["writing (local disk)"]
+es = "escritura (disco local)"
+
+["writing on the network (cache on this computer)"]
+es = "escritura en red (caché en este equipo)"
+
+["writing in a local working copy"]
+es = "escritura en una copia local de trabajo"
+
+["Horizontal CRS: EPSG:{code} · {name}"]
+es = "CRS horizontal: EPSG:{code} · {name}"
+
+["Vertical CRS: EPSG:{code} · {name}"]
+es = "CRS vertical: EPSG:{code} · {name}"
+
+["Vertical CRS: local reference · {note}"]
+es = "CRS vertical: referencia local · {note}"
+
+["GeoOrigin: {xyz} m"]
+es = "GeoOrigin: {xyz} m"
+
+["Work window: X {xmin} – {xmax}, Y {ymin} – {ymax} m"]
+es = "Ventana de trabajo: X {xmin} – {xmax}, Y {ymin} – {ymax} m"
+
+["Work window: not available (only the header could be read)"]
+es = "Ventana de trabajo: no disponible (solo se ha leído la cabecera)"
+
+["Grid step: {step} m"]
+es = "Paso de rejilla: {step} m"
+
+["Journal: classic"]
+es = "Diario: clásico"
+
+["Journal: WAL (it is converted back to classic when writing)"]
+es = "Diario: WAL (se devuelve al clásico al escribir)"
+
+["Journal: unknown"]
+es = "Diario: desconocido"
+
+["The view is out of date: reload its data"]
+es = "La vista está desfasada: vuelva a cargar sus datos"
+
+["Dismiss"]
+es = "Descartar"
+
+# Botones y menús (los mismos textos que BS §8.1) ---------------------------------------
+
+["New project…"]
+es = "Nuevo proyecto…"
+
+["Open project…"]
+es = "Abrir proyecto…"
+
+["Open recent"]
+es = "Abrir reciente"
+
+["No recent projects"]
+es = "No hay proyectos recientes"
+
+["{name} · {path}"]
+es = "{name} · {path}"
+
+["Save"]
+es = "Guardar"
+
+["Close project"]
+es = "Cerrar proyecto"
+
+["Work window…"]
+es = "Ventana de trabajo…"
+
+["Reference system…"]
+es = "Sistema de referencia…"
+
+["GeoOrigin…"]
+es = "Origen local…"
+
+["Project lock…"]
+es = "Cerrojo del proyecto…"
+
+# Diálogos ---------------------------------------------------------------------------------
+
+["New project"]
+es = "Nuevo proyecto"
+
+["Open project"]
+es = "Abrir proyecto"
+
+["Project lock"]
+es = "Cerrojo del proyecto"
+
+["Coordinate reference system"]
+es = "Sistema de referencia"
+
+["Local origin (GeoOrigin)"]
+es = "Origen local (GeoOrigin)"
+
+["Work window and grid"]
+es = "Ventana de trabajo y rejilla de cálculo"
+
+["Folder"]
+es = "Carpeta"
+
+["folder"]
+es = "carpeta"
+
+["Name"]
+es = "Nombre"
+
+["Horizontal CRS"]
+es = "CRS horizontal"
+
+["Vertical CRS"]
+es = "CRS vertical"
+
+["Local reference"]
+es = "Referencia local"
+
+["local reference"]
+es = "referencia local"
+
+["Elevations referred to a local datum, with its description"]
+es = "Cotas referidas a una referencia local, con su descripción"
+
+["Description of the local reference"]
+es = "Descripción de la referencia local"
+
+["Work window"]
+es = "Ventana de trabajo"
+
+["X min (m)"]
+es = "X mín. (m)"
+
+["Y min (m)"]
+es = "Y mín. (m)"
+
+["X max (m)"]
+es = "X máx. (m)"
+
+["Y max (m)"]
+es = "Y máx. (m)"
+
+["Grid step"]
+es = "Paso de rejilla"
+
+["Z0 (m)"]
+es = "Z0 (m)"
+
+["Reason"]
+es = "Motivo"
+
+["Read-only"]
+es = "Solo lectura"
+
+["Force the lock"]
+es = "Forzar el cerrojo"
+
+["Migrate the project"]
+es = "Migrar el proyecto"
+
+["Stale lock after (min)"]
+es = "Cerrojo caducado a los (min)"
+
+["Local copies folder"]
+es = "Carpeta de las copias locales"
+
+["choose the folder where the project will be created"]
+es = "elija la carpeta donde se creará el proyecto"
+
+["The lock is stale or reserved: {holder}."]
+es = "El cerrojo está caducado o reservado: {holder}."
+
+["Tick «Force the lock» to open it for writing."]
+es = "Marque «Forzar el cerrojo» para abrirlo en escritura."
+
+["The project uses schema {old}, older than this version of Geoblender: to write to it, it must be migrated."]
+es = "El proyecto es del esquema {old}, anterior al de esta versión de Geoblender: para escribir en él hay que migrarlo."
+
+["A full copy is made first, next to the original: «{backup}»."]
+es = "Antes se hará una copia completa junto al original: «{backup}»."
+
+["Tick «Migrate the project» to do it; otherwise it opens read-only."]
+es = "Marque «Migrar el proyecto» para hacerlo; si no, se abre en solo lectura."
+
+["Lock: {holder}."]
+es = "Cerrojo: {holder}."
+
+["Changing the CRS of a project with data will come later (R-79)"]
+es = "Cambiar el CRS de un proyecto con datos llegará más adelante (R-79)"
+
+["The stored coordinates do not change; the views will be out of date"]
+es = "Las coordenadas guardadas no cambian; las vistas quedarán desfasadas"
+
+# Mensajes ---------------------------------------------------------------------------------
+
+["Project «{name}» created: {status}"]
+es = "Proyecto «{name}» creado: {status}"
+
+["Project «{name}»: {detail}"]
+es = "Proyecto «{name}»: {detail}"
+
+["Project «{name}» closed"]
+es = "Proyecto «{name}» cerrado"
+
+["Opening the project · {phase}: {message}"]
+es = "Abriendo el proyecto · {phase}: {message}"
+
+["The lock can be forced from Project ▸ Project lock…: {warning}"]
+es = "Se puede forzar el cerrojo desde Proyecto ▸ Cerrojo del proyecto…: {warning}"
+
+["Opening cancelled: no project has been opened"]
+es = "Apertura cancelada: no se ha abierto ningún proyecto"
+
+["Opening the project did not finish with its result"]
+es = "La apertura del proyecto no ha terminado con su resultado"
+
+["Project migrated from schema {old} to {new}; prior copy in «{backup}»"]
+es = "Proyecto migrado del esquema {old} al {new}; copia previa en «{backup}»"
+
+["Project «{name}» is read-only ({status}): the view is not saved in the project folder; save it with File ▸ Save As… outside it"]
+es = "Proyecto «{name}» en solo lectura ({status}): la vista no se guarda en la carpeta del proyecto; guárdela con Archivo ▸ Guardar como… fuera de ella"
+
+["Cannot create «{folder}»: {error}"]
+es = "No se puede crear «{folder}»: {error}"
+
+["The view could not be saved to «{path}»: {error}"]
+es = "No se ha podido guardar la vista en «{path}»: {error}"
+
+["View saved to «{path}»"]
+es = "Vista guardada en «{path}»"
+
+["this session holds it ({user} on {host})"]
+es = "lo tiene esta sesión ({user} en {host})"
+
+["The lock of «{name}» cannot be forced: {holder}"]
+es = "No se puede forzar el cerrojo de «{name}»: {holder}"
+
+["To force the lock you must first see who holds it: open Project ▸ Project lock… and confirm"]
+es = "Para forzar el cerrojo hay que ver antes quién lo tiene: abra Proyecto ▸ Cerrojo del proyecto… y confirme"
+
+["Read-only project: {reason}"]
+es = "Proyecto en solo lectura: {reason}"
+
+["Project «{name}»: GeoOrigin {old} → {new}; the views are out of date"]
+es = "Proyecto «{name}»: GeoOrigin {old} → {new}; las vistas quedan desfasadas"
+
+["Project «{name}»: the lock no longer belongs to this session (another session forced it or it was deleted); the project is now read-only and nothing more will be written to it."]
+es = "Proyecto «{name}»: el cerrojo ya no es de esta sesión (otra sesión lo ha forzado o se ha borrado); el proyecto pasa a solo lectura y no se escribirá nada más en él."
+
+["Project «{name}»: the header could not be updated ({error})."]
+es = "Proyecto «{name}»: no se ha podido actualizar la cabecera ({error})."
+
+# Vistas y georreferencia de las escenas ---------------------------------------------------
+
+["EPSG:{crs} + {vertical}, GeoOrigin {xyz}"]
+es = "EPSG:{crs} + {vertical}, GeoOrigin {xyz}"
+
+["unsaved"]
+es = "sin guardar"
+
+["«{name}», {georef}"]
+es = "«{name}», {georef}"
+
+["The view «{view}» belongs to project {projects}, which is not open: Geoblender does not use its georeference and marks it out of date; open the project to work with it."]
+es = "La vista «{view}» es del proyecto {projects}, que no está abierto: Geoblender no usa la georreferencia de la vista y la deja desfasada; abra el proyecto para trabajar con ella."
+
+["The view «{view}» belongs to another project ({projects}), not to the open one («{name}», {georef}): «{name}» has been closed and the view is out of date; open its project to work with it."]
+es = "La vista «{view}» es de otro proyecto ({projects}), no del abierto («{name}», {georef}): se ha cerrado «{name}» y la vista queda desfasada; abra su proyecto para trabajar con ella."
+
+["The project «{name}» is read-only ({status}): the view «{view}» is in its folder and Ctrl+S would save it inside the project; to keep changes, use File ▸ Save As… outside the project folder."]
+es = "El proyecto «{name}» está en solo lectura ({status}): la vista «{view}» es de su carpeta y Ctrl+S la guardaría dentro del proyecto; para conservar cambios, use Archivo ▸ Guardar como… fuera de la carpeta del proyecto."
+
+["The view «{view}» has another georeference than project «{name}»: in the view, {view_georef}; in the project, {project_georef}. The project's is used and the view is out of date: reload its data."]
+es = "La vista «{view}» tiene otra georreferencia que el proyecto «{name}»: en la vista, {view_georef}; en el proyecto, {project_georef}. Se usa la del proyecto y la vista queda desfasada: vuelva a cargar sus datos."
+
+[" and {count} more"]
+es = " y {count} más"
+
+["The view «{view}» uses files with an absolute path that cannot be saved as relative (another volume or a linked library): {paths}; copy them next to the project if the view must work on another computer."]
+es = "La vista «{view}» usa ficheros con ruta absoluta que no se puede guardar relativa (otro volumen o biblioteca enlazada): {paths}; cópielos junto al proyecto si la vista tiene que servir en otro equipo."
+
+# Copia local y red (spec 002, T34) ------------------------------------------------------
+
+["Local copy and network"]
+es = "Copia local y red"
+
+["Work on a local copy…"]
+es = "Trabajar en copia local…"
+
+["Publish to the network…"]
+es = "Publicar en la red…"
+
+["Project lock (who holds it, release)…"]
+es = "Cerrojo del proyecto (quién lo tiene, liberar)…"
+
+["Work on a local copy"]
+es = "Trabajar en copia local"
+
+["Publish to the network"]
+es = "Publicar en la red"
+
+["The operation did not finish with its result"]
+es = "La operación no ha terminado con su resultado"
+
+["The open project is already a local copy: publish it with Project ▸ Local copy and network ▸ Publish to the network…"]
+es = "El proyecto abierto ya es una copia local: publíquela con Proyecto ▸ Copia local y red ▸ Publicar en la red…"
+
+["The open project is not a local copy: take one with Project ▸ Local copy and network ▸ Work on a local copy…"]
+es = "El proyecto abierto no es una copia local: saque una con Proyecto ▸ Copia local y red ▸ Trabajar en copia local…"
+
+["The original stays reserved for this copy until it is published: nobody else can write to it."]
+es = "El original queda reservado para esta copia hasta que se publique: nadie más podrá escribir en él."
+
+["The project is closed, copied to this folder and the copy is opened:"]
+es = "Se cierra el proyecto, se copia a esta carpeta y se abre la copia:"
+
+["Local copy · {phase}: {message}"]
+es = "Copia local · {phase}: {message}"
+
+["Publishing · {phase}: {message}"]
+es = "Publicación · {phase}: {message}"
+
+["Local copy cancelled: no copy has been left and the original is no longer reserved"]
+es = "Copia local cancelada: no queda ninguna copia y el original ya no está reservado"
+
+["Publication cancelled: nothing has been replaced and the local copy stays open"]
+es = "Publicación cancelada: no se ha sustituido nada y la copia local sigue abierta"
+
+["Local copy of «{name}» open in «{folder}»: the original stays reserved until you publish it"]
+es = "Copia local de «{name}» abierta en «{folder}»: el original queda reservado hasta que la publique"
+
+["The original «{path}» could not be opened again: {error}"]
+es = "No se ha podido volver a abrir el original «{path}»: {error}"
+
+["This computer does not know where the original of this copy is: it cannot be published from here."]
+es = "En este equipo no consta dónde está el original de esta copia: no se puede publicar desde aquí."
+
+["The original «{original}» will be replaced by this copy; the current original is kept as «{previous}» (only the last one is kept)."]
+es = "El original «{original}» se sustituirá por esta copia; el actual se conserva como «{previous}» (solo se guarda el último)."
+
+["Open the published project"]
+es = "Abrir el proyecto publicado"
+
+["Local copy published in «{original}»; the previous original is in «{previous}» and the local copy «{local}» can be deleted"]
+es = "Copia local publicada en «{original}»; el original anterior queda en «{previous}» y la copia local «{local}» se puede borrar"
+
+["The view «{view}» rendered to «{path}», on another volume: its render output is now the view's folder (a view of the project keeps no absolute path)."]
+es = "La vista «{view}» guardaba el render en «{path}», en otro volumen: su salida de render pasa a la carpeta de la vista (una vista del proyecto no guarda rutas absolutas)."
+
+["The view «{view}» was saved with Blender's interface data (it could not be rewritten without it: {error}); save it again."]
+es = "La vista «{view}» se ha guardado con los datos de la interfaz de Blender (no se ha podido reescribir sin ellos: {error}); guárdela otra vez."

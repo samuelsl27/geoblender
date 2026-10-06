@@ -16,7 +16,7 @@
 
 Ninguna prueba lanza Blender: el ejecutor simulado anota las órdenes y, para
 ``extension build``, escribe el zip que se le indique. Las pruebas con el Blender real
-están en ``test_harness_blender.py``.
+están en ``tests/arnes/test_harness_blender.py`` (``tools/check.py --completo``).
 """
 
 import contextlib
