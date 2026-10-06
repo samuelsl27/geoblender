@@ -40,6 +40,14 @@
   Disposición ▸ «Mostrar la fila de acceso rápido de la vista» (``bl.ui.quick_access``):
   si la fila ya se ve, apaga la preferencia; si no, la enciende y muestra la fila 2 de las
   Vistas 3D de la pantalla.
+- ``geoblender.ui_add_layout``, ``geoblender.ui_remove_layout`` y
+  ``geoblender.ui_restore_layout`` (RF-003-16; CW §6.4; BS §8.12, Disposición ▸): activar
+  una disposición (``layout``; si el fichero no la tiene, se anexa de los recursos y lo
+  dice), quitar la de esta ventana o restaurarla desde los recursos (``bl.ui.layouts``).
+  Quitar y Restaurar actúan sobre el espacio de la ventana o sobre el que nombra
+  ``workspace``; la principal no se quita y nunca se borran datos: si no se puede, lo
+  dicen y no cambian nada. Las disposiciones de una entrada aún no entregada (R-62, R-57)
+  informan «Disponible en …» y no cambian nada. Son interfaz: sin ``UNDO``.
 - ``geoblender.ui_repair_interface`` (RF-003-24; CW §5): Ayuda ▸ Reparar la interfaz
   (``bl.ui.repair``): la barra superior, una sola vez aunque otro complemento la haya
   sustituido, y los atajos. Se puede pulsar siempre.
@@ -55,6 +63,7 @@ from typing import Any
 import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 
+from ...core import catalog as core_catalog
 from ...core.errors import GeoblenderError
 from ...core.i18n import tr
 from ..ui import gate
@@ -72,6 +81,8 @@ VIEW_ITEMS = [
     ("ISO_SE", "Isometric SE", ""),
     ("ISO_SW", "Isometric SW", ""),
 ]
+# Disposiciones (layouts.toml): los nombres son las etiquetas del catálogo.
+LAYOUT_ITEMS = [(item.id, item.label, "") for item in core_catalog.load().layouts]
 TARGET_ITEMS = [
     ("TOGGLE", "Toggle", "Switch to the other interface"),
     ("GEOBLENDER", "Geoblender", "Switch to the Geoblender interface"),
@@ -417,6 +428,118 @@ class GEOBLENDER_OT_ui_toggle_quick_access_row(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GEOBLENDER_OT_ui_add_layout(bpy.types.Operator):
+    """Add, remove or restore the Geoblender layouts"""
+
+    bl_idname = "geoblender.ui_add_layout"
+    bl_label = "Layouts"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    layout: EnumProperty(name="Layout", items=LAYOUT_ITEMS)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return getattr(context, "window", None) is not None
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        from ..ui import commands, layouts, provisional
+
+        about = _variant_description(cls.bl_idname, properties)
+        if commands.is_available(layouts.add_key(properties.layout)):
+            return about
+        note = provisional.message(commands.catalog(), cls.bl_idname, properties)
+        return f"{about}\n{note}" if about and note else (about or note)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import commands, layouts, provisional
+
+        if not commands.is_available(layouts.add_key(self.layout)):
+            self.report({"INFO"}, provisional.message(commands.catalog(), self.bl_idname,
+                                                      self.properties))
+            return {"CANCELLED"}
+        name, appended = layouts.activate_layout(context.window, self.layout)
+        if appended and name == layouts.main_name():
+            self.report({"INFO"}, tr("The Geoblender workspace has been added to this file"))
+        elif appended:
+            self.report({"INFO"}, tr("The layout «{name}» has been added to this file",
+                                     name=name))
+        return {"FINISHED"}
+
+
+def _layout_workspace(operator: Any, context: Any) -> Any:
+    """El espacio sobre el que actúa Quitar o Restaurar (o ``None``, y lo dice)."""
+    from ..ui import layouts
+
+    workspace = layouts.target_workspace(context, operator.workspace)
+    if workspace is None and operator.workspace:
+        operator.report({"WARNING"}, tr("There is no workspace «{name}»",
+                                        name=operator.workspace))
+    return workspace
+
+
+class GEOBLENDER_OT_ui_remove_layout(bpy.types.Operator):
+    """Delete only this workspace, never data; the main one cannot be removed"""
+
+    bl_idname = "geoblender.ui_remove_layout"
+    bl_label = "Remove this layout"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    workspace: StringProperty(name="Workspace", default="", options={"SKIP_SAVE"})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return getattr(context, "window", None) is not None
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import layouts
+
+        workspace = _layout_workspace(self, context)
+        if workspace is None and self.workspace:
+            return {"CANCELLED"}
+        problem = layouts.remove_problem(workspace)
+        if problem:
+            self.report({"WARNING"}, problem)
+            return {"CANCELLED"}
+        name = workspace.name
+        layouts.remove(workspace)
+        self.report({"INFO"}, tr("The layout «{name}» has been removed; the data stay in "
+                                 "the file", name=name))
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_ui_restore_layout(bpy.types.Operator):
+    """Append it again from the Geoblender resources"""
+
+    bl_idname = "geoblender.ui_restore_layout"
+    bl_label = "Restore the layout"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    workspace: StringProperty(name="Workspace", default="", options={"SKIP_SAVE"})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return getattr(context, "window", None) is not None
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import layouts
+
+        workspace = _layout_workspace(self, context)
+        if workspace is None and self.workspace:
+            return {"CANCELLED"}
+        problem = layouts.restore_problem(workspace)
+        if problem:
+            self.report({"WARNING"}, problem)
+            return {"CANCELLED"}
+        name = workspace.name
+        layouts.restore(workspace)
+        self.report({"INFO"}, tr("The layout «{name}» has been restored", name=name))
+        return {"FINISHED"}
+
+
 class GEOBLENDER_OT_ui_repair_interface(bpy.types.Operator):
     """Install the top bar, the shortcuts and the icons again"""
 
@@ -448,5 +571,8 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_edit_legend,
     GEOBLENDER_OT_ui_edit_data_filter,
     GEOBLENDER_OT_ui_toggle_quick_access_row,
+    GEOBLENDER_OT_ui_add_layout,
+    GEOBLENDER_OT_ui_remove_layout,
+    GEOBLENDER_OT_ui_restore_layout,
     GEOBLENDER_OT_ui_repair_interface,
 )

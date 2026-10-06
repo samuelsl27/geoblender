@@ -620,3 +620,32 @@ es = "»"
 
 ["Geoblender interface repaired"]
 es = "Interfaz de Geoblender reparada"
+
+# Disposiciones (spec 003, T25) ------------------------------------------------------
+
+["Add layout"]
+es = "Añadir disposición"
+
+["Show the mining status bar"]
+es = "Mostrar la barra de estado minera"
+
+["This window is not in a Geoblender layout"]
+es = "Esta ventana no está en una disposición de Geoblender"
+
+["The main layout cannot be removed"]
+es = "La disposición principal no se puede quitar"
+
+["«{name}» is not a layout of the Geoblender resources"]
+es = "«{name}» no es una disposición de los recursos de Geoblender"
+
+["There is no workspace «{name}»"]
+es = "No hay ningún espacio de trabajo «{name}»"
+
+["The layout «{name}» has been added to this file"]
+es = "Se ha añadido la disposición «{name}» a este fichero"
+
+["The layout «{name}» has been removed; the data stay in the file"]
+es = "Se ha quitado la disposición «{name}»; los datos siguen en el fichero"
+
+["The layout «{name}» has been restored"]
+es = "Se ha restaurado la disposición «{name}»"

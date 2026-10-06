@@ -161,11 +161,27 @@ def append_workspace(window: Any, name: str) -> Any:
     added = [ws for ws in bpy.data.workspaces if ws.as_pointer() not in before]
     if not added:
         raise RuntimeError(f"no se pudo anexar el espacio «{name}» de {RESOURCES.name}")
-    _forget_resources_library()
+    forget_resources_library()
     return added[0]
 
 
-def _forget_resources_library() -> None:
+def load_workspace(name: str) -> Any:
+    """Anexa una copia del espacio ``name`` de ``resources/geoblender_ui.blend`` **sin
+    activarlo** y la devuelve (si el fichero ya tiene uno con ese nombre, Blender le da
+    otro: «<nombre>.001»). Para restaurar una disposición (``bl.ui.layouts``)."""
+    before = {ws.as_pointer() for ws in bpy.data.workspaces}
+    with bpy.data.libraries.load(str(RESOURCES), link=False) as (source, target):
+        if name not in source.workspaces:
+            raise RuntimeError(f"«{RESOURCES.name}» no tiene el espacio «{name}»")
+        target.workspaces = [name]
+    added = [ws for ws in bpy.data.workspaces if ws.as_pointer() not in before]
+    forget_resources_library()
+    if not added:
+        raise RuntimeError(f"no se pudo anexar el espacio «{name}» de {RESOURCES.name}")
+    return added[0]
+
+
+def forget_resources_library() -> None:
     """Quita la referencia a ``geoblender_ui.blend`` que deja el anexado: el espacio ya
     es del fichero, y el fichero no debe guardar la ruta de la extensión."""
     for library in list(bpy.data.libraries):
@@ -202,6 +218,23 @@ def toggle(window: Any, mode: str = "TOGGLE") -> Result:
     state.pending = workspace.name
     _schedule()
     return Result(workspace.name, appended)
+
+
+def activate(window: Any, workspace: Any) -> None:
+    """Asigna ``workspace`` a ``window`` (diferido) desde otra parte de la interfaz (una
+    disposición de Disposición ▾): si la ventana estaba en modo Blender y el destino es
+    de Geoblender, guarda el espacio actual como su «anterior de Blender» (CW §3.1), y el
+    destino queda pendiente, como al conmutar."""
+    state = window_state(window)
+    current = window.workspace
+    if current is not None and current == workspace:
+        return
+    if (current is not None and not gate.is_geoblender_workspace(current)
+            and gate.is_geoblender_workspace(workspace)):
+        state.previous_blender = current.name
+    window.workspace = workspace
+    state.pending = workspace.name
+    _schedule()
 
 
 def _show_tool_header(window: Any) -> None:
