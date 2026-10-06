@@ -1,0 +1,392 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 7 de 11: Diseño (BS §8.7).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_design"
+label.en = "Design"
+label.es = "Diseño"
+description.en = "Limits and constraints, bench profiles, quarry or pit, haul roads and entities"
+description.es = "Límites y restricciones, perfiles de banco, cantera o corta, pistas y entidades"
+stage.en = "Mine design"
+stage.es = "Diseño de la explotación"
+step = 7
+branch = "design"
+icon = "gb_menu_design"
+icon_fallback = "IPO_CONSTANT"
+
+# Límites y restricciones ---------------------------------------------------------------
+[[menu.group]]
+label.en = "Limits and constraints"
+label.es = "Límites y restricciones"
+
+[[menu.group.item]]
+key = "geoblender.core_edit_limits"
+label.en = "Limits…"
+label.es = "Límites…"
+description.en = "Concession, perimeter of the works and fill-only strip"
+description.es = "Concesión, perímetro de actuación y franja de solo relleno"
+entry = "R-32"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.core_edit_constraints"
+label.en = "Constraints…"
+label.es = "Restricciones…"
+description.en = "Untouchable, no cut, no fill, buffer and the other constraints of the design"
+description.es = "Intocable, sin corte, sin relleno, resguardo y las demás restricciones del diseño"
+entry = "R-32"
+action = "P"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.core_find_untouchables"
+label.en = "Find untouchable elements by sector…"
+label.es = "Buscar elementos intocables por sector…"
+description.en = "Mandatory search of the untouchable elements before designing"
+description.es = "Búsqueda obligatoria de los elementos intocables antes de diseñar"
+entry = "R-32"
+action = "D"
+frequency = 3
+aliases = ["intocables", "untouchables"]
+
+[[menu.group.item]]
+key = "geoblender.core_edit_client_marks"
+label.en = "Client intentions…"
+label.es = "Intenciones del cliente…"
+description.en = "Layers of the client with their role; they never become limits on their own"
+description.es = "Capas del cliente con su papel; nunca pasan solas a ser límites"
+entry = "R-32"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.core_edit_mining_grid"
+label.en = "Mining grid squares…"
+label.es = "Cuadrículas mineras…"
+description.en = "Mining grid squares of the mining rights"
+description.es = "Cuadrículas mineras de los derechos mineros"
+entry = "R-32"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.core_toggle_constraints_overlay"
+label.en = "Show constraints and limits"
+label.es = "Ver restricciones y límites"
+description.en = "Untouchables, limits and buffers over the view while designing"
+description.es = "Intocables, límites y resguardos superpuestos a la vista mientras se diseña"
+entry = "R-32"
+action = "T"
+frequency = 3
+icon = "gb_qat_constraints"
+icon_fallback = "MOD_MASK"
+
+# Parámetros ----------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Parameters"
+label.es = "Parámetros"
+
+[[menu.group.item]]
+key = "geoblender.des_edit_bench_profiles"
+label.en = "Bench profiles…"
+label.es = "Perfiles de banco…"
+description.en = "Bench profiles such as EXPL_10_60_6 or REST_5_35_6"
+description.es = "Perfiles de banco como EXPL_10_60_6 o REST_5_35_6"
+entry = "R-33"
+action = "P"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.des_edit_design_sectors"
+label.en = "Design sectors…"
+label.es = "Sectores de diseño…"
+description.en = "Sectors with their own bench profile"
+description.es = "Sectores con su propio perfil de banco"
+entry = "R-33"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_toggle_preview"
+label.en = "Preview of seeds, domains and constraints"
+label.es = "Vista previa de semillas, dominios y restricciones"
+description.en = "Show the seeds, domains and constraints before computing"
+description.es = "Muestra las semillas, los dominios y las restricciones antes de calcular"
+entry = "R-33"
+action = "T"
+frequency = 3
+
+# Cantera -------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Quarry"
+label.es = "Cantera"
+
+[[menu.group.item]]
+key = "geoblender.des_compute_envelope"
+label.en = "Envelopes and benching…"
+label.es = "Envolventes y escalonado…"
+description.en = "Envelope of the excavation and its benching"
+description.es = "Envolvente de la excavación y su escalonado"
+entry = "R-33"
+action = "D"
+background = true
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_create_limit_from_perimeter"
+label.en = "Limit from the perimeter…"
+label.es = "Límite desde el perímetro…"
+description.en = "Setback and final slope from the perimeter down to the floor"
+description.es = "Retranqueo y talud final desde el perímetro hasta el fondo"
+entry = "R-34"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.des_design_quarry"
+label.en = "Quarry with two surfaces…"
+label.es = "Cantera con dos superficies…"
+description.en = "Exploitation surface and final surface of the quarry"
+description.es = "Superficie de explotación y superficie final de la cantera"
+entry = "R-34"
+action = "D"
+background = true
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.des_refit_to_limit"
+label.en = "Refit the design to a new limit…"
+label.es = "Ajustar el diseño a un límite nuevo…"
+description.en = "Refit an existing design to a redrawn limit"
+description.es = "Ajusta un diseño existente a un límite redibujado"
+entry = "R-34"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_design_fill_only"
+label.en = "Fill only…"
+label.es = "Solo relleno…"
+description.en = "Design with zero cut: fill only"
+description.es = "Diseño con corte nulo: solo relleno"
+entry = "R-34"
+action = "D"
+frequency = 1
+
+# Corta ---------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Pit"
+label.es = "Corta"
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_des_pit"
+label.en = "Pit by benches"
+label.es = "Corta por bancos"
+description.en = "New pit, benches, ramps, daylight and design surface"
+description.es = "Corta nueva, bancos, rampas, línea de cielo y superficie de diseño"
+entry = ""
+action = "S"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.des_new_pit"
+label.en = "New pit…"
+label.es = "Nueva corta…"
+description.en = "Pit from the floor, the limit or the crest"
+description.es = "Corta desde el fondo, el límite o la cresta"
+entry = "R-35"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.des_expand_bench"
+label.en = "Expand bench"
+label.es = "Expandir banco"
+description.en = "Expand a bench to the next one with its profile"
+description.es = "Expande un banco al siguiente con su perfil"
+entry = "R-35"
+action = "H"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.des_add_ramp"
+label.en = "Ramp"
+label.es = "Rampa"
+description.en = "Spiral or switchback ramp"
+description.es = "Rampa en espiral o en zigzag"
+entry = "R-35"
+action = "H"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.des_compute_daylight"
+label.en = "Daylight with the DTM"
+label.es = "Línea de cielo con el MDT"
+description.en = "Intersection of the design with the terrain"
+description.es = "Intersección del diseño con el terreno"
+entry = "R-35"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.des_create_design_surface"
+label.en = "Design surface and excavation solid"
+label.es = "Superficie de diseño y sólido de excavación"
+description.en = "The design surface and the solid of the excavation"
+description.es = "La superficie de diseño y el sólido de la excavación"
+entry = "R-35"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+separator = true
+
+[[menu.group.item.item]]
+key = "geoblender.des_design_pit_from_shell"
+label.en = "Pit design from the shell…"
+label.es = "Diseño de corta desde la concha…"
+description.en = "Pit design that follows the chosen shell"
+description.es = "Diseño de corta que sigue la concha elegida"
+entry = "R-49"
+action = "D"
+frequency = 0
+
+[[menu.group.item.item]]
+key = "geoblender.des_compare_with_shell"
+label.en = "Design against the shell"
+label.es = "Diseño frente a la concha"
+description.en = "Tonnes and value of the design against the shell"
+description.es = "Toneladas y valor del diseño frente a la concha"
+entry = "R-49"
+action = "P"
+frequency = 0
+
+# Pistas y entidades --------------------------------------------------------------------
+[[menu.group]]
+label.en = "Haul roads and entities"
+label.es = "Pistas y entidades"
+
+[[menu.group.item]]
+key = "geoblender.des_draw_haul_road"
+label.en = "Haul road"
+label.es = "Pista"
+description.en = "Axis, grade line and section of the haul road (ITC)"
+description.es = "Eje, rasante y sección de la pista (ITC)"
+entry = "R-40"
+action = "H"
+frequency = 2
+jargon = [["RecMin", "Pista"]]
+
+[[menu.group.item]]
+key = "geoblender.des_route_haul_road"
+label.en = "3D route with maximum grade…"
+label.es = "Ruta 3D con pendiente máxima…"
+description.en = "Haul road route that keeps a maximum grade"
+description.es = "Ruta de pista que mantiene una pendiente máxima"
+entry = "R-40"
+action = "D"
+background = true
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.des_burn_roads"
+label.en = "Burn the haul roads into the surface"
+label.es = "Grabar las pistas en la superficie"
+description.en = "Cut and fill the haul roads into the design surface"
+description.es = "Desmonta y rellena las pistas en la superficie de diseño"
+entry = "R-40"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_des_entities"
+label.en = "Entities"
+label.es = "Entidades"
+description.en = "Platform, stockpile, buttress, pond and channel"
+description.es = "Plataforma, acopio, contrafuerte, balsa y canal"
+entry = ""
+action = "S"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.des_draw_platform"
+label.en = "Platform"
+label.es = "Plataforma"
+description.en = "Draw a platform with its slopes"
+description.es = "Dibuja una plataforma con sus taludes"
+entry = "R-36"
+action = "H"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.des_edit_stockpile"
+label.en = "Stockpile…"
+label.es = "Acopio…"
+description.en = "Detect a stockpile or remove it"
+description.es = "Detecta un acopio o lo retira"
+entry = "R-36"
+action = "D"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.des_add_buttress"
+label.en = "Buttress…"
+label.es = "Contrafuerte…"
+description.en = "Buttress at the toe of a slope"
+description.es = "Contrafuerte al pie de un talud"
+entry = "R-36"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.des_draw_pond"
+label.en = "Pond or lake"
+label.es = "Balsa o lago"
+description.en = "Draw a pond or a lake"
+description.es = "Dibuja una balsa o un lago"
+entry = "R-37"
+action = "H"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.des_draw_channel"
+label.en = "Channel"
+label.es = "Canal"
+description.en = "Draw a channel with its section"
+description.es = "Dibuja un canal con su sección"
+entry = "R-37"
+action = "H"
+frequency = 1
+
+# Comprobar -----------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Check"
+label.es = "Comprobar"
+
+[[menu.group.item]]
+key = "geoblender.des_check_rules"
+label.en = "Check the design…"
+label.es = "Comprobar el diseño…"
+description.en = "Mining regulations (ITC 07.1.03), widths and grades"
+description.es = "Normativa minera (ITC 07.1.03), anchos y pendientes"
+entry = "R-44"
+action = "P"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.des_sweep_parameters"
+label.en = "Parameter sweep…"
+label.es = "Barrido de parámetros…"
+description.en = "Scenarios with several values of the parameters"
+description.es = "Escenarios con varios valores de los parámetros"
+entry = "R-45"
+action = "D"
+background = true
+frequency = 1

@@ -28,12 +28,8 @@ from tests.support.package import import_geoblender
 
 catalog = import_geoblender("core.catalog")
 
-# Menús de BS §8 que aún no están en el catálogo: los añaden T06 (Diseño, Restauración,
-# Cubicación) y T07 (el resto).
+# Menús de BS §8 que aún no están en el catálogo: los añade la T07.
 PENDING: frozenset[str] = frozenset({
-    "GEOBLENDER_MT_ui_design",
-    "GEOBLENDER_MT_ui_reclamation",
-    "GEOBLENDER_MT_ui_volumetrics",
     "GEOBLENDER_MT_ui_scheduling",
     "GEOBLENDER_MT_ui_drawings",
     "GEOBLENDER_MT_ui_tools",
@@ -48,12 +44,12 @@ PENDING: frozenset[str] = frozenset({
     "GEOBLENDER_MT_ui_help",
 })
 
-# Accesos cruzados a comandos cuya casa es un menú pendiente (T06 y T07 los definen; al
-# final, ninguno): la fila se compara cuando llega su casa.
+# Accesos cruzados a comandos cuya casa es un menú pendiente (la T07 los define; al final,
+# ninguno): la fila se compara cuando llega su casa.
 PENDING_REFS: frozenset[str] = frozenset({
-    "geoblender.res_compute_surface_difference",
-    "geoblender.des_design_pit_from_shell",
     "geoblender.res_create_phases_from_shells",
+    "geoblender.res_report_volumetrics",
+    "geoblender.res_report_memory_data",
     "GEOBLENDER_MT_geo_new_section",
 })
 
