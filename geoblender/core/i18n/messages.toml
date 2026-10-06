@@ -733,3 +733,14 @@ es = "Títulos de los menús como texto"
 
 ["Menu titles as icons"]
 es = "Títulos de los menús como iconos"
+
+# Línea de comandos F10 (spec 003, T32) -------------------------------------------------
+
+["Run"]
+es = "Ejecutar"
+
+["Name in Spanish or English, alias or entry (R-38)"]
+es = "Nombre en español o en inglés, alias o entrada (R-38)"
+
+["No command matches «{query}»"]
+es = "Ningún comando coincide con «{query}»"

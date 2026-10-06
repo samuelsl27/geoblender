@@ -54,6 +54,13 @@
   ``workspace``; la principal no se quita y nunca se borran datos: si no se puede, lo
   dicen y no cambian nada. Las disposiciones de una entrada aún no entregada (R-62, R-57)
   informan «Disponible en …» y no cambian nada. Son interfaz: sin ``UNDO``.
+- ``geoblender.ui_open_command_line`` (RF-003-26; F10, con la puerta de modo;
+  Herramientas ▸ Línea de comandos): abre una ventana con el campo ``query`` ya activo; al
+  escribir, la lista son los resultados de la búsqueda del catálogo (``bl.ui.
+  command_line``), los no disponibles con su «Disponible en …»; al confirmar, ejecuta el
+  elegido (o el primer resultado) en la Vista 3D de destino o informa «Disponible en …» sin
+  cambiar nada. Con ``query`` (un script, un atajo propio), no abre la ventana. Sin ``UNDO``:
+  el comando elegido pone su propio paso de deshacer.
 - ``geoblender.ui_repair_interface`` (RF-003-24; CW §5): Ayuda ▸ Reparar la interfaz
   (``bl.ui.repair``): la barra superior, una sola vez aunque otro complemento la haya
   sustituido, y los atajos. Se puede pulsar siempre.
@@ -627,6 +634,58 @@ class GEOBLENDER_OT_ui_restore_layout(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _command_line_search(_operator: Any, _context: Any, edit_text: str) -> list[tuple[str, str]]:
+    """La lista del campo de la línea de comandos al escribir (``bl.ui.command_line``)."""
+    from ..ui import command_line  # diferido, como el conmutador
+
+    return command_line.suggestions(edit_text)
+
+
+class GEOBLENDER_OT_ui_open_command_line(bpy.types.Operator):
+    """Find any command by its name in Spanish or English, its alias or its entry"""
+
+    bl_idname = "geoblender.ui_open_command_line"
+    bl_label = "Command line"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    query: StringProperty(  # type: ignore[valid-type]
+        name="Command",
+        default="",
+        search=_command_line_search,
+        search_options={"SUGGESTION"},
+        options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return gate.poll(cls, context)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        if self.query:
+            return self.execute(context)
+        return context.window_manager.invoke_props_dialog(
+            self, width=640, title=self.bl_label, confirm_text=tr("Run"), translate=False,
+        )
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.activate_init = True  # se escribe sin tener que pulsar en el campo
+        layout.prop(self, "query", text="", icon="VIEWZOOM", translate=False)
+        hint = layout.row()
+        hint.active = False
+        hint.label(text=tr("Name in Spanish or English, alias or entry (R-38)"),
+                   translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import command_line
+
+        outcome = command_line.run(context, self.query)
+        if outcome.message:
+            self.report({outcome.level or "INFO"}, outcome.message)
+        return outcome.status
+
+
 class GEOBLENDER_OT_ui_repair_interface(bpy.types.Operator):
     """Install the top bar, the shortcuts and the icons again"""
 
@@ -664,5 +723,6 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_add_layout,
     GEOBLENDER_OT_ui_remove_layout,
     GEOBLENDER_OT_ui_restore_layout,
+    GEOBLENDER_OT_ui_open_command_line,
     GEOBLENDER_OT_ui_repair_interface,
 )

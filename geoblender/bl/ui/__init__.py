@@ -14,7 +14,8 @@ campos y la suscripción de ``msgbus`` al cursor 3D, renovada en ``load_post``) 
 (``views``: el manejador ``load_post`` que olvida su estado de sesión) → disposiciones
 (``layouts``: las comprobaciones de Quitar y Restaurar y su manejador ``load_post``; al
 desregistrar, el temporizador de lo pendiente) → proveedores de
-la Leyenda y del Filtro de datos (``context``: al desregistrar, se olvidan) → conmutador
+la Leyenda y del Filtro de datos (``context``: al desregistrar, se olvidan) → línea de
+comandos (``command_line``: al desregistrar, olvida su última lista) → conmutador
 (``switcher``: su manejador ``load_post``; al desregistrar, devuelve cada ventana en modo
 Geoblender a su espacio de Blender y retira su temporizador) → atajos del catálogo en el
 *keyconfig* de complementos (``keymap``). Cada paso
@@ -28,6 +29,7 @@ from collections.abc import Callable
 
 from ..registry import register_classes, unregister_classes
 from . import (
+    command_line,
     commands,
     context,
     core_menus,
@@ -90,6 +92,7 @@ def register() -> None:
         (views.register, views.unregister),
         (layouts.register, layouts.unregister),
         (lambda: None, context.clear),
+        (lambda: None, command_line.clear),
         (switcher.register, switcher.unregister),
         (keymap.register, keymap.unregister),
     )
