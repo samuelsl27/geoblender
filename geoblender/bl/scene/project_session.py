@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 
 import bpy
 
-from ...core.project.lock import HEARTBEAT_INTERVAL_S
+from ...core.project.lock import DEFAULT_STALE_MINUTES, HEARTBEAT_INTERVAL_S
 from ...core.project.model import ReadOnlyCode
 from ...core.sysinfo import SessionInfo, current_session
 from ...core.userdata import UserData
@@ -75,6 +75,15 @@ def userdata() -> UserData:
     if _STATE.userdata_root is None:
         _STATE.userdata_root = Path(bpy.utils.extension_path_user(ADDON_PACKAGE))
     return UserData(_STATE.userdata_root)
+
+
+def stale_minutes() -> int:
+    """El umbral del cerrojo caducado de las preferencias (``core.lock_stale_minutes``;
+    30 min si no se pueden leer)."""
+    addon = bpy.context.preferences.addons.get(ADDON_PACKAGE)
+    preferences = getattr(addon, "preferences", None)
+    value = getattr(getattr(preferences, "core", None), "lock_stale_minutes", None)
+    return int(value) if isinstance(value, int) and value > 0 else DEFAULT_STALE_MINUTES
 
 
 # Avisos -------------------------------------------------------------------------------

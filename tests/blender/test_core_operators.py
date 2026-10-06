@@ -1,0 +1,404 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Operadores del proyecto (spec 002, T25; plan 002 §5.3; ADR-0011).
+
+- RF-002-01, RF-002-03: «Nuevo proyecto…» crea el proyecto con las coordenadas de la
+  ventana tecleadas con coma o punto decimal (texto, nunca float32) y lo deja abierto en
+  escritura; con X e Y intercambiadas (o un número que no lo es) no crea nada y el
+  mensaje nombra el campo.
+- RF-002-04, RF-002-09: «Abrir proyecto…» es **modal** y avanza ``open_steps`` con
+  progreso (en red puede pasar de 1 s); Esc cancela. Con el cerrojo libre, en escritura;
+  si lo tiene otra sesión, en solo lectura con su titular.
+- RF-002-10: un cerrojo caducado solo se fuerza con la confirmación del usuario y con el
+  titular que vio; sin confirmar no cambia nada (también desde «Cerrojo del proyecto…»).
+- RF-002-20: un esquema anterior se migra solo si el usuario lo acepta (con copia previa)
+  y después se abre; si no, solo lectura «sin migrar».
+- RF-002-06: «Cerrar proyecto» libera el cerrojo.
+- ADR-0011: nombres ``GEOBLENDER_OT_core_<acción>`` y ``geoblender.core_<acción>``; sin
+  ``UNDO`` (solo escriben en el proyecto y no crean objetos de la vista).
+
+En ``blender -b`` no hay bucle de eventos: las pruebas de los modales los toman de
+``window.modal_operators`` y les pasan los eventos ``TIMER`` y ``ESC``. Se ejecuta con
+``tools/run_blender_tests.py``, que instala la copia de pruebas.
+"""
+
+import datetime as dt
+import json
+import shutil
+import sqlite3
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest import mock
+
+import bpy
+
+from tests.support import blender_ext
+from tests.support.blender_ext import module_name
+from tests.support.repo import ROOT, tools_on_path
+
+tools_on_path()
+
+from gbtools import manifest  # noqa: E402
+
+# El contexto de traducción de las clases es el nombre visible de la extensión (plan 003
+# §5.3, contrato 1; docs/trampas.md §5).
+CONTEXT = manifest.load(ROOT / manifest.MANIFEST_RELPATH)["name"]
+
+WINDOW_TEXT = {
+    "xmin": "699 500,4",
+    "ymin": "4399500,6",
+    "xmax": "700500.2",
+    "ymax": "4 400 500,9",
+}
+WINDOW = (699_500.4, 4_399_500.6, 700_500.2, 4_400_500.9)
+ORIGIN = (700_000, 4_400_000, 0)
+OPERATORS = ("new_project", "open_project", "close_project", "show_lock")
+
+
+def ext(name: str) -> ModuleType:
+    """El módulo ``name`` de la copia de pruebas de la extensión (ya importado)."""
+    return sys.modules[f"{module_name()}.{name}"]
+
+
+def _m1_2(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS gb_test_m2 (fid INTEGER PRIMARY KEY, nota TEXT)")
+
+
+def _m2_3(conn: sqlite3.Connection) -> None:
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(gb_test_m2)")]
+    if "extra" not in columns:
+        conn.execute("ALTER TABLE gb_test_m2 ADD COLUMN extra TEXT")
+
+
+class OperatorsTestCase(unittest.TestCase):
+    """Cada prueba parte de la extensión habilitada, la escena de fábrica y una carpeta
+    temporal para sus proyectos."""
+
+    def setUp(self) -> None:
+        blender_ext.unload()
+        blender_ext.load_file()
+        self.tmp = Path(tempfile.mkdtemp(prefix="geoblender-t25-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(blender_ext.load_file)
+        self.addCleanup(blender_ext.unload)
+        blender_ext.enable()
+        self.ps = ext("bl.scene.project_session")
+        self.ops = ext("bl.ops.core")
+        self.core = ext("core.project")
+        self.lock = ext("core.project.lock")
+        self.ps.take_notices()
+
+    # Ayudas -------------------------------------------------------------------------
+
+    def other_session(self) -> object:
+        return ext("core.sysinfo").SessionInfo(
+            "00000000-0000-4000-8000-0000000000c1", "PC-OTRO", "andres", 4242, "0.1.0"
+        )
+
+    def create_closed(self, name: str = "Cantera Prueba", session: object = None) -> Path:
+        """Un proyecto creado con ``core`` y cerrado (o con el cerrojo de ``session``)."""
+        settings = self.core.ProjectSettings(name=name, window=WINDOW)
+        owner = self.ps.session() if session is None else session
+        result = self.core.create_project(self.tmp, settings, owner, self.ps.userdata())
+        if session is None:
+            result.project.close()
+        return result.root
+
+    def write_stale_lock(self, root: Path, hours: float = 2.0) -> object:
+        """Pone en ``root`` el cerrojo de otra sesión sin renovar desde hace ``hours``."""
+        old = dt.datetime.now(dt.UTC) - dt.timedelta(hours=hours)
+        when = ext("core.timeutil").format_utc(old)
+        info = self.lock.LockInfo(
+            "00000000-0000-4000-8000-0000000000c2", "PC-OTRO", "andres", 4242, when, when,
+            "0.1.0", self.lock.LockMode.LOCAL,
+        )
+        (root / ".lock").write_bytes(self.lock.encode_lock(info))
+        return info
+
+    def events(self, root: Path) -> list[str]:
+        gpkg = ext("core.gpkg")
+        events = ext("core.project.events")
+        with gpkg.GpkgConnection.open_read(root / "project.gpkg") as db:
+            return [item.kind for item in events.read_events(db.connection)]
+
+    def run_open(self, budget: float | None = None, **props: object) -> object:
+        """Lanza «Abrir proyecto…» y lo lleva hasta el final con eventos ``TIMER``;
+        devuelve el operador (con su ``progress_log`` y su ``outcome``)."""
+        result = bpy.ops.geoblender.core_open_project("EXEC_DEFAULT", **props)
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        operator = self.modal_operator()
+        patch = (
+            mock.patch.object(type(operator), "STEP_BUDGET_S", budget)
+            if budget is not None
+            else mock.patch.object(type(operator), "STEP_BUDGET_S", type(operator).STEP_BUDGET_S)
+        )
+        with patch:
+            for _ in range(10_000):
+                state = operator.modal(bpy.context, SimpleNamespace(type="TIMER", value="NOTHING"))
+                if state != {"RUNNING_MODAL"}:
+                    break
+        self.assertIn(state, ({"FINISHED"}, {"CANCELLED"}))
+        return operator
+
+    def modal_operator(self) -> object:
+        # Los que ya terminaron siguen en la lista (sin bucle de eventos, Blender no se
+        # entera): el que está en marcha es el que aún tiene pasos.
+        cls = self.ops.GEOBLENDER_OT_core_open_project
+        running = [
+            op
+            for op in bpy.context.window.modal_operators
+            if isinstance(op, cls) and getattr(op, "_steps", None) is not None
+        ]
+        self.assertEqual(len(running), 1, "«Abrir proyecto…» no está en marcha como modal")
+        return running[0]
+
+
+class NamingTest(OperatorsTestCase):
+    def test_names_and_options(self) -> None:
+        """ADR-0011, plan 002 §5.3: los cuatro operadores existen con
+        ``geoblender.core_<acción>`` y su clase ``GEOBLENDER_OT_core_<acción>``, en el
+        contexto de traducción «Geoblender» y **sin** ``UNDO`` (Ctrl+Z no deshace el
+        proyecto)."""
+        for action in OPERATORS:
+            with self.subTest(operador=action):
+                cls = getattr(self.ops, f"GEOBLENDER_OT_core_{action}")
+                self.assertTrue(cls.is_registered)
+                self.assertEqual(cls.bl_idname, f"geoblender.core_{action}")
+                self.assertNotIn("UNDO", cls.bl_options)
+                self.assertIn("REGISTER", cls.bl_options)
+                self.assertEqual(cls.bl_translation_context, CONTEXT)
+                self.assertTrue(hasattr(bpy.ops.geoblender, f"core_{action}"))
+        self.assertTrue(hasattr(self.ops.GEOBLENDER_OT_core_open_project, "modal"))
+
+
+class NewProjectTest(OperatorsTestCase):
+    def test_create_with_decimal_comma(self) -> None:
+        """RF-002-01, RF-002-03, RF-002-24: la ventana tecleada con coma decimal y
+        espacios de miles crea el proyecto, ampliado y con su GeoOrigin, abierto en
+        escritura con el cerrojo de la sesión y la georreferencia en la escena."""
+        result = bpy.ops.geoblender.core_new_project(
+            "EXEC_DEFAULT", directory=str(self.tmp), name="Cantera Prueba", **WINDOW_TEXT
+        )
+        self.assertEqual(result, {"FINISHED"})
+        project = self.ps.current()
+        self.assertIsNotNone(project)
+        self.assertTrue(project.writable)
+        self.assertEqual(project.root, self.tmp / "Cantera Prueba.gbproj")
+        self.assertEqual((project.origin.x0, project.origin.y0, project.origin.z0), ORIGIN)
+        window = project.window
+        self.assertEqual(
+            (window.xmin, window.ymin, window.xmax, window.ymax),
+            (699_500.0, 4_399_500.0, 700_501.0, 4_400_501.0),
+        )
+        self.assertEqual(project.manifest.crs_epsg, 25830)
+        self.assertEqual(project.manifest.vcrs_epsg, 5782)
+        holder = self.lock.read_holder(project.root)
+        self.assertEqual(holder.session_uid, self.ps.session().session_uid)
+        props = bpy.context.scene.geoblender
+        self.assertEqual((props.origin_x, props.origin_y, props.origin_z), ORIGIN)
+
+    def test_local_vertical_and_grid_step(self) -> None:
+        """RF-002-23, RF-002-24: una referencia vertical local con su descripción, un paso
+        de 1,5 m y Z0 = −180 llegan al proyecto (ventana a múltiplos de 3 m)."""
+        result = bpy.ops.geoblender.core_new_project(
+            "EXEC_DEFAULT", directory=str(self.tmp), name="Local", vcrs="LOCAL",
+            vcrs_note="NP-0 del plano 3", grid_step="1.5", z0=-180, **WINDOW_TEXT,
+        )
+        self.assertEqual(result, {"FINISHED"})
+        project = self.ps.current()
+        self.assertIsNone(project.manifest.vcrs_epsg)
+        self.assertEqual(project.manifest.vcrs_note, "NP-0 del plano 3")
+        self.assertEqual(project.grid_step_m, 1.5)
+        self.assertEqual(project.origin.z0, -180)
+        self.assertEqual(project.window.xmin % 3, 0)
+
+    def test_swapped_axes_report_the_field(self) -> None:
+        """RF-002-03: con X e Y intercambiadas no se crea nada y el mensaje nombra el
+        campo (la ventana) y dice que pueden estar intercambiadas."""
+        swapped = {
+            "xmin": WINDOW_TEXT["ymin"], "ymin": WINDOW_TEXT["xmin"],
+            "xmax": WINDOW_TEXT["ymax"], "ymax": WINDOW_TEXT["xmax"],
+        }
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_new_project(
+                "EXEC_DEFAULT", directory=str(self.tmp), name="Cantera Prueba", **swapped
+            )
+        message = str(caught.exception)
+        self.assertIn("ventana", message)
+        self.assertIn("intercambiadas", message)
+        self.assertEqual(list(self.tmp.iterdir()), [])
+        self.assertIsNone(self.ps.current())
+
+    def test_bad_number_reports_the_field(self) -> None:
+        """RF-002-03: un número que no lo es (dos separadores decimales) no crea nada y el
+        mensaje nombra el campo y el valor."""
+        values = dict(WINDOW_TEXT, xmin="700.000,4")
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_new_project(
+                "EXEC_DEFAULT", directory=str(self.tmp), name="Cantera Prueba", **values
+            )
+        self.assertIn("xmin", str(caught.exception))
+        self.assertIn("700.000,4", str(caught.exception))
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+
+class OpenProjectTest(OperatorsTestCase):
+    def test_open_is_modal_with_progress(self) -> None:
+        """RF-002-04: abrir es modal, avanza ``open_steps`` con un paso de progreso por
+        fase (cabecera … apertura) y deja el proyecto abierto en escritura, con el cerrojo
+        de la sesión y la georreferencia en la escena."""
+        root = self.create_closed()
+        operator = self.run_open(budget=0.0, directory=str(root))
+        self.assertEqual(operator.outcome, "FINISHED")
+        phases = [phase for phase, _message in operator.progress_log]
+        unique = [phase for index, phase in enumerate(phases) if phase not in phases[:index]]
+        self.assertEqual(unique, list(ext("core.project.open").PHASES))
+        project = self.ps.current()
+        self.assertIsNotNone(project)
+        self.assertTrue(project.writable)
+        self.assertEqual(project.root, root)
+        self.assertEqual(self.lock.read_holder(root).session_uid, self.ps.session().session_uid)
+        self.assertEqual(bpy.context.scene.geoblender.project_uid, project.uid)
+        self.assertEqual(self.events(root)[-1], "open")
+
+    def test_escape_cancels(self) -> None:
+        """RF-002-04 (principio 9): Esc antes de terminar cancela sin abrir nada ni dejar
+        el cerrojo."""
+        root = self.create_closed()
+        result = bpy.ops.geoblender.core_open_project("EXEC_DEFAULT", directory=str(root))
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        operator = self.modal_operator()
+        with mock.patch.object(type(operator), "STEP_BUDGET_S", 0.0):
+            for _ in range(10):  # un paso por evento, hasta tomar el cerrojo
+                if (root / ".lock").exists():
+                    break
+                state = operator.modal(bpy.context, SimpleNamespace(type="TIMER", value="NOTHING"))
+                self.assertEqual(state, {"RUNNING_MODAL"})
+            self.assertTrue((root / ".lock").exists())
+            state = operator.modal(bpy.context, SimpleNamespace(type="ESC", value="PRESS"))
+        self.assertEqual(state, {"CANCELLED"})
+        self.assertIsNone(self.ps.current())
+        self.assertFalse((root / ".lock").exists())
+
+    def test_locked_opens_read_only_with_holder(self) -> None:
+        """RF-002-09: si otra sesión tiene el cerrojo, se abre en solo lectura con su
+        equipo, usuario y hora, y el cerrojo no cambia."""
+        root = self.create_closed(session=self.other_session())
+        before = (root / ".lock").read_bytes()
+        operator = self.run_open(directory=str(root))
+        self.assertEqual(operator.outcome, "FINISHED")
+        project = self.ps.current()
+        self.assertFalse(project.writable)
+        self.assertEqual(project.read_only_reason, self.core.ReadOnlyCode.LOCKED)
+        self.assertIn("andres", project.status.message)
+        self.assertIn("PC-OTRO", project.status.message)
+        self.assertEqual((root / ".lock").read_bytes(), before)
+
+    def test_force_without_confirmation_keeps_lock(self) -> None:
+        """RF-002-10: un cerrojo caducado no se fuerza sin confirmar: se abre en solo
+        lectura, el aviso dice que se puede forzar y el cerrojo no cambia; tampoco desde
+        «Cerrojo del proyecto…» sin confirmar."""
+        root = self.create_closed()
+        self.write_stale_lock(root)
+        before = (root / ".lock").read_bytes()
+        operator = self.run_open(directory=str(root))
+        self.assertEqual(operator.outcome, "FINISHED")
+        project = self.ps.current()
+        self.assertFalse(project.writable)
+        self.assertEqual((root / ".lock").read_bytes(), before)
+        self.assertTrue(any("forzar" in text for text in operator.report_log), operator.report_log)
+        self.assertEqual(bpy.ops.geoblender.core_show_lock("EXEC_DEFAULT"), {"FINISHED"})
+        self.assertEqual((root / ".lock").read_bytes(), before)
+        self.assertNotIn("lock_forced", self.events(root))
+
+    def test_force_with_confirmation_and_seen_holder(self) -> None:
+        """RF-002-10: confirmado y con el titular que vio el usuario, el cerrojo
+        caducado se fuerza (escritura y evento ``lock_forced``); con otro titular, no."""
+        root = self.create_closed()
+        seen = self.write_stale_lock(root)
+        other = json.dumps(dict(seen.to_dict(), session_uid="00000000-0000-4000-8000-0000000000c9"))
+        before = (root / ".lock").read_bytes()
+        operator = self.run_open(directory=str(root), force_lock=True, seen_lock=other)
+        self.assertFalse(self.ps.current().writable)
+        self.assertEqual((root / ".lock").read_bytes(), before)
+        self.ps.close()
+        operator = self.run_open(
+            directory=str(root), force_lock=True, seen_lock=json.dumps(seen.to_dict())
+        )
+        self.assertEqual(operator.outcome, "FINISHED")
+        project = self.ps.current()
+        self.assertTrue(project.writable)
+        self.assertEqual(self.lock.read_holder(root).session_uid, self.ps.session().session_uid)
+        self.assertIn("lock_forced", self.events(root))
+
+    def test_show_lock_forces_with_confirmation(self) -> None:
+        """RF-002-10: desde «Cerrojo del proyecto…», con la confirmación y el titular que
+        se vio, el proyecto abierto en solo lectura pasa a escritura forzando el cerrojo."""
+        root = self.create_closed()
+        seen = self.write_stale_lock(root)
+        self.run_open(directory=str(root))
+        self.assertFalse(self.ps.current().writable)
+        result = bpy.ops.geoblender.core_show_lock(
+            "EXEC_DEFAULT", force=True, seen_lock=json.dumps(seen.to_dict())
+        )
+        self.assertEqual(result, {"FINISHED"})
+        operator = self.modal_operator()
+        for _ in range(10_000):
+            state = operator.modal(bpy.context, SimpleNamespace(type="TIMER", value="NOTHING"))
+            if state != {"RUNNING_MODAL"}:
+                break
+        self.assertTrue(self.ps.current().writable)
+        self.assertIn("lock_forced", self.events(root))
+
+    def test_older_schema_migrates_only_if_accepted(self) -> None:
+        """RF-002-20: con un esquema anterior, sin aceptar se abre en solo lectura «sin
+        migrar» sin copia previa; aceptando, se hace la copia junto al original, se migra
+        y se abre en escritura con el esquema nuevo."""
+        root = self.create_closed()
+        migrations = ext("core.project.migrations")
+        registry = (
+            migrations.Migration(1, 2, "tabla de prueba", _m1_2),
+            migrations.Migration(2, 3, "columna de prueba", _m2_3),
+        )
+        with (
+            mock.patch.object(ext("core.project.open"), "SCHEMA_VERSION", 3),
+            mock.patch.object(migrations, "SCHEMA_VERSION", 3),
+            mock.patch.object(migrations, "REGISTRY", registry),
+        ):
+            self.run_open(directory=str(root))
+            project = self.ps.current()
+            self.assertEqual(project.read_only_reason, self.core.ReadOnlyCode.NOT_MIGRATED)
+            backup = self.tmp / "Cantera Prueba.gbproj.respaldo-esquema-1"
+            self.assertFalse(backup.exists())
+            self.ps.close()
+            operator = self.run_open(directory=str(root), accept_migration=True)
+            self.assertEqual(operator.outcome, "FINISHED")
+            project = self.ps.current()
+            self.assertTrue(project.writable)
+            self.assertEqual(project.schema_version, 3)
+            self.assertTrue(backup.is_dir())
+            phases = {phase for phase, _message in operator.progress_log}
+            self.assertLessEqual(set(migrations.PHASES), phases)
+
+
+class CloseProjectTest(OperatorsTestCase):
+    def test_close_releases_lock(self) -> None:
+        """RF-002-06: «Cerrar proyecto» registra el cierre, libera el cerrojo y deja la
+        sesión sin proyecto; sin proyecto no está disponible."""
+        bpy.ops.geoblender.core_new_project(
+            "EXEC_DEFAULT", directory=str(self.tmp), name="Cantera Prueba", **WINDOW_TEXT
+        )
+        root = self.ps.current().root
+        self.assertTrue(bpy.ops.geoblender.core_close_project.poll())
+        self.assertEqual(bpy.ops.geoblender.core_close_project("EXEC_DEFAULT"), {"FINISHED"})
+        self.assertIsNone(self.ps.current())
+        self.assertFalse((root / ".lock").exists())
+        self.assertEqual(self.events(root)[-1], "close")
+        self.assertFalse(bpy.ops.geoblender.core_close_project.poll())
+        self.assertFalse(bpy.ops.geoblender.core_show_lock.poll())
+
+
+if __name__ == "__main__":
+    unittest.main()
