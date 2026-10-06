@@ -247,5 +247,42 @@ class BlendRelativePathTest(unittest.TestCase):
                 self.assertEqual(paths.blend_relative_path(root, blend), "")
 
 
+class ViewFileTest(unittest.TestCase):
+    """Dónde se guarda una vista del proyecto (spec 002, T26; RF-002-07, RF-002-13)."""
+
+    def test_is_within(self) -> None:
+        """RF-002-07, RF-002-13: una vista de ``scenes/`` está dentro del proyecto (con
+        cualquier mayúscula en Windows); una carpeta vecina con el mismo prefijo, otra
+        unidad o una vista sin fichero, no."""
+        with project_tmp() as tmp:
+            root = tmp / "Cantera.gbproj"
+            (root / "scenes").mkdir(parents=True)
+            self.assertTrue(paths.is_within(root / "scenes" / "principal.blend", root))
+            self.assertTrue(paths.is_within(Path(str(root).upper()) / "x.blend", root))
+            self.assertFalse(paths.is_within(tmp / "Cantera.gbproj.anterior" / "x.blend", root))
+            self.assertFalse(paths.is_within(tmp / "x.blend", root))
+            self.assertFalse(paths.is_within(Path("D:/vistas/x.blend"), Path("C:/p/Cantera.gbproj")))
+            self.assertFalse(paths.is_within("", root))
+            self.assertFalse(paths.is_within(None, root))
+
+    def test_same_volume(self) -> None:
+        """RF-002-18: misma unidad sin distinguir mayúsculas; otra unidad, o una unidad y
+        un recurso UNC, no."""
+        self.assertTrue(paths.same_volume(Path("C:/a/b"), Path("c:/x")))
+        self.assertFalse(paths.same_volume(Path("C:/a"), Path("D:/a")))
+        self.assertFalse(paths.same_volume(Path("//srv/recurso/a"), Path("C:/a")))
+        self.assertTrue(paths.same_volume(Path("//srv/recurso/a"), Path("//SRV/recurso/b")))
+
+    def test_next_free_path(self) -> None:
+        """RF-002-07: la vista nueva va a ``principal.blend`` y, si ya existe, a
+        ``principal-2.blend``, ``principal-3.blend``…: nunca sustituye otra vista."""
+        with project_tmp() as tmp:
+            self.assertEqual(paths.next_free_path(tmp, "principal", ".blend"), tmp / "principal.blend")
+            (tmp / "principal.blend").write_bytes(b"")
+            self.assertEqual(paths.next_free_path(tmp, "principal", ".blend"), tmp / "principal-2.blend")
+            (tmp / "principal-2.blend").write_bytes(b"")
+            self.assertEqual(paths.next_free_path(tmp, "principal", ".blend"), tmp / "principal-3.blend")
+
+
 if __name__ == "__main__":
     unittest.main()

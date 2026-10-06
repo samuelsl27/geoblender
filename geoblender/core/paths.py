@@ -17,6 +17,9 @@ formato-proyecto §1; plan 002 §5.4).
 - :func:`find_absolute_paths`: rutas absolutas (Windows, UNC, Linux o macOS) dentro de
   un valor (texto, listas, diccionarios), para comprobar que el proyecto no guarda
   ninguna (RF-002-18).
+- :func:`is_within`, :func:`same_volume` y :func:`next_free_path`: si un fichero está
+  dentro de una carpeta (una vista de ``scenes/``), si dos rutas son del mismo volumen y
+  el primer nombre libre (``principal.blend``, ``principal-2.blend``…).
 - :func:`blend_relative_path`: la ruta del proyecto que guarda una escena de Blender,
   relativa al ``.blend`` con el prefijo ``//`` de Blender (``//../`` desde ``scenes/``),
   o vacía si no se puede expresar así (otro volumen, vista sin guardar): nunca absoluta
@@ -235,7 +238,7 @@ def blend_relative_path(target: Path, blend_file: Path | str | None) -> str:
     if blend_file is None or not os.fspath(blend_file):
         return ""
     folder = Path(blend_file).parent
-    if _volume(Path(target)) != _volume(folder):
+    if not same_volume(Path(target), folder):
         return ""
     try:
         relative = os.path.relpath(os.fspath(target), os.fspath(folder))
@@ -244,3 +247,36 @@ def blend_relative_path(target: Path, blend_file: Path | str | None) -> str:
     if relative == os.curdir:
         return BLEND_RELATIVE_PREFIX
     return f"{BLEND_RELATIVE_PREFIX}{PurePath(relative).as_posix()}/"
+
+
+def same_volume(first: Path | str, second: Path | str) -> bool:
+    """Verdadero si las dos rutas son de la misma unidad o del mismo recurso UNC (sin
+    distinguir mayúsculas; dos relativas, del mismo)."""
+    return _volume(Path(first)) == _volume(Path(second))
+
+
+def is_within(path: Path | str | None, folder: Path | str) -> bool:
+    """Verdadero si ``path`` es ``folder`` o está dentro (rutas canónicas, sin distinguir
+    mayúsculas en Windows); ``None`` o vacía, no."""
+    if path is None or not os.fspath(path):
+        return False
+    try:
+        target = canonical_path(Path(path))
+        base = canonical_path(Path(folder))
+    except (OSError, ValueError):
+        return False
+    if not same_volume(target, base):
+        return False
+    inner = os.path.normcase(os.fspath(target))
+    outer = os.path.normcase(os.fspath(base)).rstrip("\\/")
+    return inner == outer or inner.startswith(outer + os.sep)
+
+
+def next_free_path(folder: Path, stem: str, suffix: str) -> Path:
+    """``<folder>/<stem><suffix>`` o, si existe, ``<stem>-2<suffix>``, ``<stem>-3<suffix>``…:
+    nunca un fichero que ya existe."""
+    candidate, number = Path(folder) / f"{stem}{suffix}", 1
+    while candidate.exists():
+        number += 1
+        candidate = Path(folder) / f"{stem}-{number}{suffix}"
+    return candidate

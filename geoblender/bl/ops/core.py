@@ -12,6 +12,11 @@
   ``migrate_steps``) con progreso y que Esc cancela (en red puede pasar de 1 s,
   principio 9).
 - ``geoblender.core_close_project`` (RF-002-06): cierra el proyecto de la sesión.
+- ``geoblender.core_save_project`` (RF-002-07, RF-002-18): guarda la vista en su fichero
+  o, si no tiene, en ``scenes/principal.blend`` (``principal-2.blend``… si ya existe:
+  nunca sustituye otra vista), con rutas relativas (``bl.scene.georef``, ``save_pre``) y
+  la cabecera actualizada (``save_post``). En solo lectura no escribe en la carpeta del
+  proyecto y propone «Guardar como» fuera de ella (spec §8).
 - ``geoblender.core_show_lock`` (RF-002-09, RF-002-10): quién tiene el cerrojo y, si está
   caducado o reservado, forzarlo con confirmación.
 
@@ -40,6 +45,7 @@ from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from ...core.errors import GeoblenderError, ValidationError
 from ...core.georef.crs import DEFAULT_HORIZONTAL_EPSG, DEFAULT_VERTICAL_EPSG, load_catalog
 from ...core.numbers import parse_decimal
+from ...core.paths import is_within, next_free_path
 from ...core.project import migrations as migrations_mod
 from ...core.project.create import create_project
 from ...core.project.lock import LockInfo, LockState, LockStatus
@@ -465,6 +471,69 @@ class GEOBLENDER_OT_core_close_project(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Guardar la vista ----------------------------------------------------------------------
+
+SCENES_DIR = "scenes"
+MAIN_VIEW = "principal"
+
+
+class GEOBLENDER_OT_core_save_project(bpy.types.Operator):
+    """Save the view (.blend) with relative paths; a view without a file goes to scenes/principal.blend"""
+
+    bl_idname = "geoblender.core_save_project"
+    bl_label = "Save"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        if project_session.current() is None:
+            cls.poll_message_set("No hay ningún proyecto abierto")
+            return False
+        return True
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        project = project_session.current()
+        if project is None:
+            return {"CANCELLED"}
+        current = bpy.data.filepath
+        if not project.writable and (not current or is_within(current, project.root)):
+            self.report(
+                {"WARNING"},
+                f"Proyecto «{project.name}» en solo lectura ({project.status.message}): la "
+                "vista no se guarda en la carpeta del proyecto; guárdela con Archivo ▸ "
+                "Guardar como… fuera de ella",
+            )
+            if not bpy.app.background:
+                suggested = project.root.parent / f"{project.name}.blend"
+                bpy.ops.wm.save_as_mainfile("INVOKE_DEFAULT", filepath=str(suggested))
+            return {"CANCELLED"}
+        if current:
+            target = Path(current)
+        else:
+            scenes = project.root / SCENES_DIR
+            try:
+                scenes.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self.report({"ERROR"}, f"No se puede crear «{scenes}»: {exc}")
+                return {"CANCELLED"}
+            target = next_free_path(scenes, MAIN_VIEW, ".blend")
+        try:
+            bpy.ops.wm.save_as_mainfile(filepath=str(target), relative_remap=True)
+        except RuntimeError as exc:
+            self.report({"ERROR"}, f"No se ha podido guardar la vista «{target}»: {exc}")
+            return {"CANCELLED"}
+        shown = (
+            target.relative_to(project.root).as_posix()
+            if is_within(target, project.root)
+            else str(target)
+        )
+        self.report({"INFO"}, f"Vista guardada en «{shown}»")
+        for message in project_session.take_notices():
+            self.report({"WARNING"}, message)
+        return {"FINISHED"}
+
+
 # Cerrojo del proyecto ------------------------------------------------------------------
 
 
@@ -565,5 +634,6 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_new_project,
     GEOBLENDER_OT_core_open_project,
     GEOBLENDER_OT_core_close_project,
+    GEOBLENDER_OT_core_save_project,
     GEOBLENDER_OT_core_show_lock,
 )

@@ -25,7 +25,9 @@ retirados en :func:`unregister`:
   proyecto; se vuelven a sincronizar todas (ninguna operación de la spec 002 entra en la
   pila de deshacer).
 - ``save_pre``: se sincronizan todas, también una escena nueva, con la ruta relativa al
-  fichero de **destino** (``save_pre`` la recibe).
+  fichero de **destino** (``save_pre`` la recibe), y las rutas absolutas de los bloques de
+  datos del mismo volumen pasan a relativas al destino (RF-002-07, RF-002-18; también con
+  Ctrl+S); las de otro volumen no se pueden expresar así y quedan en un aviso.
 - ``save_post``: con el proyecto en escritura, la cabecera se actualiza desde la base de
   datos (RF-002-07).
 """
@@ -40,7 +42,7 @@ import bpy
 from bpy.app.handlers import persistent
 
 from ...core.errors import GeoblenderError
-from ...core.paths import blend_relative_path
+from ...core.paths import blend_relative_path, find_absolute_paths, is_within, same_volume
 from ..props.core import LOCAL_VERTICAL
 from . import project_session
 
@@ -207,6 +209,14 @@ def check_loaded_file(filepath: object = None) -> None:
             "y la vista queda desfasada; abra su proyecto para trabajar con ella."
         )
         return
+    if not project.writable and is_within(filepath if isinstance(filepath, str) else None,
+                                          project.root):
+        project_session.notify(
+            f"El proyecto «{expected.name}» está en solo lectura ({project.status.message}): "
+            f"la vista «{view}» es de su carpeta y Ctrl+S la guardaría dentro del proyecto; "
+            "para conservar cambios, use Archivo ▸ Guardar como… fuera de la carpeta del "
+            "proyecto."
+        )
     differing = [item for item in found if item.key != expected.key]
     if differing:
         mark_stale()
@@ -244,12 +254,57 @@ def on_redo_post(*_args: object) -> None:
     sync_scenes()
 
 
+def _is_absolute(path: str) -> bool:
+    return bool(path) and not path.startswith("//") and bool(
+        Path(path).is_absolute() or find_absolute_paths(path)
+    )
+
+
+def relativize_paths(target: Path) -> list[str]:
+    """Pasa a relativas a la carpeta de ``target`` las rutas absolutas de los bloques de
+    datos locales que están en su mismo volumen (RF-002-18) y devuelve las que siguen
+    siendo absolutas (otro volumen, una biblioteca enlazada o una ruta que no es la
+    ``filepath`` del bloque)."""
+    base = Path(target).parent
+    remaining: list[str] = []
+    for block, used in bpy.data.file_path_map(include_libraries=True).items():
+        if not used or getattr(block, "library", None) is not None:
+            continue
+        current = getattr(block, "filepath", None)
+        editable = isinstance(current, str) and not isinstance(block, bpy.types.Library)
+        if editable and _is_absolute(current):
+            full = bpy.path.abspath(current)
+            if same_volume(full, base):
+                block.filepath = bpy.path.relpath(full, start=str(base))
+            else:
+                remaining.append(current)
+        for path in sorted(used):
+            if path != current and _is_absolute(path):
+                remaining.append(path)
+    return remaining
+
+
 @persistent
 def on_save_pre(filepath: object = None, *_args: object) -> None:
     """Antes de guardar: todas las escenas (también las nuevas), con la ruta del proyecto
-    relativa al fichero de destino (RF-002-18, RF-002-28)."""
+    relativa al fichero de destino, y las rutas de los bloques de datos, relativas a él
+    (RF-002-07, RF-002-18, RF-002-28)."""
     target = filepath if isinstance(filepath, str) and filepath else None
-    sync_scenes(blend_file=target)
+    project = project_session.current()
+    if project is None:
+        return
+    sync_scenes(project, blend_file=target)
+    if target is None:
+        return
+    remaining = relativize_paths(Path(target))
+    if remaining:
+        shown = ", ".join(f"«{path}»" for path in remaining[:3])
+        more = f" y {len(remaining) - 3} más" if len(remaining) > 3 else ""
+        project_session.notify(
+            f"La vista «{Path(target).name}» usa ficheros con ruta absoluta que no se puede "
+            f"guardar relativa (otro volumen o biblioteca enlazada): {shown}{more}; cópielos "
+            "junto al proyecto si la vista tiene que servir en otro equipo."
+        )
 
 
 @persistent

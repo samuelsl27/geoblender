@@ -167,5 +167,39 @@ class ChildTempTest(unittest.TestCase):
         self.assertEqual(calls, [(["blender", "-b"], trees.child_env({"A": "1"}, temp), ROOT, 5.0)])
 
 
+class FakeLayoutTest(unittest.TestCase):
+    def test_draw_records_items(self) -> None:
+        """Spec 002, T26: ``fake_layout.draw`` llama al ``draw`` de una clase con un
+        *layout* simulado que anota etiquetas, operadores (con las propiedades que el
+        ``draw`` les pone), propiedades, menús y separadores, también dentro de columnas y
+        filas, y deja usar los métodos y atributos de la clase."""
+        from tests.support import fake_layout
+
+        class Menu:
+            label = "Hola"
+
+            def texto(self) -> str:
+                return self.label
+
+            def draw(self, context: object) -> None:
+                self.layout.label(text=self.texto(), icon="INFO")
+                column = self.layout.column(align=True)
+                props = column.operator("geoblender.core_open_project", text="Abrir")
+                props.directory = "x"
+                column.row().prop(context, "valor", text="Valor")
+                self.layout.separator()
+                self.layout.menu("GEOBLENDER_MT_core_recent", text="Recientes")
+
+        context = type("Context", (), {"valor": 7})()
+        layout = fake_layout.draw(Menu, context)
+        self.assertEqual([item.kind for item in layout.items],
+                         ["label", "operator", "prop", "separator", "menu"])
+        self.assertEqual(layout.texts(), ["Hola", "Abrir", "Valor", "Recientes"])
+        (operator,) = layout.of_kind("operator")
+        self.assertEqual((operator.target, operator.properties.directory),
+                         ("geoblender.core_open_project", "x"))
+        self.assertEqual(layout.of_kind("prop")[0].properties, 7)
+
+
 if __name__ == "__main__":
     unittest.main()
