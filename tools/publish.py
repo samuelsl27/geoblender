@@ -13,6 +13,15 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
    mayúscula) directamente dentro de la carpeta del proyecto, que es la documentación
    (``docs/constitution.md`` y su ``.git``); ``GEOBLENDER_DOCS_DIR``, si está definida,
    es esa misma carpeta.
+3. Destino (RF-007-17, RF-007-18, RF-007-31): ``--destino`` o, si no,
+   ``GEOBLENDER_NAS_ESPEJO``. Se rechaza (sin escribir nada en él) la raíz de una unidad
+   o de un recurso, la carpeta de expedientes de clientes o una de dentro (por el texto,
+   sin buscar la unidad ni el servidor, y por la ruta real), la carpeta del proyecto,
+   una de dentro o una que la contiene, uno que no existe o no es una carpeta, y uno sin
+   ``docs/constitution.md`` salvo el primer espejo contra su foto. La base de la
+   comparación es el estado del último espejo de ese destino o, en el primero, su foto
+   inicial (``gbtools.safe_mirror``); sin ninguno, o con un estado ilegible, código 2 y
+   ``--rehacer-estado``.
 5. Árboles (RF-007-15), en los dos repositorios: ``.git`` propio (ni *worktree*
    enlazado ni ``alternates``), sin cambios sin commit ni ficheros nuevos sin ignorar,
    sin operaciones de git a medias ni cerrojos, HEAD en una rama; y la documentación no
@@ -29,7 +38,8 @@ ella se lo pide en esa tarea.
 
 Códigos de salida: 0 publicado; 1 árbol no limpio, *worktree* o ``alternates``, la
 documentación versiona algo bajo ``Geoblender/``, comprobación roja; 2 uso, raíz,
-estructura o sin el Blender del manifiesto; 3 cambios en el destino.
+estructura, sin destino, destino rechazado, sin estado ni foto o estado ilegible, o sin
+el Blender del manifiesto; 3 cambios en el destino.
 """
 
 from __future__ import annotations
@@ -38,14 +48,17 @@ import sys
 
 sys.dont_write_bytecode = True  # sin __pycache__ en los repositorios
 
+import datetime  # noqa: E402
+import ntpath  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 import subprocess  # noqa: E402
 import time  # noqa: E402
 from collections.abc import Callable, Mapping, Sequence  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from gbtools import blender, git, layout, manifest  # noqa: E402
+from gbtools import blender, git, layout, manifest, safe_mirror  # noqa: E402
 from gbtools.repo import repo_root  # noqa: E402
 
 EXIT_OK = 0
@@ -64,9 +77,15 @@ STATUS_STOP = "PARADA"
 STATUS_SKIPPED = "omitido"
 
 STEP_STRUCTURE = "estructura"
+STEP_DEST = "destino"
 STEP_TREES = "árboles"
 STEP_CHECK = "comprobación"
 STEP_DOCS = "documentación"
+
+# El primer componente bajo la raíz de una unidad, o el nombre del recurso, de la
+# carpeta de expedientes de clientes (solo lectura, siempre): nunca es un destino.
+DOSSIER_FOLDER = "an"
+_SEPARATORS = re.compile(r"[\\/]+")
 
 CHECK_SCRIPT = layout.CHECK_RELPATH
 DOCS_CHECK_SCRIPT = "tools/check_docs.py"
@@ -196,6 +215,91 @@ def structure_problem(code_root: Path, environ: Mapping[str, str]) -> str | None
     return None
 
 
+def resolve_destination(option: str | None, environ: Mapping[str, str]) -> Path | None:
+    """El destino (RF-007-17): ``--destino`` o, si no se da, ``GEOBLENDER_NAS_ESPEJO``
+    (sin espacios ni comillas alrededor; vacía no cuenta); ``None`` si no hay."""
+    value = option if option else environ.get(layout.ENV_NAS_MIRROR, "")
+    value = value.strip().strip('"').strip()
+    return Path(value) if value else None
+
+
+def root_problem(path: str) -> str | None:
+    """Mirando solo el texto de ``path`` (sin buscar la unidad ni el servidor): si es la
+    raíz de una unidad o de un recurso compartido, o la carpeta de expedientes de
+    clientes o una de dentro (plan 007 §5.4.6)."""
+    drive, _root, tail = ntpath.splitroot(path)
+    parts = [part for part in _SEPARATORS.split(tail) if part]
+    if not parts:
+        return (
+            f"«{path}» es la raíz de una unidad o de un recurso compartido: el espejo va "
+            "en su propia carpeta"
+        )
+    names = [parts[0]]
+    if drive.startswith(("\\\\", "//")):
+        names.append(_SEPARATORS.split(drive.strip("\\/"))[-1])
+    if any(name.casefold() == DOSSIER_FOLDER for name in names):
+        return (
+            f"«{path}» es la carpeta de expedientes de clientes o está dentro de ella: "
+            "allí nunca se escribe"
+        )
+    return None
+
+
+def _inside(path: str, folder: str) -> bool:
+    return path.startswith(folder.rstrip("\\/") + os.sep)
+
+
+def destination_problem(
+    destination: Path, project: Path, base: safe_mirror.MirrorState | None
+) -> str | None:
+    """Por qué se rechaza el destino (RF-007-18; plan 007 §5.4.6), o ``None``: la raíz
+    de una unidad o de un recurso, la carpeta de expedientes (por el texto y por la ruta
+    real), la carpeta del proyecto, una de dentro o una que la contiene, uno que no
+    existe o no es una carpeta, y uno sin ``docs/constitution.md`` que no es el primer
+    espejo contra su foto. No escribe nada ni lanza git sobre el destino."""
+    text = os.path.abspath(destination)
+    problem = root_problem(text)
+    if problem is not None:
+        return problem
+    real = os.path.realpath(text)
+    problem = root_problem(real)
+    if problem is not None:
+        return problem
+    folded = os.path.normcase(real)
+    home = os.path.normcase(os.path.realpath(project))
+    if folded == home:
+        return f"«{destination}» es la carpeta del proyecto: el espejo es otra carpeta"
+    if _inside(folded, home):
+        return f"«{destination}» está dentro de la carpeta del proyecto"
+    if _inside(home, folded):
+        return f"«{destination}» contiene la carpeta del proyecto"
+    if not os.path.lexists(real):
+        return f"«{destination}» no existe (la publicación no crea el destino)"
+    if not os.path.isdir(real):
+        return f"«{destination}» no es una carpeta"
+    if not (Path(real) / layout.DOCS_MARKER).is_file() and not (base is not None and base.photo):
+        return (
+            f"«{destination}» no tiene «{layout.DOCS_MARKER}»: no parece el espejo de la "
+            "carpeta del proyecto, y no es el primer espejo contra su foto"
+        )
+    return None
+
+
+def _when(taken: str) -> str:
+    """``2026-10-05T23:09:01`` → ``05/10/2026 23:09`` (o el texto, si no es una fecha)."""
+    try:
+        return datetime.datetime.fromisoformat(taken).strftime("%d/%m/%Y %H:%M")
+    except ValueError:
+        return taken or "fecha desconocida"
+
+
+def base_text(base: safe_mirror.MirrorState) -> str:
+    """De dónde sale la comparación: «primer espejo, foto del …» o «estado del …»."""
+    if base.photo:
+        return f"primer espejo, foto del {_when(base.taken)}"
+    return f"estado del {_when(base.taken)}"
+
+
 def _status_line(entry: str) -> str:
     """``"XY ruta"`` de ``git.dirty_entries`` en palabras."""
     status, _sep, path = entry.partition(" ")
@@ -281,6 +385,8 @@ class Publication:
         self.git_runner = git_runner
         self.runner = runner
         self.locate = locate
+        self.dest: Path | None = None
+        self.base: safe_mirror.MirrorState | None = None
         self.started = time.perf_counter()
         self.step_started = self.started
 
@@ -313,6 +419,48 @@ class Publication:
             STATUS_OK,
             STEP_STRUCTURE,
             f"código en {layout.CODE_DIR_IN_DOCS}\\ de la documentación",
+        )
+
+    # Paso 3: destino y base de la comparación.
+    def check_destination(self) -> None:
+        dest = resolve_destination(self.options.destination, self.environ)
+        if dest is None:
+            raise Stop(
+                EXIT_USAGE,
+                STEP_DEST,
+                f"no hay destino: dé {OPTION_DEST} CARPETA o defina la variable de "
+                f"usuario {layout.ENV_NAS_MIRROR} con la carpeta del espejo",
+            )
+        problem = root_problem(os.path.abspath(dest))
+        if problem is not None:
+            raise Stop(EXIT_USAGE, STEP_DEST, problem)
+        try:
+            base = safe_mirror.load_base(dest, self.environ)
+        except safe_mirror.StateUnreadable as exc:
+            raise Stop(
+                EXIT_USAGE,
+                STEP_DEST,
+                f"{exc}; no se usa la foto en su lugar: {OPTION_REBUILD} lo rehace si "
+                "nada del destino se pierde",
+            ) from exc
+        except safe_mirror.MirrorError as exc:
+            raise Stop(EXIT_USAGE, STEP_DEST, str(exc)) from exc
+        problem = destination_problem(dest, self.project, base)
+        if problem is not None:
+            raise Stop(EXIT_USAGE, STEP_DEST, problem)
+        if base is None and not self.options.rebuild_state:
+            folder = safe_mirror.state_dir(self.environ)
+            raise Stop(
+                EXIT_USAGE,
+                STEP_DEST,
+                f"no hay estado del último espejo de este destino ni su foto inicial (en "
+                f"«{folder}»): {OPTION_REBUILD} lo rehace si nada del destino se pierde",
+            )
+        self.dest, self.base = dest, base
+        self.line(
+            STATUS_OK,
+            STEP_DEST,
+            base_text(base) if base is not None else "sin estado ni foto",
         )
 
     # Paso 5: árboles (y otra vez tras las comprobaciones, que no deben cambiar nada).
@@ -393,12 +541,13 @@ class Publication:
 
     def run(self) -> int:
         self.check_structure()
+        self.check_destination()
         self.check_trees()
         self.run_checks()
         raise Stop(
             EXIT_FAIL,
             "publicación",
-            "la publicación aún no sube ni hace el espejo (spec 007, T22 a T28)",
+            "la publicación aún no sube ni hace el espejo (spec 007, T23 a T28)",
         )
 
 

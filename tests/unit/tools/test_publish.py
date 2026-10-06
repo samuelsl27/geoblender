@@ -26,7 +26,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tests.support import gitrepo
+from tests.support import gitrepo, mirror
 from tests.support.repo import tools_on_path
 from tests.support.resources import requires
 
@@ -212,16 +212,21 @@ class Workspace:
 
 @contextlib.contextmanager
 def workspace(
-    docs: Mapping[str, str] | None = None, code: Mapping[str, str] | None = None
+    docs: Mapping[str, str] | None = None,
+    code: Mapping[str, str] | None = None,
+    photo: bool = True,
 ) -> Iterator[Workspace]:
     """Un :class:`Workspace` con la carpeta del proyecto de prueba (más ``docs`` y
-    ``code``) y un destino vacío; se borra al salir."""
+    ``code``) y un destino vacío con su foto inicial (``photo``: el primer espejo, que
+    no necesita marcador); se borra al salir."""
     with tempfile.TemporaryDirectory(prefix="geoblender-publicacion-") as tmp:
         space = Workspace(Path(tmp).resolve())
         write_files(space.project, {**DOCS_FILES, **(docs or {})})
         write_files(space.code, {**CODE_FILES, **(code or {})})
         space.dest.mkdir()
         space.profile.mkdir()
+        if photo:
+            mirror.write_photo(space.profile, space.dest, files={})
         yield space
 
 
@@ -247,14 +252,16 @@ def run_publish(
     real_git: object = None,
     checks: FakeChecks | None = None,
     locate: object = fake_locate,
+    dest_option: bool = True,
 ) -> Outcome:
     """``publish.main`` con ``--destino`` = el destino de ``space`` (salvo que ``args``
-    traiga otro), su entorno, el ejecutor de git (simulado si no se da otro) y las
-    comprobaciones simuladas (en verde si no se dan otras)."""
+    traiga otro, o sin él si no ``dest_option``), su entorno, el ejecutor de git
+    (simulado si no se da otro) y las comprobaciones simuladas (en verde si no se dan
+    otras)."""
     fake = git_runner if git_runner is not None else FakeGit()
     checks = checks if checks is not None else FakeChecks()
     argv = list(args)
-    if publish.OPTION_DEST not in argv:
+    if dest_option and publish.OPTION_DEST not in argv:
         argv = [publish.OPTION_DEST, str(space.dest), *argv]
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -375,6 +382,150 @@ class StructureTest(PublicationAssertions):
             same = space.env(**{layout.ENV_DOCS_DIR: str(space.code / "..")})
             outcome = run_publish(space, environ=same)
             self.assertNotIn(layout.ENV_DOCS_DIR, outcome.out, outcome.text)
+
+
+class DestinationTest(PublicationAssertions):
+    """RF-007-17, RF-007-18, RF-007-31: de dónde sale el destino y cuándo se rechaza
+    (plan 007 §5.4.5, paso 3; §5.4.6), antes de subir nada y sin escribir en él ni en su
+    carpeta madre."""
+
+    def assertRejected(self, space: Workspace, dest: str | Path, *expected: str) -> Outcome:
+        before = gbrepo.snapshot(space.base)
+        outcome = self.assertStopped(space, 2, publish.OPTION_DEST, str(dest))
+        self.assertIn(f"fallo     {publish.STEP_DEST}", outcome.out)
+        for text in expected:
+            self.assertIn(text, outcome.out)
+        self.assertEqual(gbrepo.snapshot_changes(before, gbrepo.snapshot(space.base)), [])
+        self.assertEqual(outcome.checks.calls, [])
+        return outcome
+
+    def test_option_over_variable(self) -> None:
+        """RF-007-17: ``--destino`` manda sobre ``GEOBLENDER_NAS_ESPEJO``; sin la opción,
+        vale la variable."""
+        with workspace() as space:
+            missing = space.base / "no-existe"
+            environ = space.env(**{layout.ENV_NAS_MIRROR: str(missing)})
+            outcome = run_publish(space, environ=environ)
+            self.assertIn(f"correcto  {publish.STEP_DEST}", outcome.out, outcome.text)
+            environ = space.env(**{layout.ENV_NAS_MIRROR: str(space.dest)})
+            outcome = run_publish(space, environ=environ, dest_option=False)
+            self.assertIn(f"correcto  {publish.STEP_DEST}", outcome.out, outcome.text)
+            outcome = self.assertStopped(
+                space, 2, environ=space.env(**{layout.ENV_NAS_MIRROR: str(missing)}),
+                dest_option=False,
+            )
+            self.assertIn("no existe", outcome.out)
+
+    def test_no_destination_exit_2(self) -> None:
+        """RF-007-17: sin ``--destino`` ni ``GEOBLENDER_NAS_ESPEJO`` (o vacía), código 2
+        nombrando la opción y la variable."""
+        with workspace() as space:
+            for environ in (space.env(), space.env(**{layout.ENV_NAS_MIRROR: "  "})):
+                outcome = self.assertStopped(space, 2, environ=environ, dest_option=False)
+                self.assertIn(publish.OPTION_DEST, outcome.out)
+                self.assertIn(layout.ENV_NAS_MIRROR, outcome.out)
+
+    def test_dest_is_project(self) -> None:
+        """RF-007-18: el destino es la carpeta del proyecto (también escrita con otras
+        mayúsculas)."""
+        with workspace() as space:
+            self.assertRejected(space, space.project, "carpeta del proyecto")
+            self.assertRejected(space, str(space.project).upper(), "carpeta del proyecto")
+
+    def test_dest_inside_project(self) -> None:
+        """RF-007-18: el destino está dentro de la carpeta del proyecto (la del código,
+        o la de ``docs/``)."""
+        with workspace() as space:
+            self.assertRejected(space, space.code, "dentro de la carpeta del proyecto")
+            self.assertRejected(space, space.project / "docs", "dentro")
+
+    def test_dest_contains_project(self) -> None:
+        """RF-007-18: el destino contiene la carpeta del proyecto."""
+        with workspace() as space:
+            self.assertRejected(space, space.base, "contiene la carpeta del proyecto")
+
+    def test_drive_root(self) -> None:
+        """RF-007-18: la raíz de una unidad (la del disco temporal, o una que no existe)."""
+        with workspace() as space:
+            anchor = Path(space.base.anchor)
+            self.assertRejected(space, anchor, "raíz")
+            self.assertRejected(space, "Y" + ":\\", "raíz")
+
+    def test_share_root(self) -> None:
+        """RF-007-18: la raíz de un recurso compartido (sin buscar el servidor)."""
+        with workspace() as space:
+            self.assertRejected(space, "\\\\servidor.invalid\\recurso", "raíz")
+            self.assertRejected(space, "\\\\servidor.invalid\\recurso\\", "raíz")
+
+    def test_dossier_folder(self) -> None:
+        """RF-007-18: la carpeta de expedientes de clientes o una de dentro (el primer
+        componente bajo la raíz de una unidad, o el nombre del recurso, es ``an``),
+        escrita con cualquier mayúscula y sin buscar la unidad ni el servidor."""
+        dossier = "an"
+        with workspace() as space:
+            for dest in (
+                "Y" + ":\\" + dossier,
+                "Y" + ":\\" + dossier.upper() + "\\proyecto\\espejo",
+                "\\\\servidor.invalid\\" + dossier + "\\espejo",
+            ):
+                with self.subTest(destino=dest):
+                    self.assertRejected(space, dest, "expedientes de clientes")
+
+    def test_missing_dest(self) -> None:
+        """RF-007-18: un destino que no existe: se rechaza y no se crea."""
+        with workspace() as space:
+            missing = space.base / "no-existe"
+            self.assertRejected(space, missing, "no existe")
+            self.assertFalse(missing.exists())
+
+    def test_dest_is_file(self) -> None:
+        """RF-007-18: un destino que es un fichero."""
+        with workspace() as space:
+            target = space.base / "destino.txt"
+            target.write_bytes(b"x\n")
+            self.assertRejected(space, target, "no es una carpeta")
+
+    def test_dest_without_marker(self) -> None:
+        """RF-007-18: un destino sin ``docs/constitution.md`` que no es el primer espejo
+        contra su foto (tiene estado, o no tiene ni estado ni foto)."""
+        with workspace(photo=False) as space:
+            mirror.write_state(space.profile, space.dest, files={}, folders=[])
+            self.assertRejected(space, space.dest, layout.DOCS_MARKER)
+        with workspace(photo=False) as space:
+            self.assertRejected(space, space.dest, layout.DOCS_MARKER)
+
+    def test_first_mirror_without_marker_ok(self) -> None:
+        """RF-007-18, RF-007-31: sin marcador, el primer espejo contra su foto sí vale;
+        con marcador y estado, también."""
+        with workspace() as space:
+            outcome = run_publish(space)
+            self.assertIn(f"correcto  {publish.STEP_DEST}", outcome.out, outcome.text)
+            self.assertIn("primer espejo", outcome.out)
+        with workspace(photo=False) as space:
+            write_files(space.dest, {layout.DOCS_MARKER: "x\n"})
+            mirror.write_state(space.profile, space.dest)
+            outcome = run_publish(space)
+            self.assertIn(f"correcto  {publish.STEP_DEST}", outcome.out, outcome.text)
+            self.assertIn("estado del 05/10/2026 23:40", outcome.out)
+
+    def test_no_state_exit_2(self) -> None:
+        """RF-007-31: con marcador pero sin estado ni foto, código 2 remitiendo a
+        ``--rehacer-estado``, sin escribir nada."""
+        with workspace(photo=False) as space:
+            write_files(space.dest, {layout.DOCS_MARKER: "x\n"})
+            outcome = self.assertRejected(space, space.dest, publish.OPTION_REBUILD)
+        self.assertIn("ni su foto", outcome.out)
+
+    def test_unreadable_state_exit_2(self) -> None:
+        """RF-007-31: un estado ilegible, aunque haya foto: código 2 remitiendo a
+        ``--rehacer-estado``; ni el estado ni la foto cambian."""
+        with workspace() as space:
+            write_files(space.dest, {layout.DOCS_MARKER: "x\n"})
+            state = mirror.write_state(space.profile, space.dest)
+            state.write_bytes(b"{roto")
+            outcome = self.assertRejected(space, space.dest, publish.OPTION_REBUILD)
+            self.assertEqual(state.read_bytes(), b"{roto")
+        self.assertIn("no se puede leer", outcome.out)
 
 
 class TreesTest(PublicationAssertions):
@@ -600,6 +751,7 @@ class EndToEndTest(PublicationAssertions):
         self.space = Workspace(self.project.base)
         self.space.dest.mkdir()
         self.space.profile.mkdir()
+        mirror.write_photo(self.space.profile, self.space.dest, files={})
 
     def publish(self, *args: str) -> Outcome:
         return run_publish(self.space, *args, real_git=self.project.runner())
