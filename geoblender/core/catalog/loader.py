@@ -40,6 +40,7 @@ from .schema import (
     ContextSpec,
     EntryRef,
     Group,
+    IconSpec,
     LayoutSpec,
     MenuItem,
     MenuSpec,
@@ -77,9 +78,10 @@ CONTEXT_FIELDS = frozenset({"kind", "id", "label", "description", "entry", "item
 CONTEXT_ITEM_FIELDS = frozenset({"ref", "placeholder", "entry", "separator"})
 SHORTCUT_FIELDS = frozenset({"key", "keymap", "event", "ctrl", "shift", "alt", "label"})
 LAYOUT_FIELDS = frozenset({"id", "workspace", "label", "description", "entry", "main"})
+ICON_FIELDS = frozenset({"name", "fallback", "fallback_text"})
 ENTRY_FIELDS = frozenset({"title", "delivered"})
 TOP_LEVEL = frozenset({"menu", "command", "project", "view", "groups", "pie", "context",
-                       "shortcut", "layout"})
+                       "shortcut", "layout", "icon"})
 _LINE_RE = re.compile(r"at line (\d+)")
 
 
@@ -97,6 +99,7 @@ class _Raw:
     shortcuts: list[Shortcut] = field(default_factory=list)
     entries: dict[str, EntryRef] = field(default_factory=dict)
     layouts: list[LayoutSpec] = field(default_factory=list)
+    icons: dict[str, IconSpec] = field(default_factory=dict)
     issues: list[CatalogIssue] = field(default_factory=list)
 
 
@@ -413,6 +416,19 @@ class _Reader:
             source=self.source,
         ))
 
+    def icon(self, table: Mapping[str, Any]) -> None:
+        name = self.string(table, "name", "")
+        self.unknown(table, ICON_FIELDS, name)
+        if name in self.raw.icons:
+            self.issue(name, "name", name, "icono repetido")
+            return
+        self.raw.icons[name] = IconSpec(
+            name=name,
+            fallback=self.string(table, "fallback", name, "NONE"),
+            fallback_text=self.string(table, "fallback_text", name, ""),
+            source=self.source,
+        )
+
     def read(self, data: Mapping[str, Any], *, top: bool) -> None:
         if self.source == ENTRIES_FILE:
             self.entries(data)
@@ -436,6 +452,8 @@ class _Reader:
             self.shortcut(table)
         for table in self.tables(data, "layout", ""):
             self.layout(table)
+        for table in self.tables(data, "icon", ""):
+            self.icon(table)
 
 
 def _files(data_dir: Path) -> Iterator[tuple[str, Path, bool]]:
@@ -500,5 +518,6 @@ def load_catalog(data_dir: Path = DATA_DIR) -> Catalog:
         entries=raw.entries,
         layouts=tuple(raw.layouts),
         load_issues=tuple(raw.issues),
+        icons=dict(raw.icons),
         _by_idname={idname: tuple(commands) for idname, commands in by_idname.items()},
     )

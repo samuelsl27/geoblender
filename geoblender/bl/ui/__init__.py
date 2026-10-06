@@ -3,7 +3,7 @@
 idioma (spec 003). Se registra el último (plan 001 §5.3, contrato 2; plan 003 DT15).
 
 Orden de :func:`register` (CW §5; plan 003 §5.4, 1), con ``bl/props`` y ``bl/ops`` ya
-registrados: idioma (``i18n``: el catálogo de comandos en ``core.i18n`` y el idioma de las
+registrados: iconos propios (``icons``: una colección de ``bpy.utils.previews``) → idioma (``i18n``: el catálogo de comandos en ``core.i18n`` y el idioma de las
 preferencias; al desregistrar, el cambio de idioma pendiente) → clases propias de la interfaz (los menús y la pestaña «Proyecto» de la
 spec 002) → catálogo (``registry``: menús generados por ``menus``, provisionales y
 textos) → sustitución de ``draw_left`` de la barra superior (``topbar``) → fila de
@@ -34,6 +34,7 @@ from . import (
     core_panel,
     headers,
     i18n,
+    icons,
     keymap,
     layouts,
     menus,
@@ -78,6 +79,7 @@ def register() -> None:
     if _UNDO:
         return
     steps: tuple[tuple[Callable[[], object], Callable[[], None]], ...] = (
+        (icons.register, icons.unregister),
         (i18n.install, i18n.cancel),
         (_register_classes, lambda: unregister_classes(classes)),
         (_register_catalog, registry.unregister),
@@ -101,12 +103,14 @@ def register() -> None:
 
 
 def repair() -> str:
-    """Ayuda ▸ Reparar la interfaz (RF-003-24; CW §5): vuelve a sustituir ``draw_left`` si
-    ya no es el de Geoblender (lo pisó otro complemento o una recarga; nunca envuelve dos
-    veces), vuelve a poner los atajos del catálogo y recalcula la disponibilidad.
+    """Ayuda ▸ Reparar la interfaz (RF-003-24; CW §5): vuelve a cargar los iconos (con el
+    tamaño de la escala de ahora), vuelve a sustituir ``draw_left`` si ya no es el de
+    Geoblender (lo pisó otro complemento o una recarga; nunca envuelve dos veces), vuelve a
+    poner los añadidos y los atajos del catálogo y recalcula la disponibilidad.
     Idempotente. Devuelve el modo de la barra (``patched`` o ``compat``)."""
     if not _UNDO:
         return ""
+    icons.reload()
     mode = topbar.install()
     quick_access.install()
     headers.install()

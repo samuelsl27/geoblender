@@ -233,6 +233,17 @@ class LayoutSpec:
 
 
 @dataclass(frozen=True)
+class IconSpec:
+    """Un icono propio (II §1.4): su nombre, su reserva nativa (``NONE`` si no tiene) y,
+    si la reserva es un texto («GB», «[MED]»), ese texto."""
+
+    name: str
+    fallback: str = "NONE"
+    fallback_text: str = ""
+    source: str = ""
+
+
+@dataclass(frozen=True)
 class CatalogIssue:
     """Un problema del catálogo: dónde está (fichero, clave, campo, valor) y qué pasa."""
 
@@ -263,6 +274,7 @@ class Catalog:
     entries: Mapping[str, EntryRef]
     layouts: tuple[LayoutSpec, ...]
     load_issues: tuple[CatalogIssue, ...] = ()
+    icons: Mapping[str, IconSpec] = field(default_factory=dict)  # los propios (II §1.4)
     _by_idname: Mapping[str, tuple[Command, ...]] = field(default_factory=dict, repr=False)
 
     def by_idname(self, idname: str) -> tuple[Command, ...]:
@@ -649,6 +661,20 @@ class _Validator:
                 self.add(entry.source, entry.id, "entry", entry.id,
                          "R-id que no está en docs/producto/roadmap.md")
 
+    def icons(self) -> None:
+        for icon in self.cat.icons.values():
+            if not OWN_ICON_RE.match(icon.name):
+                self.add(icon.source, icon.name, "name", icon.name,
+                         "un icono propio se llama gb_<grupo>_<concepto> (II §1.3)")
+            if not NATIVE_ICON_RE.match(icon.fallback):
+                self.add(icon.source, icon.name, "fallback", icon.fallback,
+                         "la reserva es el nombre de un icono nativo de Blender (MAYÚSCULAS)")
+        for command in self.cat.commands.values():
+            if (self.cat.icons and command.icon is not None
+                    and command.icon not in self.cat.icons):
+                self.add(command.source, command.key, "icon", command.icon,
+                         "icono propio que no está en icons.toml (II §1.4)")
+
     def layouts(self) -> None:
         for layout in self.cat.layouts:
             self.text(layout.source, layout.id, "label", layout.label, layout.label_es)
@@ -664,6 +690,7 @@ class _Validator:
         self.shortcuts()
         self.entries()
         self.layouts()
+        self.icons()
         for msgid, spanish in self.cat.quick_access_groups.values():
             self.text("quick_access.toml", "", "groups", msgid, spanish)
         unique = {(i.file, i.key, i.field, i.value, i.message): i for i in self.found}

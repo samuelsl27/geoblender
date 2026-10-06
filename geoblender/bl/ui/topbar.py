@@ -134,11 +134,11 @@ def draw_switcher(layout: Any, *, geoblender: bool) -> None:
     hundido."""
     row = layout.row(align=True)
     cat = catalog()
-    cmd = cat.commands.get(TOGGLE)
-    if cmd is not None and cmd.icon_fallback != "NONE":
-        logo: dict[str, Any] = {"text": "", **icon_kwargs(cmd)}
+    kwargs = icon_kwargs(cat.commands.get(TOGGLE))
+    if "icon_value" in kwargs or kwargs.get("icon", "NONE") != "NONE":
+        logo: dict[str, Any] = {"text": "", **kwargs}
     else:
-        logo = {"text": LOGO_TEXT}
+        logo = {"text": LOGO_TEXT}  # la reserva del logotipo es un texto (II §1.4)
     properties = row.operator(TOGGLE, depress=geoblender, translate=False, **logo)
     properties.target = "GEOBLENDER"
     properties = row.operator(TOGGLE, text="", icon="BLENDER", depress=not geoblender)

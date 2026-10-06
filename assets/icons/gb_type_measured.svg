@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" viewBox="0 0 16 16" width="16" height="16">
+  <metadata>
+    <rdf:RDF>
+      <cc:Work rdf:about="">
+        <dc:title>gb_type_measured</dc:title>
+        <dc:description>MEDIDO: «MED» sobre azul</dc:description>
+        <dc:creator><cc:Agent><dc:title>IMGA</dc:title></cc:Agent></dc:creator>
+        <dc:rights>CC0-1.0</dc:rights>
+        <cc:license rdf:resource="https://creativecommons.org/publicdomain/zero/1.0/"/>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+  <g id="halo">
+    <rect x="0.75" y="3.5" width="14.5" height="9" rx="2" stroke="#1A1A1A" stroke-opacity="0.6" stroke-width="2" fill="#1A1A1A" fill-opacity="0.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g id="dibujo">
+    <rect x="0.75" y="3.5" width="14.5" height="9" rx="2" stroke="none" fill="#4C8ED9"/>
+    <path d="M 2.2 10.5 V 5.5 L 3.7 8.1 L 5.2 5.5 V 10.5" stroke="#1A1A1A" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <path d="M 9.5 5.5 H 6.5 V 10.5 H 9.5" stroke="#1A1A1A" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <path d="M 6.5 8 H 8.7" stroke="#1A1A1A" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <path d="M 10.8 5.5 V 10.5 H 12.5 L 13.8 9.2 V 6.8 L 12.5 5.5 Z" stroke="#1A1A1A" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+</svg>

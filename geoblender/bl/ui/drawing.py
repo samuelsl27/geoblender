@@ -11,8 +11,9 @@ no disponible», no se dibuja; si está disponible pero su comprobación dice qu
 aplicable ahora (``commands.not_applicable``: una ranura de vista vacía), también se dibuja
 desactivado (RF-003-09). Un acceso cruzado ↗ lleva la marca delante de su etiqueta.
 
-Los iconos son los de reserva nativos (comprobados en el enumerado de la versión
-instalada; uno desconocido no se dibuja): los propios llegan con ``bl/ui/icons.py``.
+Cada comando lleva su icono propio (``bl/ui/icons.py``) o, si no se puede mostrar (sin
+interfaz gráfica, o sin su PNG), su reserva nativa, comprobada en el enumerado de iconos de
+la versión instalada (una desconocida no se dibuja; RF-003-22).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from typing import Any
 import bpy
 
 from ...core.catalog import Command
+from . import icons
 from .commands import catalog, is_available, not_applicable, text
 
 CROSS_MARK = "↗ "  # acceso cruzado (BS §6)
@@ -41,10 +43,11 @@ def native_icon(name: str) -> str:
 
 
 def icon_kwargs(cmd: Command | None) -> dict[str, Any]:
-    """Los argumentos de icono de un comando: su reserva nativa (``{"icon": …}``)."""
+    """Los argumentos de icono de un comando: su icono propio (``{"icon_value": n}``) o,
+    si no se puede mostrar, su reserva nativa (``{"icon": …}``; RF-003-22)."""
     if cmd is None:
         return {"icon": "NONE"}
-    return {"icon": native_icon(cmd.icon_fallback)}
+    return icons.icon_kwargs(cmd.icon, native_icon(cmd.icon_fallback))
 
 
 def is_menu_id(idname: str) -> bool:
