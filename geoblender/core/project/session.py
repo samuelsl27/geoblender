@@ -192,6 +192,12 @@ class Project:
         return float(step)
 
     @property
+    def is_checkout(self) -> bool:
+        """Verdadero si es una copia local de trabajo: su cabecera lleva la sección
+        ``checkout`` (RF-002-31); en el original es ``null``."""
+        return self.manifest.checkout is not None
+
+    @property
     def schema_version(self) -> int:
         """Versión del esquema del proyecto."""
         if self.record is None:

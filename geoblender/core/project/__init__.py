@@ -10,9 +10,12 @@ Python puro (biblioteca estándar y numpy). API pública:
 - :class:`Project` (el proyecto abierto: leer, escribir, marca del cerrojo, caché y
   cerrar), con su :class:`OpenMode` y, en solo lectura, su :class:`ReadOnlyCode`;
 - :func:`migrate_steps` (migrar un esquema anterior con copia previa, RF-002-20 y
-  RF-002-21), con sus :class:`Migration` y su :class:`MigrationResult`.
+  RF-002-21), con sus :class:`Migration` y su :class:`MigrationResult`;
+- :func:`checkout_steps` (sacar una copia local de trabajo, RF-002-31), con su
+  :class:`CheckoutResult`.
 """
 
+from .checkout import CheckoutResult, checkout_steps
 from .create import CreateResult, create_project, prepare
 from .events import EventKind
 from .lock import LockCheck, LockInfo, LockMode, LockState, LockStatus
@@ -35,6 +38,7 @@ __all__ = [
     "MIN_READER_SCHEMA",
     "PHASES",
     "SCHEMA_VERSION",
+    "CheckoutResult",
     "CreateResult",
     "EventKind",
     "LockCheck",
@@ -55,6 +59,7 @@ __all__ = [
     "ProjectRecord",
     "ProjectSettings",
     "ReadOnlyCode",
+    "checkout_steps",
     "create_project",
     "inspect_project",
     "migrate_steps",

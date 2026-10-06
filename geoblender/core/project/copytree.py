@@ -25,8 +25,9 @@ progreso; cerrar el generador (``close()``) cancela.
 5. Se **renombra** la temporal al destino: nunca queda una copia a medias con el nombre
    definitivo. Cancelar o fallar en cualquier paso borra la temporal.
 
-:func:`fingerprint_steps` / :func:`fingerprint` dan las huellas de una carpeta y
-:func:`compare_prints` dice qué falta, qué sobra y qué cambió entre dos.
+:func:`fingerprint_steps` / :func:`fingerprint` dan las huellas de una carpeta,
+:func:`compare_prints` dice qué falta, qué sobra y qué cambió entre dos y
+:func:`tree_digest` las resume en una sola huella (la de partida de una copia local).
 """
 
 from __future__ import annotations
@@ -92,6 +93,48 @@ class TreePrints:
             if item.path == path:
                 return item
         return None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Las huellas en JSON: ``{"folders": [...], "files": [[ruta, tamaño, sha256]…]}``."""
+        return {
+            "folders": list(self.folders),
+            "files": [[item.path, item.size, item.sha256] for item in self.files],
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> TreePrints | None:
+        """Las huellas de :meth:`to_dict`, o ``None`` si ``data`` no tiene esa forma."""
+        if not isinstance(data, dict):
+            return None
+        folders, files = data.get("folders"), data.get("files")
+        if not isinstance(folders, list) or not isinstance(files, list):
+            return None
+        if not all(isinstance(item, str) for item in folders):
+            return None
+        found: list[FilePrint] = []
+        for item in files:
+            if (
+                not isinstance(item, list)
+                or len(item) != 3
+                or not isinstance(item[0], str)
+                or not isinstance(item[1], int)
+                or not isinstance(item[2], str)
+            ):
+                return None
+            found.append(FilePrint(item[0], item[1], item[2]))
+        return cls(tuple(folders), tuple(found))
+
+
+def tree_digest(prints: TreePrints) -> str:
+    """Una sola huella (sha256) de las huellas de una carpeta: cambia si cambia, falta o
+    sobra cualquier fichero o subcarpeta (la copia local la guarda como huella de partida
+    del original)."""
+    digest = hashlib.sha256()
+    for folder in prints.folders:
+        digest.update(f"d\t{folder}\n".encode())
+    for item in prints.files:
+        digest.update(f"f\t{item.path}\t{item.size}\t{item.sha256}\n".encode())
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)

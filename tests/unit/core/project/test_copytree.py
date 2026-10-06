@@ -203,6 +203,27 @@ class CopyTreeTest(unittest.TestCase):
             )
             self.assertTrue(all(item.path in item.describe() for item in found))
 
+    def test_tree_digest_and_json(self) -> None:
+        """RF-002-31, RF-002-32 (T31): una sola huella de la carpeta, la de partida de una
+        copia local, es la misma para las mismas huellas y cambia si cambia un byte, sobra
+        un fichero o una carpeta; las huellas van y vuelven por JSON."""
+        with project_tmp() as tmp:
+            tree = Tree(tmp)
+            prints = copytree.fingerprint(tree.source)
+            digest = copytree.tree_digest(prints)
+            self.assertEqual(copytree.tree_digest(copytree.fingerprint(tree.source)), digest)
+            self.assertEqual(len(digest), 64)
+            self.assertEqual(copytree.TreePrints.from_dict(prints.to_dict()), prints)
+            for bad in (None, [], {"folders": [], "files": [["a", "1", "b"]]}, {"files": []}):
+                self.assertIsNone(copytree.TreePrints.from_dict(bad))
+            _flip_byte(tree.source / "project.gpkg", 1000)
+            flipped = copytree.tree_digest(copytree.fingerprint(tree.source))
+            (tree.source / "exports" / "nuevo.txt").write_bytes(b"")
+            extra_file = copytree.tree_digest(copytree.fingerprint(tree.source))
+            (tree.source / "exports" / "vacia").mkdir()
+            extra_folder = copytree.tree_digest(copytree.fingerprint(tree.source))
+            self.assertEqual(len({digest, flipped, extra_file, extra_folder}), 4)
+
     def test_cancel_midway_leaves_no_partial_copy(self) -> None:
         """RNF-002-06: cerrar el generador a mitad de la copia o de la comprobación
         cancela sin dejar copia parcial ni carpeta temporal, y el original no cambia."""

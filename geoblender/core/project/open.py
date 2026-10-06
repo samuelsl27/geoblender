@@ -23,9 +23,10 @@ ya se había tomado.
    mostrar cifras erróneas) y el proyecto queda limitado a su nombre, CRS y GeoOrigin.
    Lo dice la cabecera, sin abrir la base; si la cabecera no lo dice pero la base sí (la
    base manda), también se queda en la cabecera.
-5. **Cerrojo** (:mod:`.lock`): libre, huérfano o propio → escritura; otra sesión → solo
-   lectura con quién lo tiene (y la oferta de forzarlo si está caducado o reservado);
-   forzar solo con el titular que vio el usuario (``force_holder``).
+5. **Cerrojo** (:mod:`.lock`): libre, huérfano o propio → escritura (en red, en local o,
+   si la cabecera lleva la sección ``checkout``, como copia local de trabajo); otra
+   sesión → solo lectura con quién lo tiene (y la oferta de forzarlo si está caducado o
+   reservado); forzar solo con el titular que vio el usuario (``force_holder``).
 6. **Apertura**: en escritura, la base vuelve al diario clásico si otro programa la dejó
    en WAL (si sigue ocupada, solo lectura indicando qué cerrar), se registran en una
    transacción los eventos (``lock_orphan_replaced``, ``lock_forced``, ``wal_recovered``,
@@ -455,7 +456,10 @@ def open_steps(
             f"La cabecera difería de la base de datos en {fields}; manda la base de datos"
             + ("" if want_write else " (se regenerará al abrirlo en escritura)")
         )
-    mode = OpenMode.WRITE_NETWORK if inspection.network else OpenMode.WRITE_LOCAL
+    if inspection.manifest.checkout is not None:  # una copia local de trabajo (RF-002-31)
+        mode = OpenMode.CHECKOUT
+    else:
+        mode = OpenMode.WRITE_NETWORK if inspection.network else OpenMode.WRITE_LOCAL
     lock_mode = LockMode.NETWORK if inspection.network else LockMode.LOCAL
     status: OpenStatus
     acquired: Acquired | None = None
