@@ -79,7 +79,7 @@ from ..errors import GeoblenderError, ProjectError
 from ..gpkg.connection import BUSY_TIMEOUT_MS, GpkgConnection
 from ..gpkg.header import read_header
 from ..gpkg.wal import WalOutcome, to_classic_journal
-from ..ids import new_uid
+from ..ids import short_uid
 from ..paths import DriveType, is_within, next_free_path
 from ..sysinfo import SessionInfo, pid_alive
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
@@ -736,7 +736,8 @@ def _swap(
         raise _reservation_lost(original, obj, "ha cambiado mientras se preparaba la publicación")
     aside: Path | None = None
     if previous.exists():
-        aside = original.parent / f"{previous.name}{DISCARD_MARK}{new_uid()}"
+        # 8 cifras hexadecimales y no un UUID: el límite de rutas de Windows (T45).
+        aside = original.parent / f"{previous.name}{DISCARD_MARK}{short_uid()}"
         try:
             _rename_retrying(previous, aside, clock)
         except OSError as exc:

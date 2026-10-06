@@ -289,6 +289,47 @@ class CopyTreeTest(unittest.TestCase):
                 self.assertEqual(tree.leftovers(), [])
                 self.assertEqual(_snapshot(tree.source), before)
 
+    def test_temporary_name_is_short(self) -> None:
+        """RF-002-02, RF-002-31: la carpeta temporal de la copia se llama
+        ``<destino>.copiando-`` más 8 cifras hexadecimales (no un UUID de 36 caracteres):
+        cada carácter cuenta con el límite de rutas de Windows (convergencia, T45)."""
+        with project_tmp() as tmp:
+            tree = Tree(tmp)
+            steps = tree.steps()
+            for step in steps:
+                if step.phase == "copia":
+                    break
+            (temporary,) = tree.leftovers()
+            steps.close()
+            self.assertRegex(
+                temporary, r"^Cantera\.gbproj\.respaldo-esquema-1\.copiando-[0-9a-f]{8}$"
+            )
+            self.assertEqual(tree.leftovers(), [])
+
+    def test_too_long_path_fails_before_copying(self) -> None:
+        """RF-002-02: si alguna ruta de la copia (en su carpeta temporal) pasara del límite
+        de Windows (259 caracteres: Blender 5.2.1 no admite rutas más largas), error con esa
+        ruta, su longitud y el límite antes de copiar nada (ni carpeta temporal), y el
+        original no cambia (convergencia, T45)."""
+        with project_tmp() as tmp:
+            tree = Tree(tmp)
+            deep = tree.source / "snapshots" / ("v" * 70) / ("w" * 70) / "x.parquet"
+            deep.parent.mkdir(parents=True)
+            deep.write_bytes(b"x")
+            before = _snapshot(tree.source)
+            room = 259 - len(str(tree.parent)) - len("/" + tree.dest.name + ".copiando-") - 8
+            room -= len("/snapshots/" + "v" * 70 + "/" + "w" * 70 + "/x.parquet")
+            self.assertLess(room, 0, "la ruta de prueba tiene que pasar del límite")
+            with self.assertRaises(errors.ProjectError) as caught:
+                for _step in tree.steps():
+                    self.assertEqual(tree.leftovers(), [])
+            self.assertEqual(caught.exception.code, "core.path_too_long")
+            text = str(caught.exception)
+            self.assertIn("259", text)
+            self.assertIn("x.parquet", text)
+            self.assertEqual(tree.leftovers(), [])
+            self.assertEqual(_snapshot(tree.source), before)
+
     def test_no_space_fails_before_copying(self) -> None:
         """RNF-002-06: sin espacio libre para la copia más un 10 % de margen, error con
         lo necesario y lo disponible antes de copiar nada (ni carpeta temporal); con el

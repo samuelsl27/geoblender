@@ -12,9 +12,12 @@ progreso; cerrar el generador (``close()``) cancela.
 1. **Recorrido ordenado** del original (rutas relativas con «/», carpetas vacías
    incluidas), sin lo excluido (``cache``, ``.lock``…). Un enlace simbólico o una unión de
    carpetas se rechaza: un proyecto no los tiene, y seguirlos copiaría lo que no es suyo.
-2. **Espacio libre** en la carpeta de destino (``shutil.disk_usage``, inyectable) para el
-   total más un margen del 10 %, antes de crear nada.
-3. **Copia** en una carpeta temporal junto al destino (``<destino>.copiando-<uid>``), por
+2. **Longitud de las rutas** y **espacio libre** en la carpeta de destino, antes de crear
+   nada: ninguna ruta de la copia (en la carpeta temporal) pasa del límite de rutas de
+   Windows, que Blender 5.2.1 no admite (``core.path_too_long``, T45); y hay espacio
+   (``shutil.disk_usage``, inyectable) para el total más un margen del 10 %.
+3. **Copia** en una carpeta temporal junto al destino (``<destino>.copiando-<8 cifras
+   hexadecimales>``), por
    trozos de 8 MiB: cada trozo es un paso (progreso cada ≤ 1 s y cancelación en ≤ 2 s
    también en red) y su sha256 se calcula a la vez que se escribe. Cada fichero se
    escribe con ``fsync`` cada :data:`SYNC_BYTES` y al final (así el último no deja un
@@ -44,7 +47,8 @@ from pathlib import Path
 from typing import IO, Any, Literal, Protocol, TypeVar
 
 from ..errors import ProjectError
-from ..ids import new_uid
+from ..ids import SHORT_UID_CHARS, short_uid
+from ..paths import check_path_length
 from ..timeutil import SYSTEM_CLOCK, Clock
 from .model import Progress
 
@@ -419,6 +423,38 @@ def _check_destination(dest: Path) -> None:
         )
 
 
+TEMPORARY_ATTEMPTS = 3  # nombres temporales distintos que se prueban si ya existe uno
+
+
+def _temporary_path(dest: Path, tag: str) -> Path:
+    """``<destino>.copiando-<8 cifras hexadecimales>`` junto al destino (T45)."""
+    return dest.parent / f"{dest.name}{COPYING_MARK}{tag}"
+
+
+def _make_temporary(dest: Path) -> Path:
+    for attempt in range(TEMPORARY_ATTEMPTS):
+        temporary = _temporary_path(dest, short_uid())
+        try:
+            temporary.mkdir()
+        except FileExistsError:
+            if attempt == TEMPORARY_ATTEMPTS - 1:
+                raise
+            continue
+        return temporary
+    raise AssertionError("inalcanzable")  # pragma: no cover
+
+
+def _check_lengths(temporary: Path, folders: list[str], files: list[tuple[str, int]]) -> None:
+    """Sin tocar el disco, :class:`ProjectError` si la ruta más larga de la copia (un
+    fichero o una carpeta, en la carpeta temporal, más larga que el destino) pasaría del
+    límite de rutas de Windows (RF-002-02; T45)."""
+    if files:
+        longest = max((rel for rel, _size in files), key=len)
+        check_path_length(temporary / longest, obj=_OBJ)
+    deepest = max(folders, key=len) if folders else ""
+    check_path_length(temporary / deepest if deepest else temporary, folder=True, obj=_OBJ)
+
+
 def _check_space(dest: Path, total: int, disk_usage: DiskUsageFn) -> None:
     needed = total + -(-total * round(SPACE_MARGIN * 100) // 100)
     free = int(disk_usage(dest.parent).free)
@@ -502,13 +538,14 @@ def copy_steps(
         raise _failed(source, exc) from exc
     total = sum(size for _rel, size in files)
     _check_destination(dest)
+    _check_lengths(_temporary_path(dest, "0" * SHORT_UID_CHARS), folders, files)
     yield Progress(PHASES[0], 0, total, "Comprobando el espacio libre…")
     _check_space(dest, total, disk_usage)
-    temporary = dest.parent / f"{dest.name}{COPYING_MARK}{new_uid()}"
+    temporary: Path | None = None
     finished = False
     try:
         try:
-            temporary.mkdir()
+            temporary = _make_temporary(dest)
             for folder in folders:
                 (temporary / folder).mkdir(parents=True, exist_ok=True)
             prints: list[FilePrint] = []
@@ -538,7 +575,7 @@ def copy_steps(
         finished = True
         refresh_listing(dest)  # en la red, para poder sustituir después su cabecera
     finally:
-        if not finished:
+        if not finished and temporary is not None:
             remove_tree(temporary, clock)
     total_done = expected.total_bytes
     yield Progress(

@@ -15,8 +15,11 @@ GeoOrigin, en metros enteros.
    ±10 000 m. Un fallo es :class:`ValidationError` con el campo, el valor y el motivo, y
    no se crea nada. Si la ventana pasa de ±8 km del GeoOrigin se crea igual, con aviso de
    las esquinas y del error estimado (RF-002-26).
-2. **Crear de forma atómica** (:func:`create_project`): todo se hace en
-   ``<Nombre>.gbproj.creando-<uid>`` junto al destino (subcarpetas, ``project.gpkg`` con
+2. **Crear de forma atómica** (:func:`create_project`): antes, sin tocar el disco, se
+   comprueba que ninguna ruta que se va a usar pasa del límite de rutas de Windows (259
+   caracteres; Blender 5.2.1 no admite más: ``core.path_too_long`` con la ruta y el
+   límite, T45). Todo se hace en ``<Nombre>.gbproj.creando-<8 cifras hexadecimales>``
+   junto al destino (subcarpetas, ``project.gpkg`` con
    el esquema 1, la fila de ``gb_project`` y el evento ``create`` en una transacción,
    ``manifest.json`` y ``.lock`` de la sesión) y se renombra al final; ante cualquier
    error se borra la temporal y se informa del motivo con la ruta: nunca queda un
@@ -41,14 +44,20 @@ from ..georef.origin import GeoOrigin, Window, align_window, check_grid_step, ch
 from ..georef.transform import PrecisionReport, precision_report
 from ..gpkg.base import create_base
 from ..gpkg.connection import GpkgConnection
-from ..ids import new_uid
-from ..paths import DriveType, is_network_path, validate_project_name
+from ..ids import SHORT_UID_CHARS, new_uid, short_uid
+from ..paths import DriveType, check_path_length, is_network_path, validate_project_name
 from ..sysinfo import SessionInfo
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
 from .events import EventKind, record_event
-from .lock import Acquired, LockInfo, LockMode, acquire
-from .manifest import PROJECT_STORE, Manifest, manifest_from_record, write_manifest
+from .lock import LOCK_FILE, Acquired, LockInfo, LockMode, acquire
+from .manifest import (
+    PROJECT_STORE,
+    Manifest,
+    manifest_from_record,
+    manifest_temporary_path,
+    write_manifest,
+)
 from .model import OpenMode, ProjectRecord, ProjectSettings
 from .schema import MIN_READER_SCHEMA, SCHEMA_VERSION, create_schema, insert_project
 from .session import Project, write_status
@@ -253,10 +262,41 @@ def _create_event(record: ProjectRecord, network: bool) -> tuple[str, dict[str, 
 # Pasos de la creación (cada uno se puede hacer fallar en las pruebas) -------------------
 
 
+TEMPORARY_ATTEMPTS = 3  # nombres temporales distintos que se prueban si ya existe uno
+
+
+def _temporary_name(name: str, tag: str) -> str:
+    """``<Nombre>.gbproj.creando-<8 cifras hexadecimales>`` (T45)."""
+    return f"{project_folder_name(name)}{CREATING_MARK}{tag}"
+
+
+def _check_lengths(parent: Path, name: str, session: SessionInfo) -> None:
+    """Sin tocar el disco, :class:`ProjectError` si alguna ruta que se usa al crear el
+    proyecto (en su carpeta temporal, más larga que la definitiva) pasaría del límite de
+    Windows: primero los ficheros (la cabecera temporal es el más largo) y después las
+    carpetas (RF-002-02; T45)."""
+    folder = parent / _temporary_name(name, "0" * SHORT_UID_CHARS)
+    for path in (
+        manifest_temporary_path(folder, session.session_uid),
+        folder / f"{PROJECT_STORE}-journal",
+        folder / LOCK_FILE,
+    ):
+        check_path_length(path, obj=_NEW)
+    for path in (folder, *(folder / sub for sub in SUBFOLDERS)):
+        check_path_length(path, folder=True, obj=_NEW)
+
+
 def _make_temporary(parent: Path, name: str) -> Path:
-    folder = parent / f"{project_folder_name(name)}{CREATING_MARK}{new_uid()}"
-    folder.mkdir()
-    return folder
+    for attempt in range(TEMPORARY_ATTEMPTS):
+        folder = parent / _temporary_name(name, short_uid())
+        try:
+            folder.mkdir()
+        except FileExistsError:
+            if attempt == TEMPORARY_ATTEMPTS - 1:
+                raise
+            continue
+        return folder
+    raise AssertionError("inalcanzable")  # pragma: no cover
 
 
 def _make_folders(folder: Path) -> None:
@@ -347,6 +387,7 @@ def create_project(
             field="carpeta",
             value=str(target),
         )
+    _check_lengths(parent, prepared.name, session)
     is_network = is_network_path(parent, drive_type) if network is None else bool(network)
     mode = LockMode.NETWORK if is_network else LockMode.LOCAL
     record = _record(prepared, session, format_utc(clock.now()))

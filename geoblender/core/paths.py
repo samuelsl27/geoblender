@@ -20,6 +20,12 @@ formato-proyecto §1; plan 002 §5.4).
 - :func:`is_within`, :func:`same_volume` y :func:`next_free_path`: si un fichero está
   dentro de una carpeta (una vista de ``scenes/``), si dos rutas son del mismo volumen y
   el primer nombre libre (``principal.blend``, ``principal-2.blend``…).
+- :func:`check_path_length`: el límite de rutas de Windows (MAX_PATH, 259 caracteres;
+  247 para una carpeta), que Blender 5.2.1 no pasa aunque Windows admita rutas largas.
+  Límite declarado (T45): lo comprueban crear y copiar (copia previa, copia local y
+  publicación) para lo que crean; un proyecto que ya existe en una ruta demasiado larga
+  (movido a mano) se abre, pero sus escrituras fallan con su error de disco; y las specs
+  que escriban rutas más hondas dentro del proyecto comprueban las suyas.
 - :func:`blend_relative_path`: la ruta del proyecto que guarda una escena de Blender,
   relativa al ``.blend`` con el prefijo ``//`` de Blender (``//../`` desde ``scenes/``),
   o vacía si no se puede expresar así (otro volumen, vista sin guardar): nunca absoluta
@@ -37,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Literal, Protocol
 
-from .errors import ValidationError
+from .errors import ProjectError, ValidationError
 from .ids import new_uid
 
 if TYPE_CHECKING:
@@ -45,6 +51,13 @@ if TYPE_CHECKING:
 
 DRIVE_REMOTE = 4  # GetDriveTypeW
 MAX_PROJECT_NAME = 100
+# Límite de una ruta en Windows sin el prefijo «\\?\» (MAX_PATH = 260, con el carácter nulo
+# final). Blender 5.2.1 no admite rutas más largas aunque Windows las tenga activadas (su
+# Python suelto, sí): lo que pasa de él no se puede crear ni abrir dentro de Blender (spec
+# 002, hito H2; convergencia, T45).
+MAX_PATH = 260
+MAX_FILE_PATH_CHARS = MAX_PATH - 1  # 259: la ruta de un fichero
+MAX_FOLDER_PATH_CHARS = MAX_PATH - 13  # 247: CreateDirectory deja sitio a un nombre 8.3
 FORBIDDEN_NAME_CHARS = '<>:"/\\|?*'
 RESERVED_NAMES: frozenset[str] = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
@@ -131,6 +144,27 @@ def canonical_path(path: Path) -> Path:
     """La ruta canónica (``os.path.realpath``: absoluta, sin ``..`` y, en Windows, una
     unidad de red como su UNC)."""
     return Path(os.path.realpath(os.fspath(path)))
+
+
+def check_path_length(path: Path, *, folder: bool = False, obj: str) -> None:
+    """:class:`ProjectError` (``core.path_too_long``, con la ruta, su longitud y el
+    límite) si la ruta absoluta de ``path`` pasa de :data:`MAX_FILE_PATH_CHARS` (de
+    :data:`MAX_FOLDER_PATH_CHARS` si es una carpeta). Quien crea o copia comprueba antes,
+    sin tocar el disco, la ruta más larga que va a usar (RF-002-02; T45)."""
+    text = os.path.abspath(os.fspath(path))
+    limit = MAX_FOLDER_PATH_CHARS if folder else MAX_FILE_PATH_CHARS
+    if len(text) <= limit:
+        return
+    kind = "una carpeta" if folder else "un fichero"
+    raise ProjectError(
+        "core.path_too_long",
+        f"es la ruta más larga que haría falta ({kind}): tendría {len(text)} caracteres y "
+        f"Windows, dentro de Blender, no admite más de {limit}; elija una carpeta más corta "
+        "(más cerca de la raíz del disco) o un nombre más corto. No se ha creado nada",
+        obj=obj,
+        field="ruta",
+        value=text,
+    )
 
 
 def windows_drive_type(root: str) -> int:

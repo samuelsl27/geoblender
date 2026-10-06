@@ -351,11 +351,13 @@ class AtomicWriteTest(unittest.TestCase):
 
     def test_leftover_temporary_is_ignored(self) -> None:
         """RF-002-06: el temporal a medias de un proceso que murió al escribir no cambia
-        lo que se lee, y la siguiente escritura de esa sesión lo sustituye."""
+        lo que se lee, y la siguiente escritura de esa sesión lo sustituye. El temporal es
+        ``manifest.json.tmp-`` y 8 cifras hexadecimales de la sesión (T45)."""
         with project_tmp() as tmp:
             header = manifest.manifest_from_record(_record())
             manifest.write_manifest(tmp, header, SESSION_UID)
-            leftover = tmp / f"manifest.json.tmp-{SESSION_UID}"
+            leftover = manifest.manifest_temporary_path(tmp, SESSION_UID)
+            self.assertRegex(leftover.name, r"^manifest\.json\.tmp-[0-9a-f]{8}$")
             leftover.write_bytes(b'{"format": "geoblender-pro')
             self.assertEqual(manifest.read_manifest(tmp), header)
             manifest.write_manifest(tmp, header, SESSION_UID)

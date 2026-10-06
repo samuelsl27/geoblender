@@ -15,6 +15,8 @@ la ventana pasa de ±8 km del origen, se crea con aviso.
 """
 
 import json
+import os
+import re
 import sqlite3
 import unittest
 from pathlib import Path
@@ -63,6 +65,16 @@ def _make(tmp: Path, **overrides):
     return create.create_project(
         parent, make_settings(**overrides), SESSION, userdata, clock=FakeClock()
     )
+
+
+def _deep_folder(tmp: Path, length: int) -> Path:
+    """Una carpeta (creada) dentro de ``tmp`` cuya ruta mide ``length`` caracteres (±1)."""
+    folder = tmp
+    while len(str(folder)) < length - 1:
+        room = length - len(str(folder)) - 1  # el separador
+        folder = folder / ("c" * min(40, room))
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
 
 def _text_cells(path: Path) -> list[str]:
@@ -281,6 +293,63 @@ class RejectTest(unittest.TestCase):
             self.assertEqual(caught.exception.code, "core.project_not_writable")
             self.assertIn("proyectos", str(caught.exception))
             self.assertEqual(list((tmp / "proyectos").iterdir()), [])
+
+    def test_too_long_folder_rejected_before_creating(self) -> None:
+        """RF-002-02: con una carpeta de destino de unos 200 caracteres, la ruta más larga
+        que necesita crear el proyecto (la cabecera temporal dentro de la carpeta temporal)
+        pasaría del límite de Windows (MAX_PATH: 259 caracteres; Blender 5.2.1 no admite
+        rutas más largas aunque Windows las tenga activadas): se rechaza antes de crear
+        nada, con la ruta, su longitud y el límite (convergencia, T45)."""
+        with project_tmp() as tmp:
+            parent = _deep_folder(tmp, 200)
+            with self.assertRaises(errors.ProjectError) as caught:
+                create.create_project(
+                    parent, make_settings(), SESSION, userdata_mod.UserData(tmp / "u"),
+                    clock=FakeClock(),
+                )
+            self.assertEqual(caught.exception.code, "core.path_too_long")
+            text = str(caught.exception)
+            self.assertIn("259", text)
+            self.assertIn(str(parent), text)
+            self.assertIn("Cantera Prueba.gbproj", text)
+            self.assertEqual(list(parent.iterdir()), [])
+
+    def test_paths_used_while_creating_fit(self) -> None:
+        """RF-002-02: con una carpeta de 150 caracteres (dentro de Blender, crear fallaba a
+        partir de unos 145: hito H2), el proyecto se crea; la carpeta temporal es
+        ``<Nombre>.gbproj.creando-`` y la cabecera temporal ``manifest.json.tmp-``, cada una
+        con 8 cifras hexadecimales (no un UUID), y ninguna ruta que se usa al crearlo pasa
+        de 259 caracteres (convergencia, T45)."""
+        with project_tmp() as tmp:
+            parent = _deep_folder(tmp, 150)
+            used: list[str] = []
+            real_replace = os.replace
+            real_publish = create._publish
+
+            def replace(src: object, dst: object) -> None:
+                used.extend((os.fspath(src), os.fspath(dst)))
+                real_replace(src, dst)
+
+            def publish(folder: Path, target: Path) -> None:
+                used.extend(os.fspath(path) for path in (folder, *folder.rglob("*")))
+                real_publish(folder, target)
+
+            with (
+                mock.patch.object(manifest.os, "replace", side_effect=replace),
+                mock.patch.object(create, "_publish", side_effect=publish),
+            ):
+                result = create.create_project(
+                    parent, make_settings(), SESSION, userdata_mod.UserData(tmp / "u"),
+                    clock=FakeClock(),
+                )
+            self.assertTrue(result.root.is_dir())
+            names = {Path(path).name for path in used}
+            self.assertTrue(any(re.fullmatch(r"Cantera Prueba\.gbproj\.creando-[0-9a-f]{8}", n)
+                                for n in names), names)
+            self.assertTrue(any(re.fullmatch(r"manifest\.json\.tmp-[0-9a-f]{8}", n)
+                                for n in names), names)
+            self.assertLessEqual(max(len(path) for path in used), 259)
+            result.project.close()
 
     def test_failure_in_each_step_leaves_nothing(self) -> None:
         """RF-002-02: un fallo simulado en cada paso de la creación (carpetas, base de

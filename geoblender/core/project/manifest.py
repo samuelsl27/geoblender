@@ -37,6 +37,7 @@ from typing import Any
 from ..errors import GeoblenderError, ProjectError, display_value
 from ..georef.origin import GeoOrigin
 from ..gpkg.base import GPKG_VERSION
+from ..ids import SHORT_UID_CHARS
 from ..paths import find_absolute_paths
 from ..timeutil import parse_utc
 from .model import ProjectRecord
@@ -356,12 +357,21 @@ def manifest_text(manifest: Manifest) -> str:
     return json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2) + "\n"
 
 
+def manifest_temporary_path(root: Path, session_uid: str) -> Path:
+    """``<proyecto>/manifest.json.tmp-<sesión>``: la sesión, por las 8 últimas cifras
+    hexadecimales de su identidad (no las 36 del UUID: cada carácter cuenta con el límite
+    de rutas de Windows; convergencia de la spec 002, T45)."""
+    tag = session_uid.replace("-", "")[-SHORT_UID_CHARS:] or "sesion"
+    return manifest_path(root).with_name(f"{MANIFEST_FILE}.tmp-{tag}")
+
+
 def write_manifest(root: Path, manifest: Manifest, session_uid: str) -> None:
-    """Escribe la cabecera de forma atómica: ``manifest.json.tmp-<sesión>``, ``fsync`` y
-    ``os.replace``. Si algo falla, la cabecera anterior queda intacta, se borra el
-    temporal y se lanza :class:`ProjectError`."""
+    """Escribe la cabecera de forma atómica: ``manifest.json.tmp-<sesión>``
+    (:func:`manifest_temporary_path`), ``fsync`` y ``os.replace``. Si algo falla, la
+    cabecera anterior queda intacta, se borra el temporal y se lanza
+    :class:`ProjectError`."""
     target = manifest_path(root)
-    temporary = target.with_name(f"{MANIFEST_FILE}.tmp-{session_uid}")
+    temporary = manifest_temporary_path(root, session_uid)
     payload = manifest_text(manifest).encode("utf-8")
     try:
         with temporary.open("wb") as handle:
