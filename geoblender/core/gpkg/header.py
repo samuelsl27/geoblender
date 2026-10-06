@@ -8,6 +8,10 @@ lectura del formato) valen 1 en diario clásico y 2 en WAL; una base que QGIS de
 lo sigue diciendo aunque ya no haya ``-wal``. Junto a ella se miran ``-wal``, ``-shm`` y
 ``-journal`` (un ``-journal`` no vacío es un diario caliente: una transacción a medias que
 hay que deshacer antes de leer).
+
+Los bytes 24 a 27 son el contador de cambios del fichero: en diario clásico, SQLite lo
+incrementa cada vez que confirma una transacción que ha escrito. Si no cambia, nadie ha
+escrito en la base entretanto (lo usa la copia previa de una migración, spec 002, T20).
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ class SqliteHeader:
     has_shm: bool
     has_journal: bool
     has_hot_journal: bool
+    change_counter: int = 0  # bytes 24–27: sube con cada transacción confirmada
 
     @property
     def needs_recovery(self) -> bool:
@@ -111,4 +116,5 @@ def read_header(path: Path) -> SqliteHeader:
         has_shm=side_file(path, "-shm").is_file(),
         has_journal=has_journal,
         has_hot_journal=has_journal and journal_file.stat().st_size > 0,
+        change_counter=int.from_bytes(head[24:28], "big"),
     )

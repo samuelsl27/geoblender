@@ -433,7 +433,9 @@ def open_steps(
     elif inspection.schema is SchemaRelation.OLDER:
         status = read_only_status(
             ReadOnlyCode.NOT_MIGRATED,
-            f"esquema {inspection.record.schema_version} sin migrar al {SCHEMA_VERSION}",
+            f"esquema {inspection.record.schema_version} sin migrar al {SCHEMA_VERSION}: "
+            "para escribir en él hay que migrarlo (antes se hace una copia completa junto "
+            "al original)",
         )
     else:
         try:

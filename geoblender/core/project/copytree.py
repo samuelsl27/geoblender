@@ -218,8 +218,9 @@ def _retrying(action: Callable[[], _T], clock: Clock) -> _T:
     raise AssertionError("inalcanzable")  # pragma: no cover
 
 
-def _remove_tree(path: Path, clock: Clock) -> None:
-    """Borra la carpeta temporal (con reintentos si algo la retiene)."""
+def remove_tree(path: Path, clock: Clock = SYSTEM_CLOCK) -> None:
+    """Borra una carpeta que ha creado esta copia (la temporal, o una copia que se
+    descarta), con reintentos si otro programa retiene algo de ella."""
     for attempt in range(RETRIES + 1):
         shutil.rmtree(path, ignore_errors=True)
         if not path.exists() or attempt == RETRIES:
@@ -461,7 +462,7 @@ def copy_steps(
         finished = True
     finally:
         if not finished:
-            _remove_tree(temporary, clock)
+            remove_tree(temporary, clock)
     total_done = expected.total_bytes
     yield Progress(
         PHASES[2], total_done, total_done, "Copia comprobada",

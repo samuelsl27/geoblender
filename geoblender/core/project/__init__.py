@@ -8,13 +8,16 @@ Python puro (biblioteca estándar y numpy). API pública:
 - :func:`inspect_project`, :func:`open_steps` y :func:`open_project` (abrir sin escribir,
   por pasos o de una vez, RF-002-04 a RF-002-10);
 - :class:`Project` (el proyecto abierto: leer, escribir, marca del cerrojo, caché y
-  cerrar), con su :class:`OpenMode` y, en solo lectura, su :class:`ReadOnlyCode`.
+  cerrar), con su :class:`OpenMode` y, en solo lectura, su :class:`ReadOnlyCode`;
+- :func:`migrate_steps` (migrar un esquema anterior con copia previa, RF-002-20 y
+  RF-002-21), con sus :class:`Migration` y su :class:`MigrationResult`.
 """
 
 from .create import CreateResult, create_project, prepare
 from .events import EventKind
 from .lock import LockCheck, LockInfo, LockMode, LockState, LockStatus
 from .manifest import Manifest, ManifestStatus, read_manifest
+from .migrations import Migration, MigrationResult, migrate_steps
 from .model import (
     OpenMode,
     OpenResult,
@@ -41,6 +44,8 @@ __all__ = [
     "LockStatus",
     "Manifest",
     "ManifestStatus",
+    "Migration",
+    "MigrationResult",
     "OpenMode",
     "OpenResult",
     "OpenStatus",
@@ -52,6 +57,7 @@ __all__ = [
     "ReadOnlyCode",
     "create_project",
     "inspect_project",
+    "migrate_steps",
     "open_project",
     "open_steps",
     "prepare",
