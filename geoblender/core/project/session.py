@@ -21,7 +21,8 @@ leer y escribir:
   lo convierte en el estado «reintentando» para reintentar desde un temporizador. Cada
   escritura abre y cierra su conexión: entre dos no queda ningún fichero abierto.
 - :meth:`Project.heartbeat`: la marca de actividad del cerrojo; si se perdió, o no se pudo
-  renovar por un error de disco o de red, el proyecto pasa a solo lectura con el motivo.
+  renovar por un error de disco o de red, el proyecto pasa a solo lectura con el motivo
+  (y, en el segundo caso, suelta su cerrojo, o lo suelta al cerrar si no hay red).
 - :meth:`Project.cache_dir`: la única caché del proyecto, ``<proyecto>/cache/`` en disco
   local y escritura, y ``<datos de usuario>/cache/<uid>/`` en red o en solo lectura
   (ADR-0010).
@@ -34,7 +35,8 @@ leer y escribir:
   cabecera se regenera al volver a abrirlo (T40).
 - :meth:`Project.close`: en escritura, registra ``close``, reescribe la cabecera desde la
   base de datos y libera el cerrojo, y solo si el cerrojo sigue siendo de esta sesión; en
-  solo lectura no escribe nada en la carpeta del proyecto.
+  solo lectura no escribe nada en la carpeta del proyecto, salvo soltar el cerrojo propio
+  que quedó puesto al pasar a solo lectura por un fallo (T41).
 
 Un proyecto de un esquema posterior que esta versión no sabe leer se abre **solo con la
 cabecera** (:attr:`Project.header_only`, RF-002-22): sin fila de ``gb_project``
@@ -157,6 +159,9 @@ class Project:
         self._closed = False
         self._notices: list[str] = []
         self._pending_wal: int | None = None
+        # Si esta sesión puede tener aún el cerrojo del proyecto: lo tomó al abrir en
+        # escritura y no consta que lo haya soltado (lo suelta al cerrar, T41).
+        self._may_hold_lock = status.writable
 
     # Identidad y georreferencia (de la base; solo con la cabecera, de la cabecera) ----
 
@@ -308,6 +313,7 @@ class Project:
         if holder is None or holder.session_uid != self.session.session_uid:
             detail = "otra sesión ha forzado el cerrojo o ya no existe; no se ha escrito nada"
             self.set_read_only(ReadOnlyCode.LOCK_LOST, detail)
+            self._may_hold_lock = False
             log_event(EventKind.LOCK_LOST, detail, project=self.uid)
             raise LockError(
                 "core.lock_lost",
@@ -320,13 +326,14 @@ class Project:
 
     def _give_up_writing(self, code: ReadOnlyCode, detail: str, kind: EventKind) -> None:
         """Pasa a solo lectura, lo deja en el registro técnico y suelta el cerrojo propio
-        (si se puede: sin red, caducará)."""
+        (si se puede: sin red, se vuelve a intentar al cerrar, :meth:`close`)."""
         self.set_read_only(code, detail)
         log_event(kind, detail, project=self.uid)
         try:
             lock.release(self.root, self.session, clock=self.clock)
         except OSError:
-            pass
+            return
+        self._may_hold_lock = False
 
     def _write_failed(self, exc: BaseException) -> ProjectError:
         reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
@@ -576,18 +583,22 @@ class Project:
 
     def heartbeat(self) -> LockCheck:
         """Renueva la marca del cerrojo (cada 5 min). En solo lectura no hay cerrojo que
-        renovar: ``LOST``. Si se perdió o falló, el proyecto pasa a solo lectura."""
+        renovar: ``LOST``. Si se perdió, el proyecto pasa a solo lectura; si falló (un
+        error de disco o de red al renovarla es una escritura fallida, RF-002-12), pasa a
+        solo lectura y suelta su cerrojo, y si ni eso se puede (sin red), lo suelta al
+        cerrar (:meth:`close`). No se reintenta en el siguiente tic: tras un fallo, el
+        proyecto queda en solo lectura hasta que se vuelve a abrir (convergencia, T41)."""
         if not self.writable:
             return LockCheck.LOST
         check = lock.heartbeat(self.root, self.session, clock=self.clock)
         if check is LockCheck.LOST:
             detail = "otra sesión ha forzado el cerrojo o ya no existe"
             self.set_read_only(ReadOnlyCode.LOCK_LOST, detail)
+            self._may_hold_lock = False
             log_event(EventKind.LOCK_LOST, detail, project=self.uid)
         elif check is LockCheck.FAILED:
             detail = "no se ha podido renovar el cerrojo (error de disco o de red)"
-            self.set_read_only(ReadOnlyCode.WRITE_FAILED, detail)
-            log_event(EventKind.WRITE_FAILED, detail, project=self.uid)
+            self._give_up_writing(ReadOnlyCode.WRITE_FAILED, detail, EventKind.WRITE_FAILED)
         return check
 
     # Cierre -----------------------------------------------------------------------
@@ -624,15 +635,33 @@ class Project:
                 warnings.append(f"No se ha podido liberar el cerrojo: {exc}")
         return warnings
 
+    def _release_leftover_lock(self) -> list[str]:
+        """En solo lectura tras un fallo: suelta el cerrojo si sigue siendo de esta sesión
+        (``lock.release`` no toca uno ajeno, ilegible o de otra sesión)."""
+        try:
+            lock.release(self.root, self.session, clock=self.clock)
+        except OSError as exc:
+            message = f"No se ha podido liberar el cerrojo: {exc}"
+            log_event(EventKind.WRITE_FAILED, message, project=self.uid)
+            return [message]
+        self._may_hold_lock = False
+        return []
+
     def close(self) -> tuple[str, ...]:
         """Cierra el proyecto y devuelve los avisos (vacío si todo fue bien). En escritura
         actualiza la cabecera desde la base de datos y libera el cerrojo de esta sesión;
-        en solo lectura no escribe nada en el proyecto. Cerrar dos veces no hace nada."""
+        en solo lectura no escribe nada en el proyecto, salvo soltar el cerrojo que esta
+        sesión tomó al abrirlo en escritura y no pudo soltar al pasar a solo lectura (un
+        fallo de disco o de red: RF-002-06; convergencia, T41). Un proyecto abierto en
+        solo lectura desde el principio no toca nunca el cerrojo, tampoco una reserva de
+        esta misma sesión (RF-002-13). Cerrar dos veces no hace nada."""
         if self._closed:
             return ()
         warnings: list[str] = []
         if self._status.writable:
             warnings.extend(self._close_writing())
+        elif self._may_hold_lock:
+            warnings.extend(self._release_leftover_lock())
         shutil.rmtree(self.private_dir(), ignore_errors=True)
         try:
             self.userdata.add_recent(self.uid, self.name, self.root, format_utc(self.clock.now()))

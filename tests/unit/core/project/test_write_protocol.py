@@ -25,6 +25,7 @@ from tests.support.core_fixtures import FakeClock, FakePids, make_session, make_
 from tests.support.package import import_geoblender
 
 create = import_geoblender("core.project.create")
+open_mod = import_geoblender("core.project.open")
 session_mod = import_geoblender("core.project.session")
 model = import_geoblender("core.project.model")
 events = import_geoblender("core.project.events")
@@ -247,6 +248,72 @@ class BusyTest(unittest.TestCase):
             self.assertEqual(attempt.state, session_mod.WriteState.DONE)
             self.assertIn("con QGIS leyendo", _messages(project.database_path))
             project.close()
+
+
+
+NETWORK_DOWN = OSError(64, "El nombre de red especificado ya no está disponible (simulado)")
+
+
+class HeartbeatFailureTest(unittest.TestCase):
+    """Una marca de actividad que falla por la red no deja el cerrojo puesto
+    (convergencia, T41)."""
+
+    def other_opens_for_writing(self, project: object, tmp: Path) -> None:
+        opened = open_mod.open_project(
+            project.root, SESSION_B, userdata_mod.UserData(tmp / "u-b"), clock=FakeClock()
+        )
+        self.assertTrue(opened.project.writable, opened.status.message)
+        opened.project.close()
+
+    def test_failed_heartbeat_releases_the_lock(self) -> None:
+        """RF-002-11, RF-002-12: si la marca de actividad falla una vez (``FAILED``), el
+        proyecto pasa a solo lectura «fallo de escritura» con el motivo y suelta su
+        cerrojo en ese momento, como tras cualquier escritura fallida; otro equipo lo abre
+        después en escritura."""
+        with project_tmp() as tmp:
+            project, _clock = _created(tmp)
+            with (
+                mock.patch.object(lock, "_open_for_update", side_effect=NETWORK_DOWN),
+                self.assertLogs("geoblender.core.project", "WARNING"),
+            ):
+                self.assertIs(project.heartbeat(), lock.LockCheck.FAILED)
+            self.assertIs(project.read_only_reason, model.ReadOnlyCode.WRITE_FAILED)
+            self.assertFalse((project.root / ".lock").exists())
+            self.assertEqual(project.close(), ())
+            self.other_opens_for_writing(project, tmp)
+
+    def test_close_releases_a_lock_left_by_a_failure(self) -> None:
+        """RF-002-06, RF-002-12: si al fallar la marca tampoco se pudo soltar el cerrojo
+        (sin red), al cerrar ya con red se suelta, aunque el proyecto esté en solo
+        lectura; otro equipo lo abre después en escritura."""
+        with project_tmp() as tmp:
+            project, _clock = _created(tmp)
+            with (
+                mock.patch.object(lock, "_open_for_update", side_effect=NETWORK_DOWN),
+                mock.patch.object(lock, "remove_if_unchanged", side_effect=NETWORK_DOWN),
+                self.assertLogs("geoblender.core.project", "WARNING"),
+            ):
+                self.assertIs(project.heartbeat(), lock.LockCheck.FAILED)
+            self.assertIs(project.read_only_reason, model.ReadOnlyCode.WRITE_FAILED)
+            self.assertTrue((project.root / ".lock").exists())
+            self.assertEqual(project.close(), ())
+            self.assertFalse((project.root / ".lock").exists())
+            self.other_opens_for_writing(project, tmp)
+
+    def test_close_in_read_only_never_touches_a_reservation(self) -> None:
+        """RF-002-13: cerrar un proyecto que se abrió en solo lectura no toca su cerrojo,
+        tampoco la reserva de una copia local hecha por esta misma sesión."""
+        with project_tmp() as tmp:
+            project, clock = _created(tmp)
+            project.close()
+            lock.acquire(project.root, SESSION_A, lock.LockMode.CHECKOUT, clock=clock)
+            reservation = (project.root / ".lock").read_bytes()
+            opened = open_mod.open_project(
+                project.root, SESSION_A, userdata_mod.UserData(tmp / "u"), clock=clock
+            )
+            self.assertIs(opened.project.read_only_reason, model.ReadOnlyCode.RESERVED)
+            self.assertEqual(opened.project.close(), ())
+            self.assertEqual((project.root / ".lock").read_bytes(), reservation)
 
 
 if __name__ == "__main__":
