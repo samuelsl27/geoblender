@@ -12,7 +12,8 @@
   titular que vio; sin confirmar no cambia nada (también desde «Cerrojo del proyecto…»).
 - RF-002-20: un esquema anterior se migra solo si el usuario lo acepta (con copia previa)
   y después se abre; si no, solo lectura «sin migrar».
-- RF-002-06: «Cerrar proyecto» libera el cerrojo.
+- RF-002-06: «Cerrar proyecto» libera el cerrojo; abrir o crear otro proyecto cierra el
+  abierto (sin cerrojo, con el evento ``close`` y la cabecera regenerada; T53).
 - ADR-0011: nombres ``GEOBLENDER_OT_core_<acción>`` y ``geoblender.core_<acción>``; sin
   ``UNDO`` (solo escriben en el proyecto y no crean objetos de la vista).
 - RF-002-23, RF-002-24 (T27): «Sistema de referencia…» (en esta spec, solo consulta) y
@@ -423,6 +424,89 @@ class CloseProjectTest(OperatorsTestCase):
         self.assertEqual(self.events(root)[-1], "close")
         self.assertFalse(bpy.ops.geoblender.core_close_project.poll())
         self.assertFalse(bpy.ops.geoblender.core_show_lock.poll())
+
+
+class SwitchProjectTest(OperatorsTestCase):
+    """RF-002-06 (hueco de prueba I9 de la verificación; convergencia, T53): abrir o crear
+    otro proyecto cierra el que estaba abierto (``project_session.attach``), como pide la
+    spec; la T25 solo probó volver a abrir el mismo."""
+
+    def tamper_header(self, root: Path) -> bytes:
+        """Reescribe la cabecera de ``root`` con el mismo contenido y otro formato; al
+        cerrar, Geoblender la regenera desde la base con el suyo."""
+        path = root / "manifest.json"
+        tampered = (json.dumps(json.loads(path.read_text(encoding="utf-8")), indent=7) + "\n")
+        path.write_bytes(tampered.encode("utf-8"))
+        return tampered.encode("utf-8")
+
+    def assert_closed(self, root: Path, tampered: bytes) -> None:
+        """``root`` cerrado: sin ``.lock``, con el evento ``close`` el último y la cabecera
+        regenerada desde la base (no la que se dejó en el disco, y coherente con la base)."""
+        manifest = ext("core.project.manifest")
+        schema = ext("core.project.schema")
+        gpkg = ext("core.gpkg")
+        self.assertFalse((root / ".lock").exists())
+        self.assertEqual(self.events(root)[-1], "close")
+        self.assertNotEqual((root / "manifest.json").read_bytes(), tampered)
+        with gpkg.GpkgConnection.open_read(root / "project.gpkg") as db:
+            record = schema.read_project(db.connection)
+        self.assertIs(
+            manifest.compare(manifest.read_manifest(root), record).status,
+            manifest.ManifestStatus.CONSISTENT,
+        )
+
+    def assert_open_for_writing(self, root: Path) -> None:
+        project = self.ps.current()
+        self.assertIsNotNone(project)
+        self.assertEqual(project.root, root)
+        self.assertTrue(project.writable)
+        self.assertEqual(self.lock.read_holder(root).session_uid, self.ps.session().session_uid)
+        self.assertEqual(bpy.context.scene.geoblender.project_uid, project.uid)
+
+    def test_open_or_create_another_closes_the_open_one(self) -> None:
+        """RF-002-06: con A abierto en escritura, «Abrir proyecto…» de B cierra A (sin
+        ``.lock``, evento ``close`` y cabecera regenerada) y deja B en escritura; con B
+        abierto, «Nuevo proyecto…» de C cierra B igual y deja C en escritura."""
+        result = bpy.ops.geoblender.core_new_project(
+            "EXEC_DEFAULT", directory=str(self.tmp), name="Cantera A", **WINDOW_TEXT
+        )
+        self.assertEqual(result, {"FINISHED"})
+        root_a = self.ps.current().root
+        root_b = self.create_closed("Cantera B")
+        tampered = self.tamper_header(root_a)
+        operator = self.run_open(directory=str(root_b))
+        self.assertEqual(operator.outcome, "FINISHED")
+        self.assert_closed(root_a, tampered)
+        self.assert_open_for_writing(root_b)
+
+        tampered = self.tamper_header(root_b)
+        result = bpy.ops.geoblender.core_new_project(
+            "EXEC_DEFAULT", directory=str(self.tmp), name="Cantera C", **WINDOW_TEXT
+        )
+        self.assertEqual(result, {"FINISHED"})
+        self.assert_closed(root_b, tampered)
+        self.assert_open_for_writing(self.tmp / "Cantera C.gbproj")
+
+    def test_attach_closes_the_previous_project(self) -> None:
+        """RF-002-06: ``project_session.attach`` de otro proyecto (lo que hacen los
+        operadores al crear, abrir, sacar copia o publicar) cierra antes el que había; el
+        mismo proyecto otra vez no lo cierra."""
+        root_a = self.create_closed("Cantera A")
+        opened = self.core.open_project(root_a, self.ps.session(), self.ps.userdata())
+        self.ps.attach(opened.project)
+        self.assertEqual(self.ps.attach(opened.project), ())
+        self.assertTrue(opened.project.writable)
+        tampered = self.tamper_header(root_a)
+        settings = self.core.ProjectSettings(
+            name="Cantera B", window=WINDOW, crs_epsg=25830, vcrs_epsg=5782
+        )
+        created = self.core.create_project(
+            self.tmp, settings, self.ps.session(), self.ps.userdata()
+        )
+        self.ps.attach(created.project)
+        self.assert_closed(root_a, tampered)
+        self.assertTrue(opened.project.closed)
+        self.assert_open_for_writing(created.root)
 
 
 class GeorefOperatorsTest(OperatorsTestCase):
