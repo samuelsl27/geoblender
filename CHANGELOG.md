@@ -27,8 +27,11 @@ interfaz de Blender, con QGIS abierto y con dos equipos a la vez.
     ETRS89 / UTM zona 30N, EPSG:25830) y vertical (por defecto altitudes de Alicante,
     EPSG:5782, o una referencia local con su descripción), ventana de trabajo (coordenadas
     con coma o punto decimal), paso de rejilla (de 0,5 a 5 m) y Z0. Se rechaza con el campo y
-    el valor una ventana con X e Y intercambiadas, fuera del huso o vacía, y un nombre que
-    Windows no admite; nunca queda una carpeta a medias. Los sistemas de referencia salen de
+    el valor una ventana con X e Y intercambiadas, fuera del huso o vacía, un nombre que
+    Windows no admite y una carpeta tan larga que Blender no podría usar las rutas del
+    proyecto (más de 259 caracteres: se dice la ruta y el límite); nunca queda una carpeta a
+    medias. El sistema de referencia nunca se supone: el diálogo lo propone y, si falta, no
+    se crea el proyecto. Los sistemas de referencia salen de
     un catálogo propio de 25 (EPSG, de IOGP) que no depende del PROJ del equipo.
   - **Origen local (GeoOrigin)** en metros enteros, múltiplo de 100 m cerca del centro de la
     ventana: Blender trabaja en coordenadas locales y las reales vuelven con un error
@@ -47,6 +50,11 @@ interfaz de Blender, con QGIS abierto y con dos equipos a la vez.
     carpeta del proyecto. Un cerrojo que lleva más de 30 min sin renovarse (se cambia en las
     preferencias) se puede forzar desde **Cerrojo del proyecto…**, siempre con confirmación;
     quien lo perdió pasa a solo lectura con aviso en su siguiente comprobación (cada 5 min).
+    Si una escritura falla por el disco o la red, el proyecto pasa a solo lectura con el
+    motivo y suelta su cerrojo (o lo suelta al cerrar, si en ese momento no había red), así
+    que otro equipo puede abrirlo en escritura sin esperar a que caduque. Si al cambiar la
+    ventana de trabajo no se puede escribir la cabecera, manda la base de datos: el origen
+    nuevo queda guardado y la cabecera se regenera al volver a abrir el proyecto.
   - **En la red (`Z:`)** se trabaja directamente, con la caché en el disco local del equipo.
     Para cálculos pesados, **Trabajar en copia local…** reserva el original y lo copia al
     disco local comprobando que la copia es idéntica, y **Publicar en la red…** sustituye el
