@@ -6,6 +6,11 @@ RF-003-11, RF-003-21, RF-003-28; plan 003 §5.2; ADR-0012).
   Geoblender. Una ventana está en modo Geoblender cuando su espacio de trabajo activo la
   tiene (CW §1); se guarda en el ``.blend``. Al desactivar la extensión se quita la
   definición y el valor queda en el fichero (vuelve al habilitarla, CW §4).
+- ``Scene.geoblender_views`` (:data:`VIEWS_PROPERTY`, spec 003 T22; RF-003-14): las
+  vistas guardadas de la escena (ranuras 1–4, :class:`GEOBLENDER_PG_ui_saved_view`):
+  orientación, centro **local** (``view_location_local``: a ±8 km del GeoOrigin, float32
+  da ≤ 0,5 mm; nunca absoluto, ADR-0005), distancia y proyección. Se guardan con el
+  ``.blend``, como las de Datamine (plan 003 DT6).
 - :class:`GEOBLENDER_PG_ui_preferences`: el grupo ``ui`` de la única
   ``GeoblenderPreferences`` (``bl/props/preferences.py``): idioma de Geoblender
   (español por defecto, independiente del de Blender), títulos de la barra (automático,
@@ -18,10 +23,24 @@ Nada es animable (``options=set()``).
 from __future__ import annotations
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    FloatProperty,
+    FloatVectorProperty,
+    IntProperty,
+)
 
 # Nombre de la marca del modo en WorkSpace (API pública: la leen la plantilla y los scripts).
 WORKSPACE_PROPERTY = "geoblender_mode"
+# Vistas guardadas de la escena (API pública: la leen los scripts).
+VIEWS_PROPERTY = "geoblender_views"
+SAVED_VIEW_SLOTS = 4
+PERSPECTIVE_ITEMS = [
+    ("PERSP", "Perspective", "Perspective projection"),
+    ("ORTHO", "Orthographic", "Orthographic projection"),
+]
 _STATIC: set[str] = set()
 
 # Idioma de Geoblender: ES (por defecto) o EN; core.i18n usa "es" y "en".
@@ -76,12 +95,36 @@ class GEOBLENDER_PG_ui_preferences(bpy.types.PropertyGroup):
     )
 
 
-# En orden de registro (el grupo, antes de la clase de preferencias que lo usa).
-classes: tuple[type, ...] = (GEOBLENDER_PG_ui_preferences,)
+class GEOBLENDER_PG_ui_saved_view(bpy.types.PropertyGroup):
+    """Una vista guardada (spec 003; RF-003-14): la ranura y lo que se restaura."""
+
+    slot: IntProperty(  # type: ignore[valid-type]
+        name="Slot", min=1, max=SAVED_VIEW_SLOTS, default=1, options=_STATIC,
+    )
+    view_location_local: FloatVectorProperty(  # type: ignore[valid-type]
+        name="Centre (local)",
+        description="Centre of the view in local coordinates (relative to the GeoOrigin)",
+        size=3,
+        options=_STATIC,
+    )
+    view_rotation: FloatVectorProperty(  # type: ignore[valid-type]
+        name="Orientation", size=4, default=(1.0, 0.0, 0.0, 0.0), options=_STATIC,
+    )
+    view_distance: FloatProperty(  # type: ignore[valid-type]
+        name="Distance", min=0.0, default=10.0, options=_STATIC,
+    )
+    view_perspective: EnumProperty(  # type: ignore[valid-type]
+        name="Projection", items=PERSPECTIVE_ITEMS, default="PERSP", options=_STATIC,
+    )
+
+
+# En orden de registro (los grupos, antes de quien los usa).
+classes: tuple[type, ...] = (GEOBLENDER_PG_ui_preferences, GEOBLENDER_PG_ui_saved_view)
 
 
 def register() -> None:
-    """Pone ``WorkSpace.geoblender_mode`` (las clases ya están registradas)."""
+    """Pone ``WorkSpace.geoblender_mode`` y ``Scene.geoblender_views`` (las clases ya
+    están registradas)."""
     setattr(
         bpy.types.WorkSpace,
         WORKSPACE_PROPERTY,
@@ -92,9 +135,17 @@ def register() -> None:
             options=_STATIC,
         ),
     )
+    setattr(
+        bpy.types.Scene,
+        VIEWS_PROPERTY,
+        CollectionProperty(type=GEOBLENDER_PG_ui_saved_view, options=_STATIC),
+    )
 
 
 def unregister() -> None:
-    """Quita ``WorkSpace.geoblender_mode``; sin ella, nada."""
+    """Quita ``Scene.geoblender_views`` y ``WorkSpace.geoblender_mode``; sin ellas,
+    nada."""
+    if hasattr(bpy.types.Scene, VIEWS_PROPERTY):
+        delattr(bpy.types.Scene, VIEWS_PROPERTY)
     if hasattr(bpy.types.WorkSpace, WORKSPACE_PROPERTY):
         delattr(bpy.types.WorkSpace, WORKSPACE_PROPERTY)

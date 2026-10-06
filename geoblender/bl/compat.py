@@ -17,6 +17,11 @@ del modificador de Geometry Nodes en 5.2) se envuelve aquí, con su prueba en
 - :func:`ui_scale`: la escala de la interfaz (``preferences.system.ui_scale``, que ya
   incluye la del sistema operativo); sin interfaz vale 0 (``docs/trampas.md`` §3) y se
   toma 1,0.
+- :data:`VIEW_SENSOR_MM` y :data:`VIEW_ZOOM` (spec 003; RF-003-13): la proyección de una
+  Vista 3D que no mira por una cámara (``BKE_camera_params_from_view3d``: sensor de 36 mm
+  y factor 2, con el campo en el lado mayor de la región). Comprobado en 5.2.1 con
+  ``view3d.view_selected``: un cubo de 2 m en una región de 1574 × 954 px queda a 3,208 m
+  (1,4 / (36 / 50) × 1574 / 954).
 """
 
 from __future__ import annotations
@@ -60,6 +65,8 @@ def topbar_patchable(header: type | None = None) -> bool:
 
 # Anchuras de la interfaz (spec 003; RF-003-10, RF-003-11; BS §2.2–§2.3; AR §3.2–§3.3) ---
 
+VIEW_SENSOR_MM = 36.0  # sensor de la Vista 3D (DEFAULT_SENSOR_WIDTH)
+VIEW_ZOOM = 2.0  # factor de la Vista 3D (CAMERA_PARAM_ZOOM_INIT_PERSP)
 UI_FONT_POINTS = 11  # fuente de la interfaz (los títulos de los menús), en puntos
 UI_UNIT_PX = 20  # una unidad de interfaz (ui_units_x) a escala 1,0, en px
 

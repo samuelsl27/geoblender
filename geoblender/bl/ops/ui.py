@@ -18,6 +18,16 @@
   ortográfica. Su ``bl_label`` es el del menú donde viven sus variantes («Vistas», regla de
   ``bl.ui.provisional.base_command``) y su descripción emergente, la de la vista pedida.
   Sin ninguna Vista 3D en la ventana, su ``poll`` falla y lo dice.
+- ``geoblender.ui_frame_work_window`` (RF-003-13; Mayús+Alt+Inicio): encuadra en la Vista
+  3D de destino la ventana de trabajo del proyecto con las cotas de lo visible en ella y
+  ajusta el recorte de la vista (``bl.ui.views.frame_work_window``). Sin proyecto o sin
+  ventana de trabajo, su ``poll`` falla con el paso previo y su ruta (spec §8).
+- ``geoblender.ui_store_view`` y ``geoblender.ui_recall_view`` (RF-003-14; Ctrl+Mayús+F5…F8
+  y Ctrl+F5…F8): guardan y recuperan la vista de la ranura ``slot`` (1–4) de la escena.
+  Guardar cambia la escena, así que lleva ``UNDO``. Recuperar una ranura vacía informa
+  «Guarde antes la vista n (…)» y no cambia nada; su descripción emergente lo dice y los
+  menús la dibujan desactivada.
+- Los tres tienen atajo en la Vista 3D: pasan por la puerta de modo (contrato 2).
 - ``geoblender.ui_toggle_quick_access_row`` (RF-003-11; AR §3.3): Herramientas ▸
   Disposición ▸ «Mostrar la fila de acceso rápido de la vista» (``bl.ui.quick_access``):
   si la fila ya se ve, apaga la preferencia; si no, la enciende y muestra la fila 2 de las
@@ -35,7 +45,7 @@ from __future__ import annotations
 from typing import Any
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 
 from ...core.i18n import tr
 from ..ui import gate
@@ -142,6 +152,11 @@ def _variant_description(idname: str, properties: Any) -> str:
     return commands.text(cmd.description) if cmd is not None else ""
 
 
+def _poll_gated_view3d(cls: Any, context: Any) -> bool:
+    """La puerta de modo (tiene atajo en la Vista 3D) y una Vista 3D de destino."""
+    return gate.poll(cls, context) and _poll_view3d(cls, context)
+
+
 def _poll_view3d(cls: Any, context: Any) -> bool:
     """Hay una Vista 3D de destino; si no, lo dice."""
     from ..ui import views
@@ -177,6 +192,99 @@ class GEOBLENDER_OT_ui_set_view(bpy.types.Operator):
         if target is None:
             return {"CANCELLED"}
         views.set_view(target, self.view)
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_ui_frame_work_window(bpy.types.Operator):
+    """Show the whole work window of the project and adjust the clipping distance of the view"""
+
+    bl_idname = "geoblender.ui_frame_work_window"
+    bl_label = "Frame the work window"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        from ..ui import views
+
+        if not _poll_gated_view3d(cls, context):
+            return False
+        if views.work_window_local() is None:
+            cls.poll_message_set(views.no_work_window_message())
+            return False
+        return True
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import views
+
+        target = views.target_view3d(context)
+        if target is None or not views.frame_work_window(target, context):
+            self.report({"WARNING"}, views.no_work_window_message())
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_ui_store_view(bpy.types.Operator):
+    """Save the orientation, centre, distance and projection of the view in a slot"""
+
+    bl_idname = "geoblender.ui_store_view"
+    bl_label = "Save view"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "UNDO"}
+
+    slot: IntProperty(name="Slot", min=1, max=4, default=1)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _poll_gated_view3d(cls, context)
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        return _variant_description(cls.bl_idname, properties)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import views
+
+        target = views.target_view3d(context)
+        if target is None:
+            return {"CANCELLED"}
+        views.store_view(target, context.scene, self.slot)
+        self.report({"INFO"}, tr("View {n} saved", n=self.slot))
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_ui_recall_view(bpy.types.Operator):
+    """Restore a saved view: orientation, centre, distance and projection"""
+
+    bl_idname = "geoblender.ui_recall_view"
+    bl_label = "Recall view"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    slot: IntProperty(name="Slot", min=1, max=4, default=1)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _poll_gated_view3d(cls, context)
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        from ..ui import views
+
+        scene = getattr(context, "scene", None) or bpy.context.scene
+        if views.saved_view(scene, properties.slot) is None:
+            return views.empty_slot_message(properties.slot)
+        return _variant_description(cls.bl_idname, properties)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import views
+
+        target = views.target_view3d(context)
+        if target is None:
+            return {"CANCELLED"}
+        if not views.recall_view(target, context.scene, self.slot):
+            self.report({"WARNING"}, views.empty_slot_message(self.slot))
+            return {"CANCELLED"}
         return {"FINISHED"}
 
 
@@ -224,6 +332,9 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_call_pie,
     GEOBLENDER_OT_ui_call_panel,
     GEOBLENDER_OT_ui_set_view,
+    GEOBLENDER_OT_ui_frame_work_window,
+    GEOBLENDER_OT_ui_store_view,
+    GEOBLENDER_OT_ui_recall_view,
     GEOBLENDER_OT_ui_toggle_quick_access_row,
     GEOBLENDER_OT_ui_repair_interface,
 )

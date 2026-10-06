@@ -20,8 +20,9 @@ import importlib.util
 import unittest
 from pathlib import Path
 from collections.abc import Iterator, Mapping
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import bpy
 
@@ -144,13 +145,21 @@ class KeymapConflictTest(unittest.TestCase):
     def test_gate_on_3d_view_shortcuts(self) -> None:
         """RF-003-19: cada operador con atajo en «3D View» falla su ``poll`` sobre una
         Vista 3D en modo Blender y lo pasa en modo Geoblender y desde fuera de la Vista 3D
-        (la barra superior)."""
+        (la barra superior). Con un proyecto abierto con ventana de trabajo (sintético):
+        lo que un comando necesita además del modo (encuadrar, T22) no cuenta aquí."""
         window = bpy.context.window_manager.windows[0]
         area = next(a for a in window.screen.areas if a.type == "VIEW_3D")
         region = next(r for r in area.regions if r.type == "WINDOW")
         workspace = window.workspace
         idnames = sorted({s.idname for s in self.cat.shortcuts() if s.keymap == "3D View"})
         self.assertGreater(len(idnames), 20)
+        georef = _module("core.georef")
+        project = SimpleNamespace(window=georef.Window(-100.0, -100.0, 100.0, 100.0),
+                                  origin=georef.GeoOrigin(0, 0, 0))
+        session = _module("bl.scene.project_session")
+        patch = mock.patch.object(session, "current", return_value=project)
+        patch.start()
+        self.addCleanup(patch.stop)
         for idname in idnames:
             module, _, name = idname.partition(".")
             operator = getattr(getattr(bpy.ops, module), name)

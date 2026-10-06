@@ -7,7 +7,9 @@ icono y propiedades fijas), igual en un menú, en el acceso rápido, en un menú
 contextual: un operador (de Geoblender o nativo), un menú (submenú ▸), un panel (ventana
 emergente) o una propiedad nativa (``tool_settings.use_snap``). Si el comando no está
 disponible (BS §7.3) se dibuja **desactivado** dentro de una fila propia o, con «Ocultar lo
-no disponible», no se dibuja. Un acceso cruzado ↗ lleva la marca delante de su etiqueta.
+no disponible», no se dibuja; si está disponible pero su comprobación dice que no es
+aplicable ahora (``commands.not_applicable``: una ranura de vista vacía), también se dibuja
+desactivado (RF-003-09). Un acceso cruzado ↗ lleva la marca delante de su etiqueta.
 
 Los iconos son los de reserva nativos (comprobados en el enumerado de la versión
 instalada; uno desconocido no se dibuja): los propios llegan con ``bl/ui/icons.py``.
@@ -21,7 +23,7 @@ from typing import Any
 import bpy
 
 from ...core.catalog import Command
-from .commands import catalog, is_available, text
+from .commands import catalog, is_available, not_applicable, text
 
 CROSS_MARK = "↗ "  # acceso cruzado (BS §6)
 
@@ -91,7 +93,8 @@ def draw_command(
     shown = "" if icon_only else (text(cmd.label) if label is None else label)
     if cross and shown:
         shown = CROSS_MARK + shown
-    target = layout if available else _disabled(layout, inline)
+    applicable = available and not not_applicable(context, cmd)
+    target = layout if applicable else _disabled(layout, inline)
     kwargs: dict[str, Any] = {"text": shown, "translate": False, **icon_kwargs(cmd)}
     idname = cmd.idname
     if cmd.kind == "panel":

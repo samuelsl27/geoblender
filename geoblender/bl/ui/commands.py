@@ -17,10 +17,17 @@ RF-003-08; plan 003 §5.3; BS §7).
   entregado está disponible si lo está alguno de sus elementos (Encaje ▾, de R-09, con el
   conmutador nativo; Recorte ▾, de R-16, con «Sin recorte» y «Banda de la vista» de la
   003). Se calcula una vez por registro (:func:`refresh`).
+- :func:`register_check` y :func:`not_applicable` (RF-003-09; BS §7.3, «No aplicable
+  ahora»): el ``poll`` de un operador no sabe con qué propiedades se va a llamar, así que
+  lo que depende de ellas (recuperar una ranura vacía) lo dice una comprobación por
+  ``bl_idname``, que recibe el contexto y el comando (con sus propiedades fijas) y
+  devuelve "" o el mensaje con el paso previo; ``drawing.draw_command`` dibuja ese
+  comando desactivado.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import bpy
@@ -34,6 +41,9 @@ PROVISIONAL_FLAG = "_gb_provisional"  # atributo de las clases provisionales
 NATIVE_KINDS = frozenset({"native", "property"})
 
 _AVAILABLE: dict[str, bool] = {}
+# bl_idname → comprobación de «no aplicable ahora»: (contexto, comando) → "" o el mensaje.
+Check = Callable[[Any, core_catalog.Command], str]
+_CHECKS: dict[str, Check] = {}
 
 
 def catalog() -> core_catalog.Catalog:
@@ -113,6 +123,23 @@ def is_available(key: str) -> bool:
     value = _compute(cat, cmd)
     _AVAILABLE[key] = value
     return value
+
+
+def register_check(idname: str, check: Check) -> None:
+    """Pone la comprobación de «no aplicable ahora» de un ``bl_idname``."""
+    _CHECKS[idname] = check
+
+
+def unregister_check(idname: str) -> None:
+    """Quita la comprobación de un ``bl_idname`` (sin ella, nada)."""
+    _CHECKS.pop(idname, None)
+
+
+def not_applicable(context: Any, cmd: core_catalog.Command) -> str:
+    """"" si el comando se puede ejecutar ahora; si no, el mensaje que nombra el paso
+    previo (RF-003-09). Sin comprobación, "" (lo demás lo dice su ``poll``)."""
+    check = _CHECKS.get(cmd.idname)
+    return check(context, cmd) if check is not None else ""
 
 
 def preferences() -> Any:

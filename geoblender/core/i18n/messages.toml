@@ -593,6 +593,15 @@ es = "Volver"
 ["There is no 3D view in this window"]
 es = "No hay ninguna Vista 3D en esta ventana"
 
+["define the work window"]
+es = "defina la ventana de trabajo"
+
+["Save view {n} first ({shortcut})"]
+es = "Guarde antes la vista {n} ({shortcut})"
+
+["View {n} saved"]
+es = "Vista {n} guardada"
+
 # Acceso rápido de la vista (spec 003; RF-003-11; AR §3.3): el botón de los plegados.
 
 ["»"]
