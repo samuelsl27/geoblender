@@ -20,7 +20,8 @@ GeoOrigin, en metros enteros.
    ``manifest.json`` y ``.lock`` de la sesión) y se renombra al final; ante cualquier
    error se borra la temporal y se informa del motivo con la ruta: nunca queda un
    proyecto a medias. El proyecto queda con el cerrojo de la sesión (en modo ``network``
-   en una carpeta de red) y en la lista de recientes del equipo.
+   en una carpeta de red), abierto en escritura (:class:`~.session.Project`) y en la lista
+   de recientes del equipo.
 
 Ninguna ruta absoluta se guarda en el proyecto (RF-002-18).
 """
@@ -46,9 +47,10 @@ from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
 from .events import EventKind, record_event
 from .lock import Acquired, LockInfo, LockMode, acquire
-from .manifest import PROJECT_STORE, manifest_from_record, write_manifest
-from .model import ProjectRecord, ProjectSettings
+from .manifest import PROJECT_STORE, Manifest, manifest_from_record, write_manifest
+from .model import OpenMode, ProjectRecord, ProjectSettings
 from .schema import MIN_READER_SCHEMA, SCHEMA_VERSION, create_schema, insert_project
+from .session import Project, write_status
 
 PROJECT_SUFFIX = ".gbproj"
 CREATING_MARK = ".creando-"
@@ -78,7 +80,8 @@ class PreparedProject:
 @dataclass(frozen=True)
 class CreateResult:
     """El proyecto recién creado: su carpeta, la fila de ``gb_project``, el cerrojo de la
-    sesión, si está en una carpeta de red y los avisos (RF-002-26)."""
+    sesión, si está en una carpeta de red, los avisos (RF-002-26) y el proyecto abierto en
+    escritura (RF-002-01)."""
 
     root: Path
     record: ProjectRecord
@@ -86,6 +89,7 @@ class CreateResult:
     network: bool
     precision: PrecisionReport
     warnings: tuple[str, ...]
+    project: Project
 
 
 def project_folder_name(name: str) -> str:
@@ -274,8 +278,8 @@ def _create_database(
             )
 
 
-def _write_header(folder: Path, record: ProjectRecord, session: SessionInfo) -> None:
-    write_manifest(folder, manifest_from_record(record), session.session_uid)
+def _write_header(folder: Path, header: Manifest, session: SessionInfo) -> None:
+    write_manifest(folder, header, session.session_uid)
 
 
 def _acquire_lock(folder: Path, session: SessionInfo, mode: LockMode, clock: Clock) -> Acquired:
@@ -342,6 +346,7 @@ def create_project(
     is_network = is_network_path(parent, drive_type) if network is None else bool(network)
     mode = LockMode.NETWORK if is_network else LockMode.LOCAL
     record = _record(prepared, session, format_utc(clock.now()))
+    header = manifest_from_record(record)
     try:
         folder = _make_temporary(parent, prepared.name)
     except OSError as exc:
@@ -356,7 +361,7 @@ def create_project(
     try:
         _make_folders(folder)
         _create_database(folder, record, prepared.crs, session, is_network)
-        _write_header(folder, record, session)
+        _write_header(folder, header, session)
         acquired = _acquire_lock(folder, session, mode, clock)
         _publish(folder, target)
     except GeoblenderError:
@@ -373,4 +378,16 @@ def create_project(
         userdata.add_recent(record.uid, record.name, target, record.created_at)
     except OSError:
         pass  # la lista de recientes es una comodidad del equipo, no parte del proyecto
-    return CreateResult(target, record, acquired.info, is_network, prepared.precision, warnings)
+    project = Project(
+        root=target,
+        record=record,
+        manifest=header,
+        session=session,
+        userdata=userdata,
+        status=write_status(OpenMode.WRITE_NETWORK if is_network else OpenMode.WRITE_LOCAL),
+        network=is_network,
+        clock=clock,
+    )
+    return CreateResult(
+        target, record, acquired.info, is_network, prepared.precision, warnings, project
+    )

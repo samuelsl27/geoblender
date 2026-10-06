@@ -6,6 +6,10 @@
 - :class:`ProjectRecord`: la fila de ``gb_project``, la identidad y la georreferencia del
   proyecto tal como las guarda la base de datos, que es la fuente de verdad (la cabecera
   ``manifest.json`` es una copia legible que se reescribe desde ella).
+- :class:`OpenMode`, :class:`ReadOnlyCode` y :class:`OpenStatus`: cómo está abierto un
+  proyecto y, en solo lectura, por qué (RF-002-13).
+- :class:`Progress` y :class:`OpenResult`: los pasos de una operación larga (abrir, copiar,
+  migrar) y el resultado de abrir.
 
 Coordenadas: la ventana de trabajo y el GeoOrigin son **absolutos** (CRS del proyecto,
 m); el GeoOrigin, en metros enteros.
@@ -15,9 +19,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
+from enum import Enum
+from typing import TYPE_CHECKING
 
 from ..georef.crs import DEFAULT_HORIZONTAL_EPSG, DEFAULT_VERTICAL_EPSG
 from ..georef.origin import DEFAULT_GRID_STEP_M, GeoOrigin, Window
+
+if TYPE_CHECKING:
+    from .lock import LockStatus
+    from .session import Project
 
 
 @dataclass(frozen=True)
@@ -109,3 +119,67 @@ class ProjectRecord:
     def from_row(cls, row: Mapping[str, object]) -> ProjectRecord:
         """El registro de una fila leída (columna → valor)."""
         return cls(**{name: row[name] for name in cls.columns()})  # type: ignore[arg-type]
+
+
+class OpenMode(Enum):
+    """Cómo está abierto un proyecto (spec 002 §6, «Modo de apertura»)."""
+
+    WRITE_LOCAL = "write_local"  # escritura en disco local
+    WRITE_NETWORK = "write_network"  # escritura directa en una carpeta de red
+    CHECKOUT = "checkout"  # escritura en una copia local de trabajo (RF-002-31)
+    READ_ONLY = "read_only"
+
+    @property
+    def writable(self) -> bool:
+        """Verdadero si se puede escribir en el proyecto."""
+        return self is not OpenMode.READ_ONLY
+
+
+class ReadOnlyCode(Enum):
+    """Por qué un proyecto está en solo lectura (RF-002-13)."""
+
+    REQUESTED = "requested"  # a petición del usuario
+    LOCKED = "locked"  # otra sesión tiene el cerrojo
+    RESERVED = "reserved"  # el original está reservado para una copia local
+    SCHEMA_NEWER = "schema_newer"  # esquema posterior al de esta versión
+    NOT_MIGRATED = "not_migrated"  # esquema anterior sin migrar
+    WAL_BUSY = "wal_busy"  # otro programa tiene la BD abierta en WAL
+    LOCK_LOST = "lock_lost"  # el cerrojo dejó de ser de esta sesión
+    WRITE_FAILED = "write_failed"  # falló una escritura (disco, red)
+
+
+@dataclass(frozen=True)
+class OpenStatus:
+    """El modo de apertura con su motivo, en español, para mostrarlo siempre."""
+
+    mode: OpenMode
+    reason: ReadOnlyCode | None
+    message: str
+
+    @property
+    def writable(self) -> bool:
+        """Verdadero si se puede escribir en el proyecto."""
+        return self.mode.writable
+
+
+@dataclass(frozen=True)
+class Progress:
+    """Un paso de una operación larga: fase, hechos de un total (pasos o bytes), mensaje
+    en español y, en el último paso, el resultado."""
+
+    phase: str
+    done: int
+    total: int
+    message: str
+    result: object | None = None
+
+
+@dataclass(frozen=True)
+class OpenResult:
+    """El resultado de abrir: el proyecto, su estado, los avisos y el cerrojo que se vio
+    (para ofrecer forzarlo si se puede, RF-002-10)."""
+
+    project: Project
+    status: OpenStatus
+    warnings: tuple[str, ...] = ()
+    lock_status: LockStatus | None = None
