@@ -128,7 +128,8 @@ ENABLE_DISABLE = SPDX + (
 # en cada habilitación (una copia y tres lanzamientos de Blender para todas: presupuesto
 # de RNF-001-01; convergencia, T62): Scene.gb_x (hallazgo 2 de la verificación
 # independiente, sabotaje S3; T36); draw_left envuelta con functools.wraps, que copia el
-# módulo y el nombre de la original, como hará la spec 003 (hallazgo N4; T40); una función
+# módulo y el nombre de la original de Blender, tomada antes de que la spec 003 ponga su
+# envoltorio al registrar (hallazgo N4; T40; ajustada en la 003/T37); una función
 # en el menú Archivo › Importar, como el importador de las specs 005 y 006, y una
 # propiedad en Curve (hallazgo F2 de la ronda 3, sabotajes X3 y X4; T49); un temporizador
 # persistente y sus traducciones (hallazgo F3 de la ronda 3, sabotaje X7; T50: en la
@@ -150,10 +151,10 @@ LEAKY_ROOT = SPDX + (
     "    import bpy\n"
     "    import bpy.utils.previews\n\n"
     "    from . import bl\n\n"
-    "    bl.register()\n"
-    "    bpy.types.Scene.gb_x = bpy.props.IntProperty()\n"
     "    topbar = bpy.types.TOPBAR_HT_upper_bar\n"
-    "    original = topbar.draw_left\n\n"
+    "    original = topbar.draw_left  # el de Blender: la 003 lo envuelve al registrar\n"
+    "    bl.register()\n"
+    "    bpy.types.Scene.gb_x = bpy.props.IntProperty()\n\n"
     "    @functools.wraps(original)\n"
     "    def draw_left(self, context):\n"
     "        original(self, context)\n\n"
