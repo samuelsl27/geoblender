@@ -259,6 +259,26 @@ class RejectTest(unittest.TestCase):
             with self.subTest(campo=field, cambio=overrides), project_tmp() as tmp:
                 self._assert_rejected(tmp, field, value_text, **overrides)
 
+    def test_crs_scope_at_the_east_edge_of_zone_30(self) -> None:
+        """RF-002-03, tal como está escrito (D-12 de la spec, pendiente de la persona):
+        una ventana fuera del ámbito EPSG del CRS se rechaza, también al este del huso 30
+        en Castellón, aunque la cartografía valenciana (ICV) se distribuye en EPSG:25830.
+        Vinaròs (E 794 582) cae fuera de la envolvente del catálogo para 25830 (X de
+        226 161 a 773 839 m) y se rechaza con ese ámbito; Castellón de la Plana
+        (E 751 770) entra. Si la persona decide un margen (huso extendido) o un aviso en
+        lugar del rechazo, esta prueba cambia con esa decisión (convergencia, T47)."""
+        with project_tmp() as tmp:
+            with self.assertRaises(errors.ValidationError) as caught:
+                _make(tmp, window=(794_000.0, 4_482_000.0, 795_000.0, 4_483_000.0))
+            self.assertEqual(caught.exception.code, "core.window_outside_crs")
+            self.assertEqual(caught.exception.field, "ventana")
+            self.assertIn("773 839", str(caught.exception))
+            self.assertEqual(list((tmp / "proyectos").iterdir()), [])
+        with project_tmp() as tmp:
+            result = _make(tmp, window=(751_000.0, 4_429_000.0, 752_000.0, 4_430_000.0))
+            self.assertEqual(result.record.origin.as_tuple()[:2], (751_500, 4_429_500))
+            result.project.close()
+
     def test_existing_destination(self) -> None:
         """RF-002-02: si la carpeta de destino ya existe, se informa con la ruta y no se
         toca nada."""
