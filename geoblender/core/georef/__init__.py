@@ -14,12 +14,28 @@ from .crs import (
     VerticalRef,
     load_catalog,
 )
+from .origin import (
+    DEFAULT_GRID_STEP_M,
+    GeoOrigin,
+    Window,
+    align_window,
+    alignment_unit,
+    check_grid_step,
+    choose_origin,
+)
 
 __all__ = [
+    "DEFAULT_GRID_STEP_M",
     "DEFAULT_HORIZONTAL_EPSG",
     "DEFAULT_VERTICAL_EPSG",
     "CrsCatalog",
     "CrsRef",
+    "GeoOrigin",
     "VerticalRef",
+    "Window",
+    "align_window",
+    "alignment_unit",
+    "check_grid_step",
+    "choose_origin",
     "load_catalog",
 ]

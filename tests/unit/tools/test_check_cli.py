@@ -102,7 +102,10 @@ DEFAULT_RESULTS: Mapping[str, tuple[int, str, str]] = {
             217, body="test_a (tests.unit.test_a.A.test_a)\nRF-001-01: doc. ... ok"
         ),
     ),
-    "referencia": (5, "", NO_TESTS),
+    # Desde la spec 002 (T03) el repositorio tiene casos de referencia: por defecto el
+    # paso los carga (el ejecutor simulado nombra los módulos que hay en disco). «Sin
+    # casos» se prueba en una raíz temporal sin ellos (test_empty_reference_suite_ok).
+    "referencia": (0, "", _unittest_output(2)),
     "licencias": (0, "Licencias (LIC-01 a LIC-04): correcto\n", ""),
     "manifiesto": (0, 'Success parsing TOML in "Geoblender"\n', ""),
     "blender": (
@@ -465,7 +468,7 @@ class StepsTest(unittest.TestCase):
                     _step_line(result.out, name), rf"^  correcto  {name}\s+\d+,\d s"
                 )
         self.assertIn("(217 pruebas)", _step_line(result.out, "unitarias"))
-        self.assertIn("(sin casos)", _step_line(result.out, "referencia"))
+        self.assertIn("(2 pruebas)", _step_line(result.out, "referencia"))
         self.assertIn("(12 pruebas)", _step_line(result.out, "blender"))
         self.assertRegex(lines[-1], r"^RESULTADO: VERDE \(\d+,\d s\)$")
         self.assertNotIn("Ran 217", result.out)
@@ -682,9 +685,12 @@ class SuitesTest(unittest.TestCase):
 
     def test_empty_reference_suite_ok(self) -> None:
         """RF-001-07: ``tests/referencia`` sin casos (código 5) es correcto, «sin
-        casos»; con casos que fallan, fallo."""
-        result = run_check()
-        self.assertEqual(result.code, 0)
+        casos»; con casos que fallan, fallo. Sin casos, en una raíz temporal: el
+        repositorio real los tiene desde la spec 002."""
+        with _manifest_root() as tmp:
+            empty = FakeRunner({"referencia": (5, "", NO_TESTS)})
+            result = run_check(runner=empty, root=tmp)
+        self.assertEqual(result.code, 0, result.out)
         self.assertIn("(sin casos)", _step_line(result.out, "referencia"))
         failing = _unittest_output(2, "FAILED (failures=1)", "FAIL: test_volumen")
         result = run_check(runner=FakeRunner({"referencia": (1, "", failing)}))
@@ -775,7 +781,11 @@ class UnloadedFilesTest(unittest.TestCase):
         una carpeta sin ``__init__.py``) pone su paso en fallo aunque la orden termine
         con 0, y la salida lo nombra: en «unitarias» y en «blender»."""
         runner = FakeRunner(
-            {"unitarias": (0, "", self.UNIT), "blender": (0, "", self.BLENDER)},
+            {
+                "unitarias": (0, "", self.UNIT),
+                "blender": (0, "", self.BLENDER),
+                "referencia": (5, "", NO_TESTS),
+            },
             loaded=False,
         )
         with _manifest_root(self.FILES) as tmp:
@@ -801,6 +811,7 @@ class UnloadedFilesTest(unittest.TestCase):
             {
                 "unitarias": (0, "", self.UNIT),
                 "blender": (0, "", self.BLENDER),
+                "referencia": (5, "", NO_TESTS),
                 "rendimiento": (5, "", NO_TESTS),
                 "rendimiento-blender": (1, "", "NO HAY PRUEBAS en «x»\n"),
             },
@@ -932,7 +943,9 @@ class SummaryTest(unittest.TestCase):
         line = _step_line(result.out, "referencia")
         self.assertTrue(line.lstrip().startswith("fallo"), line)
         self.assertNotIn("sin casos", line)
-        result = run_check()
+        with _manifest_root() as tmp:
+            empty = FakeRunner({"referencia": (5, "", NO_TESTS)})
+            result = run_check(runner=empty, root=tmp)
         self.assertIn("(sin casos)", _step_line(result.out, "referencia"))
 
 
