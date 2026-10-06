@@ -9,7 +9,8 @@ lista vacía significa que el árbol bajo ``root`` cumple. Solo biblioteca está
   ``tools/check.py`` que no son reglas sobre ficheros (licencias, validación con
   Blender) tienen su propia orden.
 - ``DOCS_FAMILIES``, las de la documentación (ADR-01, AGT-01 y AGT-02, NOM-03 y TXT-01
-  a 03, sin ``.git/``, ``Documentacion/``, ``Promts/`` ni la carpeta del código), y
+  a 03, sin ``.git/``, ``Documentacion/``, ``Promts/`` ni la carpeta del código; y
+  REP-03, su configuración de git, desde la T18), y
   ``run_docs``: las ejecuta ``tools/check_docs.py`` (spec 007, RF-007-11). ADR-01 y
   NOM-03 dejaron el verde del código en la tarea 007/T05: el repositorio de código no
   tiene ``docs/`` ni ``specs/``.
@@ -60,6 +61,7 @@ DOCS_FAMILIES: Mapping[str, Family] = {
     "agents": partial(agents.check, excluded=DOCS_EXCLUDED),
     "specs": specs.check,
     "text": partial(text.check, excluded=DOCS_EXCLUDED),
+    "docs_repo": layout.check_docs_repo,
 }
 
 

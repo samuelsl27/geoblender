@@ -23,6 +23,9 @@
   ``unittest`` («Ran N tests» y «OK») y, en el lanzador, a su línea final.
 - RF-001-09 (convergencia, T41): si el repositorio (sin ``.git/``) cambia entre el
   primer paso y el último, «REPOSITORIO MODIFICADO» con la lista de cambios y «NO VERDE».
+- RF-007-14 (spec 007, T18): con ``--documentacion``, tras los obligatorios y los demás
+  opcionales, ``tools/check_docs.py`` sobre la documentación que encuentra
+  ``repo.find_docs``; sin documentación, «omitido» con el motivo, sin ser un fallo.
 
 Ninguna prueba lanza Blender ni Python: el ejecutor simulado anota cada orden y
 devuelve una salida fija por paso; en los pasos con pruebas que terminan con 0, la
@@ -54,6 +57,7 @@ import check  # noqa: E402
 from gbtools import blender  # noqa: E402
 from gbtools.blender import BlenderInstall, EnvironmentProblem  # noqa: E402
 from gbtools import repo as gbrepo  # noqa: E402
+from gbtools.layout import CODE_DIR_IN_DOCS, DOCS_MARKER, ENV_DOCS_DIR  # noqa: E402
 from gbtools.rules import imports  # noqa: E402
 
 FAKE_BLENDER = Path(tempfile.gettempdir()) / "geoblender-falso" / "Blender"
@@ -126,8 +130,16 @@ DEFAULT_RESULTS: Mapping[str, tuple[int, str, str]] = {
         "defínala con la carpeta del banco\nBancos: omitidos\n",
         "",
     ),
+    "documentación": (
+        0,
+        "Geoblender · comprobación de la documentación · x\n"
+        "RESULTADO: DOCUMENTACIÓN CORRECTA (6 ficheros, 0,0 s)\n",
+        "",
+    ),
 }
 OPTIONAL = ["rendimiento", "rendimiento-blender", "banco"]
+DOCS_STEP = "documentación"
+NO_DOCS = f"no hay documentación en la carpeta madre ni en {ENV_DOCS_DIR}"
 
 
 def step_of(cmd: Sequence[str]) -> str:
@@ -141,6 +153,8 @@ def step_of(cmd: Sequence[str]) -> str:
         return "iconos"
     if any(part.replace("\\", "/").endswith("tools/bench_silvestre.py") for part in parts):
         return "banco"
+    if any(part.replace("\\", "/").endswith("tools/check_docs.py") for part in parts):
+        return DOCS_STEP
     if any(part.endswith("run_blender_tests.py") for part in parts):
         if "tests/rendimiento/blender" in parts:
             return "rendimiento-blender"
@@ -309,6 +323,18 @@ def _manifest_root(
     """Raíz temporal con el manifiesto real y ``files``: ``check.main`` la acepta."""
     manifest = (ROOT / EXT / "blender_manifest.toml").read_bytes()
     return temp_tree({f"{EXT}/blender_manifest.toml": manifest, **(files or {})})
+
+
+def _project_root(docs: bool = True) -> contextlib.AbstractContextManager[Path]:
+    """Carpeta del proyecto temporal: el código (con el manifiesto real) en
+    ``Geoblender/`` y, con ``docs``, la documentación en la carpeta madre."""
+    manifest = (ROOT / EXT / "blender_manifest.toml").read_bytes()
+    files: dict[str, str | bytes] = {
+        f"{CODE_DIR_IN_DOCS}/{EXT}/blender_manifest.toml": manifest
+    }
+    if docs:
+        files[DOCS_MARKER] = "# Constitución\n"
+    return temp_tree(files)
 
 
 def _resources_file(*names: str) -> dict[str, str]:
@@ -1262,6 +1288,111 @@ class OptionalStepsTest(unittest.TestCase):
         result = run_check("--rendimiento", "--banco", runner=runner, steps=steps)
         self.assertEqual(result.code, 0, result.out)
         self.assertEqual(runner.steps(), [*MANDATORY, "iconos", *OPTIONAL])
+
+
+class DocsStepTest(unittest.TestCase):
+    """RF-007-14: el paso opcional «documentación» (``--documentacion``; D-4). Cada
+    prueba pasa su entorno: ninguna lee ``GEOBLENDER_DOCS_DIR`` del puesto ni la
+    documentación real."""
+
+    def test_documentacion_flag(self) -> None:
+        """RF-007-14: con ``--documentacion``, después de los obligatorios y de los demás
+        opcionales, ``tools/check_docs.py <carpeta>`` con el Python de Blender, desde la
+        raíz del código; su código 0 es «correcto» y otro, «fallo» con su salida."""
+        options = {step.name: step.option for step in check.STEPS}
+        self.assertEqual(options[DOCS_STEP], "--documentacion")
+        self.assertIn("--documentacion", run_check("--ayuda").out)
+        with _project_root() as tmp:
+            root = tmp / CODE_DIR_IN_DOCS
+            result = run_check("--documentacion", root=root, environ={})
+            self.assertEqual(result.code, 0, result.out + result.err)
+            runner = result.runner
+            self.assertEqual(runner.steps(), [*MANDATORY, DOCS_STEP])
+            call = runner.call(DOCS_STEP)
+            self.assertEqual(
+                call.cmd,
+                blender.python_cmd(INSTALL, "tools/check_docs.py", str(tmp.resolve())),
+            )
+            self.assertEqual(call.cwd, root)
+            expected_path = blender.python_env(root)["PYTHONPATH"]
+            self.assertEqual(call.env["PYTHONPATH"], expected_path)
+            line = _step_line(result.out, DOCS_STEP)
+            self.assertRegex(line, r"^  correcto  documentación\s")
+            self.assertRegex(result.out.strip().splitlines()[-1], r"^RESULTADO: VERDE \(")
+
+            every = run_check(
+                "--banco", "--documentacion", "--rendimiento", root=root, environ={}
+            )
+            self.assertEqual(every.code, 0, every.out)
+            self.assertEqual(every.runner.steps(), [*MANDATORY, *OPTIONAL, DOCS_STEP])
+
+            wrong = (
+                1,
+                "docs/nota.md:1: [TXT-02] tiene CRLF\n"
+                "RESULTADO: DOCUMENTACIÓN CON INCUMPLIMIENTOS (1)\n",
+                "",
+            )
+            usage = (2, "", "ERROR: no hay documentación\n")
+            for result_of_docs, shown in ((wrong, "[TXT-02]"), (usage, "ERROR: no hay")):
+                with self.subTest(codigo=result_of_docs[0]):
+                    runner = FakeRunner({DOCS_STEP: result_of_docs})
+                    failed = run_check(
+                        "--documentacion", runner=runner, root=root, environ={}
+                    )
+                    self.assertEqual(failed.code, 1, failed.out)
+                    line = _step_line(failed.out, DOCS_STEP)
+                    self.assertTrue(line.lstrip().startswith("fallo"), line)
+                    self.assertIn(shown, failed.out)
+                    self.assertIn("RESULTADO: NO VERDE", failed.out)
+
+    def test_documentacion_parent_folder(self) -> None:
+        """RF-007-14, RF-007-12: sin variable (o vacía), la carpeta madre del código;
+        con ``GEOBLENDER_DOCS_DIR``, la suya."""
+        with _project_root() as tmp, temp_tree({DOCS_MARKER: "x\n"}) as other:
+            root = tmp / CODE_DIR_IN_DOCS
+            for environ, folder in (
+                ({}, tmp),
+                ({ENV_DOCS_DIR: ""}, tmp),
+                ({ENV_DOCS_DIR: str(other)}, other),
+            ):
+                with self.subTest(entorno=environ):
+                    result = run_check("--documentacion", root=root, environ=environ)
+                    self.assertEqual(result.code, 0, result.out)
+                    self.assertEqual(
+                        result.runner.call(DOCS_STEP).cmd[-1], str(folder.resolve())
+                    )
+
+    def test_documentacion_omitted_without_docs(self) -> None:
+        """RF-007-14: sin documentación (ni en la carpeta madre ni en la variable), o
+        con una variable que no lleva a ella, el paso queda «omitido» con el motivo, no
+        se ejecuta nada y no es un fallo: «VERDE CON OMISIONES (1)»."""
+        with _project_root(docs=False) as tmp:
+            root = tmp / CODE_DIR_IN_DOCS
+            missing = str(tmp / "no-existe")
+            cases = (({}, NO_DOCS), ({ENV_DOCS_DIR: missing}, "no existe"))
+            for environ, reason in cases:
+                with self.subTest(entorno=environ):
+                    result = run_check("--documentacion", root=root, environ=environ)
+                    self.assertEqual(result.code, 0, result.out + result.err)
+                    self.assertEqual(result.runner.steps(), MANDATORY)
+                    line = _step_line(result.out, DOCS_STEP)
+                    self.assertRegex(line, r"^  omitido   documentación\s")
+                    self.assertIn(reason, line)
+                    omission = f"  {DOCS_STEP} (1): "
+                    listed = [x for x in result.out.splitlines() if x.startswith(omission)]
+                    self.assertEqual(len(listed), 1, result.out)
+                    self.assertIn(reason, listed[0])
+                    last = result.out.strip().splitlines()[-1]
+                    self.assertRegex(last, r"^RESULTADO: VERDE CON OMISIONES \(1\) ")
+
+    def test_documentacion_off_by_default(self) -> None:
+        """RF-007-14: sin la opción, la documentación no se comprueba aunque esté en la
+        carpeta madre."""
+        with _project_root() as tmp:
+            result = run_check(root=tmp / CODE_DIR_IN_DOCS, environ={})
+        self.assertEqual(result.code, 0, result.out)
+        self.assertEqual(result.runner.steps(), MANDATORY)
+        self.assertNotIn(DOCS_STEP, result.out)
 
 
 class ManifestStepTest(unittest.TestCase):

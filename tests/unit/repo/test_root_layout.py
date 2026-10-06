@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""REP: el árbol de la raíz del repositorio de código (spec 007; RF-007-01, RF-007-08)."""
+"""REP: el árbol de la raíz del repositorio de código (spec 007; RF-007-01, RF-007-08) y
+la configuración de git de la documentación (REP-03; RF-007-25, RF-007-27, RF-007-28)."""
 
 import unittest
+from unittest import mock
 
 from tests.support.repo import EXT, ROOT, tools_on_path
 from tests.support.trees import temp_tree
@@ -9,8 +11,8 @@ from tests.support.trees import temp_tree
 tools_on_path()
 
 from gbtools.findings import Finding, format_findings  # noqa: E402
-from gbtools.layout import CODE_ROOT_ENTRIES  # noqa: E402
-from gbtools.rules import FAMILIES  # noqa: E402
+from gbtools.layout import CODE_DIR_IN_DOCS, CODE_ROOT_ENTRIES, DOCS_MARKER  # noqa: E402
+from gbtools.rules import DOCS_FAMILIES, FAMILIES  # noqa: E402
 from gbtools.rules import layout as layout_rules  # noqa: E402
 
 SPDX = "# SPDX-License-Identifier: GPL-3.0-or-later\n"
@@ -157,6 +159,88 @@ class ExtensionDirTest(unittest.TestCase):
         """RF-007-01 / REP-01, RF-007-08 / REP-02: el repositorio real cumple."""
         findings = layout_rules.check(ROOT)
         self.assertEqual(findings, [], "\n" + format_findings(findings))
+
+
+GIT_CONFIG = (
+    "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tignorecase = true\n"
+)
+REMOTE = '[remote "origin"]\n\turl = https://example.invalid/docs.git\n'
+DOCS_REPO: dict[str, str] = {
+    DOCS_MARKER: "# Constitución\n",
+    ".git/config": GIT_CONFIG,
+    ".git/HEAD": "ref: refs/heads/main\n",
+    ".gitignore": f"# El código\n/{CODE_DIR_IN_DOCS}/\nThumbs.db\n",
+}
+
+
+def _rep03(files: dict[str, str | None]) -> list[Finding]:
+    """REP-03 sobre una documentación temporal (``DOCS_REPO`` cambiada con ``files``;
+    un valor ``None`` quita el fichero)."""
+    merged = {**DOCS_REPO, **files}
+    tree = {rel: text for rel, text in merged.items() if text is not None}
+    with temp_tree(tree) as root:
+        return layout_rules.check_docs_repo(root)
+
+
+class DocsRepoTest(unittest.TestCase):
+    """REP-03, de la documentación (``check_docs.py``): sin remoto y con el código
+    ignorado. Se lee ``.git/config`` como texto: no se lanza git."""
+
+    def test_docs_ok(self) -> None:
+        """RF-007-28 / REP-03: sin remotos y con ``/Geoblender/`` ignorado (también con
+        otra mayúscula, como git con ``core.ignorecase``, o sin anclar), cumple; sin
+        ``.git``, no hay remoto que mirar. No se ejecuta ningún proceso."""
+        with mock.patch("subprocess.Popen", side_effect=AssertionError("sin git")):
+            self.assertEqual(_rep03({}), [])
+            for ignore in (f"{CODE_DIR_IN_DOCS.lower()}/\n", f"/{CODE_DIR_IN_DOCS}\n"):
+                with self.subTest(gitignore=ignore):
+                    self.assertEqual(_rep03({".gitignore": ignore}), [])
+            self.assertEqual(_rep03({".git/config": None, ".git/HEAD": None}), [])
+        self.assertIs(DOCS_FAMILIES["docs_repo"], layout_rules.check_docs_repo)
+        self.assertNotIn("docs_repo", FAMILIES)
+
+    def test_docs_with_remote(self) -> None:
+        """RF-007-28, RF-007-27 / REP-03: un remoto en ``.git/config`` (con cualquier
+        nombre, mayúscula o sintaxis antigua) falla nombrándolo, con su línea."""
+        findings = _rep03({".git/config": GIT_CONFIG + REMOTE})
+        self.assertEqual(
+            [(f.path, f.line, f.rule) for f in findings],
+            [(".git/config", 5, "REP-03")],
+            format_findings(findings),
+        )
+        self.assertIn("«origin»", findings[0].message)
+        other = GIT_CONFIG + '[Remote "copia"]\n\turl = x\n[remote.viejo]\n\turl = y\n'
+        found = _rep03({".git/config": other})
+        self.assertEqual([(f.line, f.rule) for f in found], [(5, "REP-03"), (7, "REP-03")])
+        self.assertIn("«copia»", found[0].message)
+        self.assertIn("«viejo»", found[1].message)
+        branch = GIT_CONFIG + '[branch "main"]\n\tremote = origin\n'
+        self.assertEqual(_rep03({".git/config": branch}), [])
+
+    def test_docs_gitignore_without_code(self) -> None:
+        """RF-007-28, RF-007-25 / REP-03: un ``.gitignore`` que no ignora la carpeta del
+        código en la raíz (o que no existe) falla nombrándola."""
+        for ignore in ("Thumbs.db\n", f"/docs/{CODE_DIR_IN_DOCS}/\n", None):
+            with self.subTest(gitignore=ignore):
+                findings = _rep03({".gitignore": ignore})
+                self.assertEqual(
+                    [(f.path, f.rule) for f in findings],
+                    [(".gitignore", "REP-03")],
+                    format_findings(findings),
+                )
+                self.assertIn(f"/{CODE_DIR_IN_DOCS}/", findings[0].message)
+
+    def test_docs_git_is_file(self) -> None:
+        """RF-007-28 / REP-03: un ``.git`` que es un fichero (un *worktree* enlazado o un
+        submódulo) falla: la configuración no está ahí y no se puede comprobar."""
+        gitdir = "gitdir: ../otro/.git\n"
+        findings = _rep03({".git/config": None, ".git/HEAD": None, ".git": gitdir})
+        self.assertEqual(
+            [(f.path, f.rule) for f in findings],
+            [(".git", "REP-03")],
+            format_findings(findings),
+        )
+        self.assertIn("no es una carpeta", findings[0].message)
 
 
 if __name__ == "__main__":

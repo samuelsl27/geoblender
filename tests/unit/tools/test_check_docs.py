@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La comprobación de la documentación, ``tools/check_docs.py`` (spec 007; RF-007-11 a
-RF-007-13).
+RF-007-13 y RF-007-28).
 
 Todas las pruebas trabajan sobre carpetas temporales y pasan su propio entorno: nunca
 leen ``GEOBLENDER_DOCS_DIR`` del puesto ni la documentación real.
@@ -35,7 +35,9 @@ INDEX_TEXT = (
     "# ADR\n\n| Nº | Título | Estado | Fecha |\n| --- | --- | --- | --- |\n"
     f"| [ADR-0001]({ADR_NAME}) | Registrar decisiones | Aceptada | 2026-10-05 |\n"
 )
-# Una documentación mínima que cumple.
+# Una documentación mínima que cumple (REP-03: su .gitignore ignora la carpeta del
+# código; sin .git, no hay remoto que mirar).
+CODE_IGNORE = f"/{layout.CODE_DIR_IN_DOCS}/\n"
 DOCS: dict[str, str] = {
     layout.DOCS_MARKER: "# Constitución\n",
     "docs/adr/README.md": INDEX_TEXT,
@@ -43,6 +45,7 @@ DOCS: dict[str, str] = {
     "specs/001-core-esqueleto/spec.md": "# Spec\n",
     "AGENTS.md": "# Reglas\n",
     "CLAUDE.md": "@AGENTS.md\n",
+    ".gitignore": CODE_IGNORE,
 }
 # Lo que hace falta para que una carpeta sea la raíz del repositorio de código.
 CODE = {marker: "x\n" for marker in layout.ROOT_MARKERS}
@@ -121,7 +124,7 @@ class RulesTest(unittest.TestCase):
             "Documentacion/nota.md": "a\r\n",
             "Promts/nota.md": "a\r\n",
             "borradores/nota.md": "a\r\n",
-            ".gitignore": "/borradores/\n",
+            ".gitignore": CODE_IGNORE + "/borradores/\n",
         }
         with temp_tree({**DOCS, **ignored}) as docs:
             code, out, err = _run([str(docs)])
@@ -131,6 +134,16 @@ class RulesTest(unittest.TestCase):
         with temp_tree({**DOCS, **lower}) as docs:
             code, out, err = _run([str(docs)])
         self.assertEqual(code, 0, out + err)
+
+    def test_rep03_reported(self) -> None:
+        """RF-007-28 / REP-03: un remoto en ``.git/config`` o un ``.gitignore`` sin la
+        carpeta del código, con su fichero y su línea; sin lanzar git."""
+        remote = '[core]\n\tbare = false\n[remote "origin"]\n\turl = https://x.invalid/d\n'
+        with mock.patch("subprocess.Popen", side_effect=AssertionError("sin git")):
+            out = self.assertOnly({".git/config": remote}, "REP-03")
+            self.assertIn(".git/config:3: [REP-03]", out)
+            out = self.assertOnly({".gitignore": "Thumbs.db\n"}, "REP-03")
+            self.assertIn(".gitignore:0: [REP-03]", out)
 
 
 class FolderTest(unittest.TestCase):
