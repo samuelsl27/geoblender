@@ -371,3 +371,8 @@ es = "La vista «{view}» guardaba el render en «{path}», en otro volumen: su 
 
 ["The view «{view}» was saved with Blender's interface data (it could not be rewritten without it: {error}); save it again."]
 es = "La vista «{view}» se ha guardado con los datos de la interfaz de Blender (no se ha podido reescribir sin ellos: {error}); guárdela otra vez."
+
+# Estados de un comando (spec 003; BS §7.3; iconos-e-idioma.md §2.3) ------------------------
+
+["Available in {entry}"]
+es = "Disponible en {entry}"

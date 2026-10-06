@@ -10,7 +10,8 @@ usa ``bpy.app.translations``, que sigue al de Blender). Cada texto de la interfa
 
 API (la del plan 003 §5.3; la spec 003 la amplía con el catálogo de comandos):
 
-- :func:`tr`: el texto de un ``msgid`` en el idioma activo, con sus valores;
+- :func:`tr`: el texto de un ``msgid`` en el idioma activo, con sus valores
+  (:func:`translate`, en un idioma dado);
 - :func:`set_language` y :func:`language`: el idioma activo (``"es"`` o ``"en"``);
 - :func:`install`: añade traducciones (las del catálogo de comandos de la 003);
 - :func:`missing_translations`: los ``msgid`` sin traducción (en el fichero o pedidos);
@@ -111,8 +112,14 @@ def set_language(language: str) -> None:
 def tr(msgid: str, /, **values: object) -> str:
     """El texto de ``msgid`` en el idioma activo con ``values`` en sus marcadores. Sin
     traducción, el ``msgid`` (inglés), y queda en :func:`missing_translations`."""
+    return translate(_STATE.language, msgid, **values)
+
+
+def translate(language: str, msgid: str, /, **values: object) -> str:
+    """Como :func:`tr`, pero en ``language`` (``"es"`` o ``"en"``) sin cambiar el idioma
+    activo (spec 003: «Disponible en …» de la búsqueda y de la hoja de atajos)."""
     text = msgid
-    if _STATE.language != "en":
+    if language != "en":
         spanish = _STATE.installed.get(msgid) or _table().get(msgid)
         if spanish:
             text = spanish
