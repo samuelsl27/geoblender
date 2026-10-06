@@ -201,6 +201,68 @@ class FakeLayoutTest(unittest.TestCase):
                          ("geoblender.core_open_project", "x"))
         self.assertEqual(layout.of_kind("prop")[0].properties, 7)
 
+    def test_items_keep_the_effective_state(self) -> None:
+        """Spec 003, T01 (RF-003-07, RF-003-23): cada elemento anota si su *layout* estaba
+        activo y habilitado al dibujarlo, también heredado de una fila o columna madre
+        (en Blender, una fila desactivada desactiva todo lo de dentro), sin afectar a
+        las filas hermanas ni a lo dibujado antes."""
+        from tests.support.fake_layout import FakeLayout
+
+        layout = FakeLayout()
+        layout.operator("geoblender.ui_toggle_mode", text="Antes")
+        row = layout.row()
+        row.enabled = False
+        row.operator("geoblender.res_compute_volume_between_surfaces", text="Cubicar")
+        row.column().label(text="Dentro")
+        sibling = layout.row()
+        sibling.active = False
+        sibling.operator("geoblender.ui_set_view", text="Planta")
+        layout.operator("geoblender.ui_frame_work_window", text="Después")
+        self.assertEqual(
+            [(item.text, item.enabled, item.active) for item in layout.items],
+            [
+                ("Antes", True, True),
+                ("Cubicar", False, True),
+                ("Dentro", False, True),
+                ("Planta", True, False),
+                ("Después", True, True),
+            ],
+        )
+
+    def test_other_layout_methods_are_recorded(self) -> None:
+        """Spec 003, T01: los métodos de ``UILayout`` que no tiene a mano (``popover``,
+        ``menu_contents``, ``template_ID_tabs``, ``operator_menu_enum``…) se anotan con
+        su nombre como tipo y su primer argumento de texto como destino, para dibujar
+        sin error las cabeceras de Blender; los atributos de forma (``ui_units_x``,
+        ``scale_x``, ``alignment``) se pueden leer y poner."""
+        from tests.support.fake_layout import FakeLayout
+
+        layout = FakeLayout()
+        layout.popover("GEOBLENDER_PT_ui_layouts", text="", icon="WORKSPACE")
+        layout.row(align=True).menu_contents("TOPBAR_MT_editor_menus")
+        layout.template_ID_tabs(object(), "workspace", new="workspace.add")
+        props = layout.operator("geoblender.ui_toggle_mode", depress=True, icon_value=7)
+        props.target = "BLENDER"
+        layout.ui_units_x = 4.5
+        layout.scale_x = 0.8
+        self.assertEqual(
+            [(item.kind, item.target) for item in layout.items],
+            [
+                ("popover", "GEOBLENDER_PT_ui_layouts"),
+                ("menu_contents", "TOPBAR_MT_editor_menus"),
+                ("template_ID_tabs", ""),
+                ("operator", "geoblender.ui_toggle_mode"),
+            ],
+        )
+        self.assertEqual(layout.items[0].icon, "WORKSPACE")
+        self.assertEqual(layout.items[2].options["new"], "workspace.add")
+        self.assertEqual(layout.items[3].options, {"depress": True, "icon_value": 7})
+        self.assertEqual(layout.items[3].properties.target, "BLENDER")
+        self.assertEqual((layout.ui_units_x, layout.scale_x, layout.alignment),
+                         (4.5, 0.8, "EXPAND"))
+        with self.assertRaises(AttributeError):
+            layout._oculto  # noqa: B018 - lo privado no se inventa
+
 
 QGIS_TREE: dict[str, str] = {
     "bin/ogrinfo.exe": "",
