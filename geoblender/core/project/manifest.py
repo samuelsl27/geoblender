@@ -241,7 +241,14 @@ def _origin(data: object) -> GeoOrigin:
 
 def parse_manifest(data: object) -> Manifest:
     """La cabecera de un JSON ya leído; :class:`ProjectError` con el campo (``crs``,
-    ``geo_origin.x0``…) si falta algo obligatorio o un valor no vale."""
+    ``geo_origin.x0``…) si falta algo obligatorio o un valor no vale.
+
+    Al escribir, la cabecera lleva exactamente los campos de formato-proyecto §2
+    (:meth:`Manifest.to_dict`; lo comprueba ``test_manifest``). **Límite declarado**
+    (convergencia de la spec 002, T43; duda D-10, pendiente de la persona): al leer, una
+    clave que no es de esa lista (editada a mano, o de otra versión) se acepta sin aviso y
+    no se conserva al regenerar la cabecera desde la base de datos. Si se rechaza, se
+    avisa o se conserva, lo decide la persona en la spec o en formato-proyecto."""
     if not isinstance(data, Mapping):
         raise _invalid("(raíz)", type(data).__name__, "debe ser un objeto JSON")
     fmt = _lookup(data, "format")

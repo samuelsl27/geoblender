@@ -34,6 +34,17 @@ VCRS = CATALOG.vertical(5782)
 SESSION_UID = "00000000-0000-4000-8000-000000000001"
 CREATED = "2026-10-05T08:12:44.000Z"
 MODIFIED = "2026-10-05T17:03:10.000Z"
+# Los campos de manifest.json, esquema 1: la lista cerrada de formato-proyecto §2, en su
+# orden (convergencia, T43).
+TOP_KEYS = (
+    "format", "schema_version", "min_reader_schema", "geoblender_version", "created_with",
+    "project_uid", "name", "crs", "geo_origin", "grid_step_m", "created_at", "modified_at",
+    "stores", "inventory", "checkout",
+)
+CRS_KEYS = ("epsg", "name", "wkt", "vertical")
+VERTICAL_KEYS = ("epsg", "name", "note")
+ORIGIN_KEYS = ("x0", "y0", "z0")
+STORE_KEYS = ("path", "gpkg_version")
 
 
 def _record(**changes: object):
@@ -123,6 +134,32 @@ class ParseTest(unittest.TestCase):
                 self.assertIsNone(data["checkout"])
                 self.assertEqual(paths.find_absolute_paths(data), [])
                 self.assertEqual(sorted(p.name for p in tmp.iterdir()), ["manifest.json"])
+
+    def test_exact_keys(self) -> None:
+        """RF-002-05, RF-002-06: la cabecera que se escribe lleva exactamente los campos de
+        formato-proyecto §2 (lista cerrada), ni uno más ni uno menos, en el primer nivel, en
+        ``crs``, ``crs.vertical``, ``geo_origin`` y ``stores`` (esquema 1: solo
+        ``project``, con ``path`` y ``gpkg_version``), también con una referencia vertical
+        local y en una copia local (``checkout``) (convergencia, T43)."""
+        checkout = {"session_uid": SESSION_UID, "base": {}, "at": CREATED,
+                    "by": "prueba@PC-PRUEBA-A"}
+        previous = manifest.parse_manifest(_with(_data(), "checkout", checkout))
+        headers = (
+            manifest.manifest_from_record(_record()),
+            manifest.manifest_from_record(_local_record()),
+            manifest.manifest_from_record(_record(), previous=previous),
+        )
+        for header in headers:
+            with self.subTest(vertical=header.vcrs_name, copia=header.checkout is not None), \
+                    project_tmp() as tmp:
+                manifest.write_manifest(tmp, header, SESSION_UID)
+                data = json.loads((tmp / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(list(data), list(TOP_KEYS))
+                self.assertEqual(sorted(data["crs"]), sorted(CRS_KEYS))
+                self.assertEqual(sorted(data["crs"]["vertical"]), sorted(VERTICAL_KEYS))
+                self.assertEqual(sorted(data["geo_origin"]), sorted(ORIGIN_KEYS))
+                self.assertEqual(sorted(data["stores"]), ["project"])
+                self.assertEqual(sorted(data["stores"]["project"]), sorted(STORE_KEYS))
 
     def test_missing_fields_are_named(self) -> None:
         """RF-002-05: una cabecera sin ``crs``, sin ``geo_origin`` o sin otra parte
