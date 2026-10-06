@@ -14,7 +14,9 @@ ya se había tomado.
    usuario: abrirla en el sitio crearía ``-wal`` y ``-shm`` junto a ella); su fila de
    ``gb_project`` y las migraciones registradas.
 3. **Coherencia**: si la cabecera y la base difieren en identidad, CRS, GeoOrigin o
-   esquema, no abre y muestra los dos valores (sin corregir ninguno).
+   esquema, no abre y muestra los dos valores (sin corregir ninguno). Un esquema que
+   explican las migraciones registradas, o un GeoOrigin que explica el último cambio de
+   ventana registrado (la cabecera se quedó con el anterior), se regeneran desde la base.
 4. **Esquema**: igual, anterior (sin migrar: solo lectura, RF-002-20; quien acepta
    migrar lo migra antes con ``core.project.migrations``) o posterior (solo lectura
    indicando qué versión de Geoblender hace falta, RF-002-22). Si el esquema mínimo para
@@ -55,13 +57,14 @@ from ..sysinfo import SessionInfo, pid_alive
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
 from . import lock as lockmod
-from .events import EventKind, log_event, record_event
+from .events import EventKind, last_origin_move, log_event, record_event
 from .lock import Acquired, LockInfo, LockMode, LockState, LockStatus, PidAlive
 from .manifest import (
     PROJECT_STORE,
     Manifest,
     ManifestCheck,
     ManifestStatus,
+    OriginMove,
     compare,
     manifest_from_record,
     read_manifest,
@@ -149,7 +152,7 @@ def _database_error(root: Path, code: str, reason: str, exc: BaseException) -> P
 
 def _read_database(
     root: Path, private_dir: Path
-) -> tuple[SqliteHeader, ProjectRecord, tuple[tuple[int, int], ...]]:
+) -> tuple[SqliteHeader, ProjectRecord, tuple[tuple[int, int], ...], OriginMove | None]:
     path = root / PROJECT_STORE
     try:
         header = read_header(path)
@@ -171,6 +174,7 @@ def _read_database(
             missing = missing_objects(conn)
             record = None if missing else read_project(conn)
             migrations = () if missing else read_migrations(conn)
+            origin_move = None if missing else last_origin_move(conn)
     except (sqlite3.Error, DatabaseError) as exc:
         raise _database_error(
             root,
@@ -188,7 +192,7 @@ def _read_database(
             "de Geoblender o está dañada; el proyecto no se abre",
             ValueError(absent),
         )
-    return header, record, migrations
+    return header, record, migrations, origin_move
 
 
 def _schema_relation(version: int) -> SchemaRelation:
@@ -247,11 +251,11 @@ def _inspect_steps(
         yield Progress(PHASES[3], 3, total, "Comprobando la versión del esquema…")
     else:
         yield Progress(PHASES[1], 1, total, "Leyendo la base de datos…")
-        header, record, migrations = _read_database(
+        header, record, migrations, origin_move = _read_database(
             root, userdata.private_read_dir(session.session_uid)
         )
         yield Progress(PHASES[2], 2, total, "Comprobando la cabecera con la base de datos…")
-        check = compare(manifest, record, migrations)
+        check = compare(manifest, record, migrations, origin_move)
         error = check.error(record.name)
         if error is not None:
             raise error

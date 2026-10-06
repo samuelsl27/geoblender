@@ -12,8 +12,10 @@ ella (:func:`compare`):
   no abre, se muestran los dos valores y no se corrige ninguno (síntoma de ficheros
   mezclados a mano);
 - si solo difieren las fechas, la versión de Geoblender u otros datos que la base de datos
-  manda (nombre, paso de rejilla…), o la base registra una migración que la cabecera no
-  tiene: **REWRITE**, se regenera desde la base de datos;
+  manda (nombre, paso de rejilla…), la base registra una migración que la cabecera no
+  tiene o el GeoOrigin de la cabecera es el de antes del último cambio de ventana
+  registrado (``move_origin``: la cabecera no se pudo reescribir tras confirmarlo):
+  **REWRITE**, se regenera desde la base de datos;
 - si no difiere nada: **CONSISTENT**.
 
 Se escribe de forma atómica (:func:`write_manifest`): ``manifest.json.tmp-<sesión>``,
@@ -501,18 +503,48 @@ def _migrated(low: int, high: int, migrations: Sequence[tuple[int, int]]) -> boo
     return low < high and all((version, version + 1) in steps for version in range(low, high))
 
 
+_ORIGIN_FIELDS = frozenset({"geo_origin.x0", "geo_origin.y0", "geo_origin.z0"})
+OriginMove = tuple[tuple[int, int, int], tuple[int, int, int]]
+
+
+def _origin_explained(
+    manifest: Manifest, record: ProjectRecord, origin_move: OriginMove | None
+) -> bool:
+    """Verdadero si el último cambio de GeoOrigin registrado lleva del origen de la
+    cabecera al de la base: la cabecera se quedó con el anterior porque no se pudo
+    reescribir después de confirmar la transacción (``Project.set_window``)."""
+    if origin_move is None:
+        return False
+    before, after = origin_move
+    header_origin = (manifest.origin.x0, manifest.origin.y0, manifest.origin.z0)
+    db_origin = (record.origin_x, record.origin_y, record.origin_z)
+    return header_origin == tuple(before) and db_origin == tuple(after) and before != after
+
+
 def compare(
     manifest: Manifest,
     record: ProjectRecord,
     migrations: Sequence[tuple[int, int]] = (),
+    origin_move: OriginMove | None = None,
 ) -> ManifestCheck:
-    """Compara la cabecera con la fila de ``gb_project`` y las migraciones registradas en
-    ``gb_schema_migration`` ((de, a)). No corrige nada."""
+    """Compara la cabecera con la fila de ``gb_project``, las migraciones registradas en
+    ``gb_schema_migration`` ((de, a)) y el último cambio de GeoOrigin registrado en
+    ``gb_event`` (``origin_move``: (de, a), :func:`~.events.last_origin_move`). No corrige
+    nada.
+
+    Una diferencia de GeoOrigin que ese cambio explica (de = la cabecera, a = la base) se
+    regenera desde la base, como una migración (convergencia de la spec 002, T40): la
+    cabecera se queda con el origen anterior si no se pudo reescribir después de confirmar
+    «Ventana de trabajo». Límite declarado: también se regenera una cabecera del mismo
+    proyecto copiada de antes de ese cambio (la base manda y es la misma identidad y el
+    mismo CRS); una cabecera con otro origen sigue sin abrir."""
+    explained = _origin_explained(manifest, record, origin_move)
     differences: list[ManifestDifference] = []
     for name, from_header, from_db in _BLOCKING:
         header_value, db_value = from_header(manifest), from_db(record)
         if header_value != db_value:
-            differences.append(ManifestDifference(name, header_value, db_value, True))
+            blocking = not (explained and name in _ORIGIN_FIELDS)
+            differences.append(ManifestDifference(name, header_value, db_value, blocking))
     if manifest.schema_version != record.schema_version:
         explained = _migrated(manifest.schema_version, record.schema_version, migrations)
         differences.append(

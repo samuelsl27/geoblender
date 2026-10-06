@@ -9,9 +9,11 @@ del proyecto quedan byte a byte. Sin motivo, en solo lectura, con la ventana fue
 o sin el cerrojo, no cambia nada.
 """
 
+import json
 import sqlite3
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.support.core_fixtures import FakeClock, FakePids, make_session, make_settings, project_tmp
 from tests.support.package import import_geoblender
@@ -191,6 +193,97 @@ class SetWindowTest(unittest.TestCase):
             self.assertEqual(env.state(), before)
             self.assertEqual(env.project.read_only_reason, model.ReadOnlyCode.LOCK_LOST)
             env.project.close()
+
+
+MOVED = (701_000, 4_400_000, 0)
+HEADER_FAILURE = OSError(5, "red caída (simulada)")
+
+
+class HeaderFailureTest(unittest.TestCase):
+    """La cabecera no se puede escribir después de confirmar el origen nuevo en la base
+    (convergencia, T40): la base manda y el proyecto sigue abriéndose."""
+
+    def fail_header(self, env: Env) -> object:
+        with (
+            mock.patch.object(manifest_mod.os, "replace", side_effect=HEADER_FAILURE),
+            self.assertLogs("geoblender.core.project", "WARNING") as logged,
+        ):
+            moved = env.project.set_window(NEW_WINDOW, 1.0, 0, "Ampliación hacia el este")
+        self.assertTrue(any("write_failed" in line for line in logged.output), logged.output)
+        return moved
+
+    def test_header_failure_after_commit_goes_read_only(self) -> None:
+        """RF-002-27, RF-002-12: si ``os.replace`` de la cabecera falla después de
+        confirmar la transacción, el origen nuevo queda en la base (y en el proyecto de la
+        sesión), la cabecera anterior intacta y sin temporal, y el proyecto pasa a solo
+        lectura «fallo de escritura» con un aviso que lo explica y suelta su cerrojo."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            header = (env.root / "manifest.json").read_bytes()
+            moved = self.fail_header(env)
+            self.assertEqual(moved.as_tuple(), MOVED)
+            self.assertEqual(env.project.origin.as_tuple(), MOVED)
+            self.assertEqual(env.record().origin.as_tuple(), MOVED)
+            self.assertEqual((env.root / "manifest.json").read_bytes(), header)
+            self.assertEqual(sorted(p.name for p in env.root.glob("manifest.json*")),
+                             ["manifest.json"])
+            self.assertFalse(env.project.writable)
+            self.assertIs(env.project.read_only_reason, model.ReadOnlyCode.WRITE_FAILED)
+            notices = env.project.take_notices()
+            self.assertEqual(len(notices), 1, notices)
+            self.assertIn("cabecera", notices[0])
+            self.assertIn("701000", notices[0].replace(" ", "").replace(" ", ""))
+            self.assertFalse((env.root / ".lock").exists())
+            self.assertEqual(env.project.close(), ())
+
+    def test_lost_session_reopens_with_regenerated_header(self) -> None:
+        """RF-002-05, RF-002-27: tras ese fallo, aunque la sesión se pierda sin cerrar
+        (Blender cerrado de golpe), otra sesión abre el proyecto en escritura: la
+        diferencia de GeoOrigin la explica el último evento ``move_origin`` (de = la
+        cabecera, a = la base), así que la cabecera se regenera desde la base (evento
+        ``manifest_rewritten`` y aviso), igual que con una migración."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            self.fail_header(env)
+            # La sesión A se pierde: no se llama a close().
+            opened = open_mod.open_project(
+                env.root, SESSION_B, env.userdata, clock=env.clock, pid_alive=env.pids
+            )
+            self.assertTrue(opened.project.writable, opened.status.message)
+            self.assertEqual(opened.project.origin.as_tuple(), MOVED)
+            self.assertTrue(any("geo_origin" in text for text in opened.warnings), opened.warnings)
+            header = manifest_mod.read_manifest(env.root)
+            self.assertEqual(header.origin.as_tuple(), MOVED)
+            self.assertIs(
+                manifest_mod.compare(header, env.record()).status,
+                manifest_mod.ManifestStatus.CONSISTENT,
+            )
+            kinds = [item.kind for item in env.events()]
+            self.assertEqual(kinds[-2:], ["manifest_rewritten", "open"])
+            opened.project.close()
+
+    def test_unexplained_origin_still_blocks(self) -> None:
+        """RF-002-05: una cabecera con un GeoOrigin que no es el de antes del último
+        cambio registrado (editada a mano, de otro proyecto) sigue sin abrir, con los dos
+        valores, y no se corrige nada."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            env.project.set_window(NEW_WINDOW, 1.0, 0, "Ampliación hacia el este")
+            env.project.close()
+            path = env.root / "manifest.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["geo_origin"]["x0"] = 699_000
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8")
+            before = env.state()
+            with self.assertRaises(errors.ProjectError) as caught:
+                open_mod.open_project(
+                    env.root, SESSION_B, env.userdata, clock=env.clock, pid_alive=env.pids
+                )
+            self.assertEqual(caught.exception.code, "core.project_inconsistent")
+            self.assertIn("699000", str(caught.exception))
+            self.assertIn("701000", str(caught.exception))
+            self.assertEqual(env.state(), before)
 
 
 if __name__ == "__main__":

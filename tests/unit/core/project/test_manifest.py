@@ -253,6 +253,29 @@ class CompareTest(unittest.TestCase):
             manifest.ManifestStatus.INCONSISTENT,
         )
 
+    def test_origin_explained_by_last_move(self) -> None:
+        """RF-002-05, RF-002-27: una diferencia de GeoOrigin que explica el último cambio
+        de ventana registrado (de = la cabecera, a = la BD) se regenera desde la BD
+        (REWRITE), como una migración; si no la explica (otro origen en la cabecera o en
+        la BD, o sin cambio registrado), sigue siendo INCONSISTENT (convergencia,
+        T40)."""
+        header = manifest.manifest_from_record(_record())
+        moved = _record(origin_x=701_000, modified_at="2026-10-06T09:00:00.000Z")
+        move = ((700_000, 4_400_000, 0), (701_000, 4_400_000, 0))
+        check = manifest.compare(header, moved, (), move)
+        self.assertEqual(check.status, manifest.ManifestStatus.REWRITE)
+        self.assertIn("geo_origin.x0", [item.field for item in check.differences])
+        self.assertIsNone(check.error("Cantera Prueba"))
+        for db_record, origin_move in (
+            (moved, None),
+            (moved, ((700_100, 4_400_000, 0), (701_000, 4_400_000, 0))),
+            (_record(origin_x=702_000), move),
+            (_record(origin_x=701_000, uid="00000000-0000-4000-8000-0000000000bb"), move),
+        ):
+            with self.subTest(bd=db_record.origin_x, cambio=origin_move):
+                check = manifest.compare(header, db_record, (), origin_move)
+                self.assertEqual(check.status, manifest.ManifestStatus.INCONSISTENT)
+
     def test_rewrite_keeps_inventory_and_checkout(self) -> None:
         """RF-002-06: la cabecera regenerada desde la BD toma de ella identidad, CRS,
         origen, versiones y fechas, y conserva lo que la BD no tiene (inventario y

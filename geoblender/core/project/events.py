@@ -121,6 +121,37 @@ def read_events(conn: sqlite3.Connection, kind: EventKind | None = None) -> list
     ]
 
 
+OriginTriple = tuple[int, int, int]
+
+
+def _origin_triple(value: object) -> OriginTriple:
+    if (
+        not isinstance(value, list)
+        or len(value) != 3
+        or not all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+    ):
+        raise ValueError(f"no es un GeoOrigin (x0, y0, z0) en metros enteros: {value!r}")
+    return (value[0], value[1], value[2])
+
+
+def last_origin_move(conn: sqlite3.Connection) -> tuple[OriginTriple, OriginTriple] | None:
+    """El último cambio de GeoOrigin registrado (evento ``move_origin`` de
+    ``Project.set_window``): (origen anterior, origen nuevo), en metros enteros; ``None``
+    si no hay ninguno o sus datos no tienen esa forma (RF-002-27). Lo usa la apertura para
+    reconocer una cabecera que se quedó con el origen anterior (RF-002-05)."""
+    row = conn.execute(
+        "SELECT data FROM gb_event WHERE kind = ? ORDER BY fid DESC LIMIT 1",
+        (EventKind.MOVE_ORIGIN.value,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    try:
+        data = json.loads(row[0])
+        return _origin_triple(data["from"]), _origin_triple(data["to"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 def log_event(kind: EventKind, message: str, **data: Any) -> None:
     """Deja en el registro técnico de la extensión un evento que no se pudo escribir en
     el proyecto (solo lectura, fallo de escritura, cerrojo perdido)."""

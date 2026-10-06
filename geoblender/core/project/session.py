@@ -29,7 +29,9 @@ leer y escribir:
   base de datos si difiere (RF-002-07), solo en escritura y con el cerrojo propio.
 - :meth:`Project.set_window`: cambia la ventana de trabajo y con ella el GeoOrigin
   (RF-002-27): nuevo origen en la base y en la cabecera, evento ``move_origin`` con el
-  motivo (obligatorio); ninguna coordenada absoluta guardada cambia.
+  motivo (obligatorio); ninguna coordenada absoluta guardada cambia. Si la cabecera no se
+  puede escribir después de confirmar, la base manda: solo lectura con aviso, y la
+  cabecera se regenera al volver a abrirlo (T40).
 - :meth:`Project.close`: en escritura, registra ``close``, reescribe la cabecera desde la
   base de datos y libera el cerrojo, y solo si el cerrojo sigue siendo de esta sesión; en
   solo lectura no escribe nada en la carpeta del proyecto.
@@ -49,7 +51,7 @@ import shutil
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -464,7 +466,15 @@ class Project:
 
         :class:`ValidationError` sin motivo o con uno que lleva una ruta absoluta, o si la
         ventana, el paso o ``z0`` no valen; :class:`ProjectError` en solo lectura;
-        :class:`LockError` sin el cerrojo. En todos esos casos no cambia nada."""
+        :class:`LockError` sin el cerrojo. En todos esos casos no cambia nada.
+
+        Si la cabecera no se puede escribir **después** de confirmar la transacción (un
+        error de disco o de red), el origen nuevo ya está en la base, que manda: se
+        devuelve igual, la cabecera anterior queda intacta y el proyecto pasa a solo
+        lectura «fallo de escritura» (RF-002-12) con un aviso en :meth:`take_notices`, el
+        registro técnico y el cerrojo soltado. Al abrirlo otra vez en escritura, la
+        diferencia de GeoOrigin la explica el evento ``move_origin`` y la cabecera se
+        regenera desde la base (``compare``; convergencia de la spec 002, T40)."""
         obj = f"Ventana de trabajo de «{self.name}»"
         text = reason.strip() if isinstance(reason, str) else ""
         if not text:
@@ -528,10 +538,39 @@ class Project:
                     "grid_step_m": step,
                 },
             )
-        record = self.reload()
-        self.manifest = manifest_from_record(record, previous=self.manifest)
-        write_manifest(self.root, self.manifest, self.session.session_uid)
-        return record.origin
+        # Confirmado: la base ya tiene el origen nuevo y manda. La fila de la sesión se
+        # actualiza con lo escrito, sin volver a leer la base (en red podría fallar ahora).
+        self.record = replace(
+            record,
+            origin_x=origin.x0, origin_y=origin.y0, origin_z=origin.z0, grid_step_m=step,
+            window_xmin=aligned.xmin, window_ymin=aligned.ymin,
+            window_xmax=aligned.xmax, window_ymax=aligned.ymax,
+            modified_at=now, last_written_with=self.session.geoblender_version,
+        )
+        header = manifest_from_record(self.record, previous=self.manifest)
+        try:
+            write_manifest(self.root, header, self.session.session_uid)
+        except ProjectError as exc:
+            self._header_failed_after_commit(origin, exc)
+        else:
+            self.manifest = header
+        return origin
+
+    def _header_failed_after_commit(self, origin: GeoOrigin, exc: ProjectError) -> None:
+        """La base tiene el origen nuevo y la cabecera no se pudo reescribir: solo
+        lectura con el motivo, aviso, registro técnico y cerrojo soltado (RF-002-12)."""
+        cause = exc.__cause__
+        reason = getattr(cause, "strerror", None) or str(cause or exc.reason)
+        detail = (
+            f"el GeoOrigin ya es ({origin.x0}; {origin.y0}; {origin.z0}) en la base de datos, "
+            f"pero no se ha podido actualizar la cabecera, manifest.json ({reason}); se "
+            "regenerará desde la base de datos al abrir el proyecto en escritura"
+        )
+        self._give_up_writing(ReadOnlyCode.WRITE_FAILED, detail, EventKind.WRITE_FAILED)
+        self._notices.append(
+            f"Proyecto «{self.name}»: {detail}. El proyecto pasa a solo lectura: compruebe "
+            "el disco o la red y vuelva a abrirlo."
+        )
 
     # Cerrojo ----------------------------------------------------------------------
 

@@ -509,6 +509,31 @@ class GeorefOperatorsTest(OperatorsTestCase):
         self.assertEqual(self.events(project.root)[-1], "move_origin")
         self.assertEqual(self.layer(project.root), before)
 
+    def test_window_change_with_header_failure(self) -> None:
+        """RF-002-27, RF-002-12: si la cabecera no se puede escribir después de guardar el
+        origen nuevo en la base (``os.replace`` falla), «Ventana de trabajo…» termina, todas
+        las escenas pasan al origen de la base con la vista desfasada, el proyecto queda en
+        solo lectura con su motivo y el aviso (la cabecera se regenerará al abrirlo) queda
+        para la interfaz (convergencia, T40)."""
+        project = self.new_project()
+        header = (project.root / "manifest.json").read_bytes()
+        failure = OSError(5, "red caída (simulada)")
+        with mock.patch.object(ext("core.project.manifest").os, "replace", side_effect=failure):
+            result = bpy.ops.geoblender.core_set_work_window(
+                "EXEC_DEFAULT", reason="Ampliación hacia el este", **MOVED_TEXT
+            )
+        self.assertEqual(result, {"FINISHED"})
+        moved = (701_000, 4_400_000, 0)
+        self.assertEqual(project.origin.as_tuple(), moved)
+        self.assertEqual((project.root / "manifest.json").read_bytes(), header)
+        for scene in bpy.data.scenes:
+            props = scene.geoblender
+            self.assertEqual((props.origin_x, props.origin_y, props.origin_z), moved)
+            self.assertTrue(props.view_stale)
+        self.assertFalse(project.writable)
+        notices = self.ps.take_notices()
+        self.assertTrue(any("cabecera" in text for text in notices), notices)
+
     def test_window_far_from_origin_warns(self) -> None:
         """RF-002-26: una ventana de 20 × 20 km se acepta con un aviso de las esquinas a
         más de 8 km del GeoOrigin y el error estimado en mm."""

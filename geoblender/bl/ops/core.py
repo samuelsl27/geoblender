@@ -925,6 +925,11 @@ class GEOBLENDER_OT_core_set_work_window(bpy.types.Operator):
                 new=format_xyz(origin.x0, origin.y0, origin.z0, 0),
             ),
         )
+        # P. ej., la cabecera no se pudo escribir tras guardar el origen en la base: el
+        # proyecto pasa a solo lectura y lo dice (RF-002-12; convergencia, T40).
+        for message in project.take_notices():
+            project_session.notify(message)
+            self.report({"WARNING"}, message)
         window_now = project.window
         if window_now is not None:
             precision = precision_report(window_now, origin)
