@@ -11,11 +11,12 @@ Python puro (biblioteca estándar y numpy). API pública:
   cerrar), con su :class:`OpenMode` y, en solo lectura, su :class:`ReadOnlyCode`;
 - :func:`migrate_steps` (migrar un esquema anterior con copia previa, RF-002-20 y
   RF-002-21), con sus :class:`Migration` y su :class:`MigrationResult`;
-- :func:`checkout_steps` (sacar una copia local de trabajo, RF-002-31), con su
-  :class:`CheckoutResult`.
+- :func:`checkout_steps` (sacar una copia local de trabajo, RF-002-31) y
+  :func:`publish_steps` (publicarla sobre el original, RF-002-32 y RF-002-33), con su
+  :class:`CheckoutResult` y su :class:`PublishResult`.
 """
 
-from .checkout import CheckoutResult, checkout_steps
+from .checkout import CheckoutResult, PublishResult, checkout_steps, publish_steps
 from .create import CreateResult, create_project, prepare
 from .events import EventKind
 from .lock import LockCheck, LockInfo, LockMode, LockState, LockStatus
@@ -58,6 +59,7 @@ __all__ = [
     "ProjectInspection",
     "ProjectRecord",
     "ProjectSettings",
+    "PublishResult",
     "ReadOnlyCode",
     "checkout_steps",
     "create_project",
@@ -66,5 +68,6 @@ __all__ = [
     "open_project",
     "open_steps",
     "prepare",
+    "publish_steps",
     "read_manifest",
 ]

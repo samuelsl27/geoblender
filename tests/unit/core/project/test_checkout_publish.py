@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Copia local de trabajo (spec 002, T31; RF-002-31; plan 002 §5.4, «Copia local»;
-formato-proyecto §6).
+"""Copia local de trabajo y publicación (spec 002, T31 y T32; RF-002-31, RF-002-32; plan
+002 §5.4, «Copia local» y «Publicación»; formato-proyecto §6).
 
 Sacar una copia local reserva el original (su ``.lock`` en modo ``checkout``), lo copia
 sin ``cache/`` ni ``.lock`` a la carpeta de copias locales, comprueba que la copia es
@@ -9,6 +9,11 @@ idéntica (las mismas huellas), anota en la cabecera de la copia la sección ``c
 y abre la copia en escritura (modo ``CHECKOUT``). Cancelar en cualquier paso borra la
 copia parcial y libera la reserva; el original no cambia (salvo su ``.lock`` mientras
 está reservado).
+
+Publicar la copia la copia junto al original como ``<Nombre>.gbproj.publicando`` (con
+``checkout = null`` y el evento ``publish``), renombra el original a
+``<Nombre>.gbproj.anterior`` (sustituyendo la anterior) y la publicación al nombre del
+original, y libera la reserva. Cancelar antes de sustituir nada no deja nada a medias.
 """
 
 import hashlib
@@ -141,6 +146,23 @@ class Env:
     def leftovers(self) -> list[str]:
         """Lo que hay en la carpeta de copias locales."""
         return sorted(item.name for item in self.dest.iterdir())
+
+    def publish_steps(self, local, session=SESSION_A, **kwargs):
+        kwargs.setdefault("clock", self.clock)
+        kwargs.setdefault("pid_alive", self.pids)
+        kwargs.setdefault("chunk_size", CHUNK)
+        return checkout.publish_steps(local, session, self.userdata, **kwargs)
+
+    def publish(self, local, session=SESSION_A, **kwargs):
+        result = None
+        for step in self.publish_steps(local, session, **kwargs):
+            if step.result is not None:
+                result = step.result
+        return result
+
+    def siblings(self) -> list[str]:
+        """Lo que hay junto al original (en su carpeta de «red»)."""
+        return sorted(item.name for item in self.parent.iterdir())
 
 
 class CheckoutTest(unittest.TestCase):
@@ -364,9 +386,117 @@ class CheckoutRefusedTest(unittest.TestCase):
             self.assertEqual(env.leftovers(), [])
 
     def test_api_exports(self) -> None:
-        """RF-002-31: ``core.project`` reexporta la copia local."""
-        for name in ("checkout_steps", "CheckoutResult"):
+        """RF-002-31, RF-002-32: ``core.project`` reexporta la copia local y la
+        publicación."""
+        for name in ("checkout_steps", "CheckoutResult", "publish_steps", "PublishResult"):
             self.assertTrue(hasattr(project_api, name), name)
+
+
+NEW_WINDOW = (700_500.4, 4_399_500.6, 701_500.2, 4_400_500.9)
+ORIGINAL = "Cantera Prueba.gbproj"
+PREVIOUS = "Cantera Prueba.gbproj.anterior"
+
+
+class PublishTest(unittest.TestCase):
+    def test_publish_replaces_original_and_releases_reservation(self) -> None:
+        """RF-002-32: el original pasa a ``<Nombre>.gbproj.anterior`` (entero, sin la
+        reserva) y en su lugar queda la copia publicada, con ``checkout = null``, las
+        huellas de la copia (salvo su base, que suma el evento ``publish``, y su cabecera)
+        y sin cerrojo: la reserva se libera. La copia local se cierra, sale del registro
+        del equipo y el publicado es el primero de los recientes."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            original_prints = env.prints(env.root)
+            result = env.checkout()
+            local = result.opened.project
+            origin = local.set_window(NEW_WINDOW, 1.0, 0, "Ampliación hacia el este")
+            (local.root / "rasters" / "gis_dtm_nuevo.tif").write_bytes(b"nuevo" * 1000)
+            local_prints = env.prints(local.root)
+            local_rows = rows(local.root, "gb_project")
+            local_events = event_kinds(local.root)
+            published = env.publish(local)
+            previous = env.parent / PREVIOUS
+            self.assertEqual(published.original, env.root)
+            self.assertEqual(published.previous, previous)
+            self.assertEqual(published.local, local.root)
+            # El original anterior, entero y sin la reserva.
+            self.assertEqual(env.prints(previous), original_prints)
+            self.assertFalse((previous / ".lock").exists())
+            # El publicado: la copia, con checkout = null y el evento publish.
+            self.assertFalse((env.root / ".lock").exists())
+            header = manifest.read_manifest(env.root)
+            self.assertIsNone(header.checkout)
+            self.assertEqual(header.origin, origin)
+            now = env.prints(env.root)
+            self.assertEqual([item.path for item in now.files],
+                             [item.path for item in local_prints.files])
+            for item in local_prints.files:
+                if item.path not in ("manifest.json", "project.gpkg"):
+                    self.assertEqual(now.file(item.path), item, item.path)
+            self.assertEqual(published.prints, now)
+            self.assertEqual(rows(env.root, "gb_project"), local_rows)
+            self.assertEqual(event_kinds(env.root), [*local_events, "publish"])
+            with gpkg.GpkgConnection.open_read(env.root / "project.gpkg") as db:
+                found = events.read_events(db.connection, events.EventKind.PUBLISH)
+            self.assertEqual(found[0].data["base"], result.base)
+            self.assertEqual(found[0].data["checkout_session"], SESSION_A.session_uid)
+            self.assertEqual(paths.find_absolute_paths(rows(env.root, "gb_event")), [])
+            # Nada a medias; la copia, cerrada; el equipo, sin el registro de la copia.
+            self.assertEqual(env.siblings(), [ORIGINAL, PREVIOUS])
+            self.assertTrue(local.closed)
+            self.assertFalse((local.root / ".lock").exists())
+            self.assertIsNone(env.userdata.checkout_record(env.uid))
+            self.assertEqual(env.userdata.recent_projects()[0].path, env.root)
+            # Otra sesión lo abre en escritura normal, con el origen nuevo.
+            opened = env.open(env.root, SESSION_B).project
+            self.assertIs(opened.mode, model.OpenMode.WRITE_LOCAL)
+            self.assertFalse(opened.is_checkout)
+            self.assertEqual(opened.origin, origin)
+            opened.close()
+
+    def test_second_publication_replaces_previous(self) -> None:
+        """RF-002-32: se conserva una sola publicación anterior: la segunda sustituye a la
+        primera ``.anterior`` (sin dejar restos)."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            first = env.checkout()
+            env.publish(first.opened.project)
+            first_published = env.prints(env.root)
+            second = env.checkout()
+            self.assertEqual(second.copy, env.dest / "Cantera Prueba-2.gbproj")
+            (second.copy / "exports" / "informe.pdf").write_bytes(b"%PDF-1.7 informe")
+            env.publish(second.opened.project)
+            self.assertEqual(env.prints(env.parent / PREVIOUS), first_published)
+            self.assertEqual(env.siblings(), [ORIGINAL, PREVIOUS])
+            self.assertTrue((env.root / "exports" / "informe.pdf").is_file())
+            self.assertEqual(event_kinds(env.root).count("publish"), 2)
+
+    def test_cancel_before_replacing_leaves_nothing(self) -> None:
+        """RF-002-32 (RNF-002-06): cancelar a mitad de la copia, o justo antes de
+        sustituir, no deja nada junto al original, que sigue reservado y sin cambios, y
+        la copia local sigue abierta e intacta."""
+        with project_tmp() as tmp:
+            env = Env(tmp, raster_bytes=1_000_000)
+            result = env.checkout()
+            local = result.opened.project
+            original_files = snapshot(env.root)
+            local_files = snapshot(local.root)
+            record = env.userdata.checkout_record(env.uid)
+            for stop in ("copia", "sustitución"):
+                with self.subTest(fase=stop):
+                    steps = env.publish_steps(local)
+                    for step in steps:
+                        if step.phase == stop and (stop != "copia" or 0 < step.done < step.total):
+                            break
+                    else:
+                        self.fail(f"no hubo paso «{stop}»")
+                    steps.close()
+                    self.assertEqual(env.siblings(), [ORIGINAL])
+                    self.assertEqual(snapshot(env.root), original_files)
+                    self.assertEqual(snapshot(local.root), local_files)
+                    self.assertTrue(local.writable)
+                    self.assertEqual(env.userdata.checkout_record(env.uid), record)
+            local.close()
 
 
 if __name__ == "__main__":
