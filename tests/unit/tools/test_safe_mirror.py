@@ -231,16 +231,30 @@ def mirrored(files: dict[str, str] | None = None, empty: bool = False) -> Iterat
     carpeta vacía con su foto (el primer espejo)."""
     with places() as (dest, profile, environ):
         project = dest.parent / "proyecto"
+        roots = (project,) if empty else (project, dest)
+        state: dict[str, dict[str, object]] = {}
         for rel, text in (files or PROJECT).items():
-            path = project / rel
-            if not path.parent.is_dir():
-                path.parent.mkdir(parents=True)
-            path.write_bytes(text.encode("utf-8"))
+            data = text.encode("utf-8")
+            for root in roots:
+                path = root / rel
+                if not path.parent.is_dir():
+                    path.parent.mkdir(parents=True)
+                path.write_bytes(data)
+            if not empty:
+                # El estado sale del contenido escrito y de la fecha del destino: sin
+                # volver a leer los ficheros (RNF-007-01). Las fechas de los dos lados
+                # se igualan, como las deja una copia.
+                info = (dest / rel).stat()
+                os.utime(project / rel, ns=(info.st_mtime_ns, info.st_mtime_ns))
+                state[rel] = {
+                    "size": len(data),
+                    "mtime_ns": info.st_mtime_ns,
+                    "sha256": mirror.sha256_of_text(text),
+                }
         if empty:
             mirror.write_photo(profile, dest, files={})
         else:
-            shutil.copytree(project, dest, dirs_exist_ok=True)
-            mirror.write_state(profile, dest)
+            mirror.write_state(profile, dest, files=state)
         yield Mirrored(project, dest, profile, environ)
 
 

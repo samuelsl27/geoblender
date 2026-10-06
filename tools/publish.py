@@ -30,6 +30,14 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
    enlazado ni ``alternates``), sin cambios sin commit ni ficheros nuevos sin ignorar,
    sin operaciones de git a medias ni cerrojos, HEAD en una rama; y la documentación no
    versiona nada bajo ``Geoblender/`` (ni un *gitlink*).
+6. Con ``--rehacer-estado`` (RF-007-32, D-16; solo si lo pide quien publica): se
+   compara el destino con su estado (o con uno vacío, si no hay estado legible ni foto;
+   el ilegible se guarda aparte) y se toma el destino tal como está como estado nuevo
+   solo si nada se pierde: cada cambio está dentro de un ``.git`` cuyas referencias
+   (leídas como texto) apuntan todas a commits que el PC tiene, o es un fichero de
+   trabajo cuyo contenido está en el historial del PC. Un fichero de trabajo que el PC
+   no tiene, un borrado o una carpeta nueva no se aceptan: código 3, nombrándolos (y
+   cada referencia que falta). No sube, no comprueba, no copia ni borra nada.
 7. Comparación del destino con el estado (RF-007-29, «avisar y no borrar»): si alguien
    creó, cambió o borró algo en el destino desde el último espejo (también una carpeta,
    o dentro de un ``.git``), código 3 con la lista y cómo traer cada cosa al PC, sin
@@ -67,10 +75,11 @@ Las lecturas de git no toman cerrojos opcionales (``gbtools.git``): no reescribe
 ``.git/index``. Nadie publica salvo la persona que publica (D-15); un agente, solo si
 ella se lo pide en esa tarea.
 
-Códigos de salida: 0 publicado; 1 árbol no limpio, *worktree* o ``alternates``, la
+Códigos de salida: 0 publicado (o estado rehecho); 1 árbol no limpio, *worktree* o ``alternates``, la
 documentación versiona algo bajo ``Geoblender/``, comprobación roja; 2 uso, raíz,
 estructura, sin destino, destino rechazado, sin estado ni foto o estado ilegible, o sin
-el Blender del manifiesto; 3 cambios en el destino.
+el Blender del manifiesto; 3 cambios en el destino (también los que
+``--rehacer-estado`` no acepta, o un cambio durante el espejo).
 """
 
 from __future__ import annotations
@@ -117,6 +126,7 @@ STEP_DOCS = "documentación"
 STEP_PUSH = "subida"
 STEP_MIRROR = "espejo"
 STEP_VERIFY = "verificación"
+STEP_STATE = "estado"
 
 # El primer componente bajo la raíz de una unidad, o el nombre del recurso, de la
 # carpeta de expedientes de clientes (solo lectura, siempre): nunca es un destino.
@@ -487,6 +497,9 @@ class Publication:
         self.listing = safe_mirror.DestinationTree()
         self.observed: dict[str, safe_mirror.FileState] = {}
         self.mirror_hook: safe_mirror.Hook | None = None
+        self.unreadable: Path | None = None  # el estado ilegible (con --rehacer-estado)
+        self.refs_checked: dict[str, list[str]] = {}
+        self.history: dict[str, frozenset[str]] = {}
         self.mirror_started = False
         self.report: safe_mirror.MirrorReport | None = None
         self.started = time.perf_counter()
@@ -539,12 +552,14 @@ class Publication:
         try:
             base = safe_mirror.load_base(dest, self.environ)
         except safe_mirror.StateUnreadable as exc:
-            raise Stop(
-                EXIT_USAGE,
-                STEP_DEST,
-                f"{exc}; no se usa la foto en su lugar: {OPTION_REBUILD} lo rehace si "
-                "nada del destino se pierde",
-            ) from exc
+            if not self.options.rebuild_state:
+                raise Stop(
+                    EXIT_USAGE,
+                    STEP_DEST,
+                    f"{exc}; no se usa la foto en su lugar: {OPTION_REBUILD} lo rehace si "
+                    "nada del destino se pierde",
+                ) from exc
+            base, self.unreadable = None, safe_mirror.state_file(dest, self.environ)
         except safe_mirror.MirrorError as exc:
             raise Stop(EXIT_USAGE, STEP_DEST, str(exc)) from exc
         problem = destination_problem(dest, self.project, base)
@@ -859,6 +874,91 @@ class Publication:
             f"{result.identical} idénticos, 0 sobrantes; estado guardado",
         )
 
+    # Paso 6: --rehacer-estado (plan §5.4.9; D-16).
+    def judge(
+        self, change: safe_mirror.DestChange, observed: Mapping[str, safe_mirror.FileState]
+    ) -> tuple[bool, str]:
+        """Si un cambio del destino se acepta como estado (nada se pierde) y por qué."""
+        assert self.dest is not None
+        code = change.repo == safe_mirror.REPO_CODE
+        local = self.code if code else self.project
+        if change.in_git:
+            label = CODE_LABEL if code else DOCS_LABEL
+            if label not in self.refs_checked:
+                remote_git = (self.dest / layout.CODE_DIR_IN_DOCS if code else self.dest) / ".git"
+                self.refs_checked[label] = git.unknown_refs(remote_git, local, self.git_runner)
+            unknown = self.refs_checked[label]
+            if unknown:
+                return False, (
+                    "dentro de .git, y ese .git tiene referencias a commits que el PC no "
+                    f"tiene: {', '.join(unknown)}; tráigalos con git fetch"
+                )
+            return True, "dentro de .git, y todas sus referencias apuntan a commits del PC"
+        if change.kind == safe_mirror.DELETED:
+            return False, "borrado: git rm en el PC, o restáurelo en el destino"
+        if change.kind == safe_mirror.NEW_FOLDER:
+            return False, "carpeta nueva: créela en el PC o quítela del destino"
+        if change.path not in observed:
+            return False, "cambiaba mientras se leía"
+        rel = change.path.split("/", 1)[1] if code else change.path
+        label = CODE_LABEL if code else DOCS_LABEL
+        if label not in self.history:
+            self.history[label] = git.history_objects(local, self.git_runner)
+        target = self.dest / change.path
+        if git.in_history(local, rel, target, self.git_runner, self.history[label]):
+            return True, "su contenido está en el historial de git del PC"
+        return False, (
+            "su contenido no está en el historial de git del PC: tráigalo al PC y haga "
+            "commit, o quítelo del destino"
+        )
+
+    def rebuild_state(self) -> None:
+        assert self.dest is not None
+        base = self.base or safe_mirror.MirrorState(str(self.dest), "", "")
+        try:
+            source = safe_mirror.scan_source(self.project)
+            listing = safe_mirror.scan_destination(self.dest)
+            pending = safe_mirror.load_pending(self.dest, self.environ)
+            changes, observed = safe_mirror.destination_changes(
+                self.dest, base, source, listing, pending
+            )
+            verdicts = [(change, *self.judge(change, observed)) for change in changes]
+        except safe_mirror.MirrorError as exc:
+            raise Stop(EXIT_FAIL, STEP_STATE, str(exc)) from exc
+        except git.GitProblem as exc:
+            raise Stop(EXIT_FAIL, STEP_STATE, str(exc)) from exc
+        except OSError as exc:
+            raise Stop(EXIT_FAIL, STEP_STATE, f"no se pudo leer el destino: {exc}") from exc
+        origin = base_text(base) if self.base is not None else "sin estado legible ni foto"
+        self.line(STATUS_OK, STEP_DEST, f"{origin}; {len(changes)} cambios en el destino")
+        refused = [(c, why) for c, ok, why in verdicts if not ok]
+        if refused:
+            raise Stop(
+                EXIT_CHANGES,
+                STEP_STATE,
+                f"{len(refused)} cambios del destino se perderían: el estado no cambia",
+                [f"{line}: {why}" for line, (_c, why) in zip(change_lines([c for c, _w in refused]), refused)],
+                f"RESULTADO: CAMBIOS EN EL DESTINO ({len(refused)})",
+            )
+        files = {rel: observed[rel] for rel in listing.files if rel in observed}
+        result = safe_mirror.Verification(files=files, folders=set(listing.folders))
+        state = safe_mirror.new_state(
+            self.dest, self.project, result, self.repositories(), self.environ
+        )
+        if self.unreadable is not None and self.unreadable.exists():
+            stamp = safe_mirror.now_text().replace(":", "").replace("-", "")
+            aside = self.unreadable.with_name(f"{self.unreadable.stem}.ilegible-{stamp}.json")
+            os.replace(self.unreadable, aside)
+            print(f"    el estado ilegible se guarda aparte: «{aside}»")
+        safe_mirror.save_state(self.dest, self.environ, state)
+        self.line(
+            STATUS_OK,
+            STEP_STATE,
+            f"{len(changes)} cambios aceptados; estado nuevo con {len(files)} ficheros",
+        )
+        for line, (_change, _ok, why) in zip(change_lines(changes), verdicts):
+            print(f"    {line}: {why}")
+
     def run(self) -> int:
         self.check_structure()
         self.check_destination()
@@ -867,6 +967,10 @@ class Publication:
         assert self.dest is not None
         try:
             with safe_mirror.mirror_lock(self.dest, self.environ):
+                if self.options.rebuild_state:
+                    self.rebuild_state()
+                    print(f"RESULTADO: ESTADO REHECHO ({self.elapsed()} s) en {self.dest}")
+                    return EXIT_OK
                 self.compare()
                 self.run_checks()
                 self.push()

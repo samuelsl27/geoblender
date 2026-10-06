@@ -20,6 +20,7 @@ import contextlib
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -832,7 +833,11 @@ class PushTest(PublicationAssertions):
         un «+» en la referencia; después de las comprobaciones."""
         fake = FakeGit()
         with workspace() as space:
-            outcome = run_publish(space, git_runner=fake)
+            # Un fichero que aparece en el destino durante las comprobaciones para la
+            # publicación tras la subida (sin hacer el espejo, que aquí no hace falta).
+            late = space.dest / "tarde.txt"
+            checks = FakeChecks(during_check=lambda: late.write_bytes(b"x\n"))
+            outcome = run_publish(space, git_runner=fake, checks=checks)
         pushes = [cmd for cmd in fake.commands("code") if cmd.startswith("push")]
         self.assertEqual(
             pushes,
@@ -928,18 +933,6 @@ class MirrorStepTest(PublicationAssertions):
     """RF-007-22, RF-007-34: el espejo dentro de la publicación (plan 007 §5.4.5, paso
     10; §5.4.8)."""
 
-    def test_mirror_copies_project(self) -> None:
-        """RF-007-22: tras subir, el destino (vacío, primer espejo) queda con los
-        ficheros de la carpeta del proyecto, los dos ``.git`` incluidos, y el informe
-        da los copiados."""
-        with workspace() as space:
-            outcome = run_publish(space)
-            copied = sorted(p.relative_to(space.dest).as_posix() for p in space.dest.rglob("*") if p.is_file())
-            source = sorted(p.relative_to(space.project).as_posix() for p in space.project.rglob("*") if p.is_file())
-        self.assertIn(f"correcto  {publish.STEP_MIRROR}", outcome.out, outcome.text)
-        self.assertEqual(copied, source)
-        self.assertIn(f"{len(source)} copiados", outcome.out)
-
     def test_lock_present_exit_1(self) -> None:
         """RF-007-22: con el cerrojo de otro espejo desde este PC a ese destino, código 1
         antes de comparar, comprobar, subir o copiar; el cerrojo no se toca."""
@@ -974,18 +967,74 @@ class MirrorStepTest(PublicationAssertions):
         self.assertIn(f"{CHANGES} (1)", outcome.out)
 
 
-class ReportTest(PublicationAssertions):
-    """RF-007-23, RF-007-30: la comprobación del espejo, el estado y el informe (plan 007
-    §5.4.8, pasos 4 y 5; §5.5)."""
+class ReportTest(unittest.TestCase):
+    """RF-007-22, RF-007-23, RF-007-30: una publicación correcta a un destino vacío (con
+    algo excluido) y su repetición sin cambios, hechas una vez por clase
+    (``setUpClass``); cada prueba mira una parte: el espejo, la comprobación, el estado y
+    el informe (plan 007 §5.4.8, pasos 4 y 5; §5.5)."""
+
+    stack: contextlib.ExitStack
+    space: Workspace
+    first: Outcome
+    second: Outcome
+    state: dict[str, object]
+    files: dict[str, dict[str, object]]
+    folders: list[str]
+    leftovers: list[bool]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.stack = contextlib.ExitStack()
+        try:
+            space = cls.stack.enter_context(workspace())
+            cls.space = space
+            write_files(space.dest, {"dist/viejo.zip": "zip"})
+            cls.first = run_publish(space)
+            environ = space.env()
+            cls.state = json.loads(safe_mirror.state_file(space.dest, environ).read_bytes())
+            cls.files = {
+                rel: info
+                for rel, info in mirror.describe(space.dest).items()
+                if not safe_mirror.is_excluded(rel)
+            }
+            cls.folders = [
+                rel for rel in mirror.folders_of(space.dest)
+                if not safe_mirror.is_excluded(rel, True)
+            ]
+            cls.leftovers = [
+                path.exists()
+                for path in (
+                    safe_mirror.pending_file(space.dest, environ),
+                    safe_mirror.lock_file(space.dest, environ),
+                )
+            ]
+            cls.second = run_publish(space)
+        except BaseException:
+            cls.stack.close()
+            raise
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.stack.close()
+
+    def test_mirror_copies_project(self) -> None:
+        """RF-007-22: tras subir, el destino (vacío, primer espejo) queda con los
+        ficheros de la carpeta del proyecto, los dos ``.git`` incluidos (y con lo
+        excluido que tenía, sin tocar), y el informe da los copiados."""
+        source = mirror.describe(self.space.project)
+        self.assertIn(f"correcto  {publish.STEP_MIRROR}", self.first.out, self.first.text)
+        self.assertEqual(
+            {rel: info["sha256"] for rel, info in self.files.items()},
+            {rel: info["sha256"] for rel, info in source.items()},
+        )
+        self.assertEqual((self.space.dest / "dist" / "viejo.zip").read_bytes(), b"zip")
+        self.assertIn(f"{len(source)} copiados", self.first.out)
 
     def test_report_fields(self) -> None:
         """RF-007-23: el informe da la rama y el commit de cada repositorio, el remoto,
         los copiados, borrados y sin cambios, las exclusiones halladas en el destino, la
         verificación, el resultado, la duración y el destino."""
-        with workspace() as space:
-            write_files(space.dest, {"dist/viejo.zip": "zip"})
-            outcome = run_publish(space)
-            dest = space.dest
+        outcome, dest = self.first, self.space.dest
         self.assertEqual(outcome.code, 0, outcome.text)
         out = outcome.out
         for text in (
@@ -1003,37 +1052,28 @@ class ReportTest(PublicationAssertions):
     def test_state_written(self) -> None:
         """RF-007-30: tras una publicación correcta, el estado del destino (en el perfil
         local) tiene cada fichero con el tamaño, la fecha y el sha256 del destino, sus
-        carpetas, la rama y el commit de cada repositorio y el remoto; el registro en
-        curso y el cerrojo ya no están."""
-        with workspace() as space:
-            outcome = run_publish(space)
-            state = json.loads(safe_mirror.state_file(space.dest, space.env()).read_bytes())
-            files = mirror.describe(space.dest)
-            folders = mirror.folders_of(space.dest)
-            leftovers = [
-                path.exists()
-                for path in (
-                    safe_mirror.pending_file(space.dest, space.env()),
-                    safe_mirror.lock_file(space.dest, space.env()),
-                )
-            ]
-        self.assertEqual(outcome.code, 0, outcome.text)
+        carpetas (sin lo excluido), la rama y el commit de cada repositorio y el remoto;
+        el registro en curso y el cerrojo ya no están."""
+        state = self.state
         self.assertEqual((state["formato"], state["tipo"]), (1, "estado"))
-        self.assertEqual(state["ficheros"], files)
-        self.assertEqual(sorted(state["carpetas"]), folders)
-        self.assertEqual(state["repositorios"][CODE], {"rama": CODE_BRANCH, "commit": SHA_CODE, "origin": CODE_URL})
-        self.assertEqual(state["repositorios"]["."], {"rama": DOCS_BRANCH, "commit": SHA_DOCS})
-        self.assertEqual(leftovers, [False, False])
+        self.assertEqual(state["ficheros"], self.files)
+        self.assertEqual(sorted(state["carpetas"]), self.folders)  # type: ignore[arg-type]
+        repos = state["repositorios"]
+        assert isinstance(repos, dict)
+        self.assertEqual(repos[CODE], {"rama": CODE_BRANCH, "commit": SHA_CODE, "origin": CODE_URL})
+        self.assertEqual(repos["."], {"rama": DOCS_BRANCH, "commit": SHA_DOCS})
+        self.assertEqual(self.leftovers, [False, False])
 
     def test_second_run_copies_nothing(self) -> None:
         """RF-007-23: repetir la publicación sin cambios copia 0 ficheros y termina con
-        0; el estado nuevo sustituye al anterior."""
-        with workspace() as space:
-            first = run_publish(space)
-            second = run_publish(space)
-        self.assertEqual((first.code, second.code), (0, 0), second.text)
-        self.assertIn("estado del", second.out)
-        self.assertIn("0 copiados, 0 borrados", second.out)
+        0, comparando con el estado de la primera."""
+        self.assertEqual((self.first.code, self.second.code), (0, 0), self.second.text)
+        self.assertIn("estado del", self.second.out)
+        self.assertIn("0 copiados, 0 borrados", self.second.out)
+
+
+class VerifyStepTest(PublicationAssertions):
+    """RF-007-23: sin estado si la comprobación del espejo no cuadra."""
 
     def test_state_only_after_verify(self) -> None:
         """RF-007-23, RF-007-34: si la comprobación del espejo ve una diferencia (un
@@ -1094,6 +1134,147 @@ class MirrorOnlyTest(PublicationAssertions):
                 self.assertIn(f"aviso     {publish.STEP_PUSH}", outcome.out)
                 self.assertIn(expected, outcome.out)
                 self.assertIn("sin subir", outcome.out)
+
+
+REBUILT = "RESULTADO: ESTADO REHECHO"
+
+
+class RebuildStateTest(PublicationAssertions):
+    """RF-007-32 (D-16): ``--rehacer-estado`` toma el destino como estado nuevo solo si
+    nada se pierde (plan 007 §5.4.9); nunca sube, copia ni borra nada."""
+
+    def mirrored_space(self, stack: contextlib.ExitStack) -> Workspace:
+        """Un espacio cuyo destino es una copia exacta de la carpeta del proyecto (como
+        la deja un espejo) con su estado, y una rama en el ``.git`` del código del
+        destino."""
+        space = stack.enter_context(workspace())
+        shutil.copytree(space.project, space.dest, dirs_exist_ok=True)
+        write_files(space.dest, {f"{CODE}/.git/refs/heads/{CODE_BRANCH}": f"{SHA_CODE}\n"})
+        mirror.write_state(space.profile, space.dest)
+        return space
+
+    def rebuild(self, space: Workspace, fake: FakeGit | None = None, code: int = 0) -> Outcome:
+        """``--rehacer-estado``: sin subir, comprobar ni tocar el destino."""
+        fake = fake or FakeGit()
+        before = gbrepo.snapshot(space.dest)
+        outcome = run_publish(space, publish.OPTION_REBUILD, git_runner=fake)
+        self.assertEqual(outcome.code, code, outcome.text)
+        self.assertEqual(gbrepo.snapshot_changes(before, gbrepo.snapshot(space.dest)), [])
+        self.assertEqual([c for c in fake.commands() if c.startswith("push")], [])
+        self.assertEqual(outcome.checks.calls, [])
+        return outcome
+
+    def test_rehacer_estado_git_only(self) -> None:
+        """RF-007-32: un cambio dentro de un ``.git`` del destino (un ``git status`` en
+        el NAS reescribió el índice) para la publicación (3); con ``--rehacer-estado``,
+        si sus referencias apuntan a commits que el PC tiene, el destino pasa a ser el
+        estado (0) y la publicación siguiente ya no para por eso."""
+        with contextlib.ExitStack() as stack:
+            space = self.mirrored_space(stack)
+            write_files(space.dest, {f"{CODE}/.git/index": "índice reescrito en el NAS\n"})
+            outcome = self.rebuild(space)
+            self.assertIn(REBUILT, outcome.out)
+            self.assertIn(f"{CODE}/.git/index", outcome.out)
+            state = safe_mirror.load_base(space.dest, space.env())
+            assert state is not None
+            self.assertEqual(state.files, {
+                rel: safe_mirror.FileState(info["size"], info["mtime_ns"], info["sha256"])
+                for rel, info in mirror.describe(space.dest).items()
+            })
+            listing = safe_mirror.scan_destination(space.dest)
+            source = safe_mirror.scan_source(space.project)
+            changes, _observed = safe_mirror.destination_changes(space.dest, state, source, listing)
+            self.assertEqual(changes, [])
+
+    def test_rehacer_estado_refuses_work_files(self) -> None:
+        """RF-007-32: un fichero de trabajo cambiado en el destino cuyo contenido no está
+        en el historial del PC, o uno borrado, o una carpeta nueva, no se acepta: código 3
+        nombrándolos, sin tocar el estado."""
+        listing = f"{'1' * 40}\n"
+        fake = FakeGit({("*", "hash-object"): (0, f"{'2' * 40}\n"), ("*", "rev-list --objects"): (0, listing)})
+        with contextlib.ExitStack() as stack:
+            space = self.mirrored_space(stack)
+            state = safe_mirror.state_file(space.dest, space.env())
+            saved = state.read_bytes()
+            write_files(space.dest, {layout.DOCS_MARKER: "# Cambiada en el NAS\n"})
+            (space.dest / CODE / layout.CHECK_RELPATH).unlink()
+            (space.dest / "Documentacion").mkdir()
+            outcome = self.rebuild(space, fake, code=3)
+            self.assertEqual(state.read_bytes(), saved)
+        for text in (layout.DOCS_MARKER, f"{CODE}/{layout.CHECK_RELPATH}", "Documentacion"):
+            self.assertIn(text, outcome.out)
+        self.assertIn("no está en el historial", outcome.out)
+        self.assertIn(f"{CHANGES} (3)", outcome.out)
+
+    def test_rehacer_estado_ref_only_in_dest(self) -> None:
+        """RF-007-32: una rama que solo está en el ``.git`` del destino (su commit no está
+        en el PC): código 3 nombrándola, con cómo traerla."""
+        unknown = "9" * 40
+        fake = FakeGit({("code", f"cat-file -e {unknown}"): (1, "")})
+        with contextlib.ExitStack() as stack:
+            space = self.mirrored_space(stack)
+            write_files(space.dest, {f"{CODE}/.git/refs/heads/hecha-en-el-nas": f"{unknown}\n"})
+            outcome = self.rebuild(space, fake, code=3)
+        self.assertIn(f"refs/heads/hecha-en-el-nas → {unknown[:12]}", outcome.out)
+        self.assertIn("fetch", outcome.out)
+
+    def test_rehacer_estado_stash_only_in_dest(self) -> None:
+        """RF-007-32: un ``stash`` que solo está en el ``.git`` del destino (de la
+        documentación): código 3 nombrándolo."""
+        unknown = "8" * 40
+        fake = FakeGit({("docs", f"cat-file -e {unknown}"): (1, "")})
+        with contextlib.ExitStack() as stack:
+            space = self.mirrored_space(stack)
+            write_files(space.dest, {".git/refs/stash": f"{unknown}\n"})
+            outcome = self.rebuild(space, fake, code=3)
+        self.assertIn(f"refs/stash → {unknown[:12]}", outcome.out)
+
+    def test_rehacer_estado_content_in_history(self) -> None:
+        """RF-007-32: un fichero de trabajo del destino con el contenido de un commit del
+        PC (una versión anterior) se acepta: estado rehecho, con el motivo."""
+        blob = "3" * 40
+        fake = FakeGit({
+            ("*", "hash-object"): (0, f"{blob}\n"),
+            ("*", "rev-list --objects"): (0, f"{'4' * 40}\n{blob} docs/constitution.md\n"),
+        })
+        with contextlib.ExitStack() as stack:
+            space = self.mirrored_space(stack)
+            write_files(space.dest, {layout.DOCS_MARKER: "# Versión anterior\n"})
+            outcome = self.rebuild(space, fake)
+        self.assertIn(REBUILT, outcome.out)
+        self.assertIn("en el historial", outcome.out)
+        command = next(c for c in fake.commands("docs") if c.startswith("hash-object"))
+        self.assertIn(f"--path={layout.DOCS_MARKER}", command)
+
+    def test_rehacer_estado_without_base(self) -> None:
+        """RF-007-32, RF-007-31: sin estado ni foto (o con el estado ilegible, que se
+        guarda aparte), se compara con un estado vacío: un destino igual que el PC se
+        acepta entero y pasa a ser el estado."""
+        with contextlib.ExitStack() as stack:
+            space = self.mirrored_space(stack)
+            state = safe_mirror.state_file(space.dest, space.env())
+            state.unlink()
+            for photo in mirror.state_folder(space.profile).glob("foto-*.json"):
+                photo.unlink()
+            self.assertStopped(space, 2)
+            outcome = self.rebuild(space)
+            self.assertIn(REBUILT, outcome.out)
+            self.assertTrue(state.exists())
+            state.write_bytes(b"{roto")
+            outcome = self.rebuild(space)
+            aside = list(state.parent.glob(f"{state.stem}.ilegible-*.json"))
+            self.assertEqual([path.read_bytes() for path in aside], [b"{roto"])
+            self.assertIn(REBUILT, outcome.out)
+            self.assertIsNotNone(safe_mirror.load_base(space.dest, space.env()))
+
+    def test_rehacer_estado_touches_nothing(self) -> None:
+        """RF-007-32: ``--rehacer-estado`` con un destino sin cambios: estado rehecho, y
+        ni subida, ni comprobaciones, ni espejo (el destino, igual)."""
+        with contextlib.ExitStack() as stack:
+            space = self.mirrored_space(stack)
+            outcome = self.rebuild(space)
+        self.assertIn(REBUILT, outcome.out)
+        self.assertNotIn(f"correcto  {publish.STEP_MIRROR}", outcome.out)
 
 
 class EnvironTest(unittest.TestCase):

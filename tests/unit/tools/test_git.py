@@ -10,6 +10,7 @@ del sistema, y ninguna deja procesos de git en segundo plano (``gc.auto=0``,
 """
 
 import os
+import shutil
 import subprocess
 import unittest
 from collections.abc import Mapping, Sequence
@@ -249,6 +250,65 @@ class CredentialsTest(unittest.TestCase):
                 self.assertIsNone(git.credential_problem(url, text))
 
 
+class RebuildReadsTest(unittest.TestCase):
+    """RF-007-32 (D-16): lo que mira ``--rehacer-estado`` antes de aceptar el destino,
+    sin lanzar git en el destino."""
+
+    def test_unknown_refs(self) -> None:
+        """RF-007-32: las referencias del ``.git`` del destino se leen como texto
+        (``HEAD`` separado, ``refs/**`` —ramas, etiquetas, ``stash``— y
+        ``packed-refs``; las simbólicas se saltan) y se nombran las que apuntan a un
+        commit que el repositorio del PC no tiene (``cat-file -e <id>^{commit}``, una
+        vez por commit)."""
+        known, unknown, other = "a" * 40, "b" * 40, "c" * 40
+        files = {
+            "HEAD": f"{unknown}\n",
+            "refs/heads/main": f"{known}\n",
+            "refs/heads/nas": f"{unknown}\n",
+            "refs/remotes/origin/HEAD": "ref: refs/remotes/origin/main\n",
+            "refs/stash": f"{other}\n",
+            "packed-refs": (
+                "# pack-refs with: peeled fully-peeled sorted\n"
+                f"{known} refs/tags/v0.1.0\n^{other}\n{other} refs/heads/vieja\n"
+            ),
+        }
+        runner = FakeGit({f"cat-file -e {unknown}": (1, ""), f"cat-file -e {other}": (1, "")})
+        with temp_tree(files) as git_dir:
+            found = git.unknown_refs(git_dir, Path("C:/x/codigo"), runner=runner)
+        self.assertEqual(
+            found,
+            [
+                f"HEAD → {unknown[:12]}",
+                f"refs/heads/nas → {unknown[:12]}",
+                f"refs/heads/vieja → {other[:12]}",
+                f"refs/stash → {other[:12]}",
+            ],
+        )
+        checked = [cmd[2:] for cmd, _env, _cwd, _timeout in runner.calls]
+        self.assertEqual(len(checked), 3, checked)
+        for cmd, _env, cwd, _timeout in runner.calls:
+            self.assertEqual(cwd, Path("C:/x/codigo"))
+        with temp_tree({"HEAD": "ref: refs/heads/main\n"}) as git_dir:
+            self.assertEqual(git.unknown_refs(git_dir, Path("."), runner=FakeGit()), [])
+
+    def test_in_history(self) -> None:
+        """RF-007-32: un fichero del destino está en el historial del PC si su blob (con
+        los filtros de su ruta: ``hash-object --path``, sin escribir) está en algún
+        commit alcanzable desde una rama o una etiqueta."""
+        blob = "d" * 40
+        listing = f"{'e' * 40}\n{blob} docs/a.md\n{'f' * 40} docs\n"
+        runner = FakeGit({"hash-object": (0, f"{blob}\n"), "rev-list --objects": (0, listing)})
+        with temp_tree({"a.md": "x\n"}) as folder:
+            self.assertTrue(git.in_history(Path("."), "docs/a.md", folder / "a.md", runner=runner))
+            command = runner.calls[0][0]
+            self.assertEqual(command[1:3], ["hash-object", "--path=docs/a.md"])
+            self.assertNotIn("-w", command)
+            other = FakeGit({"hash-object": (0, f"{'9' * 40}\n"), "rev-list --objects": (0, listing)})
+            self.assertFalse(git.in_history(Path("."), "docs/a.md", folder / "a.md", runner=other))
+        self.assertIn("--branches", " ".join(runner.calls[1][0]))
+        self.assertIn("--tags", " ".join(runner.calls[1][0]))
+
+
 class GitDirTest(unittest.TestCase):
     """``.git`` y operaciones a medias, mirando ficheros (sin lanzar git)."""
 
@@ -294,8 +354,94 @@ class GitDirTest(unittest.TestCase):
 
 
 @requires(gitrepo.GIT, gitrepo.GIT_HINT)
+class ReadOnlyEndToEndTest(unittest.TestCase):
+    """Con git de verdad, sobre una copia de la plantilla para toda la clase: estas
+    pruebas no cambian los repositorios (RNF-007-01: una copia en lugar de una por
+    prueba). Las lecturas de la publicación con git de verdad (``toplevel``,
+    ``remote_url``, ``tree_status`` y ``tracked_under`` en los dos repositorios) las
+    hace ``test_publish.py::PublishedTest``."""
+
+    project: gitrepo.GitProject
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.project = gitrepo.shared_template().project()
+        cls.run_git = staticmethod(cls.project.runner())
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.project.close()
+
+    def test_template_layout(self) -> None:
+        """RF-007-15, RF-007-24, RF-007-33: la carpeta del proyecto es la documentación
+        (con ``docs/constitution.md``, que ignora la carpeta del código) y dentro está el
+        código, cada uno con su ``.git`` sin operaciones a medias; el remoto del código
+        es el desnudo de esta copia (no el de la plantilla), con la rama del código: el
+        código está limpio en ``main`` y sin commits por subir."""
+        project = self.project
+        self.assertTrue((project.docs / "docs" / "constitution.md").is_file())
+        self.assertEqual(project.code, project.docs / CODE_DIR_IN_DOCS)
+        self.assertIn(f"/{CODE_DIR_IN_DOCS}/", (project.docs / ".gitignore").read_text("utf-8"))
+        for repo in (project.docs, project.code):
+            with self.subTest(repositorio=repo.name):
+                self.assertIsNone(git.git_dir_problem(repo))
+                self.assertEqual(git.operations_in_progress(repo / ".git"), [])
+        config = (project.code / ".git" / "config").read_text(encoding="utf-8")
+        self.assertIn(f"url = {project.remote.as_posix()}", config)
+        remote_head = (project.remote / "refs" / "heads" / "main").read_text("utf-8").strip()
+        status = git.tree_status(project.code, runner=self.run_git)
+        self.assertEqual((status.branch, status.entries, status.commit), ("main", [], remote_head))
+        self.assertEqual(git.ahead_of_remote(project.code, "main", runner=self.run_git), 0)
+
+    def test_rebuild_reads_with_git(self) -> None:
+        """RF-007-32: con git de verdad, una copia del ``.git`` del código con un commit
+        que solo está en ella (una rama hecha «en el NAS»): ``unknown_refs`` la nombra y
+        no las demás; y ``in_history`` reconoce un fichero con el contenido de un commit
+        y no uno nuevo."""
+        project = self.project
+        copy = project.base / "destino-git"
+        shutil.copytree(project.code / ".git", copy)
+        commit = project.git(
+            project.code, f"--git-dir={copy}", "commit-tree", "HEAD^{tree}", "-p", "HEAD",
+            "-m", "hecho en el NAS",
+        ).stdout.strip()
+        (copy / "refs" / "heads" / "nas").write_text(f"{commit}\n", encoding="utf-8")
+        found = git.unknown_refs(copy, project.code, runner=self.run_git)
+        self.assertEqual(found, [f"refs/heads/nas → {commit[:12]}"])
+        readme = project.base / "README.md"
+        readme.write_bytes((project.code / "README.md").read_bytes())
+        objects = git.history_objects(project.code, runner=self.run_git)
+        for content, expected in ((None, True), (b"# Sin commit que lo tenga\n", False)):
+            if content is not None:
+                readme.write_bytes(content)
+            with self.subTest(en_el_historial=expected):
+                found = git.in_history(project.code, "README.md", readme, self.run_git, objects)
+                self.assertEqual(found, expected)
+
+    def test_isolated_config(self) -> None:
+        """T19: git solo lee la configuración del repositorio y la de las pruebas (por
+        entorno): ninguna global ni de sistema; sin ``gc`` ni mantenimiento en segundo
+        plano, sin preguntas y con la identidad y la rama fijadas."""
+        listing = self.project.git(
+            self.project.code, "config", "--list", "--show-scope"
+        ).stdout.splitlines()
+        scopes = {line.split("\t", 1)[0] for line in listing}
+        self.assertLessEqual(scopes, {"local", "command"}, listing)
+        values = dict(line.split("\t", 1)[1].split("=", 1) for line in listing)
+        self.assertEqual(values.get("gc.auto"), "0")
+        self.assertEqual(values.get("maintenance.auto"), "false")
+        self.assertEqual(values.get("init.defaultbranch"), "main")
+        self.assertEqual(values.get("user.email"), gitrepo.IDENTITY[1])
+        self.assertEqual(self.project.global_config.read_bytes(), b"")
+        env = self.project.env()
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+
+
+@requires(gitrepo.GIT, gitrepo.GIT_HINT)
 class EndToEndTest(unittest.TestCase):
-    """Con git de verdad, sobre una copia de la plantilla de cada clase."""
+    """Con git de verdad, sobre una copia de la plantilla para cada prueba (estas
+    cambian los repositorios)."""
 
     template: gitrepo.GitTemplate
 
@@ -307,35 +453,6 @@ class EndToEndTest(unittest.TestCase):
         self.project = self.template.project()
         self.addCleanup(self.project.close)
         self.run_git = self.project.runner()
-
-    def test_template_layout(self) -> None:
-        """RF-007-15, RF-007-24, RF-007-33: la carpeta del proyecto es la documentación
-        (con ``docs/constitution.md``, que ignora la carpeta del código) y dentro está el
-        código, cada uno con su git limpio en ``main``; el remoto del código es el
-        desnudo de esta copia (no el de la plantilla), y sin commits por subir."""
-        project = self.project
-        self.assertTrue((project.docs / "docs" / "constitution.md").is_file())
-        self.assertEqual(project.code, project.docs / CODE_DIR_IN_DOCS)
-        commits = {}
-        for repo in (project.docs, project.code):
-            with self.subTest(repositorio=repo.name):
-                self.assertIsNone(git.git_dir_problem(repo))
-                status = git.tree_status(repo, runner=self.run_git)
-                self.assertEqual((status.branch, status.entries), ("main", []))
-                self.assertEqual(git.operations_in_progress(repo / ".git"), [])
-                commits[repo] = status.commit
-        run_git = self.run_git
-        self.assertEqual(git.toplevel(project.code, runner=run_git), project.code.resolve())
-        self.assertIsNone(git.remote_url(project.docs, runner=run_git))
-        self.assertEqual(
-            Path(git.remote_url(project.code, runner=run_git) or ""), project.remote
-        )
-        self.assertEqual(git.ahead_of_remote(project.code, "main", runner=run_git), 0)
-        self.assertEqual(
-            git.tracked_under(project.docs, CODE_DIR_IN_DOCS, runner=run_git), []
-        )
-        remote_head = project.git(project.remote, "rev-parse", "refs/heads/main").stdout
-        self.assertEqual(commits[project.code], remote_head.strip())
 
     def test_reads_do_not_rewrite_index(self) -> None:
         """RF-007-15 (plan §2.1, 16): con un fichero tocado (otra fecha, el mismo
@@ -372,25 +489,6 @@ class EndToEndTest(unittest.TestCase):
         project.git(project.docs, "add", "-f", CODE_DIR_IN_DOCS)
         found = git.tracked_under(project.docs, CODE_DIR_IN_DOCS, runner=self.run_git)
         self.assertEqual(found, [f"{CODE_DIR_IN_DOCS} (gitlink)"])
-
-    def test_isolated_config(self) -> None:
-        """T19: git solo lee la configuración del repositorio y la de las pruebas (por
-        entorno): ninguna global ni de sistema; sin ``gc`` ni mantenimiento en segundo
-        plano, sin preguntas y con la identidad y la rama fijadas."""
-        listing = self.project.git(
-            self.project.code, "config", "--list", "--show-scope"
-        ).stdout.splitlines()
-        scopes = {line.split("\t", 1)[0] for line in listing}
-        self.assertLessEqual(scopes, {"local", "command"}, listing)
-        values = dict(line.split("\t", 1)[1].split("=", 1) for line in listing)
-        self.assertEqual(values.get("gc.auto"), "0")
-        self.assertEqual(values.get("maintenance.auto"), "false")
-        self.assertEqual(values.get("init.defaultbranch"), "main")
-        self.assertEqual(values.get("user.email"), gitrepo.IDENTITY[1])
-        self.assertEqual(self.project.global_config.read_bytes(), b"")
-        env = self.project.env()
-        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
-        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
 
 
 if __name__ == "__main__":

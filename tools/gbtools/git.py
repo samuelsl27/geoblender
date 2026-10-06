@@ -318,6 +318,88 @@ def push(root: Path, branch: str, runner: Runner = run) -> subprocess.CompletedP
     return _git(root, args, runner, accept=tuple(range(256)), write=True)
 
 
+_OBJECT_ID = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
+SYMBOLIC_PREFIX = "ref:"
+
+
+def _refs_as_text(git_dir: Path) -> list[tuple[str, str]]:
+    """Las referencias de ``git_dir`` leídas como texto (sin lanzar git en él): ``HEAD``
+    si está separado, cada fichero de ``refs/`` (ramas, etiquetas, remotas, ``stash``)
+    y cada línea de ``packed-refs``; las simbólicas («ref: …») se saltan."""
+    found: list[tuple[str, str]] = []
+    try:
+        head = (git_dir / "HEAD").read_bytes().decode("utf-8", "replace").strip()
+    except OSError:
+        head = ""
+    if head and not head.startswith(SYMBOLIC_PREFIX):
+        found.append(("HEAD", head))
+    for current, _dirs, files in os.walk(git_dir / "refs"):
+        for name in files:
+            path = Path(current) / name
+            try:
+                value = path.read_bytes().decode("utf-8", "replace").strip()
+            except OSError:
+                continue
+            if not value.startswith(SYMBOLIC_PREFIX):
+                found.append((path.relative_to(git_dir).as_posix(), value))
+    try:
+        packed = (git_dir / "packed-refs").read_bytes().decode("utf-8", "replace")
+    except OSError:
+        packed = ""
+    for line in packed.splitlines():
+        line = line.strip()
+        if line and not line.startswith(("#", "^")):
+            value, _sep, name = line.partition(" ")
+            found.append((name.strip(), value))
+    return found
+
+
+def unknown_refs(dest_git_dir: Path, root: Path, runner: Runner = run) -> list[str]:
+    """Las referencias del ``.git`` del destino (leídas como texto: nunca se lanza git en
+    el destino) cuyo commit no existe en el repositorio ``root`` del PC (``git cat-file
+    -e <id>^{commit}``, una vez por commit), como ``"nombre → id"``; vacía si el PC los
+    tiene todos (RF-007-32, D-16)."""
+    exists: dict[str, bool] = {}
+    unknown: list[str] = []
+    for name, value in sorted(_refs_as_text(Path(dest_git_dir))):
+        if value not in exists:
+            if _OBJECT_ID.match(value):
+                args = ["cat-file", "-e", f"{value}^{{commit}}"]
+                result = _git(root, args, runner, accept=(0, 1, 128))
+                exists[value] = result.returncode == 0
+            else:
+                exists[value] = False
+        if not exists[value]:
+            unknown.append(f"{name} → {value[:12]}")
+    return unknown
+
+
+def history_objects(root: Path, runner: Runner = run) -> frozenset[str]:
+    """Los objetos alcanzables desde alguna rama o etiqueta de ``root``
+    (``git rev-list --objects --branches --tags``)."""
+    args = ["rev-list", "--objects", "--branches", "--tags"]
+    out = _git(root, args, runner).stdout
+    return frozenset(line.split(" ", 1)[0] for line in out.splitlines() if line.strip())
+
+
+def in_history(
+    root: Path,
+    rel: str,
+    file: Path,
+    runner: Runner = run,
+    objects: frozenset[str] | None = None,
+) -> bool:
+    """Si el contenido de ``file`` (un fichero del destino, que solo se lee) está en el
+    historial de ``root`` como la ruta ``rel``: su blob (``git hash-object --path=<rel>``,
+    con los filtros de esa ruta y sin escribirlo) es un objeto alcanzable desde una rama
+    o una etiqueta (``objects``, o :func:`history_objects`)."""
+    args = ["hash-object", f"--path={rel}", "--", str(file)]
+    blob = _git(root, args, runner).stdout.strip()
+    if objects is None:
+        objects = history_objects(root, runner)
+    return blob in objects
+
+
 def ahead_of_remote(root: Path, branch: str, runner: Runner = run) -> int | None:
     """Commits de ``branch`` que ``refs/remotes/origin/<branch>`` no tiene, según el
     repositorio (sin red); ``None`` si no hay esa referencia."""
