@@ -1,0 +1,352 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 5 de 11: Bloques (BS §8.5).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_blocks"
+label.en = "Blocks"
+label.es = "Bloques"
+description.en = "Samples by domain, creation, assignment, estimation, classification and resources"
+description.es = "Muestras por dominio, creación, asignación, estimación, clasificación y recursos"
+stage.en = "Block model"
+stage.es = "Modelo de bloques"
+step = 5
+branch = "geology"
+icon = "gb_menu_blocks"
+icon_fallback = "MESH_CUBE"
+
+# Muestras por dominio ------------------------------------------------------------------
+[[menu.group]]
+label.en = "Samples by domain"
+label.es = "Muestras por dominio"
+
+[[menu.group.item]]
+key = "geoblender.dh_code_domains"
+label.en = "Code domains in the intervals…"
+label.es = "Codificar dominios en los tramos…"
+description.en = "Domain code of each drillhole interval from solids or surfaces"
+description.es = "Código de dominio de cada tramo de sondeo desde sólidos o superficies"
+entry = "R-15"
+action = "D"
+frequency = 1
+jargon = [["RecMin", "Zona"]]
+
+[[menu.group.item]]
+key = "geoblender.dh_composite"
+label.en = "Composite…"
+label.es = "Compositar…"
+description.en = "Composites by length, domain, bench or lithological interval"
+description.es = "Compuestos por longitud, dominio, banco o intervalo litológico"
+entry = "R-15"
+action = "D"
+frequency = 1
+aliases = ["compositar", "composite"]
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_dh_statistics"
+label.en = "Statistics"
+label.es = "Estadística"
+description.en = "Statistics by domain, top cut, declustering and alternations"
+description.es = "Estadística por dominio, corte de altos, desagrupamiento y alternancias"
+entry = ""
+action = "S"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.dh_show_statistics"
+label.en = "Statistics by domain…"
+label.es = "Estadística por dominio…"
+description.en = "Histogram, probability plot and box plot by domain"
+description.es = "Histograma y gráficos de probabilidad y de caja por dominio"
+entry = "R-14"
+action = "P"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.dh_set_top_cut"
+label.en = "Top cut…"
+label.es = "Corte de altos…"
+description.en = "Cap the high grades by domain"
+description.es = "Limita las leyes altas por dominio"
+entry = "R-14"
+action = "D"
+frequency = 0
+
+[[menu.group.item.item]]
+key = "geoblender.dh_decluster"
+label.en = "Declustering…"
+label.es = "Desagrupamiento…"
+description.en = "Weights that correct the clustering of the samples"
+description.es = "Pesos que corrigen el agrupamiento de las muestras"
+entry = "R-14"
+action = "D"
+frequency = 0
+
+[[menu.group.item.item]]
+key = "geoblender.dh_compute_alternation_stats"
+label.en = "Alternations of a composite unit…"
+label.es = "Alternancias de una unidad compuesta…"
+description.en = "Statistics of the alternations inside a composite unit"
+description.es = "Estadística de las alternancias dentro de una unidad compuesta"
+entry = "R-14"
+action = "D"
+frequency = 1
+
+# Modelo --------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Model"
+label.es = "Modelo"
+
+[[menu.group.item]]
+key = "geoblender.bm_new_block_model"
+label.en = "New block model…"
+label.es = "Nuevo modelo de bloques…"
+description.en = "Corner origin, block sizes, number of blocks and rotation"
+description.es = "Origen en esquina, tamaños de bloque, número de bloques y rotación"
+entry = "R-22"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.bm_show_models"
+label.en = "Models of the project…"
+label.es = "Modelos del proyecto…"
+description.en = "The block models of the project"
+description.es = "Los modelos de bloques del proyecto"
+entry = "R-22"
+action = "P"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.bm_freeze_snapshot"
+label.en = "Freeze snapshot"
+label.es = "Congelar instantánea"
+description.en = "Freeze the model as a Parquet snapshot"
+description.es = "Congela el modelo en una instantánea Parquet"
+entry = "R-22"
+action = "A"
+background = true
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.bm_set_subblocks"
+label.en = "Sub-blocks and rotation…"
+label.es = "Sub-bloques y rotación…"
+description.en = "Sub-blocks and rotation of the model"
+description.es = "Sub-bloques y rotación del modelo"
+entry = "R-28"
+action = "D"
+frequency = 0
+
+[[menu.group.item]]
+ref = "geoblender.io_import_block_model"
+
+# Asignar -------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Assign"
+label.es = "Asignar"
+
+[[menu.group.item]]
+key = "geoblender.bm_code_by_solids"
+label.en = "By solids…"
+label.es = "Por sólidos…"
+description.en = "Code the blocks inside solids. In RecMin, fill a T3 volume with blocks"
+description.es = "Codifica los bloques dentro de sólidos. En RecMin, rellenar volumen T3 con bloques"
+entry = "R-23"
+action = "D"
+background = true
+frequency = 1
+jargon = [["RecMin", "rellenar volumen T3 con bloques"]]
+
+[[menu.group.item]]
+key = "geoblender.bm_code_by_surfaces"
+label.en = "By surfaces…"
+label.es = "Por superficies…"
+description.en = "Fraction of each block under surfaces (pct_* fields)"
+description.es = "Fracción de cada bloque bajo superficies (campos pct_*)"
+entry = "R-23"
+action = "D"
+background = true
+frequency = 1
+jargon = [["RecMin", "definir superficie en una selección de bloques"]]
+
+[[menu.group.item]]
+key = "geoblender.bm_code_from_implicit"
+label.en = "From the implicit model…"
+label.es = "Desde el modelo implícito…"
+description.en = "Code the blocks with the units of the implicit model"
+description.es = "Codifica los bloques con las unidades del modelo implícito"
+entry = "R-23"
+action = "D"
+background = true
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.bm_set_density"
+label.en = "Density…"
+label.es = "Densidad…"
+description.en = "Density of the blocks by unit or by field"
+description.es = "Densidad de los bloques por unidad o por campo"
+entry = "R-23"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.bm_compute_field"
+label.en = "Field calculator…"
+label.es = "Calculadora de campos…"
+description.en = "New field from an expression of the others"
+description.es = "Campo nuevo desde una expresión de los demás"
+entry = "R-22"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_geo_ornamental"
+label.en = "Ornamental stone"
+label.es = "Roca ornamental"
+description.en = "Fracturing and commercial block yield"
+description.es = "Fracturación y rendimiento en bloque comercial"
+entry = ""
+action = "S"
+frequency = 0
+
+[[menu.group.item.item]]
+key = "geoblender.geo_compute_fracturing"
+label.en = "Fracturing…"
+label.es = "Fracturación…"
+description.en = "Joint sets and fracturing index by block"
+description.es = "Familias de juntas e índice de fracturación por bloque"
+entry = "R-29"
+action = "D"
+frequency = 0
+
+[[menu.group.item.item]]
+key = "geoblender.geo_compute_block_yield"
+label.en = "Commercial block yield…"
+label.es = "Rendimiento en bloque comercial…"
+description.en = "Yield in commercial blocks with a cutting grid"
+description.es = "Rendimiento en bloques comerciales con una retícula de corte"
+entry = "R-29"
+action = "D"
+frequency = 0
+
+# Estimar -------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Estimate"
+label.es = "Estimar"
+
+[[menu.group.item]]
+key = "geoblender.bm_edit_search"
+label.en = "Search ellipsoid and neighbourhood"
+label.es = "Elipsoide de búsqueda y vecindad"
+description.en = "Edit the search ellipsoid and the neighbourhood in the view"
+description.es = "Edita el elipsoide de búsqueda y la vecindad en la vista"
+entry = "R-24"
+action = "H"
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.bm_estimate_idw"
+label.en = "Nearest neighbour and inverse distance…"
+label.es = "Vecino más próximo e inverso de la distancia…"
+description.en = "NN and IDW estimation of the blocks"
+description.es = "Estimación NN e IDW de los bloques"
+entry = "R-24"
+action = "D"
+background = true
+frequency = 1
+aliases = ["idw"]
+
+[[menu.group.item]]
+key = "geoblender.bm_show_variography"
+label.en = "Variography…"
+label.es = "Variografía…"
+description.en = "Experimental variograms and their models"
+description.es = "Variogramas experimentales y sus modelos"
+entry = "R-25"
+action = "P"
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.bm_estimate_kriging"
+label.en = "Ordinary kriging…"
+label.es = "Krigeado ordinario…"
+description.en = "Ordinary kriging of the blocks"
+description.es = "Krigeado ordinario de los bloques"
+entry = "R-26"
+action = "D"
+background = true
+frequency = 0
+aliases = ["kriging"]
+
+[[menu.group.item]]
+key = "geoblender.bm_validate_estimate"
+label.en = "Validate the estimate…"
+label.es = "Validar la estimación…"
+description.en = "Global, swath and cross validation of the estimate"
+description.es = "Validación global, por franjas y cruzada de la estimación"
+entry = "R-26"
+action = "P"
+frequency = 0
+
+# Clasificar e informar -----------------------------------------------------------------
+[[menu.group]]
+label.en = "Classify and report"
+label.es = "Clasificar e informar"
+
+[[menu.group.item]]
+key = "geoblender.bm_classify_resources"
+label.en = "Classify resources…"
+label.es = "Clasificar recursos…"
+description.en = "Measured, indicated and inferred"
+description.es = "Medidos, indicados e inferidos"
+entry = "R-27"
+action = "D"
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.bm_declare_resources"
+label.en = "Resource statement…"
+label.es = "Declaración de recursos…"
+description.en = "Resource statement with RPEEE and Table 1"
+description.es = "Declaración de recursos con RPEEE y Tabla 1"
+entry = "R-52"
+action = "D"
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.bm_show_grade_tonnage"
+label.en = "Grade-tonnage curve…"
+label.es = "Curva tonelaje-ley…"
+description.en = "Tonnage and mean grade against the cut-off grade"
+description.es = "Tonelaje y ley media frente a la ley de corte"
+entry = "R-22"
+action = "P"
+frequency = 1
+jargon = [["RecMin", "gráfico toneladas-ley"]]
+
+[[menu.group.item]]
+key = "geoblender.bm_report_blocks"
+label.en = "Report by domain, bench and category…"
+label.es = "Informe por dominio, banco y categoría…"
+description.en = "Tonnes and grades of the blocks by domain, bench and category"
+description.es = "Toneladas y leyes de los bloques por dominio, banco y categoría"
+entry = "R-22"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.bm_show_display"
+label.en = "Display…"
+label.es = "Representación…"
+description.en = "Field, range, cubes, points and bench of the block model display"
+description.es = "Campo, rango, cubos, puntos y banco de la representación del modelo de bloques"
+entry = "R-22"
+action = "P"
+frequency = 1

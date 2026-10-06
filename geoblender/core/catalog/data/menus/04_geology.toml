@@ -1,0 +1,453 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 4 de 11: Geología (BS §8.4).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_geology"
+label.en = "Geology"
+label.es = "Geología"
+description.en = "Units, sections, outlines, solids from profiles, geological surfaces and implicit model (GemPy)"
+description.es = "Unidades, secciones, contornos, sólidos desde perfiles, superficies geológicas y modelo implícito (GemPy)"
+stage.en = "Geology"
+stage.es = "Geología"
+step = 4
+branch = "geology"
+icon = "gb_menu_geology"
+icon_fallback = "SURFACE_DATA"
+
+# Unidades ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Units"
+label.es = "Unidades"
+
+[[menu.group.item]]
+key = "geoblender.geo_edit_units"
+label.en = "Geological units…"
+label.es = "Unidades geológicas…"
+description.en = "Code, colour, density, role and order of each geological unit"
+description.es = "Código, color, densidad, papel y orden de cada unidad geológica"
+entry = "R-18"
+action = "P"
+frequency = 2
+
+# Secciones -----------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Sections"
+label.es = "Secciones"
+
+[[menu.group.item]]
+key = "geoblender.geo_new_section_set"
+label.en = "Section set…"
+label.es = "Conjunto de secciones…"
+description.en = "Orientation, spacing and window of a set of parallel sections"
+description.es = "Orientación, espaciado y ventana de un conjunto de secciones paralelas"
+entry = "R-16"
+action = "D"
+frequency = 2
+jargon = [["RecMin", "secciones paralelas"]]
+
+[[menu.group.item]]
+key = "geoblender.geo_show_sections"
+label.en = "Section manager"
+label.es = "Gestor de secciones"
+description.en = "The sections and section sets of the project"
+description.es = "Las secciones y los conjuntos de secciones del proyecto"
+entry = "R-16"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+ref = "GEOBLENDER_MT_geo_new_section"
+
+[[menu.group.item]]
+key = "geoblender.geo_toggle_section_traces"
+label.en = "What the section cuts"
+label.es = "Lo que corta la sección"
+description.en = "Show where the section cuts drillholes, surfaces, solids and blocks"
+description.es = "Muestra dónde corta la sección a sondeos, superficies, sólidos y bloques"
+entry = "R-16"
+action = "T"
+frequency = 2
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_geo_third_party"
+label.en = "Sections from other programs"
+label.es = "Secciones de otros programas"
+description.en = "DXF sections of Slide or Phase2, profile images and contact detection"
+description.es = "Secciones DXF de Slide o Phase2, imágenes de perfil y detección de contactos"
+entry = ""
+action = "S"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.geo_import_sections_dxf"
+label.en = "Import DXF sections with calibration…"
+label.es = "Importar secciones DXF con calibración…"
+description.en = "Sections of Slide or Phase2 in DXF, calibrated to the project"
+description.es = "Secciones de Slide o Phase2 en DXF, calibradas al proyecto"
+entry = "R-19"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.geo_place_section_image"
+label.en = "Profile image on the section plane"
+label.es = "Imagen de perfil en el plano de la sección"
+description.en = "Place a profile image on the plane of the section"
+description.es = "Coloca una imagen de perfil en el plano de la sección"
+entry = "R-19"
+action = "H"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.geo_detect_contacts"
+label.en = "Detect contacts in profiles…"
+label.es = "Detectar contactos en perfiles…"
+description.en = "Detect geological contacts in profile images or sections"
+description.es = "Detecta contactos geológicos en imágenes de perfil o en secciones"
+entry = "R-19"
+action = "D"
+frequency = 1
+
+# Interpretar ---------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Interpret"
+label.es = "Interpretar"
+
+[[menu.group.item]]
+key = "geoblender.geo_draw_outline"
+label.en = "Digitize outlines on the section"
+label.es = "Digitalizar contornos en la sección"
+description.en = "Draw interpreted outlines on the active section"
+description.es = "Dibuja contornos interpretados en la sección activa"
+entry = "R-16"
+action = "H"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.geo_assign_unit"
+label.en = "Assign unit or domain…"
+label.es = "Asignar unidad o dominio…"
+description.en = "Assign a geological unit or a domain to the selected outlines"
+description.es = "Asigna una unidad geológica o un dominio a los contornos seleccionados"
+entry = "R-16"
+action = "D"
+frequency = 2
+
+# Sólidos -------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Solids"
+label.es = "Sólidos"
+
+[[menu.group.item]]
+key = "geoblender.geo_link_outlines"
+label.en = "Solid from profiles…"
+label.es = "Sólido desde perfiles…"
+description.en = "Link the outlines of consecutive sections into a solid"
+description.es = "Enlaza los contornos de secciones consecutivas en un sólido"
+entry = "R-17"
+action = "D"
+frequency = 1
+aliases = ["ls", "enlazar", "link"]
+
+[[menu.group.item]]
+key = "geoblender.geo_draw_tie_lines"
+label.en = "Tie lines"
+label.es = "Líneas de enlace"
+description.en = "Draw the tie lines that guide the link between outlines"
+description.es = "Dibuja las líneas de enlace que guían la unión entre contornos"
+entry = "R-17"
+action = "H"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.geo_cap_solid"
+label.en = "Close ends"
+label.es = "Cerrar extremos"
+description.en = "Close the ends of the solid"
+description.es = "Cierra los extremos del sólido"
+entry = "R-17"
+action = "A"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.geo_validate_solid"
+label.en = "Validate solid"
+label.es = "Validar sólido"
+description.en = "Watertight, oriented and without self-intersections"
+description.es = "Estanco, orientado y sin autointersecciones"
+entry = "R-17"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.geo_repair_solid"
+label.en = "Repair solid…"
+label.es = "Reparar sólido…"
+description.en = "Repair the defects found by the validation"
+description.es = "Repara los defectos que encuentra la validación"
+entry = "R-17"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_geo_boolean_solids"
+label.en = "Booleans"
+label.es = "Booleanas"
+description.en = "Union, intersection or difference of solids"
+description.es = "Unión, intersección o diferencia de sólidos"
+entry = "R-17"
+action = "S"
+frequency = 1
+doc_id = ["geo_boolean_solids"]
+
+[[menu.group.item.item]]
+key = "geoblender.geo_boolean_solids?operation=UNION"
+label.en = "Union…"
+label.es = "Unión…"
+description.en = "Union of the selected solids"
+description.es = "Unión de los sólidos seleccionados"
+entry = "R-17"
+action = "D"
+frequency = 1
+aliases = ["wun", "union"]
+
+[[menu.group.item.item]]
+key = "geoblender.geo_boolean_solids?operation=INTERSECTION"
+label.en = "Intersection…"
+label.es = "Intersección…"
+description.en = "Intersection of the selected solids"
+description.es = "Intersección de los sólidos seleccionados"
+entry = "R-17"
+action = "D"
+frequency = 1
+aliases = ["win", "interseccion"]
+
+[[menu.group.item.item]]
+key = "geoblender.geo_boolean_solids?operation=DIFFERENCE"
+label.en = "Difference…"
+label.es = "Diferencia…"
+description.en = "The active solid minus the other selected ones"
+description.es = "El sólido activo menos los demás seleccionados"
+entry = "R-17"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.geo_compute_solid_volume"
+label.en = "Volume and tonnage of the solid"
+label.es = "Volumen y tonelaje del sólido"
+description.en = "Volume and tonnes of the solid with its density, type and provenance. In RecMin, volume of a closed T3"
+description.es = "Volumen y toneladas del sólido con su densidad, su tipo y su procedencia. En RecMin, volumen de un T3 cerrado"
+entry = "R-17"
+action = "A"
+frequency = 2
+aliases = ["evw"]
+jargon = [["RecMin", "T3 sólida"]]
+
+# Superficies geológicas ----------------------------------------------------------------
+[[menu.group]]
+label.en = "Geological surfaces"
+label.es = "Superficies geológicas"
+
+[[menu.group.item]]
+key = "geoblender.geo_create_surface_from_contacts"
+label.en = "From drillhole contacts…"
+label.es = "Desde contactos de sondeos…"
+description.en = "Roof or floor surface of a unit from the drillhole contacts"
+description.es = "Superficie de techo o muro de una unidad desde los contactos de los sondeos"
+entry = "R-18"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.geo_create_surface_from_polylines"
+label.en = "From contour lines or polylines…"
+label.es = "Desde curvas o polilíneas…"
+description.en = "Geological surface from contour lines or polylines"
+description.es = "Superficie geológica desde curvas de nivel o polilíneas"
+entry = "R-18"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.geo_create_thickness_unit"
+label.en = "Unit by thickness over its base…"
+label.es = "Unidad por espesor sobre su apoyo…"
+description.en = "Waste, stockpile or overburden as a thickness over its supporting surface"
+description.es = "Escombro, acopio o cobertera como un espesor sobre su superficie de apoyo"
+entry = "R-18"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_geo_surfaces_more"
+label.en = "Other surfaces"
+label.es = "Otras superficies"
+description.en = "In-situ terrain, unknown surface and composite unit"
+description.es = "Terreno in situ, superficie no conocida y unidad compuesta"
+entry = ""
+action = "S"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.geo_create_in_situ_terrain"
+label.en = "In-situ terrain"
+label.es = "Terreno in situ"
+description.en = "The terrain minus the stockpiles"
+description.es = "El terreno menos los acopios"
+entry = "R-18"
+action = "A"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.geo_create_unknown_surface"
+label.en = "Unknown surface…"
+label.es = "Superficie no conocida…"
+description.en = "Conventional floor where the real one is not known"
+description.es = "Muro convencional donde no se conoce el real"
+entry = "R-18"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.geo_edit_composite_unit"
+label.en = "Composite unit and its percentage…"
+label.es = "Unidad compuesta y su porcentaje…"
+description.en = "Composite unit and the percentage of each component"
+description.es = "Unidad compuesta y el porcentaje de cada componente"
+entry = "R-18"
+action = "D"
+frequency = 1
+
+# Modelo implícito (GemPy) --------------------------------------------------------------
+[[menu.group]]
+label.en = "Implicit model (GemPy)"
+label.es = "Modelo implícito (GemPy)"
+
+[[menu.group.item]]
+key = "geoblender.imp_edit_stack"
+label.en = "Stratigraphic pile…"
+label.es = "Pila estratigráfica…"
+description.en = "Order and relations of the units of the implicit model"
+description.es = "Orden y relaciones de las unidades del modelo implícito"
+entry = "R-20"
+action = "P"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.imp_extract_inputs"
+label.en = "Contacts and orientations from the drillholes…"
+label.es = "Contactos y orientaciones desde los sondeos…"
+description.en = "Extract the inputs of the implicit model from the drillholes"
+description.es = "Extrae las entradas del modelo implícito desde los sondeos"
+entry = "R-20"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.imp_compute_model"
+label.en = "Compute the model"
+label.es = "Calcular el modelo"
+description.en = "Compute the implicit model with GemPy"
+description.es = "Calcula el modelo implícito con GemPy"
+entry = "R-20"
+action = "A"
+background = true
+frequency = 1
+aliases = ["gempy"]
+
+[[menu.group.item]]
+key = "geoblender.imp_show_dip_qa"
+label.en = "Dip control…"
+label.es = "Control de buzamientos…"
+description.en = "Blocking check of the dips before computing"
+description.es = "Comprobación bloqueante de los buzamientos antes de calcular"
+entry = "R-20"
+action = "P"
+frequency = 1
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_imp_more"
+label.en = "Settings and results"
+label.es = "Ajustes y resultados"
+description.en = "Extent, results, engine, inputs, structures, map and plausibility"
+description.es = "Extensión, resultados, motor, entradas, estructuras, mapa y plausibilidad"
+entry = ""
+action = "S"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.imp_set_extent"
+label.en = "Extent and resolution…"
+label.es = "Extensión y resolución…"
+description.en = "Extent and resolution (fast, normal, fine) of the model"
+description.es = "Extensión y resolución (rápida, normal, fina) del modelo"
+entry = "R-20"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.imp_load_results"
+label.en = "Surfaces and solids of the model…"
+label.es = "Superficies y sólidos del modelo…"
+description.en = "Load the surfaces and solids of the computed model"
+description.es = "Carga las superficies y los sólidos del modelo calculado"
+entry = "R-20"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.imp_show_engine"
+label.en = "Modelling engine…"
+label.es = "Motor de modelado…"
+description.en = "Version of GemPy and its update"
+description.es = "Versión de GemPy y su actualización"
+entry = "R-20"
+action = "P"
+frequency = 0
+
+[[menu.group.item.item]]
+key = "geoblender.imp_show_inputs"
+label.en = "Control points and orientations…"
+label.es = "Puntos de control y orientaciones…"
+description.en = "Table of the control points and orientations"
+description.es = "Tabla de los puntos de control y las orientaciones"
+entry = "R-21"
+action = "P"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.imp_edit_structures"
+label.en = "Stereonet, faults and series…"
+label.es = "Estereograma, fallas y series…"
+description.en = "Structural data of the implicit model"
+description.es = "Datos estructurales del modelo implícito"
+entry = "R-21"
+action = "P"
+frequency = 0
+
+[[menu.group.item.item]]
+key = "geoblender.imp_create_geological_map"
+label.en = "Geological map on the project grid"
+label.es = "Mapa geológico en la rejilla del proyecto"
+description.en = "Geological map of the model on the exact grid of the project"
+description.es = "Mapa geológico del modelo en la rejilla exacta del proyecto"
+entry = "R-21"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.imp_check_plausibility"
+label.en = "Plausibility tests"
+label.es = "Pruebas de plausibilidad"
+description.en = "Check that the model honours the data and the geology"
+description.es = "Comprueba que el modelo respeta los datos y la geología"
+entry = "R-21"
+action = "A"
+frequency = 1

@@ -28,12 +28,9 @@ from tests.support.package import import_geoblender
 
 catalog = import_geoblender("core.catalog")
 
-# Menús de BS §8 que aún no están en el catálogo: los añaden T05 (Geología, Bloques,
-# Optimización), T06 (Diseño, Restauración, Cubicación) y T07 (el resto).
+# Menús de BS §8 que aún no están en el catálogo: los añaden T06 (Diseño, Restauración,
+# Cubicación) y T07 (el resto).
 PENDING: frozenset[str] = frozenset({
-    "GEOBLENDER_MT_ui_geology",
-    "GEOBLENDER_MT_ui_blocks",
-    "GEOBLENDER_MT_ui_optimization",
     "GEOBLENDER_MT_ui_design",
     "GEOBLENDER_MT_ui_reclamation",
     "GEOBLENDER_MT_ui_volumetrics",
@@ -51,17 +48,26 @@ PENDING: frozenset[str] = frozenset({
     "GEOBLENDER_MT_ui_help",
 })
 
-# Accesos cruzados a comandos cuya casa es un menú pendiente (T05 y T06 los definen; al
+# Accesos cruzados a comandos cuya casa es un menú pendiente (T06 y T07 los definen; al
 # final, ninguno): la fila se compara cuando llega su casa.
 PENDING_REFS: frozenset[str] = frozenset({
     "geoblender.res_compute_surface_difference",
-    "geoblender.dh_composite",
-    "geoblender.geo_import_sections_dxf",
+    "geoblender.des_design_pit_from_shell",
+    "geoblender.res_create_phases_from_shells",
+    "GEOBLENDER_MT_geo_new_section",
 })
 
 # Entradas aprobadas con el plan 003 que BS §8 aún no dice (las escribe la T37; plan §11):
 # Manual y Novedades pasan a R-13 (D-4).
 APPROVED_ENTRIES: dict[str, str] = {"ui_open_manual": "R-13", "ui_show_changelog": "R-13"}
+
+# Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,
+# una definición); la T37 las corrige en BS. (menú, identificador) → campo de BS que se
+# toma de la casa.
+CROSS_ROW_DIFFERENCES: dict[tuple[str, str], str] = {
+    # §8.5 dice «D» y su casa, Importar ▸ (§8.14), «D·2p».
+    ("GEOBLENDER_MT_ui_blocks", "io_import_block_model"): "background",
+}
 
 BRANCHES = {"común": "common", "rama de diseño": "design", "rama geológica": "geology",
             "convergencia": "convergence", "transversal": "transversal"}
@@ -109,19 +115,22 @@ class Rows:
                     yield from self.item(inner, sub=True)
 
 
-def doc_view(row: bs_tables.DocRow) -> tuple:
+def doc_view(row: bs_tables.DocRow, menu: str = "") -> tuple:
     """Lo que dice BS de una fila, con los campos que tiene su tabla."""
     if row.kind == "group":
         return ("group", row.text)
     if row.kind == "separator":
         return ("separator", row.sub)
     entry = row.entry
+    background = row.background
     for identifier in row.ids:
         entry = APPROVED_ENTRIES.get(identifier, entry)
+        if CROSS_ROW_DIFFERENCES.get((menu, identifier)) == "background":
+            background = not background
     return ("command", row.sub, row.cross, row.ids,
             *(() if row.module is None else (row.module,)),
             *(() if entry is None else (entry,)),
-            row.action, row.background,
+            row.action, background,
             *(() if row.frequency is None else (row.frequency,)))
 
 
@@ -183,7 +192,7 @@ class CatalogMatchesDocsTest(unittest.TestCase):
                     kind, value, _ = actual[index]
                     if kind == "missing" and value in PENDING_REFS:
                         continue
-                    self.assertEqual(catalog_view(kind, value, doc), doc_view(doc),
+                    self.assertEqual(catalog_view(kind, value, doc), doc_view(doc, table.menu),
                                      f"BS línea {doc.line} ({doc.text or doc.kind})")
                 self.assertEqual(len(actual), len(table.rows),
                                  f"el catálogo tiene de más: {actual[len(table.rows):]}")
