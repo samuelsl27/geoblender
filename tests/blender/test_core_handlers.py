@@ -14,6 +14,10 @@
   al desactivar no queda ningún manejador ni el temporizador.
 - RF-002-07: al guardar la vista con un proyecto en escritura, la cabecera se actualiza
   desde la base (``save_post``).
+- RF-002-28, RF-002-27, RF-002-20 (T54; spec §8, «Ctrl+Z tras abrir, mover el origen o
+  migrar»): deshacer y rehacer tras «Ventana de trabajo…» dejan las escenas con el origen
+  nuevo y desfasadas, y tras abrir con migración, el proyecto abierto en el esquema nuevo y
+  la copia previa intacta: nada del proyecto se deshace.
 - RF-002-29 (T24): un ``.blend`` con otra georreferencia que la del proyecto abierto, o con
   la de un proyecto cuando no hay ninguno abierto, da un aviso con las dos y deja la vista
   desfasada (``view_stale``); su georreferencia no se usa: la del proyecto abierto manda y,
@@ -25,14 +29,16 @@ temporizador directamente (docs/trampas.md §3). Se ejecuta con
 """
 
 import atexit
+import hashlib
 import json
 import shutil
+import sqlite3
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 import bpy
@@ -44,11 +50,41 @@ from tests.support.blender_ext import module_name
 WINDOW = (699_500.4, 4_399_500.6, 700_500.2, 4_400_500.9)
 ORIGIN = (700_000, 4_400_000, 0)
 HANDLER_LISTS = ("load_post", "undo_post", "redo_post", "save_pre", "save_post")
+# «Ventana de trabajo…» con el origen nuevo (701 000; 4 400 000; 0), como en la T27.
+MOVED_TEXT = {
+    "xmin": "700 500,4",
+    "ymin": "4399500,6",
+    "xmax": "701500.2",
+    "ymax": "4 400 500,9",
+}
+MOVED = (701_000, 4_400_000, 0)
 
 
 def ext(name: str) -> ModuleType:
     """El módulo ``name`` de la copia de pruebas de la extensión (ya importado)."""
     return sys.modules[f"{module_name()}.{name}"]
+
+
+def _m1_2(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS gb_test_m2 (fid INTEGER PRIMARY KEY, nota TEXT)")
+
+
+def _m2_3(conn: sqlite3.Connection) -> None:
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(gb_test_m2)")]
+    if "extra" not in columns:
+        conn.execute("ALTER TABLE gb_test_m2 ADD COLUMN extra TEXT")
+
+
+def _tree_digest(folder: Path) -> dict[str, tuple[int, str]]:
+    """Ruta relativa → (tamaño, sha256) de cada fichero bajo ``folder``."""
+    return {
+        path.relative_to(folder).as_posix(): (
+            path.stat().st_size,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in sorted(folder.rglob("*"))
+        if path.is_file()
+    }
 
 
 class HandlersTestCase(unittest.TestCase):
@@ -92,8 +128,10 @@ class HandlersTestCase(unittest.TestCase):
         with gpkg.GpkgConnection.open_read(root / "project.gpkg") as db:
             return [item.kind for item in events.read_events(db.connection)]
 
-    def assert_scenes_synced(self, project: object, path: str) -> None:
-        """Todas las escenas llevan la georreferencia del proyecto."""
+    def assert_scenes_synced(
+        self, project: object, path: str, origin: tuple[int, int, int] = ORIGIN
+    ) -> None:
+        """Todas las escenas llevan la georreferencia del proyecto (con ``origin``)."""
         self.assertGreater(len(bpy.data.scenes), 0)
         for scene in bpy.data.scenes:
             with self.subTest(escena=scene.name):
@@ -102,7 +140,25 @@ class HandlersTestCase(unittest.TestCase):
                 self.assertEqual(props.project_name, project.name)
                 self.assertEqual(props.project_path, path)
                 self.assertEqual((props.crs_epsg, props.vcrs_epsg), (25830, 5782))
-                self.assertEqual((props.origin_x, props.origin_y, props.origin_z), ORIGIN)
+                self.assertEqual((props.origin_x, props.origin_y, props.origin_z), origin)
+
+    def run_open(self, **props: object) -> object:
+        """Lanza «Abrir proyecto…» y lo lleva hasta el final con eventos ``TIMER`` (en
+        ``blender -b`` no hay bucle de eventos); devuelve el operador."""
+        result = bpy.ops.geoblender.core_open_project("EXEC_DEFAULT", **props)
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        cls = ext("bl.ops.core").GEOBLENDER_OT_core_open_project
+        (operator,) = [
+            op
+            for op in bpy.context.window.modal_operators
+            if isinstance(op, cls) and getattr(op, "_steps", None) is not None
+        ]
+        for _ in range(10_000):
+            state = operator.modal(bpy.context, SimpleNamespace(type="TIMER", value="NOTHING"))
+            if state != {"RUNNING_MODAL"}:
+                break
+        self.assertIn(state, ({"FINISHED"}, {"CANCELLED"}))
+        return operator
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +200,75 @@ class SceneSyncTest(HandlersTestCase):
         self.assert_scenes_synced(project, "//../")
         self.save(self.tmp / "fuera" / "vista.blend")
         self.assert_scenes_synced(project, f"//../{project.root.name}/")
+
+    def test_undo_redo_after_window_change(self) -> None:
+        """RF-002-28, RF-002-27 (spec §8, «Ctrl+Z tras … mover el origen»; convergencia,
+        T54): tras «Ventana de trabajo…» (origen 700 000 → 701 000), deshacer hasta antes
+        del cambio y rehacer dejan todas las escenas en (701 000; 4 400 000; 0) y
+        desfasadas (sus datos se cargaron con el origen anterior), y la base y la cabecera
+        con 701 000: nada del proyecto se deshace."""
+        self.start()
+        bpy.data.scenes.new("Segunda")
+        project = self.create()
+        self.save(project.root / "scenes" / "principal.blend")
+        bpy.ops.ed.undo_push(message="proyecto abierto")
+        result = bpy.ops.geoblender.core_set_work_window(
+            "EXEC_DEFAULT", reason="Ampliación hacia el este", **MOVED_TEXT
+        )
+        self.assertEqual(result, {"FINISHED"})
+        bpy.context.scene.frame_current = 9
+        bpy.ops.ed.undo_push(message="cambio")
+        for step in ("undo", "redo"):
+            with self.subTest(paso=step):
+                getattr(bpy.ops.ed, step)()
+                self.assertEqual(bpy.context.scene.frame_current, 9 if step == "redo" else 1)
+                self.assert_scenes_synced(project, "//../", MOVED)
+                self.assertEqual(self.stale(), [True, True])
+                self.assertEqual(project.reload().origin.as_tuple(), MOVED)
+                header = ext("core.project.manifest").read_manifest(project.root)
+                self.assertEqual(header.origin.as_tuple(), MOVED)
+                self.assertIs(self.ps.current(), project)
+                self.assertTrue(project.writable)
+
+    def test_undo_after_opening_with_migration(self) -> None:
+        """RF-002-28, RF-002-20 (spec §8, «Ctrl+Z tras … migrar»; convergencia, T54): tras
+        abrir con migración (migraciones de prueba 1 → 3, como en la T25), deshacer hasta
+        antes de abrir deja el proyecto abierto en escritura en el esquema 3, la copia
+        previa intacta y las escenas con su georreferencia."""
+        self.start()
+        project = self.create()
+        root = project.root
+        self.ps.close()
+        migrations = ext("core.project.migrations")
+        registry = (
+            migrations.Migration(1, 2, "tabla de prueba", _m1_2),
+            migrations.Migration(2, 3, "columna de prueba", _m2_3),
+        )
+        with (
+            mock.patch.object(ext("core.project.open"), "SCHEMA_VERSION", 3),
+            mock.patch.object(migrations, "SCHEMA_VERSION", 3),
+            mock.patch.object(migrations, "REGISTRY", registry),
+        ):
+            bpy.ops.ed.undo_push(message="antes de abrir")
+            operator = self.run_open(directory=str(root), accept_migration=True)
+            self.assertEqual(operator.outcome, "FINISHED")
+            opened = self.ps.current()
+            self.assertEqual((opened.schema_version, opened.writable), (3, True))
+            backup = self.tmp / "Cantera Prueba.gbproj.respaldo-esquema-1"
+            copy = _tree_digest(backup)
+            self.assertTrue(copy)
+            bpy.ops.ed.undo_push(message="abierto")
+            bpy.context.scene.frame_current = 9
+            bpy.ops.ed.undo_push(message="cambio")
+            bpy.ops.ed.undo()
+            bpy.ops.ed.undo()
+            self.assertEqual(bpy.context.scene.frame_current, 1)
+            self.assertIs(self.ps.current(), opened)
+            self.assertEqual((opened.schema_version, opened.writable), (3, True))
+            self.assertEqual(opened.reload().schema_version, 3)
+            self.assertEqual(self.lock.read_holder(root).session_uid, self.ps.session().session_uid)
+            self.assertEqual(_tree_digest(backup), copy)
+            self.assert_scenes_synced(opened, "")
 
     def test_save_post_updates_header(self) -> None:
         """RF-002-07: al guardar la vista con el proyecto en escritura, la cabecera se

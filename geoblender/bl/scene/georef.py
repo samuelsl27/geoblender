@@ -22,8 +22,9 @@ retirados en :func:`unregister`:
   (``view_stale``). Comprueba además que el temporizador de la marca del cerrojo sigue
   registrado.
 - ``undo_post`` y ``redo_post``: deshacer puede devolver una escena a antes de abrir el
-  proyecto; se vuelven a sincronizar todas (ninguna operación de la spec 002 entra en la
-  pila de deshacer).
+  proyecto, o a antes de un cambio de la ventana de trabajo; se vuelven a sincronizar
+  todas (ninguna operación de la spec 002 entra en la pila de deshacer) y, si alguna
+  traía otra georreferencia, la vista queda desfasada (RF-002-27).
 - ``save_pre``: se sincronizan todas, también una escena nueva, con la ruta relativa al
   fichero de **destino** (``save_pre`` la recibe), y las rutas absolutas de los bloques de
   datos del mismo volumen pasan a relativas al destino (RF-002-07, RF-002-18; también con
@@ -267,16 +268,31 @@ def on_load_post(filepath: object = None, *_args: object) -> None:
         project_session.ensure_heartbeat()
 
 
+def resync_after_history() -> None:
+    """Lo que hacen ``undo_post`` y ``redo_post`` (RF-002-28): todas las escenas, otra vez
+    con la georreferencia del proyecto abierto. Si alguna vuelve con otra (deshacer hasta
+    antes de «Ventana de trabajo…»: sus datos se cargaron con el origen anterior), la
+    vista queda además desfasada, como la dejó el cambio (RF-002-27; convergencia, T54);
+    una escena sin georreferencia (de antes de abrir el proyecto) solo se sincroniza."""
+    expected = project_georeference()
+    if expected is None:
+        return
+    if any(item.key != expected.key or item.uid != expected.uid
+           for item in file_georeferences()):
+        mark_stale()
+    sync_scenes()
+
+
 @persistent
 def on_undo_post(*_args: object) -> None:
-    """Tras deshacer: todas las escenas, otra vez con la georreferencia (RF-002-28)."""
-    sync_scenes()
+    """Tras deshacer: :func:`resync_after_history` (RF-002-28)."""
+    resync_after_history()
 
 
 @persistent
 def on_redo_post(*_args: object) -> None:
-    """Tras rehacer: todas las escenas, otra vez con la georreferencia (RF-002-28)."""
-    sync_scenes()
+    """Tras rehacer: :func:`resync_after_history` (RF-002-28)."""
+    resync_after_history()
 
 
 def _is_absolute(path: str) -> bool:
