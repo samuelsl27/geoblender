@@ -544,7 +544,7 @@ class GEOBLENDER_OT_core_close_project(bpy.types.Operator):
 
 # Guardar la vista ----------------------------------------------------------------------
 
-SCENES_DIR = "scenes"
+SCENES_DIR = georef.SCENES_DIR  # las vistas del proyecto
 MAIN_VIEW = "principal"
 
 

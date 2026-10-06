@@ -31,6 +31,8 @@ formato-proyecto §1; plan 002 §5.4).
   relativa al ``.blend`` con el prefijo ``//`` de Blender (``//../`` desde ``scenes/``),
   o vacía si no se puede expresar así (otro volumen, vista sin guardar): nunca absoluta
   (RF-002-18, RF-002-28).
+- :func:`relative_render_path`: la salida de render de una escena, relativa a la vista
+  de ``scenes/`` que se guarda (RF-002-18; D-11).
 """
 
 from __future__ import annotations
@@ -284,6 +286,36 @@ def blend_relative_path(target: Path, blend_file: Path | str | None) -> str:
     if relative == os.curdir:
         return BLEND_RELATIVE_PREFIX
     return f"{BLEND_RELATIVE_PREFIX}{PurePath(relative).as_posix()}/"
+
+
+def relative_render_path(path: str, view_file: Path | str) -> tuple[str, bool]:
+    """La salida de render de una escena (``render.filepath``, un texto de Blender)
+    relativa a la carpeta de la vista ``view_file``, para guardarla sin rutas absolutas
+    (RF-002-18; D-11): ``(nueva, movida)``. Rutas de Windows (``ntpath``).
+
+    - Vacía o ya relativa a la vista (``//…``): igual.
+    - Con unidad o en un recurso de red, en el mismo volumen que la vista: relativa a su
+      carpeta, con «/» y la barra final si la tenía; la salida no cambia de sitio.
+    - En otro volumen: ``//`` y su nombre final (la salida pasa a la carpeta de la vista),
+      con ``movida`` verdadero, para avisar.
+    - Sin unidad (``\\render\\``, o la ``/tmp\\`` de la escena de fábrica de Blender, que en
+      Windows depende de la unidad actual): ``//`` y su nombre final, sin aviso."""
+    if not path or path.startswith(BLEND_RELATIVE_PREFIX):
+        return path, False
+    drive, _rest = ntpath.splitdrive(path)
+    _head, tail = ntpath.split(path)
+    if not drive:
+        return f"{BLEND_RELATIVE_PREFIX}{tail}", False
+    folder = ntpath.dirname(os.fspath(view_file))
+    if not same_volume(path, folder):
+        return f"{BLEND_RELATIVE_PREFIX}{tail}", True
+    relative = ntpath.relpath(path, folder)
+    if relative == ntpath.curdir:
+        return BLEND_RELATIVE_PREFIX, False
+    text = relative.replace("\\", "/")
+    if path.endswith(("\\", "/")):
+        text += "/"
+    return f"{BLEND_RELATIVE_PREFIX}{text}", False
 
 
 def same_volume(first: Path | str, second: Path | str) -> bool:

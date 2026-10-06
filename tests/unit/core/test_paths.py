@@ -324,5 +324,41 @@ class ViewFileTest(unittest.TestCase):
             self.assertEqual(paths.next_free_path(tmp, "principal", ".blend"), tmp / "principal-3.blend")
 
 
+class RenderPathTest(unittest.TestCase):
+    """La salida de render de una vista de ``scenes/``, relativa a la vista (spec 002,
+    D-11 y T50; RF-002-18)."""
+
+    VIEW = "C:\\Proyectos\\Cantera.gbproj\\scenes\\principal.blend"
+
+    def test_relative_render_path(self) -> None:
+        """RF-002-18 (D-11): vacía o ya relativa (``//…``), igual; con unidad en el mismo
+        volumen que la vista, relativa a su carpeta con «/» (y la barra final si la tenía),
+        sin moverla; en otra unidad o en un recurso de red distinto, ``//`` y su nombre
+        final, con aviso; sin unidad (la ``/tmp\\`` de la escena de fábrica de Blender, o
+        ``\\render\\``), ``//`` y su nombre final, sin aviso. Nunca queda una absoluta."""
+        cases = (
+            ("", ("", False)),
+            ("//", ("//", False)),
+            ("//render/frame_", ("//render/frame_", False)),
+            ("/tmp\\", ("//", False)),
+            ("\\render\\toma_", ("//toma_", False)),
+            ("C:\\Proyectos\\render\\", ("//../../render/", False)),
+            ("c:/proyectos/cantera.gbproj/scenes/salida_", ("//salida_", False)),
+            ("C:\\Proyectos\\Cantera.gbproj\\scenes\\", ("//", False)),
+            ("D:\\render\\toma_", ("//toma_", True)),
+            ("\\\\servidor\\recurso\\render\\", ("//", True)),
+        )
+        for value, expected in cases:
+            with self.subTest(salida=value):
+                found = paths.relative_render_path(value, self.VIEW)
+                self.assertEqual(found, expected)
+                self.assertEqual(paths.find_absolute_paths(found[0].removeprefix("//")), [])
+        on_share = "\\\\servidor\\recurso\\P.gbproj\\scenes\\v.blend"
+        self.assertEqual(
+            paths.relative_render_path("\\\\SERVIDOR\\recurso\\render\\", on_share),
+            ("//../../render/", False),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,9 @@
   se advierte de que Ctrl+S la guardaría dentro (spec §8).
 - RF-002-18: ningún ``.blend`` de ``scenes/`` guarda rutas absolutas: ni la de los bloques
   de datos (una imagen cargada con ruta absoluta pasa a relativa al guardar, también con
-  Ctrl+S) ni la del proyecto en la escena.
+  Ctrl+S) ni la del proyecto en la escena; y, en sus bytes, tampoco las de los datos de
+  la interfaz de Blender, que una vista no guarda, ni la salida de render, que pasa a
+  relativa a la vista (D-11; T50).
 - RF-002-08: crear y abrir dejan el proyecto el primero de los recientes del equipo (10
   como mucho), guardados en los datos de usuario de la extensión y nunca en un proyecto;
   el menú «Abrir reciente» los lista y abre.
@@ -16,8 +18,10 @@
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
+import getpass
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -172,6 +176,113 @@ class SaveProjectTest(BlendPathsTestCase):
         blender_ext.load_file()  # vista sin fichero
         self.assertEqual(bpy.ops.geoblender.core_save_project("EXEC_DEFAULT"), {"CANCELLED"})
         self.assertEqual(sorted(p.name for p in (project.root / "scenes").iterdir()), before)
+
+
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"  # cabecera de un .blend comprimido (zstd)
+PRINTABLE_RUN = re.compile(rb"[\x20-\x7e]{3,}")  # los textos del fichero, como `strings`
+
+
+def view_bytes(path: Path) -> bytes:
+    """Los bytes del ``.blend`` sin comprimir (Blender comprime con zstd si la preferencia
+    lo pide; su Python trae ``zstandard``)."""
+    data = path.read_bytes()
+    if data.startswith(ZSTD_MAGIC):
+        import zstandard
+
+        with zstandard.ZstdDecompressor().stream_reader(data) as reader:
+            data = reader.read()
+    return data
+
+
+class ViewBytesTest(BlendPathsTestCase):
+    """Las vistas de ``scenes/`` sin rutas absolutas en sus bytes (spec 002, D-11 y T50;
+    RF-002-18, RF-002-07): sin los datos de la interfaz de Blender (pantallas, áreas,
+    gestor de ventanas y espacios de trabajo, que guardan la carpeta del último «Guardar
+    como» del usuario) y con la salida de render relativa a la vista (la escena de fábrica
+    trae ``/tmp\\``)."""
+
+    def assert_view_bytes_clean(self, path: Path) -> None:
+        """En los bytes de ``path`` sin comprimir no hay ninguna ruta absoluta (los textos
+        del fichero, sin el prefijo ``//`` de las relativas de Blender), ni ``/tmp``, ni
+        ``Users``, ni ``Documents``, ni el nombre de usuario del equipo."""
+        data = view_bytes(path)
+        self.assertTrue(data.startswith(b"BLENDER"), data[:12])
+        texts = [
+            match.group(0).decode("ascii").removeprefix("//")
+            for match in PRINTABLE_RUN.finditer(data)
+        ]
+        self.assertEqual(self.paths.find_absolute_paths(texts), [])
+        user = getpass.getuser().encode("utf-8")
+        for needle in (b"/tmp", b"Users", b"Documents", user):
+            with self.subTest(fichero=path.name, texto=needle):
+                where = data.find(needle)
+                self.assertEqual(where, -1, data[max(0, where - 40) : where + 60])
+
+    def test_views_saved_without_interface_or_absolute_paths(self) -> None:
+        """RF-002-18, RF-002-07 (D-11): una vista guardada con «Guardar» (en
+        ``scenes/principal.blend``), guardada otra vez con Ctrl+S (``wm.save_mainfile``) y
+        otra guardada con «Guardar como» de Blender en ``scenes/`` no tienen en sus bytes
+        ninguna ruta absoluta; la sesión sigue en su fichero, sin cambios pendientes; al
+        volver a cargarla, sus dos escenas conservan ``Scene.geoblender``, la salida de
+        render resuelve a la carpeta de la vista y no trae los datos de la interfaz."""
+        project = self.create()
+        self.assertEqual(bpy.context.scene.render.filepath, "/tmp\\")  # la de fábrica
+        bpy.data.scenes.new("Segunda")
+        scenes = project.root / "scenes"
+        principal = scenes / "principal.blend"
+        self.assertEqual(bpy.ops.geoblender.core_save_project("EXEC_DEFAULT"), {"FINISHED"})
+        self.assertEqual(Path(bpy.data.filepath), principal)
+        self.assertFalse(bpy.data.is_dirty)
+        self.assert_view_bytes_clean(principal)
+        bpy.context.scene.frame_current = 7
+        bpy.ops.wm.save_mainfile()  # Ctrl+S de Blender
+        self.assertEqual(Path(bpy.data.filepath), principal)
+        self.assertFalse(bpy.data.is_dirty)
+        self.assert_view_bytes_clean(principal)
+        blender_ext.load_file()  # otra vista, sin fichero
+        other = scenes / "otra.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(other))
+        self.assert_view_bytes_clean(other)
+        self.assertEqual(self.ps.take_notices(), [])
+
+        blender_ext.load_file(principal)
+        self.assertEqual(Path(bpy.data.filepath), principal)
+        self.assertEqual(sorted(scene.name for scene in bpy.data.scenes), ["Scene", "Segunda"])
+        self.assertEqual(bpy.data.scenes["Scene"].frame_current, 7)
+        for scene in bpy.data.scenes:
+            with self.subTest(escena=scene.name):
+                props = scene.geoblender
+                self.assertEqual(props.project_uid, project.uid)
+                self.assertEqual(props.project_path, "//../")
+                self.assertEqual(
+                    (props.origin_x, props.origin_y, props.origin_z), (700_000, 4_400_000, 0)
+                )
+                self.assertTrue(scene.render.filepath.startswith("//"), scene.render.filepath)
+                resolved = Path(bpy.path.abspath(scene.render.filepath))
+                self.assertEqual(resolved.resolve(), scenes.resolve())
+
+    def test_render_output_on_another_volume_warns(self) -> None:
+        """RF-002-18 (D-11): una salida de render en otra unidad no se puede expresar
+        relativa a la vista: pasa a la carpeta de la vista (``//`` y su nombre) con un aviso
+        que la nombra; una vista guardada fuera de ``scenes/`` no se toca."""
+        project = self.create()
+        drive = "D:" if not str(project.root).upper().startswith("D:") else "E:"
+        bpy.context.scene.render.filepath = f"{drive}\\render\\toma_"
+        # «Guardar» informa de los avisos y los vacía: se miran en el registro técnico.
+        with self.assertLogs(self.ps.LOGGER, "WARNING") as logged:
+            result = bpy.ops.geoblender.core_save_project("EXEC_DEFAULT")
+        self.assertEqual(result, {"FINISHED"})
+        self.assertEqual(Path(bpy.data.filepath), project.root / "scenes" / "principal.blend")
+        self.assertEqual(bpy.context.scene.render.filepath, "//toma_")
+        self.assertTrue(
+            any(f"{drive}\\render\\toma_" in line for line in logged.output), logged.output
+        )
+        blender_ext.load_file()  # otra vista, sin fichero: la de fábrica trae «/tmp\»
+        outside = self.tmp / "fuera" / "vista.blend"
+        outside.parent.mkdir()
+        bpy.ops.wm.save_as_mainfile(filepath=str(outside))
+        self.assertEqual(bpy.context.scene.render.filepath, "/tmp\\")
+        self.assertEqual(self.ps.take_notices(), [])
 
 
 class RecentProjectsTest(BlendPathsTestCase):

@@ -365,3 +365,9 @@ es = "Abrir el proyecto publicado"
 
 ["Local copy published in «{original}»; the previous original is in «{previous}» and the local copy «{local}» can be deleted"]
 es = "Copia local publicada en «{original}»; el original anterior queda en «{previous}» y la copia local «{local}» se puede borrar"
+
+["The view «{view}» rendered to «{path}», on another volume: its render output is now the view's folder (a view of the project keeps no absolute path)."]
+es = "La vista «{view}» guardaba el render en «{path}», en otro volumen: su salida de render pasa a la carpeta de la vista (una vista del proyecto no guarda rutas absolutas)."
+
+["The view «{view}» was saved with Blender's interface data (it could not be rewritten without it: {error}); save it again."]
+es = "La vista «{view}» se ha guardado con los datos de la interfaz de Blender (no se ha podido reescribir sin ellos: {error}); guárdela otra vez."

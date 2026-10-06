@@ -35,6 +35,7 @@ retirados en :func:`unregister`:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -44,12 +45,29 @@ from bpy.app.handlers import persistent
 
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_xyz, tr
-from ...core.paths import blend_relative_path, find_absolute_paths, is_within, same_volume
+from ...core.ids import short_uid
+from ...core.paths import (
+    blend_relative_path,
+    find_absolute_paths,
+    is_within,
+    relative_render_path,
+    same_volume,
+)
 from ..props.core import LOCAL_VERTICAL
 from . import project_session
 
 if TYPE_CHECKING:
     from ...core.project.session import Project
+
+SCENES_DIR = "scenes"  # las vistas del proyecto (ADR-0006)
+# Los datos de la interfaz, que una vista de scenes/ no guarda (D-11), y las bibliotecas,
+# que escriben los bloques enlazados que las usan.
+INTERFACE_TYPES: tuple[type, ...] = (
+    bpy.types.Screen,
+    bpy.types.WindowManager,
+    bpy.types.WorkSpace,
+    bpy.types.Library,
+)
 
 @dataclass(frozen=True)
 class SceneGeoref:
@@ -325,11 +343,65 @@ def relativize_paths(target: Path) -> list[str]:
     return remaining
 
 
+def is_project_view(target: str | Path | None, project: Project) -> bool:
+    """Verdadero si ``target`` es una vista de ``scenes/`` de ``project``."""
+    return is_within(target, project.root / SCENES_DIR)
+
+
+def relativize_render_outputs(target: Path) -> list[str]:
+    """Pasa la salida de render de cada escena a relativa a la vista ``target`` (RF-002-18;
+    D-11; ``core.paths.relative_render_path``) y devuelve las que, por estar en otro
+    volumen, pasan a la carpeta de la vista."""
+    moved: list[str] = []
+    for scene in bpy.data.scenes:
+        current = scene.render.filepath
+        new, was_moved = relative_render_path(current, target)
+        if new != current:
+            scene.render.filepath = new
+        if was_moved:
+            moved.append(current)
+    return moved
+
+
+def view_datablocks() -> set[bpy.types.ID]:
+    """Los bloques de datos que guarda una vista sin los datos de la interfaz: todos menos
+    las pantallas, el gestor de ventanas, los espacios de trabajo y las bibliotecas (las
+    escriben sus bloques enlazados); como al guardar, sin los que no tienen usuarios ni
+    usuario falso (salvo las escenas)."""
+    found: set[bpy.types.ID] = set()
+    for block in bpy.data.user_map():
+        if isinstance(block, INTERFACE_TYPES) or getattr(block, "is_embedded_data", False):
+            continue
+        if block.users > 0 or block.use_fake_user or isinstance(block, bpy.types.Scene):
+            found.add(block)
+    return found
+
+
+def write_view_without_interface(path: Path) -> None:
+    """Reescribe la vista ``path`` (recién guardada por Blender) sin los datos de la
+    interfaz (D-11, RF-002-18): sus bloques de datos (:func:`view_datablocks`) con
+    ``bpy.data.libraries.write`` en un temporal de su carpeta, con las rutas relativas y la
+    compresión de las preferencias, que sustituye al fichero (``os.replace``). La sesión
+    sigue en su fichero y sin cambios pendientes; Blender, al abrirla, conserva la interfaz
+    que tenga (avisa de que el fichero no la trae) y muestra su primera escena."""
+    temporary = path.with_name(f".{path.stem}.{short_uid()}{path.suffix}")
+    compress = bool(bpy.context.preferences.filepaths.use_file_compression)
+    try:
+        bpy.data.libraries.write(
+            str(temporary), view_datablocks(), path_remap="RELATIVE", fake_user=False,
+            compress=compress,
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 @persistent
 def on_save_pre(filepath: object = None, *_args: object) -> None:
     """Antes de guardar: todas las escenas (también las nuevas), con la ruta del proyecto
     relativa al fichero de destino, y las rutas de los bloques de datos, relativas a él
-    (RF-002-07, RF-002-18, RF-002-28)."""
+    (RF-002-07, RF-002-18, RF-002-28); en una vista de ``scenes/``, también la salida de
+    render (D-11)."""
     target = filepath if isinstance(filepath, str) and filepath else None
     project = project_session.current()
     if project is None:
@@ -337,6 +409,17 @@ def on_save_pre(filepath: object = None, *_args: object) -> None:
     sync_scenes(project, blend_file=target)
     if target is None:
         return
+    if is_project_view(target, project):
+        for output in relativize_render_outputs(Path(target)):
+            project_session.notify(
+                tr(
+                    "The view «{view}» rendered to «{path}», on another volume: its render "
+                    "output is now the view's folder (a view of the project keeps no "
+                    "absolute path).",
+                    view=Path(target).name,
+                    path=output,
+                )
+            )
     remaining = relativize_paths(Path(target))
     if remaining:
         shown = ", ".join(f"«{path}»" for path in remaining[:3])
@@ -354,11 +437,26 @@ def on_save_pre(filepath: object = None, *_args: object) -> None:
 
 
 @persistent
-def on_save_post(*_args: object) -> None:
-    """Tras guardar: con el proyecto en escritura, la cabecera desde la base (RF-002-07)."""
+def on_save_post(filepath: object = None, *_args: object) -> None:
+    """Tras guardar, con el proyecto en escritura: una vista de ``scenes/`` se reescribe
+    sin los datos de la interfaz (D-11, RF-002-18; también con Ctrl+S), y la cabecera, desde
+    la base (RF-002-07). En solo lectura no se escribe nada en el proyecto (RF-002-13)."""
     project = project_session.current()
     if project is None or not project.writable:
         return
+    target = filepath if isinstance(filepath, str) and filepath else bpy.data.filepath
+    if target and is_project_view(target, project):
+        try:
+            write_view_without_interface(Path(target))
+        except (OSError, RuntimeError, ValueError) as exc:
+            project_session.notify(
+                tr(
+                    "The view «{view}» was saved with Blender's interface data (it could not "
+                    "be rewritten without it: {error}); save it again.",
+                    view=Path(target).name,
+                    error=exc,
+                )
+            )
     try:
         project.refresh_header()
     except GeoblenderError as exc:
