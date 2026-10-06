@@ -582,3 +582,8 @@ es = "Ocultar lo no disponible"
 
 ["Mining status bar"]
 es = "Barra de estado minera"
+
+# Barra superior (spec 003; RF-003-03; CW §3.3: con el área maximizada, también «Volver»).
+
+["Back to Previous"]
+es = "Volver"

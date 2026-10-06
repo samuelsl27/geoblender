@@ -11,7 +11,8 @@ que se ponen a un *layout* (``enabled``, ``active``, ``alert``, ``ui_units_x``�
 Spec 003 (T01): cada elemento guarda además el estado **efectivo** de su *layout* al
 dibujarlo (``enabled`` y ``active`` de la fila y de todas sus madres, como en Blender: una
 fila desactivada desactiva lo de dentro), para comprobar que un comando no disponible se
-dibuja desactivado (RF-003-07). Los métodos de ``UILayout`` que no tiene a mano
+dibuja desactivado (RF-003-07). ``menu_pie`` devuelve, como ``row``, un *layout* hijo (los
+menús circulares de la 003). Los métodos de ``UILayout`` que no tiene a mano
 (``popover``, ``menu_contents``, ``template_ID_tabs``, ``operator_menu_enum``…) se anotan
 con su nombre como tipo, para dibujar sin error las cabeceras de Blender que sustituye o
 amplía la 003. Python puro: no importa ``bpy``.
@@ -102,7 +103,7 @@ class FakeLayout:
     def _child(self, **_options: Any) -> FakeLayout:
         return FakeLayout(self.items, parent=self)
 
-    column = row = box = split = grid_flow = column_flow = _child
+    column = row = box = split = grid_flow = column_flow = menu_pie = _child
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
         """Cualquier otro método público de ``UILayout`` (``popover``, ``menu_contents``,
