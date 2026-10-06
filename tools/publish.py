@@ -17,14 +17,19 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
    enlazado ni ``alternates``), sin cambios sin commit ni ficheros nuevos sin ignorar,
    sin operaciones de git a medias ni cerrojos, HEAD en una rama; y la documentación no
    versiona nada bajo ``Geoblender/`` (ni un *gitlink*).
+8. Comprobaciones (RF-007-16), con el Python del Blender del manifiesto y desde la raíz
+   del código, con su salida en directo: ``tools/check.py`` (salvo con
+   ``--solo-espejo``) y siempre ``tools/check_docs.py <carpeta del proyecto>``; las dos
+   tienen que terminar con 0. Después se miran otra vez los árboles: las comprobaciones
+   no deben cambiar nada.
 
 Las lecturas de git no toman cerrojos opcionales (``gbtools.git``): no reescriben
 ``.git/index``. Nadie publica salvo la persona que publica (D-15); un agente, solo si
 ella se lo pide en esa tarea.
 
 Códigos de salida: 0 publicado; 1 árbol no limpio, *worktree* o ``alternates``, la
-documentación versiona algo bajo ``Geoblender/``; 2 uso, raíz o estructura; 3 cambios en
-el destino.
+documentación versiona algo bajo ``Geoblender/``, comprobación roja; 2 uso, raíz,
+estructura o sin el Blender del manifiesto; 3 cambios en el destino.
 """
 
 from __future__ import annotations
@@ -34,12 +39,13 @@ import sys
 sys.dont_write_bytecode = True  # sin __pycache__ en los repositorios
 
 import os  # noqa: E402
+import subprocess  # noqa: E402
 import time  # noqa: E402
 from collections.abc import Callable, Mapping, Sequence  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from gbtools import blender, git, layout  # noqa: E402
+from gbtools import blender, git, layout, manifest  # noqa: E402
 from gbtools.repo import repo_root  # noqa: E402
 
 EXIT_OK = 0
@@ -55,9 +61,17 @@ HELP_OPTIONS: tuple[str, ...] = ("--ayuda", "-h", "--help")
 STATUS_OK = "correcto"
 STATUS_FAIL = "fallo"
 STATUS_STOP = "PARADA"
+STATUS_SKIPPED = "omitido"
 
 STEP_STRUCTURE = "estructura"
 STEP_TREES = "árboles"
+STEP_CHECK = "comprobación"
+STEP_DOCS = "documentación"
+
+CHECK_SCRIPT = layout.CHECK_RELPATH
+DOCS_CHECK_SCRIPT = "tools/check_docs.py"
+CHECK_TIMEOUT_S = 1800.0  # la comprobación completa tarda menos de 60 s
+RESULT_PREFIX = "RESULTADO:"
 
 CODE_LABEL = "código"
 DOCS_LABEL = "documentación"
@@ -211,6 +225,43 @@ def _seconds(value: float) -> str:
     return f"{value:.1f}".replace(".", ",")
 
 
+def stream_run(
+    cmd: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Como ``gbtools.blender.run``, pero la salida de la orden (con sus errores) se ve
+    en directo, línea a línea, sangrada, y se devuelve también. ``timeout`` no se
+    aplica: cada comprobación tiene los suyos."""
+    process = subprocess.Popen(
+        [str(part) for part in cmd],
+        env=dict(env) if env is not None else None,
+        cwd=str(cwd) if cwd is not None else None,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    lines: list[str] = []
+    assert process.stdout is not None
+    with process.stdout:
+        for line in process.stdout:
+            lines.append(line)
+            print(f"    │ {line.rstrip()}", flush=True)
+    code = process.wait()
+    return subprocess.CompletedProcess(list(cmd), code, "".join(lines), "")
+
+
+def last_result(text: str) -> str:
+    """La última línea «RESULTADO: …» de una salida (vacía si no hay)."""
+    found = [line.strip() for line in text.splitlines() if line.strip().startswith(RESULT_PREFIX)]
+    return found[-1] if found else ""
+
+
 class Publication:
     """Una publicación: lo que se sabe en cada paso y sus líneas en la consola."""
 
@@ -220,12 +271,16 @@ class Publication:
         code_root: Path,
         environ: Mapping[str, str],
         git_runner: blender.Runner,
+        runner: blender.Runner,
+        locate: Callable[..., blender.BlenderInstall],
     ) -> None:
         self.options = options
         self.code = code_root
         self.project = code_root.parent
         self.environ = environ
         self.git_runner = git_runner
+        self.runner = runner
+        self.locate = locate
         self.started = time.perf_counter()
         self.step_started = self.started
 
@@ -260,8 +315,8 @@ class Publication:
             f"código en {layout.CODE_DIR_IN_DOCS}\\ de la documentación",
         )
 
-    # Paso 5: árboles.
-    def check_trees(self) -> None:
+    # Paso 5: árboles (y otra vez tras las comprobaciones, que no deben cambiar nada).
+    def check_trees(self, after_checks: bool = False) -> None:
         problems: list[str] = []
         try:
             for label, repo in ((CODE_LABEL, self.code), (DOCS_LABEL, self.project)):
@@ -277,26 +332,73 @@ class Publication:
             for path in tracked
         ]
         if problems:
+            count = "1 problema" if len(problems) == 1 else f"{len(problems)} problemas"
+            if after_checks:
+                detail = f"las comprobaciones cambiaron los árboles: {count}"
+                advice = "Las comprobaciones no deben escribir en los repositorios: " \
+                    "busque qué lo hizo, deshágalo y repita."
+            else:
+                detail = f"{count} en los árboles"
+                advice = "Haga commit (o ignórelo) en su repositorio, termine o anule " \
+                    "la operación a medias y repita."
+            raise Stop(EXIT_FAIL, STEP_TREES, detail, [*problems, advice])
+        if not after_checks:
+            self.line(STATUS_OK, STEP_TREES, "los dos limpios")
+
+    # Paso 8: comprobaciones.
+    def _install(self) -> blender.BlenderInstall:
+        path = self.code / layout.MANIFEST_RELPATH
+        try:
+            minimum = manifest.blender_min(manifest.load(path))
+            return self.locate(minimum)
+        except blender.EnvironmentProblem as exc:
+            raise Stop(EXIT_USAGE, STEP_CHECK, str(exc)) from exc
+        except (OSError, ValueError) as exc:  # también tomllib.TOMLDecodeError
+            raise Stop(
+                EXIT_USAGE,
+                STEP_CHECK,
+                f"no se puede leer «blender_version_min» de «{layout.MANIFEST_RELPATH}»: {exc}",
+            ) from exc
+
+    def _run_check(self, step: str, install: blender.BlenderInstall, *args: str) -> None:
+        command = blender.python_cmd(install, *args)
+        env = blender.python_env(self.code, self.environ)
+        try:
+            result = self.runner(command, env=env, cwd=self.code, timeout=CHECK_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise Stop(EXIT_FAIL, step, f"no se pudo ejecutar «{' '.join(command)}»: {exc}") from exc
+        text = f"{result.stdout or ''}\n{result.stderr or ''}"
+        verdict = last_result(text) or "sin línea «RESULTADO»"
+        if result.returncode != 0:
             raise Stop(
                 EXIT_FAIL,
-                STEP_TREES,
-                f"{len(problems)} problemas en los árboles" if len(problems) != 1
-                else "1 problema en los árboles",
-                [
-                    *problems,
-                    "Haga commit (o ignórelo) en su repositorio, termine o anule la "
-                    "operación a medias y repita.",
-                ],
+                step,
+                f"{args[0]} terminó con el código {result.returncode}: {verdict}",
+                ["Corrija lo que dice su salida y repita."],
             )
-        self.line(STATUS_OK, STEP_TREES, "los dos limpios")
+        self.line(STATUS_OK, step, verdict)
+
+    def run_checks(self) -> None:
+        install = self._install()
+        if self.options.mirror_only:
+            self.line(
+                STATUS_SKIPPED,
+                STEP_CHECK,
+                f"{OPTION_MIRROR_ONLY}: el código no se comprueba ni se sube",
+            )
+        else:
+            self._run_check(STEP_CHECK, install, CHECK_SCRIPT)
+        self._run_check(STEP_DOCS, install, DOCS_CHECK_SCRIPT, str(self.project))
+        self.check_trees(after_checks=True)
 
     def run(self) -> int:
         self.check_structure()
         self.check_trees()
+        self.run_checks()
         raise Stop(
             EXIT_FAIL,
             "publicación",
-            "la publicación aún no comprueba, sube ni hace el espejo (spec 007, T21 a T28)",
+            "la publicación aún no sube ni hace el espejo (spec 007, T22 a T28)",
         )
 
 
@@ -344,7 +446,14 @@ def main(
             return EXIT_USAGE
     code_root = Path(root).resolve()
     print(f"Geoblender · publicación · {code_root.parent}", flush=True)
-    publication = Publication(options, code_root, environ, git_runner)
+    publication = Publication(
+        options,
+        code_root,
+        environ,
+        git_runner,
+        stream_run if runner is None else runner,
+        locate,
+    )
     try:
         return publication.run()
     except Stop as stop:

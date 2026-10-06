@@ -19,6 +19,7 @@ import ast
 import contextlib
 import io
 import subprocess
+import sys
 import tempfile
 import unittest
 from collections.abc import Iterator, Mapping, Sequence
@@ -34,6 +35,7 @@ tools_on_path()
 import publish  # noqa: E402
 from gbtools import layout  # noqa: E402
 from gbtools import repo as gbrepo  # noqa: E402
+from gbtools.blender import BlenderInstall, EnvironmentProblem  # noqa: E402
 
 CODE = layout.CODE_DIR_IN_DOCS
 SHA_CODE = "c" * 40
@@ -55,7 +57,7 @@ DOCS_FILES: Mapping[str, str] = {
     f".git/refs/heads/{DOCS_BRANCH}": f"{SHA_DOCS}\n",
 }
 CODE_FILES: Mapping[str, str] = {
-    layout.MANIFEST_RELPATH: 'schema_version = "1.0.0"\n',
+    layout.MANIFEST_RELPATH: 'schema_version = "1.0.0"\nblender_version_min = "5.2.0"\n',
     layout.CHECK_RELPATH: SPDX,
     "README.md": "# Código de prueba\n",
     ".git/HEAD": f"ref: refs/heads/{CODE_BRANCH}\n",
@@ -64,16 +66,60 @@ CODE_FILES: Mapping[str, str] = {
 }
 
 Answer = tuple[int, str] | tuple[int, str, str]
+CHECK_GREEN = "RESULTADO: VERDE (1,0 s)\n"
+DOCS_GREEN = "RESULTADO: DOCUMENTACIÓN CORRECTA (3 ficheros, 0,0 s)\n"
+FAKE_BLENDER = Path(tempfile.gettempdir()) / "geoblender-falso" / "Blender"
+INSTALL = BlenderInstall(
+    exe=FAKE_BLENDER / "blender.exe",
+    python=FAKE_BLENDER / "5.2" / "python" / "bin" / "python.exe",
+    version=(5, 2, 1),
+)
+
+
+def fake_locate(minimum: tuple[int, int, int]) -> BlenderInstall:
+    """El localizador de Blender de las pruebas: nunca busca el Blender del puesto."""
+    return INSTALL
+
+
+class FakeChecks:
+    """Ejecutor simulado de las comprobaciones (``tools/check.py`` y
+    ``tools/check_docs.py``): responde con ``check`` o ``docs`` y anota cada orden con
+    su carpeta de trabajo."""
+
+    def __init__(
+        self, check: tuple[int, str] = (0, CHECK_GREEN), docs: tuple[int, str] = (0, DOCS_GREEN)
+    ) -> None:
+        self.check, self.docs = check, docs
+        self.calls: list[tuple[list[str], Path | None]] = []
+
+    def __call__(
+        self,
+        cmd: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        parts = [str(part) for part in cmd]
+        self.calls.append((parts, cwd))
+        code, out = self.docs if "tools/check_docs.py" in parts else self.check
+        return subprocess.CompletedProcess(parts, code, out, "")
+
+    def scripts(self) -> list[str]:
+        return [next(p for p in cmd if p.startswith("tools/")) for cmd, _cwd in self.calls]
 
 
 class FakeGit:
     """Ejecutor de git simulado: responde como git en la documentación («docs») o en el
     código («code», la carpeta ``CODE``), con respuestas por defecto de dos árboles
     limpios en una rama y las de ``overrides`` (``(repositorio o «*», prefijo de la
-    orden)`` → ``(código, salida[, error])``), y anota cada orden."""
+    orden)`` → ``(código, salida[, error])``, o una lista de respuestas que se dan por
+    orden, la última para siempre), y anota cada orden."""
 
-    def __init__(self, overrides: Mapping[tuple[str, str], Answer] | None = None) -> None:
-        self.overrides = dict(overrides or {})
+    def __init__(
+        self, overrides: Mapping[tuple[str, str], Answer | list[Answer]] | None = None
+    ) -> None:
+        self.overrides = {key: value for key, value in (overrides or {}).items()}
         self.calls: list[tuple[str, list[str]]] = []
 
     @staticmethod
@@ -109,7 +155,11 @@ class FakeGit:
         found = False
         for (who, prefix), value in self.overrides.items():
             if who in (repo, "*") and key.startswith(prefix):
-                answer, found = value, True
+                if isinstance(value, list):
+                    answer = value.pop(0) if len(value) > 1 else value[0]
+                else:
+                    answer = value
+                found = True
                 break
         if not found:
             for prefix, value in self.defaults(repo, cwd).items():
@@ -181,6 +231,7 @@ class Outcome:
     out: str
     err: str
     git: FakeGit | None
+    checks: FakeChecks
 
     @property
     def text(self) -> str:
@@ -194,10 +245,14 @@ def run_publish(
     environ: Mapping[str, str] | None = None,
     root: Path | None = None,
     real_git: object = None,
+    checks: FakeChecks | None = None,
+    locate: object = fake_locate,
 ) -> Outcome:
     """``publish.main`` con ``--destino`` = el destino de ``space`` (salvo que ``args``
-    traiga otro), su entorno y el ejecutor de git (simulado si no se da otro)."""
+    traiga otro), su entorno, el ejecutor de git (simulado si no se da otro) y las
+    comprobaciones simuladas (en verde si no se dan otras)."""
     fake = git_runner if git_runner is not None else FakeGit()
+    checks = checks if checks is not None else FakeChecks()
     argv = list(args)
     if publish.OPTION_DEST not in argv:
         argv = [publish.OPTION_DEST, str(space.dest), *argv]
@@ -208,8 +263,11 @@ def run_publish(
             root=space.code if root is None else root,
             environ=space.env() if environ is None else dict(environ),
             git_runner=fake if real_git is None else real_git,
+            runner=checks,
+            locate=locate,
         )
-    return Outcome(code, out.getvalue(), err.getvalue(), fake if real_git is None else None)
+    git_used = fake if real_git is None else None
+    return Outcome(code, out.getvalue(), err.getvalue(), git_used, checks)
 
 
 class PublicationAssertions(unittest.TestCase):
@@ -217,13 +275,10 @@ class PublicationAssertions(unittest.TestCase):
     cambios."""
 
     def assertStopped(
-        self, space: Workspace, code: int, *args: str, git_runner: FakeGit | None = None,
-        environ: Mapping[str, str] | None = None, root: Path | None = None,
+        self, space: Workspace, code: int, *args: str, **kwargs: object
     ) -> Outcome:
         before = gbrepo.snapshot(space.dest)
-        outcome = run_publish(
-            space, *args, git_runner=git_runner, environ=environ, root=root
-        )
+        outcome = run_publish(space, *args, **kwargs)  # type: ignore[arg-type]
         self.assertEqual(outcome.code, code, outcome.text)
         self.assertIn(NOT_PUBLISHED, outcome.out)
         self.assertNotIn("RESULTADO: PUBLICADO", outcome.out)
@@ -421,6 +476,87 @@ class TreesTest(PublicationAssertions):
         for command in fake.commands():
             self.assertTrue(command.startswith(reads), command)
         self.assertIn("No se ha subido ni copiado nada", outcome.out)
+
+
+class ChecksTest(PublicationAssertions):
+    """RF-007-16: la publicación ejecuta siempre las dos comprobaciones (plan 007
+    §5.4.5, paso 8), con el Python de Blender, y no sigue si alguna no termina con 0."""
+
+    def test_check_red_stops(self) -> None:
+        """RF-007-16: ``tools/check.py`` no termina con 0: código 1, sin subir ni
+        copiar, mostrando su resultado."""
+        red = (1, "  fallo     unitarias\nRESULTADO: NO VERDE (2,0 s): falla «unitarias»\n")
+        with workspace() as space:
+            outcome = self.assertStopped(space, 1, checks=FakeChecks(check=red))
+        self.assertIn("fallo     comprobación", outcome.out)
+        self.assertIn("RESULTADO: NO VERDE (2,0 s): falla «unitarias»", outcome.out)
+
+    def test_docs_check_red_stops(self) -> None:
+        """RF-007-16: ``tools/check_docs.py`` no termina con 0 (con el código en verde):
+        código 1, sin subir ni copiar, mostrando su resultado."""
+        red = (1, "docs/x.md:1: [TXT-02] …\nRESULTADO: DOCUMENTACIÓN CON INCUMPLIMIENTOS (1)\n")
+        with workspace() as space:
+            outcome = self.assertStopped(space, 1, checks=FakeChecks(docs=red))
+        self.assertIn("correcto  comprobación", outcome.out)
+        self.assertIn("fallo     documentación", outcome.out)
+        self.assertIn("DOCUMENTACIÓN CON INCUMPLIMIENTOS (1)", outcome.out)
+
+    def test_checks_commands(self) -> None:
+        """RF-007-16: las dos con el Python del Blender localizado (``-B -s -X utf8``),
+        desde la raíz del código: ``tools/check.py`` y ``tools/check_docs.py`` con la
+        carpeta del proyecto; después de los árboles, que se miran otra vez."""
+        fake = FakeGit()
+        with workspace() as space:
+            outcome = run_publish(space, git_runner=fake)
+            project = space.project
+        self.assertEqual(outcome.checks.scripts(), ["tools/check.py", "tools/check_docs.py"])
+        for cmd, cwd in outcome.checks.calls:
+            self.assertEqual(cmd[:5], [str(INSTALL.python), "-B", "-s", "-X", "utf8"])
+            self.assertEqual(cwd, project / CODE)
+        self.assertEqual(outcome.checks.calls[1][0][-1], str(project))
+        self.assertEqual(len([c for c in fake.commands() if c.startswith("status")]), 4)
+        self.assertIn("RESULTADO: VERDE (1,0 s)", outcome.out)
+        self.assertIn("DOCUMENTACIÓN CORRECTA", outcome.out)
+
+    def test_solo_espejo_skips_code_check(self) -> None:
+        """RF-007-16, RF-007-24: con ``--solo-espejo`` no se comprueba el código, pero sí
+        la documentación."""
+        with workspace() as space:
+            outcome = run_publish(space, publish.OPTION_MIRROR_ONLY)
+        self.assertEqual(outcome.checks.scripts(), ["tools/check_docs.py"])
+        self.assertIn("omitido   comprobación", outcome.out)
+
+    def test_checks_change_tree_stops(self) -> None:
+        """RF-007-15, RF-007-16: si tras las comprobaciones un árbol ya no está limpio
+        (las comprobaciones no deben cambiar nada), código 1 sin subir."""
+        status = [(0, ""), (0, ""), (0, " M tools/check.py\0")]
+        with workspace() as space:
+            outcome = self.assertStopped(space, 1, git_runner=FakeGit({("*", "status"): status}))
+        self.assertIn("tools/check.py", outcome.out)
+        self.assertIn("comprobaciones", outcome.out)
+
+    def test_stream_run_shows_and_returns_output(self) -> None:
+        """RF-007-16 (plan §5.4.5, paso 8): la salida de una comprobación se ve en
+        directo, sangrada, y se devuelve entera con su código."""
+        code = "import sys; print('una'); print('RESULTADO: VERDE'); sys.exit(3)"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            result = publish.stream_run([sys.executable, "-B", "-c", code], timeout=60)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(publish.last_result(result.stdout), "RESULTADO: VERDE")
+        self.assertIn("    │ una\n", out.getvalue())
+
+    def test_blender_missing_exit_2(self) -> None:
+        """RF-007-16: sin el Blender del manifiesto no se puede comprobar: código 2 con
+        el mensaje del localizador, sin ejecutar nada."""
+
+        def missing(_minimum: tuple[int, int, int]) -> BlenderInstall:
+            raise EnvironmentProblem("No se encuentra Blender (prueba)")
+
+        with workspace() as space:
+            outcome = self.assertStopped(space, 2, locate=missing)
+        self.assertIn("No se encuentra Blender (prueba)", outcome.out)
+        self.assertEqual(outcome.checks.calls, [])
 
 
 class EnvironTest(unittest.TestCase):
