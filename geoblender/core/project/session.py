@@ -8,9 +8,18 @@ leer y escribir:
 
 - :meth:`Project.read`: una conexión de solo lectura que no crea ningún fichero junto a la
   base (en WAL o con un diario caliente, sobre una copia privada en los datos de usuario).
-- :meth:`Project.write_transaction`: una transacción de escritura, solo en un modo de
-  escritura y con el cerrojo de esta sesión; cada una abre y cierra su conexión, así que
-  entre dos escrituras no queda ningún fichero abierto.
+- :meth:`Project.write_transaction`: una transacción de escritura con el protocolo del
+  plan 002 §5.4: 1) solo en un modo de escritura; 2) con el cerrojo de esta sesión (si se
+  perdió, solo lectura «cerrojo perdido»); 3) con la base en diario clásico, devolviéndola
+  a él si otro programa la dejó en WAL (aviso y evento ``wal_recovered``; si la tiene
+  abierta, solo lectura «WAL ocupado» indicando qué cerrar); 4) ``BEGIN IMMEDIATE`` …
+  ``COMMIT``; 5) la base sigue en diario clásico. Cualquier error de disco, de red o de
+  SQLite deshace la transacción, cierra la conexión y deja el proyecto en solo lectura con
+  el motivo (y suelta el cerrojo); un error de Geoblender del propio trabajo (una
+  validación) solo la deshace. Si otro programa está leyendo, :class:`DatabaseBusyError`
+  tras esperar ≤ 0,2 s, sin cambios y sin pasar a solo lectura: :meth:`Project.try_write`
+  lo convierte en el estado «reintentando» para reintentar desde un temporizador. Cada
+  escritura abre y cierra su conexión: entre dos no queda ningún fichero abierto.
 - :meth:`Project.heartbeat`: la marca de actividad del cerrojo; si se perdió, o no se pudo
   renovar por un error de disco o de red, el proyecto pasa a solo lectura con el motivo.
 - :meth:`Project.cache_dir`: la única caché del proyecto, ``<proyecto>/cache/`` en disco
@@ -27,13 +36,18 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
+from typing import Any
 
-from ..errors import GeoblenderError, LockError, ProjectError
+from ..errors import DatabaseBusyError, DatabaseError, GeoblenderError, LockError, ProjectError
 from ..georef.origin import GeoOrigin, Window
-from ..gpkg.connection import GpkgConnection
+from ..gpkg.connection import BUSY_TIMEOUT_MS, GpkgConnection
+from ..gpkg.header import read_header
+from ..gpkg.wal import WalOutcome, to_classic_journal
 from ..sysinfo import SessionInfo, pid_alive
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
@@ -45,6 +59,11 @@ from .model import OpenMode, OpenStatus, ProjectRecord, ReadOnlyCode
 from .schema import read_project
 
 CACHE_DIR = "cache"
+BUSY_MESSAGE = "QGIS u otro programa está leyendo el proyecto; reintentando…"
+WAL_NOTICE = (
+    "La base de datos estaba en modo WAL (QGIS lo activa al editar un GeoPackage); se ha "
+    "devuelto al diario clásico sin perder datos."
+)
 WRITE_MESSAGES: dict[OpenMode, str] = {
     OpenMode.WRITE_LOCAL: "Escritura (disco local)",
     OpenMode.WRITE_NETWORK: "Escritura en red (la caché va al disco local de este equipo)",
@@ -60,6 +79,23 @@ def write_status(mode: OpenMode) -> OpenStatus:
 def read_only_status(code: ReadOnlyCode, detail: str) -> OpenStatus:
     """El estado de un proyecto en solo lectura, con su motivo («Solo lectura: …»)."""
     return OpenStatus(OpenMode.READ_ONLY, code, f"Solo lectura: {detail}")
+
+
+class WriteState(Enum):
+    """Resultado de :meth:`Project.try_write`."""
+
+    DONE = "done"
+    RETRYING = "retrying"  # otro programa está leyendo: reintentar en un momento
+
+
+@dataclass(frozen=True)
+class WriteAttempt:
+    """Un intento de escritura: hecho (con el valor que devolvió el trabajo) o
+    «reintentando» (con el mensaje para la barra de estado)."""
+
+    state: WriteState
+    value: Any = None
+    message: str = ""
 
 
 class Project:
@@ -90,6 +126,8 @@ class Project:
         self.stale_minutes = stale_minutes
         self._status = status
         self._closed = False
+        self._notices: list[str] = []
+        self._pending_wal: int | None = None
 
     # Identidad y georreferencia ---------------------------------------------------
 
@@ -151,8 +189,13 @@ class Project:
         return self._closed
 
     def set_read_only(self, code: ReadOnlyCode, detail: str) -> None:
-        """Pasa a solo lectura con su motivo; queda en el registro técnico."""
+        """Pasa a solo lectura con su motivo."""
         self._status = read_only_status(code, detail)
+
+    def take_notices(self) -> list[str]:
+        """Los avisos pendientes de mostrar (p. ej., la vuelta desde WAL); los vacía."""
+        notices, self._notices = self._notices, []
+        return notices
 
     # Rutas ------------------------------------------------------------------------
 
@@ -216,18 +259,100 @@ class Project:
                 shown="perdido",
             )
 
+    def _give_up_writing(self, code: ReadOnlyCode, detail: str, kind: EventKind) -> None:
+        """Pasa a solo lectura, lo deja en el registro técnico y suelta el cerrojo propio
+        (si se puede: sin red, caducará)."""
+        self.set_read_only(code, detail)
+        log_event(kind, detail, project=self.uid)
+        try:
+            lock.release(self.root, self.session, clock=self.clock)
+        except OSError:
+            pass
+
+    def _write_failed(self, exc: BaseException) -> ProjectError:
+        reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+        detail = f"falló una escritura en el proyecto ({reason}); no se ha cambiado nada"
+        self._give_up_writing(ReadOnlyCode.WRITE_FAILED, detail, EventKind.WRITE_FAILED)
+        return ProjectError(
+            "core.project_write_failed",
+            f"no se ha podido escribir ({reason}): la escritura se ha deshecho y el "
+            "proyecto pasa a solo lectura; compruebe el disco o la red y vuelva a abrirlo",
+            obj=f"Proyecto «{self.name}»",
+            field=PROJECT_STORE,
+            value=str(self.database_path),
+        )
+
+    def _ensure_classic_journal(self) -> None:
+        """Paso 3: la base en diario clásico; si otro programa la dejó en WAL, se devuelve
+        a él (o, si la tiene abierta, solo lectura)."""
+        path = self.database_path
+        if not read_header(path).needs_recovery:
+            return
+        recovery = to_classic_journal(path, timeout_s=BUSY_TIMEOUT_MS / 1000)
+        if recovery.outcome is WalOutcome.BUSY:
+            detail = (
+                "QGIS u otro programa tiene abierta la base de datos en modo WAL; cierre ese "
+                "programa y vuelva a abrir el proyecto"
+            )
+            self._give_up_writing(ReadOnlyCode.WAL_BUSY, detail, EventKind.WRITE_FAILED)
+            raise ProjectError(
+                "core.project_wal_busy",
+                "no se ha escrito nada: " + detail,
+                obj=f"Proyecto «{self.name}»",
+                field="diario",
+                value=str(path),
+            )
+        if recovery.outcome is WalOutcome.CONVERTED:
+            self._pending_wal = recovery.wal_bytes
+            self._notices.append(WAL_NOTICE)
+            log_event(EventKind.WAL_RECOVERED, WAL_NOTICE, project=self.uid)
+
     @contextmanager
     def write_transaction(self) -> Iterator[sqlite3.Connection]:
-        """Una transacción de escritura (``BEGIN IMMEDIATE`` … ``COMMIT``): solo en un
-        modo de escritura y con el cerrojo de esta sesión."""
+        """Una transacción de escritura con el protocolo del módulo; todo o nada."""
         self._require_writable()
         self._require_lock()
-        db = GpkgConnection.open_write(self.database_path)
+        try:
+            self._ensure_classic_journal()
+            db = GpkgConnection.open_write(self.database_path)
+        except ProjectError:
+            raise
+        except (OSError, sqlite3.Error, DatabaseError) as exc:
+            raise self._write_failed(exc) from exc
         try:
             with db.transaction() as conn:
+                if self._pending_wal is not None:
+                    record_event(
+                        conn,
+                        EventKind.WAL_RECOVERED,
+                        "La base de datos estaba en modo WAL; se ha devuelto al diario clásico",
+                        session=self.session,
+                        at=format_utc(self.clock.now()),
+                        data={"wal_bytes": self._pending_wal},
+                    )
                 yield conn
+            self._pending_wal = None
+        except DatabaseBusyError:
+            raise
+        except DatabaseError as exc:
+            raise self._write_failed(exc) from exc
+        except GeoblenderError:
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            raise self._write_failed(exc) from exc
         finally:
             db.close()
+
+    def try_write(self, work: Callable[[sqlite3.Connection], Any]) -> WriteAttempt:
+        """Ejecuta ``work`` en una transacción de escritura. Si otro programa está
+        leyendo, devuelve enseguida (espera ≤ 0,2 s) el estado «reintentando» sin cambiar
+        nada; los demás errores, como :meth:`write_transaction`."""
+        try:
+            with self.write_transaction() as conn:
+                value = work(conn)
+        except DatabaseBusyError:
+            return WriteAttempt(WriteState.RETRYING, None, BUSY_MESSAGE)
+        return WriteAttempt(WriteState.DONE, value)
 
     def reload(self) -> ProjectRecord:
         """Vuelve a leer la fila de ``gb_project``."""
