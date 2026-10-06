@@ -10,6 +10,10 @@ un submenú) o un comando, con «↳» si es de un submenú y «↗» si es un a
 menús Comprobar ▸, Trabajos ▸, Disposición ▸ y Datos ▾ son listas en prosa
 (:class:`ProseList`).
 
+Para las demás tablas de ``docs/arquitectura/interfaz/`` (AT §2, AR §2–§4, PC §3, CW
+§6.2; spec 003, T08): :func:`section`, :func:`tables` (con la barra escapada dentro de una celda),
+:func:`backticked` e :func:`identifiers`.
+
 Python puro, sin ``geoblender``: devuelve lo que dice el documento, normalizado (ver
 :class:`DocRow`); la comparación la hace la prueba.
 """
@@ -25,7 +29,7 @@ _CLASS_RE = re.compile(r"`((?:GEOBLENDER|TOPBAR)_[A-Z]{2}_[a-z0-9_]+)`")
 _ENTRY_RE = re.compile(r"\b(\d{3}|R-\d{2}|Blender)\b")
 _TOKEN_RE = re.compile(r"\(|\)|`[^`]+`")
 _ID_RE = re.compile(r"^(GEOBLENDER_[A-Z]{2}_[a-z0-9_]+|TOPBAR_MT_[a-z_]+|[a-z]+_[a-z0-9_]+|"
-                    r"[a-z0-9]+\.[a-z_.]+)$")
+                    r"[a-z0-9_]+\.[a-z0-9_.]+)$")
 _SHORTCUT_RE = re.compile(r"\s*\((?:Mayús|Ctrl|Alt|F\d)[^)]*\)")
 _TYPE_RE = re.compile(r"\b([ADPHST])(·2p)?\)\s*\.?\s*$")
 
@@ -301,3 +305,77 @@ def parse(document: str) -> BsTree:
             raise ValueError(f"línea {line_no}: fila fuera de una tabla")
         table.rows.append(_row(line_no, cells, columns, table))
     return BsTree(tables, prose)
+
+
+# Otras tablas de docs/arquitectura/interfaz/ (AT, AR, PC, CW): filas como listas de celdas.
+
+
+def split_cells(line: str) -> list[str]:
+    r"""Las celdas de una fila de una tabla Markdown («\|» es una barra dentro de una
+    celda)."""
+    body = line.strip()
+    body = body[1:] if body.startswith("|") else body
+    body = body[:-1] if body.endswith("|") and not body.endswith("\\|") else body
+    cells: list[str] = []
+    current = ""
+    index = 0
+    while index < len(body):
+        if body.startswith("\\|", index):
+            current += "|"
+            index += 2
+            continue
+        if body[index] == "|":
+            cells.append(current.strip())
+            current = ""
+        else:
+            current += body[index]
+        index += 1
+    cells.append(current.strip())
+    return cells
+
+
+def section(document: str, heading: str) -> str:
+    """El texto de la sección que empieza en la línea ``heading`` (hasta la siguiente del
+    mismo nivel o superior)."""
+    start = document.index(heading)
+    level = len(heading) - len(heading.lstrip("#"))
+    rest = document[start + len(heading):]
+    for match in re.finditer(r"^(#+) ", rest, flags=re.MULTILINE):
+        if len(match.group(1)) <= level:
+            return document[start:start + len(heading) + match.start()]
+    return document[start:]
+
+
+def tables(text: str) -> list[list[list[str]]]:
+    """Las tablas de ``text``: cada una, sus filas de datos (sin cabecera ni separador)."""
+    found: list[list[list[str]]] = []
+    current: list[list[str]] | None = None
+    header_seen = False
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            current, header_seen = None, False
+            continue
+        cells = split_cells(line)
+        if current is None:
+            current = []
+            found.append(current)
+            header_seen = False
+            continue  # cabecera
+        if not header_seen and set("".join(cells)) <= set("-: "):
+            header_seen = True
+            continue
+        current.append(cells)
+    return found
+
+
+def backticked(cell: str) -> list[str]:
+    """Los textos entre comillas invertidas de una celda, en orden."""
+    return [token.strip("`") for token in re.findall(r"`[^`]+`", cell)]
+
+
+def identifiers(cell: str) -> list[str]:
+    """Los identificadores de comando (``bl_idname`` sin prefijo, clases, nativos) de una
+    celda: los textos entre comillas invertidas que lo parecen (no ``target`` ni
+    ``mode='…'``)."""
+    return [token for token in backticked(cell)
+            if _ID_RE.match(token) and ("_" in token or "." in token)]

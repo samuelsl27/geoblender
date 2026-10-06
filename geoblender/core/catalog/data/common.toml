@@ -1,0 +1,147 @@
+# Catálogo de comandos de Geoblender (spec 003). Lo que no tiene casa en un menú de la barra:
+# «Geoblender ▾» (la barra en modo Blender y el nivel E; BS §3 y §4), los comandos nativos
+# del acceso rápido y los auxiliares internos de la interfaz (kind = internal; BS §7.1).
+# Las claves son las de los comandos del catálogo (bl_idname o clase, con ?prop=valor si fijan
+# propiedades): cada sitio referencia el comando, nunca lo copia (RF-003-06, BS §7.1).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_geoblender"
+label.en = "Geoblender"
+label.es = "Geoblender"
+description.en = "All the Geoblender menus: in Blender mode and in the narrowest level of the bar"
+description.es = "Todos los menús de Geoblender: en modo Blender y en el nivel más estrecho de la barra"
+icon = "gb_logo"
+entry = "003"
+action = "S"
+frequency = 2
+
+# (sin rótulo) --------------------------------------------------------------------------
+[[menu.group]]
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_project"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_topography"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_drillholes"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_geology"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_blocks"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_optimization"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_design"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_reclamation"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_volumetrics"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_scheduling"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_drawings"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_tools"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_ui_help"
+
+[[command]]
+key = "ed.undo"
+label.en = "Undo"
+label.es = "Deshacer"
+description.en = "Undo the last change in Blender; it does not undo calculations already written to the project (Project ▸ Control ▸ Provenance and log ▸ Undo calculation)"
+description.es = "Deshace el último cambio en Blender; no deshace los cálculos ya escritos en el proyecto (Proyecto ▸ Control ▸ Procedencia y registro ▸ Deshacer cálculo)"
+entry = "Blender"
+action = "A"
+frequency = 3
+icon_fallback = "LOOP_BACK"
+
+[[command]]
+key = "ed.redo"
+label.en = "Redo"
+label.es = "Rehacer"
+description.en = "Redo what was undone in Blender"
+description.es = "Rehace lo deshecho en Blender"
+entry = "Blender"
+action = "A"
+frequency = 2
+icon_fallback = "LOOP_FORWARDS"
+
+[[command]]
+key = "geoblender.ui_call_pie"
+kind = "internal"
+label.en = "Pie menu"
+label.es = "Menú circular"
+description.en = "Open a Geoblender pie menu (only in Geoblender mode)"
+description.es = "Abre un menú circular de Geoblender (solo en modo Geoblender)"
+entry = "003"
+action = "A"
+frequency = 3
+
+[[command]]
+key = "geoblender.ui_call_panel"
+kind = "internal"
+label.en = "Floating panel"
+label.es = "Panel flotante"
+description.en = "Open a Geoblender panel at the cursor (only in Geoblender mode)"
+description.es = "Abre un panel de Geoblender junto al cursor (solo en modo Geoblender)"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[command]]
+key = "geoblender.ui_call_context_menu"
+kind = "internal"
+label.en = "Menu of the active type"
+label.es = "Menú del tipo activo"
+description.en = "Open under the cursor the menu of the type of the active object"
+description.es = "Abre bajo el cursor el menú del tipo del objeto activo"
+entry = "003"
+action = "A"
+frequency = 2
+
+[[command]]
+key = "geoblender.ui_toggle_context_pin"
+kind = "internal"
+label.en = "Pin the context"
+label.es = "Fijar el contexto"
+description.en = "Keep the menu and the tab of the current item although the selection changes"
+description.es = "Mantiene el menú y la pestaña del elemento actual aunque cambie la selección"
+entry = "003"
+action = "T"
+frequency = 1
+icon_fallback = "UNPINNED"
+
+[[command]]
+key = "geoblender.ui_show_context_panel"
+kind = "internal"
+label.en = "Parameters…"
+label.es = "Parámetros…"
+description.en = "Parameters of the active item"
+description.es = "Parámetros del elemento activo"
+entry = "003"
+action = "P"
+frequency = 1
+
+[[command]]
+key = "geoblender.core_clear_notices"
+kind = "internal"
+label.en = "Dismiss notices"
+label.es = "Descartar avisos"
+description.en = "Dismiss the pending notices of the project"
+description.es = "Descarta los avisos pendientes del proyecto"
+entry = "002"
+action = "A"
+frequency = 1

@@ -574,9 +574,11 @@ class _Validator:
                                                  or cat.commands[item.key].home != menu.id):
                         field_name = "ref" if item.cross else "mirror"
                         self.resolve(menu.source, menu.id, field_name, item.key)
+        with_content = (set(cat.menus) | set(cat.pies)
+                        | {context.id for context in cat.contexts.values()})
         for command in cat.commands.values():
             if (command.kind == "menu" and command.idname.startswith("GEOBLENDER_")
-                    and command.idname not in cat.menus and not command.dynamic):
+                    and command.idname not in with_content and not command.dynamic):
                 self.add(command.source, command.key, "menu", "",
                          "submenú sin contenido: defínalo con sus elementos aquí o en un "
                          "[[menu]] con su id, o márquelo dynamic")
