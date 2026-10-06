@@ -10,9 +10,11 @@ al registro.
 - :class:`GeoblenderError`: la base.
 - :class:`ValidationError`: una entrada que no es válida (un CRS fuera del catálogo, una
   ventana con los ejes invertidos, un Z0 fuera de rango).
+- :class:`ProjectError` y :class:`LockError`: el proyecto y su cerrojo (spec 002).
+- :class:`GeometryError`, :class:`DatabaseError` y :class:`DatabaseBusyError`: la
+  geometría y la base de datos del proyecto (``core.gpkg``).
 
-Las specs añaden los suyos derivando de la base (p. ej. los errores de proyecto y de
-cerrojo de la spec 002, T11).
+Las specs añaden los suyos derivando de la base.
 """
 
 from __future__ import annotations
@@ -75,6 +77,16 @@ class ValidationError(GeoblenderError):
 class GeometryError(GeoblenderError):
     """Una geometría que Geoblender no escribe ni lee: vacía, de un tipo no admitido o
     mal formada (``core.gpkg.wkb``)."""
+
+
+class ProjectError(GeoblenderError):
+    """Un problema del proyecto como conjunto: crearlo, abrirlo, su cabecera, su esquema
+    o su carpeta (spec 002)."""
+
+
+class LockError(ProjectError):
+    """El cerrojo de un solo escritor no deja hacer lo que se pide: lo tiene otra sesión,
+    se perdió o no se puede leer (spec 002)."""
 
 
 class DatabaseError(GeoblenderError):
