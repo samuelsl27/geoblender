@@ -203,6 +203,25 @@ class CopyTreeTest(unittest.TestCase):
             )
             self.assertTrue(all(item.path in item.describe() for item in found))
 
+    def test_refreshes_the_listing_after_renaming(self) -> None:
+        """RF-002-20, RF-002-32 (docs/trampas.md §6): la copia, ya con su nombre definitivo,
+        se vuelve a listar con ese nombre: en una carpeta de red (SMB) que se listó con el
+        nombre anterior (la comprobación de la copia), Windows no deja sustituir después un
+        fichero de dentro (``os.replace`` de la cabecera) hasta que se lista con el nuevo."""
+        with project_tmp() as tmp:
+            tree = Tree(tmp)
+            seen: list[tuple[Path, bool]] = []
+            real = copytree.refresh_listing
+
+            def spy(folder: Path) -> None:
+                seen.append((Path(folder), Path(folder).is_dir()))
+                real(folder)
+
+            with mock.patch.object(copytree, "refresh_listing", spy):
+                _run(tree.steps())
+            self.assertEqual(seen, [(tree.dest, True)])
+            copytree.refresh_listing(tmp / "no-existe")  # no falla: es una ayuda
+
     def test_tree_digest_and_json(self) -> None:
         """RF-002-31, RF-002-32 (T31): una sola huella de la carpeta, la de partida de una
         copia local, es la misma para las mismas huellas y cambia si cambia un byte, sobra

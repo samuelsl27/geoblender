@@ -53,6 +53,16 @@ Publicar la copia (:func:`publish_steps`); el original nunca queda a medias:
    ``.lock`` de ``.anterior``, que era la reserva. Cancelar antes de este paso borra
    ``.publicando``. Al terminar se cierra la copia local, se quita su registro del equipo y
    el publicado pasa a ser el primero de los recientes.
+
+Si no se puede publicar (RF-002-33), el original y la copia local quedan como estaban y el
+error dice el motivo y qué hacer: la reserva se perdió (otra sesión la forzó), el original
+cambió, o una carpeta no se puede renombrar porque otro programa (QGIS) tiene abierto un
+fichero suyo. En este último caso lo hecho se deshace (si el segundo renombrado falla, el
+original vuelve a su nombre) y ``.publicando`` se conserva, anotado en el registro de la
+copia con sus huellas: el reintento la aprovecha sin volver a copiar si ni ella ni la copia
+local han cambiado (si la copia cambió, se prepara otra vez). Un ``.publicando`` que no
+preparó esta copia, o que cambió, no se toca. Si ni siquiera se puede deshacer, el error
+nombra las dos carpetas, completas.
 """
 
 from __future__ import annotations
@@ -60,7 +70,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Collection, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -85,6 +95,7 @@ from .copytree import (
     TreePrints,
     copy_steps,
     fingerprint_steps,
+    refresh_listing,
     remove_tree,
     tree_digest,
 )
@@ -447,10 +458,12 @@ def _rename(source: Path, target: Path) -> None:
 def _rename_retrying(source: Path, target: Path, clock: Clock) -> None:
     """:func:`_rename`, reintentado :data:`~.copytree.RETRIES` veces cada
     :data:`~.copytree.RETRY_WAIT_S` s si otro programa retiene algo (antivirus,
-    indexador)."""
+    indexador); después, la carpeta se vuelve a listar con su nombre nuevo (en la red, si
+    no, no se podría sustituir su cabecera: :func:`~.copytree.refresh_listing`)."""
     for attempt in range(RETRIES + 1):
         try:
             _rename(source, target)
+            refresh_listing(target)
             return
         except PermissionError:
             if attempt == RETRIES:
@@ -691,6 +704,16 @@ class _HalfDone(Exception):
         self.error = error
 
 
+class _Blocked(Exception):
+    """Un renombrado que no se pudo hacer (otro programa retiene algo de la carpeta); lo
+    que se había hecho ya está deshecho."""
+
+    def __init__(self, folder: Path, error: OSError) -> None:
+        super().__init__(str(error))
+        self.folder = folder
+        self.error = error
+
+
 def _put_back(aside: Path | None, previous: Path, clock: Clock) -> None:
     """Devuelve a su nombre la publicación anterior que se apartó (si se puede)."""
     if aside is None:
@@ -705,8 +728,8 @@ def _swap(
     original: Path, staging: Path, seen: bytes, obj: str, clock: Clock
 ) -> tuple[Path, list[str]]:
     """Sustituye el original por ``staging`` y libera la reserva; devuelve
-    ``.anterior`` y los avisos. Si un renombrado falla, lo hecho se deshace y se lanza el
-    ``OSError``; si tampoco se puede deshacer, :class:`_HalfDone`."""
+    ``.anterior`` y los avisos. Si un renombrado falla, lo hecho se deshace y se lanza
+    :class:`_Blocked`; si tampoco se puede deshacer, :class:`_HalfDone`."""
     previous = previous_path(original)
     content, _holder = lockmod.read_lock(original, clock=clock)
     if content != seen:
@@ -714,12 +737,15 @@ def _swap(
     aside: Path | None = None
     if previous.exists():
         aside = original.parent / f"{previous.name}{DISCARD_MARK}{new_uid()}"
-        _rename_retrying(previous, aside, clock)
+        try:
+            _rename_retrying(previous, aside, clock)
+        except OSError as exc:
+            raise _Blocked(previous, exc) from exc
     try:
         _rename_retrying(original, previous, clock)
-    except OSError:
+    except OSError as exc:
         _put_back(aside, previous, clock)
-        raise
+        raise _Blocked(original, exc) from exc
     try:
         _rename_retrying(staging, original, clock)
     except OSError as exc:
@@ -741,7 +767,7 @@ def _swap(
                 )
             ) from undo
         _put_back(aside, previous, clock)
-        raise
+        raise _Blocked(staging, exc) from exc
     warnings: list[str] = []
     try:
         if not lockmod.remove_if_unchanged(previous, seen, clock=clock):
@@ -761,6 +787,80 @@ def _swap(
                 "anterior); bórrela a mano."
             )
     return previous, warnings
+
+
+def _prints_steps(
+    root: Path, message: str, clock: Clock, chunk_size: int
+) -> Generator[Progress, None, TreePrints]:
+    """Las huellas de ``root`` (sin ``cache/`` ni ``.lock``), con su progreso."""
+    found: TreePrints | None = None
+    for step in fingerprint_steps(
+        root, exclude=CHECKOUT_EXCLUDE, clock=clock, chunk_size=chunk_size
+    ):
+        if isinstance(step.result, TreePrints):
+            found = step.result
+        yield Progress(PUBLISH_PHASES[2], step.done, step.total, message)
+    if found is None:
+        raise TypeError("las huellas no han terminado con su resultado")
+    return found
+
+
+def _foreign_staging(staging: Path, obj: str, why: str) -> ProjectError:
+    return ProjectError(
+        "core.publish_staging_foreign",
+        f"ya existe «{staging.name}» junto al original y {why}: no se publica ni se toca; "
+        "revísela y, si sobra, bórrela a mano, y vuelva a publicar",
+        obj=obj,
+        field="publicación preparada",
+        value=str(staging),
+    )
+
+
+def _reusable_staging(
+    staging: Path,
+    local: Project,
+    record: Mapping[str, Any] | None,
+    obj: str,
+    clock: Clock,
+    chunk_size: int,
+) -> Generator[Progress, None, TreePrints | None]:
+    """Las huellas de una publicación que dejó preparada un intento anterior de esta copia
+    (retenido por QGIS) si se puede aprovechar; ``None`` si era de esta copia pero la copia
+    ha cambiado desde entonces (se borra para prepararla otra vez). Una que no preparó esta
+    copia, o que ha cambiado, no se toca (:class:`ProjectError`)."""
+    publishing = None if record is None else record.get("publishing")
+    if not isinstance(publishing, Mapping) or publishing.get("folder") != os.fspath(staging):
+        raise _foreign_staging(staging, obj, "no la preparó esta copia local")
+    staged = yield from _prints_steps(
+        staging, "Comprobando la publicación preparada…", clock, chunk_size
+    )
+    if tree_digest(staged) != publishing.get("digest"):
+        raise _foreign_staging(staging, obj, "ha cambiado desde que se preparó")
+    now = yield from _prints_steps(local.root, "Comprobando la copia local…", clock, chunk_size)
+    if tree_digest(now) == publishing.get("local_digest"):
+        return staged
+    remove_tree(staging, clock)  # de esta copia, pero de antes de sus últimos cambios
+    return None
+
+
+def _remember_staging(
+    userdata: UserData, uid: str, staging: Path, prints: TreePrints, local: TreePrints
+) -> None:
+    """Anota en el registro de la copia la publicación preparada (para reintentar)."""
+    record = dict(userdata.checkout_record(uid) or {})
+    record["publishing"] = {
+        "folder": os.fspath(staging),
+        "digest": tree_digest(prints),
+        "local_digest": tree_digest(local),
+    }
+    userdata.set_checkout_record(uid, record)
+
+
+def _forget_staging(userdata: UserData, uid: str) -> None:
+    record = userdata.checkout_record(uid)
+    if record is not None and "publishing" in record:
+        del record["publishing"]
+        userdata.set_checkout_record(uid, record)
 
 
 def publish_steps(
@@ -807,50 +907,63 @@ def publish_steps(
     staging = publishing_path(original)
     database = local.database_path
     warnings = _recover_local_wal(database, obj)
-    counter = read_header(database).change_counter
     finished = staged = keep = False
+    prints: TreePrints | None = None
     try:
-        copied: CopyResult | None = None
-        for step in copy_steps(
-            local.root, staging, exclude=CHECKOUT_EXCLUDE, clock=clock, disk_usage=disk_usage,
-            chunk_size=chunk_size,
-        ):
-            if isinstance(step.result, CopyResult):
-                copied, staged = step.result, True
-            yield Progress(PUBLISH_PHASES[2], step.done, step.total, step.message)
-        if copied is None:
-            raise TypeError("la copia no ha terminado con su resultado")
-        if _changed(database, counter):
-            raise ProjectError(
-                "core.publish_local_changed",
-                "otro programa (QGIS, por ejemplo) ha escrito en la copia local mientras se "
-                "publicaba: no se ha publicado nada; cierre ese programa y vuelva a publicar",
-                obj=obj,
-                field=PROJECT_STORE,
-                value=str(database),
-            )
-        yield Progress(PUBLISH_PHASES[3], 3, total, "Preparando la publicación…")
-        _prepare_staging(staging, original, section, session, clock)
-        prints = _restamp(copied.prints, staging, (PROJECT_STORE, MANIFEST_FILE))
+        if staging.exists():  # un intento anterior retenido por QGIS
+            prints = yield from _reusable_staging(staging, local, record, obj, clock, chunk_size)
+            staged = prints is not None
+        if prints is None:
+            counter = read_header(database).change_counter
+            copied: CopyResult | None = None
+            for step in copy_steps(
+                local.root, staging, exclude=CHECKOUT_EXCLUDE, clock=clock,
+                disk_usage=disk_usage, chunk_size=chunk_size,
+            ):
+                if isinstance(step.result, CopyResult):
+                    copied, staged = step.result, True
+                yield Progress(PUBLISH_PHASES[2], step.done, step.total, step.message)
+            if copied is None:
+                raise TypeError("la copia no ha terminado con su resultado")
+            if _changed(database, counter):
+                raise ProjectError(
+                    "core.publish_local_changed",
+                    "otro programa (QGIS, por ejemplo) ha escrito en la copia local mientras se "
+                    "publicaba: no se ha publicado nada; cierre ese programa y vuelva a "
+                    "publicar",
+                    obj=obj,
+                    field=PROJECT_STORE,
+                    value=str(database),
+                )
+            yield Progress(PUBLISH_PHASES[3], 3, total, "Preparando la publicación…")
+            _prepare_staging(staging, original, section, session, clock)
+            prints = _restamp(copied.prints, staging, (PROJECT_STORE, MANIFEST_FILE))
+            _remember_staging(userdata, local.uid, staging, prints, copied.prints)
         yield Progress(PUBLISH_PHASES[4], 4, total, "Sustituyendo el original…")
         try:
             previous, swapped = _swap(original, staging, seen, obj, clock)
         except _HalfDone as half:
             keep = True
             raise half.error from half
-        except OSError as exc:
+        except _Blocked as blocked:
+            keep = True
+            error = blocked.error
             raise ProjectError(
-                "core.publish_failed",
-                f"no se ha podido sustituir el original ({exc.strerror or exc}): no se ha "
-                "publicado nada y el original sigue como estaba; vuelva a intentarlo",
+                "core.publish_blocked",
+                f"no se puede renombrar «{blocked.folder.name}» ({error.strerror or error}): "
+                "QGIS u otro programa tiene abierto un fichero de esa carpeta. No se ha "
+                "publicado nada: el original sigue intacto y la publicación preparada queda "
+                f"en «{staging.name}»; cierre ese programa y vuelva a publicar (se "
+                "aprovechará lo ya copiado)",
                 obj=obj,
-                field="original",
-                value=str(original),
-            ) from exc
+                field="carpeta",
+                value=str(blocked.folder),
+            ) from error
         finished = True
     finally:
         if not finished and staged and not keep:
             remove_tree(staging, clock)
+            _forget_staging(userdata, local.uid)
     warnings.extend(swapped)
     userdata.clear_checkout_record(local.uid)
     warnings.extend(local.close())

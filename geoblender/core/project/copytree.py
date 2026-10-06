@@ -23,7 +23,9 @@ progreso; cerrar el generador (``close()``) cancela.
 4. **Comprobación**: se vuelve a leer la copia y sus huellas tienen que ser las del
    original; si no, error con los ficheros que difieren.
 5. Se **renombra** la temporal al destino: nunca queda una copia a medias con el nombre
-   definitivo. Cancelar o fallar en cualquier paso borra la temporal.
+   definitivo. Cancelar o fallar en cualquier paso borra la temporal. Después se vuelve a
+   listar con su nombre (:func:`refresh_listing`): en la red, si no, no se podría sustituir
+   después un fichero de dentro.
 
 :func:`fingerprint_steps` / :func:`fingerprint` dan las huellas de una carpeta,
 :func:`compare_prints` dice qué falta, qué sobra y qué cambió entre dos y
@@ -259,6 +261,26 @@ def _retrying(action: Callable[[], _T], clock: Clock) -> _T:
                 raise
             clock.sleep(RETRY_WAIT_S)
     raise AssertionError("inalcanzable")  # pragma: no cover
+
+
+def refresh_listing(folder: Path) -> None:
+    """Vuelve a listar ``folder`` y sus subcarpetas (solo nombres y datos de directorio, sin
+    leer ficheros) tras renombrarla. En una carpeta de red (SMB) que se listó con su nombre
+    anterior, Windows no deja después sustituir un fichero de dentro (``os.replace``: «el
+    proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso») hasta
+    que se lista con el nombre nuevo (docs/trampas.md §6). Si no se puede listar, no hace
+    nada: es una ayuda, no una comprobación."""
+    pending = [Path(folder)]
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as found:
+                for entry in found:
+                    entry.stat(follow_symlinks=False)
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+        except OSError:
+            continue
 
 
 def remove_tree(path: Path, clock: Clock = SYSTEM_CLOCK) -> None:
@@ -503,6 +525,7 @@ def copy_steps(
         except OSError as exc:
             raise _failed(dest, exc) from exc
         finished = True
+        refresh_listing(dest)  # en la red, para poder sustituir después su cabecera
     finally:
         if not finished:
             remove_tree(temporary, clock)

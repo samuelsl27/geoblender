@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Copia local de trabajo y publicación (spec 002, T31 y T32; RF-002-31, RF-002-32; plan
+"""Copia local de trabajo y publicación (spec 002, T31 a T33; RF-002-31 a RF-002-33; plan
 002 §5.4, «Copia local» y «Publicación»; formato-proyecto §6).
 
 Sacar una copia local reserva el original (su ``.lock`` en modo ``checkout``), lo copia
@@ -14,6 +14,11 @@ Publicar la copia la copia junto al original como ``<Nombre>.gbproj.publicando``
 ``checkout = null`` y el evento ``publish``), renombra el original a
 ``<Nombre>.gbproj.anterior`` (sustituyendo la anterior) y la publicación al nombre del
 original, y libera la reserva. Cancelar antes de sustituir nada no deja nada a medias.
+
+Si no se puede publicar (reserva perdida, original cambiado, carpeta retenida por QGIS),
+el original queda con las mismas huellas, la copia local intacta y el mensaje dice el
+motivo y qué hacer; con la carpeta retenida, ``.publicando`` se conserva y el reintento la
+aprovecha. La carpeta retenida se simula sustituyendo el renombrado del módulo.
 """
 
 import hashlib
@@ -471,6 +476,31 @@ class PublishTest(unittest.TestCase):
             self.assertTrue((env.root / "exports" / "informe.pdf").is_file())
             self.assertEqual(event_kinds(env.root).count("publish"), 2)
 
+    def test_refreshes_listings_after_renaming(self) -> None:
+        """RF-002-32, RF-002-33 (docs/trampas.md §6): cada carpeta que se renombra al
+        publicar (la ``.anterior`` que se aparta, el original a ``.anterior`` y la
+        publicación al nombre del original) se vuelve a listar con su nombre nuevo: en la
+        red, si no, Windows no deja sustituir después su cabecera (``os.replace``)."""
+        with project_tmp() as tmp:
+            env = Env(tmp)
+            first = env.checkout()
+            env.publish(first.opened.project)
+            second = env.checkout()
+            seen: list[tuple[str, bool]] = []
+            real = checkout.refresh_listing
+
+            def spy(folder: Path) -> None:
+                seen.append((Path(folder).name, Path(folder).is_dir()))
+                real(folder)
+
+            with mock.patch.object(checkout, "refresh_listing", spy):
+                env.publish(second.opened.project)
+            names = [name for name, _exists in seen]
+            self.assertEqual(len(names), 3, names)
+            self.assertTrue(names[0].startswith(f"{PREVIOUS}.borrando-"), names)
+            self.assertEqual(names[1:], [PREVIOUS, ORIGINAL])
+            self.assertTrue(all(exists for _name, exists in seen))
+
     def test_cancel_before_replacing_leaves_nothing(self) -> None:
         """RF-002-32 (RNF-002-06): cancelar a mitad de la copia, o justo antes de
         sustituir, no deja nada junto al original, que sigue reservado y sin cambios, y
@@ -496,6 +526,182 @@ class PublishTest(unittest.TestCase):
                     self.assertEqual(snapshot(local.root), local_files)
                     self.assertTrue(local.writable)
                     self.assertEqual(env.userdata.checkout_record(env.uid), record)
+            local.close()
+
+
+STAGING = "Cantera Prueba.gbproj.publicando"
+
+
+def held(*blocked: Path):
+    """``_rename`` que falla como si QGIS tuviera abierto un fichero de las carpetas
+    ``blocked`` (``PermissionError``, WinError 32) y renombra las demás."""
+    real = checkout._rename
+
+    def rename(source: Path, target: Path) -> None:
+        if Path(source) in blocked:
+            raise PermissionError(
+                13,
+                "El proceso no tiene acceso al archivo porque está siendo utilizado por otro "
+                "proceso",
+                str(source),
+            )
+        real(source, target)
+
+    return mock.patch.object(checkout, "_rename", rename)
+
+
+class PublishRefusedTest(unittest.TestCase):
+    """RF-002-33: si no se puede publicar, el original queda con las mismas huellas, la
+    copia local intacta y el mensaje dice el motivo y qué hacer; nunca se publica a
+    medias."""
+
+    def _prepare(self, tmp: Path, **kwargs):
+        env = Env(tmp, **kwargs)
+        result = env.checkout()
+        local = result.opened.project
+        local.set_window(NEW_WINDOW, 1.0, 0, "Ampliación hacia el este")
+        (local.root / "rasters" / "gis_dtm_nuevo.tif").write_bytes(b"nuevo" * 1000)
+        return env, local
+
+    def _assert_untouched(self, env: Env, local, original_files, local_files) -> None:
+        self.assertEqual(snapshot(env.root), original_files)
+        self.assertEqual(snapshot(local.root), local_files)
+        self.assertTrue(local.writable)
+        self.assertIsNotNone(env.userdata.checkout_record(env.uid))
+
+    def test_reservation_lost(self) -> None:
+        """RF-002-33: si otra sesión forzó la reserva, no se publica; el mensaje dice
+        quién lo tiene ahora y qué hacer para no perder el trabajo."""
+        with project_tmp() as tmp:
+            env, local = self._prepare(tmp)
+            seen = lock.inspect(env.root, SESSION_B, clock=env.clock, pid_alive=env.pids)
+            self.assertIs(seen.state, lock.LockState.RESERVED)
+            lock.force(env.root, SESSION_B, lock.LockMode.LOCAL, seen.holder, clock=env.clock,
+                       pid_alive=env.pids)
+            original_files, local_files = snapshot(env.root), snapshot(local.root)
+            with self.assertRaises(errors.ProjectError) as caught:
+                env.publish(local)
+            self.assertEqual(caught.exception.code, "core.publish_reservation_lost")
+            message = str(caught.exception)
+            for expected in ("ya no está reservado", "otra", "PC-PRUEBA-B", "proyecto aparte",
+                             "copia nueva"):
+                self.assertIn(expected, message)
+            self._assert_untouched(env, local, original_files, local_files)
+            self.assertEqual(env.siblings(), [ORIGINAL])
+            local.close()
+
+    def test_original_changed(self) -> None:
+        """RF-002-33: si el original cambió desde que se sacó la copia (QGIS editó su
+        base), no se publica; el mensaje dice qué cambió y qué hacer."""
+        with project_tmp() as tmp:
+            env, local = self._prepare(tmp)
+            write_like_qgis(env.root / "project.gpkg")
+            original_files, local_files = snapshot(env.root), snapshot(local.root)
+            with self.assertRaises(errors.ProjectError) as caught:
+                env.publish(local)
+            self.assertEqual(caught.exception.code, "core.publish_original_changed")
+            message = str(caught.exception)
+            for expected in ("ha cambiado", "«project.gpkg» ha cambiado", "QGIS",
+                             "solo lectura", "proyecto aparte"):
+                self.assertIn(expected, message)
+            self._assert_untouched(env, local, original_files, local_files)
+            self.assertEqual(env.siblings(), [ORIGINAL])
+            local.close()
+
+    def test_retained_folder_keeps_staging_and_retry_completes(self) -> None:
+        """RF-002-33: si el original no se puede renombrar (QGIS tiene abierto un fichero
+        suyo), no se publica nada: el original sigue intacto (reservado), la copia local
+        intacta, la publicación preparada queda en ``.publicando`` y el mensaje pide
+        cerrar QGIS y volver a publicar; el reintento la aprovecha (no vuelve a copiar) y
+        completa la publicación."""
+        with project_tmp() as tmp:
+            env, local = self._prepare(tmp)
+            original_files, local_files = snapshot(env.root), snapshot(local.root)
+            with held(env.root), self.assertRaises(errors.ProjectError) as caught:
+                env.publish(local)
+            self.assertEqual(caught.exception.code, "core.publish_blocked")
+            message = str(caught.exception)
+            for expected in ("QGIS", STAGING, "vuelva a publicar", "intacto"):
+                self.assertIn(expected, message)
+            self._assert_untouched(env, local, original_files, local_files)
+            self.assertEqual(env.siblings(), [ORIGINAL, STAGING])
+            staged = env.parent / STAGING
+            self.assertIsNone(manifest.read_manifest(staged).checkout)
+            self.assertEqual(event_kinds(staged)[-1], "publish")
+            with mock.patch.object(checkout, "copy_steps",
+                                   side_effect=AssertionError("no tenía que volver a copiar")):
+                published = env.publish(local)
+            self.assertEqual(env.siblings(), [ORIGINAL, PREVIOUS])
+            self.assertTrue((env.root / "rasters" / "gis_dtm_nuevo.tif").is_file())
+            self.assertEqual(event_kinds(env.root).count("publish"), 1)
+            self.assertEqual(published.prints, env.prints(env.root))
+            self.assertIsNone(env.userdata.checkout_record(env.uid))
+
+    def test_retry_after_changing_the_copy_prepares_it_again(self) -> None:
+        """RF-002-33: si después de un intento retenido se sigue trabajando en la copia,
+        la publicación preparada ya no vale: el reintento la vuelve a preparar y publica
+        lo último."""
+        with project_tmp() as tmp:
+            env, local = self._prepare(tmp)
+            with held(env.root), self.assertRaises(errors.ProjectError):
+                env.publish(local)
+            (local.root / "exports" / "informe.pdf").write_bytes(b"%PDF-1.7 informe")
+            env.publish(local)
+            self.assertTrue((env.root / "exports" / "informe.pdf").is_file())
+            self.assertEqual(env.siblings(), [ORIGINAL, PREVIOUS])
+
+    def test_second_rename_fails_original_restored(self) -> None:
+        """RF-002-33: si falla el segundo renombrado (la publicación preparada no puede
+        tomar el nombre del original), se deshace el primero: el original vuelve a su
+        nombre, intacto, la ``.anterior`` que hubiera sigue igual y ``.publicando`` queda
+        para reintentar."""
+        with project_tmp() as tmp:
+            env, local = self._prepare(tmp)
+            (env.parent / PREVIOUS).mkdir()
+            (env.parent / PREVIOUS / "manifest.json").write_text("{}", encoding="utf-8")
+            original_files, local_files = snapshot(env.root), snapshot(local.root)
+            with held(env.parent / STAGING), self.assertRaises(errors.ProjectError) as caught:
+                env.publish(local)
+            self.assertEqual(caught.exception.code, "core.publish_blocked")
+            self._assert_untouched(env, local, original_files, local_files)
+            self.assertEqual(env.siblings(), [ORIGINAL, PREVIOUS, STAGING])
+            self.assertEqual(sorted(p.name for p in (env.parent / PREVIOUS).iterdir()),
+                             ["manifest.json"])
+            env.publish(local)
+            self.assertEqual(env.siblings(), [ORIGINAL, PREVIOUS])
+
+    def test_undo_fails_names_both_folders(self) -> None:
+        """RF-002-33: si tampoco se puede deshacer, el error nombra las dos carpetas (el
+        original y la publicación, completas) y qué renombrar; no se borra ninguna."""
+        with project_tmp() as tmp:
+            env, local = self._prepare(tmp)
+            original_prints = env.prints(env.root)
+            with held(env.parent / STAGING, env.parent / PREVIOUS), \
+                    self.assertRaises(errors.ProjectError) as caught:
+                env.publish(local)
+            self.assertEqual(caught.exception.code, "core.publish_half_done")
+            message = str(caught.exception)
+            self.assertIn(PREVIOUS, message)
+            self.assertIn(STAGING, message)
+            self.assertEqual(env.siblings(), [PREVIOUS, STAGING])
+            self.assertEqual(env.prints(env.parent / PREVIOUS), original_prints)
+            local.close()
+
+    def test_foreign_staging_is_not_touched(self) -> None:
+        """RF-002-33: un ``.publicando`` que no preparó esta copia (o que cambió desde
+        entonces) no se toca ni se publica: el mensaje dice que se revise y se quite."""
+        with project_tmp() as tmp:
+            env, local = self._prepare(tmp)
+            foreign = env.parent / STAGING
+            foreign.mkdir()
+            (foreign / "nota.txt").write_text("de otra publicación", encoding="utf-8")
+            original_files, local_files = snapshot(env.root), snapshot(local.root)
+            with self.assertRaises(errors.ProjectError) as caught:
+                env.publish(local)
+            self.assertEqual(caught.exception.code, "core.publish_staging_foreign")
+            self.assertIn(STAGING, str(caught.exception))
+            self._assert_untouched(env, local, original_files, local_files)
+            self.assertEqual(sorted(p.name for p in foreign.iterdir()), ["nota.txt"])
             local.close()
 
 
