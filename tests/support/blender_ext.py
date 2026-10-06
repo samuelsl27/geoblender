@@ -403,6 +403,34 @@ def untrack_registrations() -> None:
     _SUBSCRIPTIONS.clear()
 
 
+def _from_extension(function: object) -> bool:
+    """Verdadero si ``function`` es de la copia de pruebas de la extensión."""
+    module = str(getattr(function, "__module__", "") or "")
+    name = os.environ.get(ENV_MODULE, "")
+    return bool(name) and (module == name or module.startswith(name + "."))
+
+
+def load_file(filepath: str | os.PathLike[str] | None = None) -> None:
+    """Abre ``filepath`` (sin él, la escena de fábrica, sin tocar las preferencias ni los
+    complementos) y olvida las suscripciones de msgbus que los complementos de **Blender**
+    hacen al cargar un fichero (spec 002, T22).
+
+    Al cargar, ``copy_global_transform`` y ``pose_library`` vuelven a suscribirse desde su
+    ``load_post``: no son un rastro de la extensión, pero el seguimiento de
+    :func:`track_registrations` las vería como nuevas. Las de la extensión se conservan:
+    una que no se quite sigue siendo un rastro."""
+    before = list(_SUBSCRIPTIONS)
+    if filepath is None:
+        bpy.ops.wm.read_homefile(use_factory_startup=True)
+    else:
+        bpy.ops.wm.open_mainfile(filepath=os.fspath(filepath))
+    _SUBSCRIPTIONS[:] = [
+        entry
+        for entry in _SUBSCRIPTIONS
+        if any(entry is old for old in before) or _from_extension(entry[1].target)
+    ]
+
+
 def registered_timers() -> list[CallableRef]:
     """Las funciones anotadas por :func:`track_registrations` que siguen registradas (en
     ``blender -b`` los temporizadores no se ejecutan: uno que no se quita, sigue)."""
