@@ -33,6 +33,13 @@ Geoblender 0.1.0 ya se instala, aunque todavía no tiene funciones mineras (spec
 - Instrucciones para agentes de IA: `AGENTS.md` en la raíz y en `geoblender/`, con un
   `CLAUDE.md` junto a cada uno que los importa.
 - `.editorconfig` y `.gitattributes`: UTF-8 sin BOM y finales LF.
+- Comprobación de la documentación del proyecto, `tools/check_docs.py`, y la opción
+  `--documentacion` de `tools/check.py` (spec 007).
+- Publicación, `tools/publish.py` (spec 007): sube el código a GitHub sin forzar y deja el
+  NAS igual que la carpeta del proyecto, solo si los dos repositorios están limpios y las
+  dos comprobaciones en verde. El espejo nunca borra ni pisa lo que alguien haya dejado en
+  el NAS: si algo cambió allí desde el último espejo, se para, lo lista y explica cómo
+  traerlo al PC. Opciones `--solo-espejo` y `--rehacer-estado`.
 
 ### Cambiado
 
@@ -40,4 +47,5 @@ Geoblender 0.1.0 ya se instala, aunque todavía no tiene funciones mineras (spec
   documentación del proyecto, interna de IMGA, queda en otro que no se publica. Las
   herramientas encuentran la raíz del código por el manifiesto y `tools/check.py`, y la
   comprobación completa ya no necesita la documentación al lado: en el PC de referencia, con
-  el código en su disco local, tarda unos 35 s (antes, unos 48 s en la unidad de red).
+  el código en su disco local, tarda unos 40 s con las pruebas de la publicación (antes,
+  unos 48 s en la unidad de red, sin ellas).
