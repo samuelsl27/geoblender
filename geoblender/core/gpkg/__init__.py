@@ -8,6 +8,7 @@ clásico, nunca en WAL (ARQ-17): los proyectos de IMGA viven en una unidad de re
 
 from .connection import BUSY_TIMEOUT_MS, GpkgConnection, sqlite_uri
 from .header import SqliteHeader, read_header
+from .wal import WalOutcome, WalRecovery, private_copy, to_classic_journal
 from .wkb import Geometry, decode_geometry, encode_geometry
 
 __all__ = [
@@ -15,8 +16,12 @@ __all__ = [
     "Geometry",
     "GpkgConnection",
     "SqliteHeader",
+    "WalOutcome",
+    "WalRecovery",
     "decode_geometry",
     "encode_geometry",
+    "private_copy",
     "read_header",
     "sqlite_uri",
+    "to_classic_journal",
 ]

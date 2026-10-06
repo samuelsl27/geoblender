@@ -87,9 +87,16 @@ def _busy(path: Path, error: BaseException) -> DatabaseBusyError:
 class GpkgConnection:
     """Una conexión al GeoPackage, de escritura o de lectura."""
 
-    def __init__(self, conn: sqlite3.Connection, path: Path, writable: bool) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        path: Path,
+        writable: bool,
+        source: Path | None = None,
+    ) -> None:
         self._conn = conn
-        self.path = Path(path)
+        self.path = Path(path)  # lo que está abierto (la copia privada, si la hay)
+        self.source = Path(source) if source is not None else self.path  # la del proyecto
         self.writable = writable
 
     @classmethod
@@ -147,20 +154,24 @@ class GpkgConnection:
         Una base en WAL o con un diario caliente necesita una copia privada en
         ``private_dir`` (``core.gpkg.wal``); :class:`DatabaseError` si no la hay.
         """
-        path = Path(path)
-        header = read_header(path)
-        if header.needs_recovery:
-            raise DatabaseError(
-                "core.gpkg_needs_private_copy",
-                "está en modo WAL o tiene una transacción a medias: se lee en una copia "
-                "privada para no crear ficheros junto a ella",
-                obj=_OBJ,
-                field="diario",
-                value=str(path),
-                context={"private_dir": str(private_dir) if private_dir else None},
-            )
+        source = Path(path)
+        target = source
+        if read_header(source).needs_recovery:
+            if private_dir is None:
+                raise DatabaseError(
+                    "core.gpkg_needs_private_copy",
+                    "está en modo WAL o tiene una transacción a medias: se lee en una "
+                    "copia privada para no crear ficheros junto a ella, y no se ha "
+                    "indicado su carpeta",
+                    obj=_OBJ,
+                    field="diario",
+                    value=str(source),
+                )
+            from .wal import private_copy  # wal importa este módulo
+
+            target = private_copy(source, Path(private_dir))
         conn = sqlite3.connect(
-            sqlite_uri(path, mode="ro"),
+            sqlite_uri(target, mode="ro"),
             uri=True,
             timeout=BUSY_TIMEOUT_MS / 1000,
             isolation_level=None,
@@ -171,7 +182,7 @@ class GpkgConnection:
         except BaseException:
             conn.close()
             raise
-        return cls(conn, path, writable=False)
+        return cls(conn, target, writable=False, source=source)
 
     @property
     def connection(self) -> sqlite3.Connection:
