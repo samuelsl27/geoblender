@@ -25,7 +25,6 @@ from ...core.errors import GeoblenderError
 from ...core.gpkg.header import read_header
 from ...core.i18n import tr
 from ...core.project.model import OpenMode
-from ..ops.core import crs_lines, origin_lines
 from ..scene import project_session
 
 TRANSLATION_CONTEXT = "Geoblender"
@@ -56,6 +55,10 @@ def mode_text(project: Any) -> str:
 def project_rows(project: Any) -> list[tuple[str, str]]:
     """(icono, texto) de los seis datos de RF-002-34: nombre, modo, CRS horizontal y
     vertical, GeoOrigin, ventana de trabajo y paso de rejilla."""
+    # Diferido: bl/ops importa bl/ui (la puerta de modo, contrato 2 del plan 003), y bl/ui
+    # no importa bl/ops al cargarse (ARQ-08).
+    from ..ops.core import crs_lines, origin_lines
+
     horizontal, vertical = crs_lines(project)
     origin, window, step = origin_lines(project)
     return [

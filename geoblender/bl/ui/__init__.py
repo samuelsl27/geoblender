@@ -8,7 +8,8 @@ preferencias) → clases propias de la interfaz (los menús y la pestaña «Proy
 spec 002) → catálogo (``registry``: menús generados por ``menus``, provisionales y
 textos) → sustitución de ``draw_left`` de la barra superior (``topbar``) → conmutador
 (``switcher``: su manejador ``load_post``; al desregistrar, devuelve cada ventana en modo
-Geoblender a su espacio de Blender y retira su temporizador). Cada paso
+Geoblender a su espacio de Blender y retira su temporizador) → atajos del catálogo en el
+*keyconfig* de complementos (``keymap``). Cada paso
 anota cómo deshacerse en una pila, y :func:`unregister` la recorre al revés: deshace solo
 lo hecho, también si el registro falló a medias. Las dos son idempotentes.
 """
@@ -20,7 +21,7 @@ from collections.abc import Callable
 from ...core import i18n
 from ..props.ui import LANGUAGES
 from ..registry import register_classes, unregister_classes
-from . import commands, core_menus, core_panel, menus, registry, switcher, topbar
+from . import commands, core_menus, core_panel, keymap, menus, registry, switcher, topbar
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los menús y la pestaña «Proyecto» de core (spec 002).
@@ -62,6 +63,7 @@ def register() -> None:
         (_register_catalog, registry.unregister),
         (_install_topbar, topbar.restore),
         (switcher.register, switcher.unregister),
+        (keymap.register, keymap.unregister),
     )
     try:
         for do, undo in steps:
