@@ -23,6 +23,11 @@ from tests.support.trees import temp_tree
 
 catalog = import_geoblender("core.catalog")
 loader = import_geoblender("core.catalog.loader")
+i18n = import_geoblender("core.i18n")
+
+# Accesos cruzados a comandos cuya casa es un menú que aún no está en el catálogo (los
+# lleva la prueba contra BS §8; T05 y T06 los definen).
+from tests.unit.core.catalog.test_catalog_matches_docs import PENDING_REFS  # noqa: E402
 
 
 class LoadTest(unittest.TestCase):
@@ -114,7 +119,9 @@ class LoadTest(unittest.TestCase):
         """RF-003-06: el catálogo real se carga sin incidencias (las de contenido, frente
         a BS §8, las comprueban ``test_catalog_matches_docs`` y ``test_catalog_content``)."""
         cat = catalog.load()
-        self.assertEqual(catalog.validate(cat), [])
+        found = [str(issue) for issue in catalog.validate(cat, messages=i18n.load_messages())
+                 if not (issue.value in PENDING_REFS and "referencia" in issue.message)]
+        self.assertEqual(found, [])
         self.assertIs(catalog.load(), cat, "en caché")
 
     def test_loads_within_budget(self) -> None:

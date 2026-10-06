@@ -1,0 +1,323 @@
+# Entradas del roadmap y specs que nombra el catálogo de comandos (spec 003, RF-003-07):
+# su título en inglés (el msgid) y en español, para «Disponible en <entrada · título>».
+# delivered = true: la spec ya entrega sus comandos (sin la clase real del comando, sigue
+# siendo provisional). Los títulos de los R-id son los de docs/producto/roadmap.md.
+
+["002"]
+title.en = "Project and georeference"
+title.es = "Proyecto y georreferencia"
+delivered = true
+
+["003"]
+title.en = "Geoblender interface"
+title.es = "Interfaz Geoblender"
+delivered = true
+
+["004"]
+title.en = "Background jobs"
+title.es = "Trabajos en segundo plano"
+
+["005"]
+title.en = "Drillholes"
+title.es = "Sondeos"
+
+["006"]
+title.en = "Base topography"
+title.es = "Topografía base"
+
+["R-07"]
+title.en = "Versions and provenance"
+title.es = "Versiones y procedencia"
+
+["R-08"]
+title.en = "Acceptance criteria and permanent checks"
+title.es = "Criterios de aceptación y validaciones permanentes"
+
+["R-09"]
+title.en = "Precision drawing: snapping and numeric input"
+title.es = "Dibujo de precisión: encaje y entrada numérica"
+
+["R-10"]
+title.en = "Coordinated undo between Blender and the database"
+title.es = "Deshacer coordinado entre Blender y la BD"
+
+["R-11"]
+title.en = "Work profiles and the «Workflow» panel"
+title.es = "Perfiles de trabajo y panel «Flujo de trabajo»"
+
+["R-12"]
+title.en = "Teamwork and session log"
+title.es = "Trabajo en equipo y registro de sesión"
+
+["R-13"]
+title.en = "Installation and update on the workstations"
+title.es = "Instalación y actualización en los puestos"
+
+["R-14"]
+title.en = "Statistics, QA/QC and detection limits"
+title.es = "Estadística, QA/QC y límites de detección"
+
+["R-15"]
+title.en = "Domains and compositing"
+title.es = "Dominios y compositado"
+
+["R-16"]
+title.en = "Sections and digitizing"
+title.es = "Secciones y digitalización"
+
+["R-17"]
+title.en = "Solids from profiles"
+title.es = "Sólidos desde perfiles"
+
+["R-18"]
+title.en = "Geological surfaces and units by thickness"
+title.es = "Superficies geológicas y unidades por espesor"
+
+["R-19"]
+title.en = "Third-party sections and contact detection"
+title.es = "Secciones de terceros y detección de contactos"
+
+["R-20"]
+title.en = "Automatic implicit modelling with GemPy"
+title.es = "Modelado implícito automático con GemPy"
+
+["R-21"]
+title.en = "Structural data and control of the implicit model"
+title.es = "Datos estructurales y control del modelo implícito"
+
+["R-22"]
+title.en = "Block model in a database"
+title.es = "Modelo de bloques en base de datos"
+
+["R-23"]
+title.en = "Assignment by solids and surfaces"
+title.es = "Asignación por sólidos y superficies"
+
+["R-24"]
+title.en = "NN and IDW estimation"
+title.es = "Estimación NN e IDW"
+
+["R-25"]
+title.en = "Variography"
+title.es = "Variografía"
+
+["R-26"]
+title.en = "Ordinary kriging and estimate validation"
+title.es = "Krigeado ordinario y validación de la estimación"
+
+["R-27"]
+title.en = "Resource classification"
+title.es = "Clasificación de recursos"
+
+["R-28"]
+title.en = "Sub-blocks and rotation"
+title.es = "Sub-bloques y rotación"
+
+["R-29"]
+title.en = "Ornamental stone: fracturing and block yield"
+title.es = "Roca ornamental: fracturación y rendimiento de bloque"
+
+["R-30"]
+title.en = "Terrain analysis: derivatives, orthophoto and features"
+title.es = "Análisis del terreno: derivadas, ortofoto y elementos"
+
+["R-31"]
+title.en = "Surface profiles"
+title.es = "Perfiles de superficies"
+
+["R-32"]
+title.en = "Legal limits and constraints"
+title.es = "Límites legales y restricciones"
+
+["R-33"]
+title.en = "Envelopes and benching"
+title.es = "Envolventes y escalonado"
+
+["R-34"]
+title.en = "Quarry with two surfaces"
+title.es = "Cantera con dos superficies"
+
+["R-35"]
+title.en = "Pit by benches"
+title.es = "Corta por bancos"
+
+["R-36"]
+title.en = "Parametric design entities"
+title.es = "Entidades de diseño paramétricas"
+
+["R-37"]
+title.en = "Design hydrology, pond and channel"
+title.es = "Hidrología de diseño, balsa y canal"
+
+["R-38"]
+title.en = "Volumetrics between surfaces"
+title.es = "Cubicación entre superficies"
+
+["R-39"]
+title.en = "Fills, waste dumps and earthworks balance"
+title.es = "Rellenos, escombreras y balance de tierras"
+
+["R-40"]
+title.en = "Haul roads and ramps"
+title.es = "Pistas y rampas"
+
+["R-41"]
+title.en = "Figure control: sensitivity and audit"
+title.es = "Control de cifras: sensibilidad y auditoría"
+
+["R-42"]
+title.en = "Existing slopes: detection and treatment by linear programming"
+title.es = "Taludes existentes: detección y tratamiento por programación lineal"
+
+["R-43"]
+title.en = "Reclamation"
+title.es = "Restauración"
+
+["R-44"]
+title.en = "Regulatory checker"
+title.es = "Comprobador normativo"
+
+["R-45"]
+title.en = "Parameter sweep and scenarios"
+title.es = "Barrido de parámetros y escenarios"
+
+["R-46"]
+title.en = "Economic and geotechnical parameters"
+title.es = "Parámetros económicos y geotécnicos"
+
+["R-47"]
+title.en = "Floating cone"
+title.es = "Cono flotante"
+
+["R-48"]
+title.en = "LG/pseudoflow optimal pit and nested shells"
+title.es = "Corta óptima LG/pseudoflow y conchas anidadas"
+
+["R-49"]
+title.en = "Pit design from the shell"
+title.es = "Diseño de corta desde la concha"
+
+["R-50"]
+title.en = "Phases and advances"
+title.es = "Fases y avances"
+
+["R-51"]
+title.en = "Reserves"
+title.es = "Reservas"
+
+["R-52"]
+title.en = "Resource statement with RPEEE"
+title.es = "Declaración de recursos con RPEEE"
+
+["R-53"]
+title.en = "Monitoring and depletion"
+title.es = "Seguimiento y depleción"
+
+["R-54"]
+title.en = "Scheduling by stages and phase animation"
+title.es = "Planificación por etapas y animación de fases"
+
+["R-55"]
+title.en = "Advanced metal mine scheduling"
+title.es = "Planificación metálica avanzada"
+
+["R-56"]
+title.en = "Reconciliation"
+title.es = "Conciliación"
+
+["R-57"]
+title.en = "Scaled drawings with title block"
+title.es = "Planos a escala con cajetín"
+
+["R-58"]
+title.en = "Standard drawing sets"
+title.es = "Juegos de planos tipo"
+
+["R-59"]
+title.en = "Reports and data for the report"
+title.es = "Informes y datos para la memoria"
+
+["R-60"]
+title.en = "IMGA palette and styles"
+title.es = "Paleta y estilos IMGA"
+
+["R-61"]
+title.en = "Contour lines and breaklines of the designs"
+title.es = "Curvas y líneas de rotura de los diseños"
+
+["R-62"]
+title.en = "Version and revision comparator"
+title.es = "Comparador de versiones y revisiones"
+
+["R-63"]
+title.en = "Review cycle with the owner"
+title.es = "Ciclo de revisión con la propiedad"
+
+["R-64"]
+title.en = "RecMin: databases and text files"
+title.es = "RecMin: bases y ficheros de texto"
+
+["R-65"]
+title.en = "DXF"
+title.es = "DXF"
+
+["R-66"]
+title.en = "DWG via an external converter"
+title.es = "DWG mediante conversor externo"
+
+["R-67"]
+title.en = "LandXML"
+title.es = "LandXML"
+
+["R-68"]
+title.en = "Aplitop DTM"
+title.es = "Aplitop MDT"
+
+["R-69"]
+title.en = "Surpac"
+title.es = "Surpac"
+
+["R-70"]
+title.en = "GSLIB and third-party block models"
+title.es = "GSLIB y modelos de bloques de terceros"
+
+["R-71"]
+title.en = "OMF 2"
+title.es = "OMF 2"
+
+["R-72"]
+title.en = "Point clouds and survey meshes"
+title.es = "Nubes de puntos y mallas de levantamiento"
+
+["R-73"]
+title.en = "Publishing and editing in QGIS"
+title.es = "Publicación y edición en QGIS"
+
+["R-74"]
+title.en = "OGC services and official data"
+title.es = "Servicios OGC y datos oficiales"
+
+["R-75"]
+title.en = "Live QGIS–Blender link"
+title.es = "Enlace en vivo QGIS–Blender"
+
+["R-76"]
+title.en = "Slope stability by exporting sections"
+title.es = "Estabilidad de taludes por exportación de secciones"
+
+["R-77"]
+title.en = "Regional digital annual work plan"
+title.es = "Plan de labores digital autonómico"
+
+["R-78"]
+title.en = "Drillhole database: query and management"
+title.es = "Base de sondeos: consulta y gestión"
+
+["R-79"]
+title.en = "Change of the project CRS"
+title.es = "Cambio de CRS del proyecto"
+
+["Blender"]
+title.en = "Blender"
+title.es = "Blender"
+delivered = true

@@ -56,8 +56,10 @@ BLENDER = "blender"  # el motivo es el mensaje del localizador (gbtools.blender)
 # tools/check.py como texto (ast.literal_eval), así que solo textos literales. Cada spec
 # añade aquí el suyo (p. ej. «runtime» la 004, «ace» la 005; «git» la 007, para las
 # pruebas de la publicación; «qgis» la 002, el GDAL de QGIS, que lo registra
-# tests.support.qgis, y también lo usará la 006).
-RESOURCES: tuple[str, ...] = ("symlink", "windows", "blender", "git", "qgis")
+# tests.support.qgis, y también lo usará la 006; «docs» la 003, la carpeta de la
+# documentación, contra la que se comprueba el catálogo de comandos, que lo registra
+# tests.support.docs).
+RESOURCES: tuple[str, ...] = ("symlink", "windows", "blender", "git", "qgis", "docs")
 
 T = TypeVar("T")
 

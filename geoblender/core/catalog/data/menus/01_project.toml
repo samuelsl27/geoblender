@@ -1,0 +1,496 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 1 de 11: Proyecto (BS §8.1).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_project"
+label.en = "Project"
+label.es = "Proyecto"
+description.en = "Create or open the project, its georeference, its versions and the data exchange"
+description.es = "Crear o abrir el proyecto, su georreferencia, sus versiones y el intercambio de datos"
+stage.en = "Project"
+stage.es = "Proyecto"
+step = 1
+branch = "common"
+icon = "gb_menu_project"
+icon_fallback = "FILE_FOLDER"
+
+# Proyecto ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Project"
+label.es = "Proyecto"
+
+[[menu.group.item]]
+key = "geoblender.core_new_project"
+label.en = "New project…"
+label.es = "Nuevo proyecto…"
+description.en = "Create a Geoblender project (.gbproj) with its CRS and work window"
+description.es = "Crea un proyecto de Geoblender (.gbproj) con su sistema de referencia y su ventana de trabajo"
+entry = "002"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.core_open_project"
+label.en = "Open project…"
+label.es = "Abrir proyecto…"
+description.en = "Open a Geoblender project (.gbproj folder)"
+description.es = "Abre un proyecto de Geoblender (carpeta .gbproj)"
+entry = "002"
+action = "D"
+frequency = 3
+jargon = [["RecMin", "yacimiento"]]
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_core_recent"
+label.en = "Open recent"
+label.es = "Abrir reciente"
+description.en = "Recently opened projects on this computer"
+description.es = "Proyectos abiertos por última vez en este equipo"
+entry = "002"
+action = "S"
+frequency = 3
+dynamic = true
+
+[[menu.group.item]]
+key = "geoblender.core_save_project"
+label.en = "Save"
+label.es = "Guardar"
+description.en = "Save the view (.blend) with relative paths; a view without a file goes to scenes/principal.blend"
+description.es = "Guarda la vista (.blend) con rutas relativas; una vista sin fichero va a scenes/principal.blend"
+entry = "002"
+action = "A"
+frequency = 3
+icon_fallback = "FILE_TICK"
+
+[[menu.group.item]]
+key = "geoblender.core_refresh"
+label.en = "Refresh the views from the project"
+label.es = "Refrescar las vistas desde el proyecto"
+description.en = "Reload the views from the project; the number counts the stale results"
+description.es = "Vuelve a cargar las vistas desde el proyecto; el número cuenta los resultados obsoletos"
+entry = "R-07"
+action = "A"
+frequency = 2
+icon_fallback = "FILE_REFRESH"
+
+[[menu.group.item]]
+key = "geoblender.core_close_project"
+label.en = "Close project"
+label.es = "Cerrar proyecto"
+description.en = "Close the project: update its header and release its lock"
+description.es = "Cierra el proyecto: actualiza su cabecera y libera su cerrojo"
+entry = "002"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_core_network"
+label.en = "Local copy and network"
+label.es = "Copia local y red"
+description.en = "Local working copy and network: take a local copy, publish it, project lock"
+description.es = "Copia local de trabajo y red: sacar una copia local, publicarla y el cerrojo del proyecto"
+entry = "002"
+action = "S"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.core_checkout_project"
+label.en = "Work on a local copy…"
+label.es = "Trabajar en copia local…"
+description.en = "Work on a local copy: reserve the original, copy it to this computer and open the copy"
+description.es = "Trabajar en una copia local: reserva el original, lo copia a este equipo y abre la copia"
+entry = "002"
+action = "D"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.core_publish_project"
+label.en = "Publish to the network…"
+label.es = "Publicar en la red…"
+description.en = "Publish the local copy over its original (the original is kept as <Name>.gbproj.anterior)"
+description.es = "Publica la copia local sobre su original (el original se conserva como <Nombre>.gbproj.anterior)"
+entry = "002"
+action = "D"
+background = true
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.core_show_lock"
+label.en = "Project lock…"
+label.es = "Cerrojo del proyecto…"
+description.en = "Who holds the project lock; force a stale or reserved lock after confirming"
+description.es = "Quién tiene el cerrojo del proyecto; forzar uno caducado o reservado, tras confirmarlo"
+entry = "002"
+action = "D"
+frequency = 1
+
+# Georreferencia ------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Georeference"
+label.es = "Georreferencia"
+
+[[menu.group.item]]
+key = "geoblender.core_edit_project_properties"
+label.en = "Project data…"
+label.es = "Datos del proyecto…"
+description.en = "Holder, operation, mining register number and engineer of the project"
+description.es = "Titular, explotación, n.º de registro minero y técnico del proyecto"
+entry = "R-57"
+action = "P"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.core_set_crs"
+label.en = "Coordinate reference system…"
+label.es = "Sistema de referencia…"
+description.en = "Coordinate reference system of the project (horizontal and vertical EPSG)"
+description.es = "Sistema de referencia del proyecto (EPSG horizontal y vertical)"
+entry = "002"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.core_show_geoorigin"
+label.en = "Local origin (GeoOrigin)…"
+label.es = "Origen local (GeoOrigin)…"
+description.en = "Local origin (GeoOrigin) of the project: whole metres, read-only"
+description.es = "Origen local (GeoOrigin) del proyecto: metros enteros, de solo lectura"
+entry = "002"
+action = "D"
+frequency = 0
+jargon = [["RecMin", "coordenadas cortas"], ["RecMin", "gestión automática de coordenadas"]]
+
+[[menu.group.item]]
+key = "geoblender.core_set_work_window"
+label.en = "Work window and grid…"
+label.es = "Ventana de trabajo y rejilla de cálculo…"
+description.en = "Change the work window and, with it, the GeoOrigin (a reason is required)"
+description.es = "Cambia la ventana de trabajo y, con ella, el GeoOrigin (con un motivo obligatorio)"
+entry = "002"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.core_transform_coordinates"
+label.en = "Transform coordinates…"
+label.es = "Transformar coordenadas…"
+description.en = "Between reference systems: ED50 to ETRS89, UTM zones"
+description.es = "Entre sistemas de referencia: de ED50 a ETRS89, husos UTM"
+entry = "006"
+action = "D"
+frequency = 1
+
+# Versiones -----------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Versions"
+label.es = "Versiones"
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_core_versions"
+label.en = "Active version"
+label.es = "Versión activa"
+description.en = "The versions with the state of each one; choose the active one"
+description.es = "Las versiones con el estado de cada una; elegir la activa"
+entry = "R-07"
+action = "S"
+frequency = 3
+doc_id = ["GEOBLENDER_MT_core_versions", "core_set_active_version"]
+dynamic = true
+
+[[menu.group.item.item]]
+key = "geoblender.core_set_active_version"
+label.en = "Set the active version"
+label.es = "Fijar la versión activa"
+description.en = "Make this version the active one"
+description.es = "Hace activa esta versión"
+entry = "R-07"
+action = "A"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.core_new_version"
+label.en = "New version…"
+label.es = "Nueva versión…"
+description.en = "Feature, parent, assignment and reason of the new version"
+description.es = "Rasgo, padre, encargo y motivo de la versión nueva"
+entry = "R-07"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.core_new_revision"
+label.en = "New revision…"
+label.es = "Nueva revisión…"
+description.en = "New revision of the active version (the reason is required)"
+description.es = "Revisión nueva de la versión activa (con motivo obligatorio)"
+entry = "R-07"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.core_set_version_state"
+label.en = "Change state…"
+label.es = "Cambiar estado…"
+description.en = "Draft, current, superseded or discarded; the state is an attribute and no path changes"
+description.es = "Borrador, vigente, superado o descartado; el estado es un atributo y ninguna ruta cambia"
+entry = "R-07"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_core_version_tools"
+label.en = "Variants and comparison"
+label.es = "Variantes y comparación"
+description.en = "Parallel variants, comparison and reproduction of versions"
+description.es = "Variantes paralelas, comparación y reproducción de versiones"
+entry = ""
+action = "S"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.core_new_variant"
+label.en = "New parallel variant…"
+label.es = "Nueva variante paralela…"
+description.en = "Variant that grows in parallel with the active version"
+description.es = "Variante que crece en paralelo a la versión activa"
+entry = "R-12"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.res_compare_versions"
+label.en = "Compare versions…"
+label.es = "Comparar versiones…"
+description.en = "Figures and surfaces of two versions or revisions side by side"
+description.es = "Cifras y superficies de dos versiones o revisiones, una al lado de la otra"
+entry = "R-62"
+action = "P"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.core_reproduce_version"
+label.en = "Reproduce the version from its frozen inputs"
+label.es = "Reproducir la versión desde sus entradas congeladas"
+description.en = "Recompute the version from its frozen inputs and compare the figures"
+description.es = "Vuelve a calcular la versión desde sus entradas congeladas y compara las cifras"
+entry = "R-07"
+action = "A"
+background = true
+frequency = 1
+
+# Control -------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Control"
+label.es = "Control"
+
+[[menu.group.item]]
+key = "geoblender.core_show_parameters"
+label.en = "Project parameters…"
+label.es = "Parámetros del proyecto…"
+description.en = "Parameters with their type, provenance and history"
+description.es = "Parámetros con su tipo, su procedencia y su historial"
+entry = "R-07"
+action = "P"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.core_show_inputs"
+label.en = "Input register…"
+label.es = "Registro de entradas…"
+description.en = "Registered inputs with their content hash"
+description.es = "Entradas registradas con su hash de contenido"
+entry = "R-07"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.core_check_inputs"
+label.en = "Check changes in the inputs"
+label.es = "Comprobar cambios en las entradas"
+description.en = "Compare the content hash of every input with the registered one"
+description.es = "Compara el hash de contenido de cada entrada con el registrado"
+entry = "R-07"
+action = "A"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.core_recompute_stale"
+label.en = "Recompute the stale results"
+label.es = "Recalcular lo obsoleto"
+description.en = "Recompute the results whose inputs changed"
+description.es = "Vuelve a calcular los resultados cuyas entradas han cambiado"
+entry = "R-07"
+action = "A"
+background = true
+frequency = 2
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_core_provenance"
+label.en = "Provenance and log"
+label.es = "Procedencia y registro"
+description.en = "Operation graph, decisions, undoing a calculation and session log"
+description.es = "Grafo de operaciones, decisiones, deshacer un cálculo y registro de sesión"
+entry = ""
+action = "S"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.core_show_lineage"
+label.en = "Operation graph and provenance…"
+label.es = "Grafo de operaciones y procedencia…"
+description.en = "What each result comes from and what depends on it"
+description.es = "De qué sale cada resultado y qué depende de él"
+entry = "R-07"
+action = "P"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.core_show_decisions"
+label.en = "Assignments and decisions of the owner…"
+label.es = "Encargos y decisiones de la propiedad…"
+description.en = "Assignments and decisions of the owner that the design follows"
+description.es = "Encargos y decisiones de la propiedad que sigue el diseño"
+entry = "R-07"
+action = "P"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.core_undo_operation"
+label.en = "Undo calculation…"
+label.es = "Deshacer cálculo…"
+description.en = "Undo a calculation already written to the project (Ctrl+Z does not undo it)"
+description.es = "Deshace un cálculo ya escrito en el proyecto (Ctrl+Z no lo deshace)"
+entry = "R-10"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.core_show_session_log"
+label.en = "Session log…"
+label.es = "Registro de sesión…"
+description.en = "Who did what and when in this project"
+description.es = "Quién hizo qué y cuándo en este proyecto"
+entry = "R-12"
+action = "P"
+frequency = 1
+
+# Intercambio ---------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Exchange"
+label.es = "Intercambio"
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_io_import"
+label.en = "Import"
+label.es = "Importar"
+description.en = "Import a file into the project: every format, by subject"
+description.es = "Importa un fichero al proyecto: todos los formatos, por tema"
+entry = ""
+action = "S"
+frequency = 3
+icon_fallback = "IMPORT"
+
+[[menu.group.item]]
+key = "geoblender.core_load_into_view"
+label.en = "Load into the view…"
+label.es = "Cargar en la vista…"
+description.en = "Build the geometry of project items in the 3D view"
+description.es = "Construye en la Vista 3D la geometría de elementos del proyecto"
+entry = "006"
+action = "D"
+frequency = 3
+jargon = [["Datamine", "Load"]]
+
+[[menu.group.item]]
+key = "geoblender.core_unload_from_view"
+label.en = "Unload from the view"
+label.es = "Descargar de la vista"
+description.en = "Free the geometry of the selection; the data stay in the project"
+description.es = "Libera la geometría de la selección; los datos siguen en el proyecto"
+entry = "006"
+action = "A"
+frequency = 2
+jargon = [["Datamine", "Unload"]]
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_io_export"
+label.en = "Export"
+label.es = "Exportar"
+description.en = "Export project data: every format, by subject"
+description.es = "Exporta datos del proyecto: todos los formatos, por tema"
+entry = ""
+action = "S"
+frequency = 2
+icon_fallback = "EXPORT"
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_gis_qgis"
+label.en = "QGIS"
+label.es = "QGIS"
+description.en = "Open, publish and bring back changes with QGIS"
+description.es = "Abrir, publicar y traer cambios con QGIS"
+entry = ""
+action = "S"
+frequency = 3
+
+# Configuración -------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Settings"
+label.es = "Configuración"
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_ui_work_profile"
+label.en = "Work profile"
+label.es = "Perfil de trabajo"
+description.en = "Aggregates, ornamental stone or metal: changes default values and the workflow panel, never the menus"
+description.es = "Áridos, roca ornamental o metálica: cambia valores por defecto y el panel del flujo, nunca los menús"
+entry = "R-11"
+action = "S"
+frequency = 1
+doc_id = ["ui_set_work_profile"]
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_work_profile?profile=AGGREGATES"
+label.en = "Aggregates"
+label.es = "Áridos"
+description.en = "Work profile of the aggregate quarries"
+description.es = "Perfil de trabajo de las canteras de áridos"
+entry = "R-11"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_work_profile?profile=ORNAMENTAL_STONE"
+label.en = "Ornamental stone"
+label.es = "Roca ornamental"
+description.en = "Work profile of the ornamental stone quarries"
+description.es = "Perfil de trabajo de las canteras de roca ornamental"
+entry = "R-11"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_work_profile?profile=METAL"
+label.en = "Metal mining"
+label.es = "Metálica"
+description.en = "Work profile of the metal mines"
+description.es = "Perfil de trabajo de la minería metálica"
+entry = "R-11"
+action = "A"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.core_edit_acceptance_criteria"
+label.en = "Acceptance criteria…"
+label.es = "Criterios de aceptación…"
+description.en = "Catalogue of acceptance criteria (CA) of the project"
+description.es = "Catálogo de criterios de aceptación (CA) del proyecto"
+entry = "R-08"
+action = "P"
+frequency = 1

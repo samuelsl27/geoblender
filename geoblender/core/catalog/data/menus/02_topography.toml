@@ -1,0 +1,377 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 2 de 11: Topografía (BS §8.2).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_topography"
+label.en = "Topography"
+label.es = "Topografía"
+description.en = "DTM, surveys, surfaces, contour lines, profiles and base maps; compatible with QGIS"
+description.es = "MDT, levantamientos, superficies, curvas, perfiles y mapas base; compatible con QGIS"
+stage.en = "Topography and GIS"
+stage.es = "Topografía y SIG"
+step = 2
+branch = "design"
+icon = "gb_menu_topography"
+icon_fallback = "WORLD"
+
+# Importar ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Import"
+label.es = "Importar"
+
+[[menu.group.item]]
+key = "geoblender.gis_import_dtm"
+label.en = "Raster DTM…"
+label.es = "MDT ráster…"
+description.en = "Import a raster DTM (GeoTIFF, ASC, XYZ) onto the exact project grid"
+description.es = "Importa un MDT ráster (GeoTIFF, ASC, XYZ) a la rejilla exacta del proyecto"
+entry = "006"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.gis_import_points"
+label.en = "Points and breaklines…"
+label.es = "Puntos y líneas de rotura…"
+description.en = "Survey points and breaklines (CSV, TXT, XYZ)"
+description.es = "Puntos topográficos y líneas de rotura (CSV, TXT, XYZ)"
+entry = "006"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.gis_import_vector"
+label.en = "Vector layers…"
+label.es = "Capas vectoriales…"
+description.en = "Vector layers of a GeoPackage"
+description.es = "Capas vectoriales de un GeoPackage"
+entry = "006"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.gis_import_topo_survey"
+label.en = "Dated survey…"
+label.es = "Levantamiento fechado…"
+description.en = "Dated survey from drone, GNSS or LiDAR, for monitoring"
+description.es = "Levantamiento fechado de dron, GNSS o LiDAR, para el seguimiento"
+entry = "R-53"
+action = "D"
+background = true
+frequency = 3
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_gis_sources"
+label.en = "More sources"
+label.es = "Más fuentes"
+description.en = "Orthophotos, images, point clouds, official services, infrastructures and CAD"
+description.es = "Ortofotos, imágenes, nubes de puntos, servicios oficiales, infraestructuras y CAD"
+entry = ""
+action = "S"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.gis_import_orthophoto"
+label.en = "Orthophoto or georeferenced image…"
+label.es = "Ortofoto o imagen georreferenciada…"
+description.en = "Orthophoto or georeferenced image (GeoTIFF)"
+description.es = "Ortofoto o imagen georreferenciada (GeoTIFF)"
+entry = "R-30"
+action = "D"
+frequency = 2
+
+[[menu.group.item.item]]
+key = "geoblender.gis_import_image_sidecar"
+label.en = "Image with a georeference file…"
+label.es = "Imagen con fichero de georreferencia…"
+description.en = "Image with its georeference file (PNG with world file)"
+description.es = "Imagen con su fichero de georreferencia (PNG con world file)"
+entry = "R-30"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.gis_import_point_cloud"
+label.en = "Point cloud…"
+label.es = "Nube de puntos…"
+description.en = "Point cloud (LAS, LAZ, COPC)"
+description.es = "Nube de puntos (LAS, LAZ, COPC)"
+entry = "R-72"
+action = "D"
+background = true
+frequency = 1
+
+[[menu.group.item.item]]
+key = "GEOBLENDER_MT_gis_web_services"
+label.en = "Official services"
+label.es = "Servicios oficiales"
+description.en = "Web layers of official services: PNOA, historic PNOA, IGN DTM, Cadastre, IGME MAGNA 50, IGN Base"
+description.es = "Capas web de servicios oficiales: PNOA, PNOA histórico, MDT del IGN, Catastro, IGME MAGNA 50, IGN Base"
+entry = "R-74"
+action = "S"
+frequency = 2
+doc_id = ["gis_add_web_layer"]
+
+[[menu.group.item.item.item]]
+key = "geoblender.gis_add_web_layer?service=PNOA"
+label.en = "PNOA"
+label.es = "PNOA"
+description.en = "Latest PNOA orthophoto (IGN)"
+description.es = "Ortofoto más reciente del PNOA (IGN)"
+entry = "R-74"
+action = "D"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.gis_add_web_layer?service=PNOA_HISTORIC"
+label.en = "Historic PNOA"
+label.es = "PNOA histórico"
+description.en = "Historic orthophotos of the PNOA (IGN)"
+description.es = "Ortofotos históricas del PNOA (IGN)"
+entry = "R-74"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.gis_add_web_layer?service=IGN_DTM"
+label.en = "IGN DTM"
+label.es = "MDT del IGN"
+description.en = "Digital terrain model of the IGN"
+description.es = "Modelo digital del terreno del IGN"
+entry = "R-74"
+action = "D"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.gis_add_web_layer?service=CADASTRE"
+label.en = "Cadastre"
+label.es = "Catastro"
+description.en = "Cadastral parcels"
+description.es = "Parcelas del Catastro"
+entry = "R-74"
+action = "D"
+frequency = 2
+
+[[menu.group.item.item.item]]
+key = "geoblender.gis_add_web_layer?service=IGME_MAGNA50"
+label.en = "IGME MAGNA 50"
+label.es = "IGME MAGNA 50"
+description.en = "Geological map MAGNA 1:50 000 (IGME)"
+description.es = "Mapa geológico MAGNA 1:50 000 (IGME)"
+entry = "R-74"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.gis_add_web_layer?service=IGN_BASE"
+label.en = "IGN Base"
+label.es = "IGN Base"
+description.en = "Base map of the IGN"
+description.es = "Mapa base del IGN"
+entry = "R-74"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.gis_import_infrastructure"
+label.en = "Infrastructures with their buffer…"
+label.es = "Infraestructuras con su resguardo…"
+description.en = "Roads, power lines and other infrastructures (BTN, CV25, WFS) with their buffer"
+description.es = "Carreteras, líneas eléctricas y otras infraestructuras (BTN, CV25, WFS) con su resguardo"
+entry = "R-74"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+ref = "GEOBLENDER_MT_io_import"
+
+# Superficies ---------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Surfaces"
+label.es = "Superficies"
+
+[[menu.group.item]]
+key = "geoblender.gis_resample_to_grid"
+label.en = "Project grid from a DTM…"
+label.es = "Rejilla de proyecto desde un MDT…"
+description.en = "Resample a DTM to the exact-step project grid"
+description.es = "Remuestrea un MDT a la rejilla de paso exacto del proyecto"
+entry = "006"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.gis_create_tin_from_points"
+label.en = "TIN from points and breaklines…"
+label.es = "TIN desde puntos y líneas de rotura…"
+description.en = "Triangulated surface from points and breaklines. In RecMin, T3"
+description.es = "Superficie triangulada desde puntos y líneas de rotura. En RecMin, T3"
+entry = "006"
+action = "D"
+frequency = 3
+aliases = ["tin", "triangular", "triangulate"]
+jargon = [["RecMin", "T3"], ["RecMin", "mallado"]]
+
+[[menu.group.item]]
+key = "geoblender.gis_create_tin_from_contours"
+label.en = "TIN from contour lines…"
+label.es = "TIN desde curvas de nivel…"
+description.en = "Triangulated surface from contour lines. In RecMin, from SUP to T3"
+description.es = "Superficie triangulada desde curvas de nivel. En RecMin, de SUP a T3"
+entry = "006"
+action = "D"
+frequency = 2
+jargon = [["RecMin", "SUP"]]
+
+[[menu.group.item]]
+key = "geoblender.gis_convert_dtm_tin"
+label.en = "DTM ⇄ TIN…"
+label.es = "MDT ⇄ TIN…"
+description.en = "Convert a grid DTM into a TIN or back"
+description.es = "Convierte un MDT en rejilla en un TIN o al revés"
+entry = "006"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.gis_validate_surface"
+label.en = "Validate the surface"
+label.es = "Validar la superficie"
+description.en = "Holes, nodata and mesh checks of the surface"
+description.es = "Huecos, nodata y comprobación de la malla de la superficie"
+entry = "006"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.gis_create_dtm_from_point_cloud"
+label.en = "DTM from a point cloud…"
+label.es = "MDT desde una nube de puntos…"
+description.en = "DTM from the points of the chosen classes of a cloud"
+description.es = "MDT desde los puntos de las clases elegidas de una nube"
+entry = "R-72"
+action = "D"
+background = true
+frequency = 1
+
+# Analizar ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Analyze"
+label.es = "Analizar"
+
+[[menu.group.item]]
+key = "geoblender.gis_create_contours"
+label.en = "Contour lines…"
+label.es = "Curvas de nivel…"
+description.en = "Contour lines of a surface at the chosen interval"
+description.es = "Curvas de nivel de una superficie a la equidistancia elegida"
+entry = "006"
+action = "D"
+frequency = 3
+aliases = ["curvas", "contours"]
+
+[[menu.group.item]]
+key = "geoblender.gis_compute_terrain_derivatives"
+label.en = "Slopes, aspects and hillshade…"
+label.es = "Pendientes, orientaciones y sombreado…"
+description.en = "Slope, aspect and hillshade rasters of a surface"
+description.es = "Rásteres de pendiente, orientación y sombreado de una superficie"
+entry = "R-30"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.gis_detect_terrain_features"
+label.en = "Detect features…"
+label.es = "Detectar elementos…"
+description.en = "Platforms, berms, slopes and water surfaces detected on a surface"
+description.es = "Plataformas, bermas, taludes y láminas de agua detectados en una superficie"
+entry = "R-30"
+action = "D"
+background = true
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.gis_drape_orthophoto"
+label.en = "Drape the orthophoto over the surface…"
+label.es = "Proyectar la ortofoto sobre la superficie…"
+description.en = "Show an orthophoto draped over a surface"
+description.es = "Muestra una ortofoto proyectada sobre una superficie"
+entry = "R-30"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+ref = "geoblender.res_compute_surface_difference"
+
+# Perfiles ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Profiles"
+label.es = "Perfiles"
+
+[[menu.group.item]]
+key = "geoblender.gis_draw_profile"
+label.en = "Surface profile"
+label.es = "Perfil de superficies"
+description.en = "Profile of the surfaces along a polyline"
+description.es = "Perfil de las superficies a lo largo de una polilínea"
+entry = "R-31"
+action = "H"
+frequency = 3
+icon = "gb_qat_profile"
+icon_fallback = "FCURVE"
+aliases = ["perfil", "profile"]
+
+[[menu.group.item]]
+key = "geoblender.gis_create_profile_series"
+label.en = "Profile series…"
+label.es = "Serie de perfiles…"
+description.en = "Profiles every N m along an axis"
+description.es = "Perfiles cada N m a lo largo de un eje"
+entry = "R-31"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.gis_export_profiles"
+label.en = "Export profiles…"
+label.es = "Exportar perfiles…"
+description.en = "Profiles to DXF or CSV"
+description.es = "Perfiles a DXF o CSV"
+entry = "R-31"
+action = "D"
+frequency = 2
+
+# Exportar ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Export"
+label.es = "Exportar"
+
+[[menu.group.item]]
+key = "geoblender.gis_export_raster"
+label.en = "Surface or grid to GeoTIFF…"
+label.es = "Superficie o rejilla a GeoTIFF…"
+description.en = "Write a surface or a grid as GeoTIFF"
+description.es = "Escribe una superficie o una rejilla en GeoTIFF"
+entry = "006"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.gis_export_gpkg"
+label.en = "Layers to GeoPackage…"
+label.es = "Capas a GeoPackage…"
+description.en = "Write layers to a GeoPackage"
+description.es = "Escribe capas en un GeoPackage"
+entry = "006"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+ref = "geoblender.io_export_dxf"
