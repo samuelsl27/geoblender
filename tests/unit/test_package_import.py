@@ -40,15 +40,25 @@ def _blender_modules_loaded() -> list[str]:
     return sorted(name for name in sys.modules if is_blender_module(name))
 
 
-def _unload() -> None:
-    for name in [n for n in sys.modules if n.partition(".")[0] == PACKAGE_NAME]:
-        del sys.modules[name]
+def _unload() -> dict[str, object]:
+    """Quita de ``sys.modules`` el paquete ``geoblender`` y sus módulos; devuelve los que
+    quitó."""
+    names = [n for n in sys.modules if n.partition(".")[0] == PACKAGE_NAME]
+    return {name: sys.modules.pop(name) for name in names}
+
+
+def _restore(loaded: dict[str, object]) -> None:
+    """Quita lo que cargó la prueba y devuelve a ``sys.modules`` los módulos de antes: las
+    pruebas que se ejecutan después en el mismo proceso siguen con las clases que
+    importaron (con un ``geoblender`` nuevo, un ``JobEvent`` igual en todo sería otra
+    clase y no compararía igual; docs/trampas.md §4)."""
+    _unload()
+    sys.modules.update(loaded)
 
 
 class PackageImportTest(unittest.TestCase):
     def setUp(self) -> None:
-        _unload()
-        self.addCleanup(_unload)
+        self.addCleanup(_restore, _unload())
 
     def test_root_imports_without_blender(self) -> None:
         """RF-001-03: el paquete raíz se importa sin Blender y no carga ``bl``."""

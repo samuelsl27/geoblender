@@ -54,13 +54,20 @@ Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
   resultado, y sin proceso si el intérprete no arranca o si la petición de una carpeta ya
   preparada deja de valer antes de lanzarla (``worker_unknown``…). Nada de eso se propaga
   al proceso de Blender.
+- Cierre (RF-004-13): :meth:`JobRunner.shutdown`, al cerrarse Blender o desactivarse
+  Geoblender, deja «Interrumpido» lo que hay en la cola, pide parar (motivo ``shutdown``)
+  a los trabajos en curso, espera hasta 1 s y termina el *Job Object* de los que siguen
+  vivos; todo en ≤ 3 s, y después no admite trabajos nuevos. Si el proceso de Blender
+  muere de golpe, Windows cierra el *handle* de cada *Job Object* y termina el worker con
+  todo lo que lanzó; la vigilancia del padre del arranque (fin de la entrada estándar,
+  salida 4) es la segunda capa. El registro de un trabajo así se cierra «Interrumpido» al
+  reabrir el proyecto (``records.mark_interrupted``, T17).
 
 Los hilos de este módulo son *daemon*: nunca retienen el cierre de Blender. Solo el lanzador
 escribe ``state.json``, ``events.jsonl`` y, al final, sus avisos en ``job.log``.
 
-Llegan en otras tareas de la spec: el cierre (T13), el ejecutor en hilo (T14), el máximo de
-hilos, ``reconfigure`` y el entorno del hijo (T15) y los intérpretes ``compute`` y externo
-(T25).
+Llegan en otras tareas de la spec: el ejecutor en hilo (T14), el máximo de hilos,
+``reconfigure`` y el entorno del hijo (T15) y los intérpretes ``compute`` y externo (T25).
 """
 
 from __future__ import annotations
@@ -70,6 +77,7 @@ import dataclasses
 import datetime as dt
 import hashlib
 import json
+import math
 import queue
 import shutil
 import subprocess
@@ -136,6 +144,11 @@ DEFAULT_MAX_SUBPROCESS = 2
 """Workers en proceso aparte a la vez (D-2; plan §5.4.2)."""
 KILL_WAIT_S = 5.0
 """Lo que se espera a un worker terminado a la fuerza antes de seguir sin él."""
+SHUTDOWN_TIMEOUT_S = 3.0
+"""Lo que tarda como mucho :meth:`JobRunner.shutdown` por defecto (plan §5.4.5)."""
+SHUTDOWN_STOP_WAIT_S = 1.0
+"""Lo que :meth:`JobRunner.shutdown` espera a que los workers atiendan la petición de parar
+antes de terminar sus *Job Objects* (plan §5.4.5)."""
 
 CREATION_FLAGS = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
                   | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
@@ -303,10 +316,16 @@ class JobRunner:
         self._queue: collections.deque[_Job] = collections.deque()
         self._running: dict[str, _Job] = {}
         self._to_report: list[_Job] = []
+        self._closed = False
 
     @property
     def jobs_root(self) -> Path:
         return self._jobs_root
+
+    @property
+    def closed(self) -> bool:
+        """Si ya se cerró (:meth:`shutdown`): no admite trabajos nuevos."""
+        return self._closed
 
     # --- Preparar y lanzar -------------------------------------------------------------
 
@@ -354,11 +373,14 @@ class JobRunner:
         (RF-004-12, spec §8). Si el intérprete no se puede arrancar, el trabajo queda
         «Fallido» (``interpreter_not_found`` o ``interpreter_failed``). ``on_finish`` se
         llama una vez, desde :meth:`poll`, con su :class:`JobResult`; sus errores no se
-        propagan."""
+        propagan. Con el lanzador ya cerrado (:meth:`shutdown`), :class:`RuntimeError` sin
+        crear nada."""
+        self._check_open()
         folder = self.prepare(job) if isinstance(job, JobRequest) else job
         if not isinstance(folder, JobDir):
             raise TypeError(f"se esperaba un JobDir o un JobRequest, no {type(job).__name__}")
         with self._lock:
+            self._check_open()
             if folder.job_uid in self._jobs:
                 raise ValueError(f"el trabajo {folder.job_uid} ya se lanzó")
             request = read_request(folder)
@@ -406,6 +428,55 @@ class JobRunner:
             self._request_cancel(item, "user")
             return True
 
+    def shutdown(self, *, timeout_s: float = SHUTDOWN_TIMEOUT_S) -> None:
+        """Cierra el lanzador al cerrarse Blender o desactivarse Geoblender (RF-004-13) en
+        ≤ ``timeout_s`` s (plan §5.4.5):
+
+        - los trabajos de la cola quedan «Interrumpido» sin arrancar;
+        - a los que están en curso se les pide parar (centinela ``cancel``, motivo
+          ``shutdown``), se espera hasta :data:`SHUTDOWN_STOP_WAIT_S` a que paren y se
+          termina el *Job Object* de los que siguen vivos (el worker y lo que lanzó; la
+          cancelación consta forzada);
+        - todos quedan «Interrumpido» (``job_interrupted``) en su ``state.json``, con su
+          entrada estándar y su *Job Object* cerrados.
+
+        Un trabajo cuyo proceso ya había terminado solo acaba con su propio estado, y uno
+        al que ya se había pedido parar (el usuario o su tiempo máximo) acaba «Cancelado» o
+        «Tiempo agotado». Los finales se cuentan en el siguiente :meth:`poll`, que llama a
+        sus ``on_finish``: aquí no se llama a ninguno. Después, :meth:`submit` no admite
+        trabajos nuevos; cerrar otra vez no hace nada."""
+        if (isinstance(timeout_s, bool) or not isinstance(timeout_s, int | float)
+                or not math.isfinite(timeout_s) or timeout_s <= 0):
+            raise ValueError(f"timeout_s {timeout_s!r} no es un número de segundos > 0")
+        # Espera de verdad: se mide con el reloj del sistema, no con ``clock``.
+        deadline = time.monotonic() + timeout_s
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            while self._queue:
+                item = self._queue.popleft()
+                item.record = dataclasses.replace(item.record,
+                                                  cancel=_cancel_info("shutdown"))
+                self._finish(item, state="interrupted", exit_code=None, duration_s=None,
+                             error=_error("job_interrupted", job=item.name))
+            running = list(self._running.values())
+            for item in running:
+                process = item.process
+                assert process is not None
+                if item.record.cancel is None and process.poll() is None:
+                    self._request_cancel(item, "shutdown")
+            stop_wait = min(SHUTDOWN_STOP_WAIT_S, timeout_s)
+            _wait_for_exit(running, time.monotonic() + stop_wait)
+            for item in running:
+                process = item.process
+                assert process is not None
+                if process.poll() is None and not item.terminated:
+                    self._force_stop(item, shutdown_wait_s=stop_wait)
+            _wait_for_exit(running, deadline, channels=True)
+            for item in running:
+                self._close_at_shutdown(item)
+
     # --- Seguimiento ---------------------------------------------------------------------
 
     def poll(self) -> list[JobUpdate]:
@@ -432,6 +503,11 @@ class JobRunner:
         return updates
 
     # --- Ayudas --------------------------------------------------------------------------
+
+    def _check_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("el lanzador de trabajos ya está cerrado: no admite trabajos "
+                               "nuevos")
 
     def _reject(
         self,
@@ -582,12 +658,22 @@ class JobRunner:
         grace = item.request.grace_s
         if self._clock() - item.cancel_at < grace:
             return
+        self._force_stop(item, grace_s=grace)
+
+    def _force_stop(self, item: _Job, **wait: float) -> None:
+        """Termina el *Job Object* de un trabajo al que se pidió parar y sigue vivo (el
+        worker y sus hijos): la cancelación queda forzada en ``state.json`` y la nota
+        ``terminated`` dice cuánto se esperó (``grace_s``, al vencer el plazo de gracia,
+        RF-004-10; ``shutdown_wait_s``, al cerrar el lanzador, RF-004-13)."""
+        cancel = item.record.cancel
+        assert cancel is not None
         item.terminated = True
+        item.shutdown_wait_s = wait.get("shutdown_wait_s")
         self._terminate(item)
         item.record = dataclasses.replace(item.record,
                                           cancel=dataclasses.replace(cancel, forced=True))
         self._save(item)
-        item.events_log.note("terminated", reason=cancel.reason, grace_s=grace,
+        item.events_log.note("terminated", reason=cancel.reason, **wait,
                              exit_code=EXIT_TERMINATED)
 
     def _terminate(self, item: _Job) -> None:
@@ -631,6 +717,23 @@ class JobRunner:
             return None
         return item.update(final=False)
 
+    def _close_at_shutdown(self, item: _Job) -> None:
+        """Finaliza en el cierre un trabajo que estaba en curso, con los eventos que hayan
+        llegado (plan §5.3.4; «Interrumpido» si se le pidió parar por el cierre). Si su
+        proceso no terminó a tiempo, queda sin código de salida: al finalizar se cierra su
+        *Job Object*, que lo termina, y su entrada estándar."""
+        reader = item.reader
+        process = item.process
+        assert reader is not None and process is not None
+        closed = reader.closed.is_set()  # antes de vaciar: lo que llegó antes ya está
+        item.pending_events.extend(self._take(item, reader.drain()))
+        exit_code = process.poll()
+        if exit_code is not None:
+            item.mark_exit(self._clock(), _now())
+        if not closed:
+            item.events_log.note("channel_open", reason="shutdown")
+        self._finalize(item, exit_code, channel_closed=closed)
+
     def _take(self, item: _Job, items: Iterable[JobEvent | InvalidLine]) -> list[JobEvent]:
         """Los eventos de ``items`` (las líneas inválidas ya están en ``events.jsonl``),
         aplicados al trabajo."""
@@ -668,7 +771,7 @@ class JobRunner:
                 item.cancelled_event = event
                 item.message = event.msg or item.message
 
-    def _finalize(self, item: _Job, exit_code: int, *, channel_closed: bool) -> None:
+    def _finalize(self, item: _Job, exit_code: int | None, *, channel_closed: bool) -> None:
         """Estado según el código de salida (plan §5.3.4), resultados verificados
         (RF-004-05), ``state.json`` y avisos en ``job.log`` (RF-004-15). Con el canal aún
         abierto, su lectura no se toca: cerrarla bloquearía hasta que el hilo lector
@@ -757,7 +860,13 @@ class JobRunner:
                 reason += f" de {_seconds_text(item.request.timeout_s)} s"
             lines.append(f"{LOG_PREFIX} se pidió cancelar el trabajo {reason} "
                          f"({cancel.requested_at})")
-            if cancel.forced:
+            if cancel.forced and item.shutdown_wait_s is not None:
+                lines.append(
+                    f"{LOG_PREFIX} al cerrarse Geoblender, el worker seguía vivo tras "
+                    f"esperarlo {_seconds_text(item.shutdown_wait_s)} s: se terminó con sus "
+                    f"procesos hijos (código {EXIT_TERMINATED})"
+                )
+            elif cancel.forced:
                 lines.append(
                     f"{LOG_PREFIX} el worker seguía vivo al vencer su plazo de gracia de "
                     f"{_seconds_text(item.request.grace_s)} s: se terminó con sus procesos "
@@ -837,6 +946,7 @@ class _Job:
         self.job_object: winjob.JobObject | None = None
         self.cancel_at: float | None = None
         self.terminated = False
+        self.shutdown_wait_s: float | None = None
         self.reader: _Reader | None = None
         self.events_log = _EventsLog(folder.events_file)
         self.started_at: float | None = None
@@ -1002,18 +1112,24 @@ class _Reader:
 # --- Ayudas ---------------------------------------------------------------------------------
 
 
-def _outcome(item: _Job, exit_code: int) -> tuple[str, ErrorInfo | None]:
+def _outcome(item: _Job, exit_code: int | None) -> tuple[str, ErrorInfo | None]:
     """El estado final según el código de salida y los eventos (plan §5.3.4). Pedida la
     cancelación, con cualquier salida, «Tiempo agotado» si la pidió el tiempo máximo (con
-    él en el mensaje, RF-004-11) y si no «Cancelado» (forzado si hubo que terminarlo): lo
-    que entregara el worker se descarta, como en el hilo (spec §8)."""
+    él en el mensaje, RF-004-11), «Interrumpido» si la pidió el cierre del lanzador
+    (RF-004-13) y si no «Cancelado» (forzado si hubo que terminarlo): lo que entregara el
+    worker se descarta, como en el hilo (spec §8). Sin código de salida (un proceso que no
+    terminó a tiempo en el cierre), «Interrumpido»."""
     name = item.name
     cancel = item.record.cancel
     if cancel is not None:
         if cancel.reason == "timeout":
             return "timed_out", _error("job_timeout", job=name,
                                        seconds=item.request.timeout_s)
+        if cancel.reason == "shutdown":
+            return "interrupted", _error("job_interrupted", job=name)
         return "cancelled", _error("job_cancelled", job=name, forced=cancel.forced)
+    if exit_code is None:
+        return "interrupted", _error("job_interrupted", job=name)
     if exit_code == EXIT_OK:
         if item.result_event is not None:
             return "succeeded", None
@@ -1033,6 +1149,20 @@ def _outcome(item: _Job, exit_code: int) -> tuple[str, ErrorInfo | None]:
 
 def _error(code: str, **values: object) -> ErrorInfo:
     return ErrorInfo.from_job_error(JobError(code, **values))
+
+
+def _wait_for_exit(items: Iterable[_Job], until: float, *, channels: bool = False) -> None:
+    """Espera, como mucho hasta ``until`` (``time.monotonic``), a que terminen los procesos
+    de ``items`` y, con ``channels``, a que sus hilos lectores vean el canal cerrado."""
+    for item in items:
+        process = item.process
+        assert process is not None
+        try:
+            process.wait(timeout=max(0.0, until - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            continue
+        if channels and item.reader is not None:
+            item.reader.closed.wait(max(0.0, until - time.monotonic()))
 
 
 def _cancel_info(reason: str) -> CancelInfo:
