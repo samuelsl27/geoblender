@@ -202,12 +202,12 @@ class SelftestPolicyTest(unittest.TestCase):
 
     def test_chunked_sum_around_the_threshold(self):
         """RF-004-03: suma por trozos: 49 × 0,1 s (4,9 s) → hilo; 51 × 0,1 s (5,1 s) →
-        proceso aparte; la de 10 s del menú (20 × 0,5 s, ``SUM_10S``) → proceso aparte."""
+        proceso aparte; la de 10 s del menú (50 × 0,2 s, ``SUM_10S``) → proceso aparte."""
         self.assertEqual(self._choose({"op": "chunked_sum", "chunks": 49, "sleep_s": 0.1}),
                          ("blender", "inprocess"))
         self.assertEqual(self._choose({"op": "chunked_sum", "chunks": 51, "sleep_s": 0.1}),
                          ("blender", "subprocess"))
-        self.assertEqual(self._choose({"op": "chunked_sum", "chunks": 20, "sleep_s": 0.5}),
+        self.assertEqual(self._choose({"op": "chunked_sum", "chunks": 50, "sleep_s": 0.2}),
                          ("blender", "subprocess"))
 
     def test_provoked_crash_and_noise_only_in_a_subprocess(self):

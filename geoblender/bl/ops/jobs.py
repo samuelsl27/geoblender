@@ -70,11 +70,12 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   falla con «No hay trabajos en curso».
 
 - ``geoblender.jobs_run_selftest`` (HU-004-1, RF-004-03): lanza con el monitor un
-  autodiagnóstico (``mode``): ``SUM_10S``, una suma por trozos de unos 10 s (20 × 0,5 s:
-  más de 5 s estimados, en proceso aparte), ``MATMUL_BLENDER``, el producto 500 × 500 con el
-  numpy de Blender (unos 0,2 s: en hilo) y ``MATMUL_COMPUTE``, el de 2000 × 2000 con el
-  motor de cálculo (en proceso aparte; sin motor queda «Fallido» con ``runtime_missing`` y
-  el operador lo dice). Sin lanzador, su ``poll`` falla y lo dice.
+  autodiagnóstico (``mode``): ``SUM_10S``, una suma por trozos de unos 10 s (50 × 0,2 s:
+  más de 5 s estimados, en proceso aparte, y un avance cada 0,2 s, RF-004-06),
+  ``MATMUL_BLENDER``, el producto 500 × 500 con el numpy de Blender (unos 0,2 s: en hilo)
+  y ``MATMUL_COMPUTE``, el de 2000 × 2000 con el motor de cálculo (en proceso aparte; sin
+  motor queda «Fallido» con ``runtime_missing`` y el operador lo dice). Sin lanzador, su
+  ``poll`` falla y lo dice.
 - ``geoblender.jobs_clean`` (RF-004-17, RF-004-08): borra las carpetas de los trabajos
   terminados con ``JobRunner.purge``, que nunca toca un trabajo activo, e informa de los MB
   liberados: ``OLD``, los terminados hace más días que ``retention_days`` de las
@@ -398,9 +399,10 @@ def _open_runner() -> JobRunner | None:
 SELFTEST_WORKER = "selftest"
 SELFTEST_OWNER = "jobs"
 SELFTEST_PARAMS: Mapping[str, Mapping[str, JsonValue]] = MappingProxyType({
-    # 20 trozos de 0,5 s: unos 10 s, más de 5 s estimados → proceso aparte (RF-004-03).
-    "SUM_10S": MappingProxyType({"op": "chunked_sum", "n": 20_000, "chunks": 20,
-                                 "sleep_s": 0.5}),
+    # 50 trozos de 0,2 s: unos 10 s, más de 5 s estimados → proceso aparte (RF-004-03), y
+    # un avance por trozo, cinco por segundo (RF-004-06; M1 pide al menos dos; T37).
+    "SUM_10S": MappingProxyType({"op": "chunked_sum", "n": 20_000, "chunks": 50,
+                                 "sleep_s": 0.2}),
     # n > 1000 exige el motor de cálculo (jobs.selftest.environment).
     "MATMUL_COMPUTE": MappingProxyType({"op": "matmul", "n": 2000}),
     # Unos 0,2 s con el numpy de Blender (≤ 5 s estimados) → en hilo.

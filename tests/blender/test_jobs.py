@@ -61,8 +61,8 @@ T21 — los operadores reales ``geoblender.jobs_run_selftest`` y ``geoblender.jo
   lista) informa de los MB liberados y nunca borra un trabajo activo.
 
 Un lanzador real en una carpeta temporal: el autodiagnóstico de 10 s se cancela en cuanto
-da su primer trozo; la limpieza, sobre carpetas de otra sesión escritas a mano y dos
-trabajos del lanzador en hilo (uno terminado, otro en curso).
+da sus tres primeros trozos; la limpieza, sobre carpetas de otra sesión escritas a mano y
+dos trabajos del lanzador en hilo (uno terminado, otro en curso).
 
 T22 — el lanzador de la sesión (``bl/ops/jobs.py``), que crea el registro de la extensión y
 da al monitor:
@@ -80,6 +80,13 @@ da al monitor:
 - el ``sys.path`` de Blender no cambia con los trabajos (también uno del motor de cálculo,
   que sin motor queda «Fallido»), y ``max_parallel_jobs`` llega al lanzador al cambiarla.
 
+T37 — el autodiagnóstico ``SUM_10S`` avanza cinco veces por segundo (50 trozos de 0,2 s; en
+M1, con 20 trozos de 0,5 s, el % cambiaba 1,9 veces por segundo; M1 y H2 piden al menos dos):
+
+- RF-004-06, RF-004-03: sus parámetros dan un trabajo de 10 ± 0,5 s en proceso aparte, con
+  trozos de ≤ 0,25 s y un evento de avance por trozo; en el proceso real, los primeros
+  avances llegan cada ≤ 0,25 s, y a ese ritmo el trabajo entero dura 10 ± 0,5 s.
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
@@ -89,6 +96,7 @@ import json
 import os
 import shutil
 import stat
+import statistics
 import sys
 import tempfile
 import threading
@@ -1358,6 +1366,28 @@ SELFTEST_NAMES = {
 NO_RUNNER = "Geoblender aún no ha preparado la carpeta de los trabajos"
 CLEAN_WORKER = "gbtest_clean"
 KB = 1000
+# T37: el autodiagnóstico de 10 s se cancela tras sus primeros trozos, que bastan para
+# medir cada cuánto avanza; M1 y H2 piden al menos dos avances por segundo.
+SAMPLED_CHUNKS = 3
+PROGRESS_EVERY_S = 0.25
+SUM_10S_S = 10.0
+SUM_10S_TOLERANCE_S = 0.5
+
+
+def _chunk_number(message: str) -> int:
+    """El ``k`` del avance «Trozo k de N» del autodiagnóstico; 0 con otro mensaje."""
+    words = message.split()
+    if len(words) == 4 and words[0] == "Trozo" and words[1].isdigit() and words[2] == "de":
+        return int(words[1])
+    return 0
+
+
+def _channel_events(folder: Path) -> list[dict[str, object]]:
+    """Los eventos del canal del worker que el lanzador dejó en ``events.jsonl`` de
+    ``folder``, en orden, sin sus propias notas."""
+    events_file = folder / _module("jobs.paths").EVENTS_FILE
+    lines = events_file.read_text(encoding="utf-8").splitlines()
+    return [item for item in map(json.loads, lines) if "t" in item]
 
 
 def _bytes(path: Path) -> int:
@@ -1464,8 +1494,8 @@ class SelftestCleanCatalogTest(unittest.TestCase):
 
 class RunSelftestTest(unittest.TestCase):
     """Los tres autodiagnósticos con un lanzador real en una carpeta temporal: el de 10 s
-    se cancela en cuanto da su primer trozo; el de 500 × 500 termina en hilo; el del motor
-    falla sin él (aún no hay motor de cálculo: fase 4)."""
+    se cancela en cuanto da sus tres primeros trozos; el de 500 × 500 termina en hilo; el
+    del motor falla sin él (aún no hay motor de cálculo: fase 4)."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1475,6 +1505,7 @@ class RunSelftestTest(unittest.TestCase):
         cls.protocol = _module("jobs.protocol")
         cls.records = _module("jobs.records")
         cls.selftest = _module("jobs.selftest")
+        cls.worker_api = _module("jobs.worker_api")
         cls.messages = _module("jobs.messages")
         runner = _module("jobs.runner")
         cls.tmp = tempfile.TemporaryDirectory(prefix="gb4-")
@@ -1505,13 +1536,14 @@ class RunSelftestTest(unittest.TestCase):
         launched = cls.by_name()
         total = launched[SELFTEST_NAMES["SUM_10S"]]
         matmul = launched[SELFTEST_NAMES["MATMUL_BLENDER"]]
-        cls._wait(lambda: cls.by_name()[total.name].message.startswith("Trozo ")
+        cls._wait(lambda: _chunk_number(cls.by_name()[total.name].message) >= SAMPLED_CHUNKS
                   and not cls.by_name()[matmul.name].active)
-        cls.first_chunk_s = time.monotonic() - started
+        cls.sampled_s = time.monotonic() - started
         cls.sum_running = cls.by_name()[total.name]
         cls.sum_record = cls.records.read_record(cls.root / total.job_uid)
         cls.runner.cancel(total.job_uid)
         cls._wait(lambda: not cls.by_name()[total.name].active)
+        cls.sum_events = _channel_events(cls.root / total.job_uid)
 
     @classmethod
     def by_name(cls) -> dict[str, object]:
@@ -1556,9 +1588,13 @@ class RunSelftestTest(unittest.TestCase):
             self.assertEqual(self._poll(), (False, [NO_RUNNER]))
 
     def test_sum_of_ten_seconds_in_a_separate_process(self) -> None:
-        """RF-004-03: ``SUM_10S`` lanza con el monitor un autodiagnóstico de unos 10 s (20
-        trozos de 0,5 s; el estimador da 10 s, más de 5 s) que va en proceso aparte: tiene
-        su proceso, su primer trozo tarda al menos 0,5 s y se cancela al momento."""
+        """RF-004-03, RF-004-06: ``SUM_10S`` lanza con el monitor un autodiagnóstico de
+        10 ± 0,5 s (50 trozos de 0,2 s; el estimador da 10 s, más de 5 s) que va en proceso
+        aparte, con un evento de avance cada ≤ 0,25 s (M1 y H2 piden al menos dos por
+        segundo): trozos de ≤ 0,25 s, uno por avance, que el límite de 10 avances por
+        segundo del worker no retiene. En su proceso, el inicio y los tres primeros avances
+        llegan con ≤ 0,25 s entre uno y otro, y a ese ritmo los 50 trozos duran 10 ± 0,5 s;
+        se cancela al momento."""
         result, reports = self.sum_run
         self.assertEqual(result, {"FINISHED"})
         self.assertEqual(reports, [({"INFO"},
@@ -1567,13 +1603,30 @@ class RunSelftestTest(unittest.TestCase):
         request = self.request("SUM_10S")
         self.assertEqual((request.worker, request.owner, request.environment),
                          ("selftest", "jobs", "blender"))
+        self.assertEqual(dict(request.params), dict(self.ops.SELFTEST_PARAMS["SUM_10S"]))
         self.assertEqual(dict(request.params),
-                         {"op": "chunked_sum", "n": 20_000, "chunks": 20, "sleep_s": 0.5})
-        self.assertAlmostEqual(self.selftest.estimate_s(request.params), 10.0, places=2)
+                         {"op": "chunked_sum", "n": 20_000, "chunks": 50, "sleep_s": 0.2})
+        p = self.selftest.SelftestParams.from_params(request.params, job="SUM_10S")
+        chunk_s = p.sleep_s + p.n / p.chunks / self.selftest.SUM_RATE_PER_S
+        self.assertLessEqual(chunk_s, PROGRESS_EVERY_S)
+        self.assertGreater(chunk_s, self.worker_api.PROGRESS_INTERVAL_S)
+        self.assertAlmostEqual(self.selftest.estimate_s(request.params), p.chunks * chunk_s)
+        self.assertAlmostEqual(p.chunks * chunk_s, SUM_10S_S, delta=SUM_10S_TOLERANCE_S)
         running = self.sum_running
         self.assertEqual((running.state, running.executor), ("running", "subprocess"))
         self.assertIsNotNone(self.sum_record.pid)
-        self.assertGreaterEqual(self.first_chunk_s, 0.5)
+        self.assertGreaterEqual(self.sampled_s, SAMPLED_CHUNKS * p.sleep_s)
+        start = next(event for event in self.sum_events if event["t"] == "start")
+        self.assertEqual(start["info"]["pid"], self.sum_record.pid)
+        progress = [event for event in self.sum_events
+                    if event["t"] == "progress"][:SAMPLED_CHUNKS]
+        self.assertEqual([event["msg"] for event in progress],
+                         [f"Trozo {k} de {p.chunks}" for k in range(1, SAMPLED_CHUNKS + 1)])
+        times = [start["ts"], *(event["ts"] for event in progress)]
+        intervals = [later - earlier for earlier, later in zip(times, times[1:])]
+        self.assertLessEqual(max(intervals), PROGRESS_EVERY_S, intervals)
+        self.assertAlmostEqual(statistics.median(intervals) * p.chunks, SUM_10S_S,
+                               delta=SUM_10S_TOLERANCE_S, msg=intervals)
         cancelled = self.by_name()[SELFTEST_NAMES["SUM_10S"]]
         self.assertEqual(cancelled.state, "cancelled")
         self.assertLess(cancelled.duration_s, 5.0)

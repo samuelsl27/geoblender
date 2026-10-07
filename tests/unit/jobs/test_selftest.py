@@ -346,8 +346,8 @@ class EstimateAndEnvironmentTest(unittest.TestCase):
     """RF-004-03: estimador y entorno del autodiagnóstico (plan §5.4.1, calibrado con §2.1)."""
 
     def test_chunked_sum_estimate(self):
-        """``chunks · sleep_s + n / 1,5·10⁹`` s: la del menú (20 × 0,5 s) son 10 s."""
-        self.assertAlmostEqual(selftest.estimate_s({"chunks": 20, "sleep_s": 0.5}),
+        """``chunks · sleep_s + n / 1,5·10⁹`` s: la del menú (50 × 0,2 s) son 10 s."""
+        self.assertAlmostEqual(selftest.estimate_s({"chunks": 50, "sleep_s": 0.2}),
                                10.0 + 20_000 / 1.5e9)
         self.assertAlmostEqual(selftest.estimate_s({"n": 1_500_000_000}), 1.0)
         self.assertAlmostEqual(selftest.estimate_s({}), 20_000 / 1.5e9)
