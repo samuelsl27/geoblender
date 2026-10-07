@@ -88,6 +88,10 @@ Ciclo de vida de un trabajo en proceso aparte:
 - Limpieza (RF-004-17): :meth:`JobRunner.purge` borra las carpetas de los trabajos
   terminados (``cleanup.purge``) sin tocar nunca los que lleva activos, y los borrados salen
   de su lista.
+- Motores anteriores (RF-004-27): al terminar un trabajo del entorno ``compute``,
+  :meth:`JobRunner.poll` reintenta borrar los motores de cálculo de otros locks que ya nadie
+  usa (:meth:`JobRunner.remove_stale_engines`, que llama también ``bl`` al abrir la sesión):
+  uno que estaba en uso al instalar el vigente se borra así sin otra instalación.
 
 En hilo (``executor = "inprocess"``): la función ``run`` del tipo de trabajo corre en un
 hilo *daemon* (``inprocess.InProcessExecutor``), sin proceso propio (``pid`` vacío), con
@@ -782,7 +786,9 @@ class JobRunner:
         superaron su tiempo máximo (RF-004-11), termina los que siguen vivos al vencer su
         plazo de gracia (RF-004-10), finaliza los trabajos cuyo proceso terminó, arranca de
         la cola lo que quepa y llama a los ``on_finish`` después de dejar su
-        ``state.json``."""
+        ``state.json``. Si terminó algún trabajo del entorno ``compute``, después reintenta
+        borrar los motores de cálculo anteriores (:meth:`remove_stale_engines`,
+        RF-004-27)."""
         updates: list[JobUpdate] = []
         finished: list[_Job] = []
         with self._lock:
@@ -797,6 +803,8 @@ class JobRunner:
             self._to_report.clear()
         for item in finished:
             self._notify(item)
+        if any(item.request.environment == "compute" for item in finished):
+            self.remove_stale_engines()
         return updates
 
     def snapshots(self) -> list[JobSnapshot]:
@@ -820,6 +828,24 @@ class JobRunner:
             return {item.interp.lock_id for item in self._jobs.values()
                     if item.state in ACTIVE_STATES and item.interp is not None
                     and item.interp.lock_id is not None}
+
+    def remove_stale_engines(self) -> list[Path]:
+        """Reintenta borrar los motores de cálculo de otros locks que ya no usa ningún
+        trabajo (RF-004-27) y devuelve sus carpetas: ``remove_stale`` del motor de este
+        lanzador (``runtime.ComputeEnvironment``), con los ``lock_id`` de :meth:`locks_in_use`.
+        Solo borra algo si el motor vigente está listo; nunca uno en uso, tampoco desde otra
+        sesión de Blender (su worker tiene abierto el numpy del motor), ni uno instalado
+        después que el vigente. Sin motor, o con uno que no sabe limpiar, no hace nada. Lo
+        llama :meth:`poll` al terminar cada trabajo ``compute`` y ``bl`` al abrir la sesión
+        (diferido). Un fallo al borrar va al registro técnico y no se propaga."""
+        remove = getattr(self._runtime, "remove_stale", None)
+        if remove is None:
+            return []
+        try:
+            return list(remove(in_use=self.locks_in_use()))
+        except OSError:
+            LOGGER.exception("No se pudieron borrar los motores de cálculo anteriores")
+            return []
 
     def stored_snapshots(self, *, extra_roots: Iterable[Path] = ()) -> list[JobSnapshot]:
         """Los trabajos guardados que no son de este lanzador (RF-004-08, RF-004-13): los de

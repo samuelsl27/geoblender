@@ -22,6 +22,11 @@
   otros locks solo cuando el vigente está listo y ningún trabajo los usa (los ``lock_id`` de
   ``JobRunner.locks_in_use`` y, desde cualquier sesión, el numpy del motor que el worker
   ``compute`` tiene abierto); la cadena de instalación la llama al adoptar.
+- Un motor anterior que se conservó porque un trabajo lo usaba se borra cuando deja de
+  usarse, sin otra instalación (T44): el lanzador lo reintenta al terminar cada trabajo
+  ``compute`` (``JobRunner.remove_stale_engines``, que ``bl`` llama también al abrir la
+  sesión), y nunca borra un motor instalado después que el suyo (el de una versión más nueva
+  de Geoblender abierta en otra sesión de Blender).
 
 Motor sintético: un «numpy» de pruebas (``numpy/__init__.py`` con ``__version__``,
 ``show_config`` y un producto de matrices de mentira) y ``gbtestpkg`` en ruedas sintéticas,
@@ -86,10 +91,14 @@ IDLE_LOCK_ID = "0123456789ab"
 """Un lock de otra versión con su motor, que ningún trabajo tiene abierto."""
 LEFTOVER_LOCK_ID = "fedcba987654"
 """Un lock de otra versión del que quedan los restos ``.old`` de una limpieza anterior."""
+EARLIER_INSTALL = "2020-01-01T08:00:00.000Z"
+"""Cuándo se instaló el motor anterior del caso T44 (con la versión anterior de
+Geoblender)."""
 
 _CASES: dict[str, dict] = {}
 _STATE: dict[str, object] = {}
 _TWO: dict[str, object] = {}
+_RETRY: dict[str, object] = {}
 
 
 def _wheels(store: Path, blas: str) -> list:
@@ -181,6 +190,38 @@ def _names(folder: Path) -> list[str]:
     return sorted(path.name for path in folder.iterdir())
 
 
+def _hold(label: str):
+    """Un trabajo ``compute`` que usa el motor de su lanzador hasta que se cancela."""
+    return protocol.new_request("selftest", label=label, owner="jobs", params=HOLD_PARAMS,
+                                environment="compute")
+
+
+def _started(launcher, handle) -> bool:
+    """Si el trabajo ``handle`` de ``launcher`` ya usa su motor (su evento ``start`` llega
+    después de cargar numpy)."""
+    snapshot = {s.job_uid: s for s in launcher.snapshots()}[handle.job_uid]
+    return snapshot.interpreter is not None and snapshot.interpreter.python is not None
+
+
+def _cancel_when_started(launcher, handle) -> bool:
+    """Cancela el trabajo ``handle`` en cuanto usa su motor; dice si ya no hay que esperar
+    a que arranque (cancelado, o terminado sin arrancar)."""
+    if handle.result() is not None:
+        return True
+    if _started(launcher, handle):
+        handle.cancel()
+        return True
+    return False
+
+
+def _set_installed_at(env, text: str) -> None:
+    """Cambia en ``runtime.json`` del motor ``env`` cuándo se instaló."""
+    path = env.path / "runtime.json"
+    info = json.loads(path.read_text(encoding="utf-8"))
+    info["installed_at"] = text
+    path.write_text(json.dumps(info), encoding="utf-8")
+
+
 def _start_two_locks(base: Path, wheels: list, store: Path) -> None:
     """Dos locks en los mismos datos de usuario: el motor de la versión anterior (solo
     numpy), instalado, con un trabajo ``compute`` que lo usa; el de la versión nueva (numpy y
@@ -194,8 +235,6 @@ def _start_two_locks(base: Path, wheels: list, store: Path) -> None:
         (old.runtime_dir / name / "site" / "dato.txt").write_text("x\n", encoding="utf-8")
     launcher = _launcher(base, old)
     unittest.addModuleCleanup(launcher.shutdown)
-    request = protocol.new_request("selftest", label="Usa el motor anterior", owner="jobs",
-                                   params=HOLD_PARAMS, environment="compute")
 
     def at_end(result) -> None:
         _TWO["result"] = result
@@ -203,7 +242,7 @@ def _start_two_locks(base: Path, wheels: list, store: Path) -> None:
         _TWO["removed_at_end"] = new.remove_stale(in_use=launcher.locks_in_use())
 
     _TWO.update(old=old, new=new, runner=launcher, wheels=wheels, store=store,
-                handle=launcher.submit(request, on_finish=at_end))
+                handle=launcher.submit(_hold("Usa el motor anterior"), on_finish=at_end))
 
 
 def _step_two_locks() -> None:
@@ -235,6 +274,54 @@ def _step_two_locks() -> None:
     _TWO["handle"].cancel()
 
 
+def _start_retry(base: Path, wheels: list, store: Path) -> None:
+    """T44: dos locks en los mismos datos de usuario y sus dos motores instalados. El
+    anterior (solo numpy, instalado antes) lo usa un trabajo ``compute`` de otra sesión de
+    Blender con la versión anterior de Geoblender (su lanzador); el vigente es el del
+    lanzador de esta sesión, y se instaló cuando ese trabajo ya lo usaba (por eso se
+    conservó el anterior)."""
+    user = base / "usuario_reintento"
+    old = runtime.ComputeEnvironment(user, _lock(wheels[:1]))
+    new = runtime.ComputeEnvironment(user, _lock(wheels))
+    _install_by_hand(old, wheels[:1], store)
+    _set_installed_at(old, EARLIER_INSTALL)
+    _install_by_hand(new, wheels, store)
+    other, this = _launcher(base, old), _launcher(base, new)
+    for launcher in (other, this):
+        unittest.addModuleCleanup(launcher.shutdown)
+    _RETRY.update(old=old, new=new, other=other, this=this, step="held",
+                  held=other.submit(_hold("Usa el motor anterior desde otra sesión")))
+
+
+def _step_retry() -> None:
+    """Una vuelta del caso T44, sin limpiar nunca a mano: con el trabajo de la otra sesión
+    en marcha, el reintento al abrir la sesión y un trabajo ``compute`` de esta sesión que
+    termina; después termina el de la otra sesión y, por último, otro de esta sesión."""
+    retry = _RETRY
+    other, this = retry["other"], retry["this"]
+    other.poll()
+    this.poll()
+    step, old = retry["step"], retry["old"]
+    if step == "held" and _started(other, retry["held"]):
+        retry["swept_at_open"] = this.remove_stale_engines()
+        retry["first"] = this.submit(_hold("Primer cálculo de esta sesión"))
+        retry["step"] = "first"
+    elif step in ("first", "second") and _cancel_when_started(this, retry[step]):
+        retry["step"] = f"{step}_ending"
+    elif step == "first_ending" and retry["first"].result() is not None:
+        retry["names_after_first"] = _names(old.runtime_dir)
+        retry["held"].cancel()
+        retry["step"] = "held_ending"
+    elif step == "held_ending" and retry["held"].result() is not None:
+        retry["names_after_held"] = _names(old.runtime_dir)
+        retry["second"] = this.submit(_hold("Segundo cálculo de esta sesión"))
+        retry["step"] = "second"
+    elif step == "second_ending" and retry["second"].result() is not None:
+        retry["names_at_end"] = _names(old.runtime_dir)
+        retry["statuses"] = (retry["new"].status(), old.status())
+        retry["step"] = "done"
+
+
 def setUpModule() -> None:
     tmp = _support.jobs_tmp()
     base = tmp.__enter__()
@@ -253,6 +340,7 @@ def setUpModule() -> None:
     good, auto = _wheels(good_store, GOOD_BLAS), _wheels(auto_store, "auto")
     _STATE.update(base=base, good_store=good_store, good_wheels=good)
     _start_two_locks(base, good, good_store)
+    _start_retry(base, good, good_store)
 
     # En los datos de usuario de «ok» queda el motor de un lock anterior, que nadie usa.
     previous = runtime.ComputeEnvironment(base / "usuario_ok", _lock(good[:1]))
@@ -282,14 +370,16 @@ def setUpModule() -> None:
 
     deadline = time.monotonic() + DEADLINE_S
     ok = _CASES["ok"]
-    while not (all(case["setup"].done for case in _CASES.values()) and "result" in _TWO):
+    while not (all(case["setup"].done for case in _CASES.values()) and "result" in _TWO
+               and _RETRY["step"] == "done"):
         if time.monotonic() > deadline:
             pending = [name for name, case in _CASES.items() if not case["setup"].done]
             raise AssertionError(f"no terminaron a tiempo: {pending} (dos locks: "
-                                 f"{'result' in _TWO})")
+                                 f"{'result' in _TWO}; reintento: {_RETRY['step']})")
         for case in _CASES.values():
             case["runner"].poll()
         _step_two_locks()
+        _step_retry()
         if ok["setup"].step == runtime.STEP_CHECK and ok["env"].partial_path.exists():
             _STATE.setdefault("status_while_checking", ok["env"].status())
         time.sleep(POLL_S)
@@ -540,6 +630,41 @@ class StaleEngineTest(unittest.TestCase):
         self.assertEqual(new.remove_stale(in_use=set()), [], "ya no queda nada que borrar")
         with self.assertRaises(TypeError):
             new.remove_stale(in_use=old.lock_id)
+
+
+class StaleEngineRetryTest(unittest.TestCase):
+    def test_previous_engine_removed_when_no_longer_in_use(self) -> None:
+        """RF-004-27: con dos locks en los mismos datos de usuario y sus dos motores
+        instalados (el anterior se conservó porque un trabajo ``compute`` de otra sesión de
+        Blender lo usaba al instalar el vigente), el anterior se conserva mientras ese
+        trabajo corre: ni el reintento al abrir la sesión
+        (``JobRunner.remove_stale_engines``) ni el que hace el lanzador al terminar un
+        trabajo ``compute`` de esta sesión lo borran. Al terminar ese trabajo, su lanzador
+        (el de la versión anterior) tampoco borra el vigente, que se instaló después. El
+        siguiente trabajo ``compute`` de esta sesión, al terminar, borra el anterior sin
+        otra instalación ni ninguna llamada más; un lanzador sin motor no borra nada."""
+        retry = _RETRY
+        old, new, this = retry["old"], retry["new"], retry["this"]
+        both = sorted([old.lock_id, new.lock_id])
+        self.assertEqual(retry["swept_at_open"], [], "en uso: se conserva")
+        self.assertEqual(retry["names_after_first"], both,
+                         "un trabajo de esta sesión termina con el anterior en uso")
+        self.assertEqual(retry["names_after_held"], both,
+                         "la otra sesión no borra el motor instalado después que el suyo")
+        self.assertEqual(retry["names_at_end"], [new.lock_id],
+                         "se borra al terminar el siguiente trabajo compute de esta sesión")
+        self.assertEqual(retry["statuses"], ("ready", "outdated"))
+        for name, lock_id in (("held", old.lock_id), ("first", new.lock_id),
+                              ("second", new.lock_id)):
+            with self.subTest(trabajo=name):
+                result = retry[name].result()
+                self.assertEqual(result.state, "cancelled", result.error_text)
+                interp = _record(result)["interpreter"]
+                self.assertEqual((interp["kind"], interp["lock_id"]), ("compute", lock_id))
+        self.assertEqual(this.remove_stale_engines(), [], "ya no queda nada que borrar")
+        idle = _launcher(_STATE["base"] / "sin_motor", None)
+        self.addCleanup(idle.shutdown)
+        self.assertEqual(idle.remove_stale_engines(), [])
 
 
 if __name__ == "__main__":

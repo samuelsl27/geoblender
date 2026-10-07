@@ -92,7 +92,10 @@ listo y ningún trabajo los usa: ni los de esta sesión (``in_use``, los ``lock_
 ``JobRunner.locks_in_use``) ni los de otra sesión de Blender, porque cada worker ``compute``
 tiene abierto el numpy de su motor mientras vive (``workers/_bootstrap.py``) y Windows no
 deja apartar una carpeta con un fichero abierto. :class:`RuntimeSetup` la llama al adoptar;
-un motor en uso se conserva y se borra en la siguiente limpieza.
+un motor en uso se conserva y se borra cuando deja de usarse, en la siguiente limpieza: el
+lanzador la reintenta al terminar cada trabajo ``compute`` y ``bl`` al abrir la sesión
+(``JobRunner.remove_stale_engines``; T44). Nunca borra un motor instalado después que el
+vigente: es el de otra versión de Geoblender abierta a la vez en otra sesión de Blender.
 
 Solo :func:`fetch_wheel` usa la red (la URL del lock, con el consentimiento del usuario, desde
 el trabajo de instalación). Este módulo no toca ``sys.path``: es el único que construye la
@@ -715,19 +718,23 @@ class ComputeEnvironment:
         devuelve sus carpetas, por orden. Solo si el motor de este lock está ``ready`` (el
         anterior se borra cuando el nuevo lo sustituye; si no, no toca nada) y nunca los de
         ``in_use``, los ``lock_id`` que usan los trabajos en curso de esta sesión
-        (``JobRunner.locks_in_use``).
+        (``JobRunner.locks_in_use``), ni uno que su ``runtime.json`` dice instalado después
+        que este: no es el anterior, sino el de otra versión de Geoblender abierta a la vez
+        en otra sesión de Blender, que a su vez borrará este cuando deje de usarse.
 
         Cada motor se aparta antes de borrarlo (``os.replace`` a ``<lock_id>.old``): Windows
         no deja mover una carpeta con un fichero abierto, y cada worker ``compute`` tiene
         abierto el numpy de su motor mientras vive, también los de otra sesión de Blender.
-        Un motor en uso se conserva tal cual y se borra en la siguiente limpieza; lo que
-        quedó de un borrado a medias (``<lock_id>.old`` de otro lock), también se borra. Las
-        instalaciones a medias de otros locks (``.partial``: pueden estar en marcha en otra
-        sesión) y lo que no es un motor no se tocan. :class:`TypeError` si ``in_use`` es un
-        texto suelto o lleva algo que no es un texto."""
+        Un motor en uso se conserva tal cual y se borra en la siguiente limpieza (al terminar
+        un trabajo ``compute`` o al abrir la sesión: ``JobRunner.remove_stale_engines``); lo
+        que quedó de un borrado a medias (``<lock_id>.old`` de otro lock), también se borra.
+        Las instalaciones a medias de otros locks (``.partial``: pueden estar en marcha en
+        otra sesión) y lo que no es un motor no se tocan. :class:`TypeError` si ``in_use`` es
+        un texto suelto o lleva algo que no es un texto."""
         used = as_uid_set(in_use, "in_use (los lock_id en uso)")
         if self.status() != STATUS_READY:
             return []
+        installed = _installed_at(self.path)
         removed: list[Path] = []
         for name in _folder_names(self.runtime_dir):
             # Primero los restos de una limpieza anterior: dejan libre el sitio del apartado.
@@ -741,7 +748,14 @@ class ComputeEnvironment:
                                    "anterior); se intentará en la siguiente limpieza",
                                    self.runtime_dir / name)
         for folder in self.stale_engines():
-            if folder.name not in used and _remove_engine(folder):
+            if folder.name in used:
+                continue
+            other = _installed_at(folder)
+            if installed is not None and other is not None and other > installed:
+                LOGGER.info("Se conserva el motor de cálculo %s: se instaló después que el "
+                            "vigente %s (es de otra versión de Geoblender)", folder, self.path)
+                continue
+            if _remove_engine(folder):
                 removed.append(folder)
         return sorted(removed)
 
@@ -1017,6 +1031,16 @@ class ComputeEnvironment:
         if aside is not None and not remove_tree(aside):
             LOGGER.warning("No se pudo borrar el motor de cálculo anterior %s; no se usa",
                            aside)
+
+
+def _installed_at(folder: Path) -> dt.datetime | None:
+    """Cuándo se instaló el motor de ``folder`` (``installed_at`` de su ``runtime.json``);
+    ``None`` si no se sabe."""
+    info = read_runtime_info(folder)
+    try:
+        return parse_utc(info["installed_at"]) if info is not None else None
+    except (KeyError, ValueError):
+        return None
 
 
 def _folder_names(folder: Path) -> list[str]:

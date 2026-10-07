@@ -833,16 +833,19 @@ class JobMonitorRegistrationTest(unittest.TestCase):
         self.addCleanup(blender_ext.unload)
 
     def test_disable_retires_timer_and_field(self) -> None:
-        """RF-004-06, RF-004-07: desactivar Geoblender retira el temporizador del monitor y
-        el campo «jobs», y deja la huella del principio de la sesión."""
+        """RF-004-06, RF-004-07, RF-004-27: desactivar Geoblender retira el temporizador del
+        monitor, el que reintenta borrar los motores de cálculo anteriores (aún sin
+        dispararse) y el campo «jobs», y deja la huella del principio de la sesión."""
         blender_ext.enable()
         ops = _module("bl.ops.jobs")
         statusbar = _module("bl.ui.statusbar")
         ops.MONITOR.start()
         self.assertTrue(bpy.app.timers.is_registered(ops.tick))
+        self.assertTrue(bpy.app.timers.is_registered(ops.retry_stale_engines))
         self.assertIn(FIELD, [field.key for field in statusbar.fields()])
         blender_ext.disable()
         self.assertFalse(bpy.app.timers.is_registered(ops.tick))
+        self.assertFalse(bpy.app.timers.is_registered(ops.retry_stale_engines))
         self.assertNotIn(FIELD, [field.key for field in statusbar.fields()])
         after = state_fingerprint()
         before = blender_ext.session_baseline()
@@ -2088,6 +2091,35 @@ class SessionRunnerTest(unittest.TestCase):
         self.assertEqual(engine.lock_id, runtime.read_lock().lock_id)
         self.assertEqual(engine.status(), "missing")
         self.assertFalse((self.user / "runtime").exists())
+
+    def test_previous_engines_retried_after_opening(self) -> None:
+        """RF-004-27: habilitar Geoblender no limpia los motores de cálculo anteriores: deja
+        un temporizador persistente (``retry_stale_engines``) que lo reintenta después con
+        el lanzador de la sesión, una sola vez. Sin el motor del lock vigente listo no borra
+        nada; con él listo, borra el de otro lock que nadie usa."""
+        timer = self.ops.retry_stale_engines
+        self.assertTrue(bpy.app.timers.is_registered(timer), "diferido, no en el registro")
+        runtime = _module("jobs.runtime")
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory(
+            prefix="gb4-", ignore_cleanup_errors=True)))
+        env = runtime.ComputeEnvironment(tmp / "usuario", runtime.read_lock())
+        previous = env.runtime_dir / OTHER_LOCK_ID
+        (previous / "site").mkdir(parents=True)
+        runner = _module("jobs.runner").JobRunner(
+            jobs_root=tmp / "jobs", package_dir=self.ops.PACKAGE_DIR,
+            blender_python=Path(sys.executable), runtime=env)
+        self.addCleanup(runner.shutdown, timeout_s=2.0)
+        with mock.patch.object(self.ops._SESSION, "runner", runner):
+            self.assertIsNone(timer(), "no se repite")
+            self.assertEqual(env.status(), "outdated")
+            self.assertTrue(previous.is_dir(), "sin el motor vigente listo no se borra")
+            env.site_dir().mkdir(parents=True)
+            (env.path / "runtime.json").write_text(json.dumps({
+                "schema": runtime.RUNTIME_SCHEMA, "lock_id": env.lock_id,
+                "verification": {"ok": True}}), encoding="utf-8")
+            self.assertEqual(env.status(), "ready")
+            self.assertIsNone(timer())
+        self.assertEqual([p.name for p in env.runtime_dir.iterdir()], [env.lock_id])
 
     def test_sys_path_unchanged_by_jobs(self) -> None:
         """RF-004-03, RF-004-25: el ``sys.path`` de Blender es idéntico antes y después de

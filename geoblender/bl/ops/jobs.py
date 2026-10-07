@@ -32,8 +32,11 @@ pruebas llaman a :func:`tick` a mano.
   intérprete es el ``python.exe`` de Blender (``sys.executable``), el máximo de trabajos en
   proceso aparte sale de las preferencias (``jobs.max_parallel_jobs``, que al cambiar llega
   con ``reconfigure``) y la raíz de trabajos, de :func:`jobs_root`. También pone el
-  manejador ``exit_pre`` (persistente) y se apunta a los cambios de proyecto de la 002
-  (``bl.scene.project_session.add_listener``).
+  manejador ``exit_pre`` (persistente), se apunta a los cambios de proyecto de la 002
+  (``bl.scene.project_session.add_listener``) y deja un temporizador de un solo disparo,
+  :func:`retry_stale_engines`, que :data:`STALE_ENGINES_DELAY_S` s después reintenta borrar
+  los motores de cálculo anteriores que ya no usa nadie (RF-004-27; fuera del registro: el
+  lanzador también lo reintenta al terminar cada trabajo ``compute``).
 - Raíz de trabajos (:func:`jobs_root`, RF-004-18): con un proyecto abierto,
   ``Project.cache_dir()/jobs`` (la caché única de la 002: en la carpeta del proyecto si está
   en disco local y en escritura; en los datos de usuario si está en red o en solo lectura) y,
@@ -52,8 +55,8 @@ pruebas llaman a :func:`tick` a mano.
 - :func:`unregister` y el manejador ``exit_pre`` (:func:`on_exit_pre`) cierran el lanzador
   con ``JobRunner.shutdown(timeout_s=3)`` (los trabajos en curso quedan «Interrumpido» y
   sin proceso, RF-004-13) **antes** de retirar el temporizador del monitor;
-  :func:`unregister` quita además el manejador, el aviso de cambio de proyecto y los tipos
-  de trabajo.
+  :func:`unregister` quita además el manejador, el aviso de cambio de proyecto, el
+  temporizador de los motores anteriores si aún no se disparó y los tipos de trabajo.
 
 Operadores reales, con el ``bl_idname`` del catálogo de la 003 (Herramientas ▸ Trabajos),
 que así deja de generar sus provisionales; funcionan en los dos modos (sus botones están en
@@ -168,6 +171,9 @@ NOTICE_S = 10.0
 TRANSLATION_CONTEXT = "Geoblender"
 SHUTDOWN_TIMEOUT_S = 3.0
 """Lo que puede tardar en cerrarse el lanzador al desactivar o salir (RF-004-13)."""
+STALE_ENGINES_DELAY_S = 5.0
+"""Cuánto espera, al abrir la sesión, el reintento de borrar los motores de cálculo
+anteriores (:func:`retry_stale_engines`, RF-004-27): fuera del registro y del arranque."""
 RUNTIME_DIR = "runtime"
 """La carpeta del motor de cálculo en los datos de usuario (plan §5.2)."""
 PACKAGE_DIR = Path(__file__).resolve().parents[2]
@@ -1398,6 +1404,28 @@ def on_project_changed(project: Project | None) -> None:
         project_session.notify(_failed_text(report))
 
 
+def retry_stale_engines() -> None:
+    """El temporizador de un solo disparo que deja :func:`register` (persistente: sigue si
+    se abre otro ``.blend`` antes): reintenta borrar los motores de cálculo de otros locks
+    que ya no usa ningún trabajo (``JobRunner.remove_stale_engines``, RF-004-27), solo si el
+    del lock vigente está listo; uno que se conservó porque estaba en uso al instalar el
+    vigente se borra así sin otra instalación. Lo que borra va al registro técnico. Devuelve
+    ``None``: no se repite."""
+    runner = _SESSION.runner
+    if runner is None or runner.closed:
+        return None
+    try:
+        runner.remove_stale_engines()
+    except Exception:  # noqa: BLE001 - un temporizador que falla no tumba la interfaz
+        LOGGER.exception("Falló el reintento de borrar los motores de cálculo anteriores")
+    return None
+
+
+def _retire_stale_engines_timer() -> None:
+    if bpy.app.timers.is_registered(retry_stale_engines):
+        bpy.app.timers.unregister(retry_stale_engines)
+
+
 @bpy.app.handlers.persistent
 def on_exit_pre(*_args: object) -> None:
     """Manejador ``exit_pre`` (persistente: sigue tras abrir otro ``.blend``): al salir de
@@ -1414,7 +1442,9 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_jobs_show_jobs, GEOBLENDER_OT_jobs_ca
 def register() -> None:
     """Textos de los trabajos (y los de la instalación del motor) en ``core.i18n``, tipos
     de trabajo de la 004, el lanzador de la sesión (dado al monitor), el manejador
-    ``exit_pre`` y el aviso de cambio de proyecto; idempotente."""
+    ``exit_pre``, el aviso de cambio de proyecto y el temporizador que reintenta borrar los
+    motores de cálculo anteriores (:func:`retry_stale_engines`; aquí no se borra nada);
+    idempotente."""
     i18n.install(messages.CATALOG_ES)
     i18n.install(catalog.CATALOG_ES)
     i18n.install(jobs_runtime.CATALOG_ES)
@@ -1424,13 +1454,18 @@ def register() -> None:
     if on_exit_pre not in bpy.app.handlers.exit_pre:
         bpy.app.handlers.exit_pre.append(on_exit_pre)
     project_session.add_listener(on_project_changed)
+    if not bpy.app.timers.is_registered(retry_stale_engines):
+        bpy.app.timers.register(retry_stale_engines, first_interval=STALE_ENGINES_DELAY_S,
+                                persistent=True)
 
 
 def unregister() -> None:
-    """Quita el aviso de cambio de proyecto y el manejador ``exit_pre``, cierra el
-    lanzador de la sesión (``shutdown(timeout_s=3)``) antes de retirar el temporizador del
-    monitor, lo suelta, olvida la cadena del motor de cálculo y quita los tipos de trabajo
-    de la 004; idempotente."""
+    """Quita el temporizador de los motores anteriores (si aún no se disparó), el aviso de
+    cambio de proyecto y el manejador ``exit_pre``, cierra el lanzador de la sesión
+    (``shutdown(timeout_s=3)``) antes de retirar el temporizador del monitor, lo suelta,
+    olvida la cadena del motor de cálculo y quita los tipos de trabajo de la 004;
+    idempotente."""
+    _retire_stale_engines_timer()
     project_session.remove_listener(on_project_changed)
     if on_exit_pre in bpy.app.handlers.exit_pre:
         bpy.app.handlers.exit_pre.remove(on_exit_pre)

@@ -73,7 +73,9 @@ falta el almacén del NAS de IMGA.
     versiones, que numpy sale del motor y no de Blender y que usa la BLAS optimizada, y mide el
     producto: «Listo · numpy 2.5.3 · BLAS scipy-openblas · 2000 × 2000 en 0,040 s». Desde la
     misma ventana se verifica, se repara o se quita; con otra versión de Geoblender se ofrece
-    actualizarlo, y el anterior se borra al terminar si ningún trabajo lo está usando. Si un
+    actualizarlo, y el anterior se borra al terminar si ningún trabajo lo está usando; si
+    alguno lo usa (también desde otra sesión de Blender), se borra después, cuando ya no se
+    usa, al terminar el siguiente cálculo con el motor o al abrir Geoblender. Si un
     cálculo lo necesita y falta, se ofrece instalarlo con el mismo diálogo; si el que hay es de
     otra versión de Geoblender, el cálculo dice cuál está instalado y cuál hace falta («El
     motor de cálculo instalado (…) no es el que necesita esta versión de Geoblender (…):
