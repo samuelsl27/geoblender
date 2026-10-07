@@ -36,7 +36,7 @@ from typing import Any
 
 import bpy
 
-from ...core.catalog import QuickAccessItem
+from ...core.catalog import Catalog, QuickAccessItem
 from ...core.catalog.width import (
     FoldResult,
     Level,
@@ -64,9 +64,29 @@ class _State:
         self.installed = False
         self.folds: dict[tuple[float, float, str, bool], FoldResult] = {}
         self.folded: dict[int, tuple[str, ...]] = {}  # plegados por área (su puntero)
+        # Por ámbito: el catálogo, sus controles en orden y por clave (T46).
+        self.items: dict[str, tuple[Catalog, tuple[QuickAccessItem, ...],
+                                    dict[str, QuickAccessItem]]] = {}
 
 
 _STATE = _State()
+
+
+def _scope(scope: str) -> tuple[tuple[QuickAccessItem, ...], dict[str, QuickAccessItem]]:
+    cat = catalog()
+    cached = _STATE.items.get(scope)
+    if cached is None or cached[0] is not cat:
+        ordered = cat.quick_access(scope)
+        cached = (cat, ordered, {item.key: item for item in ordered})
+        _STATE.items[scope] = cached
+    return cached[1], cached[2]
+
+
+def items(scope: str) -> tuple[QuickAccessItem, ...]:
+    """Los controles de acceso rápido de ``scope`` (``project`` o ``view``) en su orden,
+    ordenados una vez por catálogo: se piden en cada redibujo (spec 003, T46;
+    RNF-003-03)."""
+    return _scope(scope)[0]
 
 
 # Barra superior ---------------------------------------------------------------------------
@@ -75,7 +95,7 @@ _STATE = _State()
 def draw_project(layout: Any, context: Any, level: Level) -> None:
     """El acceso rápido del proyecto en la barra superior (AR §2), en el nivel ``level``."""
     row = layout.row(align=True)
-    for item in catalog().quick_access("project"):
+    for item in items("project"):
         if item.key in (TOGGLE, LAYOUTS_PANEL):
             continue  # el conmutador y Disposición ▾ van al principio de la barra
         titled = item.key == VERSION_PANEL and level in TITLED_LEVELS
@@ -103,7 +123,7 @@ def fold(width_px: float, mode: str, scale: float | None = None) -> FoldResult:
     available = quick_access_available_px(region_width_px=width_px, scale=scale,
                                           native_px=compat.native_tool_settings_px(mode), k=k)
     found = fold_view_quick_access(available_px=available, scale=scale, edit_mode=edit,
-                                   items=catalog().quick_access("view"), k=k)
+                                   items=items("view"), k=k)
     if len(_STATE.folds) > 256:
         _STATE.folds.clear()
     _STATE.folds[key] = found
@@ -143,12 +163,12 @@ def draw_view_row(self: Any, context: Any) -> None:
     width = float(getattr(region, "width", 0) or 0)
     result = fold(width, str(getattr(context, "mode", "OBJECT")))
     _STATE.folded[_area_key(getattr(context, "area", None))] = result.folded
-    items = {item.key: item for item in catalog().quick_access("view")}
+    by_key = _scope("view")[1]
     outer = self.layout.row(align=False)
     group: str | None = None
     row = outer
     for key in result.visible:
-        item = items[key]
+        item = by_key[key]
         if item.group != group:  # cada grupo, con sus botones juntos, tras una línea
             if group is not None:
                 outer.separator(type="LINE")
@@ -171,13 +191,13 @@ class GEOBLENDER_PT_ui_quick_access_more(bpy.types.Panel):
 
     def draw(self, context: Any) -> None:
         folded = _STATE.folded.get(_area_key(getattr(context, "area", None)))
-        items = catalog().quick_access("view")
+        view_items = items("view")
         if folded is None:  # sin dibujo previo de esa vista: todos los que se pliegan
-            folded = tuple(item.key for item in items if item.fold_step is not None)
+            folded = tuple(item.key for item in view_items if item.fold_step is not None)
         cat = catalog()
         layout = self.layout.column(align=True)
         group = ""
-        for item in items:
+        for item in view_items:
             if item.key not in folded:
                 continue
             if item.group != group:
@@ -232,6 +252,7 @@ def install() -> None:
     getattr(bpy.types, HEADER).prepend(draw_view_row)
     _STATE.installed = True
     _STATE.folds.clear()
+    _STATE.items.clear()
 
 
 def uninstall() -> None:
@@ -240,6 +261,7 @@ def uninstall() -> None:
     _STATE.installed = False
     _STATE.folds.clear()
     _STATE.folded.clear()
+    _STATE.items.clear()
 
 
 classes: tuple[type, ...] = (GEOBLENDER_PT_ui_quick_access_more,)

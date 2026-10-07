@@ -7,7 +7,7 @@
   escenas. Todas, salvo «Layout», llevan ``geoblender_mode``; ninguna fija la escena y
   todas están en modo Objeto.
 - CW §6.1: la principal tiene Outliner (configurado como PC §5.5), Vista 3D con la fila 2
-  visible y Propiedades.
+  visible y la barra N cerrada (convergencia, T46; RNF-003-03) y Propiedades.
 - CW §6.2: «Sección y planta», dos Vistas 3D (planta y sección, ortográficas) con su fila 2;
   «Datos», la Hoja de cálculo; «Diseño y perfil», dos Vistas 3D; «Fases», la hoja de claves.
 
@@ -86,9 +86,11 @@ class UiResourcesTest(unittest.TestCase):
             self.assertEqual(workspace.object_mode, "OBJECT", name)
 
     def test_main_layout(self) -> None:
-        """CW §6.1, PC §5.5: Outliner, Vista 3D con la fila 2 y las barras T y N, y
-        Propiedades; el Outliner en «Capa de vista», sin contenido de objeto ni hijos,
-        con las columnas de ocultar y seleccionable y en orden alfabético."""
+        """CW §6.1, PC §5.5: Outliner, Vista 3D con la fila 2 y la barra T, y Propiedades;
+        la barra N, cerrada (convergencia, T46; RNF-003-03: abierta, el redibujo de la
+        ventana costaba unos 0,6 ms más; la pestaña «Proyecto» está a un N); el Outliner
+        en «Capa de vista», sin contenido de objeto ni hijos, con las columnas de ocultar
+        y seleccionable y en orden alfabético."""
         workspace = self.loaded[self.main]
         types = _types(workspace)
         for kind in ("OUTLINER", "VIEW_3D", "PROPERTIES"):
@@ -96,7 +98,7 @@ class UiResourcesTest(unittest.TestCase):
         (view,) = _views(workspace)
         self.assertTrue(view.show_region_tool_header)
         self.assertTrue(view.show_region_toolbar)
-        self.assertTrue(view.show_region_ui)
+        self.assertFalse(view.show_region_ui)
         outliner = next(space for area in _areas(workspace) for space in area.spaces
                         if space.type == "OUTLINER")
         self.assertEqual(outliner.display_mode, "VIEW_LAYER")

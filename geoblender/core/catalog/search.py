@@ -22,7 +22,8 @@ búsqueda difusa sobre el texto que se ve, y ``bl/ui/command_line.py`` lo enseñ
 es la etiqueta (spec 003, T45). Con la consulta vacía, :func:`frequent` da los comandos
 disponibles más frecuentes.
 
-El índice normalizado se construye una vez por catálogo. Puro: no importa ``bpy``.
+El índice normalizado y la tabla de traducciones de las rutas (:func:`path_text`) se
+construyen una vez por catálogo. Puro: no importa ``bpy``.
 """
 
 from __future__ import annotations
@@ -174,6 +175,21 @@ def _best(entry: _Entry, query: str, entry_query: str,
     return best, field, matched
 
 
+_TRANSLATIONS: dict[int, tuple[Catalog, dict[str, str]]] = {}
+
+
+def _translations(cat: Catalog) -> dict[str, str]:
+    """La tabla ``msgid`` → español del catálogo, leída una vez por catálogo: rehacerla
+    cuesta unos 0,17 ms, y la ruta la pide el ``poll`` de un operador de la fila 2 en cada
+    redibujo (spec 003, T46; RNF-003-03). No se modifica."""
+    cached = _TRANSLATIONS.get(id(cat))
+    if cached is not None and cached[0] is cat:
+        return cached[1]
+    table = cat.translations()
+    _TRANSLATIONS[id(cat)] = (cat, table)
+    return table
+
+
 def path_text(cat: Catalog, key: str, language: str, *, parent: bool = False) -> str:
     """La ruta del comando desde la barra en ``language`` («Cubicación ▸ Cubicar ▸ …»);
     con ``parent``, sin el propio comando (el menú y el grupo donde está)."""
@@ -182,7 +198,7 @@ def path_text(cat: Catalog, key: str, language: str, *, parent: bool = False) ->
         msgids = msgids[:-1]
     if language == "en":
         return " ▸ ".join(msgids)
-    table = cat.translations()
+    table = _translations(cat)
     return " ▸ ".join(table.get(msgid, msgid) for msgid in msgids)
 
 

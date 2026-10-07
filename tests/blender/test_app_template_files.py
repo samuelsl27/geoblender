@@ -8,7 +8,8 @@
 - La de la plantilla (``assets/splash/splash.svg``) da 1000 × 500 con el fondo
   ``#1F2327`` y el logotipo claro; las de ``packaging/`` miden 1000 × 500 y 2000 × 1000.
 - El ``startup.blend`` de la plantilla, con la extensión habilitada: el espacio principal
-  de Geoblender (marcado) y «Layout» (sin marcar), sin objetos, en metros.
+  de Geoblender (marcado, con la barra N cerrada como en ``geoblender_ui.blend``; T46) y
+  «Layout» (sin marcar), sin objetos, en metros.
 
 Se ejecuta con ``tools/run_blender_tests.py`` (que pone ``tools/`` en ``sys.path``).
 """
@@ -105,6 +106,10 @@ class StartupTest(unittest.TestCase):
         main = main_workspace()
         marks = {ws.name: bool(ws.geoblender_mode) for ws in bpy.data.workspaces}
         self.assertEqual(marks, {main: True, maker.FALLBACK_WORKSPACE: False})
+        views = [space for area in bpy.data.workspaces[main].screens[0].areas
+                 for space in area.spaces if space.type == "VIEW_3D"]
+        self.assertEqual(len(views), 1)  # la del principal de geoblender_ui.blend: la
+        self.assertFalse(views[0].show_region_ui)  # barra N cerrada (T46; RNF-003-03)
         self.assertEqual(len(bpy.data.objects), 0)
         self.assertEqual(len(bpy.data.libraries), 0)
         for scene in bpy.data.scenes:

@@ -23,6 +23,11 @@ GeoOrigin entero más la posición local, en float64, con ``core.georef.local_to
 abre el menú circular de encaje) y el **recorte** de la Vista 3D de destino si hay alguno
 (prioridad 2; la banda de la 003 o la caja de Blender).
 
+Se dibuja en cada redibujo de la ventana, así que nada se calcula dos veces (spec 003, T46;
+RNF-003-03): los campos se ordenan al registrar o quitar uno, cada texto se mide con ``blf``
+una vez, el cursor se pasa a absolutas solo si se ha movido (o cambian el origen o el
+idioma) y los nombres del encaje se traducen una vez por idioma.
+
 La barra de estado no se redibuja sola: una suscripción de ``bpy.msgbus`` al cursor 3D
 (:func:`on_cursor_moved`), renovada en ``load_post``, la redibuja en las ventanas sin
 operadores modales con ``workspace.status_text_set(None)``. :func:`uninstall` quita el
@@ -41,7 +46,7 @@ import numpy as np
 from bpy.app.handlers import persistent
 
 from ...core.georef import GeoOrigin, local_to_world
-from ...core.i18n import format_xyz, tr
+from ...core.i18n import format_xyz, language, tr
 from .. import compat
 from ..scene import georef as scene_georef
 from . import gate, views
@@ -57,6 +62,7 @@ OURS_ATTR = "_gb_statusbar"
 LABEL_PAD_PX = 10.0  # relleno de una etiqueta de la barra de estado, a escala 1,0
 SEPARATOR_PX = 12.0  # separador de línea entre campos
 UI_FONT_ID = 0
+MAX_CACHED_TEXTS = 256  # textos medidos que se guardan (después, se empieza de nuevo)
 
 DrawField = Callable[[Any, Any], None]
 WidthField = Callable[[Any], float]
@@ -77,8 +83,15 @@ class Field:
 class _State:
     def __init__(self) -> None:
         self.fields: dict[str, Field] = {}
+        self.ordered: tuple[Field, ...] | None = None  # los campos en su orden (caché)
         self.owner = object()  # dueño de la suscripción de msgbus
         self.subscribed = False
+        # Cachés de lo que se pide en cada redibujo (spec 003, T46; RNF-003-03): el ancho
+        # de cada texto medido con blf, el texto del cursor de la última posición y los
+        # nombres del encaje por idioma.
+        self.widths: dict[str, float] = {}
+        self.cursor: tuple[object, str] | None = None
+        self.snap_names: dict[str, dict[str, str]] = {}
 
 
 _STATE = _State()
@@ -99,17 +112,23 @@ def register_field(key: str, *, priority: int, draw: DrawField, width_px: WidthF
     if not modes or unknown:
         raise ValueError(f"modos del campo «{key}»: se espera GEOBLENDER o BLENDER")
     _STATE.fields[key] = Field(key, priority, draw, width_px, frozenset(modes), order)
+    _STATE.ordered = None
 
 
 def unregister_field(key: str) -> None:
     """Quita el campo ``key`` (si no está, nada)."""
     _STATE.fields.pop(key, None)
+    _STATE.ordered = None
 
 
 def fields() -> tuple[Field, ...]:
-    """Los campos registrados, en su orden."""
-    ordered = sorted(enumerate(_STATE.fields.values()), key=lambda pair: (pair[1].order, pair[0]))
-    return tuple(field for _index, field in ordered)
+    """Los campos registrados, en su orden (se ordenan al registrar o quitar uno, no en
+    cada dibujo)."""
+    if _STATE.ordered is None:
+        ordered = sorted(enumerate(_STATE.fields.values()),
+                         key=lambda pair: (pair[1].order, pair[0]))
+        _STATE.ordered = tuple(field for _index, field in ordered)
+    return _STATE.ordered
 
 
 # Elección de lo que se ve ----------------------------------------------------------------
@@ -179,10 +198,22 @@ setattr(draw_statusbar, OURS_ATTR, True)
 # Campos de la 003 (AR §6) ----------------------------------------------------------------
 
 
+def _text_width(text: str) -> float:
+    """El ancho ``blf`` de ``text`` a escala 1,0, medido una vez por texto (T46)."""
+    width = _STATE.widths.get(text)
+    if width is None:
+        if len(_STATE.widths) >= MAX_CACHED_TEXTS:
+            _STATE.widths.clear()
+        blf.size(UI_FONT_ID, compat.UI_FONT_POINTS)
+        width = float(blf.dimensions(UI_FONT_ID, text)[0])
+        _STATE.widths[text] = width
+    return width
+
+
 def text_px(*texts: str) -> float:
-    """Lo que ocupan unas etiquetas con ``blf`` a escala 1,0 (fuente de la interfaz)."""
-    blf.size(UI_FONT_ID, compat.UI_FONT_POINTS)
-    return sum(float(blf.dimensions(UI_FONT_ID, text)[0]) + LABEL_PAD_PX for text in texts)
+    """Lo que ocupan unas etiquetas con ``blf`` a escala 1,0 (fuente de la interfaz); cada
+    texto se mide una vez (la barra de estado lo pide en cada redibujo)."""
+    return sum(_text_width(text) + LABEL_PAD_PX for text in texts)
 
 
 def project_text() -> str:
@@ -199,18 +230,35 @@ def epsg_text() -> str:
 
 def cursor_text(context: Any) -> str:
     """Las coordenadas absolutas del cursor 3D en el formato del idioma ("" sin
-    proyecto): GeoOrigin entero + posición local, en float64."""
+    proyecto): GeoOrigin entero + posición local, en float64. Se calcula de nuevo solo si
+    cambian la posición, el origen o el idioma (T46)."""
     georef = scene_georef.project_georeference()
     scene = getattr(context, "scene", None) or bpy.context.scene
     if georef is None or scene is None:
         return ""
-    local = np.array(tuple(scene.cursor.location), dtype=np.float64)
+    location = tuple(scene.cursor.location)
+    key = (location, tuple(georef.origin), language())
+    cached = _STATE.cursor
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    local = np.array(location, dtype=np.float64)
     x, y, z = (float(value) for value in local_to_world(local, GeoOrigin(*georef.origin)))
-    return format_xyz(x, y, z)
+    found = format_xyz(x, y, z)
+    _STATE.cursor = (key, found)
+    return found
 
 
 def snap_names() -> dict[str, str]:
-    """Elemento de encaje de Blender → su nombre en el idioma de Geoblender."""
+    """Elemento de encaje de Blender → su nombre en el idioma de Geoblender (una vez por
+    idioma; no se modifica)."""
+    lang = language()
+    found = _STATE.snap_names.get(lang)
+    if found is None:
+        found = _STATE.snap_names[lang] = _snap_names()
+    return found
+
+
+def _snap_names() -> dict[str, str]:
     return {
         "INCREMENT": tr("increment"),
         "GRID": tr("grid"),
@@ -361,3 +409,7 @@ def uninstall() -> None:
     bpy.msgbus.clear_by_owner(_STATE.owner)
     _STATE.subscribed = False
     _STATE.fields.clear()
+    _STATE.ordered = None
+    _STATE.widths.clear()
+    _STATE.cursor = None
+    _STATE.snap_names.clear()

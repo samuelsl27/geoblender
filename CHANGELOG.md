@@ -53,7 +53,10 @@ vez. Lo de la spec 003 está probado sin la interfaz gráfica; falta verlo en la
     Geoblender sobre una escena vacía en metros, con su imagen de bienvenida y sin cambiar la
     configuración del Blender normal.
   - La barra superior cuesta 0,03 ms por dibujo, el registro de la interfaz 18 ms y un cambio
-    de idioma unos 10 ms (medido con Blender 5.2.1).
+    de idioma unos 10 ms (medido con Blender 5.2.1). Redibujar la ventana entera cuesta unos
+    0,6 ms más en modo Geoblender que en modo Blender (a 1920 × 1080). Para no pasar de ahí,
+    el espacio «Geoblender» se abre con la barra lateral de la Vista 3D cerrada: la pestaña
+    «Proyecto» sale con **N**.
 
 - **Proyectos de Geoblender** (spec 002). Un proyecto es una carpeta `<Nombre>.gbproj` que
   se copia, se archiva y se publica entera: su base de datos (`project.gpkg`, un GeoPackage

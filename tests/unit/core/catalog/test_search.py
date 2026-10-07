@@ -14,6 +14,7 @@ RNF-003-07; plan 003 §5.4, punto 10; HU-003-7).
 
 import time
 import unittest
+from unittest import mock
 
 from tests.support.package import import_geoblender
 
@@ -197,6 +198,26 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(few[0].label, self.cat.commands[few[0].key].label)
         self.assertEqual(search_mod.frequent(self.cat, language="es",
                                              is_available=nothing_available), [])
+
+    def test_path_text_reads_the_translations_once(self) -> None:
+        """RNF-003-03 (spec 003, T46): la ruta de un comando no rehace la tabla de
+        traducciones del catálogo en cada llamada (sin proyecto, el ``poll`` de Encuadrar
+        la ventana de trabajo la pide en cada redibujo de la fila 2): la misma ruta de
+        siempre en español y en inglés, con la tabla leída como mucho una vez."""
+        key = "geoblender.core_set_work_window"
+        table = self.cat.translations()
+        msgids = self.cat.path(key)
+        spanish = " ▸ ".join(table.get(msgid, msgid) for msgid in msgids)
+        cls = type(self.cat)
+        with mock.patch.object(cls, "translations", autospec=True,
+                               side_effect=cls.translations) as spy:
+            for _ in range(5):
+                self.assertEqual(search_mod.path_text(self.cat, key, "es"), spanish)
+                self.assertEqual(search_mod.path_text(self.cat, key, "en"), " ▸ ".join(msgids))
+                self.assertEqual(search_mod.path_text(self.cat, key, "es", parent=True),
+                                 " ▸ ".join(table.get(m, m) for m in msgids[:-1]))
+        self.assertLessEqual(spy.call_count, 1)
+        self.assertIn("▸", spanish)
 
     def _time(self, query: str) -> float:
         start = time.perf_counter()

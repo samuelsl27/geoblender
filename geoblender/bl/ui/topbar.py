@@ -97,6 +97,12 @@ class _State:
         self.level_key: tuple[object, ...] | None = None  # última elección (caché)
         self.level: Level = Level.B
         self.override: Level | None = None  # nivel fijado por la medida (T19)
+        # Lo que se pide en cada redibujo (spec 003, T46; RNF-003-03): los menús del flujo
+        # del catálogo y el ancho explícito de cada menú de texto, con las constantes con
+        # que se calculó.
+        self.flow: tuple[Catalog, tuple[str, ...]] | None = None
+        self.units: dict[tuple[str, str, bool], float] = {}
+        self.units_k: object = None
 
 
 _STATE = _State()
@@ -219,6 +225,33 @@ def current_level(context: Any) -> Level:
     return _STATE.level
 
 
+def flow_menus(cat: Catalog) -> tuple[str, ...]:
+    """Los 11 menús del flujo (los de la barra sin Herramientas ni Ayuda), una vez por
+    catálogo (T46)."""
+    cached = _STATE.flow
+    if cached is None or cached[0] is not cat:
+        cached = (cat, tuple(menu_id for menu_id in cat.top_menus
+                             if menu_id not in (TOOLS_MENU, HELP_MENU)))
+        _STATE.flow = cached
+    return cached[1]
+
+
+def menu_units(menu_id: str, *, icon: bool) -> float:
+    """El ancho explícito (``ui_units_x``) de un menú de texto de la barra en el idioma
+    activo (BS §3), calculado una vez por idioma y constantes (T46)."""
+    k = compat.topbar_width_constants()
+    if k is not _STATE.units_k:
+        _STATE.units.clear()
+        _STATE.units_k = k
+    lang = language()
+    key = (lang, menu_id, icon)
+    units = _STATE.units.get(key)
+    if units is None:
+        units = menu_button_px(titles_px(lang)[menu_id], icon=icon, k=k) / compat.UI_UNIT_PX
+        _STATE.units[key] = units
+    return units
+
+
 def _top_menu(layout: Any, cat: Catalog, menu_id: str, *, icon: bool,
               title: bool = True) -> None:
     """Un menú de la barra: solo su icono, su título o (nivel A) los dos; con título, con
@@ -228,8 +261,7 @@ def _top_menu(layout: Any, cat: Catalog, menu_id: str, *, icon: bool,
         layout.menu(menu_id, text="", **icon_kwargs(cmd))
         return
     row = layout.row(align=True)
-    row.ui_units_x = menu_button_px(titles_px(language())[menu_id], icon=icon,
-                                    k=compat.topbar_width_constants()) / compat.UI_UNIT_PX
+    row.ui_units_x = menu_units(menu_id, icon=icon)
     kwargs = icon_kwargs(cmd) if icon else {}
     row.menu(menu_id, text=text(cmd.label), translate=False, **kwargs)
 
@@ -247,9 +279,8 @@ def draw_geoblender(layout: Any, context: Any, current: Level | None = None) -> 
     if current is Level.E:
         _top_menu(layout, cat, GEOBLENDER_MENU, icon=False)
     else:
-        flow = [menu_id for menu_id in cat.top_menus if menu_id not in (TOOLS_MENU, HELP_MENU)]
         row = layout.row(align=False)
-        for menu_id in flow:
+        for menu_id in flow_menus(cat):
             _top_menu(row, cat, menu_id, icon=current is Level.A, title=current is not Level.D)
         layout.separator(type="LINE")
         compact = current in (Level.C, Level.D)

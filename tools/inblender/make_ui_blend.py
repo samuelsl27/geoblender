@@ -23,18 +23,21 @@ de 1574 px encima de una línea de tiempo de 74 px) y solo se **dividen** áreas
 su tipo:
 
 - **Geoblender** (principal, CW §6.1): el editor de imagen se divide al 18 % (unos 280 px)
-  en el Outliner, a la izquierda, y la Vista 3D (unos 1294 px) con la fila 2 y las
-  barras T y N; Propiedades a la derecha; abajo, la línea de tiempo de fábrica (decisión
-  revisable: sin interfaz no se puede quitar). Outliner como PC §5.5: «Capa de vista», sin
-  contenido de objeto ni hijos, columnas «ocultar en la vista» y «seleccionable», orden
-  alfabético.
+  en el Outliner, a la izquierda, y la Vista 3D (unos 1294 px) con la fila 2 y la barra
+  T, y con la barra N **cerrada** (convergencia, T46; RNF-003-03: abierta, el redibujo de la
+  ventana costaba unos 0,6 ms más que en modo Blender; la pestaña «Proyecto» está a un N
+  y el menú Proyecto y la barra de estado dicen lo mismo; decisión revisable);
+  Propiedades a la derecha; abajo, la línea de tiempo de fábrica (decisión revisable: sin
+  interfaz no se puede quitar). Outliner como PC §5.5: «Capa de vista», sin contenido de
+  objeto ni hijos, columnas «ocultar en la vista» y «seleccionable», orden alfabético.
 - **Sección y planta**: la Vista 3D se divide por la mitad (dos de unos 650 px, cada una
-  con su fila 2): planta ortográfica a la izquierda y sección mirando al norte a la
-  derecha.
-- **Datos**: la Vista 3D y, debajo (35 %), la Hoja de cálculo.
+  con su fila 2 y sin la barra N): planta ortográfica a la izquierda y sección mirando al
+  norte a la derecha.
+- **Datos**: la Vista 3D con la barra N y, debajo (35 %), la Hoja de cálculo.
 - **Diseño y perfil**: la Vista 3D con la barra N y, debajo (35 %), una segunda Vista 3D
   ortográfica mirando al norte (el perfil).
-- **Fases**: la Vista 3D y, debajo (30 %), la hoja de claves con los marcadores.
+- **Fases**: la Vista 3D con la barra N y, debajo (30 %), la hoja de claves con los
+  marcadores.
 
 El reparto se comprueba en la interfaz gráfica (verificación de la T14 en ``tasks.md``).
 Un error sale con código 1 (``--python-exit-code 1``).
@@ -146,20 +149,20 @@ def configure_outliner(area: bpy.types.Area) -> None:
     space.use_sort_alpha = True
 
 
-def columns(name: str) -> tuple[bpy.types.WorkSpace, bpy.types.Area]:
-    """Outliner | Vista 3D | Propiedades, con la línea de tiempo abajo; devuelve el
-    espacio y su Vista 3D."""
+def columns(name: str, *, sidebar: bool = True) -> tuple[bpy.types.WorkSpace, bpy.types.Area]:
+    """Outliner | Vista 3D (con la barra N si ``sidebar``) | Propiedades, con la línea de
+    tiempo abajo; devuelve el espacio y su Vista 3D."""
     workspace = bpy.data.workspaces[BASE].copy()
     workspace.name = name
     view = _only(workspace, "IMAGE_EDITOR")
     configure_outliner(split(workspace, view, "VERTICAL", LEFT_FACTOR))
-    configure_view(view, sidebar=True, rotation=PLAN)
+    configure_view(view, sidebar=sidebar, rotation=PLAN)
     _only(workspace, "DOPESHEET_EDITOR").ui_type = "TIMELINE"
     return workspace, view
 
 
 def build_main(name: str) -> bpy.types.WorkSpace:
-    return columns(name)[0]
+    return columns(name, sidebar=False)[0]  # la barra N, cerrada (T46; RNF-003-03)
 
 
 def build_section_plan(name: str) -> bpy.types.WorkSpace:
