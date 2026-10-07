@@ -41,6 +41,18 @@ Dirección de las dependencias dentro de ``geoblender/`` (RF-001-14; imports rel
 - ARQ-10: ``adapters`` solo importa ``core`` y módulos ``ports``;
   ``adapters/registry.py`` importa sus hermanos solo dentro de funciones; un
   ``ports.py`` solo importa ``core``.
+
+Workers (spec 004, T16; RF-004-14; ``check_workers``):
+
+- ARQ-11: un módulo de ``workers/`` no importa ``bl``, ``core.project`` ni el adaptador
+  de escritura de DuckDB (``WORKERS_FORBIDDEN``), ni nada suyo: ni relativo, ni absoluto
+  (``geoblender.…``, ``bl_ext.<repo>.geoblender.…`` o el paquete suelto), ni dinámico de
+  nombre literal; también dentro de funciones y de ``if TYPE_CHECKING``. El proyecto
+  solo lo escribe Blender (escritor único, principio 7; ADR-0010).
+- ARQ-09, condición de su excepción: ``workers/_bootstrap.py`` (``ARQ09_ALLOWED`` de
+  ``platform``) importa ``geoblender`` de forma absoluta solo tras cargarlo por ruta, así
+  que lo que se ejecuta al importarlo (fuera de funciones y de ``if TYPE_CHECKING``) solo
+  importa la biblioteca estándar: ni numpy ni ``geoblender``.
 """
 
 from __future__ import annotations
@@ -64,6 +76,8 @@ RULE_CORE = "ARQ-06"
 RULE_LEVELS = "ARQ-07"
 RULE_CYCLES = "ARQ-08"
 RULE_ADAPTERS = "ARQ-10"
+RULE_WORKERS = "ARQ-11"
+RULE_BOOTSTRAP = "ARQ-09"
 RULE_TOOLS = "HER-01"
 
 # Niveles de los paquetes de dominio (vision-general.md §2.1; ratificados en el plan
@@ -162,6 +176,18 @@ ADAPTER_OWNERS: Mapping[str, str] = {}
 
 TOOLS_LIBRARY = "gbtools"
 PACKAGE_LOADER = "load_geoblender"
+
+# ARQ-11 (spec 004): lo que un worker no importa, con nombres dentro de la extensión. Un
+# módulo que añada otro adaptador que escriba en el proyecto lo añade aquí.
+WORKERS_PACKAGE = "workers"
+WORKERS_FORBIDDEN: tuple[str, ...] = ("bl", "core.project", "adapters.duckdb_store")
+# El arranque de los workers: la excepción de ARQ-09 (platform.ARQ09_ALLOWED).
+BOOTSTRAP_MODULE = "workers._bootstrap"
+# Cuántos componentes ocupa cada raíz de INTERNAL_ROOTS en un nombre absoluto: uno, salvo
+# ``bl_ext.<repo>.<extensión>`` (tres).
+_ROOT_PARTS: Mapping[str, int] = {
+    root: 3 if root == "bl_ext" else 1 for root in INTERNAL_ROOTS
+}
 
 
 def is_blender_module(
@@ -674,14 +700,108 @@ def _direction_findings(modules: list[pyast.PyModule]) -> list[Finding]:
     return findings
 
 
+def _in_workers(module: pyast.PyModule) -> bool:
+    return module.name == WORKERS_PACKAGE or module.name.startswith(WORKERS_PACKAGE + ".")
+
+
+def _extension_name(ref: pyast.ImportRef) -> str | None:
+    """El nombre dentro de la extensión (``core.project.session``) de lo que importa
+    ``ref``: el relativo ya resuelto, el absoluto sin su raíz (``geoblender.``,
+    ``bl_ext.<repo>.geoblender.``) o con un paquete propio (``core.…``, que además es
+    ARQ-09); ``None`` si no es de la extensión o se sale del paquete."""
+    if ref.escapes:
+        return None
+    if ref.relative_level:
+        return ref.target
+    parts = ref.target.split(".")
+    size = _ROOT_PARTS.get(parts[0])
+    if size is not None:
+        return ".".join(parts[size:])
+    if parts[0] in EXTENSION_PACKAGES:
+        return ref.target
+    return None
+
+
+def _forbidden_for_workers(name: str) -> str | None:
+    """El elemento de ``WORKERS_FORBIDDEN`` que es ``name`` o lo contiene, si lo hay."""
+    for forbidden in WORKERS_FORBIDDEN:
+        if name == forbidden or name.startswith(forbidden + "."):
+            return forbidden
+    return None
+
+
+def _bootstrap_findings(module: pyast.PyModule) -> list[Finding]:
+    """La condición de la excepción de ARQ-09: lo que se ejecuta al importar el arranque
+    solo importa la biblioteca estándar."""
+    findings: list[Finding] = []
+    for ref in pyast.iter_imports(module):
+        if ref.in_function or ref.in_type_checking:
+            continue
+        if not ref.relative_level and (
+            ref.top in sys.stdlib_module_names or ref.top == "__future__"
+        ):
+            continue
+        findings.append(
+            Finding(
+                module.rel,
+                ref.line,
+                RULE_BOOTSTRAP,
+                f"importa {_how(ref)}«{ref.target}» al importarse: hasta cargar el paquete "
+                f"por ruta, {EXTENSION_DIR}/workers/_bootstrap.py solo importa la "
+                "biblioteca estándar (la excepción de ARQ-09 vale tras cargarlo; numpy, "
+                "con el sys.path del intérprete ya fijado); impórtelo dentro de la función "
+                "que lo usa",
+            )
+        )
+    return findings
+
+
+def _workers_findings(modules: Iterable[pyast.PyModule]) -> list[Finding]:
+    """ARQ-11 de los módulos de ``workers/`` y la condición de ARQ-09 del arranque."""
+    findings: list[Finding] = []
+    for module in modules:
+        if not _in_workers(module):
+            continue
+        if module.name == BOOTSTRAP_MODULE:
+            findings.extend(_bootstrap_findings(module))
+        for ref in pyast.iter_imports(module):
+            name = _extension_name(ref)
+            forbidden = None if name is None else _forbidden_for_workers(name)
+            if forbidden is None:
+                continue
+            findings.append(
+                Finding(
+                    module.rel,
+                    ref.line,
+                    RULE_WORKERS,
+                    f"importa {_how(ref)}«{ref.target}» ({forbidden}): un worker no "
+                    "importa bl, core.project ni el adaptador de escritura de DuckDB; el "
+                    "proyecto solo lo escribe Blender (escritor único, principio 7; "
+                    "ADR-0010). Recibe sus entradas en in/ y deja sus resultados en out/",
+                )
+            )
+    return findings
+
+
+def check_workers(root: Path) -> list[Finding]:
+    """Incumplimientos de ARQ-11 y de la condición de ARQ-09 de ``workers/_bootstrap.py``
+    (y AST-01) en ``geoblender/``."""
+    modules, findings = pyast.parse_modules(root, EXTENSION, EXTENSION)
+    findings.extend(_workers_findings(modules))
+    return sorted(findings)
+
+
 def check(
     root: Path, blender_modules: Iterable[str] = BLENDER_MODULES
 ) -> list[Finding]:
-    """Incumplimientos de todas las reglas de imports (ARQ-01, 02, 04 a 08, 10 y
-    HER-01, y AST-01) en el repositorio bajo ``root``, analizándolo una sola vez."""
+    """Incumplimientos de todas las reglas de imports (ARQ-01, 02, 04 a 08, 10, 11, la
+    condición de ARQ-09 del arranque de los workers y HER-01, y AST-01) en el
+    repositorio bajo ``root``, analizándolo una sola vez."""
     modules, findings = _all_modules(root)
     blender = frozenset(blender_modules)
+    extension = [m for m in modules if _in_extension(m)]
     findings.extend(_blender_findings(modules, blender))
     findings.extend(_external_findings(modules, blender, ADAPTER_OWNERS))
-    findings.extend(_direction_findings([m for m in modules if _in_extension(m)]))
+    findings.extend(_direction_findings(extension))
+    findings.extend(_workers_findings(extension))
     return sorted(set(findings))
