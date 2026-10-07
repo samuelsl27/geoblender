@@ -1,11 +1,39 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Rendimiento de los trabajos en segundo plano (spec 004; RNF-004-01 a RNF-004-08; plan
-004 §7, ``tests/rendimiento``).
+"""Rendimiento de los trabajos en segundo plano (spec 004, H1 y T35; RNF-004-01 a
+RNF-004-08; plan 004 §7, ``tests/rendimiento``).
 
 Se ejecuta con ``tools/check.py --rendimiento``: el Python de Blender, en disco local
 (``%TEMP%``), con procesos reales. Cada prueba imprime su cifra en una línea
-``RNF-004-nn: …`` (``tools/check.py`` las recoge) y la compara con su presupuesto. Por
-ahora está el HITO H1; la T35 añade los demás RNF.
+``RNF-004-nn: …``, con el intérprete con que se midió (``tools/check.py`` las recoge), y la
+compara con su presupuesto. El RNF-004-03 (lo que dura cada sondeo del seguimiento) y el
+RNF-004-04 (un avance llega a la barra de estado) se miden dentro de Blender, con su
+``tick``: ``tests/rendimiento/blender/perf_jobs_monitor.py``.
+
+- RNF-004-01: lanzar un trabajo (carpeta, petición y arranque del proceso: ``submit`` de
+  una petición, sin entradas) devuelve el control en ≤ 0,2 s: mediana de 20 lanzamientos
+  seguidos del autodiagnóstico en proceso aparte con el Python de Blender, cada uno cuando
+  ha acabado el anterior.
+- RNF-004-02: del lanzamiento (la llamada a ``submit``) al primer evento del worker (su
+  ``start``, visto al sondear el lanzador cada 2 ms): ≤ 0,3 s sin motor (los mismos 20, en
+  el entorno ``blender``) y ≤ 0,5 s con motor (otros 20 en el entorno ``compute``, con el
+  motor de pruebas: arranque aislado e ``import numpy`` del motor), medianas.
+- RNF-004-05: con el motor de pruebas, el autodiagnóstico ``matmul`` del menú, A @ B
+  float64 2000 × 2000 en el worker (el mejor de 3), en < 1 s.
+- RNF-004-06: la cadena de instalación del producto (``RuntimeSetup.install``: instalar con
+  el ``pip`` del Python de Blender, verificar con el motor y adoptar) desde el almacén de
+  ruedas local, sin red, en unos datos de usuario temporales (no toca el motor de
+  pruebas): ≤ 60 s, ≤ 80 MB en disco y ruedas (la descarga) de ≤ 20 MB. El almacén es el de
+  ``GEOBLENDER_WHEELHOUSE`` o, si no está definida, aquel del que salió el motor de pruebas
+  (su ``runtime.json``); sin almacén, se omite con ``[ENTORNO] runtime``.
+- RNF-004-08: ninguna ruta del motor recién instalado ni del motor de pruebas pasa de 240
+  caracteres, y tampoco la ruta más larga de su ``site`` puesta en su sitio de los datos
+  de usuario por defecto de Blender en este equipo (la de
+  ``bpy.utils.extension_path_user``: ``%APPDATA%/Blender Foundation/Blender/<versión>/``
+  ``extensions/.user/user_default/<extensión>/runtime/<lock_id>/site``).
+
+Las del motor (la mitad «con motor» del RNF-004-02, el 05, el 06 y el 08) necesitan el
+motor de cálculo de pruebas de ``tools/make_runtime.py``; sin él se omiten con
+``[ENTORNO] runtime`` y la orden que lo crea.
 
 - RNF-004-07 (HITO H1, CE-004-03; RF-004-13 y RF-004-14): 100 trabajos seguidos del
   autodiagnóstico en proceso aparte, con el Python de Blender y por la cola del lanzador
@@ -27,6 +55,9 @@ import dataclasses
 import gc
 import json
 import os
+import platform
+import re
+import statistics
 import sys
 import time
 import unittest
@@ -39,15 +70,24 @@ from unittest import mock
 import numpy as np
 
 from tests.support import jobs_fixtures as _support
+from tests.support import resources
+from tests.support import runtime as runtime_support
 from tests.support.package import import_geoblender
-from tests.support.repo import EXTENSION_DIR
+from tests.support.repo import EXTENSION_DIR, tools_on_path
+
+tools_on_path()
+
+from gbtools import wheels  # noqa: E402
 
 catalog = import_geoblender("jobs.catalog")
+cleanup = import_geoblender("jobs.cleanup")
 paths = import_geoblender("jobs.paths")
 protocol = import_geoblender("jobs.protocol")
 records = import_geoblender("jobs.records")
 runner = import_geoblender("jobs.runner")
+runtime = import_geoblender("jobs.runtime")
 selftest = import_geoblender("jobs.selftest")
+worker_api = import_geoblender("jobs.worker_api")
 
 MiB = 1024 * 1024
 MEMORY_BUDGET = 20 * MiB  # RNF-004-07: ≤ 20 MB de crecimiento del proceso que los lanza
@@ -481,6 +521,404 @@ class HundredJobsTest(unittest.TestCase):
         )
         self.assertLessEqual(working_set, MEMORY_BUDGET)
         self.assertLessEqual(private, MEMORY_BUDGET)
+
+
+# --- T35: lanzar, primer evento, motor de cálculo ------------------------------------------
+
+LAUNCHES = 20
+"""Lanzamientos de cada mediana (RNF-004-01 y RNF-004-02)."""
+LAUNCH_BUDGET_S = 0.2  # RNF-004-01: mediana ≤ 0,2 s
+FIRST_EVENT_BUDGET_S = 0.3  # RNF-004-02: sin motor, mediana ≤ 0,3 s
+FIRST_EVENT_ENGINE_BUDGET_S = 0.5  # RNF-004-02: con motor, mediana ≤ 0,5 s
+MATMUL_BUDGET_S = 1.0  # RNF-004-05: < 1 s
+MATMUL_N = 2000
+INSTALL_BUDGET_S = 60.0  # RNF-004-06: desde un almacén local, ≤ 60 s
+DISK_BUDGET_MB = 80.0  # RNF-004-06: ≤ 80 MB en disco
+DOWNLOAD_BUDGET_MB = 20.0  # RNF-004-06: ruedas de ≤ 20 MB
+PATH_BUDGET = 240  # RNF-004-08: ninguna ruta del motor de más de 240 caracteres
+FIRST_EVENT_POLL_S = 0.002
+"""Cada cuánto se sondea el lanzador hasta ver el primer evento: la cifra sale, como mucho,
+2 ms (y lo que dura un sondeo) más tarde que la llegada."""
+LAUNCH_DEADLINE_S = 30.0
+INSTALL_DEADLINE_S = 600.0
+QUICK_SUM = {"op": "chunked_sum", "n": 1000, "chunks": 1}
+"""Un autodiagnóstico que acaba enseguida: lo que cuenta es su arranque."""
+VERSION_FOLDER = re.compile(r"\d+\.\d+")
+WHEELHOUSE_HINT = (
+    f"defina {wheels.ENV_WHEELHOUSE} con el almacén de ruedas del motor de cálculo (lo "
+    "rellena tools/fetch_runtime_wheels.py --wheelhouse <almacén>)"
+)
+
+
+@dataclass(frozen=True)
+class Launch:
+    """Un lanzamiento: lo que tardó ``submit`` en devolver el control, lo que tardó en verse
+    el primer evento del worker desde que se llamó a ``submit`` y su tipo, y el trabajo."""
+
+    returned_s: float
+    first_event_s: float
+    first_type: str
+    handle: object
+
+
+class _TestEngine:
+    """El motor de cálculo de pruebas visto por el lanzador (``interpreter.ComputeRuntime``):
+    el lock de esta versión de Geoblender, su ``lock_id``, listo y su carpeta ``site``."""
+
+    def __init__(self, site: Path) -> None:
+        self.lock = runtime.read_lock()
+        self.lock_id = self.lock.lock_id
+        self._site = Path(site)
+
+    def status(self) -> str:
+        return runtime.STATUS_READY
+
+    def site_dir(self) -> Path:
+        return self._site
+
+
+def _seconds3(value: float) -> str:
+    """Segundos con tres decimales y coma decimal (salida en español)."""
+    return f"{value:.3f}".replace(".", ",")
+
+
+def _number(value: float, decimals: int = 1) -> str:
+    return f"{value:.{decimals}f}".replace(".", ",")
+
+
+def _wait_result(job_runner, handle, deadline_s: float = LAUNCH_DEADLINE_S):
+    """Sondea ``job_runner`` hasta que acaba ``handle`` y devuelve su resultado."""
+    deadline = time.monotonic() + deadline_s
+    while handle.result() is None:
+        if time.monotonic() > deadline:
+            raise AssertionError(f"el trabajo {handle.job_uid} no acabó en {deadline_s} s")
+        job_runner.poll()
+        time.sleep(POLL_S)
+    return handle.result()
+
+
+def _launch(job_runner, request) -> Launch:
+    """Lanza ``request``, mide lo que tarda ``submit`` en volver y lo que tarda en verse el
+    primer evento del worker (sondeando cada 2 ms) y espera a que acabe."""
+    started = time.perf_counter()
+    handle = job_runner.submit(request)
+    returned = time.perf_counter() - started
+    first: tuple[float, str] | None = None
+    while first is None:
+        for update in job_runner.poll():
+            if update.job_uid == handle.job_uid and update.events and first is None:
+                first = (time.perf_counter() - started, update.events[0].type)
+        if first is not None:
+            break
+        result = handle.result()
+        if result is not None:
+            raise AssertionError(f"el trabajo acabó sin eventos: {result.state} "
+                                 f"{result.error_code}: {result.error_text}")
+        if time.perf_counter() - started > LAUNCH_DEADLINE_S:
+            raise AssertionError(f"sin eventos del worker en {LAUNCH_DEADLINE_S} s")
+        time.sleep(FIRST_EVENT_POLL_S)
+    _wait_result(job_runner, handle)
+    return Launch(returned, first[0], first[1], handle)
+
+
+def _median_line(values: list[float]) -> str:
+    """«mediana X s de N (mín. A, máx. B)», con tres decimales."""
+    return (f"mediana {_seconds3(statistics.median(values))} s de {len(values)} "
+            f"(mín. {_seconds3(min(values))}, máx. {_seconds3(max(values))})")
+
+
+def _interpreter_text(info) -> str:
+    """El intérprete de un ``state.json`` (``InterpreterInfo``), para las líneas de cifra."""
+    if info.kind == "compute":
+        return (f"motor {info.lock_id}: Python {info.python}, numpy {info.numpy}, "
+                f"BLAS {info.blas}")
+    return f"Python de Blender {info.python}, numpy {info.numpy}"
+
+
+def _selftest_registry(cls) -> None:
+    """El registro de tipos de trabajo, vacío durante la clase, con el autodiagnóstico en
+    proceso aparte (y sin tiempo máximo que alcanzar)."""
+    registry = mock.patch.dict(catalog._REGISTRY, clear=True)
+    registry.start()
+    cls.addClassCleanup(registry.stop)
+    builtin = next(info for info in catalog.BUILTIN_WORKERS if info.name == "selftest")
+    catalog.register_worker(dataclasses.replace(builtin, policy="subprocess",
+                                                default_timeout_s=JOB_TIMEOUT_S))
+
+
+class LaunchTest(unittest.TestCase):
+    """Lanzar trabajos en proceso aparte con el Python de Blender: lo que tarda ``submit``
+    en devolver el control y lo que tarda en llegar el primer evento."""
+
+    launches: list[Launch]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        tmp = _support.jobs_tmp()
+        base = tmp.__enter__()
+        cls.addClassCleanup(tmp.__exit__, None, None, None)
+        _selftest_registry(cls)
+        job_runner = runner.JobRunner(jobs_root=base / "jobs", package_dir=EXTENSION_DIR,
+                                      blender_python=Path(sys.executable), max_subprocess=1)
+        cls.addClassCleanup(job_runner.shutdown, timeout_s=3.0)
+        cls.launches = [
+            _launch(job_runner, protocol.new_request(
+                "selftest", label=f"Lanzamiento {index + 1:02d}", owner="jobs",
+                params=dict(QUICK_SUM), environment="blender"))
+            for index in range(LAUNCHES)
+        ]
+        cls.records = [records.read_record(launch.handle.job_dir) for launch in cls.launches]
+
+    def test_launch_returns_control_quickly(self) -> None:
+        """RNF-004-01: ``submit`` de una petición (carpeta, ``request.json``,
+        ``state.json`` y arranque del proceso) devuelve el control en ≤ 0,2 s (mediana de 20
+        lanzamientos seguidos); los 20 acaban bien, en proceso aparte con el Python de
+        Blender."""
+        returned = [launch.returned_s for launch in self.launches]
+        _report(f"RNF-004-01: lanzar un trabajo (carpeta, petición y arranque del proceso; "
+                f"{_interpreter_text(self.records[0].interpreter)}): {_median_line(returned)},"
+                f" presupuesto {_number(LAUNCH_BUDGET_S)} s")
+        self.assertEqual(len(returned), LAUNCHES)
+        for launch, record in zip(self.launches, self.records):
+            with self.subTest(trabajo=launch.handle.job_uid):
+                self.assertEqual(launch.handle.result().state, "succeeded")
+                self.assertEqual((record.executor, record.interpreter.kind),
+                                 (runner.EXECUTOR_SUBPROCESS, "blender"))
+        self.assertLessEqual(statistics.median(returned), LAUNCH_BUDGET_S)
+
+    def test_first_event_without_engine(self) -> None:
+        """RNF-004-02: sin motor (entorno ``blender``), del lanzamiento al primer evento del
+        worker, su ``start``, pasan ≤ 0,3 s (mediana de 20)."""
+        first = [launch.first_event_s for launch in self.launches]
+        _report(f"RNF-004-02: del lanzamiento al primer evento del worker, sin motor "
+                f"({_interpreter_text(self.records[0].interpreter)}): {_median_line(first)}, "
+                f"presupuesto {_number(FIRST_EVENT_BUDGET_S)} s")
+        self.assertEqual({launch.first_type for launch in self.launches}, {"start"})
+        self.assertLessEqual(statistics.median(first), FIRST_EVENT_BUDGET_S)
+
+
+@resources.requires(runtime_support.RUNTIME, runtime_support.RUNTIME_HINT)
+class EngineTest(unittest.TestCase):
+    """Con el motor de cálculo de pruebas: el primer evento de un worker ``compute`` y el
+    producto 2000 × 2000 en el worker."""
+
+    launches: list[Launch]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        site = runtime_support.runtime_site()
+        tmp = _support.jobs_tmp()
+        base = tmp.__enter__()
+        cls.addClassCleanup(tmp.__exit__, None, None, None)
+        _selftest_registry(cls)
+        cls.engine = _TestEngine(site)
+        job_runner = runner.JobRunner(jobs_root=base / "jobs", package_dir=EXTENSION_DIR,
+                                      blender_python=Path(sys.executable),
+                                      runtime=cls.engine, max_subprocess=1)
+        cls.addClassCleanup(job_runner.shutdown, timeout_s=3.0)
+        cls.launches = [
+            _launch(job_runner, protocol.new_request(
+                "selftest", label=f"Lanzamiento con el motor {index + 1:02d}", owner="jobs",
+                params=dict(QUICK_SUM), environment="compute"))
+            for index in range(LAUNCHES)
+        ]
+        cls.records = [records.read_record(launch.handle.job_dir) for launch in cls.launches]
+        matmul = job_runner.submit(protocol.new_request(
+            "selftest", label="Producto con el motor", owner="jobs",
+            params={"op": "matmul", "n": MATMUL_N}))
+        cls.matmul = _wait_result(job_runner, matmul)
+        cls.matmul_record = records.read_record(matmul.job_dir)
+
+    def check_engine_interpreter(self, record) -> None:
+        """El trabajo corrió en ``compute`` con el numpy del lock del motor de pruebas y una
+        BLAS optimizada."""
+        info = record.interpreter
+        self.assertEqual((info.kind, info.lock_id, info.numpy),
+                         ("compute", self.engine.lock_id,
+                          self.engine.lock.package(runtime.LOCK_NUMPY).version))
+        self.assertNotIn(info.blas, (runtime.UNOPTIMIZED_BLAS, worker_api.UNKNOWN_BLAS, None))
+
+    def test_first_event_with_engine(self) -> None:
+        """RNF-004-02: con motor (entorno ``compute``: arranque aislado e ``import numpy``
+        del motor de pruebas), del lanzamiento al primer evento del worker, su ``start``,
+        pasan ≤ 0,5 s (mediana de 20); los 20 acaban bien con el numpy del motor."""
+        first = [launch.first_event_s for launch in self.launches]
+        _report(f"RNF-004-02: del lanzamiento al primer evento del worker, con motor "
+                f"({_interpreter_text(self.records[0].interpreter)}): {_median_line(first)}, "
+                f"presupuesto {_number(FIRST_EVENT_ENGINE_BUDGET_S)} s")
+        self.assertEqual({launch.first_type for launch in self.launches}, {"start"})
+        for launch, record in zip(self.launches, self.records):
+            with self.subTest(trabajo=launch.handle.job_uid):
+                self.assertEqual(launch.handle.result().state, "succeeded")
+                self.check_engine_interpreter(record)
+        self.assertLessEqual(statistics.median(first), FIRST_EVENT_ENGINE_BUDGET_S)
+
+    def test_matmul_with_engine(self) -> None:
+        """RNF-004-05: con el motor de cálculo, A @ B float64 2000 × 2000 en el worker (el
+        autodiagnóstico ``matmul`` del menú, el mejor de 3) tarda < 1 s."""
+        result = self.matmul
+        self.assertEqual(result.state, "succeeded", f"{result.error_code}: {result.error_text}")
+        summary = dict(result.summary)
+        self.check_engine_interpreter(self.matmul_record)
+        self.assertEqual((summary["op"], summary["n"]), ("matmul", MATMUL_N))
+        best = summary["best_s"]
+        _report(f"RNF-004-05: A @ B float64 {MATMUL_N} × {MATMUL_N} en el worker con el motor "
+                f"({_interpreter_text(self.matmul_record.interpreter)}): "
+                f"{_seconds3(best)} s, el mejor de {summary['repeats']} "
+                f"({_number(summary['gflops'], 0)} GFLOP/s), presupuesto < "
+                f"{_number(MATMUL_BUDGET_S)} s")
+        self.assertLess(best, MATMUL_BUDGET_S)
+
+
+def _wheelhouse(site: Path, lock) -> Path | None:
+    """El almacén de ruedas con todas las del lock: el de ``GEOBLENDER_WHEELHOUSE`` o, si no
+    está definida, el del que salió el motor de pruebas (su ``runtime.json``); ``None`` si
+    no hay ninguno o le falta alguna."""
+    folder = wheels.wheelhouse()
+    if folder is None:
+        info = runtime.read_runtime_info(Path(site).parent) or {}
+        source = info.get("source") or {}
+        if source.get("kind") == runtime.SOURCE_WHEELHOUSE:
+            folder = source.get("folder")
+    if not folder:
+        return None
+    store = Path(folder)
+    if not all((store / package.filename).is_file() for package in lock.packages):
+        return None
+    return store
+
+
+def _longest_path(folder: Path) -> tuple[int, int]:
+    """La ruta completa más larga bajo ``folder`` (carpetas y ficheros) y la más larga
+    relativa a ``folder``, en caracteres."""
+    base = str(folder)
+    longest = relative = 0
+    for current, dirs, files in os.walk(base):
+        for name in (*dirs, *files):
+            text = os.path.join(current, name)
+            longest = max(longest, len(text))
+            relative = max(relative, len(text) - len(base) - 1)
+    return longest, relative
+
+
+def _default_engine_site(lock_id: str) -> Path | None:
+    """La carpeta ``site`` del motor ``lock_id`` en los datos de usuario por defecto de
+    Blender en este equipo (``bpy.utils.extension_path_user`` de la extensión instalada en
+    el repositorio de usuario ``user_default``), o ``None`` si no se sabe (sin
+    ``%APPDATA%``, o un Python que no está en ``<Blender>/<versión>/python/bin``)."""
+    appdata = os.environ.get("APPDATA", "").strip()
+    version = Path(sys.executable).parents[2].name
+    if not appdata or not VERSION_FOLDER.fullmatch(version):
+        return None
+    return Path(appdata, "Blender Foundation", "Blender", version, "extensions", ".user",
+                "user_default", EXTENSION_DIR.name, runtime.RUNTIME_DIR, lock_id,
+                runtime.SITE_DIR)
+
+
+@resources.requires(runtime_support.RUNTIME, runtime_support.RUNTIME_HINT)
+class EngineInstallTest(unittest.TestCase):
+    """La cadena de instalación del producto desde el almacén de ruedas local, cronometrada,
+    y la longitud de las rutas del motor."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.test_site = runtime_support.runtime_site()
+        lock = runtime.read_lock()
+        store = _wheelhouse(cls.test_site, lock)
+        if store is None:
+            raise unittest.SkipTest(
+                resources.skip_reason(runtime_support.RUNTIME, WHEELHOUSE_HINT))
+        tmp = _support.jobs_tmp()
+        base = tmp.__enter__()
+        cls.addClassCleanup(tmp.__exit__, None, None, None)
+        registry = mock.patch.dict(catalog._REGISTRY, clear=True)
+        registry.start()
+        cls.addClassCleanup(registry.stop)
+        for info in catalog.BUILTIN_WORKERS:
+            if info.name in (runtime.INSTALL_WORKER, runtime.CHECK_WORKER):
+                catalog.register_worker(info)
+
+        cls.engine = runtime.ComputeEnvironment(base / "usuario", lock)
+        cls.plan = cls.engine.plan_install(runtime.WheelSource.wheelhouse(store),
+                                           online_access=False)
+        consent = runtime.Consent.given(cls.plan)
+        launcher = runner.JobRunner(jobs_root=base / "jobs", package_dir=EXTENSION_DIR,
+                                    blender_python=Path(sys.executable), runtime=cls.engine)
+        cls.addClassCleanup(launcher.shutdown, timeout_s=3.0)
+        started = time.perf_counter()
+        setup = runtime.RuntimeSetup.install(launcher, cls.engine, cls.plan, consent)
+        while not setup.done:
+            if time.perf_counter() - started > INSTALL_DEADLINE_S:
+                setup.cancel()
+                raise AssertionError(f"la instalación no acabó en {INSTALL_DEADLINE_S} s")
+            launcher.poll()
+            time.sleep(POLL_S)
+        cls.install_s = time.perf_counter() - started
+        cls.setup = setup
+        cls.status = cls.engine.status()
+        cls.disk_mb = cleanup.folder_size_mb(cls.engine.path)
+        cls.info = runtime.read_runtime_info(cls.engine.path) or {}
+        cls.installed_paths = _longest_path(cls.engine.path)
+        cls.site_paths = _longest_path(cls.engine.site_dir())
+        cls.test_paths = _longest_path(Path(cls.test_site))
+
+    def check_installed(self) -> None:
+        """La cadena acabó bien y dejó el motor listo, verificado con el numpy del lock."""
+        setup = self.setup
+        tail = ""
+        if setup.handles:
+            log = Path(setup.handles[-1].job_dir.log_file)
+            tail = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+        self.assertEqual(setup.state, runtime.SETUP_SUCCEEDED,
+                         f"{setup.error_code}: {setup.error_text}\n{tail}")
+        self.assertEqual(self.status, runtime.STATUS_READY)
+        verification = self.info.get("verification") or {}
+        self.assertIs(verification.get("ok"), True)
+        self.assertEqual(verification.get("numpy"),
+                         self.engine.lock.package(runtime.LOCK_NUMPY).version)
+
+    def test_install_from_local_store(self) -> None:
+        """RNF-004-06: el motor de esta spec (solo numpy), instalado con la cadena del
+        producto desde el almacén de ruedas local y sin red, tarda ≤ 60 s, ocupa ≤ 80 MB en
+        disco y sus ruedas (la descarga) suman ≤ 20 MB."""
+        self.check_installed()
+        self.assertEqual(self.plan.source.kind, runtime.SOURCE_WHEELHOUSE)
+        verification = self.info["verification"]
+        packages = ", ".join(f"{p.name} {p.version}" for p in self.plan.packages)
+        _report(f"RNF-004-06: instalación del motor {self.engine.lock_id} ({packages}) desde "
+                f"el almacén de ruedas local, sin red (pip del Python de Blender "
+                f"{platform.python_version()}; verificación con el motor: numpy "
+                f"{verification['numpy']}, BLAS {verification['blas']}): "
+                f"{_number(self.install_s)} s (≤ {INSTALL_BUDGET_S:g} s); "
+                f"{_number(self.disk_mb)} MB en disco (≤ {DISK_BUDGET_MB:g} MB); ruedas de "
+                f"{_number(self.plan.download_mb)} MB (≤ {DOWNLOAD_BUDGET_MB:g} MB)")
+        self.assertLessEqual(self.install_s, INSTALL_BUDGET_S)
+        self.assertLessEqual(self.disk_mb, DISK_BUDGET_MB)
+        self.assertLessEqual(self.plan.download_mb, DOWNLOAD_BUDGET_MB)
+
+    def test_engine_paths_within_240(self) -> None:
+        """RNF-004-08: ninguna ruta del motor recién instalado ni del motor de pruebas pasa
+        de 240 caracteres (tampoco la que midió su verificación), ni la más larga de su
+        ``site`` en el sitio del motor en los datos de usuario por defecto de Blender."""
+        self.check_installed()
+        installed, _relative = self.installed_paths
+        _site_longest, relative = self.site_paths
+        test_engine, _ = self.test_paths
+        verified = self.info["verification"]["max_path_length"]
+        default_site = _default_engine_site(self.engine.lock_id)
+        projected = None if default_site is None else len(str(default_site)) + 1 + relative
+        where = ("sin datos de usuario por defecto que medir" if projected is None
+                 else f"{projected} en los datos de usuario por defecto de Blender")
+        _report(f"RNF-004-08: ruta más larga del motor {self.engine.lock_id}: {installed} "
+                f"caracteres recién instalado en una carpeta temporal ({verified} al "
+                f"verificarlo); {test_engine} en el motor de pruebas; {where} (la más larga "
+                f"de su site, {relative}); presupuesto {PATH_BUDGET}")
+        self.assertGreater(relative, 0)
+        for name, value in (("instalado", installed), ("verificado", verified),
+                            ("motor de pruebas", test_engine), ("por defecto", projected)):
+            if value is not None:
+                with self.subTest(name):
+                    self.assertLessEqual(value, PATH_BUDGET)
 
 
 if __name__ == "__main__":
