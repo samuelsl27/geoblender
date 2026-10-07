@@ -11,10 +11,14 @@ cambiar.
 
 Geoblender 0.1.0 ya se instala (spec 001), crea y abre proyectos con su sistema de
 referencia y su origen local (spec 002) y tiene su interfaz (spec 003), aunque todavía no
-tiene funciones mineras. Lo de la spec 002 está comprobado también con QGIS 4.2 y en la red
-con un solo equipo; falta con dos equipos a la vez. Lo de la spec 003 está comprobado en una
-pantalla de 1920 × 1080 con Windows al 125 %, salvo algunas teclas en modo Blender, la fila 2
-en edición, dos idiomas de entrada y la revisión de los iconos.
+tiene funciones mineras. Lo de la spec 002 está comprobado también con QGIS 4.2 sin su
+interfaz (PyQGIS) y en la red con un solo equipo; falta con dos equipos a la vez, y que IMGA
+acepte esas pruebas de QGIS y, en lugar de la del panel del proyecto, las de la interfaz de la
+spec 003. Lo de la spec 003 está comprobado en una pantalla de 1920 × 1080 con Windows al 125 %,
+salvo algunas teclas en modo Blender, la lista de F3 en los dos modos, la barra T de Blender, la
+fila 1, el clic derecho, Mayús+Alt+B y la chincheta, la fila 2 en edición, dos idiomas de
+entrada, la plantilla instalada en el Blender de cada uno, la revisión de los iconos y la
+lectura de la barra con tres ingenieros.
 
 ### Añadido
 
