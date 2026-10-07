@@ -21,7 +21,14 @@ Toda la lógica está en la extensión (ADR-0003). La plantilla solo:
   (``geoblender_mode``) y el «Layout» de respaldo, pero no se puede guardar con el principal
   activo sin interfaz. El cambio es diferido: lo aplica el primer ciclo de eventos. Al abrir
   un fichero de la persona no cambia nada: manda el fichero;
-- deja la escena de Archivo ▸ Nuevo en metros.
+- deja la escena de Archivo ▸ Nuevo en metros;
+- **vuelve a abrir la imagen de bienvenida** que cierra ese cambio (hallazgo D5, T44).
+  Blender la abre antes del primer ciclo de eventos, en la ventana con el «Layout», y al
+  aplicar el cambio de espacio cierra las ventanas emergentes de la ventana. Mientras
+  arranca, la plantilla anota en qué ventanas se dibuja (un añadido a ``WM_MT_splash`` y a
+  ``WM_MT_splash_quick_setup`` que no dibuja nada y que quita en su primer ciclo) y, si pasa
+  una de ellas al espacio principal, la vuelve a abrir cuando el cambio se ha aplicado. Si
+  Blender no la abrió (la preferencia apagada, un fichero abierto), no abre nada.
 
 ``unregister()`` quita lo que puso y deshabilita la extensión solo si la habilitó ella.
 """
@@ -37,12 +44,19 @@ from bpy.app.handlers import persistent
 EXTENSION_SUFFIX = ".geoblender"
 WORKSPACE_FLAG = "geoblender_mode"
 MAIN_WORKSPACE = "Geoblender"
+# Los menús que dibuja la imagen de bienvenida de Blender (la normal y la de la primera vez).
+SPLASH_MENUS = ("WM_MT_splash", "WM_MT_splash_quick_setup")
+SPLASH_WAIT_CYCLES = 20  # ciclos de eventos que se espera a que se aplique el cambio
 
 
 class _State:
     def __init__(self) -> None:
         self.enabled_here: list[str] = []  # módulos que habilitó la plantilla
         self.requested: list[str] = []  # espacios pedidos para las ventanas
+        self.switched: list[int] = []  # las ventanas a las que se pidieron (as_pointer)
+        self.splash_windows: set[int] = set()  # dónde se dibujó la imagen de bienvenida
+        self.reopen: list[int] = []  # dónde hay que volver a abrirla
+        self.reopen_cycles = 0
 
 
 _STATE = _State()
@@ -88,6 +102,7 @@ def activate_main_workspace() -> list[str]:
     (diferido); devuelve los nombres pedidos, uno por ventana."""
     workspace = main_workspace()
     requested: list[str] = []
+    switched: list[int] = []
     manager = getattr(bpy.context, "window_manager", None)
     if workspace is None or manager is None:
         return requested
@@ -97,14 +112,83 @@ def activate_main_workspace() -> list[str]:
             continue
         window.workspace = workspace
         requested.append(workspace.name)
+        switched.append(window.as_pointer())
     _STATE.requested = requested
+    _STATE.switched = switched
     return requested
 
 
+def _note_splash(_menu: Any, context: Any) -> None:
+    """Añadido a los menús de la imagen de bienvenida mientras se arranca: anota la
+    ventana donde se dibuja (no dibuja nada)."""
+    window = getattr(context, "window", None)
+    if window is not None:
+        _STATE.splash_windows.add(window.as_pointer())
+
+
+def watch_splash() -> None:
+    """Empieza a anotar dónde se dibuja la imagen de bienvenida."""
+    for name in SPLASH_MENUS:
+        menu = getattr(bpy.types, name, None)
+        if menu is not None:
+            menu.remove(_note_splash)
+            menu.append(_note_splash)
+
+
+def unwatch_splash() -> None:
+    """Deja de anotarlo."""
+    for name in SPLASH_MENUS:
+        menu = getattr(bpy.types, name, None)
+        if menu is not None:
+            menu.remove(_note_splash)
+
+
+def open_splash(window: Any) -> None:
+    """Abre la imagen de bienvenida en ``window`` (la de la plantilla: Blender la toma de
+    su carpeta)."""
+    with bpy.context.temp_override(window=window):
+        bpy.ops.wm.splash("INVOKE_DEFAULT")
+
+
+def _reopen_splash() -> float | None:
+    """Temporizador: vuelve a abrir la imagen de bienvenida en cada ventana donde la
+    cerró el cambio al espacio principal, en cuanto ese cambio se ha aplicado (la ventana
+    está en un espacio de Geoblender); deja de esperar al cabo de ``SPLASH_WAIT_CYCLES``."""
+    manager = getattr(bpy.context, "window_manager", None)
+    windows = {window.as_pointer(): window for window in manager.windows} if manager else {}
+    pending: list[int] = []
+    for pointer in _STATE.reopen:
+        window = windows.get(pointer)
+        if window is None:
+            continue
+        if is_marked(window.workspace):
+            try:
+                open_splash(window)
+            except RuntimeError as exc:  # el operador no se puede ejecutar: no se insiste
+                print(f"Geoblender: no se ha podido abrir la imagen de bienvenida: {exc}")
+        else:
+            pending.append(pointer)
+    _STATE.reopen_cycles += 1
+    if pending and _STATE.reopen_cycles < SPLASH_WAIT_CYCLES:
+        _STATE.reopen = pending
+        return 0.0
+    _STATE.reopen = []
+    return None
+
+
 def _startup() -> None:
-    """Temporizador del arranque: la extensión y el espacio principal."""
+    """Temporizador del arranque: la extensión, el espacio principal y la imagen de
+    bienvenida que cierra ese cambio."""
     enable_extension()
     activate_main_workspace()
+    unwatch_splash()
+    reopen = [pointer for pointer in _STATE.switched if pointer in _STATE.splash_windows]
+    _STATE.splash_windows.clear()
+    if reopen:
+        _STATE.reopen = reopen
+        _STATE.reopen_cycles = 0
+        if not bpy.app.timers.is_registered(_reopen_splash):
+            bpy.app.timers.register(_reopen_splash, first_interval=0.0)
     return None
 
 
@@ -125,6 +209,7 @@ def _on_factory_startup(*_args: Any) -> None:
 
 
 def register() -> None:
+    watch_splash()
     bpy.app.timers.register(_startup, first_interval=0.0)
     if _on_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_on_load_post)
@@ -135,6 +220,9 @@ def register() -> None:
 def unregister() -> None:
     if bpy.app.timers.is_registered(_startup):
         bpy.app.timers.unregister(_startup)
+    if bpy.app.timers.is_registered(_reopen_splash):
+        bpy.app.timers.unregister(_reopen_splash)
+    unwatch_splash()
     if _on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_on_load_post)
     if _on_factory_startup in bpy.app.handlers.load_factory_startup_post:
@@ -143,3 +231,6 @@ def unregister() -> None:
         addon_utils.disable(name, default_set=False)
     _STATE.enabled_here.clear()
     _STATE.requested = []
+    _STATE.switched = []
+    _STATE.splash_windows.clear()
+    _STATE.reopen = []
