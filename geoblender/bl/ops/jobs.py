@@ -22,11 +22,38 @@ Lo dibuja el campo «jobs» de la barra de estado de la 003 (``bl/ui/jobs.py``),
 Geoblender y en modo Blender. En ``blender -b`` los temporizadores no se ejecutan: las
 pruebas llaman a :func:`tick` a mano.
 
-:data:`MONITOR` es el monitor de la sesión. El lanzador se le da con
-:meth:`JobMonitor.attach` (lo crea la tarea T22 con la raíz de trabajos del proyecto).
-:func:`register` instala los textos de los trabajos en ``core.i18n`` y registra los tipos de
-trabajo de la 004 (``jobs.catalog.register_builtin_workers``); :func:`unregister` retira el
-temporizador y los quita.
+:data:`MONITOR` es el monitor de la sesión, y el **lanzador de la sesión**
+(:func:`session_runner`, un ``JobRunner``) se le da con :meth:`JobMonitor.attach`
+(RF-004-13, RF-004-18; plan §5.1, §5.4.4 y §5.4.5):
+
+- :func:`register` instala los textos de los trabajos en ``core.i18n``, registra los tipos
+  de trabajo de la 004 (``jobs.catalog.register_builtin_workers``) y crea el lanzador, sin
+  crear ninguna carpeta: el paquete de los workers es la carpeta del paquete raíz, el
+  intérprete es el ``python.exe`` de Blender (``sys.executable``), el máximo de trabajos en
+  proceso aparte sale de las preferencias (``jobs.max_parallel_jobs``, que al cambiar llega
+  con ``reconfigure``) y la raíz de trabajos, de :func:`jobs_root`. También pone el
+  manejador ``exit_pre`` (persistente) y se apunta a los cambios de proyecto de la 002
+  (``bl.scene.project_session.add_listener``).
+- Raíz de trabajos (:func:`jobs_root`, RF-004-18): con un proyecto abierto,
+  ``Project.cache_dir()/jobs`` (la caché única de la 002: en la carpeta del proyecto si está
+  en disco local y en escritura; en los datos de usuario si está en red o en solo lectura) y,
+  sin proyecto, ``<datos de usuario>/cache/_sin_proyecto/jobs``, con ``<datos de usuario>`` =
+  ``extension_path_user(bl.ADDON_PACKAGE)`` (:func:`user_dir`; nunca el paquete de un
+  submódulo). El motor de cálculo irá en ``<datos de usuario>/runtime``
+  (:func:`runtime_dir`), que nadie crea sin el consentimiento del usuario (RF-004-19). Las
+  calcula ``bl`` y se las da a ``jobs/`` como ``Path``.
+- Al cambiar de proyecto (:func:`on_project_changed`), la raíz pasa a la del nuevo (o a la
+  de sin proyecto) y la raíz del proyecto queda prohibida en las peticiones (RF-004-02); al
+  abrir uno, ``records.mark_interrupted`` deja «Interrumpido» lo que su registro dejaba en
+  cola o en curso sin estar en el lanzador (Blender se cerró con ello en marcha, RF-004-13)
+  y ``JobRunner.purge`` borra los terminados hace más de ``retention_days`` días
+  (RF-004-17); los MB liberados van al registro técnico y, si algo no se pudo borrar, queda
+  un aviso del proyecto. Lo que ya estaba en marcha sigue en su carpeta.
+- :func:`unregister` y el manejador ``exit_pre`` (:func:`on_exit_pre`) cierran el lanzador
+  con ``JobRunner.shutdown(timeout_s=3)`` (los trabajos en curso quedan «Interrumpido» y
+  sin proceso, RF-004-13) **antes** de retirar el temporizador del monitor;
+  :func:`unregister` quita además el manejador, el aviso de cambio de proyecto y los tipos
+  de trabajo.
 
 Operadores reales, con el ``bl_idname`` del catálogo de la 003 (Herramientas ▸ Trabajos),
 que así deja de generar sus provisionales; funcionan en los dos modos (sus botones están en
@@ -63,11 +90,13 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import bpy
 from bpy.props import EnumProperty, StringProperty
@@ -75,21 +104,32 @@ from bpy.props import EnumProperty, StringProperty
 from ...core import i18n
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, tr
-from ...jobs import catalog, messages
+from ...jobs import catalog, messages, records
 from ...jobs.cleanup import CleanupReport
-from ...jobs.paths import JobDir
+from ...jobs.paths import JobDir, resolve_jobs_root
 from ...jobs.protocol import JobRequest, JsonValue, new_request
 from ...jobs.runner import JobHandle, JobResult, JobRunner, JobSnapshot
 from .. import ADDON_PACKAGE
-from ..props.jobs import RETENTION_DEFAULT
+from ..props.jobs import MAX_PARALLEL_DEFAULT, RETENTION_DEFAULT
+from ..scene import project_session
 from ..ui import jobs as job_list
 from ..ui import statusbar
+
+if TYPE_CHECKING:
+    from ...core.project.session import Project
 
 TICK_S = 0.25
 """Cada cuánto sondea el temporizador (plan §5.4.4)."""
 NOTICE_S = 10.0
 """Lo que dura en la barra de estado el aviso de un trabajo que acabó (RF-004-07)."""
 TRANSLATION_CONTEXT = "Geoblender"
+SHUTDOWN_TIMEOUT_S = 3.0
+"""Lo que puede tardar en cerrarse el lanzador al desactivar o salir (RF-004-13)."""
+RUNTIME_DIR = "runtime"
+"""La carpeta del motor de cálculo en los datos de usuario (plan §5.2)."""
+PACKAGE_DIR = Path(__file__).resolve().parents[2]
+"""La carpeta del paquete raíz de la extensión, la que cargan los workers (tiene
+``workers/_bootstrap.py``)."""
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 
@@ -461,6 +501,13 @@ def retention_days() -> int:
     return RETENTION_DEFAULT if value is None else int(value)
 
 
+def max_parallel_jobs() -> int:
+    """Trabajos a la vez en proceso aparte (``max_parallel_jobs`` de las preferencias; 2
+    si aún no se pueden leer, como al habilitar la extensión por primera vez)."""
+    value = getattr(_jobs_preferences(), "max_parallel_jobs", None)
+    return MAX_PARALLEL_DEFAULT if value is None else int(value)
+
+
 class GEOBLENDER_OT_jobs_clean(bpy.types.Operator):
     """Delete the folders of the finished jobs"""
 
@@ -553,10 +600,14 @@ def _discard(operator: Any, runner: JobRunner, job_uid: str) -> set[str]:
 def _report_failed(operator: Any, report: CleanupReport) -> None:
     """El aviso de las carpetas que otro programa no dejó borrar del todo."""
     if report.failed:
-        operator.report({"WARNING"}, tr(
-            "Job folders that could not be deleted completely (another program has a file "
-            "open): {count}; they will be tried again in the next cleaning",
-            count=len(report.failed)))
+        operator.report({"WARNING"}, _failed_text(report))
+
+
+def _failed_text(report: CleanupReport) -> str:
+    return tr(
+        "Job folders that could not be deleted completely (another program has a file "
+        "open): {count}; they will be tried again in the next cleaning",
+        count=len(report.failed))
 
 
 def _refresh_folder_size(runner: JobRunner) -> None:
@@ -565,20 +616,147 @@ def _refresh_folder_size(runner: JobRunner) -> None:
         job_list.measure_folder(runner.jobs_root)
 
 
+# El lanzador de la sesión ---------------------------------------------------------------
+
+
+class _Session:
+    """El lanzador de esta sesión de Blender (no se guarda en el ``.blend``)."""
+
+    def __init__(self) -> None:
+        self.runner: JobRunner | None = None
+
+
+_SESSION = _Session()
+
+
+def session_runner() -> JobRunner | None:
+    """El lanzador de la sesión que creó :func:`register` (``None`` antes de registrar y
+    después de desregistrar)."""
+    return _SESSION.runner
+
+
+def user_dir() -> Path:
+    """Los datos de usuario de la extensión, ``extension_path_user(bl.ADDON_PACKAGE)``
+    (los mismos que los de la 002; no los crea)."""
+    return project_session.userdata().root
+
+
+def runtime_dir() -> Path:
+    """La carpeta del motor de cálculo, ``<datos de usuario>/runtime`` (no la crea:
+    RF-004-19)."""
+    return Path(bpy.utils.extension_path_user(ADDON_PACKAGE, path=RUNTIME_DIR))
+
+
+def jobs_root(project: Project | None) -> Path:
+    """La raíz de trabajos (RF-004-18) con ``project`` abierto (``Project.cache_dir()``
+    más ``jobs``) o sin proyecto (``None``: ``<datos de usuario>/cache/_sin_proyecto/jobs``).
+    No la crea."""
+    cache = None if project is None else project.cache_dir()
+    return resolve_jobs_root(project_cache_dir=cache, user_dir=user_dir())
+
+
+def _forbidden_roots(project: Project | None) -> tuple[Path, ...]:
+    """Las rutas que no pueden llevar las peticiones: la raíz del proyecto (RF-004-02)."""
+    return () if project is None else (Path(project.root),)
+
+
+def _open_session() -> None:
+    """Crea el lanzador de la sesión y se lo da al monitor; si ya hay uno abierto, no hace
+    nada. No crea ninguna carpeta."""
+    if _SESSION.runner is not None and not _SESSION.runner.closed:
+        return
+    project = project_session.current()
+    runner = JobRunner(jobs_root=jobs_root(project), package_dir=PACKAGE_DIR,
+                       blender_python=Path(sys.executable),
+                       max_subprocess=max_parallel_jobs(),
+                       forbidden_roots=_forbidden_roots(project))
+    _SESSION.runner = runner
+    MONITOR.attach(runner)
+
+
+def _close_session() -> None:
+    """Cierra el lanzador de la sesión (``shutdown``: los trabajos en curso quedan
+    «Interrumpido» y sin proceso en ≤ :data:`SHUTDOWN_TIMEOUT_S` s) y después retira el
+    temporizador del monitor. Cerrar otra vez no hace nada más."""
+    runner = _SESSION.runner
+    try:
+        if runner is not None:
+            runner.shutdown(timeout_s=SHUTDOWN_TIMEOUT_S)
+    finally:
+        MONITOR.stop()
+
+
+def on_max_parallel_changed(value: int) -> None:
+    """``max_parallel_jobs`` cambió en las preferencias: llega al lanzador de la sesión
+    (RF-004-04; si sube, arranca de la cola lo que quepa)."""
+    runner = _SESSION.runner
+    if runner is not None and not runner.closed:
+        runner.reconfigure(max_subprocess=int(value))
+
+
+def on_project_changed(project: Project | None) -> None:
+    """La sesión pasó a tener ``project`` (o ninguno): la raíz de trabajos y la ruta
+    prohibida pasan a las suyas (RF-004-18, RF-004-02) y, al abrir un proyecto, se marcan
+    «Interrumpido» los trabajos de su raíz que constaban activos sin estar en el lanzador
+    (RF-004-13) y se borran los terminados hace más de ``retention_days`` días
+    (RF-004-17)."""
+    runner = _SESSION.runner
+    if runner is None or runner.closed:
+        return
+    root = jobs_root(project)
+    runner.reconfigure(jobs_root=root, forbidden_roots=_forbidden_roots(project))
+    if project is None:
+        return
+    active = {snapshot.job_uid for snapshot in runner.snapshots() if snapshot.active}
+    interrupted = records.mark_interrupted(root, active_uids=active)
+    days = retention_days()
+    report = runner.purge(older_than_days=days)
+    if interrupted:
+        LOGGER.info("Proyecto «%s»: %d trabajos que Blender dejó en marcha quedan "
+                    "«Interrumpido»", project.name, len(interrupted))
+    if report.removed:
+        LOGGER.info("Proyecto «%s»: borradas %d carpetas de trabajos terminados hace más "
+                    "de %d días (%s MB liberados)", project.name, len(report.removed), days,
+                    format_number(report.freed_mb, 1))
+    if report.failed:
+        project_session.notify(_failed_text(report))
+
+
+@bpy.app.handlers.persistent
+def on_exit_pre(*_args: object) -> None:
+    """Manejador ``exit_pre`` (persistente: sigue tras abrir otro ``.blend``): al salir de
+    Blender, cierra el lanzador de la sesión (RF-004-13)."""
+    _close_session()
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_jobs_show_jobs, GEOBLENDER_OT_jobs_cancel,
                              GEOBLENDER_OT_jobs_run_selftest, GEOBLENDER_OT_jobs_clean)
 
 
 def register() -> None:
-    """Textos de los trabajos en ``core.i18n`` y tipos de trabajo de la 004; idempotente."""
+    """Textos de los trabajos en ``core.i18n``, tipos de trabajo de la 004, el lanzador de
+    la sesión (dado al monitor), el manejador ``exit_pre`` y el aviso de cambio de
+    proyecto; idempotente."""
     i18n.install(messages.CATALOG_ES)
     i18n.install(catalog.CATALOG_ES)
     catalog.unregister_builtin_workers()
     catalog.register_builtin_workers()
+    _open_session()
+    if on_exit_pre not in bpy.app.handlers.exit_pre:
+        bpy.app.handlers.exit_pre.append(on_exit_pre)
+    project_session.add_listener(on_project_changed)
 
 
 def unregister() -> None:
-    """Retira el temporizador del monitor y quita los tipos de trabajo de la 004;
-    idempotente."""
-    MONITOR.stop()
-    catalog.unregister_builtin_workers()
+    """Quita el aviso de cambio de proyecto y el manejador ``exit_pre``, cierra el
+    lanzador de la sesión (``shutdown(timeout_s=3)``) antes de retirar el temporizador del
+    monitor, lo suelta y quita los tipos de trabajo de la 004; idempotente."""
+    project_session.remove_listener(on_project_changed)
+    if on_exit_pre in bpy.app.handlers.exit_pre:
+        bpy.app.handlers.exit_pre.remove(on_exit_pre)
+    try:
+        _close_session()
+    finally:
+        _SESSION.runner = None
+        MONITOR.attach(None)
+        catalog.unregister_builtin_workers()

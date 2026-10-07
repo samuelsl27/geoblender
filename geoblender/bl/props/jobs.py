@@ -7,8 +7,9 @@ RF-004-24, RF-004-26; plan 004 §5.2.7).
 clase de preferencias:
 
 - ``max_parallel_jobs``: trabajos en curso a la vez en proceso aparte, de 1 a 4 y 2 por
-  defecto (DP-32; el máximo de ``jobs.runner.JobRunner``, que lo recibe al crearse o con
-  ``reconfigure``); los demás esperan «En cola» (RF-004-04);
+  defecto (DP-32; el máximo de ``jobs.runner.JobRunner``, que lo recibe al crearse y, al
+  cambiarlo, con ``reconfigure``: ``bl.ops.jobs.on_max_parallel_changed``); los demás
+  esperan «En cola» (RF-004-04);
 - ``retention_days``: días que se conservan las carpetas de los trabajos terminados, de 1
   a 90 y 7 por defecto (DP-33; ``jobs.cleanup.purge`` al abrir un proyecto, RF-004-17);
 - ``runtime_source``: de dónde se instala el motor de cálculo (``AUTO``: el almacén de
@@ -47,6 +48,13 @@ RUNTIME_SOURCE_ITEMS = [
 _STATIC: set[str] = set()  # ni animable ni nada más
 
 
+def _max_parallel_changed(group: GEOBLENDER_PG_jobs_preferences, context: object) -> None:
+    """El nuevo máximo llega al momento al lanzador de la sesión (RF-004-04)."""
+    from ..ops import jobs  # diferido: bl/ops importa bl/props
+
+    jobs.on_max_parallel_changed(group.max_parallel_jobs)
+
+
 class GEOBLENDER_PG_jobs_preferences(bpy.types.PropertyGroup):
     """Preferencias de los trabajos en segundo plano y del motor de cálculo (spec 004)."""
 
@@ -60,6 +68,7 @@ class GEOBLENDER_PG_jobs_preferences(bpy.types.PropertyGroup):
         min=MAX_PARALLEL_MIN,
         max=MAX_PARALLEL_MAX,
         options=_STATIC,
+        update=_max_parallel_changed,
     )
     retention_days: IntProperty(  # type: ignore[valid-type]
         name="Keep finished jobs (days)",

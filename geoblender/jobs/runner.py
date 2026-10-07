@@ -349,7 +349,8 @@ class JobRunner:
     (1); los demás esperan en la cola, por orden de llegada (RF-004-04; enteros ≥ 1, si no
     :class:`ValueError`). ``forbidden_roots``: rutas que ninguna petición puede contener (la
     raíz del proyecto, RF-004-02). ``clock``: reloj monótono de las duraciones y los
-    plazos. :meth:`reconfigure` cambia después el máximo de procesos y la raíz.
+    plazos. :meth:`reconfigure` cambia después el máximo de procesos, la raíz y las rutas
+    prohibidas.
 
     Sus métodos se llaman desde el hilo de Blender; los hilos lectores solo llenan colas y
     ``events.jsonl``, y los de los trabajos en hilo, su cola y su ``job.log``.
@@ -399,6 +400,12 @@ class JobRunner:
         return self._jobs_root
 
     @property
+    def forbidden_roots(self) -> tuple[Path, ...]:
+        """Las rutas que ninguna petición puede contener (la raíz del proyecto abierto,
+        RF-004-02)."""
+        return self._forbidden_roots
+
+    @property
     def max_subprocess(self) -> int:
         """Workers en proceso aparte a la vez (RF-004-04)."""
         return self._max_subprocess
@@ -419,9 +426,10 @@ class JobRunner:
         *,
         max_subprocess: int | None = None,
         jobs_root: Path | None = None,
+        forbidden_roots: Iterable[Path] | None = None,
     ) -> None:
         """Cambia la configuración sin parar el lanzador (al cambiar las preferencias o el
-        proyecto; RF-004-04). Lo que se deja en ``None`` no cambia.
+        proyecto; RF-004-04, RF-004-18). Lo que se deja en ``None`` no cambia.
 
         - ``max_subprocess``: workers en proceso aparte a la vez. Si sube, arranca al
           momento de la cola, por orden de llegada, lo que ahora quepa; si baja, los que
@@ -430,15 +438,21 @@ class JobRunner:
           ahora se reparten con él (:func:`.interpreter.blas_threads_for`).
         - ``jobs_root``: la raíz de los trabajos que se preparen desde ahora; los ya
           preparados siguen en su carpeta.
+        - ``forbidden_roots``: las rutas que no pueden contener las peticiones que se
+          preparen o se lancen desde ahora (la raíz del proyecto abierto; ninguna sin
+          proyecto, RF-004-02); rutas completas.
 
         Un valor que no vale es :class:`ValueError` y no cambia nada, tampoco los demás de
         la misma llamada. El intérprete externo (``external_python``) llega con T25."""
         if max_subprocess is not None:
             _check_maximum(max_subprocess, "max_subprocess")
         root = None if jobs_root is None else _absolute_root(jobs_root)
+        forbidden = None if forbidden_roots is None else _absolute_roots(forbidden_roots)
         with self._lock:
             if root is not None:
                 self._jobs_root = root
+            if forbidden is not None:
+                self._forbidden_roots = forbidden
             if max_subprocess is not None:
                 self._max_subprocess = max_subprocess
                 self._start_queued()
@@ -1527,6 +1541,15 @@ def _absolute_root(jobs_root: Path) -> Path:
     if not root.is_absolute():
         raise ValueError(f"la raíz de trabajos «{root}» no es una ruta completa")
     return root
+
+
+def _absolute_roots(roots: Iterable[Path]) -> tuple[Path, ...]:
+    """Las rutas prohibidas como rutas completas (:class:`ValueError` si alguna no lo es)."""
+    found = tuple(Path(root) for root in roots)
+    for root in found:
+        if not root.is_absolute():
+            raise ValueError(f"la ruta prohibida «{root}» no es una ruta completa")
+    return found
 
 
 def _wait_for_exit(items: Iterable[_Job], until: float, *, channels: bool = False) -> None:

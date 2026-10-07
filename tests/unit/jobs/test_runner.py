@@ -562,6 +562,28 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "request_path_outside_job")
         self.assertFalse((self.root / "sub").exists())
 
+    def test_reconfigure_changes_the_forbidden_roots(self):
+        """RF-004-02: ``reconfigure(forbidden_roots=…)`` cambia las rutas prohibidas de lo
+        que se prepare después (al abrir o cerrar un proyecto): sin ninguna, la ruta del
+        proyecto se admite; con la del proyecto otra vez, se rechaza. Una relativa es
+        ``ValueError`` y no cambia nada, tampoco lo demás de la misma llamada."""
+        project = _STATE["project"].root
+        hidden = str(project / "project.gpkg")
+        self.assertEqual(self.runner.forbidden_roots, (project,))
+        self.runner.reconfigure(forbidden_roots=())
+        self.assertEqual(self.runner.forbidden_roots, ())
+        folder = self.runner.prepare(_request(params={"op": "chunked_sum", "nota": hidden}))
+        self.assertTrue(folder.path.is_dir())
+        with self.assertRaises(ValueError):
+            self.runner.reconfigure(forbidden_roots=[project, Path("relativa")],
+                                    max_subprocess=3)
+        self.assertEqual((self.runner.forbidden_roots, self.runner.max_subprocess), ((), 2))
+        self.runner.reconfigure(forbidden_roots=[str(project)])
+        self.assertEqual(self.runner.forbidden_roots, (project,))
+        with self.assertRaises(messages.JobError) as caught:
+            self.runner.prepare(_request(params={"op": "chunked_sum", "nota": hidden}))
+        self.assertEqual(caught.exception.code, "request_path_outside_job")
+
     def test_unknown_worker_is_rejected_without_files(self):
         """RF-004-02: Un tipo de trabajo que no está registrado es ``worker_unknown`` y no crea
         nada."""

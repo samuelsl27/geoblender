@@ -64,12 +64,31 @@ Un lanzador real en una carpeta temporal: el autodiagnóstico de 10 s se cancela
 da su primer trozo; la limpieza, sobre carpetas de otra sesión escritas a mano y dos
 trabajos del lanzador en hilo (uno terminado, otro en curso).
 
+T22 — el lanzador de la sesión (``bl/ops/jobs.py``), que crea el registro de la extensión y
+da al monitor:
+
+- RF-004-18: su raíz de trabajos sale de los datos de usuario de la copia de pruebas
+  (``extension_path_user`` de ``bl_ext.gb_tests.…``: ``cache/_sin_proyecto/jobs``) sin
+  proyecto y de ``Project.cache_dir()`` de la 002 con uno abierto (en la carpeta del
+  proyecto en disco local y escritura; en los datos de usuario en solo lectura); habilitar
+  no crea ni la raíz ni ``runtime/`` (RF-004-19);
+- RF-004-13: al abrir un proyecto, los trabajos que su registro deja en cola o en curso y
+  el lanzador no lleva quedan «Interrumpido», y se borran los terminados hace más de
+  ``retention_days`` días (RF-004-17); desactivar Geoblender o cerrar Blender
+  (``exit_pre``) con trabajos en curso los deja «Interrumpido» y sin proceso en ≤ 3 s, y
+  retira el temporizador, el campo de la barra de estado y los manejadores;
+- el ``sys.path`` de Blender no cambia con los trabajos (también uno del motor de cálculo,
+  que sin motor queda «Fallido»), y ``max_parallel_jobs`` llega al lanzador al cambiarla.
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
 import datetime as dt
 import importlib
 import json
+import os
+import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -1757,6 +1776,290 @@ class CleanJobsTest(unittest.TestCase):
         self.assertEqual(texts, ["Terminados hace más de 12 días", "Todos los terminados",
                                  "Nunca se borran los trabajos en cola ni en curso"])
         self.assertEqual(len(self.remaining()), 6)
+
+
+# --- T22: el lanzador de la sesión, su raíz de trabajos y el cierre ---------------------
+
+SESSION_WORKER = "gbtest_session"
+SHUTDOWN_BUDGET_S = 3.0
+PROJECT_WINDOW = (699_500.4, 4_399_500.6, 700_500.2, 4_400_500.9)
+NO_PROJECT_JOBS = ("cache", "_sin_proyecto", "jobs")
+
+
+def _user_dir() -> Path:
+    """Los datos de usuario de la copia de pruebas, como los da Blender (no los crea)."""
+    return Path(bpy.utils.extension_path_user(module_name()))
+
+
+def _remove_tree(path: Path) -> None:
+    """Borra ``path`` entera, también las entradas de solo lectura de los trabajos."""
+    def writable(function: object, name: str, _exc: BaseException) -> None:
+        os.chmod(name, stat.S_IWRITE)
+        function(name)
+
+    if path.exists():
+        shutil.rmtree(path, onexc=writable)
+
+
+def _wait_jobs(ops: ModuleType, condition: object) -> None:
+    """Sondea con ``tick()`` a mano hasta que se cumple ``condition``."""
+    deadline = time.monotonic() + WAIT_S
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("los trabajos de prueba no avanzaron a tiempo")
+        ops.tick()
+        time.sleep(GATE_POLL_S)
+
+
+class SessionRunnerTest(unittest.TestCase):
+    """El lanzador que crea el registro, con la extensión habilitada una vez desde el
+    repositorio de pruebas (``bl_ext.gb_tests.…``) y la escena de fábrica."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.load_file()
+        cls.user = _user_dir()
+        cls.no_project_root = cls.user.joinpath(*NO_PROJECT_JOBS)
+        cls.root_existed = cls.no_project_root.exists()
+        cls.runtime_existed = (cls.user / "runtime").exists()
+        blender_ext.enable()
+        cls.ops = _module("bl.ops.jobs")
+        cls.ps = _module("bl.scene.project_session")
+        cls.catalog = _module("jobs.catalog")
+        cls.protocol = _module("jobs.protocol")
+        cls.records = _module("jobs.records")
+        cls.messages = _module("jobs.messages")
+        cls.core = _module("core.project")
+        cls.model = _module("core.project.model")
+        cls.after_enable = (cls.no_project_root.exists(), (cls.user / "runtime").exists())
+        cls.runner = cls.ops.MONITOR.runner
+        cls.gates = _Gates()
+        cls.catalog.register_worker(cls.catalog.WorkerInfo(
+            SESSION_WORKER, "Session test job", policy="auto",
+            estimate_s=lambda _params: 0.1, run=cls.gates.run,
+        ))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.gates.release_all()
+        blender_ext.unload()
+        blender_ext.load_file()
+        if not cls.root_existed:
+            _remove_tree(cls.no_project_root)
+
+    def setUp(self) -> None:
+        self.gates.events.clear()
+        self.addCleanup(self.gates.release_all)
+
+    def project(self, *, read_only: bool = False) -> object:
+        """Un proyecto nuevo en una carpeta temporal, abierto en escritura (o pasado a
+        solo lectura) y aún sin dar a la sesión."""
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory(
+            prefix="gb4-", ignore_cleanup_errors=True)))
+        settings = self.model.ProjectSettings(name="Cantera Trabajos", window=PROJECT_WINDOW,
+                                              crs_epsg=25830, vcrs_epsg=5782)
+        created = self.core.create_project(tmp, settings, self.ps.session(),
+                                           self.ps.userdata())
+        project = created.project
+        self.addCleanup(self.ps.close)
+        if read_only:
+            project.set_read_only(self.model.ReadOnlyCode.REQUESTED, "prueba")
+        return project
+
+    def test_roots_from_the_test_repository(self) -> None:
+        """RF-004-18, RF-004-19: con la extensión habilitada desde ``gb_tests``, el lanzador
+        de la sesión existe, abierto, con la raíz sin proyecto de sus datos de usuario
+        (``cache/_sin_proyecto/jobs``), sin rutas prohibidas y con el máximo de las
+        preferencias; la carpeta del motor (``runtime/``) se resuelve también ahí, y
+        habilitar no crea ninguna de las dos."""
+        self.assertTrue(module_name().startswith("bl_ext.gb_tests."))
+        self.assertEqual(self.ops.user_dir(), self.user)
+        self.assertEqual(self.ops.jobs_root(None), self.no_project_root)
+        self.assertEqual(self.ops.runtime_dir(), self.user / "runtime")
+        runner = self.ops.MONITOR.runner
+        self.assertIs(runner, self.ops.session_runner())
+        self.assertIsInstance(runner, _module("jobs.runner").JobRunner)
+        self.assertFalse(runner.closed)
+        self.assertEqual(runner.jobs_root, self.no_project_root)
+        self.assertEqual(runner.forbidden_roots, ())
+        self.assertEqual(runner.max_subprocess,
+                         _addon_preferences().jobs.max_parallel_jobs)
+        self.assertEqual(self.after_enable, (self.root_existed, self.runtime_existed))
+        self.assertFalse(self.runtime_existed)
+
+    def test_sys_path_unchanged_by_jobs(self) -> None:
+        """RF-004-03, RF-004-25: el ``sys.path`` de Blender es idéntico antes y después de
+        un trabajo del motor de cálculo (que sin motor queda «Fallido» sin arrancar) y de
+        uno en hilo con el numpy de Blender, los dos del lanzador de la sesión."""
+        before = list(sys.path)
+        operator = self.ops.GEOBLENDER_OT_jobs_run_selftest
+        compute, _messages = _reports(operator, mode="MATMUL_COMPUTE")
+        threaded = bpy.ops.geoblender.jobs_run_selftest(mode="MATMUL_BLENDER")
+        by_name = {s.name: s for s in self.runner.snapshots()}
+        matmul = by_name[SELFTEST_NAMES["MATMUL_BLENDER"]]
+        _wait_jobs(self.ops, lambda: not {s.job_uid: s for s in self.runner.snapshots()}[
+            matmul.job_uid].active)
+        self.assertEqual(list(sys.path), before)
+        self.assertEqual((compute, threaded), ({"CANCELLED"}, {"FINISHED"}))
+        failed = self.records.read_record(
+            self.no_project_root / by_name[SELFTEST_NAMES["MATMUL_COMPUTE"]].job_uid)
+        self.assertEqual((failed.state, failed.error.code, failed.pid),
+                         ("failed", "runtime_missing", None))
+        done = self.records.read_record(self.no_project_root / matmul.job_uid)
+        self.assertEqual((done.state, done.executor), ("succeeded", "inprocess"))
+
+    def test_max_parallel_preference_reconfigures(self) -> None:
+        """RF-004-04: cambiar ``max_parallel_jobs`` en las preferencias cambia al momento el
+        máximo de trabajos en proceso aparte del lanzador de la sesión."""
+        prefs = _addon_preferences().jobs
+        self.addCleanup(setattr, prefs, "max_parallel_jobs", prefs.max_parallel_jobs)
+        for value in (3, 1, 4, 2):
+            with self.subTest(max_parallel_jobs=value):
+                prefs.max_parallel_jobs = value
+                self.assertEqual(self.runner.max_subprocess, value)
+
+    def test_opening_a_project_moves_marks_and_purges(self) -> None:
+        """RF-004-18, RF-004-13, RF-004-17, RF-004-02: dar a la sesión un proyecto en disco
+        local y en escritura lleva la raíz a ``Project.cache_dir()/jobs`` (dentro del
+        proyecto) y prohíbe su ruta en las peticiones; de los trabajos que ya estaban ahí,
+        el que su registro deja en curso queda «Interrumpido» y se borra el terminado hace
+        más de ``retention_days`` días, no el reciente. Volver a abrirlo con un trabajo del
+        lanzador en marcha no lo interrumpe; al cerrar el proyecto, la raíz vuelve a la de
+        sin proyecto y no queda ninguna ruta prohibida."""
+        project = self.project()
+        root = project.root / "cache" / "jobs"
+        self.assertEqual(project.cache_dir() / "jobs", root)
+        orphan = _job_folder(root, state="running", days=0.01, label="Huérfano", size=KB)
+        old = _job_folder(root, state="succeeded", days=10, label="Viejo", size=KB)
+        recent = _job_folder(root, state="failed", days=1, label="Reciente", size=KB)
+        self.ps.attach(project)
+        self.assertEqual(self.runner.jobs_root, root)
+        self.assertEqual(self.runner.forbidden_roots, (project.root,))
+        marked = self.records.read_record(orphan)
+        self.assertEqual((marked.state, marked.error.code), ("interrupted", "job_interrupted"))
+        self.assertFalse(old.exists())
+        self.assertEqual(self.records.read_record(recent).state, "failed")
+        with self.assertRaises(self.messages.JobError) as caught:
+            self.runner.prepare(self.protocol.new_request(
+                "selftest", label="Ruta", owner="jobs",
+                params={"nota": str(project.root / "project.gpkg")}))
+        self.assertEqual(caught.exception.code, "request_path_outside_job")
+        busy = self.ops.MONITOR.submit(self.protocol.new_request(
+            SESSION_WORKER, label="En marcha", owner="jobs"))
+        _wait_jobs(self.ops, lambda: busy.message == "Esperando")
+        self.assertEqual(busy.job_dir.path.parent, root)
+        self.ops.on_project_changed(project)  # el mismo proyecto, otra vez
+        self.assertEqual(self.records.read_record(busy.job_dir).state, "running")
+        self.assertEqual(busy.state, "running")
+        self.ps.close()
+        self.assertEqual(self.runner.jobs_root, self.no_project_root)
+        self.assertEqual(self.runner.forbidden_roots, ())
+        self.gates.release_all()
+        _wait_jobs(self.ops, lambda: busy.result() is not None)
+        self.assertEqual(busy.result().state, "succeeded")
+
+    def test_read_only_project_keeps_jobs_in_user_data(self) -> None:
+        """RF-004-18: con el proyecto en solo lectura, la raíz de trabajos es la caché del
+        proyecto en los datos de usuario (``cache/<uid>/jobs``), fuera de la carpeta del
+        proyecto, en la que no se crea nada."""
+        project = self.project(read_only=True)
+        self.ps.attach(project)
+        expected = self.ps.userdata().cache_dir(project.uid) / "jobs"
+        self.assertEqual(self.runner.jobs_root, expected)
+        self.assertTrue(expected.is_relative_to(self.user))
+        self.assertFalse(expected.is_relative_to(project.root))
+        self.assertFalse((project.root / "cache").exists())
+
+
+class SessionShutdownTest(unittest.TestCase):
+    """Cada prueba habilita la extensión, lanza con el lanzador de la sesión el
+    autodiagnóstico de 10 s (proceso aparte) y un trabajo en hilo que espera, y cierra."""
+
+    def setUp(self) -> None:
+        blender_ext.unload()
+        self.folders: list[Path] = []
+        self.addCleanup(self.remove_folders)  # lo último: con todo ya cerrado
+        self.addCleanup(blender_ext.unload)
+        self.sys_path = list(sys.path)
+        blender_ext.enable()
+        self.ops = _module("bl.ops.jobs")
+        self.ps = _module("bl.scene.project_session")
+        self.ui = _module("bl.ui.jobs")
+        self.statusbar = _module("bl.ui.statusbar")
+        self.records = _module("jobs.records")
+        self.sysinfo = _module("core.sysinfo")
+        catalog = _module("jobs.catalog")
+        protocol = _module("jobs.protocol")
+        self.gates = _Gates()
+        self.addCleanup(self.gates.release_all)
+        catalog.register_worker(catalog.WorkerInfo(
+            SESSION_WORKER, "Session test job", policy="auto",
+            estimate_s=lambda _params: 0.1, run=self.gates.run,
+        ))
+        self.addCleanup(catalog.unregister_worker, SESSION_WORKER)
+        self.runner = self.ops.MONITOR.runner
+        self.assertEqual(bpy.ops.geoblender.jobs_run_selftest(mode="SUM_10S"), {"FINISHED"})
+        self.waiting = self.ops.MONITOR.submit(protocol.new_request(
+            SESSION_WORKER, label="Esperando el cierre", owner="jobs"))
+        total = {s.name: s for s in self.runner.snapshots()}[SELFTEST_NAMES["SUM_10S"]]
+        self.folders = [self.runner.jobs_root / total.job_uid, self.waiting.job_dir.path]
+        _wait_jobs(self.ops, lambda: self.snapshot(total.job_uid).interpreter is not None
+                   and self.waiting.message == "Esperando")
+        self.pid = self.records.read_record(self.folders[0]).pid
+        self.assertTrue(self.sysinfo.pid_alive(self.pid))
+
+    def remove_folders(self) -> None:
+        for folder in self.folders:
+            _remove_tree(folder)
+
+    def snapshot(self, job_uid: str) -> object:
+        return {s.job_uid: s for s in self.runner.snapshots()}[job_uid]
+
+    def assertInterruptedWithoutProcess(self, elapsed_s: float) -> None:
+        self.assertLessEqual(elapsed_s, SHUTDOWN_BUDGET_S)
+        self.assertFalse(self.sysinfo.pid_alive(self.pid))
+        for folder in self.folders:
+            record = self.records.read_record(folder)
+            with self.subTest(trabajo=record.label):
+                self.assertEqual((record.state, record.error.code),
+                                 ("interrupted", "job_interrupted"))
+        self.assertTrue(self.runner.closed)
+        self.assertFalse(bpy.app.timers.is_registered(self.ops.tick))
+
+    def test_disable_interrupts_running_jobs(self) -> None:
+        """RF-004-13: desactivar Geoblender con un trabajo en curso en proceso aparte y
+        otro en hilo los deja «Interrumpido» en su registro y sin proceso en ≤ 3 s; quedan
+        retirados el temporizador, el campo de la barra de estado, el manejador
+        ``exit_pre`` y el aviso de cambio de proyecto (huella del principio de la sesión),
+        y el ``sys.path`` de Blender sigue igual."""
+        started = time.monotonic()
+        blender_ext.disable()
+        self.assertInterruptedWithoutProcess(time.monotonic() - started)
+        self.assertIsNone(self.ops.MONITOR.runner)
+        self.assertIsNone(self.ops.session_runner())
+        self.assertNotIn(FIELD, [field.key for field in self.statusbar.fields()])
+        self.assertNotIn(self.ops.on_exit_pre, bpy.app.handlers.exit_pre)
+        self.assertNotIn(self.ops.on_project_changed, self.ps.listeners())
+        self.assertEqual(list(sys.path), self.sys_path)
+        after = state_fingerprint()
+        before = blender_ext.session_baseline()
+        if after != before:
+            self.fail("la huella del estado de Blender cambió:\n"
+                      + "\n".join(fingerprint_diff(before, after)))
+
+    def test_exit_pre_closes_the_runner(self) -> None:
+        """RF-004-13: el manejador ``exit_pre`` (persistente, para que siga tras abrir otro
+        ``.blend``) cierra el lanzador al salir de Blender: los trabajos en curso quedan
+        «Interrumpido» y sin proceso en ≤ 3 s; desactivar después no hace nada más."""
+        handler = self.ops.on_exit_pre
+        self.assertIn(handler, bpy.app.handlers.exit_pre)
+        self.assertTrue(hasattr(handler, "_bpy_persistent"))  # lo pone @persistent
+        started = time.monotonic()
+        handler(None)
+        self.assertInterruptedWithoutProcess(time.monotonic() - started)
+        blender_ext.disable()
+        self.assertNotIn(handler, bpy.app.handlers.exit_pre)
 
 
 if __name__ == "__main__":
