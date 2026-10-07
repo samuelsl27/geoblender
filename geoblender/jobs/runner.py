@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Lanzador de los trabajos en segundo plano: :class:`JobRunner` (spec 004; RF-004-01,
-RF-004-05, RF-004-09 a RF-004-12, RF-004-15; plan 004 §5.3.1, §5.3.3, §5.3.4, §5.4.2 y
-§5.4.5).
+RF-004-03, RF-004-05, RF-004-09 a RF-004-13, RF-004-15; plan 004 §5.3.1, §5.3.3, §5.3.4,
+§5.4.1, §5.4.2 y §5.4.5).
+
+Cada trabajo corre en proceso aparte o en un hilo de Blender según su tipo
+(``policy.choose_executor``, RF-004-03): en hilo solo lo estimado en ≤ 5 s con función
+``run``, con ``inprocess.InProcessExecutor``; el resto, en proceso aparte. Los dos tienen el
+mismo seguimiento, cancelación y registro (al final de este texto, lo propio del hilo).
 
 Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
 
@@ -63,11 +68,22 @@ Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
   salida 4) es la segunda capa. El registro de un trabajo así se cierra «Interrumpido» al
   reabrir el proyecto (``records.mark_interrupted``, T17).
 
+En hilo (``executor = "inprocess"``): la función ``run`` del tipo de trabajo corre en un
+hilo *daemon* (``inprocess.InProcessExecutor``), sin proceso propio (``pid`` vacío), con
+los mismos eventos, que :meth:`JobRunner.poll` recoge de su cola y añade a
+``events.jsonl``, y el mismo estado final según su código (el de la tabla del plan
+§5.3.4). Hay un hueco de hilo (:data:`DEFAULT_MAX_INPROCESS`) aparte de los de proceso;
+la cola es por orden de llegada dentro de cada ejecutor. Un hilo no se puede matar: si
+sigue en marcha al vencer su plazo de gracia, el trabajo queda «Cancelado» (o «Tiempo
+agotado») forzado y el hilo se **abandona**: lo que entregue después se descarta, y su
+hueco se libera cuando acaba. :meth:`JobRunner.shutdown` lo espera como a un proceso
+(hasta 1 s) y después lo abandona: queda «Interrumpido» y no retiene el cierre.
+
 Los hilos de este módulo son *daemon*: nunca retienen el cierre de Blender. Solo el lanzador
 escribe ``state.json``, ``events.jsonl`` y, al final, sus avisos en ``job.log``.
 
-Llegan en otras tareas de la spec: el ejecutor en hilo (T14), el máximo de hilos,
-``reconfigure`` y el entorno del hijo (T15) y los intérpretes ``compute`` y externo (T25).
+Llegan en otras tareas de la spec: el parámetro del máximo de hilos, ``reconfigure`` y el
+entorno del hijo (T15) y los intérpretes ``compute`` y externo (T25).
 """
 
 from __future__ import annotations
@@ -90,6 +106,7 @@ from typing import IO, Any
 
 from ..core.timeutil import format_utc
 from . import catalog, policy, winjob
+from .inprocess import InProcessExecutor
 from .messages import JobError, one_line
 from .paths import JobDir, job_dir
 from .protocol import (
@@ -142,6 +159,11 @@ los del arranque y del 1 de ``Popen.kill``, así ``state.json`` dice quién lo t
 
 DEFAULT_MAX_SUBPROCESS = 2
 """Workers en proceso aparte a la vez (D-2; plan §5.4.2)."""
+DEFAULT_MAX_INPROCESS = 1
+"""Trabajos en hilo a la vez (D-2; plan §5.4.2), contando los hilos abandonados que siguen
+vivos."""
+EXECUTOR_SUBPROCESS = "subprocess"
+EXECUTOR_INPROCESS = "inprocess"
 KILL_WAIT_S = 5.0
 """Lo que se espera a un worker terminado a la fuerza antes de seguir sin él."""
 SHUTDOWN_TIMEOUT_S = 3.0
@@ -251,7 +273,8 @@ class JobHandle:
 
     @property
     def pid(self) -> int | None:
-        """El proceso del worker (``None`` si no llegó a arrancar)."""
+        """El proceso del worker (``None`` si no llegó a arrancar o si corre en un hilo de
+        Blender: no tiene proceso propio)."""
         return self._job.record.pid
 
     def result(self) -> JobResult | None:
@@ -273,11 +296,12 @@ class JobRunner:
     ``package_dir``: la carpeta del paquete ``geoblender`` que cargan los workers (la que
     tiene ``workers/_bootstrap.py``). ``blender_python``: el ``python.exe`` de Blender.
     ``max_subprocess``: workers en proceso aparte a la vez (los demás esperan en la cola, por
-    orden de llegada). ``forbidden_roots``: rutas que ninguna petición puede contener (la
-    raíz del proyecto, RF-004-02). ``clock``: reloj monótono de las duraciones y los plazos.
+    orden de llegada); en hilo, :data:`DEFAULT_MAX_INPROCESS`. ``forbidden_roots``: rutas
+    que ninguna petición puede contener (la raíz del proyecto, RF-004-02). ``clock``: reloj
+    monótono de las duraciones y los plazos.
 
     Sus métodos se llaman desde el hilo de Blender; los hilos lectores solo llenan colas y
-    ``events.jsonl``.
+    ``events.jsonl``, y los de los trabajos en hilo, su cola y su ``job.log``.
     """
 
     def __init__(
@@ -310,11 +334,15 @@ class JobRunner:
         self._blender_python = Path(blender_python)
         self._forbidden_roots: tuple[Path, ...] = tuple(Path(p) for p in forbidden_roots)
         self._max_subprocess = max_subprocess
+        self._max_inprocess = DEFAULT_MAX_INPROCESS
         self._clock = clock
         self._lock = threading.RLock()
         self._jobs: dict[str, _Job] = {}
         self._queue: collections.deque[_Job] = collections.deque()
         self._running: dict[str, _Job] = {}
+        self._abandoned: list[InProcessExecutor] = []
+        """Hilos abandonados (su trabajo ya tiene su final) que ocupan su hueco hasta que
+        acaban."""
         self._to_report: list[_Job] = []
         self._closed = False
 
@@ -364,7 +392,8 @@ class JobRunner:
         on_finish: Callable[[JobResult], object] | None = None,
     ) -> JobHandle:
         """Pone el trabajo en la cola y vuelve sin esperarlo (RNF-004-01); si hay hueco,
-        lo lanza al momento. ``job`` es una carpeta de :meth:`prepare` (con sus entradas ya
+        lo lanza al momento, en proceso aparte o en un hilo según su tipo de trabajo
+        (RF-004-03). ``job`` es una carpeta de :meth:`prepare` (con sus entradas ya
         escritas) o una petición, que se prepara antes (si no vale,
         :class:`~.messages.JobError` y no se crea nada). La petición de la carpeta se lee y
         se valida otra vez: si no se puede leer, :class:`~.messages.JobError`; si ya no vale
@@ -390,12 +419,18 @@ class JobRunner:
                                  forbidden_roots=self._forbidden_roots)
             except JobError as exc:
                 return self._reject(folder, request, exc, on_finish)
+            executor = self._executor(info, request)
             record = read_record(folder)
             fresh = record is None or record.state != "queued"
             if fresh:
-                record = JobRecord.from_request(request,
-                                                executor=self._executor(info, request))
+                record = JobRecord.from_request(request, executor=executor)
+            elif record.executor != executor:
+                # Su tipo de trabajo cambió desde prepare: manda el de ahora.
+                record = dataclasses.replace(record, executor=executor)
+                fresh = True
             item = _Job(request, folder, record, on_finish)
+            if executor == EXECUTOR_INPROCESS:
+                item.run = info.run
             self._jobs[folder.job_uid] = item
             if fresh:
                 self._save(item)
@@ -407,11 +442,12 @@ class JobRunner:
         """Pide parar el trabajo ``job_uid`` (RF-004-09) y dice si la petición tuvo efecto.
 
         En cola: queda «Cancelado» al momento, sin arrancar. En curso: se crea su centinela
-        ``cancel`` (el worker para en su siguiente punto de control) y la cancelación consta
-        en ``state.json``; si al vencer su plazo de gracia sigue vivo, :meth:`poll` lo
-        termina con sus hijos (RF-004-10). ``False``, sin cambiar nada, si ya se pidió, si
-        ya terminó (aunque :meth:`poll` aún no lo haya finalizado) o si no es de este
-        lanzador (spec §8: idempotente)."""
+        ``cancel`` (el worker para en su siguiente punto de control; en hilo, además, se
+        activa su aviso) y la cancelación consta en ``state.json``; si al vencer su plazo de
+        gracia sigue vivo, :meth:`poll` lo termina con sus hijos (RF-004-10) o, en hilo, lo
+        abandona: queda «Cancelado» y lo que entregue se descarta. ``False``, sin cambiar
+        nada, si ya se pidió, si ya terminó (aunque :meth:`poll` aún no lo haya finalizado) o
+        si no es de este lanzador (spec §8: idempotente)."""
         with self._lock:
             item = self._jobs.get(job_uid)
             if item is None or item.record.cancel is not None:
@@ -422,8 +458,7 @@ class JobRunner:
                 self._finish(item, state="cancelled", exit_code=None, duration_s=None,
                              error=_error("job_cancelled", job=item.name, forced=False))
                 return True
-            process = item.process
-            if item.state != "running" or process is None or process.poll() is not None:
+            if item.state != "running" or not item.alive():
                 return False
             self._request_cancel(item, "user")
             return True
@@ -436,7 +471,8 @@ class JobRunner:
         - a los que están en curso se les pide parar (centinela ``cancel``, motivo
           ``shutdown``), se espera hasta :data:`SHUTDOWN_STOP_WAIT_S` a que paren y se
           termina el *Job Object* de los que siguen vivos (el worker y lo que lanzó; la
-          cancelación consta forzada);
+          cancelación consta forzada); un trabajo en hilo que sigue en marcha se abandona
+          (no se puede terminar ni se espera más: es *daemon* y no retiene el cierre);
         - todos quedan «Interrumpido» (``job_interrupted``) en su ``state.json``, con su
           entrada estándar y su *Job Object* cerrados.
 
@@ -462,16 +498,12 @@ class JobRunner:
                              error=_error("job_interrupted", job=item.name))
             running = list(self._running.values())
             for item in running:
-                process = item.process
-                assert process is not None
-                if item.record.cancel is None and process.poll() is None:
+                if item.record.cancel is None and item.alive():
                     self._request_cancel(item, "shutdown")
             stop_wait = min(SHUTDOWN_STOP_WAIT_S, timeout_s)
             _wait_for_exit(running, time.monotonic() + stop_wait)
             for item in running:
-                process = item.process
-                assert process is not None
-                if process.poll() is None and not item.terminated:
+                if item.alive() and not item.terminated:
                     self._force_stop(item, shutdown_wait_s=stop_wait)
             _wait_for_exit(running, deadline, channels=True)
             for item in running:
@@ -535,9 +567,9 @@ class JobRunner:
         return info
 
     def _executor(self, info: catalog.WorkerInfo, request: JobRequest) -> str:
-        """Por ahora, siempre en proceso aparte; el hilo (``policy.choose_executor``) llega
-        con su ejecutor (T14)."""
-        return "subprocess"
+        """``inprocess`` o ``subprocess`` según el tipo de trabajo (RF-004-03, plan
+        §5.4.1)."""
+        return policy.choose_executor(info, request)
 
     def _command(self, folder: JobDir) -> list[str]:
         """La orden del worker del entorno ``blender`` (plan §5.3.3)."""
@@ -549,14 +581,38 @@ class JobRunner:
         ]
 
     def _start_queued(self) -> None:
-        """Arranca de la cola, por orden de llegada, mientras haya hueco."""
-        while self._queue and len(self._running) < self._max_subprocess:
-            self._launch(self._queue.popleft())
+        """Arranca de la cola, por orden de llegada, lo que quepa: cada ejecutor tiene sus
+        huecos (``max_subprocess`` en proceso aparte y :data:`DEFAULT_MAX_INPROCESS` en
+        hilo, contando los hilos abandonados que siguen vivos), y un trabajo que espera su
+        hueco no retiene a los del otro ejecutor."""
+        if not self._queue:
+            return
+        self._abandoned = [executor for executor in self._abandoned if executor.alive]
+        busy = {EXECUTOR_SUBPROCESS: 0, EXECUTOR_INPROCESS: len(self._abandoned)}
+        for running in self._running.values():
+            busy[running.record.executor] += 1
+        limits = {EXECUTOR_SUBPROCESS: self._max_subprocess,
+                  EXECUTOR_INPROCESS: self._max_inprocess}
+        waiting: list[_Job] = []
+        while self._queue:
+            item = self._queue.popleft()
+            executor = item.record.executor
+            if busy[executor] >= limits[executor]:
+                waiting.append(item)
+                continue
+            self._launch(item)
+            if item.folder.job_uid in self._running:
+                busy[executor] += 1
+        self._queue.extend(waiting)
 
     def _launch(self, item: _Job) -> None:
         """Arranca el worker de ``item`` dentro de su *Job Object*: ``state.json`` «En
         curso», nota en ``events.jsonl`` y hilo lector. Si no arranca, lo deja «Fallido» sin
-        proceso; si no entra en su *Job Object*, lo termina y lo deja «Fallido»."""
+        proceso; si no entra en su *Job Object*, lo termina y lo deja «Fallido». Un trabajo
+        en hilo, con :meth:`_launch_thread`."""
+        if item.record.executor == EXECUTOR_INPROCESS:
+            self._launch_thread(item)
+            return
         request = item.request
         if request.environment != INTERPRETER_KIND:
             # El motor de cálculo y su intérprete llegan con T25.
@@ -601,6 +657,34 @@ class JobRunner:
         item.reader = _Reader(item, self._clock)
         item.reader.start()
 
+    def _launch_thread(self, item: _Job) -> None:
+        """Arranca el trabajo de ``item`` en un hilo *daemon* de Blender
+        (``InProcessExecutor``): ``state.json`` «En curso» sin proceso propio y nota en
+        ``events.jsonl``. Si no se puede arrancar el hilo, lo deja «Fallido»."""
+        assert item.run is not None
+        folder = item.folder
+        executor = InProcessExecutor(item.request, folder, item.run, clock=self._clock)
+        started_wall = _now()
+        item.started_at = self._clock()
+        item.thread = executor
+        item.record = dataclasses.replace(
+            item.record, state="running", started_at=format_utc(started_wall), pid=None,
+            interpreter=InterpreterInfo(kind=INTERPRETER_KIND),
+        )
+        item.state = "running"
+        self._running[folder.job_uid] = item
+        self._save(item)
+        item.events_log.note("launched", executor=EXECUTOR_INPROCESS,
+                             interpreter=INTERPRETER_KIND, thread=executor.name)
+        try:
+            executor.start()
+        except RuntimeError as exc:  # el sistema no da más hilos
+            item.thread = None
+            self._finish(item, state="failed", exit_code=None, duration_s=None,
+                         error=_error("interpreter_failed", path=str(self._blender_python),
+                                      detail=f"no se pudo arrancar el hilo del trabajo "
+                                             f"({exc})"))
+
     def _abort_uncontained(self, item: _Job, exc: OSError) -> None:
         """El worker no entró en su *Job Object*: sin él no se podría terminar con sus
         hijos, así que se termina al momento y el trabajo queda «Fallido»
@@ -625,13 +709,18 @@ class JobRunner:
 
     def _request_cancel(self, item: _Job, reason: str, **details: JsonValue) -> None:
         """Pide parar un trabajo en curso: centinela ``cancel`` (si no se puede crear, el
-        plazo de gracia lo terminará igual), cancelación en ``state.json`` y nota en
-        ``events.jsonl`` (con ``details``). Desde ahora corre su plazo de gracia."""
+        plazo de gracia lo terminará igual) y, en hilo, su aviso; cancelación en
+        ``state.json`` y nota en ``events.jsonl`` (con ``details``), después de los eventos
+        que ya envió. Desde ahora corre su plazo de gracia."""
+        if item.thread is not None:
+            self._pump(item)
         try:
             item.folder.cancel_file.touch(exist_ok=True)
         except OSError:
             LOGGER.exception("No se pudo crear el centinela de cancelación del trabajo %s",
                              item.folder.job_uid)
+        if item.thread is not None:
+            item.thread.cancel()
         item.cancel_at = self._clock()
         item.record = dataclasses.replace(item.record, cancel=_cancel_info(reason))
         self._save(item)
@@ -664,17 +753,29 @@ class JobRunner:
         """Termina el *Job Object* de un trabajo al que se pidió parar y sigue vivo (el
         worker y sus hijos): la cancelación queda forzada en ``state.json`` y la nota
         ``terminated`` dice cuánto se esperó (``grace_s``, al vencer el plazo de gracia,
-        RF-004-10; ``shutdown_wait_s``, al cerrar el lanzador, RF-004-13)."""
+        RF-004-10; ``shutdown_wait_s``, al cerrar el lanzador, RF-004-13). Un hilo no se
+        puede terminar: se abandona (lo que envíe desde ahora se descarta y su hueco sigue
+        ocupado hasta que acabe), con la nota ``abandoned``; el trabajo se finaliza en
+        cuanto se recogen los eventos que ya envió."""
         cancel = item.record.cancel
         assert cancel is not None
         item.terminated = True
         item.shutdown_wait_s = wait.get("shutdown_wait_s")
-        self._terminate(item)
+        thread = item.thread
+        if thread is not None:
+            thread.abandon()
+            self._abandoned.append(thread)
+            self._pump(item)
+        else:
+            self._terminate(item)
         item.record = dataclasses.replace(item.record,
                                           cancel=dataclasses.replace(cancel, forced=True))
         self._save(item)
-        item.events_log.note("terminated", reason=cancel.reason, **wait,
-                             exit_code=EXIT_TERMINATED)
+        if thread is not None:
+            item.events_log.note("abandoned", reason=cancel.reason, **wait)
+        else:
+            item.events_log.note("terminated", reason=cancel.reason, **wait,
+                                 exit_code=EXIT_TERMINATED)
 
     def _terminate(self, item: _Job) -> None:
         """Termina el *Job Object* del trabajo: el worker y todos sus descendientes. Sin
@@ -694,6 +795,8 @@ class JobRunner:
                 pass
 
     def _poll_job(self, item: _Job) -> JobUpdate | None:
+        if item.thread is not None:
+            return self._poll_thread(item)
         reader = item.reader
         process = item.process
         assert reader is not None and process is not None
@@ -717,11 +820,58 @@ class JobRunner:
             return None
         return item.update(final=False)
 
+    def _poll_thread(self, item: _Job) -> JobUpdate | None:
+        """El sondeo de un trabajo en hilo: recoge sus eventos y, si acabó, lo finaliza con
+        su código; si no, aplica su tiempo máximo y su plazo de gracia, y si lo abandona al
+        vencer este, lo finaliza sin código («Cancelado» o «Tiempo agotado», forzado)."""
+        thread = item.thread
+        assert thread is not None
+        done = thread.finished  # antes de vaciar: lo que envió antes de acabar ya está
+        self._pump(item)
+        if done:
+            self._finalize_thread(item)
+            return None
+        self._enforce_timeout(item)
+        self._enforce_grace(item)
+        if item.terminated:
+            self._finalize(item, None, channel_closed=True)
+            return None
+        if not item.pending_events:
+            return None
+        return item.update(final=False)
+
+    def _pump(self, item: _Job) -> None:
+        """Los eventos que envió un trabajo en hilo: a ``events.jsonl``, en orden, y al
+        trabajo (para el siguiente :class:`JobUpdate`)."""
+        thread = item.thread
+        assert thread is not None
+        events = thread.drain()
+        for event in events:
+            item.events_log.event(event)
+        item.pending_events.extend(self._take(item, events))
+
+    def _finalize_thread(self, item: _Job) -> None:
+        """Finaliza un trabajo en hilo que acabó, con su código y la hora en que acabó."""
+        thread = item.thread
+        assert thread is not None and thread.ended_at is not None
+        assert thread.ended_wall is not None
+        item.mark_exit(thread.ended_at, thread.ended_wall)
+        self._finalize(item, thread.exit_code, channel_closed=True)
+
     def _close_at_shutdown(self, item: _Job) -> None:
         """Finaliza en el cierre un trabajo que estaba en curso, con los eventos que hayan
         llegado (plan §5.3.4; «Interrumpido» si se le pidió parar por el cierre). Si su
         proceso no terminó a tiempo, queda sin código de salida: al finalizar se cierra su
-        *Job Object*, que lo termina, y su entrada estándar."""
+        *Job Object*, que lo termina, y su entrada estándar. Un hilo que sigue en marcha
+        (ya abandonado) también queda sin código."""
+        if item.thread is not None:
+            done = item.thread.finished
+            self._pump(item)
+            if done:
+                self._finalize_thread(item)
+            else:
+                self._finalize(item, None, channel_closed=True)
+            return
         reader = item.reader
         process = item.process
         assert reader is not None and process is not None
@@ -860,7 +1010,15 @@ class JobRunner:
                 reason += f" de {_seconds_text(item.request.timeout_s)} s"
             lines.append(f"{LOG_PREFIX} se pidió cancelar el trabajo {reason} "
                          f"({cancel.requested_at})")
-            if cancel.forced and item.shutdown_wait_s is not None:
+            if cancel.forced and item.thread is not None:
+                waited = (f"al cerrarse Geoblender, el trabajo en hilo seguía en marcha tras "
+                          f"esperarlo {_seconds_text(item.shutdown_wait_s)} s"
+                          if item.shutdown_wait_s is not None else
+                          f"el trabajo en hilo seguía en marcha al vencer su plazo de gracia "
+                          f"de {_seconds_text(item.request.grace_s)} s")
+                lines.append(f"{LOG_PREFIX} {waited}: un hilo no se puede terminar; se deja "
+                             "acabar solo y lo que entregue se descarta")
+            elif cancel.forced and item.shutdown_wait_s is not None:
                 lines.append(
                     f"{LOG_PREFIX} al cerrarse Geoblender, el worker seguía vivo tras "
                     f"esperarlo {_seconds_text(item.shutdown_wait_s)} s: se terminó con sus "
@@ -873,7 +1031,10 @@ class JobRunner:
                     f"hijos (código {EXIT_TERMINATED})"
                 )
         seconds = "" if duration_s is None else f" en {duration_s:.2f} s".replace(".", ",")
-        code = "sin proceso" if exit_code is None else f"código de salida {exit_code}"
+        if item.thread is not None:
+            code = "en hilo, " + ("sin acabar" if exit_code is None else f"código {exit_code}")
+        else:
+            code = "sin proceso" if exit_code is None else f"código de salida {exit_code}"
         final = f"{LOG_PREFIX} el trabajo termina «{_STATE_TEXT[item.state]}» ({code}){seconds}"
         if item.record.error is not None:
             final += f": {item.record.error.text}"
@@ -943,6 +1104,9 @@ class _Job:
         self.frac = 0.0
         self.message = ""
         self.process: subprocess.Popen[bytes] | None = None
+        self.run: catalog.WorkerRun | None = None
+        """La función del tipo de trabajo, si va en hilo."""
+        self.thread: InProcessExecutor | None = None
         self.job_object: winjob.JobObject | None = None
         self.cancel_at: float | None = None
         self.terminated = False
@@ -968,6 +1132,12 @@ class _Job:
         """El nombre del trabajo en los mensajes."""
         label = self.request.label
         return label if isinstance(label, str) and label.strip() else self.folder.job_uid
+
+    def alive(self) -> bool:
+        """Si su proceso sigue vivo o, en hilo, si su trabajo aún no ha acabado."""
+        if self.thread is not None:
+            return not self.thread.finished
+        return self.process is not None and self.process.poll() is None
 
     def mark_exit(self, clock_now: float, wall_now: dt.datetime) -> None:
         """Apunta cuándo terminó el proceso (la primera vez que se ve)."""
@@ -1153,8 +1323,13 @@ def _error(code: str, **values: object) -> ErrorInfo:
 
 def _wait_for_exit(items: Iterable[_Job], until: float, *, channels: bool = False) -> None:
     """Espera, como mucho hasta ``until`` (``time.monotonic``), a que terminen los procesos
-    de ``items`` y, con ``channels``, a que sus hilos lectores vean el canal cerrado."""
+    de ``items`` y, con ``channels``, a que sus hilos lectores vean el canal cerrado. A un
+    trabajo en hilo se le espera a que acabe, salvo si ya se abandonó."""
     for item in items:
+        if item.thread is not None:
+            if not item.terminated:
+                item.thread.wait(max(0.0, until - time.monotonic()))
+            continue
         process = item.process
         assert process is not None
         try:
