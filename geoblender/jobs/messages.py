@@ -15,6 +15,9 @@ inglés, los mismos en los dos (constitución, principio 10).
 - :class:`JobError`: el error de un trabajo para el usuario, con código, ``msgid``,
   valores (JSON) y texto.
 
+Además de los del §8, ``source_changed`` (plan §5.3.1): la fuente de una entrada cambió
+mientras se copiaba a la carpeta del trabajo.
+
 Los errores propios de cada cálculo (``engine_missing_orientation``…) no están aquí:
 llegan del worker con su código, su ``msgid`` y su texto en español.
 """
@@ -171,6 +174,14 @@ _CATALOG: tuple[Message, ...] = (
     ),
     Message("output_missing", _OUTPUT_MSGID, _OUTPUT_ES),
     Message("output_hash_mismatch", _OUTPUT_MSGID, _OUTPUT_ES),
+    # Del plan 004 §5.3.1 (copia verificada de entradas, ``paths.JobDir.copy_input``).
+    Message(
+        "source_changed",
+        "File {path} changed while it was being copied for job «{job}»: it has not been "
+        "used; try again when nobody is modifying it.",
+        "El fichero {path} cambió mientras se copiaba para el trabajo «{job}»: no se ha "
+        "usado; vuelva a intentarlo cuando nadie lo esté modificando.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})

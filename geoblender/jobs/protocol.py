@@ -41,8 +41,6 @@ import math
 import numbers
 import os
 import re
-import secrets
-import threading
 import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -53,13 +51,13 @@ from ..core.timeutil import format_utc, parse_utc
 from ..core.version import geoblender_version
 from .messages import JobError
 
+# La estructura de la carpeta y el identificador son de ``paths``; también se leen aquí.
+from .paths import INPUTS_DIR, JOB_UID_PATTERN, OUTPUTS_DIR, REQUEST_FILE, new_job_uid
+
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type Environment = Literal["blender", "compute"]
 
 REQUEST_SCHEMA = "geoblender.job/1"
-REQUEST_FILE = "request.json"
-INPUTS_DIR = "in"
-"""Carpeta de las entradas dentro de la del trabajo: toda entrada está aquí dentro."""
 
 ENVIRONMENTS: tuple[str, ...] = ("blender", "compute")
 DEFAULT_TIMEOUT_S = 3600.0
@@ -69,16 +67,12 @@ DEFAULT_GRACE_S = 5.0
 MIN_GRACE_S = 1.0
 MAX_GRACE_S = 60.0
 
-JOB_UID_PATTERN = re.compile(r"[0-9]{8}_[0-9]{6}_[0-9a-f]{6}")
-"""``AAAAMMDD_HHMMSS_xxxxxx``: hora UTC y 6 cifras hexadecimales al azar (con ``fullmatch``)."""
 WORKER_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 """Nombre de un tipo de trabajo: ``<código>_<acción>`` en minúsculas, igual al módulo de
 ``workers/`` que lo ejecuta (con ``fullmatch``): nunca un punto ni una barra."""
 
 MAX_JSON_DEPTH = 64
 
-OUTPUTS_DIR = "out"
-"""Carpeta de los resultados dentro de la del trabajo: todo resultado está aquí dentro."""
 EVENT_VERSION = 1
 EVENT_TYPES: tuple[str, ...] = ("start", "progress", "log", "result", "error", "cancelled")
 LOG_LEVELS: tuple[str, ...] = ("debug", "info", "warning", "error")
@@ -239,7 +233,7 @@ def new_request(
     if not isinstance(copied_inputs, dict):
         raise _invalid(job, "inputs no es un objeto JSON de nombre a ruta")
     return JobRequest(
-        job_uid=_new_job_uid(moment),
+        job_uid=new_job_uid(moment),
         worker=worker,
         label=label,
         owner=owner,
@@ -921,36 +915,6 @@ def plain_json(value: object, where: str = "valor", *, depth: int = 0) -> JsonVa
 
 
 # --- Ayudas -----------------------------------------------------------------------------
-
-
-class _UidIssuer:
-    """Identificadores ``AAAAMMDD_HHMMSS_xxxxxx`` sin repetir dentro de este proceso: 6
-    cifras hexadecimales al azar por segundo, y otras si ya salieron en ese segundo."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._stamp = ""
-        self._issued: set[str] = set()
-
-    def new(self, moment: dt.datetime) -> str:
-        stamp = f"{moment.astimezone(dt.UTC):%Y%m%d_%H%M%S}"
-        with self._lock:
-            if stamp != self._stamp:
-                self._stamp = stamp
-                self._issued.clear()
-            while True:
-                uid = f"{stamp}_{secrets.token_hex(3)}"
-                if uid not in self._issued:
-                    self._issued.add(uid)
-                    return uid
-
-
-_UIDS = _UidIssuer()
-
-
-def _new_job_uid(moment: dt.datetime) -> str:
-    """``AAAAMMDD_HHMMSS_xxxxxx`` de ``moment`` en UTC, sin repetir en este proceso."""
-    return _UIDS.new(moment)
 
 
 def folder_path(job_dir: JobFolder) -> Path:
