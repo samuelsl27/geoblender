@@ -4,8 +4,9 @@ RF-004-07; plan 004 §5.3.1 y §5.4.4).
 
 ``JobRunner.snapshots()`` devuelve, por orden de llegada, una ``JobSnapshot`` inmutable de
 cada trabajo (nombre, tipo, estado, ejecutor, avance, último mensaje, duración, intérprete,
-error y si se pidió cancelarlo), y ``JobRunner.active_count()`` cuántos están en cola o en
-curso: es lo que dibuja la barra de estado (``bl/ops/jobs.py``, ``JobMonitor``).
+error, si se pidió cancelarlo, su registro y si ya se incorporó; T20, RF-004-08), y
+``JobRunner.active_count()`` cuántos están en cola o en curso: es lo que dibujan la barra de
+estado (``bl/ops/jobs.py``, ``JobMonitor``) y la lista de trabajos (``bl/ui/jobs.py``).
 
 Dos trabajos en hilo de un tipo de prueba que espera a que la prueba lo suelte, con un
 solo hueco de hilo (el segundo espera en la cola) y un reloj del lanzador que mueve la
@@ -144,6 +145,21 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(self.runner.active_count(), 0)
         self.assertEqual((before.state, before.frac), ("running", 0.25))
         self.assertIn(before.state, records.ACTIVE_STATES)
+
+    def test_log_file_and_ingested(self) -> None:
+        """RF-004-08: la foto lleva el registro del trabajo (el ``job.log`` de su carpeta, el
+        que abre el botón «Registro» de la lista) y si un módulo ya incorporó sus resultados
+        (entonces la lista no ofrece descartarlo); la foto anterior no cambia."""
+        first = self.submit("Primero")
+        self.gates["Primero"].set()
+        self.poll_until(lambda: first.result() is not None)
+        done = self.by_name()["Primero"]
+        self.assertEqual(done.log_file, first.job_dir.log_file)
+        self.assertTrue(done.log_file.is_file())
+        self.assertFalse(done.ingested)
+        self.runner.mark_ingested(first.job_uid)
+        self.assertTrue(self.by_name()["Primero"].ingested)
+        self.assertFalse(done.ingested)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ idioma (spec 003). Se registra el último (plan 001 §5.3, contrato 2; plan 003 
 Orden de :func:`register` (CW §5; plan 003 §5.4, 1), con ``bl/props`` y ``bl/ops`` ya
 registrados: iconos propios (``icons``: una colección de ``bpy.utils.previews``) → idioma (``i18n``: el catálogo de comandos en ``core.i18n`` y el idioma de las
 preferencias; al desregistrar, el cambio de idioma pendiente) → clases propias de la interfaz (los menús y la pestaña «Proyecto» de la
-spec 002) → catálogo (``registry``: menús generados por ``menus``, provisionales y
+spec 002, la lista de trabajos de la 004) → catálogo (``registry``: menús generados por ``menus``, provisionales y
 textos) → sustitución de ``draw_left`` de la barra superior (``topbar``, con el añadido a
 ``TOPBAR_MT_editor_menus`` que lleva «Geoblender ▾» a la búsqueda F3) → fila de
 acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → menú del tipo
@@ -55,14 +55,15 @@ from . import (
 from . import help as help_pages
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
-# contrato 2): los menús y la pestaña «Proyecto» de core (spec 002) y los paneles reales de
-# la interfaz (spec 003).
+# contrato 2): los menús y la pestaña «Proyecto» de core (spec 002), los paneles reales de
+# la interfaz (spec 003) y la lista de trabajos (spec 004).
 classes: tuple[type, ...] = (
     *core_menus.classes,
     *core_panel.classes,
     *quick_access.classes,
     *context.classes,
     *layouts.classes,
+    *jobs.classes,
 )
 
 _UNDO: list[Callable[[], None]] = []

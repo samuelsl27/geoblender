@@ -260,7 +260,10 @@ class JobSnapshot:
     en curso, lo que lleva desde que arrancó; al acabar, su duración; ``None`` si no llegó a
     arrancar. ``interpreter``: el que lo ejecuta (``None`` en la cola). ``error``: el del §8
     si no terminó bien. ``cancel_requested``: si se pidió pararlo (el usuario, su tiempo
-    máximo o el cierre)."""
+    máximo o el cierre). ``log_file``: su ``job.log`` (puede no existir aún), el que abre la
+    lista de trabajos (RF-004-08). ``ingested``: si el módulo dueño ya incorporó sus
+    resultados (:meth:`JobRunner.mark_ingested`); la lista solo ofrece descartar los que
+    no."""
 
     job_uid: str
     name: str
@@ -273,6 +276,8 @@ class JobSnapshot:
     interpreter: InterpreterInfo | None
     error: ErrorInfo | None
     cancel_requested: bool
+    log_file: Path | None = None
+    ingested: bool = False
 
     @property
     def active(self) -> bool:
@@ -1306,6 +1311,7 @@ class _Job:
             state=self.state, executor=record.executor, frac=self.frac,
             message=self.message, duration_s=duration, interpreter=record.interpreter,
             error=record.error, cancel_requested=record.cancel is not None,
+            log_file=self.folder.log_file, ingested=record.ingested_at is not None,
         )
 
     def release_job_object(self) -> None:

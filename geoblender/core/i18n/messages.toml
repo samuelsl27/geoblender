@@ -1056,3 +1056,36 @@ es = "Interrumpido"
 
 ["{percent}%"]
 es = "{percent} %"
+
+# Operadores y lista de los trabajos en segundo plano (spec 004, T20; RF-004-08, RF-004-09;
+# plan 004 §5.3.2 y §5.5).
+
+["No jobs are running"]
+es = "No hay trabajos en curso"
+
+["The job list needs a Blender window"]
+es = "La lista de trabajos necesita una ventana de Blender"
+
+["There is no job «{job}»"]
+es = "No hay ningún trabajo «{job}»"
+
+["The job «{job}» has already finished or is already being cancelled"]
+es = "El trabajo «{job}» ya ha terminado o ya se está cancelando"
+
+["Cancelling the job «{job}»"]
+es = "Cancelando el trabajo «{job}»"
+
+["Cancelling"]
+es = "Cancelando"
+
+["There are no background jobs"]
+es = "No hay trabajos en segundo plano"
+
+["Jobs folder: {size} MB"]
+es = "Carpeta de los trabajos: {size} MB"
+
+["Job"]
+es = "Trabajo"
+
+["Identifier of the job to cancel (empty: the oldest running one)"]
+es = "Identificador del trabajo que se cancela (vacío: el más antiguo en curso)"

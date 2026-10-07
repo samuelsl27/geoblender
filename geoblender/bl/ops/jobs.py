@@ -26,7 +26,25 @@ pruebas llaman a :func:`tick` a mano.
 :meth:`JobMonitor.attach` (lo crea la tarea T22 con la raíz de trabajos del proyecto).
 :func:`register` instala los textos de los trabajos en ``core.i18n`` y registra los tipos de
 trabajo de la 004 (``jobs.catalog.register_builtin_workers``); :func:`unregister` retira el
-temporizador y los quita. Los operadores ``geoblender.jobs_*`` llegan con T20 y T21.
+temporizador y los quita.
+
+Operadores reales, con el ``bl_idname`` del catálogo de la 003 (Herramientas ▸ Trabajos),
+que así deja de generar sus provisionales; funcionan en los dos modos (sus botones están en
+la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
+
+- ``geoblender.jobs_show_jobs`` (RF-004-08): mide la carpeta de los trabajos y abre la lista
+  de trabajos (``GEOBLENDER_PT_jobs_list``, ``bl/ui/jobs.py``) con ``wm.call_panel``. Sin
+  ventana, su ``poll`` falla y lo dice.
+- ``geoblender.jobs_cancel`` (RF-004-09): cancela el trabajo ``job_uid`` o, vacío (el botón
+  de la barra de estado), el más antiguo en curso (si todos esperan, el más antiguo en la
+  cola: el que enseña la barra). Uno en cola queda «Cancelado» sin arrancar; uno en curso
+  recibe la petición de parar (``JobRunner.cancel``). Cancelar otra vez, uno que ya terminó
+  o uno que no existe no hace nada más y avisa (spec §8). Sin trabajos activos, su ``poll``
+  falla con «No hay trabajos en curso».
+
+Los dos sin ``UNDO``: no cambian la escena. Los de T21 (``jobs_run_selftest``,
+``jobs_clean``) y la fase 4 (``jobs_setup_runtime``, ``jobs_set_external_python``) siguen
+provisionales hasta entonces.
 """
 
 from __future__ import annotations
@@ -34,26 +52,29 @@ from __future__ import annotations
 import logging
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import bpy
+from bpy.props import StringProperty
 
 from ...core import i18n
+from ...core.i18n import tr
 from ...jobs import catalog, messages
 from ...jobs.paths import JobDir
 from ...jobs.protocol import JobRequest
 from ...jobs.runner import JobHandle, JobResult, JobRunner, JobSnapshot
+from ..ui import jobs as job_list
 from ..ui import statusbar
 
 TICK_S = 0.25
 """Cada cuánto sondea el temporizador (plan §5.4.4)."""
 NOTICE_S = 10.0
 """Lo que dura en la barra de estado el aviso de un trabajo que acabó (RF-004-07)."""
+TRANSLATION_CONTEXT = "Geoblender"
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
-
-classes: tuple[type, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +94,7 @@ class StatusView:
     @property
     def percent(self) -> int:
         """El avance mostrado, en % entero hacia abajo (0–100)."""
-        return min(100, max(0, math.floor(self.frac * 100 + 1e-9)))
+        return job_list.percent_of(self.frac)
 
     @property
     def visible(self) -> bool:
@@ -139,6 +160,15 @@ class JobMonitor:
         """Lo que muestra ahora la barra de estado (lo calcula :meth:`tick`)."""
         return self._view
 
+    def shown_frac(self, snapshot: JobSnapshot) -> float:
+        """El avance que se muestra de ``snapshot`` (0–1): en curso, el de la barra de
+        estado, que nunca retrocede (RF-004-06); si no, el suyo, acotado. Lo usa la lista
+        de trabajos."""
+        frac = _clamp(snapshot.frac)
+        if snapshot.state == "running":
+            return max(frac, self._shown.get(snapshot.job_uid, 0.0))
+        return frac
+
     def tick(self) -> float | None:
         """Un sondeo (plan §5.4.4): el lanzador, lo que se muestra y el redibujo de la
         barra de estado. Devuelve :data:`TICK_S` mientras haya algo que mostrar; si no,
@@ -177,18 +207,28 @@ class JobMonitor:
         if notice is not None and now >= self._notice_until:
             notice = None
         active = [snapshot for snapshot in snapshots if snapshot.active]
-        running = [snapshot for snapshot in active if snapshot.state == "running"]
         shown: dict[str, float] = {}
-        for snapshot in running:
-            previous = self._shown.get(snapshot.job_uid, 0.0)
-            shown[snapshot.job_uid] = max(previous, _clamp(snapshot.frac))
+        for snapshot in active:
+            if snapshot.state == "running":
+                previous = self._shown.get(snapshot.job_uid, 0.0)
+                shown[snapshot.job_uid] = max(previous, _clamp(snapshot.frac))
         self._shown = shown
-        if running:
-            current: JobSnapshot | None = running[0]
-            frac = shown[running[0].job_uid]
-        else:
-            current, frac = (active[0] if active else None), 0.0
+        current = oldest_active(active)
+        frac = shown.get(current.job_uid, 0.0) if current is not None else 0.0
         return StatusView(active=len(active), current=current, frac=frac, notice=notice)
+
+
+def oldest_active(snapshots: Iterable[JobSnapshot]) -> JobSnapshot | None:
+    """El más antiguo en curso de ``snapshots`` (por orden de llegada) o, si todos esperan,
+    el más antiguo en la cola; ``None`` sin activos. Es el que enseña la barra de estado y
+    el que cancela su botón."""
+    queued: JobSnapshot | None = None
+    for snapshot in snapshots:
+        if snapshot.state == "running":
+            return snapshot
+        if queued is None and snapshot.active:
+            queued = snapshot
+    return queued
 
 
 def _clamp(frac: float) -> float:
@@ -210,6 +250,87 @@ def tick() -> float | None:
 def _retire() -> None:
     if bpy.app.timers.is_registered(tick):
         bpy.app.timers.unregister(tick)
+
+
+# Operadores ---------------------------------------------------------------------------
+
+
+def _call_panel(name: str) -> set[str]:
+    """Abre la ventana emergente ``name`` con ``wm.call_panel``; sigue abierta aunque el
+    ratón salga de ella (``keep_open``), hasta pulsar fuera o Esc."""
+    return bpy.ops.wm.call_panel(name=name, keep_open=True)
+
+
+class GEOBLENDER_OT_jobs_show_jobs(bpy.types.Operator):
+    """Running and finished jobs with their progress"""
+
+    bl_idname = "geoblender.jobs_show_jobs"
+    bl_label = "Background jobs"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        if getattr(context, "window", None) is None:
+            cls.poll_message_set(tr("The job list needs a Blender window"))
+            return False
+        return True
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        return self.execute(context)
+
+    def execute(self, context: Any) -> set[str]:
+        runner = MONITOR.runner
+        job_list.measure_folder(runner.jobs_root if runner is not None else None)
+        return _call_panel(job_list.PANEL)
+
+
+class GEOBLENDER_OT_jobs_cancel(bpy.types.Operator):
+    """Cancel the job that is running"""
+
+    bl_idname = "geoblender.jobs_cancel"
+    bl_label = "Cancel the active job"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    job_uid: StringProperty(  # type: ignore[valid-type]
+        name="Job",
+        description="Identifier of the job to cancel (empty: the oldest running one)",
+        default="",
+        options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        runner = MONITOR.runner
+        if runner is None or runner.active_count() == 0:
+            cls.poll_message_set(tr("No jobs are running"))
+            return False
+        return True
+
+    def execute(self, context: Any) -> set[str]:
+        runner = MONITOR.runner
+        snapshots = runner.snapshots() if runner is not None else []
+        if self.job_uid:
+            target = next((s for s in snapshots if s.job_uid == self.job_uid), None)
+            if target is None:
+                self.report({"WARNING"}, tr("There is no job «{job}»", job=self.job_uid))
+                return {"CANCELLED"}
+        else:
+            target = oldest_active(snapshots)
+            if target is None:
+                self.report({"WARNING"}, tr("No jobs are running"))
+                return {"CANCELLED"}
+        if runner is None or not runner.cancel(target.job_uid):
+            self.report({"WARNING"}, tr(
+                "The job «{job}» has already finished or is already being cancelled",
+                job=target.name))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Cancelling the job «{job}»", job=target.name))
+        return {"FINISHED"}
+
+
+classes: tuple[type, ...] = (GEOBLENDER_OT_jobs_show_jobs, GEOBLENDER_OT_jobs_cancel)
 
 
 def register() -> None:

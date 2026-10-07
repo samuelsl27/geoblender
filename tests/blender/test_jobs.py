@@ -34,12 +34,29 @@ autodiagnóstico, en hilo) y otro que falla con una excepción no capturada, en 
 con la raíz en una carpeta temporal; el reloj del monitor lo adelanta la prueba para ver
 caducar el aviso sin esperar 10 s.
 
+T20 — los operadores reales ``geoblender.jobs_show_jobs`` y ``geoblender.jobs_cancel``
+(``bl/ops/jobs.py``), con el ``bl_idname`` del catálogo de la 003 (que deja de generar sus
+provisionales) en Herramientas ▸ Trabajos (``GEOBLENDER_MT_jobs_menu``), y la lista de
+trabajos ``GEOBLENDER_PT_jobs_list`` (``bl/ui/jobs.py``):
+
+- RF-004-08: la lista, una fila por trabajo con su nombre, estado, avance, duración,
+  intérprete y último mensaje, y los botones Cancelar, Registro (``wm.path_open`` sobre su
+  ``job.log``) y Descartar (``geoblender.jobs_clean``, de T21);
+- RF-004-09: ``jobs_cancel`` sin ``job_uid`` cancela el más antiguo en curso; con él, ese
+  (uno en cola, sin arrancar); otra vez, uno terminado o uno que no existe, nada más que un
+  aviso; sin trabajos activos su ``poll`` falla y dice por qué.
+
+Tres trabajos reales en hilo de un tipo de prueba que espera a que lo suelten (uno en curso
+y dos en cola) y, para cada estado, un lanzador simulado; ``wm.call_panel`` se sustituye
+(en ``blender -b`` no hay dónde abrir una ventana emergente).
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
 import importlib
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -542,6 +559,7 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.snapshots_now: list[object] = []
         self.finished_now: list[str] = []
+        self.jobs_root: Path | None = None
 
     def poll(self) -> list[object]:
         finished, self.finished_now = self.finished_now, []
@@ -717,6 +735,578 @@ class JobMonitorRegistrationTest(unittest.TestCase):
         if after != before:
             self.fail("la huella del estado de Blender cambió:\n"
                       + "\n".join(fingerprint_diff(before, after)))
+
+
+# --- T20: operadores de los trabajos y lista de trabajos --------------------------------
+
+SHOW_JOBS = "geoblender.jobs_show_jobs"
+CANCEL_JOB = "geoblender.jobs_cancel"
+CLEAN_JOB = "geoblender.jobs_clean"
+PATH_OPEN = "wm.path_open"
+JOBS_MENU = "GEOBLENDER_MT_jobs_menu"
+JOBS_PANEL = "GEOBLENDER_PT_jobs_list"
+REAL_OPERATORS = {SHOW_JOBS: "GEOBLENDER_OT_jobs_show_jobs",
+                  CANCEL_JOB: "GEOBLENDER_OT_jobs_cancel"}
+CATALOG_LABELS = {SHOW_JOBS: "Background jobs", CANCEL_JOB: "Cancel the active job"}
+GATED_WORKER = "gbtest_gated"
+GATE_POLL_S = 0.02
+WAIT_S = 10.0
+NO_JOBS = "No hay trabajos en curso"
+NO_VALUE = "—"
+
+
+class _Gates:
+    """El cálculo de ``gbtest_gated``: avisa del 30 % y espera a que la prueba suelte su
+    trabajo (por su nombre), atendiendo la cancelación."""
+
+    def __init__(self) -> None:
+        self.events: dict[str, threading.Event] = {}
+
+    def __getitem__(self, label: str) -> threading.Event:
+        return self.events.setdefault(label, threading.Event())
+
+    def release_all(self) -> None:
+        for event in list(self.events.values()):
+            event.set()
+
+    def run(self, ctx: object) -> dict[str, object]:
+        ctx.progress(0.3, "Esperando")
+        while not self[ctx.request.label].wait(GATE_POLL_S):
+            ctx.check_cancelled()
+        return {"ok": True}
+
+
+class _JobRow:
+    """Lo que dibuja la lista para un trabajo: su nombre (con el icono de su estado), su
+    estado, la barra de avance, la duración, los botones y la línea de detalle (intérprete
+    y último mensaje)."""
+
+    def __init__(self, items: list[object]) -> None:
+        head = items[0]
+        self.name, self.icon = head.text, head.icon
+        labels = [item for item in items[1:] if item.kind == "label"]
+        self.state = labels[0].text
+        self.duration = labels[1].text
+        self.details = labels[2].text if len(labels) > 2 else ""
+        self.details_active = labels[2].active if len(labels) > 2 else None
+        bar = [item for item in items if item.kind == "progress"][0]
+        self.bar, self.factor = bar.text, bar.options.get("factor")
+        self.buttons = {item.target: item for item in items if item.kind == "operator"}
+
+
+def _panel(ui: ModuleType) -> FakeLayout:
+    """La lista de trabajos (``GEOBLENDER_PT_jobs_list``) dibujada."""
+    return draw(ui.GEOBLENDER_PT_jobs_list, bpy.context)
+
+
+def _rows(layout: FakeLayout, names: list[str]) -> dict[str, _JobRow]:
+    """Las filas de los trabajos ``names``: de la etiqueta con su nombre a la del
+    siguiente."""
+    starts = [index for index, item in enumerate(layout.items)
+              if item.kind == "label" and item.text in names]
+    rows: dict[str, _JobRow] = {}
+    for number, start in enumerate(starts):
+        end = starts[number + 1] if number + 1 < len(starts) else len(layout.items)
+        row = _JobRow(layout.items[start:end])
+        rows[row.name] = row
+    return rows
+
+
+class JobOperatorsCatalogTest(unittest.TestCase):
+    """Con la extensión habilitada una vez para toda la clase."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.enable()
+        cls.cat = _module("core.catalog").load()
+        cls.commands = _module("bl.ui.commands")
+        cls.registry = _module("bl.ui.registry")
+        cls.ops = _module("bl.ops.jobs")
+        cls.ui = _module("bl.ui.jobs")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.unload()
+
+    def test_real_operators_replace_the_provisionals(self) -> None:
+        """RF-004-08, RF-004-09: ``geoblender.jobs_show_jobs`` y ``geoblender.jobs_cancel``
+        son los operadores reales de ``bl/ops/jobs.py`` con el ``bl_idname`` del catálogo
+        de la 003, que no genera provisionales para ellos: están disponibles, con el nombre
+        y la descripción del catálogo en el idioma de Geoblender y el contexto de
+        traducción «Geoblender»."""
+        provisional = set(self.registry.provisional_classes())
+        real = _module("bl.ops").classes
+        for idname, name in REAL_OPERATORS.items():
+            with self.subTest(idname=idname):
+                cls = self.commands.registered_class(idname)
+                self.assertIs(cls, getattr(self.ops, name))
+                self.assertIn(cls, real)
+                self.assertNotIn(cls, provisional)
+                self.assertFalse(self.commands.is_provisional(cls))
+                self.assertTrue(self.commands.is_available(idname))
+                cmd = self.cat.commands[idname]
+                self.assertEqual(cmd.label, CATALOG_LABELS[idname])
+                self.assertEqual(cls.bl_label, self.commands.text(cmd.label))
+                self.assertEqual(cls.bl_description, self.commands.text(cmd.description))
+                self.assertEqual(cls.bl_translation_context,
+                                 self.commands.TRANSLATION_CONTEXT)
+
+    def test_jobs_menu_draws_them_enabled(self) -> None:
+        """RF-004-08, RF-004-09: Herramientas ▸ Trabajos (``GEOBLENDER_MT_jobs_menu``) es
+        el menú generado del catálogo, sin provisional, y dibuja los dos operadores
+        activos, con su nombre del catálogo (la 004 ya entrega sus comandos)."""
+        menu = self.commands.registered_class(JOBS_MENU)
+        self.assertIsNotNone(menu)
+        self.assertFalse(self.commands.is_provisional(menu))
+        self.assertIn(menu, self.registry.own_classes())
+        self.assertTrue(self.commands.is_available(JOBS_MENU))
+        drawn = {item.target: item for item in draw(menu, bpy.context).of_kind("operator")}
+        for idname in REAL_OPERATORS:
+            with self.subTest(idname=idname):
+                self.assertTrue(drawn[idname].enabled)
+                self.assertEqual(drawn[idname].text,
+                                 self.commands.text(self.cat.commands[idname].label))
+
+    def test_list_panel_registered(self) -> None:
+        """RF-004-08: ``GEOBLENDER_PT_jobs_list`` es un panel emergente de ``bl/ui`` (región
+        de cabecera: solo se abre con ``wm.call_panel``), fuera del catálogo y sin
+        provisional."""
+        panel = getattr(bpy.types, JOBS_PANEL, None)
+        self.assertIsNotNone(panel)
+        self.assertTrue(panel.is_registered)
+        self.assertIs(panel, self.ui.GEOBLENDER_PT_jobs_list)
+        self.assertIn(panel, _module("bl.ui").classes)
+        self.assertEqual(panel.bl_region_type, "HEADER")
+        self.assertNotIn(JOBS_PANEL, self.cat.commands)
+        self.assertNotIn(panel, self.registry.own_classes())
+
+
+class JobCancelTest(unittest.TestCase):
+    """Tres trabajos en hilo de un tipo de prueba que espera a que lo suelten, con un solo
+    hueco de hilo (uno en curso y dos en cola), cancelados con ``geoblender.jobs_cancel``
+    como el botón de la barra de estado (sin ``job_uid``) o el de la lista (con él)."""
+
+    NAMES = ("Primero", "Segundo", "Tercero")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.enable()
+        cls.ops = _module("bl.ops.jobs")
+        cls.ui = _module("bl.ui.jobs")
+        cls.commands = _module("bl.ui.commands")
+        cls.catalog = _module("jobs.catalog")
+        cls.i18n = _module("core.i18n")
+        protocol = _module("jobs.protocol")
+        runner = _module("jobs.runner")
+        cls.tmp = tempfile.TemporaryDirectory(prefix="gb4-")
+        package_dir = Path(sys.modules[module_name()].__file__).parent
+        cls.runner = runner.JobRunner(jobs_root=Path(cls.tmp.name) / "jobs",
+                                      package_dir=package_dir,
+                                      blender_python=Path(sys.executable), max_inprocess=1)
+        cls.monitor = cls.ops.JobMonitor(clock=_Clock())
+        cls.patch = mock.patch.object(cls.ops, "MONITOR", cls.monitor)
+        cls.patch.start()
+        cls.monitor.attach(cls.runner)
+        cls.gates = _Gates()
+        cls.catalog.register_worker(cls.catalog.WorkerInfo(
+            GATED_WORKER, "Gated test job", policy="auto",
+            estimate_s=lambda _params: 0.1, run=cls.gates.run,
+        ))
+        try:
+            cls._run_scenario(protocol)
+        finally:
+            cls.gates.release_all()
+
+    @classmethod
+    def _run_scenario(cls, protocol: ModuleType) -> None:
+        operator = bpy.ops.geoblender.jobs_cancel
+        cls.poll_empty = (operator.poll(), cls._poll())
+        cls.handles = {name: cls.monitor.submit(protocol.new_request(
+            GATED_WORKER, label=name, owner="jobs")) for name in cls.NAMES}
+        first, second, third = (cls.handles[name] for name in cls.NAMES)
+        cls._wait(lambda: first.message == "Esperando")
+        cls.poll_running = (operator.poll(), cls._poll())
+        cls.listed = _rows(_panel(cls.ui), list(cls.NAMES))
+        cls.by_default = operator()
+        cls.after_default = cls._states()
+        cls.twice = cls._execute("")
+        cls.queued = operator(job_uid=third.job_uid)
+        cls.after_queued = cls._states()
+        cls._wait(lambda: first.result() is not None and second.message == "Esperando")
+        cls.finished_again = cls._execute(first.job_uid)
+        cls.unknown = cls._execute("gbtest-desconocido")
+        cls.second_by_default = cls._execute("")
+        cls._wait(lambda: second.result() is not None)
+        cls.after_all = cls._states()
+        cls.poll_after = (operator.poll(), cls._poll())
+        cls.final = _rows(_panel(cls.ui), list(cls.NAMES))
+        cls.snapshots = {s.name: s for s in cls.runner.snapshots()}
+
+    @classmethod
+    def _wait(cls, condition: object) -> None:
+        deadline = time.monotonic() + WAIT_S
+        while not condition():
+            if time.monotonic() > deadline:
+                raise AssertionError("los trabajos de prueba no avanzaron a tiempo")
+            cls.ops.tick()
+            time.sleep(GATE_POLL_S)
+
+    @classmethod
+    def _poll(cls) -> tuple[bool, list[str]]:
+        """El ``poll`` del operador y los mensajes con que explica por qué no."""
+        operator = cls.ops.GEOBLENDER_OT_jobs_cancel
+        with mock.patch.object(operator, "poll_message_set") as message:
+            allowed = operator.poll(bpy.context)
+        return allowed, [call.args[0] for call in message.call_args_list]
+
+    @classmethod
+    def _execute(cls, job_uid: str) -> tuple[set[str], list[tuple[set[str], str]]]:
+        """El operador con ``job_uid``, con sus avisos."""
+        reports: list[tuple[set[str], str]] = []
+        fake = SimpleNamespace(job_uid=job_uid,
+                               report=lambda kind, text: reports.append((set(kind), text)))
+        result = cls.ops.GEOBLENDER_OT_jobs_cancel.execute(fake, bpy.context)
+        return result, reports
+
+    @classmethod
+    def _states(cls) -> dict[str, tuple[str, bool]]:
+        return {s.name: (s.state, s.cancel_requested) for s in cls.runner.snapshots()}
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.gates.release_all()
+        cls.runner.shutdown(timeout_s=2.0)
+        cls.monitor.stop()
+        cls.patch.stop()
+        cls.catalog.unregister_worker(GATED_WORKER)
+        blender_ext.unload()
+        cls.tmp.cleanup()
+
+    def test_poll_false_explains_why(self) -> None:
+        """RF-004-09: sin trabajos activos (antes de lanzar, después de acabar todos y sin
+        lanzador) el ``poll`` falla y explica por qué; con uno en curso, se puede."""
+        self.assertEqual(self.poll_empty, (False, (False, [NO_JOBS])))
+        self.assertEqual(self.poll_after, (False, (False, [NO_JOBS])))
+        self.assertEqual(self.poll_running, (True, (True, [])))
+        with mock.patch.object(self.ops, "MONITOR", self.ops.JobMonitor()):
+            self.assertFalse(bpy.ops.geoblender.jobs_cancel.poll())
+            self.assertEqual(self._poll(), (False, [NO_JOBS]))
+
+    def test_without_job_uid_cancels_the_oldest_running(self) -> None:
+        """RF-004-09: sin ``job_uid`` se cancela el más antiguo en curso, no los de la cola;
+        cuando acaba, el siguiente en curso es el más antiguo y se cancela igual, con su
+        aviso."""
+        self.assertEqual(self.by_default, {"FINISHED"})
+        self.assertEqual(self.after_default, {"Primero": ("running", True),
+                                              "Segundo": ("queued", False),
+                                              "Tercero": ("queued", False)})
+        self.assertEqual(self.second_by_default,
+                         ({"FINISHED"}, [({"INFO"}, "Cancelando el trabajo «Segundo»")]))
+        self.assertEqual(self.after_all, {"Primero": ("cancelled", True),
+                                          "Segundo": ("cancelled", True),
+                                          "Tercero": ("cancelled", True)})
+        for name in ("Primero", "Segundo"):
+            with self.subTest(trabajo=name):
+                snapshot = self.snapshots[name]
+                self.assertEqual(snapshot.error.code, "job_cancelled")
+                self.assertIsNotNone(snapshot.interpreter)
+
+    def test_queued_job_cancelled_without_starting(self) -> None:
+        """RF-004-09: uno en cola, con su ``job_uid``, queda «Cancelado» al momento y sin
+        arrancar (sin intérprete ni duración); el otro de la cola sigue esperando."""
+        self.assertEqual(self.queued, {"FINISHED"})
+        self.assertEqual(self.after_queued["Tercero"], ("cancelled", True))
+        self.assertEqual(self.after_queued["Segundo"], ("queued", False))
+        third = self.snapshots["Tercero"]
+        self.assertIsNone(third.interpreter)
+        self.assertIsNone(third.duration_s)
+        self.assertEqual(third.error.code, "job_cancelled")
+
+    def test_twice_finished_or_unknown_has_no_effect(self) -> None:
+        """RF-004-09 (spec §8): cancelar otra vez el que ya se está cancelando, uno que ya
+        terminó o uno que no existe no hace nada más y avisa."""
+        self.assertEqual(self.twice, ({"CANCELLED"}, [(
+            {"WARNING"}, "El trabajo «Primero» ya ha terminado o ya se está cancelando")]))
+        self.assertEqual(self.finished_again, ({"CANCELLED"}, [(
+            {"WARNING"}, "El trabajo «Primero» ya ha terminado o ya se está cancelando")]))
+        self.assertEqual(self.unknown, ({"CANCELLED"}, [(
+            {"WARNING"}, "No hay ningún trabajo «gbtest-desconocido»")]))
+        self.assertFalse(self.snapshots["Primero"].error.values.get("forced"))
+
+    def test_list_with_real_jobs(self) -> None:
+        """RF-004-08: la lista enseña cada trabajo real con su nombre, estado, avance,
+        duración, intérprete y último mensaje, y los botones de cancelar (los activos),
+        abrir el registro (si ya lo tiene) y descartar (los terminados)."""
+        running, queued = self.listed["Primero"], self.listed["Segundo"]
+        self.assertEqual((running.state, running.bar, running.factor),
+                         ("En curso", "30 %", 0.3))
+        self.assertTrue(running.duration.endswith(" s"), running.duration)
+        self.assertTrue(running.details.startswith("Blender · Python 3.13"), running.details)
+        self.assertTrue(running.details.endswith(" · Esperando"), running.details)
+        self.assertEqual((queued.state, queued.bar, queued.duration, queued.details),
+                         ("En cola", "0 %", NO_VALUE, ""))
+        for row in (running, queued, self.listed["Tercero"]):
+            with self.subTest(trabajo=row.name):
+                self.assertTrue(row.buttons[CANCEL_JOB].enabled)
+                self.assertEqual(row.buttons[CANCEL_JOB].properties.job_uid,
+                                 self.handles[row.name].job_uid)
+                self.assertFalse(row.buttons[CLEAN_JOB].enabled)
+        log = self.handles["Primero"].job_dir.log_file
+        self.assertEqual(running.buttons[PATH_OPEN].properties.filepath, str(log))
+        self.assertTrue(running.buttons[PATH_OPEN].enabled)
+        self.assertFalse(queued.buttons[PATH_OPEN].enabled)
+        discard = self.commands.is_available(CLEAN_JOB)
+        for name in self.NAMES:
+            with self.subTest(trabajo=name):
+                row = self.final[name]
+                self.assertEqual(row.state, "Cancelado")
+                self.assertEqual(row.icon, "CANCEL")
+                self.assertIn(f"Trabajo «{name}» cancelado.", row.details)
+                self.assertFalse(row.buttons[CANCEL_JOB].enabled)
+                self.assertEqual(row.buttons[CLEAN_JOB].enabled, discard)
+        self.assertEqual(self.final["Tercero"].duration, NO_VALUE)
+        self.assertTrue(self.final["Primero"].buttons[PATH_OPEN].enabled)
+
+
+class JobsListPanelTest(unittest.TestCase):
+    """La lista de trabajos con un lanzador simulado: cada estado con sus columnas y sus
+    botones, el título, la carpeta y la lista vacía."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.enable()
+        cls.ops = _module("bl.ops.jobs")
+        cls.ui = _module("bl.ui.jobs")
+        cls.commands = _module("bl.ui.commands")
+        cls.runner_mod = _module("jobs.runner")
+        cls.records = _module("jobs.records")
+        cls.messages = _module("jobs.messages")
+        cls.i18n = _module("core.i18n")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.unload()
+
+    def setUp(self) -> None:
+        self.monitor = self.ops.JobMonitor(clock=_Clock())
+        patch = mock.patch.object(self.ops, "MONITOR", self.monitor)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(self.monitor.stop)
+        self.fake = _FakeRunner()
+        self.monitor.attach(self.fake)
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))
+        self.log = self.folder / "job.log"
+        self.log.write_bytes(b"registro\n")
+        records, messages = self.records, self.messages
+        blender = records.InterpreterInfo(kind="blender", python="3.13.9", numpy="2.3.4",
+                                          blas="unknown")
+        compute = records.InterpreterInfo(kind="compute", python="3.13.9", numpy="2.5.3",
+                                          blas="scipy-openblas")
+        crashed = records.ErrorInfo.from_job_error(
+            messages.JobError("worker_crashed", job="Roto", exit_code=1))
+        self.fake.snapshots_now = [
+            self.snapshot("r", "En marcha", "running", frac=0.42, message="Trozo 3 de 7",
+                          duration_s=2.26, interpreter=blender),
+            self.snapshot("c", "Parándose", "running", frac=0.8, message="Trozo 8 de 10",
+                          duration_s=4.0, interpreter=blender, cancel_requested=True),
+            self.snapshot("q", "Esperando", "queued", log_file=self.folder / "no.log"),
+            self.snapshot("s", "Hecho", "succeeded", frac=1.0, duration_s=12.34,
+                          interpreter=compute),
+            self.snapshot("f", "Roto", "failed", frac=0.5, duration_s=0.5,
+                          interpreter=blender, error=crashed, ingested=True,
+                          message="Traceback (most recent call last):\nValueError: x"),
+        ]
+        self.names = [s.name for s in self.fake.snapshots_now]
+
+    def snapshot(self, uid: str, name: str, state: str, *, frac: float = 0.0,
+                 message: str = "", duration_s: float | None = None,
+                 interpreter: object = None, error: object = None,
+                 cancel_requested: bool = False, log_file: Path | None = None,
+                 ingested: bool = False) -> object:
+        return self.runner_mod.JobSnapshot(
+            job_uid=uid, name=name, worker="selftest", state=state, executor="subprocess",
+            frac=frac, message=message, duration_s=duration_s, interpreter=interpreter,
+            error=error, cancel_requested=cancel_requested,
+            log_file=self.log if log_file is None else log_file, ingested=ingested,
+        )
+
+    def rows(self) -> dict[str, _JobRow]:
+        rows = _rows(_panel(self.ui), self.names)
+        self.assertEqual(list(rows), self.names)
+        return rows
+
+    def seconds(self, value: float) -> str:
+        return self.i18n.format_number(value, 1) + " s"
+
+    def test_each_job_with_its_columns(self) -> None:
+        """RF-004-08: una fila por trabajo, por orden de llegada, con su nombre y el icono
+        de su estado, su estado («Cancelando» si se pidió pararlo), su avance, su duración
+        en s («—» si no arrancó) y, en gris, el intérprete y el último mensaje (el del §8
+        si no terminó bien, sin traza)."""
+        rows = self.rows()
+        crashed = self.messages.render("worker_crashed", job="Roto", exit_code=1)
+        expected = {
+            "En marcha": ("SORTTIME", "En curso", "42 %", 0.42, self.seconds(2.26),
+                          "Blender · Python 3.13.9 · numpy 2.3.4 · Trozo 3 de 7"),
+            "Parándose": ("SORTTIME", "Cancelando", "80 %", 0.8, self.seconds(4.0),
+                          "Blender · Python 3.13.9 · numpy 2.3.4 · Trozo 8 de 10"),
+            "Esperando": ("SORTTIME", "En cola", "0 %", 0.0, NO_VALUE, ""),
+            "Hecho": ("CHECKMARK", "Terminado", "100 %", 1.0, self.seconds(12.34),
+                      "Motor de cálculo · Python 3.13.9 · numpy 2.5.3 · BLAS scipy-openblas"),
+            "Roto": ("ERROR", "Fallido", "50 %", 0.5, self.seconds(0.5),
+                        f"Blender · Python 3.13.9 · numpy 2.3.4 · {crashed}"),
+        }
+        for name, (icon, state, bar, factor, duration, details) in expected.items():
+            with self.subTest(trabajo=name):
+                row = rows[name]
+                self.assertEqual((row.icon, row.state, row.bar, row.duration, row.details),
+                                 (icon, state, bar, duration, details))
+                self.assertAlmostEqual(row.factor, factor)
+                if details:
+                    self.assertFalse(row.details_active)
+        self.assertNotIn("Traceback", " ".join(r.details for r in rows.values()))
+
+    def test_buttons_by_state(self) -> None:
+        """RF-004-08, RF-004-09: «Cancelar» (con su ``job_uid``) solo en los activos a los
+        que no se pidió parar; «Registro» abre su ``job.log`` con ``wm.path_open`` si
+        existe; «Descartar» (``geoblender.jobs_clean``, ``scope = ONE`` y su ``job_uid``)
+        solo en los terminados que ningún módulo incorporó, y desactivado mientras ese
+        operador no esté disponible."""
+        rows = self.rows()
+        cancel = {name: row.buttons[CANCEL_JOB] for name, row in rows.items()}
+        self.assertEqual({name: item.enabled for name, item in cancel.items()},
+                         {"En marcha": True, "Parándose": False, "Esperando": True,
+                          "Hecho": False, "Roto": False})
+        self.assertEqual(cancel["En marcha"].properties.job_uid, "r")
+        self.assertEqual(cancel["Esperando"].properties.job_uid, "q")
+        logs = {name: row.buttons[PATH_OPEN] for name, row in rows.items()}
+        self.assertEqual({name: item.enabled for name, item in logs.items()},
+                         {"En marcha": True, "Parándose": True, "Esperando": False,
+                          "Hecho": True, "Roto": True})
+        self.assertEqual(logs["Hecho"].properties.filepath, str(self.log))
+        with mock.patch.object(self.commands, "is_available", return_value=False):
+            unavailable = self.rows()
+        for name, row in unavailable.items():
+            with self.subTest(descartar=name, disponible=False):
+                self.assertFalse(row.buttons[CLEAN_JOB].enabled)
+                self.assertEqual(vars(row.buttons[CLEAN_JOB].properties), {})
+        with mock.patch.object(self.commands, "is_available", return_value=True):
+            available = self.rows()
+        self.assertEqual({name: row.buttons[CLEAN_JOB].enabled
+                          for name, row in available.items()},
+                         {"En marcha": False, "Parándose": False, "Esperando": False,
+                          "Hecho": True, "Roto": False})
+        self.assertEqual(vars(available["Hecho"].buttons[CLEAN_JOB].properties),
+                         {"scope": "ONE", "job_uid": "s"})
+
+    def test_progress_matches_the_status_bar(self) -> None:
+        """RF-004-08 (y RF-004-06, spec §8): el avance de uno en curso es el de la barra de
+        estado, que nunca retrocede ni pasa del 100 %."""
+        self.fake.snapshots_now = [self.snapshot("r", "En marcha", "running", frac=0.5)]
+        self.names = ["En marcha"]
+        self.ops.tick()
+        self.fake.snapshots_now = [self.snapshot("r", "En marcha", "running", frac=0.3)]
+        self.ops.tick()
+        self.assertEqual(self.rows()["En marcha"].bar, "50 %")
+        self.fake.snapshots_now = [self.snapshot("r", "En marcha", "running", frac=1.7)]
+        self.ops.tick()
+        self.assertEqual((self.rows()["En marcha"].bar, self.rows()["En marcha"].factor),
+                         ("100 %", 1.0))
+
+    def test_title_folder_and_empty_list(self) -> None:
+        """RF-004-08: la lista lleva su título y, si se midió al abrirla, lo que ocupa la
+        carpeta de los trabajos; sin trabajos (o sin lanzador) lo dice."""
+        self.fake.snapshots_now = []
+        texts = _panel(self.ui).texts()
+        self.assertEqual(texts, ["Trabajos en segundo plano",
+                                 "No hay trabajos en segundo plano"])
+        self.monitor.attach(None)
+        self.assertEqual(_panel(self.ui).texts(), texts)
+        self.monitor.attach(self.fake)
+        self.fake.jobs_root = self.folder
+        self.assertEqual(self.ui.measure_folder(self.folder), 9 / 1e6)
+        self.addCleanup(self.ui.measure_folder, None)
+        size = self.i18n.format_number(9 / 1e6, 1)
+        self.assertEqual(_panel(self.ui).texts(),
+                         ["Trabajos en segundo plano", f"Carpeta de los trabajos: {size} MB",
+                          "No hay trabajos en segundo plano"])
+
+    def test_english(self) -> None:
+        """RF-004-08: en inglés, los estados y los mensajes del §8, en inglés."""
+        self.i18n.set_language("en")
+        self.addCleanup(self.i18n.set_language, "es")
+        rows = self.rows()
+        english = self.messages.render("worker_crashed", language="en", job="Roto",
+                                       exit_code=1)
+        self.assertEqual(rows["Parándose"].state, "Cancelling")
+        self.assertEqual(rows["Roto"].state, "Failed")
+        self.assertTrue(rows["Roto"].details.endswith(english))
+        self.assertTrue(rows["Hecho"].details.startswith("Compute engine · "))
+
+
+class ShowJobsTest(unittest.TestCase):
+    """``geoblender.jobs_show_jobs`` abre la lista de trabajos (``wm.call_panel``)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.enable()
+        cls.ops = _module("bl.ops.jobs")
+        cls.ui = _module("bl.ui.jobs")
+        cls.cleanup = _module("jobs.cleanup")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.unload()
+
+    def setUp(self) -> None:
+        self.monitor = self.ops.JobMonitor(clock=_Clock())
+        patch = mock.patch.object(self.ops, "MONITOR", self.monitor)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(self.ui.measure_folder, None)
+
+    def test_poll_needs_a_window(self) -> None:
+        """RF-004-08: sin ventana no se puede abrir la lista y el ``poll`` lo explica; con
+        una ventana, sí."""
+        operator = self.ops.GEOBLENDER_OT_jobs_show_jobs
+        with mock.patch.object(operator, "poll_message_set") as message:
+            self.assertFalse(operator.poll(SimpleNamespace(window=None)))
+        message.assert_called_once_with("La lista de trabajos necesita una ventana de Blender")
+        window = bpy.context.window_manager.windows[0]
+        with bpy.context.temp_override(window=window):
+            self.assertTrue(bpy.ops.geoblender.jobs_show_jobs.poll())
+
+    def test_opens_the_list_and_measures_the_folder(self) -> None:
+        """RF-004-08: abre ``GEOBLENDER_PT_jobs_list`` con ``wm.call_panel`` (que sigue
+        abierta) y antes mide lo que ocupa la carpeta de los trabajos del lanzador."""
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))
+        (folder / "uno").mkdir()
+        (folder / "uno" / "datos.bin").write_bytes(b"x" * 300_000)
+        fake = _FakeRunner()
+        fake.jobs_root = folder
+        self.monitor.attach(fake)
+        window = bpy.context.window_manager.windows[0]
+        with mock.patch.object(self.ops, "_call_panel",
+                               return_value={"FINISHED"}) as call_panel:
+            with bpy.context.temp_override(window=window):
+                result = bpy.ops.geoblender.jobs_show_jobs()
+        self.assertEqual(result, {"FINISHED"})
+        call_panel.assert_called_once_with(JOBS_PANEL)
+        self.assertEqual(self.ui.folder_size(folder), self.cleanup.folder_size_mb(folder))
+        self.assertEqual(self.ui.folder_size(folder), 0.3)
+        self.assertIn("Carpeta de los trabajos: 0,3 MB", _panel(self.ui).texts())
+        self.monitor.attach(None)
+        with mock.patch.object(self.ops, "_call_panel",
+                               return_value={"FINISHED"}) as call_panel:
+            with bpy.context.temp_override(window=window):
+                self.assertEqual(bpy.ops.geoblender.jobs_show_jobs(), {"FINISHED"})
+        call_panel.assert_called_once_with(JOBS_PANEL)
+        self.assertIsNone(self.ui.folder_size(folder))
 
 
 if __name__ == "__main__":
