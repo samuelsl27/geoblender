@@ -39,7 +39,7 @@ pruebas llaman a :func:`tick` a mano.
   en disco local y en escritura; en los datos de usuario si está en red o en solo lectura) y,
   sin proyecto, ``<datos de usuario>/cache/_sin_proyecto/jobs``, con ``<datos de usuario>`` =
   ``extension_path_user(bl.ADDON_PACKAGE)`` (:func:`user_dir`; nunca el paquete de un
-  submódulo). El motor de cálculo irá en ``<datos de usuario>/runtime``
+  submódulo). El motor de cálculo va en ``<datos de usuario>/runtime``
   (:func:`runtime_dir`), que nadie crea sin el consentimiento del usuario (RF-004-19). Las
   calcula ``bl`` y se las da a ``jobs/`` como ``Path``.
 - Al cambiar de proyecto (:func:`on_project_changed`), la raíz pasa a la del nuevo (o a la
@@ -86,8 +86,27 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   de confirmación); ``ONE``, solo el ``job_uid`` (el «Descartar» de la lista de trabajos,
   sin diálogo; si es un trabajo guardado de otra raíz, en la suya).
 
-Todos sin ``UNDO``: no cambian la escena. Los de la fase 4 (``jobs_setup_runtime``,
-``jobs_set_external_python``) siguen provisionales hasta entonces.
+- ``geoblender.jobs_setup_runtime`` (Motor de cálculo…; RF-004-19 a RF-004-25, plan §5.4.7
+  y §5.5): el motor de cálculo del lanzador de la sesión (:func:`compute_environment`, el
+  del lock de esta versión en ``<datos de usuario>/runtime``; crearlo no toca el disco).
+  ``action``: ``STATUS`` (por defecto, el del menú) instala, actualiza o repara según esté
+  el motor (no instalado, de otra versión de Geoblender o dañado) y, con el motor listo,
+  enseña su estado con Verificar, Reparar y Quitar; ``INSTALL``, ``UPDATE`` y ``REPAIR``
+  calculan el plan sin usar la red (origen ``source``; ``AUTO``: el de las preferencias,
+  con su almacén de ruedas) y, antes de hacer nada, lo enseñan en el diálogo de
+  consentimiento (``bl/ui/jobs.py``) con «Instalar» y «Cancelar»; «Instalar» lanza la
+  cadena ``jobs.runtime.RuntimeSetup`` (instalar → verificar → adoptar) con el plan
+  enseñado (su huella, ``confirmation``) y el consentimiento del usuario, seguida en la
+  barra de estado. PyPI con el acceso en línea de Blender desactivado no abre el diálogo y
+  dice las dos salidas (RF-004-23). ``VERIFY`` verifica el motor instalado; ``REMOVE``, tras
+  confirmarlo en un diálogo, lo borra si ningún trabajo lo usa. Sin confirmación (desde un
+  guion) no instala ni borra nada.
+- Un trabajo que necesita el motor y no lo tiene (``runtime_missing`` al lanzarlo con
+  :meth:`JobMonitor.submit`) abre ese mismo diálogo (:func:`offer_runtime_setup`,
+  RF-004-25); en ``blender -b`` no hay a quién enseñárselo.
+
+Todos sin ``UNDO``: no cambian la escena. ``jobs_set_external_python`` sigue provisional
+hasta la T33.
 """
 
 from __future__ import annotations
@@ -107,12 +126,15 @@ from bpy.props import EnumProperty, StringProperty
 
 from ...core import i18n
 from ...core.errors import GeoblenderError
-from ...core.i18n import format_number, tr
-from ...jobs import catalog, messages, records
+from ...core.i18n import format_number, language, tr
+from ...jobs import catalog, cleanup, messages, records
+from ...jobs import runtime as jobs_runtime
 from ...jobs.cleanup import CleanupReport
+from ...jobs.messages import JobError
 from ...jobs.paths import JobDir, resolve_jobs_root
 from ...jobs.protocol import JobRequest, JsonValue, new_request
 from ...jobs.runner import JobHandle, JobResult, JobRunner, JobSnapshot
+from ...jobs.runtime import ComputeEnvironment, InstallPlan, RuntimeSetup, WheelSource
 from .. import ADDON_PACKAGE
 from ..props.jobs import MAX_PARALLEL_DEFAULT, RETENTION_DEFAULT
 from ..scene import project_session
@@ -191,13 +213,16 @@ class JobMonitor:
                on_finish: Callable[[JobResult], object] | None = None) -> JobHandle:
         """Lanza ``job`` (``JobDir`` o ``JobRequest``) con el lanzador
         (``JobRunner.submit``, que no bloquea) y empieza a seguirlo: registra el
-        temporizador si no lo estaba. Sin lanzador, :class:`RuntimeError` y nada más."""
+        temporizador si no lo estaba. Si no se lanzó porque necesita el motor de cálculo y
+        falta, ofrece instalarlo (:func:`offer_runtime_setup`, RF-004-25). Sin lanzador,
+        :class:`RuntimeError` y nada más."""
         runner = self._runner
         if runner is None:
             raise RuntimeError("no hay lanzador de trabajos: Geoblender aún no ha preparado "
                                "la carpeta de los trabajos")
         handle = runner.submit(job, on_finish=on_finish)
         self.start()
+        offer_runtime_setup(runner, handle.result())
         return handle
 
     def start(self) -> None:
@@ -649,6 +674,431 @@ def _refresh_folder_size(runner: JobRunner) -> None:
         job_list.measure_folder(runner.jobs_root)
 
 
+# El motor de cálculo (RF-004-19 a RF-004-25) ---------------------------------------------
+
+SETUP_ACTION_ITEMS = [
+    ("STATUS", "State",
+     "Show the state of the compute engine; if it is missing, out of date or damaged, offer "
+     "to install it"),
+    ("INSTALL", "Install",
+     "Install the compute engine after showing what is installed, from where, with which "
+     "licences and how much it takes"),
+    ("UPDATE", "Update",
+     "Install the compute engine of this version of Geoblender, which replaces the one of an "
+     "earlier version"),
+    ("VERIFY", "Verify",
+     "Check the installed compute engine: package versions, numpy, its BLAS and a "
+     "2000 × 2000 product"),
+    ("REPAIR", "Repair", "Install the compute engine again over a damaged or unverified one"),
+    ("REMOVE", "Remove",
+     "Delete the compute engine of this version of Geoblender, after confirming it"),
+]
+SETUP_SOURCE_ITEMS = [
+    ("AUTO", "As in the preferences",
+     "The source chosen in the preferences: by default, the wheel store if one is "
+     "configured; otherwise PyPI"),
+    ("WHEELHOUSE", "Wheel store", "Only the wheel store folder, without internet"),
+    ("PYPI", "PyPI", "Download from PyPI (needs online access)"),
+]
+INSTALL_ACTIONS = frozenset({"INSTALL", "UPDATE", "REPAIR"})
+"""Las acciones que instalan el motor (con el diálogo de consentimiento, RF-004-20)."""
+ACTION_FOR_STATUS: Mapping[str, str] = MappingProxyType({
+    jobs_runtime.STATUS_MISSING: "INSTALL",
+    jobs_runtime.STATUS_OUTDATED: "UPDATE",
+    jobs_runtime.STATUS_BROKEN: "REPAIR",
+})
+"""Lo que se ofrece según el estado del motor (con ``ready``, su estado)."""
+SETUP_DIALOG_WIDTH = 600
+"""Ancho del diálogo de consentimiento y del estado del motor (en píxeles a escala 1)."""
+
+
+class _SetupState:
+    """La cadena del motor de cálculo de esta sesión (``jobs.runtime.RuntimeSetup``), lo que
+    falló en el último intento, el último plan enseñado en el diálogo y lo que mide la
+    carpeta que se ofrece quitar."""
+
+    def __init__(self) -> None:
+        self.current: Any = None
+        self.last_error: str | None = None
+        self.shown: InstallPlan | None = None
+        self.remove_mb: tuple[Path, float] | None = None
+
+    def clear(self) -> None:
+        self.__init__()
+
+
+_SETUP = _SetupState()
+
+
+def forget_setup() -> None:
+    """Olvida la cadena del motor de la sesión, su último fallo y lo enseñado en el diálogo
+    (al desregistrar; los trabajos de la cadena los cierra el lanzador)."""
+    _SETUP.clear()
+
+
+def setup_running() -> bool:
+    """Si se está instalando o verificando el motor de cálculo en esta sesión."""
+    current = _SETUP.current
+    return current is not None and not current.done
+
+
+def online_access() -> bool:
+    """El «Permitir acceso en línea» de Blender (``bpy.app.online_access``): sin él no se
+    descarga nada de PyPI (RF-004-23)."""
+    return bool(bpy.app.online_access)
+
+
+class _SetupRefused(Exception):
+    """El motor no se puede instalar así: ``message`` dice por qué, en el idioma de
+    Geoblender."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def _job_error_text(exc: JobError) -> str:
+    """El mensaje del §8 de ``exc`` en el idioma de Geoblender."""
+    return messages.render(exc.code, language=language(), **exc.values)
+
+
+def _setup_target() -> tuple[JobRunner, ComputeEnvironment] | None:
+    """El lanzador de la sesión y su motor de cálculo, si los hay."""
+    runner = _open_runner()
+    env = getattr(runner, "runtime", None) if runner is not None else None
+    if runner is None or not isinstance(env, ComputeEnvironment):
+        return None
+    return runner, env
+
+
+def _wheel_source(choice: str) -> WheelSource:
+    """El origen de las ruedas: ``choice`` (``AUTO``: el de las preferencias,
+    ``runtime_source``) con la carpeta del almacén de las preferencias
+    (``wheelhouse_dir``). :class:`_SetupRefused` si se pide el almacén sin carpeta o con una
+    que no es una ruta completa."""
+    prefs = _jobs_preferences()
+    if choice == "AUTO":
+        choice = getattr(prefs, "runtime_source", None) or "AUTO"
+    folder = str(getattr(prefs, "wheelhouse_dir", "") or "").strip()
+    if folder:
+        folder = bpy.path.abspath(folder)
+    try:
+        return jobs_runtime.choose_source(choice, wheelhouse_dir=Path(folder) if folder else None)
+    except ValueError:
+        if not folder:
+            raise _SetupRefused(tr("No wheel store folder is set in the preferences")) from None
+        raise _SetupRefused(tr("The wheel store folder «{folder}» is not a full path",
+                               folder=folder)) from None
+
+
+def _plan(env: ComputeEnvironment, choice: str) -> InstallPlan:
+    """El plan de instalar el motor desde el origen ``choice``, sin usar la red ni escribir
+    nada (``ComputeEnvironment.plan_install``). :class:`_SetupRefused` con el motivo si no se
+    puede: PyPI sin acceso en línea (las dos salidas, RF-004-23), una rueda que no está en el
+    almacén (RF-004-24) o un almacén sin configurar."""
+    source = _wheel_source(choice)
+    try:
+        return env.plan_install(source, online_access=online_access())
+    except JobError as exc:
+        raise _SetupRefused(_job_error_text(exc)) from None
+
+
+def _setup_title(action: str) -> str:
+    """El título del diálogo de consentimiento de ``action``."""
+    titles = {
+        "INSTALL": tr("Install the compute engine"),
+        "UPDATE": tr("Update the compute engine"),
+        "REPAIR": tr("Repair the compute engine"),
+    }
+    return titles[action]
+
+
+def _install_refusal(action: str, env: ComputeEnvironment) -> tuple[set[str], str] | None:
+    """Por qué no se instala ahora (el tipo de aviso y su texto), o ``None``: ya se está
+    instalando o verificando, o el motor ya está listo (instalar o actualizar; reparar
+    siempre se puede)."""
+    if setup_running():
+        return {"WARNING"}, tr("The compute engine is already being installed or verified")
+    if action != "REPAIR" and env.status() == jobs_runtime.STATUS_READY:
+        return {"INFO"}, tr("The compute engine is already installed and verified")
+    return None
+
+
+def _setup_done(setup: RuntimeSetup) -> None:
+    """La cadena del motor terminó: si falló, su motivo queda para el estado del motor; en
+    el registro técnico, lo que midió la verificación o el fallo."""
+    if setup.state == jobs_runtime.SETUP_SUCCEEDED:
+        if _SETUP.current is setup:
+            _SETUP.last_error = None
+        check = setup.check
+        LOGGER.info("Motor de cálculo (%s): terminado; %s", setup.kind,
+                    jobs_runtime.check_text(check) if check else "sin verificación")
+        return
+    if _SETUP.current is setup:
+        _SETUP.last_error = setup.error_text or setup.error_code or setup.state
+    LOGGER.warning("Motor de cálculo (%s): %s: %s", setup.kind, setup.state,
+                   setup.error_text or setup.error_code)
+
+
+def _start_setup(operator: Any, setup: RuntimeSetup, message: str) -> set[str]:
+    """Sigue la cadena ``setup`` en la barra de estado (el temporizador del monitor:
+    ``RuntimeSetup`` lanza con el lanzador directamente) y lo dice."""
+    _SETUP.current = setup
+    _SETUP.last_error = None
+    MONITOR.start()
+    operator.report({"INFO"}, message)
+    return {"FINISHED"}
+
+
+def _install(operator: Any, runner: JobRunner, env: ComputeEnvironment,
+             action: str) -> set[str]:
+    """Instala el motor (``RuntimeSetup.install``: instalar → verificar → adoptar) con el
+    plan que el usuario confirmó en el diálogo (``confirmation``, su huella), con su
+    consentimiento (RF-004-19). Sin confirmación, o si el plan cambió desde que se enseñó,
+    no instala nada."""
+    refusal = _install_refusal(action, env)
+    if refusal is not None:
+        operator.report(*refusal)
+        return {"CANCELLED"}
+    try:
+        plan = _plan(env, operator.source)
+    except _SetupRefused as exc:
+        operator.report({"ERROR"}, exc.message)
+        return {"CANCELLED"}
+    if not operator.confirmation:
+        operator.report({"ERROR"},
+                        tr("Installing the compute engine needs your confirmation in its "
+                           "dialog"))
+        return {"CANCELLED"}
+    if operator.confirmation != plan.digest:
+        operator.report({"ERROR"}, tr("What is going to be installed changed after it was "
+                                      "shown: ask for it again"))
+        return {"CANCELLED"}
+    consent = jobs_runtime.Consent.given(plan)
+    try:
+        setup = jobs_runtime.RuntimeSetup.install(runner, env, plan, consent,
+                                                  on_done=_setup_done)
+    except JobError as exc:
+        operator.report({"ERROR"}, _job_error_text(exc))
+        return {"CANCELLED"}
+    except (RuntimeError, ValueError) as exc:  # el lanzador se cerró; otro motor
+        operator.report({"ERROR"}, str(exc))
+        return {"CANCELLED"}
+    return _start_setup(operator, setup, tr("Installing the compute engine: follow its "
+                                            "progress in the status bar"))
+
+
+def _verify(operator: Any, runner: JobRunner, env: ComputeEnvironment) -> set[str]:
+    """Verifica el motor instalado (``RuntimeSetup.verify``, RF-004-22)."""
+    if setup_running():
+        operator.report({"WARNING"},
+                        tr("The compute engine is already being installed or verified"))
+        return {"CANCELLED"}
+    try:
+        setup = jobs_runtime.RuntimeSetup.verify(runner, env, on_done=_setup_done)
+    except JobError as exc:
+        operator.report({"ERROR"}, _job_error_text(exc))
+        return {"CANCELLED"}
+    except (RuntimeError, ValueError) as exc:
+        operator.report({"ERROR"}, str(exc))
+        return {"CANCELLED"}
+    return _start_setup(operator, setup, tr("Verifying the compute engine: follow its "
+                                            "progress in the status bar"))
+
+
+def _engine_size_mb(env: ComputeEnvironment) -> float:
+    """Los MB de la carpeta del motor (medidos una vez por diálogo de quitarlo)."""
+    measured = _SETUP.remove_mb
+    if measured is not None and measured[0] == env.path:
+        return measured[1]
+    size = cleanup.folder_size_mb(env.path)
+    _SETUP.remove_mb = (env.path, size)
+    return size
+
+
+def _remove(operator: Any, runner: JobRunner, env: ComputeEnvironment) -> set[str]:
+    """Quita el motor de este lock (``ComputeEnvironment.remove``) solo con la
+    confirmación del diálogo (``confirmation``, su carpeta; RF-004-19) y si ningún trabajo
+    lo usa."""
+    if setup_running():
+        operator.report({"WARNING"},
+                        tr("The compute engine is already being installed or verified"))
+        return {"CANCELLED"}
+    if operator.confirmation != str(env.path):
+        operator.report({"ERROR"},
+                        tr("Removing the compute engine needs your confirmation in its "
+                           "dialog"))
+        return {"CANCELLED"}
+    if not env.path.is_dir():
+        operator.report({"INFO"}, tr("The compute engine is not installed"))
+        return {"CANCELLED"}
+    size = cleanup.folder_size_mb(env.path)
+    if not env.remove(in_use=runner.locks_in_use()):
+        operator.report({"WARNING"}, tr("The compute engine is in use: close the "
+                                        "calculations that use it and try again"))
+        return {"CANCELLED"}
+    _SETUP.last_error = None
+    _SETUP.remove_mb = None
+    operator.report({"INFO"}, tr("Removed the compute engine ({size} MB freed)",
+                                 size=format_number(size, 1)))
+    return {"FINISHED"}
+
+
+class GEOBLENDER_OT_jobs_setup_runtime(bpy.types.Operator):
+    """Install, update, verify, repair or remove the compute engine, and its state"""
+
+    bl_idname = "geoblender.jobs_setup_runtime"
+    bl_label = "Compute engine…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    action: EnumProperty(  # type: ignore[valid-type]
+        name="Action", description="What to do with the compute engine",
+        items=SETUP_ACTION_ITEMS, default="STATUS", options={"SKIP_SAVE"},
+    )
+    source: EnumProperty(  # type: ignore[valid-type]
+        name="Source", description="Where the wheels of the compute engine come from",
+        items=SETUP_SOURCE_ITEMS, default="AUTO", options={"SKIP_SAVE"},
+    )
+    confirmation: StringProperty(  # type: ignore[valid-type]
+        name="Confirmation",
+        description="What the user confirmed in the dialog (the dialog fills it in)",
+        default="", options={"SKIP_SAVE", "HIDDEN"},
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        runner = _open_runner()
+        if runner is None:
+            cls.poll_message_set(tr("Geoblender has not prepared the jobs folder yet"))
+            return False
+        if not isinstance(getattr(runner, "runtime", None), ComputeEnvironment):
+            cls.poll_message_set(tr("The compute engine lock of this version of Geoblender "
+                                    "could not be read"))
+            return False
+        return True
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        target = _setup_target()
+        if target is None:
+            self.report({"ERROR"}, tr("Geoblender has not prepared the jobs folder yet"))
+            return {"CANCELLED"}
+        _runner, env = target
+        action = self.action
+        if action == "STATUS" and not setup_running():
+            action = ACTION_FOR_STATUS.get(env.status(), "STATUS")
+        self.action = action
+        manager = context.window_manager
+        if action == "STATUS":
+            return manager.invoke_popup(self, width=SETUP_DIALOG_WIDTH)
+        if action == "VERIFY":
+            return self.execute(context)
+        if action == "REMOVE":
+            if not env.path.is_dir():
+                self.report({"INFO"}, tr("The compute engine is not installed"))
+                return {"CANCELLED"}
+            _SETUP.remove_mb = None
+            _engine_size_mb(env)
+            self.confirmation = str(env.path)
+            return manager.invoke_props_dialog(
+                self, width=SETUP_DIALOG_WIDTH, title=tr("Remove the compute engine"),
+                confirm_text=tr("Remove"), translate=False)
+        refusal = _install_refusal(action, env)
+        if refusal is not None:
+            self.report(*refusal)
+            return {"CANCELLED"}
+        try:
+            plan = _plan(env, self.source)
+        except _SetupRefused as exc:
+            self.report({"ERROR"}, exc.message)
+            return {"CANCELLED"}
+        _SETUP.shown = plan
+        self.confirmation = plan.digest
+        return manager.invoke_props_dialog(
+            self, width=SETUP_DIALOG_WIDTH, title=_setup_title(action),
+            confirm_text=tr("Install"), translate=False)
+
+    def draw(self, context: Any) -> None:
+        target = _setup_target()
+        if target is None:
+            return
+        _runner, env = target
+        if self.action == "REMOVE":
+            job_list.draw_remove(self.layout, env, _engine_size_mb(env))
+            return
+        if self.action not in INSTALL_ACTIONS:
+            job_list.draw_engine(self.layout, env, running=setup_running(),
+                                 last_error=_SETUP.last_error)
+            return
+        plan = _SETUP.shown
+        if plan is None or plan.digest != self.confirmation:
+            try:
+                plan = _plan(env, self.source)
+            except _SetupRefused as exc:
+                alert = self.layout.row()
+                alert.alert = True
+                alert.label(text=exc.message, icon="ERROR", translate=False)
+                return
+        job_list.draw_consent(self.layout, plan)
+
+    def execute(self, context: Any) -> set[str]:
+        target = _setup_target()
+        if target is None:
+            self.report({"ERROR"}, tr("Geoblender has not prepared the jobs folder yet"))
+            return {"CANCELLED"}
+        runner, env = target
+        action = self.action
+        if action == "STATUS":
+            action = ACTION_FOR_STATUS.get(env.status(), "STATUS")
+        if action == "STATUS":
+            self.report({"INFO"}, tr("Compute engine: {state}",
+                                     state=job_list.engine_state_text(env)))
+            return {"FINISHED"}
+        if action == "VERIFY":
+            return _verify(self, runner, env)
+        if action == "REMOVE":
+            return _remove(self, runner, env)
+        return _install(self, runner, env, action)
+
+
+def offer_runtime_setup(runner: Any, result: JobResult | None) -> str | None:
+    """Si ``result`` es el de un trabajo que no se lanzó porque necesita el motor de cálculo
+    y falta (``runtime_missing``: no está, es de otra versión de Geoblender o está dañado),
+    abre el diálogo de instalarlo, actualizarlo o repararlo (RF-004-25) y devuelve esa
+    acción; si no, ``None``. No ofrece nada mientras se instala o verifica. Un fallo aquí
+    nunca impide lanzar trabajos: va al registro técnico."""
+    try:
+        if (result is None or result.state != "failed"
+                or result.error_code != "runtime_missing"):
+            return None
+        env = getattr(runner, "runtime", None)
+        if not isinstance(env, ComputeEnvironment) or setup_running():
+            return None
+        action = ACTION_FOR_STATUS.get(env.status())
+        if action is None:
+            return None
+        _invoke_setup(action)
+        return action
+    except Exception:  # noqa: BLE001 - ofrecer el motor no tumba el lanzamiento
+        LOGGER.exception("No se pudo ofrecer la instalación del motor de cálculo")
+        return None
+
+
+def _invoke_setup(action: str) -> bool:
+    """Abre el diálogo de ``geoblender.jobs_setup_runtime`` con ``action`` y dice si se
+    abrió. En ``blender -b`` no hay a quién enseñárselo: no hace nada. Si el operador no
+    puede (p. ej. PyPI sin acceso en línea), él mismo da el motivo."""
+    if bpy.app.background:
+        return False
+    try:
+        result = bpy.ops.geoblender.jobs_setup_runtime("INVOKE_DEFAULT", action=action)
+    except RuntimeError as exc:  # el operador informó de un error o el contexto no vale
+        LOGGER.info("No se abrió el diálogo del motor de cálculo: %s", messages.one_line(
+            str(exc)))
+        return False
+    return "RUNNING_MODAL" in result
+
+
 # El lanzador de la sesión ---------------------------------------------------------------
 
 
@@ -693,14 +1143,29 @@ def _forbidden_roots(project: Project | None) -> tuple[Path, ...]:
     return () if project is None else (Path(project.root),)
 
 
+def compute_environment() -> ComputeEnvironment | None:
+    """El motor de cálculo del lock de esta versión de Geoblender
+    (``jobs/runtime_lock.toml``) en ``<datos de usuario>/runtime`` (:func:`runtime_dir`). No
+    crea, descarga ni comprueba nada (RF-004-19). Si el lock no se puede leer, ``None`` (el
+    fallo va al registro técnico): los trabajos del motor quedan «Fallido» sin él."""
+    try:
+        lock = jobs_runtime.read_lock()
+    except (ValueError, OSError):
+        LOGGER.exception("No se pudo leer el lock del motor de cálculo (%s)",
+                         jobs_runtime.LOCK_PATH)
+        return None
+    return ComputeEnvironment(user_dir(), lock)
+
+
 def _open_session() -> None:
-    """Crea el lanzador de la sesión y se lo da al monitor; si ya hay uno abierto, no hace
-    nada. No crea ninguna carpeta."""
+    """Crea el lanzador de la sesión, con el motor de cálculo de :func:`compute_environment`,
+    y se lo da al monitor; si ya hay uno abierto, no hace nada. No crea ninguna carpeta."""
     if _SESSION.runner is not None and not _SESSION.runner.closed:
         return
     project = project_session.current()
     runner = JobRunner(jobs_root=jobs_root(project), package_dir=PACKAGE_DIR,
                        blender_python=Path(sys.executable),
+                       runtime=compute_environment(),
                        max_subprocess=max_parallel_jobs(),
                        forbidden_roots=_forbidden_roots(project))
     _SESSION.runner = runner
@@ -764,15 +1229,17 @@ def on_exit_pre(*_args: object) -> None:
 
 
 classes: tuple[type, ...] = (GEOBLENDER_OT_jobs_show_jobs, GEOBLENDER_OT_jobs_cancel,
-                             GEOBLENDER_OT_jobs_run_selftest, GEOBLENDER_OT_jobs_clean)
+                             GEOBLENDER_OT_jobs_run_selftest, GEOBLENDER_OT_jobs_clean,
+                             GEOBLENDER_OT_jobs_setup_runtime)
 
 
 def register() -> None:
-    """Textos de los trabajos en ``core.i18n``, tipos de trabajo de la 004, el lanzador de
-    la sesión (dado al monitor), el manejador ``exit_pre`` y el aviso de cambio de
-    proyecto; idempotente."""
+    """Textos de los trabajos (y los de la instalación del motor) en ``core.i18n``, tipos
+    de trabajo de la 004, el lanzador de la sesión (dado al monitor), el manejador
+    ``exit_pre`` y el aviso de cambio de proyecto; idempotente."""
     i18n.install(messages.CATALOG_ES)
     i18n.install(catalog.CATALOG_ES)
+    i18n.install(jobs_runtime.CATALOG_ES)
     catalog.unregister_builtin_workers()
     catalog.register_builtin_workers()
     _open_session()
@@ -784,7 +1251,8 @@ def register() -> None:
 def unregister() -> None:
     """Quita el aviso de cambio de proyecto y el manejador ``exit_pre``, cierra el
     lanzador de la sesión (``shutdown(timeout_s=3)``) antes de retirar el temporizador del
-    monitor, lo suelta y quita los tipos de trabajo de la 004; idempotente."""
+    monitor, lo suelta, olvida la cadena del motor de cálculo y quita los tipos de trabajo
+    de la 004; idempotente."""
     project_session.remove_listener(on_project_changed)
     if on_exit_pre in bpy.app.handlers.exit_pre:
         bpy.app.handlers.exit_pre.remove(on_exit_pre)
@@ -793,4 +1261,5 @@ def unregister() -> None:
     finally:
         _SESSION.runner = None
         MONITOR.attach(None)
+        forget_setup()
         catalog.unregister_builtin_workers()

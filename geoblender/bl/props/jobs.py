@@ -38,7 +38,8 @@ MAX_PARALLEL_MAX = 4
 RETENTION_DEFAULT = 7
 RETENTION_MIN = 1
 RETENTION_MAX = 90
-# Origen del motor de cálculo (el mismo enumerado que jobs_setup_runtime, plan §5.3).
+# Origen del motor de cálculo (plan §5.3): los mismos valores que el ``source`` de
+# jobs_setup_runtime, cuyo AUTO es «como en las preferencias», es decir, este.
 RUNTIME_SOURCE_DEFAULT = "AUTO"
 RUNTIME_SOURCE_ITEMS = [
     ("AUTO", "Automatic", "The wheel store if one is configured; otherwise PyPI"),

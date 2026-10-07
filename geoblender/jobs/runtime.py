@@ -610,8 +610,9 @@ class ComputeEnvironment:
     disco ni la red; ninguno de sus métodos crea, descarga ni borra el motor (RF-004-19),
     salvo :meth:`adopt`, que solo convierte en el motor lo que instaló y verificó la cadena
     lanzada con el consentimiento del usuario (:class:`RuntimeSetup`), los que anotan su
-    verificación en ``runtime.json`` y :meth:`remove_stale`, que borra los motores de otros
-    locks que ya sustituye (RF-004-27)."""
+    verificación en ``runtime.json``, :meth:`remove_stale`, que borra los motores de otros
+    locks que ya sustituye (RF-004-27), y :meth:`remove`, que borra este cuando el usuario
+    lo pide y lo confirma."""
 
     def __init__(self, user_dir: Path, lock: RuntimeLock) -> None:
         if not isinstance(lock, RuntimeLock):
@@ -743,6 +744,29 @@ class ComputeEnvironment:
             if folder.name not in used and _remove_engine(folder):
                 removed.append(folder)
         return sorted(removed)
+
+    def remove(self, *, in_use: Iterable[str]) -> bool:
+        """Borra el motor de este lock (su carpeta :attr:`path` y los restos
+        ``<lock_id>.old`` de un intento anterior) y dice si lo borró. Solo lo pide el
+        usuario, después de confirmarlo en su diálogo (RF-004-19;
+        ``geoblender.jobs_setup_runtime``).
+
+        No borra nada si no está instalado, si lo usa un trabajo de esta sesión (su
+        ``lock_id`` está en ``in_use``, los de ``JobRunner.locks_in_use``) o si no se deja
+        apartar (``os.replace`` a ``<lock_id>.old``): un worker de otra sesión de Blender
+        tiene abierto su numpy. Nunca toca los motores de otros locks ni la instalación a
+        medias (``<lock_id>.partial``: puede estar en marcha en otra sesión).
+        :class:`TypeError` si ``in_use`` es un texto suelto o lleva algo que no es un
+        texto."""
+        used = as_uid_set(in_use, "in_use (los lock_id en uso)")
+        if self._lock_id in used or not self.path.is_dir():
+            return False
+        leftover = self.path.with_name(self.path.name + OLD_SUFFIX)
+        if leftover.exists() and not remove_tree(leftover):
+            LOGGER.warning("No se pudo borrar %s (restos de un intento anterior); se "
+                           "intentará en la siguiente limpieza", leftover)
+            return False
+        return _remove_engine(self.path, what="el motor de cálculo")
 
     def plan_install(self, source: WheelSource, *, online_access: bool) -> InstallPlan:
         """El plan de instalar el motor desde ``source`` (RF-004-20, RF-004-23,
@@ -1006,10 +1030,11 @@ def _folder_names(folder: Path) -> list[str]:
         return []
 
 
-def _remove_engine(folder: Path) -> bool:
-    """Aparta el motor ``folder`` a ``<lock_id>.old`` y lo borra (RF-004-27). Si no se deja
-    apartar (un worker, de esta sesión o de otra, tiene abierto algo suyo: está en uso), lo
-    deja como está. Dice si se borró."""
+def _remove_engine(folder: Path, *, what: str = "el motor de cálculo anterior") -> bool:
+    """Aparta el motor ``folder`` a ``<lock_id>.old`` y lo borra (RF-004-27; y
+    :meth:`ComputeEnvironment.remove`). Si no se deja apartar (un worker, de esta sesión o
+    de otra, tiene abierto algo suyo: está en uso), lo deja como está. Dice si se borró;
+    ``what`` lo nombra en el registro técnico."""
     aside = folder.with_name(folder.name + OLD_SUFFIX)
     if aside.exists():
         return False  # quedan restos de otro intento que no se pudieron borrar (se avisó)
@@ -1018,15 +1043,14 @@ def _remove_engine(folder: Path) -> bool:
     except FileNotFoundError:
         return False  # otra sesión de Blender lo acaba de quitar
     except OSError as exc:
-        LOGGER.info("Se conserva el motor de cálculo anterior %s: está en uso (%s); se "
-                    "borrará en la siguiente limpieza", folder, exc)
+        LOGGER.info("Se conserva %s %s: está en uso (%s); se borrará en la siguiente "
+                    "limpieza", what, folder, exc)
         return False
     if not remove_tree(aside):
-        LOGGER.warning("No se pudo borrar del todo el motor de cálculo anterior %s (apartado "
-                       "en %s, ya no se usa); se intentará en la siguiente limpieza",
-                       folder, aside)
+        LOGGER.warning("No se pudo borrar del todo %s %s (apartado en %s, ya no se usa); "
+                       "se intentará en la siguiente limpieza", what, folder, aside)
         return False
-    LOGGER.info("Borrado el motor de cálculo anterior %s", folder)
+    LOGGER.info("Borrado %s %s", what, folder)
     return True
 
 

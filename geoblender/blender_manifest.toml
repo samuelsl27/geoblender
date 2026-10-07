@@ -19,6 +19,7 @@ wheels = []
 
 [permissions]
 files = "Leer y escribir proyectos, importar datos y exportar resultados"
+network = "Descargar el motor de cálculo desde PyPI"
 
 [build]
 paths_exclude_pattern = [

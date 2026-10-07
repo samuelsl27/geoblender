@@ -208,6 +208,49 @@ class EnvironmentStatusTest(unittest.TestCase):
         self.assertEqual(interp.lock_id, env.lock_id)
 
 
+class RemoveEngineTest(unittest.TestCase):
+    def test_remove_only_when_installed_and_unused(self) -> None:
+        """RF-004-19: ``remove(in_use=…)`` borra el motor de este lock (y los restos
+        ``<lock_id>.old`` de un intento anterior) solo cuando se pide, que es después de que
+        el usuario lo confirme en su diálogo (``geoblender.jobs_setup_runtime``). Sin motor
+        no hay nada que borrar ni se crea nada; con un trabajo de esta sesión que lo usa
+        (``in_use``) o con un fichero suyo abierto (un worker de otra sesión de Blender) lo
+        conserva tal cual; nunca toca el motor de otro lock ni una instalación a medias
+        (``.partial``, quizá en marcha en otra sesión). Un texto suelto como ``in_use`` es
+        :class:`TypeError`."""
+        lock = runtime.read_lock()
+        with _support.jobs_tmp() as base:
+            user_dir = base / "usuario"
+            env = runtime.ComputeEnvironment(user_dir, lock)
+            self.assertFalse(env.remove(in_use=()))
+            self.assertFalse(user_dir.exists())
+            (env.path / "site").mkdir(parents=True)
+            _write_runtime_json(env.path, env.lock_id)
+            other = env.runtime_dir / ("0" * 12) / "site"
+            other.mkdir(parents=True)
+            staged = env.staged_site
+            staged.mkdir(parents=True)
+            leftover = env.path.with_name(env.lock_id + runtime.OLD_SUFFIX)
+            leftover.mkdir()
+            self.assertEqual(env.status(), "ready")
+            with self.assertRaises(TypeError):
+                env.remove(in_use=env.lock_id)
+            self.assertFalse(env.remove(in_use={env.lock_id}))
+            self.assertEqual(env.status(), "ready")
+            held = env.site_dir() / "numpy_de_otra_sesion.py"
+            held.write_bytes(b"")
+            with held.open("rb"):
+                self.assertFalse(env.remove(in_use=()))
+            self.assertEqual(env.status(), "ready")
+            self.assertTrue(env.remove(in_use={"0" * 12}))
+            self.assertFalse(env.path.exists())
+            self.assertFalse(leftover.exists())
+            self.assertTrue(other.is_dir())
+            self.assertTrue(staged.is_dir())
+            self.assertEqual(env.status(), "outdated")
+            self.assertFalse(env.remove(in_use=()))
+
+
 class InstallPlanTest(unittest.TestCase):
     def test_plan_shows_source_packages_sizes_and_destination(self) -> None:
         """RF-004-19, RF-004-20, RF-004-23, RF-004-24: el plan lista el origen, cada paquete

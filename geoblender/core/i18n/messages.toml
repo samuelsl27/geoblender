@@ -1179,3 +1179,169 @@ es = "Descartado el trabajo «{job}» ({size} MB liberados)"
 
 ["The job «{job}» is still running: it cannot be discarded"]
 es = "El trabajo «{job}» sigue en marcha: no se puede descartar"
+
+# El motor de cálculo con el consentimiento del usuario (spec 004, T32; RF-004-19 a
+# RF-004-25; plan 004 §5.3.2 y §5.5). «Action», «Licence», «Compute engine», «Wheel store»,
+# «PyPI» y sus descripciones ya están arriba.
+
+["State"]
+es = "Estado"
+
+["Show the state of the compute engine; if it is missing, out of date or damaged, offer to install it"]
+es = "Muestra el estado del motor de cálculo; si falta, está desactualizado o dañado, ofrece instalarlo"
+
+["Install"]
+es = "Instalar"
+
+["Install the compute engine after showing what is installed, from where, with which licences and how much it takes"]
+es = "Instala el motor de cálculo después de enseñar qué se instala, de dónde, con qué licencias y cuánto ocupa"
+
+["Update"]
+es = "Actualizar"
+
+["Install the compute engine of this version of Geoblender, which replaces the one of an earlier version"]
+es = "Instala el motor de cálculo de esta versión de Geoblender, que sustituye al de una versión anterior"
+
+["Verify"]
+es = "Verificar"
+
+["Check the installed compute engine: package versions, numpy, its BLAS and a 2000 × 2000 product"]
+es = "Comprueba el motor de cálculo instalado: versiones de los paquetes, numpy, su BLAS y un producto 2000 × 2000"
+
+["Repair"]
+es = "Reparar"
+
+["Install the compute engine again over a damaged or unverified one"]
+es = "Vuelve a instalar el motor de cálculo sobre uno dañado o sin verificar"
+
+["Remove"]
+es = "Quitar"
+
+["Delete the compute engine of this version of Geoblender, after confirming it"]
+es = "Borra el motor de cálculo de esta versión de Geoblender, tras confirmarlo"
+
+["As in the preferences"]
+es = "Como en las preferencias"
+
+["The source chosen in the preferences: by default, the wheel store if one is configured; otherwise PyPI"]
+es = "El origen elegido en las preferencias: por defecto, el almacén de ruedas si hay uno configurado y, si no, PyPI"
+
+["What to do with the compute engine"]
+es = "Qué hacer con el motor de cálculo"
+
+["Source"]
+es = "Origen"
+
+["Where the wheels of the compute engine come from"]
+es = "De dónde salen las ruedas del motor de cálculo"
+
+["Confirmation"]
+es = "Confirmación"
+
+["What the user confirmed in the dialog (the dialog fills it in)"]
+es = "Lo que el usuario confirmó en el diálogo (lo rellena el diálogo)"
+
+["The compute engine lock of this version of Geoblender could not be read"]
+es = "No se pudo leer el lock del motor de cálculo de esta versión de Geoblender"
+
+["Install the compute engine"]
+es = "Instalar el motor de cálculo"
+
+["Update the compute engine"]
+es = "Actualizar el motor de cálculo"
+
+["Repair the compute engine"]
+es = "Reparar el motor de cálculo"
+
+["Remove the compute engine"]
+es = "Quitar el motor de cálculo"
+
+["The compute engine is already installed and verified"]
+es = "El motor de cálculo ya está instalado y verificado"
+
+["The compute engine is already being installed or verified"]
+es = "Ya se está instalando o verificando el motor de cálculo"
+
+["Installing the compute engine needs your confirmation in its dialog"]
+es = "Instalar el motor de cálculo necesita su confirmación en el diálogo"
+
+["What is going to be installed changed after it was shown: ask for it again"]
+es = "Lo que se va a instalar cambió después de enseñarlo: vuelva a pedirlo"
+
+["Installing the compute engine: follow its progress in the status bar"]
+es = "Instalando el motor de cálculo: siga su avance en la barra de estado"
+
+["Verifying the compute engine: follow its progress in the status bar"]
+es = "Verificando el motor de cálculo: siga su avance en la barra de estado"
+
+["The compute engine is not installed"]
+es = "El motor de cálculo no está instalado"
+
+["Removing the compute engine needs your confirmation in its dialog"]
+es = "Quitar el motor de cálculo necesita su confirmación en el diálogo"
+
+["The compute engine is in use: close the calculations that use it and try again"]
+es = "El motor de cálculo está en uso: cierre los cálculos que lo usan y vuelva a intentarlo"
+
+["Removed the compute engine ({size} MB freed)"]
+es = "Quitado el motor de cálculo ({size} MB liberados)"
+
+["No wheel store folder is set in the preferences"]
+es = "No hay ninguna carpeta del almacén de ruedas en las preferencias"
+
+["The wheel store folder «{folder}» is not a full path"]
+es = "La carpeta del almacén de ruedas «{folder}» no es una ruta completa"
+
+["Source: wheel store {folder}"]
+es = "Origen: almacén de ruedas {folder}"
+
+["Source: PyPI (internet)"]
+es = "Origen: PyPI (internet)"
+
+["Package"]
+es = "Paquete"
+
+["Version"]
+es = "Versión"
+
+["Also includes: {licenses}"]
+es = "Incluye además: {licenses}"
+
+["Download: {download} MB · On disk: {disk} MB"]
+es = "Descarga: {download} MB · En disco: {disk} MB"
+
+["Folder: {folder}"]
+es = "Carpeta: {folder}"
+
+["Used only in the heavy calculations, in a separate process; it does not change Blender's Python"]
+es = "Se usa solo en los cálculos pesados, en un proceso aparte; no cambia el Python de Blender"
+
+["Ready · numpy {numpy} · BLAS {blas} · {n} × {n} in {seconds} s"]
+es = "Listo · numpy {numpy} · BLAS {blas} · {n} × {n} en {seconds} s"
+
+["Ready"]
+es = "Listo"
+
+["Not installed"]
+es = "No instalado"
+
+["Out of date: it belongs to another version of Geoblender"]
+es = "Desactualizado: es de otra versión de Geoblender"
+
+["Damaged or not verified: it has to be repaired"]
+es = "Dañado o sin verificar: hay que repararlo"
+
+["Compute engine: {state}"]
+es = "Motor de cálculo: {state}"
+
+["State: {state}"]
+es = "Estado: {state}"
+
+["Being installed or verified: follow its progress in the status bar"]
+es = "Instalándose o verificándose: siga su avance en la barra de estado"
+
+["Last attempt: {error}"]
+es = "Último intento: {error}"
+
+["The folder {folder} is deleted ({size} MB); it can be installed again later"]
+es = "Se borra la carpeta {folder} ({size} MB); se puede volver a instalar después"

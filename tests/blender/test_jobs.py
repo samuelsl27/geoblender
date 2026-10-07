@@ -102,14 +102,35 @@ una caída previa con un proyecto abierto) y la de los botones de la lista: con 
 Blender más, el reparto de ``tools/check.py`` por número de pruebas cambia y alarga su parte
 más lenta.
 
+T32 — el motor de cálculo con el consentimiento del usuario: el operador real
+``geoblender.jobs_setup_runtime`` (Herramientas ▸ Trabajos ▸ Motor de cálculo…) y su diálogo
+(``bl/ops/jobs.py``, ``bl/ui/jobs.py``), y el motor del lock de esta versión en el lanzador
+de la sesión:
+
+- RF-004-19: habilitar Geoblender en un perfil limpio no crea ``runtime/`` (prueba de T22,
+  ampliada); nada se instala ni se borra sin la confirmación del diálogo;
+- RF-004-20, RF-004-24: antes de hacer nada, el diálogo enseña el origen, los paquetes con su
+  versión y su licencia, los MB de descarga y en disco y la carpeta, con «Instalar» y
+  «Cancelar»; «Instalar» lanza la cadena de instalación con el plan que se enseñó;
+- RF-004-23: PyPI con el acceso en línea desactivado (el de ``--factory-startup``) no abre el
+  diálogo ni se conecta, y dice las dos salidas;
+- RF-004-25: un trabajo que necesita el motor y no lo tiene abre el mismo diálogo (instalar,
+  actualizar o reparar, según el estado del motor);
+- con el motor listo, su estado, Verificar y Quitar (con confirmación).
+
+La cadena de instalación y de verificación (``jobs.runtime.RuntimeSetup``, que prueban
+``tests/unit/jobs``) se sustituye: en las pruebas de Blender nada se instala de verdad.
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
+import contextlib
 import datetime as dt
 import importlib
 import json
 import os
 import shutil
+import socket
 import stat
 import statistics
 import sys
@@ -117,6 +138,8 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest import mock
@@ -1962,7 +1985,8 @@ class SessionRunnerTest(unittest.TestCase):
         de la sesión existe, abierto, con la raíz sin proyecto de sus datos de usuario
         (``cache/_sin_proyecto/jobs``), sin rutas prohibidas y con el máximo de las
         preferencias; la carpeta del motor (``runtime/``) se resuelve también ahí, y
-        habilitar no crea ninguna de las dos."""
+        habilitar no crea ninguna de las dos (CE-004-04). El lanzador tiene el motor de
+        cálculo del lock de esta versión en esa carpeta, sin instalar."""
         self.assertTrue(module_name().startswith("bl_ext.gb_tests."))
         self.assertEqual(self.ops.user_dir(), self.user)
         self.assertEqual(self.ops.jobs_root(None), self.no_project_root)
@@ -1977,6 +2001,13 @@ class SessionRunnerTest(unittest.TestCase):
                          _addon_preferences().jobs.max_parallel_jobs)
         self.assertEqual(self.after_enable, (self.root_existed, self.runtime_existed))
         self.assertFalse(self.runtime_existed)
+        runtime = _module("jobs.runtime")
+        engine = runner.runtime
+        self.assertIsInstance(engine, runtime.ComputeEnvironment)
+        self.assertEqual(engine.runtime_dir, self.ops.runtime_dir())
+        self.assertEqual(engine.lock_id, runtime.read_lock().lock_id)
+        self.assertEqual(engine.status(), "missing")
+        self.assertFalse((self.user / "runtime").exists())
 
     def test_sys_path_unchanged_by_jobs(self) -> None:
         """RF-004-03, RF-004-25: el ``sys.path`` de Blender es idéntico antes y después de
@@ -2206,6 +2237,383 @@ class SessionShutdownTest(unittest.TestCase):
         self.assertInterruptedWithoutProcess(time.monotonic() - started)
         blender_ext.disable()
         self.assertNotIn(handler, bpy.app.handlers.exit_pre)
+
+
+# --- T32: el motor de cálculo, con el consentimiento del usuario -------------------------
+
+SETUP_RUNTIME = "geoblender.jobs_setup_runtime"
+SETUP_ACTIONS = ["STATUS", "INSTALL", "UPDATE", "VERIFY", "REPAIR", "REMOVE"]
+SETUP_SOURCES = ["AUTO", "WHEELHOUSE", "PYPI"]
+OTHER_LOCK_ID = "0123456789ab"
+CONSENT_NOTE = ("Se usa solo en los cálculos pesados, en un proceso aparte; no cambia el "
+                "Python de Blender")
+NEEDS_CONFIRMATION = "Instalar el motor de cálculo necesita su confirmación en el diálogo"
+PLAN_CHANGED = "Lo que se va a instalar cambió después de enseñarlo: vuelva a pedirlo"
+SETUP_TITLES = {"INSTALL": "Instalar el motor de cálculo",
+                "UPDATE": "Actualizar el motor de cálculo",
+                "REPAIR": "Reparar el motor de cálculo"}
+
+
+@contextlib.contextmanager
+def _no_network() -> Iterator[list[str]]:
+    """Los sockets y ``urlopen`` cambiados por funciones que anotan el intento y fallan; da
+    la lista de intentos (vacía si nadie intentó conectarse)."""
+    calls: list[str] = []
+
+    def refuse(name: str) -> object:
+        def call(*_args: object, **_kwargs: object) -> None:
+            calls.append(name)
+            raise AssertionError(f"intento de usar la red: {name}")
+        return call
+
+    with contextlib.ExitStack() as stack:
+        for module, name in ((socket, "socket"), (socket, "create_connection"),
+                             (socket, "getaddrinfo"), (urllib.request, "urlopen")):
+            stack.enter_context(mock.patch.object(module, name, side_effect=refuse(name)))
+        yield calls
+
+
+class RuntimeSetupTest(unittest.TestCase):
+    """``geoblender.jobs_setup_runtime`` con un lanzador cuyo motor de cálculo (el del lock
+    real) vive en unos datos de usuario temporales, y un almacén de ruedas con ficheros del
+    nombre de las del lock. El diálogo de Blender se sustituye (en ``blender -b`` no se
+    puede abrir) y también la cadena de instalación y de verificación
+    (``jobs.runtime.RuntimeSetup``, que prueban ``tests/unit/jobs``): nada se instala."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.enable()
+        cls.ops = _module("bl.ops.jobs")
+        cls.ui = _module("bl.ui.jobs")
+        cls.runtime = _module("jobs.runtime")
+        cls.runner_mod = _module("jobs.runner")
+        cls.messages = _module("jobs.messages")
+        cls.i18n = _module("core.i18n")
+        cls.sysinfo = _module("core.sysinfo")
+        cls.commands = _module("bl.ui.commands")
+        cls.registry = _module("bl.ui.registry")
+        cls.cat = _module("core.catalog").load()
+        cls.prefs = _addon_preferences().jobs
+        cls.lock = cls.runtime.read_lock()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.unload()
+
+    def setUp(self) -> None:
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))
+        self.user = tmp / "usuario"
+        self.env = self.runtime.ComputeEnvironment(self.user, self.lock)
+        package_dir = Path(sys.modules[module_name()].__file__).parent
+        self.runner = self.runner_mod.JobRunner(
+            jobs_root=tmp / "jobs", package_dir=package_dir,
+            blender_python=Path(sys.executable), runtime=self.env)
+        self.monitor = self.ops.JobMonitor(clock=_Clock())
+        patch = mock.patch.object(self.ops, "MONITOR", self.monitor)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(self.monitor.stop)
+        self.addCleanup(self.runner.shutdown, timeout_s=2.0)
+        self.monitor.attach(self.runner)
+        self.store = tmp / "almacen"
+        self.store.mkdir()
+        for package in self.lock.packages:
+            (self.store / package.filename).write_bytes(b"")
+        for name in ("runtime_source", "wheelhouse_dir"):
+            self.addCleanup(setattr, self.prefs, name, getattr(self.prefs, name))
+        self.prefs.runtime_source = "AUTO"
+        self.prefs.wheelhouse_dir = ""
+        self.dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        self.popup = mock.Mock(return_value={"RUNNING_MODAL"})
+        self.context = SimpleNamespace(window_manager=SimpleNamespace(
+            invoke_props_dialog=self.dialog, invoke_popup=self.popup))
+        self.addCleanup(self.ops.forget_setup)
+
+    def operator(self, **properties: object) -> SimpleNamespace:
+        """El ``self`` del operador con ``properties`` y sus avisos en ``reports``."""
+        reports: list[tuple[set[str], str]] = []
+        values = {"action": "STATUS", "source": "AUTO", "confirmation": "", **properties}
+        return SimpleNamespace(**values, reports=reports,
+                               report=lambda kind, text: reports.append((set(kind), text)))
+
+    def invoke(self, **properties: object) -> tuple[set[str], SimpleNamespace]:
+        fake = self.operator(**properties)
+        cls = self.ops.GEOBLENDER_OT_jobs_setup_runtime
+        return cls.invoke(fake, self.context, None), fake
+
+    def execute(self, fake: SimpleNamespace) -> set[str]:
+        fake.reports.clear()
+        return self.ops.GEOBLENDER_OT_jobs_setup_runtime.execute(fake, bpy.context)
+
+    def drawn(self, fake: SimpleNamespace) -> FakeLayout:
+        return draw(self.ops.GEOBLENDER_OT_jobs_setup_runtime, bpy.context,
+                    action=fake.action, source=fake.source, confirmation=fake.confirmation)
+
+    def mb(self, size: int) -> str:
+        return self.i18n.format_number(size / 1e6, 1)
+
+    def make_ready(self) -> None:
+        """Un motor «instalado y verificado» a mano en los datos de usuario temporales."""
+        self.env.site_dir().mkdir(parents=True)
+        (self.env.site_dir() / "numpy.py").write_bytes(b"x" * 250_000)
+        verification = {"ok": True, "numpy": "2.5.3", "blas": "scipy-openblas",
+                        "matmul_n": 2000, "matmul_s": 0.0431}
+        (self.env.path / self.runtime.RUNTIME_FILE).write_text(json.dumps({
+            "schema": self.runtime.RUNTIME_SCHEMA, "lock_id": self.env.lock_id,
+            "verification": verification}), encoding="utf-8")
+        self.assertEqual(self.env.status(), "ready")
+
+    def test_operator_from_the_catalog(self) -> None:
+        """RF-004-19, RF-004-20: ``geoblender.jobs_setup_runtime`` es el operador real de
+        ``bl/ops/jobs.py`` con el ``bl_idname``, el nombre y la descripción del catálogo de
+        la 003 (Herramientas ▸ Trabajos ▸ Motor de cálculo…), que ya no genera su
+        provisional, y lo dibuja activo; ``action`` (``STATUS`` por defecto, ``INSTALL``,
+        ``UPDATE``, ``VERIFY``, ``REPAIR``, ``REMOVE``) y ``source`` (``AUTO`` por defecto:
+        el de las preferencias; ``WHEELHOUSE``, ``PYPI``), y ``confirmation`` (oculta: lo
+        que el usuario confirmó en el diálogo), ninguna guardada para la vez siguiente. Sin
+        lanzador, o con uno sin motor de cálculo, su ``poll`` falla y lo dice."""
+        cls = self.commands.registered_class(SETUP_RUNTIME)
+        self.assertIs(cls, self.ops.GEOBLENDER_OT_jobs_setup_runtime)
+        self.assertIn(cls, _module("bl.ops").classes)
+        self.assertNotIn(cls, set(self.registry.provisional_classes()))
+        self.assertTrue(self.commands.is_available(SETUP_RUNTIME))
+        cmd = self.cat.commands[SETUP_RUNTIME]
+        self.assertEqual(cmd.label, "Compute engine…")
+        self.assertEqual(cls.bl_label, self.commands.text(cmd.label))
+        self.assertEqual(cls.bl_description, self.commands.text(cmd.description))
+        self.assertEqual(cls.bl_translation_context, self.commands.TRANSLATION_CONTEXT)
+        menu = self.commands.registered_class(JOBS_MENU)
+        drawn = {item.target: item for item in draw(menu, bpy.context).of_kind("operator")}
+        self.assertTrue(drawn[SETUP_RUNTIME].enabled)
+        props = bpy.ops.geoblender.jobs_setup_runtime.get_rna_type().properties
+        self.assertEqual([item.identifier for item in props["action"].enum_items],
+                         SETUP_ACTIONS)
+        self.assertEqual(props["action"].default, "STATUS")
+        self.assertEqual([item.identifier for item in props["source"].enum_items],
+                         SETUP_SOURCES)
+        self.assertEqual(props["source"].default, "AUTO")
+        self.assertEqual(props["confirmation"].default, "")
+        self.assertTrue(props["confirmation"].is_hidden)
+        for name in ("action", "source", "confirmation"):
+            with self.subTest(propiedad=name):
+                self.assertTrue(props[name].is_skip_save)
+        with mock.patch.object(cls, "poll_message_set") as message:
+            self.assertTrue(cls.poll(bpy.context))
+            self.monitor.attach(SimpleNamespace(closed=False, runtime=None))
+            self.assertFalse(cls.poll(bpy.context))
+            self.monitor.attach(None)
+            self.assertFalse(cls.poll(bpy.context))
+        self.assertEqual([call.args[0] for call in message.call_args_list], [
+            "No se pudo leer el lock del motor de cálculo de esta versión de Geoblender",
+            NO_RUNNER])
+
+    def test_pypi_without_online_access_explains_both_ways_out(self) -> None:
+        """RF-004-23, RF-004-19: con el acceso en línea de Blender desactivado (el de
+        ``--factory-startup``), instalar desde PyPI (elegido en el operador, en las
+        preferencias o por ``AUTO`` sin almacén configurado) no abre el diálogo, no intenta
+        ninguna conexión, no crea nada en los datos de usuario y dice las dos salidas:
+        activar «Permitir acceso en línea» o configurar el almacén de ruedas. Ejecutarlo
+        sin el diálogo (desde un guion) tampoco instala nada: necesita la confirmación."""
+        self.assertFalse(bpy.app.online_access)
+        self.assertFalse(self.ops.online_access())
+        expected = self.messages.render("network_not_allowed")
+        self.assertIn("«Permitir acceso en línea»", expected)
+        self.assertIn("almacén de ruedas", expected)
+        cases = (("AUTO", "PYPI", ""), ("PYPI", "AUTO", ""), ("AUTO", "AUTO", ""),
+                 ("AUTO", "PYPI", str(self.store)))
+        with _no_network() as calls, \
+                mock.patch.object(self.runtime.RuntimeSetup, "install") as install:
+            for action in ("STATUS", "INSTALL"):
+                for preference, source, store in cases:
+                    with self.subTest(action=action, preferencia=preference, source=source,
+                                      almacen=bool(store)):
+                        self.prefs.runtime_source = preference
+                        self.prefs.wheelhouse_dir = store
+                        result, fake = self.invoke(action=action, source=source)
+                        self.assertEqual(result, {"CANCELLED"})
+                        self.assertEqual(fake.reports, [({"ERROR"}, expected)])
+            self.dialog.assert_not_called()
+            fake = self.operator(action="INSTALL", source="PYPI")
+            self.assertEqual(self.execute(fake), {"CANCELLED"})
+            self.assertEqual(fake.reports, [({"ERROR"}, expected)])
+            self.prefs.wheelhouse_dir = str(self.store)
+            fake = self.operator(action="INSTALL", source="WHEELHOUSE")
+            self.assertEqual(self.execute(fake), {"CANCELLED"})
+            self.assertEqual(fake.reports, [({"ERROR"}, NEEDS_CONFIRMATION)])
+        self.assertEqual(calls, [])
+        install.assert_not_called()
+        self.assertFalse(self.user.exists())
+
+    def test_consent_dialog_shows_the_plan_before_anything(self) -> None:
+        """RF-004-20, RF-004-24, RF-004-19: «Motor de cálculo…» sin motor abre, antes de
+        hacer nada, el diálogo «Instalar el motor de cálculo» con «Instalar» y «Cancelar»:
+        el origen (el almacén de las preferencias, sin acceso en línea), una fila por
+        paquete con su versión y su licencia (y las que incluye su rueda), los MB de
+        descarga y en disco del lock, la carpeta de destino y que no cambia el Python de
+        Blender; no crea nada. «Instalar» lanza la cadena de instalación con el plan que se
+        enseñó y el consentimiento (usuario, equipo y huella de ese plan), y la sigue en la
+        barra de estado; si lo que se iba a instalar cambió, no instala. Con el motor de
+        otra versión de Geoblender el diálogo es «Actualizar»; con uno dañado, «Reparar»;
+        con PyPI y el acceso en línea, el origen es PyPI; uno listo no se reinstala."""
+        self.prefs.wheelhouse_dir = str(self.store)
+        result, fake = self.invoke()
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        self.dialog.assert_called_once()
+        self.assertIs(self.dialog.call_args.args[0], fake)
+        options = self.dialog.call_args.kwargs
+        self.assertEqual((options["title"], options["confirm_text"], options["translate"]),
+                         (SETUP_TITLES["INSTALL"], "Instalar", False))
+        plan = self.env.plan_install(self.runtime.WheelSource.wheelhouse(self.store),
+                                     online_access=False)
+        self.assertEqual((fake.action, fake.confirmation), ("INSTALL", plan.digest))
+        (numpy,) = self.lock.packages
+        self.assertEqual(self.drawn(fake).texts(), [
+            f"Origen: almacén de ruedas {self.store}",
+            "Paquete", "Versión", "Licencia",
+            numpy.name, numpy.version, numpy.license,
+            "Incluye además: " + ", ".join(numpy.bundled_licenses),
+            f"Descarga: {self.mb(self.lock.download_size)} MB · "
+            f"En disco: {self.mb(self.lock.installed_size)} MB",
+            f"Carpeta: {self.env.path}",
+            CONSENT_NOTE,
+        ])
+        self.assertEqual((self.mb(self.lock.download_size),
+                          self.mb(self.lock.installed_size)), ("12,6", "53,9"))
+        self.assertFalse(self.user.exists())
+        setup = SimpleNamespace(done=False, state="running", error_text=None, check=None)
+        with mock.patch.object(self.runtime.RuntimeSetup, "install",
+                               return_value=setup) as install:
+            changed = self.operator(action="INSTALL", confirmation="0" * 64)
+            self.assertEqual(self.execute(changed), {"CANCELLED"})
+            self.assertEqual(changed.reports, [({"ERROR"}, PLAN_CHANGED)])
+            install.assert_not_called()
+            self.assertEqual(self.execute(fake), {"FINISHED"})
+        install.assert_called_once()
+        runner, env, shown, consent = install.call_args.args
+        self.assertIs(runner, self.runner)
+        self.assertIs(env, self.env)
+        self.assertEqual(shown, plan)
+        self.assertEqual((consent.plan_digest, consent.user, consent.host),
+                         (plan.digest, self.sysinfo.user_name(), self.sysinfo.host_name()))
+        self.assertTrue(callable(install.call_args.kwargs["on_done"]))
+        self.assertEqual(fake.reports, [({"INFO"}, "Instalando el motor de cálculo: siga su "
+                                                  "avance en la barra de estado")])
+        self.assertTrue(bpy.app.timers.is_registered(self.ops.tick))
+        result, again = self.invoke(action="INSTALL")
+        self.assertEqual(result, {"CANCELLED"})
+        self.assertEqual(again.reports, [({"WARNING"}, "Ya se está instalando o verificando "
+                                                       "el motor de cálculo")])
+        self.ops.forget_setup()
+
+        other = self.env.runtime_dir / OTHER_LOCK_ID / "site"
+        other.mkdir(parents=True)
+        self.dialog.reset_mock()
+        _result, update = self.invoke()
+        self.assertEqual((update.action, self.dialog.call_args.kwargs["title"]),
+                         ("UPDATE", SETUP_TITLES["UPDATE"]))
+        self.env.path.mkdir()
+        _result, repair = self.invoke()
+        self.assertEqual((repair.action, self.dialog.call_args.kwargs["title"]),
+                         ("REPAIR", SETUP_TITLES["REPAIR"]))
+        with mock.patch.object(self.ops, "online_access", return_value=True):
+            _result, pypi = self.invoke(action="INSTALL", source="PYPI")
+            self.assertEqual(self.drawn(pypi).texts()[0], "Origen: PyPI (internet)")
+        self.dialog.reset_mock()
+        _remove_tree(self.env.path)
+        self.make_ready()
+        for action in ("INSTALL", "UPDATE"):
+            with self.subTest(listo=action):
+                result, ready = self.invoke(action=action)
+                self.assertEqual(result, {"CANCELLED"})
+                self.assertEqual(ready.reports, [(
+                    {"INFO"}, "El motor de cálculo ya está instalado y verificado")])
+        self.dialog.assert_not_called()
+
+    def test_compute_job_without_engine_offers_the_dialog(self) -> None:
+        """RF-004-25: lanzar un trabajo que necesita el motor de cálculo (el autodiagnóstico
+        ``MATMUL_COMPUTE``) sin motor no calcula nada (queda «Fallido» con
+        ``runtime_missing``, sin proceso) y abre el diálogo de instalación; si el motor es
+        de otra versión de Geoblender, el de actualizarlo, y si está dañado, el de
+        repararlo. En ``blender -b`` no hay a quién enseñarle el diálogo: no se abre."""
+        operator = self.ops.GEOBLENDER_OT_jobs_run_selftest
+        offered = []
+        missing = self.messages.render("runtime_missing")
+        with mock.patch.object(self.ops, "_invoke_setup",
+                               side_effect=lambda action: offered.append(action) or True):
+            for prepare in (lambda: None,
+                            lambda: (self.env.runtime_dir / OTHER_LOCK_ID).mkdir(parents=True),
+                            lambda: self.env.path.mkdir()):
+                prepare()
+                self.assertEqual(_reports(operator, mode="MATMUL_COMPUTE"),
+                                 ({"CANCELLED"}, [({"ERROR"}, missing)]))
+        self.assertEqual(offered, ["INSTALL", "UPDATE", "REPAIR"])
+        failed = [s for s in self.runner.snapshots()]
+        self.assertEqual([(s.state, s.error.code) for s in failed],
+                         [("failed", "runtime_missing")] * 3)
+        self.assertTrue(bpy.app.background)
+        operators = mock.Mock()
+        with mock.patch.object(self.ops, "bpy", SimpleNamespace(app=bpy.app, ops=operators)):
+            self.assertFalse(self.ops._invoke_setup("INSTALL"))
+        self.assertEqual(operators.mock_calls, [])
+
+    def test_ready_engine_state_verify_and_remove(self) -> None:
+        """RF-004-19, RF-004-20, RF-004-22: con el motor listo, «Motor de cálculo…» enseña
+        su estado («Listo · numpy · BLAS · 2000 × 2000 en … s», también en la lista de
+        trabajos), su carpeta y los botones Verificar, Reparar y Quitar. Verificar lanza la
+        verificación. Quitar pide antes confirmación en un diálogo con la carpeta y sus MB;
+        sin ella (desde un guion) o con un trabajo de la sesión que lo usa no borra nada; con
+        ella, borra el motor e informa de los MB liberados."""
+        self.make_ready()
+        ready = "Listo · numpy 2.5.3 · BLAS scipy-openblas · 2000 × 2000 en 0,043 s"
+        result, status = self.invoke()
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        self.popup.assert_called_once()
+        self.dialog.assert_not_called()
+        layout = self.drawn(status)
+        self.assertEqual(layout.texts()[:3], ["Motor de cálculo", f"Estado: {ready}",
+                                              f"Carpeta: {self.env.path}"])
+        buttons = [(item.target, item.properties.action, item.text)
+                   for item in layout.of_kind("operator")]
+        self.assertEqual(buttons, [(SETUP_RUNTIME, "VERIFY", "Verificar"),
+                                   (SETUP_RUNTIME, "REPAIR", "Reparar"),
+                                   (SETUP_RUNTIME, "REMOVE", "Quitar")])
+        self.assertIn(f"Motor de cálculo: {ready}", _panel(self.ui).texts())
+        setup = SimpleNamespace(done=False, state="running", error_text=None, check=None)
+        with mock.patch.object(self.runtime.RuntimeSetup, "verify",
+                               return_value=setup) as verify:
+            verify_op = self.operator(action="VERIFY")
+            self.assertEqual(self.execute(verify_op), {"FINISHED"})
+        self.assertEqual(verify.call_args.args, (self.runner, self.env))
+        self.assertEqual(verify_op.reports, [({"INFO"}, "Verificando el motor de cálculo: "
+                                                        "siga su avance en la barra de estado")])
+        self.ops.forget_setup()
+        size = self.mb(_bytes(self.env.path))
+        result, remove = self.invoke(action="REMOVE")
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        options = self.dialog.call_args.kwargs
+        self.assertEqual((options["title"], options["confirm_text"]),
+                         ("Quitar el motor de cálculo", "Quitar"))
+        self.assertEqual(remove.confirmation, str(self.env.path))
+        self.assertEqual(self.drawn(remove).texts(), [
+            f"Se borra la carpeta {self.env.path} ({size} MB); se puede volver a instalar "
+            "después"])
+        unconfirmed = self.operator(action="REMOVE")
+        self.assertEqual(self.execute(unconfirmed), {"CANCELLED"})
+        self.assertEqual(unconfirmed.reports, [(
+            {"ERROR"}, "Quitar el motor de cálculo necesita su confirmación en el diálogo")])
+        with mock.patch.object(self.runner, "locks_in_use", return_value={self.env.lock_id}):
+            self.assertEqual(self.execute(remove), {"CANCELLED"})
+        self.assertEqual(remove.reports, [({"WARNING"}, (
+            "El motor de cálculo está en uso: cierre los cálculos que lo usan y vuelva a "
+            "intentarlo"))])
+        self.assertEqual(self.env.status(), "ready")
+        self.assertEqual(self.execute(remove), {"FINISHED"})
+        self.assertEqual(remove.reports, [(
+            {"INFO"}, f"Quitado el motor de cálculo ({size} MB liberados)")])
+        self.assertFalse(self.env.path.exists())
+        self.assertEqual(self.env.status(), "missing")
+        self.assertIn("Motor de cálculo: No instalado", _panel(self.ui).texts())
 
 
 if __name__ == "__main__":

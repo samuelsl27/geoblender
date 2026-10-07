@@ -40,6 +40,15 @@ de proyecto (:func:`forget_stored`), y los descartados salen al momento.
 
 Los textos salen al dibujar, en el idioma de Geoblender: los estados con ``core.i18n.tr`` y
 los mensajes del §8 con ``jobs.messages.render``.
+
+El motor de cálculo (spec 004, T32; RF-004-19, RF-004-20; plan 004 §5.5): la lista lleva,
+bajo su título, el estado del motor del lanzador (:func:`engine_state_text`: «Listo · numpy
+2.5.3 · BLAS scipy-openblas · 2000 × 2000 en 0,043 s», «No instalado», desactualizado o
+dañado). ``geoblender.jobs_setup_runtime`` (``bl/ops/jobs.py``) dibuja aquí su diálogo de
+consentimiento (:func:`draw_consent`: origen, una fila por paquete con su versión y su
+licencia, y las que incluye su rueda, MB de descarga y en disco, carpeta de destino y que no
+cambia el Python de Blender), el estado del motor con sus botones (:func:`draw_engine`) y la
+confirmación de quitarlo (:func:`draw_remove`).
 """
 
 from __future__ import annotations
@@ -54,8 +63,10 @@ import bpy
 
 from ...core.i18n import format_number, language, tr
 from ...jobs import cleanup, messages
+from ...jobs import runtime as jobs_runtime
 from ...jobs.records import ErrorInfo, InterpreterInfo
 from ...jobs.runner import JobRunner, JobSnapshot
+from ...jobs.runtime import ComputeEnvironment, InstallPlan, WheelSource
 from ...jobs.worker_api import UNKNOWN_BLAS
 from .. import compat
 from . import commands, statusbar
@@ -99,6 +110,31 @@ STATE_UNITS = 5
 LIST_BAR_UNITS = 6
 DURATION_UNITS = 4
 """Anchos de la lista de trabajos y de sus columnas, en unidades de interfaz."""
+
+SETUP_RUNTIME = "geoblender.jobs_setup_runtime"
+ENGINE_ICON = "PREFERENCES"
+SOURCE_ICONS: Mapping[str, str] = {
+    jobs_runtime.SOURCE_WHEELHOUSE: "DISK_DRIVE",
+    jobs_runtime.SOURCE_PYPI: "WORLD",
+}
+SETUP_ICONS: Mapping[str, str] = {
+    "INSTALL": "IMPORT",
+    "UPDATE": "IMPORT",
+    "VERIFY": "CHECKMARK",
+    "REPAIR": "TOOL_SETTINGS",
+    "REMOVE": "TRASH",
+}
+NOTE_ICON = "INFO"
+PACKAGE_UNITS = 6
+VERSION_UNITS = 4
+"""Anchos de las columnas Paquete y Versión del diálogo de consentimiento."""
+ENGINE_ACTIONS: Mapping[str, tuple[str, ...]] = {
+    # Lo que ofrece el estado del motor según cómo está (plan 004 §5.3.2).
+    jobs_runtime.STATUS_READY: ("VERIFY", "REPAIR", "REMOVE"),
+    jobs_runtime.STATUS_MISSING: ("INSTALL",),
+    jobs_runtime.STATUS_OUTDATED: ("UPDATE",),
+    jobs_runtime.STATUS_BROKEN: ("REPAIR", "REMOVE"),
+}
 
 _TEXTS: dict[tuple[str, str], dict[str, str]] = {}  # (tabla, idioma) → clave → texto
 _FOLDER_MB: dict[Path, float] = {}  # la carpeta de los trabajos medida al abrir la lista
@@ -445,6 +481,10 @@ def draw_list(layout: Any) -> None:
     if size is not None:
         layout.label(text=tr("Jobs folder: {size} MB", size=format_number(size, 1)),
                      icon=FOLDER_ICON, translate=False)
+    engine = getattr(runner, "runtime", None) if runner is not None else None
+    if isinstance(engine, ComputeEnvironment):
+        layout.label(text=tr("Compute engine: {state}", state=engine_state_text(engine)),
+                     icon=ENGINE_ICON, translate=False)
     snapshots = listed_jobs(runner)
     if not snapshots:
         layout.label(text=tr("There are no background jobs"), translate=False)
@@ -453,6 +493,144 @@ def draw_list(layout: Any) -> None:
     for snapshot in snapshots:
         layout.separator()
         _draw_job(layout, snapshot, frac=monitor.shown_frac(snapshot), discard=discard)
+
+
+# Motor de cálculo (RF-004-19, RF-004-20) -------------------------------------------------
+
+
+def _engine_state_texts() -> dict[str, str]:
+    """Estado del motor → su texto (sin los datos de la verificación)."""
+    return {
+        jobs_runtime.STATUS_READY: tr("Ready"),
+        jobs_runtime.STATUS_MISSING: tr("Not installed"),
+        jobs_runtime.STATUS_OUTDATED: tr(
+            "Out of date: it belongs to another version of Geoblender"),
+        jobs_runtime.STATUS_BROKEN: tr("Damaged or not verified: it has to be repaired"),
+    }
+
+
+def _action_texts() -> dict[str, str]:
+    """Acción de ``geoblender.jobs_setup_runtime`` → el texto de su botón."""
+    return {
+        "INSTALL": tr("Install"),
+        "UPDATE": tr("Update"),
+        "VERIFY": tr("Verify"),
+        "REPAIR": tr("Repair"),
+        "REMOVE": tr("Remove"),
+    }
+
+
+def _verified_text(check: object) -> str | None:
+    """«Listo · numpy … · BLAS … · 2000 × 2000 en … s» de la verificación ``check`` (la de
+    ``runtime.json``), o ``None`` si le falta algo."""
+    if not isinstance(check, Mapping):
+        return None
+    numpy, blas = check.get("numpy"), check.get("blas")
+    n, seconds = check.get("matmul_n"), check.get("matmul_s")
+    if not (isinstance(numpy, str) and isinstance(blas, str) and type(n) is int
+            and isinstance(seconds, int | float) and not isinstance(seconds, bool)):
+        return None
+    return tr("Ready · numpy {numpy} · BLAS {blas} · {n} × {n} in {seconds} s", numpy=numpy,
+              blas=blas, n=n, seconds=format_number(seconds, 3))
+
+
+def engine_state_text(env: ComputeEnvironment) -> str:
+    """El estado del motor de cálculo ``env`` en una línea: listo, con lo que midió su última
+    verificación («Listo · numpy 2.5.3 · BLAS scipy-openblas · 2000 × 2000 en 0,043 s»), no
+    instalado, desactualizado (es de otra versión de Geoblender) o dañado. Solo lee."""
+    status = env.status()
+    if status == jobs_runtime.STATUS_READY:
+        info = jobs_runtime.read_runtime_info(env.path) or {}
+        verified = _verified_text(info.get(jobs_runtime.VERIFICATION_KEY))
+        if verified is not None:
+            return verified
+    return _cached("engine", _engine_state_texts).get(status, status)
+
+
+def source_text(source: WheelSource) -> str:
+    """El origen de las ruedas: «Origen: almacén de ruedas <carpeta>» o «Origen: PyPI
+    (internet)»."""
+    if source.kind == jobs_runtime.SOURCE_WHEELHOUSE:
+        return tr("Source: wheel store {folder}", folder=str(source.folder))
+    return tr("Source: PyPI (internet)")
+
+
+def _cell(row: Any, text: str, units: float) -> None:
+    """Una celda de ``units`` unidades de ancho con ``text``."""
+    cell = row.row(align=True)
+    cell.ui_units_x = units
+    cell.label(text=text, translate=False)
+
+
+def draw_consent(layout: Any, plan: InstallPlan) -> None:
+    """El diálogo de consentimiento (RF-004-20; plan 004 §5.5), antes de hacer nada: el
+    origen, una fila por paquete con su versión y su licencia (y, en gris, las que incluye
+    su rueda), los MB de descarga y en disco del lock, la carpeta de destino y que no cambia
+    el Python de Blender. Los botones «Instalar» y «Cancelar» son los del diálogo."""
+    layout.label(text=source_text(plan.source),
+                 icon=SOURCE_ICONS.get(plan.source.kind, "INFO"), translate=False)
+    table = layout.column(align=True)
+    header = table.row(align=True)
+    header.active = False
+    _cell(header, tr("Package"), PACKAGE_UNITS)
+    _cell(header, tr("Version"), VERSION_UNITS)
+    header.label(text=tr("Licence"), translate=False)
+    for package in plan.packages:
+        row = table.row(align=True)
+        _cell(row, package.name, PACKAGE_UNITS)
+        _cell(row, package.version, VERSION_UNITS)
+        row.label(text=package.license, translate=False)
+        if package.bundled_licenses:
+            bundled = table.row(align=True)
+            bundled.active = False
+            bundled.label(text=tr("Also includes: {licenses}",
+                                  licenses=", ".join(package.bundled_licenses)),
+                          translate=False)
+    layout.label(text=tr("Download: {download} MB · On disk: {disk} MB",
+                         download=format_number(plan.download_mb, 1),
+                         disk=format_number(plan.disk_mb, 1)), translate=False)
+    layout.label(text=tr("Folder: {folder}", folder=str(plan.destination)), icon=FOLDER_ICON,
+                 translate=False)
+    note = layout.row()
+    note.active = False
+    note.label(text=tr("Used only in the heavy calculations, in a separate process; it does "
+                       "not change Blender's Python"), icon=NOTE_ICON, translate=False)
+
+
+def draw_engine(layout: Any, env: ComputeEnvironment, *, running: bool,
+                last_error: str | None) -> None:
+    """El estado del motor de cálculo (``action = STATUS``): título, estado, carpeta, lo
+    que pasó en el último intento si falló y, si no se está instalando ni verificando, los
+    botones de lo que se puede hacer con él (con el motor listo: Verificar, Reparar y
+    Quitar)."""
+    layout.label(text=tr("Compute engine"), icon=ENGINE_ICON, translate=False)
+    layout.label(text=tr("State: {state}", state=engine_state_text(env)), translate=False)
+    layout.label(text=tr("Folder: {folder}", folder=str(env.path)), icon=FOLDER_ICON,
+                 translate=False)
+    if last_error:
+        alert = layout.row()
+        alert.alert = True
+        alert.label(text=tr("Last attempt: {error}", error=messages.one_line(last_error)),
+                    icon="ERROR", translate=False)
+    if running:
+        note = layout.row()
+        note.active = False
+        note.label(text=tr("Being installed or verified: follow its progress in the status "
+                           "bar"), icon=NOTE_ICON, translate=False)
+        return
+    row = layout.row(align=True)
+    texts = _cached("setup_actions", _action_texts)
+    for action in ENGINE_ACTIONS.get(env.status(), ()):
+        properties = row.operator(SETUP_RUNTIME, text=texts[action],
+                                  icon=SETUP_ICONS[action])
+        properties.action = action
+
+
+def draw_remove(layout: Any, env: ComputeEnvironment, size_mb: float) -> None:
+    """La confirmación de quitar el motor de cálculo: la carpeta que se borra y sus MB."""
+    layout.label(text=tr("The folder {folder} is deleted ({size} MB); it can be installed "
+                         "again later", folder=str(env.path), size=format_number(size_mb, 1)),
+                 icon=SETUP_ICONS["REMOVE"], translate=False)
 
 
 class GEOBLENDER_PT_jobs_list(bpy.types.Panel):
