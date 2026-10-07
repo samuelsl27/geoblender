@@ -58,8 +58,11 @@ BLENDER = "blender"  # el motivo es el mensaje del localizador (gbtools.blender)
 # pruebas de la publicación; «qgis» la 002, el GDAL de QGIS, que lo registra
 # tests.support.qgis, y también lo usará la 006; «docs» la 003, la carpeta de la
 # documentación, contra la que se comprueba el catálogo de comandos, que lo registra
-# tests.support.docs).
-RESOURCES: tuple[str, ...] = ("symlink", "windows", "blender", "git", "qgis", "docs")
+# tests.support.docs; «runtime» la 004, el motor de cálculo de pruebas de
+# tools/make_runtime.py, que lo registra tests.support.runtime).
+RESOURCES: tuple[str, ...] = (
+    "symlink", "windows", "blender", "git", "qgis", "docs", "runtime"
+)
 
 T = TypeVar("T")
 

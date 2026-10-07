@@ -47,6 +47,7 @@ inprocess = import_geoblender("jobs.inprocess")
 protocol = import_geoblender("jobs.protocol")
 records = import_geoblender("jobs.records")
 runner = import_geoblender("jobs.runner")
+worker_api = import_geoblender("jobs.worker_api")
 
 SUM_N = 1_000_000
 SUM_PARAMS = {"n": SUM_N, "chunks": 3, "sleep_s": 0.11}
@@ -394,13 +395,23 @@ class SameRecordTest(unittest.TestCase):
     def test_same_state_json(self):
         """RF-004-03, RF-004-15: ``state.json`` coincide en todo menos el ejecutor, el
         proceso y las horas: tipo, nombre, estado, intérprete con las versiones de Python,
-        numpy y BLAS, código (0), resultados y sin error ni cancelación."""
+        numpy y BLAS, código (0), resultados y sin error ni cancelación. El intérprete del
+        hilo es el de este proceso: dentro de Blender, el mismo numpy que el del proceso
+        aparte; en el paso «motor» de ``tools/check.py`` (spec 004, RF-004-28), el del
+        motor de cálculo."""
         fields = ("worker", "label", "owner", "project_uid", "operation_uid", "state",
-                  "interpreter", "exit_code", "error", "cancel", "outputs", "ingested_at")
+                  "exit_code", "error", "cancel", "outputs", "ingested_at")
         thread = _job("thread_sum")[2]
         process = _job("proc_sum")[2]
         self.assertEqual({f: getattr(thread, f) for f in fields},
                          {f: getattr(process, f) for f in fields})
+        this_process = worker_api.interpreter_info("blender")
+        self.assertEqual(
+            thread.interpreter,
+            dataclasses.replace(process.interpreter, numpy=this_process["numpy"],
+                                blas=this_process["blas"]),
+        )
+        self.assertEqual(process.interpreter.numpy, _support.blender_numpy_version())
         self.assertEqual(thread.exit_code, 0)
         self.assertEqual(thread.interpreter.kind, "blender")
         self.assertEqual(thread.interpreter.numpy, np.__version__)

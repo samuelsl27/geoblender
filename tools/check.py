@@ -14,13 +14,19 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    incluye las reglas de arquitectura y del repositorio), «referencia»
    (``tests/referencia``; sin casos es correcto), «licencias»
    (``tools/check_licenses.py``), «manifiesto» (``blender --command extension
-   validate``) y «blender» (``tools/run_blender_tests.py`` dentro de Blender, en segundo
-   plano, de fábrica, con ``--python-exit-code 1``). Con ``--completo``, justo después,
-   «arnés» (``tests/arnes`` como «unitarias»: las pruebas del propio arnés que lanzan
-   Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de la spec 002); sin la opción
-   no se ejecuta, y el resumen lo dice antes de ``RESULTADO``: la comprobación de cada
-   tarea va sin ella (RNF-001-01, ≤ 40 s) y ``tools/publish.py`` la pide siempre. Solo
-   si se piden, y después de los obligatorios: «rendimiento» (``--rendimiento``:
+   validate``), «blender» (``tools/run_blender_tests.py`` dentro de Blender, en segundo
+   plano, de fábrica, con ``--python-exit-code 1``) y «motor» (spec 004, RF-004-28:
+   ``tests/unit`` de los paquetes de dominio con el numpy del motor de cálculo de pruebas,
+   el Python de Blender con ``-S`` y la carpeta ``site`` del motor en ``PYTHONPATH``; el
+   motor lo crea ``tools/make_runtime.py`` en ``.deps/runtime/<lock_id>/``, o lo da
+   ``GEOBLENDER_TEST_RUNTIME_SITE``; sin motor, el paso se omite por el recurso
+   ``runtime`` con la orden que lo crea: «VERDE CON OMISIONES»). Con ``--completo``,
+   justo después, «arnés» (``tests/arnes`` como «unitarias»: las pruebas del propio
+   arnés que lanzan Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de la spec
+   002); sin la opción no se ejecuta, y el resumen lo dice antes de ``RESULTADO``: la
+   comprobación de cada tarea va sin ella (RNF-001-01, ≤ 40 s) y ``tools/publish.py``
+   la pide siempre. Solo si se piden, y después de los obligatorios: «rendimiento»
+   (``--rendimiento``:
    ``tests/rendimiento`` con el Python de Blender y ``tests/rendimiento/blender/perf_*.py``
    dentro de Blender), «banco» (``--banco``: ``tools/bench_silvestre.py``; sin banco
    disponible, «omitido», que no es un fallo) y «documentación» (``--documentacion``,
@@ -29,7 +35,9 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    se alcanza, «omitido» con el motivo, que no es un fallo). Los pasos de Blender usan
    un perfil temporal en ``%TEMP%``, que se borra al terminar.
 
-   Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06). Dentro de un paso,
+   Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06), salvo «motor», que va a
+   la vez que «blender» (spec 004, T30: después de él no cabría en RNF-001-01; su línea
+   va en su lugar y el paso siguiente espera a los dos). Dentro de un paso,
    «unitarias» y «blender» reparten sus pruebas en partes que se ejecutan a la vez
    (spec 003, T40; RNF-007-01: ≤ 40 s sin quitar ninguna prueba): hasta ``UNIT_PARTS``
    procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender con
@@ -108,7 +116,7 @@ import tempfile  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 import tomllib  # noqa: E402
-from collections.abc import Callable, Collection, Mapping, Sequence  # noqa: E402
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -116,6 +124,8 @@ from gbtools import blender, discovery, layout, manifest, parts, repo, wheels  #
 from gbtools.blender import BlenderInstall, EnvironmentProblem  # noqa: E402
 from gbtools.repo import repo_root  # noqa: E402
 from gbtools.rules import imports  # noqa: E402
+from make_runtime import ENV_TEST_SITE as ENV_TEST_RUNTIME_SITE  # noqa: E402
+from make_runtime import TestRuntime, find_test_runtime  # noqa: E402
 
 STATUS_OK = "correcto"
 STATUS_FAIL = "fallo"
@@ -168,6 +178,13 @@ NOT_COMPLETE = (
     f"entero ({HARNESS_FOLDER}); las ejecuta tools/check.py {OPTION_COMPLETE}, y la "
     "publicación (tools/publish.py) las pide siempre."
 )
+RUNTIME_STEP = "motor"
+RUNTIME_RESOURCE = "runtime"  # el recurso de tests/support/resources.py (spec 004)
+DOMAIN_TESTS = "tests/unit"  # tests/unit/<paquete de dominio> (imports.LEVELS)
+# Partes de cada carpeta de dominio en «motor», que va a la vez que «blender» (spec 004,
+# T30): con 2, «blender» tarda ≈ 1 s más (≈ 2 s con el equipo cargado) y «motor» acaba
+# antes que él; después de él (≈ 12 s más) no cabría en RNF-001-01.
+RUNTIME_PARTS = 2
 DOCS_STEP = "documentación"
 DOCS_RELPATH = "tools/check_docs.py"
 NO_DOCS = f"no hay documentación en la carpeta madre ni en {layout.ENV_DOCS_DIR}"
@@ -244,12 +261,20 @@ class Context:
     install: BlenderInstall
     profile: Path
     blender_modules: frozenset[str] = frozenset()
-    # Donde se busca la documentación (GEOBLENDER_DOCS_DIR); None: el del proceso.
+    # Donde se buscan la documentación (GEOBLENDER_DOCS_DIR) y el motor de cálculo de
+    # pruebas (GEOBLENDER_TEST_RUNTIME_SITE); None: el del proceso.
     environ: Mapping[str, str] | None = None
+    # Cómo se busca el motor de cálculo de pruebas (spec 004, T30).
+    find_runtime: Callable[[Path, Mapping[str, str]], TestRuntime] = find_test_runtime
 
     def docs_environ(self) -> Mapping[str, str]:
         """El entorno en que se busca la documentación (``repo.find_docs``)."""
         return os.environ if self.environ is None else self.environ
+
+    def test_runtime(self) -> TestRuntime:
+        """El motor de cálculo de pruebas (``make_runtime.find_test_runtime``): su carpeta
+        ``site`` o el motivo por el que no hay."""
+        return self.find_runtime(self.root, self.docs_environ())
 
     def python_env(self) -> dict[str, str]:
         """Entorno del Python de Blender fuera de Blender (``gbtools.blender``)."""
@@ -290,11 +315,17 @@ class Context:
         pattern: str | None = None,
         empty: str | None = None,
         part: tuple[int, int] | None = None,
+        *,
+        site: Path | None = None,
     ) -> Run:
         """``unittest discover -v`` de ``folder`` con la raíz como nivel superior; una
         prueba que devuelve algo (``async def`` en un ``TestCase``, o con ``yield``) es
         un error y no solo un aviso (``-W``; convergencia de la spec 001, T54). Con
-        ``part``, solo esa parte, con ``tools/unittest_part.py`` (T40)."""
+        ``part``, solo esa parte, con ``tools/unittest_part.py`` (T40). Con ``site`` (la
+        carpeta de paquetes del motor de cálculo de pruebas; spec 004, RF-004-28), con su
+        numpy: el Python de Blender con ``-S`` (sin su ``site-packages``, donde está el
+        numpy de Blender) y ``site`` al principio de ``PYTHONPATH``, delante de
+        ``.deps/site``."""
         args = ["-W", discovery.UNITTEST_WARNINGS]
         if part is None:
             args += ["-m", "unittest"]
@@ -303,9 +334,13 @@ class Context:
         args += ["discover", "-v", "-s", folder, "-t", "."]
         if pattern is not None:
             args += ["-p", pattern]
+        env = self.python_env()
+        if site is not None:
+            args = ["-S", *args]
+            env["PYTHONPATH"] = os.pathsep.join([str(site), env["PYTHONPATH"]])
         return Run(
             blender.python_cmd(self.install, *args),
-            self.python_env(),
+            env,
             KIND_UNITTEST,
             empty,
             folder,
@@ -365,13 +400,19 @@ class Step:
     lo pide (``None``: obligatorio), si falla, qué orden propone el resumen a partir de
     su salida (``advice``) y, antes de ejecutar nada, si hay que omitirlo (``omit``
     devuelve el motivo, o ``None``): un paso omitido no es un fallo, y el resumen lo
-    cuenta como omisión con su motivo."""
+    cuenta como omisión con su motivo, por el recurso ``resource`` (si no se da, el
+    nombre del paso). Sin órdenes que ejecutar, el paso es correcto con el detalle
+    ``empty``. Con ``alongside``, el paso se ejecuta a la vez que ese otro paso anterior
+    de la tabla, si también se ejecuta (spec 004, T30), y su línea va en su lugar."""
 
     name: str
     runs: Callable[[Context], Sequence[Run]]
     option: str | None = None
     advice: Callable[[Context, str], list[str]] | None = None
     omit: Callable[[Context], str | None] | None = None
+    resource: str | None = None
+    alongside: str | None = None
+    empty: str | None = None
 
 
 @dataclass(frozen=True)
@@ -442,6 +483,43 @@ def _blender(ctx: Context) -> list[Run]:
     return ctx.blender_tests_parts("tests/blender", BLENDER_PARTS)
 
 
+def domain_test_folders(root: Path) -> list[str]:
+    """Las carpetas ``tests/unit/<paquete>`` de los paquetes de dominio
+    (``imports.LEVELS``, en su orden) que existen (spec 004, RF-004-28)."""
+    return [
+        f"{DOMAIN_TESTS}/{name}"
+        for name in imports.LEVELS
+        if (Path(root) / DOMAIN_TESTS / name).is_dir()
+    ]
+
+
+def _runtime(ctx: Context) -> list[Run]:
+    """Paso «motor» (spec 004, T30; RF-004-28, Silvestre REN-01): con el motor de cálculo
+    de pruebas, ``tests/unit`` de cada paquete de dominio con su numpy (el mismo código,
+    probado también con el numpy de Blender en «unitarias»), cada carpeta en hasta
+    ``RUNTIME_PARTS`` partes. Sin motor no hay órdenes: lo omite :func:`_runtime_omit`."""
+    site = ctx.test_runtime().site
+    if site is None:
+        return []
+    runs: list[Run] = []
+    for folder in domain_test_folders(ctx.root):
+        count = ctx.parts_of(folder, UNITTEST_PATTERN, RUNTIME_PARTS)
+        if count == 1:
+            runs.append(ctx.unittest(folder, site=site))
+        else:
+            runs.extend(
+                ctx.unittest(folder, part=(i, count), site=site) for i in range(1, count + 1)
+            )
+    return runs
+
+
+def _runtime_omit(ctx: Context) -> str | None:
+    """Sin motor de cálculo de pruebas, el motivo (con la orden ``tools/make_runtime.py``):
+    el paso «motor» se omite por el recurso ``runtime`` (D-6 de la spec 004)."""
+    found = ctx.test_runtime()
+    return None if found.site is not None else found.reason
+
+
 def _harness(ctx: Context) -> list[Run]:
     """Las pruebas del arnés que lanzan Blender entero (``--completo``); sin pruebas, o
     con un fichero sin cargar, el paso falla como «unitarias» (RF-001-06, RF-001-07)."""
@@ -481,10 +559,10 @@ def _docs_omit(ctx: Context) -> str | None:
 
 
 # Tabla de pasos (plan 001 §5.4.7). Las specs siguientes añaden el suyo en su lugar:
-# «iconos» (003, T30) tras «licencias» y «motor» (004) tras «blender». Los opcionales se
-# ejecutan siempre después de los obligatorios (RF-001-10), en el orden de la tabla:
-# «arnés» (--completo; spec 001 0.6) el primero, tras «blender»; «documentación» (spec
-# 007, RF-007-14), el último.
+# «iconos» (003, T30) tras «licencias» y «motor» (004) tras «blender», a la vez que él
+# (T30: después no cabe en RNF-001-01). Los opcionales se ejecutan siempre después de los
+# obligatorios (RF-001-10), en el orden de la tabla: «arnés» (--completo; spec 001 0.6) el
+# primero, tras «blender» y «motor»; «documentación» (spec 007, RF-007-14), el último.
 STEPS: tuple[Step, ...] = (
     Step("unitarias", _unit),
     Step("referencia", _reference),
@@ -492,6 +570,14 @@ STEPS: tuple[Step, ...] = (
     Step("iconos", _icons),
     Step("manifiesto", _manifest),
     Step("blender", _blender),
+    Step(
+        RUNTIME_STEP,
+        _runtime,
+        omit=_runtime_omit,
+        resource=RUNTIME_RESOURCE,
+        alongside="blender",
+        empty=NO_CASES,
+    ),
     Step(HARNESS_STEP, _harness, option=OPTION_COMPLETE),
     Step("rendimiento", _performance, option=OPTION_PERFORMANCE),
     Step("banco", _bank, option=OPTION_BANK),
@@ -719,26 +805,29 @@ def _launch_together(
             errors[index] = exc
 
     threads: list[threading.Thread] = []
+    for index in indices:
+        part = runs[index].part
+        name = THREAD_PREFIX + (parts.label(*part) if part is not None else str(index))
+        threads.append(threading.Thread(target=work, args=(index,), name=name, daemon=True))
     try:
-        for index in indices:
-            part = runs[index].part
-            name = THREAD_PREFIX + (parts.label(*part) if part is not None else str(index))
-            thread = threading.Thread(target=work, args=(index,), name=name, daemon=True)
+        for thread in threads:
             thread.start()
-            threads.append(thread)
         for thread in threads:
             while thread.is_alive():
                 thread.join(JOIN_POLL_S)
     except BaseException:
+        # Se espera a todos los hilos que llegaron a arrancar, también al que arrancaba
+        # cuando llegó la interrupción (spec 004, T30).
+        started = [thread for thread in threads if thread.ident is not None]
         try:
             # Como subprocess.run con Ctrl+C: un momento para que las órdenes, que
             # también lo reciben de la consola, terminen solas; después, se paran.
             deadline = time.monotonic() + SIGINT_WAIT_S
-            for thread in threads:
+            for thread in started:
                 thread.join(max(0.0, deadline - time.monotonic()))
         finally:
             blender.stop_all()
-            for thread in threads:
+            for thread in started:
                 thread.join(STOP_WAIT_S)
         raise
     for index in indices:
@@ -1073,10 +1162,14 @@ def execute_step(step: Step, ctx: Context, runner: blender.Runner) -> StepResult
             STATUS_SKIPPED,
             time.perf_counter() - start,
             detail=[reason],
-            skipped=[Skip(f"el paso «{step.name}»", step.name, reason)],
+            skipped=[Skip(f"el paso «{step.name}»", step.resource or step.name, reason)],
         )
     resources = known_resources(ctx.root)
     runs = list(step.runs(ctx))
+    if not runs and step.empty is not None:
+        return StepResult(
+            step.name, STATUS_OK, time.perf_counter() - start, detail=[step.empty]
+        )
     outcomes = _interpret_all(runs, _launch_all(runs, ctx.root, runner), ctx.root, resources)
     seconds = time.perf_counter() - start
     if any(outcome.status == STATUS_FAIL for outcome in outcomes):
@@ -1106,6 +1199,65 @@ def execute_step(step: Step, ctx: Context, runner: blender.Runner) -> StepResult
     return StepResult(
         step.name, status, seconds, tests, detail, skipped, output, measurements, advice
     )
+
+
+def execute_together(
+    step: Step, partners: Sequence[Step], ctx: Context, runner: blender.Runner
+) -> tuple[StepResult, list[StepResult]]:
+    """Ejecuta ``step`` en este hilo y, a la vez, cada paso de ``partners`` en el suyo
+    (``Step.alongside``; spec 004, T30), y devuelve sus resultados cuando han terminado
+    todos. Cada paso mide su propia duración. Si llega Ctrl+C, para todas las órdenes en
+    marcha (``blender.stop_all``), espera a los hilos y deja pasar la interrupción; una
+    excepción de un paso compañero se lanza aquí."""
+    found: dict[str, StepResult] = {}
+    errors: list[BaseException] = []
+
+    def work(partner: Step) -> None:
+        try:
+            found[partner.name] = execute_step(partner, ctx, runner)
+        except BaseException as exc:  # noqa: BLE001 - se lanza en el hilo principal
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=work, args=(partner,), name=THREAD_PREFIX + partner.name,
+                         daemon=True)
+        for partner in partners
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        result = execute_step(step, ctx, runner)
+        for thread in threads:
+            while thread.is_alive():
+                thread.join(JOIN_POLL_S)
+    except BaseException:
+        blender.stop_all()
+        for thread in threads:
+            thread.join(STOP_WAIT_S)
+        raise
+    if errors:
+        raise errors[0]
+    return result, [found[partner.name] for partner in partners]
+
+
+def run_steps(
+    selected: Sequence[Step], ctx: Context, runner: blender.Runner
+) -> Iterator[StepResult]:
+    """Los resultados de los pasos ``selected``, en su orden, según terminan: uno tras
+    otro (RF-001-06), salvo los que van a la vez que otro (``Step.alongside``), que se
+    ejecutan con él y dan su resultado en su lugar."""
+    ready: dict[str, StepResult] = {}
+    for step in selected:
+        if step.name in ready:
+            yield ready.pop(step.name)
+            continue
+        partners = [other for other in selected if other.alongside == step.name]
+        if not partners:
+            yield execute_step(step, ctx, runner)
+            continue
+        result, others = execute_together(step, partners, ctx, runner)
+        ready.update((other.name, outcome) for other, outcome in zip(partners, others))
+        yield result
 
 
 def format_step(result: StepResult) -> str:
@@ -1214,13 +1366,15 @@ def main(
     loaded_modules: Collection[str] | None = None,
     steps: Sequence[Step] = STEPS,
     environ: Mapping[str, str] | None = None,
+    find_runtime: Callable[[Path, Mapping[str, str]], TestRuntime] = find_test_runtime,
 ) -> int:
     """Ejecuta la comprobación completa y devuelve el código de salida.
 
     Los parámetros con nombre solo los cambian las pruebas: raíz, ejecutor de órdenes,
-    localizador de Blender, intérprete en uso, módulos cargados, tabla de pasos y el
-    entorno en que se busca la documentación (``GEOBLENDER_DOCS_DIR``; por defecto, el
-    del proceso).
+    localizador de Blender, intérprete en uso, módulos cargados, tabla de pasos, el
+    entorno en que se buscan la documentación (``GEOBLENDER_DOCS_DIR``) y el motor de
+    cálculo de pruebas (``GEOBLENDER_TEST_RUNTIME_SITE``; por defecto, el del proceso) y
+    cómo se busca ese motor (``make_runtime.find_test_runtime``).
     """
     started = time.perf_counter()
     executable = sys.executable if executable is None else executable
@@ -1287,6 +1441,7 @@ def main(
             profile=profile,
             blender_modules=imports.installation_modules(_scripts_dir(install)),
             environ=environ,
+            find_runtime=find_runtime,
         )
         # Los perfiles de las demás partes de las pruebas de Blender (T40).
         for number in range(2, BLENDER_PARTS + 1):
@@ -1295,8 +1450,7 @@ def main(
         snapshot_start = time.perf_counter()
         before = repo.snapshot(root, REPOSITORY_SKIP)
         snapshot_seconds = time.perf_counter() - snapshot_start
-        for step in selected:
-            result = execute_step(step, ctx, runner)
+        for result in run_steps(selected, ctx, runner):
             results.append(result)
             print(format_step(result), flush=True)
             for line in (*result.measurements, *result.advice):

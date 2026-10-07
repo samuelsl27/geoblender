@@ -31,12 +31,11 @@ import json
 import os
 import platform
 import sys
+import sysconfig
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
-
-import numpy as np
 
 from tests.support import jobs_fixtures as _support
 from tests.support.package import import_geoblender
@@ -56,8 +55,10 @@ JOB_TIMEOUT_S = 120.0
 DEADLINE_S = 60.0
 POLL_S = 0.02
 SUM_PARAMS = {"n": 1000, "chunks": 2}
-BLENDER_NUMPY_DIR = Path(np.__file__).parent
-BLENDER_SITE = BLENDER_NUMPY_DIR.parent
+# El site-packages del Python de Blender (también en el paso «motor» de tools/check.py,
+# que ejecuta estas pruebas con el numpy del motor: spec 004, T30).
+BLENDER_SITE = Path(sysconfig.get_path("purelib"))
+BLENDER_NUMPY_DIR = BLENDER_SITE / "numpy"
 
 LABELS = {
     "fake_engine": "Motor falso",
@@ -421,7 +422,7 @@ class ExternalInterpreterTest(unittest.TestCase):
         self.assertIsNone(probe.error())
         self.assertEqual(probe.exe, PYTHON)
         self.assertEqual((probe.python, probe.numpy),
-                         (platform.python_version(), np.__version__))
+                         (platform.python_version(), _support.blender_numpy_version()))
         self.assertTrue(probe.blas)
 
         fakes = _STATE["fakes"]
@@ -466,7 +467,7 @@ class ExternalInterpreterTest(unittest.TestCase):
         self.assertEqual(
             (record.interpreter.kind, record.interpreter.python, record.interpreter.numpy,
              record.interpreter.lock_id),
-            ("external", platform.python_version(), np.__version__, None),
+            ("external", platform.python_version(), _support.blender_numpy_version(), None),
         )
         self.assertEqual([note["interpreter"] for note in _notes(handle, "launched")],
                          ["external"])

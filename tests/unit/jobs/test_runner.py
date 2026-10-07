@@ -363,7 +363,7 @@ class RecordTest(unittest.TestCase):
         self.assertEqual(record.outputs, result.outputs)
         self.assertEqual(record.interpreter.kind, "blender")
         self.assertEqual(record.interpreter.python, platform.python_version())
-        self.assertEqual(record.interpreter.numpy, np.__version__)
+        self.assertEqual(record.interpreter.numpy, _support.blender_numpy_version())
         self.assertTrue(record.interpreter.blas)
         self.assertIsNotNone(record.queued_at)
         self.assertLessEqual(record.queued_at, record.started_at)

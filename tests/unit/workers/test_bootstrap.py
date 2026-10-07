@@ -19,6 +19,9 @@ Para no esperar en serie, todos los workers del módulo se lanzan a la vez al em
   sin ``request.json`` y unos argumentos incompletos.
 - ``copy``: una copia del paquete con un worker de prueba que devuelve su entrada tal cual,
   lanzada **sin** ``-B`` (el paso 0 del arranque, ``sys.dont_write_bytecode``, basta).
+- ``stdin``: en esa copia, un worker que consulta su entrada estándar desde el hilo principal
+  mientras la vigila el arranque, como la inicialización de la libgfortran que lleva el
+  OpenBLAS de numpy 2.5.3 al importarlo en el motor (spec 004, T30).
 """
 
 import hashlib
@@ -65,6 +68,30 @@ def main(ctx):
         "shape": list(array.shape),
         "sha256": hashlib.sha256(array.tobytes()).hexdigest(),
     }
+'''
+STDIN_WORKER = "gbtest_stdin"
+STDIN_TIMEOUT_S = 5.0
+# Worker de prueba que consulta su entrada estándar (una tubería) desde el hilo principal, como
+# la DLL de OpenBLAS de numpy 2.5.3 (con libgfortran) al cargarse en el motor de cálculo. Con
+# una lectura pendiente de otro hilo sobre la misma tubería, Windows no la contesta nunca.
+STDIN_SOURCE = '''# SPDX-License-Identifier: GPL-3.0-or-later
+"""Worker de las pruebas: consulta su entrada estándar desde el hilo principal."""
+
+import ctypes
+import msvcrt
+from ctypes import wintypes
+
+
+def main(ctx):
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.PeekNamedPipe.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                       ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD),
+                                       ctypes.c_void_p]
+    kernel32.PeekNamedPipe.restype = wintypes.BOOL
+    available = wintypes.DWORD()
+    answered = kernel32.PeekNamedPipe(msvcrt.get_osfhandle(0), None, 0, None,
+                                      ctypes.byref(available), None)
+    return {"answered": bool(answered)}
 '''
 
 _RUNS: dict[str, _support.WorkerRun] = {}
@@ -113,6 +140,7 @@ def setUpModule() -> None:
                                       "thirdparty", "wheels"),
     )
     (copy / "workers" / f"{ECHO_WORKER}.py").write_bytes(ECHO_SOURCE.encode("utf-8"))
+    (copy / "workers" / f"{STDIN_WORKER}.py").write_bytes(STDIN_SOURCE.encode("utf-8"))
     _STATE["copy"] = copy
     _STATE["utm"] = _utm_array()
     _STATE["pycache_before"] = _pycache(EXTENSION_DIR)
@@ -126,6 +154,7 @@ def setUpModule() -> None:
         "no_request": paths.job_dir(root, paths.new_job_uid()).create(),
         "bad_args": paths.job_dir(root, paths.new_job_uid()).create(),
         "copy": _support.prepare_job(root, ECHO_WORKER, arrays={"data": _STATE["utm"]}),
+        "stdin": _support.prepare_job(root, STDIN_WORKER),
     }
     _JOBS.update(jobs)
     launched: dict[str, _support.LaunchedWorker] = {}
@@ -135,12 +164,20 @@ def setUpModule() -> None:
             options["args"] = ("--package-dir", str(EXTENSION_DIR), "--kind", "blender")
         elif name == "copy":
             options.update(package_dir=copy, flags=("-I", "-u"))
+        elif name == "stdin":
+            options.update(package_dir=copy)
         worker = _support.LaunchedWorker(job.path, **options)
         unittest.addModuleCleanup(worker.close)
         launched[name] = worker
         if name == "parent":
             worker.lose_parent()
     for name, worker in launched.items():
+        if name == "stdin":
+            try:
+                _RUNS[name] = worker.finish(timeout_s=STDIN_TIMEOUT_S)
+            except AssertionError as exc:  # colgado: lo dice su prueba
+                _STATE["stdin_hung"] = str(exc)
+            continue
         _RUNS[name] = worker.finish()
     _STATE["pycache_after"] = _pycache(EXTENSION_DIR)
 
@@ -251,6 +288,17 @@ class ParentWatchTest(unittest.TestCase):
         self.assertNotIn("result", run.types())
         self.assertFalse(_JOBS["parent"].result_file.exists())
         self.assertIn("padre", run.log)
+
+    def test_watching_does_not_block_the_standard_input(self):
+        """RF-004-13, RF-004-22: vigilar al padre no deja una lectura pendiente en la entrada
+        estándar: el cálculo puede consultarla (como la libgfortran del OpenBLAS de numpy
+        2.5.3 al importarlo en el motor, que se quedaba colgada) y el worker termina."""
+        self.assertNotIn("stdin_hung", _STATE, _STATE.get("stdin_hung"))
+        run = _RUNS["stdin"]
+        self.assertEqual(run.returncode, 0, run.log)
+        self.assertLess(run.elapsed_s, STDIN_TIMEOUT_S)
+        self.assertEqual(run.types()[-1], "result")
+        self.assertEqual(dict(run.of_type("result")[0].summary), {"answered": True})
 
 
 class StartupFailureTest(unittest.TestCase):

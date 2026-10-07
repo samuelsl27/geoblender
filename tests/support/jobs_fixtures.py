@@ -35,9 +35,11 @@ from __future__ import annotations
 import base64
 import dataclasses
 import hashlib
+import importlib.metadata
 import os
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import zipfile
@@ -150,6 +152,17 @@ def pid_alive(pid: int) -> bool:
     nunca a ``os.kill(pid, 0)``, que lo terminaría. Límite conocido: un proceso que
     terminó con el código 259 parece vivo; las pruebas no usan ese código."""
     return bool(import_geoblender("core.sysinfo").pid_alive(pid))
+
+
+def blender_numpy_version() -> str:
+    """La versión del numpy del Python de Blender (el de su ``site-packages``): la que ven
+    los workers ``blender`` y un externo que sea ese Python. Es la del numpy de las pruebas
+    salvo en el paso «motor» de ``tools/check.py``, que las ejecuta con el del motor de
+    cálculo (spec 004, RF-004-28: ``-S``, sin el ``site-packages`` de Blender)."""
+    purelib = sysconfig.get_path("purelib")
+    for distribution in importlib.metadata.distributions(name="numpy", path=[purelib]):
+        return distribution.version
+    raise RuntimeError(f"no hay numpy en el site-packages de este Python ({purelib})")
 
 
 def wait_until_dead(pid: int, *, timeout_s: float = 5.0) -> bool:

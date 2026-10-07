@@ -25,9 +25,10 @@ importa ``geoblender`` de forma absoluta (excepción de ARQ-09, plan 001). Pasos
 2. Canal: duplica la salida estándar original para los eventos y manda el descriptor 1 y
    ``sys.stdout`` a la salida de error: lo que impriman ``print()`` o una librería en C va a
    ``job.log`` (en UTF-8) y no ensucia el canal.
-3. Vigilancia del padre: un hilo *daemon* lee la entrada estándar hasta su fin y entonces
+3. Vigilancia del padre: un hilo *daemon* mira la entrada estándar hasta su fin y entonces
    termina el proceso con el código 4: si Blender muere, Windows cierra la tubería
-   (RF-004-13).
+   (RF-004-13). La mira sin dejar una lectura pendiente (``PeekNamedPipe``), que colgaría al
+   cargarse las DLL que la consultan, como el OpenBLAS de numpy en el motor.
 4. Con ``--site``, ``site.addsitedir`` de esa carpeta (procesa sus ``.pth``). Es el único
    cambio de ``sys.path``: con ``-I -S`` (``compute``), ``sys.path`` solo tenía la
    biblioteca estándar, y el numpy de Blender no se puede colar.
@@ -66,6 +67,7 @@ import os  # noqa: E402
 import re  # noqa: E402
 import site  # noqa: E402
 import threading  # noqa: E402
+import time  # noqa: E402
 import traceback  # noqa: E402
 from collections.abc import Callable, Sequence  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -91,6 +93,10 @@ _IN_USE: list[IO[bytes]] = []
 """Los ficheros del motor de cálculo abiertos mientras el worker vive (:func:`hold_engine`);
 se cierran solos al terminar el proceso, también si se le mata."""
 _WATCH_BYTES = 4096
+_WATCH_POLL_S = 0.05
+"""Cada cuánto mira la vigilancia del padre su tubería de entrada (:func:`watch_parent`)."""
+_FILE_TYPE_PIPE = 3
+_ERROR_BROKEN_PIPE = 109
 _PATH_NAME = re.compile(r"[a-z][a-z0-9_]*")
 """Nombre de una ruta del trabajo (``--path``; ``jobs.interpreter.PATH_NAME_PATTERN``)."""
 
@@ -153,12 +159,28 @@ def open_channel() -> IO[str]:
 
 def watch_parent() -> threading.Thread:
     """Paso 3: hilo *daemon* que termina el proceso con :data:`EXIT_PARENT_LOST` cuando se
-    acaba la entrada estándar (el padre la cerró o murió)."""
+    acaba la entrada estándar (el padre la cerró o murió).
+
+    Si la entrada estándar es una tubería (la del lanzador), la mira cada
+    :data:`_WATCH_POLL_S` s con ``PeekNamedPipe`` en lugar de dejar una lectura pendiente:
+    mientras un hilo espera a leer una tubería, Windows no contesta ninguna otra consulta de
+    esa tubería, y la inicialización de algunas DLL consulta la entrada estándar al cargarse
+    (la libgfortran que lleva el OpenBLAS de numpy 2.5.3: el worker ``compute`` se quedaba
+    colgado en ``import numpy``; spec 004, T30)."""
+    pipe = _stdin_pipe()
+    target = _wait_for_parent if pipe is None else _poll_parent
     thread = threading.Thread(
-        target=_wait_for_parent, name="geoblender-parent-watch", daemon=True
+        target=target, args=() if pipe is None else (pipe,),
+        name="geoblender-parent-watch", daemon=True,
     )
     thread.start()
     return thread
+
+
+def _parent_lost() -> NoReturn:
+    note(f"el proceso padre ya no está (fin de la entrada estándar): el worker termina con "
+         f"el código {EXIT_PARENT_LOST}")
+    os._exit(EXIT_PARENT_LOST)
 
 
 def _wait_for_parent() -> None:
@@ -170,9 +192,59 @@ def _wait_for_parent() -> None:
     except OSError as exc:
         note(f"no se vigila al proceso padre: su entrada estándar no se puede leer ({exc})")
         return
-    note(f"el proceso padre ya no está (fin de la entrada estándar): el worker termina con "
-         f"el código {EXIT_PARENT_LOST}")
-    os._exit(EXIT_PARENT_LOST)
+    _parent_lost()
+
+
+def _stdin_pipe() -> tuple[Any, int] | None:
+    """``(kernel32, handle)`` si la entrada estándar es una tubería de Windows (con
+    ``PeekNamedPipe`` preparada); si no, ``None`` (se lee hasta su fin)."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    try:
+        handle = msvcrt.get_osfhandle(0)
+    except OSError:
+        return None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetFileType.argtypes = [wintypes.HANDLE]
+    kernel32.GetFileType.restype = wintypes.DWORD
+    if kernel32.GetFileType(handle) != _FILE_TYPE_PIPE:
+        return None
+    kernel32.PeekNamedPipe.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+    ]
+    kernel32.PeekNamedPipe.restype = wintypes.BOOL
+    return kernel32, handle
+
+
+def _poll_parent(pipe: tuple[Any, int]) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32, handle = pipe
+    available = wintypes.DWORD()
+    while kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None):
+        if available.value:
+            # Lo que haya escrito el padre se descarta, como al leer: la lectura de lo que
+            # ya está en la tubería no espera.
+            try:
+                os.read(0, min(available.value, _WATCH_BYTES))
+            except OSError as exc:
+                note(f"no se vigila al proceso padre: su entrada estándar no se puede leer "
+                     f"({exc})")
+                return
+            continue
+        time.sleep(_WATCH_POLL_S)
+    error = ctypes.get_last_error()
+    if error != _ERROR_BROKEN_PIPE:
+        note(f"no se vigila al proceso padre: su entrada estándar no se puede consultar "
+             f"(error {error} de Windows)")
+        return
+    _parent_lost()
 
 
 def add_site(site_dir: str) -> None:

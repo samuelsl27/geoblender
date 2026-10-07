@@ -8,7 +8,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from tests.support import qgis, resources, trees
+from tests.support import qgis, resources, runtime, trees
 from tests.support.repo import EXTENSION_DIR, ROOT, TOOLS_DIR, tools_on_path
 
 RESOURCE = "recurso-de-prueba"
@@ -334,6 +334,25 @@ class QgisSupportTest(unittest.TestCase):
         self.assertEqual(env["PYTHONHOME"], str(root / "apps" / "Python312"))
         self.assertEqual(env["GDAL_PAM_ENABLED"], "NO")
         self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+
+
+class RuntimeSupportTest(unittest.TestCase):
+    """``tests.support.runtime``: el motor de cálculo de pruebas (spec 004, T30)."""
+
+    def test_resource_is_declared_and_registered(self) -> None:
+        """RF-004-28, RF-001-06: ``runtime`` está en la lista cerrada de recursos y tiene
+        comprobación registrada; con ``GEOBLENDER_TEST_RUNTIME_SITE`` en una carpeta que
+        no existe no hay motor, y en una que existe, esa es su carpeta ``site``; la orden
+        que lo crea es ``tools/make_runtime.py``."""
+        self.assertIn(runtime.RUNTIME, resources.RESOURCES)
+        self.assertIn("tools/make_runtime.py", runtime.RUNTIME_HINT)
+        variable = runtime.ENV_TEST_RUNTIME_SITE
+        with tempfile.TemporaryDirectory() as tmp:
+            with unittest.mock.patch.dict(os.environ, {variable: str(Path(tmp) / "no")}):
+                self.assertFalse(resources.is_available(runtime.RUNTIME))
+            with unittest.mock.patch.dict(os.environ, {variable: tmp}):
+                self.assertTrue(resources.is_available(runtime.RUNTIME))
+                self.assertEqual(runtime.runtime_site(), Path(tmp))
 
 
 if __name__ == "__main__":
