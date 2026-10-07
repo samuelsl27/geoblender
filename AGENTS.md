@@ -46,7 +46,8 @@ con `--python-exit-code 1` y un perfil temporal, nunca con el perfil real del us
 - Aquí no entra nada de la documentación ni ninguna ruta del NAS, de la carpeta del proyecto
   o de la carpeta de expedientes de clientes; los datos de clientes, nunca.
 - Los agentes no aprueban specs, no integran en `main` y no publican, salvo que una persona
-  de IMGA lo pida expresamente en esa tarea.
+  de IMGA lo pida en esa tarea o sea la sesión principal con la autorización permanente que
+  recoge la documentación (`docs/decisiones-pendientes.md` §12.1).
 - Toda subida a GitHub y todo espejo al NAS los hace `tools/publish.py`, y solo quien
   publica (una persona, o un agente al que ella se lo pida): nunca `git push` a mano ni
   fusiones en la web de GitHub. Si para con código 3 (`CAMBIOS EN EL DESTINO`), no la

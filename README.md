@@ -8,9 +8,11 @@ de minas, para su propio trabajo de proyectos de explotación y restauración.
 > **Estado: Geoblender 0.1.0 se instala (spec 001), crea y abre proyectos `.gbproj` con su
 > sistema de referencia y su origen local (spec 002) y tiene su interfaz: conmutador, barra
 > superior con los 13 menús, acceso rápido, vistas mineras, idioma, línea de comandos y
-> plantilla de aplicación (spec 003). Las dos specs están pendientes de sus comprobaciones con
-> la interfaz gráfica; todavía no hay funciones mineras.** Se habilita y se desinstala sin
-> dejar rastro, y `tools/check.py` comprueba todo el código.
+> plantilla de aplicación (spec 003). Las dos están comprobadas con Blender 5.2.1 (la
+> interfaz, en la pantalla de referencia de IMGA), y la 002 también con QGIS 4.2 y en la red
+> con un equipo; faltan comprobaciones de personas (dos equipos a la vez, algunas teclas, los
+> iconos y la lectura de la barra). Todavía no hay funciones mineras.** Se habilita y se
+> desinstala sin dejar rastro, y `tools/check.py` comprueba todo el código.
 
 Este repositorio contiene **solo el código**. La documentación del proyecto (constitución,
 proceso de trabajo, decisiones de arquitectura, specs y trampas conocidas) es interna de IMGA

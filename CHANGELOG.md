@@ -11,9 +11,10 @@ cambiar.
 
 Geoblender 0.1.0 ya se instala (spec 001), crea y abre proyectos con su sistema de
 referencia y su origen local (spec 002) y tiene su interfaz (spec 003), aunque todavía no
-tiene funciones mineras. Lo de la spec 002 está probado sin interfaz y en la red con un solo
-equipo; falta comprobarlo con la interfaz de Blender, con QGIS abierto y con dos equipos a la
-vez. Lo de la spec 003 está probado sin la interfaz gráfica; falta verlo en la pantalla.
+tiene funciones mineras. Lo de la spec 002 está comprobado también con QGIS 4.2 y en la red
+con un solo equipo; falta con dos equipos a la vez. Lo de la spec 003 está comprobado en una
+pantalla de 1920 × 1080 con Windows al 125 %, salvo algunas teclas en modo Blender, la fila 2
+en edición, dos idiomas de entrada y la revisión de los iconos.
 
 ### Añadido
 
@@ -165,8 +166,8 @@ vez. Lo de la spec 003 está probado sin la interfaz gráfica; falta verlo en la
   documentación del proyecto, interna de IMGA, queda en otro que no se publica. Las
   herramientas encuentran la raíz del código por el manifiesto y `tools/check.py`, y la
   comprobación completa ya no necesita la documentación al lado: en el PC de referencia, con
-  el código en su disco local, tarda unos 40 s con las pruebas de la publicación (antes,
-  unos 48 s en la unidad de red, sin ellas).
+  el código en su disco local, con las pruebas de la publicación (`--completo`) tarda unos
+  62 s.
 - `tools/check.py` reparte las pruebas unitarias en 4 procesos y las de Blender en 3
   Blender que se ejecutan a la vez dentro de su paso (los pasos siguen uno tras otro), sin
   quitar ni acortar ninguna: la comprobación de cada tarea pasa de unos 55 s a unos 25 s
