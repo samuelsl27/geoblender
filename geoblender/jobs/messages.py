@@ -14,6 +14,8 @@ inglés, los mismos en los dos (constitución, principio 10).
   queda «?») y nunca devuelve una traza de Python (RF-004-07).
 - :class:`JobError`: el error de un trabajo para el usuario, con código, ``msgid``,
   valores (JSON) y texto.
+- :func:`one_line`: un texto en una línea y, si trae una traza de Python, solo su última
+  línea (lo que se muestra de un error que manda un worker).
 
 Además de los del §8, ``source_changed`` (plan §5.3.1): la fuente de una entrada cambió
 mientras se copiaba a la carpeta del trabajo.
@@ -268,11 +270,12 @@ def _show(name: str, value: object, language: str) -> str:
     if isinstance(value, float):
         text = str(int(value)) if value.is_integer() else repr(value)
         return text.replace(".", ",") if language == "es" else text
-    return _one_line(str(value))
+    return one_line(str(value))
 
 
-def _one_line(text: str) -> str:
-    """``text`` en una línea; de una traza de Python, solo su última línea (la excepción)."""
+def one_line(text: str) -> str:
+    """``text`` en una línea; de una traza de Python, solo su última línea (la excepción).
+    El lanzador lo aplica también al texto de error que manda un worker (RF-004-12)."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if any(TRACEBACK_MARK in line for line in lines):
         lines = [line for line in lines if TRACEBACK_MARK not in line][-1:]

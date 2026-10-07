@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Lanzador de los trabajos en segundo plano: :class:`JobRunner` (spec 004; RF-004-01,
-RF-004-05, RF-004-09 a RF-004-11, RF-004-15; plan 004 §5.3.1, §5.3.3, §5.3.4, §5.4.2 y
+RF-004-05, RF-004-09 a RF-004-12, RF-004-15; plan 004 §5.3.1, §5.3.3, §5.3.4, §5.4.2 y
 §5.4.5).
 
 Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
@@ -47,6 +47,13 @@ Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
   pararlo, le pide parar como en una cancelación (motivo ``timeout``, con el mismo plazo de
   gracia) y el trabajo acaba «Tiempo agotado» (``job_timeout``, con el tiempo máximo en el
   mensaje), forzado o no.
+- Fallos (RF-004-12): el trabajo queda «Fallido» con el código del plan §5.3.4 y su
+  mensaje en español, nunca con una traza (la del worker está en ``job.log``): el error
+  que informa el worker (salida 2 o 5, con el texto de su evento ``error`` en una línea),
+  ``worker_crashed`` con cualquier otra salida, ``protocol_no_result`` si sale con 0 sin
+  resultado, y sin proceso si el intérprete no arranca o si la petición de una carpeta ya
+  preparada deja de valer antes de lanzarla (``worker_unknown``…). Nada de eso se propaga
+  al proceso de Blender.
 
 Los hilos de este módulo son *daemon*: nunca retienen el cierre de Blender. Solo el lanzador
 escribe ``state.json``, ``events.jsonl`` y, al final, sus avisos en ``job.log``.
@@ -75,7 +82,7 @@ from typing import IO, Any
 
 from ..core.timeutil import format_utc
 from . import catalog, policy, winjob
-from .messages import JobError
+from .messages import JobError, one_line
 from .paths import JobDir, job_dir
 from .protocol import (
     EventDecoder,
@@ -109,6 +116,9 @@ BOOTSTRAP_PARTS: tuple[str, ...] = ("workers", "_bootstrap.py")
 """El arranque de los workers dentro del paquete (se lanza por ruta: ``jobs`` no importa
 ``workers``)."""
 INTERPRETER_KIND = "blender"
+REJECTED_EXECUTOR = "subprocess"
+"""El ejecutor que consta en el registro de un trabajo rechazado al lanzarlo sin haber
+pasado por :meth:`JobRunner.prepare` (sin tipo de trabajo no se puede elegir otro)."""
 
 # Códigos de salida del worker (plan §5.3.4; los mismos que ``workers/_bootstrap.py``).
 EXIT_OK = 0
@@ -336,11 +346,15 @@ class JobRunner:
     ) -> JobHandle:
         """Pone el trabajo en la cola y vuelve sin esperarlo (RNF-004-01); si hay hueco,
         lo lanza al momento. ``job`` es una carpeta de :meth:`prepare` (con sus entradas ya
-        escritas) o una petición, que se prepara antes. La petición se lee y se valida otra
-        vez: si no vale, :class:`~.messages.JobError` y no arranca nada. Si el intérprete no
-        se puede arrancar, el trabajo queda «Fallido» (``interpreter_not_found`` o
-        ``interpreter_failed``). ``on_finish`` se llama una vez, desde :meth:`poll`, con su
-        :class:`JobResult`; sus errores no se propagan."""
+        escritas) o una petición, que se prepara antes (si no vale,
+        :class:`~.messages.JobError` y no se crea nada). La petición de la carpeta se lee y
+        se valida otra vez: si no se puede leer, :class:`~.messages.JobError`; si ya no vale
+        (su tipo de trabajo dejó de existir, o se tocó su ``request.json``), el trabajo
+        queda «Fallido» con su código (``worker_unknown``…) sin arrancar ningún proceso
+        (RF-004-12, spec §8). Si el intérprete no se puede arrancar, el trabajo queda
+        «Fallido» (``interpreter_not_found`` o ``interpreter_failed``). ``on_finish`` se
+        llama una vez, desde :meth:`poll`, con su :class:`JobResult`; sus errores no se
+        propagan."""
         folder = self.prepare(job) if isinstance(job, JobRequest) else job
         if not isinstance(folder, JobDir):
             raise TypeError(f"se esperaba un JobDir o un JobRequest, no {type(job).__name__}")
@@ -348,9 +362,12 @@ class JobRunner:
             if folder.job_uid in self._jobs:
                 raise ValueError(f"el trabajo {folder.job_uid} ya se lanzó")
             request = read_request(folder)
-            info = self._worker_info(request)
-            validate_request(request, catalog=catalog.WORKERS,
-                             forbidden_roots=self._forbidden_roots)
+            try:
+                info = self._worker_info(request)
+                validate_request(request, catalog=catalog.WORKERS,
+                                 forbidden_roots=self._forbidden_roots)
+            except JobError as exc:
+                return self._reject(folder, request, exc, on_finish)
             record = read_record(folder)
             fresh = record is None or record.state != "queued"
             if fresh:
@@ -415,6 +432,25 @@ class JobRunner:
         return updates
 
     # --- Ayudas --------------------------------------------------------------------------
+
+    def _reject(
+        self,
+        folder: JobDir,
+        request: JobRequest,
+        error: JobError,
+        on_finish: Callable[[JobResult], object] | None,
+    ) -> JobHandle:
+        """Un trabajo ya preparado cuya petición no vale al lanzarlo queda «Fallido» con el
+        código de ``error``, sin proceso: su ``state.json`` deja de decir «En cola», y
+        ``on_finish`` se llama en el siguiente :meth:`poll`, como con cualquier final."""
+        record = read_record(folder)
+        if record is None or record.state != "queued":
+            record = JobRecord.from_request(request, executor=REJECTED_EXECUTOR)
+        item = _Job(request, folder, record, on_finish)
+        self._jobs[folder.job_uid] = item
+        self._finish(item, state="failed", exit_code=None, duration_s=None,
+                     error=ErrorInfo.from_job_error(error))
+        return JobHandle(item, self)
 
     def _worker_info(self, request: JobRequest) -> catalog.WorkerInfo:
         info = catalog.WORKERS.get(request.worker)
@@ -989,8 +1025,9 @@ def _outcome(item: _Job, exit_code: int) -> tuple[str, ErrorInfo | None]:
     if exit_code in (EXIT_FAILED, EXIT_STARTUP) and item.error_event is not None:
         event = item.error_event
         assert event.code is not None and event.msgid is not None
+        # El texto lo manda el worker: al usuario llega en una línea y sin traza (RF-004-12).
         return "failed", ErrorInfo(code=event.code, msgid=event.msgid, values=event.values,
-                                   text=event.msg.strip() or event.code)
+                                   text=one_line(event.msg) or event.code)
     return "failed", _error("worker_crashed", job=name, exit_code=exit_code)
 
 

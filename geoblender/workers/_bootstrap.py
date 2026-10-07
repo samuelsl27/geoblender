@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Arranque de un worker en un proceso aparte (spec 004; RF-004-01, RF-004-13, RF-004-15;
-plan 004 §5.3.3, §5.3.4 y §5.4.3).
+"""Arranque de un worker en un proceso aparte (spec 004; RF-004-01, RF-004-12, RF-004-13,
+RF-004-15; plan 004 §5.3.3, §5.3.4 y §5.4.3).
 
 El lanzador lo ejecuta con el Python de Blender, con la carpeta del trabajo como carpeta de
 trabajo::
@@ -34,8 +34,10 @@ Códigos de salida (plan §5.3.4): 0, terminado, con ``result.json`` y el evento
 2, ``JobFailed`` (o un ``JobError``) con su evento ``error``; 3, cancelación atendida, con el
 evento ``cancelled``; 4, padre perdido; 5, comprobación de arranque fallida (argumentos,
 paquete, petición ilegible o tipo de trabajo que no existe; con su evento ``error`` si el
-canal ya funciona); 1, excepción no capturada, con la traza solo en ``job.log``. Una caída
-nativa o un ``os._exit`` dan su propio código.
+canal ya funciona); 1, excepción no capturada, con la traza solo en ``job.log`` (también
+``SystemExit``: un ``sys.exit`` del cálculo o de una librería no puede hacerse pasar por
+otro de estos códigos; RF-004-12). Una caída nativa o un ``os._exit`` dan su propio
+código.
 
 Este arranque admite el intérprete ``blender``; ``--site`` y el entorno ``compute`` (pasos 4 y
 6) llegan con el motor de cálculo.
@@ -263,7 +265,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except StartupError as exc:
         note(str(exc))
         code = EXIT_STARTUP
-    except Exception:
+    except (Exception, SystemExit):
+        # También ``sys.exit`` del cálculo o de una librería: con su propio código se haría
+        # pasar por una cancelación (3), por la pérdida del padre (4)… (RF-004-12).
         note("excepción no capturada en el worker:")
         traceback.print_exc()
         code = EXIT_CRASHED
