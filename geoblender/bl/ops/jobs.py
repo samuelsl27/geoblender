@@ -88,8 +88,9 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   terminados con ``JobRunner.purge``, que nunca toca un trabajo activo, e informa de los MB
   liberados: ``OLD``, los terminados hace más días que ``retention_days`` de las
   preferencias; ``FINISHED``, todos los terminados (los dos, desde el menú, tras un diálogo
-  de confirmación); ``ONE``, solo el ``job_uid`` (el «Descartar» de la lista de trabajos,
-  sin diálogo; si es un trabajo guardado de otra raíz, en la suya).
+  de confirmación con «Borrar» y «Cancelar» en el idioma de Geoblender, T45); ``ONE``,
+  solo el ``job_uid`` (el «Descartar» de la lista de trabajos, sin diálogo; si es un
+  trabajo guardado de otra raíz, en la suya).
 
 - ``geoblender.jobs_setup_runtime`` (Motor de cálculo…; RF-004-19 a RF-004-25, plan §5.4.7
   y §5.5): el motor de cálculo del lanzador de la sesión (:func:`compute_environment`, el
@@ -106,8 +107,8 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   enseñado (su huella, ``confirmation``) y el consentimiento del usuario, seguida en la
   barra de estado; «Cancelar» solo cierra el diálogo. PyPI con el acceso en línea de
   Blender desactivado no abre el diálogo y dice las dos salidas (RF-004-23). ``VERIFY``
-  verifica el motor instalado; ``REMOVE``, tras confirmarlo en un diálogo, lo borra si
-  ningún trabajo lo usa. Sin confirmación (desde un guion) no instala ni borra nada.
+  verifica el motor instalado; ``REMOVE``, tras confirmarlo en un diálogo (con «Quitar» y
+  «Cancelar», también en el idioma de Geoblender; T45), lo borra si ningún trabajo lo usa. Sin confirmación (desde un guion) no instala ni borra nada.
 - Un trabajo que necesita el motor y no lo tiene (``runtime_missing``, o
   ``runtime_mismatch`` si el que hay es de otra versión de Geoblender, al lanzarlo con
   :meth:`JobMonitor.submit`) abre ese mismo diálogo (:func:`offer_runtime_setup`,
@@ -627,6 +628,7 @@ class GEOBLENDER_OT_jobs_clean(bpy.types.Operator):
         note = self.layout.row()
         note.active = False
         note.label(text=tr("Queued and running jobs are never deleted"), translate=False)
+        job_list.draw_clean_buttons(self.layout, scope=self.scope)
 
     def execute(self, context: Any) -> set[str]:
         runner = MONITOR.runner
@@ -1055,6 +1057,7 @@ class GEOBLENDER_OT_jobs_setup_runtime(bpy.types.Operator):
         _runner, env = target
         if self.action == "REMOVE":
             job_list.draw_remove(self.layout, env, _engine_size_mb(env))
+            job_list.draw_remove_buttons(self.layout, confirmation=self.confirmation)
             return
         if self.action not in INSTALL_ACTIONS:
             job_list.draw_engine(self.layout, env, running=setup_running(),

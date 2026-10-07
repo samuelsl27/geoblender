@@ -147,6 +147,14 @@ usuario):
   modos de ``geoblender.jobs_run_selftest`` (el mismo ``bl_idname``), cada uno con su
   ``mode`` y el nombre visible de ese modo, en español y en inglés.
 
+T45 — los demás diálogos de los trabajos dicen «Cancelar» (tras T40, el de limpiar y el de
+quitar el motor seguían con el «Cancel» de Blender, en el idioma de Blender):
+
+- RF-004-17, RF-004-19: el de limpiar trabajos terminados (``OLD`` y ``FINISHED``) termina con
+  «Borrar» y «Cancelar» («Delete» y «Cancel» en inglés) y el de quitar el motor de cálculo,
+  con «Quitar» y «Cancelar» («Remove» y «Cancel»); el de confirmar ejecuta lo que enseña el
+  diálogo y «Cancelar» no borra nada.
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
@@ -1960,8 +1968,50 @@ class CleanJobsTest(unittest.TestCase):
                                  "Limpiar trabajos terminados")
         texts = draw(operator, bpy.context, scope="OLD", job_uid="").texts()
         self.assertEqual(texts, ["Terminados hace más de 12 días", "Todos los terminados",
-                                 "Nunca se borran los trabajos en cola ni en curso"])
+                                 "Nunca se borran los trabajos en cola ni en curso",
+                                 "Borrar"])  # su botón, con «Cancelar» (T45)
         self.assertEqual(len(self.remaining()), 6)
+
+    def test_dialog_buttons_in_the_language_of_geoblender(self) -> None:
+        """RF-004-17 (T45; ADR-0012): los dos botones del diálogo de limpiar son de
+        Geoblender y van en su idioma, no en el de Blender (eran los de
+        ``invoke_props_dialog``, con su «Cancel»): «Borrar» y «Cancelar» en español,
+        «Delete» y «Cancel» en inglés, al final (``template_popup_confirm``, que sustituye a
+        los del diálogo), con lo que se eligió en él (``OLD`` o ``FINISHED``). «Cancelar»
+        solo cierra el diálogo: no borra nada; «Borrar» ejecuta, sin volver a abrir el
+        diálogo, la limpieza elegida."""
+        self.addCleanup(self.i18n.set_language, "es")
+        self.prefs.retention_days = 7
+        cls = self.ops.GEOBLENDER_OT_jobs_clean
+        before = self.remaining()
+        for language, confirm, cancel in (("es", "Borrar", "Cancelar"),
+                                          ("en", "Delete", "Cancel")):
+            self.i18n.set_language(language)
+            for scope in ("OLD", "FINISHED"):
+                with self.subTest(idioma=language, scope=scope):
+                    fake = SimpleNamespace(scope=scope, job_uid="")
+                    layout = draw(cls, bpy.context, **vars(fake))
+                    (buttons,) = layout.of_kind("template_popup_confirm")
+                    self.assertIs(layout.items[-1], buttons)
+                    self.assertEqual(layout.of_kind("operator"), [])
+                    self.assertEqual(
+                        (buttons.target, buttons.text, buttons.options.get("cancel_text"),
+                         buttons.options.get("translate")),
+                        (CLEAN_JOB, confirm, cancel, False))
+                    self.assertEqual(buttons.operator_context, "EXEC_DEFAULT")
+                    self.assertEqual(vars(buttons.properties), {"scope": scope})
+                    # «Cancelar»: Blender cierra el diálogo (y llama a su cancel, si lo
+                    # tiene) sin ejecutar nada.
+                    getattr(cls, "cancel", lambda *_args: None)(fake, bpy.context)
+                    self.assertEqual(self.remaining(), before)
+        # «Borrar»: el operador con las propiedades del botón, como lo lanza Blender.
+        self.i18n.set_language("es")
+        (buttons,) = draw(cls, bpy.context, scope="OLD", job_uid="").of_kind(
+            "template_popup_confirm")
+        self.assertEqual(bpy.ops.geoblender.jobs_clean(buttons.operator_context,
+                                                       **vars(buttons.properties)),
+                         {"FINISHED"})
+        self.assertEqual(self.remaining(), before - {self.old.name, self.older.name})
 
 
 # --- T22: el lanzador de la sesión, su raíz de trabajos y el cierre ---------------------
@@ -2777,7 +2827,8 @@ class RuntimeSetupTest(unittest.TestCase):
         self.assertEqual(remove.confirmation, str(self.env.path))
         self.assertEqual(self.drawn(remove).texts(), [
             f"Se borra la carpeta {self.env.path} ({size} MB); se puede volver a instalar "
-            "después"])
+            "después",
+            "Quitar"])  # su botón, con «Cancelar» (T45)
         unconfirmed = self.operator(action="REMOVE")
         self.assertEqual(self.execute(unconfirmed), {"CANCELLED"})
         self.assertEqual(unconfirmed.reports, [(
@@ -2794,6 +2845,48 @@ class RuntimeSetupTest(unittest.TestCase):
         self.assertFalse(self.env.path.exists())
         self.assertEqual(self.env.status(), "missing")
         self.assertIn("Motor de cálculo: No instalado", _panel(self.ui).texts())
+
+    def test_remove_dialog_buttons_in_the_language_of_geoblender(self) -> None:
+        """RF-004-19 (T45; ADR-0012): los dos botones del diálogo de quitar el motor de
+        cálculo son de Geoblender y van en su idioma, no en el de Blender (eran los de
+        ``invoke_props_dialog``, con su «Cancel»): «Quitar» y «Cancelar» en español,
+        «Remove» y «Cancel» en inglés, al final, bajo la carpeta que se borra
+        (``template_popup_confirm``). «Cancelar» solo cierra el diálogo: el motor sigue
+        listo; «Quitar» ejecuta, sin volver a abrir el diálogo, el borrado de la carpeta que
+        se enseñó."""
+        self.make_ready()
+        self.addCleanup(self.i18n.set_language, "es")
+        cls = self.ops.GEOBLENDER_OT_jobs_setup_runtime
+        for language, confirm, cancel in (("es", "Quitar", "Cancelar"),
+                                          ("en", "Remove", "Cancel")):
+            with self.subTest(idioma=language):
+                self.i18n.set_language(language)
+                result, fake = self.invoke(action="REMOVE")
+                self.assertEqual(result, {"RUNNING_MODAL"})
+                layout = self.drawn(fake)
+                (buttons,) = layout.of_kind("template_popup_confirm")
+                self.assertIs(layout.items[-1], buttons)
+                self.assertEqual(layout.of_kind("operator"), [])
+                self.assertEqual(
+                    (buttons.target, buttons.text, buttons.options.get("cancel_text"),
+                     buttons.options.get("translate")),
+                    (SETUP_RUNTIME, confirm, cancel, False))
+                self.assertEqual(buttons.operator_context, "EXEC_DEFAULT")
+                self.assertEqual(vars(buttons.properties), {
+                    "action": "REMOVE", "confirmation": str(self.env.path)})
+                # «Cancelar»: Blender cierra el diálogo (y llama a su cancel, si lo tiene)
+                # sin ejecutar nada.
+                getattr(cls, "cancel", lambda *_args: None)(fake, bpy.context)
+                self.assertEqual(self.env.status(), "ready")
+        # «Quitar»: el operador con las propiedades del botón, como lo lanza Blender.
+        self.i18n.set_language("es")
+        _result, fake = self.invoke(action="REMOVE")
+        (buttons,) = self.drawn(fake).of_kind("template_popup_confirm")
+        self.assertEqual(bpy.ops.geoblender.jobs_setup_runtime(buttons.operator_context,
+                                                               **vars(buttons.properties)),
+                         {"FINISHED"})
+        self.assertFalse(self.env.path.exists())
+        self.assertEqual(self.env.status(), "missing")
 
 
 # --- T33: el intérprete externo, para desarrollo -----------------------------------------

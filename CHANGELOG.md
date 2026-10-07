@@ -55,7 +55,8 @@ falta el almacén del NAS de IMGA.
     proyecto está en la red o en solo lectura, y en los datos de Geoblender del equipo si no hay
     proyecto abierto) y las de los terminados se borran a los 7 días
     al abrir el proyecto (se cambia en las preferencias) o con **Limpiar trabajos
-    terminados…**, que dice los MB liberados; nunca las de un trabajo en cola o en curso.
+    terminados…** (con «Borrar» y «Cancelar» en el idioma de Geoblender), que dice los MB
+    liberados; nunca las de un trabajo en cola o en curso.
   - **Cerrar Blender o desactivar Geoblender** con trabajos en marcha los detiene sin dejar
     ningún `python.exe` (medido: 0,2 s; se exige como mucho 3 s); al volver, la lista los
     muestra «Interrumpido». 100 trabajos seguidos (bien, fallidos, cancelados y agotados) no
@@ -72,8 +73,9 @@ falta el almacén del NAS de IMGA.
     huella, y una instalación cortada o cancelada no deja nada. La verificación comprueba las
     versiones, que numpy sale del motor y no de Blender y que usa la BLAS optimizada, y mide el
     producto: «Listo · numpy 2.5.3 · BLAS scipy-openblas · 2000 × 2000 en 0,040 s». Desde la
-    misma ventana se verifica, se repara o se quita; con otra versión de Geoblender se ofrece
-    actualizarlo, y el anterior se borra al terminar si ningún trabajo lo está usando; si
+    misma ventana se verifica, se repara o se quita (con «Quitar» y «Cancelar»); con otra
+    versión de Geoblender se ofrece actualizarlo, y el anterior se borra al terminar si
+    ningún trabajo lo está usando; si
     alguno lo usa (también desde otra sesión de Blender), se borra después, cuando ya no se
     usa, al terminar el siguiente cálculo con el motor o al abrir Geoblender. Si un
     cálculo lo necesita y falta, se ofrece instalarlo con el mismo diálogo; si el que hay es de

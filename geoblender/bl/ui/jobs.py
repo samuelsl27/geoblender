@@ -48,10 +48,13 @@ dañado). ``geoblender.jobs_setup_runtime`` (``bl/ops/jobs.py``) dibuja aquí su
 consentimiento (:func:`draw_consent`: origen, una fila por paquete con su versión y su
 licencia, y las que incluye su rueda, MB de descarga y en disco, carpeta de destino y que no
 cambia el Python de Blender), el estado del motor con sus botones (:func:`draw_engine`) y la
-confirmación de quitarlo (:func:`draw_remove`). Los botones del diálogo de consentimiento,
-«Instalar» y «Cancelar», son de Geoblender y van en su idioma (:func:`draw_consent_buttons`,
-T40; ADR-0012): ``template_popup_confirm`` sustituye a los de ``invoke_props_dialog``, cuyo
-«Cancel» es el de Blender, en el idioma de Blender.
+confirmación de quitarlo (:func:`draw_remove`). Los botones de los diálogos de los trabajos
+son de Geoblender y van en su idioma (:func:`draw_dialog_buttons`; ADR-0012):
+``template_popup_confirm`` sustituye a los de ``invoke_props_dialog``, cuyo «Cancel» es el de
+Blender, en el idioma de Blender. «Instalar» y «Cancelar» en el de consentimiento
+(:func:`draw_consent_buttons`, T40); «Quitar» y «Cancelar» en el de quitar el motor
+(:func:`draw_remove_buttons`) y «Borrar» y «Cancelar» en el de limpiar los trabajos
+terminados de ``geoblender.jobs_clean`` (:func:`draw_clean_buttons`), los dos de T45.
 
 El intérprete externo (spec 004, T33; RF-004-26): si el lanzador tiene uno, la lista dice,
 bajo el estado del motor, que los trabajos del motor corren con él («Intérprete externo
@@ -613,20 +616,47 @@ def draw_consent(layout: Any, plan: InstallPlan) -> None:
                        "not change Blender's Python"), icon=NOTE_ICON, translate=False)
 
 
+def draw_dialog_buttons(layout: Any, operator: str, *, text: str, **properties: Any) -> Any:
+    """Los dos botones de un diálogo de los trabajos, al final y en el idioma de Geoblender
+    (ADR-0012; T40, T45): el de confirmar, con ``text``, y «Cancelar»
+    (``template_popup_confirm``, que en un ``invoke_props_dialog`` sustituye a sus botones,
+    cuyo «Cancel» es el de Blender, en el idioma de Blender). El de confirmar ejecuta
+    ``operator`` con ``properties`` sin volver a abrir el diálogo (``EXEC_DEFAULT``, que
+    vale para todo el *layout*: por eso van al final); «Cancelar» lo cierra sin ejecutar
+    nada. Devuelve las propiedades del botón de confirmar."""
+    layout.operator_context = CONSENT_CONTEXT
+    buttons = layout.template_popup_confirm(operator, text=text, translate=False,
+                                            cancel_text=tr("Cancel"))
+    for name, value in properties.items():
+        setattr(buttons, name, value)
+    return buttons
+
+
 def draw_consent_buttons(layout: Any, *, action: str, source: str,
                          confirmation: str) -> None:
-    """Los botones del diálogo de consentimiento, al final, en el idioma de Geoblender
-    (RF-004-20, ADR-0012; T40): «Instalar» y «Cancelar» (``template_popup_confirm``, que en
-    un ``invoke_props_dialog`` sustituye a sus botones; el de cancelar de Blender va en el
-    idioma de Blender). «Instalar» ejecuta ``geoblender.jobs_setup_runtime`` con ``action``,
-    ``source`` y ``confirmation`` (la huella del plan enseñado) sin volver a abrir el
-    diálogo; «Cancelar» lo cierra sin ejecutar nada (RF-004-19)."""
-    layout.operator_context = CONSENT_CONTEXT
-    properties = layout.template_popup_confirm(SETUP_RUNTIME, text=tr("Install"),
-                                               translate=False, cancel_text=tr("Cancel"))
-    properties.action = action
-    properties.source = source
-    properties.confirmation = confirmation
+    """Los botones del diálogo de consentimiento (RF-004-20; T40), con
+    :func:`draw_dialog_buttons`: «Instalar» ejecuta ``geoblender.jobs_setup_runtime`` con
+    ``action``, ``source`` y ``confirmation`` (la huella del plan enseñado); «Cancelar» lo
+    cierra sin ejecutar nada (RF-004-19)."""
+    draw_dialog_buttons(layout, SETUP_RUNTIME, text=tr("Install"), action=action,
+                        source=source, confirmation=confirmation)
+
+
+def draw_remove_buttons(layout: Any, *, confirmation: str) -> None:
+    """Los botones del diálogo de quitar el motor de cálculo (RF-004-19; T45), con
+    :func:`draw_dialog_buttons`: «Quitar» ejecuta ``geoblender.jobs_setup_runtime`` con
+    ``action = REMOVE`` y ``confirmation`` (la carpeta enseñada); «Cancelar» lo cierra sin
+    borrar nada."""
+    draw_dialog_buttons(layout, SETUP_RUNTIME, text=tr("Remove"), action="REMOVE",
+                        confirmation=confirmation)
+
+
+def draw_clean_buttons(layout: Any, *, scope: str) -> None:
+    """Los botones del diálogo de limpiar los trabajos terminados (RF-004-17; T45), con
+    :func:`draw_dialog_buttons`: «Borrar» ejecuta ``geoblender.jobs_clean`` con ``scope``
+    (lo elegido en el diálogo: ``OLD`` o ``FINISHED``); «Cancelar» lo cierra sin borrar
+    nada."""
+    draw_dialog_buttons(layout, CLEAN_JOB, text=tr("Delete"), scope=scope)
 
 
 def draw_engine(layout: Any, env: ComputeEnvironment, *, running: bool,
