@@ -11,9 +11,11 @@ La ejecuta una persona, con el Python de Blender, desde la raíz del repositorio
    ``<carpeta>/<fichero>``; si no, busca el fichero en el JSON de PyPI
    (``https://pypi.org/pypi/<nombre>/<versión>/json``, con ``urllib`` y 60 s),
    comprueba que el sha256 que publica PyPI es el fijado y lo descarga.
-3. Comprueba el sha256 de cada fichero y que es un zip, y extrae todas en la carpeta de
-   trabajo. Si una falta, no tiene el sha256 fijado (se dan los dos hashes) o no se
-   puede extraer, sale con 1 **sin cambiar nada** (todo o nada).
+3. Comprueba el sha256 de cada fichero, que es un zip y que, si trae DLL en
+   ``<paquete>.libs/``, su ``bundled_licenses`` no está vacío (ADR-0017 §4), y extrae
+   todas en la carpeta de trabajo. Si una falta, no tiene el sha256 fijado (se dan los
+   dos hashes), no está auditada o no se puede extraer, sale con 1 **sin cambiar nada**
+   (todo o nada).
 4. Con todo comprobado: deja en ``geoblender/wheels/`` exactamente las ruedas de destino
    «extension» (borra lo demás; si no hay ninguna, la carpeta no existe), sustituye
    ``.deps/site/`` por las ruedas de los dos destinos extraídas y escribe la lista de
@@ -23,9 +25,9 @@ La ejecuta una persona, con el Python de Blender, desde la raíz del repositorio
 Solo usa la red si hay ruedas fijadas y ninguna carpeta de ruedas. No toca
 ``.deps/runtime/`` (spec 004).
 
-Códigos de salida: 0 correcto; 1 LIC-01, una rueda que falta, que no es la fijada o que
-no se puede extraer, o un manifiesto sin bloque ``wheels`` (nada cambia); 2 error de uso
-(opción desconocida, carpeta de ruedas que no existe).
+Códigos de salida: 0 correcto; 1 LIC-01, una rueda que falta, que no es la fijada, sin
+auditar o que no se puede extraer, o un manifiesto sin bloque ``wheels`` (nada cambia); 2
+error de uso (opción desconocida, carpeta de ruedas que no existe).
 """
 
 from __future__ import annotations
@@ -302,6 +304,11 @@ def fetch(
                     path = download_from_pypi(spec, downloads, opener)
                 verify(spec, path)
                 with zipfile.ZipFile(path) as archive:
+                    problem = wheels.audit_problem(
+                        spec.filename, archive.namelist(), spec.bundled_licenses
+                    )
+                    if problem is not None:
+                        raise FetchError(problem)
                     archive.extractall(staged)
             except FetchError as exc:
                 problems.append(str(exc))

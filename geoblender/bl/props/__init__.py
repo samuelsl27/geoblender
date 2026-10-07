@@ -6,6 +6,8 @@
   ``core`` de las preferencias (spec 002);
 - ``ui``: ``WorkSpace.geoblender_mode`` (la marca del modo Geoblender) y el grupo ``ui``
   de las preferencias (spec 003);
+- ``jobs``: el grupo ``jobs`` de las preferencias (spec 004): trabajos a la vez,
+  retención, origen del motor de cálculo, almacén de ruedas e intérprete externo;
 - ``preferences``: la única ``GeoblenderPreferences``, con un grupo por módulo.
 
 Antes de registrar las clases, sus propiedades (nombre, descripción y elementos de los
@@ -19,11 +21,13 @@ from __future__ import annotations
 
 from ...core import i18n
 from ..registry import PropertyTranslator, register_classes, unregister_classes
-from . import core, preferences, ui
+from . import core, jobs, preferences, ui
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los grupos antes de quien los usa.
-classes: tuple[type, ...] = (*core.classes, *ui.classes, *preferences.classes)
+classes: tuple[type, ...] = (
+    *core.classes, *ui.classes, *jobs.classes, *preferences.classes
+)
 
 _PROPERTIES = PropertyTranslator()
 

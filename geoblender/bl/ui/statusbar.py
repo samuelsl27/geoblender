@@ -30,13 +30,14 @@ idioma) y los nombres del encaje se traducen una vez por idioma.
 
 La barra de estado no se redibuja sola: una suscripción de ``bpy.msgbus`` al cursor 3D
 (:func:`on_cursor_moved`), renovada en ``load_post``, la redibuja en las ventanas sin
-operadores modales con ``workspace.status_text_set(None)``. :func:`uninstall` quita el
+operadores modales con ``workspace.status_text_set(None)`` (:func:`redraw`, que usa también
+el seguimiento de los trabajos de la 004). :func:`uninstall` quita el
 ``append`` y la suscripción y olvida los campos.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -346,18 +347,34 @@ OWN_FIELDS: tuple[tuple[str, int, float, DrawField, WidthField], ...] = (
 # Redibujo con el cursor ------------------------------------------------------------------
 
 
-def on_cursor_moved(*_args: Any) -> None:
-    """El cursor 3D se ha movido: redibuja la barra de estado de las ventanas en modo
-    Geoblender que no tienen un operador modal (su texto de estado es suyo)."""
-    manager = getattr(bpy.context, "window_manager", None)
-    for window in getattr(manager, "windows", ()):
-        workspace = window.workspace
-        if workspace is None or not gate.is_geoblender_workspace(workspace):
-            continue
+def redraw(windows: Iterable[Any] | None = None, *, geoblender_only: bool = False) -> int:
+    """Redibuja la barra de estado de ``windows`` (por defecto, todas las ventanas) con
+    ``workspace.status_text_set(None)`` (la barra no está en ``screen.areas``: plan 004
+    §2.1), salvo las que tienen un operador modal (su texto de estado es suyo) y, con
+    ``geoblender_only``, las que no están en modo Geoblender. Devuelve cuántas redibujó.
+    Lo usan el cursor 3D y el seguimiento de los trabajos (spec 004, ``bl/ops/jobs.py``)."""
+    if windows is None:
+        manager = getattr(bpy.context, "window_manager", None)
+        windows = getattr(manager, "windows", ())
+    count = 0
+    for window in windows:
         if len(getattr(window, "modal_operators", ())):
+            continue
+        workspace = window.workspace
+        if workspace is None:
+            continue
+        if geoblender_only and not gate.is_geoblender_workspace(workspace):
             continue
         with bpy.context.temp_override(window=window):
             workspace.status_text_set(None)
+        count += 1
+    return count
+
+
+def on_cursor_moved(*_args: Any) -> None:
+    """El cursor 3D se ha movido: redibuja la barra de estado de las ventanas en modo
+    Geoblender que no tienen un operador modal (su texto de estado es suyo)."""
+    redraw(geoblender_only=True)
 
 
 def _subscribe() -> None:

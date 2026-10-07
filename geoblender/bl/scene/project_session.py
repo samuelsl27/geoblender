@@ -20,6 +20,11 @@ Geoblender (:func:`unregister`) y al salir de Blender (:func:`at_exit`, con ``at
   ``core``), el temporizador se detiene y queda un aviso (RF-002-12).
 - **Avisos**: lo que pasa sin un operador que lo cuente (un manejador, el temporizador)
   queda en :func:`take_notices` para la interfaz y en el registro técnico.
+- **Cambio de proyecto**: lo que otras partes de ``bl`` tienen que rehacer cuando la sesión
+  pasa a tener otro proyecto o ninguno (la raíz de los trabajos en segundo plano de la
+  spec 004) se apunta con :func:`add_listener`; :func:`attach` y :func:`close` lo llaman
+  con el proyecto nuevo o con ``None``. Un fallo de uno va al registro técnico y no impide
+  abrir ni cerrar el proyecto.
 
 En ``blender -b`` los temporizadores no se ejecutan: las pruebas llaman a
 :func:`heartbeat` directamente.
@@ -29,6 +34,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -48,6 +54,9 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger("geoblender.bl.scene")
 NOTICES_KEPT = 20  # avisos pendientes que se guardan (los más recientes)
 
+type Listener = Callable[[Project | None], object]
+"""Lo que se llama al cambiar el proyecto de la sesión: recibe el nuevo o ``None``."""
+
 
 class _State:
     """Estado de la sesión (no se guarda en el ``.blend``)."""
@@ -57,6 +66,7 @@ class _State:
         self.userdata_root: Path | None = None
         self.project: Project | None = None
         self.notices: list[str] = []
+        self.listeners: list[Listener] = []
 
 
 _STATE = _State()
@@ -120,6 +130,35 @@ def take_notices() -> list[str]:
     return found
 
 
+# Cambio de proyecto -------------------------------------------------------------------
+
+
+def add_listener(listener: Listener) -> None:
+    """Apunta ``listener`` para que se llame cada vez que la sesión pase a tener otro
+    proyecto (con él) o ninguno (con ``None``); si ya lo estaba, no hace nada."""
+    if listener not in _STATE.listeners:
+        _STATE.listeners.append(listener)
+
+
+def remove_listener(listener: Listener) -> None:
+    """Quita ``listener``; si no estaba, no hace nada."""
+    if listener in _STATE.listeners:
+        _STATE.listeners.remove(listener)
+
+
+def listeners() -> tuple[Listener, ...]:
+    """Lo apuntado con :func:`add_listener`, por orden."""
+    return tuple(_STATE.listeners)
+
+
+def _changed(project: Project | None) -> None:
+    for listener in list(_STATE.listeners):
+        try:
+            listener(project)
+        except Exception:  # noqa: BLE001 - abrir o cerrar el proyecto no depende de esto
+            LOGGER.exception("Falló lo que se hace al cambiar el proyecto de la sesión")
+
+
 # Proyecto de la sesión ----------------------------------------------------------------
 
 
@@ -131,22 +170,32 @@ def current() -> Project | None:
 def attach(project: Project) -> tuple[str, ...]:
     """Deja ``project`` (recién creado o abierto) como el proyecto de la sesión: cierra
     antes el que hubiera (RF-002-06), sincroniza las escenas (RF-002-28) y, en
-    escritura, arranca la marca de actividad (RF-002-11). Devuelve los avisos de cerrar
-    el anterior."""
+    escritura, arranca la marca de actividad (RF-002-11) y avisa del cambio
+    (:func:`add_listener`). Devuelve los avisos de cerrar el anterior."""
     warnings: tuple[str, ...] = ()
     if _STATE.project is not None and _STATE.project is not project:
-        warnings = close()
+        warnings = _close()
     _STATE.project = project
     from . import georef  # georef usa este módulo: se importa al usarlo
 
     georef.sync_scenes(project)
     ensure_heartbeat()
+    _changed(project)
     return warnings
 
 
 def close() -> tuple[str, ...]:
     """Cierra el proyecto de la sesión (cabecera desde la base y cerrojo liberado si es
-    de esta sesión; en solo lectura no escribe nada) y devuelve los avisos."""
+    de esta sesión; en solo lectura no escribe nada), avisa del cambio si había uno
+    (:func:`add_listener`) y devuelve los avisos."""
+    had_project = _STATE.project is not None
+    warnings = _close()
+    if had_project:
+        _changed(None)
+    return warnings
+
+
+def _close() -> tuple[str, ...]:
     project = _STATE.project
     _STATE.project = None
     _stop_heartbeat()
@@ -239,3 +288,4 @@ def unregister() -> None:
         _STATE.session = None
         _STATE.userdata_root = None
         _STATE.notices = []
+        _STATE.listeners = []

@@ -38,6 +38,19 @@
   cuenta como cargado; si las partes no suman las pruebas que dicen haber descubierto,
   el paso falla («reparto incompleto»); y con Ctrl+C se paran las partes en marcha y se
   borra la carpeta temporal.
+- RF-004-28 (spec 004, T30): con el motor de cálculo de pruebas, el paso «motor» ejecuta
+  ``tests/unit`` de cada paquete de dominio con el numpy del motor (el Python de Blender con
+  ``-S`` y la carpeta ``site`` del motor al principio de ``PYTHONPATH``), a la vez que
+  «blender» (no cabe después: RNF-001-01), y su línea va tras la de «blender»; sin motor, se
+  omite con ``[ENTORNO] runtime`` y la orden ``tools/make_runtime.py``: «VERDE CON
+  OMISIONES». Salvo en esas pruebas, el motor de las demás es uno simulado
+  (``find_runtime``), y el paso «motor» no cuenta en el orden de los pasos
+  (``FakeRunner.steps``): va a la vez que «blender».
+- RNF-001-01, RNF-007-01 (spec 004, T39): las partes de «unitarias», «blender» y «motor»
+  se reparten por la duración medida de cada módulo, guardada fuera del repositorio (un
+  almacén en la carpeta temporal del sistema, uno por raíz): sin medidas, como siempre;
+  cada parte escribe las suyas y, al terminar, sustituyen a las guardadas. Salvo en esas
+  pruebas, no hay almacén (``times_store``) y las órdenes son las de siempre.
 
 Ninguna prueba lanza Blender ni Python: el ejecutor simulado anota cada orden y
 devuelve una salida fija por paso; en los pasos con pruebas que terminan con 0, la
@@ -85,6 +98,13 @@ INSTALL = BlenderInstall(
     version=(5, 2, 1),
 )
 MANDATORY = ["unitarias", "referencia", "licencias", "iconos", "manifiesto", "blender"]
+# El paso de la spec 004 (T30): las pruebas de dominio con el numpy del motor de cálculo de
+# pruebas, a la vez que «blender». Salvo en RuntimeStepTest, el motor es este, simulado.
+RUNTIME = "motor"
+FAKE_SITE = Path(tempfile.gettempdir()) / "geoblender-falso" / "motor" / "site"
+DOMAIN_FOLDERS = [
+    f"tests/unit/{name}" for name in imports.LEVELS if (ROOT / "tests" / "unit" / name).is_dir()
+]
 # Una prueba que devuelve algo (``async def`` en un TestCase, o con ``yield``) es un
 # error y no solo un aviso (hallazgo F7 de la ronda 3; convergencia, T54).
 RETURN_VALUE_IS_ERROR = ("-W", "error:It is deprecated to return a value:DeprecationWarning")
@@ -160,6 +180,7 @@ DEFAULT_RESULTS: Mapping[str, tuple[int, str, str]] = {
         "",
     ),
     "arnés": (0, "", _unittest_output(23)),
+    RUNTIME: (0, "", _unittest_output(40)),
 }
 OPTIONAL = ["rendimiento", "rendimiento-blender", "banco"]
 HARNESS = "arnés"  # el paso de --completo (spec 001 0.6; spec 002, T48)
@@ -185,6 +206,8 @@ def step_of(cmd: Sequence[str]) -> str:
         if "tests/rendimiento/blender" in parts:
             return "rendimiento-blender"
         return "blender"
+    if "-S" in parts:  # el Python de Blender sin su site-packages: el numpy del motor
+        return RUNTIME
     if "discover" in parts:  # «-m unittest discover» o tools/unittest_part.py (T40)
         folder = parts[parts.index("-s", parts.index("discover")) + 1]
         return {
@@ -203,6 +226,7 @@ TEST_STEPS = (
     "blender",
     "rendimiento-blender",
     HARNESS,
+    RUNTIME,
 )
 
 
@@ -355,10 +379,14 @@ class FakeRunner:
             call.ended = time.perf_counter()
 
     def steps(self) -> list[str]:
-        """Los pasos en el orden de sus órdenes; las partes seguidas de un paso, una vez."""
+        """Los pasos en el orden de sus órdenes; las partes seguidas de un paso, una vez.
+        El paso «motor» no cuenta: va a la vez que «blender» y sus órdenes se mezclan con
+        las de este (se mira aparte, con ``calls_of``)."""
         found: list[str] = []
         previous: Call | None = None
         for call in self.calls:
+            if call.step == RUNTIME:
+                continue
             same = previous is not None and previous.step == call.step
             if not (same and call.part is not None and previous.part is not None):
                 found.append(call.step)
@@ -400,8 +428,14 @@ def run_check(
     root: Path = ROOT,
     **kwargs: object,
 ) -> Outcome:
-    """Ejecuta ``check.main`` con el ejecutor simulado y recoge la salida."""
+    """Ejecuta ``check.main`` con el ejecutor simulado y recoge la salida; si la prueba no
+    dice otra cosa (``find_runtime``, ``times_store``), con un motor de cálculo de pruebas
+    simulado (:data:`FAKE_SITE`) y sin almacén de tiempos."""
     runner = FakeRunner() if runner is None else runner
+    kwargs.setdefault("find_runtime", lambda root, environ: check.TestRuntime(FAKE_SITE))
+    # Sin almacén de tiempos (spec 004, T39): las órdenes de siempre, y nada se escribe
+    # en el almacén de la carpeta temporal del sistema; lo prueba PartTimesTest.
+    kwargs.setdefault("times_store", lambda root: None)
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = check.main(
@@ -919,7 +953,7 @@ class PartsTest(unittest.TestCase):
         }
 
         def meet(call: Call) -> None:
-            if call.part is not None:
+            if call.part is not None and call.step in barriers:
                 barriers[call.step].wait()
                 time.sleep(0.3)
 
@@ -935,7 +969,9 @@ class PartsTest(unittest.TestCase):
     def test_steps_one_after_another(self) -> None:
         """RF-001-06: los pasos, también los opcionales, siguen uno tras otro y en el
         orden de la tabla: ninguna orden de un paso empieza antes de que terminen todas
-        las del anterior, y el resumen da sus líneas en ese orden."""
+        las del anterior, y el resumen da sus líneas en ese orden. La excepción es
+        «motor» (spec 004, RF-004-28), que va a la vez que «blender»: empieza después de
+        «manifiesto» y el paso siguiente («arnés») espera a que termine."""
         with many_cpus():
             result = run_check("--completo", "--rendimiento", "--banco")
         self.assertEqual(result.code, 0, result.out)
@@ -946,7 +982,13 @@ class PartsTest(unittest.TestCase):
         for before, after in zip(groups, groups[1:]):
             with self.subTest(paso=after[0].step):
                 self.assertLessEqual(max(c.ended for c in before), min(c.started for c in after))
-        names = [*MANDATORY, HARNESS, "rendimiento", "banco"]
+        motor = runner.calls_of(RUNTIME)
+        self.assertTrue(motor)
+        manifest_end = max(c.ended for c in runner.calls_of("manifiesto"))
+        self.assertLessEqual(manifest_end, min(c.started for c in motor))
+        self.assertLessEqual(max(c.ended for c in motor),
+                             min(c.started for c in runner.calls_of(HARNESS)))
+        names = [*MANDATORY, RUNTIME, HARNESS, "rendimiento", "banco"]
         positions = [result.out.index(_step_line(result.out, name)) for name in names]
         self.assertEqual(positions, sorted(positions))
 
@@ -1102,12 +1144,20 @@ class PartsTest(unittest.TestCase):
     def test_ctrl_c_stops_the_parts(self) -> None:
         """RF-001-09: con Ctrl+C mientras se ejecutan las partes, la comprobación para
         las órdenes en marcha (``blender.stop_all``), espera a sus hilos, borra su
-        carpeta temporal (con los perfiles) y deja pasar la interrupción."""
+        carpeta temporal (con los perfiles) y deja pasar la interrupción. La interrupción
+        llega cuando ya están en marcha todas las partes de «blender» (la última en
+        empezar la provoca): antes, con «motor» a la vez, a veces llegaba sin que hubiera
+        empezado la tercera (spec 004, T30)."""
         stopped = threading.Event()
+        begun: list[int] = []
+        lock = threading.Lock()
 
         def interrupt(call: Call) -> None:
             if call.step == "blender" and call.part is not None:
-                if call.part[0] == 2:
+                with lock:
+                    begun.append(call.part[0])
+                    last = len(begun) == check.BLENDER_PARTS
+                if last:
                     _thread.interrupt_main()
                 stopped.wait(15)
 
@@ -1125,6 +1175,277 @@ class PartsTest(unittest.TestCase):
         self.assertFalse(profiles[0].parent.exists())
         alive = [t for t in threading.enumerate() if t.name.startswith(check.THREAD_PREFIX)]
         self.assertEqual(alive, [])
+
+
+def runtime_part_cmd(folder: str, part: int, count: int) -> list[str]:
+    """La orden de la parte ``part`` de ``count`` de las pruebas de dominio de ``folder``
+    con el numpy del motor (spec 004, T30): el Python de Blender sin su site-packages."""
+    return blender.python_cmd(
+        INSTALL, "-S", *RETURN_VALUE_IS_ERROR, "tools/unittest_part.py", parts.OPTION,
+        parts.label(part, count), "discover", "-v", "-s", folder, "-t", ".",
+    )
+
+
+class RuntimeStepTest(unittest.TestCase):
+    """RF-004-28 (spec 004, T30): el paso «motor»."""
+
+    def test_domain_tests_with_the_engine_numpy(self) -> None:
+        """RF-004-28: con el motor de pruebas, «motor» ejecuta ``tests/unit`` de cada
+        paquete de dominio (los de ``imports.LEVELS`` con carpeta) en partes, con el Python
+        de Blender sin su site-packages (``-S``: ni su numpy) y la carpeta ``site`` del
+        motor al principio de ``PYTHONPATH``, a la vez que «blender» (sus partes y las de
+        «blender» llegan a una barrera); su línea va tras la de «blender» y suma sus
+        pruebas; si una parte falla, el paso falla y el código es 1."""
+        self.assertIn("tests/unit/core", DOMAIN_FOLDERS)
+        self.assertIn("tests/unit/jobs", DOMAIN_FOLDERS)
+        count = check.RUNTIME_PARTS
+        together = threading.Barrier(check.BLENDER_PARTS + count * len(DOMAIN_FOLDERS),
+                                     timeout=15)
+
+        def meet(call: Call) -> None:
+            if call.step in ("blender", RUNTIME):
+                together.wait()
+
+        with many_cpus():
+            result = run_check(runner=FakeRunner(on_call=meet))
+        self.assertEqual(result.code, 0, result.out)
+        self.assertFalse(together.broken)
+        runner = result.runner
+        self.assertEqual(runner.steps(), MANDATORY)
+        calls = runner.calls_of(RUNTIME)
+        expected = [runtime_part_cmd(folder, i, count)
+                    for folder in DOMAIN_FOLDERS for i in range(1, count + 1)]
+        self.assertCountEqual([call.cmd for call in calls], expected)
+        python_env = _python_env()
+        for call in calls:
+            with self.subTest(parte=call.part, orden=call.cmd[-3]):
+                self.assertEqual(call.cwd, ROOT)
+                self.assertEqual(
+                    call.env["PYTHONPATH"],
+                    os.pathsep.join([str(FAKE_SITE), python_env["PYTHONPATH"]]),
+                )
+                for key in ("PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE"):
+                    self.assertEqual(call.env[key], python_env[key])
+        line = _step_line(result.out, RUNTIME)
+        self.assertRegex(
+            line, rf"^  correcto  {RUNTIME}\s+\d+,\d s  \({40 * len(DOMAIN_FOLDERS)} pruebas\)$"
+        )
+        self.assertLess(result.out.index(_step_line(result.out, "blender")),
+                        result.out.index(line))
+        self.assertRegex(result.out.strip().splitlines()[-1], r"^RESULTADO: VERDE \(")
+
+    def test_failing_part_fails_the_step(self) -> None:
+        """RF-004-28, RF-001-06: si falla una parte de «motor», el paso falla con su
+        salida, «blender» sigue correcto y el código es 1."""
+        broken = FakeRunner({f"{RUNTIME}#1": (1, "", "RuntimeError: rota\n")})
+        with many_cpus():
+            result = run_check(runner=broken)
+        self.assertEqual(result.code, 1, result.out)
+        self.assertTrue(_step_line(result.out, RUNTIME).lstrip().startswith("fallo"))
+        self.assertTrue(_step_line(result.out, "blender").lstrip().startswith("correcto"))
+        self.assertIn("RuntimeError: rota", result.out)
+        self.assertRegex(result.out.strip().splitlines()[-1], rf"falla «{RUNTIME}»$")
+
+    def test_without_engine_it_is_omitted(self) -> None:
+        """RF-004-28, RF-001-06: sin motor de pruebas (``make_runtime.find_test_runtime``;
+        aquí, ``GEOBLENDER_TEST_RUNTIME_SITE`` con una carpeta que no existe), «motor» no
+        ejecuta nada y se omite por el recurso ``runtime`` con el motivo y la orden
+        ``tools/make_runtime.py``: código 0 y «VERDE CON OMISIONES (1)»."""
+        variable = check.ENV_TEST_RUNTIME_SITE
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "no_esta"
+            with many_cpus():
+                result = run_check(find_runtime=check.find_test_runtime,
+                                   environ={variable: str(missing)})
+            self.assertEqual(result.code, 0, result.out)
+            self.assertEqual(result.runner.calls_of(RUNTIME), [])
+            self.assertEqual(result.runner.steps(), MANDATORY)
+            line = _step_line(result.out, RUNTIME)
+            self.assertTrue(line.lstrip().startswith("omitido"), line)
+            self.assertIn(variable, line)
+            self.assertIn(f"\n  {check.RUNTIME_RESOURCE} (1): ", result.out)
+            self.assertIn("tools/make_runtime.py", result.out)
+            self.assertIn(f"el paso «{RUNTIME}»", result.out)
+            self.assertRegex(result.out.strip().splitlines()[-1],
+                             r"^RESULTADO: VERDE CON OMISIONES \(1\) \(\d+,\d s\)$")
+
+    def test_engine_of_the_variable(self) -> None:
+        """RF-004-28: con ``GEOBLENDER_TEST_RUNTIME_SITE`` en una carpeta que existe, esa
+        es la carpeta ``site`` del motor de «motor» (al principio de ``PYTHONPATH``)."""
+        variable = check.ENV_TEST_RUNTIME_SITE
+        with tempfile.TemporaryDirectory() as tmp:
+            with many_cpus():
+                result = run_check(find_runtime=check.find_test_runtime,
+                                   environ={variable: tmp})
+        self.assertEqual(result.code, 0, result.out)
+        calls = result.runner.calls_of(RUNTIME)
+        self.assertTrue(calls)
+        for call in calls:
+            self.assertTrue(call.env["PYTHONPATH"].startswith(tmp + os.pathsep), call.env)
+        self.assertRegex(result.out.strip().splitlines()[-1], r"^RESULTADO: VERDE \(")
+
+
+TIMED_STEPS = ("unitarias", "blender", RUNTIME)  # los pasos con partes (spec 004, T39)
+
+
+def _option(cmd: Sequence[str], name: str) -> str | None:
+    """El valor de la opción ``name`` de una orden, o ``None`` si no la lleva."""
+    return cmd[cmd.index(name) + 1] if name in cmd else None
+
+
+def _measured_module(call: Call) -> str:
+    """El módulo que «mide» la parte simulada de ``call``: uno por paso, parte y carpeta."""
+    folder = suite_of(call.step, call.cmd)[0].replace("/", ".")
+    return f"{folder}.medida_{call.part[0] if call.part else 0}"
+
+
+def _write_measures(call: Call, skip: Sequence[tuple[str, int]] = ()) -> None:
+    """Lo que hace una parte con ``--medidas``: escribe la duración de su módulo (la de la
+    parte i, i segundos), salvo las partes ``(paso, i)`` de ``skip``."""
+    path = _option(call.cmd, parts.MEASURES_OPTION)
+    if path is None or call.part is None or (call.step, call.part[0]) in skip:
+        return
+    seconds = float(call.part[0])
+    parts.write_times(Path(path), {_measured_module(call): seconds},
+                      part=call.part[0], parts=call.part[1])
+
+
+def _measured_suites(runner: FakeRunner, skip: Sequence[tuple[str, int]] = ()
+                     ) -> dict[str, dict[str, float]]:
+    """``{suite: {módulo: s}}`` de lo que escribieron las partes de los pasos con partes."""
+    found: dict[str, dict[str, float]] = {}
+    for step in TIMED_STEPS:
+        for call in runner.calls_of(step):
+            assert call.part is not None
+            if (step, call.part[0]) in skip:
+                continue
+            folder, pattern = suite_of(step, call.cmd)
+            flavor = {"unitarias": check.TIMES_PYTHON, "blender": check.TIMES_BLENDER,
+                      RUNTIME: check.TIMES_RUNTIME}[step]
+            key = check.times_key(flavor, folder, pattern)
+            found.setdefault(key, {})[_measured_module(call)] = float(call.part[0])
+    return found
+
+
+class PartTimesTest(unittest.TestCase):
+    """Spec 004, T39 (RNF-001-01, RNF-007-01): las partes de los pasos se reparten por la
+    duración medida de cada módulo, que se guarda fuera del repositorio."""
+
+    def test_first_run_measures(self) -> None:
+        """RF-004-28, RNF-001-01, RNF-007-01: sin medidas (el almacén no existe o no se
+        puede leer), las partes son las de siempre, sin ``--tiempos``, y cada una escribe
+        la duración de sus módulos (``--medidas``, un fichero por parte en la carpeta
+        temporal de la comprobación, que se borra); al terminar, el almacén guarda las de
+        cada suite con partes («unitarias», «blender» y las de «motor»). La salida y el
+        código, los de siempre. El almacén por defecto está en la carpeta temporal del
+        sistema, fuera del repositorio, uno por raíz del código."""
+        default = check.default_times_store(ROOT)
+        self.assertTrue(default.is_relative_to(Path(tempfile.gettempdir())))
+        self.assertFalse(default.is_relative_to(ROOT))
+        self.assertEqual(default, check.default_times_store(ROOT))
+        self.assertNotEqual(default, check.default_times_store(ROOT / "otra"))
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "tiempos" / "almacen.json"
+            for name, text in (("no existe", None), ("ilegible", "{")):
+                with self.subTest(almacen=name):
+                    if text is not None:
+                        store.parent.mkdir(exist_ok=True)
+                        store.write_text(text, encoding="utf-8")
+                    runner = FakeRunner(on_call=_write_measures)
+                    with many_cpus():
+                        result = run_check(runner=runner, times_store=lambda root: store)
+                    self.assertEqual(result.code, 0, result.out)
+                    for call in runner.calls_of("unitarias"):
+                        assert call.part is not None
+                        self.assertIsNone(_option(call.cmd, parts.TIMES_OPTION))
+                        measures = _option(call.cmd, parts.MEASURES_OPTION)
+                        assert measures is not None
+                        expected = unit_part_cmd(*call.part)
+                        at = expected.index("discover")
+                        self.assertEqual(call.cmd, [*expected[:at], parts.MEASURES_OPTION,
+                                                    measures, *expected[at:]])
+                        work = Path(measures).parent.parent
+                        self.assertTrue(work.name.startswith(check.TEMP_PREFIX), measures)
+                        self.assertFalse(work.exists())
+                    for call in runner.calls_of("blender"):
+                        assert call.part is not None
+                        measures = _option(call.cmd, parts.MEASURES_OPTION)
+                        self.assertEqual(call.cmd, [*blender_part_cmd(*call.part),
+                                                    parts.MEASURES_OPTION, str(measures)])
+                    for call in runner.calls_of(RUNTIME):
+                        self.assertIsNotNone(_option(call.cmd, parts.MEASURES_OPTION))
+                        self.assertIsNone(_option(call.cmd, parts.TIMES_OPTION))
+                    self.assertEqual(parts.read_store(store), _measured_suites(runner))
+                    for step, count in (("unitarias", 217), ("blender", 12)):
+                        self.assertRegex(
+                            _step_line(result.out, step),
+                            rf"^  correcto  {step}\s+\d+,\d s  \({count} pruebas\)$",
+                        )
+                    self.assertNotIn(parts.MEASURES_OPTION, result.out)
+                    last = result.out.strip().splitlines()[-1]
+                    self.assertRegex(last, r"^RESULTADO: VERDE \(\d+,\d s\)$")
+                    store.unlink()
+
+    def test_measured_times_go_to_the_parts(self) -> None:
+        """RF-004-28, RNF-001-01, RNF-007-01: con medidas guardadas de una suite, todas sus
+        partes reciben el mismo fichero de tiempos (``--tiempos``, en la carpeta temporal
+        de la comprobación) con ellas; una suite sin medidas guardadas no lo recibe. Al
+        terminar, las medidas de todas las partes de una suite sustituyen a las guardadas;
+        si alguna parte no escribió las suyas, se conservan las guardadas que no se
+        midieron; las suites que no se ejecutaron se conservan."""
+        unit = check.times_key(check.TIMES_PYTHON, "tests/unit", "test*.py")
+        launcher = check.times_key(check.TIMES_BLENDER, "tests/blender", "test_*.py")
+        other = check.times_key(check.TIMES_PYTHON, "tests/otra", "test*.py")
+        stored = {
+            unit: {"tests.unit.viejo": 7.0, "tests.unit.otro": 0.5},
+            launcher: {"tests.blender.viejo": 2.0},
+            other: {"tests.otra.m": 1.0},
+        }
+        skip = [("blender", 2)]
+        received: dict[tuple[str, int], tuple[str | None, dict[str, float]]] = {}
+
+        def measure(call: Call) -> None:
+            if call.part is not None and call.step in TIMED_STEPS:
+                times = _option(call.cmd, parts.TIMES_OPTION)
+                read = parts.read_times(Path(times)) if times is not None else {}
+                folder = suite_of(call.step, call.cmd)[0]
+                received[(f"{call.step}:{folder}", call.part[0])] = (times, read)
+            _write_measures(call, skip)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "almacen.json"
+            parts.write_store(store, stored)
+            runner = FakeRunner(on_call=measure)
+            with many_cpus():
+                result = run_check(runner=runner, times_store=lambda root: store)
+            self.assertEqual(result.code, 0, result.out)
+            for call in runner.calls_of("unitarias"):
+                assert call.part is not None
+                times, read = received[("unitarias:tests/unit", call.part[0])]
+                assert times is not None
+                self.assertEqual(read, stored[unit])
+                measures = _option(call.cmd, parts.MEASURES_OPTION)
+                expected = unit_part_cmd(*call.part)
+                at = expected.index("discover")
+                self.assertEqual(call.cmd, [*expected[:at], parts.TIMES_OPTION, times,
+                                            parts.MEASURES_OPTION, str(measures),
+                                            *expected[at:]])
+                self.assertFalse(Path(times).exists())
+            files = {received[("unitarias:tests/unit", i)][0]
+                     for i in range(1, check.UNIT_PARTS + 1)}
+            self.assertEqual(len(files), 1)
+            for i in range(1, check.BLENDER_PARTS + 1):
+                self.assertEqual(received[("blender:tests/blender", i)][1], stored[launcher])
+            for (name, _part), (times, _read) in received.items():
+                if name.startswith(RUNTIME):
+                    self.assertIsNone(times, name)
+            expected_store = _measured_suites(runner, skip)
+            expected_store[launcher] = {**stored[launcher], **expected_store[launcher]}
+            expected_store[other] = stored[other]
+            self.assertEqual(parts.read_store(store), expected_store)
+            self.assertNotIn("tests.unit.viejo", parts.read_store(store)[unit])
+        last = result.out.strip().splitlines()[-1]
+        self.assertRegex(last, r"^RESULTADO: VERDE \(\d+,\d s\)$")
 
 
 class SuitesTest(unittest.TestCase):

@@ -8,13 +8,15 @@ de minas, para su propio trabajo de proyectos de explotación y restauración.
 > **Estado: Geoblender 0.1.0 se instala (spec 001), crea y abre proyectos `.gbproj` con su
 > sistema de referencia y su origen local (spec 002) y tiene su interfaz: conmutador, barra
 > superior con los 13 menús, acceso rápido, vistas mineras, idioma, línea de comandos y
-> plantilla de aplicación (spec 003). La 002 y la 003 están comprobadas con Blender 5.2.1 (la
-> interfaz, en la pantalla de referencia de IMGA), y la 002 también con QGIS 4.2 sin su
-> interfaz (PyQGIS) y en la red con un equipo. Faltan comprobaciones de personas: dos equipos a
-> la vez, que IMGA acepte las de QGIS sin interfaz y las de la interfaz en lugar de la del panel
-> del proyecto, algunas teclas y menús, los iconos y la lectura de la barra. Todavía no hay
-> funciones mineras.** Se habilita y se desinstala sin dejar rastro, y `tools/check.py`
-> comprueba todo el código.
+> plantilla de aplicación (spec 003). Ejecuta los cálculos largos en segundo plano, con su
+> avance y su cancelación en la barra de estado, y tiene un motor de cálculo opcional que solo
+> se instala si se acepta (spec 004). La 002, la 003 y la 004 están comprobadas con Blender
+> 5.2.1 (la interfaz y los trabajos, en la pantalla de referencia de IMGA), y la 002 también
+> con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un equipo. Faltan comprobaciones de
+> personas: dos equipos a la vez, que IMGA acepte las de QGIS sin interfaz y las de la interfaz
+> en lugar de la del panel del proyecto, algunas teclas y menús, los iconos, la lectura de la
+> barra y el almacén de ruedas del motor en el NAS. Todavía no hay funciones mineras.** Se
+> habilita y se desinstala sin dejar rastro, y `tools/check.py` comprueba todo el código.
 
 Este repositorio contiene **solo el código**. La documentación del proyecto (constitución,
 proceso de trabajo, decisiones de arquitectura, specs y trampas conocidas) es interna de IMGA
@@ -51,8 +53,13 @@ Requisitos: Windows de 64 bits y **Blender 5.2 LTS**.
 Desactivar la extensión deja Blender como estaba. Con la extensión instalada,
 `tools/install_app_template.py` instala la **plantilla de aplicación «Geoblender»** y deja en
 el escritorio el lanzador `Geoblender.cmd`, que abre Blender ya en modo Geoblender sin
-cambiar la configuración del Blender normal (`--desinstalar` lo quita). Más adelante habrá un
-motor de cálculo opcional, que solo se crea con consentimiento explícito.
+cambiar la configuración del Blender normal (`--desinstalar` lo quita).
+
+El **motor de cálculo** (un numpy con OpenBLAS para los cálculos pesados, fuera del Python de
+Blender) es opcional y solo se instala con consentimiento explícito, desde *Herramientas ▸
+Trabajos ▸ Motor de cálculo…*: desde un almacén de ruedas (una carpeta local o del NAS, que
+llena `tools/fetch_runtime_wheels.py`), sin internet, o desde PyPI, con «Permitir acceso en
+línea» de Blender activado. Va a los datos de usuario de la extensión (`runtime/`).
 
 ## Contenido
 
@@ -64,7 +71,7 @@ motor de cálculo opcional, que solo se crea con consentimiento explícito.
 | `assets/` | Fuentes SVG de los iconos y de la imagen de bienvenida (CC0); sus PNG los genera `tools/build_icons.py` |
 | `packaging/` | Plantilla de aplicación «Geoblender» (con sus ficheros generados) y lanzador `Geoblender.cmd`; no se empaquetan en la extensión |
 | `LICENSE`, `LICENSES/`, `REUSE.toml` | Licencia del código y licencias de los activos y de los datos de terceros |
-| `dist/`, `.deps/` | Salidas locales (el zip y las ruedas extraídas para las pruebas); no se versionan |
+| `dist/`, `.deps/` | Salidas locales (el zip, las ruedas extraídas para las pruebas y el motor de cálculo de pruebas, `.deps/runtime/`); no se versionan |
 
 ## Documentación
 
@@ -89,6 +96,9 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 & $PY -B tools/dev_install.py    # instala la extensión en un perfil de Blender aislado
 & $PY -B tools/build.py          # valida el manifiesto y genera el zip en dist/
 & $PY -B tools/fetch_wheels.py   # descarga las ruedas fijadas (lo hace una persona)
+& $PY -B tools/lock_runtime.py   # rellena el lock del motor de cálculo desde PyPI (una persona)
+& $PY -B tools/fetch_runtime_wheels.py  # deja en el almacén las ruedas del motor (una persona)
+& $PY -B tools/make_runtime.py   # crea el motor de cálculo de pruebas en .deps/runtime/
 & $PY -B tools/gen_crs_catalog.py  # regenera el catálogo de CRS (GEOBLENDER_PROJ_BIN)
 & $PY -B tools/build_icons.py    # SVG de assets/icons → PNG de los iconos (--check: solo compara)
 & $PY -B tools/make_app_template.py     # genera los ficheros de la plantilla de aplicación
@@ -103,6 +113,9 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 | `tools/dev_install.py` | `--perfil CARPETA`, `--abrir` (Blender con interfaz) y `--desinstalar` |
 | `tools/build.py` | `--probar-instalacion` (instala el zip en un perfil limpio y lo desinstala) |
 | `tools/fetch_wheels.py` | `--desde CARPETA` (almacén de ruedas, sin red) |
+| `tools/lock_runtime.py` | `--desde CARPETA` (almacén con las ruedas del lock; los metadatos siempre salen de la API JSON de PyPI) |
+| `tools/fetch_runtime_wheels.py` | `--wheelhouse CARPETA` (el almacén; si no, el de `GEOBLENDER_WHEELHOUSE`, que tiene que existir). Solo deja una rueda si su huella es la del lock |
+| `tools/make_runtime.py` | `--wheelhouse CARPETA` (sin red; sin ninguna opción, el de `GEOBLENDER_WHEELHOUSE`) o `--pypi`. Usa la misma cadena que el producto: instalar, verificar y adoptar |
 | `tools/gen_crs_catalog.py` | `--comprobar` (genera en memoria y compara con el catálogo guardado, sin escribir) |
 | `tools/build_icons.py` | `--check` (fuentes, PNG y manifiesto al día, sin Blender), `--fuentes CARPETA` y `--salida CARPETA` |
 | `tools/make_app_template.py` | `--salida CARPETA` (por defecto, `packaging/app_template/Geoblender/`) |
@@ -112,11 +125,17 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en unos 25 s) no ejecuta las pruebas del
+Sin `--completo` (la comprobación de cada tarea, en unos 31 s) no ejecuta las pruebas del
 propio arnés que lanzan Blender entero, y lo dice antes del resultado. Los pasos van uno
-tras otro, pero las pruebas unitarias se reparten en 4 procesos (`tools/unittest_part.py`)
+tras otro, pero las pruebas unitarias se reparten en 6 procesos (`tools/unittest_part.py`)
 y las de Blender en 3 Blender (`tools/run_blender_tests.py --parte i/n`) que se ejecutan a
-la vez, sin pasar del número de procesadores; cada prueba, en uno solo.
+la vez, sin pasar del número de procesadores; cada prueba, en uno solo. El reparto es por
+la duración de cada módulo de pruebas en la comprobación anterior, que se guarda en
+`%TEMP%\geoblender-tiempos\` (un fichero por carpeta del código); sin él, la primera vez o si
+se borra, por número de pruebas. Si existe el motor de cálculo de pruebas
+(`tools/make_runtime.py`), el paso «motor» ejecuta otra vez las pruebas unitarias de los
+paquetes de dominio con su numpy, a la vez que las de Blender (spec 004, RF-004-28); sin él, se
+omite con `[ENTORNO] runtime` y el resultado es `VERDE CON OMISIONES`.
 
 ## Variables de entorno
 
@@ -128,13 +147,13 @@ Todas son opcionales y empiezan por `GEOBLENDER_`.
 | `GEOBLENDER_NAS_ESPEJO` | Carpeta del NAS donde se refleja la carpeta del proyecto; solo la define quien publica |
 | `GEOBLENDER_BLENDER` | Ruta a `blender.exe` o a su carpeta, si Blender 5.2 no está en la ruta por defecto (también para el lanzador `Geoblender.cmd`) |
 | `GEOBLENDER_DEV_PROFILE` | Perfil aislado de desarrollo; por defecto, `%LOCALAPPDATA%\Geoblender\dev\blender-5.2`. Nunca en una unidad de red |
-| `GEOBLENDER_WHEELHOUSE` | Almacén de ruedas del que `tools/fetch_wheels.py` copia sin red |
+| `GEOBLENDER_WHEELHOUSE` | Almacén de ruedas del que `tools/fetch_wheels.py` (y `tools/lock_runtime.py`) copian sin descargarlas, que `tools/fetch_runtime_wheels.py` llena con las del motor de cálculo y del que `tools/make_runtime.py` instala el motor de pruebas. En Geoblender, el almacén se elige en las preferencias («Carpeta del almacén de ruedas») |
 | `GEOBLENDER_SILVESTRE_DIR` | Banco privado de Silvestre: solo lectura y solo con `--banco` |
 | `GEOBLENDER_RECMIN_BANK_DIR` | Banco privado de RecMin: solo lectura |
 | `GEOBLENDER_QGIS_DIR` | Instalación de QGIS 4.2 (la carpeta con `bin\ogrinfo.exe`) para las pruebas de compatibilidad del GeoPackage con su GDAL; sin ella se omiten con `[ENTORNO] qgis` |
 | `GEOBLENDER_NET_TEST_DIR` | Carpeta de red para las comprobaciones manuales; nunca en la carpeta de expedientes de clientes |
 | `GEOBLENDER_PROJ_BIN` | Carpeta con `projinfo` y `cs2cs`, para regenerar el catálogo de CRS |
-| `GEOBLENDER_TEST_RUNTIME_SITE` | Otra ubicación del motor de cálculo de pruebas |
+| `GEOBLENDER_TEST_RUNTIME_SITE` | Otra ubicación del motor de cálculo de pruebas (su carpeta `site`), en lugar del de `.deps/runtime/` |
 
 Las rutas a datos reales de clientes solo llegan por variables: nunca se escriben en el código
 ni se copian al repositorio, y se leen en solo lectura.

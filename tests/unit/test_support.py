@@ -8,7 +8,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from tests.support import qgis, resources, trees
+from tests.support import qgis, resources, runtime, trees
 from tests.support.repo import EXTENSION_DIR, ROOT, TOOLS_DIR, tools_on_path
 
 RESOURCE = "recurso-de-prueba"
@@ -263,6 +263,26 @@ class FakeLayoutTest(unittest.TestCase):
         with self.assertRaises(AttributeError):
             layout._oculto  # noqa: B018 - lo privado no se inventa
 
+    def test_items_keep_the_operator_context(self) -> None:
+        """Spec 004, T40 (RF-004-20): cada elemento anota el ``operator_context`` con que se
+        dibujó; como en Blender, es uno por *layout* raíz (``uiLayoutRoot``): ponerlo en
+        una fila vale para lo que se dibuje después en cualquier fila del mismo *layout*, y
+        no cambia lo dibujado antes ni otro *layout*."""
+        from tests.support.fake_layout import FakeLayout
+
+        layout = FakeLayout()
+        layout.operator("geoblender.jobs_show_jobs", text="Antes")
+        row = layout.row()
+        row.operator_context = "EXEC_DEFAULT"
+        row.label(text="Fila")
+        layout.column().template_popup_confirm("geoblender.jobs_setup_runtime",
+                                               text="Instalar", cancel_text="Cancelar")
+        self.assertEqual([(item.text, item.operator_context) for item in layout.items],
+                         [("Antes", "INVOKE_DEFAULT"), ("Fila", "EXEC_DEFAULT"),
+                          ("Instalar", "EXEC_DEFAULT")])
+        self.assertEqual(layout.operator_context, "EXEC_DEFAULT")
+        self.assertEqual(FakeLayout().operator_context, "INVOKE_DEFAULT")
+
 
 QGIS_TREE: dict[str, str] = {
     "bin/ogrinfo.exe": "",
@@ -334,6 +354,25 @@ class QgisSupportTest(unittest.TestCase):
         self.assertEqual(env["PYTHONHOME"], str(root / "apps" / "Python312"))
         self.assertEqual(env["GDAL_PAM_ENABLED"], "NO")
         self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+
+
+class RuntimeSupportTest(unittest.TestCase):
+    """``tests.support.runtime``: el motor de cálculo de pruebas (spec 004, T30)."""
+
+    def test_resource_is_declared_and_registered(self) -> None:
+        """RF-004-28, RF-001-06: ``runtime`` está en la lista cerrada de recursos y tiene
+        comprobación registrada; con ``GEOBLENDER_TEST_RUNTIME_SITE`` en una carpeta que
+        no existe no hay motor, y en una que existe, esa es su carpeta ``site``; la orden
+        que lo crea es ``tools/make_runtime.py``."""
+        self.assertIn(runtime.RUNTIME, resources.RESOURCES)
+        self.assertIn("tools/make_runtime.py", runtime.RUNTIME_HINT)
+        variable = runtime.ENV_TEST_RUNTIME_SITE
+        with tempfile.TemporaryDirectory() as tmp:
+            with unittest.mock.patch.dict(os.environ, {variable: str(Path(tmp) / "no")}):
+                self.assertFalse(resources.is_available(runtime.RUNTIME))
+            with unittest.mock.patch.dict(os.environ, {variable: tmp}):
+                self.assertTrue(resources.is_available(runtime.RUNTIME))
+                self.assertEqual(runtime.runtime_site(), Path(tmp))
 
 
 if __name__ == "__main__":

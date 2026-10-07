@@ -10,7 +10,8 @@ cambiar.
 ## [Sin publicar]
 
 Geoblender 0.1.0 ya se instala (spec 001), crea y abre proyectos con su sistema de
-referencia y su origen local (spec 002) y tiene su interfaz (spec 003), aunque todavía no
+referencia y su origen local (spec 002), tiene su interfaz (spec 003) y ejecuta los cálculos
+largos en segundo plano, con un motor de cálculo opcional (spec 004), aunque todavía no
 tiene funciones mineras. Lo de la spec 002 está comprobado también con QGIS 4.2 sin su
 interfaz (PyQGIS) y en la red con un solo equipo; falta con dos equipos a la vez, y que IMGA
 acepte esas pruebas de QGIS y, en lugar de la del panel del proyecto, las de la interfaz de la
@@ -18,10 +19,80 @@ spec 003. Lo de la spec 003 está comprobado en una pantalla de 1920 × 1080 con
 salvo algunas teclas en modo Blender, la lista de F3 en los dos modos, la barra T de Blender, la
 fila 1, el clic derecho, Mayús+Alt+B y la chincheta, la fila 2 en edición, dos idiomas de
 entrada, la plantilla instalada en el Blender de cada uno, la revisión de los iconos y la
-lectura de la barra con tres ingenieros.
+lectura de la barra con tres ingenieros. Lo de la spec 004 está comprobado en esa misma
+pantalla, con el motor de cálculo instalado desde un almacén de ruedas en el disco del equipo;
+falta el almacén del NAS de IMGA.
 
 ### Añadido
 
+- **Trabajos en segundo plano y motor de cálculo** (spec 004). Los cálculos largos se
+  ejecutan aparte, sin congelar Blender: mientras avanzan se puede girar la vista, abrir menús
+  y seguir trabajando. Todavía ningún cálculo minero los usa (llegarán con GemPy, la
+  estimación y la programación lineal); para probarlos, **Herramientas ▸ Trabajos ▸
+  Autodiagnóstico ▸** lanza una suma de prueba de unos 10 s o un producto de matrices con el
+  motor de cálculo (o el intérprete externo) o con el numpy de Blender.
+  - **En la barra de estado**, en modo Geoblender y también en modo Blender: cuántos trabajos
+    hay en marcha, el nombre y el % del más antiguo (se actualiza cada cuarto de segundo) y su
+    último mensaje, con un botón para ver la lista y otro para cancelarlo. Al acabar, durante
+    10 s, su nombre, cómo terminó («Terminado», «Fallido», «Cancelado», «Tiempo agotado» o
+    «Interrumpido») y su duración en s; si no terminó bien, el motivo en español, nunca una
+    traza de Python.
+  - **Trabajos en segundo plano** (Herramientas ▸ Trabajos, o el botón de la barra de estado):
+    la lista de los trabajos de la sesión y de los que quedaron en su carpeta, cada uno con su
+    estado, avance, duración, el intérprete que lo ejecutó (Python, numpy y su BLAS) y su
+    último mensaje, y los botones Cancelar, Registro (abre su `job.log`) y Descartar; arriba,
+    lo que ocupa la carpeta de los trabajos y el estado del motor de cálculo.
+  - **Cancelar** detiene un trabajo en menos de 1 s (se exige como mucho 2 s); uno que no
+    atiende la petición se termina a la fuerza al acabar su plazo de gracia (5 s) y consta
+    «cancelado (forzado)». Cada trabajo tiene un tiempo máximo (una hora si su tipo no fija
+    otro). Como mucho van 2 trabajos a la vez en proceso aparte (de 1 a 4, en las
+    preferencias) y uno corto dentro de Blender; los demás esperan «En cola», por orden de
+    llegada.
+  - **Un cálculo nunca toca el proyecto**: no recibe su ruta, trabaja en su propia carpeta y
+    devuelve ficheros que se comprueban con su huella (sha256) antes de darlo por
+    «Terminado». Si falla, se cuelga o se pasa de tiempo, Blender sigue como estaba. Las
+    carpetas de los trabajos van en la caché del proyecto (en el disco del equipo si el
+    proyecto está en la red o en solo lectura, y en los datos de Geoblender del equipo si no hay
+    proyecto abierto) y las de los terminados se borran a los 7 días
+    al abrir el proyecto (se cambia en las preferencias) o con **Limpiar trabajos
+    terminados…** (con «Borrar» y «Cancelar» en el idioma de Geoblender), que dice los MB
+    liberados; nunca las de un trabajo en cola o en curso.
+  - **Cerrar Blender o desactivar Geoblender** con trabajos en marcha los detiene sin dejar
+    ningún `python.exe` (medido: 0,2 s; se exige como mucho 3 s); al volver, la lista los
+    muestra «Interrumpido». 100 trabajos seguidos (bien, fallidos, cancelados y agotados) no
+    dejan ningún proceso ni hacen crecer más de 2 MB la memoria del proceso que los lanza.
+  - **Motor de cálculo** (Herramientas ▸ Trabajos ▸ Motor de cálculo…): un numpy aparte
+    (2.5.3, de PyPI, con OpenBLAS) para los cálculos pesados, que multiplica dos matrices de
+    2000 × 2000 en **0,04 s, frente a unos 25 s con el numpy de Blender**. **Solo se instala
+    si se acepta**, en un diálogo que dice de dónde (el almacén de ruedas de IMGA o PyPI), qué
+    paquetes, con qué versión y licencia, cuánto ocupa (12,6 MB de descarga y 53,9 MB en
+    disco) y en qué carpeta, con «Instalar» y «Cancelar» en el idioma de Geoblender;
+    habilitar Geoblender no lo crea. Desde un almacén de ruedas local se instala y se verifica
+    en unos 6 s, sin internet; desde PyPI necesita «Permitir acceso en línea» de Blender y, si
+    está desactivado, no se conecta y explica las dos salidas. Cada paquete se comprueba con su
+    huella, y una instalación cortada o cancelada no deja nada. La verificación comprueba las
+    versiones, que numpy sale del motor y no de Blender y que usa la BLAS optimizada, y mide el
+    producto: «Listo · numpy 2.5.3 · BLAS scipy-openblas · 2000 × 2000 en 0,040 s». Desde la
+    misma ventana se verifica, se repara o se quita (con «Quitar» y «Cancelar»); con otra
+    versión de Geoblender se ofrece actualizarlo, y el anterior se borra al terminar si
+    ningún trabajo lo está usando; si
+    alguno lo usa (también desde otra sesión de Blender), se borra después, cuando ya no se
+    usa, al terminar el siguiente cálculo con el motor o al abrir Geoblender. Si un
+    cálculo lo necesita y falta, se ofrece instalarlo con el mismo diálogo; si el que hay es de
+    otra versión de Geoblender, el cálculo dice cuál está instalado y cuál hace falta («El
+    motor de cálculo instalado (…) no es el que necesita esta versión de Geoblender (…):
+    actualícelo.») y se ofrece actualizarlo. Su estado sale
+    también en Ayuda ▸ Diagnóstico de la instalación, con el intérprete externo si hay uno.
+  - **Intérprete externo, para desarrollo** (Herramientas ▸ Trabajos): un Python 3.13 con numpy
+    (por ejemplo, el de un entorno de GemPy) en lugar del motor, para probar versiones nuevas de
+    las librerías sin reinstalarlo. Se comprueba antes de guardarlo y, si no sirve, se rechaza
+    diciendo por qué («es Python 3.14.2, no 3.13»); la lista y el registro de cada trabajo
+    dicen cuándo se usó. Autodiagnóstico ▸ Producto de matrices con el motor de cálculo lo
+    prueba con su numpy.
+  - Lanzar un trabajo devuelve el control en 0,014 s y su primer aviso llega a los 0,15 s
+    (también con el motor de cálculo); con 4 trabajos en curso que informan 100 veces por
+    segundo, seguirlos cuesta a Blender unos 0,5 ms (2,2 ms como mucho) cada cuarto de segundo,
+    y un avance llega a la barra de estado en menos de 0,25 s (medido con Blender 5.2.1).
 - **Interfaz de Geoblender** (spec 003). Un conmutador **[GB|B]** al principio de la barra
   superior (o **Ctrl+F10**) pasa cada ventana de la interfaz de Blender a la de Geoblender y
   vuelve, sin recargar el fichero ni tocar las preferencias de Blender. En modo Geoblender, la
@@ -163,6 +234,22 @@ lectura de la barra con tres ingenieros.
   dos comprobaciones en verde. El espejo nunca borra ni pisa lo que alguien haya dejado en
   el NAS: si algo cambió allí desde el último espejo, se para, lo lista y explica cómo
   traerlo al PC. Opciones `--solo-espejo` y `--rehacer-estado`.
+- Herramientas del motor de cálculo (spec 004), con el Python de Blender:
+  - `tools/lock_runtime.py` completa el lock del motor, `geoblender/jobs/runtime_lock.toml`:
+    para la versión fijada de cada paquete, su rueda con su huella y su tamaño (los que publica
+    PyPI), su licencia (la que declara la rueda) y lo que ocupa instalada;
+  - `tools/fetch_runtime_wheels.py` llena el almacén de ruedas del motor (local o del NAS,
+    `GEOBLENDER_WHEELHOUSE`) y solo deja las ruedas cuya huella es la del lock;
+  - `tools/make_runtime.py` crea el motor de cálculo de pruebas en `.deps/runtime/`, desde el
+    almacén o desde PyPI, con el mismo código que la instalación del producto.
+
+  Con ese motor, `tools/check.py` ejecuta otra vez las pruebas unitarias de los paquetes de
+  dominio con su numpy (paso «motor», a la vez que las pruebas de Blender); sin él, termina
+  «VERDE CON OMISIONES» y dice cómo crearlo. `tools/check.py --rendimiento` mide además los
+  trabajos en segundo plano: `tests/rendimiento/test_jobs_rendimiento.py` (lanzamiento, primer
+  aviso, producto 2000 × 2000, instalación del motor, longitud de sus rutas y 100 trabajos
+  seguidos) y, dentro de Blender, `tests/rendimiento/blender/perf_jobs_monitor.py` (el
+  seguimiento en la barra de estado).
 
 ### Cambiado
 
@@ -172,8 +259,11 @@ lectura de la barra con tres ingenieros.
   comprobación completa ya no necesita la documentación al lado: en el PC de referencia, con
   el código en su disco local, con las pruebas de la publicación (`--completo`) tarda unos
   62 s.
-- `tools/check.py` reparte las pruebas unitarias en 4 procesos y las de Blender en 3
+- `tools/check.py` reparte las pruebas unitarias en 6 procesos y las de Blender en 3
   Blender que se ejecutan a la vez dentro de su paso (los pasos siguen uno tras otro), sin
-  quitar ni acortar ninguna: la comprobación de cada tarea pasa de unos 55 s a unos 25 s
-  en el PC de referencia. Cada prueba se ejecuta en una sola parte, y si las partes no
-  suman las pruebas que hay, el paso falla.
+  quitar ni acortar ninguna. Desde la spec 004, el reparto sigue lo que tardó cada módulo de
+  pruebas en la comprobación anterior (guardado fuera del repositorio, en
+  `%TEMP%\geoblender-tiempos\`; la primera vez, por número de pruebas). La comprobación de
+  cada tarea pasó de unos 55 s a unos 25 s en el PC de referencia, y hoy, con las pruebas de
+  la spec 004 y su paso «motor», tarda unos 33 s. Cada prueba se ejecuta en una sola parte, y
+  si las partes no suman las pruebas que hay, el paso falla.

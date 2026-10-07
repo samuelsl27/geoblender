@@ -16,6 +16,7 @@ delivered = true
 ["004"]
 title.en = "Background jobs"
 title.es = "Trabajos en segundo plano"
+delivered = true
 
 ["005"]
 title.en = "Drillholes"

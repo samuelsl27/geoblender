@@ -1,0 +1,473 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Arranque de un worker en un proceso aparte (spec 004; RF-004-01, RF-004-12, RF-004-13,
+RF-004-15; plan 004 §5.3.3, §5.3.4 y §5.4.3).
+
+El lanzador lo ejecuta con la carpeta del trabajo como carpeta de trabajo, con una de estas
+órdenes (``jobs.interpreter.build_command``, plan §5.3.3)::
+
+    blender : <Python de Blender> -I -B -u    <paquete>/workers/_bootstrap.py
+                  --package-dir <paquete> --job-dir <carpeta> --kind blender [--site <dir>]
+    compute : <Python de Blender> -I -S -B -u <paquete>/workers/_bootstrap.py …
+                  --kind compute --site <motor>/site --expect-numpy <versión del lock>
+    external: <intérprete externo> -I -B -u   <paquete>/workers/_bootstrap.py … --kind external
+
+más ``--path <nombre>=<ruta>`` por cada ruta absoluta que el trabajo necesita fuera de su
+carpeta (la carpeta de los motores y el almacén de ruedas de ``runtime_install``), con la
+entrada estándar en una tubería (la vigilancia del padre), la salida estándar en otra
+(el canal de eventos) y la salida de error en ``job.log``. Es un guion autónomo: hasta cargar
+el paquete (paso 5) solo usa la biblioteca estándar, y es el único fichero de la extensión que
+importa ``geoblender`` de forma absoluta (excepción de ARQ-09, plan 001). Pasos:
+
+0. ``sys.dont_write_bytecode = True`` antes de cualquier otro import: defensa además de
+   ``-B``, porque ``-I`` implica ``-E`` y no se lee ``PYTHONDONTWRITEBYTECODE`` (plan §2.1);
+   ningún ``__pycache__`` aparece junto al paquete.
+1. Lee los argumentos.
+2. Canal: duplica la salida estándar original para los eventos y manda el descriptor 1 y
+   ``sys.stdout`` a la salida de error: lo que impriman ``print()`` o una librería en C va a
+   ``job.log`` (en UTF-8) y no ensucia el canal.
+3. Vigilancia del padre: un hilo *daemon* mira la entrada estándar hasta su fin y entonces
+   termina el proceso con el código 4: si Blender muere, Windows cierra la tubería
+   (RF-004-13). La mira sin dejar una lectura pendiente (``PeekNamedPipe``), que colgaría al
+   cargarse las DLL que la consultan, como el OpenBLAS de numpy en el motor.
+4. Con ``--site``, ``site.addsitedir`` de esa carpeta (procesa sus ``.pth``). Es el único
+   cambio de ``sys.path``: con ``-I -S`` (``compute``), ``sys.path`` solo tenía la
+   biblioteca estándar, y el numpy de Blender no se puede colar.
+5. Carga el paquete por ruta (``importlib``) con el nombre ``geoblender``, sin añadir nada a
+   ``sys.path`` (no expone las demás extensiones del usuario).
+6. ``compute``: importa numpy y comprueba que viene de la carpeta ``--site`` y que su versión
+   es ``--expect-numpy``; si no, evento ``error`` (``runtime_numpy_wrong`` o
+   ``runtime_package_mismatch``; sin numpy, ``runtime_missing``) y salida 5, sin calcular
+   (RF-004-25). Si vale, deja abierto su ``__init__.py`` mientras el proceso vive: Windows
+   no deja apartar ni borrar un motor con un fichero abierto, así que la limpieza de los
+   motores anteriores no quita el que usa un trabajo, aunque sea de otra sesión de Blender
+   (RF-004-27).
+7. Evento ``start`` con el pid, el intérprete y las versiones de Python, numpy y BLAS
+   (RF-004-15). Con el intérprete externo, ``job.log`` dice además que corrió en él, en
+   lugar del motor de cálculo, y cuál es (RF-004-26).
+8. Lee la petición (``request.json``), importa ``geoblender.workers.<tipo>`` y llama a su
+   ``main(ctx)`` con un ``WorkerContext`` que escribe en el canal.
+
+Códigos de salida (plan §5.3.4): 0, terminado, con ``result.json`` y el evento ``result``;
+2, ``JobFailed`` (o un ``JobError``) con su evento ``error``; 3, cancelación atendida, con el
+evento ``cancelled``; 4, padre perdido; 5, comprobación de arranque fallida (argumentos,
+paquete, petición ilegible, tipo de trabajo que no existe o numpy que no es el del motor;
+con su evento ``error`` si el canal ya funciona); 1, excepción no capturada, con la traza
+solo en ``job.log`` (también ``SystemExit``: un ``sys.exit`` del cálculo o de una librería no
+puede hacerse pasar por otro de estos códigos; RF-004-12). Una caída nativa o un
+``os._exit`` dan su propio código.
+"""
+
+import sys
+
+sys.dont_write_bytecode = True  # Paso 0: antes de cualquier otro import.
+
+import argparse  # noqa: E402
+import importlib  # noqa: E402
+import importlib.util  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import site  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+import traceback  # noqa: E402
+from collections.abc import Callable, Sequence  # noqa: E402
+from pathlib import Path  # noqa: E402
+from types import ModuleType  # noqa: E402
+from typing import IO, Any, NoReturn  # noqa: E402
+
+PACKAGE_NAME = "geoblender"
+WORKERS_PACKAGE = f"{PACKAGE_NAME}.workers"
+KIND_COMPUTE = "compute"
+KIND_EXTERNAL = "external"
+KINDS: tuple[str, ...] = ("blender", KIND_COMPUTE, KIND_EXTERNAL)
+"""Intérpretes que admite el arranque (``--kind``)."""
+
+EXIT_OK = 0
+EXIT_CRASHED = 1
+EXIT_FAILED = 2
+EXIT_CANCELLED = 3
+EXIT_PARENT_LOST = 4
+EXIT_STARTUP = 5
+
+LOG_PREFIX = "Geoblender:"
+"""Comienzo de las líneas que el arranque deja en ``job.log``."""
+_IN_USE: list[IO[bytes]] = []
+"""Los ficheros del motor de cálculo abiertos mientras el worker vive (:func:`hold_engine`);
+se cierran solos al terminar el proceso, también si se le mata."""
+_WATCH_BYTES = 4096
+_WATCH_POLL_S = 0.05
+"""Cada cuánto mira la vigilancia del padre su tubería de entrada (:func:`watch_parent`)."""
+_FILE_TYPE_PIPE = 3
+_ERROR_BROKEN_PIPE = 109
+_PATH_NAME = re.compile(r"[a-z][a-z0-9_]*")
+"""Nombre de una ruta del trabajo (``--path``; ``jobs.interpreter.PATH_NAME_PATTERN``)."""
+
+
+class StartupError(Exception):
+    """Una comprobación de arranque que falla antes de poder usar el paquete: el motivo va a
+    ``job.log`` y el worker termina con :data:`EXIT_STARTUP`."""
+
+
+class _Parser(argparse.ArgumentParser):
+    """Los argumentos que no valen son :class:`StartupError` (``argparse`` saldría con 2,
+    que es el código de ``JobFailed``)."""
+
+    def error(self, message: str) -> NoReturn:
+        raise StartupError(f"argumentos del arranque que no valen: {message}")
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    """Paso 1: ``--package-dir``, ``--job-dir``, ``--kind`` (:data:`KINDS`) y, si hacen
+    falta, ``--site`` (obligatorio con ``compute``), ``--expect-numpy`` (solo con
+    ``compute``) y las rutas del trabajo fuera de su carpeta, ``--path <nombre>=<ruta>``
+    (las ve en ``WorkerContext.paths``; ``args.paths``, un diccionario)."""
+    parser = _Parser(prog="_bootstrap.py", add_help=False, allow_abbrev=False)
+    parser.add_argument("--package-dir", required=True)
+    parser.add_argument("--job-dir", required=True)
+    parser.add_argument("--kind", required=True, choices=KINDS)
+    parser.add_argument("--site")
+    parser.add_argument("--expect-numpy")
+    parser.add_argument("--path", action="append", default=[], dest="path_items")
+    args = parser.parse_args(list(argv))
+    if args.kind == KIND_COMPUTE and not args.site:
+        parser.error(f"el intérprete {KIND_COMPUTE} necesita --site (el motor de cálculo)")
+    if args.expect_numpy is not None and args.kind != KIND_COMPUTE:
+        parser.error(f"--expect-numpy solo vale con el intérprete {KIND_COMPUTE}")
+    args.paths = {}
+    for item in args.path_items:
+        name, separator, path = item.partition("=")
+        if not separator or not _PATH_NAME.fullmatch(name) or not path:
+            parser.error(f"--path {item!r} no es <nombre>=<ruta>")
+        if name in args.paths:
+            parser.error(f"--path {name} está repetido")
+        args.paths[name] = path
+    return args
+
+
+def open_channel() -> IO[str]:
+    """Paso 2: el canal de eventos es una copia del descriptor 1 original (la tubería del
+    lanzador); el descriptor 1 y ``sys.stdout`` pasan a ser la salida de error (``job.log``),
+    en UTF-8."""
+    try:
+        channel = os.fdopen(os.dup(1), "w", encoding="utf-8", newline="\n", buffering=1)
+        os.dup2(2, 1)
+    except OSError as exc:
+        raise StartupError(f"no se puede abrir el canal de eventos: {exc}") from None
+    if sys.__stdout__ is not None:
+        _utf8(sys.__stdout__)
+    sys.stdout = sys.stderr
+    return channel
+
+
+def watch_parent() -> threading.Thread:
+    """Paso 3: hilo *daemon* que termina el proceso con :data:`EXIT_PARENT_LOST` cuando se
+    acaba la entrada estándar (el padre la cerró o murió).
+
+    Si la entrada estándar es una tubería (la del lanzador), la mira cada
+    :data:`_WATCH_POLL_S` s con ``PeekNamedPipe`` en lugar de dejar una lectura pendiente:
+    mientras un hilo espera a leer una tubería, Windows no contesta ninguna otra consulta de
+    esa tubería, y la inicialización de algunas DLL consulta la entrada estándar al cargarse
+    (la libgfortran que lleva el OpenBLAS de numpy 2.5.3: el worker ``compute`` se quedaba
+    colgado en ``import numpy``; spec 004, T30)."""
+    pipe = _stdin_pipe()
+    target = _wait_for_parent if pipe is None else _poll_parent
+    thread = threading.Thread(
+        target=target, args=() if pipe is None else (pipe,),
+        name="geoblender-parent-watch", daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _parent_lost() -> NoReturn:
+    note(f"el proceso padre ya no está (fin de la entrada estándar): el worker termina con "
+         f"el código {EXIT_PARENT_LOST}")
+    os._exit(EXIT_PARENT_LOST)
+
+
+def _wait_for_parent() -> None:
+    # Lee el descriptor 0 directamente, sin ``sys.stdin``: su cerrojo, retenido por un hilo
+    # daemon, haría fallar el cierre del intérprete.
+    try:
+        while os.read(0, _WATCH_BYTES):
+            pass
+    except OSError as exc:
+        note(f"no se vigila al proceso padre: su entrada estándar no se puede leer ({exc})")
+        return
+    _parent_lost()
+
+
+def _stdin_pipe() -> tuple[Any, int] | None:
+    """``(kernel32, handle)`` si la entrada estándar es una tubería de Windows (con
+    ``PeekNamedPipe`` preparada); si no, ``None`` (se lee hasta su fin)."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    try:
+        handle = msvcrt.get_osfhandle(0)
+    except OSError:
+        return None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetFileType.argtypes = [wintypes.HANDLE]
+    kernel32.GetFileType.restype = wintypes.DWORD
+    if kernel32.GetFileType(handle) != _FILE_TYPE_PIPE:
+        return None
+    kernel32.PeekNamedPipe.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+    ]
+    kernel32.PeekNamedPipe.restype = wintypes.BOOL
+    return kernel32, handle
+
+
+def _poll_parent(pipe: tuple[Any, int]) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32, handle = pipe
+    available = wintypes.DWORD()
+    while kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None):
+        if available.value:
+            # Lo que haya escrito el padre se descarta, como al leer: la lectura de lo que
+            # ya está en la tubería no espera.
+            try:
+                os.read(0, min(available.value, _WATCH_BYTES))
+            except OSError as exc:
+                note(f"no se vigila al proceso padre: su entrada estándar no se puede leer "
+                     f"({exc})")
+                return
+            continue
+        time.sleep(_WATCH_POLL_S)
+    error = ctypes.get_last_error()
+    if error != _ERROR_BROKEN_PIPE:
+        note(f"no se vigila al proceso padre: su entrada estándar no se puede consultar "
+             f"(error {error} de Windows)")
+        return
+    _parent_lost()
+
+
+def add_site(site_dir: str) -> None:
+    """Paso 4: la carpeta ``site_dir`` (el motor de cálculo o las ruedas de las extensiones)
+    entra en ``sys.path`` con ``site.addsitedir``, que procesa sus ``.pth``."""
+    site.addsitedir(site_dir)
+    note(f"carpeta de paquetes añadida (--site): {site_dir}")
+
+
+def check_numpy(site_dir: str, expected: str | None) -> None:
+    """Paso 6 (``compute``): numpy tiene que venir de ``site_dir`` (si no,
+    ``runtime_numpy_wrong`` con la carpeta de la que vino) y, con ``expected``, tener esa
+    versión (si no, ``runtime_package_mismatch``); si no se puede importar,
+    ``runtime_missing``. Lanza el ``JobError`` del §8 antes de calcular nada (RF-004-25)."""
+    from geoblender.jobs.messages import JobError
+
+    try:
+        import numpy
+    except ImportError as exc:
+        note(f"el motor de cálculo no tiene numpy: {exc}")
+        raise JobError("runtime_missing") from None
+    where = getattr(numpy, "__file__", None)
+    folder = os.path.dirname(os.path.realpath(where)) if where else "?"
+    if not where or not _inside(where, site_dir):
+        raise JobError("runtime_numpy_wrong", path=folder)
+    version = str(getattr(numpy, "__version__", "") or "?")
+    if expected is not None and version != expected:
+        raise JobError("runtime_package_mismatch", package="numpy", actual=version,
+                       locked=expected)
+    note(f"motor de cálculo: numpy {version} desde {folder}")
+    hold_engine(where)
+
+
+def hold_engine(path: str) -> None:
+    """Deja ``path`` (un fichero del motor de cálculo) abierto hasta que el proceso termina:
+    marca el motor como en uso para cualquier sesión de Blender, porque Windows no deja
+    apartar ni borrar una carpeta con un fichero abierto (RF-004-27). Si no se puede abrir,
+    el trabajo sigue y queda una nota en ``job.log``."""
+    try:
+        _IN_USE.append(open(path, "rb"))  # noqa: SIM115 - abierto a propósito hasta el final
+    except OSError as exc:
+        note(f"no se pudo marcar el motor de cálculo como en uso ({exc})")
+
+
+def _inside(path: str, folder: str) -> bool:
+    """Si ``path`` está dentro de ``folder`` (rutas reales, sin distinguir mayúsculas en
+    Windows)."""
+    real = os.path.normcase(os.path.realpath(path))
+    root = os.path.normcase(os.path.realpath(folder))
+    try:
+        return os.path.commonpath([real, root]) == root
+    except ValueError:  # otra unidad
+        return False
+
+
+def load_package(package_dir: Path) -> ModuleType:
+    """Paso 5: carga ``<package_dir>/__init__.py`` como el paquete ``geoblender``, por ruta y
+    sin tocar ``sys.path``."""
+    init = package_dir / "__init__.py"
+    if not init.is_file():
+        raise StartupError(f"no está el paquete de Geoblender en {package_dir} (falta "
+                           "__init__.py)")
+    spec = importlib.util.spec_from_file_location(
+        PACKAGE_NAME, init, submodule_search_locations=[str(package_dir)]
+    )
+    if spec is None or spec.loader is None:
+        raise StartupError(f"no se puede cargar {init} como el paquete {PACKAGE_NAME}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[PACKAGE_NAME] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(PACKAGE_NAME, None)
+        raise
+    return module
+
+
+def run_job(
+    job_dir: str,
+    kind: str,
+    channel: IO[str],
+    *,
+    site_dir: str | None = None,
+    expect_numpy: str | None = None,
+    paths: dict[str, str] | None = None,
+) -> int:
+    """Pasos 6 a 8, con el paquete ya cargado: comprobación de numpy (``compute``), evento
+    ``start``, petición, tipo de trabajo y ``main(ctx)`` (con las rutas ``paths`` de
+    ``--path``). Devuelve el código de salida (plan §5.3.4); una excepción no prevista sale
+    de aquí (código 1)."""
+    from geoblender.jobs import protocol, worker_api
+    from geoblender.jobs.messages import JobError
+
+    sink = worker_api.StreamSink(channel)
+    if kind == KIND_COMPUTE:
+        assert site_dir is not None  # parse_args lo exige
+        try:
+            check_numpy(site_dir, expect_numpy)
+        except JobError as exc:
+            note(f"comprobación de arranque fallida ({exc.code}): {exc.text}")
+            sink.send(protocol.JobEvent.error(exc.code, msgid=exc.msgid, msg=exc.text,
+                                              values=exc.values))
+            return EXIT_STARTUP
+    info = worker_api.interpreter_info(kind)
+    note(
+        f"arranque del worker: pid {info['pid']}, intérprete {kind}, Python {info['python']}, "
+        f"numpy {info['numpy'] or 'no disponible'}, BLAS {info['blas'] or 'no disponible'}"
+    )
+    if kind == KIND_EXTERNAL:
+        note(f"intérprete externo (desarrollo), en lugar del motor de cálculo: "
+             f"{sys.executable}")
+    sink.send(protocol.JobEvent.start(info))
+    try:
+        folder = _job_folder(job_dir)
+        request = protocol.read_request(folder)
+        main = _worker_main(request.worker)
+    except JobError as exc:
+        note(f"comprobación de arranque fallida ({exc.code}): {exc.text}")
+        sink.send(protocol.JobEvent.error(exc.code, msgid=exc.msgid, msg=exc.text,
+                                          values=exc.values))
+        return EXIT_STARTUP
+    note(f"trabajo {request.job_uid}: tipo {request.worker}, «{request.label}»")
+    ctx = worker_api.WorkerContext(request, folder, sink, paths=paths)
+    try:
+        summary = main(ctx)
+    except worker_api.JobCancelled as exc:
+        ctx.emit(protocol.JobEvent.cancelled(str(exc)))
+        note(f"cancelado: {exc}")
+        return EXIT_CANCELLED
+    except (worker_api.JobFailed, JobError) as exc:
+        failed = (exc if isinstance(exc, worker_api.JobFailed)
+                  else worker_api.JobFailed.from_error(exc))
+        ctx.emit(protocol.JobEvent.error(failed.code, msgid=failed.msgid, msg=failed.text,
+                                         values=failed.values))
+        note(f"fallido ({failed.code}): {failed.text}")
+        return EXIT_FAILED
+    ctx.finish(summary)
+    return EXIT_OK
+
+
+def _job_folder(job_dir: str) -> Any:
+    """La carpeta del trabajo (``JobDir``); una que no es la de un trabajo es
+    ``request_invalid``."""
+    from geoblender.jobs.messages import JobError
+    from geoblender.jobs.paths import JobDir
+
+    path = Path(job_dir)
+    try:
+        return JobDir(path)
+    except ValueError as exc:
+        raise JobError("request_invalid", job=path.name or job_dir, detail=str(exc)) from None
+
+
+def _worker_main(name: str) -> Callable[[Any], Any]:
+    """``main`` de ``geoblender.workers.<name>``; ``worker_unknown`` si el módulo no existe o
+    no la tiene. Un módulo que existe pero falla al importarse es un fallo del worker."""
+    from geoblender.jobs.messages import JobError
+
+    module_name = f"{WORKERS_PACKAGE}.{name}"
+    try:
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name != module_name:
+            raise
+        raise JobError("worker_unknown", worker=name) from None
+    main = getattr(module, "main", None)
+    if not callable(main):
+        raise JobError("worker_unknown", worker=name)
+    return main
+
+
+def note(text: str) -> None:
+    """Una línea del arranque en ``job.log`` (la salida de error)."""
+    stream = sys.stderr
+    if stream is None:
+        return
+    try:
+        print(f"{LOG_PREFIX} {text}", file=stream, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+def _utf8(stream: Any) -> None:
+    """Escribe ``stream`` en UTF-8 (sin ``-X utf8``, Windows usaría la página de códigos)."""
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Los pasos del arranque; devuelve el código de salida."""
+    _utf8(sys.stderr)
+    try:
+        args = parse_args(sys.argv[1:] if argv is None else argv)
+        channel = open_channel()
+    except StartupError as exc:
+        note(f"{exc}; el worker termina con el código {EXIT_STARTUP}")
+        return EXIT_STARTUP
+    watch_parent()
+    try:
+        if args.site:
+            add_site(args.site)
+        load_package(Path(args.package_dir))
+        code = run_job(args.job_dir, args.kind, channel, site_dir=args.site,
+                       expect_numpy=args.expect_numpy, paths=args.paths)
+    except StartupError as exc:
+        note(str(exc))
+        code = EXIT_STARTUP
+    except (Exception, SystemExit):
+        # También ``sys.exit`` del cálculo o de una librería: con su propio código se haría
+        # pasar por una cancelación (3), por la pérdida del padre (4)… (RF-004-12).
+        note("excepción no capturada en el worker:")
+        traceback.print_exc()
+        code = EXIT_CRASHED
+    try:
+        channel.close()
+    except OSError:
+        pass
+    note(f"el worker termina con el código {code}")
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

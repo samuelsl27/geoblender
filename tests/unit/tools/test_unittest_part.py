@@ -10,12 +10,15 @@ T40).
   5 «sin pruebas»), el ``-W`` del intérprete llega a las pruebas, y ``sys.path`` empieza
   por la carpeta actual y no por ``tools/``, como con ``-m unittest``.
 - RF-001-07: unas opciones no válidas dan 2 sin ejecutar nada.
+- RNF-001-01, RNF-007-01 (spec 004, T39): con ``--tiempos`` reparte por la duración
+  medida de cada módulo y con ``--medidas`` escribe la de los suyos.
 
 Lanza el Python en uso (el de Blender en ``tools/check.py``) sobre árboles temporales.
 """
 
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -174,6 +177,7 @@ class PartsTest(unittest.TestCase):
             "sin valor": (parts.OPTION,),
             "sin discover": (parts.OPTION, "1/2", "tests.unit.test_a"),
             "nada tras la parte": (parts.OPTION, "1/2"),
+            "tiempos sin valor": (parts.OPTION, "1/2", parts.TIMES_OPTION),
             "sin la opción": DISCOVER,
             "nada": (),
         }
@@ -185,6 +189,41 @@ class PartsTest(unittest.TestCase):
                     self.assertIn("Error:", result.stderr)
                     self.assertIn(parts.OPTION, result.stderr)
                     self.assertNotIn("Ran ", _text(result))
+
+    def test_times_and_measures(self) -> None:
+        """RNF-001-01, RNF-007-01 (spec 004, T39): con ``--tiempos`` (la duración de cada
+        módulo) la parte reparte por tiempo y no por número de pruebas (por número, la 1
+        tendría test_c y test_d), y con ``--medidas`` escribe la duración de los módulos
+        que ejecutó, con su parte; la línea «PARTE …» y el código, los de siempre."""
+        times = {
+            "tests.unit.test_a": 5.0,
+            "tests.unit.sub.test_b": 0.2,
+            "tests.unit.test_c": 0.1,
+            "tests.unit.test_d": 0.3,
+        }
+        expected = {1: {"tests.unit.test_a"},
+                    2: {"tests.unit.sub.test_b", "tests.unit.test_c", "tests.unit.test_d"}}
+        with temp_tree(TREE) as root, tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            parts.write_times(folder / "tiempos.json", times)
+            for part, modules in expected.items():
+                measures = folder / f"medidas-{part}.json"
+                result = run_script(
+                    root, parts.OPTION, f"{part}/2", parts.TIMES_OPTION,
+                    str(folder / "tiempos.json"), parts.MEASURES_OPTION, str(measures),
+                    *DISCOVER,
+                )
+                text = _text(result)
+                with self.subTest(parte=part):
+                    self.assertEqual(result.returncode, 0, text)
+                    self.assertEqual(_modules(text), modules)
+                    ran = sum(MODULES[m] for m in modules)
+                    self.assertEqual(parts.last_line(text), (part, 2, ran, 7))
+                    found = parts.read_measures(measures)
+                    assert found is not None
+                    self.assertEqual((found.part, found.parts), (part, 2))
+                    self.assertEqual(set(found.modules), modules)
+                    self.assertTrue(all(s >= 0 for s in found.modules.values()))
 
 
 if __name__ == "__main__":

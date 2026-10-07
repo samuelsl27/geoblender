@@ -180,11 +180,22 @@ class TestFileNamesTest(unittest.TestCase):
 
     def test_patterns_are_the_steps(self) -> None:
         """RF-001-06 / TST-02: los patrones de la regla son la carpeta y el patrón de
-        cada orden de pruebas de ``tools/check.py`` (y el del banco)."""
+        cada orden de pruebas de ``tools/check.py`` (y el del banco). Las del paso «motor»
+        (spec 004, RF-004-28; aquí, con un motor simulado) son subcarpetas de
+        ``tests/unit`` con su patrón: las cubre el de ``tests/unit``."""
         install = BlenderInstall(Path("blender.exe"), Path("python.exe"), (5, 2, 1))
-        ctx = check.Context(root=ROOT, install=install, profile=Path("perfil"))
+        ctx = check.Context(
+            root=ROOT, install=install, profile=Path("perfil"),
+            find_runtime=lambda root, environ: check.TestRuntime(Path("motor")),
+        )
         runs = [run for step in check.STEPS for run in step.runs(ctx) if run.folder]
-        steps = {(f"{run.folder}/", run.pattern) for run in runs}
+        found = {(f"{run.folder}/", run.pattern) for run in runs}
+        self.assertIn(("tests/unit/core/", "test*.py"), found)
+        steps = {
+            (folder, pattern) for folder, pattern in found
+            if not any(folder != other and folder.startswith(other) and pattern == same
+                       for other, same in found)
+        }
         bank = ("tests/banco/", "test*.py")  # tools/bench_silvestre.py
         self.assertEqual(steps | {bank}, set(suites.SUITE_PATTERNS))
 

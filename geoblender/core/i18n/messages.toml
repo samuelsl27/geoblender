@@ -971,3 +971,413 @@ es = "Modo Geoblender"
 
 ["This workspace is a Geoblender layout"]
 es = "Este espacio de trabajo es una disposición de Geoblender"
+
+# Preferencias de los trabajos en segundo plano (spec 004, T18; RF-004-04, RF-004-17,
+# RF-004-24, RF-004-26; plan 004 §5.2.7). «Background jobs» también es texto del catálogo de
+# comandos, con la misma traducción; «Automatic» y «Compute engine» ya están arriba.
+
+["Background jobs"]
+es = "Trabajos en segundo plano"
+
+["Jobs at once (separate process)"]
+es = "Trabajos a la vez (proceso aparte)"
+
+["Maximum number of jobs running at the same time in a separate process; the others wait in the queue"]
+es = "Máximo de trabajos en curso a la vez en proceso aparte; los demás esperan en cola"
+
+["Keep finished jobs (days)"]
+es = "Conservar los trabajos terminados (días)"
+
+["Days after which the folders of finished jobs are deleted when a project is opened"]
+es = "Días tras los que se borran las carpetas de los trabajos terminados al abrir un proyecto"
+
+["Compute engine source"]
+es = "Origen del motor de cálculo"
+
+["Where the compute engine is installed from"]
+es = "De dónde se instala el motor de cálculo"
+
+["The wheel store if one is configured; otherwise PyPI"]
+es = "El almacén de ruedas si hay uno configurado; si no, PyPI"
+
+["Wheel store"]
+es = "Almacén de ruedas"
+
+["Only the wheel store folder, without internet"]
+es = "Solo la carpeta del almacén de ruedas, sin internet"
+
+["PyPI"]
+es = "PyPI"
+
+["Download from PyPI (needs online access)"]
+es = "Descarga de PyPI (necesita el acceso en línea)"
+
+["Wheel store folder"]
+es = "Carpeta del almacén de ruedas"
+
+["Local or NAS folder with the wheels of the compute engine (empty: none)"]
+es = "Carpeta local o del NAS con las ruedas del motor de cálculo (vacía: ninguna)"
+
+["Use an external interpreter"]
+es = "Usar un intérprete externo"
+
+["Run the jobs that need the compute engine with the external interpreter (development)"]
+es = "Ejecuta con el intérprete externo los trabajos que necesitan el motor de cálculo (desarrollo)"
+
+["External interpreter"]
+es = "Intérprete externo"
+
+["Python 3.13 interpreter with numpy, checked when it is set (empty: none)"]
+es = "Intérprete de Python 3.13 con numpy, comprobado al configurarlo (vacío: ninguno)"
+
+# Trabajos en segundo plano en la barra de estado (spec 004, T19; RF-004-06, RF-004-07;
+# plan 004 §5.4.4 y §5.5): los siete estados de un trabajo y su avance.
+
+["Queued"]
+es = "En cola"
+
+["Running"]
+es = "En curso"
+
+["Succeeded"]
+es = "Terminado"
+
+["Failed"]
+es = "Fallido"
+
+["Cancelled"]
+es = "Cancelado"
+
+["Timed out"]
+es = "Tiempo agotado"
+
+["Interrupted"]
+es = "Interrumpido"
+
+["{percent}%"]
+es = "{percent} %"
+
+# Operadores y lista de los trabajos en segundo plano (spec 004, T20; RF-004-08, RF-004-09;
+# plan 004 §5.3.2 y §5.5).
+
+["No jobs are running"]
+es = "No hay trabajos en curso"
+
+["The job list needs a Blender window"]
+es = "La lista de trabajos necesita una ventana de Blender"
+
+["There is no job «{job}»"]
+es = "No hay ningún trabajo «{job}»"
+
+["The job «{job}» has already finished or is already being cancelled"]
+es = "El trabajo «{job}» ya ha terminado o ya se está cancelando"
+
+["Cancelling the job «{job}»"]
+es = "Cancelando el trabajo «{job}»"
+
+["Cancelling"]
+es = "Cancelando"
+
+["There are no background jobs"]
+es = "No hay trabajos en segundo plano"
+
+["Jobs folder: {size} MB"]
+es = "Carpeta de los trabajos: {size} MB"
+
+["Job"]
+es = "Trabajo"
+
+["Identifier of the job to cancel (empty: the oldest running one)"]
+es = "Identificador del trabajo que se cancela (vacío: el más antiguo en curso)"
+
+# Autodiagnóstico y limpieza de los trabajos (spec 004, T21; RF-004-03, RF-004-17,
+# RF-004-08; plan 004 §5.3.2 y §5.4.6).
+
+["Geoblender has not prepared the jobs folder yet"]
+es = "Geoblender aún no ha preparado la carpeta de los trabajos"
+
+["Launched the job «{job}»"]
+es = "Lanzado el trabajo «{job}»"
+
+["Self-test: sum of 10 s"]
+es = "Autodiagnóstico: suma de 10 s"
+
+["Self-test: 2000 × 2000 product with the compute engine"]
+es = "Autodiagnóstico: producto 2000 × 2000 con el motor de cálculo"
+
+["Self-test: 500 × 500 product with Blender's numpy"]
+es = "Autodiagnóstico: producto 500 × 500 con el numpy de Blender"
+
+["Sum of 10 s"]
+es = "Suma de 10 s"
+
+["Sum in chunks of about 10 s in a separate process, to follow its progress and cancel it"]
+es = "Suma por trozos de unos 10 s en un proceso aparte, para seguir su avance y cancelarla"
+
+["Matrix product with the compute engine"]
+es = "Producto de matrices con el motor de cálculo"
+
+["Product of two 2000 × 2000 float64 matrices with the numpy and the BLAS of the compute engine"]
+es = "Producto de dos matrices float64 de 2000 × 2000 con el numpy y la BLAS del motor de cálculo"
+
+["Matrix product with Blender's numpy"]
+es = "Producto de matrices con el numpy de Blender"
+
+["Product of two 500 × 500 float64 matrices with the numpy of Blender, in a thread"]
+es = "Producto de dos matrices float64 de 500 × 500 con el numpy de Blender, en un hilo"
+
+["Jobs to delete"]
+es = "Trabajos que se borran"
+
+["Older than the retention"]
+es = "Más antiguos que la retención"
+
+["Finished jobs that ended more days ago than set in the preferences"]
+es = "Trabajos que terminaron hace más días de los fijados en las preferencias"
+
+["All finished"]
+es = "Todos los terminados"
+
+["Every finished job, however recent"]
+es = "Todos los trabajos terminados, aunque sean recientes"
+
+["One job"]
+es = "Un trabajo"
+
+["Only the finished job with that identifier (Discard)"]
+es = "Solo el trabajo terminado con ese identificador (Descartar)"
+
+["Identifier of the job to discard (with One job)"]
+es = "Identificador del trabajo que se descarta (con «Un trabajo»)"
+
+["Clean finished jobs"]
+es = "Limpiar trabajos terminados"
+
+["Delete"]
+es = "Borrar"
+
+["Finished more than {days} days ago"]
+es = "Terminados hace más de {days} días"
+
+["Queued and running jobs are never deleted"]
+es = "Nunca se borran los trabajos en cola ni en curso"
+
+["Job folders deleted: {count} ({size} MB freed)"]
+es = "Carpetas de trabajos borradas: {count} ({size} MB liberados)"
+
+["There were no finished jobs to delete"]
+es = "No había trabajos terminados que borrar"
+
+["Job folders that could not be deleted completely (another program has a file open): {count}; they will be tried again in the next cleaning"]
+es = "Carpetas de trabajos que no se pudieron borrar del todo (otro programa tiene un fichero abierto): {count}; se intentará otra vez en la próxima limpieza"
+
+["No job to discard was given"]
+es = "No se ha indicado qué trabajo descartar"
+
+["Discarded the job «{job}» ({size} MB freed)"]
+es = "Descartado el trabajo «{job}» ({size} MB liberados)"
+
+["The job «{job}» is still running: it cannot be discarded"]
+es = "El trabajo «{job}» sigue en marcha: no se puede descartar"
+
+# El motor de cálculo con el consentimiento del usuario (spec 004, T32; RF-004-19 a
+# RF-004-25; plan 004 §5.3.2 y §5.5). «Action», «Licence», «Compute engine», «Wheel store»,
+# «PyPI» y sus descripciones ya están arriba.
+
+["State"]
+es = "Estado"
+
+["Show the state of the compute engine; if it is missing, out of date or damaged, offer to install it"]
+es = "Muestra el estado del motor de cálculo; si falta, está desactualizado o dañado, ofrece instalarlo"
+
+["Install"]
+es = "Instalar"
+
+["Cancel"]
+es = "Cancelar"
+
+["Install the compute engine after showing what is installed, from where, with which licences and how much it takes"]
+es = "Instala el motor de cálculo después de enseñar qué se instala, de dónde, con qué licencias y cuánto ocupa"
+
+["Update"]
+es = "Actualizar"
+
+["Install the compute engine of this version of Geoblender, which replaces the one of an earlier version"]
+es = "Instala el motor de cálculo de esta versión de Geoblender, que sustituye al de una versión anterior"
+
+["Verify"]
+es = "Verificar"
+
+["Check the installed compute engine: package versions, numpy, its BLAS and a 2000 × 2000 product"]
+es = "Comprueba el motor de cálculo instalado: versiones de los paquetes, numpy, su BLAS y un producto 2000 × 2000"
+
+["Repair"]
+es = "Reparar"
+
+["Install the compute engine again over a damaged or unverified one"]
+es = "Vuelve a instalar el motor de cálculo sobre uno dañado o sin verificar"
+
+["Remove"]
+es = "Quitar"
+
+["Delete the compute engine of this version of Geoblender, after confirming it"]
+es = "Borra el motor de cálculo de esta versión de Geoblender, tras confirmarlo"
+
+["As in the preferences"]
+es = "Como en las preferencias"
+
+["The source chosen in the preferences: by default, the wheel store if one is configured; otherwise PyPI"]
+es = "El origen elegido en las preferencias: por defecto, el almacén de ruedas si hay uno configurado y, si no, PyPI"
+
+["What to do with the compute engine"]
+es = "Qué hacer con el motor de cálculo"
+
+["Source"]
+es = "Origen"
+
+["Where the wheels of the compute engine come from"]
+es = "De dónde salen las ruedas del motor de cálculo"
+
+["Confirmation"]
+es = "Confirmación"
+
+["What the user confirmed in the dialog (the dialog fills it in)"]
+es = "Lo que el usuario confirmó en el diálogo (lo rellena el diálogo)"
+
+["The compute engine lock of this version of Geoblender could not be read"]
+es = "No se pudo leer el lock del motor de cálculo de esta versión de Geoblender"
+
+["Install the compute engine"]
+es = "Instalar el motor de cálculo"
+
+["Update the compute engine"]
+es = "Actualizar el motor de cálculo"
+
+["Repair the compute engine"]
+es = "Reparar el motor de cálculo"
+
+["Remove the compute engine"]
+es = "Quitar el motor de cálculo"
+
+["The compute engine is already installed and verified"]
+es = "El motor de cálculo ya está instalado y verificado"
+
+["The compute engine is already being installed or verified"]
+es = "Ya se está instalando o verificando el motor de cálculo"
+
+["Installing the compute engine needs your confirmation in its dialog"]
+es = "Instalar el motor de cálculo necesita su confirmación en el diálogo"
+
+["What is going to be installed changed after it was shown: ask for it again"]
+es = "Lo que se va a instalar cambió después de enseñarlo: vuelva a pedirlo"
+
+["Installing the compute engine: follow its progress in the status bar"]
+es = "Instalando el motor de cálculo: siga su avance en la barra de estado"
+
+["Verifying the compute engine: follow its progress in the status bar"]
+es = "Verificando el motor de cálculo: siga su avance en la barra de estado"
+
+["The compute engine is not installed"]
+es = "El motor de cálculo no está instalado"
+
+["Removing the compute engine needs your confirmation in its dialog"]
+es = "Quitar el motor de cálculo necesita su confirmación en el diálogo"
+
+["The compute engine is in use: close the calculations that use it and try again"]
+es = "El motor de cálculo está en uso: cierre los cálculos que lo usan y vuelva a intentarlo"
+
+["Removed the compute engine ({size} MB freed)"]
+es = "Quitado el motor de cálculo ({size} MB liberados)"
+
+["No wheel store folder is set in the preferences"]
+es = "No hay ninguna carpeta del almacén de ruedas en las preferencias"
+
+["The wheel store folder «{folder}» is not a full path"]
+es = "La carpeta del almacén de ruedas «{folder}» no es una ruta completa"
+
+["Source: wheel store {folder}"]
+es = "Origen: almacén de ruedas {folder}"
+
+["Source: PyPI (internet)"]
+es = "Origen: PyPI (internet)"
+
+["Package"]
+es = "Paquete"
+
+["Version"]
+es = "Versión"
+
+["Also includes: {licenses}"]
+es = "Incluye además: {licenses}"
+
+["Download: {download} MB · On disk: {disk} MB"]
+es = "Descarga: {download} MB · En disco: {disk} MB"
+
+["Folder: {folder}"]
+es = "Carpeta: {folder}"
+
+["Used only in the heavy calculations, in a separate process; it does not change Blender's Python"]
+es = "Se usa solo en los cálculos pesados, en un proceso aparte; no cambia el Python de Blender"
+
+["Ready · numpy {numpy} · BLAS {blas} · {n} × {n} in {seconds} s"]
+es = "Listo · numpy {numpy} · BLAS {blas} · {n} × {n} en {seconds} s"
+
+["Ready"]
+es = "Listo"
+
+["Not installed"]
+es = "No instalado"
+
+["Out of date: it belongs to another version of Geoblender"]
+es = "Desactualizado: es de otra versión de Geoblender"
+
+["Damaged or not verified: it has to be repaired"]
+es = "Dañado o sin verificar: hay que repararlo"
+
+["Compute engine: {state}"]
+es = "Motor de cálculo: {state}"
+
+["State: {state}"]
+es = "Estado: {state}"
+
+["Being installed or verified: follow its progress in the status bar"]
+es = "Instalándose o verificándose: siga su avance en la barra de estado"
+
+["Last attempt: {error}"]
+es = "Último intento: {error}"
+
+["The folder {folder} is deleted ({size} MB); it can be installed again later"]
+es = "Se borra la carpeta {folder} ({size} MB); se puede volver a instalar después"
+
+# El intérprete externo, para desarrollo (spec 004, T33; RF-004-26; plan 004 §5.3.2 y
+# §5.5). «External interpreter» y su descripción ya están arriba.
+
+["Interpreter"]
+es = "Intérprete"
+
+["The python.exe of the external environment: Python 3.13 with numpy"]
+es = "El python.exe del entorno externo: Python 3.13 con numpy"
+
+["Stop using it"]
+es = "Dejar de usarlo"
+
+["Stop using the external interpreter: the jobs that need the compute engine use it again"]
+es = "Deja de usar el intérprete externo: los trabajos que necesitan el motor de cálculo vuelven a usarlo"
+
+["Probe the external interpreter"]
+es = "Sondear el intérprete externo"
+
+["The jobs that need the compute engine use it again"]
+es = "Los trabajos que necesitan el motor de cálculo vuelven a usarlo"
+
+["Choose the python.exe of the external interpreter"]
+es = "Elija el python.exe del intérprete externo"
+
+["it is not a full path"]
+es = "no es una ruta completa"
+
+["Checking the external interpreter {path}: the result will appear in the status bar"]
+es = "Comprobando el intérprete externo {path}: el resultado saldrá en la barra de estado"
+
+["External interpreter (development): {path}"]
+es = "Intérprete externo (desarrollo): {path}"

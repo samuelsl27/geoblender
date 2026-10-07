@@ -259,7 +259,11 @@ class CatalogMatchesDocsTest(unittest.TestCase):
                     actual = []
                     for item in items:
                         command = self.cat.commands[item.key]
-                        actual.append(((short(command.idname),), item.cross, command.entry,
+                        # Como en las tablas: un submenú de variantes, por su operador
+                        # (Trabajos ▸ Autodiagnóstico ▸, spec 004, T42).
+                        ids = (command.doc_id if command.doc_id and not item.cross
+                               else (short(command.idname),))
+                        actual.append((tuple(ids), item.cross, command.entry,
                                        command.action, command.background))
                     expected = [(p.ids, p.cross, p.entry, p.action, p.background)
                                 for p in prose.items]

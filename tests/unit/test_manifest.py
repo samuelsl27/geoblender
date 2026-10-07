@@ -18,6 +18,8 @@ from gbtools.ignore import IgnoreSpec  # noqa: E402
 
 TAGLINE = "Software minero para Blender: sondeos, bloques, diseño y planos"
 FILES_REASON = "Leer y escribir proyectos, importar datos y exportar resultados"
+# Spec 004, D-8 (DP-36): el permiso de red, solo para descargar el motor de cálculo de PyPI.
+NETWORK_REASON = "Descargar el motor de cálculo desde PyPI"
 
 # Manifiesto válido de referencia (plan 001 §5.2) para los árboles temporales.
 VALID = """schema_version = "1.0.0"
@@ -95,7 +97,6 @@ class RealManifestTest(unittest.TestCase):
         )
         self.assertNotIn("bl_info", self.path.read_text(encoding="utf-8"))
         self.assertRegex(data["version"], manifest.SEMVER_RE)
-        self.assertNotIn("network", data["permissions"], "lo añade la spec que lo pida")
         for wheel in manifest.wheel_files(data):
             self.assertNotIn("numpy", wheel.lower())
 
@@ -107,10 +108,12 @@ class RealManifestTest(unittest.TestCase):
         raw.decode("utf-8")
 
     def test_tagline_and_permission_texts(self) -> None:
-        """RF-001-01 / MAN-01: lema y motivo del permiso de ficheros (D-1), ≤ 64 y sin
-        puntuación final."""
+        """RF-001-01 / MAN-01, RF-004-23: lema y motivos de los permisos, ≤ 64 y sin
+        puntuación final: el de ficheros (D-1) y, desde la spec 004, el de red, solo para
+        descargar el motor de cálculo de PyPI (D-8 de la 004)."""
         self.assertEqual(self.data["tagline"], TAGLINE)
-        self.assertEqual(self.data["permissions"], {"files": FILES_REASON})
+        self.assertEqual(self.data["permissions"],
+                         {"files": FILES_REASON, "network": NETWORK_REASON})
         for text in (self.data["tagline"], *self.data["permissions"].values()):
             with self.subTest(texto=text):
                 self.assertLessEqual(len(text), 64)

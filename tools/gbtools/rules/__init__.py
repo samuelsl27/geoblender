@@ -24,6 +24,10 @@ mínimo (T16); la de la documentación es solo AGT-01 y AGT-02.
 en ``core.georef.transform``; y ``sqlite`` (T06): ARQ-17, ningún literal que ponga
 SQLite en WAL.
 
+``imports`` añade con la spec 004 (T16) ARQ-11, lo que un worker no importa (``bl``,
+``core.project`` y el adaptador de escritura de DuckDB), y la condición de la excepción de
+ARQ-09: ``workers/_bootstrap.py`` solo importa la biblioteca estándar al importarse.
+
 ``suites`` llega con la convergencia de la spec 001: TST-01, carpetas de ``tests/`` sin
 ``__init__.py`` (T34); TST-02, ficheros de pruebas que su paso no carga (T43); TST-03,
 métodos de un ``TestCase`` que citan un requisito y no empiezan por «test» (T44);

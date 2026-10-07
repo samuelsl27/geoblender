@@ -4,7 +4,9 @@
 PLT-01 (``bl_info``), PLT-02 (una sola ``AddonPreferences``), PLT-03 (módulo y paquete
 con el mismo nombre), ARQ-03 (raíz sin imports a nivel de módulo), ARQ-09 (imports
 internos relativos), ARQ-15 (rutas absolutas o de red en literales), ARQ-16 (pickle),
-ARQ-18 (``sys.path`` y ``pip``), ARQ-19 (hilos en ``bl/``) y EXP-01 (rutas a los
+ARQ-18 (``sys.path`` y ``pip``; con los casos de la spec 004, T16: ``pip`` solo en
+``jobs/runtime.py`` y ``sys.path`` solo en ``workers/_bootstrap.py``), ARQ-19 (hilos en
+``bl/``; los de los trabajos, en ``jobs/``) y EXP-01 (rutas a los
 expedientes de clientes o al NAS; desde la spec 007, también la de la documentación y la
 del espejo del NAS, en todo el repositorio de código: RF-007-04). Las rutas de EXP-01 se
 construyen por concatenación o desde la carpeta temporal de la prueba: el texto del
@@ -12,6 +14,7 @@ repositorio nunca contiene el patrón.
 """
 
 import ntpath
+import re
 import unittest
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -79,6 +82,12 @@ def _other_drive(path: Path) -> str:
 
 def _lines_of(findings: list[Finding]) -> list[tuple[str, int]]:
     return [(f.path, f.line) for f in findings]
+
+
+def _arq18_kind(finding: Finding) -> str:
+    """``"sys.path"`` si un incumplimiento de ARQ-18 es de ``sys.path`` o
+    ``site.addsitedir``; si no, ``"pip"`` (el literal, ``import pip`` o ``ensurepip``)."""
+    return "sys.path" if re.search(r"sys\.path|addsitedir", finding.message) else "pip"
 
 
 class PlatformTest(unittest.TestCase):
@@ -366,6 +375,101 @@ class PlatformTest(unittest.TestCase):
         )
         rel = f"{EXT}/jobs/other.py"
         self.assertEqual(found, [(rel, 3, "ARQ-18"), (rel, 4, "ARQ-18")])
+
+    def test_pip_only_in_runtime(self) -> None:
+        """RF-001-16 / ARQ-18 (spec 004, T16): la orden de ``pip`` solo la construye
+        ``jobs/runtime.py``; el literal en el worker que instala el motor, en el intérprete
+        o en el lanzador, o ``ensurepip``, fallan, sin ampliar ``PIP_SYS_PATH_ALLOWED``."""
+        self.assertEqual(
+            platform.PIP_SYS_PATH_ALLOWED, ("workers/_bootstrap.py", "jobs/runtime.py")
+        )
+        code = 'import sys\nCOMMAND = [sys.executable, "-I", "-m", "pip", "install"]\n'
+        found = _found(
+            {
+                f"{EXT}/jobs/runtime.py": code,
+                f"{EXT}/workers/runtime_install.py": code,
+                f"{EXT}/jobs/interpreter.py": code,
+                f"{EXT}/jobs/runner.py": "import ensurepip\n",
+            }
+        )
+        self.assertEqual(
+            found,
+            [
+                (f"{EXT}/jobs/interpreter.py", 3, "ARQ-18"),
+                (f"{EXT}/jobs/runner.py", 2, "ARQ-18"),
+                (f"{EXT}/workers/runtime_install.py", 3, "ARQ-18"),
+            ],
+        )
+
+    def test_sys_path_only_in_bootstrap(self) -> None:
+        """RF-001-16 / ARQ-18 (spec 004, T16): ``sys.path`` lo fija el arranque de los
+        workers; en otro worker, en el intérprete o en el ejecutor en hilo, falla."""
+        code = "import sys\nsys.path.insert(0, 'site')\n"
+        found = _found(
+            {
+                f"{EXT}/workers/_bootstrap.py": code,
+                f"{EXT}/workers/runtime_check.py": code,
+                f"{EXT}/workers/selftest.py": "import site\nsite.addsitedir('site')\n",
+                f"{EXT}/jobs/interpreter.py": code,
+                f"{EXT}/jobs/inprocess.py": "from sys import path\n",
+            }
+        )
+        self.assertEqual(
+            found,
+            [
+                (f"{EXT}/jobs/inprocess.py", 2, "ARQ-18"),
+                (f"{EXT}/jobs/interpreter.py", 3, "ARQ-18"),
+                (f"{EXT}/workers/runtime_check.py", 3, "ARQ-18"),
+                (f"{EXT}/workers/selftest.py", 3, "ARQ-18"),
+            ],
+        )
+
+    def test_real_pip_and_sys_path_split(self) -> None:
+        """RF-001-16 / ARQ-18 (spec 004, T16): en el árbol real, el literal ``pip`` solo
+        está en ``jobs/runtime.py`` y ``sys.path`` solo se toca en
+        ``workers/_bootstrap.py``: copiados con otro nombre (fuera de la excepción), el
+        arranque no daría ningún incumplimiento de ``pip`` y ``jobs/runtime.py`` (desde
+        que existe), ninguno de ``sys.path``."""
+        cases = (("workers/_bootstrap.py", "pip"), ("jobs/runtime.py", "sys.path"))
+        copied = 0
+        for rel, kind in cases:
+            source = ROOT / EXT / rel
+            if not source.exists():
+                continue  # jobs/runtime.py llega con el motor de cálculo
+            text = source.read_text(encoding="utf-8").removeprefix(SPDX)
+            copy = f"{EXT}/{rel.split('/')[0]}/copia_sin_excepcion.py"
+            with temp_tree({copy: SPDX + text}) as root:
+                findings = [f for f in platform.check(root, environ={})
+                            if f.rule == "ARQ-18"]
+            wrong = [f for f in findings if _arq18_kind(f) == kind]
+            self.assertEqual(wrong, [], f"{rel}:\n" + format_findings(wrong))
+            copied += 1
+        self.assertGreaterEqual(copied, 1)
+
+    def test_jobs_threads_not_in_bl(self) -> None:
+        """RF-001-16 / ARQ-19 (spec 004, T16): los hilos de los trabajos viven en
+        ``jobs/`` (ejecutor en hilo, lanzador) y en el arranque de los workers; en
+        ``bl/`` (monitor, operadores y panel de los trabajos) fallan."""
+        found = _found(
+            {
+                f"{EXT}/jobs/inprocess.py": "import threading\n",
+                f"{EXT}/jobs/runner.py": "import threading\nimport queue\n",
+                f"{EXT}/workers/_bootstrap.py": "import threading\n",
+                f"{EXT}/bl/ops/jobs.py": "import threading\n",
+                f"{EXT}/bl/ui/jobs.py": (
+                    "def draw():\n    from concurrent.futures import Future\n"
+                ),
+                f"{EXT}/bl/props/jobs.py": "import _thread\n",
+            }
+        )
+        self.assertEqual(
+            found,
+            [
+                (f"{EXT}/bl/ops/jobs.py", 2, "ARQ-19"),
+                (f"{EXT}/bl/props/jobs.py", 2, "ARQ-19"),
+                (f"{EXT}/bl/ui/jobs.py", 3, "ARQ-19"),
+            ],
+        )
 
     def test_threading_in_bl(self) -> None:
         """RF-001-16 / ARQ-19: ``bl/`` no usa hilos ni procesos; ``jobs/``, sí."""

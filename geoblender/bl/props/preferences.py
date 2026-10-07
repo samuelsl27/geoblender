@@ -16,6 +16,7 @@ from bpy.props import PointerProperty
 from ...core.i18n import tr
 from .. import ADDON_PACKAGE
 from .core import GEOBLENDER_PG_core_preferences
+from .jobs import SET_EXTERNAL_PYTHON, GEOBLENDER_PG_jobs_preferences
 from .ui import GEOBLENDER_PG_ui_preferences
 
 
@@ -26,6 +27,7 @@ class GeoblenderPreferences(bpy.types.AddonPreferences):
 
     core: PointerProperty(type=GEOBLENDER_PG_core_preferences)  # type: ignore[valid-type]
     ui: PointerProperty(type=GEOBLENDER_PG_ui_preferences)  # type: ignore[valid-type]
+    jobs: PointerProperty(type=GEOBLENDER_PG_jobs_preferences)  # type: ignore[valid-type]
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
@@ -39,6 +41,7 @@ class GeoblenderPreferences(bpy.types.AddonPreferences):
             self.core, "checkout_dir", text=tr("Local copies folder"), translate=False
         )
         self.draw_ui(layout.column())
+        self.draw_jobs(layout.column())
 
     def draw_ui(self, column: bpy.types.UILayout) -> None:
         """El grupo ``ui`` (spec 003): idioma, títulos de la barra, fila de acceso rápido,
@@ -62,6 +65,33 @@ class GeoblenderPreferences(bpy.types.AddonPreferences):
         column.prop(ui, "show_mining_statusbar", text=tr("Mining status bar"),
                     translate=False)
 
+    def draw_jobs(self, column: bpy.types.UILayout) -> None:
+        """El grupo ``jobs`` (spec 004; plan 004 §5.2.7): trabajos a la vez en proceso
+        aparte, días que se conservan los terminados, origen del motor de cálculo,
+        almacén de ruedas e intérprete externo. La ruta del intérprete externo se ve sin
+        poder editarla: solo la guarda, después de comprobarla,
+        ``geoblender.jobs_set_external_python`` (RF-004-26), con sus botones de elegirla y
+        de quitarla al lado."""
+        jobs = self.jobs
+        column.separator()
+        column.label(text=tr("Background jobs"), translate=False)
+        column.prop(jobs, "max_parallel_jobs", text=tr("Jobs at once (separate process)"),
+                    translate=False)
+        column.prop(jobs, "retention_days", text=tr("Keep finished jobs (days)"),
+                    translate=False)
+        column.prop(jobs, "runtime_source", text=tr("Compute engine source"),
+                    translate=False)
+        column.prop(jobs, "wheelhouse_dir", text=tr("Wheel store folder"), translate=False)
+        column.prop(jobs, "use_external_python", text=tr("Use an external interpreter"),
+                    translate=False)
+        row = column.row(align=True)
+        path = row.row(align=True)
+        path.enabled = False
+        path.prop(jobs, "external_python", text=tr("External interpreter"), translate=False)
+        row.operator(SET_EXTERNAL_PYTHON, text="", icon="FILEBROWSER")
+        row.operator(SET_EXTERNAL_PYTHON, text="", icon="X").clear = True
 
-# En orden de registro: los grupos (bl/props/core.py) ya están registrados antes.
+
+# En orden de registro: los grupos (bl/props/core.py, ui.py y jobs.py) ya están
+# registrados antes.
 classes: tuple[type, ...] = (GeoblenderPreferences,)
