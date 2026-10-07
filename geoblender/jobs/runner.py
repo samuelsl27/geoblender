@@ -811,6 +811,15 @@ class JobRunner:
         with self._lock:
             return sum(1 for item in self._jobs.values() if item.state in ACTIVE_STATES)
 
+    def locks_in_use(self) -> set[str]:
+        """Los ``lock_id`` de los motores de cálculo que usan sus trabajos en curso (los
+        ``compute`` lanzados con un motor): la limpieza de los motores anteriores no los
+        borra (``runtime.ComputeEnvironment.remove_stale``, RF-004-27)."""
+        with self._lock:
+            return {item.interp.lock_id for item in self._jobs.values()
+                    if item.state in ACTIVE_STATES and item.interp is not None
+                    and item.interp.lock_id is not None}
+
     def stored_snapshots(self, *, extra_roots: Iterable[Path] = ()) -> list[JobSnapshot]:
         """Los trabajos guardados que no son de este lanzador (RF-004-08, RF-004-13): los de
         su raíz de trabajos y los de ``extra_roots`` (la de sin proyecto, con los de

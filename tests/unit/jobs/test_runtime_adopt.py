@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Verificación y adopción del motor de cálculo (spec 004, T28; HU-004-3; RF-004-21,
-RF-004-22, RF-004-25; plan 004 §5.2.6, §5.3.1 y §5.4.7).
+"""Verificación y adopción del motor de cálculo y limpieza de los motores anteriores
+(spec 004, T28 y T29; HU-004-3; RF-004-21, RF-004-22, RF-004-25, RF-004-27; plan 004 §5.2.6,
+§5.3.1 y §5.4.7).
 
 - El trabajo ``runtime_check`` (``workers/runtime_check.py``, entorno ``compute``) llama a
   ``runtime.probe_environment`` sobre una carpeta ``site`` que le llega por la línea de
@@ -16,6 +17,11 @@ RF-004-22, RF-004-25; plan 004 §5.2.6, §5.3.1 y §5.4.7).
 - ``runtime.RuntimeSetup.verify``: verifica el motor instalado; si falla (una versión
   cambiada en ``site/``), lo anota en ``runtime.json`` y el motor queda ``broken``: los
   trabajos que lo necesitan no se lanzan.
+- Con otro lock (una versión nueva de Geoblender), el motor del lock vigente falta y queda el
+  anterior: estado ``outdated``. ``ComputeEnvironment.remove_stale`` borra los motores de
+  otros locks solo cuando el vigente está listo y ningún trabajo los usa (los ``lock_id`` de
+  ``JobRunner.locks_in_use`` y, desde cualquier sesión, el numpy del motor que el worker
+  ``compute`` tiene abierto); la cadena de instalación la llama al adoptar.
 
 Motor sintético: un «numpy» de pruebas (``numpy/__init__.py`` con ``__version__``,
 ``show_config`` y un producto de matrices de mentira) y ``gbtestpkg`` en ruedas sintéticas,
@@ -39,6 +45,7 @@ from tests.support.repo import EXTENSION_DIR
 catalog = import_geoblender("jobs.catalog")
 interpreter = import_geoblender("jobs.interpreter")
 messages = import_geoblender("jobs.messages")
+protocol = import_geoblender("jobs.protocol")
 runner = import_geoblender("jobs.runner")
 runtime = import_geoblender("jobs.runtime")
 
@@ -70,9 +77,19 @@ def show_config(mode="stdout"):
 CONSENT = {"user": "ana", "host": "PC-PRUEBAS"}
 DEADLINE_S = 60.0
 POLL_S = 0.02
+HOLD_PARAMS = {"op": "chunked_sum", "n": 1, "chunks": 2, "sleep_s": 30.0}
+"""Un autodiagnóstico ``compute`` que espera en su primer trozo (sin usar numpy) hasta que se
+cancela: un trabajo que usa el motor anterior."""
+THIRD_LOCK_ID = "abcdefabcdef"
+"""Un lock de otra versión del que solo queda una instalación a medias."""
+IDLE_LOCK_ID = "0123456789ab"
+"""Un lock de otra versión con su motor, que ningún trabajo tiene abierto."""
+LEFTOVER_LOCK_ID = "fedcba987654"
+"""Un lock de otra versión del que quedan los restos ``.old`` de una limpieza anterior."""
 
 _CASES: dict[str, dict] = {}
 _STATE: dict[str, object] = {}
+_TWO: dict[str, object] = {}
 
 
 def _wheels(store: Path, blas: str) -> list:
@@ -150,6 +167,74 @@ def _set_version(site: Path, name: str, old: str, new: str) -> None:
     metadata.write_text(text.replace(f"Version: {old}", f"Version: {new}"), encoding="utf-8")
 
 
+def _install_by_hand(env, wheels: list, store: Path) -> tuple:
+    """Un motor instalado y adoptado sin ``pip`` (las ruedas descomprimidas en la carpeta
+    parcial y ``adopt`` con una verificación que pasó). Devuelve su plan y su
+    consentimiento."""
+    plan, consent = _plan_and_consent(env, store)
+    _unpack(wheels, env.staged_site)
+    env.adopt(env.staged_site, _passing_check(env.lock), plan, consent)
+    return plan, consent
+
+
+def _names(folder: Path) -> list[str]:
+    return sorted(path.name for path in folder.iterdir())
+
+
+def _start_two_locks(base: Path, wheels: list, store: Path) -> None:
+    """Dos locks en los mismos datos de usuario: el motor de la versión anterior (solo
+    numpy), instalado, con un trabajo ``compute`` que lo usa; el de la versión nueva (numpy y
+    ``gbtestpkg``), aún sin instalar. Al acabar el trabajo, su ``on_finish`` limpia."""
+    user = base / "usuario_dos_locks"
+    old = runtime.ComputeEnvironment(user, _lock(wheels[:1]))
+    new = runtime.ComputeEnvironment(user, _lock(wheels))
+    _install_by_hand(old, wheels[:1], store)
+    for name in (f"{THIRD_LOCK_ID}.partial", IDLE_LOCK_ID, f"{LEFTOVER_LOCK_ID}.old", "notas"):
+        (old.runtime_dir / name / "site").mkdir(parents=True)
+        (old.runtime_dir / name / "site" / "dato.txt").write_text("x\n", encoding="utf-8")
+    launcher = _launcher(base, old)
+    unittest.addModuleCleanup(launcher.shutdown)
+    request = protocol.new_request("selftest", label="Usa el motor anterior", owner="jobs",
+                                   params=HOLD_PARAMS, environment="compute")
+
+    def at_end(result) -> None:
+        _TWO["result"] = result
+        _TWO["in_use_at_end"] = launcher.locks_in_use()
+        _TWO["removed_at_end"] = new.remove_stale(in_use=launcher.locks_in_use())
+
+    _TWO.update(old=old, new=new, runner=launcher, wheels=wheels, store=store,
+                handle=launcher.submit(request, on_finish=at_end))
+
+
+def _step_two_locks() -> None:
+    """En cuanto el trabajo ya usa el motor anterior (su evento ``start`` llega después de
+    cargar numpy): lo que ve el lock nuevo sin instalar, su instalación y las limpiezas con el
+    trabajo en marcha; después lo cancela."""
+    launcher = _TWO["runner"]
+    launcher.poll()
+    if "kept_held" in _TWO:
+        return
+    (snapshot,) = launcher.snapshots()
+    if snapshot.interpreter is None or snapshot.interpreter.python is None:
+        return
+    old, new = _TWO["old"], _TWO["new"]
+    _TWO["new_before"] = new.status()
+    try:
+        _resolve(new)
+    except messages.JobError as exc:
+        _TWO["resolve_before"] = exc.code
+    _TWO["sweep_before"] = new.remove_stale(in_use=set())
+    _TWO["in_use"] = launcher.locks_in_use()
+    _install_by_hand(new, _TWO["wheels"], _TWO["store"])
+    _TWO["kept_in_use"] = new.remove_stale(
+        in_use=_TWO["in_use"] | {IDLE_LOCK_ID, LEFTOVER_LOCK_ID})
+    _TWO["names_kept"] = _names(new.runtime_dir)
+    _TWO["kept_held"] = new.remove_stale(in_use=set())
+    _TWO["names_while_running"] = _names(new.runtime_dir)
+    _TWO["old_while_running"] = old.status()
+    _TWO["handle"].cancel()
+
+
 def setUpModule() -> None:
     tmp = _support.jobs_tmp()
     base = tmp.__enter__()
@@ -167,8 +252,15 @@ def setUpModule() -> None:
     good_store, auto_store = base / "almacen", base / "almacen_auto"
     good, auto = _wheels(good_store, GOOD_BLAS), _wheels(auto_store, "auto")
     _STATE.update(base=base, good_store=good_store, good_wheels=good)
+    _start_two_locks(base, good, good_store)
+
+    # En los datos de usuario de «ok» queda el motor de un lock anterior, que nadie usa.
+    previous = runtime.ComputeEnvironment(base / "usuario_ok", _lock(good[:1]))
+    _install_by_hand(previous, good[:1], good_store)
+    _STATE["ok_previous"] = previous
     for name, wheels, store in (("ok", good, good_store), ("auto", auto, auto_store)):
         env = runtime.ComputeEnvironment(base / f"usuario_{name}", _lock(wheels))
+        _STATE[f"{name}_before"] = env.status()
         plan, consent = _plan_and_consent(env, store)
         done: list = []
         launcher = _launcher(base, env)
@@ -178,9 +270,7 @@ def setUpModule() -> None:
 
     # Un motor ya adoptado al que se le cambia la versión de un paquete en site/.
     env = runtime.ComputeEnvironment(base / "usuario_alterado", _lock(good))
-    plan, consent = _plan_and_consent(env, good_store)
-    _unpack(good, env.staged_site)
-    env.adopt(env.staged_site, _passing_check(env.lock), plan, consent)
+    plan, consent = _install_by_hand(env, good, good_store)
     _STATE["altered_before"] = env.status()
     _set_version(env.site_dir(), "gbtestpkg", "1.0.0", "1.0.1")
     _STATE["altered_untouched"] = env.status()
@@ -192,12 +282,14 @@ def setUpModule() -> None:
 
     deadline = time.monotonic() + DEADLINE_S
     ok = _CASES["ok"]
-    while not all(case["setup"].done for case in _CASES.values()):
+    while not (all(case["setup"].done for case in _CASES.values()) and "result" in _TWO):
         if time.monotonic() > deadline:
             pending = [name for name, case in _CASES.items() if not case["setup"].done]
-            raise AssertionError(f"no terminaron a tiempo: {pending}")
+            raise AssertionError(f"no terminaron a tiempo: {pending} (dos locks: "
+                                 f"{'result' in _TWO})")
         for case in _CASES.values():
             case["runner"].poll()
+        _step_two_locks()
         if ok["setup"].step == runtime.STEP_CHECK and ok["env"].partial_path.exists():
             _STATE.setdefault("status_while_checking", ok["env"].status())
         time.sleep(POLL_S)
@@ -220,18 +312,19 @@ def _resolve(env):
                                            runtime=env, external_python=None)
 
 
-# Tres pruebas con varias comprobaciones cada una: tools/check.py reparte las unitarias en
+# Cuatro pruebas con varias comprobaciones cada una: tools/check.py reparte las unitarias en
 # 4 procesos por número de pruebas (gbtools.parts; docs/trampas.md §4).
 class AdoptChainTest(unittest.TestCase):
     def test_install_verify_and_adopt(self) -> None:
-        """RF-004-21, RF-004-22: la cadena instala en ``<lock_id>.partial/site``, verifica esa
-        carpeta en un trabajo ``compute`` aparte (numpy del lock cargado desde ella, BLAS
-        distinta de ``auto``, s del 2000 × 2000, longitud máxima de ruta) y solo entonces la
-        adopta con ``os.replace``: el motor queda ``ready`` sin carpeta parcial, y mientras se
-        verificaba seguía ``missing`` (la carpeta parcial nunca se usa). ``runtime.json``
-        registra el lock, los paquetes con su versión y su huella, el origen, el
-        consentimiento (usuario, equipo, fecha y huella del plan) y la verificación. Los
-        trabajos ``compute`` usan ya su ``site``."""
+        """RF-004-21, RF-004-22, RF-004-27: la cadena instala en ``<lock_id>.partial/site``,
+        verifica esa carpeta en un trabajo ``compute`` aparte (numpy del lock cargado desde
+        ella, BLAS distinta de ``auto``, s del 2000 × 2000, longitud máxima de ruta) y solo
+        entonces la adopta con ``os.replace``: el motor queda ``ready`` sin carpeta parcial, y
+        mientras se verificaba seguía ``outdated`` (había el motor de un lock anterior; la
+        carpeta parcial nunca se usa). Al adoptar borra ese motor anterior, que nadie usaba.
+        ``runtime.json`` registra el lock, los paquetes con su versión y su huella, el
+        origen, el consentimiento (usuario, equipo, fecha y huella del plan) y la
+        verificación. Los trabajos ``compute`` usan ya su ``site``."""
         case = _CASES["ok"]
         env, setup = case["env"], case["setup"]
         self.assertEqual((setup.kind, setup.state, setup.error_code),
@@ -240,11 +333,16 @@ class AdoptChainTest(unittest.TestCase):
         install, check = _results(case)
         self.assertEqual([r.state for r in (install, check)], ["succeeded", "succeeded"])
         self.assertEqual(setup.job_uids, (install.job_uid, check.job_uid))
-        self.assertEqual(_STATE.get("status_while_checking"), "missing")
+        self.assertEqual((_STATE["ok_before"], _STATE.get("status_while_checking")),
+                         ("outdated", "outdated"))
 
         self.assertEqual(env.status(), "ready")
         self.assertFalse(env.partial_path.exists(), "no queda carpeta parcial")
+        previous = _STATE["ok_previous"]
+        self.assertNotEqual(previous.lock_id, env.lock_id)
+        self.assertEqual(setup.removed, (previous.path,), "borra el motor anterior")
         self.assertEqual([p.name for p in env.runtime_dir.iterdir()], [env.lock_id])
+        self.assertEqual(previous.status(), "outdated", "visto desde la versión anterior")
         site = env.site_dir()
         self.assertIn(f'__version__ = "{NUMPY_VERSION}"',
                       (site / "numpy" / "__init__.py").read_text(encoding="utf-8"))
@@ -401,6 +499,47 @@ class BrokenEngineTest(unittest.TestCase):
         self.assertEqual(verification["code"], "runtime_package_mismatch")
         self.assertEqual(verification["text"], setup.error_text)
         self.assertNotEqual(verification["checked_at"], "2026-10-07T10:00:00.000Z")
+
+
+class StaleEngineTest(unittest.TestCase):
+    def test_previous_engine_kept_while_in_use(self) -> None:
+        """RF-004-27: con dos locks en los mismos datos de usuario y sin el motor del lock
+        vigente, el estado es ``outdated``, los trabajos ``compute`` no se lanzan
+        (``runtime_missing``) y la limpieza no borra nada. Instalado el nuevo, la limpieza no
+        borra los motores de los ``lock_id`` en uso (``JobRunner.locks_in_use`` y los que se
+        le digan); sin ellos, borra el motor que nadie usa y los restos ``.old`` de su lock,
+        pero el anterior se conserva mientras un trabajo ``compute`` lo usa, aunque no se
+        diga (el worker tiene abierto el numpy del motor y Windows no deja apartar la
+        carpeta, como pasaría con un trabajo de otra sesión de Blender). Al terminar el
+        trabajo, la limpieza lo borra sin dejar restos. Una instalación a medias de otro
+        lock y lo que no es un motor no se tocan."""
+        two = _TWO
+        old, new = two["old"], two["new"]
+        self.assertNotEqual(old.lock_id, new.lock_id)
+        self.assertEqual((two["new_before"], two.get("resolve_before")),
+                         ("outdated", "runtime_missing"))
+        self.assertEqual(two["sweep_before"], [], "sin el motor nuevo no se borra nada")
+        self.assertEqual(two["in_use"], {old.lock_id})
+        others = [f"{THIRD_LOCK_ID}.partial", "notas"]
+        idle = [IDLE_LOCK_ID, f"{LEFTOVER_LOCK_ID}.old"]
+        self.assertEqual(two["kept_in_use"], [], "los lock_id en uso no se tocan")
+        self.assertEqual(two["names_kept"], sorted([old.lock_id, new.lock_id, *others, *idle]))
+        self.assertEqual(two["kept_held"], [new.runtime_dir / name for name in idle])
+        self.assertEqual(two["names_while_running"],
+                         sorted([old.lock_id, new.lock_id, *others]))
+        self.assertEqual(two["old_while_running"], "ready")
+
+        result = two["result"]
+        self.assertEqual(result.state, "cancelled", result.error_text)
+        interp = _record(result)["interpreter"]
+        self.assertEqual((interp["kind"], interp["lock_id"]), ("compute", old.lock_id))
+        self.assertEqual(two["in_use_at_end"], set())
+        self.assertEqual(two["removed_at_end"], [old.path])
+        self.assertEqual(_names(new.runtime_dir), sorted([new.lock_id, *others]))
+        self.assertEqual((new.status(), old.status()), ("ready", "outdated"))
+        self.assertEqual(new.remove_stale(in_use=set()), [], "ya no queda nada que borrar")
+        with self.assertRaises(TypeError):
+            new.remove_stale(in_use=old.lock_id)
 
 
 if __name__ == "__main__":

@@ -36,7 +36,10 @@ importa ``geoblender`` de forma absoluta (excepción de ARQ-09, plan 001). Pasos
 6. ``compute``: importa numpy y comprueba que viene de la carpeta ``--site`` y que su versión
    es ``--expect-numpy``; si no, evento ``error`` (``runtime_numpy_wrong`` o
    ``runtime_package_mismatch``; sin numpy, ``runtime_missing``) y salida 5, sin calcular
-   (RF-004-25).
+   (RF-004-25). Si vale, deja abierto su ``__init__.py`` mientras el proceso vive: Windows
+   no deja apartar ni borrar un motor con un fichero abierto, así que la limpieza de los
+   motores anteriores no quita el que usa un trabajo, aunque sea de otra sesión de Blender
+   (RF-004-27).
 7. Evento ``start`` con el pid, el intérprete y las versiones de Python, numpy y BLAS
    (RF-004-15).
 8. Lee la petición (``request.json``), importa ``geoblender.workers.<tipo>`` y llama a su
@@ -84,6 +87,9 @@ EXIT_STARTUP = 5
 
 LOG_PREFIX = "Geoblender:"
 """Comienzo de las líneas que el arranque deja en ``job.log``."""
+_IN_USE: list[IO[bytes]] = []
+"""Los ficheros del motor de cálculo abiertos mientras el worker vive (:func:`hold_engine`);
+se cierran solos al terminar el proceso, también si se le mata."""
 _WATCH_BYTES = 4096
 _PATH_NAME = re.compile(r"[a-z][a-z0-9_]*")
 """Nombre de una ruta del trabajo (``--path``; ``jobs.interpreter.PATH_NAME_PATTERN``)."""
@@ -197,6 +203,18 @@ def check_numpy(site_dir: str, expected: str | None) -> None:
         raise JobError("runtime_package_mismatch", package="numpy", actual=version,
                        locked=expected)
     note(f"motor de cálculo: numpy {version} desde {folder}")
+    hold_engine(where)
+
+
+def hold_engine(path: str) -> None:
+    """Deja ``path`` (un fichero del motor de cálculo) abierto hasta que el proceso termina:
+    marca el motor como en uso para cualquier sesión de Blender, porque Windows no deja
+    apartar ni borrar una carpeta con un fichero abierto (RF-004-27). Si no se puede abrir,
+    el trabajo sigue y queda una nota en ``job.log``."""
+    try:
+        _IN_USE.append(open(path, "rb"))  # noqa: SIM115 - abierto a propósito hasta el final
+    except OSError as exc:
+        note(f"no se pudo marcar el motor de cálculo como en uso ({exc})")
 
 
 def _inside(path: str, folder: str) -> bool:

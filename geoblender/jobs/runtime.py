@@ -25,10 +25,11 @@ El motor de un lock (T26), :class:`ComputeEnvironment`:
 - su carpeta ``<datos de usuario>/runtime/<lock_id>/`` (:attr:`~ComputeEnvironment.path`),
   con los paquetes en ``site/`` y ``runtime.json`` (``geoblender.runtime/1``: lock, origen,
   consentimiento y última verificación; lo escribe la adopción tras verificar, T28);
-- :meth:`~ComputeEnvironment.status`: ``missing`` (no existe la carpeta del lock vigente),
-  ``broken`` (existe sin una verificación válida) o ``ready`` (plan §5.2.6). Una carpeta
-  ``<lock_id>.partial`` (instalación a medias) nunca cuenta. ``outdated`` (falta la del
-  lock vigente pero queda otra) llega con T29;
+- :meth:`~ComputeEnvironment.status`: ``missing`` (no existe la carpeta del lock vigente ni
+  la de otro), ``outdated`` (falta la del lock vigente pero queda la de otro: el motor de
+  una versión anterior de Geoblender, T29), ``broken`` (existe sin una verificación
+  válida) o ``ready`` (plan §5.2.6). Una carpeta ``<lock_id>.partial`` (instalación a
+  medias) nunca cuenta;
 - :meth:`~ComputeEnvironment.plan_install`: el :class:`InstallPlan` que el diálogo de
   consentimiento enseña antes de hacer nada (RF-004-20): origen (:class:`WheelSource`,
   almacén de ruedas o PyPI), paquetes con su versión y sus licencias, MB de descarga y en
@@ -84,6 +85,15 @@ La verificación y la adopción (T28; RF-004-22, plan §5.4.7):
   :meth:`ComputeEnvironment.record_failed_check`): si no pasa, queda ``broken`` y los
   trabajos que lo necesitan no se lanzan hasta repararlo (RF-004-25).
 
+Los motores anteriores (T29; RF-004-27): una versión nueva de Geoblender con otro lock
+instala su motor en otra carpeta (``runtime/<lock_id nuevo>``) y
+:meth:`ComputeEnvironment.remove_stale` borra los de otros locks cuando el vigente ya está
+listo y ningún trabajo los usa: ni los de esta sesión (``in_use``, los ``lock_id`` de
+``JobRunner.locks_in_use``) ni los de otra sesión de Blender, porque cada worker ``compute``
+tiene abierto el numpy de su motor mientras vive (``workers/_bootstrap.py``) y Windows no
+deja apartar una carpeta con un fichero abierto. :class:`RuntimeSetup` la llama al adoptar;
+un motor en uso se conserva y se borra en la siguiente limpieza.
+
 Solo :func:`fetch_wheel` usa la red (la URL del lock, con el consentimiento del usuario, desde
 el trabajo de instalación). Este módulo no toca ``sys.path``: es el único que construye la
 orden de ``pip``.
@@ -121,7 +131,7 @@ from .cleanup import REMOVE_RETRIES, _pause, _remove_retrying
 from .messages import JobError, Message
 from .paths import BYTES_PER_MB, PARTIAL_SUFFIX
 from .protocol import JobRequest, JsonValue, new_request, plain_json
-from .records import LOGGER
+from .records import LOGGER, as_uid_set
 from .worker_api import CANCELLED_TEXT, JobCancelled, JobFailed, blas_name
 
 LOCK_FILE = "runtime_lock.toml"
@@ -599,8 +609,9 @@ class ComputeEnvironment:
     Cumple ``interpreter.ComputeRuntime`` (lo que necesita el lanzador). Crearlo no toca el
     disco ni la red; ninguno de sus métodos crea, descarga ni borra el motor (RF-004-19),
     salvo :meth:`adopt`, que solo convierte en el motor lo que instaló y verificó la cadena
-    lanzada con el consentimiento del usuario (:class:`RuntimeSetup`), y los que anotan su
-    verificación en ``runtime.json``."""
+    lanzada con el consentimiento del usuario (:class:`RuntimeSetup`), los que anotan su
+    verificación en ``runtime.json`` y :meth:`remove_stale`, que borra los motores de otros
+    locks que ya sustituye (RF-004-27)."""
 
     def __init__(self, user_dir: Path, lock: RuntimeLock) -> None:
         if not isinstance(lock, RuntimeLock):
@@ -673,12 +684,14 @@ class ComputeEnvironment:
         return f"ComputeEnvironment({str(self._user_dir)!r}, lock_id={self._lock_id!r})"
 
     def status(self) -> str:
-        """El estado del motor (plan §5.2.6): :data:`STATUS_MISSING` si no existe su
-        carpeta; :data:`STATUS_BROKEN` si existe pero su ``runtime.json`` no se lee, es de
-        otro lock, su verificación no tiene ``ok`` verdadero o falta ``site/``;
-        :data:`STATUS_READY` si no. Solo lee: no crea ni repara nada."""
+        """El estado del motor (plan §5.2.6): si no existe su carpeta,
+        :data:`STATUS_OUTDATED` si queda la de otro lock (:meth:`stale_engines`: hay que
+        actualizarlo) y :data:`STATUS_MISSING` si no; :data:`STATUS_BROKEN` si existe pero su
+        ``runtime.json`` no se lee, es de otro lock, su verificación no tiene ``ok``
+        verdadero o falta ``site/``; :data:`STATUS_READY` si no. Solo lee: no crea ni repara
+        nada."""
         if not self.path.is_dir():
-            return STATUS_MISSING
+            return STATUS_OUTDATED if self.stale_engines() else STATUS_MISSING
         info = read_runtime_info(self.path)
         if info is None or info.get("lock_id") != self._lock_id:
             return STATUS_BROKEN
@@ -688,6 +701,48 @@ class ComputeEnvironment:
         if not self.site_dir().is_dir():
             return STATUS_BROKEN
         return STATUS_READY
+
+    def stale_engines(self) -> list[Path]:
+        """Las carpetas de los motores de otros locks (``runtime/<lock_id>`` de otras
+        versiones de Geoblender), por orden. Las ``<lock_id>.partial`` y ``<lock_id>.old``
+        no son motores. Solo lee."""
+        return [self.runtime_dir / name for name in _folder_names(self.runtime_dir)
+                if _LOCK_ID.fullmatch(name) and name != self._lock_id]
+
+    def remove_stale(self, *, in_use: Iterable[str]) -> list[Path]:
+        """Borra los motores de otros locks que ya no hacen falta (RF-004-27; plan §5.4.7) y
+        devuelve sus carpetas, por orden. Solo si el motor de este lock está ``ready`` (el
+        anterior se borra cuando el nuevo lo sustituye; si no, no toca nada) y nunca los de
+        ``in_use``, los ``lock_id`` que usan los trabajos en curso de esta sesión
+        (``JobRunner.locks_in_use``).
+
+        Cada motor se aparta antes de borrarlo (``os.replace`` a ``<lock_id>.old``): Windows
+        no deja mover una carpeta con un fichero abierto, y cada worker ``compute`` tiene
+        abierto el numpy de su motor mientras vive, también los de otra sesión de Blender.
+        Un motor en uso se conserva tal cual y se borra en la siguiente limpieza; lo que
+        quedó de un borrado a medias (``<lock_id>.old`` de otro lock), también se borra. Las
+        instalaciones a medias de otros locks (``.partial``: pueden estar en marcha en otra
+        sesión) y lo que no es un motor no se tocan. :class:`TypeError` si ``in_use`` es un
+        texto suelto o lleva algo que no es un texto."""
+        used = as_uid_set(in_use, "in_use (los lock_id en uso)")
+        if self.status() != STATUS_READY:
+            return []
+        removed: list[Path] = []
+        for name in _folder_names(self.runtime_dir):
+            # Primero los restos de una limpieza anterior: dejan libre el sitio del apartado.
+            lock_id = name.removesuffix(OLD_SUFFIX)
+            if (name != lock_id and _LOCK_ID.fullmatch(lock_id) and lock_id != self._lock_id
+                    and lock_id not in used):
+                if remove_tree(self.runtime_dir / name):
+                    removed.append(self.runtime_dir / name)
+                else:
+                    LOGGER.warning("No se pudo borrar %s (restos de un motor de cálculo "
+                                   "anterior); se intentará en la siguiente limpieza",
+                                   self.runtime_dir / name)
+        for folder in self.stale_engines():
+            if folder.name not in used and _remove_engine(folder):
+                removed.append(folder)
+        return sorted(removed)
 
     def plan_install(self, source: WheelSource, *, online_access: bool) -> InstallPlan:
         """El plan de instalar el motor desde ``source`` (RF-004-20, RF-004-23,
@@ -938,6 +993,41 @@ class ComputeEnvironment:
         if aside is not None and not remove_tree(aside):
             LOGGER.warning("No se pudo borrar el motor de cálculo anterior %s; no se usa",
                            aside)
+
+
+def _folder_names(folder: Path) -> list[str]:
+    """Los nombres de las carpetas que hay en ``folder``, por orden (ninguno si no existe o
+    no se puede leer)."""
+    try:
+        with os.scandir(folder) as entries:
+            return sorted(entry.name for entry in entries
+                          if entry.is_dir(follow_symlinks=False))
+    except OSError:
+        return []
+
+
+def _remove_engine(folder: Path) -> bool:
+    """Aparta el motor ``folder`` a ``<lock_id>.old`` y lo borra (RF-004-27). Si no se deja
+    apartar (un worker, de esta sesión o de otra, tiene abierto algo suyo: está en uso), lo
+    deja como está. Dice si se borró."""
+    aside = folder.with_name(folder.name + OLD_SUFFIX)
+    if aside.exists():
+        return False  # quedan restos de otro intento que no se pudieron borrar (se avisó)
+    try:
+        os.replace(folder, aside)
+    except FileNotFoundError:
+        return False  # otra sesión de Blender lo acaba de quitar
+    except OSError as exc:
+        LOGGER.info("Se conserva el motor de cálculo anterior %s: está en uso (%s); se "
+                    "borrará en la siguiente limpieza", folder, exc)
+        return False
+    if not remove_tree(aside):
+        LOGGER.warning("No se pudo borrar del todo el motor de cálculo anterior %s (apartado "
+                       "en %s, ya no se usa); se intentará en la siguiente limpieza",
+                       folder, aside)
+        return False
+    LOGGER.info("Borrado el motor de cálculo anterior %s", folder)
+    return True
 
 
 def _worker_label(name: str) -> str:
@@ -1615,6 +1705,8 @@ class _Launcher(Protocol):
     @property
     def runtime(self) -> object: ...
 
+    def locks_in_use(self) -> set[str]: ...
+
     def submit(
         self,
         job: JobRequest,
@@ -1631,8 +1723,10 @@ class RuntimeSetup:
     ``on_finish`` de sus trabajos (desde ``JobRunner.poll``):
 
     - ``install``: ``runtime_install`` en ``<lock_id>.partial/site`` → ``runtime_check`` de
-      esa carpeta (``site_override``) → :meth:`ComputeEnvironment.adopt`. Si un paso no
-      termina bien (o se cancela), borra la carpeta parcial: no queda ningún motor a medias.
+      esa carpeta (``site_override``) → :meth:`ComputeEnvironment.adopt` →
+      :meth:`ComputeEnvironment.remove_stale` con los ``lock_id`` en uso del lanzador
+      (RF-004-27; ``removed``: los motores anteriores que borró). Si un paso no termina bien
+      (o se cancela), borra la carpeta parcial: no queda ningún motor a medias.
     - ``verify``: ``runtime_check`` del motor instalado; el resultado se anota en su
       ``runtime.json``: si falla (o se agota su tiempo), el motor queda ``broken``.
 
@@ -1670,6 +1764,7 @@ class RuntimeSetup:
         self.check: Mapping[str, JsonValue] | None = None
         self.error_code: str | None = None
         self.error_text: str | None = None
+        self.removed: tuple[Path, ...] = ()
 
     @classmethod
     def install(
@@ -1814,7 +1909,17 @@ class RuntimeSetup:
             self._end("failed", failure.code, failure.text)
             return
         self.check = result.summary
+        self._remove_stale()
         self._end("succeeded")
+
+    def _remove_stale(self) -> None:
+        """Tras adoptar, borra los motores de otros locks que ningún trabajo usa
+        (RF-004-27). Un fallo aquí no deshace la instalación, que ya terminó bien."""
+        try:
+            self.removed = tuple(self._env.remove_stale(in_use=self._runner.locks_in_use()))
+        except OSError:
+            LOGGER.exception("No se pudieron borrar los motores de cálculo anteriores de %s",
+                             self._env.runtime_dir)
 
     def _discard_partial(self) -> None:
         """Borra ``<lock_id>.partial`` (RF-004-21); si no se puede, se borrará en el siguiente
