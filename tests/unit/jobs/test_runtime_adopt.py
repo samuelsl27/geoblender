@@ -312,8 +312,8 @@ def _resolve(env):
                                            runtime=env, external_python=None)
 
 
-# Cuatro pruebas con varias comprobaciones cada una: tools/check.py reparte las unitarias en
-# 4 procesos por número de pruebas (gbtools.parts; docs/trampas.md §4).
+# Cuatro pruebas con varias comprobaciones cada una: hasta 004/T39, tools/check.py repartía
+# las unitarias por número de pruebas (gbtools.parts; docs/trampas.md §4).
 class AdoptChainTest(unittest.TestCase):
     def test_install_verify_and_adopt(self) -> None:
         """RF-004-21, RF-004-22, RF-004-27: la cadena instala en ``<lock_id>.partial/site``,

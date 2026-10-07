@@ -14,11 +14,15 @@ Opciones (tras ``--``):
 - ``--patron PATRÓN``: patrón de los ficheros (por defecto ``test_*.py``; las
   mediciones de ``tests/rendimiento/blender`` usan ``perf_*.py``).
 - ``--parte i/n``: de las pruebas que descubre, ejecuta solo la parte i de n
-  (``gbtools.parts``: módulos enteros, repartidos por número de pruebas) y antes
-  escribe ``PARTE i de n: r de T pruebas``; ``tools/check.py`` reparte así las de
+  (``gbtools.parts``: módulos enteros, repartidos por tiempo o por número de pruebas) y
+  antes escribe ``PARTE i de n: r de T pruebas``; ``tools/check.py`` reparte así las de
   ``tests/blender`` en varios Blender a la vez, cada uno con su perfil temporal (spec
   003, T40). Las comprobaciones de lo descubierto («NO HAY PRUEBAS», «PRUEBAS SIN
   CARGAR») son sobre todas las pruebas.
+- ``--tiempos F``: con ``--parte``, reparte por la duración de cada módulo del fichero F
+  (sin él, o sin medidas, por número de pruebas); ``--medidas F``: al terminar, escribe en
+  F la duración de cada módulo que ejecutó (spec 004, T39; ``gbtools.parts``). Una ruta
+  relativa se toma desde la raíz del repositorio.
 
 Pasos: copia ``geoblender/`` con las exclusiones del manifiesto a
 ``%TEMP%\\geoblender-pruebas-*\\geoblender``, la registra como repositorio de extensiones
@@ -83,10 +87,12 @@ BYTECODE_DIR = "pyc"  # código compilado de la sesión, dentro de la carpeta te
 ENV_USER_RESOURCES = "BLENDER_USER_RESOURCES"
 
 PART_OPTION = "--parte"  # gbtools.parts.OPTION (lo comprueba una prueba)
+TIMES_OPTION = "--tiempos"  # gbtools.parts.TIMES_OPTION (spec 004, T39)
+MEASURES_OPTION = "--medidas"  # gbtools.parts.MEASURES_OPTION (spec 004, T39)
 
 COMMAND = (
     "& $B -b --factory-startup --python-exit-code 1 --python tools/run_blender_tests.py "
-    "-- [--carpeta DIR] [--patron PATRÓN] [--parte i/n]"
+    "-- [--carpeta DIR] [--patron PATRÓN] [--parte i/n] [--tiempos F] [--medidas F]"
 )
 USAGE = f"""Uso (dentro de Blender, desde la raíz del repositorio):
   {COMMAND}
@@ -94,6 +100,8 @@ USAGE = f"""Uso (dentro de Blender, desde la raíz del repositorio):
   --carpeta DIR      carpeta de pruebas (por defecto {DEFAULT_FOLDER}; relativa a la raíz)
   --patron PATRÓN    patrón de los ficheros de prueba (por defecto {DEFAULT_PATTERN})
   --parte i/n        solo la parte i de n de las pruebas (módulos enteros)
+  --tiempos F        con --parte, reparte por la duración de cada módulo del fichero F
+  --medidas F        al terminar, escribe en F la duración de cada módulo ejecutado
   --ayuda, -h        muestra esta ayuda"""
 
 
@@ -107,6 +115,8 @@ class Options:
     pattern: str
     show_help: bool = False
     part: tuple[int, int] | None = None  # (i, n) de --parte; None: todas
+    times: Path | None = None  # --tiempos: la duración de cada módulo (spec 004, T39)
+    measures: Path | None = None  # --medidas: donde se escribe la de los ejecutados
 
 
 def _script_args(argv: Sequence[str]) -> list[str]:
@@ -116,9 +126,15 @@ def _script_args(argv: Sequence[str]) -> list[str]:
 
 
 def parse_args(args: Sequence[str]) -> Options:
-    """Lee ``--carpeta``, ``--patron`` y ``--parte``; lanza :class:`UsageError` si algo
-    sobra, falta o no vale."""
-    values = {"--carpeta": DEFAULT_FOLDER, "--patron": DEFAULT_PATTERN, PART_OPTION: ""}
+    """Lee ``--carpeta``, ``--patron``, ``--parte``, ``--tiempos`` y ``--medidas``; lanza
+    :class:`UsageError` si algo sobra, falta o no vale."""
+    values = {
+        "--carpeta": DEFAULT_FOLDER,
+        "--patron": DEFAULT_PATTERN,
+        PART_OPTION: "",
+        TIMES_OPTION: "",
+        MEASURES_OPTION: "",
+    }
     show_help = False
     pending = list(args)
     while pending:
@@ -149,8 +165,22 @@ def parse_args(args: Sequence[str]) -> Options:
         except ValueError as exc:
             raise UsageError(str(exc)) from None
     return Options(
-        folder=folder, pattern=values["--patron"], show_help=show_help, part=part
+        folder=folder,
+        pattern=values["--patron"],
+        show_help=show_help,
+        part=part,
+        times=_file_option(values[TIMES_OPTION]),
+        measures=_file_option(values[MEASURES_OPTION]),
     )
+
+
+def _file_option(value: str) -> Path | None:
+    """El fichero de una opción (``None`` si no se dio); una ruta relativa, desde la
+    raíz del repositorio."""
+    if not value:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
 
 
 def _tools_on_path() -> None:
@@ -260,12 +290,18 @@ def _run_tests(options: Options) -> tuple[int, int]:
     if count != 0 and options.part is not None:
         from gbtools import parts
 
-        suite, _total = parts.select(suite, *options.part)
+        times = parts.read_times(options.times) if options.times is not None else None
+        suite, _total = parts.select(suite, *options.part, times)
         print(
             parts.line(*options.part, suite.countTestCases(), count),
             file=sys.stderr,
             flush=True,
         )
+    if count != 0 and options.measures is not None:
+        from gbtools import parts
+
+        part, total_parts = options.part if options.part is not None else (1, 1)
+        suite = parts.measured(suite, part, total_parts, options.measures)
     if count == 0:
         if missing:
             _report_unloaded(options, missing)

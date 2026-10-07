@@ -46,6 +46,11 @@
   OMISIONES». Salvo en esas pruebas, el motor de las demás es uno simulado
   (``find_runtime``), y el paso «motor» no cuenta en el orden de los pasos
   (``FakeRunner.steps``): va a la vez que «blender».
+- RNF-001-01, RNF-007-01 (spec 004, T39): las partes de «unitarias», «blender» y «motor»
+  se reparten por la duración medida de cada módulo, guardada fuera del repositorio (un
+  almacén en la carpeta temporal del sistema, uno por raíz): sin medidas, como siempre;
+  cada parte escribe las suyas y, al terminar, sustituyen a las guardadas. Salvo en esas
+  pruebas, no hay almacén (``times_store``) y las órdenes son las de siempre.
 
 Ninguna prueba lanza Blender ni Python: el ejecutor simulado anota cada orden y
 devuelve una salida fija por paso; en los pasos con pruebas que terminan con 0, la
@@ -424,10 +429,13 @@ def run_check(
     **kwargs: object,
 ) -> Outcome:
     """Ejecuta ``check.main`` con el ejecutor simulado y recoge la salida; si la prueba no
-    dice otra cosa (``find_runtime``), con un motor de cálculo de pruebas simulado
-    (:data:`FAKE_SITE`)."""
+    dice otra cosa (``find_runtime``, ``times_store``), con un motor de cálculo de pruebas
+    simulado (:data:`FAKE_SITE`) y sin almacén de tiempos."""
     runner = FakeRunner() if runner is None else runner
     kwargs.setdefault("find_runtime", lambda root, environ: check.TestRuntime(FAKE_SITE))
+    # Sin almacén de tiempos (spec 004, T39): las órdenes de siempre, y nada se escribe
+    # en el almacén de la carpeta temporal del sistema; lo prueba PartTimesTest.
+    kwargs.setdefault("times_store", lambda root: None)
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = check.main(
@@ -1275,6 +1283,169 @@ class RuntimeStepTest(unittest.TestCase):
         for call in calls:
             self.assertTrue(call.env["PYTHONPATH"].startswith(tmp + os.pathsep), call.env)
         self.assertRegex(result.out.strip().splitlines()[-1], r"^RESULTADO: VERDE \(")
+
+
+TIMED_STEPS = ("unitarias", "blender", RUNTIME)  # los pasos con partes (spec 004, T39)
+
+
+def _option(cmd: Sequence[str], name: str) -> str | None:
+    """El valor de la opción ``name`` de una orden, o ``None`` si no la lleva."""
+    return cmd[cmd.index(name) + 1] if name in cmd else None
+
+
+def _measured_module(call: Call) -> str:
+    """El módulo que «mide» la parte simulada de ``call``: uno por paso, parte y carpeta."""
+    folder = suite_of(call.step, call.cmd)[0].replace("/", ".")
+    return f"{folder}.medida_{call.part[0] if call.part else 0}"
+
+
+def _write_measures(call: Call, skip: Sequence[tuple[str, int]] = ()) -> None:
+    """Lo que hace una parte con ``--medidas``: escribe la duración de su módulo (la de la
+    parte i, i segundos), salvo las partes ``(paso, i)`` de ``skip``."""
+    path = _option(call.cmd, parts.MEASURES_OPTION)
+    if path is None or call.part is None or (call.step, call.part[0]) in skip:
+        return
+    seconds = float(call.part[0])
+    parts.write_times(Path(path), {_measured_module(call): seconds},
+                      part=call.part[0], parts=call.part[1])
+
+
+def _measured_suites(runner: FakeRunner, skip: Sequence[tuple[str, int]] = ()
+                     ) -> dict[str, dict[str, float]]:
+    """``{suite: {módulo: s}}`` de lo que escribieron las partes de los pasos con partes."""
+    found: dict[str, dict[str, float]] = {}
+    for step in TIMED_STEPS:
+        for call in runner.calls_of(step):
+            assert call.part is not None
+            if (step, call.part[0]) in skip:
+                continue
+            folder, pattern = suite_of(step, call.cmd)
+            flavor = {"unitarias": check.TIMES_PYTHON, "blender": check.TIMES_BLENDER,
+                      RUNTIME: check.TIMES_RUNTIME}[step]
+            key = check.times_key(flavor, folder, pattern)
+            found.setdefault(key, {})[_measured_module(call)] = float(call.part[0])
+    return found
+
+
+class PartTimesTest(unittest.TestCase):
+    """Spec 004, T39 (RNF-001-01, RNF-007-01): las partes de los pasos se reparten por la
+    duración medida de cada módulo, que se guarda fuera del repositorio."""
+
+    def test_first_run_measures(self) -> None:
+        """RF-004-28, RNF-001-01, RNF-007-01: sin medidas (el almacén no existe o no se
+        puede leer), las partes son las de siempre, sin ``--tiempos``, y cada una escribe
+        la duración de sus módulos (``--medidas``, un fichero por parte en la carpeta
+        temporal de la comprobación, que se borra); al terminar, el almacén guarda las de
+        cada suite con partes («unitarias», «blender» y las de «motor»). La salida y el
+        código, los de siempre. El almacén por defecto está en la carpeta temporal del
+        sistema, fuera del repositorio, uno por raíz del código."""
+        default = check.default_times_store(ROOT)
+        self.assertTrue(default.is_relative_to(Path(tempfile.gettempdir())))
+        self.assertFalse(default.is_relative_to(ROOT))
+        self.assertEqual(default, check.default_times_store(ROOT))
+        self.assertNotEqual(default, check.default_times_store(ROOT / "otra"))
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "tiempos" / "almacen.json"
+            for name, text in (("no existe", None), ("ilegible", "{")):
+                with self.subTest(almacen=name):
+                    if text is not None:
+                        store.parent.mkdir(exist_ok=True)
+                        store.write_text(text, encoding="utf-8")
+                    runner = FakeRunner(on_call=_write_measures)
+                    with many_cpus():
+                        result = run_check(runner=runner, times_store=lambda root: store)
+                    self.assertEqual(result.code, 0, result.out)
+                    for call in runner.calls_of("unitarias"):
+                        assert call.part is not None
+                        self.assertIsNone(_option(call.cmd, parts.TIMES_OPTION))
+                        measures = _option(call.cmd, parts.MEASURES_OPTION)
+                        assert measures is not None
+                        expected = unit_part_cmd(*call.part)
+                        at = expected.index("discover")
+                        self.assertEqual(call.cmd, [*expected[:at], parts.MEASURES_OPTION,
+                                                    measures, *expected[at:]])
+                        work = Path(measures).parent.parent
+                        self.assertTrue(work.name.startswith(check.TEMP_PREFIX), measures)
+                        self.assertFalse(work.exists())
+                    for call in runner.calls_of("blender"):
+                        assert call.part is not None
+                        measures = _option(call.cmd, parts.MEASURES_OPTION)
+                        self.assertEqual(call.cmd, [*blender_part_cmd(*call.part),
+                                                    parts.MEASURES_OPTION, str(measures)])
+                    for call in runner.calls_of(RUNTIME):
+                        self.assertIsNotNone(_option(call.cmd, parts.MEASURES_OPTION))
+                        self.assertIsNone(_option(call.cmd, parts.TIMES_OPTION))
+                    self.assertEqual(parts.read_store(store), _measured_suites(runner))
+                    for step, count in (("unitarias", 217), ("blender", 12)):
+                        self.assertRegex(
+                            _step_line(result.out, step),
+                            rf"^  correcto  {step}\s+\d+,\d s  \({count} pruebas\)$",
+                        )
+                    self.assertNotIn(parts.MEASURES_OPTION, result.out)
+                    last = result.out.strip().splitlines()[-1]
+                    self.assertRegex(last, r"^RESULTADO: VERDE \(\d+,\d s\)$")
+                    store.unlink()
+
+    def test_measured_times_go_to_the_parts(self) -> None:
+        """RF-004-28, RNF-001-01, RNF-007-01: con medidas guardadas de una suite, todas sus
+        partes reciben el mismo fichero de tiempos (``--tiempos``, en la carpeta temporal
+        de la comprobación) con ellas; una suite sin medidas guardadas no lo recibe. Al
+        terminar, las medidas de todas las partes de una suite sustituyen a las guardadas;
+        si alguna parte no escribió las suyas, se conservan las guardadas que no se
+        midieron; las suites que no se ejecutaron se conservan."""
+        unit = check.times_key(check.TIMES_PYTHON, "tests/unit", "test*.py")
+        launcher = check.times_key(check.TIMES_BLENDER, "tests/blender", "test_*.py")
+        other = check.times_key(check.TIMES_PYTHON, "tests/otra", "test*.py")
+        stored = {
+            unit: {"tests.unit.viejo": 7.0, "tests.unit.otro": 0.5},
+            launcher: {"tests.blender.viejo": 2.0},
+            other: {"tests.otra.m": 1.0},
+        }
+        skip = [("blender", 2)]
+        received: dict[tuple[str, int], tuple[str | None, dict[str, float]]] = {}
+
+        def measure(call: Call) -> None:
+            if call.part is not None and call.step in TIMED_STEPS:
+                times = _option(call.cmd, parts.TIMES_OPTION)
+                read = parts.read_times(Path(times)) if times is not None else {}
+                folder = suite_of(call.step, call.cmd)[0]
+                received[(f"{call.step}:{folder}", call.part[0])] = (times, read)
+            _write_measures(call, skip)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "almacen.json"
+            parts.write_store(store, stored)
+            runner = FakeRunner(on_call=measure)
+            with many_cpus():
+                result = run_check(runner=runner, times_store=lambda root: store)
+            self.assertEqual(result.code, 0, result.out)
+            for call in runner.calls_of("unitarias"):
+                assert call.part is not None
+                times, read = received[("unitarias:tests/unit", call.part[0])]
+                assert times is not None
+                self.assertEqual(read, stored[unit])
+                measures = _option(call.cmd, parts.MEASURES_OPTION)
+                expected = unit_part_cmd(*call.part)
+                at = expected.index("discover")
+                self.assertEqual(call.cmd, [*expected[:at], parts.TIMES_OPTION, times,
+                                            parts.MEASURES_OPTION, str(measures),
+                                            *expected[at:]])
+                self.assertFalse(Path(times).exists())
+            files = {received[("unitarias:tests/unit", i)][0]
+                     for i in range(1, check.UNIT_PARTS + 1)}
+            self.assertEqual(len(files), 1)
+            for i in range(1, check.BLENDER_PARTS + 1):
+                self.assertEqual(received[("blender:tests/blender", i)][1], stored[launcher])
+            for (name, _part), (times, _read) in received.items():
+                if name.startswith(RUNTIME):
+                    self.assertIsNone(times, name)
+            expected_store = _measured_suites(runner, skip)
+            expected_store[launcher] = {**stored[launcher], **expected_store[launcher]}
+            expected_store[other] = stored[other]
+            self.assertEqual(parts.read_store(store), expected_store)
+            self.assertNotIn("tests.unit.viejo", parts.read_store(store)[unit])
+        last = result.out.strip().splitlines()[-1]
+        self.assertRegex(last, r"^RESULTADO: VERDE \(\d+,\d s\)$")
 
 
 class SuitesTest(unittest.TestCase):

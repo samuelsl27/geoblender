@@ -14,9 +14,20 @@ ni acortar ninguna prueba: cada proceso descubre todas y ejecuta solo las de su 
 - RF-001-06: cada parte dice, en una línea, cuántas pruebas tiene de cuántas hay; las
   partes de un paso cuadran solo si son 1…n, todas dicen el mismo total y suman ese
   total: si no, el reparto perdió o repitió pruebas.
+- RNF-001-01, RNF-007-01 (spec 004, T39): con la duración medida de cada módulo (un
+  fichero de tiempos), el reparto es por tiempo y no por número de pruebas; sin medidas,
+  el de siempre. Cada parte mide la duración de sus módulos (con sus preparaciones de
+  módulo y de clase) y la escribe en un fichero, y las medidas de todas las partes
+  sustituyen a las guardadas.
 """
 
+import json
+import math
+import sys
+import tempfile
+import types
 import unittest
+from pathlib import Path
 
 from tests.support.repo import tools_on_path
 
@@ -189,6 +200,211 @@ class ConsistencyTest(unittest.TestCase):
                 problem = parts.consistency(found, count)
                 self.assertIsNotNone(problem)
                 self.assertIn(text, str(problem))
+
+
+class _Clock:
+    """Un reloj que solo avanza cuando se le pide: las duraciones medidas son exactas."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _fixture_module(
+    test: unittest.TestCase,
+    name: str,
+    log: list[str],
+    clock: _Clock,
+    seconds: tuple[float, float, float],
+) -> unittest.TestSuite:
+    """La suite de un módulo ``name`` (registrado en ``sys.modules`` mientras dura la
+    prueba) con ``setUpModule``, ``tearDownModule``, una clase con ``setUpClass`` y
+    ``tearDownClass`` y una prueba; cada paso se anota en ``log``, y la preparación del
+    módulo, la prueba y el cierre del módulo avanzan ``clock`` lo que diga ``seconds``."""
+    setup_s, test_s, teardown_s = seconds
+    module = types.ModuleType(name)
+
+    def set_up_module() -> None:
+        log.append(f"{name}.setUpModule")
+        clock.advance(setup_s)
+
+    def tear_down_module() -> None:
+        log.append(f"{name}.tearDownModule")
+        clock.advance(teardown_s)
+
+    def set_up_class(cls: type) -> None:
+        log.append(f"{name}.setUpClass")
+
+    def tear_down_class(cls: type) -> None:
+        log.append(f"{name}.tearDownClass")
+
+    def test_it(self: unittest.TestCase) -> None:
+        log.append(f"{name}.test")
+        clock.advance(test_s)
+
+    module.setUpModule = set_up_module  # type: ignore[attr-defined]
+    module.tearDownModule = tear_down_module  # type: ignore[attr-defined]
+    cls = type(
+        "Caso",
+        (unittest.TestCase,),
+        {
+            "setUpClass": classmethod(set_up_class),
+            "tearDownClass": classmethod(tear_down_class),
+            "test_it": test_it,
+        },
+    )
+    cls.__module__ = name
+    sys.modules[name] = module
+    test.addCleanup(sys.modules.pop, name, None)
+    loader = unittest.TestLoader()
+    return loader.suiteClass([loader.loadTestsFromTestCase(cls)])
+
+
+class TimesTest(unittest.TestCase):
+    """Spec 004, T39: el reparto por tiempo (RNF-001-01, RNF-007-01)."""
+
+    def test_by_measured_time(self) -> None:
+        """RF-004-28, RNF-001-01, RNF-007-01: con pesos (la duración medida de cada
+        módulo), de más a menos segundos (a igualdad, en su orden), cada módulo va a la
+        parte que lleva menos segundos (a igualdad, la de número menor); sin pesos, por
+        número de pruebas, como siempre; lo que no tiene pruebas, a la 1."""
+        sizes = [10, 1, 1, 1, 0]
+        self.assertEqual(parts.assign(sizes, 2), [1, 2, 2, 2, 1])
+        self.assertEqual(parts.assign(sizes, 2, None), [1, 2, 2, 2, 1])
+        weights = [1.0, 5.0, 4.0, 0.5, 0.0]
+        self.assertEqual(parts.assign(sizes, 2, weights), [2, 1, 2, 1, 1])
+        self.assertEqual(parts.assign([1, 1, 1], 3, [0.001] * 3), [1, 2, 3])
+
+    def test_weights_from_measured_modules(self) -> None:
+        """RNF-001-01: el peso de un módulo es su duración medida (al menos
+        ``MIN_SECONDS``); uno sin medida (nuevo) cuenta sus pruebas por la media por
+        prueba de los medidos; sin ninguna medida de los módulos con pruebas, no hay
+        pesos (``None``: el reparto por número de pruebas)."""
+        sizes = [4, 2, 1, 0]
+        names = ["m0", "m1", "m2", None]
+        found = parts.weights(sizes, names, {"m0": 2.0, "m1": 3.0, "otro": 9.0})
+        assert found is not None
+        self.assertEqual(found[:2], [2.0, 3.0])
+        self.assertAlmostEqual(found[2], 5.0 / 6.0)
+        self.assertEqual(found[3], 0.0)
+        self.assertEqual(parts.weights(sizes, names, {"m0": 0.0})[0], parts.MIN_SECONDS)
+        for times in ({}, {"otro": 9.0}, {"m3": 1.0}):
+            with self.subTest(tiempos=times):
+                self.assertIsNone(parts.weights(sizes, names, times))
+
+    def test_select_by_time(self) -> None:
+        """RNF-001-01, RNF-007-01, RF-001-06: ``select`` con los tiempos de los módulos
+        (por su nombre) reparte por tiempo, cada módulo entero y en el orden de
+        ``unittest``; con tiempos de ningún módulo descubierto, igual que sin tiempos."""
+        times = {"pruebas.test_m0": 0.1, "pruebas.test_m2": 5.0, "pruebas.test_m3": 0.2}
+        by_count = [_ids(parts.select(_discovered(3, 0, 1, 1), part, 2)[0]) for part in (1, 2)]
+        self.assertEqual(by_count[0], ["pruebas.test_m0.C0.test_0", "pruebas.test_m0.C1.test_0",
+                                       "pruebas.test_m0.C2.test_0"])
+        by_time = [
+            _ids(parts.select(_discovered(3, 0, 1, 1), part, 2, times)[0]) for part in (1, 2)
+        ]
+        self.assertEqual(by_time[0], ["pruebas.test_m2.C0.test_0"])
+        self.assertEqual(by_time[1], ["pruebas.test_m0.C0.test_0", "pruebas.test_m0.C1.test_0",
+                                      "pruebas.test_m0.C2.test_0", "pruebas.test_m3.C0.test_0"])
+        unknown = [_ids(parts.select(_discovered(3, 0, 1, 1), part, 2, {"otro": 1.0})[0])
+                   for part in (1, 2)]
+        self.assertEqual(unknown, by_count)
+        self.assertEqual(parts.module_of(_discovered(2)), "pruebas.test_m0")
+        self.assertIsNone(parts.module_of(_discovered(0)))
+
+    def test_parts_measure_their_modules(self) -> None:
+        """RNF-001-01, RF-001-06: la suite medida de una parte ejecuta lo mismo y en el
+        mismo orden que sin medir (cada preparación una vez) y, al terminar, escribe la
+        duración de cada módulo con su preparación y su cierre de módulo y de clase (el
+        cierre cuenta en su módulo, no en el siguiente), con la parte y las partes."""
+
+        def build(log: list[str], clock: _Clock) -> unittest.TestSuite:
+            return unittest.TestSuite([
+                _fixture_module(self, "medida_a", log, clock, (1.0, 0.5, 2.0)),
+                _fixture_module(self, "medida_b", log, clock, (0.0, 0.25, 0.0)),
+            ])
+
+        plain_log: list[str] = []
+        unittest.TextTestRunner(stream=_Sink()).run(build(plain_log, _Clock()))
+        log: list[str] = []
+        clock = _Clock()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sub" / "medidas.json"
+            suite = parts.measured(build(log, clock), 2, 3, path, clock=clock)
+            result = unittest.TextTestRunner(stream=_Sink()).run(suite)
+            found = parts.read_measures(path)
+        self.assertTrue(result.wasSuccessful())
+        self.assertEqual(result.testsRun, 2)
+        self.assertEqual(log, plain_log)
+        self.assertEqual(log.count("medida_a.tearDownModule"), 1)
+        self.assertEqual(found, parts.Measures(2, 3, {"medida_a": 3.5, "medida_b": 0.25}))
+
+    def test_times_files(self) -> None:
+        """RNF-001-01: un fichero de tiempos que no existe, que no es JSON, de otro
+        esquema o sin módulos no da medidas; de uno válido, solo los segundos finitos y no
+        negativos. Lo escrito se lee igual (con la parte en el de medidas)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            self.assertEqual(parts.read_times(folder / "no_esta.json"), {})
+            self.assertIsNone(parts.read_measures(folder / "no_esta.json"))
+            bad = {
+                "no es JSON": "{",
+                "otro esquema": json.dumps({"schema": "otro/1", "modules": {"a": 1.0}}),
+                "sin módulos": json.dumps({"schema": parts.TIMES_SCHEMA}),
+                "una lista": json.dumps([1, 2]),
+            }
+            for name, text in bad.items():
+                with self.subTest(caso=name):
+                    path = folder / "malo.json"
+                    path.write_text(text, encoding="utf-8")
+                    self.assertEqual(parts.read_times(path), {})
+            path = folder / "mezcla.json"
+            modules = {"a": 1.5, "b": -1, "c": "x", "d": True, "e": math.inf, "f": 0}
+            path.write_text(
+                json.dumps({"schema": parts.TIMES_SCHEMA, "modules": modules}), encoding="utf-8"
+            )
+            self.assertEqual(parts.read_times(path), {"a": 1.5, "f": 0.0})
+            written = folder / "otra" / "tiempos.json"
+            parts.write_times(written, {"x": 1.23456, "y": 2.0})
+            self.assertEqual(parts.read_times(written), {"x": 1.235, "y": 2.0})
+            self.assertIsNone(parts.read_measures(written))  # sin la parte
+            parts.write_times(written, {"x": 1.0}, part=1, parts=2)
+            self.assertEqual(parts.read_measures(written), parts.Measures(1, 2, {"x": 1.0}))
+
+    def test_merge_and_store(self) -> None:
+        """RNF-001-01: las medidas de todas las partes (1…n) de unas pruebas sustituyen a
+        las guardadas (un módulo que ya no está desaparece); si falta alguna parte, se
+        actualizan las medidas y se conservan las demás. El almacén guarda los tiempos de
+        cada suite; uno ilegible es un almacén vacío."""
+        stored = {"a": 1.0, "b": 2.0, "viejo": 3.0}
+        complete = [parts.Measures(1, 2, {"a": 1.5}), parts.Measures(2, 2, {"b": 2.5, "c": 0.5})]
+        self.assertEqual(parts.merge(stored, complete), {"a": 1.5, "b": 2.5, "c": 0.5})
+        partial = [parts.Measures(2, 2, {"b": 2.5})]
+        self.assertEqual(parts.merge(stored, partial), {"a": 1.0, "b": 2.5, "viejo": 3.0})
+        self.assertEqual(parts.merge(stored, []), stored)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "almacen" / "tiempos.json"
+            self.assertEqual(parts.read_store(path), {})
+            suites = {"python:tests/unit:test*.py": {"a": 1.5}, "blender:x:y": {"b": 0.5}}
+            parts.write_store(path, suites)
+            self.assertEqual(parts.read_store(path), suites)
+            path.write_text("{", encoding="utf-8")
+            self.assertEqual(parts.read_store(path), {})
+
+
+class _Sink:
+    """Una salida que descarta lo que se escribe (para ``TextTestRunner``)."""
+
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        pass
 
 
 if __name__ == "__main__":

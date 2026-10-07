@@ -117,8 +117,8 @@ def _lock_findings(*packages: Mapping[str, object], **kwargs: object) -> list:
         return runtime_lock.check(root)
 
 
-# Tres pruebas con varias comprobaciones cada una: tools/check.py reparte las unitarias
-# en 4 procesos por número de pruebas (gbtools.parts) y más pruebas aquí movían módulos
+# Tres pruebas con varias comprobaciones cada una: hasta 004/T39, tools/check.py repartía
+# las unitarias por número de pruebas (gbtools.parts) y más pruebas aquí movían módulos
 # lentos a la misma parte (RNF-001-01, docs/trampas.md §4).
 class LockIdTest(unittest.TestCase):
     def test_lock_id(self) -> None:

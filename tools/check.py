@@ -44,7 +44,16 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    ``run_blender_tests.py --parte i/n``, sin pasar del número de módulos de prueba en
    disco ni del de procesadores (con uno, la orden de siempre). Cada parte descubre
    todas las pruebas y ejecuta las de sus módulos (``gbtools.parts``); cada Blender, con
-   su propio perfil temporal (la parte 1, el de «manifiesto»). El paso dura lo que
+   su propio perfil temporal (la parte 1, el de «manifiesto»). Los módulos se reparten
+   por su duración medida en la comprobación anterior (spec 004, T39; RNF-001-01): un
+   almacén fuera del repositorio, en la carpeta temporal del sistema y uno por raíz
+   (:func:`default_times_store`), guarda la de cada módulo de cada suite con partes
+   («unitarias», «blender» y las de «motor»); antes de los pasos se copia a la carpeta
+   temporal de la comprobación y cada parte recibe el fichero de su suite
+   (``--tiempos``) y escribe la duración de sus módulos (``--medidas``); al terminar, las
+   medidas sustituyen a las guardadas (:class:`PartTimes`). Sin medidas (la primera vez,
+   o un almacén borrado o ilegible), el reparto es por número de pruebas, el de la spec
+   003 (T40); la salida y los códigos no cambian. El paso dura lo que
    tarda la más lenta, y su línea suma las pruebas de todas (si alguna no llegó a
    contarlas, lo dice: «750 pruebas en 3 de 4 partes»). Un fichero de pruebas
    cuenta como cargado si lo carga cualquier parte; y si las partes no son 1…n, no
@@ -108,6 +117,7 @@ import sys
 sys.dont_write_bytecode = True  # sin __pycache__ en Z: (plan 001 §5.3)
 
 import ast  # noqa: E402
+import hashlib  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import shutil  # noqa: E402
@@ -156,8 +166,10 @@ STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 40 s (RNF-
 LAUNCHER_RELPATH = "tools/run_blender_tests.py"
 PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T40)
 # Partes de «unitarias» y de «blender» (spec 003, T40; RNF-007-01): a la vez, sin pasar
-# del número de módulos de prueba ni del de procesadores (part_count).
-UNIT_PARTS = 4
+# del número de módulos de prueba ni del de procesadores (part_count). Con el reparto por
+# tiempo (spec 004, T39), 6 partes de «unitarias» tardan ≈ 14 s frente a ≈ 21 s con 4;
+# por número de pruebas, más partes podían juntar los módulos lentos en una.
+UNIT_PARTS = 6
 BLENDER_PARTS = 3
 THREAD_PREFIX = "check-parte-"  # los hilos que esperan a cada parte
 JOIN_POLL_S = 0.1  # se espera a los hilos a ratos: así Ctrl+C llega enseguida
@@ -185,6 +197,16 @@ DOMAIN_TESTS = "tests/unit"  # tests/unit/<paquete de dominio> (imports.LEVELS)
 # T30): con 2, «blender» tarda ≈ 1 s más (≈ 2 s con el equipo cargado) y «motor» acaba
 # antes que él; después de él (≈ 12 s más) no cabría en RNF-001-01.
 RUNTIME_PARTS = 2
+# Las duraciones medidas de los módulos de prueba (spec 004, T39; RNF-001-01): el almacén,
+# en la carpeta temporal del sistema (uno por raíz), y los ficheros de las partes, en la
+# de la comprobación. Cada suite con partes tiene su clave (times_key): con qué se
+# ejecuta (el Python de Blender, el motor de cálculo de pruebas o Blender), su carpeta y
+# su patrón.
+TIMES_STORE_FOLDER = "geoblender-tiempos"
+TIMES_WORK_FOLDER = "tiempos"
+TIMES_PYTHON = "python"
+TIMES_RUNTIME = "motor"
+TIMES_BLENDER = "blender"
 DOCS_STEP = "documentación"
 DOCS_RELPATH = "tools/check_docs.py"
 NO_DOCS = f"no hay documentación en la carpeta madre ni en {layout.ENV_DOCS_DIR}"
@@ -253,6 +275,87 @@ class Run:
     part: tuple[int, int] | None = None  # (i, n): una parte de unas pruebas (T40)
 
 
+def default_times_store(root: Path) -> Path:
+    """El almacén de las duraciones medidas de los módulos de prueba de la raíz ``root``
+    (spec 004, T39): un fichero en la carpeta temporal del sistema, fuera del repositorio
+    (las herramientas solo escriben en carpetas temporales: RF-001-09), y uno por raíz
+    (cada clon o *worktree* tiene sus pruebas)."""
+    name = os.path.normcase(os.path.abspath(root))
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / TIMES_STORE_FOLDER / f"{digest}.json"
+
+
+def times_key(flavor: str, folder: str, pattern: str) -> str:
+    """La clave de una suite con partes en el almacén de tiempos: con qué se ejecuta
+    (``TIMES_PYTHON``, ``TIMES_RUNTIME`` o ``TIMES_BLENDER``), su carpeta y su patrón."""
+    return f"{flavor}:{folder}:{pattern}"
+
+
+@dataclass
+class PartTimes:
+    """Las duraciones medidas de los módulos de las suites con partes (spec 004, T39;
+    RNF-001-01, RNF-007-01): las del almacén ``store`` (``{suite: {módulo: s}}``), que se
+    copian, una suite por fichero, a ``folder`` (en la carpeta temporal de la
+    comprobación), donde cada parte escribe también las suyas. Lo crea :meth:`load`; las
+    órdenes de las partes llevan :meth:`options`; :meth:`save`, tras los pasos, guarda
+    las medidas en el almacén."""
+
+    store: Path
+    folder: Path
+    stored: dict[str, dict[str, float]] = field(default_factory=dict)
+    parts_of: dict[str, int] = field(default_factory=dict)  # suite → partes ejecutadas
+
+    @classmethod
+    def load(cls, store: Path, folder: Path) -> PartTimes:
+        """Lee el almacén (si falta o no se puede leer, sin medidas) y copia los tiempos
+        de cada suite a ``folder``."""
+        found = cls(store, folder, parts.read_store(store))
+        folder.mkdir(parents=True, exist_ok=True)
+        for key, modules in found.stored.items():
+            parts.write_times(found.times_file(key), modules)
+        return found
+
+    @staticmethod
+    def _name(key: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")
+
+    def times_file(self, key: str) -> Path:
+        """El fichero con los tiempos guardados de la suite ``key`` (``--tiempos``)."""
+        return self.folder / f"{self._name(key)}.json"
+
+    def measures_file(self, key: str, part: tuple[int, int]) -> Path:
+        """El fichero en que escribe sus medidas la parte ``part`` de la suite ``key``."""
+        return self.folder / f"{self._name(key)}-{part[0]}de{part[1]}.json"
+
+    def options(self, key: str, part: tuple[int, int]) -> list[str]:
+        """Las opciones de la orden de la parte ``part`` de la suite ``key``: el fichero
+        de sus tiempos, si hay medidas guardadas (sin él, la parte reparte por número de
+        pruebas), y el de sus medidas."""
+        self.parts_of[key] = part[1]
+        found: list[str] = []
+        if key in self.stored:
+            found += [parts.TIMES_OPTION, str(self.times_file(key))]
+        return [*found, parts.MEASURES_OPTION, str(self.measures_file(key, part))]
+
+    def save(self) -> None:
+        """Guarda en el almacén las medidas de las partes que se ejecutaron
+        (``parts.merge``: las de todas las partes de una suite sustituyen a las guardadas;
+        si falta alguna, se conservan las demás); las suites que no se ejecutaron se
+        conservan. Si nada cambia, no escribe."""
+        suites = dict(self.stored)
+        for key, count in self.parts_of.items():
+            measures = [
+                found
+                for number in range(1, count + 1)
+                if (found := parts.read_measures(self.measures_file(key, (number, count))))
+                is not None
+            ]
+            if measures:
+                suites[key] = parts.merge(self.stored.get(key, {}), measures)
+        if suites != self.stored:
+            parts.write_store(self.store, suites)
+
+
 @dataclass(frozen=True)
 class Context:
     """Lo que necesitan los pasos para construir sus órdenes."""
@@ -266,6 +369,17 @@ class Context:
     environ: Mapping[str, str] | None = None
     # Cómo se busca el motor de cálculo de pruebas (spec 004, T30).
     find_runtime: Callable[[Path, Mapping[str, str]], TestRuntime] = find_test_runtime
+    # Las duraciones medidas de los módulos de prueba (spec 004, T39); None: sin almacén,
+    # las órdenes de siempre.
+    times: PartTimes | None = None
+
+    def part_options(self, flavor: str, folder: str, pattern: str,
+                     part: tuple[int, int]) -> list[str]:
+        """Las opciones de tiempos de la orden de una parte (:meth:`PartTimes.options`),
+        o ninguna sin almacén."""
+        if self.times is None:
+            return []
+        return self.times.options(times_key(flavor, folder, pattern), part)
 
     def docs_environ(self) -> Mapping[str, str]:
         """El entorno en que se busca la documentación (``repo.find_docs``)."""
@@ -331,6 +445,9 @@ class Context:
             args += ["-m", "unittest"]
         else:
             args += [PART_RELPATH, parts.OPTION, parts.label(*part)]
+            flavor = TIMES_PYTHON if site is None else TIMES_RUNTIME
+            suite_pattern = UNITTEST_PATTERN if pattern is None else pattern
+            args += self.part_options(flavor, folder, suite_pattern, part)
         args += ["discover", "-v", "-s", folder, "-t", "."]
         if pattern is not None:
             args += ["-p", pattern]
@@ -370,6 +487,8 @@ class Context:
             args += ["--patron", pattern]
         if part is not None:
             args += [parts.OPTION, parts.label(*part)]
+            suite_pattern = LAUNCHER_PATTERN if pattern is None else pattern
+            args += self.part_options(TIMES_BLENDER, folder, suite_pattern, part)
         command = blender.background_cmd(self.install, self.root / LAUNCHER_RELPATH, *args)
         return Run(
             command,
@@ -1367,14 +1486,17 @@ def main(
     steps: Sequence[Step] = STEPS,
     environ: Mapping[str, str] | None = None,
     find_runtime: Callable[[Path, Mapping[str, str]], TestRuntime] = find_test_runtime,
+    times_store: Callable[[Path], Path | None] = default_times_store,
 ) -> int:
     """Ejecuta la comprobación completa y devuelve el código de salida.
 
     Los parámetros con nombre solo los cambian las pruebas: raíz, ejecutor de órdenes,
     localizador de Blender, intérprete en uso, módulos cargados, tabla de pasos, el
     entorno en que se buscan la documentación (``GEOBLENDER_DOCS_DIR``) y el motor de
-    cálculo de pruebas (``GEOBLENDER_TEST_RUNTIME_SITE``; por defecto, el del proceso) y
-    cómo se busca ese motor (``make_runtime.find_test_runtime``).
+    cálculo de pruebas (``GEOBLENDER_TEST_RUNTIME_SITE``; por defecto, el del proceso),
+    cómo se busca ese motor (``make_runtime.find_test_runtime``) y dónde está el almacén
+    de tiempos de la raíz (:func:`default_times_store`; ``None``: sin almacén, las
+    partes por número de pruebas y sin medir).
     """
     started = time.perf_counter()
     executable = sys.executable if executable is None else executable
@@ -1435,6 +1557,8 @@ def main(
     try:
         profile = work / PROFILE_FOLDER
         profile.mkdir()
+        store = times_store(root)
+        times = None if store is None else PartTimes.load(store, work / TIMES_WORK_FOLDER)
         ctx = Context(
             root=root,
             install=install,
@@ -1442,6 +1566,7 @@ def main(
             blender_modules=imports.installation_modules(_scripts_dir(install)),
             environ=environ,
             find_runtime=find_runtime,
+            times=times,
         )
         # Los perfiles de las demás partes de las pruebas de Blender (T40).
         for number in range(2, BLENDER_PARTS + 1):
@@ -1459,6 +1584,12 @@ def main(
         if modified is not None:
             results.append(modified)
             print(format_step(modified), flush=True)
+        if times is not None:
+            try:
+                times.save()
+            except OSError as exc:
+                print(f"AVISO: no se pudieron guardar las duraciones de las pruebas en "
+                      f"«{times.store}»: {exc}")
     finally:
         try:
             _remove_tree(work)

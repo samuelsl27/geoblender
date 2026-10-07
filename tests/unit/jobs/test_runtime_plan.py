@@ -126,8 +126,8 @@ def _strings(value: object) -> Iterator[str]:
             yield from _strings(inner)
 
 
-# Tres pruebas con varias comprobaciones cada una: tools/check.py reparte las unitarias en
-# 4 procesos por número de pruebas (gbtools.parts; docs/trampas.md §4).
+# Tres pruebas con varias comprobaciones cada una: hasta 004/T39, tools/check.py repartía
+# las unitarias por número de pruebas (gbtools.parts; docs/trampas.md §4).
 class EnvironmentStatusTest(unittest.TestCase):
     def test_status_and_interpreter(self) -> None:
         """RF-004-19, RF-004-25: el motor del lock real vive en
