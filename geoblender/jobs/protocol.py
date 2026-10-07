@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Protocolo de los trabajos en segundo plano: la petición (spec 004; RF-004-01, RF-004-02;
-plan 004 §5.2.2 y §5.3.1).
+"""Protocolo de los trabajos en segundo plano: la petición y los eventos (spec 004;
+RF-004-01, RF-004-02, RF-004-12, RF-004-15; plan 004 §5.2.2, §5.2.3 y §5.3.1).
 
 La **petición** (``request.json`` de la carpeta del trabajo, esquema ``geoblender.job/1``) es
 lo que un trabajo necesita: el tipo de trabajo (``worker``), su nombre visible, el módulo
@@ -18,6 +18,19 @@ intérprete lo decide el lanzador (plan §5.3.3).
   ``worker_unknown``) y no escribe nada: se rechaza antes de crear ficheros o procesos.
 - :func:`write_request` y :func:`read_request`: ``request.json`` de la carpeta de un
   trabajo, comprobado al escribir y al leer (también en el worker).
+
+Los **eventos** (plan §5.2.3) son lo que el worker cuenta por su canal (el stdout original):
+una línea JSON en UTF-8 por evento, ``{"v": 1, "t": <tipo>, "ts": <s>, …}``, de los tipos
+``start``, ``progress``, ``log``, ``result``, ``error`` y ``cancelled``.
+
+- :class:`OutputRef`: un resultado declarado (ruta relativa dentro de ``out/``, sha256,
+  tamaño y papel).
+- :class:`JobEvent`: un evento, siempre válido (se comprueba al crearlo); ``frac`` (avance,
+  0–1) fuera de 0–1 se acota (spec §6: el avance se acota).
+- :func:`encode_event`: la línea de un evento, en bytes.
+- :class:`EventDecoder`: de los bytes del canal, en trozos de cualquier tamaño, los eventos
+  en orden de llegada; lo que no es un evento (texto de una librería, JSON cortado, otra
+  versión…) sale en su sitio como :class:`InvalidLine`, sin lanzar (RF-004-15).
 """
 
 from __future__ import annotations
@@ -30,7 +43,8 @@ import os
 import re
 import secrets
 import threading
-from collections.abc import Iterator, Mapping, Sequence
+import time
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
@@ -62,6 +76,19 @@ WORKER_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 ``workers/`` que lo ejecuta (con ``fullmatch``): nunca un punto ni una barra."""
 
 MAX_JSON_DEPTH = 64
+
+OUTPUTS_DIR = "out"
+"""Carpeta de los resultados dentro de la del trabajo: todo resultado está aquí dentro."""
+EVENT_VERSION = 1
+EVENT_TYPES: tuple[str, ...] = ("start", "progress", "log", "result", "error", "cancelled")
+LOG_LEVELS: tuple[str, ...] = ("debug", "info", "warning", "error")
+MAX_EVENT_BYTES = 1 << 20
+"""Longitud máxima de una línea de evento (1 MiB): una más larga no es un evento y no se
+guarda entera en memoria (una librería que escribe sin saltos de línea)."""
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+"""Huella sha256 en 64 cifras hexadecimales en minúsculas (con ``fullmatch``)."""
+_SHOWN_CHARS = 200
+"""Caracteres que se guardan de una línea demasiado larga."""
 
 _FIELDS: tuple[str, ...] = (
     "schema", "job_uid", "worker", "label", "owner", "params", "inputs", "timeout_s",
@@ -267,7 +294,7 @@ def write_request(job_dir: JobFolder, request: JobRequest) -> None:
     :func:`validate_request` que no los necesitan): si no es válida, :class:`JobError` y no
     se crea ningún fichero."""
     _check_request(request)
-    folder = _folder(job_dir)
+    folder = folder_path(job_dir)
     _check_folder(folder, request)
     text = json.dumps(request.to_json(), ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     target = folder / REQUEST_FILE
@@ -286,7 +313,7 @@ def read_request(job_dir: JobFolder) -> JobRequest:
     :func:`write_request`; también que sea la petición de esa carpeta. :class:`JobError`
     ``request_invalid`` (o ``worker_unknown``) si falta, no es JSON en UTF-8 sin BOM, tiene
     otro esquema o no es válida. No escribe nada."""
-    folder = _folder(job_dir)
+    folder = folder_path(job_dir)
     path = folder / REQUEST_FILE
     try:
         raw = path.read_bytes()
@@ -305,6 +332,401 @@ def read_request(job_dir: JobFolder) -> JobRequest:
     _check_request(request)
     _check_folder(folder, request)
     return request
+
+
+# --- Eventos ----------------------------------------------------------------------------
+
+_OUTPUT_FIELDS: tuple[str, ...] = ("path", "sha256", "size", "role")
+# Campos de cada tipo de evento (además de ``v``, ``t`` y ``ts``) y los obligatorios.
+_EVENT_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "start": ("info",),
+    "progress": ("frac", "msg"),
+    "log": ("level", "msg"),
+    "result": ("outputs", "summary"),
+    "error": ("code", "msgid", "values", "msg"),
+    "cancelled": ("msg",),
+}
+_EVENT_REQUIRED: Mapping[str, tuple[str, ...]] = {
+    "start": ("info",),
+    "progress": ("frac",),
+    "log": ("level", "msg"),
+    "result": ("outputs",),
+    "error": ("code", "msgid", "msg"),
+    "cancelled": (),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class OutputRef:
+    """Un resultado declarado por el worker (plan §5.2.3): ``path``, relativa a la carpeta
+    del trabajo y dentro de ``out/`` (se guarda con «/»); ``sha256`` del fichero, en 64
+    cifras hexadecimales en minúsculas; ``size`` en bytes y ``role``, su papel para el
+    módulo dueño (``"sum"``). Se comprueba al crearlo: :class:`ValueError` si no cumple.
+    Que el fichero exista y case con la huella lo comprueba el lanzador (RF-004-05)."""
+
+    path: str
+    sha256: str
+    size: int
+    role: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError(f"la ruta del resultado {_shown(self.path)} no es un texto")
+        if _relative_problem(self.path, OUTPUTS_DIR) is not None:
+            raise ValueError(
+                f"el resultado {_shown(self.path)} no está dentro de {OUTPUTS_DIR}/ de la "
+                "carpeta del trabajo"
+            )
+        object.__setattr__(self, "path", self.path.replace("\\", "/"))
+        if not isinstance(self.sha256, str) or not SHA256_PATTERN.fullmatch(self.sha256):
+            raise ValueError(
+                f"la huella {_shown(self.sha256)} del resultado {self.path} no es un sha256 "
+                "(64 cifras hexadecimales en minúsculas)"
+            )
+        if not _is_int(self.size) or self.size < 0:
+            raise ValueError(
+                f"el tamaño {_shown(self.size)} del resultado {self.path} no es un número "
+                "de bytes"
+            )
+        if not _filled(self.role):
+            raise ValueError(f"el resultado {self.path} no tiene papel (role)")
+
+    def to_json(self) -> dict[str, JsonValue]:
+        """La forma JSON del resultado."""
+        return {"path": self.path, "sha256": self.sha256, "size": self.size, "role": self.role}
+
+    @classmethod
+    def from_json(cls, data: object) -> OutputRef:
+        """El resultado de su forma JSON (se ignoran las claves de más); :class:`ValueError`
+        si no es un objeto, le falta un campo o no cumple."""
+        if not isinstance(data, Mapping):
+            raise ValueError(f"un resultado no es un objeto JSON ({_shown(data)})")
+        missing = [name for name in _OUTPUT_FIELDS if name not in data]
+        if missing:
+            raise ValueError(
+                _listed("al resultado le falta el campo", "al resultado le faltan los campos",
+                        missing)
+            )
+        return cls(data["path"], data["sha256"], data["size"], data["role"])
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class JobEvent:
+    """Un evento del worker (plan §5.2.3), siempre válido: se comprueba al crearlo
+    (:class:`ValueError` si no cumple). Mejor con los constructores :meth:`start`,
+    :meth:`progress`, :meth:`log`, :meth:`result`, :meth:`error` y :meth:`cancelled`.
+
+    ``type`` es el tipo (``"t"`` en JSON) y ``ts`` la hora en segundos desde 1970. Cada tipo
+    usa solo sus campos: ``start``, ``info`` (pid, tipo de intérprete, versiones de Python,
+    numpy y BLAS); ``progress``, ``frac`` (0–1: fuera de 0–1 se acota) y ``msg``; ``log``,
+    ``level`` (:data:`LOG_LEVELS`) y ``msg``; ``result``, ``outputs`` (:class:`OutputRef`) y
+    ``summary``; ``error``, ``code``, ``msgid``, ``values`` y ``msg`` (el texto en español);
+    ``cancelled``, ``msg``. ``info``, ``summary`` y ``values`` se guardan como copias JSON.
+    """
+
+    type: str
+    ts: float
+    frac: float | None = None
+    msg: str = ""
+    level: str | None = None
+    info: Mapping[str, JsonValue] = field(default_factory=dict)
+    outputs: tuple[OutputRef, ...] = ()
+    summary: Mapping[str, JsonValue] = field(default_factory=dict)
+    code: str | None = None
+    msgid: str | None = None
+    values: Mapping[str, JsonValue] = field(default_factory=dict)
+    v: int = EVENT_VERSION
+
+    def __post_init__(self) -> None:
+        _check_version(self.v)
+        if not isinstance(self.type, str) or self.type not in EVENT_TYPES:
+            raise ValueError(
+                f"tipo de evento desconocido: {_shown(self.type)} (se esperaba uno de "
+                f"{', '.join(EVENT_TYPES)})"
+            )
+        if not _is_number(self.ts) or not math.isfinite(self.ts):
+            raise ValueError(
+                f"la hora del evento (ts) {_shown(self.ts)} no es un número finito de segundos"
+            )
+        update = object.__setattr__
+        update(self, "ts", float(self.ts))
+        if not isinstance(self.msg, str):
+            raise ValueError(f"el mensaje (msg) {_shown(self.msg)} no es un texto")
+        match self.type:
+            case "start":
+                update(self, "info", _json_object(self.info, "info"))
+            case "progress":
+                if not _is_number(self.frac) or math.isnan(self.frac):
+                    raise ValueError(f"el avance (frac) {_shown(self.frac)} no es un número")
+                update(self, "frac", min(1.0, max(0.0, float(self.frac))))
+            case "log":
+                if not isinstance(self.level, str) or self.level not in LOG_LEVELS:
+                    raise ValueError(
+                        f"el nivel {_shown(self.level)} no es uno de {', '.join(LOG_LEVELS)}"
+                    )
+            case "result":
+                if not isinstance(self.outputs, list | tuple) or not all(
+                    isinstance(item, OutputRef) for item in self.outputs
+                ):
+                    raise ValueError("los resultados (outputs) no son una lista de OutputRef")
+                update(self, "outputs", tuple(self.outputs))
+                update(self, "summary", _json_object(self.summary, "summary"))
+            case "error":
+                if not _filled(self.code):
+                    raise ValueError(f"el código de error {_shown(self.code)} está vacío")
+                if not _filled(self.msgid):
+                    raise ValueError(f"el msgid {_shown(self.msgid)} del error está vacío")
+                update(self, "values", _json_object(self.values, "values"))
+
+    # Constructores ---------------------------------------------------------------------
+
+    @classmethod
+    def start(cls, info: Mapping[str, JsonValue], *, ts: float | None = None) -> JobEvent:
+        """``start``: el worker arrancó (``info``: pid, intérprete y versiones)."""
+        return cls(type="start", ts=_event_time(ts), info=info)
+
+    @classmethod
+    def progress(cls, frac: float, msg: str = "", *, ts: float | None = None) -> JobEvent:
+        """``progress``: avance ``frac`` (0–1, acotado) con un mensaje."""
+        return cls(type="progress", ts=_event_time(ts), frac=frac, msg=msg)
+
+    @classmethod
+    def log(cls, level: str, msg: str, *, ts: float | None = None) -> JobEvent:
+        """``log``: una nota para el registro (``debug``, ``info``, ``warning``, ``error``)."""
+        return cls(type="log", ts=_event_time(ts), level=level, msg=msg)
+
+    @classmethod
+    def result(
+        cls,
+        outputs: Iterable[OutputRef] = (),
+        summary: Mapping[str, JsonValue] | None = None,
+        *,
+        ts: float | None = None,
+    ) -> JobEvent:
+        """``result``: los resultados declarados y el resumen (JSON) del trabajo."""
+        return cls(type="result", ts=_event_time(ts), outputs=tuple(outputs),
+                   summary={} if summary is None else summary)
+
+    @classmethod
+    def error(
+        cls,
+        code: str,
+        *,
+        msgid: str,
+        msg: str,
+        values: Mapping[str, JsonValue] | None = None,
+        ts: float | None = None,
+    ) -> JobEvent:
+        """``error``: el código, el ``msgid`` en inglés, sus valores y el texto en español
+        (RF-004-12)."""
+        return cls(type="error", ts=_event_time(ts), code=code, msgid=msgid, msg=msg,
+                   values={} if values is None else values)
+
+    @classmethod
+    def cancelled(cls, msg: str = "", *, ts: float | None = None) -> JobEvent:
+        """``cancelled``: el worker atendió la cancelación."""
+        return cls(type="cancelled", ts=_event_time(ts), msg=msg)
+
+    # JSON ------------------------------------------------------------------------------
+
+    def to_json(self) -> dict[str, JsonValue]:
+        """La forma JSON del evento: ``v``, ``t`` y ``ts`` y los campos de su tipo."""
+        data: dict[str, JsonValue] = {"v": self.v, "t": self.type, "ts": self.ts}
+        match self.type:
+            case "start":
+                data["info"] = plain_json(self.info, "info")
+            case "progress":
+                data["frac"] = self.frac
+                data["msg"] = self.msg
+            case "log":
+                data["level"] = self.level
+                data["msg"] = self.msg
+            case "result":
+                data["outputs"] = [output.to_json() for output in self.outputs]
+                data["summary"] = plain_json(self.summary, "summary")
+            case "error":
+                data["code"] = self.code
+                data["msgid"] = self.msgid
+                data["values"] = plain_json(self.values, "values")
+                data["msg"] = self.msg
+            case "cancelled":
+                data["msg"] = self.msg
+        return data
+
+    @classmethod
+    def from_json(cls, data: object) -> JobEvent:
+        """El evento de su forma JSON. :class:`ValueError` (con el motivo en español) si no
+        es un objeto, es de otra versión o de un tipo desconocido, le falta un campo de su
+        tipo o no cumple. Las claves de más se ignoran."""
+        if not isinstance(data, Mapping):
+            raise ValueError(f"no es un objeto JSON ({type(data).__name__})")
+        if "v" not in data:
+            raise ValueError("falta la versión del evento («v»)")
+        _check_version(data["v"])
+        kind = data.get("t")
+        if not isinstance(kind, str) or kind not in EVENT_TYPES:
+            raise ValueError(f"tipo de evento desconocido: {_shown(kind)}")
+        if "ts" not in data:
+            raise ValueError("falta la hora del evento («ts»)")
+        missing = [name for name in _EVENT_REQUIRED[kind] if name not in data]
+        if missing:
+            raise ValueError(
+                _listed(f"al evento «{kind}» le falta el campo",
+                        f"al evento «{kind}» le faltan los campos", missing)
+            )
+        values: dict[str, object] = {
+            name: data[name] for name in _EVENT_FIELDS[kind] if name in data
+        }
+        if kind == "result":
+            outputs = data["outputs"]
+            if not isinstance(outputs, list):
+                raise ValueError("los resultados (outputs) no son una lista")
+            values["outputs"] = tuple(OutputRef.from_json(item) for item in outputs)
+        return cls(type=kind, ts=data["ts"], v=data["v"], **values)
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidLine:
+    """Una línea del canal que no es un evento: ``text`` (en UTF-8, con «�» en los bytes
+    que no lo son; de una línea demasiado larga, solo el principio) y ``reason``, por qué no
+    lo es, en español. El lanzador la anota como aviso y el trabajo sigue (spec §6)."""
+
+    text: str
+    reason: str
+
+
+def encode_event(event: JobEvent) -> bytes:
+    """La línea del evento: JSON en UTF-8 (la «ñ» tal cual) y «\\n»; un salto de línea dentro
+    de un texto va escapado, así que es siempre una sola línea. Un texto con sustitutos
+    sueltos (un nombre de fichero mal descodificado) se escapa como ``\\udcxx``.
+    :class:`ValueError` si la línea pasa de :data:`MAX_EVENT_BYTES` (el decodificador no la
+    aceptaría)."""
+    if not isinstance(event, JobEvent):
+        raise ValueError(f"no es un evento: {type(event).__name__}")
+    data = event.to_json()
+    try:
+        line = json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except UnicodeEncodeError:
+        line = json.dumps(data, ensure_ascii=True, allow_nan=False).encode("ascii")
+    if len(line) > MAX_EVENT_BYTES:
+        raise ValueError(
+            f"el evento «{event.type}» ocupa {len(line)} bytes y no puede pasar de "
+            f"{MAX_EVENT_BYTES}: guarde lo grande en out/ y declárelo como resultado"
+        )
+    return line + b"\n"
+
+
+class EventDecoder:
+    """Decodificador del canal de eventos de un worker.
+
+    :meth:`feed` recibe los bytes tal como llegan (en trozos de cualquier tamaño: una línea
+    o una «ñ» pueden llegar partidas) y devuelve, en orden de llegada, un :class:`JobEvent`
+    por cada línea completa que lo es y una :class:`InvalidLine` por cada una que no; nunca
+    lanza por lo que reciba. Se aceptan los finales «\\r\\n» y se saltan las líneas vacías.
+    Una línea de más de ``max_line_bytes`` es una sola :class:`InvalidLine` y no se guarda
+    en memoria. :meth:`close` decodifica lo que quedó sin «\\n» (un worker que murió a medias
+    deja una :class:`InvalidLine`).
+    """
+
+    def __init__(self, *, max_line_bytes: int = MAX_EVENT_BYTES) -> None:
+        if not _is_int(max_line_bytes) or max_line_bytes < 1:
+            raise ValueError(f"max_line_bytes = {max_line_bytes!r} debe ser un entero ≥ 1")
+        self._max = max_line_bytes
+        self._pending = b""
+        self._discarding = False
+        self._closed = False
+
+    def feed(self, data: bytes) -> list[JobEvent | InvalidLine]:
+        """Los eventos y líneas inválidas que completa ``data``, en orden."""
+        if self._closed:
+            raise ValueError("el decodificador de eventos ya está cerrado")
+        *lines, rest = (self._pending + bytes(data)).split(b"\n")
+        found: list[JobEvent | InvalidLine] = []
+        for line in lines:
+            if self._discarding:
+                # El final de una línea demasiado larga, ya anotada.
+                self._discarding = False
+                continue
+            item = self._decode(line)
+            if item is not None:
+                found.append(item)
+        if self._discarding:
+            rest = b""
+        elif len(rest) > self._max:
+            found.append(self._too_long(rest))
+            rest = b""
+            self._discarding = True
+        self._pending = rest
+        return found
+
+    def close(self) -> list[JobEvent | InvalidLine]:
+        """Lo que quedó sin «\\n» al terminar el canal; después no admite más bytes."""
+        if self._closed:
+            return []
+        self._closed = True
+        rest, self._pending = self._pending, b""
+        if self._discarding:
+            return []
+        item = self._decode(rest)
+        return [] if item is None else [item]
+
+    def _decode(self, line: bytes) -> JobEvent | InvalidLine | None:
+        if line.endswith(b"\r"):
+            line = line[:-1]
+        if len(line) > self._max:
+            return self._too_long(line)
+        if not line.strip():
+            return None
+        try:
+            text = line.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return InvalidLine(
+                line.decode("utf-8", "replace"),
+                f"no está en UTF-8 ({exc.reason} en el byte {exc.start})",
+            )
+        try:
+            data = json.loads(text, parse_constant=_reject_constant)
+        except (ValueError, RecursionError) as exc:
+            return InvalidLine(text, f"no es JSON ({exc})")
+        try:
+            return JobEvent.from_json(data)
+        except (ValueError, TypeError, RecursionError) as exc:
+            return InvalidLine(text, f"no es un evento del protocolo: {exc}")
+
+    def _too_long(self, line: bytes) -> InvalidLine:
+        start = line[: _SHOWN_CHARS * 4].decode("utf-8", "replace")[:_SHOWN_CHARS]
+        return InvalidLine(
+            f"{start}…", f"la línea pasa de {self._max} bytes: no es un evento"
+        )
+
+
+def _check_version(version: object) -> None:
+    if not _is_int(version) or version != EVENT_VERSION:
+        raise ValueError(
+            f"versión de evento desconocida: {_shown(version)} (esta versión de Geoblender "
+            f"entiende la {EVENT_VERSION})"
+        )
+
+
+def _json_object(value: object, where: str) -> dict[str, JsonValue]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} no es un objeto JSON ({_shown(value)})")
+    copied = plain_json(value, where)
+    if not isinstance(copied, dict):  # no ocurre: la copia de un Mapping es un dict
+        raise ValueError(f"{where} no es un objeto JSON")
+    return copied
+
+
+def _event_time(ts: float | None) -> float:
+    return time.time() if ts is None else ts
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
 
 
 # --- Comprobaciones ---------------------------------------------------------------------
@@ -379,19 +801,29 @@ def _check_input(job: str, name: str, value: object) -> None:
     """Una entrada: relativa, dentro de ``in/``, sin ``..``, unidad ni «:» (RF-004-02)."""
     if not isinstance(value, str) or not value:
         raise _invalid(job, f"la entrada «{name}» = {_shown(value)} no está dentro de in/")
+    problem = _relative_problem(value, INPUTS_DIR)
+    if problem == "outside":
+        raise JobError("request_path_outside_job", job=job, path=value)
+    if problem is not None:
+        raise _invalid(job, f"la entrada «{name}» = {value} no está dentro de {INPUTS_DIR}/")
+
+
+def _relative_problem(value: str, folder: str) -> str | None:
+    """Por qué ``value`` no es una ruta relativa dentro de ``folder/`` de la carpeta del
+    trabajo: ``"outside"`` si sale de ella (absoluta, de red, con unidad, con «:» o con
+    ``..``) y ``"elsewhere"`` si no está dentro de ``folder/``; ``None`` si lo está."""
     text = value.replace("\\", "/")
     parts = text.split("/")
     # Absoluta, de red (``//``), con unidad (``C:``) o con un flujo alternativo (``x:y``).
     if text.startswith("/") or ":" in text:
-        raise JobError("request_path_outside_job", job=job, path=value)
+        return "outside"
     # ``..`` (Windows quita los puntos y espacios del final de cada nombre: ``.. `` es ``..``).
     if any(_dots_only(part) and len(part.strip()) > 1 for part in parts):
-        raise JobError("request_path_outside_job", job=job, path=value)
-    inside = len(parts) >= 2 and parts[0] == INPUTS_DIR and all(
+        return "outside"
+    inside = len(parts) >= 2 and parts[0] == folder and all(
         _good_name(part) for part in parts[1:]
     )
-    if not inside:
-        raise _invalid(job, f"la entrada «{name}» = {value} no está dentro de {INPUTS_DIR}/")
+    return None if inside else "elsewhere"
 
 
 def _check_folder(folder: Path, request: JobRequest) -> None:
@@ -450,16 +882,26 @@ def _texts(value: object) -> Iterator[str]:
             stack.extend(item)
 
 
-def _json_copy(value: object, where: str, job: str, depth: int = 0) -> JsonValue:
-    """Copia JSON de ``value`` (las tuplas, como listas; los enteros y decimales de numpy,
-    como los de Python). :class:`JobError` ``request_invalid`` si no es JSON."""
+def _json_copy(value: object, where: str, job: str) -> JsonValue:
+    """:func:`plain_json` de ``value``; :class:`JobError` ``request_invalid`` si no es JSON."""
+    try:
+        return plain_json(value, where)
+    except ValueError as exc:
+        raise _invalid(job, str(exc)) from None
+
+
+def plain_json(value: object, where: str = "valor", *, depth: int = 0) -> JsonValue:
+    """Copia JSON de ``value``: las tuplas, como listas; los enteros y decimales de numpy,
+    como los de Python. :class:`ValueError` (que nombra ``where``) si no es JSON: NaN o
+    infinitos, una clave que no es texto, otro tipo o más de :data:`MAX_JSON_DEPTH`
+    niveles."""
     if depth > MAX_JSON_DEPTH:
-        raise _invalid(job, f"{where} tiene más de {MAX_JSON_DEPTH} niveles")
+        raise ValueError(f"{where} tiene más de {MAX_JSON_DEPTH} niveles")
     if value is None or isinstance(value, bool | str):
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise _invalid(job, f"{where} = {value!r} no es JSON (ni NaN ni infinitos)")
+            raise ValueError(f"{where} = {value!r} no es JSON (ni NaN ni infinitos)")
         return float(value)
     if isinstance(value, numbers.Integral):
         return int(value)
@@ -467,15 +909,15 @@ def _json_copy(value: object, where: str, job: str, depth: int = 0) -> JsonValue
         copied: dict[str, JsonValue] = {}
         for key, inner in value.items():
             if not isinstance(key, str):
-                raise _invalid(job, f"{where} tiene una clave que no es texto ({key!r})")
-            copied[key] = _json_copy(inner, f"{where}.{key}", job, depth + 1)
+                raise ValueError(f"{where} tiene una clave que no es texto ({key!r})")
+            copied[key] = plain_json(inner, f"{where}.{key}", depth=depth + 1)
         return copied
     if isinstance(value, list | tuple):
         return [
-            _json_copy(inner, f"{where}[{index}]", job, depth + 1)
+            plain_json(inner, f"{where}[{index}]", depth=depth + 1)
             for index, inner in enumerate(value)
         ]
-    raise _invalid(job, f"{where} es de tipo {type(value).__name__}, que no es JSON")
+    raise ValueError(f"{where} es de tipo {type(value).__name__}, que no es JSON")
 
 
 # --- Ayudas -----------------------------------------------------------------------------
@@ -511,7 +953,8 @@ def _new_job_uid(moment: dt.datetime) -> str:
     return _UIDS.new(moment)
 
 
-def _folder(job_dir: JobFolder) -> Path:
+def folder_path(job_dir: JobFolder) -> Path:
+    """La ruta de la carpeta de un trabajo, dada como ruta o como objeto con ``path``."""
     inner = getattr(job_dir, "path", None)
     return Path(inner if inner is not None else job_dir)
 
