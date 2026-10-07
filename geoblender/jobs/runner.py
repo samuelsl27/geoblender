@@ -8,7 +8,7 @@ Cada trabajo corre en proceso aparte o en un hilo de Blender según su tipo
 ``run``, con ``inprocess.InProcessExecutor``; el resto, en proceso aparte. Los dos tienen el
 mismo seguimiento, cancelación y registro (al final de este texto, lo propio del hilo).
 
-Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
+Ciclo de vida de un trabajo en proceso aparte:
 
 - :meth:`JobRunner.prepare`: completa la petición con lo que declara su tipo de trabajo
   (entorno y tiempo máximo), la valida (``protocol.validate_request``, con la raíz del
@@ -22,7 +22,11 @@ Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
       <python de Blender> -I -B -u <paquete>/workers/_bootstrap.py --package-dir <paquete>
           --job-dir <carpeta> --kind blender
 
-  con la carpeta del trabajo como carpeta de trabajo, la entrada estándar en una tubería
+  (``interpreter.build_command`` con el intérprete de ``interpreter.resolve_interpreter``:
+  en el entorno ``compute``, el intérprete externo si está configurado o, si no, el Python
+  de Blender con ``-I -S`` y el motor de cálculo; sin motor listo, el trabajo queda
+  «Fallido» ``runtime_missing`` sin proceso; RF-004-25, RF-004-26), con la carpeta del
+  trabajo como carpeta de trabajo, la entrada estándar en una tubería
   que el lanzador mantiene abierta (si Blender muere, el worker lo ve y termina), la salida
   estándar como canal de eventos y la de error en ``job.log``, y el entorno de Blender sin
   variables ``PYTHON*`` ni ``PIP_*`` y con los hilos de BLAS repartidos entre los workers
@@ -98,9 +102,8 @@ hueco se libera cuando acaba. :meth:`JobRunner.shutdown` lo espera como a un pro
 Los hilos de este módulo son *daemon*: nunca retienen el cierre de Blender. Solo el lanzador
 escribe ``state.json``, ``events.jsonl`` y, al final, sus avisos en ``job.log``.
 
-:meth:`JobRunner.reconfigure` cambia el máximo de workers en proceso aparte y la raíz de
-los trabajos sin parar el lanzador. Llegan en otra tarea de la spec los intérpretes
-``compute`` y externo (T25).
+:meth:`JobRunner.reconfigure` cambia el máximo de workers en proceso aparte, el intérprete
+externo y la raíz de los trabajos sin parar el lanzador.
 """
 
 from __future__ import annotations
@@ -108,6 +111,7 @@ from __future__ import annotations
 import collections
 import dataclasses
 import datetime as dt
+import enum
 import hashlib
 import json
 import math
@@ -156,15 +160,23 @@ from .records import (
     write_record,
 )
 
-WORKER_FLAGS: tuple[str, ...] = ("-I", "-B", "-u")
-"""Banderas del Python de Blender para un worker del entorno ``blender`` (plan §5.3.3):
-aislado (sin el ``site-packages`` del usuario ni variables ``PYTHON*``), sin
-``__pycache__`` (``-I`` implica ``-E``: ``PYTHONDONTWRITEBYTECODE`` no se lee) y sin búfer en
-el canal."""
-BOOTSTRAP_PARTS: tuple[str, ...] = ("workers", "_bootstrap.py")
+WORKER_FLAGS: tuple[str, ...] = interpreter.BLENDER_FLAGS
+"""Banderas del Python de Blender para un worker del entorno ``blender`` (plan §5.3.3;
+``interpreter.BLENDER_FLAGS``)."""
+BOOTSTRAP_PARTS: tuple[str, ...] = interpreter.BOOTSTRAP_PARTS
 """El arranque de los workers dentro del paquete (se lanza por ruta: ``jobs`` no importa
 ``workers``)."""
-INTERPRETER_KIND = "blender"
+INTERPRETER_KIND = interpreter.KIND_BLENDER
+"""El intérprete de los trabajos en hilo (el de Blender)."""
+
+
+class _Keep(enum.Enum):
+    KEEP = "keep"
+
+
+KEEP = _Keep.KEEP
+"""Valor por defecto de ``external_python`` en :meth:`JobRunner.reconfigure`: no cambiarlo
+(``None`` lo quita)."""
 REJECTED_EXECUTOR = "subprocess"
 """El ejecutor que consta en el registro de un trabajo rechazado al lanzarlo sin haber
 pasado por :meth:`JobRunner.prepare` (sin tipo de trabajo no se puede elegir otro)."""
@@ -383,12 +395,16 @@ class JobRunner:
     ``jobs_root``: la raíz de trabajos (``paths.resolve_jobs_root``; se crea si falta).
     ``package_dir``: la carpeta del paquete ``geoblender`` que cargan los workers (la que
     tiene ``workers/_bootstrap.py``). ``blender_python``: el ``python.exe`` de Blender.
+    ``runtime``: el motor de cálculo (``interpreter.ComputeRuntime``; ``None``, ninguno: los
+    trabajos ``compute`` quedan «Fallido» ``runtime_missing``, RF-004-25).
+    ``external_python``: el intérprete externo (ruta completa, si no :class:`ValueError`)
+    que ejecuta los trabajos ``compute`` en lugar del motor (RF-004-26); ``None``, ninguno.
     ``max_subprocess`` y ``max_inprocess``: trabajos a la vez en proceso aparte (2) y en hilo
     (1); los demás esperan en la cola, por orden de llegada (RF-004-04; enteros ≥ 1, si no
     :class:`ValueError`). ``forbidden_roots``: rutas que ninguna petición puede contener (la
     raíz del proyecto, RF-004-02). ``clock``: reloj monótono de las duraciones y los
-    plazos. :meth:`reconfigure` cambia después el máximo de procesos, la raíz y las rutas
-    prohibidas.
+    plazos. :meth:`reconfigure` cambia después el máximo de procesos, el intérprete externo,
+    la raíz y las rutas prohibidas.
 
     Sus métodos se llaman desde el hilo de Blender; los hilos lectores solo llenan colas y
     ``events.jsonl``, y los de los trabajos en hilo, su cola y su ``job.log``.
@@ -400,6 +416,8 @@ class JobRunner:
         jobs_root: Path,
         package_dir: Path,
         blender_python: Path,
+        runtime: interpreter.ComputeRuntime | None = None,
+        external_python: Path | None = None,
         max_subprocess: int = DEFAULT_MAX_SUBPROCESS,
         max_inprocess: int = DEFAULT_MAX_INPROCESS,
         forbidden_roots: Sequence[Path] = (),
@@ -407,6 +425,7 @@ class JobRunner:
     ) -> None:
         _check_maximum(max_subprocess, "max_subprocess")
         _check_maximum(max_inprocess, "max_inprocess")
+        external = _external_python(external_python)
         root = _absolute_root(jobs_root)
         package = Path(package_dir)
         bootstrap = package.joinpath(*BOOTSTRAP_PARTS)
@@ -417,8 +436,9 @@ class JobRunner:
             )
         self._jobs_root = root
         self._package_dir = package
-        self._bootstrap = bootstrap
         self._blender_python = Path(blender_python)
+        self._runtime = runtime
+        self._external_python = external
         self._forbidden_roots: tuple[Path, ...] = tuple(Path(p) for p in forbidden_roots)
         self._max_subprocess = max_subprocess
         self._max_inprocess = max_inprocess
@@ -444,6 +464,17 @@ class JobRunner:
         return self._forbidden_roots
 
     @property
+    def runtime(self) -> interpreter.ComputeRuntime | None:
+        """El motor de cálculo de los trabajos ``compute`` (``None``: ninguno)."""
+        return self._runtime
+
+    @property
+    def external_python(self) -> Path | None:
+        """El intérprete externo de los trabajos ``compute`` (RF-004-26; ``None``:
+        ninguno)."""
+        return self._external_python
+
+    @property
     def max_subprocess(self) -> int:
         """Workers en proceso aparte a la vez (RF-004-04)."""
         return self._max_subprocess
@@ -463,17 +494,22 @@ class JobRunner:
         self,
         *,
         max_subprocess: int | None = None,
+        external_python: Path | None | _Keep = KEEP,
         jobs_root: Path | None = None,
         forbidden_roots: Iterable[Path] | None = None,
     ) -> None:
         """Cambia la configuración sin parar el lanzador (al cambiar las preferencias o el
-        proyecto; RF-004-04, RF-004-18). Lo que se deja en ``None`` no cambia.
+        proyecto; RF-004-04, RF-004-18, RF-004-26). Lo que se deja en ``None`` no cambia,
+        salvo ``external_python`` (que no cambia si se omite).
 
         - ``max_subprocess``: workers en proceso aparte a la vez. Si sube, arranca al
           momento de la cola, por orden de llegada, lo que ahora quepa; si baja, los que
           están en curso siguen hasta acabar y los de la cola esperan a que haya menos en
           curso que el nuevo máximo. Los hilos de BLAS de los workers que arranquen desde
           ahora se reparten con él (:func:`.interpreter.blas_threads_for`).
+        - ``external_python``: el intérprete externo (ruta completa) de los trabajos
+          ``compute`` que arranquen desde ahora; ``None`` lo quita (vuelven al motor de
+          cálculo). Lo sondea antes quien lo configura (``interpreter.probe_external``).
         - ``jobs_root``: la raíz de los trabajos que se preparen desde ahora; los ya
           preparados siguen en su carpeta.
         - ``forbidden_roots``: las rutas que no pueden contener las peticiones que se
@@ -481,12 +517,16 @@ class JobRunner:
           proyecto, RF-004-02); rutas completas.
 
         Un valor que no vale es :class:`ValueError` y no cambia nada, tampoco los demás de
-        la misma llamada. El intérprete externo (``external_python``) llega con T25."""
+        la misma llamada."""
         if max_subprocess is not None:
             _check_maximum(max_subprocess, "max_subprocess")
+        external = (None if external_python is KEEP
+                    else _external_python(external_python))
         root = None if jobs_root is None else _absolute_root(jobs_root)
         forbidden = None if forbidden_roots is None else _absolute_roots(forbidden_roots)
         with self._lock:
+            if external_python is not KEEP:
+                self._external_python = external
             if root is not None:
                 self._jobs_root = root
             if forbidden is not None:
@@ -823,14 +863,15 @@ class JobRunner:
         §5.4.1)."""
         return policy.choose_executor(info, request)
 
-    def _command(self, folder: JobDir) -> list[str]:
-        """La orden del worker del entorno ``blender`` (plan §5.3.3)."""
-        return [
-            str(self._blender_python), *WORKER_FLAGS, str(self._bootstrap),
-            "--package-dir", str(self._package_dir),
-            "--job-dir", str(folder.path),
-            "--kind", INTERPRETER_KIND,
-        ]
+    def _interpreter_for(self, request: JobRequest) -> interpreter.Interpreter:
+        """El intérprete del trabajo según su entorno, el motor de cálculo y el intérprete
+        externo (plan §5.3.3); :class:`~.messages.JobError` ``runtime_missing`` si necesita
+        el motor y no está listo (RF-004-25, RF-004-26)."""
+        assert request.environment is not None  # validate_request lo exige
+        return interpreter.resolve_interpreter(
+            request.environment, blender_python=self._blender_python, runtime=self._runtime,
+            external_python=self._external_python,
+        )
 
     def _child_env(self) -> dict[str, str]:
         """El entorno de un worker que arranca ahora (plan §5.3.3): el de Blender sin
@@ -874,19 +915,22 @@ class JobRunner:
         if item.record.executor == EXECUTOR_INPROCESS:
             self._launch_thread(item)
             return
-        request = item.request
-        if request.environment != INTERPRETER_KIND:
-            # El motor de cálculo y su intérprete llegan con T25.
+        try:
+            interp = self._interpreter_for(item.request)
+        except JobError as exc:  # sin motor de cálculo listo (RF-004-25)
             self._finish(item, state="failed", exit_code=None, duration_s=None,
-                         error=_error("runtime_missing"))
+                         error=ErrorInfo.from_job_error(exc))
             return
+        item.interp = interp
         folder = item.folder
+        command = interpreter.build_command(interp, package_dir=self._package_dir,
+                                            job_dir=folder.path)
         started_wall = _now()
         try:
             with folder.log_file.open("ab") as log:
                 item.started_at = self._clock()
                 process = subprocess.Popen(
-                    self._command(folder),
+                    command,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=log,
@@ -898,7 +942,7 @@ class JobRunner:
             code = ("interpreter_not_found" if isinstance(exc, FileNotFoundError)
                     else "interpreter_failed")
             self._finish(item, state="failed", exit_code=None, duration_s=None,
-                         error=_error(code, path=str(self._blender_python),
+                         error=_error(code, path=str(interp.python),
                                       detail=exc.strerror or str(exc)))
             return
         item.process = process
@@ -909,13 +953,14 @@ class JobRunner:
             return
         item.record = dataclasses.replace(
             item.record, state="running", started_at=format_utc(started_wall),
-            pid=process.pid, interpreter=InterpreterInfo(kind=INTERPRETER_KIND),
+            pid=process.pid,
+            interpreter=InterpreterInfo(kind=interp.kind, lock_id=interp.lock_id),
         )
         item.state = "running"
         self._running[folder.job_uid] = item
         self._save(item)
         item.events_log.note("launched", executor=item.record.executor,
-                             interpreter=INTERPRETER_KIND, pid=process.pid)
+                             interpreter=interp.kind, pid=process.pid)
         item.reader = _Reader(item, self._clock)
         item.reader.start()
 
@@ -964,8 +1009,9 @@ class JobRunner:
         item.channel_closed = True  # sin hilo lector: se pueden cerrar las dos tuberías
         item.record = dataclasses.replace(item.record, pid=process.pid)
         reason = exc.strerror or str(exc)
+        python = self._blender_python if item.interp is None else item.interp.python
         self._finish(item, state="failed", exit_code=exit_code, duration_s=None,
-                     error=_error("interpreter_failed", path=str(self._blender_python),
+                     error=_error("interpreter_failed", path=str(python),
                                   detail=f"no se pudo asignar el worker a su Job Object "
                                          f"({reason})"))
 
@@ -1164,8 +1210,12 @@ class JobRunner:
         item.last_event_at = format_utc(dt.datetime.fromtimestamp(event.ts, dt.UTC))
         match event.type:
             case "start":
+                launched = item.record.interpreter
                 item.record = dataclasses.replace(
-                    item.record, interpreter=_interpreter(event.info),
+                    item.record,
+                    interpreter=_interpreter(
+                        event.info, lock_id=None if launched is None else launched.lock_id
+                    ),
                     last_event_at=item.last_event_at,
                 )
                 self._save(item)
@@ -1366,6 +1416,8 @@ class _Job:
         self.frac = 0.0
         self.message = ""
         self.process: subprocess.Popen[bytes] | None = None
+        self.interp: interpreter.Interpreter | None = None
+        """El intérprete con que se lanzó su proceso."""
         self.run: catalog.WorkerRun | None = None
         """La función del tipo de trabajo, si va en hilo."""
         self.thread: InProcessExecutor | None = None
@@ -1669,8 +1721,10 @@ def _seconds_text(value: float) -> str:
     return f"{value:g}".replace(".", ",")
 
 
-def _interpreter(info: Mapping[str, JsonValue]) -> InterpreterInfo:
-    """El intérprete que contó el evento ``start``; lo que no es un texto no se guarda."""
+def _interpreter(info: Mapping[str, JsonValue], *, lock_id: str | None = None
+                 ) -> InterpreterInfo:
+    """El intérprete que contó el evento ``start`` (con el ``lock_id`` del motor con que se
+    lanzó); lo que no es un texto no se guarda."""
     kind = info.get("kind")
 
     def text(name: str) -> str | None:
@@ -1679,8 +1733,19 @@ def _interpreter(info: Mapping[str, JsonValue]) -> InterpreterInfo:
 
     return InterpreterInfo(
         kind=kind if isinstance(kind, str) and kind in INTERPRETER_KINDS else INTERPRETER_KIND,
-        python=text("python"), numpy=text("numpy"), blas=text("blas"),
+        python=text("python"), numpy=text("numpy"), blas=text("blas"), lock_id=lock_id,
     )
+
+
+def _external_python(path: Path | None) -> Path | None:
+    """El intérprete externo como ruta completa (``None``: ninguno; :class:`ValueError` si
+    no es una ruta completa)."""
+    if path is None:
+        return None
+    exe = Path(path)
+    if not exe.is_absolute():
+        raise ValueError(f"el intérprete externo «{exe}» no es una ruta completa")
+    return exe
 
 
 def _sha256(path: Path) -> tuple[str, int]:

@@ -2,11 +2,14 @@
 """Arranque de un worker en un proceso aparte (spec 004; RF-004-01, RF-004-12, RF-004-13,
 RF-004-15; plan 004 §5.3.3, §5.3.4 y §5.4.3).
 
-El lanzador lo ejecuta con el Python de Blender, con la carpeta del trabajo como carpeta de
-trabajo::
+El lanzador lo ejecuta con la carpeta del trabajo como carpeta de trabajo, con una de estas
+órdenes (``jobs.interpreter.build_command``, plan §5.3.3)::
 
-    python.exe -I -B -u <paquete>/workers/_bootstrap.py --package-dir <paquete>
-        --job-dir <carpeta del trabajo> --kind blender
+    blender : <Python de Blender> -I -B -u    <paquete>/workers/_bootstrap.py
+                  --package-dir <paquete> --job-dir <carpeta> --kind blender [--site <dir>]
+    compute : <Python de Blender> -I -S -B -u <paquete>/workers/_bootstrap.py …
+                  --kind compute --site <motor>/site --expect-numpy <versión del lock>
+    external: <intérprete externo> -I -B -u   <paquete>/workers/_bootstrap.py … --kind external
 
 con la entrada estándar en una tubería (la vigilancia del padre), la salida estándar en otra
 (el canal de eventos) y la salida de error en ``job.log``. Es un guion autónomo: hasta cargar
@@ -23,8 +26,15 @@ importa ``geoblender`` de forma absoluta (excepción de ARQ-09, plan 001). Pasos
 3. Vigilancia del padre: un hilo *daemon* lee la entrada estándar hasta su fin y entonces
    termina el proceso con el código 4: si Blender muere, Windows cierra la tubería
    (RF-004-13).
+4. Con ``--site``, ``site.addsitedir`` de esa carpeta (procesa sus ``.pth``). Es el único
+   cambio de ``sys.path``: con ``-I -S`` (``compute``), ``sys.path`` solo tenía la
+   biblioteca estándar, y el numpy de Blender no se puede colar.
 5. Carga el paquete por ruta (``importlib``) con el nombre ``geoblender``, sin añadir nada a
    ``sys.path`` (no expone las demás extensiones del usuario).
+6. ``compute``: importa numpy y comprueba que viene de la carpeta ``--site`` y que su versión
+   es ``--expect-numpy``; si no, evento ``error`` (``runtime_numpy_wrong`` o
+   ``runtime_package_mismatch``; sin numpy, ``runtime_missing``) y salida 5, sin calcular
+   (RF-004-25).
 7. Evento ``start`` con el pid, el intérprete y las versiones de Python, numpy y BLAS
    (RF-004-15).
 8. Lee la petición (``request.json``), importa ``geoblender.workers.<tipo>`` y llama a su
@@ -33,14 +43,11 @@ importa ``geoblender`` de forma absoluta (excepción de ARQ-09, plan 001). Pasos
 Códigos de salida (plan §5.3.4): 0, terminado, con ``result.json`` y el evento ``result``;
 2, ``JobFailed`` (o un ``JobError``) con su evento ``error``; 3, cancelación atendida, con el
 evento ``cancelled``; 4, padre perdido; 5, comprobación de arranque fallida (argumentos,
-paquete, petición ilegible o tipo de trabajo que no existe; con su evento ``error`` si el
-canal ya funciona); 1, excepción no capturada, con la traza solo en ``job.log`` (también
-``SystemExit``: un ``sys.exit`` del cálculo o de una librería no puede hacerse pasar por
-otro de estos códigos; RF-004-12). Una caída nativa o un ``os._exit`` dan su propio
-código.
-
-Este arranque admite el intérprete ``blender``; ``--site`` y el entorno ``compute`` (pasos 4 y
-6) llegan con el motor de cálculo.
+paquete, petición ilegible, tipo de trabajo que no existe o numpy que no es el del motor;
+con su evento ``error`` si el canal ya funciona); 1, excepción no capturada, con la traza
+solo en ``job.log`` (también ``SystemExit``: un ``sys.exit`` del cálculo o de una librería no
+puede hacerse pasar por otro de estos códigos; RF-004-12). Una caída nativa o un
+``os._exit`` dan su propio código.
 """
 
 import sys
@@ -51,6 +58,7 @@ import argparse  # noqa: E402
 import importlib  # noqa: E402
 import importlib.util  # noqa: E402
 import os  # noqa: E402
+import site  # noqa: E402
 import threading  # noqa: E402
 import traceback  # noqa: E402
 from collections.abc import Callable, Sequence  # noqa: E402
@@ -60,7 +68,8 @@ from typing import IO, Any, NoReturn  # noqa: E402
 
 PACKAGE_NAME = "geoblender"
 WORKERS_PACKAGE = f"{PACKAGE_NAME}.workers"
-KINDS: tuple[str, ...] = ("blender",)
+KIND_COMPUTE = "compute"
+KINDS: tuple[str, ...] = ("blender", KIND_COMPUTE, "external")
 """Intérpretes que admite el arranque (``--kind``)."""
 
 EXIT_OK = 0
@@ -89,12 +98,21 @@ class _Parser(argparse.ArgumentParser):
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    """Paso 1: ``--package-dir``, ``--job-dir`` y ``--kind`` (:data:`KINDS`)."""
+    """Paso 1: ``--package-dir``, ``--job-dir``, ``--kind`` (:data:`KINDS`) y, si hacen
+    falta, ``--site`` (obligatorio con ``compute``) y ``--expect-numpy`` (solo con
+    ``compute``)."""
     parser = _Parser(prog="_bootstrap.py", add_help=False, allow_abbrev=False)
     parser.add_argument("--package-dir", required=True)
     parser.add_argument("--job-dir", required=True)
     parser.add_argument("--kind", required=True, choices=KINDS)
-    return parser.parse_args(list(argv))
+    parser.add_argument("--site")
+    parser.add_argument("--expect-numpy")
+    args = parser.parse_args(list(argv))
+    if args.kind == KIND_COMPUTE and not args.site:
+        parser.error(f"el intérprete {KIND_COMPUTE} necesita --site (el motor de cálculo)")
+    if args.expect_numpy is not None and args.kind != KIND_COMPUTE:
+        parser.error(f"--expect-numpy solo vale con el intérprete {KIND_COMPUTE}")
+    return args
 
 
 def open_channel() -> IO[str]:
@@ -136,6 +154,47 @@ def _wait_for_parent() -> None:
     os._exit(EXIT_PARENT_LOST)
 
 
+def add_site(site_dir: str) -> None:
+    """Paso 4: la carpeta ``site_dir`` (el motor de cálculo o las ruedas de las extensiones)
+    entra en ``sys.path`` con ``site.addsitedir``, que procesa sus ``.pth``."""
+    site.addsitedir(site_dir)
+    note(f"carpeta de paquetes añadida (--site): {site_dir}")
+
+
+def check_numpy(site_dir: str, expected: str | None) -> None:
+    """Paso 6 (``compute``): numpy tiene que venir de ``site_dir`` (si no,
+    ``runtime_numpy_wrong`` con la carpeta de la que vino) y, con ``expected``, tener esa
+    versión (si no, ``runtime_package_mismatch``); si no se puede importar,
+    ``runtime_missing``. Lanza el ``JobError`` del §8 antes de calcular nada (RF-004-25)."""
+    from geoblender.jobs.messages import JobError
+
+    try:
+        import numpy
+    except ImportError as exc:
+        note(f"el motor de cálculo no tiene numpy: {exc}")
+        raise JobError("runtime_missing") from None
+    where = getattr(numpy, "__file__", None)
+    folder = os.path.dirname(os.path.realpath(where)) if where else "?"
+    if not where or not _inside(where, site_dir):
+        raise JobError("runtime_numpy_wrong", path=folder)
+    version = str(getattr(numpy, "__version__", "") or "?")
+    if expected is not None and version != expected:
+        raise JobError("runtime_package_mismatch", package="numpy", actual=version,
+                       locked=expected)
+    note(f"motor de cálculo: numpy {version} desde {folder}")
+
+
+def _inside(path: str, folder: str) -> bool:
+    """Si ``path`` está dentro de ``folder`` (rutas reales, sin distinguir mayúsculas en
+    Windows)."""
+    real = os.path.normcase(os.path.realpath(path))
+    root = os.path.normcase(os.path.realpath(folder))
+    try:
+        return os.path.commonpath([real, root]) == root
+    except ValueError:  # otra unidad
+        return False
+
+
 def load_package(package_dir: Path) -> ModuleType:
     """Paso 5: carga ``<package_dir>/__init__.py`` como el paquete ``geoblender``, por ruta y
     sin tocar ``sys.path``."""
@@ -158,14 +217,30 @@ def load_package(package_dir: Path) -> ModuleType:
     return module
 
 
-def run_job(job_dir: str, kind: str, channel: IO[str]) -> int:
-    """Pasos 7 y 8, con el paquete ya cargado: evento ``start``, petición, tipo de trabajo y
-    ``main(ctx)``. Devuelve el código de salida (plan §5.3.4); una excepción no prevista
-    sale de aquí (código 1)."""
+def run_job(
+    job_dir: str,
+    kind: str,
+    channel: IO[str],
+    *,
+    site_dir: str | None = None,
+    expect_numpy: str | None = None,
+) -> int:
+    """Pasos 6 a 8, con el paquete ya cargado: comprobación de numpy (``compute``), evento
+    ``start``, petición, tipo de trabajo y ``main(ctx)``. Devuelve el código de salida
+    (plan §5.3.4); una excepción no prevista sale de aquí (código 1)."""
     from geoblender.jobs import protocol, worker_api
     from geoblender.jobs.messages import JobError
 
     sink = worker_api.StreamSink(channel)
+    if kind == KIND_COMPUTE:
+        assert site_dir is not None  # parse_args lo exige
+        try:
+            check_numpy(site_dir, expect_numpy)
+        except JobError as exc:
+            note(f"comprobación de arranque fallida ({exc.code}): {exc.text}")
+            sink.send(protocol.JobEvent.error(exc.code, msgid=exc.msgid, msg=exc.text,
+                                              values=exc.values))
+            return EXIT_STARTUP
     info = worker_api.interpreter_info(kind)
     note(
         f"arranque del worker: pid {info['pid']}, intérprete {kind}, Python {info['python']}, "
@@ -260,8 +335,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_STARTUP
     watch_parent()
     try:
+        if args.site:
+            add_site(args.site)
         load_package(Path(args.package_dir))
-        code = run_job(args.job_dir, args.kind, channel)
+        code = run_job(args.job_dir, args.kind, channel, site_dir=args.site,
+                       expect_numpy=args.expect_numpy)
     except StartupError as exc:
         note(str(exc))
         code = EXIT_STARTUP
