@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Lanzador de los trabajos en segundo plano: :class:`JobRunner` (spec 004; RF-004-01,
-RF-004-03 a RF-004-05, RF-004-09 a RF-004-13, RF-004-15; plan 004 §5.3.1, §5.3.3, §5.3.4,
-§5.4.1, §5.4.2 y §5.4.5).
+RF-004-03 a RF-004-05, RF-004-09 a RF-004-13, RF-004-15, RF-004-16; plan 004 §5.3.1,
+§5.3.3, §5.3.4, §5.4.1, §5.4.2, §5.4.5 y §5.4.6).
 
 Cada trabajo corre en proceso aparte o en un hilo de Blender según su tipo
 (``policy.choose_executor``, RF-004-03): en hilo solo lo estimado en ≤ 5 s con función
@@ -69,7 +69,10 @@ Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
   muere de golpe, Windows cierra el *handle* de cada *Job Object* y termina el worker con
   todo lo que lanzó; la vigilancia del padre del arranque (fin de la entrada estándar,
   salida 4) es la segunda capa. El registro de un trabajo así se cierra «Interrumpido» al
-  reabrir el proyecto (``records.mark_interrupted``, T17).
+  reabrir el proyecto (``records.mark_interrupted``).
+- Incorporación (RF-004-16): cuando el módulo dueño confirma que incorporó los resultados,
+  :meth:`JobRunner.mark_ingested` lo anota en ``state.json`` y borra las entradas y los
+  resultados de la carpeta (``cleanup.release``); queda el registro.
 
 En hilo (``executor = "inprocess"``): la función ``run`` del tipo de trabajo corre en un
 hilo *daemon* (``inprocess.InProcessExecutor``), sin proceso propio (``pid`` vacío), con
@@ -110,7 +113,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from ..core.timeutil import format_utc
-from . import catalog, interpreter, policy, winjob
+from . import catalog, cleanup, interpreter, policy, winjob
 from .inprocess import InProcessExecutor
 from .messages import JobError, one_line
 from .paths import JobDir, job_dir
@@ -128,7 +131,9 @@ from .protocol import (
 )
 from .records import (
     INTERPRETER_KINDS,
+    LOG_PREFIX,
     LOGGER,
+    NOTE_KEY,
     CancelInfo,
     ErrorInfo,
     InterpreterInfo,
@@ -190,10 +195,6 @@ puede retenerlo); pasado ese plazo, el trabajo se finaliza con lo recibido."""
 MAX_LOGGED_INVALID = 50
 """Líneas del canal que no son eventos que se repiten como aviso en ``job.log`` (en
 ``events.jsonl`` están todas)."""
-NOTE_KEY = "note"
-"""Clave de las notas del lanzador en ``events.jsonl`` (los eventos llevan ``v`` y ``t``)."""
-LOG_PREFIX = "Geoblender (lanzador):"
-"""Comienzo de las líneas que el lanzador añade a ``job.log`` al finalizar."""
 _HASH_BLOCK = 1 << 20
 
 _STATE_TEXT: Mapping[str, str] = {
@@ -551,6 +552,42 @@ class JobRunner:
             _wait_for_exit(running, deadline, channels=True)
             for item in running:
                 self._close_at_shutdown(item)
+
+    def mark_ingested(self, job_uid: str) -> float:
+        """El módulo dueño confirma que incorporó los resultados del trabajo ``job_uid``
+        (RF-004-16): la hora queda en su ``state.json`` (``ingested_at``, la primera vez) y se
+        borran sus entradas y sus resultados (``cleanup.release``); quedan ``request.json``,
+        ``events.jsonl``, ``job.log``, ``result.json`` y ``state.json``. Devuelve los MB
+        liberados (0 si ya se habían borrado: confirmar otra vez no hace nada más).
+
+        Un trabajo que este lanzador no lanzó (de otra sesión) se busca en la raíz de
+        trabajos. :class:`ValueError` sin borrar nada si ``job_uid`` no es un identificador,
+        si no hay ningún trabajo con él (o su ``state.json`` no se puede leer), si aún está
+        en cola o en curso (aunque haya acabado, hasta que :meth:`poll` lo finalice) o si su
+        hilo abandonado sigue en marcha (aún podría escribir en ``out/``)."""
+        with self._lock:
+            item = self._jobs.get(job_uid)
+            if item is not None:
+                folder, record = item.folder, item.record
+                if item.thread is not None and item.thread.alive and record.is_final:
+                    raise ValueError(f"el trabajo {job_uid} terminó, pero su hilo sigue en "
+                                     "marcha: sus resultados no se borran hasta que acabe")
+            else:
+                folder = job_dir(self._jobs_root, job_uid)
+                found = read_record(folder)
+                if found is None:
+                    raise ValueError(f"no hay ningún trabajo {job_uid} con su registro en "
+                                     f"«{self._jobs_root}»")
+                record = found
+            if not record.is_final:
+                raise ValueError(f"el trabajo {job_uid} sigue «{record.state}»: no se puede "
+                                 "dar por incorporado")
+            if record.ingested_at is None:
+                record = dataclasses.replace(record, ingested_at=format_utc(_now()))
+                write_record(folder, record)
+                if item is not None:
+                    item.record = record
+            return cleanup.release(folder)
 
     # --- Seguimiento ---------------------------------------------------------------------
 

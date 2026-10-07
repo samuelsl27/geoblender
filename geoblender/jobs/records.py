@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Registro del estado de los trabajos: ``state.json`` (spec 004; RF-004-12, RF-004-15;
-plan 004 §5.2.4 y §5.3.1).
+"""Registro del estado de los trabajos: ``state.json`` (spec 004; RF-004-12, RF-004-13,
+RF-004-15; plan 004 §5.2.4, §5.3.1 y §5.4.5).
 
 ``state.json`` (esquema ``geoblender.job_state/1``) es el resumen de un trabajo que deja
 Blender en su carpeta: tipo, nombre, dueño, proyecto y operación de origen, estado,
@@ -19,6 +19,9 @@ incorporación. El registro completo lo forman además ``request.json``, ``event
   (:func:`without_absolute_paths`).
 - :func:`read_record` y :func:`scan`: leen sin escribir; un ``state.json`` que falta no
   cuenta, y uno ilegible tampoco (con un aviso en el registro de Python).
+- :func:`mark_interrupted` (al abrir un proyecto, RF-004-13): lo que su ``state.json`` deja
+  «En cola» o «En curso» y no está en el lanzador lo dejó así un Blender que se cayó; queda
+  «Interrumpido» con la hora de su último evento.
 
 Solo escribe Blender (el lanzador); el worker nunca toca ``state.json``.
 """
@@ -32,15 +35,18 @@ import math
 import os
 import re
 import time
-from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..core.timeutil import format_utc, parse_utc
 from .messages import JobError
+from .paths import EVENTS_FILE, LOG_FILE
 from .protocol import (
     JOB_UID_PATTERN,
+    MAX_EVENT_BYTES,
     WORKER_NAME_PATTERN,
+    JobEvent,
     JobFolder,
     JobRequest,
     JsonValue,
@@ -53,6 +59,13 @@ LOGGER = logging.getLogger("geoblender.jobs")
 
 RECORD_SCHEMA = "geoblender.job_state/1"
 RECORD_FILE = "state.json"
+NOTE_KEY = "note"
+"""Clave de las notas del lanzador en ``events.jsonl`` (los eventos llevan ``v`` y ``t``)."""
+LOG_PREFIX = "Geoblender (lanzador):"
+"""Comienzo de las líneas que el lanzador añade a ``job.log`` al finalizar un trabajo."""
+EVENTS_TAIL_BYTES = 2 * MAX_EVENT_BYTES
+"""Lo que se lee del final de ``events.jsonl`` para buscar su último evento: cabe entera la
+línea más larga que admite el protocolo."""
 
 JOB_STATES: tuple[str, ...] = (
     "queued", "running", "succeeded", "failed", "cancelled", "timed_out", "interrupted",
@@ -383,6 +396,151 @@ def scan(jobs_root: Path) -> list[JobRecord]:
         if record is not None:
             found.append(record)
     return found
+
+
+def mark_interrupted(jobs_root: Path, *, active_uids: Iterable[str]) -> list[str]:
+    """Al abrir un proyecto (plan §5.4.5; RF-004-13): deja «Interrumpido»
+    (``job_interrupted``) cada trabajo de ``jobs_root`` cuyo ``state.json`` dice «En cola» o
+    «En curso» y que no está entre ``active_uids`` (los que lleva el lanzador): lo dejó así
+    un Blender que se cayó. Devuelve sus identificadores, por orden.
+
+    Con su último evento: ``last_event_at`` pasa a ser la hora del último evento de su
+    ``events.jsonl`` (si es posterior a la que tenía), y el trabajo termina (``ended_at``) en
+    lo último que se sabe de él: la última línea con hora de ``events.jsonl`` (evento o nota
+    del lanzador) o, sin ella, su inicio o su entrada en la cola. Su duración va desde el
+    inicio hasta ahí (vacía si no llegó a arrancar), sin código de salida; la cancelación
+    que tuviera se conserva. Se añade al registro la nota final en ``events.jsonl`` y una
+    línea en ``job.log``. Un trabajo cuyo ``state.json`` no se puede escribir se queda como
+    estaba (con un aviso en el registro de Python) y no se devuelve.
+
+    ``active_uids``: colección de textos (:class:`TypeError` si es un texto suelto o lleva
+    otra cosa). Una raíz que no existe no tiene nada que marcar."""
+    active = as_uid_set(active_uids, "active_uids")
+    root = Path(jobs_root)
+    marked: list[str] = []
+    for record in scan(root):
+        if not record.is_active or record.job_uid in active:
+            continue
+        folder = root / record.job_uid
+        last_event, last_line = _last_times(folder / EVENTS_FILE)
+        known = [parse_utc(text) for text in (record.queued_at, record.started_at,
+                                              record.last_event_at) if text is not None]
+        ended = max([*known, *(t for t in (last_event, last_line) if t is not None)])
+        last_event_at = record.last_event_at
+        if last_event is not None and (
+            last_event_at is None or last_event > parse_utc(last_event_at)
+        ):
+            last_event_at = format_utc(last_event)
+        duration = (None if record.started_at is None
+                    else max(0.0, (ended - parse_utc(record.started_at)).total_seconds()))
+        error = ErrorInfo.from_job_error(JobError("job_interrupted", job=record.label))
+        interrupted = replace(
+            record, state="interrupted", ended_at=format_utc(ended), duration_s=duration,
+            exit_code=None, error=error, last_event_at=last_event_at,
+        )
+        try:
+            write_record(folder, interrupted)
+        except (OSError, ValueError) as exc:
+            LOGGER.warning("No se pudo dejar «Interrumpido» el trabajo %s: %s",
+                           record.job_uid, exc)
+            continue
+        _append_line(folder / EVENTS_FILE, (json.dumps(
+            {NOTE_KEY: "finished", "ts": time.time(), "state": "interrupted",
+             "exit_code": None, "error": error.code, "orphan": True},
+            ensure_ascii=False,
+        ) + "\n").encode("utf-8"))
+        before = "«En curso»" if record.state == "running" else "«En cola»"
+        _append_line(folder / LOG_FILE, (
+            f"{LOG_PREFIX} el trabajo termina «Interrumpido» (sin proceso): constaba "
+            f"{before} y Blender se cerró sin finalizarlo; se marcó al abrir el proyecto: "
+            f"{error.text}\n"
+        ).encode("utf-8"))
+        marked.append(record.job_uid)
+    return marked
+
+
+def as_uid_set(values: Iterable[str], what: str = "los identificadores") -> frozenset[str]:
+    """Los identificadores de trabajo de ``values`` (una colección de textos) como conjunto;
+    :class:`TypeError` si ``values`` es un texto suelto (se iterarían sus letras) o lleva
+    algo que no es un texto. ``what`` nombra el argumento en el error."""
+    if isinstance(values, str | bytes) or not isinstance(values, Iterable):
+        raise TypeError(f"{what} debe ser una colección de identificadores, no "
+                        f"{type(values).__name__}")
+    found = frozenset(values)
+    wrong = [value for value in found if not isinstance(value, str)]
+    if wrong:
+        raise TypeError(f"{what} lleva valores que no son identificadores: {wrong[0]!r}")
+    return found
+
+
+def _last_times(path: Path) -> tuple[dt.datetime | None, dt.datetime | None]:
+    """La hora del último evento de ``events.jsonl`` y la de su última línea con hora
+    (evento o nota del lanzador), leyendo solo su final (:data:`EVENTS_TAIL_BYTES`). Las
+    líneas rotas, las que no son JSON y las horas que no valen no cuentan; un fichero que
+    falta o no se puede leer no tiene ninguna."""
+    try:
+        with path.open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            start = max(0, size - EVENTS_TAIL_BYTES)
+            stream.seek(start)
+            tail = stream.read()
+    except OSError:
+        return None, None
+    lines = tail.split(b"\n")
+    if start > 0:
+        lines = lines[1:]  # la primera puede estar cortada
+    last_event: dt.datetime | None = None
+    last_line: dt.datetime | None = None
+    for raw in reversed(lines):
+        if not raw.strip():
+            continue
+        try:
+            data = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if NOTE_KEY in data:
+            moment = _moment(data.get("ts"))
+        else:
+            try:
+                moment = _moment(JobEvent.from_json(data).ts)
+            except (ValueError, TypeError, RecursionError):
+                continue
+            if moment is not None and last_event is None:
+                last_event = moment
+        if moment is not None and last_line is None:
+            last_line = moment
+        if last_event is not None:
+            break  # las notas anteriores al último evento ya no cambian nada
+    return last_event, last_line
+
+
+def _moment(ts: object) -> dt.datetime | None:
+    """La hora UTC de ``ts`` (segundos desde 1970), o ``None`` si no es una hora."""
+    if not _is_number(ts) or not math.isfinite(ts):
+        return None
+    try:
+        return dt.datetime.fromtimestamp(ts, dt.UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _append_line(path: Path, line: bytes) -> None:
+    """Añade ``line`` al final de ``path`` en su propia línea (si el fichero quedó cortado
+    sin «\\n», primero lo cierra); si no se puede, solo un aviso en el registro de
+    Python."""
+    try:
+        with path.open("a+b") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            if size:
+                stream.seek(size - 1)
+                if stream.read(1) != b"\n":
+                    line = b"\n" + line
+            stream.seek(0, os.SEEK_END)
+            stream.write(line)
+    except OSError as exc:
+        LOGGER.warning("No se pudo completar %s: %s", path.name, exc.strerror or exc)
 
 
 # --- Sin rutas absolutas ----------------------------------------------------------------
