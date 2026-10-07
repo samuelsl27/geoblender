@@ -5,6 +5,12 @@
 ``gbtools.ui_snapshot`` es puro: compara dos instantáneas (diccionarios que se pueden
 guardar en JSON, como las escribe el guion dentro de Blender) y nombra cada diferencia
 con su clave, lo que sobra y lo que falta.
+
+Convergencia, T43 (hallazgo D4 de la comprobación en pantalla): el espacio de trabajo
+marcado de Geoblender que anexa el conmutador es del fichero por diseño (CW §3.3 y §4) y no
+cuenta como diferencia, pero cualquier otro espacio que sobre o falte, sí; y los ciclos
+de RNF-003-06 se cuentan desde que se ejecuta el operador, no desde la orden (Ctrl+F10
+simulado se ejecuta en el ciclo siguiente, al entregar el evento).
 """
 
 import json
@@ -81,6 +87,103 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(report)), report)
         failed = ui_snapshot.report(_snapshot(), _snapshot(), [{**steps[0], "applied": False}])
         self.assertFalse(failed["ok"])
+
+
+MAIN = "GB"  # el espacio principal que anexa el conmutador (el real sale del catálogo)
+
+
+def _workspaces(names: list[str], marked: list[str]) -> dict[str, object]:
+    snapshot = _snapshot()
+    snapshot["workspaces"] = sorted(names)
+    snapshot["geoblender_workspaces"] = sorted(marked)
+    return snapshot
+
+
+class AppendedWorkspaceTest(unittest.TestCase):
+    """Convergencia, T43 (hallazgo D4): el anexado de un espacio marcado de Geoblender."""
+
+    def test_appended_geoblender_tolerated(self) -> None:
+        """RF-003-02, CE-003-02 (CW §3.3 y §4): el espacio marcado que no estaba antes se
+        tolera en las dos claves y el informe lo dice; sin la tolerancia, es una
+        diferencia en las dos."""
+        before = _workspaces(["Layout", "Modeling"], [])
+        after = _workspaces([MAIN, "Layout", "Modeling"], [MAIN])
+        tolerated = ui_snapshot.appended_geoblender_workspaces(before, after)
+        self.assertEqual(tolerated, {"workspaces": (MAIN,),
+                                     "geoblender_workspaces": (MAIN,)})
+        self.assertEqual(ui_snapshot.compare(before, after, tolerated=tolerated), [])
+        self.assertEqual(sorted(d.key for d in ui_snapshot.compare(before, after)),
+                         ["geoblender_workspaces", "workspaces"])
+        report = ui_snapshot.report(before, after, [], tolerated=tolerated)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["tolerated"], {"geoblender_workspaces": [MAIN],
+                                               "workspaces": [MAIN]})
+        self.assertEqual(json.loads(json.dumps(report)), report)
+        self.assertEqual(ui_snapshot.appended_geoblender_workspaces(after, after), {})
+
+    def test_other_workspaces_still_count(self) -> None:
+        """RF-003-23, CE-003-02: con el anexado tolerado, un espacio sin marcar que sobra,
+        uno que falta, uno que pasa a estar marcado y uno marcado que falta siguen siendo
+        diferencias, cada uno en su clave."""
+        before = _workspaces(["Layout", "Modeling", "Sección", "GB · Datos"],
+                             ["GB · Datos"])
+        after = _workspaces([MAIN, "Layout", "Layout.001", "Sección"],
+                            [MAIN, "Sección"])
+        tolerated = ui_snapshot.appended_geoblender_workspaces(before, after)
+        self.assertEqual(tolerated["workspaces"], (MAIN,))
+        found = {d.key: d for d in ui_snapshot.compare(before, after, tolerated=tolerated)}
+        self.assertEqual(sorted(found), ["geoblender_workspaces", "workspaces"])
+        self.assertEqual(found["workspaces"].added, ("Layout.001",))
+        self.assertEqual(found["workspaces"].removed, ("GB · Datos", "Modeling"))
+        self.assertEqual(found["geoblender_workspaces"].added, ("Sección",))
+        self.assertEqual(found["geoblender_workspaces"].removed, ("GB · Datos",))
+        self.assertFalse(ui_snapshot.report(before, after, [], tolerated=tolerated)["ok"])
+
+    def test_tolerance_only_for_its_keys(self) -> None:
+        """La tolerancia solo quita lo tolerado de las claves que nombra, y solo lo que no
+        estaba antes; una clave que antes no estaba y que solo tiene lo tolerado no es
+        una diferencia."""
+        before = _snapshot()
+        after = _snapshot()
+        after["classes"] = [*after["classes"], MAIN]  # type: ignore[misc]
+        after["geoblender_workspaces"] = [MAIN]
+        after["workspaces"] = [MAIN, "Layout", "Modeling"]
+        tolerated = ui_snapshot.appended_geoblender_workspaces(before, after)
+        found = ui_snapshot.compare(before, after, tolerated=tolerated)
+        self.assertEqual([(d.key, d.added) for d in found], [("classes", (MAIN,))])
+
+
+class CyclesTest(unittest.TestCase):
+    """Convergencia, T43 (hallazgo D4): RNF-003-06 se mide desde que se ejecuta el
+    operador."""
+
+    def test_execution_cycle(self) -> None:
+        """RNF-003-06: el operador ejecutado dentro del temporizador del guion (el botón y
+        F3) está en el ciclo de ese paso; el ejecutado al entregar el evento (Ctrl+F10),
+        en el del paso siguiente, porque Blender atiende los eventos antes que los
+        temporizadores."""
+        self.assertEqual(ui_snapshot.execution_cycle(0, in_timer=True), 0)
+        self.assertEqual(ui_snapshot.execution_cycle(0, in_timer=False), 1)
+        self.assertEqual(ui_snapshot.execution_cycle(3, in_timer=False), 4)
+        self.assertEqual(ui_snapshot.cycles_since_execution(1, 0), 1)  # botón
+        self.assertEqual(ui_snapshot.cycles_since_execution(2, 1), 1)  # Ctrl+F10
+        self.assertIsNone(ui_snapshot.cycles_since_execution(40, None))  # no se ejecutó
+
+    def test_report_first_cycle(self) -> None:
+        """RNF-003-06: un paso aplicado más tarde del primer ciclo tras ejecutarse el
+        operador deja el informe sin ``ok`` y se nombra; los pasos sin ciclos (omitidos o
+        el de deshabilitar) no cuentan."""
+        steps = [
+            {"via": "button", "applied": True, "ticks": 1},
+            {"via": "ctrl_f10", "applied": True, "ticks": 1, "order_ticks": 2},
+            {"via": "ctrl_f10", "applied": True, "skipped": True},
+            {"via": "disable", "applied": True},
+        ]
+        self.assertTrue(ui_snapshot.report(_snapshot(), _snapshot(), steps)["ok"])
+        late = [*steps, {"via": "f3", "applied": True, "ticks": 2}]
+        report = ui_snapshot.report(_snapshot(), _snapshot(), late)
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["late_steps"], [4])
 
 
 if __name__ == "__main__":

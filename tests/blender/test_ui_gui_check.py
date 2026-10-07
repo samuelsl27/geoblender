@@ -10,6 +10,12 @@
 
 El conmutado real con temporizadores solo corre con interfaz (M2 de ``tasks.md``).
 
+Convergencia, T43 (hallazgo D4 de la comprobación en pantalla): la instantánea nombra los
+espacios marcados de Geoblender, también con la extensión deshabilitada, y el anexado del
+conmutador se tolera (CW §3.3 y §4); los ciclos de RNF-003-06 se cuentan desde que se
+ejecuta el operador (una espía en ``switcher.toggle`` durante cada paso), no desde la
+orden.
+
 Y el guion de medida de la barra (spec 003, T19; ``tools/inblender/measure_topbar.py``;
 RF-003-10, RNF-003-01): las columnas con contenido de una franja de una captura (RGBA de
 abajo arriba, con numpy) salen donde hay algo distinto del fondo, y el guion se niega a
@@ -73,6 +79,101 @@ class GuiCheckSnapshotTest(unittest.TestCase):
                 gui_check.main()
         finally:
             sys.argv = argv
+
+    def test_appended_workspace_tolerated(self) -> None:
+        """RF-003-02, RF-003-23, CE-003-02 (convergencia, T43; hallazgo D4; CW §3.3 y §4):
+        la instantánea nombra los espacios marcados de Geoblender (``geoblender_workspaces``);
+        el que anexa el primer conmutado se tolera al comparar S2 con S1 y, con la
+        extensión ya deshabilitada (la marca se lee del valor que queda en el fichero),
+        S3 con S0; sin la tolerancia, sobra."""
+        blender_ext.load_file()
+        self.addCleanup(blender_ext.load_file)
+        s0 = gui_check.take_snapshot()
+        self.assertEqual(s0["geoblender_workspaces"], [])
+        blender_ext.enable()
+        main = importlib.import_module(f"{module_name()}.bl.ui.switcher").main_workspace()
+        s1 = gui_check.take_snapshot()
+        window = bpy.context.window_manager.windows[0]
+        with bpy.context.temp_override(window=window):
+            self.assertEqual(bpy.ops.geoblender.ui_toggle_mode(), {"FINISHED"})
+        s2 = gui_check.take_snapshot()
+        self.assertEqual(s2["geoblender_workspaces"], [main])
+        tolerated = ui_snapshot.appended_geoblender_workspaces(s1, s2)
+        self.assertEqual(tolerated, {"workspaces": (main,), "geoblender_workspaces": (main,)})
+        keys = ("workspaces", "geoblender_workspaces")
+        self.assertEqual([str(d) for d in ui_snapshot.compare(s1, s2, tolerated=tolerated)
+                          if d.key in keys], [])
+        blender_ext.disable()
+        self.assertNotIn("geoblender_mode", bpy.types.WorkSpace.bl_rna.properties)
+        s3 = gui_check.take_snapshot()
+        self.assertEqual(s3["geoblender_workspaces"], [main])
+        tolerated = ui_snapshot.appended_geoblender_workspaces(s0, s3)
+        self.assertEqual([str(d) for d in ui_snapshot.compare(s0, s3, tolerated=tolerated)
+                          if d.key in keys], [])
+        self.assertEqual([d.added for d in ui_snapshot.compare(s0, s3)
+                          if d.key == "workspaces"], [(main,)])
+
+
+class GuiCheckCyclesTest(unittest.TestCase):
+    """RNF-003-06 (convergencia, T43; hallazgo D4): el guion cuenta los ciclos desde que se
+    ejecuta el operador del conmutador, no desde la orden. Sin interfaz el cambio de
+    espacio no se aplica, así que cada paso agota la espera; lo que se prueba es dónde
+    empieza la cuenta y que la espía se retira."""
+
+    def setUp(self) -> None:
+        blender_ext.unload()
+        blender_ext.load_file()
+        blender_ext.enable()
+        self.addCleanup(blender_ext.unload)
+        self.addCleanup(blender_ext.load_file)
+        self.switcher = importlib.import_module(f"{module_name()}.bl.ui.switcher")
+        self.check = gui_check.Check({"toggle": 0, "disable": False, "quit": False,
+                                      "output": gui_check.DEFAULT_OUTPUT})
+
+    def run_step(self) -> dict[str, object]:
+        while self.check.waiting is not None:
+            self.check.tick()
+        return self.check.steps[-1]
+
+    def test_button_counts_from_its_tick(self) -> None:
+        """RNF-003-06: el botón se ejecuta dentro del temporizador del guion: su ciclo es
+        el del paso de la orden; al terminar el paso, ``switcher.toggle`` vuelve a ser
+        la función de antes."""
+        original = self.switcher.toggle
+        self.check.queue.append(lambda: self.check.act("button"))
+        self.check.tick()
+        self.assertIsNot(self.switcher.toggle, original)
+        step = self.run_step()
+        self.assertIs(self.switcher.toggle, original)
+        self.assertEqual((step["executions"], step["executed_in"], step["executed_tick"],
+                          step["appended"]), (1, "timer", 0, True))
+        self.assertEqual(step["order_ticks"], gui_check.MAX_WAIT_TICKS)
+        self.assertEqual((step["applied"], step["ticks"]), (False, None))
+
+    def test_event_counts_from_the_next_tick(self) -> None:
+        """RNF-003-06: Ctrl+F10 se ejecuta al entregar el evento, fuera del temporizador y
+        en el ciclo siguiente a la orden: la cuenta empieza un paso después (contada desde
+        la orden, salía un ciclo de más)."""
+        self.check.simulate_ctrl_f10 = lambda window: True  # el evento se entrega después
+        self.check.queue.append(lambda: self.check.act("ctrl_f10"))
+        self.check.tick()
+        self.assertEqual(self.check.executions, [])
+        with bpy.context.temp_override(window=self.check.window):
+            bpy.ops.geoblender.ui_toggle_mode("INVOKE_DEFAULT")  # como al entregarlo
+        step = self.run_step()
+        self.assertEqual((step["executions"], step["executed_in"], step["executed_tick"]),
+                         (1, "event", 1))
+        self.assertEqual(step["order_ticks"], gui_check.MAX_WAIT_TICKS)
+
+    def test_not_executed(self) -> None:
+        """RNF-003-06: si el operador no llega a ejecutarse, el paso no se aplica y no
+        tiene ciclos."""
+        self.check.simulate_ctrl_f10 = lambda window: True
+        self.check.queue.append(lambda: self.check.act("ctrl_f10"))
+        self.check.tick()
+        step = self.run_step()
+        self.assertEqual((step["applied"], step["executions"], step["executed_tick"],
+                          step["ticks"]), (False, 0, None, None))
 
 
 class MeasureTopbarScriptTest(unittest.TestCase):

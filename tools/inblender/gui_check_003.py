@@ -16,21 +16,29 @@ diferido):
 2. Toma la instantánea ``S1`` (``take_snapshot``): ``draw_left`` de la barra superior,
    las funciones de dibujo de las cabeceras y los menús que amplía la 003, el mapa de
    complementos, las clases ``GEOBLENDER_*``, las propiedades ``geoblender*`` de los tipos
-   principales, los manejadores, las preferencias de Blender y los espacios de trabajo.
+   principales, los manejadores, las preferencias de Blender, los espacios de trabajo y
+   los marcados de Geoblender (``geoblender_workspaces``; con la extensión deshabilitada,
+   por el valor que queda en el fichero, CW §4).
 3. Conmuta ``--toggle`` veces, alternando la vía: el botón del conmutador
    (``ui_toggle_mode`` con ``target``), ``Ctrl+F10`` (``Window.event_simulate``; solo con
    ``--enable-event-simulate``, si no se omite y se dice) y F3 (el operador invocado como lo
-   invoca la búsqueda). Tras cada orden anota el espacio de origen y el de destino, en
-   cuántos ciclos se aplicó (RNF-003-06: en el primero) y el modo del objeto (CW §3.3).
-4. Toma ``S2`` y la compara con ``S1`` (``gbtools.ui_snapshot``): 0 diferencias.
+   invoca la búsqueda). Tras cada orden anota el espacio de origen y el de destino, el modo
+   del objeto (CW §3.3) y, con una espía en ``switcher.toggle`` (:class:`ToggleSpy`), dónde
+   y en qué ciclo se ejecutó el operador y en cuántos ciclos desde entonces quedó activo el
+   destino (``ticks``; RNF-003-06: 1). Convergencia, T43 (hallazgo D4): contados desde la
+   orden (``order_ticks``), Ctrl+F10 simulado daba 2, porque el evento se entrega en el
+   ciclo siguiente (``gbtools.ui_snapshot.execution_cycle``).
+4. Toma ``S2`` y la compara con ``S1`` (``gbtools.ui_snapshot``): 0 diferencias. El
+   espacio marcado que anexa el primer conmutado es del fichero por diseño (CW §3.3 y §4) y
+   se tolera (``tolerated`` en el informe); cualquier otro espacio que sobre o falte, no
+   (convergencia, T43; hallazgo D4).
 5. Con ``--deshabilitar``, deja la ventana en modo Geoblender, deshabilita la extensión y,
-   en el ciclo siguiente, toma ``S3`` y la compara con ``S0`` (la barra original y la
-   ventana en su espacio anterior; la lista de espacios no cuenta: el anexado es del
-   fichero, CW §4) (M5).
+   en el ciclo siguiente, toma ``S3`` y la compara con ``S0``, con la misma tolerancia (la
+   barra original y la ventana en su espacio anterior) (M5).
 
 Escribe el informe JSON en ``--salida`` (por defecto ``tests/_out/gui_check_003.json``)
-con ``ok``, los pasos y las diferencias, y lo resume en la consola; ``--salir`` cierra
-Blender al terminar. M1, M3 y M4 se miran a la vez en la pantalla (``tasks.md``).
+con ``ok``, los pasos, las diferencias y lo tolerado, y lo resume en la consola; ``--salir``
+cierra Blender al terminar. M1, M3 y M4 se miran a la vez en la pantalla (``tasks.md``).
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ if __name__ == "__main__":  # como guion: sin __pycache__ en el repositorio (imp
 
 import json  # noqa: E402
 from collections.abc import Callable  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -73,6 +82,8 @@ VIAS = ("button", "ctrl_f10", "f3")
 TOGGLE = "ui_toggle_mode"
 EXTENSION_SUFFIX = ".geoblender"  # bl_ext.<repo>.geoblender
 PROPERTY_PREFIX = EXTENSION_SUFFIX[1:]  # las propiedades geoblender, geoblender_mode…
+WORKSPACE_PROPERTY = "geoblender_mode"  # la marca de un espacio de Geoblender (CW §1)
+SWITCHER = ".bl.ui.switcher"  # el módulo del conmutador, dentro de la extensión
 MAX_WAIT_TICKS = 40
 
 
@@ -180,6 +191,8 @@ def take_snapshot() -> dict[str, object]:
         "handlers": _handlers(),
         "preferences": _preferences(),
         "workspaces": sorted(workspace.name for workspace in bpy.data.workspaces),
+        "geoblender_workspaces": sorted(workspace.name for workspace in bpy.data.workspaces
+                                        if is_marked(workspace)),
         "window_workspaces": [
             window.workspace.name if window.workspace else "None"
             for window in bpy.context.window_manager.windows
@@ -201,8 +214,57 @@ def extension_module() -> str:
     raise RuntimeError("no se encuentra la extensión: instálela con tools/dev_install.py")
 
 
+def is_marked(workspace: Any) -> bool:
+    """Verdadero si ``workspace`` está marcado de Geoblender (``WorkSpace.geoblender_mode``,
+    CW §1). Con la extensión deshabilitada la propiedad no está definida, pero su valor
+    queda en el fichero (CW §4) y se lee de las propiedades de sistema del ID
+    (``bl_system_properties_get``, Blender 5.0 y posteriores)."""
+    if workspace is None:
+        return False
+    if WORKSPACE_PROPERTY in workspace.bl_rna.properties:
+        return bool(getattr(workspace, WORKSPACE_PROPERTY))
+    read = getattr(workspace, "bl_system_properties_get", None)
+    system = read() if read is not None else None
+    return bool(system is not None and system.get(WORKSPACE_PROPERTY))
+
+
 def is_geoblender(window: Any) -> bool:
-    return bool(getattr(window.workspace, "geoblender_mode", False))
+    return is_marked(window.workspace)
+
+
+@dataclass(frozen=True)
+class Execution:
+    """Una ejecución del operador del conmutador durante un paso: el paso del
+    temporizador de su ciclo (``ui_snapshot.execution_cycle``), dónde se ejecutó
+    (``timer`` o ``event``) y si anexó el espacio de Geoblender."""
+
+    tick: int
+    executed_in: str
+    appended: bool
+
+
+class ToggleSpy:
+    """Envuelve ``switcher.toggle`` de la extensión, que es lo que ejecuta el operador del
+    conmutador venga del botón, de Ctrl+F10 o de F3, y avisa a ``on_call`` con su
+    resultado cada vez; :meth:`remove` deja la función de antes (convergencia, T43)."""
+
+    def __init__(self, switcher: Any, on_call: Callable[[Any], None]) -> None:
+        self.switcher = switcher
+        self.original = switcher.toggle
+        self.on_call = on_call
+
+    def install(self) -> None:
+        original, on_call = self.original, self.on_call
+
+        def toggle(*args: Any, **kwargs: Any) -> Any:
+            result = original(*args, **kwargs)
+            on_call(result)
+            return result
+
+        self.switcher.toggle = toggle
+
+    def remove(self) -> None:
+        self.switcher.toggle = self.original
 
 
 # Pasos ----------------------------------------------------------------------------------
@@ -242,45 +304,94 @@ class Check:
         self.snapshots: dict[str, dict[str, object]] = {}
         self.queue: list[Callable[[], None]] = []
         self.waiting: dict[str, object] | None = None
-        self.ticks = 0
+        self.ticks = 0  # pasos del temporizador desde la orden del paso en curso
+        self.in_timer = False  # verdadero mientras corre :meth:`tick`
+        self.spy: ToggleSpy | None = None
+        self.executions: list[Execution] = []  # del operador, en el paso en curso
 
     # Acciones ---------------------------------------------------------------------------
+
+    def switcher(self) -> Any:
+        """El módulo del conmutador de la extensión (``bl.ui.switcher``)."""
+        return sys.modules[self.module + SWITCHER]
+
+    def on_toggle(self, result: Any) -> None:
+        """La espía: el operador se ha ejecutado. Dentro del temporizador (el botón y F3,
+        con ``bpy.ops``), en el ciclo del paso en curso; fuera (Ctrl+F10, al entregar el
+        evento), en el del paso siguiente (``ui_snapshot.execution_cycle``)."""
+        self.executions.append(Execution(
+            tick=ui_snapshot.execution_cycle(self.ticks, in_timer=self.in_timer),
+            executed_in="timer" if self.in_timer else "event",
+            appended=bool(getattr(result, "appended", False)),
+        ))
+
+    def simulate_ctrl_f10(self, window: Any) -> bool:
+        """Pone Ctrl+F10 en la cola de eventos de ``window`` (se entrega en el ciclo
+        siguiente); falso si Blender no se abrió con ``--enable-event-simulate``."""
+        if not bpy.app.use_event_simulate:
+            return False
+        window.event_simulate(type="F10", value="PRESS", ctrl=True)
+        window.event_simulate(type="F10", value="RELEASE", ctrl=True)
+        return True
+
+    def end_spy(self) -> None:
+        if self.spy is not None:
+            self.spy.remove()
+            self.spy = None
 
     def act(self, via: str) -> None:
         window = self.window
         before = window.workspace.name
         target = "BLENDER" if is_geoblender(window) else "GEOBLENDER"
         step: dict[str, object] = {"via": via, "from": before, "target": target}
+        self.ticks = 0
+        self.executions = []
+        self.spy = ToggleSpy(self.switcher(), self.on_toggle)
+        self.spy.install()
         with bpy.context.temp_override(window=window):
             if via == "button":
                 bpy.ops.geoblender.ui_toggle_mode(target=target)
             elif via == "f3":
                 bpy.ops.geoblender.ui_toggle_mode("INVOKE_DEFAULT")
                 step["note"] = "operador invocado como desde F3 (la búsqueda no se simula)"
-            elif bpy.app.use_event_simulate:
-                window.event_simulate(type="F10", value="PRESS", ctrl=True)
-                window.event_simulate(type="F10", value="RELEASE", ctrl=True)
-            else:
+            elif not self.simulate_ctrl_f10(window):
+                self.end_spy()
                 step.update(applied=True, skipped=True,
                             note="omitido: Blender sin --enable-event-simulate")
                 self.steps.append(step)
                 return
         self.waiting = step
-        self.ticks = 0
 
     def check_applied(self) -> bool:
-        """Verdadero cuando el paso en curso ya se aplicó (o se agotó la espera)."""
+        """Verdadero cuando el paso en curso ya se aplicó (o se agotó la espera). Anota los
+        pasos desde la orden (``order_ticks``), dónde y en qué paso se ejecutó el operador
+        y, si se aplicó, los ciclos desde esa ejecución (``ticks``; RNF-003-06: 1)."""
         step = self.waiting
         assert step is not None
         self.ticks += 1
         now = self.window.workspace.name
-        if now != step["from"] or self.ticks >= MAX_WAIT_TICKS:
-            step.update(to=now, applied=now != step["from"], ticks=self.ticks,
-                        geoblender=is_geoblender(self.window), object_mode=bpy.context.mode)
-            self.steps.append(step)
-            self.waiting = None
-            return True
-        return False
+        if now == step["from"] and self.ticks < MAX_WAIT_TICKS:
+            return False
+        first = self.executions[0] if self.executions else None
+        executed_tick = first.tick if first is not None else None
+        changed = now != step["from"]
+        applied = changed and first is not None
+        step.update(
+            to=now, applied=applied, order_ticks=self.ticks,
+            executions=len(self.executions),
+            executed_in=first.executed_in if first is not None else None,
+            executed_tick=executed_tick,
+            appended=any(execution.appended for execution in self.executions),
+            ticks=(ui_snapshot.cycles_since_execution(self.ticks, executed_tick)
+                   if applied else None),
+            geoblender=is_geoblender(self.window), object_mode=bpy.context.mode,
+        )
+        if changed and first is None:
+            step["note"] = "el espacio cambió sin que se ejecutara el conmutador"
+        self.end_spy()
+        self.steps.append(step)
+        self.waiting = None
+        return True
 
     def plan(self) -> None:
         options = self.options
@@ -312,12 +423,20 @@ class Check:
         addon_utils.disable(self.module, default_set=False)
 
     def finish(self) -> None:
+        self.end_spy()
         snapshots = self.snapshots
-        result = ui_snapshot.report(snapshots["S1"], snapshots["S2"], self.steps)
+        tolerated = {"S2/S1": ui_snapshot.appended_geoblender_workspaces(snapshots["S1"],
+                                                                         snapshots["S2"])}
+        result = ui_snapshot.report(snapshots["S1"], snapshots["S2"], self.steps,
+                                    tolerated=tolerated["S2/S1"])
         if "S0" in snapshots and "S3" in snapshots:
+            tolerated["S3/S0"] = ui_snapshot.appended_geoblender_workspaces(snapshots["S0"],
+                                                                            snapshots["S3"])
             disabled = ui_snapshot.compare(snapshots["S0"], snapshots["S3"],
-                                           ignore=("workspaces",))
+                                           tolerated=tolerated["S3/S0"])
             result["disable_differences"] = [d.as_dict() for d in disabled]
+            result["disable_tolerated"] = {key: sorted(names) for key, names
+                                           in sorted(tolerated["S3/S0"].items())}
             result["ok"] = bool(result["ok"]) and not disabled
         result["snapshots"] = snapshots
         output = Path(self.options["output"])  # type: ignore[arg-type]
@@ -325,6 +444,17 @@ class Check:
         output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"gui_check_003: {'CORRECTO' if result['ok'] else 'CON DIFERENCIAS'} · "
               f"{len(self.steps)} pasos · informe en «{output}»", flush=True)
+        for label, found in tolerated.items():
+            for key, names in found.items():
+                print(f"  {label}, tolerado (anexado del conmutador, CW §4): {key} "
+                      f"{list(names)}", flush=True)
+        for index, step in enumerate(self.steps, start=1):
+            ticks = step.get("ticks")
+            if not step.get("applied"):
+                print(f"  paso {index} ({step['via']}): no se aplicó", flush=True)
+            elif isinstance(ticks, int) and ticks > ui_snapshot.FIRST_CYCLE:
+                print(f"  paso {index} ({step['via']}): activo {ticks} ciclos después de "
+                      "ejecutarse el operador (RNF-003-06: 1)", flush=True)
         for difference in [*result["differences"], *result.get("disable_differences", [])]:
             print(f"  {difference['text']}", flush=True)
         if self.options["quit"]:
@@ -333,12 +463,16 @@ class Check:
     # Temporizador -----------------------------------------------------------------------
 
     def tick(self) -> float | None:
-        if self.waiting is not None and not self.check_applied():
+        self.in_timer = True
+        try:
+            if self.waiting is not None and not self.check_applied():
+                return 0.0
+            if not self.queue:
+                return None
+            self.queue.pop(0)()
             return 0.0
-        if not self.queue:
-            return None
-        self.queue.pop(0)()
-        return 0.0
+        finally:
+            self.in_timer = False
 
 
 def main() -> None:
