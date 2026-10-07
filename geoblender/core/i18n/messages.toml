@@ -971,3 +971,61 @@ es = "Modo Geoblender"
 
 ["This workspace is a Geoblender layout"]
 es = "Este espacio de trabajo es una disposición de Geoblender"
+
+# Preferencias de los trabajos en segundo plano (spec 004, T18; RF-004-04, RF-004-17,
+# RF-004-24, RF-004-26; plan 004 §5.2.7). «Background jobs» también es texto del catálogo de
+# comandos, con la misma traducción; «Automatic» y «Compute engine» ya están arriba.
+
+["Background jobs"]
+es = "Trabajos en segundo plano"
+
+["Jobs at once (separate process)"]
+es = "Trabajos a la vez (proceso aparte)"
+
+["Maximum number of jobs running at the same time in a separate process; the others wait in the queue"]
+es = "Máximo de trabajos en curso a la vez en proceso aparte; los demás esperan en cola"
+
+["Keep finished jobs (days)"]
+es = "Conservar los trabajos terminados (días)"
+
+["Days after which the folders of finished jobs are deleted when a project is opened"]
+es = "Días tras los que se borran las carpetas de los trabajos terminados al abrir un proyecto"
+
+["Compute engine source"]
+es = "Origen del motor de cálculo"
+
+["Where the compute engine is installed from"]
+es = "De dónde se instala el motor de cálculo"
+
+["The wheel store if one is configured; otherwise PyPI"]
+es = "El almacén de ruedas si hay uno configurado; si no, PyPI"
+
+["Wheel store"]
+es = "Almacén de ruedas"
+
+["Only the wheel store folder, without internet"]
+es = "Solo la carpeta del almacén de ruedas, sin internet"
+
+["PyPI"]
+es = "PyPI"
+
+["Download from PyPI (needs online access)"]
+es = "Descarga de PyPI (necesita el acceso en línea)"
+
+["Wheel store folder"]
+es = "Carpeta del almacén de ruedas"
+
+["Local or NAS folder with the wheels of the compute engine (empty: none)"]
+es = "Carpeta local o del NAS con las ruedas del motor de cálculo (vacía: ninguna)"
+
+["Use an external interpreter"]
+es = "Usar un intérprete externo"
+
+["Run the jobs that need the compute engine with the external interpreter (development)"]
+es = "Ejecuta con el intérprete externo los trabajos que necesitan el motor de cálculo (desarrollo)"
+
+["External interpreter"]
+es = "Intérprete externo"
+
+["Python 3.13 interpreter with numpy, checked when it is set (empty: none)"]
+es = "Intérprete de Python 3.13 con numpy, comprobado al configurarlo (vacío: ninguno)"
