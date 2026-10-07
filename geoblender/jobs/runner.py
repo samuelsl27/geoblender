@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Lanzador de los trabajos en segundo plano: :class:`JobRunner` (spec 004; RF-004-01,
-RF-004-03, RF-004-05, RF-004-09 a RF-004-13, RF-004-15; plan 004 §5.3.1, §5.3.3, §5.3.4,
+RF-004-03 a RF-004-05, RF-004-09 a RF-004-13, RF-004-15; plan 004 §5.3.1, §5.3.3, §5.3.4,
 §5.4.1, §5.4.2 y §5.4.5).
 
 Cada trabajo corre en proceso aparte o en un hilo de Blender según su tipo
@@ -15,15 +15,18 @@ Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
   proyecto prohibida) y, solo si vale, crea su carpeta con ``request.json`` y ``state.json``
   «En cola». El módulo dueño escribe después sus entradas en ``in/``.
 - :meth:`JobRunner.submit`: pone el trabajo en la cola (FIFO) y vuelve sin esperarlo, con
-  un :class:`JobHandle`; si hay hueco (``max_subprocess`` workers a la vez), lo lanza al
-  momento::
+  un :class:`JobHandle`; si hay hueco (``max_subprocess`` workers a la vez, 2 por defecto;
+  RF-004-04), lo lanza al momento; si no, queda «En cola» y arranca, por orden de llegada,
+  en cuanto otro acaba::
 
       <python de Blender> -I -B -u <paquete>/workers/_bootstrap.py --package-dir <paquete>
           --job-dir <carpeta> --kind blender
 
   con la carpeta del trabajo como carpeta de trabajo, la entrada estándar en una tubería
   que el lanzador mantiene abierta (si Blender muere, el worker lo ve y termina), la salida
-  estándar como canal de eventos y la de error en ``job.log``. Las rutas absolutas viajan en
+  estándar como canal de eventos y la de error en ``job.log``, y el entorno de Blender sin
+  variables ``PYTHON*`` ni ``PIP_*`` y con los hilos de BLAS repartidos entre los workers
+  que pueden correr a la vez (``interpreter.child_env``). Las rutas absolutas viajan en
   la línea de órdenes, nunca en la petición. Justo después de lanzarlo, el worker entra en
   su propio *Job Object* (``winjob.JobObject``, ``KILL_ON_JOB_CLOSE``): los procesos que
   lance entran con él, y terminarlo los termina a todos. Si no se puede asignar, el worker
@@ -72,7 +75,7 @@ En hilo (``executor = "inprocess"``): la función ``run`` del tipo de trabajo co
 hilo *daemon* (``inprocess.InProcessExecutor``), sin proceso propio (``pid`` vacío), con
 los mismos eventos, que :meth:`JobRunner.poll` recoge de su cola y añade a
 ``events.jsonl``, y el mismo estado final según su código (el de la tabla del plan
-§5.3.4). Hay un hueco de hilo (:data:`DEFAULT_MAX_INPROCESS`) aparte de los de proceso;
+§5.3.4). Hay ``max_inprocess`` huecos de hilo (1 por defecto) aparte de los de proceso;
 la cola es por orden de llegada dentro de cada ejecutor. Un hilo no se puede matar: si
 sigue en marcha al vencer su plazo de gracia, el trabajo queda «Cancelado» (o «Tiempo
 agotado») forzado y el hilo se **abandona**: lo que entregue después se descarta, y su
@@ -82,8 +85,9 @@ hueco se libera cuando acaba. :meth:`JobRunner.shutdown` lo espera como a un pro
 Los hilos de este módulo son *daemon*: nunca retienen el cierre de Blender. Solo el lanzador
 escribe ``state.json``, ``events.jsonl`` y, al final, sus avisos en ``job.log``.
 
-Llegan en otras tareas de la spec: el parámetro del máximo de hilos, ``reconfigure`` y el
-entorno del hijo (T15) y los intérpretes ``compute`` y externo (T25).
+:meth:`JobRunner.reconfigure` cambia el máximo de workers en proceso aparte y la raíz de
+los trabajos sin parar el lanzador. Llegan en otra tarea de la spec los intérpretes
+``compute`` y externo (T25).
 """
 
 from __future__ import annotations
@@ -94,6 +98,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import os
 import queue
 import shutil
 import subprocess
@@ -105,7 +110,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from ..core.timeutil import format_utc
-from . import catalog, policy, winjob
+from . import catalog, interpreter, policy, winjob
 from .inprocess import InProcessExecutor
 from .messages import JobError, one_line
 from .paths import JobDir, job_dir
@@ -295,10 +300,11 @@ class JobRunner:
     ``jobs_root``: la raíz de trabajos (``paths.resolve_jobs_root``; se crea si falta).
     ``package_dir``: la carpeta del paquete ``geoblender`` que cargan los workers (la que
     tiene ``workers/_bootstrap.py``). ``blender_python``: el ``python.exe`` de Blender.
-    ``max_subprocess``: workers en proceso aparte a la vez (los demás esperan en la cola, por
-    orden de llegada); en hilo, :data:`DEFAULT_MAX_INPROCESS`. ``forbidden_roots``: rutas
-    que ninguna petición puede contener (la raíz del proyecto, RF-004-02). ``clock``: reloj
-    monótono de las duraciones y los plazos.
+    ``max_subprocess`` y ``max_inprocess``: trabajos a la vez en proceso aparte (2) y en hilo
+    (1); los demás esperan en la cola, por orden de llegada (RF-004-04; enteros ≥ 1, si no
+    :class:`ValueError`). ``forbidden_roots``: rutas que ninguna petición puede contener (la
+    raíz del proyecto, RF-004-02). ``clock``: reloj monótono de las duraciones y los
+    plazos. :meth:`reconfigure` cambia después el máximo de procesos y la raíz.
 
     Sus métodos se llaman desde el hilo de Blender; los hilos lectores solo llenan colas y
     ``events.jsonl``, y los de los trabajos en hilo, su cola y su ``job.log``.
@@ -311,16 +317,13 @@ class JobRunner:
         package_dir: Path,
         blender_python: Path,
         max_subprocess: int = DEFAULT_MAX_SUBPROCESS,
+        max_inprocess: int = DEFAULT_MAX_INPROCESS,
         forbidden_roots: Sequence[Path] = (),
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if isinstance(max_subprocess, bool) or not isinstance(max_subprocess, int) or (
-            max_subprocess < 1
-        ):
-            raise ValueError(f"max_subprocess {max_subprocess!r} no es un entero ≥ 1")
-        root = Path(jobs_root)
-        if not root.is_absolute():
-            raise ValueError(f"la raíz de trabajos «{root}» no es una ruta completa")
+        _check_maximum(max_subprocess, "max_subprocess")
+        _check_maximum(max_inprocess, "max_inprocess")
+        root = _absolute_root(jobs_root)
         package = Path(package_dir)
         bootstrap = package.joinpath(*BOOTSTRAP_PARTS)
         if not bootstrap.is_file():
@@ -334,7 +337,7 @@ class JobRunner:
         self._blender_python = Path(blender_python)
         self._forbidden_roots: tuple[Path, ...] = tuple(Path(p) for p in forbidden_roots)
         self._max_subprocess = max_subprocess
-        self._max_inprocess = DEFAULT_MAX_INPROCESS
+        self._max_inprocess = max_inprocess
         self._clock = clock
         self._lock = threading.RLock()
         self._jobs: dict[str, _Job] = {}
@@ -351,9 +354,49 @@ class JobRunner:
         return self._jobs_root
 
     @property
+    def max_subprocess(self) -> int:
+        """Workers en proceso aparte a la vez (RF-004-04)."""
+        return self._max_subprocess
+
+    @property
+    def max_inprocess(self) -> int:
+        """Trabajos en hilo a la vez (RF-004-04), contando los hilos abandonados que siguen
+        vivos."""
+        return self._max_inprocess
+
+    @property
     def closed(self) -> bool:
         """Si ya se cerró (:meth:`shutdown`): no admite trabajos nuevos."""
         return self._closed
+
+    def reconfigure(
+        self,
+        *,
+        max_subprocess: int | None = None,
+        jobs_root: Path | None = None,
+    ) -> None:
+        """Cambia la configuración sin parar el lanzador (al cambiar las preferencias o el
+        proyecto; RF-004-04). Lo que se deja en ``None`` no cambia.
+
+        - ``max_subprocess``: workers en proceso aparte a la vez. Si sube, arranca al
+          momento de la cola, por orden de llegada, lo que ahora quepa; si baja, los que
+          están en curso siguen hasta acabar y los de la cola esperan a que haya menos en
+          curso que el nuevo máximo. Los hilos de BLAS de los workers que arranquen desde
+          ahora se reparten con él (:func:`.interpreter.blas_threads_for`).
+        - ``jobs_root``: la raíz de los trabajos que se preparen desde ahora; los ya
+          preparados siguen en su carpeta.
+
+        Un valor que no vale es :class:`ValueError` y no cambia nada, tampoco los demás de
+        la misma llamada. El intérprete externo (``external_python``) llega con T25."""
+        if max_subprocess is not None:
+            _check_maximum(max_subprocess, "max_subprocess")
+        root = None if jobs_root is None else _absolute_root(jobs_root)
+        with self._lock:
+            if root is not None:
+                self._jobs_root = root
+            if max_subprocess is not None:
+                self._max_subprocess = max_subprocess
+                self._start_queued()
 
     # --- Preparar y lanzar -------------------------------------------------------------
 
@@ -580,11 +623,20 @@ class JobRunner:
             "--kind", INTERPRETER_KIND,
         ]
 
+    def _child_env(self) -> dict[str, str]:
+        """El entorno de un worker que arranca ahora (plan §5.3.3): el de Blender sin
+        variables ``PYTHON*`` ni ``PIP_*`` y con los hilos de BLAS repartidos entre los
+        ``max_subprocess`` workers que pueden correr a la vez, si el usuario no los
+        fijó."""
+        return interpreter.child_env(
+            os.environ, blas_threads=interpreter.blas_threads_for(self._max_subprocess)
+        )
+
     def _start_queued(self) -> None:
-        """Arranca de la cola, por orden de llegada, lo que quepa: cada ejecutor tiene sus
-        huecos (``max_subprocess`` en proceso aparte y :data:`DEFAULT_MAX_INPROCESS` en
-        hilo, contando los hilos abandonados que siguen vivos), y un trabajo que espera su
-        hueco no retiene a los del otro ejecutor."""
+        """Arranca de la cola, por orden de llegada, lo que quepa (RF-004-04): cada
+        ejecutor tiene sus huecos (``max_subprocess`` en proceso aparte y
+        ``max_inprocess`` en hilo, contando los hilos abandonados que siguen vivos), y un
+        trabajo que espera su hueco no retiene a los del otro ejecutor."""
         if not self._queue:
             return
         self._abandoned = [executor for executor in self._abandoned if executor.alive]
@@ -630,6 +682,7 @@ class JobRunner:
                     stdout=subprocess.PIPE,
                     stderr=log,
                     cwd=folder.path,
+                    env=self._child_env(),
                     creationflags=CREATION_FLAGS,
                 )
         except OSError as exc:
@@ -1319,6 +1372,20 @@ def _outcome(item: _Job, exit_code: int | None) -> tuple[str, ErrorInfo | None]:
 
 def _error(code: str, **values: object) -> ErrorInfo:
     return ErrorInfo.from_job_error(JobError(code, **values))
+
+
+def _check_maximum(value: object, name: str) -> None:
+    """Un máximo de trabajos a la vez: entero ≥ 1 (:class:`ValueError` si no)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} {value!r} no es un entero ≥ 1")
+
+
+def _absolute_root(jobs_root: Path) -> Path:
+    """La raíz de trabajos como ruta completa (:class:`ValueError` si no lo es)."""
+    root = Path(jobs_root)
+    if not root.is_absolute():
+        raise ValueError(f"la raíz de trabajos «{root}» no es una ruta completa")
+    return root
 
 
 def _wait_for_exit(items: Iterable[_Job], until: float, *, channels: bool = False) -> None:
