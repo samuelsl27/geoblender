@@ -15,8 +15,10 @@ Todo se genera del **estado actual**, nunca a mano (AT §1, regla 8):
 - Diagnóstico de la instalación (:func:`diagnostics`): versiones de Blender y de
   Geoblender, modo de la barra superior (normal, compatibilidad o sustituida por otro
   complemento después de Geoblender, spec §8), atajos registrados y en conflicto en el
-  ámbito de la Vista 3D (``keymap.conflicts``), iconos cargados, idiomas, y lo que aún no
-  hay (motor de cálculo, PROJ) con su «Disponible en …».
+  ámbito de la Vista 3D (``keymap.conflicts``), iconos cargados, idiomas, el estado del
+  motor de cálculo del lanzador de la sesión y, si lo hay, su intérprete externo (spec 004,
+  T41; :func:`engine_text`, :func:`external_interpreter`), y lo que aún no hay (PROJ) con
+  su «Disponible en …».
 - «Acerca de» (:func:`about`): versión, autor, licencias y la atribución de los datos de
   terceros de ``thirdparty/`` (ADR-0019), leída de su ``README.md``.
 
@@ -29,6 +31,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import bpy
@@ -37,8 +40,10 @@ from ...core import catalog as core_catalog
 from ...core.catalog import sheets
 from ...core.i18n import language, tr
 from ...core.version import geoblender_version
+from ...jobs.runtime import ComputeEnvironment
 from .. import ADDON_PACKAGE
 from . import commands, icons, keymap, topbar
+from . import jobs as job_list
 
 HELP_FOLDER = "help"  # dentro de la carpeta de datos de la extensión
 KINDS = ("shortcuts", "aliases", "glossary")
@@ -170,6 +175,37 @@ def _language_name(lang: str) -> str:
     return tr("Spanish") if lang == "es" else tr("English")
 
 
+def _ops_jobs() -> ModuleType:
+    """``bl.ops.jobs``, importado al usarlo: bl/ops importa bl/ui (ARQ-08)."""
+    from ..ops import jobs as ops_jobs
+
+    return ops_jobs
+
+
+def engine_text() -> str:
+    """El estado del motor de cálculo (spec 004, T41; RF-004-22), el del lanzador de la
+    sesión (``bl.ops.jobs.session_runner``; sin lanzador, el del lock de esta versión,
+    ``compute_environment``), como lo dice la lista de trabajos
+    (``bl.ui.jobs.engine_state_text``): «No instalado», desactualizado, dañado o «Listo ·
+    numpy … · BLAS … · 2000 × 2000 en … s» de su última verificación. Si el lock no se
+    puede leer, lo dice. Solo lee: no crea ni comprueba nada."""
+    ops = _ops_jobs()
+    runner = ops.session_runner()
+    env = runner.runtime if runner is not None else ops.compute_environment()
+    if not isinstance(env, ComputeEnvironment):
+        return tr("The compute engine lock of this version of Geoblender could not be read")
+    return job_list.engine_state_text(env)
+
+
+def external_interpreter() -> Path | None:
+    """El intérprete externo con el que corren los trabajos del motor (spec 004, T41;
+    RF-004-26): el del lanzador de la sesión o, sin lanzador, el de las preferencias;
+    ``None`` si no hay ninguno."""
+    ops = _ops_jobs()
+    runner = ops.session_runner()
+    return runner.external_python if runner is not None else ops.configured_external_python()
+
+
 def diagnostics() -> list[tuple[str, str]]:
     """(rótulo, valor) del diagnóstico de la instalación, en el idioma de Geoblender."""
     view = bpy.context.preferences.view
@@ -182,6 +218,7 @@ def diagnostics() -> list[tuple[str, str]]:
                     size=icons.loaded_size()) if loaded
                  else tr("{n} of {total} loaded", n=0, total=own_icons))
     build = bpy.app.build_hash.decode("ascii", "replace") if bpy.app.build_hash else ""
+    external = external_interpreter()
     return [
         ("Blender", f"{bpy.app.version_string} ({build})" if build else bpy.app.version_string),
         (tr("Extension"), f"{geoblender_version()} · {ADDON_PACKAGE}"),
@@ -192,7 +229,8 @@ def diagnostics() -> list[tuple[str, str]]:
         (tr("Icons"), icon_text),
         (tr("Geoblender language"), _language_name(language())),
         (tr("Blender language"), blender_language),
-        (tr("Compute engine"), _available_in("004")),
+        (tr("Compute engine"), engine_text()),
+        *([(tr("External interpreter"), str(external))] if external is not None else []),
         ("PROJ", _available_in("006")),
     ]
 
