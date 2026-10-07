@@ -20,14 +20,23 @@ Sin nada que mostrar, el campo no ocupa sitio (:func:`width_px` da 0) ni dibuja 
 La lista de trabajos (:class:`GEOBLENDER_PT_jobs_list`, RF-004-08) es una ventana emergente
 (región de cabecera, como las de la 003: solo la abre ``geoblender.jobs_show_jobs`` con
 ``wm.call_panel``): su título, lo que ocupa la carpeta de los trabajos (medido al abrirla,
-:func:`measure_folder`) y, por orden de llegada, una fila por trabajo del lanzador con su
-nombre (y el icono de su estado), su estado («Cancelando» si se pidió pararlo), su avance
-(el de la barra de estado, que nunca retrocede), su duración en s y, en gris, el intérprete
-que lo ejecuta y su último mensaje (el del §8 si no terminó bien, sin traza). Con tres
-botones: Cancelar (``geoblender.jobs_cancel`` con su ``job_uid``; los activos a los que no
-se pidió parar), Registro (``wm.path_open`` sobre su ``job.log``, si existe) y Descartar
+:func:`measure_folder`) y una fila por trabajo con su nombre (y el icono de su estado), su
+estado («Cancelando» si se pidió pararlo), su avance (el de la barra de estado, que nunca
+retrocede), su duración en s y, en gris, el intérprete que lo ejecuta y su último mensaje
+(el del §8 si no terminó bien, sin traza). Con tres botones: Cancelar
+(``geoblender.jobs_cancel`` con su ``job_uid``; los activos del lanzador a los que no se
+pidió parar), Registro (``wm.path_open`` sobre su ``job.log``, si existe) y Descartar
 (``geoblender.jobs_clean`` con ``scope = ONE``; los terminados que ningún módulo incorporó,
 mientras ese operador esté disponible).
+
+Los trabajos de la lista (:func:`listed_jobs`, RF-004-08 y RF-004-13): primero los
+**guardados** en las carpetas de trabajos que no son del lanzador (de otra sesión de
+Blender o de antes de desactivar Geoblender: el lanzador nuevo no los conoce), por
+identificador; después los del lanzador, por orden de llegada; ninguno dos veces. Los
+guardados se leen al abrir la lista (``bl.ops.jobs.read_stored_jobs``, que deja antes
+«Interrumpido» los que constaban activos) o, si se dibuja sin haberlos leído para ese
+lanzador, en su primer dibujo; nunca al registrar. Se olvidan al desregistrar y al cambiar
+de proyecto (:func:`forget_stored`), y los descartados salen al momento.
 
 Los textos salen al dibujar, en el idioma de Geoblender: los estados con ``core.i18n.tr`` y
 los mensajes del §8 con ``jobs.messages.render``.
@@ -36,8 +45,9 @@ los mensajes del §8 con ``jobs.messages.render``.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 import bpy
@@ -45,7 +55,7 @@ import bpy
 from ...core.i18n import format_number, language, tr
 from ...jobs import cleanup, messages
 from ...jobs.records import ErrorInfo, InterpreterInfo
-from ...jobs.runner import JobSnapshot
+from ...jobs.runner import JobRunner, JobSnapshot
 from ...jobs.worker_api import UNKNOWN_BLAS
 from .. import compat
 from . import commands, statusbar
@@ -92,6 +102,22 @@ DURATION_UNITS = 4
 
 _TEXTS: dict[tuple[str, str], dict[str, str]] = {}  # (tabla, idioma) → clave → texto
 _FOLDER_MB: dict[Path, float] = {}  # la carpeta de los trabajos medida al abrir la lista
+
+
+class _StoredJobs:
+    """Los trabajos guardados que leyó la lista al abrirse (``JobRunner.stored_snapshots``)
+    y el lanzador para el que se leyeron (``None``: sin leer)."""
+
+    def __init__(self) -> None:
+        self.runner: JobRunner | None = None
+        self.snapshots: tuple[JobSnapshot, ...] = ()
+
+    def clear(self) -> None:
+        self.runner = None
+        self.snapshots = ()
+
+
+_STORED = _StoredJobs()
 
 
 def _cached(table: str, build: Callable[[], dict[str, str]]) -> dict[str, str]:
@@ -164,11 +190,16 @@ def notice_text(snapshot: JobSnapshot) -> str:
     return SEPARATOR.join(parts)
 
 
+def _ops() -> ModuleType:
+    """``bl.ops.jobs``, importado al usarlo: bl/ops importa bl/ui (ARQ-08)."""
+    from ..ops import jobs as ops_jobs
+
+    return ops_jobs
+
+
 def _monitor() -> JobMonitor:
     """El monitor de los trabajos de la sesión."""
-    from ..ops import jobs as ops_jobs  # diferido: bl/ops importa bl/ui (ARQ-08)
-
-    return ops_jobs.MONITOR
+    return _ops().MONITOR
 
 
 def current_view() -> StatusView:
@@ -238,6 +269,7 @@ def uninstall() -> None:
     """Quita el campo «jobs» y olvida la medida de la carpeta de los trabajos."""
     statusbar.unregister_field(FIELD_KEY)
     _FOLDER_MB.clear()
+    _STORED.clear()
 
 
 # Lista de trabajos (RF-004-08) -----------------------------------------------------------
@@ -319,10 +351,48 @@ def folder_size(root: Path | None) -> float | None:
     return None if root is None else _FOLDER_MB.get(Path(root))
 
 
+def remember_stored(runner: JobRunner, snapshots: Iterable[JobSnapshot]) -> None:
+    """Recuerda para la lista los trabajos guardados leídos para ``runner``."""
+    _STORED.runner = runner
+    _STORED.snapshots = tuple(snapshots)
+
+
+def stored_jobs(runner: JobRunner | None) -> tuple[JobSnapshot, ...] | None:
+    """Los trabajos guardados que se leyeron para ``runner`` (``None`` si aún no se leyeron
+    para él)."""
+    if runner is None or _STORED.runner is not runner:
+        return None
+    return _STORED.snapshots
+
+
+def forget_stored(job_uids: Iterable[str] | None = None) -> None:
+    """Olvida los trabajos guardados ``job_uids`` (los que se acaban de borrar) o, sin
+    ellos, todos, que se vuelven a leer en el siguiente dibujo de la lista (al cambiar de
+    proyecto)."""
+    if job_uids is None:
+        _STORED.clear()
+        return
+    gone = set(job_uids)
+    _STORED.snapshots = tuple(s for s in _STORED.snapshots if s.job_uid not in gone)
+
+
+def listed_jobs(runner: JobRunner | None) -> list[JobSnapshot]:
+    """Los trabajos de la lista (RF-004-08): primero los guardados leídos para ``runner``
+    (por identificador) y después los de ``runner`` (por orden de llegada), sin repetir
+    ninguno; sin lanzador, ninguno."""
+    if runner is None:
+        return []
+    session = list(runner.snapshots())
+    own = {snapshot.job_uid for snapshot in session}
+    stored = [s for s in stored_jobs(runner) or () if s.job_uid not in own]
+    return [*stored, *session]
+
+
 def _draw_buttons(row: Any, snapshot: JobSnapshot, *, discard: bool) -> None:
     """Cancelar, Registro y Descartar, desactivados cuando no proceden."""
     cancel = row.row(align=True)
-    cancel.enabled = snapshot.active and not snapshot.cancel_requested
+    cancel.enabled = (snapshot.active and not snapshot.cancel_requested
+                      and not snapshot.stored)
     cancel.operator(CANCEL_JOB, text="", icon=CANCEL_JOB_ICON).job_uid = snapshot.job_uid
     log = row.row(align=True)
     log_file = snapshot.log_file
@@ -363,15 +433,19 @@ def _draw_job(layout: Any, snapshot: JobSnapshot, *, frac: float, discard: bool)
 
 
 def draw_list(layout: Any) -> None:
-    """Dibuja la lista de trabajos del lanzador de la sesión (RF-004-08)."""
+    """Dibuja la lista de trabajos (RF-004-08): los guardados y los del lanzador de la
+    sesión. Si los guardados aún no se leyeron para ese lanzador, los lee (primer
+    dibujo)."""
     monitor = _monitor()
     runner = monitor.runner
+    if runner is not None and stored_jobs(runner) is None:
+        _ops().read_stored_jobs(runner)
     layout.label(text=tr("Background jobs"), icon=ACTIVE_ICON, translate=False)
     size = folder_size(runner.jobs_root) if runner is not None else None
     if size is not None:
         layout.label(text=tr("Jobs folder: {size} MB", size=format_number(size, 1)),
                      icon=FOLDER_ICON, translate=False)
-    snapshots = runner.snapshots() if runner is not None else []
+    snapshots = listed_jobs(runner)
     if not snapshots:
         layout.label(text=tr("There are no background jobs"), translate=False)
         return

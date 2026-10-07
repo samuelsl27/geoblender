@@ -19,9 +19,11 @@ incorporación. El registro completo lo forman además ``request.json``, ``event
   (:func:`without_absolute_paths`).
 - :func:`read_record` y :func:`scan`: leen sin escribir; un ``state.json`` que falta no
   cuenta, y uno ilegible tampoco (con un aviso en el registro de Python).
-- :func:`mark_interrupted` (al abrir un proyecto, RF-004-13): lo que su ``state.json`` deja
-  «En cola» o «En curso» y no está en el lanzador lo dejó así un Blender que se cayó; queda
-  «Interrumpido» con la hora de su último evento.
+- :func:`mark_interrupted` (al abrir un proyecto o la lista de trabajos, RF-004-13): lo que
+  su ``state.json`` deja «En cola» o «En curso» y no está en el lanzador lo dejó así un
+  Blender que se cayó; queda «Interrumpido» con la hora de su último evento.
+- :func:`last_progress`: el último avance de ``events.jsonl`` (lo que enseña la lista de
+  trabajos de uno de otra sesión, RF-004-08).
 
 Solo escribe Blender (el lanzador); el worker nunca toca ``state.json``.
 """
@@ -398,11 +400,18 @@ def scan(jobs_root: Path) -> list[JobRecord]:
     return found
 
 
-def mark_interrupted(jobs_root: Path, *, active_uids: Iterable[str]) -> list[str]:
-    """Al abrir un proyecto (plan §5.4.5; RF-004-13): deja «Interrumpido»
-    (``job_interrupted``) cada trabajo de ``jobs_root`` cuyo ``state.json`` dice «En cola» o
-    «En curso» y que no está entre ``active_uids`` (los que lleva el lanzador): lo dejó así
-    un Blender que se cayó. Devuelve sus identificadores, por orden.
+MARKED_AT_PROJECT = "al abrir el proyecto"
+"""Cuándo se marcó un trabajo «Interrumpido», en ``job.log``, si no se dice otra cosa."""
+
+
+def mark_interrupted(
+    jobs_root: Path, *, active_uids: Iterable[str], occasion: str = MARKED_AT_PROJECT
+) -> list[str]:
+    """Al abrir un proyecto (plan §5.4.5; RF-004-13) o la lista de trabajos (RF-004-08):
+    deja «Interrumpido» (``job_interrupted``) cada trabajo de ``jobs_root`` cuyo
+    ``state.json`` dice «En cola» o «En curso» y que no está entre ``active_uids`` (los que
+    lleva el lanzador): lo dejó así un Blender que se cayó o se desactivó sin cerrarlo.
+    Devuelve sus identificadores, por orden.
 
     Con su último evento: ``last_event_at`` pasa a ser la hora del último evento de su
     ``events.jsonl`` (si es posterior a la que tenía), y el trabajo termina (``ended_at``) en
@@ -410,8 +419,9 @@ def mark_interrupted(jobs_root: Path, *, active_uids: Iterable[str]) -> list[str
     del lanzador) o, sin ella, su inicio o su entrada en la cola. Su duración va desde el
     inicio hasta ahí (vacía si no llegó a arrancar), sin código de salida; la cancelación
     que tuviera se conserva. Se añade al registro la nota final en ``events.jsonl`` y una
-    línea en ``job.log``. Un trabajo cuyo ``state.json`` no se puede escribir se queda como
-    estaba (con un aviso en el registro de Python) y no se devuelve.
+    línea en ``job.log``, que dice cuándo se marcó (``occasion``; «al abrir el proyecto» si
+    no se da otra). Un trabajo cuyo ``state.json`` no se puede escribir se queda como estaba
+    (con un aviso en el registro de Python) y no se devuelve.
 
     ``active_uids``: colección de textos (:class:`TypeError` si es un texto suelto o lleva
     otra cosa). Una raíz que no existe no tiene nada que marcar."""
@@ -452,7 +462,7 @@ def mark_interrupted(jobs_root: Path, *, active_uids: Iterable[str]) -> list[str
         before = "«En curso»" if record.state == "running" else "«En cola»"
         _append_line(folder / LOG_FILE, (
             f"{LOG_PREFIX} el trabajo termina «Interrumpido» (sin proceso): constaba "
-            f"{before} y Blender se cerró sin finalizarlo; se marcó al abrir el proyecto: "
+            f"{before} y Blender se cerró sin finalizarlo; se marcó {occasion}: "
             f"{error.text}\n"
         ).encode("utf-8"))
         marked.append(record.job_uid)
@@ -473,11 +483,34 @@ def as_uid_set(values: Iterable[str], what: str = "los identificadores") -> froz
     return found
 
 
-def _last_times(path: Path) -> tuple[dt.datetime | None, dt.datetime | None]:
-    """La hora del último evento de ``events.jsonl`` y la de su última línea con hora
-    (evento o nota del lanzador), leyendo solo su final (:data:`EVENTS_TAIL_BYTES`). Las
-    líneas rotas, las que no son JSON y las horas que no valen no cuentan; un fichero que
-    falta o no se puede leer no tiene ninguna."""
+def last_progress(job_dir: JobFolder) -> tuple[float, str] | None:
+    """El último avance de un trabajo según su ``events.jsonl`` (lo que muestra la lista de
+    trabajos de uno de otra sesión, RF-004-08): la fracción (0–1) del último evento
+    ``progress`` y el último mensaje no vacío de esos eventos, leyendo solo su final
+    (:data:`EVENTS_TAIL_BYTES`). ``None`` si no hay ningún evento ``progress`` o el fichero
+    falta o no se puede leer. Las líneas rotas y las que no son eventos no cuentan. No
+    escribe nada."""
+    frac: float | None = None
+    message = ""
+    for data in _tail_objects(folder_path(job_dir) / EVENTS_FILE):
+        if NOTE_KEY in data or data.get("t") != "progress":
+            continue
+        try:
+            event = JobEvent.from_json(data)
+        except (ValueError, TypeError, RecursionError):
+            continue
+        if frac is None:
+            frac = event.frac
+        if event.msg:
+            message = event.msg
+            break
+    return None if frac is None else (frac, message)
+
+
+def _tail_objects(path: Path) -> Iterator[dict[str, object]]:
+    """Los objetos JSON de las líneas del final de ``path`` (:data:`EVENTS_TAIL_BYTES`),
+    de la última a la primera. Las líneas rotas y las que no son un objeto JSON no
+    cuentan; un fichero que falta o no se puede leer no tiene ninguno."""
     try:
         with path.open("rb") as stream:
             size = stream.seek(0, os.SEEK_END)
@@ -485,12 +518,10 @@ def _last_times(path: Path) -> tuple[dt.datetime | None, dt.datetime | None]:
             stream.seek(start)
             tail = stream.read()
     except OSError:
-        return None, None
+        return
     lines = tail.split(b"\n")
     if start > 0:
         lines = lines[1:]  # la primera puede estar cortada
-    last_event: dt.datetime | None = None
-    last_line: dt.datetime | None = None
     for raw in reversed(lines):
         if not raw.strip():
             continue
@@ -498,8 +529,18 @@ def _last_times(path: Path) -> tuple[dt.datetime | None, dt.datetime | None]:
             data = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
         except (ValueError, RecursionError):
             continue
-        if not isinstance(data, dict):
-            continue
+        if isinstance(data, dict):
+            yield data
+
+
+def _last_times(path: Path) -> tuple[dt.datetime | None, dt.datetime | None]:
+    """La hora del último evento de ``events.jsonl`` y la de su última línea con hora
+    (evento o nota del lanzador), leyendo solo su final (:data:`EVENTS_TAIL_BYTES`). Las
+    líneas rotas, las que no son JSON y las horas que no valen no cuentan; un fichero que
+    falta o no se puede leer no tiene ninguna."""
+    last_event: dt.datetime | None = None
+    last_line: dt.datetime | None = None
+    for data in _tail_objects(path):
         if NOTE_KEY in data:
             moment = _moment(data.get("ts"))
         else:

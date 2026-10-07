@@ -45,7 +45,10 @@ Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
 - :meth:`JobRunner.snapshots` y :meth:`JobRunner.active_count`: cómo está cada trabajo
   (:class:`JobSnapshot`: nombre, estado, avance, último mensaje, duración, intérprete y
   error) y cuántos están en cola o en curso; es lo que muestra la interfaz (RF-004-06,
-  RF-004-07).
+  RF-004-07). :meth:`JobRunner.stored_snapshots` añade para la lista de trabajos los que
+  ya están en las carpetas de trabajos sin ser de este lanzador (de otra sesión o de antes
+  de desactivar Geoblender), tras dejar «Interrumpido» los que constaban activos
+  (RF-004-08, RF-004-13).
 - :meth:`JobRunner.cancel` (o :meth:`JobHandle.cancel`): uno en cola queda «Cancelado» sin
   arrancar; a uno en curso se le crea el centinela ``cancel`` y el worker para en su
   siguiente punto de control (RF-004-09). Si sigue vivo al vencer su plazo de gracia
@@ -123,7 +126,7 @@ from ..core.timeutil import format_utc
 from . import catalog, cleanup, interpreter, policy, winjob
 from .inprocess import InProcessExecutor
 from .messages import JobError, one_line
-from .paths import JobDir, job_dir
+from .paths import LOG_FILE, JobDir, job_dir
 from .protocol import (
     EventDecoder,
     InvalidLine,
@@ -146,7 +149,10 @@ from .records import (
     ErrorInfo,
     InterpreterInfo,
     JobRecord,
+    last_progress,
+    mark_interrupted,
     read_record,
+    scan,
     write_record,
 )
 
@@ -210,6 +216,10 @@ _STATE_TEXT: Mapping[str, str] = {
     "failed": "Fallido", "cancelled": "Cancelado", "timed_out": "Tiempo agotado",
     "interrupted": "Interrumpido",
 }
+MARKED_AT_LIST = "al abrir la lista de trabajos"
+"""Cuándo se marca «Interrumpido» lo que :meth:`JobRunner.stored_snapshots` encuentra en
+cola o en curso sin estar en el lanzador (se dice en su ``job.log``)."""
+
 _REASON_TEXT: Mapping[str, str] = {
     "user": "a petición del usuario", "timeout": "por su tiempo máximo",
     "shutdown": "al cerrarse Geoblender",
@@ -266,7 +276,10 @@ class JobSnapshot:
     máximo o el cierre). ``log_file``: su ``job.log`` (puede no existir aún), el que abre la
     lista de trabajos (RF-004-08). ``ingested``: si el módulo dueño ya incorporó sus
     resultados (:meth:`JobRunner.mark_ingested`); la lista solo ofrece descartar los que
-    no."""
+    no. ``folder``: su carpeta. ``stored``: si no es de este lanzador, sino un trabajo
+    guardado en una carpeta de trabajos (de otra sesión de Blender o de antes de
+    desactivar Geoblender, :meth:`JobRunner.stored_snapshots`): su foto sale de su
+    ``state.json`` y este lanzador no lo puede cancelar."""
 
     job_uid: str
     name: str
@@ -281,11 +294,36 @@ class JobSnapshot:
     cancel_requested: bool
     log_file: Path | None = None
     ingested: bool = False
+    folder: Path | None = None
+    stored: bool = False
 
     @property
     def active(self) -> bool:
         """Si está en cola o en curso."""
         return self.state in ACTIVE_STATES
+
+
+def stored_snapshot(record: JobRecord, folder: Path) -> JobSnapshot:
+    """La foto de un trabajo guardado en la carpeta ``folder`` con el registro ``record``
+    (su ``state.json``), que no es de este lanzador (RF-004-08): nombre, tipo, estado,
+    ejecutor, duración, intérprete, error, cancelación e incorporación, de su registro; su
+    último avance y su último mensaje, de ``events.jsonl`` (``records.last_progress``;
+    completo si terminó bien; si no terminó bien, el mensaje es el texto de su error, como
+    en los de la sesión); su ``job.log`` y su carpeta. No escribe nada."""
+    folder = Path(folder)
+    progress = last_progress(folder)
+    frac, message = progress if progress is not None else (0.0, "")
+    if record.state == "succeeded":
+        frac = 1.0
+    elif record.error is not None:
+        message = record.error.text
+    return JobSnapshot(
+        job_uid=record.job_uid, name=record.label, worker=record.worker, state=record.state,
+        executor=record.executor, frac=frac, message=message, duration_s=record.duration_s,
+        interpreter=record.interpreter, error=record.error,
+        cancel_requested=record.cancel is not None, log_file=folder / LOG_FILE,
+        ingested=record.ingested_at is not None, folder=folder, stored=True,
+    )
 
 
 class JobHandle:
@@ -654,22 +692,26 @@ class JobRunner:
         all_finished: bool = False,
         only: Iterable[str] | None = None,
         now: dt.datetime | None = None,
+        jobs_root: Path | None = None,
     ) -> cleanup.CleanupReport:
         """Borra las carpetas de los trabajos terminados de la raíz de trabajos
         (``cleanup.purge``, RF-004-17): los que terminaron hace más de ``older_than_days``
         días, todos (``all_finished``) o, con ``only``, solo esos (el «Descartar» de la
-        lista, RF-004-08). Nunca borra uno que este lanzador lleve activo: en cola, en
-        curso, terminado sin contar aún en un :meth:`poll` (su ``on_finish`` no ha llegado)
-        o con su hilo abandonado en marcha (aún podría escribir en su carpeta). Los borrados
-        salen de :meth:`snapshots`. Devuelve el ``CleanupReport`` (MB liberados); un
-        argumento que no vale es :class:`ValueError` o :class:`TypeError` sin borrar
-        nada."""
+        lista, RF-004-08). ``jobs_root``: otra raíz donde borrar (la de un trabajo guardado
+        que salió en :meth:`stored_snapshots`; si falta, la de este lanzador). Nunca borra
+        uno que este lanzador lleve activo: en cola, en curso, terminado sin contar aún en
+        un :meth:`poll` (su ``on_finish`` no ha llegado) o con su hilo abandonado en marcha
+        (aún podría escribir en su carpeta). Los borrados salen de :meth:`snapshots`.
+        Devuelve el ``CleanupReport`` (MB liberados); un argumento que no vale es
+        :class:`ValueError` o :class:`TypeError` sin borrar nada."""
+        root = None if jobs_root is None else _absolute_root(jobs_root)
         with self._lock:
             busy = {job_uid for job_uid, item in self._jobs.items()
                     if item.state in ACTIVE_STATES
                     or (item.thread is not None and item.thread.alive)}
             busy.update(item.folder.job_uid for item in self._to_report)
-            report = cleanup.purge(self._jobs_root, older_than_days=older_than_days,
+            report = cleanup.purge(self._jobs_root if root is None else root,
+                                   older_than_days=older_than_days,
                                    all_finished=all_finished, active=busy, only=only,
                                    now=now)
             for job_uid in report.removed:
@@ -713,6 +755,36 @@ class JobRunner:
         """Cuántos trabajos de este lanzador están en cola o en curso (RF-004-06)."""
         with self._lock:
             return sum(1 for item in self._jobs.values() if item.state in ACTIVE_STATES)
+
+    def stored_snapshots(self, *, extra_roots: Iterable[Path] = ()) -> list[JobSnapshot]:
+        """Los trabajos guardados que no son de este lanzador (RF-004-08, RF-004-13): los de
+        su raíz de trabajos y los de ``extra_roots`` (la de sin proyecto, con los de
+        diagnóstico), de otra sesión de Blender o de antes de desactivar Geoblender. Lo
+        llama la lista de trabajos al abrirse, no el registro.
+
+        Primero deja «Interrumpido» en cada raíz lo que su ``state.json`` deja en cola o en
+        curso y este lanzador no lleva (``records.mark_interrupted``: lo dejó así un
+        Blender que se cayó). Después lee los registros (``records.scan``) y devuelve una
+        foto de cada uno (:func:`stored_snapshot`), por identificador (fecha de creación),
+        sin los de este lanzador (que ya están en :meth:`snapshots`) y sin repetir una raíz
+        ni un trabajo. Una raíz que no existe no tiene ninguno (no se crea); una que no es
+        una ruta completa es :class:`ValueError` sin marcar ni leer nada."""
+        extras = [_absolute_root(root) for root in extra_roots]
+        with self._lock:
+            known = frozenset(self._jobs)
+            roots = [self._jobs_root, *extras]
+        found: dict[str, JobSnapshot] = {}
+        seen: set[str] = set()
+        for root in roots:
+            key = os.path.normcase(os.path.abspath(root))
+            if key in seen:
+                continue
+            seen.add(key)
+            mark_interrupted(root, active_uids=known, occasion=MARKED_AT_LIST)
+            for record in scan(root):
+                if record.job_uid not in known and record.job_uid not in found:
+                    found[record.job_uid] = stored_snapshot(record, root / record.job_uid)
+        return [found[job_uid] for job_uid in sorted(found)]
 
     # --- Ayudas --------------------------------------------------------------------------
 
@@ -1358,6 +1430,7 @@ class _Job:
             message=self.message, duration_s=duration, interpreter=record.interpreter,
             error=record.error, cancel_requested=record.cancel is not None,
             log_file=self.folder.log_file, ingested=record.ingested_at is not None,
+            folder=self.folder.path,
         )
 
     def release_job_object(self) -> None:

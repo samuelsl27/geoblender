@@ -87,6 +87,21 @@ M1, con 20 trozos de 0,5 s, el % cambiaba 1,9 veces por segundo; M1 y H2 piden a
   trozos de ≤ 0,25 s y un evento de avance por trozo; en el proceso real, los primeros
   avances llegan cada ≤ 0,25 s, y a ese ritmo el trabajo entero dura 10 ± 0,5 s.
 
+T38 — la lista de trabajos incluye los que ya están en la carpeta de trabajos (en M2, tras
+desactivar y reactivar Geoblender, la lista salía vacía: el lanzador nuevo solo conoce los
+que lanza él):
+
+- RF-004-08, RF-004-13: al abrir la lista (el operador o su primer dibujo; nunca al
+  registrar) se leen los registros de la raíz de trabajos en uso y de la de sin proyecto (los
+  de diagnóstico); los que constaban en cola o en curso sin estar en el lanzador quedan
+  «Interrumpido», y salen junto a los de la sesión, sin repetirlos, con «Registro» y
+  «Descartar».
+
+Lo comprueban las pruebas de T22, ampliadas (reactivar tras desactivar con trabajos en curso;
+una caída previa con un proyecto abierto) y la de los botones de la lista: con una prueba de
+Blender más, el reparto de ``tools/check.py`` por número de pruebas cambia y alarga su parte
+más lenta.
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
@@ -596,11 +611,13 @@ class JobStatusFieldTest(unittest.TestCase):
 
 
 class _FakeRunner:
-    """Un lanzador simulado: ``poll`` devuelve los finales que se le dan y ``snapshots``,
-    las fotos que se le dan."""
+    """Un lanzador simulado: ``poll`` devuelve los finales que se le dan, ``snapshots``,
+    las fotos que se le dan, y ``stored_snapshots``, las de la carpeta de trabajos que se
+    le dan."""
 
     def __init__(self) -> None:
         self.snapshots_now: list[object] = []
+        self.stored_now: list[object] = []
         self.finished_now: list[str] = []
         self.jobs_root: Path | None = None
 
@@ -610,6 +627,9 @@ class _FakeRunner:
 
     def snapshots(self) -> list[object]:
         return list(self.snapshots_now)
+
+    def stored_snapshots(self, *, extra_roots: object = ()) -> list[object]:
+        return list(self.stored_now)
 
 
 class JobMonitorLogicTest(unittest.TestCase):
@@ -1169,12 +1189,13 @@ class JobsListPanelTest(unittest.TestCase):
                  message: str = "", duration_s: float | None = None,
                  interpreter: object = None, error: object = None,
                  cancel_requested: bool = False, log_file: Path | None = None,
-                 ingested: bool = False) -> object:
+                 ingested: bool = False, stored: bool = False) -> object:
         return self.runner_mod.JobSnapshot(
             job_uid=uid, name=name, worker="selftest", state=state, executor="subprocess",
             frac=frac, message=message, duration_s=duration_s, interpreter=interpreter,
             error=error, cancel_requested=cancel_requested,
             log_file=self.log if log_file is None else log_file, ingested=ingested,
+            stored=stored,
         )
 
     def rows(self) -> dict[str, _JobRow]:
@@ -1215,10 +1236,11 @@ class JobsListPanelTest(unittest.TestCase):
 
     def test_buttons_by_state(self) -> None:
         """RF-004-08, RF-004-09: «Cancelar» (con su ``job_uid``) solo en los activos a los
-        que no se pidió parar; «Registro» abre su ``job.log`` con ``wm.path_open`` si
-        existe; «Descartar» (``geoblender.jobs_clean``, ``scope = ONE`` y su ``job_uid``)
-        solo en los terminados que ningún módulo incorporó, y desactivado mientras ese
-        operador no esté disponible."""
+        que no se pidió parar (nunca en uno leído de la carpeta de trabajos, que no es del
+        lanzador); «Registro» abre su ``job.log`` con ``wm.path_open`` si existe;
+        «Descartar» (``geoblender.jobs_clean``, ``scope = ONE`` y su ``job_uid``) solo en
+        los terminados que ningún módulo incorporó, y desactivado mientras ese operador no
+        esté disponible."""
         rows = self.rows()
         cancel = {name: row.buttons[CANCEL_JOB] for name, row in rows.items()}
         self.assertEqual({name: item.enabled for name, item in cancel.items()},
@@ -1245,6 +1267,11 @@ class JobsListPanelTest(unittest.TestCase):
                           "Hecho": True, "Roto": False})
         self.assertEqual(vars(available["Hecho"].buttons[CLEAN_JOB].properties),
                          {"scope": "ONE", "job_uid": "s"})
+        self.fake.stored_now = [self.snapshot("g", "Guardado", "running", stored=True)]
+        self.ui.forget_stored()
+        stored = _rows(_panel(self.ui), [*self.names, "Guardado"])["Guardado"]
+        self.assertEqual(stored.state, "En curso")
+        self.assertFalse(stored.buttons[CANCEL_JOB].enabled)
 
     def test_progress_matches_the_status_bar(self) -> None:
         """RF-004-08 (y RF-004-06, spec §8): el avance de uno en curso es el de la barra de
@@ -1878,6 +1905,7 @@ class SessionRunnerTest(unittest.TestCase):
         cls.runtime_existed = (cls.user / "runtime").exists()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
+        cls.ui = _module("bl.ui.jobs")
         cls.ps = _module("bl.scene.project_session")
         cls.catalog = _module("jobs.catalog")
         cls.protocol = _module("jobs.protocol")
@@ -1919,6 +1947,15 @@ class SessionRunnerTest(unittest.TestCase):
         if read_only:
             project.set_read_only(self.model.ReadOnlyCode.REQUESTED, "prueba")
         return project
+
+    def open_list(self) -> FakeLayout:
+        """Abre la lista con ``geoblender.jobs_show_jobs`` (``wm.call_panel`` sustituido) y
+        la dibuja."""
+        window = bpy.context.window_manager.windows[0]
+        with mock.patch.object(self.ops, "_call_panel", return_value={"FINISHED"}):
+            with bpy.context.temp_override(window=window):
+                self.assertEqual(bpy.ops.geoblender.jobs_show_jobs(), {"FINISHED"})
+        return _panel(self.ui)
 
     def test_roots_from_the_test_repository(self) -> None:
         """RF-004-18, RF-004-19: con la extensión habilitada desde ``gb_tests``, el lanzador
@@ -1973,19 +2010,26 @@ class SessionRunnerTest(unittest.TestCase):
                 self.assertEqual(self.runner.max_subprocess, value)
 
     def test_opening_a_project_moves_marks_and_purges(self) -> None:
-        """RF-004-18, RF-004-13, RF-004-17, RF-004-02: dar a la sesión un proyecto en disco
-        local y en escritura lleva la raíz a ``Project.cache_dir()/jobs`` (dentro del
-        proyecto) y prohíbe su ruta en las peticiones; de los trabajos que ya estaban ahí,
-        el que su registro deja en curso queda «Interrumpido» y se borra el terminado hace
-        más de ``retention_days`` días, no el reciente. Volver a abrirlo con un trabajo del
-        lanzador en marcha no lo interrumpe; al cerrar el proyecto, la raíz vuelve a la de
-        sin proyecto y no queda ninguna ruta prohibida."""
+        """RF-004-18, RF-004-13, RF-004-17, RF-004-02, RF-004-08: dar a la sesión un
+        proyecto en disco local y en escritura lleva la raíz a ``Project.cache_dir()/jobs``
+        (dentro del proyecto) y prohíbe su ruta en las peticiones; de los trabajos que ya
+        estaban ahí, el que su registro deja en curso queda «Interrumpido» y se borra el
+        terminado hace más de ``retention_days`` días, no el reciente. Volver a abrirlo con
+        un trabajo del lanzador en marcha no lo interrumpe. La lista de trabajos, al
+        abrirla, lee los de la raíz del proyecto y los de diagnóstico de la raíz sin
+        proyecto: el que su ``state.json`` dejaba «En curso» tras una caída previa sale (y
+        queda en su registro) «Interrumpido», con su registro, y el del lanzador sale una
+        sola vez, en curso. Al cerrar el proyecto, la raíz vuelve a la de sin proyecto y no
+        queda ninguna ruta prohibida."""
         project = self.project()
         root = project.root / "cache" / "jobs"
         self.assertEqual(project.cache_dir() / "jobs", root)
         orphan = _job_folder(root, state="running", days=0.01, label="Huérfano", size=KB)
         old = _job_folder(root, state="succeeded", days=10, label="Viejo", size=KB)
         recent = _job_folder(root, state="failed", days=1, label="Reciente", size=KB)
+        crashed = _job_folder(self.no_project_root, state="running", days=0.01,
+                              label="Caída previa", size=KB)
+        self.addCleanup(_remove_tree, crashed)
         self.ps.attach(project)
         self.assertEqual(self.runner.jobs_root, root)
         self.assertEqual(self.runner.forbidden_roots, (project.root,))
@@ -1993,6 +2037,7 @@ class SessionRunnerTest(unittest.TestCase):
         self.assertEqual((marked.state, marked.error.code), ("interrupted", "job_interrupted"))
         self.assertFalse(old.exists())
         self.assertEqual(self.records.read_record(recent).state, "failed")
+        self.assertEqual(self.records.read_record(crashed).state, "running")
         with self.assertRaises(self.messages.JobError) as caught:
             self.runner.prepare(self.protocol.new_request(
                 "selftest", label="Ruta", owner="jobs",
@@ -2005,6 +2050,24 @@ class SessionRunnerTest(unittest.TestCase):
         self.ops.on_project_changed(project)  # el mismo proyecto, otra vez
         self.assertEqual(self.records.read_record(busy.job_dir).state, "running")
         self.assertEqual(busy.state, "running")
+        names = ["Huérfano", "Reciente", "Caída previa", "En marcha"]
+        layout = self.open_list()
+        rows = _rows(layout, names)
+        self.assertEqual({name: row.state for name, row in rows.items()},
+                         {"Huérfano": "Interrumpido", "Reciente": "Fallido",
+                          "Caída previa": "Interrumpido", "En marcha": "En curso"})
+        listed = [item.properties.job_uid for item in layout.items
+                  if item.kind == "operator" and item.target == CANCEL_JOB]
+        self.assertEqual(listed.count(busy.job_uid), 1)
+        self.assertTrue(rows["En marcha"].buttons[CANCEL_JOB].enabled)
+        self.assertFalse(rows["Caída previa"].buttons[CANCEL_JOB].enabled)
+        self.assertEqual(rows["Caída previa"].icon, "CANCEL")
+        log = rows["Caída previa"].buttons[PATH_OPEN]
+        self.assertEqual((log.enabled, log.properties.filepath),
+                         (True, str(crashed / "job.log")))
+        marked = self.records.read_record(crashed)
+        self.assertEqual((marked.state, marked.error.code), ("interrupted", "job_interrupted"))
+        self.assertEqual(self.records.read_record(busy.job_dir).state, "running")
         self.ps.close()
         self.assertEqual(self.runner.jobs_root, self.no_project_root)
         self.assertEqual(self.runner.forbidden_roots, ())
@@ -2081,11 +2144,15 @@ class SessionShutdownTest(unittest.TestCase):
         self.assertFalse(bpy.app.timers.is_registered(self.ops.tick))
 
     def test_disable_interrupts_running_jobs(self) -> None:
-        """RF-004-13: desactivar Geoblender con un trabajo en curso en proceso aparte y
-        otro en hilo los deja «Interrumpido» en su registro y sin proceso en ≤ 3 s; quedan
-        retirados el temporizador, el campo de la barra de estado, el manejador
-        ``exit_pre`` y el aviso de cambio de proyecto (huella del principio de la sesión),
-        y el ``sys.path`` de Blender sigue igual."""
+        """RF-004-13, RF-004-08: desactivar Geoblender con un trabajo en curso en proceso
+        aparte y otro en hilo los deja «Interrumpido» en su registro y sin proceso en
+        ≤ 3 s; quedan retirados el temporizador, el campo de la barra de estado, el
+        manejador ``exit_pre`` y el aviso de cambio de proyecto (huella del principio de la
+        sesión), y el ``sys.path`` de Blender sigue igual. Al volver a activarlo (M2), el
+        lanzador nuevo no tiene trabajos, pero la lista (en su primer dibujo) los lee de la
+        carpeta de trabajos sin proyecto y los muestra «Interrumpido», sin «Cancelar» y con
+        «Registro» (su ``job.log``) y «Descartar»; descartar uno borra su carpeta y lo quita
+        de la lista."""
         started = time.monotonic()
         blender_ext.disable()
         self.assertInterruptedWithoutProcess(time.monotonic() - started)
@@ -2100,6 +2167,32 @@ class SessionShutdownTest(unittest.TestCase):
         if after != before:
             self.fail("la huella del estado de Blender cambió:\n"
                       + "\n".join(fingerprint_diff(before, after)))
+        names = [SELFTEST_NAMES["SUM_10S"], "Esperando el cierre"]
+        blender_ext.enable()
+        ops, ui = _module("bl.ops.jobs"), _module("bl.ui.jobs")
+        self.assertEqual(ops.MONITOR.runner.snapshots(), [])
+        rows = _rows(_panel(ui), names)
+        self.assertEqual(set(rows), set(names))
+        uids = {}
+        for name, row in rows.items():
+            with self.subTest(trabajo=name):
+                self.assertEqual((row.state, row.icon), ("Interrumpido", "CANCEL"))
+                self.assertFalse(row.buttons[CANCEL_JOB].enabled)
+                log = Path(row.buttons[PATH_OPEN].properties.filepath)
+                self.assertTrue(row.buttons[PATH_OPEN].enabled)
+                self.assertEqual(log.name, "job.log")
+                self.assertIn(log.parent, self.folders)
+                self.assertTrue(row.buttons[CLEAN_JOB].enabled)
+                self.assertEqual(vars(row.buttons[CLEAN_JOB].properties),
+                                 {"scope": "ONE", "job_uid": log.parent.name})
+                uids[name] = log.parent.name
+        self.assertEqual(self.folders[0].parent, ops.jobs_root(None))
+        with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+            self.assertEqual(bpy.ops.geoblender.jobs_clean(
+                "INVOKE_DEFAULT", scope="ONE", job_uid=uids["Esperando el cierre"]),
+                {"FINISHED"})
+        self.assertFalse(self.waiting.job_dir.path.exists())
+        self.assertEqual(set(_rows(_panel(ui), names)), {SELFTEST_NAMES["SUM_10S"]})
 
     def test_exit_pre_closes_the_runner(self) -> None:
         """RF-004-13: el manejador ``exit_pre`` (persistente, para que siga tras abrir otro

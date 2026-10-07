@@ -59,9 +59,12 @@ Operadores reales, con el ``bl_idname`` del catálogo de la 003 (Herramientas �
 que así deja de generar sus provisionales; funcionan en los dos modos (sus botones están en
 la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
 
-- ``geoblender.jobs_show_jobs`` (RF-004-08): mide la carpeta de los trabajos y abre la lista
-  de trabajos (``GEOBLENDER_PT_jobs_list``, ``bl/ui/jobs.py``) con ``wm.call_panel``. Sin
-  ventana, su ``poll`` falla y lo dice.
+- ``geoblender.jobs_show_jobs`` (RF-004-08, RF-004-13): mide la carpeta de los trabajos, lee
+  los trabajos guardados que no son del lanzador (:func:`read_stored_jobs`: de la raíz en
+  uso y de la de sin proyecto, tras dejar «Interrumpido» los que constaban activos; así se
+  ven también tras desactivar y reactivar Geoblender) y abre la lista de trabajos
+  (``GEOBLENDER_PT_jobs_list``, ``bl/ui/jobs.py``) con ``wm.call_panel``. Sin ventana, su
+  ``poll`` falla y lo dice.
 - ``geoblender.jobs_cancel`` (RF-004-09): cancela el trabajo ``job_uid`` o, vacío (el botón
   de la barra de estado), el más antiguo en curso (si todos esperan, el más antiguo en la
   cola: el que enseña la barra). Uno en cola queda «Cancelado» sin arrancar; uno en curso
@@ -81,7 +84,7 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   liberados: ``OLD``, los terminados hace más días que ``retention_days`` de las
   preferencias; ``FINISHED``, todos los terminados (los dos, desde el menú, tras un diálogo
   de confirmación); ``ONE``, solo el ``job_uid`` (el «Descartar» de la lista de trabajos,
-  sin diálogo).
+  sin diálogo; si es un trabajo guardado de otra raíz, en la suya).
 
 Todos sin ``UNDO``: no cambian la escena. Los de la fase 4 (``jobs_setup_runtime``,
 ``jobs_set_external_python``) siguen provisionales hasta entonces.
@@ -340,7 +343,28 @@ class GEOBLENDER_OT_jobs_show_jobs(bpy.types.Operator):
     def execute(self, context: Any) -> set[str]:
         runner = MONITOR.runner
         job_list.measure_folder(runner.jobs_root if runner is not None else None)
+        if runner is not None:
+            read_stored_jobs(runner)
+        else:
+            job_list.forget_stored()
         return _call_panel(job_list.PANEL)
+
+
+def read_stored_jobs(runner: JobRunner) -> tuple[JobSnapshot, ...]:
+    """Lee para la lista de trabajos los guardados que no son de ``runner``: los de su raíz
+    de trabajos y los de la de sin proyecto (los de diagnóstico), después de dejar
+    «Interrumpido» los que constaban en cola o en curso sin estar en él
+    (``JobRunner.stored_snapshots``; RF-004-08, RF-004-13), y los recuerda
+    (``bl.ui.jobs.remember_stored``). Lo llaman ``jobs_show_jobs`` y el primer dibujo de la
+    lista, nunca el registro. Si no se pueden leer, la lista sale sin ellos y el fallo va al
+    registro técnico."""
+    try:
+        stored = tuple(runner.stored_snapshots(extra_roots=(jobs_root(None),)))
+    except Exception:  # noqa: BLE001 - la lista se abre igual
+        LOGGER.exception("No se pudieron leer los trabajos de la carpeta de trabajos")
+        stored = ()
+    job_list.remember_stored(runner, stored)
+    return stored
 
 
 class GEOBLENDER_OT_jobs_cancel(bpy.types.Operator):
@@ -564,6 +588,7 @@ class GEOBLENDER_OT_jobs_clean(bpy.types.Operator):
             report = runner.purge(older_than_days=None, all_finished=True)
         else:
             report = runner.purge(older_than_days=retention_days())
+        job_list.forget_stored(report.removed)
         _refresh_folder_size(runner)
         if report.removed:
             self.report({"INFO"}, tr("Job folders deleted: {count} ({size} MB freed)",
@@ -577,13 +602,19 @@ class GEOBLENDER_OT_jobs_clean(bpy.types.Operator):
 
 def _discard(operator: Any, runner: JobRunner, job_uid: str) -> set[str]:
     """Borra la carpeta de un solo trabajo terminado, ``job_uid`` (el «Descartar» de la
-    lista, RF-004-08), y lo dice con ``operator.report``."""
+    lista, RF-004-08): uno del lanzador o uno guardado de la lista, en su raíz; lo dice con
+    ``operator.report``."""
     if not job_uid:
         operator.report({"ERROR"}, tr("No job to discard was given"))
         return {"CANCELLED"}
-    snapshot = next((s for s in runner.snapshots() if s.job_uid == job_uid), None)
+    snapshot = next((s for s in job_list.listed_jobs(runner) if s.job_uid == job_uid), None)
     name = snapshot.name if snapshot is not None else job_uid
-    report = runner.purge(older_than_days=None, all_finished=True, only=(job_uid,))
+    root = None
+    if snapshot is not None and snapshot.stored and snapshot.folder is not None:
+        root = snapshot.folder.parent
+    report = runner.purge(older_than_days=None, all_finished=True, only=(job_uid,),
+                          jobs_root=root)
+    job_list.forget_stored(report.removed)
     _refresh_folder_size(runner)
     if report.removed:
         operator.report({"INFO"}, tr("Discarded the job «{job}» ({size} MB freed)", job=name,
@@ -707,6 +738,7 @@ def on_project_changed(project: Project | None) -> None:
         return
     root = jobs_root(project)
     runner.reconfigure(jobs_root=root, forbidden_roots=_forbidden_roots(project))
+    job_list.forget_stored()  # la lista vuelve a leer los guardados de la raíz nueva
     if project is None:
         return
     active = {snapshot.job_uid for snapshot in runner.snapshots() if snapshot.active}
