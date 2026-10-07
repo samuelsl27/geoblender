@@ -2673,26 +2673,32 @@ class RuntimeSetupTest(unittest.TestCase):
         self.assertEqual((shown.digest, consent.plan_digest), (fake.confirmation,) * 2)
 
     def test_compute_job_without_engine_offers_the_dialog(self) -> None:
-        """RF-004-25: lanzar un trabajo que necesita el motor de cálculo (el autodiagnóstico
-        ``MATMUL_COMPUTE``) sin motor no calcula nada (queda «Fallido» con
+        """RF-004-25, RF-004-27: lanzar un trabajo que necesita el motor de cálculo (el
+        autodiagnóstico ``MATMUL_COMPUTE``) sin motor no calcula nada (queda «Fallido» con
         ``runtime_missing``, sin proceso) y abre el diálogo de instalación; si el motor es
-        de otra versión de Geoblender, el de actualizarlo, y si está dañado, el de
+        de otra versión de Geoblender, dice cuál es y cuál hace falta
+        (``runtime_mismatch``) y abre el de actualizarlo, y si está dañado, el de
         repararlo. En ``blender -b`` no hay a quién enseñarle el diálogo: no se abre."""
         operator = self.ops.GEOBLENDER_OT_jobs_run_selftest
         offered = []
         missing = self.messages.render("runtime_missing")
+        mismatch = (f"El motor de cálculo instalado ({OTHER_LOCK_ID}) no es el que necesita "
+                    f"esta versión de Geoblender ({self.env.lock_id}): actualícelo.")
         with mock.patch.object(self.ops, "_invoke_setup",
                                side_effect=lambda action: offered.append(action) or True):
-            for prepare in (lambda: None,
-                            lambda: (self.env.runtime_dir / OTHER_LOCK_ID).mkdir(parents=True),
-                            lambda: self.env.path.mkdir()):
+            for prepare, text in (
+                    (lambda: None, missing),
+                    (lambda: (self.env.runtime_dir / OTHER_LOCK_ID).mkdir(parents=True),
+                     mismatch),
+                    (lambda: self.env.path.mkdir(), missing)):
                 prepare()
                 self.assertEqual(_reports(operator, mode="MATMUL_COMPUTE"),
-                                 ({"CANCELLED"}, [({"ERROR"}, missing)]))
+                                 ({"CANCELLED"}, [({"ERROR"}, text)]))
         self.assertEqual(offered, ["INSTALL", "UPDATE", "REPAIR"])
         failed = [s for s in self.runner.snapshots()]
         self.assertEqual([(s.state, s.error.code) for s in failed],
-                         [("failed", "runtime_missing")] * 3)
+                         [("failed", "runtime_missing"), ("failed", "runtime_mismatch"),
+                          ("failed", "runtime_missing")])
         self.assertTrue(bpy.app.background)
         operators = mock.Mock()
         with mock.patch.object(self.ops, "bpy", SimpleNamespace(app=bpy.app, ops=operators)):

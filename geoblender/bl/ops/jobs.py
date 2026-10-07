@@ -77,7 +77,8 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   más de 5 s estimados, en proceso aparte, y un avance cada 0,2 s, RF-004-06),
   ``MATMUL_BLENDER``, el producto 500 × 500 con el numpy de Blender (unos 0,2 s: en hilo)
   y ``MATMUL_COMPUTE``, el de 2000 × 2000 con el motor de cálculo (en proceso aparte; sin
-  motor queda «Fallido» con ``runtime_missing`` y el operador lo dice). Sin lanzador, su
+  motor queda «Fallido» con ``runtime_missing``, o ``runtime_mismatch`` si el que hay es
+  de otra versión de Geoblender, y el operador lo dice). Sin lanzador, su
   ``poll`` falla y lo dice. Herramientas ▸ Trabajos ▸ Autodiagnóstico ▸ ofrece los tres
   modos, con los nombres de :data:`SELFTEST_MODE_ITEMS` (catálogo de la 003; T42).
 - ``geoblender.jobs_clean`` (RF-004-17, RF-004-08): borra las carpetas de los trabajos
@@ -104,9 +105,10 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   Blender desactivado no abre el diálogo y dice las dos salidas (RF-004-23). ``VERIFY``
   verifica el motor instalado; ``REMOVE``, tras confirmarlo en un diálogo, lo borra si
   ningún trabajo lo usa. Sin confirmación (desde un guion) no instala ni borra nada.
-- Un trabajo que necesita el motor y no lo tiene (``runtime_missing`` al lanzarlo con
+- Un trabajo que necesita el motor y no lo tiene (``runtime_missing``, o
+  ``runtime_mismatch`` si el que hay es de otra versión de Geoblender, al lanzarlo con
   :meth:`JobMonitor.submit`) abre ese mismo diálogo (:func:`offer_runtime_setup`,
-  RF-004-25); en ``blender -b`` no hay a quién enseñárselo.
+  RF-004-25, RF-004-27); en ``blender -b`` no hay a quién enseñárselo.
 
 - ``geoblender.jobs_set_external_python`` (Intérprete externo, para desarrollo…; HU-004-5,
   RF-004-26): sin ruta, abre el explorador de ficheros; con ``filepath``, sondea ese
@@ -530,7 +532,8 @@ class GEOBLENDER_OT_jobs_run_selftest(bpy.types.Operator):
             return {"CANCELLED"}
         result = handle.result()
         if result is not None and result.state != "succeeded":
-            # No llegó a arrancar (sin motor de cálculo: «Fallido», runtime_missing).
+            # No llegó a arrancar (sin motor de cálculo: «Fallido», runtime_missing o
+            # runtime_mismatch).
             self.report({"ERROR"}, _error_of(handle.job_uid, result))
             return {"CANCELLED"}
         self.report({"INFO"}, tr("Launched the job «{job}»", job=name))
@@ -725,6 +728,10 @@ ACTION_FOR_STATUS: Mapping[str, str] = MappingProxyType({
     jobs_runtime.STATUS_BROKEN: "REPAIR",
 })
 """Lo que se ofrece según el estado del motor (con ``ready``, su estado)."""
+RUNTIME_SETUP_CODES = frozenset({"runtime_missing", "runtime_mismatch"})
+"""Los errores (spec §8) de un trabajo que no se lanzó porque necesita el motor de cálculo y
+no está listo: con ellos se ofrece instalarlo, actualizarlo o repararlo
+(:func:`offer_runtime_setup`)."""
 SETUP_DIALOG_WIDTH = 600
 """Ancho del diálogo de consentimiento y del estado del motor (en píxeles a escala 1)."""
 
@@ -1083,13 +1090,14 @@ class GEOBLENDER_OT_jobs_setup_runtime(bpy.types.Operator):
 
 def offer_runtime_setup(runner: Any, result: JobResult | None) -> str | None:
     """Si ``result`` es el de un trabajo que no se lanzó porque necesita el motor de cálculo
-    y falta (``runtime_missing``: no está, es de otra versión de Geoblender o está dañado),
-    abre el diálogo de instalarlo, actualizarlo o repararlo (RF-004-25) y devuelve esa
-    acción; si no, ``None``. No ofrece nada mientras se instala o verifica. Un fallo aquí
-    nunca impide lanzar trabajos: va al registro técnico."""
+    y falta (:data:`RUNTIME_SETUP_CODES`: ``runtime_missing`` si no está o está dañado,
+    ``runtime_mismatch`` si es de otra versión de Geoblender), abre el diálogo de
+    instalarlo, actualizarlo o repararlo (RF-004-25, RF-004-27) y devuelve esa acción; si
+    no, ``None``. No ofrece nada mientras se instala o verifica. Un fallo aquí nunca impide
+    lanzar trabajos: va al registro técnico."""
     try:
         if (result is None or result.state != "failed"
-                or result.error_code != "runtime_missing"):
+                or result.error_code not in RUNTIME_SETUP_CODES):
             return None
         env = getattr(runner, "runtime", None)
         if not isinstance(env, ComputeEnvironment) or setup_running():

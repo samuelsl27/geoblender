@@ -8,7 +8,9 @@ HU-004-4; RF-004-19, RF-004-20, RF-004-23, RF-004-24, RF-004-25; plan 004 §5.2.
   estado, planear la instalación y pedirla no crea nada en disco (RF-004-19). ``status()``:
   ``missing`` sin la carpeta del lock (una ``<lock_id>.partial`` nunca cuenta), ``broken``
   si existe sin una verificación válida en ``runtime.json`` y ``ready`` si la tiene; el
-  lanzador solo usa el motor ``ready`` (RF-004-25).
+  lanzador solo usa el motor ``ready`` (RF-004-25). Si falta el del lock vigente y queda el
+  de otra versión de Geoblender (``outdated``), el trabajo dice cuál está instalado y cuál
+  hace falta (``runtime_mismatch``, T43; RF-004-27).
 - ``plan_install(origen, online_access=…)``: lo que el diálogo del RF-004-20 enseña antes de
   hacer nada (origen, paquetes con versión y licencia, MB de descarga y en disco, carpeta de
   destino) y la huella que firma el consentimiento. Nunca usa la red: PyPI con el acceso en
@@ -206,6 +208,87 @@ class EnvironmentStatusTest(unittest.TestCase):
         self.assertEqual(interp.site, env.site_dir())
         self.assertEqual(interp.expect_numpy, env.lock.package("numpy").version)
         self.assertEqual(interp.lock_id, env.lock_id)
+
+
+OTHER_LOCK_ID = "0123456789ab"
+"""El ``lock_id`` de un tercer motor, de otra versión anterior de Geoblender."""
+MISMATCH_TEXT = ("El motor de cálculo instalado ({instalado}) no es el que necesita esta "
+                 "versión de Geoblender ({vigente}): actualícelo.")
+"""El mensaje ``runtime_mismatch`` del §8 de la spec, tal cual."""
+
+
+class OtherVersionEngineTest(unittest.TestCase):
+    def test_engine_of_another_version_is_a_mismatch(self) -> None:
+        """RF-004-25, RF-004-27: con dos locks en los mismos datos de usuario, el vigente
+        (el real) y el de una versión anterior de Geoblender (sintético), un trabajo
+        ``compute`` no se lanza (queda «Fallido» sin proceso) y dice por qué: sin ningún
+        motor, ``runtime_missing``; si falta el del lock vigente y queda el del otro
+        (``outdated``), ``runtime_mismatch`` con los dos ``lock_id`` en el mensaje del §8
+        (el instalado y el vigente; si quedan varios anteriores, todos, por orden); con la
+        carpeta del vigente dañada, otra vez ``runtime_missing`` (hay que repararlo, no
+        actualizarlo)."""
+        current = runtime.read_lock()
+        with _support.jobs_tmp() as base:
+            old_lock, _wheels = _synthetic_lock(base / "almacen")
+            user_dir = base / "usuario"
+            env = runtime.ComputeEnvironment(user_dir, current)
+            old = runtime.ComputeEnvironment(user_dir, old_lock)
+            self.assertNotEqual(old.lock_id, env.lock_id)
+            self.assertNotIn(OTHER_LOCK_ID, (old.lock_id, env.lock_id))
+            missing = ("runtime_missing", {}, messages.render("runtime_missing"))
+            with mock.patch.dict(catalog._REGISTRY, clear=True):
+                catalog.register_builtin_workers()
+                launcher = runner.JobRunner(
+                    jobs_root=base / "jobs", package_dir=EXTENSION_DIR,
+                    blender_python=Path(sys.executable), runtime=env,
+                )
+                self.addCleanup(launcher.shutdown, timeout_s=2.0)
+                with self.subTest("sin ningún motor"):
+                    self.assertEqual(env.status(), "missing")
+                    self.check_refused(env, launcher, missing)
+
+                old.site_dir().mkdir(parents=True)
+                _write_runtime_json(old.path, old.lock_id)
+                self.assertEqual((old.status(), env.status()), ("ready", "outdated"))
+                with self.subTest("el motor de otra versión"):
+                    self.check_refused(env, launcher, (
+                        "runtime_mismatch",
+                        {"installed": old.lock_id, "required": env.lock_id},
+                        MISMATCH_TEXT.format(instalado=old.lock_id, vigente=env.lock_id),
+                    ))
+
+                (env.runtime_dir / OTHER_LOCK_ID).mkdir()
+                both = ", ".join(sorted([OTHER_LOCK_ID, old.lock_id]))
+                with self.subTest("dos motores de otras versiones"):
+                    self.check_refused(env, launcher, (
+                        "runtime_mismatch", {"installed": both, "required": env.lock_id},
+                        MISMATCH_TEXT.format(instalado=both, vigente=env.lock_id),
+                    ))
+
+                env.path.mkdir()
+                self.assertEqual(env.status(), "broken")
+                with self.subTest("el vigente, dañado"):
+                    self.check_refused(env, launcher, missing)
+
+    def check_refused(self, env: object, launcher: object, expected: tuple) -> None:
+        """``resolve_interpreter`` con el motor ``env`` y un trabajo ``compute`` del
+        lanzador ``launcher`` dan el error ``expected`` (código, valores y texto); el
+        trabajo queda «Fallido» sin proceso."""
+        code, values, text = expected
+        with self.assertRaises(messages.JobError) as caught:
+            interpreter.resolve_interpreter("compute", blender_python=Path(sys.executable),
+                                            runtime=env, external_python=None)
+        error = caught.exception
+        self.assertEqual((error.code, dict(error.values), error.text), expected)
+        handle = launcher.submit(protocol.new_request(
+            "selftest", label="Necesita el motor", owner="jobs",
+            params={"n": 1000, "chunks": 2}, environment="compute",
+        ))
+        result = handle.result()
+        self.assertIsNotNone(result, "no se lanza: termina al pedirlo")
+        self.assertEqual((result.state, result.error_code, result.error_text),
+                         ("failed", code, text))
+        self.assertIsNone(handle.pid)
 
 
 class RemoveEngineTest(unittest.TestCase):

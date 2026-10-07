@@ -74,7 +74,10 @@ falta el almacén del NAS de IMGA.
     producto: «Listo · numpy 2.5.3 · BLAS scipy-openblas · 2000 × 2000 en 0,040 s». Desde la
     misma ventana se verifica, se repara o se quita; con otra versión de Geoblender se ofrece
     actualizarlo, y el anterior se borra al terminar si ningún trabajo lo está usando. Si un
-    cálculo lo necesita y falta, se ofrece instalarlo con el mismo diálogo. Su estado sale
+    cálculo lo necesita y falta, se ofrece instalarlo con el mismo diálogo; si el que hay es de
+    otra versión de Geoblender, el cálculo dice cuál está instalado y cuál hace falta («El
+    motor de cálculo instalado (…) no es el que necesita esta versión de Geoblender (…):
+    actualícelo.») y se ofrece actualizarlo. Su estado sale
     también en Ayuda ▸ Diagnóstico de la instalación, con el intérprete externo si hay uno.
   - **Intérprete externo, para desarrollo** (Herramientas ▸ Trabajos): un Python 3.13 con numpy
     (por ejemplo, el de un entorno de GemPy) en lugar del motor, para probar versiones nuevas de

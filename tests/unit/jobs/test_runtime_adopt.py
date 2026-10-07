@@ -505,7 +505,7 @@ class StaleEngineTest(unittest.TestCase):
     def test_previous_engine_kept_while_in_use(self) -> None:
         """RF-004-27: con dos locks en los mismos datos de usuario y sin el motor del lock
         vigente, el estado es ``outdated``, los trabajos ``compute`` no se lanzan
-        (``runtime_missing``) y la limpieza no borra nada. Instalado el nuevo, la limpieza no
+        (``runtime_mismatch``) y la limpieza no borra nada. Instalado el nuevo, la limpieza no
         borra los motores de los ``lock_id`` en uso (``JobRunner.locks_in_use`` y los que se
         le digan); sin ellos, borra el motor que nadie usa y los restos ``.old`` de su lock,
         pero el anterior se conserva mientras un trabajo ``compute`` lo usa, aunque no se
@@ -517,7 +517,7 @@ class StaleEngineTest(unittest.TestCase):
         old, new = two["old"], two["new"]
         self.assertNotEqual(old.lock_id, new.lock_id)
         self.assertEqual((two["new_before"], two.get("resolve_before")),
-                         ("outdated", "runtime_missing"))
+                         ("outdated", "runtime_mismatch"))
         self.assertEqual(two["sweep_before"], [], "sin el motor nuevo no se borra nada")
         self.assertEqual(two["in_use"], {old.lock_id})
         others = [f"{THIRD_LOCK_ID}.partial", "notas"]

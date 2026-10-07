@@ -9,7 +9,9 @@ plan 004 §5.1, §5.3.1, §5.3.3 y §6, D-2).
   Blender con ``-I -S -B -u`` y el motor de cálculo listo (``--site`` con su carpeta y
   ``--expect-numpy`` con la versión de numpy del lock): ``-S`` deja fuera el
   ``site-packages`` de Blender y el numpy de Blender no se puede colar (plan §6). Sin motor
-  listo ni externo, ``runtime_missing``: el cálculo no se lanza (RF-004-25). Un externo
+  listo ni externo, el cálculo no se lanza (RF-004-25): ``runtime_mismatch``, con el
+  ``lock_id`` instalado y el vigente, si el que queda es de otra versión de Geoblender
+  (``outdated``: hay que actualizarlo, RF-004-27), y ``runtime_missing`` si no. Un externo
   configurado nunca pasa al motor sin avisar: si ya no existe, el trabajo falla al
   arrancarlo (``interpreter_not_found``).
 - :func:`build_command`: la orden del arranque ``workers/_bootstrap.py`` (plan §5.3.3), con
@@ -73,6 +75,9 @@ BOOTSTRAP_PARTS: tuple[str, ...] = ("workers", "_bootstrap.py")
 ``workers``)."""
 RUNTIME_READY = "ready"
 """El estado del motor de cálculo con el que se puede calcular (plan §5.2.6)."""
+RUNTIME_OUTDATED = "outdated"
+"""El estado del motor de cálculo cuando falta el del lock vigente y queda el de otro (plan
+§5.2.6): el de otra versión de Geoblender, que hay que actualizar."""
 LOCK_NUMPY = "numpy"
 
 REQUIRED_PYTHON = "3.13"
@@ -111,7 +116,8 @@ _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 class ComputeRuntime(Protocol):
     """Lo que el lanzador necesita del motor de cálculo (``runtime.ComputeEnvironment``):
     su lock y su ``lock_id``, su estado (plan §5.2.6: ``missing``, ``outdated``, ``broken``
-    o ``ready``) y la carpeta ``site`` con sus paquetes."""
+    o ``ready``), la carpeta ``site`` con sus paquetes y, si está ``outdated``, las carpetas
+    de los motores de otros locks que quedan (su nombre es su ``lock_id``)."""
 
     lock: RuntimeLock
     lock_id: str
@@ -119,6 +125,8 @@ class ComputeRuntime(Protocol):
     def status(self) -> str: ...
 
     def site_dir(self) -> Path: ...
+
+    def stale_engines(self) -> list[Path]: ...
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -159,10 +167,14 @@ def resolve_interpreter(
       ``site`` del motor, la versión de numpy de su lock y su ``lock_id``, si el motor está
       listo.
 
-    Sin motor listo (``runtime`` es ``None`` o su estado no es ``ready``) ni externo,
-    :class:`~.messages.JobError` ``runtime_missing``: el cálculo no se lanza. Un entorno
-    que no es ``blender`` ni ``compute`` es :class:`ValueError`. No comprueba que los
-    ejecutables existan: si no, el trabajo falla al arrancarlo (``interpreter_not_found``)."""
+    Sin motor listo (``runtime`` es ``None`` o su estado no es ``ready``) ni externo, el
+    cálculo no se lanza: :class:`~.messages.JobError` ``runtime_mismatch`` si el motor está
+    ``outdated`` (falta el del lock vigente y queda el de otra versión de Geoblender, que hay
+    que actualizar; ``installed``, el ``lock_id`` de los que quedan, por orden, y
+    ``required``, el vigente; RF-004-27) y ``runtime_missing`` si no (no está o está
+    dañado). Un entorno que no es ``blender`` ni ``compute`` es :class:`ValueError`. No
+    comprueba que los ejecutables existan: si no, el trabajo falla al arrancarlo
+    (``interpreter_not_found``)."""
     python = Path(blender_python)
     if environment == KIND_BLENDER:
         site = None if site_override is None else Path(site_override)
@@ -177,17 +189,31 @@ def resolve_interpreter(
         raise JobError("runtime_missing")
     if site_override is not None:
         site = Path(site_override)
-    elif runtime.status() == RUNTIME_READY:
-        site = Path(runtime.site_dir())
     else:
-        # ``missing``, ``outdated`` o ``broken``: hay que instalar, actualizar o reparar el
-        # motor con el diálogo del RF-004-20 (Herramientas ▸ Trabajos ▸ Motor de cálculo).
-        raise JobError("runtime_missing")
+        status = runtime.status()
+        if status != RUNTIME_READY:
+            # Hay que instalar, actualizar o reparar el motor con el diálogo del RF-004-20
+            # (Herramientas ▸ Trabajos ▸ Motor de cálculo).
+            raise _not_ready_error(runtime, status)
+        site = Path(runtime.site_dir())
     numpy = runtime.lock.package(LOCK_NUMPY)
     return Interpreter(
         kind=KIND_COMPUTE, python=python, flags=COMPUTE_FLAGS, site=site,
         expect_numpy=None if numpy is None else numpy.version, lock_id=runtime.lock_id,
     )
+
+
+def _not_ready_error(runtime: ComputeRuntime, status: str) -> JobError:
+    """El error de un trabajo ``compute`` con el motor ``runtime`` en el estado ``status``,
+    que no es ``ready``: ``runtime_mismatch`` con los ``lock_id`` de los motores de otras
+    versiones de Geoblender que quedan (si está ``outdated`` y aún queda alguno) y el
+    vigente; si no, ``runtime_missing``."""
+    if status == RUNTIME_OUTDATED:
+        installed = [Path(folder).name for folder in runtime.stale_engines()]
+        if installed:
+            return JobError("runtime_mismatch", installed=", ".join(sorted(installed)),
+                            required=runtime.lock_id)
+    return JobError("runtime_missing")
 
 
 def build_command(

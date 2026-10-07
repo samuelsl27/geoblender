@@ -25,7 +25,8 @@ Ciclo de vida de un trabajo en proceso aparte:
   (``interpreter.build_command`` con el intérprete de ``interpreter.resolve_interpreter``:
   en el entorno ``compute``, el intérprete externo si está configurado o, si no, el Python
   de Blender con ``-I -S`` y el motor de cálculo; sin motor listo, el trabajo queda
-  «Fallido» ``runtime_missing`` sin proceso; RF-004-25, RF-004-26), con la carpeta del
+  «Fallido» sin proceso, con ``runtime_missing`` o, si el que hay es de otra versión de
+  Geoblender, ``runtime_mismatch``; RF-004-25, RF-004-26), con la carpeta del
   trabajo como carpeta de trabajo, la entrada estándar en una tubería
   que el lanzador mantiene abierta (si Blender muere, el worker lo ve y termina), la salida
   estándar como canal de eventos y la de error en ``job.log``, y el entorno de Blender sin
@@ -892,7 +893,8 @@ class JobRunner:
     ) -> interpreter.Interpreter:
         """El intérprete del trabajo según su entorno, el motor de cálculo, el intérprete
         externo y su ``site_override`` (plan §5.3.3); :class:`~.messages.JobError`
-        ``runtime_missing`` si necesita el motor y no está listo (RF-004-25, RF-004-26)."""
+        ``runtime_missing`` o ``runtime_mismatch`` si necesita el motor y no está listo
+        (RF-004-25, RF-004-26, RF-004-27)."""
         assert request.environment is not None  # validate_request lo exige
         return interpreter.resolve_interpreter(
             request.environment, blender_python=self._blender_python, runtime=self._runtime,
