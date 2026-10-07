@@ -571,6 +571,7 @@ class JobRunner:
         *,
         on_finish: Callable[[JobResult], object] | None = None,
         paths: Mapping[str, Path] | None = None,
+        site_override: Path | None = None,
     ) -> JobHandle:
         """Pone el trabajo en la cola y vuelve sin esperarlo (RNF-004-01); si hay hueco,
         lo lanza al momento, en proceso aparte o en un hilo según su tipo de trabajo
@@ -587,10 +588,16 @@ class JobRunner:
         por nombre (``ComputeEnvironment.install_paths``): no van en la petición sino en la
         línea de órdenes (``--path``; en hilo, en su contexto), y el worker las ve en
         ``WorkerContext.paths``; un nombre o una ruta que no valen
-        (``interpreter.check_paths``) son :class:`ValueError` sin crear nada. Con el lanzador
-        ya cerrado (:meth:`shutdown`), :class:`RuntimeError` sin crear nada."""
+        (``interpreter.check_paths``) son :class:`ValueError` sin crear nada.
+        ``site_override``: la carpeta ``site`` con la que arranca su intérprete
+        (``interpreter.resolve_interpreter``; ruta completa, si no :class:`ValueError` sin
+        crear nada): en el entorno ``compute``, el Python de Blender sobre esa carpeta aunque
+        el motor no esté listo ni se use el intérprete externo (la verificación de un motor
+        recién instalado en ``<lock_id>.partial/site``, plan §5.4.7). Con el lanzador ya
+        cerrado (:meth:`shutdown`), :class:`RuntimeError` sin crear nada."""
         self._check_open()
         job_paths = interpreter.check_paths({} if paths is None else paths)
+        override = _site_override(site_override)
         folder = self.prepare(job) if isinstance(job, JobRequest) else job
         if not isinstance(folder, JobDir):
             raise TypeError(f"se esperaba un JobDir o un JobRequest, no {type(job).__name__}")
@@ -616,6 +623,7 @@ class JobRunner:
                 fresh = True
             item = _Job(request, folder, record, on_finish)
             item.paths = job_paths
+            item.site_override = override
             if executor == EXECUTOR_INPROCESS:
                 item.run = info.run
             self._jobs[folder.job_uid] = item
@@ -870,14 +878,16 @@ class JobRunner:
         §5.4.1)."""
         return policy.choose_executor(info, request)
 
-    def _interpreter_for(self, request: JobRequest) -> interpreter.Interpreter:
-        """El intérprete del trabajo según su entorno, el motor de cálculo y el intérprete
-        externo (plan §5.3.3); :class:`~.messages.JobError` ``runtime_missing`` si necesita
-        el motor y no está listo (RF-004-25, RF-004-26)."""
+    def _interpreter_for(
+        self, request: JobRequest, site_override: Path | None = None
+    ) -> interpreter.Interpreter:
+        """El intérprete del trabajo según su entorno, el motor de cálculo, el intérprete
+        externo y su ``site_override`` (plan §5.3.3); :class:`~.messages.JobError`
+        ``runtime_missing`` si necesita el motor y no está listo (RF-004-25, RF-004-26)."""
         assert request.environment is not None  # validate_request lo exige
         return interpreter.resolve_interpreter(
             request.environment, blender_python=self._blender_python, runtime=self._runtime,
-            external_python=self._external_python,
+            external_python=self._external_python, site_override=site_override,
         )
 
     def _child_env(self) -> dict[str, str]:
@@ -923,7 +933,7 @@ class JobRunner:
             self._launch_thread(item)
             return
         try:
-            interp = self._interpreter_for(item.request)
+            interp = self._interpreter_for(item.request, item.site_override)
         except JobError as exc:  # sin motor de cálculo listo (RF-004-25)
             self._finish(item, state="failed", exit_code=None, duration_s=None,
                          error=ErrorInfo.from_job_error(exc))
@@ -1428,6 +1438,8 @@ class _Job:
         """El intérprete con que se lanzó su proceso."""
         self.paths: Mapping[str, Path] = {}
         """Las rutas del trabajo fuera de su carpeta (``submit(..., paths=…)``)."""
+        self.site_override: Path | None = None
+        """La carpeta ``site`` de su intérprete (``submit(..., site_override=…)``)."""
         self.run: catalog.WorkerRun | None = None
         """La función del tipo de trabajo, si va en hilo."""
         self.thread: InProcessExecutor | None = None
@@ -1756,6 +1768,16 @@ def _external_python(path: Path | None) -> Path | None:
     if not exe.is_absolute():
         raise ValueError(f"el intérprete externo «{exe}» no es una ruta completa")
     return exe
+
+
+def _site_override(path: Path | None) -> Path | None:
+    """La carpeta ``site`` de ``submit`` como ruta completa (``None``: ninguna;
+    :class:`ValueError` si no es una ruta completa)."""
+    if path is None:
+        return None
+    if not isinstance(path, str | os.PathLike) or not Path(path).is_absolute():
+        raise ValueError(f"la carpeta site {path!r} no es una ruta completa")
+    return Path(path)
 
 
 def _sha256(path: Path) -> tuple[str, int]:
