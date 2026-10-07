@@ -19,12 +19,16 @@ ningún proceso.
 
 import hashlib
 import io
+import json
 import os
+import platform
 import queue
+import sys
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -670,6 +674,99 @@ class JobFailedTest(unittest.TestCase):
         failed = JobFailed.from_error(error)
         self.assertEqual((failed.code, failed.msgid, failed.text, failed.values),
                          ("worker_unknown", error.msgid, error.text, {"worker": "nada"}))
+
+
+class FinishTest(_ContextCase):
+    """Spec 004, T08 (RF-004-15): el cierre de un trabajo que terminó bien y el orden de las
+    horas del canal con los eventos del ejecutor."""
+
+    def test_executor_event_created_before_the_flush_keeps_times_in_order(self):
+        """RF-004-15: un evento del ejecutor creado antes del avance retenido sale después
+        de él y con una hora que no retrocede; ``emit`` devuelve el evento enviado."""
+        ctx = self.context()
+        ctx.progress(0.5)
+        ctx.progress(1.0, "Hecho")  # retenido: el reloj simulado está parado
+        early = JobEvent.cancelled("Cancelado en el trozo 2 de 2", ts=time.time() - 60)
+        sent = ctx.emit(early)
+        self.assertEqual([e.type for e in self.sink.events], ["progress", "progress",
+                                                               "cancelled"])
+        self.assertIs(sent, self.sink.events[-1])
+        self.assertEqual(sent.msg, early.msg)
+        stamps = [event.ts for event in self.sink.events]
+        self.assertEqual(stamps, sorted(stamps))
+
+    def test_finish_writes_result_json_and_sends_the_result(self):
+        """RF-004-15: ``finish`` envía el último avance, deja el evento ``result`` (resultados
+        declarados y resumen) en ``result.json`` (UTF-8 sin BOM) y lo envía el último."""
+        ctx = self.context()
+        path = ctx.output_path("dato.bin")
+        path.write_bytes(b"geoblender")
+        ref = ctx.add_output(path, "dato")
+        ctx.progress(0.5)
+        ctx.progress(1.0, "Hecho")
+        event = ctx.finish({"suma": 3, "nota": "año"})
+        self.assertEqual([e.type for e in self.sink.events], ["progress", "progress",
+                                                               "result"])
+        self.assertIs(event, self.sink.events[-1])
+        self.assertEqual((event.outputs, dict(event.summary)),
+                         ((ref,), {"suma": 3, "nota": "año"}))
+        raw = ctx.job_dir.result_file.read_bytes()
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+        self.assertEqual(JobEvent.from_json(json.loads(raw.decode("utf-8"))), event)
+        self.assertEqual(list(ctx.job_dir.path.glob("*.partial")), [])
+        stamps = [e.ts for e in self.sink.events]
+        self.assertEqual(stamps, sorted(stamps))
+
+    def test_finish_without_summary(self):
+        """Sin resumen (``None``), el resultado lleva un resumen vacío."""
+        ctx = self.context()
+        self.assertEqual(dict(ctx.finish().summary), {})
+        self.assertTrue(ctx.job_dir.result_file.is_file())
+
+    def test_bad_summary_writes_and_sends_nothing(self):
+        """Un resumen que no es un objeto JSON es ``ValueError``: ni ``result.json`` ni
+        evento, ni siquiera el avance retenido."""
+        ctx = self.context()
+        ctx.progress(0.5)
+        ctx.progress(1.0)
+        for summary in (["no", "objeto"], {"x": float("nan")}, {"x": object()}):
+            with self.subTest(summary=summary), self.assertRaises(ValueError):
+                ctx.finish(summary)
+        self.assertEqual([e.frac for e in self.sink.events], [0.5])
+        self.assertFalse(ctx.job_dir.result_file.exists())
+        self.assertEqual(list(ctx.job_dir.path.glob("*.partial")), [])
+
+
+class InterpreterInfoTest(unittest.TestCase):
+    """Spec 004, T08 (RF-004-15): lo que cuenta el evento ``start`` del intérprete."""
+
+    def test_info_of_this_interpreter(self):
+        """RF-004-15: pid, tipo, versión de Python y versiones de numpy y de su BLAS."""
+        info = worker_api.interpreter_info("blender")
+        blas = np.show_config(mode="dicts")["Build Dependencies"]["blas"]["name"]
+        self.assertEqual(info, {"pid": os.getpid(), "kind": "blender",
+                                "python": platform.python_version(),
+                                "numpy": np.__version__, "blas": blas})
+        self.assertEqual(JobEvent.start(info).info, info)
+
+    def test_kinds(self):
+        """Solo ``blender``, ``compute`` y ``external``."""
+        for kind in ("blender", "compute", "external"):
+            self.assertEqual(worker_api.interpreter_info(kind)["kind"], kind)
+        for kind in ("", "Blender", "python", None):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                worker_api.interpreter_info(kind)
+
+    def test_without_numpy(self):
+        """Un intérprete sin numpy: numpy y BLAS vacíos (``None``)."""
+        with mock.patch.dict(sys.modules, {"numpy": None}):
+            info = worker_api.interpreter_info("external")
+        self.assertEqual((info["numpy"], info["blas"]), (None, None))
+
+    def test_blas_name_unknown(self):
+        """Un numpy que no dice su BLAS da ``unknown``."""
+        self.assertEqual(worker_api.blas_name(object()), worker_api.UNKNOWN_BLAS)
+        self.assertEqual(worker_api.UNKNOWN_BLAS, "unknown")
 
 
 if __name__ == "__main__":

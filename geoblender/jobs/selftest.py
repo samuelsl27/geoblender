@@ -44,7 +44,7 @@ from typing import Any, Protocol
 
 from .messages import JobError, Message
 from .protocol import Environment, JobRequest, JsonValue, OutputRef
-from .worker_api import JobCancelled, JobFailed
+from .worker_api import JobCancelled, JobFailed, blas_name
 
 OPS: tuple[str, ...] = ("chunked_sum", "matmul")
 DEFAULT_OP = "chunked_sum"
@@ -79,7 +79,6 @@ CRASH_EXIT_CODE = 7
 SUM_OUTPUT = "sum.npy"
 SUM_ROLE = "sum"
 MATMUL_SEED = 20_261_005
-UNKNOWN_BLAS = "unknown"
 
 _KEYS: Mapping[str, frozenset[str]] = MappingProxyType({
     "chunked_sum": frozenset({"op", "n", "chunks", "sleep_s", "fail_at", "crash_at",
@@ -342,18 +341,8 @@ def _matmul(ctx: _Context, p: SelftestParams) -> dict[str, JsonValue]:
         "best_s": best,
         "gflops": 2 * p.n**3 / best / 1e9,
         "numpy": np.__version__,
-        "blas": _blas_name(np),
+        "blas": blas_name(np),
     }
-
-
-def _blas_name(np: Any) -> str:
-    """El nombre de la BLAS de numpy (``auto`` en el de Blender, ``scipy-openblas`` en el
-    del motor), o :data:`UNKNOWN_BLAS` si numpy no lo dice."""
-    try:
-        name = np.show_config(mode="dicts")["Build Dependencies"]["blas"]["name"]
-    except Exception:  # noqa: BLE001 - cualquier numpy sin esa información
-        return UNKNOWN_BLAS
-    return name if isinstance(name, str) and name else UNKNOWN_BLAS
 
 
 # --- Parámetros y mensajes ----------------------------------------------------------------

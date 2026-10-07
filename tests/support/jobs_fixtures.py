@@ -21,6 +21,10 @@ las ayudas a ``tests/support/`` (como ``core_fixtures.py`` en la 002). Se import
 - :func:`make_fake_interpreter`: intérprete falso, un ``.cmd`` que no ejecuta Python:
   ignora los argumentos, escribe lo que se le dio y termina con el código pedido (una
   versión 3.12, un Python sin numpy…).
+- :func:`prepare_job` y :class:`LaunchedWorker` (T08): la carpeta de un trabajo con su
+  ``request.json``, y el arranque ``workers/_bootstrap.py`` lanzado a mano con el Python de
+  Blender como lo lanzará el lanzador (plan 004 §5.3.3); :meth:`LaunchedWorker.finish`
+  devuelve lo que dejó (:class:`WorkerRun`: código, eventos del canal y ``job.log``).
 
 Datos solo sintéticos (constitución, principio 7): ni rutas absolutas ni datos de un
 expediente real (lo comprueba ``tests/unit/jobs/test_jobs_fixtures.py``).
@@ -29,17 +33,22 @@ expediente real (lo comprueba ``tests/unit/jobs/test_jobs_fixtures.py``).
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import os
+import subprocess
+import sys
 import tempfile
 import time
 import zipfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from tests.support.package import import_geoblender
+from tests.support.repo import EXTENSION_DIR
 
 # Prefijo corto: las rutas de los trabajos y de ``pip --target`` se alargan dentro, y
 # Blender 5.2.1 no admite más de 259 caracteres (docs/trampas.md).
@@ -56,6 +65,15 @@ WHEEL_TAG = "py3-none-any"
 _ZIP_DATE = (2026, 1, 1, 0, 0, 0)
 
 _POLL_S = 0.05
+
+WORKER_FLAGS: tuple[str, ...] = ("-I", "-B", "-u")
+"""Banderas del Python de Blender al lanzar un worker del entorno ``blender`` (plan 004
+§5.3.3): aislado, sin ``__pycache__`` y sin búfer en el canal."""
+BOOTSTRAP_PARTS: tuple[str, ...] = ("workers", "_bootstrap.py")
+WORKER_KIND = "blender"
+WORKER_TIMEOUT_S = 60.0
+"""Plazo de seguridad de :meth:`LaunchedWorker.finish`: un worker colgado no cuelga la
+prueba (falla y se termina)."""
 
 
 @contextmanager
@@ -248,3 +266,143 @@ def make_fake_interpreter(
     ]
     script.write_bytes(("\r\n".join(lines) + "\r\n").encode("ascii"))
     return script
+
+
+def bootstrap_path(package_dir: Path = EXTENSION_DIR) -> Path:
+    """``<paquete>/workers/_bootstrap.py``, el arranque de los workers en proceso aparte."""
+    return Path(package_dir).joinpath(*BOOTSTRAP_PARTS)
+
+
+def prepare_job(
+    jobs_root: Path,
+    worker: str = "selftest",
+    *,
+    params: Mapping[str, Any] | None = None,
+    arrays: Mapping[str, Any] | None = None,
+    label: str = "Autodiagnóstico de las pruebas",
+    timeout_s: float = WORKER_TIMEOUT_S,
+) -> Any:
+    """Crea en ``jobs_root`` la carpeta de un trabajo ``worker`` (entorno ``blender``) con su
+    ``request.json`` y, si se dan, sus entradas ``arrays`` (nombre → ``ndarray``, en
+    ``in/<nombre>.npy`` con ``JobDir.write_array``). Devuelve su ``JobDir``. No comprueba el
+    catálogo: admite un tipo de trabajo que no existe."""
+    protocol = import_geoblender("jobs.protocol")
+    paths = import_geoblender("jobs.paths")
+    request = protocol.new_request(
+        worker, label=label, owner="jobs", params=params, environment=WORKER_KIND,
+        timeout_s=timeout_s,
+    )
+    folder = paths.job_dir(jobs_root, request.job_uid).create()
+    inputs = {name: folder.write_array(name, array) for name, array in (arrays or {}).items()}
+    if inputs:
+        request = dataclasses.replace(request, inputs=inputs)
+    protocol.write_request(folder, request)
+    return folder
+
+
+@dataclass(frozen=True)
+class WorkerRun:
+    """Lo que dejó un worker lanzado a mano: su pid, su código de salida, los bytes de su
+    canal, lo que el decodificador del protocolo saca de ellos (``events``, los eventos en
+    orden, e ``invalid``, las líneas que no lo son), ``job.log`` y los segundos que pasaron
+    desde que se lanzó hasta que la prueba lo vio terminar (cota superior de su duración)."""
+
+    pid: int
+    returncode: int
+    channel: bytes
+    events: tuple[Any, ...]
+    invalid: tuple[Any, ...]
+    log_bytes: bytes
+    elapsed_s: float
+
+    @property
+    def log(self) -> str:
+        """``job.log`` como texto (UTF-8; un byte que no lo es, como «�»)."""
+        return self.log_bytes.decode("utf-8", "replace")
+
+    def types(self) -> list[str]:
+        """Los tipos de los eventos, en orden de llegada."""
+        return [event.type for event in self.events]
+
+    def of_type(self, kind: str) -> list[Any]:
+        """Los eventos del tipo ``kind``, en orden de llegada."""
+        return [event for event in self.events if event.type == kind]
+
+
+class LaunchedWorker:
+    """Un worker lanzado a mano con el arranque, como lo lanzará el lanzador (plan 004
+    §5.3.3): ``python.exe -I -B -u <paquete>/workers/_bootstrap.py --package-dir <paquete>
+    --job-dir <carpeta> --kind blender`` con el Python de las pruebas (el de Blender), la
+    carpeta del trabajo como carpeta de trabajo, la entrada estándar en una tubería que la
+    prueba mantiene abierta (al cerrarla, :meth:`lose_parent`, el worker se queda sin padre),
+    la salida estándar en otra (el canal de eventos) y la de error en ``job.log``.
+
+    ``flags`` cambia las banderas del intérprete y ``args`` los argumentos del arranque
+    (``None``: los de arriba). Se lanza al crearlo; :meth:`finish` espera y recoge;
+    :meth:`close` lo termina si sigue vivo (para la limpieza de la prueba)."""
+
+    def __init__(
+        self,
+        job_dir: Path,
+        *,
+        package_dir: Path = EXTENSION_DIR,
+        flags: Sequence[str] = WORKER_FLAGS,
+        args: Sequence[str] | None = None,
+    ) -> None:
+        self.job_dir = Path(job_dir)
+        self._log_file = self.job_dir / import_geoblender("jobs.paths").LOG_FILE
+        if args is None:
+            args = ("--package-dir", str(package_dir), "--job-dir", str(self.job_dir),
+                    "--kind", WORKER_KIND)
+        command = [sys.executable, *flags, str(bootstrap_path(package_dir)), *args]
+        read_end, self._parent = os.pipe()
+        try:
+            with self._log_file.open("ab") as log:
+                self.started = time.monotonic()
+                self.process = subprocess.Popen(
+                    command, stdin=read_end, stdout=subprocess.PIPE, stderr=log,
+                    cwd=self.job_dir,
+                )
+        except BaseException:
+            self.lose_parent()
+            raise
+        finally:
+            os.close(read_end)
+
+    def lose_parent(self) -> None:
+        """Cierra el extremo de la tubería de entrada que tiene la prueba: para el worker, el
+        padre ha muerto (fin de la entrada estándar)."""
+        parent, self._parent = self._parent, None
+        if parent is not None:
+            os.close(parent)
+
+    def finish(self, timeout_s: float = WORKER_TIMEOUT_S) -> WorkerRun:
+        """Espera a que el worker termine (como mucho ``timeout_s`` s: si no, lo termina y
+        falla la prueba) leyendo su canal, y devuelve lo que dejó."""
+        try:
+            channel, _ = self.process.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            self.close()
+            raise AssertionError(f"el worker no terminó en {timeout_s} s") from None
+        elapsed = time.monotonic() - self.started
+        self.lose_parent()
+        protocol = import_geoblender("jobs.protocol")
+        decoder = protocol.EventDecoder()
+        items = decoder.feed(channel) + decoder.close()
+        invalid = tuple(item for item in items if isinstance(item, protocol.InvalidLine))
+        events = tuple(item for item in items if isinstance(item, protocol.JobEvent))
+        log = self._log_file.read_bytes() if self._log_file.exists() else b""
+        return WorkerRun(self.process.pid, self.process.returncode, channel, events, invalid,
+                         log, elapsed)
+
+    def close(self) -> None:
+        """Termina el worker si sigue vivo y cierra sus tuberías (idempotente)."""
+        if self.process.poll() is None:
+            self.process.kill()
+            try:
+                self.process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+        elif self.process.stdout is not None and not self.process.stdout.closed:
+            self.process.stdout.close()
+        self.lose_parent()

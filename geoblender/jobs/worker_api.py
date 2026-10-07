@@ -18,6 +18,10 @@ RF-004-05, RF-004-09, RF-004-12; plan 004 §5.2.3, §5.3.1, §5.3.4 y §5.4.5).
 - :class:`JobFailed`: el cálculo falló por una causa que se explica al usuario (salida 2 y
   evento ``error`` en proceso aparte; «Fallido» en los dos ejecutores), con su código, su
   ``msgid`` en inglés, sus valores y su texto en español (RF-004-12).
+- Para los ejecutores: :func:`interpreter_info`, lo que cuenta el evento ``start`` (pid,
+  intérprete y versiones de Python, numpy y BLAS; RF-004-15), y
+  :meth:`WorkerContext.finish`, el cierre de un trabajo que terminó bien (``result.json`` y
+  evento ``result``), iguales en el arranque del proceso aparte y en el hilo.
 
 **Avance** (plan §5.2.3): como mucho un evento cada :data:`PROGRESS_INTERVAL_S` s (10 por
 segundo). El que llega antes de tiempo se retiene (solo el más reciente) y sale en cuanto
@@ -33,19 +37,22 @@ Una cancelación vista no se deshace.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
+import json
 import os
+import platform
 import queue
 import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import IO, Protocol
+from typing import IO, Any, Protocol
 
 from ..core.paths import RESERVED_NAMES
 from .messages import JobError
-from .paths import INPUTS_DIR, OUTPUTS_DIR, JobDir
+from .paths import INPUTS_DIR, OUTPUTS_DIR, PARTIAL_SUFFIX, JobDir
 
 # ``_relative_problem``: la misma regla de «dentro de in/ u out/» que la petición y OutputRef.
 from .protocol import (
@@ -57,6 +64,7 @@ from .protocol import (
     encode_event,
     plain_json,
 )
+from .records import INTERPRETER_KINDS
 
 PROGRESS_INTERVAL_S = 0.1
 """Mínimo entre dos eventos de avance enviados: como mucho 10 por segundo (plan §5.2.3)."""
@@ -69,6 +77,8 @@ CANCELLED_TEXT = "Se pidió parar el trabajo"
 preciso: «Cancelado en el trozo 11 de 20»)."""
 _HASH_BLOCK = 1 << 20
 """Bloque de lectura al calcular la huella de un resultado (1 MiB)."""
+UNKNOWN_BLAS = "unknown"
+"""La BLAS de un numpy que no dice cuál usa."""
 
 type _EventQueue = queue.Queue[JobEvent] | queue.SimpleQueue[JobEvent]
 
@@ -110,6 +120,46 @@ class JobFailed(Exception):
         """El fallo con el código, el ``msgid``, los valores y el texto de un
         :class:`~.messages.JobError` del catálogo de los trabajos (``request_invalid``…)."""
         return cls(error.code, msgid=error.msgid, text=error.text, values=error.values)
+
+
+# --- Intérprete ---------------------------------------------------------------------------
+
+
+def interpreter_info(kind: str) -> dict[str, JsonValue]:
+    """Lo que el evento ``start`` cuenta del intérprete que ejecuta el trabajo (plan §5.2.3;
+    RF-004-15): ``pid``, ``kind`` (``blender``, ``compute`` o ``external``; otro es
+    :class:`ValueError`), la versión de Python y las de numpy y su BLAS (las dos ``None`` si
+    numpy no se puede importar en este intérprete)."""
+    if kind not in INTERPRETER_KINDS:
+        raise ValueError(
+            f"el tipo de intérprete «{kind}» no es uno de {', '.join(INTERPRETER_KINDS)}"
+        )
+    numpy_version: str | None = None
+    blas: str | None = None
+    try:
+        import numpy as np
+    except ImportError:
+        pass
+    else:
+        numpy_version = str(np.__version__)
+        blas = blas_name(np)
+    return {
+        "pid": os.getpid(),
+        "kind": kind,
+        "python": platform.python_version(),
+        "numpy": numpy_version,
+        "blas": blas,
+    }
+
+
+def blas_name(np: Any) -> str:
+    """El nombre de la BLAS del numpy ``np`` según ``numpy.show_config`` (``auto`` en el de
+    Blender, ``scipy-openblas`` en el del motor), o :data:`UNKNOWN_BLAS` si no lo dice."""
+    try:
+        name = np.show_config(mode="dicts")["Build Dependencies"]["blas"]["name"]
+    except Exception:  # noqa: BLE001 - cualquier numpy sin esa información
+        return UNKNOWN_BLAS
+    return name if isinstance(name, str) and name else UNKNOWN_BLAS
 
 
 # --- Sumideros de eventos ------------------------------------------------------------------
@@ -206,6 +256,7 @@ class WorkerContext:
         self._lock = threading.RLock()
         self._last_progress_at: float | None = None
         self._held: tuple[float, str] | None = None
+        self._last_sent_ts: float | None = None
         self._last_look_at: float | None = None
         self._cancelled = False
         self._outputs: dict[str, OutputRef] = {}
@@ -312,7 +363,7 @@ class WorkerContext:
         event = JobEvent.log(level, msg)
         with self._lock:
             self._send_held_if_due()
-            self._sink.send(event)
+            self._send(event)
 
     def check_cancelled(self) -> None:
         """:class:`JobCancelled` si se pidió parar el trabajo (RF-004-09): el aviso del hilo
@@ -335,14 +386,43 @@ class WorkerContext:
                 self._held = None
                 self._send_progress(frac, msg, self._clock())
 
-    def emit(self, event: JobEvent) -> None:
+    def emit(self, event: JobEvent) -> JobEvent:
         """Envía un evento del ejecutor (``start``, ``result``, ``error``, ``cancelled``)
-        por el mismo sumidero, después del avance retenido (:meth:`flush`)."""
+        por el mismo sumidero, después del avance retenido (:meth:`flush`), y devuelve el
+        evento enviado: si se creó antes que el último enviado, sale con la hora de su envío
+        (las horas del canal no retroceden)."""
         if not isinstance(event, JobEvent):
             raise TypeError(f"no es un evento: {type(event).__name__}")
         with self._lock:
             self.flush()
-            self._sink.send(event)
+            return self._send(event)
+
+    def finish(self, summary: Mapping[str, JsonValue] | None = None) -> JobEvent:
+        """Cierra un trabajo que terminó bien (lo llama el ejecutor cuando vuelve ``run``):
+        el evento ``result`` con los resultados declarados (:attr:`outputs`) y el resumen
+        ``summary`` (JSON; ``None``, vacío), que deja antes en ``result.json`` de la carpeta
+        del trabajo (UTF-8 sin BOM, sustituyendo de forma atómica) y envía después del último
+        avance (:meth:`emit`). Lo devuelve. Un resumen que no es un objeto JSON, o un evento
+        que no cabe en el canal, es :class:`ValueError` y no se escribe ni se envía nada
+        (plan §5.2.1 y §5.4.3, paso 8)."""
+        event = JobEvent.result(self.outputs, summary)  # comprueba el resumen
+        encode_event(event)  # y que quepa en el canal, antes de escribir o enviar nada
+        with self._lock:
+            self.flush()
+            event = self._stamped(event)
+            text = json.dumps(event.to_json(), ensure_ascii=False, indent=2,
+                              allow_nan=False)
+            target = self._job_dir.result_file
+            temporary = target.with_name(target.name + PARTIAL_SUFFIX)
+            try:
+                with temporary.open("w", encoding="utf-8", newline="\n",
+                                    errors="backslashreplace") as handle:
+                    handle.write(text + "\n")
+                os.replace(temporary, target)
+            except BaseException:
+                temporary.unlink(missing_ok=True)
+                raise
+            return self._send(event)
 
     # --- Ayudas -------------------------------------------------------------------------
 
@@ -350,9 +430,25 @@ class WorkerContext:
         last = self._last_progress_at
         return last is None or now - last >= PROGRESS_INTERVAL_S
 
+    def _stamped(self, event: JobEvent) -> JobEvent:
+        """``event``, o una copia con la hora actual si se creó antes que el último enviado:
+        las horas del canal no retroceden (RF-004-15: eventos en orden de llegada)."""
+        last = self._last_sent_ts
+        if last is None or event.ts >= last:
+            return event
+        return dataclasses.replace(event, ts=max(time.time(), last))
+
+    def _send(self, event: JobEvent) -> JobEvent:
+        """Envía ``event`` (con su hora corregida si hace falta, :meth:`_stamped`) y lo
+        devuelve. Se llama con el cerrojo tomado."""
+        event = self._stamped(event)
+        self._sink.send(event)
+        self._last_sent_ts = event.ts
+        return event
+
     def _send_progress(self, frac: float, msg: str, now: float) -> None:
         # Con la hora del envío: las horas del canal no retroceden.
-        self._sink.send(JobEvent.progress(frac, msg))
+        self._send(JobEvent.progress(frac, msg))
         self._last_progress_at = now
 
     def _send_held_if_due(self) -> None:
