@@ -56,7 +56,7 @@ class TopbarLevelTest(unittest.TestCase):
                                     titles_px=titles_px(language), k=self.k)
 
     def test_1920_at_scale_1(self) -> None:
-        """RF-003-10, RNF-003-01: nivel B en español con ≥ 150 px libres (BS §2.2: 257
+        """RF-003-10, RNF-003-01: nivel B en español con ≥ 150 px libres (BS §2.2: 233
         medidos); en inglés también cabe A (BS §3) y B deja ≥ 150 px."""
         self.assertIs(self.level(1920, 1.0, "es"), Level.B)
         self.assertGreaterEqual(self.free(Level.B, 1920, 1.0, "es"), 150)
@@ -96,6 +96,33 @@ class TopbarLevelTest(unittest.TestCase):
         self.assertEqual(widths, sorted(widths, reverse=True))
         self.assertAlmostEqual(width.topbar_width(Level.B, scale=1.25, titles_px=titles_px("es"),
                                                   k=self.k), widths[1] * 1.25)
+
+    def test_region_without_right_block(self) -> None:
+        """RF-003-10, RNF-003-01 (convergencia, T42; hallazgo D2): en Blender 5.2 el bloque
+        derecho es otra región, y la de ``draw_left`` mide ya solo la parte izquierda
+        (medido el 07/10/2026 a 1920 px: 1583 px a escala 1,0 y 1500 a 1,25). Con
+        ``right_block_px=0`` no se resta otra vez: B (español) o A (inglés) a 1,0 y C a 1,25
+        en los dos idiomas, y lo libre es la región menos la parte izquierda. Restando el
+        bloque derecho dos veces salía D a 1,25 y C a 1,0."""
+        for language, expected in (("es", Level.B), ("en", Level.A)):
+            with self.subTest(language=language, scale=1.0):
+                found = width.choose_topbar_level(
+                    region_width_px=1583, scale=1.0, titles_px=titles_px(language), k=self.k,
+                    right_block_px=0.0)
+                self.assertIs(found, expected)
+            with self.subTest(language=language, scale=1.25):
+                found = width.choose_topbar_level(
+                    region_width_px=1500, scale=1.25, titles_px=titles_px(language), k=self.k,
+                    right_block_px=0.0)
+                self.assertIs(found, Level.C)
+        left = width.topbar_width(Level.C, scale=1.25, titles_px=titles_px("es"), k=self.k)
+        free = width.topbar_free_px(Level.C, region_width_px=1500, scale=1.25,
+                                    titles_px=titles_px("es"), k=self.k, right_block_px=0.0)
+        self.assertAlmostEqual(free, 1500 - left)
+        self.assertAlmostEqual(
+            width.topbar_free_px(Level.C, region_width_px=1920, scale=1.25,
+                                 titles_px=titles_px("es"), k=self.k),
+            1920 - self.k.right_block * 1.25 - left)
 
     def test_menu_button_width(self) -> None:
         """RF-003-10 (BS §3, T18): el ancho explícito de un menú de texto es su título más

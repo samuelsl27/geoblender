@@ -48,6 +48,18 @@ def context(width: float) -> SimpleNamespace:
     )
 
 
+def regions_context(left: float, right: float) -> SimpleNamespace:
+    """Como :func:`context`, pero con las regiones de la barra de Blender 5.2 (T42): la de
+    ``draw_left`` (cabecera ``TOP`` de ``left`` px) y la del bloque derecho (cabecera
+    ``RIGHT`` de ``right`` px)."""
+    found = context(left)
+    found.region = SimpleNamespace(type="HEADER", alignment="TOP", width=left)
+    found.area = SimpleNamespace(show_menus=True, type="TOPBAR", regions=[
+        found.region, SimpleNamespace(type="HEADER", alignment="RIGHT", width=right),
+        SimpleNamespace(type="WINDOW", alignment="NONE", width=left + right)])
+    return found
+
+
 class TopbarWidthTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -163,6 +175,33 @@ class TopbarWidthTest(unittest.TestCase):
                     if item.icon != "NONE":
                         needed += self.k.title_icon
                     self.assertGreaterEqual(item.units_x * unit, needed - 0.01, item.target)
+
+    def test_level_in_blender_regions(self) -> None:
+        """RF-003-10, RNF-003-01 (convergencia, T42; hallazgo D2 de la pantalla): la barra
+        de Blender 5.2 son dos regiones de cabecera, la de ``draw_left`` (``TOP``) y la del
+        bloque derecho (``RIGHT``, de tamaño dinámico), y ``context.region.width`` ya no
+        incluye el bloque derecho (medido el 07/10/2026 a 1920 px: 1583 + 337 px con escala
+        efectiva 1,0 y 1500 + 420 con 1,25). El automático no lo resta otra vez: con 1,25,
+        C en los dos idiomas (antes, D); con 1,0, B en español (antes, C) y A en inglés.
+        Sin la región derecha, la anchura es la de la ventana y se resta la constante."""
+        Level = self.width.Level
+        tools, help_ = self.width.TOOLS_MENU, self.width.HELP_MENU
+        cases = (("es", 1.0, 1583, 337, Level.B), ("en", 1.0, 1583, 337, Level.A),
+                 ("es", 1.25, 1500, 420, Level.C), ("en", 1.25, 1500, 420, Level.C))
+        for language, scale, left, right, expected in cases:
+            with self.subTest(language=language, scale=scale):
+                self.preferences().language = language.upper()
+                self.i18n.set_language(language)
+                ctx = regions_context(left, right)
+                with mock.patch.object(self.compat, "ui_scale", return_value=scale):
+                    self.assertIs(self.topbar.current_level(ctx), expected)
+                    layout = draw(bpy.types.TOPBAR_HT_upper_bar, ctx, method="draw_left")
+                self.assertEqual(self.compat.topbar_right_block_px(ctx), 0.0)
+                menus = self.menus(layout)
+                self.assertEqual(len(menus), 13)
+                icons = [item.target for item in menus if not item.text]
+                self.assertEqual(icons, [tools, help_] if expected is Level.C else [])
+        self.assertIsNone(self.compat.topbar_right_block_px(context(1920)))
 
     def test_forced_level(self) -> None:
         """RF-003-10: «Texto» fija B aunque no quepa (800 px) e «Iconos», D aunque sobre

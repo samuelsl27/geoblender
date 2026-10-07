@@ -14,9 +14,13 @@ del modificador de Geometry Nodes en 5.2) se envuelve aquí, con su prueba en
   (:func:`native_tool_settings_px`). Las mide en la GUI ``tools/inblender/
   measure_topbar.py`` (T19); una versión sin medir usa las de la última medida
   (``tests/blender/test_topbar_width.py``).
-- :func:`ui_scale`: la escala de la interfaz (``preferences.system.ui_scale``, que ya
-  incluye la del sistema operativo); sin interfaz vale 0 (``docs/trampas.md`` §3) y se
-  toma 1,0.
+- :func:`topbar_right_block_px` (convergencia, T42; hallazgo D2): en 5.2 la barra superior
+  son dos regiones de cabecera, la de ``draw_left`` (``TOP``) y la del bloque derecho
+  (``RIGHT``, de tamaño dinámico), y la anchura de la primera ya no incluye el bloque
+  derecho; restarlo otra vez daba D con escala efectiva 1,25 donde cabe C.
+- :func:`ui_scale`: la escala efectiva de la interfaz (``preferences.system.ui_scale``:
+  la «Escala de resolución» por la del sistema operativo, p. ej. 1,0 × 125 % = 1,25); sin
+  interfaz vale 0 (``docs/trampas.md`` §3) y se toma 1,0.
 - :data:`VIEW_SENSOR_MM` y :data:`VIEW_ZOOM` (spec 003; RF-003-13): la proyección de una
   Vista 3D que no mira por una cámara (``BKE_camera_params_from_view3d``: sensor de 36 mm
   y factor 2, con el campo en el lado mayor de la región). Comprobado en 5.2.1 con
@@ -70,19 +74,24 @@ VIEW_ZOOM = 2.0  # factor de la Vista 3D (CAMERA_PARAM_ZOOM_INIT_PERSP)
 UI_FONT_POINTS = 11  # fuente de la interfaz (los títulos de los menús), en puntos
 UI_UNIT_PX = 20  # una unidad de interfaz (ui_units_x) a escala 1,0, en px
 
-# Por versión (mayor, menor) de Blender: medidas en la GUI el 05/10/2026 en 5.2.1 (BS §2.2 y
-# AR §3.2); tools/inblender/measure_topbar.py las vuelve a medir (T19).
+# Por versión (mayor, menor) de Blender: medidas en la GUI de 5.2.1 con
+# tools/inblender/measure_topbar.py el 07/10/2026 (convergencia, T42: 1920 px, escalas
+# efectivas 1,0 y 1,25; BS §2.2 y §2.3); antes, las del 05/10/2026.
 _TOPBAR_WIDTHS: dict[tuple[int, int], TopbarWidthConstants] = {
-    (5, 2): TopbarWidthConstants(blender_version="5.2.1", measured="2026-10-05"),
+    (5, 2): TopbarWidthConstants(
+        menu_pad=23.0, menu_gap=8.0, title_icon=21.0, icon_menu=28.0, fixed_b=363.0,
+        version_compact=91.0, right_block=337.0, margin=24.0, blender_version="5.2.1",
+        measured="2026-10-07"),
 }
 _QUICK_ACCESS_WIDTHS: dict[tuple[int, int], QuickAccessWidthConstants] = {
-    (5, 2): QuickAccessWidthConstants(blender_version="5.2.1", measured="2026-10-05"),
+    (5, 2): QuickAccessWidthConstants(native_object_mode=170.0, blender_version="5.2.1",
+                                      measured="2026-10-07"),
 }
 # Ajustes nativos de la herramienta activa en la fila 2, por modo de Blender, en px a
-# escala 1,0 (con «Opciones»). Modo Objeto, medido (AR §3.2: 93 + 64); los demás son
-# estimaciones de la herramienta de selección por defecto que la T19 mide en la GUI.
+# escala 1,0 (con «Opciones» si la hay), medidos con la herramienta de selección por
+# defecto el 07/10/2026 en 5.2.1 (T42; antes, 160 medidos y 300 y 220 estimados).
 _NATIVE_TOOL_SETTINGS_PX: dict[tuple[int, int], dict[str, float]] = {
-    (5, 2): {"OBJECT": 160.0, "EDIT_MESH": 300.0, "EDIT_CURVE": 220.0},
+    (5, 2): {"OBJECT": 170.0, "EDIT_MESH": 279.0, "EDIT_CURVE": 105.0},
 }
 NATIVE_TOOL_SETTINGS_OTHER_PX = 300.0  # cualquier otro modo (escultura, pintura…)
 # Fila 1 de la Vista 3D (spec 003; RF-003-17; PC §1), en px a escala 1,0: lo nativo (menús,
@@ -99,6 +108,22 @@ def _by_version[T](table: dict[tuple[int, int], T]) -> T:
     major, minor, _patch = blender_version()
     found = table.get((major, minor))
     return table[max(table)] if found is None else found  # sin medir: la última medida
+
+
+def topbar_right_block_px(context: object) -> float | None:
+    """Lo que ocupa el bloque derecho de la barra superior dentro de ``context.region``,
+    en px reales: 0 si Blender lo dibuja en otra región, la cabecera alineada a la derecha
+    de la misma área (5.2.1: ``context.region`` es entonces solo la parte izquierda; a 1920
+    px medidos el 07/10/2026, 1583 + 337 px con escala efectiva 1,0 y 1500 + 420 con 1,25);
+    ``None`` si no la hay (la región es la barra entera y el modelo resta la constante
+    ``right_block``)."""
+    region = getattr(context, "region", None)
+    if getattr(region, "alignment", "") == "RIGHT":
+        return None
+    for other in getattr(getattr(context, "area", None), "regions", None) or ():
+        if getattr(other, "type", "") == "HEADER" and getattr(other, "alignment", "") == "RIGHT":
+            return 0.0
+    return None
 
 
 def topbar_width_constants() -> TopbarWidthConstants:

@@ -27,7 +27,9 @@ vez. Lo de la spec 003 está probado sin la interfaz gráfica; falta verlo en la
   aún no existen: salen en gris y dicen «Disponible en …» (la spec o la entrada del roadmap que
   los traerá); si se pulsan, lo dicen y no hacen nada. La búsqueda de Blender (**F3**) los
   encuentra en los dos modos, también «Conmutar Geoblender ⇄ Blender». Si la ventana es
-  estrecha, los títulos pasan a iconos. Desactivar Geoblender deja Blender como estaba.
+  estrecha, los títulos pasan a iconos, solo los que no caben: en una pantalla de 1920 px
+  se leen todos con la escala de Windows al 100 % y los 11 del trabajo con la del 125 %
+  (Herramientas y Ayuda, en icono). Desactivar Geoblender deja Blender como estaba.
   - **Acceso rápido de cada Vista 3D** (24 controles que se pliegan si no caben), **vistas
     mineras** (planta, secciones N-S y E-O, isométricas; menú circular Mayús+Alt+V),
     **encuadrar la ventana de trabajo**, **vistas guardadas** (Ctrl+Mayús+F5…F8 y

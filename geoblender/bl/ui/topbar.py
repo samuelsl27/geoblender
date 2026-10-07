@@ -15,9 +15,10 @@
   preferencias («Texto» = B, «Iconos» = D) o, en automático, el primero de A a E que cabe
   junto al bloque derecho de Blender (``core.catalog.width.choose_topbar_level``) con los
   títulos medidos con ``blf`` en el idioma de Geoblender (:func:`titles_px`, en caché por
-  idioma), la escala de la interfaz y las constantes de la versión de Blender
-  (``bl.compat``). Cada menú de texto lleva su ancho explícito (``ui_units_x``): en 5.2.1
-  un menú de cabecera con icono y texto recorta el título.
+  idioma), la escala efectiva de la interfaz y las constantes de la versión de Blender
+  (``bl.compat``); la anchura es la de la región de ``draw_left``, que en 5.2 ya no
+  incluye el bloque derecho (T42). Cada menú de texto lleva su ancho explícito
+  (``ui_units_x``): en 5.2.1 un menú de cabecera con icono y texto recorta el título.
 - **Modo Blender**: el conmutador con B hundido, «Geoblender ▾» (los 13 menús) y todo lo
   que dibuja el original, con lo que otros complementos le añaden.
 - **F3** (RF-003-02, RF-003-06, RF-003-07; convergencia, T41): la búsqueda de menús de
@@ -196,8 +197,10 @@ def forced_level() -> Level | None:
 
 def current_level(context: Any) -> Level:
     """El nivel de la barra para la región de ``context`` (RF-003-10): el fijado o el
-    primero de A a E que cabe en su anchura con la escala y el idioma activos; sin
-    anchura conocida, B."""
+    primero de A a E que cabe en su anchura con la escala efectiva y el idioma activos;
+    sin anchura conocida, B. En Blender 5.2 la región de ``draw_left`` ya no incluye el
+    bloque derecho, que es otra región (``bl.compat.topbar_right_block_px``), y no se le
+    resta otra vez (convergencia, T42)."""
     forced = forced_level()
     if forced is not None:
         return forced
@@ -205,11 +208,13 @@ def current_level(context: Any) -> Level:
     if width <= 0:
         return Level.B
     lang, scale = language(), compat.ui_scale()
-    key = (lang, width, scale)
+    right = compat.topbar_right_block_px(context)  # 0: la región ya no lo incluye (5.2)
+    key = (lang, width, scale, right)
     if key != _STATE.level_key:
         _STATE.level = choose_topbar_level(region_width_px=width, scale=scale,
                                            titles_px=titles_px(lang),
-                                           k=compat.topbar_width_constants())
+                                           k=compat.topbar_width_constants(),
+                                           right_block_px=right)
         _STATE.level_key = key
     return _STATE.level
 
