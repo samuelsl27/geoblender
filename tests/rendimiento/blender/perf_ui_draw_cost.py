@@ -37,7 +37,7 @@ ROW2_BUDGET_MS = 0.5
 STATUSBAR_BUDGET_MS = 0.3
 MENU_BUDGET_MS = 1.0
 SEARCH_BUDGET_MS = 20.0
-QUERIES = ("cubicar", "volume", "R-38", "r38", "planta", "sondeos", "ns", "v", "export",
+QUERIES = ("", "cubicar", "volume", "R-38", "r38", "planta", "sondeos", "ns", "v", "export",
            "ventana de trabajo")
 
 

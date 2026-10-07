@@ -113,8 +113,10 @@ def repair() -> str:
     """Ayuda ▸ Reparar la interfaz (RF-003-24; CW §5): vuelve a cargar los iconos (con el
     tamaño de la escala de ahora), vuelve a sustituir ``draw_left`` si ya no es el de
     Geoblender (lo pisó otro complemento o una recarga; nunca envuelve dos veces), vuelve a
-    poner los añadidos (también el de F3) y los atajos del catálogo y recalcula la
-    disponibilidad.
+    poner los añadidos (también el de F3) y los atajos del catálogo, recalcula la
+    disponibilidad y pone otra vez los textos de las clases del catálogo
+    (``registry.relabel``: un menú o un panel que pasa a estar disponible pierde su
+    «Disponible en …», y al revés; spec 003, T45).
     Idempotente. Devuelve el modo de la barra (``patched`` o ``compat``)."""
     if not _UNDO:
         return ""
@@ -126,6 +128,7 @@ def repair() -> str:
     keymap.unregister()
     keymap.register()
     commands.refresh()
+    registry.relabel()
     return mode
 
 

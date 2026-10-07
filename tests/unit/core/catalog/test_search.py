@@ -133,6 +133,71 @@ class SearchTest(unittest.TestCase):
             worst = max(worst, best)
         self.assertLessEqual(worst * 1000, 20.0, f"{worst * 1000:.1f} ms")
 
+    def first(self, query: str, language: str = "es") -> object:
+        return search_mod.search(self.cat, query, language=language,
+                                 is_available=nothing_available, limit=1)[0]
+
+    def test_matched_text(self) -> None:
+        """RF-003-26 (convergencia, T45): cada resultado dice qué texto del catálogo dio
+        su puntuación, como está escrito (la etiqueta en el idioma activo o en el otro,
+        el alias, el término de otro programa o la entrada), si coincidió palabra a
+        palabra o por la entrada; si solo como subcadena o subsecuencia, nada: Blender
+        5.2 vuelve a filtrar la lista con el texto que se ve, y la línea de comandos lo
+        enseña."""
+        hit = self.first("nuevo proyecto")
+        self.assertEqual((hit.field, hit.matched), ("label", "Nuevo proyecto…"))
+        hit = self.first("new project")
+        self.assertEqual((hit.field, hit.matched), ("label_other", "New project…"))
+        hit = self.first("ns")
+        self.assertEqual(hit.field, "alias")
+        self.assertIn(hit.matched, self.cat.commands[hit.key].aliases)
+        hit = self.first("T3")
+        self.assertEqual(hit.field, "jargon")
+        self.assertIn(hit.matched, [term for _program, term in self.cat.commands[hit.key].jargon])
+        hit = self.first("r38")
+        self.assertEqual((hit.field, hit.matched), ("entry", "R-38"))
+        hits = search_mod.search(self.cat, "cubicar", language="en",
+                                 is_available=nothing_available)
+        volume = next(hit for hit in hits if hit.key == VOLUME)
+        self.assertEqual((volume.field, volume.matched),
+                         ("alias", "cubicar"))  # su alias en español
+        weak = [hit for hit in hits if not hit.matched]
+        self.assertTrue(weak)
+        for hit in weak:
+            command = self.cat.commands[hit.key]
+            texts = (command.label, command.label_es, *command.aliases,
+                     *(term for _program, term in command.jargon))
+            best = max(search_mod.field_score("cubicar", search_mod.normalize(text))
+                       for text in texts)
+            self.assertLess(best, search_mod.WORD_MATCH, hit.key)
+
+    def test_frequent_for_an_empty_query(self) -> None:
+        """RF-003-26 (convergencia, T45): con la consulta vacía, la línea de comandos
+        enseña los comandos disponibles más frecuentes (de ●●● a ●; a igual frecuencia,
+        en el orden del catálogo), sin auxiliares internos ni los de frecuencia ○, como
+        mucho ``limit``; los no disponibles, no."""
+        def everything(_key: str) -> bool:
+            return True
+
+        hits = search_mod.frequent(self.cat, language="es", is_available=everything)
+        self.assertEqual(len(hits), 30)
+        commands = [self.cat.commands[hit.key] for hit in hits]
+        order = [(-command.frequency, command.order) for command in commands]
+        self.assertEqual(order, sorted(order))
+        self.assertTrue(all(command.frequency >= 1 for command in commands))
+        self.assertNotIn("internal", {command.kind for command in commands})
+        self.assertTrue(all(hit.available and hit.label for hit in hits))
+        best = max(command.frequency for command in self.cat.commands.values()
+                   if command.kind in search_mod.SEARCHED_KINDS)
+        self.assertEqual(commands[0].frequency, best)
+        chosen = {hit.key for hit in hits[:3]}
+        few = search_mod.frequent(self.cat, language="en", is_available=chosen.__contains__,
+                                  limit=10)
+        self.assertEqual([hit.key for hit in few], [hit.key for hit in hits[:3]])
+        self.assertEqual(few[0].label, self.cat.commands[few[0].key].label)
+        self.assertEqual(search_mod.frequent(self.cat, language="es",
+                                             is_available=nothing_available), [])
+
     def _time(self, query: str) -> float:
         start = time.perf_counter()
         search_mod.search(self.cat, query, language="es", is_available=nothing_available)

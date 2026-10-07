@@ -647,7 +647,7 @@ class GEOBLENDER_OT_ui_restore_layout(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def _command_line_search(_operator: Any, _context: Any, edit_text: str) -> list[tuple[str, str]]:
+def _command_line_search(_operator: Any, _context: Any, edit_text: str) -> list[str]:
     """La lista del campo de la línea de comandos al escribir (``bl.ui.command_line``)."""
     from ..ui import command_line  # diferido, como el conmutador
 
@@ -678,7 +678,7 @@ class GEOBLENDER_OT_ui_open_command_line(bpy.types.Operator):
         if self.query:
             return self.execute(context)
         return context.window_manager.invoke_props_dialog(
-            self, width=640, title=self.bl_label, confirm_text=tr("Run"), translate=False,
+            self, width=800, title=self.bl_label, confirm_text=tr("Run"), translate=False,
         )
 
     def draw(self, context: Any) -> None:

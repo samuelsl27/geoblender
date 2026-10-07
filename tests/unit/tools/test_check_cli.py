@@ -815,6 +815,7 @@ TWO_UNIT_MODULES = {
 }
 HEAD_A = "test_x (tests.unit.test_a.A.test_x) ... ok"
 HEAD_B = "test_y (tests.unit.test_b.B.test_y) ... ok"
+HEAD_OTHER = "test_z (tests.unit.otro.C.test_z) ... ok"  # un módulo que no está en disco
 
 
 def _part(part: int, count: int, ran: int, total: int, body: str, verdict: str = "OK") -> Result:
@@ -976,8 +977,10 @@ class PartsTest(unittest.TestCase):
 
     def test_loaded_in_any_part(self) -> None:
         """RF-001-06 (T35): un módulo que nombra la salida de cualquier parte está
-        cargado; uno que no nombra ninguna es «1 fichero sin cargar», dicho una vez; las
-        pruebas de todas las partes se suman en la línea del paso."""
+        cargado; uno que no nombra ninguna (y las partes repartieron igual: ninguna
+        ejecutó un fichero de otra) es «1 fichero sin cargar», dicho una vez, con la pista
+        de ``__init__.py``; las pruebas de todas las partes se suman en la línea del
+        paso."""
         loaded = {
             "unitarias#1": _part(1, 2, 1, 2, HEAD_A),
             "unitarias#2": _part(2, 2, 1, 2, HEAD_B),
@@ -987,14 +990,71 @@ class PartsTest(unittest.TestCase):
             self.assertEqual(result.code, 0, result.out)
             self.assertIn("(2 pruebas)", _step_line(result.out, "unitarias"))
 
-            missing = {**loaded, "unitarias#2": _part(2, 2, 1, 2, HEAD_A)}
+            missing = {**loaded, "unitarias#2": _part(2, 2, 1, 2, HEAD_OTHER)}
             result = run_check(runner=FakeRunner(missing, loaded=False), root=tmp)
         self.assertEqual(result.code, 1, result.out)
         line = _step_line(result.out, "unitarias")
         self.assertTrue(line.lstrip().startswith("fallo"), line)
         self.assertIn("1 fichero sin cargar", line)
+        self.assertNotIn("reparto incompleto", line)
         self.assertIn("tests/unit/test_b.py", result.out)
         self.assertEqual(result.out.count("FICHEROS DE PRUEBA SIN CARGAR"), 1, result.out)
+        self.assertIn(discovery.HINT, result.out)
+
+    def test_different_distribution(self) -> None:
+        """RF-001-06 (convergencia, T45): si las partes no repartieron igual (una ejecuta
+        un fichero que también ejecutó otra, o dicen totales distintos) y por eso un
+        fichero no lo carga ninguna, el diagnóstico es «reparto incompleto», con el
+        fichero, y no la pista de ``__init__.py``; también si además falla una prueba."""
+        red = _part(2, 2, 1, 2, HEAD_A.replace("... ok", "... FAIL"), "FAILED (failures=1)")
+        cases = {
+            "repetido": (_part(1, 2, 1, 2, HEAD_A), _part(2, 2, 1, 2, HEAD_A),
+                         "tests/unit/test_a.py, en las partes 1 y 2"),
+            "totales distintos": (_part(1, 2, 1, 2, HEAD_A), _part(2, 2, 1, 3, HEAD_OTHER),
+                                  "total"),
+            "repetido y rojo": (_part(1, 2, 1, 2, HEAD_A), (1, "", red[2]),
+                                "tests/unit/test_a.py"),
+        }
+        with _manifest_root(TWO_UNIT_MODULES) as tmp, many_cpus():
+            for name, (first, second, text) in cases.items():
+                with self.subTest(caso=name):
+                    outputs = {"unitarias#1": first, "unitarias#2": second}
+                    result = run_check(runner=FakeRunner(outputs, loaded=False), root=tmp)
+                    self.assertEqual(result.code, 1, result.out)
+                    line = _step_line(result.out, "unitarias")
+                    self.assertTrue(line.lstrip().startswith("fallo"), line)
+                    self.assertIn("reparto incompleto", line)
+                    self.assertNotIn("sin cargar", line)
+                    self.assertEqual(result.out.count("REPARTO INCOMPLETO"), 1, result.out)
+                    self.assertIn(text, result.out)
+                    self.assertIn("tests/unit/test_b.py", result.out)
+                    self.assertNotIn(discovery.HINT, result.out)
+                    self.assertNotIn("FICHEROS DE PRUEBA SIN CARGAR", result.out)
+
+    def test_partial_count(self) -> None:
+        """RF-001-06 (convergencia, T45): si una parte termina sin el resumen de
+        ``unittest`` (o sin poder contar sus pruebas), la línea del paso dice que su
+        número es el de las partes que lo dieron («1 prueba en 1 de 2 partes»), además
+        del fallo."""
+        cut = (0, "", parts.line(2, 2, 1, 2) + "\n" + HEAD_B + "\n")
+        crash = (1, "", parts.line(2, 2, 1, 2) + "\nRuntimeError: rota\n")
+        with _manifest_root(TWO_UNIT_MODULES) as tmp, many_cpus():
+            for name, second, text in (("sin resumen", cut, check.SUMMARY_MISSING),
+                                       ("rota", crash, "código 1")):
+                with self.subTest(caso=name):
+                    outputs = {"unitarias#1": _part(1, 2, 1, 2, HEAD_A),
+                               "unitarias#2": second}
+                    result = run_check(runner=FakeRunner(outputs, loaded=False), root=tmp)
+                    self.assertEqual(result.code, 1, result.out)
+                    line = _step_line(result.out, "unitarias")
+                    self.assertTrue(line.lstrip().startswith("fallo"), line)
+                    self.assertIn("(1 prueba en 1 de 2 partes, ", line)
+                    self.assertIn(text, line)
+            outputs = {"unitarias#1": _part(1, 2, 1, 2, HEAD_A),
+                       "unitarias#2": _part(2, 2, 1, 2, HEAD_B)}
+            result = run_check(runner=FakeRunner(outputs, loaded=False), root=tmp)
+        self.assertEqual(result.code, 0, result.out)
+        self.assertNotIn(" de 2 partes", _step_line(result.out, "unitarias"))
 
     def test_parts_must_add_up(self) -> None:
         """RF-001-06: si una parte no dice su línea «PARTE i de n: r de T pruebas», si

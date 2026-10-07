@@ -15,7 +15,9 @@
 
 Cada elemento se dibuja con ``drawing.draw_command``, con la definición única de su
 comando: desactivado si no está disponible y omitido con «Ocultar lo no disponible»
-(nunca los 13 menús de la barra, que dibuja ``bl/ui/topbar.py``). Un menú generado que no
+(nunca los 13 menús de la barra, que dibuja ``bl/ui/topbar.py``); con ella, un grupo sin
+nada que dibujar no deja su separador ni su rótulo, y un separador no queda al principio,
+al final o junto a otro (spec 003, T45). Un menú generado que no
 está disponible (ninguno de sus elementos lo está) lleva su «Disponible en …» en la
 descripción emergente (``bl.ui.registry``) y, si se abre (el «<Tipo> ▾», el clic
 derecho, Mayús+Alt+B), en su primera línea, gris, tras «Paso n de 11» si la tiene; los
@@ -56,6 +58,33 @@ def step_text(cat: Catalog, menu_id: str) -> str:
               stage=text(spec.stage))
 
 
+def _drawn(item: MenuItem, hide: bool) -> bool:
+    """Si ``item`` (que no es un separador) dibuja algo: un comando del catálogo, salvo
+    uno no disponible con «Ocultar lo no disponible» (como ``draw_command``), o una
+    etiqueta de algo que aún no es un comando."""
+    if item.key is not None:
+        return item.key in catalog().commands and not (hide and not is_available(item.key))
+    return item.placeholder is not None
+
+
+def shown_items(items: tuple[MenuItem, ...], hide: bool) -> list[MenuItem]:
+    """Los elementos de ``items`` que se dibujan, en su orden: sin los que no dibujan
+    nada y con un separador solo entre dos que sí (nunca al principio, al final ni dos
+    seguidos), para que «Ocultar lo no disponible» no deje separadores colgando (spec
+    003, T45)."""
+    shown: list[MenuItem] = []
+    pending: MenuItem | None = None
+    for item in items:
+        if item.separator:
+            pending = item if shown else None
+        elif _drawn(item, hide):
+            if pending is not None:
+                shown.append(pending)
+                pending = None
+            shown.append(item)
+    return shown
+
+
 def _draw_item(layout: Any, context: Any, item: MenuItem, hide: bool) -> None:
     if item.separator:
         layout.separator()
@@ -70,14 +99,21 @@ def _draw_item(layout: Any, context: Any, item: MenuItem, hide: bool) -> None:
 
 def _draw_groups(layout: Any, context: Any, groups: tuple[Group, ...], *, lead: bool,
                  hide: bool) -> None:
-    for index, group in enumerate(groups):
-        if index > 0 or lead:
+    """Los grupos con algo que dibujar, cada uno tras un separador de línea (también el
+    primero si ``lead``) y con su rótulo gris."""
+    drawn = 0
+    for group in groups:
+        items = shown_items(group.items, hide)
+        if not items:
+            continue
+        if drawn or lead:
             layout.separator(type="LINE")
+        drawn += 1
         if group.label:
             row = layout.row()
             row.active = False
             row.label(text=text(group.label), translate=False)
-        for item in group.items:
+        for item in items:
             _draw_item(layout, context, item, hide)
 
 
@@ -121,9 +157,10 @@ def _context_draw(kind: str) -> Callable[[Any, Any], None]:
     def draw(self: Any, context: Any) -> None:
         spec = catalog().contexts[kind]
         hide = bool(preference("hide_unavailable", False))
-        if _draw_unavailable(self.layout, spec.id):
+        items = shown_items(spec.items, hide)
+        if _draw_unavailable(self.layout, spec.id) and items:
             self.layout.separator(type="LINE")
-        for item in spec.items:
+        for item in items:
             _draw_item(self.layout, context, item, hide)
 
     return draw

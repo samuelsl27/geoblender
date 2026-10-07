@@ -37,10 +37,13 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    disco ni del de procesadores (con uno, la orden de siempre). Cada parte descubre
    todas las pruebas y ejecuta las de sus módulos (``gbtools.parts``); cada Blender, con
    su propio perfil temporal (la parte 1, el de «manifiesto»). El paso dura lo que
-   tarda la más lenta, y su línea suma las pruebas de todas. Un fichero de pruebas
+   tarda la más lenta, y su línea suma las pruebas de todas (si alguna no llegó a
+   contarlas, lo dice: «750 pruebas en 3 de 4 partes»). Un fichero de pruebas
    cuenta como cargado si lo carga cualquier parte; y si las partes no son 1…n, no
-   dicen el mismo total o no lo suman («PARTE i de n: r de T pruebas»), el reparto
-   perdió o repitió pruebas y el paso falla («reparto incompleto»). Con Ctrl+C mientras
+   dicen el mismo total o no lo suman («PARTE i de n: r de T pruebas»), o un mismo
+   fichero se ejecutó en dos, el reparto perdió o repitió pruebas y el paso falla
+   («reparto incompleto»; si por eso no se cargó un fichero, es ese el diagnóstico, y no
+   el de los ficheros sin cargar; spec 003, T45). Con Ctrl+C mientras
    se ejecutan, se paran todas (``gbtools.blender.stop_all``) antes de borrar la carpeta
    temporal.
 3. Resumen: una línea por paso (resultado, duración y pruebas), las pruebas omitidas por
@@ -663,10 +666,6 @@ def _output_of(result: subprocess.CompletedProcess[str]) -> str:
     return "\n".join(text for text in texts if text)
 
 
-def _text_of(result: subprocess.CompletedProcess[str]) -> str:
-    return f"{result.stdout or ''}\n{result.stderr or ''}"
-
-
 def part_count(limit: int, modules: int, cpus: int | None = None) -> int:
     """En cuántas partes se ejecutan unas pruebas (T40): ``limit``, sin pasar de
     ``modules`` (ficheros de prueba en disco: así ninguna parte queda vacía) ni de los
@@ -775,12 +774,11 @@ def _interpret(
     root: Path,
     result: _Launched,
     resources: Collection[str] | None,
-    loaded: str | None = None,
     check_unloaded: bool = True,
 ) -> _RunOutcome:
-    """El resultado de una orden. Los ficheros de prueba sin cargar se buscan en
-    ``loaded`` (la salida de todas las partes de unas pruebas) o, si no se da, en la
-    salida de la orden; con ``check_unloaded`` falso, no se buscan (las otras partes)."""
+    """El resultado de una orden. Con ``check_unloaded`` falso no se buscan los ficheros
+    de prueba sin cargar: los de las partes de unas pruebas, en la salida de todas, los
+    busca :func:`_interpret_all`."""
     if isinstance(result, _RunOutcome):
         return result
     output = _output_of(result)
@@ -810,21 +808,10 @@ def _interpret(
     if problem is not None:
         status, detail = STATUS_FAIL, problem[0]
         output = f"{problem[1]}\n{output}"
-    unloaded = (
-        unloaded_files(run, root, text if loaded is None else loaded)
-        if check_unloaded
-        else []
-    )
+    unloaded = unloaded_files(run, root, text) if check_unloaded else []
     if unloaded:
-        count = _plural(len(unloaded), "fichero sin cargar", "ficheros sin cargar")
-        detail = count if status != STATUS_FAIL else f"{detail}, {count}"
+        detail, output = _with_unloaded(run, unloaded, status, detail, output)
         status = STATUS_FAIL
-        listed = "\n".join(f"  {rel}" for rel in unloaded)
-        output = (
-            f"FICHEROS DE PRUEBA SIN CARGAR ({len(unloaded)}) en «{run.folder}» con el "
-            f"patrón «{run.pattern}»: unittest no los importó y sus pruebas no se "
-            f"ejecutaron; {discovery.HINT}\n{listed}\n{output}"
-        )
     unresourced = [skip for skip in skipped if skip.resource == OTHER_SKIPS]
     if unresourced:
         skipped = [skip for skip in skipped if skip.resource != OTHER_SKIPS]
@@ -845,6 +832,22 @@ def _interpret(
     if status == STATUS_FAIL:
         output = f"(código {code}) {' '.join(run.command)}\n{output}"
     return _RunOutcome(status, tests, detail, skipped, output, text)
+
+
+def _with_unloaded(
+    run: Run, unloaded: Sequence[str], status: str, detail: str, output: str
+) -> tuple[str, str]:
+    """El detalle y la salida de una orden con ficheros de prueba sin cargar
+    (``unloaded``), con la pista de ``discovery.HINT``."""
+    count = _plural(len(unloaded), "fichero sin cargar", "ficheros sin cargar")
+    detail = count if status != STATUS_FAIL else f"{detail}, {count}"
+    listed = "\n".join(f"  {rel}" for rel in unloaded)
+    output = (
+        f"FICHEROS DE PRUEBA SIN CARGAR ({len(unloaded)}) en «{run.folder}» con el "
+        f"patrón «{run.pattern}»: unittest no los importó y sus pruebas no se "
+        f"ejecutaron; {discovery.HINT}\n{listed}\n{output}"
+    )
+    return detail, output
 
 
 def launcher_found_no_tests(text: str) -> bool:
@@ -920,18 +923,22 @@ def summary_problem(run: Run, code: int, text: str) -> tuple[str, str] | None:
     return None
 
 
-def unloaded_files(run: Run, root: Path, text: str) -> list[str]:
-    """Ficheros de prueba de ``run.folder`` en disco cuyo módulo no nombra la salida de
-    ``unittest -v`` (vacío si la orden no es de pruebas). Los módulos son relativos a la
-    raíz o, si la carpeta está fuera de ella, a la propia carpeta (como en el
-    lanzador)."""
+def _test_files(run: Run, root: Path) -> dict[str, str]:
+    """``{módulo: fichero}`` de las pruebas de ``run.folder`` en disco (vacío si la orden
+    no es de pruebas). Los módulos son relativos a la raíz o, si la carpeta está fuera
+    de ella, a la propia carpeta (como en el lanzador)."""
     if run.folder is None or run.pattern is None:
-        return []
+        return {}
     folder = Path(root) / run.folder
     inside = folder.resolve().is_relative_to(Path(root).resolve())
     top = Path(root) if inside else folder
-    expected = discovery.expected_modules(folder, run.pattern, top)
-    return discovery.missing_modules(expected, discovery.loaded_in_output(text))
+    return discovery.expected_modules(folder, run.pattern, top)
+
+
+def unloaded_files(run: Run, root: Path, text: str) -> list[str]:
+    """Ficheros de prueba de ``run.folder`` en disco cuyo módulo no nombra la salida de
+    ``unittest -v`` (vacío si la orden no es de pruebas)."""
+    return discovery.missing_modules(_test_files(run, root), discovery.loaded_in_output(text))
 
 
 def _suite_of(run: Run) -> tuple[str | None, str | None]:
@@ -945,67 +952,114 @@ def _interpret_all(
     resources: Collection[str] | None,
 ) -> list[_RunOutcome]:
     """El resultado de cada orden de un paso. Las partes de unas pruebas (T40) buscan
-    los ficheros sin cargar en la salida de todas (una vez, en la primera; no, si alguna
-    no se pudo ejecutar) y, si todas son correctas, sus líneas tienen que cuadrar
-    (:func:`parts_problem`)."""
-    outputs: dict[tuple[str | None, str | None], list[str]] = {}
-    broken: set[tuple[str | None, str | None]] = set()
-    for run, result in zip(runs, launched):
-        if run.part is None:
-            continue
-        if isinstance(result, _RunOutcome):
-            broken.add(_suite_of(run))
-        else:
-            outputs.setdefault(_suite_of(run), []).append(_text_of(result))
-    checked: set[tuple[str | None, str | None]] = set()
-    outcomes: list[_RunOutcome] = []
-    for run, result in zip(runs, launched):
-        key = _suite_of(run)
-        if run.part is None:
-            outcomes.append(_interpret(run, root, result, resources))
-            continue
-        first = key not in checked and key not in broken
-        checked.add(key)
-        loaded = "\n".join(outputs.get(key, []))
-        outcomes.append(_interpret(run, root, result, resources, loaded, first))
+    los ficheros sin cargar en la salida de todas (no, si alguna no se pudo ejecutar) y
+    tienen que haber repartido igual (:func:`different_distribution`): si no, el
+    diagnóstico es «reparto incompleto», también para los ficheros que por eso no cargó
+    ninguna, aunque falle otra cosa (T45); si sí, los ficheros sin cargar llevan la
+    pista de siempre, y una parte sin su línea «PARTE …» es «reparto incompleto» solo
+    si ninguna parte falló (su fallo ya lo explica)."""
+    outcomes = [
+        _interpret(run, root, result, resources, check_unloaded=run.part is None)
+        for run, result in zip(runs, launched)
+    ]
     for key in dict.fromkeys(_suite_of(run) for run in runs if run.part is not None):
         group = [
             index
             for index, run in enumerate(runs)
             if run.part is not None and _suite_of(run) == key
         ]
-        if any(outcomes[i].status == STATUS_FAIL for i in group):
-            continue
-        problem = parts_problem([runs[i] for i in group], [outcomes[i] for i in group])
+        if any(isinstance(launched[i], _RunOutcome) for i in group):
+            continue  # alguna no se pudo ejecutar: su fallo lo explica
+        group_runs = [runs[i] for i in group]
+        texts = [outcomes[i].text for i in group]
+        first = outcomes[group[0]]
+        unloaded = unloaded_files(group_runs[0], root, "\n".join(texts))
+        failed = any(outcomes[i].status == STATUS_FAIL for i in group)
+        problem = different_distribution(group_runs, texts, root)
+        if problem is None and not unloaded and not failed:
+            problem = parts.consistency([parts.last_line(t) for t in texts], len(group))
         if problem is not None:
-            first_outcome = outcomes[group[0]]
-            detail = first_outcome.detail
-            first_outcome.detail = f"{detail}, {PARTS_PROBLEM}" if detail else PARTS_PROBLEM
-            first_outcome.status = STATUS_FAIL
-            first_outcome.output = f"{problem}\n{first_outcome.output}".rstrip()
+            first.detail = f"{first.detail}, {PARTS_PROBLEM}" if first.detail else PARTS_PROBLEM
+            first.status = STATUS_FAIL
+            explanation = parts_message(group_runs, texts, problem, unloaded)
+            first.output = f"{explanation}\n{first.output}".rstrip()
+        elif unloaded:
+            first.detail, first.output = _with_unloaded(
+                group_runs[0], unloaded, first.status, first.detail, first.output
+            )
+            first.status = STATUS_FAIL
     return outcomes
 
 
-def parts_problem(runs: Sequence[Run], outcomes: Sequence[_RunOutcome]) -> str | None:
-    """Si las partes de unas pruebas (``runs``, en su orden, todas correctas) no cuadran
-    según su línea «PARTE i de n: r de T pruebas» (``gbtools.parts.consistency``), la
-    explicación, con la línea y la orden de cada parte; si cuadran, ``None`` (T40)."""
-    count = len(runs)
-    found = [parts.last_line(outcome.text) for outcome in outcomes]
-    problem = parts.consistency(found, count)
-    if problem is None:
-        return None
+def repeated_files(run: Run, root: Path, texts: Sequence[str]) -> dict[str, list[int]]:
+    """``{fichero: [partes]}`` de los ficheros de prueba de ``run.folder`` que nombra la
+    salida de más de una parte (``texts``, una por parte, en su orden): el reparto es
+    por fichero entero, así que cada uno se ejecuta en una sola (T45)."""
+    names = [discovery.loaded_in_output(text) for text in texts]
+    found: dict[str, list[int]] = {}
+    for module, rel in _test_files(run, root).items():
+        where = [n for n, loaded in enumerate(names, start=1)
+                 if discovery.is_loaded(module, loaded)]
+        if len(where) > 1:
+            found[rel] = where
+    return dict(sorted(found.items()))
+
+
+def different_distribution(runs: Sequence[Run], texts: Sequence[str], root: Path) -> str | None:
+    """Por qué las partes de unas pruebas (``runs`` y su salida, en su orden) no
+    repartieron igual, o ``None``: todas dicen su línea «PARTE i de n: r de T pruebas»
+    y no cuadran (``gbtools.parts.consistency``), o un mismo fichero se ejecutó en más de
+    una (:func:`repeated_files`). Cada parte calcula el reparto por su cuenta: si no
+    descubren lo mismo, un fichero puede quedar sin ejecutar en ninguna (T45)."""
+    found = [parts.last_line(text) for text in texts]
+    if all(info is not None for info in found):
+        problem = parts.consistency(found, len(runs))
+        if problem is not None:
+            return problem
+    repeated = repeated_files(runs[0], root, texts)
+    if repeated:
+        listed = "; ".join(
+            f"{rel}, en las partes {', '.join(str(n) for n in numbers[:-1])} y {numbers[-1]}"
+            for rel, numbers in repeated.items()
+        )
+        return f"un mismo fichero se ejecutó en más de una parte ({listed})"
+    return None
+
+
+def parts_message(
+    runs: Sequence[Run], texts: Sequence[str], problem: str, unloaded: Sequence[str] = ()
+) -> str:
+    """La explicación de un reparto que no cuadra (``problem``), con la línea y la orden
+    de cada parte y, si los hay, los ficheros que por eso no cargó ninguna (T45)."""
+    found = [parts.last_line(text) for text in texts]
     listed = "\n".join(
         f"  {parts.line(*info) if info is not None else '(sin línea)'}: "
         f"{' '.join(run.command)}"
         for run, info in zip(runs, found)
     )
-    return (
-        f"REPARTO INCOMPLETO en «{runs[0].folder}» ({count} partes): {problem}. Cada "
+    message = (
+        f"REPARTO INCOMPLETO en «{runs[0].folder}» ({len(runs)} partes): {problem}. Cada "
         "prueba se ejecuta en una sola parte y todas las partes descubren las mismas "
         "(gbtools.parts): si no cuadran, alguna prueba no se ejecutó o se ejecutó dos "
         f"veces.\n{listed}"
     )
+    if unloaded:
+        which = _plural(len(unloaded), "fichero", "ficheros")
+        files = "\n".join(f"  {rel}" for rel in unloaded)
+        message += (
+            f"\nPor eso ninguna parte ejecutó {which} de «{runs[0].folder}» con el "
+            f"patrón «{runs[0].pattern}»:\n{files}"
+        )
+    return message
+
+
+def _partial(runs: Sequence[Run], outcomes: Sequence[_RunOutcome]) -> str:
+    """« en k de n partes» si alguna parte de unas pruebas no dijo cuántas ejecutó (sin
+    el resumen de ``unittest``): el número del paso es solo el de las demás (T45); si
+    no, ""."""
+    parted = [outcome for run, outcome in zip(runs, outcomes) if run.part is not None]
+    counted = sum(1 for outcome in parted if outcome.tests is not None)
+    return f" en {counted} de {len(parted)} partes" if counted < len(parted) else ""
 
 
 def execute_step(step: Step, ctx: Context, runner: blender.Runner) -> StepResult:
@@ -1035,7 +1089,7 @@ def execute_step(step: Step, ctx: Context, runner: blender.Runner) -> StepResult
     tests = sum(counts) if counts else None
     detail: list[str] = []
     if tests:
-        detail.append(_plural(tests, "prueba", "pruebas"))
+        detail.append(_plural(tests, "prueba", "pruebas") + _partial(runs, outcomes))
     for outcome in outcomes:
         if outcome.detail and outcome.detail not in detail:
             if outcome.status == STATUS_OK and tests:

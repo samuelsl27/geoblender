@@ -7,9 +7,18 @@ ventana con un campo de texto ya activo. Al escribir, Blender pide la lista de
 :func:`suggestions`: los resultados de ``core.catalog.search.search`` en su orden —por
 nombre en español o en inglés, alias (también los de Datamine), términos de otros
 programas o entrada (``R-38``, ``r38``)—, cada uno con su etiqueta en el idioma de
-Geoblender y, entre paréntesis, dónde está en la barra; los no disponibles llevan a la
-derecha su «Disponible en …». Al confirmar, :func:`run` ejecuta el elegido (o, si se
-escribió un texto sin elegir, el primer resultado):
+Geoblender, dónde está en la barra y, los no disponibles, su «Disponible en …», todo en el
+mismo texto («Cubicar entre dos superficies…  ·  Cubicación ▸ Cubicar  ·  Disponible en
+R-38 · …»). Blender 5.2 no enseña ni busca el segundo elemento de una sugerencia, y vuelve
+a filtrar (y a ordenar) la lista con su búsqueda difusa sobre el texto que se ve (visto con
+interfaz, spec 003, T45): por eso la nota va en el texto y, si lo que coincidió no se ve
+(el nombre en el otro idioma, un alias, un término de otro programa o la entrada de uno
+disponible), va tras la etiqueta y una raya, como palabras sueltas («Nueva polilínea —
+ns»: con «ns», la primera de la lista; entre paréntesis, «(ns)», Blender la dejaba detrás
+de otras que solo contienen «ns»). Con la consulta vacía, en vez de una lista
+vacía («No results found»), los comandos disponibles más frecuentes (``search.frequent``).
+Al confirmar, :func:`run` ejecuta el elegido (o, si se escribió un texto sin elegir, el
+primer resultado; sin texto, ninguno):
 
 - disponible: en la **Vista 3D de destino** (``views.target_view3d``: la que lanzó F10 o,
   desde la barra superior, la última usada o la mayor), como si se hubiera pulsado en su
@@ -32,13 +41,14 @@ from typing import Any
 import bpy
 
 from ...core.catalog import unavailable_text
-from ...core.catalog.search import SearchHit, path_text, search
+from ...core.catalog.search import SearchHit, frequent, normalize, path_text, search
 from ...core.i18n import language, tr
 from . import commands, views
 from .drawing import is_menu_id, property_owner
 
 LIMIT = 30  # resultados de la lista (los de search())
-SEPARATOR = "  ·  "  # entre la etiqueta y dónde está
+SEPARATOR = "  ·  "  # entre la etiqueta, dónde está y su «Disponible en …»
+MATCHED = " — "  # entre la etiqueta y lo que coincidió, si no se ve (T45)
 
 
 class _State:
@@ -69,37 +79,45 @@ def hits(query: str) -> list[SearchHit]:
 
 
 def display_text(hit: SearchHit) -> str:
-    """El texto de un resultado en la lista: su etiqueta y, si tiene casa, dónde está
-    («Cubicar entre dos superficies…  ·  Cubicación ▸ Cubicar»)."""
+    """El texto de un resultado en la lista: su etiqueta (y, tras una raya, lo que
+    coincidió si no es ella y no se ve ya), dónde está si tiene casa y, si no está
+    disponible, su «Disponible en …» («Cubicar entre dos superficies…  ·  Cubicación ▸
+    Cubicar  ·  Disponible en R-38 · Cubicación entre superficies»)."""
     where = path_text(commands.catalog(), hit.key, language(), parent=True)
-    return f"{hit.label}{SEPARATOR}{where}" if where else hit.label
+    rest = [part for part in (where, hit.unavailable_text if not hit.available else "")
+            if part]
+    label = hit.label
+    seen = normalize(" ".join((label, *rest)))
+    if hit.field != "label" and hit.matched and normalize(hit.matched) not in seen:
+        label = f"{label}{MATCHED}{hit.matched}"
+    return SEPARATOR.join((label, *rest))
 
 
-def suggestions(query: str) -> list[tuple[str, str]]:
-    """La lista que muestra el campo al escribir ``query``: (texto, nota) por resultado,
-    en el orden de ``search()``; la nota es "" si está disponible y su «Disponible en …»
-    si no."""
+def suggestions(query: str) -> list[str]:
+    """La lista que muestra el campo al escribir ``query``, un texto por resultado
+    (:func:`display_text`), en el orden de ``search()``; con la consulta vacía, los
+    comandos disponibles más frecuentes."""
+    found = hits(query) if query.strip() else frequent(
+        commands.catalog(), language=language(), is_available=commands.is_available,
+        limit=LIMIT)
     shown: dict[str, str] = {}
-    items: list[tuple[str, str]] = []
-    for hit in hits(query):
+    for hit in found:
         text = display_text(hit)
-        if text in shown:
-            continue  # dos comandos con la misma etiqueta y la misma casa: el primero
-        shown[text] = hit.key
-        items.append((text, "" if hit.available else hit.unavailable_text))
+        if text not in shown:  # dos comandos con el mismo texto: el primero
+            shown[text] = hit.key
     _STATE.shown = shown
-    return items
+    return list(shown)
 
 
-def search_callback(_operator: Any, _context: Any, edit_text: str) -> list[tuple[str, str]]:
+def search_callback(_operator: Any, _context: Any, edit_text: str) -> list[str]:
     """``search`` de la propiedad ``query`` del operador: la lista al escribir."""
     return suggestions(edit_text)
 
 
 def resolve(query: str) -> SearchHit | None:
     """El comando de ``query``: el de la última lista si es uno de sus textos; si no, el
-    primer resultado de buscarlo (``None`` si no hay ninguno)."""
-    key = _STATE.shown.get(query)
+    primer resultado de buscarlo (``None`` si no hay ninguno, o sin texto)."""
+    key = _STATE.shown.get(query) if query else None
     if key is None:
         found = hits(query)
         return found[0] if found else None

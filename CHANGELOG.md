@@ -40,7 +40,9 @@ vez. Lo de la spec 003 está probado sin la interfaz gráfica; falta verlo en la
     estado minera** con el proyecto, su EPSG y las coordenadas reales del cursor 3D.
   - **Línea de comandos (F10)**: encuentra cualquier comando por su nombre en español o en
     inglés, sus alias (también los de Datamine), los términos de RecMin o su entrada («R-38»)
-    y lo ejecuta en la vista.
+    y lo ejecuta en la vista. La lista dice dónde está cada uno, por qué coincidió si no es
+    por su nombre («Nueva polilínea — ns») y, si aún no existe, «Disponible en …»; sin
+    escribir nada, enseña los comandos más usados.
   - **Idioma**: español por defecto, sea cual sea el de Blender; Ayuda ▸ Idioma de Geoblender
     ▸ English lo cambia sin reiniciar (las descripciones de las preferencias, al reiniciar).
   - **Ayuda**: hoja de atajos, alias y glosario (con versión imprimible), diagnóstico de la
