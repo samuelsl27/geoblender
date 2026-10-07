@@ -5,7 +5,10 @@ Se ejecuta con el Python de Blender desde la raíz del repositorio (órdenes en
 ``AGENTS.md``), sin opciones, y forma parte de ``tools/check.py`` (paso «licencias»):
 
 - LIC-01 y LIC-02 (RF-001-22): ruedas de ``tools/wheels.toml``, lista ``wheels`` del
-  manifiesto y ficheros de ``geoblender/wheels/`` (``gbtools.wheels``).
+  manifiesto y ficheros de ``geoblender/wheels/`` (``gbtools.wheels``), con las
+  expresiones SPDX evaluadas como fija ADR-0017 §3. LIC-01 valida también el lock del
+  motor de cálculo, ``geoblender/jobs/runtime_lock.toml`` (spec 004, RF-004-21;
+  ``gbtools.runtime_lock``), donde numpy sí entra (ADR-0017 §6).
 - LIC-03 (RF-001-23): ``LICENSE``, con ``\\r\\n`` → ``\\n``, tiene el sha256 del texto
   GPL-3.0-or-later de Blender 5.2 (``GPL_SHA256``, ADR-0002), y el manifiesto declara
   exactamente ``license = ["SPDX:GPL-3.0-or-later"]``. El árbol de trabajo puede tener
@@ -40,7 +43,7 @@ from collections.abc import Mapping, Sequence  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
-from gbtools import icons, manifest, wheels  # noqa: E402
+from gbtools import icons, manifest, runtime_lock, wheels  # noqa: E402
 from gbtools.findings import Finding, format_findings  # noqa: E402
 from gbtools.layout import (  # noqa: E402
     EXTENSION_DIR,
@@ -545,7 +548,12 @@ def check_assets(root: Path) -> list[Finding]:
 def check(root: Path) -> list[Finding]:
     """Incumplimientos de las reglas de licencias bajo ``root``, ordenados."""
     return sorted(
-        [*wheels.check(root), *check_gpl_license(root), *check_assets(root)]
+        [
+            *wheels.check(root),
+            *runtime_lock.check(root),
+            *check_gpl_license(root),
+            *check_assets(root),
+        ]
     )
 
 

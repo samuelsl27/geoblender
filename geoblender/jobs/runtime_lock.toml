@@ -1,0 +1,35 @@
+# Lock del motor de cálculo de Geoblender (spec 004 §4.5; plan 004 §5.2.5; ADR-0009 y
+# ADR-0017). Lo lee la extensión para instalar el motor en runtime/<lock_id>/ de los datos
+# de usuario; lo valida tools/check_licenses.py (LIC-01).
+#
+# Una persona escribe la cabecera y, por paquete, name, version, bundled_licenses (la
+# auditoría de ADR-0017 §4, un componente por línea y con su comentario) y required_by
+# (la spec que lo pide: nada «por si acaso», ADR-0009). tools/lock_runtime.py rellena
+# filename, url, sha256 y size (de la API JSON de PyPI y la rueda), license (la
+# License-Expression de la rueda, literal) e installed_size (bytes que deja pip --target).
+# El lock_id son los 12 primeros hexadecimales del sha256 de schema, python, platform y
+# {name, version, sha256} de cada paquete.
+schema = "geoblender.runtime_lock/1"
+python = "3.13"
+platform = "win_amd64"
+
+[[package]]
+name = "numpy"
+version = "2.5.3"
+filename = "numpy-2.5.3-cp313-cp313-win_amd64.whl"
+url = "https://files.pythonhosted.org/packages/f3/ec/100f2b1794ede74a9b3d7ec6b9736927f56713414c1dfe19ab6c383494bf/numpy-2.5.3-cp313-cp313-win_amd64.whl"
+sha256 = "71cad2b2a7451ab79d8f5e71b453485b6775963d5cf794179144a7463fe6e8ec"
+size = 12560965
+installed_size = 53937113
+license = "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0"
+# Auditoría de ADR-0017 §4 (2026-10-07, rueda leída como zip): numpy.libs/ trae
+# libscipy_openblas64_-ed4f167a….dll (OpenBLAS 0.3.34, BSD-3-Clause, ya en «license») y
+# msvcp140-a4c2229b….dll (añadida por delvewheel 1.11.2). La DLL de OpenBLAS enlaza
+# además winpthreads de mingw-w64 (MIT AND BSD-3-Clause, ya en «license»).
+bundled_licenses = [
+  "BSD-3-Clause-Open-MPI",                    # LAPACK, dentro de la DLL de OpenBLAS
+  "GPL-3.0-or-later WITH GCC-exception-3.1",  # libgfortran (GCC 10.3.0), estática en ella
+  "LicenseRef-MSVC-Runtime",                  # msvcp140 14.40.33810.0
+  "ZPL-2.1",                                  # runtime (CRT) de mingw-w64, estático en ella
+]
+required_by = ["004"]

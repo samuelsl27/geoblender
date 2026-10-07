@@ -47,12 +47,16 @@ SITE = ".deps/site"
 WHEELS_DIR = f"{EXT}/wheels"
 
 
-def _wheel(name: str, version: str, salt: str = "") -> bytes:
-    """Una rueda mínima: el paquete y su ``.dist-info``."""
+def _wheel(
+    name: str, version: str, salt: str = "", extra: Sequence[str] = ()
+) -> bytes:
+    """Una rueda mínima: el paquete y su ``.dist-info`` (y los ficheros ``extra``)."""
     info = f"{name}-{version}.dist-info"
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr(f"{name}/__init__.py", f"# rueda sintética {salt}\n")
+        for member in extra:
+            archive.writestr(member, b"MZ sintetica")
         archive.writestr(
             f"{info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
         )
@@ -285,7 +289,8 @@ class FetchTest(unittest.TestCase):
         """RF-001-25: si una rueda no tiene el sha256 fijado, la orden termina con 1,
         nombra la rueda con los dos hashes y no cambia nada: ni ``geoblender/wheels/``,
         ni ``.deps/site/``, ni el manifiesto (todo o nada). Lo mismo si falta una rueda
-        en el almacén o si una no es un zip válido."""
+        en el almacén, si una no es un zip válido o si trae DLL en ``<paquete>.libs/``
+        con ``bundled_licenses`` vacío (ADR-0017 §4: sin auditar)."""
         tampered = Wheel(
             DUCKDB.name,
             DUCKDB.version,
@@ -319,6 +324,20 @@ class FetchTest(unittest.TestCase):
             result = _from_store(root)
             self.assertEqual(result.code, 1, result.text)
             self.assertIn(broken.filename, result.text)
+            self.assertEqual(_snapshot(root), before)
+
+        native = _wheel("nativa", "1.0", extra=["nativa.libs/a.dll"])
+        unaudited = Wheel(
+            "nativa", "1.0", "nativa-1.0-cp313-cp313-win_amd64.whl", "dev", native,
+            _sha(native),
+        )
+        with _project([PYPROJ, unaudited], store=[PYPROJ, unaudited], extra=STALE) as root:
+            before = _snapshot(root)
+            result = _from_store(root)
+            self.assertEqual(result.code, 1, result.text)
+            self.assertIn(unaudited.filename, result.text)
+            self.assertIn("nativa.libs/a.dll", result.text)
+            self.assertIn("bundled_licenses", result.text)
             self.assertEqual(_snapshot(root), before)
 
     def test_manifest_rewrite_preserves_rest(self) -> None:

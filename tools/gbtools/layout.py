@@ -23,6 +23,8 @@ MANIFEST_RELPATH = f"{EXTENSION_DIR}/blender_manifest.toml"
 WHEELS_DIR_RELPATH = f"{EXTENSION_DIR}/wheels"
 RESOURCES_RELPATH = f"{EXTENSION_DIR}/resources"
 THIRDPARTY_RELPATH = f"{EXTENSION_DIR}/thirdparty"
+# El lock del motor de cálculo (spec 004, plan §5.2.5): se empaqueta con la extensión.
+RUNTIME_LOCK_RELPATH = f"{EXTENSION_DIR}/jobs/runtime_lock.toml"
 # Carpetas de activos cuyo LICENSE es una copia de LICENSES/CC0-1.0.txt (plan 001 §5.2).
 ASSET_ROOTS: tuple[str, ...] = (
     "assets/",

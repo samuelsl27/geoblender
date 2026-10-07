@@ -4,7 +4,10 @@
 - LIC-01 (RF-001-22): cada rueda de ``tools/wheels.toml`` con versión exacta, sha256,
   licencia de la lista blanca de ADR-0002, etiqueta ``cp313-win_amd64`` o
   ``py3-none-any``, sin numpy ni los paquetes prohibidos, LGPL/EUPL sin modificar y
-  bibliotecas incluidas con licencia admitida.
+  bibliotecas incluidas con licencia admitida; las expresiones se evalúan como fija
+  ADR-0017 §3 (``AND`` término a término, ``OR`` alguna, ``WITH`` entera en la lista de
+  componentes incluidos). El lock del motor de cálculo (spec 004) lo prueba
+  ``tests/unit/jobs/test_runtime_lock.py``.
 - LIC-02 (RF-001-22): la lista ``wheels`` del manifiesto, las ruedas de destino
   «extension» y los ficheros de ``geoblender/wheels/`` coinciden en nombre y sha256.
 - LIC-03 (RF-001-23): ``LICENSE``, con los finales normalizados a LF, es el texto
@@ -228,8 +231,11 @@ class WheelEntryTest(WheelsTestCase):
                 self.assertMentions(findings, "duckdb")
 
     def test_license_not_allowed(self) -> None:
-        """RF-001-22 / LIC-01: una licencia fuera de la lista blanca falla."""
-        for expression in ("GPL-3.0-or-later", "Proprietary", "LicenseRef-x", "0BSD"):
+        """RF-001-22 / LIC-01: una licencia fuera de la lista blanca falla; la lista es
+        la de ADR-0002 §4 más 0BSD y CC0-1.0 (ADR-0017 §1)."""
+        for expression in (
+            "GPL-3.0-or-later", "Proprietary", "LicenseRef-x", "BSD-3-Clause-Open-MPI",
+        ):
             with self.subTest(licencia=expression):
                 findings = _check([_entry(license=expression)])
                 self.assertRules(findings, "LIC-01")
@@ -242,7 +248,7 @@ class WheelEntryTest(WheelsTestCase):
             {
                 "MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "PSF-2.0", "ISC",
                 "Zlib", "MPL-2.0", "LGPL-2.1-only", "LGPL-2.1-or-later",
-                "LGPL-3.0-only", "LGPL-3.0-or-later", "EUPL-1.2",
+                "LGPL-3.0-only", "LGPL-3.0-or-later", "EUPL-1.2", "0BSD", "CC0-1.0",
             },
         )
 
@@ -318,20 +324,80 @@ class WheelEntryTest(WheelsTestCase):
         self.assertFalse(wheels.unmodified_required("LGPL-3.0-only OR MIT"))
 
     def test_bundled_license_not_allowed(self) -> None:
-        """RF-001-22 / LIC-01: bibliotecas incluidas con licencia no admitida fallan."""
-        self.assertEqual(wheels.ADR_ALLOWED_BUNDLED, frozenset())
+        """RF-001-22 / LIC-01: bibliotecas incluidas con licencia no admitida fallan; las
+        de la tabla de ADR-0017 §2 (y la lista general) pasan, cada término de un
+        «AND» en su lista."""
+        self.assertEqual(
+            wheels.ADR_ALLOWED_BUNDLED,
+            {
+                "GPL-3.0-or-later WITH GCC-exception-3.1", "BSD-3-Clause-Open-MPI",
+                "ZPL-2.1", "LicenseRef-MSVC-Runtime", "blessing", "curl", "libtiff",
+                "BSD-4.3TAHOE", "IJG", "LicenseRef-EPSG-terms-of-use", "CC-BY-4.0",
+            },
+        )
         for bundled in (
-            ["GPL-3.0-or-later WITH GCC-exception-3.1"],
-            ["MIT", "LicenseRef-MSVC-Runtime"],
-            ["curl"],
+            ["GPL-3.0-or-later"],
+            ["MIT", "LicenseRef-propia"],
+            ["curl AND Proprietary"],
+            ["GPL-3.0-only WITH GCC-exception-3.1"],
         ):
             with self.subTest(incluidas=bundled):
                 findings = _check([_entry(bundled_licenses=bundled)])
                 self.assertRules(findings, "LIC-01")
                 self.assertMentions(findings, "duckdb", bundled[-1])
         self.assertRules(_check([_entry(bundled_licenses="MIT")]), "LIC-01")
-        self.assertEqual(_check([_entry(bundled_licenses=["MIT", "Zlib"])]), [])
+        for bundled in (
+            ["MIT", "Zlib"],
+            sorted(wheels.ADR_ALLOWED_BUNDLED),
+            [
+                "curl AND ISC AND BSD-3-Clause", "libtiff AND BSD-4.3TAHOE",
+                "IJG AND BSD-3-Clause AND Zlib", "0BSD", "MIT AND BSD-3-Clause",
+            ],
+        ):
+            with self.subTest(incluidas=bundled):
+                self.assertEqual(_check([_entry(bundled_licenses=bundled)]), [])
         self.assertEqual(_check([_entry(bundled_licenses=None)]), [])
+
+    def test_adr_0017_expressions(self) -> None:
+        """RF-001-22 / LIC-01 (ADR-0017 §3, «Cómo se verifica»): ``GPL-3.0-or-later`` sola
+        falla en ``license`` y en ``bundled_licenses``; con ``WITH
+        GCC-exception-3.1`` falla en ``license`` y pasa en ``bundled_licenses``;
+        ``MIT AND BSD-3-Clause-Open-MPI`` en ``license`` falla (identificador solo de
+        componentes); ``MIT OR GPL-2.0-only`` pasa; ``LGPL-3.0-only OR GPL-2.0-only``
+        sin ``unmodified = true`` falla; ``(MIT OR Apache-2.0) AND Zlib`` falla con el
+        mensaje de paréntesis, y un ``LicenseRef-`` que no nombra ningún ADR falla."""
+        gcc = "GPL-3.0-or-later WITH GCC-exception-3.1"
+        refused_license = {
+            "GPL-3.0-or-later": "GPL-3.0-or-later",
+            gcc: "bundled_licenses",
+            "MIT AND BSD-3-Clause-Open-MPI": "bundled_licenses",
+            "LGPL-3.0-only OR GPL-2.0-only": "unmodified",
+            "(MIT OR Apache-2.0) AND Zlib": "paréntesis",
+            "LicenseRef-propia": "LicenseRef-",
+        }
+        for expression, mention in refused_license.items():
+            with self.subTest(license=expression):
+                findings = _check([_entry(license=expression)])
+                self.assertRules(findings, "LIC-01")
+                self.assertMentions(findings, "duckdb", mention)
+        for expression in ("GPL-3.0-or-later", "LicenseRef-propia"):
+            with self.subTest(bundled=expression):
+                findings = _check([_entry(bundled_licenses=[expression])])
+                self.assertRules(findings, "LIC-01")
+                self.assertMentions(findings, expression)
+        self.assertEqual(_check([_entry(bundled_licenses=[gcc])]), [])
+        self.assertEqual(_check([_entry(license="MIT OR GPL-2.0-only")]), [])
+        self.assertEqual(
+            _check([_entry(license="LGPL-3.0-only OR GPL-2.0-only", unmodified=True)]),
+            [],
+        )
+        verdict = wheels.evaluate_license("LGPL-3.0-only OR GPL-2.0-only")
+        self.assertTrue(verdict.allowed)
+        self.assertTrue(verdict.unmodified)
+        self.assertFalse(wheels.evaluate_license(gcc).allowed)
+        self.assertTrue(wheels.evaluate_license(gcc, bundled=True).allowed)
+        self.assertFalse(wheels.bundled_allowed("GPL-3.0-or-later"))
+        self.assertTrue(wheels.bundled_allowed("curl AND ISC AND BSD-3-Clause"))
 
     def test_bad_tag(self) -> None:
         """RF-001-22 / LIC-01: etiquetas ``cp313``/``abi3`` + ``win_amd64`` o

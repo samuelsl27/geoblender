@@ -89,6 +89,7 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 & $PY -B tools/dev_install.py    # instala la extensión en un perfil de Blender aislado
 & $PY -B tools/build.py          # valida el manifiesto y genera el zip en dist/
 & $PY -B tools/fetch_wheels.py   # descarga las ruedas fijadas (lo hace una persona)
+& $PY -B tools/lock_runtime.py   # rellena el lock del motor de cálculo desde PyPI (una persona)
 & $PY -B tools/gen_crs_catalog.py  # regenera el catálogo de CRS (GEOBLENDER_PROJ_BIN)
 & $PY -B tools/build_icons.py    # SVG de assets/icons → PNG de los iconos (--check: solo compara)
 & $PY -B tools/make_app_template.py     # genera los ficheros de la plantilla de aplicación
@@ -103,6 +104,7 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 | `tools/dev_install.py` | `--perfil CARPETA`, `--abrir` (Blender con interfaz) y `--desinstalar` |
 | `tools/build.py` | `--probar-instalacion` (instala el zip en un perfil limpio y lo desinstala) |
 | `tools/fetch_wheels.py` | `--desde CARPETA` (almacén de ruedas, sin red) |
+| `tools/lock_runtime.py` | `--desde CARPETA` (almacén con las ruedas del lock; los metadatos siempre salen de la API JSON de PyPI) |
 | `tools/gen_crs_catalog.py` | `--comprobar` (genera en memoria y compara con el catálogo guardado, sin escribir) |
 | `tools/build_icons.py` | `--check` (fuentes, PNG y manifiesto al día, sin Blender), `--fuentes CARPETA` y `--salida CARPETA` |
 | `tools/make_app_template.py` | `--salida CARPETA` (por defecto, `packaging/app_template/Geoblender/`) |
@@ -128,7 +130,7 @@ Todas son opcionales y empiezan por `GEOBLENDER_`.
 | `GEOBLENDER_NAS_ESPEJO` | Carpeta del NAS donde se refleja la carpeta del proyecto; solo la define quien publica |
 | `GEOBLENDER_BLENDER` | Ruta a `blender.exe` o a su carpeta, si Blender 5.2 no está en la ruta por defecto (también para el lanzador `Geoblender.cmd`) |
 | `GEOBLENDER_DEV_PROFILE` | Perfil aislado de desarrollo; por defecto, `%LOCALAPPDATA%\Geoblender\dev\blender-5.2`. Nunca en una unidad de red |
-| `GEOBLENDER_WHEELHOUSE` | Almacén de ruedas del que `tools/fetch_wheels.py` copia sin red |
+| `GEOBLENDER_WHEELHOUSE` | Almacén de ruedas del que `tools/fetch_wheels.py` (y `tools/lock_runtime.py`) copian sin descargarlas |
 | `GEOBLENDER_SILVESTRE_DIR` | Banco privado de Silvestre: solo lectura y solo con `--banco` |
 | `GEOBLENDER_RECMIN_BANK_DIR` | Banco privado de RecMin: solo lectura |
 | `GEOBLENDER_QGIS_DIR` | Instalación de QGIS 4.2 (la carpeta con `bin\ogrinfo.exe`) para las pruebas de compatibilidad del GeoPackage con su GDAL; sin ella se omiten con `[ENTORNO] qgis` |

@@ -191,11 +191,14 @@ def make_wheel(
     name: str = WHEEL_PACKAGE,
     version: str = WHEEL_VERSION,
     extra_files: Mapping[str, str] | None = None,
+    license_expression: str | None = None,
 ) -> SyntheticWheel:
     """Construye ``dest_dir/<name>-<version>-py3-none-any.whl`` con ``zipfile``: el paquete
     ``<name>/__init__.py`` (``__version__``), los ``extra_files`` (ruta del zip → texto
     UTF-8) y ``<name>-<version>.dist-info/`` con ``METADATA``, ``WHEEL`` y ``RECORD``.
-    Reproducible: la misma entrada da la misma huella. Crea ``dest_dir`` si falta."""
+    Con ``license_expression``, ``METADATA`` la declara en ``License-Expression`` (como
+    las ruedas de PyPI que siguen PEP 639; T24). Reproducible: la misma entrada da la
+    misma huella. Crea ``dest_dir`` si falta."""
     if not name.isidentifier() or not name.islower():
         raise ValueError(
             f"«{name}» no vale como nombre de la rueda sintética (a-z, 0-9 y «_»)"
@@ -214,6 +217,11 @@ def make_wheel(
         f"Name: {name}\n"
         f"Version: {version}\n"
         "Summary: Paquete sintético de las pruebas de Geoblender\n"
+        + (
+            f"License-Expression: {license_expression}\n"
+            if license_expression is not None
+            else ""
+        )
     ).encode("utf-8")
     files[f"{info}/WHEEL"] = (
         "Wheel-Version: 1.0\n"
