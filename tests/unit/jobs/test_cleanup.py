@@ -11,10 +11,14 @@ RF-004-13, RF-004-16, RF-004-17; plan 004 §5.3.1, §5.4.5 y §5.4.6).
 - RF-004-17: ``cleanup.purge`` borra las carpetas de los trabajos terminados hace más de
   ``older_than_days`` días (o de todos los terminados) y dice cuántos MB liberó; nunca uno
   activo. ``cleanup.folder_size_mb`` da el tamaño de la raíz para el panel.
+- T21 (RF-004-17, RF-004-08): ``cleanup.purge(only=…)`` borra solo esos trabajos (el
+  «Descartar» de la lista) y ``JobRunner.purge`` limpia con lo que sabe el lanzador: nunca
+  un trabajo suyo en cola, en curso, terminado sin contar aún en un sondeo o con su hilo
+  abandonado en marcha, y los borrados salen de su lista.
 
 Las fechas se inyectan (``now`` y los registros escritos a mano): nada espera a que pase el
-tiempo. Las carpetas se construyen en una raíz temporal; solo :class:`MarkIngestedTest`
-lanza trabajos de verdad, en hilo (sin procesos).
+tiempo. Las carpetas se construyen en una raíz temporal; solo :class:`MarkIngestedTest` y
+:class:`RunnerPurgeTest` lanzan trabajos de verdad, en hilo (sin procesos).
 """
 
 import datetime as dt
@@ -22,6 +26,7 @@ import json
 import os
 import stat
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -513,6 +518,155 @@ class PurgeRetryTest(_RootCase):
         self.assertEqual(report.failed, ())
         self.assertAlmostEqual(report.freed_mb, expected / 1_000_000, places=9)
         self.assertEqual(os.listdir(self.root), [])
+
+
+class PurgeOnlyTest(_RootCase):
+    """``cleanup.purge`` con ``only``: «Descartar» un solo trabajo (T21)."""
+
+    def setUp(self):
+        super().setUp()
+        self.recent = _make_job(self.root, state="succeeded", ended=NOW - DAY)
+        self.old = _make_job(self.root, state="failed", ended=NOW - 10 * DAY)
+        self.running = _make_job(self.root, state="running", started=NOW - 10 * DAY)
+
+    def test_only_the_given_finished_job(self):
+        """RF-004-17, RF-004-08: con ``only`` se borra solo ese trabajo terminado (aunque
+        sea reciente, con ``all_finished``) y se dicen los MB que liberó; los demás
+        siguen."""
+        expected = _bytes(self.recent.path)
+        report = cleanup.purge(self.root, older_than_days=None, all_finished=True,
+                               active=set(), only=[self.recent.job_uid], now=NOW)
+        self.assertEqual((report.removed, report.failed), ((self.recent.job_uid,), ()))
+        self.assertAlmostEqual(report.freed_mb, expected / 1_000_000, places=9)
+        self.assertEqual(set(os.listdir(self.root)),
+                         {self.old.job_uid, self.running.job_uid})
+
+    def test_only_narrows_the_other_criteria(self):
+        """RF-004-17: ``only`` se suma a la antigüedad: de los dos, solo el viejo; y nunca
+        uno activo, un identificador desconocido ni uno que no vale."""
+        report = cleanup.purge(self.root, older_than_days=RETENTION_DAYS, active=set(),
+                               only={self.recent.job_uid, self.old.job_uid}, now=NOW)
+        self.assertEqual(report.removed, (self.old.job_uid,))
+        for only in ([self.running.job_uid], [paths.new_job_uid()], ["../otra"], []):
+            with self.subTest(only=only):
+                report = cleanup.purge(self.root, older_than_days=None, all_finished=True,
+                                       active=set(), only=only, now=NOW)
+                self.assertEqual((report.removed, report.freed_mb), ((), 0.0))
+        self.assertEqual(set(os.listdir(self.root)),
+                         {self.recent.job_uid, self.running.job_uid})
+
+    def test_only_must_be_a_collection(self):
+        """RF-004-17: ``only`` es una colección de identificadores (un texto suelto es
+        :class:`TypeError`) y no se borra nada."""
+        with self.assertRaises(TypeError):
+            cleanup.purge(self.root, older_than_days=None, all_finished=True, active=set(),
+                          only=self.recent.job_uid, now=NOW)
+        self.assertEqual(len(os.listdir(self.root)), 3)
+
+
+STUCK_WORKER = "gbtest_stuck"
+
+
+class RunnerPurgeTest(_RootCase):
+    """``JobRunner.purge``: la limpieza del usuario («Limpiar trabajos terminados…» y
+    «Descartar», T21) con los trabajos del lanzador, en hilo."""
+
+    def setUp(self):
+        super().setUp()
+        self.release = threading.Event()
+        registry = mock.patch.dict(catalog._REGISTRY, clear=True)
+        registry.start()
+        self.addCleanup(registry.stop)
+        catalog.register_worker(catalog.WorkerInfo(INGEST_WORKER, "Ingest test job",
+                                                   estimate_s=_quick, run=_run_ingest))
+        catalog.register_worker(catalog.WorkerInfo(STUCK_WORKER, "Stuck test job",
+                                                   estimate_s=_quick, run=self._stuck))
+        self.runner = runner.JobRunner(jobs_root=self.root, package_dir=EXTENSION_DIR,
+                                       blender_python=Path(sys.executable), max_inprocess=1)
+        self.addCleanup(self.runner.shutdown, timeout_s=1.0)
+        self.addCleanup(self.release.set)  # antes del cierre: el hilo atascado acaba
+        self.previous = _make_job(self.root, state="succeeded", ended=NOW - 30 * DAY)
+
+    def _stuck(self, ctx):
+        """No atiende la cancelación: espera a que la prueba lo suelte."""
+        ctx.progress(0.5, "Atascado")
+        self.release.wait(DEADLINE_S)
+        return {}
+
+    def _submit(self, worker, label):
+        return self.runner.submit(protocol.new_request(worker, label=label, owner="jobs"))
+
+    def _poll_until(self, condition):
+        deadline = time.monotonic() + DEADLINE_S
+        while not condition():
+            if time.monotonic() > deadline:
+                raise AssertionError("los trabajos de prueba no avanzaron a tiempo")
+            self.runner.poll()
+            time.sleep(POLL_S)
+
+    def _listed(self):
+        return {snapshot.name for snapshot in self.runner.snapshots()}
+
+    def _purge(self, **options):
+        options.setdefault("older_than_days", None)
+        options.setdefault("all_finished", options["older_than_days"] is None)
+        return self.runner.purge(now=NOW, **options)
+
+    def test_finished_jobs_leave_folder_and_list(self):
+        """RF-004-17, RF-004-08: con todos los terminados se borran las carpetas de los
+        terminados del lanzador y de otras sesiones, se dicen los MB liberados y los
+        borrados salen de la lista (``snapshots``)."""
+        done = self._submit(INGEST_WORKER, "Hecho")
+        self._poll_until(lambda: done.result() is not None)
+        expected = _bytes(done.job_dir.path) + _bytes(self.previous.path)
+        report = self._purge()
+        self.assertEqual(report.removed,
+                         tuple(sorted([done.job_uid, self.previous.job_uid])))
+        self.assertAlmostEqual(report.freed_mb, expected / 1_000_000, places=9)
+        self.assertFalse(done.job_dir.path.exists())
+        self.assertEqual(self.runner.snapshots(), [])
+
+    def test_only_one_job(self):
+        """RF-004-08, RF-004-17: «Descartar» (``only``) borra solo ese trabajo terminado;
+        el otro sigue en su carpeta y en la lista."""
+        first = self._submit(INGEST_WORKER, "Primero")
+        second = self._submit(INGEST_WORKER, "Segundo")
+        self._poll_until(lambda: second.result() is not None)
+        report = self._purge(only=[first.job_uid])
+        self.assertEqual(report.removed, (first.job_uid,))
+        self.assertEqual(self._listed(), {"Segundo"})
+        self.assertTrue(second.job_dir.path.exists())
+        self.assertTrue(self.previous.path.exists())
+
+    def test_active_jobs_are_never_removed(self):
+        """RF-004-17: nunca se borra un trabajo activo del lanzador: ni el que está en
+        curso ni el que acaba de terminar y aún no se ha contado en un sondeo (su
+        ``on_finish`` no ha llegado) ni el cancelado cuyo hilo sigue en marcha (aún podría
+        escribir en su carpeta); en cuanto dejan de estarlo, sí."""
+        stuck = self._submit(STUCK_WORKER, "Atascado")
+        queued = self._submit(INGEST_WORKER, "En cola")
+        self._poll_until(lambda: stuck.message == "Atascado")
+        self.assertTrue(queued.cancel())  # «Cancelado» sin arrancar, sin contar aún
+        report = self._purge(only=[stuck.job_uid, queued.job_uid])
+        self.assertEqual(report.removed, ())
+        self.assertEqual(self._listed(), {"Atascado", "En cola"})
+        self.runner.poll()
+        self.assertEqual(self._purge(only=[stuck.job_uid, queued.job_uid]).removed,
+                         (queued.job_uid,))
+        self.runner.shutdown(timeout_s=0.2)  # el hilo no para: se abandona en marcha
+        self.runner.poll()
+        self.assertEqual(stuck.state, "interrupted")
+        self.assertEqual(self._purge().removed, (self.previous.job_uid,))
+        self.assertTrue(stuck.job_dir.path.exists())
+        self.assertEqual(self._listed(), {"Atascado"})
+        self.release.set()
+        deadline = time.monotonic() + DEADLINE_S
+        while stuck.job_dir.path.exists():
+            if time.monotonic() > deadline:
+                raise AssertionError("el hilo abandonado no terminó a tiempo")
+            self._purge()
+            time.sleep(POLL_S)
+        self.assertEqual(self._listed(), set())
 
 
 class FolderSizeTest(_RootCase):

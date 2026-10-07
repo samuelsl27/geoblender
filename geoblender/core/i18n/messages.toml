@@ -1089,3 +1089,93 @@ es = "Trabajo"
 
 ["Identifier of the job to cancel (empty: the oldest running one)"]
 es = "Identificador del trabajo que se cancela (vacío: el más antiguo en curso)"
+
+# Autodiagnóstico y limpieza de los trabajos (spec 004, T21; RF-004-03, RF-004-17,
+# RF-004-08; plan 004 §5.3.2 y §5.4.6).
+
+["Geoblender has not prepared the jobs folder yet"]
+es = "Geoblender aún no ha preparado la carpeta de los trabajos"
+
+["Launched the job «{job}»"]
+es = "Lanzado el trabajo «{job}»"
+
+["Self-test: sum of 10 s"]
+es = "Autodiagnóstico: suma de 10 s"
+
+["Self-test: 2000 × 2000 product with the compute engine"]
+es = "Autodiagnóstico: producto 2000 × 2000 con el motor de cálculo"
+
+["Self-test: 500 × 500 product with Blender's numpy"]
+es = "Autodiagnóstico: producto 500 × 500 con el numpy de Blender"
+
+["Sum of 10 s"]
+es = "Suma de 10 s"
+
+["Sum in chunks of about 10 s in a separate process, to follow its progress and cancel it"]
+es = "Suma por trozos de unos 10 s en un proceso aparte, para seguir su avance y cancelarla"
+
+["Matrix product with the compute engine"]
+es = "Producto de matrices con el motor de cálculo"
+
+["Product of two 2000 × 2000 float64 matrices with the numpy and the BLAS of the compute engine"]
+es = "Producto de dos matrices float64 de 2000 × 2000 con el numpy y la BLAS del motor de cálculo"
+
+["Matrix product with Blender's numpy"]
+es = "Producto de matrices con el numpy de Blender"
+
+["Product of two 500 × 500 float64 matrices with the numpy of Blender, in a thread"]
+es = "Producto de dos matrices float64 de 500 × 500 con el numpy de Blender, en un hilo"
+
+["Jobs to delete"]
+es = "Trabajos que se borran"
+
+["Older than the retention"]
+es = "Más antiguos que la retención"
+
+["Finished jobs that ended more days ago than set in the preferences"]
+es = "Trabajos que terminaron hace más días de los fijados en las preferencias"
+
+["All finished"]
+es = "Todos los terminados"
+
+["Every finished job, however recent"]
+es = "Todos los trabajos terminados, aunque sean recientes"
+
+["One job"]
+es = "Un trabajo"
+
+["Only the finished job with that identifier (Discard)"]
+es = "Solo el trabajo terminado con ese identificador (Descartar)"
+
+["Identifier of the job to discard (with One job)"]
+es = "Identificador del trabajo que se descarta (con «Un trabajo»)"
+
+["Clean finished jobs"]
+es = "Limpiar trabajos terminados"
+
+["Delete"]
+es = "Borrar"
+
+["Finished more than {days} days ago"]
+es = "Terminados hace más de {days} días"
+
+["Queued and running jobs are never deleted"]
+es = "Nunca se borran los trabajos en cola ni en curso"
+
+["Job folders deleted: {count} ({size} MB freed)"]
+es = "Carpetas de trabajos borradas: {count} ({size} MB liberados)"
+
+["There were no finished jobs to delete"]
+es = "No había trabajos terminados que borrar"
+
+["Job folders that could not be deleted completely (another program has a file open): {count}; they will be tried again in the next cleaning"]
+es = "Carpetas de trabajos que no se pudieron borrar del todo (otro programa tiene un fichero abierto): {count}; se intentará otra vez en la próxima limpieza"
+
+["No job to discard was given"]
+es = "No se ha indicado qué trabajo descartar"
+
+["Discarded the job «{job}» ({size} MB freed)"]
+es = "Descartado el trabajo «{job}» ({size} MB liberados)"
+
+["The job «{job}» is still running: it cannot be discarded"]
+es = "El trabajo «{job}» sigue en marcha: no se puede descartar"

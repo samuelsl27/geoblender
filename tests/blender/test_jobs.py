@@ -50,10 +50,26 @@ Tres trabajos reales en hilo de un tipo de prueba que espera a que lo suelten (u
 y dos en cola) y, para cada estado, un lanzador simulado; ``wm.call_panel`` se sustituye
 (en ``blender -b`` no hay dónde abrir una ventana emergente).
 
+T21 — los operadores reales ``geoblender.jobs_run_selftest`` y ``geoblender.jobs_clean``
+(``bl/ops/jobs.py``), también del catálogo de la 003:
+
+- RF-004-03: el autodiagnóstico ``SUM_10S`` (unos 10 s) va en proceso aparte;
+  ``MATMUL_BLENDER`` (500 × 500 con el numpy de Blender), en hilo; ``MATMUL_COMPUTE``
+  necesita el motor de cálculo y, sin él, queda «Fallido» (``runtime_missing``);
+- RF-004-17 y RF-004-08: la limpieza ``OLD`` (los terminados hace más días que los de las
+  preferencias), ``FINISHED`` (todos los terminados) y ``ONE`` (el «Descartar» de la
+  lista) informa de los MB liberados y nunca borra un trabajo activo.
+
+Un lanzador real en una carpeta temporal: el autodiagnóstico de 10 s se cancela en cuanto
+da su primer trozo; la limpieza, sobre carpetas de otra sesión escritas a mano y dos
+trabajos del lanzador en hilo (uno terminado, otro en curso).
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
+import datetime as dt
 import importlib
+import json
 import sys
 import tempfile
 import threading
@@ -1307,6 +1323,440 @@ class ShowJobsTest(unittest.TestCase):
                 self.assertEqual(bpy.ops.geoblender.jobs_show_jobs(), {"FINISHED"})
         call_panel.assert_called_once_with(JOBS_PANEL)
         self.assertIsNone(self.ui.folder_size(folder))
+
+
+# --- T21: autodiagnóstico y limpieza de los trabajos ------------------------------------
+
+RUN_SELFTEST = "geoblender.jobs_run_selftest"
+T21_OPERATORS = {RUN_SELFTEST: "GEOBLENDER_OT_jobs_run_selftest",
+                 CLEAN_JOB: "GEOBLENDER_OT_jobs_clean"}
+T21_LABELS = {RUN_SELFTEST: "Self-test", CLEAN_JOB: "Clean finished jobs…"}
+SELFTEST_NAMES = {
+    "SUM_10S": "Autodiagnóstico: suma de 10 s",
+    "MATMUL_COMPUTE": "Autodiagnóstico: producto 2000 × 2000 con el motor de cálculo",
+    "MATMUL_BLENDER": "Autodiagnóstico: producto 500 × 500 con el numpy de Blender",
+}
+NO_RUNNER = "Geoblender aún no ha preparado la carpeta de los trabajos"
+CLEAN_WORKER = "gbtest_clean"
+KB = 1000
+
+
+def _bytes(path: Path) -> int:
+    """Bytes de los ficheros bajo ``path`` (lo que libera borrarlo)."""
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def _job_folder(root: Path, *, state: str, days: float, label: str, size: int) -> Path:
+    """La carpeta de un trabajo de otra sesión (no está en el lanzador): su petición, su
+    ``state.json`` (en ``state``; si es final, terminado hace ``days`` días) y ``size``
+    bytes de resultados."""
+    protocol, paths, records = (_module(f"jobs.{name}")
+                                for name in ("protocol", "paths", "records"))
+    utc = _module("core.timeutil").format_utc
+    request = protocol.new_request("selftest", label=label, owner="jobs",
+                                   environment="blender", timeout_s=60)
+    folder = paths.job_dir(root, request.job_uid).create()
+    protocol.write_request(folder, request)
+    ended = dt.datetime.now(dt.UTC) - dt.timedelta(days=days)
+    final = state in records.FINAL_STATES
+    records.write_record(folder, records.JobRecord(
+        job_uid=request.job_uid, worker="selftest", label=label, owner="jobs", state=state,
+        executor="subprocess", queued_at=utc(ended - dt.timedelta(minutes=1)),
+        started_at=utc(ended - dt.timedelta(seconds=30)),
+        ended_at=utc(ended) if final else None, duration_s=30.0 if final else None,
+        exit_code=0 if state == "succeeded" else None,
+        error=None if state in ("running", "succeeded") else records.ErrorInfo(
+            code="worker_crashed", msgid="Job crashed", text="Falló"),
+    ))
+    (folder.outputs_dir / "datos.bin").write_bytes(b"\x01" * size)
+    return folder.path
+
+
+type _Reports = list[tuple[set[str], str]]
+
+
+def _reports(operator: type, **properties: object) -> tuple[set[str], _Reports]:
+    """``execute`` del operador con ``properties``, como lo llama Blender, y sus avisos."""
+    reports: list[tuple[set[str], str]] = []
+    fake = SimpleNamespace(**properties,
+                           report=lambda kind, text: reports.append((set(kind), text)))
+    return operator.execute(fake, bpy.context), reports
+
+
+class SelftestCleanCatalogTest(unittest.TestCase):
+    """Con la extensión habilitada una vez para toda la clase."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.enable()
+        cls.cat = _module("core.catalog").load()
+        cls.commands = _module("bl.ui.commands")
+        cls.registry = _module("bl.ui.registry")
+        cls.ops = _module("bl.ops.jobs")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.unload()
+
+    def test_real_operators_replace_the_provisionals(self) -> None:
+        """RF-004-03, RF-004-17: ``geoblender.jobs_run_selftest`` y ``geoblender.jobs_clean``
+        son los operadores reales de ``bl/ops/jobs.py`` con el ``bl_idname``, el nombre y
+        la descripción del catálogo de la 003, que no genera provisionales para ellos; están
+        disponibles y Herramientas ▸ Trabajos los dibuja activos."""
+        provisional = set(self.registry.provisional_classes())
+        real = _module("bl.ops").classes
+        menu = self.commands.registered_class(JOBS_MENU)
+        drawn = {item.target: item for item in draw(menu, bpy.context).of_kind("operator")}
+        for idname, name in T21_OPERATORS.items():
+            with self.subTest(idname=idname):
+                cls = self.commands.registered_class(idname)
+                self.assertIs(cls, getattr(self.ops, name))
+                self.assertIn(cls, real)
+                self.assertNotIn(cls, provisional)
+                self.assertFalse(self.commands.is_provisional(cls))
+                self.assertTrue(self.commands.is_available(idname))
+                cmd = self.cat.commands[idname]
+                self.assertEqual(cmd.label, T21_LABELS[idname])
+                self.assertEqual(cls.bl_label, self.commands.text(cmd.label))
+                self.assertEqual(cls.bl_description, self.commands.text(cmd.description))
+                self.assertEqual(cls.bl_translation_context,
+                                 self.commands.TRANSLATION_CONTEXT)
+                self.assertTrue(drawn[idname].enabled)
+
+    def test_properties(self) -> None:
+        """RF-004-03, RF-004-17: ``mode`` (``SUM_10S`` por defecto, ``MATMUL_COMPUTE``,
+        ``MATMUL_BLENDER``) del autodiagnóstico; ``scope`` (``OLD`` por defecto,
+        ``FINISHED``, ``ONE``) y ``job_uid`` de la limpieza, los que pone «Descartar» en
+        la lista de trabajos; ninguno se guarda para la vez siguiente."""
+        mode = bpy.ops.geoblender.jobs_run_selftest.get_rna_type().properties["mode"]
+        self.assertEqual([item.identifier for item in mode.enum_items],
+                         ["SUM_10S", "MATMUL_COMPUTE", "MATMUL_BLENDER"])
+        self.assertEqual(mode.default, "SUM_10S")
+        clean = bpy.ops.geoblender.jobs_clean.get_rna_type().properties
+        self.assertEqual([item.identifier for item in clean["scope"].enum_items],
+                         ["OLD", "FINISHED", "ONE"])
+        self.assertEqual(clean["scope"].default, "OLD")
+        self.assertEqual(clean["job_uid"].default, "")
+        for prop in (mode, clean["scope"], clean["job_uid"]):
+            with self.subTest(propiedad=prop.identifier):
+                self.assertTrue(prop.is_skip_save)
+
+
+class RunSelftestTest(unittest.TestCase):
+    """Los tres autodiagnósticos con un lanzador real en una carpeta temporal: el de 10 s
+    se cancela en cuanto da su primer trozo; el de 500 × 500 termina en hilo; el del motor
+    falla sin él (aún no hay motor de cálculo: fase 4)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.enable()
+        cls.ops = _module("bl.ops.jobs")
+        cls.protocol = _module("jobs.protocol")
+        cls.records = _module("jobs.records")
+        cls.selftest = _module("jobs.selftest")
+        cls.messages = _module("jobs.messages")
+        runner = _module("jobs.runner")
+        cls.tmp = tempfile.TemporaryDirectory(prefix="gb4-")
+        cls.root = Path(cls.tmp.name) / "jobs"
+        package_dir = Path(sys.modules[module_name()].__file__).parent
+        cls.runner = runner.JobRunner(jobs_root=cls.root, package_dir=package_dir,
+                                      blender_python=Path(sys.executable))
+        cls.monitor = cls.ops.JobMonitor(clock=_Clock())
+        cls.patch = mock.patch.object(cls.ops, "MONITOR", cls.monitor)
+        cls.patch.start()
+        try:
+            cls.poll_without_runner = cls._poll()
+            cls.monitor.attach(cls.runner)
+            cls.poll_with_runner = cls._poll()
+            cls._run_scenario()
+        except BaseException:
+            cls.tearDownClass()  # unittest no lo llama si setUpClass falla
+            raise
+
+    @classmethod
+    def _run_scenario(cls) -> None:
+        operator = cls.ops.GEOBLENDER_OT_jobs_run_selftest
+        started = time.monotonic()
+        cls.sum_run = _reports(operator, mode="SUM_10S")
+        cls.timer_after_submit = bpy.app.timers.is_registered(cls.ops.tick)
+        cls.matmul_run = bpy.ops.geoblender.jobs_run_selftest(mode="MATMUL_BLENDER")
+        cls.compute_run = _reports(operator, mode="MATMUL_COMPUTE")
+        launched = cls.by_name()
+        total = launched[SELFTEST_NAMES["SUM_10S"]]
+        matmul = launched[SELFTEST_NAMES["MATMUL_BLENDER"]]
+        cls._wait(lambda: cls.by_name()[total.name].message.startswith("Trozo ")
+                  and not cls.by_name()[matmul.name].active)
+        cls.first_chunk_s = time.monotonic() - started
+        cls.sum_running = cls.by_name()[total.name]
+        cls.sum_record = cls.records.read_record(cls.root / total.job_uid)
+        cls.runner.cancel(total.job_uid)
+        cls._wait(lambda: not cls.by_name()[total.name].active)
+
+    @classmethod
+    def by_name(cls) -> dict[str, object]:
+        return {s.name: s for s in cls.runner.snapshots()}
+
+    @classmethod
+    def _wait(cls, condition: object) -> None:
+        deadline = time.monotonic() + WAIT_S
+        while not condition():
+            if time.monotonic() > deadline:
+                raise AssertionError("los autodiagnósticos no avanzaron a tiempo")
+            cls.ops.tick()
+            time.sleep(GATE_POLL_S)
+
+    @classmethod
+    def _poll(cls) -> tuple[bool, list[str]]:
+        operator = cls.ops.GEOBLENDER_OT_jobs_run_selftest
+        with mock.patch.object(operator, "poll_message_set") as message:
+            allowed = operator.poll(bpy.context)
+        return allowed, [call.args[0] for call in message.call_args_list]
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.runner.shutdown(timeout_s=2.0)
+        cls.monitor.stop()
+        cls.patch.stop()
+        blender_ext.unload()
+        cls.tmp.cleanup()
+
+    def request(self, mode: str) -> object:
+        job_uid = self.by_name()[SELFTEST_NAMES[mode]].job_uid
+        return self.protocol.read_request(self.root / job_uid)
+
+    def test_poll_needs_the_runner(self) -> None:
+        """RF-004-03: sin lanzador (Geoblender aún no tiene la carpeta de los trabajos) el
+        ``poll`` falla y lo explica; con él, se puede; con el lanzador cerrado, tampoco."""
+        self.assertEqual(self.poll_without_runner, (False, [NO_RUNNER]))
+        self.assertEqual(self.poll_with_runner, (True, []))
+        closed = SimpleNamespace(closed=True)
+        with mock.patch.object(self.ops, "MONITOR", self.ops.JobMonitor()):
+            self.ops.MONITOR.attach(closed)
+            self.assertEqual(self._poll(), (False, [NO_RUNNER]))
+
+    def test_sum_of_ten_seconds_in_a_separate_process(self) -> None:
+        """RF-004-03: ``SUM_10S`` lanza con el monitor un autodiagnóstico de unos 10 s (20
+        trozos de 0,5 s; el estimador da 10 s, más de 5 s) que va en proceso aparte: tiene
+        su proceso, su primer trozo tarda al menos 0,5 s y se cancela al momento."""
+        result, reports = self.sum_run
+        self.assertEqual(result, {"FINISHED"})
+        self.assertEqual(reports, [({"INFO"},
+                                    f"Lanzado el trabajo «{SELFTEST_NAMES['SUM_10S']}»")])
+        self.assertTrue(self.timer_after_submit)
+        request = self.request("SUM_10S")
+        self.assertEqual((request.worker, request.owner, request.environment),
+                         ("selftest", "jobs", "blender"))
+        self.assertEqual(dict(request.params),
+                         {"op": "chunked_sum", "n": 20_000, "chunks": 20, "sleep_s": 0.5})
+        self.assertAlmostEqual(self.selftest.estimate_s(request.params), 10.0, places=2)
+        running = self.sum_running
+        self.assertEqual((running.state, running.executor), ("running", "subprocess"))
+        self.assertIsNotNone(self.sum_record.pid)
+        self.assertGreaterEqual(self.first_chunk_s, 0.5)
+        cancelled = self.by_name()[SELFTEST_NAMES["SUM_10S"]]
+        self.assertEqual(cancelled.state, "cancelled")
+        self.assertLess(cancelled.duration_s, 5.0)
+
+    def test_matmul_with_blender_numpy_in_a_thread(self) -> None:
+        """RF-004-03: ``MATMUL_BLENDER`` es el producto 500 × 500 con el numpy de Blender,
+        estimado en menos de 5 s: va en hilo (sin proceso) y termina con su resultado."""
+        self.assertEqual(self.matmul_run, {"FINISHED"})
+        request = self.request("MATMUL_BLENDER")
+        self.assertEqual(dict(request.params), {"op": "matmul", "n": 500})
+        self.assertEqual(request.environment, "blender")
+        self.assertLess(self.selftest.estimate_s(request.params), 5.0)
+        snapshot = self.by_name()[SELFTEST_NAMES["MATMUL_BLENDER"]]
+        self.assertEqual((snapshot.state, snapshot.executor), ("succeeded", "inprocess"))
+        self.assertEqual(snapshot.interpreter.kind, "blender")
+        record = self.records.read_record(self.root / snapshot.job_uid)
+        self.assertIsNone(record.pid)
+        summary = json.loads((self.root / snapshot.job_uid / "result.json")
+                             .read_text(encoding="utf-8"))["summary"]
+        self.assertEqual((summary["op"], summary["n"]), ("matmul", 500))
+        self.assertGreater(summary["gflops"], 0.0)
+
+    def test_matmul_with_the_compute_engine_needs_it(self) -> None:
+        """RF-004-03: ``MATMUL_COMPUTE`` (2000 × 2000) necesita el motor de cálculo: va a
+        proceso aparte y, sin motor, queda «Fallido» (``runtime_missing``) sin arrancar
+        ningún proceso; el operador lo dice con el mensaje del §8."""
+        result, reports = self.compute_run
+        self.assertEqual(result, {"CANCELLED"})
+        self.assertEqual(reports, [({"ERROR"}, self.messages.render("runtime_missing"))])
+        request = self.request("MATMUL_COMPUTE")
+        self.assertEqual(dict(request.params), {"op": "matmul", "n": 2000})
+        self.assertEqual(request.environment, "compute")
+        snapshot = self.by_name()[SELFTEST_NAMES["MATMUL_COMPUTE"]]
+        self.assertEqual((snapshot.state, snapshot.executor), ("failed", "subprocess"))
+        self.assertEqual(snapshot.error.code, "runtime_missing")
+        self.assertIsNone(self.records.read_record(self.root / snapshot.job_uid).pid)
+
+
+class CleanJobsTest(unittest.TestCase):
+    """``geoblender.jobs_clean`` sobre una raíz con trabajos de otra sesión (8, 10 y 1 días
+    terminados, y uno que consta en curso) y dos del lanzador en hilo: uno terminado y otro
+    en curso."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.enable()
+        cls.ops = _module("bl.ops.jobs")
+        cls.ui = _module("bl.ui.jobs")
+        cls.catalog = _module("jobs.catalog")
+        cls.protocol = _module("jobs.protocol")
+        cls.i18n = _module("core.i18n")
+        cls.runner_mod = _module("jobs.runner")
+        cls.prefs = _addon_preferences().jobs
+        cls.gates = _Gates()
+        cls.catalog.register_worker(cls.catalog.WorkerInfo(
+            CLEAN_WORKER, "Clean test job", policy="auto",
+            estimate_s=lambda _params: 0.1, run=cls.gates.run,
+        ))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.gates.release_all()
+        cls.catalog.unregister_worker(CLEAN_WORKER)
+        blender_ext.unload()
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))
+        package_dir = Path(sys.modules[module_name()].__file__).parent
+        self.runner = self.runner_mod.JobRunner(jobs_root=self.root, package_dir=package_dir,
+                                                blender_python=Path(sys.executable))
+        self.monitor = self.ops.JobMonitor(clock=_Clock())
+        patch = mock.patch.object(self.ops, "MONITOR", self.monitor)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(self.monitor.stop)
+        self.addCleanup(self.runner.shutdown, timeout_s=2.0)
+        self.addCleanup(self.gates.release_all)
+        self.monitor.attach(self.runner)
+        self.gates.events.clear()  # las de la prueba anterior ya están soltadas
+        self.old = _job_folder(self.root, state="succeeded", days=8, label="Viejo",
+                               size=300 * KB)
+        self.older = _job_folder(self.root, state="failed", days=10, label="Más viejo",
+                                 size=200 * KB)
+        self.recent = _job_folder(self.root, state="succeeded", days=1, label="Reciente",
+                                  size=100 * KB)
+        self.orphan = _job_folder(self.root, state="running", days=30, label="Huérfano",
+                                  size=50 * KB)
+        self.gates["Hecho"].set()
+        self.done = self.monitor.submit(self.protocol.new_request(
+            CLEAN_WORKER, label="Hecho", owner="jobs"))
+        self.busy = self.monitor.submit(self.protocol.new_request(
+            CLEAN_WORKER, label="En marcha", owner="jobs"))
+        deadline = time.monotonic() + WAIT_S
+        while self.done.result() is None or self.busy.message != "Esperando":
+            self.assertLess(time.monotonic(), deadline, "los trabajos no avanzaron a tiempo")
+            self.ops.tick()
+            time.sleep(GATE_POLL_S)
+        self.assertEqual((self.done.state, self.busy.state), ("succeeded", "running"))
+        self.addCleanup(setattr, self.prefs, "retention_days", self.prefs.retention_days)
+
+    def clean(self, **properties: object) -> tuple[set[str], _Reports]:
+        properties.setdefault("scope", "OLD")
+        properties.setdefault("job_uid", "")
+        return _reports(self.ops.GEOBLENDER_OT_jobs_clean, **properties)
+
+    def freed(self, *folders: Path) -> str:
+        return self.i18n.format_number(sum(_bytes(f) for f in folders) / 1e6, 1)
+
+    def remaining(self) -> set[str]:
+        return {path.name for path in self.root.iterdir()}
+
+    def listed(self) -> set[str]:
+        return {snapshot.name for snapshot in self.runner.snapshots()}
+
+    def test_poll_needs_the_runner(self) -> None:
+        """RF-004-17: sin lanzador no hay carpeta de trabajos que limpiar: el ``poll`` falla
+        y lo explica."""
+        operator = self.ops.GEOBLENDER_OT_jobs_clean
+        self.assertTrue(operator.poll(bpy.context))
+        self.monitor.attach(None)
+        with mock.patch.object(operator, "poll_message_set") as message:
+            self.assertFalse(operator.poll(bpy.context))
+        message.assert_called_once_with(NO_RUNNER)
+
+    def test_old_uses_the_retention_of_the_preferences(self) -> None:
+        """RF-004-17: ``OLD`` borra los terminados hace más días que ``retention_days`` de
+        las preferencias (9: solo el de 10 días; 7: también el de 8) e informa de los MB
+        liberados; nunca los recientes ni los activos."""
+        self.prefs.retention_days = 9
+        expected = self.freed(self.older)
+        self.assertEqual(self.clean(scope="OLD"), ({"FINISHED"}, [(
+            {"INFO"}, f"Carpetas de trabajos borradas: 1 ({expected} MB liberados)")]))
+        self.prefs.retention_days = 7
+        expected = self.freed(self.old)
+        self.assertEqual(self.clean(scope="OLD"), ({"FINISHED"}, [(
+            {"INFO"}, f"Carpetas de trabajos borradas: 1 ({expected} MB liberados)")]))
+        self.assertEqual(self.remaining(), {self.recent.name, self.orphan.name,
+                                            self.done.job_uid, self.busy.job_uid})
+        self.assertEqual(self.listed(), {"Hecho", "En marcha"})
+
+    def test_finished_removes_every_finished_job(self) -> None:
+        """RF-004-17: ``FINISHED`` borra todos los terminados, recientes y del lanzador
+        incluidos (que salen de la lista), informa de los MB liberados y nunca borra los
+        activos: ni el que corre en el lanzador ni el que su registro deja en curso; otra
+        vez, no hay nada que borrar."""
+        expected = self.freed(self.old, self.older, self.recent, self.done.job_dir.path)
+        self.assertEqual(self.clean(scope="FINISHED"), ({"FINISHED"}, [(
+            {"INFO"}, f"Carpetas de trabajos borradas: 4 ({expected} MB liberados)")]))
+        self.assertEqual(self.remaining(), {self.orphan.name, self.busy.job_uid})
+        self.assertEqual(self.listed(), {"En marcha"})
+        self.assertEqual(self.busy.state, "running")
+        self.assertEqual(self.clean(scope="FINISHED"), ({"FINISHED"}, [(
+            {"INFO"}, "No había trabajos terminados que borrar")]))
+
+    def test_discard_one_job(self) -> None:
+        """RF-004-08, RF-004-17: ``ONE`` (el «Descartar» de la lista, que lo ejecuta sin
+        diálogo) borra solo ese trabajo terminado, que sale de la lista, y dice los MB
+        liberados; uno en curso, uno que no existe o ninguno solo avisan y no borran
+        nada."""
+        expected = self.freed(self.done.job_dir.path)
+        self.assertEqual(self.clean(scope="ONE", job_uid=self.done.job_uid), (
+            {"FINISHED"},
+            [({"INFO"}, f"Descartado el trabajo «Hecho» ({expected} MB liberados)")]))
+        self.assertEqual(self.listed(), {"En marcha"})
+        self.assertEqual(self.clean(scope="ONE", job_uid=self.busy.job_uid), (
+            {"CANCELLED"},
+            [({"WARNING"}, "El trabajo «En marcha» sigue en marcha: no se puede descartar")]))
+        self.assertEqual(self.clean(scope="ONE", job_uid="gbtest-desconocido"),
+                         ({"CANCELLED"}, [({"WARNING"},
+                                           "No hay ningún trabajo «gbtest-desconocido»")]))
+        self.assertEqual(self.clean(scope="ONE"), ({"CANCELLED"}, [(
+            {"ERROR"}, "No se ha indicado qué trabajo descartar")]))
+        self.assertEqual(self.remaining(), {self.old.name, self.older.name,
+                                            self.recent.name, self.orphan.name,
+                                            self.busy.job_uid})
+        with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+            self.assertEqual(bpy.ops.geoblender.jobs_clean(
+                "INVOKE_DEFAULT", scope="ONE", job_uid=self.old.name), {"FINISHED"})
+        self.assertNotIn(self.old.name, self.remaining())
+
+    def test_menu_opens_a_dialog(self) -> None:
+        """RF-004-17: desde el menú (``OLD`` o ``FINISHED``) pide confirmación en un
+        diálogo con los días de las preferencias y que nunca se borran los activos, sin
+        borrar nada todavía."""
+        self.prefs.retention_days = 12
+        operator = self.ops.GEOBLENDER_OT_jobs_clean
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        manager = SimpleNamespace(invoke_props_dialog=dialog)
+        context = SimpleNamespace(window_manager=manager)
+        for scope in ("OLD", "FINISHED"):
+            with self.subTest(scope=scope):
+                dialog.reset_mock()
+                fake = SimpleNamespace(scope=scope, job_uid="")
+                self.assertEqual(operator.invoke(fake, context, None), {"RUNNING_MODAL"})
+                self.assertIs(dialog.call_args.args[0], fake)
+                self.assertEqual(dialog.call_args.kwargs["title"],
+                                 "Limpiar trabajos terminados")
+        texts = draw(operator, bpy.context, scope="OLD", job_uid="").texts()
+        self.assertEqual(texts, ["Terminados hace más de 12 días", "Todos los terminados",
+                                 "Nunca se borran los trabajos en cola ni en curso"])
+        self.assertEqual(len(self.remaining()), 6)
 
 
 if __name__ == "__main__":

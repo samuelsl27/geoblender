@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Lanzador de los trabajos en segundo plano: :class:`JobRunner` (spec 004; RF-004-01,
-RF-004-03 a RF-004-05, RF-004-09 a RF-004-13, RF-004-15, RF-004-16; plan 004 §5.3.1,
+RF-004-03 a RF-004-05, RF-004-09 a RF-004-13, RF-004-15 a RF-004-17; plan 004 §5.3.1,
 §5.3.3, §5.3.4, §5.4.1, §5.4.2, §5.4.5 y §5.4.6).
 
 Cada trabajo corre en proceso aparte o en un hilo de Blender según su tipo
@@ -77,6 +77,9 @@ Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
 - Incorporación (RF-004-16): cuando el módulo dueño confirma que incorporó los resultados,
   :meth:`JobRunner.mark_ingested` lo anota en ``state.json`` y borra las entradas y los
   resultados de la carpeta (``cleanup.release``); queda el registro.
+- Limpieza (RF-004-17): :meth:`JobRunner.purge` borra las carpetas de los trabajos
+  terminados (``cleanup.purge``) sin tocar nunca los que lleva activos, y los borrados salen
+  de su lista.
 
 En hilo (``executor = "inprocess"``): la función ``run`` del tipo de trabajo corre en un
 hilo *daemon* (``inprocess.InProcessExecutor``), sin proceso propio (``pid`` vacío), con
@@ -629,6 +632,35 @@ class JobRunner:
                 if item is not None:
                     item.record = record
             return cleanup.release(folder)
+
+    def purge(
+        self,
+        *,
+        older_than_days: float | None,
+        all_finished: bool = False,
+        only: Iterable[str] | None = None,
+        now: dt.datetime | None = None,
+    ) -> cleanup.CleanupReport:
+        """Borra las carpetas de los trabajos terminados de la raíz de trabajos
+        (``cleanup.purge``, RF-004-17): los que terminaron hace más de ``older_than_days``
+        días, todos (``all_finished``) o, con ``only``, solo esos (el «Descartar» de la
+        lista, RF-004-08). Nunca borra uno que este lanzador lleve activo: en cola, en
+        curso, terminado sin contar aún en un :meth:`poll` (su ``on_finish`` no ha llegado)
+        o con su hilo abandonado en marcha (aún podría escribir en su carpeta). Los borrados
+        salen de :meth:`snapshots`. Devuelve el ``CleanupReport`` (MB liberados); un
+        argumento que no vale es :class:`ValueError` o :class:`TypeError` sin borrar
+        nada."""
+        with self._lock:
+            busy = {job_uid for job_uid, item in self._jobs.items()
+                    if item.state in ACTIVE_STATES
+                    or (item.thread is not None and item.thread.alive)}
+            busy.update(item.folder.job_uid for item in self._to_report)
+            report = cleanup.purge(self._jobs_root, older_than_days=older_than_days,
+                                   all_finished=all_finished, active=busy, only=only,
+                                   now=now)
+            for job_uid in report.removed:
+                self._jobs.pop(job_uid, None)
+            return report
 
     # --- Seguimiento ---------------------------------------------------------------------
 

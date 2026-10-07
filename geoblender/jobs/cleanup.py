@@ -9,9 +9,11 @@
   ``job.log``, ``result.json`` y ``state.json``).
 - :func:`purge` (al abrir un proyecto y con «Limpiar trabajos terminados», RF-004-17): borra
   la carpeta entera de los trabajos en estado final que terminaron hace más de
-  ``older_than_days`` días (o de todos los terminados) y dice cuántos MB liberó. Nunca toca
-  un trabajo activo: ni los que su ``state.json`` deja «En cola» o «En curso», ni los que el
-  lanzador dice que lleva (``active``), ni una carpeta sin un ``state.json`` válido.
+  ``older_than_days`` días (o de todos los terminados; o solo de los de ``only``, el
+  «Descartar» de la lista de trabajos) y dice cuántos MB liberó. Nunca toca un trabajo
+  activo: ni los que su ``state.json`` deja «En cola» o «En curso», ni los que el lanzador
+  dice que lleva (``active``), ni una carpeta sin un ``state.json`` válido. Con el
+  lanzador, ``JobRunner.purge``, que sabe cuáles lleva.
 - :func:`folder_size_mb`: lo que ocupa una carpeta (la raíz de trabajos, en el panel).
 
 Las entradas de ``in/`` son de solo lectura (``paths``): se les quita el atributo antes de
@@ -87,6 +89,7 @@ def purge(
     older_than_days: float | None,
     all_finished: bool = False,
     active: Iterable[str],
+    only: Iterable[str] | None = None,
     now: dt.datetime | None = None,
 ) -> CleanupReport:
     """Borra las carpetas de los trabajos terminados de ``jobs_root`` (RF-004-17).
@@ -98,6 +101,8 @@ def purge(
     - ``active``: los identificadores de los trabajos que lleva el lanzador; nunca se
       borran, como tampoco los que su ``state.json`` deja en cola o en curso ni las
       carpetas sin un ``state.json`` válido.
+    - ``only``: si se da, solo esos trabajos (además de lo anterior): el «Descartar» de un
+      trabajo de la lista (RF-004-08).
 
     Devuelve un :class:`CleanupReport` con los borrados y los MB liberados. Un argumento que
     no vale es :class:`ValueError` o :class:`TypeError` antes de borrar nada."""
@@ -109,6 +114,7 @@ def purge(
           or not math.isfinite(older_than_days) or older_than_days < 0):
         raise ValueError(f"older_than_days {older_than_days!r} no es un número de días ≥ 0")
     keep = as_uid_set(active, "active")
+    chosen = None if only is None else as_uid_set(only, "only")
     moment = dt.datetime.now(dt.UTC) if now is None else now
     if moment.tzinfo is None or moment.utcoffset() is None:
         raise ValueError(f"la hora {moment!r} no tiene zona: las fechas del registro son UTC")
@@ -125,6 +131,8 @@ def purge(
     freed = 0
     for record in scan(root):
         if not record.is_final or record.job_uid in keep:
+            continue
+        if chosen is not None and record.job_uid not in chosen:
             continue
         if cutoff is not None and (
             record.ended_at is None or not parse_utc(record.ended_at) < cutoff
