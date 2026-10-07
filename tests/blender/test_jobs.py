@@ -139,6 +139,14 @@ de Blender, en el idioma de Blender):
   «Cancelar»; «Install» y «Cancel» en inglés), también al actualizar y al reparar;
   «Instalar» ejecuta la instalación del plan enseñado y «Cancelar» no crea ``runtime/``.
 
+T42 — el autodiagnóstico de matrices se lanza desde el menú (Herramientas ▸ Trabajos ▸
+Autodiagnóstico solo lanzaba ``SUM_10S``; HU-004-5 y M5 piden lanzar el de matrices como
+usuario):
+
+- RF-004-03, RF-004-22, RF-004-26: Autodiagnóstico ▸ es un submenú del catálogo con los tres
+  modos de ``geoblender.jobs_run_selftest`` (el mismo ``bl_idname``), cada uno con su
+  ``mode`` y el nombre visible de ese modo, en español y en inglés.
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
@@ -1433,6 +1441,18 @@ SELFTEST_NAMES = {
     "MATMUL_COMPUTE": "Autodiagnóstico: producto 2000 × 2000 con el motor de cálculo",
     "MATMUL_BLENDER": "Autodiagnóstico: producto 500 × 500 con el numpy de Blender",
 }
+# T42: Herramientas ▸ Trabajos ▸ Autodiagnóstico ▸, el submenú con los tres modos, cada uno
+# con su ``mode`` y el nombre visible de ese modo en el idioma de Geoblender.
+SELFTEST_MENU = "GEOBLENDER_MT_jobs_selftest"
+SELFTEST_MENU_LABELS = {"es": "Autodiagnóstico", "en": "Self-test"}
+SELFTEST_MODES = {
+    "es": (("SUM_10S", "Suma de 10 s"),
+           ("MATMUL_COMPUTE", "Producto de matrices con el motor de cálculo"),
+           ("MATMUL_BLENDER", "Producto de matrices con el numpy de Blender")),
+    "en": (("SUM_10S", "Sum of 10 s"),
+           ("MATMUL_COMPUTE", "Matrix product with the compute engine"),
+           ("MATMUL_BLENDER", "Matrix product with Blender's numpy")),
+}
 NO_RUNNER = "Geoblender aún no ha preparado la carpeta de los trabajos"
 CLEAN_WORKER = "gbtest_clean"
 KB = 1000
@@ -1512,7 +1532,9 @@ class SelftestCleanCatalogTest(unittest.TestCase):
         cls.cat = _module("core.catalog").load()
         cls.commands = _module("bl.ui.commands")
         cls.registry = _module("bl.ui.registry")
+        cls.provisional = _module("bl.ui.provisional")
         cls.ops = _module("bl.ops.jobs")
+        cls.i18n = _module("core.i18n")
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -1521,12 +1543,11 @@ class SelftestCleanCatalogTest(unittest.TestCase):
     def test_real_operators_replace_the_provisionals(self) -> None:
         """RF-004-03, RF-004-17: ``geoblender.jobs_run_selftest`` y ``geoblender.jobs_clean``
         son los operadores reales de ``bl/ops/jobs.py`` con el ``bl_idname``, el nombre y
-        la descripción del catálogo de la 003, que no genera provisionales para ellos; están
-        disponibles y Herramientas ▸ Trabajos los dibuja activos."""
+        la descripción del catálogo de la 003 (el del autodiagnóstico, el de su submenú: T42),
+        que no genera provisionales para ellos; la limpieza está disponible y Herramientas ▸
+        Trabajos la dibuja activa (los modos del autodiagnóstico, en su submenú: T42)."""
         provisional = set(self.registry.provisional_classes())
         real = _module("bl.ops").classes
-        menu = self.commands.registered_class(JOBS_MENU)
-        drawn = {item.target: item for item in draw(menu, bpy.context).of_kind("operator")}
         for idname, name in T21_OPERATORS.items():
             with self.subTest(idname=idname):
                 cls = self.commands.registered_class(idname)
@@ -1534,14 +1555,53 @@ class SelftestCleanCatalogTest(unittest.TestCase):
                 self.assertIn(cls, real)
                 self.assertNotIn(cls, provisional)
                 self.assertFalse(self.commands.is_provisional(cls))
-                self.assertTrue(self.commands.is_available(idname))
-                cmd = self.cat.commands[idname]
+                cmd = self.provisional.base_command(self.cat, idname)
                 self.assertEqual(cmd.label, T21_LABELS[idname])
                 self.assertEqual(cls.bl_label, self.commands.text(cmd.label))
                 self.assertEqual(cls.bl_description, self.commands.text(cmd.description))
                 self.assertEqual(cls.bl_translation_context,
                                  self.commands.TRANSLATION_CONTEXT)
-                self.assertTrue(drawn[idname].enabled)
+        menu = self.commands.registered_class(JOBS_MENU)
+        drawn = {item.target: item for item in draw(menu, bpy.context).of_kind("operator")}
+        self.assertTrue(self.commands.is_available(CLEAN_JOB))
+        self.assertTrue(drawn[CLEAN_JOB].enabled)
+
+    def test_jobs_menu_offers_the_three_selftest_modes(self) -> None:
+        """RF-004-03, RF-004-22, RF-004-26 (HU-004-5, M5; T42): Herramientas ▸ Trabajos ▸
+        Autodiagnóstico ▸ es un submenú generado del catálogo (sin provisional) con los tres
+        modos de ``geoblender.jobs_run_selftest``, activos y en este orden, cada uno con su
+        ``mode`` y el nombre visible de ese modo (el del enumerado ``mode``) en el idioma de
+        Geoblender: los productos de matrices, con el motor de cálculo (o el intérprete
+        externo) y con el numpy de Blender, se lanzan desde el menú, no solo desde Python.
+        El menú ya no dibuja el operador suelto, que solo lanzaba la suma de 10 s."""
+        menu = self.commands.registered_class(JOBS_MENU)
+        submenu = self.commands.registered_class(SELFTEST_MENU)
+        self.assertIsNotNone(submenu, f"falta el submenú {SELFTEST_MENU}")
+        self.assertFalse(self.commands.is_provisional(submenu))
+        self.assertIn(submenu, self.registry.own_classes())
+        self.assertTrue(self.commands.is_available(SELFTEST_MENU))
+        rna = bpy.ops.geoblender.jobs_run_selftest.get_rna_type()
+        self.assertEqual([(item.identifier, item.name)
+                          for item in rna.properties["mode"].enum_items],
+                         list(SELFTEST_MODES["es"]), "los nombres visibles del enumerado")
+        self.addCleanup(self.i18n.set_language, "es")
+        for language, modes in SELFTEST_MODES.items():
+            self.i18n.set_language(language)
+            with self.subTest(idioma=language):
+                drawn = draw(menu, bpy.context)
+                entries = [item for item in drawn.of_kind("menu")
+                           if item.target == SELFTEST_MENU]
+                self.assertEqual([(item.text, item.enabled) for item in entries],
+                                 [(SELFTEST_MENU_LABELS[language], True)])
+                self.assertNotIn(RUN_SELFTEST,
+                                 [item.target for item in drawn.of_kind("operator")])
+                inside = draw(submenu, bpy.context)
+                self.assertEqual(
+                    [(item.target, item.properties.mode, item.text, item.enabled)
+                     for item in inside.of_kind("operator")],
+                    [(RUN_SELFTEST, mode, name, True) for mode, name in modes])
+                for mode, _name in modes:
+                    self.assertTrue(self.commands.is_available(f"{RUN_SELFTEST}?mode={mode}"))
 
     def test_properties(self) -> None:
         """RF-004-03, RF-004-17: ``mode`` (``SUM_10S`` por defecto, ``MATMUL_COMPUTE``,

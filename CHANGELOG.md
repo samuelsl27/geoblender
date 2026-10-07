@@ -29,7 +29,8 @@ falta el almacén del NAS de IMGA.
   ejecutan aparte, sin congelar Blender: mientras avanzan se puede girar la vista, abrir menús
   y seguir trabajando. Todavía ningún cálculo minero los usa (llegarán con GemPy, la
   estimación y la programación lineal); para probarlos, **Herramientas ▸ Trabajos ▸
-  Autodiagnóstico** lanza una suma de prueba de unos 10 s.
+  Autodiagnóstico ▸** lanza una suma de prueba de unos 10 s o un producto de matrices con el
+  motor de cálculo (o el intérprete externo) o con el numpy de Blender.
   - **En la barra de estado**, en modo Geoblender y también en modo Blender: cuántos trabajos
     hay en marcha, el nombre y el % del más antiguo (se actualiza cada cuarto de segundo) y su
     último mensaje, con un botón para ver la lista y otro para cancelarlo. Al acabar, durante
@@ -79,7 +80,8 @@ falta el almacén del NAS de IMGA.
     (por ejemplo, el de un entorno de GemPy) en lugar del motor, para probar versiones nuevas de
     las librerías sin reinstalarlo. Se comprueba antes de guardarlo y, si no sirve, se rechaza
     diciendo por qué («es Python 3.14.2, no 3.13»); la lista y el registro de cada trabajo
-    dicen cuándo se usó.
+    dicen cuándo se usó. Autodiagnóstico ▸ Producto de matrices con el motor de cálculo lo
+    prueba con su numpy.
   - Lanzar un trabajo devuelve el control en 0,014 s y su primer aviso llega a los 0,15 s
     (también con el motor de cálculo); con 4 trabajos en curso que informan 100 veces por
     segundo, seguirlos cuesta a Blender unos 0,5 ms (2,2 ms como mucho) cada cuarto de segundo,

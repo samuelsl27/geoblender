@@ -1310,15 +1310,48 @@ entry = "004"
 action = "D"
 frequency = 0
 
+# Spec 004, T42: los tres modos del autodiagnóstico (la propiedad mode), con los nombres de
+# su enumerado; los de matrices miden el motor de cálculo o el intérprete externo (HU-004-5).
 [[menu.group.item.item]]
-key = "geoblender.jobs_run_selftest"
+key = "GEOBLENDER_MT_jobs_selftest"
 label.en = "Self-test"
 label.es = "Autodiagnóstico"
 description.en = "Run a test job and check the compute engine"
 description.es = "Lanza un trabajo de prueba y comprueba el motor de cálculo"
 entry = "004"
+action = "S"
+frequency = 1
+doc_id = ["jobs_run_selftest"]
+
+[[menu.group.item.item.item]]
+key = "geoblender.jobs_run_selftest?mode=SUM_10S"
+label.en = "Sum of 10 s"
+label.es = "Suma de 10 s"
+description.en = "Sum in chunks of about 10 s in a separate process, to follow its progress and cancel it"
+description.es = "Suma por trozos de unos 10 s en un proceso aparte, para seguir su avance y cancelarla"
+entry = "004"
 action = "A"
 frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.jobs_run_selftest?mode=MATMUL_COMPUTE"
+label.en = "Matrix product with the compute engine"
+label.es = "Producto de matrices con el motor de cálculo"
+description.en = "Product of two 2000 × 2000 float64 matrices with the numpy and the BLAS of the compute engine"
+description.es = "Producto de dos matrices float64 de 2000 × 2000 con el numpy y la BLAS del motor de cálculo"
+entry = "004"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item.item]]
+key = "geoblender.jobs_run_selftest?mode=MATMUL_BLENDER"
+label.en = "Matrix product with Blender's numpy"
+label.es = "Producto de matrices con el numpy de Blender"
+description.en = "Product of two 500 × 500 float64 matrices with the numpy of Blender, in a thread"
+description.es = "Producto de dos matrices float64 de 500 × 500 con el numpy de Blender, en un hilo"
+entry = "004"
+action = "A"
+frequency = 0
 
 [[menu.group.item.item]]
 key = "geoblender.jobs_clean"

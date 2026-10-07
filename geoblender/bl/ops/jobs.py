@@ -78,7 +78,8 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   ``MATMUL_BLENDER``, el producto 500 × 500 con el numpy de Blender (unos 0,2 s: en hilo)
   y ``MATMUL_COMPUTE``, el de 2000 × 2000 con el motor de cálculo (en proceso aparte; sin
   motor queda «Fallido» con ``runtime_missing`` y el operador lo dice). Sin lanzador, su
-  ``poll`` falla y lo dice.
+  ``poll`` falla y lo dice. Herramientas ▸ Trabajos ▸ Autodiagnóstico ▸ ofrece los tres
+  modos, con los nombres de :data:`SELFTEST_MODE_ITEMS` (catálogo de la 003; T42).
 - ``geoblender.jobs_clean`` (RF-004-17, RF-004-08): borra las carpetas de los trabajos
   terminados con ``JobRunner.purge``, que nunca toca un trabajo activo, e informa de los MB
   liberados: ``OLD``, los terminados hace más días que ``retention_days`` de las
