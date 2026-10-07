@@ -1,0 +1,818 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Lanzador de los trabajos en segundo plano: :class:`JobRunner` (spec 004; RF-004-01,
+RF-004-05, RF-004-15; plan 004 §5.3.1, §5.3.3, §5.3.4 y §5.4.2).
+
+Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
+
+- :meth:`JobRunner.prepare`: completa la petición con lo que declara su tipo de trabajo
+  (entorno y tiempo máximo), la valida (``protocol.validate_request``, con la raíz del
+  proyecto prohibida) y, solo si vale, crea su carpeta con ``request.json`` y ``state.json``
+  «En cola». El módulo dueño escribe después sus entradas en ``in/``.
+- :meth:`JobRunner.submit`: lanza el worker y vuelve sin esperarlo, con un
+  :class:`JobHandle`::
+
+      <python de Blender> -I -B -u <paquete>/workers/_bootstrap.py --package-dir <paquete>
+          --job-dir <carpeta> --kind blender
+
+  con la carpeta del trabajo como carpeta de trabajo, la entrada estándar en una tubería
+  que el lanzador mantiene abierta (si Blender muere, el worker lo ve y termina), la salida
+  estándar como canal de eventos y la de error en ``job.log``. Las rutas absolutas viajan en
+  la línea de órdenes, nunca en la petición.
+- Un hilo lector *daemon* por proceso lee el canal (``protocol.EventDecoder``), añade a
+  ``events.jsonl`` cada evento, en orden de llegada, y cada línea que no lo es como nota
+  (``{"note": "invalid_line", …}``; el trabajo sigue, spec §8), y deja los eventos en una
+  cola para el sondeo.
+- :meth:`JobRunner.poll`: no bloquea (lo llama el temporizador de Blender). Vacía la cola de
+  cada trabajo en curso y, cuando su proceso terminó y el canal se cerró, lo finaliza: estado
+  según el código de salida (plan §5.3.4), comprobación de cada resultado declarado (existe
+  dentro de ``out/`` y casa con su huella sha256: si no, «Fallido» con ``output_missing`` u
+  ``output_hash_mismatch``, RF-004-05), ``state.json`` atómico con el registro completo
+  (RF-004-15) y, por último, ``on_finish`` con su :class:`JobResult`.
+
+Los hilos de este módulo son *daemon*: nunca retienen el cierre de Blender. Solo el lanzador
+escribe ``state.json``, ``events.jsonl`` y, al final, sus avisos en ``job.log``.
+
+Llegan en otras tareas de la spec: la cancelación, el plazo de gracia y el *Job Object*
+(T10, T13), el tiempo máximo (T11), el ejecutor en hilo (T14), la cola con sus máximos y el
+entorno del hijo (T15) y los intérpretes ``compute`` y externo (T25).
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import datetime as dt
+import hashlib
+import json
+import queue
+import shutil
+import subprocess
+import threading
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import IO, Any
+
+from ..core.timeutil import format_utc
+from . import catalog, policy
+from .messages import JobError
+from .paths import JobDir, job_dir
+from .protocol import (
+    EventDecoder,
+    InvalidLine,
+    JobEvent,
+    JobRequest,
+    JsonValue,
+    OutputRef,
+    encode_event,
+    read_request,
+    validate_request,
+    write_request,
+)
+from .records import (
+    INTERPRETER_KINDS,
+    LOGGER,
+    ErrorInfo,
+    InterpreterInfo,
+    JobRecord,
+    read_record,
+    write_record,
+)
+
+WORKER_FLAGS: tuple[str, ...] = ("-I", "-B", "-u")
+"""Banderas del Python de Blender para un worker del entorno ``blender`` (plan §5.3.3):
+aislado (sin el ``site-packages`` del usuario ni variables ``PYTHON*``), sin
+``__pycache__`` (``-I`` implica ``-E``: ``PYTHONDONTWRITEBYTECODE`` no se lee) y sin búfer en
+el canal."""
+BOOTSTRAP_PARTS: tuple[str, ...] = ("workers", "_bootstrap.py")
+"""El arranque de los workers dentro del paquete (se lanza por ruta: ``jobs`` no importa
+``workers``)."""
+INTERPRETER_KIND = "blender"
+
+# Códigos de salida del worker (plan §5.3.4; los mismos que ``workers/_bootstrap.py``).
+EXIT_OK = 0
+EXIT_CRASHED = 1
+EXIT_FAILED = 2
+EXIT_CANCELLED = 3
+EXIT_PARENT_LOST = 4
+EXIT_STARTUP = 5
+
+CREATION_FLAGS = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                  | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
+"""Sin consola emergente al lanzar ``python.exe`` desde la interfaz y con prioridad por
+debajo de la normal: la interfaz conserva la CPU (plan §5.3.3 y §6)."""
+
+READ_BYTES = 1 << 16
+"""Lo que pide el hilo lector en cada lectura del canal."""
+CHANNEL_DRAIN_S = 1.0
+"""Lo que se espera a que se cierre el canal después de que termine el proceso (un nieto
+puede retenerlo); pasado ese plazo, el trabajo se finaliza con lo recibido."""
+MAX_LOGGED_INVALID = 50
+"""Líneas del canal que no son eventos que se repiten como aviso en ``job.log`` (en
+``events.jsonl`` están todas)."""
+NOTE_KEY = "note"
+"""Clave de las notas del lanzador en ``events.jsonl`` (los eventos llevan ``v`` y ``t``)."""
+LOG_PREFIX = "Geoblender (lanzador):"
+"""Comienzo de las líneas que el lanzador añade a ``job.log`` al finalizar."""
+_HASH_BLOCK = 1 << 20
+
+_STATE_TEXT: Mapping[str, str] = {
+    "queued": "En cola", "running": "En curso", "succeeded": "Terminado",
+    "failed": "Fallido", "cancelled": "Cancelado", "timed_out": "Tiempo agotado",
+    "interrupted": "Interrumpido",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class JobResult:
+    """El final de un trabajo (plan §5.3.1): su estado final, los resultados verificados
+    (vacío si no terminó bien), el resumen del worker, el código y el texto en español del
+    error (``None`` si terminó bien), la duración en s (``None`` si no llegó a arrancar) y
+    su carpeta."""
+
+    job_uid: str
+    state: str
+    outputs: tuple[OutputRef, ...]
+    summary: Mapping[str, JsonValue]
+    error_code: str | None
+    error_text: str | None
+    duration_s: float | None
+    job_dir: JobDir
+
+
+@dataclass(frozen=True, slots=True)
+class JobUpdate:
+    """Lo que cambió en un trabajo desde el sondeo anterior: su estado, su avance (0–1) y su
+    último mensaje, los eventos recibidos en orden y, solo en el sondeo en que llega a un
+    estado final, su :class:`JobResult`."""
+
+    job_uid: str
+    state: str
+    frac: float
+    message: str
+    events: tuple[JobEvent, ...] = ()
+    result: JobResult | None = None
+
+    @property
+    def finished(self) -> bool:
+        """Si el trabajo llegó en este sondeo a su estado final."""
+        return self.result is not None
+
+
+class JobHandle:
+    """Lo que devuelve :meth:`JobRunner.submit`: el seguimiento de un trabajo. Sus datos
+    cambian al sondear (:meth:`JobRunner.poll`)."""
+
+    __slots__ = ("_job",)
+
+    def __init__(self, job: _Job) -> None:
+        self._job = job
+
+    @property
+    def job_uid(self) -> str:
+        return self._job.folder.job_uid
+
+    @property
+    def job_dir(self) -> JobDir:
+        return self._job.folder
+
+    @property
+    def state(self) -> str:
+        """``queued``, ``running`` o el estado final."""
+        return self._job.state
+
+    @property
+    def frac(self) -> float:
+        """El avance, 0–1."""
+        return self._job.frac
+
+    @property
+    def message(self) -> str:
+        """El último mensaje del trabajo (avance o error), en español."""
+        return self._job.message
+
+    @property
+    def pid(self) -> int | None:
+        """El proceso del worker (``None`` si no llegó a arrancar)."""
+        return self._job.record.pid
+
+    def result(self) -> JobResult | None:
+        """El :class:`JobResult` si el trabajo ya llegó a su estado final; si no, ``None``."""
+        return self._job.result
+
+    def __repr__(self) -> str:
+        return f"JobHandle({self.job_uid}, {self.state})"
+
+
+class JobRunner:
+    """El lanzador de los trabajos (plan §5.3.1).
+
+    ``jobs_root``: la raíz de trabajos (``paths.resolve_jobs_root``; se crea si falta).
+    ``package_dir``: la carpeta del paquete ``geoblender`` que cargan los workers (la que
+    tiene ``workers/_bootstrap.py``). ``blender_python``: el ``python.exe`` de Blender.
+    ``forbidden_roots``: rutas que ninguna petición puede contener (la raíz del proyecto,
+    RF-004-02). ``clock``: reloj monótono de las duraciones.
+
+    Sus métodos se llaman desde el hilo de Blender; los hilos lectores solo llenan colas y
+    ``events.jsonl``.
+    """
+
+    def __init__(
+        self,
+        *,
+        jobs_root: Path,
+        package_dir: Path,
+        blender_python: Path,
+        forbidden_roots: Sequence[Path] = (),
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        root = Path(jobs_root)
+        if not root.is_absolute():
+            raise ValueError(f"la raíz de trabajos «{root}» no es una ruta completa")
+        package = Path(package_dir)
+        bootstrap = package.joinpath(*BOOTSTRAP_PARTS)
+        if not bootstrap.is_file():
+            raise ValueError(
+                f"«{package}» no es el paquete de Geoblender: falta "
+                f"{'/'.join(BOOTSTRAP_PARTS)}"
+            )
+        self._jobs_root = root
+        self._package_dir = package
+        self._bootstrap = bootstrap
+        self._blender_python = Path(blender_python)
+        self._forbidden_roots: tuple[Path, ...] = tuple(Path(p) for p in forbidden_roots)
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._jobs: dict[str, _Job] = {}
+        self._running: dict[str, _Job] = {}
+        self._to_report: list[_Job] = []
+
+    @property
+    def jobs_root(self) -> Path:
+        return self._jobs_root
+
+    # --- Preparar y lanzar -------------------------------------------------------------
+
+    def prepare(self, request: JobRequest) -> JobDir:
+        """Crea la carpeta del trabajo de ``request`` con su ``request.json`` y su
+        ``state.json`` «En cola», y la devuelve (RF-004-01). El entorno es el más exigente
+        entre el de la petición y el que exige su tipo de trabajo
+        (``policy.resolve_environment``); sin tiempo máximo, toma el de su tipo. Una
+        petición que no vale
+        (``worker_unknown``, ``request_invalid``, ``request_path_outside_job``…) es
+        :class:`~.messages.JobError` y no se crea nada (RF-004-02)."""
+        if not isinstance(request, JobRequest):
+            raise TypeError(f"se esperaba un JobRequest, no {type(request).__name__}")
+        info = self._worker_info(request)
+        environment = policy.resolve_environment(info, request)
+        timeout_s = info.default_timeout_s if request.timeout_s is None else request.timeout_s
+        if (environment, timeout_s) != (request.environment, request.timeout_s):
+            request = dataclasses.replace(request, environment=environment,
+                                          timeout_s=timeout_s)
+        validate_request(request, catalog=catalog.WORKERS,
+                         forbidden_roots=self._forbidden_roots)
+        executor = self._executor(info, request)
+        folder = job_dir(self._jobs_root, request.job_uid).create()
+        try:
+            write_request(folder, request)
+            write_record(folder, JobRecord.from_request(request, executor=executor))
+        except BaseException:
+            shutil.rmtree(folder.path, ignore_errors=True)
+            raise
+        return folder
+
+    def submit(
+        self,
+        job: JobDir | JobRequest,
+        *,
+        on_finish: Callable[[JobResult], object] | None = None,
+    ) -> JobHandle:
+        """Lanza el trabajo y vuelve sin esperarlo (RNF-004-01). ``job`` es una carpeta de
+        :meth:`prepare` (con sus entradas ya escritas) o una petición, que se prepara antes.
+        La petición se lee y se valida otra vez: si no vale, :class:`~.messages.JobError` y
+        no arranca nada. Si el intérprete no se puede arrancar, el trabajo queda «Fallido»
+        (``interpreter_not_found`` o ``interpreter_failed``). ``on_finish`` se llama una
+        vez, desde :meth:`poll`, con su :class:`JobResult`; sus errores no se propagan."""
+        folder = self.prepare(job) if isinstance(job, JobRequest) else job
+        if not isinstance(folder, JobDir):
+            raise TypeError(f"se esperaba un JobDir o un JobRequest, no {type(job).__name__}")
+        with self._lock:
+            if folder.job_uid in self._jobs:
+                raise ValueError(f"el trabajo {folder.job_uid} ya se lanzó")
+            request = read_request(folder)
+            info = self._worker_info(request)
+            validate_request(request, catalog=catalog.WORKERS,
+                             forbidden_roots=self._forbidden_roots)
+            record = read_record(folder)
+            if record is None or record.state != "queued":
+                record = JobRecord.from_request(request,
+                                                executor=self._executor(info, request))
+            item = _Job(request, folder, record, on_finish)
+            self._jobs[folder.job_uid] = item
+            self._launch(item)
+            return JobHandle(item)
+
+    # --- Seguimiento ---------------------------------------------------------------------
+
+    def poll(self) -> list[JobUpdate]:
+        """Lo que cambió en cada trabajo desde el sondeo anterior, sin bloquear: los eventos
+        recibidos y, de los que terminaron, su final (plan §5.4.2). Finaliza los trabajos
+        cuyo proceso terminó y llama a sus ``on_finish`` después de dejar su
+        ``state.json``."""
+        updates: list[JobUpdate] = []
+        finished: list[_Job] = []
+        with self._lock:
+            for item in list(self._running.values()):
+                update = self._poll_job(item)
+                if update is not None:
+                    updates.append(update)
+            for item in self._to_report:
+                updates.append(item.update(final=True))
+                finished.append(item)
+            self._to_report.clear()
+        for item in finished:
+            self._notify(item)
+        return updates
+
+    # --- Ayudas --------------------------------------------------------------------------
+
+    def _worker_info(self, request: JobRequest) -> catalog.WorkerInfo:
+        info = catalog.WORKERS.get(request.worker)
+        if info is None:
+            raise JobError("worker_unknown", worker=request.worker)
+        return info
+
+    def _executor(self, info: catalog.WorkerInfo, request: JobRequest) -> str:
+        """Por ahora, siempre en proceso aparte; el hilo (``policy.choose_executor``) llega
+        con su ejecutor (T14)."""
+        return "subprocess"
+
+    def _command(self, folder: JobDir) -> list[str]:
+        """La orden del worker del entorno ``blender`` (plan §5.3.3)."""
+        return [
+            str(self._blender_python), *WORKER_FLAGS, str(self._bootstrap),
+            "--package-dir", str(self._package_dir),
+            "--job-dir", str(folder.path),
+            "--kind", INTERPRETER_KIND,
+        ]
+
+    def _launch(self, item: _Job) -> None:
+        """Arranca el worker de ``item``: ``state.json`` «En curso», nota en
+        ``events.jsonl`` y hilo lector. Si no arranca, lo deja «Fallido» sin proceso."""
+        request = item.request
+        if request.environment != INTERPRETER_KIND:
+            # El motor de cálculo y su intérprete llegan con T25.
+            self._finish(item, state="failed", exit_code=None, duration_s=None,
+                         error=_error("runtime_missing"))
+            return
+        folder = item.folder
+        started_wall = _now()
+        try:
+            with folder.log_file.open("ab") as log:
+                item.started_at = self._clock()
+                process = subprocess.Popen(
+                    self._command(folder),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=log,
+                    cwd=folder.path,
+                    creationflags=CREATION_FLAGS,
+                )
+        except OSError as exc:
+            code = ("interpreter_not_found" if isinstance(exc, FileNotFoundError)
+                    else "interpreter_failed")
+            self._finish(item, state="failed", exit_code=None, duration_s=None,
+                         error=_error(code, path=str(self._blender_python),
+                                      detail=exc.strerror or str(exc)))
+            return
+        item.process = process
+        item.record = dataclasses.replace(
+            item.record, state="running", started_at=format_utc(started_wall),
+            pid=process.pid, interpreter=InterpreterInfo(kind=INTERPRETER_KIND),
+        )
+        item.state = "running"
+        self._running[folder.job_uid] = item
+        self._save(item)
+        item.events_log.note("launched", executor=item.record.executor,
+                             interpreter=INTERPRETER_KIND, pid=process.pid)
+        item.reader = _Reader(item, self._clock)
+        item.reader.start()
+
+    def _poll_job(self, item: _Job) -> JobUpdate | None:
+        reader = item.reader
+        process = item.process
+        assert reader is not None and process is not None
+        closed = reader.closed.is_set()  # antes de vaciar: lo que llegó antes ya está
+        item.pending_events.extend(self._take(item, reader.drain()))
+        exit_code = process.poll()
+        if exit_code is not None:
+            item.mark_exit(self._clock(), _now())
+            seen = item.exit_seen_at if item.exit_seen_at is not None else self._clock()
+            if closed or self._clock() - seen >= CHANNEL_DRAIN_S:
+                if not closed:
+                    # Un nieto retiene el canal: se finaliza con lo recibido.
+                    item.pending_events.extend(self._take(item, reader.drain()))
+                    item.events_log.note("channel_open", seconds=CHANNEL_DRAIN_S)
+                self._finalize(item, exit_code, channel_closed=closed)
+                return None  # se cuenta con los finalizados, en este mismo sondeo
+        if not item.pending_events:
+            return None
+        return item.update(final=False)
+
+    def _take(self, item: _Job, items: Iterable[JobEvent | InvalidLine]) -> list[JobEvent]:
+        """Los eventos de ``items`` (las líneas inválidas ya están en ``events.jsonl``),
+        aplicados al trabajo."""
+        events: list[JobEvent] = []
+        for entry in items:
+            if isinstance(entry, InvalidLine):
+                item.invalid_count += 1
+                if len(item.invalid) < MAX_LOGGED_INVALID:
+                    item.invalid.append(entry)
+                continue
+            events.append(entry)
+            self._observe(item, entry)
+        return events
+
+    def _observe(self, item: _Job, event: JobEvent) -> None:
+        item.last_event_at = format_utc(dt.datetime.fromtimestamp(event.ts, dt.UTC))
+        match event.type:
+            case "start":
+                item.record = dataclasses.replace(
+                    item.record, interpreter=_interpreter(event.info),
+                    last_event_at=item.last_event_at,
+                )
+                self._save(item)
+            case "progress":
+                if event.frac is not None:
+                    item.frac = event.frac
+                if event.msg:
+                    item.message = event.msg
+            case "result":
+                item.result_event = event
+            case "error":
+                item.error_event = event
+                item.message = event.msg or item.message
+            case "cancelled":
+                item.cancelled_event = event
+                item.message = event.msg or item.message
+
+    def _finalize(self, item: _Job, exit_code: int, *, channel_closed: bool) -> None:
+        """Estado según el código de salida (plan §5.3.4), resultados verificados
+        (RF-004-05), ``state.json`` y avisos en ``job.log`` (RF-004-15). Con el canal aún
+        abierto, su lectura no se toca: cerrarla bloquearía hasta que el hilo lector
+        vuelva."""
+        item.channel_closed = channel_closed
+        exit_at = item.exit_seen_at if item.exit_seen_at is not None else self._clock()
+        duration = max(0.0, exit_at - (item.started_at or exit_at))
+        state, error = _outcome(item, exit_code)
+        outputs: tuple[OutputRef, ...] = ()
+        if state == "succeeded" and item.result_event is not None:
+            try:
+                verify_outputs(item.folder, item.result_event.outputs, job=item.name)
+            except JobError as exc:
+                state, error = "failed", ErrorInfo.from_job_error(exc)
+            else:
+                outputs = item.result_event.outputs
+        self._finish(item, state=state, exit_code=exit_code, duration_s=duration,
+                     error=error, outputs=outputs, ended=item.exit_wall)
+
+    def _finish(
+        self,
+        item: _Job,
+        *,
+        state: str,
+        exit_code: int | None,
+        duration_s: float | None,
+        error: ErrorInfo | None,
+        outputs: tuple[OutputRef, ...] = (),
+        ended: dt.datetime | None = None,
+    ) -> None:
+        """Deja ``item`` en su estado final: ``state.json``, nota de fin, avisos en
+        ``job.log`` y su :class:`JobResult`, que se cuenta en el siguiente :meth:`poll`."""
+        ended_wall = ended or _now()
+        item.record = dataclasses.replace(
+            item.record, state=state, ended_at=format_utc(ended_wall), duration_s=duration_s,
+            exit_code=exit_code, error=error, outputs=outputs,
+            last_event_at=item.last_event_at,
+        )
+        if state == "succeeded":
+            item.frac = 1.0
+        elif error is not None:
+            item.message = error.text
+        item.state = state
+        self._save(item)
+        item.events_log.note("finished", state=state, exit_code=exit_code,
+                             error=None if error is None else error.code)
+        item.events_log.close()
+        self._append_log(item, exit_code, duration_s)
+        item.close_pipes()
+        summary = item.result_event.summary if state == "succeeded" and item.result_event else {}
+        item.result = JobResult(
+            job_uid=item.folder.job_uid, state=state, outputs=outputs, summary=summary,
+            error_code=None if error is None else error.code,
+            error_text=None if error is None else error.text,
+            duration_s=duration_s, job_dir=item.folder,
+        )
+        self._running.pop(item.folder.job_uid, None)
+        self._to_report.append(item)
+
+    def _save(self, item: _Job) -> None:
+        """``state.json`` del trabajo; si no se puede escribir, queda en el registro de
+        Python y el trabajo sigue (su estado en memoria es el bueno)."""
+        try:
+            write_record(item.folder, item.record)
+        except (OSError, ValueError):
+            LOGGER.exception("No se pudo escribir el estado del trabajo %s",
+                             item.folder.job_uid)
+
+    def _append_log(self, item: _Job, exit_code: int | None, duration_s: float | None) -> None:
+        """Al final de ``job.log`` (el worker ya terminó: nadie más escribe en él), los
+        avisos de las líneas del canal que no eran eventos y el estado final."""
+        lines = [
+            f"{LOG_PREFIX} aviso: el worker escribió en su canal una línea que no es un "
+            f"evento ({entry.reason}): {entry.text}"
+            for entry in item.invalid
+        ]
+        omitted = item.invalid_count - len(item.invalid)
+        if omitted > 0:
+            lines.append(f"{LOG_PREFIX} aviso: {omitted} líneas más del canal no eran "
+                         "eventos (están en events.jsonl)")
+        seconds = "" if duration_s is None else f" en {duration_s:.2f} s".replace(".", ",")
+        code = "sin proceso" if exit_code is None else f"código de salida {exit_code}"
+        final = f"{LOG_PREFIX} el trabajo termina «{_STATE_TEXT[item.state]}» ({code}){seconds}"
+        if item.record.error is not None:
+            final += f": {item.record.error.text}"
+        lines.append(final)
+        try:
+            with item.folder.log_file.open("a", encoding="utf-8", errors="replace") as log:
+                log.write("".join(line + "\n" for line in lines))
+        except OSError:
+            LOGGER.exception("No se pudo completar el registro del trabajo %s",
+                             item.folder.job_uid)
+
+    def _notify(self, item: _Job) -> None:
+        callback = item.on_finish
+        if callback is None or item.result is None:
+            return
+        try:
+            callback(item.result)
+        except Exception:  # noqa: BLE001 - un on_finish que falla no tumba el sondeo
+            LOGGER.exception("Falló el aviso de fin (on_finish) del trabajo %s",
+                             item.folder.job_uid)
+
+
+def verify_outputs(folder: JobDir, outputs: Iterable[OutputRef], *, job: str) -> None:
+    """Comprueba cada resultado declarado (RF-004-05): que es un fichero que existe dentro
+    de ``out/`` de la carpeta del trabajo (también tras resolver enlaces) y que su sha256 y
+    su tamaño son los declarados. :class:`~.messages.JobError` ``output_missing`` u
+    ``output_hash_mismatch`` (con la ruta relativa y el trabajo ``job``) en el primero que
+    no cumple."""
+    try:
+        out_root = folder.outputs_dir.resolve(strict=True)
+    except OSError:
+        out_root = None
+    for ref in outputs:
+        path = folder.path.joinpath(*ref.path.split("/"))
+        try:
+            real = path.resolve(strict=True)
+        except OSError:
+            raise JobError("output_missing", path=ref.path, job=job) from None
+        if out_root is None or not real.is_relative_to(out_root) or not real.is_file():
+            raise JobError("output_missing", path=ref.path, job=job)
+        try:
+            digest, size = _sha256(real)
+        except OSError:
+            raise JobError("output_missing", path=ref.path, job=job) from None
+        if digest != ref.sha256 or size != ref.size:
+            raise JobError("output_hash_mismatch", path=ref.path, job=job)
+
+
+# --- Un trabajo del lanzador ----------------------------------------------------------------
+
+
+class _Job:
+    """Lo que el lanzador sabe de un trabajo."""
+
+    def __init__(
+        self,
+        request: JobRequest,
+        folder: JobDir,
+        record: JobRecord,
+        on_finish: Callable[[JobResult], object] | None,
+    ) -> None:
+        self.request = request
+        self.folder = folder
+        self.record = record
+        self.on_finish = on_finish
+        self.state = record.state
+        self.frac = 0.0
+        self.message = ""
+        self.process: subprocess.Popen[bytes] | None = None
+        self.reader: _Reader | None = None
+        self.events_log = _EventsLog(folder.events_file)
+        self.started_at: float | None = None
+        self.exit_seen_at: float | None = None
+        self.exit_wall: dt.datetime | None = None
+        self.last_event_at: str | None = None
+        self.result_event: JobEvent | None = None
+        self.error_event: JobEvent | None = None
+        self.cancelled_event: JobEvent | None = None
+        self.invalid: list[InvalidLine] = []
+        self.invalid_count = 0
+        self.pending_events: list[JobEvent] = []
+        self.channel_closed = False
+        self.result: JobResult | None = None
+        self._exit_lock = threading.Lock()
+
+    @property
+    def name(self) -> str:
+        """El nombre del trabajo en los mensajes."""
+        label = self.request.label
+        return label if isinstance(label, str) and label.strip() else self.folder.job_uid
+
+    def mark_exit(self, clock_now: float, wall_now: dt.datetime) -> None:
+        """Apunta cuándo terminó el proceso (la primera vez que se ve)."""
+        with self._exit_lock:
+            if self.exit_seen_at is None:
+                self.exit_seen_at = clock_now
+                self.exit_wall = wall_now
+
+    def update(self, *, final: bool) -> JobUpdate:
+        events = tuple(self.pending_events)
+        self.pending_events.clear()
+        return JobUpdate(self.folder.job_uid, self.state, self.frac, self.message, events,
+                         self.result if final else None)
+
+    def close_pipes(self) -> None:
+        """Cierra la tubería de la entrada estándar y, si el hilo lector ya acabó, la del
+        canal (cerrarla mientras lee bloquearía hasta que vuelva)."""
+        process = self.process
+        if process is None:
+            return
+        streams = [process.stdin]
+        if self.channel_closed:
+            streams.append(process.stdout)
+        for stream in streams:
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+class _EventsLog:
+    """``events.jsonl`` de un trabajo: los eventos recibidos, en orden, y las notas del
+    lanzador, una línea JSON en UTF-8 cada uno, escritas enteras y vaciadas al momento. Lo
+    usan el hilo lector y el lanzador (con cerrojo). Un fallo al escribir queda en el
+    registro de Python una vez y no para el trabajo."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._handle: IO[bytes] | None = None
+        self._closed = False
+        self._failed = False
+
+    def event(self, event: JobEvent) -> None:
+        self._write(encode_event(event))
+
+    def note(self, kind: str, **fields: JsonValue) -> None:
+        data: dict[str, Any] = {NOTE_KEY: kind, "ts": time.time(), **fields}
+        self._write((json.dumps(data, ensure_ascii=False, allow_nan=False) + "\n")
+                    .encode("utf-8", "backslashreplace"))
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            handle, self._handle = self._handle, None
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+
+    def _write(self, line: bytes) -> None:
+        with self._lock:
+            if self._closed or self._failed:
+                return
+            try:
+                if self._handle is None:
+                    self._handle = self._path.open("ab")
+                self._handle.write(line)
+                self._handle.flush()
+            except OSError:
+                self._failed = True
+                LOGGER.exception("No se pudo escribir %s", self._path.name)
+
+
+class _Reader:
+    """Hilo lector *daemon* del canal de un worker: decodifica lo que llega, lo añade a
+    ``events.jsonl`` y lo deja en una cola; al cerrarse el canal, espera al proceso y apunta
+    cuándo terminó."""
+
+    def __init__(self, item: _Job, clock: Callable[[], float]) -> None:
+        self._item = item
+        self._clock = clock
+        self._queue: queue.SimpleQueue[JobEvent | InvalidLine] = queue.SimpleQueue()
+        self.closed = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name=f"geoblender-job-{item.folder.job_uid}", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def drain(self) -> list[JobEvent | InvalidLine]:
+        found: list[JobEvent | InvalidLine] = []
+        while True:
+            try:
+                found.append(self._queue.get_nowait())
+            except queue.Empty:
+                return found
+
+    def _run(self) -> None:
+        item = self._item
+        process = item.process
+        assert process is not None and process.stdout is not None
+        stream = process.stdout
+        decoder = EventDecoder()
+        try:
+            while data := stream.read1(READ_BYTES):
+                self._handle(decoder.feed(data))
+        except (OSError, ValueError):
+            pass  # el canal se cerró desde fuera
+        finally:
+            try:
+                self._handle(decoder.close())
+            except ValueError:
+                pass
+            self.closed.set()
+        try:
+            process.wait()
+        except OSError:
+            return
+        item.mark_exit(self._clock(), _now())
+
+    def _handle(self, items: list[JobEvent | InvalidLine]) -> None:
+        log = self._item.events_log
+        for entry in items:
+            if isinstance(entry, JobEvent):
+                log.event(entry)
+            else:
+                log.note("invalid_line", text=entry.text, reason=entry.reason)
+            self._queue.put(entry)
+
+
+# --- Ayudas ---------------------------------------------------------------------------------
+
+
+def _outcome(item: _Job, exit_code: int) -> tuple[str, ErrorInfo | None]:
+    """El estado final según el código de salida y los eventos (plan §5.3.4)."""
+    name = item.name
+    if exit_code == EXIT_OK:
+        if item.result_event is not None:
+            return "succeeded", None
+        return "failed", _error("protocol_no_result", job=name)
+    if exit_code == EXIT_CANCELLED:
+        return "cancelled", _error("job_cancelled", job=name, forced=False)
+    if exit_code == EXIT_PARENT_LOST:
+        return "interrupted", _error("job_interrupted", job=name)
+    if exit_code in (EXIT_FAILED, EXIT_STARTUP) and item.error_event is not None:
+        event = item.error_event
+        assert event.code is not None and event.msgid is not None
+        return "failed", ErrorInfo(code=event.code, msgid=event.msgid, values=event.values,
+                                   text=event.msg.strip() or event.code)
+    return "failed", _error("worker_crashed", job=name, exit_code=exit_code)
+
+
+def _error(code: str, **values: object) -> ErrorInfo:
+    return ErrorInfo.from_job_error(JobError(code, **values))
+
+
+def _interpreter(info: Mapping[str, JsonValue]) -> InterpreterInfo:
+    """El intérprete que contó el evento ``start``; lo que no es un texto no se guarda."""
+    kind = info.get("kind")
+
+    def text(name: str) -> str | None:
+        value = info.get(name)
+        return value if isinstance(value, str) and value else None
+
+    return InterpreterInfo(
+        kind=kind if isinstance(kind, str) and kind in INTERPRETER_KINDS else INTERPRETER_KIND,
+        python=text("python"), numpy=text("numpy"), blas=text("blas"),
+    )
+
+
+def _sha256(path: Path) -> tuple[str, int]:
+    """Huella sha256 y tamaño en bytes de ``path``, leído por bloques."""
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        while block := stream.read(_HASH_BLOCK):
+            digest.update(block)
+            size += len(block)
+    return digest.hexdigest(), size
+
+
+def _now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
