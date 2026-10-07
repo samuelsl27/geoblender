@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Cancelación, plazo de gracia y terminación del *Job Object* (spec 004, T10; RF-004-09,
-RF-004-10; plan 004 §5.3.4, §5.4.2 y §5.4.5).
+"""Cancelación, plazo de gracia, tiempo máximo y terminación del *Job Object* (spec 004, T10
+y T11; RF-004-09, RF-004-10, RF-004-11; plan 004 §5.3.4, §5.4.2 y §5.4.5).
 
 ``JobRunner.cancel`` (y ``JobHandle.cancel``) pide parar un trabajo: uno en cola se cancela
 sin arrancar; a uno en curso se le crea el centinela ``cancel`` y el worker para en su
 siguiente punto de control (≤ 2 s); si sigue vivo al vencer su plazo de gracia, el
 lanzador termina su *Job Object* (el worker y sus hijos) y la cancelación consta como
-forzada. Cancelar dos veces, o un trabajo ya terminado, no cambia nada.
+forzada. Cancelar dos veces, o un trabajo ya terminado, no cambia nada. Un trabajo que
+supera su tiempo máximo (``timeout_s`` de la petición; si no lo trae, el de su tipo de
+trabajo o 3600 s) se detiene igual y acaba «Tiempo agotado», con ese tiempo en el mensaje.
 
 Para no esperar en serie, todos los trabajos del módulo se lanzan a la vez al empezar
 (``setUpModule``), se cancelan juntos en cuanto están en marcha y se sondean hasta que
@@ -19,6 +21,15 @@ acaban; cada prueba mira lo que dejó el suyo:
   gracia mínimo (1 s).
 - ``done``: una suma corta que ya terminó cuando se cancela.
 - ``uncontained``: un worker que no se puede asignar a su *Job Object* (se simula el fallo).
+- ``timeout``: la suma larga con ``timeout_s`` = 2 y el plazo de gracia mínimo; nadie la
+  cancela.
+- ``timeout_forced``: lo mismo sin atender la cancelación: el tiempo máximo la termina al
+  vencer el plazo de gracia.
+- ``timeout_catalog``: la suma larga sin tiempo máximo en la petición, con un tipo de
+  trabajo que declara 2 s (solo mientras se lanza).
+
+Si un trabajo de tiempo máximo no ha acabado al pasar ``RESCUE_S``, se cancela para que el
+módulo termine y sus pruebas fallen con su motivo (``_STATE["rescued"]``).
 """
 
 import dataclasses
@@ -50,9 +61,15 @@ STOP_MAX_S = 2.0
 KILL_EXTRA_S = 1.0
 """RF-004-10: terminado en ≤ 1 s más tras vencer el plazo de gracia."""
 JOB_TIMEOUT_S = 120.0
+TIMEOUT_S = 2.0
+"""RF-004-11: el tiempo máximo de los casos de tiempo agotado."""
+TIMEOUT_MAX_S = TIMEOUT_S + GRACE_S + 1.0
+"""RF-004-11 (tarea T11): «Tiempo agotado» entre 2 s y 2 s + ``grace_s`` + 1 s."""
+RESCUE_S = TIMEOUT_MAX_S + 2.0
 DEADLINE_S = 30.0
 POLL_S = 0.02
 UNKNOWN_UID = "20260101_000000_abcdef"
+TIMEOUT_JOBS = ("timeout", "timeout_forced", "timeout_catalog")
 
 LABELS = {
     "running": "Cancelación en curso",
@@ -60,6 +77,9 @@ LABELS = {
     "ignore": "Cancelación forzada",
     "done": "Trabajo ya terminado",
     "uncontained": "Sin Job Object",
+    "timeout": "Tiempo máximo",
+    "timeout_forced": "Tiempo máximo forzado",
+    "timeout_catalog": "Tiempo máximo del catálogo",
 }
 
 _HANDLES: dict[str, object] = {}
@@ -79,6 +99,7 @@ def _on_finish(result) -> None:
 
 
 def _submit(name: str, job_runner, request) -> None:
+    _STATE.setdefault("submitted_at", {})[name] = time.monotonic()
     handle = job_runner.submit(request, on_finish=_on_finish)
     _HANDLES[name] = handle
     _RUNNERS[name] = job_runner
@@ -128,6 +149,18 @@ def setUpModule() -> None:
     single = runner.JobRunner(**options, max_subprocess=1)
     pair = runner.JobRunner(**options)
     contained = runner.JobRunner(**options)
+    timed = runner.JobRunner(**options, max_subprocess=len(TIMEOUT_JOBS))
+
+    # Los de tiempo máximo, primero: son los que más tardan.
+    _submit("timeout", timed, _request("timeout", LONG_SUM, timeout_s=TIMEOUT_S,
+                                       grace_s=GRACE_S))
+    _submit("timeout_forced", timed,
+            _request("timeout_forced", {**LONG_SUM, "ignore_cancel": True},
+                     timeout_s=TIMEOUT_S, grace_s=GRACE_S))
+    declared = dataclasses.replace(builtin, policy="subprocess", default_timeout_s=TIMEOUT_S)
+    with mock.patch.dict(catalog._REGISTRY, {"selftest": declared}):
+        _submit("timeout_catalog", timed,
+                _request("timeout_catalog", LONG_SUM, grace_s=GRACE_S))
 
     _submit("running", single, _request("running", LONG_SUM))
     _submit("queued", single, _request("queued", LONG_SUM))
@@ -167,23 +200,32 @@ def setUpModule() -> None:
 
     # 3. Hasta que todo acaba, apuntando cuándo deja de existir cada proceso y cuándo
     #    llega su final.
+    #    Un trabajo de tiempo máximo que siga en marcha al pasar RESCUE_S se cancela.
     dead_at: dict[str, float] = {}
     final_at: dict[str, float] = {}
+    rescued: set[str] = set()
+    submitted_at = _STATE["submitted_at"]
 
     def all_finished() -> bool:
         now = time.monotonic()
-        for name in ("running", "ignore"):
+        for name in ("running", "ignore", *TIMEOUT_JOBS):
             if name not in dead_at and not _support.pid_alive(_HANDLES[name].pid):
                 dead_at[name] = now
         for name, handle in _HANDLES.items():
             if name not in final_at and handle.result() is not None:
                 final_at[name] = now
+        for name in TIMEOUT_JOBS:
+            late = now - submitted_at[name] > RESCUE_S
+            if late and name not in final_at and name not in rescued:
+                rescued.add(name)
+                _RUNNERS[name].cancel(_HANDLES[name].job_uid)
         return len(final_at) == len(_HANDLES)
 
     _wait_for(all_finished, "final de los trabajos cancelados")
     _poll()
     _STATE["dead_at"] = dead_at
     _STATE["final_at"] = final_at
+    _STATE["rescued"] = rescued
 
     # 4. Ya terminados: cancelar otra vez no cambia nada.
     finished = _state_bytes()
@@ -398,6 +440,157 @@ class ContainmentFailureTest(unittest.TestCase):
         self.assertIsNotNone(handle.pid)
         self.assertTrue(_support.wait_until_dead(handle.pid, timeout_s=STOP_MAX_S))
         self.assertNotIn("launched", _notes("uncontained"))
+
+
+class _TimeoutCase(unittest.TestCase):
+    """Comprobaciones comunes de un trabajo que superó su tiempo máximo."""
+
+    def assert_in_window(self, name: str, low_s: float) -> None:
+        """No hubo que rescatarlo; su proceso dejó de existir y llegó «Tiempo agotado»
+        entre ``low_s`` y 2 s + ``grace_s`` + 1 s desde que se lanzó (con el reloj de la
+        prueba, desde antes de ``submit``, y con su duración en ``state.json``, desde que
+        arrancó el proceso)."""
+        self.assertNotIn(name, _STATE["rescued"])
+        submitted = _STATE["submitted_at"][name]
+        _, _, record = _job(name)
+        for what, seconds in (("muerte", _STATE["dead_at"][name] - submitted),
+                              ("final", _STATE["final_at"][name] - submitted),
+                              ("duration_s", record.duration_s)):
+            with self.subTest(medida=what):
+                self.assertGreaterEqual(seconds, low_s)
+                self.assertLessEqual(seconds, TIMEOUT_MAX_S)
+
+    def assert_timed_out(self, name: str, *, forced: bool) -> None:
+        """«Tiempo agotado» (``job_timeout``) con los 2 s en el mensaje, en el resultado, en
+        el *handle* y en ``state.json``; la cancelación consta con motivo ``timeout``;
+        ningún resultado se registra."""
+        handle, result, record = _job(name)
+        self.assertEqual((result.state, handle.state, record.state), ("timed_out",) * 3)
+        expected = messages.render("job_timeout", job=LABELS[name], seconds=TIMEOUT_S)
+        self.assertEqual(expected, f"El trabajo «{LABELS[name]}» superó su tiempo máximo "
+                                   "de 2 s y se ha detenido.")
+        self.assertEqual((result.error_code, result.error_text), ("job_timeout", expected))
+        self.assertEqual(handle.message, expected)
+        self.assertEqual((record.error.code, record.error.text), ("job_timeout", expected))
+        self.assertEqual(record.error.values["seconds"], TIMEOUT_S)
+        self.assertEqual((record.cancel.reason, record.cancel.forced), ("timeout", forced))
+        self.assertEqual(result.outputs, ())
+        self.assertEqual(record.outputs, ())
+        self.assertEqual(_FINISHED[handle.job_uid], [result])
+
+    def assert_logged(self, name: str) -> None:
+        """La petición de parar consta en ``events.jsonl`` (motivo ``timeout``, con el
+        tiempo máximo) antes del fin, y en ``job.log`` con el estado final."""
+        notes = _notes(name)
+        self.assertLess(notes.index("cancel_requested"), notes.index("finished"))
+        requested = next(line for line in _lines(name)
+                         if line.get("note") == "cancel_requested")
+        self.assertEqual((requested["reason"], requested["timeout_s"]), ("timeout", TIMEOUT_S))
+        log = _HANDLES[name].job_dir.log_file.read_text(encoding="utf-8")
+        self.assertIn("se pidió cancelar el trabajo por su tiempo máximo de 2 s", log)
+        self.assertIn("el trabajo termina «Tiempo agotado»", log)
+
+
+class TimeoutTest(_TimeoutCase):
+    """RF-004-11: un trabajo con ``timeout_s`` = 2 que nadie cancela se detiene como en una
+    cancelación al superarlo y queda «Tiempo agotado», con los 2 s en el mensaje."""
+
+    def test_timed_out_within_the_window(self):
+        """RF-004-11: acaba entre 2 s y 2 s + ``grace_s`` + 1 s (4 s) desde que arrancó."""
+        self.assert_in_window("timeout", TIMEOUT_S)
+
+    def test_marked_timed_out(self):
+        """RF-004-11: «Tiempo agotado» (no «Cancelado») con el mensaje que cita los 2 s; el
+        worker atendió la petición (salida 3), así que no es forzado; el tiempo declarado
+        en la petición manda sobre el de su tipo de trabajo (120 s)."""
+        self.assert_timed_out("timeout", forced=False)
+        _, _, record = _job("timeout")
+        self.assertEqual(record.exit_code, runner.EXIT_CANCELLED)
+        request = protocol.read_request(_HANDLES["timeout"].job_dir)
+        self.assertEqual(request.timeout_s, TIMEOUT_S)
+
+    def test_stopped_like_a_cancellation(self):
+        """RF-004-11: se le pidió parar con el centinela ``cancel`` y el worker lo vio
+        («Cancelado en el trozo k de 40»), sin terminarlo; consta en los registros."""
+        self.assertTrue(_HANDLES["timeout"].job_dir.cancel_file.exists())
+        cancelled = [event for update in _UPDATES[_HANDLES["timeout"].job_uid]
+                     for event in update.events if event.type == "cancelled"]
+        self.assertEqual(len(cancelled), 1)
+        self.assertRegex(cancelled[0].msg, r"^Cancelado en el trozo \d+ de 40$")
+        self.assertNotIn("terminated", _notes("timeout"))
+        self.assert_logged("timeout")
+
+
+class ForcedTimeoutTest(_TimeoutCase):
+    """RF-004-10, RF-004-11: un trabajo que supera su tiempo máximo y no atiende la
+    petición de parar se termina al vencer su plazo de gracia y queda «Tiempo agotado»."""
+
+    def test_killed_after_timeout_and_grace(self):
+        """RF-004-10, RF-004-11: deja de existir después de 2 s + ``grace_s`` (3 s) y llega
+        a su estado final antes de 4 s."""
+        self.assert_in_window("timeout_forced", TIMEOUT_S + GRACE_S)
+
+    def test_marked_timed_out_forced(self):
+        """RF-004-10, RF-004-11: «Tiempo agotado» con los 2 s en el mensaje, la cancelación
+        forzada en ``state.json`` y el código con que el lanzador termina el *Job Object*;
+        el worker no llegó a avisar de que paraba."""
+        self.assert_timed_out("timeout_forced", forced=True)
+        _, _, record = _job("timeout_forced")
+        self.assertEqual(record.exit_code, runner.EXIT_TERMINATED)
+        self.assertNotIn("cancelled", _types("timeout_forced"))
+
+    def test_termination_is_logged(self):
+        """RF-004-10, RF-004-11: nota ``terminated`` (motivo ``timeout``) entre la petición
+        y el fin, y la terminación en ``job.log``."""
+        notes = _notes("timeout_forced")
+        self.assertLess(notes.index("cancel_requested"), notes.index("terminated"))
+        self.assertLess(notes.index("terminated"), notes.index("finished"))
+        terminated = next(line for line in _lines("timeout_forced")
+                          if line.get("note") == "terminated")
+        self.assertEqual((terminated["reason"], terminated["grace_s"]), ("timeout", GRACE_S))
+        self.assert_logged("timeout_forced")
+        log = _HANDLES["timeout_forced"].job_dir.log_file.read_text(encoding="utf-8")
+        self.assertIn("plazo de gracia de 1 s", log)
+
+
+class CatalogTimeoutTest(_TimeoutCase):
+    """RF-004-11: sin tiempo máximo en la petición se aplica el que declara su tipo de
+    trabajo."""
+
+    def test_catalog_timeout_applies(self):
+        """RF-004-11: la petición no traía ``timeout_s``; su tipo declaraba 2 s, que quedan
+        en ``request.json``, y el trabajo acaba «Tiempo agotado» con los 2 s en el mensaje
+        dentro de la ventana."""
+        request = protocol.read_request(_HANDLES["timeout_catalog"].job_dir)
+        self.assertEqual(request.timeout_s, TIMEOUT_S)
+        self.assert_timed_out("timeout_catalog", forced=False)
+        self.assert_in_window("timeout_catalog", TIMEOUT_S)
+
+
+class DefaultTimeoutTest(unittest.TestCase):
+    """RF-004-11: si ni la petición ni su tipo de trabajo declaran un tiempo máximo, se
+    aplican 3600 s."""
+
+    def test_default_is_3600_seconds(self):
+        """RF-004-11: un tipo de trabajo que no declara tiempo máximo tiene 3600 s, y una
+        petición suya sin ``timeout_s`` queda con 3600 s en ``request.json`` (sin
+        arrancar)."""
+        info = catalog.WorkerInfo("selftest", "Self-test", policy="subprocess")
+        self.assertEqual(info.default_timeout_s, 3600.0)
+        self.assertEqual(protocol.DEFAULT_TIMEOUT_S, 3600.0)
+        tmp = _support.temp_jobs_root()
+        root = tmp.__enter__()
+        self.addCleanup(tmp.__exit__, None, None, None)
+        job_runner = runner.JobRunner(jobs_root=root, package_dir=EXTENSION_DIR,
+                                      blender_python=Path(sys.executable))
+        with mock.patch.dict(catalog._REGISTRY, clear=True):
+            catalog.register_worker(info)
+            request = protocol.new_request("selftest", label="Sin tiempo máximo",
+                                           owner="jobs", params=QUICK_SUM)
+            self.assertIsNone(request.timeout_s)
+            folder = job_runner.prepare(request)
+        self.assertEqual(protocol.read_request(folder).timeout_s, 3600.0)
+        self.assertEqual(records.read_record(folder).state, "queued")
 
 
 if __name__ == "__main__":

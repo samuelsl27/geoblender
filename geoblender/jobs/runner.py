@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Lanzador de los trabajos en segundo plano: :class:`JobRunner` (spec 004; RF-004-01,
-RF-004-05, RF-004-15; plan 004 §5.3.1, §5.3.3, §5.3.4 y §5.4.2).
+RF-004-05, RF-004-09 a RF-004-11, RF-004-15; plan 004 §5.3.1, §5.3.3, §5.3.4, §5.4.2 y
+§5.4.5).
 
 Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
 
@@ -40,13 +41,19 @@ Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
   sus hijos) y la cancelación consta como forzada (RF-004-10). Pedida la cancelación, el
   trabajo acaba «Cancelado» y lo que entregue el worker se descarta. Cancelar dos veces, o
   un trabajo ya terminado, no hace nada (``False``).
+- Tiempo máximo (RF-004-11): el ``timeout_s`` de la petición (:meth:`JobRunner.prepare`
+  pone el de su tipo de trabajo, 3600 s si no declara otro), contado desde que arranca su
+  proceso. Si :meth:`JobRunner.poll` lo ve en marcha pasado ese tiempo y nadie pidió
+  pararlo, le pide parar como en una cancelación (motivo ``timeout``, con el mismo plazo de
+  gracia) y el trabajo acaba «Tiempo agotado» (``job_timeout``, con el tiempo máximo en el
+  mensaje), forzado o no.
 
 Los hilos de este módulo son *daemon*: nunca retienen el cierre de Blender. Solo el lanzador
 escribe ``state.json``, ``events.jsonl`` y, al final, sus avisos en ``job.log``.
 
-Llegan en otras tareas de la spec: el tiempo máximo (T11), el cierre (T13), el ejecutor en
-hilo (T14), el máximo de hilos, ``reconfigure`` y el entorno del hijo (T15) y los
-intérpretes ``compute`` y externo (T25).
+Llegan en otras tareas de la spec: el cierre (T13), el ejecutor en hilo (T14), el máximo de
+hilos, ``reconfigure`` y el entorno del hijo (T15) y los intérpretes ``compute`` y externo
+(T25).
 """
 
 from __future__ import annotations
@@ -386,10 +393,11 @@ class JobRunner:
 
     def poll(self) -> list[JobUpdate]:
         """Lo que cambió en cada trabajo desde el sondeo anterior, sin bloquear: los eventos
-        recibidos y, de los que terminaron, su final (plan §5.4.2). Termina los que siguen
-        vivos al vencer su plazo de gracia (RF-004-10), finaliza los trabajos cuyo proceso
-        terminó, arranca de la cola lo que quepa y llama a los ``on_finish`` después de dejar
-        su ``state.json``."""
+        recibidos y, de los que terminaron, su final (plan §5.4.2). Pide parar los que
+        superaron su tiempo máximo (RF-004-11), termina los que siguen vivos al vencer su
+        plazo de gracia (RF-004-10), finaliza los trabajos cuyo proceso terminó, arranca de
+        la cola lo que quepa y llama a los ``on_finish`` después de dejar su
+        ``state.json``."""
         updates: list[JobUpdate] = []
         finished: list[_Job] = []
         with self._lock:
@@ -503,10 +511,10 @@ class JobRunner:
                                   detail=f"no se pudo asignar el worker a su Job Object "
                                          f"({reason})"))
 
-    def _request_cancel(self, item: _Job, reason: str) -> None:
+    def _request_cancel(self, item: _Job, reason: str, **details: JsonValue) -> None:
         """Pide parar un trabajo en curso: centinela ``cancel`` (si no se puede crear, el
         plazo de gracia lo terminará igual), cancelación en ``state.json`` y nota en
-        ``events.jsonl``. Desde ahora corre su plazo de gracia."""
+        ``events.jsonl`` (con ``details``). Desde ahora corre su plazo de gracia."""
         try:
             item.folder.cancel_file.touch(exist_ok=True)
         except OSError:
@@ -515,7 +523,19 @@ class JobRunner:
         item.cancel_at = self._clock()
         item.record = dataclasses.replace(item.record, cancel=_cancel_info(reason))
         self._save(item)
-        item.events_log.note("cancel_requested", reason=reason, grace_s=item.request.grace_s)
+        item.events_log.note("cancel_requested", reason=reason, grace_s=item.request.grace_s,
+                             **details)
+
+    def _enforce_timeout(self, item: _Job) -> None:
+        """Si el trabajo sigue en marcha pasado su tiempo máximo desde que arrancó su
+        proceso y nadie ha pedido pararlo, se le pide parar como en una cancelación, con
+        motivo ``timeout``; acabará «Tiempo agotado» (RF-004-11)."""
+        if item.record.cancel is not None or item.started_at is None:
+            return
+        timeout = item.request.timeout_s
+        if timeout is None or self._clock() - item.started_at <= timeout:
+            return
+        self._request_cancel(item, "timeout", timeout_s=timeout)
 
     def _enforce_grace(self, item: _Job) -> None:
         """Si el worker sigue vivo al vencer el plazo de gracia de su cancelación, termina
@@ -569,6 +589,7 @@ class JobRunner:
                 self._finalize(item, exit_code, channel_closed=closed)
                 return None  # se cuenta con los finalizados, en este mismo sondeo
         else:
+            self._enforce_timeout(item)
             self._enforce_grace(item)
         if not item.pending_events:
             return None
@@ -695,8 +716,11 @@ class JobRunner:
                          "eventos (están en events.jsonl)")
         cancel = item.record.cancel
         if cancel is not None:
-            lines.append(f"{LOG_PREFIX} se pidió cancelar el trabajo "
-                         f"{_REASON_TEXT[cancel.reason]} ({cancel.requested_at})")
+            reason = _REASON_TEXT[cancel.reason]
+            if cancel.reason == "timeout" and item.request.timeout_s is not None:
+                reason += f" de {_seconds_text(item.request.timeout_s)} s"
+            lines.append(f"{LOG_PREFIX} se pidió cancelar el trabajo {reason} "
+                         f"({cancel.requested_at})")
             if cancel.forced:
                 lines.append(
                     f"{LOG_PREFIX} el worker seguía vivo al vencer su plazo de gracia de "
@@ -944,11 +968,15 @@ class _Reader:
 
 def _outcome(item: _Job, exit_code: int) -> tuple[str, ErrorInfo | None]:
     """El estado final según el código de salida y los eventos (plan §5.3.4). Pedida la
-    cancelación, «Cancelado» (forzado si hubo que terminarlo) con cualquier salida: lo que
-    entregara el worker se descarta, como en el hilo (spec §8)."""
+    cancelación, con cualquier salida, «Tiempo agotado» si la pidió el tiempo máximo (con
+    él en el mensaje, RF-004-11) y si no «Cancelado» (forzado si hubo que terminarlo): lo
+    que entregara el worker se descarta, como en el hilo (spec §8)."""
     name = item.name
     cancel = item.record.cancel
     if cancel is not None:
+        if cancel.reason == "timeout":
+            return "timed_out", _error("job_timeout", job=name,
+                                       seconds=item.request.timeout_s)
         return "cancelled", _error("job_cancelled", job=name, forced=cancel.forced)
     if exit_code == EXIT_OK:
         if item.result_event is not None:
