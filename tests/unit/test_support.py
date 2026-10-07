@@ -263,6 +263,26 @@ class FakeLayoutTest(unittest.TestCase):
         with self.assertRaises(AttributeError):
             layout._oculto  # noqa: B018 - lo privado no se inventa
 
+    def test_items_keep_the_operator_context(self) -> None:
+        """Spec 004, T40 (RF-004-20): cada elemento anota el ``operator_context`` con que se
+        dibujó; como en Blender, es uno por *layout* raíz (``uiLayoutRoot``): ponerlo en
+        una fila vale para lo que se dibuje después en cualquier fila del mismo *layout*, y
+        no cambia lo dibujado antes ni otro *layout*."""
+        from tests.support.fake_layout import FakeLayout
+
+        layout = FakeLayout()
+        layout.operator("geoblender.jobs_show_jobs", text="Antes")
+        row = layout.row()
+        row.operator_context = "EXEC_DEFAULT"
+        row.label(text="Fila")
+        layout.column().template_popup_confirm("geoblender.jobs_setup_runtime",
+                                               text="Instalar", cancel_text="Cancelar")
+        self.assertEqual([(item.text, item.operator_context) for item in layout.items],
+                         [("Antes", "INVOKE_DEFAULT"), ("Fila", "EXEC_DEFAULT"),
+                          ("Instalar", "EXEC_DEFAULT")])
+        self.assertEqual(layout.operator_context, "EXEC_DEFAULT")
+        self.assertEqual(FakeLayout().operator_context, "INVOKE_DEFAULT")
+
 
 QGIS_TREE: dict[str, str] = {
     "bin/ogrinfo.exe": "",

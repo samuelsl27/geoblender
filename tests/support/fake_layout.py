@@ -16,7 +16,12 @@ cada menú de texto de la barra). ``menu_pie`` devuelve, como ``row``, un *layou
 menús circulares de la 003). Los métodos de ``UILayout`` que no tiene a mano
 (``popover``, ``menu_contents``, ``template_ID_tabs``, ``operator_menu_enum``…) se anotan
 con su nombre como tipo, para dibujar sin error las cabeceras de Blender que sustituye o
-amplía la 003. Python puro: no importa ``bpy``.
+amplía la 003.
+
+Spec 004 (T40): cada elemento guarda también el ``operator_context`` con que se dibujó; como
+en Blender, es uno por *layout* raíz (``uiLayoutRoot``): ponerlo en una fila vale para lo que
+se dibuje después en todo el *layout* (p. ej. ``EXEC_DEFAULT`` antes de los botones
+``template_popup_confirm`` de un diálogo). Python puro: no importa ``bpy``.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ class Item:
     enabled: bool = True  # el layout y todas sus madres estaban habilitados (spec 003)
     active: bool = True  # ídem con ``active`` (gris, pero se puede pulsar)
     units_x: float = 0.0  # ``ui_units_x`` de su *layout* (0: el ancho natural; spec 003)
+    operator_context: str = "INVOKE_DEFAULT"  # el del *layout* raíz al dibujarlo (spec 004)
 
 
 class FakeLayout:
@@ -52,6 +58,8 @@ class FakeLayout:
     def __init__(self, items: list[Item] | None = None, parent: FakeLayout | None = None) -> None:
         self.items: list[Item] = [] if items is None else items
         self.parent = parent
+        self._root: FakeLayout = self if parent is None else parent._root
+        self._operator_context = "INVOKE_DEFAULT"  # solo cuenta el de la raíz
         self.enabled = True
         self.active = True
         self.alert = False
@@ -63,7 +71,15 @@ class FakeLayout:
         self.ui_units_y = 0.0
         self.alignment = "EXPAND"
         self.emboss = "NORMAL"
-        self.operator_context = "INVOKE_DEFAULT"
+
+    @property
+    def operator_context(self) -> str:
+        """El de la raíz del *layout*, como en Blender (``uiLayoutRoot``)."""
+        return self._root._operator_context
+
+    @operator_context.setter
+    def operator_context(self, value: str) -> None:
+        self._root._operator_context = value
 
     def _effective(self, name: str) -> bool:
         layout: FakeLayout | None = self
@@ -78,6 +94,7 @@ class FakeLayout:
         item.enabled = self._effective("enabled")
         item.active = self._effective("active")
         item.units_x = float(self.ui_units_x)
+        item.operator_context = self.operator_context
         self.items.append(item)
         return item
 

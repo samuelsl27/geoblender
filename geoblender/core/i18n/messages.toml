@@ -1193,6 +1193,9 @@ es = "Muestra el estado del motor de cálculo; si falta, está desactualizado o 
 ["Install"]
 es = "Instalar"
 
+["Cancel"]
+es = "Cancelar"
+
 ["Install the compute engine after showing what is installed, from where, with which licences and how much it takes"]
 es = "Instala el motor de cálculo después de enseñar qué se instala, de dónde, con qué licencias y cuánto ocupa"
 

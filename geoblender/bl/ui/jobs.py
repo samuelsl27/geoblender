@@ -48,7 +48,10 @@ dañado). ``geoblender.jobs_setup_runtime`` (``bl/ops/jobs.py``) dibuja aquí su
 consentimiento (:func:`draw_consent`: origen, una fila por paquete con su versión y su
 licencia, y las que incluye su rueda, MB de descarga y en disco, carpeta de destino y que no
 cambia el Python de Blender), el estado del motor con sus botones (:func:`draw_engine`) y la
-confirmación de quitarlo (:func:`draw_remove`).
+confirmación de quitarlo (:func:`draw_remove`). Los botones del diálogo de consentimiento,
+«Instalar» y «Cancelar», son de Geoblender y van en su idioma (:func:`draw_consent_buttons`,
+T40; ADR-0012): ``template_popup_confirm`` sustituye a los de ``invoke_props_dialog``, cuyo
+«Cancel» es el de Blender, en el idioma de Blender.
 
 El intérprete externo (spec 004, T33; RF-004-26): si el lanzador tiene uno, la lista dice,
 bajo el estado del motor, que los trabajos del motor corren con él («Intérprete externo
@@ -117,6 +120,7 @@ DURATION_UNITS = 4
 """Anchos de la lista de trabajos y de sus columnas, en unidades de interfaz."""
 
 SETUP_RUNTIME = "geoblender.jobs_setup_runtime"
+CONSENT_CONTEXT = "EXEC_DEFAULT"  # «Instalar» ejecuta: no vuelve a abrir el diálogo (T40)
 ENGINE_ICON = "PREFERENCES"
 EXTERNAL_ICON = "CONSOLE"
 """El icono de la línea del intérprete externo en la lista de trabajos (RF-004-26)."""
@@ -577,7 +581,8 @@ def draw_consent(layout: Any, plan: InstallPlan) -> None:
     """El diálogo de consentimiento (RF-004-20; plan 004 §5.5), antes de hacer nada: el
     origen, una fila por paquete con su versión y su licencia (y, en gris, las que incluye
     su rueda), los MB de descarga y en disco del lock, la carpeta de destino y que no cambia
-    el Python de Blender. Los botones «Instalar» y «Cancelar» son los del diálogo."""
+    el Python de Blender. Sus botones «Instalar» y «Cancelar» los dibuja
+    :func:`draw_consent_buttons`."""
     layout.label(text=source_text(plan.source),
                  icon=SOURCE_ICONS.get(plan.source.kind, "INFO"), translate=False)
     table = layout.column(align=True)
@@ -606,6 +611,22 @@ def draw_consent(layout: Any, plan: InstallPlan) -> None:
     note.active = False
     note.label(text=tr("Used only in the heavy calculations, in a separate process; it does "
                        "not change Blender's Python"), icon=NOTE_ICON, translate=False)
+
+
+def draw_consent_buttons(layout: Any, *, action: str, source: str,
+                         confirmation: str) -> None:
+    """Los botones del diálogo de consentimiento, al final, en el idioma de Geoblender
+    (RF-004-20, ADR-0012; T40): «Instalar» y «Cancelar» (``template_popup_confirm``, que en
+    un ``invoke_props_dialog`` sustituye a sus botones; el de cancelar de Blender va en el
+    idioma de Blender). «Instalar» ejecuta ``geoblender.jobs_setup_runtime`` con ``action``,
+    ``source`` y ``confirmation`` (la huella del plan enseñado) sin volver a abrir el
+    diálogo; «Cancelar» lo cierra sin ejecutar nada (RF-004-19)."""
+    layout.operator_context = CONSENT_CONTEXT
+    properties = layout.template_popup_confirm(SETUP_RUNTIME, text=tr("Install"),
+                                               translate=False, cancel_text=tr("Cancel"))
+    properties.action = action
+    properties.source = source
+    properties.confirmation = confirmation
 
 
 def draw_engine(layout: Any, env: ComputeEnvironment, *, running: bool,

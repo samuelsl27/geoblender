@@ -132,6 +132,13 @@ hilo (``probe_python``) y solo lo guarda si sirve:
   uno que no es 3.13, sin numpy, que no es un Python o que no existe (intérpretes falsos) se
   rechaza con su motivo y no se guarda; quitarlo devuelve los trabajos al motor.
 
+T40 — el diálogo de consentimiento dice «Cancelar» (en M3 mostraba «Instalar» y el «Cancel»
+de Blender, en el idioma de Blender):
+
+- RF-004-20, RF-004-19: sus dos botones son de Geoblender, en su idioma («Instalar» y
+  «Cancelar»; «Install» y «Cancel» en inglés), también al actualizar y al reparar;
+  «Instalar» ejecuta la instalación del plan enseñado y «Cancelar» no crea ``runtime/``.
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
@@ -2490,6 +2497,7 @@ class RuntimeSetupTest(unittest.TestCase):
             f"En disco: {self.mb(self.lock.installed_size)} MB",
             f"Carpeta: {self.env.path}",
             CONSENT_NOTE,
+            "Instalar",  # su botón, con «Cancelar» (T40)
         ])
         self.assertEqual((self.mb(self.lock.download_size),
                           self.mb(self.lock.installed_size)), ("12,6", "53,9"))
@@ -2542,6 +2550,67 @@ class RuntimeSetupTest(unittest.TestCase):
                 self.assertEqual(ready.reports, [(
                     {"INFO"}, "El motor de cálculo ya está instalado y verificado")])
         self.dialog.assert_not_called()
+
+    def test_consent_dialog_buttons_in_the_language_of_geoblender(self) -> None:
+        """RF-004-20, RF-004-19 (T40): los dos botones del diálogo de consentimiento son de
+        Geoblender y van en su idioma (ADR-0012), no en el de Blender (en M3 el de cancelar
+        era el «Cancel» de ``invoke_props_dialog``): «Instalar» y «Cancelar» en español,
+        «Install» y «Cancel» en inglés, al final, bajo el plan (``template_popup_confirm``,
+        que sustituye a los del diálogo), también al actualizar y al reparar. «Instalar»
+        ejecuta (sin volver a abrir el diálogo) la instalación del plan que se enseñó, con su
+        acción y su origen; «Cancelar» solo cierra el diálogo: no instala nada ni crea
+        ``runtime/``."""
+        self.prefs.wheelhouse_dir = str(self.store)
+        self.addCleanup(self.i18n.set_language, "es")
+        cls = self.ops.GEOBLENDER_OT_jobs_setup_runtime
+        setup = SimpleNamespace(done=False, state="running", error_text=None, check=None)
+        with mock.patch.object(self.runtime.RuntimeSetup, "install",
+                               return_value=setup) as install:
+            for language, confirm, cancel in (("es", "Instalar", "Cancelar"),
+                                              ("en", "Install", "Cancel")):
+                self.i18n.set_language(language)
+                for action, prepare in (
+                        ("INSTALL", lambda: None),
+                        ("UPDATE",
+                         lambda: (self.env.runtime_dir / OTHER_LOCK_ID).mkdir(parents=True)),
+                        ("REPAIR", lambda: self.env.path.mkdir(parents=True))):
+                    with self.subTest(idioma=language, action=action):
+                        prepare()
+                        result, fake = self.invoke()
+                        self.assertEqual((result, fake.action), ({"RUNNING_MODAL"}, action))
+                        layout = self.drawn(fake)
+                        (buttons,) = layout.of_kind("template_popup_confirm")
+                        self.assertIs(layout.items[-1], buttons)
+                        self.assertEqual(layout.of_kind("operator"), [])
+                        self.assertEqual(
+                            (buttons.target, buttons.text, buttons.options.get("cancel_text"),
+                             buttons.options.get("translate")),
+                            (SETUP_RUNTIME, confirm, cancel, False))
+                        self.assertEqual(buttons.operator_context, "EXEC_DEFAULT")
+                        self.assertEqual(vars(buttons.properties), {
+                            "action": action, "source": "AUTO",
+                            "confirmation": fake.confirmation})
+                        # «Cancelar»: Blender cierra el diálogo (y llama a su cancel, si
+                        # lo tiene) sin ejecutar nada.
+                        getattr(cls, "cancel", lambda *_args: None)(fake, bpy.context)
+                        install.assert_not_called()
+                        self.assertFalse(self.env.site_dir().exists())
+                        if action == "INSTALL":
+                            self.assertFalse(self.user.exists())
+                _remove_tree(self.user)
+                self.assertEqual(self.env.status(), "missing")
+            self.assertFalse(self.user.exists())
+            # «Instalar»: el operador con las propiedades del botón, como lo lanza Blender.
+            self.i18n.set_language("es")
+            _result, fake = self.invoke()
+            (buttons,) = self.drawn(fake).of_kind("template_popup_confirm")
+            self.assertEqual(
+                bpy.ops.geoblender.jobs_setup_runtime(buttons.operator_context,
+                                                      **vars(buttons.properties)),
+                {"FINISHED"})
+        install.assert_called_once()
+        _runner, _env, shown, consent = install.call_args.args
+        self.assertEqual((shown.digest, consent.plan_digest), (fake.confirmation,) * 2)
 
     def test_compute_job_without_engine_offers_the_dialog(self) -> None:
         """RF-004-25: lanzar un trabajo que necesita el motor de cálculo (el autodiagnóstico

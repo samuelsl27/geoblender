@@ -94,13 +94,15 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   enseña su estado con Verificar, Reparar y Quitar; ``INSTALL``, ``UPDATE`` y ``REPAIR``
   calculan el plan sin usar la red (origen ``source``; ``AUTO``: el de las preferencias,
   con su almacén de ruedas) y, antes de hacer nada, lo enseñan en el diálogo de
-  consentimiento (``bl/ui/jobs.py``) con «Instalar» y «Cancelar»; «Instalar» lanza la
+  consentimiento (``bl/ui/jobs.py``) con «Instalar» y «Cancelar», los dos en el idioma de
+  Geoblender (``template_popup_confirm`` en lugar de los botones de ``invoke_props_dialog``,
+  cuyo «Cancel» es el de Blender; T40); «Instalar» ejecuta el operador, que lanza la
   cadena ``jobs.runtime.RuntimeSetup`` (instalar → verificar → adoptar) con el plan
   enseñado (su huella, ``confirmation``) y el consentimiento del usuario, seguida en la
-  barra de estado. PyPI con el acceso en línea de Blender desactivado no abre el diálogo y
-  dice las dos salidas (RF-004-23). ``VERIFY`` verifica el motor instalado; ``REMOVE``, tras
-  confirmarlo en un diálogo, lo borra si ningún trabajo lo usa. Sin confirmación (desde un
-  guion) no instala ni borra nada.
+  barra de estado; «Cancelar» solo cierra el diálogo. PyPI con el acceso en línea de
+  Blender desactivado no abre el diálogo y dice las dos salidas (RF-004-23). ``VERIFY``
+  verifica el motor instalado; ``REMOVE``, tras confirmarlo en un diálogo, lo borra si
+  ningún trabajo lo usa. Sin confirmación (desde un guion) no instala ni borra nada.
 - Un trabajo que necesita el motor y no lo tiene (``runtime_missing`` al lanzarlo con
   :meth:`JobMonitor.submit`) abre ese mismo diálogo (:func:`offer_runtime_setup`,
   RF-004-25); en ``blender -b`` no hay a quién enseñárselo.
@@ -1052,8 +1054,11 @@ class GEOBLENDER_OT_jobs_setup_runtime(bpy.types.Operator):
                 alert = self.layout.row()
                 alert.alert = True
                 alert.label(text=exc.message, icon="ERROR", translate=False)
-                return
-        job_list.draw_consent(self.layout, plan)
+                plan = None
+        if plan is not None:
+            job_list.draw_consent(self.layout, plan)
+        job_list.draw_consent_buttons(self.layout, action=self.action, source=self.source,
+                                      confirmation=self.confirmation)
 
     def execute(self, context: Any) -> set[str]:
         target = _setup_target()
