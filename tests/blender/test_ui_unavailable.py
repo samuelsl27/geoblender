@@ -3,8 +3,9 @@
 hallazgo 1 de la verificación).
 
 - RF-003-07, CE-003-04: un submenú (``layout.menu``) o una ventana emergente
-  (``popover``) no disponible se dibuja desactivado y no se abre, así que su nota solo se
-  puede leer en la descripción emergente: **todos** los menús y paneles del catálogo y
+  (``popover``) no disponible se dibuja desactivado y en una cabecera no se abre (en
+  Blender 5.2.1, un submenú dentro de un menú abierto sí: ``bl.ui.drawing``), así que su
+  nota se lee en la descripción emergente: **todos** los menús y paneles del catálogo y
   todos los generados que no están disponibles llevan en su ``bl_description`` la
   descripción del comando y, en otra línea, «Disponible en <entrada · título>» (el mismo
   formato y el mismo ``msgid`` que la de un operador provisional), en español y en inglés

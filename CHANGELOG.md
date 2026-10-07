@@ -51,7 +51,8 @@ vez. Lo de la spec 003 está probado sin la interfaz gráfica; falta verlo en la
   - **Plantilla de aplicación y lanzador**: `tools/install_app_template.py` instala la
     plantilla «Geoblender» y deja `Geoblender.cmd` en el escritorio, que abre Blender en modo
     Geoblender sobre una escena vacía en metros, con su imagen de bienvenida y sin cambiar la
-    configuración del Blender normal.
+    configuración del Blender normal. Con un fichero (`Geoblender.cmd fichero.blend`), lo
+    abre tal como se guardó, en su espacio de trabajo.
   - La barra superior cuesta 0,03 ms por dibujo, el registro de la interfaz 18 ms y un cambio
     de idioma unos 10 ms (medido con Blender 5.2.1). Redibujar la ventana entera cuesta unos
     0,6 ms más en modo Geoblender que en modo Blender (a 1920 × 1080). Para no pasar de ahí,

@@ -9,7 +9,8 @@ RF-003-08; plan 003 §5.3; BS §7).
   comandos llegan como variable y pasan por aquí;
 - :func:`unavailable_note` y :func:`with_note`: «Disponible en …» de un comando y su
   descripción emergente con esa nota en otra línea (RF-003-07; spec 003, T39: también la
-  de los menús y paneles no disponibles, que no se abren);
+  de los menús y paneles no disponibles, que desactivados solo se abren como submenú de un
+  menú abierto: ``drawing``);
 - :func:`registered_class`: la clase registrada de un operador (por su ``bl_idname``) o
   de un menú o un panel (por su clase);
 - :func:`is_available`: si un comando está **disponible** (BS §7.3): un nativo de

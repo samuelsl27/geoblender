@@ -19,8 +19,10 @@ en su lugar (``bl/ops``), sin provisional.
   desactivada con el texto, que también lleva su descripción emergente
   (:func:`class_description`; spec 003, T39). La misma nota, en otra línea, la pone
   :func:`labels` en la descripción de **todo** menú o panel del catálogo que no está
-  disponible, sea provisional, generado o real: desactivados, un submenú o una ventana
-  emergente no se abren y la nota solo se lee allí.
+  disponible, sea provisional, generado o real: desactivados, en una cabecera (la barra
+  superior, la fila 2) ni un menú ni una ventana emergente se abren, y la nota solo se lee
+  allí; dentro de un menú abierto, un submenú sí se abre (Blender 5.2.1) y la enseña en su
+  primera línea.
 
 Los dibujos generados desde el catálogo ya los ponen desactivados (RF-003-07). Las clases
 llevan ``bl_translation_context = "Geoblender"`` y los textos en el idioma activo de

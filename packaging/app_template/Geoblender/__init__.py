@@ -20,15 +20,21 @@ Toda la lógica está en la extensión (ADR-0003). La plantilla solo:
   Nuevo (``load_factory_startup_post``): el ``startup.blend`` trae ese espacio
   (``geoblender_mode``) y el «Layout» de respaldo, pero no se puede guardar con el principal
   activo sin interfaz. El cambio es diferido: lo aplica el primer ciclo de eventos. Al abrir
-  un fichero de la persona no cambia nada: manda el fichero;
+  un fichero de la persona no cambia nada: manda el fichero. Con ``Geoblender.cmd
+  fichero.blend`` Blender lo abre después de registrar la plantilla y antes del primer
+  ciclo (T47): su ``load_post`` anula lo que quedaba del arranque (el temporizador, lo
+  pedido al leer el fichero de inicio y la anotación de la imagen de bienvenida). El
+  temporizador del arranque es ``persistent`` para que solo eso lo anule: si antes del
+  primer ciclo se vuelve a leer el fichero de inicio, sigue y hace lo suyo;
 - deja la escena de Archivo ▸ Nuevo en metros;
 - **vuelve a abrir la imagen de bienvenida** que cierra ese cambio (hallazgo D5, T44).
   Blender la abre antes del primer ciclo de eventos, en la ventana con el «Layout», y al
   aplicar el cambio de espacio cierra las ventanas emergentes de la ventana. Mientras
   arranca, la plantilla anota en qué ventanas se dibuja (un añadido a ``WM_MT_splash`` y a
-  ``WM_MT_splash_quick_setup`` que no dibuja nada y que quita en su primer ciclo) y, si pasa
-  una de ellas al espacio principal, la vuelve a abrir cuando el cambio se ha aplicado. Si
-  Blender no la abrió (la preferencia apagada, un fichero abierto), no abre nada.
+  ``WM_MT_splash_quick_setup`` que no dibuja nada y que quita en su primer ciclo o al
+  abrirse un fichero de la persona) y, si pasa una de ellas al espacio principal, la vuelve
+  a abrir cuando el cambio se ha aplicado. Si Blender no la abrió (la preferencia apagada,
+  un fichero abierto), no abre nada; si se abre otro fichero mientras espera, tampoco.
 
 ``unregister()`` quita lo que puso y deshabilita la extensión solo si la habilitó ella.
 """
@@ -177,8 +183,9 @@ def _reopen_splash() -> float | None:
 
 
 def _startup() -> None:
-    """Temporizador del arranque: la extensión, el espacio principal y la imagen de
-    bienvenida que cierra ese cambio."""
+    """Temporizador del arranque (``persistent``: solo lo anula abrir un fichero de la
+    persona): la extensión, el espacio principal y la imagen de bienvenida que cierra ese
+    cambio."""
     enable_extension()
     activate_main_workspace()
     unwatch_splash()
@@ -192,11 +199,36 @@ def _startup() -> None:
     return None
 
 
+def cancel_reopen() -> None:
+    """Deja de esperar para volver a abrir la imagen de bienvenida."""
+    if bpy.app.timers.is_registered(_reopen_splash):
+        bpy.app.timers.unregister(_reopen_splash)
+    _STATE.reopen = []
+
+
+def cancel_startup() -> None:
+    """Anula lo que quedaba del arranque: el temporizador, los espacios pedidos para las
+    ventanas, la anotación de la imagen de bienvenida y su reapertura."""
+    if bpy.app.timers.is_registered(_startup):
+        bpy.app.timers.unregister(_startup)
+    unwatch_splash()
+    _STATE.requested = []
+    _STATE.switched = []
+    _STATE.splash_windows.clear()
+    cancel_reopen()
+
+
 @persistent
 def _on_load_post(*_args: Any) -> None:
-    """Respaldo: si la extensión aún no está habilitada, la habilita."""
+    """Respaldo: si la extensión aún no está habilitada, la habilita. Con otro fichero, la
+    imagen de bienvenida ya no se vuelve a abrir; y si es un fichero de la persona (tiene
+    ruta: ``Geoblender.cmd fichero.blend``, Archivo ▸ Abrir), manda el fichero: se anula lo
+    que quedaba del arranque (T47). El fichero de inicio se lee sin ruta."""
     if find_extension() not in bpy.context.preferences.addons:
         enable_extension()
+    cancel_reopen()
+    if bpy.data.filepath:
+        cancel_startup()
 
 
 @persistent
@@ -210,7 +242,8 @@ def _on_factory_startup(*_args: Any) -> None:
 
 def register() -> None:
     watch_splash()
-    bpy.app.timers.register(_startup, first_interval=0.0)
+    if not bpy.app.timers.is_registered(_startup):
+        bpy.app.timers.register(_startup, first_interval=0.0, persistent=True)
     if _on_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_on_load_post)
     if _on_factory_startup not in bpy.app.handlers.load_factory_startup_post:
@@ -218,11 +251,7 @@ def register() -> None:
 
 
 def unregister() -> None:
-    if bpy.app.timers.is_registered(_startup):
-        bpy.app.timers.unregister(_startup)
-    if bpy.app.timers.is_registered(_reopen_splash):
-        bpy.app.timers.unregister(_reopen_splash)
-    unwatch_splash()
+    cancel_startup()
     if _on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_on_load_post)
     if _on_factory_startup in bpy.app.handlers.load_factory_startup_post:
@@ -230,7 +259,3 @@ def unregister() -> None:
     for name in _STATE.enabled_here:
         addon_utils.disable(name, default_set=False)
     _STATE.enabled_here.clear()
-    _STATE.requested = []
-    _STATE.switched = []
-    _STATE.splash_windows.clear()
-    _STATE.reopen = []

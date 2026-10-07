@@ -10,9 +10,12 @@ disponible (BS §7.3) se dibuja **desactivado** dentro de una fila propia o, con
 no disponible», no se dibuja; si está disponible pero su comprobación dice que no es
 aplicable ahora (``commands.not_applicable``: una ranura de vista vacía), también se dibuja
 desactivado (RF-003-09). Un acceso cruzado ↗ lleva la marca delante de su etiqueta.
-Un submenú o una ventana emergente desactivados no se abren: su «Disponible en …» va en
-la descripción emergente de su clase (``bl.ui.registry``; spec 003, T39) y, por dentro,
-en la primera línea (:func:`draw_note`) para cuando se abren por otro camino.
+Desactivados, en Blender 5.2.1 (M1; comprobado con interfaz en la T47): un submenú
+**sí** se abre dentro de un menú abierto, al pasar el ratón, y enseña su contenido; en una
+cabecera (la barra superior, la fila 2) ni un menú ni una ventana emergente se abren, y una
+ventana emergente tampoco dentro de un menú. Por eso su «Disponible en …» va en la
+descripción emergente de su clase (``bl.ui.registry``; spec 003, T39) y, por dentro, en
+la primera línea (:func:`draw_note`), que se ve cuando se abre (también por otro camino).
 
 Cada comando lleva su icono propio (``bl/ui/icons.py``) o, si no se puede mostrar (sin
 interfaz gráfica, o sin su PNG), su reserva nativa, comprobada en el enumerado de iconos de

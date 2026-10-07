@@ -17,9 +17,10 @@ registrado las propiedades y los operadores reales. :func:`register`:
    ``bl_translation_context = "Geoblender"``, y vuelve a registrar las que cambian
    (:func:`relabel`; cambiar ``bl_label`` sin volver a registrar no cambia el nombre,
    plan 003 §5.4, 11). La descripción de un menú o un panel **no disponible** lleva en
-   otra línea su «Disponible en …», como la de un operador provisional: desactivados, un
-   submenú o una ventana emergente no se abren y la nota solo se lee en su descripción
-   emergente (RF-003-07, CE-003-04; spec 003, T39).
+   otra línea su «Disponible en …», como la de un operador provisional: desactivados, en
+   una cabecera ni un menú ni una ventana emergente se abren y la nota solo se lee en su
+   descripción emergente (RF-003-07, CE-003-04; spec 003, T39); dentro de un menú
+   abierto, un submenú sí se abre (Blender 5.2.1; ``drawing``).
 
 Al poner los textos, también traduce las **propiedades** de los operadores del catálogo
 (su nombre, su descripción y los nombres y descripciones de los elementos de un enumerado

@@ -17,15 +17,26 @@ ventana: la imagen de bienvenida no llegaba a verse. Ahora la plantilla:
 - si Blender no la abrió (la preferencia apagada, un fichero abierto, sin interfaz) o la
   ventana no cambia, no abre nada; si no la puede abrir, lo dice y no insiste.
 
+Con un fichero de la persona (``Geoblender.cmd fichero.blend``: T47, hallazgo de la
+verificación de la segunda ronda), Blender lo abre después de registrar la plantilla y antes
+del primer ciclo de eventos, y no abre la imagen de bienvenida. Antes, el temporizador del
+arranque se perdía al abrirlo (no era ``persistent``) y la anotación se quedaba añadida a
+``WM_MT_splash`` toda la sesión. Ahora su ``load_post`` anula lo que quedaba del arranque
+(el temporizador, lo pedido y la anotación): manda el fichero, y nada queda colgado. Si
+antes del primer ciclo se vuelve a leer el fichero de inicio (sin fichero de la persona), el
+temporizador sigue (``persistent``) y hace lo suyo.
+
 Sin interfaz el cambio de espacio no se aplica y la imagen no se puede abrir: la apertura se
 sustituye por una función anotada (``open_splash``) y el cambio aplicado, por ``is_marked``.
-Que se vea es la comprobación con interfaz de la T44.
+Que se vea es la comprobación con interfaz de las T44 y T47.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
 import importlib
 import importlib.util
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -171,6 +182,65 @@ class SplashTest(unittest.TestCase):
         self.template._note_splash(None, SimpleNamespace())
         self.template._startup()
         self.assertFalse(bpy.app.timers.is_registered(self.template._reopen_splash))
+
+    def open_person_file(self) -> Path:
+        """Guarda una copia del fichero abierto (el ``startup.blend`` de la plantilla, en
+        «Layout» y con el espacio principal de Geoblender) y la abre como un fichero de la
+        persona, igual que ``Geoblender.cmd fichero.blend``."""
+        folder = Path(tempfile.mkdtemp(prefix="gb-plantilla-t47-"))
+        self.addCleanup(shutil.rmtree, folder, True)
+        path = folder / "persona.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(path), copy=True)
+        blender_ext.load_file(path)
+        self.assertEqual(Path(bpy.data.filepath), path)
+        return path
+
+    def assert_nothing_left(self) -> None:
+        """Ni temporizadores ni anotación de la plantilla, y nada pendiente en su estado."""
+        self.assertFalse(bpy.app.timers.is_registered(self.template._startup))
+        self.assertFalse(bpy.app.timers.is_registered(self.template._reopen_splash))
+        for name in SPLASH_MENUS:
+            self.assertEqual(draw_functions(name), self.before[name])
+        state = self.template._STATE
+        self.assertEqual((state.requested, state.switched, state.splash_windows, state.reopen),
+                         ([], [], set(), []))
+
+    def test_person_file_cancels_startup(self) -> None:
+        """RF-003-25 (T47): con un fichero de la persona, abierto tras registrar la plantilla
+        y antes del primer ciclo (lo que hace ``Geoblender.cmd fichero.blend``), manda el
+        fichero: se anula lo que quedaba del arranque (el temporizador, el espacio que pidió
+        ``load_factory_startup_post`` al leer el fichero de inicio y la anotación de la
+        imagen de bienvenida), la ventana sigue en el espacio del fichero y la extensión,
+        habilitada."""
+        self.template._on_factory_startup()  # Blender, al leer el fichero de inicio
+        self.assertEqual(self.template._STATE.requested, [self.template.MAIN_WORKSPACE])
+        self.open_person_file()
+        self.assertEqual(bpy.context.window_manager.windows[0].workspace.name, "Layout")
+        self.assert_nothing_left()
+        self.assertTrue(self.template.find_extension() in bpy.context.preferences.addons)
+
+    def test_person_file_cancels_reopen(self) -> None:
+        """RF-003-25 (T47): si la persona abre un fichero mientras la plantilla espera para
+        volver a abrir la imagen de bienvenida, ya no la abre ni queda nada esperando."""
+        self.note_splash(self.window)
+        self.template._startup()
+        self.assertTrue(bpy.app.timers.is_registered(self.template._reopen_splash))
+        self.open_person_file()
+        self.assertEqual(self.opened, [])
+        self.assert_nothing_left()
+
+    def test_startup_survives_reading_the_startup_file(self) -> None:
+        """RF-003-25 (T47): si antes del primer ciclo se vuelve a leer el fichero de inicio
+        (sin fichero de la persona), el temporizador del arranque sigue (``persistent``) con
+        la anotación puesta, y en su primer ciclo la quita: nada queda colgado."""
+        blender_ext.load_file()  # el fichero de inicio: sin ruta
+        self.assertEqual(bpy.data.filepath, "")
+        self.assertTrue(bpy.app.timers.is_registered(self.template._startup))
+        for name in SPLASH_MENUS:
+            self.assertIn(self.template._note_splash, draw_functions(name))
+        self.template._startup()
+        for name in SPLASH_MENUS:
+            self.assertEqual(draw_functions(name), self.before[name])
 
 
 if __name__ == "__main__":
