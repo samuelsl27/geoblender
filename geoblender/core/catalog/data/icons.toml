@@ -1,0 +1,244 @@
+# Iconos propios de Geoblender (II §1.4; spec 003, T31; RF-003-22): los 58, con su reserva
+# nativa de Blender (comprobada en el enumerado de iconos de la versión instalada) y, si la
+# reserva es un texto («GB», «[MED]»…), fallback_text. La fuente de cada uno es
+# assets/icons/<name>.svg y sus PNG, resources/icons/<name>_32.png y _64.png
+# (tools/build_icons.py). Los comandos del catálogo nombran su icono con «icon»; los demás
+# (ramas, estados, tipos de entidad y de cifra) los usan el inventario, la ficha y las
+# insignias de las entradas que los entregan.
+
+[[icon]]
+name = "gb_logo"
+fallback = "NONE"
+fallback_text = "GB"
+
+[[icon]]
+name = "gb_menu_project"
+fallback = "FILE_FOLDER"
+
+[[icon]]
+name = "gb_menu_topography"
+fallback = "WORLD"
+
+[[icon]]
+name = "gb_menu_drillholes"
+fallback = "CURVE_PATH"
+
+[[icon]]
+name = "gb_menu_geology"
+fallback = "SURFACE_DATA"
+
+[[icon]]
+name = "gb_menu_blocks"
+fallback = "MESH_CUBE"
+
+[[icon]]
+name = "gb_menu_optimization"
+fallback = "MESH_CONE"
+
+[[icon]]
+name = "gb_menu_design"
+fallback = "IPO_CONSTANT"
+
+[[icon]]
+name = "gb_menu_reclamation"
+fallback = "RECOVER_LAST"
+
+[[icon]]
+name = "gb_menu_volumetrics"
+fallback = "SNAP_VOLUME"
+
+[[icon]]
+name = "gb_menu_scheduling"
+fallback = "TIME"
+
+[[icon]]
+name = "gb_menu_drawings"
+fallback = "DOCUMENTS"
+
+[[icon]]
+name = "gb_menu_tools"
+fallback = "TOOL_SETTINGS"
+
+[[icon]]
+name = "gb_branch_common"
+fallback = "NONE"
+
+[[icon]]
+name = "gb_branch_geology"
+fallback = "NONE"
+
+[[icon]]
+name = "gb_branch_design"
+fallback = "NONE"
+
+[[icon]]
+name = "gb_branch_convergence"
+fallback = "NONE"
+
+[[icon]]
+name = "gb_qat_views"
+fallback = "VIEW_ORTHO"
+
+[[icon]]
+name = "gb_qat_frame_window"
+fallback = "ZOOM_ALL"
+
+[[icon]]
+name = "gb_qat_section"
+fallback = "MESH_PLANE"
+
+[[icon]]
+name = "gb_qat_band"
+fallback = "ARROW_LEFTRIGHT"
+
+[[icon]]
+name = "gb_qat_clip"
+fallback = "CLIPUV_HLT"
+
+[[icon]]
+name = "gb_qat_align_section"
+fallback = "AXIS_FRONT"
+
+[[icon]]
+name = "gb_qat_polyline"
+fallback = "CURVE_DATA"
+
+[[icon]]
+name = "gb_qat_work_plane"
+fallback = "MESH_GRID"
+
+[[icon]]
+name = "gb_qat_current_object"
+fallback = "LAYER_ACTIVE"
+
+[[icon]]
+name = "gb_qat_polyline_edit"
+fallback = "MOD_CURVE"
+
+[[icon]]
+name = "gb_qat_identify"
+fallback = "EYEDROPPER"
+
+[[icon]]
+name = "gb_qat_measure"
+fallback = "DRIVER_DISTANCE"
+
+[[icon]]
+name = "gb_qat_profile"
+fallback = "FCURVE"
+
+[[icon]]
+name = "gb_qat_volume"
+fallback = "SNAP_VOLUME"
+
+[[icon]]
+name = "gb_qat_figures"
+fallback = "LINENUMBERS_ON"
+
+[[icon]]
+name = "gb_qat_constraints"
+fallback = "MOD_MASK"
+
+[[icon]]
+name = "gb_qat_check"
+fallback = "CHECKMARK"
+
+[[icon]]
+name = "gb_state_current"
+fallback = "COLLECTION_COLOR_04"
+
+[[icon]]
+name = "gb_state_draft"
+fallback = "COLLECTION_COLOR_03"
+
+[[icon]]
+name = "gb_state_superseded"
+fallback = "RADIOBUT_OFF"
+
+[[icon]]
+name = "gb_state_discarded"
+fallback = "COLLECTION_COLOR_08"
+
+[[icon]]
+name = "gb_state_stale"
+fallback = "COLLECTION_COLOR_01"
+
+[[icon]]
+name = "gb_state_input_changed"
+fallback = "COLLECTION_COLOR_02"
+
+[[icon]]
+name = "gb_state_locked"
+fallback = "LOCKED"
+
+[[icon]]
+name = "gb_kind_drillholes"
+fallback = "CURVE_PATH"
+
+[[icon]]
+name = "gb_kind_section"
+fallback = "MESH_PLANE"
+
+[[icon]]
+name = "gb_kind_surface"
+fallback = "MESH_GRID"
+
+[[icon]]
+name = "gb_kind_points"
+fallback = "POINTCLOUD_DATA"
+
+[[icon]]
+name = "gb_kind_polyline"
+fallback = "CURVE_DATA"
+
+[[icon]]
+name = "gb_kind_constraint"
+fallback = "MOD_MASK"
+
+[[icon]]
+name = "gb_kind_solid"
+fallback = "MESH_ICOSPHERE"
+
+[[icon]]
+name = "gb_kind_block_model"
+fallback = "MESH_CUBE"
+
+[[icon]]
+name = "gb_kind_design"
+fallback = "IPO_CONSTANT"
+
+[[icon]]
+name = "gb_kind_design_entity"
+fallback = "OUTLINER_OB_EMPTY"
+
+[[icon]]
+name = "gb_kind_phase"
+fallback = "TIME"
+
+[[icon]]
+name = "gb_kind_version"
+fallback = "BOOKMARKS"
+
+[[icon]]
+name = "gb_kind_drawing"
+fallback = "DOCUMENTS"
+
+[[icon]]
+name = "gb_type_measured"
+fallback = "NONE"
+fallback_text = "[MED]"
+
+[[icon]]
+name = "gb_type_calculated"
+fallback = "NONE"
+fallback_text = "[CAL]"
+
+[[icon]]
+name = "gb_type_adopted"
+fallback = "NONE"
+fallback_text = "[ADO]"
+
+[[icon]]
+name = "gb_type_assumption"
+fallback = "NONE"
+fallback_text = "[HIP]"

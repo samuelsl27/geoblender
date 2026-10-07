@@ -1,0 +1,68 @@
+# Disposiciones de Geoblender (CW §6.1 y §6.2; spec 003, RF-003-16). Cada una es un espacio
+# de trabajo con geoblender_mode = true en resources/geoblender_ui.blend, con el nombre de
+# workspace; id es el valor de geoblender.ui_add_layout (layout). Las de una entrada aún no
+# entregada se ven desactivadas con su «Disponible en …».
+
+[[layout]]
+id = "MAIN"
+workspace = "Geoblender"
+label.en = "Geoblender"
+label.es = "Geoblender"
+description.en = "The main layout: Outliner, 3D view and Properties"
+description.es = "La disposición principal: Outliner, Vista 3D y Propiedades"
+entry = "003"
+main = true
+
+[[layout]]
+id = "SECTION_PLAN"
+workspace = "Geoblender · Sección y planta"
+label.en = "Section and plan"
+label.es = "Sección y planta"
+description.en = "Two 3D views side by side: free plan and linked section"
+description.es = "Dos Vistas 3D lado a lado: planta libre y sección ligada"
+entry = "003"
+
+[[layout]]
+id = "DATA"
+workspace = "Geoblender · Datos"
+label.en = "Data"
+label.es = "Datos"
+description.en = "3D view with the spreadsheet as attribute table"
+description.es = "Vista 3D con la hoja de cálculo como tabla de atributos"
+entry = "003"
+
+[[layout]]
+id = "DESIGN_PROFILE"
+workspace = "Geoblender · Diseño y perfil"
+label.en = "Design and profile"
+label.es = "Diseño y perfil"
+description.en = "3D view and a second orthographic view along the profile axis"
+description.es = "Vista 3D y una segunda vista ortográfica alineada con el eje del perfil"
+entry = "003"
+
+[[layout]]
+id = "PHASES"
+workspace = "Geoblender · Fases"
+label.en = "Phases"
+label.es = "Fases"
+description.en = "3D view and a timeline with markers by period"
+description.es = "Vista 3D y una línea de tiempo con marcadores por periodo"
+entry = "003"
+
+[[layout]]
+id = "VERSION_REVIEW"
+workspace = "Geoblender · Revisión de versiones"
+label.en = "Version review"
+label.es = "Revisión de versiones"
+description.en = "Two synchronized 3D views and a table of figures"
+description.es = "Dos Vistas 3D sincronizadas y una tabla de cifras"
+entry = "R-62"
+
+[[layout]]
+id = "DRAWINGS"
+workspace = "Geoblender · Planos"
+label.en = "Drawings"
+label.es = "Planos"
+description.en = "Orthographic camera view with the frame of the sheet"
+description.es = "Vista de cámara ortográfica con el marco de la hoja"
+entry = "R-57"

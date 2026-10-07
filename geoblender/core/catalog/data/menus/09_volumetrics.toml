@@ -1,0 +1,154 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 9 de 11: Cubicación (BS §8.9).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_volumetrics"
+label.en = "Volumetrics"
+label.es = "Cubicación"
+description.en = "Traceable volumes and tonnages between surfaces, by unit, phase and bench, with their control"
+description.es = "Volúmenes y tonelajes trazables entre superficies, por unidad, fase y banco, con su control"
+stage.en = "Volumetrics"
+stage.es = "Cubicación"
+step = 9
+branch = "design"
+icon = "gb_menu_volumetrics"
+icon_fallback = "SNAP_VOLUME"
+
+# Cubicar -------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Compute"
+label.es = "Cubicar"
+
+[[menu.group.item]]
+key = "geoblender.res_compute_volume_between_surfaces"
+label.en = "Volume between two surfaces…"
+label.es = "Cubicar entre dos superficies…"
+description.en = "Volume and tonnage between a base surface and a top surface, with their type and provenance"
+description.es = "Volumen y tonelaje entre una superficie de base y otra de techo, con su tipo y su procedencia"
+entry = "R-38"
+action = "D"
+frequency = 3
+icon = "gb_qat_volume"
+icon_fallback = "SNAP_VOLUME"
+aliases = ["cubicar", "cubicación", "volumen", "volume", "volumes"]
+
+[[menu.group.item]]
+key = "geoblender.res_compute_surface_difference"
+label.en = "Difference between surfaces…"
+label.es = "Diferencia entre superficies…"
+description.en = "Cut and fill between two surfaces"
+description.es = "Desmonte y terraplén entre dos superficies"
+entry = "R-38"
+action = "D"
+frequency = 3
+aliases = ["desmonte", "terraplén", "cut and fill"]
+
+[[menu.group.item]]
+key = "geoblender.res_compute_volume_breakdown"
+label.en = "By unit, phase and bench…"
+label.es = "Por unidad, fase y banco…"
+description.en = "Volume and tonnage broken down by unit, phase and bench"
+description.es = "Volumen y tonelaje desglosados por unidad, fase y banco"
+entry = "R-38"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.res_compute_extraction_stages"
+label.en = "By extraction stages…"
+label.es = "Por momentos de extracción…"
+description.en = "Volumes by the stages of the extraction"
+description.es = "Volúmenes por los momentos de la extracción"
+entry = "R-38"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+ref = "geoblender.geo_compute_solid_volume"
+
+# Materiales y balance ------------------------------------------------------------------
+[[menu.group]]
+label.en = "Materials and balance"
+label.es = "Materiales y balance"
+
+[[menu.group.item]]
+key = "geoblender.res_edit_materials"
+label.en = "Materials and densities…"
+label.es = "Materiales y densidades…"
+description.en = "In-situ and loose density, swell factor K and role of each material"
+description.es = "Densidad in situ y suelta, esponjamiento K y papel de cada material"
+entry = "R-38"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.res_compute_ratios"
+label.en = "Ratios…"
+label.es = "Ratios…"
+description.en = "Waste to ore ratios"
+description.es = "Ratios estéril/mineral"
+entry = "R-38"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+ref = "geoblender.des_show_earthworks_balance"
+
+# Reservas ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Reserves"
+label.es = "Reservas"
+
+[[menu.group.item]]
+key = "geoblender.res_compute_reserves"
+label.en = "Reserves by phase and year…"
+label.es = "Reservas por fase y año…"
+description.en = "Reserves with dilution, recovery and categories"
+description.es = "Reservas con dilución, recuperación y categorías"
+entry = "R-51"
+action = "D"
+frequency = 2
+
+# Control de cifras ---------------------------------------------------------------------
+[[menu.group]]
+label.en = "Figure control"
+label.es = "Control de cifras"
+
+[[menu.group.item]]
+key = "geoblender.res_show_sensitivity"
+label.en = "Sensitivity of the assumptions…"
+label.es = "Sensibilidad de las hipótesis…"
+description.en = "How each result changes with each assumption"
+description.es = "Cómo cambia cada resultado con cada hipótesis"
+entry = "R-41"
+action = "P"
+background = true
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.res_audit_volumes"
+label.en = "Audit by independent methods…"
+label.es = "Auditoría por métodos independientes…"
+description.en = "Recompute the volumes by independent methods and compare them"
+description.es = "Vuelve a calcular los volúmenes por métodos independientes y los compara"
+entry = "R-41"
+action = "D"
+background = true
+frequency = 2
+
+# Informes ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Reports"
+label.es = "Informes"
+
+[[menu.group.item]]
+ref = "geoblender.res_report_volumetrics"
+
+[[menu.group.item]]
+ref = "geoblender.res_report_memory_data"

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" viewBox="0 0 16 16" width="16" height="16">
+  <metadata>
+    <rdf:RDF>
+      <cc:Work rdf:about="">
+        <dc:title>gb_kind_section</dc:title>
+        <dc:description>Tipo sección: plano vertical con su traza</dc:description>
+        <dc:creator><cc:Agent><dc:title>IMGA</dc:title></cc:Agent></dc:creator>
+        <dc:rights>CC0-1.0</dc:rights>
+        <cc:license rdf:resource="https://creativecommons.org/publicdomain/zero/1.0/"/>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+  <g id="halo">
+    <polygon points="2.5,14 2.5,5 13.5,2 13.5,11" stroke="#1A1A1A" stroke-opacity="0.6" stroke-width="3.25" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <polyline points="2.5,10.5 5.5,8.6 8.5,9.4 13.5,6" stroke="#1A1A1A" stroke-opacity="0.6" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g id="dibujo">
+    <polygon points="2.5,14 2.5,5 13.5,2 13.5,11" stroke="#E6E6E6" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <polyline points="2.5,10.5 5.5,8.6 8.5,9.4 13.5,6" stroke="#E6E6E6" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+</svg>

@@ -1,0 +1,211 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 3 de 11: Sondeos (BS §8.3).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_drillholes"
+label.en = "Drillholes"
+label.es = "Sondeos"
+description.en = "Import, validate, desurvey and view the field data"
+description.es = "Importar, validar, desviar y ver los datos de campo"
+stage.en = "Drillholes"
+stage.es = "Sondeos"
+step = 3
+branch = "geology"
+icon = "gb_menu_drillholes"
+icon_fallback = "CURVE_PATH"
+
+# Importar ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Import"
+label.es = "Importar"
+
+[[menu.group.item]]
+key = "geoblender.dh_import_drillholes"
+label.en = "Drillholes…"
+label.es = "Sondeos…"
+description.en = "Collars, surveys, lithology and assays from CSV or XLSX"
+description.es = "Bocas, desviaciones, litología y análisis desde CSV o XLSX"
+entry = "005"
+action = "D"
+frequency = 2
+jargon = [["RecMin", "SONDEOS"]]
+
+[[menu.group.item]]
+key = "geoblender.dh_import_recmin_mdb"
+label.en = "RecMin drillhole database…"
+label.es = "Base de sondeos RecMin…"
+description.en = "RecMin drillhole database (MDB), read-only"
+description.es = "Base de sondeos de RecMin (MDB), en solo lectura"
+entry = "005"
+action = "D"
+background = true
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.dh_import_lab_certificates"
+label.en = "Laboratory certificates…"
+label.es = "Certificados de laboratorio…"
+description.en = "Laboratory certificates for the QA/QC"
+description.es = "Certificados de laboratorio para el QA/QC"
+entry = "R-14"
+action = "D"
+frequency = 0
+
+# Base de datos -------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Database"
+label.es = "Base de datos"
+
+[[menu.group.item]]
+key = "geoblender.dh_show_tables"
+label.en = "Drillhole tables…"
+label.es = "Tablas de sondeos…"
+description.en = "Collars, surveys, intervals and assays in tables"
+description.es = "Bocas, desviaciones, tramos y análisis en tablas"
+entry = "R-78"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.dh_edit_catalogs"
+label.en = "Catalogues…"
+label.es = "Catálogos…"
+description.en = "Lithologies, elements, sectors, zones, groups and campaigns"
+description.es = "Litologías, elementos, sectores, zonas, grupos y campañas"
+entry = "R-78"
+action = "P"
+frequency = 1
+jargon = [["RecMin", "Índice"]]
+
+[[menu.group.item]]
+key = "geoblender.dh_set_detection_limit_policy"
+label.en = "Values below the detection limit…"
+label.es = "Valores bajo el límite de detección…"
+description.en = "How the values below the detection limit are treated"
+description.es = "Cómo se tratan los valores bajo el límite de detección"
+entry = "005"
+action = "D"
+frequency = 0
+
+# Validar y desviar ---------------------------------------------------------------------
+[[menu.group]]
+label.en = "Validate and desurvey"
+label.es = "Validar y desviar"
+
+[[menu.group.item]]
+key = "geoblender.dh_validate"
+label.en = "Validate the drillhole database"
+label.es = "Validar la base de sondeos"
+description.en = "Check the database, including the collar elevation against the DTM"
+description.es = "Comprueba la base, también la cota de boca frente al MDT"
+entry = "005"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.dh_export_validation_report"
+label.en = "Export the validation report…"
+label.es = "Exportar el informe de validación…"
+description.en = "Validation issues to CSV"
+description.es = "Incidencias de la validación a CSV"
+entry = "005"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.dh_desurvey"
+label.en = "Compute traces…"
+label.es = "Calcular trazas…"
+description.en = "Drillhole traces by minimum curvature, tangent or balanced tangent"
+description.es = "Trazas de los sondeos por mínima curvatura, tangente o tangente equilibrada"
+entry = "005"
+action = "D"
+frequency = 2
+aliases = ["desurvey"]
+
+[[menu.group.item]]
+key = "geoblender.dh_set_azimuth_reference"
+label.en = "Azimuth reference and declination…"
+label.es = "Referencia de azimut y declinación…"
+description.en = "Grid or true north and magnetic declination of the surveys"
+description.es = "Norte de cuadrícula o geográfico y declinación magnética de las desviaciones"
+entry = "005"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.dh_freeze_database"
+label.en = "Freeze the drillhole database…"
+label.es = "Congelar la base de sondeos…"
+description.en = "Freeze the database as an immutable version"
+description.es = "Congela la base como una versión inmutable"
+entry = "R-78"
+action = "D"
+frequency = 1
+
+# Ver -----------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "View"
+label.es = "Ver"
+
+[[menu.group.item]]
+key = "geoblender.dh_show_display"
+label.en = "Display…"
+label.es = "Representación…"
+description.en = "Trace, lithology, grade bars and labels of the drillholes"
+description.es = "Traza, litología, barras de leyes y etiquetas de los sondeos"
+entry = "005"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.dh_select_drillholes"
+label.en = "Select drillholes…"
+label.es = "Seleccionar sondeos…"
+description.en = "By group, sector, zone, campaign or expression"
+description.es = "Por grupo, sector, zona, campaña o expresión"
+entry = "R-78"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.dh_goto_drillhole"
+label.en = "Go to drillhole…"
+label.es = "Ir al sondeo…"
+description.en = "Find a drillhole by its name and frame it"
+description.es = "Busca un sondeo por su nombre y lo encuadra"
+entry = "R-78"
+action = "D"
+frequency = 2
+
+# Calidad -------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Quality"
+label.es = "Calidad"
+
+[[menu.group.item]]
+key = "geoblender.dh_show_qaqc"
+label.en = "QA/QC quality control…"
+label.es = "Control de calidad QA/QC…"
+description.en = "Standards, blanks and duplicates"
+description.es = "Patrones, blancos y duplicados"
+entry = "R-14"
+action = "P"
+frequency = 0
+
+[[menu.group.item]]
+ref = "geoblender.dh_composite"
+
+# Exportar ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Export"
+label.es = "Exportar"
+
+[[menu.group.item]]
+ref = "geoblender.io_export_samples"

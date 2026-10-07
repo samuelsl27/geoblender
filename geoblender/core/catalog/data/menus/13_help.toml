@@ -1,0 +1,158 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Ayuda (BS §8.13). Manual y Novedades: R-13 (D-4).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_help"
+label.en = "Help"
+label.es = "Ayuda"
+description.en = "Manual, shortcuts, aliases, glossary, diagnostics, language and the Blender help"
+description.es = "Manual, atajos, alias, glosario, diagnóstico, idioma y la ayuda de Blender"
+branch = "transversal"
+icon_fallback = "HELP"
+
+# (sin rótulo) --------------------------------------------------------------------------
+[[menu.group]]
+
+[[menu.group.item]]
+key = "geoblender.ui_open_manual"
+label.en = "Geoblender manual"
+label.es = "Manual de Geoblender"
+description.en = "The manual of Geoblender; F1 on a button opens its page"
+description.es = "El manual de Geoblender; F1 sobre un botón abre su página"
+entry = "R-13"
+action = "A"
+frequency = 1
+icon_fallback = "HELP"
+
+[[menu.group.item]]
+key = "geoblender.ui_show_workflow"
+label.en = "Workflow guide"
+label.es = "Guía del flujo de trabajo"
+description.en = "The 11 steps of the work and where each one is (N ▸ Project ▸ Workflow)"
+description.es = "Los 11 pasos del trabajo y dónde está cada uno (N ▸ Proyecto ▸ Flujo de trabajo)"
+entry = "R-11"
+action = "P"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.ui_show_shortcuts"
+label.en = "Shortcut sheet"
+label.es = "Hoja de atajos"
+description.en = "The shortcuts of Geoblender, printable"
+description.es = "Los atajos de Geoblender, imprimibles"
+entry = "003"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.ui_show_aliases"
+label.en = "Command line aliases"
+label.es = "Alias de la línea de comandos"
+description.en = "The aliases that the command line (F10) understands"
+description.es = "Los alias que entiende la línea de comandos (F10)"
+entry = "003"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.ui_show_glossary"
+label.en = "Glossary"
+label.es = "Glosario"
+description.en = "Terms of RecMin and other programs and their standard term"
+description.es = "Términos de RecMin y de otros programas y su término estándar"
+entry = "003"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.ui_show_changelog"
+label.en = "What's new"
+label.es = "Novedades"
+description.en = "Changes of each version of Geoblender"
+description.es = "Cambios de cada versión de Geoblender"
+entry = "R-13"
+action = "D"
+frequency = 0
+
+[[menu.group.item]]
+separator = true
+
+[[menu.group.item]]
+key = "geoblender.ui_run_diagnostics"
+label.en = "Installation diagnostics"
+label.es = "Diagnóstico de la instalación"
+description.en = "Blender, extension, PROJ, compute engine, shortcuts and icons"
+description.es = "Blender, extensión, PROJ, motor de cálculo, atajos e iconos"
+entry = "003"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.ui_repair_interface"
+label.en = "Repair the interface"
+label.es = "Reparar la interfaz"
+description.en = "Install the top bar, the shortcuts and the icons again"
+description.es = "Vuelve a instalar la barra superior, los atajos y los iconos"
+entry = "003"
+action = "A"
+frequency = 0
+
+[[menu.group.item]]
+key = "GEOBLENDER_MT_ui_language"
+label.en = "Geoblender language"
+label.es = "Idioma de Geoblender"
+description.en = "Language of the Geoblender interface, independent of the Blender one"
+description.es = "Idioma de la interfaz de Geoblender, independiente del de Blender"
+entry = "003"
+action = "S"
+frequency = 1
+doc_id = ["ui_set_language"]
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_language?language=ES"
+label.en = "Spanish"
+label.es = "Español"
+description.en = "Geoblender in Spanish"
+description.es = "Geoblender en español"
+entry = "003"
+action = "A"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.ui_set_language?language=EN"
+label.en = "English"
+label.es = "English"
+description.en = "Geoblender in English"
+description.es = "Geoblender en inglés"
+entry = "003"
+action = "A"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.ui_show_about"
+label.en = "About Geoblender"
+label.es = "Acerca de Geoblender"
+description.en = "Version, licence GPL-3.0-or-later and components"
+description.es = "Versión, licencia GPL-3.0-or-later y componentes"
+entry = "003"
+action = "D"
+frequency = 0
+
+[[menu.group.item]]
+separator = true
+
+[[menu.group.item]]
+key = "TOPBAR_MT_help"
+label.en = "Blender help"
+label.es = "Ayuda de Blender"
+description.en = "The help menu of Blender"
+description.es = "El menú de ayuda de Blender"
+entry = "Blender"
+action = "S"
+frequency = 1

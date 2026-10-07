@@ -10,10 +10,12 @@ usa ``bpy.app.translations``, que sigue al de Blender). Cada texto de la interfa
 
 API (la del plan 003 §5.3; la spec 003 la amplía con el catálogo de comandos):
 
-- :func:`tr`: el texto de un ``msgid`` en el idioma activo, con sus valores;
+- :func:`tr`: el texto de un ``msgid`` en el idioma activo, con sus valores
+  (:func:`translate`, en un idioma dado);
 - :func:`set_language` y :func:`language`: el idioma activo (``"es"`` o ``"en"``);
 - :func:`install`: añade traducciones (las del catálogo de comandos de la 003);
-- :func:`missing_translations`: los ``msgid`` sin traducción (en el fichero o pedidos);
+- :func:`missing_translations`: los ``msgid`` sin traducción (en el fichero o pedidos), y
+  :func:`untranslated`, los de una lista (la prueba de cobertura de la spec 003);
 - :func:`format_number` y :func:`format_xyz`: números y coordenadas **absolutas**
   (float64) en el formato del idioma: en español, coma decimal y espacio fino (sin
   ruptura) de miles (``X 736 512,34  Y 4 435 871,02``); en inglés, punto decimal, comas de
@@ -111,8 +113,14 @@ def set_language(language: str) -> None:
 def tr(msgid: str, /, **values: object) -> str:
     """El texto de ``msgid`` en el idioma activo con ``values`` en sus marcadores. Sin
     traducción, el ``msgid`` (inglés), y queda en :func:`missing_translations`."""
+    return translate(_STATE.language, msgid, **values)
+
+
+def translate(language: str, msgid: str, /, **values: object) -> str:
+    """Como :func:`tr`, pero en ``language`` (``"es"`` o ``"en"``) sin cambiar el idioma
+    activo (spec 003: «Disponible en …» de la búsqueda y de la hoja de atajos)."""
     text = msgid
-    if _STATE.language != "en":
+    if language != "en":
         spanish = _STATE.installed.get(msgid) or _table().get(msgid)
         if spanish:
             text = spanish
@@ -140,6 +148,15 @@ def missing_translations() -> list[str]:
     que se han pedido sin tenerla (constitución, principio 10)."""
     empty = {msgid for msgid, text in _table().items() if not text.strip()}
     return sorted(empty | _STATE.missing)
+
+
+def untranslated(msgids: Iterable[str]) -> list[str]:
+    """Los ``msgid`` de ``msgids`` sin traducción al español (ni en ``messages.toml`` ni
+    instalada): la prueba de cobertura de la spec 003 (RNF-003-08) exige que no haya
+    ninguno. No los anota en :func:`missing_translations`."""
+    table = _table()
+    return sorted({msgid for msgid in msgids
+                   if not (_STATE.installed.get(msgid) or table.get(msgid, "").strip())})
 
 
 def format_number(value: float, decimals: int) -> str:

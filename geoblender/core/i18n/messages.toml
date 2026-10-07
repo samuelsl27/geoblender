@@ -371,3 +371,603 @@ es = "La vista «{view}» guardaba el render en «{path}», en otro volumen: su 
 
 ["The view «{view}» was saved with Blender's interface data (it could not be rewritten without it: {error}); save it again."]
 es = "La vista «{view}» se ha guardado con los datos de la interfaz de Blender (no se ha podido reescribir sin ellos: {error}); guárdela otra vez."
+
+# Interfaz (spec 003; iconos-e-idioma.md §2.3). Las etiquetas de los menús, los comandos y
+# los controles las da el catálogo de comandos (core/catalog), no este fichero.
+
+# Primera línea de cada menú del flujo (BS §6)
+
+["Step {n} of {total} · {stage}"]
+es = "Paso {n} de {total} · {stage}"
+
+# Estados de un comando (BS §7.3)
+
+["Available in {entry}"]
+es = "Disponible en {entry}"
+
+["First {step} ({path})"]
+es = "Primero {step} ({path})"
+
+["{version} is in state {state}: create a revision or a new version"]
+es = "{version} está en estado {state}: cree una revisión o una versión nueva"
+
+["Input {name} changed since {revision}"]
+es = "La entrada {name} ha cambiado desde {revision}"
+
+["Needs the compute engine ({path})"]
+es = "Necesita el motor de cálculo ({path})"
+
+["Computing: {pct} %"]
+es = "Calculando: {pct} %"
+
+["Stale: {cause} changed"]
+es = "Obsoleto: cambió {cause}"
+
+["Its place: {path}"]
+es = "Su sitio: {path}"
+
+["Only in Geoblender mode (Ctrl+F10) or from Geoblender ▾"]
+es = "Solo en modo Geoblender (Ctrl+F10) o desde Geoblender ▾"
+
+# Estados de la versión y tipos de cifra: se guardan como los escribe ADR-0013 (VIGENTE,
+# MEDIDO…); la interfaz inglesa solo traduce la etiqueta (II §2.3).
+
+["DRAFT"]
+es = "BORRADOR"
+
+["CURRENT"]
+es = "VIGENTE"
+
+["SUPERSEDED"]
+es = "SUPERADO"
+
+["DISCARDED"]
+es = "DESCARTADO"
+
+["MEASURED"]
+es = "MEDIDO"
+
+["CALCULATED"]
+es = "CALCULADO"
+
+["ADOPTED"]
+es = "ADOPTADO"
+
+["ASSUMPTION"]
+es = "HIPÓTESIS"
+
+["MEA"]
+es = "MED"
+
+["CAL"]
+es = "CAL"
+
+["ADO"]
+es = "ADO"
+
+["ASM"]
+es = "HIP"
+
+# Barra de estado minera y avisos (AR §6; CW §3.1; RF-003-05, RF-003-28)
+
+["No project"]
+es = "Sin proyecto"
+
+["Cursor:"]
+es = "Cursor:"
+
+["Mouse:"]
+es = "Ratón:"
+
+["Snap: {mode}"]
+es = "Encaje: {mode}"
+
+["Section {name} · ±{front} | {step} m"]
+es = "Sección {name} · ±{front} | {step} m"
+
+["Clipping: {mode}"]
+es = "Recorte: {mode}"
+
+["Object: {name}"]
+es = "Objeto: {name}"
+
+["Slope {value} %"]
+es = "Pend. {value} %"
+
+["{n} jobs"]
+es = "{n} trabajos"
+
+["In use by {user} since {time}"]
+es = "En uso por {user} desde las {time}"
+
+["The view is removed; the data stay in the project. To retire them: Inventory ▸ Discard"]
+es = "Se elimina la vista; los datos siguen en el proyecto. Para retirarlos: Inventario ▸ Descartar"
+
+["The Geoblender workspace has been added to this file"]
+es = "Se ha añadido el espacio de trabajo Geoblender a este fichero"
+
+["Geoblender interface in compatibility mode"]
+es = "Interfaz de Geoblender en modo de compatibilidad"
+
+# Hojas de ayuda: atajos, alias y glosario (spec 003; RF-003-27). Los títulos de las hojas de
+# alias y del glosario son las etiquetas de sus comandos en el catálogo.
+
+["Geoblender shortcuts"]
+es = "Atajos de Geoblender"
+
+["Shortcut"]
+es = "Atajo"
+
+["Action"]
+es = "Acción"
+
+["Where"]
+es = "Dónde"
+
+["Entry"]
+es = "Entrada"
+
+["Keymap"]
+es = "Mapa"
+
+["Alias"]
+es = "Alias"
+
+["Program"]
+es = "Programa"
+
+["Term"]
+es = "Término"
+
+["Standard term"]
+es = "Término estándar"
+
+["Shift"]
+es = "Mayús"
+
+["Page Up"]
+es = "RePág"
+
+["Page Down"]
+es = "AvPág"
+
+["Home"]
+es = "Inicio"
+
+["Numpad +"]
+es = "Num +"
+
+["Numpad −"]
+es = "Num −"
+
+["Window"]
+es = "Ventana"
+
+["3D View"]
+es = "Vista 3D"
+
+# Preferencias de la interfaz (spec 003; RF-003-08, RF-003-10, RF-003-11, RF-003-21,
+# RF-003-28). «Interface», «Geoblender language», «Spanish» y «English» también son textos del
+# catálogo de comandos, con la misma traducción.
+
+["Interface"]
+es = "Interfaz"
+
+["Geoblender language"]
+es = "Idioma de Geoblender"
+
+["Spanish"]
+es = "Español"
+
+["English"]
+es = "English"
+
+["Top bar titles"]
+es = "Títulos de la barra"
+
+["Automatic"]
+es = "Automático"
+
+["Text"]
+es = "Texto"
+
+["Icons"]
+es = "Iconos"
+
+["Quick access row of the view"]
+es = "Fila de acceso rápido de la vista"
+
+["Hide what is not available yet"]
+es = "Ocultar lo no disponible"
+
+["Mining status bar"]
+es = "Barra de estado minera"
+
+# Barra superior (spec 003; RF-003-03; CW §3.3: con el área maximizada, también «Volver»).
+
+["Back to Previous"]
+es = "Volver"
+
+# Vistas (spec 003; RF-003-12 a RF-003-15; spec §7 y §8)
+
+["There is no 3D view in this window"]
+es = "No hay ninguna Vista 3D en esta ventana"
+
+["define the work window"]
+es = "defina la ventana de trabajo"
+
+["Save view {n} first ({shortcut})"]
+es = "Guarde antes la vista {n} ({shortcut})"
+
+["View {n} saved"]
+es = "Vista {n} guardada"
+
+# Leyenda y Filtro de datos genéricos (spec 003; RF-003-09; spec §8; contrato 6)
+
+["Select drillholes (005) or a block model (R-22)"]
+es = "Seleccione sondeos (005) o un modelo de bloques (R-22)"
+
+["No filter"]
+es = "Sin filtro"
+
+["The field «{field}» is not one of the active type"]
+es = "El campo «{field}» no es del tipo activo"
+
+# Acceso rápido de la vista (spec 003; RF-003-11; AR §3.3): el botón de los plegados.
+
+["»"]
+es = "»"
+
+["Geoblender interface repaired"]
+es = "Interfaz de Geoblender reparada"
+
+# Disposiciones (spec 003, T25) ------------------------------------------------------
+
+["Add layout"]
+es = "Añadir disposición"
+
+["Show the mining status bar"]
+es = "Mostrar la barra de estado minera"
+
+["This window is not in a Geoblender layout"]
+es = "Esta ventana no está en una disposición de Geoblender"
+
+["The main layout cannot be removed"]
+es = "La disposición principal no se puede quitar"
+
+["«{name}» is not a layout of the Geoblender resources"]
+es = "«{name}» no es una disposición de los recursos de Geoblender"
+
+["There is no workspace «{name}»"]
+es = "No hay ningún espacio de trabajo «{name}»"
+
+["The layout «{name}» has been added to this file"]
+es = "Se ha añadido la disposición «{name}» a este fichero"
+
+["The layout «{name}» has been removed; the data stay in the file"]
+es = "Se ha quitado la disposición «{name}»; los datos siguen en el fichero"
+
+["The layout «{name}» has been restored"]
+es = "Se ha restaurado la disposición «{name}»"
+
+# Menú del tipo activo (spec 003, T26) -------------------------------------------------
+
+["Selection ({n})"]
+es = "Selección ({n})"
+
+["Geoblender · {kind}"]
+es = "Geoblender · {kind}"
+
+["Select an item of Geoblender"]
+es = "Seleccione un elemento de Geoblender"
+
+# Barra de estado minera (spec 003, T27) ------------------------------------------------
+
+["off"]
+es = "desactivado"
+
+["increment"]
+es = "incremento"
+
+["grid"]
+es = "rejilla"
+
+["vertex"]
+es = "vértice"
+
+["edge"]
+es = "arista"
+
+["face"]
+es = "cara"
+
+["nearest face"]
+es = "cara más cercana"
+
+["volume"]
+es = "volumen"
+
+["edge midpoint"]
+es = "punto medio de arista"
+
+["perpendicular"]
+es = "perpendicular"
+
+["band"]
+es = "banda"
+
+["box"]
+es = "caja"
+
+# Elementos de los enumerados (spec 003, T29: nombres y descripciones con traducción) ---
+
+["Toggle"]
+es = "Conmutar"
+
+["Switch to the other interface"]
+es = "Pasa a la otra interfaz"
+
+["Switch to the Geoblender interface"]
+es = "Pasa a la interfaz de Geoblender"
+
+["Switch to the Blender interface"]
+es = "Pasa a la interfaz de Blender"
+
+["Perspective"]
+es = "Perspectiva"
+
+["Perspective projection"]
+es = "Proyección en perspectiva"
+
+["Orthographic"]
+es = "Ortográfica"
+
+["Orthographic projection"]
+es = "Proyección ortográfica"
+
+["The first level that fits next to the right block of Blender"]
+es = "El primer nivel que cabe junto al bloque derecho de Blender"
+
+["Menu titles as text"]
+es = "Títulos de los menús como texto"
+
+["Menu titles as icons"]
+es = "Títulos de los menús como iconos"
+
+# Línea de comandos F10 (spec 003, T32) -------------------------------------------------
+
+["Run"]
+es = "Ejecutar"
+
+["Name in Spanish or English, alias or entry (R-38)"]
+es = "Nombre en español o en inglés, alias o entrada (R-38)"
+
+["No command matches «{query}»"]
+es = "Ningún comando coincide con «{query}»"
+
+# Ayuda: hojas, diagnóstico y «Acerca de» (spec 003, T33; RF-003-27) --------------------
+
+["Printable version…"]
+es = "Versión imprimible…"
+
+["Page written in {path}"]
+es = "Página escrita en {path}"
+
+["Copy to the clipboard"]
+es = "Copiar al portapapeles"
+
+["Diagnostics copied to the clipboard"]
+es = "Diagnóstico copiado al portapapeles"
+
+["Extension"]
+es = "Extensión"
+
+["Top bar"]
+es = "Barra superior"
+
+["normal"]
+es = "normal"
+
+["compatibility mode"]
+es = "modo de compatibilidad"
+
+["replaced by another add-on (Help ▸ Repair the interface)"]
+es = "sustituida por otro complemento (Ayuda ▸ Reparar la interfaz)"
+
+["not installed"]
+es = "sin instalar"
+
+["Shortcuts"]
+es = "Atajos"
+
+["{n} of {total} registered"]
+es = "{n} de {total} registrados"
+
+["Conflicting shortcuts"]
+es = "Atajos en conflicto"
+
+["none"]
+es = "ninguno"
+
+["{n} of {total} loaded ({size} px)"]
+es = "{n} de {total} cargados ({size} px)"
+
+["{n} of {total} loaded"]
+es = "{n} de {total} cargados"
+
+["Blender language"]
+es = "Idioma de Blender"
+
+["Compute engine"]
+es = "Motor de cálculo"
+
+["Version {version}"]
+es = "Versión {version}"
+
+["Author"]
+es = "Autor"
+
+["Licence"]
+es = "Licencia"
+
+["Code GPL-3.0-or-later; icons, images and layouts CC0-1.0"]
+es = "Código GPL-3.0-or-later; iconos, imágenes y disposiciones CC0-1.0"
+
+["Third-party data"]
+es = "Datos de terceros"
+
+# Propiedades de los operadores (panel F9, ventanas de propiedades y mapa de teclado;
+# spec 003, T33: bl.ui.registry las traduce al cambiar de idioma) ----------------------
+
+["Folder where the project folder is created"]
+es = "Carpeta donde se crea la carpeta del proyecto"
+
+["Project name"]
+es = "Nombre del proyecto"
+
+["What the elevations refer to (local reference)"]
+es = "A qué se refieren las cotas (referencia local)"
+
+["Project folder"]
+es = "Carpeta del proyecto"
+
+["The <Name>.gbproj folder"]
+es = "La carpeta <Nombre>.gbproj"
+
+["Open without writing anything in the project"]
+es = "Abre sin escribir nada en el proyecto"
+
+["Why the window changes (recorded with the change)"]
+es = "Por qué cambia la ventana (se registra con el cambio)"
+
+["Folder for the local copy (empty: the one in the preferences, or the extension's user data)"]
+es = "Carpeta de la copia local (vacía: la de las preferencias o la de los datos de usuario de la extensión)"
+
+["Mode"]
+es = "Modo"
+
+["Half width"]
+es = "Semiancho"
+
+["Half width of the band, on each side of the plane through the 3D cursor"]
+es = "Semiancho de la banda, a cada lado del plano que pasa por el cursor 3D"
+
+["Target"]
+es = "Destino"
+
+["Menu"]
+es = "Menú"
+
+["Panel"]
+es = "Panel"
+
+["Keep open"]
+es = "Mantener abierto"
+
+["Slot"]
+es = "Ranura"
+
+["Field"]
+es = "Campo"
+
+["Expression"]
+es = "Expresión"
+
+["Layout"]
+es = "Disposición"
+
+["Workspace"]
+es = "Espacio de trabajo"
+
+["Printable"]
+es = "Imprimible"
+
+["Copy"]
+es = "Copiar"
+
+["Language"]
+es = "Idioma"
+
+# Propiedades de los grupos de propiedades y de las preferencias (spec 003, T37: se
+# registran en el idioma de la última sesión) --------------------------------------
+
+["Project UID"]
+es = "UID del proyecto"
+
+["Identity of the Geoblender project of this scene"]
+es = "Identidad del proyecto de Geoblender de esta escena"
+
+["Project path"]
+es = "Ruta del proyecto"
+
+["Project folder, relative to this .blend file (//…)"]
+es = "Carpeta del proyecto, relativa a este fichero .blend (//…)"
+
+["Horizontal CRS (EPSG)"]
+es = "CRS horizontal (EPSG)"
+
+["Vertical CRS (EPSG; 0 = local reference)"]
+es = "CRS vertical (EPSG; 0 = referencia local)"
+
+["X0 (m)"]
+es = "X0 (m)"
+
+["Y0 (m)"]
+es = "Y0 (m)"
+
+["GeoOrigin easting, whole metres"]
+es = "Este del GeoOrigin, en metros enteros"
+
+["GeoOrigin northing, whole metres"]
+es = "Norte del GeoOrigin, en metros enteros"
+
+["GeoOrigin elevation, whole metres"]
+es = "Cota del GeoOrigin, en metros enteros"
+
+["View out of date"]
+es = "Vista desfasada"
+
+["The view does not match the georeference of the project"]
+es = "La vista no coincide con la georreferencia del proyecto"
+
+["Minutes without activity after which another session's lock can be forced"]
+es = "Minutos sin actividad tras los que se puede forzar el cerrojo de otra sesión"
+
+["Folder for local working copies (empty: the extension's user data)"]
+es = "Carpeta de las copias locales de trabajo (vacía: los datos de usuario de la extensión)"
+
+["Language of the Geoblender interface, independent of Blender's"]
+es = "Idioma de la interfaz de Geoblender, independiente del de Blender"
+
+["How the Geoblender menus are shown in the top bar"]
+es = "Cómo se ven los menús de Geoblender en la barra superior"
+
+["Show the quick access row in each 3D view in Geoblender mode"]
+es = "Muestra la fila de acceso rápido en cada Vista 3D en modo Geoblender"
+
+["Hide inside the menus the commands that are not available yet"]
+es = "Oculta dentro de los menús los comandos que aún no están disponibles"
+
+["Show the project, its EPSG and the 3D cursor in the status bar"]
+es = "Muestra el proyecto, su EPSG y el cursor 3D en la barra de estado"
+
+["Centre (local)"]
+es = "Centro (local)"
+
+["Centre of the view in local coordinates (relative to the GeoOrigin)"]
+es = "Centro de la vista en coordenadas locales (relativas al GeoOrigin)"
+
+["Orientation"]
+es = "Orientación"
+
+["Distance"]
+es = "Distancia"
+
+["Projection"]
+es = "Proyección"
+
+["Geoblender mode"]
+es = "Modo Geoblender"
+
+["This workspace is a Geoblender layout"]
+es = "Este espacio de trabajo es una disposición de Geoblender"

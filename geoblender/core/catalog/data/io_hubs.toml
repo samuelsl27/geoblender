@@ -1,0 +1,417 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Concentradores de intercambio (BS §8.14): Importar ▸, Exportar ▸ y QGIS ▸ (su casa
+# está en Proyecto ▸ Intercambio; aquí, su contenido) y Datos ▾ (acceso rápido del proyecto).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_io_import"
+
+# Detectar ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Detect"
+label.es = "Detectar"
+
+[[menu.group.item]]
+key = "geoblender.io_import_file"
+label.en = "Import a file…"
+label.es = "Importar un fichero…"
+description.en = "Detect the format of the file and import it (also by dropping it on the 3D view)"
+description.es = "Detecta el formato del fichero y lo importa (también al soltarlo sobre la Vista 3D)"
+entry = "006"
+action = "D"
+frequency = 3
+aliases = ["importar", "import"]
+
+# Terreno y SIG -------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Terrain and GIS"
+label.es = "Terreno y SIG"
+
+[[menu.group.item]]
+ref = "geoblender.gis_import_dtm"
+
+[[menu.group.item]]
+ref = "geoblender.gis_import_points"
+
+[[menu.group.item]]
+ref = "geoblender.gis_import_vector"
+
+[[menu.group.item]]
+ref = "geoblender.gis_import_topo_survey"
+
+[[menu.group.item]]
+ref = "geoblender.gis_import_orthophoto"
+
+[[menu.group.item]]
+ref = "geoblender.gis_import_point_cloud"
+
+# CAD y otros programas -----------------------------------------------------------------
+[[menu.group]]
+label.en = "CAD and other programs"
+label.es = "CAD y otros programas"
+
+[[menu.group.item]]
+key = "geoblender.io_import_dxf"
+label.en = "DXF…"
+label.es = "DXF…"
+description.en = "3D polylines, 3DFACE and points with elevation from a DXF"
+description.es = "Polilíneas 3D, 3DFACE y puntos con cota de un DXF"
+entry = "R-65"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.io_import_dwg"
+label.en = "DWG…"
+label.es = "DWG…"
+description.en = "DWG through an external converter"
+description.es = "DWG mediante un conversor externo"
+entry = "R-66"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.io_import_landxml"
+label.en = "LandXML and 2DM…"
+label.es = "LandXML y 2DM…"
+description.en = "Surfaces and alignments in LandXML; QGIS meshes in 2DM"
+description.es = "Superficies y ejes en LandXML; mallas de QGIS en 2DM"
+entry = "R-67"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.io_import_aplitop"
+label.en = "Aplitop DTM…"
+label.es = "MDT de Aplitop…"
+description.en = "Surfaces of Aplitop TCP-MDT (.sup)"
+description.es = "Superficies de Aplitop TCP-MDT (.sup)"
+entry = "R-68"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.io_import_surpac"
+label.en = "Surpac…"
+label.es = "Surpac…"
+description.en = "Surpac strings and DTMs (.str, .dtm)"
+description.es = "Strings y MDT de Surpac (.str, .dtm)"
+entry = "R-69"
+action = "D"
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.gis_import_mesh"
+label.en = "OBJ, PLY or glTF meshes…"
+label.es = "Mallas OBJ, PLY o glTF…"
+description.en = "Survey meshes with their origin, without losing precision"
+description.es = "Mallas de levantamiento con su origen, sin perder precisión"
+entry = "R-72"
+action = "D"
+frequency = 1
+
+# Sondeos y geología --------------------------------------------------------------------
+[[menu.group]]
+label.en = "Drillholes and geology"
+label.es = "Sondeos y geología"
+
+[[menu.group.item]]
+ref = "geoblender.dh_import_drillholes"
+
+[[menu.group.item]]
+ref = "geoblender.dh_import_recmin_mdb"
+
+[[menu.group.item]]
+ref = "geoblender.geo_import_sections_dxf"
+
+# RecMin y modelos de bloques -----------------------------------------------------------
+[[menu.group]]
+label.en = "RecMin and block models"
+label.es = "RecMin y modelos de bloques"
+
+[[menu.group.item]]
+key = "geoblender.io_import_recmin_files"
+label.en = "RecMin files…"
+label.es = "Ficheros RecMin…"
+description.en = "RecMin text files: .su/.sup, .lin, .pts, .T3, .TOT"
+description.es = "Ficheros de texto de RecMin: .su/.sup, .lin, .pts, .T3, .TOT"
+entry = "R-64"
+action = "D"
+frequency = 2
+jargon = [["RecMin", "LIN"], ["RecMin", "TOT"]]
+
+[[menu.group.item]]
+key = "geoblender.io_import_recmin_blocks"
+label.en = "RecMin block models…"
+label.es = "Modelos de bloques RecMin…"
+description.en = "RecMin block models (BLK, MDB)"
+description.es = "Modelos de bloques de RecMin (BLK, MDB)"
+entry = "R-64"
+action = "D"
+background = true
+frequency = 1
+jargon = [["RecMin", "BLK"]]
+
+[[menu.group.item]]
+key = "geoblender.io_import_block_model"
+label.en = "Block model…"
+label.es = "Modelo de bloques…"
+description.en = "Block model from CSV, GSLIB, Datamine or Whittle"
+description.es = "Modelo de bloques desde CSV, GSLIB, Datamine o Whittle"
+entry = "R-70"
+action = "D"
+background = true
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.io_import_omf"
+label.en = "OMF 2…"
+label.es = "OMF 2…"
+description.en = "Open Mining Format 2"
+description.es = "Open Mining Format 2"
+entry = "R-71"
+action = "D"
+background = true
+frequency = 0
+
+[[menu]]
+id = "GEOBLENDER_MT_io_export"
+
+# Terreno y SIG -------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Terrain and GIS"
+label.es = "Terreno y SIG"
+
+[[menu.group.item]]
+ref = "geoblender.gis_export_raster"
+
+[[menu.group.item]]
+ref = "geoblender.gis_export_gpkg"
+
+[[menu.group.item]]
+key = "geoblender.gis_export_breaklines"
+label.en = "Contour lines and breaklines of the design…"
+label.es = "Curvas y líneas de rotura del diseño…"
+description.en = "Contour lines and breaklines of the design to GPKG or DXF"
+description.es = "Curvas y líneas de rotura del diseño a GPKG o DXF"
+entry = "R-61"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+ref = "geoblender.gis_export_profiles"
+
+[[menu.group.item]]
+key = "geoblender.gis_export_mesh"
+label.en = "OBJ, PLY or glTF meshes…"
+label.es = "Mallas OBJ, PLY o glTF…"
+description.en = "Meshes with their origin, without losing precision"
+description.es = "Mallas con su origen, sin perder precisión"
+entry = "R-72"
+action = "D"
+frequency = 1
+
+# CAD y otros programas -----------------------------------------------------------------
+[[menu.group]]
+label.en = "CAD and other programs"
+label.es = "CAD y otros programas"
+
+[[menu.group.item]]
+key = "geoblender.io_export_dxf"
+label.en = "DXF…"
+label.es = "DXF…"
+description.en = "DXF R2013 by layers with ACI colours (a ZIP if it exceeds 20 MB)"
+description.es = "DXF R2013 por capas con colores ACI (un ZIP si pasa de 20 MB)"
+entry = "R-65"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.io_export_dwg"
+label.en = "DWG…"
+label.es = "DWG…"
+description.en = "DWG through an external converter"
+description.es = "DWG mediante un conversor externo"
+entry = "R-66"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.io_export_landxml"
+label.en = "LandXML and 2DM…"
+label.es = "LandXML y 2DM…"
+description.en = "Surfaces in LandXML; QGIS meshes in 2DM"
+description.es = "Superficies en LandXML; mallas de QGIS en 2DM"
+entry = "R-67"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.io_export_surpac"
+label.en = "Surpac…"
+label.es = "Surpac…"
+description.en = "Surpac strings and DTMs"
+description.es = "Strings y MDT de Surpac"
+entry = "R-69"
+action = "D"
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.io_export_recmin_files"
+label.en = "RecMin files…"
+label.es = "Ficheros RecMin…"
+description.en = "RecMin text files: .su, .lin, .T3"
+description.es = "Ficheros de texto de RecMin: .su, .lin, .T3"
+entry = "R-64"
+action = "D"
+frequency = 1
+
+# Bloques y muestras --------------------------------------------------------------------
+[[menu.group]]
+label.en = "Blocks and samples"
+label.es = "Bloques y muestras"
+
+[[menu.group.item]]
+key = "geoblender.io_export_block_model"
+label.en = "Block model…"
+label.es = "Modelo de bloques…"
+description.en = "Block model to CSV, GSLIB, Datamine or Whittle"
+description.es = "Modelo de bloques a CSV, GSLIB, Datamine o Whittle"
+entry = "R-70"
+action = "D"
+background = true
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.io_export_block_centroids"
+label.en = "Block centroids for QGIS…"
+label.es = "Centroides de bloques para QGIS…"
+description.en = "Centroids of the blocks as GeoParquet for QGIS"
+description.es = "Centroides de los bloques en GeoParquet para QGIS"
+entry = "R-70"
+action = "D"
+background = true
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.io_export_samples"
+label.en = "Samples and composites…"
+label.es = "Muestras y compuestos…"
+description.en = "Samples and composites to CSV or GSLIB"
+description.es = "Muestras y compuestos a CSV o GSLIB"
+entry = "R-70"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.io_export_omf"
+label.en = "OMF 2…"
+label.es = "OMF 2…"
+description.en = "Open Mining Format 2"
+description.es = "Open Mining Format 2"
+entry = "R-71"
+action = "D"
+background = true
+frequency = 0
+
+# Otros programas y administración ------------------------------------------------------
+[[menu.group]]
+label.en = "Other programs and administration"
+label.es = "Otros programas y administración"
+
+[[menu.group.item]]
+key = "geoblender.io_export_stability_sections"
+label.en = "Sections for 2D slope stability…"
+label.es = "Secciones para estabilidad de taludes 2D…"
+description.en = "Sections for 2D slope stability programs"
+description.es = "Secciones para programas de estabilidad de taludes 2D"
+entry = "R-76"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.io_export_annual_work_plan"
+label.en = "Digital annual work plan…"
+label.es = "Plan de labores digital…"
+description.en = "Annual work plan in the regional digital format"
+description.es = "Plan de labores en el formato digital autonómico"
+entry = "R-77"
+action = "D"
+frequency = 2
+
+[[menu]]
+id = "GEOBLENDER_MT_gis_qgis"
+
+# (sin rótulo) --------------------------------------------------------------------------
+[[menu.group]]
+
+[[menu.group.item]]
+key = "geoblender.gis_open_in_qgis"
+label.en = "Open the project in QGIS"
+label.es = "Abrir el proyecto en QGIS"
+description.en = "Open the GeoPackage of the project in QGIS"
+description.es = "Abre el GeoPackage del proyecto en QGIS"
+entry = "R-73"
+action = "A"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.gis_publish_qgis"
+label.en = "Publish the version in QGIS…"
+label.es = "Publicar la versión en QGIS…"
+description.en = "Layer group with the IMGA styles; only the current version visible"
+description.es = "Grupo de capas con los estilos de IMGA; solo la vigente visible"
+entry = "R-73"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.gis_pull_qgis_changes"
+label.en = "Bring back the changes made in QGIS…"
+label.es = "Traer los cambios hechos en QGIS…"
+description.en = "Limits and marks edited in QGIS"
+description.es = "Límites y marcas editados en QGIS"
+entry = "R-73"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.io_toggle_qgis_link"
+label.en = "Live link with QGIS"
+label.es = "Enlace en vivo con QGIS"
+description.en = "Keep Blender and QGIS in sync while both are open"
+description.es = "Mantiene Blender y QGIS sincronizados mientras están abiertos"
+entry = "R-75"
+action = "T"
+frequency = 0
+
+[[menu]]
+id = "GEOBLENDER_MT_core_data"
+label.en = "Data"
+label.es = "Datos"
+description.en = "Import, load into the view, unload and export"
+description.es = "Importar, cargar en la vista, descargar y exportar"
+icon_fallback = "IMPORT"
+entry = "002"
+action = "S"
+frequency = 3
+
+# (sin rótulo) --------------------------------------------------------------------------
+[[menu.group]]
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_io_import"
+
+[[menu.group.item]]
+mirror = "geoblender.core_load_into_view"
+
+[[menu.group.item]]
+mirror = "geoblender.core_unload_from_view"
+
+[[menu.group.item]]
+mirror = "GEOBLENDER_MT_io_export"

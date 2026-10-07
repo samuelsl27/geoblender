@@ -1,0 +1,171 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 6 de 11: Optimización (BS §8.6).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_optimization"
+label.en = "Optimization"
+label.es = "Optimización"
+description.en = "Economic scenario, slopes, optimal pit, nested shells and candidate phases"
+description.es = "Escenario económico, taludes, corta óptima, conchas anidadas y fases candidatas"
+stage.en = "Pit optimization"
+stage.es = "Optimización de corta"
+step = 6
+branch = "convergence"
+icon = "gb_menu_optimization"
+icon_fallback = "MESH_CONE"
+
+# Parámetros ----------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Parameters"
+label.es = "Parámetros"
+
+[[menu.group.item]]
+key = "geoblender.opt_edit_scenario"
+label.en = "Economic scenario…"
+label.es = "Escenario económico…"
+description.en = "Prices, costs, recoveries and dilution"
+description.es = "Precios, costes, recuperaciones y dilución"
+entry = "R-46"
+action = "P"
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.opt_edit_slope_sectors"
+label.en = "Geotechnical sectors…"
+label.es = "Sectores geotécnicos…"
+description.en = "Slope rosette by azimuth sectors"
+description.es = "Roseta de taludes por sectores de azimut"
+entry = "R-46"
+action = "P"
+frequency = 0
+jargon = [["RecMin", "Roseta"]]
+
+[[menu.group.item]]
+key = "geoblender.opt_compute_block_value"
+label.en = "Block value and destination"
+label.es = "Valor del bloque y destino"
+description.en = "Economic value and destination of each block"
+description.es = "Valor económico y destino de cada bloque"
+entry = "R-46"
+action = "A"
+background = true
+frequency = 0
+
+# Corta óptima --------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Optimal pit"
+label.es = "Corta óptima"
+
+[[menu.group.item]]
+key = "geoblender.opt_optimize_pit"
+label.en = "Optimal pit…"
+label.es = "Corta óptima…"
+description.en = "Optimal pit by Lerchs-Grossmann or pseudoflow"
+description.es = "Corta óptima por Lerchs-Grossmann o pseudoflow"
+entry = "R-48"
+action = "D"
+background = true
+frequency = 0
+jargon = [["RecMin", "Cortas económicas"]]
+
+[[menu.group.item]]
+key = "geoblender.opt_compute_nested_shells"
+label.en = "Nested shells…"
+label.es = "Conchas anidadas…"
+description.en = "Nested pit shells for a series of revenue factors"
+description.es = "Conchas anidadas para una serie de factores de ingreso"
+entry = "R-48"
+action = "D"
+background = true
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.opt_run_floating_cone"
+label.en = "Floating cone…"
+label.es = "Cono flotante…"
+description.en = "Heuristic floating cone, to compare"
+description.es = "Cono flotante heurístico, para comparar"
+entry = "R-47"
+action = "D"
+background = true
+frequency = 0
+jargon = [["RecMin", "Cono flotante"]]
+
+# Analizar ------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Analyze"
+label.es = "Analizar"
+
+[[menu.group.item]]
+key = "geoblender.opt_show_pit_by_pit"
+label.en = "Shell by shell…"
+label.es = "Concha a concha…"
+description.en = "Tonnes and value of each shell, best and worst cases"
+description.es = "Toneladas y valor de cada concha, casos mejor y peor"
+entry = "R-48"
+action = "P"
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.opt_select_shell"
+label.en = "Choose the final shell…"
+label.es = "Elegir la concha final…"
+description.en = "Choose the shell that the pit design follows"
+description.es = "Elige la concha que sigue el diseño de corta"
+entry = "R-48"
+action = "D"
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.opt_check_slopes"
+label.en = "Check effective slopes"
+label.es = "Comprobar taludes efectivos"
+description.en = "Check the effective slopes of the shell"
+description.es = "Comprueba los taludes efectivos de la concha"
+entry = "R-48"
+action = "A"
+frequency = 0
+
+# Fases y secuencia ---------------------------------------------------------------------
+[[menu.group]]
+label.en = "Phases and sequence"
+label.es = "Fases y secuencia"
+
+[[menu.group.item]]
+key = "geoblender.opt_generate_pushbacks"
+label.en = "Automatic pit phases…"
+label.es = "Fases de corta automáticas…"
+description.en = "Pit phases (pushbacks) generated from the nested shells"
+description.es = "Fases de corta (pushbacks) generadas desde las conchas anidadas"
+entry = "R-55"
+action = "D"
+background = true
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.opt_schedule_benches"
+label.en = "Bench-phase scheduling and NPV…"
+label.es = "Secuenciación banco-fase y VAN…"
+description.en = "Sequence of benches and phases that maximises the NPV"
+description.es = "Secuencia de bancos y fases que maximiza el VAN"
+entry = "R-55"
+action = "D"
+background = true
+frequency = 0
+
+# Hacia el diseño -----------------------------------------------------------------------
+[[menu.group]]
+label.en = "Towards the design"
+label.es = "Hacia el diseño"
+
+[[menu.group.item]]
+ref = "geoblender.des_design_pit_from_shell"
+
+[[menu.group.item]]
+ref = "geoblender.res_create_phases_from_shells"

@@ -77,3 +77,13 @@ MIRROR_EXCLUDED: tuple[str, ...] = (
 )
 MIRROR_TEMP_SUFFIX = ".gb-espejo~"  # temporal de cada copia en el destino (§5.4.8)
 MIRROR_STATE_PARTS: tuple[str, ...] = ("Geoblender", "espejo")  # bajo %LOCALAPPDATA%
+
+# Plantilla de aplicación y lanzador (spec 003, T34; ADR-0003; CW §7; D-2): las fuentes
+# están en packaging/ (fuera de la extensión); el id de la plantilla es el de ADR-0003.
+APP_TEMPLATE_ID = "Geoblender"
+APP_TEMPLATE_RELPATH = f"packaging/app_template/{APP_TEMPLATE_ID}"
+LAUNCHER_NAME = f"{APP_TEMPLATE_ID}.cmd"
+LAUNCHER_RELPATH = f"packaging/{LAUNCHER_NAME}"
+SPLASH_SVG_RELPATH = "assets/splash/splash.svg"
+UI_BLEND_RELPATH = f"{RESOURCES_RELPATH}/geoblender_ui.blend"
+LAYOUTS_TOML_RELPATH = f"{EXTENSION_DIR}/core/catalog/data/layouts.toml"

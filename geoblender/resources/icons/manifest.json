@@ -1,0 +1,295 @@
+{
+  "blender": "5.2.1",
+  "icons": {
+    "gb_branch_common": {
+      "png32": "dd92b0bf0651d1e1a5e8555e1076fcee5f94c29aea780c282352d52c579a9a85",
+      "png64": "8255c64faed49bdc47ea57c85f7db387960c68dbdd57fd3dfb821a4fa34fd005",
+      "svg": "f06f6e9f85d6138ddd9db81cbd9517ad7874b4dcb1b9febfe409fe28f38411dc"
+    },
+    "gb_branch_convergence": {
+      "png32": "b011ca8d415c4562c5e782b3fa61b90ab61332acfbc4486fa61426a0926952c6",
+      "png64": "5e1f3470dafa0f37b3b150b5ae0d862eeb04f85d2371f86b5bd95c4a9f4b4cc1",
+      "svg": "dadbe702145c371c3e85fb0621aa92b0384125a111f8dcd4458e5f0c321d8772"
+    },
+    "gb_branch_design": {
+      "png32": "da4192854cc30ac1344462b69a64355db71dc89f8593bcb177593b54b8591917",
+      "png64": "dbacf05c170661fe5673bf64d43d8d62484e3846ee7e1071873adf3432e61e4d",
+      "svg": "d3496d9dfc7e6c8067f5969cb3eb8b7332e6d593a566765af49054f052ced357"
+    },
+    "gb_branch_geology": {
+      "png32": "abe99aa84b8ff0feee592243890c1190cc586940864ab198ab2bf1fab86898f8",
+      "png64": "375796ce107a6995aa3a84442352bbe3ed386b94039a47b96fa3a9ede245e5bb",
+      "svg": "fc75d9fa33ddd254da60f6786788b65cb086629b6c8ffb9bf6f0f20d9663f984"
+    },
+    "gb_kind_block_model": {
+      "png32": "c4e2fb9147055e8cdf1ea8bd4723ea071fd37d4595734521c9c8560314fa17c7",
+      "png64": "597c43043dff4995a4f7b4b4882aa9689f0eede452d39105ce2d7217a924f3d5",
+      "svg": "bc408d1552039565d69527de29da70b20016eb8713b3ff66c2aeb045ebd3480b"
+    },
+    "gb_kind_constraint": {
+      "png32": "3d189bc292bbc8f4ec5aad8537b8890721375be531b848d83f381ed74e06ef1d",
+      "png64": "2d9018e22418c642cfc1407b87682de755637935242cfb57feba4b1026d992fa",
+      "svg": "7f777aaf49548bdf7502fa6c22e48d5b75313dd5d22a2c8dea5f5b9f2fc3715c"
+    },
+    "gb_kind_design": {
+      "png32": "802e001efa436bb5c58b20ef26d63f83086c75d7b2dd9c61b9573895d6d38790",
+      "png64": "a2eb4c6c918a14ac2d2ca7de904923dbf629064c2d3ab6df6958536829e506e1",
+      "svg": "be7f9e56916d5f937fe6ec45847d12235565434803fef8a29b763d49d94e3f42"
+    },
+    "gb_kind_design_entity": {
+      "png32": "a1b7e0d7e8cd49d2ff94c40e89353b6d44a8b8be5a032d108e54a5bd116b27be",
+      "png64": "534e8a4d5aa0ca820505a33ecb4c985b7e50b7fd8a361dedb420cc2c8125dce2",
+      "svg": "482884121f88a245c4123ac3c854ef61db60536e84a185d17b8db7efe4cb6e17"
+    },
+    "gb_kind_drawing": {
+      "png32": "9036ff8ccf14becd528b8ddd9950046c86e059f2e62ff115f0e0217b9a09978c",
+      "png64": "c53f39efeaf08376408eda69e01eb825654cd3ccc540663260ea39efa2fc1372",
+      "svg": "31c89db2ae95f155419aecd9f83410f7a9adb1f8f07d17ae63cc59e1e863c139"
+    },
+    "gb_kind_drillholes": {
+      "png32": "22887a1e5944095975c61fc1c59384e2185ee49a046d044c0ad60b959daecc98",
+      "png64": "3d427c2f321788193e75e3e0b2b79c3450258f17e02f968b45d424ace7f73c9d",
+      "svg": "8ea0b63cf61a85afa9285051dfa0c5ee7cdd149dce5018b3324871a0bdffd5c6"
+    },
+    "gb_kind_phase": {
+      "png32": "c06c1e42630474cce3fe8381c6a157eb253a10d07db0e49ee579c14fcd6a30ff",
+      "png64": "1d505654a56919c45aaeede91a0a0899aaf52e850d872c0975769517a54327a5",
+      "svg": "755a3d31b8c0136a9d321cd607ac78291d584b6c206b886a0912b299777ee271"
+    },
+    "gb_kind_points": {
+      "png32": "1d99a0c21ed36f91e5dfeb8412a791b5d8401bd858056fb0aac1ac02beaa56fe",
+      "png64": "14aed6161d9a77ce0f73cdeaa67b84f92be6e667a221ac8b6e7139329e912255",
+      "svg": "bfc2638e246a4def09a3fef602cef1bc1382641717e7ef46ed853e8805fbd5c1"
+    },
+    "gb_kind_polyline": {
+      "png32": "d9dd5dc475201a64af598f15fd26ced74f26fab3001da7b81d41dda2203683d0",
+      "png64": "455a5406d614712a414d60e89f9fbb90c9693741394fc28847089152d7000dc6",
+      "svg": "4433177608789e5247521c068aa598cecfd21bc657a1c66edce2e7d17615a999"
+    },
+    "gb_kind_section": {
+      "png32": "d89dd04353332703f7f3551430ce0f7c6ee6363d597c4258f422cba9e923d4bd",
+      "png64": "3a559bb7b948f50344bc3b097b1dad4b08ff8c2822221939eca7609eba8deb2d",
+      "svg": "2bda0874ec2b7aca1ac08f51be6f3fc89801183e959ed753ee915f2794560d53"
+    },
+    "gb_kind_solid": {
+      "png32": "356b8e62c975cdada73cad6d96da5785242a30f8366aafa13c139b3880a76423",
+      "png64": "3180f7562f79d639600aa9ed3216e1f6dca5047b76f8bec67694358d5d5ae589",
+      "svg": "7510e333dfa3a003854bdc6e7534517739cc094c86bf5f609640cfbd80251d0d"
+    },
+    "gb_kind_surface": {
+      "png32": "6e9bdc7031169935ea8ec512c4c878eeb67645c30638b1f2d8c43f1e56679b21",
+      "png64": "41359af3cca746414d4b781e965d806bbc869ceefa745d8b485fb1e8aa9a2358",
+      "svg": "5bfd470eb24a11256d8a0f74c014cc28add19a9bd2177c21301e8f7f70281d22"
+    },
+    "gb_kind_version": {
+      "png32": "17cc0141e1272731d0beb7fc599ee29d67a3d28428fb305f34181aca5a779993",
+      "png64": "8d0f2b7bcff3774c480ed23d60337dc52fbbea5a12221bd6f63a9e18614f7eed",
+      "svg": "7f1cd84c6f90f71ec336eefc5480277fafcfe03b64b2779a4757a072a8af1f5c"
+    },
+    "gb_logo": {
+      "png32": "0ea9fa5b9e77bad78774b3f77fcc84264f0dc3139af68407f53f674c29f3a384",
+      "png64": "3b0b8caae7b9603bd55315b2670efb8d4f3293cf08a0cfca677bf8fdf1331b9b",
+      "svg": "a3f9e2ec69f4b46e4a1c1a29e02e93930f1cd8bbd7704ad32e84795a4cdb0e8d"
+    },
+    "gb_menu_blocks": {
+      "png32": "6f8db4f50b4806b2c9055d9571eda2949176e2583572f122d1d9c700b2c00eab",
+      "png64": "3c51ccce83b439c857de574f49f515a26ecf5d64975dd0ca6dfad3fcafb28967",
+      "svg": "5892e58c5a81fcf6143d5412383cef38d32b5f68a0054130fdffc01c37587b1c"
+    },
+    "gb_menu_design": {
+      "png32": "d7328d5932090a5e86f1c8245dc9b2ed59d966a572746eb9ff37341f31652c19",
+      "png64": "5b973a690f21c589cdd7eab8d18c81f5f86f49438aaca7eb7255706c8b62a2b6",
+      "svg": "9e6ba44eb1389ed3c40a44887dccd763972f8c971dd56a31804a0c3efbdd100e"
+    },
+    "gb_menu_drawings": {
+      "png32": "a6561f4f7c64de8e1893159a6dac840aeba921b3e025e2d4704d782d4f5d143c",
+      "png64": "6db2716af3cbac64d347724fe8666c8f8ee9b10d6831865fefb273e7e1120777",
+      "svg": "244d07ec585e1ecbd0ab00dc85965f76ab0987e50ea22d217a13511b8ab7c466"
+    },
+    "gb_menu_drillholes": {
+      "png32": "caf6715c8d5abca83a8777aa297407f81f952065d72fca910c5adabc2ef8a41b",
+      "png64": "2f9a6a0cf9974cafbbfd9bc12084be380a888bcd638ea706ce27d32c598398b3",
+      "svg": "30cf4e4c9cae1b1b7cf1a9a74ae3bc7fab588ce21df270090d6fbcef108c5783"
+    },
+    "gb_menu_geology": {
+      "png32": "97acffc88ff92d2962ef5b78c7b061801abb96a98368cd506df46654a8c9e956",
+      "png64": "7434e1a5d33c9588eaf01cc2950e67acc3d5f06d8a0a985aebc8701293ae517d",
+      "svg": "0b772ac61cf5b353e0d433eee66aefeba7ccefe8b41ce90d987c17077c813a37"
+    },
+    "gb_menu_optimization": {
+      "png32": "2033d9c46352832452a25eb04ccbc9fa3bc32fb7e3b40fce9bd8c8164f1a0749",
+      "png64": "f3c5695390437705c25b04d984d3bafa7618bfa583d191d425dd8c1f2d7e6568",
+      "svg": "9e4a0d580ff5f55906afd20ac7eea9d7b76d416e8ccaa373e819125d5eb3a715"
+    },
+    "gb_menu_project": {
+      "png32": "f2485dc5eec674ebf7b7120de630316c4b2e4167f4c7a0c4e72b13340a0634c8",
+      "png64": "3e58c7dfd5cb87e3b1ea5766ae44ada38fbfd527c000166c3507f07acc69bf82",
+      "svg": "23a5e9f39474e3d111ea50f38b5fc378c8cefb9b476261c0816da9e69a9182f0"
+    },
+    "gb_menu_reclamation": {
+      "png32": "b990f76d72381f7202e128b0d45db9b44f76cb02ff8998b27cc4a949e33dac55",
+      "png64": "29a9c252b40d374a823f8a885d89c5464982c5ee765ef02df2c8abe8632ae58e",
+      "svg": "25bcc70b9640bf60320235042c57b88ec44424d460f221723793951dfcdda41d"
+    },
+    "gb_menu_scheduling": {
+      "png32": "3f15d99ca15323c94cdc6d490dcd8f950714025cd06d17940f941bb214adfa16",
+      "png64": "3d44aeadbb350a62661c815023cf7d84b40d001d55be7bc67eb442d48c8cff59",
+      "svg": "fefa80866d2667908a610349e9d3a97ea87b4818bc9508ec8b290aff7bf7cf72"
+    },
+    "gb_menu_tools": {
+      "png32": "2754de13ec799bce044732e0f5d8afcd83688db58daa38cb961e835e78ee1a41",
+      "png64": "08c6ec3ccb12fd55084f7f1bc3d647f1ccb90df20b18dd427a6010e15d9cb80f",
+      "svg": "8e7721de9f294d8883144d4123bb5639341540b47b1d4dc14913076b058ead83"
+    },
+    "gb_menu_topography": {
+      "png32": "59b1e8fbb6c058a0ac29fd722c6455998c3ac0d3fac0c5f283f73ef77c2740c1",
+      "png64": "2647d55f825d670d06199c84149ddf31ecc157505a3a07ce63f054cbeefd5af0",
+      "svg": "6d5ebdd8e50e515c4555a7368780399e3eff001d0ca18f3ef2f9c564ee670e34"
+    },
+    "gb_menu_volumetrics": {
+      "png32": "f4fec7db412231e69611be298fb983bb7fbfed8a2027091608832fcc7d26dad2",
+      "png64": "6f45941bc104fb449480b48b859a7b63ca0900e9cfd830d502bf8f2eea9d35b3",
+      "svg": "bafca8df48d9d7e100f6e1aab17e90637a5bb7e9ccc9641f5ec93767d8f9e6d0"
+    },
+    "gb_qat_align_section": {
+      "png32": "e7ec3a2bbe91503389bcb4877f335a3b47ed0f47a1cbdf43b4bbaa2c0baf6c53",
+      "png64": "a8a6c8632c8f0fac00c7b875ebd5cfc7aa8eb5738c5fc6345ca5b9d49830452c",
+      "svg": "7eb4aaa54cf2746ce2ef9186f13466ad53a3177ed1867a6380e6bad0964f6630"
+    },
+    "gb_qat_band": {
+      "png32": "fd3b769e963e42d1a7908335e988f73b314f35872215fdc67fae6bd1308275bf",
+      "png64": "b19a50b0dbc57d8bd4b83f8157436fe9a1c20dcb8e228b4e699d6f13f6a5bcdd",
+      "svg": "51b26f40048803b944e41b130c065d86b6e4ce8c744195bdc32d16c8ef7a4f5f"
+    },
+    "gb_qat_check": {
+      "png32": "71f1ea07b97e11468d267f716d6802956f1c0ed89cd321f7e539d0289ac52cf4",
+      "png64": "fc6d87f3e99abf9aad38b7d8f27d3e9e1bd56b7389e85d1c86445e98cc9613d2",
+      "svg": "fbd6de37ecd8e521561d4a439ac2faeda9e637572cdbad7ba9f0f4c5f56c8bcd"
+    },
+    "gb_qat_clip": {
+      "png32": "3cd4d34c169ba356dbd1ac48fbd3125abb8d770bdf87de320caea6d7315f3758",
+      "png64": "e19a037acdd810b15d9803eb8f6df43fe365f1f8f29a612b217d7fcb7fd5f7f8",
+      "svg": "42a3ba7755d16acd20003ad0fb8b32dfd6150b75d94857f25d0264fc94a075c3"
+    },
+    "gb_qat_constraints": {
+      "png32": "af87fdc677368be61ea88801d04c4d942f10e95e29ea1d098121bc7e21866522",
+      "png64": "66de657c90c06f8442ce1eb6cbdd172967bf1441d3f61f35539462552f7c69d4",
+      "svg": "3b97ae05559c7bfcbe91c2c09a2ef99a3206c3065271e6b90ee6521f9949ec6f"
+    },
+    "gb_qat_current_object": {
+      "png32": "4cc99b6c01f58a5b79d16f6b96653aad22e4198afe30bdffb4da10cac51305dd",
+      "png64": "a51cd098782c81cd2b55e0dcc1bf8a46a6d375a616e413fa5d65ce7a4fdb4891",
+      "svg": "b5ca56b951ec510f650fafe957d62a41c4fd0a5d8360e71a97cc80cf45144b70"
+    },
+    "gb_qat_figures": {
+      "png32": "5f0d3b3aa8c3fd27e59678b3b5cfecb7b468268677e8393dc81babcffaf1ebc2",
+      "png64": "f11935f8e804a6f107820938ec5fa4c4e16a29638debdc7ce6f692a20e04ea1b",
+      "svg": "6aa277a8359070c4cc1d7019752e4c6ecac6c85d4fdbb406e1062c9a93ac8f55"
+    },
+    "gb_qat_frame_window": {
+      "png32": "05d1cb02bd947a747dffb0b84fd92a68d5aa39fd5697b8fdb853abbcaa7a2ea5",
+      "png64": "b0c71c49408528f1fce407f142bbfc4b1eacb9d7f6fb6f610221b77771ce6ea5",
+      "svg": "e589e2bafa3e613066a6e6e048c55eb1e744120005abf47604abff7376f832e9"
+    },
+    "gb_qat_identify": {
+      "png32": "05b7d05573b53ccc73b6059445d06c63f2a07a64e469066757157b444b02d7c8",
+      "png64": "cd60c75cba0e1f0187a56cbafd0010f5b7747d35dfcc336c9053fb2c8d1f93d0",
+      "svg": "efe5fc0a8cfd2b8e01615df1b5f64015a8c29bc3d9b55a30dc03379b8a972c20"
+    },
+    "gb_qat_measure": {
+      "png32": "eba669ef7544b5574a60586ac17f934e935fe104a3e336666bfff204b7b9693c",
+      "png64": "3b817c7ca9c4eacb77ecfa85a04f95a79a275ea76259851cdbc624393fa869be",
+      "svg": "8476687545e88b8f15b15a12b6ef0c91038372dd97d12d6576770c1c06c67b5e"
+    },
+    "gb_qat_polyline": {
+      "png32": "f5729b23d444f14e202d2aab381c1efce1c33542bf0e49c437374a3574f563d5",
+      "png64": "f43262c5426f9c3bd02a1562c21b7724e407aa0d87c33df340137973ed5bc4e2",
+      "svg": "a4a19679b5cf2df9bd9c99aab1c779dc0cad718aea5b44aedc76c5f3f76be076"
+    },
+    "gb_qat_polyline_edit": {
+      "png32": "fc54745917431209dd7ba1b6445098daf6d7f2a85a14c03ba151b1d290d42207",
+      "png64": "4e15372240e2ea438bf3df4b7c0e8ee48a9030c20e39571c9df8c4421fcba2bd",
+      "svg": "24be57341820fd2fc046efa86d1af889850bff1cdab5645c4e38051e3107afd2"
+    },
+    "gb_qat_profile": {
+      "png32": "c7266acaa41ece2b13d778ce79542f5d8cf6a93e1ee819aec5d644ebc8f91ef2",
+      "png64": "4ad6914504b7f514d22fc97e5526e7927159d149419ad65a9f14ef61ce634cbd",
+      "svg": "6906352cf383ec37204c45af32af64667731a37d5f117e0addf7117b96a375ea"
+    },
+    "gb_qat_section": {
+      "png32": "10d93781c648d0827381c282b243073be3ac288c8e488bc909b5cf288d3f0703",
+      "png64": "eb77501ae77cebd8228ab44e3ee0e5350053fb074fdd880a3f2fe9dca487d5fb",
+      "svg": "e0c82e81fd16ffb3c4a9a2016f98d3ad8d5a9b716f74699c04d4fd05ce7862c1"
+    },
+    "gb_qat_views": {
+      "png32": "03476a023f8738aa1ef7c4af30cddd297165d5de513cb05993aa1b7e30f8add0",
+      "png64": "444f649c6261db3f2471a6045e479a19b94217a3a9b760c2bc1d6f3106ffe253",
+      "svg": "44ea826140a90303cba73261cb677fd9aa8cf79e77173f2430f0df6e53df9608"
+    },
+    "gb_qat_volume": {
+      "png32": "3750d453cec6b3d4cc75272f5eb29facc1f418d08e700d11f6ce5d8bcae6fb97",
+      "png64": "41650cb49da8caa55a36031706d113064858ddc1f0d2ded088efc4caa85a43c4",
+      "svg": "41a9c41e35c96c5def94adf0e0b0ef3cc8df5cb641b4c38a6278cba245540ae5"
+    },
+    "gb_qat_work_plane": {
+      "png32": "4a2db2d30e0eed7a029289dcaa40895296f4476c129f9febc78a59e851ecdb87",
+      "png64": "0429ed97df2d8718bf319dbdba3ae1fcda87480c592bbaa3f5c61b1a6aa04c15",
+      "svg": "0c214670a74f2353335ff6b6331fa03d7fb969ba38f70767d1b90dd889e9d5c7"
+    },
+    "gb_state_current": {
+      "png32": "61900aee839a2f169f7983fe8ba86cbeeff2b558ff54e5c9386569051ecdec58",
+      "png64": "13444b372fe08d2c03808765d735c937807b7ae6690ac33fbab4f713d43f3bbc",
+      "svg": "bad606d9c20351733bf2768153a8e46922b7c12973492acb48e31aa21ae5e266"
+    },
+    "gb_state_discarded": {
+      "png32": "f1f59bd496438770b5f603a35ac71c865307e9aee56eb965925665b615a80bd4",
+      "png64": "faed76e0ff6dbf9c79f51baf65573b4bd8cb9e44f6a4513421d7476f75c128a4",
+      "svg": "4c8a31dba89f4b47081f19baa7b9ddd3b81def0e8f6f10f252c2ad287ac8203c"
+    },
+    "gb_state_draft": {
+      "png32": "4f716d0ee08540984fac34a980c22f25869a997e2668ebfc71e93a17771f14a8",
+      "png64": "062430e10d654db15520eb06cf141bc4ae5c60130cf74fae18d9d8cad889da2f",
+      "svg": "9546acd6f324055aa8fae0167fafedf8e0132588d8f6ae23d5d0fcd3f7b9367c"
+    },
+    "gb_state_input_changed": {
+      "png32": "41fb5ebe2828ca320002e20dc87dec2efe28ef3e5e7b016dbdfb28803c024901",
+      "png64": "d398cc74436f07ae82d00a9b3e43dd2183e4dbdb565430c5b1b37a50a3372f3c",
+      "svg": "b8a6896acee46b7d8a4e3da03abcb4717fe980be7bc7a0ebee17816862aecbdd"
+    },
+    "gb_state_locked": {
+      "png32": "34af943dc9d4c8dadce2ac599bab4869e3b9bd595bc14311aecb46323e473417",
+      "png64": "9a20f8194bc33835d44dbf42ed0d948c65e45f404889c7478d74b67e5100e18d",
+      "svg": "78b4ca2270f07dcd964c1147cf5baf68572f8349898658c0db9a776fa5a6ceac"
+    },
+    "gb_state_stale": {
+      "png32": "d7cc5dd79040b10ddcdfc497b4b5421dc50f4c61fcd77c0381b1214972f6cc1d",
+      "png64": "20c908d27075f692dc404ecb91a206036ba6108d350b5be712b57bd90e1c7831",
+      "svg": "9b4130984569ea2c57ff88049092f88e6a13a6a6316924fb7e042adbcca2c79e"
+    },
+    "gb_state_superseded": {
+      "png32": "2b07515c87b26f8a6e45931491763815b37909d046d89358aab6a70cb4d301b4",
+      "png64": "5574c612cd45b22cf926543ee79da28dade946e861eb71d07340f906cbe5bbc0",
+      "svg": "73dccc6b90f5948b5e6df130e5714c65c16c4ba4d4dbcc1a6fa009d8da74b71a"
+    },
+    "gb_type_adopted": {
+      "png32": "694faf4574482af1e1cc7ba974654d30d406eb0b06768fbdced9caa916c49ff9",
+      "png64": "e2167158abd0a822075010249f135cea31eef0efb319a76ebc80b5db7aed4e3d",
+      "svg": "04fd9f67e785ced83e03604cdd8f2908f126b05a5bb9e4b51be26edbc081bc30"
+    },
+    "gb_type_assumption": {
+      "png32": "e7b9a4c593cfc81d4f006c7ef8ff5dbe33a32f783390ae694e59e19d2172fd01",
+      "png64": "ce6f46f706a37ce606f404cc9ad0cf96922ba5dbf5efc954c4480357b1b39aef",
+      "svg": "cb0303013abb0c1b9069911826e9c27d67d9317335af708d265989d08fc21cf1"
+    },
+    "gb_type_calculated": {
+      "png32": "c6c9d68819bf2846d1ee36847bb26bbeba68ae8d96ae1b2a6fc0b2b7fbaf0a14",
+      "png64": "ac7b972a3fe7dc5b6f1866b2cd650fe717e5e8a1c8c070a985c4aeeec43bd7e4",
+      "svg": "0a7c4c4ad3efc126ee731c3f7326acd3a1f4ca5771aa4e15e3d587522dc71843"
+    },
+    "gb_type_measured": {
+      "png32": "83c3244d88427d150828a8a14eff21e365be8f2fc8da589cd5b1c9015e3219e8",
+      "png64": "5e58332b61f2f5504fe4043341a9ce23e91a1c31dba92ad7032e068cce5aa5d2",
+      "svg": "2b60abfc6e6632ea21e08a8fd8d07a874e08a1b1ea09604fe8b824a99bc91382"
+    }
+  }
+}

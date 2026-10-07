@@ -1,17 +1,28 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Un ``UILayout`` simulado para dibujar menús y paneles sin interfaz (spec 002, T26 y
-T28; plan 003 §5.1, «layout simulado»).
+"""Un ``UILayout`` simulado para dibujar menús, paneles y cabeceras sin interfaz (spec 002,
+T26 y T28; spec 003, T01; plan 003 §5.1, «layout simulado»).
 
-En ``blender -b`` no hay regiones que dibujar: las pruebas llaman al ``draw`` de un menú o
-de un panel con un objeto que tiene ``layout`` (y lo que use el ``draw``) y leen lo que se
-pidió dibujar. :class:`FakeLayout` anota cada elemento en una lista común a todo el árbol
-(columnas, filas y cajas incluidas) y admite los atributos que se ponen a un *layout*
-(``enabled``, ``alert``…). Python puro: no importa ``bpy``.
+En ``blender -b`` no hay regiones que dibujar: las pruebas llaman al ``draw`` de un menú,
+de un panel o de una cabecera con un objeto que tiene ``layout`` (y lo que use el
+``draw``) y leen lo que se pidió dibujar. :class:`FakeLayout` anota cada elemento en una
+lista común a todo el árbol (columnas, filas y cajas incluidas) y admite los atributos
+que se ponen a un *layout* (``enabled``, ``active``, ``alert``, ``ui_units_x``…).
+
+Spec 003 (T01): cada elemento guarda además el estado **efectivo** de su *layout* al
+dibujarlo (``enabled`` y ``active`` de la fila y de todas sus madres, como en Blender: una
+fila desactivada desactiva lo de dentro), para comprobar que un comando no disponible se
+dibuja desactivado (RF-003-07), y el ``ui_units_x`` de su fila (T18: el ancho explícito de
+cada menú de texto de la barra). ``menu_pie`` devuelve, como ``row``, un *layout* hijo (los
+menús circulares de la 003). Los métodos de ``UILayout`` que no tiene a mano
+(``popover``, ``menu_contents``, ``template_ID_tabs``, ``operator_menu_enum``…) se anotan
+con su nombre como tipo, para dibujar sin error las cabeceras de Blender que sustituye o
+amplía la 003. Python puro: no importa ``bpy``.
 """
 
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import MethodType, SimpleNamespace
 from typing import Any
@@ -20,7 +31,8 @@ from typing import Any
 @dataclass
 class Item:
     """Un elemento dibujado: su tipo (``label``, ``operator``, ``prop``, ``menu``,
-    ``separator``), su texto, su icono y lo demás que se pasó."""
+    ``separator`` o el nombre del método de ``UILayout``), su texto, su icono y lo demás
+    que se pasó."""
 
     kind: str
     text: str = ""
@@ -29,23 +41,43 @@ class Item:
     properties: Any = None  # las propiedades del operador, que el draw rellena
     options: dict[str, Any] = field(default_factory=dict)
     alert: bool = False  # el layout estaba en alerta (``layout.alert = True``)
+    enabled: bool = True  # el layout y todas sus madres estaban habilitados (spec 003)
+    active: bool = True  # ídem con ``active`` (gris, pero se puede pulsar)
+    units_x: float = 0.0  # ``ui_units_x`` de su *layout* (0: el ancho natural; spec 003)
 
 
 class FakeLayout:
-    """Lo mínimo de ``bpy.types.UILayout`` que usan los menús y paneles de Geoblender."""
+    """Lo mínimo de ``bpy.types.UILayout`` que usan los menús, paneles y cabeceras."""
 
-    def __init__(self, items: list[Item] | None = None) -> None:
+    def __init__(self, items: list[Item] | None = None, parent: FakeLayout | None = None) -> None:
         self.items: list[Item] = [] if items is None else items
+        self.parent = parent
         self.enabled = True
         self.active = True
         self.alert = False
         self.use_property_split = False
         self.use_property_decorate = True
+        self.scale_x = 1.0
         self.scale_y = 1.0
+        self.ui_units_x = 0.0
+        self.ui_units_y = 0.0
+        self.alignment = "EXPAND"
+        self.emboss = "NORMAL"
         self.operator_context = "INVOKE_DEFAULT"
+
+    def _effective(self, name: str) -> bool:
+        layout: FakeLayout | None = self
+        while layout is not None:
+            if not getattr(layout, name):
+                return False
+            layout = layout.parent
+        return True
 
     def _add(self, item: Item) -> Item:
         item.alert = bool(self.alert)
+        item.enabled = self._effective("enabled")
+        item.active = self._effective("active")
+        item.units_x = float(self.ui_units_x)
         self.items.append(item)
         return item
 
@@ -72,9 +104,24 @@ class FakeLayout:
         self._add(Item("separator", options=options))
 
     def _child(self, **_options: Any) -> FakeLayout:
-        return FakeLayout(self.items)
+        return FakeLayout(self.items, parent=self)
 
-    column = row = box = split = grid_flow = column_flow = _child
+    column = row = box = split = grid_flow = column_flow = menu_pie = _child
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        """Cualquier otro método público de ``UILayout`` (``popover``, ``menu_contents``,
+        ``template_ID_tabs``, ``operator_menu_enum``…): anota un elemento con el nombre
+        del método como tipo y su primer argumento de texto como destino."""
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def record(*args: Any, text: str = "", icon: str = "NONE", **options: Any) -> Any:
+            target = args[0] if args and isinstance(args[0], str) else ""
+            properties = SimpleNamespace()
+            self._add(Item(name, text, icon, target, properties, options))
+            return properties
+
+        return record
 
     # Lectura ---------------------------------------------------------------------------
 
@@ -103,9 +150,10 @@ class _Owner:
         return value
 
 
-def draw(cls: type, context: Any, **attributes: Any) -> FakeLayout:
-    """Llama al ``draw`` de la clase de un menú o un panel con un :class:`FakeLayout` y
-    devuelve el *layout* con lo dibujado."""
+def draw(cls: type, context: Any, *, method: str = "draw", **attributes: Any) -> FakeLayout:
+    """Llama al ``draw`` (o a ``method``, p. ej. ``"draw_left"`` de una cabecera) de la
+    clase de un menú, un panel o una cabecera con un :class:`FakeLayout` y devuelve el
+    *layout* con lo dibujado."""
     layout = FakeLayout()
-    cls.draw(_Owner(cls, layout, attributes), context)
+    getattr(cls, method)(_Owner(cls, layout, attributes), context)
     return layout

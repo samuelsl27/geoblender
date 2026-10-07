@@ -9,12 +9,55 @@ cambiar.
 
 ## [Sin publicar]
 
-Geoblender 0.1.0 ya se instala (spec 001) y crea y abre proyectos con su sistema de
-referencia y su origen local (spec 002), aunque todavía no tiene funciones mineras. Lo de la
-spec 002 está probado sin interfaz y en la red con un solo equipo; falta comprobarlo con la
-interfaz de Blender, con QGIS abierto y con dos equipos a la vez.
+Geoblender 0.1.0 ya se instala (spec 001), crea y abre proyectos con su sistema de
+referencia y su origen local (spec 002) y tiene su interfaz (spec 003), aunque todavía no
+tiene funciones mineras. Lo de la spec 002 está probado sin interfaz y en la red con un solo
+equipo; falta comprobarlo con la interfaz de Blender, con QGIS abierto y con dos equipos a la
+vez. Lo de la spec 003 está probado sin la interfaz gráfica; falta verlo en la pantalla.
 
 ### Añadido
+
+- **Interfaz de Geoblender** (spec 003). Un conmutador **[GB|B]** al principio de la barra
+  superior (o **Ctrl+F10**) pasa cada ventana de la interfaz de Blender a la de Geoblender y
+  vuelve, sin recargar el fichero ni tocar las preferencias de Blender. En modo Geoblender, la
+  barra tiene Disposición ▾, los menús de Blender plegados (≡), los **11 menús del trabajo**
+  en su orden (de Proyecto a Planos, cada uno con su «Paso n de 11»), Herramientas, Ayuda y
+  el acceso rápido del proyecto; en modo Blender, la barra de Blender entera con un menú
+  «Geoblender ▾» delante. Están **todos los comandos del producto** (unos 390), también los que
+  aún no existen: salen en gris y dicen «Disponible en …» (la spec o la entrada del roadmap que
+  los traerá); si se pulsan, lo dicen y no hacen nada. La búsqueda de Blender (**F3**) los
+  encuentra en los dos modos, también «Conmutar Geoblender ⇄ Blender». Si la ventana es
+  estrecha, los títulos pasan a iconos, solo los que no caben: en una pantalla de 1920 px
+  se leen todos con la escala de Windows al 100 % y los 11 del trabajo con la del 125 %
+  (Herramientas y Ayuda, en icono). Desactivar Geoblender deja Blender como estaba.
+  - **Acceso rápido de cada Vista 3D** (24 controles que se pliegan si no caben), **vistas
+    mineras** (planta, secciones N-S y E-O, isométricas; menú circular Mayús+Alt+V),
+    **encuadrar la ventana de trabajo**, **vistas guardadas** (Ctrl+Mayús+F5…F8 y
+    Ctrl+F5…F8) y el recorte **«Banda de la vista»**: oculta lo que queda a más de ±5 m del
+    plano que pasa por el cursor 3D (Alt+0 lo quita).
+  - **Disposiciones** (Sección y planta, Datos, Diseño y perfil, Fases), el **menú del tipo
+    del objeto activo** en la fila 1, en el clic derecho y con Mayús+Alt+B, y la **barra de
+    estado minera** con el proyecto, su EPSG y las coordenadas reales del cursor 3D.
+  - **Línea de comandos (F10)**: encuentra cualquier comando por su nombre en español o en
+    inglés, sus alias (también los de Datamine), los términos de RecMin o su entrada («R-38»)
+    y lo ejecuta en la vista. La lista dice dónde está cada uno, por qué coincidió si no es
+    por su nombre («Nueva polilínea — ns») y, si aún no existe, «Disponible en …»; sin
+    escribir nada, enseña los comandos más usados.
+  - **Idioma**: español por defecto, sea cual sea el de Blender; Ayuda ▸ Idioma de Geoblender
+    ▸ English lo cambia sin reiniciar (las descripciones de las preferencias, al reiniciar).
+  - **Ayuda**: hoja de atajos, alias y glosario (con versión imprimible), diagnóstico de la
+    instalación, «Acerca de» y Reparar la interfaz. **49 atajos**, ninguno de los que usa
+    Blender en la Vista 3D, y **58 iconos propios** (CC0) con su icono de Blender de reserva.
+  - **Plantilla de aplicación y lanzador**: `tools/install_app_template.py` instala la
+    plantilla «Geoblender» y deja `Geoblender.cmd` en el escritorio, que abre Blender en modo
+    Geoblender sobre una escena vacía en metros, con su imagen de bienvenida y sin cambiar la
+    configuración del Blender normal. Con un fichero (`Geoblender.cmd fichero.blend`), lo
+    abre tal como se guardó, en su espacio de trabajo.
+  - La barra superior cuesta 0,03 ms por dibujo, el registro de la interfaz 18 ms y un cambio
+    de idioma unos 10 ms (medido con Blender 5.2.1). Redibujar la ventana entera cuesta unos
+    0,6 ms más en modo Geoblender que en modo Blender (a 1920 × 1080). Para no pasar de ahí,
+    el espacio «Geoblender» se abre con la barra lateral de la Vista 3D cerrada: la pestaña
+    «Proyecto» sale con **N**.
 
 - **Proyectos de Geoblender** (spec 002). Un proyecto es una carpeta `<Nombre>.gbproj` que
   se copia, se archiva y se publica entera: su base de datos (`project.gpkg`, un GeoPackage
@@ -124,3 +167,8 @@ interfaz de Blender, con QGIS abierto y con dos equipos a la vez.
   comprobación completa ya no necesita la documentación al lado: en el PC de referencia, con
   el código en su disco local, tarda unos 40 s con las pruebas de la publicación (antes,
   unos 48 s en la unidad de red, sin ellas).
+- `tools/check.py` reparte las pruebas unitarias en 4 procesos y las de Blender en 3
+  Blender que se ejecutan a la vez dentro de su paso (los pasos siguen uno tras otro), sin
+  quitar ni acortar ninguna: la comprobación de cada tarea pasa de unos 55 s a unos 25 s
+  en el PC de referencia. Cada prueba se ejecuta en una sola parte, y si las partes no
+  suman las pruebas que hay, el paso falla.

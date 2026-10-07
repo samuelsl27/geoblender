@@ -88,13 +88,15 @@ def loaded_in_output(text: str) -> set[str]:
     return {match.group("where") for match in TEST_HEAD.finditer(text)}
 
 
+def is_loaded(module: str, names: set[str]) -> bool:
+    """Si ``names`` (lo que nombra la salida) nombra el módulo ``module`` o algo de
+    dentro de él."""
+    prefix = module + "."
+    return module in names or any(name.startswith(prefix) for name in names)
+
+
 def missing_modules(expected: Mapping[str, str], loaded: Iterable[str]) -> list[str]:
     """Rutas de los ficheros de ``expected`` cuyo módulo no se cargó: ningún nombre de
     ``loaded`` es el módulo ni algo de dentro de él. Ordenadas."""
     names = set(loaded)
-    missing: list[str] = []
-    for module, rel in expected.items():
-        prefix = module + "."
-        if module not in names and not any(name.startswith(prefix) for name in names):
-            missing.append(rel)
-    return sorted(missing)
+    return sorted(rel for module, rel in expected.items() if not is_loaded(module, names))

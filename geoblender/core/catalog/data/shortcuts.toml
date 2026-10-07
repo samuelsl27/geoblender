@@ -1,0 +1,345 @@
+# Catálogo de comandos de Geoblender (spec 003). Atajos del modo Geoblender (AT §2): 49 combinaciones.
+# Ctrl+F10 en el mapa «Window»; las demás, en «3D View». event: el tipo de evento de Blender.
+# label: el nombre del atajo en la hoja de atajos cuando la clave no es un comando del catálogo
+# (una variante solo de atajo, o un envoltorio interno con su menú o su panel).
+# Las claves son las de los comandos del catálogo (bl_idname o clase, con ?prop=valor si fijan
+# propiedades): cada sitio referencia el comando, nunca lo copia (RF-003-06, BS §7.1).
+
+[[shortcut]]
+key = "geoblender.ui_toggle_mode"
+keymap = "Window"
+event = "F10"
+ctrl = true
+
+[[shortcut]]
+key = "geoblender.core_refresh"
+keymap = "3D View"
+event = "F5"
+
+[[shortcut]]
+key = "geoblender.ui_draw_polyline"
+keymap = "3D View"
+event = "F6"
+
+[[shortcut]]
+key = "geoblender.ui_measure"
+keymap = "3D View"
+event = "F7"
+
+[[shortcut]]
+key = "geoblender.ui_identify"
+keymap = "3D View"
+event = "F8"
+
+[[shortcut]]
+key = "geoblender.ui_open_command_line"
+keymap = "3D View"
+event = "F10"
+
+[[shortcut]]
+key = "geoblender.core_run_checks"
+keymap = "3D View"
+event = "F9"
+ctrl = true
+
+[[shortcut]]
+key = "geoblender.ui_recall_view?slot=1"
+keymap = "3D View"
+event = "F5"
+ctrl = true
+
+[[shortcut]]
+key = "geoblender.ui_recall_view?slot=2"
+keymap = "3D View"
+event = "F6"
+ctrl = true
+
+[[shortcut]]
+key = "geoblender.ui_recall_view?slot=3"
+keymap = "3D View"
+event = "F7"
+ctrl = true
+
+[[shortcut]]
+key = "geoblender.ui_recall_view?slot=4"
+keymap = "3D View"
+event = "F8"
+ctrl = true
+
+[[shortcut]]
+key = "geoblender.ui_store_view?slot=1"
+keymap = "3D View"
+event = "F5"
+ctrl = true
+shift = true
+
+[[shortcut]]
+key = "geoblender.ui_store_view?slot=2"
+keymap = "3D View"
+event = "F6"
+ctrl = true
+shift = true
+
+[[shortcut]]
+key = "geoblender.ui_store_view?slot=3"
+keymap = "3D View"
+event = "F7"
+ctrl = true
+shift = true
+
+[[shortcut]]
+key = "geoblender.ui_store_view?slot=4"
+keymap = "3D View"
+event = "F8"
+ctrl = true
+shift = true
+
+[[shortcut]]
+key = "geoblender.geo_step_section?direction=1"
+keymap = "3D View"
+event = "PAGE_UP"
+
+[[shortcut]]
+key = "geoblender.geo_step_section?direction=-1"
+keymap = "3D View"
+event = "PAGE_DOWN"
+
+[[shortcut]]
+key = "geoblender.geo_step_section?direction=1&half=True"
+keymap = "3D View"
+event = "PAGE_UP"
+shift = true
+label.en = "Half step forward"
+label.es = "Medio paso adelante"
+
+[[shortcut]]
+key = "geoblender.geo_step_section?direction=-1&half=True"
+keymap = "3D View"
+event = "PAGE_DOWN"
+shift = true
+label.en = "Half step back"
+label.es = "Medio paso atrás"
+
+[[shortcut]]
+key = "geoblender.geo_resize_band?direction=1"
+keymap = "3D View"
+event = "PAGE_UP"
+alt = true
+label.en = "Widen the section band"
+label.es = "Ensanchar la banda de la sección"
+
+[[shortcut]]
+key = "geoblender.geo_resize_band?direction=-1"
+keymap = "3D View"
+event = "PAGE_DOWN"
+alt = true
+label.en = "Narrow the section band"
+label.es = "Estrechar la banda de la sección"
+
+[[shortcut]]
+key = "geoblender.geo_resize_band?direction=1"
+keymap = "3D View"
+event = "NUMPAD_PLUS"
+alt = true
+label.en = "Widen the section band"
+label.es = "Ensanchar la banda de la sección"
+
+[[shortcut]]
+key = "geoblender.geo_resize_band?direction=-1"
+keymap = "3D View"
+event = "NUMPAD_MINUS"
+alt = true
+label.en = "Narrow the section band"
+label.es = "Estrechar la banda de la sección"
+
+[[shortcut]]
+key = "geoblender.geo_step_section?direction=1&scope=SET"
+keymap = "3D View"
+event = "PAGE_UP"
+shift = true
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_step_section?direction=-1&scope=SET"
+keymap = "3D View"
+event = "PAGE_DOWN"
+shift = true
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_new_section?mode=HORIZONTAL"
+keymap = "3D View"
+event = "ONE"
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_new_section?mode=NORTH_SOUTH"
+keymap = "3D View"
+event = "TWO"
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_new_section?mode=EAST_WEST"
+keymap = "3D View"
+event = "THREE"
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_new_section?mode=TWO_POINTS"
+keymap = "3D View"
+event = "FOUR"
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_new_section?mode=THREE_POINTS"
+keymap = "3D View"
+event = "FIVE"
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_new_section?mode=BENCH"
+keymap = "3D View"
+event = "SIX"
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_set_clip_mode?mode=NONE"
+keymap = "3D View"
+event = "ZERO"
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_cycle_clip_mode"
+keymap = "3D View"
+event = "C"
+shift = true
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_toggle_bench_clip"
+keymap = "3D View"
+event = "X"
+shift = true
+alt = true
+
+[[shortcut]]
+key = "geoblender.geo_align_view_to_section"
+keymap = "3D View"
+event = "HOME"
+shift = true
+
+[[shortcut]]
+key = "geoblender.ui_frame_work_window"
+keymap = "3D View"
+event = "HOME"
+shift = true
+alt = true
+
+[[shortcut]]
+key = "geoblender.ui_call_pie?name=GEOBLENDER_MT_ui_pie_views"
+keymap = "3D View"
+event = "V"
+shift = true
+alt = true
+label.en = "Pie menu of views"
+label.es = "Menú circular de vistas"
+
+[[shortcut]]
+key = "geoblender.ui_call_pie?name=GEOBLENDER_MT_gis_pie_polyline"
+keymap = "3D View"
+event = "E"
+shift = true
+alt = true
+label.en = "Pie menu of polyline editing"
+label.es = "Menú circular de edición de polilíneas"
+
+[[shortcut]]
+key = "geoblender.ui_call_pie?name=GEOBLENDER_MT_geo_pie_solids"
+keymap = "3D View"
+event = "W"
+shift = true
+alt = true
+label.en = "Pie menu of solids"
+label.es = "Menú circular de sólidos"
+
+[[shortcut]]
+key = "geoblender.ui_call_pie?name=GEOBLENDER_MT_ui_pie_snap"
+keymap = "3D View"
+event = "K"
+shift = true
+alt = true
+label.en = "Pie menu of snapping"
+label.es = "Menú circular de encaje"
+
+[[shortcut]]
+key = "geoblender.ui_draw_polyline"
+keymap = "3D View"
+event = "N"
+shift = true
+alt = true
+
+[[shortcut]]
+key = "geoblender.ui_call_panel?keep_open=True&name=GEOBLENDER_PT_ui_current_object"
+keymap = "3D View"
+event = "D"
+shift = true
+alt = true
+label.en = "Current object"
+label.es = "Objeto actual"
+
+[[shortcut]]
+key = "geoblender.ui_call_panel?name=GEOBLENDER_PT_ui_work_plane"
+keymap = "3D View"
+event = "T"
+shift = true
+alt = true
+label.en = "Work plane"
+label.es = "Plano de trabajo"
+
+[[shortcut]]
+key = "geoblender.ui_call_panel?name=GEOBLENDER_PT_ui_selection_filter"
+keymap = "3D View"
+event = "U"
+shift = true
+alt = true
+label.en = "Selection filter"
+label.es = "Filtro de selección"
+
+[[shortcut]]
+key = "geoblender.ui_call_panel?name=GEOBLENDER_PT_ui_legend"
+keymap = "3D View"
+event = "L"
+shift = true
+alt = true
+label.en = "Legend"
+label.es = "Leyenda"
+
+[[shortcut]]
+key = "geoblender.ui_call_panel?name=GEOBLENDER_PT_ui_data_filter"
+keymap = "3D View"
+event = "F"
+shift = true
+alt = true
+label.en = "Data filter"
+label.es = "Filtro de datos"
+
+[[shortcut]]
+key = "geoblender.gis_draw_profile"
+keymap = "3D View"
+event = "P"
+shift = true
+alt = true
+
+[[shortcut]]
+key = "geoblender.res_compute_volume_between_surfaces"
+keymap = "3D View"
+event = "M"
+shift = true
+alt = true
+
+[[shortcut]]
+key = "geoblender.ui_call_context_menu"
+keymap = "3D View"
+event = "B"
+shift = true
+alt = true

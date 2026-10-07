@@ -54,6 +54,13 @@ menú de la barra superior) se comparan por el objeto, no solo por ``módulo.nom
 (:class:`CallableRef`): ``functools.wraps`` copia ``__module__`` y ``__qualname__``, y
 una envoltura que no se deshizo al deshabilitar tendría el mismo nombre que la original
 (convergencia de la spec 001, T40).
+
+La instantánea de la interfaz (:func:`ui_snapshot`, spec 003, T01) añade a la huella los
+espacios de trabajo del fichero y el de cada ventana, y :data:`UI_DRAW_TARGETS` nombra
+las cabeceras y los menús de Blender que amplía la 003. Vive aquí y no en un
+``tests/blender/support/state_snapshot.py`` (como dice la T01): TST-02 no admite en una
+carpeta de pruebas un ``.py`` que no case con su patrón, y ARQ-01 solo deja importar
+``bpy`` en ``tests/support/`` a este módulo.
 """
 
 from __future__ import annotations
@@ -529,7 +536,10 @@ def state_fingerprint() -> dict[str, object]:
         "properties": properties,
         "handlers": handlers,
         "addon_keymaps": keymaps,
-        "topbar_draw_left": CallableRef.of(bpy.types.TOPBAR_HT_upper_bar.draw_left),
+        # Sin draw_left (la prueba del respaldo de compatibilidad, spec 003, T13), None.
+        "topbar_draw_left": CallableRef.of(
+            getattr(bpy.types.TOPBAR_HT_upper_bar, "draw_left", None)
+        ),
         "draw_funcs": draw_funcs,
         "timers": registered_timers(),
         "translations": registered_translations(EXTENSION_MODULES),
@@ -541,6 +551,37 @@ def state_fingerprint() -> dict[str, object]:
         "addons": sorted(addon.module for addon in bpy.context.preferences.addons),
         "driver_namespace": sorted(bpy.app.driver_namespace),
     }
+
+
+# Cabeceras y menús de Blender que la interfaz (spec 003) sustituye o amplía (CW §4; PC §1;
+# AR §6): la instantánea de la interfaz comprueba que existen en la versión instalada.
+UI_DRAW_TARGETS: tuple[str, ...] = (
+    "TOPBAR_HT_upper_bar",
+    "TOPBAR_MT_editor_menus",
+    "VIEW3D_MT_editor_menus",
+    "VIEW3D_HT_tool_header",
+    "STATUSBAR_HT_header",
+    "VIEW3D_MT_object_context_menu",
+    "VIEW3D_MT_edit_curve_context_menu",
+    "OUTLINER_MT_object",
+    "OUTLINER_MT_collection",
+)
+
+
+def ui_snapshot() -> dict[str, object]:
+    """Instantánea de lo que toca la interfaz (spec 003, T01; RF-003-23, CE-003-02): la
+    huella de :func:`state_fingerprint` (``draw_left``, las funciones de dibujo de todas
+    las cabeceras y menús, el mapa de complementos, las clases, las propiedades, los
+    manejadores y los temporizadores) más los espacios de trabajo del fichero y el de
+    cada ventana, por nombre (el estado de sesión del conmutador no se guarda, CW §3.1).
+    Se compara con :func:`fingerprint_diff`."""
+    snapshot = state_fingerprint()
+    snapshot["workspaces"] = sorted(workspace.name for workspace in bpy.data.workspaces)
+    snapshot["window_workspaces"] = [
+        window.workspace.name if window.workspace else None
+        for window in bpy.context.window_manager.windows
+    ]
+    return snapshot
 
 
 def session_baseline() -> dict[str, object]:

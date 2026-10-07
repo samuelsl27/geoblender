@@ -1,0 +1,358 @@
+# Catálogo de comandos de Geoblender (spec 003). Acceso rápido (AR §2 y §3).
+# [[project]]: los 8 controles de la barra superior; [[view]]: los 24 de la fila 2 de cada
+# Vista 3D, por grupos. compact_step: el paso del plegado (AR §3.3) que lo deja en solo icono;
+# fold_step: el que lo lleva a «»» (sin él, nunca se pliega); edit_modes: se queda en los modos
+# de edición de malla y de curva; width_text: el texto con que se mide su anchura.
+# Las claves son las de los comandos del catálogo (bl_idname o clase, con ?prop=valor si fijan
+# propiedades): cada sitio referencia el comando, nunca lo copia (RF-003-06, BS §7.1).
+
+[groups]
+view = {en = "Viewing", es = "Vista"}
+section = {en = "Section", es = "Sección"}
+draw = {en = "Drafting", es = "Dibujo"}
+query = {en = "Query", es = "Consulta"}
+compute = {en = "Calculation and control", es = "Cálculo y control"}
+command = {en = "Command", es = "Comando"}
+
+# 1
+[[project]]
+key = "geoblender.ui_toggle_mode"
+display = "switch"
+
+# 2
+[[project]]
+key = "GEOBLENDER_PT_ui_layouts"
+display = "popover"
+
+# 3
+[[project]]
+key = "geoblender.core_save_project"
+display = "icon"
+
+# 4
+[[project]]
+key = "ed.undo"
+display = "icon"
+
+# 5
+[[project]]
+key = "ed.redo"
+display = "icon"
+
+# 6
+[[project]]
+key = "GEOBLENDER_MT_core_data"
+display = "menu"
+
+# 7
+[[project]]
+key = "geoblender.core_refresh"
+display = "icon_text"
+extra = "GEOBLENDER_PT_core_stale"
+
+# 8
+[[project]]
+key = "GEOBLENDER_PT_core_version"
+display = "popover_text"
+
+# 9
+[[view]]
+key = "GEOBLENDER_MT_ui_views"
+group = "view"
+display = "menu"
+edit_modes = true
+
+# 10
+[[view]]
+key = "geoblender.ui_frame_work_window"
+group = "view"
+display = "icon"
+edit_modes = true
+
+# 11
+[[view]]
+key = "GEOBLENDER_MT_geo_new_section"
+group = "section"
+display = "menu"
+edit_modes = true
+
+# 12
+[[view]]
+key = "geoblender.geo_step_section?direction=-1"
+group = "section"
+display = "icon"
+edit_modes = true
+
+# 13
+[[view]]
+key = "geoblender.geo_step_section?direction=1"
+group = "section"
+display = "icon"
+edit_modes = true
+
+# 14
+[[view]]
+key = "GEOBLENDER_PT_geo_band"
+group = "section"
+display = "popover_text"
+compact_step = 1
+edit_modes = true
+width_text = "±5 | 10 m"
+
+# 15
+[[view]]
+key = "GEOBLENDER_MT_geo_clip"
+group = "section"
+display = "menu"
+edit_modes = true
+
+# 16
+[[view]]
+key = "geoblender.geo_align_view_to_section"
+group = "section"
+display = "icon"
+edit_modes = true
+
+# 17
+[[view]]
+key = "geoblender.ui_draw_polyline"
+group = "draw"
+display = "icon"
+edit_modes = true
+
+# 18
+[[view]]
+key = "tool_settings.use_snap"
+group = "draw"
+display = "toggle_menu"
+extra = "GEOBLENDER_MT_ui_snap"
+edit_modes = true
+
+# 19
+[[view]]
+key = "GEOBLENDER_PT_ui_work_plane"
+group = "draw"
+display = "popover"
+fold_step = 5
+edit_modes = true
+
+# 20
+[[view]]
+key = "GEOBLENDER_PT_ui_current_object"
+group = "draw"
+display = "popover_text"
+compact_step = 1
+fold_step = 5
+edit_modes = true
+width_text = "Límites"
+
+# 21
+[[view]]
+key = "GEOBLENDER_MT_gis_polyline_edit"
+group = "draw"
+display = "menu"
+fold_step = 5
+
+# 22
+[[view]]
+key = "GEOBLENDER_PT_ui_selection_filter"
+group = "draw"
+display = "popover"
+fold_step = 5
+
+# 23
+[[view]]
+key = "geoblender.ui_identify"
+group = "query"
+display = "icon"
+fold_step = 4
+
+# 24
+[[view]]
+key = "geoblender.ui_measure"
+group = "query"
+display = "icon"
+fold_step = 4
+
+# 25
+[[view]]
+key = "geoblender.gis_draw_profile"
+group = "query"
+display = "icon"
+fold_step = 4
+
+# 26
+[[view]]
+key = "GEOBLENDER_PT_ui_legend"
+group = "query"
+display = "popover"
+fold_step = 4
+
+# 27
+[[view]]
+key = "GEOBLENDER_PT_ui_data_filter"
+group = "query"
+display = "popover"
+fold_step = 4
+
+# 28
+[[view]]
+key = "geoblender.res_compute_volume_between_surfaces"
+group = "compute"
+display = "icon"
+fold_step = 3
+
+# 29
+[[view]]
+key = "geoblender.core_show_selection_figures"
+group = "compute"
+display = "icon"
+fold_step = 3
+
+# 30
+[[view]]
+key = "geoblender.core_toggle_constraints_overlay"
+group = "compute"
+display = "icon"
+fold_step = 3
+
+# 31
+[[view]]
+key = "geoblender.core_run_checks"
+group = "compute"
+display = "icon_text"
+extra = "GEOBLENDER_PT_core_checks"
+fold_step = 3
+width_text = "✗ 2"
+
+# 32
+[[view]]
+key = "geoblender.ui_open_command_line"
+group = "command"
+display = "icon"
+fold_step = 2
+
+# Paneles del acceso rápido (ventanas emergentes): comandos sin casa en un menú.
+
+[[command]]
+key = "GEOBLENDER_PT_ui_layouts"
+label.en = "Layouts"
+label.es = "Disposición"
+description.en = "Choose, add, remove or restore a Geoblender layout"
+description.es = "Elegir, añadir, quitar o restaurar una disposición de Geoblender"
+entry = "003"
+action = "P"
+frequency = 1
+icon_fallback = "WORKSPACE"
+
+[[command]]
+key = "GEOBLENDER_PT_core_stale"
+label.en = "Stale results"
+label.es = "Resultados obsoletos"
+description.en = "What is stale and why"
+description.es = "Lo que está obsoleto y por qué"
+entry = "R-07"
+action = "P"
+frequency = 2
+icon_fallback = "FILE_REFRESH"
+
+[[command]]
+key = "GEOBLENDER_PT_core_version"
+label.en = "Active version"
+label.es = "Versión activa"
+description.en = "Versions with their state, revisions, new revision, change state and compare"
+description.es = "Versiones con su estado, revisiones, nueva revisión, cambiar estado y comparar"
+entry = "R-07"
+action = "P"
+frequency = 3
+icon_fallback = "RADIOBUT_ON"
+
+[[command]]
+key = "GEOBLENDER_PT_geo_band"
+label.en = "Section band"
+label.es = "Banda"
+description.en = "Front, back and step of the section band; automatic step = front + back"
+description.es = "Delante, detrás y paso de la banda de la sección; paso automático = delante + detrás"
+entry = "R-16"
+action = "P"
+frequency = 3
+icon = "gb_qat_band"
+icon_fallback = "ARROW_LEFTRIGHT"
+
+[[command]]
+key = "GEOBLENDER_PT_ui_work_plane"
+label.en = "Work plane"
+label.es = "Plano de trabajo"
+description.en = "Active section, fixed elevation, on a surface or view plane, and the grade"
+description.es = "Sección activa, cota fija, sobre una superficie o plano de la vista, y la pendiente"
+entry = "R-09"
+action = "P"
+frequency = 2
+icon = "gb_qat_work_plane"
+icon_fallback = "MESH_GRID"
+
+[[command]]
+key = "GEOBLENDER_PT_ui_current_object"
+label.en = "Current object"
+label.es = "Objeto actual"
+description.en = "Layer and attributes with which what is drawn is born"
+description.es = "Capa y atributos con que nace lo que se dibuja"
+entry = "R-09"
+action = "P"
+frequency = 2
+icon = "gb_qat_current_object"
+icon_fallback = "LAYER_ACTIVE"
+
+[[command]]
+key = "GEOBLENDER_PT_ui_selection_filter"
+label.en = "Selection filter"
+label.es = "Filtro de selección"
+description.en = "Types that can be selected in the view; it writes Object.hide_select"
+description.es = "Tipos que se pueden seleccionar en la vista; escribe Object.hide_select"
+entry = "R-09"
+action = "P"
+frequency = 2
+icon_fallback = "RESTRICT_SELECT_OFF"
+
+[[command]]
+key = "GEOBLENDER_PT_ui_legend"
+label.en = "Legend"
+label.es = "Leyenda"
+description.en = "Colour the items of the active type by one of their fields"
+description.es = "Colorea los elementos del tipo activo por uno de sus campos"
+entry = "003"
+action = "P"
+frequency = 2
+icon_fallback = "COLOR"
+
+[[command]]
+key = "GEOBLENDER_PT_ui_data_filter"
+label.en = "Data filter"
+label.es = "Filtro de datos"
+description.en = "Expression on the items of the active type"
+description.es = "Expresión sobre los elementos del tipo activo"
+entry = "003"
+action = "P"
+frequency = 2
+icon_fallback = "FILTER"
+
+[[command]]
+key = "GEOBLENDER_PT_core_checks"
+label.en = "Checks"
+label.es = "Comprobaciones"
+description.en = "Criteria met and not met by the active version, with «Go to»"
+description.es = "Criterios que cumple y que no cumple la versión activa, con «Ir a»"
+entry = "R-08"
+action = "P"
+frequency = 2
+icon_fallback = "CHECKMARK"
+
+[[command]]
+key = "GEOBLENDER_PT_ui_quick_access_more"
+label.en = "More controls"
+label.es = "Más controles"
+description.en = "The quick access controls that do not fit in the row"
+description.es = "Los controles de acceso rápido que no caben en la fila"
+entry = "003"
+action = "P"
+frequency = 1

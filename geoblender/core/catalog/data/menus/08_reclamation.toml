@@ -1,0 +1,224 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 8 de 11: Restauración (BS §8.8).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_reclamation"
+label.en = "Reclamation"
+label.es = "Restauración"
+description.en = "Rehabilitation (RD 975/2009): fills, waste dumps, slopes, water and final surface"
+description.es = "Rehabilitación (RD 975/2009): rellenos, escombreras, taludes, agua y superficie final"
+stage.en = "Reclamation"
+stage.es = "Restauración"
+step = 8
+branch = "design"
+icon = "gb_menu_reclamation"
+icon_fallback = "RECOVER_LAST"
+
+# Rellenos y escombreras ----------------------------------------------------------------
+[[menu.group]]
+label.en = "Fills and waste dumps"
+label.es = "Rellenos y escombreras"
+
+[[menu.group.item]]
+key = "geoblender.des_edit_fills"
+label.en = "Fill manager…"
+label.es = "Gestor de rellenos…"
+description.en = "Fill items, priority, cap and spill"
+description.es = "Partidas de relleno, prioridad, tope y derrame"
+entry = "R-39"
+action = "P"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.des_fill_slope"
+label.en = "Minimum fill of a slope…"
+label.es = "Relleno mínimo de un talud…"
+description.en = "The least fill that leaves a slope stable"
+description.es = "El menor relleno que deja estable un talud"
+entry = "R-39"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_design_waste_dump"
+label.en = "Waste dump by lifts…"
+label.es = "Escombrera por tongadas…"
+description.en = "Waste dump built by lifts"
+description.es = "Escombrera construida por tongadas"
+entry = "R-39"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_show_earthworks_balance"
+label.en = "Earthworks balance…"
+label.es = "Balance de tierras…"
+description.en = "Cut and fill balance closed with the swell factor K"
+description.es = "Balance de desmonte y relleno cerrado con el esponjamiento K"
+entry = "R-39"
+action = "P"
+frequency = 3
+
+# Taludes existentes --------------------------------------------------------------------
+[[menu.group]]
+label.en = "Existing slopes"
+label.es = "Taludes existentes"
+
+[[menu.group.item]]
+key = "geoblender.des_detect_slopes"
+label.en = "Detect slopes…"
+label.es = "Detectar taludes…"
+description.en = "Detect the existing slopes of a surface"
+description.es = "Detecta los taludes existentes de una superficie"
+entry = "R-42"
+action = "D"
+background = true
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_show_slope_cards"
+label.en = "Slope cards…"
+label.es = "Fichas por talud…"
+description.en = "One card per slope with its geometry and its treatment"
+description.es = "Una ficha por talud con su geometría y su tratamiento"
+entry = "R-42"
+action = "P"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.des_treat_slopes"
+label.en = "Treat slopes…"
+label.es = "Tratar taludes…"
+description.en = "Treatment of the slopes by linear programming"
+description.es = "Tratamiento de los taludes por programación lineal"
+entry = "R-42"
+action = "D"
+background = true
+frequency = 2
+
+# Agua ----------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Water"
+label.es = "Agua"
+
+[[menu.group.item]]
+key = "geoblender.des_analyze_drainage"
+label.en = "Drainage and depressions"
+label.es = "Drenaje y depresiones"
+description.en = "Flow directions and closed depressions of the surface"
+description.es = "Direcciones de flujo y depresiones cerradas de la superficie"
+entry = "R-37"
+action = "A"
+background = true
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_compute_catchments"
+label.en = "Catchments and flows…"
+label.es = "Cuencas y caudales…"
+description.en = "Catchments and design flows"
+description.es = "Cuencas y caudales de diseño"
+entry = "R-37"
+action = "D"
+frequency = 1
+
+# Superficie final ----------------------------------------------------------------------
+[[menu.group]]
+label.en = "Final surface"
+label.es = "Superficie final"
+
+[[menu.group.item]]
+key = "geoblender.des_create_transitions"
+label.en = "Transitions with the untouched terrain"
+label.es = "Transiciones con el terreno no afectado"
+description.en = "Smooth transitions between the design and the untouched terrain"
+description.es = "Transiciones suaves entre el diseño y el terreno no afectado"
+entry = "R-34"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_create_final_surface"
+label.en = "Final remodelled surface…"
+label.es = "Superficie final remodelada…"
+description.en = "Final surface of the reclamation"
+description.es = "Superficie final de la restauración"
+entry = "R-43"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.des_compute_topsoil"
+label.en = "Topsoil…"
+label.es = "Tierra vegetal…"
+description.en = "Topsoil stripped, stored and spread"
+description.es = "Tierra vegetal retirada, acopiada y extendida"
+entry = "R-43"
+action = "D"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_draw_revegetation"
+label.en = "Revegetation zones"
+label.es = "Zonas de revegetación"
+description.en = "Draw the revegetation zones"
+description.es = "Dibuja las zonas de revegetación"
+entry = "R-43"
+action = "H"
+frequency = 2
+
+# Calendario y presupuesto --------------------------------------------------------------
+[[menu.group]]
+label.en = "Schedule and budget"
+label.es = "Calendario y presupuesto"
+
+[[menu.group.item]]
+key = "geoblender.des_compute_disturbed_areas"
+label.en = "Disturbed, in reclamation and reclaimed areas by year…"
+label.es = "Superficies afectadas, en restauración y restauradas por año…"
+description.en = "Areas by year from the phases"
+description.es = "Superficies por año desde las fases"
+entry = "R-43"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.des_show_reclamation_budget"
+label.en = "Reclamation measurements and budget…"
+label.es = "Mediciones y presupuesto de restauración…"
+description.en = "Measurements and budget of the reclamation works"
+description.es = "Mediciones y presupuesto de las obras de restauración"
+entry = "R-43"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_report_reclamation_plan"
+label.en = "Reclamation plan data…"
+label.es = "Datos del plan de restauración…"
+description.en = "Data for parts II, IV and V of the reclamation plan"
+description.es = "Datos de las partes II, IV y V del plan de restauración"
+entry = "R-43"
+action = "D"
+frequency = 2
+
+# Comprobar -----------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Check"
+label.es = "Comprobar"
+
+[[menu.group.item]]
+key = "geoblender.des_check_reclamation"
+label.en = "Check the reclamation…"
+label.es = "Comprobar la restauración…"
+description.en = "Drainage, steps created and reclamation criteria"
+description.es = "Drenaje, saltos creados y criterios de restauración"
+entry = "R-43"
+action = "P"
+frequency = 3

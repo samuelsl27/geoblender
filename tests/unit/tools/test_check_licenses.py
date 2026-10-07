@@ -27,6 +27,7 @@ import zipfile
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 
+from tests.support import icon_fixtures
 from tests.support.repo import (
     EMPTY_WHEELS_TOML,
     EXT,
@@ -670,9 +671,9 @@ class AssetLicensesTest(WheelsTestCase):
         self.assertRules(findings, "LIC-04")
         findings = _assets_found(
             {
-                "assets/icons/dh.svg": "<svg/>\n",
+                "assets/icons/dh.svg": icon_fixtures.VALID_SVG,
                 "assets/icons/LICENSE": self.cc0,
-                "assets/icons/menus/io.svg": "<svg/>\n",
+                "assets/icons/menus/io.svg": icon_fixtures.VALID_SVG,
             }
         )
         self.assertRules(findings, "LIC-04")
@@ -775,10 +776,22 @@ class AssetLicensesTest(WheelsTestCase):
         self.assertRules(findings, "LIC-04")
         self.assertEqual(
             _assets_found(
-                {"assets/icons/dh.svg": "<svg/>\n", "assets/icons/LICENSE": self.cc0}
+                {"assets/icons/dh.svg": icon_fixtures.VALID_SVG,
+                 "assets/icons/LICENSE": self.cc0}
             ),
             [],
         )
+
+    def test_svg_cc0_metadata(self) -> None:
+        """LIC-04 (spec 003, T30; II §1.7): una fuente SVG de ``assets/`` sin los metadatos
+        RDF de CC0-1.0 (``dc:rights``, ``cc:license`` y el autor) es un incumplimiento."""
+        findings = _assets_found(
+            {"assets/icons/dh.svg": icon_fixtures.WITHOUT_LICENSE_SVG,
+             "assets/icons/LICENSE": self.cc0}
+        )
+        self.assertRules(findings, "LIC-04", "LIC-04", "LIC-04")
+        self.assertEqual({finding.path for finding in findings}, {"assets/icons/dh.svg"})
+        self.assertTrue(any("dc:rights" in finding.message for finding in findings))
 
 
 class CheckLicensesCommandTest(WheelsTestCase):

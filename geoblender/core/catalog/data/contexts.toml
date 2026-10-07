@@ -1,0 +1,508 @@
+# Catálogo de comandos de Geoblender (spec 003). Menús contextuales (PC §3 y §4).
+# Un menú «<Tipo> ▾» por tipo de objeto (Object.geoblender.kind, que registra la 006) y «Selección (n) ▾»;
+# se ven en la fila 1 de la Vista 3D, en el clic derecho y con Mayús+Alt+B. icon: los dos
+# iconos de acción de la fila 1. placeholder: algo que aún no es un comando (una propiedad del
+# tipo, que llega con su entrada) y se dibuja desactivado con su «Disponible en …».
+# Las claves son las de los comandos del catálogo (bl_idname o clase, con ?prop=valor si fijan
+# propiedades): cada sitio referencia el comando, nunca lo copia (RF-003-06, BS §7.1).
+
+[[context]]
+kind = "DRILLHOLES"
+id = "GEOBLENDER_MT_dh_context"
+label.en = "Drillholes"
+label.es = "Sondeos"
+description.en = "Commands for the active drillholes"
+description.es = "Órdenes para los sondeos activos"
+entry = "005"
+
+[[context.item]]
+ref = "geoblender.dh_show_display"
+
+[[context.item]]
+ref = "geoblender.ui_edit_legend"
+
+[[context.item]]
+ref = "geoblender.dh_select_drillholes"
+
+[[context.item]]
+ref = "geoblender.dh_goto_drillhole"
+
+[[context.item]]
+ref = "geoblender.geo_new_section?mode=THROUGH_OBJECT"
+
+[[context.item]]
+ref = "geoblender.dh_validate"
+
+[[context.item]]
+ref = "geoblender.dh_show_tables"
+
+[[context.item]]
+ref = "geoblender.io_export_samples"
+
+[[context.icon]]
+placeholder.en = "Labels"
+placeholder.es = "Etiquetas"
+entry = "005"
+
+[[context.icon]]
+ref = "geoblender.dh_goto_drillhole"
+
+[[context]]
+kind = "SECTION"
+id = "GEOBLENDER_MT_geo_context_section"
+label.en = "Section"
+label.es = "Sección"
+description.en = "Commands for the active section"
+description.es = "Órdenes para la sección activa"
+entry = "R-16"
+
+[[context.item]]
+ref = "geoblender.geo_align_view_to_section"
+
+[[context.item]]
+ref = "geoblender.geo_step_section?direction=-1"
+
+[[context.item]]
+ref = "geoblender.geo_step_section?direction=1"
+
+[[context.item]]
+ref = "geoblender.geo_edit_band"
+
+[[context.item]]
+ref = "GEOBLENDER_MT_geo_clip"
+
+[[context.item]]
+ref = "geoblender.geo_toggle_section_traces"
+
+[[context.item]]
+ref = "geoblender.geo_place_section_image"
+
+[[context.item]]
+ref = "geoblender.geo_save_section"
+
+[[context.item]]
+ref = "geoblender.gis_export_profiles"
+
+[[context.icon]]
+ref = "geoblender.geo_align_view_to_section"
+
+[[context.icon]]
+ref = "geoblender.geo_toggle_section_traces"
+
+[[context]]
+kind = "SURFACE"
+id = "GEOBLENDER_MT_gis_context_surface"
+label.en = "Surface"
+label.es = "Superficie"
+description.en = "Commands for the active surface or DTM"
+description.es = "Órdenes para la superficie o el MDT activo"
+entry = "006"
+
+[[context.item]]
+ref = "geoblender.gis_create_contours"
+
+[[context.item]]
+ref = "geoblender.gis_compute_terrain_derivatives"
+
+[[context.item]]
+ref = "geoblender.gis_draw_profile"
+
+[[context.item]]
+ref = "geoblender.res_compute_volume_between_surfaces"
+
+[[context.item]]
+ref = "geoblender.res_compute_surface_difference"
+
+[[context.item]]
+ref = "geoblender.gis_drape_orthophoto"
+
+[[context.item]]
+ref = "geoblender.gis_validate_surface"
+
+[[context.item]]
+placeholder.en = "Level of detail"
+placeholder.es = "Nivel de detalle"
+entry = "006"
+
+[[context.item]]
+ref = "geoblender.gis_export_raster"
+
+[[context.item]]
+ref = "geoblender.io_export_dxf"
+
+[[context.icon]]
+ref = "geoblender.gis_create_contours"
+
+[[context.icon]]
+ref = "geoblender.res_compute_volume_between_surfaces"
+
+[[context]]
+kind = "POINTS"
+id = "GEOBLENDER_MT_gis_context_points"
+label.en = "Points"
+label.es = "Puntos"
+description.en = "Commands for the active points or point cloud"
+description.es = "Órdenes para los puntos o la nube de puntos activa"
+entry = "006"
+
+[[context.item]]
+ref = "geoblender.gis_create_tin_from_points"
+
+[[context.item]]
+ref = "geoblender.gis_create_dtm_from_point_cloud"
+
+[[context.item]]
+ref = "GEOBLENDER_MT_io_export"
+
+[[context.icon]]
+ref = "geoblender.gis_create_tin_from_points"
+
+[[context.icon]]
+ref = "geoblender.ui_identify"
+
+[[context]]
+kind = "POLYLINE"
+id = "GEOBLENDER_MT_gis_context_polyline"
+label.en = "Polyline"
+label.es = "Polilínea"
+description.en = "Commands for the active polyline"
+description.es = "Órdenes para la polilínea activa"
+entry = "R-09"
+
+[[context.item]]
+ref = "geoblender.gis_toggle_polyline_closed"
+
+[[context.item]]
+ref = "geoblender.gis_reverse_polyline"
+
+[[context.item]]
+ref = "geoblender.gis_offset_polyline"
+
+[[context.item]]
+ref = "geoblender.gis_densify_polyline"
+
+[[context.item]]
+ref = "geoblender.gis_simplify_polyline"
+
+[[context.item]]
+ref = "geoblender.gis_drape_polyline"
+
+[[context.item]]
+ref = "geoblender.ui_move_to_current_object"
+
+[[context.item]]
+ref = "geoblender.gis_draw_profile"
+
+[[context.item]]
+ref = "geoblender.ui_assign_attributes"
+
+[[context.icon]]
+ref = "geoblender.gis_offset_polyline"
+
+[[context.icon]]
+ref = "geoblender.gis_drape_polyline"
+
+[[context]]
+kind = "CONSTRAINT"
+id = "GEOBLENDER_MT_core_context_constraint"
+label.en = "Constraint"
+label.es = "Restricción"
+description.en = "Commands for the active constraint or limit"
+description.es = "Órdenes para la restricción o el límite activo"
+entry = "R-32"
+
+[[context.item]]
+ref = "geoblender.core_edit_constraints"
+
+[[context.item]]
+ref = "geoblender.core_toggle_constraints_overlay"
+
+[[context.item]]
+ref = "geoblender.core_find_untouchables"
+
+[[context.item]]
+ref = "geoblender.core_show_decisions"
+
+[[context.item]]
+ref = "geoblender.gis_open_in_qgis"
+
+[[context.icon]]
+ref = "geoblender.core_toggle_constraints_overlay"
+
+[[context.icon]]
+ref = "geoblender.core_edit_constraints"
+
+[[context]]
+kind = "SOLID"
+id = "GEOBLENDER_MT_geo_context_solid"
+label.en = "Solid"
+label.es = "Sólido"
+description.en = "Commands for the active solid"
+description.es = "Órdenes para el sólido activo"
+entry = "R-17"
+
+[[context.item]]
+ref = "geoblender.geo_validate_solid"
+
+[[context.item]]
+ref = "geoblender.geo_repair_solid"
+
+[[context.item]]
+ref = "geoblender.geo_cap_solid"
+
+[[context.item]]
+ref = "GEOBLENDER_MT_geo_boolean_solids"
+
+[[context.item]]
+ref = "geoblender.geo_compute_solid_volume"
+
+[[context.item]]
+ref = "geoblender.bm_code_by_solids"
+
+[[context.item]]
+ref = "geoblender.geo_new_section?mode=THROUGH_OBJECT"
+
+[[context.icon]]
+ref = "geoblender.geo_validate_solid"
+
+[[context.icon]]
+ref = "geoblender.geo_compute_solid_volume"
+
+[[context]]
+kind = "BLOCK_MODEL"
+id = "GEOBLENDER_MT_bm_context"
+label.en = "Blocks"
+label.es = "Bloques"
+description.en = "Commands for the active block model"
+description.es = "Órdenes para el modelo de bloques activo"
+entry = "R-22"
+
+[[context.item]]
+ref = "geoblender.ui_edit_legend"
+
+[[context.item]]
+ref = "geoblender.ui_edit_data_filter"
+
+[[context.item]]
+placeholder.en = "Display level"
+placeholder.es = "Nivel de representación"
+entry = "R-22"
+
+[[context.item]]
+placeholder.en = "Cut"
+placeholder.es = "Corte"
+entry = "R-22"
+
+[[context.item]]
+ref = "geoblender.bm_report_blocks"
+
+[[context.item]]
+ref = "geoblender.bm_compute_field"
+
+[[context.item]]
+ref = "geoblender.bm_show_grade_tonnage"
+
+[[context.item]]
+ref = "geoblender.io_export_block_model"
+
+[[context.icon]]
+ref = "geoblender.ui_edit_legend"
+
+[[context.icon]]
+ref = "geoblender.bm_report_blocks"
+
+[[context]]
+kind = "DESIGN"
+id = "GEOBLENDER_MT_des_context_design"
+label.en = "Design"
+label.es = "Diseño"
+description.en = "Commands for the active design"
+description.es = "Órdenes para el diseño activo"
+entry = "R-33"
+
+[[context.item]]
+ref = "geoblender.des_edit_bench_profiles"
+
+[[context.item]]
+ref = "geoblender.des_toggle_preview"
+
+[[context.item]]
+ref = "geoblender.core_recompute_stale"
+
+[[context.item]]
+ref = "geoblender.des_check_rules"
+
+[[context.item]]
+ref = "geoblender.res_compute_volume_between_surfaces"
+
+[[context.item]]
+ref = "geoblender.res_compare_versions"
+
+[[context.item]]
+ref = "geoblender.des_create_design_surface"
+
+[[context.icon]]
+ref = "geoblender.core_recompute_stale"
+
+[[context.icon]]
+ref = "geoblender.des_check_rules"
+
+[[context]]
+kind = "DESIGN_ENTITY"
+id = "GEOBLENDER_MT_des_context_entity"
+label.en = "Entity"
+label.es = "Entidad"
+description.en = "Commands for the active design entity"
+description.es = "Órdenes para la entidad de diseño activa"
+entry = "R-36"
+
+[[context.item]]
+placeholder.en = "Edit the axis or the outline"
+placeholder.es = "Editar el eje o el contorno"
+entry = "R-36"
+
+[[context.item]]
+ref = "geoblender.ui_show_context_panel"
+
+[[context.item]]
+ref = "geoblender.core_recompute_stale"
+
+[[context.item]]
+placeholder.en = "Constraints it declares…"
+placeholder.es = "Restricciones que declara…"
+entry = "R-36"
+
+[[context.item]]
+ref = "geoblender.core_show_lineage"
+
+[[context.item]]
+ref = "geoblender.des_edit_stockpile"
+
+[[context.icon]]
+ref = "geoblender.ui_show_context_panel"
+
+[[context.icon]]
+ref = "geoblender.core_recompute_stale"
+
+[[context]]
+kind = "PHASE"
+id = "GEOBLENDER_MT_res_context_phase"
+label.en = "Phase"
+label.es = "Fase"
+description.en = "Commands for the active phase"
+description.es = "Órdenes para la fase activa"
+entry = "R-50"
+
+[[context.item]]
+ref = "geoblender.res_compute_phase_volumes"
+
+[[context.item]]
+ref = "geoblender.res_report_phase_vertices"
+
+[[context.item]]
+ref = "geoblender.ui_show_context_panel"
+
+[[context.item]]
+ref = "geoblender.res_animate_phases"
+
+[[context.icon]]
+ref = "geoblender.res_compute_phase_volumes"
+
+[[context.icon]]
+ref = "geoblender.res_report_phase_vertices"
+
+[[context]]
+kind = "VERSION"
+id = "GEOBLENDER_MT_core_context_version"
+label.en = "Version"
+label.es = "Versión"
+description.en = "Commands for the active version"
+description.es = "Órdenes para la versión activa"
+entry = "R-07"
+
+[[context.item]]
+ref = "geoblender.core_new_revision"
+
+[[context.item]]
+ref = "geoblender.core_set_version_state"
+
+[[context.item]]
+ref = "geoblender.res_compare_versions"
+
+[[context.item]]
+ref = "geoblender.core_run_checks"
+
+[[context.item]]
+ref = "geoblender.res_report_version_sheet"
+
+[[context.item]]
+ref = "geoblender.gis_publish_qgis"
+
+[[context.item]]
+ref = "geoblender.core_reproduce_version"
+
+[[context.icon]]
+ref = "geoblender.core_run_checks"
+
+[[context.icon]]
+ref = "geoblender.res_compare_versions"
+
+[[context]]
+kind = "DRAWING"
+id = "GEOBLENDER_MT_plan_context_drawing"
+label.en = "Drawing"
+label.es = "Plano"
+description.en = "Commands for the active drawing"
+description.es = "Órdenes para el plano activo"
+entry = "R-57"
+
+[[context.item]]
+ref = "geoblender.plan_set_frame"
+
+[[context.item]]
+ref = "geoblender.plan_edit_title_block"
+
+[[context.item]]
+ref = "geoblender.plan_edit_content"
+
+[[context.item]]
+ref = "geoblender.plan_preview_drawing"
+
+[[context.item]]
+ref = "geoblender.plan_export_pdf"
+
+[[context.icon]]
+ref = "geoblender.plan_preview_drawing"
+
+[[context.icon]]
+ref = "geoblender.plan_export_pdf"
+
+[[context]]
+kind = "SELECTION"
+id = "GEOBLENDER_MT_ui_context_selection"
+label.en = "Selection"
+label.es = "Selección"
+description.en = "Commands common to the selected items of several types"
+description.es = "Órdenes comunes a los elementos seleccionados de varios tipos"
+entry = "003"
+
+[[context.item]]
+ref = "geoblender.core_show_selection_figures"
+
+[[context.item]]
+ref = "geoblender.core_load_into_view"
+
+[[context.item]]
+ref = "geoblender.core_unload_from_view"
+
+[[context.item]]
+ref = "GEOBLENDER_MT_io_export"
+
+[[context.item]]
+ref = "geoblender.core_show_lineage"
+
+[[context.icon]]
+ref = "geoblender.core_show_selection_figures"
+
+[[context.icon]]
+ref = "geoblender.core_load_into_view"

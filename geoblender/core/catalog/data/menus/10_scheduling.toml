@@ -1,0 +1,183 @@
+# Catálogo de comandos de Geoblender (spec 003). BS: docs/arquitectura/interfaz/barra-superior.md
+# Paso 10 de 11: Planificación (BS §8.10).
+# Cada comando se define una sola vez, en su casa: key (bl_idname o clase; con ?prop=valor si
+# fija propiedades), label y description en inglés (el msgid) y en español, entry (spec o R-id),
+# action (A, D, P, H, S, T), background (·2p) y frequency (0 ○ … 3 ●●●). ref = acceso cruzado ↗;
+# mirror = el mismo comando sin la marca. El módulo sale del identificador (ADR-0011). doc_id: con
+# qué identificadores lista BS §8 un submenú de variantes; dynamic: su contenido se calcula al
+# dibujarlo (proyectos recientes, versiones).
+
+[[menu]]
+id = "GEOBLENDER_MT_ui_scheduling"
+label.en = "Scheduling"
+label.es = "Planificación"
+description.en = "Phases, advances by period, production, monitoring and annual work plan"
+description.es = "Fases, avances por periodo, producción, seguimiento y plan de labores"
+stage.en = "Scheduling"
+stage.es = "Planificación"
+step = 10
+branch = "convergence"
+icon = "gb_menu_scheduling"
+icon_fallback = "TIME"
+
+# Fases ---------------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Phases"
+label.es = "Fases"
+
+[[menu.group.item]]
+key = "geoblender.res_define_phases"
+label.en = "Define phases"
+label.es = "Definir fases"
+description.en = "Partition of the perimeter into phases without gaps or overlaps"
+description.es = "Partición del perímetro en fases sin huecos ni solapes"
+entry = "R-50"
+action = "H"
+frequency = 2
+jargon = [["RecMin", "Time evolution"]]
+
+[[menu.group.item]]
+key = "geoblender.res_create_phases_from_shells"
+label.en = "Pit phases from the shells…"
+label.es = "Fases de corta desde las conchas…"
+description.en = "Pit phases from the nested shells of the optimization"
+description.es = "Fases de corta desde las conchas anidadas de la optimización"
+entry = "R-50"
+action = "D"
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.res_report_phase_vertices"
+label.en = "Stake-out vertices of the phases…"
+label.es = "Vértices replanteables de las fases…"
+description.en = "Coordinates of the vertices of each phase, to stake them out"
+description.es = "Coordenadas de los vértices de cada fase, para replantearlas"
+entry = "R-50"
+action = "D"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.res_compute_phase_volumes"
+label.en = "Volumes by phase and bench"
+label.es = "Cubicar por fase y banco"
+description.en = "Volume and tonnage of each phase by bench"
+description.es = "Volumen y tonelaje de cada fase por banco"
+entry = "R-50"
+action = "A"
+frequency = 2
+
+# Avance y producción -------------------------------------------------------------------
+[[menu.group]]
+label.en = "Advance and production"
+label.es = "Avance y producción"
+
+[[menu.group.item]]
+key = "geoblender.res_edit_production"
+label.en = "Production and life of the operation…"
+label.es = "Producción y vida de la explotación…"
+description.en = "Annual production and life of the operation"
+description.es = "Producción anual y vida de la explotación"
+entry = "R-51"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.res_compute_advances"
+label.en = "Advances by period…"
+label.es = "Avances por periodo…"
+description.en = "Mining advances in each period"
+description.es = "Avances de la explotación en cada periodo"
+entry = "R-50"
+action = "D"
+background = true
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.res_edit_stages"
+label.en = "Stages…"
+label.es = "Etapas…"
+description.en = "Faces, fills and deferred reclamation by stage"
+description.es = "Frentes, rellenos y restauración diferida por etapa"
+entry = "R-54"
+action = "P"
+frequency = 1
+
+[[menu.group.item]]
+key = "geoblender.res_animate_phases"
+label.en = "Animate the evolution"
+label.es = "Animar la evolución"
+description.en = "Animate the phases over time"
+description.es = "Anima las fases en el tiempo"
+entry = "R-54"
+action = "A"
+frequency = 1
+
+# Seguimiento ---------------------------------------------------------------------------
+[[menu.group]]
+label.en = "Monitoring"
+label.es = "Seguimiento"
+
+[[menu.group.item]]
+ref = "geoblender.gis_import_topo_survey"
+
+[[menu.group.item]]
+key = "geoblender.res_compute_mined_volume"
+label.en = "Volume mined between surveys…"
+label.es = "Volumen extraído entre levantamientos…"
+description.en = "Volume mined between two dated surveys"
+description.es = "Volumen extraído entre dos levantamientos fechados"
+entry = "R-53"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+key = "geoblender.res_compare_plan_actual"
+label.en = "Actual against plan…"
+label.es = "Real frente a plan…"
+description.en = "What was mined against what was planned"
+description.es = "Lo extraído frente a lo planificado"
+entry = "R-53"
+action = "P"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.res_deplete_block_model"
+label.en = "Deplete the block model…"
+label.es = "Deplecionar el modelo de bloques…"
+description.en = "Mark as mined the blocks above the survey"
+description.es = "Marca como extraídos los bloques por encima del levantamiento"
+entry = "R-53"
+action = "D"
+background = true
+frequency = 0
+
+[[menu.group.item]]
+key = "geoblender.res_show_reconciliation"
+label.en = "Reconciliation…"
+label.es = "Conciliación…"
+description.en = "F1, F2 and F3 reconciliation factors"
+description.es = "Factores de conciliación F1, F2 y F3"
+entry = "R-56"
+action = "P"
+frequency = 0
+
+# Plan de labores -----------------------------------------------------------------------
+[[menu.group]]
+label.en = "Annual work plan"
+label.es = "Plan de labores"
+
+[[menu.group.item]]
+key = "geoblender.res_report_annual_work_plan"
+label.en = "Annual work plan data of the year…"
+label.es = "Datos del plan de labores del año…"
+description.en = "Figures of the annual work plan, generated from the project"
+description.es = "Cifras del plan de labores, generadas desde el proyecto"
+entry = "R-53"
+action = "D"
+frequency = 3
+
+[[menu.group.item]]
+ref = "geoblender.plan_create_drawing_set?set=ANNUAL_WORK_PLAN"
+
+[[menu.group.item]]
+ref = "geoblender.io_export_annual_work_plan"

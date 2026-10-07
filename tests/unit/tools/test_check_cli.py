@@ -30,12 +30,24 @@
   «blender», el paso «arnés» (``unittest`` de ``tests/arnes``, las pruebas del arnés que
   lanzan Blender entero), en el que «sin pruebas» o un fichero sin cargar son un fallo;
   sin la opción no se ejecuta, y el resumen lo dice antes de ``RESULTADO``.
+- RNF-007-01, RF-001-06 (spec 003, T40): las pruebas unitarias y las de Blender se
+  reparten en varias partes (``tools/unittest_part.py`` y ``run_blender_tests.py
+  --parte``) que se ejecutan a la vez dentro de su paso, cada parte de Blender con su
+  propio perfil temporal; los pasos siguen uno tras otro y en su orden, con la misma
+  línea, el mismo resumen y el mismo código. Un fichero cargado en cualquier parte
+  cuenta como cargado; si las partes no suman las pruebas que dicen haber descubierto,
+  el paso falla («reparto incompleto»); y con Ctrl+C se paran las partes en marcha y se
+  borra la carpeta temporal.
 
 Ninguna prueba lanza Blender ni Python: el ejecutor simulado anota cada orden y
 devuelve una salida fija por paso; en los pasos con pruebas que terminan con 0, la
 salida nombra además los módulos de prueba que hay en disco, como haría ``unittest -v``.
+Con partes, la primera da esa salida (con su línea «PARTE 1 de n: T de T pruebas») y
+las demás, una parte sin pruebas que termina bien, salvo que la prueba fije la de una
+parte (``"<paso>#<i>"``).
 """
 
+import _thread
 import contextlib
 import fnmatch
 import functools
@@ -44,6 +56,8 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -58,7 +72,7 @@ from tests.support.trees import age_folders, temp_tree
 tools_on_path()
 
 import check  # noqa: E402
-from gbtools import blender  # noqa: E402
+from gbtools import blender, discovery, parts  # noqa: E402
 from gbtools.blender import BlenderInstall, EnvironmentProblem  # noqa: E402
 from gbtools import repo as gbrepo  # noqa: E402
 from gbtools.layout import CODE_DIR_IN_DOCS, DOCS_MARKER, ENV_DOCS_DIR  # noqa: E402
@@ -70,11 +84,12 @@ INSTALL = BlenderInstall(
     python=FAKE_BLENDER / "5.2" / "python" / "bin" / "python.exe",
     version=(5, 2, 1),
 )
-MANDATORY = ["unitarias", "referencia", "licencias", "manifiesto", "blender"]
+MANDATORY = ["unitarias", "referencia", "licencias", "iconos", "manifiesto", "blender"]
 # Una prueba que devuelve algo (``async def`` en un TestCase, o con ``yield``) es un
 # error y no solo un aviso (hallazgo F7 de la ronda 3; convergencia, T54).
 RETURN_VALUE_IS_ERROR = ("-W", "error:It is deprecated to return a value:DeprecationWarning")
 LINE = "-" * 70
+SPDX = "# SPDX-License-Identifier: GPL-3.0-or-later\n"
 USER_VARIABLES = (
     "BLENDER_USER_CONFIG",
     "BLENDER_USER_SCRIPTS",
@@ -111,6 +126,7 @@ DEFAULT_RESULTS: Mapping[str, tuple[int, str, str]] = {
     # casos» se prueba en una raíz temporal sin ellos (test_empty_reference_suite_ok).
     "referencia": (0, "", _unittest_output(2)),
     "licencias": (0, "Licencias (LIC-01 a LIC-04): correcto\n", ""),
+    "iconos": (0, "RESULTADO: correcto (0,0 s): 58 iconos con sus PNG y su manifiesto\n", ""),
     "manifiesto": (0, 'Success parsing TOML in "Geoblender"\n', ""),
     "blender": (
         0,
@@ -169,7 +185,7 @@ def step_of(cmd: Sequence[str]) -> str:
         if "tests/rendimiento/blender" in parts:
             return "rendimiento-blender"
         return "blender"
-    if "unittest" in parts:
+    if "discover" in parts:  # «-m unittest discover» o tools/unittest_part.py (T40)
         folder = parts[parts.index("-s", parts.index("discover")) + 1]
         return {
             "tests/unit": "unitarias",
@@ -221,9 +237,35 @@ class Call:
     cwd: Path | None
     timeout: float | None
     profile_existed: bool | None
+    part: tuple[int, int] | None = None  # «--parte i/n» (T40)
+    started: float = 0.0  # time.perf_counter() al empezar y al terminar
+    ended: float = 0.0
 
 
 Result = tuple[int, str, str] | BaseException
+LAUNCHER_STEPS = ("blender", "rendimiento-blender")
+
+
+def part_of(cmd: Sequence[str]) -> tuple[int, int] | None:
+    """La parte «i/n» de una orden con ``--parte`` (``None`` sin ella; T40)."""
+    items = [str(item) for item in cmd]
+    if parts.OPTION not in items:
+        return None
+    return parts.parse(items[items.index(parts.OPTION) + 1])
+
+
+def _total(result: Result) -> int:
+    """Las pruebas («Ran N tests») de una salida fijada que termina con 0; si no, 0."""
+    if isinstance(result, BaseException) or result[0] != 0:
+        return 0
+    return check.tests_ran(f"{result[1]}\n{result[2]}") or 0
+
+
+def _empty_part(step: str, part: tuple[int, int], total: int) -> Result:
+    """Una parte sin pruebas que termina bien: su línea «PARTE i de n: 0 de T pruebas»,
+    el resumen de ``unittest`` y, en el lanzador, su línea final."""
+    end = discovery.launcher_end_line(0, 0) + "\n" if step in LAUNCHER_STEPS else ""
+    return (0, "", parts.line(*part, 0, total) + "\n" + _unittest_output(0) + end)
 
 
 class FakeRunner:
@@ -232,7 +274,13 @@ class FakeRunner:
     Con ``loaded=True`` (por defecto), un paso de pruebas que termina con 0 nombra al
     principio de su salida cada módulo de prueba que hay en disco (``unittest -v``).
     ``effects`` hace algo en la carpeta de trabajo (la raíz) cuando se ejecuta un paso,
-    como una prueba que escribe donde no debe.
+    como una prueba que escribe donde no debe. ``on_call`` se llama con cada orden, en
+    el hilo que la ejecuta, antes de devolver su salida.
+
+    Una orden con ``--parte i/n`` (T40) devuelve la salida fijada para ``"<paso>#<i>"``
+    si la hay; si no, la parte 1 da la del paso (con «PARTE 1 de n: T de T pruebas» si
+    termina con 0 y dice «Ran T tests», y los módulos de disco) y las demás, una parte
+    sin pruebas que termina bien (``_empty_part``).
     """
 
     def __init__(
@@ -240,11 +288,28 @@ class FakeRunner:
         overrides: Mapping[str, Result] | None = None,
         loaded: bool = True,
         effects: Mapping[str, Callable[[Path], object]] | None = None,
+        on_call: Callable[[Call], object] | None = None,
     ) -> None:
         self.results: dict[str, Result] = {**DEFAULT_RESULTS, **(overrides or {})}
         self.calls: list[Call] = []
         self.loaded = loaded
         self.effects = dict(effects or {})
+        self.on_call = on_call
+
+    def result_of(self, step: str, part: tuple[int, int] | None) -> Result:
+        if part is None:
+            return self.results[step]
+        key = f"{step}#{part[0]}"
+        if key in self.results:
+            return self.results[key]
+        base = self.results[step]
+        if part[0] > 1:
+            return _empty_part(step, part, _total(base))
+        if isinstance(base, BaseException) or not _total(base):
+            return base
+        code, stdout, stderr = base
+        total = _total(base)
+        return (code, stdout, parts.line(1, part[1], total, total) + "\n" + stderr)
 
     def __call__(
         self,
@@ -255,40 +320,67 @@ class FakeRunner:
         timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         step = step_of(cmd)
+        part = part_of(cmd)
         environment = dict(env or {})
         profile = environment.get("BLENDER_USER_RESOURCES")
-        self.calls.append(
-            Call(
-                step,
-                [str(part) for part in cmd],
-                environment,
-                cwd,
-                timeout,
-                Path(profile).is_dir() if profile else None,
-            )
+        call = Call(
+            step,
+            [str(item) for item in cmd],
+            environment,
+            cwd,
+            timeout,
+            Path(profile).is_dir() if profile else None,
+            part,
+            time.perf_counter(),
         )
-        if step in self.effects and cwd is not None:
-            self.effects[step](Path(cwd))
-        result = self.results[step]
-        if isinstance(result, BaseException):
-            raise result
-        code, stdout, stderr = result
-        if self.loaded and code == 0 and step in TEST_STEPS and cwd is not None:
-            heads = [
-                f"test_cargado ({module}.Cargado.test_cargado) ... ok\n"
-                for module in disk_modules(Path(cwd), *suite_of(step, cmd))
-            ]
-            stderr = "".join(heads) + stderr
-        return subprocess.CompletedProcess(list(cmd), code, stdout, stderr)
+        self.calls.append(call)
+        try:
+            if self.on_call is not None:
+                self.on_call(call)
+            first = part is None or part[0] == 1
+            if step in self.effects and cwd is not None and first:
+                self.effects[step](Path(cwd))
+            result = self.result_of(step, part)
+            if isinstance(result, BaseException):
+                raise result
+            code, stdout, stderr = result
+            if self.loaded and code == 0 and step in TEST_STEPS and cwd is not None and first:
+                heads = [
+                    f"test_cargado ({module}.Cargado.test_cargado) ... ok\n"
+                    for module in disk_modules(Path(cwd), *suite_of(step, cmd))
+                ]
+                stderr = "".join(heads) + stderr
+            return subprocess.CompletedProcess(list(cmd), code, stdout, stderr)
+        finally:
+            call.ended = time.perf_counter()
 
     def steps(self) -> list[str]:
-        return [call.step for call in self.calls]
+        """Los pasos en el orden de sus órdenes; las partes seguidas de un paso, una vez."""
+        found: list[str] = []
+        previous: Call | None = None
+        for call in self.calls:
+            same = previous is not None and previous.step == call.step
+            if not (same and call.part is not None and previous.part is not None):
+                found.append(call.step)
+            previous = call
+        return found
 
-    def call(self, step: str) -> Call:
-        found = [call for call in self.calls if call.step == step]
+    def call(self, step: str, part: int | None = None) -> Call:
+        """La orden de ``step`` (o su parte ``part``): tiene que haber una sola."""
+        found = [
+            call
+            for call in self.calls
+            if call.step == step
+            and (part is None or (call.part is not None and call.part[0] == part))
+        ]
         if len(found) != 1:
             raise AssertionError(f"«{step}» se ejecutó {len(found)} veces")
         return found[0]
+
+    def calls_of(self, step: str) -> list[Call]:
+        """Las órdenes de ``step``, por número de parte."""
+        found = [call for call in self.calls if call.step == step]
+        return sorted(found, key=lambda call: call.part or (0, 0))
 
 
 @dataclass
@@ -322,6 +414,48 @@ def run_check(
             **kwargs,
         )
     return Outcome(code, out.getvalue(), err.getvalue(), runner)
+
+
+def many_cpus() -> contextlib.AbstractContextManager[object]:
+    """24 procesadores: el número de partes no depende del puesto (T40)."""
+    return mock.patch("os.cpu_count", return_value=24)
+
+
+def unit_part_cmd(part: int, count: int) -> list[str]:
+    """La orden de la parte ``part`` de ``count`` de las pruebas unitarias (T40)."""
+    return blender.python_cmd(
+        INSTALL,
+        *RETURN_VALUE_IS_ERROR,
+        "tools/unittest_part.py",
+        parts.OPTION,
+        parts.label(part, count),
+        "discover",
+        "-v",
+        "-s",
+        "tests/unit",
+        "-t",
+        ".",
+    )
+
+
+def blender_part_cmd(part: int, count: int) -> list[str]:
+    """La orden de la parte ``part`` de ``count`` de las pruebas de Blender (T40)."""
+    return blender.background_cmd(
+        INSTALL,
+        ROOT / "tools" / "run_blender_tests.py",
+        "--carpeta",
+        "tests/blender",
+        parts.OPTION,
+        parts.label(part, count),
+    )
+
+
+def _seconds_of(line: str) -> float:
+    """La duración de una línea del resumen («  correcto  blender  0,3 s  (…)»)."""
+    match = re.search(r"\s(\d+),(\d) s", line)
+    if match is None:
+        raise AssertionError(f"sin duración: {line}")
+    return float(f"{match.group(1)}.{match.group(2)}")
 
 
 def _step_line(out: str, name: str) -> str:
@@ -364,26 +498,20 @@ def _resources_file(*names: str) -> dict[str, str]:
 class StepsTest(unittest.TestCase):
     def test_steps_run_in_order(self) -> None:
         """RF-001-06: unitarias, referencia, licencias, manifiesto y blender, en ese
-        orden, con las órdenes del plan (§5.4.7) y desde la raíz del repositorio."""
-        result = run_check()
+        orden, con las órdenes del plan (§5.4.7) y desde la raíz del repositorio; las
+        unitarias, repartidas en partes con ``tools/unittest_part.py`` (T40; con un solo
+        módulo, la orden de siempre: ``PartsTest``)."""
+        with many_cpus():
+            result = run_check()
         self.assertEqual(result.code, 0, result.out + result.err)
         runner = result.runner
         self.assertEqual(runner.steps(), MANDATORY)
-        self.assertEqual(
-            runner.call("unitarias").cmd,
-            blender.python_cmd(
-                INSTALL,
-                *RETURN_VALUE_IS_ERROR,
-                "-m",
-                "unittest",
-                "discover",
-                "-v",
-                "-s",
-                "tests/unit",
-                "-t",
-                ".",
-            ),
-        )
+        units = runner.calls_of("unitarias")
+        count = len(units)
+        self.assertEqual([call.part for call in units], [(i, count) for i in range(1, count + 1)])
+        for call in units:
+            with self.subTest(parte=call.part):
+                self.assertEqual(call.cmd, unit_part_cmd(*(call.part or (1, 1))))
         self.assertEqual(
             runner.call("referencia").cmd,
             blender.python_cmd(
@@ -413,10 +541,10 @@ class StepsTest(unittest.TestCase):
                 self.assertIsNotNone(call.timeout)
         expected_env = _python_env()
         for step in ("unitarias", "referencia", "licencias"):
-            env = runner.call(step).env
-            with self.subTest(paso=step):
-                for key in ("PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE"):
-                    self.assertEqual(env[key], expected_env[key])
+            for call in runner.calls_of(step):
+                with self.subTest(paso=step, parte=call.part):
+                    for key in ("PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE"):
+                        self.assertEqual(call.env[key], expected_env[key])
 
     def test_failed_step_exit_1(self) -> None:
         """RF-001-06: si un paso falla, los demás se ejecutan igual, el código es 1, el
@@ -656,24 +784,16 @@ class StepsTest(unittest.TestCase):
         self.assertEqual(result.code, 1)
         self.assertNotIn("RESULTADO: VERDE", result.out)
 
-    def test_extra_step_slot(self) -> None:
-        """RF-001-06: otra spec añade un paso en su lugar de la tabla (p. ej. «iconos»
-        de la 003, tras «licencias») con los mismos estados y códigos."""
-
-        def icons(ctx: check.Context) -> list[check.Run]:
-            return [ctx.python("tools/build_icons.py", "--check")]
-
+    def test_icons_step(self) -> None:
+        """RF-001-06 (spec 003, T30): el paso «iconos» va en su lugar de la tabla, tras
+        «licencias», con ``tools/build_icons.py --check`` y los mismos estados y códigos."""
         names = [step.name for step in check.STEPS]
         self.assertEqual(names[: len(MANDATORY)], MANDATORY)
-        position = names.index("licencias") + 1
-        steps = (*check.STEPS[:position], check.Step("iconos", icons), *check.STEPS[position:])
-        runner = FakeRunner({"iconos": (0, "iconos: correcto\n", "")})
-        result = run_check(runner=runner, steps=steps)
+        self.assertEqual(names.index("iconos"), names.index("licencias") + 1)
+        runner = FakeRunner()
+        result = run_check(runner=runner)
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(
-            runner.steps(),
-            ["unitarias", "referencia", "licencias", "iconos", "manifiesto", "blender"],
-        )
+        self.assertEqual(runner.steps(), MANDATORY)
         self.assertEqual(
             runner.call("iconos").cmd,
             blender.python_cmd(INSTALL, "tools/build_icons.py", "--check"),
@@ -681,10 +801,330 @@ class StepsTest(unittest.TestCase):
         self.assertRegex(_step_line(result.out, "iconos"), r"^  correcto  iconos\s")
 
         runner = FakeRunner({"iconos": (1, "icons/a.png: hash distinto\n", "")})
-        result = run_check(runner=runner, steps=steps)
+        result = run_check(runner=runner)
         self.assertEqual(result.code, 1)
         self.assertIn("icons/a.png: hash distinto", result.out)
         self.assertIn("«iconos»", result.out.strip().splitlines()[-1])
+
+
+TWO_UNIT_MODULES = {
+    "tests/__init__.py": SPDX,
+    "tests/unit/__init__.py": SPDX,
+    "tests/unit/test_a.py": SPDX,
+    "tests/unit/test_b.py": SPDX,
+}
+HEAD_A = "test_x (tests.unit.test_a.A.test_x) ... ok"
+HEAD_B = "test_y (tests.unit.test_b.B.test_y) ... ok"
+HEAD_OTHER = "test_z (tests.unit.otro.C.test_z) ... ok"  # un módulo que no está en disco
+
+
+def _part(part: int, count: int, ran: int, total: int, body: str, verdict: str = "OK") -> Result:
+    """La salida de una parte de las unitarias: su línea y el resumen de ``unittest``."""
+    head = parts.line(part, count, ran, total)
+    return (0, "", head + "\n" + _unittest_output(ran, verdict, body))
+
+
+class PartsTest(unittest.TestCase):
+    """Spec 003, T40 (RNF-007-01: ≤ 40 s sin quitar ninguna prueba): dentro de su paso,
+    las pruebas unitarias y las de Blender se reparten en partes que se ejecutan a la
+    vez; los pasos siguen uno tras otro y en su orden (RF-001-06)."""
+
+    def test_part_count(self) -> None:
+        """RNF-007-01: tantas partes como pide el paso, sin pasar del número de módulos
+        de prueba en disco ni del de procesadores, y al menos una; las unitarias y las de
+        Blender piden más de una."""
+        self.assertGreaterEqual(check.UNIT_PARTS, 2)
+        self.assertGreaterEqual(check.BLENDER_PARTS, 2)
+        self.assertEqual(check.part_count(4, 76, 24), 4)
+        self.assertEqual(check.part_count(4, 2, 24), 2)
+        self.assertEqual(check.part_count(4, 76, 3), 3)
+        self.assertEqual(check.part_count(4, 0, 24), 1)
+        with mock.patch("os.cpu_count", return_value=2):
+            self.assertEqual(check.part_count(4, 76), 2)
+        with mock.patch("os.cpu_count", return_value=None):  # no se sabe: una
+            self.assertEqual(check.part_count(4, 76), 1)
+
+    def test_part_commands(self) -> None:
+        """RNF-007-01, RF-001-09: en el repositorio real, «unitarias» son las partes
+        1…n de ``tools/unittest_part.py --parte i/n discover -v -s tests/unit -t .``
+        (con el ``-W`` y el entorno de siempre) y «blender», las del lanzador con
+        ``--parte i/m``; el resumen, igual que con una orden (la línea y su número de
+        pruebas)."""
+        with many_cpus():
+            result = run_check()
+        self.assertEqual(result.code, 0, result.out)
+        runner = result.runner
+        units = runner.calls_of("unitarias")
+        expected = [(i, check.UNIT_PARTS) for i in range(1, check.UNIT_PARTS + 1)]
+        self.assertEqual([call.part for call in units], expected)
+        python_env = _python_env()
+        for call in units:
+            with self.subTest(parte=call.part):
+                self.assertEqual(call.cmd, unit_part_cmd(*(call.part or (1, 1))))
+                self.assertEqual(call.cwd, ROOT)
+                for key in ("PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE"):
+                    self.assertEqual(call.env[key], python_env[key])
+        blenders = runner.calls_of("blender")
+        expected = [(i, check.BLENDER_PARTS) for i in range(1, check.BLENDER_PARTS + 1)]
+        self.assertEqual([call.part for call in blenders], expected)
+        self.assertEqual(runner.steps(), MANDATORY)
+        for step, count in (("unitarias", 217), ("blender", 12)):
+            with self.subTest(paso=step):
+                self.assertRegex(
+                    _step_line(result.out, step),
+                    rf"^  correcto  {step}\s+\d+,\d s  \({count} pruebas\)$",
+                )
+        last = result.out.strip().splitlines()[-1]
+        self.assertRegex(last, r"^RESULTADO: VERDE \(\d+,\d s\)$")
+        self.assertNotIn("PARTE", result.out)
+
+    def test_few_modules(self) -> None:
+        """RNF-007-01: con un solo módulo de prueba en disco, la orden de siempre, sin
+        partes (``-m unittest discover`` y el lanzador sin ``--parte``); con dos, dos
+        partes."""
+        files = {
+            "tests/__init__.py": SPDX,
+            "tests/unit/__init__.py": SPDX,
+            "tests/unit/test_a.py": SPDX,
+            "tests/blender/__init__.py": SPDX,
+            "tests/blender/test_b.py": SPDX,
+        }
+        with _manifest_root(files) as tmp, many_cpus():
+            result = run_check(root=tmp)
+            self.assertEqual(result.code, 0, result.out)
+            single = blender.python_cmd(
+                INSTALL, *RETURN_VALUE_IS_ERROR, "-m", "unittest", "discover", "-v",
+                "-s", "tests/unit", "-t", ".",
+            )
+            self.assertEqual(result.runner.call("unitarias").cmd, single)
+            launcher = blender.background_cmd(
+                INSTALL, tmp / "tools" / "run_blender_tests.py", "--carpeta", "tests/blender"
+            )
+            self.assertEqual(result.runner.call("blender").cmd, launcher)
+
+        with _manifest_root(TWO_UNIT_MODULES) as tmp, many_cpus():
+            result = run_check(root=tmp)
+        self.assertEqual(result.code, 0, result.out)
+        self.assertEqual(
+            [call.part for call in result.runner.calls_of("unitarias")], [(1, 2), (2, 2)]
+        )
+
+    def test_parts_run_at_the_same_time(self) -> None:
+        """RNF-007-01: las partes de un paso se ejecutan a la vez: todas llegan a una
+        barrera que, una tras otra, no se alcanzaría; la duración del paso cubre la de
+        sus partes (una espera de 0,3 s en cada una)."""
+        barriers = {
+            "unitarias": threading.Barrier(check.UNIT_PARTS, timeout=15),
+            "blender": threading.Barrier(check.BLENDER_PARTS, timeout=15),
+        }
+
+        def meet(call: Call) -> None:
+            if call.part is not None:
+                barriers[call.step].wait()
+                time.sleep(0.3)
+
+        runner = FakeRunner(on_call=meet)
+        with many_cpus():
+            result = run_check(runner=runner)
+        self.assertEqual(result.code, 0, result.out)
+        for step, barrier in barriers.items():
+            with self.subTest(paso=step):
+                self.assertFalse(barrier.broken)
+                self.assertGreaterEqual(_seconds_of(_step_line(result.out, step)), 0.3)
+
+    def test_steps_one_after_another(self) -> None:
+        """RF-001-06: los pasos, también los opcionales, siguen uno tras otro y en el
+        orden de la tabla: ninguna orden de un paso empieza antes de que terminen todas
+        las del anterior, y el resumen da sus líneas en ese orden."""
+        with many_cpus():
+            result = run_check("--completo", "--rendimiento", "--banco")
+        self.assertEqual(result.code, 0, result.out)
+        runner = result.runner
+        order = runner.steps()
+        self.assertEqual(order, [*MANDATORY, HARNESS, *OPTIONAL])
+        groups = [[c for c in runner.calls if c.step == step] for step in order]
+        for before, after in zip(groups, groups[1:]):
+            with self.subTest(paso=after[0].step):
+                self.assertLessEqual(max(c.ended for c in before), min(c.started for c in after))
+        names = [*MANDATORY, HARNESS, "rendimiento", "banco"]
+        positions = [result.out.index(_step_line(result.out, name)) for name in names]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_failing_part(self) -> None:
+        """RF-001-06: si falla una parte (la 2), su paso falla con su salida (una vez) y
+        su orden (``--parte 2/n``), los demás pasos se ejecutan y el código es 1."""
+        red = _unittest_output(
+            5, "FAILED (failures=1)", "FAIL: test_roja (tests.unit.x.X.test_roja)"
+        )
+        broken = (1, "", "RuntimeError: rota\n")
+        runner = FakeRunner({"unitarias#2": (1, "", red), "blender#2": broken})
+        with many_cpus():
+            result = run_check(runner=runner)
+        self.assertEqual(result.code, 1, result.out)
+        self.assertEqual(runner.steps(), MANDATORY)
+        for step, text in (("unitarias", "FAIL: test_roja"), ("blender", "RuntimeError: rota")):
+            with self.subTest(paso=step):
+                line = _step_line(result.out, step)
+                self.assertTrue(line.lstrip().startswith("fallo"), line)
+                self.assertIn("código 1", line)
+                self.assertEqual(result.out.count(text), 1, result.out)
+        self.assertIn(f"{parts.OPTION} 2/{check.UNIT_PARTS} discover", result.out)
+        self.assertIn(f"{parts.OPTION} 2/{check.BLENDER_PARTS}", result.out)
+        last = result.out.strip().splitlines()[-1]
+        self.assertRegex(
+            last, r"^RESULTADO: NO VERDE \(\d+,\d s\): fallan «unitarias», «blender»$"
+        )
+
+    def test_loaded_in_any_part(self) -> None:
+        """RF-001-06 (T35): un módulo que nombra la salida de cualquier parte está
+        cargado; uno que no nombra ninguna (y las partes repartieron igual: ninguna
+        ejecutó un fichero de otra) es «1 fichero sin cargar», dicho una vez, con la pista
+        de ``__init__.py``; las pruebas de todas las partes se suman en la línea del
+        paso."""
+        loaded = {
+            "unitarias#1": _part(1, 2, 1, 2, HEAD_A),
+            "unitarias#2": _part(2, 2, 1, 2, HEAD_B),
+        }
+        with _manifest_root(TWO_UNIT_MODULES) as tmp, many_cpus():
+            result = run_check(runner=FakeRunner(loaded, loaded=False), root=tmp)
+            self.assertEqual(result.code, 0, result.out)
+            self.assertIn("(2 pruebas)", _step_line(result.out, "unitarias"))
+
+            missing = {**loaded, "unitarias#2": _part(2, 2, 1, 2, HEAD_OTHER)}
+            result = run_check(runner=FakeRunner(missing, loaded=False), root=tmp)
+        self.assertEqual(result.code, 1, result.out)
+        line = _step_line(result.out, "unitarias")
+        self.assertTrue(line.lstrip().startswith("fallo"), line)
+        self.assertIn("1 fichero sin cargar", line)
+        self.assertNotIn("reparto incompleto", line)
+        self.assertIn("tests/unit/test_b.py", result.out)
+        self.assertEqual(result.out.count("FICHEROS DE PRUEBA SIN CARGAR"), 1, result.out)
+        self.assertIn(discovery.HINT, result.out)
+
+    def test_different_distribution(self) -> None:
+        """RF-001-06 (convergencia, T45): si las partes no repartieron igual (una ejecuta
+        un fichero que también ejecutó otra, o dicen totales distintos) y por eso un
+        fichero no lo carga ninguna, el diagnóstico es «reparto incompleto», con el
+        fichero, y no la pista de ``__init__.py``; también si además falla una prueba."""
+        red = _part(2, 2, 1, 2, HEAD_A.replace("... ok", "... FAIL"), "FAILED (failures=1)")
+        cases = {
+            "repetido": (_part(1, 2, 1, 2, HEAD_A), _part(2, 2, 1, 2, HEAD_A),
+                         "tests/unit/test_a.py, en las partes 1 y 2"),
+            "totales distintos": (_part(1, 2, 1, 2, HEAD_A), _part(2, 2, 1, 3, HEAD_OTHER),
+                                  "total"),
+            "repetido y rojo": (_part(1, 2, 1, 2, HEAD_A), (1, "", red[2]),
+                                "tests/unit/test_a.py"),
+        }
+        with _manifest_root(TWO_UNIT_MODULES) as tmp, many_cpus():
+            for name, (first, second, text) in cases.items():
+                with self.subTest(caso=name):
+                    outputs = {"unitarias#1": first, "unitarias#2": second}
+                    result = run_check(runner=FakeRunner(outputs, loaded=False), root=tmp)
+                    self.assertEqual(result.code, 1, result.out)
+                    line = _step_line(result.out, "unitarias")
+                    self.assertTrue(line.lstrip().startswith("fallo"), line)
+                    self.assertIn("reparto incompleto", line)
+                    self.assertNotIn("sin cargar", line)
+                    self.assertEqual(result.out.count("REPARTO INCOMPLETO"), 1, result.out)
+                    self.assertIn(text, result.out)
+                    self.assertIn("tests/unit/test_b.py", result.out)
+                    self.assertNotIn(discovery.HINT, result.out)
+                    self.assertNotIn("FICHEROS DE PRUEBA SIN CARGAR", result.out)
+
+    def test_partial_count(self) -> None:
+        """RF-001-06 (convergencia, T45): si una parte termina sin el resumen de
+        ``unittest`` (o sin poder contar sus pruebas), la línea del paso dice que su
+        número es el de las partes que lo dieron («1 prueba en 1 de 2 partes»), además
+        del fallo."""
+        cut = (0, "", parts.line(2, 2, 1, 2) + "\n" + HEAD_B + "\n")
+        crash = (1, "", parts.line(2, 2, 1, 2) + "\nRuntimeError: rota\n")
+        with _manifest_root(TWO_UNIT_MODULES) as tmp, many_cpus():
+            for name, second, text in (("sin resumen", cut, check.SUMMARY_MISSING),
+                                       ("rota", crash, "código 1")):
+                with self.subTest(caso=name):
+                    outputs = {"unitarias#1": _part(1, 2, 1, 2, HEAD_A),
+                               "unitarias#2": second}
+                    result = run_check(runner=FakeRunner(outputs, loaded=False), root=tmp)
+                    self.assertEqual(result.code, 1, result.out)
+                    line = _step_line(result.out, "unitarias")
+                    self.assertTrue(line.lstrip().startswith("fallo"), line)
+                    self.assertIn("(1 prueba en 1 de 2 partes, ", line)
+                    self.assertIn(text, line)
+            outputs = {"unitarias#1": _part(1, 2, 1, 2, HEAD_A),
+                       "unitarias#2": _part(2, 2, 1, 2, HEAD_B)}
+            result = run_check(runner=FakeRunner(outputs, loaded=False), root=tmp)
+        self.assertEqual(result.code, 0, result.out)
+        self.assertNotIn(" de 2 partes", _step_line(result.out, "unitarias"))
+
+    def test_parts_must_add_up(self) -> None:
+        """RF-001-06: si una parte no dice su línea «PARTE i de n: r de T pruebas», si
+        dice otra parte o si las partes no dicen el mismo total o no lo suman, el reparto
+        perdió o repitió pruebas: el paso falla «reparto incompleto» con el motivo."""
+        good = _part(1, 2, 1, 2, HEAD_A)
+        cases = {
+            "sin línea": (good, (0, "", _unittest_output(1, body=HEAD_B)), "parte 2"),
+            "otra parte": (good, _part(1, 2, 1, 2, HEAD_B), "parte 2"),
+            "totales distintos": (good, _part(2, 2, 1, 3, HEAD_B), "total"),
+            "no suman": (_part(1, 2, 1, 3, HEAD_A), _part(2, 2, 1, 3, HEAD_B), "2 de 3"),
+        }
+        with _manifest_root(TWO_UNIT_MODULES) as tmp, many_cpus():
+            for name, (first, second, text) in cases.items():
+                with self.subTest(caso=name):
+                    outputs = {"unitarias#1": first, "unitarias#2": second}
+                    result = run_check(runner=FakeRunner(outputs, loaded=False), root=tmp)
+                    self.assertEqual(result.code, 1, result.out)
+                    line = _step_line(result.out, "unitarias")
+                    self.assertTrue(line.lstrip().startswith("fallo"), line)
+                    self.assertIn("reparto incompleto", line)
+                    self.assertIn("REPARTO INCOMPLETO", result.out)
+                    self.assertIn(text, result.out)
+                    self.assertIn("«unitarias»", result.out.strip().splitlines()[-1])
+
+    def test_omissions_of_every_part(self) -> None:
+        """RF-001-06: las omisiones por un recurso de todas las partes cuentan, cada una
+        una vez, y el resultado es «VERDE CON OMISIONES (n)»."""
+        skip = "skipped '" + SKIP_PREFIX + " symlink: active el modo de desarrollador'"
+        verdict = "OK (skipped=1)"
+        outputs = {
+            "unitarias#1": _part(1, 2, 1, 2, HEAD_A.replace("... ok", f"... {skip}"), verdict),
+            "unitarias#2": _part(2, 2, 1, 2, HEAD_B.replace("... ok", f"... {skip}"), verdict),
+        }
+        files = {**TWO_UNIT_MODULES, **_resources_file("symlink")}
+        with _manifest_root(files) as tmp, many_cpus():
+            result = run_check(runner=FakeRunner(outputs, loaded=False), root=tmp)
+        self.assertEqual(result.code, 0, result.out)
+        self.assertIn("(2 pruebas, 2 omitidas)", _step_line(result.out, "unitarias"))
+        last = result.out.strip().splitlines()[-1]
+        self.assertRegex(last, r"^RESULTADO: VERDE CON OMISIONES \(2\) ")
+        self.assertIn("tests.unit.test_a.A.test_x", result.out)
+        self.assertIn("tests.unit.test_b.B.test_y", result.out)
+
+    def test_ctrl_c_stops_the_parts(self) -> None:
+        """RF-001-09: con Ctrl+C mientras se ejecutan las partes, la comprobación para
+        las órdenes en marcha (``blender.stop_all``), espera a sus hilos, borra su
+        carpeta temporal (con los perfiles) y deja pasar la interrupción."""
+        stopped = threading.Event()
+
+        def interrupt(call: Call) -> None:
+            if call.step == "blender" and call.part is not None:
+                if call.part[0] == 2:
+                    _thread.interrupt_main()
+                stopped.wait(15)
+
+        runner = FakeRunner(on_call=interrupt)
+        with (
+            mock.patch.object(check.blender, "stop_all", side_effect=stopped.set) as stop,
+            many_cpus(),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            run_check(runner=runner)
+        stop.assert_called()
+        self.assertTrue(stopped.is_set())
+        profiles = [Path(c.env["BLENDER_USER_RESOURCES"]) for c in runner.calls_of("blender")]
+        self.assertEqual(len(profiles), check.BLENDER_PARTS)
+        self.assertFalse(profiles[0].parent.exists())
+        alive = [t for t in threading.enumerate() if t.name.startswith(check.THREAD_PREFIX)]
+        self.assertEqual(alive, [])
 
 
 class SuitesTest(unittest.TestCase):
@@ -764,9 +1204,6 @@ class SuitesTest(unittest.TestCase):
             result = run_check("--rendimiento", runner=FakeRunner(empty), root=tmp)
         self.assertEqual(result.code, 0, result.out)
         self.assertIn("(sin pruebas)", _step_line(result.out, "rendimiento"))
-
-
-SPDX = "# SPDX-License-Identifier: GPL-3.0-or-later\n"
 
 
 class UnloadedFilesTest(unittest.TestCase):
@@ -1584,39 +2021,42 @@ class ManifestStepTest(unittest.TestCase):
 class BlenderStepTest(unittest.TestCase):
     def test_blender_command_flags(self) -> None:
         """RF-001-09: ``tools/run_blender_tests.py`` en segundo plano, de fábrica y con
-        ``--python-exit-code 1``, sobre ``tests/blender``."""
-        result = run_check()
-        cmd = result.runner.call("blender").cmd
-        self.assertEqual(
-            cmd,
-            blender.background_cmd(
-                INSTALL,
-                ROOT / "tools" / "run_blender_tests.py",
-                "--carpeta",
-                "tests/blender",
-            ),
-        )
-        self.assertEqual(cmd[1:5], ["-b", "--factory-startup", "--python-exit-code", "1"])
-        self.assertEqual(result.runner.call("blender").cwd, ROOT)
+        ``--python-exit-code 1``, sobre ``tests/blender``, en cada parte (T40)."""
+        with many_cpus():
+            result = run_check()
+        calls = result.runner.calls_of("blender")
+        self.assertEqual(len(calls), check.BLENDER_PARTS)
+        for call in calls:
+            with self.subTest(parte=call.part):
+                self.assertEqual(call.cmd, blender_part_cmd(*(call.part or (1, 1))))
+                self.assertEqual(
+                    call.cmd[1:5], ["-b", "--factory-startup", "--python-exit-code", "1"]
+                )
+                self.assertEqual(call.cwd, ROOT)
 
     def test_blender_env_uses_temp_profile(self) -> None:
-        """RF-001-09: los pasos «manifiesto» y «blender» usan el mismo perfil temporal
-        en ``%TEMP%`` (nunca el del usuario ni el repositorio), sin las variables
-        ``BLENDER_USER_*`` que lo sustituirían; el perfil existe mientras se ejecutan y
-        se borra al terminar, también si un paso falla o el ejecutor lanza."""
+        """RF-001-09: los pasos «manifiesto» y «blender» usan perfiles temporales en
+        ``%TEMP%`` (nunca el del usuario ni el repositorio), sin las variables
+        ``BLENDER_USER_*`` que lo sustituirían: «manifiesto» y la parte 1 de «blender»,
+        el mismo, y cada otra parte, el suyo, en la misma carpeta temporal (T40); los
+        perfiles existen mientras se ejecutan y se borran al terminar, también si un
+        paso falla o el ejecutor lanza."""
         planted = {name: str(ROOT / "perfil-real") for name in USER_VARIABLES}
-        with mock.patch.dict(os.environ, planted):
+        with mock.patch.dict(os.environ, planted), many_cpus():
             result = run_check()
         manifest_env = result.runner.call("manifiesto").env
-        blender_env = result.runner.call("blender").env
-        profile = Path(blender_env["BLENDER_USER_RESOURCES"])
+        blender_calls = result.runner.calls_of("blender")
+        profile = Path(blender_calls[0].env["BLENDER_USER_RESOURCES"])
         self.assertEqual(Path(manifest_env["BLENDER_USER_RESOURCES"]), profile)
-        for env in (manifest_env, blender_env):
+        profiles = [Path(call.env["BLENDER_USER_RESOURCES"]) for call in blender_calls]
+        self.assertEqual(len(set(profiles)), check.BLENDER_PARTS)
+        self.assertEqual({other.parent for other in profiles}, {profile.parent})
+        for env in (manifest_env, *(call.env for call in blender_calls)):
             for name in USER_VARIABLES:
                 self.assertNotIn(name, env)
             self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
-        self.assertTrue(result.runner.call("blender").profile_existed)
-        self.assertTrue(result.runner.call("manifiesto").profile_existed)
+        for call in (*blender_calls, result.runner.call("manifiesto")):
+            self.assertTrue(call.profile_existed)
         temp = Path(tempfile.gettempdir()).resolve()
         self.assertEqual(profile.resolve().parents[1], temp)
         self.assertTrue(profile.parent.name.startswith(check.TEMP_PREFIX))
@@ -1625,14 +2065,15 @@ class BlenderStepTest(unittest.TestCase):
             self.assertFalse(profile.resolve().is_relative_to(forbidden), forbidden)
         self.assertFalse(profile.parent.exists())
 
-        result = run_check(runner=FakeRunner({"blender": (1, "", "FAIL: x\n")}))
-        profile = Path(result.runner.call("blender").env["BLENDER_USER_RESOURCES"])
+        with many_cpus():
+            result = run_check(runner=FakeRunner({"blender": (1, "", "FAIL: x\n")}))
+        profile = Path(result.runner.call("blender", 1).env["BLENDER_USER_RESOURCES"])
         self.assertFalse(profile.parent.exists())
 
-        runner = FakeRunner({"blender": RuntimeError("fallo inesperado del ejecutor")})
-        with self.assertRaises(RuntimeError):
+        runner = FakeRunner({"blender#2": RuntimeError("fallo inesperado del ejecutor")})
+        with self.assertRaises(RuntimeError), many_cpus():
             run_check(runner=runner)
-        profile = Path(runner.call("blender").env["BLENDER_USER_RESOURCES"])
+        profile = Path(runner.call("blender", 2).env["BLENDER_USER_RESOURCES"])
         self.assertFalse(profile.parent.exists())
 
     def test_unit_step_extends_blender_modules(self) -> None:
@@ -1656,11 +2097,12 @@ class BlenderStepTest(unittest.TestCase):
             )
             result = run_check(locate=lambda minimum: install, executable=str(install.python))
         self.assertEqual(result.code, 0, result.out + result.err)
-        value = result.runner.call("unitarias").env[imports.ENV_BLENDER_MODULES]
-        self.assertEqual(
-            sorted(value.split(",")),
-            ["_rna_info", "bl_keymap_utils", "bl_operators", "keyingsets_builtins"],
-        )
+        for call in result.runner.calls_of("unitarias"):
+            value = call.env[imports.ENV_BLENDER_MODULES]
+            self.assertEqual(
+                sorted(value.split(",")),
+                ["_rna_info", "bl_keymap_utils", "bl_operators", "keyingsets_builtins"],
+            )
 
 
 class MissingWheelsTest(unittest.TestCase):

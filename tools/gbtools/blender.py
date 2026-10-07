@@ -13,6 +13,10 @@
 
 Todo error de entorno es :class:`EnvironmentProblem`, con un mensaje en español que dice
 qué falta y cómo corregirlo.
+
+:func:`run` anota cada orden mientras se ejecuta, y :func:`stop_all` las termina: así
+``tools/check.py``, que ejecuta a la vez las partes de un paso en varios hilos, las para
+al pulsar Ctrl+C igual que ``subprocess.run`` para la suya (spec 003, T40).
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +63,10 @@ class EnvironmentProblem(Exception):
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
+# Las órdenes de run() en marcha, de cualquier hilo (stop_all las termina).
+_RUNNING: set[subprocess.Popen[str]] = set()
+_RUNNING_LOCK = threading.Lock()
+
 
 def run(
     cmd: Sequence[str],
@@ -69,20 +78,58 @@ def run(
     """Ejecuta ``cmd`` sin entrada estándar y devuelve su código y su salida (UTF-8).
 
     No lanza por un código distinto de 0; sí ``OSError`` si no se puede lanzar y
-    ``subprocess.TimeoutExpired`` si se agota ``timeout``.
+    ``subprocess.TimeoutExpired`` si se agota ``timeout``. Como ``subprocess.run``
+    (``check=False``), termina el proceso si se agota el tiempo o llega una excepción
+    (Ctrl+C) mientras espera; y mientras se ejecuta, :func:`stop_all` lo puede terminar
+    desde otro hilo.
     """
-    return subprocess.run(
+    with subprocess.Popen(
         [str(part) for part in cmd],
         env=dict(env) if env is not None else None,
         cwd=str(cwd) if cwd is not None else None,
-        timeout=timeout,
         stdin=subprocess.DEVNULL,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
-        check=False,
-    )
+    ) as process:
+        with _RUNNING_LOCK:
+            _RUNNING.add(process)
+        try:
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                exc.stdout, exc.stderr = process.communicate()
+                raise
+            except BaseException:
+                process.kill()
+                raise
+        finally:
+            with _RUNNING_LOCK:
+                _RUNNING.discard(process)
+        code = process.poll()
+    return subprocess.CompletedProcess(process.args, code, stdout, stderr)
+
+
+def running() -> int:
+    """Cuántas órdenes de :func:`run` se están ejecutando ahora (en cualquier hilo)."""
+    with _RUNNING_LOCK:
+        return len(_RUNNING)
+
+
+def stop_all() -> None:
+    """Termina las órdenes de :func:`run` en marcha (en cualquier hilo): devuelven
+    enseguida su código. ``tools/check.py`` lo llama si llega Ctrl+C mientras espera a
+    las partes de un paso. Sin órdenes en marcha, no hace nada."""
+    with _RUNNING_LOCK:
+        processes = list(_RUNNING)
+    for process in processes:
+        try:
+            process.kill()
+        except OSError:
+            pass  # ya había terminado
 
 
 def parse_version(text: str) -> tuple[int, int, int]:
