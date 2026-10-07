@@ -42,7 +42,8 @@ importa ``geoblender`` de forma absoluta (excepción de ARQ-09, plan 001). Pasos
    motores anteriores no quita el que usa un trabajo, aunque sea de otra sesión de Blender
    (RF-004-27).
 7. Evento ``start`` con el pid, el intérprete y las versiones de Python, numpy y BLAS
-   (RF-004-15).
+   (RF-004-15). Con el intérprete externo, ``job.log`` dice además que corrió en él, en
+   lugar del motor de cálculo, y cuál es (RF-004-26).
 8. Lee la petición (``request.json``), importa ``geoblender.workers.<tipo>`` y llama a su
    ``main(ctx)`` con un ``WorkerContext`` que escribe en el canal.
 
@@ -77,7 +78,8 @@ from typing import IO, Any, NoReturn  # noqa: E402
 PACKAGE_NAME = "geoblender"
 WORKERS_PACKAGE = f"{PACKAGE_NAME}.workers"
 KIND_COMPUTE = "compute"
-KINDS: tuple[str, ...] = ("blender", KIND_COMPUTE, "external")
+KIND_EXTERNAL = "external"
+KINDS: tuple[str, ...] = ("blender", KIND_COMPUTE, KIND_EXTERNAL)
 """Intérpretes que admite el arranque (``--kind``)."""
 
 EXIT_OK = 0
@@ -353,6 +355,9 @@ def run_job(
         f"arranque del worker: pid {info['pid']}, intérprete {kind}, Python {info['python']}, "
         f"numpy {info['numpy'] or 'no disponible'}, BLAS {info['blas'] or 'no disponible'}"
     )
+    if kind == KIND_EXTERNAL:
+        note(f"intérprete externo (desarrollo), en lugar del motor de cálculo: "
+             f"{sys.executable}")
     sink.send(protocol.JobEvent.start(info))
     try:
         folder = _job_folder(job_dir)

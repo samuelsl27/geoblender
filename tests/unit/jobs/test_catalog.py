@@ -26,6 +26,8 @@ catalog = import_geoblender("jobs.catalog")
 protocol = import_geoblender("jobs.protocol")
 messages = import_geoblender("jobs.messages")
 selftest = import_geoblender("jobs.selftest")
+interpreter = import_geoblender("jobs.interpreter")
+policy = import_geoblender("jobs.policy")
 
 WorkerInfo = catalog.WorkerInfo
 NOW = dt.datetime(2026, 10, 7, 9, 0, 0, tzinfo=dt.UTC)
@@ -308,13 +310,19 @@ class BuiltinWorkersTest(unittest.TestCase):
         self.assertIsNone(check.run)
 
     def test_probe_python_fits_in_the_thread(self):
-        """El sondeo del intérprete externo se estima en ≤ 5 s (va en hilo cuando tenga su
-        ``run``, plan 004 §5.1) con un tiempo máximo corto."""
+        """RF-004-26: el sondeo del intérprete externo se estima en ≤ 5 s y tiene su ``run``
+        (``jobs.interpreter.run_probe``, la misma función que envuelve
+        ``workers/probe_python.py``): va en hilo (plan 004 §5.1), con un tiempo máximo
+        corto."""
         info = self.builtins["probe_python"]
         self.assertEqual((info.policy, info.environment), ("auto", "blender"))
         estimate = info.estimate_s({"path": "python.exe"})
         self.assertLessEqual(estimate, 5.0)
         self.assertLessEqual(info.default_timeout_s, 60.0)
+        self.assertIs(info.run, interpreter.run_probe)
+        self.assertIs(import_geoblender("workers.probe_python").main, interpreter.run_probe)
+        request = protocol.new_request("probe_python", label="Sondeo", owner="jobs")
+        self.assertEqual(policy.choose_executor(info, request), "inprocess")
 
     def test_labels_have_spanish(self):
         """Constitución, principio 10: cada nombre visible es un ``msgid`` en inglés con su

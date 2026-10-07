@@ -27,10 +27,10 @@ Un ``WorkerInfo`` declara:
 Los de la spec 004 (:data:`BUILTIN_WORKERS`) los registra ``bl/ops/jobs.py`` con
 :func:`register_builtin_workers`: ``selftest`` (autodiagnóstico, ``jobs/selftest.py``),
 ``runtime_install`` y ``runtime_check`` (instalar y verificar el motor de cálculo, siempre en
-proceso aparte) y ``probe_python`` (sondeo del intérprete externo, estimado en ≤ 5 s; su
-``run`` llega con el sondeo de ``jobs/interpreter.py``, tareas T25 y T33: hasta entonces va
-a proceso aparte). Sus nombres visibles y los mensajes del autodiagnóstico están en
-:data:`CATALOG_ES` para ``core.i18n.install``.
+proceso aparte) y ``probe_python`` (sondeo del intérprete externo, RF-004-26: estimado en
+≤ 5 s, va en hilo con ``jobs.interpreter.run_probe``, la función que envuelve
+``workers/probe_python.py``). Sus nombres visibles y los mensajes del autodiagnóstico están
+en :data:`CATALOG_ES` para ``core.i18n.install``.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from dataclasses import KW_ONLY, dataclass
 from types import MappingProxyType
 from typing import Any, Literal
 
-from . import selftest
+from . import interpreter, selftest
 from .protocol import (
     DEFAULT_TIMEOUT_S,
     ENVIRONMENTS,
@@ -224,7 +224,7 @@ BUILTIN_WORKERS: tuple[WorkerInfo, ...] = (
         environment="compute",
         default_timeout_s=300.0,
     ),
-    # El hilo lanza el intérprete externo y espera (plan §5.1); ``run``: T25 y T33.
+    # El hilo lanza el intérprete externo y espera (plan §5.1; RF-004-26).
     WorkerInfo(
         "probe_python",
         _LABELS[3][0],
@@ -232,6 +232,7 @@ BUILTIN_WORKERS: tuple[WorkerInfo, ...] = (
         environment="blender",
         default_timeout_s=30.0,
         estimate_s=_probe_python_estimate,
+        run=interpreter.run_probe,
     ),
 )
 """Los tipos de trabajo de la spec 004 (plan §5.1)."""

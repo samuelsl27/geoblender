@@ -16,7 +16,7 @@ from bpy.props import PointerProperty
 from ...core.i18n import tr
 from .. import ADDON_PACKAGE
 from .core import GEOBLENDER_PG_core_preferences
-from .jobs import GEOBLENDER_PG_jobs_preferences
+from .jobs import SET_EXTERNAL_PYTHON, GEOBLENDER_PG_jobs_preferences
 from .ui import GEOBLENDER_PG_ui_preferences
 
 
@@ -70,7 +70,8 @@ class GeoblenderPreferences(bpy.types.AddonPreferences):
         aparte, días que se conservan los terminados, origen del motor de cálculo,
         almacén de ruedas e intérprete externo. La ruta del intérprete externo se ve sin
         poder editarla: solo la guarda, después de comprobarla,
-        ``geoblender.jobs_set_external_python`` (RF-004-26)."""
+        ``geoblender.jobs_set_external_python`` (RF-004-26), con sus botones de elegirla y
+        de quitarla al lado."""
         jobs = self.jobs
         column.separator()
         column.label(text=tr("Background jobs"), translate=False)
@@ -83,9 +84,12 @@ class GeoblenderPreferences(bpy.types.AddonPreferences):
         column.prop(jobs, "wheelhouse_dir", text=tr("Wheel store folder"), translate=False)
         column.prop(jobs, "use_external_python", text=tr("Use an external interpreter"),
                     translate=False)
-        row = column.row()
-        row.enabled = False
-        row.prop(jobs, "external_python", text=tr("External interpreter"), translate=False)
+        row = column.row(align=True)
+        path = row.row(align=True)
+        path.enabled = False
+        path.prop(jobs, "external_python", text=tr("External interpreter"), translate=False)
+        row.operator(SET_EXTERNAL_PYTHON, text="", icon="FILEBROWSER")
+        row.operator(SET_EXTERNAL_PYTHON, text="", icon="X").clear = True
 
 
 # En orden de registro: los grupos (bl/props/core.py, ui.py y jobs.py) ya están

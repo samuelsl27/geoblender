@@ -49,6 +49,11 @@ consentimiento (:func:`draw_consent`: origen, una fila por paquete con su versi�
 licencia, y las que incluye su rueda, MB de descarga y en disco, carpeta de destino y que no
 cambia el Python de Blender), el estado del motor con sus botones (:func:`draw_engine`) y la
 confirmación de quitarlo (:func:`draw_remove`).
+
+El intérprete externo (spec 004, T33; RF-004-26): si el lanzador tiene uno, la lista dice,
+bajo el estado del motor, que los trabajos del motor corren con él («Intérprete externo
+(desarrollo): <ruta>»), y la fila de cada trabajo que corrió en él lo indica con sus
+versiones de Python y numpy («Intérprete externo · Python 3.13… · numpy …»).
 """
 
 from __future__ import annotations
@@ -113,6 +118,8 @@ DURATION_UNITS = 4
 
 SETUP_RUNTIME = "geoblender.jobs_setup_runtime"
 ENGINE_ICON = "PREFERENCES"
+EXTERNAL_ICON = "CONSOLE"
+"""El icono de la línea del intérprete externo en la lista de trabajos (RF-004-26)."""
 SOURCE_ICONS: Mapping[str, str] = {
     jobs_runtime.SOURCE_WHEELHOUSE: "DISK_DRIVE",
     jobs_runtime.SOURCE_PYPI: "WORLD",
@@ -485,6 +492,10 @@ def draw_list(layout: Any) -> None:
     if isinstance(engine, ComputeEnvironment):
         layout.label(text=tr("Compute engine: {state}", state=engine_state_text(engine)),
                      icon=ENGINE_ICON, translate=False)
+    external = getattr(runner, "external_python", None) if runner is not None else None
+    if external is not None:
+        layout.label(text=tr("External interpreter (development): {path}", path=str(external)),
+                     icon=EXTERNAL_ICON, translate=False)
     snapshots = listed_jobs(runner)
     if not snapshots:
         layout.label(text=tr("There are no background jobs"), translate=False)

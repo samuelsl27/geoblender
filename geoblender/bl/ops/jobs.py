@@ -105,12 +105,24 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   :meth:`JobMonitor.submit`) abre ese mismo diálogo (:func:`offer_runtime_setup`,
   RF-004-25); en ``blender -b`` no hay a quién enseñárselo.
 
-Todos sin ``UNDO``: no cambian la escena. ``jobs_set_external_python`` sigue provisional
-hasta la T33.
+- ``geoblender.jobs_set_external_python`` (Intérprete externo, para desarrollo…; HU-004-5,
+  RF-004-26): sin ruta, abre el explorador de ficheros; con ``filepath``, sondea ese
+  intérprete en un trabajo en hilo (``probe_python``: ``jobs.interpreter.run_probe``) seguido
+  en la barra de estado y, solo si es Python 3.13 con numpy, al terminar lo guarda en las
+  preferencias (``external_python``, ``use_external_python``) y se lo da al lanzador: los
+  trabajos del motor de cálculo que arranquen desde entonces corren con él (``kind =
+  external``). Si no sirve, el trabajo queda «Fallido» con el motivo
+  (``external_python_invalid``) y no se guarda nada. Con ``clear``, lo quita: vuelven al
+  motor. El lanzador de la sesión toma el de las preferencias al crearse
+  (:func:`configured_external_python`) y al activarlo o desactivarlo
+  (:func:`on_external_python_changed`).
+
+Todos sin ``UNDO``: no cambian la escena.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import sys
@@ -122,12 +134,12 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from ...core import i18n
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, tr
-from ...jobs import catalog, cleanup, messages, records
+from ...jobs import catalog, cleanup, interpreter, messages, records
 from ...jobs import runtime as jobs_runtime
 from ...jobs.cleanup import CleanupReport
 from ...jobs.messages import JobError
@@ -210,17 +222,19 @@ class JobMonitor:
         self._runner = runner
 
     def submit(self, job: JobDir | JobRequest, *,
-               on_finish: Callable[[JobResult], object] | None = None) -> JobHandle:
+               on_finish: Callable[[JobResult], object] | None = None,
+               paths: Mapping[str, Path] | None = None) -> JobHandle:
         """Lanza ``job`` (``JobDir`` o ``JobRequest``) con el lanzador
-        (``JobRunner.submit``, que no bloquea) y empieza a seguirlo: registra el
-        temporizador si no lo estaba. Si no se lanzó porque necesita el motor de cálculo y
-        falta, ofrece instalarlo (:func:`offer_runtime_setup`, RF-004-25). Sin lanzador,
-        :class:`RuntimeError` y nada más."""
+        (``JobRunner.submit``, que no bloquea; ``paths``, las rutas absolutas que necesita
+        fuera de su carpeta) y empieza a seguirlo: registra el temporizador si no lo estaba.
+        Si no se lanzó porque necesita el motor de cálculo y falta, ofrece instalarlo
+        (:func:`offer_runtime_setup`, RF-004-25). Sin lanzador, :class:`RuntimeError` y nada
+        más."""
         runner = self._runner
         if runner is None:
             raise RuntimeError("no hay lanzador de trabajos: Geoblender aún no ha preparado "
                                "la carpeta de los trabajos")
-        handle = runner.submit(job, on_finish=on_finish)
+        handle = runner.submit(job, on_finish=on_finish, paths=paths)
         self.start()
         offer_runtime_setup(runner, handle.result())
         return handle
@@ -1099,6 +1113,129 @@ def _invoke_setup(action: str) -> bool:
     return "RUNNING_MODAL" in result
 
 
+# El intérprete externo, para desarrollo (RF-004-26) -------------------------------------
+
+PROBE_WORKER = "probe_python"
+
+
+def _save_external(path: Path | None) -> bool:
+    """Guarda en las preferencias el intérprete externo ``path`` y lo activa o, con
+    ``None``, lo quita y lo desactiva (las preferencias quedan por guardar, como las demás),
+    y se lo da al lanzador de la sesión. ``False`` si las preferencias aún no están."""
+    prefs = _jobs_preferences()
+    if prefs is None:
+        return False
+    prefs.external_python = "" if path is None else str(path)
+    prefs.use_external_python = path is not None
+    try:
+        bpy.context.preferences.is_dirty = True  # Blender las guardará con las demás
+    except (AttributeError, TypeError):
+        pass
+    on_external_python_changed()
+    return True
+
+
+def _external_probed(runner: JobRunner, path: Path, result: JobResult) -> None:
+    """Fin del sondeo de ``path`` (``on_finish``, desde el sondeo del monitor): si sirve,
+    queda guardado y activo, en las preferencias y en ``runner``; si no, nada cambia (el
+    motivo lo dicen el aviso de la barra de estado y la lista de trabajos)."""
+    if result.state != "succeeded":
+        LOGGER.warning("Intérprete externo %s rechazado: %s", path,
+                       messages.one_line(result.error_text or result.error_code or
+                                         result.state))
+        return
+    _save_external(path)
+    if not runner.closed:
+        runner.reconfigure(external_python=path)
+    summary = result.summary or {}
+    LOGGER.info("Intérprete externo guardado: %s (Python %s, numpy %s)", path,
+                summary.get("python"), summary.get("numpy"))
+
+
+def _set_external(operator: Any) -> set[str]:
+    """Lo que hace ``geoblender.jobs_set_external_python`` (``operator``): con ``clear``,
+    quita el intérprete externo; si no, sondea ``filepath`` en un trabajo en hilo
+    (``probe_python``), que lo guarda solo si es Python 3.13 con numpy."""
+    runner = _open_runner()
+    if runner is None:
+        operator.report({"ERROR"}, tr("Geoblender has not prepared the jobs folder yet"))
+        return {"CANCELLED"}
+    if operator.clear:
+        _save_external(None)
+        runner.reconfigure(external_python=None)
+        operator.report({"INFO"}, tr("The jobs that need the compute engine use it again"))
+        return {"FINISHED"}
+    text = str(operator.filepath or "").strip()
+    if not text:
+        operator.report({"ERROR"}, tr("Choose the python.exe of the external interpreter"))
+        return {"CANCELLED"}
+    path = Path(bpy.path.abspath(text))
+    if not path.is_absolute():
+        operator.report({"ERROR"}, messages.render(
+            "external_python_invalid", language=language(), path=text,
+            reason=tr("it is not a full path")))
+        return {"CANCELLED"}
+    request = new_request(PROBE_WORKER, label=tr("Probe the external interpreter"),
+                          owner=SELFTEST_OWNER)
+    try:
+        handle = MONITOR.submit(request,
+                                on_finish=functools.partial(_external_probed, runner, path),
+                                paths={interpreter.PATH_PYTHON: path})
+    except GeoblenderError as exc:
+        operator.report({"ERROR"}, exc.message)
+        return {"CANCELLED"}
+    except RuntimeError as exc:  # el lanzador se cerró
+        operator.report({"ERROR"}, str(exc))
+        return {"CANCELLED"}
+    result = handle.result()
+    if result is not None and result.state != "succeeded":  # no llegó a arrancar
+        operator.report({"ERROR"}, _error_of(handle.job_uid, result))
+        return {"CANCELLED"}
+    operator.report({"INFO"}, tr("Checking the external interpreter {path}: the result will "
+                                 "appear in the status bar", path=str(path)))
+    return {"FINISHED"}
+
+
+class GEOBLENDER_OT_jobs_set_external_python(bpy.types.Operator):
+    """Use an external Python for the workers (development)"""
+
+    bl_idname = "geoblender.jobs_set_external_python"
+    bl_label = "External interpreter, for development…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="Interpreter",
+        description="The python.exe of the external environment: Python 3.13 with numpy",
+        default="", subtype="FILE_PATH", options={"SKIP_SAVE"},
+    )
+    clear: BoolProperty(  # type: ignore[valid-type]
+        name="Stop using it",
+        description="Stop using the external interpreter: the jobs that need the compute "
+                    "engine use it again",
+        default=False, options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        if _open_runner() is None:
+            cls.poll_message_set(tr("Geoblender has not prepared the jobs folder yet"))
+            return False
+        return True
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        if self.clear or self.filepath:
+            return _set_external(self)
+        saved = str(getattr(_jobs_preferences(), "external_python", "") or "")
+        if saved:
+            self.filepath = saved
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context: Any) -> set[str]:
+        return _set_external(self)
+
+
 # El lanzador de la sesión ---------------------------------------------------------------
 
 
@@ -1166,6 +1303,7 @@ def _open_session() -> None:
     runner = JobRunner(jobs_root=jobs_root(project), package_dir=PACKAGE_DIR,
                        blender_python=Path(sys.executable),
                        runtime=compute_environment(),
+                       external_python=configured_external_python(),
                        max_subprocess=max_parallel_jobs(),
                        forbidden_roots=_forbidden_roots(project))
     _SESSION.runner = runner
@@ -1190,6 +1328,31 @@ def on_max_parallel_changed(value: int) -> None:
     runner = _SESSION.runner
     if runner is not None and not runner.closed:
         runner.reconfigure(max_subprocess=int(value))
+
+
+def configured_external_python() -> Path | None:
+    """El intérprete externo de las preferencias (RF-004-26) si está activado
+    (``use_external_python``) y tiene una ruta completa (``external_python``, que solo
+    guarda ``geoblender.jobs_set_external_python`` tras sondearlo); si no, ``None``. No
+    comprueba que siga existiendo: si se borró, el trabajo falla al arrancarlo
+    (``interpreter_not_found``) y nunca pasa al motor sin avisar."""
+    prefs = _jobs_preferences()
+    if prefs is None or not getattr(prefs, "use_external_python", False):
+        return None
+    text = str(getattr(prefs, "external_python", "") or "").strip()
+    if not text:
+        return None
+    path = Path(bpy.path.abspath(text))
+    return path if path.is_absolute() else None
+
+
+def on_external_python_changed() -> None:
+    """El intérprete externo de las preferencias cambió (se activó, se desactivó, se guardó
+    o se quitó): llega al lanzador de la sesión para los trabajos que arranquen desde ahora
+    (RF-004-26)."""
+    runner = _SESSION.runner
+    if runner is not None and not runner.closed:
+        runner.reconfigure(external_python=configured_external_python())
 
 
 def on_project_changed(project: Project | None) -> None:
@@ -1230,7 +1393,8 @@ def on_exit_pre(*_args: object) -> None:
 
 classes: tuple[type, ...] = (GEOBLENDER_OT_jobs_show_jobs, GEOBLENDER_OT_jobs_cancel,
                              GEOBLENDER_OT_jobs_run_selftest, GEOBLENDER_OT_jobs_clean,
-                             GEOBLENDER_OT_jobs_setup_runtime)
+                             GEOBLENDER_OT_jobs_setup_runtime,
+                             GEOBLENDER_OT_jobs_set_external_python)
 
 
 def register() -> None:

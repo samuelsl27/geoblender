@@ -18,6 +18,10 @@ plan 004 §5.1, §5.3.1, §5.3.3 y §6, D-2).
 - :func:`probe_external`: sondea un intérprete externo antes de guardarlo (RF-004-26): lo
   lanza con ``-I -B`` y un guion que cuenta su versión de Python, la de numpy y su BLAS; lo
   acepta si es Python 3.13 con numpy y, si no, dice por qué (:class:`ExternalProbe`).
+  :func:`run_probe` es el tipo de trabajo ``probe_python`` (``WorkerInfo.run``, en hilo; lo
+  envuelve ``workers/probe_python.py``): sondea el intérprete de la ruta
+  ``--path python=…`` (:data:`PATH_PYTHON`) y, si no sirve, falla con
+  ``external_python_invalid`` y su motivo.
 - :func:`child_env`: el entorno del hijo, a partir del de Blender sin ninguna variable
   ``PYTHON*`` ni ``PIP_*`` (que cambiarían qué Python o qué paquetes carga el worker, o qué
   hace ``pip`` en la instalación del motor) y con los hilos de BLAS
@@ -41,7 +45,7 @@ from typing import TYPE_CHECKING, Protocol
 from .messages import JobError
 
 if TYPE_CHECKING:
-    from .protocol import Environment
+    from .protocol import Environment, JobRequest, JsonValue
     from .runtime import RuntimeLock
 
 DROPPED_PREFIXES: tuple[str, ...] = ("PYTHON", "PIP_")
@@ -301,6 +305,49 @@ def probe_external(exe: Path, *, timeout_s: float = PROBE_TIMEOUT_S) -> External
     elif numpy is None:
         reason = f"es Python {python} sin numpy"
     return ExternalProbe(exe=path, python=python, numpy=numpy, blas=blas, reason=reason)
+
+
+PATH_PYTHON = "python"
+"""El nombre de la ruta del intérprete que sondea ``probe_python`` (``--path python=…``, en
+``WorkerContext.paths``: la petición no lleva rutas absolutas)."""
+PROBING_TEXT = "Comprobando el intérprete externo"
+"""Mensaje del avance mientras se sondea."""
+
+
+class _ProbeContext(Protocol):
+    """Lo que :func:`run_probe` usa del ``WorkerContext`` (``jobs/worker_api.py``)."""
+
+    request: JobRequest
+    paths: Mapping[str, Path]
+
+    def progress(self, frac: float, msg: str = "") -> None: ...
+
+    def log(self, level: str, msg: str) -> None: ...
+
+
+def run_probe(ctx: _ProbeContext) -> dict[str, JsonValue]:
+    """El tipo de trabajo ``probe_python`` (RF-004-26): sondea con :func:`probe_external`
+    el intérprete de la ruta :data:`PATH_PYTHON` y devuelve sus versiones de Python y de
+    numpy y su BLAS. Si no sirve, :class:`~.messages.JobError` ``external_python_invalid``
+    con la ruta y el motivo (el trabajo queda «Fallido» con ese mensaje); sin la ruta,
+    ``request_invalid``. No guarda nada: lo guarda quien lo lanzó, si terminó bien."""
+    label = ctx.request.label
+    job = label if isinstance(label, str) and label.strip() else ctx.request.worker
+    exe = ctx.paths.get(PATH_PYTHON)
+    if exe is None:
+        raise JobError("request_invalid", job=job,
+                       detail=f"falta la ruta del intérprete que se sondea (--path "
+                              f"{PATH_PYTHON}=…)")
+    ctx.progress(0.0, PROBING_TEXT)
+    probe = probe_external(Path(exe))
+    error = probe.error()
+    if error is not None:
+        ctx.log("warning", error.text)
+        raise error
+    found = f"Python {probe.python} con numpy {probe.numpy} (BLAS {probe.blas or 'desconocida'})"
+    ctx.log("info", f"Intérprete externo {probe.exe}: {found}")
+    ctx.progress(1.0, f"Intérprete externo comprobado: {found}")
+    return {"python": probe.python, "numpy": probe.numpy, "blas": probe.blas}
 
 
 def _last_line(data: bytes, limit: int = 200) -> str:

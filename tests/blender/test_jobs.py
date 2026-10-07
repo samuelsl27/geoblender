@@ -121,6 +121,17 @@ de la sesión:
 La cadena de instalación y de verificación (``jobs.runtime.RuntimeSetup``, que prueban
 ``tests/unit/jobs``) se sustituye: en las pruebas de Blender nada se instala de verdad.
 
+T33 — el intérprete externo, para desarrollo: el operador real
+``geoblender.jobs_set_external_python`` (Herramientas ▸ Trabajos ▸ Intérprete externo, para
+desarrollo…, y sus botones en las preferencias), que sondea el intérprete en un trabajo en
+hilo (``probe_python``) y solo lo guarda si sirve:
+
+- RF-004-26: uno que es Python 3.13 con numpy (el propio Python de Blender) queda guardado en
+  las preferencias y en el lanzador, y el siguiente trabajo del motor de cálculo corre con él
+  (``kind = external`` en su ``state.json``), lo dicen la lista de trabajos y su ``job.log``;
+  uno que no es 3.13, sin numpy, que no es un Python o que no existe (intérpretes falsos) se
+  rechaza con su motivo y no se guarda; quitarlo devuelve los trabajos al motor.
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
@@ -129,6 +140,7 @@ import datetime as dt
 import importlib
 import json
 import os
+import platform
 import shutil
 import socket
 import stat
@@ -149,6 +161,7 @@ import bpy
 from tests.support import blender_ext
 from tests.support.blender_ext import fingerprint_diff, module_name, state_fingerprint
 from tests.support.fake_layout import FakeLayout, draw
+from tests.support.jobs_fixtures import make_fake_interpreter
 
 GROUP = "jobs"
 GROUP_CLASS = "GEOBLENDER_PG_jobs_preferences"
@@ -2614,6 +2627,261 @@ class RuntimeSetupTest(unittest.TestCase):
         self.assertFalse(self.env.path.exists())
         self.assertEqual(self.env.status(), "missing")
         self.assertIn("Motor de cálculo: No instalado", _panel(self.ui).texts())
+
+
+# --- T33: el intérprete externo, para desarrollo -----------------------------------------
+
+SET_EXTERNAL = "geoblender.jobs_set_external_python"
+PROBE_WORKER = "probe_python"
+PROBE_LABEL = "Sondear el intérprete externo"
+EXTERNAL_LABEL = "Suma con el intérprete externo"
+EXTERNAL_SUM = {"op": "chunked_sum", "n": 1000, "chunks": 1, "sleep_s": 0.0}
+CHECKING = "Comprobando el intérprete externo {path}: el resultado saldrá en la barra de estado"
+EXTERNAL_LINE = "Intérprete externo (desarrollo): {path}"
+EXTERNAL_NOTE = "intérprete externo (desarrollo), en lugar del motor de cálculo: {path}"
+BACK_TO_ENGINE = "Los trabajos que necesitan el motor de cálculo vuelven a usarlo"
+CHOOSE_PYTHON = "Elija el python.exe del intérprete externo"
+JOB_DEADLINE_S = 20.0
+
+
+class ExternalPythonTest(unittest.TestCase):
+    """``geoblender.jobs_set_external_python`` con un lanzador real en una carpeta temporal
+    (sin motor de cálculo instalado) seguido por un monitor de la prueba, al que se llama a
+    mano (en ``blender -b`` no corren los temporizadores). El intérprete que sirve es el
+    propio Python de Blender (3.13 con numpy); los que no, intérpretes falsos (``.cmd``)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.enable()
+        cls.ops = _module("bl.ops.jobs")
+        cls.ui = _module("bl.ui.jobs")
+        cls.runtime = _module("jobs.runtime")
+        cls.runner_mod = _module("jobs.runner")
+        cls.messages = _module("jobs.messages")
+        cls.interpreter = _module("jobs.interpreter")
+        cls.protocol = _module("jobs.protocol")
+        cls.records = _module("jobs.records")
+        cls.commands = _module("bl.ui.commands")
+        cls.registry = _module("bl.ui.registry")
+        cls.cat = _module("core.catalog").load()
+        cls.preferences = _addon_preferences()
+        cls.prefs = cls.preferences.jobs
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.unload()
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))
+        env = self.runtime.ComputeEnvironment(self.tmp / "usuario", self.runtime.read_lock())
+        package_dir = Path(sys.modules[module_name()].__file__).parent
+        self.runner = self.runner_mod.JobRunner(
+            jobs_root=self.tmp / "jobs", package_dir=package_dir,
+            blender_python=Path(sys.executable), runtime=env)
+        self.monitor = self.ops.JobMonitor(clock=_Clock())
+        patch = mock.patch.object(self.ops, "MONITOR", self.monitor)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(self.monitor.stop)
+        self.addCleanup(self.runner.shutdown, timeout_s=2.0)
+        self.monitor.attach(self.runner)
+        dirty = bpy.context.preferences.is_dirty
+        self.addCleanup(setattr, bpy.context.preferences, "is_dirty", dirty)
+        for name in ("use_external_python", "external_python"):
+            self.addCleanup(setattr, self.prefs, name, getattr(self.prefs, name))
+        self.prefs.external_python = ""
+        self.prefs.use_external_python = False
+
+    def execute(self, **properties: object) -> tuple[set[str], _Reports]:
+        """``execute`` del operador con ``properties`` y sus avisos."""
+        values = {"filepath": "", "clear": False, **properties}
+        return _reports(self.ops.GEOBLENDER_OT_jobs_set_external_python, **values)
+
+    def finish(self) -> None:
+        """Sondea con el monitor hasta que no queda ningún trabajo activo (y una vez más:
+        los avisos de fin ya se dieron)."""
+        deadline = time.monotonic() + JOB_DEADLINE_S
+        while self.runner.active_count():
+            self.assertLess(time.monotonic(), deadline, "los trabajos no terminaron")
+            self.monitor.tick()
+            time.sleep(TICK_SLEEP_S / 2)
+        self.monitor.tick()
+
+    def probes(self) -> list[object]:
+        """Los sondeos del intérprete externo del lanzador, por orden de llegada."""
+        return [s for s in self.runner.snapshots() if s.worker == PROBE_WORKER]
+
+    def probe_output(self, python: str, numpy: str | None) -> str:
+        """Lo que contaría el guion del sondeo en un intérprete ``python`` con ``numpy``."""
+        info = {"python": python, "numpy": numpy, "blas": None}
+        return self.interpreter.PROBE_MARK + json.dumps(info) + "\n"
+
+    def test_operator_from_the_catalog(self) -> None:
+        """RF-004-26: ``geoblender.jobs_set_external_python`` es el operador real de
+        ``bl/ops/jobs.py`` con el ``bl_idname``, el nombre y la descripción del catálogo de la
+        003 (Herramientas ▸ Trabajos), que ya no genera su provisional; ``filepath`` (el
+        intérprete) y ``clear`` (quitarlo), ninguna guardada para la vez siguiente. Sin ruta,
+        abre el explorador de ficheros; con ``clear``, lo quita sin preguntar. Las
+        preferencias muestran la ruta sin dejar editarla, con los botones de elegirla y de
+        quitarla. Sin lanzador, su ``poll`` falla y lo dice."""
+        cls = self.commands.registered_class(SET_EXTERNAL)
+        self.assertIs(cls, self.ops.GEOBLENDER_OT_jobs_set_external_python)
+        self.assertIn(cls, _module("bl.ops").classes)
+        self.assertNotIn(cls, set(self.registry.provisional_classes()))
+        self.assertTrue(self.commands.is_available(SET_EXTERNAL))
+        cmd = self.cat.commands[SET_EXTERNAL]
+        self.assertEqual(cmd.label, "External interpreter, for development…")
+        self.assertEqual(cls.bl_label, self.commands.text(cmd.label))
+        self.assertEqual(cls.bl_description, self.commands.text(cmd.description))
+        self.assertEqual(cls.bl_translation_context, self.commands.TRANSLATION_CONTEXT)
+        menu = self.commands.registered_class(JOBS_MENU)
+        drawn = {item.target: item for item in draw(menu, bpy.context).of_kind("operator")}
+        self.assertTrue(drawn[SET_EXTERNAL].enabled)
+        props = bpy.ops.geoblender.jobs_set_external_python.get_rna_type().properties
+        self.assertEqual((props["filepath"].type, props["filepath"].subtype,
+                          props["filepath"].default), ("STRING", "FILE_PATH", ""))
+        self.assertEqual((props["clear"].type, props["clear"].default), ("BOOLEAN", False))
+        for name in ("filepath", "clear"):
+            with self.subTest(propiedad=name):
+                self.assertTrue(props[name].is_skip_save)
+        browser = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window_manager=SimpleNamespace(fileselect_add=browser))
+        fake = SimpleNamespace(filepath="", clear=False, report=mock.Mock())
+        self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+        browser.assert_called_once_with(fake)
+        browser.reset_mock()
+        self.prefs.external_python = str(Path(sys.executable))
+        self.prefs.use_external_python = True
+        clear = SimpleNamespace(filepath="", clear=True, report=mock.Mock())
+        self.assertEqual(cls.invoke(clear, context, None), {"FINISHED"})
+        browser.assert_not_called()
+        self.assertEqual((self.prefs.external_python, self.prefs.use_external_python),
+                         ("", False))
+        layout = draw(type(self.preferences), bpy.context, core=self.preferences.core,
+                      ui=self.preferences.ui, jobs=self.prefs)
+        path = [item for item in layout.of_kind("prop") if item.target == "external_python"]
+        self.assertEqual([item.enabled for item in path], [False])
+        buttons = [(bool(getattr(item.properties, "clear", False)), item.enabled)
+                   for item in layout.of_kind("operator") if item.target == SET_EXTERNAL]
+        self.assertEqual(buttons, [(False, True), (True, True)])
+        with mock.patch.object(cls, "poll_message_set") as message:
+            self.assertTrue(cls.poll(bpy.context))
+            self.monitor.attach(None)
+            self.assertFalse(cls.poll(bpy.context))
+        message.assert_called_once_with(NO_RUNNER)
+
+    def test_valid_interpreter_is_saved_and_used(self) -> None:
+        """RF-004-26: un intérprete que es Python 3.13 con numpy (el de Blender) se sondea en
+        un trabajo en hilo y, al terminar bien, queda guardado (preferencias, lanzador de la
+        prueba y de la sesión); antes no. El siguiente trabajo del motor de cálculo corre con
+        él: ``kind = external`` en su ``state.json``, con su Python y su numpy; su ``job.log``
+        dice que corrió en el intérprete externo, y la lista de trabajos lo indica (la ruta y,
+        en su fila, «Intérprete externo» con sus versiones). Desactivarlo en las preferencias
+        o quitarlo devuelve esos trabajos al motor (aquí, sin motor: ``runtime_missing``)."""
+        import numpy
+
+        python = Path(sys.executable)
+        result, reports = self.execute(filepath=str(python))
+        self.assertEqual(result, {"FINISHED"})
+        self.assertEqual(reports, [({"INFO"}, CHECKING.format(path=python))])
+        (probe,) = self.probes()
+        self.assertEqual((probe.name, probe.executor), (PROBE_LABEL, "inprocess"))
+        self.assertEqual((self.prefs.external_python, self.runner.external_python), ("", None))
+        self.finish()
+        (probe,) = self.probes()
+        self.assertEqual(probe.state, "succeeded", probe.error)
+        self.assertEqual((self.prefs.external_python, self.prefs.use_external_python),
+                         (str(python), True))
+        self.assertEqual(self.runner.external_python, python)
+        self.assertEqual(self.ops.configured_external_python(), python)
+        self.assertEqual(self.ops.session_runner().external_python, python)
+        self.assertEqual(self.monitor.view().notice.job_uid, probe.job_uid)
+
+        request = self.protocol.new_request("selftest", label=EXTERNAL_LABEL, owner="jobs",
+                                            params=EXTERNAL_SUM, environment="compute")
+        handle = self.monitor.submit(request)
+        self.finish()
+        self.assertEqual(handle.state, "succeeded", handle.result())
+        self.assertEqual(self.protocol.read_request(handle.job_dir).environment, "compute")
+        info = self.records.read_record(handle.job_dir).interpreter
+        self.assertEqual((info.kind, info.python, info.numpy, info.lock_id),
+                         ("external", platform.python_version(), numpy.__version__, None))
+        log = handle.job_dir.log_file.read_text(encoding="utf-8")
+        self.assertIn("intérprete external", log)
+        self.assertIn(EXTERNAL_NOTE.format(path=python), log)
+        layout = _panel(self.ui)
+        self.assertIn(EXTERNAL_LINE.format(path=python), layout.texts())
+        row = _rows(layout, [EXTERNAL_LABEL])[EXTERNAL_LABEL]
+        self.assertTrue(row.details.startswith(
+            f"Intérprete externo · Python {platform.python_version()} · "
+            f"numpy {numpy.__version__}"), row.details)
+
+        self.prefs.use_external_python = False
+        self.assertIsNone(self.ops.configured_external_python())
+        self.assertIsNone(self.ops.session_runner().external_python)
+        self.prefs.use_external_python = True
+        self.assertEqual(self.ops.session_runner().external_python, python)
+        result, reports = self.execute(clear=True)
+        self.assertEqual((result, reports), ({"FINISHED"}, [({"INFO"}, BACK_TO_ENGINE)]))
+        self.assertEqual((self.prefs.external_python, self.prefs.use_external_python),
+                         ("", False))
+        self.assertIsNone(self.runner.external_python)
+        self.assertIsNone(self.ops.session_runner().external_python)
+        self.assertNotIn(EXTERNAL_LINE.format(path=python), _panel(self.ui).texts())
+        again = self.protocol.new_request("selftest", label=EXTERNAL_LABEL, owner="jobs",
+                                          params=EXTERNAL_SUM, environment="compute")
+        self.assertEqual(self.monitor.submit(again).result().error_code, "runtime_missing")
+
+    def test_invalid_interpreter_is_rejected(self) -> None:
+        """RF-004-26: un intérprete que no es Python 3.13, uno sin numpy, un programa que no
+        es un Python y una ruta que no existe se rechazan, cada uno con su motivo (el mensaje
+        ``external_python_invalid``, también en el aviso de la barra de estado), y no se
+        guardan: sigue el que había. Una ruta que no es completa o vacía se rechaza sin
+        lanzar nada."""
+        saved = Path(sys.executable)
+        self.prefs.external_python = str(saved)
+        self.prefs.use_external_python = True
+        self.runner.reconfigure(external_python=saved)
+        fakes = self.tmp / "falsos"
+        cases = {
+            make_fake_interpreter(fakes, name="python312",
+                                  stdout=self.probe_output("3.12.7", "2.1.0")):
+                "es Python 3.12.7, no 3.13",
+            make_fake_interpreter(fakes, name="sinnumpy",
+                                  stdout=self.probe_output("3.13.1", None)):
+                "es Python 3.13.1 sin numpy",
+            make_fake_interpreter(fakes, name="otro", stdout="hola\n"):
+                "no respondió como un intérprete de Python",
+            fakes / "no_existe" / "python.exe": "no existe",
+        }
+        for path in cases:
+            result, reports = self.execute(filepath=str(path))
+            self.assertEqual((result, reports), ({"FINISHED"}, [({"INFO"},
+                                                                 CHECKING.format(path=path))]))
+        self.finish()
+        probes = self.probes()
+        expected = {probe.job_uid: self.messages.render("external_python_invalid",
+                                                        path=str(path), reason=reason)
+                    for probe, (path, reason) in zip(probes, cases.items(), strict=True)}
+        for probe in probes:
+            with self.subTest(sondeo=expected[probe.job_uid]):
+                self.assertEqual((probe.state, probe.error.code),
+                                 ("failed", "external_python_invalid"))
+                self.assertEqual(self.ui.error_text(probe.error), expected[probe.job_uid])
+        notice = self.monitor.view().notice
+        self.assertTrue(self.ui.notice_text(notice).endswith(expected[notice.job_uid]))
+        self.assertEqual((self.prefs.external_python, self.prefs.use_external_python),
+                         (str(saved), True))
+        self.assertEqual(self.runner.external_python, saved)
+        relative = self.messages.render("external_python_invalid", path="python.exe",
+                                        reason="no es una ruta completa")
+        self.assertEqual(self.execute(filepath="python.exe"),
+                         ({"CANCELLED"}, [({"ERROR"}, relative)]))
+        self.assertEqual(self.execute(filepath="  "),
+                         ({"CANCELLED"}, [({"ERROR"}, CHOOSE_PYTHON)]))
+        self.assertEqual(len(self.probes()), len(cases))
+        self.assertEqual(self.prefs.external_python, str(saved))
 
 
 if __name__ == "__main__":

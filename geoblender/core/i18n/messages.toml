@@ -1345,3 +1345,36 @@ es = "Último intento: {error}"
 
 ["The folder {folder} is deleted ({size} MB); it can be installed again later"]
 es = "Se borra la carpeta {folder} ({size} MB); se puede volver a instalar después"
+
+# El intérprete externo, para desarrollo (spec 004, T33; RF-004-26; plan 004 §5.3.2 y
+# §5.5). «External interpreter» y su descripción ya están arriba.
+
+["Interpreter"]
+es = "Intérprete"
+
+["The python.exe of the external environment: Python 3.13 with numpy"]
+es = "El python.exe del entorno externo: Python 3.13 con numpy"
+
+["Stop using it"]
+es = "Dejar de usarlo"
+
+["Stop using the external interpreter: the jobs that need the compute engine use it again"]
+es = "Deja de usar el intérprete externo: los trabajos que necesitan el motor de cálculo vuelven a usarlo"
+
+["Probe the external interpreter"]
+es = "Sondear el intérprete externo"
+
+["The jobs that need the compute engine use it again"]
+es = "Los trabajos que necesitan el motor de cálculo vuelven a usarlo"
+
+["Choose the python.exe of the external interpreter"]
+es = "Elija el python.exe del intérprete externo"
+
+["it is not a full path"]
+es = "no es una ruta completa"
+
+["Checking the external interpreter {path}: the result will appear in the status bar"]
+es = "Comprobando el intérprete externo {path}: el resultado saldrá en la barra de estado"
+
+["External interpreter (development): {path}"]
+es = "Intérprete externo (desarrollo): {path}"

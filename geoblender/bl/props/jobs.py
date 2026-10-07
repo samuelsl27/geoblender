@@ -17,8 +17,10 @@ clase de preferencias:
   ``wheelhouse_dir``: la carpeta del almacén de ruedas, local o del NAS (RF-004-24);
 - ``use_external_python`` y ``external_python``: el intérprete externo de Python 3.13 con
   numpy para los trabajos del motor de cálculo (RF-004-26). La ruta solo la guarda,
-  después de comprobarla, ``geoblender.jobs_set_external_python`` (T33): el panel de
-  preferencias la muestra sin dejar editarla.
+  después de comprobarla, ``geoblender.jobs_set_external_python`` (T33), que también la
+  activa o la quita: el panel de preferencias la muestra sin dejar editarla, con los
+  botones de elegirla y de quitarla. Activarlo o desactivarlo llega al momento al lanzador
+  de la sesión (``bl.ops.jobs.on_external_python_changed``).
 
 Ninguna ruta por defecto escrita en el código (ARQ-15): las dos empiezan vacías (sin
 almacén, sin intérprete externo). Nada es animable (``options=set()``).
@@ -47,6 +49,8 @@ RUNTIME_SOURCE_ITEMS = [
     ("PYPI", "PyPI", "Download from PyPI (needs online access)"),
 ]
 _STATIC: set[str] = set()  # ni animable ni nada más
+SET_EXTERNAL_PYTHON = "geoblender.jobs_set_external_python"
+"""El operador que elige (y comprueba) o quita el intérprete externo (RF-004-26)."""
 
 
 def _max_parallel_changed(group: GEOBLENDER_PG_jobs_preferences, context: object) -> None:
@@ -54,6 +58,14 @@ def _max_parallel_changed(group: GEOBLENDER_PG_jobs_preferences, context: object
     from ..ops import jobs  # diferido: bl/ops importa bl/props
 
     jobs.on_max_parallel_changed(group.max_parallel_jobs)
+
+
+def _external_python_changed(group: GEOBLENDER_PG_jobs_preferences, context: object) -> None:
+    """Usar o no el intérprete externo llega al momento al lanzador de la sesión
+    (RF-004-26)."""
+    from ..ops import jobs  # diferido: bl/ops importa bl/props
+
+    jobs.on_external_python_changed()
 
 
 class GEOBLENDER_PG_jobs_preferences(bpy.types.PropertyGroup):
@@ -104,6 +116,7 @@ class GEOBLENDER_PG_jobs_preferences(bpy.types.PropertyGroup):
         ),
         default=False,
         options=_STATIC,
+        update=_external_python_changed,
     )
     external_python: StringProperty(  # type: ignore[valid-type]
         name="External interpreter",
