@@ -37,6 +37,7 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Mapping
+from pathlib import Path
 
 from .messages import JobError
 from .paths import JobDir
@@ -97,7 +98,9 @@ class InProcessExecutor:
         run: WorkerRun,
         *,
         clock: Callable[[], float] = time.monotonic,
+        paths: Mapping[str, Path] | None = None,
     ) -> None:
+        """``paths``: las rutas del trabajo fuera de su carpeta (``WorkerContext.paths``)."""
         if not callable(run):
             raise TypeError(
                 f"la función del trabajo {request.job_uid} no se puede llamar "
@@ -112,7 +115,8 @@ class InProcessExecutor:
         self._done = threading.Event()
         self._log_lock = threading.Lock()
         self._sink = _ThreadSink(self._abandoned)
-        self._ctx = WorkerContext(request, folder, self._sink, cancel_event=self._cancel)
+        self._ctx = WorkerContext(request, folder, self._sink, cancel_event=self._cancel,
+                                  paths=paths)
         self.exit_code: int | None = None
         """El código del final (los del plan §5.3.4); ``None`` mientras no acaba."""
         self.ended_at: float | None = None

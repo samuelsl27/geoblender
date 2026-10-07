@@ -570,6 +570,7 @@ class JobRunner:
         job: JobDir | JobRequest,
         *,
         on_finish: Callable[[JobResult], object] | None = None,
+        paths: Mapping[str, Path] | None = None,
     ) -> JobHandle:
         """Pone el trabajo en la cola y vuelve sin esperarlo (RNF-004-01); si hay hueco,
         lo lanza al momento, en proceso aparte o en un hilo según su tipo de trabajo
@@ -582,9 +583,14 @@ class JobRunner:
         (RF-004-12, spec §8). Si el intérprete no se puede arrancar, el trabajo queda
         «Fallido» (``interpreter_not_found`` o ``interpreter_failed``). ``on_finish`` se
         llama una vez, desde :meth:`poll`, con su :class:`JobResult`; sus errores no se
-        propagan. Con el lanzador ya cerrado (:meth:`shutdown`), :class:`RuntimeError` sin
-        crear nada."""
+        propagan. ``paths``: las rutas absolutas que el trabajo necesita fuera de su carpeta,
+        por nombre (``ComputeEnvironment.install_paths``): no van en la petición sino en la
+        línea de órdenes (``--path``; en hilo, en su contexto), y el worker las ve en
+        ``WorkerContext.paths``; un nombre o una ruta que no valen
+        (``interpreter.check_paths``) son :class:`ValueError` sin crear nada. Con el lanzador
+        ya cerrado (:meth:`shutdown`), :class:`RuntimeError` sin crear nada."""
         self._check_open()
+        job_paths = interpreter.check_paths({} if paths is None else paths)
         folder = self.prepare(job) if isinstance(job, JobRequest) else job
         if not isinstance(folder, JobDir):
             raise TypeError(f"se esperaba un JobDir o un JobRequest, no {type(job).__name__}")
@@ -609,6 +615,7 @@ class JobRunner:
                 record = dataclasses.replace(record, executor=executor)
                 fresh = True
             item = _Job(request, folder, record, on_finish)
+            item.paths = job_paths
             if executor == EXECUTOR_INPROCESS:
                 item.run = info.run
             self._jobs[folder.job_uid] = item
@@ -924,7 +931,7 @@ class JobRunner:
         item.interp = interp
         folder = item.folder
         command = interpreter.build_command(interp, package_dir=self._package_dir,
-                                            job_dir=folder.path)
+                                            job_dir=folder.path, paths=item.paths)
         started_wall = _now()
         try:
             with folder.log_file.open("ab") as log:
@@ -970,7 +977,8 @@ class JobRunner:
         ``events.jsonl``. Si no se puede arrancar el hilo, lo deja «Fallido»."""
         assert item.run is not None
         folder = item.folder
-        executor = InProcessExecutor(item.request, folder, item.run, clock=self._clock)
+        executor = InProcessExecutor(item.request, folder, item.run, clock=self._clock,
+                                     paths=item.paths)
         started_wall = _now()
         item.started_at = self._clock()
         item.thread = executor
@@ -1418,6 +1426,8 @@ class _Job:
         self.process: subprocess.Popen[bytes] | None = None
         self.interp: interpreter.Interpreter | None = None
         """El intérprete con que se lanzó su proceso."""
+        self.paths: Mapping[str, Path] = {}
+        """Las rutas del trabajo fuera de su carpeta (``submit(..., paths=…)``)."""
         self.run: catalog.WorkerRun | None = None
         """La función del tipo de trabajo, si va en hilo."""
         self.thread: InProcessExecutor | None = None

@@ -12,7 +12,9 @@ plan 004 §5.1, §5.3.1, §5.3.3 y §6, D-2).
   listo ni externo, ``runtime_missing``: el cálculo no se lanza (RF-004-25). Un externo
   configurado nunca pasa al motor sin avisar: si ya no existe, el trabajo falla al
   arrancarlo (``interpreter_not_found``).
-- :func:`build_command`: la orden del arranque ``workers/_bootstrap.py`` (plan §5.3.3).
+- :func:`build_command`: la orden del arranque ``workers/_bootstrap.py`` (plan §5.3.3), con
+  las rutas absolutas que el trabajo necesita fuera de su carpeta (``--path``,
+  :func:`check_paths`).
 - :func:`probe_external`: sondea un intérprete externo antes de guardarlo (RF-004-26): lo
   lanza con ``-I -B`` y un guion que cuenta su versión de Python, la de numpy y su BLAS; lo
   acepta si es Python 3.13 con numpy y, si no, dice por qué (:class:`ExternalProbe`).
@@ -29,6 +31,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -183,13 +186,22 @@ def resolve_interpreter(
     )
 
 
-def build_command(interp: Interpreter, *, package_dir: Path, job_dir: Path) -> list[str]:
+def build_command(
+    interp: Interpreter,
+    *,
+    package_dir: Path,
+    job_dir: Path,
+    paths: Mapping[str, Path] | None = None,
+) -> list[str]:
     """La orden del worker (plan §5.3.3)::
 
         <python> <banderas> <paquete>/workers/_bootstrap.py --package-dir <paquete>
             --job-dir <carpeta> --kind <tipo> [--site <dir>] [--expect-numpy <versión>]
+            [--path <nombre>=<ruta> …]
 
-    Las rutas absolutas viajan aquí, en la línea de órdenes, nunca en la petición."""
+    Las rutas absolutas viajan aquí, en la línea de órdenes, nunca en la petición: también
+    las que necesita un trabajo fuera de su carpeta (``paths``, :func:`check_paths`; el
+    worker las ve en ``WorkerContext.paths``), por orden de nombre."""
     package = Path(package_dir)
     command = [
         str(interp.python), *interp.flags, str(package.joinpath(*BOOTSTRAP_PARTS)),
@@ -201,7 +213,30 @@ def build_command(interp: Interpreter, *, package_dir: Path, job_dir: Path) -> l
         command += ["--site", str(interp.site)]
     if interp.expect_numpy is not None:
         command += ["--expect-numpy", interp.expect_numpy]
+    for name, path in sorted(check_paths(paths or {}).items()):
+        command += ["--path", f"{name}={path}"]
     return command
+
+
+PATH_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
+"""Nombre de una ruta de un trabajo (``--path <nombre>=<ruta>``)."""
+
+
+def check_paths(paths: Mapping[str, Path]) -> dict[str, Path]:
+    """Las rutas de un trabajo fuera de su carpeta (``--path``), comprobadas: nombres
+    :data:`PATH_NAME_PATTERN` y rutas completas. :class:`ValueError` si alguna no vale."""
+    if not isinstance(paths, Mapping):
+        raise ValueError(f"las rutas del trabajo deben ser un diccionario, no "
+                         f"{type(paths).__name__}")
+    checked: dict[str, Path] = {}
+    for name, value in paths.items():
+        if not isinstance(name, str) or not PATH_NAME_PATTERN.fullmatch(name):
+            raise ValueError(f"el nombre de ruta {name!r} no es a-z, 0-9 y «_» empezando por "
+                             "una letra")
+        if not isinstance(value, str | os.PathLike) or not Path(value).is_absolute():
+            raise ValueError(f"la ruta «{name}» = {value!r} no es una ruta completa")
+        checked[name] = Path(value)
+    return checked
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

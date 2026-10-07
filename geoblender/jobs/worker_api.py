@@ -48,6 +48,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import IO, Any, Protocol
 
 from ..core.paths import RESERVED_NAMES
@@ -229,7 +230,9 @@ class WorkerContext:
     ``sink`` recibe los eventos (:class:`StreamSink` o :class:`QueueSink`); ``cancel_event``
     es el aviso del hilo del ejecutor en hilo (en proceso aparte, ``None``: basta el
     centinela). ``clock`` es el reloj monótono del límite de avances y de la mirada al
-    centinela (las pruebas lo sustituyen).
+    centinela (las pruebas lo sustituyen). ``paths``: las rutas absolutas que el trabajo
+    necesita fuera de su carpeta, por nombre (``JobRunner.submit(..., paths=…)``; en proceso
+    aparte llegan por la línea de órdenes, ``--path``): :attr:`paths`.
 
     Sus métodos se pueden llamar desde varios hilos del cálculo.
     """
@@ -242,12 +245,19 @@ class WorkerContext:
         *,
         cancel_event: threading.Event | None = None,
         clock: Callable[[], float] = time.monotonic,
+        paths: Mapping[str, str | os.PathLike[str]] | None = None,
     ) -> None:
         folder = job_dir if isinstance(job_dir, JobDir) else JobDir(Path(job_dir))
         if folder.job_uid != request.job_uid:
             raise ValueError(
                 f"la carpeta {folder.job_uid} no es la del trabajo {request.job_uid}"
             )
+        named: dict[str, Path] = {}
+        for name, value in (paths or {}).items():
+            if not isinstance(name, str) or not name or not isinstance(value, str | os.PathLike):
+                raise ValueError(f"la ruta del trabajo {name!r} = {value!r} no vale")
+            named[name] = Path(value)
+        self._paths: Mapping[str, Path] = MappingProxyType(named)
         self._request = request
         self._job_dir = folder
         self._sink = sink
@@ -270,6 +280,12 @@ class WorkerContext:
     def job_dir(self) -> JobDir:
         """La carpeta del trabajo."""
         return self._job_dir
+
+    @property
+    def paths(self) -> Mapping[str, Path]:
+        """Las rutas absolutas del trabajo fuera de su carpeta, por nombre (solo lectura;
+        vacío si no tiene)."""
+        return self._paths
 
     @property
     def outputs(self) -> tuple[OutputRef, ...]:

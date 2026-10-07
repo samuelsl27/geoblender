@@ -39,10 +39,32 @@ El motor de un lock (T26), :class:`ComputeEnvironment`:
 - :meth:`~ComputeEnvironment.install_request`: con el :class:`Consent` del usuario
   (usuario, equipo, hora y la huella del plan que vio), la petición del trabajo
   ``runtime_install`` (RF-004-19). Las rutas (el almacén, el destino) no van en ella: viajan
-  en la línea de órdenes (plan §5.3.3 y §5.4.7).
+  en la línea de órdenes (plan §5.3.3 y §5.4.7), con las de
+  :meth:`~ComputeEnvironment.install_paths` (``JobRunner.submit(..., paths=…)``).
 
 Nada de esto crea, descarga ni borra el motor (RF-004-19): solo lo hace el trabajo que se
-lanza con el consentimiento. Este módulo no usa la red ni toca ``sys.path``.
+lanza con el consentimiento.
+
+La instalación (T27), que ejecuta ese trabajo (``workers/runtime_install.py``) con el
+Python de Blender en un proceso aparte (plan §5.4.7):
+
+- :func:`install_task`: lo que pide la petición (:class:`InstallTask`), con las rutas de la
+  línea de órdenes; los paquetes van a ``<runtime>/<lock_id>.partial/site``
+  (:func:`partial_dir`), hermana de la carpeta final, que solo la adopción (T28) convierte
+  en el motor.
+- :func:`fetch_wheel`: copia la rueda del almacén o la descarga de la URL del lock con
+  ``urllib`` (``https``; ``file`` para las pruebas), calculando su sha256 mientras la lee:
+  si no es la del lock, ``wheel_hash_mismatch`` y no queda nada (RF-004-21). ``pip`` no ve
+  una rueda sin comprobar.
+- :func:`write_requirements` y :func:`run_pip_install`: ``requirements.txt`` con la huella de
+  cada paquete y el ``pip`` del Python de Blender con la orden de :func:`pip_install_command`
+  (``--isolated``: no lee las variables ``PIP_*`` ni la configuración del usuario;
+  ``--no-index`` y ``--find-links``: solo las ruedas comprobadas; ``--no-cache-dir``: ninguna
+  caché fuera del trabajo). Se cancela matando ``pip``.
+
+Solo :func:`fetch_wheel` usa la red (la URL del lock, con el consentimiento del usuario, desde
+el trabajo de instalación). Este módulo no toca ``sys.path``: es el único que construye la
+orden de ``pip``.
 """
 
 from __future__ import annotations
@@ -50,20 +72,30 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 import re
+import subprocess
 import tomllib
+import urllib.parse
+import urllib.request
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import IO, Any, Protocol
 
 from ..core.sysinfo import host_name, user_name
 from ..core.timeutil import format_utc, parse_utc
 from . import catalog
-from .messages import JobError
-from .paths import BYTES_PER_MB
+
+# ``_remove_retrying``: el mismo borrado con reintentos que la limpieza de los trabajos.
+from .cleanup import _remove_retrying
+from .messages import JobError, Message
+from .paths import BYTES_PER_MB, PARTIAL_SUFFIX
 from .protocol import JobRequest, JsonValue, new_request
+from .worker_api import CANCELLED_TEXT, JobCancelled, JobFailed
 
 LOCK_FILE = "runtime_lock.toml"
 LOCK_PATH = Path(__file__).with_name(LOCK_FILE)
@@ -554,6 +586,28 @@ class ComputeEnvironment:
         """La carpeta de los paquetes del motor (``--site`` de los workers ``compute``)."""
         return self.path / SITE_DIR
 
+    @property
+    def partial_path(self) -> Path:
+        """``<datos de usuario>/runtime/<lock_id>.partial``: donde instala el trabajo
+        ``runtime_install`` (en su ``site/``) antes de verificar y adoptar el motor. Nunca se
+        usa para calcular (:meth:`status` no la mira)."""
+        return partial_dir(self.runtime_dir, self._lock_id)
+
+    def install_paths(self, plan: InstallPlan) -> dict[str, Path]:
+        """Las rutas del trabajo ``runtime_install`` de ``plan``, que viajan en la línea de
+        órdenes (``JobRunner.submit(..., paths=…)``) y no en la petición: la carpeta de los
+        motores (:data:`PATH_RUNTIME`) y, con el almacén de ruedas, su carpeta
+        (:data:`PATH_WHEELHOUSE`). :class:`ValueError` si el plan es de otro lock o de otra
+        carpeta."""
+        if not isinstance(plan, InstallPlan):
+            raise TypeError(f"se esperaba un InstallPlan, no {type(plan).__name__}")
+        if plan.lock_id != self._lock_id or plan.destination != self.path:
+            raise ValueError("el plan de instalación es de otro motor o de otra carpeta")
+        paths = {PATH_RUNTIME: self.runtime_dir}
+        if plan.source.folder is not None:
+            paths[PATH_WHEELHOUSE] = Path(plan.source.folder)
+        return paths
+
     def __repr__(self) -> str:
         return f"ComputeEnvironment({str(self._user_dir)!r}, lock_id={self._lock_id!r})"
 
@@ -683,3 +737,379 @@ def _install_label() -> str:
 def _refused(job: str, detail: str) -> JobError:
     return JobError("request_invalid", job=job,
                     detail=f"{detail} (vuelva a pedir la instalación)")
+
+
+# --- La instalación: ruedas con huella y pip en la carpeta parcial (T27) --------------------
+
+PATH_RUNTIME = "runtime"
+"""Nombre de la ruta de la línea de órdenes (``--path runtime=…``) con la carpeta de los
+motores, ``<datos de usuario>/runtime``."""
+PATH_WHEELHOUSE = "wheelhouse"
+"""Nombre de la ruta de la línea de órdenes con la carpeta del almacén de ruedas."""
+WHEELS_DIR = "wheels"
+"""Carpeta de ``out/`` del trabajo de instalación con las ruedas ya comprobadas (se borra al
+acabar)."""
+REQUIREMENTS_FILE = "requirements.txt"
+INSTALLING_TEXT = "Instalando los paquetes del motor de cálculo"
+"""Mensaje del avance mientras se instalan los paquetes (después de comprobar las ruedas)."""
+FETCH_BLOCK_BYTES = 1 << 20
+DOWNLOAD_TIMEOUT_S = 60.0
+"""Lo que se espera a que responda el servidor de una rueda antes de dar la descarga por
+fallida (``network_error``)."""
+DOWNLOAD_SCHEMES: tuple[str, ...] = ("https", "file")
+"""De dónde se descarga una rueda: PyPI (``https``) o un fichero (``file``, las pruebas)."""
+INSTALL_POLL_S = 0.05
+"""Cada cuánto se mira la cancelación mientras instala ``pip``."""
+INSTALL_KILL_WAIT_S = 5.0
+"""Lo que se espera a que termine ``pip`` después de matarlo."""
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_LOCK_ID = re.compile(rf"[0-9a-f]{{{LOCK_ID_LENGTH}}}")
+_WHEEL_KEYS = frozenset({"name", "version", "filename", "sha256", "size", "url"})
+
+_INSTALL_CATALOG: tuple[Message, ...] = (
+    Message(
+        "runtime_install_failed",
+        "The compute engine could not be installed: the installer ended with code "
+        "{exit_code}. Details in its log.",
+        "No se pudo instalar el motor de cálculo: el instalador terminó con el código "
+        "{exit_code}. Detalles en su registro.",
+    ),
+    Message(
+        "runtime_partial_busy",
+        "The half-finished installation in {path} could not be deleted: close the programs "
+        "that use it and try again.",
+        "No se pudo borrar la instalación a medias de {path}: cierre los programas que la "
+        "usen y vuelva a intentarlo.",
+    ),
+)
+
+MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _INSTALL_CATALOG})
+"""Los errores propios de la instalación del motor, por código (solo lectura)."""
+
+CATALOG_ES: Mapping[str, str] = MappingProxyType({m.msgid: m.es for m in _INSTALL_CATALOG})
+"""``msgid`` → texto en español, para ``core.i18n.install`` (solo lectura)."""
+
+
+def install_failure(code: str, **values: JsonValue) -> JobFailed:
+    """El fallo propio de la instalación ``code`` (:data:`MESSAGES`) con sus valores."""
+    message = MESSAGES[code]
+    return JobFailed(code, msgid=message.msgid, text=message.es.format(**values),
+                     values=values)
+
+
+class WheelRef(Protocol):
+    """Lo que se necesita de un paquete para traer su rueda: nombre, versión, fichero, huella,
+    bytes y URL (:class:`LockedPackage` o :class:`RequestedWheel`)."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def version(self) -> str: ...
+
+    @property
+    def filename(self) -> str: ...
+
+    @property
+    def sha256(self) -> str: ...
+
+    @property
+    def size(self) -> int: ...
+
+    @property
+    def url(self) -> str: ...
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RequestedWheel:
+    """Un paquete de la petición ``runtime_install`` (los del lock que el usuario consintió):
+    nombre, versión, fichero de la rueda, huella sha256 (minúsculas), bytes y URL."""
+
+    name: str
+    version: str
+    filename: str
+    sha256: str
+    size: int
+    url: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InstallTask:
+    """Lo que tiene que hacer el trabajo ``runtime_install`` (:func:`install_task`): el
+    ``lock_id``, el origen de las ruedas, los paquetes y la carpeta de los motores
+    ``runtime_dir`` (ruta completa, de la línea de órdenes)."""
+
+    lock_id: str
+    source: WheelSource
+    packages: tuple[RequestedWheel, ...]
+    runtime_dir: Path
+
+    @property
+    def partial_path(self) -> Path:
+        """``<runtime>/<lock_id>.partial``: la carpeta de la instalación a medias."""
+        return partial_dir(self.runtime_dir, self.lock_id)
+
+    @property
+    def site_dir(self) -> Path:
+        """``<runtime>/<lock_id>.partial/site``: el destino de ``pip --target``."""
+        return self.partial_path / SITE_DIR
+
+
+def partial_dir(runtime_dir: Path, lock_id: str) -> Path:
+    """La carpeta ``<runtime_dir>/<lock_id>.partial`` de una instalación sin adoptar."""
+    return Path(runtime_dir) / f"{lock_id}{PARTIAL_SUFFIX}"
+
+
+def install_task(
+    params: Mapping[str, Any], paths: Mapping[str, Path], *, job: str
+) -> InstallTask:
+    """Lo que pide el trabajo ``runtime_install`` ``job``: sus parámetros (los de
+    :meth:`ComputeEnvironment.install_request`) y sus rutas de la línea de órdenes
+    (:data:`PATH_RUNTIME` y, con el almacén, :data:`PATH_WHEELHOUSE`, rutas completas). Sin
+    un consentimiento con la huella del plan, o con algo que no vale,
+    :class:`~.messages.JobError` ``request_invalid``: no se instala nada."""
+
+    def invalid(detail: str) -> JobError:
+        return JobError("request_invalid", job=job, detail=detail)
+
+    lock_id = params.get("lock_id")
+    if not isinstance(lock_id, str) or not _LOCK_ID.fullmatch(lock_id):
+        raise invalid(f"el lock_id {lock_id!r} no tiene {LOCK_ID_LENGTH} hexadecimales")
+    digest = params.get("plan_digest")
+    consent = params.get("consent")
+    if (not isinstance(digest, str) or not _DIGEST.fullmatch(digest)
+            or not isinstance(consent, Mapping) or consent.get("plan_digest") != digest):
+        raise invalid("falta el consentimiento del usuario al plan de instalación")
+    kind = params.get("source")
+    if kind not in SOURCE_KINDS:
+        raise invalid(f"el origen {kind!r} no es uno de {', '.join(SOURCE_KINDS)}")
+    entries = params.get("packages")
+    if not isinstance(entries, list) or not entries:
+        raise invalid("no hay paquetes que instalar")
+    packages = tuple(_requested_wheel(entry, invalid) for entry in entries)
+
+    def folder(name: str) -> Path:
+        value = paths.get(name)
+        if value is None or not Path(value).is_absolute():
+            raise invalid(f"falta la ruta completa «{name}» en la línea de órdenes (--path)")
+        return Path(value)
+
+    source = (WheelSource.pypi() if kind == SOURCE_PYPI
+              else WheelSource.wheelhouse(folder(PATH_WHEELHOUSE)))
+    return InstallTask(lock_id=lock_id, source=source, packages=packages,
+                       runtime_dir=folder(PATH_RUNTIME))
+
+
+def _requested_wheel(entry: object, invalid: Callable[[str], JobError]) -> RequestedWheel:
+    if not isinstance(entry, Mapping) or set(entry) != _WHEEL_KEYS:
+        raise invalid(f"un paquete no tiene exactamente {', '.join(sorted(_WHEEL_KEYS))}")
+    texts = {key: entry[key] for key in ("name", "version", "filename", "sha256", "url")}
+    if not all(isinstance(value, str) and value.strip() for value in texts.values()):
+        raise invalid(f"un paquete tiene un texto vacío: {texts}")
+    filename = texts["filename"]
+    if not filename.endswith(".whl") or any(c in filename for c in "/\\:"):
+        raise invalid(f"«{filename}» no es el nombre de un fichero «.whl»")
+    if not _SHA256.fullmatch(texts["sha256"]):
+        raise invalid(f"la huella de {filename} no tiene 64 hexadecimales")
+    size = entry["size"]
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise invalid(f"el tamaño de {filename} no es un número entero de bytes")
+    return RequestedWheel(name=texts["name"], version=texts["version"], filename=filename,
+                          sha256=texts["sha256"].lower(), size=size, url=texts["url"])
+
+
+def remove_tree(path: Path) -> bool:
+    """Borra ``path`` (carpeta o fichero; lo de solo lectura también), reintentando si otro
+    programa retiene algo un momento. Dice si ya no está."""
+    return _remove_retrying(Path(path))
+
+
+def fetch_wheel(
+    pkg: WheelRef,
+    source: WheelSource,
+    dest_dir: Path,
+    *,
+    progress: Callable[[int], object] | None = None,
+    cancelled: Callable[[], object] | None = None,
+) -> Path:
+    """Trae la rueda de ``pkg`` a ``dest_dir`` (que crea) y devuelve su ruta
+    (RF-004-21, RF-004-24; plan §5.4.7): del almacén de ``source``, una copia; de PyPI, la
+    descarga de ``pkg.url`` (``https``; ``file`` en las pruebas) con ``urllib``. La lee por
+    bloques en ``<fichero>.partial`` calculando su sha256 y la deja con su nombre solo si
+    coincide con la del lock.
+
+    - Otra huella, o más bytes de los del lock: :class:`~.messages.JobError`
+      ``wheel_hash_mismatch`` con el fichero.
+    - Sin la rueda en el almacén (o el almacén inalcanzable): ``wheel_not_found`` con el
+      fichero y la carpeta. Una descarga que falla o una URL que no es ``https`` ni
+      ``file``: ``network_error`` con el paquete.
+    - ``progress(bytes leídos)`` tras cada bloque; ``cancelled()`` antes de cada bloque:
+      si devuelve verdadero, :class:`~.worker_api.JobCancelled` (o la que lance, como
+      ``WorkerContext.check_cancelled``).
+
+    Si algo falla, o se cancela, no queda nada de esta rueda en ``dest_dir``."""
+    if not isinstance(source, WheelSource):
+        raise TypeError(f"se esperaba un WheelSource, no {type(source).__name__}")
+    folder = Path(dest_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / pkg.filename
+    temporary = target.with_name(target.name + PARTIAL_SUFFIX)
+    target.unlink(missing_ok=True)
+    expected = pkg.sha256.lower()
+    try:
+        _check_cancelled(cancelled)
+        digest = hashlib.sha256()
+        done = 0
+        with _open_wheel(pkg, source) as stream, temporary.open("wb") as out:
+            while True:
+                _check_cancelled(cancelled)
+                block = _read_block(stream, pkg, source)
+                if not block:
+                    break
+                done += len(block)
+                if done > pkg.size:
+                    raise JobError("wheel_hash_mismatch", file=pkg.filename)
+                digest.update(block)
+                out.write(block)
+                if progress is not None:
+                    progress(done)
+        if digest.hexdigest() != expected:
+            raise JobError("wheel_hash_mismatch", file=pkg.filename)
+        os.replace(temporary, target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return target
+
+
+def _open_wheel(pkg: WheelRef, source: WheelSource) -> IO[bytes]:
+    if source.kind == SOURCE_WHEELHOUSE:
+        folder = Path(source.folder)  # un almacén siempre tiene carpeta (WheelSource)
+        try:
+            return (folder / pkg.filename).open("rb")
+        except OSError:
+            raise JobError("wheel_not_found", file=pkg.filename, folder=folder) from None
+    scheme = urllib.parse.urlsplit(pkg.url).scheme.lower()
+    if scheme not in DOWNLOAD_SCHEMES:
+        raise JobError("network_error", package=pkg.name,
+                       detail=f"la dirección {pkg.url} no es https")
+    try:
+        return urllib.request.urlopen(pkg.url, timeout=DOWNLOAD_TIMEOUT_S)
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        raise JobError("network_error", package=pkg.name, detail=_reason(exc)) from None
+
+
+def _read_block(stream: IO[bytes], pkg: WheelRef, source: WheelSource) -> bytes:
+    try:
+        return stream.read(FETCH_BLOCK_BYTES)
+    except (OSError, http.client.HTTPException) as exc:
+        if source.kind == SOURCE_WHEELHOUSE:
+            raise JobError("wheel_not_found", file=pkg.filename,
+                           folder=source.folder) from None
+        raise JobError("network_error", package=pkg.name, detail=_reason(exc)) from None
+
+
+def _reason(exc: BaseException) -> str:
+    reason = getattr(exc, "reason", None)
+    text = str(reason if reason is not None else exc).strip()
+    return text or type(exc).__name__
+
+
+def _check_cancelled(cancelled: Callable[[], object] | None) -> None:
+    """:class:`~.worker_api.JobCancelled` si ``cancelled()`` dice que hay que parar (también
+    sale la que lance la propia función)."""
+    if cancelled is not None and cancelled():
+        raise JobCancelled(CANCELLED_TEXT)
+
+
+def write_requirements(packages: Iterable[WheelRef], path: Path) -> Path:
+    """Escribe en ``path`` (UTF-8, «\\n») el ``requirements.txt`` de ``packages``: una línea
+    ``<nombre>==<versión> --hash=sha256:<huella>`` por paquete (``pip --require-hashes``).
+    Crea su carpeta y devuelve la ruta. Sin paquetes, :class:`ValueError`."""
+    lines = [f"{p.name}=={p.version} --hash=sha256:{p.sha256.lower()}\n" for p in packages]
+    if not lines:
+        raise ValueError("no hay paquetes para requirements.txt")
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes("".join(lines).encode("utf-8"))
+    return target
+
+
+def pip_install_command(
+    python: Path, wheels_dir: Path, requirements: Path, target: Path
+) -> list[str]:
+    """La orden de ``pip`` que instala el motor (plan §5.4.7)::
+
+        <python> -I -B -m pip --isolated install --no-index --find-links <ruedas>
+            --require-hashes --no-deps --only-binary=:all: --target <destino> --no-cache-dir
+            --disable-pip-version-check --no-input --progress-bar off -r <requirements.txt>
+
+    ``-I``: sin variables ``PYTHON*`` ni el ``site-packages`` del usuario; ``--isolated``:
+    ``pip`` no lee sus variables ``PIP_*`` ni la configuración del usuario; ``--no-index`` y
+    ``--find-links``: solo las ruedas ya comprobadas, sin red; ``--no-cache-dir``: ninguna
+    caché."""
+    return [
+        str(python), "-I", "-B", "-m", "pip", "--isolated", "install", "--no-index",
+        "--find-links", str(wheels_dir), "--require-hashes", "--no-deps",
+        "--only-binary=:all:", "--target", str(target), "--no-cache-dir",
+        "--disable-pip-version-check", "--no-input", "--progress-bar", "off",
+        "-r", str(requirements),
+    ]
+
+
+def run_pip_install(
+    python: Path,
+    wheels_dir: Path,
+    requirements: Path,
+    target: Path,
+    *,
+    cancelled: Callable[[], object] | None = None,
+    log: IO[Any] | int | None = None,
+) -> None:
+    """Instala con ``pip`` (:func:`pip_install_command`, el ``pip`` de ``python``) los
+    paquetes de ``requirements`` desde ``wheels_dir`` en ``target`` y espera a que acabe,
+    mirando ``cancelled()`` cada :data:`INSTALL_POLL_S` s (como en :func:`fetch_wheel`): si
+    hay que parar, mata ``pip`` y lanza :class:`~.worker_api.JobCancelled`. Su salida va a
+    ``log`` (un fichero o un descriptor; sin él, la de este proceso: en el worker,
+    ``job.log``). Hereda el entorno de este proceso; con ``--isolated`` da igual que traiga
+    variables ``PIP_*``.
+
+    Si ``pip`` no arranca, :class:`~.messages.JobError` ``interpreter_not_found`` o
+    ``interpreter_failed``; si termina con un código distinto de 0,
+    :class:`~.worker_api.JobFailed` ``runtime_install_failed`` (:data:`MESSAGES`)."""
+    command = pip_install_command(python, wheels_dir, requirements, target)
+    try:
+        process = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=log,
+            stderr=None if log is None else subprocess.STDOUT,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+    except OSError as exc:
+        code = ("interpreter_not_found" if isinstance(exc, FileNotFoundError)
+                else "interpreter_failed")
+        raise JobError(code, path=str(python), detail=exc.strerror or str(exc)) from None
+    try:
+        while True:
+            try:
+                exit_code = process.wait(timeout=INSTALL_POLL_S)
+            except subprocess.TimeoutExpired:
+                _check_cancelled(cancelled)
+            else:
+                break
+    except BaseException:
+        _stop(process)
+        raise
+    if exit_code != 0:
+        raise install_failure("runtime_install_failed", exit_code=exit_code)
+
+
+def _stop(process: subprocess.Popen[bytes]) -> None:
+    """Mata ``process`` y espera a que termine (sus ficheros quedan libres)."""
+    try:
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=INSTALL_KILL_WAIT_S)
+    except subprocess.TimeoutExpired:
+        pass

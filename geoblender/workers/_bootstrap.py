@@ -11,7 +11,9 @@ El lanzador lo ejecuta con la carpeta del trabajo como carpeta de trabajo, con u
                   --kind compute --site <motor>/site --expect-numpy <versión del lock>
     external: <intérprete externo> -I -B -u   <paquete>/workers/_bootstrap.py … --kind external
 
-con la entrada estándar en una tubería (la vigilancia del padre), la salida estándar en otra
+más ``--path <nombre>=<ruta>`` por cada ruta absoluta que el trabajo necesita fuera de su
+carpeta (la carpeta de los motores y el almacén de ruedas de ``runtime_install``), con la
+entrada estándar en una tubería (la vigilancia del padre), la salida estándar en otra
 (el canal de eventos) y la salida de error en ``job.log``. Es un guion autónomo: hasta cargar
 el paquete (paso 5) solo usa la biblioteca estándar, y es el único fichero de la extensión que
 importa ``geoblender`` de forma absoluta (excepción de ARQ-09, plan 001). Pasos:
@@ -58,6 +60,7 @@ import argparse  # noqa: E402
 import importlib  # noqa: E402
 import importlib.util  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 import site  # noqa: E402
 import threading  # noqa: E402
 import traceback  # noqa: E402
@@ -82,6 +85,8 @@ EXIT_STARTUP = 5
 LOG_PREFIX = "Geoblender:"
 """Comienzo de las líneas que el arranque deja en ``job.log``."""
 _WATCH_BYTES = 4096
+_PATH_NAME = re.compile(r"[a-z][a-z0-9_]*")
+"""Nombre de una ruta del trabajo (``--path``; ``jobs.interpreter.PATH_NAME_PATTERN``)."""
 
 
 class StartupError(Exception):
@@ -99,19 +104,29 @@ class _Parser(argparse.ArgumentParser):
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     """Paso 1: ``--package-dir``, ``--job-dir``, ``--kind`` (:data:`KINDS`) y, si hacen
-    falta, ``--site`` (obligatorio con ``compute``) y ``--expect-numpy`` (solo con
-    ``compute``)."""
+    falta, ``--site`` (obligatorio con ``compute``), ``--expect-numpy`` (solo con
+    ``compute``) y las rutas del trabajo fuera de su carpeta, ``--path <nombre>=<ruta>``
+    (las ve en ``WorkerContext.paths``; ``args.paths``, un diccionario)."""
     parser = _Parser(prog="_bootstrap.py", add_help=False, allow_abbrev=False)
     parser.add_argument("--package-dir", required=True)
     parser.add_argument("--job-dir", required=True)
     parser.add_argument("--kind", required=True, choices=KINDS)
     parser.add_argument("--site")
     parser.add_argument("--expect-numpy")
+    parser.add_argument("--path", action="append", default=[], dest="path_items")
     args = parser.parse_args(list(argv))
     if args.kind == KIND_COMPUTE and not args.site:
         parser.error(f"el intérprete {KIND_COMPUTE} necesita --site (el motor de cálculo)")
     if args.expect_numpy is not None and args.kind != KIND_COMPUTE:
         parser.error(f"--expect-numpy solo vale con el intérprete {KIND_COMPUTE}")
+    args.paths = {}
+    for item in args.path_items:
+        name, separator, path = item.partition("=")
+        if not separator or not _PATH_NAME.fullmatch(name) or not path:
+            parser.error(f"--path {item!r} no es <nombre>=<ruta>")
+        if name in args.paths:
+            parser.error(f"--path {name} está repetido")
+        args.paths[name] = path
     return args
 
 
@@ -224,10 +239,12 @@ def run_job(
     *,
     site_dir: str | None = None,
     expect_numpy: str | None = None,
+    paths: dict[str, str] | None = None,
 ) -> int:
     """Pasos 6 a 8, con el paquete ya cargado: comprobación de numpy (``compute``), evento
-    ``start``, petición, tipo de trabajo y ``main(ctx)``. Devuelve el código de salida
-    (plan §5.3.4); una excepción no prevista sale de aquí (código 1)."""
+    ``start``, petición, tipo de trabajo y ``main(ctx)`` (con las rutas ``paths`` de
+    ``--path``). Devuelve el código de salida (plan §5.3.4); una excepción no prevista sale
+    de aquí (código 1)."""
     from geoblender.jobs import protocol, worker_api
     from geoblender.jobs.messages import JobError
 
@@ -257,7 +274,7 @@ def run_job(
                                           values=exc.values))
         return EXIT_STARTUP
     note(f"trabajo {request.job_uid}: tipo {request.worker}, «{request.label}»")
-    ctx = worker_api.WorkerContext(request, folder, sink)
+    ctx = worker_api.WorkerContext(request, folder, sink, paths=paths)
     try:
         summary = main(ctx)
     except worker_api.JobCancelled as exc:
@@ -339,7 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             add_site(args.site)
         load_package(Path(args.package_dir))
         code = run_job(args.job_dir, args.kind, channel, site_dir=args.site,
-                       expect_numpy=args.expect_numpy)
+                       expect_numpy=args.expect_numpy, paths=args.paths)
     except StartupError as exc:
         note(str(exc))
         code = EXIT_STARTUP
