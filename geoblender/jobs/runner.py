@@ -42,6 +42,10 @@ Ciclo de vida de un trabajo en proceso aparte (entorno ``blender``):
   ``output_hash_mismatch``, RF-004-05), ``state.json`` atómico con el registro completo
   (RF-004-15), cierre de su *Job Object* (termina lo que el worker dejara vivo) y, por
   último, ``on_finish`` con su :class:`JobResult`. Después arranca de la cola lo que quepa.
+- :meth:`JobRunner.snapshots` y :meth:`JobRunner.active_count`: cómo está cada trabajo
+  (:class:`JobSnapshot`: nombre, estado, avance, último mensaje, duración, intérprete y
+  error) y cuántos están en cola o en curso; es lo que muestra la interfaz (RF-004-06,
+  RF-004-07).
 - :meth:`JobRunner.cancel` (o :meth:`JobHandle.cancel`): uno en cola queda «Cancelado» sin
   arrancar; a uno en curso se le crea el centinela ``cancel`` y el worker para en su
   siguiente punto de control (RF-004-09). Si sigue vivo al vencer su plazo de gracia
@@ -130,6 +134,7 @@ from .protocol import (
     write_request,
 )
 from .records import (
+    ACTIVE_STATES,
     INTERPRETER_KINDS,
     LOG_PREFIX,
     LOGGER,
@@ -242,6 +247,37 @@ class JobUpdate:
     def finished(self) -> bool:
         """Si el trabajo llegó en este sondeo a su estado final."""
         return self.result is not None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class JobSnapshot:
+    """Cómo está ahora un trabajo del lanzador (plan §5.3.1; :meth:`JobRunner.snapshots`):
+    lo que muestran la barra de estado y la lista de trabajos (RF-004-06, RF-004-07). Es una
+    foto: no cambia con el trabajo.
+
+    ``name``: su nombre visible (``label`` de la petición). ``frac`` (0–1) y ``message``: su
+    último avance y su último mensaje (al acabar mal, el texto de su error). ``duration_s``:
+    en curso, lo que lleva desde que arrancó; al acabar, su duración; ``None`` si no llegó a
+    arrancar. ``interpreter``: el que lo ejecuta (``None`` en la cola). ``error``: el del §8
+    si no terminó bien. ``cancel_requested``: si se pidió pararlo (el usuario, su tiempo
+    máximo o el cierre)."""
+
+    job_uid: str
+    name: str
+    worker: str
+    state: str
+    executor: str
+    frac: float
+    message: str
+    duration_s: float | None
+    interpreter: InterpreterInfo | None
+    error: ErrorInfo | None
+    cancel_requested: bool
+
+    @property
+    def active(self) -> bool:
+        """Si está en cola o en curso."""
+        return self.state in ACTIVE_STATES
 
 
 class JobHandle:
@@ -613,6 +649,19 @@ class JobRunner:
         for item in finished:
             self._notify(item)
         return updates
+
+    def snapshots(self) -> list[JobSnapshot]:
+        """Una :class:`JobSnapshot` de cada trabajo de este lanzador, por orden de llegada
+        (RF-004-06, RF-004-07): los activos y los que ya acabaron. Refleja lo visto en el
+        último :meth:`poll`; no sondea."""
+        with self._lock:
+            now = self._clock()
+            return [item.snapshot(now) for item in self._jobs.values()]
+
+    def active_count(self) -> int:
+        """Cuántos trabajos de este lanzador están en cola o en curso (RF-004-06)."""
+        with self._lock:
+            return sum(1 for item in self._jobs.values() if item.state in ACTIVE_STATES)
 
     # --- Ayudas --------------------------------------------------------------------------
 
@@ -1241,6 +1290,23 @@ class _Job:
         self.pending_events.clear()
         return JobUpdate(self.folder.job_uid, self.state, self.frac, self.message, events,
                          self.result if final else None)
+
+    def snapshot(self, now: float) -> JobSnapshot:
+        """La foto del trabajo a la hora ``now`` del reloj del lanzador."""
+        record = self.record
+        duration: float | None
+        if self.state not in ACTIVE_STATES:
+            duration = record.duration_s
+        elif self.started_at is not None:
+            duration = max(0.0, now - self.started_at)
+        else:
+            duration = None
+        return JobSnapshot(
+            job_uid=self.folder.job_uid, name=self.name, worker=self.request.worker,
+            state=self.state, executor=record.executor, frac=self.frac,
+            message=self.message, duration_s=duration, interpreter=record.interpreter,
+            error=record.error, cancel_requested=record.cancel is not None,
+        )
 
     def release_job_object(self) -> None:
         """Cierra el *Job Object* del worker (ya terminado): con ``KILL_ON_JOB_CLOSE``,

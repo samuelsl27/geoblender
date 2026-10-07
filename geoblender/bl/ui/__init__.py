@@ -11,7 +11,9 @@ textos) → sustitución de ``draw_left`` de la barra superior (``topbar``, con 
 acceso rápido de cada Vista 3D (``quick_access``: ``prepend`` a su fila 2) → menú del tipo
 activo (``headers``: ``append`` a la fila 1 y al clic derecho de la Vista 3D y del
 Outliner) → barra de estado minera (``statusbar``: un ``append`` a la barra de estado, sus
-campos y la suscripción de ``msgbus`` al cursor 3D, renovada en ``load_post``) → vistas
+campos y la suscripción de ``msgbus`` al cursor 3D, renovada en ``load_post``) → campo
+«jobs» de la barra de estado (``jobs``, spec 004: los trabajos en segundo plano, en los dos
+modos) → vistas
 (``views``: el manejador ``load_post`` que olvida su estado de sesión) → disposiciones
 (``layouts``: las comprobaciones de Quitar y Restaurar y su manejador ``load_post``; al
 desregistrar, el temporizador de lo pendiente) → proveedores de
@@ -39,6 +41,7 @@ from . import (
     headers,
     i18n,
     icons,
+    jobs,
     keymap,
     layouts,
     menus,
@@ -92,6 +95,7 @@ def register() -> None:
         (quick_access.install, quick_access.uninstall),
         (headers.install, headers.uninstall),
         (statusbar.install, statusbar.uninstall),
+        (jobs.install, jobs.uninstall),
         (views.register, views.unregister),
         (layouts.register, layouts.unregister),
         (lambda: None, context.clear),
@@ -125,6 +129,7 @@ def repair() -> str:
     quick_access.install()
     headers.install()
     statusbar.install()
+    jobs.install()
     keymap.unregister()
     keymap.register()
     commands.refresh()

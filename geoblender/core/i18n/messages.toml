@@ -1029,3 +1029,30 @@ es = "Intérprete externo"
 
 ["Python 3.13 interpreter with numpy, checked when it is set (empty: none)"]
 es = "Intérprete de Python 3.13 con numpy, comprobado al configurarlo (vacío: ninguno)"
+
+# Trabajos en segundo plano en la barra de estado (spec 004, T19; RF-004-06, RF-004-07;
+# plan 004 §5.4.4 y §5.5): los siete estados de un trabajo y su avance.
+
+["Queued"]
+es = "En cola"
+
+["Running"]
+es = "En curso"
+
+["Succeeded"]
+es = "Terminado"
+
+["Failed"]
+es = "Fallido"
+
+["Cancelled"]
+es = "Cancelado"
+
+["Timed out"]
+es = "Tiempo agotado"
+
+["Interrupted"]
+es = "Interrumpido"
+
+["{percent}%"]
+es = "{percent} %"
