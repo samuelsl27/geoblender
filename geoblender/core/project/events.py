@@ -61,6 +61,9 @@ class EventKind(Enum):
     INPUT_KEPT = "input_kept"
     INPUT_DISCARDED = "input_discarded"
     INPUT_EDITED = "input_edited"
+    # El original de una entrada tabular o documental que pasa del límite y no se guarda
+    # (RF-008-53; D-18).
+    ORIGINAL_NOT_STORED = "original_not_stored"
 
 
 @dataclass(frozen=True)

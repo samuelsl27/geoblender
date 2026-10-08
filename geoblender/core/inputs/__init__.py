@@ -9,9 +9,12 @@
   con su importación, reutilizarla, sustituirla (RF-008-11), mantener la copia de una cambiada
   (RF-008-12), descartarla (RF-008-55), editar su nombre y su entrega (D-11), buscarla y anclar
   o encontrar sus ficheros.
+- :mod:`.originals`: guardar el original de una entrada tabular o documental desde la copia
+  verificada de su importación, con su huella y el límite ``core.original_copy_limit``
+  (RF-008-53, RF-008-14).
 
-Los originales, la guarda de escritura y la comprobación de las fuentes llegan con las tareas
-siguientes (plan 008 §5.3.1).
+La guarda de escritura y la comprobación de las fuentes llegan con las tareas siguientes (plan
+008 §5.3.1).
 """
 
 from .model import (
@@ -35,6 +38,12 @@ from .model import (
     check_received_from,
     crs_text,
     input_declarations,
+)
+from .originals import (
+    ORIGINAL_COPY_LIMIT,
+    OriginalsOutcome,
+    StoredOriginal,
+    store_originals_steps,
 )
 from .registry import (
     UNSET,
@@ -61,6 +70,7 @@ __all__ = [
     "ELEVATION_KINDS",
     "INACTIVE_STATUSES",
     "INPUT_KINDS",
+    "ORIGINAL_COPY_LIMIT",
     "UNSET",
     "Classification",
     "Difference",
@@ -72,9 +82,11 @@ __all__ = [
     "InputStatus",
     "New",
     "OriginalState",
+    "OriginalsOutcome",
     "Reuse",
     "SourceFile",
     "SourcePrint",
+    "StoredOriginal",
     "Substitute",
     "check_crs",
     "check_name",
@@ -91,5 +103,6 @@ __all__ = [
     "register_input",
     "resolve_source",
     "reuse_input",
+    "store_originals_steps",
     "supersede",
 ]

@@ -391,6 +391,42 @@ _CATALOG: tuple[Message, ...] = (
         "Input «{name}» is already «changed · copy kept».",
         "La entrada «{name}» ya está «cambiada · se mantiene la copia».",
     ),
+    # Originales (T22; RF-008-53, RF-008-14): el aviso de la spec §8 por encima del límite
+    # (D-18) y los rechazos de la copia verificada, que nunca se rehace desde la fuente.
+    Message(
+        "core.original_too_large",
+        "The original of «{file}» ({size} MB) exceeds the limit of {limit} MB: only the "
+        "imported data is kept.",
+        "El original de «{file}» ({size} MB) pasa del límite de {limit} MB: se guarda solo lo "
+        "importado.",
+    ),
+    Message(
+        "core.original_copy_missing",
+        "The verified copy of «{file}» of input «{name}» is missing: its original is not kept; "
+        "import it again.",
+        "Falta la copia verificada de «{file}» de la entrada «{name}»: no se guarda su "
+        "original; vuelva a importarla.",
+    ),
+    Message(
+        "core.original_copy_mismatch",
+        "The verified copy of «{file}» of input «{name}» does not match its registered "
+        "fingerprint: its original is not kept; import it again.",
+        "La copia verificada de «{file}» de la entrada «{name}» no coincide con su huella "
+        "registrada: no se guarda su original; vuelva a importarla.",
+    ),
+    Message(
+        "core.original_exists",
+        "There is already a file «{path}» in the originals of the project: it is not "
+        "overwritten.",
+        "Ya hay un fichero «{path}» en los originales del proyecto: no se sobrescribe.",
+    ),
+    Message(
+        "core.original_copy_failed",
+        "The original of «{file}» of input «{name}» could not be kept ({reason}): nothing is "
+        "left half-done.",
+        "No se ha podido guardar el original de «{file}» de la entrada «{name}» ({reason}): no "
+        "queda nada a medias.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})
