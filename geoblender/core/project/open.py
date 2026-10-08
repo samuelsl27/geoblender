@@ -15,7 +15,9 @@ ya se había tomado.
 2. **Base de datos**, sin escribir en el proyecto: ``project.gpkg`` en solo lectura (una
    base en WAL o con un diario caliente se lee en una copia privada de los datos de
    usuario: abrirla en el sitio crearía ``-wal`` y ``-shm`` junto a ella); su fila de
-   ``gb_project`` y las migraciones registradas.
+   ``gb_project`` y las migraciones registradas. Si le falta algo de su esquema (del 1, para
+   leer ``gb_project``; después, del esquema del proyecto o, si es posterior y se puede
+   leer, del de esta versión: spec 008), no abre y dice qué.
 3. **Coherencia**: si la cabecera y la base difieren en identidad, CRS, GeoOrigin o
    esquema, no abre y muestra los dos valores (sin corregir ninguno). Un esquema que
    explican las migraciones registradas, o un GeoOrigin que explica el último cambio de
@@ -175,8 +177,11 @@ def _read_database(
     try:
         with GpkgConnection.open_read(path, private_dir) as db:
             conn = db.connection
-            missing = missing_objects(conn)
+            missing = missing_objects(conn, 1)  # lo que hace falta para leer gb_project
             record = None if missing else read_project(conn)
+            if record is not None and record.min_reader_schema <= SCHEMA_VERSION:
+                # Lo de su esquema (de uno posterior que se puede leer, lo que se conoce).
+                missing = missing_objects(conn, min(record.schema_version, SCHEMA_VERSION))
             migrations = () if missing else read_migrations(conn)
             origin_move = None if missing else last_origin_move(conn)
     except (sqlite3.Error, DatabaseError) as exc:

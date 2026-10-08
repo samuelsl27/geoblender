@@ -1,25 +1,30 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Tablas internas de la procedencia, primera parte (spec 008, T07; RF-008-01, RF-008-02,
-RF-008-07; ADR-0025; plan 008 §5.2.1).
+"""Tablas internas de la procedencia y esquema 2 del proyecto (spec 008, T07 y T08;
+RF-008-01, RF-008-02, RF-008-07, RF-008-17, RF-008-30; ADR-0025; plan 008 §5.2.1).
 
-``core.provenance.schema`` crea en el GeoPackage del proyecto ``gb_parameter``,
-``gb_parameter_history``, ``gb_input``, ``gb_input_file`` y ``gb_ignored``, con sus índices
-y sus disparadores:
+``core.provenance.schema`` crea en el GeoPackage del proyecto las doce tablas de la
+procedencia —parámetros y su historial, entradas y sus ficheros, datos y sus cambios,
+operaciones con lo que consumen y producen y los parámetros que usan, cifras, la caché de
+obsolescencia y lo ignorado—, con sus índices y sus disparadores:
 
 - solo una conexión de Geoblender (la función SQL ``gb_writer()``) escribe en ellas; en una
   conexión ajena (QGIS, GDAL) la función no existe y la sentencia ni se prepara;
-- nada se borra (plan §5.2.1, «Reglas de escritura»), tampoco con ``INSERT OR REPLACE`` o
-  ``UPDATE OR REPLACE``: en SQLite el ``REPLACE`` borra la fila que choca sin disparar los
-  ``BEFORE DELETE`` (salvo con ``recursive_triggers``), así que un disparador ``BEFORE
-  INSERT`` rechaza una fila cuya identidad ya existe;
-- el historial de parámetros es de solo inserción (RF-008-02), y de las demás tablas solo
-  cambian las columnas que deja el plan: el valor y su procedencia en un parámetro; el
+- nada se borra (plan §5.2.1, «Reglas de escritura») salvo las filas de la caché
+  ``gb_stale``, tampoco con ``INSERT OR REPLACE`` o ``UPDATE OR REPLACE``: en SQLite el
+  ``REPLACE`` borra la fila que choca sin disparar los ``BEFORE DELETE`` (salvo con
+  ``recursive_triggers``), así que un disparador ``BEFORE INSERT`` rechaza una fila cuya
+  identidad ya existe;
+- el historial de parámetros, los cambios de los datos, lo que consume y produce cada
+  operación, los parámetros que usó y las cifras son de solo inserción; de las demás tablas
+  solo cambian las columnas que deja el plan: el valor y su procedencia en un parámetro; el
   estado, el original, el nombre y la entrega de una entrada (D-11); la comprobación de sus
-  ficheros, con la ruta, la huella y el tamaño de su original escritos una sola vez.
+  ficheros, con la ruta, la huella y el tamaño de su original escritos una sola vez; de un
+  dato, ni su identidad ni su ubicación, y lo importado tampoco cambia de contenido; una
+  operación terminada solo anota, una vez, la que la sustituye.
 
-``gb_operation`` llega con T08: mientras no esté en el esquema, :func:`_insert_operation`
-crea una tabla mínima, porque con ``foreign_keys = ON`` una tabla madre que no existe impide
-escribir en la hija («no such table: main.gb_operation»).
+``core.project.schema`` crea con ellas el esquema 2 (``min_reader_schema`` 1) y comprueba
+lo que le falta a una base según su esquema; abrir un proyecto echa en falta lo de su
+esquema y no lo de uno posterior que aún no tiene.
 
 Cada prueba trabaja sobre una copia de una plantilla que se crea una vez; los rechazos van
 en una sola transacción (``RAISE(ABORT)`` y las restricciones deshacen solo su sentencia).
@@ -27,19 +32,35 @@ en una sola transacción (``RAISE(ABORT)`` y las restricciones deshacen solo su 
 
 from __future__ import annotations
 
+import math
 import shutil
 import sqlite3
+import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from tests.support.core_fixtures import (
+    FakeClock,
+    FakePids,
+    make_session,
+    make_settings,
+    mark_schema,
+    project_tmp,
+)
 from tests.support.package import import_geoblender
 
 gpkg = import_geoblender("core.gpkg")
 base = import_geoblender("core.gpkg.base")
 project_schema = import_geoblender("core.project.schema")
+create = import_geoblender("core.project.create")
+manifest_mod = import_geoblender("core.project.manifest")
+open_mod = import_geoblender("core.project.open")
+model = import_geoblender("core.project.model")
+errors = import_geoblender("core.errors")
+userdata_mod = import_geoblender("core.userdata")
 schema = import_geoblender("core.provenance.schema")
 hashing = import_geoblender("core.hashing")
 params = import_geoblender("core.params")
@@ -47,16 +68,53 @@ content = import_geoblender("core.content")
 georef = import_geoblender("core.georef")
 
 CRS = georef.load_catalog().horizontal(25830)
-TABLES = ("gb_parameter", "gb_parameter_history", "gb_input", "gb_input_file", "gb_ignored")
+TABLES = (
+    "gb_parameter",
+    "gb_parameter_history",
+    "gb_input",
+    "gb_input_file",
+    "gb_dataset",
+    "gb_dataset_change",
+    "gb_operation",
+    "gb_operation_io",
+    "gb_operation_param",
+    "gb_figure",
+    "gb_stale",
+    "gb_ignored",
+)
+SCHEMA_1_TABLES = ("gb_project", "gb_event", "gb_schema_migration")
+APPEND_ONLY = (
+    "gb_parameter_history",
+    "gb_dataset_change",
+    "gb_operation_io",
+    "gb_operation_param",
+    "gb_figure",
+)
 NOW = "2026-10-08T09:31:00.000Z"
 LATER = "2026-10-09T10:00:00.000Z"
 USER = "prueba@PC-PRUEBA-A"
 SESSION_UID = "00000000-0000-4000-8000-000000000001"
 OP_UID = "00000000-0000-4000-8000-0000000000c1"
+OP2_UID = "00000000-0000-4000-8000-0000000000c2"
 PARAM_UID = "00000000-0000-4000-8000-0000000000d1"
 INPUT_UID = "00000000-0000-4000-8000-0000000000e1"
 REF_UID = "00000000-0000-4000-8000-0000000000f1"
+DATASET_UID = "00000000-0000-4000-8000-0000000000a1"
+FIGURE_UID = "00000000-0000-4000-8000-0000000000b1"
 UNKNOWN_UID = "00000000-0000-4000-8000-0000000000ff"
+CHECK = "CHECK constraint failed"
+FOREIGN_KEY = "FOREIGN KEY constraint failed"
+STALE_CAUSES = (
+    "dataset_changed",
+    "parameter_changed",
+    "input_updated",
+    "input_discarded",
+    "dataset_missing",
+    "dataset_blocked",
+    "dataset_damaged",
+    "algorithm",
+    "group",
+)
 
 Case = tuple[str, str, Sequence[Any], str]
 
@@ -226,6 +284,184 @@ def file_row(**changes: Any) -> dict[str, Any]:
     )
 
 
+def operation_row(**changes: Any) -> dict[str, Any]:
+    """La importación de «Limites_v1» (``core.import_layer`` 1.0), hecha en el hilo de
+    Blender."""
+    return _row(
+        {
+            "uid": OP_UID,
+            "op_type": "core.import_layer",
+            "op_version": "1.0",
+            "module": "core",
+            "scope": "project",
+            "repeatable": 0,
+            "group_name": None,
+            "group_uid": None,
+            "settings": _json({"layer": "limites"}),
+            "settings_sha256": _sha("ajustes de la importación"),
+            "status": "done",
+            "status_reason": None,
+            "supersedes_uid": None,
+            "superseded_by": None,
+            "geoblender_version": "0.3.0",
+            "software": "{}",
+            "executor": "blender",
+            "job_uid": None,
+            "interpreter": None,
+            "user_host": USER,
+            "host": "PC-PRUEBA-A",
+            "session_uid": SESSION_UID,
+            "started_at": NOW,
+            "finished_at": NOW,
+            "message": None,
+        },
+        changes,
+    )
+
+
+RUNNING = {"status": "running", "finished_at": None}
+
+
+def dataset_row(**changes: Any) -> dict[str, Any]:
+    """Lo importado de «Limites_v1»: la capa ``core_imported_limites`` del proyecto, con el
+    selector de su entrada e inmutable (RF-008-52)."""
+    return _row(
+        {
+            "uid": DATASET_UID,
+            "name": "core_imported_limites",
+            "module": "core",
+            "kind": "vector",
+            "store": "gpkg",
+            "locator": "core_imported_limites",
+            "selector": _json({"column": "input_uid", "equals": INPUT_UID}),
+            "reader": "core.gpkg_layer@1",
+            "normalizer": content.NORMALIZER,
+            "content_sha256": _sha("contenido"),
+            "crs_epsg": 25830,
+            "operation_uid": OP_UID,
+            "input_uid": INPUT_UID,
+            "immutable": 1,
+            "qgis_editable": 0,
+            "tracked": 1,
+            "status": "current",
+            "superseded_by": None,
+            "tracked_size": None,
+            "tracked_mtime_ns": None,
+            "tracked_last_change": NOW,
+            "tracked_schema_sha256": _sha("sql de core_imported_limites"),
+            "checked_at": None,
+            "description": None,
+            "created_at": NOW,
+            "modified_at": NOW,
+        },
+        changes,
+    )
+
+
+# Un dato derivado: un MDT en rasters/, escrito por una operación de la 006.
+DERIVED = {
+    "uid": _uid(0xA2),
+    "name": "gis_dtm_proyecto",
+    "module": "gis",
+    "kind": "raster",
+    "store": "rasters",
+    "locator": "rasters/gis_dtm_proyecto.tif",
+    "selector": "",
+    "reader": "gis.geotiff@1",
+    "content_sha256": _sha("mdt"),
+    "input_uid": None,
+    "immutable": 0,
+    "tracked_size": 1_000_000,
+    "tracked_mtime_ns": 1_790_000_000_000_000_000,
+    "tracked_last_change": None,
+    "tracked_schema_sha256": None,
+}
+
+
+def dataset_change_row(**changes: Any) -> dict[str, Any]:
+    """El primer contenido de lo importado de «Limites_v1»."""
+    return _row(
+        {
+            "dataset_uid": DATASET_UID,
+            "from_sha256": None,
+            "to_sha256": _sha("contenido"),
+            "operation_uid": OP_UID,
+            "detail": None,
+            "at": NOW,
+        },
+        changes,
+    )
+
+
+def io_row(**changes: Any) -> dict[str, Any]:
+    """La importación produce lo importado de «Limites_v1» (papel ``imported``)."""
+    return _row(
+        {
+            "operation_uid": OP_UID,
+            "direction": "out",
+            "item_kind": "dataset",
+            "item_uid": DATASET_UID,
+            "content_sha256": _sha("contenido"),
+            "role": "imported",
+        },
+        changes,
+    )
+
+
+def op_param_row(**changes: Any) -> dict[str, Any]:
+    """La operación usó ``res.swell_factor`` en su revisión 2 (RF-008-05)."""
+    return _row(
+        {
+            "operation_uid": OP_UID,
+            "parameter_uid": PARAM_UID,
+            "key": "res.swell_factor",
+            "scope": "project",
+            "rev": 2,
+            "value": _json(1.23),
+            "unit": "-",
+            "kind": "ADOPTADO",
+            "unconfirmed": 0,
+            "value_sha256": _sha("1.23 -"),
+        },
+        changes,
+    )
+
+
+def figure_row(**changes: Any) -> dict[str, Any]:
+    """Una cifra CALCULADA de la fase 1 (RF-008-30)."""
+    return _row(
+        {
+            "uid": FIGURE_UID,
+            "key": "res.sellable_t",
+            "label": "Toneladas vendibles",
+            "value": 1_234_567.5,
+            "unit": "t",
+            "kind": "CALCULADO",
+            "operation_uid": OP_UID,
+            "parameter_uid": None,
+            "parameter_rev": None,
+            "scope": _json({"phase": "1"}),
+            "scope_key": _sha(_json({"phase": "1"}))[:16],
+            "created_at": NOW,
+        },
+        changes,
+    )
+
+
+def stale_row(**changes: Any) -> dict[str, Any]:
+    """La operación queda obsoleta porque cambió ``res.swell_factor`` (RF-008-24)."""
+    return _row(
+        {
+            "item_kind": "operation",
+            "item_uid": OP_UID,
+            "cause_kind": "parameter_changed",
+            "subject_uid": PARAM_UID,
+            "since": NOW,
+        },
+        changes,
+    )
+
+
 def ignored_row(**changes: Any) -> dict[str, Any]:
     """Una capa del proyecto que el usuario decidió ignorar (RF-008-62)."""
     return _row(
@@ -240,12 +476,28 @@ def ignored_row(**changes: Any) -> dict[str, Any]:
     )
 
 
-# Una fila nueva y válida de cada tabla, que no choca con la plantilla.
+# Una fila nueva y válida de cada tabla, que no choca con la plantilla (en este orden, por
+# las claves foráneas: el parámetro y la operación nuevos van antes de lo que los nombra).
 NEW_ROWS: dict[str, Callable[[], dict[str, Any]]] = {
     "gb_parameter": lambda: parameter_row(uid=_uid(0xD2), key="res.density"),
     "gb_parameter_history": lambda: history_row(rev=3, action="confirm", reason=None),
     "gb_input": lambda: input_row(uid=_uid(0xE2), name="Collares"),
     "gb_input_file": lambda: file_row(ord=1, role="sidecar", path="Limites_v1.qmd"),
+    "gb_dataset": lambda: dataset_row(**DERIVED),
+    "gb_dataset_change": lambda: dataset_change_row(
+        from_sha256=_sha("contenido"), to_sha256=_sha("contenido 2")
+    ),
+    "gb_operation": lambda: operation_row(
+        uid=OP2_UID, op_type="gis.resample", module="gis", **RUNNING
+    ),
+    "gb_operation_io": lambda: io_row(
+        direction="in", item_kind="input", item_uid=INPUT_UID, role="boundary"
+    ),
+    "gb_operation_param": lambda: op_param_row(parameter_uid=_uid(0xD2), key="res.density"),
+    "gb_figure": lambda: figure_row(uid=_uid(0xB2), key="res.waste_t", label="Toneladas de estéril"),
+    "gb_stale": lambda: stale_row(
+        item_kind="dataset", item_uid=DATASET_UID, cause_kind="input_updated", subject_uid=INPUT_UID
+    ),
     "gb_ignored": lambda: ignored_row(name="otra_capa"),
 }
 
@@ -260,15 +512,6 @@ def _insert(conn: sqlite3.Connection, table: str, row: Mapping[str, Any]) -> Non
     conn.execute(*_insert_sql(table, row))
 
 
-def _insert_operation(conn: sqlite3.Connection, uid: str) -> None:
-    """Una operación para las claves foráneas. ``gb_operation`` llega con T08: hasta
-    entonces, una tabla mínima (cuando esté en ``schema.TABLES``, esta función tendrá que
-    dar sus columnas)."""
-    if "gb_operation" not in schema.TABLES:
-        conn.execute("CREATE TABLE IF NOT EXISTS gb_operation (uid TEXT NOT NULL UNIQUE)")
-    conn.execute("INSERT INTO gb_operation (uid) VALUES (?)", (uid,))
-
-
 def _changed(column: str) -> str:
     """Una expresión SQL que da otro valor para ``column`` (también si es nula)."""
     return (
@@ -278,19 +521,24 @@ def _changed(column: str) -> str:
 
 
 def _build(path: Path) -> None:
-    """La plantilla: esquema 1, las tablas de T07 y una fila en cada una (el parámetro con
-    sus dos filas de historial)."""
+    """La plantilla: el esquema 2 (que ya trae las tablas de la procedencia) y una fila en
+    cada tabla (el parámetro con sus dos filas de historial)."""
     with gpkg.GpkgConnection.open_write(path, create=True) as db:
         with db.transaction() as conn:
             base.create_base(conn, CRS)
             project_schema.create_schema(conn)
-            schema.create_tables(conn)
-            _insert_operation(conn, OP_UID)
+            _insert(conn, "gb_operation", operation_row())
             _insert(conn, "gb_parameter", parameter_row())
             _insert(conn, "gb_parameter_history", history_row(**DEFAULT_HISTORY))
             _insert(conn, "gb_parameter_history", history_row())
             _insert(conn, "gb_input", input_row())
             _insert(conn, "gb_input_file", file_row())
+            _insert(conn, "gb_dataset", dataset_row())
+            _insert(conn, "gb_dataset_change", dataset_change_row())
+            _insert(conn, "gb_operation_io", io_row())
+            _insert(conn, "gb_operation_param", op_param_row())
+            _insert(conn, "gb_figure", figure_row())
+            _insert(conn, "gb_stale", stale_row())
             _insert(conn, "gb_ignored", ignored_row())
 
 
@@ -298,7 +546,7 @@ _TEMPLATE: list[Path] = []
 
 
 def setUpModule() -> None:
-    tmp = tempfile.TemporaryDirectory(prefix="gb-008-t07-", ignore_cleanup_errors=True)
+    tmp = tempfile.TemporaryDirectory(prefix="gb-008-t08-", ignore_cleanup_errors=True)
     unittest.addModuleCleanup(tmp.cleanup)
     path = Path(tmp.name) / "plantilla.gpkg"
     _build(path)
@@ -317,7 +565,7 @@ class _DbCase(unittest.TestCase):
     """Una copia de la plantilla abierta para escribir como Geoblender."""
 
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory(prefix="gb-t07-", ignore_cleanup_errors=True)
+        tmp = tempfile.TemporaryDirectory(prefix="gb-t08-", ignore_cleanup_errors=True)
         self.addCleanup(tmp.cleanup)
         self.path = Path(tmp.name) / "project.gpkg"
         shutil.copyfile(_template(), self.path)
@@ -365,14 +613,31 @@ class _DbCase(unittest.TestCase):
         ]
 
 
+# Los índices que no salen de las restricciones: tabla, único, parcial y columnas.
+EXPECTED_INDEXES: dict[str, tuple[str, int, int, list[str]]] = {
+    "gb_input_name_active": ("gb_input", 1, 1, ["name"]),
+    "gb_dataset_name_active": ("gb_dataset", 1, 1, ["name"]),
+    "gb_dataset_location": ("gb_dataset", 1, 0, ["store", "locator", "selector"]),
+    "gb_operation_io_item": ("gb_operation_io", 0, 0, ["item_kind", "item_uid", "direction"]),
+    "gb_operation_io_version": (
+        "gb_operation_io", 0, 0, ["item_uid", "content_sha256", "direction"]
+    ),
+    "gb_operation_param_parameter": ("gb_operation_param", 0, 0, ["parameter_uid"]),
+    "gb_figure_key": ("gb_figure", 0, 0, ["key", "scope_key", "created_at"]),
+}
+
+
 class StructureTest(unittest.TestCase):
     def test_tables_indexes_and_declaration(self) -> None:
-        """RF-008-01, RF-008-07: existen las cinco tablas, el índice único parcial de los
-        nombres de las entradas activas y los disparadores; las tablas están declaradas en
-        ``gpkg_extensions`` (``imga_geoblender``, ``write-only``) y fuera de
-        ``gpkg_contents``; ``missing_objects`` no echa nada en falta y nombra lo que falta."""
+        """RF-008-01, RF-008-07, RF-008-17, RF-008-30: existen las doce tablas, los índices
+        del plan (únicos parciales para los nombres activos de entradas y vivos de datos,
+        único para la ubicación de un dato y los de búsqueda del grafo y las cifras) y los
+        disparadores; las tablas están declaradas en ``gpkg_extensions``
+        (``imga_geoblender``, ``write-only``) y fuera de ``gpkg_contents``;
+        ``missing_objects`` no echa nada en falta y nombra lo que falta."""
         self.assertEqual(schema.INTERNAL_TABLES, TABLES)
         self.assertEqual(tuple(schema.TABLES), TABLES)
+        self.assertEqual(set(schema.INDEXES), set(EXPECTED_INDEXES))
         marks = ", ".join("?" for _ in TABLES)
         with gpkg.GpkgConnection.open_read(_template()) as db:
             conn = db.connection
@@ -384,13 +649,15 @@ class StructureTest(unittest.TestCase):
             registered = conn.execute(
                 f"SELECT count(*) FROM gpkg_contents WHERE table_name IN ({marks})", TABLES
             ).fetchone()[0]
-            index = {row[1]: tuple(row[2:]) for row in conn.execute("PRAGMA index_list(gb_input)")}
-            index_columns = [
-                row[2] for row in conn.execute("PRAGMA index_info(gb_input_name_active)")
-            ]
-            index_sql = conn.execute(
-                "SELECT sql FROM sqlite_master WHERE name = 'gb_input_name_active'"
-            ).fetchone()[0]
+            indexes = {}
+            for name, (table, *_) in EXPECTED_INDEXES.items():
+                listed = {row[1]: tuple(row[2:]) for row in conn.execute(f"PRAGMA index_list({table})")}
+                columns = [row[2] for row in conn.execute(f"PRAGMA index_info({name})")]
+                indexes[name] = (table, listed[name][0], listed[name][2], columns, listed[name][1])
+            partial_sql = {
+                name: conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (name,)).fetchone()[0]
+                for name in ("gb_input_name_active", "gb_dataset_name_active")
+            }
             triggers = {
                 name
                 for (name,) in conn.execute(
@@ -403,29 +670,42 @@ class StructureTest(unittest.TestCase):
             declared, [(table, None, "imga_geoblender", "write-only") for table in sorted(TABLES)]
         )
         self.assertEqual(registered, 0)
-        self.assertEqual(index["gb_input_name_active"], (1, "c", 1))  # único, creado, parcial
-        self.assertEqual(index_columns, ["name"])
-        self.assertIn("WHERE status NOT IN ('superseded','discarded')", index_sql)
+        for name, (table, unique, partial, columns) in EXPECTED_INDEXES.items():
+            with self.subTest(name):
+                self.assertEqual(indexes[name], (table, unique, partial, columns, "c"))
+        self.assertIn("WHERE status NOT IN ('superseded','discarded')", partial_sql["gb_input_name_active"])
+        self.assertIn(
+            "WHERE status IN ('current','missing','blocked','damaged')",
+            partial_sql["gb_dataset_name_active"],
+        )
         self.assertEqual(triggers, set(schema.TRIGGERS))
-        with tempfile.TemporaryDirectory(prefix="gb-t07-", ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory(prefix="gb-t08-", ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "falta.gpkg"
             shutil.copyfile(_template(), path)
             raw = sqlite3.connect(path, isolation_level=None)
             try:
                 raw.execute("DROP TRIGGER gb_parameter_history_no_upd")
+                raw.execute("DROP TRIGGER gb_operation_finished")
                 raw.execute("DROP INDEX gb_input_name_active")
+                raw.execute("DROP INDEX gb_figure_key")
                 missing = schema.missing_objects(raw)
             finally:
                 raw.close()
         self.assertEqual(
-            missing, ["index gb_input_name_active", "trigger gb_parameter_history_no_upd"]
+            missing,
+            [
+                "index gb_input_name_active",
+                "index gb_figure_key",
+                "trigger gb_parameter_history_no_upd",
+                "trigger gb_operation_finished",
+            ],
         )
 
     def test_create_again_changes_nothing(self) -> None:
         """Plan §5.2.4 (la migración de T09): crear otra vez las tablas en una base que ya
         las tiene no cambia nada: el mismo ``sqlite_master`` (que guarda el SQL sin «IF NOT
         EXISTS»), las mismas filas y una sola declaración por tabla."""
-        with tempfile.TemporaryDirectory(prefix="gb-t07-", ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory(prefix="gb-t08-", ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "otra_vez.gpkg"
             shutil.copyfile(_template(), path)
             with gpkg.GpkgConnection.open_write(path) as db:
@@ -447,23 +727,28 @@ class StructureTest(unittest.TestCase):
                     "SELECT table_name, count(*) FROM gpkg_extensions WHERE table_name LIKE "
                     "'gb_%' GROUP BY table_name"
                 ).fetchall()
+        self.assertEqual(len(counts), len(SCHEMA_1_TABLES) + len(TABLES))
         self.assertTrue(all(count == 1 for _, count in counts), counts)
         stored = [sql for *_, sql in master if sql is not None]
         self.assertFalse([sql for sql in stored if "IF NOT EXISTS" in sql.upper()])
 
     def test_every_column_has_a_rule(self) -> None:
-        """RF-008-02, RF-008-07; plan §5.2.1, «Reglas de escritura»: cada columna de las
-        tablas que se pueden cambiar es fija, cambiable o de una sola escritura, sin repetir
-        (una columna nueva obliga a decidir), con lo que dice el plan; el historial es de
-        solo inserción entero."""
+        """RF-008-02, RF-008-07, RF-008-17, RF-008-30; plan §5.2.1, «Reglas de escritura»:
+        cada columna de las tablas que se pueden cambiar es fija, cambiable o de una sola
+        escritura, sin repetir (una columna nueva obliga a decidir), con lo que dice el plan;
+        el historial, los cambios de los datos, lo que consume y produce cada operación, los
+        parámetros que usó y las cifras son de solo inserción enteros; ``gb_stale`` es la
+        caché de la que se borran filas."""
         with gpkg.GpkgConnection.open_read(_template()) as db:
             columns = {table: _columns(db.connection, table) for table in TABLES}
-        self.assertEqual(schema.APPEND_ONLY_TABLES, ("gb_parameter_history",))
+        self.assertEqual(schema.APPEND_ONLY_TABLES, APPEND_ONLY)
+        self.assertEqual(schema.CACHE_TABLES, ("gb_stale",))
         for table in TABLES:
             with self.subTest(table):
                 if table in schema.APPEND_ONLY_TABLES:
                     self.assertNotIn(table, schema.FIXED_COLUMNS)
                     self.assertNotIn(table, schema.MUTABLE_COLUMNS)
+                    self.assertNotIn(table, schema.WRITE_ONCE_COLUMNS)
                     continue
                 ruled = (
                     *schema.FIXED_COLUMNS[table],
@@ -503,9 +788,33 @@ class StructureTest(unittest.TestCase):
         )
         self.assertEqual(
             schema.WRITE_ONCE_COLUMNS,
-            {"gb_input_file": ("original_path", "original_sha256", "original_size")},
+            {
+                "gb_input_file": ("original_path", "original_sha256", "original_size"),
+                "gb_operation": ("superseded_by",),
+            },
         )
         self.assertEqual(set(schema.FIXED_COLUMNS["gb_ignored"]), {"fid", "kind", "name"})
+        # gb_dataset: lo que el plan dice que no cambia, más la entrada y si es inmutable.
+        self.assertTrue(
+            {
+                "uid", "name", "module", "kind", "store", "locator", "selector", "reader",
+                "normalizer", "input_uid", "immutable",
+            }
+            <= set(schema.FIXED_COLUMNS["gb_dataset"])
+        )
+        self.assertEqual(schema.IMMUTABLE_CONTENT_COLUMNS, ("content_sha256", "operation_uid"))
+        # gb_operation: lo que se completa al terminar; fuera de «en curso», nada de ello.
+        self.assertEqual(
+            set(schema.MUTABLE_COLUMNS["gb_operation"]),
+            {
+                "status", "status_reason", "software", "executor", "job_uid", "interpreter",
+                "finished_at", "message",
+            },
+        )
+        self.assertEqual(
+            set(schema.FIXED_COLUMNS["gb_stale"]),
+            {"item_kind", "item_uid", "cause_kind", "subject_uid"},
+        )
 
 
 # UPDATE y DELETE de una conexión ajena (las INSERT, con una fila nueva y válida de NEW_ROWS,
@@ -521,17 +830,32 @@ FOREIGN_WRITES: dict[str, tuple[str, str]] = {
         "UPDATE gb_input_file SET checked_at = 'ahora'",
         "DELETE FROM gb_input_file",
     ),
+    "gb_dataset": ("UPDATE gb_dataset SET description = 'otra'", "DELETE FROM gb_dataset"),
+    "gb_dataset_change": (
+        "UPDATE gb_dataset_change SET detail = 'otro'",
+        "DELETE FROM gb_dataset_change",
+    ),
+    # Anotar su sustituta (de NULL a un valor): lo único que cambia en una terminada.
+    "gb_operation": ("UPDATE gb_operation SET superseded_by = uid", "DELETE FROM gb_operation"),
+    "gb_operation_io": ("UPDATE gb_operation_io SET role = 'otro'", "DELETE FROM gb_operation_io"),
+    "gb_operation_param": (
+        "UPDATE gb_operation_param SET unit = 'm'",
+        "DELETE FROM gb_operation_param",
+    ),
+    "gb_figure": ("UPDATE gb_figure SET value = 0", "DELETE FROM gb_figure"),
+    "gb_stale": ("UPDATE gb_stale SET since = 'ahora'", "DELETE FROM gb_stale"),
     "gb_ignored": ("UPDATE gb_ignored SET reason = 'otro'", "DELETE FROM gb_ignored"),
 }
 
 
 class ForeignConnectionTest(unittest.TestCase):
     def test_foreign_writes_fail(self) -> None:
-        """RF-008-01, RF-008-02, RF-008-07 (RF-002-15): desde una conexión sin
-        ``gb_writer()`` (QGIS, GDAL), INSERT (de una fila válida), UPDATE, DELETE e INSERT
-        OR REPLACE fallan en las cinco tablas, que se leen, y el volcado SQL no cambia."""
+        """RF-008-01, RF-008-02, RF-008-07, RF-008-17, RF-008-30 (RF-002-15): desde una
+        conexión sin ``gb_writer()`` (QGIS, GDAL), INSERT (de una fila válida), UPDATE,
+        DELETE (también en la caché) e INSERT OR REPLACE fallan en las doce tablas, que se
+        leen, y el volcado SQL no cambia."""
         self.assertEqual(set(FOREIGN_WRITES), set(TABLES))
-        with tempfile.TemporaryDirectory(prefix="gb-t07-", ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory(prefix="gb-t08-", ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "project.gpkg"
             shutil.copyfile(_template(), path)
             foreign = sqlite3.connect(path, isolation_level=None)
@@ -560,12 +884,15 @@ class ForeignConnectionTest(unittest.TestCase):
 
 class RequiredColumnsTest(_DbCase):
     def test_required_columns(self) -> None:
-        """RF-008-01, RF-008-02, RF-008-07: sin clave, unidad, tipo, origen y su clase,
-        decisor, fecha, ámbito o motivo no se guarda un parámetro; sin el estado de antes, quién
-        o cuándo, una fila del historial; sin nombre, tipo, lector, normalizador, CRS horizontal
-        o vertical declarados, ajustes, huellas, hashes, quién y cuándo la registra o su
-        importación, una entrada; sin ruta, papel, ancla o huella, un fichero suyo. Una fila
-        completa sí se guarda."""
+        """RF-008-01, RF-008-02, RF-008-07, RF-008-17, RF-008-30: sin clave, unidad, tipo,
+        origen y su clase, decisor, fecha, ámbito o motivo no se guarda un parámetro; sin el
+        estado de antes, quién o cuándo, una fila del historial; sin nombre, tipo, lector,
+        normalizador, CRS horizontal o vertical declarados, ajustes, huellas, hashes, quién y
+        cuándo la registra o su importación, una entrada; sin ruta, papel, ancla o huella, un
+        fichero suyo; sin nombre, módulo, tipo, ubicación, lector, normalizador, hash de
+        contenido u operación que lo escribió, un dato (D-2); sin tipo, versión, ajustes,
+        estado, ejecutor, quién, dónde o cuándo, una operación; sin clave, texto, valor,
+        unidad, tipo u operación, una cifra. Una fila completa sí se guarda."""
         cases: list[Case] = []
         for table, make in NEW_ROWS.items():
             required = [
@@ -578,7 +905,7 @@ class RequiredColumnsTest(_DbCase):
                 sql, args = _insert_sql(table, {**make(), column: None})
                 expected = f"NOT NULL constraint failed: {table}.{column}"
                 cases.append((f"{table}.{column}", sql, args, expected))
-        self.assertGreaterEqual(len(cases), 60)
+        self.assertGreaterEqual(len(cases), 120)
         self.assertRejected(cases)
         self.accept(*(_insert_sql(table, make()) for table, make in NEW_ROWS.items()))
         for table in TABLES:
@@ -625,7 +952,7 @@ class ParameterTest(_DbCase):
             for value in (
                 "",
                 "HIPOTESIS",
-                "HIPÓTESIS",
+                "HIPO\u0301TESIS",  # la tilde descompuesta (NFD)
                 "hipótesis",
                 "Hipótesis",
                 "ADOPTADA",
@@ -641,7 +968,7 @@ class ParameterTest(_DbCase):
         for number, (column, value) in enumerate(bad):
             row = parameter_row(uid=_uid(0x200 + number), key=f"res.bad_{number}", **{column: value})
             sql, args = _insert_sql("gb_parameter", row)
-            cases.append((f"{column}={value!r}", sql, args, "CHECK constraint failed"))
+            cases.append((f"{column}={value!r}", sql, args, CHECK))
         self.assertRejected(cases)
         self.accept(*(_insert_sql("gb_parameter", row) for row in accepted))
         self.assertEqual(self.scalar("SELECT count(*) FROM gb_parameter"), 1 + len(accepted))
@@ -657,17 +984,17 @@ class ParameterTest(_DbCase):
         calculated = parameter_row(uid=_uid(0xD3), key="res.balance_k", kind="CALCULADO")
         self.assertRejected(
             [
-                ("sin operación", *_insert_sql("gb_parameter", calculated), "CHECK constraint failed"),
+                ("sin operación", *_insert_sql("gb_parameter", calculated), CHECK),
                 (
                     "operación desconocida",
                     *_insert_sql("gb_parameter", {**calculated, "operation_uid": UNKNOWN_UID}),
-                    "FOREIGN KEY constraint failed",
+                    FOREIGN_KEY,
                 ),
                 (
                     "cambiar a CALCULADO sin operación",
                     "UPDATE gb_parameter SET kind = 'CALCULADO' WHERE uid = ?",
                     (PARAM_UID,),
-                    "CHECK constraint failed",
+                    CHECK,
                 ),
             ]
         )
@@ -707,7 +1034,7 @@ class ParameterTest(_DbCase):
                         "gb_parameter",
                         parameter_row(uid=_uid(0xD6), key="res.a", kind="MEDIDO", unconfirmed=1),
                     ),
-                    "CHECK constraint failed",
+                    CHECK,
                 ),
                 (
                     "CALCULADO",
@@ -721,13 +1048,13 @@ class ParameterTest(_DbCase):
                             unconfirmed=1,
                         ),
                     ),
-                    "CHECK constraint failed",
+                    CHECK,
                 ),
                 (
                     "cambiar a MEDIDO",
                     "UPDATE gb_parameter SET kind = 'MEDIDO' WHERE uid = ?",
                     (_uid(0xD4),),
-                    "CHECK constraint failed",
+                    CHECK,
                 ),
             ]
         )
@@ -845,23 +1172,22 @@ class HistoryTest(_DbCase):
         """RF-008-02: el motivo es obligatorio (no vacío ni en blanco) salvo al confirmar; una
         acción desconocida y un parámetro que no existe se rechazan."""
         table = "gb_parameter_history"
-        check = "CHECK constraint failed"
         cases: list[Case] = []
         rev = 10
         for action in ("default", "create", "change"):
             for reason in (None, "", "   "):
                 row = history_row(rev=rev, action=action, reason=reason)
-                cases.append((f"{action}, {reason!r}", *_insert_sql(table, row), check))
+                cases.append((f"{action}, {reason!r}", *_insert_sql(table, row), CHECK))
                 rev += 1
         for action in ("", "delete", "update", "Confirm"):
             row = history_row(rev=rev, action=action)
-            cases.append((f"acción {action!r}", *_insert_sql(table, row), check))
+            cases.append((f"acción {action!r}", *_insert_sql(table, row), CHECK))
             rev += 1
         cases.append(
             (
                 "parámetro desconocido",
                 *_insert_sql(table, history_row(rev=rev, parameter_uid=UNKNOWN_UID)),
-                "FOREIGN KEY constraint failed",
+                FOREIGN_KEY,
             )
         )
         self.assertRejected(cases)
@@ -932,15 +1258,14 @@ class InputTest(_DbCase):
             ("original", "yes"),
             ("original", ""),
         ]
-        check = "CHECK constraint failed"
         cases: list[Case] = []
         for number, (column, value) in enumerate(bad_inputs):
             row = input_row(uid=_uid(0x300 + number), name=f"Mal_{number}", **{column: value})
-            cases.append((f"{column}={value!r}", *_insert_sql("gb_input", row), check))
+            cases.append((f"{column}={value!r}", *_insert_sql("gb_input", row), CHECK))
         bad_files = (("role", "principal"), ("anchor", "absolute"), ("anchor", ""))
         for number, (column, value) in enumerate(bad_files):
             row = file_row(ord=10 + number, **{column: value})
-            cases.append((f"{column}={value!r}", *_insert_sql("gb_input_file", row), check))
+            cases.append((f"{column}={value!r}", *_insert_sql("gb_input_file", row), CHECK))
         foreign_keys = (
             (
                 "importación desconocida",
@@ -955,7 +1280,7 @@ class InputTest(_DbCase):
             ("entrada desconocida", "gb_input_file", file_row(input_uid=UNKNOWN_UID)),
         )
         for label, table, row in foreign_keys:
-            cases.append((label, *_insert_sql(table, row), "FOREIGN KEY constraint failed"))
+            cases.append((label, *_insert_sql(table, row), FOREIGN_KEY))
         self.assertRejected(cases)
 
     def test_one_active_input_per_name(self) -> None:
@@ -1103,7 +1428,7 @@ class InputTest(_DbCase):
                 original,
             ),
         )
-        once = _abort(table, schema.MSG_WRITE_ONCE)
+        once = _abort(table, schema.MSG_WRITE_ONCE[table])
         self.assertRejected(
             [
                 (column, f"UPDATE {table} SET {column} = {_changed(column)} WHERE ord = 0", (), once)
@@ -1125,6 +1450,553 @@ class InputTest(_DbCase):
         )
 
 
+class DatasetTest(_DbCase):
+    def test_dataset_keeps_what_rf_008_17_asks(self) -> None:
+        """RF-008-17, RF-008-52: un dato se guarda con nombre estable, módulo dueño, tipo,
+        ubicación, lector y normalizador, hash de contenido y la operación que escribió su
+        contenido actual (lo importado, también con su entrada, inmutable); se lee igual. Un
+        acumulado comparte la tabla con otro selector, y lo exportado y lo de DuckDB van sin
+        seguimiento. Un dato sin operación (sin procedencia), con un tipo, almacén o estado
+        desconocidos, inmutable sin entrada, sin seguimiento fuera de ``exports`` y
+        ``duckdb``, o con una operación, una entrada o un sucesor que no existen, se
+        rechaza."""
+        table = "gb_dataset"
+        rows = [
+            dataset_row(**DERIVED),
+            dataset_row(
+                uid=_uid(0xA3),
+                name="core_inputs_limites",
+                selector=_json({"column": "input_uid", "of": "current_inputs"}),
+                content_sha256=_sha("acumulado"),
+                input_uid=None,
+                immutable=0,
+                description="Límites de las entradas vigentes",
+            ),
+            dataset_row(
+                uid=_uid(0xA4),
+                name="exp_plano",
+                kind="report",
+                store="exports",
+                locator="exports/plano.pdf",
+                selector="",
+                reader="core.document@1",
+                crs_epsg=None,
+                input_uid=None,
+                immutable=0,
+                tracked=0,
+            ),
+            dataset_row(
+                uid=_uid(0xA5),
+                name="bm_bloques",
+                module="bm",
+                kind="block_model",
+                store="duckdb",
+                locator="blocks.duckdb",
+                selector="",
+                reader="bm.duckdb@1",
+                input_uid=None,
+                immutable=0,
+                tracked=0,
+            ),
+        ]
+        self.accept(*(_insert_sql(table, row) for row in rows))
+        for row in rows:
+            stored = self.row(table, "uid = ?", (row["uid"],))
+            self.assertEqual({key: stored[key] for key in row}, row)
+
+        def bad(number: int, **changes: Any) -> dict[str, Any]:
+            return dataset_row(
+                uid=_uid(0x500 + number), name=f"mal_{number}", locator=f"mal_{number}", **changes
+            )
+
+        cases: list[Case] = [
+            ("sin procedencia", *_insert_sql(table, bad(0, operation_uid=None)),
+             "NOT NULL constraint failed: gb_dataset.operation_uid"),
+            ("tipo 'grid'", *_insert_sql(table, bad(1, kind="grid")), CHECK),
+            ("tipo 'Vector'", *_insert_sql(table, bad(2, kind="Vector")), CHECK),
+            ("almacén 'cache'", *_insert_sql(table, bad(3, store="cache")), CHECK),
+            ("almacén 'GPKG'", *_insert_sql(table, bad(4, store="GPKG")), CHECK),
+            ("estado 'stale'", *_insert_sql(table, bad(5, status="stale")), CHECK),
+            ("estado 'vigente'", *_insert_sql(table, bad(6, status="vigente")), CHECK),
+            ("inmutable sin entrada", *_insert_sql(table, bad(7, input_uid=None)), CHECK),
+            ("sin seguimiento en gpkg", *_insert_sql(table, bad(8, tracked=0)), CHECK),
+            ("operación desconocida", *_insert_sql(table, bad(9, operation_uid=UNKNOWN_UID)), FOREIGN_KEY),
+            ("entrada desconocida", *_insert_sql(table, bad(10, input_uid=UNKNOWN_UID)), FOREIGN_KEY),
+            ("sucesor desconocido", *_insert_sql(table, bad(11, superseded_by=UNKNOWN_UID)), FOREIGN_KEY),
+        ]
+        self.assertRejected(cases)
+
+    def test_one_live_dataset_per_name(self) -> None:
+        """RF-008-17 (D21; plan §5.2.1): un nombre tiene como mucho un dato vivo (vigente,
+        que falta, bloqueado o dañado): otro vivo con el mismo nombre se rechaza, también con
+        ``INSERT OR REPLACE`` y al devolver a vivo uno sustituido o descartado (también con
+        ``UPDATE OR REPLACE``); uno sustituido o descartado no choca: el nombre queda tres
+        veces y solo uno vivo."""
+        table = "gb_dataset"
+        live = _abort(table, schema.MSG_LIVE_DATASET)
+
+        def twin(number: int, **changes: Any) -> dict[str, Any]:
+            return dataset_row(
+                uid=_uid(0x600 + number), locator=f"core_imported_limites_{number}", **changes
+            )
+
+        cases: list[Case] = [
+            (status, *_insert_sql(table, twin(number, status=status)), live)
+            for number, status in enumerate(("current", "missing", "blocked", "damaged"))
+        ]
+        cases.append(("REPLACE", *_insert_sql(table, twin(9), "INSERT OR REPLACE"), live))
+        self.assertRejected(cases)
+        successor, discarded = twin(10), twin(11, status="discarded")
+        self.accept(
+            ("UPDATE gb_dataset SET status = 'superseded' WHERE uid = ?", (DATASET_UID,)),
+            _insert_sql(table, successor),
+            (
+                "UPDATE gb_dataset SET superseded_by = ? WHERE uid = ?",
+                (successor["uid"], DATASET_UID),
+            ),
+            _insert_sql(table, discarded),
+        )
+        self.assertRejected(
+            [
+                (
+                    "volver a vigente",
+                    "UPDATE gb_dataset SET status = 'current' WHERE uid = ?",
+                    (DATASET_UID,),
+                    live,
+                ),
+                (
+                    "volver con REPLACE",
+                    "UPDATE OR REPLACE gb_dataset SET status = 'missing' WHERE uid = ?",
+                    (DATASET_UID,),
+                    live,
+                ),
+                (
+                    "descartado a dañado",
+                    "UPDATE gb_dataset SET status = 'damaged' WHERE uid = ?",
+                    (discarded["uid"],),
+                    live,
+                ),
+            ]
+        )
+        names = self.db.connection.execute(
+            "SELECT uid, status, superseded_by FROM gb_dataset "
+            "WHERE name = 'core_imported_limites' ORDER BY fid"
+        ).fetchall()
+        self.assertEqual(
+            names,
+            [
+                (DATASET_UID, "superseded", successor["uid"]),
+                (successor["uid"], "current", None),
+                (discarded["uid"], "discarded", None),
+            ],
+        )
+        self.accept(("UPDATE gb_dataset SET status = 'discarded' WHERE uid = ?", (successor["uid"],)))
+        self.accept(("UPDATE gb_dataset SET status = 'current' WHERE uid = ?", (DATASET_UID,)))
+
+    def test_location_is_never_reused(self) -> None:
+        """RF-008-17 (D21; plan §5.2.1): dos datos con la misma ubicación (almacén, tabla o
+        ruta y selector) se rechazan siempre, aunque el que la ocupa esté sustituido o
+        descartado y también con ``INSERT OR REPLACE``; la misma tabla con otro selector (un
+        acumulado, lo importado de otra entrada) o la misma ruta en otro almacén, sí."""
+        table = "gb_dataset"
+        location = _abort(table, schema.MSG_LOCATION)
+
+        def other(number: int, **changes: Any) -> dict[str, Any]:
+            return dataset_row(uid=_uid(0x700 + number), name=f"otro_{number}", **changes)
+
+        cases: list[Case] = [
+            (status, *_insert_sql(table, other(number, status=status)), location)
+            for number, status in enumerate(("current", "superseded", "discarded"))
+        ]
+        cases.append(("REPLACE", *_insert_sql(table, other(5), "INSERT OR REPLACE"), location))
+        self.assertRejected(cases)
+        self.accept(("UPDATE gb_dataset SET status = 'discarded' WHERE uid = ?", (DATASET_UID,)))
+        self.assertRejected([("ocupada por un descartado", *_insert_sql(table, other(6)), location)])
+        self.accept(
+            _insert_sql(
+                table, other(7, selector=_json({"column": "input_uid", "equals": _uid(0xE9)}))
+            ),
+            _insert_sql(table, other(8, store="exports", tracked=0, immutable=0, input_uid=None)),
+        )
+        self.assertEqual(
+            self.scalar("SELECT count(*) FROM gb_dataset WHERE locator = 'core_imported_limites'"), 3
+        )
+
+    def test_identity_fixed_imported_content_fixed_and_nothing_deleted(self) -> None:
+        """RF-008-17, RF-008-52 (plan §5.2.1): de un dato no cambian su identidad, su nombre,
+        su módulo, su tipo, su ubicación, su lector, su normalizador, su entrada ni si es
+        inmutable; lo importado (inmutable) tampoco cambia de contenido ni de la operación que
+        lo escribió, y uno derivado sí. Su estado, su seguimiento y su comprobación cambian.
+        Ninguno se borra ni se sustituye con ``INSERT OR REPLACE``."""
+        table = "gb_dataset"
+        no_replace = _abort(table, schema.MSG_NO_REPLACE)
+        cases = self.fixed_cases(table, "uid = '" + DATASET_UID + "'")
+        cases += [
+            ("borrar", f"DELETE FROM {table}", (), _abort(table, schema.MSG_NO_DELETE)),
+            (
+                "REPLACE por uid",
+                *_insert_sql(table, dataset_row(name="otro", locator="otro"), "INSERT OR REPLACE"),
+                no_replace,
+            ),
+            (
+                "REPLACE por fid",
+                *_insert_sql(
+                    table,
+                    {"fid": 1, **dataset_row(uid=_uid(0xA9), name="otro", locator="otro")},
+                    "INSERT OR REPLACE",
+                ),
+                no_replace,
+            ),
+        ]
+        self.assertGreaterEqual(len(schema.FIXED_COLUMNS[table]), 13)
+        self.assertRejected(cases)
+        derived = dataset_row(**DERIVED)
+        self.accept(
+            _insert_sql("gb_operation", operation_row(uid=OP2_UID, op_type="core.external_edit")),
+            _insert_sql(table, derived),
+        )
+        immutable = _abort(table, schema.MSG_IMMUTABLE)
+        self.assertRejected(
+            [
+                (
+                    "contenido de lo importado",
+                    f"UPDATE {table} SET content_sha256 = ? WHERE uid = ?",
+                    (_sha("editado en QGIS"), DATASET_UID),
+                    immutable,
+                ),
+                (
+                    "operación de lo importado",
+                    f"UPDATE {table} SET operation_uid = ? WHERE uid = ?",
+                    (OP2_UID, DATASET_UID),
+                    immutable,
+                ),
+            ]
+        )
+        self.accept(
+            (f"UPDATE {table} SET uid = uid, name = name, locator = locator, "
+             "content_sha256 = content_sha256, operation_uid = operation_uid", ()),
+            (
+                f"UPDATE {table} SET status = 'damaged', tracked_last_change = ?, "
+                "tracked_schema_sha256 = ?, checked_at = ?, qgis_editable = 1, "
+                "description = 'Editado fuera de Geoblender', modified_at = ? WHERE uid = ?",
+                (LATER, _sha("sql 2"), LATER, LATER, DATASET_UID),
+            ),
+            (
+                f"UPDATE {table} SET content_sha256 = ?, operation_uid = ?, tracked_size = 2, "
+                "crs_epsg = 25830, modified_at = ? WHERE uid = ?",
+                (_sha("mdt editado"), OP2_UID, LATER, derived["uid"]),
+            ),
+        )
+        imported = self.row(table, "uid = ?", (DATASET_UID,))
+        self.assertEqual(
+            (imported["status"], imported["content_sha256"], imported["operation_uid"]),
+            ("damaged", _sha("contenido"), OP_UID),
+        )
+        edited = self.row(table, "uid = ?", (derived["uid"],))
+        self.assertEqual(
+            (edited["content_sha256"], edited["operation_uid"], edited["created_at"]),
+            (_sha("mdt editado"), OP2_UID, NOW),
+        )
+
+    def test_dataset_change_and_operation_links(self) -> None:
+        """RF-008-17, RF-008-18: cada contenido nuevo de un dato queda en
+        ``gb_dataset_change`` con la operación que lo escribió, y lo que consume y produce
+        una operación en ``gb_operation_io`` (dato o entrada, con su hash y su papel; el
+        mismo elemento con otro papel no choca); un dato, una operación o un parámetro que no
+        existen, una dirección o un tipo de elemento desconocidos, se rechazan."""
+        cases: list[Case] = [
+            (
+                "dato desconocido",
+                *_insert_sql("gb_dataset_change", dataset_change_row(dataset_uid=UNKNOWN_UID)),
+                FOREIGN_KEY,
+            ),
+            (
+                "operación del cambio desconocida",
+                *_insert_sql("gb_dataset_change", dataset_change_row(operation_uid=UNKNOWN_UID)),
+                FOREIGN_KEY,
+            ),
+            ("dirección", *_insert_sql("gb_operation_io", io_row(direction="both")), CHECK),
+            ("tipo de elemento", *_insert_sql("gb_operation_io", io_row(item_kind="parameter")), CHECK),
+            (
+                "operación desconocida",
+                *_insert_sql("gb_operation_io", io_row(operation_uid=UNKNOWN_UID, role="otro")),
+                FOREIGN_KEY,
+            ),
+            (
+                "parámetro desconocido",
+                *_insert_sql("gb_operation_param", op_param_row(parameter_uid=UNKNOWN_UID)),
+                FOREIGN_KEY,
+            ),
+        ]
+        self.assertRejected(cases)
+        self.accept(
+            _insert_sql("gb_dataset_change", NEW_ROWS["gb_dataset_change"]()),
+            _insert_sql("gb_operation_io", NEW_ROWS["gb_operation_io"]()),
+            _insert_sql("gb_operation_io", io_row(role="imported_copy")),
+        )
+        self.assertEqual(
+            self.db.connection.execute(
+                "SELECT from_sha256, to_sha256 FROM gb_dataset_change ORDER BY fid"
+            ).fetchall(),
+            [(None, _sha("contenido")), (_sha("contenido"), _sha("contenido 2"))],
+        )
+        self.assertEqual(self.scalar("SELECT count(*) FROM gb_operation_io"), 3)
+
+
+class OperationTest(_DbCase):
+    def test_states_and_completion(self) -> None:
+        """RF-008-18, RF-008-19, RF-008-51: una operación se registra «en curso» sin fecha de
+        fin y se completa con su estado, su fin, dónde se ejecutó (también en un proceso
+        aparte, con su trabajo e intérprete), las bibliotecas y su mensaje; una en curso con
+        fin, una terminada sin fin, un estado, un ejecutor o un ámbito desconocidos, y una
+        operación sustituida o sustituta que no existe, se rechazan. Cancelada, fallida,
+        interrumpida y no incorporada son estados terminados."""
+        table = "gb_operation"
+
+        def op(number: int, **changes: Any) -> dict[str, Any]:
+            return operation_row(uid=_uid(0x800 + number), **changes)
+
+        self.assertRejected(
+            [
+                ("en curso con fin", *_insert_sql(table, op(0, status="running")), CHECK),
+                ("hecha sin fin", *_insert_sql(table, op(1, finished_at=None)), CHECK),
+                ("estado 'hecha'", *_insert_sql(table, op(2, status="hecha")), CHECK),
+                ("estado 'stale'", *_insert_sql(table, op(3, status="stale")), CHECK),
+                ("ejecutor 'gpu'", *_insert_sql(table, op(4, executor="gpu")), CHECK),
+                ("ámbito 'sector'", *_insert_sql(table, op(5, scope="sector")), CHECK),
+                ("sustituye a una desconocida", *_insert_sql(table, op(6, supersedes_uid=UNKNOWN_UID)),
+                 FOREIGN_KEY),
+                ("sustituida por una desconocida", *_insert_sql(table, op(7, superseded_by=UNKNOWN_UID)),
+                 FOREIGN_KEY),
+            ]
+        )
+        interpreter = _json({"python": "3.13.13", "numpy": "2.3.4", "blas": "openblas"})
+        software = _json({"numpy": "2.3.4"})
+        self.accept(
+            _insert_sql(table, operation_row(uid=OP2_UID, **RUNNING)),
+            (
+                "UPDATE gb_operation SET status = 'done', finished_at = ?, executor = 'job_process', "
+                "job_uid = ?, interpreter = ?, software = ?, message = 'Hecho' WHERE uid = ?",
+                (LATER, _uid(0x99), interpreter, software, OP2_UID),
+            ),
+        )
+        row = self.row(table, "uid = ?", (OP2_UID,))
+        self.assertEqual(
+            (row["status"], row["finished_at"], row["executor"], row["interpreter"], row["started_at"]),
+            ("done", LATER, "job_process", interpreter, NOW),
+        )
+        for number, status in enumerate(("cancelled", "failed", "interrupted", "not_ingested")):
+            with self.subTest(status):
+                uid = _uid(0x810 + number)
+                self.accept(
+                    _insert_sql(table, operation_row(uid=uid, **RUNNING)),
+                    (
+                        "UPDATE gb_operation SET status = ?, status_reason = 'motivo', "
+                        "finished_at = ? WHERE uid = ?",
+                        (status, LATER, uid),
+                    ),
+                )
+                self.assertRejected(
+                    [
+                        (
+                            "cambiar el motivo",
+                            "UPDATE gb_operation SET status_reason = 'otro' WHERE uid = ?",
+                            (uid,),
+                            _abort(table, schema.MSG_FINISHED),
+                        )
+                    ]
+                )
+
+    def test_finished_operation_only_records_its_successor(self) -> None:
+        """RF-008-18, RF-008-19 (plan §5.2.1): una operación terminada no cambia nada salvo
+        ``superseded_by``, y solo de NULL a un valor: cambiar cualquier otra columna que se
+        completa al terminar, volver a «en curso», cambiar o quitar su sustituta se rechazan;
+        su identidad no cambia ni en curso; ninguna se borra ni se sustituye."""
+        table = "gb_operation"
+        finished = _abort(table, schema.MSG_FINISHED)
+        no_replace = _abort(table, schema.MSG_NO_REPLACE)
+        where = f"uid = '{OP_UID}'"
+        self.accept(_insert_sql(table, operation_row(uid=OP2_UID, **RUNNING)))
+        cases: list[Case] = [
+            (f"terminada.{column}", f"UPDATE {table} SET {column} = {_changed(column)} WHERE {where}",
+             (), finished)
+            for column in schema.MUTABLE_COLUMNS[table]
+        ]
+        cases.append(
+            (
+                "volver a en curso",
+                f"UPDATE {table} SET status = 'running', finished_at = NULL WHERE {where}",
+                (),
+                finished,
+            )
+        )
+        cases += self.fixed_cases(table, where)
+        cases += [(f"en curso: {label}", *rest) for label, *rest in self.fixed_cases(table, f"uid = '{OP2_UID}'")]
+        cases += [
+            ("borrar", f"DELETE FROM {table}", (), _abort(table, schema.MSG_NO_DELETE)),
+            ("REPLACE por uid", *_insert_sql(table, operation_row(), "INSERT OR REPLACE"), no_replace),
+            (
+                "REPLACE por fid",
+                *_insert_sql(table, {"fid": 1, **operation_row(uid=_uid(0x8FF))}, "INSERT OR REPLACE"),
+                no_replace,
+            ),
+        ]
+        self.assertGreaterEqual(len(cases), 45)
+        self.assertRejected(cases)
+        successor = operation_row(uid=_uid(0x820), supersedes_uid=OP_UID)
+        self.accept(
+            _insert_sql(table, successor),
+            (f"UPDATE {table} SET superseded_by = ? WHERE {where}", (successor["uid"],)),
+            (f"UPDATE {table} SET status = status, message = message, superseded_by = superseded_by "
+             f"WHERE {where}", ()),
+        )
+        once = _abort(table, schema.MSG_WRITE_ONCE[table])
+        self.assertRejected(
+            [
+                ("otra sustituta", f"UPDATE {table} SET superseded_by = ? WHERE {where}", (OP2_UID,), once),
+                ("quitar la sustituta", f"UPDATE {table} SET superseded_by = NULL WHERE {where}", (), once),
+            ]
+        )
+        row = self.row(table, where)
+        self.assertEqual(
+            (row["status"], row["finished_at"], row["superseded_by"]), ("done", NOW, successor["uid"])
+        )
+
+
+class AppendOnlyTest(_DbCase):
+    def test_append_only_tables(self) -> None:
+        """RF-008-05, RF-008-17, RF-008-18, RF-008-30: ninguna fila de los cambios de los
+        datos, de lo que consume y produce una operación, de los parámetros que usó ni de las
+        cifras cambia (ninguna columna) ni se borra, tampoco desde Geoblender ni sustituyéndola
+        con ``INSERT OR REPLACE`` (por ``fid`` o por su clave única); una fila nueva sí se
+        añade."""
+        cases: list[Case] = []
+        duplicates = {
+            "gb_operation_io": io_row(),
+            "gb_operation_param": op_param_row(),
+            "gb_figure": figure_row(key="res.otra"),
+        }
+        for table in APPEND_ONLY[1:]:
+            append_only = _abort(table, schema.MSG_APPEND_ONLY)
+            cases += [
+                (f"{table}.{column}", f"UPDATE {table} SET {column} = {_changed(column)}", (), append_only)
+                for column in _columns(self.db.connection, table)
+            ]
+            cases += [
+                (f"{table}: borrar", f"DELETE FROM {table}", (), append_only),
+                (
+                    f"{table}: REPLACE por fid",
+                    *_insert_sql(table, {"fid": 1, **NEW_ROWS[table]()}, "INSERT OR REPLACE"),
+                    append_only,
+                ),
+            ]
+            if table in duplicates:
+                cases += [
+                    (f"{table}: la misma", *_insert_sql(table, duplicates[table]), append_only),
+                    (
+                        f"{table}: REPLACE por clave",
+                        *_insert_sql(table, duplicates[table], "INSERT OR REPLACE"),
+                        append_only,
+                    ),
+                ]
+        self.assertGreaterEqual(len(cases), 50)
+        self.assertRejected(cases)
+        self.accept(
+            _insert_sql("gb_parameter", NEW_ROWS["gb_parameter"]()),
+            *(_insert_sql(table, NEW_ROWS[table]()) for table in APPEND_ONLY[1:]),
+        )
+        for table in APPEND_ONLY[1:]:
+            self.assertEqual(self.scalar(f"SELECT count(*) FROM {table}"), 2, table)
+
+
+class FigureTest(_DbCase):
+    def test_figure_needs_type_unit_operation_and_a_finite_value(self) -> None:
+        """RF-008-30: una cifra sin clave, texto, tipo, unidad u operación de origen, con un
+        tipo fuera de los cuatro (``HIPOTESIS`` sin tilde, en minúsculas), con una operación
+        o un parámetro que no existen, NaN (que SQLite guarda como NULL) o infinita (±) no se
+        registra (el texto del rechazo lo da ``record_figure``, T19); el mayor finito, el
+        menor subnormal, cero y los valores corrientes se guardan exactos; una cifra que
+        muestra un parámetro lo nombra con su revisión."""
+        table = "gb_figure"
+
+        def fig(number: int, **changes: Any) -> dict[str, Any]:
+            return figure_row(uid=_uid(0x900 + number), **changes)
+
+        cases: list[Case] = [
+            ("NaN", *_insert_sql(table, fig(0, value=math.nan)),
+             "NOT NULL constraint failed: gb_figure.value"),
+            ("+infinito", *_insert_sql(table, fig(1, value=math.inf)), CHECK),
+            ("-infinito", *_insert_sql(table, fig(2, value=-math.inf)), CHECK),
+            ("sin tipo", *_insert_sql(table, fig(3, kind=None)), "NOT NULL constraint failed: gb_figure.kind"),
+            ("HIPOTESIS", *_insert_sql(table, fig(4, kind="HIPOTESIS")), CHECK),
+            ("en minúsculas", *_insert_sql(table, fig(5, kind="calculado")), CHECK),
+            ("sin unidad", *_insert_sql(table, fig(6, unit=None)), "NOT NULL constraint failed: gb_figure.unit"),
+            ("sin operación", *_insert_sql(table, fig(7, operation_uid=None)),
+             "NOT NULL constraint failed: gb_figure.operation_uid"),
+            ("operación desconocida", *_insert_sql(table, fig(8, operation_uid=UNKNOWN_UID)), FOREIGN_KEY),
+            ("parámetro desconocido", *_insert_sql(table, fig(9, parameter_uid=UNKNOWN_UID, parameter_rev=1)),
+             FOREIGN_KEY),
+            ("sin clave", *_insert_sql(table, fig(10, key=None)), "NOT NULL constraint failed: gb_figure.key"),
+            ("sin texto", *_insert_sql(table, fig(11, label=None)), "NOT NULL constraint failed: gb_figure.label"),
+        ]
+        self.assertRejected(cases)
+        values = (sys.float_info.max, -sys.float_info.max, 5e-324, 0.0, 0.1, 13.43, -2.5e-12)
+        self.accept(
+            *(_insert_sql(table, fig(0x20 + number, value=value)) for number, value in enumerate(values)),
+            _insert_sql(
+                table,
+                fig(0x30, key="res.swell_factor", label="Esponjamiento", value=1.23, unit="-",
+                    kind="ADOPTADO", parameter_uid=PARAM_UID, parameter_rev=2),
+            ),
+        )
+        stored = [
+            value
+            for (value,) in self.db.connection.execute(
+                f"SELECT value FROM {table} WHERE uid BETWEEN ? AND ? ORDER BY fid",
+                (_uid(0x920), _uid(0x92F)),
+            )
+        ]
+        self.assertEqual(stored, list(values))
+        shown = self.row(table, "uid = ?", (_uid(0x930),))
+        self.assertEqual((shown["kind"], shown["parameter_uid"], shown["parameter_rev"]), ("ADOPTADO", PARAM_UID, 2))
+
+
+class StaleTest(_DbCase):
+    def test_stale_is_a_cache(self) -> None:
+        """RF-008-24, RF-008-28 (plan §5.2.1; ADR-0025 §5): ``gb_stale`` es la caché de la
+        obsolescencia deducida, la única tabla de la que Geoblender borra filas (y la que
+        sustituye con ``INSERT OR REPLACE``); guarda las nueve causas de una operación o un
+        dato, una vez cada una; un elemento o una causa desconocidos y cambiar el elemento o la
+        causa de una fila se rechazan."""
+        table = "gb_stale"
+        rows = [
+            stale_row(cause_kind=cause, subject_uid=_uid(0xA00 + number))
+            for number, cause in enumerate(STALE_CAUSES)
+        ]
+        self.accept(*(_insert_sql(table, row) for row in rows))
+        self.assertRejected(
+            [
+                ("elemento 'input'", *_insert_sql(table, stale_row(item_kind="input")), CHECK),
+                ("causa desconocida", *_insert_sql(table, stale_row(cause_kind="edited")), CHECK),
+                ("repetida", *_insert_sql(table, stale_row()), "UNIQUE constraint failed"),
+                *self.fixed_cases(table, f"subject_uid = '{PARAM_UID}'"),
+            ]
+        )
+        replaced = stale_row(cause_kind=STALE_CAUSES[0], subject_uid=_uid(0xA00), since=LATER)
+        self.accept(
+            (f"UPDATE {table} SET since = ? WHERE subject_uid = ?", (LATER, PARAM_UID)),
+            _insert_sql(table, replaced, "INSERT OR REPLACE"),
+            (f"DELETE FROM {table} WHERE cause_kind = 'algorithm'", ()),
+        )
+        # La plantilla y las nueve causas, menos la borrada (la sustituida sigue siendo una).
+        self.assertEqual(self.scalar(f"SELECT count(*) FROM {table}"), len(STALE_CAUSES))
+        self.assertEqual(
+            self.scalar(f"SELECT since FROM {table} WHERE subject_uid = ?", (_uid(0xA00),)), LATER
+        )
+        self.accept((f"DELETE FROM {table}", ()))
+        self.assertEqual(self.scalar(f"SELECT count(*) FROM {table}"), 0)
+
+
 class IgnoredTest(_DbCase):
     def test_ignored(self) -> None:
         """RF-008-62 (plan §5.2.1): lo ignorado es una tabla o un fichero, una vez por tipo y
@@ -1134,11 +2006,7 @@ class IgnoredTest(_DbCase):
         no_replace = _abort(table, schema.MSG_NO_REPLACE)
         cases = self.fixed_cases(table, "name = 'capa_de_trabajo'")
         cases += [
-            (
-                "tipo desconocido",
-                *_insert_sql(table, ignored_row(kind="folder", name="x")),
-                "CHECK constraint failed",
-            ),
+            ("tipo desconocido", *_insert_sql(table, ignored_row(kind="folder", name="x")), CHECK),
             ("repetido", *_insert_sql(table, ignored_row()), no_replace),
             ("REPLACE", *_insert_sql(table, ignored_row(reason="otro"), "INSERT OR REPLACE"), no_replace),
             ("borrar", f"DELETE FROM {table}", (), _abort(table, schema.MSG_NO_DELETE)),
@@ -1162,6 +2030,124 @@ class IgnoredTest(_DbCase):
                 ("file", "capa_de_trabajo", "Capa de apoyo de QGIS"),
             ],
         )
+
+
+class ProjectSchemaTest(unittest.TestCase):
+    """El esquema 2 del proyecto (``core.project.schema``) y su comprobación al abrir."""
+
+    def _create(self, tmp: Path) -> Any:
+        parent = tmp / "proyectos"
+        parent.mkdir()
+        created = create.create_project(
+            parent, make_settings(), make_session(), userdata_mod.UserData(tmp / "datos"),
+            clock=FakeClock(),
+        )
+        created.project.close()
+        return created
+
+    def _open(self, tmp: Path, root: Path) -> Any:
+        session = make_session()
+        return open_mod.open_project(
+            root, session, userdata_mod.UserData(tmp / "datos"), clock=FakeClock(),
+            pid_alive=FakePids({session.pid}),
+        )
+
+    def test_new_project_has_schema_2(self) -> None:
+        """RF-008-17, RF-008-30 (RF-002-14, RF-002-22; plan §5.2): un proyecto nuevo tiene
+        el esquema 2 con ``min_reader_schema`` 1 (un Geoblender de la 002 lo abre en solo
+        lectura), en su base y en su cabecera; sus tablas internas son las tres de la 002 y
+        las doce de la procedencia, vacías y declaradas en ``gpkg_extensions`` con una
+        definición sin número de esquema, y ``missing_objects`` no echa nada en falta."""
+        self.assertEqual((project_schema.SCHEMA_VERSION, project_schema.MIN_READER_SCHEMA), (2, 1))
+        self.assertEqual(project_schema.INTERNAL_TABLES, SCHEMA_1_TABLES + TABLES)
+        self.assertNotIn("esquema", base.EXTENSION_DEFINITION)
+        with project_tmp("gb-t08-") as tmp:
+            created = self._create(tmp)
+            header = manifest_mod.read_manifest(created.root)
+            with gpkg.GpkgConnection.open_read(created.root / "project.gpkg") as db:
+                conn = db.connection
+                versions = conn.execute(
+                    "SELECT schema_version, min_reader_schema FROM gb_project"
+                ).fetchone()
+                missing = project_schema.missing_objects(conn, 2)
+                counts = {
+                    table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                    for table in TABLES
+                }
+                declared = conn.execute(
+                    "SELECT table_name, definition, scope FROM gpkg_extensions "
+                    "WHERE extension_name = 'imga_geoblender' ORDER BY table_name"
+                ).fetchall()
+        self.assertEqual(tuple(versions), (2, 1))
+        self.assertEqual((created.record.schema_version, created.record.min_reader_schema), (2, 1))
+        self.assertEqual((header.schema_version, header.min_reader_schema), (2, 1))
+        self.assertEqual(missing, [])
+        self.assertEqual(counts, dict.fromkeys(TABLES, 0))
+        self.assertEqual(
+            declared,
+            [
+                (table, base.EXTENSION_DEFINITION, "write-only")
+                for table in sorted(SCHEMA_1_TABLES + TABLES)
+            ],
+        )
+
+    def test_missing_objects_by_version(self) -> None:
+        """RF-002-20, RF-002-22 (plan §5.1): ``missing_objects(conn, version)`` echa en falta
+        lo del esquema pedido: en el 1, solo lo de la 002; en el 2, también las tablas, los
+        índices y los disparadores de la procedencia; en uno posterior, lo que conoce esta
+        versión (el 2). Un esquema que no es un entero desde 1 es un error."""
+        with tempfile.TemporaryDirectory(prefix="gb-t08-", ignore_cleanup_errors=True) as tmp:
+            path = Path(tmp) / "falta.gpkg"
+            shutil.copyfile(_template(), path)
+            raw = sqlite3.connect(path, isolation_level=None)
+            try:
+                self.assertEqual(project_schema.missing_objects(raw, 2), [])
+                raw.execute("DROP TRIGGER gb_event_no_upd")
+                raw.execute("DROP TABLE gb_figure")
+                found = {version: project_schema.missing_objects(raw, version) for version in (1, 2, 3)}
+                for wrong, error in ((0, ValueError), (-1, ValueError), (True, TypeError), ("2", TypeError)):
+                    with self.subTest(version=wrong), self.assertRaises(error):
+                        project_schema.missing_objects(raw, wrong)
+            finally:
+                raw.close()
+        figure = ["table gb_figure", "index gb_figure_key"] + [
+            f"trigger {name}" for name in schema.TRIGGERS if name.startswith("gb_figure_")
+        ]
+        self.assertEqual(found[1], ["trigger gb_event_no_upd"])
+        self.assertEqual(found[2], ["trigger gb_event_no_upd", *figure])
+        self.assertEqual(found[3], found[2])
+        self.assertGreaterEqual(len(figure), 6)
+
+    def test_open_checks_the_objects_of_its_schema(self) -> None:
+        """RF-002-05, RF-002-20 (plan §5.1): al abrir, a un proyecto del esquema 2 que ha
+        perdido un disparador de la procedencia se le echa en falta y no se abre; uno del
+        esquema 1, sin las tablas de la procedencia, abre (en solo lectura, sin migrar) sin
+        que le falte nada."""
+        with project_tmp("gb-t08-") as tmp:
+            created = self._create(tmp)
+            database = created.root / "project.gpkg"
+            raw = sqlite3.connect(database, isolation_level=None)
+            try:
+                raw.execute("DROP TRIGGER gb_figure_no_upd")
+            finally:
+                raw.close()
+            with self.assertRaises(errors.ProjectError) as caught:
+                self._open(tmp, created.root)
+            self.assertEqual(caught.exception.code, "core.project_database_incomplete")
+            self.assertIn("trigger gb_figure_no_upd", str(caught.exception))
+            raw = sqlite3.connect(database, isolation_level=None)
+            try:
+                for table in reversed(TABLES):
+                    raw.execute(f"DROP TABLE {table}")
+            finally:
+                raw.close()
+            mark_schema(created.root, 1)
+            result = self._open(tmp, created.root)
+            try:
+                self.assertEqual(result.project.read_only_reason, model.ReadOnlyCode.NOT_MIGRATED)
+                self.assertEqual(result.project.schema_version, 1)
+            finally:
+                result.project.close()
 
 
 if __name__ == "__main__":

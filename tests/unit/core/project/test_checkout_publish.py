@@ -383,7 +383,7 @@ class CheckoutRefusedTest(unittest.TestCase):
         """RF-002-31, RF-002-20: un esquema anterior se migra antes de sacar la copia."""
         with project_tmp() as tmp:
             env = Env(tmp)
-            with mock.patch.object(open_mod, "SCHEMA_VERSION", 2):
+            with mock.patch.object(open_mod, "SCHEMA_VERSION", schema.SCHEMA_VERSION + 1):
                 with self.assertRaises(errors.ProjectError) as caught:
                     env.checkout()
             self.assertEqual(caught.exception.code, "core.checkout_not_migrated")

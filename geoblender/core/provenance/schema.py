@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tablas internas de la procedencia en el GeoPackage del proyecto (spec 008; RF-008-01,
-RF-008-02, RF-008-07; ADR-0025; plan 008 §5.2.1).
+RF-008-02, RF-008-07, RF-008-17, RF-008-30; ADR-0025; plan 008 §5.2.1).
 
-Primera parte (T07): parámetros tipados y su historial (RF-008-01 a 06), entradas y sus
-ficheros (RF-008-07 a 16) y lo que el usuario decidió ignorar (RF-008-62). La segunda (T08)
-añade datos, operaciones, cifras y la caché de obsolescencia, y ``core.project.schema`` las
-crea con el esquema 2.
+Son las tablas que el esquema 2 añade al 1 (``core.project.schema.create_schema`` las crea
+con él): parámetros tipados y su historial (RF-008-01 a 06), entradas y sus ficheros
+(RF-008-07 a 16), datos del proyecto y cada contenido nuevo suyo (RF-008-17, 21, 52, 56,
+57), operaciones con lo que consumen y producen y los parámetros que usaron (RF-008-05,
+18 a 20, 23 a 27, 51), cifras (RF-008-30, 31), la caché de la obsolescencia deducida
+(RF-008-24, 28) y lo que el usuario decidió ignorar (RF-008-62).
 
-El SQL de las tablas y del índice es el del plan §5.2.1, con «IF NOT EXISTS» para que la
+El SQL de las tablas y de los índices es el del plan §5.2.1, con «IF NOT EXISTS» para que la
 migración 1 → 2 sea idempotente: SQLite guarda el SQL sin esa cláusula, así que crear de cero
 y migrar dan el mismo ``sqlite_master``. Como las de la 002, las tablas son internas:
 declaradas en ``gpkg_extensions`` (``imga_geoblender``, ``write-only``) y fuera de
@@ -16,29 +18,42 @@ declaradas en ``gpkg_extensions`` (``imga_geoblender``, ``write-only``) y fuera 
 
 - solo escribe una conexión de Geoblender (``WHEN gb_writer() IS NOT 1``; en una ajena la
   función no existe y la sentencia ni se prepara);
-- nada se borra (plan §5.2.1, «Reglas de escritura»: solo se borran filas de la caché
-  ``gb_stale``), tampoco con ``REPLACE``: en SQLite, ``INSERT OR REPLACE`` y ``UPDATE OR
-  REPLACE`` borran la fila que choca sin disparar los ``BEFORE DELETE`` (salvo con
-  ``PRAGMA recursive_triggers``), así que ``<tabla>_no_replace`` rechaza insertar una fila
-  cuya identidad (``fid`` o una clave única, :data:`UNIQUE_KEYS`) ya existe;
-- ``gb_parameter_history`` es de solo inserción, también para Geoblender (RF-008-02);
+- nada se borra (plan §5.2.1, «Reglas de escritura») salvo las filas de la caché
+  ``gb_stale`` (:data:`CACHE_TABLES`, y solo Geoblender), tampoco con ``REPLACE``: en SQLite,
+  ``INSERT OR REPLACE`` y ``UPDATE OR REPLACE`` borran la fila que choca sin disparar los
+  ``BEFORE DELETE`` (salvo con ``PRAGMA recursive_triggers``), así que ``<tabla>_no_replace``
+  rechaza insertar una fila cuya identidad (``fid`` o una clave única, :data:`UNIQUE_KEYS`)
+  ya existe;
+- el historial de parámetros, los cambios de los datos, lo que consume y produce cada
+  operación, los parámetros que usó y las cifras son de solo inserción, también para
+  Geoblender (:data:`APPEND_ONLY_TABLES`; RF-008-02, RF-008-05, RF-008-17, RF-008-30);
 - de las demás solo cambian las columnas de :data:`MUTABLE_COLUMNS`: ``<tabla>_fixed``
   rechaza cambiar una de :data:`FIXED_COLUMNS` (escribir el mismo valor sí pasa). Cambian el
   valor y la procedencia de un parámetro; el estado, el original, el nombre y la entrega de
   una entrada (D-11); la comprobación de un fichero de una entrada y la fecha de su original,
   cuya ruta, huella y tamaño se escriben una sola vez (:data:`WRITE_ONCE_COLUMNS`,
-  RF-008-53); el motivo de lo ignorado;
-- un nombre lógico tiene como mucho una entrada activa (ni sustituida ni descartada): el
-  índice único parcial del plan y, para que ``REPLACE`` no lo salte al insertar ni al
-  renombrar, ``gb_input_name_ins`` y ``gb_input_name_upd``.
+  RF-008-53); de un dato, su contenido, su estado, su seguimiento y su comprobación, nunca su
+  identidad ni su ubicación, y lo importado tampoco cambia de contenido ni de la operación
+  que lo escribió (``gb_dataset_immutable``, RF-008-52); de una operación, lo que se completa
+  al terminar y, ya terminada, solo la que la sustituye, una vez (``gb_operation_finished``
+  y ``gb_operation_once``); el motivo de lo ignorado;
+- un nombre lógico tiene como mucho una entrada activa (ni sustituida ni descartada), y un
+  nombre de dato, un dato vivo (vigente, que falta, bloqueado o dañado): los índices únicos
+  parciales del plan y, para que ``REPLACE`` no los salte, ``gb_input_name_ins``,
+  ``gb_input_name_upd``, ``gb_dataset_name_ins`` y ``gb_dataset_name_upd``; una ubicación de
+  dato (almacén, tabla o ruta y selector) no se reutiliza nunca (``gb_dataset_location`` y
+  ``gb_dataset_location_ins``; D21).
 
 ``gb_writer()`` no es seguridad: evita que otro programa altere por error lo que solo
 gestiona Geoblender. Los ``CHECK`` del plan rechazan un parámetro con un tipo fuera de los
 cuatro (``HIPÓTESIS`` con tilde, como ``core.params.ParamKind``), uno CALCULADO sin operación
-y uno «sin confirmar» que no es ADOPTADO ni HIPÓTESIS (RF-008-01), y una fila del historial
-sin motivo salvo al confirmar (RF-008-02). Las claves foráneas a ``gb_operation`` (T08)
-necesitan esa tabla: con ``foreign_keys = ON``, sin ella no se puede escribir en las tablas
-que la nombran.
+y uno «sin confirmar» que no es ADOPTADO ni HIPÓTESIS (RF-008-01); una fila del historial
+sin motivo salvo al confirmar (RF-008-02); un dato inmutable sin entrada o sin seguimiento
+fuera de ``exports`` y ``duckdb``; una operación en curso con fecha de fin o terminada sin
+ella; y una cifra infinita (NaN no llega: SQLite lo guarda como NULL y ``value`` es ``NOT
+NULL``), con un tipo fuera de los cuatro o sin unidad u operación (RF-008-30; el texto del
+rechazo para el usuario lo da ``record_figure``). Con ``foreign_keys = ON``, toda tabla que
+nombra otra necesita que esa exista para escribir en ella.
 """
 
 from __future__ import annotations
@@ -140,6 +155,117 @@ TABLES: dict[str, str] = {
   original_sha256 TEXT, original_size INTEGER, original_mtime_ns INTEGER,
   UNIQUE (input_uid, ord)
 )""",
+    "gb_dataset": """CREATE TABLE IF NOT EXISTS gb_dataset (
+  fid             INTEGER  PRIMARY KEY AUTOINCREMENT,
+  uid             TEXT     NOT NULL UNIQUE,
+  name            TEXT     NOT NULL,                 -- estable: 'gis_dtm_proyecto', 'dh_collar'
+  module          TEXT     NOT NULL,
+  kind            TEXT     NOT NULL CHECK (kind IN ('vector','raster','mesh','table','drillholes','point_cloud',
+                                                    'block_model','block_field','report','document')),
+  store           TEXT     NOT NULL CHECK (store IN ('gpkg','rasters','meshes','duckdb','originals','exports')),
+  locator         TEXT     NOT NULL,                 -- tabla del GPKG o ruta relativa
+  selector        TEXT     NOT NULL DEFAULT '',      -- JSON canónico: {"column":"input_uid","equals":uid} (lo importado
+                                                     -- de una entrada) | {"column":"input_uid","of":"current_inputs"} (acumulado)
+  reader          TEXT     NOT NULL,                 -- su lector y su normalizador para siempre (ADR-0024 §6)
+  normalizer      TEXT     NOT NULL,
+  content_sha256  TEXT     NOT NULL,
+  crs_epsg        INTEGER,
+  operation_uid   TEXT     NOT NULL REFERENCES gb_operation(uid),  -- escribió su contenido actual
+  input_uid       TEXT     REFERENCES gb_input(uid),              -- si es lo importado de una entrada
+  immutable       BOOLEAN  NOT NULL DEFAULT 0,       -- lo importado (RF-008-52)
+  qgis_editable   BOOLEAN  NOT NULL DEFAULT 0,       -- su módulo lo declara editable a mano (RF-008-56)
+  tracked         BOOLEAN  NOT NULL DEFAULT 1,       -- 0 en 'exports' y, hasta R-22, en 'duckdb'
+  status          TEXT     NOT NULL DEFAULT 'current'
+                  CHECK (status IN ('current','superseded','discarded','missing','blocked','damaged')),
+  superseded_by   TEXT     REFERENCES gb_dataset(uid),
+  tracked_size INTEGER, tracked_mtime_ns INTEGER,             -- ficheros (ADR-0025 §6)
+  tracked_last_change TEXT, tracked_schema_sha256 TEXT,       -- tablas del GPKG (gpkg_contents.last_change y SQL)
+  checked_at      DATETIME,
+  description     TEXT,
+  created_at DATETIME NOT NULL, modified_at DATETIME NOT NULL,
+  CHECK (NOT immutable OR input_uid IS NOT NULL),
+  CHECK (tracked OR store IN ('exports','duckdb'))
+)""",
+    "gb_dataset_change": """CREATE TABLE IF NOT EXISTS gb_dataset_change (  -- solo inserción: cada contenido nuevo de un dato
+  fid             INTEGER  PRIMARY KEY AUTOINCREMENT,
+  dataset_uid     TEXT     NOT NULL REFERENCES gb_dataset(uid),
+  from_sha256     TEXT,                              -- NULL en el primero
+  to_sha256       TEXT     NOT NULL,
+  operation_uid   TEXT     NOT NULL REFERENCES gb_operation(uid),
+  detail          TEXT,                              -- JSON del módulo: elementos afectados (RF-005-22)
+  at              DATETIME NOT NULL
+)""",
+    "gb_operation": """CREATE TABLE IF NOT EXISTS gb_operation (
+  fid             INTEGER  PRIMARY KEY AUTOINCREMENT,
+  uid             TEXT     NOT NULL UNIQUE,
+  op_type         TEXT     NOT NULL,                 -- '<código>.<acción>'
+  op_version      TEXT     NOT NULL,                 -- 'M.m' del algoritmo
+  module          TEXT     NOT NULL,
+  scope           TEXT     NOT NULL DEFAULT 'project' CHECK (scope IN ('project','version')),
+  repeatable      BOOLEAN  NOT NULL,                 -- se puede repetir sola (RF-008-27)
+  group_name      TEXT,                              -- grupo de operaciones acopladas (RF-008-25)
+  group_uid       TEXT,                              -- una ejecución de ese grupo
+  settings        TEXT     NOT NULL,                 -- ajustes de la orden (JSON canónico)
+  settings_sha256 TEXT     NOT NULL,
+  status          TEXT     NOT NULL CHECK (status IN ('running','done','cancelled','failed','interrupted','not_ingested')),
+  status_reason   TEXT,
+  supersedes_uid  TEXT     REFERENCES gb_operation(uid),  -- recálculo, reimportación o «dar por buena» de…
+  superseded_by   TEXT     REFERENCES gb_operation(uid),
+  geoblender_version TEXT  NOT NULL,
+  software        TEXT     NOT NULL DEFAULT '{}',    -- bibliotecas que influyen en sus cifras
+  executor        TEXT     NOT NULL CHECK (executor IN ('blender','job_thread','job_process','external')),
+  job_uid         TEXT,
+  interpreter     TEXT,                              -- JSON de InterpreterInfo de la 004
+  user_host TEXT NOT NULL, host TEXT NOT NULL, session_uid TEXT NOT NULL,
+  started_at      DATETIME NOT NULL,
+  finished_at     DATETIME,
+  message         TEXT,
+  CHECK ((status = 'running') = (finished_at IS NULL))
+)""",
+    "gb_operation_io": """CREATE TABLE IF NOT EXISTS gb_operation_io (  -- solo inserción
+  fid INTEGER PRIMARY KEY AUTOINCREMENT,
+  operation_uid   TEXT     NOT NULL REFERENCES gb_operation(uid),
+  direction       TEXT     NOT NULL CHECK (direction IN ('in','out')),
+  item_kind       TEXT     NOT NULL CHECK (item_kind IN ('dataset','input')),
+  item_uid        TEXT     NOT NULL,
+  content_sha256  TEXT     NOT NULL,                 -- versión consumida o producida (normalizador del elemento)
+  role            TEXT     NOT NULL,                 -- 'terrain', 'boundary', 'imported'…
+  UNIQUE (operation_uid, direction, item_kind, item_uid, role)
+)""",
+    "gb_operation_param": """CREATE TABLE IF NOT EXISTS gb_operation_param (  -- solo inserción: lo que usó (RF-008-05); nunca escribe (S-1)
+  fid INTEGER PRIMARY KEY AUTOINCREMENT,
+  operation_uid   TEXT     NOT NULL REFERENCES gb_operation(uid),
+  parameter_uid   TEXT     NOT NULL REFERENCES gb_parameter(uid),
+  key TEXT NOT NULL, scope TEXT NOT NULL, rev INTEGER NOT NULL,
+  value TEXT, unit TEXT NOT NULL, kind TEXT NOT NULL, unconfirmed BOOLEAN NOT NULL,
+  value_sha256    TEXT     NOT NULL,
+  UNIQUE (operation_uid, parameter_uid)
+)""",
+    "gb_figure": """CREATE TABLE IF NOT EXISTS gb_figure (  -- solo inserción
+  fid INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid             TEXT     NOT NULL UNIQUE,
+  key             TEXT     NOT NULL,                 -- 'res.sellable_t'
+  label           TEXT     NOT NULL,                 -- texto en español
+  value           DOUBLE   NOT NULL CHECK (abs(value) <= 1.7976931348623157e308),  -- NaN se guarda NULL; infinito no pasa
+  unit            TEXT     NOT NULL,                 -- código de core.units ('-' adimensional)
+  kind            TEXT     NOT NULL CHECK (kind IN ('MEDIDO','CALCULADO','ADOPTADO','HIPÓTESIS')),
+  operation_uid   TEXT     NOT NULL REFERENCES gb_operation(uid),
+  parameter_uid   TEXT     REFERENCES gb_parameter(uid),   -- si la cifra muestra un parámetro o lo calcula
+  parameter_rev   INTEGER,
+  scope           TEXT     NOT NULL DEFAULT '{}',    -- JSON canónico: {"phase":"1","bench":125}
+  scope_key       TEXT     NOT NULL DEFAULT '',      -- sha256 abreviado de scope, para buscar
+  created_at      DATETIME NOT NULL
+)""",
+    "gb_stale": """CREATE TABLE IF NOT EXISTS gb_stale (
+  item_kind       TEXT     NOT NULL CHECK (item_kind IN ('operation','dataset')),
+  item_uid        TEXT     NOT NULL,
+  cause_kind      TEXT     NOT NULL CHECK (cause_kind IN ('dataset_changed','parameter_changed','input_updated',
+                                    'input_discarded','dataset_missing','dataset_blocked','dataset_damaged',
+                                    'algorithm','group')),
+  subject_uid     TEXT     NOT NULL,                 -- lo que cambió: dato, parámetro, entrada o tipo de operación
+  since           DATETIME NOT NULL,
+  PRIMARY KEY (item_kind, item_uid, cause_kind, subject_uid)
+)""",
     "gb_ignored": """CREATE TABLE IF NOT EXISTS gb_ignored (  -- capas y ficheros que el usuario decidió ignorar (RF-008-62)
   fid INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL CHECK (kind IN ('table','file')), name TEXT NOT NULL,
@@ -154,13 +280,47 @@ INDEXES: dict[str, str] = {
         "CREATE UNIQUE INDEX IF NOT EXISTS gb_input_name_active ON gb_input(name) "
         "WHERE status NOT IN ('superseded','discarded')"
     ),
+    "gb_dataset_name_active": (  # un nombre, un dato vivo (I-9)
+        "CREATE UNIQUE INDEX IF NOT EXISTS gb_dataset_name_active ON gb_dataset(name) "
+        "WHERE status IN ('current','missing','blocked','damaged')"
+    ),
+    "gb_dataset_location": (  # una ubicación no se reutiliza
+        "CREATE UNIQUE INDEX IF NOT EXISTS gb_dataset_location "
+        "ON gb_dataset(store, locator, selector)"
+    ),
+    "gb_operation_io_item": (
+        "CREATE INDEX IF NOT EXISTS gb_operation_io_item "
+        "ON gb_operation_io(item_kind, item_uid, direction)"
+    ),
+    "gb_operation_io_version": (
+        "CREATE INDEX IF NOT EXISTS gb_operation_io_version "
+        "ON gb_operation_io(item_uid, content_sha256, direction)"
+    ),
+    "gb_operation_param_parameter": (
+        "CREATE INDEX IF NOT EXISTS gb_operation_param_parameter "
+        "ON gb_operation_param(parameter_uid)"
+    ),
+    "gb_figure_key": (
+        "CREATE INDEX IF NOT EXISTS gb_figure_key ON gb_figure(key, scope_key, created_at)"
+    ),
 }
 """Los índices que no salen de las restricciones de las tablas."""
 
 INTERNAL_TABLES: tuple[str, ...] = tuple(TABLES)
 
-APPEND_ONLY_TABLES: tuple[str, ...] = ("gb_parameter_history",)
+APPEND_ONLY_TABLES: tuple[str, ...] = (
+    "gb_parameter_history",
+    "gb_dataset_change",
+    "gb_operation_io",
+    "gb_operation_param",
+    "gb_figure",
+)
 """Tablas de solo inserción: ninguna fila cambia ni se borra."""
+
+CACHE_TABLES: tuple[str, ...] = ("gb_stale",)
+"""Tablas de caché: Geoblender borra y sustituye sus filas (la obsolescencia deducida se
+reescribe por diferencias, ADR-0025 §5); las demás reglas (solo Geoblender escribe, columnas
+fijas) se aplican igual."""
 
 FIXED_COLUMNS: dict[str, tuple[str, ...]] = {
     "gb_parameter": ("fid", "uid", "key", "scope", "scope_uid", "module", "created_at"),
@@ -198,9 +358,47 @@ FIXED_COLUMNS: dict[str, tuple[str, ...]] = {
         "last_change",
         "sha256",
     ),
+    "gb_dataset": (
+        "fid",
+        "uid",
+        "name",
+        "module",
+        "kind",
+        "store",
+        "locator",
+        "selector",
+        "reader",
+        "normalizer",
+        "input_uid",
+        "immutable",
+        "created_at",
+    ),
+    "gb_operation": (
+        "fid",
+        "uid",
+        "op_type",
+        "op_version",
+        "module",
+        "scope",
+        "repeatable",
+        "group_name",
+        "group_uid",
+        "settings",
+        "settings_sha256",
+        "supersedes_uid",
+        "geoblender_version",
+        "user_host",
+        "host",
+        "session_uid",
+        "started_at",
+    ),
+    "gb_stale": ("item_kind", "item_uid", "cause_kind", "subject_uid"),
     "gb_ignored": ("fid", "kind", "name"),
 }
-"""Las columnas que no cambian nunca en las tablas que no son de solo inserción."""
+"""Las columnas que no cambian nunca en las tablas que no son de solo inserción. De un dato,
+además de lo que dice el plan, su entrada y si es inmutable: si no, bastaría con quitarle la
+marca para cambiar lo importado (RF-008-52). De una operación, lo que se fija al empezarla
+(RF-008-51)."""
 
 MUTABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     "gb_parameter": (
@@ -240,40 +438,122 @@ MUTABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "checked_at",
         "original_mtime_ns",
     ),
+    "gb_dataset": (
+        "content_sha256",
+        "crs_epsg",
+        "operation_uid",
+        "qgis_editable",
+        "tracked",
+        "status",
+        "superseded_by",
+        "tracked_size",
+        "tracked_mtime_ns",
+        "tracked_last_change",
+        "tracked_schema_sha256",
+        "checked_at",
+        "description",
+        "modified_at",
+    ),
+    "gb_operation": (
+        "status",
+        "status_reason",
+        "software",
+        "executor",
+        "job_uid",
+        "interpreter",
+        "finished_at",
+        "message",
+    ),
+    "gb_stale": ("since",),
     "gb_ignored": ("reason", "decided_by", "decided_at"),
 }
-"""Las columnas que sí cambian (lo demás de cada tabla es fijo o de una sola escritura)."""
+"""Las columnas que sí cambian (lo demás de cada tabla es fijo o de una sola escritura). Las
+de una operación, solo mientras está «en curso» (``gb_operation_finished``): son las que se
+completan al terminarla (RF-008-18, RF-008-19)."""
 
 WRITE_ONCE_COLUMNS: dict[str, tuple[str, ...]] = {
     "gb_input_file": ("original_path", "original_sha256", "original_size"),
+    "gb_operation": ("superseded_by",),
 }
 """Columnas que pasan una vez de NULL a un valor y ya no cambian (RF-008-53: el original se
-guarda tras registrar la entrada, por trozos; después, su ruta, su huella y su tamaño quedan)."""
+guarda tras registrar la entrada, por trozos; después, su ruta, su huella y su tamaño quedan;
+plan §5.2.1: la operación que sustituye a otra se anota en ella una vez, también terminada)."""
+
+IMMUTABLE_CONTENT_COLUMNS: tuple[str, ...] = ("content_sha256", "operation_uid")
+"""Lo que no cambia en un dato ``immutable`` (lo importado, RF-008-52): su contenido y la
+operación que lo escribió (``gb_dataset_immutable``)."""
 
 UNIQUE_KEYS: dict[str, tuple[tuple[str, ...], ...]] = {
     "gb_parameter": (("fid",), ("uid",), ("key", "scope", "scope_uid")),
     "gb_parameter_history": (("fid",), ("parameter_uid", "rev")),
     "gb_input": (("fid",), ("uid",)),
     "gb_input_file": (("fid",), ("input_uid", "ord")),
+    "gb_dataset": (("fid",), ("uid",)),
+    "gb_dataset_change": (("fid",),),
+    "gb_operation": (("fid",), ("uid",)),
+    "gb_operation_io": (
+        ("fid",),
+        ("operation_uid", "direction", "item_kind", "item_uid", "role"),
+    ),
+    "gb_operation_param": (("fid",), ("operation_uid", "parameter_uid")),
+    "gb_figure": (("fid",), ("uid",)),
+    "gb_stale": (("item_kind", "item_uid", "cause_kind", "subject_uid"),),
     "gb_ignored": (("fid",), ("kind", "name")),
 }
 """La identidad de una fila de cada tabla: una fila nueva con una que ya existe se rechaza
-(``REPLACE`` borraría la anterior). El nombre activo de una entrada lo vigilan aparte
-``gb_input_name_ins`` y ``gb_input_name_upd``."""
+(``REPLACE`` borraría la anterior), salvo en la caché (:data:`CACHE_TABLES`), de la que
+Geoblender sí sustituye filas. Aparte: el nombre activo de una entrada
+(``gb_input_name_ins`` y ``gb_input_name_upd``), el nombre vivo de un dato
+(``gb_dataset_name_ins`` y ``gb_dataset_name_upd``) y su ubicación
+(``gb_dataset_location_ins``; las columnas de la ubicación son fijas)."""
 
 INACTIVE_INPUT_STATUSES: tuple[str, ...] = ("superseded", "discarded")
 """Los estados de una entrada que no ocupan su nombre lógico (índice ``gb_input_name_active``)."""
+
+LIVE_DATASET_STATUSES: tuple[str, ...] = ("current", "missing", "blocked", "damaged")
+"""Los estados de un dato que ocupan su nombre (índice ``gb_dataset_name_active``): todos
+menos sustituido y descartado."""
+
+LOCATION_COLUMNS: tuple[str, ...] = ("store", "locator", "selector")
+"""La ubicación de un dato (índice ``gb_dataset_location``): no la reutiliza ningún otro,
+tampoco cuando el que la ocupa está sustituido o descartado (D21)."""
+
+RUNNING = "running"
+"""El estado de una operación «en curso», la única que aún cambia (RF-008-51)."""
 
 MSG_WRITER_ONLY = "solo Geoblender escribe en esta tabla interna (gb_writer)"
 MSG_APPEND_ONLY = "registro de solo inserción: no se modifica ni se borra"
 MSG_NO_DELETE = "no se borra ninguna fila: es la procedencia del proyecto"
 MSG_NO_REPLACE = "esa fila ya existe: no se sustituye ni se borra"
 MSG_ACTIVE_NAME = "ya hay otra entrada activa (ni sustituida ni descartada) con ese nombre"
-MSG_WRITE_ONCE = "la ruta, la huella y el tamaño del original se escriben una vez y no cambian"
+MSG_LIVE_DATASET = "ya hay otro dato vivo (ni sustituido ni descartado) con ese nombre"
+MSG_LOCATION = (
+    "esa ubicación (almacén, tabla o ruta y selector) ya es de otro dato: no se reutiliza"
+)
+MSG_IMMUTABLE = (
+    "es lo importado de una entrada: su contenido y la operación que lo escribió no cambian"
+)
+MSG_FINISHED = (
+    "una operación terminada no cambia: solo se anota, una vez, la que la sustituye "
+    "(superseded_by)"
+)
+MSG_WRITE_ONCE: dict[str, str] = {
+    "gb_input_file": "la ruta, la huella y el tamaño del original se escriben una vez y no cambian",
+    "gb_operation": "la operación que sustituye a esta se anota una vez y no cambia",
+}
 MSG_FIXED: dict[str, str] = {
     "gb_parameter": "la identidad de un parámetro (uid, clave, ámbito, módulo y alta) no cambia",
     "gb_input": "de una entrada solo cambian su estado, su original, su nombre y su entrega",
     "gb_input_file": "de un fichero de una entrada solo cambian su comprobación y su original",
+    "gb_dataset": (
+        "la identidad de un dato (uid, nombre, módulo, tipo, ubicación, lector, normalizador, "
+        "entrada, si es inmutable y alta) no cambia"
+    ),
+    "gb_operation": (
+        "lo que se fijó al empezar una operación (tipo, versión, módulo, ámbito, grupo, "
+        "ajustes, a cuál sustituye, quién, dónde y cuándo) no cambia"
+    ),
+    "gb_stale": "una causa de obsolescencia no cambia de elemento ni de causa: se borra",
     "gb_ignored": "lo ignorado no cambia de tipo ni de nombre",
 }
 """Los motivos con los que abortan los disparadores (tras ``<tabla>: ``)."""
@@ -307,16 +587,21 @@ def _triggers() -> dict[str, str]:
 
     for table in TABLES:
         append_only = table in APPEND_ONLY_TABLES
+        cache = table in CACHE_TABLES
         add(table, "w_ins", "BEFORE INSERT", writer, MSG_WRITER_ONLY)
-        exists = " OR ".join(_row_exists(table, key) for key in UNIQUE_KEYS[table])
-        add(table, "no_replace", "BEFORE INSERT", exists,
-            MSG_APPEND_ONLY if append_only else MSG_NO_REPLACE)
+        if not cache:
+            exists = " OR ".join(_row_exists(table, key) for key in UNIQUE_KEYS[table])
+            add(table, "no_replace", "BEFORE INSERT", exists,
+                MSG_APPEND_ONLY if append_only else MSG_NO_REPLACE)
         if append_only:
             add(table, "no_upd", "BEFORE UPDATE", None, MSG_APPEND_ONLY)
             add(table, "no_del", "BEFORE DELETE", None, MSG_APPEND_ONLY)
             continue
         add(table, "w_upd", "BEFORE UPDATE", writer, MSG_WRITER_ONLY)
-        add(table, "no_del", "BEFORE DELETE", None, MSG_NO_DELETE)
+        if cache:
+            add(table, "w_del", "BEFORE DELETE", writer, MSG_WRITER_ONLY)
+        else:
+            add(table, "no_del", "BEFORE DELETE", None, MSG_NO_DELETE)
         fixed = FIXED_COLUMNS[table]
         add(table, "fixed", f"BEFORE UPDATE OF {', '.join(fixed)}", _any_changed(fixed),
             MSG_FIXED[table])
@@ -327,7 +612,7 @@ def _triggers() -> dict[str, str]:
                 for column in once
             )
             add(table, "once", f"BEFORE UPDATE OF {', '.join(once)}", rewritten,
-                MSG_WRITE_ONCE)
+                MSG_WRITE_ONCE[table])
     inactive = ", ".join(f"'{status}'" for status in INACTIVE_INPUT_STATUSES)
     active_new = f"NEW.status NOT IN ({inactive})"
     other_active = f"name = NEW.name AND status NOT IN ({inactive})"
@@ -338,6 +623,26 @@ def _triggers() -> dict[str, str]:
         f"{active_new} AND EXISTS (SELECT 1 FROM gb_input WHERE {other_active} "
         "AND fid <> OLD.fid)",
         MSG_ACTIVE_NAME)
+    live = ", ".join(f"'{status}'" for status in LIVE_DATASET_STATUSES)
+    live_new = f"NEW.status IN ({live})"
+    other_live = f"name = NEW.name AND status IN ({live})"
+    add("gb_dataset", "name_ins", "BEFORE INSERT",
+        f"{live_new} AND EXISTS (SELECT 1 FROM gb_dataset WHERE {other_live})",
+        MSG_LIVE_DATASET)
+    add("gb_dataset", "name_upd", "BEFORE UPDATE OF status",  # el nombre es fijo
+        f"{live_new} AND EXISTS (SELECT 1 FROM gb_dataset WHERE {other_live} "
+        "AND fid <> OLD.fid)",
+        MSG_LIVE_DATASET)
+    add("gb_dataset", "location_ins", "BEFORE INSERT",
+        _row_exists("gb_dataset", LOCATION_COLUMNS), MSG_LOCATION)
+    add("gb_dataset", "immutable",
+        f"BEFORE UPDATE OF {', '.join(IMMUTABLE_CONTENT_COLUMNS)}",
+        f"OLD.immutable AND ({_any_changed(IMMUTABLE_CONTENT_COLUMNS)})",
+        MSG_IMMUTABLE)
+    completed = MUTABLE_COLUMNS["gb_operation"]
+    add("gb_operation", "finished", f"BEFORE UPDATE OF {', '.join(completed)}",
+        f"OLD.status IS NOT '{RUNNING}' AND ({_any_changed(completed)})",
+        MSG_FINISHED)
     return triggers
 
 

@@ -50,6 +50,7 @@ import bpy
 
 from tests.support import blender_ext
 from tests.support.blender_ext import module_name
+from tests.support.core_fixtures import mark_schema
 from tests.support.fake_layout import draw
 from tests.support.repo import ROOT, tools_on_path
 
@@ -383,6 +384,7 @@ class OpenProjectTest(OperatorsTestCase):
         migrar» sin copia previa; aceptando, se hace la copia junto al original, se migra
         y se abre en escritura con el esquema nuevo."""
         root = self.create_closed()
+        mark_schema(root, 1)  # uno nuevo ya es del esquema 2 (spec 008)
         migrations = ext("core.project.migrations")
         registry = (
             migrations.Migration(1, 2, "tabla de prueba", _m1_2),

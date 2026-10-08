@@ -14,6 +14,7 @@
   existe es un error de la prueba); los ``make_*`` construyen el tipo del dominio
   (``core.sysinfo.SessionInfo`` y ``core.project.model.ProjectSettings``) y lo importan al
   llamarlos, no al importar este módulo, porque los crean tareas posteriores de la spec.
+- :func:`mark_schema`: un proyecto cerrado que dice ser de otro esquema (spec 008, T08).
 
 Datos solo sintéticos (constitución, principio 7): CRS 25830 y 5782 y una ventana en
 torno a (700 000; 4 400 000), el origen de la prueba de precisión de ADR-0005. Ni rutas
@@ -24,6 +25,8 @@ test_core_fixtures.py``.
 from __future__ import annotations
 
 import datetime as dt
+import json
+import sqlite3
 import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -152,3 +155,21 @@ def make_settings(**overrides: Any) -> Any:
     """Los ajustes sintéticos como ``core.project.model.ProjectSettings``."""
     model = import_geoblender("core.project.model")
     return model.ProjectSettings(**settings_values(**overrides))
+
+
+def mark_schema(root: Path, version: int) -> None:
+    """Simula un proyecto cerrado de otro esquema: su base (``gb_project``) y su cabecera
+    (``manifest.json``) dicen ``version``, y nada más cambia. Para las pruebas de migrar y
+    de abrir un esquema anterior o posterior con proyectos que crea el código actual (spec
+    008, T08: un proyecto nuevo ya es del esquema 2). Solo usa la biblioteca estándar, así
+    que sirve también en las pruebas de Blender."""
+    conn = sqlite3.connect(Path(root) / "project.gpkg", isolation_level=None)
+    try:
+        conn.create_function("gb_writer", 0, lambda: 1, deterministic=True)
+        conn.execute("UPDATE gb_project SET schema_version = ?", (version,))
+    finally:
+        conn.close()
+    path = Path(root) / "manifest.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["schema_version"] = version
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
