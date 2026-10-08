@@ -354,6 +354,43 @@ _CATALOG: tuple[Message, ...] = (
         "Table «{table}» of input «{name}» is not a layer or table of the project.",
         "La tabla «{table}» de la entrada «{name}» no es una capa ni una tabla del proyecto.",
     ),
+    # Sustituir, mantener la copia, descartar y editar (T21; RF-008-11, RF-008-12,
+    # RF-008-55; D-11): una entrada sustituida o descartada queda como historia.
+    Message(
+        "core.input_unknown",
+        "There is no input {input} in project «{project}».",
+        "No hay ninguna entrada {input} en el proyecto «{project}».",
+    ),
+    Message(
+        "core.input_superseded",
+        "Input «{name}» is already superseded: it is kept as history and does not change.",
+        "La entrada «{name}» ya está sustituida: queda como historia y no cambia.",
+    ),
+    Message(
+        "core.input_discarded",
+        "Input «{name}» is discarded: it is kept as a record and does not change.",
+        "La entrada «{name}» está descartada: queda como registro y no cambia.",
+    ),
+    Message(
+        "core.input_supersede_reason_missing",
+        "State the reason for replacing input «{name}».",
+        "Indique el motivo de la sustitución de la entrada «{name}».",
+    ),
+    Message(
+        "core.input_discard_reason_missing",
+        "State the reason for discarding input «{name}».",
+        "Indique el motivo para descartar la entrada «{name}».",
+    ),
+    Message(
+        "core.input_not_changed",
+        "Input «{name}» has not changed: there is no change to decide on.",
+        "La entrada «{name}» no ha cambiado: no hay ningún cambio que decidir.",
+    ),
+    Message(
+        "core.input_already_kept",
+        "Input «{name}» is already «changed · copy kept».",
+        "La entrada «{name}» ya está «cambiada · se mantiene la copia».",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})

@@ -54,6 +54,13 @@ class EventKind(Enum):
     # el mismo contenido y los mismos ajustes, reutilizada (RF-008-54).
     INPUT_REGISTERED = "input_registered"
     INPUT_REUSED = "input_reused"
+    # Una entrada sustituida por la que la actualiza (RF-008-11), cambiada con la copia
+    # mantenida (RF-008-12), descartada (RF-008-55) y con su nombre o su entrega editados
+    # (D-11; ``input_edited`` no está en la lista del plan §5.2.3: deja quién y cuándo).
+    INPUT_UPDATED = "input_updated"
+    INPUT_KEPT = "input_kept"
+    INPUT_DISCARDED = "input_discarded"
+    INPUT_EDITED = "input_edited"
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Registro de las entradas (spec 008; RF-008-07, RF-008-11, RF-008-54; RF-002-19; ADR-0024 §1,
-§3 y §6; ADR-0025; plan 008 §5.2.1, §5.3.1, §5.3.4 y §5.4.8).
+"""Registro de las entradas (spec 008; RF-008-07, RF-008-11, RF-008-12, RF-008-54, RF-008-55;
+RF-002-19; ADR-0024 §1, §3 y §6; ADR-0025; plan 008 §5.2.1, §5.3.1, §5.3.4 y §5.4.8).
 
 Un módulo que importa una fuente al proyecto (plan §5.3.4, «Importar»): empieza su operación de
 importación (``begin_operation``), lee la fuente y calcula su ``ContentDigest`` con su lector
@@ -22,17 +22,36 @@ la registra con :func:`register_input` y completa la operación.
   (``core.input_reused``), la de otros ajustes sin sustituirla (``previous_uid``) o sin motivo,
   la que sustituye a una descartada o ya sustituida, un nombre lógico ocupado o una tabla del
   proyecto que no está; su lector tiene que estar registrado (``core.reader_unregistered``).
-  Marcar la sustituida («sustituida», sus datos importados) es de ``supersede`` (T21), en la
-  misma transacción y antes, si la nueva toma su nombre.
+  La sustituida se marca antes, en la misma transacción, con :func:`supersede`.
+- :func:`supersede` (RF-008-11; plan §5.4.8, «Actualizar»): la entrada activa pasa a
+  «sustituida» con quién, cuándo y el motivo; lo importado de ella (sus datos con
+  ``input_uid``), a «sustituido», con su nombre, su contenido y sus filas protegidas (su sucesor
+  se resuelve por papel: ``core.datasets.successor``); su importación queda sustituida por la
+  importación **en curso** que registra la nueva (``gb_operation.superseded_by``, la declarase
+  esta al empezar o no), y el evento ``input_updated``. Después, en la misma transacción, la
+  importación registra la entrada nueva (``previous_uid``), escribe lo importado de ella (que
+  puede tomar su nombre) y se completa: en una tabla común, el dato acumulado (selector de las
+  entradas activas) ya no ve las filas de la sustituida, que siguen en la tabla.
+- :func:`keep_copy` (RF-008-12): una entrada «cambiada» pasa a «cambiada · se mantiene la
+  copia» con quién y cuándo (y el motivo, si lo hay); sigue activa con lo importado y su
+  contenido visto (``seen_sha256``, el que anotó la comprobación); evento ``input_kept``.
+- :func:`discard` (RF-008-55): con motivo obligatorio, la entrada pasa a «descartada · registro,
+  no usar» y lo importado de ella a «descartado»; no se borra nada; evento ``input_discarded``.
+- :func:`edit_delivery` (D-11): cambia el nombre lógico (único entre las activas), la fecha de
+  entrega y quién la entrega, y nada más de la entrada; evento ``input_edited``.
 - :func:`get`: una entrada por su uid o por el nombre lógico de la activa.
 - :func:`locate_source` y :func:`resolve_source` (RF-002-19): el ancla de un fichero de una
   fuente (dentro del proyecto, junto al original o, en otro volumen, con su ruta en los datos
   de usuario del equipo) y su ruta en este equipo (``None`` si no está anotada: «no
   localizable», RF-008-13). Solo usan la ruta: el fichero no se abre.
 
-Ningún evento lleva rutas absolutas: las rutas se guardan relativas o solo con su nombre, y el
-motivo de una sustitución, sin ellas (solo el nombre del fichero). Python puro (ADR-0004): los
-eventos se importan al registrarlos (``core.project`` importa ``core.provenance``).
+Ningún evento lleva rutas absolutas: las rutas se guardan relativas o solo con su nombre, y los
+motivos, sin ellas (solo el nombre del fichero). Todo se comprueba antes de escribir: un rechazo
+para la persona es un ``ProvenanceError`` y uno del programa, ``TypeError``/``ValueError``;
+ninguno escribe nada. Las funciones que escriben reciben la conexión de una transacción de
+escritura (``Project.write_transaction()``) y no la confirman. La obsolescencia por región de
+lo que dependía de una entrada sustituida o descartada llega con T27. Python puro (ADR-0004):
+los eventos se importan al registrarlos (``core.project`` importa ``core.provenance``).
 """
 
 from __future__ import annotations
@@ -47,6 +66,8 @@ from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..content.readers import reader as content_reader
+from ..datasets import registry as dataset_registry
+from ..datasets.model import LIVE_STATUSES, DatasetStatus
 from ..hashing import canonical_json
 from ..i18n import LANGUAGES
 from ..ids import new_uid
@@ -76,6 +97,9 @@ from .model import (
     InputStatus,
     OriginalState,
     SourceFile,
+    check_name,
+    check_received_at,
+    check_received_from,
     crs_text,
     is_not_applicable,
 )
@@ -86,10 +110,30 @@ if TYPE_CHECKING:
 
 RUNNING = "running"
 """El estado de una operación «en curso» (``gb_operation.status``)."""
+DONE = "done"
+"""El estado de una operación «hecha» (``gb_operation.status``)."""
 MAX_REASON_CHARS = 500
-"""Largo máximo del motivo de una sustitución que se guarda (el resto se corta con «…»)."""
+"""Largo máximo de un motivo que se guarda (el resto se corta con «…»)."""
+
+
+class _Unset:
+    """Lo que :func:`edit_delivery` no cambia (``None`` sí: quita la entrega)."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET: Any = _Unset()
+"""Valor por defecto de los campos de :func:`edit_delivery`: no se cambia."""
 
 _INACTIVE = ", ".join(f"'{status}'" for status in INACTIVE_STATUSES)
+_LIVE_DATASETS = ", ".join(f"'{status}'" for status in LIVE_STATUSES)
+_EDITABLE: tuple[tuple[str, str], ...] = (
+    ("name", "nombre lógico"),
+    ("received_at", "fecha de entrega"),
+    ("received_from", "quién la entrega"),
+)
+"""Lo que cambia :func:`edit_delivery` (D-11) y cómo se nombra en su evento."""
 _INPUTS = ", ".join(INPUT_COLUMNS)
 _FILES = ", ".join(FILE_COLUMNS)
 _LABELS: Mapping[str, Mapping[str, str]] = {
@@ -113,8 +157,9 @@ _SETTING = "settings."
 
 class InputProject(Protocol):
     """Lo que el registro usa del proyecto (``core.project.Project``): su identidad y su raíz
-    (las rutas de las fuentes), el reloj, la sesión (quién registra) y, para
-    :func:`reuse_input`, una transacción de escritura."""
+    (las rutas de las fuentes), su base (los datos importados, ``core.datasets``), el reloj,
+    la sesión (quién registra y decide) y, para :func:`reuse_input`, una transacción de
+    escritura."""
 
     @property
     def uid(self) -> str: ...
@@ -124,6 +169,9 @@ class InputProject(Protocol):
 
     @property
     def root(self) -> Path: ...
+
+    @property
+    def database_path(self) -> Path: ...
 
     @property
     def clock(self) -> Clock: ...
@@ -438,7 +486,8 @@ def register_input(
     confirma), y la devuelve (RF-008-07): su fila de ``gb_input`` («vigente», original «no
     aplica» hasta que se guarde, T22), la de cada fichero (con el ``last_change`` de una tabla
     del proyecto) y el evento ``input_registered``. ``previous_uid`` y ``reason``: la entrada
-    que sustituye y el motivo, obligatorio (RF-008-11, RF-008-54).
+    que sustituye, marcada antes en esta transacción con :func:`supersede`, y el motivo,
+    obligatorio (RF-008-11, RF-008-54).
 
     Rechazos, sin escribir nada: ``ProvenanceError`` (``core.input_crs_missing``/
     ``_not_applicable``, ``core.input_operation_missing``/``_unknown``/``_not_running``,
@@ -446,8 +495,8 @@ def register_input(
     ``core.input_reason_missing``, ``core.input_reused``,
     ``core.input_substitution_required``, ``core.input_name_taken``,
     ``core.input_table_missing``), ``ValidationError`` (``core.reader_unregistered``) y
-    ``TypeError``/``ValueError`` con un argumento mal formado, un lector que no da su tipo o
-    fuera de una transacción."""
+    ``TypeError``/``ValueError`` con un argumento mal formado, un lector que no da su tipo,
+    una sustituida que sigue activa (falta :func:`supersede`) o fuera de una transacción."""
     _spec(spec)
     if not isinstance(conn, sqlite3.Connection):
         raise TypeError(f"register_input recibe la conexión de una transacción de escritura, no "
@@ -474,6 +523,12 @@ def register_input(
     if conn.execute(f"SELECT 1 FROM gb_input WHERE name = ? AND status NOT IN ({_INACTIVE})",
                     (spec.name,)).fetchone():
         raise ProvenanceError("core.input_name_taken", name=spec.name)
+    if previous is not None and previous.active:
+        raise ValueError(
+            f"la entrada «{previous.name}», a la que sustituye «{spec.name}», sigue activa: se "
+            "marca sustituida con supersede() en esta misma transacción, antes de registrar la "
+            "nueva"
+        )
     changes = _table_changes(conn, spec)
     now = format_utc(project.clock.now())
     uid = new_uid()
@@ -559,6 +614,298 @@ def reuse_input(project: InputProject, handle: Any, reuse: Reuse) -> None:
             "op_type": handle.op_type,
             "content_sha256": reuse.input.content_sha256,
         }, format_utc(project.clock.now()))
+
+
+# --- Sustituir, mantener la copia, descartar y editar (RF-008-11, 12, 55; D-11) ----------------
+
+
+def _writing(conn: object, what: str) -> sqlite3.Connection:
+    """La conexión de una transacción de escritura abierta por quien llama."""
+    if not isinstance(conn, sqlite3.Connection):
+        raise TypeError(f"{what} recibe la conexión de una transacción de escritura, no {conn!r}")
+    if not conn.in_transaction:
+        raise ValueError(f"{what} se llama dentro de una transacción de escritura "
+                         "(Project.write_transaction)")
+    return conn
+
+
+def _uid(value: object, what: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{what} se indica por su uid, no {value!r}")
+    return value
+
+
+def _reason_text(reason: object) -> str | None:
+    """Un motivo como se guarda (sin espacios a los lados, sin rutas absolutas y de
+    :data:`MAX_REASON_CHARS` como mucho), o ``None`` si no lo hay."""
+    if reason is not None and not isinstance(reason, str):
+        raise TypeError(f"un motivo es un texto, no {reason!r}")
+    text = None if reason is None else reason.strip()
+    return _clean(text) if text else None
+
+
+def _existing(conn: sqlite3.Connection, project: InputProject, uid: str) -> InputRecord:
+    record = _load(conn, uid)
+    if record is None:
+        raise ProvenanceError("core.input_unknown", input=uid, project=project.name)
+    return record
+
+
+def _check_active(record: InputRecord) -> None:
+    """Una entrada sustituida o descartada queda como historia: ya no cambia de estado."""
+    if record.status is InputStatus.SUPERSEDED:
+        raise ProvenanceError("core.input_superseded", name=record.name)
+    if record.status is InputStatus.DISCARDED:
+        raise ProvenanceError("core.input_discarded", name=record.name)
+
+
+def _imported(conn: sqlite3.Connection, input_uid: str) -> list[str]:
+    """Los uid de lo importado de la entrada que sigue vivo, por orden de registro."""
+    return [
+        str(row[0])
+        for row in conn.execute(
+            f"SELECT uid FROM gb_dataset WHERE input_uid = ? AND status IN ({_LIVE_DATASETS}) "
+            "ORDER BY fid",
+            (input_uid,),
+        )
+    ]
+
+
+def _set_status(conn: sqlite3.Connection, project: InputProject, record: InputRecord,
+                status: InputStatus, reason: str | None, now: str) -> None:
+    """El estado nuevo de la entrada, con quién lo decide, cuándo y su motivo."""
+    conn.execute(
+        "UPDATE gb_input SET status = ?, status_at = ?, status_by = ?, status_reason = ?, "
+        "modified_at = ? WHERE uid = ?",
+        (str(status), now, project.session.user_host, reason, now, record.uid),
+    )
+
+
+def _check_replacing(conn: sqlite3.Connection, project: InputProject, record: InputRecord,
+                     operation_uid: str) -> tuple[str, bool]:
+    """La importación en curso ``operation_uid`` sustituye a la de ``record``: devuelve su
+    tipo y si hay que anotarlo en la sustituida (``superseded_by`` aún vacío)."""
+    row = conn.execute("SELECT op_type, status, supersedes_uid FROM gb_operation WHERE uid = ?",
+                       (operation_uid,)).fetchone()
+    if row is None:
+        raise ProvenanceError("core.operation_unknown", operation=operation_uid,
+                              project=project.name)
+    op_type, status, declared = str(row[0]), row[1], row[2]
+    if status != RUNNING:
+        raise ProvenanceError("core.operation_not_running", op_type=op_type,
+                              operation=operation_uid)
+    previous = record.operation_uid
+    if declared is not None and declared != previous:
+        raise ValueError(
+            f"la importación {operation_uid} («{op_type}») declara que sustituye a la operación "
+            f"{declared}, no a {previous}, la importación de la entrada «{record.name}»"
+        )
+    values = {"op_type": op_type, "supersedes": previous}
+    old = conn.execute("SELECT status, superseded_by FROM gb_operation WHERE uid = ?",
+                       (previous,)).fetchone()
+    if old is None:  # pragma: no cover - la clave foránea de gb_input lo impide
+        raise ProvenanceError("core.operation_supersedes_unknown", **values)
+    if old[0] != DONE:
+        raise ProvenanceError("core.operation_supersedes_not_done", **values)
+    other = conn.execute(
+        "SELECT 1 FROM gb_operation WHERE supersedes_uid = ? AND uid <> ? AND status IN (?, ?)",
+        (previous, operation_uid, RUNNING, DONE),
+    ).fetchone()
+    if (old[1] is not None and old[1] != operation_uid) or other is not None:
+        raise ProvenanceError("core.operation_already_superseded", **values)
+    return op_type, old[1] is None
+
+
+def supersede(conn: sqlite3.Connection, project: InputProject, input_uid: str, *,
+              operation_uid: str, reason: str | None) -> InputRecord:
+    """Sustituye la entrada activa ``input_uid`` por la que registra la importación en curso
+    ``operation_uid`` (RF-008-11, RF-008-54; plan §5.4.8), en la transacción de escritura
+    ``conn`` de quien llama (la de esa importación; no la confirma), y la devuelve:
+
+    - la entrada, «sustituida» con quién, cuándo y ``reason`` (obligatorio), y lo demás igual;
+    - lo importado de ella que sigue vivo, «sustituido» con su nombre y su contenido (sus filas
+      siguen protegidas en su tabla; su sucesor se resuelve por papel), RF-008-52;
+    - su importación, sustituida por ``operation_uid`` (``superseded_by``), y el evento
+      ``input_updated``.
+
+    Se llama **antes** de registrar la entrada nueva (``register_input`` con ``previous_uid``)
+    y de completar la importación, que pueden tomar su nombre y el de lo importado.
+
+    Rechazos, sin escribir nada: ``ProvenanceError`` (``core.input_unknown``,
+    ``core.input_previous_discarded``, ``core.input_superseded``,
+    ``core.input_supersede_reason_missing``, ``core.operation_unknown``,
+    ``core.operation_not_running``, ``core.operation_supersedes_not_done`` y
+    ``core.operation_already_superseded``: otra operación ya sustituye a su importación) y
+    ``TypeError``/``ValueError`` con un argumento mal formado, una importación que declaró
+    sustituir a otra operación o fuera de una transacción."""
+    _writing(conn, "supersede")
+    _uid(input_uid, "la entrada que se sustituye")
+    _uid(operation_uid, "la importación que la sustituye (operation_uid)")
+    text = _reason_text(reason)
+    record = _existing(conn, project, input_uid)
+    if record.status is InputStatus.DISCARDED:
+        raise ProvenanceError("core.input_previous_discarded", previous=record.name)
+    _check_active(record)
+    if text is None:
+        raise ProvenanceError("core.input_supersede_reason_missing", name=record.name)
+    op_type, link = _check_replacing(conn, project, record, operation_uid)
+    found = _imported(conn, record.uid)
+    now = format_utc(project.clock.now())
+    _set_status(conn, project, record, InputStatus.SUPERSEDED, text, now)
+    for uid in found:
+        dataset_registry.supersede(conn, project, uid)
+    if link:
+        conn.execute("UPDATE gb_operation SET superseded_by = ? WHERE uid = ?",
+                     (operation_uid, record.operation_uid))
+    _record(conn, project, "INPUT_UPDATED", record.uid,
+            f"Entrada «{record.name}» sustituida ({text}).", {
+                "name": record.name,
+                "from_status": str(record.status),
+                "reason": text,
+                "operation_uid": operation_uid,
+                "op_type": op_type,
+                "previous_operation_uid": record.operation_uid,
+                "datasets": found,
+            }, now)
+    return _require(conn, record.uid)
+
+
+def keep_copy(conn: sqlite3.Connection, project: InputProject, input_uid: str, *,
+              reason: str | None = None) -> InputRecord:
+    """La persona mantiene la copia del proyecto de la entrada cambiada ``input_uid``
+    (RF-008-12), en la transacción de escritura ``conn``, y la devuelve: «cambiada · se
+    mantiene la copia» con quién, cuándo y ``reason`` (opcional), el contenido visto que anotó
+    la comprobación (``seen_sha256``) y lo demás igual; sigue activa, con lo importado, y el
+    evento ``input_kept``. No se vuelve a avisar de ella mientras su fuente no cambie otra vez
+    (la comprobación compara con lo visto, T25).
+
+    Rechazos, sin escribir nada: ``ProvenanceError`` (``core.input_unknown``,
+    ``core.input_not_changed``, ``core.input_already_kept``, ``core.input_superseded``,
+    ``core.input_discarded``) y ``TypeError``/``ValueError`` con un argumento mal formado,
+    una entrada cambiada sin su contenido visto o fuera de una transacción."""
+    _writing(conn, "keep_copy")
+    _uid(input_uid, "una entrada")
+    text = _reason_text(reason)
+    record = _existing(conn, project, input_uid)
+    _check_active(record)
+    if record.status is InputStatus.CURRENT:
+        raise ProvenanceError("core.input_not_changed", name=record.name)
+    if record.status is InputStatus.KEPT:
+        raise ProvenanceError("core.input_already_kept", name=record.name)
+    if record.seen_sha256 is None:
+        raise ValueError(f"la entrada «{record.name}» está cambiada sin el contenido visto "
+                         "(seen_sha256): lo anota la comprobación que la encuentra cambiada")
+    now = format_utc(project.clock.now())
+    _set_status(conn, project, record, InputStatus.KEPT, text, now)
+    _record(conn, project, "INPUT_KEPT", record.uid,
+            f"Entrada «{record.name}»: cambiada · se mantiene la copia.", {
+                "name": record.name,
+                "seen_sha256": record.seen_sha256,
+                "content_sha256": record.content_sha256,
+                "reason": text,
+            }, now)
+    return _require(conn, record.uid)
+
+
+def discard(conn: sqlite3.Connection, project: InputProject, input_uid: str,
+            reason: str | None) -> InputRecord:
+    """Descarta la entrada activa ``input_uid`` con ``reason`` (obligatorio; RF-008-55), en la
+    transacción de escritura ``conn``, y la devuelve: «descartada · registro, no usar» con
+    quién, cuándo y el motivo, y lo demás igual; lo importado de ella que sigue vivo pasa a
+    «descartado», con su contenido y sus filas protegidas (no se borra nada, RF-008-52), y el
+    evento ``input_discarded``. Libera su nombre lógico, no se reutiliza ni se consume.
+
+    Rechazos, sin escribir nada: ``ProvenanceError`` (``core.input_unknown``,
+    ``core.input_superseded``, ``core.input_discarded``,
+    ``core.input_discard_reason_missing``) y ``TypeError``/``ValueError`` con un argumento mal
+    formado o fuera de una transacción."""
+    _writing(conn, "discard")
+    _uid(input_uid, "una entrada")
+    text = _reason_text(reason)
+    record = _existing(conn, project, input_uid)
+    _check_active(record)
+    if text is None:
+        raise ProvenanceError("core.input_discard_reason_missing", name=record.name)
+    found = _imported(conn, record.uid)
+    now = format_utc(project.clock.now())
+    _set_status(conn, project, record, InputStatus.DISCARDED, text, now)
+    for uid in found:
+        dataset_registry.set_status(conn, project, uid, DatasetStatus.DISCARDED)
+    _record(conn, project, "INPUT_DISCARDED", record.uid,
+            f"Entrada «{record.name}» descartada ({text}).", {
+                "name": record.name,
+                "from_status": str(record.status),
+                "reason": text,
+                "datasets": found,
+            }, now)
+    return _require(conn, record.uid)
+
+
+def _enumeration(items: list[str]) -> str:
+    """«a», «a y b», «a, b y c»."""
+    if len(items) == 1:
+        return items[0]
+    return f"{', '.join(items[:-1])} y {items[-1]}"
+
+
+def edit_delivery(
+    conn: sqlite3.Connection,
+    project: InputProject,
+    input_uid: str,
+    *,
+    name: str = UNSET,
+    received_at: Any = UNSET,
+    received_from: str | None = UNSET,
+) -> InputRecord:
+    """Cambia el nombre lógico (``name``), la fecha de entrega (``received_at``: ``date`` o
+    «AAAA-MM-DD») o quién la entrega (``received_from``) de la entrada ``input_uid`` (D-11;
+    spec §11), en la transacción de escritura ``conn``, y la devuelve; ``None`` quita la
+    entrega y lo que no se indica no cambia. La entrada es la misma: sus ficheros, sus ajustes,
+    sus hashes, su estado y lo importado no cambian (también se corrige la entrega de una
+    sustituida o descartada). Con cambios, el evento ``input_edited`` con lo que había y lo
+    nuevo; sin ellos, no escribe nada.
+
+    Rechazos, sin escribir nada: ``ProvenanceError`` (``core.input_unknown``;
+    ``core.input_name_taken``, el nombre de otra entrada activa) y ``TypeError``/``ValueError``
+    con un valor mal formado (vacío, con espacios a los lados o con rutas absolutas; una fecha
+    que no es un día) o fuera de una transacción."""
+    _writing(conn, "edit_delivery")
+    _uid(input_uid, "una entrada")
+    wanted: dict[str, object] = {}
+    if name is not UNSET:
+        wanted["name"] = check_name(name)
+    if received_at is not UNSET:
+        wanted["received_at"] = check_received_at(received_at)
+    if received_from is not UNSET:
+        wanted["received_from"] = check_received_from(received_from)
+    record = _existing(conn, project, input_uid)
+    changes = {
+        column: (getattr(record, column), wanted[column])
+        for column, _ in _EDITABLE
+        if column in wanted and getattr(record, column) != wanted[column]
+    }
+    if not changes:
+        return record
+    shown = str(wanted.get("name", record.name))
+    if "name" in changes and conn.execute(
+        f"SELECT 1 FROM gb_input WHERE name = ? AND uid <> ? AND status NOT IN ({_INACTIVE})",
+        (shown, record.uid),
+    ).fetchone():
+        raise ProvenanceError("core.input_name_taken", name=shown)
+    now = format_utc(project.clock.now())
+    conn.execute(
+        f"UPDATE gb_input SET {', '.join(f'{column} = ?' for column in changes)}, "
+        "modified_at = ? WHERE uid = ?",
+        (*(after for _before, after in changes.values()), now, record.uid),
+    )
+    labels = [label for column, label in _EDITABLE if column in changes]
+    _record(conn, project, "INPUT_EDITED", record.uid,
+            f"Entrada «{shown}» editada: {_enumeration(labels)}.", {
+                "name": shown,
+                "changes": {column: [before, after]
+                            for column, (before, after) in changes.items()},
+            }, now)
+    return _require(conn, record.uid)
 
 
 # --- Ubicación de las fuentes (RF-002-19) -------------------------------------------------------

@@ -342,6 +342,27 @@ class SourcePrint:
 # --- Lo que declara el módulo -------------------------------------------------------------------
 
 
+def check_name(value: object) -> str:
+    """El nombre lógico de una entrada: un texto no vacío, sin espacios a los lados y sin
+    rutas absolutas (``TypeError``/``ValueError`` si no). Que no lo tenga otra entrada activa
+    lo comprueba el registro."""
+    return _label("el nombre lógico de una entrada", value)
+
+
+def check_received_at(value: object) -> str | None:
+    """La fecha de entrega (D-11) como se guarda, «AAAA-MM-DD» (de un ``date`` o de ese
+    texto), o ``None``; ``TypeError``/``ValueError`` si no es un día."""
+    return _received_at(value)
+
+
+def check_received_from(value: object) -> str | None:
+    """Quién entrega una entrada (D-11): ``None`` o un texto no vacío, sin espacios a los
+    lados y sin rutas absolutas."""
+    if value is None:
+        return None
+    return _label("quién entrega una entrada", value)
+
+
 def _received_at(value: object) -> str | None:
     if value is None:
         return None
@@ -417,7 +438,7 @@ class InputSpec:
     bytes_sha256: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        name = _label("el nombre lógico de una entrada", self.name)
+        name = check_name(self.name)
         kind = _text("el tipo de una entrada", self.kind)
         if kind not in INPUT_KINDS:
             raise ValueError(f"tipo de entrada desconocido {kind!r}: es uno de "
@@ -439,9 +460,8 @@ class InputSpec:
         values = json.loads(canonical_json(dict(self.settings)))
         _no_paths("los ajustes de una entrada", values)
         keys = _content_keys(self.content_settings_keys, values)
-        received_at = _received_at(self.received_at)
-        if self.received_from is not None:
-            _label("quién entrega una entrada", self.received_from)
+        received_at = check_received_at(self.received_at)
+        check_received_from(self.received_from)
         declarations = input_declarations(crs_h, crs_v, {key: values[key] for key in keys})
         self._check_digest(name, kind, declarations)
         identity = {"content_keys": list(keys), "crs_h": crs_h, "crs_v": crs_v,
