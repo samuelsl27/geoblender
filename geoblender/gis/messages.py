@@ -533,6 +533,19 @@ CATALOG: tuple[Message, ...] = (
         "planas.",
         "warning",
     ),
+    # Curvas de nivel (RF-006-18) -------------------------------------------------------
+    Message(
+        "gis.contours_base_invalid",
+        "Contours of «{surface}»: base elevation «{value}» is not a number of metres.",
+        "Curvas de «{surface}»: la cota base «{value}» no es un número de metros.",
+    ),
+    Message(
+        "gis.contours_too_many",
+        "Contours of «{surface}»: an interval of {interval} m between {low} and {high} m "
+        "gives {value} levels, more than {limit}: choose a larger interval.",
+        "Curvas de «{surface}»: una equidistancia de {interval} m entre {low} y {high} m da "
+        "{value} cotas, más de {limit}: elija una equidistancia mayor.",
+    ),
     # Exportar (RF-006-10) ---------------------------------------------------------------
     Message(
         "gis.export_over_input",

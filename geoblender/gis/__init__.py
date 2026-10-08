@@ -15,13 +15,14 @@ datum con sus transformaciones (``gis.crs``), el aviso de alturas elipsoidales
 líneas de rotura y sus duplicados (``gis.points``), las capas de un GeoPackage leídas sobre
 una copia (``gis.vector``), la preparación de las restricciones de un TIN
 (``gis.breaklines``), el triangulador propio (``gis.cdt``), el TIN con su fichero, su paso
-a rejilla y desde ella y su muestreo (``gis.tin``) y el TIN desde curvas de nivel con la
-corrección de triángulos planos (``gis.tin_contours``). Cada tarea de la 006 añade aquí lo
-suyo.
+a rejilla y desde ella y su muestreo (``gis.tin``), el TIN desde curvas de nivel con la
+corrección de triángulos planos (``gis.tin_contours``) y las curvas de nivel de una rejilla
+o de un TIN (``gis.contours``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
 from .breaklines import PreparedInput, prepare_constraints
 from .cdt import PureTriangulator
+from .contours import ContourLine, contours_from_raster, contours_from_tin
 from .crs import (
     ELLIPSOIDAL_ETRS89,
     CoordinateTransform,
@@ -103,6 +104,7 @@ __all__ = [
     "Conflict",
     "ConflictError",
     "ConflictKind",
+    "ContourLine",
     "CoordinateTransform",
     "CrsService",
     "CrsServiceStatus",
@@ -142,6 +144,8 @@ __all__ = [
     "build_tin",
     "check_vertical_offset",
     "choose_method",
+    "contours_from_raster",
+    "contours_from_tin",
     "copy_source",
     "crs_service_status",
     "ellipsoidal_band",
