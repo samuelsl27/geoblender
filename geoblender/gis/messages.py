@@ -221,6 +221,42 @@ CATALOG: tuple[Message, ...] = (
         "warning",
     ),
     Message(
+        "gis.asc_header_invalid",
+        "DTM «{file}»: its ESRI ASCII Grid header is not valid ({detail}). Correct it "
+        "(ncols, nrows, xllcorner or xllcenter, yllcorner or yllcenter, cellsize or dx and "
+        "dy, and NODATA_value if there is one) or save it again from QGIS, and import it "
+        "again.",
+        "MDT «{file}»: su cabecera de ESRI ASCII Grid no es válida ({detail}). Corríjala "
+        "(ncols, nrows, xllcorner o xllcenter, yllcorner o yllcenter, cellsize o dx y dy, y "
+        "NODATA_value si lo hay) o vuelva a guardarlo desde QGIS, y vuelva a importarlo.",
+    ),
+    Message(
+        "gis.asc_value_count",
+        "DTM «{file}»: it has {value} values and its header asks for {expected} (ncols "
+        "{ncols} × nrows {nrows}). Check that the file is complete, export it again and "
+        "import it again.",
+        "MDT «{file}»: tiene {value} valores y su cabecera pide {expected} (ncols {ncols} × "
+        "nrows {nrows}). Compruebe que el fichero está completo, vuelva a exportarlo y a "
+        "importarlo.",
+    ),
+    Message(
+        "gis.asc_value_invalid",
+        "DTM «{file}», row {row}, column {column} from the north-west corner: «{value}» is "
+        "not a number. Correct that value (with a decimal point) or export the file again, "
+        "and import it again.",
+        "MDT «{file}», fila {row}, columna {column} desde la esquina noroeste: «{value}» no "
+        "es un número. Corrija ese valor (con punto decimal) o vuelva a exportar el fichero, "
+        "y vuelva a importarlo.",
+    ),
+    Message(
+        "gis.prj_unidentified",
+        "The CRS declared by «{prj}» has not been recognised in Geoblender's catalog: "
+        "declare the CRS of «{file}» when importing it.",
+        "El CRS que declara «{prj}» no se ha reconocido en el catálogo de Geoblender: "
+        "declare el CRS de «{file}» al importarlo.",
+        "warning",
+    ),
+    Message(
         "gis.xyz_not_grid",
         "File «{file}» is not a regular grid ({detail}). Import it as points (Topography "
         "▸ Import ▸ Points and breaklines…).",
