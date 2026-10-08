@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Registro de las operaciones en dos pasos (spec 008; RF-008-04, RF-008-05, RF-008-18,
-RF-008-23, RF-008-51; ADR-0025 §3; plan 008 §5.3.1, §5.3.4 y §5.4.7).
+RF-008-19, RF-008-23, RF-008-51; ADR-0025 §3; plan 008 §5.3.1, §5.3.4 y §5.4.7).
 
 Toda operación que produce resultados (cálculo, importación, edición o exportación) se
 registra en ``gb_operation`` **en dos pasos** (ADR-0025 §3); los módulos nunca escriben en las
@@ -28,19 +28,31 @@ Mientras tanto, :meth:`OperationHandle.claim_paths` reclama los ficheros del pro
 escribe (temporales y finales), para que el barrido de restos no los aparte: constan en
 :func:`claimed_paths` mientras la operación está «en curso» en el proyecto (ADR-0025 §3). En el
 hilo de Blender, :func:`operation` hace los dos pasos como gestor de contexto: si el bloque
-falla, la operación queda «fallida» con el motivo; si termina sin completar el registro,
-también, y lo dice (``core.operation_not_completed``).
+falla, la operación queda «fallida» con el motivo (o «cancelada», si se paró una lectura o una
+huella: :data:`CANCELLATIONS`); si termina sin completar el registro, «fallida», y lo dice
+(``core.operation_not_completed``).
+
+Una operación que no termina bien queda registrada sin salidas, como auditoría, y nunca deja
+un dato registrado como bueno (RF-008-19; sus salidas solo se registran al completarla):
+
+- :meth:`OperationHandle.fail` y :meth:`OperationHandle.cancel`: «fallida» o «cancelada» con
+  el motivo, en su propia transacción;
+- :func:`interrupt_orphaned`, al abrir en escritura: «interrumpida», con su evento, toda
+  operación «en curso» de otra sesión, que ya no tiene el cerrojo y no pudo registrar su final
+  (Blender se cerró, cayó la red de ``Z:`` u otro equipo forzó el cerrojo);
+- :func:`mark_not_ingested`: «no incorporada», con el motivo y su evento, la operación «en
+  curso» cuyo trabajo de la 004 se borró sin incorporarlo (RF-008-23).
 
 Todo se comprueba **antes** de escribir: un rechazo para el usuario es un
 :class:`~.messages.ProvenanceError` (o el ``ParamError`` / ``ValidationError`` de los
 parámetros y los datos) y un error del programa, :class:`ValueError` o :class:`TypeError`;
-ninguno deja el proyecto en solo lectura. En solo lectura, :func:`begin_operation` lanza
+ninguno deja el proyecto en solo lectura. En solo lectura, todo lo que escribiría lanza
 ``core.read_only`` sin tocar nada.
 
 Pendiente de otras tareas de la 008: la puerta antes de operar (``gate.can_run``, T30), las
-cifras (``record_figure``, T19), la obsolescencia por región en ``complete`` (T27), fallar y
-cancelar con su motivo (T18) e incorporar un trabajo (``ingest_job``, T31). Python puro
-(ADR-0004): no importa ``core.project`` (que importa ``core.provenance.schema``).
+cifras (``record_figure``, T19), la obsolescencia por región en ``complete`` (T27) e
+incorporar un trabajo (``ingest_job``, T31). Python puro (ADR-0004): al importarse no importa
+``core.project`` (que importa ``core.provenance.schema``); sus eventos, solo al registrarlos.
 """
 
 from __future__ import annotations
@@ -59,11 +71,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
+from ..content.readers import ReadCancelled
 from ..datasets import registry as dataset_registry
 from ..datasets.model import DatasetRecord, DatasetSpec, Store
 from ..datasets.tracking import table_states
 from ..errors import GeoblenderError
-from ..hashing import canonical_json, sha256_bytes
+from ..hashing import HashCancelled, canonical_json, sha256_bytes
 from ..ids import new_uid
 from ..params.store import ParameterStore, ResolvedParam
 from ..paths import ABSOLUTE_PATH, find_absolute_paths
@@ -117,8 +130,22 @@ NOT_COMPLETED_REASON = (
 """El motivo de una operación de :func:`operation` cuyo bloque termina sin completarla."""
 FAILURE_REASON_PREFIX = "error durante la operación: "
 """El principio del motivo de una operación de :func:`operation` cuyo bloque falla."""
+CANCEL_REASON_PREFIX = "cancelada durante la operación: "
+"""El principio del motivo de una operación de :func:`operation` cuyo bloque se para por una
+cancelación (:data:`CANCELLATIONS`)."""
+INTERRUPTED_REASON = (
+    "la sesión de {user_host} que la ejecutaba ya no tiene el cerrojo del proyecto (Blender se "
+    "cerró, se cayó la red u otro equipo forzó el cerrojo) y no pudo registrar su final"
+)
+"""El motivo de una operación «interrumpida» (:func:`interrupt_orphaned`), con «usuario@equipo»
+de su sesión."""
 MAX_REASON_CHARS = 500
-"""Largo máximo del motivo que se guarda de un error (el resto se corta con «…»)."""
+"""Largo máximo del motivo que se guarda (el resto se corta con «…»)."""
+
+CANCELLATIONS: tuple[type[BaseException], ...] = (ReadCancelled, HashCancelled)
+"""Los errores con los que se para una lectura o una huella a petición de la persona (entre
+dos trozos): en :func:`operation`, la operación queda «cancelada», no «fallida». Un trabajo de
+la 004 cancelado lo traduce quien lo incorpora (``ingest_job``, T31)."""
 
 _ROLE = re.compile(r"[a-z][a-z0-9_]*")
 
@@ -351,6 +378,17 @@ def _outputs(outputs: object) -> tuple[DatasetSpec, ...]:
     if repeated:
         raise ValueError(f"una operación escribe cada dato una vez: {repeated} se repite")
     return specs
+
+
+def _in_transaction(conn: object, what: str) -> sqlite3.Connection:
+    """La conexión de una transacción de escritura abierta por quien llama."""
+    if not isinstance(conn, sqlite3.Connection):
+        raise TypeError(f"{what} recibe la conexión de una transacción de escritura, no "
+                        f"{conn!r}")
+    if not conn.in_transaction:
+        raise ValueError(f"{what} se llama dentro de una transacción de escritura "
+                         "(Project.write_transaction)")
+    return conn
 
 
 def _require_writable(project: OperationProject) -> None:
@@ -660,7 +698,28 @@ class OperationHandle:
             )
         return tuple(records)
 
-    # --- Final sin completar (lo usa operation(); T18 da fail y cancel) ---------------------
+    # --- Final sin completar (RF-008-19) -----------------------------------------------------
+
+    def fail(self, reason: str) -> None:
+        """La deja «fallida» con ``reason`` (texto no vacío; sus rutas absolutas se quedan en
+        el nombre del fichero y se corta a :data:`MAX_REASON_CHARS`) y su hora, en su propia
+        transacción, sin salidas, y suelta sus rutas (RF-008-19). ``ProvenanceError``:
+        ``core.read_only`` en solo lectura (sigue «en curso» y quedará «interrumpida» al
+        abrirlo en escritura) y ``core.operation_not_running`` si ya terminó (una operación
+        terminada no cambia); ``TypeError``/``ValueError`` sin motivo. Sin escribir nada."""
+        self._stop(OperationStatus.FAILED, reason)
+
+    def cancel(self, reason: str) -> None:
+        """La deja «cancelada» con ``reason`` (la persona la paró o, al incorporar un trabajo,
+        la 004 lo canceló): lo mismo que :meth:`fail` (RF-008-19)."""
+        self._stop(OperationStatus.CANCELLED, reason)
+
+    def _stop(self, status: OperationStatus, reason: object) -> None:
+        text = _reason(reason)
+        _require_writable(self.project)
+        if not self._end(status, text):
+            raise ProvenanceError("core.operation_not_running", op_type=self.op_type,
+                                  operation=self.uid)
 
     def _running(self) -> bool:
         """Si sigue «en curso» en lo confirmado del proyecto."""
@@ -682,15 +741,20 @@ class OperationHandle:
         return running
 
     def _abandon(self, error: BaseException) -> None:
-        """El bloque de :func:`operation` falló: «fallida» con el motivo. Si no se puede
-        escribir (solo lectura, red), se dice en el error, que sigue: quedará «interrumpida»
-        al abrirlo en escritura (RF-008-19)."""
+        """El bloque de :func:`operation` falló: «fallida» con el motivo, o «cancelada» si se
+        paró una lectura o una huella (:data:`CANCELLATIONS`); si el módulo ya la terminó, no
+        cambia. Si no se puede escribir (solo lectura, red), se dice en el error, que sigue:
+        quedará «interrumpida» al abrirlo en escritura (RF-008-19)."""
+        if isinstance(error, CANCELLATIONS):
+            status, reason, what = OperationStatus.CANCELLED, cancel_reason(error), "cancelación"
+        else:
+            status, reason, what = OperationStatus.FAILED, failure_reason(error), "fallo"
         try:
-            self._end(OperationStatus.FAILED, failure_reason(error))
+            self._end(status, reason)
         except (GeoblenderError, OSError, sqlite3.Error) as exc:
             error.add_note(
                 f"La operación «{self.op_type}» ({self.uid}) sigue «en curso» en el proyecto: "
-                f"no se pudo registrar su fallo ({exc})."
+                f"no se pudo registrar su {what} ({exc})."
             )
 
 
@@ -699,16 +763,39 @@ def _shorten(path: str) -> str:
     return ntpath.basename(path.rstrip("\\/")) or "…"
 
 
+def _clean(text: str) -> str:
+    """Un motivo como se guarda en el proyecto: sus rutas absolutas, solo con el nombre de su
+    fichero (ADR-0006 §5), y de :data:`MAX_REASON_CHARS` como mucho."""
+    shown = ABSOLUTE_PATH.sub(lambda match: _shorten(match.group(0)), text)
+    if len(shown) > MAX_REASON_CHARS:
+        shown = shown[: MAX_REASON_CHARS - 1] + "…"
+    return shown
+
+
+def _reason(reason: object) -> str:
+    """El motivo dado por el módulo, que es obligatorio (RF-008-19)."""
+    if not isinstance(reason, str):
+        raise TypeError(f"el motivo de una operación que no termina bien es un texto, no "
+                        f"{reason!r}")
+    text = reason.strip()
+    if not text:
+        raise ValueError("falta el motivo: una operación que no termina bien queda registrada "
+                         "con él (RF-008-19)")
+    return _clean(text)
+
+
 def failure_reason(error: BaseException) -> str:
     """El motivo que se guarda de un error: su clase y su texto, sin rutas absolutas (solo el
     nombre de su fichero) y de :data:`MAX_REASON_CHARS` como mucho."""
     text = str(error).strip()
     shown = f"{type(error).__name__}: {text}" if text else type(error).__name__
-    shown = ABSOLUTE_PATH.sub(lambda match: _shorten(match.group(0)), shown)
-    reason = FAILURE_REASON_PREFIX + shown
-    if len(reason) > MAX_REASON_CHARS:
-        reason = reason[: MAX_REASON_CHARS - 1] + "…"
-    return reason
+    return _clean(FAILURE_REASON_PREFIX + shown)
+
+
+def cancel_reason(error: BaseException) -> str:
+    """El motivo que se guarda de una cancelación (:data:`CANCELLATIONS`): su texto, como el
+    de :func:`failure_reason`."""
+    return _clean(CANCEL_REASON_PREFIX + (str(error).strip() or type(error).__name__))
 
 
 # --- Empezar ------------------------------------------------------------------------------
@@ -844,3 +931,95 @@ def operation(
         handle._end(OperationStatus.FAILED, NOT_COMPLETED_REASON)
         raise ProvenanceError("core.operation_not_completed", op_type=handle.op_type)
     _forget(handle)
+
+
+# --- Operaciones que su sesión no pudo terminar -------------------------------------------
+
+
+def _record(conn: sqlite3.Connection, project: OperationProject, kind: str, operation_uid: str,
+            message: str, data: Mapping[str, object], at: str) -> None:
+    """Su evento en ``gb_event`` (``kind``: el nombre de ``core.project.events.EventKind``),
+    con la sesión que lo registra. Se importa aquí: ``core.project`` importa
+    ``core.provenance`` (su esquema) y este módulo no lo carga al importarse."""
+    from ..project.events import EventKind, record_event
+
+    record_event(conn, EventKind[kind], message, session=project.session, at=at,
+                 entity_kind="operation", entity_uid=operation_uid, data=dict(data))
+
+
+def _interrupt(conn: sqlite3.Connection, project: OperationProject) -> list[str]:
+    rows = conn.execute(
+        "SELECT uid, op_type, session_uid, user_host, started_at, job_uid FROM gb_operation "
+        "WHERE status = ? AND session_uid <> ? ORDER BY fid",
+        (str(OperationStatus.RUNNING), project.session.session_uid),
+    ).fetchall()
+    found: list[str] = []
+    at = format_utc(project.clock.now())
+    for uid, op_type, session_uid, user_host, started_at, job_uid in rows:
+        reason = _clean(INTERRUPTED_REASON.format(user_host=user_host))
+        conn.execute(
+            "UPDATE gb_operation SET status = ?, status_reason = ?, finished_at = ? WHERE uid = ?",
+            (str(OperationStatus.INTERRUPTED), reason, at, uid),
+        )
+        _record(conn, project, "OPERATION_INTERRUPTED", uid,
+                f"Operación «{op_type}» interrumpida: {reason}",
+                {"op_type": op_type, "session_uid": session_uid, "user_host": user_host,
+                 "started_at": started_at, "job_uid": job_uid, "reason": reason}, at)
+        found.append(str(uid))
+    return found
+
+
+def interrupt_orphaned(project: OperationProject, *,
+                       conn: sqlite3.Connection | None = None) -> list[str]:
+    """Al abrir ``project`` en escritura: deja «interrumpida», con su motivo, su hora y un
+    evento ``operation_interrupted``, toda operación «en curso» de **otra** sesión (en
+    escritura, el cerrojo es de esta: la suya lo perdió sin poder registrar su final) y
+    devuelve sus uid, en orden (RF-008-19). Las «en curso» de esta sesión siguen así, y lo que
+    escribieron a medias no queda registrado como bueno (sus salidas solo se registran al
+    completarlas): sus ficheros sin registro, a restos (RF-008-22). Con ``conn`` escribe en esa
+    transacción de escritura de quien llama (las comprobaciones de apertura agrupan sus
+    escrituras); sin ella, en una propia. ``core.read_only`` en solo lectura, sin tocar nada."""
+    _require_writable(project)
+    if conn is not None:
+        return _interrupt(_in_transaction(conn, "interrupt_orphaned"), project)
+    with project.write_transaction() as opened:
+        return _interrupt(opened, project)
+
+
+def mark_not_ingested(project: OperationProject, op_uid: str, reason: str) -> bool:
+    """Deja «no incorporada», con ``reason`` (como el de :meth:`OperationHandle.fail`), su hora
+    y un evento ``operation_not_ingested``, la operación ``op_uid`` de un trabajo de la 004 que
+    sigue «en curso» y cuyo trabajo se borró sin incorporar su resultado (descartarlo, limpiar o
+    la purga por antigüedad, RF-004-17), y suelta sus rutas (RF-008-23); dice si la cambió:
+    una ya terminada no cambia (falso). Rechazos, sin escribir nada: ``ProvenanceError``
+    (``core.read_only`` en solo lectura, ``core.operation_unknown``), ``ValueError`` si no es
+    de un trabajo y ``TypeError``/``ValueError`` sin motivo."""
+    if not isinstance(op_uid, str):
+        raise TypeError(f"una operación se indica por su uid, no {op_uid!r}")
+    text = _reason(reason)
+    _require_writable(project)
+    with project.write_transaction() as conn:
+        row = conn.execute("SELECT op_type, status, executor, job_uid FROM gb_operation "
+                           "WHERE uid = ?", (op_uid,)).fetchone()
+        if row is None:
+            raise ProvenanceError("core.operation_unknown", operation=op_uid,
+                                  project=project.name)
+        op_type, status, executor, job_uid = row
+        if executor not in JOB_EXECUTORS:
+            raise ValueError(f"la operación «{op_type}» ({op_uid}) no se ejecuta en un trabajo "
+                             f"de la 004 ({executor}): no tiene trabajo que incorporar")
+        if status != OperationStatus.RUNNING:
+            return False
+        at = format_utc(project.clock.now())
+        conn.execute(
+            "UPDATE gb_operation SET status = ?, status_reason = ?, finished_at = ? WHERE uid = ?",
+            (str(OperationStatus.NOT_INGESTED), text, at, op_uid),
+        )
+        _record(conn, project, "OPERATION_NOT_INGESTED", op_uid,
+                f"Operación «{op_type}» no incorporada: {text}",
+                {"op_type": op_type, "job_uid": job_uid, "reason": text}, at)
+    with _LOCK:
+        handle = _HANDLES.get(op_uid)
+    if handle is not None:
+        _forget(handle)
+    return True

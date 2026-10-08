@@ -10,8 +10,9 @@
 - :mod:`.messages`: los mensajes de la procedencia (código, ``msgid`` en inglés y español) y
   :class:`ProvenanceError`.
 - :mod:`.operations`: el registro de las operaciones en dos pasos (:func:`begin_operation`,
-  :class:`OperationHandle` con ``claim_paths`` y ``complete``, :func:`operation` y
-  :func:`claimed_paths`).
+  :class:`OperationHandle` con ``claim_paths``, ``complete``, ``fail`` y ``cancel``,
+  :func:`operation` y :func:`claimed_paths`) y las que su sesión no pudo terminar
+  (:func:`interrupt_orphaned` y :func:`mark_not_ingested`).
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
@@ -65,6 +66,8 @@ OPERATIONS_API: tuple[str, ...] = (
     "Use",
     "begin_operation",
     "claimed_paths",
+    "interrupt_orphaned",
+    "mark_not_ingested",
     "operation",
 )
 """Lo de :mod:`.operations` que se reexporta al usarlo."""
@@ -115,6 +118,8 @@ __all__ = [
     "figure_def",
     "group_def",
     "importer_def",
+    "interrupt_orphaned",
+    "mark_not_ingested",
     "operation",
     "operation_def",
     "parse_version",

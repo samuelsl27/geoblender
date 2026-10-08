@@ -29,7 +29,8 @@ LOGGER = logging.getLogger("geoblender.core.project")
 
 
 class EventKind(Enum):
-    """Tipos de evento de la spec 002 (``gb_event.kind``)."""
+    """Tipos de evento (``gb_event.kind``): los de la spec 002 y los de la procedencia de la
+    008 (plan 008 §5.2.3), que se añaden con la tarea que los registra."""
 
     CREATE = "create"
     OPEN = "open"
@@ -45,6 +46,10 @@ class EventKind(Enum):
     MOVE_ORIGIN = "move_origin"
     CHECKOUT = "checkout"
     PUBLISH = "publish"
+    # Spec 008: una operación «en curso» de una sesión que perdió el cerrojo (RF-008-19) y una
+    # cuyo trabajo se borró sin incorporarlo (RF-008-23).
+    OPERATION_INTERRUPTED = "operation_interrupted"
+    OPERATION_NOT_INGESTED = "operation_not_ingested"
 
 
 @dataclass(frozen=True)

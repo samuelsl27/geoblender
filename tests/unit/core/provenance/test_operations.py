@@ -17,7 +17,12 @@ RF-008-18, RF-008-23, RF-008-51; ADR-0025 §3; plan 008 §5.3.1 y §5.4.7).
 - ``OperationHandle.claim_paths`` reclama los ficheros que escribe, que constan mientras la
   operación está en curso (``claimed_paths``; ADR-0025 §3);
 - ``operation()`` hace lo mismo en el hilo de Blender como gestor de contexto: si el bloque
-  falla o termina sin completar el registro, la operación queda fallida.
+  falla o termina sin completar el registro, la operación queda fallida;
+- (T18) ``OperationHandle.fail`` y ``.cancel`` la dejan fallida o cancelada con el motivo y sin
+  salidas; ``interrupt_orphaned``, al abrir en escritura, deja «interrumpida», con su evento, la
+  que sigue en curso de otra sesión (no las de esta); ``mark_not_ingested`` deja «no
+  incorporada», con el motivo, la que sigue en curso cuando se borra su trabajo; ninguna deja un
+  dato registrado como bueno (RF-008-19, RF-008-23).
 
 Cada prueba crea su proyecto sintético (esquema 2) con un reloj simulado, registra los
 parámetros y los tipos de operación de prueba de ``res`` y los quita al acabar.
@@ -37,6 +42,7 @@ from typing import Any
 from tests.support.core_fixtures import (
     CLOCK_START,
     FakeClock,
+    FakePids,
     make_session,
     make_settings,
     project_tmp,
@@ -46,6 +52,8 @@ from tests.support.provenance_contract import registered, snapshot
 from tests.unit.core.provenance.test_schema import input_row
 
 create = import_geoblender("core.project.create")
+open_mod = import_geoblender("core.project.open")
+events = import_geoblender("core.project.events")
 project_model = import_geoblender("core.project.model")
 userdata_mod = import_geoblender("core.userdata")
 params = import_geoblender("core.params")
@@ -62,6 +70,11 @@ hashing = import_geoblender("core.hashing")
 timeutil = import_geoblender("core.timeutil")
 
 SESSION = make_session()
+# Otro Blender del mismo equipo (abre tras cerrarse el de SESSION de golpe) y otro equipo.
+SESSION_A2 = make_session(session_uid="00000000-0000-4000-8000-0000000000a2", pid=5151)
+SESSION_B = make_session(
+    session_uid="00000000-0000-4000-8000-000000000002", host="PC-PRUEBA-B", user="otra", pid=777
+)
 GPKG_READER = builtin.GPKG_LAYER.id
 MESH_READER = builtin.NPZ_MESH.id
 INPUT_UID = "00000000-0000-4000-8000-0000000001e1"
@@ -103,6 +116,7 @@ TABLES = (
     "gb_dataset",
     "gb_dataset_change",
     "gb_input",
+    "gb_event",
 )
 
 
@@ -168,8 +182,9 @@ class OperationsCase(unittest.TestCase):
         parent.mkdir()
         self.tmp = tmp
         self.clock = FakeClock()
+        self.userdata = userdata_mod.UserData(tmp / "u")
         self.project = create.create_project(
-            parent, make_settings(), SESSION, userdata_mod.UserData(tmp / "u"), clock=self.clock
+            parent, make_settings(), SESSION, self.userdata, clock=self.clock
         ).project
         self.addCleanup(self.project.close)
         self.store = store_mod.ParameterStore(self.project)
@@ -239,6 +254,23 @@ class OperationsCase(unittest.TestCase):
         """La entrada «Limites_v1», importada por ``operation_uid``."""
         row = input_row(uid=INPUT_UID, operation_uid=operation_uid)
         self.write(lambda conn: _insert(conn, "gb_input", row))
+
+    def logged(self, kind: Any) -> list[Any]:
+        """Los eventos ``kind`` del proyecto (``gb_event``)."""
+        with self.project.read() as conn:
+            return events.read_events(conn, kind)
+
+    def assertNoOutputs(self, *uids: str) -> None:
+        """Ninguna de las operaciones ``uids`` deja un dato registrado como bueno: ni
+        salidas, ni datos, ni contenidos escritos por ella."""
+        marks = ", ".join("?" for _ in uids)
+        self.assertEqual(
+            [self.query(f"SELECT COUNT(*) FROM {table} WHERE operation_uid IN ({marks}){extra}",
+                        uids)
+             for table, extra in (("gb_operation_io", " AND direction = 'out'"),
+                                  ("gb_dataset", ""), ("gb_dataset_change", ""))],
+            [[(0,)]] * 3,
+        )
 
 
 class BeginTest(OperationsCase):
@@ -659,6 +691,255 @@ class ContextManagerTest(OperationsCase):
         )
 
 
+INTERRUPTED_REASON = (
+    "la sesión de prueba@PC-PRUEBA-A que la ejecutaba ya no tiene el cerrojo del proyecto "
+    "(Blender se cerró, se cayó la red u otro equipo forzó el cerrojo) y no pudo registrar su "
+    "final"
+)
+NOT_INGESTED_REASON = (
+    "La carpeta del trabajo «job-0001» se borró (purga por antigüedad) sin incorporar su "
+    "resultado"
+)
+
+
+class EndTest(OperationsCase):
+    """Fallar, cancelar, interrumpir y no incorporar (T18; RF-008-19, RF-008-23)."""
+
+    def test_cancel_and_fail_keep_the_reason_and_no_outputs(self) -> None:
+        """RF-008-19, RF-008-23: cancelar o fallar deja la operación cancelada o fallida, con
+        su motivo (sin rutas absolutas) y su hora, sin salidas (tampoco lo que el módulo
+        escribió en una transacción que se deshizo) y sin rutas reclamadas; lo que consumió
+        queda anotado. Una operación terminada ya no se completa, ni se cancela, ni falla."""
+        _survey, terrain = self.survey()
+        stopped = self.begin(inputs=[operations.Use("res_terreno", "terrain")],
+                             params=["res.recovery"])
+        stopped.claim_paths("rasters/res_tmp.tif")
+        broken = self.begin("res.survey")
+
+        def work(conn: sqlite3.Connection) -> None:
+            _write_table(conn, "res_resultado", (1.0,))
+            stopped.complete(conn, outputs=[_table_spec("res_resultado", "summary")],
+                             software=SOFTWARE)
+            raise _Abort("se pidió cancelar mientras escribía")
+
+        with self.assertRaises(_Abort):
+            self.write(work)
+        self.tick()
+        self.assertIsNone(stopped.cancel("Cancelado por la persona desde la barra de estado"))
+        self.assertIsNone(broken.fail(
+            "No se pudo leer C:\\Datos\\cliente\\cotas.csv: falta la columna «cota»"))
+        fields = ("status", "status_reason", "finished_at", "software", "message")
+        self.assertEqual(
+            [tuple(self.row(handle.uid)[name] for name in fields) for handle in (stopped, broken)],
+            [("cancelled", "Cancelado por la persona desde la barra de estado", _now(1), "{}",
+              None),
+             ("failed", "No se pudo leer cotas.csv: falta la columna «cota»", _now(1), "{}",
+              None)],
+        )
+        self.assertNoOutputs(stopped.uid, broken.uid)
+        self.assertEqual(
+            self.query("SELECT item_uid, role FROM gb_operation_io WHERE operation_uid = ? "
+                       "AND direction = 'in'", (stopped.uid,)),
+            [(terrain.uid, "terrain")],
+        )
+        self.assertEqual(self.query("SELECT key FROM gb_operation_param WHERE operation_uid = ?",
+                                    (stopped.uid,)), [("res.recovery",)])
+        self.assertEqual(self.query("SELECT name FROM gb_dataset ORDER BY fid"),
+                         [("res_terreno",)])
+        self.assertEqual(operations.claimed_paths(self.project), set())
+        with self.assertRaises(RuntimeError):
+            stopped.claim_paths("rasters/res_otro.tif")
+        for handle in (stopped, broken):
+            for end in (handle.fail, handle.cancel):
+                with self.subTest(op_type=handle.op_type, end=end.__name__):
+                    self.assertRejected(provenance.ProvenanceError, "core.operation_not_running",
+                                        lambda end=end: end("otra vez"))
+            self.assertRejected(
+                provenance.ProvenanceError, "core.operation_not_running",
+                lambda handle=handle: self.write(lambda conn: handle.complete(conn)))
+
+    def test_reasons_and_read_only(self) -> None:
+        """RF-008-19: el motivo es un texto no vacío (si no, un error del programa, sin
+        escribir nada) de 500 caracteres como mucho; en solo lectura no se registra nada
+        (``core.read_only``) y la operación sigue en curso: quedará interrumpida al abrir el
+        proyecto en escritura."""
+        handle = self.begin()
+        for bad in (None, 42, "", "   "):
+            for end in (handle.fail, handle.cancel):
+                with self.subTest(bad=bad, end=end.__name__):
+                    self.assertRejected((TypeError, ValueError), None,
+                                        lambda end=end, bad=bad: end(bad))
+        self.assertEqual(self.status(handle.uid), "running")
+        handle.fail("x" * 600)
+        reason = self.row(handle.uid)["status_reason"]
+        self.assertEqual((len(reason), reason[-1]), (operations.MAX_REASON_CHARS, "…"))
+        other = self.begin()
+        before = self.snapshot()
+        self.project.set_read_only(project_model.ReadOnlyCode.LOCKED,
+                                   "otra sesión lo tiene en escritura")
+        for end in (other.fail, other.cancel):
+            with self.subTest(end=end.__name__):
+                with self.assertRaises(provenance.ProvenanceError) as caught:
+                    end("Cancelado por la persona")
+                self.assertEqual(caught.exception.code, "core.read_only")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_context_manager_cancelled_or_ended_by_the_module(self) -> None:
+        """RF-008-19: en ``operation()``, parar una lectura o una huella (``ReadCancelled``,
+        ``HashCancelled``) deja la operación cancelada con el motivo y el error sigue; si el
+        módulo la da por fallida o la cancela dentro del bloque, queda así, también si luego
+        el bloque falla."""
+        for error in (content.ReadCancelled("test.npy_grid@1", 0.42),
+                      hashing.HashCancelled("cotas.csv", 10, 100)):
+            with self.subTest(error=type(error).__name__):
+                with self.assertRaises(type(error)):
+                    with operations.operation(self.project, "res.survey", settings={}) as handle:
+                        handle.claim_paths("rasters/res_a.tif")
+                        raise error
+                self.assertEqual(
+                    (self.status(handle.uid), self.row(handle.uid)["status_reason"]),
+                    ("cancelled", f"cancelada durante la operación: {error}"),
+                )
+        with operations.operation(self.project, "res.survey", settings={}) as explicit:
+            explicit.fail("Faltan las cotas de 3 sondeos")
+        with self.assertRaises(ZeroDivisionError):
+            with operations.operation(self.project, "res.survey", settings={}) as stopped:
+                stopped.cancel("Cancelado por la persona")
+                raise ZeroDivisionError("después de cancelar")
+        self.assertEqual(
+            [(self.status(h.uid), self.row(h.uid)["status_reason"]) for h in (explicit, stopped)],
+            [("failed", "Faltan las cotas de 3 sondeos"), ("cancelled", "Cancelado por la persona")],
+        )
+        self.assertEqual(operations.claimed_paths(self.project), set())
+
+    def test_interrupted_when_opened_in_write_mode(self) -> None:
+        """RF-008-19: al abrir en escritura, las operaciones «en curso» de otra sesión (su
+        Blender se cerró de golpe sin registrar su final) pasan a «interrumpida» con su motivo,
+        su hora y su evento, sin ningún dato registrado como bueno (tampoco la tabla que
+        dejaron a medias); las de esta sesión siguen en curso y las terminadas no cambian. En
+        solo lectura no se registra nada; repetirlo no hace nada más; con la conexión de una
+        transacción, escribe en ella."""
+        survey, _terrain = self.survey()
+        failed = self.begin("res.survey")
+        failed.fail("Faltan las cotas de 3 sondeos")
+        running = self.begin(inputs=[operations.Use("res_terreno", "terrain")],
+                             params=["res.recovery"])
+        job = self.begin("res.survey", executor="job_process", job_uid="job-0001")
+        self.write(lambda conn: _write_table(conn, "res_resultado", (7.0,)))  # a medias
+        self.tick()
+        # El Blender de SESSION se cierra de golpe: no vuelve a escribir (ni al cerrar).
+        self.project.set_read_only(project_model.ReadOnlyCode.LOCK_LOST, "Blender se cerró")
+        pids = FakePids({SESSION_A2.pid, SESSION_B.pid})
+
+        def open_(session: Any, **kw: Any) -> Any:
+            project = open_mod.open_project(self.project.root, session, self.userdata,
+                                            clock=self.clock, pid_alive=pids, **kw).project
+            self.addCleanup(project.close)
+            return project
+
+        reader = open_(SESSION_B, want_write=False)
+        before = self.snapshot()
+        with self.assertRaises(provenance.ProvenanceError) as caught:
+            operations.interrupt_orphaned(reader)
+        self.assertEqual(caught.exception.code, "core.read_only")
+        self.assertEqual(self.snapshot(), before)
+        reader.close()
+
+        writer = open_(SESSION_A2)
+        self.assertTrue(writer.writable)
+        mine = operations.begin_operation(writer, "res.balance", settings={}, executor="blender")
+        self.tick()
+        with self.assertRaises(_Abort), writer.write_transaction() as conn:
+            self.assertEqual(operations.interrupt_orphaned(writer, conn=conn),
+                             [running.uid, job.uid])
+            raise _Abort("la transacción de quien llama se deshace")
+        self.assertEqual([self.status(h.uid) for h in (running, job)], ["running"] * 2)
+        self.assertEqual(operations.interrupt_orphaned(writer), [running.uid, job.uid])
+        fields = ("status", "status_reason", "finished_at")
+        self.assertEqual([tuple(self.row(h.uid)[name] for name in fields) for h in (running, job)],
+                         [("interrupted", INTERRUPTED_REASON, _now(2))] * 2)
+        self.assertEqual([self.status(h.uid) for h in (survey, failed, mine)],
+                         ["done", "failed", "running"])
+        self.assertEqual(
+            [(e.at, e.user_host, e.session_uid, e.entity_kind, e.entity_uid, e.message, e.data)
+             for e in self.logged(events.EventKind.OPERATION_INTERRUPTED)],
+            [(_now(2), "prueba@PC-PRUEBA-A", SESSION_A2.session_uid, "operation", h.uid,
+              f"Operación «{h.op_type}» interrumpida: {INTERRUPTED_REASON}",
+              {"op_type": h.op_type, "session_uid": SESSION.session_uid,
+               "user_host": "prueba@PC-PRUEBA-A", "started_at": _now(), "job_uid": job_uid,
+               "reason": INTERRUPTED_REASON})
+             for h, job_uid in ((running, None), (job, "job-0001"))],
+        )
+        self.assertNoOutputs(running.uid, job.uid)
+        self.assertEqual(self.query("SELECT name FROM gb_dataset ORDER BY fid"),
+                         [("res_terreno",)])
+        self.assertIn(("res_resultado",), self.query("SELECT table_name FROM gpkg_contents"))
+        before = self.snapshot()
+        self.assertEqual(operations.interrupt_orphaned(writer), [])
+        self.assertEqual(self.snapshot(), before)
+        with writer.read() as conn, self.assertRaises(ValueError):
+            operations.interrupt_orphaned(writer, conn=conn)  # fuera de una transacción
+
+    def test_not_ingested_when_its_job_is_deleted(self) -> None:
+        """RF-008-23, RF-008-19: una operación «en curso» cuyo trabajo se borra sin
+        incorporarlo (descartarlo, limpiar, la purga por antigüedad) pasa a «no incorporada»
+        con el motivo, su hora y su evento, sin salidas y sin rutas reclamadas; repetirlo, o
+        con una ya terminada, no cambia nada. Una operación que no es de un trabajo, una que no
+        existe, un motivo vacío y el proyecto en solo lectura se rechazan sin escribir nada."""
+        handle = self.begin(executor="job_process", job_uid="job-0001")
+        handle.claim_paths("rasters/res_tmp.tif")
+        done = self.begin(executor="job_thread")
+        self.write(lambda conn: done.complete(conn, software=SOFTWARE, job_uid="job-0002"))
+        here = self.begin()
+        later = self.begin(executor="job_thread")
+        self.tick()
+        self.assertTrue(operations.mark_not_ingested(self.project, handle.uid,
+                                                     NOT_INGESTED_REASON))
+        row = self.row(handle.uid)
+        self.assertEqual(
+            (row["status"], row["status_reason"], row["finished_at"], row["job_uid"]),
+            ("not_ingested", NOT_INGESTED_REASON, _now(1), "job-0001"),
+        )
+        self.assertEqual(
+            [(e.at, e.session_uid, e.entity_kind, e.entity_uid, e.message, e.data)
+             for e in self.logged(events.EventKind.OPERATION_NOT_INGESTED)],
+            [(_now(1), SESSION.session_uid, "operation", handle.uid,
+              f"Operación «res.balance» no incorporada: {NOT_INGESTED_REASON}",
+              {"op_type": "res.balance", "job_uid": "job-0001",
+               "reason": NOT_INGESTED_REASON})],
+        )
+        self.assertNoOutputs(handle.uid)
+        self.assertEqual(operations.claimed_paths(self.project), set())
+        with self.assertRaises(RuntimeError):
+            handle.claim_paths("rasters/res_otro.tif")
+        self.assertRejected(
+            provenance.ProvenanceError, "core.operation_not_running",
+            lambda: self.write(lambda conn: handle.complete(conn, software=SOFTWARE)))
+        before = self.snapshot()
+        for finished in (handle, done):
+            with self.subTest(status=self.status(finished.uid)):
+                self.assertFalse(operations.mark_not_ingested(self.project, finished.uid,
+                                                              NOT_INGESTED_REASON))
+        self.assertEqual(self.snapshot(), before)
+        self.assertRejected(
+            provenance.ProvenanceError, "core.operation_unknown",
+            lambda: operations.mark_not_ingested(self.project, UNKNOWN_UID, NOT_INGESTED_REASON))
+        self.assertRejected(
+            ValueError, None,
+            lambda: operations.mark_not_ingested(self.project, here.uid, NOT_INGESTED_REASON))
+        for bad in (None, ""):
+            with self.subTest(bad=bad):
+                self.assertRejected(
+                    (TypeError, ValueError), None,
+                    lambda bad=bad: operations.mark_not_ingested(self.project, later.uid, bad))
+        self.project.set_read_only(project_model.ReadOnlyCode.LOCKED,
+                                   "otra sesión lo tiene en escritura")
+        with self.assertRaises(provenance.ProvenanceError) as caught:
+            operations.mark_not_ingested(self.project, later.uid, NOT_INGESTED_REASON)
+        self.assertEqual(caught.exception.code, "core.read_only")
+        self.assertEqual(self.snapshot(), before)
+
+
 class VocabularyTest(unittest.TestCase):
     def test_statuses_executors_and_items_match_the_schema(self) -> None:
         """RF-008-18, RF-008-19: los estados, los ejecutores y las clases de elemento de una
@@ -671,10 +952,20 @@ class VocabularyTest(unittest.TestCase):
         self.assertEqual(operations.OperationStatus.RUNNING, schema.RUNNING)
         self.assertEqual(set(operations.JOB_EXECUTORS), {"job_thread", "job_process"})
 
+    def test_event_kinds(self) -> None:
+        """RF-008-19, RF-008-23 (plan §5.2.3): los eventos de una operación interrumpida y de
+        una no incorporada."""
+        self.assertEqual(
+            (events.EventKind.OPERATION_INTERRUPTED.value,
+             events.EventKind.OPERATION_NOT_INGESTED.value),
+            ("operation_interrupted", "operation_not_ingested"),
+        )
+
     def test_public_api(self) -> None:
         """Plan §5.1: ``core.provenance`` reexporta la API de las operaciones."""
         for name in ("begin_operation", "operation", "claimed_paths", "OperationHandle", "Use",
-                     "OperationStatus", "Executor", "ItemKind"):
+                     "OperationStatus", "Executor", "ItemKind", "interrupt_orphaned",
+                     "mark_not_ingested"):
             with self.subTest(name=name):
                 self.assertIn(name, provenance.__all__)
                 self.assertIs(getattr(provenance, name), getattr(operations, name))
