@@ -9,9 +9,10 @@ acepta, se migra con :func:`migrate_steps` antes de abrirlo en escritura. Reglas
 
 - Cada migración (:class:`Migration`) lleva de un esquema N al N+1 y es idempotente; las
   forman una cadena sin huecos (:func:`plan_migrations`) que se comprueba **antes** de
-  tocar nada. :data:`REGISTRY` está vacío en el esquema 1; cada migración futura será un
-  módulo ``m<NNNN>.py`` de este paquete que se añade al registro y, si toca otros
-  almacenes además del GeoPackage, declara cómo se recupera.
+  tocar nada. Cada una es un módulo ``m<NNNN>.py`` de este paquete (con el tipo de
+  ``base``, para no importar el paquete) que se añade a :data:`REGISTRY` (la 1 → 2,
+  ``m0002``, de la spec 008) y, si toca otros almacenes además del GeoPackage, declara
+  cómo se recupera.
 - Solo migra la sesión que tiene el cerrojo (libre, huérfano o suyo; si lo tiene otra,
   :class:`~..errors.LockError` sin tocar nada). Si otro programa dejó la base en WAL, se
   devuelve antes al diario clásico (si la tiene abierta, no se copia ni migra nada).
@@ -37,7 +38,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,6 +58,8 @@ from ..manifest import PROJECT_STORE, Manifest, manifest_from_record, write_mani
 from ..model import Progress
 from ..open import WAL_WARNING, inspect_project
 from ..schema import SCHEMA_VERSION, read_project
+from .base import Migration
+from .m0002 import MIGRATION as _MIGRATION_0002
 
 BACKUP_MARK = ".respaldo-esquema-"
 BACKUP_EXCLUDE: tuple[str, ...] = ("cache", ".lock")
@@ -65,30 +68,9 @@ _CHAIN = "Migraciones del esquema del proyecto"
 
 _Event = tuple[EventKind, str, dict[str, object]]
 
-
-@dataclass(frozen=True)
-class Migration:
-    """Una migración del esquema ``from_version`` al ``from_version + 1``.
-
-    ``apply`` hace los cambios en la base dentro de la transacción de la migración (sin
-    confirmar ni deshacer: lo hace quien la llama); debe ser idempotente.
-    ``min_reader_schema``: el esquema mínimo que hay que saber leer después de aplicarla
-    (``None``: no cambia).
-    """
-
-    from_version: int
-    to_version: int
-    description: str
-    apply: Callable[[sqlite3.Connection], None]
-    min_reader_schema: int | None = None
-
-    @property
-    def step(self) -> str:
-        """``«N → N+1»``, para los mensajes."""
-        return f"{self.from_version} → {self.to_version}"
-
-
-REGISTRY: tuple[Migration, ...] = ()  # el esquema 1 no tiene migraciones
+REGISTRY: tuple[Migration, ...] = (_MIGRATION_0002,)
+"""Las migraciones de esta versión, una por esquema: 1 → 2, la procedencia (``m0002``,
+spec 008)."""
 
 
 @dataclass(frozen=True)

@@ -14,7 +14,8 @@
   existe es un error de la prueba); los ``make_*`` construyen el tipo del dominio
   (``core.sysinfo.SessionInfo`` y ``core.project.model.ProjectSettings``) y lo importan al
   llamarlos, no al importar este módulo, porque los crean tareas posteriores de la spec.
-- :func:`mark_schema`: un proyecto cerrado que dice ser de otro esquema (spec 008, T08).
+- :func:`mark_schema`: un proyecto cerrado que dice ser de otro esquema (spec 008, T08), y
+  :func:`make_schema_1`: uno fiel del esquema 1 de la spec 002 (spec 008, T09).
 
 Datos solo sintéticos (constitución, principio 7): CRS 25830 y 5782 y una ventana en
 torno a (700 000; 4 400 000), el origen de la prueba de precisión de ADR-0005. Ni rutas
@@ -173,3 +174,46 @@ def mark_schema(root: Path, version: int) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     data["schema_version"] = version
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+# Lo que escribía la spec 002 en el esquema 1: sus tres tablas internas y la definición de
+# la extensión con el número de esquema (la 008 la deja sin él).
+SCHEMA_1_TABLES: tuple[str, ...] = ("gb_project", "gb_event", "gb_schema_migration")
+SCHEMA_1_DEFINITION = "Geoblender — docs/arquitectura/datos/formato-proyecto.md (esquema 1)"
+_EXTENSION = "imga_geoblender"
+
+
+def make_schema_1(root: Path) -> None:
+    """Convierte un proyecto cerrado que crea el código actual en uno del esquema 1 tal como
+    lo dejaba la spec 002 (spec 008, T09): sin las tablas internas que llegaron después (las
+    de la procedencia, con sus índices y disparadores, y su declaración en
+    ``gpkg_extensions``), con la definición antigua de la extensión
+    (:data:`SCHEMA_1_DEFINITION`) en las tres del 1 y marcado como del esquema 1
+    (:func:`mark_schema`). Solo usa la biblioteca estándar, así que sirve también en las
+    pruebas de Blender."""
+    conn = sqlite3.connect(Path(root) / "project.gpkg", isolation_level=None)
+    try:
+        marks = ", ".join("?" for _ in SCHEMA_1_TABLES)
+        later = [
+            row[0]
+            for row in conn.execute(
+                "SELECT table_name FROM gpkg_extensions WHERE extension_name = ? "
+                f"AND column_name IS NULL AND table_name NOT IN ({marks}) ORDER BY rowid DESC",
+                (_EXTENSION, *SCHEMA_1_TABLES),
+            )
+        ]
+        conn.execute("BEGIN")
+        for table in later:  # al revés de como se crearon: las hijas antes que sus madres
+            conn.execute(f'DROP TABLE "{table}"')
+        conn.execute(
+            f"DELETE FROM gpkg_extensions WHERE extension_name = ? AND table_name NOT IN ({marks})",
+            (_EXTENSION, *SCHEMA_1_TABLES),
+        )
+        conn.execute(
+            "UPDATE gpkg_extensions SET definition = ? WHERE extension_name = ?",
+            (SCHEMA_1_DEFINITION, _EXTENSION),
+        )
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+    mark_schema(root, 1)
