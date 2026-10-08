@@ -87,6 +87,80 @@ _CATALOG: tuple[Message, ...] = (
         "No hay ningún importador registrado para el lector «{reader}»: sus entradas no se "
         "pueden reimportar hasta que esté activo el módulo que lo declara.",
     ),
+    # Operaciones (T17; RF-008-18, RF-008-23, RF-008-51).
+    Message(
+        "core.operation_unknown",
+        "There is no operation {operation} in project «{project}».",
+        "No hay ninguna operación {operation} en el proyecto «{project}».",
+    ),
+    Message(
+        "core.operation_not_running",
+        "Operation «{op_type}» ({operation}) is no longer running: a finished operation does "
+        "not change.",
+        "La operación «{op_type}» ({operation}) ya no está en curso: una operación terminada "
+        "no cambia.",
+    ),
+    Message(
+        "core.operation_dataset_unknown",
+        "Operation «{op_type}» consumes dataset «{item}», which is not in the project.",
+        "La operación «{op_type}» consume el dato «{item}», que no está en el proyecto.",
+    ),
+    Message(
+        "core.operation_dataset_not_live",
+        "Operation «{op_type}» cannot consume dataset «{item}»: it is superseded or discarded "
+        "and kept as history (consume its successor).",
+        "La operación «{op_type}» no puede consumir el dato «{item}»: está sustituido o "
+        "descartado y queda como historia (consuma su sucesor).",
+    ),
+    Message(
+        "core.operation_input_unknown",
+        "Operation «{op_type}» consumes input «{item}», which is not registered in the "
+        "project.",
+        "La operación «{op_type}» consume la entrada «{item}», que no está registrada en el "
+        "proyecto.",
+    ),
+    Message(
+        "core.operation_input_not_live",
+        "Operation «{op_type}» cannot consume input «{item}»: it is superseded or discarded "
+        "and kept as history.",
+        "La operación «{op_type}» no puede consumir la entrada «{item}»: está sustituida o "
+        "descartada y queda como historia.",
+    ),
+    Message(
+        "core.operation_supersedes_unknown",
+        "Operation «{op_type}» supersedes {supersedes}, which is not an operation of the "
+        "project.",
+        "La operación «{op_type}» sustituye a {supersedes}, que no es ninguna operación del "
+        "proyecto.",
+    ),
+    Message(
+        "core.operation_supersedes_not_done",
+        "Operation «{op_type}» can only supersede a finished (done) operation, and "
+        "{supersedes} is not.",
+        "La operación «{op_type}» solo sustituye a una operación hecha, y {supersedes} no lo "
+        "está.",
+    ),
+    Message(
+        "core.operation_already_superseded",
+        "Operation {supersedes} is already superseded, or another running operation is "
+        "superseding it: «{op_type}» does not supersede it again.",
+        "La operación {supersedes} ya está sustituida, o la está sustituyendo otra en curso: "
+        "«{op_type}» no la vuelve a sustituir.",
+    ),
+    Message(
+        "core.operation_output_not_saved",
+        "Result «{name}» of operation «{op_type}» is not saved in the project ({locator}): "
+        "save it in the project before completing the operation.",
+        "El resultado «{name}» de la operación «{op_type}» no está guardado en el proyecto "
+        "({locator}): se guarda en el proyecto antes de completar la operación.",
+    ),
+    Message(
+        "core.operation_not_completed",
+        "Operation «{op_type}» ended without completing its record: it is left failed and its "
+        "results are not accepted.",
+        "La operación «{op_type}» terminó sin completar su registro: queda fallida y sus "
+        "resultados no se dan por buenos.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})

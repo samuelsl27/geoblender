@@ -9,11 +9,21 @@
   operaciones de ``core`` (:data:`CORE_OPERATIONS`).
 - :mod:`.messages`: los mensajes de la procedencia (código, ``msgid`` en inglés y español) y
   :class:`ProvenanceError`.
+- :mod:`.operations`: el registro de las operaciones en dos pasos (:func:`begin_operation`,
+  :class:`OperationHandle` con ``claim_paths`` y ``complete``, :func:`operation` y
+  :func:`claimed_paths`).
 
-La API pública (operaciones, cifras, grafo, comprobaciones…) se reexporta aquí a medida que
-existe (plan 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
+La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
+008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
 ``core.project.schema`` importa ``core.provenance.schema``, que pasa por este fichero.
+
+Por lo mismo, lo de :mod:`.operations` (que trae ``core.datasets``, ``core.content`` y
+``core.params``) se reexporta **al usarlo** (``__getattr__``, PEP 562), no al importar el
+paquete: así abrir un proyecto no carga ni compila esos módulos (las pruebas de Blender
+rehabilitan la extensión muchas veces desde cero, con ``-B``).
 """
+
+from typing import Any
 
 from .contract import (
     ACCEPT_REVIEW,
@@ -45,6 +55,35 @@ from .contract import (
 )
 from .messages import CATALOG_ES, LABELS, MESSAGES, Message, ProvenanceError, render
 
+OPERATIONS_API: tuple[str, ...] = (
+    "JOB_EXECUTORS",
+    "Consumed",
+    "Executor",
+    "ItemKind",
+    "OperationHandle",
+    "OperationStatus",
+    "Use",
+    "begin_operation",
+    "claimed_paths",
+    "operation",
+)
+"""Lo de :mod:`.operations` que se reexporta al usarlo."""
+
+
+def __getattr__(name: str) -> Any:
+    if name not in OPERATIONS_API:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import operations
+
+    value = getattr(operations, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *OPERATIONS_API})
+
+
 __all__ = [
     "ACCEPT_REVIEW",
     "CATALOG_ES",
@@ -54,19 +93,29 @@ __all__ = [
     "GROUPS",
     "IMPORTERS",
     "IMPORT_LAYER",
+    "JOB_EXECUTORS",
     "LABELS",
     "MESSAGES",
     "OPERATIONS",
     "SCOPES",
+    "Consumed",
     "CoupledGroupDef",
+    "Executor",
     "FigureDef",
     "ImporterDef",
+    "ItemKind",
     "Message",
     "OperationDef",
+    "OperationHandle",
+    "OperationStatus",
     "ProvenanceError",
+    "Use",
+    "begin_operation",
+    "claimed_paths",
     "figure_def",
     "group_def",
     "importer_def",
+    "operation",
     "operation_def",
     "parse_version",
     "register_figure",
