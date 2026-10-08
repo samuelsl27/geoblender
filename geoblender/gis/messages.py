@@ -520,6 +520,19 @@ CATALOG: tuple[Message, ...] = (
         "El fichero de TIN «{file}» no se puede leer: {detail}. Vuelva a crear el TIN desde "
         "sus datos.",
     ),
+    # TIN desde curvas (RF-006-16, D-6) ---------------------------------------------------
+    Message(
+        "gis.flat_regions_unresolved",
+        "TIN «{tin}»: closed flat areas with no neighbouring elevation remain flat: {value} "
+        "({area} m²). They are summits or pits without a spot height, or bays of a contour "
+        "at the edge of the TIN: add their spot heights or a boundary and create it again "
+        "if they must not stay flat.",
+        "TIN «{tin}»: quedan planas zonas cerradas sin cota vecina: {value} ({area} m²). "
+        "Son cimas o fondos sin punto acotado, o entrantes de una curva en el borde del "
+        "TIN: añada sus puntos acotados o un contorno y vuelva a crearlo si no deben quedar "
+        "planas.",
+        "warning",
+    ),
     # Exportar (RF-006-10) ---------------------------------------------------------------
     Message(
         "gis.export_over_input",
