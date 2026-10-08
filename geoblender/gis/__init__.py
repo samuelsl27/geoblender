@@ -7,11 +7,18 @@ externas, a través de puertos implementados en ``adapters`` (ARQ-04).
 
 Reexporta la API pública (plan 006 §5.1): los puertos (``gis.ports``), los parámetros
 (``gis.params``), el error y los mensajes (``gis.messages``), los informes
-(``gis.reports``) y la rejilla de paso exacto (``gis.grid``). Cada tarea de la 006 añade
-aquí lo suyo.
+(``gis.reports``), la rejilla de paso exacto y el volumen entre superficies (``gis.grid``)
+y las superficies en rejilla (``gis.raster``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
-from .grid import Grid, aligned_grid, project_grid, validate_step
+from .grid import (
+    Grid,
+    VolumeResult,
+    aligned_grid,
+    project_grid,
+    validate_step,
+    volume_between,
+)
 from .messages import GisError
 from .params import PARAMS, ParamDef, param
 from .ports import (
@@ -25,6 +32,7 @@ from .ports import (
     Triangulator,
     WriteProfile,
 )
+from .raster import Raster
 from .reports import (
     Conflict,
     ConflictKind,
@@ -45,6 +53,7 @@ __all__ = [
     "Grid",
     "ParamDef",
     "Progress",
+    "Raster",
     "RasterIO",
     "Rejection",
     "ResampleReport",
@@ -55,9 +64,11 @@ __all__ = [
     "TransformInfo",
     "TriangulationError",
     "Triangulator",
+    "VolumeResult",
     "WriteProfile",
     "aligned_grid",
     "param",
     "project_grid",
     "validate_step",
+    "volume_between",
 ]

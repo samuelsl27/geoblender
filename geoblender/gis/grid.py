@@ -15,6 +15,9 @@ Todas las coordenadas de este módulo son **absolutas** (CRS del proyecto, m, fl
   a múltiplos de la unidad de alineación del paso (RF-006-01).
 - :func:`project_grid`: la rejilla de la ventana de trabajo, que ya viene alineada
   (RF-002-24); una ventana sin alinear es ``gis.window_not_aligned``.
+- :func:`volume_between` y :class:`VolumeResult`: el volumen entre dos superficies en la
+  misma rejilla, celda a celda con su área exacta, en corte, relleno y neto, con el área
+  con y sin dato (RF-006-03; plan §5.4 A2).
 
 La ventana (``Window``), la unidad de alineación (``alignment_unit``) y la alineación de una
 ventana (``align_window``) son de ``core.georef`` (spec 002) y no se redefinen aquí: así la
@@ -26,19 +29,40 @@ from __future__ import annotations
 import math
 import operator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from ..core.errors import ValidationError
-from ..core.georef import Window, align_window, alignment_unit, check_grid_step
-from .messages import GisError
+from ..core.georef import VerticalRef, Window, align_window, alignment_unit, check_grid_step
+from .messages import GisError, format_value
 
-__all__ = ["Grid", "aligned_grid", "project_grid", "validate_step"]
+if TYPE_CHECKING:
+    from .raster import Raster
+
+__all__ = [
+    "Grid",
+    "VolumeResult",
+    "aligned_grid",
+    "project_grid",
+    "validate_step",
+    "volume_between",
+]
 
 _GRID = "Rejilla del proyecto"
 _STEP_FIELD = "paso de rejilla"
 _WINDOW = "Ventana de trabajo"
 _EDGES = ("xmin", "ymin", "xmax", "ymax")
+_VOLUME = "Volumen entre superficies"
+# Atributo de la rejilla → cómo se nombra en el detalle de gis.grid_mismatch.
+_GEOMETRY = {
+    "west": "oeste",
+    "north": "norte",
+    "dx": "paso en X",
+    "dy": "paso en Y",
+    "ncols": "columnas",
+    "nrows": "filas",
+}
 
 
 def _real(value: object, name: str) -> float:
@@ -204,3 +228,127 @@ def aligned_grid(extent: Window, step_m: float) -> Grid:
     RF-002-24). Error: ``gis.step_invalid``."""
     validate_step(step_m)
     return project_grid(align_window(extent, step_m), step_m)
+
+
+@dataclass(frozen=True, slots=True)
+class VolumeResult:
+    """Volumen entre dos superficies (RF-006-03): corte (``upper`` por encima de ``lower``),
+    relleno y neto (corte − relleno) en m³; área con dato en las dos superficies y área sin
+    dato en alguna de ellas, dentro de la máscara si la hay, en m²; y el área de celda
+    exacta con la que se calcularon (|dx·dy|, RF-006-02)."""
+
+    cut_m3: float
+    fill_m3: float
+    net_m3: float
+    area_m2: float
+    nodata_area_m2: float
+    cell_area_m2: float
+
+
+def _vertical_label(vertical: VerticalRef) -> str:
+    """Una referencia vertical como la lee una persona: «EPSG:5782» o «Referencia local
+    (NP-0 del plano 3)»."""
+    if vertical.epsg is not None:
+        return f"EPSG:{vertical.epsg}"
+    return f"{vertical.name} ({vertical.note})" if vertical.note else vertical.name
+
+
+def _mismatch(upper: Raster, lower: Raster) -> tuple[str, object, str] | None:
+    """La primera diferencia entre las dos superficies que impide cubicarlas celda a celda
+    (campo, valor de ``lower`` y detalle en español), o ``None`` si están en la misma
+    rejilla (bit a bit), el mismo CRS y la misma referencia vertical."""
+    if not upper.grid.same_geometry(lower.grid):
+        for field, label in _GEOMETRY.items():
+            first, second = getattr(upper.grid, field), getattr(lower.grid, field)
+            if first != second:
+                detail = f"{label} {format_value(first)} frente a {format_value(second)}"
+                return field, second, detail
+    if upper.crs != lower.crs:
+        detail = f"CRS EPSG:{upper.crs.epsg} frente a EPSG:{lower.crs.epsg}"
+        return "crs", lower.crs.epsg, detail
+    if upper.vertical != lower.vertical:
+        first, second = _vertical_label(upper.vertical), _vertical_label(lower.vertical)
+        return "vertical", second, f"referencia vertical {first} frente a {second}"
+    return None
+
+
+def _min_thickness(value: object) -> float:
+    """El espesor mínimo (m) como float: un número finito ≥ 0 (si no, error del programa)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+        raise TypeError(f"min_thickness_m debe ser un número, no {type(value).__name__}")
+    thickness = float(value)
+    if not math.isfinite(thickness) or thickness < 0.0:
+        raise ValueError(f"min_thickness_m debe ser un número finito ≥ 0, no {thickness!r}")
+    return thickness
+
+
+def volume_between(
+    upper: Raster,
+    lower: Raster,
+    *,
+    mask: np.ndarray | None = None,
+    min_thickness_m: float = 0.0,
+    names: tuple[str, str] = ("superior", "inferior"),
+) -> VolumeResult:
+    """Volumen entre ``upper`` y ``lower``, dos superficies en la misma rejilla, celda a
+    celda con su área exacta |dx·dy| (RF-006-03, RF-006-02; plan §5.4 A2).
+
+    Con d = upper − lower y e = ``min_thickness_m``: corte = Σ max(d − e, 0)·A y relleno =
+    Σ max(−d − e, 0)·A (lo que no pasa de e no cuenta), sumados con ``numpy.sum`` en float64
+    (por pares) sobre las celdas con dato en las dos superficies y, si hay ``mask`` (booleana,
+    de la forma de la rejilla), dentro de ella; neto = corte − relleno. Una cota no finita
+    (NaN = sin dato) en cualquiera de las dos deja la celda fuera del volumen y la cuenta en
+    el área sin dato (si está dentro de la máscara). ``names`` son los nombres de las dos
+    superficies en el mensaje de error. Las entradas no se modifican.
+
+    Error: ``gis.grid_mismatch`` si las rejillas no tienen la misma geometría, bit a bit, o
+    las superficies no están en el mismo CRS o la misma referencia vertical. Un espesor
+    negativo o no finito, o una máscara que no es booleana o tiene otra forma, son errores
+    del programa (``ValueError``, ``TypeError``).
+    """
+    from .raster import Raster  # aquí: gis.raster importa Grid de este módulo
+
+    for surface in (upper, lower):
+        if not isinstance(surface, Raster):
+            raise TypeError(f"se esperaba un Raster, no {type(surface).__name__}")
+    thickness = _min_thickness(min_thickness_m)
+    different = _mismatch(upper, lower)
+    if different is not None:
+        field, value, detail = different
+        raise GisError(
+            "gis.grid_mismatch",
+            obj=_VOLUME,
+            field=field,
+            value=value,
+            upper=names[0],
+            lower=names[1],
+            detail=detail,
+        )
+    valid = np.isfinite(upper.values) & np.isfinite(lower.values)
+    if mask is None:
+        considered = valid.size
+    else:
+        if not isinstance(mask, np.ndarray) or mask.dtype != np.bool_:
+            found = getattr(mask, "dtype", type(mask).__name__)
+            raise TypeError(f"la máscara debe ser un array booleano, no {found}")
+        if mask.shape != valid.shape:
+            raise ValueError(
+                f"la máscara tiene la forma {mask.shape} y la rejilla, {valid.shape}"
+            )
+        valid &= mask
+        considered = int(np.count_nonzero(mask))
+    with_data = int(np.count_nonzero(valid))
+    difference = upper.values[valid] - lower.values[valid]  # 1-D, float64
+    cut = float(np.sum(np.maximum(difference - thickness, 0.0)))
+    fill = float(np.sum(np.maximum(-difference - thickness, 0.0)))
+    area = upper.grid.cell_area
+    cut_m3 = cut * area
+    fill_m3 = fill * area
+    return VolumeResult(
+        cut_m3=cut_m3,
+        fill_m3=fill_m3,
+        net_m3=cut_m3 - fill_m3,
+        area_m2=with_data * area,
+        nodata_area_m2=(considered - with_data) * area,
+        cell_area_m2=area,
+    )
