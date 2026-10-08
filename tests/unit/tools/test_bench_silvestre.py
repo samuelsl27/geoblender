@@ -279,8 +279,12 @@ class ComparisonsTest(unittest.TestCase):
         self.assertIn("sin comparaciones registradas", result.out)
 
     def test_real_comparisons_folder(self) -> None:
-        """RF-001-11: con la carpeta real ``tests/banco/silvestre`` (sin comparaciones en
-        esta spec) y una carpeta de banco sintética, el banco es correcto."""
+        """RF-001-11, RNF-001-05: con la carpeta real ``tests/banco/silvestre`` y una carpeta
+        de banco sintética sin los datos de Silvestre, el arnés carga y ejecuta sus
+        comparaciones: la de la spec 006 (T36, ``test_gis_grid_area``) no encuentra el MDT
+        y falla con el motivo (un banco sin sus datos nunca da verde, código 1), y la
+        carpeta del banco no cambia. Hasta la 006 no había comparaciones (correcto, «sin
+        comparaciones registradas»)."""
         with temp_tree(BANK_FILES) as tmp:
             out, err = io.StringIO(), io.StringIO()
             with (
@@ -289,8 +293,10 @@ class ComparisonsTest(unittest.TestCase):
                 contextlib.redirect_stderr(err),
             ):
                 code = bench_silvestre.main([])
-        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
-        self.assertIn("sin comparaciones registradas", out.getvalue())
+        self.assertEqual(code, 1, out.getvalue() + err.getvalue())
+        self.assertIn("test_gis_grid_area", err.getvalue())
+        self.assertIn("ningún MDT como el de Silvestre", err.getvalue())
+        self.assertIn("la carpeta no ha cambiado", out.getvalue())
 
     def test_modules_do_not_leak(self) -> None:
         """RF-001-11: las comparaciones se cargan y se descargan en cada ejecución: dos
