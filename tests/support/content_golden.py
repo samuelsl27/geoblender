@@ -5,7 +5,8 @@ ADR-0024 §6): ``tests/data/core/content/golden_gbch1.json``.
 Cada caso describe una entrada pequeña (su tipo, sus declaraciones y sus datos en una forma
 que JSON puede guardar) y sus dos hashes esperados. :func:`build` la pasa por
 ``core.content`` y devuelve su ``ContentDigest``; las pruebas comparan sus hashes con los
-guardados.
+guardados. Un caso con ``"same_data_as": id`` tiene los mismos datos que otro escritos de
+otra forma (WKB *big endian* o extendido, otro orden, float32): su hash de datos es el mismo.
 
 Una versión publicada del normalizador no cambia: un hash guardado que deja de coincidir es un
 cambio de forma (una versión nueva), nunca un dato que se regenera. Por eso :func:`fill_missing`
@@ -17,7 +18,15 @@ casos, se escriben a mano en el JSON y después, desde la raíz del código::
 Marcas en los valores: ``{"nan": true}``, ``{"inf": 1}``, ``{"inf": -1}`` y
 ``{"f64": "<16 cifras hexadecimales>"}`` (los bits exactos de un float64, para NaN con otra
 carga); un trozo de documento es un texto (UTF-8) o ``{"b64": …}``; una parte de un compuesto
-puede citar el hash de datos de otro caso con ``{"case": id}``.
+puede citar el hash de datos de otro caso con ``{"case": id}``. Por método:
+
+- ``features``: ``fields`` (``[[nombre, tipo], …]``), ``dims``, ``crs`` e ``items``, cada
+  entidad ``[geometría, atributos]`` con la geometría ``{"wkb": "<hex>"}`` o ``null`` y los
+  atributos con las mismas marcas (``{"b64": …}`` es un binario);
+- ``rows``: ``columns``, ``ordered`` e ``items`` (las filas, listas de valores);
+- ``mesh``: ``arrays`` (``{nombre: {"dtype", "shape", "values"}}``, valores en orden C) y
+  ``meta``;
+- ``points``: ``columns``, ``ordered`` y ``blocks`` (``[{columna: {"dtype", "values"}}, …]``).
 """
 
 from __future__ import annotations
@@ -37,7 +46,9 @@ from tests.support.repo import ROOT
 
 GOLDEN: Path = ROOT / "tests" / "data" / "core" / "content" / "golden_gbch1.json"
 HASH_KEYS: tuple[str, str] = ("data_sha256", "content_sha256")
-METHODS: tuple[str, ...] = ("grid", "document", "composite")
+METHODS: tuple[str, ...] = (
+    "grid", "document", "composite", "features", "rows", "mesh", "points"
+)
 """Los métodos de ``ContentHasher`` que saben construir los casos (uno por caso)."""
 _COMPACT_WIDTH = 96
 
@@ -81,24 +92,62 @@ def decode_float(value: object) -> float:
     return value
 
 
+def decode_array(
+    values: Sequence[Any], dtype: str, shape: Sequence[int] | None = None
+) -> np.ndarray:
+    """Una matriz de ``dtype`` con ``values`` (listas anidadas o planas, con las marcas de
+    :func:`decode_float` si es de flotantes: sus bits se conservan) y, si se da, ``shape``."""
+    kind = np.dtype(dtype)
+    if kind.kind == "f":
+        items = np.array(values, dtype=object)
+        bits = [
+            struct.unpack("<Q", struct.pack("<d", decode_float(item)))[0]
+            for item in items.ravel().tolist()
+        ]
+        wide = np.array(bits, dtype="<u8").view("<f8")
+        with np.errstate(invalid="ignore", over="ignore"):
+            array = wide.astype(kind)
+        array = array.reshape(items.shape if shape is None else shape)
+    else:
+        array = np.array(values, dtype=kind)
+        if shape is not None:
+            array = array.reshape(shape)
+    return array
+
+
 def decode_grid(spec: Mapping[str, Any]) -> tuple[dict[str, Any], np.ndarray]:
     """La cabecera (con el sin dato descodificado) y la matriz de un caso ``grid``."""
     header = dict(spec["header"])
     if isinstance(header.get("nodata"), Mapping):
         header["nodata"] = decode_float(header["nodata"])
-    dtype = np.dtype(spec["dtype"])
-    rows = spec["values"]
-    if dtype.kind == "f":
-        bits = [
-            [struct.unpack("<Q", struct.pack("<d", decode_float(item)))[0] for item in row]
-            for row in rows
-        ]
-        wide = np.array(bits, dtype="<u8").view("<f8")
-        with np.errstate(invalid="ignore", over="ignore"):
-            values = wide.astype(dtype)
-    else:
-        values = np.array(rows, dtype=dtype)
-    return header, values
+    return header, decode_array(spec["values"], spec["dtype"])
+
+
+def decode_value(value: object) -> object:
+    """Un valor de un atributo o de una fila: las marcas de :func:`decode_float` como
+    ``float`` y ``{"b64": …}`` como ``bytes``; lo demás, tal cual."""
+    if isinstance(value, Mapping):
+        if set(value) == {"b64"}:
+            return base64.b64decode(value["b64"], validate=True)
+        return decode_float(value)
+    return value
+
+
+def decode_features(spec: Mapping[str, Any]) -> list[tuple[bytes | None, dict[str, Any]]]:
+    """Las entidades de un caso ``features``: ``(WKB o None, atributos)``."""
+    found: list[tuple[bytes | None, dict[str, Any]]] = []
+    for geometry, attributes in spec["items"]:
+        wkb = None if geometry is None else bytes.fromhex(geometry["wkb"])
+        found.append((wkb, {name: decode_value(item) for name, item in attributes.items()}))
+    return found
+
+
+def decode_points(spec: Mapping[str, Any]) -> list[dict[str, np.ndarray]]:
+    """Los bloques de un caso ``points``: ``{columna: matriz 1-D}``."""
+    return [
+        {name: decode_array(column["values"], column["dtype"]) for name, column in block.items()}
+        for block in spec["blocks"]
+    ]
 
 
 def decode_chunks(spec: Mapping[str, Any]) -> list[bytes]:
@@ -124,6 +173,23 @@ def build(case: Mapping[str, Any], by_id: Mapping[str, Mapping[str, Any]]) -> An
         hasher.grid(header, [values])
     elif method == "document":
         hasher.document(decode_chunks(case["document"]))
+    elif method == "features":
+        spec = case["features"]
+        hasher.features(spec["fields"], spec["dims"], spec["crs"], decode_features(spec))
+    elif method == "rows":
+        spec = case["rows"]
+        rows = [[decode_value(item) for item in row] for row in spec["items"]]
+        hasher.rows(spec["columns"], spec["ordered"], rows)
+    elif method == "mesh":
+        spec = case["mesh"]
+        arrays = {
+            name: decode_array(array["values"], array["dtype"], array["shape"])
+            for name, array in spec["arrays"].items()
+        }
+        hasher.mesh(arrays, spec["meta"])
+    elif method == "points":
+        spec = case["points"]
+        hasher.points(spec["columns"], spec["ordered"], decode_points(spec))
     else:
         parts: dict[str, tuple[str, str]] = {}
         for name, (kind, data) in case["composite"]["parts"].items():

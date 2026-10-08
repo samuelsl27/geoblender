@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Normalizador ``gbch/1``, primera parte: secciones ``HEAD``, ``DECL`` y ``DATA``,
-``ContentDigest`` y rejillas, documentos y compuestos (spec 008, T05; RF-008-08; ADR-0024
-§1, §2, §4 y §6; plan 008 §5.4.1).
+"""Normalizador ``gbch/1``: secciones ``HEAD``, ``DECL`` y ``DATA``, ``ContentDigest`` y
+rejillas, documentos y compuestos (spec 008, T05); entidades, filas, mallas y nubes de puntos
+(T06). RF-008-08; ADR-0024 §1, §2, §4 y §6; plan 008 §5.4.1. Los vectores de referencia, en
+``test_golden_gbch1.py``.
 
 RF-008-08: el hash de contenido da el mismo valor para el mismo dato aunque cambie su
 contenedor (teselas, bloques de lectura, orden de bytes, float32 o float64, NaN con otra carga,
@@ -12,6 +13,7 @@ mismo contenido con otros ajustes»); §6: los vectores de referencia fijan la s
 ``gbch/1``.
 """
 
+import datetime as dt
 import hashlib
 import struct
 import tracemalloc
@@ -20,7 +22,7 @@ from unittest import mock
 
 import numpy as np
 
-from tests.support import content_golden, provenance_data
+from tests.support import provenance_data, wkb_build
 from tests.support.package import import_geoblender
 
 content = import_geoblender("core.content")
@@ -631,26 +633,940 @@ class ValidationTest(unittest.TestCase):
             content.ContentDigest(EMPTY_SHA256, EMPTY_SHA256, "", "")
 
 
-class GoldenTest(unittest.TestCase):
-    """RF-008-08; ADR-0024 §6: los vectores de referencia de ``gbch/1``
-    (``tests/data/core/content/golden_gbch1.json``: rejillas float32 y float64 con NaN de
-    otras cargas, −0,0, infinitos, enteros, booleanos, CRS del fichero o ``null``, sin dato NaN;
-    documentos; compuestos) dan exactamente su hash: un cambio del normalizador los rompe."""
+# --- Entidades, filas, mallas y puntos (T06) -------------------------------------------------
 
-    def test_vectors(self) -> None:
-        document = content_golden.load()
-        self.assertEqual(document["normalizer"], content.NORMALIZER)
-        by_id = content_golden.index(document)
-        methods = set()
-        for case in document["cases"]:
-            with self.subTest(case=case["id"]):
-                digest = content_golden.build(case, by_id)
-                self.assertEqual(digest.data_sha256, case["data_sha256"])
-                self.assertEqual(digest.content_sha256, case["content_sha256"])
-                self.assertEqual(digest.reader, case["reader"])
-                methods.add(content_golden.method_of(case))
-        self.assertLessEqual({"grid", "document", "composite"}, methods)
+content_wkb = import_geoblender("core.content.wkb")
+core_numbers = import_geoblender("core.numbers")
 
+FIELDS = {"code": "text", "area": "float", "parts": "int"}
+LAYER_CRS = {"epsg": 25830}
+ATTRIBUTES = {"code": "A", "area": 1.0, "parts": 1}
+COLUMNS = [["hole", "text"], ["x", "float"], ["y", "float"], ["z", "float"], ["depth", "float"]]
+ROWS = [
+    ["S-01", 715010.0, 4378020.0, 612.5, 120.0],
+    ["S-02", 715030.5, 4378041.25, 613.0, None],
+    ["S-03", 715050.0, 4378060.0, 611.75, 95.5],
+]
+MESH_META = {
+    "schema": 1,
+    "kind": "solid",
+    "crs_epsg": 25830,
+    "closed": True,
+    "oriented": True,
+    "volume_m3": 166.66666666666666,
+    "operation_uid": "op-0001",
+}
+POINT_COLUMNS = [["x", "float"], ["y", "float"], ["z", "float"], ["class", "int"]]
+
+
+def polygon(x0: float, y0: float, side: float = 10.0) -> tuple[str, object]:
+    return ("Polygon", [wkb_build.square(x0, y0, side)])
+
+
+def sample_features() -> list[tuple[bytes | None, dict[str, object]]]:
+    """Tres parcelas: dos cuadrados (uno con un atributo nulo) y una sin geometría."""
+    return [
+        (wkb_build.iso_le(polygon(715000.0, 4378000.0)),
+         {"code": "P-01", "area": 100.0, "parts": 1}),
+        (wkb_build.iso_le(polygon(715020.0, 4378000.0)),
+         {"code": "P-02", "area": 100.0, "parts": None}),
+        (None, {"code": "P-03", "area": None, "parts": 0}),
+    ]
+
+
+def feature_digest(
+    features: object = None,
+    *,
+    fields: object = FIELDS,
+    dims: str = "XY",
+    crs: object = LAYER_CRS,
+    declarations: dict[str, object] | None = None,
+) -> object:
+    """El ``ContentDigest`` de una capa (por defecto, :func:`sample_features`)."""
+    hasher = content.ContentHasher(
+        "vector",
+        declarations=DECLARATIONS if declarations is None else declarations,
+        reader="test.layer@1",
+    )
+    items = sample_features() if features is None else features
+    return hasher.features(fields, dims, crs, items).digest()
+
+
+def row_digest(
+    rows: object = None, *, ordered: bool = False, columns: object = COLUMNS
+) -> object:
+    hasher = content.ContentHasher("table", declarations=DECLARATIONS, reader="test.table@1")
+    return hasher.rows(columns, ordered, ROWS if rows is None else rows).digest()
+
+
+def tetrahedron() -> dict[str, np.ndarray]:
+    """Un sólido de 4 vértices (float64 absolutos) y 4 caras (int32), con ``vertex_source``."""
+    return {
+        "vertices": np.array(
+            [
+                [715000.0, 4378000.0, 600.0],
+                [715010.0, 4378000.0, 600.0],
+                [715000.0, 4378010.0, 600.0],
+                [715000.0, 4378000.0, 610.0],
+            ]
+        ),
+        "faces": np.array([[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]], dtype="<i4"),
+        "vertex_source": np.array([0, 0, 1, 3], dtype="u1"),
+    }
+
+
+def mesh_digest(arrays: object = None, meta: object = None) -> object:
+    hasher = content.ContentHasher("mesh", declarations=DECLARATIONS, reader="test.mesh@1")
+    return hasher.mesh(
+        tetrahedron() if arrays is None else arrays, MESH_META if meta is None else meta
+    ).digest()
+
+
+def cloud(count: int = 12) -> dict[str, np.ndarray]:
+    """Una nube de ``count`` puntos: x e y en float64, z en float32 y la clase en uint8."""
+    rng = np.random.default_rng(6)
+    return {
+        "x": 715000.0 + rng.integers(0, 4000, count) / 4,
+        "y": 4378000.0 + rng.integers(0, 4000, count) / 4,
+        "z": (600 + rng.integers(0, 400, count) / 8).astype("<f4"),
+        "class": rng.integers(1, 7, count).astype("<u1"),
+    }
+
+
+def point_digest(
+    blocks: object, *, ordered: bool = True, columns: object = POINT_COLUMNS
+) -> object:
+    hasher = content.ContentHasher("point_cloud", declarations=DECLARATIONS)
+    return hasher.points(columns, ordered, blocks).digest()
+
+
+def pick(columns: dict[str, np.ndarray], index: object) -> dict[str, np.ndarray]:
+    """Los puntos ``index`` (un corte o una permutación) de cada columna."""
+    return {name: values[index] for name, values in columns.items()}
+
+
+class StreamLayoutTest(unittest.TestCase):
+    """RF-008-08; ADR-0024 §2 y §4: entidades, filas, mallas y nubes de puntos escritas a mano
+    (``struct`` y ``hashlib``, sin el normalizador) dan los mismos hashes. Cada tipo es su
+    cabecera en JSON canónico con su etiqueta (``FEAT``, ``TABL``, ``MESH``, ``PNTS``) y una
+    sección ``VALS``: los sha256 de las entidades ordenados; los de las filas, en orden o
+    ordenados; los arrays de la malla en float64 o int64 por nombre; el sha256 de los
+    registros de los puntos (float64 o int64 *little-endian*, punto a punto)."""
+
+    def test_features_stream(self) -> None:
+        ring = [715000.0, 4378000.0, 715010.0, 4378000.0, 715010.0, 4378010.0,
+                715000.0, 4378000.0]
+        polygon_wkb = struct.pack("<BIII8d", 1, 3, 1, 4, *ring)
+        empty_point = struct.pack("<BI2Q", 1, 1, CANONICAL_NAN_BITS, CANONICAL_NAN_BITS)
+        features = [
+            (polygon_wkb, {"code": "A", "area": 50.0, "parts": 1}),
+            (None, {"code": "B", "area": None, "parts": 2}),
+            (empty_point, {"code": "C", "area": float("nan"), "parts": None}),
+        ]
+        digest = feature_digest(features)
+        entities = sorted(
+            [
+                hashlib.sha256(polygon_wkb + b'{"area":50.0,"code":"A","parts":1}').digest(),
+                hashlib.sha256(b"\x00" + b'{"area":null,"code":"B","parts":2}').digest(),
+                hashlib.sha256(
+                    empty_point + b'{"area":{"nan":true},"code":"C","parts":null}'
+                ).digest(),
+            ]
+        )
+        head = (
+            b'{"count":3,"crs":{"epsg":25830},"dims":"XY","fields":[["area","float"],'
+            b'["code","text"],["parts","int"]]}'
+        )
+        data = hashlib.sha256(
+            _section(b"FEAT", head) + _section(b"VALS", b"".join(entities))
+        ).hexdigest()
+        self.assertEqual(digest.data_sha256, data)
+        self.assertEqual(
+            digest.content_sha256, content.content_sha256("vector", DECLARATIONS, data)
+        )
+
+    def test_rows_stream(self) -> None:
+        columns = [["hole", "text"], ["z", "float"], ["n", "int"]]
+        rows = [["S-02", None, 4], ["S-01", 612.5, 3]]
+        each = [
+            hashlib.sha256(b'["S-02",null,4]').digest(),
+            hashlib.sha256(b'["S-01",612.5,3]').digest(),
+        ]
+        for ordered, flag, values in ((True, b"true", each), (False, b"false", sorted(each))):
+            with self.subTest(ordered=ordered):
+                hasher = content.ContentHasher("table", declarations={})
+                digest = hasher.rows(columns, ordered, rows).digest()
+                head = (
+                    b'{"columns":[["hole","text"],["z","float"],["n","int"]],"count":2,'
+                    b'"ordered":' + flag + b"}"
+                )
+                stream = _section(b"TABL", head) + _section(b"VALS", b"".join(values))
+                self.assertEqual(digest.data_sha256, hashlib.sha256(stream).hexdigest())
+
+    def test_mesh_stream(self) -> None:
+        arrays = tetrahedron()
+        digest = mesh_digest(arrays)
+        head = (
+            b'{"arrays":[["faces","int",[4,3]],["vertex_source","int",[4]],'
+            b'["vertices","float",[4,3]]],"meta":{"closed":true,"crs_epsg":25830,'
+            b'"kind":"solid"}}'
+        )
+        values = (
+            arrays["faces"].astype("<i8").tobytes()
+            + arrays["vertex_source"].astype("<i8").tobytes()
+            + arrays["vertices"].astype("<f8").tobytes()
+        )
+        stream = _section(b"MESH", head) + _section(b"VALS", values)
+        self.assertEqual(digest.data_sha256, hashlib.sha256(stream).hexdigest())
+
+    def test_points_stream(self) -> None:
+        points = [
+            (715000.5, 4378000.25, 612.0, 2),
+            (715001.0, 4378000.0, -0.0, 6),
+            (715000.0, 4378002.0, 611.5, 2),
+        ]
+        block = {
+            "x": np.array([p[0] for p in points]),
+            "y": np.array([p[1] for p in points]),
+            "z": np.array([p[2] for p in points], dtype="<f4"),
+            "class": np.array([p[3] for p in points], dtype="<u1"),
+        }
+        records = [struct.pack("<dddq", x, y, z + 0.0, c) for x, y, z, c in points]
+        for ordered, flag, chosen in (
+            (True, b"true", records),
+            (False, b"false", sorted(records)),
+        ):
+            with self.subTest(ordered=ordered):
+                digest = point_digest([block], ordered=ordered)
+                head = (
+                    b'{"columns":[["x","float"],["y","float"],["z","float"],["class","int"]],'
+                    b'"count":3,"ordered":' + flag + b"}"
+                )
+                inner = hashlib.sha256(b"".join(chosen)).digest()
+                stream = _section(b"PNTS", head) + _section(b"VALS", inner)
+                self.assertEqual(digest.data_sha256, hashlib.sha256(stream).hexdigest())
+
+
+class FeatureRulesTest(unittest.TestCase):
+    """RF-008-08; ADR-0024 §4 (fila «Vectorial»): las entidades son un multiconjunto (ni su
+    orden ni su número interno cuentan; dos iguales cuentan dos veces); un vértice movido
+    1 mm, un atributo, el CRS de la capa, las dimensiones o los campos y sus tipos cambian el
+    hash; el WKB *big endian* y el extendido dan lo mismo que el ISO; la geometría nula (byte
+    ``0x00``), la vacía (su WKB ISO vacío; un punto vacío con NaN canónicos) y el atributo nulo
+    (``null``) son distintos entre sí y de cualquier valor."""
+
+    def test_order_does_not_count(self) -> None:
+        reference = feature_digest()
+        features = sample_features()
+        for name, items in (
+            ("al revés", features[::-1]),
+            ("rotadas", features[1:] + features[:1]),
+        ):
+            with self.subTest(name):
+                self.assertEqual(feature_digest(items), reference)
+
+    def test_duplicates_count_twice(self) -> None:
+        features = sample_features()
+        first, second = features[0], features[1]
+        self.assertNotEqual(
+            feature_digest(features + [first]).data_sha256, feature_digest().data_sha256
+        )
+        self.assertNotEqual(
+            feature_digest([first, first, second]).data_sha256,
+            feature_digest([first, second, second]).data_sha256,
+        )
+        self.assertNotEqual(
+            feature_digest([first, first]).data_sha256, feature_digest([first]).data_sha256
+        )
+
+    def test_vertex_moved_1_mm(self) -> None:
+        reference = feature_digest()
+        ring = wkb_build.square(715000.0, 4378000.0, 10.0)
+        for index, axis in ((2, 0), (2, 1), (0, 1)):
+            moved = [list(point) for point in ring]
+            moved[index][axis] += 0.001
+            if index == 0:
+                moved[-1][axis] += 0.001  # el anillo sigue cerrado
+            features = sample_features()
+            features[0] = (wkb_build.iso_le(("Polygon", [moved])), features[0][1])
+            with self.subTest(vertex=index, axis=axis):
+                digest = feature_digest(features)
+                self.assertNotEqual(digest.data_sha256, reference.data_sha256)
+                self.assertNotEqual(digest.content_sha256, reference.content_sha256)
+
+    def test_wkb_variants(self) -> None:
+        hole = [[715052.0, 4378002.0], [715052.0, 4378003.0], [715053.0, 4378003.0],
+                [715052.0, 4378002.0]]
+        line_zm = [[0.0, 0.0, 1.0, 2.0], [1.0, 1.0, 1.0, 3.0], [2.0, 0.0, 1.0, 4.0]]
+        cases = (
+            ("XY", ("MultiPolygon", [
+                polygon(715000.0, 4378000.0),
+                ("Polygon", [wkb_build.square(715050.0, 4378000.0, 5.0), hole]),
+            ])),
+            ("XYZ", ("LineString", [[715000.0, 4378000.0, 612.5], [715003.0, 4378004.0, 613.0]])),
+            ("XYM", ("Point", [715000.0, 4378000.0, 7.5])),
+            ("XYZM", ("GeometryCollection", [
+                ("Point", [1.0, 2.0, 3.0, 4.0]),
+                ("LineString", line_zm),
+                ("MultiPoint", [("Point", [5.0, 6.0, 7.0, 8.0]), ("Point", None)]),
+            ])),
+            ("XY", ("CompoundCurve", [
+                ("CircularString", [[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]]),
+                ("LineString", [[2.0, 0.0], [0.0, 0.0]]),
+            ])),
+            ("XYZ", ("MultiSurface", [
+                ("CurvePolygon", [("LineString", [p + [9.0] for p in wkb_build.square(0, 0, 1)])]),
+                ("PolyhedralSurface", [("Polygon", [wkb_build.square(0, 0, 1, z=1.0)])]),
+                ("TIN", [("Triangle", [[[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0],
+                                        [0.0, 0.0, 1.0]]])]),
+            ])),
+            ("XY", ("MultiCurve", [("LineString", [[0.0, 0.0], [1.0, 1.0]])])),
+        )
+        for dims, geometry in cases:
+            iso = wkb_build.iso_le(geometry, dims)
+            reference = feature_digest([(iso, ATTRIBUTES)], dims=dims)
+            variants = {
+                "ISO big endian": wkb_build.encode(geometry, dims, order=">"),
+                "extendido": wkb_build.encode(geometry, dims, flavor="ewkb"),
+                "extendido big endian con SRID": wkb_build.encode(
+                    geometry, dims, order=">", flavor="ewkb", srid=25830
+                ),
+                "partes en otro orden de bytes": wkb_build.encode(geometry, dims, parts_order=">"),
+                "bytearray": bytearray(iso),
+                "memoryview": memoryview(iso),
+            }
+            self.assertEqual(content_wkb.canonical_wkb(iso, dims), iso)
+            for name, wkb in variants.items():
+                with self.subTest(geometry=geometry[0], dims=dims, variant=name):
+                    self.assertEqual(content_wkb.canonical_wkb(wkb, dims), iso)
+                    self.assertEqual(feature_digest([(wkb, ATTRIBUTES)], dims=dims), reference)
+
+    def test_canonical_coordinates(self) -> None:
+        zero = wkb_build.iso_le(("Point", [0.0, 4378000.0]))
+        negative = wkb_build.encode(("Point", [-0.0, 4378000.0]), order=">")
+        self.assertEqual(content_wkb.canonical_wkb(negative, "XY"), zero)
+        canonical = struct.pack("<BI2Q", 1, 1, CANONICAL_NAN_BITS, CANONICAL_NAN_BITS)
+        self.assertEqual(content_wkb.canonical_wkb(wkb_build.iso_le(("Point", None)), "XY"),
+                         canonical)
+        for bits in NAN64:
+            nan = _f64(bits)
+            for order, flag in (("<", 1), (">", 0)):
+                with self.subTest(bits=f"{bits:016x}", order=order):
+                    raw = struct.pack(f"{order}BI2d", flag, 1, nan, nan)
+                    self.assertEqual(content_wkb.canonical_wkb(raw, "XY"), canonical)
+
+    def test_null_empty_and_null_attribute(self) -> None:
+        geometries = {
+            "nula": None,
+            "punto vacío": wkb_build.iso_le(("Point", None)),
+            "polígono vacío": wkb_build.iso_le(("Polygon", [])),
+            "multipolígono vacío": wkb_build.iso_le(("MultiPolygon", [])),
+            "línea vacía": wkb_build.iso_le(("LineString", [])),
+            "colección vacía": wkb_build.iso_le(("GeometryCollection", [])),
+            "polígono con un anillo vacío": wkb_build.iso_le(("Polygon", [[]])),
+            "punto (0, 0)": wkb_build.iso_le(("Point", [0.0, 0.0])),
+        }
+        found = {
+            name: feature_digest([(wkb, ATTRIBUTES)]).data_sha256
+            for name, wkb in geometries.items()
+        }
+        self.assertEqual(len(set(found.values())), len(geometries), found)
+        empty_be = wkb_build.encode(("Polygon", []), order=">", flavor="ewkb", srid=25830)
+        self.assertEqual(
+            feature_digest([(empty_be, ATTRIBUTES)]).data_sha256, found["polígono vacío"]
+        )
+        values = {"nulo": None, "cero": 0.0, "NaN": float("nan"), "−0,0": -0.0}
+        attribute = {
+            name: feature_digest([(None, {**ATTRIBUTES, "area": value})]).data_sha256
+            for name, value in values.items()
+        }
+        self.assertEqual(attribute["cero"], attribute["−0,0"])
+        self.assertEqual(len({attribute[name] for name in ("nulo", "cero", "NaN")}), 3)
+
+    def test_layer_fields_and_dims(self) -> None:
+        reference = feature_digest()
+        features = sample_features()
+        renamed = [
+            (geometry, {("codigo" if key == "code" else key): value
+                        for key, value in attributes.items()})
+            for geometry, attributes in features
+        ]
+        changed = [features[0], (features[1][0], {**features[1][1], "code": "P-2"}), features[2]]
+        cases = (
+            ("CRS de la capa null", feature_digest(crs=None)),
+            ("CRS de la capa 25829", feature_digest(crs={"epsg": 25829})),
+            ("dimensiones XYZ", feature_digest(dims="XYZ")),
+            ("campo renombrado", feature_digest(
+                renamed, fields={"codigo": "text", "area": "float", "parts": "int"})),
+            ("tipo de un campo", feature_digest(fields={**FIELDS, "parts": "float"})),
+            ("un atributo", feature_digest(changed)),
+            ("una entidad menos", feature_digest(features[:2])),
+            ("capa vacía", feature_digest([])),
+        )
+        for name, digest in cases:
+            with self.subTest(name):
+                self.assertNotEqual(digest.data_sha256, reference.data_sha256)
+                self.assertNotEqual(digest.content_sha256, reference.content_sha256)
+        for name, fields in (
+            ("campos en otro orden", dict(reversed(list(FIELDS.items())))),
+            ("campos en pares", [[key, value] for key, value in FIELDS.items()]),
+            ("campos en tuplas", tuple((key, value) for key, value in FIELDS.items())),
+        ):
+            with self.subTest(name):
+                self.assertEqual(feature_digest(fields=fields), reference)
+        self.assertEqual(feature_digest(crs={"epsg": np.int32(25830)}), reference)
+
+    def test_attribute_values(self) -> None:
+        fields = {"f": "float", "i": "int", "b": "bool", "t": "text", "d": "date",
+                  "dt": "datetime", "blob": "blob"}
+        base = {"f": 100.0, "i": 3, "b": True, "t": "Límite", "d": dt.date(2026, 10, 8),
+                "dt": dt.datetime(2026, 10, 8, 10, 0, tzinfo=dt.UTC), "blob": b"\x00\x01"}
+
+        def digest(**changes: object) -> object:
+            return feature_digest([(None, {**base, **changes})], fields=fields)
+
+        reference = digest()
+        same = {
+            "flotante entero": {"f": 100},
+            "flotante float32": {"f": np.float32(100.0)},
+            "flotante entero de numpy": {"f": np.int64(100)},
+            "entero 3,0": {"i": 3.0},
+            "entero de numpy": {"i": np.int16(3)},
+            "booleano 1": {"b": 1},
+            "booleano de numpy": {"b": np.bool_(True)},
+            "fecha en texto": {"d": "2026-10-08"},
+            "fecha y hora en texto": {"dt": "2026-10-08T10:00:00Z"},
+            "fecha y hora en otra zona": {"dt": "2026-10-08T12:00:00+02:00"},
+            "fecha y hora con milisegundos": {"dt": "2026-10-08T10:00:00.000Z"},
+            "binario bytearray": {"blob": bytearray(b"\x00\x01")},
+            "binario memoryview": {"blob": memoryview(b"\x00\x01")},
+        }
+        for name, changes in same.items():
+            with self.subTest(name):
+                self.assertEqual(digest(**changes), reference)
+        different = {
+            "texto descompuesto": {"t": "Li" + chr(0x301) + "mite"},
+            "texto con espacio": {"t": "Límite "},
+            "flotante +1 ulp": {"f": float(np.nextafter(100.0, np.inf))},
+            "booleano falso": {"b": False},
+            "fecha": {"d": dt.date(2026, 10, 9)},
+            "fecha y hora +1 ms": {"dt": "2026-10-08T10:00:00.001Z"},
+            "binario": {"blob": b"\x00\x02"},
+            "entero 4": {"i": 4},
+        }
+        for name, changes in different.items():
+            with self.subTest(name):
+                self.assertNotEqual(digest(**changes).data_sha256, reference.data_sha256)
+
+    def test_dims_kept(self) -> None:
+        xy = [[715000.0, 4378000.0], [715003.0, 4378004.0]]
+        xyz = [point + [612.5] for point in xy]
+        xym = [point + [7.0] for point in xy]
+        xyzm = [point + [7.0] for point in xyz]
+        line = ("LineString",)
+        cases = (
+            ("Z de más en una capa XY", ("XYZ", xyz), "XY", ("XY", xy)),
+            ("M de más en una capa XYZ", ("XYZM", xyzm), "XYZ", ("XYZ", xyz)),
+            ("Z de más en una capa XYM", ("XYZM", xyzm), "XYM", ("XYM", xym)),
+            ("sin Z en una capa XYZ", ("XY", xy), "XYZ", ("XY", xy)),
+            ("sin M en una capa XYZM", ("XYZ", xyz), "XYZM", ("XYZ", xyz)),
+        )
+        for name, (source_dims, points), dims, (kept_dims, kept) in cases:
+            with self.subTest(name):
+                source = wkb_build.encode(line + (points,), source_dims, order=">")
+                expected = wkb_build.iso_le(line + (kept,), kept_dims)
+                self.assertEqual(content_wkb.canonical_wkb(source, dims), expected)
+        nested = ("GeometryCollection", [("Point", [1.0, 2.0, 3.0, 4.0]), ("Point", None)])
+        flat = ("GeometryCollection", [("Point", [1.0, 2.0]), ("Point", None)])
+        self.assertEqual(
+            content_wkb.canonical_wkb(wkb_build.encode(nested, "XYZM", flavor="ewkb"), "XY"),
+            wkb_build.iso_le(flat),
+        )
+
+    def test_declarations_change_only_the_content(self) -> None:
+        reference = feature_digest()
+        other = feature_digest(declarations={**DECLARATIONS, "crs_h": {"epsg": 25829}})
+        self.assertEqual(other.data_sha256, reference.data_sha256)
+        self.assertNotEqual(other.content_sha256, reference.content_sha256)
+
+    def test_push_form(self) -> None:
+        reference = feature_digest()
+        features = sample_features()
+        hasher = content.ContentHasher("vector", declarations=DECLARATIONS, reader="test.layer@1")
+        feed = hasher.begin_features(FIELDS, "XY", LAYER_CRS)
+        feed.add(*features[0])
+        feed.update(iter(features[1:]))
+        self.assertEqual(feed.count, 3)
+        self.assertEqual(feed.finish(), reference.data_sha256)
+        self.assertEqual(hasher.digest(), reference)
+        alone = encoder.FeatureEncoder(FIELDS, "XY", LAYER_CRS)
+        alone.update(features)
+        self.assertEqual(alone.finish(), reference.data_sha256)
+
+    def test_input_is_not_modified(self) -> None:
+        features = sample_features()
+        raw = bytearray(features[0][0])
+        attributes = {**features[0][1], "area": np.float32(100.0)}
+        frozen = (bytes(raw), dict(attributes))
+        fields = dict(FIELDS)
+        feature_digest([(raw, attributes)], fields=fields)
+        self.assertEqual((bytes(raw), attributes), frozen)
+        self.assertEqual(fields, FIELDS)
+
+
+class RowRulesTest(unittest.TestCase):
+    """RF-008-08; ADR-0024 §4 (fila «Tabla»): el orden de las filas solo cuenta con
+    ``ordered = True``; dos filas iguales cuentan dos veces; los valores llegan ya
+    interpretados («1,5» y «1.50» de un CSV son el mismo número) y se convierten al tipo
+    declarado de su columna; un valor, un nulo, el nombre, el tipo o el orden de una columna
+    cambian el hash."""
+
+    def test_order_only_with_ordered(self) -> None:
+        unordered = row_digest(ordered=False)
+        self.assertEqual(row_digest(ROWS[::-1], ordered=False), unordered)
+        ordered = row_digest(ordered=True)
+        self.assertNotEqual(row_digest(ROWS[::-1], ordered=True).data_sha256,
+                            ordered.data_sha256)
+        self.assertEqual(row_digest([tuple(row) for row in ROWS], ordered=True), ordered)
+        self.assertNotEqual(ordered.data_sha256, unordered.data_sha256)
+
+    def test_duplicates_count_twice(self) -> None:
+        for ordered in (False, True):
+            with self.subTest(ordered=ordered):
+                self.assertNotEqual(
+                    row_digest(ROWS + ROWS[:1], ordered=ordered).data_sha256,
+                    row_digest(ordered=ordered).data_sha256,
+                )
+
+    def test_interpreted_values(self) -> None:
+        columns = [["hole", "text"], ["grade", "float"], ["count", "int"]]
+        texts = ("1,5", "1.50", "1,500", " 1.5 ")
+        digests = {
+            text: row_digest(
+                [["S-01", core_numbers.parse_decimal(text, obj="CSV", field="ley"), 2]],
+                columns=columns,
+            )
+            for text in texts
+        }
+        self.assertEqual(len(set(digests.values())), 1, digests)
+        reference = row_digest(ordered=True)
+        names = [name for name, _ in COLUMNS]
+        same = {
+            "entero en una columna de flotantes": [[*ROWS[0][:4], 120], *ROWS[1:]],
+            "float32": [[*ROWS[0][:3], np.float32(612.5), ROWS[0][4]], *ROWS[1:]],
+            "filas como diccionarios": [dict(zip(names, row, strict=True)) for row in ROWS],
+            "diccionarios en otro orden": [
+                dict(reversed(list(zip(names, row, strict=True)))) for row in ROWS
+            ],
+        }
+        for name, rows in same.items():
+            with self.subTest(name):
+                self.assertEqual(row_digest(rows, ordered=True), reference)
+
+    def test_changes(self) -> None:
+        reference = row_digest()
+        swapped = [["hole", "text"], ["y", "float"], ["x", "float"], ["z", "float"],
+                   ["depth", "float"]]
+        cases = (
+            ("una cota", [ROWS[0], [*ROWS[1][:3], 613.01, None], ROWS[2]], COLUMNS),
+            ("un nulo", [[*ROWS[0][:4], None], *ROWS[1:]], COLUMNS),
+            ("columna renombrada", ROWS, [["sondeo", "text"], *COLUMNS[1:]]),
+            ("columnas en otro orden", [[r[0], r[2], r[1], r[3], r[4]] for r in ROWS], swapped),
+            ("tabla vacía", [], COLUMNS),
+        )
+        for name, rows, columns in cases:
+            with self.subTest(name):
+                self.assertNotEqual(row_digest(rows, columns=columns).data_sha256,
+                                    reference.data_sha256)
+        as_float = row_digest([[*row[:4], 100.0] for row in ROWS])
+        as_int = row_digest([[*row[:4], 100] for row in ROWS],
+                            columns=[*COLUMNS[:4], ["depth", "int"]])
+        self.assertNotEqual(as_int.data_sha256, as_float.data_sha256)
+
+    def test_push_form(self) -> None:
+        reference = row_digest(ordered=True)
+        hasher = content.ContentHasher("table", declarations=DECLARATIONS, reader="test.table@1")
+        feed = hasher.begin_rows(COLUMNS, True)
+        feed.add(ROWS[0])
+        feed.update(ROWS[1:])
+        self.assertEqual(feed.count, 3)
+        feed.finish()
+        self.assertEqual(hasher.digest(), reference)
+
+
+class MeshRulesTest(unittest.TestCase):
+    """RF-008-08; ADR-0024 §4 (fila «Malla»): los arrays van por su nombre, con su clase y su
+    forma, ``vertices`` en float64 canónico y las caras y demás enteros en int64; el orden de
+    los vértices y de las caras cuenta; de ``meta`` solo son contenido ``kind``, ``crs_epsg`` y
+    ``closed`` (una clave que falta es ``null``): las demás no cuentan."""
+
+    def test_meta_keys_that_are_not_content(self) -> None:
+        reference = mesh_digest()
+        cases = {
+            "solo las de contenido": {
+                key: MESH_META[key] for key in ("kind", "crs_epsg", "closed")
+            },
+            "volumen": {**MESH_META, "volume_m3": 1.0},
+            "operación": {**MESH_META, "operation_uid": "op-0002"},
+            "esquema": {**MESH_META, "schema": 2},
+            "orientación": {**MESH_META, "oriented": False},
+            "tipo de superficie": {**MESH_META, "surface_type": "tin"},
+            "triangulador": {**MESH_META, "triangulator": "delaunay@1"},
+        }
+        for name, meta in cases.items():
+            with self.subTest(name):
+                self.assertEqual(mesh_digest(meta=meta), reference)
+
+    def test_meta_keys_that_are_content(self) -> None:
+        reference = mesh_digest()
+        cases = {
+            "kind": {**MESH_META, "kind": "surface"},
+            "crs_epsg": {**MESH_META, "crs_epsg": 25829},
+            "closed": {**MESH_META, "closed": False},
+            "sin closed": {key: value for key, value in MESH_META.items() if key != "closed"},
+            "sin meta": {},
+        }
+        for name, meta in cases.items():
+            with self.subTest(name):
+                self.assertNotEqual(mesh_digest(meta=meta).data_sha256, reference.data_sha256)
+        self.assertEqual(mesh_digest(meta={"kind": "solid"}),
+                         mesh_digest(meta={"kind": "solid", "crs_epsg": None, "closed": None}))
+        self.assertEqual(mesh_digest(meta={**MESH_META, "crs_epsg": np.int64(25830),
+                                           "closed": np.bool_(True)}), reference)
+
+    def test_order_and_values_count(self) -> None:
+        reference = mesh_digest()
+        arrays = tetrahedron()
+        order = [3, 2, 1, 0]
+        renumbered = {
+            "vertices": arrays["vertices"][order],
+            "faces": np.array([[order.index(i) for i in face] for face in arrays["faces"]],
+                              dtype="<i4"),
+            "vertex_source": arrays["vertex_source"][order],
+        }
+        moved = tetrahedron()
+        moved["vertices"][3, 2] += 0.001
+        cases = {
+            "vértices renumerados": renumbered,
+            "caras en otro orden": {**arrays, "faces": arrays["faces"][::-1].copy()},
+            "un vértice 1 mm": moved,
+            "caras en una fila": {**arrays, "faces": arrays["faces"].reshape(-1)},
+            "array renombrado": {**{k: v for k, v in arrays.items() if k != "vertex_source"},
+                                 "vertex_kind": arrays["vertex_source"]},
+            "sin vertex_source": {k: v for k, v in arrays.items() if k != "vertex_source"},
+            "vértices enteros": {**arrays, "vertices": arrays["vertices"].astype("<i8")},
+        }
+        for name, changed in cases.items():
+            with self.subTest(name):
+                self.assertNotEqual(mesh_digest(changed).data_sha256, reference.data_sha256)
+
+    def test_same_values_written_otherwise(self) -> None:
+        reference = mesh_digest()
+        arrays = tetrahedron()
+        cases = {
+            "vértices en float32": {**arrays, "vertices": arrays["vertices"].astype("<f4")},
+            "vértices big endian": {**arrays, "vertices": arrays["vertices"].astype(">f8")},
+            "vértices en orden Fortran": {**arrays,
+                                          "vertices": np.asfortranarray(arrays["vertices"])},
+            "caras en int64": {**arrays, "faces": arrays["faces"].astype("<i8")},
+            "caras en uint16": {**arrays, "faces": arrays["faces"].astype("<u2")},
+            "arrays en otro orden": dict(reversed(list(arrays.items()))),
+        }
+        for name, changed in cases.items():
+            with self.subTest(name):
+                self.assertEqual(mesh_digest(changed), reference)
+        odd = {"vertices": np.array([[-0.0, 1.0, _f64(0xFFF8000000000001)]])}
+        canonical = {"vertices": np.array([[0.0, 1.0, np.nan]])}
+        self.assertEqual(mesh_digest(odd, {}), mesh_digest(canonical, {}))
+        with mock.patch.object(encoder, "GRID_CHUNK_CELLS", 2):
+            self.assertEqual(mesh_digest(), reference)
+
+
+class PointRulesTest(unittest.TestCase):
+    """RF-008-08; ADR-0024 §4 (fila «Nube de puntos»): las columnas en float64 o int64, por
+    bloques; los bloques, su forma (columnas o array estructurado) y los trozos internos no
+    cuentan; float32 = float64, NaN canónico y −0,0 = 0,0; con ``ordered = True`` (por
+    defecto) el orden de los puntos cuenta, y sin él, no; dos puntos iguales cuentan dos
+    veces; el orden de las columnas declaradas, sí."""
+
+    def setUp(self) -> None:
+        self.points = cloud()
+        self.reference = point_digest([self.points])
+
+    def test_blocks_do_not_count(self) -> None:
+        points = self.points
+        structured = np.zeros(12, dtype=[("class", "u1"), ("x", "<f8"), ("y", "<f8"), ("z", "<f4")])
+        for name in points:
+            structured[name] = points[name]
+        cases = {
+            "en tres bloques": [pick(points, slice(0, 5)), pick(points, slice(5, 5)),
+                                pick(points, slice(5, 12))],
+            "punto a punto": (pick(points, slice(i, i + 1)) for i in range(12)),
+            "array estructurado": [structured],
+            "columnas en otro orden": [dict(reversed(list(points.items())))],
+            "listas": [{name: values.tolist() for name, values in points.items()}],
+        }
+        for name, blocks in cases.items():
+            with self.subTest(name):
+                self.assertEqual(point_digest(blocks), self.reference)
+        unordered = point_digest([points], ordered=False)
+        for cells in (1, 4, 5, 1000):
+            with self.subTest(cells=cells), mock.patch.object(encoder, "GRID_CHUNK_CELLS", cells):
+                self.assertEqual(point_digest([points]), self.reference)
+                self.assertEqual(point_digest([points], ordered=False), unordered)
+
+    def test_order(self) -> None:
+        permutation = np.random.default_rng(1).permutation(12)
+        shuffled = pick(self.points, permutation)
+        self.assertNotEqual(point_digest([shuffled]).data_sha256, self.reference.data_sha256)
+        unordered = point_digest([self.points], ordered=False)
+        self.assertEqual(point_digest([shuffled], ordered=False), unordered)
+        self.assertEqual(
+            point_digest([pick(shuffled, slice(0, 7)), pick(shuffled, slice(7, 12))],
+                         ordered=False),
+            unordered,
+        )
+        self.assertNotEqual(unordered.data_sha256, self.reference.data_sha256)
+        doubled = pick(self.points, np.r_[np.arange(12), 0])
+        self.assertNotEqual(point_digest([doubled], ordered=False).data_sha256,
+                            unordered.data_sha256)
+
+    def test_values(self) -> None:
+        points = self.points
+        same = {
+            "z en float64": {**points, "z": points["z"].astype("<f8")},
+            "clase en int64": {**points, "class": points["class"].astype("<i8")},
+            "x big endian": {**points, "x": points["x"].astype(">f8")},
+        }
+        for name, block in same.items():
+            with self.subTest(name):
+                self.assertEqual(point_digest([block]), self.reference)
+        odd = {"x": np.array([-0.0, 1.0]), "y": np.array([_f64(0x7FF0000000000001), 2.0]),
+               "z": np.array([1.0, 2.0], dtype="<f4"), "class": np.array([1, 2], dtype="u1")}
+        canonical = {**odd, "x": np.array([0.0, 1.0]), "y": np.array([np.nan, 2.0])}
+        self.assertEqual(point_digest([odd]), point_digest([canonical]))
+        moved = {**points, "z": points["z"].copy()}
+        moved["z"][4] = np.nextafter(moved["z"][4], np.float32(np.inf))
+        swapped = [["y", "float"], ["x", "float"], ["z", "float"], ["class", "int"]]
+        changed = {
+            "una cota +1 ulp": point_digest([moved]),
+            "columnas declaradas en otro orden": point_digest([points], columns=swapped),
+            "clase como flotante": point_digest(
+                [points], columns=[*POINT_COLUMNS[:3], ["class", "float"]]),
+            "un punto menos": point_digest([pick(points, slice(0, 11))]),
+        }
+        for name, digest in changed.items():
+            with self.subTest(name):
+                self.assertNotEqual(digest.data_sha256, self.reference.data_sha256)
+
+    def test_push_form(self) -> None:
+        hasher = content.ContentHasher("point_cloud", declarations=DECLARATIONS)
+        feed = hasher.begin_points(POINT_COLUMNS)
+        feed.update(pick(self.points, slice(0, 8)))
+        feed.update(pick(self.points, slice(8, 12)))
+        self.assertEqual(feed.count, 12)
+        feed.finish()
+        self.assertEqual(hasher.digest(), self.reference)
+
+
+class NewTypesValidationTest(unittest.TestCase):
+    """RF-008-08: lo que no tiene forma canónica única —un WKB truncado, con bytes de más o de
+    un tipo desconocido, un atributo que no es de su tipo declarado o que falta, una fila de
+    otra longitud, columnas o arrays de otra clase, un ``meta`` mal formado— se rechaza con un
+    error claro, sin dar un hash; un fallo a medias deja el codificador inservible."""
+
+    def features_error(self, items: object, fields: object = FIELDS) -> None:
+        content.ContentHasher("vector", declarations={}).features(fields, "XY", None, items)
+
+    def test_layer(self) -> None:
+        cases = (
+            ("dimensiones XYZMM", (FIELDS, "XYZMM", None), ValueError),
+            ("dimensiones en minúsculas", (FIELDS, "xy", None), ValueError),
+            ("campo repetido", ([["a", "text"], ["a", "int"]], "XY", None), ValueError),
+            ("tipo de campo desconocido", ({"a": "double"}, "XY", None), ValueError),
+            ("nombre vacío", ({"": "text"}, "XY", None), ValueError),
+            ("campos en un texto", ("abc", "XY", None), TypeError),
+            ("par de tres", ([["a", "text", 1]], "XY", None), ValueError),
+            ("CRS en texto", (FIELDS, "XY", "EPSG:25830"), TypeError),
+            ("CRS 0", (FIELDS, "XY", {"epsg": 0}), ValueError),
+        )
+        for name, args, error in cases:
+            with self.subTest(name), self.assertRaises(error):
+                encoder.FeatureEncoder(*args)
+
+    def test_features(self) -> None:
+        wkb = sample_features()[0][0]
+        attributes = sample_features()[0][1]
+        point = struct.pack("<BI2d", 1, 1, 1.0, 2.0)
+        cases = (
+            ("geometría en texto", ("POINT (1 2)", attributes), TypeError),
+            ("falta un atributo", (wkb, {"code": "A", "area": 1.0}), ValueError),
+            ("atributo de más", (wkb, {**attributes, "x": 1}), ValueError),
+            ("atributos en lista", (wkb, ["A", 1.0, 1]), TypeError),
+            ("entidad sin atributos", (wkb,), ValueError),
+            ("texto en un flotante", (None, {**attributes, "area": "100"}), TypeError),
+            ("1,5 en un entero", (None, {**attributes, "parts": 1.5}), ValueError),
+            ("NaN en un entero", (None, {**attributes, "parts": float("nan")}), ValueError),
+            ("booleano en un entero", (None, {**attributes, "parts": True}), TypeError),
+            ("booleano en un flotante", (None, {**attributes, "area": False}), TypeError),
+            ("número en un texto", (None, {**attributes, "code": 5}), TypeError),
+            ("WKB vacío", (b"", attributes), ValueError),
+            ("WKB truncado", (wkb[:-1], attributes), ValueError),
+            ("bytes de más", (wkb + b"\x00", attributes), ValueError),
+            ("orden de bytes 2", (b"\x02" + wkb[1:], attributes), ValueError),
+            ("tipo 13", (struct.pack("<BI", 1, 13), attributes), ValueError),
+            ("tipo 0", (struct.pack("<BI2d", 1, 0, 1.0, 2.0), attributes), ValueError),
+            ("tipo 4001", (struct.pack("<BI2d", 1, 4001, 1.0, 2.0), attributes), ValueError),
+            ("ISO y extendido a la vez",
+             (struct.pack("<BI3d", 1, 1001 | 0x80000000, 1.0, 2.0, 3.0), attributes), ValueError),
+            ("número de puntos enorme", (struct.pack("<BII", 1, 2, 0xFFFFFFFF), attributes),
+             ValueError),
+            ("número de partes enorme", (struct.pack("<BII", 1, 7, 0xFFFFFFFF) + point,
+                                         attributes), ValueError),
+        )
+        for name, feature, error in cases:
+            with self.subTest(name), self.assertRaises(error):
+                self.features_error([feature])
+        deep = point
+        for _ in range(100):
+            deep = struct.pack("<BII", 1, 7, 1) + deep
+        with self.assertRaises(ValueError):
+            self.features_error([(deep, attributes)])
+
+    def test_attribute_types(self) -> None:
+        cases = (
+            ("2 en un booleano", "bool", 2, ValueError),
+            ("texto en un booleano", "bool", "sí", TypeError),
+            ("fecha y hora en una fecha", "date",
+             dt.datetime(2026, 10, 8, tzinfo=dt.UTC), TypeError),
+            ("fecha con barras", "date", "08/10/2026", ValueError),
+            ("fecha sin ceros", "date", "2026-10-8", ValueError),
+            ("fecha y hora sin zona", "datetime", dt.datetime(2026, 10, 8, 10), ValueError),
+            ("texto sin zona", "datetime", "2026-10-08T10:00:00", ValueError),
+            ("fecha en una fecha y hora", "datetime", dt.date(2026, 10, 8), TypeError),
+            ("texto en un binario", "blob", "AAE=", TypeError),
+            ("número en una fecha", "date", 20261008, TypeError),
+        )
+        for name, kind, value, error in cases:
+            with self.subTest(name), self.assertRaises(error):
+                self.features_error([(None, {"a": value})], fields={"a": kind})
+
+    def test_failed_update_leaves_the_encoder_as_it_was(self) -> None:
+        features = sample_features()
+        feed = encoder.FeatureEncoder(FIELDS, "XY", LAYER_CRS)
+        feed.update(features[:1])
+        with self.assertRaises(TypeError):
+            feed.update([features[1], (None, {**features[2][1], "area": "1"})])
+        self.assertEqual(feed.count, 1)
+        feed.update(features[1:])
+        self.assertEqual(feed.finish(), feature_digest().data_sha256)
+        rows = encoder.RowEncoder(COLUMNS, True)
+        with self.assertRaises(ValueError):
+            rows.update([ROWS[0], ROWS[1][:2]])
+        self.assertEqual(rows.count, 0)
+        rows.update(ROWS)
+        self.assertEqual(rows.finish(), row_digest(ordered=True).data_sha256)
+        points = encoder.PointEncoder(POINT_COLUMNS)
+        with self.assertRaises(ValueError):
+            points.update({**cloud(), "z": np.zeros(3)})
+        self.assertEqual(points.count, 0)
+        points.update(cloud())
+        self.assertEqual(points.finish(), point_digest([cloud()]).data_sha256)
+
+    def test_failure_while_hashing_breaks_the_points(self) -> None:
+        real = encoder._float_cells
+        calls: list[int] = []
+
+        def failing(block: np.ndarray) -> np.ndarray:
+            calls.append(len(block))
+            if len(calls) == 2:
+                raise MemoryError("simulado")
+            return real(block)
+
+        broken = encoder.PointEncoder(POINT_COLUMNS)
+        with (
+            mock.patch.object(encoder, "GRID_CHUNK_CELLS", 8),
+            mock.patch.object(encoder, "_float_cells", failing),
+            self.assertRaises(MemoryError),
+        ):
+            broken.update(cloud())
+        for action in (lambda: broken.update(cloud()), broken.finish):
+            with self.assertRaises(RuntimeError):
+                action()
+
+    def test_rows(self) -> None:
+        cases = (
+            ("ordered en texto", (COLUMNS, "yes", [ROWS[0]]), TypeError),
+            ("fila corta", (COLUMNS, True, [ROWS[0][:4]]), ValueError),
+            ("fila larga", (COLUMNS, True, [[*ROWS[0], 1.0]]), ValueError),
+            ("fila en texto", (COLUMNS, True, ["S-01"]), TypeError),
+            ("diccionario sin una columna", (COLUMNS, True, [{"hole": "S-01"}]), ValueError),
+            ("sin columnas", ([], True, []), ValueError),
+            ("columna repetida", ([["a", "int"], ["a", "int"]], True, []), ValueError),
+            ("texto en un flotante", (COLUMNS, False, [[*ROWS[0][:4], "120"]]), TypeError),
+        )
+        for name, args, error in cases:
+            with self.subTest(name), self.assertRaises(error):
+                content.ContentHasher("table", declarations={}).rows(*args)
+
+    def test_mesh(self) -> None:
+        arrays = tetrahedron()
+        cases = (
+            ("sin arrays", ({}, MESH_META), ValueError),
+            ("arrays en lista", ([arrays["vertices"]], MESH_META), TypeError),
+            ("nombre vacío", ({"": arrays["vertices"]}, MESH_META), ValueError),
+            ("objetos", ({"vertices": arrays["vertices"].astype(object)}, MESH_META), TypeError),
+            ("textos", ({"meta": np.array('{"kind": "solid"}')}, MESH_META), TypeError),
+            ("uint64 enorme", ({"faces": np.array([2**63], dtype="<u8")}, MESH_META), ValueError),
+            ("meta en lista", (arrays, [("kind", "solid")]), TypeError),
+            ("crs_epsg en texto", (arrays, {**MESH_META, "crs_epsg": "25830"}), TypeError),
+            ("crs_epsg booleano", (arrays, {**MESH_META, "crs_epsg": True}), TypeError),
+            ("crs_epsg 0", (arrays, {**MESH_META, "crs_epsg": 0}), ValueError),
+            ("closed en texto", (arrays, {**MESH_META, "closed": "yes"}), TypeError),
+            ("kind numérico", (arrays, {**MESH_META, "kind": 3}), TypeError),
+        )
+        for name, args, error in cases:
+            with self.subTest(name), self.assertRaises(error):
+                content.ContentHasher("mesh", declarations={}).mesh(*args)
+
+    def test_points(self) -> None:
+        points = cloud()
+        cases = (
+            ("clase desconocida", ([["x", "double"]], True, [{"x": points["x"]}]), ValueError),
+            ("ordered en número", (POINT_COLUMNS, 1, [points]), TypeError),
+            ("falta una columna", (POINT_COLUMNS, True,
+                                   [{k: v for k, v in points.items() if k != "z"}]), ValueError),
+            ("columna de más", (POINT_COLUMNS, True, [{**points, "t": points["z"]}]), ValueError),
+            ("longitudes distintas", (POINT_COLUMNS, True, [{**points, "z": points["z"][:5]}]),
+             ValueError),
+            ("columna 2-D", (POINT_COLUMNS, True,
+                             [{**points, "z": points["z"].reshape(3, 4)}]), ValueError),
+            ("flotantes en una columna entera", (POINT_COLUMNS, True,
+                                                 [{**points, "class": points["z"]}]), TypeError),
+            ("bloque en lista", (POINT_COLUMNS, True, [[points["x"]]]), TypeError),
+            ("sin columnas", ([], True, []), ValueError),
+        )
+        for name, args, error in cases:
+            with self.subTest(name), self.assertRaises(error):
+                content.ContentHasher("point_cloud", declarations={}).points(*args)
+
+    def test_states(self) -> None:
+        hasher = content.ContentHasher("vector", declarations={})
+        feed = hasher.begin_features(FIELDS, "XY", None)
+        with self.assertRaises(RuntimeError):
+            hasher.digest()
+        for action in (
+            lambda: hasher.rows(COLUMNS, True, []),
+            lambda: hasher.mesh(tetrahedron(), {}),
+            lambda: hasher.begin_points(POINT_COLUMNS),
+        ):
+            with self.assertRaises(RuntimeError):
+                action()
+        feed.finish()
+        with self.assertRaises(RuntimeError):
+            feed.add(None, {"code": "A", "area": 1.0, "parts": 1})
+        with self.assertRaises(RuntimeError):
+            hasher.features(FIELDS, "XY", None, [])
 
 if __name__ == "__main__":
     unittest.main()

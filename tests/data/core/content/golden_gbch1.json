@@ -1,6 +1,6 @@
 {
   "normalizer": "gbch/1",
-  "about": "Vectores de referencia del normalizador gbch/1 (ADR-0024 §6; spec 008, RF-008-08). Una versión publicada no cambia: un hash que deja de coincidir es un cambio del normalizador (una versión nueva), nunca un dato que se regenera. Marcas en los valores: {\"nan\": true}, {\"inf\": 1}, {\"inf\": -1} y {\"f64\": \"<16 cifras hexadecimales>\"} (los bits de un float64); un trozo de documento es un texto (UTF-8) o {\"b64\": …}; una parte de un compuesto puede citar otro caso con {\"case\": id}. Los hashes que faltan los rellena tests/support/content_golden.py, que nunca cambia uno escrito.",
+  "about": "Vectores de referencia del normalizador gbch/1 (ADR-0024 §6; spec 008, RF-008-08). Una versión publicada no cambia: un hash que deja de coincidir es un cambio del normalizador (una versión nueva), nunca un dato que se regenera. Marcas en los valores: {\"nan\": true}, {\"inf\": 1}, {\"inf\": -1} y {\"f64\": \"<16 cifras hexadecimales>\"} (los bits de un float64); un trozo de documento es un texto (UTF-8) o {\"b64\": …}; una parte de un compuesto puede citar otro caso con {\"case\": id}; una geometría es {\"wkb\": \"<hex>\"} (el WKB tal como lo da el lector) o null; \"same_data_as\" nombra un caso con los mismos datos escritos de otra forma. Los hashes que faltan los rellena tests/support/content_golden.py, que nunca cambia uno escrito.",
   "cases": [
     {
       "id": "grid-float32-area-epsg",
@@ -174,6 +174,490 @@
       },
       "data_sha256": "c2db53f9f1aa1bb9bce6670ad5f95642fe0d99c8bb08cf57e711452df682f2da",
       "content_sha256": "11298438140ddd1f37a9ffa0c8219d77c66c889d4243ab386f3e3538d279ce16"
+    },
+    {
+      "id": "features-parcels-epsg",
+      "about": "Capa de parcelas XY en EPSG:25830: un polígono con agujero (dos veces: cuenta dos), un multipolígono y una entidad sin geometría con atributos nulos; WKB ISO little endian",
+      "kind": "vector",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "features": {
+        "fields": [["code", "text"], ["area", "float"], ["parts", "int"], ["surveyed", "date"]],
+        "dims": "XY",
+        "crs": {"epsg": 25830},
+        "items": [
+          [
+            {
+              "wkb": "0103000000020000000500000000000000f0d125410000000064b350410000000004d225410000000064b350410000000004d225410000008066b3504100000000f0d125410000008066b3504100000000f0d125410000000064b350410400000000000000f4d125410000008064b3504100000000f4d125410000000065b3504100000000f8d125410000000065b3504100000000f4d125410000008064b35041"
+            },
+            {"code": "P-01", "area": 96.0, "parts": 1, "surveyed": "2026-09-30"}
+          ],
+          [
+            {
+              "wkb": "010600000002000000010300000001000000050000000000000018d225410000000064b350410000000022d225410000000064b350410000000022d225410000004065b350410000000018d225410000004065b350410000000018d225410000000064b3504101030000000100000005000000000000002cd225410000000064b350410000000031d225410000000064b350410000000031d22541000000a064b35041000000002cd22541000000a064b35041000000002cd225410000000064b35041"
+            },
+            {"code": "P-02", "area": 31.25, "parts": 2, "surveyed": null}
+          ],
+          [null, {"code": "P-03", "area": null, "parts": null, "surveyed": "2026-10-01"}],
+          [
+            {
+              "wkb": "0103000000020000000500000000000000f0d125410000000064b350410000000004d225410000000064b350410000000004d225410000008066b3504100000000f0d125410000008066b3504100000000f0d125410000000064b350410400000000000000f4d125410000008064b3504100000000f4d125410000000065b3504100000000f8d125410000000065b3504100000000f4d125410000008064b35041"
+            },
+            {"code": "P-01", "area": 96.0, "parts": 1, "surveyed": "2026-09-30"}
+          ]
+        ]
+      },
+      "data_sha256": "f91ebf06765c756e0c1a417f0c6e79bbb31865fcfdbe0c1a041585cc2f497776",
+      "content_sha256": "67f5151fe61708c1d421c3e0caa32d16a92999d6a2599d7a6cd195367fb41e8f"
+    },
+    {
+      "id": "features-parcels-reordered-be",
+      "about": "Las mismas parcelas en otro orden, en WKB big endian, extendido con SRID y con las partes en otro orden de bytes, y un área entera: los mismos datos",
+      "kind": "vector",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "same_data_as": "features-parcels-epsg",
+      "features": {
+        "fields": [["surveyed", "date"], ["parts", "int"], ["area", "float"], ["code", "text"]],
+        "dims": "XY",
+        "crs": {"epsg": 25830},
+        "items": [
+          [
+            {
+              "wkb": "000000000300000002000000054125d1f0000000004150b364000000004125d204000000004150b364000000004125d204000000004150b366800000004125d1f0000000004150b366800000004125d1f0000000004150b36400000000000000044125d1f4000000004150b364800000004125d1f4000000004150b365000000004125d1f8000000004150b365000000004125d1f4000000004150b36480000000"
+            },
+            {"code": "P-01", "area": 96.0, "parts": 1, "surveyed": "2026-09-30"}
+          ],
+          [
+            {
+              "wkb": "010600000002000000000000000300000001000000054125d218000000004150b364000000004125d222000000004150b364000000004125d222000000004150b365400000004125d218000000004150b365400000004125d218000000004150b36400000000000000000300000001000000054125d22c000000004150b364000000004125d231000000004150b364000000004125d231000000004150b364a00000004125d22c000000004150b364a00000004125d22c000000004150b36400000000"
+            },
+            {"code": "P-02", "area": 31.25, "parts": 2, "surveyed": null}
+          ],
+          [null, {"code": "P-03", "area": null, "parts": null, "surveyed": "2026-10-01"}],
+          [
+            {
+              "wkb": "0020000003000064e600000002000000054125d1f0000000004150b364000000004125d204000000004150b364000000004125d204000000004150b366800000004125d1f0000000004150b366800000004125d1f0000000004150b36400000000000000044125d1f4000000004150b364800000004125d1f4000000004150b365000000004125d1f8000000004150b365000000004125d1f4000000004150b36480000000"
+            },
+            {"code": "P-01", "area": 96, "parts": 1, "surveyed": "2026-09-30"}
+          ]
+        ]
+      },
+      "data_sha256": "f91ebf06765c756e0c1a417f0c6e79bbb31865fcfdbe0c1a041585cc2f497776",
+      "content_sha256": "67f5151fe61708c1d421c3e0caa32d16a92999d6a2599d7a6cd195367fb41e8f"
+    },
+    {
+      "id": "features-null-empty-crs-null",
+      "about": "Capa XYZ sin CRS: geometría nula, punto vacío (NaN con carga, big endian), polígono y multipolígono vacíos, un punto Z y una línea XY; atributos nulos, NaN, −0,0, infinito, booleanos, binario y fecha y hora en otra zona",
+      "kind": "vector",
+      "reader": "test.golden@1",
+      "declarations": {
+        "conventions": {"vertical": "orthometric"},
+        "crs_h": {"epsg": 25830},
+        "crs_v": {"local": "cota de obra"}
+      },
+      "features": {
+        "fields": [
+          ["name", "text"],
+          ["value", "float"],
+          ["flag", "bool"],
+          ["photo", "blob"],
+          ["when", "datetime"]
+        ],
+        "dims": "XYZ",
+        "crs": null,
+        "items": [
+          [null, {"name": "nula", "value": null, "flag": null, "photo": null, "when": null}],
+          [
+            {"wkb": "00000003e97ff80000000000017ff80000000000017ff8000000000001"},
+            {
+              "name": "punto vacío",
+              "value": {"nan": true},
+              "flag": true,
+              "photo": {"b64": "AAE="},
+              "when": "2026-10-08T10:00:00Z"
+            }
+          ],
+          [
+            {"wkb": "01eb03000000000000"},
+            {
+              "name": "polígono vacío",
+              "value": -0.0,
+              "flag": false,
+              "photo": null,
+              "when": "2026-10-08T12:00:00.250+02:00"
+            }
+          ],
+          [
+            {"wkb": "00000003ee00000000"},
+            {"name": "multipolígono vacío", "value": {"inf": 1}, "flag": null, "photo": null, "when": null}
+          ],
+          [
+            {"wkb": "01e903000000000000f1d125410000001064b350410000000000218340"},
+            {"name": "punto Z", "value": 612.125, "flag": 1, "photo": null, "when": null}
+          ],
+          [
+            {"wkb": "01020000000200000000000000f0d125410000000064b350410000000004d225410000004065b35041"},
+            {"name": "línea sin Z en una capa XYZ", "value": null, "flag": 0, "photo": null, "when": null}
+          ]
+        ]
+      },
+      "data_sha256": "961d3ed478f06b2cac3f2ba0f0350acdadc15d7de11b23226a3aea51e3e75a7e",
+      "content_sha256": "5203c536c59d2883417cc3491f4b5cfef06b97a36b76fdd1b09c095c77627105"
+    },
+    {
+      "id": "features-curves-zm",
+      "about": "Capa XYZM: colección, curva compuesta con arco (extendida con SRID), TIN de triángulos y un punto ZM extendido big endian con un atributo nulo",
+      "kind": "vector",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "features": {
+        "fields": [["name", "text"]],
+        "dims": "XYZM",
+        "crs": {"epsg": 25830},
+        "items": [
+          [
+            {
+              "wkb": "01bf0b00000200000001b90b000000000000f0d125410000000064b350410000000000248340000000000000084001ba0b00000200000000000000000000000000000000000000000000000000f03f0000000000000040000000000000f03f000000000000f03f000000000000f03f0000000000000840"
+            },
+            {"name": "colección"}
+          ],
+          [
+            {
+              "wkb": "01090000e0e66400000200000001080000c00300000000000000000000000000000000000000000000000000f03f0000000000000000000000000000f03f000000000000f03f000000000000f03f000000000000e03f00000000000000400000000000000000000000000000f03f000000000000f03f01020000c00200000000000000000000400000000000000000000000000000f03f000000000000f03f00000000000000000000000000000000000000000000f03f0000000000000040"
+            },
+            {"name": "curva compuesta"}
+          ],
+          [
+            {
+              "wkb": "0000000bc8000000010000000bc9000000010000000400000000000000000000000000000000401400000000000000000000000000003ff000000000000000000000000000004014000000000000000000000000000000000000000000003ff0000000000000401400000000000000000000000000000000000000000000000000000000000040140000000000000000000000000000"
+            },
+            {"name": "TIN"}
+          ],
+          [
+            {"wkb": "00c00000014125d1f0000000004150b3640000000040832400000000004008000000000000"},
+            {"name": null}
+          ]
+        ]
+      },
+      "data_sha256": "7b49b226ae77bb29c75de19b4ce80fa8b2cafc3e682e5b8bf19c2abb902a43ee",
+      "content_sha256": "24107e1161bdede98b2d8dcace7e4ebf94f1e08e1d4d08fd463eec07a5998f55"
+    },
+    {
+      "id": "features-z-not-kept",
+      "about": "Capa XY sin campos: una línea XYZ y un punto XYZM extendido; la Z y la M no se conservan",
+      "kind": "vector",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "features": {
+        "fields": [],
+        "dims": "XY",
+        "crs": {"epsg": 25830},
+        "items": [
+          [
+            {
+              "wkb": "01ea0300000200000000000000f0d125410000000064b3504100000000002083400000000004d225410000004065b350410000000000288340"
+            },
+            {}
+          ],
+          [{"wkb": "01010000c000000000f0d125410000000064b350410000000000208340000000000000f03f"}, {}]
+        ]
+      },
+      "data_sha256": "6234aa24cf7e2191e4006edd73be3aa8f3a8a08738f288684371bbba7ec38880",
+      "content_sha256": "579122042eb0203134a4d03c5db1b45e30ba49b38d4ce88269737317bd37e081"
+    },
+    {
+      "id": "rows-collars-ordered",
+      "about": "Tabla de collares con el orden como contenido; una profundidad nula",
+      "kind": "table",
+      "reader": "test.golden@1",
+      "declarations": {
+        "conventions": {"decimal": ",", "separator": ";"},
+        "crs_h": {"epsg": 25830},
+        "crs_v": {"epsg": 5782}
+      },
+      "rows": {
+        "columns": [["hole", "text"], ["x", "float"], ["y", "float"], ["z", "float"], ["depth", "float"]],
+        "ordered": true,
+        "items": [
+          ["S-01", 715010.0, 4378020.0, 612.5, 120.0],
+          ["S-02", 715030.5, 4378041.25, 613.0, null],
+          ["S-03", 715050.0, 4378060.0, 611.75, 95.5]
+        ]
+      },
+      "data_sha256": "8536ea14530008f4bd9471f098dc34d1bed373121c765e2ce0b29af069bcaf5a",
+      "content_sha256": "0fc9ea9570effddf5c9683d5a7448b6fc4c8cdfbc5b8e395ee0eed89b1ab9bbd"
+    },
+    {
+      "id": "rows-collars-unordered",
+      "about": "La misma tabla sin orden",
+      "kind": "table",
+      "reader": "test.golden@1",
+      "declarations": {
+        "conventions": {"decimal": ",", "separator": ";"},
+        "crs_h": {"epsg": 25830},
+        "crs_v": {"epsg": 5782}
+      },
+      "rows": {
+        "columns": [["hole", "text"], ["x", "float"], ["y", "float"], ["z", "float"], ["depth", "float"]],
+        "ordered": false,
+        "items": [
+          ["S-01", 715010.0, 4378020.0, 612.5, 120.0],
+          ["S-02", 715030.5, 4378041.25, 613.0, null],
+          ["S-03", 715050.0, 4378060.0, 611.75, 95.5]
+        ]
+      },
+      "data_sha256": "8dc9cf46bfe306e6316380ed04e065a82681564a101ac515061bae8f2dd9a97c",
+      "content_sha256": "17e8edbe14697f1e8e48f496b3d7be590922c853098ec256c4fc628fbb55099c"
+    },
+    {
+      "id": "rows-collars-unordered-shuffled",
+      "about": "La tabla sin orden con las filas en otro orden y enteros en columnas de flotantes: los mismos datos",
+      "kind": "table",
+      "reader": "test.golden@1",
+      "declarations": {
+        "conventions": {"decimal": ",", "separator": ";"},
+        "crs_h": {"epsg": 25830},
+        "crs_v": {"epsg": 5782}
+      },
+      "same_data_as": "rows-collars-unordered",
+      "rows": {
+        "columns": [["hole", "text"], ["x", "float"], ["y", "float"], ["z", "float"], ["depth", "float"]],
+        "ordered": false,
+        "items": [
+          ["S-03", 715050, 4378060, 611.75, 95.5],
+          ["S-01", 715010, 4378020, 612.5, 120],
+          ["S-02", 715030.5, 4378041.25, 613, null]
+        ]
+      },
+      "data_sha256": "8dc9cf46bfe306e6316380ed04e065a82681564a101ac515061bae8f2dd9a97c",
+      "content_sha256": "17e8edbe14697f1e8e48f496b3d7be590922c853098ec256c4fc628fbb55099c"
+    },
+    {
+      "id": "rows-all-types",
+      "about": "Tabla sin orden con una columna de cada tipo: binario, booleano, fecha, fecha y hora (con microsegundos), flotante (NaN, −∞, −0,0, subnormal), entero mayor que 2^53 y texto (vacío, compuesto y descompuesto); nulos",
+      "kind": "table",
+      "reader": "test.golden@1",
+      "declarations": {},
+      "rows": {
+        "columns": [
+          ["b", "blob"],
+          ["flag", "bool"],
+          ["day", "date"],
+          ["at", "datetime"],
+          ["f", "float"],
+          ["n", "int"],
+          ["t", "text"]
+        ],
+        "ordered": false,
+        "items": [
+          [
+            {"b64": "AP8="},
+            true,
+            "2026-10-08",
+            "2026-10-08T10:00:00Z",
+            {"nan": true},
+            9007199254740993,
+            "Límite «norte»"
+          ],
+          [null, false, null, "2026-10-08T10:00:00.123456Z", {"inf": -1}, -1, ""],
+          [null, null, "2024-02-29", null, -0.0, 0, null],
+          [{"b64": ""}, null, null, null, 5e-324, null, "Límite"]
+        ]
+      },
+      "data_sha256": "2c096db079792d93fe43d9fd645015cc0f62deac6262000eeb67e7b3969fd42c",
+      "content_sha256": "ae799c1c6d4fb34ccb3f88e9b2f262a2fb26a710920ea80e34c7fe03d1089630"
+    },
+    {
+      "id": "mesh-solid",
+      "about": "Tetraedro: vértices float64, caras int32, vertex_source uint8 y meta con claves que no son contenido",
+      "kind": "mesh",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "mesh": {
+        "arrays": {
+          "vertices": {
+            "dtype": "<f8",
+            "shape": [4, 3],
+            "values": [
+              715000.0,
+              4378000.0,
+              600.0,
+              715010.0,
+              4378000.0,
+              600.0,
+              715000.0,
+              4378010.0,
+              600.0,
+              715000.0,
+              4378000.0,
+              610.0
+            ]
+          },
+          "faces": {"dtype": "<i4", "shape": [4, 3], "values": [0, 2, 1, 0, 1, 3, 1, 2, 3, 0, 3, 2]},
+          "vertex_source": {"dtype": "|u1", "shape": [4], "values": [0, 0, 1, 3]}
+        },
+        "meta": {
+          "schema": 1,
+          "kind": "solid",
+          "crs_epsg": 25830,
+          "closed": true,
+          "oriented": true,
+          "volume_m3": 166.66666666666666,
+          "operation_uid": "op-0001"
+        }
+      },
+      "data_sha256": "2bbb56be5461f7871ca0dd2aed8381ed53e3a1a4dd6738f1ef1787328a8e99f8",
+      "content_sha256": "0faa63cba598b040901ffa6a390ecd12f59b5265e15a44890e6802562f00e851"
+    },
+    {
+      "id": "mesh-solid-float32-other-meta",
+      "about": "El mismo tetraedro con vértices float32, caras int64 y otro meta que solo cambia claves que no son contenido",
+      "kind": "mesh",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "same_data_as": "mesh-solid",
+      "mesh": {
+        "arrays": {
+          "faces": {"dtype": "<i8", "shape": [4, 3], "values": [0, 2, 1, 0, 1, 3, 1, 2, 3, 0, 3, 2]},
+          "vertex_source": {"dtype": "<i2", "shape": [4], "values": [0, 0, 1, 3]},
+          "vertices": {
+            "dtype": "<f4",
+            "shape": [4, 3],
+            "values": [
+              715000.0,
+              4378000.0,
+              600.0,
+              715010.0,
+              4378000.0,
+              600.0,
+              715000.0,
+              4378010.0,
+              600.0,
+              715000.0,
+              4378000.0,
+              610.0
+            ]
+          }
+        },
+        "meta": {"kind": "solid", "crs_epsg": 25830, "closed": true, "volume_m3": 1.0, "schema": 2}
+      },
+      "data_sha256": "2bbb56be5461f7871ca0dd2aed8381ed53e3a1a4dd6738f1ef1787328a8e99f8",
+      "content_sha256": "0faa63cba598b040901ffa6a390ecd12f59b5265e15a44890e6802562f00e851"
+    },
+    {
+      "id": "mesh-surface-no-meta",
+      "about": "Superficie de 3 vértices con −0,0 y un NaN con carga, una cara, aristas obligatorias (k, 2) y una máscara booleana; meta vacío (kind, crs_epsg y closed nulos)",
+      "kind": "mesh",
+      "reader": "test.golden@1",
+      "declarations": {
+        "conventions": {"vertical": "orthometric"},
+        "crs_h": {"epsg": 25830},
+        "crs_v": {"local": "cota de obra"}
+      },
+      "mesh": {
+        "arrays": {
+          "vertices": {
+            "dtype": ">f8",
+            "shape": [3, 3],
+            "values": [-0.0, 0.0, 600.0, 10.0, 0.0, {"f64": "7ff8000000000001"}, 0.0, 10.0, 601.5]
+          },
+          "faces": {"dtype": "<i4", "shape": [1, 3], "values": [0, 1, 2]},
+          "constraint_edges": {"dtype": "<i4", "shape": [2, 2], "values": [0, 1, 1, 2]},
+          "face_mask": {"dtype": "|b1", "shape": [1], "values": [true]}
+        },
+        "meta": {}
+      },
+      "data_sha256": "bca3c9a550870839a13289eef33c1a393462ffadcc3b82e5ac8d048b647e1a4c",
+      "content_sha256": "05f91fa933f11a85eac296ddd3a9a660693f26a266cb11c2ff56f69f4881a984"
+    },
+    {
+      "id": "points-ordered",
+      "about": "Nube de 5 puntos en orden (dos iguales), en dos bloques: x e y float64, z float32 con −0,0, intensidad uint16 y clase uint8",
+      "kind": "point_cloud",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "points": {
+        "columns": [["x", "float"], ["y", "float"], ["z", "float"], ["intensity", "int"], ["class", "int"]],
+        "ordered": true,
+        "blocks": [
+          {
+            "x": {"dtype": "<f8", "values": [715000.5, 715001.0]},
+            "y": {"dtype": "<f8", "values": [4378000.25, 4378000.0]},
+            "z": {"dtype": "<f4", "values": [612.0, -0.0]},
+            "intensity": {"dtype": "<u2", "values": [310, 15]},
+            "class": {"dtype": "|u1", "values": [2, 6]}
+          },
+          {
+            "x": {"dtype": "<f8", "values": [715000.0, 715003.25, 715000.5]},
+            "y": {"dtype": "<f8", "values": [4378002.0, 4378001.5, 4378000.25]},
+            "z": {"dtype": "<f4", "values": [611.5, 610.875, 612.0]},
+            "intensity": {"dtype": "<u2", "values": [120, 4095, 310]},
+            "class": {"dtype": "|u1", "values": [2, 9, 2]}
+          }
+        ]
+      },
+      "data_sha256": "2c3dc2dc7f769260c4185729499db4670dd75e1174d213861dfa42e27910dc0c",
+      "content_sha256": "d751c0188b4f81209953166e1f3b08160f96f0026e5a16ddd4c8bc4ec5fb267d"
+    },
+    {
+      "id": "points-unordered",
+      "about": "La misma nube sin orden",
+      "kind": "point_cloud",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "points": {
+        "columns": [["x", "float"], ["y", "float"], ["z", "float"], ["intensity", "int"], ["class", "int"]],
+        "ordered": false,
+        "blocks": [
+          {
+            "x": {"dtype": "<f8", "values": [715000.5, 715001.0]},
+            "y": {"dtype": "<f8", "values": [4378000.25, 4378000.0]},
+            "z": {"dtype": "<f4", "values": [612.0, -0.0]},
+            "intensity": {"dtype": "<u2", "values": [310, 15]},
+            "class": {"dtype": "|u1", "values": [2, 6]}
+          },
+          {
+            "x": {"dtype": "<f8", "values": [715000.0, 715003.25, 715000.5]},
+            "y": {"dtype": "<f8", "values": [4378002.0, 4378001.5, 4378000.25]},
+            "z": {"dtype": "<f4", "values": [611.5, 610.875, 612.0]},
+            "intensity": {"dtype": "<u2", "values": [120, 4095, 310]},
+            "class": {"dtype": "|u1", "values": [2, 9, 2]}
+          }
+        ]
+      },
+      "data_sha256": "fed050f4df187d49c2070fc051591a3d9f48461c101a5f118b5f441a88e1cffe",
+      "content_sha256": "9af9fa848bd80ca0d6b12b0b13968d9f912b955a7e1d2bfa0525607e37d9b16c"
+    },
+    {
+      "id": "points-unordered-shuffled",
+      "about": "La nube sin orden con los puntos en otro orden, en otros bloques y z en float64: los mismos datos",
+      "kind": "point_cloud",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "same_data_as": "points-unordered",
+      "points": {
+        "columns": [["x", "float"], ["y", "float"], ["z", "float"], ["intensity", "int"], ["class", "int"]],
+        "ordered": false,
+        "blocks": [
+          {
+            "x": {"dtype": "<f8", "values": [715003.25, 715000.5, 715000.5, 715000.0]},
+            "y": {"dtype": "<f8", "values": [4378001.5, 4378000.25, 4378000.25, 4378002.0]},
+            "z": {"dtype": "<f8", "values": [610.875, 612.0, 612.0, 611.5]},
+            "intensity": {"dtype": "<u2", "values": [4095, 310, 310, 120]},
+            "class": {"dtype": "|u1", "values": [9, 2, 2, 2]}
+          },
+          {
+            "x": {"dtype": "<f8", "values": [715001.0]},
+            "y": {"dtype": "<f8", "values": [4378000.0]},
+            "z": {"dtype": "<f8", "values": [-0.0]},
+            "intensity": {"dtype": "<u2", "values": [15]},
+            "class": {"dtype": "|u1", "values": [6]}
+          }
+        ]
+      },
+      "data_sha256": "fed050f4df187d49c2070fc051591a3d9f48461c101a5f118b5f441a88e1cffe",
+      "content_sha256": "9af9fa848bd80ca0d6b12b0b13968d9f912b955a7e1d2bfa0525607e37d9b16c"
     }
   ]
 }

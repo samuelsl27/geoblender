@@ -11,8 +11,9 @@ bytes, longitud del contenido en ``uint64`` *little-endian* y contenido. El hash
   declarados, convenios que son contenido…);
 - ``DATA``: los 32 bytes del hash de **datos** (``data_sha256``).
 
-El hash de datos es el sha256 de la forma normalizada de lo leído, por tipo. Dentro de un
-flujo, un hash siempre va en sus 32 bytes (no en hexadecimal). Esta primera parte (T05) da:
+El hash de datos es el sha256 de la forma normalizada de lo leído, por tipo: una sección con
+su cabecera en JSON canónico y una sección ``VALS`` con sus valores. Dentro de un flujo, un
+hash siempre va en sus 32 bytes (no en hexadecimal). Por tipo:
 
 - **Rejilla** (:meth:`ContentHasher.grid`, :class:`GridEncoder`): sección ``GRID`` con la
   cabecera en JSON canónico y sección ``VALS`` con las celdas por filas de norte a sur, en
@@ -39,16 +40,46 @@ flujo, un hash siempre va en sus 32 bytes (no en hexadecimal). Esta primera part
   ``{"parts": [[nombre, tipo], …]}`` ordenadas por nombre (punto de código) y sección ``VALS``
   con el hash de datos de cada parte en ese orden (una tabla por parte en unos sondeos; el
   ``.prj`` de un ASC es una parte).
+- **Vectorial** (:meth:`ContentHasher.features`, :class:`FeatureEncoder`): sección ``FEAT``
+  con ``{"count", "crs", "dims", "fields"}`` —número de entidades, CRS de la capa
+  (``{"epsg": n}`` o ``None``), dimensiones que conserva el importador (:data:`.wkb.DIMS`) y
+  campos ``[nombre, tipo]`` ordenados por nombre— y sección ``VALS`` con el sha256 de cada
+  entidad, **ordenados** (un multiconjunto: el orden y el número interno de las entidades no
+  cuentan y dos iguales cuentan dos veces). El sha256 de una entidad es el de su geometría en
+  WKB ISO *little-endian* con dobles canónicos (:func:`.wkb.canonical_wkb`: el orden de bytes
+  y las banderas extendidas del original no influyen; vacía, su WKB ISO vacío; nula, el byte
+  ``0x00``) seguida del JSON canónico de sus atributos por nombre, cada valor convertido al
+  tipo declarado de su campo (:data:`FIELD_TYPES`; nulo, ``null``).
+- **Tabla** (:meth:`ContentHasher.rows`, :class:`RowEncoder`): sección ``TABL`` con
+  ``{"columns", "count", "ordered"}`` —columnas ``[nombre, tipo]`` en el orden declarado— y
+  sección ``VALS`` con el sha256 del JSON canónico de los valores de cada fila (ya
+  interpretados y convertidos al tipo de su columna): en orden si ``ordered`` es verdadero y,
+  si el importador declara que el orden no importa, ordenados.
+- **Malla** (:meth:`ContentHasher.mesh`): sección ``MESH`` con ``{"arrays", "meta"}``
+  —``[nombre, clase, forma]`` de cada array, ordenados por nombre, y de ``meta`` solo las
+  claves que son contenido (:data:`MESH_META_KEYS`; la que falta, ``null``)— y sección
+  ``VALS`` con los valores de cada array en ese orden y en orden C: flotantes en float64
+  canónico, enteros y booleanos en int64. El orden de los vértices y de las caras cuenta.
+- **Nube de puntos** (:meth:`ContentHasher.points`, :class:`PointEncoder`): sección ``PNTS``
+  con ``{"columns", "count", "ordered"}`` —columnas ``[nombre, clase]`` en el orden declarado,
+  clases de :data:`GRID_CLASSES`— y sección ``VALS`` con el sha256 (32 bytes) de los
+  registros: cada punto, sus columnas en float64 canónico o int64 *little-endian*, punto a
+  punto; con ``ordered`` falso, los registros ordenados byte a byte. El número de puntos solo
+  se sabe al final: por eso ``VALS`` lleva su sha256 y no los registros, y los puntos en
+  orden se hashean por bloques con memoria acotada (sin orden, quedan todos en memoria).
 
 Una versión publicada no cambia nunca (unos vectores de referencia la fijan,
 ``tests/data/core/content/golden_gbch1.json``): cualquier cambio de forma es un normalizador
 nuevo. Las entradas del lector no se modifican: el normalizador trabaja sobre copias, por
 trozos de :data:`GRID_CHUNK_CELLS` celdas como mucho (memoria acotada a un trozo más el
-bloque que da el lector). Python puro y numpy (ADR-0004).
+bloque que da el lector, y 32 bytes por entidad o fila). Un bloque o un lote se comprueba
+entero antes de hashear nada de él: si no vale, el codificador queda como estaba. Python puro
+y numpy (ADR-0004).
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import math
 import numbers
@@ -62,6 +93,7 @@ from typing import Any
 import numpy as np
 
 from ..hashing import CANONICAL_NAN_BITS, canonical_float, canonical_json
+from .wkb import canonical_wkb, check_dims
 
 NORMALIZER = "gbch/1"
 """El normalizador vigente: el de las entradas y los datos nuevos (ADR-0024 §6)."""
@@ -90,18 +122,40 @@ GRID_KEYS: frozenset[str] = frozenset(
 )
 """Las claves de la cabecera de una rejilla: todas, y ninguna más."""
 GRID_CHUNK_CELLS = 1 << 20
-"""Celdas que se convierten y se hashean de una vez (8 MiB en float64); como poco, una fila."""
+"""Celdas que se convierten y se hashean de una vez (8 MiB en float64); como poco, una fila.
+También los valores de una malla y de una nube de puntos."""
+FIELD_TYPES: tuple[str, ...] = ("blob", "bool", "date", "datetime", "float", "int", "text")
+"""Los tipos de un campo de una capa o de una columna de una tabla. Cada valor se convierte
+al de su campo: ``float`` (un real; NaN, ±inf, −0,0 canónicos), ``int`` (un entero o un real
+entero), ``bool`` (un booleano o 0 y 1), ``text`` (un texto, exacto), ``date`` (una fecha o su
+texto ``AAAA-MM-DD``), ``datetime`` (una fecha y hora con zona o su texto ISO 8601 con zona;
+se escribe en UTC) y ``blob`` (bytes)."""
+MESH_META_KEYS: tuple[str, ...] = ("closed", "crs_epsg", "kind")
+"""Las claves de ``meta`` de una malla que son contenido (ADR-0024 §4); las demás
+(``schema``, ``volume_m3``, ``operation_uid``…) no cuentan."""
+NULL_GEOMETRY = b"\x00"
+"""Lo que se hashea en lugar del WKB de una geometría nula (un WKB empieza por 0 o 1 y tiene
+al menos 5 bytes: no se confunde)."""
 
 LABEL_HEAD = b"HEAD"
 LABEL_DECL = b"DECL"
 LABEL_DATA = b"DATA"
 LABEL_GRID = b"GRID"
 LABEL_PART = b"PART"
+LABEL_FEATURES = b"FEAT"
+LABEL_TABLE = b"TABL"
+LABEL_MESH = b"MESH"
+LABEL_POINTS = b"PNTS"
 LABEL_VALUES = b"VALS"
 
 _CELL_BYTES = 8
+_DIGEST_BYTES = 32
 _INT64_MAX = (1 << 63) - 1
 _SHA256_TEXT = re.compile(r"[0-9a-f]{64}")
+_DATE_TEXT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_EXACT_TYPES: dict[str, type] = {"float": float, "int": int, "bool": bool, "text": str}
+"""El tipo de Python que ya tiene la forma canónica de cada tipo de campo (un ``float`` la
+toma en ``canonical_json``: NaN, infinitos y −0,0)."""
 _READER_ID = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+@[1-9][0-9]*")
 _SIZE = struct.Struct("<Q")
 
@@ -259,6 +313,324 @@ class DocumentEncoder:
         return data
 
 
+class _Collector:
+    """Lo común de las entidades y las filas: el sha256 de cada elemento (32 bytes en
+    memoria por elemento), por lotes que se comprueban enteros antes de añadirse."""
+
+    _what = "los elementos"
+
+    def __init__(self, on_finish: Callable[[str], None] | None) -> None:
+        self.count = 0
+        self._digests: list[bytes] = []
+        self._on_finish = on_finish
+        self._finished = False
+
+    def _check_open(self) -> None:
+        if self._finished:
+            raise RuntimeError(f"{self._what} ya se cerraron con finish(): no admiten más")
+
+    def _item(self, item: object) -> bytes:  # pragma: no cover - lo da cada subclase
+        raise NotImplementedError
+
+    def _extend(self, items: Iterable[object]) -> None:
+        self._check_open()
+        batch = [self._item(item) for item in items]  # todo el lote, antes de añadir nada
+        self._digests.extend(batch)
+        self.count += len(batch)
+
+    def _finish(self, label: bytes, header: Mapping[str, Any], *, ordered: bool) -> str:
+        self._check_open()
+        self._finished = True
+        values = self._digests if ordered else sorted(self._digests)
+        stream = hashlib.sha256(_section(label, canonical_json(header)))
+        stream.update(_section(LABEL_VALUES, b"".join(values)))
+        self._digests = []
+        data = stream.hexdigest()
+        if self._on_finish is not None:
+            self._on_finish(data)
+        return data
+
+
+class FeatureEncoder(_Collector):
+    """El hash de datos de una capa vectorial: un multiconjunto de entidades.
+
+    ``fields``: los campos, ``{nombre: tipo}`` o pares ``[nombre, tipo]`` (tipos de
+    :data:`FIELD_TYPES`; el orden no cuenta); ``dims``: las dimensiones que conserva el
+    importador (``"XY"``, ``"XYZ"``, ``"XYM"`` o ``"XYZM"``); ``crs``: el CRS de la capa,
+    ``{"epsg": n}`` o ``None``. Cada entidad es ``(geometría, atributos)``: su WKB (ISO o
+    extendido, de cualquier orden de bytes) o ``None`` si es nula, y ``{campo: valor}`` con
+    todos los campos (``None`` es un atributo nulo). ``add`` añade una y ``update`` un lote
+    (que se comprueba entero: si una entidad no vale, no se añade ninguna)."""
+
+    _what = "las entidades de la capa"
+
+    def __init__(
+        self,
+        fields: Mapping[str, str] | Iterable[Iterable[str]],
+        dims: str,
+        crs: Mapping[str, int] | None,
+        *,
+        on_finish: Callable[[str], None] | None = None,
+    ) -> None:
+        super().__init__(on_finish)
+        self.fields: list[tuple[str, str]] = sorted(_named_types(fields, FIELD_TYPES, "campo"))
+        self.dims: str = check_dims(dims)
+        self.crs: dict[str, int] | None = _crs(crs, "el CRS de la capa")
+        self._types = dict(self.fields)
+
+    def add(
+        self, geometry: bytes | bytearray | memoryview | None, attributes: Mapping[str, Any]
+    ) -> None:
+        """Añade una entidad."""
+        self._extend([(geometry, attributes)])
+
+    def update(self, features: Iterable[object]) -> None:
+        """Añade un lote de entidades ``(geometría, atributos)``."""
+        self._extend(features)
+
+    def finish(self) -> str:
+        """El hash de datos de la capa."""
+        header = {
+            "count": self.count,
+            "crs": self.crs,
+            "dims": self.dims,
+            "fields": [[name, kind] for name, kind in self.fields],
+        }
+        return self._finish(LABEL_FEATURES, header, ordered=False)
+
+    def _item(self, item: object) -> bytes:
+        geometry, attributes = _pair(item, "una entidad", "(geometría, atributos)")
+        shape = NULL_GEOMETRY if geometry is None else canonical_wkb(geometry, self.dims)
+        if type(attributes) is not dict and not isinstance(attributes, Mapping):
+            raise TypeError(
+                f"los atributos de una entidad son un diccionario {{campo: valor}}, no "
+                f"{type(attributes).__name__}"
+            )
+        _same_names(attributes, self._types, "los atributos de una entidad", "campos")
+        values = {
+            name: _field_value(kind, attributes[name], f"el atributo «{name}»")
+            for name, kind in self.fields
+        }
+        return hashlib.sha256(shape + canonical_json(values)).digest()
+
+
+class RowEncoder(_Collector):
+    """El hash de datos de una tabla, fila a fila.
+
+    ``columns``: ``{nombre: tipo}`` o pares ``[nombre, tipo]`` en el orden declarado (al menos
+    una; tipos de :data:`FIELD_TYPES`); ``ordered``: si el orden de las filas es contenido.
+    Cada fila es una secuencia con un valor por columna, en ese orden, o un diccionario con
+    todas las columnas; sus valores llegan ya interpretados (el «1,5» de un CSV es 1.5) y se
+    convierten al tipo de su columna. ``add`` añade una y ``update`` un lote (que se comprueba
+    entero)."""
+
+    _what = "las filas de la tabla"
+
+    def __init__(
+        self,
+        columns: Mapping[str, str] | Iterable[Iterable[str]],
+        ordered: bool,
+        *,
+        on_finish: Callable[[str], None] | None = None,
+    ) -> None:
+        super().__init__(on_finish)
+        self.columns: list[tuple[str, str]] = _named_types(columns, FIELD_TYPES, "columna")
+        if not self.columns:
+            raise ValueError("una tabla necesita al menos una columna")
+        self.ordered: bool = _flag(ordered, "ordered")
+        self._names = {name: kind for name, kind in self.columns}
+
+    def add(self, row: object) -> None:
+        """Añade una fila."""
+        self._extend([row])
+
+    def update(self, rows: Iterable[object]) -> None:
+        """Añade un lote de filas."""
+        self._extend(rows)
+
+    def finish(self) -> str:
+        """El hash de datos de la tabla."""
+        header = {
+            "columns": [[name, kind] for name, kind in self.columns],
+            "count": self.count,
+            "ordered": self.ordered,
+        }
+        return self._finish(LABEL_TABLE, header, ordered=self.ordered)
+
+    def _item(self, item: object) -> bytes:
+        values: Any
+        if type(item) is list or type(item) is tuple:
+            values = item
+        elif isinstance(item, Mapping):
+            _same_names(item, self._names, "una fila", "columnas")
+            values = [item[name] for name, _ in self.columns]
+        elif isinstance(item, str | bytes | bytearray | memoryview) or not isinstance(
+            item, Iterable
+        ):
+            raise TypeError(
+                f"una fila es una secuencia de valores o un diccionario {{columna: valor}}, no "
+                f"{type(item).__name__}"
+            )
+        else:
+            values = list(item)
+        if len(values) != len(self.columns):
+            raise ValueError(
+                f"una fila tiene {len(values)} valores y la tabla {len(self.columns)} columnas"
+            )
+        converted = [
+            _field_value(kind, value, f"la columna «{name}»")
+            for (name, kind), value in zip(self.columns, values, strict=True)
+        ]
+        return hashlib.sha256(canonical_json(converted)).digest()
+
+
+class PointEncoder:
+    """El hash de datos de una nube de puntos, por bloques.
+
+    ``columns``: ``{nombre: clase}`` o pares ``[nombre, clase]`` en el orden declarado (al
+    menos una; clases ``float``, ``int`` o ``bool``, como las celdas de una rejilla);
+    ``ordered`` (por defecto, verdadero): si el orden de los puntos es contenido. Cada bloque
+    es un diccionario ``{columna: valores 1-D}`` con todas las columnas y la misma longitud, o
+    un array estructurado con esos campos. Un bloque se comprueba entero antes de hashear nada
+    de él; si algo falla mientras se hashea, la nube ya no admite nada (``RuntimeError``)."""
+
+    def __init__(
+        self,
+        columns: Mapping[str, str] | Iterable[Iterable[str]],
+        ordered: bool = True,
+        *,
+        on_finish: Callable[[str], None] | None = None,
+    ) -> None:
+        self.columns: list[tuple[str, str]] = _named_types(columns, GRID_CLASSES, "columna")
+        if not self.columns:
+            raise ValueError("una nube de puntos necesita al menos una columna")
+        self.ordered: bool = _flag(ordered, "ordered")
+        self.count = 0
+        self._names = {name: kind for name, kind in self.columns}
+        self._digest = hashlib.sha256()
+        self._records: list[np.ndarray] = []
+        self._on_finish = on_finish
+        self._finished = False
+        self._broken = False
+
+    def _check_open(self) -> None:
+        if self._broken:
+            raise RuntimeError(
+                "un error dejó un bloque de la nube de puntos a medias: su hash ya no vale"
+            )
+        if self._finished:
+            raise RuntimeError("la nube de puntos ya está terminada: no admite más puntos")
+
+    def update(self, block: Mapping[str, object] | np.ndarray) -> None:
+        """Añade un bloque de puntos (los siguientes)."""
+        self._check_open()
+        columns = self._columns(block)
+        count = len(columns[0])
+        converters: list[_Cells] = []
+        for (_, value_class), column in zip(self.columns, columns, strict=True):
+            check, convert = _converter(value_class, column.dtype)
+            if check is not None:  # todo el bloque, antes de hashear nada de él
+                check(column)
+            converters.append(convert)
+        width = len(self.columns)
+        step = max(1, GRID_CHUNK_CELLS // width)
+        try:
+            for top in range(0, count, step):
+                size = min(step, count - top)
+                records = np.empty((size, width), dtype="<u8")
+                for index, (convert, column) in enumerate(zip(converters, columns, strict=True)):
+                    records[:, index] = convert(column[top:top + size]).view("<u8")
+                if self.ordered:
+                    self._digest.update(records)
+                else:
+                    self._records.append(records)
+        except BaseException:
+            self._broken = True
+            raise
+        self.count += count
+
+    def finish(self) -> str:
+        """El hash de datos de la nube de puntos."""
+        self._check_open()
+        self._finished = True
+        if self.ordered:
+            inner = self._digest.digest()
+        else:
+            inner = hashlib.sha256(_sorted_records(self._records)).digest()
+            self._records = []
+        header = {
+            "columns": [[name, kind] for name, kind in self.columns],
+            "count": self.count,
+            "ordered": self.ordered,
+        }
+        stream = _section(LABEL_POINTS, canonical_json(header)) + _section(LABEL_VALUES, inner)
+        data = hashlib.sha256(stream).hexdigest()
+        if self._on_finish is not None:
+            self._on_finish(data)
+        return data
+
+    def _columns(self, block: object) -> list[np.ndarray]:
+        if isinstance(block, np.ndarray) and block.dtype.names is not None:
+            source: Mapping[str, object] = {name: block[name] for name in block.dtype.names}
+        elif isinstance(block, Mapping):
+            source = block
+        else:
+            raise TypeError(
+                "un bloque de puntos es un diccionario {columna: valores} o un array "
+                f"estructurado, no {type(block).__name__}"
+            )
+        _same_names(source, self._names, "un bloque de puntos", "columnas")
+        columns = [np.asarray(source[name]) for name, _ in self.columns]
+        for (name, _), column in zip(self.columns, columns, strict=True):
+            if column.ndim != 1:
+                raise ValueError(
+                    f"la columna «{name}» de un bloque de puntos tiene que ser 1-D, no de "
+                    f"{column.ndim} dimensiones"
+                )
+        lengths = {len(column) for column in columns}
+        if len(lengths) != 1:
+            raise ValueError(
+                f"las columnas de un bloque de puntos tienen longitudes distintas: "
+                f"{sorted(lengths)}"
+            )
+        return columns
+
+
+def mesh_sha256(arrays: Mapping[str, object], meta: Mapping[str, Any]) -> str:
+    """El hash de datos de una malla (ver :meth:`ContentHasher.mesh`)."""
+    if not isinstance(arrays, Mapping):
+        raise TypeError(
+            f"los arrays de una malla son un diccionario {{nombre: array}}, no "
+            f"{type(arrays).__name__}"
+        )
+    if not arrays:
+        raise ValueError("una malla necesita al menos un array")
+    for name in arrays:
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"el nombre de un array de la malla ({name!r}) tiene que ser un texto")
+    content_meta = _mesh_meta(meta)
+    listed: list[list[object]] = []
+    blocks: list[tuple[np.ndarray, _Cells]] = []
+    for name in sorted(arrays):
+        array = np.asarray(arrays[name])
+        value_class = _array_class(array.dtype, name)
+        check, convert = _converter(value_class, array.dtype)
+        rows = _as_rows(array)
+        if check is not None:  # todos los arrays, antes de hashear nada
+            for top, size in _chunks(rows):
+                check(rows[top:top + size])
+        listed.append([name, value_class, list(array.shape)])
+        blocks.append((rows, convert))
+    header = {"arrays": listed, "meta": content_meta}
+    stream = hashlib.sha256(_section(LABEL_MESH, canonical_json(header)))
+    total = sum(rows.size for rows, _ in blocks) * _CELL_BYTES
+    stream.update(LABEL_VALUES + _SIZE.pack(total))
+    for rows, convert in blocks:
+        for top, size in _chunks(rows):
+            stream.update(convert(rows[top:top + size]))
+    return stream.hexdigest()
+
+
 class ContentHasher:
     """Calcula el :class:`ContentDigest` de una entrada o de un dato de tipo ``kind`` (uno
     de :data:`KINDS`) con sus ``declarations`` (un ``Mapping`` con forma JSON canónica: CRS
@@ -266,9 +638,10 @@ class ContentHasher:
     p. ej. ``"gis.geotiff@1"``) y su normalizador (por defecto, el vigente).
 
     Recibe los datos **una vez**, con un método por tipo (:meth:`grid`, :meth:`document`,
-    :meth:`composite`), o por partes con :meth:`begin_grid` y :meth:`begin_document`, cuyo
-    ``finish()`` los entrega; después, :meth:`digest`. Los métodos de datos devuelven el
-    propio objeto: ``ContentHasher(…).grid(cabecera, bloques).digest()``."""
+    :meth:`composite`, :meth:`features`, :meth:`rows`, :meth:`mesh`, :meth:`points`), o por
+    partes con los ``begin_*``, cuyo ``finish()`` los entrega; después, :meth:`digest`. Los
+    métodos de datos devuelven el propio objeto:
+    ``ContentHasher(…).grid(cabecera, bloques).digest()``."""
 
     def __init__(
         self,
@@ -293,7 +666,9 @@ class ContentHasher:
         self._head = _head(kind, normalizer)
         self._decl = _declarations(declarations)
         self._data: str | None = None
-        self._open: GridEncoder | DocumentEncoder | None = None
+        self._open: (
+            GridEncoder | DocumentEncoder | FeatureEncoder | RowEncoder | PointEncoder | None
+        ) = None
 
     # --- Rejillas ------------------------------------------------------------------------
 
@@ -336,6 +711,92 @@ class ContentHasher:
         """Un compuesto: ``{nombre: (tipo, hash de datos)}`` de cada parte (al menos una)."""
         self._check_empty()
         self._accept(composite_sha256(parts))
+        return self
+
+    # --- Capas vectoriales ----------------------------------------------------------------
+
+    def begin_features(
+        self,
+        fields: Mapping[str, str] | Iterable[Iterable[str]],
+        dims: str,
+        crs: Mapping[str, int] | None,
+    ) -> FeatureEncoder:
+        """Empieza una capa por lotes: su ``finish()`` entrega el hash de datos."""
+        self._check_empty()
+        feed = FeatureEncoder(fields, dims, crs, on_finish=self._accept)
+        self._open = feed
+        return feed
+
+    def features(
+        self,
+        fields: Mapping[str, str] | Iterable[Iterable[str]],
+        dims: str,
+        crs: Mapping[str, int] | None,
+        features: Iterable[object],
+    ) -> ContentHasher:
+        """Una capa: sus campos, sus dimensiones, su CRS y sus entidades
+        ``(geometría, atributos)`` en cualquier orden (ver :class:`FeatureEncoder`)."""
+        feed = self.begin_features(fields, dims, crs)
+        feed.update(features)
+        feed.finish()
+        return self
+
+    # --- Tablas ---------------------------------------------------------------------------
+
+    def begin_rows(
+        self, columns: Mapping[str, str] | Iterable[Iterable[str]], ordered: bool
+    ) -> RowEncoder:
+        """Empieza una tabla por lotes: su ``finish()`` entrega el hash de datos."""
+        self._check_empty()
+        feed = RowEncoder(columns, ordered, on_finish=self._accept)
+        self._open = feed
+        return feed
+
+    def rows(
+        self,
+        columns: Mapping[str, str] | Iterable[Iterable[str]],
+        ordered: bool,
+        rows: Iterable[object],
+    ) -> ContentHasher:
+        """Una tabla: sus columnas en el orden declarado, si su orden es contenido y sus filas
+        (ver :class:`RowEncoder`)."""
+        feed = self.begin_rows(columns, ordered)
+        feed.update(rows)
+        feed.finish()
+        return self
+
+    # --- Mallas ---------------------------------------------------------------------------
+
+    def mesh(self, arrays: Mapping[str, object], meta: Mapping[str, Any]) -> ContentHasher:
+        """Una malla: sus arrays por nombre (``vertices``, ``faces``…; flotantes, enteros o
+        booleanos) y su ``meta``, de la que solo cuentan :data:`MESH_META_KEYS`."""
+        self._check_empty()
+        self._accept(mesh_sha256(arrays, meta))
+        return self
+
+    # --- Nubes de puntos ------------------------------------------------------------------
+
+    def begin_points(
+        self, columns: Mapping[str, str] | Iterable[Iterable[str]], ordered: bool = True
+    ) -> PointEncoder:
+        """Empieza una nube de puntos por bloques: su ``finish()`` entrega el hash de datos."""
+        self._check_empty()
+        feed = PointEncoder(columns, ordered, on_finish=self._accept)
+        self._open = feed
+        return feed
+
+    def points(
+        self,
+        columns: Mapping[str, str] | Iterable[Iterable[str]],
+        ordered: bool,
+        blocks: Iterable[Mapping[str, object] | np.ndarray],
+    ) -> ContentHasher:
+        """Una nube de puntos: sus columnas en el orden declarado, si su orden es contenido y
+        sus bloques (ver :class:`PointEncoder`)."""
+        feed = self.begin_points(columns, ordered)
+        for block in blocks:
+            feed.update(block)
+        feed.finish()
         return self
 
     # --- Resultado ------------------------------------------------------------------------
@@ -460,7 +921,7 @@ def _grid_header(header: Mapping[str, Any]) -> dict[str, Any]:
         "cell": str(cell),
         "class": str(value_class),
         "nodata": _nodata(header["nodata"], value_class),
-        "crs": _file_crs(header["crs"]),
+        "crs": _crs(header["crs"], "el CRS que trae el fichero"),
     }
     return found
 
@@ -503,24 +964,223 @@ def _nodata(value: object, value_class: str) -> float | int | None:
     return int(number)
 
 
-def _file_crs(value: object) -> dict[str, int] | None:
+def _crs(value: object, what: str) -> dict[str, int] | None:
+    """``{"epsg": n}`` o ``None``: el CRS de un fichero o de una capa (``what``)."""
     if value is None:
         return None
     if not isinstance(value, Mapping):
-        raise TypeError(
-            f"el CRS que trae el fichero es {{\"epsg\": n}} o None, no {type(value).__name__}"
-        )
+        raise TypeError(f"{what} es {{\"epsg\": n}} o None, no {type(value).__name__}")
     if set(value) != {"epsg"}:
-        raise ValueError(
-            f"el CRS que trae el fichero es {{\"epsg\": n}} o None, no {dict(value)!r}"
-        )
-    code = value["epsg"]
+        raise ValueError(f"{what} es {{\"epsg\": n}} o None, no {dict(value)!r}")
+    return {"epsg": _epsg(value["epsg"], what)}
+
+
+def _epsg(code: object, what: str) -> int:
     if isinstance(code, bool | np.bool_) or not isinstance(code, numbers.Integral):
-        raise TypeError(f"el código EPSG del fichero ({code!r}) no es un número entero")
+        raise TypeError(f"el código EPSG de {what} ({code!r}) no es un número entero")
     number = operator.index(code)
     if number < 1:
-        raise ValueError(f"el código EPSG del fichero ({number}) no es válido")
-    return {"epsg": number}
+        raise ValueError(f"el código EPSG de {what} ({number}) no es válido")
+    return number
+
+
+# --- Campos, columnas y valores --------------------------------------------------------------
+
+
+def _named_types(items: object, allowed: tuple[str, ...], what: str) -> list[tuple[str, str]]:
+    """Los pares ``(nombre, tipo)`` de un diccionario o de una secuencia de pares, en su
+    orden: nombres de texto no vacíos y únicos, tipos de ``allowed``."""
+    if isinstance(items, str | bytes) or not isinstance(items, Mapping | Iterable):
+        raise TypeError(
+            f"se esperaba un diccionario {{nombre: tipo}} o una lista de pares [nombre, tipo] "
+            f"({what}), no {type(items).__name__}"
+        )
+    pairs = list(items.items()) if isinstance(items, Mapping) else [tuple(i) for i in items]
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for pair in pairs:
+        if len(pair) != 2:
+            raise ValueError(f"se esperaba un par [nombre, tipo] ({what}), no {list(pair)!r}")
+        name, kind = pair
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"el nombre ({what}) tiene que ser un texto no vacío: {name!r}")
+        if not isinstance(kind, str) or kind not in allowed:
+            raise ValueError(
+                f"tipo desconocido para «{name}» ({what}): {kind!r} (son {', '.join(allowed)})"
+            )
+        if name in seen:
+            raise ValueError(f"nombre repetido ({what}): «{name}»")
+        seen.add(name)
+        found.append((str.__str__(name), str.__str__(kind)))
+    return found
+
+
+def _same_names(given: Mapping[str, object], declared: Mapping[str, str], what: str,
+                plural: str) -> None:
+    if given.keys() == declared.keys():
+        return
+    names = set(given)
+    missing = sorted(set(declared) - names)
+    extra = sorted(map(str, names - set(declared)))
+    raise ValueError(
+        f"{what} no tiene las {plural} declaradas: faltan {missing}, sobran {extra}"
+    )
+
+
+def _pair(item: object, what: str, shape: str) -> tuple[Any, Any]:
+    values: Any
+    if type(item) is tuple or type(item) is list:
+        values = item
+    elif isinstance(item, str | bytes | bytearray | memoryview | Mapping) or not isinstance(
+        item, Iterable
+    ):
+        raise TypeError(f"{what} es un par {shape}, no {type(item).__name__}")
+    else:
+        values = tuple(item)
+    if len(values) != 2:
+        raise ValueError(f"{what} es un par {shape}, no {len(values)} valores")
+    return values[0], values[1]
+
+
+def _flag(value: object, name: str) -> bool:
+    if not isinstance(value, bool | np.bool_):
+        raise TypeError(f"«{name}» es verdadero o falso, no {value!r}")
+    return bool(value)
+
+
+def _field_value(kind: str, value: object, where: str) -> object:
+    """``value`` convertido al tipo ``kind`` de su campo o columna (``where``), con forma
+    JSON canónica; ``None`` es un valor nulo. ``TypeError`` si no es de ese tipo y
+    ``ValueError`` si lo es pero no cabe (un 1,5 en un entero, una fecha mal escrita…)."""
+    if value is None or type(value) is _EXACT_TYPES.get(kind):
+        return value  # el caso de casi todos los valores: ya es del tipo de su campo
+    if kind == "float":
+        if isinstance(value, bool | np.bool_) or not isinstance(value, numbers.Real):
+            raise TypeError(f"{where} es un número (float) y su valor {value!r} no lo es")
+        return canonical_float(value)  # type: ignore[arg-type]
+    if kind == "int":
+        if isinstance(value, bool | np.bool_) or not isinstance(value, numbers.Real):
+            raise TypeError(f"{where} es un entero y su valor {value!r} no es un número")
+        if isinstance(value, numbers.Integral):
+            return operator.index(value)
+        number = float(value)
+        if not number.is_integer():
+            raise ValueError(f"{where} es un entero y su valor {number!r} no lo es")
+        return int(number)
+    if kind == "bool":
+        if isinstance(value, bool | np.bool_):
+            return bool(value)
+        if isinstance(value, numbers.Integral):
+            number = operator.index(value)
+            if number in (0, 1):
+                return bool(number)
+            raise ValueError(f"{where} es verdadero o falso (1 o 0) y su valor es {number}")
+        raise TypeError(f"{where} es verdadero o falso y su valor {value!r} no lo es")
+    if kind == "text":
+        if isinstance(value, str):
+            return str.__str__(value)
+        raise TypeError(f"{where} es un texto y su valor {value!r} no lo es")
+    if kind == "date":
+        return _date(value, where)
+    if kind == "datetime":
+        return _datetime(value, where)
+    if isinstance(value, bytes | bytearray | memoryview):
+        return bytes(value)
+    raise TypeError(f"{where} es un binario y su valor ({type(value).__name__}) no son bytes")
+
+
+def _date(value: object, where: str) -> dt.date:
+    if isinstance(value, dt.datetime):
+        raise TypeError(f"{where} es una fecha y su valor {value!r} es una fecha y hora")
+    if isinstance(value, dt.date):
+        return value
+    if not isinstance(value, str):
+        raise TypeError(f"{where} es una fecha y su valor {value!r} no lo es")
+    if _DATE_TEXT.fullmatch(value) is None:
+        raise ValueError(f"{where} es una fecha AAAA-MM-DD y su valor es «{value}»")
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(f"{where} es una fecha y «{value}» no existe") from error
+
+
+def _datetime(value: object, where: str) -> dt.datetime:
+    if isinstance(value, str):
+        try:
+            value = dt.datetime.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError(
+                f"{where} es una fecha y hora ISO 8601 con zona y su valor es «{value}»"
+            ) from error
+    elif not isinstance(value, dt.datetime):
+        raise TypeError(f"{where} es una fecha y hora y su valor {value!r} no lo es")
+    if value.utcoffset() is None:
+        raise ValueError(f"{where} es una fecha y hora con zona y su valor no la lleva")
+    return value
+
+
+# --- Mallas y nubes de puntos ----------------------------------------------------------------
+
+
+def _mesh_meta(meta: object) -> dict[str, Any]:
+    """Las claves de ``meta`` que son contenido (:data:`MESH_META_KEYS`; la que falta,
+    ``None``), comprobadas."""
+    if not isinstance(meta, Mapping):
+        raise TypeError(f"el meta de una malla es un diccionario, no {type(meta).__name__}")
+    kind = meta.get("kind")
+    if kind is not None and not isinstance(kind, str):
+        raise TypeError(f"«kind» del meta de una malla ({kind!r}) no es un texto")
+    crs = meta.get("crs_epsg")
+    closed = meta.get("closed")
+    if closed is not None and not isinstance(closed, bool | np.bool_):
+        raise TypeError(f"«closed» del meta de una malla ({closed!r}) no es verdadero o falso")
+    return {
+        "closed": None if closed is None else bool(closed),
+        "crs_epsg": None if crs is None else _epsg(crs, "la malla"),
+        "kind": None if kind is None else str.__str__(kind),
+    }
+
+
+def _array_class(dtype: np.dtype, name: str) -> str:
+    if dtype.kind == "f":
+        return "float"
+    if dtype.kind in "iu":
+        return "int"
+    if dtype.kind == "b":
+        return "bool"
+    raise TypeError(
+        f"el array «{name}» de la malla es de {dtype}: solo flotantes, enteros o booleanos"
+    )
+
+
+def _as_rows(array: np.ndarray) -> np.ndarray:
+    """``array`` como matriz de filas (su primer eje; el resto, aplanado en orden C)."""
+    if array.ndim == 2:
+        return array
+    if array.ndim < 2:
+        return array.reshape(-1, 1)
+    return array.reshape(array.shape[0], -1)
+
+
+def _chunks(rows: np.ndarray) -> Iterable[tuple[int, int]]:
+    """``(primera fila, filas)`` de cada trozo de :data:`GRID_CHUNK_CELLS` celdas como mucho."""
+    count = rows.shape[0]
+    if not rows.size:
+        return
+    step = max(1, GRID_CHUNK_CELLS // max(1, rows.shape[1]))
+    for top in range(0, count, step):
+        yield top, min(step, count - top)
+
+
+def _sorted_records(blocks: list[np.ndarray]) -> bytes:
+    """Los registros de los puntos ordenados byte a byte (el orden de ``sorted`` sobre sus
+    bytes): cada columna, leída como entero *big-endian* de sus 8 bytes, es una clave."""
+    if not blocks:
+        return b""
+    records = np.concatenate(blocks) if len(blocks) > 1 else blocks[0]
+    keys = records.view(">u8").astype(np.uint64)
+    order = np.lexsort(keys.T[::-1])
+    return np.ascontiguousarray(records[order]).tobytes()
 
 
 # --- Conversión de las celdas ----------------------------------------------------------------
