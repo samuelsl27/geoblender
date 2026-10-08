@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Remuestreo de una superficie a la rejilla del proyecto (spec 006; RF-006-11, RF-006-30;
-plan 006 §5.3.2, §5.4 A6 y §6 D6; ADR-0014).
+"""Remuestreo de una superficie a la rejilla del proyecto (spec 006; RF-006-05, RF-006-11,
+RF-006-30; plan 006 §5.3.2, §5.4 A6 y §6 D6 y D7; ADR-0014).
 
-Todas las coordenadas de este módulo son **absolutas** (CRS del proyecto, m, float64). La
-fuente y la rejilla destino están en el mismo CRS: lo que cambia de CRS es la reproyección
-(``reproject_to_grid``, RF-006-05).
+Todas las coordenadas de este módulo son **absolutas** (m, float64). En el remuestreo, la
+fuente y la rejilla destino están en el mismo CRS; en la reproyección
+(:func:`reproject_to_grid`, RF-006-05), la fuente está en el suyo y la rejilla en el del
+proyecto, y las transformaciones llevan los puntos de uno a otro.
 
 - :func:`choose_method`: el método por defecto (RF-006-11; plan §6 D6): la media ponderada
   por área si el paso de la fuente es menor o igual que el de la rejilla en X y en Y (bajar
@@ -33,6 +34,17 @@ fuente y la rejilla destino están en el mismo CRS: lo que cambia de CRS es la r
   destino (``numpy.bincount`` sobre celda y código) y la clase de mayor área, con empate el
   código menor; nunca un código que no esté en la fuente. Misma regla de cobertura que la
   media.
+- :func:`reproject_to_grid`: una superficie de otro CRS o de otro datum vertical,
+  directamente en la rejilla del proyecto (RF-006-05; A6 y D7). Con la media, s × s
+  subcentros por celda destino (s = ``gis.reproject.supersample``, 4) se llevan a la fuente
+  con la transformación **inversa**, se interpolan allí con la bilineal (sin dato si les
+  falta un vecino) y, si el datum vertical difiere, su cota pasa al del proyecto con la
+  transformación **directa**; la celda vale la media de los subcentros válidos si estos son
+  al menos la fracción mínima de los s²; si no, queda sin dato. Con la bilineal, un solo
+  punto: el centro (s = 1). Solo con transformaciones de precisión conocida
+  (``gis.transform_unknown_accuracy``, con los dos CRS); el informe cita la transformación
+  directa y el submuestreo. Un punto que una transformación no puede llevar (∞: fuera de
+  su rejilla) es sin dato.
 
 Las cotas de la fuente que no son finitas (NaN, ±∞) son sin dato. Las entradas no se
 modifican. Se calcula por bloques de filas destino (como mucho :data:`BLOCK_ITEMS` elementos
@@ -53,19 +65,23 @@ from enum import StrEnum
 
 import numpy as np
 
+from ..core.georef import CrsRef, VerticalRef
 from ..jobs.worker_api import JobCancelled
 from . import params
+from .crs import unknown_accuracy_error
 from .grid import Grid
 from .messages import GisError
-from .ports import Cancelled, Progress
+from .ports import Cancelled, Progress, Transform, TransformInfo
 from .raster import Raster
 from .reports import ResampleReport
 
 __all__ = [
     "BLOCK_ITEMS",
     "CELL_TOLERANCE",
+    "PAIR_TOLERANCE_M",
     "ResampleMethod",
     "choose_method",
+    "reproject_to_grid",
     "resample_classes_to_grid",
     "resample_to_grid",
 ]
@@ -77,7 +93,13 @@ float64); un bloque tiene al menos una fila. Las pruebas lo bajan para trocear."
 CELL_TOLERANCE = 1e-9
 """Redondeo admitido, en fracción de celda (véase el docstring del módulo)."""
 
+PAIR_TOLERANCE_M = 0.001
+"""Lo que puede separarse un punto de sí mismo al pasar por la transformación inversa y la
+directa de una reproyección: una pareja de verdad lo devuelve con el redondeo de PROJ
+(≪ 1 mm); una equivocada, desplazado por la transformación entera (decenas de metros)."""
+
 MIN_VALID_FRACTION_KEY = "gis.resample.min_valid_fraction"
+SUPERSAMPLE_KEY = "gis.reproject.supersample"
 _CLASSES_FIELD = "código"
 
 
@@ -199,11 +221,34 @@ def _fraction(value: object) -> float:
     return float(definition.check(value))  # type: ignore[arg-type]
 
 
+def _supersample(value: object) -> int:
+    """Los subcentros por lado de la reproyección: los de ``gis.reproject.supersample`` si
+    es ``None``; si no, comprobados en [1; 16] (``GisError`` ``gis.param_*`` con la clave)."""
+    definition = params.param(SUPERSAMPLE_KEY)
+    if value is None:
+        return int(definition.default)  # type: ignore[arg-type]
+    return int(definition.check(value))  # type: ignore[arg-type]
+
+
 def _check_inputs(src: object, target: object) -> None:
     if not isinstance(src, Raster):
         raise TypeError(f"se esperaba un Raster, no {type(src).__name__}")
     if not isinstance(target, Grid):
         raise TypeError(f"se esperaba una Grid de destino, no {type(target).__name__}")
+
+
+def _height_method(method: object) -> ResampleMethod:
+    """El método de cotas declarado (media o bilineal); otro es un error del programa."""
+    try:
+        chosen = ResampleMethod(method)
+    except ValueError:
+        chosen = None
+    if chosen not in (ResampleMethod.AREA_MEAN, ResampleMethod.BILINEAR):
+        raise ValueError(
+            f"método de remuestreo de cotas {method!r}: debe ser «area_mean» o «bilinear» "
+            "(las clases, con resample_classes_to_grid)"
+        )
+    return chosen
 
 
 def _covered(cover: np.ndarray, fraction: float) -> np.ndarray:
@@ -299,14 +344,17 @@ def _bilinear(src: Raster, target: Grid, progress: Progress | None,
     return out
 
 
-def _report(method: ResampleMethod, fraction: float, out: np.ndarray,
-            target: Grid) -> ResampleReport:
+def _report(method: ResampleMethod, fraction: float, out: np.ndarray, target: Grid, *,
+            transform: TransformInfo | None = None,
+            supersample: int | None = None) -> ResampleReport:
     return ResampleReport(
         method=method.value,
         min_valid_fraction=fraction,
         cells=target.ncols * target.nrows,
         valid_cells=int(np.count_nonzero(np.isfinite(out))),
         cell_area_m2=target.cell_area,
+        transform=transform,
+        supersample=supersample,
     )
 
 
@@ -332,21 +380,187 @@ def resample_to_grid(
     argumentos de otro tipo son errores del programa (``ValueError``, ``TypeError``).
     ``JobCancelled`` si ``cancelled()`` pide parar."""
     _check_inputs(src, target)
-    try:
-        chosen = ResampleMethod(method)
-    except ValueError:
-        chosen = None
-    if chosen not in (ResampleMethod.AREA_MEAN, ResampleMethod.BILINEAR):
-        raise ValueError(
-            f"método de remuestreo de cotas {method!r}: debe ser «area_mean» o «bilinear» "
-            "(las clases, con resample_classes_to_grid)"
-        )
+    chosen = _height_method(method)
     fraction = _fraction(min_valid_fraction)
     if chosen is ResampleMethod.AREA_MEAN:
         out = _area_mean(src, target, fraction, progress, cancelled)
     else:
         out = _bilinear(src, target, progress, cancelled)
     return Raster(target, out, src.crs, src.vertical), _report(chosen, fraction, out, target)
+
+
+def _apply(transform: Transform, xyz: np.ndarray) -> np.ndarray:
+    """``transform.apply`` en float64, con la forma de la entrada (si no, ``ValueError``)."""
+    result = np.asarray(transform.apply(xyz), dtype=np.float64)
+    if result.shape != xyz.shape:
+        raise ValueError(
+            f"la transformación «{transform.info.description}» devolvió {result.shape} "
+            f"para {xyz.shape} puntos"
+        )
+    return result
+
+
+def _check_transforms(transform: object, inverse: object, target_crs: object,
+                      target_vertical: object) -> None:
+    for label, item in (("transform", transform), ("inverse", inverse)):
+        if not isinstance(item, Transform):
+            raise TypeError(f"{label}: se esperaba una Transform, no {type(item).__name__}")
+    if not isinstance(target_crs, CrsRef):
+        raise TypeError(f"target_crs: se esperaba un CrsRef, no {type(target_crs).__name__}")
+    if not isinstance(target_vertical, VerticalRef):
+        raise TypeError(
+            f"target_vertical: se esperaba un VerticalRef, no {type(target_vertical).__name__}"
+        )
+
+
+def _check_pair(transform: Transform, inverse: Transform, target: Grid) -> None:
+    """Las esquinas y el centro de ``target``, llevados a la fuente con ``inverse`` y
+    devueltos con ``transform``, vuelven a su sitio (≤ :data:`PAIR_TOLERANCE_M` en planta);
+    si no, ``ValueError``: no son una transformación y su inversa. Los puntos que alguna
+    no puede llevar (∞) no cuentan."""
+    west, north = target.west, target.north
+    east, south = west + target.ncols * target.dx, north - target.nrows * target.dy
+    points = np.array([[west, north, 0.0], [east, north, 0.0], [west, south, 0.0],
+                       [east, south, 0.0], [(west + east) / 2, (north + south) / 2, 0.0]])
+    there = _apply(inverse, points)
+    keep = np.isfinite(there).all(axis=1)
+    if not keep.any():
+        return
+    back = _apply(transform, there[keep])
+    error = np.hypot(back[:, 0] - points[keep, 0], back[:, 1] - points[keep, 1])
+    error = error[np.isfinite(error)]
+    if error.size and float(error.max()) > PAIR_TOLERANCE_M:
+        raise ValueError(
+            f"«{inverse.info.description}» no es la inversa de "
+            f"«{transform.info.description}»: "
+            f"un punto de la rejilla vuelve a {float(error.max()):.3f} m de su sitio"
+        )
+
+
+def _subcenters(target: Grid, first: int, stop: int,
+                supersample: int) -> tuple[np.ndarray, np.ndarray]:
+    """X e Y ABSOLUTAS de los s × s subcentros de las celdas de las filas ``first`` …
+    ``stop`` − 1, en el orden (fila, subfila, columna, subcolumna); con s = 1, los centros."""
+    offsets = (np.arange(supersample, dtype=np.float64) + 0.5) / supersample
+    columns = np.arange(target.ncols, dtype=np.float64)[:, None] + offsets
+    rows = np.arange(first, stop, dtype=np.float64)[:, None] + offsets
+    x, y = np.meshgrid(target.west + columns.ravel() * target.dx,
+                       target.north - rows.ravel() * target.dy)
+    return x.ravel(), y.ravel()
+
+
+def _sample(src: Raster, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """La bilineal de ``src`` en los puntos (``x``, ``y``) ABSOLUTOS de su CRS, con los
+    vecinos de :func:`_neighbours` (como la de ``resample_to_grid``): NaN si al punto le
+    falta un vecino de peso no nulo (fuera de los centros de la fuente o sin dato) o si no
+    es finito."""
+    grid = src.grid
+    finite = np.isfinite(x) & np.isfinite(y)
+    # Un punto no finito queda sin vecinos; los lejanos se acotan para que pasar a enteros
+    # no desborde.
+    fx = np.where(finite, (x - grid.west) / grid.dx - 0.5, -1.0)
+    fy = np.where(finite, (grid.north - y) / grid.dy - 0.5, -1.0)
+    np.clip(fx, -1.0, float(grid.ncols), out=fx)
+    np.clip(fy, -1.0, float(grid.nrows), out=fy)
+    left, right, tx, inside_x = _neighbours(fx, grid.ncols)
+    top, bottom, ty, inside_y = _neighbours(fy, grid.nrows)
+    values = src.values
+    z00, z10 = values[top, left], values[top, right]
+    z01, z11 = values[bottom, left], values[bottom, right]
+    with np.errstate(invalid="ignore"):
+        upper = (1.0 - tx) * z00 + tx * z10
+        lower = (1.0 - tx) * z01 + tx * z11
+        result = (1.0 - ty) * upper + ty * lower
+    ok = (finite & inside_x & inside_y & np.isfinite(z00) & np.isfinite(z10)
+          & np.isfinite(z01) & np.isfinite(z11))
+    result[~ok] = np.nan
+    return result
+
+
+def _reproject(src: Raster, target: Grid, transform: Transform, inverse: Transform, *,
+               vertical: bool, supersample: int, fraction: float,
+               progress: Progress | None, cancelled: Cancelled | None) -> np.ndarray:
+    out = np.full(target.shape, np.nan)
+    count = supersample * supersample
+    blocks = _blocks(np.arange(target.nrows), target.ncols * count)
+    for index, (first, stop) in enumerate(blocks):
+        _cancel_point(cancelled, index, len(blocks))
+        x, y = _subcenters(target, first, stop, supersample)
+        there = _apply(inverse, np.column_stack((x, y, np.zeros_like(x))))
+        z = _sample(src, there[:, 0], there[:, 1])
+        if vertical:
+            keep = np.flatnonzero(np.isfinite(z))
+            if keep.size:
+                moved = _apply(transform, np.column_stack(
+                    (there[keep, 0], there[keep, 1], z[keep])))
+                z[keep] = moved[:, 2]
+        cells = z.reshape(stop - first, supersample, target.ncols, supersample)
+        valid = np.isfinite(cells)
+        hits = valid.sum(axis=(1, 3))
+        total = np.where(valid, cells, 0.0).sum(axis=(1, 3))
+        values = np.full(hits.shape, np.nan)
+        np.divide(total, hits, out=values, where=_covered(hits / count, fraction))
+        out[first:stop] = values
+        _advance(progress, index, len(blocks))
+    return out
+
+
+def reproject_to_grid(
+    src: Raster,
+    target: Grid,
+    *,
+    transform: Transform,
+    inverse: Transform,
+    target_crs: CrsRef,
+    target_vertical: VerticalRef,
+    method: ResampleMethod | str,
+    min_valid_fraction: float | None = None,
+    supersample: int | None = None,
+    name: str = "MDT",
+    progress: Progress | None = None,
+    cancelled: Cancelled | None = None,
+) -> tuple[Raster, ResampleReport]:
+    """Las cotas de ``src`` (en su CRS y su datum vertical) en la rejilla ``target`` del
+    proyecto (``target_crs`` + ``target_vertical``), directamente, sin pasar por una
+    rejilla intermedia (RF-006-05; plan 006 §5.4 A6 y §6 D7).
+
+    ``transform`` es la transformación directa (de la fuente al proyecto, la de
+    ``gis.crs.transformation_for``): su ``info`` va al informe, y convierte la cota de cada
+    punto si la referencia vertical difiere. ``inverse`` es su inversa (del proyecto a la
+    fuente: ``CrsService.transformer`` con los CRS al revés), que lleva los puntos de la
+    rejilla a la fuente; las dos deben ser de precisión conocida (si no,
+    ``gis.transform_unknown_accuracy`` con los dos CRS y ``name``, la fuente) y una la
+    inversa de la otra (si no, ``ValueError``).
+
+    ``method``: ``"area_mean"`` (la media, para bajar o mantener la resolución, como
+    :func:`choose_method`): s × s subcentros por celda (s = ``supersample``; ``None``:
+    ``gis.reproject.supersample``, 4) interpolados con la bilineal en la fuente; la celda
+    vale la media de los válidos si son al menos ``min_valid_fraction`` (``None``:
+    ``gis.resample.min_valid_fraction``, 1) de los s²; si no, queda sin dato.
+    ``"bilinear"``: la bilineal en el centro de la celda (s = 1), sin dato si le falta un
+    vecino. El informe lleva el método, la fracción, las celdas con dato, el área de celda
+    exacta, la transformación directa y el submuestreo usado.
+
+    Errores: ``gis.transform_unknown_accuracy``, ``gis.param_*`` (fracción y submuestreo);
+    un método que no es de cotas o una pareja que no es inversa, ``ValueError``; argumentos
+    de otro tipo, ``TypeError``. ``JobCancelled`` si ``cancelled()`` pide parar. La fuente
+    no se modifica."""
+    _check_inputs(src, target)
+    _check_transforms(transform, inverse, target_crs, target_vertical)
+    chosen = _height_method(method)
+    fraction = _fraction(min_valid_fraction)
+    supersample = _supersample(supersample)
+    if chosen is ResampleMethod.BILINEAR:
+        supersample = 1
+    if transform.info.accuracy_m is None or inverse.info.accuracy_m is None:
+        raise unknown_accuracy_error(name, src.crs, src.vertical, target_crs, target_vertical)
+    _check_pair(transform, inverse, target)
+    out = _reproject(src, target, transform, inverse,
+                     vertical=src.vertical != target_vertical, supersample=supersample,
+                     fraction=fraction, progress=progress, cancelled=cancelled)
+    report = _report(chosen, fraction, out, target, transform=transform.info,
+                     supersample=supersample)
+    return Raster(target, out, target_crs, target_vertical), report
 
 
 def _class_index(values: np.ndarray, name: str) -> tuple[np.ndarray, np.ndarray]:

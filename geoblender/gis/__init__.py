@@ -8,9 +8,9 @@ externas, a través de puertos implementados en ``adapters`` (ARQ-04).
 Reexporta la API pública (plan 006 §5.1): los puertos (``gis.ports``), los parámetros
 (``gis.params``), el error y los mensajes (``gis.messages``), los informes
 (``gis.reports``), la rejilla de paso exacto y el volumen entre superficies (``gis.grid``),
-las superficies en rejilla y los MDT leídos de un fichero (``gis.raster``), el remuestreo a
-la rejilla del proyecto (``gis.resample``) y la declaración de CRS y datum con sus
-transformaciones (``gis.crs``). Cada tarea de la 006 añade aquí lo suyo.
+las superficies en rejilla y los MDT leídos de un fichero (``gis.raster``), el remuestreo y
+la reproyección a la rejilla del proyecto (``gis.resample``) y la declaración de CRS y
+datum con sus transformaciones (``gis.crs``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
 from .crs import (
@@ -52,6 +52,7 @@ from .raster import Raster, RasterSource
 from .resample import (
     ResampleMethod,
     choose_method,
+    reproject_to_grid,
     resample_classes_to_grid,
     resample_to_grid,
 )
@@ -102,6 +103,7 @@ __all__ = [
     "param",
     "project_grid",
     "reference_label",
+    "reproject_to_grid",
     "require_crs_service",
     "resample_classes_to_grid",
     "resample_to_grid",

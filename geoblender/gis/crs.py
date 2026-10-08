@@ -50,6 +50,7 @@ __all__ = [
     "transform_coordinates",
     "transform_summary",
     "transformation_for",
+    "unknown_accuracy_error",
 ]
 
 type Resolver = Callable[[], CrsService]
@@ -127,9 +128,11 @@ def _local_mismatch(src_v: VerticalRef, dst_v: VerticalRef) -> bool:
     return "local" in (src_v.kind, dst_v.kind) and src_v != dst_v
 
 
-def _unknown_accuracy(
+def unknown_accuracy_error(
     source: str, src: CrsRef, src_v: VerticalRef, dst: CrsRef, dst_v: VerticalRef
 ) -> GisError:
+    """El rechazo de RF-006-05 (``gis.transform_unknown_accuracy``): no hay transformación
+    de precisión conocida de ``src`` + ``src_v`` a ``dst`` + ``dst_v`` para ``source``."""
     return GisError(
         "gis.transform_unknown_accuracy",
         obj=source,
@@ -203,12 +206,16 @@ def transformation_for(
     if not needs_transform(src, src_v, target_crs, target_vertical):
         return None
     if _local_mismatch(src_v, target_vertical):
-        raise _unknown_accuracy(declaration.source, src, src_v, target_crs, target_vertical)
+        raise unknown_accuracy_error(
+            declaration.source, src, src_v, target_crs, target_vertical
+        )
     if service is None:
         service = require_crs_service(resolver)
     transform = service.transformer(src, src_v, target_crs, target_vertical)
     if transform.info.accuracy_m is None:
-        raise _unknown_accuracy(declaration.source, src, src_v, target_crs, target_vertical)
+        raise unknown_accuracy_error(
+            declaration.source, src, src_v, target_crs, target_vertical
+        )
     return transform
 
 
