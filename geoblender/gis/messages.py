@@ -264,6 +264,14 @@ CATALOG: tuple[Message, ...] = (
         "(Topografía ▸ Importar ▸ Puntos y líneas de rotura…).",
     ),
     Message(
+        "gis.xyz_line_invalid",
+        "DTM «{file}», line {line}: {detail}. Correct it (X, Y and Z on each line, with the "
+        "chosen separator and decimal mark) or export the file again, and import it again.",
+        "MDT «{file}», línea {line}: {detail}. Corríjala (X, Y y Z en cada línea, con el "
+        "separador y el decimal elegidos) o vuelva a exportar el fichero, y vuelva a "
+        "importarlo.",
+    ),
+    Message(
         "gis.pixel_is_point",
         "DTM «{file}» declares PixelIsPoint: its grid has been moved half a cell so that "
         "each cell is an area.",
