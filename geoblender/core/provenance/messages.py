@@ -19,7 +19,7 @@ mismos en los dos (constitución, principio 10). Los nombres visibles de las ope
   ``core.read_only`` sin tocar nada (plan §5.3.1).
 
 Cada tarea de la 008 añade aquí los códigos de sus rechazos (los textos de la spec §8, tal
-cual). Python puro (ADR-0004).
+cual) y sus avisos (``core.figure_differs``, RF-008-59). Python puro (ADR-0004).
 """
 
 from __future__ import annotations
@@ -160,6 +160,117 @@ _CATALOG: tuple[Message, ...] = (
         "results are not accepted.",
         "La operación «{op_type}» terminó sin completar su registro: queda fallida y sus "
         "resultados no se dan por buenos.",
+    ),
+    # Cifras (T19; RF-008-30, RF-008-59; spec §8): el rechazo nombra su clave y su operación.
+    Message(
+        "core.figure_operation_missing",
+        "Figure «{key}» has no originating operation: only a running operation records it.",
+        "La cifra «{key}» no tiene operación de origen: solo la registra una operación en "
+        "curso.",
+    ),
+    Message(
+        "core.figure_operation_not_running",
+        "Figure «{key}» of operation «{op_type}» is not recorded: the operation is no longer "
+        "running.",
+        "La cifra «{key}» de la operación «{op_type}» no se registra: la operación ya no está "
+        "en curso.",
+    ),
+    Message(
+        "core.figure_kind_missing",
+        "Figure «{key}» of operation «{op_type}» needs a type: CALCULATED, or that of the "
+        "parameter it shows.",
+        "La cifra «{key}» de la operación «{op_type}» necesita un tipo: CALCULADO, o el del "
+        "parámetro que muestra.",
+    ),
+    Message(
+        "core.figure_kind_unknown",
+        "Figure «{key}» of operation «{op_type}» has type «{kind}», which is not MEASURED, "
+        "CALCULATED, ADOPTED or HYPOTHESIS.",
+        "La cifra «{key}» de la operación «{op_type}» tiene el tipo «{kind}», que no es "
+        "MEDIDO, CALCULADO, ADOPTADO ni HIPÓTESIS.",
+    ),
+    Message(
+        "core.figure_kind_without_parameter",
+        "Figure «{key}» of operation «{op_type}» is {kind} and shows no parameter: what an "
+        "operation computes is CALCULATED, and only a figure that shows a parameter carries "
+        "its type.",
+        "La cifra «{key}» de la operación «{op_type}» es {kind} y no muestra ningún "
+        "parámetro: lo que calcula una operación es CALCULADO, y solo la cifra que muestra un "
+        "parámetro lleva su tipo.",
+    ),
+    Message(
+        "core.figure_parameter_kind",
+        "Figure «{key}» of operation «{op_type}» shows parameter «{parameter}», which is "
+        "{parameter_kind}: it carries that type, not {kind}.",
+        "La cifra «{key}» de la operación «{op_type}» muestra el parámetro «{parameter}», que "
+        "es {parameter_kind}: lleva su tipo, no {kind}.",
+    ),
+    Message(
+        "core.figure_parameter_value",
+        "Figure «{key}» of operation «{op_type}» shows parameter «{parameter}» "
+        "({parameter_value}) and is {value}: if the operation computes it, the figure is "
+        "CALCULATED.",
+        "La cifra «{key}» de la operación «{op_type}» muestra el parámetro «{parameter}» "
+        "({parameter_value}) y vale {value}: si la operación lo calcula, la cifra es "
+        "CALCULADO.",
+    ),
+    Message(
+        "core.figure_unit_missing",
+        "Figure «{key}» of operation «{op_type}» needs its unit from Geoblender's unit "
+        "catalog («-» if it is dimensionless).",
+        "La cifra «{key}» de la operación «{op_type}» necesita su unidad del catálogo de "
+        "unidades de Geoblender («-» si es adimensional).",
+    ),
+    Message(
+        "core.figure_unit_unknown",
+        "Figure «{key}» of operation «{op_type}» is in «{unit}», which is not in Geoblender's "
+        "unit catalog.",
+        "La cifra «{key}» de la operación «{op_type}» está en «{unit}», que no está en el "
+        "catálogo de unidades de Geoblender.",
+    ),
+    Message(
+        "core.figure_unit_other",
+        "Figure «{key}» of operation «{op_type}» is in «{unit}» and its definition declares "
+        "it in «{declared}».",
+        "La cifra «{key}» de la operación «{op_type}» está en «{unit}» y su definición la "
+        "declara en «{declared}».",
+    ),
+    Message(
+        "core.figure_value_missing",
+        "Figure «{key}» of operation «{op_type}» has no value: check its inputs.",
+        "La cifra «{key}» de la operación «{op_type}» no tiene valor: revise sus entradas.",
+    ),
+    Message(
+        "core.figure_nan",
+        "Figure «{key}» of operation «{op_type}» is NaN: check its inputs.",
+        "La cifra «{key}» de la operación «{op_type}» es NaN: revise sus entradas.",
+    ),
+    Message(
+        "core.figure_infinite",
+        "Figure «{key}» of operation «{op_type}» is infinite: check its inputs.",
+        "La cifra «{key}» de la operación «{op_type}» es infinita: revise sus entradas.",
+    ),
+    Message(
+        "core.figure_zero",
+        "Figure «{key}» of operation «{op_type}» is zero and its definition does not admit "
+        "it: check its inputs.",
+        "La cifra «{key}» de la operación «{op_type}» es cero y su definición no lo admite: "
+        "revise sus entradas.",
+    ),
+    Message(
+        "core.figure_negative",
+        "Figure «{key}» of operation «{op_type}» is negative ({value}) and its definition "
+        "does not admit it: check its inputs.",
+        "La cifra «{key}» de la operación «{op_type}» es negativa ({value}) y su definición no "
+        "lo admite: revise sus entradas.",
+    ),
+    # El aviso de RF-008-59 (spec §8): el parámetro no cambia.
+    Message(
+        "core.figure_differs",
+        "Operation «{op_type}» computes {name} = {value}; the {kind} value is "
+        "{parameter_value} ({decided_by}, {decided_on}).",
+        "La operación «{op_type}» calcula {name} = {value}; el valor {kind} es "
+        "{parameter_value} ({decided_by}, {decided_on}).",
     ),
 )
 

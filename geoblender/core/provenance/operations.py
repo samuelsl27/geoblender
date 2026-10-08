@@ -15,14 +15,15 @@ tablas ``gb_*``, llaman a esta API:
    sesión y en qué equipo, y la versión de Geoblender (RF-008-51).
 2. :meth:`OperationHandle.complete`, en la transacción **del módulo**, la que escribe sus
    resultados (el punto de confirmación): registra cada salida (``core.datasets``: un dato
-   nuevo o el contenido nuevo de uno vivo con su nombre, con su hash y su papel) y la deja
-   «hecha» con las versiones de las bibliotecas que influyen en sus cifras, dónde se ejecutó
-   (hilo de Blender o trabajo de la 004, con su identificador y su intérprete) y su mensaje
-   (RF-008-18). No confirma: si la transacción del módulo se deshace, no queda nada de la
-   operación terminada y sigue «en curso». Un resultado que no está guardado en el proyecto
-   (un fichero que solo está en la caché o en la carpeta de un trabajo, una tabla que no se
-   escribió) no se acepta (RF-008-23). Si sustituye a otra (un recálculo, una reimportación),
-   la anota en ella (``superseded_by``), una vez.
+   nuevo o el contenido nuevo de uno vivo con su nombre, con su hash y su papel) y cada cifra
+   (:mod:`.figures`, RF-008-30), y la deja «hecha» con las versiones de las bibliotecas que
+   influyen en sus cifras, dónde se ejecutó (hilo de Blender o trabajo de la 004, con su
+   identificador y su intérprete) y su mensaje (RF-008-18). No confirma: si la transacción
+   del módulo se deshace, no queda nada de la operación terminada y sigue «en curso». Un
+   resultado que no está guardado en el proyecto (un fichero que solo está en la caché o en
+   la carpeta de un trabajo, una tabla que no se escribió) no se acepta (RF-008-23). Si
+   sustituye a otra (un recálculo, una reimportación), la anota en ella (``superseded_by``),
+   una vez.
 
 Mientras tanto, :meth:`OperationHandle.claim_paths` reclama los ficheros del proyecto que
 escribe (temporales y finales), para que el barrido de restos no los aparte: constan en
@@ -49,10 +50,10 @@ parámetros y los datos) y un error del programa, :class:`ValueError` o :class:`
 ninguno deja el proyecto en solo lectura. En solo lectura, todo lo que escribiría lanza
 ``core.read_only`` sin tocar nada.
 
-Pendiente de otras tareas de la 008: la puerta antes de operar (``gate.can_run``, T30), las
-cifras (``record_figure``, T19), la obsolescencia por región en ``complete`` (T27) e
-incorporar un trabajo (``ingest_job``, T31). Python puro (ADR-0004): al importarse no importa
-``core.project`` (que importa ``core.provenance.schema``); sus eventos, solo al registrarlos.
+Pendiente de otras tareas de la 008: la puerta antes de operar (``gate.can_run``, T30), la
+obsolescencia por región en ``complete`` (T27) e incorporar un trabajo (``ingest_job``,
+T31). Python puro (ADR-0004): al importarse no importa ``core.project`` (que importa
+``core.provenance.schema``); sus eventos, solo al registrarlos.
 """
 
 from __future__ import annotations
@@ -82,6 +83,7 @@ from ..params.store import ParameterStore, ResolvedParam
 from ..paths import ABSOLUTE_PATH, find_absolute_paths
 from ..timeutil import Clock, format_utc
 from .contract import OperationDef, operation_def
+from .figures import FigureSpec, prepare_figures, write_figures
 from .messages import ProvenanceError
 from .schema import INACTIVE_INPUT_STATUSES, RUNNING
 
@@ -630,6 +632,7 @@ class OperationHandle:
         conn: sqlite3.Connection,
         *,
         outputs: Sequence[DatasetSpec] = (),
+        figures: Sequence[FigureSpec] = (),
         software: Mapping[str, str] | None = None,
         interpreter: Mapping[str, Any] | None = None,
         message: str | None = None,
@@ -642,6 +645,10 @@ class OperationHandle:
 
         - cada salida de ``outputs`` (``DatasetSpec``) ya guardada en el proyecto, como dato
           nuevo o como contenido nuevo del dato vivo con su nombre, con su hash y su papel;
+        - cada cifra de ``figures`` (``FigureSpec``), con su tipo, su unidad y su ámbito
+          (RF-008-30; :func:`~.figures.record_figure`): las que calculan un parámetro dejan
+          su aviso si difieren de él (:func:`~.figures.divergences`), y ningún parámetro
+          cambia (RF-008-59);
         - «hecha», con su hora, ``software`` (la versión de cada biblioteca que declara su
           ``OperationDef.libraries``, todas y solas), ``executor`` y ``job_uid`` (si cambian
           desde el principio; un trabajo lleva su identificador), ``interpreter`` (el de un
@@ -650,8 +657,9 @@ class OperationHandle:
 
         ``ProvenanceError`` si ya no está «en curso» (``core.operation_not_running``) o si una
         salida no está guardada en el proyecto (``core.operation_output_not_saved``,
-        RF-008-23); los rechazos de ``core.datasets``; ``ValueError``/``TypeError`` con un
-        argumento mal formado o fuera de una transacción. En todos, sin escribir nada."""
+        RF-008-23); los rechazos de ``core.datasets`` y los de las cifras (que se comprueban
+        todas antes de escribir nada); ``ValueError``/``TypeError`` con un argumento mal
+        formado o fuera de una transacción. En todos, sin escribir nada."""
         if not isinstance(conn, sqlite3.Connection):
             raise TypeError(f"complete recibe la conexión de la transacción del módulo, no "
                             f"{conn!r}")
@@ -673,6 +681,7 @@ class OperationHandle:
         chosen = self.executor if executor is None else _executor(executor)
         job = self.job_uid if job_uid is None else _optional_text(job_uid, "job_uid")
         _check_job(chosen, job, required=True)
+        prepared = prepare_figures(conn, self, figures)
         _check_saved(conn, self.project, self.op_type, specs)
         records: list[DatasetRecord] = []
         for spec in specs:
@@ -684,6 +693,7 @@ class OperationHandle:
                 record = dataset_registry.register_dataset(conn, self.project, spec,
                                                            operation_uid=self.uid)
             records.append(record)
+        write_figures(conn, self, prepared)
         conn.execute(
             "UPDATE gb_operation SET status = ?, finished_at = ?, software = ?, executor = ?, "
             "job_uid = ?, interpreter = ?, message = ? WHERE uid = ?",

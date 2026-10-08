@@ -13,15 +13,18 @@
   :class:`OperationHandle` con ``claim_paths``, ``complete``, ``fail`` y ``cancel``,
   :func:`operation` y :func:`claimed_paths`) y las que su sesión no pudo terminar
   (:func:`interrupt_orphaned` y :func:`mark_not_ingested`).
+- :mod:`.figures`: las cifras con tipo y procedencia (:class:`FigureSpec`,
+  :func:`record_figure`, :class:`FigureRecord`) y el aviso de una cifra que calcula un
+  parámetro con otro valor (:class:`Divergence`, :func:`divergence` y :func:`divergences`).
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
 ``core.project.schema`` importa ``core.provenance.schema``, que pasa por este fichero.
 
-Por lo mismo, lo de :mod:`.operations` (que trae ``core.datasets``, ``core.content`` y
-``core.params``) se reexporta **al usarlo** (``__getattr__``, PEP 562), no al importar el
-paquete: así abrir un proyecto no carga ni compila esos módulos (las pruebas de Blender
-rehabilitan la extensión muchas veces desde cero, con ``-B``).
+Por lo mismo, lo de :mod:`.operations` y :mod:`.figures` (que traen ``core.datasets``,
+``core.content`` y ``core.params``) se reexporta **al usarlo** (``__getattr__``, PEP 562), no
+al importar el paquete: así abrir un proyecto no carga ni compila esos módulos (las pruebas
+de Blender rehabilitan la extensión muchas veces desde cero, con ``-B``).
 """
 
 from typing import Any
@@ -72,19 +75,32 @@ OPERATIONS_API: tuple[str, ...] = (
 )
 """Lo de :mod:`.operations` que se reexporta al usarlo."""
 
+FIGURES_API: tuple[str, ...] = (
+    "Divergence",
+    "FigureRecord",
+    "FigureSpec",
+    "divergence",
+    "divergences",
+    "record_figure",
+    "scope_key",
+)
+"""Lo de :mod:`.figures` que se reexporta al usarlo."""
+
 
 def __getattr__(name: str) -> Any:
-    if name not in OPERATIONS_API:
+    if name in OPERATIONS_API:
+        from . import operations as source
+    elif name in FIGURES_API:
+        from . import figures as source
+    else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from . import operations
-
-    value = getattr(operations, name)
+    value = getattr(source, name)
     globals()[name] = value
     return value
 
 
 def __dir__() -> list[str]:
-    return sorted({*globals(), *OPERATIONS_API})
+    return sorted({*globals(), *OPERATIONS_API, *FIGURES_API})
 
 
 __all__ = [
@@ -103,8 +119,11 @@ __all__ = [
     "SCOPES",
     "Consumed",
     "CoupledGroupDef",
+    "Divergence",
     "Executor",
     "FigureDef",
+    "FigureRecord",
+    "FigureSpec",
     "ImporterDef",
     "ItemKind",
     "Message",
@@ -115,6 +134,8 @@ __all__ = [
     "Use",
     "begin_operation",
     "claimed_paths",
+    "divergence",
+    "divergences",
     "figure_def",
     "group_def",
     "importer_def",
@@ -123,11 +144,13 @@ __all__ = [
     "operation",
     "operation_def",
     "parse_version",
+    "record_figure",
     "register_figure",
     "register_group",
     "register_importer",
     "register_operation",
     "render",
+    "scope_key",
     "unregister_figure",
     "unregister_group",
     "unregister_importer",
