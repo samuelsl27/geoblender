@@ -6,7 +6,8 @@ Cada valor que cambia un resultado de un módulo (una tolerancia, un K de esponj
 límite) es un **parámetro** con clave, tipo de valor, unidad, rango, valor por defecto, tipo
 y procedencia. Su módulo lo **declara** con :class:`ParamDef` en ``<paquete>/params.py`` y lo
 registra desde ``bl/`` con :func:`register_definitions` (``core`` no importa los módulos,
-ADR-0004). Los valores del proyecto y su historial los guarda ``ParameterStore`` (otra tarea).
+ADR-0004). Los valores del proyecto y su historial los guarda ``ParameterStore``
+(:mod:`.store`).
 
 - :class:`ParamKind`, :class:`ValueType` y :class:`SourceKind`: los códigos de
   ``gb_parameter.kind``, ``value_type`` y ``source_kind`` (``HIPÓTESIS`` con tilde, como
@@ -175,6 +176,98 @@ _CATALOG: tuple[Message, ...] = (
         "parameter's unit, «{to_symbol}»; its range is {range}.",
         "Parámetro «{key}»: «{value}» está en «{from_symbol}», que no se convierte a la unidad "
         "del parámetro, «{to_symbol}»; su rango es {range}.",
+    ),
+    # Los del registro de valores (store.py; spec §8, RF-008-01, RF-008-02, RF-008-04).
+    Message(
+        "core.param_kind_missing",
+        "Parameter «{key}» needs a type: MEASURED, CALCULATED, ADOPTED or HYPOTHESIS.",
+        "El parámetro «{key}» necesita un tipo: MEDIDO, CALCULADO, ADOPTADO o HIPÓTESIS.",
+    ),
+    Message(
+        "core.param_kind_unknown",
+        "Parameter «{key}» has type «{value}», which is not MEASURED, CALCULATED, ADOPTED or "
+        "HYPOTHESIS.",
+        "El parámetro «{key}» tiene el tipo «{value}», que no es MEDIDO, CALCULADO, ADOPTADO "
+        "ni HIPÓTESIS.",
+    ),
+    Message(
+        "core.param_calculated_by_hand",
+        "{key}: a CALCULATED parameter is written by an operation; to set it by hand, choose "
+        "ADOPTED or HYPOTHESIS.",
+        "{key}: un parámetro CALCULADO lo escribe una operación; para fijarlo a mano, elija "
+        "ADOPTADO o HIPÓTESIS.",
+    ),
+    Message(
+        "core.param_reason_missing",
+        "State the reason for the change of «{key}» ({change}).",
+        "Indique el motivo del cambio de «{key}» ({change}).",
+    ),
+    Message(
+        "core.param_reason_missing_new",
+        "State the reason for the value of «{key}» ({shown}).",
+        "Indique el motivo del valor de «{key}» ({shown}).",
+    ),
+    Message(
+        "core.param_source_missing",
+        "State the source of «{key}»: a document, a standard, a person, an operation or an "
+        "algorithm.",
+        "Indique el origen de «{key}»: un documento, una norma, una persona, una operación o "
+        "un algoritmo.",
+    ),
+    Message(
+        "core.param_source_kind_unknown",
+        "The source of «{key}» is a document, a standard, a person, an operation or an "
+        "algorithm, not «{value}».",
+        "El origen de «{key}» es un documento, una norma, una persona, una operación o un "
+        "algoritmo, no «{value}».",
+    ),
+    Message(
+        "core.param_decided_by_missing",
+        "State who decided the value of «{key}».",
+        "Indique quién decidió el valor de «{key}».",
+    ),
+    Message(
+        "core.param_exists",
+        "Parameter «{key}» is already registered in the project: change it instead of "
+        "creating it again.",
+        "El parámetro «{key}» ya está registrado en el proyecto: cámbielo en lugar de darlo "
+        "de alta otra vez.",
+    ),
+    Message(
+        "core.param_not_registered",
+        "Parameter «{key}» is not registered in the project.",
+        "El parámetro «{key}» no está registrado en el proyecto.",
+    ),
+    Message(
+        "core.param_undefined",
+        "No loaded module declares parameter «{key}»: its value cannot be checked.",
+        "Ningún módulo cargado declara el parámetro «{key}»: no se puede comprobar su valor.",
+    ),
+    Message(
+        "core.param_unchanged",
+        "Parameter «{key}» already has that value, type, source and decision maker: there is "
+        "nothing to change.",
+        "El parámetro «{key}» ya tiene ese valor, tipo, origen y decisor: no hay nada que "
+        "cambiar.",
+    ),
+    Message(
+        "core.param_nothing_to_confirm",
+        "Parameter «{key}» is not «unconfirmed»: there is nothing to confirm.",
+        "El parámetro «{key}» no está «sin confirmar»: no hay nada que confirmar.",
+    ),
+    Message(
+        "core.param_figure_unknown",
+        "Figure «{figure}» is not in the project: it cannot be adopted as the value of "
+        "«{key}».",
+        "La cifra «{figure}» no está en el proyecto: no se puede adoptar como valor de "
+        "«{key}».",
+    ),
+    Message(
+        "core.param_figure_other",
+        "Figure «{figure}» of operation «{operation}» does not calculate «{key}»: only the "
+        "figure that calculates this parameter can be adopted.",
+        "La cifra «{figure}» de la operación «{operation}» no calcula «{key}»: solo se adopta "
+        "la cifra que calcula este parámetro.",
     ),
 )
 
