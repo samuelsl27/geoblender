@@ -674,6 +674,100 @@ class ContractTest(unittest.TestCase):
                       self._broken(free, _pairs(absent[:1])))
 
 
+class CheckInputTest(unittest.TestCase):
+    """``check_input`` y ``check_output``: el contrato en dos pasos, para comprobar la
+    entrada antes de llamar a otro triangulador (la CDT de Blender, T23) y su salida
+    después, con el nombre de ese triangulador en los mensajes."""
+
+    def test_input_errors_carry_the_name(self) -> None:
+        """RF-006-13: menos de 3 puntos, no finitos, repetidos o alineados dan
+        ``gis.triangulation_input`` con el nombre del triangulador que comprueba."""
+        cases = {
+            "al menos 3 puntos": [[0.0, 0.0], [1.0, 0.0]],
+            "no tiene coordenadas finitas": [[0.0, 0.0], [1.0, 0.0], [0.0, np.inf]],
+            "coinciden": [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]],
+            "alineados": [[0.0, 0.0], [1.0, 2.0], [2.0, 4.0]],
+        }
+        for expected, rows in cases.items():
+            for check in (lambda xy: cdt.check_input(xy, NO_EDGES, name="otro@2"),
+                          lambda xy: cdt.check_contract(xy, NO_EDGES,
+                                                        _frozen([[0, 1, 2]], np.int32),
+                                                        name="otro@2")):
+                with self.subTest(caso=expected):
+                    with self.assertRaises(ports.TriangulationError) as caught:
+                        check(_xy(rows))
+                    self.assertEqual(caught.exception.code, "gis.triangulation_input")
+                    self.assertIn("otro@2", str(caught.exception))
+                    self.assertIn(expected, str(caught.exception))
+        self.assertIn(cdt.NAME, str(_error(_xy(cases["alineados"]))))
+
+    def test_checked_input_and_output(self) -> None:
+        """RF-006-13: la entrada comprobada lleva los puntos en float64, las aristas en su
+        orden y el nombre; ``check_output`` acepta la salida de ``PureTriangulator`` y
+        rechaza una rota con ese nombre."""
+        rng = np.random.default_rng(23)
+        xy = _frozen(rng.uniform(-50.0, 50.0, (60, 2)), np.float32)
+        edges = _random_constraints(rng, xy.astype(np.float64), 4)
+        checked = cdt.check_input(xy, edges, name="otro@2")
+        self.assertEqual(checked.xy.dtype, np.float64)
+        np.testing.assert_array_equal(checked.xy, xy.astype(np.float64))
+        self.assertEqual(checked.constraints, tuple(map(tuple, edges.tolist())))
+        self.assertEqual(checked.name, "otro@2")
+        tri = _triangulate(xy, edges)
+        cdt.check_output(checked, tri)
+        with self.assertRaises(ports.TriangulationError) as caught:
+            cdt.check_output(checked, np.vstack([tri[:-1], tri[-1:, ::-1]]))
+        self.assertEqual(caught.exception.code, "gis.triangulation_contract")
+        self.assertIn("otro@2", str(caught.exception))
+
+    def test_hull_prefilter_keeps_the_hull(self) -> None:
+        """RF-006-13: la envolvente convexa, con los puntos alineados del borde, es la misma
+        si antes se quitan los puntos que están (con signo seguro) dentro del cuadrilátero de
+        los extremos: nubes al azar, retículas (bordes con muchos puntos alineados y extremos
+        empatados), puntos en un círculo y extremos que coinciden; en una nube grande quedan
+        pocos candidatos."""
+        rng = np.random.default_rng(29)
+        clouds = []
+        for seed in range(12):
+            local = np.random.default_rng(seed)
+            offset = local.uniform(-8000.0, 8000.0, 2)
+            clouds.append(local.uniform(0.0, 10.0 ** local.uniform(0.0, 3.0),
+                                        (int(local.integers(64, 3000)), 2)) + offset)
+        gx, gy = np.meshgrid(np.arange(20.0), np.arange(15.0))
+        lattice = np.column_stack([gx.ravel(), gy.ravel()])
+        clouds += [lattice + [7000.0, -7000.0], lattice[::-1] * 0.5,
+                   lattice @ np.array([[1.0, 1.0], [-1.0, 1.0]])]  # rombo: extremos empatados
+        angles = np.linspace(0.0, 2.0 * np.pi, 97)[:-1]
+        clouds.append(np.vstack([np.column_stack([np.cos(angles), np.sin(angles)]) * 100.0,
+                                 rng.uniform(-50.0, 50.0, (100, 2))]))
+        clouds.append(np.vstack([[[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]],
+                                 rng.uniform(0.1, 4.9, (100, 2))]))  # extremos que coinciden
+        # P, casi en el lado A → B del polígono de extremos (A, el de menor X; B, el de menor
+        # x + y): en float queda a la izquierda (dentro) y en exacto, a la derecha (fuera), y
+        # es un vértice de la envolvente. Solo el margen de error del filtro lo conserva.
+        a, b = (-100.3, 0.7), (-70.9, -70.1)
+        t = 949 / 4001.0
+        p = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+        left = (a[0] - p[0]) * (b[1] - p[1])
+        right = (a[1] - p[1]) * (b[0] - p[0])
+        self.assertGreater(left - right, 0.0)
+        self.assertEqual(cdt.orient2d(*a, *b, *p), -1)
+        others = [(0.0, -100.0), (70.0, -70.0), (100.0, 0.0), (70.0, 70.0), (0.0, 100.0),
+                  (-70.0, 70.0)]
+        disk = rng.uniform(-35.0, 35.0, (100, 2))
+        clouds.append(np.vstack([[a, b, p], others, disk]))
+        for index, cloud in enumerate(clouds):
+            with self.subTest(nube=index):
+                xy = _xy(cloud)
+                order = cdt._check_points(xy)
+                full = cdt._convex_hull(xy[:, 0].tolist(), xy[:, 1].tolist(), order)
+                self.assertEqual(list(cdt.check_input(xy, NO_EDGES, name="x").hull), full)
+        self.assertIn(2, full)  # P, en la última nube
+        big = _xy(rng.uniform(-8000.0, 8000.0, (20_000, 2)))
+        candidates = cdt._hull_candidates(big, cdt._check_points(big))
+        self.assertLess(len(candidates), 0.05 * len(big))
+
+
 class ProgressTest(unittest.TestCase):
     """RF-006-28: avance y cancelación (para el trabajo ``gis_triangulate``)."""
 

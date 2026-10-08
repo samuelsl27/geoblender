@@ -5,7 +5,9 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
 - ``project_session``: el proyecto abierto en esta sesión, la marca de actividad de su
   cerrojo (temporizador persistente) y su cierre al desactivar o salir (spec 002);
 - ``georef``: la georreferencia del proyecto en las escenas y sus manejadores
-  (``load_post``, ``undo_post``, ``redo_post``, ``save_pre``, ``save_post``).
+  (``load_post``, ``undo_post``, ``redo_post``, ``save_pre``, ``save_post``);
+- ``triangulator``: la CDT de Blender como ``gis.ports.Triangulator`` y la elección entre
+  ella y el trabajo ``gis_triangulate`` (spec 006; no registra nada).
 """
 
 from __future__ import annotations

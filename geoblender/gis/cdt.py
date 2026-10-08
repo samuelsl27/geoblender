@@ -43,6 +43,8 @@ admite es un error del programa (``ValueError`` o ``TypeError``).
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Sequence
+from dataclasses import dataclass
 from fractions import Fraction
 
 import numpy as np
@@ -53,12 +55,16 @@ from .ports import Cancelled, Progress, TriangulationError
 
 __all__ = [
     "ALGORITHM_VERSION",
+    "HULL_FILTER_MIN",
     "NAME",
     "PROGRESS_STEP",
     "SUPER_SCALE",
+    "CheckedInput",
     "PureTriangulator",
     "TriangulatorError",
     "check_contract",
+    "check_input",
+    "check_output",
     "incircle",
     "orient2d",
 ]
@@ -78,6 +84,10 @@ PROGRESS_STEP = 4096
 SEED = 20061017
 """Semilla del orden BRIO: la misma entrada da siempre la misma salida."""
 
+HULL_FILTER_MIN = 64
+"""Desde cuántos puntos se quitan, antes de calcular la envolvente convexa, los que están
+claramente dentro (:func:`_hull_candidates`)."""
+
 _EPSILON = 2.0**-53
 _CCW_BOUND = (3.0 + 16.0 * _EPSILON) * _EPSILON
 _ICC_BOUND = (10.0 + 96.0 * _EPSILON) * _EPSILON
@@ -92,9 +102,10 @@ class TriangulatorError(TriangulationError, GisError):
     (salida que no cumple el contrato). Valores: ``name`` (el triangulador) y ``detail``."""
 
 
-def _input_error(detail: str, *, field: str, value: object) -> TriangulatorError:
+def _input_error(detail: str, *, field: str, value: object,
+                 name: str = NAME) -> TriangulatorError:
     return TriangulatorError("gis.triangulation_input", obj="Triangulación", field=field,
-                             value=value, name=NAME, detail=detail)
+                             value=value, name=name, detail=detail)
 
 
 def _contract_error(name: str, detail: str, *, field: str, value: object) -> TriangulatorError:
@@ -203,24 +214,26 @@ def _point_text(xy: np.ndarray, index: int) -> str:
     return f"({format_value(float(xy[index, 0]))}; {format_value(float(xy[index, 1]))})"
 
 
-def _check_points(xy: np.ndarray) -> np.ndarray:
+def _check_points(xy: np.ndarray, name: str = NAME) -> np.ndarray:
     """Comprueba que hay 3 puntos o más, finitos y distintos; devuelve el orden
-    lexicográfico (x, y)."""
+    lexicográfico (x, y). Los errores llevan el nombre del triangulador ``name``."""
     n = len(xy)
     if n < 3:
-        raise _input_error(f"hacen falta al menos 3 puntos y hay {n}", field="puntos", value=n)
+        raise _input_error(f"hacen falta al menos 3 puntos y hay {n}", field="puntos", value=n,
+                           name=name)
     bad = np.flatnonzero(~np.isfinite(xy).all(axis=1))
     if len(bad):
         index = int(bad[0])
         raise _input_error(f"el vértice {index} no tiene coordenadas finitas", field="vértice",
-                           value=index)
+                           value=index, name=name)
     order = np.lexsort((xy[:, 1], xy[:, 0]))
     ordered = xy[order]
     same = np.flatnonzero((ordered[1:] == ordered[:-1]).all(axis=1))
     if len(same):
         first, second = sorted((int(order[same[0]]), int(order[same[0] + 1])))
         raise _input_error(f"los vértices {first} y {second} coinciden en "
-                           f"{_point_text(xy, first)}", field="vértice", value=second)
+                           f"{_point_text(xy, first)}", field="vértice", value=second,
+                           name=name)
     return order
 
 
@@ -259,6 +272,44 @@ def _convex_hull(x: list[float], y: list[float], order: np.ndarray) -> list[int]
     lower = chain(ordered)
     upper = chain(ordered[::-1])
     return lower[:-1] + upper[:-1]
+
+
+def _hull_candidates(xy: np.ndarray, order: np.ndarray) -> np.ndarray:
+    """``order`` (el orden lexicográfico de ``xy``) sin los puntos que están, con signo
+    seguro, estrictamente a la izquierda de todos los lados del polígono de los extremos en
+    8 direcciones (X, Y y las dos diagonales, en sentido antihorario; Akl y Toussaint, 1978).
+    Un punto así está en el interior de la envolvente convexa de los vértices del polígono
+    (si estuviera fuera o en su borde, los vectores del punto a los vértices cabrían en un
+    semiplano y no podrían girar siempre a la izquierda y volver), y por tanto en el de la
+    envolvente de todos: ni es vértice ni está alineado en un lado. Vale con cualquier punto
+    de la entrada como extremo (aunque el redondeo de x ± y elija uno que no lo es) y con
+    extremos repetidos; un punto dudoso se queda. Con todos los puntos, la cadena monótona
+    recorre en Python cada uno (unos 1,2 µs por punto); aquí quedan los que rozan el borde."""
+    if len(order) < HULL_FILTER_MIN:
+        return order
+    x, y = xy[:, 0], xy[:, 1]
+    corners = [int(np.argmin(x)), int(np.argmin(x + y)), int(np.argmin(y)),
+               int(np.argmax(x - y)), int(np.argmax(x)), int(np.argmax(x + y)),
+               int(np.argmax(y)), int(np.argmin(x - y))]
+    inside = np.ones(len(xy), dtype=bool)
+    for a, b in zip(corners, corners[1:] + corners[:1], strict=True):
+        if a == b:  # dos extremos en el mismo punto: ese lado no existe
+            continue
+        ax, ay = xy[a]
+        bx, by = xy[b]
+        left = (ax - x) * (by - y)
+        right = (ay - y) * (bx - x)
+        inside &= left - right > _CCW_BOUND * (np.abs(left) + np.abs(right))
+    return order[~inside[order]]
+
+
+def _hull(xy: np.ndarray, order: np.ndarray) -> list[int]:
+    """La envolvente convexa de ``xy`` (como :func:`_convex_hull`, con los puntos alineados
+    del borde) calculada solo con los candidatos de :func:`_hull_candidates`."""
+    candidates = _hull_candidates(xy, order)
+    local = _convex_hull(xy[candidates, 0].tolist(), xy[candidates, 1].tolist(),
+                         np.arange(len(candidates)))
+    return candidates[local].tolist()
 
 
 def _hilbert_keys(xy: np.ndarray, bits: int = 16) -> np.ndarray:
@@ -604,9 +655,24 @@ class _Mesh:
 # Contrato --------------------------------------------------------------------------------
 
 
-def _check(xy: np.ndarray, constraints: list[tuple[int, int]], triangles: object,
-           hull: list[int], name: str) -> None:
+@dataclass(frozen=True, slots=True)
+class CheckedInput:
+    """La entrada comprobada de una triangulación (:func:`check_input`): ``xy`` float64
+    (n, 2) contiguo (el mismo array si ya lo era: no se modifica), ``constraints`` (las
+    aristas obligatorias como parejas, en su orden de entrada), ``hull`` (la envolvente
+    convexa: índices antihorarios desde el menor (x, y), con los puntos alineados del borde)
+    y ``name`` (el triangulador, para los mensajes)."""
+
+    xy: np.ndarray
+    constraints: tuple[tuple[int, int], ...]
+    hull: tuple[int, ...]
+    name: str
+
+
+def _check(xy: np.ndarray, constraints: Sequence[tuple[int, int]], triangles: object,
+           hull: Sequence[int], name: str) -> None:
     n = len(xy)
+    hull = list(hull)
     tri = np.asarray(triangles)
     if tri.dtype != np.int32 or tri.ndim != 2 or (tri.size and tri.shape[1] != 3):
         raise _contract_error(name, f"los triángulos son {tri.dtype} {tri.shape}, no int32 "
@@ -632,14 +698,30 @@ def _check(xy: np.ndarray, constraints: list[tuple[int, int]], triangles: object
         if orient2d(xy[a, 0], xy[a, 1], xy[b, 0], xy[b, 1], xy[c, 0], xy[c, 1]) <= 0:
             raise _contract_error(name, f"el triángulo {row} ({a}, {b}, {c}) no es "
                                   "antihorario", field="triángulo", value=row)
+    # Cada arista dirigida, como el doble de la clave de su arista sin sentido más su sentido
+    # (1 si va del índice mayor al menor): al ordenar, las dos mitades de una arista interior
+    # quedan juntas. Una sola ordenación en lugar de np.unique y np.isin (unas 3 veces menos
+    # con 600.000 triángulos: el contrato se comprueba tras la CDT de Blender, en el hilo
+    # principal).
     directed = np.concatenate([tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]])
-    keys = directed[:, 0] * n + directed[:, 1]
-    unique, counts = np.unique(keys, return_counts=True)
-    if len(unique) != len(keys):
-        u, v = divmod(int(unique[np.argmax(counts > 1)]), n)
+    low = np.minimum(directed[:, 0], directed[:, 1])
+    high = np.maximum(directed[:, 0], directed[:, 1])
+    ordered = np.sort((low * n + high) * 2 + (directed[:, 0] > directed[:, 1]))
+    repeated = np.flatnonzero(ordered[1:] == ordered[:-1])
+    if len(repeated):
+        key, backwards = divmod(int(ordered[repeated[0]]), 2)
+        u, v = divmod(key, n)
+        u, v = (v, u) if backwards else (u, v)
         raise _contract_error(name, f"la arista {u}–{v} está repetida: hay triángulos "
                               "solapados", field="arista", value=f"{u}–{v}")
-    border = keys[~np.isin(directed[:, 1] * n + directed[:, 0], keys)]
+    undirected = ordered >> 1
+    paired = undirected[1:] == undirected[:-1]
+    alone = np.ones(len(ordered), dtype=bool)
+    alone[1:] &= ~paired
+    alone[:-1] &= ~paired
+    lone = ordered[alone]
+    lone_low, lone_high = np.divmod(lone >> 1, n)
+    border = np.where(lone & 1, lone_high * n + lone_low, lone_low * n + lone_high)
     expected = np.array([a * n + b for a, b in zip(hull, hull[1:] + hull[:1], strict=True)],
                         dtype=np.int64)
     area = float(np.sum(left - right)) / 2.0
@@ -650,29 +732,49 @@ def _check(xy: np.ndarray, constraints: list[tuple[int, int]], triangles: object
             or len(tri) != 2 * n - len(hull) - 2 or abs(area - hull_area) > 1e-9 * hull_area):
         raise _contract_error(name, f"los {len(tri)} triángulos no cubren la envolvente "
                               f"convexa de los {n} puntos", field="triángulos", value=len(tri))
-    present = set(unique.tolist())
-    for a, b in constraints:
-        if a * n + b not in present and b * n + a not in present:
+    if constraints:
+        pairs = np.array(constraints, dtype=np.int64)
+        wanted = pairs.min(axis=1) * n + pairs.max(axis=1)
+        at = np.minimum(np.searchsorted(undirected, wanted), len(undirected) - 1)
+        missing = np.flatnonzero(undirected[at] != wanted)
+        if len(missing):
+            a, b = constraints[int(missing[0])]
             raise _contract_error(name, f"falta la arista obligatoria {a}–{b}",
                                   field="arista", value=f"{a}–{b}")
 
 
-def check_contract(xy_local: np.ndarray, edges: np.ndarray, triangles: np.ndarray, *,
-                   name: str) -> None:
-    """Comprueba que ``triangles`` cumple el contrato de ``ports.Triangulator`` para
-    ``xy_local`` y ``edges``: int32 (m, 3), solo vértices de la entrada y todos usados,
-    antihorarios (signo exacto), sin aristas repetidas, borde = envolvente convexa (con sus
-    puntos alineados), área de la envolvente, m = 2n − h − 2 y cada arista obligatoria
-    presente. Si no, ``TriangulatorError`` ``gis.triangulation_contract`` con ``name``.
-    No comprueba la propiedad de Delaunay."""
+def check_input(xy_local: np.ndarray, edges: np.ndarray, *, name: str) -> CheckedInput:
+    """La primera mitad del contrato de ``ports.Triangulator``: comprueba la entrada antes
+    de triangular. ``xy_local`` float (n, 2) y ``edges`` enteros (k, 2) con índices válidos
+    (si no, ``ValueError`` o ``TypeError``); al menos 3 puntos, finitos, distintos y no todos
+    alineados (si no, ``TriangulatorError`` ``gis.triangulation_input`` con ``name``).
+    Devuelve los puntos en float64, las aristas obligatorias y la envolvente convexa, para
+    :func:`check_output`. Un triangulador que no puede recibir datos sin triangulación (la
+    CDT de Blender) la llama antes."""
     xy = _points(xy_local)
-    constraints = _constraints(edges, len(xy))
-    order = _check_points(xy)
+    constraints = tuple(_constraints(edges, len(xy)))
+    order = _check_points(xy, name)
     if _all_collinear(xy, int(order[0]), int(order[-1])):
         raise _input_error(f"los {len(xy)} puntos están alineados", field="puntos",
-                           value=len(xy))
-    hull = _convex_hull(xy[:, 0].tolist(), xy[:, 1].tolist(), order)
-    _check(xy, constraints, triangles, hull, name)
+                           value=len(xy), name=name)
+    return CheckedInput(xy, constraints, tuple(_hull(xy, order)), name)
+
+
+def check_output(checked: CheckedInput, triangles: np.ndarray) -> None:
+    """La segunda mitad del contrato: ``triangles`` es int32 (m, 3), solo con vértices de
+    la entrada y todos usados, antihorarios (signo exacto), sin aristas repetidas, con el
+    borde igual a la envolvente convexa (con sus puntos alineados), su área, m = 2n − h − 2
+    y cada arista obligatoria presente. Si no, ``TriangulatorError``
+    ``gis.triangulation_contract`` con el nombre de ``checked``. No comprueba la propiedad
+    de Delaunay."""
+    _check(checked.xy, checked.constraints, triangles, checked.hull, checked.name)
+
+
+def check_contract(xy_local: np.ndarray, edges: np.ndarray, triangles: np.ndarray, *,
+                   name: str) -> None:
+    """El contrato de ``ports.Triangulator`` entero (:func:`check_input` y
+    :func:`check_output`) para ``triangles``, con ``name`` en los mensajes."""
+    check_output(check_input(xy_local, edges, name=name), triangles)
 
 
 # Puerto ----------------------------------------------------------------------------------
@@ -701,14 +803,10 @@ class PureTriangulator:
         """Triángulos (int32 (m, 3), antihorarios, índices de ``xy_local``) de la
         triangulación de Delaunay restringida de ``xy_local`` (float64 (n, 2), relativas al
         GeoOrigin) con las aristas obligatorias ``edges`` (int (k, 2)). Ver el módulo."""
-        xy = _points(xy_local)
+        checked = check_input(xy_local, edges, name=self.name)
+        xy, constraints, hull = checked.xy, checked.constraints, list(checked.hull)
         n = len(xy)
-        constraints = _constraints(edges, n)
-        order = _check_points(xy)
-        if _all_collinear(xy, int(order[0]), int(order[-1])):
-            raise _input_error(f"los {n} puntos están alineados", field="puntos", value=n)
         x, y = xy[:, 0].tolist(), xy[:, 1].tolist()
-        hull = _convex_hull(x, y, order)
         low, high = xy.min(axis=0), xy.max(axis=0)
         cx, cy = (low + high) / 2.0
         reach = SUPER_SCALE * float((high - low).max())
@@ -734,7 +832,7 @@ class PureTriangulator:
             if mesh.find_edge(a, b) is None:
                 self._insert(mesh, a, b)
         triangles = mesh.triangles(n)
-        _check(xy, constraints, triangles, hull, self.name)
+        check_output(checked, triangles)
         self._tick(total, total, "terminado")
         return triangles
 
