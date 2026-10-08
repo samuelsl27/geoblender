@@ -9,8 +9,9 @@ Reexporta la API pública (plan 006 §5.1): los puertos (``gis.ports``), los par
 (``gis.params``), el error y los mensajes (``gis.messages``), los informes
 (``gis.reports``), la rejilla de paso exacto y el volumen entre superficies (``gis.grid``),
 las superficies en rejilla y los MDT leídos de un fichero (``gis.raster``), el remuestreo y
-la reproyección a la rejilla del proyecto (``gis.resample``) y la declaración de CRS y
-datum con sus transformaciones (``gis.crs``). Cada tarea de la 006 añade aquí lo suyo.
+la reproyección a la rejilla del proyecto (``gis.resample``), la declaración de CRS y
+datum con sus transformaciones (``gis.crs``) y el aviso de alturas elipsoidales
+(``gis.vertical``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
 from .crs import (
@@ -65,6 +66,7 @@ from .reports import (
     TinReport,
     TopoReport,
 )
+from .vertical import VerticalCheck, check_vertical_offset, ellipsoidal_band
 
 __all__ = [
     "ELLIPSOIDAL_ETRS89",
@@ -94,11 +96,14 @@ __all__ = [
     "TransformInfo",
     "TriangulationError",
     "Triangulator",
+    "VerticalCheck",
     "VolumeResult",
     "WriteProfile",
     "aligned_grid",
+    "check_vertical_offset",
     "choose_method",
     "crs_service_status",
+    "ellipsoidal_band",
     "needs_transform",
     "param",
     "project_grid",
