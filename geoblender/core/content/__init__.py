@@ -10,7 +10,9 @@ o en float64, renumerar las entidades de una capa o escribir su WKB en otro orde
 los cambia; una cota, un vértice, un píxel, un atributo, una fila, el sin dato, el tipo de
 celda o el CRS declarado, sí, sin tolerancia (D-8). Detalle en :mod:`.encoder` y, la
 geometría, en :mod:`.wkb`. Cada formato lo lee un lector registrado (:mod:`.readers`:
-``ContentReader``, su registro y dónde se hashea, ADR-0024 §5). Python puro y numpy (ADR-0004).
+``ContentReader``, su registro y dónde se hashea, ADR-0024 §5). Los de ``core`` (capas y
+tablas de GeoPackage, documentos y mallas ``npz``) están en :mod:`.builtin`, que no se importa
+aquí: lo importa quien los registra. Python puro y numpy (ADR-0004).
 """
 
 from .encoder import (

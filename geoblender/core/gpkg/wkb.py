@@ -20,6 +20,8 @@ Cabecera que se escribe: versión 0, *little endian*, no extendida y no vacía; 
 XY (código 1) o XYZ (código 2) salvo en los puntos, que no la llevan. Al leer se admiten
 también las cabeceras y el WKB *big endian* y las envolventes con M (que se ignoran).
 Las geometrías vacías no se escriben ni se leen: Geoblender no las usa.
+:func:`geometry_wkb` solo quita la cabecera (también de una vacía) para el hash de contenido
+de la spec 008, que normaliza el WKB de una capa cualquiera.
 """
 
 from __future__ import annotations
@@ -303,3 +305,32 @@ def decode_geometry(blob: bytes) -> Geometry:
         reason = "sobran bytes después de la geometría"
         raise _error("trailing", reason, "bytes de más", len(data) - reader.offset)
     return Geometry(name, srs_id, has_z, coords, _envelope(code, values))
+
+
+def geometry_wkb(blob: bytes | bytearray | memoryview) -> memoryview:
+    """El WKB de un blob GeoPackage sin su cabecera ni su envolvente, tal como está: de
+    cualquier orden de bytes, de cualquier tipo y también el de una geometría vacía
+    (bandera E), para quien lo normaliza (el hash de contenido de la spec 008,
+    ``core.content.wkb``), que lo comprueba entero. :class:`GeometryError` si no empieza
+    por la cabecera ``GP`` de la versión 0, es extendida (bandera X) o su envolvente no es
+    válida o no cabe; ``TypeError`` si no son bytes."""
+    if not isinstance(blob, bytes | bytearray | memoryview):
+        raise TypeError(f"un blob GeoPackage son bytes, no {type(blob).__name__}")
+    data = memoryview(blob).cast("B")
+    if len(data) < 8 or data[:2] != MAGIC:
+        reason = "no empieza por la cabecera «GP» de GeoPackage"
+        raise _error("not_gpkg", reason, "cabecera", bytes(data[:2]).hex())
+    version, flags = data[2], data[3]
+    if version != VERSION:
+        raise _error("version", "versión de cabecera no admitida", "versión", version)
+    if flags & _FLAG_EXTENDED:
+        reason = "geometría GeoPackage extendida no admitida"
+        raise _error("extended", reason, "cabecera", flags)
+    code = (flags >> 1) & 0b111
+    if code not in _ENVELOPE_DOUBLES:
+        raise _error("envelope", "código de envolvente no válido", "envolvente", code)
+    start = 8 + 8 * _ENVELOPE_DOUBLES[code]
+    if len(data) < start:
+        reason = f"la envolvente no cabe: el blob tiene {len(data)} bytes y necesita {start}"
+        raise _error("envelope", reason, "envolvente", code)
+    return data[start:]
