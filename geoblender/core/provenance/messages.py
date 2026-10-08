@@ -488,6 +488,27 @@ _CATALOG: tuple[Message, ...] = (
         "No se tiene en cuenta la carpeta de solo lectura «{folder}»: no es una ruta completa, "
         "con su unidad o de red.",
     ),
+    # Obsolescencia deducida (T26; RF-008-24, RF-008-25): «Obsoleto: …» y una causa por
+    # clase de ``gb_stale.cause_kind`` (``core.cause_<clase>``).
+    Message("core.stale", "Stale: {causes}", "Obsoleto: {causes}"),
+    Message("core.cause_dataset_changed", "«{name}» changed", "cambió «{name}»"),
+    Message("core.cause_parameter_changed", "{name} changed", "cambió {name}"),
+    Message("core.cause_input_updated", "input «{name}» was updated",
+            "se actualizó la entrada «{name}»"),
+    Message("core.cause_input_discarded", "input «{name}» was discarded",
+            "se descartó la entrada «{name}»"),
+    Message("core.cause_dataset_missing", "«{name}» is missing", "falta «{name}»"),
+    Message("core.cause_dataset_blocked", "«{name}» is blocked by an external edit",
+            "«{name}» está bloqueado por una edición externa"),
+    Message("core.cause_dataset_damaged", "«{name}» is damaged: it can only be reimported",
+            "«{name}» está dañado: solo se puede reimportar"),
+    Message(
+        "core.cause_algorithm",
+        "Geoblender changes the algorithm of {op_type} ({registered} → {installed})",
+        "Geoblender cambia el algoritmo de {op_type} ({registered} → {installed})",
+    ),
+    Message("core.cause_group", "it is coupled in group «{group}»",
+            "está acoplada en el grupo «{group}»"),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})

@@ -16,13 +16,17 @@
 - :mod:`.figures`: las cifras con tipo y procedencia (:class:`FigureSpec`,
   :func:`record_figure`, :class:`FigureRecord`) y el aviso de una cifra que calcula un
   parámetro con otro valor (:class:`Divergence`, :func:`divergence` y :func:`divergences`).
+- :mod:`.graph`: el grafo por versiones (:func:`load_graph`, :class:`ProvenanceGraph`) y la
+  obsolescencia deducida con sus causas (:func:`deduce`, :func:`stale_state`,
+  :class:`Staleness`, :class:`Cause`).
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
 ``core.project.schema`` importa ``core.provenance.schema``, que pasa por este fichero.
 
-Por lo mismo, lo de :mod:`.operations` y :mod:`.figures` (que traen ``core.datasets``,
-``core.content`` y ``core.params``) se reexporta **al usarlo** (``__getattr__``, PEP 562), no
+Por lo mismo, lo de :mod:`.operations`, :mod:`.figures` y :mod:`.graph` (que traen
+``core.datasets``, ``core.content`` y ``core.params``) se reexporta **al usarlo**
+(``__getattr__``, PEP 562), no
 al importar el paquete: así abrir un proyecto no carga ni compila esos módulos (las pruebas
 de Blender rehabilitan la extensión muchas veces desde cero, con ``-B``).
 """
@@ -86,12 +90,26 @@ FIGURES_API: tuple[str, ...] = (
 )
 """Lo de :mod:`.figures` que se reexporta al usarlo."""
 
+GRAPH_API: tuple[str, ...] = (
+    "Cause",
+    "CauseKind",
+    "ProvenanceGraph",
+    "Staleness",
+    "Version",
+    "deduce",
+    "load_graph",
+    "stale_state",
+)
+"""Lo de :mod:`.graph` que se reexporta al usarlo."""
+
 
 def __getattr__(name: str) -> Any:
     if name in OPERATIONS_API:
         from . import operations as source
     elif name in FIGURES_API:
         from . import figures as source
+    elif name in GRAPH_API:
+        from . import graph as source
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(source, name)
@@ -100,7 +118,7 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted({*globals(), *OPERATIONS_API, *FIGURES_API})
+    return sorted({*globals(), *OPERATIONS_API, *FIGURES_API, *GRAPH_API})
 
 
 __all__ = [
@@ -117,6 +135,8 @@ __all__ = [
     "MESSAGES",
     "OPERATIONS",
     "SCOPES",
+    "Cause",
+    "CauseKind",
     "Consumed",
     "CoupledGroupDef",
     "Divergence",
@@ -131,15 +151,20 @@ __all__ = [
     "OperationHandle",
     "OperationStatus",
     "ProvenanceError",
+    "ProvenanceGraph",
+    "Staleness",
     "Use",
+    "Version",
     "begin_operation",
     "claimed_paths",
+    "deduce",
     "divergence",
     "divergences",
     "figure_def",
     "group_def",
     "importer_def",
     "interrupt_orphaned",
+    "load_graph",
     "mark_not_ingested",
     "operation",
     "operation_def",
@@ -151,6 +176,7 @@ __all__ = [
     "register_operation",
     "render",
     "scope_key",
+    "stale_state",
     "unregister_figure",
     "unregister_group",
     "unregister_importer",
