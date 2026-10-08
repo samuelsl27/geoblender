@@ -14,8 +14,8 @@ datum con sus transformaciones (``gis.crs``), el aviso de alturas elipsoidales
 (``gis.vertical``), la validación de una superficie (``gis.validate``), los puntos, las
 líneas de rotura y sus duplicados (``gis.points``), las capas de un GeoPackage leídas sobre
 una copia (``gis.vector``), la preparación de las restricciones de un TIN
-(``gis.breaklines``) y el triangulador propio (``gis.cdt``). Cada tarea de la 006 añade aquí
-lo suyo.
+(``gis.breaklines``), el triangulador propio (``gis.cdt``) y el TIN con su fichero
+(``gis.tin``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
 from .breaklines import PreparedInput, prepare_constraints
@@ -86,6 +86,7 @@ from .reports import (
     TinReport,
     TopoReport,
 )
+from .tin import Tin, build_tin, load_tin, save_tin
 from .validate import validate_raster
 from .vector import FeatureSet, LayerInfo, copy_source, import_dir, list_layers, read_layer
 from .vertical import VerticalCheck, check_vertical_offset, ellipsoidal_band
@@ -123,6 +124,7 @@ __all__ = [
     "ResampleMethod",
     "ResampleReport",
     "SurfaceReport",
+    "Tin",
     "TinReport",
     "TopoReport",
     "Transform",
@@ -134,6 +136,7 @@ __all__ = [
     "WriteProfile",
     "aligned_grid",
     "breaklines_from_features",
+    "build_tin",
     "check_vertical_offset",
     "choose_method",
     "copy_source",
@@ -142,6 +145,7 @@ __all__ = [
     "find_duplicates",
     "import_dir",
     "list_layers",
+    "load_tin",
     "needs_transform",
     "param",
     "points_from_features",
@@ -155,6 +159,7 @@ __all__ = [
     "resample_classes_to_grid",
     "resample_to_grid",
     "resolve_duplicates",
+    "save_tin",
     "transform_coordinates",
     "transform_summary",
     "transformation_for",

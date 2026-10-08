@@ -491,6 +491,27 @@ CATALOG: tuple[Message, ...] = (
         "Triangulator {name} cannot triangulate this data: {detail}.",
         "El triangulador {name} no puede triangular estos datos: {detail}.",
     ),
+    # TIN: filtros y fichero (RF-006-13, RF-006-15) ---------------------------------------
+    Message(
+        "gis.tin_max_edge_invalid",
+        "TIN «{tin}»: maximum side length {value} m is not valid: it must be a number of "
+        "metres greater than 0.",
+        "TIN «{tin}»: el lado máximo {value} m no es válido: debe ser un número de metros "
+        "mayor que 0.",
+    ),
+    Message(
+        "gis.tin_empty",
+        "TIN «{tin}»: the boundary, the holes and the maximum side length exclude all its "
+        "{value} triangles. Check them and create it again.",
+        "TIN «{tin}»: el contorno, los huecos y el lado máximo excluyen sus {value} "
+        "triángulos. Revíselos y vuelva a crearlo.",
+    ),
+    Message(
+        "gis.tin_file_invalid",
+        "TIN file «{file}» cannot be read: {detail}. Create the TIN again from its data.",
+        "El fichero de TIN «{file}» no se puede leer: {detail}. Vuelva a crear el TIN desde "
+        "sus datos.",
+    ),
     # Exportar (RF-006-10) ---------------------------------------------------------------
     Message(
         "gis.export_over_input",
