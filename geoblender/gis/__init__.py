@@ -10,8 +10,9 @@ Reexporta la API pública (plan 006 §5.1): los puertos (``gis.ports``), los par
 (``gis.reports``), la rejilla de paso exacto y el volumen entre superficies (``gis.grid``),
 las superficies en rejilla y los MDT leídos de un fichero (``gis.raster``), el remuestreo y
 la reproyección a la rejilla del proyecto (``gis.resample``), la declaración de CRS y
-datum con sus transformaciones (``gis.crs``) y el aviso de alturas elipsoidales
-(``gis.vertical``). Cada tarea de la 006 añade aquí lo suyo.
+datum con sus transformaciones (``gis.crs``), el aviso de alturas elipsoidales
+(``gis.vertical``) y la validación de una superficie (``gis.validate``). Cada tarea de la 006
+añade aquí lo suyo.
 """
 
 from .crs import (
@@ -66,6 +67,7 @@ from .reports import (
     TinReport,
     TopoReport,
 )
+from .validate import validate_raster
 from .vertical import VerticalCheck, check_vertical_offset, ellipsoidal_band
 
 __all__ = [
@@ -115,6 +117,7 @@ __all__ = [
     "transform_coordinates",
     "transform_summary",
     "transformation_for",
+    "validate_raster",
     "validate_step",
     "volume_between",
 ]
