@@ -17,11 +17,18 @@ tampoco.
 Cada prueba usa el proyecto sintético de ``test_operations`` (esquema 2, reloj simulado) con los
 tipos de operación, los parámetros y la cifra de prueba de este módulo; las operaciones escriben
 tablas reales de ``project.gpkg`` y sus hashes son los del lector ``core.gpkg_layer@1``.
+
+La caché ``gb_stale`` (``core.provenance.stale``, T27) se escribe por diferencias, por región
+(solo lo alcanzable desde lo que cambió), en la transacción de cada camino que escribe; cada
+cálculo completo de estas pruebas comprueba además que la caché es, fila a fila, lo deducido.
+La propiedad «región = completo» se prueba en grafos aleatorios sobre una base en memoria con
+las tablas de la procedencia.
 """
 
 from __future__ import annotations
 
 import ast
+import random
 import re
 import sqlite3
 import unittest
@@ -37,10 +44,18 @@ from tests.unit.core.provenance.test_operations import (
     OperationsCase,
     _insert,
 )
-from tests.unit.core.provenance.test_schema import input_row
+from tests.unit.core.provenance.test_schema import (
+    dataset_row,
+    input_row,
+    io_row,
+    op_param_row,
+    operation_row,
+    parameter_row,
+)
 
 provenance = import_geoblender("core.provenance")
 graph_mod = import_geoblender("core.provenance.graph")
+stale_mod = import_geoblender("core.provenance.stale")
 contract = import_geoblender("core.provenance.contract")
 operations = import_geoblender("core.provenance.operations")
 figures = import_geoblender("core.provenance.figures")
@@ -55,6 +70,7 @@ encoder = import_geoblender("core.content.encoder")
 base = import_geoblender("core.gpkg.base")
 hashing = import_geoblender("core.hashing")
 i18n = import_geoblender("core.i18n")
+timeutil = import_geoblender("core.timeutil")
 
 Cause = graph_mod.Cause
 CauseKind = graph_mod.CauseKind
@@ -205,11 +221,40 @@ class GraphCase(OperationsCase):
         uid = self.dataset(name)
         self.write(lambda conn: dataset_registry.set_status(conn, self.project, uid, status))
 
+    def chain(self) -> tuple[Any, Any, Any, Any]:
+        """A → B → C, que leen en cadena, y D, independiente."""
+        a = self.run_op("res.step_a", {"res_a": [1.0, 2.0]}, params=["res.production"])
+        b = self.run_op("res.step_b", {"res_b": [3.0]}, reads=["res_a"])
+        c = self.run_op("res.step_c", {"res_c": [4.0]}, reads=["res_b"])
+        d = self.run_op("res.step_d", {"res_d": [5.0]}, params=["res.density"])
+        return a, b, c, d
+
+    def mark_changed(self, input_uid: str) -> None:
+        """La comprobación de las fuentes encuentra cambiada la entrada (como
+        ``check_steps``: estado y contenido visto)."""
+        seen = hashing.sha256_bytes(b"contenido visto de la fuente")
+        self.write(lambda conn: conn.execute(
+            "UPDATE gb_input SET status = 'changed', seen_sha256 = ?, modified_at = ? "
+            "WHERE uid = ?", (seen, "2026-10-08T10:00:00.000Z", input_uid),
+        ))
+
     # --- Lecturas -----------------------------------------------------------------------------
 
-    def stale(self, **kw: Any) -> Any:
+    def stale(self, *, cache: bool = True, **kw: Any) -> Any:
+        """La obsolescencia completa del proyecto; con las versiones instaladas (sin
+        ``versions``) y ``cache``, comprueba además que la caché es, fila a fila, lo deducido
+        (la mantienen los caminos que escriben)."""
         with self.project.read() as conn:
-            return graph_mod.deduce(graph_mod.load_graph(conn), **kw)
+            state = graph_mod.deduce(graph_mod.load_graph(conn), **kw)
+            if cache and "versions" not in kw:
+                self.assertEqual(stale_mod.cached_rows(conn), stale_mod.expected_rows(state))
+        return state
+
+    def cached(self) -> dict[tuple[str, str, str, str], str]:
+        """Las filas de la caché ``gb_stale`` con su ``since``."""
+        rows = self.query("SELECT item_kind, item_uid, cause_kind, subject_uid, since "
+                          "FROM gb_stale")
+        return {tuple(row[:4]): row[4] for row in rows}
 
     def dataset(self, name: str) -> str:
         """El uid del último dato registrado con ``name``."""
@@ -319,14 +364,6 @@ class GraphLoadTest(GraphCase):
 
 
 class StaleTest(GraphCase):
-    def chain(self) -> tuple[Any, Any, Any, Any]:
-        """A → B → C, que leen en cadena, y D, independiente."""
-        a = self.run_op("res.step_a", {"res_a": [1.0, 2.0]}, params=["res.production"])
-        b = self.run_op("res.step_b", {"res_b": [3.0]}, reads=["res_a"])
-        c = self.run_op("res.step_c", {"res_c": [4.0]}, reads=["res_b"])
-        d = self.run_op("res.step_d", {"res_d": [5.0]}, params=["res.density"])
-        return a, b, c, d
-
     def test_parameter_change_cascades_to_what_depends_on_it(self) -> None:
         """RF-008-24: en A → B → C y D independiente, cambiar un parámetro de A deja
         obsoletos A, B y C y sus datos, no D, con la causa «cambió <parámetro>»."""
@@ -444,7 +481,9 @@ class StaleTest(GraphCase):
         contract.unregister_operation("res.step_a")
         contract.register_operation(_op("res.step_a", "2.0"))
         self.run_op("res.step_a", {"res_z": [9.0]})  # ya con el algoritmo 2.0
-        state = self.stale()
+        # Cambiar lo instalado no es un camino que escriba: la caché la rehace la comprobación
+        # de apertura (obsolescencia completa).
+        state = self.stale(cache=False)
         self.assertEqual(set(state.operations), {a.uid, b.uid, c.uid})
         self.assertEqual(state.text(a.uid, language="en"),
                          "Stale: Geoblender changes the algorithm of res.step_a (1.9 → 2.0)")
@@ -583,6 +622,504 @@ class StaleTest(GraphCase):
         ((key, figure_uid),) = state.current_figures.items()
         (row,) = self.query("SELECT operation_uid FROM gb_figure WHERE uid = ?", (figure_uid,))
         self.assertEqual((key[0], row[0]), ("res.marks", fresh.uid))
+
+
+# --- Caché por región (T27) -------------------------------------------------------------------
+
+PERSON = {"source": "Acta de la propiedad", "source_kind": "document",
+          "decided_by": "la propiedad", "reason": "Cambio de prueba"}
+
+
+class CacheTest(GraphCase):
+    def now(self) -> str:
+        return timeutil.format_utc(self.clock.now())
+
+    def test_every_write_path_keeps_the_cache(self) -> None:
+        """RF-008-24, RF-008-28 (plan §5.4.3): tras cada camino que escribe —cambiar el
+        valor, solo el tipo o confirmar un parámetro; completar una operación, también un
+        recálculo con el mismo contenido y una edición externa; un dato bloqueado, dañado, que
+        falta o vuelto a vigente; mantener la copia, descartar y sustituir una entrada— la caché
+        ``gb_stale`` es, fila a fila, la obsolescencia deducida (la historia incluida), y lo
+        que no deja nada obsoleto no la toca."""
+        (external,) = (definition for definition in contract.CORE_OPERATIONS
+                       if definition.op_type == contract.EXTERNAL_EDIT)
+        self.enterContext(registered(external))
+        a, b, c, d = self.chain()
+        self.import_input(INPUT_1, "Entrada_1", "res_im1")
+        second = self.import_input(INPUT_2, "Entrada_2", "res_im2")
+        k1 = self.run_op("res.step_b", {"res_k1": [1.0]}, reads=["res_im1"])
+        k2 = self.run_op("res.step_c", {"res_k2": [2.0]},
+                         reads=[Use(INPUT_2, "source", kind="input")])
+        k3 = self.run_op("res.step_c", {"res_k3": [3.0]},
+                         reads=[Use(INPUT_1, "source", kind="input")])
+        self.assertNothingStale(self.stale())
+        self.assertEqual(self.cached(), {})
+
+        # Parámetros: el valor deja obsoleto lo que lo leyó; solo el tipo o confirmar, nada.
+        self.change("res.production", 120000.0)
+        production = self.changed("res.production")
+        self.assertStale(self.stale(), {a: {production}, b: {production}, c: {production}},
+                         {"res_a": {production}, "res_b": {production},
+                          "res_c": {production}})
+        rows = self.cached()
+        self.assertEqual(len(rows), 6)
+        self.change("res.production", kind="ADOPTADO")
+        self.write(lambda conn: self.store.confirm(conn, "res.density"))
+        self.assertEqual(self.cached(), rows)
+        self.stale()
+
+        # Completar: lo que lee algo obsoleto nace obsoleto; un recálculo con el mismo
+        # contenido deja al día lo de aguas abajo, y la sustituida queda en la caché como
+        # historia, con su causa.
+        e = self.run_op("res.step_d", {"res_e": [6.0]}, reads=["res_c"])
+        self.assertEqual(self.stale().of(e.uid), {production})
+        self.run_op("res.step_a", {"res_a": [2.0, 1.0]}, params=["res.production"],
+                    supersedes=a.uid)
+        state = self.stale()
+        self.assertNothingStale(state)
+        self.assertEqual(state.causes[a.uid], {production})
+        self.assertEqual(set(self.cached()),
+                         {("operation", a.uid, "parameter_changed", production.subject)})
+
+        # Una edición externa (``core.external_edit``, como la registrará T32): lo que leía
+        # el contenido anterior queda obsoleto; bloqueado, también «bloqueado».
+        edit = self.begin("core.external_edit", inputs=_uses(["res_b"]), executor="external")
+
+        def edited(conn: sqlite3.Connection) -> None:
+            _replace_table(conn, "res_b", [3.0, 30.0])
+            edit.complete(conn, outputs=[_spec("res_b")])
+
+        self.write(edited)
+        changed_b = Cause(CauseKind.DATASET_CHANGED, self.dataset("res_b"))
+        self.assertStale(self.stale(), {c: {changed_b}, e: {changed_b}},
+                         {"res_c": {changed_b}, "res_e": {changed_b}})
+        self.set_status("res_b", "blocked")
+        blocked = Cause(CauseKind.DATASET_BLOCKED, self.dataset("res_b"))
+        self.assertEqual(self.stale().of(c.uid), {changed_b, blocked})
+        self.set_status("res_b", "current")
+        self.assertEqual(self.stale().of(c.uid), {changed_b})
+
+        # Lo importado dañado o que falta, y vuelto a vigente.
+        imported = self.dataset("res_im1")
+        self.set_status("res_im1", "damaged")
+        self.assertEqual(self.stale().of(k1.uid), {Cause(CauseKind.DATASET_DAMAGED, imported)})
+        self.set_status("res_im1", "missing")
+        self.assertEqual(self.stale().of(k1.uid), {Cause(CauseKind.DATASET_MISSING, imported)})
+        self.set_status("res_im1", "current")
+        self.assertEqual(self.stale().of(k1.uid), frozenset())
+
+        # Entradas: mantener la copia no deja nada; descartar y sustituir, sí.
+        self.mark_changed(INPUT_1)
+        rows = self.cached()
+        self.write(lambda conn: inputs.keep_copy(conn, self.project, INPUT_1,
+                                                 reason="se queda la copia"))
+        self.assertEqual(self.cached(), rows)
+        self.stale()
+        self.write(lambda conn: inputs.discard(conn, self.project, INPUT_1, "entrega anulada"))
+        discarded = Cause(CauseKind.INPUT_DISCARDED, INPUT_1)
+        state = self.stale()
+        self.assertEqual((state.of(k1.uid), state.of(k3.uid)), ({discarded}, {discarded}))
+        reimport = self.begin("res.import_source", supersedes=second.uid)
+
+        def update(conn: sqlite3.Connection) -> None:
+            inputs.supersede(conn, self.project, INPUT_2, operation_uid=reimport.uid,
+                             reason="nueva entrega")
+            reimport.complete(conn)
+
+        self.write(update)
+        self.assertEqual(self.stale().of(k2.uid), {Cause(CauseKind.INPUT_UPDATED, INPUT_2)})
+        self.assertEqual(self.stale().of(d.uid), frozenset())
+
+    def test_written_by_differences_in_the_same_transaction(self) -> None:
+        """RF-008-24 (plan §5.4.3): la caché se escribe en la transacción del camino que
+        escribe (si se deshace, no queda nada de ella) y por diferencias: una causa que sigue
+        conserva su fecha, la nueva lleva la de su cambio y la que ya no está se borra."""
+        a, b, c, d = self.chain()
+        with self.assertRaises(RuntimeError):
+            with self.project.write_transaction() as conn:
+                self.store.change(conn, "res.production", value=1.0, **PERSON)
+                self.assertTrue(stale_mod.cached_rows(conn))
+                raise RuntimeError("falla lo demás de la transacción")
+        self.assertEqual(self.cached(), {})
+
+        first_at = self.now()
+        self.change("res.production", 120000.0)
+        first = self.cached()
+        self.assertEqual(set(first.values()), {first_at})
+        second_at = self.now()
+        self.change("res.density", 2.6)
+        density = self.changed("res.density")
+        second = self.cached()
+        self.assertEqual({key: second[key] for key in first}, first)
+        self.assertEqual({key: at for key, at in second.items() if key not in first}, {
+            ("operation", d.uid, "parameter_changed", density.subject): second_at,
+            ("dataset", self.dataset("res_d"), "parameter_changed", density.subject): second_at,
+        })
+        self.change("res.production", 100000.0)  # vuelve al valor que leyeron A, B y C
+        self.assertEqual(set(self.cached()), set(second) - set(first))
+        self.stale()
+
+    def test_counts(self) -> None:
+        """RF-008-28: «! n obsoletos» cuenta los datos vivos obsoletos más las operaciones que
+        esperan revisión a mano (también por una cifra vigente, que deja de serlo con otra más
+        reciente al día), y «⚠ n entradas», las entradas cambiadas sin decidir (ni las que
+        mantienen la copia ni las descartadas)."""
+        self.assertEqual(stale_mod.counts(self.project), stale_mod.Counts(0, 0, 0))
+        self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
+        self.run_op("res.digitize", {"res_r": [2.0]}, reads=["res_a"])
+        self.run_op("res.digitize", reads=["res_a"], figure=3.0)
+        self.run_op("res.step_d", {"res_d": [5.0]})
+        self.change("res.production", 80000.0)
+        state = self.stale()
+        found = stale_mod.counts(self.project)
+        self.assertEqual(found, stale_mod.Counts(stale=2, review=2, inputs_changed=0))
+        self.assertEqual(found.obsolete, 4)
+        self.assertEqual((found.stale, found.review), (len(state.datasets), len(state.review)))
+        self.run_op("res.step_d", figure=6.0)
+        self.run_op("res.digitize", reads=["res_a"], figure=7.0)  # más reciente, obsoleta
+        self.assertEqual(stale_mod.counts(self.project), stale_mod.Counts(2, 1, 0))
+        self.assertEqual(len(self.stale().review), 1)
+
+        self.import_input(INPUT_1, "Entrada_1", "res_im1")
+        self.import_input(INPUT_2, "Entrada_2", "res_im2")
+        self.mark_changed(INPUT_1)
+        self.mark_changed(INPUT_2)
+        self.assertEqual(stale_mod.counts(self.project).inputs_changed, 2)
+        self.write(lambda conn: inputs.keep_copy(conn, self.project, INPUT_1))
+        self.assertEqual(stale_mod.counts(self.project).inputs_changed, 1)
+        self.write(lambda conn: inputs.discard(conn, self.project, INPUT_2, "entrega anulada"))
+        with self.project.read() as conn:
+            self.assertEqual(stale_mod.counts(self.project, conn=conn),
+                             stale_mod.Counts(2, 1, 0))
+
+    def test_list_of_what_is_stale(self) -> None:
+        """RF-008-28: la lista de lo obsoleto tiene los resultados obsoletos y las operaciones
+        que esperan revisión a mano, con sus causas («Obsoleto: cambió Producción»), su
+        módulo, la operación que los escribió y desde cuándo (la causa más antigua); y lo
+        mismo en inglés."""
+        self.import_input(INPUT_1, "Entrada_1", "res_im1")
+        a = self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
+        r = self.run_op("res.digitize", {"res_r": [2.0]}, reads=["res_a"])
+        k = self.run_op("res.step_b", {"res_k": [3.0]}, reads=["res_im1", "res_a"])
+        self.run_op("res.step_d", {"res_d": [5.0]}, params=["res.density"])
+        changed_at = self.now()
+        self.change("res.production", 80000.0)
+        self.write(lambda conn: inputs.discard(conn, self.project, INPUT_1, "entrega anulada"))
+        report = stale_mod.stale_items(self.project)
+        self.assertEqual(report.counts, stale_mod.counts(self.project))
+        self.assertEqual(report.counts, stale_mod.Counts(stale=3, review=1, inputs_changed=0))
+        self.assertEqual(
+            [(item.item_kind, item.name, item.module, item.operation_uid, item.op_type,
+              item.review, item.text) for item in report.items],
+            [
+                ("dataset", "res_a", "res", a.uid, "res.step_a", False,
+                 "Obsoleto: cambió Producción"),
+                ("dataset", "res_k", "res", k.uid, "res.step_b", False,
+                 "Obsoleto: cambió Producción; se descartó la entrada «Entrada_1»"),
+                ("dataset", "res_r", "res", r.uid, "res.digitize", True,
+                 "Obsoleto: cambió Producción"),
+                ("operation", "res.digitize", "res", r.uid, "res.digitize", True,
+                 "Obsoleto: cambió Producción"),
+            ],
+        )
+        self.assertEqual([item.uid for item in report.items],
+                         [self.dataset("res_a"), self.dataset("res_k"), self.dataset("res_r"),
+                          r.uid])
+        self.assertEqual([item.since for item in report.items], [changed_at] * 4)
+        self.assertEqual(report.items[1].causes, {self.changed("res.production"),
+                                                  Cause(CauseKind.INPUT_DISCARDED, INPUT_1)})
+        english = stale_mod.stale_items(self.project, language="en")
+        self.assertEqual([item.text for item in english.items][1:3],
+                         ["Stale: Test production changed; input «Entrada_1» was discarded",
+                          "Stale: Test production changed"])
+
+    def test_region_takes_whole_group_runs(self) -> None:
+        """RF-008-25 (plan §5.4.3): el cálculo por región exige toda la ejecución de grupo de
+        sus operaciones y que estén en el grafo; con ella da lo mismo que el completo, y las
+        causas raíz (las de sus datos) no llevan la del grupo."""
+        first = self.run_op("res.pair_first", {"res_x1": [1.0]}, params=["res.density"])
+        second = self.run_op("res.pair_second", {"res_x2": [2.0]}, group_uid=first.group_uid)
+        self.change("res.density", 2.6)
+        density = self.changed("res.density")
+        with self.project.read() as conn:
+            loaded = graph_mod.load_graph(conn)
+        with self.assertRaises(ValueError):
+            graph_mod.deduce_region(loaded, {first.uid}, {})
+        with self.assertRaises(ValueError):
+            graph_mod.deduce_region(loaded, {first.uid, second.uid, INPUT_1}, {})
+        found = graph_mod.deduce_region(loaded, {second.uid, first.uid}, {})
+        full = graph_mod.deduce(loaded)
+        self.assertEqual(dict(found.causes),
+                         {uid: full.causes[uid] for uid in (first.uid, second.uid)})
+        self.assertEqual(dict(found.roots), {first.uid: {density}, second.uid: {density}})
+        self.assertEqual(self.stale().of(self.dataset("res_x2")), {density})
+
+    def test_full_refresh_repairs_the_cache(self) -> None:
+        """RF-008-24 (plan §5.4.6, paso 8): la obsolescencia completa rehace una caché
+        alterada a mano (una fila de menos y una de más) sin tocar lo que estaba bien."""
+        a, b, c, d = self.chain()
+        self.change("res.production", 120000.0)
+        rows = self.cached()
+        missing = ("dataset", self.dataset("res_c"), "parameter_changed",
+                   self.changed("res.production").subject)
+        self.write(lambda conn: conn.execute(
+            "DELETE FROM gb_stale WHERE item_kind = ? AND item_uid = ? AND cause_kind = ? "
+            "AND subject_uid = ?", missing))
+        self.write(lambda conn: conn.execute(
+            "INSERT INTO gb_stale (item_kind, item_uid, cause_kind, subject_uid, since) "
+            "VALUES ('operation', ?, 'algorithm', 'res.step_d', ?)", (d.uid, self.now())))
+        later = self.now()
+        update = self.write(lambda conn: stale_mod.refresh_all(conn, now=later))
+        self.assertEqual(len(update.added), 1)
+        self.assertEqual(len(update.removed), 1)
+        self.assertEqual(self.cached(), {**rows, missing: later})
+        self.stale()
+
+    def test_public_api(self) -> None:
+        """RF-008-24, RF-008-28 (plan §5.3.1): ``core.provenance`` reexporta la caché al
+        usarla, sin cargarla al importarse."""
+        for name in provenance.STALE_API:
+            with self.subTest(name=name):
+                self.assertIn(name, provenance.__all__)
+                self.assertIs(getattr(provenance, name), getattr(stale_mod, name))
+        self.assertLessEqual({"counts", "stale_items", "refresh_region", "refresh_all"},
+                             set(provenance.STALE_API))
+        tree = ast.parse(Path(provenance.__file__).read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom):
+                with self.subTest(line=node.lineno):
+                    self.assertNotIn("stale", [alias.name for alias in node.names])
+
+
+# --- Grafos aleatorios: región = completo (T27) -------------------------------------------------
+
+_RANDOM_TABLES = ("gb_parameter", "gb_input", "gb_dataset", "gb_operation", "gb_operation_io",
+                  "gb_operation_param", "gb_figure", "gb_stale")
+_RANDOM_TYPES: dict[str, bool] = {"res.t0": True, "res.t1": True, "res.t2": True,
+                                  "res.manual": False}  # tipo → se repite sola
+_RANDOM_VERSIONS = {"res.t0": "1.1", "res.t1": "1.0", "res.t2": "1.0", "res.manual": "1.0"}
+_POOL = tuple(hashing.sha256_bytes(f"contenido {n}".encode()) for n in range(3))
+_VALUES = tuple(hashing.sha256_bytes(f"valor {n}".encode()) for n in range(3))
+
+
+class RandomProject:
+    """Una base en memoria con solo las tablas de la procedencia (sin disparadores) que cambia
+    con pasos aleatorios como los caminos que escriben; cada paso devuelve lo que cambió, como
+    lo pasan esos caminos a la caché."""
+
+    def __init__(self, rng: random.Random) -> None:
+        self.rng = rng
+        self.conn = sqlite3.connect(":memory:", isolation_level=None)
+        for table in _RANDOM_TABLES:
+            self.conn.execute(schema.TABLES[table])
+        for sql in schema.INDEXES.values():
+            self.conn.execute(sql)
+        self.serial = 0
+        self.live: dict[str, bool] = {}  # dato vivo → es lo importado
+        self.content: dict[str, str] = {}
+        self.versions: dict[str, list[str]] = {}
+        self.inputs: list[str] = []  # entradas activas
+        self.current: list[str] = []  # operaciones sin sustituir
+        self.groups: list[str] = []
+        self.params: dict[str, str] = {}
+        for n in range(3):
+            uid = self.uid()
+            self.params[uid] = rng.choice(_VALUES)
+            self.insert("gb_parameter", parameter_row(uid=uid, key=f"res.p{n}",
+                                                      value_sha256=self.params[uid]))
+
+    def uid(self) -> str:
+        self.serial += 1
+        return f"00000000-0000-4000-8000-{self.serial:012x}"
+
+    def stamp(self) -> str:
+        self.serial += 1
+        minutes, seconds = divmod(self.serial, 60)
+        return f"2026-10-08T{10 + minutes // 60:02d}:{minutes % 60:02d}:{seconds:02d}.000Z"
+
+    def insert(self, table: str, row: Mapping[str, Any]) -> None:
+        self.conn.execute(f"INSERT INTO {table} ({', '.join(row)}) "
+                          f"VALUES ({', '.join('?' for _ in row)})", tuple(row.values()))
+
+    def step(self) -> dict[str, list[str]]:
+        roll = self.rng.random()
+        if roll < 0.15:
+            return self.change_parameter()
+        if roll < 0.3 and self.live:
+            return self.dataset_status()
+        if roll < 0.37 and not all(self.live.values()):
+            return self.supersede_dataset()
+        if roll < 0.45 and self.inputs:
+            return self.input_status()
+        return self.operation()
+
+    def operation(self) -> dict[str, list[str]]:
+        rng = self.rng
+        uid, now = self.uid(), self.stamp()
+        op_type = rng.choice(tuple(_RANDOM_TYPES))
+        importing = rng.random() < 0.15
+        group_uid = None
+        if not importing and rng.random() < 0.25:
+            if self.groups and rng.random() < 0.6:
+                group_uid = rng.choice(self.groups)
+            else:
+                group_uid = self.uid()
+                self.groups.append(group_uid)
+        supersedes = rng.choice(self.current) if self.current and rng.random() < 0.2 else None
+        self.insert("gb_operation", operation_row(
+            uid=uid, op_type=op_type, module="res", repeatable=int(_RANDOM_TYPES[op_type]),
+            op_version=rng.choice(("1.0", "1.1")) if op_type == "res.t0" else "1.0",
+            group_name=None if group_uid is None else "res.pair", group_uid=group_uid,
+            supersedes_uid=supersedes, started_at=now, finished_at=now,
+        ))
+        live = sorted(self.live)
+        for item in rng.sample(live, min(len(live), rng.randint(0, 3))):
+            sha = self.content[item] if rng.random() < 0.85 else rng.choice(self.versions[item])
+            self.insert("gb_operation_io", io_row(operation_uid=uid, direction="in",
+                                                  item_uid=item, content_sha256=sha,
+                                                  role="source"))
+        if self.inputs and rng.random() < 0.2:
+            self.insert("gb_operation_io", io_row(
+                operation_uid=uid, direction="in", item_kind="input",
+                item_uid=rng.choice(self.inputs), content_sha256=_POOL[0], role="entry",
+            ))
+        for parameter in rng.sample(sorted(self.params), rng.randint(0, 2)):
+            value = self.params[parameter] if rng.random() < 0.9 else rng.choice(_VALUES)
+            self.insert("gb_operation_param", op_param_row(
+                operation_uid=uid, parameter_uid=parameter, value_sha256=value))
+        written: list[str] = []
+        if importing:
+            entry = self.uid()
+            self.insert("gb_input", input_row(uid=entry, name=f"Entrada_{self.serial}",
+                                              operation_uid=uid))
+            self.inputs.append(entry)
+            written.append(self.new_dataset(uid, entry))
+        for _ in range(0 if importing else rng.randint(1, 2)):
+            targets = [item for item in live if not self.live[item] and item not in written]
+            if targets and rng.random() < 0.4:
+                item = rng.choice(targets)
+                sha = rng.choice(_POOL)
+                self.conn.execute("UPDATE gb_dataset SET content_sha256 = ?, operation_uid = ?, "
+                                  "status = 'current' WHERE uid = ?", (sha, uid, item))
+                self.content[item] = sha
+                self.versions[item].append(sha)
+                self.insert("gb_operation_io", io_row(operation_uid=uid, item_uid=item,
+                                                      content_sha256=sha, role="result"))
+                written.append(item)
+            else:
+                written.append(self.new_dataset(uid, None))
+        if supersedes is not None:
+            self.conn.execute("UPDATE gb_operation SET superseded_by = ? WHERE uid = ?",
+                              (uid, supersedes))
+            self.current.remove(supersedes)
+        self.current.append(uid)
+        return {"operations": [uid], "datasets": written}
+
+    def new_dataset(self, operation_uid: str, entry: str | None) -> str:
+        uid = self.uid()
+        sha = self.rng.choice(_POOL)
+        name = f"res_d{self.serial}"
+        self.insert("gb_dataset", dataset_row(
+            uid=uid, name=name, module="res", kind="table", locator=name, selector="",
+            content_sha256=sha, operation_uid=operation_uid, input_uid=entry,
+            immutable=int(entry is not None),
+        ))
+        self.insert("gb_operation_io", io_row(
+            operation_uid=operation_uid, item_uid=uid, content_sha256=sha,
+            role="result" if entry is None else "imported",
+        ))
+        self.live[uid] = entry is not None
+        self.content[uid] = sha
+        self.versions[uid] = [sha]
+        return uid
+
+    def change_parameter(self) -> dict[str, list[str]]:
+        uid = self.rng.choice(sorted(self.params))
+        self.params[uid] = self.rng.choice(_VALUES)  # puede volver al que leyeron
+        self.conn.execute("UPDATE gb_parameter SET value_sha256 = ? WHERE uid = ?",
+                          (self.params[uid], uid))
+        return {"parameters": [uid]}
+
+    def dataset_status(self) -> dict[str, list[str]]:
+        item = self.rng.choice(sorted(self.live))
+        status = self.rng.choice(("current", "missing", "blocked", "damaged"))
+        self.conn.execute("UPDATE gb_dataset SET status = ? WHERE uid = ?", (status, item))
+        return {"datasets": [item]}
+
+    def supersede_dataset(self) -> dict[str, list[str]]:
+        item = self.rng.choice(sorted(uid for uid, imported in self.live.items() if not imported))
+        self.conn.execute("UPDATE gb_dataset SET status = 'superseded' WHERE uid = ?", (item,))
+        del self.live[item]
+        return {"datasets": [item]}
+
+    def input_status(self) -> dict[str, list[str]]:
+        """Una entrada sustituida o descartada, con lo importado de ella: se pasa solo la
+        entrada (la caché busca sus datos)."""
+        entry = self.rng.choice(self.inputs)
+        status = self.rng.choice(("superseded", "discarded"))
+        self.conn.execute("UPDATE gb_input SET status = ? WHERE uid = ?", (status, entry))
+        for (item,) in self.conn.execute("SELECT uid FROM gb_dataset WHERE input_uid = ?",
+                                         (entry,)).fetchall():
+            if item in self.live:
+                self.conn.execute("UPDATE gb_dataset SET status = ? WHERE uid = ?",
+                                  (status, item))
+                del self.live[item]
+        self.inputs.remove(entry)
+        return {"inputs": [entry]}
+
+    def refresh(self, changes: Mapping[str, list[str]] | None = None) -> Any:
+        """La caché por región con ``changes`` (o completa), en su transacción."""
+        now = self.stamp()
+        self.conn.execute("BEGIN")
+        try:
+            if changes is None:
+                found = stale_mod.refresh_all(self.conn, now=now, versions=_RANDOM_VERSIONS)
+            else:
+                found = stale_mod.refresh_region(self.conn, now=now, versions=_RANDOM_VERSIONS,
+                                                 **changes)
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
+        self.conn.execute("COMMIT")
+        return found
+
+    def expected(self) -> Any:
+        state = graph_mod.deduce(graph_mod.load_graph(self.conn), versions=_RANDOM_VERSIONS)
+        return stale_mod.expected_rows(state)
+
+    def done(self) -> int:
+        return int(self.conn.execute("SELECT COUNT(*) FROM gb_operation").fetchone()[0])
+
+
+class RegionPropertyTest(unittest.TestCase):
+    def test_region_matches_full_on_random_graphs(self) -> None:
+        """RF-008-24, RF-008-25 (plan §5.4.3, D3): en 200 grafos aleatorios —operaciones
+        repetibles y no, grupos acoplados, sustituidas, ediciones propias, versiones anteriores
+        consumidas, entradas sustituidas y descartadas, datos que faltan, bloqueados, dañados o
+        sustituidos, parámetros que cambian y vuelven, algoritmos más nuevos—, tras cada cambio
+        la obsolescencia por región (solo lo alcanzable desde lo que cambió, con la caché para
+        lo de fuera) deja la caché igual que el cálculo completo, y casi siempre recalcula menos
+        que el grafo entero."""
+        seeds = random.Random(20261008)
+        smaller = total = 0
+        for case in range(200):
+            world = RandomProject(random.Random(seeds.getrandbits(64)))
+            try:
+                for _ in range(world.rng.randint(4, 14)):
+                    world.step()
+                world.refresh()
+                self.assertEqual(stale_mod.cached_rows(world.conn), world.expected(),
+                                 f"caso {case}, completo")
+                for step in range(5):
+                    changes = world.step()
+                    update = world.refresh(changes)
+                    self.assertEqual(stale_mod.cached_rows(world.conn), world.expected(),
+                                     f"caso {case}, paso {step}: {changes}")
+                    total += 1
+                    smaller += len(update.operations) < world.done()
+            finally:
+                world.conn.close()
+        self.assertGreater(smaller, total // 2)
 
 
 if __name__ == "__main__":

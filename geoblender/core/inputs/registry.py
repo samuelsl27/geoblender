@@ -49,9 +49,10 @@ Ningún evento lleva rutas absolutas: las rutas se guardan relativas o solo con 
 motivos, sin ellas (solo el nombre del fichero). Todo se comprueba antes de escribir: un rechazo
 para la persona es un ``ProvenanceError`` y uno del programa, ``TypeError``/``ValueError``;
 ninguno escribe nada. Las funciones que escriben reciben la conexión de una transacción de
-escritura (``Project.write_transaction()``) y no la confirman. La obsolescencia por región de
-lo que dependía de una entrada sustituida o descartada llega con T27. Python puro (ADR-0004):
-los eventos se importan al registrarlos (``core.project`` importa ``core.provenance``).
+escritura (``Project.write_transaction()``) y no la confirman. Sustituir, mantener la copia y
+descartar ponen al día en esa transacción la obsolescencia por región de lo que dependía de la
+entrada (``core.provenance.stale``, RF-008-24). Python puro (ADR-0004): los eventos y la caché
+se importan al usarlos (``core.project`` importa ``core.provenance``).
 """
 
 from __future__ import annotations
@@ -671,6 +672,14 @@ def _imported(conn: sqlite3.Connection, input_uid: str) -> list[str]:
     ]
 
 
+def _refresh_stale(conn: sqlite3.Connection, now: str, input_uid: str) -> None:
+    """La obsolescencia por región de lo que consumió la entrada ``input_uid`` o lo importado
+    de ella, en la misma transacción (RF-008-24)."""
+    from ..provenance.stale import refresh_region
+
+    refresh_region(conn, now=now, inputs=[input_uid])
+
+
 def _set_status(conn: sqlite3.Connection, project: InputProject, record: InputRecord,
                 status: InputStatus, reason: str | None, now: str) -> None:
     """El estado nuevo de la entrada, con quién lo decide, cuándo y su motivo."""
@@ -757,6 +766,7 @@ def supersede(conn: sqlite3.Connection, project: InputProject, input_uid: str, *
     if link:
         conn.execute("UPDATE gb_operation SET superseded_by = ? WHERE uid = ?",
                      (operation_uid, record.operation_uid))
+    _refresh_stale(conn, now, record.uid)
     _record(conn, project, "INPUT_UPDATED", record.uid,
             f"Entrada «{record.name}» sustituida ({text}).", {
                 "name": record.name,
@@ -797,6 +807,7 @@ def keep_copy(conn: sqlite3.Connection, project: InputProject, input_uid: str, *
                          "(seen_sha256): lo anota la comprobación que la encuentra cambiada")
     now = format_utc(project.clock.now())
     _set_status(conn, project, record, InputStatus.KEPT, text, now)
+    _refresh_stale(conn, now, record.uid)
     _record(conn, project, "INPUT_KEPT", record.uid,
             f"Entrada «{record.name}»: cambiada · se mantiene la copia.", {
                 "name": record.name,
@@ -831,6 +842,7 @@ def discard(conn: sqlite3.Connection, project: InputProject, input_uid: str,
     _set_status(conn, project, record, InputStatus.DISCARDED, text, now)
     for uid in found:
         dataset_registry.set_status(conn, project, uid, DatasetStatus.DISCARDED)
+    _refresh_stale(conn, now, record.uid)
     _record(conn, project, "INPUT_DISCARDED", record.uid,
             f"Entrada «{record.name}» descartada ({text}).", {
                 "name": record.name,

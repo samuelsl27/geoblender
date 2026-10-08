@@ -19,16 +19,19 @@
 - :mod:`.graph`: el grafo por versiones (:func:`load_graph`, :class:`ProvenanceGraph`) y la
   obsolescencia deducida con sus causas (:func:`deduce`, :func:`stale_state`,
   :class:`Staleness`, :class:`Cause`).
+- :mod:`.stale`: la caché ``gb_stale`` puesta al día por región en cada camino que escribe
+  (:func:`refresh_region`) o completa (:func:`refresh_all`), los recuentos «! n obsoletos» y
+  «⚠ n entradas» (:func:`counts`) y la lista de lo obsoleto (:func:`stale_items`).
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
 ``core.project.schema`` importa ``core.provenance.schema``, que pasa por este fichero.
 
-Por lo mismo, lo de :mod:`.operations`, :mod:`.figures` y :mod:`.graph` (que traen
-``core.datasets``, ``core.content`` y ``core.params``) se reexporta **al usarlo**
-(``__getattr__``, PEP 562), no
-al importar el paquete: así abrir un proyecto no carga ni compila esos módulos (las pruebas
-de Blender rehabilitan la extensión muchas veces desde cero, con ``-B``).
+Por lo mismo, lo de :mod:`.operations`, :mod:`.figures`, :mod:`.graph` y :mod:`.stale` (que
+traen ``core.datasets``, ``core.content`` y ``core.params``) se reexporta **al usarlo**
+(``__getattr__``, PEP 562), no al importar el paquete: así abrir un proyecto no carga ni
+compila esos módulos (las pruebas de Blender rehabilitan la extensión muchas veces desde
+cero, con ``-B``).
 """
 
 from typing import Any
@@ -102,6 +105,19 @@ GRAPH_API: tuple[str, ...] = (
 )
 """Lo de :mod:`.graph` que se reexporta al usarlo."""
 
+STALE_API: tuple[str, ...] = (
+    "CacheUpdate",
+    "Counts",
+    "StaleItem",
+    "StaleReport",
+    "StaleRow",
+    "counts",
+    "refresh_all",
+    "refresh_region",
+    "stale_items",
+)
+"""Lo de :mod:`.stale` que se reexporta al usarlo."""
+
 
 def __getattr__(name: str) -> Any:
     if name in OPERATIONS_API:
@@ -110,6 +126,8 @@ def __getattr__(name: str) -> Any:
         from . import figures as source
     elif name in GRAPH_API:
         from . import graph as source
+    elif name in STALE_API:
+        from . import stale as source
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(source, name)
@@ -118,7 +136,7 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted({*globals(), *OPERATIONS_API, *FIGURES_API, *GRAPH_API})
+    return sorted({*globals(), *OPERATIONS_API, *FIGURES_API, *GRAPH_API, *STALE_API})
 
 
 __all__ = [
@@ -135,10 +153,12 @@ __all__ = [
     "MESSAGES",
     "OPERATIONS",
     "SCOPES",
+    "CacheUpdate",
     "Cause",
     "CauseKind",
     "Consumed",
     "CoupledGroupDef",
+    "Counts",
     "Divergence",
     "Executor",
     "FigureDef",
@@ -152,11 +172,15 @@ __all__ = [
     "OperationStatus",
     "ProvenanceError",
     "ProvenanceGraph",
+    "StaleItem",
+    "StaleReport",
+    "StaleRow",
     "Staleness",
     "Use",
     "Version",
     "begin_operation",
     "claimed_paths",
+    "counts",
     "deduce",
     "divergence",
     "divergences",
@@ -170,12 +194,15 @@ __all__ = [
     "operation_def",
     "parse_version",
     "record_figure",
+    "refresh_all",
+    "refresh_region",
     "register_figure",
     "register_group",
     "register_importer",
     "register_operation",
     "render",
     "scope_key",
+    "stale_items",
     "stale_state",
     "unregister_figure",
     "unregister_group",

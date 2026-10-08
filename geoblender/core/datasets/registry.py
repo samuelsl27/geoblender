@@ -15,7 +15,8 @@ escribió su contenido actual: sin ella no se registra (RF-008-17, D-2). Lo llam
   (RF-008-52).
 - :func:`get`, :func:`successor`, :func:`supersede` y :func:`set_status`: buscar un dato por
   su uid o por el nombre de su dato vivo, el sucesor vivo de uno sustituido, sustituirlo y
-  cambiar su estado.
+  cambiar su estado. Las dos últimas ponen al día en la misma transacción la caché de la
+  obsolescencia por región de lo que lo consumió (``core.provenance.stale``, RF-008-24).
 
 **Hash** (ADR-0024 §6). Cada dato se hashea siempre con **su** lector y **su** normalizador,
 los que tenía al registrarse (los nuevos, los que trae su :class:`~.model.DatasetSpec`), y sin
@@ -44,7 +45,8 @@ Todo se comprueba **antes** de escribir: un rechazo es un ``ValidationError``
 (``core.dataset_*``) que solo deshace la transacción, nunca una restricción de SQLite, que
 dejaría el proyecto en solo lectura. Las funciones que escriben reciben la conexión de una
 transacción de escritura (``Project.write_transaction()``) y no la confirman. Python puro
-(ADR-0004): no importa ``core.provenance``, que importará este módulo.
+(ADR-0004): al importarse no importa ``core.provenance``, que importa este módulo; su caché,
+solo al ponerla al día.
 """
 
 from __future__ import annotations
@@ -520,10 +522,12 @@ def supersede(conn: sqlite3.Connection, project: DatasetProject, uid: str, *,
         if following.uid == record.uid:
             raise _error("core.dataset_successor_self", record.name,
                          "un dato no se sustituye a sí mismo", "sucesor", by)
+    now = format_utc(project.clock.now())
     conn.execute(
         "UPDATE gb_dataset SET status = ?, superseded_by = ?, modified_at = ? WHERE uid = ?",
-        (str(DatasetStatus.SUPERSEDED), by, format_utc(project.clock.now()), record.uid),
+        (str(DatasetStatus.SUPERSEDED), by, now, record.uid),
     )
+    _refresh_stale(conn, now, record.uid)
     return _require(conn, record.uid, record.name)
 
 
@@ -542,9 +546,20 @@ def set_status(conn: sqlite3.Connection, project: DatasetProject, uid: str,
                      f"está «{record.status}» y queda como historia: su estado ya no cambia",
                      "estado", str(target))
     if record.status is not target:
+        now = format_utc(project.clock.now())
         conn.execute(
             "UPDATE gb_dataset SET status = ?, modified_at = ? WHERE uid = ?",
-            (str(target), format_utc(project.clock.now()), record.uid),
+            (str(target), now, record.uid),
         )
+        _refresh_stale(conn, now, record.uid)
     return _require(conn, record.uid, record.name)
+
+
+def _refresh_stale(conn: sqlite3.Connection, now: str, uid: str) -> None:
+    """La obsolescencia por región de lo que consumió el dato ``uid``, que cambió de estado,
+    en la misma transacción (RF-008-24: un dato que falta, bloqueado, dañado o que ya no está
+    vivo). Se importa aquí: ``core.provenance`` importa ``core.datasets`` (ARQ-08)."""
+    from ..provenance.stale import refresh_region
+
+    refresh_region(conn, now=now, datasets=[uid])
 

@@ -34,9 +34,15 @@ procedencia, que :func:`load_graph` carga del proyecto en una sola lectura.
 - la **cifra vigente** de una clave y un ámbito es la de la operación más reciente (sin
   sustituir) que no está obsoleta; si todas lo están, la más reciente.
 
+:func:`deduce_region` hace el mismo cálculo **por región** (plan §5.4.3): solo para las
+operaciones de una región cerrada hacia abajo (lo que consume lo que producen y su ejecución de
+grupo), con las causas ya conocidas (la caché) de las de fuera de las que depende; con ellas
+exactas, da lo mismo que :func:`deduce` (lo prueba una propiedad en grafos aleatorios). La
+región y su carga desde la base, con los índices, son de :mod:`.stale`.
+
 Cada causa (:class:`Cause`) es lo que guarda la caché ``gb_stale`` (clase y sujeto; T27) y se
-presenta con :meth:`Staleness.text` («Obsoleto: cambió Producción»). Python puro (ADR-0004):
-solo lee el proyecto.
+presenta con :meth:`Staleness.text` o :func:`stale_text` («Obsoleto: cambió Producción»).
+Python puro (ADR-0004): solo lee el proyecto.
 """
 
 from __future__ import annotations
@@ -47,6 +53,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
+from typing import Any
 
 from ..i18n import translate
 from ..params.model import DEFINITIONS
@@ -276,6 +283,68 @@ class ProvenanceGraph:
 
 # --- Carga --------------------------------------------------------------------------------
 
+OPERATION_COLUMNS = (
+    "fid, uid, op_type, op_version, module, repeatable, group_name, group_uid, supersedes_uid, "
+    "superseded_by, started_at, finished_at"
+)
+"""Las columnas de ``gb_operation`` de un :class:`OperationNode`, en su orden."""
+IO_COLUMNS = "operation_uid, direction, item_kind, item_uid, content_sha256, role"
+"""Las columnas de ``gb_operation_io`` de una :class:`Version`, con su operación y su sentido."""
+PARAM_USE_COLUMNS = "operation_uid, parameter_uid, key, rev, value_sha256"
+"""Las columnas de ``gb_operation_param`` de un :class:`ParamUse`, con su operación."""
+DATASET_COLUMNS = (
+    "fid, uid, name, module, kind, status, content_sha256, normalizer, operation_uid, input_uid"
+)
+"""Las columnas de ``gb_dataset`` de un :class:`DatasetNode`, en su orden."""
+INPUT_NODE_COLUMNS = "uid, name, status, operation_uid"
+"""Las columnas de ``gb_input`` de un :class:`InputNode`, en su orden."""
+PARAMETER_COLUMNS = "uid, key, scope, value_sha256, kind, unconfirmed"
+"""Las columnas de ``gb_parameter`` de un :class:`ParameterNode`, en su orden."""
+
+
+def version_of(row: tuple[Any, ...]) -> tuple[str, bool, Version]:
+    """De una fila de :data:`IO_COLUMNS`: su operación, si es una salida y la versión."""
+    op_uid, direction, item_kind, item_uid, sha, role = row
+    return str(op_uid), direction == "out", Version(str(item_kind), str(item_uid), str(sha),
+                                                    str(role))
+
+
+def param_use_of(row: tuple[Any, ...]) -> tuple[str, ParamUse]:
+    """De una fila de :data:`PARAM_USE_COLUMNS`: su operación y la versión que leyó."""
+    op_uid, parameter_uid, key, rev, value_sha256 = row
+    return str(op_uid), ParamUse(str(parameter_uid), str(key), int(rev), str(value_sha256))
+
+
+def operation_node(row: tuple[Any, ...], consumed: Iterable[Version] = (),
+                   produced: Iterable[Version] = (),
+                   params: Iterable[ParamUse] = ()) -> OperationNode:
+    """Un :class:`OperationNode` de una fila de :data:`OPERATION_COLUMNS` y lo que consumió,
+    produjo y leyó."""
+    (fid, uid, op_type, op_version, module, repeatable, group_name, group_uid, supersedes_uid,
+     superseded_by, started_at, finished_at) = row
+    return OperationNode(
+        int(fid), str(uid), str(op_type), str(op_version), str(module), bool(repeatable),
+        group_name, group_uid, supersedes_uid, superseded_by, str(started_at), str(finished_at),
+        tuple(consumed), tuple(produced), tuple(params),
+    )
+
+
+def dataset_node(row: tuple[Any, ...]) -> DatasetNode:
+    """Un :class:`DatasetNode` de una fila de :data:`DATASET_COLUMNS`."""
+    return DatasetNode(int(row[0]), *(str(value) for value in row[1:9]), row[9])
+
+
+def input_node(row: tuple[Any, ...]) -> InputNode:
+    """Un :class:`InputNode` de una fila de :data:`INPUT_NODE_COLUMNS`."""
+    return InputNode(*(str(value) for value in row))
+
+
+def parameter_node(row: tuple[Any, ...]) -> ParameterNode:
+    """Un :class:`ParameterNode` de una fila de :data:`PARAMETER_COLUMNS`."""
+    uid, key, scope, value_sha256, kind, unconfirmed = row
+    return ParameterNode(str(uid), str(key), str(scope), str(value_sha256), str(kind),
+                         bool(unconfirmed))
+
 
 def load_graph(conn: sqlite3.Connection) -> ProvenanceGraph:
     """El grafo de la procedencia del proyecto de ``conn`` (de lectura o la transacción de
@@ -294,54 +363,34 @@ def load_graph(conn: sqlite3.Connection) -> ProvenanceGraph:
 def _load(conn: sqlite3.Connection) -> ProvenanceGraph:
     consumed: dict[str, list[Version]] = defaultdict(list)
     produced: dict[str, list[Version]] = defaultdict(list)
-    for op_uid, direction, item_kind, item_uid, sha, role in conn.execute(
-        "SELECT io.operation_uid, io.direction, io.item_kind, io.item_uid, io.content_sha256, "
-        "io.role FROM gb_operation_io AS io JOIN gb_operation AS op "
+    io_columns = ", ".join(f"io.{column}" for column in IO_COLUMNS.split(", "))
+    for row in conn.execute(
+        f"SELECT {io_columns} FROM gb_operation_io AS io JOIN gb_operation AS op "
         "ON op.uid = io.operation_uid WHERE op.status = ? ORDER BY io.fid", (DONE,)
     ):
-        target = consumed if direction == "in" else produced
-        target[op_uid].append(Version(str(item_kind), str(item_uid), str(sha), str(role)))
+        op_uid, out, version = version_of(row)
+        (produced if out else consumed)[op_uid].append(version)
     used: dict[str, list[ParamUse]] = defaultdict(list)
-    for op_uid, parameter_uid, key, rev, value_sha256 in conn.execute(
-        "SELECT p.operation_uid, p.parameter_uid, p.key, p.rev, p.value_sha256 "
-        "FROM gb_operation_param AS p JOIN gb_operation AS op ON op.uid = p.operation_uid "
-        "WHERE op.status = ? ORDER BY p.fid", (DONE,)
+    use_columns = ", ".join(f"p.{column}" for column in PARAM_USE_COLUMNS.split(", "))
+    for row in conn.execute(
+        f"SELECT {use_columns} FROM gb_operation_param AS p JOIN gb_operation AS op "
+        "ON op.uid = p.operation_uid WHERE op.status = ? ORDER BY p.fid", (DONE,)
     ):
-        used[op_uid].append(ParamUse(str(parameter_uid), str(key), int(rev), str(value_sha256)))
+        op_uid, use = param_use_of(row)
+        used[op_uid].append(use)
     operations = [
-        OperationNode(
-            int(fid), str(uid), str(op_type), str(op_version), str(module), bool(repeatable),
-            group_name, group_uid, supersedes_uid, superseded_by, str(started_at),
-            str(finished_at), tuple(consumed[uid]), tuple(produced[uid]), tuple(used[uid]),
-        )
-        for (fid, uid, op_type, op_version, module, repeatable, group_name, group_uid,
-             supersedes_uid, superseded_by, started_at, finished_at) in conn.execute(
-            "SELECT fid, uid, op_type, op_version, module, repeatable, group_name, group_uid, "
-            "supersedes_uid, superseded_by, started_at, finished_at FROM gb_operation "
-            "WHERE status = ? ORDER BY fid", (DONE,)
-        )
-    ]
-    datasets = [
-        DatasetNode(int(row[0]), *(str(value) for value in row[1:9]), row[9])
+        operation_node(row, consumed[row[1]], produced[row[1]], used[row[1]])
         for row in conn.execute(
-            "SELECT fid, uid, name, module, kind, status, content_sha256, normalizer, "
-            "operation_uid, input_uid FROM gb_dataset ORDER BY fid"
+            f"SELECT {OPERATION_COLUMNS} FROM gb_operation WHERE status = ? ORDER BY fid",
+            (DONE,),
         )
     ]
-    inputs = [
-        InputNode(str(uid), str(name), str(status), str(operation_uid))
-        for uid, name, status, operation_uid in conn.execute(
-            "SELECT uid, name, status, operation_uid FROM gb_input ORDER BY fid"
-        )
-    ]
-    parameters = [
-        ParameterNode(str(uid), str(key), str(scope), str(value_sha256), str(kind),
-                      bool(unconfirmed))
-        for uid, key, scope, value_sha256, kind, unconfirmed in conn.execute(
-            "SELECT uid, key, scope, value_sha256, kind, unconfirmed FROM gb_parameter "
-            "ORDER BY fid"
-        )
-    ]
+    datasets = [dataset_node(row) for row in conn.execute(
+        f"SELECT {DATASET_COLUMNS} FROM gb_dataset ORDER BY fid")]
+    inputs = [input_node(row) for row in conn.execute(
+        f"SELECT {INPUT_NODE_COLUMNS} FROM gb_input ORDER BY fid")]
+    parameters = [parameter_node(row) for row in conn.execute(
+        f"SELECT {PARAMETER_COLUMNS} FROM gb_parameter ORDER BY fid")]
     figures = [
         FigureNode(int(fid), str(uid), str(key), str(scope_key), str(operation_uid))
         for fid, uid, key, scope_key, operation_uid in conn.execute(
@@ -407,13 +456,43 @@ def direct_causes(graph: ProvenanceGraph, node: OperationNode,
     return found
 
 
-def _propagate(graph: ProvenanceGraph, roots: dict[str, set[Cause]]) -> None:
-    """Lleva las causas raíz de cada operación a lo que depende de ella y a las de su
-    ejecución de grupo, hasta un punto fijo (los conjuntos solo crecen)."""
+def root_causes(causes: Iterable[Cause]) -> frozenset[Cause]:
+    """Las causas raíz de las causas de una operación (las de la caché): sin la de su grupo,
+    que solo va en las operaciones del grupo y no se propaga ni pasa a sus datos."""
+    return frozenset(cause for cause in causes if cause.kind is not CauseKind.GROUP)
+
+
+def _installed(versions: Mapping[str, str] | None) -> tuple[dict[str, str],
+                                                             dict[str, tuple[int, int]]]:
+    chosen = dict(installed_versions() if versions is None else versions)
+    return chosen, {op_type: parse_version(version) for op_type, version in chosen.items()}
+
+
+def _roots(graph: ProvenanceGraph, members: Iterable[str],
+           known: Mapping[str, Iterable[Cause]],
+           installed: Mapping[str, tuple[int, int]]) -> dict[str, set[Cause]]:
+    """Las causas raíz de las operaciones ``members``: las directas, las ya conocidas
+    (``known``) de las de fuera de las que dependen y lo que se propaga entre ellas."""
+    roots = {uid: direct_causes(graph, graph.operations[uid], installed) for uid in members}
+    upstream = {uid: graph.upstream(uid) for uid in roots}
+    for uid, producers in upstream.items():
+        for producer in producers:
+            if producer not in roots:
+                roots[uid] |= root_causes(known.get(producer, ()))
+    _propagate(graph, roots, upstream)
+    return roots
+
+
+def _propagate(graph: ProvenanceGraph, roots: dict[str, set[Cause]],
+               upstream: Mapping[str, tuple[str, ...]]) -> None:
+    """Lleva las causas raíz de cada operación de ``roots`` a lo que depende de ella y a las
+    de su ejecución de grupo (todas en ``roots``), hasta un punto fijo (los conjuntos solo
+    crecen)."""
     downstream: dict[str, list[str]] = defaultdict(list)
-    for uid in graph.operations:
-        for producer in graph.upstream(uid):
-            downstream[producer].append(uid)
+    for uid, producers in upstream.items():
+        for producer in producers:
+            if producer in roots:
+                downstream[producer].append(uid)
     pending = deque(uid for uid, found in roots.items() if found)
     queued = set(pending)
     while pending:
@@ -446,16 +525,10 @@ def _current_figures(graph: ProvenanceGraph,
     return current
 
 
-def deduce(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None = None) -> Staleness:
-    """La obsolescencia completa de ``graph`` (véase el módulo). ``versions``: la versión
-    instalada de cada tipo de operación (por defecto, la de los registrados,
-    :func:`installed_versions`); un tipo que no está, no cambia de algoritmo.
-    :class:`ValueError` si una versión no es «M.m»."""
-    chosen = dict(installed_versions() if versions is None else versions)
-    installed = {op_type: parse_version(version) for op_type, version in chosen.items()}
-    roots = {uid: direct_causes(graph, node, installed)
-             for uid, node in graph.operations.items()}
-    _propagate(graph, roots)
+def _with_group(graph: ProvenanceGraph,
+                roots: Mapping[str, set[Cause]]) -> dict[str, frozenset[Cause]]:
+    """Las causas de cada operación obsoleta: las raíz y, en una ejecución de un grupo
+    acoplado con más de una, la del grupo."""
     causes: dict[str, frozenset[Cause]] = {}
     for uid, found in roots.items():
         if not found:
@@ -464,6 +537,17 @@ def deduce(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None = None)
         if group_uid is not None and len(graph.group(group_uid)) > 1:
             found = found | {Cause(CauseKind.GROUP, group_uid)}
         causes[uid] = frozenset(found)
+    return causes
+
+
+def deduce(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None = None) -> Staleness:
+    """La obsolescencia completa de ``graph`` (véase el módulo). ``versions``: la versión
+    instalada de cada tipo de operación (por defecto, la de los registrados,
+    :func:`installed_versions`); un tipo que no está, no cambia de algoritmo.
+    :class:`ValueError` si una versión no es «M.m»."""
+    chosen, installed = _installed(versions)
+    roots = _roots(graph, graph.operations, {}, installed)
+    causes = _with_group(graph, roots)
     data = {
         dataset.uid: frozenset(roots[dataset.operation_uid])
         for dataset in graph.datasets.values()
@@ -521,47 +605,112 @@ class Staleness:
 
     def describe(self, cause: Cause, *, language: str = "es") -> str:
         """Una causa como la lee una persona, en ``language`` («cambió Producción»)."""
-        kind, subject = cause.kind, cause.subject
-        values: dict[str, object] = {"name": subject}
-        if kind is CauseKind.PARAMETER_CHANGED:
-            values["name"] = self._parameter_name(subject, language)
-        elif kind in (CauseKind.INPUT_UPDATED, CauseKind.INPUT_DISCARDED):
-            entry = self.graph.inputs.get(subject)
-            values["name"] = subject if entry is None else entry.name
-        elif kind is CauseKind.ALGORITHM:
-            installed = self.versions.get(subject)
-            older = [] if installed is None else sorted(
-                {node.op_version for node in self.graph.operations.values()
-                 if node.op_type == subject
-                 and parse_version(node.op_version) < parse_version(installed)},
-                key=parse_version,
-            )
-            values = {"op_type": subject, "registered": ", ".join(older) or None,
-                      "installed": installed}
-        elif kind is CauseKind.GROUP:
-            names = sorted({str(self.graph.operations[uid].group_name)
-                            for uid in self.graph.group(subject)})
-            values = {"group": ", ".join(names) or subject}
-        else:
-            dataset = self.graph.datasets.get(subject)
-            values["name"] = subject if dataset is None else dataset.name
-        return render(f"core.cause_{kind}", language=language, **values)
+        return describe_cause(self.graph, self.versions, cause, language=language)
 
     def text(self, uid: str, *, language: str = "es") -> str | None:
         """«Obsoleto: …» con las causas de la operación o del dato ``uid``, por clase y por
         nombre; ``None`` si no está obsoleto."""
-        found = self.of(uid)
-        if not found:
-            return None
-        shown = sorted((_ORDER[cause.kind], self.describe(cause, language=language))
-                       for cause in found)
-        return render("core.stale", language=language,
-                      causes=CAUSE_SEPARATOR.join(text for _order, text in shown))
+        return stale_text(self.graph, self.versions, self.of(uid), language=language)
 
-    def _parameter_name(self, uid: str, language: str) -> str:
-        """El nombre visible de un parámetro (su etiqueta, o su clave si no la tiene)."""
-        node = self.graph.parameters.get(uid)
-        key = uid if node is None else node.key
-        definition = DEFINITIONS.get(key)
-        msgid = None if definition is None else definition.label_msgid
-        return key if msgid is None else translate(language, msgid)
+
+def describe_cause(graph: ProvenanceGraph, versions: Mapping[str, str], cause: Cause, *,
+                   language: str = "es") -> str:
+    """Una causa como la lee una persona, en ``language`` («cambió Producción»), con los
+    nombres de ``graph`` (el del dato, la entrada, el parámetro o el grupo; su uid si no
+    está) y, para un algoritmo, la versión instalada de ``versions`` y las anteriores
+    registradas en ``graph``."""
+    kind, subject = cause.kind, cause.subject
+    values: dict[str, object] = {"name": subject}
+    if kind is CauseKind.PARAMETER_CHANGED:
+        values["name"] = _parameter_name(graph, subject, language)
+    elif kind in (CauseKind.INPUT_UPDATED, CauseKind.INPUT_DISCARDED):
+        entry = graph.inputs.get(subject)
+        values["name"] = subject if entry is None else entry.name
+    elif kind is CauseKind.ALGORITHM:
+        installed = versions.get(subject)
+        older = [] if installed is None else sorted(
+            {node.op_version for node in graph.operations.values()
+             if node.op_type == subject
+             and parse_version(node.op_version) < parse_version(installed)},
+            key=parse_version,
+        )
+        values = {"op_type": subject, "registered": ", ".join(older) or None,
+                  "installed": installed}
+    elif kind is CauseKind.GROUP:
+        names = sorted({str(graph.operations[uid].group_name) for uid in graph.group(subject)})
+        values = {"group": ", ".join(names) or subject}
+    else:
+        dataset = graph.datasets.get(subject)
+        values["name"] = subject if dataset is None else dataset.name
+    return render(f"core.cause_{kind}", language=language, **values)
+
+
+def stale_text(graph: ProvenanceGraph, versions: Mapping[str, str], causes: Iterable[Cause],
+               *, language: str = "es") -> str | None:
+    """«Obsoleto: …» con ``causes`` (:func:`describe_cause`), por clase y por nombre;
+    ``None`` sin causas."""
+    shown = sorted((_ORDER[cause.kind], describe_cause(graph, versions, cause,
+                                                       language=language))
+                   for cause in causes)
+    if not shown:
+        return None
+    return render("core.stale", language=language,
+                  causes=CAUSE_SEPARATOR.join(text for _order, text in shown))
+
+
+def _parameter_name(graph: ProvenanceGraph, uid: str, language: str) -> str:
+    """El nombre visible de un parámetro (su etiqueta, o su clave si no la tiene)."""
+    node = graph.parameters.get(uid)
+    key = uid if node is None else node.key
+    definition = DEFINITIONS.get(key)
+    msgid = None if definition is None else definition.label_msgid
+    return key if msgid is None else translate(language, msgid)
+
+
+# --- Por región (plan §5.4.3) ---------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RegionStaleness:
+    """La obsolescencia de las operaciones de una región (:func:`deduce_region`): ``roots``,
+    las causas raíz de cada una (vacías si está al día; son las de los datos que escribió) y
+    ``causes``, las de cada obsoleta, con la de su grupo."""
+
+    region: frozenset[str]
+    roots: Mapping[str, frozenset[Cause]]
+    causes: Mapping[str, frozenset[Cause]]
+
+
+def deduce_region(graph: ProvenanceGraph, region: Iterable[str],
+                  known: Mapping[str, Iterable[Cause]], *,
+                  versions: Mapping[str, str] | None = None) -> RegionStaleness:
+    """La obsolescencia de las operaciones de ``region`` (plan §5.4.3), igual que la de
+    :func:`deduce` si:
+
+    - ``region`` está cerrada hacia abajo: tiene lo que consume lo que producen sus
+      operaciones y toda la ejecución de grupo de cada una (lo segundo se comprueba:
+      :class:`ValueError`);
+    - ``known`` tiene las causas exactas (las de la caché, con o sin la del grupo) de las
+      operaciones de fuera de las que depende alguna de dentro;
+    - ``graph`` tiene esas operaciones con lo que consumen, producen y leen, los datos,
+      entradas y parámetros que nombran y quién escribió cada versión que consumen (puede ser
+      una parte del proyecto).
+
+    ``versions``, como en :func:`deduce`."""
+    members = frozenset(region)
+    missing = sorted(members - graph.operations.keys())
+    if missing:
+        raise ValueError(f"la región tiene operaciones que no están en el grafo: {missing}")
+    for uid in members:
+        group_uid = graph.operations[uid].group_uid
+        outside = [] if group_uid is None else sorted(set(graph.group(group_uid)) - members)
+        if outside:
+            raise ValueError(f"la región tiene la operación {uid} de la ejecución de grupo "
+                             f"{group_uid} sin las demás: {outside}")
+    _chosen, installed = _installed(versions)
+    roots = _roots(graph, members, known, installed)
+    return RegionStaleness(
+        region=members,
+        roots=MappingProxyType({uid: frozenset(found) for uid, found in roots.items()}),
+        causes=MappingProxyType(_with_group(graph, roots)),
+    )

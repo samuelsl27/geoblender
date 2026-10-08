@@ -50,10 +50,11 @@ parámetros y los datos) y un error del programa, :class:`ValueError` o :class:`
 ninguno deja el proyecto en solo lectura. En solo lectura, todo lo que escribiría lanza
 ``core.read_only`` sin tocar nada.
 
-Pendiente de otras tareas de la 008: la puerta antes de operar (``gate.can_run``, T30), la
-obsolescencia por región en ``complete`` (T27) e incorporar un trabajo (``ingest_job``,
-T31). Python puro (ADR-0004): al importarse no importa ``core.project`` (que importa
-``core.provenance.schema``); sus eventos, solo al registrarlos.
+``complete`` pone al día, en la misma transacción, la caché de la obsolescencia por región
+(:mod:`.stale`). Pendiente de otras tareas de la 008: la puerta antes de operar
+(``gate.can_run``, T30) e incorporar un trabajo (``ingest_job``, T31). Python puro (ADR-0004):
+al importarse no importa ``core.project`` (que importa ``core.provenance.schema``); sus
+eventos, solo al registrarlos.
 """
 
 from __future__ import annotations
@@ -86,6 +87,7 @@ from .contract import OperationDef, operation_def
 from .figures import FigureSpec, prepare_figures, write_figures
 from .messages import ProvenanceError
 from .schema import INACTIVE_INPUT_STATUSES, RUNNING
+from .stale import refresh_region
 
 if TYPE_CHECKING:
     from ..sysinfo import SessionInfo
@@ -653,7 +655,10 @@ class OperationHandle:
           ``OperationDef.libraries``, todas y solas), ``executor`` y ``job_uid`` (si cambian
           desde el principio; un trabajo lleva su identificador), ``interpreter`` (el de un
           trabajo de la 004) y ``message``;
-        - si sustituye a otra, la anota en ella (``superseded_by``).
+        - si sustituye a otra, la anota en ella (``superseded_by``);
+        - la obsolescencia por región de ella y de lo que leía lo que escribió, en la caché
+          (:func:`~.stale.refresh_region`, RF-008-24): nace obsoleta si consumió algo que ya
+          lo estaba o que cambió mientras se calculaba.
 
         ``ProvenanceError`` si ya no está «en curso» (``core.operation_not_running``) o si una
         salida no está guardada en el proyecto (``core.operation_output_not_saved``,
@@ -694,11 +699,12 @@ class OperationHandle:
                                                            operation_uid=self.uid)
             records.append(record)
         write_figures(conn, self, prepared)
+        finished = format_utc(self.project.clock.now())
         conn.execute(
             "UPDATE gb_operation SET status = ?, finished_at = ?, software = ?, executor = ?, "
             "job_uid = ?, interpreter = ?, message = ? WHERE uid = ?",
-            (str(OperationStatus.DONE), format_utc(self.project.clock.now()), software_json,
-             str(chosen), job, interpreter_json, text, self.uid),
+            (str(OperationStatus.DONE), finished, software_json, str(chosen), job,
+             interpreter_json, text, self.uid),
         )
         if self.supersedes is not None:
             conn.execute(
@@ -706,6 +712,8 @@ class OperationHandle:
                 "AND superseded_by IS NULL",
                 (self.uid, self.supersedes),
             )
+        # La región sigue lo que escribió (sus datos y lo que los consumía).
+        refresh_region(conn, now=finished, operations=[self.uid])
         return tuple(records)
 
     # --- Final sin completar (RF-008-19) -----------------------------------------------------

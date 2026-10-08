@@ -1165,7 +1165,9 @@ class ParameterStore:
                 action: HistoryAction, *, value_type: ValueType,
                 def_sha256: str | None = None) -> ParameterRecord:
         """Escribe ``state`` como revisión siguiente; con ``def_sha256`` (la definición con
-        la que se comprobó o confirmó el valor), la guarda y quita «revisar»."""
+        la que se comprobó o confirmó el valor), la guarda y quita «revisar». Si cambia el
+        valor o la unidad (``value_sha256``; el tipo no cuenta, D10), pone al día en la misma
+        transacción la obsolescencia por región de lo que lo leyó (RF-008-24)."""
         rev = record.rev + 1
         now = self._now()
         reviewed = "" if def_sha256 is None else "review = NULL, def_sha256 = ?, "
@@ -1184,6 +1186,11 @@ class ParameterStore:
         )
         self._history(conn, record.uid, rev, action, state,
                       changed_by=self.project.session.user_host, at=now)
+        if state.value_sha256 != record.value_sha256:
+            # Aquí: core.provenance importa core.params (ARQ-08).
+            from ..provenance.stale import refresh_region
+
+            refresh_region(conn, now=now, parameters=[record.uid])
         return self._require(conn, record.key)
 
     def _history(self, conn: sqlite3.Connection, parameter_uid: str, rev: int,
