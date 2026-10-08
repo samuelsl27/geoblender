@@ -272,6 +272,88 @@ _CATALOG: tuple[Message, ...] = (
         "La operación «{op_type}» calcula {name} = {value}; el valor {kind} es "
         "{parameter_value} ({decided_by}, {decided_on}).",
     ),
+    # Entradas (T20; RF-008-07, RF-008-11, RF-008-54): el CRS declarado nunca se supone y la
+    # misma fuente no se duplica.
+    Message(
+        "core.input_crs_missing",
+        "Input «{name}» ({kind}) does not declare its {axis} CRS: declare it when importing; "
+        "Geoblender never assumes it.",
+        "La entrada «{name}» ({kind}) no declara su CRS {axis}: declárelo al importar; "
+        "Geoblender nunca lo supone.",
+    ),
+    Message(
+        "core.input_crs_not_applicable",
+        "Input «{name}» is of type «{kind}», which has coordinates: its {axis} CRS cannot be "
+        "«not applicable».",
+        "La entrada «{name}» es de tipo «{kind}», con coordenadas: su CRS {axis} no puede ser "
+        "«no aplica».",
+    ),
+    Message(
+        "core.input_reused",
+        "Input «{name}» is already registered with the same content ({registered_on}).",
+        "La entrada «{name}» ya está registrada con el mismo contenido ({registered_on}).",
+    ),
+    Message(
+        "core.input_substitution_required",
+        "Input «{name}» has the same content as «{existing}» with other import settings "
+        "({differences}): the import replaces it, with a reason.",
+        "La entrada «{name}» tiene el mismo contenido que «{existing}» con otros ajustes de "
+        "importación ({differences}): la importación la sustituye, con un motivo.",
+    ),
+    Message(
+        "core.input_reason_missing",
+        "State the reason for replacing input «{previous}» with «{name}».",
+        "Indique el motivo de la sustitución de la entrada «{previous}» por «{name}».",
+    ),
+    Message(
+        "core.input_name_taken",
+        "There is already another input «{name}» in the project: choose another name or "
+        "update that input.",
+        "Ya hay otra entrada «{name}» en el proyecto: elija otro nombre o actualice esa "
+        "entrada.",
+    ),
+    Message(
+        "core.input_previous_unknown",
+        "The input that «{name}» replaces ({previous}) is not in the project.",
+        "La entrada a la que sustituye «{name}» ({previous}) no está en el proyecto.",
+    ),
+    Message(
+        "core.input_previous_discarded",
+        "Input «{previous}» is discarded: it is kept as a record and is not updated.",
+        "La entrada «{previous}» está descartada: queda como registro y no se actualiza.",
+    ),
+    Message(
+        "core.input_previous_replaced",
+        "Input «{previous}» is already replaced by «{other}»: «{name}» does not replace it "
+        "again.",
+        "La entrada «{previous}» ya está sustituida por «{other}»: «{name}» no la vuelve a "
+        "sustituir.",
+    ),
+    Message(
+        "core.input_operation_missing",
+        "Input «{name}» is registered with its import operation: without provenance it is not "
+        "accepted.",
+        "La entrada «{name}» se registra con su operación de importación: sin procedencia no "
+        "se admite.",
+    ),
+    Message(
+        "core.input_operation_unknown",
+        "The import operation of input «{name}» ({operation}) is not in the project.",
+        "La operación de importación de la entrada «{name}» ({operation}) no está en el "
+        "proyecto.",
+    ),
+    Message(
+        "core.input_operation_not_running",
+        "Import operation «{op_type}» of input «{name}» ({operation}) is no longer running: the "
+        "input is registered before completing it.",
+        "La operación de importación «{op_type}» de la entrada «{name}» ({operation}) ya no "
+        "está en curso: la entrada se registra antes de completarla.",
+    ),
+    Message(
+        "core.input_table_missing",
+        "Table «{table}» of input «{name}» is not a layer or table of the project.",
+        "La tabla «{table}» de la entrada «{name}» no es una capa ni una tabla del proyecto.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})

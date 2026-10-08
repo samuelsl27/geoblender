@@ -50,6 +50,10 @@ class EventKind(Enum):
     # cuyo trabajo se borró sin incorporarlo (RF-008-23).
     OPERATION_INTERRUPTED = "operation_interrupted"
     OPERATION_NOT_INGESTED = "operation_not_ingested"
+    # Una entrada registrada con su importación (RF-008-07) y una fuente que ya lo estaba, con
+    # el mismo contenido y los mismos ajustes, reutilizada (RF-008-54).
+    INPUT_REGISTERED = "input_registered"
+    INPUT_REUSED = "input_reused"
 
 
 @dataclass(frozen=True)
