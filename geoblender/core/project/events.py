@@ -61,6 +61,10 @@ class EventKind(Enum):
     INPUT_KEPT = "input_kept"
     INPUT_DISCARDED = "input_discarded"
     INPUT_EDITED = "input_edited"
+    # Una entrada cuya fuente ya no tiene el contenido registrado (o el visto), «cambiada»
+    # (RF-008-10), y una cambiada o mantenida cuya fuente vuelve al registrado, otra vez vigente.
+    INPUT_CHANGED = "input_changed"
+    INPUT_RESTORED = "input_restored"
     # El original de una entrada tabular o documental que pasa del límite y no se guarda
     # (RF-008-53; D-18).
     ORIGINAL_NOT_STORED = "original_not_stored"

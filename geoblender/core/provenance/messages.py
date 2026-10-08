@@ -391,6 +391,34 @@ _CATALOG: tuple[Message, ...] = (
         "Input «{name}» is already «changed · copy kept».",
         "La entrada «{name}» ya está «cambiada · se mantiene la copia».",
     ),
+    # Comprobación de las fuentes (T25; RF-008-10, RF-008-13): el aviso de la spec §8 de una
+    # entrada cambiada, con la fecha de su fuente, y las que no se pueden comprobar.
+    Message(
+        "core.input_changed",
+        "Input «{name}» has changed since it was registered ({registered}). Depending on it: "
+        "{datasets}, {operations} and {figures}.",
+        "La entrada «{name}» ha cambiado desde su registro ({registered}). Dependen de ella: "
+        "{datasets}, {operations} y {figures}.",
+    ),
+    Message(
+        "core.input_changed_source",
+        "Date of the source: {source_date}.",
+        "Fecha de la fuente: {source_date}.",
+    ),
+    Message(
+        "core.input_unreachable",
+        "The source of input «{name}» cannot be found ({file}): not locatable; the imported "
+        "data is still used.",
+        "No se encuentra la fuente de la entrada «{name}» ({file}): no localizable; se sigue "
+        "con lo importado.",
+    ),
+    Message(
+        "core.input_unreadable",
+        "The source of input «{name}» cannot be read with its reader «{reader}» ({reason}): the "
+        "imported data is still used.",
+        "No se puede leer la fuente de la entrada «{name}» con su lector «{reader}» "
+        "({reason}): se sigue con lo importado.",
+    ),
     # Originales (T22; RF-008-53, RF-008-14): el aviso de la spec §8 por encima del límite
     # (D-18) y los rechazos de la copia verificada, que nunca se rehace desde la fuente.
     Message(

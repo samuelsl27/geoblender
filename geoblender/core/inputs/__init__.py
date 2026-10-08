@@ -16,8 +16,10 @@
 - :mod:`.guard`: rechazar una escritura de Geoblender en la fuente de una entrada, en su
   carpeta fuera del proyecto o en una carpeta de solo lectura (``check_write_target``), y los
   avisos de las carpetas de solo lectura (``read_only_warnings``) (RF-008-15, RF-008-14).
-
-La comprobación de las fuentes llega con las tareas siguientes (plan 008 §5.3.1).
+- :mod:`.check`: comprobar las fuentes de las entradas activas (``check_steps``, rápida por
+  tamaño y fecha o completa por hash de contenido), con «cambiada», «se mantiene la copia», la
+  vuelta a «vigente», «no localizable» y lo que depende de cada una (RF-008-09, RF-008-10,
+  RF-008-12, RF-008-13, RF-008-14).
 """
 
 from .model import (
@@ -41,6 +43,17 @@ from .model import (
     check_received_from,
     crs_text,
     input_declarations,
+)
+from .check import (
+    CheckMode,
+    CheckOutcome,
+    Dependent,
+    Dependents,
+    InputFinding,
+    Verdict,
+    check_steps,
+    dependents,
+    reader_roles,
 )
 from .guard import check_write_target, read_only_warnings
 from .originals import (
@@ -76,11 +89,16 @@ __all__ = [
     "INPUT_KINDS",
     "ORIGINAL_COPY_LIMIT",
     "UNSET",
+    "CheckMode",
+    "CheckOutcome",
     "Classification",
+    "Dependent",
+    "Dependents",
     "Difference",
     "FileAnchor",
     "FileRole",
     "InputFileRecord",
+    "InputFinding",
     "InputRecord",
     "InputSpec",
     "InputStatus",
@@ -92,13 +110,16 @@ __all__ = [
     "SourcePrint",
     "StoredOriginal",
     "Substitute",
+    "Verdict",
     "check_crs",
     "check_name",
     "check_received_at",
     "check_received_from",
+    "check_steps",
     "check_write_target",
     "classify_import",
     "crs_text",
+    "dependents",
     "discard",
     "edit_delivery",
     "get",
@@ -106,6 +127,7 @@ __all__ = [
     "keep_copy",
     "locate_source",
     "read_only_warnings",
+    "reader_roles",
     "register_input",
     "resolve_source",
     "reuse_input",
