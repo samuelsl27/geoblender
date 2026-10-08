@@ -486,6 +486,11 @@ CATALOG: tuple[Message, ...] = (
         "Triangulator {name} did not fulfil its contract: {detail}.",
         "El triangulador {name} no cumplió su contrato: {detail}.",
     ),
+    Message(
+        "gis.triangulation_input",
+        "Triangulator {name} cannot triangulate this data: {detail}.",
+        "El triangulador {name} no puede triangular estos datos: {detail}.",
+    ),
     # Exportar (RF-006-10) ---------------------------------------------------------------
     Message(
         "gis.export_over_input",

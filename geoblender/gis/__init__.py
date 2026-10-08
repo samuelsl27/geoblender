@@ -13,11 +13,13 @@ la reproyección a la rejilla del proyecto (``gis.resample``), la declaración d
 datum con sus transformaciones (``gis.crs``), el aviso de alturas elipsoidales
 (``gis.vertical``), la validación de una superficie (``gis.validate``), los puntos, las
 líneas de rotura y sus duplicados (``gis.points``), las capas de un GeoPackage leídas sobre
-una copia (``gis.vector``) y la preparación de las restricciones de un TIN
-(``gis.breaklines``). Cada tarea de la 006 añade aquí lo suyo.
+una copia (``gis.vector``), la preparación de las restricciones de un TIN
+(``gis.breaklines``) y el triangulador propio (``gis.cdt``). Cada tarea de la 006 añade aquí
+lo suyo.
 """
 
 from .breaklines import PreparedInput, prepare_constraints
+from .cdt import PureTriangulator
 from .crs import (
     ELLIPSOIDAL_ETRS89,
     CoordinateTransform,
@@ -113,6 +115,7 @@ __all__ = [
     "PointSet",
     "PreparedInput",
     "Progress",
+    "PureTriangulator",
     "Raster",
     "RasterIO",
     "RasterSource",
