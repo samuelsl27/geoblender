@@ -24,7 +24,9 @@
   «⚠ n entradas» (:func:`counts`) y la lista de lo obsoleto (:func:`stale_items`).
 - :mod:`.recompute`: el plan de «Recalcular lo obsoleto» (:func:`plan_recompute`,
   :class:`RecomputePlan`): unidades en orden de dependencia y lo que se deja fuera, con su
-  motivo (:class:`Skipped`, :class:`SkipReason`).
+  motivo (:class:`Skipped`, :class:`SkipReason`); su ejecución por unidades
+  (:func:`recompute_steps`, :class:`RecomputeRequest`, :class:`RecomputeOutcome`) y «dar por
+  buena» una operación que espera revisión a mano (:func:`accept_review`).
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
@@ -77,6 +79,7 @@ OPERATIONS_API: tuple[str, ...] = (
     "OperationHandle",
     "OperationStatus",
     "Use",
+    "begin_in_transaction",
     "begin_operation",
     "claimed_paths",
     "interrupt_orphaned",
@@ -122,13 +125,21 @@ STALE_API: tuple[str, ...] = (
 """Lo de :mod:`.stale` que se reexporta al usarlo."""
 
 RECOMPUTE_API: tuple[str, ...] = (
+    "RECOMPUTE_PHASE",
     "SCOPE_ALL",
     "OperationRef",
+    "RecomputeHandle",
+    "RecomputeOutcome",
     "RecomputePlan",
+    "RecomputeRequest",
     "RecomputeUnit",
     "SkipReason",
     "Skipped",
+    "UnitResult",
+    "UnitStatus",
+    "accept_review",
     "plan_recompute",
+    "recompute_steps",
 )
 """Lo de :mod:`.recompute` que se reexporta al usarlo."""
 
@@ -169,6 +180,7 @@ __all__ = [
     "LABELS",
     "MESSAGES",
     "OPERATIONS",
+    "RECOMPUTE_PHASE",
     "SCOPES",
     "SCOPE_ALL",
     "CacheUpdate",
@@ -191,7 +203,10 @@ __all__ = [
     "OperationStatus",
     "ProvenanceError",
     "ProvenanceGraph",
+    "RecomputeHandle",
+    "RecomputeOutcome",
     "RecomputePlan",
+    "RecomputeRequest",
     "RecomputeUnit",
     "SkipReason",
     "Skipped",
@@ -199,8 +214,12 @@ __all__ = [
     "StaleReport",
     "StaleRow",
     "Staleness",
+    "UnitResult",
+    "UnitStatus",
     "Use",
     "Version",
+    "accept_review",
+    "begin_in_transaction",
     "begin_operation",
     "claimed_paths",
     "counts",
@@ -217,6 +236,7 @@ __all__ = [
     "operation_def",
     "parse_version",
     "plan_recompute",
+    "recompute_steps",
     "record_figure",
     "refresh_all",
     "refresh_region",

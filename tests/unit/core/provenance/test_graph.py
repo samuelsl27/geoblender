@@ -173,12 +173,14 @@ class GraphCase(OperationsCase):
         figure: float | None = None,
         before: Callable[[sqlite3.Connection, Any], None] | None = None,
         outputs: Sequence[Any] = (),
+        settings: Mapping[str, Any] | None = None,
     ) -> Any:
-        """Una operación hecha de ``op_type``: consume ``reads`` (nombres de datos vivos o
-        ``Use``) y ``params``, escribe las tablas de ``writes`` (con el hash de ``digests``
-        si se da) y, si se pide, la cifra ``res.marks``."""
+        """Una operación hecha de ``op_type`` (con sus ``settings``): consume ``reads``
+        (nombres de datos vivos o ``Use``) y ``params``, escribe las tablas de ``writes`` (con
+        el hash de ``digests`` si se da) y, si se pide, la cifra ``res.marks``."""
         handle = self.begin(op_type, inputs=_uses(reads), params=list(params),
-                            group_uid=group_uid, supersedes=supersedes)
+                            group_uid=group_uid, supersedes=supersedes,
+                            settings=dict(settings or {}))
         chosen = digests or {}
 
         def work(conn: sqlite3.Connection) -> None:

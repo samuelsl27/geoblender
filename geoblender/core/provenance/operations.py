@@ -12,7 +12,9 @@ tablas ``gb_*``, llaman a esta API:
    (RF-008-05; los que el proyecto aún no tiene, registrados antes con su valor por defecto
    «sin confirmar» en **esa misma transacción**, RF-008-04), cada dato o entrada que consume
    con su hash de contenido y su papel (:class:`Use`), quién la lanza, cuándo, desde qué
-   sesión y en qué equipo, y la versión de Geoblender (RF-008-51).
+   sesión y en qué equipo, y la versión de Geoblender (RF-008-51). Una operación que empieza
+   y termina en una sola transacción (``core.accept_review``) usa
+   :func:`begin_in_transaction`, en la de quien llama.
 2. :meth:`OperationHandle.complete`, en la transacción **del módulo**, la que escribe sus
    resultados (el punto de confirmación): registra cada salida (``core.datasets``: un dato
    nuevo o el contenido nuevo de uno vivo con su nombre, con su hash y su papel) y cada cifra
@@ -849,26 +851,81 @@ def begin_operation(
     ``core.operation_input_unknown``/``_not_live``, ``core.operation_supersedes_unknown``/
     ``_not_done``, ``core.operation_already_superseded``), ``ParamError``
     (``core.param_undefined``) y ``ValueError``/``TypeError`` con un argumento mal formado."""
-    definition = operation_def(op_type)
-    _require_writable(project)
-    settings_json = _settings(settings)
-    chosen = _executor(executor)
-    job = _optional_text(job_uid, "job_uid")
-    _check_job(chosen, job, required=False)
-    group = _group_uid(definition, group_uid)
-    uses = _uses(inputs)
-    keys = _keys(params)
-    previous = _optional_text(supersedes, "la operación sustituida (supersedes)")
-    session = project.session
-    store = ParameterStore(project)
+    start = _Start.of(project, op_type, settings=settings, inputs=inputs, params=params,
+                      executor=executor, job_uid=job_uid, group_uid=group_uid,
+                      supersedes=supersedes)
     with project.write_transaction() as conn:
         _prune(project, conn)
+        handle = start.insert(conn, project)
+    with _LOCK:
+        _HANDLES[handle.uid] = handle
+    return handle
+
+
+def begin_in_transaction(
+    conn: sqlite3.Connection,
+    project: OperationProject,
+    op_type: str,
+    *,
+    settings: Mapping[str, Any],
+    inputs: Sequence[Use] = (),
+    params: Sequence[str] = (),
+    executor: Executor | str,
+    job_uid: str | None = None,
+    group_uid: str | None = None,
+    supersedes: str | None = None,
+) -> OperationHandle:
+    """Lo mismo que :func:`begin_operation`, pero en la transacción de escritura ``conn`` de
+    quien llama, para una operación que empieza y se completa en ella (``core.accept_review``,
+    una edición externa): si la transacción se deshace, no queda nada. No reclama rutas (no
+    escribe ficheros mientras está en curso). Los mismos rechazos (se deshacen con la
+    transacción de quien llama) y ``ValueError`` fuera de una transacción de escritura."""
+    _in_transaction(conn, "begin_in_transaction")
+    start = _Start.of(project, op_type, settings=settings, inputs=inputs, params=params,
+                      executor=executor, job_uid=job_uid, group_uid=group_uid,
+                      supersedes=supersedes)
+    return start.insert(conn, project)
+
+
+@dataclass(frozen=True, slots=True)
+class _Start:
+    """Lo que se comprueba de una operación antes de registrarla «en curso», sin leer el
+    proyecto (:meth:`of`), y su registro en una transacción de escritura (:meth:`insert`)."""
+
+    definition: OperationDef
+    settings_json: str
+    executor: Executor
+    job_uid: str | None
+    group_uid: str | None
+    uses: tuple[Use, ...]
+    keys: tuple[str, ...]
+    supersedes: str | None
+
+    @classmethod
+    def of(cls, project: OperationProject, op_type: str, *, settings: Mapping[str, Any],
+           inputs: Sequence[Use], params: Sequence[str], executor: Executor | str,
+           job_uid: str | None, group_uid: str | None, supersedes: str | None) -> _Start:
+        definition = operation_def(op_type)
+        _require_writable(project)
+        settings_json = _settings(settings)
+        chosen = _executor(executor)
+        job = _optional_text(job_uid, "job_uid")
+        _check_job(chosen, job, required=False)
+        return cls(definition, settings_json, chosen, job, _group_uid(definition, group_uid),
+                   _uses(inputs), _keys(params),
+                   _optional_text(supersedes, "la operación sustituida (supersedes)"))
+
+    def insert(self, conn: sqlite3.Connection, project: OperationProject) -> OperationHandle:
+        """La deja «en curso» en la transacción ``conn`` (véase :func:`begin_operation`)."""
+        definition, previous = self.definition, self.supersedes
+        session = project.session
+        store = ParameterStore(project)
         if previous is not None:
             _check_supersedes(conn, definition, previous)
-        consumed = tuple(_resolve_use(conn, definition, use) for use in uses)
+        consumed = tuple(_resolve_use(conn, definition, use) for use in self.uses)
         _check_repeated(consumed)
         resolved: list[ResolvedParam] = []
-        for key in keys:
+        for key in self.keys:
             store.ensure_default(conn, key, geoblender_version=session.geoblender_version)
             resolved.append(store.resolve(conn, key))
         uid = new_uid()
@@ -881,15 +938,15 @@ def begin_operation(
             "scope": definition.scope,
             "repeatable": int(definition.repeatable),
             "group_name": definition.group,
-            "group_uid": group,
-            "settings": settings_json,
-            "settings_sha256": sha256_bytes(settings_json.encode("utf-8")),
+            "group_uid": self.group_uid,
+            "settings": self.settings_json,
+            "settings_sha256": sha256_bytes(self.settings_json.encode("utf-8")),
             "status": str(OperationStatus.RUNNING),
             "supersedes_uid": previous,
             "geoblender_version": session.geoblender_version,
             "software": "{}",
-            "executor": str(chosen),
-            "job_uid": job,
+            "executor": str(self.executor),
+            "job_uid": self.job_uid,
             "user_host": session.user_host,
             "host": session.host,
             "session_uid": session.session_uid,
@@ -914,14 +971,11 @@ def begin_operation(
               param.unit, str(param.kind), int(param.unconfirmed), param.value_sha256)
              for param in resolved],
         )
-    handle = OperationHandle(
-        project, definition, uid, settings=settings_json, group_uid=group,
-        supersedes=previous, executor=chosen, job_uid=job, started_at=started,
-        inputs=consumed, params=tuple(resolved),
-    )
-    with _LOCK:
-        _HANDLES[uid] = handle
-    return handle
+        return OperationHandle(
+            project, definition, uid, settings=self.settings_json, group_uid=self.group_uid,
+            supersedes=previous, executor=self.executor, job_uid=self.job_uid,
+            started_at=started, inputs=consumed, params=tuple(resolved),
+        )
 
 
 @contextmanager

@@ -68,6 +68,9 @@ class EventKind(Enum):
     # El original de una entrada tabular o documental que pasa del límite y no se guarda
     # (RF-008-53; D-18).
     ORIGINAL_NOT_STORED = "original_not_stored"
+    # Una operación que esperaba revisión a mano, dada por buena con su motivo
+    # (``core.accept_review``; RF-008-27, D-12).
+    REVIEW_ACCEPTED = "review_accepted"
 
 
 @dataclass(frozen=True)

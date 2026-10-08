@@ -535,6 +535,71 @@ _CATALOG: tuple[Message, ...] = (
         "Computed with {op_type} {version}: update Geoblender",
         "Calculado con {op_type} {version}: actualice Geoblender",
     ),
+    # Ejecución del plan (T29; RF-008-26): una unidad que al empezar no se ejecuta (sigue
+    # obsoleta) y una que no se pudo recalcular.
+    Message(
+        "core.recompute_input_changed",
+        "Not recomputed: input «{name}» has changed and it has not been decided whether to "
+        "update it or keep the copy.",
+        "No se recalcula: la entrada «{name}» ha cambiado y no se ha decidido si actualizarla "
+        "o mantener la copia.",
+    ),
+    Message(
+        "core.recompute_dataset_unusable",
+        "Not recomputed: dataset «{name}» that it consumes is missing, blocked or damaged.",
+        "No se recalcula: el dato «{name}» que consume falta, está bloqueado o dañado.",
+    ),
+    Message(
+        "core.recompute_no_successor",
+        "Not recomputed: «{name}», which it consumed, was discarded and has no successor.",
+        "No se recalcula: «{name}», que consumía, se descartó y no tiene sucesor.",
+    ),
+    Message(
+        "core.recompute_failed",
+        "Operation «{op_type}» could not be recomputed: {reason}",
+        "No se pudo recalcular la operación «{op_type}»: {reason}",
+    ),
+    # «Dar por buena» una operación que espera revisión a mano (T29; RF-008-27, D-12).
+    Message(
+        "core.accept_review_reason_missing",
+        "A reason is missing: accepting operation «{op_type}» as good is recorded with it.",
+        "Falta el motivo: dar por buena la operación «{op_type}» queda registrado con él.",
+    ),
+    Message(
+        "core.accept_review_not_review",
+        "Operation «{op_type}» ({operation}) is not waiting for review by hand: there is "
+        "nothing to accept as good.",
+        "La operación «{op_type}» ({operation}) no espera revisión a mano: no hay nada que dar "
+        "por bueno.",
+    ),
+    Message(
+        "core.accept_review_upstream",
+        "Operation «{op_type}» cannot be accepted as good yet: what it consumes is still "
+        "stale ({names}); recompute or review it first.",
+        "La operación «{op_type}» aún no se puede dar por buena: lo que consume sigue "
+        "obsoleto ({names}); recalcúlelo o revíselo antes.",
+    ),
+    Message(
+        "core.accept_review_imported",
+        "Operation «{op_type}» wrote what was imported from input «{name}»: it is not "
+        "accepted as good; update or reimport the input.",
+        "La operación «{op_type}» escribió lo importado de la entrada «{name}»: no se da por "
+        "buena; actualice o reimporte la entrada.",
+    ),
+    Message(
+        "core.accept_review_output",
+        "Dataset «{name}» written by operation «{op_type}» is missing, blocked or damaged: "
+        "resolve it before accepting the operation as good.",
+        "El dato «{name}» que escribió la operación «{op_type}» falta, está bloqueado o "
+        "dañado: resuélvalo antes de dar la operación por buena.",
+    ),
+    Message(
+        "core.accept_review_changed",
+        "Dataset «{name}» is no longer the one written by operation «{op_type}»: check the "
+        "project data before accepting it as good.",
+        "El dato «{name}» ya no es el que escribió la operación «{op_type}»: compruebe los "
+        "datos del proyecto antes de darla por buena.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})

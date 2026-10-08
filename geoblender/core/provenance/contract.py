@@ -54,7 +54,8 @@ from .messages import (
 
 type RecomputeFunction = Callable[[Any], Any]
 """``recompute(request) -> handle``: vuelve a ejecutar una operación con las entradas y los
-parámetros vigentes (la petición y lo que devuelve los fija ``recompute.py``, T28 y T29)."""
+parámetros vigentes (``recompute.RecomputeRequest``) y devuelve la operación nueva, que la
+sustituye (``recompute.RecomputeHandle``: su ``OperationHandle``)."""
 type ReimportFunction = Callable[[Any], Any]
 """``reimport(request) -> handle``: vuelve a importar una entrada con sus ajustes registrados
 (la petición la fija el registro de entradas, T21 y T34)."""
