@@ -600,6 +600,59 @@ _CATALOG: tuple[Message, ...] = (
         "El dato «{name}» ya no es el que escribió la operación «{op_type}»: compruebe los "
         "datos del proyecto antes de darla por buena.",
     ),
+    # Datos del proyecto cambiados fuera de Geoblender (T30; RF-008-21, RF-008-56,
+    # RF-008-57; ADR-0025 §4): la edición externa registrada, el bloqueo de la spec §8, lo que
+    # falta, lo dañado y lo que no se puede leer para comprobarlo.
+    Message(
+        "core.external_edit",
+        "Dataset «{name}» was edited outside Geoblender: the external edit is recorded and "
+        "what depends on it is stale.",
+        "El dato «{name}» se editó fuera de Geoblender: se registra la edición externa y lo "
+        "que depende de él queda obsoleto.",
+    ),
+    Message(
+        "core.dataset_blocked",
+        "Layer «{name}» was edited outside Geoblender and is not edited by hand: accept the "
+        "edit with a reason, recompute or reimport",
+        "La capa «{name}» se editó fuera de Geoblender y no se edita a mano: acepte la "
+        "edición con un motivo, recalcule o reimporte",
+    ),
+    Message(
+        "core.dataset_missing",
+        "Dataset «{name}» is missing ({locator}): recompute or reimport it; while it is "
+        "missing, no operation that consumes it is run.",
+        "Falta el dato «{name}» ({locator}): recalcúlelo o reimpórtelo; mientras falte, no se "
+        "ejecuta ninguna operación que lo consuma.",
+    ),
+    Message(
+        "core.dataset_damaged",
+        "Dataset «{name}», imported from input «{input}», is damaged: it changed or lost its "
+        "protection; it can only be reimported.",
+        "El dato «{name}», lo importado de la entrada «{input}», está dañado: cambió o perdió "
+        "su protección; solo se puede reimportar.",
+    ),
+    Message(
+        "core.dataset_unreadable",
+        "Dataset «{name}» cannot be read to check it ({reason}): no operation that consumes "
+        "it is run.",
+        "No se puede leer el dato «{name}» para comprobarlo ({reason}): no se ejecuta ninguna "
+        "operación que lo consuma.",
+    ),
+    # Puerta antes de operar (T30; RF-008-10, RF-008-58): las tres salidas del aviso de una
+    # entrada cambiada y la espera a la comprobación de apertura o a un hash largo.
+    Message("core.choice_update", "Update", "Actualizar"),
+    Message("core.choice_keep", "Keep the copy", "Mantener la copia"),
+    Message("core.choice_cancel", "Cancel", "Cancelar"),
+    Message(
+        "core.gate_checking",
+        "Checking the project…: wait until it finishes ({names}).",
+        "Comprobando el proyecto…: espere a que termine ({names}).",
+    ),
+    Message(
+        "core.gate_hashing",
+        "Checking the content of {names}: wait until it finishes and repeat the command.",
+        "Comprobando el contenido de {names}: espere a que termine y repita la orden.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})

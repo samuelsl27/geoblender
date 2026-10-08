@@ -17,6 +17,9 @@ escribió su contenido actual: sin ella no se registra (RF-008-17, D-2). Lo llam
   su uid o por el nombre de su dato vivo, el sucesor vivo de uno sustituido, sustituirlo y
   cambiar su estado. Las dos últimas ponen al día en la misma transacción la caché de la
   obsolescencia por región de lo que lo consumió (``core.provenance.stale``, RF-008-24).
+- :func:`content_digest` y :func:`spec_of`: el hash del contenido que tiene ahora un dato
+  (cancelable entre trozos) y la declaración de un contenido nuevo con su misma identidad, para
+  comprobar los datos del proyecto (``core.datasets.external``).
 
 **Hash** (ADR-0024 §6). Cada dato se hashea siempre con **su** lector y **su** normalizador,
 los que tenía al registrarse (los nuevos, los que trae su :class:`~.model.DatasetSpec`), y sin
@@ -53,12 +56,13 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Protocol
 
 from ..content import builtin
 from ..content.encoder import NORMALIZER, NORMALIZERS, ContentDigest, content_sha256
-from ..content.readers import read_steps, reader
+from ..content.readers import ReadCancelled, read_steps, reader
 from ..errors import ValidationError
 from ..ids import new_uid
 from ..timeutil import Clock, format_utc
@@ -79,6 +83,8 @@ RUNNING = "running"
 SUCCESSOR_OPERATION_STATUSES: tuple[str, ...] = (RUNNING, "done")
 """Los estados de la operación que sustituye a otra en los que cuenta para el sucesor (una
 reimportación cancelada o fallida no sustituye nada)."""
+DIGEST_ROLE = "content"
+"""El papel con que :func:`content_digest` declara el dato que hashea (no se escribe)."""
 
 _COLUMNS = ", ".join(RECORD_COLUMNS)
 _LIVE = ", ".join(f"'{status}'" for status in LIVE_STATUSES)
@@ -308,8 +314,26 @@ def _check_normalizer(name: str, normalizer: str) -> None:
 # --- Hash y seguimiento ---------------------------------------------------------------------
 
 
+def _advance(steps: Iterator[float], reader_id: str,
+             cancelled: Callable[[], bool] | None) -> None:
+    """Lleva hasta el final los pasos de un lector; ``cancelled()``, antes de empezar y tras
+    cada trozo: si es verdadero, ``ReadCancelled`` (el lector se cierra)."""
+    done = 0.0
+    try:
+        if cancelled is not None and cancelled():
+            raise ReadCancelled(reader_id, done)
+        for done in steps:
+            if cancelled is not None and cancelled():
+                raise ReadCancelled(reader_id, done)
+    finally:
+        close = getattr(steps, "close", None)
+        if close is not None:
+            close()
+
+
 def _computed(conn: sqlite3.Connection, project: DatasetProject, spec: DatasetSpec,
-              reader_id: str, normalizer: str) -> ContentDigest:
+              reader_id: str, normalizer: str, *,
+              cancelled: Callable[[], bool] | None = None) -> ContentDigest:
     """El hash del dato, leído con ``reader_id`` y ``normalizer``, sin declaraciones."""
     _check_normalizer(spec.name, normalizer)
     if spec.store is Store.GPKG:
@@ -321,8 +345,7 @@ def _computed(conn: sqlite3.Connection, project: DatasetProject, spec: DatasetSp
             spec.kind, DATASET_DECLARATIONS, {"main": project.database_path},
             {"layer": spec.locator, "selector": spec.selector}, normalizer=normalizer,
         )
-        for _ in builtin.layer_steps(conn, request):
-            pass
+        _advance(builtin.layer_steps(conn, request), reader_id, cancelled)
         return request.hasher.digest()
     if spec.store is Store.DUCKDB:
         raise _error("core.dataset_content_missing", spec.name,
@@ -332,8 +355,7 @@ def _computed(conn: sqlite3.Connection, project: DatasetProject, spec: DatasetSp
     content_reader = reader(reader_id)
     request = content_reader.request(spec.kind, DATASET_DECLARATIONS, {"main": path},
                                      normalizer=normalizer)
-    for _ in read_steps(content_reader, request):
-        pass
+    _advance(read_steps(content_reader, request), reader_id, cancelled)
     return request.hasher.digest()
 
 
@@ -344,6 +366,35 @@ def _file(project: DatasetProject, spec: DatasetSpec) -> Path:
                      "el fichero no está en el proyecto: un dato se registra después de "
                      "escribirlo", "ubicación", spec.locator)
     return path
+
+
+def spec_of(record: DatasetRecord, *, role: str,
+            content: ContentDigest | None = None) -> DatasetSpec:
+    """La declaración de un contenido nuevo del dato ``record``, con su misma identidad y su
+    ubicación (lo que pide :func:`set_content`), su papel ``role`` en la operación que lo
+    escribe y, si se da, su hash ``content`` (con su lector y su normalizador): la de una
+    edición externa o la de dar por buena una operación."""
+    return DatasetSpec(
+        record.name, record.module, record.kind, record.store, record.locator,
+        reader=record.reader, role=role, selector=record.selector, content=content,
+        crs_epsg=record.crs_epsg, input_uid=record.input_uid, immutable=record.immutable,
+        qgis_editable=record.qgis_editable,
+    )
+
+
+def content_digest(conn: sqlite3.Connection, project: DatasetProject, record: DatasetRecord, *,
+                   cancelled: Callable[[], bool] | None = None) -> ContentDigest:
+    """El hash del contenido que tiene ahora el dato ``record``, con **su** lector y **su**
+    normalizador y sin declaraciones (ADR-0024 §6): una tabla de ``project.gpkg``, en la
+    conexión ``conn`` (ve lo no confirmado de su transacción); un fichero, con su lector
+    registrado. ``cancelled()`` se consulta antes de empezar y tras cada trozo: si es
+    verdadero, ``ReadCancelled`` (``core.content.readers``). ``ValidationError`` si no se
+    puede leer (``core.dataset_*``, ``core.content_*``, ``core.reader_unregistered``); los
+    ``OSError`` y ``sqlite3.Error`` de la lectura pasan tal cual. No escribe nada."""
+    if not isinstance(record, DatasetRecord):
+        raise TypeError(f"se hashea un DatasetRecord, no {type(record).__name__}")
+    spec = spec_of(record, role=DIGEST_ROLE)
+    return _computed(conn, project, spec, record.reader, record.normalizer, cancelled=cancelled)
 
 
 def _content(conn: sqlite3.Connection, project: DatasetProject, spec: DatasetSpec,

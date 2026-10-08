@@ -10,8 +10,12 @@ ADR-0025; plan 008 §5.1).
 - :mod:`.tracking`: el seguimiento de las tablas de los datos por
   ``gpkg_contents.last_change``, la huella de su SQL y sus disparadores, y la protección de lo
   importado.
+- :mod:`.external`: los datos cambiados fuera de Geoblender, dato a dato (prefiltro, veredicto
+  y registro de la edición externa, lo que falta y lo dañado), que usa la puerta antes de
+  operar (no se reexporta: ``external.assess``, ``external.record``…).
 
-Las ediciones externas y los restos llegan con las tareas siguientes (plan 008 §5.3.1).
+La comprobación de todos los datos y los restos llegan con las tareas siguientes (plan 008
+§5.3.1).
 """
 
 from .model import (
@@ -24,7 +28,16 @@ from .model import (
     DatasetStatus,
     Store,
 )
-from .registry import get, register_dataset, set_content, set_status, successor, supersede
+from .registry import (
+    content_digest,
+    get,
+    register_dataset,
+    set_content,
+    set_status,
+    spec_of,
+    successor,
+    supersede,
+)
 from .tracking import (
     TableState,
     ensure_triggers,
@@ -45,6 +58,7 @@ __all__ = [
     "DatasetStatus",
     "Store",
     "TableState",
+    "content_digest",
     "ensure_triggers",
     "get",
     "protect_immutable",
@@ -52,6 +66,7 @@ __all__ = [
     "register_dataset",
     "set_content",
     "set_status",
+    "spec_of",
     "successor",
     "supersede",
     "table_states",

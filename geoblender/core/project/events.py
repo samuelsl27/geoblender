@@ -71,6 +71,12 @@ class EventKind(Enum):
     # Una operación que esperaba revisión a mano, dada por buena con su motivo
     # (``core.accept_review``; RF-008-27, D-12).
     REVIEW_ACCEPTED = "review_accepted"
+    # Un dato del proyecto editado fuera de Geoblender (``core.external_edit``; RF-008-21,
+    # RF-008-56), uno que falta (RF-008-57) y lo importado que cambió o perdió su protección
+    # (ADR-0025 §4).
+    EXTERNAL_EDIT = "external_edit"
+    DATASET_MISSING = "dataset_missing"
+    DATASET_DAMAGED = "dataset_damaged"
 
 
 @dataclass(frozen=True)

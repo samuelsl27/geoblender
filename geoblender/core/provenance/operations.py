@@ -53,10 +53,12 @@ ninguno deja el proyecto en solo lectura. En solo lectura, todo lo que escribir�
 ``core.read_only`` sin tocar nada.
 
 ``complete`` pone al día, en la misma transacción, la caché de la obsolescencia por región
-(:mod:`.stale`). Pendiente de otras tareas de la 008: la puerta antes de operar
-(``gate.can_run``, T30) e incorporar un trabajo (``ingest_job``, T31). Python puro (ADR-0004):
-al importarse no importa ``core.project`` (que importa ``core.provenance.schema``); sus
-eventos, solo al registrarlos.
+(:mod:`.stale`). La puerta antes de operar (:func:`.gate.can_run`: entradas cambiadas, datos
+editados fuera, que faltan, bloqueados o dañados, lo aún sin comprobar) la llama quien lanza la
+operación antes de :func:`begin_operation` (``bl``, T48); ``begin_operation`` no la repite.
+Pendiente de otra tarea de la 008: incorporar un trabajo (``ingest_job``, T31). Python puro
+(ADR-0004): al importarse no importa ``core.project`` (que importa
+``core.provenance.schema``); sus eventos, solo al registrarlos.
 """
 
 from __future__ import annotations

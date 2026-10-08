@@ -27,13 +27,17 @@
   motivo (:class:`Skipped`, :class:`SkipReason`); su ejecución por unidades
   (:func:`recompute_steps`, :class:`RecomputeRequest`, :class:`RecomputeOutcome`) y «dar por
   buena» una operación que espera revisión a mano (:func:`accept_review`).
+- :mod:`.gate`: la puerta antes de operar (:func:`can_run` → :class:`Ready`,
+  :class:`Blocked` o :class:`Pending`) y lo que la comprobación de apertura aún no ha
+  comprobado (:class:`CheckState`).
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
 ``core.project.schema`` importa ``core.provenance.schema``, que pasa por este fichero.
 
-Por lo mismo, lo de :mod:`.operations`, :mod:`.figures`, :mod:`.graph`, :mod:`.stale` y
-:mod:`.recompute` (que traen ``core.datasets``, ``core.content`` y ``core.params``) se reexporta
+Por lo mismo, lo de :mod:`.operations`, :mod:`.figures`, :mod:`.graph`, :mod:`.stale`,
+:mod:`.recompute` y :mod:`.gate` (que traen ``core.datasets``, ``core.content``,
+``core.params`` y ``core.inputs``) se reexporta
 **al usarlo** (``__getattr__``, PEP 562), no al importar el paquete: así abrir un proyecto no
 carga ni compila esos módulos (las pruebas de Blender rehabilitan la extensión muchas veces
 desde cero, con ``-B``).
@@ -143,6 +147,22 @@ RECOMPUTE_API: tuple[str, ...] = (
 )
 """Lo de :mod:`.recompute` que se reexporta al usarlo."""
 
+GATE_API: tuple[str, ...] = (
+    "BlockKind",
+    "BlockReason",
+    "Blocked",
+    "CheckState",
+    "Choice",
+    "Notice",
+    "Pending",
+    "PendingItem",
+    "PendingReason",
+    "Ready",
+    "can_run",
+    "choice_label",
+)
+"""Lo de :mod:`.gate` que se reexporta al usarlo."""
+
 
 def __getattr__(name: str) -> Any:
     if name in OPERATIONS_API:
@@ -155,6 +175,8 @@ def __getattr__(name: str) -> Any:
         from . import stale as source
     elif name in RECOMPUTE_API:
         from . import recompute as source
+    elif name in GATE_API:
+        from . import gate as source
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(source, name)
@@ -164,7 +186,7 @@ def __getattr__(name: str) -> Any:
 
 def __dir__() -> list[str]:
     return sorted({*globals(), *OPERATIONS_API, *FIGURES_API, *GRAPH_API, *STALE_API,
-                   *RECOMPUTE_API})
+                   *RECOMPUTE_API, *GATE_API})
 
 
 __all__ = [
@@ -183,9 +205,14 @@ __all__ = [
     "RECOMPUTE_PHASE",
     "SCOPES",
     "SCOPE_ALL",
+    "BlockKind",
+    "BlockReason",
+    "Blocked",
     "CacheUpdate",
     "Cause",
     "CauseKind",
+    "CheckState",
+    "Choice",
     "Consumed",
     "CoupledGroupDef",
     "Counts",
@@ -197,12 +224,17 @@ __all__ = [
     "ImporterDef",
     "ItemKind",
     "Message",
+    "Notice",
     "OperationDef",
     "OperationHandle",
     "OperationRef",
     "OperationStatus",
+    "Pending",
+    "PendingItem",
+    "PendingReason",
     "ProvenanceError",
     "ProvenanceGraph",
+    "Ready",
     "RecomputeHandle",
     "RecomputeOutcome",
     "RecomputePlan",
@@ -221,6 +253,8 @@ __all__ = [
     "accept_review",
     "begin_in_transaction",
     "begin_operation",
+    "can_run",
+    "choice_label",
     "claimed_paths",
     "counts",
     "deduce",
