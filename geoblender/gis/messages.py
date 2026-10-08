@@ -107,6 +107,13 @@ CATALOG: tuple[Message, ...] = (
         "«{source}» no se ha importado.",
     ),
     Message(
+        "gis.coordinates_unknown_accuracy",
+        "There is no transformation of known accuracy from {source_crs} to {target_crs}: "
+        "the coordinates have not been transformed.",
+        "No hay una transformación de precisión conocida de {source_crs} a {target_crs}: "
+        "las coordenadas no se han transformado.",
+    ),
+    Message(
         "gis.crs_catalog_mismatch",
         "The definition of {crs} in the coordinate transformation library differs from "
         "the one in Geoblender's catalog: transformations are disabled.",
@@ -121,6 +128,13 @@ CATALOG: tuple[Message, ...] = (
         "Las transformaciones de coordenadas están desactivadas: Blender cargó pyproj "
         "{found} y Geoblender necesita {expected} (otra extensión puede haber traído la "
         "suya). El resto de Geoblender funciona con normalidad.",
+    ),
+    Message(
+        "gis.crs_service_broken",
+        "Coordinate transformations are disabled: {detail}. The rest of Geoblender works "
+        "normally.",
+        "Las transformaciones de coordenadas están desactivadas: {detail}. El resto de "
+        "Geoblender funciona con normalidad.",
     ),
     # Importar un MDT (RF-006-08, RF-006-09) ---------------------------------------------
     Message(

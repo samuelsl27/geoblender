@@ -14,9 +14,9 @@ precedence = "override"
 SPDX-FileCopyrightText = "IOGP (International Association of Oil and Gas Producers), EPSG Geodetic Parameter Dataset"
 SPDX-License-Identifier = "LicenseRef-EPSG-terms-of-use"
 
-# Ejemplo de la 006 (rejillas del IGN):
-# [[annotations]]
-# path = ["geoblender/thirdparty/proj/**"]
-# precedence = "override"
-# SPDX-FileCopyrightText = "Instituto Geográfico Nacional"
-# SPDX-License-Identifier = "CC-BY-4.0"
+# Rejillas del IGN de la spec 006 (T11, D-3): distribuidas por PROJ-data, sin modificar.
+[[annotations]]
+path = ["geoblender/thirdparty/proj/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "Instituto Geográfico Nacional (www.ign.es), distribuidas por PROJ-data"
+SPDX-License-Identifier = "CC-BY-4.0"

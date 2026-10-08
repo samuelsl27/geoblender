@@ -64,6 +64,16 @@ class EnvironmentTest(unittest.TestCase):
             "numpy no puede venir de una carpeta de extensiones",
         )
 
+    def test_test_copy_without_wheels(self) -> None:
+        """RNF-001-01 (spec 006, T11): la copia de pruebas va sin ``wheels/`` y con
+        ``wheels = []`` (con ruedas, Blender instalaría y quitaría pyproj en cada habilitar
+        y deshabilitar), y lo demás de la extensión sí está (``thirdparty/proj/``)."""
+        copy = Path(blender_ext.import_root().__file__).resolve().parent
+        self.assertFalse((copy / "wheels").exists())
+        copied = manifest.load(copy / "blender_manifest.toml")
+        self.assertEqual(manifest.wheel_files(copied), [])
+        self.assertTrue((copy / "thirdparty" / "proj" / "es_ign_SPED2ETV2.tif").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

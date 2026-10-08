@@ -637,6 +637,8 @@ precedence = "override"
 SPDX-FileCopyrightText = "Instituto Geográfico Nacional"
 SPDX-License-Identifier = "CC-BY-4.0"
 """
+# Una licencia sin su texto en LICENSES/: CC-BY-4.0 ya lo tiene desde la 006 (T11).
+UNTEXTED_ANNOTATION = THIRDPARTY_ANNOTATION.replace('"CC-BY-4.0"', '"CC-BY-SA-4.0"')
 
 
 def _assets_found(
@@ -700,7 +702,7 @@ class AssetLicensesTest(WheelsTestCase):
             "sin la plantilla": self.reuse.replace(', "packaging/app_template/**"', ""),
             "MIT en lugar de CC0": self.reuse.replace('"CC0-1.0"', '"MIT"'),
             "TOML roto": self.reuse + "\n[[annotations]\n",
-            "licencia sin texto": self.reuse + THIRDPARTY_ANNOTATION,
+            "licencia sin texto": self.reuse + UNTEXTED_ANNOTATION,
         }
         for case, reuse in cases.items():
             with self.subTest(caso=case):
@@ -711,8 +713,8 @@ class AssetLicensesTest(WheelsTestCase):
                     findings = _assets_found({}, reuse=reuse)
                 self.assertTrue(findings, case)
                 self.assertEqual({f.rule for f in findings}, {"LIC-04"}, case)
-        findings = _assets_found({}, reuse=self.reuse + THIRDPARTY_ANNOTATION)
-        self.assertMentions(findings, "LICENSES/CC-BY-4.0.txt")
+        findings = _assets_found({}, reuse=self.reuse + UNTEXTED_ANNOTATION)
+        self.assertMentions(findings, "LICENSES/CC-BY-SA-4.0.txt")
 
     def test_asset_folder_without_license(self) -> None:
         """RF-001-24 / LIC-04: un PNG en ``geoblender/resources/icons/`` sin

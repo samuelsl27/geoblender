@@ -3,7 +3,7 @@
 
 - ARQ-04: fuera de ``geoblender/adapters/``, solo biblioteca estándar y numpy.
 - ARQ-05: en ``adapters/``, cada librería la importa solo su módulo dueño
-  (``ADAPTER_OWNERS``, vacía en esta spec).
+  (``ADAPTER_OWNERS``: pyproj → ``adapters.pyproj_crs``, spec 006).
 - HER-01: ``tools/`` (salvo los guiones que se ejecutan dentro de Blender) solo importa
   biblioteca estándar, ``gbtools``, sus scripts hermanos y ``geoblender`` cargado por
   ruta con ``gbtools.package.load_geoblender`` (nunca ``geoblender.bl``).
@@ -69,7 +69,7 @@ class ExternalLibrariesTest(unittest.TestCase):
             f"{EXT}/adapters/gempy_2025/__init__.py": "",
             f"{EXT}/adapters/gempy_2025/engine.py": "import gempy\n",
         }
-        self.assertEqual(imports.ADAPTER_OWNERS, {})
+        self.assertEqual(imports.ADAPTER_OWNERS, {"pyproj": "adapters.pyproj_crs"})
         self.assertEqual(
             _found(files),
             [

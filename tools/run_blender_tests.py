@@ -25,7 +25,10 @@ Opciones (tras ``--``):
   relativa se toma desde la raíz del repositorio.
 
 Pasos: copia ``geoblender/`` con las exclusiones del manifiesto a
-``%TEMP%\\geoblender-pruebas-*\\geoblender``, la registra como repositorio de extensiones
+``%TEMP%\\geoblender-pruebas-*\\geoblender``, sin ``wheels/`` y con ``wheels = []`` en
+el manifiesto de la copia (con ruedas, Blender instala y quita pyproj, spec 006, en cada
+habilitar y deshabilitar: unos 0,17 s por vez y 9 s en el paso «blender» de ``check.py``,
+RNF-001-01; ninguna prueba de Blender las usa), la registra como repositorio de extensiones
 ``gb_tests`` (sin habilitarla: lo hacen las pruebas, con ``tests.support.blender_ext``),
 descubre y ejecuta las pruebas con ``unittest`` y, pase lo que pase, deshabilita la
 extensión, retira el repositorio y borra la carpeta temporal. No escribe en el
@@ -83,6 +86,8 @@ EXTENSION_ID = "geoblender"
 REPO_NAME = "Geoblender (pruebas)"
 REPO_MODULE = "gb_tests"
 TEMP_PREFIX = "geoblender-pruebas-"
+# La copia de pruebas va sin las ruedas de la extensión (ver el docstring del módulo).
+NO_WHEELS_PATTERN = "/wheels/"
 BYTECODE_DIR = "pyc"  # código compilado de la sesión, dentro de la carpeta temporal
 ENV_USER_RESOURCES = "BLENDER_USER_RESOURCES"
 
@@ -221,11 +226,13 @@ def _install_copy(manifest_data: dict[str, object], temp: Path) -> object:
     import bpy
     from gbtools import layout, manifest, sync
 
+    copy = temp / EXTENSION_ID
     sync.mirror(
         ROOT / layout.EXTENSION_DIR,
-        temp / EXTENSION_ID,
-        manifest.exclude_patterns(manifest_data),
+        copy,
+        [*manifest.exclude_patterns(manifest_data), NO_WHEELS_PATTERN],
     )
+    manifest.rewrite_wheels(copy / Path(layout.MANIFEST_RELPATH).name, [])
     repos = bpy.context.preferences.extensions.repos
     for stale in [repo for repo in repos if repo.module == REPO_MODULE]:
         repos.remove(stale)

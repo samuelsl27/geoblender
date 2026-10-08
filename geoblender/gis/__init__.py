@@ -8,10 +8,24 @@ externas, a través de puertos implementados en ``adapters`` (ARQ-04).
 Reexporta la API pública (plan 006 §5.1): los puertos (``gis.ports``), los parámetros
 (``gis.params``), el error y los mensajes (``gis.messages``), los informes
 (``gis.reports``), la rejilla de paso exacto y el volumen entre superficies (``gis.grid``),
-las superficies en rejilla y los MDT leídos de un fichero (``gis.raster``) y el remuestreo a
-la rejilla del proyecto (``gis.resample``). Cada tarea de la 006 añade aquí lo suyo.
+las superficies en rejilla y los MDT leídos de un fichero (``gis.raster``), el remuestreo a
+la rejilla del proyecto (``gis.resample``) y la declaración de CRS y datum con sus
+transformaciones (``gis.crs``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
+from .crs import (
+    ELLIPSOIDAL_ETRS89,
+    CoordinateTransform,
+    CrsServiceStatus,
+    Declaration,
+    crs_service_status,
+    needs_transform,
+    reference_label,
+    require_crs_service,
+    transform_coordinates,
+    transform_summary,
+    transformation_for,
+)
 from .grid import (
     Grid,
     VolumeResult,
@@ -25,6 +39,7 @@ from .params import PARAMS, ParamDef, param
 from .ports import (
     Cancelled,
     CrsService,
+    CrsServiceUnavailable,
     Progress,
     RasterIO,
     Transform,
@@ -51,11 +66,16 @@ from .reports import (
 )
 
 __all__ = [
+    "ELLIPSOIDAL_ETRS89",
     "PARAMS",
     "Cancelled",
     "Conflict",
     "ConflictKind",
+    "CoordinateTransform",
     "CrsService",
+    "CrsServiceStatus",
+    "CrsServiceUnavailable",
+    "Declaration",
     "GisError",
     "Grid",
     "ParamDef",
@@ -77,10 +97,17 @@ __all__ = [
     "WriteProfile",
     "aligned_grid",
     "choose_method",
+    "crs_service_status",
+    "needs_transform",
     "param",
     "project_grid",
+    "reference_label",
+    "require_crs_service",
     "resample_classes_to_grid",
     "resample_to_grid",
+    "transform_coordinates",
+    "transform_summary",
+    "transformation_for",
     "validate_step",
     "volume_between",
 ]

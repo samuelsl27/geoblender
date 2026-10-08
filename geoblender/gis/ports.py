@@ -14,7 +14,9 @@ la 005 (convergencia de cuadrícula para el azimut de los sondeos).
   descripción, su precisión (``None`` = desconocida; RF-006-05 no la admite) y sus rejillas.
 - :class:`CrsService`: identificar un WKT, dar transformaciones, el factor de escala y la
   convergencia de cuadrícula; lo implementa ``adapters.pyproj_crs.PyprojCrsService``
-  (PROJ aislado y sin red), resuelto por ``adapters.registry``.
+  (PROJ aislado y sin red), resuelto por ``adapters.registry``. Si no se puede usar (otra
+  versión de pyproj, RF-006-31), el adaptador lanza :class:`CrsServiceUnavailable`, que
+  ``gis.crs`` convierte en el error para el usuario.
 - ``Progress`` y ``Cancelled``: el avance (fracción de 0 a 1 y texto) y la consulta de
   cancelación que reciben las operaciones largas (RF-006-28).
 
@@ -50,6 +52,7 @@ type Cancelled = Callable[[], bool]
 __all__ = [
     "Cancelled",
     "CrsService",
+    "CrsServiceUnavailable",
     "Progress",
     "RasterIO",
     "Transform",
@@ -95,6 +98,24 @@ class TriangulationError(GeoblenderError):
     vértices nuevos o perdió una arista obligatoria). Se construye como cualquier
     ``GeoblenderError``, con el código y el texto de ``gis.messages``
     (``gis.triangulation_contract``)."""
+
+
+class CrsServiceUnavailable(Exception):
+    """El servicio de CRS no se puede usar y las transformaciones quedan desactivadas,
+    sin que deje de funcionar lo demás (RF-006-31; ADR-0009).
+
+    ``code`` es el código del mensaje de ``gis.messages`` y ``values``, sus valores:
+    ``gis.crs_service_version`` (``found``, ``expected``: otra versión de pyproj),
+    ``gis.crs_catalog_mismatch`` (``crs``: el ``proj.db`` no define un CRS como el catálogo
+    de la 002) o ``gis.crs_service_broken`` (``detail``: pyproj falta o no carga). No es el
+    error para el usuario: un adaptador no importa los mensajes del dominio (ARQ-10), y
+    ``gis.crs`` lo convierte en un ``GisError`` con su texto."""
+
+    def __init__(self, code: str, /, **values: str) -> None:
+        self.code = code
+        self.values: dict[str, str] = dict(values)
+        shown = ", ".join(f"{key}={value!r}" for key, value in self.values.items())
+        super().__init__(f"{code} ({shown})")
 
 
 @runtime_checkable
