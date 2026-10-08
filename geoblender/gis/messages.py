@@ -61,6 +61,15 @@ CATALOG: tuple[Message, ...] = (
         "5 m.",
     ),
     Message(
+        "gis.window_not_aligned",
+        "Edge {edge} = {value} m of the work window is not a multiple of {unit} m, the "
+        "alignment unit of grid step {step} m: change the project's work window so that it "
+        "is aligned again.",
+        "El borde {edge} = {value} m de la ventana de trabajo no es múltiplo de {unit} m, la "
+        "unidad de alineación del paso de rejilla {step} m: cambie la ventana de trabajo del "
+        "proyecto para que se vuelva a alinear.",
+    ),
+    Message(
         "gis.grid_mismatch",
         "Surfaces «{upper}» and «{lower}» are not on the same grid ({detail}): bring both "
         "to the project grid first.",

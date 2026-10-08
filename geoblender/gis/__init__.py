@@ -6,10 +6,12 @@ Dominio puro: solo importa paquetes de nivel menor (ARQ-07); las librerías
 externas, a través de puertos implementados en ``adapters`` (ARQ-04).
 
 Reexporta la API pública (plan 006 §5.1): los puertos (``gis.ports``), los parámetros
-(``gis.params``), el error y los mensajes (``gis.messages``) y los informes
-(``gis.reports``). Cada tarea de la 006 añade aquí lo suyo.
+(``gis.params``), el error y los mensajes (``gis.messages``), los informes
+(``gis.reports``) y la rejilla de paso exacto (``gis.grid``). Cada tarea de la 006 añade
+aquí lo suyo.
 """
 
+from .grid import Grid, aligned_grid, project_grid, validate_step
 from .messages import GisError
 from .params import PARAMS, ParamDef, param
 from .ports import (
@@ -40,6 +42,7 @@ __all__ = [
     "ConflictKind",
     "CrsService",
     "GisError",
+    "Grid",
     "ParamDef",
     "Progress",
     "RasterIO",
@@ -53,5 +56,8 @@ __all__ = [
     "TriangulationError",
     "Triangulator",
     "WriteProfile",
+    "aligned_grid",
     "param",
+    "project_grid",
+    "validate_step",
 ]
