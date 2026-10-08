@@ -165,6 +165,62 @@ CATALOG: tuple[Message, ...] = (
         "MDT «{file}»: no tiene ninguna celda con dato.",
     ),
     Message(
+        "gis.raster_not_georeferenced",
+        "DTM «{file}»: it has no georeferencing (ModelPixelScale and ModelTiepoint, or "
+        "ModelTransformation). Georeference it in QGIS and import it again.",
+        "MDT «{file}»: no tiene georreferencia (ModelPixelScale y ModelTiepoint, o "
+        "ModelTransformation). Georreferéncielo en QGIS y vuelva a importarlo.",
+    ),
+    Message(
+        "gis.raster_crs_unsupported",
+        "DTM «{file}»: its CRS {value} is not in Geoblender's catalog (projected CRS in "
+        "metres). Reproject it in QGIS to a CRS of the catalog (e.g. EPSG:25830) and import "
+        "it again.",
+        "MDT «{file}»: su CRS {value} no está en el catálogo de Geoblender (CRS proyectados "
+        "en metros). Reproyéctelo en QGIS a un CRS del catálogo (p. ej. EPSG:25830) y "
+        "vuelva a importarlo.",
+    ),
+    Message(
+        "gis.raster_vertical_unsupported",
+        "DTM «{file}»: its vertical CRS {value} is not in Geoblender's catalog. Convert its "
+        "elevations in QGIS to a vertical datum of the catalog (e.g. EPSG:5782, Alicante "
+        "height) and import it again.",
+        "MDT «{file}»: su CRS vertical {value} no está en el catálogo de Geoblender. "
+        "Convierta sus cotas en QGIS a un datum vertical del catálogo (p. ej. EPSG:5782, "
+        "altitud de Alicante) y vuelva a importarlo.",
+    ),
+    Message(
+        "gis.tiff_invalid",
+        "DTM «{file}»: it is not a GeoTIFF that can be read ({detail}). Open it in QGIS, "
+        "save it as GeoTIFF and import it again.",
+        "MDT «{file}»: no es un GeoTIFF que se pueda leer ({detail}). Ábralo en QGIS, "
+        "guárdelo como GeoTIFF y vuelva a importarlo.",
+    ),
+    Message(
+        "gis.tiff_feature_unsupported",
+        "DTM «{file}»: {feature} = {value} is not supported. Save it in QGIS as a "
+        "single-band GeoTIFF, north-up and in metres, with DEFLATE or LZW compression, and "
+        "import it again.",
+        "MDT «{file}»: {feature} = {value} no se admite. Guárdelo en QGIS como GeoTIFF de "
+        "una banda, orientado al norte y en metros, con compresión DEFLATE o LZW, y vuelva "
+        "a importarlo.",
+    ),
+    Message(
+        "gis.tiff_block_corrupt",
+        "DTM «{file}»: block {block} of {blocks} is damaged ({detail}). Save it again in "
+        "QGIS and import it again.",
+        "MDT «{file}»: el bloque {block} de {blocks} está dañado ({detail}). Vuelva a "
+        "guardarlo en QGIS y a importarlo.",
+    ),
+    Message(
+        "gis.crs_user_defined",
+        "DTM «{file}» defines its CRS with its own parameters, without an EPSG code: "
+        "declare its CRS when importing it.",
+        "El MDT «{file}» define su CRS con parámetros propios, sin código EPSG: declare su "
+        "CRS al importarlo.",
+        "warning",
+    ),
+    Message(
         "gis.xyz_not_grid",
         "File «{file}» is not a regular grid ({detail}). Import it as points (Topography "
         "▸ Import ▸ Points and breaklines…).",
