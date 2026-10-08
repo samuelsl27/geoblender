@@ -7,9 +7,9 @@ externas, a través de puertos implementados en ``adapters`` (ARQ-04).
 
 Reexporta la API pública (plan 006 §5.1): los puertos (``gis.ports``), los parámetros
 (``gis.params``), el error y los mensajes (``gis.messages``), los informes
-(``gis.reports``), la rejilla de paso exacto y el volumen entre superficies (``gis.grid``)
-y las superficies en rejilla y los MDT leídos de un fichero (``gis.raster``). Cada tarea
-de la 006 añade aquí lo suyo.
+(``gis.reports``), la rejilla de paso exacto y el volumen entre superficies (``gis.grid``),
+las superficies en rejilla y los MDT leídos de un fichero (``gis.raster``) y el remuestreo a
+la rejilla del proyecto (``gis.resample``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
 from .grid import (
@@ -34,6 +34,12 @@ from .ports import (
     WriteProfile,
 )
 from .raster import Raster, RasterSource
+from .resample import (
+    ResampleMethod,
+    choose_method,
+    resample_classes_to_grid,
+    resample_to_grid,
+)
 from .reports import (
     Conflict,
     ConflictKind,
@@ -58,6 +64,7 @@ __all__ = [
     "RasterIO",
     "RasterSource",
     "Rejection",
+    "ResampleMethod",
     "ResampleReport",
     "SurfaceReport",
     "TinReport",
@@ -69,8 +76,11 @@ __all__ = [
     "VolumeResult",
     "WriteProfile",
     "aligned_grid",
+    "choose_method",
     "param",
     "project_grid",
+    "resample_classes_to_grid",
+    "resample_to_grid",
     "validate_step",
     "volume_between",
 ]

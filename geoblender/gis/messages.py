@@ -76,6 +76,14 @@ CATALOG: tuple[Message, ...] = (
         "Las superficies «{upper}» y «{lower}» no están en la misma rejilla ({detail}): "
         "llévelas antes a la rejilla del proyecto.",
     ),
+    # Remuestreo (RF-006-11, RF-006-30) -------------------------------------------------
+    Message(
+        "gis.classes_not_integer",
+        "Class grid «{source}»: {value} is not a whole-number class code. Elevations are "
+        "resampled with the area-weighted mean or the bilinear interpolation.",
+        "Rejilla de clases «{source}»: {value} no es un código de clase entero. Las cotas se "
+        "remuestrean con la media ponderada por área o con la interpolación bilineal.",
+    ),
     # CRS y datum vertical (RF-006-04 a RF-006-07, RF-006-31) ----------------------------
     Message(
         "gis.crs_undeclared",
