@@ -11,12 +11,14 @@ modal avanza con progreso; cerrarlos (``close()``) antes del final cancela.
 Sacar la copia (:func:`checkout_steps`); cancelar no deja nada (ni copia, ni registro, ni
 reserva):
 
-1. **Comprobación** (sin escribir): el original se puede abrir (cabecera y base
+1. **Comprobación** (sin escribir): el original no está en una carpeta de solo lectura (las
+   que declaran la variable de IMGA y la preferencia, ``read_only``: habría que reservarlo
+   escribiendo su cerrojo; spec 008, RF-008-15, S-3), se puede abrir (cabecera y base
    coherentes), es del esquema de esta versión (uno anterior se migra antes; uno posterior
-   no se toca), no es él mismo una copia local, y la carpeta de las copias existe y no está
-   dentro del original. Su cerrojo tiene que estar libre o huérfano: si lo tiene otra
-   sesión no se reserva (:class:`~..errors.LockError` con quién lo tiene); si lo tiene esta
-   misma sesión abierto en escritura, hay que cerrarlo antes.
+   no se toca), no es él mismo una copia local, y la carpeta de las copias existe, no está
+   dentro del original ni en una carpeta de solo lectura. Su cerrojo tiene que estar libre o
+   huérfano: si lo tiene otra sesión no se reserva (:class:`~..errors.LockError` con quién lo
+   tiene); si lo tiene esta misma sesión abierto en escritura, hay que cerrarlo antes.
 2. **Reserva** del original: su ``.lock`` en modo ``checkout``, a nombre de esta sesión.
    Mientras dure, nadie lo abre en escritura (lo ven «reservado para una copia local»); la
    reserva sobrevive a la sesión y solo se quita al publicar o forzándola con aviso.
@@ -38,8 +40,9 @@ El original no cambia salvo su ``.lock`` (y, si estaba en WAL, su diario).
 Publicar la copia (:func:`publish_steps`); el original nunca queda a medias:
 
 1. **Comprobación**: la copia está abierta en escritura y es una copia local; este equipo
-   sabe dónde está su original (``checkout.json``), que es del mismo proyecto; y el
-   original **sigue reservado para esta copia** (su ``.lock`` en modo ``checkout`` con la
+   sabe dónde está su original (``checkout.json``), que es del mismo proyecto y no está en una
+   carpeta de solo lectura (spec 008, RF-008-15, S-3: se declaró después de sacar la copia); y
+   el original **sigue reservado para esta copia** (su ``.lock`` en modo ``checkout`` con la
    sesión de la sección ``checkout``).
 2. **Original**: sus huellas (sin ``cache/`` ni ``.lock``) siguen siendo las de partida;
    si no, alguien lo cambió (QGIS) y publicar perdería esos cambios.
@@ -80,7 +83,7 @@ from ..gpkg.connection import BUSY_TIMEOUT_MS, GpkgConnection
 from ..gpkg.header import read_header
 from ..gpkg.wal import WalOutcome, to_classic_journal
 from ..ids import short_uid
-from ..paths import DriveType, is_within, next_free_path
+from ..paths import DriveType, ReadOnlyDirs, is_within, next_free_path
 from ..sysinfo import SessionInfo, pid_alive
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
@@ -108,7 +111,7 @@ from .manifest import (
     read_manifest,
     write_manifest,
 )
-from .model import OpenResult, ProjectRecord, Progress
+from .model import OpenResult, ProjectRecord, Progress, read_only_folder, read_only_phrase
 from .open import ProjectInspection, SchemaRelation, inspect_project, open_steps
 from .schema import SCHEMA_VERSION, read_project
 
@@ -196,7 +199,20 @@ def _source_record(inspection: ProjectInspection) -> ProjectRecord:
     return record
 
 
-def _check_dest_dir(original: Path, dest_dir: Path, obj: str) -> None:
+def _check_dest_dir(
+    original: Path, dest_dir: Path, obj: str, read_only: ReadOnlyDirs | None
+) -> None:
+    folder = read_only_folder(read_only, dest_dir)
+    if folder is not None:
+        raise ProjectError(
+            "core.checkout_dest_read_only",
+            f"está dentro de {read_only_phrase(folder)}: no se copia nada allí; elija otra "
+            "carpeta para las copias locales",
+            obj=obj,
+            field="carpeta de las copias locales",
+            value=str(dest_dir),
+            context={"read_only_folder": str(folder)},
+        )
     if not dest_dir.is_dir():
         raise ProjectError(
             "core.checkout_dest_missing",
@@ -302,11 +318,13 @@ def checkout_steps(
     drive_type: DriveType | None = None,
     disk_usage: DiskUsageFn = shutil.disk_usage,
     chunk_size: int = CHUNK_SIZE,
+    read_only: ReadOnlyDirs | None = None,
 ) -> Iterator[Progress]:
     """Saca una copia local de ``original`` en ``dest_dir`` y la abre en escritura, por
     pasos (:data:`CHECKOUT_PHASES`); el último lleva el :class:`CheckoutResult`.
 
     ``network``/``drive_type``: la detección de la red, como al abrir (inyectable).
+    ``read_only``: las carpetas de solo lectura (spec 008, S-3; ``None``, ninguna).
     :class:`ProjectError` o :class:`~..errors.LockError` con el motivo si no se puede; en
     ese caso, y al cancelar, no queda copia, ni registro, ni reserva.
     """
@@ -314,13 +332,25 @@ def checkout_steps(
     dest_dir = Path(os.path.abspath(dest_dir))
     total = len(CHECKOUT_PHASES)
     yield Progress(CHECKOUT_PHASES[0], 0, total, "Comprobando el proyecto original…")
+    folder = read_only_folder(read_only, original)
+    if folder is not None:
+        raise ProjectError(
+            "core.checkout_read_only_folder",
+            f"está dentro de {read_only_phrase(folder)}: no se saca una copia local, porque "
+            "habría que reservarlo escribiendo su cerrojo; cópielo a otra carpeta y trabaje en "
+            "esa copia",
+            obj=f"Proyecto «{_stem(original)}»",
+            field="carpeta",
+            value=str(original),
+            context={"read_only_folder": str(folder)},
+        )
     inspection = inspect_project(
         original, session, userdata, clock=clock, pid_alive=pid_alive,
         stale_minutes=stale_minutes, network=network, drive_type=drive_type,
     )
     record = _source_record(inspection)
     obj = f"Proyecto «{record.name}»"
-    _check_dest_dir(original, dest_dir, obj)
+    _check_dest_dir(original, dest_dir, obj, read_only)
     _check_lock(inspection, obj)
     yield Progress(CHECKOUT_PHASES[1], 1, total, "Reservando el original para la copia local…")
     acquired = lockmod.acquire(
@@ -874,9 +904,11 @@ def publish_steps(
     stale_minutes: int = lockmod.DEFAULT_STALE_MINUTES,
     disk_usage: DiskUsageFn = shutil.disk_usage,
     chunk_size: int = CHUNK_SIZE,
+    read_only: ReadOnlyDirs | None = None,
 ) -> Iterator[Progress]:
     """Publica la copia local ``local`` (abierta en escritura) sobre su original, por pasos
-    (:data:`PUBLISH_PHASES`); el último lleva el :class:`PublishResult`.
+    (:data:`PUBLISH_PHASES`); el último lleva el :class:`PublishResult`. ``read_only``: las
+    carpetas de solo lectura (spec 008, S-3; ``None``, ninguna).
 
     :class:`ProjectError` con el motivo y qué hacer si no se puede; entonces el original y
     la copia local quedan como estaban. Cerrar el generador antes de la sustitución cancela
@@ -891,6 +923,18 @@ def publish_steps(
     obj = f"Proyecto «{local.name}»"
     record = userdata.checkout_record(local.uid)
     original = _original_of(local, record)
+    folder = read_only_folder(read_only, original)
+    if folder is not None:
+        raise ProjectError(
+            "core.publish_read_only_folder",
+            f"el original está dentro de {read_only_phrase(folder)}: no se publica en él, "
+            "porque se escribiría allí. La copia local se conserva intacta: para no perder su "
+            "trabajo, cópiela a otra carpeta como un proyecto aparte",
+            obj=obj,
+            field="original",
+            value=str(original),
+            context={"read_only_folder": str(folder)},
+        )
     seen = _check_reservation(original, section, session, obj, clock, pid_alive, stale_minutes)
     yield Progress(PUBLISH_PHASES[1], 0, 0, "Comprobando que el original no ha cambiado…")
     current: TreePrints | None = None
