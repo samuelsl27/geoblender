@@ -36,6 +36,12 @@ lista de regiones (o una sola), y basta con estar dentro de una para quedar fuer
 :func:`save_tin` y :func:`load_tin`: el npz de ``meshes/`` (``formato-proyecto.md`` §4.3)
 con ``numpy.savez_compressed``, escrito en un temporal y renombrado, y leído siempre con
 ``allow_pickle=False`` (ARQ-16).
+
+TIN ⇄ rejilla (RF-006-17; A13): :func:`tin_to_raster` interpola linealmente dentro de cada
+triángulo en los centros de celda (sin dato fuera del TIN), :func:`sample_tin` en puntos
+cualesquiera con la misma regla y :func:`raster_to_tin` triangula los centros de las celdas
+con dato (dos triángulos por cuadro de 2 × 2 con la diagonal fija, uno si tiene tres
+esquinas con dato): la ida y vuelta rejilla → TIN → rejilla devuelve las mismas cotas.
 """
 
 from __future__ import annotations
@@ -45,7 +51,7 @@ import math
 import numbers
 import os
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -53,11 +59,12 @@ from typing import Any
 
 import numpy as np
 
-from ..core.georef import GeoOrigin, world_to_local
+from ..core.georef import CrsRef, GeoOrigin, VerticalRef, world_to_local
 from ..core.gpkg import Geometry
 from ..jobs.worker_api import JobCancelled
-from .breaklines import SOURCE_POINT, PreparedInput, prepare_constraints
+from .breaklines import SOURCE_CELL, SOURCE_POINT, PreparedInput, prepare_constraints
 from .cdt import _CCW_BOUND, TriangulatorError, orient2d
+from .grid import Grid
 from .messages import GisError
 from .points import (
     Breakline,
@@ -69,15 +76,21 @@ from .points import (
     resolve_duplicates,
 )
 from .ports import Cancelled, Progress, Triangulator
+from .raster import Raster
 from .reports import TinReport
 
 __all__ = [
     "DEGENERATE_AREA_M2",
+    "GRID_TRIANGULATOR",
     "META_SCHEMA",
+    "TOUCH_TOLERANCE",
     "Tin",
     "build_tin",
     "load_tin",
+    "raster_to_tin",
+    "sample_tin",
     "save_tin",
+    "tin_to_raster",
 ]
 
 DEGENERATE_AREA_M2 = 1e-6
@@ -86,8 +99,19 @@ DEGENERATE_AREA_M2 = 1e-6
 META_SCHEMA = 1
 """Versión del ``meta`` del npz de un TIN (plan §5.2.2)."""
 
+TOUCH_TOLERANCE = 1e-12
+"""Un punto está en un triángulo si sus tres coordenadas baricéntricas son ≥ −10⁻¹² (plan
+A13): así un punto sobre una arista compartida o sobre el borde del TIN tiene cota."""
+
+GRID_TRIANGULATOR = "grid@1"
+"""El «triangulador» de :func:`raster_to_tin`: la regla fija de la diagonal, versión 1."""
+
 _GEOMETRY_TYPES = ("POLYGON", "MULTIPOLYGON")
 _PAIR_BUDGET = 1 << 22  # parejas (arista de anillo, centroide) por bloque como mucho
+_TRIANGLE_BATCH = 1 << 16  # triángulos por lote en TIN → rejilla (avance y cancelación)
+_SAMPLE_PAIRS = 1 << 18  # parejas (triángulo, punto) por bloque como mucho
+_QUAD_BLOCK = 1 << 18  # cuadros de 2 × 2 por bloque de filas en rejilla → TIN
+_BOX_PAD = 1e-9  # holgura de la caja de un triángulo, por metro de extensión del TIN
 _REQUIRED_META = ("crs_epsg", "vertical", "operation_uid")
 _ARRAYS = ("vertices", "faces", "constraint_edges", "vertex_source")
 _READ_ERRORS = (OSError, ValueError, EOFError, zipfile.BadZipFile)
@@ -330,9 +354,7 @@ def _finish(prepared: PreparedInput, faces: np.ndarray, xy: np.ndarray, *,
         vertex_source=np.ascontiguousarray(prepared.vertex_source[used], dtype=np.uint8),
         triangulator=triangulator,
     )
-    p = local[faces]
-    area = 0.5 * np.abs((p[:, 1, 0] - p[:, 0, 0]) * (p[:, 2, 1] - p[:, 0, 1])
-                        - (p[:, 1, 1] - p[:, 0, 1]) * (p[:, 2, 0] - p[:, 0, 0]))
+    area = _plan_areas(local, faces)
     report = TinReport(
         triangulator=triangulator,
         input_points=prepared.input_vertices,
@@ -350,10 +372,20 @@ def _finish(prepared: PreparedInput, faces: np.ndarray, xy: np.ndarray, *,
 
 
 def _sides(xy: np.ndarray, faces: np.ndarray) -> np.ndarray:
-    """Longitud en planta (m) de los tres lados de cada triángulo, ``(m, 3)``."""
+    """Longitud en planta (m) de los tres lados de cada triángulo, ``(m, 3)``. Con
+    coordenadas absolutas o locales da lo mismo, bit a bit: las diferencias entre
+    coordenadas cercanas son exactas en las dos."""
     p = xy[faces]
     q = np.roll(p, -1, axis=1)
     return np.hypot(q[..., 0] - p[..., 0], q[..., 1] - p[..., 1])
+
+
+def _plan_areas(xy: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Área en planta (m², sin signo) de cada triángulo, ``(m,)``; como :func:`_sides`, la
+    misma con coordenadas absolutas o locales."""
+    p = xy[faces]
+    return 0.5 * np.abs((p[:, 1, 0] - p[:, 0, 0]) * (p[:, 2, 1] - p[:, 0, 1])
+                        - (p[:, 1, 1] - p[:, 0, 1]) * (p[:, 2, 0] - p[:, 0, 0]))
 
 
 def _keys(pairs: np.ndarray, count: int) -> np.ndarray:
@@ -416,30 +448,359 @@ def _local_rings(rings: list[np.ndarray], origin: GeoOrigin) -> list[np.ndarray]
 
 def _inside(points: np.ndarray, rings: list[np.ndarray]) -> np.ndarray:
     """Si cada punto ``(n, 2)`` está dentro de los anillos (paridad de cruces de un rayo
-    hacia +X; un lado cuenta si ``min(ya, yb) ≤ y < max(ya, yb)``). Vectorizado: por cada
-    lado, solo los puntos de su franja de Y (ordenados por Y), en bloques."""
+    hacia +X, :func:`_ray_hits`)."""
     count = len(points)
+    a = np.concatenate([ring[:, :2] for ring in rings])
+    b = np.concatenate([np.roll(ring[:, :2], -1, axis=0) for ring in rings])
+    crossings = np.zeros(count, dtype=np.int64)
+    for point, _side in _ray_hits(points, a, b):
+        crossings += np.bincount(point, minlength=count)
+    return crossings % 2 == 1
+
+
+def _ray_hits(points: np.ndarray, a: np.ndarray,
+              b: np.ndarray) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Las parejas (punto, lado) en que el rayo hacia +X desde cada punto ``(n, 2)`` cruza el
+    lado ``a[k]``–``b[k]`` (un lado cuenta si ``min(ya, yb) ≤ y < max(ya, yb)``), por
+    bloques de como mucho :data:`_PAIR_BUDGET` parejas candidatas. Vectorizado: por cada
+    lado, solo los puntos de su franja de Y (ordenados por Y)."""
     order = np.argsort(points[:, 1], kind="stable")
     ys = points[order, 1]
-    crossings = np.zeros(count, dtype=np.int64)
-    for ring in rings:
-        a = ring
-        b = np.roll(ring, -1, axis=0)
-        start = np.searchsorted(ys, np.minimum(a[:, 1], b[:, 1]), side="left")
-        stop = np.searchsorted(ys, np.maximum(a[:, 1], b[:, 1]), side="left")
-        sizes = stop - start
-        cuts = np.searchsorted(np.cumsum(sizes), np.arange(_PAIR_BUDGET, int(sizes.sum()),
-                                                           _PAIR_BUDGET), side="left")
-        for side in np.split(np.arange(len(ring)), cuts + 1):
-            pair_side, position = _expand(start[side], stop[side])
-            owner = side[pair_side]
-            point = order[position]
-            ax, ay = a[owner, 0], a[owner, 1]
-            bx, by = b[owner, 0], b[owner, 1]
-            px, py = points[point, 0], points[point, 1]
-            hit = px < ax + (py - ay) * (bx - ax) / (by - ay)
-            crossings += np.bincount(point[hit], minlength=count)
-    return crossings % 2 == 1
+    start = np.searchsorted(ys, np.minimum(a[:, 1], b[:, 1]), side="left")
+    stop = np.searchsorted(ys, np.maximum(a[:, 1], b[:, 1]), side="left")
+    sizes = stop - start
+    cuts = np.searchsorted(np.cumsum(sizes), np.arange(_PAIR_BUDGET, int(sizes.sum()),
+                                                       _PAIR_BUDGET), side="left")
+    for side in np.split(np.arange(len(a)), cuts + 1):
+        pair_side, position = _expand(start[side], stop[side])
+        owner = side[pair_side]
+        point = order[position]
+        ax, ay = a[owner, 0], a[owner, 1]
+        bx, by = b[owner, 0], b[owner, 1]
+        px, py = points[point, 0], points[point, 1]
+        hit = px < ax + (py - ay) * (bx - ax) / (by - ay)
+        yield point[hit], owner[hit]
+
+
+# TIN ⇄ rejilla y muestreo (A13) ----------------------------------------------------------
+
+
+def _check_tin(tin: object) -> Tin:
+    if not isinstance(tin, Tin):
+        raise TypeError(f"tin debe ser un Tin, no {type(tin).__name__}")
+    return tin
+
+
+def _box_pad(tin: Tin) -> float:
+    """La holgura (m) de la caja de un triángulo: :data:`_BOX_PAD` por la extensión del TIN
+    (al menos 1 m), muy por encima del redondeo de los índices de celda o de cubeta."""
+    xy = tin.vertices[:, :2]
+    extent = float(np.max(xy.max(axis=0) - xy.min(axis=0)))
+    return _BOX_PAD * max(1.0, extent)
+
+
+def _boxes(tin: Tin, first: int, stop: int,
+           pad: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """``(xmin, ymin, xmax, ymax)`` en planta de los triángulos ``first``…``stop − 1``,
+    ampliados ``pad`` m."""
+    p = tin.vertices[tin.faces[first:stop]][:, :, :2]
+    low = p.min(axis=1) - pad
+    high = p.max(axis=1) + pad
+    return low[:, 0], low[:, 1], high[:, 0], high[:, 1]
+
+
+def _barycentric(tin: Tin, tri: np.ndarray, x: np.ndarray,
+                 y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Para cada pareja (triángulo ``tri[k]``, punto ``x[k]``, ``y[k]`` ABSOLUTO): si el
+    punto está en el triángulo (las tres coordenadas baricéntricas ≥ −:data:`TOUCH_TOLERANCE`
+    y área no nula) y la cota interpolada ``λa·za + λb·zb + λc·zc``. Las diferencias de
+    coordenadas absolutas cercanas son exactas: un punto en un vértice da su cota, bit a
+    bit."""
+    corners = tin.faces[tri]
+    a = tin.vertices[corners[:, 0]]
+    b = tin.vertices[corners[:, 1]]
+    c = tin.vertices[corners[:, 2]]
+    acx = a[:, 0] - c[:, 0]
+    acy = a[:, 1] - c[:, 1]
+    bcy = b[:, 1] - c[:, 1]
+    cbx = c[:, 0] - b[:, 0]
+    cay = c[:, 1] - a[:, 1]
+    det = bcy * acx + cbx * acy
+    pcx = x - c[:, 0]
+    pcy = y - c[:, 1]
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        la = (bcy * pcx + cbx * pcy) / det
+        lb = (cay * pcx + acx * pcy) / det
+        lc = 1.0 - la - lb
+        hit = ((det != 0.0) & (la >= -TOUCH_TOLERANCE) & (lb >= -TOUCH_TOLERANCE)
+               & (lc >= -TOUCH_TOLERANCE))
+        z = la * a[:, 2] + lb * b[:, 2] + lc * c[:, 2]
+    return hit, z
+
+
+type _Ranges = Callable[[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+type _Points = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]]
+
+
+def _interpolate_into(out: np.ndarray, tin: Tin, *, ranges: _Ranges, width: int,
+                      start: np.ndarray | None, points: _Points,
+                      progress: Progress | None, cancelled: Cancelled | None,
+                      doing: str, to_do: str) -> None:
+    """Rellena ``out`` (plano, NaN) con la cota del TIN en sus puntos, por lotes de
+    :data:`_TRIANGLE_BATCH` triángulos (A13).
+
+    Los puntos están en una red de cubetas de ``width`` columnas: ``ranges`` da, de la caja
+    de cada triángulo, las filas y columnas de cubeta que toca (inclusivas; vacío si la
+    última es menor que la primera), y los puntos de las cubetas de una fila de la caja son
+    las posiciones contiguas ``start[fila·width + col0]``…``start[fila·width + col1 + 1]``
+    (con ``start`` ``None``, cada cubeta es un punto: el centro de una celda). ``points``
+    convierte posiciones en índices de ``out`` y coordenadas ABSOLUTAS. Cada punto toma la
+    cota del primer triángulo (en el orden del TIN) que lo contiene: el resultado no depende
+    de los lotes."""
+    done = np.zeros(out.shape, dtype=bool)
+    total = len(tin.faces)
+    pad = _box_pad(tin)
+    firsts = range(0, total, _TRIANGLE_BATCH)
+    for index, first in enumerate(firsts):
+        if cancelled is not None and cancelled():
+            raise JobCancelled(f"Cancelado al {to_do} en el lote {index + 1} de {len(firsts)}")
+        stop = min(first + _TRIANGLE_BATCH, total)
+        row0, row1, col0, col1 = ranges(*_boxes(tin, first, stop, pad))
+        row1 = np.where(col1 < col0, row0 - 1, np.maximum(row1, row0 - 1))
+        owner, row = _expand(row0, row1 + 1)
+        lo = row * width + col0[owner]
+        hi = row * width + col1[owner] + 1
+        if start is not None:
+            lo, hi = start[lo], start[hi]
+        _fill(out, done, tin, first + owner, lo, hi, points)
+        if progress is not None:
+            progress((index + 1) / len(firsts), f"{doing}: lote {index + 1} de {len(firsts)}")
+
+
+def _fill(out: np.ndarray, done: np.ndarray, tin: Tin, tri: np.ndarray, lo: np.ndarray,
+          hi: np.ndarray, points: _Points) -> None:
+    """Las parejas (triángulo ``tri[k]``, posiciones ``lo[k]``…``hi[k] − 1``), por bloques de
+    como mucho :data:`_SAMPLE_PAIRS`: cada punto que aún no tiene cota toma la del primer
+    triángulo que lo contiene."""
+    sizes = hi - lo
+    total = int(sizes.sum())
+    if not total:
+        return
+    cuts = np.searchsorted(np.cumsum(sizes), np.arange(_SAMPLE_PAIRS, total, _SAMPLE_PAIRS),
+                           side="left")
+    for part in np.split(np.arange(len(sizes)), cuts + 1):
+        entry, position = _expand(lo[part], hi[part])
+        if not entry.size:
+            continue
+        ids, x, y = points(position)
+        hit, z = _barycentric(tin, tri[part[entry]], x, y)
+        if not hit.any():
+            continue
+        unique, first = np.unique(ids[hit], return_index=True)
+        fresh = ~done[unique]
+        out[unique[fresh]] = z[hit][first[fresh]]
+        done[unique[fresh]] = True
+
+
+def _first_index(position: np.ndarray, count: int) -> np.ndarray:
+    """El primer índice entero ≥ ``position`` (fraccionario), entre 0 y ``count``."""
+    return np.maximum(np.ceil(np.clip(position, -1.0, count)).astype(np.int64), 0)
+
+
+def _last_index(position: np.ndarray, count: int) -> np.ndarray:
+    """El último índice entero ≤ ``position`` (fraccionario), entre −1 y ``count − 1``."""
+    return np.minimum(np.floor(np.clip(position, -1.0, count)).astype(np.int64), count - 1)
+
+
+def tin_to_raster(
+    tin: Tin,
+    grid: Grid,
+    *,
+    crs: CrsRef,
+    vertical: VerticalRef,
+    progress: Progress | None = None,
+    cancelled: Cancelled | None = None,
+) -> Raster:
+    """El TIN en la rejilla ``grid`` (RF-006-17; plan A13): en el centro de cada celda, la
+    interpolación lineal dentro del triángulo que lo contiene (coordenadas baricéntricas,
+    las tres ≥ −:data:`TOUCH_TOLERANCE`: un centro sobre una arista o sobre el borde del TIN
+    tiene cota; en una arista compartida, la del primer triángulo, que es la misma); las
+    celdas con el centro fuera del TIN o en un hueco quedan sin dato (NaN). El TIN no lleva
+    CRS: el ráster lleva ``crs`` y ``vertical``, los del TIN (los del proyecto). Para cada
+    lote de triángulos, las celdas cuyo centro cae en su caja; avance (``progress``) y
+    cancelación (``cancelled`` → ``JobCancelled``) tras cada lote. Las entradas no se
+    modifican; tipos que no son → ``TypeError``."""
+    _check_tin(tin)
+    if not isinstance(grid, Grid):
+        raise TypeError(f"grid debe ser una Grid, no {type(grid).__name__}")
+    if not isinstance(crs, CrsRef):
+        raise TypeError(f"crs debe ser un CrsRef, no {type(crs).__name__}")
+    if not isinstance(vertical, VerticalRef):
+        raise TypeError(f"vertical debe ser un VerticalRef, no {type(vertical).__name__}")
+    ncols, nrows = grid.ncols, grid.nrows
+
+    def ranges(xmin: np.ndarray, ymin: np.ndarray, xmax: np.ndarray,
+               ymax: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        # Índices (fraccionarios) de los centros: columna j en x = oeste + (j + 0,5)·dx.
+        return (_first_index((grid.north - ymax) / grid.dy - 0.5, nrows),
+                _last_index((grid.north - ymin) / grid.dy - 0.5, nrows),
+                _first_index((xmin - grid.west) / grid.dx - 0.5, ncols),
+                _last_index((xmax - grid.west) / grid.dx - 0.5, ncols))
+
+    def centers(position: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        row = position // ncols
+        col = position - row * ncols
+        # Como Grid.centers, bit a bit: los vértices de raster_to_tin caen en los centros.
+        x = grid.west + (col.astype(np.float64) + 0.5) * grid.dx
+        y = grid.north - (row.astype(np.float64) + 0.5) * grid.dy
+        return position, x, y
+
+    out = np.full(nrows * ncols, np.nan)
+    _interpolate_into(out, tin, ranges=ranges, width=ncols, start=None, points=centers,
+                      progress=progress, cancelled=cancelled,
+                      doing="Convirtiendo el TIN en rejilla",
+                      to_do="convertir el TIN en rejilla")
+    return Raster(grid, out.reshape(grid.shape), crs, vertical)
+
+
+def _bucket_shape(count: int, width: float, height: float) -> tuple[int, int]:
+    """Columnas y filas de una red de unas ``count`` cubetas sobre ``width`` × ``height``
+    m (una sola en un eje sin extensión)."""
+    if width > 0.0 and height > 0.0:
+        nx = int(min(max(round(math.sqrt(count * width / height)), 1), count))
+        return nx, max(1, -(-count // nx))
+    if width > 0.0:
+        return count, 1
+    if height > 0.0:
+        return 1, count
+    return 1, 1
+
+
+def sample_tin(tin: Tin, xy: np.ndarray) -> np.ndarray:
+    """La cota del TIN en los puntos ``xy`` (float64 ``(n, 2)``, ABSOLUTOS): la misma regla
+    que :func:`tin_to_raster` (en los centros de una rejilla da lo mismo, bit a bit); NaN
+    fuera del TIN, en un hueco o en un punto no finito. Los puntos dentro de la caja del TIN
+    se reparten en una red de unas ``n`` cubetas y cada triángulo mira los de las cubetas
+    de su caja. ``xy`` no se modifica; tipos o formas que no son → ``TypeError`` o
+    ``ValueError``."""
+    _check_tin(tin)
+    if not isinstance(xy, np.ndarray) or xy.dtype != np.float64:
+        found = xy.dtype if isinstance(xy, np.ndarray) else type(xy).__name__
+        raise TypeError(f"xy son coordenadas ABSOLUTAS en un ndarray float64, no {found}")
+    if xy.ndim != 2 or xy.shape[1] != 2:
+        raise ValueError(f"xy es (n, 2) y llega {xy.shape}")
+    out = np.full(len(xy), np.nan)
+    pad = _box_pad(tin)
+    low = tin.vertices[:, :2].min(axis=0) - pad
+    high = tin.vertices[:, :2].max(axis=0) + pad
+    keep = np.flatnonzero(np.isfinite(xy).all(axis=1) & (xy >= low).all(axis=1)
+                          & (xy <= high).all(axis=1))
+    if not keep.size:
+        return out
+    px, py = xy[keep, 0], xy[keep, 1]
+    left, bottom = float(px.min()), float(py.min())
+    width, height = float(px.max()) - left, float(py.max()) - bottom
+    nx, ny = _bucket_shape(keep.size, width, height)
+    sx = width / nx if width > 0.0 else 1.0
+    sy = height / ny if height > 0.0 else 1.0
+    col = np.clip(np.floor((px - left) / sx), 0, nx - 1).astype(np.int64)
+    row = np.clip(np.floor((py - bottom) / sy), 0, ny - 1).astype(np.int64)
+    bucket = row * nx + col
+    order = np.argsort(bucket, kind="stable")
+    start = np.concatenate([[0], np.cumsum(np.bincount(bucket, minlength=nx * ny))])
+
+    def ranges(xmin: np.ndarray, ymin: np.ndarray, xmax: np.ndarray,
+               ymax: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        return (_first_index(np.floor(np.clip((ymin - bottom) / sy, -1.0, ny)), ny),
+                _last_index((ymax - bottom) / sy, ny),
+                _first_index(np.floor(np.clip((xmin - left) / sx, -1.0, nx)), nx),
+                _last_index((xmax - left) / sx, nx))
+
+    def located(position: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        ids = order[position]
+        return ids, px[ids], py[ids]
+
+    values = np.full(keep.size, np.nan)
+    _interpolate_into(values, tin, ranges=ranges, width=nx, start=start, points=located,
+                      progress=None, cancelled=None, doing="", to_do="")
+    out[keep] = values
+    return out
+
+
+def _quad_faces(valid: np.ndarray, first: int, stop: int) -> np.ndarray:
+    """Los triángulos (índices de celda, fila·ncols + columna, int64) de los cuadros de 2 × 2
+    centros de las filas de cuadro ``first``…``stop − 1``, en orden de filas y columnas: con
+    las esquinas a (NO), b (NE), c (SO) y d (SE), (a, c, d) y (a, d, b) con las cuatro (la
+    diagonal fija a–d), y con tres, el de esas tres; todos antihorarios vistos desde
+    arriba."""
+    ncols = valid.shape[1]
+    a = valid[first:stop, :-1]
+    b = valid[first:stop, 1:]
+    c = valid[first + 1:stop + 1, :-1]
+    d = valid[first + 1:stop + 1, 1:]
+    wanted = np.stack([a & c & d, a & d & b, ~a & b & c & d, a & b & c & ~d], axis=-1)
+    quad_row, quad_col, kind = np.nonzero(wanted)
+    corner_a = (quad_row.astype(np.int64) + first) * ncols + quad_col
+    # Desplazamientos de a, b, c y d: 0, 1, ncols y ncols + 1.
+    table = np.array([[0, ncols, ncols + 1], [0, ncols + 1, 1], [1, ncols, ncols + 1],
+                      [0, ncols, 1]], dtype=np.int64)
+    return corner_a[:, None] + table[kind]
+
+
+def raster_to_tin(
+    raster: Raster,
+    *,
+    name: str = "",
+    progress: Progress | None = None,
+    cancelled: Cancelled | None = None,
+) -> Tin:
+    """El TIN de los centros de las celdas con dato de ``raster`` (RF-006-17; plan A13):
+    por cada cuadro de 2 × 2 centros con dato, dos triángulos con la diagonal fija
+    (i, j)–(i+1, j+1); con tres, el triángulo de esos tres; con menos, ninguno. Los vértices
+    son los centros (como ``Grid.centers``, bit a bit) con su cota, en orden de filas y
+    columnas, con origen «centro de celda» (``vertex_source`` 5); sin aristas obligatorias;
+    triangulador :data:`GRID_TRIANGULATOR`. Así :func:`tin_to_raster` en la misma rejilla
+    devuelve las mismas cotas, bit a bit. Una celda con dato que no es esquina de ningún
+    triángulo (aislada o en una línea de una celda de ancho) no entra en el TIN. Sin ningún
+    triángulo → ``GisError`` ``gis.grid_tin_empty`` (``name`` es el del TIN). Por bloques de
+    filas (:data:`_QUAD_BLOCK` cuadros) con avance y cancelación. La entrada no se
+    modifica."""
+    if not isinstance(raster, Raster):
+        raise TypeError(f"raster debe ser un Raster, no {type(raster).__name__}")
+    grid = raster.grid
+    nrows, ncols = grid.shape
+    if nrows * ncols > np.iinfo(np.int32).max:
+        raise ValueError(f"una rejilla de {nrows} × {ncols} celdas no cabe en un TIN (int32)")
+    valid = np.isfinite(raster.values)
+    pieces = []
+    if nrows > 1 and ncols > 1:
+        block = max(1, _QUAD_BLOCK // (ncols - 1))
+        firsts = range(0, nrows - 1, block)
+        for index, first in enumerate(firsts):
+            if cancelled is not None and cancelled():
+                raise JobCancelled("Cancelado al convertir la rejilla en TIN en el bloque "
+                                   f"{index + 1} de {len(firsts)}")
+            pieces.append(_quad_faces(valid, first, min(first + block, nrows - 1)))
+            if progress is not None:
+                progress((index + 1) / len(firsts), "Convirtiendo la rejilla en TIN: bloque "
+                         f"{index + 1} de {len(firsts)}")
+    cells = np.concatenate(pieces) if pieces else np.empty((0, 3), dtype=np.int64)
+    if not len(cells):
+        raise GisError("gis.grid_tin_empty", obj=_tin_object(name), field="celdas con dato",
+                       value=int(np.count_nonzero(valid)), tin=name)
+    used = np.unique(cells)
+    rows, cols = np.divmod(used, ncols)
+    x = grid.west + (cols.astype(np.float64) + 0.5) * grid.dx
+    y = grid.north - (rows.astype(np.float64) + 0.5) * grid.dy
+    vertices = np.column_stack([x, y, raster.values[rows, cols]])
+    return Tin(
+        vertices=vertices,
+        faces=np.ascontiguousarray(np.searchsorted(used, cells), dtype=np.int32),
+        constraint_edges=np.empty((0, 2), dtype=np.int32),
+        vertex_source=np.full(len(used), SOURCE_CELL, dtype=np.uint8),
+        triangulator=GRID_TRIANGULATOR,
+    )
 
 
 # Fichero npz (plan §5.2.2) ---------------------------------------------------------------

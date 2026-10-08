@@ -22,13 +22,34 @@ una unión–búsqueda vectorizada (enganche al menor índice y salto de puntero
 el tiempo van con el número de tramos, no con el de celdas. Se recorre la rejilla por bloques
 de filas de como mucho :data:`BLOCK_ITEMS` celdas. La entrada no se modifica.
 
-La validación de un TIN (``validate_tin``: triángulos planos, lado máximo y degenerados) es de
-la T19.
+:func:`validate_tin` informa de un TIN con el mismo :class:`~.reports.SurfaceReport`:
+
+- el **área** que encierra su borde exterior (triángulos y huecos, m²) y, como área sin dato,
+  la de sus **huecos interiores**: cada uno, la región sin triángulos que encierra un ciclo
+  del borde que se recorre en sentido horario, menos las islas del TIN que tenga dentro
+  (área neta, como el hueco de una rejilla); de mayor a menor;
+- los **triángulos con algún vértice fuera de la ventana** (``cells_outside_window``) y los
+  **vértices con la cota fuera del rango plausible** (``out_of_range``);
+- el **% de triángulos planos**, el **lado máximo** en planta y los **degenerados** (área en
+  planta < 10⁻⁶ m²), calculados como en ``build_tin``: dan lo mismo, bit a bit.
+
+El borde de un TIN son las aristas de un solo triángulo, orientadas como en él (con el
+triángulo a su izquierda); en un vértice donde se tocan dos trozos de borde (dos huecos, o
+un hueco y el borde exterior, que se tocan en un punto) cada arista sigue con la primera
+saliente en sentido antihorario desde la que llega: así cada región sin triángulos (un
+hueco o el exterior) tiene su propio ciclo. Su área con signo (fórmula del área de Gauss)
+dice si es un borde exterior (positiva; dos trozos del TIN que se tocan en un vértice son
+un solo ciclo, con la suma de sus áreas) o un hueco (negativa); una isla está en el hueco
+más pequeño que contiene un punto de uno de sus triángulos (paridad de un rayo hacia +X).
+
+``gis.tin`` se importa dentro de las funciones del TIN: ``gis.points`` (que importa
+``gis.tin``) usa la unión–búsqueda de este módulo.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -38,11 +59,23 @@ from .raster import Raster
 from .reports import SurfaceReport
 from .resample import CELL_TOLERANCE
 
-__all__ = ["BLOCK_ITEMS", "SURFACE_GRID", "Z_RANGE_KEY", "validate_raster"]
+if TYPE_CHECKING:
+    from .tin import Tin
+
+__all__ = [
+    "BLOCK_ITEMS",
+    "SURFACE_GRID",
+    "SURFACE_TIN",
+    "Z_RANGE_KEY",
+    "validate_raster",
+    "validate_tin",
+]
 
 Z_RANGE_KEY = "gis.validate.z_range_m"
 SURFACE_GRID = "grid"
 """El ``surface_type`` de una rejilla en :class:`~.reports.SurfaceReport`."""
+SURFACE_TIN = "tin"
+"""El ``surface_type`` de un TIN en :class:`~.reports.SurfaceReport`."""
 BLOCK_ITEMS = 1 << 22
 """Celdas por bloque de filas (al menos una fila): acota la memoria de las máscaras."""
 
@@ -203,4 +236,150 @@ def validate_raster(
         cells_outside_window=outside,
         out_of_range=out_of_range,
         z_range_m=(low, high),
+    )
+
+
+# TIN -------------------------------------------------------------------------------------
+
+
+def _boundary_edges(faces: np.ndarray,
+                    count: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Las aristas del borde: las aristas dirigidas de los triángulos (a→b, b→c, c→a) cuya
+    inversa no es de ningún triángulo. Origen, destino y triángulo de cada una."""
+    tail = faces.astype(np.int64).ravel()
+    head = np.roll(faces, -1, axis=1).astype(np.int64).ravel()
+    owner = np.repeat(np.arange(len(faces), dtype=np.int64), 3)
+    keys = np.sort(tail * count + head)
+    twin = head * count + tail
+    position = np.minimum(np.searchsorted(keys, twin), keys.size - 1)
+    border = keys[position] != twin
+    return tail[border], head[border], owner[border]
+
+
+def _next_edges(xy: np.ndarray, tail: np.ndarray, head: np.ndarray) -> np.ndarray:
+    """La arista de borde que sigue a cada una: de las que salen de su destino, la primera
+    en sentido antihorario desde la dirección de vuelta a su origen (la de menor ángulo mayor
+    que el de esa dirección; si no hay, la de menor ángulo). Así se recorre cada región sin
+    triángulos (hueco o exterior) por su lado: en un vértice donde se tocan dos huecos, o un
+    hueco y el exterior, cada uno es un ciclo."""
+    count = tail.size
+    dx = xy[head, 0] - xy[tail, 0]
+    dy = xy[head, 1] - xy[tail, 1]
+    vertex = np.concatenate([tail, head])
+    angle = np.concatenate([np.arctan2(dy, dx), np.arctan2(-dy, -dx)])
+    arriving = np.concatenate([np.zeros(count, dtype=np.int8), np.ones(count, dtype=np.int8)])
+    # Por vértice y ángulo; a igual ángulo, la salida antes que la vuelta («mayor que»).
+    order = np.lexsort((arriving, angle, vertex))
+    is_out = order < count
+    position = np.arange(order.size)
+    beyond = order.size
+    next_out = np.minimum.accumulate(np.where(is_out, position, beyond)[::-1])[::-1]
+    sorted_vertex = vertex[order]
+    group_first = np.searchsorted(sorted_vertex, sorted_vertex, side="left")
+    query = np.flatnonzero(~is_out)
+    found = next_out[query]
+    same = found < beyond
+    same[same] = sorted_vertex[found[same]] == sorted_vertex[query[same]]
+    found = np.where(same, found, next_out[group_first[query]])
+    if (found >= beyond).any() or (sorted_vertex[np.minimum(found, beyond - 1)]
+                                   != sorted_vertex[query]).any():
+        raise ValueError("el borde del TIN no se puede recorrer: tiene triángulos solapados "
+                         "u horarios")
+    following = np.empty(count, dtype=np.int64)
+    following[order[query] - count] = order[found]
+    return following
+
+
+def _tin_holes(xy: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """El área neta (m²) de cada hueco interior del TIN, de mayor a menor (y, a igual área,
+    por el orden de su primera arista): ciclos del borde con área negativa menos las islas
+    que tienen directamente dentro (ver el módulo)."""
+    tail, head, owner = _boundary_edges(faces, len(xy))
+    if not tail.size:
+        return np.empty(0)
+    # Diferencias exactas: todas las coordenadas del TIN son cercanas entre sí.
+    rel = xy - xy.min(axis=0)
+    following = _next_edges(rel, tail, head)
+    count = tail.size
+    root = _roots(count, np.arange(count, dtype=np.int64), following)
+    cross = rel[tail, 0] * rel[head, 1] - rel[head, 0] * rel[tail, 1]
+    loops = np.flatnonzero(root == np.arange(count))
+    area = 0.5 * np.bincount(root, weights=cross, minlength=count)[loops]
+    holes = np.flatnonzero(area < 0.0)
+    if not holes.size:
+        return np.empty(0)
+    net = -area[holes]
+    islands = np.flatnonzero(area > 0.0)
+    if islands.size > 1:
+        _subtract_islands(net, rel, faces, tail, head, owner, root, loops, holes,
+                          islands, area)
+    return net[np.argsort(-net, kind="stable")]
+
+
+def _subtract_islands(net: np.ndarray, rel: np.ndarray, faces: np.ndarray,
+                      tail: np.ndarray, head: np.ndarray, owner: np.ndarray,
+                      root: np.ndarray, loops: np.ndarray, holes: np.ndarray,
+                      islands: np.ndarray, area: np.ndarray) -> None:
+    """Resta a cada hueco el área de los bordes exteriores que tiene directamente dentro: el
+    hueco más pequeño que contiene el centroide del triángulo de su primera arista."""
+    from .tin import _ray_hits  # aquí: ciclo de importación (ver el módulo)
+
+    probe = rel[faces[owner[loops[islands]]]].mean(axis=1)
+    loop_of_edge = np.searchsorted(loops, root)
+    hole_of_loop = np.full(loops.size, -1, dtype=np.int64)
+    hole_of_loop[holes] = np.arange(holes.size)
+    edge_hole = hole_of_loop[loop_of_edge]
+    hole_edges = np.flatnonzero(edge_hole >= 0)
+    keys = [point * holes.size + edge_hole[hole_edges[side]]
+            for point, side in _ray_hits(probe, rel[tail[hole_edges]], rel[head[hole_edges]])]
+    if not keys:
+        return
+    pairs, hits = np.unique(np.concatenate(keys), return_counts=True)
+    inside = pairs[hits % 2 == 1]
+    island, hole = np.divmod(inside, holes.size)
+    order = np.lexsort((-area[holes][hole], island))  # el hueco de menor área primero
+    first = np.unique(island[order], return_index=True)[1]
+    np.subtract.at(net, hole[order][first], area[islands][island[order][first]])
+
+
+def validate_tin(
+    tin: Tin,
+    *,
+    window: Window,
+    z_range: Sequence[float] | None = None,
+) -> SurfaceReport:
+    """Valida el TIN ``tin`` frente a la ventana de trabajo ``window`` (``core.georef.Window``,
+    absoluta) y el rango plausible de cotas (RF-006-23; ver el módulo). ``z_range`` como en
+    :func:`validate_raster`. Devuelve un :class:`~.reports.SurfaceReport` de tipo ``tin``:
+    área (la que encierra su borde exterior) y área sin dato (sus huecos interiores) en m²,
+    el área neta de cada hueco de mayor a menor, los triángulos con algún vértice fuera de la
+    ventana, los vértices con la cota fuera del rango, el % de triángulos planos, el lado
+    máximo (m) y los degenerados. Entradas mal formadas: ``TypeError``. El TIN no se
+    modifica."""
+    from .tin import DEGENERATE_AREA_M2, Tin, _plan_areas, _sides  # ciclo (ver el módulo)
+
+    if not isinstance(tin, Tin):
+        raise TypeError(f"tin debe ser un Tin, no {type(tin).__name__}")
+    if not isinstance(window, Window):
+        raise TypeError(f"window debe ser una core.georef.Window, no {type(window).__name__}")
+    low, high = _z_range(z_range)
+    xy = tin.vertices[:, :2]
+    z = tin.vertices[:, 2]
+    faces = tin.faces
+    outside_vertex = ((xy[:, 0] < window.xmin) | (xy[:, 0] > window.xmax)
+                      | (xy[:, 1] < window.ymin) | (xy[:, 1] > window.ymax))
+    areas = _plan_areas(xy, faces)
+    holes = _tin_holes(xy, faces)
+    nodata = float(holes.sum())
+    return SurfaceReport(
+        surface_type=SURFACE_TIN,
+        area_m2=float(areas.sum()) + nodata,
+        nodata_area_m2=nodata,
+        hole_areas_m2=tuple(float(value) for value in holes),
+        cells_outside_window=int(np.count_nonzero(outside_vertex[faces].any(axis=1))),
+        out_of_range=int(np.count_nonzero((z < low) | (z > high))),
+        z_range_m=(low, high),
+        flat_pct=100.0 * tin.flat_faces / len(faces),
+        max_edge_m=float(_sides(xy, faces).max()),
+        degenerate=int(np.count_nonzero(areas < DEGENERATE_AREA_M2)),
     )

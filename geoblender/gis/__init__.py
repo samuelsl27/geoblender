@@ -14,8 +14,8 @@ datum con sus transformaciones (``gis.crs``), el aviso de alturas elipsoidales
 (``gis.vertical``), la validación de una superficie (``gis.validate``), los puntos, las
 líneas de rotura y sus duplicados (``gis.points``), las capas de un GeoPackage leídas sobre
 una copia (``gis.vector``), la preparación de las restricciones de un TIN
-(``gis.breaklines``), el triangulador propio (``gis.cdt``) y el TIN con su fichero
-(``gis.tin``). Cada tarea de la 006 añade aquí lo suyo.
+(``gis.breaklines``), el triangulador propio (``gis.cdt``) y el TIN con su fichero, su paso
+a rejilla y desde ella y su muestreo (``gis.tin``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
 from .breaklines import PreparedInput, prepare_constraints
@@ -86,8 +86,8 @@ from .reports import (
     TinReport,
     TopoReport,
 )
-from .tin import Tin, build_tin, load_tin, save_tin
-from .validate import validate_raster
+from .tin import Tin, build_tin, load_tin, raster_to_tin, sample_tin, save_tin, tin_to_raster
+from .validate import validate_raster, validate_tin
 from .vector import FeatureSet, LayerInfo, copy_source, import_dir, list_layers, read_layer
 from .vertical import VerticalCheck, check_vertical_offset, ellipsoidal_band
 
@@ -152,6 +152,7 @@ __all__ = [
     "points_from_rows",
     "prepare_constraints",
     "project_grid",
+    "raster_to_tin",
     "read_layer",
     "reference_label",
     "reproject_to_grid",
@@ -159,11 +160,14 @@ __all__ = [
     "resample_classes_to_grid",
     "resample_to_grid",
     "resolve_duplicates",
+    "sample_tin",
     "save_tin",
+    "tin_to_raster",
     "transform_coordinates",
     "transform_summary",
     "transformation_for",
     "validate_raster",
     "validate_step",
+    "validate_tin",
     "volume_between",
 ]

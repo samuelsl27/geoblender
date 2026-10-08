@@ -507,6 +507,14 @@ CATALOG: tuple[Message, ...] = (
         "triángulos. Revíselos y vuelva a crearlo.",
     ),
     Message(
+        "gis.grid_tin_empty",
+        "TIN «{tin}»: none of the {value} cells with data of the grid forms a triangle (it "
+        "takes three of the four cells of a 2 × 2 square). Check the grid's no data.",
+        "TIN «{tin}»: ninguna de las {value} celdas con dato de la rejilla forma un triángulo "
+        "(hacen falta tres de las cuatro celdas de un cuadro de 2 × 2). Revise el sin dato de "
+        "la rejilla.",
+    ),
+    Message(
         "gis.tin_file_invalid",
         "TIN file «{file}» cannot be read: {detail}. Create the TIN again from its data.",
         "El fichero de TIN «{file}» no se puede leer: {detail}. Vuelva a crear el TIN desde "

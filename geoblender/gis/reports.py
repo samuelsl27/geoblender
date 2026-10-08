@@ -190,7 +190,12 @@ class SurfaceReport:
     """Validación de una superficie (RF-006-23): ``surface_type`` (``grid`` o ``tin``),
     área total y sin dato (m²), el área de cada hueco interior, celdas con dato fuera de
     la ventana de trabajo, cotas fuera del rango plausible ``z_range_m`` y, en un TIN, el
-    % de triángulos planos, el lado máximo (m) y los degenerados."""
+    % de triángulos planos, el lado máximo (m) y los degenerados.
+
+    En un TIN (``gis.validate.validate_tin``), el área total es la que encierra su borde
+    exterior y el área sin dato, la de sus huecos interiores; ``cells_outside_window``
+    cuenta los triángulos con algún vértice fuera de la ventana y ``out_of_range``, los
+    vértices con la cota fuera del rango."""
 
     surface_type: str
     area_m2: float
