@@ -13,8 +13,11 @@
   verificada de su importación, con su huella y el límite ``core.original_copy_limit``
   (RF-008-53, RF-008-14).
 
-La guarda de escritura y la comprobación de las fuentes llegan con las tareas siguientes (plan
-008 §5.3.1).
+- :mod:`.guard`: rechazar una escritura de Geoblender en la fuente de una entrada, en su
+  carpeta fuera del proyecto o en una carpeta de solo lectura (``check_write_target``), y los
+  avisos de las carpetas de solo lectura (``read_only_warnings``) (RF-008-15, RF-008-14).
+
+La comprobación de las fuentes llega con las tareas siguientes (plan 008 §5.3.1).
 """
 
 from .model import (
@@ -39,6 +42,7 @@ from .model import (
     crs_text,
     input_declarations,
 )
+from .guard import check_write_target, read_only_warnings
 from .originals import (
     ORIGINAL_COPY_LIMIT,
     OriginalsOutcome,
@@ -92,6 +96,7 @@ __all__ = [
     "check_name",
     "check_received_at",
     "check_received_from",
+    "check_write_target",
     "classify_import",
     "crs_text",
     "discard",
@@ -100,6 +105,7 @@ __all__ = [
     "input_declarations",
     "keep_copy",
     "locate_source",
+    "read_only_warnings",
     "register_input",
     "resolve_source",
     "reuse_input",

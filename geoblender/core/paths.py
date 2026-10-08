@@ -33,6 +33,13 @@ formato-proyecto §1; plan 002 §5.4).
   (RF-002-18, RF-002-28).
 - :func:`relative_render_path`: la salida de render de una escena, relativa a la vista
   de ``scenes/`` que se guarda (RF-002-18; D-11).
+- :class:`ReadOnlyDirs` (spec 008; RF-008-15; S-3 del plan 008; ADR-0025 §9): las carpetas
+  de solo lectura (los expedientes de clientes), que declaran la variable de IMGA
+  :data:`READ_ONLY_DIRS_ENV` (lista separada por «;») **y** la preferencia de cada usuario;
+  :meth:`ReadOnlyDirs.contains` dice cuál contiene una ruta, con su unidad o con su ruta UNC
+  (:func:`path_forms`: el resolvedor se inyecta, por defecto :func:`canonical_path`) y sin
+  distinguir mayúsculas (:func:`forms_within`); ``empty``, para el aviso si la lista combinada
+  está vacía. Ninguna ruta va en el código: llegan por la variable y la preferencia.
 """
 
 from __future__ import annotations
@@ -41,8 +48,8 @@ import ntpath
 import os
 import re
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -339,6 +346,165 @@ def is_within(path: Path | str | None, folder: Path | str) -> bool:
     inner = os.path.normcase(os.fspath(target))
     outer = os.path.normcase(os.fspath(base)).rstrip("\\/")
     return inner == outer or inner.startswith(outer + os.sep)
+
+
+READ_ONLY_DIRS_ENV = "GEOBLENDER_READ_ONLY_DIRS"
+"""La variable de entorno de IMGA con las carpetas de solo lectura de todos los puestos (S-3 del
+plan 008): una lista separada por :data:`READ_ONLY_DIRS_SEPARATOR`."""
+READ_ONLY_DIRS_SEPARATOR = ";"
+
+type PathText = str | os.PathLike[str]
+
+
+def _comparable(text: str) -> str:
+    """Una ruta absoluta como se compara: con «\\», sin «.» ni «..», sin barra final y sin
+    mayúsculas (``ntpath.normcase``, como las compara Windows)."""
+    return ntpath.normcase(ntpath.normpath(text)).rstrip("\\")
+
+
+def path_forms(path: PathText, resolve: Canonical = canonical_path) -> tuple[str, ...]:
+    """Las formas comparables de ``path`` (para :func:`forms_within`): la absoluta, sin tocar
+    el disco, y la que da ``resolve`` (por defecto :func:`canonical_path`: una unidad de red da
+    su ruta UNC); si ``resolve`` falla (la red no responde), solo la primera. ``TypeError`` si
+    no es una ruta y ``ValueError`` si está vacía (sería la carpeta de trabajo)."""
+    text = os.fspath(path)
+    if not isinstance(text, str):
+        raise TypeError(f"una ruta es un texto, no {path!r}")
+    if not text.strip():
+        raise ValueError("la ruta está vacía: sería la carpeta de trabajo")
+    absolute = os.path.abspath(text)
+    found = [_comparable(absolute)]
+    try:
+        resolved = _comparable(os.fspath(resolve(Path(absolute))))
+    except (OSError, ValueError):
+        return tuple(found)
+    if resolved not in found:
+        found.append(resolved)
+    return tuple(found)
+
+
+def forms_within(inner: Iterable[str], outer: Iterable[str]) -> bool:
+    """Verdadero si alguna forma de ``inner`` es alguna de ``outer`` o está dentro (formas de
+    :func:`path_forms`: por unidad o por UNC, sin distinguir mayúsculas)."""
+    folders = tuple(outer)
+    return any(
+        item == folder or item.startswith(folder + "\\")
+        for item in inner
+        for folder in folders
+    )
+
+
+def _is_full_path(text: str) -> bool:
+    """Verdadero si ``text`` es una ruta completa: una unidad con su barra (``X:\\…``) o un
+    recurso de red con servidor y recurso."""
+    drive, rest = ntpath.splitdrive(text)
+    if _is_unc(text):
+        return len([part for part in re.split(r"[\\/]", drive) if part]) >= 2
+    return len(drive) == 2 and rest.startswith(tuple(_SEPARATORS))
+
+
+def _folders(entries: Iterable[str]) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+    """Las carpetas de una lista (las vacías se saltan) y las entradas que no son rutas
+    completas."""
+    folders: list[Path] = []
+    ignored: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            raise TypeError(f"una carpeta de solo lectura es un texto, no {entry!r}")
+        text = entry.strip().strip('"').strip()
+        if not text:
+            continue
+        if _is_full_path(text):
+            folders.append(Path(ntpath.normpath(text)))
+        else:
+            ignored.append(text)
+    return tuple(folders), tuple(ignored)
+
+
+@dataclass(frozen=True)
+class ReadOnlyDirs:
+    """Las carpetas de solo lectura (S-3 del plan 008; ADR-0025 §9): ``env_folders``, las de la
+    variable :data:`READ_ONLY_DIRS_ENV`, y ``preference_folders``, las de la preferencia del
+    usuario, como se declararon (rutas completas, normalizadas); ``ignored``, las entradas que
+    no son rutas completas (no protegen nada: se avisa de ellas); ``resolve``, el resolvedor
+    de :func:`path_forms` (se inyecta en las pruebas: no tocan la red). Se construye con
+    :meth:`from_sources`."""
+
+    env_folders: tuple[Path, ...] = ()
+    preference_folders: tuple[Path, ...] = ()
+    ignored: tuple[str, ...] = ()
+    resolve: Canonical = field(default=canonical_path, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        for name in ("env_folders", "preference_folders"):
+            folders = tuple(getattr(self, name))
+            for folder in folders:
+                if not isinstance(folder, Path) or not _is_full_path(os.fspath(folder)):
+                    raise ValueError(f"una carpeta de solo lectura es una ruta completa (Path), "
+                                     f"no {folder!r}")
+            object.__setattr__(self, name, folders)
+        object.__setattr__(self, "ignored", tuple(self.ignored))
+        if not callable(self.resolve):
+            raise TypeError(f"el resolvedor de rutas es una función, no {self.resolve!r}")
+
+    @classmethod
+    def from_sources(
+        cls,
+        env_value: str | None,
+        preferences: Iterable[str],
+        *,
+        resolve: Canonical = canonical_path,
+    ) -> ReadOnlyDirs:
+        """Las carpetas de la variable (su valor, ``None`` si no está definida; separadas por
+        «;», con espacios o comillas a los lados) más las de la preferencia (una lista de
+        textos). Las entradas vacías se saltan."""
+        if env_value is not None and not isinstance(env_value, str):
+            raise TypeError(f"el valor de {READ_ONLY_DIRS_ENV} es un texto o None, no "
+                            f"{env_value!r}")
+        if isinstance(preferences, str | bytes) or not isinstance(preferences, Iterable):
+            raise TypeError(f"las carpetas de solo lectura de la preferencia son una lista de "
+                            f"textos, no {preferences!r}")
+        env_folders, env_ignored = _folders((env_value or "").split(READ_ONLY_DIRS_SEPARATOR))
+        preference_folders, preference_ignored = _folders(preferences)
+        return cls(env_folders, preference_folders, env_ignored + preference_ignored,
+                   resolve=resolve)
+
+    @property
+    def folders(self) -> tuple[Path, ...]:
+        """Todas, las de la variable primero, sin repetir la misma carpeta."""
+        seen: set[str] = set()
+        found: list[Path] = []
+        for folder in (*self.env_folders, *self.preference_folders):
+            key = _comparable(os.fspath(folder))
+            if key not in seen:
+                seen.add(key)
+                found.append(folder)
+        return tuple(found)
+
+    @property
+    def empty(self) -> bool:
+        """Verdadero si no hay ninguna (para el aviso, S-3)."""
+        return not (self.env_folders or self.preference_folders)
+
+    def forms(self, path: PathText) -> tuple[str, ...]:
+        """Las formas comparables de ``path`` con el resolvedor (:func:`path_forms`)."""
+        return path_forms(path, self.resolve)
+
+    def folder_of(self, forms: Iterable[str]) -> Path | None:
+        """La carpeta (como se declaró) que contiene la ruta de formas ``forms``
+        (:meth:`forms`), o ``None``. Sus formas se calculan en cada llamada: una unidad
+        conectada después también cuenta."""
+        target = tuple(forms)
+        for folder in self.folders:
+            if forms_within(target, self.forms(folder)):
+                return folder
+        return None
+
+    def contains(self, path: PathText) -> Path | None:
+        """La carpeta de solo lectura (como se declaró) que contiene ``path`` o que es
+        ``path``, por su unidad o por su ruta UNC y sin distinguir mayúsculas; ``None`` si
+        ninguna."""
+        return self.folder_of(self.forms(path))
 
 
 def next_free_path(folder: Path, stem: str, suffix: str) -> Path:

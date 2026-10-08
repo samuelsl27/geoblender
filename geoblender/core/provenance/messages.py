@@ -427,6 +427,39 @@ _CATALOG: tuple[Message, ...] = (
         "No se ha podido guardar el original de «{file}» de la entrada «{name}» ({reason}): no "
         "queda nada a medias.",
     ),
+    # Guarda de las escrituras (T23; RF-008-15, RF-008-14; S-3 del plan): los rechazos de la
+    # spec §8 y los avisos de las carpetas de solo lectura.
+    Message(
+        "core.write_target_source_folder",
+        "Cannot write in folder «{folder}»: it contains the source of input «{name}».",
+        "No se puede escribir en la carpeta «{folder}»: contiene la fuente de la entrada "
+        "«{name}».",
+    ),
+    Message(
+        "core.write_target_source",
+        "Cannot write to «{file}»: it is the source of input «{name}».",
+        "No se puede escribir en «{file}»: es la fuente de la entrada «{name}».",
+    ),
+    Message(
+        "core.write_target_read_only",
+        "Folder «{folder}» is read-only in the Geoblender preferences.",
+        "La carpeta «{folder}» es de solo lectura en las preferencias de Geoblender.",
+    ),
+    Message(
+        "core.read_only_dirs_empty",
+        "There is no read-only folder: neither the variable {variable} nor the Geoblender "
+        "preferences declare any, so client dossiers are not protected from Geoblender writes.",
+        "No hay ninguna carpeta de solo lectura: ni la variable {variable} ni las preferencias "
+        "de Geoblender declaran ninguna, así que los expedientes de clientes no están "
+        "protegidos de las escrituras de Geoblender.",
+    ),
+    Message(
+        "core.read_only_dir_ignored",
+        "Read-only folder «{folder}» is ignored: it is not a full path, with its drive or on "
+        "the network.",
+        "No se tiene en cuenta la carpeta de solo lectura «{folder}»: no es una ruta completa, "
+        "con su unidad o de red.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})
