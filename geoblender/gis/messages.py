@@ -546,6 +546,19 @@ CATALOG: tuple[Message, ...] = (
         "Curvas de «{surface}»: una equidistancia de {interval} m entre {low} y {high} m da "
         "{value} cotas, más de {limit}: elija una equidistancia mayor.",
     ),
+    # Malla de una superficie en la vista (RF-006-21) -----------------------------------
+    Message(
+        "gis.mesh_invalid",
+        "The mesh of «{surface}» is not valid and is not shown as a project surface: "
+        "{value} of its {faces} faces face down or are degenerate (the surface has "
+        "{reference_faces}) and its volume above {base} m differs from that of the surface "
+        "by {difference} m³ ({tolerance} m³ is allowed). Load it into the view again.",
+        "La malla de «{surface}» no es válida y no se muestra como superficie del proyecto: "
+        "{value} de sus {faces} caras tienen la normal hacia abajo o son degeneradas (la "
+        "superficie tiene {reference_faces}) y su volumen sobre la cota {base} m difiere del "
+        "de la superficie en {difference} m³ (se admiten {tolerance} m³). Vuelva a cargarla "
+        "en la vista.",
+    ),
     # Exportar (RF-006-10) ---------------------------------------------------------------
     Message(
         "gis.export_over_input",

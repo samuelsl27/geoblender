@@ -16,8 +16,9 @@ líneas de rotura y sus duplicados (``gis.points``), las capas de un GeoPackage 
 una copia (``gis.vector``), la preparación de las restricciones de un TIN
 (``gis.breaklines``), el triangulador propio (``gis.cdt``), el TIN con su fichero, su paso
 a rejilla y desde ella y su muestreo (``gis.tin``), el TIN desde curvas de nivel con la
-corrección de triángulos planos (``gis.tin_contours``) y las curvas de nivel de una rejilla
-o de un TIN (``gis.contours``). Cada tarea de la 006 añade aquí lo suyo.
+corrección de triángulos planos (``gis.tin_contours``), las curvas de nivel de una rejilla
+o de un TIN (``gis.contours``) y las mallas de una superficie para la vista, con su
+comprobación y sus niveles de detalle (``gis.mesh``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
 from .breaklines import PreparedInput, prepare_constraints
@@ -43,6 +44,14 @@ from .grid import (
     project_grid,
     validate_step,
     volume_between,
+)
+from .mesh import (
+    MeshArrays,
+    MeshReport,
+    check_surface_mesh,
+    lod_rasters,
+    surface_mesh_from_raster,
+    surface_mesh_from_tin,
 )
 from .messages import GisError
 from .params import PARAMS, ParamDef, param
@@ -117,6 +126,8 @@ __all__ = [
     "GisError",
     "Grid",
     "LayerInfo",
+    "MeshArrays",
+    "MeshReport",
     "ParamDef",
     "PointSet",
     "PreparedInput",
@@ -142,6 +153,7 @@ __all__ = [
     "aligned_grid",
     "breaklines_from_features",
     "build_tin",
+    "check_surface_mesh",
     "check_vertical_offset",
     "choose_method",
     "contours_from_raster",
@@ -153,6 +165,7 @@ __all__ = [
     "import_dir",
     "list_layers",
     "load_tin",
+    "lod_rasters",
     "needs_transform",
     "param",
     "points_from_features",
@@ -169,6 +182,8 @@ __all__ = [
     "resolve_duplicates",
     "sample_tin",
     "save_tin",
+    "surface_mesh_from_raster",
+    "surface_mesh_from_tin",
     "tin_from_contours",
     "tin_to_raster",
     "transform_coordinates",

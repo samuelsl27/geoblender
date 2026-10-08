@@ -293,10 +293,11 @@ def _contract_error(name: str, detail: str, field_name: str,
                              field=field_name, value=value, name=name, detail=detail)
 
 
-def _oriented(xy: np.ndarray, faces: np.ndarray) -> np.ndarray:
-    """Los triángulos antihorarios: se da la vuelta a los horarios (signo de float64 si
-    es seguro y, si no, el exacto de ``orient2d``). Los de área exactamente nula quedan
-    como están (degenerados)."""
+def _orientation(xy: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """El doble del área en planta con signo de cada triángulo, ``(a − c) × (b − c)`` en
+    float64 (positivo si es antihorario), y su signo exacto (−1, 0 o +1, int64): el de
+    float64 si es seguro y, si no, el de ``orient2d``. Coordenadas finitas, absolutas o
+    locales."""
     p = xy[faces]
     left = (p[:, 0, 0] - p[:, 2, 0]) * (p[:, 1, 1] - p[:, 2, 1])
     right = (p[:, 0, 1] - p[:, 2, 1]) * (p[:, 1, 0] - p[:, 2, 0])
@@ -306,6 +307,14 @@ def _oriented(xy: np.ndarray, faces: np.ndarray) -> np.ndarray:
     for row in doubtful.tolist():
         a, b, c = faces[row].tolist()
         sign[row] = orient2d(xy[a, 0], xy[a, 1], xy[b, 0], xy[b, 1], xy[c, 0], xy[c, 1])
+    return det, sign
+
+
+def _oriented(xy: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Los triángulos antihorarios: se da la vuelta a los horarios (signo de float64 si
+    es seguro y, si no, el exacto de ``orient2d``). Los de área exactamente nula quedan
+    como están (degenerados)."""
+    _det, sign = _orientation(xy, faces)
     clockwise = sign < 0
     if clockwise.any():
         faces = faces.copy()
