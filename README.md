@@ -125,10 +125,10 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en unos 31 s) no ejecuta las pruebas del
+Sin `--completo` (la comprobación de cada tarea, en unos 30 s) no ejecuta las pruebas del
 propio arnés que lanzan Blender entero, y lo dice antes del resultado. Los pasos van uno
-tras otro, pero las pruebas unitarias se reparten en 6 procesos (`tools/unittest_part.py`)
-y las de Blender en 3 Blender (`tools/run_blender_tests.py --parte i/n`) que se ejecutan a
+tras otro, pero las pruebas unitarias se reparten en 12 procesos (`tools/unittest_part.py`)
+y las de Blender en 5 Blender (`tools/run_blender_tests.py --parte i/n`) que se ejecutan a
 la vez, sin pasar del número de procesadores; cada prueba, en uno solo. El reparto es por
 la duración de cada módulo de pruebas en la comprobación anterior, que se guarda en
 `%TEMP%\geoblender-tiempos\` (un fichero por carpeta del código); sin él, la primera vez o si

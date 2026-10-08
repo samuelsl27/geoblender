@@ -1179,11 +1179,28 @@ class PartsTest(unittest.TestCase):
 
 def runtime_part_cmd(folder: str, part: int, count: int) -> list[str]:
     """La orden de la parte ``part`` de ``count`` de las pruebas de dominio de ``folder``
-    con el numpy del motor (spec 004, T30): el Python de Blender sin su site-packages."""
+    con el numpy del motor (spec 004, T30): el Python de Blender sin su site-packages; con
+    una sola parte, la de siempre (``-m unittest``)."""
+    if count == 1:
+        return blender.python_cmd(
+            INSTALL, "-S", *RETURN_VALUE_IS_ERROR, "-m", "unittest", "discover", "-v",
+            "-s", folder, "-t", ".",
+        )
     return blender.python_cmd(
         INSTALL, "-S", *RETURN_VALUE_IS_ERROR, "tools/unittest_part.py", parts.OPTION,
         parts.label(part, count), "discover", "-v", "-s", folder, "-t", ".",
     )
+
+
+def runtime_counts() -> dict[str, int]:
+    """Las partes de «motor» de cada carpeta de dominio del repositorio real con 24
+    procesadores: ``RUNTIME_PARTS``, sin pasar de sus módulos de prueba (``part_count``;
+    una carpeta nueva con menos módulos, en menos partes; spec 006, T38)."""
+    return {
+        folder: check.part_count(check.RUNTIME_PARTS,
+                                 len(disk_modules(ROOT, folder, "test*.py")), 24)
+        for folder in DOMAIN_FOLDERS
+    }
 
 
 class RuntimeStepTest(unittest.TestCase):
@@ -1198,12 +1215,15 @@ class RuntimeStepTest(unittest.TestCase):
         pruebas; si una parte falla, el paso falla y el código es 1."""
         self.assertIn("tests/unit/core", DOMAIN_FOLDERS)
         self.assertIn("tests/unit/jobs", DOMAIN_FOLDERS)
-        count = check.RUNTIME_PARTS
-        together = threading.Barrier(check.BLENDER_PARTS + count * len(DOMAIN_FOLDERS),
-                                     timeout=15)
+        counts = runtime_counts()
+        self.assertEqual(counts["tests/unit/core"], check.RUNTIME_PARTS)
+        # Una carpeta en una sola parte (con un solo módulo) va después, como toda orden
+        # sin partes: no llega a la barrera.
+        parted = sum(count for count in counts.values() if count > 1)
+        together = threading.Barrier(check.BLENDER_PARTS + parted, timeout=15)
 
         def meet(call: Call) -> None:
-            if call.step in ("blender", RUNTIME):
+            if call.step in ("blender", RUNTIME) and call.part is not None:
                 together.wait()
 
         with many_cpus():
@@ -1214,7 +1234,7 @@ class RuntimeStepTest(unittest.TestCase):
         self.assertEqual(runner.steps(), MANDATORY)
         calls = runner.calls_of(RUNTIME)
         expected = [runtime_part_cmd(folder, i, count)
-                    for folder in DOMAIN_FOLDERS for i in range(1, count + 1)]
+                    for folder, count in counts.items() for i in range(1, count + 1)]
         self.assertCountEqual([call.cmd for call in calls], expected)
         python_env = _python_env()
         for call in calls:
@@ -1316,8 +1336,8 @@ def _measured_suites(runner: FakeRunner, skip: Sequence[tuple[str, int]] = ()
     found: dict[str, dict[str, float]] = {}
     for step in TIMED_STEPS:
         for call in runner.calls_of(step):
-            assert call.part is not None
-            if (step, call.part[0]) in skip:
+            # Una carpeta de «motor» con un solo módulo va sin partes, y sin medidas.
+            if call.part is None or (step, call.part[0]) in skip:
                 continue
             folder, pattern = suite_of(step, call.cmd)
             flavor = {"unitarias": check.TIMES_PYTHON, "blender": check.TIMES_BLENDER,
@@ -1373,7 +1393,8 @@ class PartTimesTest(unittest.TestCase):
                         self.assertEqual(call.cmd, [*blender_part_cmd(*call.part),
                                                     parts.MEASURES_OPTION, str(measures)])
                     for call in runner.calls_of(RUNTIME):
-                        self.assertIsNotNone(_option(call.cmd, parts.MEASURES_OPTION))
+                        self.assertEqual(_option(call.cmd, parts.MEASURES_OPTION) is None,
+                                         call.part is None)
                         self.assertIsNone(_option(call.cmd, parts.TIMES_OPTION))
                     self.assertEqual(parts.read_store(store), _measured_suites(runner))
                     for step, count in (("unitarias", 217), ("blender", 12)):

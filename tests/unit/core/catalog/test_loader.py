@@ -13,10 +13,10 @@
 - Un catálogo válido del tamaño del real (unos 400 comandos) se carga en ≤ 50 ms.
 """
 
-import time
 import unittest
 from pathlib import Path
 
+from tests.support import timing
 from tests.support.catalog_fixtures import VALID, big_catalog
 from tests.support.package import import_geoblender
 from tests.support.trees import temp_tree
@@ -28,6 +28,8 @@ i18n = import_geoblender("core.i18n")
 # Accesos cruzados a comandos cuya casa es un menú que aún no está en el catálogo (los
 # lleva la prueba contra BS §8; T05 y T06 los definen).
 from tests.unit.core.catalog.test_catalog_matches_docs import PENDING_REFS  # noqa: E402
+
+BUDGET_S = 0.050  # T02: un catálogo del tamaño del real se carga en ≤ 50 ms
 
 
 class LoadTest(unittest.TestCase):
@@ -126,15 +128,15 @@ class LoadTest(unittest.TestCase):
 
     def test_loads_within_budget(self) -> None:
         """T02: un catálogo válido del tamaño del real (400 comandos en 13 menús) se carga
-        en ≤ 50 ms (la mejor de tres cargas sin caché, con el Python de Blender)."""
+        en ≤ 50 ms (la mejor de tres cargas sin caché, con el Python de Blender; con la
+        máquina cargada por las demás partes de ``tools/check.py``, de más, hasta que una
+        quepa: ``tests.support.timing.best_of``, spec 006, T38)."""
+        loaded = []
         with temp_tree(big_catalog(400)) as root:
-            times = []
-            for _ in range(3):
-                start = time.perf_counter()
-                cat = loader.load_catalog(Path(root))
-                times.append(time.perf_counter() - start)
-        self.assertEqual(len(cat.commands), 400 + 13)
-        self.assertLessEqual(min(times) * 1000, 50.0, f"{min(times) * 1000:.1f} ms")
+            best = timing.best_of(lambda: loaded.append(loader.load_catalog(Path(root))),
+                                  BUDGET_S)
+        self.assertEqual(len(loaded[-1].commands), 400 + 13)
+        self.assertLessEqual(best, BUDGET_S, f"{best * 1000:.1f} ms")
 
 
 if __name__ == "__main__":

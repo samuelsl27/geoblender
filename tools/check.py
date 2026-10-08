@@ -37,7 +37,8 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
 
    Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06), salvo «motor», que va a
    la vez que «blender» (spec 004, T30: después de él no cabría en RNF-001-01; su línea
-   va en su lugar y el paso siguiente espera a los dos). Dentro de un paso,
+   va en su lugar y el paso siguiente espera a los dos; a la vez que «unitarias» no
+   compensa, spec 006, T38). Dentro de un paso,
    «unitarias» y «blender» reparten sus pruebas en partes que se ejecutan a la vez
    (spec 003, T40; RNF-007-01: ≤ 40 s sin quitar ninguna prueba): hasta ``UNIT_PARTS``
    procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender con
@@ -168,9 +169,14 @@ PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T
 # Partes de «unitarias» y de «blender» (spec 003, T40; RNF-007-01): a la vez, sin pasar
 # del número de módulos de prueba ni del de procesadores (part_count). Con el reparto por
 # tiempo (spec 004, T39), 6 partes de «unitarias» tardan ≈ 14 s frente a ≈ 21 s con 4;
-# por número de pruebas, más partes podían juntar los módulos lentos en una.
-UNIT_PARTS = 6
-BLENDER_PARTS = 3
+# por número de pruebas, más partes podían juntar los módulos lentos en una. En el PC de
+# referencia (24 hilos; spec 006, T38), 12 partes de «unitarias» tardan ≈ 12,5 s frente a
+# ≈ 16 s con 6 (y ≈ 12,5 s con 10: el suelo es su módulo más lento, test_check_cli, con el
+# arranque de la parte), y 5 de «blender» con «motor» a la vez ≈ 14 s frente a ≈ 18 s con
+# 3 y ≈ 15,5 s con 4 (con 6, igual que con 5: el suelo es test_jobs, con su trabajo de
+# 10 s).
+UNIT_PARTS = 12
+BLENDER_PARTS = 5
 THREAD_PREFIX = "check-parte-"  # los hilos que esperan a cada parte
 JOIN_POLL_S = 0.1  # se espera a los hilos a ratos: así Ctrl+C llega enseguida
 SIGINT_WAIT_S = 0.25  # tras Ctrl+C, lo que espera subprocess antes de parar la orden
@@ -195,8 +201,11 @@ RUNTIME_RESOURCE = "runtime"  # el recurso de tests/support/resources.py (spec 0
 DOMAIN_TESTS = "tests/unit"  # tests/unit/<paquete de dominio> (imports.LEVELS)
 # Partes de cada carpeta de dominio en «motor», que va a la vez que «blender» (spec 004,
 # T30): con 2, «blender» tarda ≈ 1 s más (≈ 2 s con el equipo cargado) y «motor» acaba
-# antes que él; después de él (≈ 12 s más) no cabría en RNF-001-01.
-RUNTIME_PARTS = 2
+# antes que él; después de él (≈ 12 s más) no cabría en RNF-001-01. Con 2 de cada carpeta,
+# tests/unit/jobs tarda ≈ 12–13,5 s, casi lo que 5 partes de «blender» (spec 006, T38);
+# con 4, «motor» acaba en ≈ 8,5 s (con 3, ≈ 9,3 s), y «blender» tarda lo mismo con 3 o 4.
+# A la vez que «unitarias» no compensa: las alarga lo mismo (≈ 2,5 s) que a «blender».
+RUNTIME_PARTS = 4
 # Las duraciones medidas de los módulos de prueba (spec 004, T39; RNF-001-01): el almacén,
 # en la carpeta temporal del sistema (uno por raíz), y los ficheros de las partes, en la
 # de la comprobación. Cada suite con partes tiene su clave (times_key): con qué se
