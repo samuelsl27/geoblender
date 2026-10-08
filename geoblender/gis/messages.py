@@ -436,6 +436,52 @@ CATALOG: tuple[Message, ...] = (
         "({position}) con cotas {first_z} m y {second_z} m.",
     ),
     Message(
+        "gis.breaklines_overlap",
+        "TIN «{tin}»: breaklines «{first}» and «{second}» overlap at ({position}) with "
+        "elevations {first_z} m and {second_z} m.",
+        "TIN «{tin}»: las líneas de rotura «{first}» y «{second}» se solapan en "
+        "({position}) con cotas {first_z} m y {second_z} m.",
+    ),
+    Message(
+        "gis.point_on_breakline",
+        "TIN «{tin}»: point «{first}» lies on breakline «{second}» at ({position}) with "
+        "elevations {first_z} m and {second_z} m.",
+        "TIN «{tin}»: el punto «{first}» está sobre la línea de rotura «{second}» en "
+        "({position}) con cotas {first_z} m y {second_z} m.",
+    ),
+    Message(
+        "gis.points_conflict",
+        "TIN «{tin}»: points «{first}» and «{second}» coincide in plan at ({position}) with "
+        "elevations {first_z} m and {second_z} m.",
+        "TIN «{tin}»: los puntos «{first}» y «{second}» coinciden en planta en "
+        "({position}) con cotas {first_z} m y {second_z} m.",
+    ),
+    Message(
+        "gis.duplicate_conflicts",
+        "TIN «{tin}»: {value} pairs of points coincide in plan within {tol_xy} m with "
+        "elevations that differ by more than {tol_z} m. Choose how to resolve them: mean, "
+        "minimum, maximum, first or cancel.",
+        "TIN «{tin}»: {value} parejas de puntos coinciden en planta a ≤ {tol_xy} m con cotas "
+        "que difieren más de {tol_z} m. Elija cómo resolverlas: media, mínima, máxima, "
+        "primero o cancelar.",
+    ),
+    Message(
+        "gis.duplicates_cancelled",
+        "TIN «{tin}» has not been created: {value} pairs of points coincide in plan with "
+        "different elevations and you chose to cancel.",
+        "No se ha creado el TIN «{tin}»: {value} parejas de puntos coinciden en planta con "
+        "cotas distintas y se eligió cancelar.",
+    ),
+    Message(
+        "gis.constraint_conflicts",
+        "TIN «{tin}» has not been created: {value} conflicts between breaklines and points "
+        "within {tol_xy} m with elevations that differ by more than {tol_z} m. Correct the "
+        "lines in their source or choose how to resolve the points, and create it again.",
+        "No se ha creado el TIN «{tin}»: {value} conflictos entre líneas de rotura y puntos "
+        "a ≤ {tol_xy} m con cotas que difieren más de {tol_z} m. Corrija las líneas en su "
+        "fuente o elija cómo resolver los puntos, y vuelva a crearlo.",
+    ),
+    Message(
         "gis.triangulation_contract",
         "Triangulator {name} did not fulfil its contract: {detail}.",
         "El triangulador {name} no cumplió su contrato: {detail}.",

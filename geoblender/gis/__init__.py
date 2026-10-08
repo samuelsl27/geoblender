@@ -11,11 +11,13 @@ Reexporta la API pública (plan 006 §5.1): los puertos (``gis.ports``), los par
 las superficies en rejilla y los MDT leídos de un fichero (``gis.raster``), el remuestreo y
 la reproyección a la rejilla del proyecto (``gis.resample``), la declaración de CRS y
 datum con sus transformaciones (``gis.crs``), el aviso de alturas elipsoidales
-(``gis.vertical``), la validación de una superficie (``gis.validate``), los puntos y las
-líneas de rotura (``gis.points``) y las capas de un GeoPackage leídas sobre una copia
-(``gis.vector``). Cada tarea de la 006 añade aquí lo suyo.
+(``gis.vertical``), la validación de una superficie (``gis.validate``), los puntos, las
+líneas de rotura y sus duplicados (``gis.points``), las capas de un GeoPackage leídas sobre
+una copia (``gis.vector``) y la preparación de las restricciones de un TIN
+(``gis.breaklines``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
+from .breaklines import PreparedInput, prepare_constraints
 from .crs import (
     ELLIPSOIDAL_ETRS89,
     CoordinateTransform,
@@ -42,10 +44,15 @@ from .params import PARAMS, ParamDef, param
 from .points import (
     Breakline,
     ColumnMapping,
+    DuplicateGroup,
+    DuplicatePolicy,
+    DuplicateReport,
     PointSet,
     breaklines_from_features,
+    find_duplicates,
     points_from_features,
     points_from_rows,
+    resolve_duplicates,
 )
 from .ports import (
     Cancelled,
@@ -69,6 +76,7 @@ from .resample import (
 )
 from .reports import (
     Conflict,
+    ConflictError,
     ConflictKind,
     Rejection,
     ResampleReport,
@@ -87,18 +95,23 @@ __all__ = [
     "Cancelled",
     "ColumnMapping",
     "Conflict",
+    "ConflictError",
     "ConflictKind",
     "CoordinateTransform",
     "CrsService",
     "CrsServiceStatus",
     "CrsServiceUnavailable",
     "Declaration",
+    "DuplicateGroup",
+    "DuplicatePolicy",
+    "DuplicateReport",
     "FeatureSet",
     "GisError",
     "Grid",
     "LayerInfo",
     "ParamDef",
     "PointSet",
+    "PreparedInput",
     "Progress",
     "Raster",
     "RasterIO",
@@ -123,12 +136,14 @@ __all__ = [
     "copy_source",
     "crs_service_status",
     "ellipsoidal_band",
+    "find_duplicates",
     "import_dir",
     "list_layers",
     "needs_transform",
     "param",
     "points_from_features",
     "points_from_rows",
+    "prepare_constraints",
     "project_grid",
     "read_layer",
     "reference_label",
@@ -136,6 +151,7 @@ __all__ = [
     "require_crs_service",
     "resample_classes_to_grid",
     "resample_to_grid",
+    "resolve_duplicates",
     "transform_coordinates",
     "transform_summary",
     "transformation_for",

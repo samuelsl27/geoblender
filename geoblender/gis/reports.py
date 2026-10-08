@@ -9,7 +9,8 @@ informe las cite (spec 006 §11). Inmutables, con tuplas en lugar de listas, y s
 JSON con ``dataclasses.asdict`` (los ``report.json`` de los trabajos de la 004).
 
 - :class:`TopoReport` y :class:`Rejection`: puntos y líneas importados (RF-006-12).
-- :class:`Conflict` y :class:`ConflictKind`: un conflicto al crear un TIN (RF-006-14).
+- :class:`Conflict` y :class:`ConflictKind`: un conflicto al crear un TIN (RF-006-14);
+  :class:`ConflictError`, el error que los lista y no deja crear el TIN.
 - :class:`ResampleReport`: la rejilla del proyecto desde un MDT (RF-006-05, RF-006-11).
 - :class:`TinReport`: un TIN creado (RF-006-13 a RF-006-16).
 - :class:`SurfaceReport`: la validación de una superficie (RF-006-23).
@@ -17,9 +18,12 @@ JSON con ``dataclasses.asdict`` (los ``report.json`` de los trabajos de la 004).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from ..core.i18n import format_number
+from .messages import GisError, render
 from .ports import TransformInfo
 
 KIND = "CALCULADO"
@@ -65,10 +69,20 @@ class ConflictKind(StrEnum):
     COLLINEAR_OVERLAP = "collinear_overlap"
 
 
+_CONFLICT_CODES = {
+    ConflictKind.DUPLICATE_POINTS: "gis.points_conflict",
+    ConflictKind.CROSSING_LINES: "gis.breaklines_cross",
+    ConflictKind.POINT_ON_LINE: "gis.point_on_breakline",
+    ConflictKind.COLLINEAR_OVERLAP: "gis.breaklines_overlap",
+}
+_CONFLICT_DECIMALS = 3  # posición y cotas al milímetro: las tolerancias son de 1 mm y 1 cm
+
+
 @dataclass(frozen=True, slots=True)
 class Conflict:
     """Un conflicto (RF-006-14): sus dos identificadores (punto o línea), la posición X, Y
-    ABSOLUTA (m) y la cota de cada uno allí (m)."""
+    ABSOLUTA (m) y la cota de cada uno allí (m). En un punto sobre una línea, primero el
+    punto; entre dos líneas, por su orden de entrada."""
 
     kind: ConflictKind
     ids: tuple[str, str]
@@ -80,6 +94,39 @@ class Conflict:
     def dz(self) -> float:
         """La diferencia de cota (m), en valor absoluto."""
         return abs(self.z[0] - self.z[1])
+
+    @property
+    def code(self) -> str:
+        """El código ``gis.*`` de su texto."""
+        return _CONFLICT_CODES[ConflictKind(self.kind)]
+
+    def message(self, tin: str = "", language: str = "es") -> str:
+        """El conflicto como lo lee una persona (plan §5.5): los dos identificadores, la
+        posición «X; Y» y las dos cotas, al milímetro (``core.i18n.format_number``)."""
+        position = "; ".join(format_number(v, _CONFLICT_DECIMALS) for v in (self.x, self.y))
+        first_z, second_z = (format_number(z, _CONFLICT_DECIMALS) for z in self.z)
+        return render(self.code, language=language, tin=tin, first=self.ids[0],
+                      second=self.ids[1], position=position, first_z=first_z,
+                      second_z=second_z)
+
+
+class ConflictError(GisError):
+    """Los conflictos que no dejan crear un TIN (RF-006-14): ``conflicts`` (cada uno con
+    sus identificadores, posición y cotas) y :meth:`texts`, su lista en español; el texto
+    del error dice cuántos hay y qué hacer (``code``: ``gis.duplicate_conflicts``,
+    ``gis.duplicates_cancelled`` o ``gis.constraint_conflicts``). Objeto, el TIN; campo,
+    «conflictos»; valor, cuántos."""
+
+    def __init__(self, code: str, conflicts: Sequence[Conflict], /, *, tin: str = "",
+                 **values: object) -> None:
+        self.conflicts: tuple[Conflict, ...] = tuple(conflicts)
+        self.tin = tin
+        super().__init__(code, obj=f"TIN «{tin}»" if tin else "TIN", field="conflictos",
+                         value=len(self.conflicts), tin=tin, **values)
+
+    def texts(self, language: str = "es") -> list[str]:
+        """Cada conflicto como lo lee una persona, en el orden de :attr:`conflicts`."""
+        return [conflict.message(self.tin, language) for conflict in self.conflicts]
 
 
 @dataclass(frozen=True, slots=True)

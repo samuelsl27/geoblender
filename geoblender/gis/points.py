@@ -19,8 +19,19 @@ texto, o la de la capa bit a bit.
   declara para una capa; una geometría sin Z no se acepta como punto ni como rotura, y una
   de otro tipo se rechaza con su número de entidad.
 
-Los duplicados (``TopoReport.duplicates``) los cuenta ``find_duplicates`` (T16) sobre lo que
-se devuelve aquí.
+Duplicados (RF-006-14; plan A7):
+
+- :func:`find_duplicates`: los puntos que coinciden en planta a ≤ ``tol_xy``
+  (``gis.points.dup_xy_tol_m``, 1 mm) forman grupos (las componentes de «a ≤ ``tol_xy``»,
+  buscadas en cubetas de lado ``tol_xy`` y sus 8 vecinas); un grupo cuyas cotas difieren
+  ≤ ``tol_z`` (``gis.points.dup_z_tol_m``, 0,01 m) se funde y se cuenta; si difieren más,
+  es un conflicto (:class:`~gis.reports.Conflict`) con los dos identificadores, la posición
+  del primero y las dos cotas. El informe (:class:`DuplicateReport`) da el número de
+  duplicados para ``TopoReport.duplicates``.
+- :func:`resolve_duplicates`: los puntos sin duplicados según la política que elija el
+  usuario para los conflictos (:class:`DuplicatePolicy`: media, mínima, máxima, primero o
+  cancelar; «preguntar», por defecto, lanza :class:`~gis.reports.ConflictError` con la lista
+  para que elija).
 """
 
 from __future__ import annotations
@@ -29,12 +40,15 @@ import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from . import params
 from .messages import render
-from .reports import Rejection, TopoReport
+from .reports import Conflict, ConflictError, ConflictKind, Rejection, TopoReport
+from .validate import _roots
 
 if TYPE_CHECKING:
     from .vector import FeatureSet
@@ -48,6 +62,10 @@ _ROLES = ("x", "y", "z", "point_id", "code", "line")
 _REQUIRED = ("x", "y", "z")
 _POINT_TYPES = ("POINT", "MULTIPOINT")
 _LINE_TYPES = ("LINESTRING", "MULTILINESTRING")
+DUP_XY_KEY = "gis.points.dup_xy_tol_m"
+DUP_Z_KEY = "gis.points.dup_z_tol_m"
+_MAX_CELLS = 2**26  # cubetas por eje como mucho: claves enteras exactas (< 2⁵³)
+_HALF_NEIGHBOURS = ((0, 0), (0, 1), (1, -1), (1, 0), (1, 1))  # cada pareja de cubetas, una vez
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,3 +419,253 @@ def breaklines_from_features(
                 source_rows=(fid,) * len(part),
             ))
     return breaklines, _report(features, rejected, points=0, lines=len(breaklines))
+
+
+# Duplicados (RF-006-14; plan A7) ----------------------------------------------------------
+
+
+class DuplicatePolicy(StrEnum):
+    """Cómo resolver los puntos en conflicto: a ≤ ``tol_xy`` en planta con cotas que
+    difieren más de ``tol_z`` (RF-006-14). Por defecto, preguntar (D-5)."""
+
+    ASK = "ask"
+    """Preguntar: si hay conflictos, :class:`~gis.reports.ConflictError` con la lista."""
+    MEAN = "mean"
+    """La cota media del grupo, en la posición del primero."""
+    MIN = "min"
+    """El punto de cota mínima, tal cual."""
+    MAX = "max"
+    """El punto de cota máxima, tal cual."""
+    FIRST = "first"
+    """El primero, tal cual."""
+    CANCEL = "cancel"
+    """Cancelar: si hay conflictos, el TIN no se crea."""
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateGroup:
+    """Puntos que coinciden en planta: sus posiciones en la entrada, en orden (el primero
+    es el que se conserva) y si sus cotas difieren más de ``tol_z`` (``conflict``)."""
+
+    indices: tuple[int, ...]
+    conflict: bool
+
+    @property
+    def kept(self) -> int:
+        """La posición del primero: el que se conserva sin conflicto o con «primero»."""
+        return self.indices[0]
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateReport:
+    """Los duplicados de ``count`` puntos con las tolerancias ``tol_xy`` y ``tol_z`` (m):
+    los grupos de dos o más, por su primer punto, y los conflictos (los de los grupos con
+    ``conflict``)."""
+
+    count: int
+    tol_xy: float
+    tol_z: float
+    groups: tuple[DuplicateGroup, ...] = ()
+    conflicts: tuple[Conflict, ...] = ()
+
+    @property
+    def merged(self) -> int:
+        """Puntos que se funden con el primero de su grupo (cotas dentro de ``tol_z``)."""
+        return sum(len(g.indices) - 1 for g in self.groups if not g.conflict)
+
+    @property
+    def duplicates(self) -> int:
+        """Puntos que coinciden en planta con otro anterior, fundidos o en conflicto: el
+        ``TopoReport.duplicates`` de la importación (RF-006-12)."""
+        return sum(len(g.indices) - 1 for g in self.groups)
+
+
+def duplicate_tolerances(tol_xy: float | None = None,
+                         tol_z: float | None = None) -> tuple[float, float]:
+    """Las tolerancias en planta y en cota (m): las de ``gis/params.py`` si son ``None``;
+    si no, comprobadas como esos parámetros (``GisError`` ``gis.param_*`` con la clave
+    como campo)."""
+    def value(key: str, given: float | None) -> float:
+        definition = params.param(key)
+        return float(definition.default if given is None else definition.check(given))
+
+    return value(DUP_XY_KEY, tol_xy), value(DUP_Z_KEY, tol_z)
+
+
+def _expand(start: np.ndarray, stop: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Para cada ``k`` y cada posición de ``start[k]`` a ``stop[k]`` (sin incluir), el
+    par (``k``, posición), vectorizado."""
+    counts = stop - start
+    owner = np.repeat(np.arange(len(start), dtype=np.int64), counts)
+    offsets = np.repeat(np.cumsum(counts) - counts - start, counts)
+    return owner, np.arange(len(owner), dtype=np.int64) - offsets
+
+
+def _close_pairs(xy: np.ndarray, tol: float) -> tuple[np.ndarray, np.ndarray]:
+    """Las parejas (``i`` < ``j``) de ``xy`` (float64 ``(n, 2)``, ABSOLUTAS) a ≤ ``tol`` en
+    planta. Cubetas de lado ``tol`` (o mayor, si la extensión pide más de
+    :data:`_MAX_CELLS` por eje) ordenadas por clave; cada punto mira su cubeta y la mitad de
+    sus 8 vecinas, así que cada pareja de cubetas se mira una vez. La distancia se mide con
+    las diferencias de las coordenadas absolutas, exactas entre puntos cercanos."""
+    empty = np.empty(0, dtype=np.int64)
+    if len(xy) < 2:
+        return empty, empty
+    local = xy - xy.min(axis=0)
+    size = max(tol, float(local.max()) / _MAX_CELLS)
+    cells = np.floor(local / size).astype(np.int64)
+    stride = int(cells[:, 1].max()) + 2  # cy + 1 y cy − 1 nunca pisan otra columna
+    keys = cells[:, 0] * stride + cells[:, 1]
+    order = np.argsort(keys, kind="stable")
+    sorted_keys = keys[order]
+    firsts, seconds = [], []
+    for dx, dy in _HALF_NEIGHBOURS:
+        wanted = sorted_keys + (dx * stride + dy)  # ya ordenadas: búsqueda mucho más rápida
+        start = np.searchsorted(sorted_keys, wanted, side="left")
+        stop = np.searchsorted(sorted_keys, wanted, side="right")
+        owner, position = _expand(start, stop)
+        if dx == 0 and dy == 0:
+            later = position > owner
+            owner, position = owner[later], position[later]
+        first, second = order[owner], order[position]
+        delta = xy[first] - xy[second]
+        near = np.hypot(delta[:, 0], delta[:, 1]) <= tol
+        firsts.append(first[near])
+        seconds.append(second[near])
+    first = np.concatenate(firsts)
+    second = np.concatenate(seconds)
+    return np.minimum(first, second), np.maximum(first, second)
+
+
+def _cluster(
+    xy: np.ndarray, z: np.ndarray, tol_xy: float, tol_z: float,
+    priority: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Grupos de puntos a ≤ ``tol_xy`` en planta (componentes conexas, plan A7).
+
+    Devuelve ``kept``: para cada punto, el que se conserva de su grupo (él mismo si está
+    solo), el de menor ``priority`` (una permutación de las posiciones; por defecto, la
+    posición); ``conflict``: si las cotas de su grupo difieren más de ``tol_z``; y
+    ``pairs`` ``(m, 2)``: las parejas (``i`` < ``j``) que se listan como conflictos, en
+    orden: las vecinas (a ≤ ``tol_xy``) con Δz > ``tol_z`` y, en un grupo en conflicto sin
+    ninguna (una cadena), la de su cota mínima y su cota máxima.
+    """
+    count = len(xy)
+    rank = np.arange(count, dtype=np.int64) if priority is None else priority
+    by_rank = np.empty(count, dtype=np.int64)
+    by_rank[rank] = np.arange(count, dtype=np.int64)
+    first, second = _close_pairs(xy, tol_xy)
+    roots = _roots(count, rank[first], rank[second])
+    kept = by_rank[roots[rank]]
+    low = z.copy()
+    high = z.copy()
+    np.minimum.at(low, kept, z)
+    np.maximum.at(high, kept, z)
+    in_conflict = (high - low > tol_z)[kept]
+    steep = np.abs(z[first] - z[second]) > tol_z
+    pairs = [np.column_stack([first[steep], second[steep]])]
+    covered = np.zeros(count, dtype=bool)
+    covered[kept[first[steep]]] = True
+    for group in np.flatnonzero(in_conflict & (kept == np.arange(count)) & ~covered):
+        members = np.flatnonzero(kept == group)
+        lowest = int(members[np.argmin(z[members])])
+        highest = int(members[np.argmax(z[members])])
+        pairs.append(np.array([[min(lowest, highest), max(lowest, highest)]]))
+    listed = np.concatenate(pairs).reshape(-1, 2).astype(np.int64)
+    listed = listed[np.lexsort((listed[:, 1], listed[:, 0]))]
+    return kept, in_conflict, listed
+
+
+def _check_points(xyz: object, what: str) -> None:
+    _check_xyz(xyz, what)
+    if not np.isfinite(xyz).all():  # type: ignore[call-overload]
+        raise ValueError(f"{what}: hay coordenadas que no son finitas")
+
+
+def find_duplicates(
+    xyz: np.ndarray,
+    *,
+    tol_xy: float | None = None,
+    tol_z: float | None = None,
+    ids: Sequence[str] | None = None,
+) -> DuplicateReport:
+    """Los puntos de ``xyz`` (float64 ``(n, 3)``, ABSOLUTOS) que coinciden en planta a
+    ≤ ``tol_xy`` (RF-006-14; plan A7): grupos por su primer punto y conflictos (cotas que
+    difieren más de ``tol_z``) con los identificadores ``ids`` (por defecto, «#1», «#2»…
+    por su posición), la posición X, Y del primero de la pareja y sus dos cotas. Las
+    tolerancias, las de :func:`duplicate_tolerances`. No modifica ``xyz``."""
+    _check_points(xyz, "xyz")
+    tol_xy, tol_z = duplicate_tolerances(tol_xy, tol_z)
+    count = len(xyz)
+    labels = tuple(f"#{i + 1}" for i in range(count)) if ids is None else tuple(ids)
+    if len(labels) != count:
+        raise ValueError(f"ids tiene {len(labels)} identificadores para {count} puntos")
+    kept, in_conflict, pairs = _cluster(xyz[:, :2], xyz[:, 2], tol_xy, tol_z)
+    grouped = np.flatnonzero(np.bincount(kept, minlength=count)[kept] > 1)
+    groups: list[DuplicateGroup] = []
+    if grouped.size:
+        order = grouped[np.lexsort((grouped, kept[grouped]))]
+        cuts = np.flatnonzero(np.diff(kept[order])) + 1
+        for members in np.split(order, cuts):
+            groups.append(DuplicateGroup(tuple(int(i) for i in members),
+                                         bool(in_conflict[members[0]])))
+    groups.sort(key=lambda group: group.indices[0])
+    conflicts = tuple(
+        Conflict(ConflictKind.DUPLICATE_POINTS, (labels[i], labels[j]), float(xyz[i, 0]),
+                 float(xyz[i, 1]), (float(xyz[i, 2]), float(xyz[j, 2])))
+        for i, j in pairs.tolist()
+    )
+    return DuplicateReport(count, tol_xy, tol_z, tuple(groups), conflicts)
+
+
+def resolve_duplicates(
+    points: PointSet,
+    report: DuplicateReport,
+    policy: DuplicatePolicy | str,
+    *,
+    name: str = "",
+) -> PointSet:
+    """Los puntos de ``points`` sin duplicados (RF-006-14), con el informe de
+    :func:`find_duplicates` sobre ellos. Cada grupo sin conflicto se queda en su primer
+    punto; uno en conflicto, según ``policy``: la media (posición del primero con la cota
+    media), la mínima o la máxima (ese punto tal cual) o el primero. Con conflictos,
+    «preguntar» y «cancelar» lanzan :class:`~gis.reports.ConflictError` (TIN ``name``) con
+    la lista. El orden es el de entrada; ``points`` no se modifica. ``ValueError`` si la
+    política no existe o el informe es de otros puntos (errores del programa)."""
+    policy = DuplicatePolicy(policy)
+    if not isinstance(points, PointSet):
+        raise TypeError("points es un PointSet")
+    if report.count != len(points):
+        raise ValueError(f"el informe es de {report.count} puntos y hay {len(points)}")
+    if report.conflicts and policy in (DuplicatePolicy.ASK, DuplicatePolicy.CANCEL):
+        code = ("gis.duplicate_conflicts" if policy is DuplicatePolicy.ASK
+                else "gis.duplicates_cancelled")
+        raise ConflictError(code, report.conflicts, tin=name, tol_xy=report.tol_xy,
+                            tol_z=report.tol_z)
+    xyz = points.xyz.copy()
+    point_ids = list(points.point_ids)
+    codes = list(points.codes)
+    rows = list(points.source_rows)
+    keep = np.ones(len(points), dtype=bool)
+    for group in report.groups:
+        first, *others = group.indices
+        keep[others] = False
+        if not group.conflict or policy is DuplicatePolicy.FIRST:
+            continue
+        members = list(group.indices)
+        heights = points.xyz[members, 2]
+        if policy is DuplicatePolicy.MEAN:
+            xyz[first, 2] = float(np.mean(heights))
+            continue
+        pick = np.argmin(heights) if policy is DuplicatePolicy.MIN else np.argmax(heights)
+        chosen = members[int(pick)]
+        xyz[first] = points.xyz[chosen]
+        point_ids[first] = points.point_ids[chosen]
+        codes[first] = points.codes[chosen]
+        rows[first] = points.source_rows[chosen]
+    kept = np.flatnonzero(keep).tolist()
+    return PointSet(
+        xyz=np.ascontiguousarray(xyz[keep]),
+        point_ids=tuple(point_ids[i] for i in kept),
+        codes=tuple(codes[i] for i in kept),
+        source_rows=tuple(rows[i] for i in kept),
+    )
