@@ -1,0 +1,179 @@
+{
+  "normalizer": "gbch/1",
+  "about": "Vectores de referencia del normalizador gbch/1 (ADR-0024 §6; spec 008, RF-008-08). Una versión publicada no cambia: un hash que deja de coincidir es un cambio del normalizador (una versión nueva), nunca un dato que se regenera. Marcas en los valores: {\"nan\": true}, {\"inf\": 1}, {\"inf\": -1} y {\"f64\": \"<16 cifras hexadecimales>\"} (los bits de un float64); un trozo de documento es un texto (UTF-8) o {\"b64\": …}; una parte de un compuesto puede citar otro caso con {\"case\": id}. Los hashes que faltan los rellena tests/support/content_golden.py, que nunca cambia uno escrito.",
+  "cases": [
+    {
+      "id": "grid-float32-area-epsg",
+      "about": "Rejilla float32 de 3 × 4 con un NaN, un −0,0 y el sin dato −9999; celdas de área; el fichero trae EPSG:25830",
+      "kind": "raster",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "grid": {
+        "header": {
+          "rows": 3,
+          "columns": 4,
+          "x0": 715000.0,
+          "y0": 4378000.0,
+          "dx": 5.0,
+          "dy": 5.0,
+          "cell": "area",
+          "class": "float",
+          "nodata": -9999.0,
+          "crs": {"epsg": 25830}
+        },
+        "dtype": "<f4",
+        "values": [
+          [612.5, 613.25, {"nan": true}, 614.0],
+          [-9999.0, -0.0, 611.75, 612.0],
+          [610.5, 611.0, 611.5, 612.125]
+        ]
+      },
+      "data_sha256": "c76a04ffc8c817a3dec1611132660811534580a622565cc0ac3cbdc9da6f5471",
+      "content_sha256": "14db449357ba9ed6a4f5b1967d9f6573c5bc6656620f08409f2d49e404667393"
+    },
+    {
+      "id": "grid-float64-point-nodata-nan-crs-null",
+      "about": "Rejilla float64 big-endian de 2 × 3 con NaN de otras cargas, −0,0, infinitos y un subnormal; celdas de punto; sin dato NaN; el fichero no trae CRS",
+      "kind": "raster",
+      "reader": "test.golden@1",
+      "declarations": {
+        "conventions": {"vertical": "orthometric"},
+        "crs_h": {"epsg": 25830},
+        "crs_v": {"local": "cota de obra"}
+      },
+      "grid": {
+        "header": {
+          "rows": 2,
+          "columns": 3,
+          "x0": 715002.5,
+          "y0": 4377997.5,
+          "dx": 0.5,
+          "dy": 0.25,
+          "cell": "point",
+          "class": "float",
+          "nodata": {"nan": true},
+          "crs": null
+        },
+        "dtype": ">f8",
+        "values": [
+          [{"f64": "7ff8000000000001"}, -0.0, {"inf": 1}],
+          [{"f64": "fff0000000000001"}, 5e-324, {"inf": -1}]
+        ]
+      },
+      "data_sha256": "489e43db8fc4a8e335eb53da12421df2345ab46500b891ab528612be13d31870",
+      "content_sha256": "c3753aeb016fc9c4963cbf8f66493e9489bc93ac77c1ef7bd21aac2d8a498b56"
+    },
+    {
+      "id": "grid-int16",
+      "about": "Rejilla de enteros int16 de 2 × 4 con el sin dato −32768",
+      "kind": "raster",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "grid": {
+        "header": {
+          "rows": 2,
+          "columns": 4,
+          "x0": 715000,
+          "y0": 4378000,
+          "dx": 25,
+          "dy": 25,
+          "cell": "area",
+          "class": "int",
+          "nodata": -32768,
+          "crs": {"epsg": 25830}
+        },
+        "dtype": "<i2",
+        "values": [[-32768, 0, 1, 32767], [-1, 612, 613, -32768]]
+      },
+      "data_sha256": "43992654b5f5bcbd85c1bd93b365c6d334365b41dd90421140f683c75991c9d8",
+      "content_sha256": "c645f311c31daee73ef75877cfb2a302fd08b936b15fab9dcc2ed54b735450dc"
+    },
+    {
+      "id": "grid-bool",
+      "about": "Máscara booleana de 2 × 2 sin valor de sin dato",
+      "kind": "raster",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"not_applicable": true}},
+      "grid": {
+        "header": {
+          "rows": 2,
+          "columns": 2,
+          "x0": 715000.0,
+          "y0": 4378000.0,
+          "dx": 10.0,
+          "dy": 10.0,
+          "cell": "area",
+          "class": "bool",
+          "nodata": null,
+          "crs": {"epsg": 25830}
+        },
+        "dtype": "|b1",
+        "values": [[true, false], [false, true]]
+      },
+      "data_sha256": "00bebaedca9e6a0d4a9e40140fa50e081b7ecf1e1956b20805d0970dbe2dea42",
+      "content_sha256": "7bded2c02986ecea2a2ee4cd37e9b31e7c2a80ec3804489edcacf20391e148b3"
+    },
+    {
+      "id": "document-text",
+      "about": "Documento de texto en dos trozos: el hash de datos es la huella de sus bytes",
+      "kind": "document",
+      "reader": "test.golden@1",
+      "declarations": {},
+      "document": {"chunks": ["Informe de ", "prueba\n"]},
+      "data_sha256": "c3c7be63615d730fd1cf3482a67b6ac0dd19ae7853e98aadaf2769a61bf9a8e3",
+      "content_sha256": "a0c59320b653545a23c63a8f6b58f33826e6ded8996838d95629bb886e22a340"
+    },
+    {
+      "id": "document-empty",
+      "about": "Documento vacío",
+      "kind": "document",
+      "reader": "test.golden@1",
+      "declarations": {},
+      "document": {"chunks": []},
+      "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "content_sha256": "60c17ff8f8c9ea4fd5522938a06125d0962d3a9cbd72d33e1148049fafc30adc"
+    },
+    {
+      "id": "document-binary",
+      "about": "Documento binario de 8 bytes",
+      "kind": "document",
+      "reader": "test.golden@1",
+      "declarations": {},
+      "document": {"chunks": [{"b64": "AAECAwT//oA="}]},
+      "data_sha256": "f658cf51603dd01b12f2be797203616fadefc5b8ca914fe55f5deb2005804114",
+      "content_sha256": "60e693e05bd1addaa5120c81503916d998ed6150d84a3fa97f3b90017ac7ab1e"
+    },
+    {
+      "id": "composite-drillholes",
+      "about": "Sondeos de tres tablas: las partes se ordenan por su nombre",
+      "kind": "drillholes",
+      "reader": "test.golden@1",
+      "declarations": {
+        "conventions": {"azimuth": "grid_north", "dip": "negative_down"},
+        "crs_h": {"epsg": 25830},
+        "crs_v": {"epsg": 5782}
+      },
+      "composite": {
+        "parts": {
+          "survey": ["table", "a4a0f9e1535ecd0712344a2310dce7ce1675e2b2096de99605120e5025913bf6"],
+          "collar": ["table", "381ac31791dd4f867e6b0841d4345af8c0b25fa702e83896464fd76ead1fba10"],
+          "assay": ["table", "ca8ce249de4bf7723f1fd99fa1a2aeaa1cc88611e48d00708cba54ed20f88c61"]
+        }
+      },
+      "data_sha256": "3df881bc0615d51b2e4bacd1450f0abf7609016a743e742805a9f5d05a54cdbf",
+      "content_sha256": "2657c44aa1fbca6e7a7a0ea07b8c0f82d41536be9fa32a7ed537bace20d341a3"
+    },
+    {
+      "id": "composite-grid-and-prj",
+      "about": "Una rejilla con su .prj como dos partes (el .prj de un ASC es una parte)",
+      "kind": "raster",
+      "reader": "test.golden@1",
+      "declarations": {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": {"epsg": 5782}},
+      "composite": {
+        "parts": {"prj": ["document", {"case": "document-text"}], "grid": ["raster", {"case": "grid-int16"}]}
+      },
+      "data_sha256": "c2db53f9f1aa1bb9bce6670ad5f95642fe0d99c8bb08cf57e711452df682f2da",
+      "content_sha256": "11298438140ddd1f37a9ffa0c8219d77c66c889d4243ab386f3e3538d279ce16"
+    }
+  ]
+}
