@@ -318,10 +318,114 @@ CATALOG: tuple[Message, ...] = (
         "número.",
     ),
     Message(
+        "gis.value_empty",
+        "Points «{file}», row {row}, column {column} («{header}»): it is empty.",
+        "Puntos «{file}», fila {row}, columna {column} («{header}»): está vacía.",
+    ),
+    Message(
+        "gis.row_columns",
+        "Points «{file}», row {row}: it has {value} columns and {expected} are expected. "
+        "Check the separator and the decimal mark chosen.",
+        "Puntos «{file}», fila {row}: tiene {value} columnas y se esperan {expected}. "
+        "Compruebe el separador y el decimal elegidos.",
+    ),
+    Message(
+        "gis.breakline_no_elevation",
+        "Points «{file}», row {row}: this vertex of line «{line}» has no elevation (Z); a "
+        "breakline without elevation is not accepted, so the whole line is rejected.",
+        "Puntos «{file}», fila {row}: este vértice de la línea «{line}» no tiene cota (Z); "
+        "no se acepta una línea de rotura sin cota, así que se rechaza la línea entera.",
+    ),
+    Message(
+        "gis.line_rejected",
+        "Points «{file}», row {row}: line «{line}» is rejected whole because its row "
+        "{bad_row} is not valid. Correct that row and import the file again.",
+        "Puntos «{file}», fila {row}: se rechaza entera la línea «{line}» porque su fila "
+        "{bad_row} no es válida. Corrija esa fila y vuelva a importar el fichero.",
+    ),
+    Message(
+        "gis.line_single_point",
+        "Points «{file}», row {row}: line «{line}» has a single point; a line needs at "
+        "least two.",
+        "Puntos «{file}», fila {row}: la línea «{line}» tiene un solo punto; una línea "
+        "necesita al menos dos.",
+    ),
+    Message(
         "gis.m_discarded",
         "Layer «{layer}»: its M values have been discarded.",
         "Capa «{layer}»: se han descartado sus valores M.",
         "warning",
+    ),
+    Message(
+        "gis.gpkg_unreadable",
+        "GeoPackage «{file}» cannot be read: {detail}.",
+        "No se puede leer el GeoPackage «{file}»: {detail}.",
+    ),
+    Message(
+        "gis.layer_not_found",
+        "«{file}» has no feature layer «{value}»: choose one of its layers.",
+        "«{file}» no tiene ninguna capa vectorial «{value}»: elija una de sus capas.",
+    ),
+    Message(
+        "gis.layer_geometry_unsupported",
+        "Layer «{layer}» of «{file}»: geometry type {value} is not supported (points, lines "
+        "and polygons, single or multi-part, 2D or with Z, are). Convert it in QGIS (e.g. "
+        "curves with Segmentize) and import it again.",
+        "Capa «{layer}» de «{file}»: el tipo de geometría {value} no se admite (sí los "
+        "puntos, las líneas y los polígonos, simples o múltiples, 2D o con Z). Conviértala "
+        "en QGIS (p. ej. las curvas con Segmentar) y vuelva a importarla.",
+    ),
+    Message(
+        "gis.layer_crs_unsupported",
+        "Layer «{layer}» of «{file}»: its CRS {value} is not in Geoblender's catalog "
+        "(projected CRS in metres). Reproject it in QGIS to a CRS of the catalog (e.g. "
+        "EPSG:25830) and import it again.",
+        "Capa «{layer}» de «{file}»: su CRS {value} no está en el catálogo de Geoblender "
+        "(CRS proyectados en metros). Reproyéctela en QGIS a un CRS del catálogo (p. ej. "
+        "EPSG:25830) y vuelva a importarla.",
+    ),
+    Message(
+        "gis.layer_crs_undeclared",
+        "Layer «{layer}» of «{file}» has no EPSG CRS ({value}): declare its CRS when "
+        "importing it.",
+        "La capa «{layer}» de «{file}» no tiene un CRS EPSG ({value}): declare su CRS al "
+        "importarla.",
+        "warning",
+    ),
+    Message(
+        "gis.features_without_geometry",
+        "Layer «{layer}» of «{file}»: {value} features without geometry (empty or null) have "
+        "been skipped.",
+        "Capa «{layer}» de «{file}»: se han omitido {value} entidades sin geometría (vacías "
+        "o nulas).",
+        "warning",
+    ),
+    Message(
+        "gis.feature_geometry_invalid",
+        "Layer «{layer}» of «{file}», feature {row}: its geometry cannot be read ({detail}).",
+        "Capa «{layer}» de «{file}», entidad {row}: su geometría no se puede leer "
+        "({detail}).",
+    ),
+    Message(
+        "gis.feature_srs_mismatch",
+        "Layer «{layer}» of «{file}», feature {row}: its geometry declares SRS {value} and "
+        "the layer {expected}.",
+        "Capa «{layer}» de «{file}», entidad {row}: su geometría declara el SRS {value} y la "
+        "capa, el {expected}.",
+    ),
+    Message(
+        "gis.feature_role_mismatch",
+        "Layer «{layer}», feature {row}: it is a {value} and only {expected} are imported as "
+        "{role}.",
+        "Capa «{layer}», entidad {row}: es un {value} y como {role} solo se importan "
+        "{expected}.",
+    ),
+    Message(
+        "gis.feature_without_z",
+        "Layer «{layer}», feature {row}: it has no elevation (Z) and a geometry without "
+        "elevation is not accepted as {role}.",
+        "Capa «{layer}», entidad {row}: no tiene cota (Z) y no se acepta como {role} una "
+        "geometría sin cota.",
     ),
     # TIN (RF-006-13, RF-006-14) ---------------------------------------------------------
     Message(

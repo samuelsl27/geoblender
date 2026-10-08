@@ -257,5 +257,121 @@ class GeometryWkbTest(unittest.TestCase):
             wkb.geometry_wkb("GP")  # type: ignore[arg-type]
 
 
+def _blob(body: bytes, *, envelope: tuple[float, ...] = (), code: int = 0) -> bytes:
+    """Cabecera ``GP`` *little endian* (envolvente de código ``code``) + ``body``."""
+    flags = 1 | (code << 1)
+    return b"GP" + bytes([0, flags]) + struct.pack("<i", SRS) + struct.pack(
+        f"<{len(envelope)}d", *envelope
+    ) + body
+
+
+def _wkb(code: int, values: np.ndarray, *, order: str = "<", count: bool = True) -> bytes:
+    head = struct.pack(f"{order}BI", 1 if order == "<" else 0, code)
+    size = struct.pack(f"{order}I", len(values)) if count else b""
+    return head + size + np.asarray(values, dtype=f"{order}f8").tobytes()
+
+
+ZM_LINE = np.array([[700_123.456, 4_400_987.654, 850.123, 0.0],
+                    [700_200.001, 4_401_000.999, 851.5, 76.6]])
+XYM_LINE = ZM_LINE[:, [0, 1, 3]]
+
+
+class ExternalGeometryTest(unittest.TestCase):
+    """Geometrías de las capas de otros programas (spec 006, T15; plan 006 §5.3.6): con
+    ``external=True`` se leen también las de M o ZM (la M se descarta: ``had_m``) y el WKB
+    con las banderas de EWKB; sin él, el GeoPackage del proyecto sigue igual de estricto."""
+
+    def test_m_and_zm_dropped(self) -> None:
+        """RF-006-12: Point M, LineString M y ZM y MultiLineString ZM (WKB ISO): X, Y (y
+        Z) bit a bit, sin la M, con ``had_m``; sin ``external``, se rechazan."""
+        multi = struct.pack("<BII", 1, 3005, 2) + _wkb(3002, ZM_LINE) + _wkb(
+            3002, ZM_LINE[::-1]
+        )
+        cases = {
+            "Point M": (_wkb(2001, XYM_LINE[0], count=False), "POINT", False,
+                        ZM_LINE[0, :2]),
+            "LineString M": (_wkb(2002, XYM_LINE), "LINESTRING", False, ZM_LINE[:, :2]),
+            "LineString ZM": (_wkb(3002, ZM_LINE), "LINESTRING", True, ZM_LINE[:, :3]),
+            "MultiLineString ZM": (multi, "MULTILINESTRING", True,
+                                   [ZM_LINE[:, :3], ZM_LINE[::-1, :3]]),
+        }
+        for label, (body, name, has_z, expected) in cases.items():
+            with self.subTest(label):
+                blob = _blob(body)
+                geometry = gpkg.decode_geometry(blob, external=True)
+                self.assertEqual((geometry.geometry_type, geometry.has_z, geometry.had_m),
+                                 (name, has_z, True))
+                _assert_same(self, geometry.coords, expected)
+                if isinstance(geometry.coords, np.ndarray):
+                    self.assertTrue(geometry.coords.flags.c_contiguous)
+                with self.assertRaises(errors.GeometryError):
+                    gpkg.decode_geometry(blob)
+
+    def test_ewkb_flags(self) -> None:
+        """RF-006-12: EWKB (Z = 0x80000000, M = 0x40000000) con ``external``: igual que el
+        ISO; con SRID dentro (0x20000000) u otros bits, no: tipo no admitido."""
+        for label, code, values, has_z in (
+            ("Z", 0x8000_0002, ZM_LINE[:, :3], True),
+            ("M", 0x4000_0002, XYM_LINE, False),
+            ("ZM", 0xC000_0002, ZM_LINE, True),
+        ):
+            with self.subTest(label):
+                geometry = gpkg.decode_geometry(_blob(_wkb(code, values)), external=True)
+                self.assertEqual(geometry.has_z, has_z)
+                self.assertEqual(geometry.had_m, label != "Z")
+                _assert_same(self, geometry.coords, ZM_LINE[:, : 3 if has_z else 2])
+        srid = struct.pack("<I", SRS)
+        for code, body in (
+            (0x2000_0002, _wkb(0x2000_0002, ZM_LINE[:, :2])),
+            (0xA000_0002, _wkb(0xA000_0002, ZM_LINE[:, :3])[:5] + srid
+             + _wkb(0xA000_0002, ZM_LINE[:, :3])[5:]),
+            (0x8000_0102, _wkb(0x8000_0102, ZM_LINE[:, :3])),
+        ):
+            with self.subTest(codigo=hex(code)):
+                with self.assertRaises(errors.GeometryError) as caught:
+                    gpkg.decode_geometry(_blob(body), external=True)
+                self.assertEqual(caught.exception.code, "core.geometry_type_unknown")
+                self.assertEqual(caught.exception.value, code)
+
+    def test_envelope_with_m(self) -> None:
+        """RF-006-12: una envolvente XYZM (código 4) se lee sin la M."""
+        envelope = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)
+        geometry = gpkg.decode_geometry(_blob(_wkb(3002, ZM_LINE), envelope=envelope, code=4),
+                                        external=True)
+        self.assertEqual(geometry.envelope, envelope[:6])
+
+    def test_still_rejected(self) -> None:
+        """RF-006-12: con ``external`` siguen rechazadas las curvas, las colecciones, las
+        partes con y sin M mezcladas, la cabecera extendida y las vacías."""
+        mixed = struct.pack("<BII", 1, 3005, 2) + _wkb(3002, ZM_LINE) + _wkb(
+            1002, ZM_LINE[:, :3]
+        )
+        point = gpkg.encode_geometry("POINT", np.array(P1[:2]), SRS, False)
+        empty = point[:3] + bytes([point[3] | 0b0001_0000]) + point[4:]
+        extended = point[:3] + bytes([point[3] | 0b0010_0000]) + point[4:]
+        for label, blob in {
+            "CircularString": _blob(_wkb(8, ZM_LINE[:, :2])),
+            "CircularString ZM": _blob(_wkb(3008, ZM_LINE)),
+            "GeometryCollection": _blob(struct.pack("<BII", 1, 7, 0)),
+            "partes mezcladas": _blob(mixed),
+            "extendida": extended,
+            "vacía": empty,
+        }.items():
+            with self.subTest(label):
+                with self.assertRaises(errors.GeometryError):
+                    gpkg.decode_geometry(blob, external=True)
+
+    def test_project_geometries_unchanged(self) -> None:
+        """RF-002-14: lo que escribe Geoblender se lee igual con y sin ``external`` y sin
+        ``had_m``."""
+        for name, coords in CASES.items():
+            with self.subTest(tipo=name):
+                blob = gpkg.encode_geometry(name, coords, SRS, True)
+                strict = gpkg.decode_geometry(blob)
+                lenient = gpkg.decode_geometry(blob, external=True)
+                self.assertFalse(strict.had_m or lenient.had_m)
+                _assert_same(self, lenient.coords, strict.coords)
+
+
 if __name__ == "__main__":
     unittest.main()

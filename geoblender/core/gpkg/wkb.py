@@ -22,6 +22,12 @@ también las cabeceras y el WKB *big endian* y las envolventes con M (que se ign
 Las geometrías vacías no se escriben ni se leen: Geoblender no las usa.
 :func:`geometry_wkb` solo quita la cabecera (también de una vacía) para el hash de contenido
 de la spec 008, que normaliza el WKB de una capa cualquiera.
+
+Capas de otros programas (spec 006, T15; plan 006 §5.3.6): ``decode_geometry(...,
+external=True)`` lee además las geometrías con M o con Z y M (WKB ISO, tipo + 2000 o
++ 3000) y el WKB con las banderas de EWKB (Z = ``0x80000000``, M = ``0x40000000``); la M se
+descarta (``Geometry.had_m``) y X, Y y Z vuelven bit a bit. Las curvas, las colecciones, el
+EWKB con el SRID dentro y la cabecera extendida se rechazan igual.
 """
 
 from __future__ import annotations
@@ -46,6 +52,10 @@ WKB_TYPES: dict[str, int] = {
 }
 TYPE_NAMES: dict[int, str] = {code: name for name, code in WKB_TYPES.items()}
 Z_OFFSET = 1000  # WKB ISO: tipo + 1000 = con Z
+M_OFFSET = 2000  # WKB ISO: tipo + 2000 = con M; + 3000 = con Z y M (solo al leer, external)
+EWKB_Z = 0x8000_0000  # banderas de EWKB (solo al leer, external)
+EWKB_M = 0x4000_0000
+EWKB_FLAGS = EWKB_Z | EWKB_M
 _MULTI_PART: dict[str, str] = {
     "MULTIPOINT": "POINT",
     "MULTILINESTRING": "LINESTRING",
@@ -62,13 +72,15 @@ _OBJ = "Geometría GeoPackage"
 class Geometry:
     """Una geometría leída: tipo, SRS, si lleva Z, coordenadas absolutas en float64 (con
     la estructura del módulo) y envolvente en el orden GeoPackage (minx, maxx, miny, maxy
-    y, con Z, minz, maxz), o ``None`` si no la lleva."""
+    y, con Z, minz, maxz), o ``None`` si no la lleva. ``had_m``: la fuente traía M, que se
+    ha descartado (solo con ``external``)."""
 
     geometry_type: str
     srs_id: int
     has_z: bool
     coords: Any
     envelope: tuple[float, ...] | None
+    had_m: bool = False
 
 
 def _error(code: str, reason: str, field: str, value: object) -> GeometryError:
@@ -201,9 +213,10 @@ def encode_geometry(
 class _Reader:
     """Lector de WKB ISO con su posición."""
 
-    def __init__(self, data: bytes, offset: int) -> None:
+    def __init__(self, data: bytes, offset: int, external: bool = False) -> None:
         self.data = data
         self.offset = offset
+        self.external = external
 
     def take(self, size: int) -> bytes:
         end = self.offset + size
@@ -214,28 +227,35 @@ class _Reader:
         self.offset = end
         return chunk
 
-    def _type(self) -> tuple[str, str, bool]:
+    def _type(self) -> tuple[str, str, bool, bool]:
         order = self.take(1)[0]
         if order not in (0, 1):
             raise _error("byte_order", "orden de bytes WKB desconocido", "orden", order)
         endian = "<" if order == 1 else ">"
         (code,) = struct.unpack(f"{endian}I", self.take(4))
-        has_z = Z_OFFSET < code < Z_OFFSET + 10
-        name = TYPE_NAMES.get(code - Z_OFFSET if has_z else code)
+        base, has_z, has_m = code, False, False
+        if Z_OFFSET < code < Z_OFFSET + 10:
+            base, has_z = code - Z_OFFSET, True
+        elif self.external and M_OFFSET < code < M_OFFSET + Z_OFFSET + 10:
+            base, has_z, has_m = code % Z_OFFSET, code > M_OFFSET + Z_OFFSET, True
+        elif self.external and code & EWKB_FLAGS and not code & ~EWKB_FLAGS & 0xFFFF_FFF0:
+            base, has_z, has_m = code & 0xF, bool(code & EWKB_Z), bool(code & EWKB_M)
+        name = TYPE_NAMES.get(base)
         if name is None:
             reason = (
                 f"tipo WKB no admitido; los admitidos son {', '.join(WKB_TYPES)}, con o "
                 "sin Z (WKB ISO)"
             )
             raise _error("type_unknown", reason, "tipo WKB", code)
-        return endian, name, has_z
+        return endian, name, has_z, has_m
 
-    def geometry(self, expected: str | None = None) -> tuple[str, bool, Any]:
-        endian, name, has_z = self._type()
+    def geometry(self, expected: str | None = None) -> tuple[str, bool, bool, Any]:
+        endian, name, has_z, has_m = self._type()
         if expected is not None and name != expected:
             reason = f"se esperaba una parte {expected}"
             raise _error("part_invalid", reason, "tipo WKB", name)
-        dims = 3 if has_z else 2
+        keep = 3 if has_z else 2
+        dims = keep + has_m  # la M es siempre la última ordenada
         dtype = np.dtype(f"{endian}f8")
 
         def count() -> int:
@@ -243,8 +263,8 @@ class _Reader:
 
         def points(number: int) -> np.ndarray:
             raw = self.take(number * dims * 8)
-            values = np.frombuffer(raw, dtype=dtype).astype(np.float64)
-            return values.reshape(number, dims)
+            values = np.frombuffer(raw, dtype=dtype).reshape(number, dims)
+            return np.array(values[:, :keep], dtype=np.float64, order="C")  # copia
 
         coords: Any
         if name == "POINT":
@@ -257,14 +277,14 @@ class _Reader:
             coords = [points(count()) for _ in range(count())]
         else:
             items = [self.geometry(_MULTI_PART[name]) for _ in range(count())]
-            if any(item_z != has_z for _, item_z, _ in items):
-                raise _error("dimension", "partes con y sin Z", "tipo", name)
-            coords = [item for _, _, item in items]
+            if any((item_z, item_m) != (has_z, has_m) for _, item_z, item_m, _ in items):
+                raise _error("dimension", "partes con y sin Z o M", "tipo", name)
+            coords = [item for _, _, _, item in items]
             if name == "MULTIPOINT":
-                coords = np.array(coords, dtype=np.float64).reshape(-1, dims)
+                coords = np.array(coords, dtype=np.float64).reshape(-1, keep)
         if len(coords) == 0:
             raise _empty(name)
-        return name, has_z, coords
+        return name, has_z, has_m, coords
 
 
 def _envelope(code: int, values: tuple[float, ...]) -> tuple[float, ...] | None:
@@ -277,9 +297,12 @@ def _envelope(code: int, values: tuple[float, ...]) -> tuple[float, ...] | None:
     return None
 
 
-def decode_geometry(blob: bytes) -> Geometry:
+def decode_geometry(blob: bytes, *, external: bool = False) -> Geometry:
     """La geometría de un blob GeoPackage; :class:`GeometryError` si no es un blob
-    estándar, está vacía, tiene un tipo no admitido o le sobran o faltan bytes."""
+    estándar, está vacía, tiene un tipo no admitido o le sobran o faltan bytes.
+
+    ``external``: el blob es de una capa de otro programa (spec 006): se admiten también M
+    y ZM (la M se descarta y ``had_m`` lo dice) y las banderas Z y M de EWKB."""
     data = bytes(blob)
     if len(data) < 8 or data[:2] != MAGIC:
         reason = "no empieza por la cabecera «GP» de GeoPackage"
@@ -298,13 +321,13 @@ def decode_geometry(blob: bytes) -> Geometry:
     if code not in _ENVELOPE_DOUBLES:
         raise _error("envelope", "código de envolvente no válido", "envolvente", code)
     size = _ENVELOPE_DOUBLES[code]
-    reader = _Reader(data, 8)
+    reader = _Reader(data, 8, external)
     values = struct.unpack(f"{endian}{size}d", reader.take(size * 8)) if size else ()
-    name, has_z, coords = reader.geometry()
+    name, has_z, had_m, coords = reader.geometry()
     if reader.offset != len(data):
         reason = "sobran bytes después de la geometría"
         raise _error("trailing", reason, "bytes de más", len(data) - reader.offset)
-    return Geometry(name, srs_id, has_z, coords, _envelope(code, values))
+    return Geometry(name, srs_id, has_z, coords, _envelope(code, values), had_m)
 
 
 def geometry_wkb(blob: bytes | bytearray | memoryview) -> memoryview:

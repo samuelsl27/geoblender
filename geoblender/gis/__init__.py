@@ -11,8 +11,9 @@ Reexporta la API pública (plan 006 §5.1): los puertos (``gis.ports``), los par
 las superficies en rejilla y los MDT leídos de un fichero (``gis.raster``), el remuestreo y
 la reproyección a la rejilla del proyecto (``gis.resample``), la declaración de CRS y
 datum con sus transformaciones (``gis.crs``), el aviso de alturas elipsoidales
-(``gis.vertical``) y la validación de una superficie (``gis.validate``). Cada tarea de la 006
-añade aquí lo suyo.
+(``gis.vertical``), la validación de una superficie (``gis.validate``), los puntos y las
+líneas de rotura (``gis.points``) y las capas de un GeoPackage leídas sobre una copia
+(``gis.vector``). Cada tarea de la 006 añade aquí lo suyo.
 """
 
 from .crs import (
@@ -38,6 +39,14 @@ from .grid import (
 )
 from .messages import GisError
 from .params import PARAMS, ParamDef, param
+from .points import (
+    Breakline,
+    ColumnMapping,
+    PointSet,
+    breaklines_from_features,
+    points_from_features,
+    points_from_rows,
+)
 from .ports import (
     Cancelled,
     CrsService,
@@ -68,12 +77,15 @@ from .reports import (
     TopoReport,
 )
 from .validate import validate_raster
+from .vector import FeatureSet, LayerInfo, copy_source, import_dir, list_layers, read_layer
 from .vertical import VerticalCheck, check_vertical_offset, ellipsoidal_band
 
 __all__ = [
     "ELLIPSOIDAL_ETRS89",
     "PARAMS",
+    "Breakline",
     "Cancelled",
+    "ColumnMapping",
     "Conflict",
     "ConflictKind",
     "CoordinateTransform",
@@ -81,9 +93,12 @@ __all__ = [
     "CrsServiceStatus",
     "CrsServiceUnavailable",
     "Declaration",
+    "FeatureSet",
     "GisError",
     "Grid",
+    "LayerInfo",
     "ParamDef",
+    "PointSet",
     "Progress",
     "Raster",
     "RasterIO",
@@ -102,13 +117,20 @@ __all__ = [
     "VolumeResult",
     "WriteProfile",
     "aligned_grid",
+    "breaklines_from_features",
     "check_vertical_offset",
     "choose_method",
+    "copy_source",
     "crs_service_status",
     "ellipsoidal_band",
+    "import_dir",
+    "list_layers",
     "needs_transform",
     "param",
+    "points_from_features",
+    "points_from_rows",
     "project_grid",
+    "read_layer",
     "reference_label",
     "reproject_to_grid",
     "require_crs_service",
