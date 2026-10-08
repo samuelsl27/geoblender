@@ -41,8 +41,13 @@ exactas, da lo mismo que :func:`deduce` (lo prueba una propiedad en grafos aleat
 región y su carga desde la base, con los índices, son de :mod:`.stale`.
 
 Cada causa (:class:`Cause`) es lo que guarda la caché ``gb_stale`` (clase y sujeto; T27) y se
-presenta con :meth:`Staleness.text` o :func:`stale_text` («Obsoleto: cambió Producción»).
-Python puro (ADR-0004): solo lee el proyecto.
+presenta con :meth:`Staleness.text` o :func:`stale_text` («Obsoleto: cambió Producción»). Una
+causa directa de una operación que cambió **mientras se calculaba** (entre su principio y su
+final, el de un trabajo de la 004 al incorporarlo) se presenta así, «cambió Producción
+mientras se calculaba» (RF-008-20; plan §5.4.3): lo dice :func:`changes_while_running`, que
+el grafo lleva en :attr:`ProvenanceGraph.during` si se carga para presentarlo
+(``load_graph(conn, during=True)``, :func:`stale_state`). Python puro (ADR-0004): solo lee el
+proyecto.
 """
 
 from __future__ import annotations
@@ -218,7 +223,9 @@ class FigureNode:
 class ProvenanceGraph:
     """El grafo de la procedencia (véase el módulo): operaciones hechas en orden de registro
     (:attr:`operations`) y el estado actual de los datos, las entradas, los parámetros y las
-    cifras, todo de solo lectura."""
+    cifras, todo de solo lectura. :attr:`during`: de cada operación, lo que consumió y cambió
+    mientras se calculaba (:func:`changes_while_running`; vacío si no se cargó), que solo
+    cambia cómo se presentan sus causas."""
 
     def __init__(
         self,
@@ -227,6 +234,8 @@ class ProvenanceGraph:
         inputs: Iterable[InputNode] = (),
         parameters: Iterable[ParameterNode] = (),
         figures: Iterable[FigureNode] = (),
+        *,
+        during: Mapping[str, Iterable[Cause]] | None = None,
     ) -> None:
         ops = {node.uid: node for node in sorted(operations, key=lambda node: node.fid)}
         self.operations: Mapping[str, OperationNode] = MappingProxyType(ops)
@@ -237,6 +246,8 @@ class ProvenanceGraph:
         self.parameters: Mapping[str, ParameterNode] = MappingProxyType(
             {node.uid: node for node in parameters})
         self.figures: tuple[FigureNode, ...] = tuple(sorted(figures, key=lambda node: node.fid))
+        self.during: Mapping[str, frozenset[Cause]] = MappingProxyType(
+            {uid: frozenset(causes) for uid, causes in (during or {}).items()})
         writers: dict[tuple[str, str], list[str]] = defaultdict(list)
         groups: dict[str, list[str]] = defaultdict(list)
         for node in sorted(ops.values(), key=lambda node: (node.finished_at, node.fid)):
@@ -346,21 +357,89 @@ def parameter_node(row: tuple[Any, ...]) -> ParameterNode:
                          bool(unconfirmed))
 
 
-def load_graph(conn: sqlite3.Connection) -> ProvenanceGraph:
+def load_graph(conn: sqlite3.Connection, *, during: bool = False) -> ProvenanceGraph:
     """El grafo de la procedencia del proyecto de ``conn`` (de lectura o la transacción de
-    escritura de quien llama: ve lo aún no confirmado), leído en una sola instantánea. No
+    escritura de quien llama: ve lo aún no confirmado), leído en una sola instantánea; con
+    ``during``, también lo que cambió mientras se calculaba cada operación
+    (:func:`changes_while_running`, para presentar sus causas; deducir no lo necesita). No
     escribe nada."""
     began = not conn.in_transaction
     if began:
         conn.execute("BEGIN")  # todas las lecturas en la misma instantánea
     try:
-        return _load(conn)
+        return _load(conn, changes_while_running(conn) if during else None)
     finally:
         if began:
             conn.execute("ROLLBACK")
 
 
-def _load(conn: sqlite3.Connection) -> ProvenanceGraph:
+# Un parámetro que leyó una operación hecha y cuyo valor, cuando la operación terminó (la
+# última revisión de su historial hasta su final), ya no era el que leyó: cambió mientras se
+# calculaba. Solo los que hoy tienen otro valor (las causas; la revisión leída es anterior).
+_PARAMETERS_DURING = (
+    "SELECT p.operation_uid, p.parameter_uid FROM gb_operation_param AS p "
+    "JOIN gb_operation AS op ON op.uid = p.operation_uid "
+    "JOIN gb_parameter AS cur ON cur.uid = p.parameter_uid "
+    "WHERE op.status = 'done' AND cur.value_sha256 <> p.value_sha256{only} "
+    "AND (SELECT h.value_sha256 FROM gb_parameter_history AS h "
+    "WHERE h.parameter_uid = p.parameter_uid AND h.rev > p.rev "
+    "AND h.changed_at <= op.finished_at ORDER BY h.rev DESC LIMIT 1) <> p.value_sha256"
+)
+# Un dato que consumió una operación hecha y cuyo contenido, cuando la operación terminó (el de
+# la última que lo escribió entre su principio y su final, sin contarla a ella), ya no era el
+# que consumió: otra lo reescribió mientras se calculaba. Lo escrito antes de empezar no
+# cuenta (al empezar, el contenido era el consumido), aunque su hora sea posterior a la de
+# otra escritura (otro equipo con el reloj adelantado). Solo los que hoy tienen otro contenido
+# (las causas); por el índice de gb_operation_io (item_kind, item_uid, direction).
+_DATASETS_DURING = (
+    "SELECT io.operation_uid, io.item_uid FROM gb_operation_io AS io "
+    "JOIN gb_operation AS op ON op.uid = io.operation_uid "
+    "JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "WHERE io.direction = 'in' AND io.item_kind = 'dataset' AND op.status = 'done' "
+    "AND d.content_sha256 <> io.content_sha256{only} "
+    "AND (SELECT w.content_sha256 FROM gb_operation_io AS w "
+    "JOIN gb_operation AS x ON x.uid = w.operation_uid "
+    "WHERE w.item_kind = 'dataset' AND w.item_uid = io.item_uid AND w.direction = 'out' "
+    "AND w.operation_uid <> io.operation_uid AND x.status = 'done' "
+    "AND x.finished_at >= op.started_at AND x.finished_at <= op.finished_at "
+    "ORDER BY x.finished_at DESC, x.fid DESC LIMIT 1) <> io.content_sha256"
+)
+_DURING_CHUNK = 500
+"""Cuántos uid van, como mucho, en cada ``IN (…)`` de :func:`changes_while_running`."""
+
+
+def changes_while_running(conn: sqlite3.Connection, operations: Iterable[str] | None = None
+                          ) -> dict[str, frozenset[Cause]]:
+    """De cada operación hecha (de ``operations``; sin ellas, todas), las causas directas que
+    cambiaron **mientras se calculaba** (RF-008-20): un parámetro que leyó y que al terminar
+    ya tenía otro valor (la última revisión de su historial hasta su final), o un dato que
+    consumió y que al terminar ya tenía otro contenido (el de la última operación que lo
+    escribió entre su principio y su final, sin contarla a ella). Solo las que siguen siendo
+    causa (hoy tienen otro valor o contenido); las que no tienen ninguna no están. Lee
+    ``conn`` sin escribir."""
+    if operations is None:
+        chunks: list[list[str]] = [[]]
+    else:
+        if isinstance(operations, str):
+            raise TypeError(f"las operaciones son una lista de uid, no el texto {operations!r}")
+        uids = sorted(set(operations))
+        chunks = [uids[start:start + _DURING_CHUNK]
+                  for start in range(0, len(uids), _DURING_CHUNK)]
+    found: dict[str, set[Cause]] = defaultdict(set)
+    for chunk in chunks:
+        marks = ", ".join("?" for _ in chunk)
+        for sql, column, kind in ((_PARAMETERS_DURING, "p.operation_uid",
+                                   CauseKind.PARAMETER_CHANGED),
+                                  (_DATASETS_DURING, "io.operation_uid",
+                                   CauseKind.DATASET_CHANGED)):
+            only = f" AND {column} IN ({marks})" if chunk else ""
+            for op_uid, subject in conn.execute(sql.format(only=only), tuple(chunk)):
+                found[str(op_uid)].add(Cause(kind, str(subject)))
+    return {uid: frozenset(causes) for uid, causes in found.items()}
+
+
+def _load(conn: sqlite3.Connection,
+          during: Mapping[str, Iterable[Cause]] | None = None) -> ProvenanceGraph:
     consumed: dict[str, list[Version]] = defaultdict(list)
     produced: dict[str, list[Version]] = defaultdict(list)
     io_columns = ", ".join(f"io.{column}" for column in IO_COLUMNS.split(", "))
@@ -397,7 +476,7 @@ def _load(conn: sqlite3.Connection) -> ProvenanceGraph:
             "SELECT fid, uid, key, scope_key, operation_uid FROM gb_figure ORDER BY fid"
         )
     ]
-    return ProvenanceGraph(operations, datasets, inputs, parameters, figures)
+    return ProvenanceGraph(operations, datasets, inputs, parameters, figures, during=during)
 
 
 # --- Obsolescencia ------------------------------------------------------------------------
@@ -574,8 +653,9 @@ def deduce(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None = None)
 
 def stale_state(conn: sqlite3.Connection, *,
                 versions: Mapping[str, str] | None = None) -> Staleness:
-    """:func:`deduce` sobre :func:`load_graph` de ``conn``."""
-    return deduce(load_graph(conn), versions=versions)
+    """:func:`deduce` sobre :func:`load_graph` de ``conn``, con lo que cambió mientras se
+    calculaba cada operación (para presentar sus causas)."""
+    return deduce(load_graph(conn, during=True), versions=versions)
 
 
 @dataclass(frozen=True, slots=True)
@@ -603,22 +683,44 @@ class Staleness:
         """Las causas de la operación o del dato ``uid`` (vacío si no está obsoleto)."""
         return self.causes.get(uid) or self.datasets.get(uid) or frozenset()
 
-    def describe(self, cause: Cause, *, language: str = "es") -> str:
-        """Una causa como la lee una persona, en ``language`` («cambió Producción»)."""
-        return describe_cause(self.graph, self.versions, cause, language=language)
+    def writer(self, uid: str) -> str | None:
+        """La operación de ``uid``: ella misma o la que escribió el contenido actual del
+        dato; ``None`` si no es ninguna de las dos."""
+        if uid in self.graph.operations:
+            return uid
+        dataset = self.graph.datasets.get(uid)
+        return None if dataset is None else dataset.operation_uid
+
+    def describe(self, cause: Cause, *, language: str = "es",
+                 operation: str | None = None) -> str:
+        """Una causa como la lee una persona, en ``language`` («cambió Producción»; de la
+        operación ``operation``, «… mientras se calculaba» si cambió entonces)."""
+        return describe_cause(self.graph, self.versions, cause, language=language,
+                              operation=operation)
 
     def text(self, uid: str, *, language: str = "es") -> str | None:
         """«Obsoleto: …» con las causas de la operación o del dato ``uid``, por clase y por
-        nombre; ``None`` si no está obsoleto."""
-        return stale_text(self.graph, self.versions, self.of(uid), language=language)
+        nombre (las que cambiaron mientras se calculaba la operación o la que escribió el
+        dato, así); ``None`` si no está obsoleto."""
+        return stale_text(self.graph, self.versions, self.of(uid), language=language,
+                          operation=self.writer(uid))
 
 
 def describe_cause(graph: ProvenanceGraph, versions: Mapping[str, str], cause: Cause, *,
-                   language: str = "es") -> str:
+                   language: str = "es", operation: str | None = None) -> str:
     """Una causa como la lee una persona, en ``language`` («cambió Producción»), con los
     nombres de ``graph`` (el del dato, la entrada, el parámetro o el grupo; su uid si no
     está) y, para un algoritmo, la versión instalada de ``versions`` y las anteriores
-    registradas en ``graph``."""
+    registradas en ``graph``. Si es de las que cambiaron mientras se calculaba la operación
+    ``operation`` (:attr:`ProvenanceGraph.during`), «… mientras se calculaba» (RF-008-20)."""
+    text = _cause_text(graph, versions, cause, language)
+    if operation is not None and cause in graph.during.get(operation, ()):
+        return render("core.cause_while_running", language=language, cause=text)
+    return text
+
+
+def _cause_text(graph: ProvenanceGraph, versions: Mapping[str, str], cause: Cause,
+                language: str) -> str:
     kind, subject = cause.kind, cause.subject
     values: dict[str, object] = {"name": subject}
     if kind is CauseKind.PARAMETER_CHANGED:
@@ -646,11 +748,12 @@ def describe_cause(graph: ProvenanceGraph, versions: Mapping[str, str], cause: C
 
 
 def stale_text(graph: ProvenanceGraph, versions: Mapping[str, str], causes: Iterable[Cause],
-               *, language: str = "es") -> str | None:
-    """«Obsoleto: …» con ``causes`` (:func:`describe_cause`), por clase y por nombre;
-    ``None`` sin causas."""
+               *, language: str = "es", operation: str | None = None) -> str | None:
+    """«Obsoleto: …» con ``causes`` (:func:`describe_cause`, de la operación
+    ``operation``), por clase y por nombre; ``None`` sin causas."""
     shown = sorted((_ORDER[cause.kind], describe_cause(graph, versions, cause,
-                                                       language=language))
+                                                       language=language,
+                                                       operation=operation))
                    for cause in causes)
     if not shown:
         return None

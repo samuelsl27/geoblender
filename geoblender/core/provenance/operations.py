@@ -46,6 +46,18 @@ un dato registrado como bueno (RF-008-19; sus salidas solo se registran al compl
 - :func:`mark_not_ingested`: «no incorporada», con el motivo y su evento, la operación «en
   curso» cuyo trabajo de la 004 se borró sin incorporarlo (RF-008-23).
 
+Una operación que se calcula en un trabajo de la 004 se incorpora con :func:`ingest_job`
+(RF-008-20; plan §5.4.7) a partir de :class:`JobOutcome`, el final del trabajo como objeto de
+datos de ``core``: ``core`` no importa ``jobs`` (ADR-0004 R4) y lo construye
+``jobs.ingest.job_outcome`` con el ``state.json`` del trabajo. Comprueba la huella de cada
+salida en ``out/`` (una que falta o no coincide deja la operación fallida con el mensaje de la
+004), deja que el módulo escriba sus resultados y la completa, en la transacción del módulo,
+con la procedencia técnica del trabajo (intérprete, versiones de Python y de numpy, BLAS e
+identificador del motor), su ejecutor y su identificador; un trabajo que no terminó bien la deja
+fallida o cancelada con el motivo de la 004. Lo que consumió se compara con lo vigente al
+completarla (la obsolescencia por región): si algo cambió mientras se calculaba, se incorpora
+obsoleta, «… mientras se calculaba» (:class:`IngestOutcome`), y nunca como vigente.
+
 Todo se comprueba **antes** de escribir: un rechazo para el usuario es un
 :class:`~.messages.ProvenanceError` (o el ``ParamError`` / ``ValidationError`` de los
 parámetros y los datos) y un error del programa, :class:`ValueError` o :class:`TypeError`;
@@ -56,8 +68,7 @@ ninguno deja el proyecto en solo lectura. En solo lectura, todo lo que escribir�
 (:mod:`.stale`). La puerta antes de operar (:func:`.gate.can_run`: entradas cambiadas, datos
 editados fuera, que faltan, bloqueados o dañados, lo aún sin comprobar) la llama quien lanza la
 operación antes de :func:`begin_operation` (``bl``, T48); ``begin_operation`` no la repite.
-Pendiente de otra tarea de la 008: incorporar un trabajo (``ingest_job``, T31). Python puro
-(ADR-0004): al importarse no importa ``core.project`` (que importa
+Python puro (ADR-0004): al importarse no importa ``core.project`` (que importa
 ``core.provenance.schema``); sus eventos, solo al registrarlos.
 """
 
@@ -69,9 +80,9 @@ import os
 import re
 import sqlite3
 import threading
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
-from dataclasses import KW_ONLY, dataclass
+from dataclasses import KW_ONLY, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -82,16 +93,18 @@ from ..datasets import registry as dataset_registry
 from ..datasets.model import DatasetRecord, DatasetSpec, Store
 from ..datasets.tracking import table_states
 from ..errors import GeoblenderError
-from ..hashing import HashCancelled, canonical_json, sha256_bytes
+from ..hashing import HashCancelled, canonical_json, sha256_bytes, sha256_file
+from ..i18n import LANGUAGES
 from ..ids import new_uid
 from ..params.store import ParameterStore, ResolvedParam
 from ..paths import ABSOLUTE_PATH, find_absolute_paths
 from ..timeutil import Clock, format_utc
 from .contract import OperationDef, operation_def
 from .figures import FigureSpec, prepare_figures, write_figures
-from .messages import ProvenanceError
+from .graph import Cause
+from .messages import ProvenanceError, render
 from .schema import INACTIVE_INPUT_STATUSES, RUNNING
-from .stale import refresh_region
+from .stale import OPERATION, item_causes, item_text, refresh_region
 
 if TYPE_CHECKING:
     from ..sysinfo import SessionInfo
@@ -153,7 +166,7 @@ MAX_REASON_CHARS = 500
 CANCELLATIONS: tuple[type[BaseException], ...] = (ReadCancelled, HashCancelled)
 """Los errores con los que se para una lectura o una huella a petición de la persona (entre
 dos trozos): en :func:`operation`, la operación queda «cancelada», no «fallida». Un trabajo de
-la 004 cancelado lo traduce quien lo incorpora (``ingest_job``, T31)."""
+la 004 cancelado deja «cancelada» su operación al incorporarlo (:func:`ingest_job`)."""
 
 _ROLE = re.compile(r"[a-z][a-z0-9_]*")
 
@@ -1097,3 +1110,302 @@ def mark_not_ingested(project: OperationProject, op_uid: str, reason: str) -> bo
     if handle is not None:
         _forget(handle)
     return True
+
+
+# --- Incorporar un trabajo de la 004 (RF-008-20) -------------------------------------------
+
+JOB_SUCCEEDED = "succeeded"
+"""El final de un trabajo que terminó bien (``jobs.records``)."""
+JOB_CANCELLED = "cancelled"
+"""El final de un trabajo cancelado (a petición de la persona)."""
+JOB_FINAL_STATES: tuple[str, ...] = (
+    JOB_SUCCEEDED, "failed", JOB_CANCELLED, "timed_out", "interrupted",
+)
+"""Los finales de un trabajo de la 004 (``jobs.records.FINAL_STATES``; ``core`` no importa
+``jobs``, una prueba de ``tests/unit/jobs`` comprueba que son los mismos)."""
+OUTPUTS_DIR = "out"
+"""La carpeta de los resultados dentro de la carpeta de un trabajo (``jobs.paths``)."""
+
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True, slots=True)
+class OutputPrint:
+    """Un resultado de un trabajo con su huella: ``path``, relativa a la carpeta del trabajo y
+    dentro de ``out/`` (con «/»; «\\» se cambia), ``sha256`` del fichero (64 cifras
+    hexadecimales en minúsculas), ``role``, su papel para el módulo (``"sum"``), y ``size`` en
+    bytes, si se sabe. :class:`ValueError` o :class:`TypeError` si no cumple."""
+
+    path: str
+    sha256: str
+    role: str
+    _: KW_ONLY
+    size: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str):
+            raise TypeError(f"la ruta de un resultado es un texto relativo a la carpeta del "
+                            f"trabajo, no {self.path!r}")
+        path = self.path.replace("\\", "/")
+        parts = path.split("/")
+        if (len(parts) < 2 or parts[0] != OUTPUTS_DIR or ":" in path
+                or any(part in ("", ".", "..") for part in parts)):
+            raise ValueError(f"un resultado está dentro de {OUTPUTS_DIR}/ de la carpeta del "
+                             f"trabajo, no en {self.path!r}")
+        object.__setattr__(self, "path", "/".join(parts))
+        if not isinstance(self.sha256, str) or _SHA256.fullmatch(self.sha256) is None:
+            raise ValueError(f"la huella de {path} es un sha256 (64 cifras hexadecimales en "
+                             f"minúsculas), no {self.sha256!r}")
+        if not isinstance(self.role, str) or not self.role.strip():
+            raise ValueError(f"el resultado {path} no tiene papel (role)")
+        if self.size is not None and (isinstance(self.size, bool)
+                                      or not isinstance(self.size, int)):
+            raise TypeError(f"el tamaño de {path} es un número de bytes, no {self.size!r}")
+        if self.size is not None and self.size < 0:
+            raise ValueError(f"el tamaño de {path} no puede ser negativo ({self.size})")
+
+
+@dataclass(frozen=True, slots=True)
+class JobOutcome:
+    """El final de un trabajo de la 004 para incorporarlo (plan §5.3.1), un objeto de datos de
+    ``core`` (``core`` no importa ``jobs``, ADR-0004 R4; lo construye
+    ``jobs.ingest.job_outcome`` con su ``state.json``):
+
+    - ``job_uid``; ``state``, uno de :data:`JOB_FINAL_STATES`; ``executor``,
+      :attr:`Executor.JOB_THREAD` o :attr:`Executor.JOB_PROCESS`;
+    - ``label``, su nombre visible (el de los mensajes de la 004); ``folder``, su carpeta
+      (ruta completa); ``operation_uid``, la operación que lo lanzó, si la petición la llevaba;
+    - ``outputs``, sus resultados con su huella (:class:`OutputPrint`, rutas distintas);
+      ``summary``, el resumen del worker;
+    - ``interpreter``, la procedencia técnica de su intérprete (``InterpreterInfo`` de la
+      004: tipo, versiones de Python y de numpy, BLAS y ``lock_id`` del motor), ``None`` si no
+      llegó a arrancar;
+    - ``error_code`` y ``error_text``, el error de la 004 (el texto, obligatorio si no
+      terminó bien).
+
+    :class:`ValueError` o :class:`TypeError` si no cumple (un trabajo que aún no ha
+    terminado, otro ejecutor…)."""
+
+    job_uid: str
+    state: str
+    executor: Executor
+    _: KW_ONLY
+    label: str
+    folder: Path
+    outputs: tuple[OutputPrint, ...] = ()
+    summary: Mapping[str, Any] = field(default_factory=dict)
+    interpreter: Mapping[str, Any] | None = None
+    error_code: str | None = None
+    error_text: str | None = None
+    operation_uid: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.job_uid, str) or not self.job_uid.strip():
+            raise ValueError(f"un trabajo se identifica por su job_uid, no {self.job_uid!r}")
+        if self.state not in JOB_FINAL_STATES:
+            raise ValueError(f"el trabajo {self.job_uid} no ha terminado («{self.state}»): se "
+                             f"incorpora con uno de {', '.join(JOB_FINAL_STATES)}")
+        executor = _executor(self.executor)
+        if executor not in JOB_EXECUTORS:
+            raise ValueError(f"un trabajo se ejecuta en {' o '.join(JOB_EXECUTORS)}, no en "
+                             f"«{executor}»")
+        object.__setattr__(self, "executor", executor)
+        if not isinstance(self.label, str) or not self.label.strip():
+            raise ValueError(f"el trabajo {self.job_uid} no tiene nombre (label)")
+        if not isinstance(self.folder, str | os.PathLike):
+            raise TypeError(f"la carpeta de un trabajo es una ruta, no {self.folder!r}")
+        folder = Path(self.folder)
+        if not folder.is_absolute():
+            raise ValueError(f"la carpeta del trabajo {self.job_uid} es una ruta completa, no "
+                             f"«{folder}»")
+        object.__setattr__(self, "folder", folder)
+        outputs = _sequence(self.outputs, "los resultados (outputs)")
+        for output in outputs:
+            if not isinstance(output, OutputPrint):
+                raise TypeError(f"un resultado de un trabajo es un OutputPrint, no {output!r}")
+        repeated = sorted({o.path for o in outputs
+                           if [p.path for p in outputs].count(o.path) > 1})
+        if repeated:
+            raise ValueError(f"el trabajo {self.job_uid} declara dos veces {repeated}")
+        object.__setattr__(self, "outputs", outputs)
+        for name in ("summary", "interpreter"):
+            value = getattr(self, name)
+            if value is None and name == "interpreter":
+                continue
+            if not isinstance(value, Mapping):
+                raise TypeError(f"{name} de un trabajo es un diccionario, no {value!r}")
+            object.__setattr__(self, name, MappingProxyType(dict(value)))
+        for name in ("error_code", "error_text", "operation_uid"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, str):
+                raise TypeError(f"{name} de un trabajo es un texto, no {value!r}")
+        if self.state != JOB_SUCCEEDED and not (self.error_text or "").strip():
+            raise ValueError(f"el trabajo {self.job_uid} terminó «{self.state}»: falta su "
+                             "motivo (error_text)")
+
+    def output(self, role: str) -> OutputPrint:
+        """El resultado con el papel ``role`` (el primero); :class:`KeyError` si no hay."""
+        for output in self.outputs:
+            if output.role == role:
+                return output
+        raise KeyError(f"el trabajo {self.job_uid} no tiene ningún resultado «{role}»")
+
+    def file(self, output: OutputPrint | str) -> Path:
+        """El fichero de un resultado (o del de papel ``output``) en la carpeta del trabajo:
+        lo que lee el módulo al incorporarlo."""
+        chosen = self.output(output) if isinstance(output, str) else output
+        return self.folder.joinpath(*chosen.path.split("/"))
+
+
+@dataclass(frozen=True, slots=True)
+class IngestOutcome:
+    """Lo que dejó :func:`ingest_job`: la operación y su trabajo, su estado
+    (:attr:`OperationStatus.DONE`, ``FAILED`` o ``CANCELLED``) y su motivo, sus salidas
+    registradas y, si se incorporó obsoleta, sus causas y su texto en cada idioma
+    («Obsoleto: cambió Producción mientras se calculaba»): nunca se presenta como vigente."""
+
+    operation_uid: str
+    job_uid: str
+    status: OperationStatus
+    reason: str | None = None
+    outputs: tuple[DatasetRecord, ...] = ()
+    causes: frozenset[Cause] = frozenset()
+    texts: Mapping[str, str] = field(default_factory=dict)
+
+    @property
+    def ingested(self) -> bool:
+        """Si se incorporó (la operación quedó hecha): el lanzador lo puede dar por
+        incorporado (``JobRunner.mark_ingested``)."""
+        return self.status is OperationStatus.DONE
+
+    @property
+    def stale(self) -> bool:
+        """Si se incorporó obsoleta (algo de lo que consumió ya no es lo vigente)."""
+        return bool(self.causes)
+
+    def text(self, language: str = "es") -> str | None:
+        """«Obsoleto: …» en ``language``, o ``None`` si está al día."""
+        if language not in LANGUAGES:
+            raise ValueError(f"el idioma «{language}» no es de Geoblender: "
+                             f"{', '.join(LANGUAGES)}")
+        return self.texts.get(language)
+
+
+type IngestWriter = Callable[[sqlite3.Connection], Sequence[DatasetSpec]]
+"""Lo que hace el módulo al incorporar un trabajo: escribe sus resultados en la transacción
+``conn`` (y deja sus ficheros en el proyecto) y devuelve sus salidas."""
+
+
+def _check_outputs(outcome: JobOutcome) -> str | None:
+    """El motivo de la 004 para la primera salida que falta, no está dentro de ``out/`` (una
+    unión o un enlace que lleva fuera), no es un fichero o no casa con su huella o su tamaño;
+    ``None`` si todas casan (RF-008-20)."""
+    out = outcome.folder / OUTPUTS_DIR
+    for output in outcome.outputs:
+        try:
+            root = out.resolve(strict=True)
+            real = outcome.file(output).resolve(strict=True)
+            fits = real.is_relative_to(root) and real.is_file()
+            if fits and output.size is not None:
+                fits = real.stat().st_size == output.size
+            fits = fits and sha256_file(real) == output.sha256
+        except OSError:
+            fits = False
+        if not fits:
+            return render("core.job_output_mismatch", path=output.path, job=outcome.label)
+    return None
+
+
+def ingest_job(
+    project: OperationProject,
+    handle: OperationHandle,
+    outcome: JobOutcome,
+    outputs: Sequence[DatasetSpec] | IngestWriter = (),
+    *,
+    figures: Sequence[FigureSpec] = (),
+    software: Mapping[str, str] | None = None,
+    message: str | None = None,
+) -> IngestOutcome:
+    """Incorpora el trabajo de la 004 ``outcome`` a su operación ``handle``, «en curso» desde
+    que se lanzó, y la termina (RF-008-20; plan §5.4.7):
+
+    - si el trabajo no terminó bien, la operación queda cancelada (si se canceló) o fallida,
+      con el motivo de la 004 y sin salidas (RF-008-19);
+    - si una salida falta o no casa con su huella, no se incorpora: la operación queda fallida
+      con el mensaje de la 004 («El resultado out/… del trabajo «…» falta o no coincide con su
+      huella.») y el módulo no escribe nada;
+    - si no, en una transacción: ``outputs`` (una función ``write(conn)`` que escribe los
+      resultados del módulo en ella y devuelve sus salidas, o las salidas ya guardadas) y
+      :meth:`OperationHandle.complete` con sus ``figures``, ``software`` y ``message`` y,
+      del trabajo, su intérprete, su ejecutor y su identificador. Si lo consumido cambió
+      mientras se calculaba (un parámetro, un dato), queda hecha y obsoleta, con esa causa
+      (:class:`IngestOutcome`); si la escritura falla, la operación queda fallida con el
+      motivo y el error sigue, como en :func:`operation`.
+
+    Después ya no reclama rutas. Rechazos, sin escribir nada: ``TypeError``/``ValueError``
+    con argumentos mal formados, el trabajo de otra operación o con otro ``job_uid`` que el
+    anotado; ``ProvenanceError`` ``core.read_only`` (sigue en curso: quedará interrumpida al
+    abrirlo en escritura) y ``core.operation_not_running``."""
+    if not isinstance(handle, OperationHandle):
+        raise TypeError(f"ingest_job incorpora a un OperationHandle, no {handle!r}")
+    if not isinstance(outcome, JobOutcome):
+        raise TypeError(f"ingest_job incorpora un JobOutcome (jobs.ingest.job_outcome), no "
+                        f"{outcome!r}")
+    if handle.project_uid != project.uid:
+        raise ValueError(f"la operación {handle.uid} es de otro proyecto")
+    if outcome.operation_uid is not None and outcome.operation_uid != handle.uid:
+        raise ValueError(f"el trabajo {outcome.job_uid} es de la operación "
+                         f"{outcome.operation_uid}, no de {handle.uid}")
+    if handle.job_uid is not None and handle.job_uid != outcome.job_uid:
+        raise ValueError(f"la operación {handle.uid} es del trabajo {handle.job_uid}, no de "
+                         f"{outcome.job_uid}")
+    if not callable(outputs):
+        _outputs(outputs)
+    _software(handle.definition, software)
+    _message(message)
+    _require_writable(project)
+    if not handle._running():
+        raise ProvenanceError("core.operation_not_running", op_type=handle.op_type,
+                              operation=handle.uid)
+    ended = _ended(handle, outcome)
+    if ended is not None:
+        return ended
+    try:
+        with project.write_transaction() as conn:
+            specs = outputs(conn) if callable(outputs) else outputs
+            records = handle.complete(
+                conn, outputs=specs, figures=figures, software=software,
+                interpreter=outcome.interpreter, message=message, executor=outcome.executor,
+                job_uid=outcome.job_uid,
+            )
+            causes = item_causes(conn, OPERATION, handle.uid)
+            texts = {language: text for language in LANGUAGES
+                     if (text := item_text(conn, OPERATION, handle.uid,
+                                           language=language)) is not None}
+    except BaseException as error:
+        handle._abandon(error)
+        raise
+    _forget(handle)
+    return IngestOutcome(handle.uid, outcome.job_uid, OperationStatus.DONE, None,
+                         records, causes, MappingProxyType(texts))
+
+
+def _ended(handle: OperationHandle, outcome: JobOutcome) -> IngestOutcome | None:
+    """Si el trabajo no terminó bien o una salida no casa con su huella, la operación queda
+    cancelada o fallida con el motivo de la 004 (y su :class:`IngestOutcome`); si no,
+    ``None``."""
+    if outcome.state != JOB_SUCCEEDED:
+        reason = str(outcome.error_text)
+        if outcome.state == JOB_CANCELLED:
+            handle.cancel(reason)
+            status = OperationStatus.CANCELLED
+        else:
+            handle.fail(reason)
+            status = OperationStatus.FAILED
+        return IngestOutcome(handle.uid, outcome.job_uid, status, _reason(reason))
+    mismatch = _check_outputs(outcome)
+    if mismatch is None:
+        return None
+    handle.fail(mismatch)
+    return IngestOutcome(handle.uid, outcome.job_uid, OperationStatus.FAILED,
+                         _reason(mismatch))

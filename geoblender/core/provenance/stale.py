@@ -23,8 +23,12 @@ cambio; la que ya no está se borra) en la **misma transacción** de cada camino
 
 Para la interfaz (sin recalcular nada): :func:`counts` («! n obsoletos» = datos vivos
 obsoletos más operaciones que esperan revisión a mano; «⚠ n entradas» = las cambiadas sin
-decidir) y :func:`stale_items` (lo obsoleto y lo que espera revisión a mano, con su causa, su
-módulo, la operación que lo escribió y desde cuándo). Python puro (ADR-0004).
+decidir), :func:`stale_items` (lo obsoleto y lo que espera revisión a mano, con su causa, su
+módulo, la operación que lo escribió y desde cuándo) e :func:`item_causes` e
+:func:`item_text` (las causas y el texto de una operación o un dato, los que da la
+incorporación de un trabajo). Los textos dicen «… mientras se calculaba» de lo que cambió
+mientras se calculaba la operación o la que escribió el dato (RF-008-20;
+:func:`.graph.changes_while_running`). Python puro (ADR-0004).
 """
 
 from __future__ import annotations
@@ -52,6 +56,7 @@ from .graph import (
     ProvenanceGraph,
     Staleness,
     Version,
+    changes_while_running,
     dataset_node,
     deduce,
     deduce_region,
@@ -537,32 +542,14 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
             since[key] = min(since.get(key, str(at)), str(at))
         review = review_operations(reading)
         found = counts(project, conn=reading)
-        subjects: dict[CauseKind, set[str]] = defaultdict(set)
-        for found_causes in causes.values():
-            for cause in found_causes:
-                subjects[cause.kind].add(cause.subject)
-        named = {uid for kind, uids in subjects.items() if kind.startswith("dataset_")
-                 for uid in uids}
-        data = {node.uid: node for node in (dataset_node(row) for row in _select(
-            reading, _DATASETS, {uid for kind, uid in causes if kind == DATASET} | named))}
+        subjects = _subjects(causes.values())
+        data = _dataset_nodes(reading, {uid for kind, uid in causes if kind == DATASET}
+                              | _named(subjects))
         shown = sorted((node for (kind, uid) in causes if kind == DATASET
                         and (node := data.get(uid)) is not None and node.live),
                        key=lambda node: (node.name, node.uid))
         writers = review | {node.operation_uid for node in shown}
-        operations = {node.uid: node for node in (
-            *(operation_node(row) for row in _select(reading, _OPERATIONS, writers)),
-            *(operation_node(row) for row in _select(reading, _OPERATIONS_OF_GROUPS,
-                                                     subjects[CauseKind.GROUP])),
-            *(operation_node(row) for row in _select(reading, _OPERATIONS_OF_TYPES,
-                                                     subjects[CauseKind.ALGORITHM])),
-        )}
-        entries = subjects[CauseKind.INPUT_UPDATED] | subjects[CauseKind.INPUT_DISCARDED]
-        graph = ProvenanceGraph(
-            operations.values(), data.values(),
-            [input_node(row) for row in _select(reading, _INPUTS, entries)],
-            [parameter_node(row) for row in _select(reading, _PARAMETERS,
-                                                    subjects[CauseKind.PARAMETER_CHANGED])],
-        )
+        graph = _text_graph(reading, subjects, data, writers)
     chosen = dict(installed_versions() if versions is None else versions)
     items: list[StaleItem] = []
     for node in shown:
@@ -571,7 +558,8 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
         items.append(StaleItem(
             DATASET, node.uid, node.name, node.module, node.operation_uid,
             "" if writer is None else writer.op_type, node.operation_uid in review,
-            found_causes, str(stale_text(graph, chosen, found_causes, language=language)),
+            found_causes, str(stale_text(graph, chosen, found_causes, language=language,
+                                         operation=node.operation_uid)),
             since[(DATASET, node.uid)],
         ))
     for operation in sorted((graph.operations[uid] for uid in review),
@@ -580,7 +568,82 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
         items.append(StaleItem(
             OPERATION, operation.uid, operation.op_type, operation.module, operation.uid,
             operation.op_type, True, found_causes,
-            str(stale_text(graph, chosen, found_causes, language=language)),
+            str(stale_text(graph, chosen, found_causes, language=language,
+                           operation=operation.uid)),
             since[(OPERATION, operation.uid)],
         ))
     return StaleReport(tuple(items), found)
+
+
+def item_causes(conn: sqlite3.Connection, item_kind: str, uid: str) -> frozenset[Cause]:
+    """Las causas de la operación o del dato ``uid`` (``item_kind``: ``operation`` o
+    ``dataset``) en la caché de ``conn`` (vacío si está al día)."""
+    if item_kind not in ITEM_KINDS:
+        raise ValueError(f"la caché guarda {', '.join(ITEM_KINDS)}, no {item_kind!r}")
+    return frozenset(StaleRow(*(str(value) for value in row)).cause for row in conn.execute(
+        "SELECT item_kind, item_uid, cause_kind, subject_uid FROM gb_stale "
+        "WHERE item_kind = ? AND item_uid = ?", (item_kind, uid)))
+
+
+def item_text(conn: sqlite3.Connection, item_kind: str, uid: str, *, language: str = "es",
+              versions: Mapping[str, str] | None = None) -> str | None:
+    """«Obsoleto: …» de la operación o del dato ``uid`` según la caché de ``conn`` (también
+    la transacción de escritura de quien llama, que ve lo aún no confirmado), como en la
+    lista de lo obsoleto (:func:`stale_items`): con «… mientras se calculaba» lo que cambió
+    mientras se calculaba la operación (o la que escribió el dato); ``None`` si está al día."""
+    with _snapshot(conn):
+        causes = item_causes(conn, item_kind, uid)
+        if not causes:
+            return None
+        subjects = _subjects([causes])
+        data = _dataset_nodes(conn, _named(subjects) | ({uid} if item_kind == DATASET
+                                                        else set()))
+        writer = uid if item_kind == OPERATION else (
+            data[uid].operation_uid if uid in data else None)
+        graph = _text_graph(conn, subjects, data, set() if writer is None else {writer})
+    chosen = dict(installed_versions() if versions is None else versions)
+    return stale_text(graph, chosen, causes, language=language, operation=writer)
+
+
+def _subjects(causes: Iterable[Iterable[Cause]]) -> dict[CauseKind, set[str]]:
+    """Los sujetos de ``causes``, por clase de causa."""
+    subjects: dict[CauseKind, set[str]] = defaultdict(set)
+    for found in causes:
+        for cause in found:
+            subjects[cause.kind].add(cause.subject)
+    return subjects
+
+
+def _named(subjects: Mapping[CauseKind, Collection[str]]) -> set[str]:
+    """Los datos que nombran las causas de ``subjects`` (cambiado, que falta, bloqueado o
+    dañado)."""
+    return {uid for kind, uids in subjects.items() if kind.startswith("dataset_")
+            for uid in uids}
+
+
+def _dataset_nodes(conn: sqlite3.Connection, uids: Collection[str]) -> dict[str, DatasetNode]:
+    return {node.uid: node for node in (dataset_node(row) for row in _select(
+        conn, _DATASETS, uids))}
+
+
+def _text_graph(conn: sqlite3.Connection, subjects: Mapping[CauseKind, set[str]],
+                data: Mapping[str, DatasetNode], writers: Collection[str]) -> ProvenanceGraph:
+    """El grafo con lo que nombran los textos de las causas de ``subjects`` (los datos
+    ``data``, las operaciones ``writers``, las de los grupos y los tipos de algoritmo, las
+    entradas y los parámetros) y lo que cambió mientras se calculaban ``writers``."""
+    operations = {node.uid: node for node in (
+        *(operation_node(row) for row in _select(conn, _OPERATIONS, writers)),
+        *(operation_node(row) for row in _select(conn, _OPERATIONS_OF_GROUPS,
+                                                 subjects.get(CauseKind.GROUP, set()))),
+        *(operation_node(row) for row in _select(conn, _OPERATIONS_OF_TYPES,
+                                                 subjects.get(CauseKind.ALGORITHM, set()))),
+    )}
+    entries = (subjects.get(CauseKind.INPUT_UPDATED, set())
+               | subjects.get(CauseKind.INPUT_DISCARDED, set()))
+    return ProvenanceGraph(
+        operations.values(), data.values(),
+        [input_node(row) for row in _select(conn, _INPUTS, entries)],
+        [parameter_node(row) for row in _select(
+            conn, _PARAMETERS, subjects.get(CauseKind.PARAMETER_CHANGED, set()))],
+        during=changes_while_running(conn, writers),
+    )

@@ -510,6 +510,18 @@ _CATALOG: tuple[Message, ...] = (
     ),
     Message("core.cause_group", "it is coupled in group «{group}»",
             "está acoplada en el grupo «{group}»"),
+    # Una causa que cambió mientras se calculaba la operación (T31; RF-008-20): «cambió
+    # Producción mientras se calculaba».
+    Message("core.cause_while_running", "{cause} while it was being calculated",
+            "{cause} mientras se calculaba"),
+    # Incorporar un trabajo (T31; RF-008-20): una salida que falta o no coincide con su
+    # huella, con el mismo ``msgid`` y el mismo texto que la 004 (``output_hash_mismatch`` de
+    # ``jobs/messages.py``, que ``core`` no importa).
+    Message(
+        "core.job_output_mismatch",
+        "Result {path} of job «{job}» is missing or does not match its hash.",
+        "El resultado {path} del trabajo «{job}» falta o no coincide con su huella.",
+    ),
     # Plan de «Recalcular lo obsoleto» (T28; RF-008-25, RF-008-26, RF-008-27): por qué una
     # operación obsoleta se deja fuera (un tipo que no está instalado da
     # ``core.operation_unregistered``).

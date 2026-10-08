@@ -11,8 +11,9 @@
   :class:`ProvenanceError`.
 - :mod:`.operations`: el registro de las operaciones en dos pasos (:func:`begin_operation`,
   :class:`OperationHandle` con ``claim_paths``, ``complete``, ``fail`` y ``cancel``,
-  :func:`operation` y :func:`claimed_paths`) y las que su sesión no pudo terminar
-  (:func:`interrupt_orphaned` y :func:`mark_not_ingested`).
+  :func:`operation` y :func:`claimed_paths`), las que su sesión no pudo terminar
+  (:func:`interrupt_orphaned` y :func:`mark_not_ingested`) y la incorporación de un trabajo
+  de la 004 (:func:`ingest_job` con su :class:`JobOutcome` → :class:`IngestOutcome`).
 - :mod:`.figures`: las cifras con tipo y procedencia (:class:`FigureSpec`,
   :func:`record_figure`, :class:`FigureRecord`) y el aviso de una cifra que calcula un
   parámetro con otro valor (:class:`Divergence`, :func:`divergence` y :func:`divergences`).
@@ -77,15 +78,20 @@ from .messages import CATALOG_ES, LABELS, MESSAGES, Message, ProvenanceError, re
 
 OPERATIONS_API: tuple[str, ...] = (
     "JOB_EXECUTORS",
+    "JOB_FINAL_STATES",
     "Consumed",
     "Executor",
+    "IngestOutcome",
     "ItemKind",
+    "JobOutcome",
     "OperationHandle",
     "OperationStatus",
+    "OutputPrint",
     "Use",
     "begin_in_transaction",
     "begin_operation",
     "claimed_paths",
+    "ingest_job",
     "interrupt_orphaned",
     "mark_not_ingested",
     "operation",
@@ -199,6 +205,7 @@ __all__ = [
     "IMPORTERS",
     "IMPORT_LAYER",
     "JOB_EXECUTORS",
+    "JOB_FINAL_STATES",
     "LABELS",
     "MESSAGES",
     "OPERATIONS",
@@ -222,13 +229,16 @@ __all__ = [
     "FigureRecord",
     "FigureSpec",
     "ImporterDef",
+    "IngestOutcome",
     "ItemKind",
+    "JobOutcome",
     "Message",
     "Notice",
     "OperationDef",
     "OperationHandle",
     "OperationRef",
     "OperationStatus",
+    "OutputPrint",
     "Pending",
     "PendingItem",
     "PendingReason",
@@ -263,6 +273,7 @@ __all__ = [
     "figure_def",
     "group_def",
     "importer_def",
+    "ingest_job",
     "interrupt_orphaned",
     "load_graph",
     "mark_not_ingested",
