@@ -14,7 +14,8 @@ ADR-0004). Los valores del proyecto y su historial los guarda ``ParameterStore``
   ADR-0013).
 - :class:`ParamDef`: la definición, comprobada al declararla (una incoherente es un error del
   programa: :class:`ValueError`). :meth:`ParamDef.check` comprueba un valor del programa y lo
-  devuelve normalizado; :meth:`ParamDef.range_text`, el rango como se lee.
+  devuelve normalizado; :meth:`ParamDef.range_text` (o :func:`format_range` desde sus
+  campos), el rango como se lee.
 - :func:`parse_value`: un valor **tecleado** con su unidad, convertido a la declarada
   («35 %» en una fracción es 0,35; RF-008-03).
 - :class:`ParamError`: el rechazo para el usuario, con un código ``core.param_*`` y su texto
@@ -252,8 +253,31 @@ _CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "core.param_nothing_to_confirm",
-        "Parameter «{key}» is not «unconfirmed»: there is nothing to confirm.",
-        "El parámetro «{key}» no está «sin confirmar»: no hay nada que confirmar.",
+        "Parameter «{key}» is neither «unconfirmed» nor «to review»: there is nothing to "
+        "confirm.",
+        "El parámetro «{key}» no está «sin confirmar» ni «revisar»: no hay nada que "
+        "confirmar.",
+    ),
+    # «Revisar» por un cambio de definición (store.py; RF-008-60).
+    Message(
+        "core.param_review_changed",
+        "The definition of «{key}» has changed ({change}); its registered value has not been "
+        "touched.",
+        "La definición de «{key}» ha cambiado ({change}); su valor registrado no se ha "
+        "tocado.",
+    ),
+    Message(
+        "core.param_review_undeclared",
+        "No loaded module declares «{key}» any more; its registered value has not been "
+        "touched.",
+        "Ningún módulo cargado declara ya «{key}»; su valor registrado no se ha tocado.",
+    ),
+    Message(
+        "core.param_review_mismatch",
+        "{key}: the registered value, {shown}, is not in the unit or the value type of its "
+        "current definition ({expected}): change it instead of confirming it.",
+        "{key}: el valor registrado, {shown}, no está en la unidad o el tipo de valor de su "
+        "definición actual ({expected}): cámbielo en lugar de confirmarlo.",
     ),
     Message(
         "core.param_figure_unknown",
@@ -553,23 +577,32 @@ class ParamDef:
         paréntesis en el extremo excluido o abierto (``(0; 1]``, ``[0; +∞) m``), sin unidad si
         es adimensional y vacío si no es un número ni una lista. La unidad, con su símbolo en
         español (``m³``) o, en inglés, su código (``m3``)."""
-        if language not in LANGUAGES:
-            raise ValueError(f"el idioma «{language}» no es de Geoblender: {', '.join(LANGUAGES)}")
-        if self.value_type not in _NUMERIC:
-            return ""
-        separator = "; " if language == "es" else ", "
-        opening = "(" if self.min_exclusive or self.minimum is None else "["
-        closing = ")" if self.maximum is None else "]"
-        low = "-∞" if self.minimum is None else format_value(float(self.minimum), language)
-        high = "+∞" if self.maximum is None else format_value(float(self.maximum), language)
-        text = f"{opening}{low}{separator}{high}{closing}"
-        if self.unit == DIMENSIONLESS:
-            return text
-        return f"{text} {symbol(self.unit) if language == 'es' else self.unit}"
+        return format_range(self.value_type, self.unit, self.minimum, self.maximum,
+                            min_exclusive=self.min_exclusive, language=language)
 
     def _error(self, code: str, value: object, **values: object) -> ParamError:
         return ParamError(code, key=self.key, value=value, unit=self.unit,
                           range=self.range_text(), **values)
+
+
+def format_range(value_type: ValueType | str, unit: str, minimum: float | None,
+                 maximum: float | None, *, min_exclusive: bool = False,
+                 language: str = "es") -> str:
+    """El rango de una definición como se lee (:meth:`ParamDef.range_text`), también desde
+    sus campos guardados (la definición de un cambio que hay que revisar, RF-008-60)."""
+    if language not in LANGUAGES:
+        raise ValueError(f"el idioma «{language}» no es de Geoblender: {', '.join(LANGUAGES)}")
+    if value_type not in _NUMERIC:
+        return ""
+    separator = "; " if language == "es" else ", "
+    opening = "(" if min_exclusive or minimum is None else "["
+    closing = ")" if maximum is None else "]"
+    low = "-∞" if minimum is None else format_value(float(minimum), language)
+    high = "+∞" if maximum is None else format_value(float(maximum), language)
+    text = f"{opening}{low}{separator}{high}{closing}"
+    if unit == DIMENSIONLESS:
+        return text
+    return f"{text} {symbol(unit) if language == 'es' else unit}"
 
 
 def _is_finite_real(value: object) -> bool:

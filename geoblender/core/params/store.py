@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Valores de los parámetros del proyecto y su historial (spec 008; RF-008-01, RF-008-02,
-RF-008-04, RF-008-05; plan 008 §5.2.1, §5.3.1, §2.3 S-1 y D10; ADR-0013).
+RF-008-04, RF-008-05, RF-008-06, RF-008-60; plan 008 §5.2.1, §5.3.1, §2.3 S-1 y D10;
+ADR-0013).
 
 :class:`ParameterStore` guarda en ``gb_parameter`` el valor vigente de cada parámetro del
 proyecto (clave, valor, unidad, tipo, origen y su clase, decisor, fecha de la decisión,
@@ -19,13 +20,32 @@ HIPÓTESIS que pasa a ADOPTADO sigue constando como HIPÓTESIS en sus filas ante
   CALCULADO el valor de una cifra, con la operación que la calculó: es la única forma de
   que un parámetro sea CALCULADO (decisión S-1 de Samuel: **ningún cálculo cambia un
   parámetro**; no hay ninguna función por la que una operación lo haga).
-- :meth:`ParameterStore.confirm`: confirma un «sin confirmar», sin motivo (RF-008-02).
+- :meth:`ParameterStore.confirm`: confirma un «sin confirmar» o un «revisar», sin motivo
+  (RF-008-02, RF-008-60).
 - :meth:`ParameterStore.ensure_default`: registra el valor y el tipo por defecto de la
   definición, «sin confirmar», con el origen «valor por defecto de Geoblender <versión>» y
   el decisor «Geoblender (valor por defecto)» (RF-008-04); si ya está, no hace nada.
 - :meth:`ParameterStore.resolve`: lo que una operación anota del parámetro que lee: clave,
   valor, unidad, tipo, ámbito y la revisión del historial (RF-008-05).
-- :meth:`ParameterStore.get` y :meth:`ParameterStore.history`: la consulta.
+- :meth:`ParameterStore.get` y :meth:`ParameterStore.history`: la consulta;
+  :meth:`ParameterStore.list`, la lista del panel, filtrable por módulo, tipo y marca
+  (:class:`ParameterFilter`, :class:`ParameterRow`; RF-008-06).
+- :meth:`ParameterStore.mark_definition_changes`: al abrir con otro Geoblender, marca
+  «revisar», con el cambio, cada parámetro cuya definición cambió o que ya no se declara
+  (RF-008-60). No toca ningún valor ni el historial.
+
+**«Revisar»** (RF-008-60). ``def_sha256`` es la huella (:func:`definition_sha256`) de la
+definición con la que se registró el valor o con la que una persona lo confirmó o lo cambió
+(el valor se comprueba con ella y se guarda en su unidad y su tipo de valor), o la de «no
+declarada» (:func:`undeclared_sha256`) si se confirmó sin ninguna. Si la definición
+declarada no es esa, ``review`` guarda el cambio (JSON canónico):
+``{"registered": {"def_sha256", "unit", "value_type"}, "declared": {<campos de la
+definición>, "def_sha256"} | null, "problem": {"code", "values"} | null}``. De la
+definición anterior solo se conoce lo que guarda el parámetro (su huella, su unidad y su
+tipo de valor); de la nueva, todo. ``problem`` es por qué el valor registrado no cumple la
+definición nueva (fuera del rango nuevo, otra unidad…), que es también por qué no se puede
+confirmar: hay que cambiarlo. :func:`review_text` lo cuenta en español. Confirmar, o cambiar
+el valor (que se comprueba con la definición actual), quita la marca.
 
 Los valores se comprueban con la definición registrada del módulo dueño
 (``core.params.DEFINITIONS``) y se guardan en su unidad declarada: un valor en otra unidad
@@ -45,29 +65,34 @@ versión llega con la spec 009 y el sector con R-32.
 
 from __future__ import annotations
 
+import builtins
 import datetime as dt
 import json
 import numbers
 import sqlite3
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
 
+from ..catalog.schema import MODULE_CODES
 from ..hashing import canonical_json, sha256_bytes
 from ..ids import new_uid
 from ..timeutil import Clock, format_utc, parse_utc
 from ..units import DIMENSIONLESS, UNITS, UnitError, convert, symbol
 from .model import (
     DEFINITIONS,
+    MESSAGES,
     ParamDef,
     ParamError,
     ParamKind,
     ParamValue,
     SourceKind,
     ValueType,
+    format_range,
     format_value,
+    render,
 )
 
 if TYPE_CHECKING:
@@ -102,7 +127,14 @@ class HistoryAction(StrEnum):
     DEFAULT = "default"  # valor por defecto, «sin confirmar» (RF-008-04)
     CREATE = "create"  # alta por una persona
     CHANGE = "change"  # cambio de valor, tipo, origen o decisor (RF-008-02)
-    CONFIRM = "confirm"  # confirmación de un «sin confirmar», sin motivo
+    CONFIRM = "confirm"  # confirmación de un «sin confirmar» o un «revisar», sin motivo
+
+
+class ParamMark(StrEnum):
+    """Las marcas de un parámetro en la lista (RF-008-06), en el orden en que se ven."""
+
+    UNCONFIRMED = "unconfirmed"  # «sin confirmar»: un valor por defecto (RF-008-04)
+    REVIEW = "review"  # «revisar»: cambió su definición o ya no se declara (RF-008-60)
 
 
 class _Unset(Enum):
@@ -211,6 +243,83 @@ class ResolvedParam:
     value_sha256: str
 
 
+def _filter_values[T](name: str, value: object, convert_one: Callable[[object], T]
+                      ) -> frozenset[T] | None:
+    """Los valores de un filtro: ``None`` (todos), uno o varios; vacío es un error (no es
+    «todos»)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items: Iterable[object] = (value,)
+    elif isinstance(value, Iterable):
+        items = value
+    else:
+        raise TypeError(f"el filtro «{name}» es un valor, varios o None, no {value!r}")
+    result = frozenset(convert_one(item) for item in items)
+    if not result:
+        raise ValueError(f"el filtro «{name}» está vacío: para no filtrar, None")
+    return result
+
+
+def _module_code(value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"un módulo es su código, no {value!r}")
+    if value not in MODULE_CODES:
+        raise ValueError(f"módulo «{value}» desconocido; válidos: {', '.join(MODULE_CODES)}")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterFilter:
+    """Los filtros de :meth:`ParameterStore.list` (RF-008-06), que se combinan: ``module``
+    (código del módulo dueño), ``kind`` (:class:`~.model.ParamKind`) y ``mark``
+    (:class:`ParamMark`: el parámetro tiene alguna de ellas). Cada uno es ``None`` (no
+    filtra), un valor o varios (cualquiera de ellos); se guardan como ``frozenset``.
+    :class:`ValueError` si uno no existe o está vacío; :class:`TypeError` si no es un texto."""
+
+    module: str | Iterable[str] | frozenset[str] | None = None
+    kind: ParamKind | str | Iterable[ParamKind | str] | frozenset[ParamKind] | None = None
+    mark: ParamMark | str | Iterable[ParamMark | str] | frozenset[ParamMark] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "module", _filter_values("module", self.module, _module_code))
+        object.__setattr__(self, "kind", _filter_values("kind", self.kind, ParamKind))
+        object.__setattr__(self, "mark", _filter_values("mark", self.mark, ParamMark))
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterRow:
+    """Una fila de la lista de parámetros (RF-008-06): el registro (valor, unidad, tipo,
+    origen, decisor, fecha de la decisión y ``review``), el valor con su unidad como lo lee
+    una persona (``shown``: «1,23», «35 m») y sus marcas en orden (:class:`ParamMark`)."""
+
+    record: ParameterRecord
+    shown: str
+    marks: tuple[ParamMark, ...]
+
+    @property
+    def review_text(self) -> str:
+        """El cambio de definición que hay que revisar, en español («» si no hay)."""
+        return review_text(self.record.key, self.record.review)
+
+
+@dataclass(frozen=True, slots=True)
+class DefinitionChange:
+    """Un parámetro cuya marca «revisar» escribió :meth:`ParameterStore.mark_definition_changes`
+    (RF-008-60): ``review`` es el cambio (el JSON de ``gb_parameter.review``, ya leído) o
+    ``None`` si se quitó porque se declara otra vez la definición registrada."""
+
+    parameter_uid: str
+    key: str
+    scope: str
+    review: dict[str, Any] | None
+
+    @property
+    def text(self) -> str:
+        """El cambio en español («» si se quitó la marca)."""
+        return review_text(self.key, self.review)
+
+
 # --- Valores y huellas ----------------------------------------------------------------------
 
 
@@ -264,6 +373,13 @@ def definition_sha256(defn: ParamDef) -> str:
     return sha256_bytes(canonical_json(definition_fields(defn)))
 
 
+def undeclared_sha256(key: str) -> str:
+    """La «huella» de un parámetro que ningún módulo declara: la que guarda
+    ``def_sha256`` cuando una persona lo confirma así (RF-008-60), para que no vuelva a
+    quedar «revisar» mientras siga sin declararse."""
+    return sha256_bytes(canonical_json({"declared": False, "key": key}))
+
+
 def shown_value(value: ParamValue | None, unit: str) -> str:
     """Un valor con su unidad como lo lee una persona: «1,23», «35 m», «[5; 15] m», «sí»,
     «sin valor»."""
@@ -275,7 +391,121 @@ def shown_value(value: ParamValue | None, unit: str) -> str:
         text = format_value(value)
     if unit == DIMENSIONLESS or isinstance(value, bool | str):
         return text
-    return f"{text} {symbol(unit) if unit in UNITS else unit}"
+    return f"{text} {_symbol(unit)}"
+
+
+def _symbol(unit: str) -> str:
+    return symbol(unit) if unit in UNITS else unit
+
+
+# --- «Revisar» por un cambio de definición (RF-008-60) --------------------------------------
+
+_VALUE_TYPE_ES = {
+    ValueType.FLOAT: "número",
+    ValueType.INT: "entero",
+    ValueType.BOOL: "sí/no",
+    ValueType.TEXT: "texto",
+    ValueType.JSON: "lista",
+}
+"""Cómo se lee en español cada tipo de valor."""
+
+
+def _value_type_text(value_type: str) -> str:
+    try:
+        return _VALUE_TYPE_ES[ValueType(value_type)]
+    except ValueError:
+        return value_type
+
+
+def _expected(defn: ParamDef) -> str:
+    """El tipo de valor y la unidad de una definición: «número en kg/m³», «sí/no»."""
+    label = _value_type_text(defn.value_type)
+    if defn.unit == DIMENSIONLESS:
+        return label
+    return f"{label} en {_symbol(defn.unit)}"
+
+
+def _value_problem(record: ParameterRecord, defn: ParamDef) -> ParamError | None:
+    """Por qué el valor registrado de ``record`` no cumple ``defn`` (otra unidad u otro tipo
+    de valor, o fuera de su rango…), o ``None`` si la cumple. No convierte ni cambia nada."""
+    if record.unit != defn.unit or record.value_type != defn.value_type:
+        return ParamError(
+            "core.param_review_mismatch", key=record.key, value=record.value,
+            shown=shown_value(record.value, record.unit), expected=_expected(defn),
+            unit=defn.unit, range=defn.range_text(),
+        )
+    try:
+        defn.check(record.value)
+    except ParamError as exc:
+        return exc
+    return None
+
+
+def _review(record: ParameterRecord, defn: ParamDef | None) -> dict[str, Any] | None:
+    """El cambio que hay que revisar de ``record`` con la definición declarada ``defn``
+    (``None``: ninguna), o ``None`` si es la registrada o confirmada."""
+    if defn is None:
+        if record.def_sha256 == undeclared_sha256(record.key):
+            return None
+        declared = None
+        problem = None
+    else:
+        declared_sha = definition_sha256(defn)
+        if declared_sha == record.def_sha256:
+            return None
+        declared = {**definition_fields(defn), "def_sha256": declared_sha}
+        error = _value_problem(record, defn)
+        problem = None if error is None else {"code": error.code, "values": error.values}
+    return {
+        "registered": {
+            "def_sha256": record.def_sha256,
+            "unit": record.unit,
+            "value_type": str(record.value_type),
+        },
+        "declared": declared,
+        "problem": problem,
+    }
+
+
+def _review_json(review: object) -> str | None:
+    return None if review is None else canonical_json(review).decode("utf-8")
+
+
+def _declared_value(value: object) -> ParamValue | None:
+    """Un valor de la definición guardada en ``review`` (una lista vuelve como tupla)."""
+    if isinstance(value, list):
+        return tuple(float(item) for item in value)
+    return value  # type: ignore[return-value]
+
+
+def review_text(key: str, review: Mapping[str, Any] | None) -> str:
+    """El cambio de definición de ``key`` que hay que revisar (``review``, el JSON de
+    ``gb_parameter.review`` ya leído), en español: lo que cambió de lo que se sabe de la
+    definición registrada (unidad y tipo de valor), el rango y el valor por defecto de la
+    nueva y, si el valor registrado no la cumple, por qué. «» si no hay nada que revisar."""
+    if review is None:
+        return ""
+    declared = review.get("declared")
+    if declared is None:
+        return render("core.param_review_undeclared", key=key)
+    registered = review["registered"]
+    parts: list[str] = []
+    if registered["unit"] != declared["unit"]:
+        parts.append(f"unidad {_symbol(registered['unit'])} → {_symbol(declared['unit'])}")
+    if registered["value_type"] != declared["value_type"]:
+        parts.append(f"tipo de valor {_value_type_text(registered['value_type'])} → "
+                     f"{_value_type_text(declared['value_type'])}")
+    shown_range = format_range(declared["value_type"], declared["unit"], declared["minimum"],
+                               declared["maximum"], min_exclusive=declared["min_exclusive"])
+    if shown_range:
+        parts.append(f"rango {shown_range}")
+    default = _declared_value(declared["default"])
+    parts.append(f"valor por defecto {shown_value(default, declared['unit'])}")
+    text = render("core.param_review_changed", key=key, change=", ".join(parts))
+    problem = review.get("problem")
+    if problem and problem.get("code") in MESSAGES:  # el de otro Geoblender, se omite
+        text += " " + render(problem["code"], **problem["values"])
+    return text
 
 
 # --- Estado y comprobaciones ----------------------------------------------------------------
@@ -493,6 +723,34 @@ def _entry(row: Sequence[Any]) -> HistoryEntry:
     )
 
 
+def _list_row(record: ParameterRecord) -> ParameterRow:
+    marks: list[ParamMark] = []
+    if record.unconfirmed:
+        marks.append(ParamMark.UNCONFIRMED)
+    if record.review is not None:
+        marks.append(ParamMark.REVIEW)
+    return ParameterRow(record, shown_value(record.value, record.unit), tuple(marks))
+
+
+def _declared_definitions(defs: object) -> dict[str, ParamDef]:
+    """Las definiciones declaradas por clave: un ``Mapping`` como ``DEFINITIONS`` o una
+    secuencia de :class:`~.model.ParamDef` con claves distintas."""
+    if isinstance(defs, Mapping):
+        items: Iterable[object] = defs.values()
+    elif isinstance(defs, str | bytes) or not isinstance(defs, Iterable):
+        raise TypeError(f"las definiciones son ParamDef, no {defs!r}")
+    else:
+        items = defs
+    declared: dict[str, ParamDef] = {}
+    for defn in items:
+        if not isinstance(defn, ParamDef):
+            raise TypeError(f"solo se comparan ParamDef, no {type(defn).__name__} ({defn!r})")
+        if defn.key in declared:
+            raise ValueError(f"la definición de «{defn.key}» está repetida")
+        declared[defn.key] = defn
+    return declared
+
+
 def _load(conn: sqlite3.Connection, key: str) -> ParameterRecord | None:
     row = conn.execute(
         f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter "
@@ -559,6 +817,36 @@ class ParameterStore:
                 (key, scope),
             ).fetchall()
         return [_entry(row) for row in rows]
+
+    def list(self, filters: ParameterFilter | None = None, *,
+             conn: sqlite3.Connection | None = None) -> builtins.list[ParameterRow]:
+        """Los parámetros del proyecto por clave (RF-008-06), los que cumplen a la vez los
+        filtros de módulo, tipo y marca de ``filters`` (``None``: todos), cada uno con su
+        valor presentado y sus marcas."""
+        if filters is None:
+            filters = ParameterFilter()
+        if not isinstance(filters, ParameterFilter):
+            raise TypeError(f"los filtros son un ParameterFilter, no {filters!r}")
+        clauses = ["scope = ?", "scope_uid = ''"]
+        args: builtins.list[object] = [PROJECT_SCOPE]
+        for column, chosen in (("module", filters.module), ("kind", filters.kind)):
+            if chosen is not None:
+                clauses.append(f"{column} IN ({', '.join('?' for _ in chosen)})")
+                args.extend(sorted(str(item) for item in chosen))
+        if filters.mark is not None:
+            either = []
+            if ParamMark.UNCONFIRMED in filters.mark:
+                either.append("unconfirmed <> 0")
+            if ParamMark.REVIEW in filters.mark:
+                either.append("review IS NOT NULL")
+            clauses.append(f"({' OR '.join(either)})")
+        with self._reading(conn) as reading:
+            rows = reading.execute(
+                f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter "
+                f"WHERE {' AND '.join(clauses)} ORDER BY key",
+                args,
+            ).fetchall()
+        return [_list_row(_record(row)) for row in rows]
 
     def resolve(self, conn: sqlite3.Connection, key: str,
                 scope_chain: Iterable[str] = (PROJECT_SCOPE,)) -> ResolvedParam:
@@ -693,12 +981,13 @@ class ParameterStore:
         record = self._require(conn, key)
         old = _State.of(record)
         value_type = record.value_type
+        checked_with: ParamDef | None = None  # la definición con que se comprobó un valor
         if from_figure is not None:
             if value is not UNSET or unit is not None:
                 raise ValueError("con la cifra de origen, el valor y la unidad son los suyos")
             if kind is not UNSET and kind != ParamKind.CALCULADO:
                 raise ValueError(f"una cifra se adopta como CALCULADO, no como {kind!r}")
-            defn = _definition(key)
+            defn = checked_with = _definition(key)
             figure = _figure(conn, key, record, from_figure)
             new_value = _checked_value(defn, figure.value, figure.unit)
             new_unit, value_type = defn.unit, defn.value_type
@@ -712,7 +1001,7 @@ class ParameterStore:
             new_kind = old.kind if kind is UNSET else _kind(key, kind)
             new_value, new_unit = old.value, old.unit
             if value is not UNSET:
-                defn = _definition(key)
+                defn = checked_with = _definition(key)
                 new_value = _checked_value(defn, value, unit)
                 new_unit, value_type = defn.unit, defn.value_type
             value_changed = value_sha256(new_value, new_unit) != old.value_sha256
@@ -748,21 +1037,76 @@ class ParameterStore:
         if text is None:
             raise ParamError("core.param_reason_missing", key=key, value=new.value,
                              change=_change_text(old, new, dated=dated))
-        return self._update(conn, record, replace(new, reason=text), HistoryAction.CHANGE,
-                            value_type=value_type)
+        # Un valor comprobado con la definición actual la deja como la confirmada: quita
+        # «revisar» (RF-008-60). Un cambio sin valor (tipo, origen, decisor) no la quita.
+        return self._update(
+            conn, record, replace(new, reason=text), HistoryAction.CHANGE,
+            value_type=value_type,
+            def_sha256=None if checked_with is None else definition_sha256(checked_with),
+        )
 
     def confirm(self, conn: sqlite3.Connection, key: str, *,
                 reason: str | None = None) -> ParameterRecord:
-        """Confirma el valor «sin confirmar» de ``key`` (RF-008-02, RF-008-04): quita la
-        marca y añade una fila con el mismo valor, tipo, origen y decisor; el motivo es
-        opcional. :class:`~.model.ParamError` si no está registrado o no está «sin
-        confirmar»."""
+        """Confirma ``key`` «sin confirmar» o «revisar» (RF-008-02, RF-008-04, RF-008-60):
+        quita las dos marcas, deja la definición declarada ahora como la confirmada
+        (``def_sha256``; :func:`undeclared_sha256` si ninguna la declara) y añade una fila
+        con el mismo valor, tipo, origen y decisor; el motivo es opcional.
+
+        :class:`~.model.ParamError` si no está registrado, si no tiene ninguna de las dos
+        marcas o si su valor no cumple la definición actual (``core.param_review_mismatch``
+        si está en otra unidad o es de otro tipo de valor; si no, el código de
+        :meth:`~.model.ParamDef.check`, como ``core.param_out_of_range``): ese valor se
+        cambia, no se confirma (no se convierte ni se recorta nunca)."""
         record = self._require(conn, key)
-        if not record.unconfirmed:
+        if not record.unconfirmed and record.review is None:
             raise ParamError("core.param_nothing_to_confirm", key=key, value=record.value)
+        defn = DEFINITIONS.get(key)
+        if defn is None:
+            def_sha = undeclared_sha256(key)
+        else:
+            problem = _value_problem(record, defn)
+            if problem is not None:
+                raise problem
+            def_sha = definition_sha256(defn)
         state = replace(_State.of(record), unconfirmed=False, reason=_reason(reason))
         return self._update(conn, record, state, HistoryAction.CONFIRM,
-                            value_type=record.value_type)
+                            value_type=record.value_type, def_sha256=def_sha)
+
+    def mark_definition_changes(
+        self, conn: sqlite3.Connection, defs: Mapping[str, ParamDef] | Iterable[ParamDef]
+    ) -> builtins.list[DefinitionChange]:
+        """Marca «revisar», con el cambio, cada parámetro registrado cuya definición en
+        ``defs`` (las que declara el Geoblender que abre el proyecto, normalmente
+        ``DEFINITIONS``) no es la registrada o confirmada, o que ya no se declara; quita la
+        marca si se vuelve a declarar la registrada (RF-008-60). Solo escribe ``review`` (y
+        ``modified_at``) de los que cambian: ningún valor, unidad, tipo, marca «sin
+        confirmar», revisión ni fila del historial; un valor fuera del rango nuevo tampoco
+        (no se convierte ni se recorta). Devuelve lo escrito, por clave (vacío si nada
+        cambia: repetirlo no escribe). :class:`TypeError` o :class:`ValueError` si ``defs``
+        no son ``ParamDef`` con claves distintas."""
+        declared = _declared_definitions(defs)
+        rows = conn.execute(
+            f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter ORDER BY key, scope, scope_uid"
+        ).fetchall()
+        changes: builtins.list[DefinitionChange] = []
+        now: str | None = None
+        for row in rows:
+            record = _record(row)
+            review = _review(record, declared.get(record.key))
+            text = _review_json(review)
+            if text == _review_json(record.review):
+                continue
+            if now is None:
+                now = self._now()
+            conn.execute(
+                "UPDATE gb_parameter SET review = ?, modified_at = ? WHERE uid = ?",
+                (text, now, record.uid),
+            )
+            changes.append(DefinitionChange(
+                record.uid, record.key, record.scope,
+                None if text is None else json.loads(text),
+            ))
+        return changes
 
     # --- Interno ----------------------------------------------------------------------------
 
@@ -818,19 +1162,24 @@ class ParameterStore:
         return self._require(conn, defn.key)
 
     def _update(self, conn: sqlite3.Connection, record: ParameterRecord, state: _State,
-                action: HistoryAction, *, value_type: ValueType) -> ParameterRecord:
+                action: HistoryAction, *, value_type: ValueType,
+                def_sha256: str | None = None) -> ParameterRecord:
+        """Escribe ``state`` como revisión siguiente; con ``def_sha256`` (la definición con
+        la que se comprobó o confirmó el valor), la guarda y quita «revisar»."""
         rev = record.rev + 1
         now = self._now()
+        reviewed = "" if def_sha256 is None else "review = NULL, def_sha256 = ?, "
         conn.execute(
             "UPDATE gb_parameter SET value_type = ?, value = ?, unit = ?, kind = ?, "
             "source = ?, source_kind = ?, decided_by = ?, decided_at = ?, reason = ?, "
-            "operation_uid = ?, unconfirmed = ?, value_sha256 = ?, rev = ?, modified_at = ? "
-            "WHERE uid = ?",
+            f"operation_uid = ?, unconfirmed = ?, {reviewed}value_sha256 = ?, rev = ?, "
+            "modified_at = ? WHERE uid = ?",
             (
                 str(value_type), state.value_json, state.unit, str(state.kind), state.source,
                 str(state.source_kind), state.decided_by, state.decided_at,
                 record.reason if state.reason is None else state.reason, state.operation_uid,
-                int(state.unconfirmed), state.value_sha256, rev, now, record.uid,
+                int(state.unconfirmed), *(() if def_sha256 is None else (def_sha256,)),
+                state.value_sha256, rev, now, record.uid,
             ),
         )
         self._history(conn, record.uid, rev, action, state,
