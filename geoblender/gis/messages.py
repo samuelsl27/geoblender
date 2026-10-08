@@ -278,6 +278,44 @@ CATALOG: tuple[Message, ...] = (
         "«{file}» está registrado como entrada del proyecto y nunca se sobrescribe: elija "
         "otro destino.",
     ),
+    # Escribir un GeoTIFF (RF-006-08, RF-006-24) -----------------------------------------
+    Message(
+        "gis.export_nodata_collision",
+        "GeoTIFF «{file}»: {count} cells have an elevation that in float32 is −9999, the "
+        "no-data value of GeoTIFF deliverables (the first one, {value} m, in row {row} and "
+        "column {column} from the north-west corner). Correct those elevations and export "
+        "it again.",
+        "GeoTIFF «{file}»: {count} celdas tienen una cota que en float32 es −9999, el sin "
+        "dato de los GeoTIFF entregables (la primera, {value} m, en la fila {row} y la "
+        "columna {column} desde la esquina noroeste). Corrija esas cotas y vuelva a "
+        "exportarlo.",
+    ),
+    Message(
+        "gis.export_value_out_of_range",
+        "GeoTIFF «{file}»: {count} cells have an elevation that does not fit in float32, the "
+        "type of GeoTIFF deliverables (the first one, {value} m, in row {row} and column "
+        "{column} from the north-west corner). Correct those elevations and export it "
+        "again.",
+        "GeoTIFF «{file}»: {count} celdas tienen una cota que no cabe en float32, el tipo de "
+        "los GeoTIFF entregables (la primera, {value} m, en la fila {row} y la columna "
+        "{column} desde la esquina noroeste). Corrija esas cotas y vuelva a exportarlo.",
+    ),
+    Message(
+        "gis.raster_target_locked",
+        "«{file}» cannot be replaced: another program has it open (e.g. QGIS). Remove the "
+        "layer in QGIS or close that program and try again; the previous file is intact.",
+        "No se puede sustituir «{file}»: otro programa lo tiene abierto (p. ej. QGIS). "
+        "Quite la capa en QGIS o cierre ese programa y vuelva a intentarlo; el fichero "
+        "anterior sigue intacto.",
+    ),
+    Message(
+        "gis.raster_write_failed",
+        "«{file}» could not be written ({detail}): check that the folder exists, that there "
+        "is free space and that you may write in it; no half-written file is left.",
+        "No se ha podido escribir «{file}» ({detail}): compruebe que la carpeta existe, que "
+        "queda espacio y que tiene permiso de escritura; no ha quedado ningún fichero a "
+        "medias.",
+    ),
     # Parámetros (gis/params.py) ---------------------------------------------------------
     Message(
         "gis.param_not_number",

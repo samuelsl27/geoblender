@@ -15,6 +15,8 @@ RF-006-08, RF-006-09; ADR-0020), con biblioteca estándar.
 - :func:`parse_gdal_metadata`: escala, offset y unidad de las cotas de la banda 1 en
   ``GDAL_METADATA`` (42112, XML), leídos con expresiones regulares: sin analizador XML, sin
   entidades que expandir.
+- Para el escritor: :func:`encode_geokeys` (el ``GeoKeyDirectory`` de claves con un valor
+  entero, ordenadas) y :func:`format_nodata` (el texto de ``GDAL_NODATA``).
 
 Un directorio mal formado (corto, de otra versión o que apunta fuera de su etiqueta) es
 :class:`GeoKeyError` (``ValueError``), y un sin dato que no es un número, ``ValueError``;
@@ -25,7 +27,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 __all__ = [
@@ -45,6 +47,8 @@ __all__ = [
     "GdalMetadata",
     "GeoKeyError",
     "GeoKeyValue",
+    "encode_geokeys",
+    "format_nodata",
     "parse_gdal_metadata",
     "parse_geokeys",
     "parse_nodata",
@@ -71,6 +75,9 @@ _DOUBLE_TAG = 34736
 _ASCII_TAG = 34737
 _HEADER = 4
 _VERSION = 1
+_REVISION = (1, 0)  # revisión de las claves 1.0, la que escribe GDAL por defecto
+_SHORT_MAX = 0xFFFF
+_EXACT_INTEGER = 2**53  # por encima, un float64 entero se escribe en notación científica
 
 type GeoKeyValue = int | str | tuple[float, ...] | tuple[int, ...]
 
@@ -133,10 +140,39 @@ def _slice[T: Sequence[object]](values: T, start: int, number: int, key: int) ->
     return values[start : start + number]  # type: ignore[return-value]
 
 
+def encode_geokeys(keys: Mapping[int, int]) -> tuple[int, ...]:
+    """El ``GeoKeyDirectory`` (versión 1, revisión 1.0) de ``keys`` (clave → valor entero,
+    cada uno en el propio directorio), ordenadas por clave como pide GeoTIFF; lo lee
+    :func:`parse_geokeys`. ``ValueError`` si una clave o un valor no cabe en un ``SHORT``
+    (un error del programa)."""
+    directory = [_VERSION, *_REVISION, len(keys)]
+    for key in sorted(keys):
+        value = keys[key]
+        for number in (key, value):
+            if isinstance(number, bool) or not isinstance(number, int) or not (
+                0 <= number <= _SHORT_MAX
+            ):
+                raise ValueError(f"clave GeoTIFF {key} = {value!r}: no cabe en un SHORT")
+        directory += [key, 0, 1, value]
+    return tuple(directory)
+
+
 def parse_nodata(text: str) -> float:
     """El sin dato de ``GDAL_NODATA`` (``"-9999"``, ``"nan"``, ``"-3.4e+38"``) como
     ``float``; ``ValueError`` si no es un número."""
     return float(text.strip())
+
+
+def format_nodata(value: float) -> str:
+    """El texto de ``GDAL_NODATA`` para ``value``, como lo escribe GDAL: ``"nan"`` para
+    NaN, sin decimales si es un entero exacto de float64 (``-9999``) y, si no, el decimal
+    más corto que lo reproduce (``-3.4e+38``); lo lee :func:`parse_nodata`."""
+    value = float(value)
+    if math.isnan(value):
+        return "nan"
+    if value.is_integer() and abs(value) <= _EXACT_INTEGER:
+        return str(int(value))
+    return repr(value)
 
 
 @dataclass(frozen=True, slots=True)

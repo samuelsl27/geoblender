@@ -11,6 +11,9 @@
   sin los NUL del final; ``BYTE`` y ``UNDEFINED``, como ``bytes``. Una etiqueta de tipo
   desconocido se ignora (TIFF 6.0 §2) y, si se repite, vale la primera.
 - Constantes con el número de las etiquetas que usan el lector y el escritor.
+- Para el escritor, siempre en «II»: :func:`encode_header` (la cabecera TIFF o BigTIFF que
+  apunta al IFD) y :func:`encode_ifd` (un IFD con sus etiquetas ordenadas y, detrás, los
+  valores que no caben en la entrada, en desplazamientos pares; sin IFD siguiente).
 
 Un fichero que no es TIFF, o con la cabecera, el IFD o un valor fuera del fichero, es
 :class:`TiffError` (un ``ValueError`` con el detalle en español), que el lector convierte en
@@ -20,7 +23,7 @@ Un fichero que no es TIFF, o con la cabecera, el IFD o un valor fuera del ficher
 from __future__ import annotations
 
 import struct
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import BinaryIO
@@ -28,24 +31,32 @@ from typing import BinaryIO
 import numpy as np
 
 __all__ = [
+    "ASCII",
+    "BIGTIFF_HEADER_SIZE",
     "BITS_PER_SAMPLE",
     "COMPRESSION",
+    "DOUBLE",
     "FILL_ORDER",
     "GDAL_METADATA",
     "GDAL_NODATA",
     "GEO_ASCII_PARAMS",
     "GEO_DOUBLE_PARAMS",
     "GEO_KEY_DIRECTORY",
+    "HEADER_SIZE",
     "IMAGE_LENGTH",
     "IMAGE_WIDTH",
+    "LONG",
+    "LONG8",
     "MODEL_PIXEL_SCALE",
     "MODEL_TIEPOINT",
     "MODEL_TRANSFORMATION",
+    "PHOTOMETRIC_INTERPRETATION",
     "PLANAR_CONFIGURATION",
     "PREDICTOR",
     "ROWS_PER_STRIP",
     "SAMPLES_PER_PIXEL",
     "SAMPLE_FORMAT",
+    "SHORT",
     "STRIP_BYTE_COUNTS",
     "STRIP_OFFSETS",
     "TILE_BYTE_COUNTS",
@@ -53,8 +64,11 @@ __all__ = [
     "TILE_OFFSETS",
     "TILE_WIDTH",
     "Ifd",
+    "IfdEntry",
     "TagValue",
     "TiffError",
+    "encode_header",
+    "encode_ifd",
     "read_first_ifd",
 ]
 
@@ -63,6 +77,7 @@ IMAGE_WIDTH = 256
 IMAGE_LENGTH = 257
 BITS_PER_SAMPLE = 258
 COMPRESSION = 259
+PHOTOMETRIC_INTERPRETATION = 262
 FILL_ORDER = 266
 STRIP_OFFSETS = 273
 SAMPLES_PER_PIXEL = 277
@@ -88,9 +103,22 @@ GDAL_NODATA = 42113
 
 type TagValue = tuple[int, ...] | tuple[float, ...] | str | bytes
 
+# Tipos de campo que escribe el escritor -----------------------------------------------------
+ASCII = 2
+SHORT = 3
+LONG = 4
+DOUBLE = 12
+LONG8 = 16  # solo BigTIFF
+
+type IfdEntry = tuple[int, int, Sequence[int] | Sequence[float] | str]
+"""Una etiqueta para :func:`encode_ifd`: (número, tipo de campo, valores o texto)."""
+
+HEADER_SIZE = 8
+BIGTIFF_HEADER_SIZE = 16
+
 _TIFF = 42
 _BIGTIFF = 43
-_ASCII = 2
+_ASCII = ASCII
 _RATIONALS = (5, 10)
 _RAW = (1, 7)  # BYTE y UNDEFINED
 # Tipo de campo TIFF → tipo de numpy (sin el orden de bytes).
@@ -225,3 +253,76 @@ def _read_at(stream: BinaryIO, offset: int, length: int, size: int, what: str) -
     if len(data) != length:
         raise TiffError(f"{what} está cortado (se leyeron {len(data)} de {length} bytes)")
     return data
+
+
+# --- Escritura («II») ----------------------------------------------------------------------
+
+# Tipo de campo → tipo de numpy en little-endian, para escribir.
+_WRITE_TYPES: Mapping[int, str] = MappingProxyType(
+    {SHORT: "<u2", LONG: "<u4", DOUBLE: "<f8", LONG8: "<u8"}
+)
+
+
+def encode_header(ifd_offset: int, *, bigtiff: bool) -> bytes:
+    """La cabecera «II» de un TIFF clásico (42, :data:`HEADER_SIZE` bytes) o de un BigTIFF
+    (43, :data:`BIGTIFF_HEADER_SIZE` bytes) cuyo primer IFD está en ``ifd_offset``."""
+    if bigtiff:
+        return b"II" + struct.pack("<HHHQ", _BIGTIFF, 8, 0, ifd_offset)
+    return b"II" + struct.pack("<HI", _TIFF, ifd_offset)
+
+
+def encode_ifd(entries: Sequence[IfdEntry], offset: int, *, bigtiff: bool) -> bytes:
+    """Los bytes de un IFD «II» que empieza en ``offset`` (par) del fichero, con las
+    etiquetas ``entries`` ordenadas por número (TIFF 6.0 §2) y, detrás, los valores que no
+    caben en su entrada (4 bytes; 8 en BigTIFF), cada uno en un desplazamiento par; el IFD
+    siguiente es 0 (no hay). Un tipo de campo que no escribe, una etiqueta repetida, un
+    valor que no cabe en su tipo o un ``LONG8`` en un TIFF clásico son ``ValueError`` (un
+    error del programa)."""
+    if offset < 0 or offset % 2:
+        raise ValueError(f"el IFD debe empezar en un byte par y no en el {offset}")
+    tags = [tag for tag, _kind, _values in entries]
+    if len(set(tags)) != len(tags):
+        raise ValueError(f"etiquetas repetidas en el IFD: {sorted(tags)}")
+    count_format, entry_format, pointer, inline = (
+        ("<Q", "<HHQ", "<Q", 8) if bigtiff else ("<H", "<HHI", "<I", 4)
+    )
+    entry_size = struct.calcsize(entry_format) + inline
+    size = struct.calcsize(count_format) + len(entries) * entry_size + struct.calcsize(pointer)
+    table = bytearray(struct.pack(count_format, len(entries)))
+    extra = bytearray()
+    for tag, kind, values in sorted(entries, key=lambda entry: entry[0]):
+        payload, count = _payload(tag, kind, values, bigtiff)
+        if len(payload) <= inline:
+            field = payload.ljust(inline, b"\0")
+        else:
+            field = struct.pack(pointer, offset + size + len(extra))
+            extra += payload + b"\0" * (len(payload) % 2)
+        table += struct.pack(entry_format, tag, kind, count) + field
+    table += struct.pack(pointer, 0)
+    end = offset + size + len(extra)
+    if not bigtiff and end > 0xFFFF_FFFF:
+        raise ValueError(f"un TIFF clásico no llega al byte {end}: escriba un BigTIFF")
+    return bytes(table + extra)
+
+
+def _payload(tag: int, kind: int, values: object, bigtiff: bool) -> tuple[bytes, int]:
+    """Los bytes de los valores de una etiqueta y cuántos valores son."""
+    if kind == ASCII:
+        if not isinstance(values, str):
+            raise ValueError(f"la etiqueta {tag} es ASCII y su valor no es un texto")
+        data = values.encode("ascii") + b"\0"
+        return data, len(data)
+    if kind not in _WRITE_TYPES or (kind == LONG8 and not bigtiff):
+        raise ValueError(f"la etiqueta {tag} es de un tipo ({kind}) que no se escribe aquí")
+    if isinstance(values, str):
+        raise ValueError(f"la etiqueta {tag} es numérica y su valor es un texto")
+    numbers = list(values)  # type: ignore[call-overload]
+    if not numbers:
+        raise ValueError(f"la etiqueta {tag} no tiene valores")
+    try:
+        array = np.array(numbers, dtype=_WRITE_TYPES[kind])
+    except OverflowError:
+        raise ValueError(f"un valor de la etiqueta {tag} no cabe en su tipo ({kind})") from None
+    if kind != DOUBLE and not np.array_equal(array, np.array(numbers, dtype=object)):
+        raise ValueError(f"los valores de la etiqueta {tag} no son enteros de su tipo")
+    return array.tobytes(), len(numbers)
