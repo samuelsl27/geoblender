@@ -22,16 +22,19 @@
 - :mod:`.stale`: la caché ``gb_stale`` puesta al día por región en cada camino que escribe
   (:func:`refresh_region`) o completa (:func:`refresh_all`), los recuentos «! n obsoletos» y
   «⚠ n entradas» (:func:`counts`) y la lista de lo obsoleto (:func:`stale_items`).
+- :mod:`.recompute`: el plan de «Recalcular lo obsoleto» (:func:`plan_recompute`,
+  :class:`RecomputePlan`): unidades en orden de dependencia y lo que se deja fuera, con su
+  motivo (:class:`Skipped`, :class:`SkipReason`).
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
 ``core.project.schema`` importa ``core.provenance.schema``, que pasa por este fichero.
 
-Por lo mismo, lo de :mod:`.operations`, :mod:`.figures`, :mod:`.graph` y :mod:`.stale` (que
-traen ``core.datasets``, ``core.content`` y ``core.params``) se reexporta **al usarlo**
-(``__getattr__``, PEP 562), no al importar el paquete: así abrir un proyecto no carga ni
-compila esos módulos (las pruebas de Blender rehabilitan la extensión muchas veces desde
-cero, con ``-B``).
+Por lo mismo, lo de :mod:`.operations`, :mod:`.figures`, :mod:`.graph`, :mod:`.stale` y
+:mod:`.recompute` (que traen ``core.datasets``, ``core.content`` y ``core.params``) se reexporta
+**al usarlo** (``__getattr__``, PEP 562), no al importar el paquete: así abrir un proyecto no
+carga ni compila esos módulos (las pruebas de Blender rehabilitan la extensión muchas veces
+desde cero, con ``-B``).
 """
 
 from typing import Any
@@ -118,6 +121,17 @@ STALE_API: tuple[str, ...] = (
 )
 """Lo de :mod:`.stale` que se reexporta al usarlo."""
 
+RECOMPUTE_API: tuple[str, ...] = (
+    "SCOPE_ALL",
+    "OperationRef",
+    "RecomputePlan",
+    "RecomputeUnit",
+    "SkipReason",
+    "Skipped",
+    "plan_recompute",
+)
+"""Lo de :mod:`.recompute` que se reexporta al usarlo."""
+
 
 def __getattr__(name: str) -> Any:
     if name in OPERATIONS_API:
@@ -128,6 +142,8 @@ def __getattr__(name: str) -> Any:
         from . import graph as source
     elif name in STALE_API:
         from . import stale as source
+    elif name in RECOMPUTE_API:
+        from . import recompute as source
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(source, name)
@@ -136,7 +152,8 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted({*globals(), *OPERATIONS_API, *FIGURES_API, *GRAPH_API, *STALE_API})
+    return sorted({*globals(), *OPERATIONS_API, *FIGURES_API, *GRAPH_API, *STALE_API,
+                   *RECOMPUTE_API})
 
 
 __all__ = [
@@ -153,6 +170,7 @@ __all__ = [
     "MESSAGES",
     "OPERATIONS",
     "SCOPES",
+    "SCOPE_ALL",
     "CacheUpdate",
     "Cause",
     "CauseKind",
@@ -169,9 +187,14 @@ __all__ = [
     "Message",
     "OperationDef",
     "OperationHandle",
+    "OperationRef",
     "OperationStatus",
     "ProvenanceError",
     "ProvenanceGraph",
+    "RecomputePlan",
+    "RecomputeUnit",
+    "SkipReason",
+    "Skipped",
     "StaleItem",
     "StaleReport",
     "StaleRow",
@@ -193,6 +216,7 @@ __all__ = [
     "operation",
     "operation_def",
     "parse_version",
+    "plan_recompute",
     "record_figure",
     "refresh_all",
     "refresh_region",

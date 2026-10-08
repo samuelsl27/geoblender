@@ -19,7 +19,8 @@ mismos en los dos (constitución, principio 10). Los nombres visibles de las ope
   ``core.read_only`` sin tocar nada (plan §5.3.1).
 
 Cada tarea de la 008 añade aquí los códigos de sus rechazos (los textos de la spec §8, tal
-cual) y sus avisos (``core.figure_differs``, RF-008-59). Python puro (ADR-0004).
+cual), sus avisos (``core.figure_differs``, RF-008-59) y los motivos de lo que se deja fuera de
+«Recalcular lo obsoleto» (``core.recompute_*``). Python puro (ADR-0004).
 """
 
 from __future__ import annotations
@@ -509,6 +510,31 @@ _CATALOG: tuple[Message, ...] = (
     ),
     Message("core.cause_group", "it is coupled in group «{group}»",
             "está acoplada en el grupo «{group}»"),
+    # Plan de «Recalcular lo obsoleto» (T28; RF-008-25, RF-008-26, RF-008-27): por qué una
+    # operación obsoleta se deja fuera (un tipo que no está instalado da
+    # ``core.operation_unregistered``).
+    Message(
+        "core.recompute_review",
+        "Review by hand: operation «{op_type}» is not repeated on its own; redo it or accept "
+        "it as good.",
+        "Revisar a mano: la operación «{op_type}» no se repite sola; rehágala o dela por "
+        "buena.",
+    ),
+    Message(
+        "core.recompute_waits",
+        "Waits for what is upstream of it and is not recomputed now: {operations}.",
+        "Espera a lo que tiene aguas arriba y no se recalcula ahora: {operations}.",
+    ),
+    Message(
+        "core.recompute_group",
+        "It is coupled in group «{group}» and is not recomputed without {operations}.",
+        "Está acoplada en el grupo «{group}» y no se recalcula sin {operations}.",
+    ),
+    Message(
+        "core.recompute_newer_algorithm",
+        "Computed with {op_type} {version}: update Geoblender",
+        "Calculado con {op_type} {version}: actualice Geoblender",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})
