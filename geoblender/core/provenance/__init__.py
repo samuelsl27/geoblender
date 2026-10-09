@@ -48,6 +48,9 @@
   fuentes externas grandes que pone ``bl`` (:class:`HashJobs`, :class:`HashRequest`,
   :class:`HashResult`)— y la transacción final; y lo que la puerta pide hashear después
   (:func:`hash_requests_steps`).
+- :mod:`.undo`: el diario de Ctrl+Z de la sesión (:class:`UndoJournal`): numera cada cambio
+  registrado (:class:`UndoEntry`) y dice qué deja atrás o recupera la escena que restaura
+  Blender (:class:`UndoNotice`), sin deshacer nada de lo registrado.
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
@@ -58,7 +61,8 @@ Por lo mismo, lo de :mod:`.operations`, :mod:`.figures`, :mod:`.graph`, :mod:`.s
 ``core.datasets``, ``core.content``, ``core.params`` y ``core.inputs``) se reexporta
 **al usarlo** (``__getattr__``, PEP 562), no al importar el paquete: así abrir un proyecto no
 carga ni compila esos módulos (las pruebas de Blender rehabilitan la extensión muchas veces
-desde cero, con ``-B``).
+desde cero, con ``-B``). :mod:`.undo` es ligero, pero solo lo usa ``bl`` con un proyecto
+abierto: también al usarlo.
 """
 
 from typing import Any
@@ -239,6 +243,15 @@ CHECKS_API: tuple[str, ...] = (
 )
 """Lo de :mod:`.checks` que se reexporta al usarlo."""
 
+UNDO_API: tuple[str, ...] = (
+    "UndoDirection",
+    "UndoEntry",
+    "UndoJournal",
+    "UndoKind",
+    "UndoNotice",
+)
+"""Lo de :mod:`.undo` que se reexporta al usarlo."""
+
 
 def __getattr__(name: str) -> Any:
     if name in OPERATIONS_API:
@@ -259,6 +272,8 @@ def __getattr__(name: str) -> Any:
         from . import lineage as source
     elif name in CHECKS_API:
         from . import checks as source
+    elif name in UNDO_API:
+        from . import undo as source
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(source, name)
@@ -268,7 +283,8 @@ def __getattr__(name: str) -> Any:
 
 def __dir__() -> list[str]:
     return sorted({*globals(), *OPERATIONS_API, *FIGURES_API, *GRAPH_API, *STALE_API,
-                   *RECOMPUTE_API, *GATE_API, *IMPORTER_API, *LINEAGE_API, *CHECKS_API})
+                   *RECOMPUTE_API, *GATE_API, *IMPORTER_API, *LINEAGE_API, *CHECKS_API,
+                   *UNDO_API})
 
 
 __all__ = [
@@ -361,6 +377,11 @@ __all__ = [
     "StaleReport",
     "StaleRow",
     "Staleness",
+    "UndoDirection",
+    "UndoEntry",
+    "UndoJournal",
+    "UndoKind",
+    "UndoNotice",
     "UnitResult",
     "UnitStatus",
     "Use",

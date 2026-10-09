@@ -21,8 +21,9 @@ mismos en los dos (constitución, principio 10). Los nombres visibles de las ope
 Cada tarea de la 008 añade aquí los códigos de sus rechazos (los textos de la spec §8, tal
 cual), sus avisos (``core.figure_differs``, RF-008-59), los motivos de lo que se deja fuera de
 «Recalcular lo obsoleto» (``core.recompute_*``) y lo que muestra la procedencia: el estado de
-una entrada (``core.input_status_*``), las marcas de una cifra (``core.mark_*``) y el estado de
-lo mostrado (``core.result_*``, RF-008-23). Python puro (ADR-0004).
+una entrada (``core.input_status_*``), las marcas de una cifra (``core.mark_*``), el estado de
+lo mostrado (``core.result_*``, RF-008-23) y los avisos de Ctrl+Z (``core.undo_*`` y
+``core.redo_*``, RF-008-32). Python puro (ADR-0004).
 """
 
 from __future__ import annotations
@@ -863,6 +864,36 @@ _CATALOG: tuple[Message, ...] = (
         "{key}: its registered definition is declared again; it no longer needs review.",
         "{key}: se vuelve a declarar su definición registrada; ya no hay que revisarlo.",
     ),
+    # Ctrl+Z (T38; RF-008-32): lo que un paso de deshacer deja atrás o uno de rehacer recupera
+    # sigue en el proyecto. Avisos de la barra de estado, sin punto final; ``{item}`` es uno de
+    # los tres primeros, ya en el idioma del aviso.
+    Message("core.undo_item_operation", "operation «{label}»", "la operación «{label}»"),
+    Message("core.undo_item_parameter", "the change of «{label}»", "el cambio de «{label}»"),
+    Message("core.undo_item_input", "the decision on input «{label}»",
+            "la decisión sobre la entrada «{label}»"),
+    Message("core.undo_kept", "Ctrl+Z does not undo {item}: it stays in the project",
+            "Ctrl+Z no deshace {item}: sigue en el proyecto"),
+    Message("core.undo_kept_one_more",
+            "Ctrl+Z does not undo {item} or another recorded change: they stay in the project",
+            "Ctrl+Z no deshace {item} ni otro cambio registrado: siguen en el proyecto"),
+    Message("core.undo_kept_more",
+            "Ctrl+Z does not undo {item} or {more} other recorded changes: they stay in the "
+            "project",
+            "Ctrl+Z no deshace {item} ni otros {more} cambios registrados: siguen en el "
+            "proyecto"),
+    Message("core.redo_kept",
+            "Ctrl+Shift+Z does not redo {item}: it was not undone and stays in the project",
+            "Ctrl+Mayús+Z no rehace {item}: no se deshizo y sigue en el proyecto"),
+    Message("core.redo_kept_one_more",
+            "Ctrl+Shift+Z does not redo {item} or another recorded change: they were not "
+            "undone and stay in the project",
+            "Ctrl+Mayús+Z no rehace {item} ni otro cambio registrado: no se deshicieron y "
+            "siguen en el proyecto"),
+    Message("core.redo_kept_more",
+            "Ctrl+Shift+Z does not redo {item} or {more} other recorded changes: they were not "
+            "undone and stay in the project",
+            "Ctrl+Mayús+Z no rehace {item} ni otros {more} cambios registrados: no se "
+            "deshicieron y siguen en el proyecto"),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})
