@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Comprobaciones de apertura, pasos 1 a 6 (spec 008, T36; RF-008-09, RF-008-19, RF-008-21,
+"""Comprobaciones de apertura (spec 008, T36 y T37; RF-008-09, RF-008-19, RF-008-21,
 RF-008-22, RF-008-24, RF-008-57, RF-008-60, RF-008-62 y RF-008-58; plan 008 §5.3.1 y §5.4.6).
 
 ``core.provenance.checks.open_check_steps`` hace, justo después de abrir y por pasos que avanza
-un temporizador de ``bl`` (ninguno pasa de 20 ms), con su progreso («Comprobando el proyecto…
-42 %»):
+un temporizador de ``bl``, con su progreso («Comprobando el proyecto… 42 %»), los pasos 1 a 6
+(``survey_steps``, T36; ninguno pasa de 20 ms):
 
 1. la **foto**: la hora de inicio, lo registrado (por páginas) y el listado de ``rasters/``,
    ``meshes/`` y ``originals/`` (tamaño y fecha por ``os.scandir``);
@@ -16,8 +16,12 @@ un temporizador de ``bl`` (ninguno pasa de 20 ms), con su progreso («Comproband
 6. las **versiones de algoritmo** mayores (con su aviso) y las **definiciones** de parámetros
    cambiadas.
 
-Lo que hay que hashear queda para el paso 7 y las escrituras en la base, para la transacción
-final (T37): estos pasos no leen el contenido de nada ni escriben nada en la base.
+Esos pasos no leen el contenido de nada ni escriben nada en la base. Después (T37):
+
+7. la **cola de hashes** de lo que saltó: lo del proyecto en el hilo, por trozos, y las fuentes
+   externas grandes en trabajos (``HashJobs``, que pone ``bl``), con lo que pidió la puerta;
+8. **una sola transacción final** con ``Project.try_write`` (reintentada si otro programa está
+   leyendo) con todo lo encontrado y la obsolescencia completa; en solo lectura, el informe.
 
 Cada prueba usa el proyecto de ``test_external`` (esquema 2, reloj simulado): la entrada
 «Limites_v1» importada en ``res_limites``; ``res_contorno`` (editable a mano) y ``res_bocas``
@@ -29,7 +33,9 @@ from __future__ import annotations
 import ast
 import contextlib
 import dataclasses
+import json
 import os
+import sqlite3
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -52,7 +58,7 @@ from tests.unit.core.datasets.test_external import (
     TERRAIN_FILE,
     ExternalCase,
 )
-from tests.unit.core.inputs.test_check import BASE_NS
+from tests.unit.core.inputs.test_check import BASE_NS, SOURCE
 from tests.unit.core.inputs.test_registry import GPKG, MTIME_NS, SESSION
 from tests.unit.core.params.test_store import DENSITY, DENSITY_KG, SWELL
 from tests.unit.core.provenance.test_gate import AREA, EDITED_AT, PLAN, _spec
@@ -62,6 +68,11 @@ checks = import_geoblender("core.provenance.checks")
 provenance = import_geoblender("core.provenance")
 operations = import_geoblender("core.provenance.operations")
 stale_mod = import_geoblender("core.provenance.stale")
+graph_mod = import_geoblender("core.provenance.graph")
+gate = import_geoblender("core.provenance.gate")
+contract = import_geoblender("core.provenance.contract")
+readers = import_geoblender("core.content.readers")
+session_mod = import_geoblender("core.project.session")
 external = import_geoblender("core.datasets.external")
 dataset_registry = import_geoblender("core.datasets.registry")
 datasets = import_geoblender("core.datasets")
@@ -77,6 +88,7 @@ hashing = import_geoblender("core.hashing")
 ids = import_geoblender("core.ids")
 
 Use = operations.Use
+ItemKind = operations.ItemKind
 Signal = external.Signal
 Verdict = external.DatasetVerdict
 InputVerdict = check.Verdict
@@ -106,13 +118,13 @@ class ChecksCase(ExternalCase):
     # --- Ayudas -----------------------------------------------------------------------------
 
     def steps(self, **kw: Any) -> list[Any]:
-        """Todos los pasos de la comprobación de apertura (en escritura, por defecto)."""
+        """Todos los pasos 1 a 6 de la comprobación de apertura (en escritura, por defecto)."""
         kw.setdefault("write", True)
         registries = kw.pop("registries", self.registries)
-        return list(checks.open_check_steps(self.project, registries, **kw))
+        return list(checks.survey_steps(self.project, registries, **kw))
 
     def open_check(self, **kw: Any) -> Any:
-        """El resultado de la comprobación de apertura (el último paso)."""
+        """El resultado de los pasos 1 a 6 de la comprobación de apertura (el último paso)."""
         found = self.steps(**kw)
         for step in found:
             self.assertIsInstance(step, project_model.Progress)
@@ -141,12 +153,98 @@ class ChecksCase(ExternalCase):
 
     def through_photo(self, steps: Iterator[Any]) -> list[Any]:
         """Avanza los pasos de la foto (hasta el primero de otra fase)."""
+        return self.until(steps, lambda step: step.phase != checks.OPEN_CHECK_STEPS[0])
+
+    def until(self, steps: Iterator[Any], stop: Any) -> list[Any]:
+        """Avanza los pasos hasta el primero que cumple ``stop`` (incluido)."""
         found: list[Any] = []
         for step in steps:
             found.append(step)
-            if step.phase != checks.OPEN_CHECK_STEPS[0]:
+            if stop(step):
                 return found
-        self.fail("la comprobación terminó sin pasar de la foto")
+        self.fail("la comprobación terminó antes de lo esperado")
+
+    def check_all(self, **kw: Any) -> tuple[Any, list[Any]]:
+        """Todos los pasos 1 a 8 de la comprobación de apertura (en escritura, por defecto): su
+        resultado (solo en el último paso) y los pasos."""
+        kw.setdefault("write", True)
+        registries = kw.pop("registries", self.registries)
+        found = list(checks.open_check_steps(self.project, registries, **kw))
+        for step in found:
+            self.assertIsInstance(step, project_model.Progress)
+        self.assertEqual([step.result is not None for step in found],
+                         [False] * (len(found) - 1) + [True])
+        outcome = found[-1].result
+        self.assertIsInstance(outcome, checks.OpenCheckOutcome)
+        return outcome, found
+
+    def changes(self) -> Any:
+        """Lo que pasa antes de abrir, uno de cada: otro Blender (``SESSION_B``) deja «res.plan»
+        en curso; la fuente de «Limites_v1» pasa a la v2; QGIS edita ``res_contorno`` (editable
+        a mano) y borra la capa ``res_bocas``; queda un resto en ``rasters/``; ``res.density``
+        está registrado en t/m³. Devuelve lo que declara el Geoblender que abre: «res.area»
+        2.0 y ``res.density`` en kg/m³ (en ``self.other``, la operación en curso)."""
+        with self.as_session(SESSION_B):
+            self.other = operations.begin_operation(self.project, PLAN.op_type, settings={},
+                                                    executor="blender")
+        params.register_definitions((DENSITY,))
+        self.addCleanup(params.unregister_definitions, "res")
+        store = params.ParameterStore(self.project)
+        self.write(lambda conn: store.ensure_default(conn, DENSITY.key,
+                                                     geoblender_version="0.3.0"))
+        self.later()
+        self.replace(data.BOUNDARY_V2)
+        self.qgis('UPDATE "res_contorno" SET valor = 9 WHERE codigo = ?', ("C-01",),
+                  table="res_contorno", at=EDITED_AT)
+        self.foreign('DROP TABLE "res_bocas"')
+        self.foreign("DELETE FROM gpkg_contents WHERE table_name = 'res_bocas'")
+        leftover = self.path("rasters/res_resto.bin")
+        leftover.parent.mkdir(parents=True, exist_ok=True)
+        leftover.write_bytes(b"resto")
+        os.utime(leftover, ns=(BASE_NS, BASE_NS))
+        declared = dict(params.DEFINITIONS)
+        declared[DENSITY.key] = DENSITY_KG
+        return checks.Registries({**self.registries.versions, AREA.op_type: "2.0"}, declared)
+
+    def events(self, kind: str) -> list[dict[str, Any]]:
+        return self.rows("gb_event", "kind = ?", (kind,))
+
+    def assertCacheDeduced(self, versions: Any) -> None:
+        """La caché ``gb_stale`` es la obsolescencia completa deducida con ``versions``."""
+        with self.project.read() as conn:
+            state = graph_mod.deduce(graph_mod.load_graph(conn), versions=versions)
+            self.assertEqual(stale_mod.cached_rows(conn), stale_mod.expected_rows(state))
+
+    def assertRecorded(self, outcome: Any, registries: Any) -> None:
+        """Lo de :meth:`changes`, registrado en el proyecto, una vez cada cosa."""
+        self.assertTrue(outcome.writing and outcome.recorded)
+        self.assertEqual(self.rows("gb_operation", "uid = ?", (self.other.uid,))[0]["status"],
+                         "interrupted")
+        self.assertEqual(self.input_row(self.record.uid)["status"], "changed")
+        self.assertEqual(self.input_row(self.record.uid)["seen_sha256"],
+                         self.content_of(self.target))
+        (edit,) = self.external_edits()
+        self.assertEqual(self.dataset("res_contorno").operation_uid, edit["uid"])
+        self.assertEqual(self.dataset("res_contorno").status, Status.CURRENT)
+        self.assertEqual(self.dataset("res_bocas").status, Status.MISSING)
+        (parameter,) = self.rows("gb_parameter", "key = ?", (DENSITY.key,))
+        self.assertIsNotNone(parameter["review"])
+        for kind in ("operation_interrupted", "input_changed", "external_edit",
+                     "dataset_missing", "orphans_moved", "definition_changed",
+                     "algorithm_changed"):
+            with self.subTest(kind=kind):
+                self.assertEqual(len(self.events(kind)), 1)
+        (algorithm,) = self.events("algorithm_changed")
+        self.assertEqual(algorithm["message"], outcome.algorithms[0].text())
+        (changed,) = self.events("input_changed")
+        self.assertGreaterEqual(json.loads(changed["data"])["dependents"]["datasets"], 3)
+        (definition,) = self.events("definition_changed")
+        self.assertEqual((definition["entity_kind"], definition["entity_uid"]),
+                         ("parameter", parameter["uid"]))
+        self.assertTrue(outcome.orphans.recorded)
+        self.assertFalse(self.path("rasters/res_resto.bin").exists())
+        self.assertCacheDeduced(registries.versions)
+        self.assertIn("res_area", self.stale_names())
 
     @contextlib.contextmanager
     def never_hashed(self) -> Iterator[None]:
@@ -287,10 +385,10 @@ class StepsTest(ChecksCase):
             found = self.steps()
         self.assertEqual(self.full_state(), before)
         phases = [step.phase for step in found]
-        self.assertEqual(list(dict.fromkeys(phases)), list(checks.OPEN_CHECK_STEPS))
-        self.assertEqual(checks.OPEN_CHECK_STEPS, ("foto", "interrumpidas", "entradas", "datos",
+        self.assertEqual(list(dict.fromkeys(phases)), list(checks.SURVEY_STEPS))
+        self.assertEqual(checks.SURVEY_STEPS, ("foto", "interrumpidas", "entradas", "datos",
                                                    "restos", "versiones"))
-        order = [checks.OPEN_CHECK_STEPS.index(phase) for phase in phases]
+        order = [checks.SURVEY_STEPS.index(phase) for phase in phases]
         self.assertEqual(order, sorted(order))
         done = [step.done for step in found]
         self.assertEqual(done, sorted(done))
@@ -330,8 +428,8 @@ class StepsTest(ChecksCase):
             path.unlink()
 
         def run(budget_s: float = BUDGET_S) -> tuple[Any, list[float]]:
-            return self.drive(checks.open_check_steps(self.project, self.registries,
-                                                      write=True, budget_s=budget_s))
+            return self.drive(checks.survey_steps(self.project, self.registries,
+                                                  write=True, budget_s=budget_s))
 
         outcome, durations = run()
         worst = max(durations)
@@ -470,7 +568,7 @@ class DatasetsTest(ChecksCase):
         self.foreign('DROP TABLE "res_bocas"')
         self.foreign("DELETE FROM gpkg_contents WHERE table_name = 'res_bocas'")
         self.rebuild("res_limites")
-        steps = checks.open_check_steps(self.project, self.registries, write=True)
+        steps = checks.survey_steps(self.project, self.registries, write=True)
         self.through_photo(steps)
         area = operations.begin_operation(self.project, AREA.op_type, settings={},
                                           executor="blender", supersedes=self.area.uid,
@@ -515,7 +613,7 @@ class DatasetsTest(ChecksCase):
                                              executor="blender")
         running.claim_paths(self.path("rasters/res_mdt4.bin"))
         self.path("rasters/res_mdt4.bin").write_bytes(b"rejilla 4, a medias")
-        steps = checks.open_check_steps(self.project, self.registries, write=True)
+        steps = checks.survey_steps(self.project, self.registries, write=True)
         self.through_photo(steps)
         self.path(TERRAIN_FILE).write_bytes(b"rejilla v2, recalculada")
         redo = operations.begin_operation(self.project, GRID.op_type, settings={},
@@ -742,6 +840,363 @@ class ApiTest(ChecksCase):
             (only,) = self.steps()
         self.assertEqual((only.done, only.total), (checks.PROGRESS_TOTAL, checks.PROGRESS_TOTAL))
         self.assertEqual(self.summary(only.result)[:9], ((), [], [], [], [], [], [], [], []))
+
+
+# --- Pasos 7 y 8 (T37) ------------------------------------------------------------------------
+
+
+class FakeJobs:
+    """Los trabajos de hash que pone ``bl`` (T47), simulados: anotan lo que se les pide y, tras
+    ``waits`` consultas sin terminar, lo hashean con el lector registrado (como el trabajo) o
+    devuelven ``result``; con ``refuse``, no se pueden lanzar."""
+
+    def __init__(self, waits: int = 1, *, result: Any = None, refuse: bool = False) -> None:
+        self.waits = waits
+        self.result = result
+        self.refuse = refuse
+        self.submitted: list[Any] = []
+        self.polls = 0
+        self.cancelled: list[int] = []
+
+    def submit(self, request: Any) -> int | None:
+        self.submitted.append(request)
+        return None if self.refuse else len(self.submitted)
+
+    def poll(self, ticket: int) -> Any:
+        self.polls += 1
+        if self.polls <= self.waits:
+            return None
+        if self.result is not None:
+            return self.result
+        request = self.submitted[ticket - 1]
+        found = readers.reader(request.reader)
+        read = found.request(request.kind, request.declarations, dict(request.files),
+                             dict(request.settings), normalizer=request.normalizer)
+        return checks.HashResult(readers.read_content(found, read))
+
+    def cancel(self, ticket: int) -> None:
+        self.cancelled.append(ticket)
+
+
+class FinalTest(ChecksCase):
+    def test_hashes_and_records_everything_in_one_final_transaction(self) -> None:
+        """RF-008-58, RF-008-09, RF-008-19, RF-008-21, RF-008-22, RF-008-24, RF-008-57,
+        RF-008-60 (plan §5.4.6, pasos 7 y 8): con un cambio de cada clase antes de abrir, la
+        comprobación corre sus ocho pasos en orden con su progreso hasta el 100 %; hashea lo
+        que saltó (la fuente de «Limites_v1», ``res_contorno``) y registra todo en **una**
+        transacción final: la operación del Blender que se cerró, interrumpida; «Limites_v1»,
+        cambiada (con el contenido visto); la edición externa de ``res_contorno``;
+        ``res_bocas``, que falta; el evento de los restos apartados; «revisar» en
+        ``res.density`` y los eventos de la definición y del algoritmo; y la caché con la
+        obsolescencia completa (``res_area``, obsoleto). La fuente queda intacta. Una segunda
+        apertura no encuentra nada nuevo ni repite ningún evento."""
+        newer = self.changes()
+        age_folders(self.sources)
+        real = self.project.write_transaction
+        transactions: list[int] = []
+
+        def counting() -> Any:
+            transactions.append(1)
+            return real()
+
+        with assert_source_untouched(self.sources), \
+                mock.patch.object(self.project, "write_transaction", counting):
+            outcome, found = self.check_all(registries=newer)
+        self.assertEqual(len(transactions), 1)
+        phases = [step.phase for step in found]
+        self.assertEqual(list(dict.fromkeys(phases)), list(checks.OPEN_CHECK_STEPS))
+        self.assertEqual(checks.OPEN_CHECK_STEPS,
+                         (*checks.SURVEY_STEPS, "contenido", "registro"))
+        done = [step.done for step in found]
+        self.assertEqual(done, sorted(done))
+        self.assertEqual(found[-1].message, "Comprobando el proyecto… 100 %")
+        self.assertRecorded(outcome, newer)
+        self.assertEqual({item.name: item.verdict for item in outcome.inputs},
+                         {"Limites_v1": InputVerdict.CHANGED})
+        (missing, edited) = sorted(outcome.datasets, key=lambda item: item.record.name)
+        self.assertEqual((edited.record.name, edited.verdict, edited.operation_uid),
+                         ("res_contorno", Verdict.EDITED, self.external_edits()[0]["uid"]))
+        self.assertEqual((missing.record.name, missing.verdict), ("res_bocas", Verdict.MISSING))
+        self.assertEqual((outcome.input_probes, outcome.dataset_probes, outcome.original_probes),
+                         ((), (), ()))
+        self.assertIn(self.uid("res_contorno"), outcome.checked_datasets)
+        self.assertEqual([item.key for item in outcome.definitions], [DENSITY.key])
+        self.assertTrue(any(text.startswith("La entrada «Limites_v1» ha cambiado")
+                            for text in outcome.warnings))
+        events = self.rows("gb_event")
+        again, _steps = self.check_all(registries=newer)
+        self.assertEqual(self.rows("gb_event"), events)
+        self.assertEqual((again.inputs[0].verdict, again.datasets, again.algorithms,
+                          again.definitions, again.interrupted),
+                         (InputVerdict.UNCHANGED, (), (), (), ()))
+
+    def test_busy_database_retries_without_losing_anything(self) -> None:
+        """RF-008-58 (plan §5.4.6, D22; I-7): con QGIS leyendo el proyecto, la transacción
+        final devuelve el control enseguida con «… reintentando…» sin escribir nada, y se
+        reintenta en el paso siguiente; cuando termina de leer, se registra todo lo encontrado
+        (nada se pierde)."""
+        newer = self.changes()
+        before = self.full_state()
+        reader = sqlite3.connect(self.project.database_path, isolation_level=None)
+        self.addCleanup(reader.close)
+        reader.execute("BEGIN")
+        reader.execute("SELECT count(*) FROM gb_event").fetchone()
+        steps = checks.open_check_steps(self.project, newer, write=True)
+        busy = self.until(steps, lambda step: step.message == session_mod.BUSY_MESSAGE)[-1]
+        self.assertEqual((busy.phase, busy.result), ("registro", None))
+        self.assertEqual(self.full_state(), before)
+        reader.execute("COMMIT")
+        reader.close()
+        rest = list(steps)  # el paso siguiente la reintenta
+        self.assertNotIn(session_mod.BUSY_MESSAGE, [step.message for step in rest])
+        self.assertEqual(len(rest), 1)
+        self.assertRecorded(rest[-1].result, newer)
+
+    def test_read_only_reports_everything_and_records_it_when_writable(self) -> None:
+        """RF-008-58, RF-008-22 (plan §5.4.6): en solo lectura (o sin ``write``) se detecta
+        todo —también lo que hay que hashear— y no cambia ni un byte del proyecto ni de la
+        fuente (no se aparta nada): queda el informe con sus avisos, en español y en inglés.
+        Al abrir después en escritura, todo se vuelve a detectar y se registra."""
+        newer = self.changes()
+        for chosen, write in ((contextlib.nullcontext(), False), (self.read_only(), True)):
+            age_folders(self.project.root)
+            age_folders(self.sources)
+            with assert_source_untouched(self.project.root), \
+                    assert_source_untouched(self.sources), chosen:
+                outcome, _steps = self.check_all(registries=newer, write=write)
+        self.assertEqual((outcome.writing, outcome.recorded, outcome.cache), (False, False, None))
+        self.assertEqual([item.uid for item in outcome.interrupted], [self.other.uid])
+        (changed,) = outcome.inputs
+        self.assertEqual((changed.verdict, changed.status, changed.content_sha256),
+                         (InputVerdict.CHANGED, InputStatus.CHANGED, self.content_of(self.target)))
+        self.assertIn("res_area", [item.name for item in changed.dependents.datasets])
+        self.assertEqual({item.record.name: (item.verdict, item.operation_uid)
+                          for item in outcome.datasets},
+                         {"res_contorno": (Verdict.EDITED, None),
+                          "res_bocas": (Verdict.MISSING, None)})
+        self.assertEqual([item.path for item in outcome.orphans.found],
+                         ["rasters/res_resto.bin"])
+        self.assertEqual([item.op_type for item in outcome.algorithms], [AREA.op_type])
+        self.assertEqual([item.key for item in outcome.definitions], [DENSITY.key])
+        texts = outcome.warnings
+        for expected in (outcome.interrupted[0].text(), changed.warning,
+                         outcome.datasets[0].text(), outcome.datasets[1].text(),
+                         outcome.algorithms[0].text(), outcome.definitions[0].text):
+            self.assertIn(expected, texts)
+        self.assertEqual(len(outcome.texts("en")), len(texts))
+        self.assertEqual(self.input_row(self.record.uid)["status"], "current")
+        self.assertEqual(self.external_edits(), [])
+        outcome, _steps = self.check_all(registries=newer)
+        self.assertRecorded(outcome, newer)
+
+    def test_full_staleness_repairs_a_cache_altered_by_hand(self) -> None:
+        """RF-008-24, RF-008-58 (plan §5.4.6, paso 8): la obsolescencia completa de la
+        transacción final corrige una caché alterada a mano (una fila de menos y una de más)
+        y deja la de lo deducido; sin cambios, no escribe ninguna fila."""
+        self.qgis('UPDATE "res_contorno" SET valor = 9 WHERE codigo = ?', ("C-01",),
+                  table="res_contorno", at=EDITED_AT)
+        self.check_all()
+        self.assertCacheDeduced(None)
+        (row,) = [item for item in self.read(stale_mod.cached_rows)
+                  if item.item_uid == self.uid("res_area")]
+        self.write(lambda conn: (
+            conn.execute("DELETE FROM gb_stale WHERE item_kind = ? AND item_uid = ? AND "
+                         "cause_kind = ? AND subject_uid = ?", tuple(row)),
+            conn.execute("INSERT INTO gb_stale (item_kind, item_uid, cause_kind, subject_uid, "
+                         "since) VALUES ('dataset', ?, 'algorithm', 'res.grid', ?)",
+                         (self.uid("res_limites"), self.later()))))
+        outcome, _steps = self.check_all()
+        self.assertEqual((len(outcome.cache.added), len(outcome.cache.removed)), (1, 1))
+        self.assertCacheDeduced(None)
+        outcome, _steps = self.check_all()
+        self.assertEqual((outcome.cache.added, outcome.cache.removed),
+                         (frozenset(), frozenset()))
+
+
+class PendingTest(ChecksCase):
+    def test_check_state_keeps_pending_what_is_not_checked_yet(self) -> None:
+        """RF-008-58 (plan §5.4.5 y §5.4.6): mientras dura la comprobación, ``CheckState``
+        deja como pendiente lo que aún no ha comprobado: todo al empezar; tras el prefiltro,
+        solo lo que espera su hash o su registro (``res_contorno`` y «Limites_v1»), así que la
+        puerta espera («Comprobando el proyecto…») para lo que depende de ello y no para lo
+        demás (ni para la entrada «planos», sin cambios). Al terminar, nada queda pendiente, los
+        hashes que había pedido la puerta están hechos y la puerta ve lo registrado."""
+        for name in ("plano.dxf", "plano.txt"):
+            (self.sources / name).write_bytes(name.encode("ascii")[-3:])
+            os.utime(self.sources / name, ns=(MTIME_NS, MTIME_NS))
+        plans = self.plans()
+        self.replace(data.BOUNDARY_V2)
+        self.qgis('UPDATE "res_contorno" SET valor = 9 WHERE codigo = ?', ("C-01",),
+                  table="res_contorno", at=EDITED_AT)
+        asked = gate.PendingItem(ItemKind.DATASET, self.uid("res_area"), "res_area",
+                                 gate.PendingReason.HASHING)
+        self.state.request_hash(asked)
+        steps = checks.open_check_steps(self.project, self.registries, write=True,
+                                        pending=self.state)
+        self.assertFalse(self.state.running)
+        next(steps)
+        self.assertTrue(self.state.running)
+        for kind, uid in ((ItemKind.INPUT, self.record.uid), (ItemKind.INPUT, plans.uid),
+                          (ItemKind.DATASET, self.uid("res_area"))):
+            self.assertTrue(self.state.is_pending(kind, uid))
+        self.until(steps, lambda step: step.phase == "contenido")
+        self.assertTrue(self.state.is_pending(ItemKind.INPUT, self.record.uid))
+        self.assertFalse(self.state.is_pending(ItemKind.INPUT, plans.uid))
+        self.assertTrue(self.state.is_pending(ItemKind.DATASET, self.uid("res_contorno")))
+        for name in ("res_area", "res_limites", "res_bocas"):
+            self.assertFalse(self.state.is_pending(ItemKind.DATASET, self.uid(name)), name)
+        result = self.can_run(Use("res_contorno", "outline"))
+        self.assertIsInstance(result, gate.Pending)
+        self.assertEqual({(item.name, item.reason) for item in result.items},
+                         {("res_contorno", gate.PendingReason.CHECKING),
+                          ("Limites_v1", gate.PendingReason.CHECKING)})
+        self.assertIsNotNone(list(steps)[-1].result)
+        self.assertFalse(self.state.running)
+        self.assertEqual(self.state.requests, ())
+        self.assertEqual(len(self.external_edits()), 1)
+        self.assertBlocked(self.can_run(Use("res_contorno", "outline")),
+                           gate.BlockKind.INPUT_CHANGED)
+
+
+class JobsTest(ChecksCase):
+    def hashing(self) -> Any:
+        """Anota en ``self.hashed`` lo que se hashea en el hilo (el fichero principal)."""
+        self.hashed = []
+        real = check.read_steps
+
+        def counting(found: Any, request: Any) -> Any:
+            self.hashed.append(request.files["main"].name)
+            return real(found, request)
+
+        return mock.patch.object(check, "read_steps", counting)
+
+    def test_external_sources_are_hashed_in_jobs(self) -> None:
+        """RF-008-58, RF-008-09 (plan §5.3.3, §5.4.1 y §5.4.6; RNF-008-11): una fuente externa
+        cuyo hash no cabe en el hilo se pide a los trabajos de ``bl`` (``HashJobs``) con su
+        lector, sus ajustes y la ruta de sus ficheros, y no se lee en el hilo; mientras no
+        termina, la comprobación espera paso a paso; su resultado se registra como el del hilo.
+        Lo del proyecto nunca va a un trabajo. Sin trabajos (o si ahora no se puede lanzar
+        uno), se hashea en el hilo. Cerrar la comprobación mientras espera cancela el trabajo
+        y no registra nada."""
+        self.replace(data.BOUNDARY_V2)
+        self.qgis('UPDATE "res_contorno" SET valor = 9 WHERE codigo = ?', ("C-01",),
+                  table="res_contorno", at=EDITED_AT)
+        jobs = FakeJobs(waits=2)
+        with mock.patch.object(readers, "INLINE_LIMIT_S", 0.0), self.hashing():
+            outcome, found = self.check_all(jobs=jobs)
+        self.assertEqual(self.hashed, [])
+        (request,) = jobs.submitted
+        self.assertEqual(
+            (request.input_uid, request.name, request.reader, request.kind, list(request.files),
+             request.normalizer, request.size),
+            (self.record.uid, "Limites_v1", GPKG, "vector", ["main"],
+             self.record.normalizer, self.target.stat().st_size))
+        self.assertTrue(request.files["main"].samefile(self.target))
+        self.assertEqual(dict(request.declarations), dict(self.record.declarations))
+        self.assertEqual(dict(request.settings), dict(self.record.settings))
+        self.assertGreaterEqual(jobs.polls, 3)
+        self.assertEqual(jobs.cancelled, [])
+        self.assertGreaterEqual([step.phase for step in found].count("contenido"), 2)
+        (changed,) = outcome.inputs
+        self.assertEqual((changed.verdict, changed.content_sha256),
+                         (InputVerdict.CHANGED, self.content_of(self.target)))
+        self.assertEqual(self.input_row(self.record.uid)["status"], "changed")
+        self.assertEqual(len(self.external_edits()), 1)
+        # Sin trabajos (o si no se puede lanzar uno), en el hilo.
+        for refused in (None, FakeJobs(refuse=True)):
+            if refused is None:
+                self.third_version()
+            else:
+                self.replace(data.BOUNDARY_V2, step=40)
+            with mock.patch.object(readers, "INLINE_LIMIT_S", 0.0), self.hashing():
+                outcome, _steps = self.check_all(jobs=refused)
+            self.assertEqual(self.hashed, [SOURCE])
+            self.assertEqual(outcome.inputs[0].content_sha256, self.content_of(self.target))
+        # Cerrar la comprobación mientras espera: el trabajo se cancela y no se registra nada.
+        self.replace(data.BOUNDARY_V1_QGIS)
+        jobs = FakeJobs(waits=10**9)
+        before = self.full_state()
+        with mock.patch.object(readers, "INLINE_LIMIT_S", 0.0):
+            steps = checks.open_check_steps(self.project, self.registries, write=True,
+                                            jobs=jobs)
+            self.until(steps, lambda step: bool(jobs.submitted) and jobs.polls >= 2)
+            steps.close()
+        self.assertEqual(jobs.cancelled, [1])
+        self.assertEqual(self.full_state(), before)
+
+    def test_a_job_that_cannot_read_the_source_is_a_notice(self) -> None:
+        """RF-008-13, RF-008-58 (plan §5.3.3): un trabajo que termina sin el hash —la fuente
+        cambió mientras se copiaba, o leyó con otro lector o normalizador— deja la entrada «sin
+        leer» con el motivo (sin rutas absolutas); uno que ya no la encuentra, «no
+        localizable». Ni lo uno ni lo otro es un cambio: no se registra nada de la entrada."""
+        self.replace(data.BOUNDARY_V2)
+        other = dataclasses.replace(self.record.digest, reader="test.otro@1")
+        error = "source_changed: la fuente cambió mientras se copiaba (" + str(self.target) + ")"
+        cases = ((checks.HashResult(error=error), InputVerdict.UNREADABLE, data.BOUNDARY_V1),
+                 (checks.HashResult(other), InputVerdict.UNREADABLE, "test.otro@1"),
+                 (checks.HashResult(gone=True), InputVerdict.UNREACHABLE, None))
+        before = self.input_row(self.record.uid)
+        for result, verdict, shown in cases:
+            with self.subTest(verdict=verdict, shown=shown), \
+                    mock.patch.object(readers, "INLINE_LIMIT_S", 0.0):
+                outcome, _steps = self.check_all(jobs=FakeJobs(0, result=result))
+                (found,) = outcome.inputs
+                self.assertEqual(found.verdict, verdict)
+                notice = found.render_notice()
+                self.assertIn(notice, outcome.warnings)
+                self.assertNotIn(str(self.target.parent), notice)
+                if shown is not None:
+                    self.assertIn(shown, found.reason)
+                self.assertEqual(self.input_row(self.record.uid), before)
+
+    def test_hashes_requested_by_the_gate_are_computed_and_recorded(self) -> None:
+        """RF-008-58, RF-008-09, RF-008-21 (plan §5.4.5): lo que la puerta pidió hashear
+        después de la comprobación de apertura (``CheckState.requests``) lo calcula y lo
+        registra ``hash_requests_steps``, en una transacción, y deja de esperarse: la puerta
+        ve entonces la entrada cambiada. Lo pedido que ya no hay que hashear solo se quita."""
+        self.qgis('UPDATE "res_contorno" SET valor = 3.0', table="res_contorno", at=EDITED_AT)
+        self.replace(data.BOUNDARY_V2)
+        with mock.patch.object(gate, "HASH_LIMIT_S", 0.0):
+            self.assertIsInstance(self.can_run(Use("res_area", "area")), gate.Pending)
+        self.assertEqual({(item.item_kind, item.name) for item in self.state.requests},
+                         {(ItemKind.DATASET, "res_contorno"), (ItemKind.INPUT, "Limites_v1")})
+        self.state.request_hash(gate.PendingItem(ItemKind.DATASET, self.uid("res_area"),
+                                                 "res_area", gate.PendingReason.HASHING))
+        found = list(checks.hash_requests_steps(self.project, self.state))
+        self.assertEqual(list(dict.fromkeys(step.phase for step in found)),
+                         list(checks.REQUEST_STEPS))
+        outcome = found[-1].result
+        self.assertTrue(outcome.recorded)
+        self.assertEqual(self.state.requests, ())
+        self.assertEqual({item.record.name for item in outcome.datasets}, {"res_contorno"})
+        self.assertEqual(len(self.external_edits()), 1)
+        self.assertEqual(self.input_row(self.record.uid)["status"], "changed")
+        self.assertBlocked(self.can_run(Use("res_area", "area")), gate.BlockKind.INPUT_CHANGED)
+
+    def test_arguments(self) -> None:
+        """Plan §5.3.1: lo pendiente es un ``CheckState`` y los trabajos, algo con ``submit``,
+        ``poll`` y ``cancel``; un ``HashResult`` es un hash, un error o una fuente que ya no
+        está, solo uno. Un proyecto sin la procedencia (esquema 1) no tiene nada que
+        comprobar ni que registrar."""
+        for bad in ({"pending": "x"}, {"jobs": object()}):
+            with self.subTest(bad=bad), self.assertRaises(TypeError):
+                checks.open_check_steps(self.project, self.registries, write=True, **bad)
+        with self.assertRaises(TypeError):
+            checks.hash_requests_steps(self.project, "x")
+        with self.assertRaises(TypeError):
+            checks.hash_requests_steps(self.project, self.state, jobs=object())
+        digest = self.record.digest
+        for bad in ({}, {"digest": digest, "error": "x"}, {"error": "x", "gone": True},
+                    {"digest": "x"}):
+            with self.subTest(bad=bad), self.assertRaises((TypeError, ValueError)):
+                checks.HashResult(**bad)
+        self.assertEqual(checks.HashResult(error="sin leer").error, "sin leer")
+        before = self.full_state()
+        with mock.patch.object(type(self.project), "schema_version", property(lambda _s: 1)):
+            outcome, (only,) = self.check_all(pending=self.state)
+        self.assertEqual((only.done, outcome.recorded), (checks.PROGRESS_TOTAL, False))
+        self.assertFalse(self.state.running)
+        self.assertEqual(self.full_state(), before)
 
 
 if __name__ == "__main__":

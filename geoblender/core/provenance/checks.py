@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Comprobaciones de apertura de un proyecto, pasos 1 a 6 (spec 008; RF-008-09, RF-008-19,
-RF-008-21, RF-008-22, RF-008-24, RF-008-57, RF-008-58, RF-008-60, RF-008-62; ADR-0025 §6; plan
-008 §5.3.1 y §5.4.6).
+"""Comprobaciones de apertura de un proyecto (spec 008; RF-008-09, RF-008-19, RF-008-21,
+RF-008-22, RF-008-24, RF-008-57, RF-008-58, RF-008-60, RF-008-62; ADR-0025 §6; plan 008 §5.3.1,
+§5.4.5 y §5.4.6).
 
 Justo después de abrir un proyecto (RNF-002-02 no cambia: el proyecto ya es usable), un
-temporizador de ``bl`` avanza :func:`open_check_steps` paso a paso; ningún paso pasa de
-``budget_s`` (20 ms; el trabajo de cada uno se planea para la mitad), y cada uno da su progreso
-(«Comprobando el proyecto… 42 %»), que no retrocede:
+temporizador de ``bl`` avanza :func:`open_check_steps` paso a paso; cada paso de los seis
+primeros (:func:`survey_steps`) no pasa de ``budget_s`` (20 ms; el trabajo de cada uno se planea
+para la mitad), y cada uno da su progreso («Comprobando el proyecto… 42 %»), que no retrocede:
 
 1. **foto** (``foto``): la hora de inicio (lo escrito después no se aparta como resto), lo
    registrado —las operaciones «en curso», las entradas activas con sus ficheros, los originales
@@ -37,12 +37,32 @@ temporizador de ``bl`` avanza :func:`open_check_steps` paso a paso; ningún paso
    cuya definición cambió (RF-008-60).
 
 Estos pasos **no leen el contenido de nada y no escriben nada en la base**: lo que hay que
-hashear (las entradas, datos y originales que saltaron en el prefiltro) queda en el resultado
-(:class:`OpenCheckOutcome`) para el paso 7, y todas las escrituras —interrumpidas, entradas,
-ediciones externas, faltas, daños, eventos, «revisar» y la caché— van en la transacción final
-del paso 8 (T37). Lo único que cambia en el disco es lo que pide RF-008-22: en escritura, los
-restos se apartan en el paso 5 (su evento, en esa transacción final). En **solo lectura**,
-todo se detecta igual y no se mueve nada.
+hashear (las entradas, datos y originales que saltaron en el prefiltro) queda en su resultado
+(:class:`OpenCheckOutcome`) para el paso 7. Lo único que cambia en el disco es lo que pide
+RF-008-22: en escritura, los restos se apartan en el paso 5 (su evento, en la transacción
+final). Después:
+
+7. **contenido** (``contenido``): la **cola de hashes** de lo que saltó y de lo que la puerta
+   pidió hashear (``CheckState.requests``): lo del proyecto (datos, originales, fuentes dentro
+   del proyecto) y las fuentes externas pequeñas, en el hilo por trozos (``plan_hash``); las
+   fuentes externas grandes, en los trabajos de hash que pone ``bl`` (:class:`HashJobs`,
+   ``core_content_hash`` de la 004, T47: ``core`` no importa ``jobs``), con la comprobación
+   esperando paso a paso; sin trabajos, también en el hilo. Cerrar la comprobación cancela los
+   trabajos pendientes;
+8. **registro** (``registro``): **todas las escrituras en una sola transacción final** con
+   ``Project.try_write`` —las operaciones interrumpidas, las entradas cambiadas o que vuelven,
+   las ediciones externas, lo que falta, lo dañado, los originales, los eventos de los restos,
+   de lo ajeno, de las definiciones y de los algoritmos, «revisar» y la **obsolescencia
+   completa** de la caché (``refresh_all``, que corrige una caché alterada)—; si otro programa
+   está leyendo (QGIS), se reintenta en el paso siguiente sin perder nada (I-7). Lo que cambió
+   entre el hash y el registro no se registra: queda para la próxima (I-5).
+
+En **solo lectura** todo se detecta igual (también lo que hay que hashear) y no se escribe ni
+se mueve nada: el resultado es el informe de la sesión, que se vuelve a detectar y se registra
+al abrir después en escritura. Mientras dura, la comprobación deja en ``CheckState``
+(``pending``) como pendiente lo que aún no ha comprobado, y la puerta espera por ello
+(RF-008-58). :func:`hash_requests_steps` hace los pasos 7 y 8 de lo que la puerta pide hashear
+después.
 
 Python puro (ADR-0004); ``core.provenance`` lo reexporta al usarlo.
 """
@@ -51,15 +71,19 @@ from __future__ import annotations
 
 import ntpath
 import os
+import sqlite3
 import stat
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
+from ..content.encoder import ContentDigest
+from ..content.readers import JOB, READERS, plan_hash
+from ..datasets import registry as dataset_registry
 from ..datasets.external import (
     MAX_REASON_CHARS,
     SURVEYED_STATUSES,
@@ -69,15 +93,35 @@ from ..datasets.external import (
     OriginalFinding,
     OriginalVerdict,
     Signal,
+    _Check,
+    _hash_dataset,
+    _hash_original,
+    _Original,
+    _OriginalCheck,
+    _record_all,
+    checkable,
     probe_dataset,
 )
 from ..datasets.external import assess as assess_dataset
 from ..datasets.model import LIVE_STATUSES, RECORD_COLUMNS, DatasetRecord, DatasetStatus, Store
-from ..datasets.orphans import DATA_FOLDERS, OrphanOutcome, orphan_steps
+from ..datasets.orphans import DATA_FOLDERS, OrphanOutcome, orphan_steps, record_orphans
 from ..datasets.orphans import PHASES as ORPHAN_PHASES
 from ..datasets.tracking import TableState, table_states
+from ..errors import GeoblenderError
 from ..i18n import LANGUAGES
-from ..inputs.check import CheckMode, InputFinding, Probe, probe_input, table_changes
+from ..inputs import registry as input_registry
+from ..inputs.check import (
+    CheckMode,
+    InputFinding,
+    Probe,
+    _content_steps,
+    _shown_name,
+    dependents,
+    probe_input,
+    record_findings,
+    table_changes,
+)
+from ..inputs.check import Verdict as InputVerdict
 from ..inputs.check import assess as assess_input
 from ..inputs.model import (
     ACTIVE_STATUSES,
@@ -85,24 +129,39 @@ from ..inputs.model import (
     INPUT_COLUMNS,
     InputFileRecord,
     InputRecord,
+    InputStatus,
 )
 from ..params import DEFINITIONS, DefinitionChange, ParamDef, ParameterStore
 from ..paths import ABSOLUTE_PATH
+from ..project.events import EventKind, record_event
 from ..project.lock import decode_lock, lock_path
 from ..project.model import Progress
+from ..project.session import WriteState
+from ..timeutil import format_utc
 from .contract import parse_version
+from .gate import CheckState, PendingItem
 from .graph import installed_versions
 from .messages import render
-from .operations import OperationStatus, claimed_paths
+from .operations import ItemKind, OperationStatus, claimed_paths, interrupt_orphaned
+from .stale import CacheUpdate, refresh_all
 
 if TYPE_CHECKING:
     from ..sysinfo import SessionInfo
     from ..timeutil import Clock
     from ..userdata import UserData
 
-OPEN_CHECK_STEPS: tuple[str, ...] = ("foto", "interrumpidas", "entradas", "datos", "restos",
-                                     "versiones")
+SURVEY_STEPS: tuple[str, ...] = ("foto", "interrumpidas", "entradas", "datos", "restos",
+                                 "versiones")
+"""Los pasos 1 a 6 (:func:`survey_steps`), en su orden: no leen el contenido de nada ni escriben
+en la base."""
+HASH_STEP = "contenido"
+"""El paso 7: la cola de hashes."""
+RECORD_STEP = "registro"
+"""El paso 8: la transacción final (o, en solo lectura, el informe)."""
+OPEN_CHECK_STEPS: tuple[str, ...] = (*SURVEY_STEPS, HASH_STEP, RECORD_STEP)
 """Los pasos de la comprobación de apertura, en su orden (la fase de cada ``Progress``)."""
+REQUEST_STEPS: tuple[str, ...] = (HASH_STEP, RECORD_STEP)
+"""Los pasos de :func:`hash_requests_steps`."""
 PROGRESS_TOTAL = 1000
 """El total del progreso (``Progress.total``): lo hecho va en milésimas de toda la
 comprobación, cada paso una parte igual."""
@@ -330,23 +389,33 @@ class AlgorithmChange:
 
 @dataclass(frozen=True)
 class OpenCheckOutcome:
-    """El resultado de los pasos 1 a 6 de :func:`open_check_steps`:
+    """El resultado de la comprobación de apertura: el de los pasos 1 a 6
+    (:func:`survey_steps`) y, al final de :func:`open_check_steps`, el de los ocho, que es
+    también el informe de la sesión en solo lectura:
 
     - ``writing``: si se pudo escribir (``write`` y el proyecto en escritura al empezar);
       ``started_at_ns``, la hora de la foto (``time.time_ns()``);
     - ``interrupted``: las operaciones «en curso» de otras sesiones (RF-008-19);
-    - ``inputs``: lo concluido de las entradas sin hashearlas (sin cambios o no localizables);
-      ``input_probes``, las que saltaron en el prefiltro (su hash, en el paso 7);
-    - ``datasets``: lo concluido de los datos sin hashearlos (lo que falta, lo importado sin su
-      protección, lo que no se pudo mirar); ``dataset_probes``, los que saltaron (su hash, en el
-      paso 7); ``checked_datasets``, los uid de los comprobados (los que saltaron, no; tampoco
-      lo reclamado por una operación en curso de esta sesión); ``stale``, los uid de los que
-      Geoblender registró después de la foto (no se toman por cambiados: la próxima vez);
-    - ``originals``: los originales que faltan; ``original_probes``, los que saltaron;
-    - ``orphans``: los restos (apartados en escritura, sin su evento), lo ajeno y las capas sin
-      registrar;
+    - ``inputs``: lo concluido de las entradas (sin cambios, no localizables y, tras el paso 7,
+      lo hasheado: el mismo contenido, cambiadas —con lo que depende de ellas— o que vuelven a
+      su contenido registrado); ``input_probes``, las que saltaron en el prefiltro y esperan su
+      hash (vacío al terminar);
+    - ``datasets``: lo concluido de los datos (lo que falta, lo importado sin su protección, lo
+      que no se pudo mirar y, tras el paso 7, las ediciones externas —con su operación si se
+      registró—, lo dañado y lo que vuelve); ``dataset_probes``, los que saltaron y esperan su
+      hash (vacío al terminar); ``checked_datasets``, los uid de los comprobados (tampoco lo
+      reclamado por una operación en curso de esta sesión); ``stale``, lo que cambió mientras
+      se comprobaba (los uid de los datos que Geoblender registró después de la foto y de lo
+      que cambió entre su hash y su registro, y las rutas de esos originales): no se toma por
+      cambiado y se comprueba la próxima vez;
+    - ``originals``: los originales que faltan o tienen otra huella; ``original_probes``, los
+      que saltaron y esperan su huella (vacío al terminar);
+    - ``orphans``: los restos (apartados en escritura), lo ajeno y las capas sin registrar;
     - ``algorithms``: los tipos con un algoritmo mayor (RF-008-24); ``definitions``, los
-      parámetros cuya marca «revisar» cambia (RF-008-60).
+      parámetros cuya marca «revisar» cambia (RF-008-60; las que se marcaron, si se registró);
+    - ``recorded``: si lo encontrado quedó registrado en el proyecto (la transacción final del
+      paso 8; ``False`` en solo lectura y en los pasos 1 a 6); ``cache``, lo que hizo la
+      obsolescencia completa con la caché (``None`` si no se registró).
     """
 
     writing: bool
@@ -363,20 +432,24 @@ class OpenCheckOutcome:
     orphans: OrphanOutcome = field(default_factory=lambda: OrphanOutcome((), None, False))
     algorithms: tuple[AlgorithmChange, ...] = ()
     definitions: tuple[DefinitionChange, ...] = ()
+    recorded: bool = False
+    cache: CacheUpdate | None = None
 
     @property
     def checked_inputs(self) -> tuple[str, ...]:
-        """Los uid de las entradas comprobadas sin hashearlas."""
+        """Los uid de las entradas comprobadas."""
         return tuple(item.input_uid for item in self.inputs)
 
     def texts(self, language: str = "es") -> tuple[str, ...]:
-        """Los avisos en ``language``, en orden: las interrumpidas, las entradas no
-        localizables o que no se pueden leer, los datos y los originales que faltan o están
-        dañados, los restos y lo ajeno, los algoritmos y las definiciones (el cambio de una
-        definición, en español)."""
+        """Los avisos en ``language``, en orden: las interrumpidas, las entradas que quedan
+        cambiadas (el aviso de la spec §8), no localizables o que no se pueden leer, los datos
+        y los originales editados fuera, que faltan, dañados o con otra huella, los restos y lo
+        ajeno, los algoritmos y las definiciones (el cambio de una definición, en español)."""
         chosen = _language(language)
         found = [item.text(chosen) for item in self.interrupted]
-        found += [text for item in self.inputs if (text := item.render_notice(chosen))]
+        found += [text for item in self.inputs
+                  if (text := (item.render(chosen) if item.verdict is InputVerdict.CHANGED
+                               else item.render_notice(chosen)))]
         found += [text for item in self.datasets if (text := item.text(chosen))]
         found += [text for item in self.originals if (text := item.text(chosen))]
         found += self.orphans.texts(chosen)
@@ -388,6 +461,69 @@ class OpenCheckOutcome:
     def warnings(self) -> tuple[str, ...]:
         """Los avisos en español."""
         return self.texts("es")
+
+
+# --- Trabajos de hash (los pone ``bl``) ----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HashRequest:
+    """Lo que necesita un trabajo de hash (``core_content_hash`` de la 004, T47) para la fuente
+    externa de una entrada: la entrada (``input_uid``, ``name``), su lector registrado con su
+    versión (``reader``), su tipo (``kind``), sus declaraciones y sus ajustes, sus ficheros por
+    el papel de cada uno para su lector (``files``: la ruta donde está; el trabajo la recibe
+    por la línea de órdenes, nunca en ``request.json``), su normalizador y su tamaño en bytes
+    (``size``). Nada del proyecto llega a un trabajo (plan §5.3.3)."""
+
+    input_uid: str
+    name: str
+    reader: str
+    kind: str
+    declarations: Mapping[str, Any]
+    settings: Mapping[str, Any]
+    files: Mapping[str, Path]
+    normalizer: str
+    size: int
+
+    def __post_init__(self) -> None:
+        for name in ("declarations", "settings", "files"):
+            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
+
+
+@dataclass(frozen=True)
+class HashResult:
+    """Cómo terminó un trabajo de hash: el hash de la fuente (``digest``), por qué no se pudo
+    leer (``error``; también si la fuente cambió mientras se copiaba) o que ya no está
+    (``gone``): solo uno. :class:`TypeError` o :class:`ValueError` si no."""
+
+    digest: ContentDigest | None = None
+    error: str | None = None
+    gone: bool = False
+
+    def __post_init__(self) -> None:
+        if self.digest is not None and not isinstance(self.digest, ContentDigest):
+            raise TypeError(f"el hash de un trabajo es un ContentDigest, no {self.digest!r}")
+        if self.error is not None and not isinstance(self.error, str):
+            raise TypeError(f"el error de un trabajo es un texto, no {self.error!r}")
+        if not isinstance(self.gone, bool):
+            raise TypeError(f"«gone» es verdadero o falso, no {self.gone!r}")
+        if (self.digest is not None) + (self.error is not None) + self.gone != 1:
+            raise ValueError("un trabajo de hash termina con su hash, con un error o sin la "
+                             "fuente: solo uno")
+
+
+class HashJobs(Protocol):
+    """Los trabajos de hash de las fuentes externas grandes (``core_content_hash`` de la 004,
+    T47), que pone ``bl`` (``core`` no importa ``jobs``, ADR-0004): ``submit`` lanza uno y
+    devuelve su resguardo (``None`` si ahora no se puede: se hashea en el hilo); ``poll`` dice
+    cómo terminó (``None`` mientras sigue); ``cancel`` lo cancela (al cerrar la comprobación a
+    medias)."""
+
+    def submit(self, request: HashRequest) -> object | None: ...
+
+    def poll(self, ticket: object) -> HashResult | None: ...
+
+    def cancel(self, ticket: object) -> None: ...
 
 
 # --- Ayudas -------------------------------------------------------------------------------------
@@ -421,18 +557,25 @@ class _Pacer:
 
 
 class _Meter:
-    """El progreso de toda la comprobación, en milésimas: cada paso, una parte igual; nunca
-    retrocede."""
+    """El progreso de toda la comprobación (``steps``, sus pasos), en milésimas: cada paso, una
+    parte igual; nunca retrocede."""
 
-    def __init__(self) -> None:
+    def __init__(self, steps: tuple[str, ...], label: str = "Comprobando el proyecto…") -> None:
+        self.steps = steps
+        self.label = label
         self.done = 0
 
-    def at(self, step: int, fraction: float, result: object | None = None) -> Progress:
+    def at(self, step: int | str, fraction: float, result: object | None = None, *,
+           message: str | None = None) -> Progress:
+        """El progreso en el paso ``step`` (su orden o su nombre), con ``fraction`` de él
+        hecho; ``message`` en lugar de «Comprobando el proyecto… n %»."""
+        index = self.steps.index(step) if isinstance(step, str) else step
         share = min(max(fraction, 0.0), 1.0)
-        value = int((step + share) * PROGRESS_TOTAL / len(OPEN_CHECK_STEPS))
+        value = int((index + share) * PROGRESS_TOTAL / len(self.steps))
         self.done = max(self.done, min(value, PROGRESS_TOTAL))
-        return Progress(OPEN_CHECK_STEPS[step], self.done, PROGRESS_TOTAL,
-                        f"Comprobando el proyecto… {self.done * 100 // PROGRESS_TOTAL} %", result)
+        shown = (message if message is not None
+                 else f"{self.label} {self.done * 100 // PROGRESS_TOTAL} %")
+        return Progress(self.steps[index], self.done, PROGRESS_TOTAL, shown, result)
 
 
 def _key(rel: str) -> str:
@@ -506,21 +649,25 @@ class _Found:
     originals: list[OriginalFinding] = field(default_factory=list)
     original_probes: list[OriginalProbe] = field(default_factory=list)
     orphans: OrphanOutcome | None = None
+    # lo que se vio del contenedor de cada dato que falta o está dañado (para registrarlo solo
+    # si sigue así: I-5)
+    bases: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _Survey:
+    """Lo de los pasos 1 a 6: su resultado, la foto y lo encontrado."""
+
+    outcome: OpenCheckOutcome
+    photo: _Photo
+    found: _Found
 
 
 # --- Los pasos ----------------------------------------------------------------------------------
 
 
-def open_check_steps(project: OpenCheckProject, registries: Registries | None = None, *,
-                     write: bool, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """Los pasos 1 a 6 de la comprobación de apertura de ``project`` (véase el módulo), por
-    pasos de ``budget_s`` como mucho; cada uno es un ``core.project.model.Progress`` en la fase
-    de su paso (:data:`OPEN_CHECK_STEPS`) y el último lleva el :class:`OpenCheckOutcome` en
-    ``result``. ``registries``: lo que declara el Geoblender que lo abre (por defecto,
-    :meth:`Registries.installed`); ``write``: si se puede apartar los restos (con el proyecto
-    en escritura). No escribe nada en la base. Un proyecto sin la procedencia (esquema
-    anterior al 2) no tiene nada que comprobar. :class:`TypeError` o :class:`ValueError` (al
-    llamarla) con un argumento mal dado."""
+def _arguments(write: object, registries: object,
+               budget_s: object) -> tuple[Registries, float]:
     if not isinstance(write, bool):
         raise TypeError(f"«write» es verdadero o falso, no {write!r}")
     if registries is None:
@@ -528,31 +675,156 @@ def open_check_steps(project: OpenCheckProject, registries: Registries | None = 
     elif not isinstance(registries, Registries):
         raise TypeError(f"lo que declara el Geoblender que abre el proyecto es un Registries, "
                         f"no {registries!r}")
-    return _steps(project, registries, write and bool(project.writable), _budget(budget_s))
+    return registries, _budget(budget_s)
 
 
-def _steps(project: OpenCheckProject, registries: Registries, writing: bool,
-           budget: float) -> Iterator[Progress]:
-    meter = _Meter()
-    if (getattr(project, "header_only", False)
-            or getattr(project, "schema_version", PROVENANCE_SCHEMA) < PROVENANCE_SCHEMA):
-        meter.done = PROGRESS_TOTAL
-        yield meter.at(len(OPEN_CHECK_STEPS) - 1, 1.0,
+def _pending(value: object) -> CheckState | None:
+    if value is not None and not isinstance(value, CheckState):
+        raise TypeError(f"lo pendiente de la comprobación de apertura es un CheckState, no "
+                        f"{value!r}")
+    return value
+
+
+def _jobs(value: object) -> HashJobs | None:
+    if value is not None and not all(callable(getattr(value, name, None))
+                                     for name in ("submit", "poll", "cancel")):
+        raise TypeError(f"los trabajos de hash tienen «submit», «poll» y «cancel» (HashJobs), "
+                        f"no {value!r}")
+    return value  # type: ignore[return-value]
+
+
+def _provenance(project: OpenCheckProject) -> bool:
+    """Si el proyecto tiene la procedencia (esquema 2 o posterior, con su base)."""
+    return not (getattr(project, "header_only", False)
+                or getattr(project, "schema_version", PROVENANCE_SCHEMA) < PROVENANCE_SCHEMA)
+
+
+def survey_steps(project: OpenCheckProject, registries: Registries | None = None, *,
+                 write: bool, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """Los pasos 1 a 6 de la comprobación de apertura de ``project`` (véase el módulo), por
+    pasos de ``budget_s`` como mucho; cada uno es un ``core.project.model.Progress`` en la fase
+    de su paso (:data:`SURVEY_STEPS`) y el último lleva el :class:`OpenCheckOutcome` en
+    ``result``, con lo que hay que hashear. ``registries``: lo que declara el Geoblender que lo
+    abre (por defecto, :meth:`Registries.installed`); ``write``: si se puede apartar los restos
+    (con el proyecto en escritura). No lee el contenido de nada ni escribe nada en la base. Un
+    proyecto sin la procedencia (esquema anterior al 2) no tiene nada que comprobar.
+    :class:`TypeError` o :class:`ValueError` (al llamarla) con un argumento mal dado."""
+    chosen, budget = _arguments(write, registries, budget_s)
+    return _survey_only(project, chosen, write and bool(project.writable), budget)
+
+
+def _survey_only(project: OpenCheckProject, registries: Registries, writing: bool,
+                 budget: float) -> Iterator[Progress]:
+    meter = _Meter(SURVEY_STEPS)
+    if not _provenance(project):
+        yield meter.at(len(SURVEY_STEPS) - 1, 1.0,
                        OpenCheckOutcome(writing=writing, started_at_ns=time.time_ns()))
         return
+    survey = yield from _survey(project, registries, writing, budget, meter, None)
+    yield meter.at(len(SURVEY_STEPS) - 1, 1.0, survey.outcome)
+
+
+def open_check_steps(project: OpenCheckProject, registries: Registries | None = None, *,
+                     write: bool, pending: CheckState | None = None,
+                     jobs: HashJobs | None = None,
+                     budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """La comprobación de apertura de ``project``, sus ocho pasos (véase el módulo): cada uno
+    es un ``core.project.model.Progress`` en la fase de su paso (:data:`OPEN_CHECK_STEPS`) y el
+    último lleva el :class:`OpenCheckOutcome` en ``result`` (en solo lectura, el informe).
+    ``registries``: lo que declara el Geoblender que lo abre (por defecto,
+    :meth:`Registries.installed`); ``write``: si se puede escribir (apartar los restos y la
+    transacción final, con el proyecto en escritura); ``pending``: el ``CheckState`` del
+    proyecto, que deja como pendiente lo que aún no se ha comprobado y cuyos hashes pedidos
+    hace la cola; ``jobs``: los trabajos de hash de las fuentes externas grandes (sin ellos,
+    en el hilo); ``budget_s``: lo que dura cada paso de los seis primeros y cada trozo de un
+    hash. Cerrar el generador a medias cancela los trabajos y no registra nada. Un proyecto
+    sin la procedencia (esquema anterior al 2) no tiene nada que comprobar.
+    :class:`TypeError` o :class:`ValueError` (al llamarla) con un argumento mal dado; al
+    registrar, los rechazos de lo que registra (p. ej. ``core.operation_unregistered`` sin
+    ``core.external_edit`` registrado)."""
+    chosen, budget = _arguments(write, registries, budget_s)
+    return _open_check(project, chosen, write and bool(project.writable), budget,
+                       _pending(pending), _jobs(jobs))
+
+
+def _open_check(project: OpenCheckProject, registries: Registries, writing: bool,
+                budget: float, pending: CheckState | None,
+                jobs: HashJobs | None) -> Iterator[Progress]:
+    meter = _Meter(OPEN_CHECK_STEPS)
+    if pending is not None:
+        pending.start()
+    settlement = _Settlement(project, writing, jobs, pending, budget, meter)
+    try:
+        if not _provenance(project):
+            outcome = OpenCheckOutcome(writing=writing, started_at_ns=time.time_ns())
+        else:
+            survey = yield from _survey(project, registries, writing, budget, meter, pending)
+            settlement.add_survey(survey)
+            settlement.add_requests()
+            yield from settlement.hash_steps()
+            outcome = yield from settlement.record_steps(survey, registries)
+            settlement.release()
+    finally:
+        settlement.cancel()
+        if pending is not None:
+            pending.finish()
+    yield meter.at(RECORD_STEP, 1.0, outcome)
+
+
+def hash_requests_steps(project: OpenCheckProject, pending: CheckState, *,
+                        jobs: HashJobs | None = None,
+                        budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """Los pasos 7 y 8 (:data:`REQUEST_STEPS`) para lo que la puerta pidió hashear fuera de la
+    comprobación de apertura (``pending.requests``): la cola de hashes y una transacción
+    final con lo encontrado (en solo lectura, solo el informe); después, lo pedido deja de
+    esperarse (``CheckState.hashed``). Lo pedido que ya no hay que hashear solo se quita. El
+    último paso lleva un :class:`OpenCheckOutcome` con lo de las entradas y los datos.
+    :class:`TypeError` o :class:`ValueError` (al llamarla) con un argumento mal dado."""
+    chosen = _pending(pending)
+    if chosen is None:
+        raise TypeError("lo pedido está en el CheckState del proyecto, no en None")
+    return _requests(project, chosen, _jobs(jobs), _budget(budget_s))
+
+
+def _requests(project: OpenCheckProject, pending: CheckState, jobs: HashJobs | None,
+              budget: float) -> Iterator[Progress]:
+    meter = _Meter(REQUEST_STEPS, "Comprobando el contenido…")
+    settlement = _Settlement(project, bool(project.writable), jobs, pending, budget, meter)
+    try:
+        settlement.add_requests()
+        yield from settlement.hash_steps()
+        outcome = yield from settlement.record_steps(None, None)
+        settlement.release()
+    finally:
+        settlement.cancel()
+    yield meter.at(RECORD_STEP, 1.0, outcome)
+
+
+def _survey(project: OpenCheckProject, registries: Registries, writing: bool, budget: float,
+            meter: _Meter, pending: CheckState | None) -> Generator[Progress, None, _Survey]:
+    """Los pasos 1 a 6; lo que se comprueba sin hash deja de estar pendiente en ``pending``."""
     pacer = _Pacer(budget)
     photo = _photo(project)
     yield meter.at(0, 0.0)
     pacer.restart()
     yield from _page_steps(project, photo, pacer, meter)
     yield from _list_steps(project, photo, pacer, meter)
+    if pending is not None:
+        pending.start(inputs=[record.uid for record in photo.inputs],
+                      datasets=[record.uid for record in photo.datasets])
     yield meter.at(0, 1.0)
     found = _Found()
     found.interrupted = tuple(item for item in photo.running if item.session_uid != photo.holder)
     yield meter.at(1, 1.0)
     pacer.restart()
     yield from _input_steps(project, photo, found, pacer, meter)
+    if pending is not None:
+        pending.checked(inputs=[item.input_uid for item in found.inputs])
     yield from _dataset_steps(project, photo, found, pacer, meter)
+    if pending is not None:
+        # lo comprobado sin nada que registrar y lo que Geoblender registró después de la foto
+        pending.checked(datasets=[*(uid for uid in found.checked if uid not in found.bases),
+                                  *found.stale])
     for step in orphan_steps(project, write=writing, started_at=photo.started_at_ns,
                              budget_s=budget, record=False):
         if isinstance(step.result, OrphanOutcome):
@@ -582,7 +854,7 @@ def _steps(project: OpenCheckProject, registries: Registries, writing: bool,
         algorithms=tuple(algorithms),
         definitions=definitions,
     )
-    yield meter.at(5, 1.0, outcome)
+    return _Survey(outcome, photo, found)
 
 
 # --- 1. Foto ------------------------------------------------------------------------------------
@@ -751,12 +1023,16 @@ def _claimed_key(root: Path, record: DatasetRecord) -> str:
     return os.path.normcase(os.path.normpath(Path(root, *record.locator.split("/"))))
 
 
-def _reason(error: BaseException) -> str:
-    """Por qué no se pudo mirar: sin rutas absolutas (solo el nombre de su fichero) y no muy
-    largo."""
+def _shown(text: str) -> str:
+    """Un motivo sin rutas absolutas (solo el nombre de su fichero) y no muy largo."""
     shown = ABSOLUTE_PATH.sub(
-        lambda match: ntpath.basename(match.group(0).rstrip("\\/")) or "…", str(error))
+        lambda match: ntpath.basename(match.group(0).rstrip("\\/")) or "…", text)
     return shown if len(shown) <= MAX_REASON_CHARS else shown[: MAX_REASON_CHARS - 1] + "…"
+
+
+def _reason(error: BaseException) -> str:
+    """Por qué no se pudo mirar (como :func:`_shown`)."""
+    return _shown(str(error))
 
 
 def _listed_probe(record: DatasetRecord, seen: tuple[int, int] | None) -> DatasetProbe:
@@ -837,9 +1113,11 @@ def _dataset_steps(project: OpenCheckProject, photo: _Photo, found: _Found, pace
             elif probe.signal is Signal.MOVED:
                 found.dataset_probes.append(probe)
             else:
-                found.datasets.append(replace(assess_dataset(probe),
-                                              input_name=_input_name(photo, record)))
+                finding = replace(assess_dataset(probe), input_name=_input_name(photo, record))
+                found.datasets.append(finding)
                 found.checked.append(record.uid)
+                if finding.changed:  # falta o está dañado: se registra si sigue así
+                    found.bases[record.uid] = probe.observed
         if candidates and pacer.lap():
             yield meter.at(3, 0.95)
             pacer.restart()
@@ -916,3 +1194,398 @@ def _algorithm_steps(project: OpenCheckProject, registries: Registries,
     found.sort(key=lambda item: (item.op_type, parse_version(item.registered)))
     yield meter.at(5, 0.5)
     pacer.restart()
+
+
+# --- 7. Cola de hashes y 8. transacción final ---------------------------------------------------
+
+_RECORDED_INPUTS: tuple[InputVerdict, ...] = (InputVerdict.SAME, InputVerdict.CHANGED,
+                                              InputVerdict.RESTORED)
+"""Lo de una entrada que escribe la transacción final (lo demás no se registra)."""
+
+
+@dataclass
+class _InputHash:
+    """Una entrada en la cola de hashes: su prefiltro, lo concluido y, mientras su hash está en
+    un trabajo, su resguardo."""
+
+    probe: Probe
+    finding: InputFinding | None = None
+    ticket: object | None = None
+
+
+@dataclass(frozen=True)
+class _Written:
+    """Lo que escribió la transacción final: lo de las entradas (con lo que depende de las
+    cambiadas), lo que cambió desde que se comprobó (no se registró), lo registrado de cada
+    dato, si quedó el evento de los restos y lo ajeno, las definiciones marcadas y lo que hizo
+    la obsolescencia completa."""
+
+    inputs: tuple[InputFinding, ...]
+    late: frozenset[str]
+    datasets: Mapping[str, DatasetFinding]
+    orphans: bool
+    definitions: tuple[DefinitionChange, ...]
+    cache: CacheUpdate | None
+
+
+def _concluded(item: object) -> bool:
+    """Si un elemento de la cola ya está concluido (o queda para la próxima)."""
+    return getattr(item, "finding", None) is not None or bool(getattr(item, "stale", False))
+
+
+def _job_finding(probe: Probe, result: HashResult) -> InputFinding:
+    """El veredicto de una entrada con lo que devolvió su trabajo de hash."""
+    record = probe.record
+    if result.gone:
+        return assess_input(replace(probe, missing=_shown_name(record.files[0])))
+    digest = result.digest
+    if digest is None:
+        return assess_input(probe, error=_shown(result.error or ""))
+    if (digest.reader, digest.normalizer) != (record.reader, record.normalizer):
+        return assess_input(probe, error=(
+            f"el trabajo de hash leyó con «{digest.reader}» ({digest.normalizer}), no con "
+            f"«{record.reader}» ({record.normalizer})"))
+    return assess_input(probe, digest.content_sha256)
+
+
+class _Settlement:
+    """Los pasos 7 y 8 (véase el módulo): la cola de hashes de lo que saltó en el prefiltro y
+    de lo que pidió la puerta, y la transacción final (o, en solo lectura, el informe)."""
+
+    def __init__(self, project: OpenCheckProject, writing: bool, jobs: HashJobs | None,
+                 pending: CheckState | None, budget: float, meter: _Meter) -> None:
+        self.project = project
+        self.writing = writing
+        self.jobs = jobs
+        self.pending = pending
+        self.pacer = _Pacer(budget)
+        self.meter = meter
+        self.started_at_ns = time.time_ns()
+        self.inputs: list[_InputHash] = []
+        self.concluded: list[InputFinding] = []  # de lo pedido: lo que no se localiza
+        self.checks: list[_Check] = []
+        self.reported: list[DatasetFinding] = []  # lo que no se pudo mirar: solo se avisa
+        self.originals: list[_OriginalCheck] = []
+        self.requests: list[PendingItem] = []
+
+    # --- Lo que hay que hashear y registrar -----------------------------------------------
+
+    def add_survey(self, survey: _Survey) -> None:
+        """Lo de los pasos 1 a 6: lo que saltó en el prefiltro, a la cola; lo que falta o está
+        dañado, para registrarlo si sigue como se vio."""
+        outcome, photo, found = survey.outcome, survey.photo, survey.found
+        self.started_at_ns = outcome.started_at_ns
+        self.inputs += [_InputHash(probe) for probe in outcome.input_probes]
+        for finding in outcome.datasets:
+            uid = finding.record.uid
+            if uid in found.bases:
+                self.checks.append(_Check(finding.record, finding.input_name,
+                                          basis=found.bases[uid], finding=finding))
+            else:
+                self.reported.append(finding)
+        self.checks += [_Check(probe.record, _input_name(photo, probe.record),
+                               basis=probe.observed) for probe in outcome.dataset_probes]
+        stored = {(item.input_uid, item.ord): item for item in photo.originals}
+        for missing in outcome.originals:
+            kept = stored[(missing.input_uid, missing.ord)]
+            check = _OriginalCheck(_Original(kept.input_uid, kept.name, kept.ord, kept.path,
+                                             kept.sha256, kept.size, kept.mtime_ns))
+            check.conclude(OriginalVerdict.MISSING)
+            self.originals.append(check)
+        self.originals += [
+            _OriginalCheck(_Original(probe.input_uid, probe.name, probe.ord, probe.path,
+                                     probe.sha256, probe.size, probe.mtime_ns), seen=probe.seen)
+            for probe in outcome.original_probes
+        ]
+
+    def add_requests(self) -> None:
+        """Lo que la puerta pidió hashear (``CheckState.requests``): lo que ya está en la cola
+        va con lo suyo; lo demás se vuelve a mirar (si ya no hay que hashearlo, solo se
+        quita)."""
+        if self.pending is None:
+            return
+        self.requests = list(self.pending.requests)
+        if not self.requests:
+            return
+        inputs = {item.probe.record.uid for item in self.inputs}
+        datasets = {item.record.uid for item in self.checks}
+        with self.project.read() as conn:
+            names = {str(uid): str(name)
+                     for uid, name in conn.execute("SELECT uid, name FROM gb_input")}
+            changes = table_changes(conn)
+            for request in self.requests:
+                if request.item_kind == ItemKind.INPUT and request.uid not in inputs:
+                    inputs.add(request.uid)
+                    self._request_input(conn, request.uid, changes)
+                elif request.item_kind == ItemKind.DATASET and request.uid not in datasets:
+                    datasets.add(request.uid)
+                    self._request_dataset(conn, request.uid, names)
+
+    def _request_input(self, conn: sqlite3.Connection, uid: str,
+                       changes: Mapping[str, str | None]) -> None:
+        record = input_registry.get(conn, uid)
+        if record is None or record.uid != uid or not record.active:
+            return
+        probe = probe_input(self.project, record, mode=CheckMode.QUICK,  # type: ignore[arg-type]
+                            tables=changes)
+        if probe.needs_hash:
+            self.inputs.append(_InputHash(probe))
+        elif probe.missing is not None:
+            self.concluded.append(assess_input(probe))
+
+    def _request_dataset(self, conn: sqlite3.Connection, uid: str,
+                         names: Mapping[str, str]) -> None:
+        record = dataset_registry.get(conn, uid)
+        if record is None or record.uid != uid or not checkable(record):
+            return
+        states = table_states(conn, [record.locator]) if record.store is Store.GPKG else {}
+        try:
+            probe = probe_dataset(self.project, record, states)
+        except OSError:  # no se puede mirar: la puerta lo verá al repetir la orden
+            return
+        if probe.signal is Signal.UNCHANGED:
+            return
+        name = None if record.input_uid is None else names.get(record.input_uid,
+                                                               record.input_uid)
+        item = _Check(record, name, basis=probe.observed)
+        if probe.signal is not Signal.MOVED:  # falta o está dañado
+            item.conclude(assess_dataset(probe))
+        self.checks.append(item)
+
+    # --- 7. La cola de hashes -------------------------------------------------------------
+
+    def hash_steps(self) -> Iterator[Progress]:
+        """El paso 7: las fuentes externas grandes, a los trabajos; lo demás, en el hilo por
+        trozos mientras tanto; después, se espera a los trabajos paso a paso."""
+        work: list[object] = [
+            *(item for item in self.inputs if item.finding is None),
+            *(item for item in self.checks if not _concluded(item)),
+            *(item for item in self.originals if not _concluded(item)),
+        ]
+        total = max(len(work), 1)
+
+        def fraction() -> float:
+            return sum(1 for item in work if _concluded(item)) / total
+
+        yield self.meter.at(HASH_STEP, 0.0)
+        self.pacer.restart()
+        for item in self.inputs:
+            self._submit(item)
+        for done, item in enumerate(work):
+            if _concluded(item) or getattr(item, "ticket", None) is not None:
+                continue
+            steps: Iterator[Any]
+            if isinstance(item, _InputHash):
+                steps = self._hash_input(item, done, total)
+            elif isinstance(item, _Check):
+                steps = _hash_dataset(self.project, item, self.pacer, done, total)
+            elif isinstance(item, _OriginalCheck):
+                steps = _hash_original(self.project, item, self.pacer, done, total)
+            else:  # pragma: no cover - en la cola solo hay entradas, datos y originales
+                continue
+            for _step in steps:
+                yield self.meter.at(HASH_STEP, fraction())
+            if self.pacer.lap():
+                yield self.meter.at(HASH_STEP, fraction())
+                self.pacer.restart()
+        while True:
+            self._poll()
+            if not any(item.ticket is not None for item in self.inputs):
+                break
+            yield self.meter.at(HASH_STEP, fraction())
+            self.pacer.restart()
+
+    def _submit(self, item: _InputHash) -> None:
+        """Lanza en un trabajo el hash de la fuente de ``item`` si hay trabajos y su lector la
+        manda allí (``plan_hash``: una fuente externa grande; nada del proyecto); si no, o si
+        ahora no se puede lanzar, se hashea en el hilo."""
+        if self.jobs is None:
+            return
+        probe = item.probe
+        record = probe.record
+        found = READERS.get(record.reader)
+        if found is None:
+            return  # en el hilo, que dice por qué no se puede leer
+        size = sum(seen.size or 0 for seen in probe.observed)
+        try:
+            found.request(record.kind, record.declarations, probe.files, dict(record.settings),
+                          normalizer=record.normalizer)
+            if plan_hash(found, str(record.files[0].anchor), size) != JOB:
+                return
+        except (GeoblenderError, TypeError, ValueError):
+            return
+        ticket = self.jobs.submit(HashRequest(
+            record.uid, record.name, record.reader, record.kind, record.declarations,
+            record.settings, probe.files, record.normalizer, size))
+        if ticket is not None:
+            item.ticket = ticket
+
+    def _hash_input(self, item: _InputHash, done: int,
+                    total: int) -> Generator[Progress, None, None]:
+        """El hash de la fuente de una entrada en el hilo, por trozos."""
+        probe = item.probe
+        content, error, gone = yield from _content_steps(
+            probe, self.pacer, done, total)  # type: ignore[arg-type]
+        if gone:  # se borró mientras se leía: no localizable
+            probe = replace(probe, missing=_shown_name(probe.record.files[0]))
+        item.finding = assess_input(probe, content, error=None if gone else error)
+
+    def _poll(self) -> None:
+        """Lo que ya terminó en los trabajos."""
+        if self.jobs is None:
+            return
+        for item in self.inputs:
+            if item.ticket is None:
+                continue
+            result = self.jobs.poll(item.ticket)
+            if result is None:
+                continue
+            if not isinstance(result, HashResult):
+                raise TypeError(f"un trabajo de hash termina con un HashResult, no {result!r}")
+            item.finding = _job_finding(item.probe, result)
+            item.ticket = None
+
+    def cancel(self) -> None:
+        """Cancela los trabajos que no han terminado (al cerrar la comprobación a medias)."""
+        if self.jobs is None:
+            return
+        for item in self.inputs:
+            if item.ticket is not None:
+                ticket, item.ticket = item.ticket, None
+                self.jobs.cancel(ticket)
+
+    # --- 8. La transacción final ----------------------------------------------------------
+
+    def _hashed(self) -> list[InputFinding]:
+        return [item.finding for item in self.inputs if item.finding is not None]
+
+    def _anything(self) -> bool:
+        """Si hay algo que registrar de lo hasheado y de lo concluido."""
+        return (any(finding.verdict in _RECORDED_INPUTS for finding in self._hashed())
+                or any(item.pending for item in self.checks)
+                or any(item.pending for item in self.originals))
+
+    def _with_dependents(self, conn: sqlite3.Connection) -> tuple[InputFinding, ...]:
+        """Lo hasheado de las entradas, las cambiadas con lo que depende de ellas ahora."""
+        records = {item.probe.record.uid: item.probe.record for item in self.inputs}
+        return tuple(
+            replace(finding, dependents=dependents(conn, records[finding.input_uid]))
+            if finding.status is InputStatus.CHANGED else finding
+            for finding in self._hashed()
+        )
+
+    def record_steps(self, survey: _Survey | None,
+                     registries: Registries | None) -> Generator[Progress, None,
+                                                                 OpenCheckOutcome]:
+        """El paso 8: todo en una transacción con ``try_write``, reintentada en el paso
+        siguiente mientras otro programa lee (sin escribir nada mientras tanto); en solo
+        lectura, nada. Devuelve el resultado."""
+        yield self.meter.at(RECORD_STEP, 0.0)
+        written: _Written | None = None
+        if self.writing and self.project.writable and (survey is not None or self._anything()):
+            while True:
+                attempt = self.project.try_write(
+                    lambda conn: self._write(conn, survey, registries))
+                if attempt.state is WriteState.DONE:
+                    break
+                yield self.meter.at(RECORD_STEP, 0.5, message=attempt.message)
+            written = attempt.value
+            return self._outcome(survey, written, written.inputs)
+        if any(finding.status is InputStatus.CHANGED for finding in self._hashed()):
+            with self.project.read() as conn:
+                return self._outcome(survey, None, self._with_dependents(conn))
+        return self._outcome(survey, None, tuple(self._hashed()))
+
+    def _write(self, conn: sqlite3.Connection, survey: _Survey | None,
+               registries: Registries | None) -> _Written:
+        """La transacción final, en ``conn`` (se repite entera si hay que reintentarla)."""
+        project = self.project
+        now = format_utc(project.clock.now())
+        if survey is not None and survey.outcome.interrupted:
+            interrupt_orphaned(project, conn=conn)  # type: ignore[arg-type]
+        findings = self._with_dependents(conn)
+        _done, inputs_late = record_findings(conn, project, findings)  # type: ignore[arg-type]
+        late, datasets = _record_all(conn, project, self.checks, self.originals)
+        orphans = False
+        definitions: tuple[DefinitionChange, ...] = ()
+        cache = None
+        if survey is not None and registries is not None:
+            orphans = record_orphans(conn, project,  # type: ignore[arg-type]
+                                     survey.outcome.orphans)
+            store = ParameterStore(project)  # type: ignore[arg-type]
+            definitions = tuple(store.mark_definition_changes(conn, registries.definitions))
+            for change in definitions:
+                record_event(conn, EventKind.DEFINITION_CHANGED,
+                             change.text or render("core.definition_redeclared", key=change.key),
+                             session=project.session, at=now, entity_kind="parameter",
+                             entity_uid=change.parameter_uid,
+                             data={"key": change.key, "scope": change.scope,
+                                   "review": change.review})
+            for item in survey.outcome.algorithms:
+                record_event(conn, EventKind.ALGORITHM_CHANGED, item.text(),
+                             session=project.session, at=now,
+                             data={"op_type": item.op_type, "registered": item.registered,
+                                   "installed": item.installed,
+                                   "geoblender_version": item.geoblender_version,
+                                   "operations": item.operations, "results": item.results})
+            cache = refresh_all(conn, now=now, versions=registries.versions)
+        return _Written(findings, frozenset(late) | frozenset(inputs_late),
+                        MappingProxyType(dict(datasets)), orphans, definitions, cache)
+
+    def _outcome(self, survey: _Survey | None, written: _Written | None,
+                 hashed: Iterable[InputFinding]) -> OpenCheckOutcome:
+        """El resultado: lo de los pasos 1 a 6 con lo hasheado y lo registrado."""
+        base = (survey.outcome if survey is not None
+                else OpenCheckOutcome(writing=self.writing, started_at_ns=self.started_at_ns))
+        late = frozenset() if written is None else written.late
+        recorded = {} if written is None else written.datasets
+        stale = list(base.stale)
+        inputs = [*base.inputs, *self.concluded]
+        for finding in hashed:
+            if finding.input_uid in late:  # cambió de estado mientras se comprobaba
+                stale.append(finding.input_uid)
+            else:
+                inputs.append(finding)
+        checked = [uid for uid in base.checked_datasets if uid not in late]
+        datasets = list(self.reported)
+        for item in self.checks:
+            uid = item.record.uid
+            if item.stale or uid in late:
+                stale.append(uid)
+            elif item.finding is not None:
+                checked.append(uid)
+                finding = recorded.get(uid, item.finding)
+                if finding.verdict is not DatasetVerdict.UNCHANGED:
+                    datasets.append(finding)
+        originals: list[OriginalFinding] = []
+        for check in self.originals:
+            if check.stale or check.item.path in late:
+                stale.append(check.item.path)
+            elif (check.finding is not None
+                  and check.finding.verdict is not OriginalVerdict.UNCHANGED):
+                originals.append(check.finding)
+        orphans, definitions = base.orphans, base.definitions
+        if written is not None and survey is not None:
+            orphans = replace(base.orphans, recorded=written.orphans)
+            definitions = written.definitions
+        return replace(
+            base,
+            inputs=tuple(inputs),
+            input_probes=(),
+            datasets=tuple(datasets),
+            dataset_probes=(),
+            checked_datasets=tuple(dict.fromkeys(checked)),
+            stale=tuple(dict.fromkeys(stale)),
+            originals=tuple(originals),
+            original_probes=(),
+            orphans=orphans,
+            definitions=definitions,
+            recorded=written is not None,
+            cache=None if written is None else written.cache,
+        )
+
+    def release(self) -> None:
+        """Lo que pidió la puerta y se ha hecho deja de esperarse."""
+        if self.pending is not None:
+            for request in self.requests:
+                self.pending.hashed(request.item_kind, request.uid)

@@ -856,6 +856,13 @@ _CATALOG: tuple[Message, ...] = (
         "Geoblender {version} cambia el algoritmo de {op_type} ({registered} → {installed}): "
         "{results}",
     ),
+    # Un parámetro marcado «revisar» cuya definición registrada se vuelve a declarar: la marca
+    # se quita (el evento de la comprobación de apertura).
+    Message(
+        "core.definition_redeclared",
+        "{key}: its registered definition is declared again; it no longer needs review.",
+        "{key}: se vuelve a declarar su definición registrada; ya no hay que revisarlo.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})

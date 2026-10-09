@@ -90,6 +90,12 @@ class EventKind(Enum):
     # y uno de ellos ignorado por el usuario (RF-008-62; plan §5.4.9).
     UNREGISTERED_FOUND = "unregistered_found"
     ITEM_IGNORED = "item_ignored"
+    # Lo que la comprobación de apertura encuentra en lo que declara el Geoblender que abre el
+    # proyecto: la definición de un parámetro cambiada, que ya no se declara o que se vuelve a
+    # declarar (RF-008-60), y un algoritmo con una versión mayor que la de sus operaciones
+    # vigentes (RF-008-24).
+    DEFINITION_CHANGED = "definition_changed"
+    ALGORITHM_CHANGED = "algorithm_changed"
 
 
 @dataclass(frozen=True)

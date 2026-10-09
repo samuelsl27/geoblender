@@ -43,7 +43,11 @@
 - :mod:`.checks`: las comprobaciones de apertura por pasos medidos por tiempo
   (:func:`open_check_steps` → :class:`OpenCheckOutcome`, con lo que declara el Geoblender que
   abre el proyecto, :class:`Registries`): interrumpidas, entradas, datos y originales, restos,
-  versiones de algoritmo (:class:`AlgorithmChange`) y definiciones de parámetros.
+  versiones de algoritmo (:class:`AlgorithmChange`) y definiciones de parámetros
+  (:func:`survey_steps`, sin leer ni escribir), la cola de hashes —con los trabajos de las
+  fuentes externas grandes que pone ``bl`` (:class:`HashJobs`, :class:`HashRequest`,
+  :class:`HashResult`)— y la transacción final; y lo que la puerta pide hashear después
+  (:func:`hash_requests_steps`).
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
@@ -219,12 +223,19 @@ se importa."""
 
 CHECKS_API: tuple[str, ...] = (
     "OPEN_CHECK_STEPS",
+    "REQUEST_STEPS",
+    "SURVEY_STEPS",
     "AlgorithmChange",
+    "HashJobs",
+    "HashRequest",
+    "HashResult",
     "InterruptedOperation",
     "OpenCheckOutcome",
     "OriginalProbe",
     "Registries",
+    "hash_requests_steps",
     "open_check_steps",
+    "survey_steps",
 )
 """Lo de :mod:`.checks` que se reexporta al usarlo."""
 
@@ -278,8 +289,10 @@ __all__ = [
     "OPEN_CHECK_STEPS",
     "OPERATIONS",
     "RECOMPUTE_PHASE",
+    "REQUEST_STEPS",
     "SCOPES",
     "SCOPE_ALL",
+    "SURVEY_STEPS",
     "VIEW_STATES",
     "AlgorithmChange",
     "BlockKind",
@@ -300,6 +313,9 @@ __all__ = [
     "FigureMarks",
     "FigureRecord",
     "FigureSpec",
+    "HashJobs",
+    "HashRequest",
+    "HashResult",
     "ImporterDef",
     "IngestOutcome",
     "InputLink",
@@ -363,6 +379,7 @@ __all__ = [
     "figure_def",
     "figure_marks",
     "group_def",
+    "hash_requests_steps",
     "import_layer",
     "imported_name",
     "importer_def",
@@ -390,6 +407,7 @@ __all__ = [
     "scope_key",
     "stale_items",
     "stale_state",
+    "survey_steps",
     "unregister_figure",
     "unregister_group",
     "unregister_importer",
