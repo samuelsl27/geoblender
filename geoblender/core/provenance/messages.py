@@ -650,6 +650,48 @@ _CATALOG: tuple[Message, ...] = (
         "No se puede leer el dato «{name}» para comprobarlo ({reason}): no se ejecuta ninguna "
         "operación que lo consuma.",
     ),
+    # Comprobación de los datos del proyecto (T32; RF-008-56, RF-008-57, RF-008-53): un dato
+    # que vuelve, aceptar una edición externa con su motivo, lo que se ofrece para resolver un
+    # dato bloqueado, que falta o dañado, y un original que ya no coincide con su huella.
+    Message(
+        "core.dataset_restored",
+        "Dataset «{name}» is back in the project with its registered content: current again.",
+        "El dato «{name}» vuelve a estar en el proyecto con su contenido registrado: vigente "
+        "otra vez.",
+    ),
+    Message(
+        "core.edit_accepted",
+        "External edit of «{name}» accepted: {reason}",
+        "Edición externa de «{name}» aceptada: {reason}",
+    ),
+    Message(
+        "core.accept_edit_reason_missing",
+        "A reason is missing: accepting the external edit of «{name}» is recorded with it.",
+        "Falta el motivo: aceptar la edición externa de «{name}» queda registrado con él.",
+    ),
+    Message(
+        "core.accept_edit_not_blocked",
+        "Dataset «{name}» is not blocked by an external edit: there is no edit to accept.",
+        "El dato «{name}» no está bloqueado por una edición externa: no hay ninguna edición que "
+        "aceptar.",
+    ),
+    Message("core.offer_accept", "Accept the edit", "Aceptar la edición"),
+    Message("core.offer_recompute", "Recompute", "Recalcular"),
+    Message("core.offer_reimport", "Reimport", "Reimportar"),
+    Message(
+        "core.original_altered",
+        "The original «{file}» of input «{name}» no longer matches its fingerprint: it cannot "
+        "be used to reimport.",
+        "El original «{file}» de la entrada «{name}» ya no coincide con su huella: no sirve "
+        "para reimportar.",
+    ),
+    Message(
+        "core.original_missing",
+        "The original «{file}» of input «{name}» is missing from the project: it cannot be "
+        "used to reimport.",
+        "Falta el original «{file}» de la entrada «{name}» en el proyecto: no sirve para "
+        "reimportar.",
+    ),
     # Puerta antes de operar (T30; RF-008-10, RF-008-58): las tres salidas del aviso de una
     # entrada cambiada y la espera a la comprobación de apertura o a un hash largo.
     Message("core.choice_update", "Update", "Actualizar"),

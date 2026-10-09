@@ -77,6 +77,12 @@ class EventKind(Enum):
     EXTERNAL_EDIT = "external_edit"
     DATASET_MISSING = "dataset_missing"
     DATASET_DAMAGED = "dataset_damaged"
+    # Una edición externa aceptada con su motivo (RF-008-56), un dato que faltaba y vuelve con
+    # su contenido registrado (RF-008-57) y un original de ``originals/`` con otra huella o que
+    # falta (RF-008-53; plan §5.4.9, I-13).
+    EDIT_ACCEPTED = "edit_accepted"
+    DATASET_RESTORED = "dataset_restored"
+    ORIGINAL_ALTERED = "original_altered"
 
 
 @dataclass(frozen=True)

@@ -10,14 +10,25 @@ ADR-0025; plan 008 §5.1).
 - :mod:`.tracking`: el seguimiento de las tablas de los datos por
   ``gpkg_contents.last_change``, la huella de su SQL y sus disparadores, y la protección de lo
   importado.
-- :mod:`.external`: los datos cambiados fuera de Geoblender, dato a dato (prefiltro, veredicto
-  y registro de la edición externa, lo que falta y lo dañado), que usa la puerta antes de
-  operar (no se reexporta: ``external.assess``, ``external.record``…).
+- :mod:`.external`: los datos cambiados fuera de Geoblender: dato a dato (prefiltro, veredicto
+  y registro de la edición externa, lo que falta, lo que vuelve y lo dañado), que usa la puerta
+  antes de operar (no se reexporta: ``external.assess``, ``external.record``…), y la
+  comprobación de todos los datos y de los originales (:func:`external_check_steps`), aceptar
+  una edición (:func:`accept_edit`) y lo que se ofrece para resolver un dato (:func:`offers`).
 
-La comprobación de todos los datos y los restos llegan con las tareas siguientes (plan 008
-§5.3.1).
+Los restos llegan con las tareas siguientes (plan 008 §5.3.1).
 """
 
+from .external import (
+    ExternalOutcome,
+    Offer,
+    accept_edit,
+    external_check_steps,
+    mark_missing,
+    offers,
+    original_usable,
+    restore,
+)
 from .model import (
     DATASET_KINDS,
     FILE_STORES,
@@ -56,14 +67,22 @@ __all__ = [
     "DatasetRecord",
     "DatasetSpec",
     "DatasetStatus",
+    "ExternalOutcome",
+    "Offer",
     "Store",
     "TableState",
+    "accept_edit",
     "content_digest",
     "ensure_triggers",
+    "external_check_steps",
     "get",
+    "mark_missing",
+    "offers",
+    "original_usable",
     "protect_immutable",
     "protection_trigger_names",
     "register_dataset",
+    "restore",
     "set_content",
     "set_status",
     "spec_of",
