@@ -83,6 +83,9 @@ class EventKind(Enum):
     EDIT_ACCEPTED = "edit_accepted"
     DATASET_RESTORED = "dataset_restored"
     ORIGINAL_ALTERED = "original_altered"
+    # Restos de operaciones interrumpidas apartados a ``orphans/`` al abrir el proyecto
+    # (RF-008-22; D-19 de la spec; plan §5.2.2).
+    ORPHANS_MOVED = "orphans_moved"
 
 
 @dataclass(frozen=True)

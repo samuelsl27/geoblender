@@ -15,8 +15,11 @@ ADR-0025; plan 008 §5.1).
   antes de operar (no se reexporta: ``external.assess``, ``external.record``…), y la
   comprobación de todos los datos y de los originales (:func:`external_check_steps`), aceptar
   una edición (:func:`accept_edit`) y lo que se ofrece para resolver un dato (:func:`offers`).
+- :mod:`.orphans`: los restos de operaciones interrumpidas en ``rasters/``, ``meshes/`` y
+  ``originals/``, apartados a ``orphans/`` al abrir el proyecto (:func:`orphan_steps`,
+  RF-008-22).
 
-Los restos llegan con las tareas siguientes (plan 008 §5.3.1).
+Los ficheros ajenos y las capas sin registrar llegan con la tarea siguiente (plan 008 §5.3.1).
 """
 
 from .external import (
@@ -39,6 +42,7 @@ from .model import (
     DatasetStatus,
     Store,
 )
+from .orphans import Orphan, OrphanOutcome, OrphanState, orphan_steps
 from .registry import (
     content_digest,
     get,
@@ -69,6 +73,9 @@ __all__ = [
     "DatasetStatus",
     "ExternalOutcome",
     "Offer",
+    "Orphan",
+    "OrphanOutcome",
+    "OrphanState",
     "Store",
     "TableState",
     "accept_edit",
@@ -79,6 +86,7 @@ __all__ = [
     "mark_missing",
     "offers",
     "original_usable",
+    "orphan_steps",
     "protect_immutable",
     "protection_trigger_names",
     "register_dataset",

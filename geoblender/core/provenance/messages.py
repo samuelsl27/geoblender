@@ -692,6 +692,38 @@ _CATALOG: tuple[Message, ...] = (
         "Falta el original «{file}» de la entrada «{name}» en el proyecto: no sirve para "
         "reimportar.",
     ),
+    # Restos de operaciones interrumpidas (T33; RF-008-22): apartados a ``orphans/``, abiertos
+    # en otro programa o que no se pudieron apartar (se reintenta al abrir otra vez) y, en
+    # solo lectura, solo el aviso.
+    Message(
+        "core.orphans_moved",
+        "Leftovers of interrupted operations set aside in «{folder}» (nothing is deleted): "
+        "{files}.",
+        "Restos de operaciones interrumpidas apartados a «{folder}» (no se borra nada): "
+        "{files}.",
+    ),
+    Message(
+        "core.orphans_locked",
+        "Leftovers open in another program, not set aside: {files}. It will be tried again "
+        "the next time the project is opened.",
+        "Restos abiertos en otro programa, sin apartar: {files}. Se reintentará al abrir el "
+        "proyecto la próxima vez.",
+    ),
+    Message(
+        "core.orphans_failed",
+        "Leftovers that could not be set aside: {files}. It will be tried again the next time "
+        "the project is opened.",
+        "Restos que no se pudieron apartar: {files}. Se reintentará al abrir el proyecto la "
+        "próxima vez.",
+    ),
+    Message(
+        "core.orphans_found",
+        "Leftovers of interrupted operations in the project: {files}. Read-only: they are set "
+        "aside when the project is opened for writing.",
+        "Restos de operaciones interrumpidas en el proyecto: {files}. En solo lectura no se "
+        "apartan: se apartarán al abrirlo en escritura.",
+    ),
+    Message("core.orphans_more", "and {count} more", "y {count} más"),
     # Puerta antes de operar (T30; RF-008-10, RF-008-58): las tres salidas del aviso de una
     # entrada cambiada y la espera a la comprobación de apertura o a un hash largo.
     Message("core.choice_update", "Update", "Actualizar"),
