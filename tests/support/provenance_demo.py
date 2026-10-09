@@ -23,7 +23,9 @@ La cadena (todo en tablas de ``project.gpkg``, sin ficheros):
 - ``demo.bench_years``: años de cada banco = tonelaje del banco / producción
   ``demo.production`` (t/año, HIPÓTESIS por defecto) → ``demo_bench_years`` y una cifra
   ``demo.bench_years`` (año) por banco. El «volumen por banco» del plan va en toneladas para
-  que el cociente entre t/año dé años;
+  que el cociente entre t/año dé años. También como trabajo de la 004 (T41):
+  :meth:`Demo.bench_years_job` la registra «en curso» con el ejecutor del trabajo y
+  :meth:`Demo.ingest_bench_years` la incorpora (``ingest_job``) con la producción que leyó;
 - el grupo acoplado ``demo.stockpiles``: ``demo.detect_stockpiles`` (las marcas con los años
   de su banco → ``demo_stockpile_candidates``) y ``demo.filter_stockpiles`` (las de bancos con
   al menos :data:`MIN_YEARS` años, con su volumen esponjado = volumen en banco × K
@@ -423,6 +425,38 @@ class Demo:
         return self._run(project, BENCH_YEARS, inputs=self.uses(BENCH_YEARS),
                          params=(PRODUCTION,))
 
+    def bench_years_job(self, project: Any, *, executor: str = "job_thread") -> Any:
+        """``demo.bench_years`` como trabajo de la 004 (plan 008 §7.1): la registra «en curso»
+        con el ejecutor del trabajo (``job_thread`` o ``job_process``) y lo que lee al empezar
+        (los bancos y la producción vigentes), y devuelve su ``OperationHandle``. El trabajo se
+        lanza con su ``uid`` (el ``operation_uid`` de la petición; en las pruebas, el
+        autodiagnóstico de la 004 hace de cálculo) y se incorpora con
+        :meth:`ingest_bench_years`."""
+        if not self._active:
+            raise RuntimeError("la demostración no está registrada (register)")
+        operations = self.module("core.provenance.operations")
+        return operations.begin_operation(project, BENCH_YEARS, settings={},
+                                          inputs=list(self.uses(BENCH_YEARS)),
+                                          params=[PRODUCTION], executor=executor)
+
+    def ingest_bench_years(self, project: Any, handle: Any, outcome: Any) -> Any:
+        """Incorpora a la operación ``handle`` de :meth:`bench_years_job` su trabajo terminado
+        (``outcome``, el ``JobOutcome`` de ``jobs.ingest.job_outcome``) con
+        ``core.provenance.operations.ingest_job``: los años de cada banco con la producción que
+        leyó la operación al empezar (la del trabajo), en ``demo_bench_years`` y sus cifras.
+        Devuelve su ``IngestOutcome``: obsoleta, con la causa, si lo que leyó cambió mientras
+        corría."""
+        operations = self.module("core.provenance.operations")
+        with project.read() as conn:
+            rows = self._years_rows(conn, handle)
+        outputs, found = self._years_results(rows)
+
+        def write(conn: sqlite3.Connection) -> list[Any]:
+            self._replace(conn, YEARS_TABLE, rows)
+            return outputs
+
+        return operations.ingest_job(project, handle, outcome, write, figures=found)
+
     def stockpiles(self, project: Any, *, min_years: float = MIN_YEARS) -> tuple[Any, Any]:
         """El grupo ``demo.stockpiles``: detectar y filtrar los acopios, en la misma
         ejecución del grupo; devuelve las dos operaciones."""
@@ -597,21 +631,30 @@ class Demo:
                 parts.extend(-_ring_area(hole.tolist()) for hole in holes)
         return math.fsum(parts)
 
-    def _bench_years(self, handle: Any) -> None:
+    def _years_rows(self, conn: sqlite3.Connection,
+                    handle: Any) -> list[tuple[str, float, float]]:
+        """Banco, tonelaje y años de cada banco con la producción que leyó ``handle``."""
         units = self.module("core.units")
-        figures = self.module("core.provenance.figures")
         param = self._param(handle, PRODUCTION)
         production = units.convert(param.value, param.unit, "t/yr")
+        record = self._locator(conn, handle, "benches")
+        return [(bench, tonnes, tonnes / production) for bench, tonnes in conn.execute(
+            f'SELECT bench, tonnage_t FROM "{record.locator}" ORDER BY fid')]
+
+    def _years_results(self, rows: Sequence[tuple[str, float, float]]) -> tuple[list[Any],
+                                                                               list[Any]]:
+        """Las salidas y las cifras de los años por banco ``rows``."""
+        figures = self.module("core.provenance.figures")
+        return ([self._spec(YEARS_TABLE, "bench_years")],
+                [figures.FigureSpec(YEARS_FIGURE, years, "yr", scope={"bench": bench})
+                 for bench, _tonnes, years in rows])
+
+    def _bench_years(self, handle: Any) -> None:
         with handle.project.write_transaction() as conn:
-            record = self._locator(conn, handle, "benches")
-            rows = [(bench, tonnes, tonnes / production) for bench, tonnes in conn.execute(
-                f'SELECT bench, tonnage_t FROM "{record.locator}" ORDER BY fid')]
+            rows = self._years_rows(conn, handle)
             self._replace(conn, YEARS_TABLE, rows)
-            handle.complete(
-                conn, outputs=[self._spec(YEARS_TABLE, "bench_years")],
-                figures=[figures.FigureSpec(YEARS_FIGURE, years, "yr", scope={"bench": bench})
-                         for bench, _tonnes, years in rows],
-            )
+            outputs, found = self._years_results(rows)
+            handle.complete(conn, outputs=outputs, figures=found)
 
     def _detect(self, handle: Any) -> None:
         with handle.project.write_transaction() as conn:

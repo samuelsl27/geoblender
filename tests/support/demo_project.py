@@ -16,6 +16,9 @@ carpeta temporal de ruta corta que se borra al terminar:
   fichero de esos datos en su lugar (el cliente entrega otra versión con el mismo nombre);
 - ``u/``: los datos de usuario de la sesión.
 
+:meth:`DemoProjectTestCase.chain` recorre la cadena entera de la demostración (T41) y
+:meth:`DemoProjectTestCase.obsolete` dice qué deja obsoleto la caché del proyecto.
+
 La demostración se registra antes de crear el proyecto y se quita al terminar, y la prueba
 comprueba entonces que el proceso queda como estaba (:func:`process_state`).
 
@@ -31,6 +34,7 @@ import sqlite3
 import sys
 import unittest
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +57,25 @@ SESSION = make_session()
 """La sesión sintética de las pruebas (equipo «PC-PRUEBA-A», usuario «prueba»)."""
 REL_TOL = 1e-9
 """La tolerancia relativa de las cifras de referencia de la demostración (plan 008 §7)."""
+
+
+@dataclass(frozen=True)
+class Chain:
+    """Las operaciones de la cadena entera de la demostración (:meth:`DemoProjectTestCase.chain`):
+    la importación del límite (su ``LayerImport``) y las demás (su ``OperationHandle``)."""
+
+    boundary: Any
+    area: Any
+    digitize: Any
+    years: Any
+    detect: Any
+    filter: Any
+    balance: Any
+
+    @property
+    def operations(self) -> tuple[Any, ...]:
+        """Las operaciones de la demostración, en su orden (sin la importación)."""
+        return (self.area, self.digitize, self.years, self.detect, self.filter, self.balance)
 
 
 def process_state() -> tuple[Any, ...]:
@@ -122,6 +145,27 @@ class DemoProjectTestCase(unittest.TestCase):
         self.project = open_mod.open_project(self.project.root, SESSION, self.userdata,
                                              clock=self.clock).project
         return self.project
+
+    def chain(self) -> Chain:
+        """La cadena entera de la demostración, un paso por minuto: ``fuentes/Limites_v1.gpkg``
+        importado y su área, los bancos y las marcas, los años por banco, los dos acopios
+        acoplados y el balance (:class:`Chain`)."""
+        boundary = self.run_step(lambda: self.demo.import_boundary(self.project, self.source))
+        area = self.run_step(lambda: self.demo.area(self.project, boundary.dataset.name))
+        digitize = self.run_step(lambda: self.demo.digitize(self.project))
+        years = self.run_step(lambda: self.demo.bench_years(self.project))
+        detect, kept = self.run_step(lambda: self.demo.stockpiles(self.project))
+        balance = self.run_step(lambda: self.demo.balance(self.project))
+        return Chain(boundary, area, digitize, years, detect, kept, balance)
+
+    def obsolete(self) -> set[tuple[str, str]]:
+        """Lo obsoleto según la caché del proyecto (``gb_stale``), sin la historia (las
+        operaciones sustituidas, que la caché también guarda): la clase y el uid de cada
+        operación vigente y cada dato vivo con alguna causa."""
+        return self.read(lambda conn: {(item_kind, uid) for item_kind, uid in conn.execute(
+            "SELECT DISTINCT s.item_kind, s.item_uid FROM gb_stale AS s "
+            "LEFT JOIN gb_operation AS o ON s.item_kind = 'operation' AND o.uid = s.item_uid "
+            "WHERE s.item_kind <> 'operation' OR o.superseded_by IS NULL")})
 
     # --- Cifras -----------------------------------------------------------------------------
 

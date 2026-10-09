@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Regresiones de Silvestre de la procedencia, primera parte (spec 008, T40; plan 008 §7;
-Silvestre 00, §4.5): CE-008-01, CE-008-03 y CE-008-05. La segunda parte (CE-008-02, 09 y 10) es
-de T41.
+Silvestre 00, §4.5): CE-008-01, CE-008-03 y CE-008-05. La segunda parte (CE-008-02, 09 y 10, de
+T41) está en ``test_silvestre_regresiones_2.py``.
 
 Cada prueba recorre la demostración de la procedencia (``tests.support.provenance_demo``) sobre
 un proyecto real en disco (``tests.support.demo_project``) con las fuentes sintéticas de
