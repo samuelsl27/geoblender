@@ -24,17 +24,15 @@ import dataclasses
 import math
 import shutil
 import sqlite3
-import sys
 import unittest
-from collections.abc import Callable
 from typing import Any
 from unittest import mock
 
 from tests.support import provenance_data as data
 from tests.support import provenance_demo as demo_support
-from tests.support.core_fixtures import FakeClock, make_session, make_settings, project_tmp
-from tests.support.package import PACKAGE_NAME, import_geoblender
-from tests.support.provenance_contract import registered, snapshot
+from tests.support.demo_project import DemoProjectTestCase, process_state
+from tests.support.package import import_geoblender
+from tests.support.provenance_contract import registered
 from tests.support.provenance_readers import registered as readers_registered
 from tests.support.repo import EXT, ROOT
 
@@ -50,10 +48,7 @@ builtin = import_geoblender("core.content.builtin")
 catalog = import_geoblender("core.catalog")
 schema = import_geoblender("core.catalog.schema")
 i18n = import_geoblender("core.i18n")
-create = import_geoblender("core.project.create")
-userdata_mod = import_geoblender("core.userdata")
 
-SESSION = make_session()
 SCRIPT = ROOT / "tools" / "inblender" / "provenance_demo.py"
 SUPPORT = ROOT / "tests" / "support" / "provenance_demo.py"
 SCRIPT_IDNAMES = (
@@ -80,19 +75,7 @@ DEMO_FIGURES = {
 }
 UPDATE_REASON = "La propiedad entrega el límite redibujado"
 PRODUCTION_REASON = "Plan de labores revisado"
-REL_TOL = 1e-9  # tolerancia relativa de las cifras de referencia (plan 008 §7)
 DONE = recompute.UnitStatus.DONE
-
-
-def _state() -> tuple[Any, ...]:
-    """Lo que la demostración puede tocar del proceso: los cuatro registros de la procedencia,
-    las definiciones de parámetros, los lectores, la lista de códigos de módulo que ve cada
-    módulo de Geoblender y las traducciones instaladas."""
-    prefix = f"{PACKAGE_NAME}."
-    codes = {name: module.MODULE_CODES for name, module in sorted(sys.modules.items())
-             if name.startswith(prefix) and hasattr(module, "MODULE_CODES")}
-    return (snapshot(), dict(params.DEFINITIONS), dict(readers.READERS), codes,
-            dict(i18n._STATE.installed))
 
 
 def _rows(conn: sqlite3.Connection, table: str, columns: str) -> list[tuple[Any, ...]]:
@@ -108,7 +91,7 @@ class DemoRegistrationTest(unittest.TestCase):
         su importador y sus lectores); al quitarla, todo queda como estaba (también los
         códigos de módulo: ``demo.*`` se vuelve a rechazar), y lo que ``core`` ya tenía
         registrado sigue igual."""
-        before = _state()
+        before = process_state()
         self.assertNotIn("demo", schema.MODULE_CODES)
         demo = demo_support.Demo()
         demo.register()
@@ -138,20 +121,20 @@ class DemoRegistrationTest(unittest.TestCase):
                 demo.register()
         finally:
             demo.unregister()
-        self.assertEqual(_state(), before)
+        self.assertEqual(process_state(), before)
         with self.assertRaises(ValueError):
             contract.OperationDef("demo.area", "1.0", "demo", "Demo boundary area", False)
         demo.unregister()  # idempotente
-        self.assertEqual(_state(), before)
+        self.assertEqual(process_state(), before)
 
         with registered(*contract.CORE_OPERATIONS), registered(*importer.CORE_IMPORTERS), \
                 readers_registered(*builtin.CONTENT_READERS):
-            held = _state()
+            held = process_state()
             with demo_support.Demo().registered():
                 self.assertIs(contract.OPERATIONS["core.import_layer"],
                               held[0][0]["core.import_layer"])
-            self.assertEqual(_state(), held)
-        self.assertEqual(_state(), before)
+            self.assertEqual(process_state(), held)
+        self.assertEqual(process_state(), before)
 
         # Lo que registró y otro sustituyó después (bl, al registrarse) no lo quita.
         demo = demo_support.Demo()
@@ -162,73 +145,25 @@ class DemoRegistrationTest(unittest.TestCase):
             contract.register_operation(replacement)
         self.assertIs(contract.OPERATIONS.get("core.import_layer"), replacement)
         contract.unregister_operation("core.import_layer")
-        self.assertEqual(_state(), before)
+        self.assertEqual(process_state(), before)
 
     def test_failed_registration_leaves_nothing(self) -> None:
         """RF-008-17: si un registro falla a medias (el grupo), la demostración quita lo que
         ya había registrado y deja pasar el error."""
-        before = _state()
+        before = process_state()
         demo = demo_support.Demo()
         with mock.patch.object(contract, "register_group",
                                side_effect=ValueError("fallo de prueba")), \
                 self.assertRaisesRegex(ValueError, "fallo de prueba"):
             demo.register()
-        self.assertEqual(_state(), before)
+        self.assertEqual(process_state(), before)
 
 
-class DemoCase(unittest.TestCase):
+class DemoCase(DemoProjectTestCase):
     """Un proyecto nuevo por prueba con la demostración registrada y las fuentes de prueba en
-    ``fuentes/``, junto a él."""
+    ``fuentes/``, junto a él (``tests.support.demo_project``)."""
 
-    def setUp(self) -> None:
-        before = _state()
-        self.addCleanup(lambda: self.assertEqual(_state(), before))
-        self.demo = demo_support.Demo()
-        self.enterContext(self.demo.registered())
-        tmp = self.enterContext(project_tmp("gb-t39-"))
-        parent = tmp / "proyectos"
-        parent.mkdir()
-        self.sources = tmp / "fuentes"
-        self.sources.mkdir()
-        self.source = self.sources / data.BOUNDARY_V1
-        shutil.copyfile(data.DATA_DIR / data.BOUNDARY_V1, self.source)
-        self.clock = FakeClock()
-        self.project = create.create_project(
-            parent, make_settings(), SESSION, userdata_mod.UserData(tmp / "u"), clock=self.clock
-        ).project
-        self.addCleanup(self.project.close)
-
-    # --- Ayudas -----------------------------------------------------------------------------
-
-    def run_step(self, work: Callable[[], Any]) -> Any:
-        """Un paso de la demostración y un minuto más en el reloj."""
-        result = work()
-        self.clock.advance(minutes=1)
-        return result
-
-    def read(self, work: Callable[[sqlite3.Connection], Any]) -> Any:
-        with self.project.read() as conn:
-            return work(conn)
-
-    def figures_of(self, operation_uid: str) -> list[Any]:
-        found, _warnings = self.demo.figures(self.project, operation_uid)
-        self.assertTrue(all(isinstance(figure, figures.FigureRecord) for figure in found))
-        return found
-
-    def years(self, operation_uid: str) -> dict[str, float]:
-        """Los años por banco que registró la operación, por banco."""
-        return {figure.scope["bench"]: figure.value for figure in self.figures_of(operation_uid)}
-
-    def recompute_all(self) -> Any:
-        progress = list(recompute.recompute_steps(self.project))
-        outcome = progress[-1].result
-        self.assertIsInstance(outcome, recompute.RecomputeOutcome)
-        self.clock.advance(minutes=1)
-        return outcome
-
-    def assertClose(self, value: float, expected: float) -> None:
-        self.assertTrue(math.isclose(value, expected, rel_tol=REL_TOL),
-                        f"{value!r} no es {expected!r} (tolerancia relativa {REL_TOL})")
+    tmp_prefix = "gb-t39-"
 
 
 class DemoOperationsTest(DemoCase):

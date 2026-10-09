@@ -20,7 +20,8 @@ mismo SQLite y el mismo catálogo de CRS), las fuentes de prueba de
 
 :func:`make_wal_variant` deja en una carpeta temporal una copia de ``Limites_v1.gpkg`` en
 WAL con una edición pendiente en su ``-wal`` (la de v2: P-02 con el vértice movido y el
-``last_change`` de v2), como la deja QGIS al editar; no se versiona.
+``last_change`` de v2), como la deja QGIS al editar; no se versiona. Sus dos pasos sirven
+también sueltos, sobre una fuente ya registrada: :func:`to_wal` y :func:`edit_in_wal`.
 
 Para regenerar los datos y ver la tabla del ``README.md``, desde la raíz del repositorio
 de código y con el Python de Blender: ``-B -s -X utf8 -m tests.support.provenance_data``.
@@ -289,24 +290,25 @@ class WalVariant:
     main_mtime_ns: int
 
 
-def make_wal_variant(tmp: Path, source: Path | None = None) -> WalVariant:
-    """Copia ``Limites_v1.gpkg`` (o ``source``) en la carpeta temporal ``tmp``, la pasa a
-    WAL y confirma en su ``-wal`` la edición de v2 sin volcarla al principal (como QGIS
-    con la capa editada y guardada): la cabecera queda en WAL, el ``-wal`` (y el ``-shm``)
-    junto a ella y el principal con el tamaño y la fecha de antes de editar."""
-    target = Path(tmp) / BOUNDARY_V1
-    _remove(target)
-    shutil.copyfile(source or DATA_DIR / BOUNDARY_V1, target)
-    conn = sqlite3.connect(target, isolation_level=None)
+def to_wal(path: Path) -> None:
+    """Pasa el GeoPackage ``path`` a WAL (como QGIS al abrirlo para editar) y lo cierra: la
+    cabecera queda en WAL y, al cerrar la última conexión, sin ``-wal`` ni ``-shm``."""
+    conn = sqlite3.connect(path, isolation_level=None)
     try:
         mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
     finally:
         conn.close()  # la última conexión vuelca el WAL y lo borra
     if str(mode).lower() != "wal":
         raise RuntimeError(f"la copia no ha pasado a WAL (sigue en «{mode}»)")
-    stat = target.stat()
+
+
+def edit_in_wal(path: Path) -> Path:
+    """Confirma en el ``-wal`` del GeoPackage ``path`` (en WAL, :func:`to_wal`) la edición de
+    v2 —P-02 con el vértice movido y el ``last_change`` de v2— sin volcarla al principal, que
+    conserva su tamaño y su fecha (como QGIS con la capa editada y guardada); devuelve la ruta
+    del ``-wal``, que queda junto a él con el ``-shm``."""
     moved = {code: ring for code, _kind, ring in PARCELS_V2}[MOVED_PARCEL]
-    conn = sqlite3.connect(target, isolation_level=None)
+    conn = sqlite3.connect(path, isolation_level=None)
     try:
         # Sin volcado al cerrar: la edición se queda en el -wal (Python ≥ 3.12).
         conn.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
@@ -319,7 +321,21 @@ def make_wal_variant(tmp: Path, source: Path | None = None) -> WalVariant:
         conn.execute("COMMIT")
     finally:
         conn.close()
-    return WalVariant(target, Path(f"{target}-wal"), stat.st_size, stat.st_mtime_ns)
+    return Path(f"{path}-wal")
+
+
+def make_wal_variant(tmp: Path, source: Path | None = None) -> WalVariant:
+    """Copia ``Limites_v1.gpkg`` (o ``source``) en la carpeta temporal ``tmp``, la pasa a
+    WAL y confirma en su ``-wal`` la edición de v2 sin volcarla al principal (como QGIS
+    con la capa editada y guardada): la cabecera queda en WAL, el ``-wal`` (y el ``-shm``)
+    junto a ella y el principal con el tamaño y la fecha de antes de editar."""
+    target = Path(tmp) / BOUNDARY_V1
+    _remove(target)
+    shutil.copyfile(source or DATA_DIR / BOUNDARY_V1, target)
+    to_wal(target)
+    stat = target.stat()
+    wal = edit_in_wal(target)
+    return WalVariant(target, wal, stat.st_size, stat.st_mtime_ns)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
