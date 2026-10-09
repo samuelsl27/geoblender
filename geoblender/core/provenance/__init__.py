@@ -36,14 +36,18 @@
   «Actualizar» una entrada con el importador de su lector (:func:`reimport_input`; el de
   ``core``, :data:`CORE_IMPORTERS`), que pide los ajustes que ya no sirven
   (:class:`SettingsNeeded`, con su :class:`ReimportRequest`).
+- :mod:`.lineage`: la procedencia de una cifra, un dato o una operación hasta sus entradas
+  (``lineage.lineage`` → :class:`LineageTree`), las marcas de las cifras (:func:`figure_marks` →
+  :class:`FigureMarks`), la cifra vigente de una clave y un ámbito (:func:`current_figure`) y
+  cómo se presenta lo que se muestra (:func:`result_state` → :class:`ResultStatus`).
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
 ``core.project.schema`` importa ``core.provenance.schema``, que pasa por este fichero.
 
 Por lo mismo, lo de :mod:`.operations`, :mod:`.figures`, :mod:`.graph`, :mod:`.stale`,
-:mod:`.recompute`, :mod:`.gate` y :mod:`.importer` (que traen ``core.datasets``,
-``core.content``, ``core.params`` y ``core.inputs``) se reexporta
+:mod:`.recompute`, :mod:`.gate`, :mod:`.importer` y :mod:`.lineage` (que traen
+``core.datasets``, ``core.content``, ``core.params`` y ``core.inputs``) se reexporta
 **al usarlo** (``__getattr__``, PEP 562), no al importar el paquete: así abrir un proyecto no
 carga ni compila esos módulos (las pruebas de Blender rehabilitan la extensión muchas veces
 desde cero, con ``-B``).
@@ -187,6 +191,28 @@ IMPORTER_API: tuple[str, ...] = (
 )
 """Lo de :mod:`.importer` que se reexporta al usarlo."""
 
+LINEAGE_API: tuple[str, ...] = (
+    "VIEW_STATES",
+    "DatasetLink",
+    "FigureMarks",
+    "InputLink",
+    "InputUse",
+    "LineageKind",
+    "LineageRow",
+    "LineageTree",
+    "Mark",
+    "OperationLink",
+    "ParameterLink",
+    "ResultState",
+    "ResultStatus",
+    "current_figure",
+    "figure_marks",
+    "result_state",
+)
+"""Lo de :mod:`.lineage` que se reexporta al usarlo. Su función ``lineage`` no: es el nombre
+del módulo (``core.provenance.lineage.lineage``), que el paquete tiene como atributo en cuanto
+se importa."""
+
 
 def __getattr__(name: str) -> Any:
     if name in OPERATIONS_API:
@@ -203,6 +229,8 @@ def __getattr__(name: str) -> Any:
         from . import gate as source
     elif name in IMPORTER_API:
         from . import importer as source
+    elif name in LINEAGE_API:
+        from . import lineage as source
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(source, name)
@@ -212,7 +240,7 @@ def __getattr__(name: str) -> Any:
 
 def __dir__() -> list[str]:
     return sorted({*globals(), *OPERATIONS_API, *FIGURES_API, *GRAPH_API, *STALE_API,
-                   *RECOMPUTE_API, *GATE_API, *IMPORTER_API})
+                   *RECOMPUTE_API, *GATE_API, *IMPORTER_API, *LINEAGE_API})
 
 
 __all__ = [
@@ -234,6 +262,7 @@ __all__ = [
     "RECOMPUTE_PHASE",
     "SCOPES",
     "SCOPE_ALL",
+    "VIEW_STATES",
     "BlockKind",
     "BlockReason",
     "Blocked",
@@ -243,25 +272,35 @@ __all__ = [
     "CheckState",
     "Choice",
     "Consumed",
-    "CoupledGroupDef",
     "Counts",
+    "CoupledGroupDef",
+    "DatasetLink",
     "Divergence",
     "Executor",
     "FigureDef",
+    "FigureMarks",
     "FigureRecord",
     "FigureSpec",
     "ImporterDef",
     "IngestOutcome",
-    "LayerImport",
+    "InputLink",
+    "InputUse",
     "ItemKind",
     "JobOutcome",
+    "LayerImport",
+    "LineageKind",
+    "LineageRow",
+    "LineageTree",
+    "Mark",
     "Message",
     "Notice",
     "OperationDef",
     "OperationHandle",
+    "OperationLink",
     "OperationRef",
     "OperationStatus",
     "OutputPrint",
+    "ParameterLink",
     "Pending",
     "PendingItem",
     "PendingReason",
@@ -274,6 +313,8 @@ __all__ = [
     "RecomputeRequest",
     "RecomputeUnit",
     "ReimportRequest",
+    "ResultState",
+    "ResultStatus",
     "SettingsNeeded",
     "SkipReason",
     "Skipped",
@@ -292,10 +333,12 @@ __all__ = [
     "choice_label",
     "claimed_paths",
     "counts",
+    "current_figure",
     "deduce",
     "divergence",
     "divergences",
     "figure_def",
+    "figure_marks",
     "group_def",
     "import_layer",
     "imported_name",
@@ -319,6 +362,7 @@ __all__ = [
     "reimport_input",
     "reimport_layer",
     "render",
+    "result_state",
     "scope_key",
     "stale_items",
     "stale_state",

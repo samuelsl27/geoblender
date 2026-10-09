@@ -19,8 +19,10 @@ mismos en los dos (constitución, principio 10). Los nombres visibles de las ope
   ``core.read_only`` sin tocar nada (plan §5.3.1).
 
 Cada tarea de la 008 añade aquí los códigos de sus rechazos (los textos de la spec §8, tal
-cual), sus avisos (``core.figure_differs``, RF-008-59) y los motivos de lo que se deja fuera de
-«Recalcular lo obsoleto» (``core.recompute_*``). Python puro (ADR-0004).
+cual), sus avisos (``core.figure_differs``, RF-008-59), los motivos de lo que se deja fuera de
+«Recalcular lo obsoleto» (``core.recompute_*``) y lo que muestra la procedencia: el estado de
+una entrada (``core.input_status_*``), las marcas de una cifra (``core.mark_*``) y el estado de
+lo mostrado (``core.result_*``, RF-008-23). Python puro (ADR-0004).
 """
 
 from __future__ import annotations
@@ -811,6 +813,29 @@ _CATALOG: tuple[Message, ...] = (
         "Checking the content of {names}: wait until it finishes and repeat the command.",
         "Comprobando el contenido de {names}: espere a que termine y repita la orden.",
     ),
+    # Procedencia y marcas de las cifras (T35; RF-008-29, RF-008-31): lo que no está en el
+    # proyecto, el estado de una entrada en la cadena (spec §8 y RF-008-55) y las marcas.
+    Message(
+        "core.lineage_unknown",
+        "«{item}» is not a dataset, a figure or an operation of project «{project}».",
+        "«{item}» no es un dato, una cifra ni una operación del proyecto «{project}».",
+    ),
+    Message("core.input_status_current", "current", "vigente"),
+    Message("core.input_status_changed", "changed", "cambiada"),
+    Message("core.input_status_kept", "changed · copy kept", "cambiada · se mantiene la copia"),
+    Message("core.input_status_superseded", "superseded", "sustituida"),
+    Message("core.input_status_discarded", "discarded · record, do not use",
+            "descartada · registro, no usar"),
+    Message("core.mark_hypothesis", "depends on a hypothesis", "depende de una hipótesis"),
+    Message("core.mark_unconfirmed", "depends on an unconfirmed value",
+            "depende de un valor sin confirmar"),
+    Message("core.mark_stale", "stale", "obsoleta"),
+    # Estado de lo mostrado (T35; RF-008-23, spec §8).
+    Message("core.result_result", "result", "resultado"),
+    Message("core.result_pending", "pending ingestion", "pendiente de incorporar"),
+    Message("core.result_not_ingested", "not ingested: {reason}", "no incorporada: {reason}"),
+    Message("core.result_preview", "preview, not saved", "vista previa, sin guardar"),
+    Message("core.result_measurement", "measurement, not recorded", "medición, no registrada"),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})
