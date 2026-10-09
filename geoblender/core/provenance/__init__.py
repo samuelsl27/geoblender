@@ -40,13 +40,17 @@
   (``lineage.lineage`` → :class:`LineageTree`), las marcas de las cifras (:func:`figure_marks` →
   :class:`FigureMarks`), la cifra vigente de una clave y un ámbito (:func:`current_figure`) y
   cómo se presenta lo que se muestra (:func:`result_state` → :class:`ResultStatus`).
+- :mod:`.checks`: las comprobaciones de apertura por pasos medidos por tiempo
+  (:func:`open_check_steps` → :class:`OpenCheckOutcome`, con lo que declara el Geoblender que
+  abre el proyecto, :class:`Registries`): interrumpidas, entradas, datos y originales, restos,
+  versiones de algoritmo (:class:`AlgorithmChange`) y definiciones de parámetros.
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
 ``core.project.schema`` importa ``core.provenance.schema``, que pasa por este fichero.
 
 Por lo mismo, lo de :mod:`.operations`, :mod:`.figures`, :mod:`.graph`, :mod:`.stale`,
-:mod:`.recompute`, :mod:`.gate`, :mod:`.importer` y :mod:`.lineage` (que traen
+:mod:`.recompute`, :mod:`.gate`, :mod:`.importer`, :mod:`.lineage` y :mod:`.checks` (que traen
 ``core.datasets``, ``core.content``, ``core.params`` y ``core.inputs``) se reexporta
 **al usarlo** (``__getattr__``, PEP 562), no al importar el paquete: así abrir un proyecto no
 carga ni compila esos módulos (las pruebas de Blender rehabilitan la extensión muchas veces
@@ -213,6 +217,17 @@ LINEAGE_API: tuple[str, ...] = (
 del módulo (``core.provenance.lineage.lineage``), que el paquete tiene como atributo en cuanto
 se importa."""
 
+CHECKS_API: tuple[str, ...] = (
+    "OPEN_CHECK_STEPS",
+    "AlgorithmChange",
+    "InterruptedOperation",
+    "OpenCheckOutcome",
+    "OriginalProbe",
+    "Registries",
+    "open_check_steps",
+)
+"""Lo de :mod:`.checks` que se reexporta al usarlo."""
+
 
 def __getattr__(name: str) -> Any:
     if name in OPERATIONS_API:
@@ -231,6 +246,8 @@ def __getattr__(name: str) -> Any:
         from . import importer as source
     elif name in LINEAGE_API:
         from . import lineage as source
+    elif name in CHECKS_API:
+        from . import checks as source
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(source, name)
@@ -240,7 +257,7 @@ def __getattr__(name: str) -> Any:
 
 def __dir__() -> list[str]:
     return sorted({*globals(), *OPERATIONS_API, *FIGURES_API, *GRAPH_API, *STALE_API,
-                   *RECOMPUTE_API, *GATE_API, *IMPORTER_API, *LINEAGE_API})
+                   *RECOMPUTE_API, *GATE_API, *IMPORTER_API, *LINEAGE_API, *CHECKS_API})
 
 
 __all__ = [
@@ -258,11 +275,13 @@ __all__ = [
     "JOB_FINAL_STATES",
     "LABELS",
     "MESSAGES",
+    "OPEN_CHECK_STEPS",
     "OPERATIONS",
     "RECOMPUTE_PHASE",
     "SCOPES",
     "SCOPE_ALL",
     "VIEW_STATES",
+    "AlgorithmChange",
     "BlockKind",
     "BlockReason",
     "Blocked",
@@ -285,6 +304,7 @@ __all__ = [
     "IngestOutcome",
     "InputLink",
     "InputUse",
+    "InterruptedOperation",
     "ItemKind",
     "JobOutcome",
     "LayerImport",
@@ -294,11 +314,13 @@ __all__ = [
     "Mark",
     "Message",
     "Notice",
+    "OpenCheckOutcome",
     "OperationDef",
     "OperationHandle",
     "OperationLink",
     "OperationRef",
     "OperationStatus",
+    "OriginalProbe",
     "OutputPrint",
     "ParameterLink",
     "Pending",
@@ -312,6 +334,7 @@ __all__ = [
     "RecomputePlan",
     "RecomputeRequest",
     "RecomputeUnit",
+    "Registries",
     "ReimportRequest",
     "ResultState",
     "ResultStatus",
@@ -347,6 +370,7 @@ __all__ = [
     "interrupt_orphaned",
     "load_graph",
     "mark_not_ingested",
+    "open_check_steps",
     "operation",
     "operation_def",
     "parse_version",

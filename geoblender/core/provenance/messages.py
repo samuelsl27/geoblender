@@ -836,6 +836,26 @@ _CATALOG: tuple[Message, ...] = (
     Message("core.result_not_ingested", "not ingested: {reason}", "no incorporada: {reason}"),
     Message("core.result_preview", "preview, not saved", "vista previa, sin guardar"),
     Message("core.result_measurement", "measurement, not recorded", "medición, no registrada"),
+    # Comprobaciones de apertura (T36; RF-008-19, RF-008-24): una operación «en curso» de una
+    # sesión que perdió el cerrojo (el texto que registra ``interrupt_orphaned``) y un algoritmo
+    # que el Geoblender instalado declara con una versión mayor, con sus resultados
+    # («3 resultados obsoletos»).
+    Message(
+        "core.operation_interrupted",
+        "Operation «{op_type}» was interrupted: the session of {user_host} that ran it no "
+        "longer holds the project lock (Blender closed, the network went down or another "
+        "computer forced the lock) and could not record its end",
+        "Operación «{op_type}» interrumpida: la sesión de {user_host} que la ejecutaba ya no "
+        "tiene el cerrojo del proyecto (Blender se cerró, se cayó la red u otro equipo forzó el "
+        "cerrojo) y no pudo registrar su final",
+    ),
+    Message(
+        "core.algorithm_changed",
+        "Geoblender {version} changes the algorithm of {op_type} ({registered} → {installed}): "
+        "{results}",
+        "Geoblender {version} cambia el algoritmo de {op_type} ({registered} → {installed}): "
+        "{results}",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})

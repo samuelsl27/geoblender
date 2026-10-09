@@ -46,7 +46,8 @@ decide ignorar (:func:`ignore`: ``gb_ignored``, con quién, cuándo y el motivo,
 
 Los pasos los avanza el temporizador de ``bl`` (ninguno pasa de ``budget_s``; el trabajo de
 cada paso se planea para la mitad): primero el **listado** (``os.scandir``: el tamaño y la fecha
-salen del listado, sin un ``stat`` por fichero) contra lo registrado (una lectura); después
+salen del listado, sin un ``stat`` por fichero) contra lo registrado (lo que no se aparta, en un
+paso propio, y lo demás, al empezar el listado); después
 **apartar**, volviendo a leer en cada paso lo registrado y lo reclamado y a mirar el tamaño y la
 fecha de cada resto justo antes de moverlo: lo que se registró, se reclamó o cambió entre dos
 pasos queda para la próxima (``stale``); por último, el **registro**: los eventos
@@ -523,7 +524,9 @@ def unregistered_tables(conn: sqlite3.Connection) -> tuple[Foreign, ...]:
     la fuente de una entrada (ancla ``project_table``), ni ignoradas (``gb_ignored``); cada una
     dice si se puede registrar como entrada (está en ``gpkg_contents`` como capa de entidades
     o tabla, :data:`REGISTRABLE_DATA_TYPES`). Solo lee."""
-    taken = (_column(conn, "SELECT locator FROM gb_dataset WHERE store = 'gpkg'")
+    # DISTINCT: muchos datos comparten tabla (uno por selector); sin él, con el volumen de
+    # D-13 (16 000 datos en 160 tablas), esta lectura sola pasaba de 15 ms (T36).
+    taken = (_column(conn, "SELECT DISTINCT locator FROM gb_dataset WHERE store = 'gpkg'")
              | _column(conn, "SELECT path FROM gb_input_file WHERE anchor = 'project_table'")
              | _column(conn, "SELECT name FROM gb_ignored WHERE kind = 'table'"))
     layers = {_table_key(str(name)): str(data_type).lower()
@@ -549,10 +552,12 @@ class _Survey:
     reported: frozenset[tuple[str, str]]
 
 
-def _survey(project: OrphanProject, root: Path, extra: frozenset[str]) -> _Survey:
+def _survey(project: OrphanProject, protected: _Protected) -> _Survey:
+    """El resto de la lectura del principio, con lo que no se aparta ya leído (en el paso
+    anterior: las dos lecturas juntas pasaban de 20 ms con el volumen de D-13, T36)."""
     with project.read() as conn:
         return _Survey(
-            _protection(project, root, extra, conn),
+            protected,
             frozenset(_key(str(row[0])) for row in conn.execute(
                 "SELECT name FROM gb_ignored WHERE kind = 'file'")),
             unregistered_tables(conn),
@@ -922,7 +927,12 @@ def _steps(project: OrphanProject, root: Path, *, write: bool, limit: int,
     from ..project.session import WriteState
 
     pacer = _Pacer(budget)
-    survey = _survey(project, root, extra)
+    protected = _protection(project, root, extra)
+    # Un paso propio (de la fase del listado, sin hacer aún nada de un total de 1): lo que no
+    # se aparta es una lectura de todo lo registrado en las carpetas de datos.
+    yield Progress(PHASES[0], 0, 1, "Buscando restos de operaciones interrumpidas…")
+    pacer.restart()
+    survey = _survey(project, protected)
     sweep = _Sweep(root, _tag(project), limit, survey.ignored)
     yield from _list_steps(project, sweep, survey.protected, pacer)
     sweep.found.sort(key=lambda item: item.path.casefold())

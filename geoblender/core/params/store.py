@@ -471,6 +471,24 @@ def _review_json(review: object) -> str | None:
     return None if review is None else canonical_json(review).decode("utf-8")
 
 
+def _definition_changes(conn: sqlite3.Connection, declared: Mapping[str, ParamDef]
+                        ) -> list[tuple[DefinitionChange, str | None]]:
+    """Cada parámetro registrado cuya marca «revisar» cambia con las definiciones
+    ``declared`` (por clave, ámbito y uid de ámbito), con el texto que se guardaría en
+    ``review`` (``None``: se quita). Solo lee."""
+    found: list[tuple[DefinitionChange, str | None]] = []
+    for row in conn.execute(
+        f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter ORDER BY key, scope, scope_uid"
+    ).fetchall():
+        record = _record(row)
+        text = _review_json(_review(record, declared.get(record.key)))
+        if text == _review_json(record.review):
+            continue
+        found.append((DefinitionChange(record.uid, record.key, record.scope,
+                                       None if text is None else json.loads(text)), text))
+    return found
+
+
 def _declared_value(value: object) -> ParamValue | None:
     """Un valor de la definición guardada en ``review`` (una lista vuelve como tupla)."""
     if isinstance(value, list):
@@ -1084,29 +1102,26 @@ class ParameterStore:
         (no se convierte ni se recorta). Devuelve lo escrito, por clave (vacío si nada
         cambia: repetirlo no escribe). :class:`TypeError` o :class:`ValueError` si ``defs``
         no son ``ParamDef`` con claves distintas."""
-        declared = _declared_definitions(defs)
-        rows = conn.execute(
-            f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter ORDER BY key, scope, scope_uid"
-        ).fetchall()
-        changes: builtins.list[DefinitionChange] = []
-        now: str | None = None
-        for row in rows:
-            record = _record(row)
-            review = _review(record, declared.get(record.key))
-            text = _review_json(review)
-            if text == _review_json(record.review):
-                continue
-            if now is None:
-                now = self._now()
-            conn.execute(
+        found = _definition_changes(conn, _declared_definitions(defs))
+        if found:
+            now = self._now()
+            conn.executemany(
                 "UPDATE gb_parameter SET review = ?, modified_at = ? WHERE uid = ?",
-                (text, now, record.uid),
+                [(text, now, change.parameter_uid) for change, text in found],
             )
-            changes.append(DefinitionChange(
-                record.uid, record.key, record.scope,
-                None if text is None else json.loads(text),
-            ))
-        return changes
+        return [change for change, _text in found]
+
+    def definition_changes(
+        self, defs: Mapping[str, ParamDef] | Iterable[ParamDef], *,
+        conn: sqlite3.Connection | None = None,
+    ) -> builtins.list[DefinitionChange]:
+        """Lo que escribiría :meth:`mark_definition_changes` con ``defs``, en el mismo orden,
+        **sin escribir nada** (RF-008-60): la comprobación de apertura lo encuentra también en
+        solo lectura y lo marca en su transacción final. Solo lee (con ``conn``, en esa
+        conexión). Los mismos errores que :meth:`mark_definition_changes`."""
+        declared = _declared_definitions(defs)
+        with self._reading(conn) as reading:
+            return [change for change, _text in _definition_changes(reading, declared)]
 
     # --- Interno ----------------------------------------------------------------------------
 
