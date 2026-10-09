@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Restos de operaciones interrumpidas en las carpetas de datos del proyecto (spec 008;
-RF-008-22, RF-008-14, RF-008-58; D-19 de la spec; ADR-0025 §3 y §8; plan 008 §5.2.2, §5.3.1,
-§5.4.6 y §5.4.9).
+"""Restos de operaciones interrumpidas, ficheros ajenos y capas sin registrar en el proyecto
+(spec 008; RF-008-22, RF-008-62, RF-008-14, RF-008-58; D-19 de la spec; ADR-0025 §3 y §8; plan
+008 §5.2.2, §5.3.1, §5.4.6 y §5.4.9).
 
 Una operación que se interrumpe (Blender se cierra, cae la red de ``Z:``, otro equipo fuerza el
 cerrojo) puede dejar en ``rasters/``, ``meshes/`` u ``originals/`` ficheros que no llegó a
@@ -30,22 +30,34 @@ escribe QGIS junto a un ráster; un temporal, en cambio, sí es un resto), lo qu
 operación en curso de esta sesión (``OperationHandle.claim_paths``, y ``claimed``), un temporal
 de esta misma sesión, lo escrito o cambiado después de empezar (``started_at``, con
 :data:`RECENT_MARGIN_NS` de margen por la resolución de las fechas en red; I-5) y lo que no
-lleva nombre de los módulos (lo avisa el aviso de ficheros ajenos, RF-008-62).
+lleva nombre de los módulos.
+
+**Ajenos y sin registrar** (RF-008-62): lo que no lleva nombre de los módulos en esas
+carpetas y no es de ningún dato ni de ninguna entrada (ni lo acompaña, ni lo reclama una
+operación en curso de esta sesión) es un **fichero ajeno**; una tabla de ``project.gpkg`` que no
+es del estándar GeoPackage ni de SQLite ni interna (:data:`~.tracking.RESERVED_PREFIXES`), ni
+de un dato, ni la fuente de una entrada (ancla ``project_table``), es una **capa o tabla sin
+registrar** (creada desde QGIS); las de ``gpkg_contents`` (capas de entidades y tablas) se
+pueden registrar como entrada (``core.import_layer``). Se avisan con su lista
+(:attr:`OrphanOutcome.foreign`) y **nunca** se mueven ni se cambian; el hallazgo queda en el
+evento ``unregistered_found`` cuando hay algo que no constaba en el anterior. Lo que el usuario
+decide ignorar (:func:`ignore`: ``gb_ignored``, con quién, cuándo y el motivo, y el evento
+``item_ignored``) deja de avisarse.
 
 Los pasos los avanza el temporizador de ``bl`` (ninguno pasa de ``budget_s``; el trabajo de
 cada paso se planea para la mitad): primero el **listado** (``os.scandir``: el tamaño y la fecha
 salen del listado, sin un ``stat`` por fichero) contra lo registrado (una lectura); después
 **apartar**, volviendo a leer en cada paso lo registrado y lo reclamado y a mirar el tamaño y la
 fecha de cada resto justo antes de moverlo: lo que se registró, se reclamó o cambió entre dos
-pasos queda para la próxima (``stale``); por último, el **registro**: el evento
-``orphans_moved`` (sin rutas absolutas) con ``Project.try_write``, reintentado en el paso
-siguiente si otro programa está leyendo, o en la transacción final de quien llama
-(``record=False`` y :func:`record_orphans`).
+pasos queda para la próxima (``stale``); por último, el **registro**: los eventos
+``orphans_moved`` y ``unregistered_found`` (sin rutas absolutas) con ``Project.try_write``,
+reintentado en el paso siguiente si otro programa está leyendo, o en la transacción final de
+quien llama (``record=False`` y :func:`record_orphans`).
 
 Un resto que otro programa tiene abierto (``PermissionError``: QGIS) se salta sin fallar y queda
 en el aviso «se reintentará»; nada se anota: se vuelve a encontrar al abrir la próxima vez. En
 **solo lectura** (``write=False`` o el proyecto sin escritura) solo se avisa con la lista: no
-se mueve nada, no se crea ``orphans/`` ni se escribe en la base.
+se mueve nada, no se crea ``orphans/`` ni se escribe en la base (tampoco el evento de lo ajeno).
 
 Python puro (ADR-0004): al importarse no importa ``core.provenance`` ni ``core.project`` (que
 pasan por este paquete), que se cargan al usarse.
@@ -54,23 +66,28 @@ pasan por este paquete), que se cargan al usarse.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import re
+import sqlite3
 import stat
+import string
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..catalog.schema import MODULE_CODES
+from ..content.builtin import LAYER_KINDS
 from ..ids import SHORT_UID_CHARS
 from ..paths import MAX_FILE_PATH_CHARS, MAX_FOLDER_PATH_CHARS
 from ..timeutil import format_utc
 from .external import _budget, _Pacer, _reason
 from .model import FILE_STORES, Store
+from .tracking import RESERVED_PREFIXES
 
 if TYPE_CHECKING:
     from ..sysinfo import SessionInfo
@@ -93,12 +110,16 @@ PHASES: tuple[str, ...] = ("listado", "apartar", "registro")
 """Las fases de los pasos (``core.project.model.Progress``)."""
 LOCKED_REASON = "abierto en otro programa"
 """El motivo de un resto que no se pudo apartar porque otro programa lo tiene abierto."""
+REGISTRABLE_DATA_TYPES: frozenset[str] = frozenset(LAYER_KINDS)
+"""Los ``gpkg_contents.data_type`` de una capa o tabla sin registrar que se puede registrar como
+entrada (``core.import_layer`` la lee con ``core.gpkg_layer``)."""
 
 _MODULE_NAME = re.compile(rf"(?:{'|'.join(MODULE_CODES)})_[a-z0-9_]+(?:\..*)?", re.DOTALL)
 _SESSION_TEMPORARY = re.compile(r"\.tmp-([0-9A-Za-z]{1,32})$")
 _TEMPORARY = re.compile(r"\.tmp(?:-[0-9A-Za-z]{1,32})?$")
 _HASHED = re.compile(r"__[0-9a-f]{8}\.[^.]+$")
 _UID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
 __all__ = [
     "DATA_FOLDERS",
@@ -106,13 +127,18 @@ __all__ = [
     "ORPHANS_DIR",
     "PHASES",
     "RECENT_MARGIN_NS",
+    "REGISTRABLE_DATA_TYPES",
+    "Foreign",
+    "ForeignKind",
     "Orphan",
     "OrphanOutcome",
     "OrphanProject",
     "OrphanState",
     "geoblender_name",
+    "ignore",
     "orphan_steps",
     "record_orphans",
+    "unregistered_tables",
 ]
 
 
@@ -165,13 +191,43 @@ class Orphan:
         return f"{self.path}/" if self.folder else self.path
 
 
+class ForeignKind(StrEnum):
+    """Qué es algo ajeno al proyecto (``gb_ignored.kind``)."""
+
+    FILE = "file"  # un fichero ajeno de una carpeta de datos
+    TABLE = "table"  # una capa o tabla de project.gpkg sin registrar
+
+
+@dataclass(frozen=True)
+class Foreign:
+    """Un fichero ajeno o una capa o tabla sin registrar (RF-008-62): su clase, su nombre (de
+    un fichero, su ruta relativa a la raíz del proyecto con «/», ``rasters/Mapa.tif``; de una
+    tabla, su nombre en la base) y si se puede registrar como entrada (una capa de entidades o
+    una tabla de ``gpkg_contents``, con ``core.import_layer``)."""
+
+    kind: ForeignKind
+    name: str
+    registrable: bool = False
+
+    @property
+    def shown(self) -> str:
+        """Como se nombra en un aviso."""
+        return self.name
+
+    @property
+    def key(self) -> tuple[str, str]:
+        """Para compararlo sin distinguir mayúsculas (en Windows, tampoco los separadores)."""
+        return str(self.kind), (_key(self.name) if self.kind is ForeignKind.FILE
+                                else _table_key(self.name))
+
+
 def _render(code: str, *, language: str = "es", **values: Any) -> str:
     from ..provenance.messages import render
 
     return render(code, language=language, **values)
 
 
-def _listing(items: Iterable[Orphan], language: str, *, reasons: bool = False) -> str:
+def _listing(items: Iterable[Orphan | Foreign], language: str, *, reasons: bool = False) -> str:
     """«a», «b» y n más: los primeros :data:`MAX_LISTED` (con ``reasons``, cada uno con su
     motivo entre paréntesis)."""
     chosen = list(items)
@@ -187,13 +243,16 @@ def _listing(items: Iterable[Orphan], language: str, *, reasons: bool = False) -
 class OrphanOutcome:
     """El resultado de :func:`orphan_steps`: los restos encontrados, por su ruta (apartados, que
     no se pudieron apartar o, en solo lectura, solo vistos), la carpeta de la pasada en
-    ``orphans/`` (si se apartó algo), si quedó el evento en el proyecto y lo que se vio pero
-    cambió, se registró o se reclamó mientras tanto (``stale``: queda para la próxima)."""
+    ``orphans/`` (si se apartó algo), si quedó algún evento en el proyecto, lo que se vio pero
+    cambió, se registró o se reclamó mientras tanto (``stale``: queda para la próxima) y lo
+    ajeno (``foreign``: los ficheros ajenos por su ruta y después las capas y tablas sin
+    registrar por su nombre, RF-008-62)."""
 
     orphans: tuple[Orphan, ...]
     folder: str | None
     recorded: bool
     stale: tuple[str, ...] = ()
+    foreign: tuple[Foreign, ...] = ()
 
     def _of(self, *states: OrphanState) -> tuple[Orphan, ...]:
         return tuple(item for item in self.orphans if item.state in states)
@@ -214,9 +273,30 @@ class OrphanOutcome:
         """Los que solo se vieron (solo lectura)."""
         return self._of(OrphanState.FOUND)
 
+    @property
+    def foreign_files(self) -> tuple[Foreign, ...]:
+        """Los ficheros ajenos (RF-008-62)."""
+        return tuple(item for item in self.foreign if item.kind is ForeignKind.FILE)
+
+    @property
+    def unregistered_tables(self) -> tuple[Foreign, ...]:
+        """Las capas y tablas sin registrar (RF-008-62)."""
+        return tuple(item for item in self.foreign if item.kind is ForeignKind.TABLE)
+
+    def foreign_texts(self, language: str = "es") -> tuple[str, ...]:
+        """Los avisos de lo ajeno en ``language``: los ficheros y las capas, con su lista."""
+        found: list[str] = []
+        if self.foreign_files:
+            found.append(_render("core.foreign_files", language=language,
+                                 files=_listing(self.foreign_files, language)))
+        if self.unregistered_tables:
+            found.append(_render("core.unregistered_tables", language=language,
+                                 tables=_listing(self.unregistered_tables, language)))
+        return tuple(found)
+
     def texts(self, language: str = "es") -> tuple[str, ...]:
         """Los avisos en ``language``: lo apartado, lo abierto en otro programa, lo que no se
-        pudo apartar y lo visto en solo lectura, cada uno con su lista."""
+        pudo apartar y lo visto en solo lectura, y después lo ajeno, cada uno con su lista."""
         found: list[str] = []
         if self.moved:
             found.append(_render("core.orphans_moved", language=language, folder=self.folder,
@@ -232,7 +312,7 @@ class OrphanOutcome:
         if self.found:
             found.append(_render("core.orphans_found", language=language,
                                  files=_listing(self.found, language)))
-        return tuple(found)
+        return (*found, *self.foreign_texts(language))
 
     @property
     def warnings(self) -> tuple[str, ...]:
@@ -285,22 +365,56 @@ def orphan_steps(project: OrphanProject, *, write: bool, started_at: int | None 
 
 
 def record_orphans(conn: Any, project: OrphanProject, outcome: OrphanOutcome) -> bool:
-    """Escribe el evento ``orphans_moved`` de ``outcome`` en la transacción de escritura
-    ``conn`` de quien llama (no la confirma): la carpeta, lo apartado (de dónde y adónde) y lo
-    que no se pudo apartar con su motivo, sin rutas absolutas. Si no se apartó nada, no
-    escribe y devuelve ``False``."""
-    if not outcome.moved:
-        return False
+    """Escribe los eventos de ``outcome`` en la transacción de escritura ``conn`` de quien
+    llama (no la confirma), sin rutas absolutas, y dice si escribió alguno:
+
+    - ``orphans_moved``, si se apartó algo: la carpeta, lo apartado (de dónde y adónde) y lo
+      que no se pudo apartar con su motivo;
+    - ``unregistered_found``, si hay algo ajeno que no constaba en el anterior (RF-008-62): los
+      ficheros ajenos y las capas y tablas sin registrar que hay ahora."""
     from ..project.events import EventKind, record_event
 
-    record_event(conn, EventKind.ORPHANS_MOVED, outcome.texts("es")[0], session=project.session,
-                 at=format_utc(project.clock.now()), data={
-                     "folder": outcome.folder,
-                     "moved": [[item.path, item.moved_to] for item in outcome.moved],
-                     "not_moved": [[item.path, str(item.state), item.reason]
-                                   for item in outcome.retry],
-                 })
-    return True
+    at = format_utc(project.clock.now())
+    written = False
+    if outcome.moved:
+        record_event(conn, EventKind.ORPHANS_MOVED,
+                     _render("core.orphans_moved", folder=outcome.folder,
+                             files=_listing(outcome.moved, "es")),
+                     session=project.session, at=at, data={
+                         "folder": outcome.folder,
+                         "moved": [[item.path, item.moved_to] for item in outcome.moved],
+                         "not_moved": [[item.path, str(item.state), item.reason]
+                                       for item in outcome.retry],
+                     })
+        written = True
+    if _news(outcome.foreign, _reported(conn)):
+        record_event(conn, EventKind.UNREGISTERED_FOUND, " ".join(outcome.foreign_texts("es")),
+                     session=project.session, at=at, data={
+                         "files": [item.name for item in outcome.foreign_files],
+                         "tables": [item.name for item in outcome.unregistered_tables],
+                     })
+        written = True
+    return written
+
+
+def _news(foreign: Iterable[Foreign], reported: frozenset[tuple[str, str]]) -> bool:
+    """Si hay algo ajeno que no constaba en el último evento ``unregistered_found``."""
+    return any(item.key not in reported for item in foreign)
+
+
+def _reported(conn: sqlite3.Connection) -> frozenset[tuple[str, str]]:
+    """Lo ajeno que constaba en el último evento ``unregistered_found``."""
+    row = conn.execute("SELECT data FROM gb_event WHERE kind = 'unregistered_found' "
+                       "ORDER BY fid DESC LIMIT 1").fetchone()
+    if row is None or row[0] is None:
+        return frozenset()
+    try:
+        data = json.loads(row[0])
+        files = [Foreign(ForeignKind.FILE, str(name)).key for name in data["files"]]
+        tables = [Foreign(ForeignKind.TABLE, str(name)).key for name in data["tables"]]
+    except (ValueError, KeyError, TypeError):
+        return frozenset()
+    return frozenset(files + tables)
 
 
 # --- Lo que no es un resto ------------------------------------------------------------------
@@ -361,15 +475,20 @@ class _Protected:
         return key in self.folders
 
 
-def _protection(project: OrphanProject, root: Path, extra: frozenset[str]) -> _Protected:
-    """Una lectura de lo registrado más lo reclamado ahora por esta sesión y ``extra``."""
+def _protection(project: OrphanProject, root: Path, extra: frozenset[str],
+                conn: sqlite3.Connection | None = None) -> _Protected:
+    """Una lectura (con ``conn`` o una propia) de lo registrado más lo reclamado ahora por
+    esta sesión y ``extra``."""
     from ..provenance.operations import claimed_paths
 
-    with project.read() as conn:
-        found = [str(row[0]) for sql in _PROTECTED for row in conn.execute(sql)]
-        inputs = frozenset(str(row[0]).lower() for row in conn.execute("SELECT uid FROM gb_input"))
+    reading = nullcontext(conn) if conn is not None else project.read()
+    with reading as opened:
+        found = [str(row[0]) for sql in _PROTECTED for row in opened.execute(sql)]
+        inputs = frozenset(str(row[0]).lower()
+                           for row in opened.execute("SELECT uid FROM gb_input"))
+        claimed = claimed_paths(project, conn=opened)  # type: ignore[arg-type]
     keys = {_key(rel) for rel in found} | set(extra)
-    for path in claimed_paths(project):
+    for path in claimed:
         key = _claimed_key(root, path)
         if key:
             keys.add(key)
@@ -383,6 +502,171 @@ def _protection(project: OrphanProject, root: Path, extra: frozenset[str]) -> _P
             parent = os.path.dirname(parent)
     return _Protected(frozenset(keys), frozenset(folders),
                       {parent: tuple(items) for parent, items in names.items()}, inputs)
+
+
+# --- Capas y tablas sin registrar (RF-008-62) -------------------------------------------------
+
+
+def _table_key(name: str) -> str:
+    """La clave del nombre de una tabla: SQLite no distingue mayúsculas de las letras ASCII."""
+    return name.translate(_ASCII_LOWER)
+
+
+def _column(conn: sqlite3.Connection, sql: str) -> set[str]:
+    return {_table_key(str(row[0])) for row in conn.execute(sql)}
+
+
+def unregistered_tables(conn: sqlite3.Connection) -> tuple[Foreign, ...]:
+    """Las capas y tablas sin registrar de ``project.gpkg`` (con la conexión ``conn``),
+    ordenadas por su nombre: las tablas que no son del estándar GeoPackage ni de SQLite ni
+    internas (:data:`~.tracking.RESERVED_PREFIXES`), ni la de un dato (en cualquier estado), ni
+    la fuente de una entrada (ancla ``project_table``), ni ignoradas (``gb_ignored``); cada una
+    dice si se puede registrar como entrada (está en ``gpkg_contents`` como capa de entidades
+    o tabla, :data:`REGISTRABLE_DATA_TYPES`). Solo lee."""
+    taken = (_column(conn, "SELECT locator FROM gb_dataset WHERE store = 'gpkg'")
+             | _column(conn, "SELECT path FROM gb_input_file WHERE anchor = 'project_table'")
+             | _column(conn, "SELECT name FROM gb_ignored WHERE kind = 'table'"))
+    layers = {_table_key(str(name)): str(data_type).lower()
+              for name, data_type in conn.execute(
+                  "SELECT table_name, data_type FROM gpkg_contents")}
+    found = [
+        Foreign(ForeignKind.TABLE, str(name), layers.get(key) in REGISTRABLE_DATA_TYPES)
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        if not (key := _table_key(str(name))).startswith(RESERVED_PREFIXES) and key not in taken
+    ]
+    return tuple(sorted(found, key=lambda item: item.name.casefold()))
+
+
+@dataclass(frozen=True)
+class _Survey:
+    """La lectura del principio del barrido: lo que no se aparta, los ficheros ignorados (sus
+    claves), las capas y tablas sin registrar y lo ajeno que ya constaba en el último
+    evento."""
+
+    protected: _Protected
+    ignored: frozenset[str]
+    tables: tuple[Foreign, ...]
+    reported: frozenset[tuple[str, str]]
+
+
+def _survey(project: OrphanProject, root: Path, extra: frozenset[str]) -> _Survey:
+    with project.read() as conn:
+        return _Survey(
+            _protection(project, root, extra, conn),
+            frozenset(_key(str(row[0])) for row in conn.execute(
+                "SELECT name FROM gb_ignored WHERE kind = 'file'")),
+            unregistered_tables(conn),
+            _reported(conn),
+        )
+
+
+# --- Ignorar (RF-008-62) ------------------------------------------------------------------------
+
+
+def _foreign_kind(kind: object) -> ForeignKind:
+    if not isinstance(kind, str):
+        raise TypeError(f"se ignora un fichero («file») o una capa o tabla («table»), no {kind!r}")
+    try:
+        return ForeignKind(kind)
+    except ValueError:
+        raise ValueError(f"se ignora un fichero («file») o una capa o tabla («table»), no "
+                         f"{kind!r}") from None
+
+
+def _relative_file(name: str) -> str:
+    """La ruta de un fichero relativa a la raíz del proyecto, con «/» (``ValueError`` si es
+    absoluta o sale de ella)."""
+    parts = name.split("/")
+    if ("\\" in name or PureWindowsPath(name).drive or PureWindowsPath(name).is_absolute()
+            or PurePosixPath(name).is_absolute() or any(part in ("", ".", "..") for part in parts)):
+        raise ValueError(f"un fichero ajeno se indica con su ruta relativa a la raíz del "
+                         f"proyecto, con «/» y sin salir de ella, no {name!r}")
+    return name
+
+
+def _foreign_file(conn: sqlite3.Connection, project: OrphanProject, rel: str) -> bool:
+    """Si ``rel`` es ahora un fichero ajeno de una carpeta de datos (véase el módulo)."""
+    parts = rel.split("/")
+    folder = os.path.normcase(parts[0])
+    if len(parts) < 2 or folder not in DATA_FOLDERS or geoblender_name(parts[-1]):
+        return False
+    root = Path(project.root)
+    try:
+        found = os.stat(root.joinpath(*parts), follow_symlinks=False)
+    except OSError:
+        return False
+    if not stat.S_ISREG(found.st_mode):
+        return False
+    protected = _protection(project, root, frozenset(), conn)
+    key = _key(rel)
+    if key in protected.files or protected.companion(key):
+        return False
+    if folder == Store.ORIGINALS.value and len(parts) > 2:
+        uid = parts[1].lower()  # una carpeta de originales sin entrada es un resto entero
+        holder = _key(f"{parts[0]}/{parts[1]}")
+        if (_UID.fullmatch(uid) is not None and uid not in protected.inputs
+                and not protected.holds(holder) and holder not in protected.files):
+            return False
+    return True
+
+
+def ignore(conn: sqlite3.Connection, project: OrphanProject, kind: ForeignKind | str, name: str,
+           reason: str | None = None) -> bool:
+    """El usuario decide ignorar el fichero ajeno o la capa o tabla sin registrar ``name``
+    (``kind``: ``"file"``, con su ruta relativa a la raíz del proyecto, o ``"table"``, con su
+    nombre; RF-008-62), en la transacción de escritura ``conn`` de quien llama (no la
+    confirma): su fila de ``gb_ignored`` con quién, cuándo y ``reason`` (opcional, sin rutas
+    absolutas) y el evento ``item_ignored``; deja de avisarse y nada de él se mueve ni cambia.
+    Si ya estaba ignorado, no escribe nada y devuelve ``False``.
+
+    ``ProvenanceError`` (``core.ignore_not_foreign``) sin escribir nada si no es ahora un
+    fichero ajeno ni una capa sin registrar (un dato, la fuente de una entrada, una tabla del
+    estándar o interna, lo que no está o no está en una carpeta de datos);
+    :class:`TypeError`/:class:`ValueError` con un argumento mal formado o fuera de una
+    transacción."""
+    if not isinstance(conn, sqlite3.Connection):
+        raise TypeError(f"ignore recibe la conexión de una transacción de escritura, no {conn!r}")
+    if not conn.in_transaction:
+        raise ValueError("ignore se llama dentro de una transacción de escritura "
+                         "(Project.write_transaction)")
+    chosen = _foreign_kind(kind)
+    if not isinstance(name, str):
+        raise TypeError(f"lo que se ignora se indica por su nombre o su ruta, no {name!r}")
+    if not name.strip() or name != name.strip():
+        raise ValueError(f"lo que se ignora no tiene un nombre vacío ni con espacios a los lados: "
+                         f"{name!r}")
+    if reason is not None and not isinstance(reason, str):
+        raise TypeError(f"el motivo de ignorar algo es un texto, no {reason!r}")
+    if chosen is ForeignKind.FILE:
+        item: Foreign | None = Foreign(chosen, _relative_file(name))
+    else:
+        item = Foreign(chosen, name)
+    stored = {Foreign(chosen, str(row[0])).key for row in conn.execute(
+        "SELECT name FROM gb_ignored WHERE kind = ?", (str(chosen),))}
+    if item.key in stored:
+        return False
+    if chosen is ForeignKind.FILE:
+        item = item if _foreign_file(conn, project, item.name) else None
+    else:
+        item = next((found for found in unregistered_tables(conn) if found.key == item.key),
+                    None)
+    if item is None:
+        from ..provenance.messages import ProvenanceError
+
+        raise ProvenanceError("core.ignore_not_foreign", name=name)
+    from ..project.events import EventKind, record_event
+    from ..provenance.operations import _clean
+
+    text = _clean(reason.strip()) if reason is not None and reason.strip() else None
+    now = format_utc(project.clock.now())
+    conn.execute("INSERT INTO gb_ignored (kind, name, reason, decided_by, decided_at) "
+                 "VALUES (?, ?, ?, ?, ?)",
+                 (str(chosen), item.name, text, project.session.user_host, now))
+    code = "core.ignored_file" if chosen is ForeignKind.FILE else "core.ignored_table"
+    record_event(conn, EventKind.ITEM_IGNORED, _render(code, name=item.name),
+                 session=project.session, at=now,
+                 data={"kind": str(chosen), "name": item.name, "reason": text})
+    return True
 
 
 # --- Listado ---------------------------------------------------------------------------------
@@ -407,8 +691,10 @@ class _Sweep:
     root: Path
     tag: str
     limit: int
+    ignored: frozenset[str] = frozenset()
     found: list[_Candidate] = field(default_factory=list)
     stale: list[str] = field(default_factory=list)
+    foreign: list[str] = field(default_factory=list)
 
 
 def _real_dir(path: Path) -> bool:
@@ -474,7 +760,9 @@ def _examine(sweep: _Sweep, protected: _Protected, rel_dir: str, entry: os.DirEn
     if temporary is not None and temporary.group(1).lower() == sweep.tag:
         return  # un temporal de esta misma sesión: lo está escribiendo
     if not geoblender_name(entry.name):
-        return  # ajeno: lo avisa la comprobación de ficheros ajenos (RF-008-62)
+        if not protected.companion(key) and key not in sweep.ignored:
+            sweep.foreign.append(rel)  # ajeno: se avisa y nunca se mueve (RF-008-62)
+        return
     if _TEMPORARY.search(entry.name) is None and protected.companion(key):
         return
     info = entry.stat(follow_symlinks=False)
@@ -633,10 +921,10 @@ def _steps(project: OrphanProject, root: Path, *, write: bool, limit: int,
     from ..project.model import Progress
     from ..project.session import WriteState
 
-    sweep = _Sweep(root, _tag(project), limit)
     pacer = _Pacer(budget)
-    protected = _protection(project, root, extra)
-    yield from _list_steps(project, sweep, protected, pacer)
+    survey = _survey(project, root, extra)
+    sweep = _Sweep(root, _tag(project), limit, survey.ignored)
+    yield from _list_steps(project, sweep, survey.protected, pacer)
     sweep.found.sort(key=lambda item: item.path.casefold())
     total = len(sweep.found)
     yield Progress(PHASES[0], total, total, f"Restos encontrados: {total}.")
@@ -649,22 +937,29 @@ def _steps(project: OrphanProject, root: Path, *, write: bool, limit: int,
         else Orphan(item.path, item.folder, OrphanState.FOUND)
         for item in sweep.found if item.result is not None or item.path not in left
     )
+    files = tuple(Foreign(ForeignKind.FILE, rel)
+                  for rel in sorted(sweep.foreign, key=str.casefold))
     outcome = OrphanOutcome(
         orphans=orphans,
         folder=folder if any(item.state is OrphanState.MOVED for item in orphans) else None,
         recorded=False,
         stale=tuple(sorted(sweep.stale, key=str.casefold)),
+        foreign=files + survey.tables,
     )
-    if record and outcome.moved and project.writable:
+    news = _news(outcome.foreign, survey.reported)
+    if record and write and project.writable and (outcome.moved or news):
         while True:
             attempt = project.try_write(lambda conn: record_orphans(conn, project, outcome))
             if attempt.state is WriteState.DONE:
                 break
             yield Progress(PHASES[2], total, total, attempt.message)
-        outcome = OrphanOutcome(outcome.orphans, outcome.folder, True, outcome.stale)
+        outcome = OrphanOutcome(outcome.orphans, outcome.folder, bool(attempt.value),
+                                outcome.stale, outcome.foreign)
     yield Progress(PHASES[2], total, total, _summary(outcome), result=outcome)
 
 
 def _summary(outcome: OrphanOutcome) -> str:
     return (f"Restos apartados: {len(outcome.moved)}; sin apartar (se reintentará): "
-            f"{len(outcome.retry)}; vistos en solo lectura: {len(outcome.found)}.")
+            f"{len(outcome.retry)}; vistos en solo lectura: {len(outcome.found)}; ficheros "
+            f"ajenos: {len(outcome.foreign_files)}; capas sin registrar: "
+            f"{len(outcome.unregistered_tables)}.")

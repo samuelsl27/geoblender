@@ -17,9 +17,8 @@ ADR-0025; plan 008 §5.1).
   una edición (:func:`accept_edit`) y lo que se ofrece para resolver un dato (:func:`offers`).
 - :mod:`.orphans`: los restos de operaciones interrumpidas en ``rasters/``, ``meshes/`` y
   ``originals/``, apartados a ``orphans/`` al abrir el proyecto (:func:`orphan_steps`,
-  RF-008-22).
-
-Los ficheros ajenos y las capas sin registrar llegan con la tarea siguiente (plan 008 §5.3.1).
+  RF-008-22), y los ficheros ajenos y las capas y tablas sin registrar, que solo se avisan
+  (:class:`Foreign`) o se ignoran (:func:`ignore`, RF-008-62).
 """
 
 from .external import (
@@ -42,7 +41,16 @@ from .model import (
     DatasetStatus,
     Store,
 )
-from .orphans import Orphan, OrphanOutcome, OrphanState, orphan_steps
+from .orphans import (
+    Foreign,
+    ForeignKind,
+    Orphan,
+    OrphanOutcome,
+    OrphanState,
+    ignore,
+    orphan_steps,
+    unregistered_tables,
+)
 from .registry import (
     content_digest,
     get,
@@ -72,6 +80,8 @@ __all__ = [
     "DatasetSpec",
     "DatasetStatus",
     "ExternalOutcome",
+    "Foreign",
+    "ForeignKind",
     "Offer",
     "Orphan",
     "OrphanOutcome",
@@ -83,6 +93,7 @@ __all__ = [
     "ensure_triggers",
     "external_check_steps",
     "get",
+    "ignore",
     "mark_missing",
     "offers",
     "original_usable",
@@ -99,4 +110,5 @@ __all__ = [
     "table_states",
     "track_table",
     "tracking_trigger_names",
+    "unregistered_tables",
 ]

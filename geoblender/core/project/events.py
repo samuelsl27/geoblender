@@ -86,6 +86,10 @@ class EventKind(Enum):
     # Restos de operaciones interrumpidas apartados a ``orphans/`` al abrir el proyecto
     # (RF-008-22; D-19 de la spec; plan §5.2.2).
     ORPHANS_MOVED = "orphans_moved"
+    # Ficheros ajenos y capas sin registrar encontrados en el proyecto (cuando hay algo nuevo)
+    # y uno de ellos ignorado por el usuario (RF-008-62; plan §5.4.9).
+    UNREGISTERED_FOUND = "unregistered_found"
+    ITEM_IGNORED = "item_ignored"
 
 
 @dataclass(frozen=True)

@@ -35,11 +35,15 @@ from tests.support.provenance_contract import registered
 from tests.support.provenance_readers import registered as readers_registered
 from tests.unit.core.inputs.test_registry import (
     ETRS89,
+    GPKG,
     MTIME_NS,
     NOT_APPLICABLE,
+    NOW,
+    SESSION,
     SOURCE,
     InputsCase,
     _digest,
+    _sha,
 )
 
 orphans = import_geoblender("core.datasets.orphans")
@@ -54,6 +58,7 @@ events = import_geoblender("core.project.events")
 project_model = import_geoblender("core.project.model")
 session_mod = import_geoblender("core.project.session")
 hashing = import_geoblender("core.hashing")
+base = import_geoblender("core.gpkg.base")
 
 State = orphans.OrphanState
 
@@ -78,6 +83,12 @@ LOCKED_TEXT = ("Restos abiertos en otro programa, sin apartar: {files}. Se reint
                "el proyecto la próxima vez.")
 FOUND_TEXT = ("Restos de operaciones interrumpidas en el proyecto: {files}. En solo lectura no "
               "se apartan: se apartarán al abrirlo en escritura.")
+FOREIGN_TEXT = ("Ficheros ajenos en las carpetas de datos del proyecto, que no son de ningún dato "
+                "(no se mueven): {files}. Puede ignorarlos.")
+UNREGISTERED_TEXT = ("Capas o tablas del proyecto sin registrar (creadas fuera de Geoblender; no "
+                     "se tocan): {tables}. Regístrelas como entrada o ignórelas.")
+IGNORE_REASON = "Lo deja el cliente para consulta (Q:\\expedientes\\leeme.txt)"
+IGNORE_REASON_STORED = "Lo deja el cliente para consulta (leeme.txt)"
 
 
 def _quoted(*paths: str) -> str:
@@ -265,7 +276,10 @@ class MoveTest(OrphansCase):
             self.assertEqual(after[rel], before[rel], rel)
         shown = [f"{rel}/" if rel == f"originals/{UNKNOWN_UID}" else rel for rel in leftovers]
         expected = MOVED_TEXT.format(folder=STAMP_DIR, files=_quoted(*shown))
-        self.assertEqual(outcome.warnings, (expected,))
+        # Lo que no lleva nombre de los módulos no es un resto: es ajeno (T34, RF-008-62).
+        foreign = FOREIGN_TEXT.format(files=_quoted("originals/notas/leeme.txt",
+                                                    "rasters/Mapa del cliente.tif"))
+        self.assertEqual(outcome.warnings, (expected, foreign))
         self.assertIn(STAMP_DIR, outcome.texts("en")[0])
         (event,) = self.logged()
         self.assertEqual(event.message, expected)
@@ -277,7 +291,7 @@ class MoveTest(OrphansCase):
 
         again = self.sweep()
         self.assertEqual(again.orphans, ())
-        self.assertEqual(again.warnings, ())
+        self.assertEqual(again.warnings, (foreign,))
         self.assertIsNone(again.folder)
         self.assertFalse(again.recorded)
         self.assertEqual(len(self.logged()), 1)
@@ -512,3 +526,256 @@ class StepsTest(OrphansCase):
                           ({"claimed": "rasters/res_a.tif"}, TypeError)):
             with self.subTest(kw=kw), self.assertRaises(error):
                 orphans.orphan_steps(self.project, **{"write": True, **kw})
+
+
+class ForeignTest(OrphansCase):
+    """Ficheros ajenos y capas sin registrar (T34; RF-008-62)."""
+
+    # --- Ayudas -----------------------------------------------------------------------------
+
+    def qgis(self, *statements: str) -> None:
+        """Lo que hace otro programa (QGIS) en el proyecto con su conexión, en una
+        transacción."""
+        conn = sqlite3.connect(str(self.project.database_path), isolation_level=None)
+        try:
+            conn.execute("BEGIN")
+            for sql in statements:
+                conn.execute(sql)
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+
+    def table_dataset(self, table: str) -> None:
+        """Una tabla de ``project.gpkg`` escrita y registrada como dato por una operación."""
+        handle = self.start()
+
+        def work(conn: sqlite3.Connection) -> None:
+            base.create_attribute_table(conn, table, [base.ColumnDef("valor", "DOUBLE")], table)
+            conn.execute(f'INSERT INTO "{table}" (valor) VALUES (1.5)')
+            handle.complete(conn, outputs=[datasets.DatasetSpec(
+                table, "res", "table", "gpkg", table, reader=GPKG, role="valores")])
+
+        self.write(work)
+
+    def table_input(self, table: str) -> Any:
+        """Una tabla creada desde QGIS y registrada ya como entrada (ancla de tabla del
+        proyecto)."""
+        self.qgis(f'CREATE TABLE "{table}" (fid INTEGER PRIMARY KEY, nota TEXT)',
+                  "INSERT INTO gpkg_contents (table_name, data_type, identifier) VALUES "
+                  f"('{table}', 'attributes', '{table}')")
+        declarations = inputs_model.input_declarations(NOT_APPLICABLE, NOT_APPLICABLE, {})
+        return self.register(inputs_model.InputSpec(
+            table, "table", "res", SOURCE.id,
+            files=[inputs_model.SourceFile(table, "main", "project_table")],
+            file_prints=[inputs_model.SourcePrint(_sha(table))],
+            digest=_digest(table, "table", declarations), crs_h=NOT_APPLICABLE,
+            crs_v=NOT_APPLICABLE,
+        ))
+
+    def contents(self, *tables: str) -> list[Any]:
+        """El SQL, los disparadores y las filas de ``tables``."""
+        with self.project.read() as conn:
+            found = [conn.execute("SELECT type, name, sql FROM sqlite_master "
+                                  "WHERE tbl_name IN ({}) ORDER BY 1, 2".format(
+                                      ", ".join("?" for _ in tables)), tables).fetchall()]
+            found += [conn.execute(f'SELECT * FROM "{table}" ORDER BY 1').fetchall()
+                      for table in tables]
+        return found
+
+    def ignored(self) -> list[Any]:
+        with self.project.read() as conn:
+            return conn.execute("SELECT kind, name, reason, decided_by, decided_at "
+                                "FROM gb_ignored ORDER BY fid").fetchall()
+
+    def ignore(self, kind: str, name: str, reason: str | None = None) -> bool:
+        return self.write(lambda conn: orphans.ignore(conn, self.project, kind, name, reason))
+
+    # --- Pruebas ----------------------------------------------------------------------------
+
+    def test_foreign_files_and_unregistered_tables_are_warned_never_moved(self) -> None:
+        """RF-008-62 (spec §8, «Capa nueva creada en el proyecto desde QGIS; fichero dejado a
+        mano en una carpeta de datos»): los ficheros sin nombre de los módulos que no son de
+        ningún dato (también en subcarpetas y en una carpeta de originales) y las capas y
+        tablas creadas desde otra conexión que no son del estándar GeoPackage, internas, de
+        un dato ni la fuente de una entrada se avisan con su lista (las capas de
+        ``gpkg_contents``, que se pueden registrar como entrada) y nada de ellos se mueve ni
+        cambia, aunque los restos sí se apartan; lo que acompaña a la fuente de una entrada y lo
+        que reclama una operación en curso no se avisan. El hallazgo queda en un evento
+        (``unregistered_found``) solo si hay algo nuevo; en solo lectura se avisa sin
+        escribir nada."""
+        self.put("rasters/res_mdt.bin")
+        self.produce("rasters/res_mdt.bin")
+        self.put("rasters/Ortofoto.tif", b"II*\x00 orto")
+        self.put("rasters/Ortofoto.tif.aux.xml")
+        self.project_source("ortofoto", "raster", "rasters/Ortofoto.tif")
+        report = self.register(self.simple("informe", "document", NOT_APPLICABLE,
+                                           NOT_APPLICABLE))
+        self.stored_original(report.uid, "informe.pdf", b"%PDF-1.7 informe")
+        foreign_files = ("meshes/modelo.obj", f"originals/{report.uid}/carta.txt",
+                         "originals/notas/leeme.txt", "rasters/Mapa del cliente.tif")
+        for rel in foreign_files:
+            self.put(rel)
+        self.put("rasters/res_resto.tif")
+        self.put("rasters/Exportando.tif", recent=True)
+        self.start().claim_paths("rasters/Exportando.tif")
+        self.table_dataset("res_valores")
+        self.table_input("res_capa_qgis")
+        self.qgis('CREATE TABLE "zonas_qgis" (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, '
+                  "geom POLYGON, nombre TEXT)",
+                  "INSERT INTO gpkg_contents (table_name, data_type, identifier, srs_id) "
+                  "VALUES ('zonas_qgis', 'features', 'Zonas', 25830)",
+                  "INSERT INTO gpkg_geometry_columns VALUES ('zonas_qgis', 'geom', 'POLYGON', "
+                  "25830, 0, 0)",
+                  'CREATE VIRTUAL TABLE "rtree_zonas_qgis_geom" USING rtree(id, minx, maxx, '
+                  "miny, maxy)",
+                  'CREATE TABLE "Notas" (texto TEXT)',
+                  "INSERT INTO \"Notas\" (texto) VALUES ('del topógrafo')")
+        tables_before = self.contents("zonas_qgis", "Notas", "res_valores", "res_capa_qgis")
+        before = self.files()
+
+        outcome = self.sweep()
+
+        self.assertEqual(self.moved(outcome),
+                         {"rasters/res_resto.tif": f"{STAMP_DIR}/rasters/res_resto.tif"})
+        expected = (
+            *(orphans.Foreign(orphans.ForeignKind.FILE, rel) for rel in sorted(
+                foreign_files, key=str.casefold)),
+            orphans.Foreign(orphans.ForeignKind.TABLE, "Notas", False),
+            orphans.Foreign(orphans.ForeignKind.TABLE, "zonas_qgis", True),
+        )
+        self.assertEqual(outcome.foreign, expected)
+        listed_files = _quoted(*sorted(foreign_files, key=str.casefold))
+        self.assertEqual(outcome.warnings, (
+            MOVED_TEXT.format(folder=STAMP_DIR, files=_quoted("rasters/res_resto.tif")),
+            FOREIGN_TEXT.format(files=listed_files),
+            UNREGISTERED_TEXT.format(tables=_quoted("Notas", "zonas_qgis")),
+        ))
+        self.assertTrue(outcome.texts("en")[1].startswith("Files in the project data folders"))
+        after = self.files()
+        self.assertNothingDeleted(before, after)
+        for rel in foreign_files:
+            self.assertEqual(after[rel], before[rel], rel)
+        self.assertEqual(self.contents("zonas_qgis", "Notas", "res_valores", "res_capa_qgis"),
+                         tables_before)
+        self.assertTrue(outcome.recorded)
+        (found,) = self.logged(events.EventKind.UNREGISTERED_FOUND)
+        self.assertEqual(found.data, {"files": sorted(foreign_files, key=str.casefold),
+                                      "tables": ["Notas", "zonas_qgis"]})
+        self.assertEqual(found.message, " ".join(outcome.warnings[1:]))
+        self.assertIsNone(found.entity_kind)
+
+        # Lo mismo otra vez: no hay nada nuevo que registrar (tampoco con un resto que se
+        # aparta); algo nuevo, sí.
+        again = self.sweep()
+        self.assertEqual((again.foreign, again.recorded), (expected, False))
+        self.put("rasters/res_otro.tif")
+        moved = self.sweep()
+        self.assertEqual((set(self.moved(moved)), moved.foreign, moved.recorded),
+                         ({"rasters/res_otro.tif"}, expected, True))
+        self.assertEqual(len(self.logged(events.EventKind.UNREGISTERED_FOUND)), 1)
+        self.put("meshes/otro.obj")
+        state = self.table_state()
+        with mock.patch.object(type(self.project), "writable", property(lambda _s: False)):
+            locked = self.sweep(write=True)
+        unwritten = self.sweep(write=False)
+        for seen in (locked, unwritten):
+            self.assertIn(orphans.Foreign(orphans.ForeignKind.FILE, "meshes/otro.obj"),
+                          seen.foreign)
+            self.assertFalse(seen.recorded)
+        self.assertEqual(self.table_state(), state)
+        self.assertTrue(self.sweep().recorded)
+        self.assertEqual(len(self.logged(events.EventKind.UNREGISTERED_FOUND)), 2)
+
+    def test_ignoring_removes_from_the_next_warning(self) -> None:
+        """RF-008-62 (plan §5.4.9): ignorar un fichero ajeno o una capa sin registrar
+        (``gb_ignored``, con quién, cuándo y el motivo sin rutas, y su evento) lo quita del
+        aviso siguiente y no lo mueve ni lo cambia; ignorarlo otra vez no escribe nada. Lo que
+        no es ajeno ni está sin registrar (un dato, su tabla, una tabla interna o del
+        estándar, la fuente de una entrada, lo que no está, lo que lleva nombre de los
+        módulos, lo de una carpeta de originales sin entrada, que es un resto, o lo que no
+        está en una carpeta de datos) no se ignora, sin escribir nada."""
+        self.put("rasters/Mapa del cliente.tif")
+        self.put("originals/notas/leeme.txt")
+        self.put("rasters/res_mdt.bin")
+        self.produce("rasters/res_mdt.bin")
+        self.put("rasters/res_resto.tif")
+        self.put(f"originals/{UNKNOWN_UID}/plano.dxf")
+        self.put("rasters/Ortofoto.tif", b"II*\x00 orto")
+        self.put("rasters/Ortofoto.tif.aux.xml")
+        self.project_source("ortofoto", "raster", "rasters/Ortofoto.tif")
+        self.table_dataset("res_valores")
+        self.table_input("res_capa_qgis")
+        self.qgis('CREATE TABLE "Notas" (texto TEXT)',
+                  'CREATE TABLE "zonas_qgis" (fid INTEGER PRIMARY KEY, nombre TEXT)',
+                  "INSERT INTO gpkg_contents (table_name, data_type, identifier) VALUES "
+                  "('zonas_qgis', 'attributes', 'Zonas')")
+        self.put("exports/informe.pdf")
+        before = self.files()
+        tables_before = self.contents("Notas")
+
+        self.assertTrue(self.ignore("file", "rasters/Mapa del cliente.tif", IGNORE_REASON))
+        self.assertTrue(self.ignore(orphans.ForeignKind.TABLE, "notas"))
+
+        self.assertEqual(self.ignored(), [
+            ("file", "rasters/Mapa del cliente.tif", IGNORE_REASON_STORED, SESSION.user_host,
+             NOW),
+            ("table", "Notas", None, SESSION.user_host, NOW),
+        ])
+        events_ = self.logged(events.EventKind.ITEM_IGNORED)
+        self.assertEqual([(item.message, item.data) for item in events_], [
+            ("Se ignora el fichero «rasters/Mapa del cliente.tif»: ya no se avisa de él.",
+             {"kind": "file", "name": "rasters/Mapa del cliente.tif",
+              "reason": IGNORE_REASON_STORED}),
+            ("Se ignora la capa o tabla «Notas»: ya no se avisa de ella.",
+             {"kind": "table", "name": "Notas", "reason": None}),
+        ])
+        outcome = self.sweep(write=False)
+        self.assertEqual(outcome.foreign, (
+            orphans.Foreign(orphans.ForeignKind.FILE, "originals/notas/leeme.txt"),
+            orphans.Foreign(orphans.ForeignKind.TABLE, "zonas_qgis", True),
+        ))
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.contents("Notas"), tables_before)
+
+        state = (self.table_state(), self.ignored())
+        self.assertFalse(self.ignore("file", "RASTERS/mapa del cliente.tif"))
+        self.assertFalse(self.ignore("table", "Notas", "otra vez"))
+        self.assertEqual((self.table_state(), self.ignored()), state)
+        refused = (
+            ("file", "rasters/res_mdt.bin"),
+            ("file", "rasters/res_resto.tif"),
+            ("file", f"originals/{UNKNOWN_UID}/plano.dxf"),
+            ("file", "rasters/Ortofoto.tif"),
+            ("file", "rasters/Ortofoto.tif.aux.xml"),
+            ("file", "rasters/no_esta.tif"),
+            ("file", "exports/informe.pdf"),
+            ("file", "rasters"),
+            ("file", "originals/notas"),
+            ("table", "res_valores"),
+            ("table", "res_capa_qgis"),
+            ("table", "gb_input"),
+            ("table", "gpkg_contents"),
+            ("table", "no_esta"),
+        )
+        for kind, name in refused:
+            with self.subTest(kind=kind, name=name):
+                error = self.refused(messages.ProvenanceError, "core.ignore_not_foreign",
+                                     lambda conn, kind=kind, name=name: orphans.ignore(
+                                         conn, self.project, kind, name))
+                self.assertEqual(str(error), f"«{name}» no es un fichero ajeno ni una capa sin "
+                                             "registrar del proyecto: no hay nada que ignorar.")
+        for kind, name, error in (("capa", "Notas", ValueError), (1, "Notas", TypeError),
+                                  ("file", "", ValueError), ("table", None, TypeError),
+                                  ("file", "Q:/proyectos/x.tif", ValueError),
+                                  ("file", "rasters/../exports/informe.pdf", ValueError)):
+            with self.subTest(kind=kind, name=name):
+                self.refused(error, None, lambda conn, kind=kind, name=name: orphans.ignore(
+                    conn, self.project, kind, name))
+        self.assertEqual(self.ignored(), state[1])
+        for name in ("Foreign", "ForeignKind", "ignore"):
+            with self.subTest(name=name):
+                self.assertIn(name, datasets.__all__)
+                self.assertIs(getattr(datasets, name), getattr(orphans, name))
+        self.assertEqual((events.EventKind.UNREGISTERED_FOUND.value,
+                          events.EventKind.ITEM_IGNORED.value),
+                         ("unregistered_found", "item_ignored"))

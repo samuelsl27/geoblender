@@ -724,6 +724,78 @@ _CATALOG: tuple[Message, ...] = (
         "apartan: se apartarán al abrirlo en escritura.",
     ),
     Message("core.orphans_more", "and {count} more", "y {count} más"),
+    # Ficheros ajenos y capas sin registrar (T34; RF-008-62): el aviso con la lista (nada se
+    # mueve) y lo que se ignora.
+    Message(
+        "core.foreign_files",
+        "Files in the project data folders that belong to no dataset (they are not moved): "
+        "{files}. You can ignore them.",
+        "Ficheros ajenos en las carpetas de datos del proyecto, que no son de ningún dato (no "
+        "se mueven): {files}. Puede ignorarlos.",
+    ),
+    Message(
+        "core.unregistered_tables",
+        "Layers or tables of the project that are not registered (created outside Geoblender; "
+        "they are not touched): {tables}. Register them as inputs or ignore them.",
+        "Capas o tablas del proyecto sin registrar (creadas fuera de Geoblender; no se tocan): "
+        "{tables}. Regístrelas como entrada o ignórelas.",
+    ),
+    Message(
+        "core.ignored_file",
+        "File «{name}» is ignored: it is no longer warned about.",
+        "Se ignora el fichero «{name}»: ya no se avisa de él.",
+    ),
+    Message(
+        "core.ignored_table",
+        "Layer or table «{name}» is ignored: it is no longer warned about.",
+        "Se ignora la capa o tabla «{name}»: ya no se avisa de ella.",
+    ),
+    Message(
+        "core.ignore_not_foreign",
+        "«{name}» is not a foreign file nor an unregistered layer of the project: there is "
+        "nothing to ignore.",
+        "«{name}» no es un fichero ajeno ni una capa sin registrar del proyecto: no hay nada "
+        "que ignorar.",
+    ),
+    # Registrar una capa de un GeoPackage como entrada (``core.import_layer``, T34; RF-008-07,
+    # RF-008-11, RF-008-62): lo registrado, la capa que no está (el importador pide los
+    # ajustes), lo que no se registra y la fuente que no se encuentra al reimportar.
+    Message(
+        "core.layer_imported",
+        "Layer «{layer}» registered as input «{name}»; the imported data is in «{table}».",
+        "Capa «{layer}» registrada como entrada «{name}»; lo importado, en «{table}».",
+    ),
+    Message(
+        "core.import_layer_missing",
+        "Layer «{layer}» is not in «{source}» (it has: {layers}): indicate the import settings "
+        "again (the layer) to import «{name}».",
+        "La capa «{layer}» no está en «{source}» (tiene: {layers}): indique otra vez los "
+        "ajustes de la importación (la capa) para importar «{name}».",
+    ),
+    Message(
+        "core.import_layer_kind",
+        "«{layer}» of «{source}» is of type «{data_type}»: only feature layers and tables are "
+        "registered as inputs.",
+        "«{layer}» de «{source}» es de tipo «{data_type}»: solo se registran como entrada "
+        "capas de entidades y tablas.",
+    ),
+    Message(
+        "core.import_layer_not_gpkg",
+        "«{source}» is not a GeoPackage: it has no gpkg_contents.",
+        "«{source}» no es un GeoPackage: no tiene gpkg_contents.",
+    ),
+    Message(
+        "core.import_layer_dataset",
+        "Table «{layer}» is already a dataset of the project or an internal table: it is not "
+        "registered as an input.",
+        "La tabla «{layer}» ya es un dato del proyecto o una tabla interna: no se registra "
+        "como entrada.",
+    ),
+    Message(
+        "core.reimport_source_missing",
+        "The source of input «{name}» cannot be found ({file}): it cannot be reimported.",
+        "No se encuentra la fuente de la entrada «{name}» ({file}): no se puede reimportar.",
+    ),
     # Puerta antes de operar (T30; RF-008-10, RF-008-58): las tres salidas del aviso de una
     # entrada cambiada y la espera a la comprobación de apertura o a un hash largo.
     Message("core.choice_update", "Update", "Actualizar"),

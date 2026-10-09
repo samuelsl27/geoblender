@@ -31,14 +31,19 @@
 - :mod:`.gate`: la puerta antes de operar (:func:`can_run` → :class:`Ready`,
   :class:`Blocked` o :class:`Pending`) y lo que la comprobación de apertura aún no ha
   comprobado (:class:`CheckState`).
+- :mod:`.importer`: «Registrar como entrada» una capa de un GeoPackage (:func:`import_layer`,
+  la operación ``core.import_layer``, con lo importado en ``core_imported_<slug>``) y
+  «Actualizar» una entrada con el importador de su lector (:func:`reimport_input`; el de
+  ``core``, :data:`CORE_IMPORTERS`), que pide los ajustes que ya no sirven
+  (:class:`SettingsNeeded`, con su :class:`ReimportRequest`).
 
 La API pública (cifras, grafo, comprobaciones…) se reexporta aquí a medida que existe (plan
 008 §5.3.1). Nada de lo que se importe aquí puede importar ``core.project``:
 ``core.project.schema`` importa ``core.provenance.schema``, que pasa por este fichero.
 
 Por lo mismo, lo de :mod:`.operations`, :mod:`.figures`, :mod:`.graph`, :mod:`.stale`,
-:mod:`.recompute` y :mod:`.gate` (que traen ``core.datasets``, ``core.content``,
-``core.params`` y ``core.inputs``) se reexporta
+:mod:`.recompute`, :mod:`.gate` y :mod:`.importer` (que traen ``core.datasets``,
+``core.content``, ``core.params`` y ``core.inputs``) se reexporta
 **al usarlo** (``__getattr__``, PEP 562), no al importar el paquete: así abrir un proyecto no
 carga ni compila esos módulos (las pruebas de Blender rehabilitan la extensión muchas veces
 desde cero, con ``-B``).
@@ -60,6 +65,8 @@ from .contract import (
     FigureDef,
     ImporterDef,
     OperationDef,
+    ReimportRequest,
+    SettingsNeeded,
     figure_def,
     group_def,
     importer_def,
@@ -169,6 +176,17 @@ GATE_API: tuple[str, ...] = (
 )
 """Lo de :mod:`.gate` que se reexporta al usarlo."""
 
+IMPORTER_API: tuple[str, ...] = (
+    "CORE_IMPORTERS",
+    "IMPORTED_PREFIX",
+    "LayerImport",
+    "import_layer",
+    "imported_name",
+    "reimport_input",
+    "reimport_layer",
+)
+"""Lo de :mod:`.importer` que se reexporta al usarlo."""
+
 
 def __getattr__(name: str) -> Any:
     if name in OPERATIONS_API:
@@ -183,6 +201,8 @@ def __getattr__(name: str) -> Any:
         from . import recompute as source
     elif name in GATE_API:
         from . import gate as source
+    elif name in IMPORTER_API:
+        from . import importer as source
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(source, name)
@@ -192,16 +212,18 @@ def __getattr__(name: str) -> Any:
 
 def __dir__() -> list[str]:
     return sorted({*globals(), *OPERATIONS_API, *FIGURES_API, *GRAPH_API, *STALE_API,
-                   *RECOMPUTE_API, *GATE_API})
+                   *RECOMPUTE_API, *GATE_API, *IMPORTER_API})
 
 
 __all__ = [
     "ACCEPT_REVIEW",
     "CATALOG_ES",
+    "CORE_IMPORTERS",
     "CORE_OPERATIONS",
     "EXTERNAL_EDIT",
     "FIGURES",
     "GROUPS",
+    "IMPORTED_PREFIX",
     "IMPORTERS",
     "IMPORT_LAYER",
     "JOB_EXECUTORS",
@@ -230,6 +252,7 @@ __all__ = [
     "FigureSpec",
     "ImporterDef",
     "IngestOutcome",
+    "LayerImport",
     "ItemKind",
     "JobOutcome",
     "Message",
@@ -250,6 +273,8 @@ __all__ = [
     "RecomputePlan",
     "RecomputeRequest",
     "RecomputeUnit",
+    "ReimportRequest",
+    "SettingsNeeded",
     "SkipReason",
     "Skipped",
     "StaleItem",
@@ -272,6 +297,8 @@ __all__ = [
     "divergences",
     "figure_def",
     "group_def",
+    "import_layer",
+    "imported_name",
     "importer_def",
     "ingest_job",
     "interrupt_orphaned",
@@ -289,6 +316,8 @@ __all__ = [
     "register_group",
     "register_importer",
     "register_operation",
+    "reimport_input",
+    "reimport_layer",
     "render",
     "scope_key",
     "stale_items",

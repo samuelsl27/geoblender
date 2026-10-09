@@ -16,7 +16,9 @@ los módulos (ADR-0004).
   queda obsoleta, todas, y ninguna se recalcula sin las demás (RF-008-25).
 - :class:`FigureDef`: una cifra, con su unidad del catálogo y si admite cero o negativos.
 - :class:`ImporterDef`: cómo reimportar las entradas de un lector de contenido con sus
-  ajustes registrados (RF-008-11).
+  ajustes registrados (RF-008-11): su función recibe una :class:`ReimportRequest` y, si los
+  ajustes registrados ya no sirven (una capa o una columna que ya no está), los pide con
+  :class:`SettingsNeeded`.
 
 Una declaración incoherente es un error del programa: :class:`ValueError` (o
 :class:`TypeError` si un campo no es del tipo de Python que toca) al crearla o al
@@ -30,8 +32,9 @@ grupo se registra después de sus tipos y se quita antes.
 ``core`` declara sus operaciones en :data:`CORE_OPERATIONS` (las registra ``bl/``):
 ``core.external_edit`` (una edición hecha fuera de Geoblender, D9), ``core.accept_review``
 («dar por buena» una operación que espera revisión a mano, D8) y ``core.import_layer``
-(registrar una capa de un GeoPackage como entrada, D14; su importador llega con T34). Ninguna se
-repite sola. Python puro (ADR-0004).
+(registrar una capa de un GeoPackage como entrada, D14; su importador, el del lector
+``core.gpkg_layer``, está en ``core.provenance.importer``). Ninguna se repite sola. Python
+puro (ADR-0004).
 """
 
 from __future__ import annotations
@@ -57,8 +60,10 @@ type RecomputeFunction = Callable[[Any], Any]
 parámetros vigentes (``recompute.RecomputeRequest``) y devuelve la operación nueva, que la
 sustituye (``recompute.RecomputeHandle``: su ``OperationHandle``)."""
 type ReimportFunction = Callable[[Any], Any]
-"""``reimport(request) -> handle``: vuelve a importar una entrada con sus ajustes registrados
-(la petición la fija el registro de entradas, T21 y T34)."""
+"""``reimport(request) -> result``: vuelve a importar una entrada con sus ajustes registrados
+(:class:`ReimportRequest`) como una entrada nueva que la sustituye, y devuelve el resultado de
+su importación (algo con el ``uid`` de la operación nueva, como ``recompute.RecomputeHandle``);
+si los ajustes ya no sirven, :class:`SettingsNeeded`."""
 
 SCOPES: tuple[str, ...] = ("project", "version")
 """Ámbitos de un tipo de operación (``gb_operation.scope``; D-2): del proyecto (hoy, todas) o
@@ -314,6 +319,48 @@ class ImporterDef:
         return self.reader_id.partition(".")[0]
 
 
+@dataclass(frozen=True, slots=True)
+class ReimportRequest:
+    """Lo que recibe ``ImporterDef.reimport`` (RF-008-11; plan §5.4.8, «Actualizar»): el
+    proyecto, la entrada activa que se reimporta (``input_uid``), el motivo de la sustitución
+    (obligatorio: lo comprueba ``reimport_input``) y, con su nombre, los ajustes que pidió el
+    importador (``settings``: solo los que cambian; ``None``, los registrados) y la entrega
+    nueva (``received_at``, ``received_from``; ``None``: sin entrega)."""
+
+    project: Any
+    input_uid: str
+    reason: str
+    _: KW_ONLY
+    settings: Mapping[str, Any] | None = None
+    received_at: Any = None
+    received_from: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.input_uid, str) or not isinstance(self.reason, str):
+            raise TypeError(f"una reimportación indica la entrada (uid) y el motivo en texto, no "
+                            f"{self.input_uid!r} y {self.reason!r}")
+        if self.settings is not None:
+            if not isinstance(self.settings, Mapping):
+                raise TypeError(f"los ajustes de una reimportación son un diccionario (o "
+                                f"None), no {self.settings!r}")
+            object.__setattr__(self, "settings", MappingProxyType(dict(self.settings)))
+
+
+class SettingsNeeded(ProvenanceError):
+    """El importador no puede reimportar con los ajustes registrados (una capa o una columna
+    que ya no está en la fuente) y los pide (RF-008-11; spec §8, «Actualizar con una columna
+    que el cliente renombró»): un :class:`~.messages.ProvenanceError` con el texto para la
+    persona y, para el diálogo que los pide, ``needed`` (los ajustes que hay que volver a
+    indicar, por su clave) y ``choices`` (los valores posibles de cada uno, si se conocen)."""
+
+    def __init__(self, code: str, /, *, needed: Iterable[str],
+                 choices: Mapping[str, Iterable[str]] | None = None, **values: object) -> None:
+        super().__init__(code, **values)
+        self.needed: tuple[str, ...] = tuple(needed)
+        self.choices: Mapping[str, tuple[str, ...]] = MappingProxyType(
+            {key: tuple(items) for key, items in (choices or {}).items()})
+
+
 # --- Registros --------------------------------------------------------------------------------
 
 _LOCK = threading.Lock()
@@ -522,7 +569,7 @@ ACCEPT_REVIEW = "core.accept_review"
 versiones vigentes, «produce» las mismas salidas y sustituye a la revisada."""
 IMPORT_LAYER = "core.import_layer"
 """Registrar una capa de un GeoPackage como entrada (RF-008-62; D14), con lo importado en
-``core_imported_<slug>``; su importador llega con T34."""
+``core_imported_<slug>`` (``core.provenance.importer``)."""
 
 CORE_OPERATIONS: tuple[OperationDef, ...] = (
     OperationDef(EXTERNAL_EDIT, "1.0", "core", EXTERNAL_EDIT_MSGID, False),
