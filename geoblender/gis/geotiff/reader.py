@@ -27,12 +27,18 @@ en el fichero (desplazamiento y tamaño 0) quedan NaN. Devuelve un
 - **Entrada intacta** (RF-006-10): el fichero se abre solo para leer y nada se escribe
   junto a él. Avance y cancelación (RF-006-28), antes y después de cada bloque; la
   cancelación es ``jobs.worker_api.JobCancelled`` y no deja nada.
+
+El lector de contenido ``gis.geotiff@1`` (``gis.content``, T40) usa las mismas piezas sin
+cargar la rejilla entera: :func:`read_header` (la cabecera comprobada, con la referencia de la
+celda del noroeste tal como la da el fichero) y :func:`read_bands` (las celdas por bandas de
+filas, con el sin dato y los bloques que faltan en NaN, como :func:`read_geotiff`).
 """
 
 from __future__ import annotations
 
 import math
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, NoReturn
@@ -50,7 +56,7 @@ from ..raster import RasterSource
 from . import geokeys, tiff
 from .codecs import COMPRESSIONS, CodecError, compression_name, decode_block
 
-__all__ = ["read_geotiff"]
+__all__ = ["GeoTiffHeader", "read_bands", "read_geotiff", "read_header"]
 
 MAX_CELLS_KEY = "gis.import.max_cells"
 
@@ -99,6 +105,100 @@ class _Declared:
     notes: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class GeoTiffHeader:
+    """Lo que declara un GeoTIFF admitido antes de leer sus celdas (:func:`read_header`):
+    ``name`` y ``size`` (el nombre del fichero y sus bytes); ``x0`` e ``y0``, la referencia
+    de la celda del noroeste **tal como la da el fichero** (su esquina noroeste o, con
+    *PixelIsPoint*, su centro); ``dx`` y ``dy``; ``nodata`` (el de ``GDAL_NODATA`` o
+    ``None``); ``pixel_is_point``; ``crs`` y ``vertical`` declarados por sus claves (o
+    ``None``) y sus ``notes``; ``encoding`` (cómo está guardado, para el informe) y cómo se
+    leen sus bloques (``layout``)."""
+
+    name: str
+    size: int
+    x0: float
+    y0: float
+    dx: float
+    dy: float
+    nodata: float | None
+    pixel_is_point: bool
+    crs: CrsRef | None
+    vertical: VerticalRef | None
+    notes: tuple[str, ...]
+    encoding: str
+    layout: _Layout
+
+    @property
+    def width(self) -> int:
+        """Las columnas de la rejilla (``ImageWidth``)."""
+        return self.layout.width
+
+    @property
+    def height(self) -> int:
+        """Las filas de la rejilla (``ImageLength``)."""
+        return self.layout.height
+
+
+def read_header(
+    stream: BinaryIO, size: int, name: str, *, catalog: CrsCatalog | None = None
+) -> GeoTiffHeader:
+    """La cabecera del GeoTIFF abierto en ``stream`` (``size`` bytes; ``name``, para los
+    mensajes), comprobada **antes de leer los datos**: ``GisError`` si no se admite
+    (RF-006-09; plan §5.3.6). ``catalog``: el catálogo de CRS (por defecto, el de la
+    extensión)."""
+    try:
+        ifd = tiff.read_first_ifd(stream, size)
+        layout = _layout(ifd, name)
+        x0, y0, dx, dy = _georeference(ifd, name)
+        declared = _declared(ifd, name, load_catalog() if catalog is None else catalog)
+        _check_metadata(ifd, name)
+        nodata = _nodata(ifd, name)
+    except tiff.TiffError as error:
+        raise GisError(
+            "gis.tiff_invalid", obj=name, field="TIFF", file=name, detail=str(error)
+        ) from None
+    return GeoTiffHeader(
+        name=name,
+        size=size,
+        x0=x0,
+        y0=y0,
+        dx=dx,
+        dy=dy,
+        nodata=nodata,
+        pixel_is_point=declared.pixel_is_point,
+        crs=declared.crs,
+        vertical=declared.vertical,
+        notes=declared.notes,
+        encoding=_encoding(ifd, layout),
+        layout=layout,
+    )
+
+
+def read_bands(
+    stream: BinaryIO, header: GeoTiffHeader
+) -> Iterator[tuple[float, np.ndarray | None]]:
+    """Las celdas del GeoTIFF de ``header`` por bandas de filas de norte a sur, en float64
+    con NaN en el sin dato y en los bloques que no están en el fichero (como
+    :func:`read_geotiff`), sin cargar la rejilla entera. Tras cada bloque da la fracción de
+    bloques leídos y la banda que ese bloque termina (una tira, o la fila de teselas al leer
+    la última) o ``None``; cada banda es un array nuevo. ``GisError`` si un bloque está
+    dañado."""
+    layout = header.layout
+    match = _nodata_sample(layout.dtype, header.nodata)
+    total = len(layout.offsets)
+    band: np.ndarray | None = None
+    for index, (top, left, rows, cols, part) in enumerate(_blocks(stream, header)):
+        if band is None:
+            band = np.empty((rows, layout.width), np.float64)
+        _place(band[:, left : left + cols], part, match)
+        if left + cols < layout.width:
+            yield (index + 1) / total, None
+        else:
+            done, band = band, None
+            yield (index + 1) / total, done
+
+
 def read_geotiff(
     path: Path | str,
     *,
@@ -115,19 +215,9 @@ def read_geotiff(
     name = path.name
     with path.open("rb") as stream:
         size = os.fstat(stream.fileno()).st_size
-        try:
-            ifd = tiff.read_first_ifd(stream, size)
-            layout = _layout(ifd, name)
-            corner_x, corner_y, dx, dy = _georeference(ifd, name)
-            declared = _declared(ifd, name, load_catalog() if catalog is None else catalog)
-            _check_metadata(ifd, name)
-            nodata = _nodata(ifd, name)
-        except tiff.TiffError as error:
-            raise GisError(
-                "gis.tiff_invalid", obj=name, field="TIFF", file=name, detail=str(error)
-            ) from None
+        header = read_header(stream, size, name, catalog=catalog)
         limit = int(params.default(MAX_CELLS_KEY)) if max_cells is None else int(max_cells)
-        cells = layout.width * layout.height
+        cells = header.width * header.height
         if cells > limit:
             raise GisError(
                 "gis.raster_too_large",
@@ -137,23 +227,24 @@ def read_geotiff(
                 file=name,
                 limit=limit,
             )
-        values = _read_values(stream, size, layout, nodata, name, progress, cancelled)
+        values = _read_values(stream, header, progress, cancelled)
     if np.isnan(values).all():
         raise GisError("gis.raster_empty", obj=name, field="valores", file=name)
-    notes = declared.notes
-    if declared.pixel_is_point:
+    corner_x, corner_y, dx, dy = header.x0, header.y0, header.dx, header.dy
+    notes = header.notes
+    if header.pixel_is_point:
         corner_x -= dx / 2.0
         corner_y += dy / 2.0
         notes = (render("gis.pixel_is_point", file=name), *notes)
     return RasterSource(
-        grid=Grid(corner_x, corner_y, dx, dy, layout.width, layout.height),
+        grid=Grid(corner_x, corner_y, dx, dy, header.width, header.height),
         values=values,
-        source_dtype=layout.dtype.name,
-        nodata_value=nodata,
-        pixel_is_point=declared.pixel_is_point,
-        declared_crs=declared.crs,
-        declared_vertical=declared.vertical,
-        encoding=_encoding(ifd, layout),
+        source_dtype=header.layout.dtype.name,
+        nodata_value=header.nodata,
+        pixel_is_point=header.pixel_is_point,
+        declared_crs=header.crs,
+        declared_vertical=header.vertical,
+        encoding=header.encoding,
         notes=notes,
     )
 
@@ -436,17 +527,15 @@ def _nodata_sample(dtype: np.dtype, nodata: float | None) -> np.generic | None:
     return None
 
 
-def _read_values(
-    stream: BinaryIO,
-    size: int,
-    layout: _Layout,
-    nodata: float | None,
-    name: str,
-    progress: Progress | None,
-    cancelled: Cancelled | None,
-) -> np.ndarray:
-    match = _nodata_sample(layout.dtype, nodata)
-    values = np.empty((layout.height, layout.width), np.float64)
+def _blocks(
+    stream: BinaryIO, header: GeoTiffHeader, cancelled: Cancelled | None = None
+) -> Iterator[tuple[int, int, int, int, np.ndarray | None]]:
+    """Los bloques (tiras o teselas) en el orden del fichero: su fila y su columna de
+    arriba a la izquierda, sus filas y columnas dentro de la imagen y sus muestras en el tipo
+    del fichero, recortadas a ellas, o ``None`` si el bloque no está en el fichero
+    (``SPARSE_OK`` de GDAL: sin dato). ``cancelled`` se consulta antes de cada bloque."""
+    layout = header.layout
+    name = header.name
     across = -(-layout.width // layout.block_w)
     total = len(layout.offsets)
     for index, (offset, count) in enumerate(zip(layout.offsets, layout.counts, strict=True)):
@@ -454,21 +543,46 @@ def _read_values(
             raise JobCancelled(f"Cancelado al leer «{name}» en el bloque {index + 1} de {total}")
         if layout.tiled:
             row, col = divmod(index, across)
-            top, left, rows = row * layout.block_h, col * layout.block_w, layout.block_h
+            top, left, coded = row * layout.block_h, col * layout.block_w, layout.block_h
         else:
             top, left = index * layout.block_h, 0
-            rows = min(layout.block_h, layout.height - top)
-        target = values[top : top + rows, left : left + layout.block_w]
-        if count == 0:  # bloque que no está en el fichero (SPARSE_OK de GDAL): sin dato
-            target[...] = np.nan
-        else:
-            samples = _block(stream, size, layout, offset, count, rows, name, index, total)
-            part = samples[: target.shape[0], : target.shape[1]]
-            target[...] = part
-            if match is not None:
-                target[part == match] = np.nan
+            coded = min(layout.block_h, layout.height - top)
+        rows = min(layout.block_h, layout.height - top)
+        cols = min(layout.block_w, layout.width - left)
+        part = None
+        if count != 0:
+            samples = _block(stream, header.size, layout, offset, count, coded, name, index,
+                             total)
+            part = samples[:rows, :cols]
+        yield top, left, rows, cols, part
+
+
+def _place(target: np.ndarray, part: np.ndarray | None, match: np.generic | None) -> None:
+    """Copia las muestras de un bloque en ``target`` (float64) con el sin dato en NaN; un
+    bloque que no está en el fichero, todo NaN."""
+    if part is None:
+        target[...] = np.nan
+        return
+    target[...] = part
+    if match is not None:
+        target[part == match] = np.nan
+
+
+def _read_values(
+    stream: BinaryIO,
+    header: GeoTiffHeader,
+    progress: Progress | None,
+    cancelled: Cancelled | None,
+) -> np.ndarray:
+    layout = header.layout
+    match = _nodata_sample(layout.dtype, header.nodata)
+    values = np.empty((layout.height, layout.width), np.float64)
+    total = len(layout.offsets)
+    for index, (top, left, rows, cols, part) in enumerate(_blocks(stream, header, cancelled)):
+        _place(values[top : top + rows, left : left + cols], part, match)
         if progress is not None:
-            progress((index + 1) / total, f"Leyendo «{name}»: bloque {index + 1} de {total}")
+            progress((index + 1) / total,
+                     f"Leyendo «{header.name}»: bloque {index + 1} de {total}")
     return values
 
 

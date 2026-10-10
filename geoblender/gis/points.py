@@ -206,6 +206,32 @@ def _field(fields: Sequence[str], index: int | None) -> str:
     return fields[index].strip()
 
 
+def check_rows_options(
+    columns: Sequence[str], mapping: ColumnMapping, decimal: str
+) -> tuple[list[str], int]:
+    """La cabecera en texto y las columnas que espera cada fila (las de la cabecera o, sin
+    ella, las que usa la correspondencia), tras comprobar las opciones de
+    :func:`points_from_rows`: ``ValueError`` o ``TypeError`` si no son válidas (un error del
+    programa: el asistente solo ofrece las válidas)."""
+    if decimal not in DECIMALS:
+        raise ValueError(f"decimal «{decimal}» no admitido: {', '.join(DECIMALS)}")
+    if not isinstance(mapping, ColumnMapping):
+        raise TypeError("mapping es un ColumnMapping")
+    headers = [str(name) for name in columns]
+    if headers and mapping.needed > len(headers):
+        raise ValueError(f"la correspondencia usa la columna {mapping.needed} y la "
+                         f"cabecera tiene {len(headers)}")
+    return headers, len(headers) if headers else mapping.needed
+
+
+def row_has_columns(fields: Sequence[str], expected: int, header: bool) -> bool:
+    """Si una fila tiene las columnas que espera (``expected``): ni de menos ni, con
+    cabecera, de más con algo escrito (si no, ``gis.row_columns``)."""
+    count = len(fields)
+    extra = count > expected and any(f.strip() for f in fields[expected:])
+    return not (count < expected or (header and extra))
+
+
 def points_from_rows(
     columns: Sequence[str],
     rows: Sequence[Sequence[str]],
@@ -225,18 +251,10 @@ def points_from_rows(
     Las filas no se modifican. ``ValueError`` o ``TypeError`` si las opciones no son
     válidas (un error del programa: el asistente solo ofrece las válidas).
     """
-    if decimal not in DECIMALS:
-        raise ValueError(f"decimal «{decimal}» no admitido: {', '.join(DECIMALS)}")
-    if not isinstance(mapping, ColumnMapping):
-        raise TypeError("mapping es un ColumnMapping")
-    headers = [str(name) for name in columns]
-    if headers and mapping.needed > len(headers):
-        raise ValueError(f"la correspondencia usa la columna {mapping.needed} y la "
-                         f"cabecera tiene {len(headers)}")
+    headers, expected = check_rows_options(columns, mapping, decimal)
     numbers = list(range(1, len(rows) + 1)) if row_numbers is None else list(row_numbers)
     if len(numbers) != len(rows):
         raise ValueError(f"row_numbers tiene {len(numbers)} números para {len(rows)} filas")
-    expected = len(headers) if headers else mapping.needed
     axes = (("X", mapping.x), ("Y", mapping.y), ("Z", mapping.z))
     rejected: list[Rejection] = []
     found: list[tuple[int, list[float], str, str]] = []
@@ -250,10 +268,8 @@ def points_from_rows(
 
     for number, fields in zip(numbers, rows, strict=True):
         line_id = _field(fields, mapping.line)
-        count = len(fields)
-        extra = count > expected and any(f.strip() for f in fields[expected:])
-        if count < expected or (headers and extra):
-            reject(number, "gis.row_columns", line_id, value=count, expected=expected)
+        if not row_has_columns(fields, expected, bool(headers)):
+            reject(number, "gis.row_columns", line_id, value=len(fields), expected=expected)
             continue
         xyz: list[float] = []
         for axis, index in axes:

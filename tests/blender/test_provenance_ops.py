@@ -137,6 +137,9 @@ SYNTHETIC_OP = "jobs.provenance_selftest"  # el tipo de operación del operador 
 SYNTHETIC_IDNAME = "gbtest.provenance_selftest"  # fuera del catálogo, como gbdemo.*
 SELFTEST_PARAMS = {"op": "chunked_sum", "n": 1000, "chunks": 1, "sleep_s": 0.0}  # en hilo
 PENDING_TEXT = "pendiente de incorporar"
+# Los lectores de contenido de la topografía (spec 006, T40), los registra bl/ops/gis.py.
+GIS_READERS = ("gis.asc@1", "gis.geotiff@1", "gis.gpkg_layer@1", "gis.points_text@1",
+               "gis.xyz_grid@1")
 DATA = ROOT / "tests" / "data" / "core" / "provenance"
 LAYER = "limites"
 INPUTS_PANEL = "GEOBLENDER_PT_core_inputs"
@@ -673,6 +676,34 @@ class ProvenanceSessionTest(unittest.TestCase):
             self.assertNotIn(shown, text)
         self.assertIsNotNone(records.read_record(handle.job_dir).ingested_at)
         self.assertEqual(records.read_record(handle.job_dir).executor, "inprocess")
+
+    def test_gis_readers_register_and_unregister(self) -> None:
+        """RF-006-26, RF-008-09 (spec 006, T40; ADR-0025 §2; principio 8): con la extensión
+        habilitada están los cinco lectores de contenido de ``gis`` y su lector de tablas de
+        ``interop`` (``gis`` no puede importarlo, ARQ-07); ``bl/ops/gis.py`` los quita y los
+        vuelve a poner, las dos cosas idempotentes, y quitarlos deja el registro como
+        estaba."""
+        gis_ops = _module("bl.ops.gis")
+        readers = _module("core.content.readers")
+        content = _module("gis.content")
+        read_table = _module("interop.csv_tables").read_table
+
+        def ours() -> list[str]:
+            return sorted(key for key in readers.READERS if key.startswith("gis."))
+
+        self.assertEqual(ours(), list(GIS_READERS))
+        self.assertIs(content.table_reader(), read_table)
+        self.addCleanup(gis_ops.register)  # la clase sigue con la extensión habilitada
+        for _ in range(2):
+            gis_ops.unregister()
+            self.assertEqual((ours(), content.table_reader()), ([], None))
+        before = dict(readers.READERS)
+        for _ in range(2):
+            gis_ops.register()
+            self.assertEqual(ours(), list(GIS_READERS))
+            self.assertIs(content.table_reader(), read_table)
+        gis_ops.unregister()
+        self.assertEqual(dict(readers.READERS), before)
 
     # Ayudas para los módulos (T48) --------------------------------------------------------
 

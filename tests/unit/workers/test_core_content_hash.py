@@ -354,18 +354,25 @@ class InThreadTest(unittest.TestCase):
 class WorkerReadersTest(unittest.TestCase):
     """La lista estática de lectores del envoltorio en proceso aparte."""
 
-    def test_static_list_is_core(self) -> None:
-        """ADR-0025 §2 (plan §5.3.3): ``workers/core_content_hash.py`` carga los lectores de
-        su lista estática de paquetes (``("core",)`` en la 008): los de ``core`` que pueden
-        ir al trabajo, y los registra antes de llamar a ``jobs.content_hash.run`` (la
-        comparación con lo que registra ``bl`` está en ``tests/blender``)."""
-        self.assertEqual(tuple(worker.READER_PACKAGES), ("core",))
-        expected = tuple(found for found in builtin.CONTENT_READERS if found.worker)
+    def test_static_list_is_core_and_gis(self) -> None:
+        """ADR-0025 §2 (plan §5.3.3; plan 006 §5.6.2, RF-006-26):
+        ``workers/core_content_hash.py`` carga los lectores de su lista estática de paquetes
+        (``("core", "gis")`` desde la 006, T40): los de ``core`` y los de ``gis`` que pueden
+        ir al trabajo, y los registra antes de llamar a ``jobs.content_hash.run``, con el
+        lector de tablas que necesitan los de ``gis`` (la comparación con lo que registra
+        ``bl`` está en ``tests/blender``; el trabajo con ellos, en
+        ``tests/unit/gis/test_content_readers.py``)."""
+        self.assertEqual(tuple(worker.READER_PACKAGES), ("core", "gis"))
+        gis_content = worker.READER_PACKAGES["gis"]
+        expected = tuple(found for found in (*builtin.CONTENT_READERS,
+                                             *gis_content.CONTENT_READERS) if found.worker)
         self.assertEqual(worker.worker_readers(), expected)
+        self.addCleanup(gis_content.use_table_reader, gis_content.use_table_reader(None))
         with mock.patch.dict(readers._REGISTRY, clear=True):
             worker.register_readers()
             worker.register_readers()  # idempotente
             self.assertEqual(sorted(readers.READERS), sorted(found.id for found in expected))
+        self.assertIs(gis_content.table_reader(), worker.read_table)
         self.assertIs(worker.run, content_hash.run)
 
 

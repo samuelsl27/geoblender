@@ -6,12 +6,15 @@ resultado.
 ``jobs`` (spec 004) tiene además su propio registro: el seguimiento de los trabajos en
 segundo plano (``JobMonitor``), los textos de los trabajos y sus tipos de trabajo. También
 ``core_provenance`` (spec 008): los textos de la procedencia y de los parámetros.
+
+``gis`` (spec 006) registra lo que la topografía declara a la 008 (hoy, sus lectores de
+contenido), después de lo de ``core``.
 """
 
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
-from . import core, core_provenance, geo, jobs, ui
+from . import core, core_provenance, geo, gis, jobs, ui
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): core (spec 002), ui y geo (spec 003; geo: el recorte de la vista, D-1), jobs
@@ -19,11 +22,14 @@ from . import core, core_provenance, geo, jobs, ui
 classes: tuple[type, ...] = (*core.classes, *ui.classes, *geo.classes, *jobs.classes,
                              *core_provenance.classes)
 
+# Los de la topografía (spec 006), después.
+classes += gis.classes
+
 
 def register() -> None:
     """Registra ``classes`` en orden y después lo propio de ``core_provenance`` y de
     ``jobs``; si ya lo están, no hace nada. Si uno de los dos falla, deshace lo anterior
-    antes de propagar el error."""
+    antes de propagar el error. Después, lo de ``gis``: si falla, lo deshace todo."""
     register_classes(classes)
     try:
         core_provenance.register()
@@ -32,11 +38,17 @@ def register() -> None:
         core_provenance.unregister()
         unregister_classes(classes)
         raise
+    try:
+        gis.register()
+    except BaseException:
+        unregister()
+        raise
 
 
 def unregister() -> None:
-    """Deshace lo propio de ``jobs`` y de ``core_provenance`` y desregistra ``classes`` en
-    orden inverso; omite lo que no está registrado."""
+    """Deshace lo propio de ``gis``, de ``jobs`` y de ``core_provenance`` y desregistra
+    ``classes`` en orden inverso; omite lo que no está registrado."""
+    gis.unregister()
     jobs.unregister()
     core_provenance.unregister()
     unregister_classes(classes)

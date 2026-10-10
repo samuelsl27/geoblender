@@ -34,6 +34,10 @@ cuyos centros son esos puntos.
 - **Entrada intacta** (RF-006-10): el fichero se abre solo para leer y nada se escribe
   junto a él. Avance y cancelación por trozos (RF-006-28); la cancelación es
   ``jobs.worker_api.JobCancelled`` y no deja nada.
+
+El lector de contenido ``gis.xyz_grid@1`` (``gis.content``, T40) usa las mismas piezas:
+:func:`point_steps` (los puntos por trozos, con su avance) y :func:`fit_grid` (la malla, con
+la referencia de la celda del noroeste tal como la dan los puntos: su centro).
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ import bisect
 import math
 import os
 import re
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, NoReturn
@@ -56,7 +61,18 @@ from .messages import GisError
 from .ports import Cancelled, Progress
 from .raster import RasterSource
 
-__all__ = ["CHUNK_BYTES", "DECIMALS", "GRID_TOLERANCE_M", "SEPARATORS", "read_xyz_grid"]
+__all__ = [
+    "CHUNK_BYTES",
+    "DECIMALS",
+    "GRID_TOLERANCE_M",
+    "SEPARATORS",
+    "XyzGrid",
+    "XyzPoints",
+    "check_options",
+    "fit_grid",
+    "point_steps",
+    "read_xyz_grid",
+]
 
 MAX_CELLS_KEY = "gis.import.max_cells"
 CHUNK_BYTES = 4 << 20
@@ -120,6 +136,29 @@ class _LineIndex:
         return first_line + offset if lines is None else int(lines[offset])
 
 
+@dataclass(frozen=True, slots=True)
+class XyzPoints:
+    """Los puntos de un XYZ (:func:`point_steps`): ``xyz`` (n, 3) float64 en el orden del
+    fichero, la línea de cada uno (``lines``) y lo que hay antes de los datos (``prefix``)."""
+
+    xyz: np.ndarray
+    lines: _LineIndex
+    prefix: _Prefix
+
+
+@dataclass(frozen=True, slots=True)
+class XyzGrid:
+    """La malla de unos puntos (:func:`fit_grid`): su rejilla (``grid``), sus cotas
+    (``values``, NaN en las celdas sin punto) y ``x0`` e ``y0``, la referencia de la celda
+    del noroeste tal como la dan los puntos: su centro (la X de la primera columna y la Y de
+    la fila norte)."""
+
+    grid: Grid
+    values: np.ndarray
+    x0: float
+    y0: float
+
+
 def read_xyz_grid(
     path: Path | str,
     *,
@@ -135,15 +174,34 @@ def read_xyz_grid(
     ``gis.import.max_cells`` de ``gis.params``). ``ValueError`` si las opciones no son
     válidas (también coma como separador y como decimal); ``GisError`` si el fichero no se
     admite (RF-006-09); ``JobCancelled`` si ``cancelled()`` pide parar."""
-    _check_options(separator, decimal)
+    check_options(separator, decimal)
     path = Path(path)
     name = path.name
     limit = int(params.default(MAX_CELLS_KEY)) if max_cells is None else int(max_cells)
     with path.open("rb") as stream:
         size = os.fstat(stream.fileno()).st_size
-        prefix = _read_prefix(stream, name, separator, decimal)
-        xyz, lines = _read_points(stream, size, prefix, decimal, limit, name, progress,
-                                  cancelled)
+        points = _drive(point_steps(stream, size, name, separator=separator, decimal=decimal,
+                                    limit=limit, chunk_bytes=CHUNK_BYTES, cancelled=cancelled),
+                        progress)
+    fitted = fit_grid(points, name, limit)
+    grid = fitted.grid
+    return RasterSource(
+        grid=grid,
+        values=fitted.values,
+        source_dtype="float64",
+        nodata_value=None,
+        pixel_is_point=True,
+        declared_crs=None,
+        declared_vertical=None,
+        encoding=_encoding(points.prefix, decimal, len(points.xyz), grid.ncols, grid.nrows),
+    )
+
+
+def fit_grid(points: XyzPoints, name: str, limit: int) -> XyzGrid:
+    """La malla de ``points`` (A5): ``gis.raster_empty`` sin puntos o sin ninguna cota,
+    ``gis.xyz_not_grid`` si no forman una malla y ``gis.raster_too_large`` con más celdas
+    que ``limit`` (``name``, el del fichero)."""
+    xyz, lines = points.xyz, points.lines
     if not len(xyz):
         raise GisError("gis.raster_empty", obj=name, field=_FIELD_POINTS, file=name)
     west_centre, dx, columns = _axis(xyz[:, 0], "X", name, lines)
@@ -162,19 +220,25 @@ def read_xyz_grid(
     values = values.reshape(nrows, ncols)
     if np.isnan(values).all():
         raise GisError("gis.raster_empty", obj=name, field=_FIELD_POINTS, file=name)
-    return RasterSource(
-        grid=grid,
-        values=values,
-        source_dtype="float64",
-        nodata_value=None,
-        pixel_is_point=True,
-        declared_crs=None,
-        declared_vertical=None,
-        encoding=_encoding(prefix, decimal, len(xyz), ncols, nrows),
-    )
+    return XyzGrid(grid, values, west_centre, -minus_top)
 
 
-def _check_options(separator: str | None, decimal: str) -> None:
+def _drive(
+    steps: Generator[tuple[float, str], None, XyzPoints], progress: Progress | None
+) -> XyzPoints:
+    """Avanza :func:`point_steps` hasta el final, con su avance."""
+    while True:
+        try:
+            fraction, text = next(steps)
+        except StopIteration as stop:
+            return stop.value
+        if progress is not None:
+            progress(fraction, text)
+
+
+def check_options(separator: str | None, decimal: str) -> None:
+    """``ValueError`` si ``separator`` (de :data:`SEPARATORS` o ``None``, que se detecta) o
+    ``decimal`` (de :data:`DECIMALS`) no se admiten, también la coma como los dos."""
     if separator is not None and separator not in SEPARATORS:
         raise ValueError(f"separador {separator!r} no admitido: {list(SEPARATORS)} o None")
     if decimal not in DECIMALS:
@@ -252,20 +316,27 @@ def _read_prefix(stream: BinaryIO, name: str, separator: str | None,
     return _Prefix(bom, header, chosen, separator is None, offset, lines)
 
 
-def _read_points(
+def point_steps(
     stream: BinaryIO,
     size: int,
-    prefix: _Prefix,
+    name: str,
+    *,
+    separator: str | None,
     decimal: str,
     limit: int,
-    name: str,
-    progress: Progress | None,
-    cancelled: Cancelled | None,
-) -> tuple[np.ndarray, _LineIndex]:
-    """Los puntos (n, 3) float64 de las líneas de datos, por trozos cortados en un fin de
-    línea (una línea nunca queda partida), y la línea de cada uno."""
+    chunk_bytes: int = CHUNK_BYTES,
+    cancelled: Cancelled | None = None,
+) -> Generator[tuple[float, str], None, XyzPoints]:
+    """Los puntos del XYZ abierto en ``stream`` (``size`` bytes): lee lo que hay antes de los
+    datos y las líneas de datos por trozos de ``chunk_bytes`` cortados en un fin de línea
+    (una línea nunca queda partida). Da, tras cada trozo, la fracción leída y el texto del
+    avance, y devuelve (``StopIteration.value``) los :class:`XyzPoints`. ``GisError`` si una
+    línea no vale o si hay más puntos que ``limit``; ``cancelled`` se consulta antes de
+    cada trozo (``JobCancelled``)."""
+    check_options(separator, decimal)
+    prefix = _read_prefix(stream, name, separator, decimal)
     total = size - prefix.offset
-    chunks = max(1, -(-total // CHUNK_BYTES))
+    chunks = max(1, -(-total // chunk_bytes))
     stream.seek(prefix.offset)
     blocks: list[np.ndarray] = []
     index = _LineIndex()
@@ -274,7 +345,7 @@ def _read_points(
         if cancelled is not None and cancelled():
             raise JobCancelled(
                 f"Cancelado al leer «{name}» en el trozo {chunk + 1} de {chunks}")
-        data = stream.read(min(CHUNK_BYTES, total - done))
+        data = stream.read(min(chunk_bytes, total - done))
         # Sin bytes, el fichero se ha acortado mientras se leía: lo que queda es el final.
         done = done + len(data) if data else total
         _check_text(data, name, line + 1)  # «carry» no tiene ningún fin de línea
@@ -295,10 +366,9 @@ def _read_points(
                                    value=points, file=name, limit=limit)
             line += part.count(b"\n")
         chunk += 1
-        if progress is not None:
-            progress(done / total, f"Leyendo «{name}»: trozo {chunk} de {chunks}")
+        yield done / total, f"Leyendo «{name}»: trozo {chunk} de {chunks}"
     xyz = np.concatenate(blocks) if blocks else np.empty((0, 3), np.float64)
-    return xyz, index
+    return XyzPoints(xyz, index, prefix)
 
 
 def _counts(text: bytes) -> np.ndarray:

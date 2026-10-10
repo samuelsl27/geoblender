@@ -29,6 +29,10 @@ array float64. Devuelve un :class:`~.raster.RasterSource` con lo que declara la 
 - **Entrada intacta** (RF-006-10): el ASC y su ``.prj`` se abren solo para leer y nada se
   escribe junto a ellos. Avance y cancelación antes y después de cada trozo; la
   cancelación es ``jobs.worker_api.JobCancelled`` y no deja nada.
+
+El lector de contenido ``gis.asc@1`` (``gis.content``, T40) usa las mismas piezas sin cargar
+la rejilla entera: :func:`read_header` (la cabecera comprobada, con la referencia de la celda
+del noroeste tal como la da el fichero) y :func:`value_chunks` (las cotas por trozos).
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from __future__ import annotations
 import math
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, NoReturn
@@ -49,7 +54,8 @@ from .messages import GisError, render
 from .ports import Cancelled, CrsService, Progress
 from .raster import RasterSource
 
-__all__ = ["CHUNK_BYTES", "read_asc", "read_prj"]
+__all__ = ["CHUNK_BYTES", "AscHeader", "read_asc", "read_header", "read_prj",
+           "value_chunks"]
 
 MAX_CELLS_KEY = "gis.import.max_cells"
 CHUNK_BYTES = 4 << 20
@@ -74,9 +80,11 @@ _KEYS = {
 
 
 @dataclass(frozen=True, slots=True)
-class _Header:
-    """La cabecera comprobada: rejilla, sin dato, si referencia centros, cómo da el paso,
-    si el fichero empieza con BOM y dónde empieza el cuerpo."""
+class AscHeader:
+    """La cabecera comprobada (:func:`read_header`): rejilla, sin dato, si referencia
+    centros, cómo da el paso, si el fichero empieza con BOM, dónde empieza el cuerpo y
+    ``x0`` e ``y0``, la referencia de la celda del noroeste **tal como la da el fichero**
+    (su esquina noroeste con ``xllcorner``; su centro con ``xllcenter``)."""
 
     grid: Grid
     nodata: float | None
@@ -84,6 +92,8 @@ class _Header:
     steps: str
     bom: bool
     body_offset: int
+    x0: float
+    y0: float
 
 
 def read_asc(
@@ -103,7 +113,7 @@ def read_asc(
     name = path.name
     with path.open("rb") as stream:
         size = os.fstat(stream.fileno()).st_size
-        header = _read_header(stream, name)
+        header = read_header(stream, name)
         grid = header.grid
         limit = int(params.default(MAX_CELLS_KEY)) if max_cells is None else int(max_cells)
         cells = grid.ncols * grid.nrows
@@ -197,9 +207,10 @@ def _is_key(token: bytes) -> bool:
     return False
 
 
-def _read_header(stream: BinaryIO, name: str) -> _Header:
-    """Lee las líneas de la cabecera (hasta la primera que no empieza por una clave) y
-    las comprueba; ``gis.asc_header_invalid`` si falta o sobra algo."""
+def read_header(stream: BinaryIO, name: str) -> AscHeader:
+    """Lee las líneas de la cabecera del ASC abierto en ``stream`` (hasta la primera que no
+    empieza por una clave) y las comprueba **antes de leer los datos**;
+    ``gis.asc_header_invalid`` si falta o sobra algo (``name``, el del fichero)."""
     bom = stream.read(len(_BOM)) == _BOM
     offset = len(_BOM) if bom else 0
     stream.seek(offset)
@@ -234,7 +245,7 @@ def _read_header(stream: BinaryIO, name: str) -> _Header:
     return _check_header(fields, name, bom, offset)
 
 
-def _check_header(fields: dict[str, str], name: str, bom: bool, offset: int) -> _Header:
+def _check_header(fields: dict[str, str], name: str, bom: bool, offset: int) -> AscHeader:
     ncols = _count(fields, "ncols", name)
     nrows = _count(fields, "nrows", name)
     x_key = _origin(fields, "xllcorner", "xllcenter", name)
@@ -271,8 +282,9 @@ def _check_header(fields: dict[str, str], name: str, bom: bool, offset: int) -> 
         north = y + nrows * dy
     if not (math.isfinite(west) and math.isfinite(north)):
         _invalid(name, y_key, fields[y_key], "la rejilla se sale de los números finitos")
-    return _Header(Grid(west, north, dx, dy, ncols, nrows), nodata, centre, steps, bom,
-                   offset)
+    first_y = y + (nrows - 1) * dy if centre else north
+    return AscHeader(Grid(west, north, dx, dy, ncols, nrows), nodata, centre, steps, bom,
+                     offset, x, first_y)
 
 
 def _required(fields: dict[str, str], key: str, name: str) -> str:
@@ -346,28 +358,33 @@ def _last_space(data: bytes) -> int:
     return -1
 
 
-def _read_values(
+def value_chunks(
     stream: BinaryIO,
     size: int,
-    header: _Header,
+    header: AscHeader,
     name: str,
-    progress: Progress | None,
-    cancelled: Cancelled | None,
-) -> np.ndarray:
-    """Las cotas del cuerpo, por trozos que se cortan en un separador (un número nunca
-    queda partido entre dos trozos), en un array (nrows, ncols) float64."""
+    *,
+    chunk_bytes: int = CHUNK_BYTES,
+    cancelled: Cancelled | None = None,
+) -> Iterator[tuple[float, str, np.ndarray]]:
+    """Las cotas del cuerpo del ASC abierto en ``stream`` (``size`` bytes), por trozos de
+    ``chunk_bytes`` que se cortan en un separador (un número nunca queda partido entre dos
+    trozos), en el orden del fichero: tras cada trozo, la fracción leída, el texto del
+    avance y sus cotas en float64 (las que caben en la rejilla; las que sobran solo se
+    cuentan). Al terminar, ``gis.asc_value_count`` si no son ``ncols·nrows``; un valor que
+    no es un número, ``gis.asc_value_invalid``. ``cancelled`` se consulta antes de cada
+    trozo (``JobCancelled``)."""
     grid = header.grid
     expected = grid.ncols * grid.nrows
-    flat = np.empty(expected, np.float64)
     found = 0  # valores vistos (los que sobran solo se cuentan)
     total = size - header.body_offset
-    chunks = max(1, -(-total // CHUNK_BYTES))
+    chunks = max(1, -(-total // chunk_bytes))
     stream.seek(header.body_offset)
     done, index, carry = 0, 0, b""
     while done < total:
         if cancelled is not None and cancelled():
             raise JobCancelled(f"Cancelado al leer «{name}» en el trozo {index + 1} de {chunks}")
-        data = stream.read(min(CHUNK_BYTES, total - done))
+        data = stream.read(min(chunk_bytes, total - done))
         # Sin bytes, el fichero se ha acortado mientras se leía: lo que queda es el final
         # (y la cuenta de valores lo dirá).
         done = done + len(data) if data else total
@@ -379,12 +396,10 @@ def _read_values(
             carry = b""
         tokens = part.split()
         wanted = tokens[: max(0, expected - found)]
-        if wanted:
-            flat[found : found + len(wanted)] = _parse(wanted, found, grid.ncols, name)
+        values = _parse(wanted, found, grid.ncols, name) if wanted else np.empty(0)
         found += len(tokens)
         index += 1
-        if progress is not None:
-            progress(done / total, f"Leyendo «{name}»: trozo {index} de {chunks}")
+        yield done / total, f"Leyendo «{name}»: trozo {index} de {chunks}", values
     if found != expected:
         raise GisError(
             "gis.asc_value_count",
@@ -396,6 +411,27 @@ def _read_values(
             ncols=grid.ncols,
             nrows=grid.nrows,
         )
+
+
+def _read_values(
+    stream: BinaryIO,
+    size: int,
+    header: AscHeader,
+    name: str,
+    progress: Progress | None,
+    cancelled: Cancelled | None,
+) -> np.ndarray:
+    """Las cotas del cuerpo (:func:`value_chunks` con :data:`CHUNK_BYTES`) en un array
+    (nrows, ncols) float64."""
+    grid = header.grid
+    flat = np.empty(grid.ncols * grid.nrows, np.float64)
+    found = 0
+    for fraction, text, values in value_chunks(stream, size, header, name,
+                                               chunk_bytes=CHUNK_BYTES, cancelled=cancelled):
+        flat[found : found + len(values)] = values
+        found += len(values)
+        if progress is not None:
+            progress(fraction, text)
     return flat.reshape(grid.shape)
 
 
@@ -423,7 +459,7 @@ def _parse(tokens: list[bytes], start: int, ncols: int, name: str) -> np.ndarray
     raise AssertionError("numpy rechazó un trozo sin ningún valor que rechazar")
 
 
-def _encoding(header: _Header) -> str:
+def _encoding(header: AscHeader) -> str:
     """Cómo está escrito el fichero, para el informe (``ESRI ASCII Grid, texto ASCII,
     xllcorner/yllcorner, cellsize``)."""
     parts = [

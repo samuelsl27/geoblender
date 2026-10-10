@@ -17,6 +17,10 @@ la 005 (convergencia de cuadrícula para el azimut de los sondeos).
   (PROJ aislado y sin red), resuelto por ``adapters.registry``. Si no se puede usar (otra
   versión de pyproj, RF-006-31), el adaptador lanza :class:`CrsServiceUnavailable`, que
   ``gis.crs`` convierte en el error para el usuario.
+- :class:`TableReader` y :class:`TextTable`: leer un fichero de texto con columnas (CSV, TXT,
+  XYZ disperso) como una tabla de textos; lo implementa ``interop.csv_tables.read_table`` de
+  la 005, que ``gis`` no puede importar (nivel 10, ARQ-07): se lo dan ``bl/ops/gis.py`` y el
+  envoltorio del trabajo ``core_content_hash`` (``gis.content.use_table_reader``; T40).
 - ``Progress`` y ``Cancelled``: el avance (fracción de 0 a 1 y texto) y la consulta de
   cancelación que reciben las operaciones largas (RF-006-28).
 
@@ -32,7 +36,7 @@ Un ``ports.py`` solo importa la biblioteca estándar, numpy y ``core`` (ARQ-10):
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -55,6 +59,8 @@ __all__ = [
     "CrsServiceUnavailable",
     "Progress",
     "RasterIO",
+    "TableReader",
+    "TextTable",
     "Transform",
     "TransformInfo",
     "TriangulationError",
@@ -138,6 +144,29 @@ class RasterIO(Protocol):
         """Escribe ``raster`` (``gis.raster.Raster``) en ``path`` con ``profile``, con
         temporal y renombrado: nunca un fichero a medias."""
         ...
+
+
+class TextTable(Protocol):
+    """Una tabla de textos leída de un fichero: ``columns``, los nombres de las columnas
+    (vacía sin cabecera), y ``rows``, los campos de cada fila tal como están escritos, en el
+    orden del fichero (``interop.csv_tables.Table``)."""
+
+    @property
+    def columns(self) -> Sequence[str]: ...
+
+    @property
+    def rows(self) -> Sequence[Sequence[str]]: ...
+
+
+class TableReader(Protocol):
+    """Lee un fichero de texto con columnas (RF-006-12): ``encoding`` y ``separator``
+    declarados (nunca adivinados) y ``header_row``, las líneas antes de la cabecera (``None``:
+    sin cabecera). Las opciones que no admite son ``ValueError``; un fichero que no se puede
+    leer así, un ``GeoblenderError`` con su línea. El fichero solo se lee (RF-006-10)."""
+
+    def __call__(
+        self, path: Path, *, encoding: str, separator: str, header_row: int | None
+    ) -> TextTable: ...
 
 
 @runtime_checkable
