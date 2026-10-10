@@ -49,13 +49,20 @@ final). Después:
    ``core_content_hash`` de la 004, T47: ``core`` no importa ``jobs``), con la comprobación
    esperando paso a paso; sin trabajos, también en el hilo. Cerrar la comprobación cancela los
    trabajos pendientes;
-8. **registro** (``registro``): **todas las escrituras en una sola transacción final** con
-   ``Project.try_write`` —las operaciones interrumpidas, las entradas cambiadas o que vuelven,
-   las ediciones externas, lo que falta, lo dañado, los originales, los eventos de los restos,
-   de lo ajeno, de las definiciones y de los algoritmos, «revisar» y la **obsolescencia
-   completa** de la caché (``refresh_all``, que corrige una caché alterada)—; si otro programa
-   está leyendo (QGIS), se reintenta en el paso siguiente sin perder nada (I-7). Lo que cambió
-   entre el hash y el registro no se registra: queda para la próxima (I-5).
+8. **registro** (``registro``): la **obsolescencia completa** de la caché, por pasos y sin
+   escribir (T65; RNF-008-12: ``stale.full_difference_steps`` mira sin cargar el grafo si
+   alguna operación tiene una causa directa; si la hay, lee el grafo por páginas y deduce por
+   trozos; y lee la caché, con lo que corrige una caché alterada), anotando antes el contador de
+   cambios de la cabecera de ``project.gpkg``; si se mueve mientras se calcula (otro programa
+   o la propia sesión escribió), se vuelve a calcular. Después, **todas las escrituras en una
+   sola transacción final** corta con ``Project.try_write`` —la diferencia de la caché (solo
+   si hay algo que cambiar), las operaciones interrumpidas, las entradas cambiadas o que
+   vuelven, las ediciones externas, lo que falta, lo dañado, los originales, los eventos de los
+   restos, de lo ajeno, de las definiciones y de los algoritmos y «revisar»—; si el contador ya
+   no es el anotado, no escribe nada (nada calculado sobre otra base) y se vuelve a calcular;
+   si otro programa está leyendo (QGIS), se reintenta en el paso siguiente sin perder nada
+   (I-7). Lo que cambió entre el hash y el registro no se registra: queda para la próxima
+   (I-5).
 
 En **solo lectura** todo se detecta igual (también lo que hay que hashear) y no se escribe ni
 se mueve nada: el resultado es el informe de la sesión, que se vuelve a detectar y se registra
@@ -115,6 +122,7 @@ from ..datasets.orphans import DATA_FOLDERS, OrphanOutcome, orphan_steps, record
 from ..datasets.orphans import PHASES as ORPHAN_PHASES
 from ..datasets.tracking import TableState, table_states
 from ..errors import GeoblenderError
+from ..gpkg.header import read_header, side_file
 from ..i18n import LANGUAGES
 from ..inputs import registry as input_registry
 from ..inputs.check import (
@@ -150,7 +158,13 @@ from .gate import CheckState, PendingItem
 from .graph import installed_versions
 from .messages import render
 from .operations import ItemKind, OperationStatus, claimed_paths, interrupt_orphaned
-from .stale import CacheUpdate, refresh_all
+from .stale import (
+    CacheDifference,
+    CacheUpdate,
+    declared_versions,
+    full_difference_steps,
+    write_difference,
+)
 
 if TYPE_CHECKING:
     from ..sysinfo import SessionInfo
@@ -190,6 +204,13 @@ VALIDATE_ROWS = 500
 """Los datos cuyo registro se vuelve a leer de una vez antes de darlos por cambiados."""
 PROVENANCE_SCHEMA = 2
 """El esquema desde el que el proyecto tiene la procedencia: uno anterior no se comprueba."""
+MANY_DATASETS = 2_000
+"""Los datos registrados desde los que la comprobación de apertura guarda entre pasos tantos
+objetos de Python (la foto de los datos y, si algo está obsoleto, el grafo) que pueden provocar
+en uno de sus pasos una recolección completa del GC de Python, de 30–50 ms con el montón de
+Blender (T65; RNF-008-12): quien la lleva hace antes esa recolección (:func:`holds_many_objects`).
+Con menos, lo que guarda es poco frente a lo que la provoca (una cuarta parte de lo que ya
+vive), y recolectar al abrir costaría esos milisegundos en cada apertura."""
 SNAPSHOT_FIELDS: tuple[str, ...] = (
     "status", "content_sha256", "operation_uid", "tracked_size", "tracked_mtime_ns",
     "tracked_last_change", "tracked_schema_sha256",
@@ -712,6 +733,17 @@ def _provenance(project: OpenCheckProject) -> bool:
     """Si el proyecto tiene la procedencia (esquema 2 o posterior, con su base)."""
     return not (getattr(project, "header_only", False)
                 or getattr(project, "schema_version", PROVENANCE_SCHEMA) < PROVENANCE_SCHEMA)
+
+
+def holds_many_objects(project: OpenCheckProject) -> bool:
+    """Si la comprobación de apertura de ``project`` guardará entre pasos muchos objetos de
+    Python: tiene la procedencia y al menos :data:`MANY_DATASETS` datos registrados (una
+    lectura, sin contarlos). Quien la lleva por pasos hace entonces antes, al abrir, una
+    recolección completa del GC de Python (T65; RNF-008-12)."""
+    if not _provenance(project):
+        return False
+    with project.read() as conn:
+        return int(conn.execute(_LAST_FID_SQL).fetchone()[0] or 0) >= MANY_DATASETS
 
 
 def survey_steps(project: OpenCheckProject, registries: Registries | None = None, *,
@@ -1262,6 +1294,31 @@ def _algorithm_steps(project: OpenCheckProject, registries: Registries,
 _RECORDED_INPUTS: tuple[InputVerdict, ...] = (InputVerdict.SAME, InputVerdict.CHANGED,
                                               InputVerdict.RESTORED)
 """Lo de una entrada que escribe la transacción final (lo demás no se registra)."""
+_CACHE_SHARE = 0.9  # la parte del paso 8 que es calcular la obsolescencia completa
+_WRITTEN_SHARE = 0.95  # … y hasta la transacción final (el resultado va en el paso siguiente)
+
+
+def _stamp(project: OpenCheckProject) -> tuple[Any, ...]:
+    """Lo que dice si alguien escribió en la base del proyecto: el contador de cambios de su
+    cabecera (en diario clásico sube con cada transacción confirmada) y, por si QGIS la dejó en
+    WAL, el modo y el tamaño y la fecha de su ``-wal`` (en WAL el contador no sube)."""
+    path = Path(project.database_path)
+    header = read_header(path)
+    return header.change_counter, header.journal, _stat(side_file(path, "-wal"))
+
+
+class _Rebased(Exception):
+    """La base cambió desde que se calculó la obsolescencia completa: la transacción final no
+    escribe nada y se vuelve a calcular."""
+
+
+@dataclass(frozen=True)
+class _CacheBasis:
+    """La obsolescencia completa calculada por pasos y la base sobre la que se calculó (su
+    :func:`_stamp` al empezar)."""
+
+    stamp: tuple[Any, ...]
+    difference: CacheDifference
 
 
 @dataclass
@@ -1580,30 +1637,85 @@ class _Settlement:
     def record_steps(self, survey: _Survey | None,
                      registries: Registries | None) -> Generator[Progress, None,
                                                                  OpenCheckOutcome]:
-        """El paso 8: todo en una transacción con ``try_write``, reintentada en el paso
-        siguiente mientras otro programa lee (sin escribir nada mientras tanto); en solo
-        lectura, nada. Devuelve el resultado."""
+        """El paso 8: en la comprobación de apertura, la obsolescencia completa por pasos
+        (:meth:`_cache_steps`); después, todo en una transacción con ``try_write``,
+        reintentada en el paso siguiente mientras otro programa lee (sin escribir nada
+        mientras tanto) y, si la base cambió desde el cálculo, sin escribir nada y con el
+        cálculo otra vez; en solo lectura, nada. Devuelve el resultado."""
         yield self.meter.at(RECORD_STEP, 0.0)
         written: _Written | None = None
         if self.writing and self.project.writable and (survey is not None or self._anything()):
+            full = survey is not None and registries is not None
+            basis: _CacheBasis | None = None
             while True:
-                attempt = self.project.try_write(
-                    lambda conn: self._write(conn, survey, registries))
+                if full and basis is None:
+                    basis = yield from self._cache_steps(registries)  # type: ignore[arg-type]
+                    yield self.meter.at(RECORD_STEP, _CACHE_SHARE)  # la transacción, aparte
+                chosen = basis
+                try:
+                    attempt = self.project.try_write(
+                        lambda conn: self._write(conn, survey, registries, chosen))
+                except _Rebased:
+                    basis = None
+                    continue
                 if attempt.state is WriteState.DONE:
                     break
-                yield self.meter.at(RECORD_STEP, 0.5, message=attempt.message)
+                yield self.meter.at(RECORD_STEP, _CACHE_SHARE, message=attempt.message)
             written = attempt.value
+            yield self.meter.at(RECORD_STEP, _WRITTEN_SHARE)  # el resultado, en otro paso
             return self._outcome(survey, written, written.inputs)
         if any(finding.status is InputStatus.CHANGED for finding in self._hashed()):
             with self.project.read() as conn:
                 return self._outcome(survey, None, self._with_dependents(conn))
         return self._outcome(survey, None, tuple(self._hashed()))
 
+    def _cache_steps(self, registries: Registries) -> Generator[Progress, None, _CacheBasis]:
+        """La obsolescencia completa por pasos, leyendo sin escribir
+        (``stale.full_difference_steps``, con las versiones que declara el Geoblender que abre
+        el proyecto), con la base sobre la que se calcula: el :func:`_stamp` de antes de
+        empezar. Si cambia entre dos pasos, vuelve a empezar. Entre pasos mantiene abierta
+        su conexión de lectura, sin ninguna transacción (no impide escribir a nadie); cerrar
+        la comprobación la cierra."""
+        while True:
+            stamp = _stamp(self.project)
+            steps = full_difference_steps(self.project.read, versions=registries.versions,
+                                          lap=self.pacer.lap)
+            self.pacer.restart()
+            try:
+                while True:
+                    try:
+                        done = next(steps)
+                    except StopIteration as stop:
+                        return _CacheBasis(stamp, stop.value)
+                    yield self.meter.at(RECORD_STEP, _CACHE_SHARE * done)
+                    self.pacer.restart()
+                    if _stamp(self.project) != stamp:
+                        break
+            finally:
+                steps.close()
+
     def _write(self, conn: sqlite3.Connection, survey: _Survey | None,
-               registries: Registries | None) -> _Written:
-        """La transacción final, en ``conn`` (se repite entera si hay que reintentarla)."""
+               registries: Registries | None, basis: _CacheBasis | None) -> _Written:
+        """La transacción final, en ``conn`` (se repite entera si hay que reintentarla): si la
+        base ya no es la de ``basis`` (:class:`_Rebased`), nada; si no, primero la diferencia
+        de la caché con la obsolescencia completa y después lo encontrado, que pone al día la
+        caché por región con las versiones declaradas: queda como si la completa se hubiera
+        hecho al final."""
         project = self.project
+        if basis is not None and _stamp(project) != basis.stamp:
+            raise _Rebased
         now = format_utc(project.clock.now())
+        cache = None
+        if basis is not None:
+            cache = write_difference(conn, now=now, difference=basis.difference)
+        with declared_versions(None if registries is None else registries.versions):
+            return self._record(conn, survey, registries, now, cache)
+
+    def _record(self, conn: sqlite3.Connection, survey: _Survey | None,
+                registries: Registries | None, now: str,
+                cache: CacheUpdate | None) -> _Written:
+        """Lo encontrado, en la transacción final (después de la diferencia de la caché)."""
+        project = self.project
         if survey is not None and survey.outcome.interrupted:
             interrupt_orphaned(project, conn=conn)  # type: ignore[arg-type]
         findings = self._with_dependents(conn)
@@ -1611,7 +1723,6 @@ class _Settlement:
         late, datasets = _record_all(conn, project, self.checks, self.originals)
         orphans = False
         definitions: tuple[DefinitionChange, ...] = ()
-        cache = None
         if survey is not None and registries is not None:
             orphans = record_orphans(conn, project,  # type: ignore[arg-type]
                                      survey.outcome.orphans)
@@ -1631,7 +1742,6 @@ class _Settlement:
                                    "installed": item.installed,
                                    "geoblender_version": item.geoblender_version,
                                    "operations": item.operations, "results": item.results})
-            cache = refresh_all(conn, now=now, versions=registries.versions)
         return _Written(findings, frozenset(late) | frozenset(inputs_late),
                         MappingProxyType(dict(datasets)), orphans, definitions, cache)
 

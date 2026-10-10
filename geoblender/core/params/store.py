@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import builtins
 import datetime as dt
+import functools
 import json
 import numbers
 import sqlite3
@@ -373,6 +374,21 @@ def definition_sha256(defn: ParamDef) -> str:
     return sha256_bytes(canonical_json(definition_fields(defn)))
 
 
+@functools.lru_cache(maxsize=4096)
+def _cached_sha256(defn: ParamDef) -> str:
+    return definition_sha256(defn)
+
+
+def _declared_sha256(defn: ParamDef) -> str:
+    """:func:`definition_sha256` memorizada por definición (una ``ParamDef`` no cambia): la
+    piden «revisar» y la comprobación de apertura para cada parámetro registrado en cada
+    apertura (unos 6 ms con los 300 de D-13, en la transacción final; T65)."""
+    try:
+        return _cached_sha256(defn)
+    except TypeError:  # un valor que no se puede usar como clave: sin memorizar
+        return definition_sha256(defn)
+
+
 def undeclared_sha256(key: str) -> str:
     """La «huella» de un parámetro que ningún módulo declara: la que guarda
     ``def_sha256`` cuando una persona lo confirma así (RF-008-60), para que no vuelva a
@@ -450,7 +466,7 @@ def _review(record: ParameterRecord, defn: ParamDef | None) -> dict[str, Any] | 
         declared = None
         problem = None
     else:
-        declared_sha = definition_sha256(defn)
+        declared_sha = _declared_sha256(defn)
         if declared_sha == record.def_sha256:
             return None
         declared = {**definition_fields(defn), "def_sha256": declared_sha}

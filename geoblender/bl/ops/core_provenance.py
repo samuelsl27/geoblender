@@ -27,7 +27,9 @@ ADR-0025).
   :data:`SESSION` (:class:`ProvenanceSession`) escucha los cambios de proyecto de la sesión
   (``bl.scene.project_session.add_listener``). Al abrir un proyecto con la procedencia (esquema
   2 o posterior, también en solo lectura) **no comprueba nada** —el proyecto queda usable como
-  en la 002 (RNF-002-02)—: deja todo pendiente para la puerta (``CheckState``) y un temporizador
+  en la 002 (RNF-002-02)—: carga ``core.provenance.checks`` y, en un proyecto grande, hace una
+  recolección completa del GC de Python (T65: ninguna de las dos cabe en un tic de 20 ms, y
+  así no caen en uno), deja todo pendiente para la puerta (``CheckState``) y un temporizador
   **persistente** (:func:`check_tick`, cada :data:`TICK_S` s) que un tic después empieza la
   comprobación de apertura (``core.provenance.checks.open_check_steps``) y la avanza un paso
   por tic, de :data:`STEP_BUDGET_S` s como mucho, con su progreso para la barra de estado
@@ -160,6 +162,7 @@ from __future__ import annotations
 
 import datetime as dt
 import functools
+import gc
 import json
 import logging
 import os
@@ -332,7 +335,7 @@ class ProvenanceSession:
         (``core.provenance.gate.CheckState``), para la puerta. Si hay una comprobación prevista
         que aún no ha empezado, todo está pendiente."""
         if self._pending is None:
-            from ...core.provenance.gate import CheckState  # al usarlo: abrir no lo carga
+            from ...core.provenance.gate import CheckState  # al usarlo: registrar no lo carga
 
             self._pending = CheckState()
             if self._next == _OPEN:
@@ -418,12 +421,14 @@ class ProvenanceSession:
     def on_project_changed(self, project: Project | None) -> None:
         """La sesión pasó a tener ``project`` (o ninguno): para lo que hubiera del anterior,
         lo olvida y, si el nuevo tiene la procedencia, deja todo pendiente y la comprobación
-        de apertura para el próximo tic, sin hacer nada más (RNF-002-02 no cambia)."""
+        de apertura para el próximo tic, sin comprobar nada (RNF-002-02 no cambia); antes la
+        prepara (:func:`_prepare_checks`), en lo que tarda abrir y no en un tic."""
         if project is self._project:
             return
         self.reset()
         self._project = project
         if project is not None and self.unavailable() is None:
+            _prepare_checks(project)
             self._next = _OPEN
             _schedule()
 
@@ -518,7 +523,7 @@ class ProvenanceSession:
         return None
 
     def _start(self, kind: str) -> Iterator[Progress]:
-        from ...core.provenance import checks  # al usarlo: abrir no lo carga
+        from ...core.provenance import checks  # al usarlo (ya cargado: _prepare_checks)
 
         project = self._project
         pending = self.pending
@@ -581,6 +586,21 @@ class ProvenanceSession:
         project_session.notify(tr("The project check stopped: {error}",
                                   error=str(exc) or type(exc).__name__))
         statusbar.redraw()
+
+
+def _prepare_checks(project: Project) -> None:
+    """Lo que la comprobación de apertura necesita antes de su primer tic, al recibir la sesión
+    ``project`` con la procedencia (la carga diferida de la sesión; T65, RNF-008-12): carga
+    ``core.provenance.checks`` (al usarlo, nunca al registrar: en frío son unos 40 ms, que
+    irían en un tic de 20 ms) y, si su comprobación guardará muchos objetos entre tics
+    (``checks.holds_many_objects``: un proyecto grande), hace una recolección completa del GC
+    de Python (unos 30–50 ms con el montón de Blender, que no se pueden partir): así la que
+    acabarían provocando esos objetos no cae en uno de sus tics. Todo va en lo que tarda abrir
+    (RNF-002-02: ≤ 0,5 s hasta que es usable)."""
+    from ...core.provenance import checks  # se carga aquí, no en el primer tic
+
+    if checks.holds_many_objects(project):
+        gc.collect()
 
 
 def _outcome_of(step: Progress) -> object | None:

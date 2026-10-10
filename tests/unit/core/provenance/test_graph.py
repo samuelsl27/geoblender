@@ -28,11 +28,16 @@ La carga del grafo y la lista de lo obsoleto (RNF-008-02, T64) se comparan con l
 (``whole_load_graph`` y ``whole_stale_items``, la referencia: un JOIN a ``gb_operation`` por
 cada fila leída, todos los nodos de lo obsoleto y un texto por elemento): idénticas en cada
 cálculo completo de estas pruebas y en grafos aleatorios.
+
+La obsolescencia completa por pasos de la comprobación de apertura (RNF-008-12, T65: el grafo
+por páginas, la deducción por trozos y la diferencia con la caché) se compara en grafos
+aleatorios con ``load_graph``, ``deduce`` y ``refresh_all``: idénticas.
 """
 
 from __future__ import annotations
 
 import ast
+import contextlib
 import random
 import re
 import sqlite3
@@ -1526,6 +1531,191 @@ class RandomListTest(unittest.TestCase):
             world.conn.close()
         self.assertIn("SEARCH d USING INDEX sqlite_autoindex_gb_dataset_1 (uid=?)", plan)
         self.assertFalse([line for line in plan if line.startswith("SCAN d")], plan)
+
+
+# --- Grafos aleatorios: la completa por pasos (T65) --------------------------------------------
+
+RANDOM_STEPS = 30
+
+
+def _always() -> bool:
+    """Un ritmo que para tras cada unidad de trabajo."""
+    return True
+
+
+def _whole_rows(conn: sqlite3.Connection) -> list[Any]:
+    return sorted(conn.execute("SELECT item_kind, item_uid, cause_kind, subject_uid, since "
+                               "FROM gb_stale").fetchall())
+
+
+def _heal(world: RandomProject, versions: Mapping[str, str]) -> None:
+    """Nada obsoleto en ``world`` sin tocar su caché: los datos y las entradas vigentes, lo que
+    leyó cada operación es lo que hay y su algoritmo, el instalado."""
+    conn = world.conn
+    conn.execute("UPDATE gb_dataset SET status = 'current'")
+    conn.execute("UPDATE gb_input SET status = 'current'")
+    conn.execute("UPDATE gb_operation_io SET content_sha256 = (SELECT d.content_sha256 FROM "
+                 "gb_dataset AS d WHERE d.uid = gb_operation_io.item_uid) "
+                 "WHERE direction = 'in' AND item_kind = 'dataset'")
+    conn.execute("UPDATE gb_operation_param SET value_sha256 = (SELECT cur.value_sha256 FROM "
+                 "gb_parameter AS cur WHERE cur.uid = gb_operation_param.parameter_uid)")
+    conn.executemany("UPDATE gb_operation SET op_version = ? WHERE op_type = ?",
+                     [(version, op_type) for op_type, version in versions.items()])
+
+
+def _scramble(world: RandomProject) -> None:
+    """Las operaciones de ``world`` terminan en otro orden que el de registro (y algunas a la
+    vez): quién escribió cada versión va en el orden en que terminaron."""
+    moments = [world.stamp() for _ in range(3)]
+    uids = [str(uid) for (uid,) in world.conn.execute("SELECT uid FROM gb_operation")]
+    world.conn.executemany("UPDATE gb_operation SET finished_at = ? WHERE uid = ?",
+                           [(world.rng.choice(moments), uid) for uid in uids])
+
+
+_CONSUMED = (
+    "SELECT io.item_uid FROM gb_operation_io AS io JOIN gb_operation AS op "
+    "ON op.uid = io.operation_uid WHERE io.direction = 'in' AND io.item_kind = '{kind}' "
+    "AND op.status = 'done'{extra} ORDER BY io.fid LIMIT 1"
+)
+_NOT_WRITTEN = (" AND NOT EXISTS (SELECT 1 FROM gb_operation_io AS w WHERE w.operation_uid = "
+                "io.operation_uid AND w.direction = 'out' AND w.item_uid = io.item_uid)")
+# Una causa directa de cada clase, sola (sobre un mundo sin nada obsoleto).
+_ONE_CAUSE: dict[str, str] = {
+    "dato que falta": (f"UPDATE gb_dataset SET status = 'missing' WHERE uid = "
+                       f"({_CONSUMED.format(kind='dataset', extra='')})"),
+    "dato sustituido": (f"UPDATE gb_dataset SET status = 'superseded' WHERE uid = "
+                        f"({_CONSUMED.format(kind='dataset', extra='')})"),
+    "otro contenido": (f"UPDATE gb_dataset SET content_sha256 = 'otro' WHERE uid = "
+                       f"({_CONSUMED.format(kind='dataset', extra=_NOT_WRITTEN)})"),
+    "entrada descartada": (f"UPDATE gb_input SET status = 'discarded' WHERE uid = "
+                           f"({_CONSUMED.format(kind='input', extra='')})"),
+    "otro valor": ("UPDATE gb_parameter SET value_sha256 = 'otro' WHERE uid = (SELECT "
+                   "p.parameter_uid FROM gb_operation_param AS p JOIN gb_operation AS op "
+                   "ON op.uid = p.operation_uid WHERE op.status = 'done' ORDER BY p.fid LIMIT 1)"),
+    "algoritmo": "UPDATE gb_operation SET op_version = '0.9' WHERE uid = (SELECT uid FROM "
+                 "gb_operation WHERE status = 'done' AND op_type = 'res.t1' ORDER BY fid LIMIT 1)",
+}
+
+
+class RandomStepsTest(unittest.TestCase):
+    def each_cause_alone(self, world: RandomProject, versions: Mapping[str, str],
+                         what: str, seen: set[str]) -> None:
+        """Sobre ``world`` sin nada obsoleto, cada causa directa sola: mirarlo sin cargar el
+        grafo (por páginas de una fila) dice lo mismo que ``deduce`` (que hay alguna)."""
+        for name, sql in _ONE_CAUSE.items():
+            world.conn.execute("SAVEPOINT una")
+            try:
+                if world.conn.execute(sql).rowcount:
+                    seen.add(name)
+                    scan = graph_mod.CauseScan(versions)
+                    while not scan.finished:
+                        scan.read(world.conn, rows=1, lap=_always)
+                    expected = graph_mod.deduce(graph_mod.load_graph(world.conn),
+                                                versions=versions)
+                    self.assertEqual((scan.caused, bool(expected.causes)), (True, True),
+                                     f"{what}, {name}")
+            finally:
+                world.conn.execute("ROLLBACK TO una")
+                world.conn.execute("RELEASE una")
+
+    def test_steps_match_the_whole_on_random_graphs(self) -> None:
+        """RNF-008-12, RF-008-24, RF-008-25 (plan §5.4.6, paso 8; T65): en grafos aleatorios
+        —como los de la lista, con algoritmos más nuevos y operaciones que terminan en otro
+        orden en la mitad, la caché alterada en uno de cada tres, cambios que la caché aún no
+        sabe y, en uno de cada cuatro, nada obsoleto con la caché de antes—, leer el grafo por
+        páginas de 1 a 3 filas parando tras cada una da el grafo de ``load_graph`` y el de
+        antes de T64; deducir por pasos parando tras cada operación o dato da lo de ``deduce``;
+        mirar si alguna operación tiene una causa directa sin cargar el grafo (de una vez o por
+        páginas) dice si ``deduce`` encuentra alguna causa (también con cada clase de causa
+        directa sola, en los mundos sin nada obsoleto) y, si no, da las operaciones y los datos
+        del grafo; la diferencia de la caché por pasos tiene las filas
+        que añade y borra ``refresh_all`` sobre la misma base, y escribirla deja la caché
+        igual, fila a fila y con sus fechas. Soltar lo leído deja el grafo vacío."""
+        seeds = random.Random(20261010)
+        newer = {**_RANDOM_VERSIONS, "res.t0": "1.2"}
+        changed = caused = 0
+        seen: set[str] = set()
+        for case in range(RANDOM_STEPS):
+            world = HistoryProject(random.Random(seeds.getrandbits(64)))
+            try:
+                for _ in range(world.rng.randint(6, 18)):
+                    world.step()
+                world.start_early()
+                versions = newer if case % 2 else _RANDOM_VERSIONS
+                world.refresh()
+                if case % 3 == 2:
+                    world.alter()
+                for _ in range(world.rng.randint(0, 3)):
+                    world.step()  # sin poner la caché al día
+                if case % 2:
+                    _scramble(world)
+                if case % 4 == 3:
+                    _heal(world, versions)
+                what = f"caso {case}"
+                rows = world.rng.randint(1, 3)
+                pages = graph_mod.GraphPages()
+                reads = 0
+                while not pages.finished:
+                    pages.read(world.conn, rows=rows, lap=_always)
+                    reads += 1
+                graph = pages.graph()
+                same_graph(self, graph, graph_mod.load_graph(world.conn), what)
+                same_graph(self, graph, whole_load_graph(world.conn), what)
+                self.assertGreater(reads, len(graph.operations) // rows, what)
+                expected = graph_mod.deduce(graph, versions=versions)
+                deducing = graph_mod.deduce_steps(graph, versions=versions, lap=_always)
+                paused = 0
+                while True:
+                    try:
+                        next(deducing)
+                    except StopIteration as stop:
+                        state = stop.value
+                        break
+                    paused += 1
+                for name in ("versions", "causes", "operations", "datasets", "review",
+                             "current_figures"):
+                    self.assertEqual(getattr(state, name), getattr(expected, name),
+                                     f"{what}, {name}")
+                self.assertGreaterEqual(paused, len(graph.operations), what)
+                for paged in (None, rows):
+                    scan = graph_mod.CauseScan(versions)
+                    while not scan.finished:
+                        scan.read(world.conn, rows=paged, lap=_always)
+                    self.assertEqual(scan.caused, bool(expected.causes), f"{what}, {paged}")
+                    if not scan.caused:
+                        self.assertEqual((scan.operations, scan.datasets),
+                                         (list(graph.operations), list(graph.datasets)), what)
+                caused += scan.caused
+                if case % 4 == 3:
+                    self.each_cause_alone(world, versions, what, seen)
+                for _ in pages.release(_always):
+                    pass
+                self.assertEqual((len(graph.operations), len(graph.datasets)), (0, 0), what)
+                steps = stale_mod.full_difference_steps(
+                    lambda: contextlib.nullcontext(world.conn), versions=versions, lap=_always,
+                    rows=rows)
+                difference = graph_mod.drain(steps)
+                now = world.stamp()
+                world.conn.execute("BEGIN")
+                update = stale_mod.refresh_all(world.conn, now=now, versions=versions)
+                whole = _whole_rows(world.conn)
+                world.conn.execute("ROLLBACK")
+                self.assertEqual((difference.operations, difference.datasets, difference.added,
+                                  difference.removed),
+                                 (update.operations, update.datasets, update.added,
+                                  update.removed), what)
+                world.conn.execute("BEGIN")
+                written = stale_mod.write_difference(world.conn, now=now, difference=difference)
+                self.assertEqual(_whole_rows(world.conn), whole, what)
+                world.conn.execute("COMMIT")
+                self.assertEqual(written, update, what)
+                changed += not difference.empty
+            finally:
+                world.conn.close()
+        self.assertGreater(changed, RANDOM_STEPS // 3)
+        self.assertGreater(caused, 0)
+        self.assertEqual(seen, set(_ONE_CAUSE))
+        self.assertLess(caused, RANDOM_STEPS)
 
 
 if __name__ == "__main__":

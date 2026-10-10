@@ -105,6 +105,9 @@ demostración de la 008:
 - RF-008-58: «Cancelar las comprobaciones» (``geoblender.core_cancel_checks``, el botón del
   campo «Comprobando el proyecto…») para la comprobación en marcha enseguida.
 
+T65 (RNF-008-12): la sesión carga ``core.provenance.checks`` y hace una recolección completa del
+GC de Python al recibir un proyecto con la procedencia, no en un tic de la comprobación.
+
 T57 (Ctrl+Z; el detalle, en ``test_provenance_undo.py``):
 
 - RF-008-32: Mantener la copia, Descartar…, Editar… y lo recalculado se apuntan en el diario de
@@ -119,6 +122,7 @@ llamando a su función.
 """
 
 import functools
+import gc
 import importlib
 import json
 import os
@@ -330,7 +334,12 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         y deshabilitar lo quita. T47 (RF-008-09; plan §5.3.3): y el tipo de trabajo
         ``core_content_hash``, con los trabajos de hash de la sesión. T48 (RF-008-23): y la
         escucha de las carpetas de trabajos borradas y la nota «pendiente de incorporar» de
-        la lista de trabajos."""
+        la lista de trabajos. T65 (RNF-008-12, RF-008-58; plan §5.4.6): la sesión carga
+        ``core.provenance.checks`` al recibir un proyecto con la procedencia (no uno del esquema
+        1), en lo que tarda abrir, y no en el primer tic de su comprobación (en frío son unos
+        40 ms); y, si es grande (``MANY_DATASETS`` datos o más), hace antes una recolección
+        completa del GC de Python, para que la que provocarían los objetos de su comprobación
+        no caiga en un tic (uno pequeño no la hace)."""
         self.enterContext(_without_variable())
         blender_ext.enable()
         provenance = _module("bl.props.provenance")
@@ -348,6 +357,7 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         heavy = ("core.provenance.importer", "core.provenance.gate", "core.provenance.checks")
         self.assertEqual([name for name in heavy if f"{module_name()}.{name}" in sys.modules],
                          [])  # se cargan al usarlos
+        self.prepared_checks()
         workers = _module("jobs.catalog").WORKERS
         content_hash = _module("jobs.content_hash")
         self.assertIs(workers.get(HASH_WORKER), content_hash.WORKER_INFO)
@@ -394,6 +404,42 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         if after != baseline:
             self.fail("la huella del estado de Blender cambió:\n"
                       + "\n".join(fingerprint_diff(baseline, after)))
+
+    def prepared_checks(self) -> None:
+        """Lo de T65 en la prueba de registrar: con la extensión recién habilitada, sin
+        ``core.provenance.checks`` cargado, recibir proyectos (del esquema 1, uno pequeño y uno
+        «grande») y cerrarlos."""
+        checks = f"{module_name()}.core.provenance.checks"
+        core = _module("core.project")
+        project_session = _module("bl.scene.project_session")
+        tmp = Path(tempfile.mkdtemp(prefix="gb-t65-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        settings = core.ProjectSettings(**settings_values())
+        session, userdata = project_session.session(), project_session.userdata()
+        (tmp / "viejo").mkdir()
+        (tmp / "nuevo").mkdir()
+        old = core.create_project(tmp / "viejo", settings, session, userdata).project
+        root = old.root
+        old.close()
+        mark_schema(root, 1)
+        try:
+            with mock.patch.object(gc, "collect", wraps=gc.collect) as collected:
+                project_session.attach(core.open_project(root, session, userdata).project)
+                self.assertFalse(checks in sys.modules, "un proyecto del esquema 1 la carga")
+                project_session.close()
+                project = core.create_project(tmp / "nuevo", settings, session,
+                                              userdata).project
+                root = project.root
+                project_session.attach(project)
+                self.assertTrue(checks in sys.modules, "recibir el proyecto no la carga")
+                collected.assert_not_called()  # un proyecto pequeño
+                self.assertIsNone(_module("bl.ops.core_provenance").SESSION.progress)
+                project_session.close()
+                with mock.patch.object(sys.modules[checks], "MANY_DATASETS", 0):
+                    project_session.attach(core.open_project(root, session, userdata).project)
+            collected.assert_called_once_with()
+        finally:
+            project_session.close()
 
 
 class ProvenancePropsTest(unittest.TestCase):

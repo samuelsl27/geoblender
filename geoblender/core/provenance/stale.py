@@ -18,8 +18,17 @@ cambio; la que ya no está se borra) en la **misma transacción** de cada camino
   ``OperationHandle.complete`` (también la edición externa, ``core.external_edit``), el estado
   de un dato (``core.datasets.set_status`` y ``supersede``: falta, bloqueado, dañado, vigente,
   descartado, sustituido) y ``core.inputs.supersede``, ``discard`` y ``keep_copy``;
-- :func:`refresh_all`, la completa (la comprobación de apertura, tras cambiar la versión
-  instalada de un algoritmo o si alguien alteró la caché).
+- :func:`refresh_all`, la completa (tras cambiar la versión instalada de un algoritmo o si
+  alguien alteró la caché), en la transacción de quien la llama. La comprobación de apertura
+  la hace **por pasos y sin escribir** (T65; RNF-008-12): :func:`full_difference_steps` mira
+  primero, sin cargar el grafo, si alguna operación tiene una causa directa (sin ninguna,
+  nada está obsoleto); si la hay, lee el grafo por páginas y deduce por trozos; después lee la
+  caché y da la diferencia (:class:`CacheDifference`). Su transacción final escribe solo esa
+  diferencia (:func:`write_difference`) si la base no cambió entretanto (lo comprueba ella con el
+  contador de cambios de la cabecera). Lo que registra esa transacción después se pone al día
+  por región con las versiones de los algoritmos que declara el Geoblender que abre el proyecto
+  (:func:`declared_versions`), las mismas de la completa: la caché queda igual que si la
+  completa se hubiera hecho al final.
 
 Hacia arriba, para la procedencia (RNF-008-03): :func:`upstream_region` da en una consulta
 recursiva la región **aguas arriba** de unas operaciones (las que escribieron lo que consumen,
@@ -40,9 +49,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Iterator, Mapping
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, NamedTuple, Protocol
 
 from ..timeutil import parse_utc
@@ -51,11 +62,15 @@ from .graph import (
     INPUT_NODE_COLUMNS,
     IO_COLUMNS,
     OPERATION_COLUMNS,
+    PAGE_ROWS,
     PARAM_USE_COLUMNS,
     PARAMETER_COLUMNS,
     Cause,
     CauseKind,
+    CauseScan,
     DatasetNode,
+    GraphPages,
+    Lap,
     OperationNode,
     ParamUse,
     ProvenanceGraph,
@@ -63,11 +78,11 @@ from .graph import (
     Version,
     changes_while_running,
     dataset_node,
-    deduce,
     deduce_region,
+    deduce_steps,
+    drain,
     input_node,
     installed_versions,
-    load_graph,
     operation_node,
     param_use_of,
     parameter_node,
@@ -357,26 +372,33 @@ def cached_rows(conn: sqlite3.Connection) -> frozenset[StaleRow]:
 
 
 def _write(conn: sqlite3.Connection, now: str, items: Mapping[str, Collection[str]],
-           desired: set[StaleRow] | frozenset[StaleRow],
-           existing: set[StaleRow] | frozenset[StaleRow] | None = None) -> CacheUpdate:
+           desired: set[StaleRow] | frozenset[StaleRow]) -> CacheUpdate:
     """Escribe por diferencias las filas de ``items`` (por clase de elemento) para que sean
     ``desired``: borra las que sobran y añade las que faltan con la fecha ``now``."""
-    if existing is None:
-        existing = {StaleRow(*(str(value) for value in row))
-                    for kind, uids in items.items()
-                    for row in _select(conn, _CACHED, uids, (kind,))}
+    existing = {StaleRow(*(str(value) for value in row))
+                for kind, uids in items.items()
+                for row in _select(conn, _CACHED, uids, (kind,))}
     removed = frozenset(existing - desired)
     added = frozenset(desired - existing)
-    conn.executemany(
-        "DELETE FROM gb_stale WHERE item_kind = ? AND item_uid = ? AND cause_kind = ? "
-        "AND subject_uid = ?", sorted(removed),
-    )
-    conn.executemany(
-        "INSERT INTO gb_stale (item_kind, item_uid, cause_kind, subject_uid, since) "
-        "VALUES (?, ?, ?, ?, ?)", [(*row, now) for row in sorted(added)],
-    )
+    _apply(conn, now, added, removed)
     return CacheUpdate(frozenset(items.get(OPERATION, ())), frozenset(items.get(DATASET, ())),
                        added, removed)
+
+
+def _apply(conn: sqlite3.Connection, now: str, added: Collection[StaleRow],
+           removed: Collection[StaleRow]) -> None:
+    """Borra de la caché las filas ``removed`` y añade ``added`` con la fecha ``now``; sin
+    ninguna, no la toca."""
+    if removed:
+        conn.executemany(
+            "DELETE FROM gb_stale WHERE item_kind = ? AND item_uid = ? AND cause_kind = ? "
+            "AND subject_uid = ?", sorted(removed),
+        )
+    if added:
+        conn.executemany(
+            "INSERT INTO gb_stale (item_kind, item_uid, cause_kind, subject_uid, since) "
+            "VALUES (?, ?, ?, ?, ?)", [(*row, now) for row in sorted(added)],
+        )
 
 
 def _check_now(now: object) -> str:
@@ -465,10 +487,14 @@ def refresh_region(
     llevan la fecha ``now`` (texto UTC). ``versions``, como en :func:`.graph.deduce`.
 
     Exige que la caché de lo de fuera de la región esté al día (la mantienen todos los
-    caminos que escriben y la completa de la apertura). ``TypeError``/``ValueError`` con un
+    caminos que escriben y la completa de la apertura). Sin ``versions``, las de
+    :func:`declared_versions` si se está dentro (la transacción final de la comprobación de
+    apertura) y, si no, las de los tipos registrados. ``TypeError``/``ValueError`` con un
     argumento mal formado o fuera de una transacción, sin escribir nada."""
     _writing(conn, "refresh_region")
     _check_now(now)
+    if versions is None:
+        versions = _DECLARED.get()
     changed_operations = _uids(operations, "operations")
     changed_datasets = _uids(datasets, "datasets")
     changed_parameters = _uids(parameters, "parameters")
@@ -515,13 +541,146 @@ def refresh_all(conn: sqlite3.Connection, *, now: str,
     """Rehace la caché con la obsolescencia **completa** (:func:`.graph.deduce`), por
     diferencias, en la transacción de escritura ``conn`` (no la confirma): lo que sigue
     conserva su fecha y lo nuevo lleva ``now``. Corrige una caché alterada o que no sabe de
-    otra versión instalada de un algoritmo."""
+    otra versión instalada de un algoritmo. Es :func:`full_difference_steps` de una vez, en
+    ``conn`` (ve lo aún no confirmado), y :func:`write_difference`."""
     _writing(conn, "refresh_all")
     _check_now(now)
-    state = deduce(load_graph(conn), versions=versions)
-    return _write(conn, now, {OPERATION: state.graph.operations.keys(),
-                              DATASET: state.graph.datasets.keys()},
-                  expected_rows(state), cached_rows(conn))
+    difference = drain(full_difference_steps(lambda: nullcontext(conn), versions=versions,
+                                             rows=None))
+    return write_difference(conn, now=now, difference=difference)
+
+
+# --- La completa por pasos (la comprobación de apertura, T65) -------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CacheDifference:
+    """Lo que le falta y le sobra a la caché para ser la obsolescencia completa de una base
+    (:func:`full_difference_steps`): todas las operaciones y todos los datos (lo que rehace
+    la completa) y las filas que hay que añadir y borrar."""
+
+    operations: frozenset[str]
+    datasets: frozenset[str]
+    added: frozenset[StaleRow]
+    removed: frozenset[StaleRow]
+
+    @property
+    def empty(self) -> bool:
+        """Si la caché ya es la completa."""
+        return not (self.added or self.removed)
+
+
+_CACHE_PAGE = (
+    "SELECT rowid, item_kind, item_uid, cause_kind, subject_uid FROM gb_stale "
+    "WHERE rowid > ? ORDER BY rowid LIMIT ?"
+)
+_SCANNED = 0.3  # el progreso al saber si hay causas directas
+_LOADED = 0.6  # … y al leer el grafo (lo demás: deducir y la caché)
+
+
+def full_difference_steps(
+    read: Callable[[], AbstractContextManager[sqlite3.Connection]],
+    *,
+    versions: Mapping[str, str] | None = None,
+    lap: Lap | None = None,
+    rows: int | None = PAGE_ROWS,
+) -> Generator[float, None, CacheDifference]:
+    """La obsolescencia **completa** y lo que le falta y le sobra a la caché, por pasos y sin
+    escribir (la comprobación de apertura, T65; RNF-008-12): con una conexión de ``read`` (la
+    del proyecto, de solo lectura), mira primero si alguna operación hecha tiene una causa
+    directa (:class:`.graph.CauseScan`, sin cargar el grafo); sin ninguna, nada está obsoleto.
+    Si la hay, lee el grafo por páginas (:class:`.graph.GraphPages`), deduce por trozos
+    (:func:`.graph.deduce_steps`, con ``versions`` como :func:`refresh_all`) y lo suelta por
+    trozos. Después lee la caché y compara. Las páginas son de ``rows`` filas (``None``: cada
+    tabla de una vez). Cede —con lo hecho, de 0 a 1— cuando ``lap`` lo pide (sin ``lap``, de
+    una vez); entre pasos no hay ninguna transacción abierta, así que otro programa (o la misma
+    sesión) puede escribir: quien lo lleva por pasos tiene que comprobar que la base no cambió
+    desde que empezó antes de escribir la diferencia (:func:`write_difference`). Devuelve una
+    :class:`CacheDifference`."""
+    with read() as conn:
+        scan = CauseScan(versions)
+        while True:
+            scan.read(conn, rows=rows, lap=lap)
+            if scan.finished:
+                break
+            yield _SCANNED * scan.fraction
+        desired: set[StaleRow] = set()  # expected_rows(state), por trozos
+        if scan.caused:
+            pages = GraphPages()
+            while True:
+                pages.read(conn, rows=rows, lap=lap)
+                if pages.finished:
+                    break
+                yield _SCANNED + (_LOADED - _SCANNED) * pages.fraction
+            graph = pages.graph()
+            deducing = deduce_steps(graph, versions=versions, lap=lap)
+            while True:
+                try:
+                    next(deducing)
+                except StopIteration as stop:
+                    state: Staleness = stop.value
+                    break
+                yield 0.7
+            for item_kind, found in ((OPERATION, state.causes), (DATASET, state.datasets)):
+                for uid, causes in found.items():
+                    desired.update(_rows(item_kind, uid, causes))
+                    if lap is not None and lap():
+                        yield 0.8
+            operations, datasets = frozenset(graph.operations), frozenset(graph.datasets)
+            del graph, state
+            for _ in pages.release(lap):
+                yield 0.85
+        else:  # nada obsoleto
+            operations, datasets = frozenset(scan.operations), frozenset(scan.datasets)
+        del scan
+        cached: set[StaleRow] = set()
+        limit = -1 if rows is None else rows
+        last = 0
+        while True:
+            page = conn.execute(_CACHE_PAGE, (last, limit)).fetchall()
+            cached.update(StaleRow(str(item_kind), str(item_uid), str(cause_kind), str(subject))
+                          for _rowid, item_kind, item_uid, cause_kind, subject in page)
+            if rows is None or len(page) < rows:
+                break
+            last = int(page[-1][0])
+            if lap is not None and lap():
+                yield 0.9
+    return CacheDifference(operations, datasets, frozenset(desired - cached),
+                           frozenset(cached - desired))
+
+
+def write_difference(conn: sqlite3.Connection, *, now: str,
+                     difference: CacheDifference) -> CacheUpdate:
+    """Escribe en la caché, en la transacción de escritura ``conn`` (no la confirma), la
+    diferencia de :func:`full_difference_steps`: borra lo que sobra y añade lo que falta con la
+    fecha ``now`` (lo que sigue conserva la suya); sin nada que cambiar, no toca la caché.
+    Solo vale sobre la misma base en que se calculó (lo comprueba quien la calculó por pasos).
+    Devuelve lo que hizo, como :func:`refresh_all`."""
+    _writing(conn, "write_difference")
+    _check_now(now)
+    if not isinstance(difference, CacheDifference):
+        raise TypeError(f"la diferencia de la caché es un CacheDifference, no {difference!r}")
+    _apply(conn, now, difference.added, difference.removed)
+    return CacheUpdate(difference.operations, difference.datasets, difference.added,
+                       difference.removed)
+
+
+_DECLARED: ContextVar[Mapping[str, str] | None] = ContextVar("geoblender_stale_versions",
+                                                            default=None)
+
+
+@contextmanager
+def declared_versions(versions: Mapping[str, str] | None) -> Iterator[None]:
+    """Mientras dura, :func:`refresh_region` sin ``versions`` deduce con ``versions`` (la
+    versión de cada algoritmo que declara el Geoblender que abre el proyecto; ``None``: las de
+    los tipos registrados). La usa la transacción final de la comprobación de apertura, que
+    escribe la completa con ellas antes de registrar lo encontrado: así lo que se registra
+    después se deduce igual."""
+    token = _DECLARED.set(None if versions is None else MappingProxyType(dict(versions)))
+    try:
+        yield
+    finally:
+        _DECLARED.reset(token)
 
 
 # --- Aguas arriba (la procedencia) ----------------------------------------------------------
