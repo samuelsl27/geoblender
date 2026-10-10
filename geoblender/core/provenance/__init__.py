@@ -214,6 +214,7 @@ LINEAGE_API: tuple[str, ...] = (
     "InputLink",
     "InputUse",
     "LineageKind",
+    "LineageMatch",
     "LineageRow",
     "LineageTree",
     "Mark",
@@ -224,6 +225,7 @@ LINEAGE_API: tuple[str, ...] = (
     "current_figure",
     "figure_marks",
     "result_state",
+    "search_items",
 )
 """Lo de :mod:`.lineage` que se reexporta al usarlo. Su función ``lineage`` no: es el nombre
 del módulo (``core.provenance.lineage.lineage``), que el paquete tiene como atributo en cuanto
@@ -348,6 +350,7 @@ __all__ = [
     "JobOutcome",
     "LayerImport",
     "LineageKind",
+    "LineageMatch",
     "LineageRow",
     "LineageTree",
     "Mark",
@@ -436,6 +439,7 @@ __all__ = [
     "render",
     "result_state",
     "scope_key",
+    "search_items",
     "stale_items",
     "stale_state",
     "survey_steps",

@@ -35,6 +35,18 @@ T50 (Parámetros del proyecto):
   lo acepta, y entonces el parámetro es CALCULADO con esa operación.
 - ARQ-13: ninguna propiedad de las órdenes de parámetros es flotante.
 
+T55 (Grafo de operaciones y procedencia):
+
+- RF-008-29: ``geoblender.core_show_lineage`` abre ``GEOBLENDER_PT_core_lineage`` con la
+  cadena de una cifra o un dato hasta sus entradas (``GEOBLENDER_UL_core_lineage``: filas
+  sangradas y plegables por nudo), con los parámetros (valor, unidad, insignia de tipo y «sin
+  confirmar»), las versiones del código, quién y cuándo, y los eslabones obsoletos con su
+  causa; su búsqueda encuentra las cifras vigentes y los datos por su nombre; también en solo
+  lectura.
+- RF-008-31: la cifra va con su unidad, su insignia y sus marcas según el estado de hoy de lo
+  de aguas arriba; ningún nombre de objeto, de colección ni de fichero del proyecto contiene
+  una cifra registrada (``assert_no_figures_in_names``).
+
 Se ejecuta con ``tools/run_blender_tests.py``. En ``blender -b`` los temporizadores no corren:
 las pruebas llaman a su función. El proyecto es sintético (la demostración de la 008 y los
 GeoPackage de ``tests/data/core/provenance/``).
@@ -56,6 +68,7 @@ from tests.support import blender_ext
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
 from tests.support.fake_layout import FakeLayout, draw
+from tests.support.provenance_checks import assert_no_figures_in_names
 from tests.support.provenance_demo import PRODUCTION, SWELL_FACTOR, Demo
 from tests.support.repo import ROOT
 
@@ -85,6 +98,15 @@ USE_CALCULATED = "Usar el valor calculado…"
 READ_ONLY = "Proyecto en solo lectura:"  # y el motivo del proyecto
 PROPERTY = {"kind": "ADOPTADO", "source": "Acta de la propiedad", "source_kind": "DOCUMENT",
             "decided_by": "la propiedad", "decided_at": "24/09/2026"}
+LINEAGE_PANEL = "GEOBLENDER_PT_core_lineage"
+LINEAGE_LIST = "GEOBLENDER_UL_core_lineage"
+SHOW_LINEAGE = "geoblender.core_show_lineage"
+YEARS_B1 = "Años del banco (demostración) · B-1 = 2,5 año"
+YEARS_OP = "Años por banco (demostración) · demo.bench_years 1.0 · Geoblender "
+PRODUCTION_ROW = "Producción (demostración) · demo.production = 500000 t/año"
+HYPOTHESIS = "depende de una hipótesis"
+UNCONFIRMED = "depende de un valor sin confirmar"
+STALE_CAUSE = "Obsoleto: cambió Producción (demostración)"
 
 
 def _module(name: str) -> ModuleType:
@@ -563,6 +585,133 @@ class ProvenanceUiTest(unittest.TestCase):
             with self.subTest(orden=idname):
                 self.assertEqual([prop.identifier for prop in rna.properties
                                   if prop.type == "FLOAT"], [])
+
+    # Grafo de operaciones y procedencia (T55) -------------------------------------------------
+
+    def show_lineage(self, **props: object) -> object:
+        """Proyecto ▸ Control ▸ Procedencia y registro ▸ Grafo de operaciones y procedencia
+        (``wm.call_panel`` sustituido): la vista de ``WindowManager`` con sus filas."""
+        window = bpy.context.window_manager.windows[0]
+        with mock.patch.object(self.session, "_call_panel", return_value={"FINISHED"}) as call:
+            with bpy.context.temp_override(window=window):
+                self.assertEqual(bpy.ops.geoblender.core_show_lineage(**props), {"FINISHED"})
+        call.assert_called_once_with(LINEAGE_PANEL)
+        return bpy.context.window_manager.geoblender_provenance
+
+    @staticmethod
+    def lineage_rows(view: object) -> list[tuple[int, str, list[str]]]:
+        """Lo que dibuja la lista de la procedencia: profundidad, clase y textos de cada fila."""
+        found = []
+        for index, row in enumerate(view.lineage):
+            layout = FakeLayout()
+            bpy.types.GEOBLENDER_UL_core_lineage.draw_item(
+                SimpleNamespace(), bpy.context, layout, view, row, 0, view, "lineage_index",
+                index)
+            found.append((row.depth, row.kind, [text for text in layout.texts() if text]))
+        return found
+
+    def test_lineage_of_a_figure_with_badges_and_marks(self) -> None:
+        """RF-008-29, RF-008-31 (M3): con la cadena de la demostración, la procedencia de los
+        años de B-1 enseña la cifra con su valor, su unidad, su insignia [CAL] y las marcas
+        «depende de una hipótesis» y «depende de un valor sin confirmar»; debajo, los años por
+        banco con la versión de su algoritmo y de Geoblender, quién y cuándo; la producción
+        que leyó (500000 t/año [HIP] «sin confirmar»), los bancos y su digitalización. La del
+        área llega hasta su entrada («Limites: vigente»). Cambiada la producción (ADOPTADO),
+        la cifra solo está «obsoleta», su eslabón dice la causa en alerta y la producción
+        leída, lo de hoy. Cada nudo se pliega; la búsqueda encuentra las cifras vigentes por su
+        nombre; lo que no está en el proyecto, desde un guion, es un error. En solo lectura se
+        consulta igual. Ningún nombre de objeto, de colección ni de fichero del proyecto
+        contiene una cifra registrada."""
+        project = self.create()
+        sources = self.tmp / "fuentes"
+        sources.mkdir()
+        source = sources / "Limites.gpkg"
+        shutil.copyfile(DATA / "Limites_v1.gpkg", source)
+        demo = self.enterContext(Demo(module_name()).registered())
+        boundary = demo.import_boundary(project, source)
+        area = demo.area(project, boundary.dataset.uid)
+        demo.digitize(project)
+        years = demo.bench_years(project)
+        self.ps.attach(project)
+        (b1, *_others), _warnings = demo.figures(project, years.uid)
+        self.assertEqual(dict(b1.scope), {"bench": "B-1"})
+
+        view = self.show_lineage(item_uid=b1.uid)
+        rows = self.lineage_rows(view)
+        self.assertEqual([(depth, kind) for depth, kind, _texts in rows], [
+            (0, "figure"), (1, "operation"), (2, "parameter"), (2, "dataset"),
+            (3, "operation")])
+        figure, operation, parameter, benches, digitize = (texts for *_r, texts in rows)
+        self.assertEqual(figure, ["[CAL]", YEARS_B1, HYPOTHESIS, UNCONFIRMED])
+        self.assertTrue(operation[0].startswith(YEARS_OP), operation)
+        self.assertIn(self.ps.session().user_host, operation[0])
+        self.assertEqual(parameter, ["[HIP]", PRODUCTION_ROW, "sin confirmar"])
+        self.assertEqual(benches, ["demo_benches (benches)"])
+        self.assertIn("demo.digitize 1.0", digitize[0])
+        self.assertEqual(view.lineage_uid, b1.uid)
+        panel = draw(bpy.types.GEOBLENDER_PT_core_lineage, bpy.context)
+        self.assertEqual([item.target for item in panel.of_kind("template_list")],
+                         [LINEAGE_LIST])
+        self.assertEqual([item.target for item in panel.of_kind("prop")], ["lineage_uid"])
+        badge = [item for item in self.list_lineage(view).items if item.text == "[HIP]"]
+        self.assertTrue(badge[0].alert)
+
+        view.lineage[1].expanded = False  # plegar los años por banco
+        self.assertEqual(self.ui.lineage_visible(view.lineage), [True, True, False, False,
+                                                                 False])
+        shown = bpy.types.UIList.bl_rna.properties["bitflag_filter_item"].default
+        flags, order = bpy.types.GEOBLENDER_UL_core_lineage.filter_items(
+            SimpleNamespace(bitflag_filter_item=shown), bpy.context, view, "lineage")
+        self.assertEqual(flags, [shown, shown, 0, 0, 0])
+        self.assertEqual(order, [])
+
+        texts = [texts for *_r, texts in self.lineage_rows(self.show_lineage(item_uid=area.uid))]
+        self.assertIn(["Limites: vigente"], texts)
+
+        view.lineage_uid = "años del banco"  # la búsqueda
+        self.assertEqual(len(view.lineage), 0)
+        self.assertEqual([match.text for match in view.lineage_matches][:1], [YEARS_B1])
+        panel = draw(bpy.types.GEOBLENDER_PT_core_lineage, bpy.context)
+        found = [item for item in panel.of_kind("operator") if item.target == SHOW_LINEAGE]
+        self.assertEqual(len(found), 3)
+        self.assertEqual((found[0].text, found[0].properties.item_uid), (YEARS_B1, b1.uid))
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_show_lineage(item_uid="nada")  # desde un guion
+        self.assertIn("«nada» no es un dato, una cifra ni una operación", str(caught.exception))
+
+        with project.write_transaction() as conn:
+            _module("core.params").ParameterStore(project).change(
+                conn, PRODUCTION, value=400_000.0, kind="ADOPTADO", source="Plan de labores",
+                source_kind="document", decided_by="la propiedad", reason="Plan revisado")
+        project.set_read_only(self.core.ReadOnlyCode.REQUESTED, "prueba")
+        self.assertTrue(bpy.ops.geoblender.core_show_lineage.poll())
+        rows = self.lineage_rows(self.show_lineage(item_uid=b1.uid))
+        figure, operation, parameter = (texts for *_r, texts in rows[:3])
+        self.assertEqual(figure, ["[CAL]", YEARS_B1, "obsoleta"])
+        self.assertEqual(operation[1:], [STALE_CAUSE])
+        self.assertEqual(parameter, ["[HIP]", PRODUCTION_ROW, "sin confirmar",
+                                     "hoy: 400000 t/año [ADO]"])
+        cause = [item for item in self.list_lineage(view).items if item.text == STALE_CAUSE]
+        self.assertTrue(cause[0].alert)
+
+        with project.read() as conn:
+            values = [value for (value,) in conn.execute("SELECT value FROM gb_figure")]
+        self.assertEqual(len(values), 4)  # el área y los años de los tres bancos
+        names = [*(item.name for item in bpy.data.objects),
+                 *(item.name for item in bpy.data.collections),
+                 *(path.relative_to(project.root).as_posix()
+                   for path in project.root.rglob("*"))]
+        self.assertIn("project.gpkg", names)
+        assert_no_figures_in_names(names, values)
+
+    def list_lineage(self, view: object) -> FakeLayout:
+        """Lo que dibuja la lista de la procedencia, todo en un mismo *layout*."""
+        layout = FakeLayout()
+        for index, row in enumerate(view.lineage):
+            bpy.types.GEOBLENDER_UL_core_lineage.draw_item(
+                SimpleNamespace(), bpy.context, layout, view, row, 0, view, "lineage_index",
+                index)
+        return layout
 
 
 if __name__ == "__main__":

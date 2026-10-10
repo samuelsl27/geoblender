@@ -29,6 +29,12 @@ Spec 008, T54: ``unusable``, los datos bloqueados, que faltan o dañados con lo 
 resolverlos (los regenera el temporizador de los indicadores con lo obsoleto), y
 ``unregistered``, las capas y tablas del proyecto sin registrar (las regenera el registro de
 entradas).
+
+Spec 008, T55: la procedencia (``lineage``, filas sangradas con su insignia, sus marcas y su
+nota; ``lineage_more``, las que no caben) se lee de nuevo al cambiar la búsqueda
+(``lineage_uid``, el uid o el texto que se busca: ``bl.ui.provenance.search_lineage``); si no es
+una cifra, un dato ni una operación del proyecto, ``lineage_error`` dice por qué y
+``lineage_matches`` lista las cifras vigentes y los datos que contienen el texto.
 """
 
 from __future__ import annotations
@@ -95,6 +101,13 @@ def _parameter_selected(_view: object, _context: object) -> None:
     from ..ui import provenance
 
     provenance.selection_changed()
+
+
+def _lineage_searched(_view: object, _context: object) -> None:
+    """Cambió la búsqueda de la procedencia: se lee la de lo buscado (T55)."""
+    from ..ui import provenance
+
+    provenance.lineage_searched()
 
 
 class GEOBLENDER_PG_core_parameter_row(bpy.types.PropertyGroup):
@@ -193,6 +206,19 @@ class GEOBLENDER_PG_core_lineage_row(bpy.types.PropertyGroup):
     repeated: _flag()  # type: ignore[valid-type]
     marks: _text()  # type: ignore[valid-type]  # valores de Mark separados por «,»
     expanded: BoolProperty(default=True, options=_STATIC)  # type: ignore[valid-type]
+    # T55: el tipo (ParamKind) de una cifra o de un parámetro, para su insignia, y la nota de
+    # la fila (la causa de un eslabón obsoleto, lo de hoy de un parámetro que cambió…).
+    param_kind: _text()  # type: ignore[valid-type]
+    note: _text()  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_core_lineage_match(bpy.types.PropertyGroup):
+    """Lo que encuentra la búsqueda de la procedencia (T55; ``core.provenance.lineage.
+    LineageMatch``): una cifra vigente o un dato, con su texto."""
+
+    kind: _text()  # type: ignore[valid-type]  # LineageKind
+    uid: _text()  # type: ignore[valid-type]
+    text: _text()  # type: ignore[valid-type]
 
 
 class GEOBLENDER_PG_core_import_setting(bpy.types.PropertyGroup):
@@ -254,7 +280,16 @@ class GEOBLENDER_PG_core_provenance(bpy.types.PropertyGroup):
         type=GEOBLENDER_PG_core_lineage_row, options=_STATIC
     )
     lineage_index: _index()  # type: ignore[valid-type]
-    lineage_uid: _text()  # type: ignore[valid-type]  # la cifra, el dato o la operación pedidos
+    # La cifra, el dato o la operación pedidos (su uid o el nombre de un dato), o lo que se
+    # busca (T55).
+    lineage_uid: StringProperty(  # type: ignore[valid-type]
+        default="", options=_STATIC, update=_lineage_searched
+    )
+    lineage_more: _index()  # type: ignore[valid-type]  # las filas que no caben
+    lineage_error: _text()  # type: ignore[valid-type]
+    lineage_matches: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_lineage_match, options=_STATIC
+    )
 
 
 # En orden de registro: las filas antes de la vista que las reúne.
@@ -266,6 +301,7 @@ classes: tuple[type, ...] = (
     GEOBLENDER_PG_core_unusable_row,
     GEOBLENDER_PG_core_unregistered_row,
     GEOBLENDER_PG_core_lineage_row,
+    GEOBLENDER_PG_core_lineage_match,
     GEOBLENDER_PG_core_provenance,
     GEOBLENDER_PG_core_import_setting,  # el de los ajustes de geoblender.core_resolve_input
 )

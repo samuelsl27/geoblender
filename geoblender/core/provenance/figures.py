@@ -174,6 +174,22 @@ class FigureRecord:
         """El ámbito como se guarda (JSON canónico)."""
         return canonical_json(dict(self.scope)).decode("utf-8")
 
+    def text(self, *, language: str = "es") -> str:
+        """La cifra como la lee una persona en ``language`` (RF-008-31; T55): su nombre (en
+        inglés, el ``label_msgid`` de su definición, si está registrada), los valores de su
+        ámbito y su valor con su unidad: «Años del banco (demostración) · B-1 = 2,5 año». El
+        valor va entero, sin redondear. :class:`ValueError` con otro idioma."""
+        if language not in LANGUAGES:
+            raise ValueError(f"el idioma «{language}» no es de Geoblender: "
+                             f"{', '.join(LANGUAGES)}")
+        name = self.label
+        declared = FIGURES.get(self.key) if language == "en" else None
+        if declared is not None:
+            name = declared.label_msgid
+        scope = ", ".join(format_value(value, language) for value in self.scope.values())
+        shown = f"{name} · {scope}" if scope else name
+        return f"{shown} = {_shown(self.value, self.unit, language)}"
+
 
 @dataclass(frozen=True, slots=True)
 class Divergence:

@@ -1919,3 +1919,30 @@ es = "No hay ninguna comprobación del proyecto en marcha"
 
 ["Project checks cancelled: what was not checked is checked before using it"]
 es = "Comprobaciones del proyecto canceladas: lo que no se comprobó se comprueba antes de usarlo"
+
+# Grafo de operaciones y procedencia (RF-008-29, RF-008-31; T55): la búsqueda, lo encontrado y
+# las filas de la cadena
+
+["Figure or dataset"]
+es = "Cifra o dato"
+
+["Uid of the figure, the dataset or the operation, or name of a dataset; empty: the last one asked for"]
+es = "Uid de la cifra, del dato o de la operación, o nombre de un dato; vacío: el último que se pidió"
+
+["Figures and datasets found"]
+es = "Cifras y datos encontrados"
+
+["Search for a figure or a dataset by its name, its key or its uid"]
+es = "Busque una cifra o un dato por su nombre, su clave o su uid"
+
+["today: {value}"]
+es = "hoy: {value}"
+
+["its source operation is stale"]
+es = "su operación de origen está obsoleta"
+
+["earlier version"]
+es = "versión anterior"
+
+["shown above"]
+es = "ya mostrada arriba"

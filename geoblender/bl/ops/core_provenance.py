@@ -133,8 +133,14 @@ ADR-0025).
   ``geoblender.core_cancel_checks`` para la comprobación del proyecto en marcha
   (:meth:`ProvenanceSession.cancel`; el botón del campo «Comprobando el proyecto…»).
 
-Lo demás llega con las tareas siguientes: la procedencia de una cifra, el estado de comando de
-las órdenes de los módulos y el aviso de Ctrl+Z (fase 8).
+- Grafo de operaciones y procedencia (T55; RF-008-29, RF-008-31; plan §5.3.2):
+  ``geoblender.core_show_lineage`` lee la procedencia de ``item_uid`` (una cifra, un dato o una
+  operación; vacío, la de la búsqueda del panel) con ``bl.ui.provenance.search_lineage`` y abre
+  ``GEOBLENDER_PT_core_lineage``, también en solo lectura; lo que no está en el proyecto, el
+  panel lo dice con lo que contiene el texto, y un guion sin ventana lo recibe como error.
+
+Lo demás llega con las tareas siguientes: el estado de comando de las órdenes de los módulos y
+el aviso de Ctrl+Z (fase 8).
 
 ``core.i18n`` no tiene cómo quitar traducciones: :func:`unregister` las deja (como los
 trabajos de la 004), y volver a registrar las instala otra vez sin cambiar nada.
@@ -2573,6 +2579,58 @@ class GEOBLENDER_OT_core_cancel_checks(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Grafo de operaciones y procedencia (T55) ---------------------------------------------------
+
+SHOW_LINEAGE = "geoblender.core_show_lineage"
+
+
+class GEOBLENDER_OT_core_show_lineage(bpy.types.Operator):
+    """What each result comes from and what depends on it"""
+
+    bl_idname = SHOW_LINEAGE
+    bl_label = "Operation graph and provenance…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    item_uid: StringProperty(  # type: ignore[valid-type]
+        name="Figure or dataset",
+        description="Uid of the figure, the dataset or the operation, or name of a dataset; "
+                    "empty: the last one asked for",
+        default="", options=_HIDDEN,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        reason = SESSION.unavailable()
+        if reason is not None:
+            cls.poll_message_set(reason)
+            return False
+        return True
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        return self.execute(context)
+
+    def execute(self, context: Any) -> set[str]:
+        """Lee la procedencia de ``item_uid`` (vacío: la de la búsqueda del panel, otra vez)
+        y abre el panel, que, si no está en el proyecto, dice por qué y lo que contiene el
+        texto; desde un guion (sin ventana o en ``blender -b``), eso es un error. Solo lee:
+        también en solo lectura."""
+        from ..ui import provenance as ui  # al usarlo (ARQ-08)
+
+        wanted = self.item_uid.strip() or None
+        try:
+            found = ui.search_lineage(wanted)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if wanted is not None and not found and not _interactive(context):
+            self.report({"ERROR"}, ui.lineage_error())
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}  # desde un guion sin ventana: las filas, sin la ventana
+        return _call_panel(ui.LINEAGE_PANEL)
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_show_parameters,
     GEOBLENDER_OT_core_set_parameter,
@@ -2587,8 +2645,9 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_accept_review,
     GEOBLENDER_OT_core_resolve_unregistered,
     GEOBLENDER_OT_core_cancel_checks,
+    GEOBLENDER_OT_core_show_lineage,
 )
-"""Los operadores reales de la 008 (los demás siguen provisionales hasta su tarea)."""
+"""Los operadores reales de la 008: ya todas sus órdenes (T50 a T55)."""
 
 
 # Registro ---------------------------------------------------------------------------------

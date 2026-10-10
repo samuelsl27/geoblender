@@ -809,13 +809,58 @@ def _running(world: RandomProject) -> str:
     return uid
 
 
+class SearchTest(LineageCase):
+    def test_current_figures_and_live_datasets_are_found(self) -> None:
+        """RF-008-29, RF-008-31 (plan §5.5, la búsqueda del panel de la procedencia):
+        ``search_items`` encuentra, sin escribir nada, las cifras **vigentes** cuya clave, cuyo
+        nombre (en español o en inglés, sin distinguir mayúsculas) o cuyo ámbito contienen el
+        texto, por orden de registro, y después los datos vivos cuyo nombre lo contiene, por
+        nombre; como mucho ``limit``. El texto de una cifra es su nombre, su ámbito y su valor
+        con su unidad (``FigureRecord.text``), en el idioma pedido. Lo que ya no es vigente
+        (la cifra de una operación sustituida) no sale; un texto vacío no busca nada."""
+        _imported, _a, _b, seven = self.figure_chain()
+        c = self.run_figures("res.step_c", {"res_c": [1.0]}, reads=["res_b"],
+                             figures=[(2.5, BENCH), (1_250_000 / 300_000, OTHER_BENCH)])
+        bench, other = self.figure(c, BENCH), self.figure(c, OTHER_BENCH)
+        before = self.snapshot()
+        found = lineage_mod.search_items(self.project, "MARCAS")
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual([(str(item.kind), item.uid, item.text) for item in found], [
+            ("figure", seven, "Marcas = 7"),
+            ("figure", bench, "Marcas · 125 = 2,5"),
+            ("figure", other, "Marcas · 130 = 4,166666666666667"),
+        ])
+        english = lineage_mod.search_items(self.project, "test marks", language="en")
+        self.assertEqual([item.text for item in english][1:],
+                         ["Test marks · 125 = 2.5", "Test marks · 130 = 4.166666666666667"])
+        self.assertEqual([item.uid for item in lineage_mod.search_items(self.project, "130")],
+                         [other])
+        self.assertEqual([item.uid for item in lineage_mod.search_items(
+            self.project, "res.marks", limit=2)], [seven, bench])
+        self.assertEqual([(str(item.kind), item.text)
+                          for item in lineage_mod.search_items(self.project, "RES_")],
+                         [("dataset", "res_a"), ("dataset", "res_b"), ("dataset", "res_c"),
+                          ("dataset", "res_im1")])
+        self.assertEqual(lineage_mod.search_items(self.project, "  "), ())
+        self.run_figures("res.step_c", {"res_c": [2.0]}, reads=["res_b"],
+                         figures=[(2.0, BENCH)], supersedes=c.uid)
+        self.assertEqual([item.text for item in lineage_mod.search_items(self.project, "marcas")],
+                         ["Marcas = 7", "Marcas · 125 = 2"])
+        record = lineage_mod.lineage(self.project, seven).figure
+        self.assertEqual((record.text(), record.text(language="en")), ("Marcas = 7",
+                                                                       "Test marks = 7"))
+        with self.assertRaises(TypeError):
+            lineage_mod.search_items(self.project, None)
+
+
 class ApiTest(unittest.TestCase):
     def test_public_api(self) -> None:
         """RF-008-29, RF-008-31 (plan §5.1): ``core.provenance`` reexporta la procedencia al
         usarla, sin cargarla al importarse; su función ``lineage`` se llama como el módulo,
         que es lo que el paquete tiene con ese nombre."""
         self.assertLessEqual({"figure_marks", "current_figure", "result_state", "LineageTree",
-                              "FigureMarks", "ResultState", "ResultStatus"},
+                              "FigureMarks", "ResultState", "ResultStatus", "LineageMatch",
+                              "search_items"},
                              set(provenance.LINEAGE_API))
         for name in provenance.LINEAGE_API:
             with self.subTest(name=name):

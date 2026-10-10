@@ -51,7 +51,7 @@ REAL = ("geoblender.core_show_parameters", "geoblender.core_set_parameter",
         "geoblender.core_discard_input", "geoblender.core_edit_input",
         "geoblender.core_recompute_stale", "geoblender.core_resolve_dataset",
         "geoblender.core_accept_review", "geoblender.core_resolve_unregistered",
-        "geoblender.core_cancel_checks")
+        "geoblender.core_cancel_checks", "geoblender.core_show_lineage")
 
 
 def _module(name: str) -> ModuleType:
@@ -159,7 +159,8 @@ class UiCatalogTest(unittest.TestCase):
         las órdenes de la 008 con su etiqueta; mientras su operador sea provisional, salen
         desactivadas y dicen «Disponible en 008 · …», y las que ya tienen su clase real
         (Parámetros del proyecto, T50; Registro de entradas y Comprobar cambios en las
-        entradas, T51; Recalcular lo obsoleto, T53) salen disponibles; el panel de lo obsoleto
+        entradas, T51; Recalcular lo obsoleto, T53; Grafo de operaciones y procedencia, T55:
+        ya todas) salen disponibles; el panel de lo obsoleto
         del control 7 ya es el real (T49) y está disponible, sin nota; lo de la 009 sigue
         «Disponible en R-07 · …»."""
         commands = _module("bl.ui.commands")

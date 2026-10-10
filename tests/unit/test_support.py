@@ -8,7 +8,7 @@ import unittest
 import unittest.mock
 from pathlib import Path, PureWindowsPath
 
-from tests.support import network, qgis, resources, runtime, timing, trees
+from tests.support import network, provenance_checks, qgis, resources, runtime, timing, trees
 from tests.support.repo import EXTENSION_DIR, ROOT, TOOLS_DIR, tools_on_path
 
 RESOURCE = "recurso-de-prueba"
@@ -484,6 +484,34 @@ class TimingSupportTest(unittest.TestCase):
         for attempts, most in ((0, 5), (3, 2)):
             with self.subTest(intentos=attempts, maximo=most), self.assertRaises(ValueError):
                 timing.best_of(_SlowAction([0.0]), budget, attempts=attempts, max_attempts=most)
+
+
+class NoFiguresInNamesTest(unittest.TestCase):
+    """``provenance_checks.assert_no_figures_in_names`` (spec 008, T55)."""
+
+    FIGURES = (1_250_000 / 300_000, 2.5, 3.0, 21_275.0, 12.0, 1_250_000.0)
+
+    def test_figures_in_spanish_or_english_are_found(self) -> None:
+        """RF-008-31 (Silvestre UI-03, N-18): un nombre con una cifra registrada, con formato
+        español o inglés (con todos sus decimales o redondeada, con separador de miles o sin
+        él), falla y el mensaje nombra el nombre y la cifra; una numeración de una o dos cifras
+        (fase 2, banco B-3, v1), una versión de tres números, un uid o un valor que no es el de
+        la cifra redondeada no son una cifra."""
+        for name in ("Acopio 2,5 años", "acopio_2.50", "Banco B-1 4,17 a", "years 4.167",
+                     "4,166666666666667", "Volumen 21.275 m3", "Volumen 21,275 m3",
+                     "volumen 21 275", "21275m3", "Área 12,0 ha", "1.250.000 t"):
+            with self.subTest(nombre=name):
+                with self.assertRaises(AssertionError) as caught:
+                    provenance_checks.assert_no_figures_in_names([name], self.FIGURES)
+                self.assertIn(f"«{name}»", str(caught.exception))
+        provenance_checks.assert_no_figures_in_names(
+            ["Fase 2", "Banco B-3", "Limites_v1.gpkg", "project.gpkg", "Geoblender 0.1.0",
+             "orphans/3f2a1250000b9c4d8e7f6a5b4c3d2e1f.gpkg",
+             "originals/0a1b2c3d-1250-4000-8000-001250000e1f/Limites.gpkg", "4,16", "2,6"],
+            self.FIGURES)
+        found = provenance_checks.figures_in_names(["a 2,5 y 4.17", "nada"], self.FIGURES)
+        self.assertEqual(found, [("a 2,5 y 4.17", 2.5, "2,5"),
+                                 ("a 2,5 y 4.17", 1_250_000 / 300_000, "4.17")])
 
 
 if __name__ == "__main__":

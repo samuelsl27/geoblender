@@ -74,6 +74,19 @@ que no se guarda (plan D7) lo dice la sesión al dibujar (:func:`input_status`):
 última no encontró su fuente. Con el registro abierto, el temporizador de los indicadores
 vuelve a leer sus filas cuando cambia el proyecto.
 
+**Grafo de operaciones y procedencia** (:class:`GEOBLENDER_PT_core_lineage`, ventana emergente
+que abre ``geoblender.core_show_lineage``; RF-008-29, RF-008-31; T55): la búsqueda (el uid de una
+cifra, de un dato o de una operación, o el nombre de un dato; si no es nada de eso, el motivo y
+las cifras vigentes y los datos que contienen el texto, cada uno con su procedencia) y la cadena
+(:class:`GEOBLENDER_UL_core_lineage`): lo pedido y, sangrados debajo, cada eslabón con la versión
+de su algoritmo y de Geoblender, quién y cuándo; sus parámetros con el valor y la unidad que
+leyó, su insignia de tipo y «sin confirmar», y lo de hoy si cambió; sus entradas con su estado;
+los datos que consumió y el eslabón que escribió esa versión. La cifra lleva su unidad, su
+insignia y las marcas de RF-008-31 según el estado de hoy, y un eslabón obsoleto, su causa en
+alerta. Cada nudo se pliega (``expanded``). :func:`search_lineage` lee la cadena al abrir el
+panel y al cambiar la búsqueda (no en cada cambio del proyecto: con un grafo grande tarda hasta
+0,5 s); las filas viven en ``WindowManager.geoblender_provenance``, como texto ya presentado.
+
 :func:`install` registra los campos, el número del control 7 y la escucha del proyecto de la
 sesión; :func:`uninstall` lo quita todo, con los temporizadores.
 """
@@ -170,6 +183,16 @@ INPUT_COLUMNS = (8.0, 10.0, 4.0, 4.5, 6.0, 5.5, 5.0, 5.5, 4.0)
 _ACTIVE_INPUTS = frozenset(str(status) for status in ACTIVE_STATUSES)
 NOT_SHOWN = "—"  # una celda sin valor (sin entrega, sin original)
 
+LINEAGE_PANEL = "GEOBLENDER_PT_core_lineage"
+LINEAGE_LIST = "GEOBLENDER_UL_core_lineage"
+SHOW_LINEAGE = "geoblender.core_show_lineage"
+LINEAGE_PANEL_UNITS = 56
+LINEAGE_ROWS = 12  # filas visibles de la procedencia (después, se desplaza)
+LINEAGE_INDENT = 1.5  # sangría de cada nivel (factor de ``separator``)
+BADGE_UNITS = 2.5  # ancho de la insignia de tipo
+MAX_LINEAGE_ROWS = 1000
+"""Las filas de la procedencia que se guardan en la vista (las demás, «… y n más»)."""
+
 _clock: Callable[[], float] = time.monotonic
 
 
@@ -185,6 +208,7 @@ class _State:
         self.undo_until = 0.0
         self.properties: dict[type, frozenset[str]] = {}  # propiedades de cada operador
         self.filling = False  # se están regenerando las filas de los parámetros
+        self.searching = False  # se está poniendo la búsqueda de la procedencia
 
 
 _STATE = _State()
@@ -344,6 +368,7 @@ def on_project_changed(project: Project | None) -> None:
     had = _forget()
     _clear_parameters()
     _clear_inputs()
+    _forget_lineage()
     _retire(indicator_tick)
     if project is not None:
         bpy.app.timers.register(indicator_tick, first_interval=INDICATOR_TICK_S,
@@ -1205,6 +1230,299 @@ class GEOBLENDER_PT_core_inputs(bpy.types.Panel):
         draw_inputs(self.layout, context)
 
 
+# Grafo de operaciones y procedencia (T55) -----------------------------------------------------
+
+
+def lineage_error() -> str:
+    """Por qué la última búsqueda de la procedencia no dio una cadena (lo buscado no es una
+    cifra, un dato ni una operación del proyecto), o ""."""
+    view = _view()
+    return "" if view is None else view.lineage_error
+
+
+def _clear_lineage(view: Any) -> None:
+    """Vacía la procedencia, lo encontrado y el motivo (no la búsqueda)."""
+    if len(view.lineage):
+        view.lineage.clear()
+    if len(view.lineage_matches):
+        view.lineage_matches.clear()
+    view.lineage_index = 0
+    view.lineage_more = 0
+    view.lineage_error = ""
+
+
+def _forget_lineage() -> None:
+    """Vacía la procedencia y su búsqueda (otro proyecto, ninguno)."""
+    view = _view()
+    if view is None:
+        return
+    _clear_lineage(view)
+    if view.lineage_uid:
+        _STATE.searching = True
+        try:
+            view.lineage_uid = ""
+        finally:
+            _STATE.searching = False
+
+
+def search_lineage(wanted: str | None = None) -> int:
+    """La procedencia de ``wanted`` (por defecto, la búsqueda del panel; si se da, pasa a ser
+    la búsqueda) en las filas del panel (RF-008-29, RF-008-31): el uid de una cifra, de un dato
+    o de una operación, o el nombre de un dato vivo (``core.provenance.lineage.lineage``). Si
+    no es nada de eso, quedan el motivo (:func:`lineage_error`) y lo que lo contiene: las cifras
+    vigentes y los datos (``search_items``). Sin proyecto con la procedencia o sin nada que
+    buscar, todo vacío. Devuelve cuántas filas hay. Si no se puede leer el proyecto, el error
+    sigue (y el panel queda vacío)."""
+    view = _view()
+    if view is None:
+        return 0
+    if wanted is not None and view.lineage_uid != wanted:
+        _STATE.searching = True
+        try:
+            view.lineage_uid = wanted
+        finally:
+            _STATE.searching = False
+    _clear_lineage(view)
+    project = _project()
+    shown_text = view.lineage_uid.strip()
+    if project is None or not shown_text:
+        return 0
+    from ...core.provenance.lineage import lineage, search_items  # al usarlo
+    from ...core.provenance.messages import ProvenanceError
+
+    shown = language()
+    try:
+        tree = lineage(project, shown_text, language=shown)
+    except ProvenanceError as exc:
+        if exc.code != "core.lineage_unknown":
+            raise
+        view.lineage_error = render(exc.code, language=shown, **exc.values)
+        for match in search_items(project, shown_text, language=shown):
+            row = view.lineage_matches.add()
+            row.kind = str(match.kind)
+            row.uid = match.uid
+            row.text = match.text
+        return 0
+    found = tree.rows()
+    for item in found[:MAX_LINEAGE_ROWS]:
+        text_shown, param_kind, marks, note = _lineage_cells(tree, item, shown)
+        row = view.lineage.add()
+        row.depth = item.depth
+        row.kind = str(item.kind)
+        row.uid = item.uid
+        row.role = item.role or ""
+        row.repeated = item.repeated
+        row.text = text_shown
+        row.param_kind = param_kind
+        row.marks = ",".join(str(mark) for mark in marks)
+        row.note = note
+    view.lineage_more = max(0, len(found) - MAX_LINEAGE_ROWS)
+    return min(len(found), MAX_LINEAGE_ROWS)
+
+
+def lineage_searched() -> None:
+    """Cambió la búsqueda del panel (``bl.props.provenance``): :func:`search_lineage`; si no
+    se puede leer el proyecto, queda en el registro técnico."""
+    if _STATE.searching:
+        return
+    try:
+        search_lineage()
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.warning("No se pudo leer la procedencia del proyecto", exc_info=True)
+
+
+def _role(role: str | None) -> str:
+    return f" ({role})" if role else ""
+
+
+def _operation_text(node: Any, shown: str) -> str:
+    """Un eslabón: su nombre, su tipo con la versión de su algoritmo, la versión de Geoblender,
+    quién y cuándo la lanzó y, si lo suyo no es un resultado guardado, cómo se presenta."""
+    defn = contract.OPERATIONS.get(node.op_type)
+    name = text(defn.label_msgid) if defn is not None and defn.label_msgid else node.op_type
+    parts = [name, f"{node.op_type} {node.op_version}",
+             f"Geoblender {node.geoblender_version}", node.user_host,
+             _local(node.started_at, "%d/%m/%Y %H:%M")]
+    if not node.result.saved:
+        parts.append(node.result.text(language=shown))
+    return " · ".join(parts)
+
+
+def _parameter_text(node: Any, shown: str) -> str:
+    """Un parámetro que leyó un eslabón: su nombre, su clave y el valor que leyó con su
+    unidad."""
+    from ...core.params import DEFINITIONS  # al usarlo: las definiciones de los módulos
+
+    definition = DEFINITIONS.get(node.key)
+    label = text(definition.label_msgid) if definition is not None and \
+        definition.label_msgid else ""
+    name = f"{label} · {node.key}" if label else node.key
+    return f"{name} = {node.value_text(language=shown)}"
+
+
+def _parameter_note(node: Any, shown: str) -> str:
+    """Lo de hoy de un parámetro, si no es lo que leyó el eslabón (otro valor, otro tipo u
+    otra marca: RF-008-31 cuenta lo de hoy), y si la operación de la que sale un CALCULADO
+    está obsoleta."""
+    notes = []
+    if node.changed or node.current_kind != node.kind or \
+            node.current_unconfirmed != node.unconfirmed:
+        today = f"{node.current_value_text(language=shown)} {badge(node.current_kind)}"
+        if node.current_unconfirmed:
+            today += f" {tr('unconfirmed')}"
+        notes.append(tr("today: {value}", value=today))
+    if node.source_stale:
+        notes.append(tr("its source operation is stale"))
+    return " · ".join(notes)
+
+
+def _lineage_cells(tree: Any, item: Any, shown: str) -> tuple[str, str, tuple[str, ...], str]:
+    """De una fila de la procedencia (``core.provenance.lineage.LineageRow``): su texto, el
+    tipo de su insignia (de una cifra o un parámetro), sus marcas y su nota."""
+    node = item.node
+    match str(item.kind):
+        case "figure":
+            note = "" if tree.result.saved else tree.result.text(language=shown)
+            return node.text(language=shown), str(node.kind), tree.marks.marks, note
+        case "operation":
+            notes = [node.stale_text] if node.stale_text else []
+            if node.review:
+                notes.append(tr("review"))
+            return (_operation_text(node, shown), "", ("stale",) if node.stale else (),
+                    " · ".join(notes))
+        case "parameter":
+            return (_parameter_text(node, shown), str(node.kind),
+                    ("unconfirmed",) if node.unconfirmed else (), _parameter_note(node, shown))
+        case "input":
+            return node.text(language=shown) + _role(item.role), "", (), ""
+    shown_text = node.name + _role(item.role)
+    if not node.current:
+        shown_text += f" · {tr('earlier version')}"
+    return shown_text, "", tree.marks.marks if item.depth == 0 else (), ""
+
+
+def lineage_visible(rows: Sequence[Any]) -> list[bool]:
+    """Qué filas de la procedencia se ven: las de debajo de un nudo plegado (``expanded``
+    falso), no."""
+    found: list[bool] = []
+    folded: int | None = None
+    for row in rows:
+        if folded is not None and row.depth > folded:
+            found.append(False)
+            continue
+        found.append(True)
+        folded = None if row.expanded else row.depth
+    return found
+
+
+def _mark_text(kind: str, mark: str) -> str:
+    """Una marca de una fila: de un parámetro, «sin confirmar»; de una cifra o un dato, la de
+    RF-008-31 («depende de una hipótesis», «depende de un valor sin confirmar», «obsoleta»)."""
+    if kind == "parameter":
+        return tr("unconfirmed")
+    return render(f"core.mark_{mark}", language=language())
+
+
+def draw_lineage_row(layout: Any, row: Any, *, children: bool) -> None:
+    """Una fila de la procedencia (RF-008-29, RF-008-31): sangrada por su profundidad, con el
+    botón de plegar si tiene ramas, la insignia de tipo de una cifra o un parámetro ([HIP] en
+    ámbar), su texto, «ya mostrada arriba» si se repite, sus marcas en alerta y su nota (en
+    alerta, la causa de un eslabón obsoleto)."""
+    line = layout.row(align=True)
+    if row.depth:
+        line.separator(factor=LINEAGE_INDENT * row.depth)
+    if children:
+        icon = "DISCLOSURE_TRI_DOWN" if row.expanded else "DISCLOSURE_TRI_RIGHT"
+        line.prop(row, "expanded", text="", icon=icon, emboss=False)
+    else:
+        line.label(text="", icon="BLANK1")
+    if row.param_kind:
+        _cell(line, badge(row.param_kind), BADGE_UNITS,
+              alert=row.param_kind == ParamKind.HIPOTESIS)
+    line.label(text=row.text, translate=False)
+    if row.repeated:
+        again = line.row(align=True)
+        again.active = False
+        again.label(text=tr("shown above"), translate=False)
+    marks = [mark for mark in row.marks.split(",") if mark]
+    if row.kind != "operation":  # de un eslabón, su nota dice por qué
+        for mark in marks:
+            flagged = line.row(align=True)
+            flagged.alert = True
+            flagged.label(text=_mark_text(row.kind, mark), translate=False)
+    if row.note:
+        note = line.row(align=True)
+        note.alert = "stale" in marks
+        note.label(text=row.note, translate=False)
+
+
+def draw_lineage(layout: Any, context: Any) -> None:
+    """El contenido de :class:`GEOBLENDER_PT_core_lineage` (RF-008-29, RF-008-31): la
+    búsqueda, el motivo si lo buscado no está, lo que lo contiene (cada uno abre su
+    procedencia) y la cadena."""
+    layout.label(text=tr("Operation graph and provenance"), translate=False)
+    reason = _session().unavailable()
+    if reason is not None:
+        layout.label(text=reason, icon="INFO", translate=False)
+        return
+    view = getattr(getattr(context, "window_manager", None), WINDOW_MANAGER_PROPERTY, None)
+    if view is None:
+        return
+    layout.prop(view, "lineage_uid", text=tr("Figure or dataset"), icon="VIEWZOOM",
+                translate=False)
+    matches = view.lineage_matches
+    if len(matches):
+        layout.label(text=tr("Figures and datasets found"), translate=False)
+        column = layout.column(align=True)
+        for match in matches:
+            _operator(column, SHOW_LINEAGE, match.text, item_uid=match.uid)
+    elif view.lineage_error:
+        note = layout.row()
+        note.alert = True
+        note.label(text=view.lineage_error, icon="ERROR", translate=False)
+    if len(view.lineage):
+        layout.template_list(LINEAGE_LIST, "", view, "lineage", view, "lineage_index",
+                             rows=LINEAGE_ROWS)
+        if view.lineage_more:
+            layout.label(text=tr("… and {count} more", count=view.lineage_more),
+                         translate=False)
+    elif not len(matches) and not view.lineage_error:
+        layout.label(text=tr("Search for a figure or a dataset by its name, its key or its uid"),
+                     translate=False)
+
+
+class GEOBLENDER_UL_core_lineage(bpy.types.UIList):
+    """The chain of operations of a figure or a dataset"""
+
+    bl_idname = LINEAGE_LIST
+
+    def draw_item(self, _context: Any, layout: Any, data: Any, item: Any, _icon: int,
+                  _active_data: Any, _active_property: str, index: int = 0,
+                  _flt_flag: int = 0) -> None:
+        rows = data.lineage
+        children = index + 1 < len(rows) and rows[index + 1].depth > item.depth
+        draw_lineage_row(layout, item, children=children)
+
+    def filter_items(self, _context: Any, data: Any, propname: str) -> tuple[list[int],
+                                                                            list[int]]:
+        flag = self.bitflag_filter_item
+        return [flag if shown else 0 for shown in lineage_visible(getattr(data, propname))], []
+
+
+class GEOBLENDER_PT_core_lineage(bpy.types.Panel):
+    """What each result comes from and what depends on it"""
+
+    bl_idname = LINEAGE_PANEL
+    bl_label = "Operation graph and provenance"
+    bl_translation_context = "Geoblender"
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = LINEAGE_PANEL_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_lineage(self.layout, context)
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_PT_core_stale,
     GEOBLENDER_UL_core_parameters,
@@ -1212,6 +1530,8 @@ classes: tuple[type, ...] = (
     GEOBLENDER_PT_core_parameters,
     GEOBLENDER_UL_core_inputs,
     GEOBLENDER_PT_core_inputs,
+    GEOBLENDER_UL_core_lineage,
+    GEOBLENDER_PT_core_lineage,
 )
 
 
@@ -1246,6 +1566,7 @@ def uninstall() -> None:
     _forget()
     _clear_parameters()
     _clear_inputs()
+    _forget_lineage()
     _STATE.texts.clear()
     _STATE.properties.clear()
     _STATE.undo_text = ""
