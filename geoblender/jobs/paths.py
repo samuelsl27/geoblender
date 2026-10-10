@@ -228,7 +228,8 @@ class JobDir:
         _make_read_only(target)
         return f"{INPUTS_DIR}/{filename}"
 
-    def copy_input(self, source: Path, name: str, *, job: str | None = None) -> str:
+    def copy_input(self, source: Path, name: str, *, job: str | None = None,
+                   progress: Callable[[float], object] | None = None) -> str:
         """Copia el fichero ``source`` a ``in/<name><extensión de source>`` (RF-004-01; lo
         pide la 005 para CSV, XLSX y bases de RecMin) y devuelve su ruta relativa
         (``"in/collares.csv"``). La fuente solo se lee.
@@ -238,7 +239,12 @@ class JobDir:
         :class:`JobError` ``source_changed`` (que nombra la fuente y el trabajo ``job``, por
         defecto su ``job_uid``) y no queda nada en ``in/``. Una fuente que no existe o no es
         un fichero, ``request_invalid``; sin espacio, ``disk_space`` antes de leerla.
-        ``name`` como en :meth:`write_array`; la copia queda de solo lectura."""
+        ``name`` como en :meth:`write_array`; la copia queda de solo lectura.
+
+        ``progress(fracción)`` (spec 006, T33; RF-006-28), si se da, recibe lo hecho de las
+        tres lecturas (0–1) tras cada bloque de 1 MiB: una fuente grande o en red avisa de su
+        avance, y lo que lance (``JobCancelled`` del contexto del trabajo) para la copia sin
+        dejar nada en ``in/``."""
         source = Path(source)
         stem = _input_name(name)
         label = job if isinstance(job, str) and job.strip() else self.job_uid
@@ -258,13 +264,20 @@ class JobDir:
         target, temporary = self._targets(filename)
         self._check_space(info.st_size)
         self.inputs_dir.mkdir(parents=True, exist_ok=True)
+        passes = None if progress is None else _Passes(progress, info.st_size)
+
+        def digest(sink: Callable[[bytes], object] | None = None) -> str:
+            if passes is None:
+                return _digest(source, sink)
+            return _digest(source, sink, done=passes.done)
+
         try:
-            before = _digest(source)
+            before = digest()
             with temporary.open("xb") as handle:
-                copied = _digest(source, handle.write)
+                copied = digest(handle.write)
                 handle.flush()
                 os.fsync(handle.fileno())
-            after = _digest(source)
+            after = digest()
             if not before == copied == after:
                 raise JobError("source_changed", job=label, path=source)
             os.replace(temporary, target)
@@ -355,16 +368,34 @@ def _input_name(name: object) -> str:
     return name
 
 
-def _digest(path: Path, sink: Callable[[bytes], object] | None = None) -> str:
+def _digest(path: Path, sink: Callable[[bytes], object] | None = None, *,
+            done: Callable[[int], object] | None = None) -> str:
     """Huella sha256 de ``path`` leído por bloques; cada bloque leído va también a ``sink``
-    (la copia), así la huella de la copia es la de lo que se escribió."""
+    (la copia), así la huella de la copia es la de lo que se escribió, y su tamaño a
+    ``done``."""
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
         while block := stream.read(_CHUNK_BYTES):
             digest.update(block)
             if sink is not None:
                 sink(block)
+            if done is not None:
+                done(len(block))
     return digest.hexdigest()
+
+
+class _Passes:
+    """El avance de las tres lecturas de :meth:`JobDir.copy_input` (antes, copia y después)
+    de una fuente de ``size`` bytes, para ``progress(fracción)``."""
+
+    def __init__(self, progress: Callable[[float], object], size: int) -> None:
+        self._progress = progress
+        self._total = 3 * max(1, size)
+        self._read = 0
+
+    def done(self, count: int) -> None:
+        self._read += count
+        self._progress(min(1.0, self._read / self._total))
 
 
 def _free_bytes(folder: Path) -> int:

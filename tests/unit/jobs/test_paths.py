@@ -354,6 +354,28 @@ class CopyInputTest(unittest.TestCase):
             self.folder.copy_input(self.source, "collares")
         self.assertEqual(calls, [(self.source, False), (self.source, True), (self.source, False)])
 
+    def test_progress_of_the_three_reads(self) -> None:
+        """RF-004-01 (spec 006, T33; RF-006-28): con ``progress``, la copia avisa tras cada
+        bloque de lo hecho de sus tres lecturas (4 bloques cada una), creciente hasta 1; lo
+        que lance ``progress`` (la cancelación del trabajo) para la copia sin dejar nada en
+        ``in/``."""
+        seen: list[float] = []
+        self.folder.copy_input(self.source, "collares", progress=seen.append)
+        self.assertEqual(len(seen), 12)
+        self.assertEqual(seen, sorted(seen))
+        self.assertEqual(seen[-1], 1.0)
+
+        class Stop(Exception):
+            pass
+
+        def stop(fraction: float) -> None:
+            if fraction > 0.5:  # ya copiando
+                raise Stop
+
+        with self.assertRaises(Stop):
+            self.folder.copy_input(self.source, "otra", progress=stop)
+        self.assertEqual(_tree(self.folder.inputs_dir), ["collares.csv"])
+
     def _assert_source_changed(self, change_at_call: int, *, mid_copy: bool = False) -> None:
         real = paths._digest
         count = 0

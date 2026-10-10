@@ -92,10 +92,11 @@ from ..core.content.encoder import (
 from ..core.content.readers import MAIN_ROLE, ContentReader, ReadRequest
 from ..core.georef import CrsRef
 from ..core.hashing import canonical_json
+from ..jobs.worker_api import JobCancelled
 from . import asc, xyz_grid
 from .geotiff import reader as geotiff_reader
 from .points import ColumnMapping, _field, _number, check_rows_options, row_has_columns
-from .ports import TableReader
+from .ports import Cancelled, Progress, TableReader
 from .raster import Raster
 from .tin import Tin, file_meta
 
@@ -165,6 +166,10 @@ XYZ_BYTES_PER_S = 30_000_000
 TEXT_BYTES_PER_S = 3_000_000
 """Ídem, ``gis.points_text@1`` (el CSV de ``interop`` y un sha256 por fila, en Python;
 medido: 8,5 MB, 200 000 filas, en 2,0 s; 4,2 MB/s)."""
+DIGEST_BLOCK_CELLS = 1 << 20
+"""Celdas por banda de filas de :func:`raster_digest` (unas 50 ms de hash cada una)."""
+DIGEST_TEXT = "Calculando el hash de contenido de la rejilla…"
+"""Lo que dice el avance de :func:`raster_digest`."""
 
 _TABLES = "tables"
 _PORTS: dict[str, TableReader] = {}
@@ -306,15 +311,34 @@ def raster_header(raster: Raster) -> dict[str, Any]:
 
 
 def raster_digest(
-    raster: Raster, declarations: Mapping[str, Any], *, normalizer: str = NORMALIZER
+    raster: Raster,
+    declarations: Mapping[str, Any],
+    *,
+    normalizer: str = NORMALIZER,
+    progress: Progress | None = None,
+    cancelled: Cancelled | None = None,
 ) -> ContentDigest:
     """El ``ContentDigest`` que da ``gis.geotiff@1`` al leer ``raster`` escrito por
     ``GeoTiffIO`` con el perfil ``project`` (Float64 con los mismos bits), sin escribirlo: el
-    hash de una rejilla del proyecto que escribe una operación (RF-006-26, ida y vuelta)."""
+    hash de una rejilla del proyecto que escribe una operación (RF-006-26, ida y vuelta).
+
+    Por bandas de filas de unas :data:`DIGEST_BLOCK_CELLS` celdas (el mismo hash que de una
+    vez): tras cada una, ``progress(fracción, texto)``, y antes, si ``cancelled()`` pide
+    parar, ``JobCancelled`` (RF-006-28, T33: 11,2 M celdas son medio segundo de hash)."""
     hasher = ContentHasher("raster", declarations=declarations, reader=GEOTIFF.id,
                            normalizer=normalizer)
     feed = hasher.begin_grid(raster_header(raster))
-    feed.update(raster.values)
+    values = raster.values
+    rows, columns = values.shape
+    band = max(1, DIGEST_BLOCK_CELLS // max(1, columns))
+    total = -(-rows // band)
+    for index, start in enumerate(range(0, rows, band)):
+        if cancelled is not None and cancelled():
+            raise JobCancelled(f"Cancelado al calcular el hash de la rejilla en el trozo "
+                               f"{index + 1} de {total}")
+        feed.update(values[start:start + band])
+        if progress is not None:
+            progress((index + 1) / total, DIGEST_TEXT)
     feed.finish()
     return hasher.digest()
 

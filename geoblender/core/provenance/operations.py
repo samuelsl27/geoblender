@@ -1330,7 +1330,9 @@ def ingest_job(
     que se lanzó, y la termina (RF-008-20; plan §5.4.7):
 
     - si el trabajo no terminó bien, la operación queda cancelada (si se canceló) o fallida,
-      con el motivo de la 004 y sin salidas (RF-008-19);
+      con el motivo de la 004 y sin salidas (RF-008-19); sin cifras, tampoco hacen falta las
+      versiones de sus bibliotecas (``software``; spec 006, T33: así la deja la sesión al
+      cancelar el trabajo de una operación con ``OperationDef.libraries``);
     - si una salida falta o no casa con su huella, no se incorpora: la operación queda fallida
       con el mensaje de la 004 («El resultado out/… del trabajo «…» falta o no coincide con su
       huella.») y el módulo no escribe nada;
@@ -1361,7 +1363,8 @@ def ingest_job(
                          f"{outcome.job_uid}")
     if not callable(outputs):
         _outputs(outputs)
-    _software(handle.definition, software)
+    if outcome.state == JOB_SUCCEEDED:  # uno que no terminó bien no deja cifras
+        _software(handle.definition, software)
     _message(message)
     _require_writable(project)
     if not handle._running():

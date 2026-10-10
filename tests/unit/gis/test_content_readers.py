@@ -319,6 +319,32 @@ class GeoTiffTest(_Temp):
                         raster, path, profile="project")
                     self.assertEqual(_digest(content.GEOTIFF, {"main": path}), expected)
 
+    def test_raster_digest_by_bands_with_progress(self) -> None:
+        """RF-006-28 (T33: 11,2 M celdas son medio segundo de hash): ``raster_digest`` hashea
+        por bandas de filas (aquí de 7 celdas: 2 filas de 3) con el mismo hash que de una vez,
+        da su avance tras cada banda, hasta 1, y si se pide parar, ``JobCancelled`` antes de
+        la siguiente."""
+        crs, vertical = CATALOG.horizontal(25830), CATALOG.vertical(5782)
+        values = np.linspace(780.0, 820.0, 257 * 3).reshape(257, 3)
+        values[4, 2] = np.nan
+        raster = raster_mod.Raster(grid_mod.Grid(700000.0, 4400128.5, 0.5, 0.5, 3, 257), values,
+                                   crs, vertical)
+        expected = content.raster_digest(raster, DECL)  # 771 celdas: una sola banda
+        seen: list[tuple[float, str]] = []
+        with mock.patch.object(content, "DIGEST_BLOCK_CELLS", 7):
+            got = content.raster_digest(raster, DECL,
+                                        progress=lambda frac, text: seen.append((frac, text)))
+            self.assertEqual(got, expected)
+            self.assertEqual(len(seen), 129)  # 257 filas de 2 en 2
+            self.assertEqual([frac for frac, _ in seen], sorted(frac for frac, _ in seen))
+            self.assertEqual(seen[-1], (1.0, content.DIGEST_TEXT))
+            seen.clear()
+            with self.assertRaises(worker_api.JobCancelled):
+                content.raster_digest(raster, DECL,
+                                      progress=lambda frac, text: seen.append((frac, text)),
+                                      cancelled=lambda: len(seen) >= 3)
+        self.assertEqual(len(seen), 3)
+
     def test_progress_and_cancel(self) -> None:
         """RF-006-28: por tiras (``f64_strip``: 3 de 16 filas) y por teselas (``f32_tile``:
         4 de 32 × 32)."""

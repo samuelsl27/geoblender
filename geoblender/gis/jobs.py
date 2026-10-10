@@ -14,9 +14,11 @@ que el hilo de Blender y el proceso aparte hacen lo mismo. Todos en el entorno `
 **La petición nunca lleva una ruta** (ARQ-11): una fuente externa llega por la línea de
 órdenes (``JobRunner.submit(paths=…)``, ``--path source_main=…``; el ``.prj`` de un ASC,
 ``source_prj``) y el trabajo la copia a ``in/`` con ``JobDir.copy_input`` (huella antes,
-durante y después); lo del proyecto (una rejilla, un TIN, puntos) lo copia ``bl`` a ``in/``
-antes de lanzarlo (``request.inputs``). Los parámetros van resueltos (los del proyecto,
-``handle.params``; los de control, su valor) y la operación, en ``operation_uid``.
+durante y después, con su avance cada MiB: T33); lo del proyecto (una rejilla, un TIN,
+puntos) lo copia ``bl`` a ``in/`` antes de lanzarlo (``request.inputs``). Los parámetros van
+resueltos (los del proyecto, ``handle.params``; los de control, su valor) y la operación, en
+``operation_uid``. Ningún paso sin avance pasa de medio segundo con 11,2 M celdas (RF-006-28,
+T33): la copia, su huella y el hash de la rejilla escrita avisan por trozos.
 
 **Resultados** en ``out/`` con su huella (``WorkerContext.add_output``, con el papel de
 :class:`JobOutput`) y un **resumen** JSON con el ``ContentDigest`` de la fuente
@@ -319,6 +321,9 @@ HASHING_TEXT = "Calculando el hash de contenido de la fuente…"
 WRITING_TEXT = "Escribiendo el resultado…"
 EXPORT_HASH_TEXT = "Calculando el hash de contenido del entregable…"
 DONE_TEXT = "Terminado"
+COPY_SHARE = 0.75
+"""La parte del avance de copiar un fichero de la fuente que es la copia verificada (lee la
+fuente tres veces); el resto, la huella de la copia (una lectura)."""
 
 # Estimaciones [I] (plan §5.3.4: «celdas × 0,6 µs (DEFLATE)…»; medidas de T05 a T23).
 READ_PASSES = 3
@@ -970,38 +975,63 @@ def _finish(ctx: _Context, outputs: Sequence[JobOutput]) -> None:
         ctx.add_output(ctx.output_path(output.file), output.role)
 
 
-def _sha256(path: Path) -> str:
+def _sha256(path: Path, progress: Callable[[float], None] | None = None) -> str:
+    """La huella sha256 de ``path`` por bloques de 1 MiB, con ``progress(fracción)`` tras
+    cada uno."""
     digest = hashlib.sha256()
+    size = max(1, path.stat().st_size) if progress is not None else 1
+    read = 0
     with open(path, "rb") as stream:
         while block := stream.read(_HASH_BLOCK):
             digest.update(block)
+            if progress is not None:
+                read += len(block)
+                progress(min(1.0, read / size))
     return digest.hexdigest()
 
 
-def _dataset_digest_raster(raster: Raster) -> ContentDigest:
+def _dataset_digest_raster(ctx: _Context, raster: Raster, low: float,
+                           high: float) -> ContentDigest:
+    """El ``ContentDigest`` de la rejilla ``raster`` como dato del proyecto, con su avance en
+    el tramo [``low``, ``high``] y la cancelación entre bandas (11,2 M celdas son medio
+    segundo de hash; RF-006-28, T33)."""
     from ..core.datasets.model import DATASET_DECLARATIONS  # un dato se hashea sin declaraciones
 
-    return gis_content.raster_digest(raster, DATASET_DECLARATIONS)
+    return gis_content.raster_digest(raster, DATASET_DECLARATIONS,
+                                     progress=_span(ctx, low, high), cancelled=_cancelled(ctx))
 
 
 def _copy_sources(ctx: _Context, request: _Request, roles: Sequence[str], *,
-                  sqlite: bool = False) -> tuple[dict[str, Path], dict[str, dict[str, Any]]]:
+                  sqlite: bool = False, low: float = 0.0,
+                  high: float = 0.0) -> tuple[dict[str, Path], dict[str, dict[str, Any]]]:
     """Las copias verificadas en ``in/`` de los ficheros de la fuente que llegan por
     ``--path`` (``source_<papel>``; todas con el nombre ``source_main`` y su extensión: el
     ``.prj`` queda junto a su ASC) y sus huellas (sha256, tamaño y fecha). Con ``sqlite`` (un
     GeoPackage), también el ``-wal`` o el diario de la principal, junto a su copia
-    (``in/source_main.gpkg-wal``; plan §5.6.4, D9), sin que cambie mientras se copian."""
+    (``in/source_main.gpkg-wal``; plan §5.6.4, D9), sin que cambie mientras se copian. El
+    avance de cada copia y de su huella (cada MiB; los ficheros, por su tamaño) va en el
+    tramo [``low``, ``high``] con :data:`COPYING_TEXT`, y cada aviso es un punto de
+    cancelación (RF-006-28, T33: una fuente grande o en red tarda)."""
     files: dict[str, Path] = {}
     prints: dict[str, dict[str, Any]] = {}
+    found = {role: Path(path) for role in roles
+             if (path := ctx.paths.get(path_name(role))) is not None}
+    sizes = {role: _size(path) for role, path in found.items()}
+    total = max(1, sum(sizes.values()))
+    done = 0
     for role in roles:
-        source = ctx.paths.get(path_name(role))
+        source = found.get(role)
         if source is None:
             if role == MAIN_ROLE:
                 raise request.invalid(f"falta la ruta «{path_name(role)}» de la fuente (--path)")
             continue
         ctx.check_cancelled()
+        start = low + (high - low) * done / total
+        done += sizes[role]
+        span = _span(ctx, start, low + (high - low) * done / total)
         before = _stamp(Path(source))
-        relative = ctx.job_dir.copy_input(Path(source), path_name(MAIN_ROLE), job=request.job)
+        relative = ctx.job_dir.copy_input(Path(source), path_name(MAIN_ROLE), job=request.job,
+                                          progress=_part(span, 0.0, COPY_SHARE, COPYING_TEXT))
         copy = ctx.job_dir.path / relative
         if sqlite and role == MAIN_ROLE:
             for suffix in SQLITE_SIDES:
@@ -1012,8 +1042,19 @@ def _copy_sources(ctx: _Context, request: _Request, roles: Sequence[str], *,
         if before is None or _stamp(Path(source)) != before:
             raise JobError("source_changed", job=request.job, path=source)
         files[role] = copy
-        prints[role] = {"sha256": _sha256(copy), "size": before[0], "mtime_ns": before[1]}
+        sha256 = _sha256(copy, _part(span, COPY_SHARE, 1.0, COPYING_TEXT))
+        prints[role] = {"sha256": sha256, "size": before[0], "mtime_ns": before[1]}
     return files, prints
+
+
+def _part(span: Progress, low: float, high: float, text: str) -> Callable[[float], None]:
+    """``progress(fracción)`` de una parte [``low``, ``high``] del tramo ``span``, con
+    ``text``."""
+
+    def progress(fraction: float) -> None:
+        span(low + (high - low) * min(max(float(fraction), 0.0), 1.0), text)
+
+    return progress
 
 
 def _stamp(path: Path) -> tuple[int, int] | None:
@@ -1022,6 +1063,15 @@ def _stamp(path: Path) -> tuple[int, int] | None:
     except OSError:
         return None
     return info.st_size, info.st_mtime_ns
+
+
+def _size(path: Path) -> int:
+    """El tamaño de ``path`` para repartir el avance (0 si no se puede leer: lo dirá la
+    copia)."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _source_digest(ctx: _Context, reader: ContentReader, kind: str, files: Mapping[str, Path],
@@ -1213,9 +1263,9 @@ def run_read_raster(ctx: _Context) -> dict[str, Any]:
         raise request.invalid(f"el sin dato forzado es un número finito o nada, no {override!r}")
     ctx.progress(0.0, COPYING_TEXT)
     roles = (MAIN_ROLE, PRJ_ROLE) if reader is gis_content.ASC else (MAIN_ROLE,)
-    files, prints = _copy_sources(ctx, request, roles)
+    files, prints = _copy_sources(ctx, request, roles, low=0.0, high=0.1)
     main = files[MAIN_ROLE]
-    progress, cancelled = _span(ctx, 0.1, 0.45), _cancelled(ctx)
+    progress, cancelled = _span(ctx, 0.1, 0.4), _cancelled(ctx)
     if reader is gis_content.GEOTIFF:
         source = read_geotiff(main, max_cells=max_cells, progress=progress, cancelled=cancelled)
     elif reader is gis_content.ASC:
@@ -1235,10 +1285,11 @@ def run_read_raster(ctx: _Context) -> dict[str, Any]:
         values = np.where(values == float(override), np.nan, values)
     raster = Raster(source.grid, values, crs, vertical)
     declarations = _declarations(request, reader, crs, vertical, settings)
-    digest = _source_digest(ctx, reader, "raster", files, declarations, settings, 0.45, 0.75)
-    ctx.progress(0.75, WRITING_TEXT)
+    digest = _source_digest(ctx, reader, "raster", files, declarations, settings, 0.4, 0.6)
+    ctx.progress(0.6, WRITING_TEXT)
     GeoTiffIO().write(raster, ctx.output_path(OUT_SOURCE_GRID.file), profile="project",
-                      progress=_span(ctx, 0.75, 0.98), cancelled=cancelled)
+                      progress=_span(ctx, 0.6, 0.9), cancelled=cancelled)
+    written = _dataset_digest_raster(ctx, raster, 0.9, 0.99)
     summary = {
         "source": _source_summary(reader, digest, prints, declarations, settings),
         "crs": crs_json(crs),
@@ -1252,7 +1303,7 @@ def run_read_raster(ctx: _Context) -> dict[str, Any]:
         "valid_cells": int(np.count_nonzero(np.isfinite(values))),
         "outputs": {OUT_SOURCE_GRID.role: {
             "file": OUT_SOURCE_GRID.relative,
-            "digest": digest_json(_dataset_digest_raster(raster))}},
+            "digest": digest_json(written)}},
     }
     _finish(ctx, (OUT_SOURCE_GRID,))
     return summary
@@ -1303,7 +1354,8 @@ def run_resample(ctx: _Context) -> dict[str, Any]:
                                         cancelled=cancelled)
     ctx.progress(0.85, WRITING_TEXT)
     GeoTiffIO().write(grid, ctx.output_path(OUT_PROJECT_GRID.file), profile="project",
-                      progress=_span(ctx, 0.85, 0.97), cancelled=cancelled)
+                      progress=_span(ctx, 0.85, 0.96), cancelled=cancelled)
+    written = _dataset_digest_raster(ctx, grid, 0.96, 0.99)
     _write_report(ctx, report)
     summary = {
         "method": str(report.method),
@@ -1315,7 +1367,7 @@ def run_resample(ctx: _Context) -> dict[str, Any]:
             **plain(transform.info), "summary": transform_summary(transform.info)},
         "outputs": {
             OUT_PROJECT_GRID.role: {"file": OUT_PROJECT_GRID.relative,
-                                    "digest": digest_json(_dataset_digest_raster(grid))},
+                                    "digest": digest_json(written)},
             OUT_REPORT.role: {"file": OUT_REPORT.relative}},
     }
     _finish(ctx, (OUT_PROJECT_GRID, OUT_REPORT))
@@ -1341,7 +1393,7 @@ def run_import_points(ctx: _Context) -> dict[str, Any]:
                            "su envoltorio (gis.content.use_table_reader)")
     mapping = _column_mapping(request, settings)
     ctx.progress(0.0, COPYING_TEXT)
-    files, prints = _copy_sources(ctx, request, (MAIN_ROLE,))
+    files, prints = _copy_sources(ctx, request, (MAIN_ROLE,), low=0.0, high=0.1)
     digest = _source_digest(ctx, reader, "table", files, declarations, settings, 0.1, 0.45)
     ctx.progress(0.45, READING_TEXT)
     table = tables(files[MAIN_ROLE], encoding=settings["encoding"],
@@ -1682,7 +1734,7 @@ def run_import_vector(ctx: _Context) -> dict[str, Any]:
     declared_crs = request.crs("crs", required=False)
     declared_vertical = request.vertical("vertical", required=False)
     ctx.progress(0.0, COPYING_TEXT)
-    files, prints = _copy_sources(ctx, request, (MAIN_ROLE,), sqlite=True)
+    files, prints = _copy_sources(ctx, request, (MAIN_ROLE,), sqlite=True, low=0.0, high=0.1)
     ctx.progress(0.1, READING_TEXT)
     work = ctx.job_dir.path / LAYER_DIR
     try:
@@ -1843,12 +1895,13 @@ def run_convert_surface(ctx: _Context) -> dict[str, Any]:
                          progress=_span(ctx, 0.3, 0.85), cancelled=cancelled)
     ctx.progress(0.85, WRITING_TEXT)
     GeoTiffIO().write(grid, ctx.output_path(OUT_PROJECT_GRID.file), profile="project",
-                      progress=_span(ctx, 0.85, 0.98), cancelled=cancelled)
+                      progress=_span(ctx, 0.85, 0.96), cancelled=cancelled)
+    written = _dataset_digest_raster(ctx, grid, 0.96, 0.99)
     summary = {"direction": direction, "grid": grid_json(target), "cells": int(grid.values.size),
                "valid_cells": int(np.count_nonzero(np.isfinite(grid.values))),
                "outputs": {OUT_PROJECT_GRID.role: {
                    "file": OUT_PROJECT_GRID.relative,
-                   "digest": digest_json(_dataset_digest_raster(grid))}}}
+                   "digest": digest_json(written)}}}
     _finish(ctx, (OUT_PROJECT_GRID,))
     return summary
 
