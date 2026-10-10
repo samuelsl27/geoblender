@@ -18,6 +18,9 @@ del modificador de Geometry Nodes en 5.2) se envuelve aquí, con su prueba en
   son dos regiones de cabecera, la de ``draw_left`` (``TOP``) y la del bloque derecho
   (``RIGHT``, de tamaño dinámico), y la anchura de la primera ya no incluye el bloque
   derecho; restarlo otra vez daba D con escala efectiva 1,25 donde cabe C.
+- :func:`statusbar_widths` (spec 003, RF-003-28; spec 008, T69): lo que ocupa en la barra de
+  estado cada elemento (etiqueta, botón, desplegable, separador) además de su texto, medido
+  en la GUI de esta versión; con ello se calcula qué campos caben y cuáles se pliegan.
 - :func:`ui_scale`: la escala efectiva de la interfaz (``preferences.system.ui_scale``:
   la «Escala de resolución» por la del sistema operativo, p. ej. 1,0 × 125 % = 1,25); sin
   interfaz vale 0 (``docs/trampas.md`` §3) y se toma 1,0.
@@ -31,6 +34,7 @@ del modificador de Geometry Nodes en 5.2) se envuelve aquí, con su prueba en
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
 
 import bpy
 
@@ -148,10 +152,48 @@ def native_tool_settings_px(mode: str) -> float:
 STATUSBAR_RESERVED_PX = 480.0
 
 
+@dataclass(frozen=True)
+class StatusbarWidths:
+    """Lo que ocupa en la barra de estado cada elemento, a escala 1,0, además del ancho
+    ``blf`` de su texto con la fuente de la interfaz (spec 003, RF-003-28; spec 008, T69).
+
+    ``label``: una etiqueta sin icono (su texto + 0,25 unidades); ``icon_label``: con icono
+    (+ 1,75); ``button``: el botón de una orden con texto y sin icono (+ 1,5); ``icon_button``:
+    el de una orden solo con su icono (1 unidad); ``popover``: un desplegable con texto
+    (+ 1,25); ``separator``: el separador de línea entre dos campos con el espacio a cada lado;
+    ``spacer``: un separador dentro de una fila alineada (0,3 unidades, del código de Blender,
+    sin medir)."""
+
+    label: float
+    icon_label: float
+    button: float
+    icon_button: float
+    popover: float
+    separator: float
+    spacer: float
+    blender_version: str
+    measured: str
+
+
+# Medidas en las capturas de la barra de estado de 5.2.1 a 1920 px con escalas efectivas 1,0
+# y 1,5 (comprobación M6 de la spec 008, 10/10/2026): las posiciones de los textos y de los
+# separadores frente al ancho blf de cada texto a 11 pt.
+_STATUSBAR_WIDTHS: dict[tuple[int, int], StatusbarWidths] = {
+    (5, 2): StatusbarWidths(label=5.0, icon_label=35.0, button=30.0, icon_button=20.0,
+                            popover=25.0, separator=22.0, spacer=6.0, blender_version="5.2.1",
+                            measured="2026-10-10"),
+}
+
+
 def view3d_row1_widths() -> dict[str, float]:
     """Anchuras de la fila 1 de la Vista 3D de esta versión (``native``, ``full`` y
     ``pin_and_icons``), a escala 1,0."""
     return dict(_by_version(_VIEW3D_ROW1_PX))
+
+
+def statusbar_widths() -> StatusbarWidths:
+    """Lo que ocupa cada elemento de la barra de estado en esta versión, a escala 1,0."""
+    return _by_version(_STATUSBAR_WIDTHS)
 
 
 def ui_scale() -> float:

@@ -15,6 +15,18 @@ orden en la barra (``order``; los de la 003, los primeros, como en AR §6).
   3 y después los de prioridad 2; los de prioridad 1, nunca.
 - **Modo Blender**, o la preferencia apagada: solo los campos declarados para los dos modos,
   y solo mientras tengan algo que mostrar.
+- **Plegado** (spec 008, T69; M6: a 1920 px con escala efectiva 1,5, el trabajo de la 004 se
+  salía por la derecha): un campo puede registrar además una **forma plegada**, más estrecha y
+  con sus mismos botones (``folded_draw``, ``folded_width_px``). Si después de ocultar las
+  prioridades 3 y 2 lo que queda aún no cabe, se pliegan los campos que la tienen, de derecha
+  a izquierda y solo los que hace falta (:func:`fold`; :func:`arrange` dice qué se ve y
+  plegado o no). Los de la 003 no se pliegan.
+
+Lo que ocupa cada campo se calcula como lo dibuja Blender (spec 008, T69): el ancho ``blf``
+de cada texto más lo que añade su elemento (:func:`label_px`, :func:`button_px`,
+:func:`popover_px`, :func:`units_px`), con las medidas de ``bl.compat.statusbar_widths``, y un
+separador entre campos (:data:`SEPARATOR_PX`), frente a la región menos
+``bl.compat.STATUSBAR_RESERVED_PX``, todo a escala 1,0.
 
 Los campos de la 003 (AR §6): el **proyecto** («Sin proyecto» si no hay ninguno abierto), su
 **EPSG** y las coordenadas **absolutas** X, Y, Z del cursor 3D («Cursor: X 736 512,34  Y …»;
@@ -60,8 +72,9 @@ ONLY_GEOBLENDER = frozenset({GEOBLENDER})
 SNAP_PIE = "GEOBLENDER_MT_ui_pie_snap"
 CALL_PIE = "geoblender.ui_call_pie"
 OURS_ATTR = "_gb_statusbar"
-LABEL_PAD_PX = 10.0  # relleno de una etiqueta de la barra de estado, a escala 1,0
-SEPARATOR_PX = 12.0  # separador de línea entre campos
+WIDTHS = compat.statusbar_widths()
+"""Lo que ocupa cada elemento de la barra de estado además de su texto (esta versión)."""
+SEPARATOR_PX = WIDTHS.separator  # separador de línea entre campos, con su espacio
 UI_FONT_ID = 0
 MAX_CACHED_TEXTS = 256  # textos medidos que se guardan (después, se empieza de nuevo)
 
@@ -71,7 +84,8 @@ WidthField = Callable[[Any], float]
 
 @dataclass(frozen=True)
 class Field:
-    """Un campo de la barra de estado (contrato 5)."""
+    """Un campo de la barra de estado (contrato 5) y, si se puede plegar, su forma plegada
+    (spec 008, T69)."""
 
     key: str
     priority: int
@@ -79,6 +93,8 @@ class Field:
     width_px: WidthField
     modes: frozenset[str]
     order: float
+    folded_draw: DrawField | None = None
+    folded_width_px: WidthField | None = None
 
 
 class _State:
@@ -102,17 +118,23 @@ _STATE = _State()
 
 
 def register_field(key: str, *, priority: int, draw: DrawField, width_px: WidthField,
-                   modes: frozenset[str] = ONLY_GEOBLENDER, order: float = 100.0) -> None:
+                   modes: frozenset[str] = ONLY_GEOBLENDER, order: float = 100.0,
+                   folded_draw: DrawField | None = None,
+                   folded_width_px: WidthField | None = None) -> None:
     """Registra (o sustituye) el campo ``key``: prioridad 1, 2 o 3; ``draw(layout,
     context)``; ``width_px(context)``, lo que ocupa a escala 1,0 (0: nada que mostrar);
     ``modes``, ``GEOBLENDER`` y, si se ve también en modo Blender, ``BLENDER``; ``order``,
-    su sitio en la barra (los de la 003, de 10 a 60)."""
+    su sitio en la barra (los de la 003, de 10 a 60); y, si se puede plegar (spec 008, T69),
+    ``folded_draw`` y ``folded_width_px``, su forma plegada (los dos o ninguno)."""
     if priority not in (1, 2, 3):
         raise ValueError(f"prioridad «{priority}» del campo «{key}»: se espera 1, 2 o 3")
     unknown = set(modes) - {GEOBLENDER, BLENDER}
     if not modes or unknown:
         raise ValueError(f"modos del campo «{key}»: se espera GEOBLENDER o BLENDER")
-    _STATE.fields[key] = Field(key, priority, draw, width_px, frozenset(modes), order)
+    if (folded_draw is None) != (folded_width_px is None):
+        raise ValueError(f"forma plegada del campo «{key}»: se esperan su dibujo y su ancho")
+    _STATE.fields[key] = Field(key, priority, draw, width_px, frozenset(modes), order,
+                               folded_draw, folded_width_px)
     _STATE.ordered = None
 
 
@@ -135,6 +157,12 @@ def fields() -> tuple[Field, ...]:
 # Elección de lo que se ve ----------------------------------------------------------------
 
 
+def total_px(widths: Iterable[float]) -> float:
+    """Lo que ocupan unos campos de anchos ``widths`` con un separador entre cada dos."""
+    values = list(widths)
+    return sum(values) + SEPARATOR_PX * max(0, len(values) - 1)
+
+
 def fit(widths: Sequence[tuple[int, float]], available_px: float) -> list[int]:
     """Los índices de los campos ``(prioridad, ancho)`` que se ven en ``available_px``:
     se quitan los de prioridad 3 y después los de prioridad 2 (cada vez, todos los de esa
@@ -142,7 +170,7 @@ def fit(widths: Sequence[tuple[int, float]], available_px: float) -> list[int]:
     shown = list(range(len(widths)))
 
     def total() -> float:
-        return sum(widths[i][1] for i in shown) + SEPARATOR_PX * max(0, len(shown) - 1)
+        return total_px(widths[i][1] for i in shown)
 
     for priority in (3, 2):
         for index in reversed([i for i in shown if widths[i][0] == priority]):
@@ -152,14 +180,39 @@ def fit(widths: Sequence[tuple[int, float]], available_px: float) -> list[int]:
     return shown
 
 
+def fold(widths: Sequence[tuple[float, float | None]], available_px: float) -> list[bool]:
+    """Qué campos ``(ancho, ancho plegado o None)`` se pliegan para caber en
+    ``available_px`` (spec 008, T69): de derecha a izquierda, los que tienen una forma plegada
+    más estrecha, hasta que quepa; si plegados todos aún no cabe, quedan todos plegados."""
+    folded = [False] * len(widths)
+    total = total_px(width for width, _narrow in widths)
+    for index in reversed(range(len(widths))):
+        if total <= available_px:
+            break
+        width, narrow = widths[index]
+        if narrow is not None and narrow < width:
+            folded[index] = True
+            total -= width - narrow
+    return folded
+
+
 def mode_of(context: Any) -> str:
     """``GEOBLENDER`` o ``BLENDER``, el modo de la ventana de ``context``."""
     geoblender = gate.is_geoblender_workspace(getattr(context, "workspace", None))
     return GEOBLENDER if geoblender else BLENDER
 
 
-def visible_fields(context: Any) -> list[Field]:
-    """Los campos que se dibujan ahora en la barra de estado de ``context``."""
+def _folded_px(field: Field, context: Any) -> float | None:
+    if field.folded_width_px is None:
+        return None
+    width = float(field.folded_width_px(context))
+    return width if width > 0 else None
+
+
+def arrange(context: Any) -> list[tuple[Field, bool]]:
+    """Los campos que se dibujan ahora en la barra de estado de ``context``, en su orden, y
+    si cada uno va plegado: se ocultan las prioridades 3 y 2 que no caben (:func:`fit`) y,
+    si aún no cabe, se pliegan los que se pueden plegar (:func:`fold`; spec 008, T69)."""
     mode = mode_of(context)
     if mode == GEOBLENDER and not preference("show_mining_statusbar", True):
         mode = BLENDER  # solo los de los dos modos
@@ -175,22 +228,34 @@ def visible_fields(context: Any) -> list[Field]:
     scale = compat.ui_scale()
     region_width = float(getattr(getattr(context, "region", None), "width", 0) or 0)
     if region_width <= 0:
-        return [field for field, _width in candidates]
+        return [(field, False) for field, _width in candidates]
     available = region_width / scale - compat.STATUSBAR_RESERVED_PX
-    chosen = fit([(field.priority, width) for field, width in candidates], available)
-    return [candidates[index][0] for index in chosen]
+    chosen = [candidates[index]
+              for index in fit([(field.priority, width) for field, width in candidates],
+                               available)]
+    if total_px(width for _field, width in chosen) <= available:
+        return [(field, False) for field, _width in chosen]
+    folded = fold([(width, _folded_px(field, context)) for field, width in chosen], available)
+    return [(field, flag) for (field, _width), flag in zip(chosen, folded, strict=True)]
+
+
+def visible_fields(context: Any) -> list[Field]:
+    """Los campos que se dibujan ahora en la barra de estado de ``context``."""
+    return [field for field, _folded in arrange(context)]
 
 
 def draw_statusbar(self: Any, context: Any) -> None:
-    """Los campos visibles, separados por una línea (RF-003-28)."""
-    shown = visible_fields(context)
+    """Los campos visibles, separados por una línea (RF-003-28), plegados los que no caben
+    (spec 008, T69)."""
+    shown = arrange(context)
     if not shown:
         return
     row = self.layout.row(align=False)
-    for index, field in enumerate(shown):
+    for index, (field, folded) in enumerate(shown):
         if index:
             row.separator(type="LINE")
-        field.draw(row, context)
+        draw = field.folded_draw if folded and field.folded_draw is not None else field.draw
+        draw(row, context)
 
 
 setattr(draw_statusbar, OURS_ATTR, True)
@@ -212,9 +277,35 @@ def _text_width(text: str) -> float:
 
 
 def text_px(*texts: str) -> float:
-    """Lo que ocupan unas etiquetas con ``blf`` a escala 1,0 (fuente de la interfaz); cada
-    texto se mide una vez (la barra de estado lo pide en cada redibujo)."""
-    return sum(_text_width(text) + LABEL_PAD_PX for text in texts)
+    """Lo que ocupan unas etiquetas sin icono con ``blf`` a escala 1,0 (fuente de la
+    interfaz); cada texto se mide una vez (la barra de estado lo pide en cada redibujo)."""
+    return sum(label_px(text) for text in texts)
+
+
+def label_px(text: str, *, icon: bool = False) -> float:
+    """Lo que ocupa una etiqueta (``layout.label``) con ``text`` y, si ``icon``, su icono, a
+    escala 1,0; sin texto ni icono, nada (spec 008, T69)."""
+    if not text:
+        return WIDTHS.icon_button if icon else 0.0
+    return _text_width(text) + (WIDTHS.icon_label if icon else WIDTHS.label)
+
+
+def button_px(text: str = "") -> float:
+    """Lo que ocupa el botón de una orden (``layout.operator``) sin icono con ``text`` o, sin
+    texto, solo con su icono, a escala 1,0 (spec 008, T69)."""
+    return _text_width(text) + WIDTHS.button if text else WIDTHS.icon_button
+
+
+def popover_px(text: str) -> float:
+    """Lo que ocupa un desplegable (``layout.popover``) con ``text``, a escala 1,0 (spec 008,
+    T69)."""
+    return _text_width(text) + WIDTHS.popover
+
+
+def units_px(units: float) -> float:
+    """Lo que ocupa una fila de ``units`` unidades de interfaz (``ui_units_x``), a escala
+    1,0."""
+    return float(units) * compat.UI_UNIT_PX
 
 
 def project_text() -> str:
@@ -339,7 +430,7 @@ OWN_FIELDS: tuple[tuple[str, int, float, DrawField, WidthField], ...] = (
     ("project", 1, 10.0, _draw_project, lambda _context: text_px(project_text())),
     ("epsg", 1, 20.0, _draw_epsg, lambda _context: _optional_px(epsg_text())),
     ("cursor", 1, 30.0, _draw_cursor, _cursor_px),
-    ("snap", 3, 40.0, _draw_snap, lambda context: text_px(snap_text(context))),
+    ("snap", 3, 40.0, _draw_snap, lambda context: button_px(snap_text(context))),
     ("clip", 2, 60.0, _draw_clip, lambda context: _optional_px(clip_text(context))),
 )
 

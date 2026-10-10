@@ -15,6 +15,12 @@ en los dos modos, Geoblender y Blender; spec §11), cada uno solo si tiene algo 
 - el aviso de Ctrl+Z (RF-008-32; plan §5.4.11): :func:`show_undo_notice` lo deja
   :data:`UNDO_NOTICE_S` s.
 
+Si no caben (spec 008, T69; M6: a 1920 px con escala efectiva 1,5), la barra de estado los
+**pliega** de derecha a izquierda (``bl.ui.statusbar.fold``), con los mismos botones: «⚠ n»,
+«! n», solo «42 %» con su botón de cancelar y el aviso de Ctrl+Z cortado a
+:data:`UNDO_FOLDED_UNITS` unidades. Lo que ocupa cada campo, plegado o no, se calcula como lo
+dibuja Blender (``statusbar.button_px``, ``popover_px``, ``label_px``).
+
 Los iconos ``gb_state_input_changed`` y ``gb_state_stale`` dibujan los mismos signos ⚠ y ! con
 que empiezan los textos de la spec (AR §6): en la barra van solo los textos, sin repetir el
 signo; el de lo obsoleto, en el panel.
@@ -110,6 +116,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Callable, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import bpy
@@ -132,7 +139,6 @@ from ...core.params.store import shown_value
 from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
-from .. import compat
 from ..props.provenance import FILTER_ALL, WINDOW_MANAGER_PROPERTY
 from ..scene import project_session
 from . import icons, quick_access, statusbar
@@ -168,6 +174,12 @@ INDICATOR_TICK_S = 0.5
 
 UNDO_NOTICE_S = 10.0
 """Lo que se ve el aviso de Ctrl+Z en la barra de estado (plan §5.5)."""
+
+UNDO_FOLDED_UNITS = 6
+"""El ancho del aviso de Ctrl+Z plegado, en unidades: Blender corta el texto con «…» (T69)."""
+
+FOLDED_INPUTS = "provenance_inputs_folded"  # los textos plegados, en la caché de textos (T69)
+FOLDED_STALE = "provenance_stale_folded"
 
 MAX_STALE_ROWS = 50
 """Las filas de lo obsoleto que se regeneran y dibujan (las demás, «… y n más»)."""
@@ -548,31 +560,41 @@ def _counted(field: str, n: int) -> str:
             _STATE.texts.clear()
         if field == FIELD_INPUTS:
             found = tr("⚠ {n} inputs", n=n)
-        else:
+        elif field == FIELD_STALE:
             found = tr("! {n} stale", n=n)
+        elif field == FOLDED_INPUTS:
+            found = tr("⚠ {n}", n=n)
+        else:
+            found = tr("! {n}", n=n)
         _STATE.texts[key] = found
     return found
 
 
-def inputs_text() -> str:
-    """«⚠ n entradas» (RF-008-16), o "" si ninguna entrada cambió sin decidir."""
+def inputs_text(*, folded: bool = False) -> str:
+    """«⚠ n entradas» (RF-008-16) o, plegado (T69), «⚠ n»; "" si ninguna entrada cambió sin
+    decidir."""
     found = _STATE.counts
     if found is None or found.inputs_changed <= 0:
         return ""
-    return _counted(FIELD_INPUTS, found.inputs_changed)
+    return _counted(FOLDED_INPUTS if folded else FIELD_INPUTS, found.inputs_changed)
 
 
-def stale_text() -> str:
-    """«! n obsoletos» (RF-008-28), o "" si no hay nada obsoleto."""
+def stale_text(*, folded: bool = False) -> str:
+    """«! n obsoletos» (RF-008-28) o, plegado (T69), «! n»; "" si no hay nada obsoleto."""
     found = _STATE.counts
     if found is None or found.obsolete <= 0:
         return ""
-    return _counted(FIELD_STALE, found.obsolete)
+    return _counted(FOLDED_STALE if folded else FIELD_STALE, found.obsolete)
 
 
-def checking_text() -> str:
-    """«Comprobando el proyecto… 42 %» (RF-008-58) mientras hay una comprobación, o ""."""
-    return _session().status_text() or ""
+def checking_text(*, folded: bool = False) -> str:
+    """«Comprobando el proyecto… 42 %» (RF-008-58) mientras hay una comprobación o, plegado
+    (T69), solo «42 %»; si no, ""."""
+    session = _session()
+    shown = session.status_text() or ""
+    if not shown or not folded:
+        return shown
+    return tr("{percent}%", percent=session.percent)
 
 
 def _operator_properties(idname: str) -> frozenset[str]:
@@ -606,48 +628,72 @@ def _operator(layout: Any, idname: str, shown: str, *, icon: str = "NONE",
                 setattr(properties, name, value)
 
 
-def _draw_inputs(layout: Any, _context: Any) -> None:
-    shown = inputs_text()
+def _draw_inputs(layout: Any, _context: Any, *, folded: bool = False) -> None:
+    shown = inputs_text(folded=folded)
     if shown:
         _operator(layout, SHOW_INPUTS, shown, emboss=False)
 
 
-def _draw_stale(layout: Any, _context: Any) -> None:
-    shown = stale_text()
+def _draw_stale(layout: Any, _context: Any, *, folded: bool = False) -> None:
+    shown = stale_text(folded=folded)
     if shown:
         sub = layout.row(align=True)
         sub.enabled = is_available(STALE_PANEL)
         sub.popover(STALE_PANEL, text=shown, translate=False)
 
 
-def _draw_checking(layout: Any, _context: Any) -> None:
-    shown = checking_text()
+def _draw_checking(layout: Any, _context: Any, *, folded: bool = False) -> None:
+    shown = checking_text(folded=folded)
     if shown:
         row = layout.row(align=True)
         row.label(text=shown, translate=False)
         _operator(row, CANCEL_CHECKS, "", icon=CANCEL_ICON, emboss=False)
 
 
-def _draw_undo(layout: Any, _context: Any) -> None:
+def _draw_undo(layout: Any, _context: Any, *, folded: bool = False) -> None:
     shown = undo_notice()
     if shown:
-        layout.label(text=shown, icon=UNDO_ICON, translate=False)
+        row = layout.row(align=True)
+        if folded:
+            row.ui_units_x = UNDO_FOLDED_UNITS  # Blender corta el texto con «…»
+        row.label(text=shown, icon=UNDO_ICON, translate=False)
 
 
-def _px(shown: str, extra_units: int = 0) -> float:
+def _inputs_px(_context: Any, *, folded: bool = False) -> float:
+    shown = inputs_text(folded=folded)
+    return statusbar.button_px(shown) if shown else 0.0
+
+
+def _stale_px(_context: Any, *, folded: bool = False) -> float:
+    shown = stale_text(folded=folded)
+    return statusbar.popover_px(shown) if shown else 0.0
+
+
+def _checking_px(_context: Any, *, folded: bool = False) -> float:
+    shown = checking_text(folded=folded)
+    return statusbar.label_px(shown) + statusbar.button_px() if shown else 0.0
+
+
+def _undo_px(_context: Any, *, folded: bool = False) -> float:
+    shown = undo_notice()
     if not shown:
         return 0.0
-    return statusbar.text_px(shown) + extra_units * float(compat.UI_UNIT_PX)
+    if folded:
+        return statusbar.units_px(UNDO_FOLDED_UNITS)
+    return statusbar.label_px(shown, icon=True)
 
 
-FIELDS: tuple[tuple[str, float, Callable[[Any, Any], None], Callable[[Any], float]], ...] = (
-    (FIELD_INPUTS, 62.0, _draw_inputs, lambda _context: _px(inputs_text())),
-    (FIELD_STALE, 63.0, _draw_stale, lambda _context: _px(stale_text(), 1)),
-    (FIELD_CHECKING, 64.0, _draw_checking, lambda _context: _px(checking_text(), 1)),
-    (FIELD_UNDO, 65.0, _draw_undo, lambda _context: _px(undo_notice(), 1)),
+_Draw = Callable[..., None]
+_Width = Callable[..., float]
+FIELDS: tuple[tuple[str, float, _Draw, _Width], ...] = (
+    (FIELD_INPUTS, 62.0, _draw_inputs, _inputs_px),
+    (FIELD_STALE, 63.0, _draw_stale, _stale_px),
+    (FIELD_CHECKING, 64.0, _draw_checking, _checking_px),
+    (FIELD_UNDO, 65.0, _draw_undo, _undo_px),
 )
 """Los campos: clave, sitio en la barra (tras los de la 003 y antes de los trabajos de la
-004, como en AR §6), dibujo y ancho a escala 1,0 (0 sin nada que mostrar)."""
+004, como en AR §6), dibujo y ancho a escala 1,0 (0 sin nada que mostrar); los dos admiten
+``folded=True``, su forma plegada (T69)."""
 FIELD_KEYS: tuple[str, ...] = tuple(key for key, *_rest in FIELDS)
 
 
@@ -1645,7 +1691,9 @@ def install() -> None:
     interfaz» la vuelve a llamar)."""
     for key, order, draw, width in FIELDS:
         statusbar.register_field(key, priority=FIELD_PRIORITY, draw=draw, width_px=width,
-                                 modes=FIELD_MODES, order=order)
+                                 modes=FIELD_MODES, order=order,
+                                 folded_draw=partial(draw, folded=True),
+                                 folded_width_px=partial(width, folded=True))
     quick_access.set_count_provider(REFRESH, stale_count)
     set_state_provider(command_state)
     project_session.add_listener(on_project_changed)

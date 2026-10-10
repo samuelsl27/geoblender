@@ -1402,6 +1402,14 @@ es = "⚠ {n} entradas"
 ["! {n} stale"]
 es = "! {n} obsoletos"
 
+# Los mismos, plegados cuando no caben en la barra de estado (T69)
+
+["⚠ {n}"]
+es = "⚠ {n}"
+
+["! {n}"]
+es = "! {n}"
+
 ["Checking the project… {percent} %"]
 es = "Comprobando el proyecto… {percent} %"
 

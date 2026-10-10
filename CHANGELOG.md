@@ -125,7 +125,11 @@ en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su inte
   - Las órdenes que dependen de una entrada cambiada salen con ⚠ (al ejecutarlas, se decide
     sobre la entrada), y las que tienen resultados obsoletos dicen la causa en su descripción,
     con «Recalcular lo obsoleto» resaltado. Los avisos de la barra de estado se ven en modo
-    Geoblender y en modo Blender.
+    Geoblender y en modo Blender. Si no caben (una escala de la interfaz grande en una pantalla
+    de 1920 px), primero desaparecen el encaje y el recorte y después se pliegan, de derecha a
+    izquierda, el trabajo en segundo plano (sin su último mensaje y con una barra corta que
+    solo dice el %) y los avisos («⚠ 1», «! 3», solo el % de la comprobación), con sus botones
+    de cancelar a la vista.
   - Medido con Blender 5.2.1 en el PC de referencia, con un proyecto sintético de 100 entradas,
     300 parámetros, 10 000 operaciones y 20 000 datos: queda listo para trabajar en 0,1 s como
     mucho; mientras se comprueba, la interfaz responde en menos de 0,02 s, y buscar las
