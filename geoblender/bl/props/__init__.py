@@ -24,12 +24,13 @@ from __future__ import annotations
 
 from ...core import i18n
 from ..registry import PropertyTranslator, register_classes, unregister_classes
-from . import core, jobs, preferences, provenance, ui
+from . import core, gis, jobs, preferences, provenance, ui
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los grupos antes de quien los usa.
 classes: tuple[type, ...] = (
-    *core.classes, *provenance.classes, *ui.classes, *jobs.classes, *preferences.classes
+    *core.classes, *gis.classes, *provenance.classes, *ui.classes, *jobs.classes,
+    *preferences.classes
 )
 
 _PROPERTIES = PropertyTranslator()

@@ -1873,6 +1873,331 @@ es = "Transformación: {transform}"
 ["The project grid «{name}» has not been computed: {reason}"]
 es = "No se ha calculado la rejilla del proyecto «{name}»: {reason}"
 
+# Puntos, capas, TIN y MDT ⇄ TIN (spec 006, T29; RF-006-12 a RF-006-17, RF-006-27; plan 006
+# §5.3.4, §5.3.5 y §5.6.1 a §5.6.4): Importar ▸ Puntos y líneas de rotura… y Capas
+# vectoriales…, TIN desde puntos y líneas de rotura…, TIN desde curvas de nivel…, MDT ⇄ TIN…,
+# sus diálogos (el asistente de columnas: GEOBLENDER_PG_gis_column), sus informes, el aviso
+# de la triangulación en el hilo y los trabajos nuevos. «Name», «Reason», «Separator»,
+# «Decimal mark», «Points», «Breaklines», «Boundary» y «Contour lines» ya están arriba.
+
+["Read a vector layer"]
+es = "Lectura de una capa vectorial"
+
+["Convert a surface"]
+es = "Conversión de una superficie"
+
+["Not imported"]
+es = "No se importa"
+
+["The column is not imported"]
+es = "La columna no se importa"
+
+["Point (P)"]
+es = "Punto (P)"
+
+["Identifier of the point"]
+es = "Identificador del punto"
+
+["X (east)"]
+es = "X (este)"
+
+["Y (north)"]
+es = "Y (norte)"
+
+["Z (elevation)"]
+es = "Z (cota)"
+
+["Code"]
+es = "Código"
+
+["Survey code of the point"]
+es = "Código topográfico del punto"
+
+["Line"]
+es = "Línea"
+
+["Breakline the point belongs to"]
+es = "Línea de rotura a la que pertenece el punto"
+
+["Column"]
+es = "Columna"
+
+["Column of the file, from 0"]
+es = "Columna del fichero, desde 0"
+
+["UTF-8"]
+es = "UTF-8"
+
+["Windows-1252"]
+es = "Windows-1252"
+
+["ISO-8859-1 (Latin-1)"]
+es = "ISO-8859-1 (Latin-1)"
+
+["DOS (CP850)"]
+es = "DOS (CP850)"
+
+["One or more blanks"]
+es = "Uno o varios espacios"
+
+["Hard"]
+es = "Duras"
+
+["Soft"]
+es = "Blandas"
+
+["The breaklines are edges of the TIN"]
+es = "Las líneas de rotura son aristas del TIN"
+
+["The breaklines only add their points"]
+es = "Las líneas de rotura solo aportan sus puntos"
+
+["Boundary and holes of a TIN"]
+es = "Contorno y huecos de un TIN"
+
+["Encoding"]
+es = "Codificación"
+
+["Header"]
+es = "Cabecera"
+
+["The file has a header row with the column names"]
+es = "El fichero tiene una fila de cabecera con los nombres de las columnas"
+
+["Lines before the header"]
+es = "Líneas antes de la cabecera"
+
+["EPSG code of the points' horizontal CRS, such as EPSG:25830"]
+es = "Código EPSG del CRS horizontal de los puntos, como EPSG:25830"
+
+["Columns (preview of the first rows)"]
+es = "Columnas (vista previa de las primeras filas)"
+
+["Two columns have the role «{role}»: choose one"]
+es = "Dos columnas tienen el papel «{role}»: elija una"
+
+["The file «{file}» does not exist: choose the file to import"]
+es = "El fichero «{file}» no existe: elija el fichero que quiere importar"
+
+["Choose the columns X, Y and Z of «{file}» in the wizard"]
+es = "Elija en el asistente las columnas X, Y y Z de «{file}»"
+
+["Layer"]
+es = "Capa"
+
+["Layer of the GeoPackage to import"]
+es = "Capa del GeoPackage que se importa"
+
+["Role"]
+es = "Papel"
+
+["Elevation field"]
+es = "Campo de cota"
+
+["Field with the elevation of each contour line (empty: the Z of its vertices)"]
+es = "Campo con la cota de cada curva de nivel (vacío: la Z de sus vértices)"
+
+["EPSG code of the layer's horizontal CRS, such as EPSG:25830 (empty: the one the layer declares)"]
+es = "Código EPSG del CRS horizontal de la capa, como EPSG:25830 (vacío: el que declara la capa)"
+
+["Choose the layer of «{file}» to import"]
+es = "Elija la capa de «{file}» que quiere importar"
+
+["Import of the points «{name}»"]
+es = "Importación de los puntos «{name}»"
+
+["Import of the layer «{name}»"]
+es = "Importación de la capa «{name}»"
+
+["«{name}» has the same data as the input «{existing}» with other settings ({differences}): import it again with the reason why it replaces it"]
+es = "«{name}» tiene los mismos datos que la entrada «{existing}» con otros ajustes ({differences}): vuelva a importarlo con el motivo por el que la sustituye"
+
+["The original of the input could not be kept: {reason}"]
+es = "No se ha podido guardar el original de la entrada: {reason}"
+
+["… and {count} more rejected"]
+es = "… y {count} rechazadas más"
+
+["Points «{name}» imported as {datasets}: rows read {read}, points {points}, breaklines {lines}, rejected {rejected}, duplicates {duplicates}"]
+es = "Puntos «{name}» importados como {datasets}: filas leídas {read}, puntos {points}, líneas de rotura {lines}, rechazadas {rejected}, duplicados {duplicates}"
+
+[" and "]
+es = " y "
+
+["points"]
+es = "puntos"
+
+["breaklines"]
+es = "líneas de rotura"
+
+["contour lines"]
+es = "curvas de nivel"
+
+["boundaries"]
+es = "contornos"
+
+["Layer «{layer}» of «{file}» imported as {dataset}: {count} {what} of {read} features read, {rejected} rejected"]
+es = "Capa «{layer}» de «{file}» importada como {dataset}: {count} {what} de {read} entidades leídas, {rejected} rechazadas"
+
+["duplicates {duplicates}"]
+es = "duplicados {duplicates}"
+
+["Ask"]
+es = "Preguntar"
+
+["List the conflicts and do not create the TIN"]
+es = "Lista los conflictos y no crea el TIN"
+
+["Mean"]
+es = "Media"
+
+["The mean elevation of the coincident points"]
+es = "La cota media de los puntos que coinciden"
+
+["Minimum"]
+es = "Mínima"
+
+["The point with the lowest elevation"]
+es = "El punto de cota mínima"
+
+["Maximum"]
+es = "Máxima"
+
+["The point with the highest elevation"]
+es = "El punto de cota máxima"
+
+["First"]
+es = "Primero"
+
+["The first point of the file"]
+es = "El primer punto del fichero"
+
+["Do not create the TIN if there are conflicts"]
+es = "No crea el TIN si hay conflictos"
+
+["DTM → TIN"]
+es = "MDT → TIN"
+
+["Triangulate the centres of the cells with data"]
+es = "Triangula los centros de las celdas con dato"
+
+["TIN → DTM"]
+es = "TIN → MDT"
+
+["Interpolate the TIN at the centres of the project grid"]
+es = "Interpola el TIN en los centros de la rejilla del proyecto"
+
+["TIN «{name}» has not been created: {reason}"]
+es = "No se ha creado el TIN «{name}»: {reason}"
+
+["«{name}» transformed from {source} to {target}: {transform}"]
+es = "«{name}» transformado de {source} a {target}: {transform}"
+
+["… and {count} more conflicts"]
+es = "… y {count} conflictos más"
+
+["Triangulating {count} points (about {seconds} s)…"]
+es = "Triangulando {count} puntos (unos {seconds} s)…"
+
+["The Blender triangulation did not fulfil its contract ({reason}): repeated with the pure triangulator"]
+es = "La triangulación de Blender no cumplió su contrato ({reason}): se repitió con el triangulador propio"
+
+["TIN «{name}» ({dataset}): {vertices} vertices, {triangles} triangles, {constraints} constraint edges; flat triangles {flat} %, longest side {side} m, degenerate {degenerate}; triangulator {triangulator}"]
+es = "TIN «{name}» ({dataset}): {vertices} vértices, {triangles} triángulos, {constraints} aristas obligatorias; triángulos planos {flat} %, lado máximo {side} m, degenerados {degenerate}; triangulador {triangulator}"
+
+["Duplicate points merged: {count}"]
+es = "Puntos duplicados fundidos: {count}"
+
+["Triangles removed by the boundary and the holes: {outside}; by the longest side: {long}"]
+es = "Triángulos quitados por el contorno y los huecos: {outside}; por el lado máximo: {long}"
+
+["Flat triangles before the correction: {before} %; after: {after} %; points added: {added}"]
+es = "Triángulos planos antes de la corrección: {before} %; después: {after} %; puntos añadidos: {added}"
+
+["Creating the TIN «{name}» in the background…"]
+es = "Creando el TIN «{name}» en segundo plano…"
+
+["Name or uid of the imported points"]
+es = "Nombre o uid de los puntos importados"
+
+["Name or uid of the imported breaklines (optional)"]
+es = "Nombre o uid de las líneas de rotura importadas (opcional)"
+
+["Name or uid of the imported boundary (optional)"]
+es = "Nombre o uid del contorno importado (opcional)"
+
+["Longest side"]
+es = "Lado máximo"
+
+["Triangles with a longer side in plan are removed, m (empty: none)"]
+es = "Se quitan los triángulos con un lado en planta más largo, m (vacío: ninguno)"
+
+["Coincident points"]
+es = "Puntos que coinciden"
+
+["Name of the TIN (empty: the points')"]
+es = "Nombre del TIN (vacío: el de los puntos)"
+
+["import points"]
+es = "importe puntos"
+
+["Choose the points or the breaklines of the TIN"]
+es = "Elija los puntos o las líneas de rotura del TIN"
+
+["Name or uid of the contour lines"]
+es = "Nombre o uid de las curvas de nivel"
+
+["Spot heights"]
+es = "Puntos acotados"
+
+["Name or uid of the imported points (optional)"]
+es = "Nombre o uid de los puntos importados (opcional)"
+
+["Densification"]
+es = "Densificación"
+
+["Longest segment of a contour line, m (empty or unchanged: the project's parameter)"]
+es = "Tramo más largo de una curva de nivel, m (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Name of the TIN (empty: the contour lines')"]
+es = "Nombre del TIN (vacío: el de las curvas)"
+
+["import contour lines"]
+es = "importe curvas de nivel"
+
+["Choose the contour lines of the TIN"]
+es = "Elija las curvas de nivel del TIN"
+
+["TIN «{name}»"]
+es = "TIN «{name}»"
+
+["TIN «{name}» ({dataset}) from the DTM «{source}»: {vertices} vertices and {triangles} triangles at the centres of the cells with data"]
+es = "TIN «{name}» ({dataset}) desde el MDT «{source}»: {vertices} vértices y {triangles} triángulos en los centros de las celdas con dato"
+
+["Project grid {dataset} from the TIN «{source}»: {valid} of {cells} cells with data (linear interpolation in each triangle)"]
+es = "Rejilla del proyecto {dataset} desde el TIN «{source}»: {valid} de {cells} celdas con dato (interpolación lineal en cada triángulo)"
+
+["«{name}» has not been converted: {reason}"]
+es = "No se ha convertido «{name}»: {reason}"
+
+["Direction"]
+es = "Sentido"
+
+["Surface"]
+es = "Superficie"
+
+["Name or uid of the DTM or the TIN"]
+es = "Nombre o uid del MDT o del TIN"
+
+["Name of the result (empty: the source's)"]
+es = "Nombre del resultado (vacío: el de la fuente)"
+
+["DTM ⇄ TIN conversion"]
+es = "Conversión MDT ⇄ TIN"
+
+["Converting «{name}» in the background…"]
+es = "Convirtiendo «{name}» en segundo plano…"
+
 # Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
 # Los mensajes de la procedencia y de los parámetros (spec §8) están en
 # core/provenance/messages.py y core/params/model.py, y se instalan al registrar.

@@ -660,6 +660,27 @@ CATALOG: tuple[Message, ...] = (
         "«{value}» no es un CRS horizontal del catálogo de Geoblender: escriba su código EPSG, "
         "como EPSG:25830, o déjelo vacío para usar el que declara el fichero.",
     ),
+    # Puntos, capas y TIN (T29; RF-006-12, RF-006-13, RF-006-17; plan §5.3.5) --------------
+    Message(
+        "gis.survey_empty",
+        "«{name}»: nothing could be imported from «{file}» ({rejected} rows or features "
+        "rejected). Check the columns, the separator and the decimal mark, or the layer and "
+        "its role.",
+        "«{name}»: no se ha podido importar nada de «{file}» ({rejected} filas o entidades "
+        "rechazadas). Compruebe las columnas, el separador y el decimal, o la capa y su papel.",
+    ),
+    Message(
+        "gis.tin_project_closed",
+        "TIN «{tin}»: the project «{value}» is no longer open; create the TIN again.",
+        "TIN «{tin}»: el proyecto «{value}» ya no está abierto; vuelva a crear el TIN.",
+    ),
+    Message(
+        "gis.surface_references_mismatch",
+        "«{name}»: it is in {value} and the project in {expected}: bring it first to the "
+        "project grid (Project grid from a DTM…) and convert that one.",
+        "«{name}»: está en {value} y el proyecto en {expected}: llévelo antes a la rejilla del "
+        "proyecto (Rejilla de proyecto desde un MDT…) y convierta esa.",
+    ),
     # Los de un parámetro (gis/params.py) los da core.params (core.param_*; plan §5.6.1).
 )
 

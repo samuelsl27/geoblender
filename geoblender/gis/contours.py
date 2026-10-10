@@ -51,6 +51,7 @@ import math
 import numbers
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -58,10 +59,14 @@ from ..core.i18n import format_number
 from ..jobs.worker_api import JobCancelled
 from . import params
 from .messages import GisError
-from .points import _expand
+from .points import _attribute, _expand, _report, _role_check
 from .ports import Cancelled, Progress
 from .raster import Raster
+from .reports import Rejection, TopoReport
 from .tin import Tin, _oriented
+
+if TYPE_CHECKING:
+    from .vector import FeatureSet
 
 __all__ = [
     "INDEX_EVERY_KEY",
@@ -72,6 +77,7 @@ __all__ = [
     "MIN_LENGTH_KEY",
     "SIMPLIFY_KEY",
     "ContourLine",
+    "contours_from_features",
     "contours_from_raster",
     "contours_from_tin",
 ]
@@ -694,3 +700,63 @@ def _lines(start: np.ndarray, end: np.ndarray, edge_count: int,
                 lines.append(line)
     _stage(progress, None, 1.0, "terminado")
     return lines
+
+
+# Curvas de una capa importada (T29; RF-006-12) -------------------------------------------
+
+_LINE_TYPES = ("LINESTRING", "MULTILINESTRING")
+
+
+def _elevation(value: object) -> float | None:
+    """La cota de un campo: un número finito (no booleano) o ``None``."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def contours_from_features(
+    features: FeatureSet, *, elevation_field: str | None = None
+) -> tuple[list[ContourLine], TopoReport]:
+    """Las curvas de nivel de una capa con ese papel (RF-006-12): cada LineString o cada parte
+    de un MultiLineString es una :class:`ContourLine` con sus vértices tal como llegan (la M,
+    ya descartada al leer). La cota de la curva es la del campo ``elevation_field`` si lo hay
+    y tiene un número; si no, la Z de su primer vértice. Una línea sin Z toma esa cota en
+    todos sus vértices y, sin ella, se rechaza (``gis.feature_without_z``: una curva sin cota
+    no se acepta); la Z de una línea que la tiene no se cambia. Una línea con su primer
+    vértice repetido al final (4 o más) es **cerrada**, sin repetirlo (``gis.store`` lo
+    vuelve a escribir al guardarla). Ninguna es maestra (la capa no lo dice). Una entidad de
+    otro tipo se rechaza con su número (``gis.feature_role_mismatch``). ``ValueError`` si
+    la capa no tiene el campo."""
+    from .messages import render
+
+    values = _attribute(features, elevation_field)
+    rejected: list[Rejection] = []
+    lines: list[ContourLine] = []
+    layer = features.layer.name
+    for index, fid in enumerate(features.fids):
+        geometry = features.geometries[index]
+        if geometry.geometry_type not in _LINE_TYPES:
+            problem = _role_check(features, index, _LINE_TYPES, "curvas de nivel",
+                                  "curva de nivel")
+            if problem is not None:
+                rejected.append(problem)
+            continue
+        field = None if values is None else _elevation(values[index])
+        if not geometry.has_z and field is None:
+            code = "gis.feature_without_z"
+            rejected.append(Rejection(fid, render(code, layer=layer, row=fid,
+                                                  role="curva de nivel"), code))
+            continue
+        parts = ([geometry.coords] if geometry.geometry_type == "LINESTRING"
+                 else list(geometry.coords))
+        for part in parts:
+            xyz = (np.ascontiguousarray(part, dtype=np.float64) if geometry.has_z
+                   else np.column_stack([part[:, 0], part[:, 1],
+                                         np.full(len(part), field, dtype=np.float64)]))
+            closed = len(xyz) >= 4 and bool(np.array_equal(xyz[0], xyz[-1]))
+            if closed:
+                xyz = np.ascontiguousarray(xyz[:-1])
+            elevation = float(xyz[0, 2]) if field is None else field
+            lines.append(ContourLine(xyz, elevation, False, closed))
+    return lines, _report(features, rejected, points=0, lines=len(lines))

@@ -77,6 +77,7 @@ SOURCES = {
     "grid.xyz": DATA / "xyz" / "grid.xyz",
     "taludes.csv": DATA / "points" / "taludes.csv",
     "errores.csv": DATA / "points" / "errores.csv",
+    "capas.gpkg": DATA / "gpkg" / "capas.gpkg",  # T29: gis_import_vector
 }
 CATALOG = georef.load_catalog()
 CRS = CATALOG.horizontal(25830)
@@ -94,7 +95,8 @@ REPROJECTING = 0.25  # avance de gis_resample ya dentro de la reproyección (tra
 WAIT_S = 60.0  # plazo de seguridad: un trabajo colgado no cuelga la prueba
 EXPECTED_WORKERS = ("gis_read_raster", "gis_resample", "gis_import_points", "gis_tin_prepare",
                     "gis_triangulate", "gis_tin_finish", "gis_contours", "gis_validate",
-                    "gis_export", "gis_view_arrays")
+                    "gis_export", "gis_view_arrays", "gis_import_vector", "gis_tin_contours",
+                    "gis_convert_surface")  # los tres últimos, de la T29
 
 _STATE: dict = {}
 
@@ -718,6 +720,17 @@ class CancelTest(_JobCase):
             gis_jobs.EXPORT: (grid, {"source": "source.tif"}, {}),
             gis_jobs.VIEW_ARRAYS: ({**grid, "lod_steps": [2.0, 5.0]}, {"source": "source.tif"},
                                    {}),
+            # Los de la T29.
+            gis_jobs.IMPORT_VECTOR: (
+                {"reader": gis_content.GPKG_LAYER.id, "name": "Roturas",
+                 "settings": {"layer": "roturas_z", "role": "breaklines"},
+                 "crs": CRS_JSON, "vertical": VERTICAL_JSON},
+                {}, {main: sources / "capas.gpkg"}),
+            gis_jobs.TIN_CONTOURS: (
+                {"name": "Taludes", "origin": origin, "crs": CRS_JSON,
+                 "vertical": VERTICAL_JSON}, {"lines": "lines.npz"}, {}),
+            gis_jobs.CONVERT_SURFACE: ({**grid, "direction": "grid_to_tin"},
+                                       {"source": "source.tif"}, {}),
         }
 
     def test_cancel_midway_leaves_out_without_results(self) -> None:
@@ -754,8 +767,8 @@ class CancelTest(_JobCase):
 
 class WorkerInfoTest(unittest.TestCase):
     def test_worker_infos_and_their_wrappers(self) -> None:
-        """RF-006-28 (plan §5.3.4; plan 004 §5.3.1): los diez tipos de trabajo de la 006,
-        en el entorno de Blender, automáticos salvo ``gis_triangulate`` (siempre en proceso
+        """RF-006-28 (plan §5.3.4; plan 004 §5.3.1): los trece tipos de trabajo de la 006
+        (tres de la T29), en el entorno de Blender, automáticos salvo ``gis_triangulate`` (siempre en proceso
         aparte), con su función ``run`` de ``gis/jobs.py`` y su nombre visible traducido;
         cada uno tiene su envoltorio ``workers/<tipo>.py`` con ``main``. Una reproyección no
         tiene estimación (va a proceso aparte) y pide ``--site``; lo demás estima su

@@ -16,7 +16,10 @@ Registra lo que la topografía declara a las specs 004 y 008:
 - (T28) el ``OperationDef`` de ``gis.import_dtm`` (sin recálculo: se reimporta) y el de
   ``gis.resample`` con su **recálculo** (:func:`recompute_resample`, RF-008-26), y los
   ``ImporterDef`` de ``gis.geotiff``, ``gis.asc`` y ``gis.xyz_grid`` con su **reimportación**
-  (:func:`reimport_dtm`, RF-008-11; plan §5.6.3 y §5.6.8).
+  (:func:`reimport_dtm`, RF-008-11; plan §5.6.3 y §5.6.8);
+- (T29) los de ``gis.import_points`` y ``gis.import_vector`` (sin recálculo) y los de los TIN
+  y las conversiones con el suyo, y los ``ImporterDef`` de ``gis.points_text`` y
+  ``gis.gpkg_layer``; al quitarlo todo, también el temporizador de las triangulaciones.
 
 :func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` lo quita en orden
 inverso (lo que otro cambió después es suyo). Los dos son simétricos e idempotentes.
@@ -47,6 +50,33 @@ inverso (lo que otro cambió después es suyo). Los dos son simétricos e idempo
   referencia vertical, su trabajo reproyecta en proceso aparte con las ruedas de la extensión
   (``site_override``, :func:`wheels_site`; D11).
 
+**Puntos, capas y TIN** (T29; HU-006-2, HU-006-5; RF-006-12 a RF-006-17, RF-006-27):
+
+- ``geoblender.gis_import_points`` (Importar ▸ Puntos y líneas de rotura…): un CSV, TXT o XYZ
+  disperso con su asistente (codificación, separador, decimal, cabecera y el papel de cada
+  columna, ``GEOBLENDER_PG_gis_column``; sin él, adivinado por la cabecera) a ``gis_pts_`` y
+  ``gis_brk_`` con su entrada y su original (trabajo ``gis_import_points``); el informe dice las
+  filas leídas, las rechazadas (número y motivo) y los duplicados.
+- ``geoblender.gis_import_vector`` (Importar ▸ Capas vectoriales…): una capa de un GeoPackage
+  (listada sobre una copia en ``cache/import/``) con su papel (puntos, roturas, curvas con su
+  campo de cota o contorno; trabajo ``gis_import_vector``, que copia la fuente con su ``-wal``).
+  Lo mismo que los de un MDT: la entrega, ``classify_import`` (reutilizar: cancelada con el
+  aviso; sustituir sin motivo: cancelada pidiéndolo) y su reimportación
+  (:func:`reimport_survey`).
+- ``geoblender.gis_create_tin_from_points`` y ``…_from_contours``: una operación con una cadena
+  de trabajos; desde puntos, ``gis_tin_prepare`` → la CDT de Blender en el hilo principal
+  desde un temporizador (:func:`triangulation_tick`; avisada antes en la barra de estado si se
+  estima en más de 1 s) solo si su estimación no pasa de ``gis.tin.blender_cdt_max_s`` (de
+  control, D17), y si pasa, ``gis_triangulate`` → ``gis_tin_finish``, que se incorpora con el
+  triangulador en ``software``; desde curvas, ``gis_tin_contours`` (``PureTriangulator``: la
+  corrección de triángulos planos triangula varias veces). Lo que consumen se lee del proyecto
+  y, si está en otro CRS, se transforma con una de precisión conocida (RF-006-05). Los
+  conflictos sin resolver quedan en los avisos con su posición y sus cotas y la operación,
+  fallida o cancelada con su motivo, sin TIN (RF-006-14). Con su recálculo
+  (:func:`recompute_tin`).
+- ``geoblender.gis_convert_dtm_tin`` (MDT ⇄ TIN…): ``gis.grid_to_tin`` o ``gis.tin_to_grid``
+  con ``gis_convert_surface`` (RF-006-17), con su recálculo (:func:`recompute_convert`).
+
 Sin proyecto, ``poll`` dice el paso previo («Primero abra un proyecto (Proyecto ▸ … ▸ Abrir
 proyecto…)», con su ruta en la barra); sin la procedencia o en solo lectura (también dentro de
 una carpeta de solo lectura), su motivo (:func:`unavailable_reason`). El servicio de CRS de las
@@ -58,16 +88,22 @@ from __future__ import annotations
 
 import datetime as dt
 import functools
+import json
 import logging
+import math
 import re
+import shutil
 import sys
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+import unicodedata
+import uuid
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import bpy
-from bpy.props import CollectionProperty, EnumProperty, StringProperty
+import numpy as np
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, StringProperty
 
 from ...core import i18n
 from ...core import params as core_params
@@ -76,7 +112,8 @@ from ...core.content import readers as content_readers
 from ...core.content.readers import MAIN_ROLE
 from ...core.datasets import registry as dataset_registry
 from ...core.errors import GeoblenderError
-from ...core.georef import load_catalog
+from ...core.georef import load_catalog, world_to_local
+from ...core.gpkg.wkb import Geometry
 from ...core.i18n import format_number, tr
 from ...core.inputs import get as get_input
 from ...core.inputs import locate_source, reader_roles, resolve_source
@@ -85,11 +122,12 @@ from ...core.inputs.registry import Reuse, Substitute
 from ...core.numbers import parse_decimal
 from ...core.provenance import contract
 from ...core.provenance.messages import ProvenanceError
-from ...core.provenance.operations import Use, begin_operation
-from ...gis import content, jobs, provenance, store
+from ...core.provenance.operations import Use, begin_operation, ingest_job
+from ...gis import content, jobs, provenance, store, vector
 from ...gis import params as gis_params
 from ...gis.crs import (
     ELLIPSOIDAL_ETRS89,
+    VERTICAL_FIELD,
     Declaration,
     crs_library,
     needs_transform,
@@ -114,13 +152,18 @@ from ...gis.dtm import (
 from ...gis.geotiff.reader import read_geotiff
 from ...gis.grid import Grid, project_grid
 from ...gis.messages import GisError
+from ...gis.points import DUP_XY_KEY, DUP_Z_KEY, Breakline, PointSet
+from ...gis.ports import TriangulationError
 from ...gis.raster import Raster
+from ...gis.tin_contours import DENSIFY_KEY, MAX_FLAT_KEY, PASSES_KEY
 from ...gis.vertical import BAND_KEY, check_vertical_offset
-from ...interop.csv_tables import read_table
+from ...interop.csv_tables import preview_table, read_table
 from ...jobs import catalog as job_catalog
 from ...jobs.ingest import job_outcome
 from ..props.core import GEOBLENDER_PG_core_view_dataset
+from ..props.gis import COLUMN_ROLES, NOT_IMPORTED, GEOBLENDER_PG_gis_column
 from ..scene import project_session
+from ..scene import triangulator as cdt_blender
 from ..ui.commands import catalog as command_catalog
 from ..ui.provenance import badge
 from ..ui.views import no_work_window_message
@@ -151,6 +194,11 @@ FRACTION_KEY = "gis.resample.min_valid_fraction"
 SUPERSAMPLE_KEY = "gis.reproject.supersample"
 DTM_IMPORTERS: tuple[str, ...] = ("gis.geotiff", "gis.asc", "gis.xyz_grid")
 """Los lectores (sin versión) cuya reimportación registra esta orden (plan §5.6.8)."""
+T29_OPERATIONS: tuple[str, ...] = (
+    provenance.IMPORT_POINTS, provenance.IMPORT_VECTOR, provenance.TIN_FROM_POINTS,
+    provenance.TIN_FROM_CONTOURS, provenance.GRID_TO_TIN, provenance.TIN_TO_GRID,
+)
+"""Los tipos de operación de las órdenes de la T29 (puntos, capas, TIN y MDT ⇄ TIN)."""
 _SUCCEEDED = "succeeded"  # el final de un trabajo que terminó bien (jobs.records)
 _DTM_SOURCE_READERS = {reader.id: reader for reader in (content.GEOTIFF, content.ASC,
                                                          content.XYZ_GRID)}
@@ -223,16 +271,20 @@ def register() -> None:
             job_catalog.register_worker(info)
             _UNDO.append(_unregister_if(job_catalog.WORKERS, info.name, info,
                                         job_catalog.unregister_worker))
-    definitions = provenance.operation_defs({provenance.RESAMPLE: recompute_resample},
-                                            op_types=(provenance.IMPORT_DTM, provenance.RESAMPLE))
+    definitions = provenance.operation_defs(
+        {provenance.RESAMPLE: recompute_resample, provenance.TIN_FROM_POINTS: recompute_tin,
+         provenance.TIN_FROM_CONTOURS: recompute_tin, provenance.GRID_TO_TIN: recompute_convert,
+         provenance.TIN_TO_GRID: recompute_convert},
+        op_types=(provenance.IMPORT_DTM, provenance.RESAMPLE, *T29_OPERATIONS))
     for definition in definitions:
         if definition.op_type not in contract.OPERATIONS:
             contract.register_operation(definition)
             _UNDO.append(_unregister_if(contract.OPERATIONS, definition.op_type, definition,
                                         contract.unregister_operation))
-    for reader_id in DTM_IMPORTERS:
+    for reader_id, reimport in ((*((r, reimport_dtm) for r in DTM_IMPORTERS),
+                                 *((r, reimport_survey) for r in SURVEY_IMPORTERS))):
         if reader_id not in contract.IMPORTERS:
-            importer = provenance.importer_def(reader_id, reimport_dtm)
+            importer = provenance.importer_def(reader_id, reimport)
             contract.register_importer(importer)
             _UNDO.append(_unregister_if(contract.IMPORTERS, reader_id, importer,
                                         contract.unregister_importer))
@@ -242,6 +294,9 @@ def unregister() -> None:
     """Quita lo que puso :func:`register`, en orden inverso (lo que otro cambió después es
     suyo), y olvida las importaciones que esperaban una decisión; idempotente."""
     _WAITING.clear()
+    _TRIANGULATIONS.clear()
+    if bpy.app.timers.is_registered(triangulation_tick):
+        bpy.app.timers.unregister(triangulation_tick)
     while _UNDO:
         _UNDO.pop()()
 
@@ -1140,5 +1195,1707 @@ class GEOBLENDER_OT_gis_resample_to_grid(ProvenanceAwareOperator, bpy.types.Oper
         return {"FINISHED"}
 
 
-classes: tuple[type, ...] = (GEOBLENDER_OT_gis_import_dtm, GEOBLENDER_OT_gis_resample_to_grid)
-"""Los operadores de ``gis`` (T28: las órdenes de un MDT)."""
+# --- Puntos, líneas de rotura y capas (T29) -----------------------------------------------
+
+
+IMPORT_POINTS = "geoblender.gis_import_points"
+IMPORT_VECTOR = "geoblender.gis_import_vector"
+TIN_FROM_POINTS = "geoblender.gis_create_tin_from_points"
+TIN_FROM_CONTOURS = "geoblender.gis_create_tin_from_contours"
+CONVERT_DTM_TIN = "geoblender.gis_convert_dtm_tin"
+SURVEY_IMPORTERS: tuple[str, ...] = ("gis.points_text", "gis.gpkg_layer")
+"""Los lectores (sin versión) del texto de puntos y de las capas: su reimportación (T29)."""
+DUP_KEYS: tuple[str, ...] = (DUP_XY_KEY, DUP_Z_KEY)
+"""Las tolerancias de duplicados: de resultado en un TIN; de control en una importación,
+donde solo cuentan los duplicados del informe (D17)."""
+REJECTIONS_SHOWN = 50
+"""Filas o entidades rechazadas que se citan en el informe de una importación."""
+CONFLICTS_SHOWN = 50
+"""Conflictos de un TIN que se citan en los avisos y en el motivo de su operación."""
+ENCODING_ITEMS = [
+    ("UTF8", "UTF-8", ""),
+    ("CP1252", "Windows-1252", ""),
+    ("ISO8859_1", "ISO-8859-1 (Latin-1)", ""),
+    ("CP850", "DOS (CP850)", ""),
+]
+ENCODINGS: Mapping[str, str] = {"UTF8": "utf-8", "CP1252": "cp1252", "ISO8859_1": "iso8859-1",
+                                "CP850": "cp850"}
+POINT_SEPARATOR_ITEMS = [
+    ("SEMICOLON", "Semicolon", ""),
+    ("COMMA", "Comma", ""),
+    ("TAB", "Tab", ""),
+    ("SPACE", "Space", "One or more blanks"),
+]
+POINT_SEPARATORS: Mapping[str, str] = {"SEMICOLON": ";", "COMMA": ",", "TAB": "\t",
+                                       "SPACE": " "}
+LINE_KIND_ITEMS = [
+    ("HARD", "Hard", "The breaklines are edges of the TIN"),
+    ("SOFT", "Soft", "The breaklines only add their points"),
+]
+LINE_KINDS: Mapping[str, str] = {"HARD": "hard", "SOFT": "soft"}
+LAYER_ROLE_ITEMS = [
+    ("POINTS", "Points", ""),
+    ("BREAKLINES", "Breaklines", ""),
+    ("CONTOURS", "Contour lines", ""),
+    ("BOUNDARY", "Boundary", "Boundary and holes of a TIN"),
+]
+LAYER_ROLES: Mapping[str, str] = {"POINTS": "points", "BREAKLINES": "breaklines",
+                                  "CONTOURS": "contours", "BOUNDARY": "boundary"}
+_GUESSES: Mapping[str, tuple[str, ...]] = {
+    "point_id": ("p", "punto", "id", "point", "pt", "num", "numero", "nombre", "name"),
+    "x": ("x", "este", "easting", "e", "coordx"),
+    "y": ("y", "norte", "northing", "n", "coordy"),
+    "z": ("z", "cota", "elevation", "altura", "h", "coordz"),
+    "code": ("codigo", "code", "cod"),
+    "line": ("linea", "line", "rotura", "breakline"),
+}
+"""Los nombres de cabecera con que se adivina el papel de cada columna (sin tildes ni
+mayúsculas)."""
+
+
+def _plain_header(text: str) -> str:
+    """Un nombre de cabecera sin tildes, en minúsculas y solo con letras y cifras."""
+    plain = "".join(char for char in unicodedata.normalize("NFKD", text)
+                    if not unicodedata.combining(char)).lower()
+    return "".join(char for char in plain if char.isalnum())
+
+
+def guess_columns(header: Sequence[str]) -> dict[str, int]:
+    """El papel de cada columna adivinado por su nombre en la cabecera (P, X, Y, Z, Código,
+    Línea…): papel → índice desde 0, solo los que se reconocen (el primero de cada uno)."""
+    found: dict[str, int] = {}
+    for index, text in enumerate(header):
+        key = _plain_header(str(text))
+        for role, names in _GUESSES.items():
+            if role not in found and key in names:
+                found[role] = index
+                break
+    return found
+
+
+def _mapping_of(columns: Any) -> dict[str, int]:
+    """La correspondencia de las filas del asistente (``GEOBLENDER_PG_gis_column``): papel →
+    índice; ``ValueError`` si dos filas tienen el mismo papel."""
+    found: dict[str, int] = {}
+    for item in columns:
+        if item.role == NOT_IMPORTED:
+            continue
+        role = COLUMN_ROLES[item.role]
+        if role in found:
+            raise ValueError(tr("Two columns have the role «{role}»: choose one",
+                                role=item.role))
+        found[role] = int(item.index)
+    return found
+
+
+@dataclass(eq=False)
+class _Survey:
+    """Una importación de puntos o de una capa en marcha: su operación, la fuente, su lector,
+    sus ajustes de lectura, los CRS declarados (en una capa, el horizontal puede llegar de
+    ella), los parámetros de control, la entrega, la entrada a la que sustituye y el
+    motivo."""
+
+    handle: OperationHandle
+    name: str
+    path: Path
+    reader: str
+    settings: dict[str, Any]
+    crs: CrsRef | None
+    vertical: VerticalRef
+    control: Mapping[str, Any]
+    received_at: Any = None
+    received_from: str | None = None
+    previous_uid: str | None = None
+    reason: str | None = None
+    failure: str = ""
+
+
+def _survey_settings(plan: _Survey) -> dict[str, Any]:
+    """Los ajustes de la operación de una importación de puntos o de una capa: el nombre
+    lógico, el fichero (sin su ruta), el lector, los ajustes de lectura, los CRS declarados y
+    los parámetros de control con su valor (D17)."""
+    return {"name": plan.name, "file": plan.path.name, "reader": plan.reader,
+            "read": dict(plan.settings), "crs": jobs.crs_json(plan.crs),
+            "vertical": jobs.vertical_json(plan.vertical), "control": dict(plan.control)}
+
+
+def _start_survey(plan: _Survey, launch: Callable[..., Any]) -> Any:
+    """Lanza el trabajo de la importación de ``plan`` (``gis_import_points`` o
+    ``gis_import_vector``) con ``launch``; al terminar, :func:`_survey_finished`."""
+    points = plan.reader == content.POINTS_TEXT.id
+    params = {"reader": plan.reader, "name": plan.name, "settings": plan.settings,
+              "crs": jobs.crs_json(plan.crs), "vertical": jobs.vertical_json(plan.vertical),
+              "size": plan.path.stat().st_size, "tol_xy": plan.control.get(DUP_XY_KEY),
+              "tol_z": plan.control.get(DUP_Z_KEY)}
+    label = (tr("Import of the points «{name}»", name=plan.name) if points
+             else tr("Import of the layer «{name}»", name=plan.name))
+    return launch(plan.handle, jobs.IMPORT_POINTS if points else jobs.IMPORT_VECTOR,
+                  label=label, params=params, paths={jobs.path_name(MAIN_ROLE): plan.path},
+                  on_finish=functools.partial(_survey_finished, plan),
+                  grace_s=jobs.CANCEL_GRACE_S)
+
+
+def _survey_finished(plan: _Survey, result: JobResult) -> None:
+    """El final del trabajo de una importación de puntos o de una capa: si terminó bien,
+    :func:`_settle_survey` (si no, la procedencia la deja cancelada o fallida)."""
+    if result.state == _SUCCEEDED:
+        _settle_survey(plan, result)
+
+
+def _survey_spec(plan: _Survey, summary: Mapping[str, Any]) -> Any:
+    """La entrada de la importación con lo que trae el resumen de su trabajo (RF-008-07)."""
+    project = plan.handle.project
+    found = summary["source"]
+    main = found["files"][MAIN_ROLE]
+    anchor = locate_source(plan.path, project, project.userdata, role="main")
+    prints = [SourcePrint(main["sha256"], size=main["size"], mtime_ns=main["mtime_ns"])]
+    return store.source_input(found["reader"], plan.name, files=[anchor], file_prints=prints,
+                              digest=jobs.digest_of(found["digest"]),
+                              crs=jobs.crs_of(summary["crs"]),
+                              vertical=jobs.vertical_of(summary["vertical"]),
+                              settings=dict(plan.settings), received_at=plan.received_at,
+                              received_from=plan.received_from)
+
+
+def _settle_survey(plan: _Survey, result: JobResult) -> str:
+    """Incorpora la importación de ``plan`` (su trabajo terminó bien) y dice cómo quedó:
+    ``"reused"`` (la misma entrada: cancelada con el aviso, RF-008-54), ``"cancelled"`` (los
+    mismos datos con otros ajustes y sin motivo: se repite con él, RF-008-11), ``"done"`` o
+    ``"failed"``. El original del texto de puntos se guarda desde la copia verificada del
+    trabajo antes de darlo por incorporado (RF-008-53)."""
+    project = plan.handle.project
+    language = i18n.language()
+    try:
+        outcome = job_outcome(result, result.job_dir)
+        summary = outcome.summary
+        spec = _survey_spec(plan, summary)
+        if plan.previous_uid is None:
+            found = store.classify_source(project, spec)
+            if isinstance(found, Reuse):
+                with store.ResultWriter(project, plan.handle) as out:
+                    out.declare_input(spec)  # la deja cancelada con el aviso
+                core_provenance.release_job(result.job_uid)
+                _say(found.render(language))
+                return "reused"
+            if isinstance(found, Substitute):
+                if not plan.reason:
+                    text = tr("«{name}» has the same data as the input «{existing}» with other "
+                              "settings ({differences}): import it again with the reason why "
+                              "it replaces it", name=plan.name, existing=found.input.name,
+                              differences=found.describe(language))
+                    plan.handle.cancel(text)
+                    core_provenance.release_job(result.job_uid)
+                    _say(text)
+                    return "cancelled"
+                plan.previous_uid = found.input.uid
+        report = _survey_report(plan, summary, outcome)
+        with store.ResultWriter(project, plan.handle) as out:
+            out.declare_input(spec, previous_uid=plan.previous_uid, reason=plan.reason)
+            _write_survey(out, plan, outcome, summary)
+            ingest_job(project, plan.handle, outcome, out.write, message=report)
+        if plan.reader == content.POINTS_TEXT.id:
+            _store_original(out, result.job_dir.inputs_dir / (
+                jobs.path_name(MAIN_ROLE) + plan.path.suffix))
+        core_provenance.release_job(result.job_uid)
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        plan.failure = tr("«{name}» has not been imported: {reason}", name=plan.name,
+                          reason=_failure(plan.handle, result, error))
+        _say(plan.failure)
+        return "failed"
+    _say(report)
+    return "done"
+
+
+def _store_original(out: store.ResultWriter, verified: Path) -> None:
+    """El original del texto de puntos desde la copia verificada (RF-008-53); si no se puede
+    guardar, la importación sigue hecha y se avisa."""
+    try:
+        for _step in out.originals([verified]):
+            pass
+    except Exception as error:  # noqa: BLE001 - lo importado ya está confirmado
+        LOGGER.warning("No se guardó el original de «%s»", verified.name, exc_info=True)
+        _say(tr("The original of the input could not be kept: {reason}",
+                reason=error_text(error)))
+
+
+def _write_survey(out: store.ResultWriter, plan: _Survey, outcome: Any,
+                  summary: Mapping[str, Any]) -> None:
+    """Prepara lo importado del resultado del trabajo: puntos y líneas de un texto; de una
+    capa, según su papel. Sin nada que importar, ``gis.survey_empty``."""
+    if plan.reader == content.POINTS_TEXT.id:
+        points = jobs.read_points(outcome.file(jobs.OUT_POINTS.role))
+        lines = jobs.read_lines(outcome.file(jobs.OUT_LINES.role))
+        if len(points):
+            out.points(plan.name, points)
+        if lines:
+            out.breaklines(plan.name, lines)
+        count = len(points) + len(lines)
+    else:
+        role = str(summary["role"])
+        path = outcome.file(jobs.LAYER_OUTPUTS[role].role)
+        count = int(summary["count"])
+        if count and role == "points":
+            out.points(plan.name, jobs.read_points(path))
+        elif count and role == "breaklines":
+            out.breaklines(plan.name, jobs.read_lines(path))
+        elif count and role == "contours":
+            out.contours(plan.name, jobs.read_contours(path))
+        elif count:
+            epsg = jobs.crs_of(summary["crs"]).epsg
+            out.boundary(plan.name, [Geometry("MULTIPOLYGON", epsg, False, polygons, None)
+                                     for polygons in jobs.read_polygons(path)])
+    if not count:
+        raise GisError("gis.survey_empty", obj=f"«{plan.path.name}»", field="filas",
+                       value=0, name=plan.name, file=plan.path.name,
+                       rejected=int(summary.get("rejected", 0)))
+
+
+def _rejections(outcome: Any) -> list[str]:
+    """Las filas o entidades rechazadas del informe del trabajo (número y motivo), como mucho
+    :data:`REJECTIONS_SHOWN`."""
+    report = json.loads(outcome.file(jobs.OUT_REPORT.role).read_text("utf-8"))
+    rejected = list(report.get("rejected", ()))
+    lines = [str(item["reason"]) for item in rejected[:REJECTIONS_SHOWN]]
+    if len(rejected) > REJECTIONS_SHOWN:
+        lines.append(tr("… and {count} more rejected", count=format_number(
+            len(rejected) - REJECTIONS_SHOWN, 0)))
+    lines.extend(str(item) for item in report.get("warnings", ()))
+    return lines
+
+
+def _survey_report(plan: _Survey, summary: Mapping[str, Any], outcome: Any) -> str:
+    """El informe de una importación de puntos o de una capa (RF-006-12): lo leído, lo
+    importado, lo rechazado (con número y motivo) y los duplicados."""
+    if plan.reader == content.POINTS_TEXT.id:
+        names = [name for family, count in ((provenance.POINTS, summary["points"]),
+                                            (provenance.BREAKLINES, summary["lines"]))
+                 if count for name in [provenance.dataset_name(family, plan.name)]]
+        head = tr("Points «{name}» imported as {datasets}: rows read {read}, points {points}, "
+                  "breaklines {lines}, rejected {rejected}, duplicates {duplicates}",
+                  name=plan.name, datasets=tr(" and ").join(names) if names else "—",
+                  read=format_number(int(summary["read"]), 0),
+                  points=format_number(int(summary["points"]), 0),
+                  lines=format_number(int(summary["lines"]), 0),
+                  rejected=format_number(int(summary["rejected"]), 0),
+                  duplicates=format_number(int(summary.get("duplicates", 0)), 0))
+    else:
+        role = str(summary["role"])
+        family = provenance.layer_family(role)
+        what = {"points": tr("points"), "breaklines": tr("breaklines"),
+                "contours": tr("contour lines"), "boundary": tr("boundaries")}[role]
+        head = tr("Layer «{layer}» of «{file}» imported as {dataset}: {count} {what} of {read} "
+                  "features read, {rejected} rejected", layer=summary["layer"],
+                  file=plan.path.name, dataset=provenance.dataset_name(family, plan.name),
+                  count=format_number(int(summary["count"]), 0), what=what,
+                  read=format_number(int(summary["read"]), 0),
+                  rejected=format_number(int(summary["rejected"]), 0))
+        if role == "points":
+            head += "; " + tr("duplicates {duplicates}", duplicates=format_number(
+                int(summary.get("duplicates", 0)), 0))
+    return "\n".join([head, *_rejections(outcome)])
+
+
+def _declared_vertical(choice: str, project: Any, source: str) -> VerticalRef:
+    """El datum vertical elegido para la fuente ``source``; «Sin declarar»,
+    ``gis.vertical_undeclared`` (RF-006-04: un texto o una capa no lo declaran)."""
+    found = _vertical_choice(choice, project)
+    if found is None:
+        raise GisError("gis.vertical_undeclared", obj=source, field=VERTICAL_FIELD,
+                       source=source)
+    return found
+
+
+def reimport_survey(request: ReimportRequest) -> OperationHandle:
+    """La reimportación de una entrada de puntos (``gis.points_text``) o de una capa
+    (``gis.gpkg_layer``) (RF-008-11; plan §5.6.8): vuelve a importar su fuente con sus ajustes
+    registrados (o los que pide ``request.settings``) y sus CRS declarados, como una entrada
+    nueva que la sustituye con el motivo, en su trabajo; devuelve la operación, aún «en
+    curso». Sin escribir nada: ``core.input_unknown``, ``core.reimport_source_missing`` y
+    ``ValueError`` con un ajuste que no es de lectura de su lector."""
+    project = request.project
+    with project.read() as conn:
+        record = get_input(conn, request.input_uid)
+    if record is None:
+        raise ProvenanceError("core.input_unknown", input=request.input_uid,
+                              project=project.name)
+    if record.reader not in (content.POINTS_TEXT.id, content.GPKG_LAYER.id):
+        raise ValueError(f"la entrada «{record.name}» no es de puntos ni de una capa "
+                         f"({record.reader})")
+    path = resolve_source(record.files[0], project, project.userdata)
+    if path is None or not path.is_file():
+        raise ProvenanceError("core.reimport_source_missing", name=record.name,
+                              file=record.files[0].path)
+    settings = dict(record.settings)
+    given = dict(request.settings or {})
+    unknown = sorted(key for key in given if key not in content.READER_SETTINGS[record.reader])
+    if unknown:
+        raise ValueError(f"ajustes que no son de lectura de «{record.reader}»: {unknown}")
+    settings.update(given)
+    points = record.reader == content.POINTS_TEXT.id
+    plan = _Survey(None, record.name, path, record.reader, settings,  # type: ignore[arg-type]
+                   jobs.crs_of(dict(record.crs_h)), jobs.vertical_of(dict(record.crs_v)),
+                   control_values(project, DUP_KEYS), received_at=request.received_at,
+                   received_from=request.received_from, previous_uid=record.uid,
+                   reason=request.reason)
+    plan.handle = begin_operation(
+        project, provenance.IMPORT_POINTS if points else provenance.IMPORT_VECTOR,
+        settings=_survey_settings(plan), executor="job_thread",
+        supersedes=record.operation_uid)
+    _start_survey(plan, core_provenance.launch_job)
+    return plan.handle
+
+
+class _SurveyMixin:
+    """Lo común de las dos importaciones de la T29: la puerta, la entrega y el lanzamiento."""
+
+    def _start(self, context: Any, plan_values: dict[str, Any]) -> set[str]:
+        project = core_provenance.SESSION.project
+        try:
+            received_at = _delivery_day(self.received_at)  # type: ignore[attr-defined]
+            control = control_values(project, DUP_KEYS)
+        except _DateText as exc:
+            text = tr("Delivery date «{value}»: write it as DD/MM/YYYY", value=str(exc))
+            self.report({"ERROR"}, text)  # type: ignore[attr-defined]
+            return {"CANCELLED"}
+        except (GeoblenderError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
+            return {"CANCELLED"}
+        delivered = self.received_from.strip() or None  # type: ignore[attr-defined]
+        reason = self.reason.strip() or None  # type: ignore[attr-defined]
+        plan = _Survey(None, control=control, received_at=received_at,  # type: ignore[arg-type]
+                       received_from=delivered, reason=reason, **plan_values)
+        handle = self.begin(context, settings=_survey_settings(plan), executor="job_thread")
+        if handle is None:
+            return {"CANCELLED"}
+        plan.handle = handle
+        if _start_survey(plan, self.launch_job) is None:
+            return {"CANCELLED"}
+        text = tr("Importing «{name}» in the background…", name=plan.name)
+        self.report({"INFO"}, text)  # type: ignore[attr-defined]
+        return {"FINISHED"}
+
+
+def _open_wizard(idname: str, values: Mapping[str, Any]) -> None:
+    """Abre el asistente de la orden ``idname`` con ``values`` (tras elegir el fichero); sin
+    ventana, nada (lo dice el error de quien lo pide)."""
+    manager = getattr(bpy.context, "window_manager", None)
+    windows = list(getattr(manager, "windows", ()) or ())
+    if not windows:
+        return
+    group, name = idname.split(".")
+
+    def call() -> None:
+        try:
+            with bpy.context.temp_override(window=windows[0]):
+                getattr(getattr(bpy.ops, group), name)("INVOKE_DEFAULT", wizard=True,
+                                                       **values)
+        except (RuntimeError, TypeError, AttributeError):
+            LOGGER.warning("No se pudo abrir el asistente de %s", idname, exc_info=True)
+
+    bpy.app.timers.register(call, first_interval=0.0)
+
+
+class GEOBLENDER_OT_gis_import_points(_SurveyMixin, ProvenanceAwareOperator,
+                                      bpy.types.Operator):
+    """Survey points and breaklines (CSV, TXT, XYZ)"""
+
+    bl_idname = IMPORT_POINTS
+    bl_label = "Points and breaklines…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.IMPORT_POINTS
+
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="File", subtype="FILE_PATH", options={"SKIP_SAVE"},
+    )
+    filter_glob: StringProperty(  # type: ignore[valid-type]
+        default="*.csv;*.txt;*.xyz", options={"HIDDEN"},
+    )
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Logical name of the input", options={"SKIP_SAVE"},
+    )
+    encoding: EnumProperty(  # type: ignore[valid-type]
+        name="Encoding", items=ENCODING_ITEMS, default="UTF8", options={"SKIP_SAVE"},
+    )
+    separator: EnumProperty(  # type: ignore[valid-type]
+        name="Separator", items=POINT_SEPARATOR_ITEMS, default="SEMICOLON",
+        options={"SKIP_SAVE"},
+    )
+    decimal: EnumProperty(  # type: ignore[valid-type]
+        name="Decimal mark", items=DECIMAL_ITEMS, default="POINT", options={"SKIP_SAVE"},
+    )
+    header: BoolProperty(  # type: ignore[valid-type]
+        name="Header", description="The file has a header row with the column names",
+        default=True, options={"SKIP_SAVE"},
+    )
+    header_row: IntProperty(  # type: ignore[valid-type]
+        name="Lines before the header", default=0, min=0, options={"SKIP_SAVE"},
+    )
+    columns: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_gis_column, options={"SKIP_SAVE"},
+    )
+    line_kind: EnumProperty(  # type: ignore[valid-type]
+        name="Breaklines", items=LINE_KIND_ITEMS, default="HARD", options={"SKIP_SAVE"},
+    )
+    crs: StringProperty(  # type: ignore[valid-type]
+        name="Horizontal CRS",
+        description="EPSG code of the points' horizontal CRS, such as EPSG:25830",
+        options={"SKIP_SAVE"},
+    )
+    vertical: EnumProperty(  # type: ignore[valid-type]
+        name="Vertical CRS", items=VERTICAL_ITEMS, default=UNDECLARED, options={"SKIP_SAVE"},
+    )
+    received_at: StringProperty(  # type: ignore[valid-type]
+        name="Delivery date", description="Delivery day, DD/MM/YYYY (empty: no date)",
+        options={"SKIP_SAVE"},
+    )
+    received_from: StringProperty(  # type: ignore[valid-type]
+        name="Delivered by", description="Who delivered the input (empty: nobody recorded)",
+        options={"SKIP_SAVE"},
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason",
+        description="Why the input replaces the one imported with the same data and other "
+                    "settings",
+        options={"SKIP_SAVE"},
+    )
+    wizard: BoolProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _poll(cls)
+
+    def _read_options(self) -> tuple[str, str, int | None]:
+        return (ENCODINGS[self.encoding], POINT_SEPARATORS[self.separator],
+                self.header_row if self.header else None)
+
+    def _fill_columns(self, path: Path) -> list[list[str]]:
+        """Las columnas del asistente desde la vista previa del fichero (el papel adivinado
+        por la cabecera) y sus primeras filas."""
+        encoding, separator, header_row = self._read_options()
+        table = preview_table(path, encoding=encoding, separator=separator,
+                              header_row=header_row)
+        count = max([len(table.columns), *(len(row) for row in table.rows)], default=0)
+        guessed = {index: role for role, index in guess_columns(table.columns).items()}
+        reverse = {role: key for key, role in COLUMN_ROLES.items()}
+        self.columns.clear()
+        for index in range(count):
+            item = self.columns.add()
+            item.index = index
+            item.name = table.columns[index] if index < len(table.columns) else ""
+            item.role = reverse[guessed[index]] if index in guessed else NOT_IMPORTED
+        self._preview = [list(row) for row in table.rows]
+        return self._preview
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        if self.filepath:
+            try:
+                self._fill_columns(Path(bpy.path.abspath(self.filepath)))
+            except (GeoblenderError, OSError, ValueError) as exc:
+                self.report({"ERROR"}, error_text(exc))
+                return {"CANCELLED"}
+            self.wizard = True
+            return context.window_manager.invoke_props_dialog(
+                self, width=DIALOG_WIDTH, translate=False,
+                title=tr("Import of points and breaklines"))
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        for prop, text in (("encoding", tr("Encoding")), ("separator", tr("Separator")),
+                           ("decimal", tr("Decimal mark")), ("header", tr("Header")),
+                           ("header_row", tr("Lines before the header")),
+                           ("line_kind", tr("Breaklines")), ("crs", tr("Horizontal CRS")),
+                           ("vertical", tr("Vertical CRS")),
+                           ("received_at", tr("Delivery date")),
+                           ("received_from", tr("Delivered by"))):
+            layout.prop(self, prop, text=text, translate=False)
+        if self.wizard:
+            layout.prop(self, "reason", text=tr("Reason"), translate=False)
+            box = layout.box()
+            box.label(text=tr("Columns (preview of the first rows)"), translate=False)
+            preview = getattr(self, "_preview", [])
+            for item in self.columns:
+                sample = " · ".join(row[item.index].strip() for row in preview[:3]
+                                    if item.index < len(row))
+                shown = f"{item.index + 1}. {item.name}"
+                row = box.row()
+                row.label(text=shown, translate=False)
+                row.label(text=sample, translate=False)
+                row.prop(item, "role", text="")
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        path = Path(bpy.path.abspath(self.filepath)) if self.filepath else None
+        if path is None or not path.is_file():
+            self.report({"ERROR"}, tr("The file «{file}» does not exist: choose the file to "
+                                      "import", file="" if path is None else path.name))
+            return {"CANCELLED"}
+        if self.provenance_dialog and not self.wizard:
+            _open_wizard(IMPORT_POINTS, {
+                "filepath": str(path), "name": self.name, "encoding": self.encoding,
+                "separator": self.separator, "decimal": self.decimal, "header": self.header,
+                "header_row": self.header_row, "line_kind": self.line_kind, "crs": self.crs,
+                "vertical": self.vertical, "received_at": self.received_at,
+                "received_from": self.received_from})
+            return {"CANCELLED"}
+        try:
+            encoding, separator, header_row = self._read_options()
+            mapping = _mapping_of(self.columns)
+            if not mapping:
+                table = preview_table(path, encoding=encoding, separator=separator,
+                                      header_row=header_row)
+                mapping = guess_columns(table.columns)
+            missing = [axis for axis in ("x", "y", "z") if axis not in mapping]
+            if missing:
+                raise ValueError(tr("Choose the columns X, Y and Z of «{file}» in the wizard",
+                                    file=path.name))
+            source = self.name.strip() or path.name
+            crs, vertical = Declaration(source, parse_crs(self.crs),
+                                        _vertical_choice(self.vertical, project)).require()
+            _transform(project, DtmSource(self.name or path.name, content.POINTS_TEXT,
+                                          {MAIN_ROLE: path}, crs, vertical, {}))
+            settings = {"encoding": encoding, "separator": separator,
+                        "decimal": DECIMALS[self.decimal], "header_row": header_row,
+                        "columns": {role: mapping.get(role) for role in content.MAPPING_ROLES},
+                        "line_kind": LINE_KINDS[self.line_kind]}
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        name = self.name.strip() or path.stem
+        return self._start(context, {"name": name, "path": path,
+                                     "reader": content.POINTS_TEXT.id, "settings": settings,
+                                     "crs": crs, "vertical": vertical})
+
+
+class GEOBLENDER_OT_gis_import_vector(_SurveyMixin, ProvenanceAwareOperator,
+                                      bpy.types.Operator):
+    """Vector layers of a GeoPackage"""
+
+    bl_idname = IMPORT_VECTOR
+    bl_label = "Vector layers…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.IMPORT_VECTOR
+
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="File", subtype="FILE_PATH", options={"SKIP_SAVE"},
+    )
+    filter_glob: StringProperty(  # type: ignore[valid-type]
+        default="*.gpkg", options={"HIDDEN"},
+    )
+    layer: StringProperty(  # type: ignore[valid-type]
+        name="Layer", description="Layer of the GeoPackage to import", options={"SKIP_SAVE"},
+    )
+    layers: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options={"SKIP_SAVE"},
+    )
+    role: EnumProperty(  # type: ignore[valid-type]
+        name="Role", items=LAYER_ROLE_ITEMS, default="POINTS", options={"SKIP_SAVE"},
+    )
+    elevation_field: StringProperty(  # type: ignore[valid-type]
+        name="Elevation field",
+        description="Field with the elevation of each contour line (empty: the Z of its "
+                    "vertices)",
+        options={"SKIP_SAVE"},
+    )
+    crs: StringProperty(  # type: ignore[valid-type]
+        name="Horizontal CRS",
+        description="EPSG code of the layer's horizontal CRS, such as EPSG:25830 (empty: the "
+                    "one the layer declares)",
+        options={"SKIP_SAVE"},
+    )
+    vertical: EnumProperty(  # type: ignore[valid-type]
+        name="Vertical CRS", items=VERTICAL_ITEMS, default=UNDECLARED, options={"SKIP_SAVE"},
+    )
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Logical name of the input", options={"SKIP_SAVE"},
+    )
+    received_at: StringProperty(  # type: ignore[valid-type]
+        name="Delivery date", description="Delivery day, DD/MM/YYYY (empty: no date)",
+        options={"SKIP_SAVE"},
+    )
+    received_from: StringProperty(  # type: ignore[valid-type]
+        name="Delivered by", description="Who delivered the input (empty: nobody recorded)",
+        options={"SKIP_SAVE"},
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason",
+        description="Why the input replaces the one imported with the same data and other "
+                    "settings",
+        options={"SKIP_SAVE"},
+    )
+    wizard: BoolProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _poll(cls)
+
+    def _list_layers(self, path: Path) -> None:
+        """Las capas del GeoPackage, leídas de una copia en ``cache/import/`` (nunca del
+        fichero de la persona, RF-006-10), en las filas del diálogo."""
+        project = core_provenance.SESSION.project
+        folder = vector.import_dir(project.cache_dir(), f"capas-{uuid.uuid4().hex[:8]}")
+        try:
+            found = vector.list_layers(vector.copy_source(path, folder))
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        self.layers.clear()
+        for info in found:
+            item = self.layers.add()
+            item.name = info.name
+            item.uid = info.name
+            item.label = (f"{info.name} · {info.geometry_type} · {info.srs}"
+                          + ("" if info.importable else f" · {info.problem}"))
+        if found and not self.layer:
+            self.layer = next((info.name for info in found if info.importable), found[0].name)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        if self.filepath:
+            try:
+                self._list_layers(Path(bpy.path.abspath(self.filepath)))
+            except (GeoblenderError, OSError, ValueError) as exc:
+                self.report({"ERROR"}, error_text(exc))
+                return {"CANCELLED"}
+            self.wizard = True
+            return context.window_manager.invoke_props_dialog(
+                self, width=DIALOG_WIDTH, translate=False, title=tr("Import of a vector layer"))
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        if self.wizard:
+            layout.prop_search(self, "layer", self, "layers", text=tr("Layer"),
+                               translate=False)
+        layout.prop(self, "role", text=tr("Role"), translate=False)
+        if self.role == "CONTOURS":
+            layout.prop(self, "elevation_field", text=tr("Elevation field"), translate=False)
+        for prop, text in (("name", tr("Name")), ("crs", tr("Horizontal CRS")),
+                           ("vertical", tr("Vertical CRS")),
+                           ("received_at", tr("Delivery date")),
+                           ("received_from", tr("Delivered by"))):
+            layout.prop(self, prop, text=text, translate=False)
+        if self.wizard:
+            layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        path = Path(bpy.path.abspath(self.filepath)) if self.filepath else None
+        if path is None or not path.is_file():
+            self.report({"ERROR"}, tr("The file «{file}» does not exist: choose the file to "
+                                      "import", file="" if path is None else path.name))
+            return {"CANCELLED"}
+        if self.provenance_dialog and not self.wizard:
+            _open_wizard(IMPORT_VECTOR, {
+                "filepath": str(path), "layer": self.layer, "role": self.role,
+                "elevation_field": self.elevation_field, "crs": self.crs,
+                "vertical": self.vertical, "name": self.name,
+                "received_at": self.received_at, "received_from": self.received_from})
+            return {"CANCELLED"}
+        try:
+            layer = self.layer.strip()
+            if not layer:
+                raise ValueError(tr("Choose the layer of «{file}» to import", file=path.name))
+            vertical = _declared_vertical(self.vertical, project, self.name.strip() or layer)
+            crs = parse_crs(self.crs)
+            role = LAYER_ROLES[self.role]
+            settings: dict[str, Any] = {"layer": layer, "role": role}
+            field = self.elevation_field.strip()
+            if role == "contours" and field:
+                settings["elevation_field"] = field
+            if crs is not None:
+                _transform(project, DtmSource(layer, content.GPKG_LAYER, {MAIN_ROLE: path},
+                                              crs, vertical, {}))
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        name = self.name.strip() or layer
+        return self._start(context, {"name": name, "path": path,
+                                     "reader": content.GPKG_LAYER.id, "settings": settings,
+                                     "crs": crs, "vertical": vertical})
+
+
+# --- TIN y conversiones (T29) ----------------------------------------------------------------
+
+
+ANNOUNCE_S = 1.0
+"""Una triangulación en el hilo estimada en más (s) se avisa antes en la barra de estado y
+corre en el paso siguiente del temporizador (RNF-006-09, D-12)."""
+TRIANGULATION_TICK_S = 0.05
+"""Lo que espera el temporizador entre el aviso y la triangulación (la barra se redibuja)."""
+WORK_DIR = "gis"
+"""La carpeta de la caché del proyecto con los ficheros de una cadena de un TIN mientras dura
+(``cache/gis/tin-<operación8>/``, en disco local también con el proyecto en red)."""
+POLICY_ITEMS = [
+    ("ASK", "Ask", "List the conflicts and do not create the TIN"),
+    ("MEAN", "Mean", "The mean elevation of the coincident points"),
+    ("MIN", "Minimum", "The point with the lowest elevation"),
+    ("MAX", "Maximum", "The point with the highest elevation"),
+    ("FIRST", "First", "The first point of the file"),
+    ("CANCEL", "Cancel", "Do not create the TIN if there are conflicts"),
+]
+POLICIES: Mapping[str, str] = {key: key.lower() for key, *_ in POLICY_ITEMS}
+DIRECTION_ITEMS = [
+    ("DTM_TO_TIN", "DTM → TIN", "Triangulate the centres of the cells with data"),
+    ("TIN_TO_DTM", "TIN → DTM", "Interpolate the TIN at the centres of the project grid"),
+]
+_TIN_POINTS = "points"
+_TIN_CONTOURS = "contours"
+
+
+@dataclass(eq=False)
+class _Tin:
+    """Una cadena de un TIN o una conversión en marcha (una sola operación aunque lance varios
+    trabajos; se incorpora el último): su operación, su tipo (``points``, ``contours``,
+    ``grid_to_tin`` o ``tin_to_grid``), el nombre del resultado, sus ajustes, su carpeta de
+    trabajo y lo que se va sabiendo (vértices, dónde se triangula, el triangulador y las
+    notas del informe)."""
+
+    handle: OperationHandle
+    kind: str
+    name: str
+    settings: Mapping[str, Any]
+    work: Path | None = None
+    regions: bool = False
+    vertices: int = 0
+    choice: Any = None
+    announced: bool = False
+    triangulator: str = ""
+    notes: list[str] = field(default_factory=list)
+
+
+_TRIANGULATIONS: list[_Tin] = []
+"""Las triangulaciones con la CDT de Blender que esperan su turno en el temporizador."""
+
+
+def pending_triangulations() -> list[str]:
+    """Las operaciones cuya triangulación con la CDT de Blender espera el temporizador."""
+    return [plan.handle.uid for plan in _TRIANGULATIONS]
+
+
+def _status(text: str | None) -> None:
+    """El aviso en la barra de estado de cada ventana (``None`` lo quita)."""
+    manager = getattr(bpy.context, "window_manager", None)
+    for window in list(getattr(manager, "windows", ()) or ()):
+        workspace = getattr(window, "workspace", None)
+        if workspace is None:
+            continue
+        try:
+            workspace.status_text_set(text)
+        except (RuntimeError, TypeError):
+            LOGGER.debug("Sin barra de estado en una ventana", exc_info=True)
+
+
+def _work_dir(handle: OperationHandle) -> Path:
+    """La carpeta de trabajo de la cadena de ``handle`` (en la caché del proyecto)."""
+    folder = Path(handle.project.cache_dir(), WORK_DIR, f"tin-{handle.uid.partition('-')[0]}")
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _discard_work(plan: _Tin) -> None:
+    if plan.work is not None:
+        shutil.rmtree(plan.work, ignore_errors=True)
+
+
+def _abort(plan: _Tin, error: BaseException, result: JobResult | None = None) -> None:
+    """Deja fallida con su motivo la operación de ``plan`` (si sigue en curso), da por
+    incorporado su trabajo ``result`` (si lo hay), borra su carpeta de trabajo y lo dice."""
+    if result is not None:
+        reason = _failure(plan.handle, result, error)
+    else:
+        reason = error_text(error)
+        LOGGER.warning("La operación «%s» (%s) no terminó", plan.handle.op_type,
+                       plan.handle.uid, exc_info=error)
+        try:
+            plan.handle.fail(reason)
+        except (GeoblenderError, TypeError, ValueError):
+            pass
+    _discard_work(plan)
+    _say(tr("TIN «{name}» has not been created: {reason}", name=plan.name, reason=reason))
+
+
+def _record(project: Any, ref: str, families: Sequence[str]) -> DatasetRecord:
+    """El dato vivo ``ref`` (nombre o uid) de una de ``families`` de ``gis``;
+    ``gis.dataset_unknown`` si no lo hay."""
+    shown = ref.strip()
+    with project.read() as conn:
+        record = dataset_registry.get(conn, shown) if shown else None
+    prefixes = tuple(provenance.FAMILIES_BY_CODE[code].prefix for code in families)
+    if record is None or record.module != MODULE or not record.name.startswith(prefixes):
+        raise GisError("gis.dataset_unknown", obj="Dato de topografía", field="dato",
+                       value=ref)
+    return record
+
+
+def _to_project(project: Any, record: DatasetRecord, arrays: list[np.ndarray],
+                notes: list[str]) -> list[np.ndarray]:
+    """Las coordenadas ``arrays`` del dato ``record`` (``(n, 2)`` o ``(n, 3)``) en el CRS y la
+    referencia vertical del proyecto: las mismas si ya lo están; si no, transformadas con una
+    de precisión conocida (RF-006-05; si no la hay, ``GisError`` nombrando los dos CRS), con
+    la transformación en ``notes`` (para el informe)."""
+    crs, vertical = store.dataset_references(project, record)
+    target_crs, target_vertical = store.project_references(project)
+    if not needs_transform(crs, vertical, target_crs, target_vertical):
+        return arrays
+    transform = transformation_for(Declaration(record.name, crs, vertical), target_crs,
+                                   target_vertical, resolver=crs_resolver)
+    assert transform is not None
+    notes.append(tr("«{name}» transformed from {source} to {target}: {transform}",
+                    name=record.name, source=reference_label(crs, vertical),
+                    target=reference_label(target_crs, target_vertical),
+                    transform=transform_summary(transform.info)))
+    found: list[np.ndarray] = []
+    for array in arrays:
+        xyz = (array if array.shape[1] == 3
+               else np.column_stack([array, np.zeros(len(array), dtype=np.float64)]))
+        moved = np.ascontiguousarray(transform.apply(xyz), dtype=np.float64)
+        found.append(moved if array.shape[1] == 3 else np.ascontiguousarray(moved[:, :2]))
+    return found
+
+
+def _points_of(project: Any, record: DatasetRecord, notes: list[str]) -> PointSet:
+    points = store.load_points(project, record)
+    (xyz,) = _to_project(project, record, [points.xyz], notes)
+    return PointSet(xyz, points.point_ids, points.codes, points.source_rows)
+
+
+def _lines_of(project: Any, record: DatasetRecord, notes: list[str]) -> list[Breakline]:
+    lines = store.load_lines(project, record)
+    moved = _to_project(project, record, [line.xyz for line in lines], notes)
+    return [Breakline(line.line_id, xyz, hard=line.hard, code=line.code)
+            for line, xyz in zip(lines, moved, strict=True)]
+
+
+def _regions_of(project: Any, record: DatasetRecord, notes: list[str],
+                ) -> tuple[list[np.ndarray], list[list[np.ndarray]]]:
+    """Los anillos del contorno (todos los de sus polígonos: dentro, por paridad) y los de
+    cada hueco del dato ``record``, en las referencias del proyecto."""
+    polygons, holes = store.load_regions(project, record)
+    rings = [ring for polygon in polygons for ring in polygon]
+    hole_rings = [[ring for polygon in hole for ring in polygon] for hole in holes]
+    flat = _to_project(project, record, [*rings, *(r for hole in hole_rings for r in hole)],
+                       notes)
+    boundary, position = flat[:len(rings)], len(rings)
+    found: list[list[np.ndarray]] = []
+    for hole in hole_rings:
+        found.append(flat[position:position + len(hole)])
+        position += len(hole)
+    return boundary, found
+
+
+def _tin_settings(name: str, uses: Mapping[str, DatasetRecord],
+                  extra: Mapping[str, Any]) -> dict[str, Any]:
+    """Los ajustes de la operación de un TIN: su nombre, lo que consume (por papel, el nombre
+    del dato) y los de la orden (``extra``)."""
+    return {"name": name, "sources": {role: record.name for role, record in uses.items()},
+            **dict(extra)}
+
+
+def _start_tin(plan: _Tin, launch: Callable[..., Any],
+               uses: Mapping[str, DatasetRecord]) -> Any:
+    """Lee lo que consume el TIN de ``plan`` (puntos, líneas o curvas y contorno; en las
+    referencias del proyecto), lo deja en su carpeta de trabajo y lanza con ``launch`` su
+    primer trabajo: ``gis_tin_prepare`` (desde puntos) o ``gis_tin_contours`` (desde
+    curvas)."""
+    project = plan.handle.project
+    plan.work = _work_dir(plan.handle)
+    inputs: dict[str, Path] = {}
+    count = 0
+    if _TIN_POINTS in uses or "spot_heights" in uses:
+        record = uses.get(_TIN_POINTS) or uses["spot_heights"]
+        points = _points_of(project, record, plan.notes)
+        jobs.write_points(plan.work / "points.npz", points)
+        inputs[jobs.INPUT_POINTS] = plan.work / "points.npz"
+        count += len(points)
+    line_role = "breaklines" if plan.kind == _TIN_POINTS else _TIN_CONTOURS
+    if line_role in uses:
+        lines = _lines_of(project, uses[line_role], plan.notes)
+        jobs.write_lines(plan.work / "lines.npz", lines)
+        inputs[jobs.INPUT_LINES] = plan.work / "lines.npz"
+        count += sum(len(line.xyz) for line in lines)
+    if "boundary" in uses:
+        boundary, holes = _regions_of(project, uses["boundary"], plan.notes)
+        if plan.kind == _TIN_CONTOURS:  # el TIN desde curvas no tiene huecos: por paridad
+            boundary, holes = boundary + [ring for hole in holes for ring in hole], []
+        jobs.write_regions(plan.work / "regions.npz", boundary or None, holes)
+        plan.regions = True
+    resolved = _resolved(plan.handle)
+    settings = plan.settings
+    if plan.kind == _TIN_POINTS:
+        params = {"name": plan.name, "tol_xy": resolved[DUP_XY_KEY],
+                  "tol_z": resolved[DUP_Z_KEY], "duplicate_policy": settings["duplicate_policy"],
+                  "count": count}
+        return launch(plan.handle, jobs.TIN_PREPARE, label=tr("TIN «{name}»", name=plan.name),
+                      params=params, inputs=inputs,
+                      on_finish=functools.partial(_tin_prepared, plan),
+                      grace_s=jobs.CANCEL_GRACE_S)
+    if plan.regions:
+        inputs[jobs.INPUT_REGIONS] = plan.work / "regions.npz"
+    crs, vertical = store.project_references(project)
+    params = {"name": plan.name, "origin": jobs.origin_json(project.origin),
+              "crs": jobs.crs_json(crs), "vertical": jobs.vertical_json(vertical),
+              "densify_m": settings.get("densify_m", resolved.get(DENSIFY_KEY)),
+              "max_passes": resolved[PASSES_KEY], "max_flat_pct": resolved[MAX_FLAT_KEY],
+              "tol_xy": resolved[DUP_XY_KEY], "tol_z": resolved[DUP_Z_KEY],
+              "duplicate_policy": settings["duplicate_policy"], "count": count}
+    return launch(plan.handle, jobs.TIN_CONTOURS, label=tr("TIN «{name}»", name=plan.name),
+                  params=params, inputs=inputs, on_finish=functools.partial(_tin_finished, plan),
+                  grace_s=jobs.CANCEL_GRACE_S)
+
+
+def _conflicts(plan: _Tin, result: JobResult, outcome: Any) -> None:
+    """Un TIN con conflictos sin resolver (RF-006-14): cada uno en los avisos, con sus
+    identificadores, su posición y sus dos cotas; la operación queda cancelada (si se eligió
+    cancelar) o fallida con el motivo y la lista; ningún dato."""
+    error = jobs.read_conflicts(outcome.file(jobs.OUT_CONFLICTS.role))
+    texts = error.texts(i18n.language())
+    shown = texts[:CONFLICTS_SHOWN]
+    if len(texts) > CONFLICTS_SHOWN:
+        shown.append(tr("… and {count} more conflicts", count=format_number(
+            len(texts) - CONFLICTS_SHOWN, 0)))
+    reason = "\n".join([error.text, *shown])
+    for text in (error.text, *shown):
+        _say(text)
+    try:
+        if error.code == "gis.duplicates_cancelled":
+            plan.handle.cancel(reason)
+        else:
+            plan.handle.fail(reason)
+    finally:
+        core_provenance.release_job(result.job_uid)
+        _discard_work(plan)
+
+
+def _tin_prepared(plan: _Tin, result: JobResult) -> None:
+    """El final de ``gis_tin_prepare``: con conflictos, :func:`_conflicts`; si no, lo
+    preparado pasa a la carpeta de trabajo y se triangula con la CDT de Blender desde el
+    temporizador si la estimación no pasa del umbral del proyecto
+    (``gis.tin.blender_cdt_max_s``) o, si pasa, en el trabajo ``gis_triangulate``."""
+    if result.state != _SUCCEEDED:
+        _discard_work(plan)
+        return
+    try:
+        outcome = job_outcome(result, result.job_dir)
+        summary = outcome.summary
+        if summary.get("conflicts"):
+            _conflicts(plan, result, outcome)
+            return
+        assert plan.work is not None
+        shutil.copyfile(outcome.file(jobs.OUT_PREPARED.role), plan.work / "prepared.npz")
+        plan.vertices = int(summary["vertices"])
+        core_provenance.release_job(result.job_uid)
+        limit = plan.settings["control"][cdt_blender.MAX_SECONDS_KEY]
+        plan.choice = cdt_blender.choose_triangulation(plan.vertices, limit_s=limit)
+        if plan.choice.in_process:
+            _TRIANGULATIONS.append(plan)
+            if not bpy.app.timers.is_registered(triangulation_tick):
+                bpy.app.timers.register(triangulation_tick, first_interval=0.0,
+                                        persistent=True)
+        else:
+            _launch_triangulate(plan)
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        _abort(plan, error, result)
+
+
+def triangulation_tick() -> float | None:
+    """El temporizador de las triangulaciones con la CDT de Blender (plan §5.3.4, A10, D-12):
+    una por paso; si se estima en más de :data:`ANNOUNCE_S`, primero el aviso en la barra de
+    estado y en los avisos («Triangulando n puntos (unos t s)…») y la triangulación en el
+    paso siguiente. Devuelve cuándo volver (``None``: no queda ninguna)."""
+    if not _TRIANGULATIONS:
+        return None
+    plan = _TRIANGULATIONS[0]
+    if plan.choice.estimate_s > ANNOUNCE_S and not plan.announced:
+        plan.announced = True
+        text = tr("Triangulating {count} points (about {seconds} s)…",
+                  count=format_number(plan.vertices, 0),
+                  seconds=_decimal(round(plan.choice.estimate_s, 1)))
+        _status(text)
+        _say(text)
+        return TRIANGULATION_TICK_S
+    _TRIANGULATIONS.pop(0)
+    try:
+        _triangulate_here(plan)
+    finally:
+        if plan.announced:
+            _status(None)
+    return TRIANGULATION_TICK_S if _TRIANGULATIONS else None
+
+
+def _triangulate_here(plan: _Tin) -> None:
+    """La CDT de Blender en el hilo principal con lo preparado (coordenadas locales respecto
+    al GeoOrigin) y, después, ``gis_tin_finish``. Si no cumple su contrato
+    (``gis.triangulation_contract``), se repite con ``PureTriangulator`` en
+    ``gis_triangulate``."""
+    try:
+        if core_provenance.SESSION.project is not plan.handle.project:
+            raise GisError("gis.tin_project_closed", obj=f"TIN «{plan.name}»",
+                           field="proyecto", value=plan.handle.project.name, tin=plan.name)
+        assert plan.work is not None
+        source = jobs.read_tin_input(plan.work / "prepared.npz")
+        xy = world_to_local(source.prepared.xyz[:, :2], plan.handle.project.origin)
+        try:
+            faces = cdt_blender.BlenderTriangulator().triangulate(xy, source.prepared.edges)
+        except TriangulationError as error:
+            plan.notes.append(tr("The Blender triangulation did not fulfil its contract "
+                                 "({reason}): repeated with the pure triangulator",
+                                 reason=error_text(error)))
+            _launch_triangulate(plan)
+            return
+        with open(plan.work / "faces.npy", "wb") as stream:
+            np.save(stream, faces, allow_pickle=False)
+        plan.triangulator = cdt_blender.NAME
+        _launch_finish(plan)
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        _abort(plan, error)
+
+
+def _launch_triangulate(plan: _Tin) -> None:
+    """``gis_triangulate`` (``PureTriangulator`` en proceso aparte, con avance y
+    cancelación) con lo preparado."""
+    assert plan.work is not None
+    core_provenance.launch_job(
+        plan.handle, jobs.TRIANGULATE, label=tr("TIN «{name}»", name=plan.name),
+        params={"name": plan.name, "origin": jobs.origin_json(plan.handle.project.origin),
+                "count": plan.vertices},
+        inputs={jobs.INPUT_PREPARED: plan.work / "prepared.npz"},
+        on_finish=functools.partial(_tin_triangulated, plan), grace_s=jobs.CANCEL_GRACE_S)
+
+
+def _tin_triangulated(plan: _Tin, result: JobResult) -> None:
+    """El final de ``gis_triangulate``: sus triángulos a la carpeta de trabajo y
+    ``gis_tin_finish``."""
+    if result.state != _SUCCEEDED:
+        _discard_work(plan)
+        return
+    try:
+        outcome = job_outcome(result, result.job_dir)
+        assert plan.work is not None
+        shutil.copyfile(outcome.file(jobs.OUT_FACES.role), plan.work / "faces.npy")
+        plan.triangulator = str(outcome.summary["triangulator"])
+        core_provenance.release_job(result.job_uid)
+        _launch_finish(plan)
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        _abort(plan, error, result)
+
+
+def _launch_finish(plan: _Tin) -> None:
+    """``gis_tin_finish``: orientación, contorno, huecos, lado máximo y estadísticas."""
+    assert plan.work is not None
+    project = plan.handle.project
+    crs, vertical = store.project_references(project)
+    inputs = {jobs.INPUT_PREPARED: plan.work / "prepared.npz",
+              jobs.INPUT_FACES: plan.work / "faces.npy"}
+    if plan.regions:
+        inputs[jobs.INPUT_REGIONS] = plan.work / "regions.npz"
+    core_provenance.launch_job(
+        plan.handle, jobs.TIN_FINISH, label=tr("TIN «{name}»", name=plan.name),
+        params={"name": plan.name, "origin": jobs.origin_json(project.origin),
+                "triangulator": plan.triangulator,
+                "max_edge_m": plan.settings.get("max_edge_m"), "crs": jobs.crs_json(crs),
+                "vertical": jobs.vertical_json(vertical), "count": plan.vertices},
+        inputs=inputs, on_finish=functools.partial(_tin_finished, plan),
+        grace_s=jobs.CANCEL_GRACE_S)
+
+
+def _tin_report(plan: _Tin, outcome: Any) -> str:
+    """El informe de un TIN (RF-006-13 a RF-006-16): vértices, triángulos, aristas
+    obligatorias, triángulos planos (antes y después, en uno desde curvas), puntos añadidos,
+    lado máximo, degenerados, lo quitado por el contorno y el lado máximo, el triangulador y
+    las transformaciones."""
+    report = json.loads(outcome.file(jobs.OUT_REPORT.role).read_text("utf-8"))
+    lines = [tr("TIN «{name}» ({dataset}): {vertices} vertices, {triangles} triangles, "
+                "{constraints} constraint edges; flat triangles {flat} %, longest side {side} "
+                "m, degenerate {degenerate}; triangulator {triangulator}",
+                name=plan.name, dataset=provenance.dataset_name(provenance.TIN, plan.name),
+                vertices=format_number(int(report["vertices"]), 0),
+                triangles=format_number(int(report["triangles"]), 0),
+                constraints=format_number(int(report["constraint_edges"]), 0),
+                flat=format_number(float(report["flat_pct"]), 2),
+                side=format_number(float(report["max_edge_m"]), 3),
+                degenerate=format_number(int(report["degenerate"]), 0),
+                triangulator=report["triangulator"])]
+    if report.get("duplicates_merged"):
+        lines.append(tr("Duplicate points merged: {count}", count=format_number(
+            int(report["duplicates_merged"]), 0)))
+    if report.get("removed_outside") or report.get("removed_long_edges"):
+        lines.append(tr("Triangles removed by the boundary and the holes: {outside}; by the "
+                        "longest side: {long}",
+                        outside=format_number(int(report.get("removed_outside", 0)), 0),
+                        long=format_number(int(report.get("removed_long_edges", 0)), 0)))
+    before = report.get("flat_pct_before")
+    if plan.kind == _TIN_CONTOURS:
+        lines.append(tr("Flat triangles before the correction: {before} %; after: {after} %; "
+                        "points added: {added}",
+                        before="—" if before is None else format_number(float(before), 2),
+                        after=format_number(float(report["flat_pct"]), 2),
+                        added=format_number(int(report.get("points_added", 0)), 0)))
+    lines.extend([*plan.notes, *(str(note) for note in report.get("notes", ()))])
+    return "\n".join(lines)
+
+
+def _tin_finished(plan: _Tin, result: JobResult) -> None:
+    """El final del último trabajo de la cadena (``gis_tin_finish`` o ``gis_tin_contours``):
+    con conflictos, :func:`_conflicts`; si no, el TIN pasa a ``gis_tin_<nombre>`` con su hash
+    y el triangulador usado en ``software`` (RF-006-26), y se incorpora la operación."""
+    if result.state != _SUCCEEDED:
+        _discard_work(plan)
+        return
+    try:
+        outcome = job_outcome(result, result.job_dir)
+        summary = outcome.summary
+        if summary.get("conflicts"):
+            _conflicts(plan, result, outcome)
+            return
+        plan.triangulator = plan.triangulator or str(summary["triangulator"])
+        report = _tin_report(plan, outcome)
+        role = jobs.OUT_TIN.role
+        with store.ResultWriter(plan.handle.project, plan.handle) as out:
+            out.copy_file(provenance.TIN, plan.name, outcome.file(role),
+                          content=jobs.digest_of(summary["outputs"][role]["digest"]),
+                          sha256=outcome.output(role).sha256)
+            core_provenance.ingest_job_result(
+                plan.handle, result, out.write,
+                software={provenance.TRIANGULATOR: plan.triangulator}, message=report)
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        _abort(plan, error, result)
+        return
+    _discard_work(plan)
+    _say(report)
+
+
+def _tin_inputs(operator: Any, roles: Sequence[tuple[str, str, Sequence[str]]],
+                project: Any) -> dict[str, DatasetRecord]:
+    """Los datos que consume un TIN, por papel, de las propiedades del operador (``roles``:
+    papel, propiedad y familias); los vacíos no cuentan."""
+    found: dict[str, DatasetRecord] = {}
+    for role, prop, families in roles:
+        ref = str(getattr(operator, prop)).strip()
+        if ref:
+            found[role] = _record(project, ref, families)
+    return found
+
+
+def _default_name(records: Sequence[DatasetRecord]) -> str:
+    """El nombre por defecto de un resultado: el del primer dato que consume, sin su
+    familia."""
+    for record in records:
+        for family in provenance.FAMILIES:
+            if record.name.startswith(family.prefix):
+                return record.name.removeprefix(family.prefix)
+    return ""
+
+
+def _max_edge(text: str, name: str) -> float | None:
+    """El lado máximo tecleado (m, coma o punto) o ``None``; ``gis.tin_max_edge_invalid``
+    si no es un número positivo."""
+    if not text.strip():
+        return None
+    value = parse_decimal(text, obj=tr("Longest side"), field="max_edge")
+    if not (math.isfinite(value) and value > 0.0):
+        raise GisError("gis.tin_max_edge_invalid", obj=f"TIN «{name}»", field="lado máximo",
+                       value=value, tin=name)
+    return float(value)
+
+
+def _fill_items(operator: Any, families: Sequence[str]) -> list[DatasetRecord]:
+    """Las filas del diálogo de una orden de un TIN: los datos de ``families``."""
+    records = store.list_gis_datasets(core_provenance.SESSION.project, families=families)
+    operator.items.clear()
+    for record in records:
+        item = operator.items.add()
+        item.name = record.name
+        item.uid = record.uid
+        item.label = record.name
+    return records
+
+
+def _first(records: Sequence[DatasetRecord], family: str) -> str:
+    prefix = provenance.FAMILIES_BY_CODE[family].prefix
+    return next((record.name for record in reversed(records)
+                 if record.name.startswith(prefix)), "")
+
+
+def _begin_tin(operator: Any, context: Any, kind: str, uses: Mapping[str, DatasetRecord],
+               settings: dict[str, Any], params: list[str]) -> _Tin | None:
+    """La puerta y la operación «en curso» de un TIN (la de ``operator``) con lo que consume,
+    sus ajustes y los parámetros de resultado que lee."""
+    operator._uses = tuple(Use(record.uid, role) for role, record in uses.items())
+    handle = operator.begin(context, settings=settings, params=params, executor="job_thread")
+    if handle is None:
+        return None
+    return _Tin(handle, kind, str(settings["name"]), settings)
+
+
+def _launch_first(operator: Any, plan: _Tin, uses: Mapping[str, DatasetRecord]) -> set[str]:
+    try:
+        job = _start_tin(plan, operator.launch_job, uses)
+    except (GeoblenderError, OSError, ValueError) as exc:
+        _abort(plan, exc)
+        operator.report({"ERROR"}, error_text(exc))
+        return {"CANCELLED"}
+    if job is None:
+        _discard_work(plan)
+        return {"CANCELLED"}
+    operator.report({"INFO"}, tr("Creating the TIN «{name}» in the background…",
+                                 name=plan.name))
+    return {"FINISHED"}
+
+
+class _TinMixin:
+    """Lo común de las órdenes de un TIN: lo que consumen (``_uses``) y su diálogo."""
+
+    def provenance_inputs(self, context: Any) -> tuple[Use, ...]:
+        return tuple(getattr(self, "_uses", ()))
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _poll(cls)
+
+
+class GEOBLENDER_OT_gis_create_tin_from_points(_TinMixin, ProvenanceAwareOperator,
+                                               bpy.types.Operator):
+    """Triangulated surface from points and breaklines. In RecMin, T3"""
+
+    bl_idname = TIN_FROM_POINTS
+    bl_label = "TIN from points and breaklines…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.TIN_FROM_POINTS
+
+    points: StringProperty(  # type: ignore[valid-type]
+        name="Points", description="Name or uid of the imported points", options={"SKIP_SAVE"},
+    )
+    breaklines: StringProperty(  # type: ignore[valid-type]
+        name="Breaklines", description="Name or uid of the imported breaklines (optional)",
+        options={"SKIP_SAVE"},
+    )
+    boundary: StringProperty(  # type: ignore[valid-type]
+        name="Boundary", description="Name or uid of the imported boundary (optional)",
+        options={"SKIP_SAVE"},
+    )
+    max_edge: StringProperty(  # type: ignore[valid-type]
+        name="Longest side",
+        description="Triangles with a longer side in plan are removed, m (empty: none)",
+        options={"SKIP_SAVE"},
+    )
+    duplicate_policy: EnumProperty(  # type: ignore[valid-type]
+        name="Coincident points", items=POLICY_ITEMS, default="ASK", options={"SKIP_SAVE"},
+    )
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the TIN (empty: the points')", options={"SKIP_SAVE"},
+    )
+    items: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options={"SKIP_SAVE"},
+    )
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        if self.points or self.breaklines:
+            return self.execute(context)
+        try:
+            records = _fill_items(self, (provenance.POINTS, provenance.BREAKLINES,
+                                         provenance.BOUNDARY))
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if not any(record.name.startswith(("gis_pts_", "gis_brk_")) for record in records):
+            path = path_text(command_catalog(), IMPORT_POINTS, i18n.language())
+            self.report({"ERROR"}, tr("First {step} ({path})", step=tr("import points"),
+                                      path=path))
+            return {"CANCELLED"}
+        self.points = _first(records, provenance.POINTS)
+        self.breaklines = _first(records, provenance.BREAKLINES)
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=tr("TIN from points and breaklines"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        for prop, text in (("points", tr("Points")), ("breaklines", tr("Breaklines")),
+                           ("boundary", tr("Boundary"))):
+            layout.prop_search(self, prop, self, "items", text=text, translate=False)
+        layout.prop(self, "max_edge", text=tr("Longest side"), translate=False)
+        layout.prop(self, "duplicate_policy", text=tr("Coincident points"), translate=False)
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        try:
+            uses = _tin_inputs(self, (
+                (_TIN_POINTS, "points", (provenance.POINTS,)),
+                ("breaklines", "breaklines", (provenance.BREAKLINES,)),
+                ("boundary", "boundary", (provenance.BOUNDARY,))), project)
+            if _TIN_POINTS not in uses and "breaklines" not in uses:
+                raise ValueError(tr("Choose the points or the breaklines of the TIN"))
+            name = self.name.strip() or _default_name(list(uses.values()))
+            provenance.dataset_slug(name)
+            settings = _tin_settings(name, uses, {
+                "max_edge_m": _max_edge(self.max_edge, name),
+                "duplicate_policy": POLICIES[self.duplicate_policy],
+                "control": control_values(project, (cdt_blender.MAX_SECONDS_KEY,))})
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        plan = _begin_tin(self, context, _TIN_POINTS, uses, settings, list(DUP_KEYS))
+        if plan is None:
+            return {"CANCELLED"}
+        return _launch_first(self, plan, uses)
+
+
+def densify_field(project: Any) -> tuple[str, str]:
+    """El campo de la densificación del diálogo del TIN desde curvas (D18): su valor en el
+    proyecto y su insignia con «sin confirmar» si lo está."""
+    value, kind, unconfirmed = project_value(project, DENSIFY_KEY)
+    note = badge(kind)
+    if unconfirmed:
+        note = f"{note} {tr('unconfirmed')}"
+    return _decimal(value), note
+
+
+class GEOBLENDER_OT_gis_create_tin_from_contours(_TinMixin, ProvenanceAwareOperator,
+                                                 bpy.types.Operator):
+    """Triangulated surface from contour lines. In RecMin, from SUP to T3"""
+
+    bl_idname = TIN_FROM_CONTOURS
+    bl_label = "TIN from contour lines…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.TIN_FROM_CONTOURS
+
+    contours: StringProperty(  # type: ignore[valid-type]
+        name="Contour lines", description="Name or uid of the contour lines",
+        options={"SKIP_SAVE"},
+    )
+    spot_heights: StringProperty(  # type: ignore[valid-type]
+        name="Spot heights", description="Name or uid of the imported points (optional)",
+        options={"SKIP_SAVE"},
+    )
+    boundary: StringProperty(  # type: ignore[valid-type]
+        name="Boundary", description="Name or uid of the imported boundary (optional)",
+        options={"SKIP_SAVE"},
+    )
+    densify: StringProperty(  # type: ignore[valid-type]
+        name="Densification",
+        description="Longest segment of a contour line, m (empty or unchanged: the project's "
+                    "parameter)",
+        options={"SKIP_SAVE"},
+    )
+    duplicate_policy: EnumProperty(  # type: ignore[valid-type]
+        name="Coincident points", items=POLICY_ITEMS, default="ASK", options={"SKIP_SAVE"},
+    )
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the TIN (empty: the contour lines')",
+        options={"SKIP_SAVE"},
+    )
+    items: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options={"SKIP_SAVE"},
+    )
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        if self.contours:
+            return self.execute(context)
+        try:
+            records = _fill_items(self, (provenance.CONTOUR_LINES, provenance.POINTS,
+                                         provenance.BOUNDARY))
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.contours = _first(records, provenance.CONTOUR_LINES)
+        if not self.contours:
+            path = path_text(command_catalog(), IMPORT_VECTOR, i18n.language())
+            self.report({"ERROR"}, tr("First {step} ({path})", step=tr("import contour lines"),
+                                      path=path))
+            return {"CANCELLED"}
+        self.densify, self._densify_note = densify_field(core_provenance.SESSION.project)
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("TIN from contour lines"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        for prop, text in (("contours", tr("Contour lines")),
+                           ("spot_heights", tr("Spot heights")),
+                           ("boundary", tr("Boundary"))):
+            layout.prop_search(self, prop, self, "items", text=text, translate=False)
+        row = layout.row()
+        row.prop(self, "densify", text=tr("Densification"), translate=False)
+        row.label(text=getattr(self, "_densify_note", ""), translate=False)
+        layout.prop(self, "duplicate_policy", text=tr("Coincident points"), translate=False)
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        try:
+            uses = _tin_inputs(self, (
+                (_TIN_CONTOURS, "contours", (provenance.CONTOUR_LINES,)),
+                ("spot_heights", "spot_heights", (provenance.POINTS,)),
+                ("boundary", "boundary", (provenance.BOUNDARY,))), project)
+            if _TIN_CONTOURS not in uses:
+                raise ValueError(tr("Choose the contour lines of the TIN"))
+            name = self.name.strip() or _default_name([uses[_TIN_CONTOURS]])
+            provenance.dataset_slug(name)
+            extra: dict[str, Any] = {"duplicate_policy": POLICIES[self.duplicate_policy]}
+            params = [*DUP_KEYS, PASSES_KEY, MAX_FLAT_KEY]
+            typed = None
+            if self.densify.strip():
+                typed = gis_params.param(DENSIFY_KEY).check(parse_decimal(
+                    self.densify, obj=tr("Densification"), field=DENSIFY_KEY))
+            if typed is None or typed == project_value(project, DENSIFY_KEY)[0]:
+                params.append(DENSIFY_KEY)  # la del proyecto: se consume (RF-008-05)
+            else:
+                extra["densify_m"] = typed  # tecleada: un ajuste (D18)
+            settings = _tin_settings(name, uses, extra)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        plan = _begin_tin(self, context, _TIN_CONTOURS, uses, settings, params)
+        if plan is None:
+            return {"CANCELLED"}
+        return _launch_first(self, plan, uses)
+
+
+def recompute_tin(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``gis.tin_from_points`` y ``gis.tin_from_contours`` (RF-008-26; plan
+    §5.6.8): la misma cadena con los datos vigentes, los parámetros de hoy y los mismos
+    ajustes; devuelve la operación nueva, aún «en curso», que sustituye a la antigua."""
+    project = request.project
+    uses: dict[str, DatasetRecord] = {}
+    for use in request.inputs:
+        with project.read() as conn:
+            record = dataset_registry.get(conn, use.item)
+        if record is None:
+            raise GisError("gis.dataset_unknown", obj="Dato de topografía", field="dato",
+                           value=use.item)
+        uses[use.role] = record
+    kind = _TIN_POINTS if request.op_type == provenance.TIN_FROM_POINTS else _TIN_CONTOURS
+    arguments = request.arguments()
+    if kind == _TIN_POINTS:  # los parámetros de control se vuelven a leer del proyecto (D17)
+        arguments["settings"] = {**arguments["settings"], "control": control_values(
+            project, (cdt_blender.MAX_SECONDS_KEY,))}
+    handle = begin_operation(project, request.op_type, executor="job_thread", **arguments)
+    plan = _Tin(handle, kind, str(request.settings["name"]), dict(arguments["settings"]))
+    try:
+        _start_tin(plan, core_provenance.launch_job, uses)
+    except (GeoblenderError, OSError, ValueError) as exc:
+        _abort(plan, exc)
+    return handle
+
+
+# --- MDT ⇄ TIN ---------------------------------------------------------------------------
+
+
+def _start_convert(plan: _Tin, launch: Callable[..., Any], record: DatasetRecord) -> Any:
+    """Lanza ``gis_convert_surface`` para la conversión de ``plan`` con el fichero de
+    ``record`` copiado a ``in/``."""
+    project = plan.handle.project
+    path = _file_of(project, record)
+    crs, vertical = store.project_references(project)
+    params: dict[str, Any] = {"name": plan.name, "crs": jobs.crs_json(crs),
+                              "vertical": jobs.vertical_json(vertical)}
+    if plan.kind == jobs.GRID_TO_TIN:
+        params.update(direction=jobs.GRID_TO_TIN, count=path.stat().st_size // 4)
+    else:
+        target = jobs.grid_of(plan.settings["grid"])
+        params.update(direction=jobs.TIN_TO_GRID, target=jobs.grid_json(target),
+                      count=target.ncols * target.nrows)
+    label = (tr("TIN «{name}»", name=plan.name) if plan.kind == jobs.GRID_TO_TIN
+             else tr("Project grid «{name}»", name=plan.name))
+    return launch(plan.handle, jobs.CONVERT_SURFACE, label=label, params=params,
+                  inputs={jobs.INPUT_SOURCE: path},
+                  on_finish=functools.partial(_converted, plan, record),
+                  grace_s=jobs.CANCEL_GRACE_S)
+
+
+def _converted(plan: _Tin, record: DatasetRecord, result: JobResult) -> None:
+    """El final de ``gis_convert_surface``: el TIN a ``gis_tin_<nombre>`` o la rejilla a
+    ``gis_dtm_<nombre>``, con su hash, y la operación incorporada (RF-006-17)."""
+    if result.state != _SUCCEEDED:
+        return
+    try:
+        outcome = job_outcome(result, result.job_dir)
+        summary = outcome.summary
+        if plan.kind == jobs.GRID_TO_TIN:
+            role, family = jobs.OUT_TIN.role, provenance.TIN
+            report = tr("TIN «{name}» ({dataset}) from the DTM «{source}»: {vertices} vertices "
+                        "and {triangles} triangles at the centres of the cells with data",
+                        name=plan.name, dataset=provenance.dataset_name(family, plan.name),
+                        source=record.name,
+                        vertices=format_number(int(summary["vertices"]), 0),
+                        triangles=format_number(int(summary["triangles"]), 0))
+        else:
+            role, family = jobs.OUT_PROJECT_GRID.role, provenance.PROJECT_GRID
+            report = tr("Project grid {dataset} from the TIN «{source}»: {valid} of {cells} "
+                        "cells with data (linear interpolation in each triangle)",
+                        dataset=provenance.dataset_name(family, plan.name), source=record.name,
+                        valid=format_number(int(summary["valid_cells"]), 0),
+                        cells=format_number(int(summary["cells"]), 0))
+        with store.ResultWriter(plan.handle.project, plan.handle) as out:
+            out.copy_file(family, plan.name, outcome.file(role),
+                          content=jobs.digest_of(summary["outputs"][role]["digest"]),
+                          sha256=outcome.output(role).sha256)
+            core_provenance.ingest_job_result(plan.handle, result, out.write, message=report)
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        reason = _failure(plan.handle, result, error)
+        _say(tr("«{name}» has not been converted: {reason}", name=plan.name, reason=reason))
+        return
+    _say(report)
+
+
+def recompute_convert(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``gis.grid_to_tin`` y ``gis.tin_to_grid`` (RF-008-26): la misma
+    conversión con el dato vigente y los mismos ajustes; devuelve la operación nueva, aún
+    «en curso»."""
+    project = request.project
+    (use,) = [use for use in request.inputs if use.role == "source"]
+    with project.read() as conn:
+        record = dataset_registry.get(conn, use.item)
+    if record is None:
+        raise GisError("gis.dataset_unknown", obj="Dato de topografía", field="dato",
+                       value=use.item)
+    kind = jobs.GRID_TO_TIN if request.op_type == provenance.GRID_TO_TIN else jobs.TIN_TO_GRID
+    handle = request.begin(executor="job_thread")
+    _start_convert(_Tin(handle, kind, str(request.settings["name"]), dict(request.settings)),
+                   core_provenance.launch_job, record)
+    return handle
+
+
+class GEOBLENDER_OT_gis_convert_dtm_tin(ProvenanceAwareOperator, bpy.types.Operator):
+    """Convert a grid DTM into a TIN or back"""
+
+    bl_idname = CONVERT_DTM_TIN
+    bl_label = "DTM ⇄ TIN…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.GRID_TO_TIN
+
+    direction: EnumProperty(  # type: ignore[valid-type]
+        name="Direction", items=DIRECTION_ITEMS, default="DTM_TO_TIN", options={"SKIP_SAVE"},
+    )
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Surface", description="Name or uid of the DTM or the TIN", options={"SKIP_SAVE"},
+    )
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the result (empty: the source's)",
+        options={"SKIP_SAVE"},
+    )
+    items: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _poll(cls)
+
+    def provenance_inputs(self, context: Any) -> tuple[Use, ...]:
+        record = getattr(self, "_record", None)
+        return () if record is None else (Use(record.uid, "source"),)
+
+    def _families(self) -> tuple[str, ...]:
+        return ((provenance.SOURCE_GRID, provenance.PROJECT_GRID)
+                if self.direction == "DTM_TO_TIN" else (provenance.TIN,))
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        if self.source:
+            return self.execute(context)
+        try:
+            records = _fill_items(self, (provenance.SOURCE_GRID, provenance.PROJECT_GRID,
+                                         provenance.TIN))
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if not records:
+            path = path_text(command_catalog(), IMPORT_DTM, i18n.language())
+            self.report({"ERROR"}, tr("First {step} ({path})", step=tr("import a DTM"),
+                                      path=path))
+            return {"CANCELLED"}
+        self.source = records[-1].name
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("DTM ⇄ TIN conversion"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "direction", text=tr("Direction"), translate=False)
+        layout.prop_search(self, "source", self, "items", text=tr("Surface"), translate=False)
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        to_tin = self.direction == "DTM_TO_TIN"
+        try:
+            record = _record(project, self.source, self._families())
+            found = store.dataset_references(project, record)
+            expected = store.project_references(project)
+            if found != expected:
+                raise GisError("gis.surface_references_mismatch", obj=f"«{record.name}»",
+                               field="CRS", value=reference_label(*found), name=record.name,
+                               expected=reference_label(*expected))
+            name = self.name.strip() or _default_name([record])
+            provenance.dataset_slug(name)
+            settings: dict[str, Any] = {"name": name}
+            if not to_tin:
+                if project.window is None:
+                    self.report({"ERROR"}, no_work_window_message())
+                    return {"CANCELLED"}
+                settings["grid"] = jobs.grid_json(project_grid(project.window,
+                                                               project.grid_step_m))
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._record = record
+        self.provenance_op_type = provenance.GRID_TO_TIN if to_tin else provenance.TIN_TO_GRID
+        handle = self.begin(context, settings=settings, executor="job_thread")
+        if handle is None:
+            return {"CANCELLED"}
+        plan = _Tin(handle, jobs.GRID_TO_TIN if to_tin else jobs.TIN_TO_GRID, name, settings)
+        try:
+            job = _start_convert(plan, self.launch_job, record)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            _abort(plan, exc)
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if job is None:
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Converting «{name}» in the background…", name=record.name))
+        return {"FINISHED"}
+
+
+classes: tuple[type, ...] = (GEOBLENDER_OT_gis_import_dtm, GEOBLENDER_OT_gis_resample_to_grid,
+                             GEOBLENDER_OT_gis_import_points, GEOBLENDER_OT_gis_import_vector,
+                             GEOBLENDER_OT_gis_create_tin_from_points,
+                             GEOBLENDER_OT_gis_create_tin_from_contours,
+                             GEOBLENDER_OT_gis_convert_dtm_tin)
+"""Los operadores de ``gis`` (T28: las órdenes de un MDT; T29: puntos, capas, TIN y MDT ⇄
+TIN)."""

@@ -708,7 +708,7 @@ class ProvenanceSessionTest(unittest.TestCase):
 
     def test_gis_jobs_and_parameters_register_and_unregister(self) -> None:
         """RF-006-28, RF-008-01, RF-008-06 (spec 006, T26; plan 006 §5.3.4 y §5.6.1;
-        principio 8): con la extensión habilitada están los diez tipos de trabajo de ``gis``
+        principio 8): con la extensión habilitada están los trece tipos de trabajo de ``gis``
         (``jobs.catalog``, los de ``gis.jobs``) y sus 17 definiciones de parámetros
         (``core.params``); ``bl/ops/gis.py`` los quita y los vuelve a poner, las dos cosas
         idempotentes, y quitarlos deja los dos registros como estaban."""
@@ -724,7 +724,7 @@ class ProvenanceSessionTest(unittest.TestCase):
             return workers, sorted(key for key in params.DEFINITIONS if key.startswith("gis."))
 
         expected = (sorted(gis_jobs.WORKER_NAMES), keys)
-        self.assertEqual((len(expected[0]), len(keys)), (10, 17))
+        self.assertEqual((len(expected[0]), len(keys)), (13, 17))  # 3 tipos de la T29
         self.assertEqual(ours(), expected)
         for name in gis_jobs.WORKER_NAMES:
             self.assertIs(catalog.WORKERS[name], gis_jobs.WORKER_INFOS_BY_NAME[name])

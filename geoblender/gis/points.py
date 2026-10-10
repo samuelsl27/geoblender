@@ -17,7 +17,9 @@ texto, o la de la capa bit a bit.
   entera si una de sus filas no vale: una línea de rotura sin cota no se acepta.
 - :func:`points_from_features` y :func:`breaklines_from_features`: el papel que el usuario
   declara para una capa; una geometría sin Z no se acepta como punto ni como rotura, y una
-  de otro tipo se rechaza con su número de entidad.
+  de otro tipo se rechaza con su número de entidad. :func:`polygons_from_features` (T29),
+  los anillos en planta de un contorno; las curvas de nivel de una capa, en
+  ``gis.contours.contours_from_features``.
 
 Duplicados (RF-006-14; plan A7):
 
@@ -435,6 +437,34 @@ def breaklines_from_features(
                 source_rows=(fid,) * len(part),
             ))
     return breaklines, _report(features, rejected, points=0, lines=len(breaklines))
+
+
+_POLYGON_TYPES = ("POLYGON", "MULTIPOLYGON")
+
+
+def polygons_from_features(
+    features: FeatureSet,
+) -> tuple[list[list[list[np.ndarray]]], TopoReport]:
+    """Los contornos de una capa con ese papel (RF-006-12, RF-006-15; T29): de cada Polygon o
+    MultiPolygon, sus polígonos y, de cada uno, sus anillos (el exterior y sus huecos) en
+    planta, X e Y tal como llegan (float64; la Z, si la hay, no cuenta en un contorno). Una
+    entidad de otro tipo se rechaza con su número (``gis.feature_role_mismatch``)."""
+    rejected: list[Rejection] = []
+    found: list[list[list[np.ndarray]]] = []
+    for index, fid in enumerate(features.fids):
+        geometry = features.geometries[index]
+        if geometry.geometry_type not in _POLYGON_TYPES:
+            code = "gis.feature_role_mismatch"
+            text = render(code, layer=features.layer.name, row=fid,
+                          value=geometry.geometry_type, role="contornos",
+                          expected=" y ".join(_POLYGON_TYPES))
+            rejected.append(Rejection(fid, text, code))
+            continue
+        parts = ([geometry.coords] if geometry.geometry_type == "POLYGON"
+                 else list(geometry.coords))
+        found.append([[np.ascontiguousarray(np.asarray(ring, dtype=np.float64)[:, :2])
+                       for ring in polygon] for polygon in parts])
+    return found, _report(features, rejected, points=0, lines=0)
 
 
 # Duplicados (RF-006-14; plan A7) ----------------------------------------------------------

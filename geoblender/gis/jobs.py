@@ -60,6 +60,27 @@ resultados en ``out/``:
 - ``gis_view_arrays``: ``name``, ``crs``, ``vertical``, ``lod_steps`` y ``count``;
   ``source`` → ``mesh.npz``.
 
+Los que añade la T29 (RF-006-12, RF-006-16, RF-006-17):
+
+- ``gis_import_vector``: ``reader`` (``gis.gpkg_layer@1``), ``name``, ``settings`` (``layer``,
+  ``role`` y, en curvas, ``elevation_field``), ``crs`` (``None``: el de la capa),
+  ``vertical``, ``size`` y, en puntos, ``tol_xy`` y ``tol_z``; ``source_main`` (copiado a
+  ``in/`` con su ``-wal`` o su diario y leído sobre una copia consolidada,
+  ``gis.vector.copy_source``) → según el papel, ``points.npz``, ``lines.npz``,
+  ``contours.npz`` o ``polygons.npz`` (:data:`LAYER_OUTPUTS`), y ``report.json``.
+- ``gis_import_points`` admite además ``tol_xy`` y ``tol_z``: su informe dice los puntos
+  duplicados (RF-006-12).
+- ``gis_tin_contours``: ``name``, ``origin``, ``crs``, ``vertical``, ``densify_m``,
+  ``max_passes``, ``max_flat_pct``, ``tol_xy``, ``tol_z``, ``duplicate_policy`` y ``count``;
+  ``lines`` (las curvas) [, ``points`` (los puntos acotados) y ``regions`` (el contorno)]; la
+  operación de la petición → ``tin.npz`` (``gis.tin_from_contours`` con ``PureTriangulator``:
+  la corrección de triángulos planos triangula varias veces seguidas) y ``report.json``, o
+  ``conflicts.json``.
+- ``gis_convert_surface``: ``direction`` (``grid_to_tin`` o ``tin_to_grid``), ``name``,
+  ``crs``, ``vertical``, ``target`` (la rejilla del proyecto, de un TIN a rejilla) y
+  ``count``; ``source`` (``.tif`` o ``.npz``) → ``tin.npz`` (con la operación de la petición)
+  o ``grid.tif``.
+
 Referencias en JSON: un CRS, ``{"epsg": n}``; una referencia vertical, ``{"epsg": n}``,
 ``{"local": nota}`` o ``{"ellipsoidal": 4937}`` (los de ``gis.store.declared_crs`` y
 ``declared_vertical``); una rejilla, :func:`grid_json`; el GeoOrigin, :func:`origin_json`.
@@ -99,6 +120,7 @@ from ..core.content.encoder import NORMALIZER, ContentDigest
 from ..core.content.readers import MAIN_ROLE, ContentReader, read_steps
 from ..core.errors import GeoblenderError
 from ..core.georef import CrsRef, GeoOrigin, VerticalRef, Window, load_catalog, world_to_local
+from ..core.gpkg.header import side_file
 from ..jobs.catalog import WorkerInfo
 from ..jobs.messages import JobError
 from ..jobs.paths import JobDir
@@ -107,14 +129,30 @@ from ..jobs.worker_api import JobCancelled, JobFailed
 from . import content as gis_content
 from .asc import read_asc
 from .cdt import PureTriangulator
-from .contours import ContourLine, contours_from_raster, contours_from_tin
+from .contours import (
+    ContourLine,
+    contours_from_features,
+    contours_from_raster,
+    contours_from_tin,
+)
 from .crs import ELLIPSOIDAL_ETRS89, Declaration, needs_transform, transformation_for
 from .crs import require_crs_service, transform_summary
 from .geotiff import GeoTiffIO
 from .geotiff.reader import read_geotiff
 from .grid import Grid
 from .mesh import MeshArrays, lod_rasters, surface_mesh_from_raster, surface_mesh_from_tin
-from .points import Breakline, ColumnMapping, DuplicatePolicy, PointSet, points_from_rows
+from .points import (
+    Breakline,
+    ColumnMapping,
+    DuplicatePolicy,
+    PointSet,
+    breaklines_from_features,
+    duplicate_tolerances,
+    find_duplicates,
+    points_from_features,
+    points_from_rows,
+    polygons_from_features,
+)
 from .ports import Cancelled, Progress
 from .raster import Raster
 from .reports import Conflict, ConflictError, ConflictKind
@@ -125,8 +163,20 @@ from .resample import (
     resample_classes_to_grid,
     resample_to_grid,
 )
-from .tin import Tin, TinInput, finish_tin, load_tin, meta_vertical, prepare_tin, save_tin
+from .tin import (
+    Tin,
+    TinInput,
+    finish_tin,
+    load_tin,
+    meta_vertical,
+    prepare_tin,
+    raster_to_tin,
+    save_tin,
+    tin_to_raster,
+)
+from .tin_contours import tin_from_contours
 from .validate import validate_raster, validate_tin
+from .vector import copy_source, read_layer
 from .xyz_grid import read_xyz_grid
 
 __all__ = [
@@ -151,6 +201,7 @@ __all__ = [
     "read_lines",
     "read_mesh",
     "read_points",
+    "read_polygons",
     "read_regions",
     "read_tin_input",
     "reprojects",
@@ -160,6 +211,7 @@ __all__ = [
     "write_lines",
     "write_mesh",
     "write_points",
+    "write_polygons",
     "write_regions",
     "write_tin_input",
 ]
@@ -180,10 +232,18 @@ CONTOURS = "gis_contours"
 VALIDATE = "gis_validate"
 EXPORT = "gis_export"
 VIEW_ARRAYS = "gis_view_arrays"
+IMPORT_VECTOR = "gis_import_vector"
+TIN_CONTOURS = "gis_tin_contours"
+CONVERT_SURFACE = "gis_convert_surface"
 WORKER_NAMES: tuple[str, ...] = (READ_RASTER, RESAMPLE, IMPORT_POINTS, TIN_PREPARE,
                                  TRIANGULATE, TIN_FINISH, CONTOURS, VALIDATE, EXPORT,
-                                 VIEW_ARRAYS)
-"""Los tipos de trabajo de la 006 (y sus módulos de ``workers/``), en el orden del plan."""
+                                 VIEW_ARRAYS, IMPORT_VECTOR, TIN_CONTOURS, CONVERT_SURFACE)
+"""Los tipos de trabajo de la 006 (y sus módulos de ``workers/``), en el orden del plan y,
+después, los de la T29."""
+GRID_TO_TIN = "grid_to_tin"
+TIN_TO_GRID = "tin_to_grid"
+DIRECTIONS: tuple[str, ...] = (GRID_TO_TIN, TIN_TO_GRID)
+"""Lo que hace ``gis_convert_surface``: una rejilla en TIN o un TIN en rejilla."""
 
 PATH_PREFIX = "source_"
 """Las rutas de la fuente en la línea de órdenes: ``source_<papel>`` (``source_main``)."""
@@ -225,6 +285,15 @@ OUT_TIN = JobOutput("tin.npz", "tin")
 OUT_CONTOURS = JobOutput("contours.npz", "contours")
 OUT_EXPORT = JobOutput("export.tif", "export")
 OUT_MESH = JobOutput("mesh.npz", "mesh")
+OUT_POLYGONS = JobOutput("polygons.npz", "boundary")
+LAYER_OUTPUTS: Mapping[str, JobOutput] = MappingProxyType({
+    "points": OUT_POINTS,
+    "breaklines": OUT_LINES,
+    "contours": OUT_CONTOURS,
+    "boundary": OUT_POLYGONS,
+})
+"""El resultado de ``gis_import_vector`` según el papel de la capa (los de
+``gis.provenance.LAYER_ROLES``)."""
 
 COPYING_TEXT = "Copiando la fuente…"
 READING_TEXT = "Leyendo la fuente…"
@@ -248,9 +317,18 @@ TIN_POINT_S = 5e-6
 """Preparar o acabar un TIN por punto (300.000 puntos y 200 roturas en 1,0 s, T16)."""
 PURE_POINT_S = 20e-6
 """``PureTriangulator`` por punto (20.000 puntos en 0,34 s; mallas regulares, ×4; T17)."""
+CONTOUR_PASSES = 5
+"""Triangulaciones de un TIN desde curvas como mucho: las curvas solas, la primera y una por
+pasada de corrección (``gis.tin.flat_max_passes``, 3)."""
 
 _UNLIMITED = sys.maxsize
 """Sin límite de celdas al leer lo que ya es del proyecto (lo comprobó su importación)."""
+SQLITE_SIDES: tuple[str, ...] = ("-wal", "-journal")
+"""Lo que se copia junto a un GeoPackage: su ``-wal`` o su diario (el ``-shm`` no hace
+falta), como el trabajo de hash de la 008."""
+LAYER_DIR = "capa"
+"""La carpeta del trabajo donde se consolida la copia de un GeoPackage para leerla (se borra
+al terminar)."""
 _ELLIPSOIDAL_EPSG = 4937
 _HASH_BLOCK = 1 << 20
 _SURFACE_SUFFIXES = {".tif": "grid", ".tiff": "grid", ".npz": "tin"}
@@ -561,6 +639,33 @@ def read_regions(path: Path | str) -> tuple[list[np.ndarray] | None, list[list[n
     return boundary, holes
 
 
+def write_polygons(path: Path | str,
+                   features: Sequence[Sequence[Sequence[np.ndarray]]]) -> None:
+    """Los contornos de una capa en el npz ``path``: de cada entidad, sus polígonos y, de cada
+    uno, sus anillos (X e Y ABSOLUTOS), con sus ``offsets``."""
+    polygons = [polygon for feature in features for polygon in feature]
+    rings = [np.ascontiguousarray(np.asarray(ring, dtype=np.float64)[:, :2])
+             for polygon in polygons for ring in polygon]
+    _save_npz(Path(path), xy=_xyz_rows(rings, 2), ring_offsets=_offsets([len(r) for r in rings]),
+              polygon_offsets=_offsets([len(polygon) for polygon in polygons]),
+              feature_offsets=_offsets([len(feature) for feature in features]))
+
+
+def read_polygons(path: Path | str) -> list[list[list[np.ndarray]]]:
+    """Los contornos de :func:`write_polygons` (anillos bit a bit)."""
+    data = _load_npz(Path(path), ("xy", "ring_offsets", "polygon_offsets", "feature_offsets"))
+    xy = np.ascontiguousarray(data["xy"], dtype=np.float64).reshape(-1, 2)
+    rings, polygons, features = (data["ring_offsets"], data["polygon_offsets"],
+                                 data["feature_offsets"])
+    found: list[list[list[np.ndarray]]] = []
+    for feature in range(len(features) - 1):
+        found.append([
+            [np.ascontiguousarray(xy[int(rings[r]):int(rings[r + 1])])
+             for r in range(int(polygons[p]), int(polygons[p + 1]))]
+            for p in range(int(features[feature]), int(features[feature + 1]))])
+    return found
+
+
 def write_contours(path: Path | str, lines: Sequence[ContourLine]) -> None:
     """Las curvas de nivel ``lines`` en el npz ``path`` (vértices seguidos y ``offsets``,
     cota, maestra y cerrada)."""
@@ -785,11 +890,13 @@ def _dataset_digest_raster(raster: Raster) -> ContentDigest:
     return gis_content.raster_digest(raster, DATASET_DECLARATIONS)
 
 
-def _copy_sources(ctx: _Context, request: _Request, roles: Sequence[str],
-                  ) -> tuple[dict[str, Path], dict[str, dict[str, Any]]]:
+def _copy_sources(ctx: _Context, request: _Request, roles: Sequence[str], *,
+                  sqlite: bool = False) -> tuple[dict[str, Path], dict[str, dict[str, Any]]]:
     """Las copias verificadas en ``in/`` de los ficheros de la fuente que llegan por
     ``--path`` (``source_<papel>``; todas con el nombre ``source_main`` y su extensión: el
-    ``.prj`` queda junto a su ASC) y sus huellas (sha256, tamaño y fecha)."""
+    ``.prj`` queda junto a su ASC) y sus huellas (sha256, tamaño y fecha). Con ``sqlite`` (un
+    GeoPackage), también el ``-wal`` o el diario de la principal, junto a su copia
+    (``in/source_main.gpkg-wal``; plan §5.6.4, D9), sin que cambie mientras se copian."""
     files: dict[str, Path] = {}
     prints: dict[str, dict[str, Any]] = {}
     for role in roles:
@@ -802,6 +909,12 @@ def _copy_sources(ctx: _Context, request: _Request, roles: Sequence[str],
         before = _stamp(Path(source))
         relative = ctx.job_dir.copy_input(Path(source), path_name(MAIN_ROLE), job=request.job)
         copy = ctx.job_dir.path / relative
+        if sqlite and role == MAIN_ROLE:
+            for suffix in SQLITE_SIDES:
+                side = side_file(Path(source), suffix)
+                if side.is_file():
+                    ctx.check_cancelled()
+                    ctx.job_dir.copy_input(side, path_name(MAIN_ROLE), job=request.job)
         if before is None or _stamp(Path(source)) != before:
             raise JobError("source_changed", job=request.job, path=source)
         files[role] = copy
@@ -960,6 +1073,12 @@ def _points_estimate(params: Mapping[str, Any]) -> float | None:
     if params.get("reader") != gis_content.POINTS_TEXT.id:
         return None
     return _size_estimate(params, gis_content.POINTS_TEXT)
+
+
+def _vector_estimate(params: Mapping[str, Any]) -> float | None:
+    if params.get("reader") != gis_content.GPKG_LAYER.id:
+        return None
+    return _size_estimate(params, gis_content.GPKG_LAYER)
 
 
 def _resample_estimate(params: Mapping[str, Any]) -> float | None:
@@ -1136,6 +1255,7 @@ def run_import_points(ctx: _Context) -> dict[str, Any]:
     points, lines, report = points_from_rows(
         table.columns, table.rows, mapping, settings["decimal"], source=name,
         row_numbers=table.lines, hard=settings.get("line_kind", "hard") == "hard")
+    report = dataclasses.replace(report, duplicates=_duplicates(request, points))
     ctx.progress(0.9, WRITING_TEXT)
     write_points(ctx.output_path(OUT_POINTS.file), points)
     write_lines(ctx.output_path(OUT_LINES.file), lines)
@@ -1148,6 +1268,7 @@ def run_import_points(ctx: _Context) -> dict[str, Any]:
         "points": len(points),
         "lines": len(lines),
         "rejected": len(report.rejected),
+        "duplicates": report.duplicates,
         "outputs": {output.role: {"file": output.relative}
                     for output in (OUT_POINTS, OUT_LINES, OUT_REPORT)},
     }
@@ -1365,6 +1486,225 @@ def run_view_arrays(ctx: _Context) -> dict[str, Any]:
     return summary
 
 
+def _duplicates(request: _Request, points: PointSet) -> int:
+    """Los puntos que coinciden en planta con otro anterior (``gis.points.find_duplicates``
+    con ``tol_xy`` y ``tol_z`` de la petición o, sin ellas, las de ``gis/params.py``): el
+    ``TopoReport.duplicates`` de una importación (RF-006-12)."""
+    try:
+        tol_xy, tol_z = duplicate_tolerances(request.number("tol_xy"), request.number("tol_z"))
+    except GeoblenderError as error:
+        raise request.invalid(str(error)) from None
+    if not len(points):
+        return 0
+    labels = [pid or f"#{row}" for pid, row in zip(points.point_ids, points.source_rows,
+                                                   strict=True)]
+    return find_duplicates(points.xyz, tol_xy=tol_xy, tol_z=tol_z, ids=labels).duplicates
+
+
+def _layer_settings(request: _Request, settings: Mapping[str, Any]) -> tuple[str, str,
+                                                                             str | None]:
+    """La capa, su papel (uno de :data:`LAYER_OUTPUTS`) y el campo de cota (solo en curvas)
+    de una importación de una capa; si no valen, ``request_invalid``."""
+    layer, role = settings.get("layer"), settings.get("role")
+    field = settings.get("elevation_field")
+    if not isinstance(layer, str) or not layer:
+        raise request.invalid(f"falta la capa que se importa («layer»), no {layer!r}")
+    if role not in LAYER_OUTPUTS:
+        raise request.invalid(f"el papel de una capa es uno de {list(LAYER_OUTPUTS)}, no "
+                              f"{role!r}")
+    if field is not None and (not isinstance(field, str) or role != "contours"):
+        raise request.invalid(f"el campo de cota ({field!r}) es de una capa de curvas de nivel")
+    return layer, str(role), field
+
+
+@_job
+def run_import_vector(ctx: _Context) -> dict[str, Any]:
+    """``gis_import_vector``: una capa de un GeoPackage (``gis.gpkg_layer@1``) con el papel
+    que declara la persona (RF-006-12): el GeoPackage, copiado a ``in/`` con su ``-wal`` o su
+    diario y leído sobre una copia consolidada (nunca el de la persona, RF-006-10), da los
+    puntos, las líneas de rotura (duras), las curvas de nivel (con su cota) o el contorno con
+    las coordenadas de la capa bit a bit, el informe (entidades leídas, rechazadas con su
+    número y motivo y, en puntos, duplicados) y el hash de la fuente (RF-006-26). Su CRS, el
+    de la petición o el de la capa; el datum, el de la petición (RF-006-04)."""
+    request = _Request(ctx)
+    reader = _reader(request, (gis_content.GPKG_LAYER,))
+    settings = _settings(request, reader)
+    layer, role, field = _layer_settings(request, settings)
+    name = request.name() or layer
+    declared_crs = request.crs("crs", required=False)
+    declared_vertical = request.vertical("vertical", required=False)
+    ctx.progress(0.0, COPYING_TEXT)
+    files, prints = _copy_sources(ctx, request, (MAIN_ROLE,), sqlite=True)
+    ctx.progress(0.1, READING_TEXT)
+    work = ctx.job_dir.path / LAYER_DIR
+    try:
+        features = read_layer(copy_source(files[MAIN_ROLE], work), layer)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    crs, vertical = Declaration(name, declared_crs or features.layer.declared_crs,
+                                declared_vertical).require()
+    declarations = _declarations(request, reader, crs, vertical, settings)
+    digest = _source_digest(ctx, reader, "vector", files, declarations, settings, 0.3, 0.7)
+    ctx.progress(0.7, READING_TEXT)
+    output = LAYER_OUTPUTS[role]
+    path = ctx.output_path(output.file)
+    extra: dict[str, Any] = {}
+    if role == "points":
+        points, report = points_from_features(features)
+        report = dataclasses.replace(report, duplicates=_duplicates(request, points))
+        write_points(path, points)
+        count = len(points)
+        extra["duplicates"] = report.duplicates
+    elif role == "breaklines":
+        lines, report = breaklines_from_features(features, hard=True)
+        write_lines(path, lines)
+        count = len(lines)
+    elif role == "contours":
+        try:
+            contours, report = contours_from_features(features, elevation_field=field)
+        except ValueError as error:
+            raise request.invalid(str(error)) from None
+        write_contours(path, contours)
+        count = len(contours)
+    else:
+        polygons, report = polygons_from_features(features)
+        write_polygons(path, polygons)
+        count = len(polygons)
+    _write_report(ctx, report)
+    summary = {
+        "source": _source_summary(reader, digest, prints, declarations, settings),
+        "crs": crs_json(crs),
+        "vertical": vertical_json(vertical),
+        "layer": layer,
+        "role": role,
+        "read": report.read,
+        "count": count,
+        "rejected": len(report.rejected),
+        **extra,
+        "outputs": {item.role: {"file": item.relative} for item in (output, OUT_REPORT)},
+    }
+    _finish(ctx, (output, OUT_REPORT))
+    return summary
+
+
+def _tin_meta(request: _Request, ctx: _Context, crs: CrsRef,
+              vertical: VerticalRef) -> dict[str, Any]:
+    """El ``meta`` de un TIN de ``meshes/`` (el EPSG, la referencia vertical y la operación
+    de la petición, que tiene que llegar)."""
+    operation_uid = ctx.request.operation_uid
+    if not isinstance(operation_uid, str) or not operation_uid:
+        raise request.invalid("el TIN necesita la operación que lo crea (operation_uid)")
+    return {"crs_epsg": crs.epsg, "vertical": meta_vertical(vertical),
+            "operation_uid": operation_uid}
+
+
+def _tin_summary(tin: Tin, meta: Mapping[str, Any], **values: Any) -> dict[str, Any]:
+    from ..core.datasets.model import DATASET_DECLARATIONS
+
+    return {
+        **values,
+        "vertices": len(tin.vertices),
+        "triangles": len(tin.faces),
+        "outputs": {
+            OUT_TIN.role: {"file": OUT_TIN.relative, "digest": digest_json(
+                gis_content.tin_digest(tin, meta, DATASET_DECLARATIONS))}},
+    }
+
+
+@_job
+def run_tin_contours(ctx: _Context) -> dict[str, Any]:
+    """``gis_tin_contours``: el TIN de las curvas de nivel de ``in/lines.npz`` con los puntos
+    acotados de ``in/points.npz`` y el contorno de ``in/regions.npz`` (si llegan) y la
+    corrección de triángulos planos (``gis.tin_from_contours``, RF-006-16) con
+    ``PureTriangulator`` (RF-006-13), en ``tin.npz`` con el ``meta`` de la operación de la
+    petición y su hash, e informe; con conflictos (RF-006-14), solo ``conflicts.json``."""
+    request = _Request(ctx)
+    name = request.name()
+    origin = request.parsed("origin", origin_of)
+    crs, vertical = request.crs("crs"), request.vertical("vertical")
+    meta = _tin_meta(request, ctx, crs, vertical)
+    try:
+        policy = DuplicatePolicy(request.text("duplicate_policy", DuplicatePolicy.ASK.value))
+    except ValueError as error:
+        raise request.invalid(str(error)) from None
+    options = {"densify_m": request.number("densify_m"),
+               "max_passes": request.integer("max_passes"),
+               "max_flat_pct": request.number("max_flat_pct"),
+               "tol_xy": request.number("tol_xy"), "tol_z": request.number("tol_z")}
+    entries = ctx.request.inputs
+    if INPUT_LINES not in entries:
+        raise request.invalid("no hay curvas de nivel que triangular («lines»)")
+    lines = read_lines(ctx.input_path(INPUT_LINES))
+    spots = read_points(ctx.input_path(INPUT_POINTS)) if INPUT_POINTS in entries else None
+    boundary = (read_regions(ctx.input_path(INPUT_REGIONS))[0]
+                if INPUT_REGIONS in entries else None)
+    triangulator = PureTriangulator(cancelled=_cancelled(ctx))
+    try:
+        tin, report = tin_from_contours(lines, spot_heights=spots, triangulator=triangulator,
+                                        origin=origin, boundary=boundary,
+                                        duplicate_policy=policy, name=name,
+                                        progress=_span(ctx, 0.0, 0.9),
+                                        cancelled=_cancelled(ctx), **options)
+    except ConflictError as error:
+        _write_conflicts(ctx.output_path(OUT_CONFLICTS.file), error)
+        summary = {"conflicts": len(error.conflicts), "code": error.code, "text": error.text,
+                   "outputs": {OUT_CONFLICTS.role: {"file": OUT_CONFLICTS.relative}}}
+        _finish(ctx, (OUT_CONFLICTS,))
+        return summary
+    ctx.progress(0.9, WRITING_TEXT)
+    save_tin(tin, ctx.output_path(OUT_TIN.file), meta)
+    _write_report(ctx, report)
+    summary = _tin_summary(tin, meta, conflicts=0, triangulator=triangulator.name)
+    summary["outputs"][OUT_REPORT.role] = {"file": OUT_REPORT.relative}
+    _finish(ctx, (OUT_TIN, OUT_REPORT))
+    return summary
+
+
+@_job
+def run_convert_surface(ctx: _Context) -> dict[str, Any]:
+    """``gis_convert_surface`` (RF-006-17): ``grid_to_tin``, la rejilla del proyecto de
+    ``in/source.tif`` en un TIN de los centros de sus celdas con dato
+    (``gis.tin.raster_to_tin``) en ``tin.npz``, con el ``meta`` de la operación de la petición;
+    ``tin_to_grid``, el TIN de ``in/source.npz`` interpolado en los centros de la rejilla
+    ``target`` (``gis.tin.tin_to_raster``; fuera del TIN, sin dato) en ``grid.tif``. Cada uno
+    con el hash de su lector (RF-006-26)."""
+    request = _Request(ctx)
+    direction = request.text("direction", "")
+    if direction not in DIRECTIONS:
+        raise request.invalid(f"«direction» es una de {list(DIRECTIONS)}, no {direction!r}")
+    name = request.name()
+    crs, vertical = request.crs("crs"), request.vertical("vertical")
+    cancelled = _cancelled(ctx)
+    ctx.progress(0.0, READING_TEXT)
+    surface = _surface(ctx, request, low=0.0, high=0.3)
+    if direction == GRID_TO_TIN:
+        if isinstance(surface, Tin):
+            raise request.invalid("de rejilla a TIN, la fuente es una rejilla (.tif)")
+        meta = _tin_meta(request, ctx, crs, vertical)
+        tin = raster_to_tin(surface, name=name, progress=_span(ctx, 0.3, 0.85),
+                            cancelled=cancelled)
+        ctx.progress(0.85, WRITING_TEXT)
+        save_tin(tin, ctx.output_path(OUT_TIN.file), meta)
+        summary = _tin_summary(tin, meta, direction=direction, triangulator=tin.triangulator)
+        _finish(ctx, (OUT_TIN,))
+        return summary
+    if not isinstance(surface, Tin):
+        raise request.invalid("de TIN a rejilla, la fuente es un TIN (.npz)")
+    target = request.parsed("target", grid_of)
+    grid = tin_to_raster(surface, target, crs=crs, vertical=vertical,
+                         progress=_span(ctx, 0.3, 0.85), cancelled=cancelled)
+    ctx.progress(0.85, WRITING_TEXT)
+    GeoTiffIO().write(grid, ctx.output_path(OUT_PROJECT_GRID.file), profile="project",
+                      progress=_span(ctx, 0.85, 0.98), cancelled=cancelled)
+    summary = {"direction": direction, "grid": grid_json(target), "cells": int(grid.values.size),
+               "valid_cells": int(np.count_nonzero(np.isfinite(grid.values))),
+               "outputs": {OUT_PROJECT_GRID.role: {
+                   "file": OUT_PROJECT_GRID.relative,
+                   "digest": digest_json(_dataset_digest_raster(grid))}}}
+    _finish(ctx, (OUT_PROJECT_GRID,))
+    return summary
+
+
 # --- Los tipos de trabajo ------------------------------------------------------------------
 
 _LABELS: Mapping[str, str] = MappingProxyType({
@@ -1378,6 +1718,9 @@ _LABELS: Mapping[str, str] = MappingProxyType({
     VALIDATE: "Validate a surface",
     EXPORT: "Write a deliverable GeoTIFF",
     VIEW_ARRAYS: "View meshes of a surface",
+    IMPORT_VECTOR: "Read a vector layer",
+    TIN_CONTOURS: "TIN from contour lines",
+    CONVERT_SURFACE: "Convert a surface",
 })
 """El nombre visible (``msgid``) de cada tipo; su español, en ``core/i18n/messages.toml``."""
 
@@ -1400,6 +1743,13 @@ WORKER_INFOS: tuple[WorkerInfo, ...] = (
     WorkerInfo(EXPORT, _LABELS[EXPORT], estimate_s=_count_estimate(2 * CELL_S), run=run_export),
     WorkerInfo(VIEW_ARRAYS, _LABELS[VIEW_ARRAYS], estimate_s=_count_estimate(CELL_S + MESH_CELL_S),
                run=run_view_arrays),
+    WorkerInfo(IMPORT_VECTOR, _LABELS[IMPORT_VECTOR], estimate_s=_vector_estimate,
+               run=run_import_vector),
+    WorkerInfo(TIN_CONTOURS, _LABELS[TIN_CONTOURS],
+               estimate_s=_count_estimate(CONTOUR_PASSES * PURE_POINT_S + TIN_POINT_S),
+               run=run_tin_contours),
+    WorkerInfo(CONVERT_SURFACE, _LABELS[CONVERT_SURFACE],
+               estimate_s=_count_estimate(CELL_S + MESH_CELL_S), run=run_convert_surface),
 )
 """Los tipos de trabajo de la 006 (plan §5.3.4), para ``jobs.catalog.register_worker`` desde
 ``bl/ops/gis.py``: entorno ``blender``; automáticos salvo ``gis_triangulate`` (proceso

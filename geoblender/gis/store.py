@@ -79,7 +79,9 @@ lectura): es ``gis.raster_target_locked`` o ``gis.raster_write_failed``.
 
 Para leer lo guardado: :func:`list_gis_datasets` (desde ``gb_dataset``), :func:`load_raster`,
 :func:`load_tin` y, de una tabla de puntos, líneas de rotura o curvas, :func:`load_features`
-(T27, para la vista: sus geometrías absolutas tal como están guardadas y sus atributos). Las
+(T27, para la vista: sus geometrías absolutas tal como están guardadas y sus atributos); para
+un TIN (T29), :func:`load_points`, :func:`load_lines` y :func:`load_regions` (el contorno y
+los huecos de una tabla ``gis_bnd_``). Las
 referencias de un dato (:func:`dataset_references`: lo importado, las que declaró su entrada;
 lo calculado, las del proyecto) y su comprobación antes de mostrarlo en la vista, que no
 transforma coordenadas (:func:`require_project_references`, ``gis.view_references_mismatch``;
@@ -206,7 +208,10 @@ __all__ = [
     "declared_vertical",
     "list_gis_datasets",
     "load_features",
+    "load_lines",
+    "load_points",
     "load_raster",
+    "load_regions",
     "load_tin",
     "project_references",
     "require_project_references",
@@ -1555,6 +1560,73 @@ def load_features(project: StoreProject, ref: DatasetRecord | str) -> StoredFeat
     attributes = {name: tuple(row[index + 1] for row in rows)
                   for index, name in enumerate(names)}
     return StoredFeatures(record.name, tuple(geometries), MappingProxyType(attributes))
+
+
+# --- Para un TIN (T29) ---------------------------------------------------------------------------
+
+
+def load_points(project: StoreProject, ref: DatasetRecord | str) -> PointSet:
+    """Los puntos guardados del dato ``ref`` (``gis_pts_``), como los usa un TIN
+    (RF-006-13): sus coordenadas absolutas en float64 tal como están guardadas, su
+    identificador, su código y su fila (o entidad) de origen, en el orden de sus ``fid``. Los
+    mismos errores que :func:`load_features`; ``ValueError`` si es de otra familia."""
+    record = _resolve(project, ref, (POINTS,))
+    stored = load_features(project, record)
+    xyz = (np.ascontiguousarray(np.concatenate(stored.geometries), dtype=np.float64)
+           if stored.geometries else np.empty((0, 3), dtype=np.float64))
+    attributes = stored.attributes
+    return PointSet(xyz, tuple(str(value or "") for value in attributes["point_id"]),
+                    tuple(str(value or "") for value in attributes["code"]),
+                    tuple(int(value or 0) for value in attributes["source_row"]))
+
+
+def load_lines(project: StoreProject, ref: DatasetRecord | str) -> list[Breakline]:
+    """Las líneas guardadas del dato ``ref`` como restricciones de un TIN (RF-006-13,
+    RF-006-16): las líneas de rotura (``gis_brk_``) con su identificador, si son duras y su
+    código; las curvas de nivel (``gis_cnt_``), duras, con su cota como identificador (la
+    cerrada, con su primer vértice repetido al final, como está guardada). Vértices bit a
+    bit. Los mismos errores que :func:`load_features`."""
+    record = _resolve(project, ref, (BREAKLINES, CONTOUR_LINES))
+    stored = load_features(project, record)
+    if _family_of(record, (BREAKLINES, CONTOUR_LINES)) == BREAKLINES:
+        attributes = stored.attributes
+        return [Breakline(str(line_id or index + 1), np.ascontiguousarray(xyz),
+                          hard=bool(hard), code=str(code or ""))
+                for index, (xyz, line_id, hard, code) in enumerate(zip(
+                    stored.geometries, attributes["line_id"], attributes["hard"],
+                    attributes["code"], strict=True))]
+    return [Breakline(f"{float(elevation):g} m #{index + 1}", np.ascontiguousarray(xyz))
+            for index, (xyz, elevation) in enumerate(zip(
+                stored.geometries, stored.attributes["elevation"], strict=True))]
+
+
+def load_regions(project: StoreProject, ref: DatasetRecord | str,
+                 ) -> tuple[list[list[np.ndarray]], list[list[list[np.ndarray]]]]:
+    """El contorno y los huecos guardados del dato ``ref`` (``gis_bnd_``) para un TIN
+    (RF-006-15): los polígonos de las entidades de papel «boundary» (cada uno, sus anillos en
+    planta, X e Y tal como están guardados) y, de cada entidad de papel «hole», los suyos (una
+    región por hueco). Los mismos errores que :func:`load_features`."""
+    record = _resolve(project, ref, (BOUNDARY,))
+    with project.read() as conn:
+        if not _table_exists(conn, record.locator):
+            raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
+                           field=_FIELD_LOCATION, value=record.locator, file=record.locator,
+                           name=record.name)
+        rows = conn.execute(f'SELECT "{_GEOMETRY_COLUMN}", role FROM "{record.locator}" '
+                            "ORDER BY fid").fetchall()
+    polygons: list[list[np.ndarray]] = []
+    holes: list[list[list[np.ndarray]]] = []
+    for blob, role in rows:
+        geometry = decode_geometry(blob)
+        parts = ([geometry.coords] if geometry.geometry_type == "POLYGON"
+                 else list(geometry.coords))
+        found = [[np.ascontiguousarray(np.asarray(ring, dtype=np.float64)[:, :2])
+                  for ring in polygon] for polygon in parts]
+        if role == BOUNDARY_ROLES[1]:
+            holes.append(found)
+        else:
+            polygons.extend(found)
+    return polygons, holes
 
 
 def dataset_references(project: StoreProject,
