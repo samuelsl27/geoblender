@@ -53,6 +53,19 @@ llaman la orden que abre el panel, Cambiar y Confirmar al escribir, y los filtro
 selección al cambiar. Las filas viven en ``WindowManager.geoblender_provenance`` (D16), como
 texto ya presentado: ningún valor pasa por una propiedad flotante.
 
+**Registro de entradas** (:class:`GEOBLENDER_PT_core_inputs`, ventana emergente que abre
+``geoblender.core_show_inputs``; RF-008-16, RF-008-13; T51): la cabecera de las columnas y la
+lista (:class:`GEOBLENDER_UL_core_inputs`) con el nombre, el estado, el tipo, la fecha de
+entrega, quién la entrega, los CRS horizontal y vertical declarados, el hash de contenido
+abreviado (12 caracteres) y si guarda su original; de la seleccionada, Actualizar y Mantener la
+copia (si está cambiada), Descartar… y Editar… (T52); y Comprobar cambios en las entradas
+(``geoblender.core_check_inputs``); en solo lectura, desactivadas y con el motivo.
+:func:`fill_inputs` lee las filas (``core.inputs.list_inputs``) con el estado registrado; el
+que no se guarda (plan D7) lo dice la sesión al dibujar (:func:`input_status`):
+«comprobando» mientras una comprobación tiene pendiente la entrada y «no localizable» si la
+última no encontró su fuente. Con el registro abierto, el temporizador de los indicadores
+vuelve a leer sus filas cuando cambia el proyecto.
+
 :func:`install` registra los campos, el número del control 7 y la escucha del proyecto de la
 sesión; :func:`uninstall` lo quita todo, con los temporizadores.
 """
@@ -70,9 +83,11 @@ import bpy
 from ...core.errors import GeoblenderError
 from ...core.gpkg.header import read_header
 from ...core.i18n import language, tr
+from ...core.inputs import ACTIVE_STATUSES, InputStatus, OriginalState, crs_text, list_inputs
 from ...core.params import HistoryAction, ParameterFilter, ParameterStore, ParamKind, ParamMark
 from ...core.params.store import shown_value
 from ...core.provenance import contract
+from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
 from .. import compat
 from ..props.provenance import FILTER_ALL, WINDOW_MANAGER_PROPERTY
@@ -129,6 +144,21 @@ HISTORY_ROWS = 5
 # Ancho (unidades) de cada columna de la lista de parámetros y del historial.
 PARAMETER_COLUMNS = (9.0, 5.5, 2.5, 5.0, 10.0, 7.0, 4.0)
 HISTORY_COLUMNS = (1.5, 3.5, 4.5, 2.5, 3.5, 5.0, 3.5, 8.0, 6.0, 5.5)
+
+INPUTS_PANEL = "GEOBLENDER_PT_core_inputs"
+INPUTS_LIST = "GEOBLENDER_UL_core_inputs"
+CHECK_INPUTS = "geoblender.core_check_inputs"
+RESOLVE_INPUT = "geoblender.core_resolve_input"
+DISCARD_INPUT = "geoblender.core_discard_input"
+EDIT_INPUT = "geoblender.core_edit_input"
+INPUTS_PANEL_UNITS = 56
+INPUT_ROWS = 8  # filas visibles del registro de entradas (después, se desplaza)
+HASH_CHARS = 12  # el hash de contenido abreviado (plan §5.5)
+# Ancho (unidades) de cada columna del registro de entradas: nombre, estado, tipo, entrega,
+# quién la entrega, CRS horizontal, CRS vertical, hash de contenido y original.
+INPUT_COLUMNS = (8.0, 10.0, 4.0, 4.5, 6.0, 5.5, 5.0, 5.5, 4.0)
+_ACTIVE_INPUTS = frozenset(str(status) for status in ACTIVE_STATUSES)
+NOT_SHOWN = "—"  # una celda sin valor (sin entrega, sin original)
 
 _clock: Callable[[], float] = time.monotonic
 
@@ -201,6 +231,7 @@ def refresh(*, force: bool = False) -> bool:
         return changed
     _STATE.signature = signature
     _fill_rows(report.items)
+    _refill_inputs()
     if report.counts != _STATE.counts:
         _STATE.counts = report.counts
         changed = True
@@ -269,6 +300,7 @@ def on_project_changed(project: Project | None) -> None:
     abrir: RNF-002-02)."""
     had = _forget()
     _clear_parameters()
+    _clear_inputs()
     _retire(indicator_tick)
     if project is not None:
         bpy.app.timers.register(indicator_tick, first_interval=INDICATOR_TICK_S,
@@ -833,11 +865,239 @@ class GEOBLENDER_PT_core_parameters(bpy.types.Panel):
         draw_parameters(self.layout, context)
 
 
+# Registro de entradas (T51) ---------------------------------------------------------------------
+
+
+def _delivery_date(day: str | None) -> str:
+    """La fecha de entrega guardada («2026-09-24») como la lee una persona («24/09/2026»);
+    "" sin fecha."""
+    if not day:
+        return ""
+    year, month, rest = day.split("-", 2)
+    return f"{rest}/{month}/{year}"
+
+
+def fill_inputs() -> int:
+    """Regenera las filas del registro de entradas desde el proyecto de la sesión (RF-008-16;
+    ``core.inputs.list_inputs``): todas las entradas, también las sustituidas y las
+    descartadas, con su estado registrado, su tipo, su entrega, sus CRS declarados (como se
+    leen en el idioma de Geoblender), su hash de contenido abreviado y su original; conserva
+    la seleccionada si sigue. Sin proyecto con la procedencia, la lista queda vacía. Devuelve
+    cuántas filas hay. Si no se puede leer el proyecto, el error sigue y las filas quedan como
+    estaban."""
+    view = _view()
+    if view is None:
+        return 0
+    project = _project()
+    found: list[Any] = []
+    if project is not None:
+        with project.read() as conn:
+            found = list_inputs(conn)
+    rows = view.inputs
+    index = view.input_index
+    chosen = rows[index].uid if 0 <= index < len(rows) else None
+    shown = language()
+    rows.clear()
+    for record in found:
+        row = rows.add()
+        row.uid = record.uid
+        row.name = record.name
+        row.status = str(record.status)
+        row.kind = record.kind
+        row.module = record.module
+        row.received_at = _delivery_date(record.received_at)
+        row.received_from = record.received_from or ""
+        row.crs_h = crs_text(record.crs_h, shown)
+        row.crs_v = crs_text(record.crs_v, shown)
+        row.content_hash = record.content_sha256[:HASH_CHARS]
+        row.original = str(record.original)
+    uids = [record.uid for record in found]
+    view.input_index = uids.index(chosen) if chosen in uids else 0
+    return len(found)
+
+
+def _refill_inputs() -> None:
+    """Con el registro de entradas abierto (con filas), las vuelve a leer: el proyecto cambió
+    (una comprobación, una decisión) o el idioma. Si no se puede leer, queda en el registro
+    técnico y se intenta en la próxima."""
+    view = _view()
+    if view is None or not len(view.inputs):
+        return
+    try:
+        fill_inputs()
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.debug("No se pudo leer el registro de entradas; se intenta después",
+                     exc_info=True)
+
+
+def _clear_inputs() -> None:
+    """Vacía el registro de entradas (otro proyecto, ninguno)."""
+    view = _view()
+    if view is not None and len(view.inputs):
+        view.inputs.clear()
+        view.input_index = 0
+
+
+def input_status(row: Any) -> str:
+    """El estado que se ve de una fila del registro: de una entrada activa, lo que la sesión
+    sabe ahora y no se guarda («checking» mientras una comprobación la tiene pendiente,
+    «unreachable» si no se encontró su fuente; plan D7); si no, el registrado."""
+    if row.status in _ACTIVE_INPUTS:
+        state = _session().input_state(row.uid)
+        if state is not None:
+            return state
+    return str(row.status)
+
+
+def status_text(status: str) -> str:
+    """Un estado de una entrada como se lee: «vigente», «comprobando», «cambiada», «cambiada ·
+    se mantiene la copia», «no localizable», «sustituida» o «descartada · registro, no usar»
+    (RF-008-16, RF-008-55), en el idioma de Geoblender."""
+    return render(f"core.input_status_{status}", language=language())
+
+
+def kind_text(kind: str) -> str:
+    """El tipo de una entrada (``core.inputs.INPUT_KINDS``) como se lee."""
+    match kind:
+        case "raster":
+            return tr("raster")
+        case "vector":
+            return tr("vector")
+        case "table":
+            return tr("table")
+        case "drillholes":
+            return tr("drillholes")
+        case "mesh":
+            return tr("mesh")
+        case "point_cloud":
+            return tr("point cloud")
+        case "document":
+            return tr("document")
+        case "other":
+            return tr("other")
+    return kind
+
+
+def original_text(original: str) -> str:
+    """Si la entrada guarda su original (RF-008-53): «guardado», «no guardado» (pasa del
+    límite) o «—» (no se guarda: un ráster, una nube, una capa)."""
+    if original == OriginalState.STORED:
+        return tr("stored")
+    if original == OriginalState.TOO_LARGE:
+        return tr("not stored")
+    return NOT_SHOWN
+
+
+def draw_input_row(layout: Any, row: Any) -> None:
+    """Una fila del registro de entradas (RF-008-16): nombre, estado («cambiada» en alerta),
+    tipo, fecha de entrega, quién la entrega, CRS horizontal y vertical declarados, hash de
+    contenido abreviado y original."""
+    line = layout.row(align=True)
+    name, status, kind, received_at, received_from, crs_h, crs_v, digest, original = \
+        INPUT_COLUMNS
+    shown = input_status(row)
+    _cell(line, row.name, name)
+    _cell(line, status_text(shown), status, alert=shown == InputStatus.CHANGED)
+    _cell(line, kind_text(row.kind), kind)
+    _cell(line, row.received_at or NOT_SHOWN, received_at)
+    _cell(line, row.received_from or NOT_SHOWN, received_from)
+    _cell(line, row.crs_h, crs_h)
+    _cell(line, row.crs_v, crs_v)
+    _cell(line, row.content_hash, digest)
+    _cell(line, original_text(row.original), original)
+
+
+def _selected_input(view: Any) -> Any | None:
+    rows = view.inputs
+    index = view.input_index
+    return rows[index] if 0 <= index < len(rows) else None
+
+
+def _draw_input_buttons(layout: Any, row: Any, writable: bool) -> None:
+    """Las órdenes de la entrada seleccionada (plan §5.5): Actualizar y Mantener la copia de
+    una cambiada (no Actualizar si no se encuentra su fuente, RF-008-13), Descartar… de una
+    activa y Editar…; las que aún no tienen su clase real (T52), desactivadas."""
+    from ..ops.core_provenance import UNREACHABLE  # al usarlo: bl/ops importa bl/ui
+
+    buttons = layout.row(align=True)
+    changed = row.status == InputStatus.CHANGED
+    found = input_status(row) != UNREACHABLE
+    shown = language()
+    commands = catalog().commands
+    _operator(buttons, RESOLVE_INPUT, render("core.choice_update", language=shown),
+              enabled=writable and changed and found, input_uid=row.uid, decision="UPDATE")
+    _operator(buttons, RESOLVE_INPUT, render("core.choice_keep", language=shown),
+              enabled=writable and changed, input_uid=row.uid, decision="KEEP")
+    _operator(buttons, DISCARD_INPUT, text(commands[DISCARD_INPUT].label),
+              enabled=writable and row.status in _ACTIVE_INPUTS, input_uid=row.uid)
+    _operator(buttons, EDIT_INPUT, text(commands[EDIT_INPUT].label), enabled=writable,
+              input_uid=row.uid)
+
+
+def draw_inputs(layout: Any, context: Any) -> None:
+    """El contenido de :class:`GEOBLENDER_PT_core_inputs` (RF-008-16, RF-008-13, RF-008-09):
+    la cabecera de las columnas, la lista, las órdenes de la seleccionada y Comprobar cambios en
+    las entradas; en solo lectura, desactivadas y con el motivo."""
+    layout.label(text=tr("Input register"), translate=False)
+    reason = _session().unavailable()
+    if reason is not None:
+        layout.label(text=reason, icon="INFO", translate=False)
+        return
+    view = getattr(getattr(context, "window_manager", None), WINDOW_MANAGER_PROPERTY, None)
+    if view is None:
+        return
+    header = layout.row(align=True)
+    titles = (tr("Name"), tr("Status"), tr("Type"), tr("Delivered on"), tr("Delivered by"),
+              tr("Horizontal CRS"), tr("Vertical CRS"), tr("Content hash"), tr("Original"))
+    for title, units in zip(titles, INPUT_COLUMNS, strict=True):
+        _cell(header, title, units)
+    layout.template_list(INPUTS_LIST, "", view, "inputs", view, "input_index",
+                         rows=INPUT_ROWS)
+    blocked = _write_unavailable()
+    row = _selected_input(view)
+    if row is None:
+        layout.label(text=tr("No inputs"), translate=False)
+    else:
+        _draw_input_buttons(layout, row, blocked is None)
+    layout.separator(type="LINE")
+    _operator(layout, CHECK_INPUTS, text(catalog().commands[CHECK_INPUTS].label),
+              enabled=blocked is None)
+    if blocked is not None:
+        layout.label(text=blocked, icon="LOCKED", translate=False)
+
+
+class GEOBLENDER_UL_core_inputs(bpy.types.UIList):
+    """The registered inputs"""
+
+    bl_idname = INPUTS_LIST
+
+    def draw_item(self, _context: Any, layout: Any, _data: Any, item: Any, _icon: int,
+                  _active_data: Any, _active_property: str, _index: int = 0,
+                  _flt_flag: int = 0) -> None:
+        draw_input_row(layout, item)
+
+
+class GEOBLENDER_PT_core_inputs(bpy.types.Panel):
+    """Registered inputs with their content hash"""
+
+    bl_idname = INPUTS_PANEL
+    bl_label = "Input register"
+    bl_translation_context = "Geoblender"
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = INPUTS_PANEL_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_inputs(self.layout, context)
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_PT_core_stale,
     GEOBLENDER_UL_core_parameters,
     GEOBLENDER_UL_core_parameter_history,
     GEOBLENDER_PT_core_parameters,
+    GEOBLENDER_UL_core_inputs,
+    GEOBLENDER_PT_core_inputs,
 )
 
 
@@ -871,6 +1131,7 @@ def uninstall() -> None:
     _retire(expire_undo_notice)
     _forget()
     _clear_parameters()
+    _clear_inputs()
     _STATE.texts.clear()
     _STATE.properties.clear()
     _STATE.undo_text = ""

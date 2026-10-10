@@ -53,6 +53,19 @@ que lanza el autodiagnóstico de la 004:
 - RF-008-15: exportar a una carpeta de solo lectura (``read_only_dirs()`` con
   ``check_write_target``) se rechaza sin escribir nada, y crear un proyecto dentro, también.
 
+T51 (Registro de entradas y Comprobar cambios en las entradas):
+
+- RF-008-16, RF-008-13: ``geoblender.core_show_inputs`` abre ``GEOBLENDER_PT_core_inputs``,
+  cuya lista (``GEOBLENDER_UL_core_inputs``) dice de cada entrada su estado —también
+  «comprobando» mientras la comprobación la tiene pendiente y «no localizable» si no se
+  encontró su fuente—, su tipo, su entrega, sus CRS declarados, su hash de contenido abreviado
+  y si guarda su original; en solo lectura se consulta, y lo demás está desactivado con el
+  motivo.
+- RF-008-09, RF-008-21: ``geoblender.core_check_inputs`` hashea en segundo plano (con el
+  temporizador de la sesión, tras la comprobación en marcha) todas las entradas y los datos
+  del proyecto: encuentra cambiada una fuente con otro contenido y el mismo tamaño y fecha, y
+  lo dice.
+
 Se ejecuta con ``tools/run_blender_tests.py``. Las carpetas son de unidades simuladas: nunca
 se abren. En ``blender -b`` los temporizadores no corren: las pruebas avanzan el monitor
 llamando a su función.
@@ -68,7 +81,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 import bpy
@@ -77,7 +90,7 @@ from bpy.props import BoolProperty, StringProperty
 from tests.support import blender_ext
 from tests.support.blender_ext import fingerprint_diff, module_name
 from tests.support.core_fixtures import mark_schema, settings_values
-from tests.support.fake_layout import draw
+from tests.support.fake_layout import FakeLayout, draw
 from tests.support.repo import ROOT
 
 VARIABLE = "GEOBLENDER_READ_ONLY_DIRS"
@@ -113,6 +126,17 @@ SELFTEST_PARAMS = {"op": "chunked_sum", "n": 1000, "chunks": 1, "sleep_s": 0.0} 
 PENDING_TEXT = "pendiente de incorporar"
 DATA = ROOT / "tests" / "data" / "core" / "provenance"
 LAYER = "limites"
+INPUTS_PANEL = "GEOBLENDER_PT_core_inputs"
+INPUTS_LIST = "GEOBLENDER_UL_core_inputs"
+CHECK_INPUTS = "geoblender.core_check_inputs"
+RESOLVE_INPUT = "geoblender.core_resolve_input"
+DISCARD_INPUT = "geoblender.core_discard_input"
+EDIT_INPUT = "geoblender.core_edit_input"
+INPUT_BUTTONS = {(RESOLVE_INPUT, "Actualizar"), (RESOLVE_INPUT, "Mantener la copia"),
+                 (DISCARD_INPUT, "Descartar entrada…"), (EDIT_INPUT, "Editar entrada…")}
+HEADER = ["Nombre", "Estado", "Tipo", "Entrega", "Entregada por", "CRS horizontal",
+          "CRS vertical", "Hash de contenido", "Original"]
+READ_ONLY = "Proyecto en solo lectura:"  # y el motivo del proyecto
 
 
 def _module(name: str) -> ModuleType:
@@ -833,6 +857,146 @@ class ProvenanceSessionTest(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT status FROM gb_input WHERE uid = ?",
                                           (imported.input.uid,)).fetchone()[0], "changed")
         self.assertEqual(self.session.pending_ingests(), {})
+
+    # Registro de entradas y Comprobar (T51) -----------------------------------------------
+
+    def two_inputs(self) -> tuple[object, Path, Path, object, object]:
+        """Un proyecto nuevo (aún fuera de la sesión) con dos entradas importadas de
+        ``fuentes/``: «Limites» (``Limites_v1``, entregada por la propiedad) y «Vecino»
+        (``Limites_v2``). Devuelve el proyecto, las dos fuentes y las dos entradas."""
+        sources = self.tmp / "fuentes"
+        sources.mkdir()
+        first, second = sources / "Limites.gpkg", sources / "Vecino.gpkg"
+        shutil.copyfile(DATA / "Limites_v1.gpkg", first)
+        shutil.copyfile(DATA / "Limites_v2.gpkg", second)
+        project = self.create()
+        importer = _module("core.provenance.importer")
+        limits = importer.import_layer(project, LAYER, source=first, received_at="2026-09-24",
+                                       received_from="La propiedad").input
+        neighbour = importer.import_layer(project, LAYER, source=second).input
+        return project, first, second, limits, neighbour
+
+    def show_inputs(self) -> object:
+        """Proyecto ▸ Control ▸ Registro de entradas (``wm.call_panel`` sustituido): la vista
+        de ``WindowManager`` con sus filas."""
+        window = bpy.context.window_manager.windows[0]
+        with mock.patch.object(self.session, "_call_panel", return_value={"FINISHED"}) as call:
+            with bpy.context.temp_override(window=window):
+                self.assertEqual(bpy.ops.geoblender.core_show_inputs(), {"FINISHED"})
+        call.assert_called_once_with(INPUTS_PANEL)
+        return bpy.context.window_manager.geoblender_provenance
+
+    @staticmethod
+    def input_rows(view: object) -> list[list[str]]:
+        """Lo que dibuja la lista de entradas, fila a fila (los textos de cada una)."""
+        found = []
+        for index, row in enumerate(view.inputs):
+            layout = FakeLayout()
+            bpy.types.GEOBLENDER_UL_core_inputs.draw_item(
+                SimpleNamespace(), bpy.context, layout, view, row, 0, view, "input_index", index)
+            found.append(layout.texts())
+        return found
+
+    def test_input_register_lists_each_input_with_its_state(self) -> None:
+        """RF-008-16, RF-008-13 (plan §5.5): sin proyecto, ni el registro ni Comprobar están
+        disponibles. Con uno abierto, el registro de entradas lista cada entrada con su
+        estado («comprobando» mientras la comprobación de apertura no la ha mirado; después,
+        «vigente», o «no localizable» si no se encuentra su fuente), su tipo, su entrega, sus
+        CRS horizontal y vertical, su hash de contenido abreviado (12 caracteres) y su
+        original; el panel tiene la cabecera de las columnas, la lista, Actualizar, Mantener la
+        copia, Descartar… y Editar… del seleccionado (hasta T52, desactivados) y Comprobar. En
+        solo lectura el registro se consulta, pero Comprobar está desactivado con el motivo."""
+        self.assertFalse(bpy.ops.geoblender.core_show_inputs.poll())
+        self.assertFalse(bpy.ops.geoblender.core_check_inputs.poll())
+        project, _first, second, limits, neighbour = self.two_inputs()
+        second.unlink()  # «Vecino»: su fuente ya no está
+        with project.write_transaction() as conn:  # como si guardase su original
+            conn.execute("UPDATE gb_input SET original = 'stored' WHERE uid = ?", (limits.uid,))
+        self.ps.attach(project)
+        view = self.show_inputs()
+        self.assertEqual([(row.uid, row.name, row.status) for row in view.inputs],
+                         [(limits.uid, "Limites", "current"),
+                          (neighbour.uid, "Vecino", "current")])
+        self.assertEqual([texts[1] for texts in self.input_rows(view)],
+                         ["comprobando", "comprobando"])
+        self.run_checks()
+        self.assertEqual(self.input_rows(view), [
+            ["Limites", "vigente", "vectorial", "24/09/2026", "La propiedad", "EPSG:25830",
+             "no aplica", limits.content_sha256[:12], "guardado"],
+            ["Vecino", "no localizable", "vectorial", "—", "—", "EPSG:25830", "no aplica",
+             neighbour.content_sha256[:12], "—"],
+        ])
+        panel = draw(bpy.types.GEOBLENDER_PT_core_inputs, bpy.context)
+        self.assertEqual([item.target for item in panel.of_kind("template_list")],
+                         [INPUTS_LIST])
+        texts = panel.texts()
+        start = texts.index(HEADER[0])
+        self.assertEqual(texts[start:start + len(HEADER)], HEADER)
+        buttons = {(item.target, item.text): item for item in panel.of_kind("operator")}
+        self.assertLessEqual(INPUT_BUTTONS, set(buttons))
+        self.assertFalse(any(buttons[key].enabled for key in INPUT_BUTTONS))  # T52
+        check = buttons[(CHECK_INPUTS, "Comprobar cambios en las entradas")]
+        self.assertTrue(check.enabled)
+
+        project.set_read_only(self.core.ReadOnlyCode.REQUESTED, "prueba")
+        self.assertTrue(bpy.ops.geoblender.core_show_inputs.poll())
+        self.assertFalse(bpy.ops.geoblender.core_check_inputs.poll())
+        self.assertEqual(len(self.show_inputs().inputs), 2)
+        panel = draw(bpy.types.GEOBLENDER_PT_core_inputs, bpy.context)
+        self.assertFalse([item for item in panel.of_kind("operator") if item.enabled])
+        reasons = [text for text in panel.texts() if text.startswith(READ_ONLY)]
+        self.assertEqual(len(reasons), 1, panel.texts())
+        self.assertIn("prueba", reasons[0])
+        self.assertFalse(self.monitor.check_inputs())
+
+    def test_check_inputs_hashes_everything_in_the_background(self) -> None:
+        """RF-008-09, RF-008-21 (plan §5.3.2 y §5.4.2): Comprobar cambios en las entradas,
+        lanzado con la comprobación de apertura en marcha, queda para después de ella y no
+        hace nada al llamarla; todas las entradas activas están «comprobando». Los tics del
+        temporizador la hacen por pasos (``full_check_steps`` con lo pendiente de la puerta,
+        los trabajos de hash de la sesión y pasos de 20 ms): el hash de «Limites», con otro
+        contenido y el mismo tamaño y fecha (el prefiltro de la apertura no lo ve), la deja
+        cambiada, y lo dicen sus avisos y el resumen de lo comprobado; «Vecino» sigue
+        vigente, con su comprobación anotada. El registro la enseña «cambiada»."""
+        project, first, _second, limits, neighbour = self.two_inputs()
+        seen = first.stat()
+        shutil.copyfile(DATA / "Limites_v2.gpkg", first)
+        os.utime(first, ns=(seen.st_atime_ns, seen.st_mtime_ns))
+        self.assertEqual(first.stat().st_size, seen.st_size)
+        monitor = self.monitor
+        self.ps.attach(project)
+        self.ps.take_notices()
+        with mock.patch.object(self.checks, "full_check_steps",
+                               wraps=self.checks.full_check_steps) as started:
+            self.assertEqual(bpy.ops.geoblender.core_check_inputs(), {"FINISHED"})
+            self.assertEqual(bpy.ops.geoblender.core_check_inputs(), {"FINISHED"})  # una vez
+            started.assert_not_called()
+            self.assertEqual([monitor.input_state(uid) for uid in (limits.uid, neighbour.uid)],
+                             ["checking", "checking"])
+            self.assertEqual(monitor.status_text(), "Comprobando el proyecto… 0 %")
+            shown = self.run_checks()
+        started.assert_called_once()
+        self.assertIs(started.call_args.args[0], project)
+        kwargs = started.call_args.kwargs
+        self.assertIs(kwargs["pending"], monitor.pending)
+        self.assertIs(kwargs["jobs"], monitor.hash_jobs)
+        self.assertEqual(kwargs["budget_s"], 0.02)
+        self.assertEqual(shown[-1].phase, "registro")
+        self.assertIsNone(monitor.input_state(limits.uid))
+        self.assertFalse(bpy.app.timers.is_registered(self.session.check_tick))
+        with project.read() as conn:
+            found = dict(conn.execute("SELECT name, status FROM gb_input"))
+            checked = conn.execute("SELECT checked_at FROM gb_input_file WHERE input_uid = ?",
+                                   (neighbour.uid,)).fetchone()[0]
+        self.assertEqual(found, {"Limites": "changed", "Vecino": "current"})
+        self.assertIsNotNone(checked)
+        notices = self.ps.take_notices()
+        self.assertTrue(any(text.startswith("La entrada «Limites» ha cambiado")
+                            for text in notices), notices)
+        self.assertEqual(notices[-1], "Comprobación terminada: 2 entradas y 2 datos "
+                                      "comprobados")
+        view = self.show_inputs()
+        self.assertEqual([texts[1] for texts in self.input_rows(view)], ["cambiada", "vigente"])
 
 
 if __name__ == "__main__":

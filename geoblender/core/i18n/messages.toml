@@ -1600,3 +1600,60 @@ es = "Parámetro «{key}» = {value} {kind}"
 
 ["Parameter «{key}» confirmed"]
 es = "Parámetro «{key}» confirmado"
+
+# Registro de entradas (RF-008-16, RF-008-13; T51): las columnas, los tipos de entrada, el
+# original y Comprobar cambios en las entradas (RF-008-09, RF-008-21)
+
+["Status"]
+es = "Estado"
+
+["Delivered on"]
+es = "Entrega"
+
+["Delivered by"]
+es = "Entregada por"
+
+["Content hash"]
+es = "Hash de contenido"
+
+["Original"]
+es = "Original"
+
+["No inputs"]
+es = "Ninguna entrada"
+
+["raster"]
+es = "ráster"
+
+["vector"]
+es = "vectorial"
+
+["table"]
+es = "tabla"
+
+["drillholes"]
+es = "sondeos"
+
+["mesh"]
+es = "malla"
+
+["point cloud"]
+es = "nube de puntos"
+
+["document"]
+es = "documento"
+
+["other"]
+es = "otro"
+
+["stored"]
+es = "guardado"
+
+["not stored"]
+es = "no guardado"
+
+["Checking the inputs and the project data…"]
+es = "Comprobando las entradas y los datos del proyecto…"
+
+["Check finished: {inputs} inputs and {datasets} datasets checked"]
+es = "Comprobación terminada: {inputs} entradas y {datasets} datos comprobados"

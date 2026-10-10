@@ -81,6 +81,17 @@ ADR-0025).
   calculada y su operación, y el parámetro solo pasa a CALCULADO cuando la persona lo acepta
   (S-1). Lo que no se toca en el diálogo ni se pasa desde un guion no cambia.
 
+- Registro de entradas (T51; RF-008-16, RF-008-13, RF-008-09, RF-008-21; plan §5.3.2):
+  ``geoblender.core_show_inputs`` lee la lista (``bl.ui.provenance.fill_inputs``) y abre
+  ``GEOBLENDER_PT_core_inputs``, también en solo lectura; ``geoblender.core_check_inputs``
+  («Comprobar cambios en las entradas») pide a la sesión
+  (:meth:`ProvenanceSession.check_inputs`) el hash de todas las entradas activas y la
+  comprobación de los datos del proyecto (``core.provenance.checks.full_check_steps``), en
+  segundo plano con el temporizador de la comprobación (tras la que esté en marcha), y no está
+  disponible en solo lectura. Lo que no se guarda de una entrada (plan D7) lo sabe la sesión
+  (:meth:`ProvenanceSession.input_state`): «comprobando» mientras una comprobación la tiene
+  pendiente y «no localizable» si la última que la miró no encontró su fuente.
+
 Lo demás llega con las tareas siguientes: los demás operadores de §5.3.2, con sus paneles, y
 el estado de comando de las órdenes de los módulos (fase 8).
 
@@ -158,6 +169,14 @@ PROVENANCE_SCHEMA = m0002.MIGRATION.to_version
 
 _OPEN = "open"  # la comprobación de apertura (los ocho pasos)
 _REQUESTS = "requests"  # los hashes que pidió la puerta (pasos 7 y 8)
+_FULL = "full"  # «Comprobar cambios en las entradas»: todas por su hash, y los datos (T51)
+
+CHECKING = "checking"
+"""El estado de una entrada que una comprobación de la sesión tiene pendiente (no se guarda,
+plan D7; RF-008-16)."""
+UNREACHABLE = "unreachable"
+"""El estado de una entrada cuya fuente no encontró la última comprobación de la sesión que la
+miró: «no localizable» (no se guarda, plan D7; RF-008-13)."""
 
 
 class _State:
@@ -230,6 +249,8 @@ class ProvenanceSession:
         self._asked: frozenset[tuple[str, str]] = frozenset()  # lo pedido al empezar
         self._progress: Progress | None = None
         self._report: OpenCheckOutcome | None = None
+        self._full_wanted = False  # «Comprobar» pedido con otra comprobación en marcha
+        self._unreachable: set[str] = set()  # entradas no localizables en la última que las vio
 
     # Lo que se ve -------------------------------------------------------------------------
 
@@ -299,6 +320,25 @@ class ProvenanceSession:
             return None
         return tr("Checking the project… {percent} %", percent=self.percent)
 
+    def _full_planned(self) -> bool:
+        """Si «Comprobar cambios en las entradas» está en marcha o prevista."""
+        return self._full_wanted or _FULL in (self._kind, self._next)
+
+    def input_state(self, uid: str) -> str | None:
+        """Lo que la sesión sabe ahora de la entrada activa ``uid`` y no se guarda (plan D7;
+        RF-008-16, RF-008-13): :data:`CHECKING` mientras una comprobación la tiene pendiente
+        (la de apertura hasta mirarla, la de un hash que pidió la puerta o «Comprobar cambios
+        en las entradas», que las mira todas); si no, :data:`UNREACHABLE` si la última
+        comprobación que la miró no encontró su fuente; si no, ``None`` (su estado
+        registrado)."""
+        if self.running:
+            if self._full_planned():
+                return CHECKING
+            pending = self.pending
+            if pending.is_pending("input", uid) or pending.awaiting("input", uid):
+                return CHECKING
+        return UNREACHABLE if uid in self._unreachable else None
+
     # Lo que la cambia ---------------------------------------------------------------------
 
     def on_project_changed(self, project: Project | None) -> None:
@@ -325,13 +365,33 @@ class ProvenanceSession:
         _schedule()
         return True
 
+    def check_inputs(self) -> bool:
+        """«Comprobar cambios en las entradas» (RF-008-09, RF-008-21; plan §5.3.2 y §5.4.2):
+        el hash de todas las entradas activas y el prefiltro y el hash de lo que salte en los
+        datos del proyecto (``core.provenance.checks.full_check_steps``), en segundo plano: un
+        paso por tic, con las fuentes externas grandes en los trabajos de hash. Empieza en el
+        próximo tic o, con otra comprobación en marcha, al terminarla; pedirla otra vez antes
+        no la repite. Dice si se hará (falso sin proyecto, sin la procedencia o en solo
+        lectura)."""
+        if write_unavailable() is not None:
+            return False
+        if self._full_planned():
+            return True
+        if self.running:
+            self._full_wanted = True
+            return True
+        self._next, self._progress = _FULL, None
+        _schedule()
+        return True
+
     def cancel(self) -> None:
         """Para la comprobación en marcha o prevista (lo que tenía en trabajos se cancela y no
         se registra nada) y la puerta deja de esperarla; lo pedido sigue pedido."""
         steps, self._steps = self._steps, None
-        busy = self._next is not None or steps is not None
+        busy = self._next is not None or steps is not None or self._full_wanted
         self._next = None
         self._kind = None
+        self._full_wanted = False
         if steps is not None:
             _close(steps)
         if self._pending is not None:
@@ -348,6 +408,7 @@ class ProvenanceSession:
         self._asked = frozenset()
         self._progress = None
         self._report = None
+        self._unreachable = set()
 
     # El temporizador ----------------------------------------------------------------------
 
@@ -367,6 +428,7 @@ class ProvenanceSession:
         except StopIteration:
             self._steps = None
             self._kind = None
+            self._queue_full()
         except Exception as exc:  # noqa: BLE001 - un temporizador que falla no tumba Blender
             self._fail(exc)
             return None
@@ -391,6 +453,9 @@ class ProvenanceSession:
             return checks.open_check_steps(project, write=project.writable, pending=pending,
                                            jobs=self.hash_jobs, budget_s=STEP_BUDGET_S)
         self._asked = _keys(pending.requests)
+        if kind == _FULL:
+            return checks.full_check_steps(project, pending=pending, jobs=self.hash_jobs,
+                                           budget_s=STEP_BUDGET_S)
         return checks.hash_requests_steps(project, pending, jobs=self.hash_jobs,
                                           budget_s=STEP_BUDGET_S)
 
@@ -398,19 +463,41 @@ class ProvenanceSession:
         steps, self._steps = self._steps, None
         if steps is not None:
             _close(steps)
-        if self._kind == _OPEN:
+        kind, self._kind = self._kind, None
+        if kind == _OPEN:
             self._report = outcome
-        self._kind = None
+        self._remember(outcome)
         for text in outcome.texts(i18n.language()):
             project_session.notify(text)
-        if _keys(self.pending.requests) - self._asked:
+        if kind == _FULL:
+            project_session.notify(tr(
+                "Check finished: {inputs} inputs and {datasets} datasets checked",
+                inputs=len(outcome.inputs), datasets=len(outcome.checked_datasets)))
+        self._queue_full()
+        if self._next is None and _keys(self.pending.requests) - self._asked:
             self._next = _REQUESTS  # lo que la puerta pidió mientras tanto
             self._progress = None
+
+    def _queue_full(self) -> None:
+        """«Comprobar cambios en las entradas» pedida durante otra comprobación: ahora."""
+        if self._full_wanted and self._next is None:
+            self._full_wanted = False
+            self._next, self._progress = _FULL, None
+
+    def _remember(self, outcome: OpenCheckOutcome) -> None:
+        """Lo que la comprobación vio de cada entrada que miró y no se guarda (plan D7): si
+        encontró su fuente o no (RF-008-13)."""
+        for finding in outcome.inputs:
+            if finding.verdict == UNREACHABLE:
+                self._unreachable.add(finding.input_uid)
+            else:
+                self._unreachable.discard(finding.input_uid)
 
     def _fail(self, exc: BaseException) -> None:
         steps, self._steps = self._steps, None
         self._next = None
         self._kind = None
+        self._full_wanted = False
         if steps is not None:
             _close(steps)
         if self._pending is not None:
@@ -1287,10 +1374,72 @@ class GEOBLENDER_OT_core_confirm_parameter(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Registro de entradas (T51) ---------------------------------------------------------------
+
+CHECK_INPUTS = "geoblender.core_check_inputs"
+
+
+class GEOBLENDER_OT_core_show_inputs(bpy.types.Operator):
+    """Registered inputs with their content hash"""
+
+    bl_idname = "geoblender.core_show_inputs"
+    bl_label = "Input register…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        reason = SESSION.unavailable()
+        if reason is not None:
+            cls.poll_message_set(reason)
+            return False
+        return True
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        return self.execute(context)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import provenance as ui  # al usarlo (ARQ-08)
+
+        try:
+            ui.fill_inputs()
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}  # desde un guion sin ventana: las filas, sin la ventana
+        return _call_panel(ui.INPUTS_PANEL)
+
+
+class GEOBLENDER_OT_core_check_inputs(bpy.types.Operator):
+    """Compare the content hash of every input and check the project data too"""
+
+    bl_idname = CHECK_INPUTS
+    bl_label = "Check changes in the inputs"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        SESSION.check_inputs()
+        statusbar.redraw()
+        self.report({"INFO"}, tr("Checking the inputs and the project data…"))
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_show_parameters,
     GEOBLENDER_OT_core_set_parameter,
     GEOBLENDER_OT_core_confirm_parameter,
+    GEOBLENDER_OT_core_show_inputs,
+    GEOBLENDER_OT_core_check_inputs,
 )
 """Los operadores reales de la 008 (los demás siguen provisionales hasta su tarea)."""
 

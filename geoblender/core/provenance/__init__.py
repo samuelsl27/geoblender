@@ -47,8 +47,9 @@
   versiones de algoritmo (:class:`AlgorithmChange`) y definiciones de parámetros
   (:func:`survey_steps`, sin leer ni escribir), la cola de hashes —con los trabajos de las
   fuentes externas grandes que pone ``bl`` (:class:`HashJobs`, :class:`HashRequest`,
-  :class:`HashResult`)— y la transacción final; y lo que la puerta pide hashear después
-  (:func:`hash_requests_steps`).
+  :class:`HashResult`)— y la transacción final; lo que la puerta pide hashear después
+  (:func:`hash_requests_steps`); y «Comprobar cambios en las entradas», a petición
+  (:func:`full_check_steps`: todas las entradas por su hash y los datos del proyecto).
 - :mod:`.undo`: el diario de Ctrl+Z de la sesión (:class:`UndoJournal`): numera cada cambio
   registrado (:class:`UndoEntry`) y dice qué deja atrás o recupera la escena que restaura
   Blender (:class:`UndoNotice`), sin deshacer nada de lo registrado.
@@ -228,6 +229,7 @@ del módulo (``core.provenance.lineage.lineage``), que el paquete tiene como atr
 se importa."""
 
 CHECKS_API: tuple[str, ...] = (
+    "FULL_CHECK_STEPS",
     "OPEN_CHECK_STEPS",
     "REQUEST_STEPS",
     "SURVEY_STEPS",
@@ -239,6 +241,7 @@ CHECKS_API: tuple[str, ...] = (
     "OpenCheckOutcome",
     "OriginalProbe",
     "Registries",
+    "full_check_steps",
     "hash_requests_steps",
     "open_check_steps",
     "survey_steps",
@@ -296,6 +299,7 @@ __all__ = [
     "CORE_OPERATIONS",
     "EXTERNAL_EDIT",
     "FIGURES",
+    "FULL_CHECK_STEPS",
     "GROUPS",
     "IMPORTED_PREFIX",
     "IMPORTERS",
@@ -401,6 +405,7 @@ __all__ = [
     "divergences",
     "figure_def",
     "figure_marks",
+    "full_check_steps",
     "group_def",
     "hash_requests_steps",
     "import_layer",

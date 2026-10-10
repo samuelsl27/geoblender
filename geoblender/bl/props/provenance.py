@@ -10,8 +10,8 @@ la procedencia, con los filtros de la lista de parámetros (módulo, tipo y marc
 proyecto. Vive en ``WindowManager``, que Blender no guarda en el ``.blend`` (RF-002-29), y
 cada valor llega ya presentado como texto («35 %», «1,15»): ninguna cifra pasa por una
 propiedad flotante (float32; ARQ-13). Los estados (``status``, ``kind``…) son los valores de
-los enumerados de ``core`` (``InputStatus``, ``ParamKind``…), y «comprobando» y «no
-localizable», que no se guardan (D7), los pone quien rellena las filas.
+los enumerados de ``core`` (``InputStatus``, ``ParamKind``…); «comprobando» y «no
+localizable», que no se guardan (D7), los dice la sesión al dibujar el registro de entradas.
 
 Las filas no tienen nombre ni descripción: no se dibujan con los suyos, sino con los textos
 del catálogo de idioma que pone cada panel. Ninguna se anima.
@@ -124,7 +124,7 @@ class GEOBLENDER_PG_core_input_row(bpy.types.PropertyGroup):
 
     uid: _text()  # type: ignore[valid-type]
     name: _text()  # type: ignore[valid-type]
-    status: _text()  # type: ignore[valid-type]  # InputStatus, «checking» o «unreachable»
+    status: _text()  # type: ignore[valid-type]  # InputStatus (el registrado)
     kind: _text()  # type: ignore[valid-type]
     module: _text()  # type: ignore[valid-type]
     received_at: _text()  # type: ignore[valid-type]

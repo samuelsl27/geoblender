@@ -827,6 +827,10 @@ _CATALOG: tuple[Message, ...] = (
     Message("core.input_status_superseded", "superseded", "sustituida"),
     Message("core.input_status_discarded", "discarded · record, do not use",
             "descartada · registro, no usar"),
+    # Lo que no se guarda (plan D7; T51, RF-008-16, RF-008-13): mientras una comprobación la
+    # tiene pendiente y si la última no encontró su fuente.
+    Message("core.input_status_checking", "checking", "comprobando"),
+    Message("core.input_status_unreachable", "not locatable", "no localizable"),
     Message("core.mark_hypothesis", "depends on a hypothesis", "depende de una hipótesis"),
     Message("core.mark_unconfirmed", "depends on an unconfirmed value",
             "depende de un valor sin confirmar"),

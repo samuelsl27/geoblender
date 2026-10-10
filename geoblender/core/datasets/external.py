@@ -875,10 +875,12 @@ def _claimed(project: Any) -> frozenset[str]:
     return frozenset(os.path.normcase(os.path.normpath(path)) for path in claimed_paths(project))
 
 
-def _check_steps(project: ExternalProject, budget: float) -> Iterator[Any]:
-    from ..project.model import Progress
-    from ..project.session import WriteState
-
+def _surveyed(project: Any) -> tuple[list[_Check], list[_OriginalCheck],
+                                     Mapping[str, TableState]]:
+    """Lo que repasa la comprobación de los datos, en una lectura: los datos seguidos vigentes,
+    bloqueados o que faltan (sin los ficheros que reclama una operación en curso de esta
+    sesión), los originales guardados y el estado de las tablas de los datos (también la
+    comprobación a petición de ``core.provenance.checks``)."""
     with project.read() as conn:
         records = [DatasetRecord.from_row(row) for row in conn.execute(_SURVEY)]
         names = {str(uid): str(name)
@@ -893,16 +895,29 @@ def _check_steps(project: ExternalProject, budget: float) -> Iterator[Any]:
         if item.store is Store.GPKG
         or os.path.normcase(os.path.normpath(_path(project, item))) not in claimed
     ]
-    originals = [_OriginalCheck(item) for item in stored]
+    return checks, [_OriginalCheck(item) for item in stored], tables
+
+
+def _prefilter_item(project: Any, item: _Check | _OriginalCheck,
+                    tables: Mapping[str, TableState]) -> None:
+    """El prefiltro de un dato (contra ``tables``) o de un original."""
+    if isinstance(item, _Check):
+        _prefilter(project, item, tables)
+    else:
+        _prefilter_original(project, item)
+
+
+def _check_steps(project: ExternalProject, budget: float) -> Iterator[Any]:
+    from ..project.model import Progress
+    from ..project.session import WriteState
+
+    checks, originals, tables = _surveyed(project)
     total = len(checks) + len(originals)
     message = "Comprobando los datos del proyecto…"
     yield Progress(PHASES[0], 0, total, message)
     pacer = _Pacer(budget)
     for index, item in enumerate((*checks, *originals), start=1):
-        if isinstance(item, _Check):
-            _prefilter(project, item, tables)
-        else:
-            _prefilter_original(project, item)
+        _prefilter_item(project, item, tables)
         if pacer.lap() and index < total:
             yield Progress(PHASES[0], index, total, message)
             pacer.restart()
