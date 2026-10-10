@@ -744,13 +744,14 @@ _CATALOG: tuple[Message, ...] = (
     ),
     Message("core.orphans_more", "and {count} more", "y {count} más"),
     # Ficheros ajenos y capas sin registrar (T34; RF-008-62): el aviso con la lista (nada se
-    # mueve) y lo que se ignora.
+    # mueve) y lo que se ignora. El de los ficheros solo avisa: la interfaz ofrece Ignorar…
+    # para una capa o tabla sin registrar, no para un fichero (T68).
     Message(
         "core.foreign_files",
         "Files in the project data folders that belong to no dataset (they are not moved): "
-        "{files}. You can ignore them.",
+        "{files}.",
         "Ficheros ajenos en las carpetas de datos del proyecto, que no son de ningún dato (no "
-        "se mueven): {files}. Puede ignorarlos.",
+        "se mueven): {files}.",
     ),
     Message(
         "core.unregistered_tables",
