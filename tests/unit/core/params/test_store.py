@@ -29,7 +29,8 @@ Y (T14; RF-008-06, RF-008-60):
 - ``mark_definition_changes`` marca «revisar», con el cambio, los parámetros cuya definición
   cambió (unidad, rango o valor por defecto) o que ya no se declaran, sin tocar ningún valor
   ni el historial (tampoco el que queda fuera del rango nuevo); confirmar quita la marca, y
-  cambiar el valor también, porque se comprueba con la definición actual.
+  cambiar el valor también, porque se comprueba con la definición actual; y (T71) no vuelve a
+  marcar ni reescribe nada porque cambie cómo se muestran los números de su problema.
 
 Cada prueba crea su proyecto sintético (esquema 2) con un reloj simulado y la sesión de
 ``tests.support.core_fixtures``; los rechazos se comprueban dentro de
@@ -37,6 +38,7 @@ Cada prueba crea su proyecto sintético (esquema 2) con un reloj simulado y la s
 """
 
 import datetime as dt
+import json
 import sqlite3
 import unittest
 from collections.abc import Callable, Mapping
@@ -71,6 +73,7 @@ SESSION = make_session()
 USER_HOST = SESSION.user_host
 KEY = "res.swell_factor"
 DEFAULT_DECIDER = "Geoblender (valor por defecto)"
+THIN = " "  # separador de miles de las cifras en español (spec 003, II §2.4; T71)
 OTHER_FIGURE_UID = "00000000-0000-4000-8000-0000000000b2"
 
 # Los textos de la spec §8 (sin el punto final, que añade el mensaje).
@@ -886,6 +889,34 @@ class DefinitionReviewTest(StoreCase):
         self.tick()
         self.assertEqual(self.mark(), [])
         self.assertEqual(self.snapshot(), snapshot)
+
+    def test_review_does_not_depend_on_how_numbers_are_shown(self) -> None:
+        """RF-008-60 (T71): si los textos del problema guardado con «revisar» los escribió un
+        Geoblender que mostraba los números de otra forma (sin separador de miles, con punto
+        decimal), abrir con este no vuelve a marcar el parámetro ni reescribe nada: «revisar»
+        depende de las definiciones y del problema, no de cómo se leen sus números. Lo que
+        guarda este, con el separador de miles de las cifras («[1 000; 5 000] kg/m³»)."""
+        self.redeclare(*NEWER)
+        self.mark()
+        shown_range = self.store.get("res.density").review["problem"]["values"]["range"]
+
+        def older(conn: sqlite3.Connection) -> None:
+            for key, texts in (("res.density", {"range": "[1000; 5000] kg/m³",
+                                                 "shown": "2.65 t/m³"}),
+                               ("res.recovery", {"range": "[0, 0.95]"})):
+                (text,) = conn.execute("SELECT review FROM gb_parameter WHERE key = ?",
+                                       (key,)).fetchone()
+                review = json.loads(text)
+                review["problem"]["values"].update(texts)
+                conn.execute("UPDATE gb_parameter SET review = ? WHERE key = ?",
+                             (hashing.canonical_json(review).decode("utf-8"), key))
+
+        self.write(older)
+        snapshot = self.snapshot()
+        self.tick()
+        self.assertEqual(self.mark(), [])
+        self.assertEqual(self.snapshot(), snapshot)
+        self.assertEqual(shown_range, f"[1{THIN}000; 5{THIN}000] kg/m³")
 
     def test_confirm_removes_the_mark(self) -> None:
         """RF-008-60 y RF-008-02: confirmar quita «revisar» (y «sin confirmar») y deja la

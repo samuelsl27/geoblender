@@ -17,7 +17,7 @@
   ``msgbus`` al cursor 3D se renueva en ``load_post`` (una sola) y desregistrar la retira.
 
 Spec 008, T69 (RF-008-16, RF-008-28, RF-008-58; RF-004-06; RF-003-28; M6 de la 008): con los
-campos de la 003, «⚠ 1 entradas», «! 3 obsoletos», «Comprobando el proyecto… 40 %» y un
+campos de la 003, «⚠ 1 entrada», «! 3 obsoletos», «Comprobando el proyecto… 40 %» y un
 trabajo de la 004 a la vez, en una barra de 1920 px con escalas efectivas 1,0, 1,25 y 1,5 y
 en los dos modos, lo dibujado cabe en lo que deja Blender (la región menos
 ``STATUSBAR_RESERVED_PX``): se ocultan la prioridad 3 y la 2 y, si aún no cabe, se pliegan los
@@ -58,7 +58,7 @@ CANCEL_CHECKS = "geoblender.core_cancel_checks"
 JOB_NAME = "Autodiagnóstico: suma de 10 s"
 JOB_MESSAGE = "Trozo 16 de 50"
 UNDO_TEXT = "Ctrl+Z no deshace la operación «gis.resample»: sigue en el proyecto"
-FULL_008 = ("⚠ 1 entradas", "! 3 obsoletos", "Comprobando el proyecto… 40 %")
+FULL_008 = ("⚠ 1 entrada", "! 3 obsoletos", "Comprobando el proyecto… 40 %")
 FOLDED_008 = ("⚠ 1", "! 3", "40 %")
 # Lo que ocupa a escala 1,0 cada elemento de la barra de estado de Blender 5.2.1, además del
 # ancho blf de su texto (11 pt), medido en las capturas de M6 (10/10/2026; 1920 px, escalas

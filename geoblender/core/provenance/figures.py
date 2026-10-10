@@ -178,7 +178,8 @@ class FigureRecord:
         """La cifra como la lee una persona en ``language`` (RF-008-31; T55): su nombre (en
         inglés, el ``label_msgid`` de su definición, si está registrada), los valores de su
         ámbito y su valor con su unidad: «Años del banco (demostración) · B-1 = 2,5 año». El
-        valor va entero, sin redondear. :class:`ValueError` con otro idioma."""
+        valor va entero, sin redondear, con el separador de miles (T71); el ámbito, sin él
+        («2026», «fase 2»). :class:`ValueError` con otro idioma."""
         if language not in LANGUAGES:
             raise ValueError(f"el idioma «{language}» no es de Geoblender: "
                              f"{', '.join(LANGUAGES)}")
@@ -186,7 +187,8 @@ class FigureRecord:
         declared = FIGURES.get(self.key) if language == "en" else None
         if declared is not None:
             name = declared.label_msgid
-        scope = ", ".join(format_value(value, language) for value in self.scope.values())
+        scope = ", ".join(format_value(value, language, grouped=False)
+                          for value in self.scope.values())
         shown = f"{name} · {scope}" if scope else name
         return f"{shown} = {_shown(self.value, self.unit, language)}"
 
@@ -245,7 +247,8 @@ class Divergence:
 
 
 def _shown(value: ParamValue | None, unit: str, language: str = "es") -> str:
-    """Un valor con su unidad como lo lee una persona: «1,11», «90,5 %», «2,65 t/m³»."""
+    """Un valor con su unidad como lo lee una persona: «1,11», «90,5 %», «2,65 t/m³»,
+    «500 000 t/año» (con el separador de miles, como un parámetro: T71)."""
     if value is None:
         return _NO_VALUE[language]
     if isinstance(value, tuple):

@@ -1402,6 +1402,14 @@ es = "⚠ {n} entradas"
 ["! {n} stale"]
 es = "! {n} obsoletos"
 
+# Con uno, en singular (T71)
+
+["⚠ 1 input"]
+es = "⚠ 1 entrada"
+
+["! 1 stale"]
+es = "! 1 obsoleto"
+
 # Los mismos, plegados cuando no caben en la barra de estado (T69)
 
 ["⚠ {n}"]
@@ -1954,3 +1962,117 @@ es = "versión anterior"
 
 ["shown above"]
 es = "ya mostrada arriba"
+
+# La vista de los paneles de la procedencia (WindowManager.geoblender_provenance; T71): el
+# nombre y la descripción de cada propiedad, que enseña la ayuda emergente de una lista y de la
+# búsqueda. Ya están: «Project parameters», «Module», «Type», «Mark», «Input register»,
+# «Datasets that cannot be used», «Layers and tables of the project not registered» y «Figure
+# or dataset».
+
+["Parameters of the open project that the list shows, with its filters"]
+es = "Parámetros del proyecto abierto que enseña la lista, con sus filtros"
+
+["Selected parameter"]
+es = "Parámetro seleccionado"
+
+["Parameter whose history, warning and orders are shown below the list"]
+es = "Parámetro del que se ven, debajo de la lista, el historial, el aviso y las órdenes"
+
+["Parameter history"]
+es = "Historial del parámetro"
+
+["Every entry of the history of the selected parameter"]
+es = "Cada entrada del historial del parámetro seleccionado"
+
+["Selected history entry"]
+es = "Entrada del historial seleccionada"
+
+["Selected row of the history of the parameter"]
+es = "Fila seleccionada del historial del parámetro"
+
+["Difference with the calculated value"]
+es = "Diferencia con el valor calculado"
+
+["Warning of the last figure that calculates the selected parameter with another value"]
+es = "Aviso de la última cifra que calcula el parámetro seleccionado con otro valor"
+
+["Calculated figure"]
+es = "Cifra calculada"
+
+["Identifier of the figure that «Use the calculated value…» adopts"]
+es = "Identificador de la cifra que adopta «Usar el valor calculado…»"
+
+["Only the parameters of this module"]
+es = "Solo los parámetros de este módulo"
+
+["Only the parameters of this type"]
+es = "Solo los parámetros de este tipo"
+
+["Only the parameters with this mark"]
+es = "Solo los parámetros con esta marca"
+
+["Inputs of the open project, with their state"]
+es = "Entradas del proyecto abierto, con su estado"
+
+["Selected input"]
+es = "Entrada seleccionada"
+
+["Input whose orders are shown below the list"]
+es = "Entrada de la que se ven las órdenes debajo de la lista"
+
+["Stale results"]
+es = "Resultados obsoletos"
+
+["Stale results and those waiting for manual review, with their cause"]
+es = "Resultados obsoletos y los que esperan revisión a mano, con su causa"
+
+["Selected stale result"]
+es = "Resultado obsoleto seleccionado"
+
+["Selected row of the stale results"]
+es = "Fila seleccionada de lo obsoleto"
+
+["Blocked, missing or damaged datasets, with what is offered to resolve them"]
+es = "Datos bloqueados, que faltan o dañados, con lo que se ofrece para resolverlos"
+
+["Layers and tables created in the project outside Geoblender, such as from QGIS"]
+es = "Capas y tablas creadas en el proyecto fuera de Geoblender, como desde QGIS"
+
+["Provenance chain"]
+es = "Cadena de procedencia"
+
+["The figure or dataset searched for and, indented below, each link down to its inputs"]
+es = "La cifra o el dato buscado y, sangrado debajo, cada eslabón hasta sus entradas"
+
+["Selected link"]
+es = "Eslabón seleccionado"
+
+["Selected row of the provenance chain"]
+es = "Fila seleccionada de la cadena de procedencia"
+
+["Identifier of a figure, a dataset or an operation, or part of the name of a figure or a dataset"]
+es = "Identificador de una cifra, un dato o una operación, o parte del nombre de una cifra o un dato"
+
+["Rows not shown"]
+es = "Filas sin mostrar"
+
+["Rows of the provenance chain that do not fit in the list"]
+es = "Filas de la cadena de procedencia que no caben en la lista"
+
+["Search problem"]
+es = "Problema de la búsqueda"
+
+["Why what was searched for is not a figure, a dataset or an operation of the project"]
+es = "Por qué lo buscado no es una cifra, un dato ni una operación del proyecto"
+
+["Matches"]
+es = "Coincidencias"
+
+["Current figures and datasets whose name contains the text searched for"]
+es = "Cifras vigentes y datos cuyo nombre contiene el texto buscado"
+
+["Expanded"]
+es = "Desplegado"
+
+["Show or hide what this link depends on"]
+es = "Muestra u oculta de qué depende este eslabón"

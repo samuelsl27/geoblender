@@ -72,6 +72,13 @@ errores y los cambios):
   y con un hueco del ancho del icono (el texto queda alineado). La columna cabe con el icono en
   los dos idiomas, y el icono pasa las reglas de iconos de la 003 (licencia y tamaños).
 
+T71 (textos de T58):
+
+- RF-008-16, RF-008-28: «⚠ 1 entrada» y «! 1 obsoleto» en singular (0, 1 y n, en español y en
+  inglés); RF-008-06, RF-008-16, RF-008-29: las propiedades de la vista con nombre y descripción
+  del catálogo; RF-008-06: el motivo de solo lectura, sin repetir «Solo lectura:»; los valores
+  de los parámetros con el separador de miles de las cifras («500 000 t/año»).
+
 Se ejecuta con ``tools/run_blender_tests.py``. En ``blender -b`` los temporizadores no corren:
 las pruebas llaman a su función. El proyecto es sintético (la demostración de la 008 y los
 GeoPackage de ``tests/data/core/provenance/``).
@@ -134,7 +141,8 @@ LINEAGE_LIST = "GEOBLENDER_UL_core_lineage"
 SHOW_LINEAGE = "geoblender.core_show_lineage"
 YEARS_B1 = "Años del banco (demostración) · B-1 = 2,5 año"
 YEARS_OP = "Años por banco (demostración) · demo.bench_years 1.0 · Geoblender "
-PRODUCTION_ROW = "Producción (demostración) · demo.production = 500000 t/año"
+THIN = "\u202f"  # separador de miles de las cifras en español (spec 003, II §2.4; T71)
+PRODUCTION_ROW = f"Producción (demostración) · demo.production = 500{THIN}000 t/año"
 HYPOTHESIS = "depende de una hipótesis"
 UNCONFIRMED = "depende de un valor sin confirmar"
 STALE_CAUSE = "Obsoleto: cambió Producción (demostración)"
@@ -299,9 +307,9 @@ class ProvenanceUiTest(unittest.TestCase):
         procedencia ni número en el control 7. Al abrir un proyecto, «Comprobando el
         proyecto… 0 %» con su botón de cancelar, en los dos modos; al terminar la comprobación
         (que registra la entrada «Limites», redibujada por la propiedad), el temporizador de los
-        indicadores pone «⚠ 1 entradas» y nada de obsoletos. Cambiar la producción deja
+        indicadores pone «⚠ 1 entrada» y nada de obsoletos. Cambiar la producción deja
         obsoletos los años por banco: hasta el siguiente tic se ve lo de antes y, con él (≤ 1 s
-        con lo que tarda), «! 1 obsoletos» en la barra y «1» tras Refrescar en el control 7, que
+        con lo que tarda), «! 1 obsoleto» en la barra y «1» tras Refrescar en el control 7, que
         abre el panel de lo obsoleto con «Refrescar · obsoletos (1)», el dato, su módulo, la
         causa y Recalcular; otro tic sin cambios no vuelve a leer el proyecto. Dibujar los
         campos cuesta ≤ 1 ms. Cerrar el proyecto los quita y retira el temporizador.
@@ -351,8 +359,8 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
         self.assertEqual(self.stale.counts(project),
                          self.stale.Counts(stale=0, figures=0, review=0, inputs_changed=1))
-        self.assertEqual(self.both_modes(), ["⚠ 1 entradas"])
-        inputs = [item for item in self.bar().items if item.text == "⚠ 1 entradas"]
+        self.assertEqual(self.both_modes(), ["⚠ 1 entrada"])
+        inputs = [item for item in self.bar().items if item.text == "⚠ 1 entrada"]
         self.assertEqual(inputs[0].target, SHOW_INPUTS)
         self.assertIsNone(self.quick.count_of(REFRESH, bpy.context))
         shown, enabled, alert, about = self.synthetic_drawn(synthetic)
@@ -369,15 +377,15 @@ class ProvenanceUiTest(unittest.TestCase):
             store.change(conn, PRODUCTION, value=400_000.0, kind="ADOPTADO",
                          source="Plan de labores 2027", source_kind="document",
                          decided_by="la propiedad", reason="Plan revisado")
-        self.assertEqual(self.both_modes(), ["⚠ 1 entradas"])  # hasta el siguiente tic
+        self.assertEqual(self.both_modes(), ["⚠ 1 entrada"])  # hasta el siguiente tic
         self.assertLessEqual(ui.INDICATOR_TICK_S, UPDATE_BUDGET_S / 2)
         start = time.perf_counter()
         interval = ui.indicator_tick()
         elapsed = time.perf_counter() - start
         self.assertEqual(interval, ui.INDICATOR_TICK_S)
         self.assertLessEqual(interval + elapsed, UPDATE_BUDGET_S)
-        self.assertEqual(self.both_modes(), ["⚠ 1 entradas", "! 1 obsoletos"])
-        stale_field = [item for item in self.bar().items if item.text == "! 1 obsoletos"]
+        self.assertEqual(self.both_modes(), ["⚠ 1 entrada", "! 1 obsoleto"])
+        stale_field = [item for item in self.bar().items if item.text == "! 1 obsoleto"]
         self.assertEqual(stale_field[0].target, STALE_PANEL)
         with mock.patch.object(self.stale, "stale_items") as read:
             self.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
@@ -432,7 +440,7 @@ class ProvenanceUiTest(unittest.TestCase):
     def test_stale_area_that_only_leaves_a_figure(self) -> None:
         """RF-008-28, RF-008-61 (spec 0.3, T66; F-1 de la verificación): importado el límite
         y calculada su área (que solo deja la cifra), con ``Limites_v2`` en su lugar y la
-        entrada actualizada, «! 1 obsoletos» en la barra (los dos modos) y «1» en el control 7,
+        entrada actualizada, «! 1 obsoleto» en la barra (los dos modos) y «1» en el control 7,
         que abre el panel con la operación del área, su módulo, su causa («Obsoleto: se
         actualizó la entrada «Limites»») y Recalcular de esa operación; la orden sintética que
         declara el área lleva la causa en su descripción («Resultado obsoleto», sin la
@@ -457,7 +465,7 @@ class ProvenanceUiTest(unittest.TestCase):
         self.ps.attach(project)
         self.run_checks()
         self.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
-        self.assertEqual(self.both_modes(), ["! 1 obsoletos"])
+        self.assertEqual(self.both_modes(), ["! 1 obsoleto"])
         _refresh, number = self.control_7()
         self.assertEqual((number.kind, number.target, number.text), ("popover", STALE_PANEL,
                                                                       "1"))
@@ -598,7 +606,9 @@ class ProvenanceUiTest(unittest.TestCase):
         nada que confirmar, lo dice); los filtros por marca, tipo y módulo se combinan; el
         seleccionado enseña su historial, su aviso de divergencia con «Usar el valor
         calculado…», Cambiar y Confirmar. En solo lectura la lista se consulta, pero Cambiar,
-        Confirmar y «Usar el valor calculado…» están desactivados con el motivo."""
+        Confirmar y «Usar el valor calculado…» están desactivados con el motivo, que no repite
+        «Solo lectura:». T71: cada valor, con el separador de miles de las cifras en los dos
+        idiomas («500 000 t/año»; «500,000 t/año»)."""
         project, store, balance = self.parameters_project()
         view = self.show_parameters()
         self.assertEqual(self.keys(view), KEYS)
@@ -616,9 +626,17 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertEqual([(item.text, item.alert, item.icon) for item in badges],
                          [("[ADO]", False, "BLANK1"), amber, amber, amber])
         texts = items.texts()
-        for shown in ("1,15", "500000 t/año", "sin confirmar", swell.source, swell.decided_by,
-                      swell.decided_at):
+        for shown in ("1,15", f"500{THIN}000 t/año", "sin confirmar", swell.source,
+                      swell.decided_by, swell.decided_at):
             self.assertIn(shown, texts)
+        i18n = _module("core.i18n")
+        self.addCleanup(i18n.set_language, i18n.language())
+        i18n.set_language("en")  # T71: como las cifras, también en inglés
+        self.assertEqual([row.value for row in self.show_parameters().parameters],
+                         ["200 MB", "500,000 t/año", "0.9", "1.15"])
+        i18n.set_language("es")
+        self.assertEqual([row.value for row in self.show_parameters().parameters],
+                         ["200 MB", f"500{THIN}000 t/año", "0,9", "1,15"])
 
         self.assertEqual(bpy.ops.geoblender.core_confirm_parameter(key=PRODUCTION),
                          {"FINISHED"})
@@ -689,11 +707,10 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertEqual(len(buttons), 3)
         self.assertFalse(any(item.enabled for item in buttons))
         reasons = [text for text in panel.texts() if text.startswith(READ_ONLY)]
-        self.assertEqual(len(reasons), 1, panel.texts())
-        self.assertIn("prueba", reasons[0])
+        self.assertEqual(reasons, [f"{READ_ONLY} prueba"])  # sin repetir «Solo lectura:» (T71)
         with self.assertRaises(RuntimeError) as caught:
             bpy.ops.geoblender.core_confirm_parameter(key=SWELL_FACTOR)
-        self.assertIn(READ_ONLY, str(caught.exception))
+        self.assertIn(f"{READ_ONLY} prueba", str(caught.exception))
         self.assertTrue(store.get(SWELL_FACTOR).unconfirmed)
 
     def rejected_confirm(self, key: str) -> str:
@@ -808,7 +825,7 @@ class ProvenanceUiTest(unittest.TestCase):
         años de B-1 enseña la cifra con su valor, su unidad, su insignia [CAL] y las marcas
         «depende de una hipótesis» y «depende de un valor sin confirmar»; debajo, los años por
         banco con la versión de su algoritmo y de Geoblender, quién y cuándo; la producción
-        que leyó (500000 t/año [HIP] «sin confirmar»), los bancos y su digitalización. La del
+        que leyó (500 000 t/año [HIP] «sin confirmar»), los bancos y su digitalización. La del
         área llega hasta su entrada («Limites: vigente»). Cambiada la producción (ADOPTADO),
         la cifra solo está «obsoleta», su eslabón dice la causa en alerta y la producción
         leída, lo de hoy. Cada nudo se pliega; la búsqueda encuentra las cifras vigentes por su
@@ -883,7 +900,7 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertEqual(figure, ["[CAL]", YEARS_B1, "obsoleta"])
         self.assertEqual(operation[1:], [STALE_CAUSE])
         self.assertEqual(parameter, ["[HIP]", PRODUCTION_ROW, "sin confirmar",
-                                     "hoy: 400000 t/año [ADO]"])
+                                     f"hoy: 400{THIN}000 t/año [ADO]"])
         cause = [item for item in self.list_lineage(view).items if item.text == STALE_CAUSE]
         self.assertTrue(cause[0].alert)
 
@@ -991,6 +1008,66 @@ class ProvenanceUiTest(unittest.TestCase):
             self.assertEqual(icon_rules.png_size(png), (size, size))
             self.assertLessEqual(png.stat().st_size, MAX_PNG_BYTES)
             self.assertEqual(icon_rules.sha256_file(png), entry[f"png{size}"])
+
+    # Textos (T71) -----------------------------------------------------------------------------
+
+    def test_texts_in_singular_with_names_and_one_read_only_reason(self) -> None:
+        """RF-008-16, RF-008-28 (T71; T58): con 0 no hay campo; con 1, «⚠ 1 entrada» y «! 1
+        obsoleto» en la barra de estado de los dos modos; con 3, «⚠ 3 entradas» y «! 3
+        obsoletos»; en inglés, «⚠ 1 input», «⚠ 3 inputs», «! 1 stale» y «! 3 stale»;
+        plegados, «⚠ n» y «! n» en los dos idiomas. RF-008-06, RF-008-16, RF-008-29: ninguna
+        propiedad de ``WindowManager.geoblender_provenance`` queda sin nombre ni descripción
+        (la ayuda de una lista o de la búsqueda no enseña ``input_index`` ni
+        ``lineage_uid``), ni «Desplegado» de las filas de la procedencia. RF-008-06: el motivo
+        de un proyecto del que solo se lee la cabecera no repite «Solo lectura:». RF-008-03:
+        Cambiar se rellena con el valor sin separar sus miles, como se teclea en cada idioma."""
+        ui = self.ui
+        i18n = _module("core.i18n")
+        self.addCleanup(i18n.set_language, i18n.language())
+        expected = {
+            "es": {0: ("", ""), 1: ("⚠ 1 entrada", "! 1 obsoleto"),
+                   3: ("⚠ 3 entradas", "! 3 obsoletos")},
+            "en": {0: ("", ""), 1: ("⚠ 1 input", "! 1 stale"), 3: ("⚠ 3 inputs", "! 3 stale")},
+        }
+        for language, by_count in expected.items():
+            i18n.set_language(language)
+            for n, texts in by_count.items():
+                counts = self.stale.Counts(stale=n, figures=0, review=0, inputs_changed=n)
+                with self.subTest(idioma=language, n=n), \
+                        mock.patch.object(ui._STATE, "counts", counts):
+                    self.assertEqual((ui.inputs_text(), ui.stale_text()), texts)
+                    self.assertEqual(self.both_modes(), [text for text in texts if text])
+                    folded = (f"⚠ {n}", f"! {n}") if n else ("", "")
+                    self.assertEqual((ui.inputs_text(folded=True), ui.stale_text(folded=True)),
+                                     folded)
+        i18n.set_language("es")
+
+        base = set(bpy.types.PropertyGroup.bl_rna.properties.keys())
+        view = bpy.context.window_manager.geoblender_provenance.bl_rna.properties
+        found = {prop.identifier: (prop.name, prop.description) for prop in view
+                 if prop.identifier not in base}
+        expanded = view["lineage"].fixed_type.properties["expanded"]
+        found["expanded"] = (expanded.name, expanded.description)
+        self.assertLessEqual({"parameter_index", "input_index", "lineage_index", "lineage_uid",
+                              "stale_index", "history_index"}, set(found))
+        for identifier, (name, about) in found.items():
+            with self.subTest(propiedad=identifier):
+                self.assertTrue(name and about, (name, about))
+                self.assertNotIn("_", name)
+        self.assertEqual((found["input_index"][0], found["lineage_uid"][0]),
+                         ("Entrada seleccionada", "Cifra o dato"))
+
+        status = _module("core.project.session").read_only_status(
+            self.core.ReadOnlyCode.REQUESTED, "copia de otro equipo")
+        header_only = SimpleNamespace(closed=False, header_only=True, status=status)
+        with mock.patch.object(self.session.SESSION, "_project", header_only):
+            self.assertEqual(self.session.SESSION.unavailable(),
+                             f"{READ_ONLY} copia de otro equipo")
+
+        typed = self.session.typed_value
+        self.assertEqual([typed(500_000.0, "es"), typed(500_000.0, "en"),
+                          typed((1_000.0, 2_500.5), "es"), typed((1_000.0, 2_500.5), "en")],
+                         ["500000", "500000", "[1000; 2500,5]", "[1000, 2500.5]"])
 
 
 if __name__ == "__main__":

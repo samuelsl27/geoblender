@@ -237,7 +237,7 @@ class IndicatorsTest(D13Case):
     def test_indicators_follow_the_changes(self) -> None:
         """RNF-008-06: en el proyecto de D-13, al volver a abrirlo con una fuente cambiada,
         «Comprobando el proyecto… 0 %» se ve en cuanto es usable y avanza en cada tic del
-        monitor; al terminar, «⚠ 1 entradas»; y, tras cambiar el parámetro que leen todas las
+        monitor; al terminar, «⚠ 1 entrada»; y, tras cambiar el parámetro que leen todas las
         cadenas, «! 20000 obsoletos»: cada uno ≤ 1 s después del cambio (lo que espera el tic
         más lo que tarda). Dibujar los cuatro campos cuesta ≤ 1 ms."""
         ui, ops = self.ui, self.ops
@@ -255,7 +255,7 @@ class IndicatorsTest(D13Case):
         progress_after = ops.TICK_S + max(checking["check"])  # el siguiente porcentaje
         took, interval = _timed(ui.indicator_tick)
         inputs_after = interval + took
-        self.assertEqual(self.shown(), ["⚠ 1 entradas"])
+        self.assertEqual(self.shown(), ["⚠ 1 entrada"])
 
         store = _module("core.params").ParameterStore(project)
         before = store.get(d13.COMMON_KEY).value
@@ -264,12 +264,12 @@ class IndicatorsTest(D13Case):
             store.change(conn, d13.COMMON_KEY, value=before + 1.0,
                          reason="Prueba de rendimiento")
         marks = time.perf_counter() - started
-        self.assertEqual(self.shown(), ["⚠ 1 entradas"])  # hasta el siguiente tic
+        self.assertEqual(self.shown(), ["⚠ 1 entrada"])  # hasta el siguiente tic
         took, interval = _timed(ui.indicator_tick)
         stale_after = interval + took
         counts = ui.counts()
         self.assertGreaterEqual(counts.obsolete, d13.DATASETS)
-        self.assertEqual(self.shown(), ["⚠ 1 entradas", f"! {counts.obsolete} obsoletos"])
+        self.assertEqual(self.shown(), ["⚠ 1 entrada", f"! {counts.obsolete} obsoletos"])
 
         ops.SESSION.check_inputs()  # «Comprobando…» a la vista
         ui.show_undo_notice(UNDO_TEXT)
@@ -282,7 +282,7 @@ class IndicatorsTest(D13Case):
             f"RNF-008-06: indicadores con el proyecto de D-13: «Comprobando el proyecto… 0 %» "
             f"al quedar usable ({_seconds(opened)} s) y el porcentaje siguiente ≤ "
             f"{_seconds(progress_after)} s después (tic de {_seconds(ops.TICK_S, 2)} s + el más "
-            f"largo); «⚠ 1 entradas» {_seconds(inputs_after)} s y «! {counts.obsolete} "
+            f"largo); «⚠ 1 entrada» {_seconds(inputs_after)} s y «! {counts.obsolete} "
             f"obsoletos» {_seconds(stale_after)} s después del cambio (tic de "
             f"{_seconds(ui.INDICATOR_TICK_S, 1)} s + lectura; presupuesto "
             f"{_seconds(UPDATE_BUDGET_S, 0)} s; escribir las marcas {_seconds(marks)} s); "

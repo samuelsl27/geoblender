@@ -384,7 +384,7 @@ class ProvenanceSession:
         if project is None or project.closed:
             return tr("Open a project")
         if project.header_only:
-            return tr("Read-only project: {reason}", reason=project.status.message)
+            return read_only_text(project)
         if project.schema_version < PROVENANCE_SCHEMA:
             return tr("Schema {schema} project: migrate the project to use provenance",
                       schema=project.schema_version)
@@ -800,8 +800,17 @@ def write_unavailable() -> str | None:
         return reason
     project = SESSION.project
     if project is not None and not project.writable:
-        return tr("Read-only project: {reason}", reason=project.status.message)
+        return read_only_text(project)
     return None
+
+
+def read_only_text(project: Project) -> str:
+    """«Proyecto en solo lectura: <motivo>», en el idioma de Geoblender: el motivo de
+    ``core.project`` sin el «Solo lectura: » con que empieza, que el texto ya dice (T71)."""
+    from ...core.provenance.operations import READ_ONLY_PREFIX  # al usarlo: no al registrar
+
+    reason = str(project.status.message).removeprefix(READ_ONLY_PREFIX)
+    return tr("Read-only project: {reason}", reason=reason)
 
 
 def ensure_ready(op_type: str, inputs: Sequence[Any] = (), *, report: Report | None = None,
@@ -1273,13 +1282,15 @@ def _call_panel(name: str) -> set[str]:
 
 def typed_value(value: Any, language: str) -> str:
     """Un valor registrado como se teclea en el diálogo, en la unidad del parámetro y sin ella
-    («1,15», «0,35», «[5; 15]», «sí»; «» sin valor), para que el mismo texto se lea igual."""
+    («1,15», «0,35», «[5; 15]», «sí»; «» sin valor), para que el mismo texto se lea igual: sin
+    separador de miles («500000»; en inglés, la coma de miles no se lee: T71)."""
     if value is None:
         return ""
     if isinstance(value, tuple):
         separator = "; " if language == "es" else ", "
-        return "[" + separator.join(params.format_value(item, language) for item in value) + "]"
-    return params.format_value(value, language)
+        return "[" + separator.join(params.format_value(item, language, grouped=False)
+                                    for item in value) + "]"
+    return params.format_value(value, language, grouped=False)
 
 
 def _decision_date(typed: str) -> dt.date | str | None:
@@ -1433,7 +1444,7 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
                 self.report({"WARNING"}, tr("The calculated figure no longer differs from "
                                             "«{key}»: there is nothing to adopt", key=self.key))
                 return {"CANCELLED"}
-            self.value = shown_value(warning.value, warning.unit)
+            self.value = shown_value(warning.value, warning.unit, language)  # solo se muestra
             self.kind = params.ParamKind.CALCULADO.name
             self.decided_by = user
             self._divergence = warning.render(language)
@@ -1525,7 +1536,8 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
         from ..ui.provenance import badge
 
         self.report({"INFO"}, tr("Parameter «{key}» = {value} {kind}", key=changed.key,
-                                 value=shown_value(changed.value, changed.unit),
+                                 value=shown_value(changed.value, changed.unit,
+                                                   i18n.language()),
                                  kind=badge(changed.kind)))
         return {"FINISHED"}
 

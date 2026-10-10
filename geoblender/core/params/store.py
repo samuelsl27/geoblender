@@ -110,6 +110,8 @@ DEFAULT_SOURCE_PREFIX = "valor por defecto de Geoblender"
 
 NO_VALUE_TEXT = "sin valor"
 """Cómo se ve un valor que falta en los mensajes."""
+NO_VALUE_TEXT_EN = "no value"
+"""Lo mismo en inglés (:func:`shown_value`; como ``core.provenance.figures``)."""
 
 
 def default_source(geoblender_version: str) -> str:
@@ -396,15 +398,17 @@ def undeclared_sha256(key: str) -> str:
     return sha256_bytes(canonical_json({"declared": False, "key": key}))
 
 
-def shown_value(value: ParamValue | None, unit: str) -> str:
+def shown_value(value: ParamValue | None, unit: str, language: str = "es") -> str:
     """Un valor con su unidad como lo lee una persona: «1,23», «35 m», «[5; 15] m», «sí»,
-    «sin valor»."""
+    «sin valor»; un número, con el separador de miles de las cifras («500 000 t/año»; T71).
+    En ``language``, como una cifra (``core.provenance.figures``): «500,000 t/año» en
+    inglés."""
     if value is None:
-        return NO_VALUE_TEXT
+        return NO_VALUE_TEXT if language == "es" else NO_VALUE_TEXT_EN
     if isinstance(value, tuple):
-        text = "[" + "; ".join(format_value(item) for item in value) + "]"
+        text = "[" + "; ".join(format_value(item, language) for item in value) + "]"
     else:
-        text = format_value(value)
+        text = format_value(value, language)
     if unit == DIMENSIONLESS or isinstance(value, bool | str):
         return text
     return f"{text} {_symbol(unit)}"
@@ -487,19 +491,35 @@ def _review_json(review: object) -> str | None:
     return None if review is None else canonical_json(review).decode("utf-8")
 
 
+def _review_identity(review: Mapping[str, Any] | None) -> str | None:
+    """Lo que decide si cambia la marca «revisar» de un parámetro (RF-008-60): las
+    definiciones registrada y declarada y el código del problema de su valor; no los textos
+    del problema, que dicen sus números como los muestra el Geoblender que los escribió (T71:
+    con el separador de miles; uno anterior, sin él). Mientras está «revisar», su valor no
+    cambia (cambiarlo la quita): el mismo código es el mismo problema."""
+    if review is None:
+        return None
+    problem = review.get("problem")
+    code = None if not isinstance(problem, Mapping) else problem.get("code")
+    return _review_json({**review, "problem": code})
+
+
 def _definition_changes(conn: sqlite3.Connection, declared: Mapping[str, ParamDef]
                         ) -> list[tuple[DefinitionChange, str | None]]:
     """Cada parámetro registrado cuya marca «revisar» cambia con las definiciones
     ``declared`` (por clave, ámbito y uid de ámbito), con el texto que se guardaría en
-    ``review`` (``None``: se quita). Solo lee."""
+    ``review`` (``None``: se quita). Solo lee. Que cambie cómo se muestran los números del
+    problema no es un cambio (:func:`_review_identity`): ni se vuelve a marcar ni se
+    reescribe."""
     found: list[tuple[DefinitionChange, str | None]] = []
     for row in conn.execute(
         f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter ORDER BY key, scope, scope_uid"
     ).fetchall():
         record = _record(row)
-        text = _review_json(_review(record, declared.get(record.key)))
-        if text == _review_json(record.review):
+        review = _review(record, declared.get(record.key))
+        if _review_identity(review) == _review_identity(record.review):
             continue
+        text = _review_json(review)
         found.append((DefinitionChange(record.uid, record.key, record.scope,
                                        None if text is None else json.loads(text)), text))
     return found

@@ -1213,7 +1213,7 @@ class ProvenanceSessionTest(unittest.TestCase):
     def test_changed_input_is_updated_or_its_copy_kept(self) -> None:
         """RF-008-10, RF-008-11, RF-008-12, RF-008-61 (plan §5.3.2 y §5.4.8): con
         ``Limites_v2`` en lugar de ``Limites_v1``, la comprobación de apertura deja «Limites»
-        cambiada y «⚠ 1 entradas». Su diálogo (el que abre la puerta, solo con su uid) dice el
+        cambiada y «⚠ 1 entrada». Su diálogo (el que abre la puerta, solo con su uid) dice el
         aviso de la spec §8 —su registro, lo que depende de ella y la fecha de la fuente— con
         Actualizar (elegida) y Mantener la copia y el motivo; abrirlo y cancelarlo no cambia
         nada. Mantener la copia la deja «cambiada · se mantiene la copia», con quién, y la saca
@@ -1233,7 +1233,7 @@ class ProvenanceSessionTest(unittest.TestCase):
         self.run_checks()
         ui = _module("bl.ui.provenance")
         ui.refresh(force=True)
-        self.assertEqual(ui.inputs_text(), "⚠ 1 entradas")
+        self.assertEqual(ui.inputs_text(), "⚠ 1 entrada")
         changed = self.registry_state(project)
         self.assertEqual(changed[0][0][2], "changed")
 

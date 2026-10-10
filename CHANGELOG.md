@@ -36,7 +36,8 @@ en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su inte
   con qué operación y con qué versión del programa, y avisa de lo que deja de valer cuando algo
   cambia. Todavía ningún módulo minero registra sus entradas ni sus operaciones: lo harán la
   topografía (spec 006) y los sondeos (spec 005). Las órdenes están en **Proyecto ▸ Control**.
-  - **Parámetros del proyecto…**: cada parámetro que mueve cifras, con su valor y su unidad, su
+  - **Parámetros del proyecto…**: cada parámetro que mueve cifras, con su valor y su unidad
+    (como las cifras, con el separador de miles: 500 000 t/año, también en los avisos), su
     tipo (MEDIDO, CALCULADO, ADOPTADO o HIPÓTESIS, con las insignias [MED], [CAL], [ADO] y
     [HIP], esta con un icono ámbar, también en el historial y en la procedencia; el rojo queda
     para los errores y los cambios), su origen (documento, norma, persona, operación o

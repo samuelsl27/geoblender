@@ -4,10 +4,10 @@
 **Barra de estado** (campos de la 003 con ``bl.ui.statusbar.register_field``, prioridad 1,
 en los dos modos, Geoblender y Blender; spec §11), cada uno solo si tiene algo que mostrar:
 
-- «⚠ n entradas» (RF-008-16): las entradas cambiadas sin decidir; abre el registro de
-  entradas (``geoblender.core_show_inputs``);
-- «! n obsoletos» (RF-008-28): los datos obsoletos, más las operaciones obsoletas que solo
-  dejan cifras, más las que esperan revisión a mano; abre lo obsoleto
+- «⚠ n entradas» (RF-008-16; con una, «⚠ 1 entrada»: T71): las entradas cambiadas sin
+  decidir; abre el registro de entradas (``geoblender.core_show_inputs``);
+- «! n obsoletos» (RF-008-28; «! 1 obsoleto»): los datos obsoletos, más las operaciones
+  obsoletas que solo dejan cifras, más las que esperan revisión a mano; abre lo obsoleto
   (:class:`GEOBLENDER_PT_core_stale`);
 - «Comprobando el proyecto… 42 %» (RF-008-58), el progreso de la comprobación de apertura de
   la sesión de la procedencia (``bl.ops.core_provenance.SESSION``), con su botón de cancelar
@@ -64,7 +64,8 @@ Cambiar parámetro… y Confirmar parámetro; en solo lectura, desactivados y co
 filtros de la vista) y :func:`fill_history`, el historial y el aviso del seleccionado; los
 llaman la orden que abre el panel, Cambiar y Confirmar al escribir, y los filtros y la
 selección al cambiar. Las filas viven en ``WindowManager.geoblender_provenance`` (D16), como
-texto ya presentado: ningún valor pasa por una propiedad flotante.
+texto ya presentado: ningún valor pasa por una propiedad flotante. Los valores, en el idioma de
+Geoblender y con el separador de miles de las cifras, como una cifra («500 000 t/año»; T71).
 
 **Registro de entradas** (:class:`GEOBLENDER_PT_core_inputs`, ventana emergente que abre
 ``geoblender.core_show_inputs``; RF-008-16, RF-008-13; T51): la cabecera de las columnas y la
@@ -565,16 +566,17 @@ def expire_undo_notice() -> float | None:
 
 def _counted(field: str, n: int) -> str:
     """El texto con número del campo ``field`` en el idioma de Geoblender, compuesto una vez
-    por número e idioma (la barra lo pide en cada redibujo)."""
+    por número e idioma (la barra lo pide en cada redibujo); con 1, en singular (T71: «⚠ 1
+    entrada», «! 1 obsoleto»). Los plegados («⚠ n», «! n») no tienen número gramatical."""
     key = (field, n, language())
     found = _STATE.texts.get(key)
     if found is None:
         if len(_STATE.texts) >= MAX_TEXTS:
             _STATE.texts.clear()
         if field == FIELD_INPUTS:
-            found = tr("⚠ {n} inputs", n=n)
+            found = tr("⚠ 1 input") if n == 1 else tr("⚠ {n} inputs", n=n)
         elif field == FIELD_STALE:
-            found = tr("! {n} stale", n=n)
+            found = tr("! 1 stale") if n == 1 else tr("! {n} stale", n=n)
         elif field == FOLDED_INPUTS:
             found = tr("⚠ {n}", n=n)
         else:
@@ -584,8 +586,8 @@ def _counted(field: str, n: int) -> str:
 
 
 def inputs_text(*, folded: bool = False) -> str:
-    """«⚠ n entradas» (RF-008-16) o, plegado (T69), «⚠ n»; "" si ninguna entrada cambió sin
-    decidir."""
+    """«⚠ n entradas» (RF-008-16; «⚠ 1 entrada», T71) o, plegado (T69), «⚠ n»; "" si ninguna
+    entrada cambió sin decidir."""
     found = _STATE.counts
     if found is None or found.inputs_changed <= 0:
         return ""
@@ -593,7 +595,8 @@ def inputs_text(*, folded: bool = False) -> str:
 
 
 def stale_text(*, folded: bool = False) -> str:
-    """«! n obsoletos» (RF-008-28) o, plegado (T69), «! n»; "" si no hay nada obsoleto."""
+    """«! n obsoletos» (RF-008-28; «! 1 obsoleto», T71) o, plegado (T69), «! n»; "" si no hay
+    nada obsoleto."""
     found = _STATE.counts
     if found is None or found.obsolete <= 0:
         return ""
@@ -862,6 +865,7 @@ def fill_parameters() -> int:
     found = [] if project is None else ParameterStore(project).list(_filters(view))
     chosen = _selected(view)
     key = None if chosen is None else chosen.key
+    shown = language()
     _STATE.filling = True
     try:
         rows = view.parameters
@@ -872,7 +876,7 @@ def fill_parameters() -> int:
             row.uid = record.uid
             row.key = record.key
             row.module = record.module
-            row.value = item.shown
+            row.value = shown_value(record.value, record.unit, shown)  # como una cifra (T71)
             row.kind = str(record.kind)
             row.unconfirmed = record.unconfirmed
             row.review = ParamMark.REVIEW in item.marks
@@ -907,11 +911,12 @@ def fill_history() -> None:
             warning = parameter_divergence(conn, chosen.uid)
     history = view.parameter_history
     history.clear()
+    shown = language()
     for entry in entries:
         row = history.add()
         row.rev = entry.rev
         row.action = str(entry.action)
-        row.value = shown_value(entry.value, entry.unit)
+        row.value = shown_value(entry.value, entry.unit, shown)
         row.kind = str(entry.kind)
         row.unconfirmed = entry.unconfirmed
         row.decided_by = entry.decided_by
@@ -920,7 +925,7 @@ def fill_history() -> None:
         row.changed_by = entry.changed_by
         row.changed_at = _local(entry.changed_at, "%d/%m/%Y %H:%M")
     view.history_index = max(0, len(history) - 1)
-    view.parameter_divergence = "" if warning is None else warning.render(language())
+    view.parameter_divergence = "" if warning is None else warning.render(shown)
     view.parameter_figure_uid = "" if warning is None else warning.figure_uid
 
 

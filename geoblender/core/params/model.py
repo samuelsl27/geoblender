@@ -48,7 +48,7 @@ from types import MappingProxyType
 
 from ..catalog.schema import MODULE_CODES
 from ..errors import ValidationError
-from ..i18n import LANGUAGES
+from ..i18n import LANGUAGES, THIN_SPACE
 from ..units import DIMENSIONLESS, UNITS, UnitError, convert, parse_quantity, symbol
 
 type ParamValue = float | int | bool | str | tuple[float, ...]
@@ -302,10 +302,20 @@ CATALOG_ES: Mapping[str, str] = MappingProxyType({m.msgid: m.es for m in _CATALO
 """``msgid`` → español, para ``core.i18n.install`` (solo lectura)."""
 
 
-def format_value(value: object, language: str = "es") -> str:
+_INTEGER_PART = re.compile(r"([+-]?)(\d{4,})")
+"""La parte entera de un número escrito por Python, si tiene miles."""
+
+
+def format_value(value: object, language: str = "es", *, grouped: bool = True) -> str:
     """Un valor como lo lee una persona en ``language``: un decimal con coma en español
-    (``0.25`` → ``0,25``) y sin decimales si es entero (``2.0`` → ``2``); un booleano, «sí»
-    o «no»; ``None``, :data:`MISSING_VALUE`; lo demás, su texto (como la provisional)."""
+    (``0.25`` → ``0,25``), con todos sus decimales, y sin ellos si es entero (``2.0`` →
+    ``2``); un booleano, «sí» o «no»; ``None``, :data:`MISSING_VALUE`; lo demás, su texto
+    (como la provisional).
+
+    Un número (real o entero) lleva el separador de miles de las cifras (spec 003, II §2.4;
+    spec 008, T71): espacio fino en español (``500 000``) y coma en inglés (``500,000``). Sin
+    ``grouped``, sin él: como se teclea en un diálogo, que lo vuelve a leer igual en los dos
+    idiomas, o el valor de un ámbito («2026»)."""
     if value is None:
         return MISSING_VALUE
     if isinstance(value, bool):
@@ -314,8 +324,23 @@ def format_value(value: object, language: str = "es") -> str:
         return "yes" if value else "no"
     if isinstance(value, float):
         text = str(int(value)) if value.is_integer() else repr(value)
-        return text.replace(".", ",") if language == "es" else text
-    return str(value)
+    elif isinstance(value, int):
+        text = str(value)
+    else:
+        return str(value)
+    if grouped:
+        text = _grouped(text, THIN_SPACE if language == "es" else ",")
+    return text.replace(".", ",") if language == "es" else text
+
+
+def _grouped(text: str, separator: str) -> str:
+    """``text`` (un número escrito por Python: «-1234567.5», «1e-05», «inf») con
+    ``separator`` entre los miles de su parte entera."""
+    found = _INTEGER_PART.match(text)
+    if found is None:
+        return text
+    sign, digits = found.groups()
+    return sign + f"{int(digits):,}".replace(",", separator) + text[found.end():]
 
 
 def render(code: str, /, *, language: str = "es", **values: object) -> str:
