@@ -14,10 +14,16 @@ RF-007-13).
 También la foto de una carpeta (:func:`snapshot`, rutas, tamaños y ``mtime_ns``) y sus
 diferencias (:func:`snapshot_changes`): con ella el banco comprueba que no escribe en
 su carpeta y ``tools/check.py``, que la comprobación no escribe en el repositorio.
+
+Y el texto de los ficheros que leen las reglas (:func:`read_bytes`; spec 006, T47;
+RNF-001-01): cada fichero se lee una sola vez por proceso mientras no cambie (su ruta,
+su fecha y su tamaño), y lo comparten todas las familias de reglas y las pruebas que las
+llaman.
 """
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 from collections.abc import Collection, Iterator, Mapping, Sequence
@@ -41,6 +47,14 @@ BINARY_SUFFIXES: frozenset[str] = frozenset(
     }
 )
 _BLEND_BACKUP = re.compile(r"\.blend\d+$")
+
+# El texto compartido de las reglas (spec 006, T47): cuántos ficheros guarda la caché
+# (el repositorio tiene unos 800) y el tamaño a partir del cual un fichero se lee cada
+# vez (ninguno del repositorio llega).
+TEXT_CACHE_SIZE = 4096
+TEXT_CACHE_MAX_BYTES = 4 * 1024 * 1024
+
+FileKey = tuple[str, int, int]  # (ruta, mtime_ns, tamaño): identifica un contenido
 
 
 def repo_root(start: Path | None = None) -> Path:
@@ -101,12 +115,44 @@ def docs_root(path: Path) -> Path:
     return folder
 
 
+def file_key(path: Path) -> FileKey:
+    """``(ruta, mtime_ns, tamaño)`` de ``path``: la clave de su contenido en las cachés
+    de las reglas (:func:`read_bytes`, ``rules.pyast``)."""
+    stat = Path(path).stat()
+    return str(path), stat.st_mtime_ns, stat.st_size
+
+
+@functools.lru_cache(maxsize=TEXT_CACHE_SIZE)
+def _read_cached(path: str, mtime_ns: int, size: int) -> bytes:
+    del mtime_ns, size  # forman parte de la clave de la caché
+    return Path(path).read_bytes()
+
+
+def read_bytes(path: Path, key: FileKey | None = None) -> bytes:
+    """El contenido de ``path``, leído una sola vez por proceso mientras no cambien su
+    ruta, su fecha y su tamaño (``key``, o :func:`file_key`): lo comparten todas las reglas
+    (spec 006, T47; RNF-001-01). Un fichero de más de ``TEXT_CACHE_MAX_BYTES`` se lee cada
+    vez. Límite declarado, el de la caché de árboles de ``rules.pyast``: un fichero que se
+    reescribe con el mismo tamaño en el mismo instante (la misma ``mtime_ns``) no se
+    vuelve a leer."""
+    found = file_key(path) if key is None else key
+    if found[2] > TEXT_CACHE_MAX_BYTES:
+        return Path(path).read_bytes()
+    return _read_cached(*found)
+
+
+def clear_text_cache() -> None:
+    """Vacía la caché de :func:`read_bytes` (``rules.pyast.clear_caches`` la vacía al salir
+    del proceso)."""
+    _read_cached.cache_clear()
+
+
 def load_gitignore(root: Path) -> IgnoreSpec:
     """Patrones del ``.gitignore`` raíz (ninguno si no existe)."""
     path = root / ".gitignore"
     if not path.is_file():
         return IgnoreSpec()
-    return IgnoreSpec.from_lines(path.read_text(encoding="utf-8").splitlines())
+    return IgnoreSpec.from_lines(read_bytes(path).decode("utf-8").splitlines())
 
 
 def _walk(

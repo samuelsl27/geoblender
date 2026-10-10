@@ -19,6 +19,10 @@ prueba de los medidos; sin ninguna medida, el reparto es por número de pruebas,
 spec 003 (T40). Como todas las partes descubren lo mismo, leen el mismo fichero de
 tiempos y el reparto solo depende de eso, cada prueba está en una sola parte.
 
+Unas suites que se ejecutan a la vez (las carpetas de dominio del paso «motor»; spec 006,
+T47) se reparten también sus partes por tiempo (:func:`share`): cada parte más va a la
+que más tarda (:func:`span`, su parte más cargada con el reparto de :func:`assign`).
+
 Antes de ejecutar, cada parte escribe ``PARTE i de n: r de T pruebas`` (:func:`line`).
 ``tools/check.py`` comprueba con :func:`consistency` que las partes son 1…n, que todas
 dicen el mismo total y que sus pruebas suman ese total: si no, el reparto perdió o
@@ -60,6 +64,9 @@ FORMAT = "i/n (la parte i de n, con 1 ≤ i ≤ n)"
 TIMES_SCHEMA = "geoblender.test-times/1"  # un fichero de tiempos o de medidas (T39)
 STORE_SCHEMA = "geoblender.test-times-store/1"  # el almacén de check.py (T39)
 MIN_SECONDS = 0.001  # el peso mínimo de un módulo: así ninguna parte queda vacía
+# Los módulos de pruebas con el mismo valor en esta constante van a la misma parte (spec
+# 006, T47; affinity_of).
+AFFINITY_ATTRIBUTE = "PART_AFFINITY"
 DECIMALS = 3  # los segundos se guardan en milésimas
 
 _VALUE = re.compile(r"([0-9]+)/([0-9]+)")
@@ -87,28 +94,88 @@ def label(part: int, parts: int) -> str:
 
 
 def assign(
-    sizes: Sequence[int], parts: int, weights: Sequence[float] | None = None
+    sizes: Sequence[int],
+    parts: int,
+    weights: Sequence[float] | None = None,
+    affinities: Sequence[str | None] | None = None,
 ) -> list[int]:
     """La parte (1…``parts``) de cada grupo de pruebas, en el orden de ``unittest``,
     con ``sizes`` pruebas cada uno y, si se dan, ``weights`` segundos (:func:`weights`;
     sin ellos, el peso de cada grupo es su número de pruebas). Los que tienen pruebas,
     de más a menos peso (a igualdad, en su orden), van cada uno a la parte que lleva
-    menos (a igualdad, la de número menor); los que no tienen, a la 1. Depende solo de
-    ``sizes`` y ``weights``: todas las partes calculan lo mismo. Con al menos ``parts``
-    grupos con pruebas y pesos positivos, ninguna parte queda vacía (los ``parts``
-    mayores van uno a cada parte)."""
+    menos (a igualdad, la de número menor); los que no tienen, a la 1. Con
+    ``affinities`` (spec 006, T47; :func:`affinity_of`), los que tienen la misma van
+    juntos, como uno solo con sus pesos sumados (en el lugar del primero). Depende solo
+    de lo que recibe: todas las partes calculan lo mismo. Con al menos ``parts`` grupos
+    (o afinidades) con pruebas y pesos positivos, ninguna parte queda vacía (los
+    ``parts`` mayores van uno a cada parte)."""
     load_of: Sequence[float] = sizes if weights is None else weights
     owners = [1] * len(sizes)
     loads = [0.0] * parts
+    units: dict[tuple[int, object], list[int]] = {}
+    for index, size in enumerate(sizes):
+        if size > 0:
+            shared = affinities[index] if affinities is not None else None
+            units.setdefault((0, index) if shared is None else (1, shared), []).append(index)
     order = sorted(
-        (index for index, size in enumerate(sizes) if size > 0),
-        key=lambda index: (-load_of[index], index),
+        units.values(),
+        key=lambda members: (-sum(load_of[index] for index in members), members[0]),
     )
-    for index in order:
+    for members in order:
         lightest = min(range(parts), key=lambda part: (loads[part], part))
-        owners[index] = lightest + 1
-        loads[lightest] += load_of[index]
+        for index in members:
+            owners[index] = lightest + 1
+        loads[lightest] += sum(load_of[index] for index in members)
     return owners
+
+
+def affinity_of(name: str | None) -> str | None:
+    """La afinidad del módulo de pruebas ``name`` (spec 006, T47): su ``AFFINITY_ATTRIBUTE``
+    si ya está importado (``discover`` los importa) y es un texto no vacío; si no,
+    ``None``. Los módulos con la misma van a la misma parte: así comparten lo que su
+    proceso guarda (los árboles del repositorio que analizan las reglas)."""
+    module = sys.modules.get(name) if name is not None else None
+    value = getattr(module, AFFINITY_ATTRIBUTE, None)
+    return value if isinstance(value, str) and value else None
+
+
+def span(seconds: Sequence[float], parts: int) -> float:
+    """Lo que tarda la parte más cargada si unos módulos que tardan ``seconds`` se
+    reparten en ``parts`` partes por tiempo (:func:`assign`); 0 sin módulos."""
+    loads = [0.0] * parts
+    for owner, value in zip(assign([1] * len(seconds), parts, seconds), seconds):
+        loads[owner - 1] += value
+    return max(loads)
+
+
+def share(
+    seconds: Mapping[str, Sequence[float]],
+    limits: Mapping[str, int],
+    budget: int,
+    minimum: int = 2,
+) -> dict[str, int]:
+    """Cuántas partes tiene cada una de unas suites que se ejecutan a la vez (las
+    carpetas de dominio del paso «motor»; spec 006, T47): ``seconds`` da la duración de
+    cada módulo de cada suite, ``limits`` cuántas partes admite cada una y ``budget``
+    cuántas hay entre todas. Cada suite empieza con ``minimum`` partes (o las que admita)
+    y, mientras queden, van a la suite que más tarda con las que tiene (:func:`span`; a
+    igualdad, la primera), las que le hagan falta para tardar menos (a veces, más de una).
+    Si la que más tarda no puede tardar menos con las que quedan, no se dan más: el paso
+    no acabaría antes y más procesos a la vez solo cargan el equipo. No pasa del límite
+    de ninguna ni de ``budget``, salvo con las partes del principio."""
+    counts = {name: max(1, min(minimum, limits[name])) for name in seconds}
+    while (left := budget - sum(counts.values())) > 0:
+        slowest = max(counts, key=lambda name: span(seconds[name], counts[name]))
+        now = span(seconds[slowest], counts[slowest])
+        top = min(limits[slowest], counts[slowest] + left)
+        better = next(
+            (n for n in range(counts[slowest] + 1, top + 1) if span(seconds[slowest], n) < now),
+            None,
+        )
+        if better is None:
+            break
+        counts[slowest] = better
+    return counts
 
 
 def weights(
@@ -166,10 +233,9 @@ def select(
     ``suite``."""
     groups = list(suite)
     sizes = [group.countTestCases() for group in groups]
-    found = None
-    if times:
-        found = weights(sizes, [module_of(group) for group in groups], times)
-    owners = assign(sizes, parts, found)
+    names = [module_of(group) for group in groups]
+    found = weights(sizes, names, times) if times else None
+    owners = assign(sizes, parts, found, [affinity_of(name) for name in names])
     chosen = [group for group, owner in zip(groups, owners) if owner == part]
     return unittest.TestSuite(chosen), suite.countTestCases()
 

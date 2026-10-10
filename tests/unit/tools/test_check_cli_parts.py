@@ -521,6 +521,66 @@ class RuntimeStepTest(unittest.TestCase):
             self.assertRegex(result.out.strip().splitlines()[-1],
                              r"^RESULTADO: VERDE CON OMISIONES \(1\) \(\d+,\d s\)$")
 
+    def test_runtime_parts_by_time(self) -> None:
+        """RF-004-28, RNF-001-01, RNF-007-01 (spec 006, T47): con medidas guardadas de las
+        carpetas de «motor», sus partes se reparten entre ellas por su tiempo
+        (``parts.share``, con las duraciones de sus módulos en disco): como mucho
+        ``RUNTIME_PROCESSES`` órdenes y nunca más que las de siempre; más partes para la que
+        más tarda, al menos dos para la que tiene más de un módulo (con una iría después de
+        las demás) y una para la que tiene uno; cada carpeta, con sus partes 1…n y el
+        fichero de sus tiempos. Si falta la medida de alguna carpeta, las de siempre."""
+        each = {"tests/unit/core": 1.0, "tests/unit/jobs": 1.6, "tests/unit/gis": 0.3}
+        modules = {folder: disk_modules(ROOT, folder, "test*.py") for folder in DOMAIN_FOLDERS}
+        stored = {
+            check.times_key(check.TIMES_RUNTIME, folder, "test*.py"):
+                {name: each.get(folder, 0.5) for name in modules[folder]}
+            for folder in DOMAIN_FOLDERS
+            if len(modules[folder]) > 1
+        }
+        always = runtime_counts()
+        parted = [folder for folder in DOMAIN_FOLDERS if len(modules[folder]) > 1]
+        expected = parts.share(
+            {folder: [each.get(folder, 0.5)] * len(modules[folder]) for folder in parted},
+            {folder: check.part_count(check.RUNTIME_PROCESSES, len(modules[folder]), 24)
+             for folder in parted},
+            min(check.RUNTIME_PROCESSES, sum(always.values())) - (len(always) - len(parted)),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "almacen.json"
+            for name, saved in (("todas", stored), ("sin core", {
+                key: value for key, value in stored.items() if "/core:" not in key
+            })):
+                with self.subTest(medidas=name):
+                    parts.write_store(store, saved)
+                    with many_cpus():
+                        result = run_check(times_store=lambda root: store)
+                    self.assertEqual(result.code, 0, result.out)
+                    found: dict[str, list[tuple[int, int] | None]] = {}
+                    for call in result.runner.calls_of(RUNTIME):
+                        found.setdefault(suite_of(RUNTIME, call.cmd)[0], []).append(call.part)
+                        if call.part is not None and name == "todas":
+                            self.assertIsNotNone(_option(call.cmd, parts.TIMES_OPTION))
+                    counts = {folder: len(found[folder]) for folder in DOMAIN_FOLDERS}
+                    for folder, calls in found.items():
+                        if len(calls) > 1:
+                            self.assertCountEqual(
+                                calls, [(i, len(calls)) for i in range(1, len(calls) + 1)]
+                            )
+                        else:
+                            self.assertEqual(calls, [None], folder)
+                    if name == "sin core":
+                        self.assertEqual(counts, always)
+                        continue
+                    self.assertEqual({f: counts[f] for f in parted}, expected)
+                    self.assertLessEqual(sum(counts.values()), check.RUNTIME_PROCESSES)
+                    self.assertLessEqual(sum(counts.values()), sum(always.values()))
+                    self.assertGreater(counts["tests/unit/core"], counts["tests/unit/jobs"])
+                    self.assertGreater(counts["tests/unit/jobs"], counts["tests/unit/gis"])
+                    self.assertGreaterEqual(counts["tests/unit/gis"], 2)
+                    for folder in DOMAIN_FOLDERS:
+                        if len(modules[folder]) == 1:
+                            self.assertEqual(counts[folder], 1, folder)
+
     def test_engine_of_the_variable(self) -> None:
         """RF-004-28: con ``GEOBLENDER_TEST_RUNTIME_SITE`` en una carpeta que existe, esa
         es la carpeta ``site`` del motor de «motor» (al principio de ``PYTHONPATH``)."""

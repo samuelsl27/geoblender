@@ -57,7 +57,7 @@ from pathlib import Path
 
 from ..findings import Finding
 from ..layout import ENV_DOCS_DIR, ENV_NAS_MIRROR
-from ..repo import find_docs, is_text_file, iter_repo_files, relpath
+from ..repo import find_docs, is_text_file, iter_repo_files, read_bytes, relpath
 from . import pyast
 from .imports import EXTENSION, is_internal
 
@@ -279,6 +279,26 @@ def _is_sys_path(node: ast.expr, sys_names: set[str]) -> bool:
     )
 
 
+# Los nodos que mira _expression_rules (los demás no cambian nada en él).
+_EXPRESSION_NODES = (
+    ast.Module,
+    ast.ClassDef,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.JoinedStr,
+    ast.FormattedValue,
+    ast.Constant,
+    ast.Call,
+    ast.List,
+    ast.Tuple,
+    ast.Assign,
+    ast.AugAssign,
+    ast.AnnAssign,
+    ast.Delete,
+    ast.ImportFrom,
+)
+
+
 def _expression_rules(module: pyast.PyModule) -> list[Finding]:
     """ARQ-15 (literales con rutas), ARQ-16 (``allow_pickle=True``) y ARQ-18
     (``sys.path``, ``site.addsitedir`` y ``"pip"``), en un solo recorrido del árbol.
@@ -305,7 +325,7 @@ def _expression_rules(module: pyast.PyModule) -> list[Finding]:
             "workers/_bootstrap.py y jobs/runtime.py",
         )
 
-    for node in ast.walk(module.tree):
+    for node in pyast.nodes_of(module.tree, _EXPRESSION_NODES):
         if isinstance(
             node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
         ):
@@ -544,7 +564,7 @@ def _dossier_paths(
         if path.is_symlink() or not is_text_file(path):
             continue
         rel = relpath(root, path)
-        text = path.read_bytes().decode("utf-8", errors="replace")
+        text = read_bytes(path).decode("utf-8", errors="replace")
         for pattern, message in patterns:
             for match in pattern.finditer(text):
                 line = text.count("\n", 0, match.start()) + 1
