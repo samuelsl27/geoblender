@@ -71,14 +71,14 @@ def draw_functions(name: str) -> list[object]:
 class SplashTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
 
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         blender_ext.load_file(TEMPLATE / "startup.blend")

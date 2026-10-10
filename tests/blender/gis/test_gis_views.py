@@ -258,7 +258,7 @@ class ViewsCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.ps = _module("bl.scene.project_session")
@@ -280,7 +280,7 @@ class ViewsCase(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.ps.close()
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self) -> None:

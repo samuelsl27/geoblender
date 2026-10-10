@@ -16,6 +16,7 @@ import time
 import unittest
 from pathlib import Path
 
+from tests.support import timing
 from tests.support.core_fixtures import project_tmp
 from tests.support.package import import_geoblender
 
@@ -25,6 +26,7 @@ connection = import_geoblender("core.gpkg.connection")
 errors = import_geoblender("core.errors")
 
 SIDE_SUFFIXES = ("-wal", "-shm", "-journal")
+BUSY_BUDGET_S = 0.25  # RF-002-16 (plan §5.2): «ocupado» en ≤ 0,25 s
 
 
 def _make_db(path: Path, *, wal: bool = False) -> None:
@@ -151,7 +153,10 @@ class WriteConnectionTest(unittest.TestCase):
         """RF-002-16 (plan §5.2): con otra conexión que mantiene una lectura abierta, una
         escritura devuelve «ocupado» en ≤ 0,25 s sin cambiar nada (el ``busy_timeout`` de
         SQLite esperaría 0,29 s en Windows: el cerrojo se toma con un reintento propio) y
-        el ``busy_timeout`` vuelve a 200; al liberarla, la misma escritura termina."""
+        el ``busy_timeout`` vuelve a 200; al liberarla, la misma escritura termina. Con la
+        máquina cargada (las partes de ``tools/check.py`` a la vez), la escritura ocupada
+        se repite mientras pase del presupuesto (``tests.support.timing.least_of``; spec
+        006, T48): cada vez, «ocupado» y sin transacción abierta."""
         with project_tmp() as tmp:
             path = tmp / "p.gpkg"
             _make_db(path)
@@ -160,14 +165,21 @@ class WriteConnectionTest(unittest.TestCase):
                 reader.execute("BEGIN")
                 reader.execute("SELECT count(*) FROM t").fetchone()
                 with gpkg.GpkgConnection.open_write(path) as db:
-                    start = time.perf_counter()
-                    with self.assertRaises(errors.DatabaseBusyError) as caught:
-                        with db.transaction() as conn:
-                            conn.execute("INSERT INTO t (v) VALUES ('d')")
-                    elapsed = time.perf_counter() - start
-                    self.assertLessEqual(elapsed, 0.25)
-                    self.assertEqual(caught.exception.code, "core.gpkg_busy")
-                    self.assertFalse(db.connection.in_transaction)
+                    codes: list[str] = []
+
+                    def busy_write() -> float:
+                        start = time.perf_counter()
+                        with self.assertRaises(errors.DatabaseBusyError) as caught:
+                            with db.transaction() as conn:
+                                conn.execute("INSERT INTO t (v) VALUES ('d')")
+                        elapsed = time.perf_counter() - start
+                        codes.append(caught.exception.code)
+                        self.assertFalse(db.connection.in_transaction)
+                        return elapsed
+
+                    elapsed = timing.least_of(busy_write, BUSY_BUDGET_S)
+                    self.assertLessEqual(elapsed, BUSY_BUDGET_S)
+                    self.assertEqual(set(codes), {"core.gpkg_busy"})
                     timeout = db.connection.execute("PRAGMA busy_timeout").fetchone()[0]
                     self.assertEqual(timeout, 200)
                     reader.execute("COMMIT")

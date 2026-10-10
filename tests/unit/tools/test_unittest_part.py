@@ -11,7 +11,9 @@ T40).
   por la carpeta actual y no por ``tools/``, como con ``-m unittest``.
 - RF-001-07: unas opciones no válidas dan 2 sin ejecutar nada.
 - RNF-001-01, RNF-007-01 (spec 004, T39): con ``--tiempos`` reparte por la duración
-  medida de cada módulo y con ``--medidas`` escribe la de los suyos.
+  medida de cada módulo y con ``--medidas`` escribe la de los suyos. Con tiempos (spec 006,
+  T48), reparte los ficheros sin importarlos todos, solo importa los suyos y escribe
+  «PARTE i de n: m de M módulos».
 
 Lanza el Python en uso (el de Blender en ``tools/check.py``) sobre árboles temporales.
 """
@@ -191,10 +193,12 @@ class PartsTest(unittest.TestCase):
                     self.assertNotIn("Ran ", _text(result))
 
     def test_times_and_measures(self) -> None:
-        """RNF-001-01, RNF-007-01 (spec 004, T39): con ``--tiempos`` (la duración de cada
-        módulo) la parte reparte por tiempo y no por número de pruebas (por número, la 1
-        tendría test_c y test_d), y con ``--medidas`` escribe la duración de los módulos
-        que ejecutó, con su parte; la línea «PARTE …» y el código, los de siempre."""
+        """RNF-001-01, RNF-007-01 (spec 004, T39; spec 006, T48): con ``--tiempos`` (la
+        duración de cada módulo) la parte reparte por tiempo y no por número de pruebas
+        (por número, la 1 tendría test_c y test_d), y con ``--medidas`` escribe la
+        duración de los módulos que ejecutó, con su parte; reparte los ficheros sin
+        importarlos todos y su línea es «PARTE i de 2: m de 4 módulos» (las de las dos
+        partes cuadran); el código, el de siempre."""
         times = {
             "tests.unit.test_a": 5.0,
             "tests.unit.sub.test_b": 0.2,
@@ -203,6 +207,7 @@ class PartsTest(unittest.TestCase):
         }
         expected = {1: {"tests.unit.test_a"},
                     2: {"tests.unit.sub.test_b", "tests.unit.test_c", "tests.unit.test_d"}}
+        lines: list[tuple[int, int, int, int] | None] = []
         with temp_tree(TREE) as root, tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             parts.write_times(folder / "tiempos.json", times)
@@ -218,12 +223,48 @@ class PartsTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, text)
                     self.assertEqual(_modules(text), modules)
                     ran = sum(MODULES[m] for m in modules)
-                    self.assertEqual(parts.last_line(text), (part, 2, ran, 7))
+                    self.assertRegex(text, rf"(?m)^Ran {ran} tests? in ")
+                    lines.append(parts.last_module_line(text))
+                    self.assertEqual(lines[-1], (part, 2, len(modules), 4))
+                    self.assertIsNone(parts.last_line(text))
                     found = parts.read_measures(measures)
                     assert found is not None
                     self.assertEqual((found.part, found.parts), (part, 2))
                     self.assertEqual(set(found.modules), modules)
                     self.assertTrue(all(s >= 0 for s in found.modules.values()))
+        self.assertIsNone(parts.consistency(lines, 2, unit=parts.MODULES_UNIT))
+
+    def test_times_import_only_the_part(self) -> None:
+        """RNF-001-01, RNF-007-01 (spec 006, T48): con ``--tiempos``, la parte no importa
+        los módulos de la otra (uno que falla al importarse no la toca, y en la suya es un
+        error de importación, como con ``unittest``); un módulo nuevo, sin tiempo, cuenta
+        la media de los medidos; y los de la misma afinidad (``PART_AFFINITY`` en su
+        fuente) van juntos."""
+        tree = {
+            **TREE,
+            "tests/unit/test_a.py": 'PART_AFFINITY = "juntos"\n' + _module("test_a1", "test_a2"),
+            "tests/unit/test_c.py": 'PART_AFFINITY = "juntos"\n' + _module(
+                "test_c1", "test_c2", "test_c3"),
+            "tests/unit/test_roto.py": SPDX + "raise RuntimeError('no se importa')\n",
+        }
+        times = {"tests.unit.test_a": 1.0, "tests.unit.sub.test_b": 0.5,
+                 "tests.unit.test_c": 1.0, "tests.unit.test_d": 3.0}
+        # juntos (a + c) 2 s; d 3 s; roto, sin tiempo, la media (1,375 s); b 0,5 s:
+        # d → 1, juntos → 2, roto → 2, b → 1.
+        expected = {1: ({"tests.unit.test_d", "tests.unit.sub.test_b"}, 0),
+                    2: ({"tests.unit.test_a", "tests.unit.test_c", "tests.unit.test_roto"}, 1)}
+        with temp_tree(tree) as root, tempfile.TemporaryDirectory() as tmp:
+            parts.write_times(Path(tmp) / "tiempos.json", times)
+            for part, (modules, code) in expected.items():
+                result = run_script(root, parts.OPTION, f"{part}/2", parts.TIMES_OPTION,
+                                    str(Path(tmp) / "tiempos.json"), *DISCOVER)
+                text = _text(result)
+                with self.subTest(parte=part):
+                    self.assertEqual(result.returncode, code, text)
+                    ran = {name for name in _modules(text) if name.startswith("tests.")}
+                    self.assertEqual(ran, modules - {"tests.unit.test_roto"})
+                    self.assertEqual(parts.last_module_line(text), (part, 2, len(modules), 5))
+                    self.assertEqual("no se importa" in text, bool(code), text)
 
 
 if __name__ == "__main__":

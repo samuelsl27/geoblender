@@ -52,7 +52,7 @@ def _views(workspace: bpy.types.WorkSpace) -> Iterator[bpy.types.SpaceView3D]:
 class UiResourcesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         root = blender_ext.enable()
         cls.path = Path(root.__file__).parent / "resources" / BLEND_NAME
         cls.cat = _module("core.catalog").load()
@@ -68,7 +68,7 @@ class UiResourcesTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()  # el fichero de fábrica, sin los espacios anexados
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_content(self) -> None:
         """RF-003-02, RF-003-16: las disposiciones de la 003 y «Layout», sin objetos ni

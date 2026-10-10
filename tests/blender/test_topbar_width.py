@@ -63,7 +63,7 @@ def regions_context(left: float, right: float) -> SimpleNamespace:
 class TopbarWidthTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
         cls.width = _module("core.catalog.width")
@@ -74,7 +74,7 @@ class TopbarWidthTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def tearDown(self) -> None:
         self.preferences().topbar_titles = "AUTO"

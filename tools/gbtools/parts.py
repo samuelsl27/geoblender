@@ -28,6 +28,18 @@ Antes de ejecutar, cada parte escribe ``PARTE i de n: r de T pruebas`` (:func:`l
 dicen el mismo total y que sus pruebas suman ese total: si no, el reparto perdió o
 repitió pruebas, y el paso falla.
 
+Por ficheros (spec 006, T48; RNF-001-01, RNF-007-01): descubrir todas las pruebas importa
+todos los módulos de prueba, y con 16 partes de «unitarias» y otras 16 de «motor», cada
+una lo hacía entero (≈ 1,7 s en reposo, más con el equipo cargado) para ejecutar una
+dieciseisava parte. Con los tiempos medidos, ``tools/unittest_part.py`` reparte los
+ficheros de prueba que hay en disco sin importarlos (:func:`select_files`: su tiempo, el
+de uno nuevo la media de los medidos, y su afinidad leída de la fuente,
+:func:`source_affinity`), solo importa los suyos y escribe ``PARTE i de n: m de M
+módulos`` (:func:`module_line`): ``tools/check.py`` lee las líneas de cada paso en su
+unidad (:func:`part_lines`) y comprueba igual que todas dicen el mismo total de módulos y
+que los suyos lo suman; que ningún fichero quede sin cargar ni se ejecute en dos partes lo
+comprueba aparte, como siempre. Sin tiempos, y en Blender, se descubre todo, como antes.
+
 Los tiempos (spec 004, T39; RNF-001-01, RNF-007-01): ``tools/check.py`` guarda la
 duración de cada módulo de cada suite con partes en un almacén fuera del repositorio
 (:func:`read_store`, :func:`write_store`; lo sitúa ``check.default_times_store``, en la
@@ -45,6 +57,7 @@ Solo biblioteca estándar (HER-01): lo importan ``tools/check.py``,
 
 from __future__ import annotations
 
+import ast
 import json
 import math
 import os
@@ -69,12 +82,21 @@ MIN_SECONDS = 0.001  # el peso mínimo de un módulo: así ninguna parte queda v
 AFFINITY_ATTRIBUTE = "PART_AFFINITY"
 DECIMALS = 3  # los segundos se guardan en milésimas
 
+# La unidad de las líneas «PARTE …»: pruebas (descubiertas todas) o módulos (por
+# ficheros; spec 006, T48), con su «cuántos».
+TESTS_UNIT = "pruebas"
+MODULES_UNIT = "módulos"
+_HOW_MANY = {TESTS_UNIT: "cuántas", MODULES_UNIT: "cuántos"}
+
 _VALUE = re.compile(r"([0-9]+)/([0-9]+)")
 _LINE = re.compile(
     rf"^{LINE_PREFIX} ([0-9]+) de ([0-9]+): ([0-9]+) de ([0-9]+) pruebas?\s*$", re.MULTILINE
 )
+_MODULE_LINE = re.compile(
+    rf"^{LINE_PREFIX} ([0-9]+) de ([0-9]+): ([0-9]+) de ([0-9]+) módulos?\s*$", re.MULTILINE
+)
 
-PartLine = tuple[int, int, int, int]  # (parte, partes, pruebas de la parte, total)
+PartLine = tuple[int, int, int, int]  # (parte, partes, pruebas o módulos de la parte, total)
 
 
 def parse(value: str) -> tuple[int, int]:
@@ -137,6 +159,51 @@ def affinity_of(name: str | None) -> str | None:
     module = sys.modules.get(name) if name is not None else None
     value = getattr(module, AFFINITY_ATTRIBUTE, None)
     return value if isinstance(value, str) and value else None
+
+
+def source_affinity(path: Path) -> str | None:
+    """La afinidad de un módulo de pruebas leída de su fuente ``path``, sin importarlo
+    (spec 006, T48): el texto no vacío que se asigna a ``AFFINITY_ATTRIBUTE`` al nivel del
+    módulo (con anotación o sin ella); si no hay, o el fichero no se puede leer o no es
+    Python, ``None``."""
+    try:
+        tree = ast.parse(Path(path).read_bytes())
+    except (OSError, SyntaxError, ValueError):
+        return None
+    found: str | None = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == AFFINITY_ATTRIBUTE for t in targets):
+            constant = value.value if isinstance(value, ast.Constant) else None
+            found = constant if isinstance(constant, str) and constant else None
+    return found
+
+
+def select_files(
+    modules: Mapping[str, str],
+    root: Path,
+    part: int,
+    parts: int,
+    times: Mapping[str, float],
+) -> tuple[list[str], int]:
+    """Los módulos de la parte ``part`` de ``parts`` de ``modules`` (``{módulo: ruta}``
+    relativa a ``root``, los ficheros de prueba en disco, en su orden) y cuántos hay, sin
+    importar ninguno (spec 006, T48): cada uno pesa su tiempo de ``times`` (al menos
+    ``MIN_SECONDS``) o, sin medida, la media de los medidos, y va con los de su afinidad
+    (:func:`source_affinity`), con el reparto de :func:`assign`. Depende solo de lo que
+    recibe: todas las partes calculan lo mismo."""
+    names = list(modules)
+    known = [times[name] for name in names if name in times]
+    mean = sum(known) / len(known) if known else MIN_SECONDS
+    found = [max(times.get(name, mean), MIN_SECONDS) for name in names]
+    affinities = [source_affinity(Path(root) / modules[name]) for name in names]
+    owners = assign([1] * len(names), parts, found, affinities)
+    return [name for name, owner in zip(names, owners) if owner == part], len(names)
 
 
 def span(seconds: Sequence[float], parts: int) -> float:
@@ -457,38 +524,74 @@ def line(part: int, parts: int, selected: int, total: int) -> str:
     return f"{LINE_PREFIX} {part} de {parts}: {selected} de {total} {noun}"
 
 
-def last_line(text: str) -> PartLine | None:
-    """La última línea de :func:`line` de una salida (al principio de una línea), o
-    ``None`` si no hay ninguna."""
-    found = _LINE.findall(text)
+def module_line(part: int, parts: int, selected: int, total: int) -> str:
+    """«PARTE 2 de 16: 12 de 192 módulos»: lo que escribe antes de ejecutar cada parte que
+    reparte por ficheros (spec 006, T48; :func:`select_files`)."""
+    noun = "módulo" if total == 1 else "módulos"
+    return f"{LINE_PREFIX} {part} de {parts}: {selected} de {total} {noun}"
+
+
+def _last(pattern: re.Pattern[str], text: str) -> PartLine | None:
+    found = pattern.findall(text)
     if not found:
         return None
     part, parts, selected, total = (int(value) for value in found[-1])
     return part, parts, selected, total
 
 
-def consistency(found: Sequence[PartLine | None], parts: int) -> str | None:
+def last_line(text: str) -> PartLine | None:
+    """La última línea de :func:`line` de una salida (al principio de una línea), o
+    ``None`` si no hay ninguna."""
+    return _last(_LINE, text)
+
+
+def last_module_line(text: str) -> PartLine | None:
+    """La última línea de :func:`module_line` de una salida (al principio de una línea),
+    o ``None`` si no hay ninguna."""
+    return _last(_MODULE_LINE, text)
+
+
+def part_lines(texts: Sequence[str]) -> tuple[list[PartLine | None], str]:
+    """La última línea «PARTE …» de cada salida de las partes de un paso, y su unidad: si
+    alguna dijo la de módulos (:func:`module_line`), todas se leen así (una que no la dijo
+    no la tiene, y el reparto no cuadra); si no, las de pruebas (:func:`line`)."""
+    modules = [last_module_line(text) for text in texts]
+    if any(info is not None for info in modules):
+        return modules, MODULES_UNIT
+    return [last_line(text) for text in texts], TESTS_UNIT
+
+
+def describe(info: PartLine, unit: str = TESTS_UNIT) -> str:
+    """La línea «PARTE …» de ``info`` en su unidad (:func:`line` o :func:`module_line`)."""
+    return module_line(*info) if unit == MODULES_UNIT else line(*info)
+
+
+def consistency(
+    found: Sequence[PartLine | None], parts: int, *, unit: str = TESTS_UNIT
+) -> str | None:
     """Qué no cuadra entre las líneas de las partes de un paso (``found[k]``, la de la
     parte k + 1, o ``None`` si no la dijo), o ``None`` si cuadran: las partes son
-    1…``parts``, todas dicen el mismo total y suman ese total."""
+    1…``parts``, todas dicen el mismo total y suman ese total. ``unit``: lo que cuentan
+    las líneas, pruebas o módulos (spec 006, T48)."""
+    how_many = _HOW_MANY[unit]
     if len(found) != parts:
         return f"llegaron {len(found)} de {parts} partes"
     for number, info in enumerate(found, start=1):
         if info is None:
             return (
-                f"la parte {number} de {parts} no dice cuántas pruebas tiene (falta su "
+                f"la parte {number} de {parts} no dice {how_many} {unit} tiene (falta su "
                 f"línea «{LINE_PREFIX} {number} de {parts}: …»)"
             )
         if (info[0], info[1]) != (number, parts):
-            return f"la parte {number} de {parts} dice «{line(*info)}»"
+            return f"la parte {number} de {parts} dice «{describe(info, unit)}»"
     lines = [info for info in found if info is not None]
     totals = sorted({info[3] for info in lines})
     if len(totals) > 1:
         listed = ", ".join(str(total) for total in totals)
-        return f"las partes no dicen el mismo total de pruebas ({listed})"
+        return f"las partes no dicen el mismo total de {unit} ({listed})"
     total = totals[0]
     added = sum(info[2] for info in lines)
     if added != total:
         what = "perdió" if added < total else "repitió"
-        return f"las partes suman {added} de {total} pruebas: el reparto {what} pruebas"
+        return f"las partes suman {added} de {total} {unit}: el reparto {what} {unit}"
     return None

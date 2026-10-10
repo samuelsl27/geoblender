@@ -76,7 +76,7 @@ def controls(layout: FakeLayout) -> list[tuple[str, str]]:
 class TopbarDrawTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         # En un diccionario: una función como atributo de la clase sería un método.
         cls.saved = {"draw_left": bpy.types.TOPBAR_HT_upper_bar.draw_left,
                      "draw_right": bpy.types.TOPBAR_HT_upper_bar.draw_right}
@@ -87,7 +87,7 @@ class TopbarDrawTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def preferences(self) -> object:
         return bpy.context.preferences.addons[module_name()].preferences.ui

@@ -53,7 +53,7 @@ class _Area:
 class RedrawCostTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
@@ -66,7 +66,7 @@ class RedrawCostTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         bpy.context.scene.cursor.location = (12.34, -28.98, 212.4)

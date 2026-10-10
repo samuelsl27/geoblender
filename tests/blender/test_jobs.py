@@ -241,14 +241,14 @@ class JobsPreferencesTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.prefs = _addon_preferences()
         cls.i18n = _module("core.i18n")
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def jobs(self) -> object:
         return getattr(self.prefs, GROUP)
@@ -488,7 +488,7 @@ class JobStatusFieldTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -566,7 +566,7 @@ class JobStatusFieldTest(unittest.TestCase):
         cls.monitor.stop()
         cls.patch.stop()
         cls.catalog.unregister_worker(BOOM_WORKER)
-        blender_ext.unload()
+        blender_ext.release()
         cls.tmp.cleanup()
 
     def test_field_registered_for_both_modes(self) -> None:
@@ -697,7 +697,7 @@ class JobMonitorLogicTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -709,7 +709,7 @@ class JobMonitorLogicTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.monitor = self.ops.JobMonitor(clock=_Clock())
@@ -942,7 +942,7 @@ class JobOperatorsCatalogTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
         cls.commands = _module("bl.ui.commands")
@@ -952,7 +952,7 @@ class JobOperatorsCatalogTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_real_operators_replace_the_provisionals(self) -> None:
         """RF-004-08, RF-004-09: ``geoblender.jobs_show_jobs`` y ``geoblender.jobs_cancel``
@@ -1016,7 +1016,7 @@ class JobCancelTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -1106,7 +1106,7 @@ class JobCancelTest(unittest.TestCase):
         cls.monitor.stop()
         cls.patch.stop()
         cls.catalog.unregister_worker(GATED_WORKER)
-        blender_ext.unload()
+        blender_ext.release()
         cls.tmp.cleanup()
 
     def test_poll_false_explains_why(self) -> None:
@@ -1201,7 +1201,7 @@ class JobsListPanelTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -1213,7 +1213,7 @@ class JobsListPanelTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.monitor = self.ops.JobMonitor(clock=_Clock())
@@ -1385,7 +1385,7 @@ class ShowJobsTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -1393,7 +1393,7 @@ class ShowJobsTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.monitor = self.ops.JobMonitor(clock=_Clock())
@@ -1473,6 +1473,9 @@ SAMPLED_CHUNKS = 3
 PROGRESS_EVERY_S = 0.25
 SUM_10S_S = 10.0
 SUM_10S_TOLERANCE_S = 0.5
+# Con la máquina cargada, la suma se lanza otra vez mientras su ritmo pase del plazo, hasta
+# estas veces (spec 006, T48; como tests.support.timing.least_of).
+RHYTHM_ATTEMPTS = 5
 
 
 def _chunk_number(message: str) -> int:
@@ -1538,7 +1541,7 @@ class SelftestCleanCatalogTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
         cls.commands = _module("bl.ui.commands")
@@ -1549,7 +1552,7 @@ class SelftestCleanCatalogTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_real_operators_replace_the_provisionals(self) -> None:
         """RF-004-03, RF-004-17: ``geoblender.jobs_run_selftest`` y ``geoblender.jobs_clean``
@@ -1640,7 +1643,7 @@ class RunSelftestTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.protocol = _module("jobs.protocol")
@@ -1679,12 +1682,53 @@ class RunSelftestTest(unittest.TestCase):
         matmul = launched[SELFTEST_NAMES["MATMUL_BLENDER"]]
         cls._wait(lambda: _chunk_number(cls.by_name()[total.name].message) >= SAMPLED_CHUNKS
                   and not cls.by_name()[matmul.name].active)
+        cls._sample_sum(started)
+        # Con la máquina cargada (las partes de tools/check.py a la vez, u otro programa),
+        # el worker puede ir más despacio que su ritmo aunque el código esté bien: como
+        # tests.support.timing.least_of (spec 006, T48), mientras el ritmo medido pase de
+        # su plazo, se lanza otra vez (solo la suma), hasta RHYTHM_ATTEMPTS veces; los
+        # plazos no cambian.
+        cls.rhythm_attempts = 1
+        while not cls._on_rhythm() and cls.rhythm_attempts < RHYTHM_ATTEMPTS:
+            cls.rhythm_attempts += 1
+            started = time.monotonic()
+            cls.sum_run = _reports(operator, mode="SUM_10S")
+            cls._wait(lambda: _chunk_number(cls.by_name()[total.name].message)
+                      >= SAMPLED_CHUNKS)
+            cls._sample_sum(started)
+
+    @classmethod
+    def _sample_sum(cls, started: float) -> None:
+        """Lo que miran las pruebas de la última suma de 10 s, ya en su tercer trozo: el
+        tiempo desde ``started``, su foto y su registro; después la cancela, espera a que
+        termine y lee sus eventos."""
+        total = cls.by_name()[SELFTEST_NAMES["SUM_10S"]]
         cls.sampled_s = time.monotonic() - started
-        cls.sum_running = cls.by_name()[total.name]
+        cls.sum_running = total
         cls.sum_record = cls.records.read_record(cls.root / total.job_uid)
         cls.runner.cancel(total.job_uid)
         cls._wait(lambda: not cls.by_name()[total.name].active)
         cls.sum_events = _channel_events(cls.root / total.job_uid)
+
+    @classmethod
+    def _intervals(cls) -> list[float]:
+        """Lo que hubo entre el inicio de la última suma y cada uno de sus tres primeros
+        avances, en su proceso."""
+        start = next(event for event in cls.sum_events if event["t"] == "start")
+        progress = [event for event in cls.sum_events
+                    if event["t"] == "progress"][:SAMPLED_CHUNKS]
+        times = [start["ts"], *(event["ts"] for event in progress)]
+        return [later - earlier for earlier, later in zip(times, times[1:])]
+
+    @classmethod
+    def _on_rhythm(cls) -> bool:
+        """Si la última suma fue a su ritmo: sus avances con ≤ 0,25 s entre uno y otro y,
+        a ese ritmo, sus 50 trozos en ≤ 10,5 s (lo que la carga de la máquina solo puede
+        alargar)."""
+        intervals = cls._intervals()
+        chunks = cls.ops.SELFTEST_PARAMS["SUM_10S"]["chunks"]
+        return (len(intervals) == SAMPLED_CHUNKS and max(intervals) <= PROGRESS_EVERY_S
+                and statistics.median(intervals) * chunks <= SUM_10S_S + SUM_10S_TOLERANCE_S)
 
     @classmethod
     def by_name(cls) -> dict[str, object]:
@@ -1711,7 +1755,7 @@ class RunSelftestTest(unittest.TestCase):
         cls.runner.shutdown(timeout_s=2.0)
         cls.monitor.stop()
         cls.patch.stop()
-        blender_ext.unload()
+        blender_ext.release()
         cls.tmp.cleanup()
 
     def request(self, mode: str) -> object:
@@ -1735,7 +1779,9 @@ class RunSelftestTest(unittest.TestCase):
         segundo): trozos de ≤ 0,25 s, uno por avance, que el límite de 10 avances por
         segundo del worker no retiene. En su proceso, el inicio y los tres primeros avances
         llegan con ≤ 0,25 s entre uno y otro, y a ese ritmo los 50 trozos duran 10 ± 0,5 s;
-        se cancela al momento."""
+        se cancela al momento. Con la máquina cargada, la suma se lanza otra vez mientras su
+        ritmo pase del plazo, hasta ``RHYTHM_ATTEMPTS`` veces (spec 006, T48), y se mira la
+        última."""
         result, reports = self.sum_run
         self.assertEqual(result, {"FINISHED"})
         self.assertEqual(reports, [({"INFO"},
@@ -1813,7 +1859,7 @@ class CleanJobsTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -1832,7 +1878,7 @@ class CleanJobsTest(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.gates.release_all()
         cls.catalog.unregister_worker(CLEAN_WORKER)
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))
@@ -2053,7 +2099,7 @@ class SessionRunnerTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         cls.user = _user_dir()
         cls.no_project_root = cls.user.joinpath(*NO_PROJECT_JOBS)
@@ -2080,7 +2126,7 @@ class SessionRunnerTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.gates.release_all()
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         if not cls.root_existed:
             _remove_tree(cls.no_project_root)
@@ -2444,7 +2490,7 @@ class RuntimeSetupTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -2461,7 +2507,7 @@ class RuntimeSetupTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))
@@ -2912,7 +2958,7 @@ class ExternalPythonTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -2930,7 +2976,7 @@ class ExternalPythonTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))

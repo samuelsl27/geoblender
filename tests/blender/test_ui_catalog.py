@@ -81,7 +81,7 @@ def _context() -> SimpleNamespace:
 class UiCatalogTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
         cls.schema = _module("core.catalog.schema")
@@ -90,7 +90,7 @@ class UiCatalogTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_mirrors_share_one_definition(self) -> None:
         """RF-003-06: en todos los menús generados, un mismo comando (operador y

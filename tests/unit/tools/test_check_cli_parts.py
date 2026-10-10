@@ -144,6 +144,46 @@ class PartsTest(unittest.TestCase):
         self.assertRegex(last, r"^RESULTADO: VERDE \(\d+,\d s\)$")
         self.assertNotIn("PARTE", result.out)
 
+    def test_shared_copy_for_the_blender_parts(self) -> None:
+        """RNF-001-01, RNF-007-01 (spec 006, T48): la copia de pruebas de la extensión se
+        prepara una vez, en otro hilo, en ``copia/`` de la carpeta temporal de la
+        comprobación (``gbtools.ext_copy.prepare``), y cada parte de «blender» la recibe con
+        ``--copia``; las demás órdenes, las de siempre. Si no se puede preparar, un aviso y
+        cada parte hace la suya, como antes; el resultado no cambia."""
+        prepared: list[tuple[Path, Path, str]] = []
+
+        def prepare(root: Path, target: Path) -> Path:
+            prepared.append((root, target, threading.current_thread().name))
+            return target
+
+        with many_cpus():
+            result = run_check(test_copy=prepare)
+        self.assertEqual(result.code, 0, result.out)
+        ((root, target, thread),) = prepared
+        self.assertEqual(root, ROOT)
+        self.assertEqual(target.name, check.COPY_FOLDER)
+        self.assertTrue(target.parent.name.startswith(check.TEMP_PREFIX))
+        self.assertNotEqual(thread, threading.main_thread().name)
+        for call in result.runner.calls_of("blender"):
+            with self.subTest(parte=call.part):
+                expected = blender_part_cmd(*(call.part or (1, 1)))
+                self.assertEqual(call.cmd, [*expected, "--copia", str(target)])
+        for call in result.runner.calls_of("unitarias"):
+            self.assertNotIn("--copia", call.cmd)
+        self.assertFalse(target.parent.exists())
+
+        def broken(root: Path, target: Path) -> Path:
+            raise OSError(28, "No queda espacio en el disco (simulado)")
+
+        with many_cpus():
+            result = run_check(test_copy=broken)
+        self.assertEqual(result.code, 0, result.out)
+        self.assertIn("AVISO: no se pudo preparar la copia de la extensión para las partes de "
+                      "«blender»", result.out)
+        self.assertIn("No queda espacio en el disco (simulado)", result.out)
+        for call in result.runner.calls_of("blender"):
+            self.assertEqual(call.cmd, blender_part_cmd(*(call.part or (1, 1))))
+
     def test_few_modules(self) -> None:
         """RNF-007-01: con un solo módulo de prueba en disco, la orden de siempre, sin
         partes (``-m unittest discover`` y el lanzador sin ``--parte``); con dos, dos
@@ -353,6 +393,38 @@ class PartsTest(unittest.TestCase):
                     self.assertIn("REPARTO INCOMPLETO", result.out)
                     self.assertIn(text, result.out)
                     self.assertIn("«unitarias»", result.out.strip().splitlines()[-1])
+
+    def test_module_lines_must_add_up(self) -> None:
+        """RF-001-06 (spec 006, T48): las partes que reparten por ficheros dicen «PARTE i de
+        n: m de M módulos»; si son 1…n, dicen el mismo total de módulos y lo suman, el paso
+        es correcto y su línea cuenta las pruebas de todas; si una no dice la suya, dicen
+        totales distintos o no suman, «reparto incompleto» con el motivo en módulos, como
+        con las de pruebas."""
+
+        def modules(part: int, chosen: int, total: int, body: str) -> Result:
+            head = parts.module_line(part, 2, chosen, total)
+            return (0, "", head + "\n" + _unittest_output(1, "OK", body))
+
+        good = modules(1, 1, 2, HEAD_A)
+        cases = {
+            "sin línea": (good, _part(2, 2, 1, 2, HEAD_B), "cuántos módulos"),
+            "totales distintos": (good, modules(2, 1, 3, HEAD_B), "total de módulos"),
+            "no suman": (modules(1, 1, 3, HEAD_A), modules(2, 1, 3, HEAD_B), "2 de 3 módulos"),
+        }
+        with _manifest_root(TWO_UNIT_MODULES) as tmp, many_cpus():
+            outputs = {"unitarias#1": good, "unitarias#2": modules(2, 1, 2, HEAD_B)}
+            result = run_check(runner=FakeRunner(outputs, loaded=False), root=tmp)
+            self.assertEqual(result.code, 0, result.out)
+            self.assertRegex(_step_line(result.out, "unitarias"), r"\(2 pruebas\)")
+            for name, (first, second, text) in cases.items():
+                with self.subTest(caso=name):
+                    outputs = {"unitarias#1": first, "unitarias#2": second}
+                    result = run_check(runner=FakeRunner(outputs, loaded=False), root=tmp)
+                    self.assertEqual(result.code, 1, result.out)
+                    line = _step_line(result.out, "unitarias")
+                    self.assertIn("reparto incompleto", line)
+                    self.assertIn(text, result.out)
+                    self.assertIn("PARTE 1 de 2: 1 de", result.out)
 
     def test_omissions_of_every_part(self) -> None:
         """RF-001-06: las omisiones por un recurso de todas las partes cuentan, cada una

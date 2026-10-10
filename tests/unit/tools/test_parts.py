@@ -202,6 +202,100 @@ class ConsistencyTest(unittest.TestCase):
                 self.assertIn(text, str(problem))
 
 
+class FilesTest(unittest.TestCase):
+    """Spec 006, T48 (RNF-001-01, RNF-007-01): con los tiempos medidos, cada parte reparte
+    los ficheros de prueba en disco sin importarlos y solo importa los suyos; dice cuántos
+    módulos tiene de cuántos hay."""
+
+    def test_module_line_and_parse(self) -> None:
+        """RF-001-06: «PARTE i de n: m de M módulos», con singular, y se lee de una salida
+        con más texto (la última); la de pruebas no es la de módulos ni al revés."""
+        self.assertEqual(parts.module_line(2, 16, 12, 192), "PARTE 2 de 16: 12 de 192 módulos")
+        self.assertEqual(parts.module_line(1, 1, 1, 1), "PARTE 1 de 1: 1 de 1 módulo")
+        text = "x\n" + parts.module_line(1, 3, 2, 9) + "\nRan 3 tests\n" + parts.module_line(
+            2, 3, 4, 9)
+        self.assertEqual(parts.last_module_line(text), (2, 3, 4, 9))
+        self.assertIsNone(parts.last_line(text))
+        self.assertIsNone(parts.last_module_line(parts.line(2, 3, 5, 9)))
+        self.assertIsNone(parts.last_module_line("  " + parts.module_line(2, 3, 4, 9)))
+
+    def test_part_lines_and_consistency_in_modules(self) -> None:
+        """RF-001-06: si alguna parte dice la línea de módulos, se leen todas así y cuadran
+        si son 1…n, dicen el mismo total de módulos y suman ese total; si no, el texto
+        habla de módulos. Sin ninguna, las de pruebas, como siempre (``describe`` escribe
+        cada una con su unidad)."""
+        texts = [parts.module_line(1, 2, 3, 5) + "\n", "Ran 1 test\n" + parts.module_line(
+            2, 2, 2, 5) + "\n"]
+        found, unit = parts.part_lines(texts)
+        self.assertEqual((found, unit), ([(1, 2, 3, 5), (2, 2, 2, 5)], parts.MODULES_UNIT))
+        self.assertIsNone(parts.consistency(found, 2, unit=unit))
+        self.assertEqual(parts.describe(found[0], unit), "PARTE 1 de 2: 3 de 5 módulos")
+        classic = [parts.line(1, 2, 3, 5), parts.line(2, 2, 2, 5)]
+        self.assertEqual(parts.part_lines(classic),
+                         ([(1, 2, 3, 5), (2, 2, 2, 5)], parts.TESTS_UNIT))
+        self.assertEqual(parts.describe((1, 2, 3, 5), parts.TESTS_UNIT),
+                         "PARTE 1 de 2: 3 de 5 pruebas")
+        mixed, unit = parts.part_lines([classic[0], texts[1]])
+        self.assertEqual((mixed, unit), ([None, (2, 2, 2, 5)], parts.MODULES_UNIT))
+        cases = {
+            "una sin la de módulos": (mixed, "cuántos módulos"),
+            "totales distintos": ([(1, 2, 3, 5), (2, 2, 2, 6)], "total de módulos"),
+            "no suman": ([(1, 2, 3, 5), (2, 2, 1, 5)], "4 de 5 módulos"),
+        }
+        for name, (lines, text) in cases.items():
+            with self.subTest(caso=name):
+                problem = parts.consistency(lines, 2, unit=parts.MODULES_UNIT)
+                self.assertIsNotNone(problem)
+                self.assertIn(text, str(problem))
+        self.assertIn("8 de 9 pruebas", str(parts.consistency([(1, 2, 4, 9), (2, 2, 4, 9)], 2)))
+
+    def test_source_affinity(self) -> None:
+        """RNF-001-01 (spec 006, T47 y T48): la afinidad de un módulo leída de su fuente,
+        sin importarlo: un texto no vacío asignado a ``PART_AFFINITY`` al nivel del
+        módulo (también con anotación); si no, o si el fichero no se puede leer o no es
+        Python, ``None``."""
+        sources = {
+            "a.py": 'import os\n\nPART_AFFINITY = "reglas-repositorio"\n',
+            "b.py": 'PART_AFFINITY: str = "reglas-extension"\n',
+            "c.py": "import unittest\n",
+            "d.py": 'PART_AFFINITY = ""\n',
+            "e.py": "PART_AFFINITY = 7\n",
+            "f.py": 'def f():\n    PART_AFFINITY = "dentro"\n',
+            "g.py": "esto no es Python (\n",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            for name, text in sources.items():
+                (folder / name).write_text(text, encoding="utf-8")
+            found = {name: parts.source_affinity(folder / name) for name in sources}
+            missing = parts.source_affinity(folder / "no_existe.py")
+        self.assertEqual(found, {"a.py": "reglas-repositorio", "b.py": "reglas-extension",
+                                 "c.py": None, "d.py": None, "e.py": None, "f.py": None,
+                                 "g.py": None})
+        self.assertIsNone(missing)
+
+    def test_select_files(self) -> None:
+        """RNF-001-01, RNF-007-01: los ficheros de ``{módulo: ruta}`` repartidos por su
+        tiempo medido (uno nuevo, sin medida, cuenta la media de los medidos) y con su
+        afinidad leída de la fuente: cada módulo en una sola parte, la misma en todas, y
+        el total es el número de ficheros."""
+        sources = {"t/test_a.py": 'PART_AFFINITY = "x"\n', "t/test_b.py": "",
+                   "t/test_c.py": 'PART_AFFINITY = "x"\n', "t/test_d.py": "",
+                   "t/test_e.py": ""}
+        modules = {rel[:-3].replace("/", "."): rel for rel in sources}
+        times = {"t.test_a": 1.0, "t.test_b": 4.0, "t.test_c": 1.0, "t.test_d": 2.0}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "t").mkdir()
+            for rel, text in sources.items():
+                (root / rel).write_text(text, encoding="utf-8")
+            chosen = [parts.select_files(modules, root, part, 3, times) for part in (1, 2, 3)]
+        # b 4 s; x (a + c) 2 s; d 2 s; e sin medida, la media (2 s): b → 1, x → 2, d → 3,
+        # e → 2 (la que lleva menos de las empatadas a 2 s es la 2).
+        self.assertEqual(chosen, [(["t.test_b"], 5), (["t.test_a", "t.test_c", "t.test_e"], 5),
+                                  (["t.test_d"], 5)])
+
+
 class _Clock:
     """Un reloj que solo avanza cuando se le pide: las duraciones medidas son exactas."""
 

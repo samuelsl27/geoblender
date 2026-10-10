@@ -485,6 +485,38 @@ class TimingSupportTest(unittest.TestCase):
             with self.subTest(intentos=attempts, maximo=most), self.assertRaises(ValueError):
                 timing.best_of(_SlowAction([0.0]), budget, attempts=attempts, max_attempts=most)
 
+    def test_least_of_measures_again_while_over_budget(self) -> None:
+        """RNF-001-01, RNF-007-01 (spec 006, T48): ``least_of`` toma lo que mide la propia
+        prueba (p. ej. desde que se pide parar un cálculo hasta que para): una medida, la de
+        siempre, y, mientras pase del presupuesto (la máquina cargada), otra, hasta
+        ``MAX_ATTEMPTS``; devuelve la menor. El presupuesto no cambia: si ninguna cabe,
+        devuelve la menor, que no cabe."""
+        budget = 0.2
+        cases = {
+            "en reposo": ([0.06, 0.5], 1, 0.06),
+            "cargada a ratos": ([0.5, 0.3, 0.15, 0.01], 3, 0.15),
+            "justo en el presupuesto": ([0.2, 0.01], 1, 0.2),
+            "no para nunca": ([float("inf")], timing.MAX_ATTEMPTS, float("inf")),
+            "cargada siempre": ([0.4, 0.3, 0.35], timing.MAX_ATTEMPTS, 0.3),
+        }
+        for name, (values, calls, least) in cases.items():
+            with self.subTest(caso=name):
+                measured: list[float] = []
+
+                def measure(values: list[float] = values, measured: list[float] = measured) -> float:
+                    measured.append(values[min(len(measured), len(values) - 1)])
+                    return measured[-1]
+
+                self.assertEqual(timing.least_of(measure, budget), least)
+                self.assertEqual(len(measured), calls)
+        measured = []
+        found = timing.least_of(lambda: measured.append(0.4) or 0.4, budget, attempts=2,
+                                max_attempts=3)
+        self.assertEqual((len(measured), found), (3, 0.4))
+        for attempts, most in ((0, 5), (3, 2)):
+            with self.subTest(intentos=attempts, maximo=most), self.assertRaises(ValueError):
+                timing.least_of(lambda: 0.0, budget, attempts=attempts, max_attempts=most)
+
 
 class NoFiguresInNamesTest(unittest.TestCase):
     """``provenance_checks.assert_no_figures_in_names`` (spec 008, T55)."""

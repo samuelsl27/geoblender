@@ -23,16 +23,26 @@ Opciones (tras ``--``):
   (sin él, o sin medidas, por número de pruebas); ``--medidas F``: al terminar, escribe en
   F la duración de cada módulo que ejecutó (spec 004, T39; ``gbtools.parts``). Una ruta
   relativa se toma desde la raíz del repositorio.
+- ``--copia DIR``: usa la copia de la extensión ya preparada en DIR (``DIR/geoblender``,
+  con su código compilado en ``DIR/pyc``; ``gbtools.ext_copy.prepare``) en vez de hacer la
+  suya, y no la borra al terminar: ``tools/check.py`` la prepara una vez, mientras corren
+  las unitarias, para todas las partes de «blender» (spec 006, T48; RNF-001-01). Una ruta
+  relativa se toma desde la raíz del repositorio.
 
 Pasos: copia ``geoblender/`` con las exclusiones del manifiesto a
 ``%TEMP%\\geoblender-pruebas-*\\geoblender``, sin ``wheels/`` y con ``wheels = []`` en
-el manifiesto de la copia (con ruedas, Blender instala y quita pyproj, spec 006, en cada
-habilitar y deshabilitar: unos 0,17 s por vez y 9 s en el paso «blender» de ``check.py``,
-RNF-001-01; ninguna prueba de Blender las usa), la registra como repositorio de extensiones
-``gb_tests`` (sin habilitarla: lo hacen las pruebas, con ``tests.support.blender_ext``),
-descubre y ejecuta las pruebas con ``unittest`` y, pase lo que pase, deshabilita la
-extensión, retira el repositorio y borra la carpeta temporal. No escribe en el
-repositorio ni en el perfil de Blender del usuario. Justo después de registrar el
+el manifiesto de la copia (``gbtools.ext_copy.make_copy``; con ruedas, Blender instala y
+quita pyproj, spec 006, en cada habilitar y deshabilitar: unos 0,17 s por vez y 9 s en el
+paso «blender» de ``check.py``, RNF-001-01; ninguna prueba de Blender las usa), o toma la
+de ``--copia``; la registra como repositorio de extensiones ``gb_tests`` (sin habilitarla:
+lo hacen las pruebas, con ``tests.support.blender_ext``), descubre y ejecuta las pruebas
+con ``unittest`` y, pase lo que pase, deshabilita la extensión, retira el repositorio y
+borra la carpeta temporal (la de ``--copia``, no). No escribe en el repositorio ni en el
+perfil de Blender del usuario. El código compilado de lo que se importa durante las
+pruebas se guarda en ``pyc/`` de la carpeta temporal (o de la copia de ``--copia``), y solo
+desde que se han descubierto las pruebas: lo que importan los módulos de prueba al
+descubrirlos (numpy, la biblioteca estándar) se lee del código compilado de la instalación
+de Blender en vez de compilarse otra vez (spec 006, T48). Justo después de registrar el
 repositorio de pruebas, y antes de cualquier prueba, toma la huella del estado de Blender
 (``tests.support.blender_ext.SESSION_BASELINE``, la referencia de las pruebas de
 registro); al terminar, con la extensión deshabilitada y descargada, la toma otra vez y,
@@ -73,7 +83,7 @@ import tempfile  # noqa: E402
 import time  # noqa: E402
 import unittest  # noqa: E402
 import warnings  # noqa: E402
-from collections.abc import Sequence  # noqa: E402
+from collections.abc import Callable, Sequence  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -86,18 +96,18 @@ EXTENSION_ID = "geoblender"
 REPO_NAME = "Geoblender (pruebas)"
 REPO_MODULE = "gb_tests"
 TEMP_PREFIX = "geoblender-pruebas-"
-# La copia de pruebas va sin las ruedas de la extensión (ver el docstring del módulo).
-NO_WHEELS_PATTERN = "/wheels/"
-BYTECODE_DIR = "pyc"  # código compilado de la sesión, dentro de la carpeta temporal
+BYTECODE_DIR = "pyc"  # código compilado de la sesión: gbtools.ext_copy.BYTECODE_FOLDER
 ENV_USER_RESOURCES = "BLENDER_USER_RESOURCES"
 
 PART_OPTION = "--parte"  # gbtools.parts.OPTION (lo comprueba una prueba)
 TIMES_OPTION = "--tiempos"  # gbtools.parts.TIMES_OPTION (spec 004, T39)
 MEASURES_OPTION = "--medidas"  # gbtools.parts.MEASURES_OPTION (spec 004, T39)
+COPY_OPTION = "--copia"  # la copia compartida que prepara tools/check.py (spec 006, T48)
 
 COMMAND = (
     "& $B -b --factory-startup --python-exit-code 1 --python tools/run_blender_tests.py "
-    "-- [--carpeta DIR] [--patron PATRÓN] [--parte i/n] [--tiempos F] [--medidas F]"
+    "-- [--carpeta DIR] [--patron PATRÓN] [--parte i/n] [--tiempos F] [--medidas F] "
+    "[--copia DIR]"
 )
 USAGE = f"""Uso (dentro de Blender, desde la raíz del repositorio):
   {COMMAND}
@@ -107,6 +117,7 @@ USAGE = f"""Uso (dentro de Blender, desde la raíz del repositorio):
   --parte i/n        solo la parte i de n de las pruebas (módulos enteros)
   --tiempos F        con --parte, reparte por la duración de cada módulo del fichero F
   --medidas F        al terminar, escribe en F la duración de cada módulo ejecutado
+  --copia DIR        usa la copia de la extensión preparada en DIR y no la borra
   --ayuda, -h        muestra esta ayuda"""
 
 
@@ -122,6 +133,7 @@ class Options:
     part: tuple[int, int] | None = None  # (i, n) de --parte; None: todas
     times: Path | None = None  # --tiempos: la duración de cada módulo (spec 004, T39)
     measures: Path | None = None  # --medidas: donde se escribe la de los ejecutados
+    copy: Path | None = None  # --copia: la copia compartida (spec 006, T48)
 
 
 def _script_args(argv: Sequence[str]) -> list[str]:
@@ -131,14 +143,15 @@ def _script_args(argv: Sequence[str]) -> list[str]:
 
 
 def parse_args(args: Sequence[str]) -> Options:
-    """Lee ``--carpeta``, ``--patron``, ``--parte``, ``--tiempos`` y ``--medidas``; lanza
-    :class:`UsageError` si algo sobra, falta o no vale."""
+    """Lee ``--carpeta``, ``--patron``, ``--parte``, ``--tiempos``, ``--medidas`` y
+    ``--copia``; lanza :class:`UsageError` si algo sobra, falta o no vale."""
     values = {
         "--carpeta": DEFAULT_FOLDER,
         "--patron": DEFAULT_PATTERN,
         PART_OPTION: "",
         TIMES_OPTION: "",
         MEASURES_OPTION: "",
+        COPY_OPTION: "",
     }
     show_help = False
     pending = list(args)
@@ -176,6 +189,7 @@ def parse_args(args: Sequence[str]) -> Options:
         part=part,
         times=_file_option(values[TIMES_OPTION]),
         measures=_file_option(values[MEASURES_OPTION]),
+        copy=_file_option(values[COPY_OPTION]),
     )
 
 
@@ -221,18 +235,16 @@ def _remove_tree(folder: Path, attempts: int = 5) -> None:
             time.sleep(0.2 * (attempt + 1))
 
 
-def _install_copy(manifest_data: dict[str, object], temp: Path) -> object:
-    """Copia la extensión a ``temp`` y la registra como repositorio ``gb_tests``."""
+def _install_copy(
+    manifest_data: dict[str, object], temp: Path, *, copy: bool = True
+) -> object:
+    """Copia la extensión a ``temp`` (``gbtools.ext_copy.make_copy``; con ``copy`` falso,
+    la de ``--copia``, ya hecha) y la registra como repositorio ``gb_tests``."""
     import bpy
-    from gbtools import layout, manifest, sync
+    from gbtools import ext_copy
 
-    copy = temp / EXTENSION_ID
-    sync.mirror(
-        ROOT / layout.EXTENSION_DIR,
-        copy,
-        [*manifest.exclude_patterns(manifest_data), NO_WHEELS_PATTERN],
-    )
-    manifest.rewrite_wheels(copy / Path(layout.MANIFEST_RELPATH).name, [])
+    if copy:
+        ext_copy.make_copy(ROOT, temp, manifest_data)
     repos = bpy.context.preferences.extensions.repos
     for stale in [repo for repo in repos if repo.module == REPO_MODULE]:
         repos.remove(stale)
@@ -283,8 +295,11 @@ def _report_expected_failures(failures: Sequence[tuple[unittest.TestCase, str]])
     )
 
 
-def _run_tests(options: Options) -> tuple[int, int]:
-    """Descubre y ejecuta las pruebas; devuelve el código y cuántas se ejecutaron."""
+def _run_tests(
+    options: Options, on_discovered: Callable[[], None] | None = None
+) -> tuple[int, int]:
+    """Descubre y ejecuta las pruebas; devuelve el código y cuántas se ejecutaron. Llama a
+    ``on_discovered`` (si se da) tras descubrirlas y antes de ejecutarlas."""
     from gbtools import discovery
 
     top_level = ROOT if _inside(options.folder, ROOT) else options.folder
@@ -292,6 +307,8 @@ def _run_tests(options: Options) -> tuple[int, int]:
     suite = unittest.defaultTestLoader.discover(
         str(options.folder), pattern=options.pattern, top_level_dir=str(top_level)
     )
+    if on_discovered is not None:
+        on_discovered()
     missing = discovery.missing_modules(expected, _suite_modules(suite))
     count = suite.countTestCases()
     if count != 0 and options.part is not None:
@@ -379,8 +396,9 @@ def _fingerprint_changes(baseline: dict[str, object] | None) -> list[str]:
     ]
 
 
-def _remove_repo(repo: object | None, temp: Path) -> list[str]:
-    """Retira el repositorio de pruebas y borra ``temp``; devuelve los problemas."""
+def _remove_repo(repo: object | None, temp: Path | None) -> list[str]:
+    """Retira el repositorio de pruebas y borra ``temp`` (``None``: nada que borrar, la
+    copia de ``--copia``); devuelve los problemas."""
     import bpy
 
     problems: list[str] = []
@@ -392,6 +410,8 @@ def _remove_repo(repo: object | None, temp: Path) -> list[str]:
         problems.append(f"no se pudo retirar el repositorio «{REPO_MODULE}»: {exc!r}")
     if any(item.module == REPO_MODULE for item in repos):
         problems.append(f"el repositorio de pruebas «{REPO_MODULE}» sigue registrado")
+    if temp is None:
+        return problems
     try:
         _remove_tree(temp)
     except OSError as exc:
@@ -403,7 +423,10 @@ def _cache_bytecode(temp: Path) -> None:
     """Guarda el código compilado de lo que se importa durante las pruebas en la carpeta
     temporal (``sys.pycache_prefix``), nunca junto a las fuentes: las pruebas que
     descargan y vuelven a habilitar la extensión no la recompilan cada vez (spec 003,
-    T11), y no aparece ningún ``__pycache__`` en el repositorio."""
+    T11), y no aparece ningún ``__pycache__`` en el repositorio. Se llama tras descubrir
+    las pruebas (spec 006, T48): con el prefijo, Python busca ahí también el código
+    compilado de la biblioteca estándar y de numpy, y lo compilaría otra vez (≈ 0,4 s por
+    parte) en vez de leer el de la instalación de Blender."""
     sys.pycache_prefix = str(temp / BYTECODE_DIR)
     sys.dont_write_bytecode = False
 
@@ -458,18 +481,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not options.folder.is_dir():
         print(f"Error: no existe la carpeta de pruebas «{options.folder}»", file=sys.stderr)
         return 2
+    if options.copy is not None and not (options.copy / manifest.MANIFEST_RELPATH).is_file():
+        print(
+            f"Error: «{options.copy}» no tiene la copia de la extensión de {COPY_OPTION} "
+            f"(falta «{manifest.MANIFEST_RELPATH}»)",
+            file=sys.stderr,
+        )
+        return 2
 
     from gbtools import discovery
     from tests.support import blender_ext
 
     module = f"bl_ext.{REPO_MODULE}.{EXTENSION_ID}"
-    temp = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
+    shared = options.copy is not None
+    temp = options.copy if shared else Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
     repo: object | None = None
     baseline: dict[str, object] | None = None
     code, count = 1, 0
     try:
-        repo = _install_copy(manifest_data, temp)
-        _cache_bytecode(temp)
+        repo = _install_copy(manifest_data, temp, copy=not shared)
         os.environ[blender_ext.ENV_MODULE] = module
         # Lo que no se puede enumerar (temporizadores, manejadores de dibujo, previews,
         # suscripciones de msgbus) se anota desde ahora, y se buscan las traducciones de
@@ -482,14 +512,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         baseline = blender_ext.state_fingerprint()
         blender_ext.SESSION_BASELINE = baseline
         print(f"Extensión de pruebas: {module} (copia en «{temp}»)", flush=True)
-        code, count = _run_tests(options)
+        code, count = _run_tests(options, lambda: _cache_bytecode(temp))
     finally:
         problems = _disable_and_unload(module)
         _stop_caching_bytecode()
         changes = _fingerprint_changes(baseline)
         blender_ext.untrack_registrations()
         blender_ext.EXTENSION_MODULES = ()
-        problems += _remove_repo(repo, temp)
+        problems += _remove_repo(repo, None if shared else temp)
         blender_ext.SESSION_BASELINE = None
         os.environ.pop(blender_ext.ENV_MODULE, None)
         for change in changes:

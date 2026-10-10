@@ -67,7 +67,7 @@ class EnabledUiTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
         cls.commands = _module("bl.ui.commands")
@@ -77,7 +77,7 @@ class EnabledUiTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_each_operator_registered_once(self) -> None:
         """RF-003-07: cada ``bl_idname`` del catálogo tiene una clase registrada, real o

@@ -165,6 +165,23 @@ def unload() -> None:
         del sys.modules[key]
 
 
+def release() -> None:
+    """Deshabilita la extensión si lo está y deja sus módulos en ``sys.modules`` (spec 006,
+    T48; RNF-001-01): la siguiente :func:`enable` la registra otra vez sobre los mismos
+    módulos, como al desactivarla y activarla en las preferencias, sin importarla de nuevo.
+
+    Es lo que usan las clases que solo necesitan la extensión habilitada (operadores,
+    paneles, trabajos…), al empezar y al terminar: habilitarla tras :func:`unload` importa
+    otra vez ``core``, ``gis``, ``bl``… y lee el catálogo (unos 0,26 s cada vez, y con unas
+    170 habilitaciones, más de la mitad del paso «blender» de ``tools/check.py``); tras
+    ``release``, unos 0,03 s. Las que prueban el registro, la huella o lo que carga la
+    importación siguen con :func:`unload`, que parte de cero. Deshabilitada, Blender queda
+    como al principio de la sesión (``unregister()`` deshace todo lo que hizo
+    ``register()``; lo comprueba la huella del lanzador al terminar)."""
+    if is_enabled():
+        disable()
+
+
 def import_root() -> ModuleType:
     """Importa la extensión **sin** habilitarla (como hace Blender al listarla)."""
     return importlib.import_module(module_name())

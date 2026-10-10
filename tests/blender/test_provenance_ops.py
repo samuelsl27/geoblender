@@ -451,7 +451,7 @@ class ProvenancePropsTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.session = _module("bl.ops.core_provenance")
@@ -462,7 +462,7 @@ class ProvenancePropsTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.enterContext(_without_variable())
@@ -606,7 +606,7 @@ class ProvenanceSessionTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.session = _module("bl.ops.core_provenance")
@@ -618,7 +618,7 @@ class ProvenanceSessionTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="gb-t46-"))

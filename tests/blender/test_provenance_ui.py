@@ -182,7 +182,7 @@ class ProvenanceUiTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ui = _module("bl.ui.provenance")
         cls.session = _module("bl.ops.core_provenance")
@@ -194,7 +194,7 @@ class ProvenanceUiTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="gb-t49-"))

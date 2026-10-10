@@ -110,7 +110,7 @@ def _module(name: str) -> ModuleType:
 class StatusbarTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.statusbar = _module("bl.ui.statusbar")
@@ -127,7 +127,7 @@ class StatusbarTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         bpy.context.scene.cursor.location = (12.34, -28.98, 212.4)

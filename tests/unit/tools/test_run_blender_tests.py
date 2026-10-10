@@ -8,6 +8,8 @@ sin Blender (spec 003, T40).
 - RF-001-07: una parte que no es «i/n» con 1 ≤ i ≤ n es un error de uso (código 2).
 - RNF-001-01, RNF-007-01 (spec 004, T39): ``--tiempos`` y ``--medidas`` dan los ficheros
   con que la parte reparte por tiempo y en que escribe la duración de sus módulos.
+- RNF-001-01, RNF-007-01 (spec 006, T48): ``--copia`` da la copia de la extensión que
+  prepara ``tools/check.py`` para todas las partes.
 
 Lo que hace dentro de Blender con la parte (la línea «PARTE i de n: …» y solo sus
 pruebas) lo prueba ``tests/arnes/test_harness_blender.py`` con el Blender real y, en
@@ -21,7 +23,7 @@ from tests.support.repo import ROOT, tools_on_path
 tools_on_path()
 
 import run_blender_tests  # noqa: E402
-from gbtools import parts  # noqa: E402
+from gbtools import ext_copy, parts  # noqa: E402
 
 
 class PartOptionTest(unittest.TestCase):
@@ -75,6 +77,23 @@ class PartOptionTest(unittest.TestCase):
             with self.subTest(argumentos=args):
                 with self.assertRaises(run_blender_tests.UsageError):
                     run_blender_tests.parse_args(args)
+
+    def test_shared_copy(self) -> None:
+        """RNF-001-01, RNF-007-01 (spec 006, T48): ``--copia DIR`` da la copia de la
+        extensión que preparó ``tools/check.py`` para todas las partes (una ruta relativa,
+        desde la raíz); sin ella, ninguna (cada lanzador hace la suya); sin valor, un error
+        de uso. Su código compilado va en la carpeta de la copia que espera
+        ``gbtools.ext_copy``."""
+        absolute = ROOT.parent / "copia"
+        options = run_blender_tests.parse_args(["--parte", "1/5", "--copia", str(absolute)])
+        self.assertEqual(options.copy, absolute)
+        self.assertEqual(run_blender_tests.parse_args(["--copia=c"]).copy, ROOT / "c")
+        self.assertIsNone(run_blender_tests.parse_args([]).copy)
+        with self.assertRaises(run_blender_tests.UsageError):
+            run_blender_tests.parse_args(["--copia"])
+        self.assertEqual(run_blender_tests.COPY_OPTION, "--copia")
+        self.assertEqual(run_blender_tests.BYTECODE_DIR, ext_copy.BYTECODE_FOLDER)
+        self.assertEqual(run_blender_tests.EXTENSION_ID, ext_copy.EXTENSION_FOLDER)
 
 
 if __name__ == "__main__":

@@ -122,7 +122,7 @@ class DtmOperatorsCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.ps = _module("bl.scene.project_session")
@@ -144,7 +144,7 @@ class DtmOperatorsCase(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.ps.close()
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="gb-t28-"))

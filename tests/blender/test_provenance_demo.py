@@ -41,8 +41,8 @@ def _registries(contract: Any) -> tuple[dict[str, object], ...]:
 
 class ProvenanceDemoScriptTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        blender_ext.release()
+        self.addCleanup(blender_ext.release)
         self.addCleanup(script.unregister)
 
     def test_registers_gbdemo_operators_outside_the_catalog(self) -> None:

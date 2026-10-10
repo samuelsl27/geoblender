@@ -74,7 +74,7 @@ def _context() -> SimpleNamespace:
 class UnavailableNoteTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.catalog = _module("core.catalog")
@@ -87,7 +87,7 @@ class UnavailableNoteTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def tearDown(self) -> None:
         self.ui_i18n.apply("es")

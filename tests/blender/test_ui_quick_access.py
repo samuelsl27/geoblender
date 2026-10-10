@@ -63,7 +63,7 @@ def context(width: float, *, mode: str = "OBJECT", geoblender: bool = True,
 class QuickAccessTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
         cls.schema = _module("core.catalog.schema")
@@ -74,7 +74,7 @@ class QuickAccessTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def tearDown(self) -> None:
         self.preferences().show_view_quick_access = True

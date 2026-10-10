@@ -9,6 +9,11 @@ cambiado. :func:`best_of` toma la mejor de ``ATTEMPTS`` medidas, como hasta ahor
 mientras ninguna quepa en el presupuesto mide otra vez, hasta ``MAX_ATTEMPTS``: con la
 máquina en reposo es la misma medida de siempre, con carga a ratos encuentra un momento
 tranquilo, y el presupuesto no cambia (si ninguna cabe, la prueba falla igual).
+
+:func:`least_of` hace lo mismo con lo que mide la propia prueba (spec 006, T48): una
+latencia, como el tiempo desde que se pide parar un cálculo hasta que para, o desde que se
+pide escribir hasta que llega «ocupado». Una medida, la de siempre, y otra mientras pase del
+presupuesto.
 """
 
 from __future__ import annotations
@@ -32,16 +37,35 @@ def best_of(
     mientras la mejor pase de ``budget_s``, otra vez, hasta ``max_attempts`` en total.
     Lanza ``ValueError`` si ``attempts`` < 1 o ``max_attempts`` < ``attempts``. La prueba
     compara el resultado con el mismo presupuesto (``assertLessEqual``)."""
+
+    def measure() -> float:
+        start = clock()
+        action()
+        return clock() - start
+
+    return least_of(measure, budget_s, attempts=attempts, max_attempts=max_attempts)
+
+
+def least_of(
+    measure: Callable[[], float],
+    budget_s: float,
+    *,
+    attempts: int = 1,
+    max_attempts: int = MAX_ATTEMPTS,
+) -> float:
+    """El menor de los valores, en segundos, que da ``measure`` (lo que mide la prueba;
+    ``inf`` si no llegó a ocurrir): la llama ``attempts`` veces y, mientras el menor pase
+    de ``budget_s``, otra vez, hasta ``max_attempts`` en total. Lanza ``ValueError`` si
+    ``attempts`` < 1 o ``max_attempts`` < ``attempts``. La prueba compara el resultado con
+    el mismo presupuesto."""
     if attempts < 1 or max_attempts < attempts:
         raise ValueError(
             f"medidas no válidas: {attempts} y como mucho {max_attempts} (1 ≤ medidas ≤ "
             "máximo)"
         )
-    best = float("inf")
+    least = float("inf")
     for done in range(max_attempts):
-        if done >= attempts and best <= budget_s:
+        if done >= attempts and least <= budget_s:
             break
-        start = clock()
-        action()
-        best = min(best, clock() - start)
-    return best
+        least = min(least, measure())
+    return least

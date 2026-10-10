@@ -33,6 +33,7 @@ from unittest import mock
 import numpy as np
 
 from tests.support import jobs_fixtures as _support
+from tests.support import timing
 from tests.support.package import import_geoblender
 
 worker_api = import_geoblender("jobs.worker_api")
@@ -52,6 +53,7 @@ OutputRef = protocol.OutputRef
 LABEL = "Autodiagnóstico: suma por trozos"
 INTERVAL = worker_api.PROGRESS_INTERVAL_S
 EPSILON = 1e-9
+STOP_BUDGET_S = 0.2  # RF-004-09: un cálculo en otro hilo para en menos de 0,2 s
 
 
 class _Clock:
@@ -310,32 +312,38 @@ class CancellationTest(_ContextCase):
         self.addCleanup(thread.join, 5)
         return ended
 
-    def test_another_thread_stops_quickly_with_the_event(self):
-        """RF-004-09: un cálculo en otro hilo para en ≤ 0,2 s tras activar el aviso."""
-        event = threading.Event()
-        ctx = self.context(cancel_event=event, real_clock=True)
+    def _stop_delay(self, *, event: bool) -> float:
+        """Lo que tarda en parar un cálculo en otro hilo desde que se pide (con el aviso
+        del hilo o con el centinela), o ``inf`` si no para en 2 s."""
+        cancel = threading.Event() if event else None
+        ctx = self.context(cancel_event=cancel, real_clock=True)
         ended = self._loop_until_cancelled(ctx)
         time.sleep(0.05)
         asked = time.monotonic()
-        event.set()
+        if cancel is not None:
+            cancel.set()
+        else:
+            ctx.job_dir.cancel_file.touch()
         deadline = asked + 2
         while not ended and time.monotonic() < deadline:
             time.sleep(0.005)
-        self.assertTrue(ended, "el cálculo no paró")
-        self.assertLess(ended[0][0] - asked, 0.2)
+        return ended[0][0] - asked if ended else float("inf")
+
+    def test_another_thread_stops_quickly_with_the_event(self):
+        """RF-004-09: un cálculo en otro hilo para en < 0,2 s tras activar el aviso. Con la
+        máquina cargada (las partes de ``tools/check.py`` a la vez), se mide otra vez
+        mientras pase del presupuesto (``tests.support.timing.least_of``; spec 006, T48)."""
+        delay = timing.least_of(lambda: self._stop_delay(event=True), STOP_BUDGET_S)
+        self.assertLess(delay, float("inf"), "el cálculo no paró")
+        self.assertLess(delay, STOP_BUDGET_S)
 
     def test_another_thread_stops_quickly_with_the_sentinel(self):
-        """RF-004-09: un cálculo en otro hilo para en ≤ 0,2 s tras crear el centinela."""
-        ctx = self.context(real_clock=True)
-        ended = self._loop_until_cancelled(ctx)
-        time.sleep(0.05)
-        asked = time.monotonic()
-        ctx.job_dir.cancel_file.touch()
-        deadline = asked + 2
-        while not ended and time.monotonic() < deadline:
-            time.sleep(0.005)
-        self.assertTrue(ended, "el cálculo no paró")
-        self.assertLess(ended[0][0] - asked, 0.2)
+        """RF-004-09: un cálculo en otro hilo para en < 0,2 s tras crear el centinela. Con
+        la máquina cargada, se mide otra vez mientras pase del presupuesto
+        (``tests.support.timing.least_of``; spec 006, T48)."""
+        delay = timing.least_of(lambda: self._stop_delay(event=False), STOP_BUDGET_S)
+        self.assertLess(delay, float("inf"), "el cálculo no paró")
+        self.assertLess(delay, STOP_BUDGET_S)
 
     def test_selftest_stops_within_two_seconds(self):
         """RF-004-09: el autodiagnóstico con el contexto de verdad (un trozo de 30 s) para en

@@ -62,7 +62,7 @@ def body_rows(html: str) -> int:
 class HelpTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.help = _module("bl.ui.help")
@@ -76,7 +76,7 @@ class HelpTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def help_folder(self) -> Path:
         return Path(bpy.utils.extension_path_user(module_name(), path="help"))

@@ -121,10 +121,10 @@ class GuiCheckCyclesTest(unittest.TestCase):
     empieza la cuenta y que la espía se retira."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
-        self.addCleanup(blender_ext.unload)
+        self.addCleanup(blender_ext.release)
         self.addCleanup(blender_ext.load_file)
         self.switcher = importlib.import_module(f"{module_name()}.bl.ui.switcher")
         self.check = gui_check.Check({"toggle": 0, "disable": False, "quit": False,
@@ -229,9 +229,9 @@ class MeasureTopbarScriptTest(unittest.TestCase):
 
 class MeasureProbeTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
-        self.addCleanup(blender_ext.unload)
+        self.addCleanup(blender_ext.release)
 
     def test_probe_records_drawn_level(self) -> None:
         """RF-003-10 (convergencia, T42; hallazgo D3): la sonda envuelve el dibujo de la

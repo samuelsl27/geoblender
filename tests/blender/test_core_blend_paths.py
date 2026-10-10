@@ -49,12 +49,12 @@ class BlendPathsTestCase(unittest.TestCase):
     temporal para sus proyectos."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         self.tmp = Path(tempfile.mkdtemp(prefix="geoblender-t26-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.addCleanup(blender_ext.load_file)
-        self.addCleanup(blender_ext.unload)
+        self.addCleanup(blender_ext.release)
         blender_ext.enable()
         self.ps = ext("bl.scene.project_session")
         self.core = ext("core.project")

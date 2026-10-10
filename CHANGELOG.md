@@ -408,7 +408,17 @@ en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su inte
   mismos incumplimientos que antes. Cada prueba se
   ejecuta en una sola parte, y si las partes no suman las pruebas que hay, el paso falla.
   Una prueba con un presupuesto de milisegundos mide otra vez mientras la máquina está
-  cargada, sin cambiar el presupuesto.
+  cargada, sin cambiar el presupuesto. Con las pruebas de la topografía (spec 006) y de la
+  procedencia (spec 008) completas llegó a unos 50 s; ahora tarda unos 37 s, con las mismas
+  pruebas y alguna más: dentro de Blender, las clases de pruebas que no prueban el registro
+  ya no vuelven a importar la extensión cada vez que la habilitan (la registran otra vez
+  sobre los módulos ya cargados, como al desactivarla y activarla en las preferencias); los
+  6 Blender (antes 5) comparten una copia de la extensión que la comprobación prepara y
+  compila mientras corren las pruebas unitarias; y cada proceso de pruebas unitarias, con
+  las duraciones guardadas, solo importa sus módulos de prueba (antes, todos), y dice
+  cuántos módulos tiene de cuántos hay. Las pruebas que miden cuánto tarda en pararse un
+  trabajo, en devolver «ocupado» una escritura o en vencer un tiempo máximo miden otra vez
+  mientras la máquina está cargada, también sin cambiar sus plazos.
 - Solo un `tools/check.py` a la vez en el equipo (spec 006): si hay otro en marcha (de la
   misma carpeta, de un *worktree* o de otra sesión), el nuevo dice a cuál espera (su pid y su
   carpeta) y empieza cuando termina; su tiempo se cuenta desde entonces. Antes los dos se
