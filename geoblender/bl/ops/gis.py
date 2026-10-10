@@ -149,18 +149,29 @@ from ...gis.dtm import (
     read_settings,
     vertical_samples,
 )
+from ...gis.contours import (
+    INDEX_EVERY_KEY,
+    INDEX_OFFSET_KEY,
+    INTERVAL_KEY,
+    MIN_LENGTH_KEY,
+    SIMPLIFY_KEY,
+    ContourLine,
+)
 from ...gis.geotiff.reader import read_geotiff
 from ...gis.grid import Grid, project_grid
 from ...gis.messages import GisError
 from ...gis.points import DUP_XY_KEY, DUP_Z_KEY, Breakline, PointSet
 from ...gis.ports import TriangulationError
 from ...gis.raster import Raster
+from ...gis.reports import SurfaceReport
 from ...gis.tin_contours import DENSIFY_KEY, MAX_FLAT_KEY, PASSES_KEY
+from ...gis.validate import SURFACE_GRID, Z_RANGE_KEY
 from ...gis.vertical import BAND_KEY, check_vertical_offset
 from ...interop.csv_tables import preview_table, read_table
 from ...jobs import catalog as job_catalog
 from ...jobs.ingest import job_outcome
-from ..props.core import GEOBLENDER_PG_core_view_dataset
+from ...jobs.protocol import new_request
+from ..props.core import OBJECT_PROPERTY, GEOBLENDER_PG_core_view_dataset
 from ..props.gis import COLUMN_ROLES, NOT_IMPORTED, GEOBLENDER_PG_gis_column
 from ..scene import project_session
 from ..scene import triangulator as cdt_blender
@@ -168,6 +179,7 @@ from ..ui.commands import catalog as command_catalog
 from ..ui.provenance import badge
 from ..ui.views import no_work_window_message
 from . import core_provenance
+from . import jobs as jobs_ops
 from .core_provenance import ProvenanceAwareOperator, error_text, write_unavailable
 
 if TYPE_CHECKING:
@@ -274,8 +286,9 @@ def register() -> None:
     definitions = provenance.operation_defs(
         {provenance.RESAMPLE: recompute_resample, provenance.TIN_FROM_POINTS: recompute_tin,
          provenance.TIN_FROM_CONTOURS: recompute_tin, provenance.GRID_TO_TIN: recompute_convert,
-         provenance.TIN_TO_GRID: recompute_convert},
-        op_types=(provenance.IMPORT_DTM, provenance.RESAMPLE, *T29_OPERATIONS))
+         provenance.TIN_TO_GRID: recompute_convert, provenance.CONTOURS: recompute_contours},
+        op_types=(provenance.IMPORT_DTM, provenance.RESAMPLE, *T29_OPERATIONS,
+                  provenance.CONTOURS))
     for definition in definitions:
         if definition.op_type not in contract.OPERATIONS:
             contract.register_operation(definition)
@@ -332,15 +345,21 @@ def wheels_site() -> Path | None:
     return found if found is not None and found.is_dir() else None
 
 
-def unavailable_reason() -> str | None:
-    """Por qué no se puede lanzar ahora una orden de un MDT (su ``poll``), en el idioma de
-    Geoblender: sin proyecto, el paso previo («Primero abra un proyecto (Proyecto ▸ … ▸ Abrir
-    proyecto…)»); sin la procedencia o en solo lectura, su motivo
-    (``core_provenance.write_unavailable``); si se puede, ``None``."""
+def open_reason() -> str | None:
+    """Sin proyecto abierto, el paso previo de una orden de la topografía («Primero abra un
+    proyecto (Proyecto ▸ … ▸ Abrir proyecto…)»); con él, ``None``. Basta para las que no
+    escriben en el proyecto (validar una superficie, T30)."""
     if project_session.current() is None:
         path = path_text(command_catalog(), OPEN_PROJECT, i18n.language())
         return tr("First {step} ({path})", step=tr("open a project"), path=path)
-    return write_unavailable()
+    return None
+
+
+def unavailable_reason() -> str | None:
+    """Por qué no se puede lanzar ahora una orden de un MDT (su ``poll``), en el idioma de
+    Geoblender: sin proyecto, el paso previo (:func:`open_reason`); sin la procedencia o en
+    solo lectura, su motivo (``core_provenance.write_unavailable``); si se puede, ``None``."""
+    return open_reason() or write_unavailable()
 
 
 def _poll(cls: type) -> bool:
@@ -931,15 +950,21 @@ def project_value(project: Any, key: str) -> tuple[Any, str, bool]:
     return record.value, str(record.kind), record.unconfirmed
 
 
-def fraction_field(project: Any) -> tuple[str, str]:
-    """El campo de la fracción mínima del diálogo de la rejilla del proyecto (D18; plan
+def param_field(project: Any, key: str) -> tuple[str, str]:
+    """El campo del diálogo de una orden con el parámetro de resultado ``key`` (D18; plan
     §5.6.1): su valor en el proyecto, como se teclea, y su insignia de tipo con «sin confirmar»
     si lo está."""
-    value, kind, unconfirmed = project_value(project, FRACTION_KEY)
+    value, kind, unconfirmed = project_value(project, key)
     note = badge(kind)
     if unconfirmed:
         note = f"{note} {tr('unconfirmed')}"
     return _decimal(value), note
+
+
+def fraction_field(project: Any) -> tuple[str, str]:
+    """El campo de la fracción mínima del diálogo de la rejilla del proyecto
+    (:func:`param_field`)."""
+    return param_field(project, FRACTION_KEY)
 
 
 def _source_record(project: Any, ref: str) -> DatasetRecord:
@@ -2043,6 +2068,18 @@ def _record(project: Any, ref: str, families: Sequence[str]) -> DatasetRecord:
     return record
 
 
+def _require_project_references(project: Any, record: DatasetRecord) -> None:
+    """Una superficie que se convierte, se contornea o se valida, en el CRS y la referencia
+    vertical del proyecto (lo calculado sale en ellos y la ventana de trabajo es suya); si no,
+    ``gis.surface_references_mismatch`` nombrando los dos."""
+    found = store.dataset_references(project, record)
+    expected = store.project_references(project)
+    if found != expected:
+        raise GisError("gis.surface_references_mismatch", obj=f"«{record.name}»",
+                       field="CRS", value=reference_label(*found), name=record.name,
+                       expected=reference_label(*expected))
+
+
 def _to_project(project: Any, record: DatasetRecord, arrays: list[np.ndarray],
                 notes: list[str]) -> list[np.ndarray]:
     """Las coordenadas ``arrays`` del dato ``record`` (``(n, 2)`` o ``(n, 3)``) en el CRS y la
@@ -2414,9 +2451,12 @@ def _max_edge(text: str, name: str) -> float | None:
     return float(value)
 
 
-def _fill_items(operator: Any, families: Sequence[str]) -> list[DatasetRecord]:
-    """Las filas del diálogo de una orden de un TIN: los datos de ``families``."""
-    records = store.list_gis_datasets(core_provenance.SESSION.project, families=families)
+def _fill_items(operator: Any, families: Sequence[str],
+                project: Any = None) -> list[DatasetRecord]:
+    """Las filas del diálogo de una orden: los datos de ``families`` de ``project`` (por
+    defecto, el de la sesión de la procedencia)."""
+    records = store.list_gis_datasets(project or core_provenance.SESSION.project,
+                                      families=families)
     operator.items.clear()
     for record in records:
         item = operator.items.add()
@@ -2565,13 +2605,8 @@ class GEOBLENDER_OT_gis_create_tin_from_points(_TinMixin, ProvenanceAwareOperato
 
 
 def densify_field(project: Any) -> tuple[str, str]:
-    """El campo de la densificación del diálogo del TIN desde curvas (D18): su valor en el
-    proyecto y su insignia con «sin confirmar» si lo está."""
-    value, kind, unconfirmed = project_value(project, DENSIFY_KEY)
-    note = badge(kind)
-    if unconfirmed:
-        note = f"{note} {tr('unconfirmed')}"
-    return _decimal(value), note
+    """El campo de la densificación del diálogo del TIN desde curvas (:func:`param_field`)."""
+    return param_field(project, DENSIFY_KEY)
 
 
 class GEOBLENDER_OT_gis_create_tin_from_contours(_TinMixin, ProvenanceAwareOperator,
@@ -2856,12 +2891,7 @@ class GEOBLENDER_OT_gis_convert_dtm_tin(ProvenanceAwareOperator, bpy.types.Opera
         to_tin = self.direction == "DTM_TO_TIN"
         try:
             record = _record(project, self.source, self._families())
-            found = store.dataset_references(project, record)
-            expected = store.project_references(project)
-            if found != expected:
-                raise GisError("gis.surface_references_mismatch", obj=f"«{record.name}»",
-                               field="CRS", value=reference_label(*found), name=record.name,
-                               expected=reference_label(*expected))
+            _require_project_references(project, record)
             name = self.name.strip() or _default_name([record])
             provenance.dataset_slug(name)
             settings: dict[str, Any] = {"name": name}
@@ -2892,10 +2922,510 @@ class GEOBLENDER_OT_gis_convert_dtm_tin(ProvenanceAwareOperator, bpy.types.Opera
         return {"FINISHED"}
 
 
+# --- Curvas de nivel y validación de una superficie (T30) ----------------------------------
+
+
+CREATE_CONTOURS = "geoblender.gis_create_contours"
+VALIDATE_SURFACE = "geoblender.gis_validate_surface"
+SURFACE_FAMILIES: tuple[str, ...] = (provenance.SOURCE_GRID, provenance.PROJECT_GRID,
+                                     provenance.TIN)
+"""Las superficies de la topografía: el MDT importado, la rejilla del proyecto y el TIN."""
+SURFACE_KINDS: tuple[str, ...] = ("DTM", "TIN")
+"""El tipo (``Object.geoblender.kind``) de un objeto de la vista que muestra una superficie."""
+CONTOUR_FIELDS: tuple[tuple[str, str, str, str], ...] = (
+    ("interval", INTERVAL_KEY, "interval_m", "Interval"),
+    ("index_every", INDEX_EVERY_KEY, "index_every_m", "Index contours every"),
+    ("index_offset", INDEX_OFFSET_KEY, "index_offset_m", "Index offset"),
+    ("simplify", SIMPLIFY_KEY, "simplify_m", "Simplification"),
+    ("min_length", MIN_LENGTH_KEY, "min_length_m", "Minimum length"),
+)
+"""Los campos del diálogo de las curvas con un parámetro de resultado del proyecto (D18): la
+propiedad, la clave, su nombre en los ajustes de la operación y en el trabajo, y su etiqueta
+(``msgid``)."""
+BASE_SETTING = "base_m"
+"""La cota base de las curvas en los ajustes y en el trabajo (un ajuste, D18; 0 por
+defecto)."""
+HOLES_SHOWN = 20
+"""Huecos interiores cuya área cita el informe de una validación (el resto, cuántos más)."""
+
+
+def contour_fields(project: Any) -> dict[str, tuple[str, str]]:
+    """Los campos del diálogo de las curvas (D18; plan §5.6.1), por propiedad: el valor en el
+    proyecto de cada uno de los cinco ``gis.contours.*``, como se teclea, y su insignia con
+    «sin confirmar» si lo está (:func:`param_field`)."""
+    return {prop: param_field(project, key) for prop, key, _setting, _label in CONTOUR_FIELDS}
+
+
+def _active_surface(context: Any) -> str:
+    """El uid del dato que muestra el objeto activo de la vista si es una superficie (un MDT o
+    un TIN de la topografía); si no, vacío."""
+    obj = getattr(context, "active_object", None)
+    marks = getattr(obj, OBJECT_PROPERTY, None) if obj is not None else None
+    if marks is None or marks.kind not in SURFACE_KINDS:
+        return ""
+    return str(marks.dataset_uid)
+
+
+def _surface(project: Any, ref: str, context: Any) -> DatasetRecord:
+    """La superficie ``ref`` (nombre o uid) o, sin él, la activa en la vista, en las
+    referencias del proyecto; ``ValueError`` si no hay ninguna."""
+    shown = ref.strip() or _active_surface(context)
+    if not shown:
+        raise ValueError(tr("Choose the surface: select it in the view or give its name"))
+    record = _record(project, shown, SURFACE_FAMILIES)
+    _require_project_references(project, record)
+    return record
+
+
+def _surface_items(operator: Any, context: Any, project: Any) -> set[str] | None:
+    """Las filas del diálogo de una orden sobre una superficie y la superficie propuesta (la
+    activa en la vista o la última); sin ninguna, lo dice y devuelve ``{'CANCELLED'}``."""
+    try:
+        records = _fill_items(operator, SURFACE_FAMILIES, project)
+    except GeoblenderError as exc:
+        operator.report({"ERROR"}, error_text(exc))
+        return {"CANCELLED"}
+    if not records:
+        path = path_text(command_catalog(), IMPORT_DTM, i18n.language())
+        operator.report({"ERROR"}, tr("First {step} ({path})", step=tr("import a DTM"),
+                                      path=path))
+        return {"CANCELLED"}
+    if not operator.source:
+        active = _active_surface(context)
+        chosen = next((record for record in records if record.uid == active), records[-1])
+        operator.source = chosen.name
+    return None
+
+
+@dataclass(eq=False)
+class _Contours:
+    """Unas curvas de nivel en marcha: su operación, su nombre, la superficie y los valores
+    con que se calculan (la cota base y los cinco ``gis.contours.*``, en m)."""
+
+    handle: OperationHandle
+    name: str
+    source: DatasetRecord
+    values: Mapping[str, float]
+
+
+def _contours_plan(handle: OperationHandle, record: DatasetRecord,
+                   settings: Mapping[str, Any]) -> _Contours:
+    """Las curvas de ``record`` de la operación ``handle`` con sus ajustes ``settings``: cada
+    valor tecleado o, si no, el del proyecto que resolvió al empezar."""
+    resolved = _resolved(handle)
+    values = {BASE_SETTING: float(settings.get(BASE_SETTING, 0.0))}
+    for _prop, key, setting, _label in CONTOUR_FIELDS:
+        value = settings.get(setting, resolved.get(key))
+        if value is None:
+            raise ValueError(f"las curvas «{settings['name']}» no tienen valor para «{key}»: "
+                             "ni tecleado ni del proyecto")
+        values[setting] = float(value)
+    return _Contours(handle, str(settings["name"]), record, values)
+
+
+def _start_contours(plan: _Contours, launch: Callable[..., Any]) -> Any:
+    """Lanza el trabajo ``gis_contours`` de ``plan`` con ``launch``, con la superficie copiada
+    a ``in/``; al terminar, :func:`_contours_finished`."""
+    project = plan.handle.project
+    path = _file_of(project, plan.source)
+    crs, vertical = store.project_references(project)
+    params: dict[str, Any] = {"name": plan.name, "crs": jobs.crs_json(crs),
+                              "vertical": jobs.vertical_json(vertical), **plan.values,
+                              "count": path.stat().st_size // 4}
+    return launch(plan.handle, jobs.CONTOURS, label=tr("Contour lines «{name}»", name=plan.name),
+                  params=params, inputs={jobs.INPUT_SOURCE: path},
+                  on_finish=functools.partial(_contours_finished, plan),
+                  grace_s=jobs.CANCEL_GRACE_S)
+
+
+def _contours_finished(plan: _Contours, result: JobResult) -> None:
+    """El final de ``gis_contours``: las curvas a ``gis_cnt_<nombre>`` (su cota, si son
+    maestras, si son cerradas y su longitud en planta; su hash, el del registro) y la operación
+    incorporada con el informe (RF-006-18, RF-006-26); si el trabajo no terminó bien, la
+    procedencia la deja cancelada o fallida con el motivo de la 004."""
+    if result.state != _SUCCEEDED:
+        return
+    try:
+        outcome = job_outcome(result, result.job_dir)
+        lines = jobs.read_contours(outcome.file(jobs.OUT_CONTOURS.role))
+        report = _contours_report(plan, lines)
+        with store.ResultWriter(plan.handle.project, plan.handle) as out:
+            out.contours(plan.name, lines)
+            core_provenance.ingest_job_result(plan.handle, result, out.write, message=report)
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        reason = _failure(plan.handle, result, error)
+        _say(tr("The contour lines «{name}» have not been computed: {reason}", name=plan.name,
+                reason=reason))
+        return
+    _say(report)
+
+
+def _contours_report(plan: _Contours, lines: Sequence[ContourLine]) -> str:
+    """El informe de unas curvas: cuántas (maestras y cerradas), sus vértices y su longitud
+    en planta, y los valores con que se calcularon."""
+    values = plan.values
+    report = [tr("Contour lines {dataset} of «{source}»: {count} lines ({index} index, {closed} "
+                 "closed), {vertices} vertices, {length} m in plan; interval {interval} m, "
+                 "base elevation {base} m, index every {index_every} m",
+                 dataset=provenance.dataset_name(provenance.CONTOUR_LINES, plan.name),
+                 source=plan.source.name, count=format_number(len(lines), 0),
+                 index=format_number(sum(1 for line in lines if line.is_index), 0),
+                 closed=format_number(sum(1 for line in lines if line.closed), 0),
+                 vertices=format_number(sum(len(line.xyz) for line in lines), 0),
+                 length=format_number(sum(line.length_m for line in lines), 1),
+                 interval=_decimal(values["interval_m"]), base=_decimal(values[BASE_SETTING]),
+                 index_every=_decimal(values["index_every_m"]))]
+    if values["index_offset_m"] or values["simplify_m"] or values["min_length_m"]:
+        report.append(tr("Index offset {offset} m, simplification {simplify} m, minimum length "
+                         "{min_length} m", offset=_decimal(values["index_offset_m"]),
+                         simplify=_decimal(values["simplify_m"]),
+                         min_length=_decimal(values["min_length_m"])))
+    return "\n".join(report)
+
+
+def recompute_contours(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``gis.contours`` (RF-008-26; plan §5.6.8): las curvas de la superficie
+    vigente con los parámetros de hoy y los mismos ajustes, en su trabajo; devuelve la
+    operación nueva, que sustituye a la antigua, aún «en curso»."""
+    project = request.project
+    (use,) = [use for use in request.inputs if use.role == "source"]
+    with project.read() as conn:
+        record = dataset_registry.get(conn, use.item)
+    if record is None:
+        raise GisError("gis.dataset_unknown", obj="Dato de topografía", field="dato",
+                       value=use.item)
+    handle = request.begin(executor="job_thread")
+    _start_contours(_contours_plan(handle, record, request.settings),
+                    core_provenance.launch_job)
+    return handle
+
+
+class GEOBLENDER_OT_gis_create_contours(ProvenanceAwareOperator, bpy.types.Operator):
+    """Contour lines of a surface at the chosen interval"""
+
+    bl_idname = CREATE_CONTOURS
+    bl_label = "Contour lines…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.CONTOURS
+
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Surface",
+        description="Name or uid of the DTM or the TIN (empty: the active surface in the view)",
+        options={"SKIP_SAVE"},
+    )
+    interval: StringProperty(  # type: ignore[valid-type]
+        name="Interval",
+        description="Height between contour lines, m (empty or unchanged: the project's "
+                    "parameter)",
+        options={"SKIP_SAVE"},
+    )
+    base: StringProperty(  # type: ignore[valid-type]
+        name="Base elevation", description="Elevation from which the levels are counted, m "
+                                           "(empty: 0)",
+        options={"SKIP_SAVE"},
+    )
+    index_every: StringProperty(  # type: ignore[valid-type]
+        name="Index contours every",
+        description="Height between index contours, m (empty or unchanged: the project's "
+                    "parameter)",
+        options={"SKIP_SAVE"},
+    )
+    index_offset: StringProperty(  # type: ignore[valid-type]
+        name="Index offset",
+        description="Offset of the index contours, m (empty or unchanged: the project's "
+                    "parameter)",
+        options={"SKIP_SAVE"},
+    )
+    simplify: StringProperty(  # type: ignore[valid-type]
+        name="Simplification",
+        description="Douglas–Peucker tolerance, m; 0 does not simplify (empty or unchanged: "
+                    "the project's parameter)",
+        options={"SKIP_SAVE"},
+    )
+    min_length: StringProperty(  # type: ignore[valid-type]
+        name="Minimum length",
+        description="Shorter contour lines are dropped, m (empty or unchanged: the project's "
+                    "parameter)",
+        options={"SKIP_SAVE"},
+    )
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the contour lines (empty: the surface's)",
+        options={"SKIP_SAVE"},
+    )
+    items: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _poll(cls)
+
+    def provenance_inputs(self, context: Any) -> tuple[Use, ...]:
+        record = getattr(self, "_record", None)
+        return () if record is None else (Use(record.uid, "source"),)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        project = core_provenance.SESSION.project
+        stop = _surface_items(self, context, project)
+        if stop is not None:
+            return stop
+        fields = contour_fields(project)
+        for prop, (shown, _note) in fields.items():
+            if not getattr(self, prop):
+                setattr(self, prop, shown)
+        self._notes = {prop: note for prop, (_shown, note) in fields.items()}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("Contour lines of a surface"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop_search(self, "source", self, "items", text=tr("Surface"), translate=False)
+        notes = getattr(self, "_notes", {})
+        language = i18n.language()
+        for prop, _key, _setting, label in CONTOUR_FIELDS:
+            row = layout.row()
+            row.prop(self, prop, text=i18n.translate(language, label), translate=False)
+            note = notes.get(prop, "")
+            row.label(text=note, translate=False)
+        layout.prop(self, "base", text=tr("Base elevation"), translate=False)
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        language = i18n.language()
+        try:
+            record = _surface(project, self.source, context)
+            name = self.name.strip() or _default_name([record])
+            provenance.dataset_slug(name)  # un nombre sin letras ni cifras no vale
+            base = (parse_decimal(self.base, obj=tr("Base elevation"), field=BASE_SETTING)
+                    if self.base.strip() else 0.0)
+            settings: dict[str, Any] = {"name": name, "source": record.name,
+                                        BASE_SETTING: base}
+            params: list[str] = []
+            for prop, key, setting, label in CONTOUR_FIELDS:
+                text = str(getattr(self, prop)).strip()
+                typed = None
+                if text:
+                    typed = gis_params.param(key).check(parse_decimal(
+                        text, obj=i18n.translate(language, label), field=key))
+                if typed is None or typed == project_value(project, key)[0]:
+                    params.append(key)  # la del proyecto: se consume (RF-008-05)
+                else:
+                    settings[setting] = typed  # tecleada: un ajuste (D18)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._record = record
+        handle = self.begin(context, settings=settings, params=params, executor="job_thread")
+        if handle is None:
+            return {"CANCELLED"}
+        try:
+            job = _start_contours(_contours_plan(handle, record, settings), self.launch_job)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            try:
+                handle.fail(error_text(exc))
+            except GeoblenderError:
+                pass
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if job is None:
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Computing the contour lines «{name}» in the background…",
+                                 name=name))
+        return {"FINISHED"}
+
+
+@dataclass(eq=False)
+class _Validation:
+    """Una validación en marcha: el proyecto, la superficie y el rango plausible aplicado."""
+
+    project: Any
+    record: DatasetRecord
+    z_range: tuple[float, float]
+
+
+def validation_range(project: Any) -> tuple[float, float]:
+    """El rango plausible de las cotas (``gis.validate.z_range_m``, de control, D17): el del
+    proyecto si lo tiene y, si no, el de su definición, sin registrarlo (validar no escribe en
+    el proyecto)."""
+    low, high = project_value(project, Z_RANGE_KEY)[0]
+    return float(low), float(high)
+
+
+def _start_validation(plan: _Validation) -> Any:
+    """Lanza el trabajo ``gis_validate`` de ``plan`` sin operación (validar no es una
+    operación: spec §11) con la superficie copiada a ``in/``; al terminar,
+    :func:`_validated`. Sin lanzador de trabajos, :class:`RuntimeError`."""
+    runner = jobs_ops.MONITOR.runner
+    if runner is None or runner.closed:
+        raise RuntimeError("no hay lanzador de trabajos: Geoblender aún no ha preparado la "
+                           "carpeta de los trabajos")
+    project = plan.project
+    path = _file_of(project, plan.record)
+    crs, vertical = store.project_references(project)
+    window = project.window
+    params = {"name": plan.record.name, "crs": jobs.crs_json(crs),
+              "vertical": jobs.vertical_json(vertical),
+              "window": {"xmin": window.xmin, "ymin": window.ymin, "xmax": window.xmax,
+                         "ymax": window.ymax},
+              "z_range": list(plan.z_range), "count": path.stat().st_size // 4}
+    request = new_request(jobs.VALIDATE, label=tr("Validation of «{name}»",
+                                                  name=plan.record.name),
+                          owner=MODULE, params=params, project_uid=project.uid,
+                          grace_s=jobs.CANCEL_GRACE_S)
+    # La misma copia a in/ que los trabajos de una operación (launch_job de la 008).
+    folder = core_provenance._prepare_inputs(runner, request, {jobs.INPUT_SOURCE: path})
+    return jobs_ops.MONITOR.submit(folder, on_finish=functools.partial(_validated, plan))
+
+
+def _validated(plan: _Validation, result: JobResult) -> None:
+    """El final de ``gis_validate``: el informe en los avisos de la sesión (el panel del
+    proyecto y el registro técnico) y el trabajo dado por incorporado; nada en el
+    proyecto."""
+    name = plan.record.name
+    try:
+        if result.state == "cancelled":
+            _say(tr("The validation of «{name}» was cancelled", name=name))
+        elif result.state != _SUCCEEDED:
+            _say(tr("«{name}» has not been validated: {reason}", name=name,
+                    reason=result.error_text or result.state))
+        else:
+            outcome = job_outcome(result, result.job_dir)
+            data = json.loads(outcome.file(jobs.OUT_REPORT.role).read_text("utf-8"))
+            _say(validation_text(name, _surface_report(data)))
+    except Exception as error:  # noqa: BLE001 - se dice; el proyecto no cambia
+        LOGGER.warning("La validación de «%s» no se pudo leer", name, exc_info=error)
+        _say(tr("«{name}» has not been validated: {reason}", name=name,
+                reason=error_text(error)))
+    finally:
+        core_provenance.release_job(result.job_uid)
+
+
+def _surface_report(data: Mapping[str, Any]) -> SurfaceReport:
+    """El ``SurfaceReport`` del ``report.json`` de ``gis_validate``."""
+    values = dict(data)
+    values["hole_areas_m2"] = tuple(float(area) for area in values["hole_areas_m2"])
+    values["z_range_m"] = tuple(float(z) for z in values["z_range_m"])
+    return SurfaceReport(**values)
+
+
+def validation_text(name: str, report: SurfaceReport) -> str:
+    """El informe de la validación de la superficie ``name`` (RF-006-23), con su valor y su
+    unidad: el área y el porcentaje sin dato, el área de cada hueco interior, lo que queda
+    fuera de la ventana de trabajo, las cotas fuera del rango plausible (posible sin dato no
+    declarado) y, en un TIN, los triángulos planos, el lado máximo y los degenerados."""
+    grid = report.surface_type == SURFACE_GRID
+    area, nodata = format_number(report.area_m2, 2), format_number(report.nodata_area_m2, 2)
+    pct = format_number(report.nodata_pct, 2)
+    lines = [tr("Validation of the grid «{name}»: area {area} m², without data {nodata} m² "
+                "({pct} %)", name=name, area=area, nodata=nodata, pct=pct) if grid else
+             tr("Validation of the TIN «{name}»: area {area} m², without data {nodata} m² "
+                "({pct} %)", name=name, area=area, nodata=nodata, pct=pct)]
+    holes = report.hole_areas_m2
+    if not holes:
+        lines.append(tr("Interior holes: none"))
+    else:
+        areas = "; ".join(f"{format_number(hole, 2)} m²" for hole in holes[:HOLES_SHOWN])
+        if len(holes) > HOLES_SHOWN:
+            more = tr("… and {count} more", count=format_number(len(holes) - HOLES_SHOWN, 0))
+            areas = f"{areas}; {more}"
+        lines.append(tr("Interior holes: {count} ({areas})",
+                        count=format_number(len(holes), 0), areas=areas))
+    outside = format_number(report.cells_outside_window, 0)
+    lines.append(tr("Cells with data outside the work window: {count}", count=outside) if grid
+                 else tr("Triangles with a vertex outside the work window: {count}",
+                         count=outside))
+    low, high = (_decimal(z) for z in report.z_range_m)
+    count = format_number(report.out_of_range, 0)
+    lines.append(tr("Cells with the elevation outside the plausible range from {low} to {high} "
+                    "m: {count}", low=low, high=high, count=count) if grid else
+                 tr("Vertices with the elevation outside the plausible range from {low} to "
+                    "{high} m: {count}", low=low, high=high, count=count))
+    if report.out_of_range:
+        lines.append(tr("Elevations outside the plausible range may be an undeclared no-data "
+                        "value"))
+    if not grid:
+        lines.append(tr("Flat triangles: {flat} %; longest side: {side} m; degenerate "
+                        "triangles: {degenerate}",
+                        flat=format_number(report.flat_pct or 0.0, 2),
+                        side=format_number(report.max_edge_m or 0.0, 3),
+                        degenerate=format_number(report.degenerate or 0, 0)))
+    return "\n".join(lines)
+
+
+class GEOBLENDER_OT_gis_validate_surface(bpy.types.Operator):
+    """Holes, nodata and mesh checks of the surface"""
+
+    bl_idname = VALIDATE_SURFACE
+    bl_label = "Validate the surface"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Surface",
+        description="Name or uid of the DTM or the TIN (empty: the active surface in the view)",
+        options={"SKIP_SAVE"},
+    )
+    items: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        reason = open_reason()
+        if reason is not None:
+            cls.poll_message_set(reason)
+            return False
+        return True
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        if self.source or _active_surface(context):
+            return self.execute(context)
+        stop = _surface_items(self, context, project_session.current())
+        if stop is not None:
+            return stop
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("Validation of a surface"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop_search(self, "source", self, "items", text=tr("Surface"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = open_reason()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = project_session.current()
+        try:
+            record = _surface(project, self.source, context)
+            if project.window is None:
+                self.report({"ERROR"}, no_work_window_message())
+                return {"CANCELLED"}
+            _start_validation(_Validation(project, record, validation_range(project)))
+        except RuntimeError:
+            self.report({"ERROR"}, tr("Geoblender has not prepared the jobs folder yet"))
+            return {"CANCELLED"}
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Validating «{name}» in the background…", name=record.name))
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_gis_import_dtm, GEOBLENDER_OT_gis_resample_to_grid,
                              GEOBLENDER_OT_gis_import_points, GEOBLENDER_OT_gis_import_vector,
                              GEOBLENDER_OT_gis_create_tin_from_points,
                              GEOBLENDER_OT_gis_create_tin_from_contours,
-                             GEOBLENDER_OT_gis_convert_dtm_tin)
+                             GEOBLENDER_OT_gis_convert_dtm_tin, GEOBLENDER_OT_gis_create_contours,
+                             GEOBLENDER_OT_gis_validate_surface)
 """Los operadores de ``gis`` (T28: las órdenes de un MDT; T29: puntos, capas, TIN y MDT ⇄
-TIN)."""
+TIN; T30: curvas de nivel y validar una superficie)."""

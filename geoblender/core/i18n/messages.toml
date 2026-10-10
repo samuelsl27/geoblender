@@ -2198,6 +2198,116 @@ es = "Conversión MDT ⇄ TIN"
 ["Converting «{name}» in the background…"]
 es = "Convirtiendo «{name}» en segundo plano…"
 
+# Curvas de nivel y validar una superficie (spec 006, T30; RF-006-18, RF-006-23, RF-006-27;
+# plan 006 §5.3.5 y §5.6.1): Curvas de nivel… y Validar la superficie, sus diálogos y sus
+# informes. «Surface», «Name», «Contour lines of a surface» y «… and {count} more» ya están
+# arriba.
+
+["Interval"]
+es = "Equidistancia"
+
+["Height between contour lines, m (empty or unchanged: the project's parameter)"]
+es = "Desnivel entre curvas, m (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Base elevation"]
+es = "Cota base"
+
+["Elevation from which the levels are counted, m (empty: 0)"]
+es = "Cota desde la que se cuentan las curvas, m (vacío: 0)"
+
+["Index contours every"]
+es = "Maestras cada"
+
+["Height between index contours, m (empty or unchanged: the project's parameter)"]
+es = "Desnivel entre curvas maestras, m (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Index offset"]
+es = "Desfase de las maestras"
+
+["Offset of the index contours, m (empty or unchanged: the project's parameter)"]
+es = "Desfase de las curvas maestras, m (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Simplification"]
+es = "Simplificación"
+
+["Douglas–Peucker tolerance, m; 0 does not simplify (empty or unchanged: the project's parameter)"]
+es = "Tolerancia de Douglas–Peucker, m; 0 no simplifica (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Minimum length"]
+es = "Longitud mínima"
+
+["Shorter contour lines are dropped, m (empty or unchanged: the project's parameter)"]
+es = "Se quitan las curvas más cortas, m (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Name of the contour lines (empty: the surface's)"]
+es = "Nombre de las curvas (vacío: el de la superficie)"
+
+["Name or uid of the DTM or the TIN (empty: the active surface in the view)"]
+es = "Nombre o uid del MDT o del TIN (vacío: la superficie activa en la vista)"
+
+["Choose the surface: select it in the view or give its name"]
+es = "Elija la superficie: selecciónela en la vista o dé su nombre"
+
+["Contour lines «{name}»"]
+es = "Curvas de nivel «{name}»"
+
+["Contour lines {dataset} of «{source}»: {count} lines ({index} index, {closed} closed), {vertices} vertices, {length} m in plan; interval {interval} m, base elevation {base} m, index every {index_every} m"]
+es = "Curvas de nivel {dataset} de «{source}»: {count} curvas ({index} maestras, {closed} cerradas), {vertices} vértices, {length} m en planta; equidistancia {interval} m, cota base {base} m, maestras cada {index_every} m"
+
+["Index offset {offset} m, simplification {simplify} m, minimum length {min_length} m"]
+es = "Desfase de las maestras {offset} m, simplificación {simplify} m, longitud mínima {min_length} m"
+
+["The contour lines «{name}» have not been computed: {reason}"]
+es = "No se han calculado las curvas de nivel «{name}»: {reason}"
+
+["Computing the contour lines «{name}» in the background…"]
+es = "Calculando las curvas de nivel «{name}» en segundo plano…"
+
+["Validation of a surface"]
+es = "Validación de una superficie"
+
+["Validation of «{name}»"]
+es = "Validación de «{name}»"
+
+["Validating «{name}» in the background…"]
+es = "Validando «{name}» en segundo plano…"
+
+["The validation of «{name}» was cancelled"]
+es = "Se canceló la validación de «{name}»"
+
+["«{name}» has not been validated: {reason}"]
+es = "No se ha validado «{name}»: {reason}"
+
+["Validation of the grid «{name}»: area {area} m², without data {nodata} m² ({pct} %)"]
+es = "Validación de la rejilla «{name}»: área {area} m², sin dato {nodata} m² ({pct} %)"
+
+["Validation of the TIN «{name}»: area {area} m², without data {nodata} m² ({pct} %)"]
+es = "Validación del TIN «{name}»: área {area} m², sin dato {nodata} m² ({pct} %)"
+
+["Interior holes: none"]
+es = "Huecos interiores: ninguno"
+
+["Interior holes: {count} ({areas})"]
+es = "Huecos interiores: {count} ({areas})"
+
+["Cells with data outside the work window: {count}"]
+es = "Celdas con dato fuera de la ventana de trabajo: {count}"
+
+["Triangles with a vertex outside the work window: {count}"]
+es = "Triángulos con algún vértice fuera de la ventana de trabajo: {count}"
+
+["Cells with the elevation outside the plausible range from {low} to {high} m: {count}"]
+es = "Celdas con la cota fuera del rango plausible de {low} a {high} m: {count}"
+
+["Vertices with the elevation outside the plausible range from {low} to {high} m: {count}"]
+es = "Vértices con la cota fuera del rango plausible de {low} a {high} m: {count}"
+
+["Elevations outside the plausible range may be an undeclared no-data value"]
+es = "Las cotas fuera del rango plausible pueden ser un sin dato no declarado"
+
+["Flat triangles: {flat} %; longest side: {side} m; degenerate triangles: {degenerate}"]
+es = "Triángulos planos: {flat} %; lado máximo: {side} m; triángulos degenerados: {degenerate}"
+
 # Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
 # Los mensajes de la procedencia y de los parámetros (spec §8) están en
 # core/provenance/messages.py y core/params/model.py, y se instalan al registrar.
