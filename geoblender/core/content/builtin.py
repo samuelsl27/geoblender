@@ -26,7 +26,9 @@ es un punto de cancelación) y ninguno crea, cambia ni borra nada junto a su fue
   una copia privada en una carpeta temporal (``core.gpkg.wal.private_copy``, con lo que tenga
   pendiente su ``-wal``), que se borra al acabar y al cancelar: por eso ``needs_copy`` es
   falso, la copia la hace él. :func:`layer_steps` lee con una conexión ya abierta: la de la
-  transacción que escribe una tabla del proyecto, que ve lo que aún no ha confirmado.
+  transacción que escribe una tabla del proyecto, que ve lo que aún no ha confirmado. Cuenta
+  las filas por trozos de su clave entera, las lee por trozos y cierra el hash por trozos, con
+  el progreso de cada parte y un punto de cancelación tras cada trozo (T67; RNF-008-11).
 - :data:`DOCUMENT` (``core.document@1``): los bytes de un documento o un informe; su hash de
   datos es su huella (``core.hashing.sha256_file``).
 - :data:`NPZ_MESH` (``core.npz_mesh@1``): una malla ``npz`` de ``meshes/``
@@ -46,7 +48,7 @@ import os
 import re
 import sqlite3
 import tempfile
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -93,6 +95,17 @@ LAYER_KINDS: Mapping[str, str] = MappingProxyType(
 """``gpkg_contents.data_type`` → tipo de dato (``aspatial``: las tablas del GDAL antiguo)."""
 ROW_BYTES = 256
 """Lo que se cuenta por fila para repartir la lectura en trozos de ``chunk_bytes``."""
+SCAN_CHUNKS = 8
+"""Trozos de lectura (``chunk_bytes // ROW_BYTES`` filas) que van en un trozo del recuento y
+del cierre del hash de ``core.gpkg_layer@1``: contar o cerrar una fila cuesta decenas de veces
+menos que leerla y hashearla (T67; RNF-008-11)."""
+COUNT_SHARE = 0.05
+"""La parte del progreso de ``core.gpkg_layer@1`` que es el recuento de las filas, antes de
+leerlas (en ``Z:``, en frío, el 17 % del tiempo; en local, el 1 %)."""
+FINISH_SHARE = 0.05
+"""La parte del progreso que es el cierre del hash (los sha256 de las filas, ordenados)."""
+READ_SHARE = 1.0 - COUNT_SHARE - FINISH_SHARE
+"""La parte del progreso que es la lectura de las filas, entre las otras dos."""
 GPKG_BYTES_PER_S = 20_000_000
 """Los bytes del fichero que lee y hashea ``core.gpkg_layer@1`` por segundo, a la baja: su
 estimación (medido en el PC de referencia: 41 MB, 100 000 polígonos de 20 vértices, en
@@ -121,7 +134,7 @@ _OBJ = "Capa de GeoPackage"
 @dataclass(frozen=True)
 class _Layer:
     """Lo que se lee de una capa o tabla: su nombre, su tipo, la consulta de sus filas
-    (clave, geometría si la tiene y columnas) y cómo se hashean."""
+    (clave, geometría si la tiene y columnas), cómo se cuentan y cómo se hashean."""
 
     name: str
     kind: str
@@ -130,8 +143,24 @@ class _Layer:
     columns: tuple[tuple[str, str, str], ...]  # (nombre, tipo de campo, tipo SQL)
     numeric: tuple[int, ...]  # posición de las columnas REAL y enteras
     select: str
-    count: str
-    params: tuple[object, ...]
+    count: str  # todas de una vez (sin clave entera)
+    params: tuple[object, ...]  # los del selector
+    table: str  # el nombre entre comillas
+    key: str | None  # la clave entera entre comillas (el rowid), o None
+    condition: str  # la condición del selector, sin WHERE ("" sin selector)
+
+    def count_sql(self, after: bool) -> str:
+        """El recuento de un trozo: cuántas filas hay (con el selector) entre las ``LIMIT``
+        siguientes en el orden de la clave, después de la clave ``?`` si ``after``, y la
+        última clave contada."""
+        key = self.key
+        tests = [f"{key} > ?"] if after else []
+        tests += [f"({self.condition})"] if self.condition else []
+        where = f" WHERE {' AND '.join(tests)}" if tests else ""
+        return (
+            f"SELECT count(*), max(k) FROM (SELECT {key} AS k FROM {self.table}{where} "
+            f"ORDER BY {key} LIMIT ?)"
+        )
 
 
 def _quote(name: str) -> str:
@@ -231,7 +260,7 @@ def _selector(
     names: Sequence[str],
     layer: str,
 ) -> tuple[str, tuple[object, ...]]:
-    """La cláusula ``WHERE`` del selector y sus parámetros (vacía sin selector)."""
+    """La condición del selector, sin ``WHERE``, y sus parámetros (vacía sin selector)."""
     if selector is None:
         return "", ()
     keys = set(selector)
@@ -259,10 +288,10 @@ def _selector(
     else:
         quoted = _quote(column)
         if "equals" in keys:
-            return f" WHERE {quoted} = ?", (selector["equals"],)
+            return f"{quoted} = ?", (selector["equals"],)
         inactive = ", ".join(f"'{status}'" for status in INACTIVE_INPUT_STATUSES)
         return (
-            f" WHERE {quoted} IN (SELECT uid FROM gb_input WHERE status NOT IN ({inactive}))",
+            f"{quoted} IN (SELECT uid FROM gb_input WHERE status NOT IN ({inactive}))",
             (),
         )
     raise ValidationError(
@@ -340,7 +369,8 @@ def _describe(conn: sqlite3.Connection, request: ReadRequest) -> _Layer:
                 layer,
             )
         columns.append((name, field, str(sql_type)))
-    where, params = _selector(conn, selector, [name for name, _t, _p in info], layer)
+    condition, params = _selector(conn, selector, [name for name, _t, _p in info], layer)
+    where = f" WHERE {condition}" if condition else ""
     selected = [_quote(alias) if alias else "NULL"]
     selected += [_quote(geometry)] if geometry else []
     selected += [_quote(name) for name, _f, _s in columns]
@@ -355,6 +385,9 @@ def _describe(conn: sqlite3.Connection, request: ReadRequest) -> _Layer:
         select=f"SELECT {', '.join(selected)} FROM {table}{where}",
         count=f"SELECT count(*) FROM {table}{where}",
         params=params,
+        table=table,
+        key=_quote(alias) if alias else None,
+        condition=condition,
     )
 
 
@@ -401,25 +434,72 @@ def _add(feed: Any, layer: _Layer, row: Sequence[Any], ordinal: int) -> None:
         ) from error
 
 
+def _count_steps(
+    conn: sqlite3.Connection, layer: _Layer, limit: int
+) -> Generator[float, None, int]:
+    """Las filas de la capa (con su selector), contadas por trozos de ``limit`` filas en el
+    orden de su clave entera (cada trozo, un recorrido acotado del árbol de la tabla o de un
+    índice del selector), con la posición alcanzada en el rango de la clave (0–1) tras cada
+    trozo que no es el último. Sin clave entera (fuera del estándar), de una vez."""
+    if layer.key is None:
+        return int(conn.execute(layer.count, layer.params).fetchone()[0])
+    first = conn.execute(f"SELECT min({layer.key}) FROM {layer.table}").fetchone()[0]
+    last = conn.execute(f"SELECT max({layer.key}) FROM {layer.table}").fetchone()[0]
+    if type(first) is not int or type(last) is not int:  # vacía, o una clave que no es entera
+        return int(conn.execute(layer.count, layer.params).fetchone()[0])
+    span = last - first + 1
+    total = 0
+    counted, reached = conn.execute(layer.count_sql(False), (*layer.params, limit)).fetchone()
+    while True:
+        total += counted
+        if counted < limit or reached >= last:
+            return total
+        yield (reached - first + 1) / span
+        counted, reached = conn.execute(
+            layer.count_sql(True), (reached, *layer.params, limit)
+        ).fetchone()
+
+
+def _scaled(
+    steps: Generator[float, None, int | str], start: float, share: float
+) -> Generator[float, None, int | str]:
+    """Los avances (0–1) de una parte de la lectura llevados a ``start + share · avance`` y lo
+    que devuelve al acabar."""
+    try:
+        while True:
+            try:
+                value = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            yield start + share * value
+    finally:
+        steps.close()
+
+
 def layer_steps(conn: sqlite3.Connection, request: ReadRequest) -> Iterator[float]:
     """Los pasos de ``core.gpkg_layer@1`` con una conexión ya abierta (``sqlite3``): cuenta
-    las filas, las lee por trozos de unos ``request.chunk_bytes`` y las escribe en el hasher
-    de la petición; da el progreso (filas leídas / filas) y 1,0 cuando el hash está hecho. No
-    abre ni confirma transacciones: con la conexión de una transacción de escritura, ve lo
-    que aún no ha confirmado. ``ValidationError`` (``core.content_*``,
-    ``core.dataset_selector_invalid``) si la capa no se puede leer."""
+    las filas por trozos de su clave entera, las lee por trozos de unos ``request.chunk_bytes``
+    y las escribe en el hasher de la petición, y cierra el hash por trozos; da el progreso de
+    cada parte (:data:`COUNT_SHARE`, :data:`READ_SHARE` por filas leídas y
+    :data:`FINISH_SHARE`) tras cada trozo y 1,0 cuando el hash está hecho. Cada trozo, también
+    al contar y al cerrar el hash, es un punto de cancelación (T67; RNF-008-11: en ``Z:``, un
+    ``count(*)`` de un GeoPackage de 1 GB tardaba 8 s en frío). No abre ni confirma
+    transacciones: con la conexión de una transacción de escritura, ve lo que aún no ha
+    confirmado. ``ValidationError`` (``core.content_*``, ``core.dataset_selector_invalid``) si
+    la capa no se puede leer."""
     if request.reader != GPKG_LAYER.id:
         raise ValueError(
             f"la petición es para el lector «{request.reader}», no para «{GPKG_LAYER.id}»"
         )
     layer = _describe(conn, request)
-    total = int(conn.execute(layer.count, layer.params).fetchone()[0])
+    step = max(1, request.chunk_bytes // ROW_BYTES)
+    total = yield from _scaled(_count_steps(conn, layer, step * SCAN_CHUNKS), 0.0, COUNT_SHARE)
     fields = [[name, field] for name, field, _s in layer.columns]
     if layer.kind == "vector":
         feed: Any = request.hasher.begin_features(fields, layer.dims, layer.crs)
     else:
         feed = request.hasher.begin_rows(fields, False)
-    step = max(1, request.chunk_bytes // ROW_BYTES)
+    finishing = 1.0 - FINISH_SHARE
     cursor = conn.execute(layer.select, layer.params)
     try:
         done = 0
@@ -428,10 +508,10 @@ def layer_steps(conn: sqlite3.Connection, request: ReadRequest) -> Iterator[floa
                 done += 1
                 _add(feed, layer, row, done)
             if done < total:
-                yield done / total
-        feed.finish()
+                yield min(COUNT_SHARE + READ_SHARE * (done / total), finishing)
     finally:
         cursor.close()
+    yield from _scaled(feed.finish_steps(step * SCAN_CHUNKS), finishing, FINISH_SHARE)
     yield 1.0
 
 

@@ -29,7 +29,9 @@ el intérprete (``tools/check.py`` las recoge) y la compara con su presupuesto, 
   sin cambios ≤ 1 s, por pasos.
 - RNF-008-11 (:class:`BigHashTest`): el arnés por lector de ``provenance_fixtures`` con
   ``test.npy_grid@1`` y un MDT de 100 M celdas (10 000 × 10 000, float32): ≤ 45 s, progreso
-  cada ≤ 1 s y cancelación a mitad en ≤ 2 s.
+  cada ≤ 1 s y cancelación en ≤ 2 s (mirada cada ≤ 2 s, al empezar y a mitad). Con
+  ``core.gpkg_layer@1`` (:class:`BigLayerHashTest`, T67): una capa de 2 M polígonos (unos
+  0,9 GB) en disco local, ≤ 60 s, con lo mismo también mientras cuenta y cierra el hash.
 - RNF-008-12 (:class:`OpenStepsTest`, T65): la comprobación de apertura del proyecto de D-13
   sin cambios, con la obsolescencia completa por pasos: ningún paso de más de 20 ms (el más
   largo, mediana de 5); y, con la caché sin saber de un cambio de todas las cadenas y otro
@@ -39,9 +41,9 @@ el intérprete (``tools/check.py`` las recoge) y la compara con su presupuesto, 
 En la red (recurso «red»: la carpeta de pruebas de ``GEOBLENDER_NET_TEST_DIR``, nunca la de
 los expedientes ni la del espejo; sin ella, se omiten): RNF-008-04 con las 100 fuentes en la
 red (≤ 3 s) y RNF-008-10 con el proyecto de D-13 en la red (≤ 5 s). Quedan para la
-comprobación manual M7 (T59): RNF-008-01 y 02 en la red y el GeoPackage de 1 GB de RNF-008-11;
-el GeoTIFF de 100 M celdas y la base de RecMin de 100 MB, para la 006 y la 005 con este arnés
-(S-4).
+comprobación manual M7 (T59): RNF-008-01 y 02 en la red y el GeoPackage de 1 GB de RNF-008-11
+(medido de nuevo en T67); el GeoTIFF de 100 M celdas y la base de RecMin de 100 MB, para la 006
+y la 005 con este arnés (S-4).
 """
 
 from __future__ import annotations
@@ -528,6 +530,29 @@ class BigHashTest(d13.BigHashHarness, unittest.TestCase):
         return d13.BigSource(
             {"main": path}, "raster", d13.GRID_DECLARATIONS, d13.grid_settings(),
             f"un MDT de {rows * columns // 1_000_000} M celdas ({rows} × {columns}, float32)",
+        )
+
+    @classmethod
+    def report(cls, text: str) -> None:
+        _report(text)
+
+
+class BigLayerHashTest(d13.BigHashHarness, unittest.TestCase):
+    """RNF-008-11 con ``core.gpkg_layer@1`` (T67): una capa de un GeoPackage con 2 M polígonos
+    de 20 vértices (unos 0,9 GB) en disco local, ≤ 60 s (el presupuesto del GeoPackage de 1 GB
+    en ``Z:``), con progreso cada ≤ 1 s también mientras cuenta sus filas y mientras cierra el
+    hash, y la cancelación en ≤ 2 s en cualquier momento. En ``Z:``, a mano (M7)."""
+
+    reader = builtin.GPKG_LAYER
+    budget_s = d13.BIG_LAYER_BUDGET_S
+
+    @classmethod
+    def make_source(cls, folder: Path) -> d13.BigSource:
+        path = d13.write_layer(folder / "parcelas_2m.gpkg", d13.BIG_LAYER_FEATURES)
+        return d13.BigSource(
+            {"main": path}, "vector", d13.LAYER_DECLARATIONS, {"layer": d13.LAYER_NAME},
+            f"una capa de {d13.BIG_LAYER_FEATURES // 1_000_000} M polígonos de "
+            f"{d13.LAYER_VERTICES} vértices",
         )
 
     @classmethod

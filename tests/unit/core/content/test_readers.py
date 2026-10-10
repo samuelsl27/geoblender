@@ -682,6 +682,40 @@ def _private_files(root: Path) -> list[str]:
     return sorted(path.name for path in root.rglob("*") if path.is_file())
 
 
+def _square(index: int) -> list[list[float]]:
+    """El anillo de la parcela ``index`` de :func:`_parcels` (un cuadrado de 5 m)."""
+    return wkb_build.square(715_000.0 + 10.0 * (index % 20), 4_378_000.0 + 10.0 * (index // 20),
+                            5.0)
+
+
+def _code(index: int) -> str:
+    return f"P-{index:04d}"
+
+
+def _parcels(path: Path, count: int) -> Path:
+    """Un GeoPackage nuevo con la capa ``parcelas`` (EPSG:25830) de ``count`` cuadrados con
+    su código, con ``fid`` de 1 a ``count``."""
+    crs = georef.load_catalog().horizontal(25830)
+    with gpkg.GpkgConnection.open_write(path, create=True) as db, db.transaction() as conn:
+        base.create_base(conn, crs)
+        base.create_feature_table(
+            conn, "parcelas", "POLYGON", 25830, False, [base.ColumnDef("codigo", "TEXT")],
+            "Parcelas",
+        )
+        conn.executemany(
+            "INSERT INTO parcelas (geom, codigo) VALUES (?, ?)",
+            ((gpkg.encode_geometry("POLYGON", [np.array(_square(index))], 25830, False),
+              _code(index)) for index in range(count)),
+        )
+    return path
+
+
+def _read_share(fraction: float) -> float:
+    """El progreso de ``core.gpkg_layer@1`` con ``fraction`` de las filas leídas: entre la
+    parte del recuento y la del cierre del hash (T67)."""
+    return builtin.COUNT_SHARE + builtin.READ_SHARE * fraction
+
+
 class BuiltinReadersTest(unittest.TestCase):
     """RF-008-08 (ADR-0024 §5 y §6): los lectores de ``core``."""
 
@@ -753,15 +787,17 @@ class GpkgLayerReaderTest(_TempCase):
         self.assertEqual(v1.reader, "core.gpkg_layer@1")
 
     def test_progress_and_cancel(self) -> None:
-        """RF-008-09 y RF-008-14: tras abrir la base da 0 y luego el progreso por filas;
-        cancelar entre dos trozos para la lectura, cierra la base (se puede borrar) y no
-        deja nada junto a ella."""
+        """RF-008-09, RF-008-14 y RNF-008-11: tras abrir la base da 0 y luego el progreso
+        por filas, entre la parte del recuento y la del cierre del hash (T67; tres filas se
+        cuentan y se cierran en un solo trozo); cancelar entre dos trozos para la lectura,
+        cierra la base (se puede borrar) y no deja nada junto a ella."""
         folder = self.source(BOUNDARY_V1)
         path = folder / BOUNDARY_V1
         seen: list[float] = []
         request = _gpkg_request(path, chunk_bytes=builtin.ROW_BYTES)
         readers.read_content(GPKG_LAYER, request, progress=seen.append)
-        self.assertEqual(seen, [0.0, 1 / 3, 2 / 3, 1.0])
+        first, second = _read_share(1 / 3), _read_share(2 / 3)
+        self.assertEqual(seen, [0.0, first, second, 1.0])
         seen.clear()
         request = _gpkg_request(path, chunk_bytes=builtin.ROW_BYTES)
         with assert_source_untouched(folder), self.closes_its_files():
@@ -769,9 +805,101 @@ class GpkgLayerReaderTest(_TempCase):
                 readers.read_content(
                     GPKG_LAYER, request, progress=seen.append, cancelled=lambda: len(seen) >= 2
                 )
-        self.assertEqual(seen, [0.0, 1 / 3])
-        self.assertEqual(caught.exception.progress, 1 / 3)
+        self.assertEqual(seen, [0.0, first])
+        self.assertEqual(caught.exception.progress, first)
         os.remove(path)  # en Windows falla si la base sigue abierta
+
+    def test_count_and_finish_by_chunks(self) -> None:
+        """RNF-008-11 (T67), RF-008-08 y RF-008-14: una capa se cuenta por trozos de la clave
+        entera (``fid``) antes de leerla —nunca un ``count(*)`` de toda la tabla, que en
+        ``Z:`` tarda segundos sin avisar ni poder cancelarse— con el progreso de la parte
+        del recuento (la posición alcanzada) tras cada trozo y sin leer ninguna fila; luego
+        la lectura, fila a fila, y el cierre del hash por trozos, con el suyo. Cancelar
+        mientras cuenta o mientras cierra el hash para la lectura y cierra la base. El hash
+        es el mismo que leyendo en trozos grandes y el de las entidades escritas a mano."""
+        count = 200
+        folder = self.tmp / "fuente"
+        folder.mkdir()
+        path = _parcels(folder / "parcelas.gpkg", count)
+        age_folders(folder)
+        expected = _features(
+            [(wkb_build.iso_le(("Polygon", [_square(index)])), {"codigo": _code(index)})
+             for index in range(count)],
+            {"codigo": "text"},
+        )
+        scan = builtin.SCAN_CHUNKS  # una fila por trozo de lectura: SCAN_CHUNKS por recuento
+        seen: list[tuple[float, int]] = []
+        with mock.patch.object(builtin, "_add", wraps=builtin._add) as added:
+
+            def look(value: float) -> None:
+                seen.append((value, added.call_count))
+
+            with assert_source_untouched(folder), self.closes_its_files():
+                digest = readers.read_content(
+                    GPKG_LAYER, _gpkg_request(path, "parcelas", chunk_bytes=builtin.ROW_BYTES),
+                    progress=look,
+                )
+                whole = readers.read_content(GPKG_LAYER, _gpkg_request(path, "parcelas"))
+        self.assertEqual(digest, expected)
+        self.assertEqual(whole, expected)
+        values = [value for value, _rows in seen]
+        self.assertEqual(values, sorted(values))
+        self.assertEqual((values[0], values[-1]), (0.0, 1.0))
+        counting = [(value, rows) for value, rows in seen[1:]
+                    if value <= builtin.COUNT_SHARE]
+        self.assertEqual(len(counting), math.ceil(count / scan) - 1)
+        self.assertEqual({rows for _value, rows in counting}, {0})  # sin leer ninguna fila
+        self.assertEqual(  # la posición alcanzada en el rango de los fid (1 a count)
+            [value for value, _rows in counting],
+            [builtin.COUNT_SHARE * (scan * (index + 1) / count) for index in range(len(counting))],
+        )
+        reading = [(value, rows) for value, rows in seen
+                   if builtin.COUNT_SHARE < value < 1.0 - builtin.FINISH_SHARE]
+        self.assertEqual(reading, [(_read_share(rows / count), rows) for rows in range(1, count)])
+        finishing = [(value, rows) for value, rows in seen
+                     if 1.0 - builtin.FINISH_SHARE <= value < 1.0]
+        self.assertGreaterEqual(len(finishing), 2)
+        self.assertEqual({rows for _value, rows in finishing}, {count})
+        self.assertLessEqual(len(finishing), count // scan)
+        for moment, stop in (
+            ("contando", lambda value: 0.0 < value <= builtin.COUNT_SHARE),
+            ("cerrando el hash", lambda value: value >= 1.0 - builtin.FINISH_SHARE),
+        ):
+            seen.clear()
+            with self.subTest(moment), assert_source_untouched(folder):
+                with self.closes_its_files(), self.assertRaises(readers.ReadCancelled) as caught:
+                    readers.read_content(
+                        GPKG_LAYER, _gpkg_request(path, "parcelas", chunk_bytes=builtin.ROW_BYTES),
+                        progress=lambda value: seen.append((value, 0)),
+                        cancelled=lambda: bool(seen) and stop(seen[-1][0]),
+                    )
+                self.assertTrue(stop(caught.exception.progress))
+                self.assertLess(caught.exception.progress, 1.0)
+        os.remove(path)  # en Windows falla si la base sigue abierta
+
+    def test_no_whole_table_count(self) -> None:
+        """RNF-008-11 (T67): con la conexión ya abierta (``layer_steps``), cada recuento es
+        de un trozo (``LIMIT``); sin clave entera (una tabla con ``TEXT PRIMARY KEY``, fuera
+        del estándar), se cuenta de una vez y el hash es el mismo."""
+        path = _parcels(self.tmp / "parcelas.gpkg", 40)
+        conn = sqlite3.connect(path)
+        self.addCleanup(conn.close)
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        request = _gpkg_request(path, "parcelas", chunk_bytes=builtin.ROW_BYTES)
+        self.assertEqual(list(builtin.layer_steps(conn, request))[-1], 1.0)
+        counts = [text for text in statements if "count(" in text.lower()]
+        self.assertGreater(len(counts), 1)
+        self.assertEqual([text for text in counts if "LIMIT" not in text], [])
+        keyed = _attributes(self.tmp / "claves.gpkg", "codigo TEXT PRIMARY KEY, ley REAL",
+                            [(f"S-{index:02d}", 0.5 * index) for index in range(20)], "claves",
+                            key="")
+        digest = readers.read_content(
+            GPKG_LAYER, _gpkg_request(keyed, "claves", kind="table",
+                                      chunk_bytes=builtin.ROW_BYTES)
+        )
+        self.assertEqual(digest, _rows([["codigo", "text"], ["ley", "float"]],
+                                       [[f"S-{index:02d}", 0.5 * index] for index in range(20)]))
 
     def test_wal_variant_hashes_its_pending_edit(self) -> None:
         """RF-008-08 y RF-008-14 (CE-008-01 con la fuente en WAL): la variante en WAL de T01
@@ -999,8 +1127,9 @@ class GpkgProjectTableTest(dataset_tables.DatasetTablesCase):
     tablas de ``project.gpkg``, con selector fijo y de entradas vigentes."""
 
     def digest(self, selector: dict | None = None, *, conn: sqlite3.Connection | None = None,
-               table: str = dataset_tables.SHARED, kind: str = "table"):
-        request = _gpkg_request(self.path, table, selector, kind=kind)
+               table: str = dataset_tables.SHARED, kind: str = "table",
+               chunk_bytes: int = readers.DEFAULT_CHUNK_BYTES):
+        request = _gpkg_request(self.path, table, selector, kind=kind, chunk_bytes=chunk_bytes)
         if conn is None:
             return readers.read_content(GPKG_LAYER, request)
         steps = list(builtin.layer_steps(conn, request))
@@ -1063,6 +1192,40 @@ class GpkgProjectTableTest(dataset_tables.DatasetTablesCase):
                 "UPDATE gb_input SET status = 'discarded' WHERE uid = ?", (dataset_tables.INPUT_C,)
             )
         self.assertEqual(self.digest(CURRENT_INPUTS), _rows(SHARED_COLUMNS, vigentes[:2]))
+
+    def test_selectors_counted_by_chunks(self) -> None:
+        """RNF-008-11 (T67) y RF-008-08: con selector, el recuento por trozos de la clave
+        (de una fila de lectura, con filas de varias entradas intercaladas) da los mismos
+        hashes que en un solo trozo, también con la conexión que escribe."""
+        self.register_inputs(
+            {dataset_tables.INPUT_A: "current", dataset_tables.INPUT_B: "superseded",
+             dataset_tables.INPUT_C: "kept"}
+        )
+        owners = (dataset_tables.INPUT_A, dataset_tables.INPUT_B, dataset_tables.INPUT_C)
+        extra = [(owners[index % 3], f"X-{index:03d}", 0.25 * index, "x") for index in range(45)]
+        with self.db.transaction() as conn:
+            conn.executemany(
+                f"INSERT INTO {dataset_tables.SHARED} (input_uid, codigo, ley, nota) "
+                "VALUES (?, ?, ?, ?)", extra,
+            )
+        everything = [list(row[1:]) for row in dataset_tables.SHARED_ROWS] + [
+            list(row) for row in extra
+        ]
+        fixed = {"column": "input_uid", "equals": dataset_tables.INPUT_A}
+        cases = (
+            (None, everything),
+            (fixed, [row for row in everything if row[0] == dataset_tables.INPUT_A]),
+            (CURRENT_INPUTS, [row for row in everything if row[0] != dataset_tables.INPUT_B]),
+        )
+        for selector, rows in cases:
+            with self.subTest(selector=selector):
+                expected = _rows(SHARED_COLUMNS, rows)
+                self.assertEqual(self.digest(selector), expected)
+                self.assertEqual(self.digest(selector, chunk_bytes=builtin.ROW_BYTES), expected)
+                with self.db.transaction() as conn:
+                    self.assertEqual(
+                        self.digest(selector, conn=conn, chunk_bytes=builtin.ROW_BYTES), expected
+                    )
 
     def test_selector_errors(self) -> None:
         """RF-008-08: un selector mal escrito o con una columna que la tabla no tiene se

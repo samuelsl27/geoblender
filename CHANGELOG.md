@@ -132,7 +132,10 @@ en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su inte
     obsoleto un cambio, 0,34 s; la procedencia de una cifra, 0,4 s; los avisos de la barra de
     estado están al día en menos de 0,7 s. El hash de contenido de un MDT de 11,2 M celdas
     tarda 0,5 s, el de 100 000 polígonos 1,6 s y el de 500 000 filas 3,6 s; el de una rejilla
-    de 100 M celdas, 4,6 s en segundo plano, y se cancela al instante.
+    de 100 M celdas, 4,6 s en segundo plano, y se cancela al instante. El de una capa de 2 M
+    polígonos (0,9 GB) tarda 37 s en segundo plano, y el de un GeoPackage de 1 GB en `Z:`,
+    48 s, con su avance también mientras cuenta las entidades y mientras cierra el hash; se
+    cancela en cualquier momento en menos de 0,5 s.
 - **Trabajos en segundo plano y motor de cálculo** (spec 004). Los cálculos largos se
   ejecutan aparte, sin congelar Blender: mientras avanzan se puede girar la vista, abrir menús
   y seguir trabajando. Todavía ningún cálculo minero los usa (llegarán con GemPy, la
