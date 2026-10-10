@@ -37,7 +37,7 @@ from pathlib import Path
 
 import numpy as np
 
-from tests.support.core_fixtures import make_session, make_settings, project_tmp
+from tests.support.core_fixtures import mark_schema, make_session, make_settings, project_tmp
 from tests.support.package import import_geoblender
 from tests.support.trees import child_env, child_temp
 
@@ -370,9 +370,11 @@ class GigabyteCopiesTest(unittest.TestCase):
             self._check_driven("publicación", driven, cancel_s)
 
             # Copia previa de una migración (1 → 2, de prueba), sin la publicación anterior
-            # ni la copia local para no pasar de 3 GiB en disco.
+            # ni la copia local para no pasar de 3 GiB en disco. Un proyecto nuevo ya es del
+            # esquema 2 (spec 008): se marca del 1 para que la migración de prueba se aplique.
             copytree.remove_tree(checkout.previous_path(root))
             copytree.remove_tree(driven.result.local)
+            mark_schema(root, 1)
             backup = migrations.backup_path(root, 1)
             cancel_s = cancel_at_half(
                 migrations.migrate_steps(root, SESSION, userdata, (M1_2,), target=2),

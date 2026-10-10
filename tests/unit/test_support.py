@@ -6,9 +6,9 @@ import os
 import tempfile
 import unittest
 import unittest.mock
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
-from tests.support import qgis, resources, runtime, timing, trees
+from tests.support import network, qgis, resources, runtime, timing, trees
 from tests.support.repo import EXTENSION_DIR, ROOT, TOOLS_DIR, tools_on_path
 
 RESOURCE = "recurso-de-prueba"
@@ -373,6 +373,65 @@ class RuntimeSupportTest(unittest.TestCase):
             with unittest.mock.patch.dict(os.environ, {variable: tmp}):
                 self.assertTrue(resources.is_available(runtime.RUNTIME))
                 self.assertEqual(runtime.runtime_site(), Path(tmp))
+
+
+class NetworkSupportTest(unittest.TestCase):
+    """``tests.support.network``: la carpeta de pruebas de la red (spec 008, T42)."""
+
+    def _environ(self, folder: object, mirror: object = None) -> dict[str, str]:
+        found = {network.NET_TEST_DIR_ENV: str(folder)}
+        if mirror is not None:
+            found[network.NAS_MIRROR_ENV] = str(mirror)
+        return found
+
+    def test_resource_is_declared_and_registered(self) -> None:
+        """RNF-008-04, RNF-008-10, RF-001-06: ``red`` está en la lista cerrada de recursos y
+        tiene comprobación registrada: sin la variable, o con una carpeta que no existe, no
+        hay red; con una que existe, esa es la carpeta de pruebas."""
+        self.assertIn(network.NET, resources.RESOURCES)
+        self.assertIn(network.NET_TEST_DIR_ENV, network.NET_HINT)
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = {key: value for key, value in os.environ.items()
+                     if key != network.NET_TEST_DIR_ENV}
+            with unittest.mock.patch.dict(os.environ, empty, clear=True):
+                self.assertFalse(resources.is_available(network.NET))
+            with unittest.mock.patch.dict(os.environ, self._environ(Path(tmp) / "no")):
+                self.assertFalse(resources.is_available(network.NET))
+            with unittest.mock.patch.dict(os.environ, self._environ(tmp)):
+                self.assertTrue(resources.is_available(network.NET))
+                self.assertEqual(network.net_test_dir(), Path(os.path.realpath(tmp)))
+
+    def test_dossiers_and_mirror_are_refused(self) -> None:
+        """RNF-008-04, RNF-008-10 (T42): una carpeta de pruebas que es la de los expedientes de
+        clientes o está dentro del espejo del repositorio es un error (nunca una omisión ni
+        una escritura); otra con un nombre que empieza como el espejo vale."""
+        dossiers = PureWindowsPath("Q:/", network.DOSSIERS, "pruebas")
+        with self.assertRaisesRegex(ValueError, "expedientes"):
+            network.check_net_dir(str(dossiers))
+        with tempfile.TemporaryDirectory() as tmp:
+            mirror = Path(tmp) / "Geo_espejo"
+            (mirror / "pruebas").mkdir(parents=True)
+            sibling = Path(tmp) / "Geo_espejo_pruebas"
+            sibling.mkdir()
+            for inside in (mirror, mirror / "pruebas"):
+                with self.assertRaisesRegex(ValueError, "espejo"):
+                    network.net_test_dir(self._environ(inside, mirror))
+            self.assertEqual(network.net_test_dir(self._environ(sibling, mirror)),
+                             Path(os.path.realpath(sibling)))
+
+    def test_net_tmp_removes_only_its_folder(self) -> None:
+        """RNF-008-04, RNF-008-10 (T42): cada prueba trabaja en una subcarpeta temporal propia de
+        la carpeta de pruebas, que se borra entera al salir; lo demás no se toca."""
+        with tempfile.TemporaryDirectory() as tmp:
+            kept = Path(tmp) / "LEEME.txt"
+            kept.write_text("carpeta de pruebas\n", encoding="utf-8")
+            with unittest.mock.patch.dict(os.environ, self._environ(tmp)):
+                with network.net_tmp("gb-prueba-") as folder:
+                    self.assertEqual(folder.parent, Path(os.path.realpath(tmp)))
+                    (folder / "sub").mkdir()
+                    (folder / "sub" / "dato.bin").write_bytes(b"x")
+            self.assertFalse(folder.exists())
+            self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["LEEME.txt"])
 
 
 class _SlowAction:
