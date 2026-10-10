@@ -45,8 +45,31 @@ ADR-0025).
   al lanzador de la sesión (con el monitor de los trabajos, que lo sigue en la barra de
   estado), con las rutas de la fuente en la línea de órdenes; :func:`unregister` lo quita.
 
-Lo demás llega con las tareas siguientes: las ayudas para los módulos (T48); los operadores de
-§5.3.2, con los paneles (fase 8).
+- Ayudas para los módulos (T48; plan §5.3.4 «Calcular», «Exportar» y «Mostrar», §5.4.7):
+  :class:`ProvenanceAwareOperator`, la base de sus operadores, junto con ``bpy.types.Operator``:
+
+  - :func:`ensure_ready`, la puerta antes de operar (``core.provenance.gate.can_run`` con lo
+    pendiente de la sesión): con lo aún sin comprobar, espera (y pide los hashes,
+    :meth:`ProvenanceSession.request_hashes`); con una entrada cambiada sin decidir aguas
+    arriba, se niega y, lanzada desde la interfaz, abre su diálogo (:func:`open_input_dialog`,
+    la orden :data:`RESOLVE_INPUT`: Actualizar, Mantener la copia, Cancelar; RF-008-10,
+    RF-008-61); con lo que falta, está bloqueado o dañado, se niega con su motivo;
+  - ``begin`` (``begin_operation`` tras la puerta: «en curso», RF-008-51) y :func:`launch_job`,
+    que lanza con el monitor de los trabajos el trabajo de la 004 de esa operación (con su
+    ``operation_uid``); al terminar, el módulo la incorpora con :func:`ingest_job_result`
+    (``jobs.ingest.job_outcome`` → ``ingest_job`` → ``JobRunner.mark_ingested``; RF-008-20).
+    Un trabajo que no termina bien deja la operación cancelada o fallida con el motivo de la
+    004. Hasta incorporarla, la lista de trabajos (:func:`job_note`) y la procedencia la dicen
+    «pendiente de incorporar» (RF-008-23); si la 004 borra la carpeta de su trabajo antes
+    (descartarlo, limpiar o la purga), :func:`on_jobs_removed` la deja «no incorporada» con
+    el motivo (:data:`NOT_INGESTED_REASONS`). Lo pendiente de incorporar es de esta sesión de
+    Blender (el equipo que lanzó el trabajo): las operaciones que quedan «en curso» al
+    cerrarla se registran «interrumpidas» al abrir el proyecto en escritura otra sesión;
+  - :func:`check_write_target`: antes de escribir un entregable, la guarda de ``core`` con el
+    proyecto de la sesión y :func:`read_only_dirs` (RF-008-15).
+
+Lo demás llega con las tareas siguientes: los operadores de §5.3.2, con los paneles, y el
+estado de comando de las órdenes de los módulos (fase 8).
 
 ``core.i18n`` no tiene cómo quitar traducciones: :func:`unregister` las deja (como los
 trabajos de la 004), y volver a registrar las instala otra vez sin cambiar nada.
@@ -56,8 +79,13 @@ En ``blender -b`` los temporizadores no se ejecutan: las pruebas llaman a :func:
 
 from __future__ import annotations
 
+import functools
 import logging
-from collections.abc import Callable, Iterable, Iterator
+import os
+import time
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import bpy
@@ -65,7 +93,9 @@ import bpy
 from ...core import i18n, params
 from ...core.content import readers as content_readers
 from ...core.content.builtin import CONTENT_READERS, GPKG_LAYER
+from ...core.errors import GeoblenderError
 from ...core.i18n import tr
+from ...core.inputs.guard import check_write_target as guard_write_target
 from ...core.inputs.guard import read_only_warnings
 from ...core.params import core_defs
 from ...core.paths import ReadOnlyDirs
@@ -73,23 +103,27 @@ from ...core.project.migrations import m0002
 from ...core.provenance import contract, messages
 from ...jobs import catalog as job_catalog
 from ...jobs import content_hash
+from ...jobs.protocol import new_request
 from .. import ADDON_PACKAGE
 from ..props.core import read_only_dirs_of
 from ..scene import project_session
+from ..ui import jobs as job_list
 from ..ui import statusbar
 from . import jobs as jobs_ops
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from pathlib import Path
 
+    from ...core.datasets.model import DatasetSpec
     from ...core.project.model import Progress
     from ...core.project.session import Project
     from ...core.provenance.checks import OpenCheckOutcome
     from ...core.provenance.contract import ReimportRequest
-    from ...core.provenance.gate import CheckState
+    from ...core.provenance.figures import FigureSpec
+    from ...core.provenance.gate import BlockReason, CheckState, Ready
+    from ...core.provenance.operations import IngestOutcome, IngestWriter, OperationHandle
     from ...jobs.protocol import JobRequest
-    from ...jobs.runner import JobHandle, JobRunner
+    from ...jobs.runner import JobHandle, JobResult, JobRunner, JobSnapshot
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 
@@ -115,6 +149,7 @@ class _State:
     def __init__(self) -> None:
         self.read_only_checked = False  # ya se miró (y, si tocaba, se avisó) en esta sesión
         self.undo: list[Callable[[], object]] = []  # cómo quitar lo que se registró
+        self.jobs: dict[str, _PendingJob] = {}  # job_uid → operación pendiente de incorporar
 
 
 _STATE = _State()
@@ -500,6 +535,409 @@ def _unregister_declarations() -> None:
         _STATE.undo.pop()()
 
 
+# Ayudas para los módulos (T48) ------------------------------------------------------------
+
+RESOLVE_INPUT = "geoblender.core_resolve_input"
+"""La orden del diálogo de una entrada cambiada (RF-008-10; plan §5.3.2): Actualizar, Mantener
+la copia y Cancelar, con el ``input_uid`` de la entrada."""
+
+NOT_INGESTED_REASONS: Mapping[str, str] = MappingProxyType({
+    jobs_ops.REMOVED_DISCARDED: "se descartó su trabajo «{job}» en la lista de trabajos sin "
+                                "incorporarlo",
+    jobs_ops.REMOVED_CLEANED: "se borró la carpeta de su trabajo «{job}» al limpiar los "
+                              "trabajos terminados sin incorporarlo",
+    jobs_ops.REMOVED_PURGED: "se borró la carpeta de su trabajo «{job}» por antigüedad sin "
+                             "incorporarlo",
+})
+"""El motivo que queda en el proyecto (en español, como los demás motivos guardados) de una
+operación cuyo trabajo se borró sin incorporarlo, según por qué se borró (RF-008-23)."""
+
+RELEASE_WAIT_S = 0.1
+"""Lo que espera como mucho :func:`ingest_job_result` a que acabe el hilo de un trabajo en hilo
+que ya terminó, para darlo por incorporado (``JobRunner.mark_ingested`` no lo hace mientras
+su hilo sigue vivo)."""
+
+_SUCCEEDED = "succeeded"  # el final de un trabajo que terminó bien (jobs.records)
+
+type Report = Callable[[set[str], str], object]
+"""Cómo se dicen las cosas: ``Operator.report`` (tipo y texto)."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingJob:
+    """Un trabajo lanzado con :func:`launch_job` cuya operación aún no se ha incorporado."""
+
+    handle: OperationHandle
+    label: str
+    on_finish: Callable[[JobResult], object] | None
+
+
+def _notify(_kind: set[str], text: str) -> None:
+    """Sin operador, lo que se dice va a los avisos de la sesión."""
+    project_session.notify(text)
+
+
+def error_text(exc: BaseException) -> str:
+    """El texto de un error para el usuario en el idioma de Geoblender: el de la procedencia
+    en su idioma; el de otro error de Geoblender, su mensaje (en español)."""
+    if isinstance(exc, messages.ProvenanceError):
+        return messages.render(exc.code, language=i18n.language(), **exc.values)
+    if isinstance(exc, GeoblenderError):
+        return exc.message
+    return str(exc) or type(exc).__name__
+
+
+def write_unavailable() -> str | None:
+    """Por qué no se puede lanzar ahora una operación registrada (lo que dice el ``poll`` de
+    :class:`ProvenanceAwareOperator`), en el idioma de Geoblender, o ``None`` si se puede: sin
+    proyecto, sin la procedencia o en solo lectura, con su motivo."""
+    reason = SESSION.unavailable()
+    if reason is not None:
+        return reason
+    project = SESSION.project
+    if project is not None and not project.writable:
+        return tr("Read-only project: {reason}", reason=project.status.message)
+    return None
+
+
+def ensure_ready(op_type: str, inputs: Sequence[Any] = (), *, report: Report | None = None,
+                 dialog: bool = False) -> Ready | None:
+    """La puerta antes de empezar una operación de tipo ``op_type`` que consume ``inputs``
+    (``core.provenance.operations.Use``) en el proyecto de la sesión, con lo que su
+    comprobación de apertura aún no ha comprobado (RF-008-10, RF-008-21, RF-008-56 a 58; plan
+    §5.3.4 «Calcular» y §5.4.5). Devuelve el ``Ready`` de la puerta (sus avisos ya dichos, y
+    lo que consume que está obsoleto) si se puede ejecutar; si no, dice por qué con
+    ``report`` (``Operator.report``; sin él, en los avisos de la sesión) y devuelve ``None``:
+
+    - sin proyecto, sin la procedencia o en solo lectura: su motivo;
+    - con algo aún sin comprobar o un hash largo pedido: «Comprobando el proyecto…: espere a
+      que termine» (aviso), y lo pedido se hace (:meth:`ProvenanceSession.request_hashes`);
+    - con una entrada cambiada sin decidir aguas arriba (RF-008-10) y ``dialog`` (la orden se
+      lanzó desde la interfaz), abre su diálogo (:func:`open_input_dialog`) y lo dice como
+      aviso; sin ``dialog`` (un guion), como error, igual que lo que falta, está bloqueado o
+      dañado."""
+    say = _notify if report is None else report
+    unavailable = write_unavailable()
+    if unavailable is not None:
+        say({"ERROR"}, unavailable)
+        return None
+    from ...core.provenance import gate  # al usarlo: registrar no lo carga
+
+    language = i18n.language()
+    try:
+        result = gate.can_run(SESSION.project, op_type, inputs, pending=SESSION.pending)
+    except GeoblenderError as exc:
+        say({"ERROR"}, error_text(exc))
+        return None
+    if isinstance(result, gate.Pending):
+        SESSION.request_hashes()
+        say({"WARNING"}, result.text(language))
+        return None
+    if isinstance(result, gate.Blocked):
+        changed = [reason for reason in result.reasons
+                   if reason.kind is gate.BlockKind.INPUT_CHANGED]
+        opened = bool(dialog and changed)
+        if opened:
+            open_input_dialog(changed[0])
+        say({"WARNING"} if opened else {"ERROR"}, result.text(language))
+        return None
+    for notice in result.notices:
+        say({"WARNING"}, notice.text(language))
+    return result
+
+
+def open_input_dialog(reason: BlockReason) -> set[str]:
+    """Abre el diálogo de la entrada cambiada de ``reason`` (RF-008-10, RF-008-61; plan
+    §5.3.2): la orden :data:`RESOLVE_INPUT` con su ``input_uid`` (Actualizar, Mantener la copia
+    y Cancelar). Mientras su clase real no llegue (T52), la provisional dice «Disponible en
+    008». Si no se puede abrir, lo deja en el registro técnico y devuelve ``{"CANCELLED"}``."""
+    group, name = RESOLVE_INPUT.split(".")
+    try:
+        operator = getattr(getattr(bpy.ops, group), name)
+        values: dict[str, Any] = {}
+        if "input_uid" in operator.get_rna_type().properties.keys():
+            values["input_uid"] = reason.uid or ""
+        return set(operator("INVOKE_DEFAULT", **values))
+    except (RuntimeError, KeyError, AttributeError, TypeError):
+        LOGGER.warning("No se pudo abrir el diálogo de la entrada cambiada «%s»", reason.name,
+                       exc_info=True)
+        return {"CANCELLED"}
+
+
+def check_write_target(path: str | os.PathLike[str]) -> None:
+    """Rechaza (``ProvenanceError``, sin escribir nada) que un módulo escriba en ``path`` un
+    entregable o cualquier fichero fuera de lo que gestiona el proyecto, si es o está dentro de
+    una carpeta de solo lectura (:func:`read_only_dirs`, las de ahora), de la carpeta de la
+    fuente de una entrada del proyecto de la sesión que está fuera de él o es el fichero de una
+    fuente que está dentro (RF-008-15; ``core.inputs.guard.check_write_target``)."""
+    project = SESSION.project
+    if project is not None and (project.closed or project.header_only):
+        project = None  # no se puede leer: cuentan solo las carpetas de solo lectura
+    guard_write_target(path, project=project, read_only=read_only_dirs())
+
+
+def pending_ingests() -> dict[str, str]:
+    """Los trabajos lanzados en esta sesión con :func:`launch_job` cuya operación aún no se ha
+    incorporado: su ``job_uid`` y el uid de su operación."""
+    return {job_uid: entry.handle.uid for job_uid, entry in _STATE.jobs.items()}
+
+
+def job_note(snapshot: JobSnapshot) -> str | None:
+    """La nota de un trabajo en la lista de trabajos (``bl.ui.jobs.set_note_provider``;
+    RF-008-23): «pendiente de incorporar» si su operación aún no se ha incorporado; si no,
+    ``None``."""
+    if snapshot.job_uid not in _STATE.jobs:
+        return None
+    return messages.render("core.result_pending", language=i18n.language())
+
+
+def launch_job(handle: OperationHandle, worker: str, *, label: str,
+               params: Mapping[str, Any] | None = None, paths: Mapping[str, Path] | None = None,
+               on_finish: Callable[[JobResult], object] | None = None,
+               **request: Any) -> JobHandle:
+    """Lanza el trabajo de la 004 de la operación ``handle`` («en curso» desde
+    ``begin_operation``; RF-008-51, RF-008-20; plan §5.3.4 «Calcular») con el monitor de los
+    trabajos, que lo sigue en la barra de estado: tipo ``worker``, nombre visible ``label``,
+    ``params``, las rutas absolutas ``paths`` (en la línea de órdenes, nunca en la petición) y
+    lo demás de ``jobs.protocol.new_request`` (``request``), con el ``operation_uid`` de la
+    operación, el proyecto y su módulo como dueño. Al terminar, en el hilo de Blender, llama a
+    ``on_finish`` con su ``JobResult``: ahí (o después) el módulo la incorpora con
+    :func:`ingest_job_result`; si el trabajo no terminó bien y no la incorporó, la operación
+    queda cancelada o fallida con el motivo de la 004. Hasta incorporarla, «pendiente de
+    incorporar» (:func:`job_note`). Si no se puede lanzar, la operación queda fallida con el
+    motivo y el error sigue: :class:`RuntimeError` sin lanzador de trabajos, ``JobError`` con
+    una petición que no vale y :class:`ValueError` con una ruta que no vale."""
+    from ...core.provenance.operations import failure_reason
+
+    try:
+        runner = jobs_ops.MONITOR.runner
+        if runner is None or runner.closed:
+            raise RuntimeError("no hay lanzador de trabajos: Geoblender aún no ha preparado la "
+                               "carpeta de los trabajos")
+        job_request = new_request(worker, label=label, owner=handle.definition.module,
+                                  params=params, project_uid=handle.project_uid,
+                                  operation_uid=handle.uid, **request)
+        finished = functools.partial(_job_finished, job_request.job_uid)
+        job = jobs_ops.MONITOR.submit(job_request, on_finish=finished, paths=paths)
+    except Exception as exc:
+        try:
+            handle.fail(failure_reason(exc))
+        except Exception:  # noqa: BLE001 - el error que sigue es el de lanzarlo
+            LOGGER.warning("La operación «%s» (%s) sigue «en curso»: no se pudo dejar fallida",
+                           handle.op_type, handle.uid, exc_info=True)
+        raise
+    _STATE.jobs[job.job_uid] = _PendingJob(handle, label, on_finish)
+    return job
+
+
+def _job_finished(job_uid: str, result: JobResult) -> None:
+    """El aviso de fin de un trabajo de :func:`launch_job` (en el sondeo del monitor, en el
+    hilo de Blender): el ``on_finish`` del módulo y, si el trabajo no terminó bien y la
+    operación sigue sin incorporar, :func:`ingest_job_result`, que la deja cancelada o fallida
+    con el motivo de la 004."""
+    entry = _STATE.jobs.get(job_uid)
+    if entry is None:
+        return
+    try:
+        if entry.on_finish is not None:
+            entry.on_finish(result)
+    finally:
+        if job_uid in _STATE.jobs and result.state != _SUCCEEDED:
+            ingest_job_result(entry.handle, result)
+
+
+def ingest_job_result(
+    handle: OperationHandle,
+    result: JobResult,
+    outputs: Sequence[DatasetSpec] | IngestWriter = (),
+    *,
+    figures: Sequence[FigureSpec] = (),
+    software: Mapping[str, str] | None = None,
+    message: str | None = None,
+) -> IngestOutcome:
+    """Incorpora a su operación ``handle`` el trabajo de la 004 que terminó con ``result``
+    (RF-008-20, RF-008-23; plan §5.4.7): su final y la procedencia técnica de su
+    ``state.json`` (``jobs.ingest.job_outcome``) → ``core.provenance.operations.ingest_job``
+    con ``outputs`` (las salidas ya guardadas o la función que escribe los resultados del
+    módulo en la transacción y las devuelve), ``figures``, ``software`` y ``message`` → el
+    lanzador lo da por incorporado (``mark_ingested``: se borran sus entradas y sus
+    resultados). Devuelve el ``IngestOutcome`` (hecha, y obsoleta si algo de lo que consumió
+    cambió mientras se calculaba; o cancelada o fallida con el motivo de la 004). Si la
+    incorporación falla, el error sigue: la operación queda fallida y el trabajo, con sus
+    resultados, sin incorporar; en solo lectura o con el proyecto cerrado, sigue «pendiente de
+    incorporar»."""
+    from ...core.provenance.operations import ingest_job
+    from ...jobs.ingest import job_outcome
+
+    outcome = job_outcome(result, result.job_dir)
+    try:
+        ingested = ingest_job(handle.project, handle, outcome, outputs, figures=figures,
+                              software=software, message=message)
+    except BaseException:
+        if not _still_pending(handle):
+            _STATE.jobs.pop(result.job_uid, None)
+        raise
+    _STATE.jobs.pop(result.job_uid, None)
+    _release(result.job_uid)
+    return ingested
+
+
+def _still_pending(handle: OperationHandle) -> bool:
+    """Si la operación sigue «pendiente de incorporar» en el proyecto (si no se puede leer,
+    se da por pendiente)."""
+    from ...core.provenance.lineage import ResultState, result_state
+
+    try:
+        return result_state(handle.project, handle.uid).state is ResultState.PENDING
+    except Exception:  # noqa: BLE001 - sin poder leerlo, sigue pendiente
+        return True
+
+
+def _release(job_uid: str) -> None:
+    """El lanzador da el trabajo por incorporado (``JobRunner.mark_ingested``), esperando
+    como mucho :data:`RELEASE_WAIT_S` a que acabe su hilo; si no puede, lo deja en el registro
+    técnico (el trabajo queda en la lista, con sus resultados)."""
+    runner = jobs_ops.MONITOR.runner
+    if runner is None or runner.closed:
+        return
+    deadline = time.monotonic() + RELEASE_WAIT_S
+    while True:
+        try:
+            runner.mark_ingested(job_uid)
+            return
+        except ValueError:
+            if time.monotonic() >= deadline:
+                LOGGER.warning("El trabajo %s no se pudo dar por incorporado", job_uid,
+                               exc_info=True)
+                return
+            time.sleep(0.002)
+        except OSError:
+            LOGGER.warning("El trabajo %s no se pudo dar por incorporado", job_uid,
+                           exc_info=True)
+            return
+
+
+def on_jobs_removed(job_uids: tuple[str, ...], why: str) -> None:
+    """Lo que se apunta en ``bl.ops.jobs`` (RF-008-23; plan §5.4.7): de cada trabajo de esta
+    sesión cuya carpeta se borró sin incorporar su operación (``why``: descartarlo en la
+    lista, limpiar o la purga por antigüedad), la operación pasa a «no incorporada» con el
+    motivo (:data:`NOT_INGESTED_REASONS`). Si no se puede (solo lectura, proyecto cerrado),
+    sigue «en curso» y queda en el registro técnico."""
+    from ...core.provenance.operations import mark_not_ingested
+
+    template = NOT_INGESTED_REASONS.get(why, NOT_INGESTED_REASONS[jobs_ops.REMOVED_CLEANED])
+    for job_uid in job_uids:
+        entry = _STATE.jobs.pop(job_uid, None)
+        if entry is None:
+            continue
+        handle = entry.handle
+        try:
+            mark_not_ingested(handle.project, handle.uid, template.format(job=entry.label))
+        except Exception:  # noqa: BLE001 - la limpieza de los trabajos sigue
+            LOGGER.warning("La operación «%s» (%s) sigue «en curso»: no se pudo dejar «no "
+                           "incorporada»", handle.op_type, handle.uid, exc_info=True)
+
+
+class ProvenanceAwareOperator:
+    """La base de los operadores de los módulos que lanzan una operación registrada (plan
+    §5.3.4 «Calcular», «Exportar» y «Mostrar»; RF-008-10, RF-008-15, RF-008-20, RF-008-23,
+    RF-008-51, RF-008-61), junto con ``bpy.types.Operator``::
+
+        class GEOBLENDER_OT_gis_resample(ProvenanceAwareOperator, bpy.types.Operator): ...
+
+    Declara :attr:`provenance_op_type`, el tipo de su ``OperationDef`` (cuyo ``commands``
+    lleva su ``bl_idname``), y, si consume algo, :meth:`provenance_inputs`. Da:
+
+    - ``poll``: sin proyecto, sin la procedencia o en solo lectura, no está disponible y dice
+      por qué (:func:`write_unavailable`);
+    - ``invoke`` (desde la interfaz) → ``execute``: la puerta abrirá el diálogo de una entrada
+      cambiada; un ``invoke`` propio llama a ``super().invoke`` o pone antes
+      ``self.provenance_dialog = True``;
+    - :meth:`begin` (la puerta y ``begin_operation``), :meth:`launch_job` (su trabajo de la
+      004, que el módulo incorpora con :func:`ingest_job_result`) y :meth:`check_write_target`
+      (antes de escribir un entregable); cada una dice lo que impide seguir con
+      ``Operator.report`` y devuelve ``None`` o falso.
+
+    Los operadores no calculan (ARQ): validan, llaman al dominio y presentan el resultado."""
+
+    # Sin anotaciones: Blender toma las de la clase por propiedades del operador.
+    provenance_op_type = ""
+    """El tipo de la operación que lanza (``gis.resample``)."""
+
+    provenance_dialog = False
+    """Si se lanzó desde la interfaz (``invoke``): la puerta abre el diálogo de una entrada
+    cambiada; desde un guion, solo lo dice."""
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        reason = write_unavailable()
+        if reason is not None:
+            cls.poll_message_set(reason)  # type: ignore[attr-defined]
+            return False
+        return True
+
+    def provenance_inputs(self, context: Any) -> Sequence[Any]:
+        """Lo que consume la operación (``Use``): por defecto, nada."""
+        return ()
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        return self.execute(context)  # type: ignore[attr-defined]
+
+    def begin(self, context: Any, *, settings: Mapping[str, Any] | None = None,
+              params: Sequence[str] = (), executor: str = "blender",
+              group_uid: str | None = None,
+              supersedes: str | None = None) -> OperationHandle | None:
+        """La puerta (:func:`ensure_ready`, con el diálogo si se lanzó desde la interfaz) y, si
+        se puede, la operación «en curso» (``begin_operation`` con ``settings``, lo de
+        :meth:`provenance_inputs`, los parámetros ``params`` y ``executor``: ``blender``, o
+        ``job_thread``/``job_process`` para un trabajo, que al incorporarla dice dónde corrió
+        de verdad). ``None`` si no se puede (ya dicho)."""
+        inputs = tuple(self.provenance_inputs(context))
+        ready = ensure_ready(self.provenance_op_type, inputs,
+                             report=self.report,  # type: ignore[attr-defined]
+                             dialog=self.provenance_dialog)
+        if ready is None:
+            return None
+        from ...core.provenance.operations import begin_operation
+
+        try:
+            return begin_operation(SESSION.project, self.provenance_op_type,
+                                   settings=dict(settings or {}), inputs=list(inputs),
+                                   params=list(params), executor=executor,
+                                   group_uid=group_uid, supersedes=supersedes)
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
+            return None
+
+    def launch_job(self, handle: OperationHandle, worker: str, *, label: str,
+                   params: Mapping[str, Any] | None = None,
+                   paths: Mapping[str, Path] | None = None,
+                   on_finish: Callable[[JobResult], object] | None = None,
+                   **request: Any) -> JobHandle | None:
+        """:func:`launch_job`; si no se puede lanzar (la operación queda fallida), lo dice y
+        devuelve ``None``."""
+        try:
+            return launch_job(handle, worker, label=label, params=params, paths=paths,
+                              on_finish=on_finish, **request)
+        except RuntimeError:
+            self.report({"ERROR"},  # type: ignore[attr-defined]
+                        tr("Geoblender has not prepared the jobs folder yet"))
+        except (GeoblenderError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
+        return None
+
+    def check_write_target(self, path: str | os.PathLike[str]) -> bool:
+        """:func:`check_write_target`: si no se puede escribir en ``path``, lo dice (nombrando
+        la carpeta o la entrada) y devuelve falso."""
+        try:
+            check_write_target(path)
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
+            return False
+        return True
+
+
 # Registro ---------------------------------------------------------------------------------
 
 
@@ -507,9 +945,10 @@ def register() -> None:
     """Instala los textos de la procedencia, de los parámetros y del trabajo de hash en
     ``core.i18n``, registra las declaraciones de ``core`` (con el tipo de trabajo
     ``core_content_hash``), da a la sesión sus trabajos de hash (:data:`HASH_JOBS`), la apunta
-    a los cambios de proyecto y pone el temporizador del aviso de las carpetas de solo lectura
-    (persistente, para que no lo quite abrir otro ``.blend`` antes de que se dispare);
-    idempotente."""
+    a los cambios de proyecto, escucha las carpetas de trabajos borradas
+    (:func:`on_jobs_removed`), pone la nota de la lista de trabajos (:func:`job_note`) y el
+    temporizador del aviso de las carpetas de solo lectura (persistente, para que no lo quite
+    abrir otro ``.blend`` antes de que se dispare); idempotente."""
     i18n.install(messages.CATALOG_ES)
     i18n.install(params.CATALOG_ES)
     i18n.install(content_hash.CATALOG_ES)
@@ -521,18 +960,26 @@ def register() -> None:
     SESSION.hash_jobs = HASH_JOBS
     project_session.add_listener(on_project_changed)
     SESSION.on_project_changed(project_session.current())
+    jobs_ops.add_removal_listener(on_jobs_removed)
+    job_list.set_note_provider(job_note)
     forget_read_only_warning()
     if not bpy.app.timers.is_registered(warn_read_only_dirs):
         bpy.app.timers.register(warn_read_only_dirs, first_interval=0.0, persistent=True)
 
 
 def unregister() -> None:
-    """Deja de escuchar los cambios de proyecto, para la comprobación en marcha (quita su
-    temporizador y cancela lo pendiente) y olvida el proyecto, quita el temporizador del aviso
+    """Deja de escuchar los cambios de proyecto y las carpetas de trabajos borradas, quita la
+    nota de la lista de trabajos y olvida lo pendiente de incorporar (sus operaciones siguen
+    «en curso»: el lanzador ya interrumpió sus trabajos), para la comprobación en marcha (quita
+    su temporizador y cancela lo pendiente) y olvida el proyecto, quita el temporizador del aviso
     (si aún no se disparó) y olvida que se avisó (la sesión siguiente avisa otra vez), quita
     los trabajos de hash de la sesión y las declaraciones de ``core`` que registró; las
     traducciones instaladas se quedan; idempotente."""
     project_session.remove_listener(on_project_changed)
+    jobs_ops.remove_removal_listener(on_jobs_removed)
+    if job_list.note_provider() is job_note:
+        job_list.set_note_provider(None)
+    _STATE.jobs.clear()
     SESSION.reset()
     SESSION.hash_jobs = None
     if bpy.app.timers.is_registered(warn_read_only_dirs):

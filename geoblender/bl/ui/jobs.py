@@ -60,10 +60,16 @@ El intérprete externo (spec 004, T33; RF-004-26): si el lanzador tiene uno, la 
 bajo el estado del motor, que los trabajos del motor corren con él («Intérprete externo
 (desarrollo): <ruta>»), y la fila de cada trabajo que corrió en él lo indica con sus
 versiones de Python y numpy («Intérprete externo · Python 3.13… · numpy …»).
+
+La nota de un trabajo (spec 008, T48; RF-008-23): quien lo necesita pone con
+:func:`set_note_provider` una función que da, para la foto de un trabajo, una nota o ``None``;
+la nota abre su línea gris. La procedencia dice así «pendiente de incorporar» de los trabajos
+que lanzó esta sesión para una operación que aún no se ha incorporado.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -84,6 +90,8 @@ from . import commands, statusbar
 
 if TYPE_CHECKING:
     from ..ops.jobs import JobMonitor, StatusView
+
+LOGGER = logging.getLogger("geoblender.bl.ui.jobs")
 
 FIELD_KEY = "jobs"
 FIELD_PRIORITY = 1
@@ -376,9 +384,42 @@ def message_text(snapshot: JobSnapshot) -> str:
     return messages.one_line(snapshot.message)
 
 
+type NoteProvider = Callable[[JobSnapshot], str | None]
+"""La nota de un trabajo para su línea gris (spec 008, T48), o ``None``."""
+
+_NOTE: list[NoteProvider] = []  # la función de la nota (una o ninguna)
+
+
+def set_note_provider(provider: NoteProvider | None) -> None:
+    """Pone la función que da la nota de cada trabajo de la lista (``None``: ninguna)."""
+    _NOTE.clear()
+    if provider is not None:
+        _NOTE.append(provider)
+
+
+def note_provider() -> NoteProvider | None:
+    """La función de la nota que se puso con :func:`set_note_provider`, o ``None``."""
+    return _NOTE[0] if _NOTE else None
+
+
+def note_text(snapshot: JobSnapshot) -> str:
+    """La nota de un trabajo (vacía sin función o sin nota). Si la función falla, va al
+    registro técnico y la lista se dibuja sin nota."""
+    provider = note_provider()
+    if provider is None:
+        return ""
+    try:
+        return provider(snapshot) or ""
+    except Exception:  # noqa: BLE001 - la lista se dibuja igual
+        LOGGER.exception("Falló la nota del trabajo %s en la lista", snapshot.job_uid)
+        return ""
+
+
 def details_text(snapshot: JobSnapshot) -> str:
-    """La línea gris de un trabajo: su intérprete y su último mensaje."""
-    parts = (interpreter_text(snapshot.interpreter), message_text(snapshot))
+    """La línea gris de un trabajo: su nota (spec 008: «pendiente de incorporar»), su
+    intérprete y su último mensaje."""
+    parts = (note_text(snapshot), interpreter_text(snapshot.interpreter),
+             message_text(snapshot))
     return SEPARATOR.join(part for part in parts if part)
 
 

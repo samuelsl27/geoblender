@@ -40,11 +40,25 @@ T47:
   (seguidos en la barra de estado) con la ruta de la fuente aparte de la petición; la lista
   estática de lectores del trabajo es la de los lectores registrados que pueden ir a él.
 
+T48 (plan §5.3.4 y §5.4.7), con un operador sintético de un módulo (``ProvenanceAwareOperator``)
+que lanza el autodiagnóstico de la 004:
+
+- RF-008-51, RF-008-20, RF-008-23: registra su operación «en curso» al empezar, la incorpora
+  al terminar (``ingest_job_result``) y llama a ``mark_ingested``; hasta entonces, la lista de
+  trabajos y la procedencia dicen «pendiente de incorporar»; descartar el trabajo en la lista
+  la deja «no incorporada» con el motivo, y un trabajo que falla la deja fallida.
+- RF-008-10, RF-008-61: con una entrada cambiada aguas arriba, ``ensure_ready`` abre el diálogo
+  de Actualizar, Mantener la copia y Cancelar y no deja empezar la operación; con la
+  comprobación de apertura en marcha, espera.
+- RF-008-15: exportar a una carpeta de solo lectura (``read_only_dirs()`` con
+  ``check_write_target``) se rechaza sin escribir nada, y crear un proyecto dentro, también.
+
 Se ejecuta con ``tools/run_blender_tests.py``. Las carpetas son de unidades simuladas: nunca
 se abren. En ``blender -b`` los temporizadores no corren: las pruebas avanzan el monitor
 llamando a su función.
 """
 
+import functools
 import importlib
 import json
 import os
@@ -58,11 +72,13 @@ from types import ModuleType
 from unittest import mock
 
 import bpy
+from bpy.props import BoolProperty, StringProperty
 
 from tests.support import blender_ext
 from tests.support.blender_ext import fingerprint_diff, module_name
 from tests.support.core_fixtures import mark_schema, settings_values
 from tests.support.fake_layout import draw
+from tests.support.repo import ROOT
 
 VARIABLE = "GEOBLENDER_READ_ONLY_DIRS"
 DOSSIERS = "Q:\\expedientes"  # unidad de red simulada (la prueba nunca la abre)
@@ -91,10 +107,53 @@ MIGRATE_TEXT = "Proyecto de esquema 1: migre el proyecto para usar la procedenci
 MAX_TICKS = 200  # un proyecto vacío se comprueba en una decena de pasos
 HASH_WORKER = "core_content_hash"
 JOB_WAIT_S = 30.0  # plazo de seguridad de un trabajo de hash en hilo
+SYNTHETIC_OP = "jobs.provenance_selftest"  # el tipo de operación del operador sintético
+SYNTHETIC_IDNAME = "gbtest.provenance_selftest"  # fuera del catálogo, como gbdemo.*
+SELFTEST_PARAMS = {"op": "chunked_sum", "n": 1000, "chunks": 1, "sleep_s": 0.0}  # en hilo
+PENDING_TEXT = "pendiente de incorporar"
+DATA = ROOT / "tests" / "data" / "core" / "provenance"
+LAYER = "limites"
 
 
 def _module(name: str) -> ModuleType:
     return importlib.import_module(f"{module_name()}.{name}")
+
+
+def _synthetic_operator(base: type) -> type:
+    """El operador sintético de un módulo: lanza el autodiagnóstico de la 004 como la operación
+    :data:`SYNTHETIC_OP` (que consume ``uses``) y, con ``ingest``, la incorpora al terminar;
+    con ``export_path``, antes comprueba ese destino."""
+    session = sys.modules[base.__module__]
+
+    class GBTEST_OT_provenance_selftest(base, bpy.types.Operator):
+        bl_idname = SYNTHETIC_IDNAME
+        bl_label = "Self-test with provenance"
+        bl_options = {"REGISTER"}
+        provenance_op_type = SYNTHETIC_OP
+        uses = ()  # lo que consume (sin anotación: no es una propiedad)
+
+        ingest: BoolProperty(default=True)  # type: ignore[valid-type]
+        fail: BoolProperty(default=False)  # type: ignore[valid-type]
+        export_path: StringProperty(default="")  # type: ignore[valid-type]
+
+        def provenance_inputs(self, context: object) -> tuple[object, ...]:
+            return type(self).uses
+
+        def execute(self, context: object) -> set[str]:
+            if self.export_path and not self.check_write_target(self.export_path):
+                return {"CANCELLED"}
+            handle = self.begin(context, settings={"n": SELFTEST_PARAMS["n"]},
+                                executor="job_thread")
+            if handle is None:
+                return {"CANCELLED"}
+            params = dict(SELFTEST_PARAMS, fail_at=1) if self.fail else SELFTEST_PARAMS
+            finish = (functools.partial(session.ingest_job_result, handle) if self.ingest
+                      else None)
+            job = self.launch_job(handle, "selftest", label="Prueba de la procedencia",
+                                  params=params, on_finish=finish)
+            return {"CANCELLED"} if job is None else {"FINISHED"}
+
+    return GBTEST_OT_provenance_selftest
 
 
 def _without_variable():
@@ -154,7 +213,9 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         deja la huella de Blender como al principio de la sesión de pruebas. T46 (ADR-0025
         §2): también registra las declaraciones de ``core`` y escucha los cambios de proyecto,
         y deshabilitar lo quita. T47 (RF-008-09; plan §5.3.3): y el tipo de trabajo
-        ``core_content_hash``, con los trabajos de hash de la sesión."""
+        ``core_content_hash``, con los trabajos de hash de la sesión. T48 (RF-008-23): y la
+        escucha de las carpetas de trabajos borradas y la nota «pendiente de incorporar» de
+        la lista de trabajos."""
         self.enterContext(_without_variable())
         blender_ext.enable()
         provenance = _module("bl.props.provenance")
@@ -164,6 +225,10 @@ class ProvenanceRegistrationTest(unittest.TestCase):
             "operations": CORE_OPERATIONS, "importers": CORE_IMPORTERS,
             "readers": CORE_READERS, "parameters": CORE_PARAMETERS})
         self.assertIn(session.on_project_changed, project_session.listeners())
+        jobs_ops = _module("bl.ops.jobs")
+        job_list = _module("bl.ui.jobs")
+        self.assertIn(session.on_jobs_removed, jobs_ops.removal_listeners())
+        self.assertIs(job_list.note_provider(), session.job_note)
         self.assertFalse(bpy.app.timers.is_registered(session.check_tick))  # sin proyecto
         heavy = ("core.provenance.importer", "core.provenance.gate", "core.provenance.checks")
         self.assertEqual([name for name in heavy if f"{module_name()}.{name}" in sys.modules],
@@ -205,6 +270,8 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         self.assertEqual(_core_declarations(), {
             "operations": (), "importers": (), "readers": (), "parameters": ()})
         self.assertNotIn(session.on_project_changed, project_session.listeners())
+        self.assertNotIn(session.on_jobs_removed, jobs_ops.removal_listeners())
+        self.assertIsNone(job_list.note_provider())
         self.assertNotIn(HASH_WORKER, workers)
         self.assertIsNone(session.SESSION.hash_jobs)
         after = blender_ext.state_fingerprint()
@@ -566,6 +633,206 @@ class ProvenanceSessionTest(unittest.TestCase):
             self.assertNotIn(shown, text)
         self.assertIsNotNone(records.read_record(handle.job_dir).ingested_at)
         self.assertEqual(records.read_record(handle.job_dir).executor, "inprocess")
+
+    # Ayudas para los módulos (T48) --------------------------------------------------------
+
+    def synthetic(self) -> type:
+        """Registra el tipo de operación y el operador sintéticos hasta el final de la
+        prueba."""
+        contract = _module("core.provenance.contract")
+        contract.register_operation(contract.OperationDef(
+            SYNTHETIC_OP, "1.0", "jobs", "Self-test with provenance", False))
+        self.addCleanup(contract.unregister_operation, SYNTHETIC_OP)
+        cls = _synthetic_operator(self.session.ProvenanceAwareOperator)
+        bpy.utils.register_class(cls)
+        self.addCleanup(bpy.utils.unregister_class, cls)
+        return cls
+
+    def snapshot(self, job_uid: str) -> object:
+        runner = _module("bl.ops.jobs").MONITOR.runner
+        return next(found for found in runner.snapshots() if found.job_uid == job_uid)
+
+    def finish(self, job_uid: str) -> object:
+        """Avanza el monitor de los trabajos a mano hasta que el trabajo termina (y se llama a
+        su aviso de fin); devuelve su foto."""
+        jobs_ops = _module("bl.ops.jobs")
+        deadline = time.monotonic() + JOB_WAIT_S
+        while time.monotonic() < deadline:
+            jobs_ops.tick()  # en «blender -b» no corren los temporizadores
+            snapshot = self.snapshot(job_uid)
+            if not snapshot.active:
+                return snapshot
+            time.sleep(0.002)
+        self.fail(f"el trabajo {job_uid} no termina")
+
+    def launched(self) -> tuple[str, str]:
+        """El trabajo pendiente de incorporar que acaba de lanzar el operador sintético y su
+        operación."""
+        (found,) = self.session.pending_ingests().items()
+        return found
+
+    @staticmethod
+    def operation(project: object, uid: str) -> tuple[object, ...]:
+        with project.read() as conn:
+            return conn.execute("SELECT status, executor, job_uid, interpreter, status_reason "
+                                "FROM gb_operation WHERE uid = ?", (uid,)).fetchone()
+
+    def test_job_operation_is_ingested_when_it_ends(self) -> None:
+        """RF-008-51, RF-008-20, RF-008-23 (plan §5.3.4 «Calcular» y §5.4.7): el operador
+        sintético de un módulo (``ProvenanceAwareOperator``) registra su operación «en curso»
+        al empezar y lanza el autodiagnóstico de la 004 con su ``operation_uid``; hasta
+        incorporarla, la lista de trabajos y la procedencia dicen «pendiente de incorporar»; al
+        terminar, ``ingest_job_result`` la incorpora con la procedencia técnica del trabajo y
+        llama a ``mark_ingested``. Sin incorporarla, descartar el trabajo en la lista de
+        trabajos la deja «no incorporada» con el motivo; un trabajo que falla la deja fallida
+        con el motivo de la 004 y queda incorporado."""
+        self.synthetic()
+        project = self.create()
+        self.ps.attach(project)
+        jobs_ops = _module("bl.ops.jobs")
+        job_list = _module("bl.ui.jobs")
+        lineage = _module("core.provenance.lineage")
+        self.addCleanup(jobs_ops.MONITOR.stop)
+
+        self.assertEqual(bpy.ops.gbtest.provenance_selftest("EXEC_DEFAULT"), {"FINISHED"})
+        job_uid, op_uid = self.launched()
+        snapshot = self.snapshot(job_uid)
+        request = json.loads((snapshot.folder / "request.json").read_text("utf-8"))
+        self.assertEqual((request["operation_uid"], request["project_uid"], request["owner"]),
+                         (op_uid, project.uid, "jobs"))
+        self.assertEqual(self.operation(project, op_uid)[:3], ("running", "job_thread", None))
+        self.assertEqual(lineage.result_state(project, op_uid).text(), PENDING_TEXT)
+        self.assertIn(PENDING_TEXT, job_list.details_text(snapshot))
+        snapshot = self.finish(job_uid)
+        self.assertEqual((snapshot.state, snapshot.ingested), ("succeeded", True))
+        self.assertNotIn(PENDING_TEXT, job_list.details_text(snapshot))
+        self.assertEqual(self.session.pending_ingests(), {})
+        status, executor, job, interpreter, _reason = self.operation(project, op_uid)
+        self.assertEqual((status, executor, job), ("done", "job_thread", job_uid))
+        self.assertEqual(json.loads(interpreter)["kind"], "blender")
+        self.assertTrue(lineage.result_state(project, op_uid).saved)
+        self.assertFalse((snapshot.folder / "out").exists())  # mark_ingested: sin resultados
+
+        self.assertEqual(bpy.ops.gbtest.provenance_selftest("EXEC_DEFAULT", ingest=False),
+                         {"FINISHED"})
+        job_uid, op_uid = self.launched()
+        snapshot = self.finish(job_uid)
+        self.assertEqual((snapshot.state, snapshot.ingested), ("succeeded", False))
+        self.assertIn(PENDING_TEXT, job_list.details_text(snapshot))
+        self.assertEqual(lineage.result_state(project, op_uid).text(), PENDING_TEXT)
+        self.assertEqual(bpy.ops.geoblender.jobs_clean("EXEC_DEFAULT", scope="ONE",
+                                                       job_uid=job_uid), {"FINISHED"})
+        self.assertEqual(self.session.pending_ingests(), {})
+        state = lineage.result_state(project, op_uid)
+        self.assertEqual(state.state, lineage.ResultState.NOT_INGESTED)
+        self.assertEqual(state.text(), "no incorporada: se descartó su trabajo «Prueba de la "
+                                       "procedencia» en la lista de trabajos sin incorporarlo")
+
+        self.assertEqual(bpy.ops.gbtest.provenance_selftest("EXEC_DEFAULT", ingest=False,
+                                                            fail=True), {"FINISHED"})
+        job_uid, op_uid = self.launched()
+        snapshot = self.finish(job_uid)
+        self.assertEqual((snapshot.state, snapshot.ingested), ("failed", True))
+        self.assertEqual(self.session.pending_ingests(), {})
+        status, _executor, _job, _interpreter, reason = self.operation(project, op_uid)
+        self.assertEqual((status, reason), ("failed", snapshot.error.text))
+
+    def test_gate_and_write_target_before_operating(self) -> None:
+        """RF-008-58, RF-008-10, RF-008-61, RF-008-15 (plan §5.3.4 y §5.4.13): con la
+        comprobación de apertura en marcha, ``ensure_ready`` espera y lo dice; con una entrada
+        cambiada aguas arriba, al lanzar la orden abre el diálogo de RF-008-10 (Actualizar,
+        Mantener la copia, Cancelar) con esa entrada y no empieza la operación (sin diálogo
+        si se ejecuta desde un guion). Exportar a una carpeta de solo lectura o a la carpeta de
+        la fuente de una entrada se rechaza nombrándola, sin escribir nada, y crear un
+        proyecto dentro de una carpeta de solo lectura, también."""
+        cls = self.synthetic()
+        self.enterContext(_without_variable())
+        prefs = _core_preferences()
+        self.addCleanup(setattr, prefs, "read_only_folders", prefs.read_only_folders)
+        dossiers = self.tmp / "expedientes"
+        dossiers.mkdir()
+        prefs.read_only_folders = str(dossiers)
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_new_project(
+                "EXEC_DEFAULT", directory=str(dossiers), name="Cantera", xmin="699500",
+                ymin="4399500", xmax="700500", ymax="4400500")
+        self.assertIn(f"«{dossiers}», una carpeta de solo lectura", str(caught.exception))
+        self.assertEqual(list(dossiers.iterdir()), [])
+
+        sources = self.tmp / "fuentes"
+        sources.mkdir()
+        source = sources / "Limites.gpkg"
+        shutil.copyfile(DATA / "Limites_v1.gpkg", source)
+        project = self.create()
+        self.ps.attach(project)  # con la comprobación de apertura prevista
+        importer = _module("core.provenance.importer")
+        imported = importer.import_layer(project, LAYER, source=source)
+        cls.uses = (_module("core.provenance.operations").Use(imported.dataset.name,
+                                                              "boundary"),)
+        reports: list[tuple[set[str], str]] = []
+
+        def report(kind: set[str], text: str) -> None:
+            reports.append((set(kind), text))
+
+        self.assertIsNone(self.session.ensure_ready(SYNTHETIC_OP, cls.uses, report=report))
+        ((kind, text),) = reports
+        self.assertEqual(kind, {"WARNING"})
+        self.assertTrue(text.startswith("Comprobando el proyecto…: espere a que termine ("),
+                        text)
+        self.assertIn("«Limites»", text)
+        self.monitor.cancel()
+
+        shutil.copyfile(DATA / "Limites_v2.gpkg", source)
+        later = time.time() + 10
+        os.utime(source, (later, later))
+        opened: list[tuple[object, set[str]]] = []
+        real = self.session.open_input_dialog
+
+        def spy(reason: object) -> set[str]:
+            result = real(reason)
+            opened.append((reason, result))
+            return result
+
+        # En «blender -b» no hay evento: «INVOKE_DEFAULT» ejecuta sin invoke. El invoke de la
+        # base marca que la orden viene de la interfaz y ejecuta; la puerta, con el diálogo.
+        launched = mock.Mock(provenance_dialog=False, execute=mock.Mock(return_value={"X"}))
+        self.assertEqual(cls.invoke(launched, bpy.context, None), {"X"})
+        self.assertTrue(launched.provenance_dialog)
+        reports.clear()
+        with mock.patch.object(self.session, "open_input_dialog", spy):
+            self.assertIsNone(self.session.ensure_ready(SYNTHETIC_OP, cls.uses, report=report,
+                                                        dialog=True))
+        ((reason, result),) = opened
+        self.assertEqual((reason.kind, reason.uid), (_module("core.provenance.gate").BlockKind
+                                                     .INPUT_CHANGED, imported.input.uid))
+        self.assertEqual(result, {"CANCELLED"})  # la orden provisional, hasta T52
+        ((kind, text),) = reports
+        self.assertEqual(kind, {"WARNING"})  # el diálogo ya lo enseña
+        self.assertTrue(text.startswith("La entrada «Limites» ha cambiado desde su registro"),
+                        text)
+        with (mock.patch.object(self.session, "open_input_dialog", spy),
+              self.assertRaises(RuntimeError) as caught):
+            bpy.ops.gbtest.provenance_selftest("EXEC_DEFAULT")  # desde un guion: sin diálogo
+        self.assertIn("La entrada «Limites» ha cambiado", str(caught.exception))
+        self.assertEqual(len(opened), 1)
+
+        cls.uses = ()
+        for target, expected in (
+            (dossiers / "plano.dxf", f"La carpeta «{dossiers}» es de solo lectura"),
+            (sources / "copia.gpkg", "No se puede escribir en la carpeta «fuentes»: contiene "
+                                     "la fuente de la entrada «Limites»."),
+        ):
+            with self.subTest(destino=target.name):
+                with self.assertRaises(RuntimeError) as caught:
+                    bpy.ops.gbtest.provenance_selftest("EXEC_DEFAULT", export_path=str(target))
+                self.assertIn(expected, str(caught.exception))
+                self.assertFalse(target.exists())
+        with project.read() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM gb_operation WHERE op_type = ?",
+                                          (SYNTHETIC_OP,)).fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT status FROM gb_input WHERE uid = ?",
+                                          (imported.input.uid,)).fetchone()[0], "changed")
+        self.assertEqual(self.session.pending_ingests(), {})
 
 
 if __name__ == "__main__":

@@ -127,6 +127,14 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
   (:func:`on_external_python_changed`).
 
 Todos sin ``UNDO``: no cambian la escena.
+
+Carpetas de trabajos borradas (spec 008, T48; RF-008-23; plan 008 §5.4.7): quien lo necesita
+se apunta con :func:`add_removal_listener` (la procedencia: una operación cuyo trabajo se borra
+sin incorporarlo pasa a «no incorporada» con el motivo) y se le avisa con los ``job_uid`` de
+las carpetas que se acaban de borrar y por qué (:data:`REMOVED_DISCARDED`, el «Descartar» de
+la lista de trabajos; :data:`REMOVED_CLEANED`, «Limpiar trabajos terminados…»;
+:data:`REMOVED_PURGED`, la purga por antigüedad al abrir un proyecto). Un aviso que falla va
+al registro técnico y no para la limpieza.
 """
 
 from __future__ import annotations
@@ -182,6 +190,51 @@ PACKAGE_DIR = Path(__file__).resolve().parents[2]
 ``workers/_bootstrap.py``)."""
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
+
+REMOVED_DISCARDED = "discarded"
+"""Por qué se borró la carpeta de un trabajo: «Descartar» en la lista de trabajos."""
+REMOVED_CLEANED = "cleaned"
+"""Por qué se borró: «Limpiar trabajos terminados…»."""
+REMOVED_PURGED = "purged"
+"""Por qué se borró: la purga de los terminados hace más de ``retention_days`` días al abrir
+un proyecto (RF-004-17)."""
+REMOVAL_REASONS: tuple[str, ...] = (REMOVED_DISCARDED, REMOVED_CLEANED, REMOVED_PURGED)
+
+type RemovalListener = Callable[[tuple[str, ...], str], object]
+"""Lo que se avisa al borrar carpetas de trabajos: sus ``job_uid`` y por qué (uno de
+:data:`REMOVAL_REASONS`)."""
+
+_REMOVAL_LISTENERS: list[RemovalListener] = []
+
+
+def add_removal_listener(listener: RemovalListener) -> None:
+    """Apunta ``listener`` para avisarle de las carpetas de trabajos que se borran (véase el
+    módulo); si ya lo estaba, no hace nada."""
+    if listener not in _REMOVAL_LISTENERS:
+        _REMOVAL_LISTENERS.append(listener)
+
+
+def remove_removal_listener(listener: RemovalListener) -> None:
+    """Deja de avisar a ``listener``; si no estaba, no hace nada."""
+    if listener in _REMOVAL_LISTENERS:
+        _REMOVAL_LISTENERS.remove(listener)
+
+
+def removal_listeners() -> tuple[RemovalListener, ...]:
+    """Lo apuntado con :func:`add_removal_listener`, por orden."""
+    return tuple(_REMOVAL_LISTENERS)
+
+
+def _removed(report: CleanupReport, why: str) -> None:
+    """Avisa de las carpetas que borró una limpieza (``report.removed``) a cada uno de los
+    apuntados; uno que falla va al registro técnico y no para a los demás."""
+    if not report.removed:
+        return
+    for listener in list(_REMOVAL_LISTENERS):
+        try:
+            listener(tuple(report.removed), why)
+        except Exception:  # noqa: BLE001 - un aviso que falla no para la limpieza
+            LOGGER.exception("Falló el aviso de las carpetas de trabajos borradas (%s)", why)
 
 
 @dataclass(frozen=True, slots=True)
@@ -641,6 +694,7 @@ class GEOBLENDER_OT_jobs_clean(bpy.types.Operator):
             report = runner.purge(older_than_days=None, all_finished=True)
         else:
             report = runner.purge(older_than_days=retention_days())
+        _removed(report, REMOVED_CLEANED)
         job_list.forget_stored(report.removed)
         _refresh_folder_size(runner)
         if report.removed:
@@ -667,6 +721,7 @@ def _discard(operator: Any, runner: JobRunner, job_uid: str) -> set[str]:
         root = snapshot.folder.parent
     report = runner.purge(older_than_days=None, all_finished=True, only=(job_uid,),
                           jobs_root=root)
+    _removed(report, REMOVED_DISCARDED)
     job_list.forget_stored(report.removed)
     _refresh_folder_size(runner)
     if report.removed:
@@ -1396,6 +1451,7 @@ def on_project_changed(project: Project | None) -> None:
     interrupted = records.mark_interrupted(root, active_uids=active)
     days = retention_days()
     report = runner.purge(older_than_days=days)
+    _removed(report, REMOVED_PURGED)
     if interrupted:
         LOGGER.info("Proyecto «%s»: %d trabajos que Blender dejó en marcha quedan "
                     "«Interrumpido»", project.name, len(interrupted))
