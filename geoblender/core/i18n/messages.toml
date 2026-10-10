@@ -1436,6 +1436,42 @@ es = "Celdas máximas de una rejilla importada"
 ["Grid steps of the levels of detail"]
 es = "Pasos de rejilla de los niveles de detalle"
 
+# Operaciones de topografía (spec 006, T41; RF-006-26; plan 006 §5.6.3): el nombre visible
+# (label_msgid) de cada tipo de operación de gis/provenance.py.
+
+["Import of a raster DTM"]
+es = "Importación de un MDT ráster"
+
+["Import of points and breaklines"]
+es = "Importación de puntos y líneas de rotura"
+
+["Import of a vector layer"]
+es = "Importación de una capa vectorial"
+
+["Resampling to the project grid"]
+es = "Remuestreo a la rejilla del proyecto"
+
+["TIN from points and breaklines"]
+es = "TIN desde puntos y líneas de rotura"
+
+["TIN from contour lines"]
+es = "TIN desde curvas de nivel"
+
+["DTM to TIN conversion"]
+es = "Conversión de MDT a TIN"
+
+["TIN to DTM conversion"]
+es = "Conversión de TIN a MDT"
+
+["Contour lines of a surface"]
+es = "Curvas de nivel de una superficie"
+
+["Export of a raster DTM"]
+es = "Exportación de un MDT ráster"
+
+["Export to GeoPackage"]
+es = "Exportación a GeoPackage"
+
 # Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
 # Los mensajes de la procedencia y de los parámetros (spec §8) están en
 # core/provenance/messages.py y core/params/model.py, y se instalan al registrar.

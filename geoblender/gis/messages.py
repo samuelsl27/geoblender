@@ -605,6 +605,13 @@ CATALOG: tuple[Message, ...] = (
         "queda espacio y que tiene permiso de escritura; no ha quedado ningún fichero a "
         "medias.",
     ),
+    # Procedencia (plan §5.6.3, T41) -------------------------------------------------------
+    Message(
+        "gis.dataset_name_invalid",
+        "The name «{value}» cannot name a dataset: write at least one letter or digit.",
+        "El nombre «{value}» no sirve para nombrar un dato: escriba al menos una letra o una "
+        "cifra.",
+    ),
     # Los de un parámetro (gis/params.py) los da core.params (core.param_*; plan §5.6.1).
 )
 
