@@ -1499,8 +1499,8 @@ es = "Cálculo de curvas de nivel"
 ["Validate a surface"]
 es = "Validación de una superficie"
 
-["Write a deliverable GeoTIFF"]
-es = "Escritura de un GeoTIFF entregable"
+["Write a deliverable"]
+es = "Escritura de un entregable"
 
 ["View meshes of a surface"]
 es = "Mallas de vista de una superficie"
@@ -2307,6 +2307,68 @@ es = "Las cotas fuera del rango plausible pueden ser un sin dato no declarado"
 
 ["Flat triangles: {flat} %; longest side: {side} m; degenerate triangles: {degenerate}"]
 es = "Triángulos planos: {flat} %; lado máximo: {side} m; triángulos degenerados: {degenerate}"
+
+# Exportar (spec 006, T31; RF-006-24, RF-006-25; plan 006 §5.3.5 y §5.6.6): Superficie o
+# rejilla a GeoTIFF… y Capas a GeoPackage…, sus diálogos (GEOBLENDER_PG_gis_export_item), la
+# confirmación de sustituir un fichero y sus informes. «File», «First {step} ({path})»,
+# «import a DTM» y «Choose the surface: …» ya están arriba.
+
+["Grid"]
+es = "Rejilla"
+
+["Name or uid of the DTM or the project grid (empty: the active surface in the view)"]
+es = "Nombre o uid del MDT o de la rejilla del proyecto (vacío: la superficie activa en la vista)"
+
+["Replace"]
+es = "Sustituir"
+
+["Replace the file if it already exists"]
+es = "Sustituir el fichero si ya existe"
+
+["Replace the file"]
+es = "Sustituir el fichero"
+
+["«{file}» already exists: replace it?"]
+es = "Ya existe «{file}»: ¿sustituirlo?"
+
+["Export the layer"]
+es = "Exportar la capa"
+
+["Write this layer to the GeoPackage"]
+es = "Escribir esta capa en el GeoPackage"
+
+["Layers"]
+es = "Capas"
+
+["import or compute a layer"]
+es = "importe o calcule una capa"
+
+["Choose the file to export to"]
+es = "Elija el fichero al que exportar"
+
+["Choose at least one layer to export"]
+es = "Elija al menos una capa que exportar"
+
+["Export of «{file}»"]
+es = "Exportación de «{file}»"
+
+["Exporting «{file}» in the background…"]
+es = "Exportando «{file}» en segundo plano…"
+
+["«{file}» has not been exported: {reason}"]
+es = "No se ha exportado «{file}»: {reason}"
+
+["GeoTIFF «{file}» exported from «{source}»: {cols} × {rows} cells of {dx} × {dy} m, {valid} with data, in float32 with no data −9999; {references}"]
+es = "GeoTIFF «{file}» exportado desde «{source}»: {cols} × {rows} celdas de {dx} × {dy} m, {valid} con dato, en float32 con sin dato −9999; {references}"
+
+["GeoPackage «{file}» exported with {count} layers: {layers}; {references}"]
+es = "GeoPackage «{file}» exportado con {count} capas: {layers}; {references}"
+
+["In the project as the deliverable {dataset}"]
+es = "En el proyecto, como el entregable {dataset}"
+
+["Written outside the project: it is not a dataset of the project"]
+es = "Escrito fuera del proyecto: no es un dato del proyecto"
 
 # Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
 # Los mensajes de la procedencia y de los parámetros (spec §8) están en

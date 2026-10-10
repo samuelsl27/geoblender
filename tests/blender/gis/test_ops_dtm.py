@@ -278,11 +278,11 @@ class DtmImportTest(DtmOperatorsCase):
                 self.assertIsNotNone(cls)
                 self.assertFalse(commands.is_provisional(cls))
                 self.assertTrue(commands.is_available(idname))
-        # Con las de la T29 (los TIN, las conversiones y las importaciones de puntos y capas) y
-        # la de la T30 (las curvas de nivel).
-        expected = (["gis.contours", "gis.grid_to_tin", "gis.import_dtm", "gis.import_points",
-                     "gis.import_vector", "gis.resample", "gis.tin_from_contours",
-                     "gis.tin_from_points", "gis.tin_to_grid"],
+        # Con las de la T29 (los TIN, las conversiones y las importaciones de puntos y capas),
+        # la de la T30 (las curvas de nivel) y las de la T31 (las exportaciones).
+        expected = (["gis.contours", "gis.export_gpkg", "gis.export_raster", "gis.grid_to_tin",
+                     "gis.import_dtm", "gis.import_points", "gis.import_vector", "gis.resample",
+                     "gis.tin_from_contours", "gis.tin_from_points", "gis.tin_to_grid"],
                     ["gis.asc", "gis.geotiff", "gis.gpkg_layer", "gis.points_text",
                      "gis.xyz_grid"])
 

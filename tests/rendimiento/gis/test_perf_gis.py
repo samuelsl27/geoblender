@@ -37,10 +37,9 @@ float64) en EPSG:25830 y en EPSG:23030 (ED50).
   con ``contours_from_raster``: ≤ 15 s.
 - RNF-006-07: exportar esa rejilla a GeoTIFF float32 (leer la del proyecto y escribir el
   entregable, el trabajo ``gis_export``): ≤ 5 s; y 50.000 polilíneas con Z de 30 vértices
-  (1,5 M) a un GeoPackage con sus campos de curva: ≤ 15 s. ``gis.vector.write_layers`` llega
-  con la T31: hasta entonces se mide la cadena de la 002 que usará (``create_base``,
-  ``create_feature_table`` con Z, ``encode_geometry`` e inserción en una transacción, en un
-  temporal que se renombra); la T31 la sustituye por ``write_layers``.
+  (1,5 M) a un GeoPackage con sus campos de curva (``gis.vector.write_layers``, T31: temporal
+  en diario clásico, inserción por lotes, índice R*Tree y renombrado, lo que hace el trabajo
+  ``gis_export`` con ``format = "gpkg"``): ≤ 15 s.
 """
 
 import gc
@@ -68,6 +67,7 @@ tiff = import_geoblender("gis.geotiff.tiff")
 georef = import_geoblender("core.georef")
 gpkg = import_geoblender("core.gpkg")
 gpkg_base = import_geoblender("core.gpkg.base")
+vector = import_geoblender("gis.vector")
 pyproj_crs = import_geoblender("adapters.pyproj_crs")
 
 REPETITIONS = 5  # spec 006 §5: 5 repeticiones, mediana
@@ -629,28 +629,17 @@ def _export_tiff(source: Path, target: Path) -> object:
 
 
 def _export_gpkg(lines: list[object], target: Path) -> int:
-    """Las polilíneas en una capa ``LINESTRING`` con Z de un GeoPackage nuevo, con la
-    cadena de la 002 que usará ``gis.vector.write_layers`` (T31): temporal y renombrado.
-    Devuelve las filas escritas."""
-    temporary = target.with_name(target.name + ".tmp")
-    temporary.unlink(missing_ok=True)
-    srs = CRS.epsg
-    rows = (
-        (gpkg.encode_geometry("LINESTRING", line.xyz, srs, True), line.elevation,
-         line.is_index, line.closed, line.length_m)
-        for line in lines
-    )
-    with gpkg.GpkgConnection.open_write(temporary, create=True) as db:
-        with db.transaction() as conn:
-            gpkg_base.create_base(conn, CRS)
-            gpkg_base.create_feature_table(conn, GPKG_TABLE, "LINESTRING", srs, True,
-                                           GPKG_COLUMNS, identifier="Curvas de rendimiento")
-            cursor = conn.executemany(
-                f'INSERT INTO "{GPKG_TABLE}" (geom, elevation, is_index, closed, length_m) '
-                "VALUES (?, ?, ?, ?, ?)", rows)
-            written = cursor.rowcount
-    os.replace(temporary, target)
-    return written
+    """Las polilíneas en una capa ``LINESTRING`` con Z de un GeoPackage nuevo con
+    ``gis.vector.write_layers`` (T31), con sus campos de curva. Devuelve las filas escritas."""
+    layer = vector.LayerToWrite(
+        GPKG_TABLE, "LINESTRING", True, [line.xyz for line in lines], GPKG_COLUMNS,
+        {"elevation": [line.elevation for line in lines],
+         "is_index": [int(line.is_index) for line in lines],
+         "closed": [int(line.closed) for line in lines],
+         "length_m": [line.length_m for line in lines]},
+        identifier="Curvas de rendimiento")
+    vector.write_layers(target, [layer], CRS, VERTICAL)
+    return len(layer.geometries)
 
 
 class ExportTest(unittest.TestCase):
@@ -681,8 +670,8 @@ class ExportTest(unittest.TestCase):
         times, written = _measure(lambda: _export_gpkg(lines, target))
         vertices = sum(len(line.xyz) for line in lines)
         _report(f"RNF-006-07: exportar a GeoPackage {_count(len(lines))} polilíneas con "
-                f"{_count(vertices)} vértices (cadena de la 002 que usará write_layers, "
-                f"T31; {MACHINE}): {_median_line(times)}, presupuesto "
+                f"{_count(vertices)} vértices (gis.vector.write_layers con su índice R*Tree; "
+                f"{MACHINE}): {_median_line(times)}, presupuesto "
                 f"{_number(EXPORT_GPKG_BUDGET_S, 0)} s")
         self.assertEqual(written, GPKG_LINES)
         self.assertEqual(vertices, GPKG_LINES * GPKG_VERTICES)

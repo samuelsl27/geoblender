@@ -179,15 +179,21 @@ from .provenance import (
     PROJECT_GRID,
     SOURCE_GRID,
     TIN,
+    EXPORTS,
+    EXPORTS_FOLDER,
     DatasetFamily,
     dataset_name,
     dataset_spec,
+    export_locator,
+    export_spec,
     input_kind,
+    inside_project,
     layer_family,
 )
 from .raster import Raster
 from .tin import Tin, meta_vertical, save_tin
 from .tin import load_tin as read_tin_file
+from .vector import StoredLayer, z_description
 
 __all__ = [
     "BACKUP_MARK",
@@ -201,11 +207,13 @@ __all__ = [
     "StoredFeatures",
     "TableLayout",
     "VIEW_TABLE_FAMILIES",
+    "EXPORT_TABLE_FAMILIES",
     "backup_path",
     "classify_source",
     "dataset_references",
     "declared_crs",
     "declared_vertical",
+    "export_layer",
     "list_gis_datasets",
     "load_features",
     "load_lines",
@@ -362,12 +370,9 @@ def _vertical_text(vertical: VerticalRef) -> str:
 
 
 def _z_description(vertical: VerticalRef) -> str:
-    """Cómo se cita en ``gpkg_contents.description`` la referencia de las Z (plan §5.2.3)."""
-    if vertical.epsg is not None:
-        return f"Z en {vertical.name} (EPSG:{vertical.epsg})"
-    if vertical.kind == "ellipsoidal":
-        return f"Z en {vertical.name}"
-    return f"Z referidas a «{vertical.note}» ({vertical.name})"
+    """Cómo se cita en ``gpkg_contents.description`` la referencia de las Z (plan §5.2.3; la
+    misma que en los entregables, ``gis.vector.z_description``)."""
+    return z_description(vertical)
 
 
 def _family(code: str, allowed: Sequence[str]) -> DatasetFamily:
@@ -1117,6 +1122,64 @@ class ResultWriter:
             rings += [ring for polygon in parts for ring in polygon]
         return self._plan_table(BOUNDARY, name, rows, _extent(rings), imported)
 
+    def export(
+        self,
+        source: Path | str,
+        target: Path | str,
+        *,
+        content: ContentDigest,
+        sha256: str | None = None,
+        crs_epsg: int | None = None,
+        progress: Progress | None = None,
+        cancelled: Cancelled | None = None,
+    ) -> DatasetSpec | None:
+        """Prepara el entregable que dejó el trabajo de una exportación (``gis.export_raster``
+        o ``gis.export_gpkg``; T31, plan §5.6.6) en ``source`` para ponerlo en ``target`` al
+        confirmar. Dentro de ``exports/`` del proyecto es el dato ``gis_exp_<ruta>`` del
+        almacén ``exports``, sin seguimiento (``provenance.export_spec``), con ``content``, el
+        hash que dio el trabajo con su lector; fuera del proyecto, ninguno (D21: la operación
+        queda sin salida registrada). Lo copia por trozos al temporal ``<fichero>.tmp-<sesión>``
+        junto al destino con su huella (``sha256`` si se da; si no coincide,
+        ``gis.output_copy_mismatch``); al ponerlo en su sitio (:meth:`install`), el destino
+        anterior, que la persona confirmó sustituir, se aparta hasta confirmar, y si otro
+        programa lo tiene abierto, ``gis.raster_target_locked`` sin fichero a medias. Devuelve
+        su ``DatasetSpec`` o ``None``. ``ValueError`` si la operación no es una exportación o
+        ``target`` está en otra carpeta del proyecto; ``JobCancelled`` si ``cancelled()`` pide
+        parar entre trozos."""
+        self._check_open()
+        if self.handle.op_type not in EXPORTS:
+            raise ValueError(f"solo una exportación escribe un entregable, no "
+                             f"«{self.handle.op_type}»")
+        if not isinstance(content, ContentDigest):
+            raise TypeError(f"el hash del trabajo es un ContentDigest, no {content!r}")
+        target = Path(target)
+        locator = export_locator(self.project.root, target)
+        if locator is None and inside_project(self.project.root, target):
+            raise ValueError(f"«{target.name}» está en el proyecto fuera de "
+                             f"{EXPORTS_FOLDER}/: no es el destino de un entregable")
+        spec = None if locator is None else export_spec(locator, content, crs_epsg=crs_epsg)
+        if any(isinstance(output, _File) and output.final == target for output in self._outputs):
+            raise ValueError(f"una exportación escribe «{target.name}» una vez")
+        entry = _File(target.name if spec is None else spec.name, "", target.name, content,
+                      crs_epsg, target, temporary_path(self.project, target), spec, target,
+                      backup_path(self.project, target))
+        for path in (entry.temporary, entry.backup):
+            check_path_length(path, obj=target.name)
+        if spec is not None:
+            self.handle.claim_paths(entry.temporary, target, entry.backup)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                raise write_failed(target.name, error) from None
+        self._outputs.append(entry)
+        found = _copy(Path(source), entry.temporary, target.name, progress, cancelled)
+        if sha256 is not None and found != sha256:
+            entry.temporary.unlink(missing_ok=True)
+            raise GisError("gis.output_copy_mismatch", obj=f"Entregable «{target.name}»",
+                           field="huella", value=found, file=target.name,
+                           detail=f"sha256 {found[:12]}… frente a {sha256[:12]}…")
+        return spec
+
     # --- Poner en su sitio y confirmar --------------------------------------------------------
 
     def install(self) -> None:
@@ -1544,7 +1607,22 @@ def load_features(project: StoreProject, ref: DatasetRecord | str) -> StoredFeat
     de ``gis`` así y ``gis.dataset_file_missing`` si falta su tabla; ``ValueError`` si es de
     otra familia."""
     record = _resolve(project, ref, VIEW_TABLE_FAMILIES)
-    layout = TABLE_LAYOUTS[_family_of(record, VIEW_TABLE_FAMILIES)]
+    layout, rows = _table_rows(project, record, VIEW_TABLE_FAMILIES)
+    geometries: list[np.ndarray] = []
+    for row in rows:
+        coords = np.asarray(decode_geometry(row[0]).coords, dtype=np.float64)
+        geometries.append(coords.reshape(-1, coords.shape[-1]))
+    attributes = {name: tuple(row[index + 1] for row in rows)
+                  for index, name in enumerate(column.name for column in layout.columns)}
+    return StoredFeatures(record.name, tuple(geometries), MappingProxyType(attributes))
+
+
+def _table_rows(project: StoreProject, record: DatasetRecord,
+                families: Sequence[str]) -> tuple[TableLayout, list[tuple[Any, ...]]]:
+    """La forma de la tabla del dato ``record`` y sus filas en el orden de sus ``fid``: la
+    geometría tal como está guardada y el valor de cada columna; ``gis.dataset_file_missing``
+    si falta la tabla."""
+    layout = TABLE_LAYOUTS[_family_of(record, families)]
     names = [column.name for column in layout.columns]
     selected = ", ".join(f'"{name}"' for name in (_GEOMETRY_COLUMN, *names))
     with project.read() as conn:
@@ -1553,13 +1631,29 @@ def load_features(project: StoreProject, ref: DatasetRecord | str) -> StoredFeat
                            field=_FIELD_LOCATION, value=record.locator, file=record.locator,
                            name=record.name)
         rows = conn.execute(f'SELECT {selected} FROM "{record.locator}" ORDER BY fid').fetchall()
-    geometries: list[np.ndarray] = []
-    for row in rows:
-        coords = np.asarray(decode_geometry(row[0]).coords, dtype=np.float64)
-        geometries.append(coords.reshape(-1, coords.shape[-1]))
-    attributes = {name: tuple(row[index + 1] for row in rows)
-                  for index, name in enumerate(names)}
-    return StoredFeatures(record.name, tuple(geometries), MappingProxyType(attributes))
+    return layout, rows
+
+
+# --- Para exportar (T31) ----------------------------------------------------------------------
+
+EXPORT_TABLE_FAMILIES: tuple[str, ...] = (POINTS, BREAKLINES, CONTOUR_LINES, BOUNDARY)
+"""Las tablas de la topografía que se exportan a GeoPackage (con el TIN, RF-006-25)."""
+
+
+def export_layer(project: StoreProject, ref: DatasetRecord | str) -> StoredLayer:
+    """La tabla del dato ``ref`` (``gis_pts_``, ``gis_brk_``, ``gis_cnt_`` o ``gis_bnd_``) para
+    exportarla a GeoPackage (RF-006-25): con el nombre del dato, su tipo y su Z, sus columnas,
+    sus geometrías tal como están guardadas (sin descodificarlas: lo hace el trabajo) y sus
+    valores, con el identificador «<tipo>: <dato>» y la descripción de un entregable. Solo
+    lee. Los mismos errores que :func:`load_features`."""
+    record = _resolve(project, ref, EXPORT_TABLE_FAMILIES)
+    layout, rows = _table_rows(project, record, EXPORT_TABLE_FAMILIES)
+    values = {column.name: tuple(row[index + 1] for row in rows)
+              for index, column in enumerate(layout.columns)}
+    return StoredLayer(record.name, layout.geometry_type, layout.has_z, layout.columns,
+                       tuple(bytes(row[0]) for row in rows), values,
+                       identifier=f"{layout.label}: {record.name}",
+                       description=f"{layout.label}: entregable de Geoblender")
 
 
 # --- Para un TIN (T29) ---------------------------------------------------------------------------

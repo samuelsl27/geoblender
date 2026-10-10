@@ -32,9 +32,10 @@ from tests.blender.gis.test_ops_tin import CONVERT, IMPORT_POINTS, TIN_POINTS, T
 IMPORT_VECTOR = "geoblender.gis_import_vector"
 TIN_CONTOURS = "geoblender.gis_create_tin_from_contours"
 T29_COMMANDS = (IMPORT_POINTS, IMPORT_VECTOR, TIN_POINTS, TIN_CONTOURS, CONVERT)
-OPERATIONS = ["gis.contours", "gis.grid_to_tin", "gis.import_dtm", "gis.import_points",
-              "gis.import_vector", "gis.resample", "gis.tin_from_contours", "gis.tin_from_points",
-              "gis.tin_to_grid"]  # con las curvas de nivel de la T30
+OPERATIONS = ["gis.contours", "gis.export_gpkg", "gis.export_raster", "gis.grid_to_tin",
+              "gis.import_dtm", "gis.import_points", "gis.import_vector", "gis.resample",
+              "gis.tin_from_contours", "gis.tin_from_points",
+              "gis.tin_to_grid"]  # con las curvas de nivel de la T30 y las exportaciones de la T31
 IMPORTERS = ["gis.asc", "gis.geotiff", "gis.gpkg_layer", "gis.points_text", "gis.xyz_grid"]
 CONSUMED = ["gis.points.dup_xy_tol_m", "gis.points.dup_z_tol_m", "gis.tin.flat_max_passes",
             "gis.tin.max_flat_pct"]

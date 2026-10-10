@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Propiedades del módulo ``gis`` (spec 006, T29; RF-006-12; plan 006 §5.1 y §5.3.5).
+"""Propiedades del módulo ``gis`` (spec 006, T29 y T31; RF-006-12, RF-006-25; plan 006 §5.1 y
+§5.3.5).
 
 :class:`GEOBLENDER_PG_gis_column` es una fila del asistente de «Puntos y líneas de rotura…»
 (``geoblender.gis_import_points``): una columna del fichero de texto (su índice desde 0, su
@@ -7,6 +8,11 @@ nombre en la cabecera y lo que lleva en las primeras filas) y su papel (P, X, Y,
 línea o ninguno). Solo texto, enteros y enumerados: ninguna coordenada (ADR-0005). Desde un
 guion, ``columns=[{"name": "X", "index": 1, "role": "X"}, …]`` (Blender pide ``name`` en
 cada fila).
+
+:class:`GEOBLENDER_PG_gis_export_item` es una fila de «Capas a GeoPackage…»
+(``geoblender.gis_export_gpkg``, T31): un dato de la topografía (su nombre, ``name``) y si se
+exporta (``selected``). Desde un guion, ``items=[{"name": "gis_pts_taludes", "selected":
+True}, …]``.
 
 No se anima (``options=set()``).
 """
@@ -16,7 +22,7 @@ from __future__ import annotations
 from types import MappingProxyType
 
 import bpy
-from bpy.props import EnumProperty, IntProperty
+from bpy.props import BoolProperty, EnumProperty, IntProperty
 
 NOT_IMPORTED = "NONE"
 COLUMN_ROLE_ITEMS = [
@@ -48,5 +54,14 @@ class GEOBLENDER_PG_gis_column(bpy.types.PropertyGroup):
     )
 
 
-classes: tuple[type, ...] = (GEOBLENDER_PG_gis_column,)
+class GEOBLENDER_PG_gis_export_item(bpy.types.PropertyGroup):
+    """Un dato de la topografía en «Capas a GeoPackage…» y si se exporta (RF-006-25)."""
+
+    selected: BoolProperty(  # type: ignore[valid-type]
+        name="Export the layer", description="Write this layer to the GeoPackage",
+        default=True, options=_STATIC,
+    )
+
+
+classes: tuple[type, ...] = (GEOBLENDER_PG_gis_column, GEOBLENDER_PG_gis_export_item)
 """Los grupos de propiedades de ``gis``."""

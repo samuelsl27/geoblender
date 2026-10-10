@@ -55,8 +55,12 @@ resultados en ``out/``:
   ``source`` (``.tif`` o ``.npz``) → ``contours.npz``.
 - ``gis_validate``: ``name``, ``crs``, ``vertical``, ``window``, ``z_range`` y ``count``;
   ``source`` → ``report.json``.
-- ``gis_export``: ``name``, ``crs``, ``vertical`` y ``count``; ``source`` (``.tif``) →
-  ``export.tif``, el GeoTIFF entregable.
+- ``gis_export``: ``format`` (``geotiff``, por defecto, o ``gpkg``), ``name``, ``crs``,
+  ``vertical`` y ``count``; con ``geotiff``, ``source`` (``.tif``) → ``export.tif``, el GeoTIFF
+  entregable; con ``gpkg`` (T31), ``layers`` (``.npz`` de :func:`write_export_layers`: las
+  tablas del proyecto tal como están guardadas y, de cada TIN, el nombre de su entrada) y
+  esos TIN (``tin_<n>``, ``.npz``) → ``export.gpkg`` (``gis.vector.write_layers``). Los dos,
+  con el hash de contenido del fichero escrito (``gis.geotiff@1``, ``core.document@1``).
 - ``gis_view_arrays``: ``name``, ``crs``, ``vertical``, ``lod_steps`` y ``count``;
   ``source`` → ``mesh.npz``.
 
@@ -116,10 +120,12 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from ..core.content.builtin import DOCUMENT
 from ..core.content.encoder import NORMALIZER, ContentDigest
 from ..core.content.readers import MAIN_ROLE, ContentReader, read_steps
 from ..core.errors import GeoblenderError
 from ..core.georef import CrsRef, GeoOrigin, VerticalRef, Window, load_catalog, world_to_local
+from ..core.gpkg.base import ColumnDef
 from ..core.gpkg.header import side_file
 from ..jobs.catalog import WorkerInfo
 from ..jobs.messages import JobError
@@ -176,7 +182,7 @@ from .tin import (
 )
 from .tin_contours import tin_from_contours
 from .validate import validate_raster, validate_tin
-from .vector import copy_source, read_layer
+from .vector import StoredLayer, copy_source, read_layer, tin_layer, write_layers
 from .xyz_grid import read_xyz_grid
 
 __all__ = [
@@ -185,6 +191,7 @@ __all__ = [
     "WORKER_INFOS_BY_NAME",
     "WORKER_NAMES",
     "JobOutput",
+    "TinExport",
     "crs_json",
     "crs_of",
     "digest_json",
@@ -201,6 +208,7 @@ __all__ = [
     "read_lines",
     "read_mesh",
     "read_points",
+    "read_export_layers",
     "read_polygons",
     "read_regions",
     "read_tin_input",
@@ -208,6 +216,7 @@ __all__ = [
     "vertical_json",
     "vertical_of",
     "write_contours",
+    "write_export_layers",
     "write_lines",
     "write_mesh",
     "write_points",
@@ -252,6 +261,14 @@ PRJ_ROLE = gis_content.PRJ_ROLE
 
 INPUT_SOURCE = "source"
 """``in/source.tif`` (una rejilla del proyecto) o ``in/source.npz`` (un TIN)."""
+INPUT_LAYERS = "layers"
+"""``in/layers.npz``: las capas de una exportación a GeoPackage (:func:`write_export_layers`)."""
+TIN_INPUT_PREFIX = "tin_"
+"""Las entradas de los TIN de una exportación a GeoPackage: ``in/tin_<n>.npz``."""
+GEOTIFF_FORMAT = "geotiff"
+GPKG_FORMAT = "gpkg"
+EXPORT_FORMATS: tuple[str, ...] = (GEOTIFF_FORMAT, GPKG_FORMAT)
+"""Lo que escribe ``gis_export``: el GeoTIFF entregable o el GeoPackage con las capas."""
 INPUT_POINTS = "points"
 INPUT_LINES = "lines"
 INPUT_PREPARED = "prepared"
@@ -284,6 +301,7 @@ OUT_FACES = JobOutput("faces.npy", "faces")
 OUT_TIN = JobOutput("tin.npz", "tin")
 OUT_CONTOURS = JobOutput("contours.npz", "contours")
 OUT_EXPORT = JobOutput("export.tif", "export")
+OUT_EXPORT_GPKG = JobOutput("export.gpkg", "export")
 OUT_MESH = JobOutput("mesh.npz", "mesh")
 OUT_POLYGONS = JobOutput("polygons.npz", "boundary")
 LAYER_OUTPUTS: Mapping[str, JobOutput] = MappingProxyType({
@@ -299,6 +317,7 @@ COPYING_TEXT = "Copiando la fuente…"
 READING_TEXT = "Leyendo la fuente…"
 HASHING_TEXT = "Calculando el hash de contenido de la fuente…"
 WRITING_TEXT = "Escribiendo el resultado…"
+EXPORT_HASH_TEXT = "Calculando el hash de contenido del entregable…"
 DONE_TEXT = "Terminado"
 
 # Estimaciones [I] (plan §5.3.4: «celdas × 0,6 µs (DEFLATE)…»; medidas de T05 a T23).
@@ -711,6 +730,81 @@ def read_mesh(path: Path | str) -> dict[float | None, MeshArrays]:
     return found
 
 
+@dataclass(frozen=True, slots=True)
+class TinExport:
+    """Un TIN que el trabajo ``gis_export`` exporta como triángulos (``gis.vector.tin_layer``):
+    el nombre de su capa, la entrada de la petición con su fichero (``tin_<n>``), su
+    identificador y su descripción."""
+
+    name: str
+    input: str
+    identifier: str = ""
+    description: str = ""
+
+
+_TABLE_LAYER = "table"
+_TIN_LAYER = "tin"
+
+
+def _text_array(value: Any) -> np.ndarray:
+    return np.array(json.dumps(value, ensure_ascii=False))
+
+
+def _json_of(value: np.ndarray) -> Any:
+    return json.loads(str(value.item()))
+
+
+def write_export_layers(path: Path | str, layers: Sequence[StoredLayer | TinExport]) -> None:
+    """Las capas de una exportación a GeoPackage en el npz ``path`` (sin comprimir: las
+    geometrías codificadas no se comprimen apenas y así ``bl`` lo escribe enseguida): de cada
+    tabla (``gis.vector.StoredLayer``), su forma, sus geometrías tal como están guardadas
+    (seguidas, con sus ``offsets``) y sus valores en JSON (los números, con todos sus
+    decimales); de cada TIN (:class:`TinExport`), su capa y su entrada."""
+    arrays: dict[str, np.ndarray] = {"count": np.array([len(layers)], dtype=np.int64)}
+    for index, layer in enumerate(layers):
+        if isinstance(layer, TinExport):
+            arrays[f"meta{index}"] = _text_array({
+                "kind": _TIN_LAYER, "name": layer.name, "input": layer.input,
+                "identifier": layer.identifier, "description": layer.description})
+            continue
+        if not isinstance(layer, StoredLayer):
+            raise TypeError(f"una capa exportada es un StoredLayer o un TinExport, no {layer!r}")
+        arrays[f"meta{index}"] = _text_array({
+            "kind": _TABLE_LAYER, "name": layer.name, "geometry_type": layer.geometry_type,
+            "has_z": layer.has_z, "identifier": layer.identifier,
+            "description": layer.description,
+            "columns": [[column.name, column.sql_type, column.not_null, column.default]
+                        for column in layer.columns]})
+        blobs = [bytes(blob) for blob in layer.blobs]
+        arrays[f"blobs{index}"] = np.frombuffer(b"".join(blobs), dtype=np.uint8)
+        arrays[f"offsets{index}"] = _offsets([len(blob) for blob in blobs])
+        arrays[f"values{index}"] = _text_array({column.name: list(layer.values[column.name])
+                                                for column in layer.columns})
+    with open(Path(path), "wb") as stream:
+        np.savez(stream, **arrays)
+
+
+def read_export_layers(path: Path | str) -> list[StoredLayer | TinExport]:
+    """Las capas de :func:`write_export_layers` (las geometrías, con los mismos bytes)."""
+    data = _load_npz(Path(path), ("count",))
+    found: list[StoredLayer | TinExport] = []
+    for index in range(int(data["count"][0])):
+        meta = _json_of(data[f"meta{index}"])
+        if meta["kind"] == _TIN_LAYER:
+            found.append(TinExport(meta["name"], meta["input"], meta["identifier"],
+                                   meta["description"]))
+            continue
+        raw = data[f"blobs{index}"].tobytes()
+        offsets = data[f"offsets{index}"]
+        blobs = tuple(raw[int(offsets[i]):int(offsets[i + 1])] for i in range(len(offsets) - 1))
+        columns = tuple(ColumnDef(name, sql_type, bool(not_null), default)
+                        for name, sql_type, not_null, default in meta["columns"])
+        found.append(StoredLayer(meta["name"], meta["geometry_type"], bool(meta["has_z"]),
+                                 columns, blobs, _json_of(data[f"values{index}"]),
+                                 meta["identifier"], meta["description"]))
+    return found
+
+
 def _write_conflicts(path: Path, error: ConflictError) -> None:
     values = {key: value for key, value in error.values.items() if key not in ("value", "tin")}
     data = {
@@ -932,15 +1026,16 @@ def _stamp(path: Path) -> tuple[int, int] | None:
 
 def _source_digest(ctx: _Context, reader: ContentReader, kind: str, files: Mapping[str, Path],
                    declarations: Mapping[str, Any], settings: Mapping[str, Any],
-                   low: float, high: float) -> ContentDigest:
+                   low: float, high: float, text: str = HASHING_TEXT) -> ContentDigest:
     """El ``ContentDigest`` de la fuente con su lector de contenido (el mismo que da
-    ``core_content_hash``), con avance y cancelación entre trozos."""
+    ``core_content_hash``), con avance y cancelación entre trozos (``text``, lo que dice el
+    avance)."""
     request = reader.request(kind, declarations, files, settings, normalizer=NORMALIZER)
     steps = read_steps(reader, request)
     try:
         ctx.check_cancelled()
         for done in steps:
-            ctx.progress(low + (high - low) * done, HASHING_TEXT)
+            ctx.progress(low + (high - low) * done, text)
     except (ValueError, TypeError) as error:  # ajustes de lectura que el lector no admite
         raise JobError("request_invalid", job=_job_name(ctx.request), detail=str(error)) from None
     finally:
@@ -1437,18 +1532,71 @@ def run_validate(ctx: _Context) -> dict[str, Any]:
 
 @_job
 def run_export(ctx: _Context) -> dict[str, Any]:
-    """``gis_export``: la rejilla de ``in/source.tif`` como GeoTIFF entregable (Float32,
-    −9999; RF-006-24) en ``export.tif``."""
+    """``gis_export``: con ``format = "geotiff"`` (por defecto), la rejilla de
+    ``in/source.tif`` como GeoTIFF entregable (Float32, −9999; RF-006-24) en ``export.tif``;
+    con ``"gpkg"`` (T31), las capas de ``in/layers.npz`` (y sus TIN) en un GeoPackage con Z y
+    el CRS de la petición (``gis.vector.write_layers``; RF-006-25) en ``export.gpkg``. Con el
+    hash de contenido de lo escrito (``gis.geotiff@1``, ``core.document@1``) para
+    registrarlo como dato ``exports`` si va a ``exports/`` del proyecto."""
+    from ..core.datasets.model import DATASET_DECLARATIONS
+
     request = _Request(ctx)
+    chosen = request.text("format", GEOTIFF_FORMAT)
+    if chosen not in EXPORT_FORMATS:
+        raise request.invalid(f"«format» es uno de {list(EXPORT_FORMATS)}, no {chosen!r}")
+    if chosen == GPKG_FORMAT:
+        return _export_gpkg(ctx, request)
     surface = _surface(ctx, request, low=0.0, high=0.4)
     if isinstance(surface, Tin):
         raise request.invalid("solo una rejilla se exporta a GeoTIFF")
     ctx.progress(0.4, WRITING_TEXT)
-    GeoTiffIO().write(surface, ctx.output_path(OUT_EXPORT.file), profile="deliverable",
-                      progress=_span(ctx, 0.4, 0.98), cancelled=_cancelled(ctx))
+    path = ctx.output_path(OUT_EXPORT.file)
+    GeoTiffIO().write(surface, path, profile="deliverable", progress=_span(ctx, 0.4, 0.9),
+                      cancelled=_cancelled(ctx))
+    digest = _source_digest(ctx, gis_content.GEOTIFF, "raster", {MAIN_ROLE: path},
+                            DATASET_DECLARATIONS, {}, 0.9, 0.98, EXPORT_HASH_TEXT)
     summary = {"grid": grid_json(surface.grid),
-               "outputs": {OUT_EXPORT.role: {"file": OUT_EXPORT.relative}}}
+               "valid_cells": int(np.count_nonzero(np.isfinite(surface.values))),
+               "outputs": {OUT_EXPORT.role: {"file": OUT_EXPORT.relative,
+                                             "digest": digest_json(digest)}}}
     _finish(ctx, (OUT_EXPORT,))
+    return summary
+
+
+def _export_gpkg(ctx: _Context, request: _Request) -> dict[str, Any]:
+    """Las capas de ``in/layers.npz`` a ``out/export.gpkg`` (véase :func:`run_export`)."""
+    crs, vertical = request.crs("crs"), request.vertical("vertical")
+    ctx.progress(0.0, READING_TEXT)
+    try:
+        exported = read_export_layers(ctx.input_path(INPUT_LAYERS))
+    except (ValueError, KeyError, TypeError) as error:
+        raise request.invalid(f"«{INPUT_LAYERS}» no es la lista de capas de una exportación: "
+                              f"{error}") from None
+    layers = []
+    for item in exported:
+        ctx.check_cancelled()
+        if isinstance(item, TinExport):
+            if not item.input.startswith(TIN_INPUT_PREFIX):
+                raise request.invalid(f"la entrada del TIN «{item.name}» es «{item.input}», no "
+                                      f"«{TIN_INPUT_PREFIX}<n>»")
+            tin = load_tin(ctx.input_path(item.input))
+            layers.append(tin_layer(tin, item.name, identifier=item.identifier,
+                                    description=item.description))
+        else:
+            try:
+                layers.append(item.decoded(crs.epsg))
+            except ValueError as error:
+                raise request.invalid(str(error)) from None
+    ctx.progress(0.2, WRITING_TEXT)
+    path = ctx.output_path(OUT_EXPORT_GPKG.file)
+    write_layers(path, layers, crs, vertical, progress=_span(ctx, 0.2, 0.95),
+                 cancelled=_cancelled(ctx))
+    digest = _source_digest(ctx, DOCUMENT, "document", {MAIN_ROLE: path}, {}, {}, 0.95, 0.98,
+                            EXPORT_HASH_TEXT)
+    summary = {"layers": [[layer.name, len(layer.geometries)] for layer in layers],
+               "outputs": {OUT_EXPORT_GPKG.role: {"file": OUT_EXPORT_GPKG.relative,
+                                                  "digest": digest_json(digest)}}}
+    _finish(ctx, (OUT_EXPORT_GPKG,))
     return summary
 
 
@@ -1716,7 +1864,7 @@ _LABELS: Mapping[str, str] = MappingProxyType({
     TIN_FINISH: "Finish a TIN",
     CONTOURS: "Compute contour lines",
     VALIDATE: "Validate a surface",
-    EXPORT: "Write a deliverable GeoTIFF",
+    EXPORT: "Write a deliverable",
     VIEW_ARRAYS: "View meshes of a surface",
     IMPORT_VECTOR: "Read a vector layer",
     TIN_CONTOURS: "TIN from contour lines",

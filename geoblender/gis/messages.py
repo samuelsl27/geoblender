@@ -681,6 +681,37 @@ CATALOG: tuple[Message, ...] = (
         "«{name}»: está en {value} y el proyecto en {expected}: llévelo antes a la rejilla del "
         "proyecto (Rejilla de proyecto desde un MDT…) y convierta esa.",
     ),
+    # Exportar (RF-006-24, RF-006-25; plan §5.6.6; T31) -----------------------------------
+    Message(
+        "gis.export_target_exists",
+        "«{file}» already exists: confirm that it is replaced or choose another name; nothing "
+        "has been written.",
+        "Ya existe «{file}»: confirme que se sustituye o elija otro nombre; no se ha escrito "
+        "nada.",
+    ),
+    Message(
+        "gis.export_inside_project",
+        "«{file}» is inside the project «{project}» but not in its exports folder: export to "
+        "exports/ or outside the project; nothing has been written.",
+        "«{file}» está dentro del proyecto «{project}» pero no en su carpeta de entregables: "
+        "exporte a exports/ o fuera del proyecto; no se ha escrito nada.",
+    ),
+    Message(
+        "gis.export_references_mismatch",
+        "«{name}»: it is in {value} and the project in {expected}, and a deliverable goes in "
+        "the project references: export what was computed from it (the resampled grid, the "
+        "TIN, its contour lines); nothing has been written.",
+        "«{name}»: está en {value} y el proyecto en {expected}, y un entregable va en las "
+        "referencias del proyecto: exporte lo calculado a partir de él (la rejilla "
+        "remuestreada, el TIN, sus curvas); no se ha escrito nada.",
+    ),
+    Message(
+        "gis.export_extension_invalid",
+        "«{file}»: a {format} deliverable has the extension {expected}, not «{value}»; nothing "
+        "has been written.",
+        "«{file}»: un entregable {format} lleva la extensión {expected}, no «{value}»; no se ha "
+        "escrito nada.",
+    ),
     # Los de un parámetro (gis/params.py) los da core.params (core.param_*; plan §5.6.1).
 )
 

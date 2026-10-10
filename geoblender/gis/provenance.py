@@ -45,19 +45,27 @@ minúsculas con «_» (:func:`dataset_slug`); su :class:`~..core.datasets.Datase
   sustituido. El papel de una capa importada decide su familia (:data:`LAYER_ROLES`).
 
 Las exportaciones (``gis.export_*``) escriben fuera de los datos del proyecto o en
-``exports/``, sin seguimiento: su dato lo declara la exportación (plan §5.6.6). Python puro
-(ADR-0004).
+``exports/``, sin seguimiento: su dato lo declara la exportación (plan §5.6.6; T31). Dentro de
+``exports/`` el entregable es el dato ``gis_exp_<ruta>`` del almacén ``exports``
+(:func:`export_spec`, con su ubicación de :func:`export_locator`): una rejilla
+(``gis.geotiff@1``) o un documento (el GeoPackage, ``core.document@1``); fuera, ninguno (D21).
+Una ruta del proyecto fuera de ``exports/`` no es un destino (:func:`inside_project`). Python
+puro (ADR-0004).
 """
 
 from __future__ import annotations
 
+import ntpath
+import os
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
 from typing import Any
 
+from ..core.content.builtin import DOCUMENT
 from ..core.content.builtin import GPKG_LAYER as CORE_GPKG_LAYER
 from ..core.content.builtin import NPZ_MESH
 from ..core.content.encoder import ContentDigest
@@ -432,3 +440,59 @@ def dataset_spec(
         immutable=input_uid is not None,
         detail=detail,
     )
+
+
+# --- Entregables (T31; plan §5.6.6, D21) ----------------------------------------------------------
+
+EXPORTS_FOLDER = str(Store.EXPORTS)
+"""La carpeta de los entregables dentro del proyecto (``exports/``)."""
+EXPORT_PREFIX = f"{_GIS_PREFIX}exp_"
+"""El comienzo del nombre del dato de un entregable de ``exports/``: ``gis_exp_<ruta>``."""
+EXPORT_ROLE = "export"
+"""Su papel de salida en la operación que lo escribe."""
+_EXPORT_KINDS: Mapping[str, str] = MappingProxyType({GEOTIFF.id: "raster",
+                                                     DOCUMENT.id: "document"})
+
+
+def _comparable(path: str | os.PathLike[str]) -> str:
+    """Una ruta absoluta como la compara Windows: sin «.» ni «..», con «\\» y sin mayúsculas."""
+    return ntpath.normcase(ntpath.normpath(os.path.abspath(os.fspath(path))))
+
+
+def inside_project(root: str | os.PathLike[str], target: str | os.PathLike[str]) -> bool:
+    """Si ``target`` es la raíz del proyecto ``root`` o está dentro (sin distinguir
+    mayúsculas, como Windows)."""
+    base, found = _comparable(root), _comparable(target)
+    return found == base or found.startswith(base.rstrip("\\") + "\\")
+
+
+def export_locator(root: str | os.PathLike[str], target: str | os.PathLike[str]) -> str | None:
+    """La ubicación (``exports/<ruta con «/»>``) del entregable ``target`` si está dentro de
+    ``exports/`` del proyecto ``root``; si no, ``None`` (fuera del proyecto: ningún dato, D21;
+    en otra carpeta del proyecto, no es un destino: :func:`inside_project`)."""
+    folder = Path(root) / EXPORTS_FOLDER
+    if not inside_project(folder, target) or _comparable(folder) == _comparable(target):
+        return None
+    relative = os.path.relpath(os.path.abspath(os.fspath(target)),
+                               os.path.abspath(os.fspath(folder)))
+    return "/".join((EXPORTS_FOLDER, *PureWindowsPath(relative).parts))
+
+
+def export_spec(locator: str, content: ContentDigest, *, crs_epsg: int | None = None,
+                ) -> DatasetSpec:
+    """La ``DatasetSpec`` del entregable de ``exports/`` en ``locator`` (:func:`export_locator`)
+    con el ``content`` que dio su trabajo (plan §5.6.6): ``gis_exp_<ruta>`` (la ruta dentro de
+    ``exports/`` con :func:`dataset_slug`: un entregable con la misma ruta es el mismo dato con
+    otro contenido), almacén ``exports`` (sin seguimiento), su lector (``gis.geotiff@1``: una
+    rejilla; ``core.document@1``: el GeoPackage, un documento) y el papel ``export``.
+    ``ValueError`` si ``content`` no es de uno de esos lectores."""
+    if not isinstance(content, ContentDigest):
+        raise TypeError(f"el hash de un entregable es un ContentDigest, no {content!r}")
+    kind = _EXPORT_KINDS.get(content.reader)
+    if kind is None:
+        raise ValueError(f"un entregable se lee con {', '.join(_EXPORT_KINDS)}, no con "
+                         f"«{content.reader}»")
+    relative = locator.removeprefix(f"{EXPORTS_FOLDER}/")
+    return DatasetSpec(EXPORT_PREFIX + dataset_slug(relative), MODULE, kind, Store.EXPORTS,
+                       locator, reader=content.reader, role=EXPORT_ROLE, content=content,
+                       crs_epsg=crs_epsg)

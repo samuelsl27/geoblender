@@ -19,7 +19,9 @@ Registra lo que la topografía declara a las specs 004 y 008:
   (:func:`reimport_dtm`, RF-008-11; plan §5.6.3 y §5.6.8);
 - (T29) los de ``gis.import_points`` y ``gis.import_vector`` (sin recálculo) y los de los TIN
   y las conversiones con el suyo, y los ``ImporterDef`` de ``gis.points_text`` y
-  ``gis.gpkg_layer``; al quitarlo todo, también el temporizador de las triangulaciones.
+  ``gis.gpkg_layer``; al quitarlo todo, también el temporizador de las triangulaciones;
+- (T30) el de ``gis.contours`` con su recálculo, y (T31) los de ``gis.export_raster`` y
+  ``gis.export_gpkg`` (no se repiten solas: sin recálculo).
 
 :func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` lo quita en orden
 inverso (lo que otro cambió después es suyo). Los dos son simétricos e idempotentes.
@@ -76,6 +78,20 @@ inverso (lo que otro cambió después es suyo). Los dos son simétricos e idempo
   (:func:`recompute_tin`).
 - ``geoblender.gis_convert_dtm_tin`` (MDT ⇄ TIN…): ``gis.grid_to_tin`` o ``gis.tin_to_grid``
   con ``gis_convert_surface`` (RF-006-17), con su recálculo (:func:`recompute_convert`).
+
+**Exportar** (T31; HU-006-6; RF-006-24, RF-006-25; plan §5.6.6, D21):
+``geoblender.gis_export_raster`` (Exportar ▸ Superficie o rejilla a GeoTIFF…: el MDT importado o
+la rejilla del proyecto, el GeoTIFF float32 con −9999 de T07) y ``geoblender.gis_export_gpkg``
+(Capas a GeoPackage…: puntos, líneas de rotura, TIN como triángulos, curvas y contornos, con
+``GEOBLENDER_PG_gis_export_item``), operaciones ``gis.export_raster`` y ``gis.export_gpkg`` que
+consumen lo exportado (papel ``exported``) con su trabajo ``gis_export``. Antes de empezar y
+otra vez antes de escribir, la guarda de las escrituras de la 008 (``check_write_target`` con
+``read_only_dirs()``: la fuente de una entrada, su carpeta y las de solo lectura, RF-008-15);
+ni otra carpeta del proyecto que ``exports/`` ni otra extensión. Un destino que ya existe no se
+sustituye sin confirmarlo (desde la interfaz, una confirmación; desde un guion, ``overwrite``);
+abierto por otro programa, la operación falla con el anterior intacto. Dentro de ``exports/``
+el entregable es el dato ``exports`` ``gis_exp_<ruta>`` con su hash; fuera, ninguno, y los
+ajustes llevan el nombre del fichero, nunca su ruta.
 
 Sin proyecto, ``poll`` dice el paso previo («Primero abra un proyecto (Proyecto ▸ … ▸ Abrir
 proyecto…)», con su ruta en la barra); sin la procedencia o en solo lectura (también dentro de
@@ -172,7 +188,12 @@ from ...jobs import catalog as job_catalog
 from ...jobs.ingest import job_outcome
 from ...jobs.protocol import new_request
 from ..props.core import OBJECT_PROPERTY, GEOBLENDER_PG_core_view_dataset
-from ..props.gis import COLUMN_ROLES, NOT_IMPORTED, GEOBLENDER_PG_gis_column
+from ..props.gis import (
+    COLUMN_ROLES,
+    NOT_IMPORTED,
+    GEOBLENDER_PG_gis_column,
+    GEOBLENDER_PG_gis_export_item,
+)
 from ..scene import project_session
 from ..scene import triangulator as cdt_blender
 from ..ui.commands import catalog as command_catalog
@@ -288,7 +309,7 @@ def register() -> None:
          provenance.TIN_FROM_CONTOURS: recompute_tin, provenance.GRID_TO_TIN: recompute_convert,
          provenance.TIN_TO_GRID: recompute_convert, provenance.CONTOURS: recompute_contours},
         op_types=(provenance.IMPORT_DTM, provenance.RESAMPLE, *T29_OPERATIONS,
-                  provenance.CONTOURS))
+                  provenance.CONTOURS, provenance.EXPORT_RASTER, provenance.EXPORT_GPKG))
     for definition in definitions:
         if definition.op_type not in contract.OPERATIONS:
             contract.register_operation(definition)
@@ -3421,11 +3442,471 @@ class GEOBLENDER_OT_gis_validate_surface(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# --- Exportar (T31) ---------------------------------------------------------------------------
+
+
+EXPORT_RASTER = "geoblender.gis_export_raster"
+EXPORT_GPKG = "geoblender.gis_export_gpkg"
+EXPORT_OPERATIONS: tuple[str, ...] = (provenance.EXPORT_RASTER, provenance.EXPORT_GPKG)
+"""Los tipos de operación de las dos exportaciones (no se repiten solas: sin recálculo)."""
+GRID_FAMILIES: tuple[str, ...] = (provenance.SOURCE_GRID, provenance.PROJECT_GRID)
+"""Lo que se exporta a GeoTIFF: el MDT importado y la rejilla del proyecto (un TIN, antes a
+rejilla con MDT ⇄ TIN)."""
+LAYER_FAMILIES: tuple[str, ...] = (provenance.POINTS, provenance.BREAKLINES, provenance.TIN,
+                                   provenance.CONTOUR_LINES, provenance.BOUNDARY)
+"""Lo que se exporta a GeoPackage (RF-006-25), en el orden de su lista."""
+RASTER_SUFFIXES: tuple[str, ...] = (".tif", ".tiff")
+GPKG_SUFFIXES: tuple[str, ...] = (".gpkg",)
+EXPORTED_ROLE = "exported"
+"""El papel de lo que consume una exportación (``gis.provenance``)."""
+TIN_LABEL = "TIN"
+TIN_DESCRIPTION = "TIN de Geoblender: un triángulo por entidad"
+
+
+@dataclass(eq=False)
+class _Export:
+    """Una exportación en marcha: su operación, el destino, lo que exporta y si la persona
+    confirmó sustituir un destino que ya existía."""
+
+    handle: OperationHandle
+    target: Path
+    sources: tuple[DatasetRecord, ...]
+    overwrite: bool
+
+
+def _export_target(project: Any, filepath: str, suffixes: Sequence[str], label: str) -> Path:
+    """El destino de una exportación (la ruta del diálogo): con una de ``suffixes``
+    (``gis.export_extension_invalid``) y fuera del proyecto o en su ``exports/``
+    (``gis.export_inside_project``: nunca sobre lo que gestiona el proyecto)."""
+    shown = filepath.strip()
+    if not shown:
+        raise ValueError(tr("Choose the file to export to"))
+    path = Path(bpy.path.abspath(shown))
+    if path.suffix.lower() not in suffixes:
+        raise GisError("gis.export_extension_invalid", obj=path.name, field="extensión",
+                       value=path.suffix or "—", file=path.name, format=label,
+                       expected="/".join(suffixes))
+    if (provenance.inside_project(project.root, path)
+            and provenance.export_locator(project.root, path) is None):
+        raise GisError("gis.export_inside_project", obj=path.name, field="destino",
+                       value=path.name, file=path.name, project=project.name)
+    return path
+
+
+def _require_export_references(project: Any, record: DatasetRecord) -> None:
+    """Lo que se exporta, en el CRS y la referencia vertical del proyecto (RF-006-24,
+    RF-006-25: los entregables van en ellos); si no, ``gis.export_references_mismatch``
+    nombrando los dos."""
+    found = store.dataset_references(project, record)
+    expected = store.project_references(project)
+    if found != expected:
+        raise GisError("gis.export_references_mismatch", obj=f"«{record.name}»", field="CRS",
+                       value=reference_label(*found), name=record.name,
+                       expected=reference_label(*expected))
+
+
+def _default_target(project: Any, name: str, suffix: str) -> str:
+    """El destino que propone el diálogo: ``exports/<nombre><extensión>`` del proyecto."""
+    return str(Path(project.root, provenance.EXPORTS_FOLDER, f"{name}{suffix}"))
+
+
+def _open_confirm(idname: str, values: Mapping[str, Any]) -> None:
+    """Pide confirmar que se sustituye el destino que ya existe: la misma orden con
+    ``confirm`` (su confirmación) en cuanto acaba esta; sin ventana, nada (lo dice el aviso)."""
+    manager = getattr(bpy.context, "window_manager", None)
+    windows = list(getattr(manager, "windows", ()) or ())
+    if not windows:
+        return
+    group, name = idname.split(".")
+
+    def call() -> None:
+        try:
+            with bpy.context.temp_override(window=windows[0]):
+                getattr(getattr(bpy.ops, group), name)("INVOKE_DEFAULT", confirm=True, **values)
+        except (RuntimeError, TypeError, AttributeError):
+            LOGGER.warning("No se pudo pedir confirmación en %s", idname, exc_info=True)
+
+    bpy.app.timers.register(call, first_interval=0.0)
+
+
+def _existing(operator: Any, target: Path, values: Mapping[str, Any]) -> set[str] | None:
+    """Si ``target`` ya existe y la persona no confirmó sustituirlo (spec §8: nunca sin
+    confirmación): desde la interfaz, lo dice y pide confirmarlo; desde un guion, lo rechaza
+    (``gis.export_target_exists``; con ``overwrite``, se sustituye). Devuelve
+    ``{'CANCELLED'}``; si no hay nada que confirmar, ``None``."""
+    if operator.overwrite or not target.exists():
+        return None
+    error = GisError("gis.export_target_exists", obj=target.name, field="destino",
+                     value=target.name, file=target.name)
+    if operator.provenance_dialog:
+        operator.report({"WARNING"}, error_text(error))
+        _open_confirm(operator.bl_idname, {"filepath": str(target), **values})
+    else:
+        operator.report({"ERROR"}, error_text(error))
+    return {"CANCELLED"}
+
+
+def _confirm(operator: Any, context: Any, event: Any) -> set[str]:
+    """La confirmación de sustituir el destino (la orden con ``confirm``): si se acepta, la
+    orden sigue con ``overwrite``."""
+    operator.overwrite = True
+    name = Path(operator.filepath).name
+    return context.window_manager.invoke_confirm(
+        operator, event, title=tr("Replace the file"),
+        message=tr("«{file}» already exists: replace it?", file=name),
+        confirm_text=tr("Replace"), translate=False)
+
+
+def _start_export(operator: Any, context: Any, target: Path,
+                  records: Sequence[DatasetRecord], settings: dict[str, Any],
+                  start: Callable[[_Export, Callable[..., Any]], Any]) -> set[str]:
+    """La puerta, la operación «en curso» que consume ``records`` y su trabajo (``start``);
+    lo que no se puede, lo dice."""
+    project = core_provenance.SESSION.project
+    settings["file"] = target.name  # solo el nombre: ninguna ruta en el proyecto (D21)
+    settings["in_exports"] = provenance.export_locator(project.root, target) is not None
+    operator._records = tuple(records)
+    handle = operator.begin(context, settings=settings, executor="job_thread")
+    if handle is None:
+        return {"CANCELLED"}
+    plan = _Export(handle, target, tuple(records), bool(operator.overwrite))
+    try:
+        job = start(plan, operator.launch_job)
+    except (GeoblenderError, OSError, ValueError) as exc:
+        try:
+            handle.fail(error_text(exc))
+        except GeoblenderError:
+            pass
+        operator.report({"ERROR"}, error_text(exc))
+        return {"CANCELLED"}
+    if job is None:
+        return {"CANCELLED"}
+    operator.report({"INFO"}, tr("Exporting «{file}» in the background…", file=target.name))
+    return {"FINISHED"}
+
+
+def _start_raster(plan: _Export, launch: Callable[..., Any]) -> Any:
+    """Lanza el trabajo ``gis_export`` (GeoTIFF) de ``plan`` con la rejilla copiada a
+    ``in/``; al terminar, :func:`_exported`."""
+    project = plan.handle.project
+    (record,) = plan.sources
+    path = _file_of(project, record)
+    crs, vertical = store.project_references(project)
+    params = {"format": jobs.GEOTIFF_FORMAT, "name": record.name, "crs": jobs.crs_json(crs),
+              "vertical": jobs.vertical_json(vertical), "count": path.stat().st_size // 4}
+    return launch(plan.handle, jobs.EXPORT, label=tr("Export of «{file}»", file=plan.target.name),
+                  params=params, inputs={jobs.INPUT_SOURCE: path},
+                  on_finish=functools.partial(_exported, plan), grace_s=jobs.CANCEL_GRACE_S)
+
+
+def _start_gpkg(plan: _Export, launch: Callable[..., Any]) -> Any:
+    """Lanza el trabajo ``gis_export`` (GeoPackage) de ``plan``: las tablas tal como están
+    guardadas (``store.export_layer``, sin descodificarlas) en ``in/layers.npz`` y cada TIN,
+    su fichero (``in/tin_<n>.npz``); al terminar, :func:`_exported`."""
+    project = plan.handle.project
+    tin_prefix = provenance.FAMILIES_BY_CODE[provenance.TIN].prefix
+    layers: list[Any] = []
+    inputs: dict[str, Path] = {}
+    size = 0
+    for record in plan.sources:
+        if record.name.startswith(tin_prefix):
+            path = _file_of(project, record)
+            name = f"{jobs.TIN_INPUT_PREFIX}{len(inputs)}"
+            inputs[name] = path
+            layers.append(jobs.TinExport(record.name, name, f"{TIN_LABEL}: {record.name}",
+                                         TIN_DESCRIPTION))
+            size += path.stat().st_size
+        else:
+            layer = store.export_layer(project, record)
+            layers.append(layer)
+            size += sum(len(blob) for blob in layer.blobs)
+    work = Path(project.cache_dir(), WORK_DIR, f"export-{plan.handle.uid.partition('-')[0]}")
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        listed = work / f"{jobs.INPUT_LAYERS}.npz"
+        jobs.write_export_layers(listed, layers)
+        inputs[jobs.INPUT_LAYERS] = listed
+        crs, vertical = store.project_references(project)
+        params = {"format": jobs.GPKG_FORMAT, "name": plan.target.stem,
+                  "crs": jobs.crs_json(crs), "vertical": jobs.vertical_json(vertical),
+                  "count": size // 24}
+        return launch(plan.handle, jobs.EXPORT,
+                      label=tr("Export of «{file}»", file=plan.target.name), params=params,
+                      inputs=inputs, on_finish=functools.partial(_exported, plan),
+                      grace_s=jobs.CANCEL_GRACE_S)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)  # el trabajo tiene su copia en in/
+
+
+def _exported(plan: _Export, result: JobResult) -> None:
+    """El final de ``gis_export``: el entregable a su destino (con la guarda de las escrituras
+    otra vez, RF-008-15) y la operación incorporada con el informe; dentro de ``exports/``,
+    como dato ``exports`` con el hash del trabajo (plan §5.6.6). Si no se puede (el destino
+    abierto por otro programa: ``gis.raster_target_locked``), la operación queda fallida con
+    el motivo y el destino anterior intacto; si el trabajo no terminó bien, la procedencia la
+    deja cancelada o fallida con el motivo de la 004."""
+    if result.state != _SUCCEEDED:
+        return
+    project = plan.handle.project
+    name = plan.target.name
+    role = jobs.OUT_EXPORT.role
+    try:
+        outcome = job_outcome(result, result.job_dir)
+        core_provenance.check_write_target(plan.target)
+        if not plan.overwrite and plan.target.exists():
+            raise GisError("gis.export_target_exists", obj=name, field="destino", value=name,
+                           file=name)
+        crs, _vertical = store.project_references(project)
+        with store.ResultWriter(project, plan.handle) as out:
+            spec = out.export(outcome.file(role), plan.target,
+                              content=jobs.digest_of(outcome.summary["outputs"][role]["digest"]),
+                              sha256=outcome.output(role).sha256, crs_epsg=crs.epsg)
+            report = _export_report(plan, outcome.summary, spec)
+            core_provenance.ingest_job_result(plan.handle, result, out.write, message=report)
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        reason = _failure(plan.handle, result, error)
+        _say(tr("«{file}» has not been exported: {reason}", file=name, reason=reason))
+        return
+    _say(report)
+
+
+def _export_report(plan: _Export, summary: Mapping[str, Any], spec: Any) -> str:
+    """El informe de una exportación: qué se escribió, con el CRS y la referencia vertical
+    del proyecto, y si es un dato del proyecto (dentro de ``exports/``) o no."""
+    references = reference_label(*store.project_references(plan.handle.project))
+    name = plan.target.name
+    if "grid" in summary:
+        grid = jobs.grid_of(summary["grid"])
+        lines = [tr("GeoTIFF «{file}» exported from «{source}»: {cols} × {rows} cells of {dx} × "
+                    "{dy} m, {valid} with data, in float32 with no data −9999; {references}",
+                    file=name, source=plan.sources[0].name, cols=grid.ncols, rows=grid.nrows,
+                    dx=_decimal(grid.dx), dy=_decimal(grid.dy),
+                    valid=format_number(int(summary["valid_cells"]), 0),
+                    references=references)]
+    else:
+        layers = "; ".join(f"{layer} ({format_number(int(count), 0)})"
+                           for layer, count in summary["layers"])
+        lines = [tr("GeoPackage «{file}» exported with {count} layers: {layers}; {references}",
+                    file=name, count=len(summary["layers"]), layers=layers,
+                    references=references)]
+    if spec is not None:
+        lines.append(tr("In the project as the deliverable {dataset}", dataset=spec.name))
+    else:
+        lines.append(tr("Written outside the project: it is not a dataset of the project"))
+    return "\n".join(lines)
+
+
+def _selected_datasets(context: Any) -> set[str]:
+    """Los uid de los datos que muestran los objetos seleccionados en la vista."""
+    found: set[str] = set()
+    for obj in getattr(context, "selected_objects", None) or ():
+        marks = getattr(obj, OBJECT_PROPERTY, None)
+        if marks is not None and marks.dataset_uid:
+            found.add(str(marks.dataset_uid))
+    return found
+
+
+class GEOBLENDER_OT_gis_export_raster(ProvenanceAwareOperator, bpy.types.Operator):
+    """Write a surface or a grid as GeoTIFF"""
+
+    bl_idname = EXPORT_RASTER
+    bl_label = "Surface or grid to GeoTIFF…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.EXPORT_RASTER
+
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="File", subtype="FILE_PATH", options={"SKIP_SAVE"},
+    )
+    filter_glob: StringProperty(  # type: ignore[valid-type]
+        default="*.tif;*.tiff", options={"HIDDEN"},
+    )
+    check_existing: BoolProperty(  # type: ignore[valid-type]
+        default=True, options={"HIDDEN", "SKIP_SAVE"},
+    )
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Grid",
+        description="Name or uid of the DTM or the project grid (empty: the active surface in "
+                    "the view)",
+        options={"SKIP_SAVE"},
+    )
+    overwrite: BoolProperty(  # type: ignore[valid-type]
+        name="Replace", description="Replace the file if it already exists",
+        options={"SKIP_SAVE"},
+    )
+    confirm: BoolProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore[valid-type]
+    items: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _poll(cls)
+
+    def provenance_inputs(self, context: Any) -> tuple[Use, ...]:
+        return tuple(Use(record.uid, EXPORTED_ROLE) for record in getattr(self, "_records", ()))
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        if self.confirm:
+            return _confirm(self, context, event)
+        project = core_provenance.SESSION.project
+        try:
+            records = _fill_items(self, GRID_FAMILIES, project)
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if not records:
+            path = path_text(command_catalog(), IMPORT_DTM, i18n.language())
+            self.report({"ERROR"}, tr("First {step} ({path})", step=tr("import a DTM"),
+                                      path=path))
+            return {"CANCELLED"}
+        if not self.source:
+            active = _active_surface(context)
+            chosen = next((record for record in records if record.uid == active), records[-1])
+            self.source = chosen.name
+        if not self.filepath:
+            self.filepath = _default_target(project, self.source, RASTER_SUFFIXES[0])
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.prop_search(self, "source", self, "items", text=tr("Grid"), translate=False)
+        layout.prop(self, "overwrite", text=tr("Replace"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        try:
+            target = _export_target(project, self.filepath, RASTER_SUFFIXES, "GeoTIFF")
+            shown = self.source.strip() or _active_surface(context)
+            if not shown:
+                raise ValueError(tr("Choose the surface: select it in the view or give its name"))
+            record = _record(project, shown, GRID_FAMILIES)
+            _require_export_references(project, record)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if not self.check_write_target(target):
+            return {"CANCELLED"}
+        stop = _existing(self, target, {"source": record.name})
+        if stop is not None:
+            return stop
+        return _start_export(self, context, target, (record,), {"source": record.name},
+                             _start_raster)
+
+
+class GEOBLENDER_OT_gis_export_gpkg(ProvenanceAwareOperator, bpy.types.Operator):
+    """Write layers to a GeoPackage"""
+
+    bl_idname = EXPORT_GPKG
+    bl_label = "Layers to GeoPackage…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.EXPORT_GPKG
+
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="File", subtype="FILE_PATH", options={"SKIP_SAVE"},
+    )
+    filter_glob: StringProperty(  # type: ignore[valid-type]
+        default="*.gpkg", options={"HIDDEN"},
+    )
+    check_existing: BoolProperty(  # type: ignore[valid-type]
+        default=True, options={"HIDDEN", "SKIP_SAVE"},
+    )
+    overwrite: BoolProperty(  # type: ignore[valid-type]
+        name="Replace", description="Replace the file if it already exists",
+        options={"SKIP_SAVE"},
+    )
+    confirm: BoolProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore[valid-type]
+    items: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_gis_export_item, options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _poll(cls)
+
+    def provenance_inputs(self, context: Any) -> tuple[Use, ...]:
+        return tuple(Use(record.uid, EXPORTED_ROLE) for record in getattr(self, "_records", ()))
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        if self.confirm:
+            return _confirm(self, context, event)
+        project = core_provenance.SESSION.project
+        try:
+            records = store.list_gis_datasets(project, families=LAYER_FAMILIES)
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if not records:
+            path = path_text(command_catalog(), IMPORT_POINTS, i18n.language())
+            self.report({"ERROR"}, tr("First {step} ({path})", step=tr("import or compute a "
+                                                                         "layer"), path=path))
+            return {"CANCELLED"}
+        order = {provenance.FAMILIES_BY_CODE[code].prefix: index
+                 for index, code in enumerate(LAYER_FAMILIES)}
+        chosen = _selected_datasets(context)
+        self.items.clear()
+        for record in sorted(records, key=lambda found: (
+                next(index for prefix, index in order.items()
+                     if found.name.startswith(prefix)), found.name)):
+            item = self.items.add()
+            item.name = record.name
+            item.selected = record.uid in chosen
+        if not self.filepath:
+            self.filepath = _default_target(project, "capas", GPKG_SUFFIXES[0])
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.label(text=tr("Layers"), translate=False)
+        column = layout.column(align=True)
+        for item in self.items:
+            column.prop(item, "selected", text=item.name, translate=False)
+        layout.prop(self, "overwrite", text=tr("Replace"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        names = [str(item.name) for item in self.items if item.selected]
+        if not names:
+            self.report({"ERROR"}, tr("Choose at least one layer to export"))
+            return {"CANCELLED"}
+        try:
+            target = _export_target(project, self.filepath, GPKG_SUFFIXES, "GeoPackage")
+            records = [_record(project, name, LAYER_FAMILIES) for name in names]
+            for record in records:
+                _require_export_references(project, record)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if not self.check_write_target(target):
+            return {"CANCELLED"}
+        rows = [{"name": str(item.name), "selected": bool(item.selected)} for item in self.items]
+        stop = _existing(self, target, {"items": rows})
+        if stop is not None:
+            return stop
+        return _start_export(self, context, target, records,
+                             {"layers": [record.name for record in records]}, _start_gpkg)
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_gis_import_dtm, GEOBLENDER_OT_gis_resample_to_grid,
                              GEOBLENDER_OT_gis_import_points, GEOBLENDER_OT_gis_import_vector,
                              GEOBLENDER_OT_gis_create_tin_from_points,
                              GEOBLENDER_OT_gis_create_tin_from_contours,
                              GEOBLENDER_OT_gis_convert_dtm_tin, GEOBLENDER_OT_gis_create_contours,
-                             GEOBLENDER_OT_gis_validate_surface)
+                             GEOBLENDER_OT_gis_validate_surface, GEOBLENDER_OT_gis_export_raster,
+                             GEOBLENDER_OT_gis_export_gpkg)
 """Los operadores de ``gis`` (T28: las órdenes de un MDT; T29: puntos, capas, TIN y MDT ⇄
-TIN; T30: curvas de nivel y validar una superficie)."""
+TIN; T30: curvas de nivel y validar una superficie; T31: exportar a GeoTIFF y a
+GeoPackage)."""
