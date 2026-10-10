@@ -10,10 +10,10 @@
   Blender.
 - Spec 008, T44 (RF-008-06, RF-008-16, RF-008-26, RF-008-28, RF-008-29): las órdenes de
   Proyecto ▸ Control y el panel de lo obsoleto son de la entrada ``008`` (mientras sean
-  provisionales, «Disponible en 008 · …»); lo de la 009 sigue «Disponible en R-07 · …»; las
-  nueve órdenes internas del plan 008 §5.3.2 están registradas con su ``bl_idname`` y no
-  salen en los menús; al habilitar, los textos de la procedencia y de los parámetros están
-  en ``core.i18n``.
+  provisionales, «Disponible en 008 · …»; el panel, real desde T49, ya está disponible); lo
+  de la 009 sigue «Disponible en R-07 · …»; las nueve órdenes internas del plan 008 §5.3.2
+  están registradas con su ``bl_idname`` y no salen en los menús; al habilitar, los textos
+  de la procedencia y de los parámetros están en ``core.i18n``.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -149,8 +149,9 @@ class UiCatalogTest(unittest.TestCase):
     def test_provenance_commands_in_008(self) -> None:
         """RF-008-06, RF-008-16, RF-008-26, RF-008-28, RF-008-29: Proyecto ▸ Control dibuja
         las órdenes de la 008 con su etiqueta; mientras su operador sea provisional, salen
-        desactivadas y dicen «Disponible en 008 · …» (también el panel de lo obsoleto del
-        control 7); lo de la 009 sigue «Disponible en R-07 · …»."""
+        desactivadas y dicen «Disponible en 008 · …»; el panel de lo obsoleto del control 7
+        ya es el real (T49) y está disponible, sin nota; lo de la 009 sigue «Disponible en
+        R-07 · …»."""
         commands = _module("bl.ui.commands")
         for menu, idnames in CONTROL.items():
             drawn = {i.target: i for i in draw(getattr(bpy.types, menu), _context()).items
@@ -164,8 +165,9 @@ class UiCatalogTest(unittest.TestCase):
                     self.assertFalse(item.enabled)
                     self.assertEqual(_reported(cls), [({"INFO"}, PROVENANCE_NOTE)])
         stale = self.cat.commands["GEOBLENDER_PT_core_stale"]
-        self.assertFalse(commands.is_available(stale.key))
-        self.assertEqual(commands.unavailable_note(stale), PROVENANCE_NOTE)
+        self.assertTrue(commands.is_available(stale.key))
+        self.assertFalse(commands.is_provisional(commands.registered_class(stale.key)))
+        self.assertNotIn(PROVENANCE_NOTE, bpy.types.GEOBLENDER_PT_core_stale.bl_description)
         for idname in LATER:
             with self.subTest(idname=idname):
                 self.assertEqual(commands.unavailable_note(self.cat.commands[idname]),

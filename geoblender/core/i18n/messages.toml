@@ -1408,6 +1408,17 @@ es = "Comprobando el proyecto… {percent} %"
 ["Refresh · stale ({n})"]
 es = "Refrescar · obsoletos ({n})"
 
+# Panel de lo obsoleto del control 7 (RF-008-28; T49): Recalcular, como en la procedencia
+
+["Recompute"]
+es = "Recalcular"
+
+["Nothing is stale"]
+es = "No hay nada obsoleto"
+
+["… and {count} more"]
+es = "… y {count} más"
+
 # Insignias de tipo y marcas de un parámetro (RF-008-06)
 
 ["[MEA]"]
