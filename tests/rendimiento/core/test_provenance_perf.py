@@ -29,32 +29,41 @@ el intérprete (``tools/check.py`` las recoge) y la compara con su presupuesto, 
   sin cambios ≤ 1 s, por pasos.
 - RNF-008-11 (:class:`BigHashTest`): el arnés por lector de ``provenance_fixtures`` con
   ``test.npy_grid@1`` y un MDT de 100 M celdas (10 000 × 10 000, float32): ≤ 45 s, progreso
-  cada ≤ 1 s y cancelación a mitad en ≤ 2 s.
+  cada ≤ 1 s y cancelación en ≤ 2 s (mirada cada ≤ 2 s, al empezar y a mitad). Con
+  ``core.gpkg_layer@1`` (:class:`BigLayerHashTest`, T67): una capa de 2 M polígonos (unos
+  0,9 GB) en disco local, ≤ 60 s, con lo mismo también mientras cuenta y cierra el hash.
+- RNF-008-12 (:class:`OpenStepsTest`, T65): la comprobación de apertura del proyecto de D-13
+  sin cambios, con la obsolescencia completa por pasos: ningún paso de más de 20 ms (el más
+  largo, mediana de 5); y, con la caché sin saber de un cambio de todas las cadenas y otro
+  cambio entre el cálculo y la escritura, la caché y los estados al terminar son, fila a
+  fila, los de la transacción final de antes (con ``refresh_all``) sobre la misma base.
 
 En la red (recurso «red»: la carpeta de pruebas de ``GEOBLENDER_NET_TEST_DIR``, nunca la de
 los expedientes ni la del espejo; sin ella, se omiten): RNF-008-04 con las 100 fuentes en la
 red (≤ 3 s) y RNF-008-10 con el proyecto de D-13 en la red (≤ 5 s). Quedan para la
-comprobación manual M7 (T59): RNF-008-01 y 02 en la red y el GeoPackage de 1 GB de RNF-008-11;
-el GeoTIFF de 100 M celdas y la base de RecMin de 100 MB, para la 006 y la 005 con este arnés
-(S-4).
+comprobación manual M7 (T59): RNF-008-01 y 02 en la red y el GeoPackage de 1 GB de RNF-008-11
+(medido de nuevo en T67); el GeoTIFF de 100 M celdas y la base de RecMin de 100 MB, para la 006
+y la 005 con este arnés (S-4).
 """
 
 from __future__ import annotations
 
 import platform
+import shutil
 import statistics
 import sys
 import time
 import unittest
 from collections.abc import Iterator
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import numpy as np
 
-from tests.support import network
+from tests.support import network, open_check
 from tests.support import provenance_fixtures as d13
 from tests.support.core_fixtures import project_tmp
 from tests.support.package import import_geoblender
@@ -85,6 +94,8 @@ CONTENT_HASH_BUDGET_S = 5.0  # RNF-008-05
 PROGRESS_GAP_S = 1.0  # RNF-008-05 y 11: progreso cada ≤ 1 s
 OPEN_DETECT_BUDGET_S = 1.0  # RNF-008-10, en disco local
 NET_OPEN_DETECT_BUDGET_S = 5.0  # RNF-008-10, en la red
+OPEN_STEP_BUDGET_S = 0.020  # RNF-008-12: cada paso de la comprobación de apertura (plan §5.4.6)
+OPEN_STEP_RUNS = 5
 
 # RNF-008-05: un MDT de 3 399 × 3 309 (11,2 M celdas), 100 000 polígonos de 20 vértices y una
 # tabla de ensayos de 500 000 filas.
@@ -349,6 +360,103 @@ class OpenDetectTest(unittest.TestCase):
             self._check(built, "en la red", NET_OPEN_DETECT_BUDGET_S)
 
 
+def _ms(value: float) -> str:
+    return f"{value * 1000:.1f}".replace(".", ",")
+
+
+class OpenStepsTest(unittest.TestCase):
+    def test_no_step_takes_longer_than_its_budget(self) -> None:
+        """RNF-008-12 (plan §5.4.6; T65): la comprobación de apertura del proyecto de D-13 sin
+        cambios en disco local, con la obsolescencia completa por pasos, no tiene ningún paso de
+        más de 20 ms (el más largo, mediana de 5 comprobaciones) y su transacción final no toca
+        la caché."""
+        built = _d13()
+        longest: list[float] = []
+        totals: list[float] = []
+        counts: list[int] = []
+        for _ in range(OPEN_STEP_RUNS):
+            driven = drive(checks.open_check_steps(built.project, write=True))
+            outcome = driven.result
+            self.assertTrue(outcome.recorded)
+            self.assertEqual((outcome.cache.added, outcome.cache.removed),
+                             (frozenset(), frozenset()))
+            longest.append(driven.max_step_s)
+            totals.append(driven.total_s)
+            counts.append(driven.steps)
+        median = statistics.median(longest)
+        _report(
+            f"RNF-008-12: comprobación de apertura del proyecto de D-13 sin cambios en disco "
+            f"local, {OPEN_STEP_RUNS} veces: paso más largo, mediana {_ms(median)} ms (máximo "
+            f"{_ms(max(longest))} ms; presupuesto {_ms(OPEN_STEP_BUDGET_S)} ms), "
+            f"{statistics.median(counts):.0f} pasos y {_seconds(statistics.median(totals))} s"
+        )
+        self.assertLessEqual(median, OPEN_STEP_BUDGET_S)
+
+    def test_cache_identical_to_the_full_refresh(self) -> None:
+        """RF-008-58, RF-008-24, RNF-008-12 (plan §5.4.6, paso 8; T65): en el proyecto de D-13
+        con la caché sin saber del cambio del parámetro de todas las cadenas (sus 10 000
+        operaciones y 20 000 datos, obsoletos) y otro cambio del proyecto entre el cálculo y la
+        escritura (un parámetro de dentro de las cadenas, justo antes de la transacción final),
+        la comprobación de apertura vuelve a calcular y deja la caché y los estados idénticos,
+        fila a fila, a los de la transacción final de antes (con ``refresh_all``) sobre la
+        misma base. El proyecto queda como estaba."""
+        built = _d13()
+        project = built.project
+        database = Path(project.database_path)
+        clock = project.clock
+        store = params.ParameterStore(project)
+        inner = d13.parameter_key(d13.FIRST_INNER_PARAMETER + 49)
+        with ExitStack() as stack:
+            tmp = stack.enter_context(project_tmp("gb-008-t65-"))
+            shutil.copyfile(database, tmp / "d13.gpkg")
+            stack.callback(shutil.copyfile, tmp / "d13.gpkg", database)
+            moment = (clock._now, clock._monotonic)
+            with project.write_transaction() as conn:  # la caché no lo sabe
+                conn.execute("UPDATE gb_parameter SET value_sha256 = ? WHERE key = ?",
+                             (d13.SHA, d13.COMMON_KEY))
+            shutil.copyfile(database, tmp / "base.gpkg")
+            found = []
+            for before in (False, True):
+                shutil.copyfile(tmp / "base.gpkg", database)
+                clock._now, clock._monotonic = moment
+                real = project.try_write
+                pending = [inner]
+
+                def writing(work: Any, real: Any = real, pending: list[str] = pending) -> Any:
+                    while pending:
+                        key = pending.pop()
+                        with project.write_transaction() as conn:
+                            store.change(conn, key, value=store.get(key).value + 1.0,
+                                         reason="Cambio entre el cálculo y la escritura")
+                    return real(work)
+
+                with open_check.same_uids(), \
+                        (open_check.as_before() if before else nullcontext()), \
+                        mock.patch.object(project, "try_write", writing), \
+                        mock.patch.object(checks, "full_difference_steps",
+                                          wraps=stale.full_difference_steps) as computed:
+                    driven = drive(checks.open_check_steps(project, write=True))
+                found.append((driven, open_check.project_rows(project), computed.call_count))
+            (driven, rows, computed), (expected, reference, _computed) = found
+            clock._now, clock._monotonic = moment
+        self.assertEqual(computed, 2)
+        outcome = driven.result
+        self.assertGreaterEqual(len(outcome.cache.added), d13.OPERATIONS + d13.DATASETS)
+        self.assertEqual(outcome.texts("es"), expected.result.texts("es"))
+        self.assertEqual(rows.keys(), reference.keys())
+        for table in sorted(reference):
+            self.assertTrue(rows[table] == reference[table], table)
+        _report(
+            f"RNF-008-12: comprobación de apertura del proyecto de D-13 con la caché sin saber "
+            f"de un cambio de todas las cadenas ({len(outcome.cache.added)} filas que añadir) y "
+            f"un cambio entre el cálculo y la escritura: caché y estados idénticos a los de la "
+            f"transacción final de antes ({len(rows[open_check.CACHE_TABLE])} filas de la "
+            f"caché); calculada 2 veces, {_seconds(driven.total_s)} s en {driven.steps} pasos, "
+            f"paso más largo {_ms(driven.max_step_s)} ms (la transacción final con todas esas "
+            f"filas; antes, {_seconds(expected.total_s)} s y {_ms(expected.max_step_s)} ms)"
+        )
+
+
 class ContentHashTest(unittest.TestCase):
     """Las tres fuentes de RNF-008-05, escritas una vez en un temporal."""
 
@@ -422,6 +530,29 @@ class BigHashTest(d13.BigHashHarness, unittest.TestCase):
         return d13.BigSource(
             {"main": path}, "raster", d13.GRID_DECLARATIONS, d13.grid_settings(),
             f"un MDT de {rows * columns // 1_000_000} M celdas ({rows} × {columns}, float32)",
+        )
+
+    @classmethod
+    def report(cls, text: str) -> None:
+        _report(text)
+
+
+class BigLayerHashTest(d13.BigHashHarness, unittest.TestCase):
+    """RNF-008-11 con ``core.gpkg_layer@1`` (T67): una capa de un GeoPackage con 2 M polígonos
+    de 20 vértices (unos 0,9 GB) en disco local, ≤ 60 s (el presupuesto del GeoPackage de 1 GB
+    en ``Z:``), con progreso cada ≤ 1 s también mientras cuenta sus filas y mientras cierra el
+    hash, y la cancelación en ≤ 2 s en cualquier momento. En ``Z:``, a mano (M7)."""
+
+    reader = builtin.GPKG_LAYER
+    budget_s = d13.BIG_LAYER_BUDGET_S
+
+    @classmethod
+    def make_source(cls, folder: Path) -> d13.BigSource:
+        path = d13.write_layer(folder / "parcelas_2m.gpkg", d13.BIG_LAYER_FEATURES)
+        return d13.BigSource(
+            {"main": path}, "vector", d13.LAYER_DECLARATIONS, {"layer": d13.LAYER_NAME},
+            f"una capa de {d13.BIG_LAYER_FEATURES // 1_000_000} M polígonos de "
+            f"{d13.LAYER_VERTICES} vértices",
         )
 
     @classmethod

@@ -39,6 +39,8 @@ from tests.support.repo import EXT, ROOT
 contract = import_geoblender("core.provenance.contract")
 importer = import_geoblender("core.provenance.importer")
 recompute = import_geoblender("core.provenance.recompute")
+stale = import_geoblender("core.provenance.stale")
+graph = import_geoblender("core.provenance.graph")
 figures = import_geoblender("core.provenance.figures")
 gate = import_geoblender("core.provenance.gate")
 lineage = import_geoblender("core.provenance.lineage")
@@ -211,6 +213,40 @@ class DemoOperationsTest(DemoCase):
         third = self.run_step(lambda: self.demo.import_boundary(self.project, other))
         self.assertEqual(self.demo.boundary_name(self.project), third.dataset.name)
         self.assertEqual(third.dataset.name, "core_imported_limites_v1_qgis")
+
+    def test_stale_area_is_counted_and_listed(self) -> None:
+        """RF-008-28, RF-008-61 (spec 0.3, T66; F-1 de la verificación): importado
+        ``Limites_v1`` y calculada su área (``demo.area`` solo deja la cifra), con
+        ``Limites_v2`` en su lugar y la entrada actualizada, «! 1 obsoletos»: la lista tiene la
+        operación del área, una vez, con su causa («Obsoleto: se actualizó la entrada
+        «Limites_v1»»), su módulo y ella misma para Recalcular (su plan la recalcula); tras
+        Recalcular lo obsoleto, 0 y nada."""
+        nothing = stale.Counts(stale=0, figures=0, review=0, inputs_changed=0)
+        first = self.run_step(lambda: self.demo.import_boundary(self.project, self.source))
+        area = self.run_step(lambda: self.demo.area(self.project, first.dataset.name))
+        self.assertEqual(stale.counts(self.project), nothing)
+        self.deliver(data.BOUNDARY_V2)
+        self.run_step(lambda: importer.reimport_input(self.project, "Limites_v1",
+                                                      UPDATE_REASON))
+        found = stale.counts(self.project)
+        self.assertEqual(found, stale.Counts(stale=0, figures=1, review=0, inputs_changed=0))
+        self.assertEqual(found.obsolete, 1)
+        report = stale.stale_items(self.project)
+        self.assertEqual(report.counts, found)
+        self.assertEqual(
+            [(item.item_kind, item.uid, item.name, item.module, item.operation_uid,
+              item.op_type, item.review, item.text) for item in report.items],
+            [("operation", area.uid, demo_support.AREA, demo_support.DEMO_CODE, area.uid,
+              demo_support.AREA, False, "Obsoleto: se actualizó la entrada «Limites_v1»")],
+        )
+        plan = self.read(lambda conn: recompute.plan_recompute(graph.load_graph(conn),
+                                                               scope=area.uid))
+        self.assertEqual(plan.operations, (area.uid,))
+
+        outcome = self.recompute_all()
+        self.assertEqual([result.status for result in outcome.results], [DONE])
+        self.assertEqual(stale.counts(self.project), nothing)
+        self.assertEqual(stale.stale_items(self.project).items, ())
 
     def test_bench_years_is_tonnage_over_production(self) -> None:
         """RF-008-24, RF-008-25, RF-008-26, RF-008-30 (base de CE-008-02 y CE-008-10):

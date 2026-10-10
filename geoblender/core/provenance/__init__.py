@@ -12,8 +12,9 @@
 - :mod:`.operations`: el registro de las operaciones en dos pasos (:func:`begin_operation`,
   :class:`OperationHandle` con ``claim_paths``, ``complete``, ``fail`` y ``cancel``,
   :func:`operation` y :func:`claimed_paths`), las que su sesión no pudo terminar
-  (:func:`interrupt_orphaned` y :func:`mark_not_ingested`) y la incorporación de un trabajo
-  de la 004 (:func:`ingest_job` con su :class:`JobOutcome` → :class:`IngestOutcome`).
+  (:func:`interrupt_orphaned` y :func:`mark_not_ingested`), la incorporación de un trabajo
+  de la 004 (:func:`ingest_job` con su :class:`JobOutcome` → :class:`IngestOutcome`) y el
+  estado registrado de unas operaciones (:func:`operation_statuses`, para Ctrl+Z).
 - :mod:`.figures`: las cifras con tipo y procedencia (:class:`FigureSpec`,
   :func:`record_figure`, :class:`FigureRecord`) y el aviso de una cifra que calcula un
   parámetro con otro valor (:class:`Divergence`, :func:`divergence`, :func:`divergences` y,
@@ -120,6 +121,7 @@ OPERATIONS_API: tuple[str, ...] = (
     "interrupt_orphaned",
     "mark_not_ingested",
     "operation",
+    "operation_statuses",
 )
 """Lo de :mod:`.operations` que se reexporta al usarlo."""
 
@@ -175,6 +177,7 @@ RECOMPUTE_API: tuple[str, ...] = (
     "UnitStatus",
     "accept_review",
     "plan_recompute",
+    "recompute_dataset_steps",
     "recompute_steps",
 )
 """Lo de :mod:`.recompute` que se reexporta al usarlo."""
@@ -213,6 +216,7 @@ LINEAGE_API: tuple[str, ...] = (
     "InputLink",
     "InputUse",
     "LineageKind",
+    "LineageMatch",
     "LineageRow",
     "LineageTree",
     "Mark",
@@ -223,6 +227,7 @@ LINEAGE_API: tuple[str, ...] = (
     "current_figure",
     "figure_marks",
     "result_state",
+    "search_items",
 )
 """Lo de :mod:`.lineage` que se reexporta al usarlo. Su función ``lineage`` no: es el nombre
 del módulo (``core.provenance.lineage.lineage``), que el paquete tiene como atributo en cuanto
@@ -347,6 +352,7 @@ __all__ = [
     "JobOutcome",
     "LayerImport",
     "LineageKind",
+    "LineageMatch",
     "LineageRow",
     "LineageTree",
     "Mark",
@@ -418,9 +424,11 @@ __all__ = [
     "open_check_steps",
     "operation",
     "operation_def",
+    "operation_statuses",
     "parameter_divergence",
     "parse_version",
     "plan_recompute",
+    "recompute_dataset_steps",
     "recompute_steps",
     "record_figure",
     "refresh_all",
@@ -434,6 +442,7 @@ __all__ = [
     "render",
     "result_state",
     "scope_key",
+    "search_items",
     "stale_items",
     "stale_state",
     "survey_steps",

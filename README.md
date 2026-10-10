@@ -10,7 +10,10 @@ de minas, para su propio trabajo de proyectos de explotación y restauración.
 > superior con los 13 menús, acceso rápido, vistas mineras, idioma, línea de comandos y
 > plantilla de aplicación (spec 003). Ejecuta los cálculos largos en segundo plano, con su
 > avance y su cancelación en la barra de estado, y tiene un motor de cálculo opcional que solo
-> se instala si se acepta (spec 004). La 002, la 003 y la 004 están comprobadas con Blender
+> se instala si se acepta (spec 004). Registra la procedencia de los parámetros, las entradas,
+> las operaciones y las cifras del proyecto, y lo que queda obsoleto cuando algo cambia (spec
+> 008, probada en Blender sin su interfaz; faltan sus comprobaciones en pantalla, y ningún
+> módulo minero la usa aún). La 002, la 003 y la 004 están comprobadas con Blender
 > 5.2.1 (la interfaz y los trabajos, en la pantalla de referencia de IMGA), y la 002 también
 > con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un equipo. Faltan comprobaciones de
 > personas: dos equipos a la vez, que IMGA acepte las de QGIS sin interfaz y las de la interfaz
@@ -150,10 +153,12 @@ OMISIONES`.
 
 ## Variables de entorno
 
-Todas son opcionales y empiezan por `GEOBLENDER_`.
+Todas son opcionales y empiezan por `GEOBLENDER_`. La primera la lee Geoblender en cada
+equipo; las demás, las herramientas de desarrollo y las pruebas.
 
 | Variable | Para qué |
 | --- | --- |
+| `GEOBLENDER_READ_ONLY_DIRS` | Carpetas en las que Geoblender nunca escribe (las de los expedientes de clientes), separadas por «;»: cada una, una ruta completa con su unidad (`X:\…`) o de red (`\\servidor\…`); una unidad de red y su ruta de red son la misma carpeta, y no se distinguen mayúsculas. La define IMGA en cada equipo, y cada persona puede añadir las suyas en las preferencias de Geoblender («Carpetas de solo lectura»), donde se ven también las de la variable. Un proyecto dentro de una de ellas se abre en solo lectura, sin cerrojo y sin migrarlo; en ellas no se crea un proyecto, ni se saca o se publica una copia local, ni escribe ninguna exportación. Si ni la variable ni las preferencias declaran ninguna, Geoblender avisa una vez por sesión y en Ayuda ▸ Diagnóstico de la instalación (spec 008) |
 | `GEOBLENDER_DOCS_DIR` | Carpeta de la documentación, si no es la carpeta madre de este repositorio |
 | `GEOBLENDER_NAS_ESPEJO` | Carpeta del NAS donde se refleja la carpeta del proyecto; solo la define quien publica |
 | `GEOBLENDER_BLENDER` | Ruta a `blender.exe` o a su carpeta, si Blender 5.2 no está en la ruta por defecto (también para el lanzador `Geoblender.cmd`) |

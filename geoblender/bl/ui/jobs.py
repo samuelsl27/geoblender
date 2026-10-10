@@ -17,6 +17,12 @@ Blender, y solo mientras haya algo que mostrar). Sin ``append`` propio (contrato
 
 Sin nada que mostrar, el campo no ocupa sitio (:func:`width_px` da 0) ni dibuja nada.
 
+Si no cabe (spec 008, T69; M6: a 1920 px con escala efectiva 1,5 se salía por la derecha), la
+barra de estado lo dibuja **plegado** (:func:`draw_folded`, :func:`folded_width_px`): el número
+de activos, una barra de :data:`FOLDED_BAR_UNITS` unidades con solo el % («42 %» o el estado
+si todos esperan), sin el último mensaje, y los mismos dos botones; el aviso de uno que acabó,
+solo con su estado y su duración («Terminado · 2,0 s») y su icono.
+
 La lista de trabajos (:class:`GEOBLENDER_PT_jobs_list`, RF-004-08) es una ventana emergente
 (región de cabecera, como las de la 003: solo la abre ``geoblender.jobs_show_jobs`` con
 ``wm.call_panel``): su título, lo que ocupa la carpeta de los trabajos (medido al abrirla,
@@ -85,7 +91,6 @@ from ...jobs.records import ErrorInfo, InterpreterInfo
 from ...jobs.runner import JobRunner, JobSnapshot
 from ...jobs.runtime import ComputeEnvironment, InstallPlan, WheelSource
 from ...jobs.worker_api import UNKNOWN_BLAS
-from .. import compat
 from . import commands, statusbar
 
 if TYPE_CHECKING:
@@ -99,6 +104,8 @@ FIELD_ORDER = 70.0  # tras los de la 003 (10–60)
 FIELD_MODES = frozenset({statusbar.GEOBLENDER, statusbar.BLENDER})
 BAR_UNITS = 10
 """Ancho de la barra de avance, en unidades de interfaz (plan §5.4.4)."""
+FOLDED_BAR_UNITS = 3
+"""Ancho de la barra de avance del campo plegado (spec 008, T69): cabe «100 %»."""
 ACTIVE_ICON = "SORTTIME"
 NOTICE_ICONS: Mapping[str, str] = {
     "succeeded": "CHECKMARK",
@@ -238,6 +245,13 @@ def bar_text(current: JobSnapshot, percent: int) -> str:
     return current.name + SEPARATOR + state_text(current.state)
 
 
+def folded_bar_text(current: JobSnapshot, percent: int) -> str:
+    """El texto de la barra de avance plegada (spec 008, T69): «42 %» o «En cola»."""
+    if current.state == "running":
+        return tr("{percent}%", percent=percent)
+    return state_text(current.state)
+
+
 def notice_text(snapshot: JobSnapshot) -> str:
     """El aviso de un trabajo que acabó: nombre, estado, duración en s y, si no terminó
     bien, el mensaje del §8 (RF-004-07)."""
@@ -246,6 +260,13 @@ def notice_text(snapshot: JobSnapshot) -> str:
     if snapshot.state != "succeeded" and snapshot.error is not None:
         parts.append(error_text(snapshot.error))
     return SEPARATOR.join(parts)
+
+
+def folded_notice_text(snapshot: JobSnapshot) -> str:
+    """El aviso plegado de un trabajo que acabó (spec 008, T69): su estado y su duración en
+    s («Terminado · 2,0 s»); el icono dice cómo terminó."""
+    seconds = format_number(snapshot.duration_s or 0.0, 1)
+    return SEPARATOR.join([state_text(snapshot.state), f"{seconds} s"])
 
 
 def _ops() -> ModuleType:
@@ -272,8 +293,7 @@ def _running_message(view: StatusView) -> str:
     return messages.one_line(current.message)
 
 
-def draw(layout: Any, _context: Any) -> None:
-    """Dibuja el campo «jobs» (nada si no hay nada que mostrar)."""
+def _draw(layout: Any, *, folded: bool) -> None:
     view = current_view()
     if not view.visible:
         return
@@ -282,10 +302,10 @@ def draw(layout: Any, _context: Any) -> None:
     if view.active and current is not None:
         row.label(text=str(view.active), icon=ACTIVE_ICON, translate=False)
         bar = row.row(align=True)
-        bar.ui_units_x = BAR_UNITS
-        bar.progress(factor=view.percent / 100, type="BAR",
-                     text=bar_text(current, view.percent), translate=False)
-        message = _running_message(view)
+        bar.ui_units_x = FOLDED_BAR_UNITS if folded else BAR_UNITS
+        shown = (folded_bar_text if folded else bar_text)(current, view.percent)
+        bar.progress(factor=view.percent / 100, type="BAR", text=shown, translate=False)
+        message = "" if folded else _running_message(view)
         if message:
             row.label(text=message, translate=False)
         row.operator(SHOW_JOBS, text="", icon=SHOW_JOBS_ICON, emboss=False)
@@ -294,33 +314,59 @@ def draw(layout: Any, _context: Any) -> None:
     if notice is not None:
         if view.active:
             row.separator()
-        row.label(text=notice_text(notice), icon=NOTICE_ICONS.get(notice.state, "INFO"),
-                  translate=False)
+        shown = (folded_notice_text if folded else notice_text)(notice)
+        row.label(text=shown, icon=NOTICE_ICONS.get(notice.state, "INFO"), translate=False)
 
 
-def width_px(_context: Any) -> float:
-    """Lo que ocupa el campo a escala 1,0 (0 si no hay nada que mostrar)."""
+def _width(*, folded: bool) -> float:
     view = current_view()
     if not view.visible:
         return 0.0
-    unit = float(compat.UI_UNIT_PX)
     width = 0.0
     current = view.current
     if view.active and current is not None:
-        width += unit + statusbar.text_px(str(view.active))
-        width += BAR_UNITS * unit + BUTTONS * unit
-        message = _running_message(view)
-        if message:
-            width += statusbar.text_px(message)
-    if view.notice is not None:
-        width += unit + statusbar.text_px(notice_text(view.notice))
+        width += statusbar.label_px(str(view.active), icon=True)
+        width += statusbar.units_px(FOLDED_BAR_UNITS if folded else BAR_UNITS)
+        width += BUTTONS * statusbar.button_px()
+        if not folded:
+            width += statusbar.label_px(_running_message(view))
+    notice = view.notice
+    if notice is not None:
+        if view.active:
+            width += statusbar.WIDTHS.spacer
+        shown = (folded_notice_text if folded else notice_text)(notice)
+        width += statusbar.label_px(shown, icon=True)
     return width
 
 
+def draw(layout: Any, _context: Any) -> None:
+    """Dibuja el campo «jobs» (nada si no hay nada que mostrar)."""
+    _draw(layout, folded=False)
+
+
+def draw_folded(layout: Any, _context: Any) -> None:
+    """Dibuja el campo «jobs» plegado (spec 008, T69): sin el último mensaje, con una barra
+    corta y solo el %, y los mismos botones."""
+    _draw(layout, folded=True)
+
+
+def width_px(_context: Any) -> float:
+    """Lo que ocupa el campo a escala 1,0, con su icono, su barra y sus botones (0 si no hay
+    nada que mostrar)."""
+    return _width(folded=False)
+
+
+def folded_width_px(_context: Any) -> float:
+    """Lo que ocupa el campo plegado a escala 1,0 (spec 008, T69)."""
+    return _width(folded=True)
+
+
 def install() -> None:
-    """Registra el campo «jobs» en la barra de estado (después de ``statusbar.install``)."""
+    """Registra el campo «jobs» en la barra de estado (después de ``statusbar.install``),
+    con su forma plegada."""
     statusbar.register_field(FIELD_KEY, priority=FIELD_PRIORITY, draw=draw,
-                             width_px=width_px, modes=FIELD_MODES, order=FIELD_ORDER)
+                             width_px=width_px, modes=FIELD_MODES, order=FIELD_ORDER,
+                             folded_draw=draw_folded, folded_width_px=folded_width_px)
 
 
 def uninstall() -> None:

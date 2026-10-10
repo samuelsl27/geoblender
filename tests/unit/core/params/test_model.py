@@ -12,7 +12,12 @@ La 006 hizo antes un ``ParamDef`` provisional en ``gis/params.py`` (commit ``39b
 llamadas** se ejecuta aquí sin cambiar nada, y da los mismos valores normalizados, los
 mismos textos y el mismo ``range_text()``, con códigos ``core.param_*`` en lugar de
 ``gis.param_*``. Lo esperado de :data:`PROVISIONAL_CHECK` y :data:`PROVISIONAL_RANGES` lo
-dio la provisional de ``39b28f1`` con esos mismos valores (copiado aquí, no recalculado).
+dio la provisional de ``39b28f1`` con esos mismos valores (copiado aquí, no recalculado),
+salvo el separador de miles de T71 en los números de cuatro cifras o más.
+
+Spec 008, T71: los valores, los rangos y los rechazos se leen como las cifras, con el
+separador de miles (spec 003, II §2.4: «500 000» en español y «500,000» en inglés);
+``format_value(..., grouped=False)``, sin él, como se teclea.
 """
 
 import inspect
@@ -25,11 +30,14 @@ import numpy
 from tests.support.package import import_geoblender
 
 params = import_geoblender("core.params")
+store = import_geoblender("core.params.store")
+figures = import_geoblender("core.provenance.figures")
 core_defs = import_geoblender("core.params.core_defs")
 units = import_geoblender("core.units")
 errors = import_geoblender("core.errors")
 
 ParamDef = params.ParamDef
+THIN = "\u202f"  # separador de miles de las cifras en español (spec 003, II §2.4; T71)
 DIMENSIONLESS = units.DIMENSIONLESS
 
 # --- Copia literal de gis/params.py (39b28f1): las 17 llamadas de DEFINITIONS ---------------
@@ -79,6 +87,8 @@ DEFINITIONS: tuple[ParamDef, ...] = (
 """Los parámetros de la tabla del plan 006 §5.2.5, en su orden."""
 
 # --- Lo que dio la provisional de 39b28f1 -----------------------------------------------------
+# Con el separador de miles de las cifras en los números de cuatro cifras o más, que la
+# provisional no ponía (spec 008, T71: los valores se leen como las cifras).
 
 # (clave, valor, resultado): el valor normalizado (con su tipo) o (código, texto en español),
 # con el código gis.param_* ya escrito como core.param_*.
@@ -119,10 +129,10 @@ PROVISIONAL_CHECK: tuple[tuple[str, object, object], ...] = (
     ("gis.tin.max_flat_pct", 100.5, ("core.param_out_of_range", "Parámetro «gis.tin.max_flat_pct»: 100,5 está fuera de su rango [0; 100] %.")),
     ("gis.tin.blender_cdt_max_s", 2, 2.0),
     ("gis.tin.blender_cdt_max_s", 2.5, ("core.param_out_of_range", "Parámetro «gis.tin.blender_cdt_max_s»: 2,5 está fuera de su rango [0; 2] s.")),
-    ("gis.contours.interval_m", 0.0, ("core.param_out_of_range", "Parámetro «gis.contours.interval_m»: 0 está fuera de su rango (0; 1000] m.")),
+    ("gis.contours.interval_m", 0.0, ("core.param_out_of_range", f"Parámetro «gis.contours.interval_m»: 0 está fuera de su rango (0; 1{THIN}000] m.")),
     ("gis.contours.interval_m", 1000.0, 1000.0),
     ("gis.contours.index_every_m", 5, 5.0),
-    ("gis.contours.index_every_m", 10000.25, ("core.param_out_of_range", "Parámetro «gis.contours.index_every_m»: 10000,25 está fuera de su rango (0; 10000] m.")),
+    ("gis.contours.index_every_m", 10000.25, ("core.param_out_of_range", f"Parámetro «gis.contours.index_every_m»: 10{THIN}000,25 está fuera de su rango (0; 10{THIN}000] m.")),
     ("gis.contours.index_offset_m", -100.0, -100.0),
     ("gis.contours.index_offset_m", -100.5, ("core.param_out_of_range", "Parámetro «gis.contours.index_offset_m»: -100,5 está fuera de su rango [-100; 100] m.")),
     ("gis.contours.simplify_m", numpy.float64(2.5), 2.5),
@@ -139,10 +149,10 @@ PROVISIONAL_CHECK: tuple[tuple[str, object, object], ...] = (
     ("gis.vertical.ellipsoidal_band_m", (True, 60.0), ("core.param_not_list", "Parámetro «gis.vertical.ellipsoidal_band_m»: «(True, 60.0)» no es una lista de 2 números en orden creciente.")),
     ("gis.vertical.ellipsoidal_band_m", (40.0, 300.0), ("core.param_out_of_range", "Parámetro «gis.vertical.ellipsoidal_band_m»: [40; 300] está fuera de su rango [0; 200] m.")),
     ("gis.validate.z_range_m", (-11000.0, 9000.0), (-11000.0, 9000.0)),
-    ("gis.validate.z_range_m", (-11000.5, 0.0), ("core.param_out_of_range", "Parámetro «gis.validate.z_range_m»: [-11000,5; 0] está fuera de su rango [-11000; 9000] m.")),
+    ("gis.validate.z_range_m", (-11000.5, 0.0), ("core.param_out_of_range", f"Parámetro «gis.validate.z_range_m»: [-11{THIN}000,5; 0] está fuera de su rango [-11{THIN}000; 9{THIN}000] m.")),
     ("gis.import.max_cells", 100_000_000, 100000000),
     ("gis.import.max_cells", 1e8, 100000000),
-    ("gis.import.max_cells", 100_000_001, ("core.param_out_of_range", "Parámetro «gis.import.max_cells»: 100000001 está fuera de su rango [1; 100000000].")),
+    ("gis.import.max_cells", 100_000_001, ("core.param_out_of_range", f"Parámetro «gis.import.max_cells»: 100{THIN}000{THIN}001 está fuera de su rango [1; 100{THIN}000{THIN}000].")),
     ("gis.view.lod_steps_m", (0.5, 100.0), (0.5, 100.0)),
     ("gis.view.lod_steps_m", (0.25, 2.0), ("core.param_out_of_range", "Parámetro «gis.view.lod_steps_m»: [0,25; 2] está fuera de su rango [0,5; 100] m.")),
 )
@@ -157,14 +167,14 @@ PROVISIONAL_RANGES: dict[str, tuple[str, str]] = {
     "gis.tin.flat_max_passes": ("[0; 10]", "[0, 10]"),
     "gis.tin.max_flat_pct": ("[0; 100] %", "[0, 100] %"),
     "gis.tin.blender_cdt_max_s": ("[0; 2] s", "[0, 2] s"),
-    "gis.contours.interval_m": ("(0; 1000] m", "(0, 1000] m"),
-    "gis.contours.index_every_m": ("(0; 10000] m", "(0, 10000] m"),
+    "gis.contours.interval_m": (f"(0; 1{THIN}000] m", "(0, 1,000] m"),
+    "gis.contours.index_every_m": (f"(0; 10{THIN}000] m", "(0, 10,000] m"),
     "gis.contours.index_offset_m": ("[-100; 100] m", "[-100, 100] m"),
     "gis.contours.simplify_m": ("[0; 100] m", "[0, 100] m"),
-    "gis.contours.min_length_m": ("[0; 10000] m", "[0, 10000] m"),
+    "gis.contours.min_length_m": (f"[0; 10{THIN}000] m", "[0, 10,000] m"),
     "gis.vertical.ellipsoidal_band_m": ("[0; 200] m", "[0, 200] m"),
-    "gis.validate.z_range_m": ("[-11000; 9000] m", "[-11000, 9000] m"),
-    "gis.import.max_cells": ("[1; 100000000]", "[1, 100000000]"),
+    "gis.validate.z_range_m": (f"[-11{THIN}000; 9{THIN}000] m", "[-11,000, 9,000] m"),
+    "gis.import.max_cells": (f"[1; 100{THIN}000{THIN}000]", "[1, 100,000,000]"),
     "gis.view.lod_steps_m": ("[0,5; 100] m", "[0.5, 100] m"),
 }
 
@@ -525,8 +535,8 @@ class OtherValueTypesTest(unittest.TestCase):
     def test_unit_symbol_in_spanish(self) -> None:
         """El rango se escribe con el símbolo en español de la unidad («m³», «t/m³»)."""
         volume = fraction(key="res.volume", unit="m3", default=10.0, maximum=1000.0)
-        self.assertEqual(volume.range_text(), "[0; 1000] m³")
-        self.assertEqual(volume.range_text("en"), "[0, 1000] m3")
+        self.assertEqual(volume.range_text(), f"[0; 1{THIN}000] m³")
+        self.assertEqual(volume.range_text("en"), "[0, 1,000] m3")
         with self.assertRaises(ValueError):
             volume.range_text("fr")
 
@@ -755,6 +765,79 @@ class MessagesTest(unittest.TestCase):
                          "Parámetro «k»: «?» no es una lista de ? números en orden creciente.")
         with self.assertRaises(ValueError):
             params.render("core.no_such", key="k")
+
+
+class ThousandsTest(unittest.TestCase):
+    """Spec 008, T71 (en la comprobación en pantalla, T58, los parámetros salían sin separador
+    de miles, «500000 t/año»): un valor se lee como una cifra (spec 003, II §2.4)."""
+
+    def test_values_with_the_thousands_separator_of_the_figures(self) -> None:
+        """RF-008-06, RF-008-29, RF-008-59, RF-008-03 (T71): un valor se lee con el separador
+        de miles de las cifras, «500 000» (espacio fino) en español y «500,000» en inglés, con
+        todos sus decimales, también un entero; sin separar, como se teclea. Un parámetro de
+        500 000 t/año se muestra igual que una cifra de 500 000 t/año en los dos idiomas (el
+        ámbito de la cifra, «2026», no se separa), y lo separan el aviso de divergencia, el
+        rango y su rechazo. Ningún valor cambia: el texto sin separar y el separado se leen
+        como el mismo número."""
+        shown = params.format_value
+        for value, spanish, english in (
+            (500_000.0, f"500{THIN}000", "500,000"),
+            (1_234_567.891, f"1{THIN}234{THIN}567,891", "1,234,567.891"),
+            (-12_345.5, f"-12{THIN}345,5", "-12,345.5"),
+            (1_000.0, f"1{THIN}000", "1,000"),
+            (999.5, "999,5", "999.5"),
+            (0.35, "0,35", "0.35"),
+            (1.2e-05, "1,2e-05", "1.2e-05"),
+            (100_000_001, f"100{THIN}000{THIN}001", "100,000,001"),
+            (16, "16", "16"),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(shown(value), spanish)
+                self.assertEqual(shown(value, "es"), spanish)
+                self.assertEqual(shown(value, "en"), english)
+                self.assertEqual(shown(value, "es", grouped=False), spanish.replace(THIN, ""))
+                self.assertEqual(shown(value, "en", grouped=False), english.replace(",", ""))
+        self.assertEqual((shown(True), shown(False, "en"), shown("B-1")), ("sí", "no", "B-1"))
+
+        production = ParamDef("res.output", "float", "t/yr", 500_000.0, 0.0, 2_000_000.0,
+                              ("RF-008-03",), "Prueba: producción del plan", kind="HIPÓTESIS",
+                              source_kind="document")
+        self.assertEqual(production.range_text(), f"[0; 2{THIN}000{THIN}000] t/año")
+        self.assertEqual(production.range_text("en"), "[0, 2,000,000] t/yr")
+        with self.assertRaises(params.ParamError) as caught:
+            production.check(3_000_000.0)
+        self.assertEqual(str(caught.exception),
+                         f"Parámetro «res.output»: 3{THIN}000{THIN}000 está fuera de su rango "
+                         f"[0; 2{THIN}000{THIN}000] t/año.")
+        for language, decimal in (("es", ","), ("en", ".")):
+            typed = shown(512_345.25, language, grouped=False)
+            self.assertEqual(params.parse_value(production, typed, decimal=decimal), 512_345.25)
+        self.assertEqual(params.parse_value(production, f"512{THIN}345,25"), 512_345.25)
+
+        figure = figures.FigureRecord(
+            uid="f", key="res.output_calc", label="Producción calculada", value=500_000.0,
+            unit="t/yr", kind=params.ParamKind.CALCULADO, operation_uid="o",
+            parameter_uid=None, parameter_rev=None, scope={"year": 2026}, scope_key="",
+            created_at="2026-09-24T09:31:00Z")
+        self.assertEqual(figure.text(), f"Producción calculada · 2026 = 500{THIN}000 t/año")
+        self.assertEqual(store.shown_value(500_000.0, "t/yr"), f"500{THIN}000 t/año")
+        self.assertEqual(store.shown_value(500_000.0, "t/yr", "en"), "500,000 t/año")
+        for language in ("es", "en"):
+            with self.subTest(language=language):
+                self.assertEqual(figure.text(language=language).rpartition(" = ")[2],
+                                 store.shown_value(500_000.0, "t/yr", language))
+
+        warning = figures.Divergence(
+            figure_uid="f", figure_key="res.output_calc", label="Producción calculada",
+            op_type="res.plan", operation_uid="o", value=512_345.5, unit="t/yr",
+            parameter_uid="p", parameter_key="res.output", parameter_value=500_000.0,
+            parameter_unit="t/yr", parameter_kind=params.ParamKind.HIPOTESIS,
+            unconfirmed=True, decided_by="Geoblender (valor por defecto)",
+            decided_at="2026-09-24T09:31:00Z")
+        self.assertIn(f"= 512{THIN}345,5 t/año; el valor hipotético sin confirmar es "
+                      f"500{THIN}000 t/año (", warning.render("es"))
+        self.assertIn("= 512,345.5 t/año; the unconfirmed hypothetical value is 500,000 t/año (",
+                      warning.render("en"))
 
 
 if __name__ == "__main__":

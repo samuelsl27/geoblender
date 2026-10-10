@@ -4,15 +4,22 @@
 **Barra de estado** (campos de la 003 con ``bl.ui.statusbar.register_field``, prioridad 1,
 en los dos modos, Geoblender y Blender; spec §11), cada uno solo si tiene algo que mostrar:
 
-- «⚠ n entradas» (RF-008-16): las entradas cambiadas sin decidir; abre el registro de
-  entradas (``geoblender.core_show_inputs``);
-- «! n obsoletos» (RF-008-28): los datos obsoletos más las operaciones que esperan revisión a
-  mano; abre lo obsoleto (:class:`GEOBLENDER_PT_core_stale`);
+- «⚠ n entradas» (RF-008-16; con una, «⚠ 1 entrada»: T71): las entradas cambiadas sin
+  decidir; abre el registro de entradas (``geoblender.core_show_inputs``);
+- «! n obsoletos» (RF-008-28; «! 1 obsoleto»): los datos obsoletos, más las operaciones
+  obsoletas que solo dejan cifras, más las que esperan revisión a mano; abre lo obsoleto
+  (:class:`GEOBLENDER_PT_core_stale`);
 - «Comprobando el proyecto… 42 %» (RF-008-58), el progreso de la comprobación de apertura de
   la sesión de la procedencia (``bl.ops.core_provenance.SESSION``), con su botón de cancelar
   (``geoblender.core_cancel_checks``);
 - el aviso de Ctrl+Z (RF-008-32; plan §5.4.11): :func:`show_undo_notice` lo deja
   :data:`UNDO_NOTICE_S` s.
+
+Si no caben (spec 008, T69; M6: a 1920 px con escala efectiva 1,5), la barra de estado los
+**pliega** de derecha a izquierda (``bl.ui.statusbar.fold``), con los mismos botones: «⚠ n»,
+«! n», solo «42 %» con su botón de cancelar y el aviso de Ctrl+Z cortado a
+:data:`UNDO_FOLDED_UNITS` unidades. Lo que ocupa cada campo, plegado o no, se calcula como lo
+dibuja Blender (``statusbar.button_px``, ``popover_px``, ``label_px``).
 
 Los iconos ``gb_state_input_changed`` y ``gb_state_stale`` dibujan los mismos signos ⚠ y ! con
 que empiezan los textos de la spec (AR §6): en la barra van solo los textos, sin repetir el
@@ -32,18 +39,24 @@ vez. Al abrir un proyecto no se lee nada (RNF-002-02 no cambia): el primer tic, 
 obsoleto, solo el icono. Refrescar sigue provisional hasta la 009.
 
 **Lo obsoleto** (:class:`GEOBLENDER_PT_core_stale`, RF-008-28): «Refrescar · obsoletos (n)» y,
-por cada resultado obsoleto (como mucho :data:`MAX_STALE_ROWS`; los demás, «… y n más»), su
-nombre, su módulo, la causa («Obsoleto: cambió Producción») y Recalcular
-(``geoblender.core_recompute_stale`` de ese elemento) o, si espera revisión a mano, «revisar» y
-Dar por buena… (``geoblender.core_accept_review``); al final, Recalcular lo obsoleto. Dibuja las
-filas de ``WindowManager.geoblender_provenance.stale`` (D16), que el temporizador regenera con
-los recuentos. Las órdenes cuya clase real aún no ha llegado se dibujan desactivadas.
+por cada resultado obsoleto (como mucho :data:`MAX_STALE_ROWS`; los demás, «… y n más»): un
+dato o una operación que solo deja cifras, con su nombre, su módulo, la causa («Obsoleto:
+cambió Producción») y Recalcular (``geoblender.core_recompute_stale`` de ese elemento) o, si
+espera revisión a mano, «revisar» y
+Dar por buena… (``geoblender.core_accept_review``); después (T54; RF-008-56, RF-008-57), los
+datos que no se pueden usar (bloqueados por una edición externa, que faltan o dañados), cada uno
+con su aviso y lo que se ofrece para resolverlo (Aceptar la edición, Recalcular, Reimportar:
+``geoblender.core_resolve_dataset``); al final, Recalcular lo obsoleto. Dibuja las filas de
+``WindowManager.geoblender_provenance.stale`` y ``unusable`` (D16), que el temporizador
+regenera con los recuentos. Las órdenes cuya clase real aún no ha llegado se dibujan
+desactivadas.
 
 **Parámetros del proyecto** (:class:`GEOBLENDER_PT_core_parameters`, ventana emergente que
 abre ``geoblender.core_show_parameters``; RF-008-06, RF-008-59; T50): filtros por módulo, tipo
 y marca; la lista (:class:`GEOBLENDER_UL_core_parameters`) con la clave, el valor con su
-unidad, la insignia de tipo ([HIP] en ámbar), las marcas «sin confirmar» y «revisar», el
-origen, el decisor y la fecha; del seleccionado, su origen, su decisión, lo que hay que revisar,
+unidad, la insignia de tipo ([HIP] con su icono ámbar: :func:`badge_icon`), las marcas «sin
+confirmar» y «revisar», el origen, el decisor y la fecha; del seleccionado, su origen, su
+decisión, lo que hay que revisar,
 el aviso de divergencia de su última cifra calculada con «Usar el valor calculado…» (Cambiar
 relleno con la cifra), el historial completo (:class:`GEOBLENDER_UL_core_parameter_history`) y
 Cambiar parámetro… y Confirmar parámetro; en solo lectura, desactivados y con el motivo.
@@ -51,7 +64,8 @@ Cambiar parámetro… y Confirmar parámetro; en solo lectura, desactivados y co
 filtros de la vista) y :func:`fill_history`, el historial y el aviso del seleccionado; los
 llaman la orden que abre el panel, Cambiar y Confirmar al escribir, y los filtros y la
 selección al cambiar. Las filas viven en ``WindowManager.geoblender_provenance`` (D16), como
-texto ya presentado: ningún valor pasa por una propiedad flotante.
+texto ya presentado: ningún valor pasa por una propiedad flotante. Los valores, en el idioma de
+Geoblender y con el separador de miles de las cifras, como una cifra («500 000 t/año»; T71).
 
 **Registro de entradas** (:class:`GEOBLENDER_PT_core_inputs`, ventana emergente que abre
 ``geoblender.core_show_inputs``; RF-008-16, RF-008-13; T51): la cabecera de las columnas y la
@@ -61,15 +75,49 @@ abreviado (12 caracteres) y si guarda su original; de la seleccionada, Actualiza
 cambiada, también con su copia mantenida, y se encuentra su fuente) y Mantener la copia (si
 está cambiada), Descartar… y Editar…, que abren sus diálogos (T52); y Comprobar cambios en las
 entradas
-(``geoblender.core_check_inputs``); en solo lectura, desactivadas y con el motivo.
+(``geoblender.core_check_inputs``); debajo (T54; RF-008-62), las capas y tablas del proyecto
+sin registrar, creadas desde QGIS, con Registrar como entrada… e Ignorar…
+(``geoblender.core_resolve_unregistered``); en solo lectura, desactivadas y con el motivo.
 :func:`fill_inputs` lee las filas (``core.inputs.list_inputs``) con el estado registrado; el
 que no se guarda (plan D7) lo dice la sesión al dibujar (:func:`input_status`):
 «comprobando» mientras una comprobación tiene pendiente la entrada y «no localizable» si la
 última no encontró su fuente. Con el registro abierto, el temporizador de los indicadores
 vuelve a leer sus filas cuando cambia el proyecto.
 
-:func:`install` registra los campos, el número del control 7 y la escucha del proyecto de la
-sesión; :func:`uninstall` lo quita todo, con los temporizadores.
+**Grafo de operaciones y procedencia** (:class:`GEOBLENDER_PT_core_lineage`, ventana emergente
+que abre ``geoblender.core_show_lineage``; RF-008-29, RF-008-31; T55): la búsqueda (el uid de una
+cifra, de un dato o de una operación, o el nombre de un dato; si no es nada de eso, el motivo y
+las cifras vigentes y los datos que contienen el texto, cada uno con su procedencia) y la cadena
+(:class:`GEOBLENDER_UL_core_lineage`): lo pedido y, sangrados debajo, cada eslabón con la versión
+de su algoritmo y de Geoblender, quién y cuándo; sus parámetros con el valor y la unidad que
+leyó, su insignia de tipo y «sin confirmar», y lo de hoy si cambió; sus entradas con su estado;
+los datos que consumió y el eslabón que escribió esa versión. La cifra lleva su unidad, su
+insignia y las marcas de RF-008-31 según el estado de hoy, y un eslabón obsoleto, su causa en
+alerta. Cada nudo se pliega (``expanded``). :func:`search_lineage` lee la cadena al abrir el
+panel y al cambiar la búsqueda (no en cada cambio del proyecto: con un grafo grande tarda hasta
+0,5 s); las filas viven en ``WindowManager.geoblender_provenance``, como texto ya presentado.
+
+**Insignias de tipo** (RF-008-02, RF-008-06, RF-008-29; T70): en las tres listas (parámetros,
+su historial y la procedencia), [MED], [CAL], [ADO] y [HIP] (:func:`badge`) en una columna de
+:data:`BADGE_UNITS` unidades. Blender solo colorea un texto en rojo (``alert``), que la interfaz
+deja para los errores y los cambios: [HIP] se distingue con el icono ámbar propio
+:data:`HYPOTHESIS_ICON` de la 003 junto a la insignia, sin alerta (:func:`badge_icon`; sin él,
+su reserva nativa ámbar), y los demás tipos llevan un hueco del mismo ancho, para que el texto
+quede alineado.
+
+**Estados de las órdenes** (RF-008-61; BS §7.3; T56): :func:`command_state` es el proveedor de
+``bl.ui.commands.set_state_provider``. Una orden de un módulo (su ``bl_idname`` en los
+``commands`` del ``OperationDef`` de una operación hecha) de la que depende una entrada
+cambiada sin decidir (``core.inputs.dependents``) lleva la insignia ⚠ y, en su descripción, el
+aviso de RF-008-10; si alguno de sus resultados (un dato o, de una operación que solo deja
+cifras, ella misma) está obsoleto o espera revisión a mano, su descripción lleva su
+«Obsoleto: cambió …»; con algo obsoleto en el proyecto, «Recalcular lo
+obsoleto» se dibuja resaltado en el menú y en los contextuales. Se calcula con los recuentos
+(:func:`refresh`, solo cuando cambia el proyecto) y el dibujo solo lo busca.
+
+:func:`install` registra los campos, el número del control 7, el proveedor de estado de las
+órdenes y la escucha del proyecto de la sesión; :func:`uninstall` lo quita todo, con los
+temporizadores.
 """
 
 from __future__ import annotations
@@ -78,6 +126,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Callable, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import bpy
@@ -85,22 +134,39 @@ import bpy
 from ...core.errors import GeoblenderError
 from ...core.gpkg.header import read_header
 from ...core.i18n import language, tr
-from ...core.inputs import ACTIVE_STATUSES, InputStatus, OriginalState, crs_text, list_inputs
+from ...core.inputs import (
+    ACTIVE_STATUSES,
+    InputFinding,
+    InputStatus,
+    OriginalState,
+    Verdict,
+    crs_text,
+    dependents,
+    list_inputs,
+)
 from ...core.params import HistoryAction, ParameterFilter, ParameterStore, ParamKind, ParamMark
 from ...core.params.store import shown_value
 from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
-from .. import compat
 from ..props.provenance import FILTER_ALL, WINDOW_MANAGER_PROPERTY
 from ..scene import project_session
 from . import icons, quick_access, statusbar
-from .commands import catalog, is_available, registered_class, text
+from .commands import (
+    CommandState,
+    catalog,
+    is_available,
+    registered_class,
+    set_state_provider,
+    state_provider,
+    text,
+)
 from .drawing import draw_command, native_icon
 
 if TYPE_CHECKING:
+    from ...core.inputs import InputRecord
     from ...core.project.session import Project
-    from ...core.provenance.stale import Counts, StaleItem
+    from ...core.provenance.stale import Counts, StaleItem, StaleReport
     from ..ops.core_provenance import ProvenanceSession
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
@@ -119,6 +185,12 @@ INDICATOR_TICK_S = 0.5
 UNDO_NOTICE_S = 10.0
 """Lo que se ve el aviso de Ctrl+Z en la barra de estado (plan §5.5)."""
 
+UNDO_FOLDED_UNITS = 6
+"""El ancho del aviso de Ctrl+Z plegado, en unidades: Blender corta el texto con «…» (T69)."""
+
+FOLDED_INPUTS = "provenance_inputs_folded"  # los textos plegados, en la caché de textos (T69)
+FOLDED_STALE = "provenance_stale_folded"
+
 MAX_STALE_ROWS = 50
 """Las filas de lo obsoleto que se regeneran y dibujan (las demás, «… y n más»)."""
 
@@ -128,6 +200,8 @@ SHOW_INPUTS = "geoblender.core_show_inputs"
 CANCEL_CHECKS = "geoblender.core_cancel_checks"
 RECOMPUTE = "geoblender.core_recompute_stale"
 ACCEPT_REVIEW = "geoblender.core_accept_review"
+RESOLVE_DATASET = "geoblender.core_resolve_dataset"
+RESOLVE_UNREGISTERED = "geoblender.core_resolve_unregistered"
 STALE_ICON = "gb_state_stale"
 STALE_FALLBACK = "COLLECTION_COLOR_01"
 CANCEL_ICON = "X"
@@ -143,9 +217,14 @@ CONFIRM_PARAMETER = "geoblender.core_confirm_parameter"
 PARAMETERS_PANEL_UNITS = 44
 PARAMETER_ROWS = 8  # filas visibles de la lista (después, se desplaza)
 HISTORY_ROWS = 5
+HYPOTHESIS_ICON = "gb_type_assumption"  # [HIP]: «HIP» sobre ámbar (spec 003, II §1.4; T70)
+HYPOTHESIS_FALLBACK = "COLLECTION_COLOR_03"  # su reserva nativa ámbar (la de BORRADOR)
+BADGE_UNITS = 3.5
+"""Ancho de la insignia de tipo con su icono (T70): el de [HYP], el más ancho con icono, es
+65 px a escala 1,0 (blf 30 + 35)."""
 # Ancho (unidades) de cada columna de la lista de parámetros y del historial.
-PARAMETER_COLUMNS = (9.0, 5.5, 2.5, 5.0, 10.0, 7.0, 4.0)
-HISTORY_COLUMNS = (1.5, 3.5, 4.5, 2.5, 3.5, 5.0, 3.5, 8.0, 6.0, 5.5)
+PARAMETER_COLUMNS = (9.0, 5.5, BADGE_UNITS, 5.0, 9.0, 7.0, 4.0)
+HISTORY_COLUMNS = (1.5, 3.5, 4.5, BADGE_UNITS, 3.5, 5.0, 3.5, 7.0, 6.0, 5.5)
 
 INPUTS_PANEL = "GEOBLENDER_PT_core_inputs"
 INPUTS_LIST = "GEOBLENDER_UL_core_inputs"
@@ -162,6 +241,15 @@ INPUT_COLUMNS = (8.0, 10.0, 4.0, 4.5, 6.0, 5.5, 5.0, 5.5, 4.0)
 _ACTIVE_INPUTS = frozenset(str(status) for status in ACTIVE_STATUSES)
 NOT_SHOWN = "—"  # una celda sin valor (sin entrega, sin original)
 
+LINEAGE_PANEL = "GEOBLENDER_PT_core_lineage"
+LINEAGE_LIST = "GEOBLENDER_UL_core_lineage"
+SHOW_LINEAGE = "geoblender.core_show_lineage"
+LINEAGE_PANEL_UNITS = 56
+LINEAGE_ROWS = 12  # filas visibles de la procedencia (después, se desplaza)
+LINEAGE_INDENT = 1.5  # sangría de cada nivel (factor de ``separator``)
+MAX_LINEAGE_ROWS = 1000
+"""Las filas de la procedencia que se guardan en la vista (las demás, «… y n más»)."""
+
 _clock: Callable[[], float] = time.monotonic
 
 
@@ -177,6 +265,8 @@ class _State:
         self.undo_until = 0.0
         self.properties: dict[type, frozenset[str]] = {}  # propiedades de cada operador
         self.filling = False  # se están regenerando las filas de los parámetros
+        self.searching = False  # se está poniendo la búsqueda de la procedencia
+        self.command_states: dict[str, CommandState] = {}  # bl_idname → estado (T56)
 
 
 _STATE = _State()
@@ -227,12 +317,16 @@ def refresh(*, force: bool = False) -> bool:
 
     try:
         report = stale.stale_items(project, language=shown)
+        blocked = _unusable(project)
+        states = _command_states(project, report, shown)
     except (GeoblenderError, sqlite3.Error, OSError):
         LOGGER.debug("No se pudo leer lo obsoleto del proyecto; se intenta después",
                      exc_info=True)
         return changed
     _STATE.signature = signature
+    _STATE.command_states = states
     _fill_rows(report.items)
+    _fill_unusable(blocked, shown)
     _refill_inputs()
     if report.counts != _STATE.counts:
         _STATE.counts = report.counts
@@ -247,7 +341,9 @@ def _forget() -> bool:
     _STATE.project = None
     _STATE.counts = None
     _STATE.signature = None
+    _STATE.command_states = {}
     _fill_rows(())
+    _fill_unusable((), "")
     return had
 
 
@@ -279,6 +375,101 @@ def _fill_rows(items: Sequence[StaleItem]) -> None:
     view.stale_index = 0
 
 
+def _unusable(project: Project) -> tuple[Any, ...]:
+    """Los datos que no se pueden usar hasta resolverlos (``core.datasets.external.unusable``;
+    T54), leídos del proyecto."""
+    from ...core.datasets.external import unusable  # al usarlo: registrar no lo carga
+
+    with project.read() as conn:
+        return unusable(conn)
+
+
+def _fill_unusable(items: Sequence[Any], shown: str) -> None:
+    """Regenera las filas de lo que no se puede usar (RF-008-56, RF-008-57): cada dato con su
+    estado, lo que se ofrece para resolverlo y su aviso en el idioma ``shown``."""
+    view = _view()
+    if view is None:
+        return
+    rows = view.unusable
+    if not items and not len(rows):
+        return
+    rows.clear()
+    for item in items:
+        record = item.record
+        row = rows.add()
+        row.uid = record.uid
+        row.name = record.name
+        row.module = record.module
+        row.status = str(record.status)
+        row.offers = ",".join(str(offer) for offer in item.offers)
+        row.text = item.text(shown)
+
+
+# Los estados de las órdenes (T56) -------------------------------------------------------------
+
+INPUT_BADGE = "⚠"
+"""La insignia de una orden que depende de una entrada cambiada sin decidir (BS §7.3)."""
+
+
+def command_state(_context: Any, idname: str) -> CommandState | None:
+    """El proveedor de estado de las órdenes (``commands.set_state_provider``; RF-008-61): el
+    de ``idname`` según lo último que leyó :func:`refresh`, o ``None``. Solo lo busca."""
+    return _STATE.command_states.get(idname)
+
+
+def _changed_warning(conn: sqlite3.Connection, record: InputRecord,
+                     shown: str) -> tuple[str, tuple[str, ...]]:
+    """El aviso de RF-008-10 de la entrada cambiada ``record`` en el idioma ``shown`` (su
+    registro y lo que depende de ella ahora, sin mirar su fuente) y los tipos de las
+    operaciones hechas que dependen de ella."""
+    found = dependents(conn, record)
+    finding = InputFinding(
+        input_uid=record.uid, name=record.name, verdict=Verdict.CHANGED, before=record.status,
+        status=record.status, registered_at=record.registered_at,
+        registered_sha256=record.content_sha256, previous_seen=record.seen_sha256,
+        reader=record.reader, content_sha256=record.seen_sha256, dependents=found)
+    return finding.render(shown) or "", tuple(item.name for item in found.operations)
+
+
+def _command_states(project: Project, report: StaleReport,
+                    shown: str) -> dict[str, CommandState]:
+    """El estado de cada orden que lo tiene (RF-008-61), en el idioma ``shown``: las órdenes de
+    las operaciones que dependen de una entrada cambiada sin decidir, con la insignia y su aviso;
+    las de las operaciones de la lista de lo obsoleto (las que escribieron un dato obsoleto, las
+    obsoletas que solo dejan cifras y las que esperan revisión a mano), con su «Obsoleto: …»;
+    y, con algo obsoleto, «Recalcular lo obsoleto» resaltado. Las entradas solo se leen si hay
+    alguna cambiada."""
+    notes: dict[str, list[str]] = {}
+    badges: set[str] = set()
+
+    def add(op_type: str, note: str, *, badge: bool = False) -> None:
+        definition = contract.OPERATIONS.get(op_type)
+        for idname in () if definition is None else definition.commands:
+            found = notes.setdefault(idname, [])
+            if note and note not in found:
+                found.append(note)
+            if badge:
+                badges.add(idname)
+
+    if report.counts.inputs_changed > 0:
+        with project.read() as conn:
+            for record in list_inputs(conn):
+                if record.status is InputStatus.CHANGED:
+                    warning, op_types = _changed_warning(conn, record, shown)
+                    for op_type in dict.fromkeys(op_types):
+                        add(op_type, warning, badge=True)
+    for item in report.items:
+        if item.op_type:
+            add(item.op_type, item.text)
+    states = {idname: CommandState(badge=INPUT_BADGE if idname in badges else "",
+                                   note="\n".join(found))
+              for idname, found in notes.items()}
+    if report.counts.obsolete > 0:
+        states[RECOMPUTE] = CommandState(highlight=True,
+                                         note=states.get(RECOMPUTE, CommandState()).note)
+    return states
+
+
 def indicator_tick() -> float | None:
     """La función del temporizador de los indicadores: :func:`refresh` y, si cambió lo que se
     ve, redibuja la barra de estado y la barra superior. Sigue cada :data:`INDICATOR_TICK_S` s
@@ -303,6 +494,7 @@ def on_project_changed(project: Project | None) -> None:
     had = _forget()
     _clear_parameters()
     _clear_inputs()
+    _forget_lineage()
     _retire(indicator_tick)
     if project is not None:
         bpy.app.timers.register(indicator_tick, first_interval=INDICATOR_TICK_S,
@@ -374,39 +566,51 @@ def expire_undo_notice() -> float | None:
 
 def _counted(field: str, n: int) -> str:
     """El texto con número del campo ``field`` en el idioma de Geoblender, compuesto una vez
-    por número e idioma (la barra lo pide en cada redibujo)."""
+    por número e idioma (la barra lo pide en cada redibujo); con 1, en singular (T71: «⚠ 1
+    entrada», «! 1 obsoleto»). Los plegados («⚠ n», «! n») no tienen número gramatical."""
     key = (field, n, language())
     found = _STATE.texts.get(key)
     if found is None:
         if len(_STATE.texts) >= MAX_TEXTS:
             _STATE.texts.clear()
         if field == FIELD_INPUTS:
-            found = tr("⚠ {n} inputs", n=n)
+            found = tr("⚠ 1 input") if n == 1 else tr("⚠ {n} inputs", n=n)
+        elif field == FIELD_STALE:
+            found = tr("! 1 stale") if n == 1 else tr("! {n} stale", n=n)
+        elif field == FOLDED_INPUTS:
+            found = tr("⚠ {n}", n=n)
         else:
-            found = tr("! {n} stale", n=n)
+            found = tr("! {n}", n=n)
         _STATE.texts[key] = found
     return found
 
 
-def inputs_text() -> str:
-    """«⚠ n entradas» (RF-008-16), o "" si ninguna entrada cambió sin decidir."""
+def inputs_text(*, folded: bool = False) -> str:
+    """«⚠ n entradas» (RF-008-16; «⚠ 1 entrada», T71) o, plegado (T69), «⚠ n»; "" si ninguna
+    entrada cambió sin decidir."""
     found = _STATE.counts
     if found is None or found.inputs_changed <= 0:
         return ""
-    return _counted(FIELD_INPUTS, found.inputs_changed)
+    return _counted(FOLDED_INPUTS if folded else FIELD_INPUTS, found.inputs_changed)
 
 
-def stale_text() -> str:
-    """«! n obsoletos» (RF-008-28), o "" si no hay nada obsoleto."""
+def stale_text(*, folded: bool = False) -> str:
+    """«! n obsoletos» (RF-008-28; «! 1 obsoleto», T71) o, plegado (T69), «! n»; "" si no hay
+    nada obsoleto."""
     found = _STATE.counts
     if found is None or found.obsolete <= 0:
         return ""
-    return _counted(FIELD_STALE, found.obsolete)
+    return _counted(FOLDED_STALE if folded else FIELD_STALE, found.obsolete)
 
 
-def checking_text() -> str:
-    """«Comprobando el proyecto… 42 %» (RF-008-58) mientras hay una comprobación, o ""."""
-    return _session().status_text() or ""
+def checking_text(*, folded: bool = False) -> str:
+    """«Comprobando el proyecto… 42 %» (RF-008-58) mientras hay una comprobación o, plegado
+    (T69), solo «42 %»; si no, ""."""
+    session = _session()
+    shown = session.status_text() or ""
+    if not shown or not folded:
+        return shown
+    return tr("{percent}%", percent=session.percent)
 
 
 def _operator_properties(idname: str) -> frozenset[str]:
@@ -440,48 +644,72 @@ def _operator(layout: Any, idname: str, shown: str, *, icon: str = "NONE",
                 setattr(properties, name, value)
 
 
-def _draw_inputs(layout: Any, _context: Any) -> None:
-    shown = inputs_text()
+def _draw_inputs(layout: Any, _context: Any, *, folded: bool = False) -> None:
+    shown = inputs_text(folded=folded)
     if shown:
         _operator(layout, SHOW_INPUTS, shown, emboss=False)
 
 
-def _draw_stale(layout: Any, _context: Any) -> None:
-    shown = stale_text()
+def _draw_stale(layout: Any, _context: Any, *, folded: bool = False) -> None:
+    shown = stale_text(folded=folded)
     if shown:
         sub = layout.row(align=True)
         sub.enabled = is_available(STALE_PANEL)
         sub.popover(STALE_PANEL, text=shown, translate=False)
 
 
-def _draw_checking(layout: Any, _context: Any) -> None:
-    shown = checking_text()
+def _draw_checking(layout: Any, _context: Any, *, folded: bool = False) -> None:
+    shown = checking_text(folded=folded)
     if shown:
         row = layout.row(align=True)
         row.label(text=shown, translate=False)
         _operator(row, CANCEL_CHECKS, "", icon=CANCEL_ICON, emboss=False)
 
 
-def _draw_undo(layout: Any, _context: Any) -> None:
+def _draw_undo(layout: Any, _context: Any, *, folded: bool = False) -> None:
     shown = undo_notice()
     if shown:
-        layout.label(text=shown, icon=UNDO_ICON, translate=False)
+        row = layout.row(align=True)
+        if folded:
+            row.ui_units_x = UNDO_FOLDED_UNITS  # Blender corta el texto con «…»
+        row.label(text=shown, icon=UNDO_ICON, translate=False)
 
 
-def _px(shown: str, extra_units: int = 0) -> float:
+def _inputs_px(_context: Any, *, folded: bool = False) -> float:
+    shown = inputs_text(folded=folded)
+    return statusbar.button_px(shown) if shown else 0.0
+
+
+def _stale_px(_context: Any, *, folded: bool = False) -> float:
+    shown = stale_text(folded=folded)
+    return statusbar.popover_px(shown) if shown else 0.0
+
+
+def _checking_px(_context: Any, *, folded: bool = False) -> float:
+    shown = checking_text(folded=folded)
+    return statusbar.label_px(shown) + statusbar.button_px() if shown else 0.0
+
+
+def _undo_px(_context: Any, *, folded: bool = False) -> float:
+    shown = undo_notice()
     if not shown:
         return 0.0
-    return statusbar.text_px(shown) + extra_units * float(compat.UI_UNIT_PX)
+    if folded:
+        return statusbar.units_px(UNDO_FOLDED_UNITS)
+    return statusbar.label_px(shown, icon=True)
 
 
-FIELDS: tuple[tuple[str, float, Callable[[Any, Any], None], Callable[[Any], float]], ...] = (
-    (FIELD_INPUTS, 62.0, _draw_inputs, lambda _context: _px(inputs_text())),
-    (FIELD_STALE, 63.0, _draw_stale, lambda _context: _px(stale_text(), 1)),
-    (FIELD_CHECKING, 64.0, _draw_checking, lambda _context: _px(checking_text(), 1)),
-    (FIELD_UNDO, 65.0, _draw_undo, lambda _context: _px(undo_notice(), 1)),
+_Draw = Callable[..., None]
+_Width = Callable[..., float]
+FIELDS: tuple[tuple[str, float, _Draw, _Width], ...] = (
+    (FIELD_INPUTS, 62.0, _draw_inputs, _inputs_px),
+    (FIELD_STALE, 63.0, _draw_stale, _stale_px),
+    (FIELD_CHECKING, 64.0, _draw_checking, _checking_px),
+    (FIELD_UNDO, 65.0, _draw_undo, _undo_px),
 )
 """Los campos: clave, sitio en la barra (tras los de la 003 y antes de los trabajos de la
-004, como en AR §6), dibujo y ancho a escala 1,0 (0 sin nada que mostrar)."""
+004, como en AR §6), dibujo y ancho a escala 1,0 (0 sin nada que mostrar); los dos admiten
+``folded=True``, su forma plegada (T69)."""
 FIELD_KEYS: tuple[str, ...] = tuple(key for key, *_rest in FIELDS)
 
 
@@ -516,8 +744,30 @@ def _draw_stale_row(layout: Any, row: Any) -> None:
     cause.label(text=row.text, translate=False)
 
 
+def _draw_unusable_row(layout: Any, row: Any, writable: bool) -> None:
+    """Un dato que no se puede usar (T54; RF-008-56, RF-008-57): su nombre (en alerta), su
+    módulo y lo que se ofrece para resolverlo (Aceptar la edición, Recalcular, Reimportar: la
+    orden ``geoblender.core_resolve_dataset`` con esa decisión, que abre su diálogo), y debajo
+    su aviso."""
+    from ...core.datasets.external import offer_label  # al usarlo: registrar no lo carga
+
+    line = layout.row(align=True)
+    name = line.row(align=True)
+    name.alert = True
+    name.label(text=row.name, translate=False)
+    line.label(text=row.module, translate=False)
+    shown = language()
+    for offer in filter(None, row.offers.split(",")):
+        _operator(line, RESOLVE_DATASET, offer_label(offer, shown), enabled=writable,
+                  dataset_uid=row.uid, decision=offer.upper())
+    note = layout.row()
+    note.active = False
+    note.label(text=row.text, translate=False)
+
+
 def draw_stale(layout: Any, context: Any) -> None:
-    """El contenido de :class:`GEOBLENDER_PT_core_stale` (RF-008-28)."""
+    """El contenido de :class:`GEOBLENDER_PT_core_stale` (RF-008-28; y, T54, lo que no se
+    puede usar, RF-008-56 y RF-008-57)."""
     reason = _session().unavailable()
     if reason is not None:
         layout.label(text=reason, icon="INFO", translate=False)
@@ -536,6 +786,14 @@ def draw_stale(layout: Any, context: Any) -> None:
         hidden = total - len(rows)
         if hidden > 0:
             column.label(text=tr("… and {count} more", count=hidden), translate=False)
+    blocked = view.unusable if view is not None else ()
+    if len(blocked):
+        layout.separator(type="LINE")
+        layout.label(text=tr("Datasets that cannot be used"), translate=False)
+        column = layout.column()
+        writable = _write_unavailable() is None
+        for row in blocked:
+            _draw_unusable_row(column, row, writable)
     layout.separator(type="LINE")
     draw_command(layout, RECOMPUTE, context=context)
 
@@ -607,6 +865,7 @@ def fill_parameters() -> int:
     found = [] if project is None else ParameterStore(project).list(_filters(view))
     chosen = _selected(view)
     key = None if chosen is None else chosen.key
+    shown = language()
     _STATE.filling = True
     try:
         rows = view.parameters
@@ -617,7 +876,7 @@ def fill_parameters() -> int:
             row.uid = record.uid
             row.key = record.key
             row.module = record.module
-            row.value = item.shown
+            row.value = shown_value(record.value, record.unit, shown)  # como una cifra (T71)
             row.kind = str(record.kind)
             row.unconfirmed = record.unconfirmed
             row.review = ParamMark.REVIEW in item.marks
@@ -652,11 +911,12 @@ def fill_history() -> None:
             warning = parameter_divergence(conn, chosen.uid)
     history = view.parameter_history
     history.clear()
+    shown = language()
     for entry in entries:
         row = history.add()
         row.rev = entry.rev
         row.action = str(entry.action)
-        row.value = shown_value(entry.value, entry.unit)
+        row.value = shown_value(entry.value, entry.unit, shown)
         row.kind = str(entry.kind)
         row.unconfirmed = entry.unconfirmed
         row.decided_by = entry.decided_by
@@ -665,7 +925,7 @@ def fill_history() -> None:
         row.changed_by = entry.changed_by
         row.changed_at = _local(entry.changed_at, "%d/%m/%Y %H:%M")
     view.history_index = max(0, len(history) - 1)
-    view.parameter_divergence = "" if warning is None else warning.render(language())
+    view.parameter_divergence = "" if warning is None else warning.render(shown)
     view.parameter_figure_uid = "" if warning is None else warning.figure_uid
 
 
@@ -718,6 +978,23 @@ def badge(kind: str) -> str:
     return tr("[HYP]")
 
 
+def badge_icon(kind: str) -> dict[str, Any]:
+    """El icono de la insignia de un tipo (T70; RF-008-02, RF-008-06, RF-008-29): de [HIP], el
+    ámbar propio :data:`HYPOTHESIS_ICON` (``{"icon_value": n}``) o, si no se puede mostrar,
+    su reserva nativa ámbar; de los demás, un hueco del mismo ancho (``BLANK1``)."""
+    if kind == ParamKind.HIPOTESIS:
+        return icons.icon_kwargs(HYPOTHESIS_ICON, native_icon(HYPOTHESIS_FALLBACK))
+    return {"icon": "BLANK1"}
+
+
+def _badge_cell(layout: Any, kind: str, units: float = BADGE_UNITS) -> None:
+    """La columna de la insignia de tipo ``kind`` con su icono y sin alerta (T70): el rojo de
+    ``alert`` es para los errores y los cambios."""
+    cell = layout.row(align=True)
+    cell.ui_units_x = units
+    cell.label(text=badge(kind), translate=False, **badge_icon(kind))
+
+
 def _action_text(action: str) -> str:
     if action == HistoryAction.DEFAULT:
         return tr("Default value")
@@ -747,12 +1024,12 @@ def _marks_text(unconfirmed: bool, review: bool = False) -> str:
 
 def draw_parameter_row(layout: Any, row: Any) -> None:
     """Una fila de la lista de parámetros (RF-008-06): clave, valor con su unidad, insignia de
-    tipo ([HIP] en ámbar), marcas, origen, decisor y fecha."""
+    tipo ([HIP] con su icono ámbar), marcas, origen, decisor y fecha."""
     line = layout.row(align=True)
     key, value, kind, marks, source, decided_by, decided_at = PARAMETER_COLUMNS
     _cell(line, row.key, key)
     _cell(line, row.value, value)
-    _cell(line, badge(row.kind), kind, alert=row.kind == ParamKind.HIPOTESIS)
+    _badge_cell(line, row.kind, kind)
     _cell(line, _marks_text(row.unconfirmed, row.review), marks, alert=row.review)
     _cell(line, row.source, source)
     _cell(line, row.decided_by, decided_by)
@@ -760,14 +1037,15 @@ def draw_parameter_row(layout: Any, row: Any) -> None:
 
 
 def draw_history_row(layout: Any, row: Any) -> None:
-    """Una fila del historial (RF-008-02, RF-008-06): revisión, qué fue, valor, insignia,
-    «sin confirmar», decisor y fecha de la decisión, motivo, y quién y cuándo lo registró."""
+    """Una fila del historial (RF-008-02, RF-008-06): revisión, qué fue, valor, insignia ([HIP]
+    con su icono ámbar), «sin confirmar», decisor y fecha de la decisión, motivo, y quién y
+    cuándo lo registró."""
     line = layout.row(align=True)
     rev, action, value, kind, marks, decided_by, decided_at, reason, by, at = HISTORY_COLUMNS
     _cell(line, str(row.rev), rev)
     _cell(line, _action_text(row.action), action)
     _cell(line, row.value, value)
-    _cell(line, badge(row.kind), kind, alert=row.kind == ParamKind.HIPOTESIS)
+    _badge_cell(line, row.kind, kind)
     _cell(line, _marks_text(row.unconfirmed), marks)
     _cell(line, row.decided_by, decided_by)
     _cell(line, row.decided_at, decided_at)
@@ -892,9 +1170,14 @@ def fill_inputs() -> int:
         return 0
     project = _project()
     found: list[Any] = []
+    tables: tuple[Any, ...] = ()
     if project is not None:
+        from ...core.datasets.orphans import unregistered_tables  # al usarlo
+
         with project.read() as conn:
             found = list_inputs(conn)
+            tables = unregistered_tables(conn)
+    _fill_unregistered(view, tables)
     rows = view.inputs
     index = view.input_index
     chosen = rows[index].uid if 0 <= index < len(rows) else None
@@ -918,6 +1201,17 @@ def fill_inputs() -> int:
     return len(found)
 
 
+def _fill_unregistered(view: Any, tables: Sequence[Any]) -> None:
+    """Regenera las capas y tablas del proyecto sin registrar (RF-008-62; T54)."""
+    rows = view.unregistered
+    rows.clear()
+    for item in tables:
+        row = rows.add()
+        row.kind = str(item.kind)
+        row.name = item.name
+        row.registrable = item.registrable
+
+
 def _refill_inputs() -> None:
     """Con el registro de entradas abierto (con filas), las vuelve a leer: el proyecto cambió
     (una comprobación, una decisión) o el idioma. Si no se puede leer, queda en el registro
@@ -938,6 +1232,8 @@ def _clear_inputs() -> None:
     if view is not None and len(view.inputs):
         view.inputs.clear()
         view.input_index = 0
+    if view is not None and len(view.unregistered):
+        view.unregistered.clear()
 
 
 def input_status(row: Any) -> str:
@@ -1066,8 +1362,29 @@ def draw_inputs(layout: Any, context: Any) -> None:
     layout.separator(type="LINE")
     _operator(layout, CHECK_INPUTS, text(catalog().commands[CHECK_INPUTS].label),
               enabled=blocked is None)
+    _draw_unregistered(layout, view, blocked is None)
     if blocked is not None:
         layout.label(text=blocked, icon="LOCKED", translate=False)
+
+
+def _draw_unregistered(layout: Any, view: Any, writable: bool) -> None:
+    """Las capas y tablas del proyecto sin registrar, creadas desde QGIS (T54; RF-008-62): cada
+    una con Registrar como entrada… (si es una capa o una tabla de ``gpkg_contents``) e
+    Ignorar…, que abren el diálogo de ``geoblender.core_resolve_unregistered``."""
+    rows = view.unregistered
+    if not len(rows):
+        return
+    layout.separator(type="LINE")
+    layout.label(text=tr("Layers and tables of the project not registered"), translate=False)
+    for row in rows:
+        line = layout.row(align=True)
+        line.label(text=row.name, translate=False)
+        kind = row.kind.upper()
+        _operator(line, RESOLVE_UNREGISTERED, tr("Register as input…"),
+                  enabled=writable and row.registrable, kind=kind, name=row.name,
+                  decision="REGISTER")
+        _operator(line, RESOLVE_UNREGISTERED, tr("Ignore…"), enabled=writable, kind=kind,
+                  name=row.name, decision="IGNORE")
 
 
 class GEOBLENDER_UL_core_inputs(bpy.types.UIList):
@@ -1095,6 +1412,298 @@ class GEOBLENDER_PT_core_inputs(bpy.types.Panel):
         draw_inputs(self.layout, context)
 
 
+# Grafo de operaciones y procedencia (T55) -----------------------------------------------------
+
+
+def lineage_error() -> str:
+    """Por qué la última búsqueda de la procedencia no dio una cadena (lo buscado no es una
+    cifra, un dato ni una operación del proyecto), o ""."""
+    view = _view()
+    return "" if view is None else view.lineage_error
+
+
+def _clear_lineage(view: Any) -> None:
+    """Vacía la procedencia, lo encontrado y el motivo (no la búsqueda)."""
+    if len(view.lineage):
+        view.lineage.clear()
+    if len(view.lineage_matches):
+        view.lineage_matches.clear()
+    view.lineage_index = 0
+    view.lineage_more = 0
+    view.lineage_error = ""
+
+
+def _forget_lineage() -> None:
+    """Vacía la procedencia y su búsqueda (otro proyecto, ninguno)."""
+    view = _view()
+    if view is None:
+        return
+    _clear_lineage(view)
+    if view.lineage_uid:
+        _STATE.searching = True
+        try:
+            view.lineage_uid = ""
+        finally:
+            _STATE.searching = False
+
+
+def search_lineage(wanted: str | None = None) -> int:
+    """La procedencia de ``wanted`` (por defecto, la búsqueda del panel; si se da, pasa a ser
+    la búsqueda) en las filas del panel (RF-008-29, RF-008-31): el uid de una cifra, de un dato
+    o de una operación, o el nombre de un dato vivo (``core.provenance.lineage.lineage``). Si
+    no es nada de eso, quedan el motivo (:func:`lineage_error`) y lo que lo contiene: las cifras
+    vigentes y los datos (``search_items``). Sin proyecto con la procedencia o sin nada que
+    buscar, todo vacío. Devuelve cuántas filas hay. Si no se puede leer el proyecto, el error
+    sigue (y el panel queda vacío)."""
+    view = _view()
+    if view is None:
+        return 0
+    if wanted is not None and view.lineage_uid != wanted:
+        _STATE.searching = True
+        try:
+            view.lineage_uid = wanted
+        finally:
+            _STATE.searching = False
+    _clear_lineage(view)
+    project = _project()
+    shown_text = view.lineage_uid.strip()
+    if project is None or not shown_text:
+        return 0
+    from ...core.provenance.lineage import lineage, search_items  # al usarlo
+    from ...core.provenance.messages import ProvenanceError
+
+    shown = language()
+    try:
+        tree = lineage(project, shown_text, language=shown)
+    except ProvenanceError as exc:
+        if exc.code != "core.lineage_unknown":
+            raise
+        view.lineage_error = render(exc.code, language=shown, **exc.values)
+        for match in search_items(project, shown_text, language=shown):
+            row = view.lineage_matches.add()
+            row.kind = str(match.kind)
+            row.uid = match.uid
+            row.text = match.text
+        return 0
+    found = tree.rows()
+    for item in found[:MAX_LINEAGE_ROWS]:
+        text_shown, param_kind, marks, note = _lineage_cells(tree, item, shown)
+        row = view.lineage.add()
+        row.depth = item.depth
+        row.kind = str(item.kind)
+        row.uid = item.uid
+        row.role = item.role or ""
+        row.repeated = item.repeated
+        row.text = text_shown
+        row.param_kind = param_kind
+        row.marks = ",".join(str(mark) for mark in marks)
+        row.note = note
+    view.lineage_more = max(0, len(found) - MAX_LINEAGE_ROWS)
+    return min(len(found), MAX_LINEAGE_ROWS)
+
+
+def lineage_searched() -> None:
+    """Cambió la búsqueda del panel (``bl.props.provenance``): :func:`search_lineage`; si no
+    se puede leer el proyecto, queda en el registro técnico."""
+    if _STATE.searching:
+        return
+    try:
+        search_lineage()
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.warning("No se pudo leer la procedencia del proyecto", exc_info=True)
+
+
+def _role(role: str | None) -> str:
+    return f" ({role})" if role else ""
+
+
+def _operation_text(node: Any, shown: str) -> str:
+    """Un eslabón: su nombre, su tipo con la versión de su algoritmo, la versión de Geoblender,
+    quién y cuándo la lanzó y, si lo suyo no es un resultado guardado, cómo se presenta."""
+    defn = contract.OPERATIONS.get(node.op_type)
+    name = text(defn.label_msgid) if defn is not None and defn.label_msgid else node.op_type
+    parts = [name, f"{node.op_type} {node.op_version}",
+             f"Geoblender {node.geoblender_version}", node.user_host,
+             _local(node.started_at, "%d/%m/%Y %H:%M")]
+    if not node.result.saved:
+        parts.append(node.result.text(language=shown))
+    return " · ".join(parts)
+
+
+def _parameter_text(node: Any, shown: str) -> str:
+    """Un parámetro que leyó un eslabón: su nombre, su clave y el valor que leyó con su
+    unidad."""
+    from ...core.params import DEFINITIONS  # al usarlo: las definiciones de los módulos
+
+    definition = DEFINITIONS.get(node.key)
+    label = text(definition.label_msgid) if definition is not None and \
+        definition.label_msgid else ""
+    name = f"{label} · {node.key}" if label else node.key
+    return f"{name} = {node.value_text(language=shown)}"
+
+
+def _parameter_note(node: Any, shown: str) -> str:
+    """Lo de hoy de un parámetro, si no es lo que leyó el eslabón (otro valor, otro tipo u
+    otra marca: RF-008-31 cuenta lo de hoy), y si la operación de la que sale un CALCULADO
+    está obsoleta."""
+    notes = []
+    if node.changed or node.current_kind != node.kind or \
+            node.current_unconfirmed != node.unconfirmed:
+        today = f"{node.current_value_text(language=shown)} {badge(node.current_kind)}"
+        if node.current_unconfirmed:
+            today += f" {tr('unconfirmed')}"
+        notes.append(tr("today: {value}", value=today))
+    if node.source_stale:
+        notes.append(tr("its source operation is stale"))
+    return " · ".join(notes)
+
+
+def _lineage_cells(tree: Any, item: Any, shown: str) -> tuple[str, str, tuple[str, ...], str]:
+    """De una fila de la procedencia (``core.provenance.lineage.LineageRow``): su texto, el
+    tipo de su insignia (de una cifra o un parámetro), sus marcas y su nota."""
+    node = item.node
+    match str(item.kind):
+        case "figure":
+            note = "" if tree.result.saved else tree.result.text(language=shown)
+            return node.text(language=shown), str(node.kind), tree.marks.marks, note
+        case "operation":
+            notes = [node.stale_text] if node.stale_text else []
+            if node.review:
+                notes.append(tr("review"))
+            return (_operation_text(node, shown), "", ("stale",) if node.stale else (),
+                    " · ".join(notes))
+        case "parameter":
+            return (_parameter_text(node, shown), str(node.kind),
+                    ("unconfirmed",) if node.unconfirmed else (), _parameter_note(node, shown))
+        case "input":
+            return node.text(language=shown) + _role(item.role), "", (), ""
+    shown_text = node.name + _role(item.role)
+    if not node.current:
+        shown_text += f" · {tr('earlier version')}"
+    return shown_text, "", tree.marks.marks if item.depth == 0 else (), ""
+
+
+def lineage_visible(rows: Sequence[Any]) -> list[bool]:
+    """Qué filas de la procedencia se ven: las de debajo de un nudo plegado (``expanded``
+    falso), no."""
+    found: list[bool] = []
+    folded: int | None = None
+    for row in rows:
+        if folded is not None and row.depth > folded:
+            found.append(False)
+            continue
+        found.append(True)
+        folded = None if row.expanded else row.depth
+    return found
+
+
+def _mark_text(kind: str, mark: str) -> str:
+    """Una marca de una fila: de un parámetro, «sin confirmar»; de una cifra o un dato, la de
+    RF-008-31 («depende de una hipótesis», «depende de un valor sin confirmar», «obsoleta»)."""
+    if kind == "parameter":
+        return tr("unconfirmed")
+    return render(f"core.mark_{mark}", language=language())
+
+
+def draw_lineage_row(layout: Any, row: Any, *, children: bool) -> None:
+    """Una fila de la procedencia (RF-008-29, RF-008-31): sangrada por su profundidad, con el
+    botón de plegar si tiene ramas, la insignia de tipo de una cifra o un parámetro ([HIP] con
+    su icono ámbar), su texto, «ya mostrada arriba» si se repite, sus marcas en alerta y su
+    nota (en alerta, la causa de un eslabón obsoleto)."""
+    line = layout.row(align=True)
+    if row.depth:
+        line.separator(factor=LINEAGE_INDENT * row.depth)
+    if children:
+        icon = "DISCLOSURE_TRI_DOWN" if row.expanded else "DISCLOSURE_TRI_RIGHT"
+        line.prop(row, "expanded", text="", icon=icon, emboss=False)
+    else:
+        line.label(text="", icon="BLANK1")
+    if row.param_kind:
+        _badge_cell(line, row.param_kind)
+    line.label(text=row.text, translate=False)
+    if row.repeated:
+        again = line.row(align=True)
+        again.active = False
+        again.label(text=tr("shown above"), translate=False)
+    marks = [mark for mark in row.marks.split(",") if mark]
+    if row.kind != "operation":  # de un eslabón, su nota dice por qué
+        for mark in marks:
+            flagged = line.row(align=True)
+            flagged.alert = True
+            flagged.label(text=_mark_text(row.kind, mark), translate=False)
+    if row.note:
+        note = line.row(align=True)
+        note.alert = "stale" in marks
+        note.label(text=row.note, translate=False)
+
+
+def draw_lineage(layout: Any, context: Any) -> None:
+    """El contenido de :class:`GEOBLENDER_PT_core_lineage` (RF-008-29, RF-008-31): la
+    búsqueda, el motivo si lo buscado no está, lo que lo contiene (cada uno abre su
+    procedencia) y la cadena."""
+    layout.label(text=tr("Operation graph and provenance"), translate=False)
+    reason = _session().unavailable()
+    if reason is not None:
+        layout.label(text=reason, icon="INFO", translate=False)
+        return
+    view = getattr(getattr(context, "window_manager", None), WINDOW_MANAGER_PROPERTY, None)
+    if view is None:
+        return
+    layout.prop(view, "lineage_uid", text=tr("Figure or dataset"), icon="VIEWZOOM",
+                translate=False)
+    matches = view.lineage_matches
+    if len(matches):
+        layout.label(text=tr("Figures and datasets found"), translate=False)
+        column = layout.column(align=True)
+        for match in matches:
+            _operator(column, SHOW_LINEAGE, match.text, item_uid=match.uid)
+    elif view.lineage_error:
+        note = layout.row()
+        note.alert = True
+        note.label(text=view.lineage_error, icon="ERROR", translate=False)
+    if len(view.lineage):
+        layout.template_list(LINEAGE_LIST, "", view, "lineage", view, "lineage_index",
+                             rows=LINEAGE_ROWS)
+        if view.lineage_more:
+            layout.label(text=tr("… and {count} more", count=view.lineage_more),
+                         translate=False)
+    elif not len(matches) and not view.lineage_error:
+        layout.label(text=tr("Search for a figure or a dataset by its name, its key or its uid"),
+                     translate=False)
+
+
+class GEOBLENDER_UL_core_lineage(bpy.types.UIList):
+    """The chain of operations of a figure or a dataset"""
+
+    bl_idname = LINEAGE_LIST
+
+    def draw_item(self, _context: Any, layout: Any, data: Any, item: Any, _icon: int,
+                  _active_data: Any, _active_property: str, index: int = 0,
+                  _flt_flag: int = 0) -> None:
+        rows = data.lineage
+        children = index + 1 < len(rows) and rows[index + 1].depth > item.depth
+        draw_lineage_row(layout, item, children=children)
+
+    def filter_items(self, _context: Any, data: Any, propname: str) -> tuple[list[int],
+                                                                            list[int]]:
+        flag = self.bitflag_filter_item
+        return [flag if shown else 0 for shown in lineage_visible(getattr(data, propname))], []
+
+
+class GEOBLENDER_PT_core_lineage(bpy.types.Panel):
+    """What each result comes from and what depends on it"""
+
+    bl_idname = LINEAGE_PANEL
+    bl_label = "Operation graph and provenance"
+    bl_translation_context = "Geoblender"
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = LINEAGE_PANEL_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_lineage(self.layout, context)
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_PT_core_stale,
     GEOBLENDER_UL_core_parameters,
@@ -1102,6 +1711,8 @@ classes: tuple[type, ...] = (
     GEOBLENDER_PT_core_parameters,
     GEOBLENDER_UL_core_inputs,
     GEOBLENDER_PT_core_inputs,
+    GEOBLENDER_UL_core_lineage,
+    GEOBLENDER_PT_core_lineage,
 )
 
 
@@ -1110,12 +1721,16 @@ classes: tuple[type, ...] = (
 
 def install() -> None:
     """Registra los campos de la barra de estado (después de ``statusbar.install``), el número
-    del control 7 y la escucha del proyecto de la sesión; con un proyecto ya abierto, pone el
-    temporizador. Idempotente («Reparar la interfaz» la vuelve a llamar)."""
+    del control 7, el proveedor de estado de las órdenes y la escucha del proyecto de la
+    sesión; con un proyecto ya abierto, pone el temporizador. Idempotente («Reparar la
+    interfaz» la vuelve a llamar)."""
     for key, order, draw, width in FIELDS:
         statusbar.register_field(key, priority=FIELD_PRIORITY, draw=draw, width_px=width,
-                                 modes=FIELD_MODES, order=order)
+                                 modes=FIELD_MODES, order=order,
+                                 folded_draw=partial(draw, folded=True),
+                                 folded_width_px=partial(width, folded=True))
     quick_access.set_count_provider(REFRESH, stale_count)
+    set_state_provider(command_state)
     project_session.add_listener(on_project_changed)
     if project_session.current() is not None and not bpy.app.timers.is_registered(
             indicator_tick):
@@ -1124,18 +1739,22 @@ def install() -> None:
 
 
 def uninstall() -> None:
-    """Quita los campos, el número del control 7, la escucha y los temporizadores, y olvida
-    los recuentos, las filas (también las de los parámetros) y el aviso."""
+    """Quita los campos, el número del control 7, el proveedor de estado de las órdenes, la
+    escucha y los temporizadores, y olvida los recuentos, las filas (también las de los
+    parámetros) y el aviso."""
     for key in FIELD_KEYS:
         statusbar.unregister_field(key)
     if quick_access.count_provider(REFRESH) is stale_count:
         quick_access.set_count_provider(REFRESH, None)
+    if state_provider() is command_state:
+        set_state_provider(None)
     project_session.remove_listener(on_project_changed)
     _retire(indicator_tick)
     _retire(expire_undo_notice)
     _forget()
     _clear_parameters()
     _clear_inputs()
+    _forget_lineage()
     _STATE.texts.clear()
     _STATE.properties.clear()
     _STATE.undo_text = ""

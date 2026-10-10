@@ -17,9 +17,10 @@ Base de RF-006-01 a RF-006-31: lo que usan todas las tareas siguientes de la 006
   Desde T39 (RF-008-01, RF-008-03, RF-008-06), ``ParamDef`` es el de ``core.params``: las 17
   definiciones dan el mismo valor normalizado, el mismo texto y el mismo ``range_text()`` que
   la definición provisional de ``gis`` (:data:`CHECKS` y :data:`RANGES`, copia literal de lo
-  que daba antes de T39), cada una lleva su etiqueta (``label_msgid``) con su español en el
-  catálogo de idioma y no queda ningún código de parámetro de ``gis`` (los cuatro que daba
-  ``gis/messages.py``) en el código ni en las pruebas de la 006.
+  que daba antes de T39, con el separador de miles que pone desde 008/T71 ``format_value``),
+  cada una lleva su etiqueta (``label_msgid``) con su español en el catálogo de idioma y no
+  queda ningún código de parámetro de ``gis`` (los cuatro que daba ``gis/messages.py``) en el
+  código ni en las pruebas de la 006.
 - **Puertos** (``gis.ports``; plan §5.3.1): los nombres y las firmas del contrato, y que
   ``ports.py`` solo importa la biblioteca estándar, numpy y ``core`` (ARQ-10; RF-006-01 a
   RF-006-31 lo usan a través de él): el detector ve un import prohibido sembrado a
@@ -163,14 +164,14 @@ CHECKS: tuple[tuple[str, object, object], ...] = (
     ("gis.contours.interval_m", 1.0, 1.0),
     ("gis.contours.interval_m", 1, 1.0),
     ("gis.contours.interval_m", 1000.0, 1000.0),
-    ("gis.contours.interval_m", 0.0, ("core.param_out_of_range", "Parámetro «gis.contours.interval_m»: 0 está fuera de su rango (0; 1000] m.")),
-    ("gis.contours.interval_m", 1000.5, ("core.param_out_of_range", "Parámetro «gis.contours.interval_m»: 1000,5 está fuera de su rango (0; 1000] m.")),
+    ("gis.contours.interval_m", 0.0, ("core.param_out_of_range", "Parámetro «gis.contours.interval_m»: 0 está fuera de su rango (0; 1 000] m.")),
+    ("gis.contours.interval_m", 1000.5, ("core.param_out_of_range", "Parámetro «gis.contours.interval_m»: 1 000,5 está fuera de su rango (0; 1 000] m.")),
     ("gis.contours.interval_m", True, ("core.param_not_number", "Parámetro «gis.contours.interval_m»: «sí» no es un número.")),
     ("gis.contours.index_every_m", 5.0, 5.0),
     ("gis.contours.index_every_m", 5, 5.0),
     ("gis.contours.index_every_m", 10000.0, 10000.0),
-    ("gis.contours.index_every_m", 0.0, ("core.param_out_of_range", "Parámetro «gis.contours.index_every_m»: 0 está fuera de su rango (0; 10000] m.")),
-    ("gis.contours.index_every_m", 10000.5, ("core.param_out_of_range", "Parámetro «gis.contours.index_every_m»: 10000,5 está fuera de su rango (0; 10000] m.")),
+    ("gis.contours.index_every_m", 0.0, ("core.param_out_of_range", "Parámetro «gis.contours.index_every_m»: 0 está fuera de su rango (0; 10 000] m.")),
+    ("gis.contours.index_every_m", 10000.5, ("core.param_out_of_range", "Parámetro «gis.contours.index_every_m»: 10 000,5 está fuera de su rango (0; 10 000] m.")),
     ("gis.contours.index_every_m", True, ("core.param_not_number", "Parámetro «gis.contours.index_every_m»: «sí» no es un número.")),
     ("gis.contours.index_offset_m", 0.0, 0.0),
     ("gis.contours.index_offset_m", 0, 0.0),
@@ -188,8 +189,8 @@ CHECKS: tuple[tuple[str, object, object], ...] = (
     ("gis.contours.min_length_m", 0.0, 0.0),
     ("gis.contours.min_length_m", 0, 0.0),
     ("gis.contours.min_length_m", 10000.0, 10000.0),
-    ("gis.contours.min_length_m", -0.5, ("core.param_out_of_range", "Parámetro «gis.contours.min_length_m»: -0,5 está fuera de su rango [0; 10000] m.")),
-    ("gis.contours.min_length_m", 10000.5, ("core.param_out_of_range", "Parámetro «gis.contours.min_length_m»: 10000,5 está fuera de su rango [0; 10000] m.")),
+    ("gis.contours.min_length_m", -0.5, ("core.param_out_of_range", "Parámetro «gis.contours.min_length_m»: -0,5 está fuera de su rango [0; 10 000] m.")),
+    ("gis.contours.min_length_m", 10000.5, ("core.param_out_of_range", "Parámetro «gis.contours.min_length_m»: 10 000,5 está fuera de su rango [0; 10 000] m.")),
     ("gis.contours.min_length_m", True, ("core.param_not_number", "Parámetro «gis.contours.min_length_m»: «sí» no es un número.")),
     ("gis.vertical.ellipsoidal_band_m", (40.0, 60.0), (40.0, 60.0)),
     ("gis.vertical.ellipsoidal_band_m", [40.0, 60.0], (40.0, 60.0)),
@@ -200,15 +201,15 @@ CHECKS: tuple[tuple[str, object, object], ...] = (
     ("gis.validate.z_range_m", (-500.0, 5000.0), (-500.0, 5000.0)),
     ("gis.validate.z_range_m", [-500.0, 5000.0], (-500.0, 5000.0)),
     ("gis.validate.z_range_m", (-11000.0, 9000.0), (-11000.0, 9000.0)),
-    ("gis.validate.z_range_m", (-11001.0, 9000.0), ("core.param_out_of_range", "Parámetro «gis.validate.z_range_m»: [-11001; 9000] está fuera de su rango [-11000; 9000] m.")),
-    ("gis.validate.z_range_m", (-11000.0, 9001.0), ("core.param_out_of_range", "Parámetro «gis.validate.z_range_m»: [-11000; 9001] está fuera de su rango [-11000; 9000] m.")),
+    ("gis.validate.z_range_m", (-11001.0, 9000.0), ("core.param_out_of_range", "Parámetro «gis.validate.z_range_m»: [-11 001; 9 000] está fuera de su rango [-11 000; 9 000] m.")),
+    ("gis.validate.z_range_m", (-11000.0, 9001.0), ("core.param_out_of_range", "Parámetro «gis.validate.z_range_m»: [-11 000; 9 001] está fuera de su rango [-11 000; 9 000] m.")),
     ("gis.validate.z_range_m", (5000.0, -500.0), ("core.param_not_list", "Parámetro «gis.validate.z_range_m»: «(5000.0, -500.0)» no es una lista de 2 números en orden creciente.")),
     ("gis.import.max_cells", 100000000, 100000000),
     ("gis.import.max_cells", 100000000.0, 100000000),
     ("gis.import.max_cells", 1, 1),
-    ("gis.import.max_cells", 0, ("core.param_out_of_range", "Parámetro «gis.import.max_cells»: 0 está fuera de su rango [1; 100000000].")),
-    ("gis.import.max_cells", 100000001, ("core.param_out_of_range", "Parámetro «gis.import.max_cells»: 100000001 está fuera de su rango [1; 100000000].")),
-    ("gis.import.max_cells", 100000000.5, ("core.param_not_integer", "Parámetro «gis.import.max_cells»: «100000000,5» no es un número entero.")),
+    ("gis.import.max_cells", 0, ("core.param_out_of_range", "Parámetro «gis.import.max_cells»: 0 está fuera de su rango [1; 100 000 000].")),
+    ("gis.import.max_cells", 100000001, ("core.param_out_of_range", "Parámetro «gis.import.max_cells»: 100 000 001 está fuera de su rango [1; 100 000 000].")),
+    ("gis.import.max_cells", 100000000.5, ("core.param_not_integer", "Parámetro «gis.import.max_cells»: «100 000 000,5» no es un número entero.")),
     ("gis.view.lod_steps_m", (2.0, 5.0), (2.0, 5.0)),
     ("gis.view.lod_steps_m", [2.0, 5.0], (2.0, 5.0)),
     ("gis.view.lod_steps_m", (0.5, 100.0), (0.5, 100.0)),
@@ -227,14 +228,14 @@ RANGES: dict[str, tuple[str, str]] = {
     "gis.tin.flat_max_passes": ("[0; 10]", "[0, 10]"),
     "gis.tin.max_flat_pct": ("[0; 100] %", "[0, 100] %"),
     "gis.tin.blender_cdt_max_s": ("[0; 2] s", "[0, 2] s"),
-    "gis.contours.interval_m": ("(0; 1000] m", "(0, 1000] m"),
-    "gis.contours.index_every_m": ("(0; 10000] m", "(0, 10000] m"),
+    "gis.contours.interval_m": ("(0; 1 000] m", "(0, 1,000] m"),
+    "gis.contours.index_every_m": ("(0; 10 000] m", "(0, 10,000] m"),
     "gis.contours.index_offset_m": ("[-100; 100] m", "[-100, 100] m"),
     "gis.contours.simplify_m": ("[0; 100] m", "[0, 100] m"),
-    "gis.contours.min_length_m": ("[0; 10000] m", "[0, 10000] m"),
+    "gis.contours.min_length_m": ("[0; 10 000] m", "[0, 10,000] m"),
     "gis.vertical.ellipsoidal_band_m": ("[0; 200] m", "[0, 200] m"),
-    "gis.validate.z_range_m": ("[-11000; 9000] m", "[-11000, 9000] m"),
-    "gis.import.max_cells": ("[1; 100000000]", "[1, 100000000]"),
+    "gis.validate.z_range_m": ("[-11 000; 9 000] m", "[-11,000, 9,000] m"),
+    "gis.import.max_cells": ("[1; 100 000 000]", "[1, 100,000,000]"),
     "gis.view.lod_steps_m": ("[0,5; 100] m", "[0.5, 100] m"),
 }
 

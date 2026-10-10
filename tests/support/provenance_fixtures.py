@@ -511,6 +511,7 @@ TABLE_DECLARATIONS: Mapping[str, Any] = {
 LAYER_NAME = "parcelas"
 ASSAYS_NAME = "ensayos"
 LAYER_VERTICES = 20
+LAYER_BATCH = 50_000  # polígonos por lote al escribir una capa
 BAND_CELLS = 4_000_000  # celdas por banda al escribir una rejilla grande
 
 
@@ -539,9 +540,36 @@ def write_mdt(path: Path, shape: tuple[int, int]) -> Path:
     return path
 
 
+def _parcel_blobs(first: int, count: int, circle: np.ndarray) -> list[bytes]:
+    """Los blobs GeoPackage de los polígonos ``first``…``first + count − 1`` de
+    :func:`write_layer` (cabecera con su envolvente XY y WKB ISO *little-endian*), escritos
+    de una vez con numpy: los mismos bytes que ``gpkg.encode_geometry``, que lo comprueba con
+    el primero (T67: 2 M polígonos en segundos, no en un minuto)."""
+    index = np.arange(first, first + count)
+    centres = np.column_stack([715_000.0 + (index % 300) * 10.0,
+                               4_378_000.0 + (index // 300) * 10.0])
+    rings = circle[None, :, :] + centres[:, None, :]
+    rings = np.concatenate([rings, rings[:, :1]], axis=1)  # cerrado
+    reference = gpkg.encode_geometry("POLYGON", [rings[0]], 25830, False)
+    points = rings.shape[1]
+    wkb_at = len(reference) - 16 * points - 13  # cabecera y envolvente | WKB (13 B) | puntos
+    envelope = np.stack([rings[:, :, 0].min(axis=1), rings[:, :, 0].max(axis=1),
+                         rings[:, :, 1].min(axis=1), rings[:, :, 1].max(axis=1)], axis=1)
+    blobs = np.empty((count, len(reference)), dtype=np.uint8)
+    blobs[:, :8] = np.frombuffer(reference[:8], dtype=np.uint8)
+    blobs[:, 8:wkb_at] = envelope.astype("<f8").view(np.uint8)
+    blobs[:, wkb_at:wkb_at + 13] = np.frombuffer(reference[wkb_at:wkb_at + 13], dtype=np.uint8)
+    blobs[:, wkb_at + 13:] = rings.astype("<f8").reshape(count, -1).view(np.uint8)
+    found = [row.tobytes() for row in blobs]
+    if found[0] != reference:
+        raise AssertionError("los blobs de write_layer no son los de gpkg.encode_geometry")
+    return found
+
+
 def write_layer(path: Path, count: int) -> Path:
     """Escribe en ``path`` un GeoPackage con la capa :data:`LAYER_NAME` de ``count`` polígonos
-    de :data:`LAYER_VERTICES` vértices (EPSG:25830) con un código y una ley."""
+    de :data:`LAYER_VERTICES` vértices (EPSG:25830) con un código y una ley, por lotes de
+    :data:`LAYER_BATCH`."""
     crs = georef.load_catalog().horizontal(25830)
     angles = np.linspace(0.0, 2.0 * np.pi, LAYER_VERTICES + 1)[:-1]
     circle = np.column_stack([4.0 * np.cos(angles), 4.0 * np.sin(angles)])
@@ -552,12 +580,10 @@ def write_layer(path: Path, count: int) -> Path:
             [base.ColumnDef("codigo", "TEXT"), base.ColumnDef("ley", "DOUBLE")], "Parcelas")
 
         def features() -> Iterator[tuple[bytes, str, float]]:
-            for index in range(count):
-                centre = (715_000.0 + (index % 300) * 10.0, 4_378_000.0 + (index // 300) * 10.0)
-                ring = circle + centre
-                ring = np.vstack([ring, ring[:1]])
-                yield (gpkg.encode_geometry("POLYGON", [ring], 25830, False),
-                       f"P-{index:06d}", 0.01 * index)
+            for first in range(0, count, LAYER_BATCH):
+                blobs = _parcel_blobs(first, min(LAYER_BATCH, count - first), circle)
+                for index, blob in enumerate(blobs, start=first):
+                    yield blob, f"P-{index:06d}", 0.01 * index
 
         conn.executemany(f"INSERT INTO {LAYER_NAME} (geom, codigo, ley) VALUES (?, ?, ?)",
                          features())
@@ -617,9 +643,25 @@ class ProgressClock:
 
 BIG_HASH_BUDGET_S = 45.0  # RNF-008-11: un MDT de 100 M celdas en disco local
 BIG_MDT_SHAPE = (10_000, 10_000)
+BIG_LAYER_BUDGET_S = 60.0  # RNF-008-11: un GeoPackage de 1 GB en Z: (en local, también)
+BIG_LAYER_FEATURES = 2_000_000  # T67: 2 M polígonos de 20 vértices (unos 0,9 GB)
 PROGRESS_GAP_S = 1.0  # RNF-008-11: progreso cada ≤ 1 s
 CANCEL_BUDGET_S = 2.0  # RNF-008-11: cancelación efectiva en ≤ 2 s
 JOBS_FOLDER = "trabajos"  # la raíz de las carpetas de trabajo del arnés
+
+
+class _WatchedEvent(threading.Event):
+    """El aviso de parar del trabajo del arnés, que apunta cuándo lo mira el trabajo
+    (``WorkerContext.check_cancelled``, tras cada trozo): el mayor intervalo entre dos miradas
+    es lo más que tardaría en parar si se cancelase en cualquier momento (T67)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.looks: list[float] = []
+
+    def is_set(self) -> bool:
+        self.looks.append(time.perf_counter())
+        return super().is_set()
 
 
 @dataclass(frozen=True)
@@ -638,7 +680,8 @@ class _HarnessSink:
     """Los eventos del trabajo de hash en el arnés (su ``EventSink``): cada aviso de progreso
     de la lectura va a ``progress`` y, si después ``cancelled()`` lo pide, se activa el aviso
     de parar del trabajo (``cancel``); apunta lo que tardó la copia verificada (de empezar a su
-    primer aviso de lectura; 0 si no hubo copia) y la última fracción leída."""
+    primer aviso de lectura; 0 si no hubo copia), cuándo llegó ese aviso y la última fracción
+    leída."""
 
     def __init__(self, progress: Callable[[float], object] | None,
                  cancelled: Callable[[], bool] | None, cancel: threading.Event) -> None:
@@ -648,6 +691,7 @@ class _HarnessSink:
         self.cancel = cancel
         self.copying = False
         self.copy_s = 0.0
+        self.reading_at: float | None = None
         self.fraction = 0.0
 
     def send(self, event: Any) -> None:
@@ -656,8 +700,10 @@ class _HarnessSink:
         if event.msg == content_hash.COPYING_TEXT:
             self.copying = True
             return
+        if self.reading_at is None:
+            self.reading_at = time.perf_counter()
         if self.copying and not self.copy_s:
-            self.copy_s = time.perf_counter() - self.started
+            self.copy_s = self.reading_at - self.started
         self.fraction = event.frac
         if self.progress is not None:
             self.progress(event.frac)
@@ -671,7 +717,8 @@ class BigHashHarness:
     función que ejecuta el trabajo en el hilo y en proceso aparte, con las rutas de la fuente
     por ``paths``, su copia verificada de ``JobDir.copy_input`` si el lector la pide y el
     progreso y la cancelación de su ``WorkerContext``), con su presupuesto, un aviso de
-    progreso cada ≤ 1 s y la cancelación a mitad en ≤ 2 s.
+    progreso cada ≤ 1 s y la cancelación en ≤ 2 s: mirada cada ≤ 2 s mientras lee (lo más que
+    tardaría en parar si se cancelase en cualquier momento; T67), al empezar y a mitad.
 
     Se usa como mezcla de una clase de pruebas (``class X(BigHashHarness, unittest.TestCase)``)
     que da el lector (``reader``, que el arnés registra si no lo está), su presupuesto
@@ -688,6 +735,7 @@ class BigHashHarness:
     big_folder: ClassVar[Path]
     _big_stack: ClassVar[ExitStack]
     sink: _HarnessSink  # los eventos del último trabajo (hash_source)
+    cancel_event: _WatchedEvent  # su aviso de parar, con las miradas del trabajo
 
     @classmethod
     def make_source(cls, folder: Path) -> BigSource:
@@ -736,7 +784,7 @@ class BigHashHarness:
                                      encoder.NORMALIZER, size)
         job = content_hash.new_job(request)
         folder = job_paths.job_dir(self.big_folder / JOBS_FOLDER, job.job_uid).create()
-        cancel = threading.Event()
+        self.cancel_event = cancel = _WatchedEvent()
         self.sink = _HarnessSink(progress, cancelled, cancel)
         ctx = worker_api.WorkerContext(job, folder, self.sink, cancel_event=cancel,
                                        paths=content_hash.job_paths(request))
@@ -749,32 +797,42 @@ class BigHashHarness:
         total = sum(os.path.getsize(path) for path in self.source.files.values())
         return f"{total / 1e6:.0f} MB"
 
+    def _looks_gap(self, end: float) -> float:
+        """El mayor intervalo sin mirar la cancelación desde que empieza a leer (tras la copia
+        verificada, si la hay) hasta ``end``."""
+        start = self.sink.reading_at or self.sink.started
+        moments = [start, *(look for look in self.cancel_event.looks if look >= start), end]
+        return max(later - earlier for earlier, later in zip(moments, moments[1:]))
+
     def test_big_hash(self) -> None:
         """RNF-008-11: el hash de contenido en segundo plano de la fuente grande del lector
         tarda lo que su presupuesto (un MDT de 100 M celdas, ≤ 45 s en disco local), con un
-        aviso de progreso cada ≤ 1 s."""
+        aviso de progreso cada ≤ 1 s y, mientras lee, la cancelación mirada cada ≤ 2 s."""
         clock = ProgressClock()
         digest, copy_s = self.hash_source(progress=clock.tick)
         total, gap = clock.finish()
+        looks = self._looks_gap(clock.started + total)
         test: Any = self
         test.assertEqual(digest.reader, self.reader.id)
         copied = f" (copia verificada {_comma(copy_s, 2)} s)" if copy_s else ""
         self.report(
             f"{self.requirement}: hash de contenido de {self.source.label} ({self._size()}) "
             f"con {self.reader.id}: {_comma(total, 2)} s{copied}, {clock.ticks} avisos de "
-            f"progreso, el mayor hueco {_comma(gap, 3)} s (presupuestos "
-            f"{_comma(self.budget_s, 0)} s y {_comma(self.progress_gap_s, 0)} s)"
+            f"progreso, el mayor hueco {_comma(gap, 3)} s, la cancelación mirada cada "
+            f"≤ {_comma(looks, 3)} s (presupuestos {_comma(self.budget_s, 0)} s, "
+            f"{_comma(self.progress_gap_s, 0)} s y {_comma(self.cancel_budget_s, 0)} s)"
         )
         test.assertLessEqual(total, self.budget_s)
         test.assertLessEqual(gap, self.progress_gap_s)
+        test.assertLessEqual(looks, self.cancel_budget_s)
 
-    def test_big_hash_cancelled_at_half(self) -> None:
-        """RNF-008-11: cancelar a mitad el hash de contenido de la fuente grande del lector
-        lo para en ≤ 2 s, entre dos trozos (``JobCancelled`` del trabajo)."""
+    def _cancelled_when(self, wanted: Callable[[float], bool], moment: str) -> None:
+        """Cancela en el primer aviso de lectura cuya fracción cumple ``wanted`` y comprueba
+        que el trabajo para (``JobCancelled``) en ≤ 2 s."""
         asked: list[float] = []
 
         def progress(fraction: float) -> None:
-            if fraction >= 0.5 and not asked:
+            if wanted(fraction) and not asked:
                 asked.append(time.perf_counter())
 
         test: Any = self
@@ -782,9 +840,20 @@ class BigHashHarness:
             self.hash_source(progress=progress, cancelled=lambda: bool(asked))
         took = time.perf_counter() - asked[0]
         self.report(
-            f"{self.requirement}: cancelar a mitad el hash de contenido de "
+            f"{self.requirement}: cancelar {moment} el hash de contenido de "
             f"{self.source.label} con {self.reader.id}: parado en {_comma(took, 3)} s al "
             f"{100 * self.sink.fraction:.0f} % (presupuesto "
             f"{_comma(self.cancel_budget_s, 0)} s)"
         )
         test.assertLessEqual(took, self.cancel_budget_s)
+
+    def test_big_hash_cancelled_at_start(self) -> None:
+        """RNF-008-11 (T67): cancelar al empezar a leer (el primer aviso con avance: con un
+        GeoPackage, mientras cuenta sus filas) el hash de contenido de la fuente grande del
+        lector lo para en ≤ 2 s (``JobCancelled`` del trabajo)."""
+        self._cancelled_when(lambda fraction: fraction > 0.0, "al empezar")
+
+    def test_big_hash_cancelled_at_half(self) -> None:
+        """RNF-008-11: cancelar a mitad el hash de contenido de la fuente grande del lector
+        lo para en ≤ 2 s, entre dos trozos (``JobCancelled`` del trabajo)."""
+        self._cancelled_when(lambda fraction: fraction >= 0.5, "a mitad")

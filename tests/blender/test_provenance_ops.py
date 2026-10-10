@@ -78,20 +78,61 @@ demostración de la 008 calculada con el límite:
   que dependía de la entrada; ``geoblender.core_edit_input`` (D-11) cambia el nombre y la
   entrega sin cambiar la entrada. En solo lectura, ninguna se puede.
 
+T53 (Recalcular lo obsoleto), con los bancos, los años por banco y el grupo acoplado de los
+acopios de la demostración de la 008:
+
+- RF-008-26, RF-008-25, RF-008-28: ``geoblender.core_recompute_stale`` es un modal con
+  temporizador que recalcula, en orden de dependencia y por unidades (las dos operaciones del
+  grupo juntas), lo obsoleto de un elemento (el botón Recalcular de su fila en el panel de lo
+  obsoleto), lo que depende de un cambio (la producción) o todo, como operaciones nuevas que
+  sustituyen a las anteriores, con su progreso, y deja la cuenta de «! n obsoletos» a 0; Esc a
+  mitad deja lo ya recalculado y lo demás obsoleto. No empieza mientras se comprueba el
+  proyecto ni con otro recálculo en marcha, y en solo lectura no está disponible.
+
+T54 (lo que no se puede usar, dar por buena, capas sin registrar y cancelar), con la
+demostración de la 008:
+
+- RF-008-56, RF-008-21: los años por banco (no editables) editados fuera quedan bloqueados y
+  salen, con su aviso, en el panel de lo obsoleto con Aceptar la edición y Recalcular
+  (``geoblender.core_resolve_dataset``); recalcularlos repite su operación y aceptar la edición
+  pide el motivo.
+- RF-008-27: la edición aceptada, con la producción cambiada, espera revisión a mano: el panel
+  la lista con «Dar por buena…» (``geoblender.core_accept_review``), que pide el motivo.
+- RF-008-57, RF-008-52: una tabla eliminada desde QGIS «falta» y se recalcula; lo importado
+  que pierde una columna está dañado y solo se reimporta.
+- RF-008-62: una capa creada desde QGIS en el proyecto sale en el registro de entradas con
+  Registrar como entrada… e Ignorar… (``geoblender.core_resolve_unregistered``).
+- RF-008-58: «Cancelar las comprobaciones» (``geoblender.core_cancel_checks``, el botón del
+  campo «Comprobando el proyecto…») para la comprobación en marcha enseguida.
+
+T65 (RNF-008-12): la sesión carga ``core.provenance.checks`` y hace una recolección completa del
+GC de Python al recibir un proyecto con la procedencia, no en un tic de la comprobación.
+
+T57 (Ctrl+Z; el detalle, en ``test_provenance_undo.py``):
+
+- RF-008-32: Mantener la copia, Descartar…, Editar… y lo recalculado se apuntan en el diario de
+  Ctrl+Z de la sesión (su clase y su nombre o su tipo) y sellan la escena con su número.
+
+En ``blender -b`` no hay bucle de eventos: las pruebas toman el modal de
+``window.modal_operators`` y le pasan los eventos ``TIMER`` y ``ESC``.
+
 Se ejecuta con ``tools/run_blender_tests.py``. Las carpetas son de unidades simuladas: nunca
 se abren. En ``blender -b`` los temporizadores no corren: las pruebas avanzan el monitor
 llamando a su función.
 """
 
 import functools
+import gc
 import importlib
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest import mock
@@ -103,7 +144,16 @@ from tests.support import blender_ext
 from tests.support.blender_ext import fingerprint_diff, module_name
 from tests.support.core_fixtures import mark_schema, settings_values
 from tests.support.fake_layout import FakeLayout, draw
-from tests.support.provenance_demo import Demo
+from tests.support.provenance_demo import (
+    BENCH_YEARS,
+    DETECT_STOCKPILES,
+    FILTER_STOCKPILES,
+    PRODUCTION,
+    SWELL_FACTOR,
+    YEARS_FIGURE,
+    YEARS_TABLE,
+    Demo,
+)
 from tests.support.repo import ROOT
 
 VARIABLE = "GEOBLENDER_READ_ONLY_DIRS"
@@ -157,6 +207,17 @@ READ_ONLY = "Proyecto en solo lectura:"  # y el motivo del proyecto
 UPDATE_REASON = "Nueva entrega del cliente"
 KEPT = "cambiada · se mantiene la copia"
 DISCARDED = "descartada · registro, no usar"
+RECOMPUTE = "geoblender.core_recompute_stale"
+TIMER = SimpleNamespace(type="TIMER", value="NOTHING")
+ESC = SimpleNamespace(type="ESC", value="PRESS")
+STOCKPILE_UNIT = (DETECT_STOCKPILES, FILTER_STOCKPILES)  # el grupo, en su orden
+RESOLVE_DATASET = "geoblender.core_resolve_dataset"
+ACCEPT_REVIEW = "geoblender.core_accept_review"
+RESOLVE_UNREGISTERED = "geoblender.core_resolve_unregistered"
+BLOCKED = ("La capa «demo_bench_years» se editó fuera de Geoblender y no se edita a mano: "
+           "acepte la edición con un motivo, recalcule o reimporte")
+OFFERS = ("Aceptar la edición", "Recalcular", "Reimportar")
+IMPORTED = "core_imported_limites"
 
 
 def _module(name: str) -> ModuleType:
@@ -198,6 +259,24 @@ def _synthetic_operator(base: type) -> type:
             return {"CANCELLED"} if job is None else {"FINISHED"}
 
     return GBTEST_OT_provenance_selftest
+
+
+def _foreign(project: object, *statements: str) -> None:
+    """Otro programa (QGIS) escribe en ``project.gpkg`` con su propia conexión."""
+    with closing(sqlite3.connect(project.database_path, isolation_level=None)) as conn:
+        for sql in statements:
+            conn.execute(sql)
+
+
+def _view() -> object:
+    return bpy.context.window_manager.geoblender_provenance
+
+
+def _buttons(layout: object, target: str) -> list[tuple[str, dict, bool]]:
+    """Los botones de la orden ``target`` dibujados: su texto, sus propiedades y si están
+    activos."""
+    return [(item.text, vars(item.properties), item.enabled) for item in layout.items
+            if item.kind == "operator" and item.target == target]
 
 
 def _without_variable():
@@ -259,7 +338,12 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         y deshabilitar lo quita. T47 (RF-008-09; plan §5.3.3): y el tipo de trabajo
         ``core_content_hash``, con los trabajos de hash de la sesión. T48 (RF-008-23): y la
         escucha de las carpetas de trabajos borradas y la nota «pendiente de incorporar» de
-        la lista de trabajos."""
+        la lista de trabajos. T65 (RNF-008-12, RF-008-58; plan §5.4.6): la sesión carga
+        ``core.provenance.checks`` al recibir un proyecto con la procedencia (no uno del esquema
+        1), en lo que tarda abrir, y no en el primer tic de su comprobación (en frío son unos
+        40 ms); y, si es grande (``MANY_DATASETS`` datos o más), hace antes una recolección
+        completa del GC de Python, para que la que provocarían los objetos de su comprobación
+        no caiga en un tic (uno pequeño no la hace)."""
         self.enterContext(_without_variable())
         blender_ext.enable()
         provenance = _module("bl.props.provenance")
@@ -277,6 +361,7 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         heavy = ("core.provenance.importer", "core.provenance.gate", "core.provenance.checks")
         self.assertEqual([name for name in heavy if f"{module_name()}.{name}" in sys.modules],
                          [])  # se cargan al usarlos
+        self.prepared_checks()
         workers = _module("jobs.catalog").WORKERS
         content_hash = _module("jobs.content_hash")
         self.assertIs(workers.get(HASH_WORKER), content_hash.WORKER_INFO)
@@ -323,6 +408,42 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         if after != baseline:
             self.fail("la huella del estado de Blender cambió:\n"
                       + "\n".join(fingerprint_diff(baseline, after)))
+
+    def prepared_checks(self) -> None:
+        """Lo de T65 en la prueba de registrar: con la extensión recién habilitada, sin
+        ``core.provenance.checks`` cargado, recibir proyectos (del esquema 1, uno pequeño y uno
+        «grande») y cerrarlos."""
+        checks = f"{module_name()}.core.provenance.checks"
+        core = _module("core.project")
+        project_session = _module("bl.scene.project_session")
+        tmp = Path(tempfile.mkdtemp(prefix="gb-t65-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        settings = core.ProjectSettings(**settings_values())
+        session, userdata = project_session.session(), project_session.userdata()
+        (tmp / "viejo").mkdir()
+        (tmp / "nuevo").mkdir()
+        old = core.create_project(tmp / "viejo", settings, session, userdata).project
+        root = old.root
+        old.close()
+        mark_schema(root, 1)
+        try:
+            with mock.patch.object(gc, "collect", wraps=gc.collect) as collected:
+                project_session.attach(core.open_project(root, session, userdata).project)
+                self.assertFalse(checks in sys.modules, "un proyecto del esquema 1 la carga")
+                project_session.close()
+                project = core.create_project(tmp / "nuevo", settings, session,
+                                              userdata).project
+                root = project.root
+                project_session.attach(project)
+                self.assertTrue(checks in sys.modules, "recibir el proyecto no la carga")
+                collected.assert_not_called()  # un proyecto pequeño
+                self.assertIsNone(_module("bl.ops.core_provenance").SESSION.progress)
+                project_session.close()
+                with mock.patch.object(sys.modules[checks], "MANY_DATASETS", 0):
+                    project_session.attach(core.open_project(root, session, userdata).project)
+            collected.assert_called_once_with()
+        finally:
+            project_session.close()
 
 
 class ProvenancePropsTest(unittest.TestCase):
@@ -1110,6 +1231,14 @@ class ProvenanceSessionTest(unittest.TestCase):
         return project, source, imported.input, imported.dataset, area
 
     @staticmethod
+    def journaled() -> tuple[str, str, bool]:
+        """Lo último apuntado en el diario de Ctrl+Z: su clase, su etiqueta y si la escena
+        lleva su número."""
+        entry = _module("bl.scene.undo_watch").JOURNAL.entries[-1]
+        stamped = bpy.context.scene.geoblender.registry_seq
+        return str(entry.kind), entry.label, stamped == entry.seq
+
+    @staticmethod
     def registry_state(project: object) -> tuple[object, ...]:
         """Lo que guarda el proyecto de las entradas, de los datos y de las operaciones, con
         el número de eventos: lo que no debe cambiar al cancelar o al rechazar."""
@@ -1129,7 +1258,8 @@ class ProvenanceSessionTest(unittest.TestCase):
         la llamada a ``invoke_props_dialog`` y lo dibujado."""
         given = set(values)
         defaults = {"input_uid": "", "decision": "UPDATE", "reason": "", "settings": [],
-                    "choices": "", "name": "", "received_at": "", "received_from": ""}
+                    "choices": "", "name": "", "received_at": "", "received_from": "",
+                    "dataset_uid": "", "operation_uid": "", "kind": "TABLE"}
         group, idname = cls.bl_idname.split(".")
         rna = getattr(getattr(bpy.ops, group), idname).get_rna_type()
         own = {name for name in defaults if name in rna.properties.keys()}
@@ -1149,7 +1279,7 @@ class ProvenanceSessionTest(unittest.TestCase):
     def test_changed_input_is_updated_or_its_copy_kept(self) -> None:
         """RF-008-10, RF-008-11, RF-008-12, RF-008-61 (plan §5.3.2 y §5.4.8): con
         ``Limites_v2`` en lugar de ``Limites_v1``, la comprobación de apertura deja «Limites»
-        cambiada y «⚠ 1 entradas». Su diálogo (el que abre la puerta, solo con su uid) dice el
+        cambiada y «⚠ 1 entrada». Su diálogo (el que abre la puerta, solo con su uid) dice el
         aviso de la spec §8 —su registro, lo que depende de ella y la fecha de la fuente— con
         Actualizar (elegida) y Mantener la copia y el motivo; abrirlo y cancelarlo no cambia
         nada. Mantener la copia la deja «cambiada · se mantiene la copia», con quién, y la saca
@@ -1158,7 +1288,8 @@ class ProvenanceSessionTest(unittest.TestCase):
         otra vez el diálogo con ellos, que los pide) y, con ellos, la reimporta con el
         importador de ``core.import_layer`` como una entrada nueva que la sustituye: la
         anterior queda «sustituida» con lo importado intacto, y el área calculada con ella,
-        obsoleta. En solo lectura no se puede."""
+        obsoleta. En solo lectura no se puede. RF-008-32: Mantener la copia se apunta en el
+        diario de Ctrl+Z."""
         demo = self.enterContext(Demo(module_name()).registered())
         project, source, limits, imported, area = self.boundary_with_area(demo)
         shutil.copyfile(DATA / "Limites_v2.gpkg", source)
@@ -1168,7 +1299,7 @@ class ProvenanceSessionTest(unittest.TestCase):
         self.run_checks()
         ui = _module("bl.ui.provenance")
         ui.refresh(force=True)
-        self.assertEqual(ui.inputs_text(), "⚠ 1 entradas")
+        self.assertEqual(ui.inputs_text(), "⚠ 1 entrada")
         changed = self.registry_state(project)
         self.assertEqual(changed[0][0][2], "changed")
 
@@ -1190,6 +1321,7 @@ class ProvenanceSessionTest(unittest.TestCase):
                                                                decision="KEEP"), {"FINISHED"})
         kept = self.registry_state(project)
         self.assertEqual(kept[0][0][2:4], ("kept", project.session.user_host))
+        self.assertEqual(self.journaled(), ("input", "Limites", True))  # RF-008-32
         self.assertEqual(ui.inputs_text(), "")
         self.assertEqual(self.input_rows(self.show_inputs())[0][1], KEPT)
 
@@ -1276,7 +1408,8 @@ class ProvenanceSessionTest(unittest.TestCase):
         el proyecto, y el área calculada con ella, obsoleta. Editar… sale relleno con su nombre
         y su entrega y cambia solo eso: sus ficheros, sus hashes, su estado y lo importado no
         cambian (también la de una descartada); una fecha que no es DD/MM/AAAA se rechaza sin
-        cambiar nada. En solo lectura, ninguna de las dos."""
+        cambiar nada. En solo lectura, ninguna de las dos. RF-008-32: las dos se apuntan en el
+        diario de Ctrl+Z."""
         demo = self.enterContext(Demo(module_name()).registered())
         project, _source, limits, imported, area = self.boundary_with_area(demo)
         self.ps.attach(project)
@@ -1298,6 +1431,7 @@ class ProvenanceSessionTest(unittest.TestCase):
         inputs, datasets, _operations, _events = self.registry_state(project)
         self.assertEqual(inputs[0][2:5], ("discarded", project.session.user_host,
                                           "Importación equivocada"))
+        self.assertEqual(self.journaled(), ("input", "Limites", True))  # RF-008-32
         self.assertEqual(datasets[0][:3], (imported.uid, imported.name, "discarded"))
         with project.read() as conn:
             self.assertIsNotNone(conn.execute(
@@ -1325,6 +1459,7 @@ class ProvenanceSessionTest(unittest.TestCase):
             received_from=""), {"FINISHED"})
         inputs, datasets, operations, events = self.registry_state(project)
         self.assertEqual(inputs[0][1:3], ("Limites del cliente", "discarded"))
+        self.assertEqual(self.journaled(), ("input", "Limites del cliente", True))
         self.assertEqual(inputs[0][5:7], ("2026-09-25", None))
         self.assertEqual(inputs[0][7:], discarded[0][0][7:])  # su contenido no cambia
         self.assertEqual((datasets, operations), discarded[1:3])
@@ -1333,6 +1468,401 @@ class ProvenanceSessionTest(unittest.TestCase):
         project.set_read_only(self.core.ReadOnlyCode.REQUESTED, "prueba")
         self.assertFalse(bpy.ops.geoblender.core_discard_input.poll())
         self.assertFalse(bpy.ops.geoblender.core_edit_input.poll())
+
+    # Recalcular lo obsoleto (T53) -----------------------------------------------------------
+
+    def stockpile_chain(self, demo: Demo) -> object:
+        """Un proyecto nuevo con los bancos, los años por banco y los acopios (el grupo
+        acoplado) de la demostración, abierto en la sesión (su comprobación de apertura, aún
+        pendiente)."""
+        project = self.create()
+        demo.digitize(project)
+        demo.bench_years(project)
+        demo.stockpiles(project)
+        self.ps.attach(project)
+        return project
+
+    @staticmethod
+    def change(project: object, key: str, value: float) -> None:
+        """Cambia el parámetro ``key`` a ``value`` (ADOPTADO, con su origen y su motivo)."""
+        store = _module("core.params").ParameterStore(project)
+        with project.write_transaction() as conn:
+            store.change(conn, key, value=value, kind="ADOPTADO", source="Plan de labores 2027",
+                         source_kind="document", decided_by="la propiedad",
+                         reason="Plan revisado")
+
+    def recompute(self, **props: object) -> object:
+        """Lanza «Recalcular lo obsoleto» con ``props`` y devuelve el modal en marcha (al
+        terminar la prueba, si sigue en marcha, se cancela)."""
+        self.assertEqual(bpy.ops.geoblender.core_recompute_stale("EXEC_DEFAULT", **props),
+                         {"RUNNING_MODAL"})
+        return self.running_modal(self.session.GEOBLENDER_OT_core_recompute_stale)
+
+    def running_modal(self, cls: type) -> object:
+        """El modal de la orden ``cls`` en marcha (al terminar la prueba, si sigue, se
+        cancela)."""
+        found = [op for op in bpy.context.window.modal_operators
+                 if isinstance(op, cls) and getattr(op, "_steps", None) is not None]
+        self.assertEqual(len(found), 1)
+        operator = found[0]
+        self.addCleanup(lambda: operator._steps is None or operator.cancel(bpy.context))
+        return operator
+
+    def drive(self, operator: object) -> set[str]:
+        """Pasa eventos ``TIMER`` al modal hasta que termina; devuelve su estado."""
+        for _ in range(MAX_TICKS):
+            state = operator.modal(bpy.context, TIMER)
+            if state != {"RUNNING_MODAL"}:
+                return state
+        self.fail("el recálculo no termina")
+
+    @staticmethod
+    def units(operator: object) -> list[tuple[tuple[str, ...], str]]:
+        """Las unidades que intentó el modal: sus tipos de operación y cómo terminaron."""
+        return [(result.unit.op_types, str(result.status))
+                for result in operator.result.results]
+
+    def test_recompute_one_result_a_change_and_everything(self) -> None:
+        """RF-008-26, RF-008-25, RF-008-28 (plan §5.3.2 y §5.4.4): con la producción cambiada,
+        los años por banco y los dos datos de los acopios están obsoletos («! 3 obsoletos»).
+        Recalcular en la fila de los años por banco del panel de lo obsoleto (su elemento)
+        rehace solo esa operación; Recalcular lo que depende del cambio de la producción rehace
+        después las dos del grupo de los acopios, juntas y en su orden, y la cuenta queda a 0.
+        Con la producción y el factor K cambiados otra vez, Recalcular lo obsoleto lo rehace
+        todo en orden de dependencia (los años antes que los acopios), con su progreso, como
+        operaciones nuevas que sustituyen a las anteriores y leen los parámetros vigentes, y la
+        cuenta vuelve a 0. RF-008-32: lo recalculado se apunta en el diario de Ctrl+Z."""
+        demo = self.enterContext(Demo(module_name()).registered())
+        project = self.stockpile_chain(demo)
+        self.run_checks()
+        ui = _module("bl.ui.provenance")
+        self.change(project, PRODUCTION, 400_000.0)
+        ui.refresh(force=True)
+        self.assertEqual(ui.stale_text(), "! 3 obsoletos")
+
+        panel = draw(bpy.types.GEOBLENDER_PT_core_stale, bpy.context)
+        buttons = [item for item in panel.items if item.target == RECOMPUTE]
+        self.assertEqual([item.text for item in buttons], ["Recalcular"] * 3
+                         + ["Recalcular lo obsoleto"])
+        self.assertTrue(all(item.enabled for item in buttons))
+        with project.read() as conn:
+            (years,) = conn.execute("SELECT uid FROM gb_dataset WHERE name = ?",
+                                    (YEARS_TABLE,)).fetchone()
+        row = vars(buttons[0].properties)
+        self.assertEqual(row, {"scope": "ITEM", "subject_uid": years})
+        operator = self.recompute(**row)
+        self.assertEqual(self.drive(operator), {"FINISHED"})
+        self.assertEqual(self.units(operator), [((BENCH_YEARS,), "done")])
+        self.assertEqual(ui.stale_text(), "! 2 obsoletos")
+        self.assertEqual(self.journaled(), ("operation", BENCH_YEARS, True))  # RF-008-32
+
+        production = _module("core.params").ParameterStore(project).get(PRODUCTION).uid
+        operator = self.recompute(scope="CAUSE", subject_uid=production)
+        self.assertEqual(self.drive(operator), {"FINISHED"})
+        self.assertEqual(self.units(operator), [(STOCKPILE_UNIT, "done")])
+        self.assertEqual((ui.stale_text(), ui.counts().obsolete), ("", 0))
+
+        self.change(project, PRODUCTION, 300_000.0)
+        self.change(project, SWELL_FACTOR, 1.2)
+        ui.refresh(force=True)
+        self.assertEqual(ui.stale_text(), "! 3 obsoletos")
+        with project.read() as conn:
+            current = dict(conn.execute("SELECT uid, op_type FROM gb_operation "
+                                        "WHERE superseded_by IS NULL"))
+        operator = self.recompute()
+        self.assertEqual(self.drive(operator), {"FINISHED"})
+        self.assertEqual(self.units(operator), [((BENCH_YEARS,), "done"),
+                                                (STOCKPILE_UNIT, "done")])
+        self.assertEqual(operator.progress_log, [
+            f"Recalculando lo obsoleto: {done} de 2… Esc: cancelar" for done in (0, 1, 2)])
+        made = [uid for result in operator.result.results for uid in result.operations]
+        with project.read() as conn:
+            rows = [conn.execute("SELECT op_type, supersedes_uid, fid FROM gb_operation "
+                                 "WHERE uid = ?", (uid,)).fetchone() for uid in made]
+        self.assertEqual([op_type for op_type, _old, _fid in rows],
+                         [BENCH_YEARS, *STOCKPILE_UNIT])
+        self.assertEqual([current[old] for _op_type, old, _fid in rows],
+                         [BENCH_YEARS, *STOCKPILE_UNIT])  # sustituyen a las anteriores
+        self.assertEqual([fid for *_rest, fid in rows], sorted(fid for *_rest, fid in rows))
+        figure = demo.current_figure(project, YEARS_FIGURE, {"bench": "B-1"})
+        self.assertAlmostEqual(figure.value, 1_250_000.0 / 300_000.0, places=12)
+        self.assertEqual((ui.stale_text(), ui.counts().obsolete), ("", 0))
+        self.assertIn("Operaciones recalculadas: 3", operator.report_log)
+
+    def test_recompute_cancelled_halfway_and_not_in_read_only(self) -> None:
+        """RF-008-26, RF-008-58 (plan §5.4.4): mientras se comprueba el proyecto, Recalcular lo
+        obsoleto no empieza (lo dice). Con la producción cambiada, Esc tras recalcular los años
+        por banco para antes del grupo de los acopios: lo recalculado queda y los acopios
+        siguen obsoletos («! 2 obsoletos»), y lo dice; con un recálculo en marcha no empieza
+        otro. En solo lectura no está disponible."""
+        demo = self.enterContext(Demo(module_name()).registered())
+        project = self.stockpile_chain(demo)
+        self.change(project, PRODUCTION, 400_000.0)
+        self.assertTrue(self.monitor.running)
+        self.assertEqual(bpy.ops.geoblender.core_recompute_stale(), {"CANCELLED"})
+        self.run_checks()
+
+        operator = self.recompute()
+        self.assertEqual(operator.modal(bpy.context, TIMER), {"RUNNING_MODAL"})  # 0 de 2
+        self.assertEqual(bpy.ops.geoblender.core_recompute_stale(), {"CANCELLED"})
+        self.assertEqual(operator.modal(bpy.context, TIMER), {"RUNNING_MODAL"})  # los años
+        self.assertEqual(operator.modal(bpy.context, ESC), {"CANCELLED"})
+        self.assertTrue(operator.result.cancelled)
+        self.assertEqual(self.units(operator), [((BENCH_YEARS,), "done")])
+        self.assertEqual(_module("bl.ui.provenance").stale_text(), "! 2 obsoletos")
+        self.assertIn("Recálculo cancelado: operaciones recalculadas, 1; lo demás sigue "
+                      "obsoleto", operator.report_log)
+
+        project.set_read_only(self.core.ReadOnlyCode.REQUESTED, "prueba")
+        self.assertFalse(bpy.ops.geoblender.core_recompute_stale.poll())
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_recompute_stale()
+        self.assertIn(READ_ONLY, str(caught.exception))
+
+    # Lo que no se puede usar, dar por buena, capas sin registrar y cancelar (T54) ---------
+
+    def check_everything(self) -> None:
+        """«Comprobar cambios en las entradas» (también los datos del proyecto), hasta el
+        final, y los indicadores al día."""
+        self.assertTrue(self.monitor.check_inputs())
+        self.run_checks()
+        _module("bl.ui.provenance").refresh(force=True)
+
+    @staticmethod
+    def status(project: object, uid: str) -> str:
+        with project.read() as conn:
+            return conn.execute("SELECT status FROM gb_dataset WHERE uid = ?", (uid,)).fetchone()[0]
+
+    def test_blocked_dataset_and_accept_review(self) -> None:
+        """RF-008-56, RF-008-21, RF-008-27, RF-008-28 (plan §5.3.2, §5.4.4 y §5.4.9): los años
+        por banco editados fuera quedan bloqueados y el panel de lo obsoleto los lista con su
+        aviso, Aceptar la edición y Recalcular (Reimportar no se ofrece). Su diálogo sale con
+        Aceptar la edición elegida; reimportarlo o aceptar sin motivo se rechaza sin cambiar
+        nada. Recalcular repite los años por banco (un modal) y el dato vuelve a vigente, sin
+        nada obsoleto. Editado otra vez, aceptar la edición con motivo lo deja vigente y lo que
+        lo usaba, obsoleto; con la producción cambiada, la edición espera revisión a mano: el
+        panel la lista con «Dar por buena…», cuyo diálogo dice por qué y pide el motivo, y
+        darla por buena la sustituye. En solo lectura, ninguna de las dos órdenes."""
+        demo = self.enterContext(Demo(module_name()).registered())
+        project = self.stockpile_chain(demo)
+        self.run_checks()
+        ui = _module("bl.ui.provenance")
+        with project.read() as conn:
+            (years,) = conn.execute("SELECT uid FROM gb_dataset WHERE name = ?",
+                                    (YEARS_TABLE,)).fetchone()
+        edit = f'UPDATE "{YEARS_TABLE}" SET years = years + 1 WHERE bench = \'B-1\''
+        _foreign(project, edit)
+        self.check_everything()
+        self.assertEqual(self.status(project, years), "blocked")
+        self.assertEqual([(row.uid, row.status, row.offers) for row in _view().unusable],
+                         [(years, "blocked", "accept,recompute")])
+        panel = draw(bpy.types.GEOBLENDER_PT_core_stale, bpy.context)
+        self.assertEqual(_buttons(panel, RESOLVE_DATASET), [
+            (OFFERS[0], {"dataset_uid": years, "decision": "ACCEPT"}, True),
+            (OFFERS[1], {"dataset_uid": years, "decision": "RECOMPUTE"}, True),
+        ])
+        self.assertIn("Datos que no se pueden usar", panel.texts())
+        self.assertIn(BLOCKED, panel.texts())
+
+        cls = self.session.GEOBLENDER_OT_core_resolve_dataset
+        operator, opened, shown = self.dialog(cls, dataset_uid=years)
+        self.assertEqual(operator.decision, "ACCEPT")
+        self.assertEqual(opened.call_args.kwargs["title"], "Decidir sobre un dato editado fuera…")
+        self.assertEqual(" ".join(item.text for item in shown.of_kind("label")), BLOCKED)
+        self.assertEqual([(item.text, item.enabled) for item in shown.of_kind("prop_enum")],
+                         [(OFFERS[0], True), (OFFERS[1], True), (OFFERS[2], False)])
+        self.assertEqual([item.target for item in shown.of_kind("prop")], ["reason"])
+        before = self.registry_state(project)
+        for decision, reason, refused in (
+            ("REIMPORT", "Otra entrega", "no se puede reimportar"),
+            ("ACCEPT", " ", "Falta el motivo: aceptar la edición externa de «demo_bench_years»"),
+        ):
+            with self.subTest(decision=decision), self.assertRaises(RuntimeError) as caught:
+                bpy.ops.geoblender.core_resolve_dataset(dataset_uid=years, decision=decision,
+                                                        reason=reason)
+            self.assertIn(refused, str(caught.exception))
+        self.assertEqual(self.registry_state(project), before)
+
+        self.assertEqual(bpy.ops.geoblender.core_resolve_dataset(
+            "EXEC_DEFAULT", dataset_uid=years, decision="RECOMPUTE"), {"RUNNING_MODAL"})
+        modal = self.running_modal(cls)
+        self.assertEqual(self.drive(modal), {"FINISHED"})
+        self.assertEqual([(result.unit.op_types, str(result.status))
+                          for result in modal.result.results], [((BENCH_YEARS,), "done")])
+        self.assertEqual(self.status(project, years), "current")
+        self.assertEqual((ui.stale_text(), len(_view().unusable)), ("", 0))
+
+        _foreign(project, edit)
+        self.check_everything()
+        self.assertEqual(bpy.ops.geoblender.core_resolve_dataset(
+            dataset_uid=years, decision="ACCEPT", reason="La propiedad corrige B-1"),
+            {"FINISHED"})
+        self.assertEqual(self.status(project, years), "current")
+        self.assertEqual(ui.stale_text(), "! 2 obsoletos")  # los acopios, por el cambio
+
+        self.change(project, PRODUCTION, 400_000.0)
+        ui.refresh(force=True)
+        ((review, op_type),) = [(row.uid, row.op_type) for row in _view().stale
+                                if row.review and row.item_kind == "operation"]
+        self.assertEqual(op_type, "core.external_edit")
+        panel = draw(bpy.types.GEOBLENDER_PT_core_stale, bpy.context)
+        # La de la operación y la del dato que escribió, que también espera la revisión.
+        self.assertEqual({(text, props["operation_uid"], on) for text, props, on in
+                          _buttons(panel, ACCEPT_REVIEW)}, {("Dar por buena…", review, True)})
+        accept = self.session.GEOBLENDER_OT_core_accept_review
+        _operator, opened, shown = self.dialog(accept, operation_uid=review)
+        self.assertEqual(opened.call_args.kwargs["title"], "Dar por buena…")
+        notice = " ".join(item.text for item in shown.of_kind("label"))
+        self.assertIn("espera revisión a mano: Obsoleto: cambió Producción (demostración)",
+                      notice)
+        self.assertEqual([item.target for item in shown.of_kind("prop")], ["reason"])
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_accept_review(operation_uid=review)
+        self.assertIn("Falta el motivo: dar por buena la operación «core.external_edit»",
+                      str(caught.exception))
+        self.assertEqual(bpy.ops.geoblender.core_accept_review(
+            operation_uid=review, reason="Revisado con la propiedad"), {"FINISHED"})
+        with project.read() as conn:
+            accepted = conn.execute("SELECT o.op_type, r.superseded_by = o.uid FROM gb_operation "
+                                    "AS o JOIN gb_operation AS r ON r.uid = ? WHERE "
+                                    "o.supersedes_uid = r.uid", (review,)).fetchone()
+        self.assertEqual(accepted, ("core.accept_review", 1))
+        self.assertFalse([row for row in _view().stale if row.review])
+
+        project.set_read_only(self.core.ReadOnlyCode.REQUESTED, "prueba")
+        for name in ("core_resolve_dataset", "core_accept_review"):
+            with self.subTest(orden=name):
+                self.assertFalse(getattr(bpy.ops.geoblender, name).poll())
+
+    def test_missing_damaged_and_unregistered(self) -> None:
+        """RF-008-57, RF-008-52, RF-008-62 (plan §5.3.2, §5.4.9 y §5.5): con los años por banco
+        eliminados desde QGIS, lo importado de «Limites» sin una de sus columnas y dos capas
+        creadas desde QGIS, la comprobación de apertura deja los años «falta» (solo se ofrece
+        Recalcular) y lo importado «dañado» (solo Reimportar: aceptar o recalcular se rechaza).
+        Recalcular repite los años por banco y vuelven a vigentes; reimportar, con su motivo,
+        sustituye la entrada por una nueva y deja el área obsoleta. El registro de entradas
+        lista las dos capas con Registrar como entrada… e Ignorar…: registrar una la convierte
+        en una entrada del proyecto y la otra se ignora con su motivo; un fichero no se
+        registra. En solo lectura, nada de eso se puede."""
+        demo = self.enterContext(Demo(module_name()).registered())
+        project, _source, limits, imported, area = self.boundary_with_area(demo)
+        demo.digitize(project)
+        demo.bench_years(project)
+        with project.read() as conn:
+            (years,) = conn.execute("SELECT uid FROM gb_dataset WHERE name = ?",
+                                    (YEARS_TABLE,)).fetchone()
+        layers = [(f'CREATE TABLE "{name}" (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, '
+                   f'nota TEXT)',
+                   f"INSERT INTO \"{name}\" (nota) VALUES ('{name}')",
+                   "INSERT INTO gpkg_contents (table_name, data_type, identifier) VALUES "
+                   f"('{name}', 'attributes', '{name}')") for name in ("capa_qgis", "otra_qgis")]
+        _foreign(project, f'DROP TABLE "{YEARS_TABLE}"',
+                 f"DELETE FROM gpkg_contents WHERE table_name = '{YEARS_TABLE}'",
+                 f'ALTER TABLE "{IMPORTED}" DROP COLUMN tipo', *layers[0], *layers[1])
+        self.ps.attach(project)
+        self.run_checks()
+        _module("bl.ui.provenance").refresh(force=True)
+        self.assertEqual([(row.uid, row.status, row.offers) for row in _view().unusable], [
+            (imported.uid, "damaged", "reimport"), (years, "missing", "recompute")])
+        panel = draw(bpy.types.GEOBLENDER_PT_core_stale, bpy.context)
+        self.assertEqual([(text, props["decision"]) for text, props, _on in
+                          _buttons(panel, RESOLVE_DATASET)],
+                         [(OFFERS[2], "REIMPORT"), (OFFERS[1], "RECOMPUTE")])
+        cls = self.session.GEOBLENDER_OT_core_resolve_dataset
+        operator, _opened, shown = self.dialog(cls, dataset_uid=imported.uid)
+        self.assertEqual(operator.decision, "REIMPORT")
+        self.assertEqual([item.enabled for item in shown.of_kind("prop_enum")],
+                         [False, False, True])
+        before = self.registry_state(project)
+        for decision, refused in (("ACCEPT", "solo se puede reimportar"),
+                                  ("RECOMPUTE", "no se puede recalcular")):
+            with self.subTest(decision=decision), self.assertRaises(RuntimeError) as caught:
+                bpy.ops.geoblender.core_resolve_dataset(dataset_uid=imported.uid,
+                                                        decision=decision, reason="Sí")
+            self.assertIn(refused, str(caught.exception))
+        self.assertEqual(self.registry_state(project), before)
+
+        self.assertEqual(bpy.ops.geoblender.core_resolve_dataset(
+            "EXEC_DEFAULT", dataset_uid=years, decision="RECOMPUTE"), {"RUNNING_MODAL"})
+        self.assertEqual(self.drive(self.running_modal(cls)), {"FINISHED"})
+        self.assertEqual(self.status(project, years), "current")
+        self.assertEqual(bpy.ops.geoblender.core_resolve_dataset(
+            dataset_uid=imported.uid, decision="REIMPORT", reason="Lo importado está dañado"),
+            {"FINISHED"})
+        inputs, _datasets, _operations, _events = self.registry_state(project)
+        self.assertEqual([row[1:3] for row in inputs],
+                         [("Limites", "superseded"), ("Limites", "current")])
+        self.assertEqual(self.status(project, imported.uid), "superseded")
+        with project.read() as conn:
+            stale = _module("core.provenance.stale").item_text(conn, "operation", area.uid)
+        self.assertEqual(stale, "Obsoleto: se actualizó la entrada «Limites»")
+        self.assertEqual(len(_view().unusable), 0)
+        self.assertNotEqual(limits.uid, inputs[1][0])
+
+        ui = _module("bl.ui.provenance")
+        ui.fill_inputs()
+        self.assertEqual([(row.kind, row.name, row.registrable) for row in _view().unregistered],
+                         [("table", "capa_qgis", True), ("table", "otra_qgis", True)])
+        panel = draw(bpy.types.GEOBLENDER_PT_core_inputs, bpy.context)
+        self.assertIn("Capas y tablas del proyecto sin registrar", panel.texts())
+        self.assertEqual(_buttons(panel, RESOLVE_UNREGISTERED)[:2], [
+            ("Registrar como entrada…",
+             {"kind": "TABLE", "name": "capa_qgis", "decision": "REGISTER"}, True),
+            ("Ignorar…", {"kind": "TABLE", "name": "capa_qgis", "decision": "IGNORE"}, True),
+        ])
+        unregistered = self.session.GEOBLENDER_OT_core_resolve_unregistered
+        operator, opened, shown = self.dialog(unregistered, kind="TABLE", name="capa_qgis")
+        self.assertEqual(operator.decision, "REGISTER")
+        self.assertEqual(opened.call_args.kwargs["title"], "Capa o fichero sin registrar…")
+        self.assertEqual([(item.text, item.enabled) for item in shown.of_kind("prop_enum")],
+                         [("Registrar como entrada", True), ("Ignorar", True)])
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_resolve_unregistered(kind="FILE", name="rasters/a.tif",
+                                                         decision="REGISTER")
+        self.assertIn("solo se registran como entrada las capas y las tablas",
+                      str(caught.exception))
+        self.assertEqual(bpy.ops.geoblender.core_resolve_unregistered(
+            kind="TABLE", name="capa_qgis", decision="REGISTER"), {"FINISHED"})
+        self.assertEqual(bpy.ops.geoblender.core_resolve_unregistered(
+            kind="TABLE", name="otra_qgis", decision="IGNORE", reason="Pruebas de QGIS"),
+            {"FINISHED"})
+        with project.read() as conn:
+            registered = conn.execute("SELECT i.name, f.anchor FROM gb_input AS i JOIN "
+                                      "gb_input_file AS f ON f.input_uid = i.uid WHERE "
+                                      "i.name = 'capa_qgis'").fetchall()
+            ignored = conn.execute("SELECT kind, name, reason FROM gb_ignored").fetchall()
+        self.assertEqual(registered, [("capa_qgis", "project_table")])
+        self.assertEqual(ignored, [("table", "otra_qgis", "Pruebas de QGIS")])
+        self.assertEqual(len(_view().unregistered), 0)
+
+        project.set_read_only(self.core.ReadOnlyCode.REQUESTED, "prueba")
+        for name in ("core_resolve_dataset", "core_resolve_unregistered"):
+            with self.subTest(orden=name):
+                self.assertFalse(getattr(bpy.ops.geoblender, name).poll())
+        panel = draw(bpy.types.GEOBLENDER_PT_core_stale, bpy.context)
+        self.assertFalse([item for item in panel.of_kind("operator")
+                          if item.target == RESOLVE_DATASET and item.enabled])
+
+    def test_cancel_the_checks(self) -> None:
+        """RF-008-58, RNF-008-11 (plan §5.3.2): sin una comprobación en marcha, «Cancelar las
+        comprobaciones» no está disponible y lo dice; con la de apertura a medias, para enseguida
+        (≤ 2 s): no queda nada en marcha, la puerta deja de esperar, se quita el temporizador y
+        el campo «Comprobando el proyecto…» desaparece."""
+        operator = bpy.ops.geoblender.core_cancel_checks
+        self.assertFalse(operator.poll())
+        self.ps.attach(self.create())
+        self.assertIsNotNone(self.session.check_tick())
+        self.assertTrue(self.monitor.running and self.monitor.pending.running)
+        ui = _module("bl.ui.provenance")
+        self.assertTrue(ui.checking_text())
+        self.assertTrue(operator.poll())
+        started = time.monotonic()
+        self.assertEqual(operator(), {"FINISHED"})
+        self.assertLessEqual(time.monotonic() - started, 2.0)
+        self.assertFalse(self.monitor.running or self.monitor.pending.running)
+        self.assertFalse(bpy.app.timers.is_registered(self.session.check_tick))
+        self.assertEqual(ui.checking_text(), "")
+        self.assertFalse(operator.poll())
 
 
 if __name__ == "__main__":

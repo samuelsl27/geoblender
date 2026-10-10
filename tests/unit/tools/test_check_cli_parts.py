@@ -575,8 +575,10 @@ class RuntimeStepTest(unittest.TestCase):
                     self.assertLessEqual(sum(counts.values()), check.RUNTIME_PROCESSES)
                     self.assertLessEqual(sum(counts.values()), sum(always.values()))
                     self.assertGreater(counts["tests/unit/core"], counts["tests/unit/jobs"])
-                    self.assertGreater(counts["tests/unit/jobs"], counts["tests/unit/gis"])
-                    self.assertGreaterEqual(counts["tests/unit/gis"], 2)
+                    # La carpeta de la 006 no está en todas las ramas (la 008 no la tiene).
+                    if "tests/unit/gis" in counts:
+                        self.assertGreater(counts["tests/unit/jobs"], counts["tests/unit/gis"])
+                        self.assertGreaterEqual(counts["tests/unit/gis"], 2)
                     for folder in DOMAIN_FOLDERS:
                         if len(modules[folder]) == 1:
                             self.assertEqual(counts[folder], 1, folder)

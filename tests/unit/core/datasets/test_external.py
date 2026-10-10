@@ -308,6 +308,10 @@ class BlockedTest(ExternalCase):
         self.assertEqual(self.dataset("res_bocas").status, Status.BLOCKED)
         self.assertEqual(len(self.table("res_bocas")), 2)
         self.assertEqual(self.offers("res_bocas"), (Offer.ACCEPT,))
+        (item,) = self.read(external.unusable)  # T54: lo que se lista para resolverlo
+        self.assertEqual((item.record.name, item.offers, item.input_uid, item.text()),
+                         ("res_bocas", (Offer.ACCEPT,), None,
+                          BLOCKED_TEXT.format(name="res_bocas")))
         self.assertEqual([external.offer_label(offer) for offer in Offer],
                          ["Aceptar la edición", "Recalcular", "Reimportar"])
         self.assertEqual([external.offer_label(offer, "en") for offer in Offer],
@@ -333,6 +337,7 @@ class BlockedTest(ExternalCase):
                          ("La propiedad añade la boca S-02 (bocas.pdf)", SESSION.user_host))
         self.assertReady(self.can_run(Use("res_bocas", "collars")))
         self.assertEqual(self.offers("res_bocas"), ())
+        self.assertEqual(self.read(external.unusable), ())
 
         self.levels(PLAN.op_type)
         levels = self.levels(value=2.0)
@@ -369,6 +374,10 @@ class DamagedTest(ExternalCase):
             with self.subTest(name=name):
                 self.assertEqual(self.dataset(name).status, Status.DAMAGED)
                 self.assertEqual(self.offers(name), (Offer.REIMPORT,))
+        self.assertEqual([item.text() for item in self.read(external.unusable)], [
+            DAMAGED_TEXT.format(name="res_ensayos_b", input="collares"),
+            DAMAGED_TEXT.format(name="res_limites", input="Limites_v1"),
+        ])
         self.assertEqual(len(self.logged(events.EventKind.DATASET_DAMAGED)), 2)
         with self.project.read() as conn:
             state = tracking.table_states(conn, ["res_ensayos"])["res_ensayos"]
@@ -464,6 +473,22 @@ class MissingTest(ExternalCase):
         self.assertEqual([self.offers(name) for name in ("res_limites", "res_ensayos_b",
                                                          "res_ensayos", "res_area")],
                          [(Offer.REIMPORT,), (Offer.REIMPORT,), (Offer.REIMPORT,), ()])
+        # T54: la lista de lo que no se puede usar, por nombre, con la entrada que se
+        # reimporta (la de lo importado o la cuya importación escribió el acumulado).
+        found = self.read(external.unusable)
+        imported = self.dataset("res_ensayos_b").input_uid
+        self.assertEqual([(item.record.name, item.offers, item.input_uid) for item in found], [
+            ("res_area", (), None),
+            ("res_ensayos", (Offer.REIMPORT,), imported),
+            ("res_ensayos_b", (Offer.REIMPORT,), imported),
+            ("res_limites", (Offer.REIMPORT,), self.record.uid),
+        ])
+        self.assertEqual(found[0].text(), MISSING_TEXT.format(name="res_area",
+                                                              locator="res_area"))
+        area = self.uid("res_area")
+        self.assertEqual(self.read(lambda conn: external.unusable(conn, area)), found[:1])
+        self.assertEqual(self.read(lambda conn: external.unusable(conn, self.uid("res_bocas"))),
+                         ())
 
         conn = sqlite3.connect(self.project.database_path, isolation_level=None)
         try:
@@ -496,8 +521,9 @@ class MissingTest(ExternalCase):
         lo que ya falta no escribe nada y volver a vigente lo que no falta es un error del
         programa (aunque su contenido sea el registrado); un presupuesto que no es un número
         positivo, también."""
-        for name in ("ExternalOutcome", "Offer", "accept_edit", "external_check_steps",
-                     "mark_missing", "offers", "original_usable", "restore"):
+        for name in ("ExternalOutcome", "Offer", "Unusable", "accept_edit",
+                     "external_check_steps", "mark_missing", "offers", "original_usable",
+                     "restore", "unusable"):
             with self.subTest(name=name):
                 self.assertIn(name, datasets.__all__)
                 self.assertIs(getattr(datasets, name), getattr(external, name))

@@ -6,6 +6,9 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
   cerrojo (temporizador persistente) y su cierre al desactivar o salir (spec 002);
 - ``georef``: la georreferencia del proyecto en las escenas y sus manejadores
   (``load_post``, ``undo_post``, ``redo_post``, ``save_pre``, ``save_post``);
+- ``undo_watch``: el diario de Ctrl+Z de lo registrado en el proyecto (spec 008, RF-008-32) y
+  sus manejadores (``undo_post``, ``redo_post``, ``load_post``), que avisan de que deshacer no
+  deshace lo registrado.
 - ``triangulator``: la CDT de Blender como ``gis.ports.Triangulator`` y la elección entre
   ella y el trabajo ``gis_triangulate`` (spec 006; no registra nada);
 - ``mesh``: mallas desde arrays absolutos, pasados a locales con ``core.georef`` (spec 006);
@@ -18,7 +21,7 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
-from . import georef, gis_views, project_session
+from . import georef, gis_views, project_session, undo_watch
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2); vacía hasta que una spec añada la primera.
@@ -32,9 +35,11 @@ def register() -> None:
     try:
         project_session.register()
         georef.register()
+        undo_watch.register()
         gis_views.register()
     except BaseException:
         gis_views.unregister()
+        undo_watch.unregister()
         georef.unregister()
         project_session.unregister()
         unregister_classes(classes)
@@ -46,6 +51,7 @@ def unregister() -> None:
     su cerrojo) y desregistra ``classes``, en orden inverso."""
     try:
         gis_views.unregister()
+        undo_watch.unregister()
         georef.unregister()
         project_session.unregister()
     finally:

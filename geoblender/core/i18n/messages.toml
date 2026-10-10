@@ -2474,6 +2474,22 @@ es = "⚠ {n} entradas"
 ["! {n} stale"]
 es = "! {n} obsoletos"
 
+# Con uno, en singular (T71)
+
+["⚠ 1 input"]
+es = "⚠ 1 entrada"
+
+["! 1 stale"]
+es = "! 1 obsoleto"
+
+# Los mismos, plegados cuando no caben en la barra de estado (T69)
+
+["⚠ {n}"]
+es = "⚠ {n}"
+
+["! {n}"]
+es = "! {n}"
+
 ["Checking the project… {percent} %"]
 es = "Comprobando el proyecto… {percent} %"
 
@@ -2810,3 +2826,319 @@ es = "Entrada «{name}» editada"
 
 ["Input «{name}»: nothing to change"]
 es = "Entrada «{name}»: no hay nada que cambiar"
+
+# Recalcular lo obsoleto (RF-008-26, RF-008-25, RF-008-58; T53): sus ámbitos, su
+# progreso y lo que dice al terminar
+
+["Scope"]
+es = "Ámbito"
+
+["What is recomputed: everything, what depends on a change or one result"]
+es = "Qué se recalcula: todo, lo que depende de un cambio o un resultado"
+
+["Subject"]
+es = "Sujeto"
+
+["Uid of what changed (CAUSE) or of the result (ITEM)"]
+es = "Uid de lo que cambió (CAUSE) o del resultado (ITEM)"
+
+["All the stale results"]
+es = "Todo lo obsoleto"
+
+["Everything stale in the project"]
+es = "Todo lo obsoleto del proyecto"
+
+["What depends on a change"]
+es = "Lo que depende de un cambio"
+
+["The stale results caused by a change: the uid of what changed is the subject"]
+es = "Los resultados obsoletos por un cambio: el sujeto es el uid de lo que cambió"
+
+["One result"]
+es = "Un resultado"
+
+["A stale result and what it needs upstream: its uid is the subject"]
+es = "Un resultado obsoleto y lo que necesita aguas arriba: el sujeto es su uid"
+
+["Recompute the stale results from a Blender window"]
+es = "Recalcule lo obsoleto desde una ventana de Blender"
+
+["Already recomputing the stale results"]
+es = "Ya se está recalculando lo obsoleto"
+
+["Checking the project: recompute when the check finishes"]
+es = "Comprobando el proyecto: recalcule cuando termine la comprobación"
+
+["Indicate what to recompute: the uid of what changed or of a result"]
+es = "Indique qué recalcular: el uid de lo que cambió o de un resultado"
+
+["Nothing stale depends on «{subject}»"]
+es = "Nada obsoleto depende de «{subject}»"
+
+["The recompute stopped: {error}"]
+es = "El recálculo se ha parado: {error}"
+
+["Recomputing the stale results: {done} of {total}… Esc: cancel"]
+es = "Recalculando lo obsoleto: {done} de {total}… Esc: cancelar"
+
+["Recompute cancelled: operations recomputed, {done}; the rest is still stale"]
+es = "Recálculo cancelado: operaciones recalculadas, {done}; lo demás sigue obsoleto"
+
+["Operations recomputed: {done}"]
+es = "Operaciones recalculadas: {done}"
+
+["Nothing to recompute"]
+es = "No hay nada que recalcular"
+
+# Lo que no se puede usar, dar por buena, capas sin registrar y cancelar las comprobaciones
+# (RF-008-56, RF-008-57, RF-008-27, RF-008-62, RF-008-58; T54): sus diálogos, sus
+# propiedades, lo que dicen y lo que se dibuja en los paneles
+
+["Datasets that cannot be used"]
+es = "Datos que no se pueden usar"
+
+["Layers and tables of the project not registered"]
+es = "Capas y tablas del proyecto sin registrar"
+
+["Register as input…"]
+es = "Registrar como entrada…"
+
+["Ignore…"]
+es = "Ignorar…"
+
+["Uid or name of the dataset"]
+es = "Uid o nombre del dato"
+
+["Accept the edit, recompute or reimport the dataset"]
+es = "Aceptar la edición, recalcular o reimportar el dato"
+
+["Why the edit is accepted or the dataset reimported (required)"]
+es = "Por qué se acepta la edición o se reimporta el dato (obligatorio)"
+
+["Accept the edit"]
+es = "Aceptar la edición"
+
+["Accept the external edit with a reason: the dataset can be used again"]
+es = "Acepta la edición externa con un motivo: el dato se puede usar otra vez"
+
+["Repeat the operation of Geoblender that wrote the dataset"]
+es = "Repite la operación de Geoblender que escribió el dato"
+
+["Reimport"]
+es = "Reimportar"
+
+["Reimport its input from the source as a new input that replaces it"]
+es = "Reimporta su entrada desde la fuente como una entrada nueva que la sustituye"
+
+["Dataset «{name}» can be used: there is nothing to resolve"]
+es = "El dato «{name}» se puede usar: no hay nada que resolver"
+
+["Recomputing «{name}»… Esc: cancel"]
+es = "Recalculando «{name}»… Esc: cancelar"
+
+["Choose whether to accept the edit, recompute or reimport the dataset: nothing changed"]
+es = "Elija si aceptar la edición, recalcular o reimportar el dato: no cambia nada"
+
+["Uid of the operation that awaits review by hand"]
+es = "Uid de la operación que espera revisión a mano"
+
+["Why the operation is accepted as good (required)"]
+es = "Por qué se da por buena la operación (obligatorio)"
+
+["Operation «{name}» does not await review by hand: there is nothing to accept as good"]
+es = "La operación «{name}» no espera revisión a mano: no hay nada que dar por bueno"
+
+["Operation «{name}» ({op_type}) awaits review by hand: {cause}"]
+es = "La operación «{name}» ({op_type}) espera revisión a mano: {cause}"
+
+["Operation accepted as good: what depends on it can be recomputed"]
+es = "Operación dada por buena: lo que depende de ella se puede recalcular"
+
+["Kind"]
+es = "Clase"
+
+["A layer or table of the project, or a file"]
+es = "Una capa o tabla del proyecto, o un fichero"
+
+["Layer or table"]
+es = "Capa o tabla"
+
+["A layer or table of the project database"]
+es = "Una capa o tabla de la base del proyecto"
+
+["A file of the project data folders"]
+es = "Un fichero de las carpetas de datos del proyecto"
+
+["Name of the layer or table, or path of the file in the project"]
+es = "Nombre de la capa o la tabla, o ruta del fichero en el proyecto"
+
+["Register the layer as an input or ignore it"]
+es = "Registrar la capa como entrada o ignorarla"
+
+["Register as input"]
+es = "Registrar como entrada"
+
+["Register the layer as a new input of the project"]
+es = "Registra la capa como una entrada nueva del proyecto"
+
+["Ignore"]
+es = "Ignorar"
+
+["Stop warning about it: nothing of it is moved or changed"]
+es = "Deja de avisar de ello: nada de ello se mueve ni cambia"
+
+["Why it is ignored (optional)"]
+es = "Por qué se ignora (opcional)"
+
+["«{name}» is a file: only layers and tables are registered as inputs"]
+es = "«{name}» es un fichero: solo se registran como entrada las capas y las tablas"
+
+["«{name}» ignored: it is no longer warned about"]
+es = "«{name}» ignorado: ya no se avisa"
+
+["No project check in progress"]
+es = "No hay ninguna comprobación del proyecto en marcha"
+
+["Project checks cancelled: what was not checked is checked before using it"]
+es = "Comprobaciones del proyecto canceladas: lo que no se comprobó se comprueba antes de usarlo"
+
+# Grafo de operaciones y procedencia (RF-008-29, RF-008-31; T55): la búsqueda, lo encontrado y
+# las filas de la cadena
+
+["Figure or dataset"]
+es = "Cifra o dato"
+
+["Uid of the figure, the dataset or the operation, or name of a dataset; empty: the last one asked for"]
+es = "Uid de la cifra, del dato o de la operación, o nombre de un dato; vacío: el último que se pidió"
+
+["Figures and datasets found"]
+es = "Cifras y datos encontrados"
+
+["Search for a figure or a dataset by its name, its key or its uid"]
+es = "Busque una cifra o un dato por su nombre, su clave o su uid"
+
+["today: {value}"]
+es = "hoy: {value}"
+
+["its source operation is stale"]
+es = "su operación de origen está obsoleta"
+
+["earlier version"]
+es = "versión anterior"
+
+["shown above"]
+es = "ya mostrada arriba"
+
+# La vista de los paneles de la procedencia (WindowManager.geoblender_provenance; T71): el
+# nombre y la descripción de cada propiedad, que enseña la ayuda emergente de una lista y de la
+# búsqueda. Ya están: «Project parameters», «Module», «Type», «Mark», «Input register»,
+# «Datasets that cannot be used», «Layers and tables of the project not registered» y «Figure
+# or dataset».
+
+["Parameters of the open project that the list shows, with its filters"]
+es = "Parámetros del proyecto abierto que enseña la lista, con sus filtros"
+
+["Selected parameter"]
+es = "Parámetro seleccionado"
+
+["Parameter whose history, warning and orders are shown below the list"]
+es = "Parámetro del que se ven, debajo de la lista, el historial, el aviso y las órdenes"
+
+["Parameter history"]
+es = "Historial del parámetro"
+
+["Every entry of the history of the selected parameter"]
+es = "Cada entrada del historial del parámetro seleccionado"
+
+["Selected history entry"]
+es = "Entrada del historial seleccionada"
+
+["Selected row of the history of the parameter"]
+es = "Fila seleccionada del historial del parámetro"
+
+["Difference with the calculated value"]
+es = "Diferencia con el valor calculado"
+
+["Warning of the last figure that calculates the selected parameter with another value"]
+es = "Aviso de la última cifra que calcula el parámetro seleccionado con otro valor"
+
+["Calculated figure"]
+es = "Cifra calculada"
+
+["Identifier of the figure that «Use the calculated value…» adopts"]
+es = "Identificador de la cifra que adopta «Usar el valor calculado…»"
+
+["Only the parameters of this module"]
+es = "Solo los parámetros de este módulo"
+
+["Only the parameters of this type"]
+es = "Solo los parámetros de este tipo"
+
+["Only the parameters with this mark"]
+es = "Solo los parámetros con esta marca"
+
+["Inputs of the open project, with their state"]
+es = "Entradas del proyecto abierto, con su estado"
+
+["Selected input"]
+es = "Entrada seleccionada"
+
+["Input whose orders are shown below the list"]
+es = "Entrada de la que se ven las órdenes debajo de la lista"
+
+["Stale results"]
+es = "Resultados obsoletos"
+
+["Stale results and those waiting for manual review, with their cause"]
+es = "Resultados obsoletos y los que esperan revisión a mano, con su causa"
+
+["Selected stale result"]
+es = "Resultado obsoleto seleccionado"
+
+["Selected row of the stale results"]
+es = "Fila seleccionada de lo obsoleto"
+
+["Blocked, missing or damaged datasets, with what is offered to resolve them"]
+es = "Datos bloqueados, que faltan o dañados, con lo que se ofrece para resolverlos"
+
+["Layers and tables created in the project outside Geoblender, such as from QGIS"]
+es = "Capas y tablas creadas en el proyecto fuera de Geoblender, como desde QGIS"
+
+["Provenance chain"]
+es = "Cadena de procedencia"
+
+["The figure or dataset searched for and, indented below, each link down to its inputs"]
+es = "La cifra o el dato buscado y, sangrado debajo, cada eslabón hasta sus entradas"
+
+["Selected link"]
+es = "Eslabón seleccionado"
+
+["Selected row of the provenance chain"]
+es = "Fila seleccionada de la cadena de procedencia"
+
+["Identifier of a figure, a dataset or an operation, or part of the name of a figure or a dataset"]
+es = "Identificador de una cifra, un dato o una operación, o parte del nombre de una cifra o un dato"
+
+["Rows not shown"]
+es = "Filas sin mostrar"
+
+["Rows of the provenance chain that do not fit in the list"]
+es = "Filas de la cadena de procedencia que no caben en la lista"
+
+["Search problem"]
+es = "Problema de la búsqueda"
+
+["Why what was searched for is not a figure, a dataset or an operation of the project"]
+es = "Por qué lo buscado no es una cifra, un dato ni una operación del proyecto"
+
+["Matches"]
+es = "Coincidencias"
+
+["Current figures and datasets whose name contains the text searched for"]
+es = "Cifras vigentes y datos cuyo nombre contiene el texto buscado"
+
+["Expanded"]
+es = "Desplegado"
+
+["Show or hide what this link depends on"]
+es = "Muestra u oculta de qué depende este eslabón"

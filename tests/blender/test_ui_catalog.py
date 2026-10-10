@@ -48,7 +48,10 @@ INTERNAL = ("core_set_parameter", "core_confirm_parameter", "core_resolve_input"
 REAL = ("geoblender.core_show_parameters", "geoblender.core_set_parameter",
         "geoblender.core_confirm_parameter", "geoblender.core_show_inputs",
         "geoblender.core_check_inputs", "geoblender.core_resolve_input",
-        "geoblender.core_discard_input", "geoblender.core_edit_input")
+        "geoblender.core_discard_input", "geoblender.core_edit_input",
+        "geoblender.core_recompute_stale", "geoblender.core_resolve_dataset",
+        "geoblender.core_accept_review", "geoblender.core_resolve_unregistered",
+        "geoblender.core_cancel_checks", "geoblender.core_show_lineage")
 
 
 def _module(name: str) -> ModuleType:
@@ -156,9 +159,10 @@ class UiCatalogTest(unittest.TestCase):
         las órdenes de la 008 con su etiqueta; mientras su operador sea provisional, salen
         desactivadas y dicen «Disponible en 008 · …», y las que ya tienen su clase real
         (Parámetros del proyecto, T50; Registro de entradas y Comprobar cambios en las
-        entradas, T51) salen disponibles; el panel de lo obsoleto del control
-        7 ya es el real (T49) y está disponible, sin nota; lo de la 009 sigue «Disponible en
-        R-07 · …»."""
+        entradas, T51; Recalcular lo obsoleto, T53; Grafo de operaciones y procedencia, T55:
+        ya todas) salen disponibles; el panel de lo obsoleto
+        del control 7 ya es el real (T49) y está disponible, sin nota; lo de la 009 sigue
+        «Disponible en R-07 · …»."""
         commands = _module("bl.ui.commands")
         for menu, idnames in CONTROL.items():
             drawn = {i.target: i for i in draw(getattr(bpy.types, menu), _context()).items
@@ -190,7 +194,9 @@ class UiCatalogTest(unittest.TestCase):
         están registradas con su ``bl_idname`` (internas: fuera de F3) y ningún menú las
         dibuja; las provisionales, invocadas, informan «Disponible en 008 · …» sin hacer
         nada, y las que ya tienen su clase real (Cambiar y Confirmar parámetro, T50; Decidir
-        sobre una entrada cambiada, Descartar y Editar entrada, T52) están disponibles."""
+        sobre una entrada cambiada, Descartar y Editar entrada, T52; Decidir sobre un dato
+        editado fuera, Dar por buena, Capa o fichero sin registrar y Cancelar las
+        comprobaciones, T54: ya todas) están disponibles."""
         commands = _module("bl.ui.commands")
         drawn = {i.target for cls in self.registry.own_classes()
                  if issubclass(cls, bpy.types.Menu)

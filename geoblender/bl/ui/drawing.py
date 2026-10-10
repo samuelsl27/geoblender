@@ -10,6 +10,9 @@ disponible (BS §7.3) se dibuja **desactivado** dentro de una fila propia o, con
 no disponible», no se dibuja; si está disponible pero su comprobación dice que no es
 aplicable ahora (``commands.not_applicable``: una ranura de vista vacía), también se dibuja
 desactivado (RF-003-09). Un acceso cruzado ↗ lleva la marca delante de su etiqueta.
+Disponible y aplicable, lleva su estado (``commands.command_state``; spec 008, RF-008-61): la
+insignia delante de la etiqueta («⚠ Calcular…», activa) o, solo con su icono, en alerta; y,
+resaltada, en alerta («Recalcular lo obsoleto» con resultados obsoletos).
 Desactivados, en Blender 5.2.1 (M1; comprobado con interfaz en la T47): un submenú
 **sí** se abre dentro de un menú abierto, al pasar el ratón, y enseña su contenido; en una
 cabecera (la barra superior, la fila 2) ni un menú ni una ventana emergente se abren, y una
@@ -31,7 +34,7 @@ import bpy
 
 from ...core.catalog import Command
 from . import icons
-from .commands import catalog, is_available, not_applicable, text
+from .commands import CommandState, catalog, command_state, is_available, not_applicable, text
 
 CROSS_MARK = "↗ "  # acceso cruzado (BS §6)
 
@@ -87,6 +90,25 @@ def _disabled(layout: Any, inline: bool) -> Any:
     return sub
 
 
+def _alert(layout: Any, inline: bool) -> Any:
+    sub = layout.row(align=True) if inline else layout.column()
+    sub.alert = True
+    return sub
+
+
+def _with_state(layout: Any, shown: str, state: CommandState | None,
+                inline: bool) -> tuple[Any, str]:
+    """El *layout* y el texto de una orden con su estado (RF-008-61): la insignia delante del
+    texto y, resaltada o solo con su icono y una insignia, en alerta."""
+    if state is None:
+        return layout, shown
+    if state.badge and shown:
+        shown = f"{state.badge} {shown}"
+    elif state.badge:
+        return _alert(layout, inline), shown
+    return (_alert(layout, inline) if state.highlight else layout), shown
+
+
 def draw_command(
     layout: Any,
     key: str,
@@ -112,7 +134,10 @@ def draw_command(
     if cross and shown:
         shown = CROSS_MARK + shown
     applicable = available and not not_applicable(context, cmd)
-    target = layout if applicable else _disabled(layout, inline)
+    if applicable:
+        target, shown = _with_state(layout, shown, command_state(context, cmd.idname), inline)
+    else:
+        target = _disabled(layout, inline)
     kwargs: dict[str, Any] = {"text": shown, "translate": False, **icon_kwargs(cmd)}
     idname = cmd.idname
     if cmd.kind == "panel":

@@ -65,7 +65,9 @@ INTERFACE_TEXTS = {
     "Schema {schema} project: migrate the project to use provenance":
         "Proyecto de esquema {schema}: migre el proyecto para usar la procedencia",
     "⚠ {n} inputs": "⚠ {n} entradas",
+    "⚠ 1 input": "⚠ 1 entrada",  # en singular (T71)
     "! {n} stale": "! {n} obsoletos",
+    "! 1 stale": "! 1 obsoleto",
     "Checking the project… {percent} %": "Comprobando el proyecto… {percent} %",
     "Refresh · stale ({n})": "Refrescar · obsoletos ({n})",
     "[MEA]": "[MED]",

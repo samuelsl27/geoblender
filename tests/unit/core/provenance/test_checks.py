@@ -26,6 +26,12 @@ Esos pasos no leen el contenido de nada ni escriben nada en la base. Después (T
 Cada prueba usa el proyecto de ``test_external`` (esquema 2, reloj simulado): la entrada
 «Limites_v1» importada en ``res_limites``; ``res_contorno`` (editable a mano) y ``res_bocas``
 calculados de ella; ``res_area`` de ``res_contorno``.
+
+La obsolescencia completa del paso 8 se calcula en pasos anteriores, leyendo sin escribir, y la
+transacción final escribe solo su diferencia con la caché (T65; RNF-008-12): las pruebas de
+:class:`OpenCacheTest` la comparan, con la demostración (``tests.support.demo_project``), con la
+transacción final de antes (lo encontrado y, al final, ``refresh_all``) sobre la misma base,
+también con un cambio del proyecto mientras se calcula y entre el cálculo y la escritura.
 """
 
 from __future__ import annotations
@@ -35,15 +41,20 @@ import contextlib
 import dataclasses
 import json
 import os
+import re
+import shutil
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from tests.support import open_check
 from tests.support import provenance_data as data
+from tests.support import provenance_demo as demo_support
 from tests.support.core_fixtures import make_session
+from tests.support.demo_project import DemoProjectTestCase
 from tests.support.package import import_geoblender
 from tests.support.provenance_checks import assert_source_untouched
 from tests.support.provenance_contract import registered
@@ -106,6 +117,11 @@ VOLUME_ROWS = 400  # datos de una tabla común (por selector)
 VOLUME_FILES = 200  # datos de rasters/vol/
 UNREACHABLE = ("No se encuentra la fuente de la entrada «planos» (plano.dxf): no localizable; se "
                "sigue con lo importado.")
+GRAPH_READ = re.compile(
+    r"^\s*SELECT\b.*\b(?:FROM|JOIN)\s+gb_(?:operation_io|operation_param|dataset|stale)\b", re.S)
+"""Una lectura del grafo o de la caché en una sentencia SQL."""
+CACHE_WRITE = re.compile(r"^\s*(?:INSERT INTO|DELETE FROM|UPDATE)\s+gb_stale\b")
+"""Una escritura en la caché ``gb_stale``."""
 
 
 class ChecksCase(ExternalCase):
@@ -947,9 +963,9 @@ class FinalTest(ChecksCase):
         self.assertEqual(self.full_state(), before)
         reader.execute("COMMIT")
         reader.close()
-        rest = list(steps)  # el paso siguiente la reintenta
+        rest = list(steps)  # el paso siguiente la reintenta (y el otro da el resultado, T65)
         self.assertNotIn(session_mod.BUSY_MESSAGE, [step.message for step in rest])
-        self.assertEqual(len(rest), 1)
+        self.assertEqual(len(rest), 2)
         self.assertRecorded(rest[-1].result, newer)
 
     def test_read_only_reports_everything_and_records_it_when_writable(self) -> None:
@@ -1011,6 +1027,209 @@ class FinalTest(ChecksCase):
         outcome, _steps = self.check_all()
         self.assertEqual((outcome.cache.added, outcome.cache.removed),
                          (frozenset(), frozenset()))
+
+    def test_many_datasets_hold_many_objects(self) -> None:
+        """RNF-008-12 (T65): la comprobación de apertura guarda muchos objetos entre pasos (y
+        quien la lleva hace antes una recolección completa del GC de Python) desde
+        ``MANY_DATASETS`` datos registrados: no con los del proyecto de prueba; sí con el
+        límite en los que tiene, y no un dato por encima."""
+        self.assertFalse(checks.holds_many_objects(self.project))
+        last = self.read(lambda conn: conn.execute("SELECT MAX(fid) FROM gb_dataset").fetchone()[0])
+        for limit, many in ((last, True), (last + 1, False)):
+            with mock.patch.object(checks, "MANY_DATASETS", limit):
+                self.assertEqual(checks.holds_many_objects(self.project), many)
+
+    def final_statements(self) -> tuple[Any, list[str]]:
+        """La comprobación de apertura entera (en escritura): su resultado y las sentencias SQL
+        de su transacción final."""
+        real = self.project.try_write
+        statements: list[str] = []
+
+        def traced(work: Callable[[sqlite3.Connection], Any]) -> Any:
+            def spied(conn: sqlite3.Connection) -> Any:
+                conn.set_trace_callback(statements.append)
+                try:
+                    return work(conn)
+                finally:
+                    conn.set_trace_callback(None)
+            return real(spied)
+
+        with mock.patch.object(self.project, "try_write", traced):
+            outcome, _steps = self.check_all()
+        return outcome, statements
+
+    def test_final_transaction_only_writes_the_difference(self) -> None:
+        """RF-008-58, RNF-008-12 (plan §5.4.6, paso 8; T65): la obsolescencia completa se
+        calcula en pasos anteriores, leyendo sin escribir; la transacción final no lee el grafo
+        ni la caché y escribe solo la diferencia: con una caché alterada a mano, borra la fila
+        que sobra y añade la que falta, y queda la de lo deducido; sin nada que cambiar, no toca
+        la caché."""
+        self.qgis('UPDATE "res_contorno" SET valor = 9 WHERE codigo = ?', ("C-01",),
+                  table="res_contorno", at=EDITED_AT)
+        self.check_all()
+        (row,) = [item for item in self.read(stale_mod.cached_rows)
+                  if item.item_uid == self.uid("res_area")]
+        self.write(lambda conn: (
+            conn.execute("DELETE FROM gb_stale WHERE item_kind = ? AND item_uid = ? AND "
+                         "cause_kind = ? AND subject_uid = ?", tuple(row)),
+            conn.execute("INSERT INTO gb_stale (item_kind, item_uid, cause_kind, subject_uid, "
+                         "since) VALUES ('dataset', ?, 'algorithm', 'res.grid', ?)",
+                         (self.uid("res_limites"), self.later()))))
+        outcome, statements = self.final_statements()
+        self.assertTrue(outcome.recorded)
+        self.assertEqual([text for text in statements if GRAPH_READ.search(text)], [])
+        written = list(dict.fromkeys(text for text in statements if CACHE_WRITE.search(text)))
+        self.assertEqual([text.split()[0] for text in written], ["DELETE", "INSERT"], written)
+        self.assertIn(self.uid("res_limites"), written[0])
+        self.assertIn(self.uid("res_area"), written[1])
+        self.assertCacheDeduced(None)
+        outcome, statements = self.final_statements()
+        self.assertEqual((outcome.cache.added, outcome.cache.removed), (frozenset(), frozenset()))
+        self.assertEqual([text for text in statements
+                          if GRAPH_READ.search(text) or CACHE_WRITE.search(text)], [])
+
+
+class OpenCacheTest(DemoProjectTestCase):
+    """La comprobación de apertura con la demostración: la obsolescencia completa por pasos y la
+    diferencia en la transacción final (T65), frente a la transacción final de antes sobre la
+    misma base (``tests.support.open_check.as_before``)."""
+
+    def base(self) -> None:
+        """La cadena de la demostración y, antes de abrir, un cambio de cada clase: la
+        producción cambia (lo que la lee, obsoleto), QGIS edita ``demo_marks``, la propiedad
+        entrega otro límite con el mismo nombre, alguien altera la caché a mano (una fila de
+        menos y una de más) y el Geoblender que abre declara «demo.area» y
+        «demo.detect_stockpiles» 2.0 (la segunda lee las marcas). Guarda la base y el reloj."""
+        self.chain()
+        self.change(demo_support.PRODUCTION, 400_000.0)
+        qgis = sqlite3.connect(self.project.database_path, isolation_level=None)
+        try:
+            qgis.execute(f'UPDATE "{demo_support.MARKS_TABLE}" SET bank_m3 = bank_m3 + 10 '
+                         "WHERE fid = 1")
+            qgis.execute("UPDATE gpkg_contents SET last_change = ? WHERE table_name = ?",
+                         (EDITED_AT, demo_support.MARKS_TABLE))
+        finally:
+            qgis.close()
+        with self.project.write_transaction() as conn:
+            row = conn.execute("SELECT item_kind, item_uid, cause_kind, subject_uid FROM gb_stale "
+                               "WHERE item_kind = 'dataset' ORDER BY rowid LIMIT 1").fetchone()
+            conn.execute("DELETE FROM gb_stale WHERE item_kind = ? AND item_uid = ? AND "
+                         "cause_kind = ? AND subject_uid = ?", row)
+            conn.execute("INSERT INTO gb_stale (item_kind, item_uid, cause_kind, subject_uid, "
+                         "since) SELECT 'dataset', uid, 'algorithm', 'demo.area', "
+                         "'2026-10-08T10:00:00.000Z' FROM gb_dataset ORDER BY fid LIMIT 1")
+        self.deliver(data.BOUNDARY_V2)
+        self.registries = checks.Registries(
+            {**checks.Registries.installed().versions, demo_support.AREA: "2.0",
+             demo_support.DETECT_STOCKPILES: "2.0"},
+            params.DEFINITIONS)
+        self.saved = self.tmp / "base.gpkg"
+        shutil.copyfile(self.project.database_path, self.saved)
+        self.moment = (self.clock._now, self.clock._monotonic)
+
+    def change(self, key: str, value: float) -> None:
+        """Cambia el parámetro ``key`` del proyecto (con su caché por región)."""
+        store = params.ParameterStore(self.project)
+        with self.project.write_transaction() as conn:
+            store.change(conn, key, value=value, kind="ADOPTADO", source="Plan de labores 2027",
+                         source_kind="document", decided_by="la propiedad",
+                         reason="Prueba de la comprobación")
+
+    def checked(self, *, reference: bool = False,
+                change: Callable[[], None] | None = None,
+                when: str = "") -> tuple[Any, dict[str, list[Any]], tuple[int, int]]:
+        """La comprobación de apertura entera sobre la base guardada, con el mismo reloj, los
+        mismos uid nuevos y cada unidad de trabajo en su paso (un presupuesto mínimo); con
+        ``reference``, la transacción final de antes. ``change`` es un
+        cambio del proyecto que se hace ``when``: «calculando», en el segundo paso del registro
+        (en la referencia, que no calcula nada, en el primero); «escribiendo», al empezar la
+        primera transacción final. Devuelve el resultado, las filas de la base y cuántas veces
+        se calculó la obsolescencia completa y se intentó la transacción final."""
+        shutil.copyfile(self.saved, self.project.database_path)
+        self.clock._now, self.clock._monotonic = self.moment
+        real = self.project.try_write
+        pending = [change] if change is not None else []
+        attempts: list[int] = []
+
+        def writing(work: Callable[[sqlite3.Connection], Any]) -> Any:
+            attempts.append(1)
+            if when == "escribiendo" and pending:
+                pending.pop()()
+            return real(work)
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(open_check.same_uids())
+            stack.enter_context(mock.patch.object(self.project, "try_write", writing))
+            computed = stack.enter_context(mock.patch.object(
+                checks, "full_difference_steps", wraps=stale_mod.full_difference_steps))
+            if reference:
+                stack.enter_context(open_check.as_before())
+            recording = 0
+            outcome = None
+            for step in checks.open_check_steps(self.project, self.registries, write=True,
+                                                budget_s=1e-9):
+                if step.phase == checks.RECORD_STEP:
+                    recording += 1
+                    if (when == "calculando" and pending
+                            and recording == (1 if reference else 2)):
+                        pending.pop()()
+                if step.result is not None:
+                    outcome = step.result
+        self.assertEqual(pending, [])
+        return (outcome, open_check.project_rows(self.project),
+                (computed.call_count, len(attempts)))
+
+    def assertSameAsBefore(self, change: Callable[[], None] | None = None,
+                           when: str = "") -> tuple[int, int]:
+        """La comprobación da, fila a fila, la misma base y los mismos avisos que la de antes
+        sobre la misma base (y con el mismo cambio en el mismo momento), y su caché es la
+        obsolescencia completa deducida; devuelve cuántas veces se calculó y se intentó la
+        transacción final."""
+        outcome, rows, done = self.checked(change=change, when=when)
+        expected, reference, _done = self.checked(reference=True, change=change, when=when)
+        self.assertTrue(outcome.recorded and expected.recorded)
+        self.assertEqual(outcome.texts("es"), expected.texts("es"))
+        for table in sorted(reference):
+            self.assertEqual(rows[table], reference[table], table)
+        self.assertEqual(rows.keys(), reference.keys())
+        with self.project.read() as conn:
+            state = graph_mod.deduce(graph_mod.load_graph(conn),
+                                     versions=self.registries.versions)
+            self.assertEqual(stale_mod.cached_rows(conn), stale_mod.expected_rows(state))
+        return done
+
+    def test_same_cache_and_states_as_the_full_refresh(self) -> None:
+        """RF-008-58, RF-008-24, RNF-008-12 (plan §5.4.6, paso 8; T65): con la demostración y
+        un cambio de cada clase antes de abrir (un parámetro, una edición de QGIS, otro límite
+        entregado, una caché alterada a mano y un algoritmo más nuevo), la obsolescencia
+        completa por pasos y su diferencia en la transacción final dejan la caché (con sus
+        fechas) y todo lo demás de la base idéntico, fila a fila, a lo que dejaba la
+        transacción final con la completa al final, con los mismos avisos; se calcula una
+        vez."""
+        self.base()
+        self.assertEqual(self.assertSameAsBefore(), (1, 1))
+        rows = open_check.project_rows(self.project)
+        external = [row for row in rows["gb_operation"] if contract.EXTERNAL_EDIT in row]
+        self.assertEqual(len(external), 1)  # QGIS editó las marcas
+        self.assertIn("algorithm", {row[2] for row in rows["gb_stale"]})
+
+    def test_a_change_while_computing_or_before_writing_is_not_lost(self) -> None:
+        """RF-008-58, RNF-008-12 (plan §5.4.6, paso 8; I-5, I-7; T65): si el proyecto cambia
+        mientras se calcula la obsolescencia completa (la propia sesión cambia un parámetro) o
+        entre el cálculo y la escritura (justo antes de la transacción final; la producción
+        vuelve al valor que leyeron, y lo que dejaba obsoleto deja de estarlo), no se escribe
+        nada calculado sobre la otra base: se vuelve a calcular (mientras se calcula, sin
+        acabar el cálculo ni intentar la transacción; antes de escribir, sin escribir nada en
+        ella) y lo que queda es, fila a fila, lo de la transacción final de antes con el mismo
+        cambio en el mismo momento."""
+        self.base()
+        for when, key, value, attempts in (
+                ("calculando", demo_support.SWELL_FACTOR, 1.3, 1),
+                ("escribiendo", demo_support.PRODUCTION, 500_000.0, 2)):
+            with self.subTest(when=when):
+                done = self.assertSameAsBefore(
+                    lambda key=key, value=value: self.change(key, value), when)
+                self.assertEqual(done, (2, attempts))
 
 
 class PendingTest(ChecksCase):

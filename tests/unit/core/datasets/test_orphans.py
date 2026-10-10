@@ -84,7 +84,9 @@ LOCKED_TEXT = ("Restos abiertos en otro programa, sin apartar: {files}. Se reint
 FOUND_TEXT = ("Restos de operaciones interrumpidas en el proyecto: {files}. En solo lectura no "
               "se apartan: se apartarán al abrirlo en escritura.")
 FOREIGN_TEXT = ("Ficheros ajenos en las carpetas de datos del proyecto, que no son de ningún dato "
-                "(no se mueven): {files}. Puede ignorarlos.")
+                "(no se mueven): {files}.")
+FOREIGN_TEXT_EN = ("Files in the project data folders that belong to no dataset (they are not "
+                   "moved): {files}.")
 UNREGISTERED_TEXT = ("Capas o tablas del proyecto sin registrar (creadas fuera de Geoblender; no "
                      "se tocan): {tables}. Regístrelas como entrada o ignórelas.")
 IGNORE_REASON = "Lo deja el cliente para consulta (Q:\\expedientes\\leeme.txt)"
@@ -650,7 +652,7 @@ class ForeignTest(OrphansCase):
             FOREIGN_TEXT.format(files=listed_files),
             UNREGISTERED_TEXT.format(tables=_quoted("Notas", "zonas_qgis")),
         ))
-        self.assertTrue(outcome.texts("en")[1].startswith("Files in the project data folders"))
+        self.assertEqual(outcome.texts("en")[1], FOREIGN_TEXT_EN.format(files=listed_files))
         after = self.files()
         self.assertNothingDeleted(before, after)
         for rel in foreign_files:
@@ -685,6 +687,31 @@ class ForeignTest(OrphansCase):
         self.assertEqual(self.table_state(), state)
         self.assertTrue(self.sweep().recorded)
         self.assertEqual(len(self.logged(events.EventKind.UNREGISTERED_FOUND)), 2)
+
+    def test_foreign_files_warning_offers_nothing_more_than_the_list(self) -> None:
+        """RF-008-62 (T68; O-2 de la verificación de la 008): el aviso de los ficheros ajenos,
+        en español y en inglés, solo avisa con su lista y dice que no se mueven: no ofrece
+        ignorarlos, porque la interfaz solo ofrece Ignorar… para una capa o una tabla sin
+        registrar; el aviso de las capas y tablas sí ofrece registrarlas o ignorarlas."""
+        self.put("rasters/Mapa del cliente.tif")
+        self.put("meshes/modelo.obj")
+        self.qgis('CREATE TABLE "Notas" (texto TEXT)')
+
+        outcome = self.sweep(write=False)
+
+        files = _quoted("meshes/modelo.obj", "rasters/Mapa del cliente.tif")
+        self.assertEqual(outcome.foreign_texts("es"), (
+            FOREIGN_TEXT.format(files=files), UNREGISTERED_TEXT.format(tables="«Notas»")))
+        self.assertEqual(outcome.foreign_texts("en")[0], FOREIGN_TEXT_EN.format(files=files))
+        for language in ("es", "en"):
+            with self.subTest(language=language):
+                warned, tables = outcome.foreign_texts(language)
+                self.assertNotRegex(warned.casefold(), "ign[oó]r")
+                self.assertRegex(tables.casefold(), "ign[oó]r")
+                self.assertEqual(messages.render("core.foreign_files", language=language,
+                                                 files="«a.txt»"),
+                                 (FOREIGN_TEXT if language == "es" else FOREIGN_TEXT_EN).format(
+                                     files="«a.txt»"))
 
     def test_ignoring_removes_from_the_next_warning(self) -> None:
         """RF-008-62 (plan §5.4.9): ignorar un fichero ajeno o una capa sin registrar

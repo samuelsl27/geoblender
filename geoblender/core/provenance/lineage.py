@@ -37,6 +37,9 @@ transacción de escritura de quien llama, que ve lo aún no confirmado):
   sin guardar» o «medición, no registrada» si solo está en la vista. Nada que el proyecto no
   tenga como hecho se presenta como resultado: lo de una operación que falló o lo que el
   proyecto no conoce es «vista previa, sin guardar».
+- :func:`search_items` (T55; plan §5.5, la búsqueda del panel de la procedencia): las cifras
+  vigentes cuya clave, cuyo nombre o cuyo ámbito contienen un texto y los datos vivos cuyo
+  nombre lo contiene (:class:`LineageMatch`), para pedir su procedencia sin saber su uid.
 
 La obsolescencia y la revisión a mano se leen de la caché ``gb_stale`` (:mod:`.stale`), como
 la lista de lo obsoleto y «! n obsoletos»: la mantienen todos los caminos que escriben y la
@@ -60,6 +63,7 @@ from ..i18n import LANGUAGES
 from ..inputs.model import InputStatus
 from ..params.model import ParamKind, ParamValue
 from ..params.store import decode_value
+from .contract import FIGURES
 from .figures import RECORD_COLUMNS as FIGURE_COLUMNS
 from .figures import FigureRecord, ScopeValue, _local_date, _shown, scope_key
 from .graph import (
@@ -1158,3 +1162,73 @@ def result_state(project: ReadableProject, item: str | None = None, *,
         if found is None:
             return ResultStatus(ResultState.PREVIEW, wanted)
         return _item_status(reading, found)
+
+
+# --- Búsqueda (T55) -------------------------------------------------------------------------
+
+SEARCH_LIMIT = 20
+"""Lo que da como mucho una búsqueda de la procedencia (:func:`search_items`)."""
+
+# Cada clave y ámbito de las cifras, por orden de su primer registro (con MIN, SQLite da las
+# demás columnas de esa fila).
+_FIGURE_PAIRS = (
+    "SELECT key, scope_key, label, scope, MIN(fid) AS first FROM gb_figure "
+    "GROUP BY key, scope_key ORDER BY first"
+)
+_LIVE_DATA = (
+    f"SELECT uid, name FROM gb_dataset WHERE status IN ({_LIVE}) "
+    "ORDER BY name COLLATE NOCASE, fid"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LineageMatch:
+    """Lo que encuentra la búsqueda de la procedencia (:func:`search_items`): una cifra
+    vigente o un dato vivo (``kind``), su uid y cómo se lee (de una cifra,
+    :meth:`.figures.FigureRecord.text`; de un dato, su nombre)."""
+
+    kind: LineageKind
+    uid: str
+    text: str
+
+
+def search_items(project: ReadableProject, text: str, *, limit: int = SEARCH_LIMIT,
+                 conn: sqlite3.Connection | None = None,
+                 language: str = "es") -> tuple[LineageMatch, ...]:
+    """Lo que contiene ``text`` (sin distinguir mayúsculas), leído en una instantánea sin
+    escribir nada (plan §5.5): primero las cifras **vigentes** (:func:`current_figure`) cuya
+    clave, cuyo nombre (en español o en inglés) o el valor de alguno de cuyos ámbitos lo
+    contienen, por el orden en que se registró por primera vez esa clave y ese ámbito; después
+    los datos vivos cuyo nombre lo contiene, por nombre. Como mucho ``limit``; nada si
+    ``text`` está vacío. Los textos, en ``language``. :class:`TypeError`/:class:`ValueError`
+    con un argumento mal formado."""
+    if not isinstance(text, str):
+        raise TypeError(f"se busca un texto, no {text!r}")
+    if language not in LANGUAGES:
+        raise ValueError(f"el idioma «{language}» no es de Geoblender: {', '.join(LANGUAGES)}")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError(f"la búsqueda da al menos un resultado, no {limit!r}")
+    wanted = text.strip().casefold()
+    if not wanted:
+        return ()
+    found: list[LineageMatch] = []
+    with _reading(project, conn) as reading:
+        for key, wanted_scope, label, scope, _first in reading.execute(_FIGURE_PAIRS):
+            declared = FIGURES.get(str(key))
+            words = [str(key), str(label), "" if declared is None else declared.label_msgid,
+                     *(str(value) for value in json.loads(scope).values())]
+            if wanted not in " ".join(words).casefold():
+                continue
+            uid = _current_of(reading, str(key), str(wanted_scope))
+            if uid is None:
+                continue
+            record = FigureRecord.from_row(reading.execute(_FIGURE, (uid,)).fetchone())
+            found.append(LineageMatch(LineageKind.FIGURE, uid, record.text(language=language)))
+            if len(found) >= limit:
+                return tuple(found)
+        for uid, name in reading.execute(_LIVE_DATA):
+            if wanted in str(name).casefold():
+                found.append(LineageMatch(LineageKind.DATASET, str(uid), str(name)))
+                if len(found) >= limit:
+                    break
+    return tuple(found)
