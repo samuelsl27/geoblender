@@ -38,11 +38,20 @@ cuyos centros son esos puntos.
 El lector de contenido ``gis.xyz_grid@1`` (``gis.content``, T40) usa las mismas piezas:
 :func:`point_steps` (los puntos por trozos, con su avance) y :func:`fit_grid` (la malla, con
 la referencia de la celda del noroeste tal como la dan los puntos: su centro).
+
+**¿Malla o puntos?** (T32; RF-006-27): «Importar un fichero» abre con un ``.xyz`` en malla el
+importador de MDT y con uno disperso el de puntos. :func:`sample_xyz` lo decide con las líneas
+enteras de los primeros :data:`SAMPLE_BYTES` (unas 30 000): si son puntos X Y Z (con punto o,
+si no, con coma decimal) y si forman una malla con las mismas reglas (A5, :func:`fit_grid`), con
+su separador, su decimal y su cabecera. Una malla de la que esos bytes no alcanzan a dar dos
+filas (más de unas 30 000 columnas) parece puntos; el importador de MDT es quien decide al
+leerla entera.
 """
 
 from __future__ import annotations
 
 import bisect
+import io
 import math
 import os
 import re
@@ -65,13 +74,16 @@ __all__ = [
     "CHUNK_BYTES",
     "DECIMALS",
     "GRID_TOLERANCE_M",
+    "SAMPLE_BYTES",
     "SEPARATORS",
     "XyzGrid",
     "XyzPoints",
+    "XyzSample",
     "check_options",
     "fit_grid",
     "point_steps",
     "read_xyz_grid",
+    "sample_xyz",
 ]
 
 MAX_CELLS_KEY = "gis.import.max_cells"
@@ -91,6 +103,8 @@ SEPARATORS = {" ": "espacio", "\t": "tabulador", ",": "coma", ";": "punto y coma
 """Separadores admitidos y su nombre en el informe; el espacio es uno o varios blancos."""
 DECIMALS = {".": "punto", ",": "coma"}
 """Separadores decimales admitidos y su nombre en el informe."""
+SAMPLE_BYTES = 1 << 20
+"""Bytes del principio de un XYZ que mira :func:`sample_xyz` (1 MiB)."""
 
 _BOM = b"\xef\xbb\xbf"
 _NOT_TEXT = re.compile(rb"[\x00-\x08\x0e-\x1f\x7f]")
@@ -221,6 +235,47 @@ def fit_grid(points: XyzPoints, name: str, limit: int) -> XyzGrid:
     if np.isnan(values).all():
         raise GisError("gis.raster_empty", obj=name, field=_FIELD_POINTS, file=name)
     return XyzGrid(grid, values, west_centre, -minus_top)
+
+
+@dataclass(frozen=True, slots=True)
+class XyzSample:
+    """Lo que dicen las primeras líneas de un XYZ (:func:`sample_xyz`): si forman una malla
+    (``grid``), su separador (uno de :data:`SEPARATORS`), su decimal (uno de :data:`DECIMALS`)
+    y si tienen cabecera."""
+
+    grid: bool
+    separator: str
+    decimal: str
+    header: bool
+
+
+def sample_xyz(path: Path | str, *, max_bytes: int = SAMPLE_BYTES) -> XyzSample | None:
+    """Las líneas enteras de los primeros ``max_bytes`` del XYZ ``path``: si son puntos X Y Z
+    con punto decimal o, si no, con coma, cómo están escritos y si forman una malla regular
+    (las reglas de :func:`fit_grid`); ``None`` si no son puntos X Y Z (otro número de columnas,
+    palabras, un binario o nada). Solo lee (RF-006-10). ``OSError`` si no se puede leer."""
+    found = Path(path)
+    with found.open("rb") as stream:
+        data = stream.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        data = data[: data.rfind(b"\n", 0, max_bytes) + 1]  # sin la línea cortada
+    limit = int(params.default(MAX_CELLS_KEY))
+    for decimal in DECIMALS:
+        try:
+            points = _drive(point_steps(io.BytesIO(data), len(data), found.name, separator=None,
+                                        decimal=decimal, limit=limit,
+                                        chunk_bytes=max(len(data), 1)), None)
+        except GisError:
+            continue
+        if not len(points.xyz):
+            return None
+        try:
+            fit_grid(points, found.name, limit)
+            grid = True
+        except GisError:
+            grid = False
+        return XyzSample(grid, points.prefix.separator, decimal, points.prefix.header)
+    return None
 
 
 def _drive(

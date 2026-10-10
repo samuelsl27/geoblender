@@ -89,7 +89,10 @@ class EnabledUiTest(unittest.TestCase):
             cls = self.commands.registered_class(idname)
             self.assertIsNotNone(cls, idname)
             self.assertEqual(cls.bl_idname, idname)
-        real = {cls.bl_idname for cls in self.ops.classes}
+        # Los operadores de bl/ops (también registra el manejador de ficheros de «Importar un
+        # fichero», spec 006, T32, que no es un comando).
+        real = {cls.bl_idname for cls in self.ops.classes
+                if issubclass(cls, bpy.types.Operator)}
         provisional = {cls.bl_idname for cls in self.registry.provisional_classes()
                        if issubclass(cls, bpy.types.Operator)}
         self.assertEqual(real & provisional, set())

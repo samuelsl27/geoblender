@@ -9,12 +9,14 @@ segundo plano (``JobMonitor``), los textos de los trabajos y sus tipos de trabaj
 
 ``gis`` (spec 006) registra lo que la topografía declara a la 008 (hoy, sus lectores de
 contenido), después de lo de ``core``.
+
+``io`` (spec 006, T32): «Importar un fichero» y su manejador de ficheros (soltar en la vista).
 """
 
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
-from . import core, core_provenance, geo, gis, jobs, ui
+from . import core, core_provenance, geo, gis, io, jobs, ui
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): core (spec 002), ui y geo (spec 003; geo: el recorte de la vista, D-1), jobs
@@ -24,6 +26,9 @@ classes: tuple[type, ...] = (*core.classes, *ui.classes, *geo.classes, *jobs.cla
 
 # Los de la topografía (spec 006), después.
 classes += gis.classes
+
+# «Importar un fichero» y su manejador (spec 006, T32), que abre los de la topografía.
+classes += io.classes
 
 
 def register() -> None:

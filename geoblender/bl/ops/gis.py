@@ -42,7 +42,8 @@ inverso (lo que otro cambió después es suyo). Los dos son simétricos e idempo
   MDT del proyecto (RF-006-06). Una sustitución sin motivo o un aviso de alturas elipsoidales
   **esperan la decisión de la persona** (:func:`waiting_imports`): la misma orden con
   ``pending`` (el uid de la operación), ``decision`` y, en una sustitución, ``reason`` la sigue
-  o la cancela; mientras, el trabajo está «pendiente de incorporar».
+  o la cancela; mientras, el trabajo está «pendiente de incorporar». Con el fichero ya elegido
+  y ``dialog`` (lo abre así «Importar un fichero…» de ``bl.ops.io``, T32), su diálogo.
 - ``geoblender.gis_resample_to_grid`` (Topografía ▸ Superficies ▸ Rejilla de proyecto desde un
   MDT…): el MDT importado a ``gis_dtm_<nombre>`` en la rejilla del proyecto (la ventana de
   trabajo con el paso del proyecto, ``gis.grid.project_grid``), con el método en el informe
@@ -770,6 +771,9 @@ class GEOBLENDER_OT_gis_import_dtm(ProvenanceAwareOperator, bpy.types.Operator):
     decision: EnumProperty(  # type: ignore[valid-type]
         name="Decision", items=DECISION_ITEMS, default="CONTINUE", options={"SKIP_SAVE"},
     )
+    # Con el fichero ya elegido (Importar un fichero…, o soltado en la vista; T32), el diálogo
+    # de la importación en lugar de importar sin más.
+    dialog: BoolProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore[valid-type]
 
     @classmethod
     def poll(cls, context: Any) -> bool:
@@ -781,6 +785,9 @@ class GEOBLENDER_OT_gis_import_dtm(ProvenanceAwareOperator, bpy.types.Operator):
             if self.pending not in _WAITING:
                 return self.execute(context)
             self.decision = "CONTINUE"
+            return context.window_manager.invoke_props_dialog(
+                self, width=DIALOG_WIDTH, translate=False, title=tr("Import of a raster DTM"))
+        if self.filepath and self.dialog:
             return context.window_manager.invoke_props_dialog(
                 self, width=DIALOG_WIDTH, translate=False, title=tr("Import of a raster DTM"))
         if self.filepath:

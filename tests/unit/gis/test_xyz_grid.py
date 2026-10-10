@@ -20,6 +20,9 @@
   de ningún fichero.
 
 Avance y cancelación por trozos (RF-006-28).
+
+- **RF-006-27** (T32, «Importar un fichero»): las primeras líneas de un ``.xyz`` dicen si es
+  una malla (MDT) o puntos dispersos, con su separador, su decimal y su cabecera.
 """
 
 import os
@@ -470,6 +473,63 @@ class ReadBuiltFilesTest(unittest.TestCase):
                         {"separator": ",", "decimal": ","}):
             with self.subTest(**options), self.assertRaises(ValueError):
                 xyz_grid.read_xyz_grid(path, **options)
+
+
+# --- Las primeras líneas: ¿malla o puntos? (T32) -------------------------------------------
+
+
+class SampleTest(unittest.TestCase):
+    """RF-006-27 (T32): «Importar un fichero» abre con un ``.xyz`` en malla el importador de
+    MDT y con uno disperso el de puntos; lo decide :func:`sample_xyz` con las primeras líneas
+    del fichero, sin cambiarlo (RF-006-10)."""
+
+    def setUp(self) -> None:
+        self.folder = Path(tempfile.mkdtemp(prefix="gb-xyz-"))
+        self.addCleanup(shutil.rmtree, self.folder, True)
+
+    def test_grid_and_scattered_files(self) -> None:
+        """RF-006-27: ``grid.xyz`` es una malla (espacio, punto decimal, sin cabecera);
+        ``grid_hole.xyz`` también (cabecera ``X;Y;Z``, «;» y coma decimal: la coma se prueba
+        cuando el punto no da números); ``irregular.xyz`` son puntos dispersos (tabulador).
+        Leerlos no cambia la carpeta (RF-006-10)."""
+        before = {entry.name: entry.stat().st_mtime_ns for entry in os.scandir(XYZ)}
+        cases = (("grid.xyz", (True, " ", ".", False)),
+                 ("grid_hole.xyz", (True, ";", ",", True)),
+                 ("irregular.xyz", (False, "\t", ".", False)))
+        for name, expected in cases:
+            with self.subTest(fichero=name):
+                sample = xyz_grid.sample_xyz(XYZ / name)
+                self.assertIsInstance(sample, xyz_grid.XyzSample)
+                self.assertEqual((sample.grid, sample.separator, sample.decimal,
+                                  sample.header), expected)
+        self.assertEqual({entry.name: entry.stat().st_mtime_ns for entry in os.scandir(XYZ)},
+                         before)
+
+    def test_only_whole_lines_of_the_first_bytes(self) -> None:
+        """RF-006-27: solo se leen los primeros ``max_bytes`` y, de ellos, las líneas enteras:
+        las tres primeras filas de ``grid.xyz`` y media línea de la cuarta siguen siendo una
+        malla; si no llegan a dos filas, no se puede decir que lo sean (puntos)."""
+        data = (XYZ / "grid.xyz").read_bytes()
+        rows = data.split(b"\n")
+        three = len(b"\n".join(rows[:60])) + 1  # 3 filas de 20 puntos, con su fin de línea
+        sample = xyz_grid.sample_xyz(XYZ / "grid.xyz", max_bytes=three + 12)
+        self.assertTrue(sample.grid)
+        one = len(b"\n".join(rows[:20])) + 1
+        self.assertFalse(xyz_grid.sample_xyz(XYZ / "grid.xyz", max_bytes=one + 12).grid)
+
+    def test_not_xyz_points(self) -> None:
+        """RF-006-27: un texto que no son puntos X Y Z con punto ni con coma decimal (cuatro
+        columnas, palabras, un binario, nada) no es un XYZ: ``None`` (se abre el importador de
+        puntos, que tiene su asistente)."""
+        tif = ROOT / "tests" / "data" / "gis" / "geotiff" / "f32_strip.tif"
+        cases = {"cuatro.xyz": b"P1 700000 4400000 800\nP2 700001 4400000 801\n",
+                 "palabras.xyz": b"uno dos tres\ncuatro cinco seis\n",
+                 "binario.xyz": tif.read_bytes(), "vacio.xyz": b""}
+        for name, data in cases.items():
+            with self.subTest(fichero=name):
+                path = self.folder / name
+                path.write_bytes(data)
+                self.assertIsNone(xyz_grid.sample_xyz(path))
 
 
 if __name__ == "__main__":

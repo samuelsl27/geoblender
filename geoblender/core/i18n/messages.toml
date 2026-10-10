@@ -2370,6 +2370,90 @@ es = "En el proyecto, como el entregable {dataset}"
 ["Written outside the project: it is not a dataset of the project"]
 es = "Escrito fuera del proyecto: no es un dato del proyecto"
 
+# Transformar coordenadas e importar un fichero (spec 006, T32; RF-006-07, RF-006-27; plan 006
+# §5.3.5 y §5.5): Proyecto ▸ Georreferencia ▸ Transformar coordenadas… (su diálogo, su resultado
+# y «Copiar») e Importar ▸ Importar un fichero… (también al soltarlo en la vista). «File», «Copy»,
+# «Copy to the clipboard», «ETRS89 ellipsoidal height» y «The file «{file}» does not exist…» ya
+# están arriba.
+
+["Source CRS"]
+es = "CRS de origen"
+
+["Horizontal CRS of the typed coordinates"]
+es = "CRS horizontal de las coordenadas tecleadas"
+
+["Source vertical CRS"]
+es = "CRS vertical de origen"
+
+["Vertical reference of the typed elevations"]
+es = "Referencia vertical de las cotas tecleadas"
+
+["Target CRS"]
+es = "CRS de destino"
+
+["Horizontal CRS of the result"]
+es = "CRS horizontal del resultado"
+
+["Target vertical CRS"]
+es = "CRS vertical de destino"
+
+["Vertical reference of the result"]
+es = "Referencia vertical del resultado"
+
+["Coordinates"]
+es = "Coordenadas"
+
+["One point per line, or points separated by «;»: X Y or X Y Z separated by spaces, with decimal comma or point"]
+es = "Un punto por línea, o puntos separados por «;»: X Y o X Y Z separados por espacios, con coma o punto decimal"
+
+["Type the coordinates: X Y or X Y Z, one point per line or separated by «;»"]
+es = "Escriba las coordenadas: X Y o X Y Z, un punto por línea o separados por «;»"
+
+["Point {index} «{text}»: write X Y or X Y Z separated by spaces, with decimal comma or point"]
+es = "Punto {index} «{text}»: escriba X Y o X Y Z separados por espacios, con coma o punto decimal"
+
+["Point {index}"]
+es = "Punto {index}"
+
+["Coordinates from {source} to {target}"]
+es = "Coordenadas de {source} a {target}"
+
+["Transformation: {summary}"]
+es = "Transformación: {summary}"
+
+["Point {index}: {typed} → {result} m; scale factor {scale}; convergence {convergence}°"]
+es = "Punto {index}: {typed} → {result} m; factor de escala {scale}; convergencia {convergence}°"
+
+["Scale factor and grid convergence in {target}; the convergence in degrees, positive east of the central meridian"]
+es = "Factor de escala y convergencia de cuadrícula en {target}; la convergencia en grados, positiva al este del meridiano central"
+
+["Transform coordinates"]
+es = "Transformar coordenadas"
+
+["Transform"]
+es = "Transformar"
+
+["There are no transformed coordinates to copy"]
+es = "No hay coordenadas transformadas que copiar"
+
+["Transformed coordinates copied to the clipboard"]
+es = "Coordenadas transformadas copiadas al portapapeles"
+
+["Transformed coordinates"]
+es = "Coordenadas transformadas"
+
+["«{file}»: Geoblender does not import {extension} files yet. {available}"]
+es = "«{file}»: Geoblender aún no importa ficheros {extension}. {available}"
+
+["«{file}»: shapefiles are not imported. Convert it to GeoPackage in QGIS and import the GeoPackage"]
+es = "«{file}»: los shapefiles no se importan. Conviértalo a GeoPackage en QGIS e importe el GeoPackage"
+
+["«{file}»: Geoblender does not know how to import files with the extension «{extension}». It imports {extensions}"]
+es = "«{file}»: Geoblender no sabe importar ficheros con la extensión «{extension}». Importa {extensions}"
+
+["Importing «{file}» with {command}"]
+es = "Importando «{file}» con {command}"
+
 # Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
 # Los mensajes de la procedencia y de los parámetros (spec §8) están en
 # core/provenance/messages.py y core/params/model.py, y se instalan al registrar.
