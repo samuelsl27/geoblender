@@ -633,6 +633,21 @@ def divergence(conn: sqlite3.Connection, figure: FigureRecord) -> Divergence | N
     )
 
 
+def parameter_divergence(conn: sqlite3.Connection, parameter_uid: str) -> Divergence | None:
+    """El aviso de RF-008-59 que se enseña junto al parámetro ``parameter_uid`` (el panel de
+    parámetros, RF-008-06): el de la **última** cifra CALCULADO que lo calcula, si difiere de
+    su valor de ahora (:func:`divergence`); si la última coincide, no hay ninguna o el
+    parámetro no existe, ``None``. Solo lee: lo decide una persona (S-1)."""
+    if not isinstance(parameter_uid, str):
+        raise TypeError(f"un parámetro se indica por su uid, no {parameter_uid!r}")
+    row = conn.execute(
+        f"SELECT {RECORD_COLUMNS} FROM gb_figure WHERE parameter_uid = ? AND kind = ? "
+        "ORDER BY fid DESC LIMIT 1",
+        (parameter_uid, str(ParamKind.CALCULADO)),
+    ).fetchone()
+    return None if row is None else divergence(conn, FigureRecord.from_row(row))
+
+
 def divergences(conn: sqlite3.Connection, operation_uid: str) -> list[Divergence]:
     """Los avisos de RF-008-59 de las cifras de la operación ``operation_uid``, en su orden
     (:func:`divergence`): lo que el módulo muestra al usuario tras completarla."""

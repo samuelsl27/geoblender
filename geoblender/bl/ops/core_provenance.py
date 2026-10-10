@@ -68,8 +68,21 @@ ADR-0025).
   - :func:`check_write_target`: antes de escribir un entregable, la guarda de ``core`` con el
     proyecto de la sesión y :func:`read_only_dirs` (RF-008-15).
 
-Lo demás llega con las tareas siguientes: los operadores de §5.3.2, con los paneles, y el
-estado de comando de las órdenes de los módulos (fase 8).
+- Parámetros del proyecto (T50; RF-008-02, RF-008-03, RF-008-06, RF-008-59; plan §5.3.2):
+  ``geoblender.core_show_parameters`` lee la lista (``bl.ui.provenance.fill_parameters``) y
+  abre ``GEOBLENDER_PT_core_parameters``, también en solo lectura;
+  ``geoblender.core_set_parameter`` (Cambiar, un diálogo) y
+  ``geoblender.core_confirm_parameter`` (Confirmar) escriben con ``core.params.ParameterStore``
+  en una transacción del proyecto y no están disponibles sin proyecto, sin la procedencia o en
+  solo lectura (lo dicen). Cambiar rechaza con los textos de ``core.params`` (spec §8) y sin
+  escribir nada; el valor se teclea como **texto** («35 %») y lo convierte
+  ``core.params.parse_value`` a la unidad declarada: nunca pasa por una propiedad flotante.
+  Desde el aviso de divergencia (``from_figure_uid``), el diálogo sale relleno con la cifra
+  calculada y su operación, y el parámetro solo pasa a CALCULADO cuando la persona lo acepta
+  (S-1). Lo que no se toca en el diálogo ni se pasa desde un guion no cambia.
+
+Lo demás llega con las tareas siguientes: los demás operadores de §5.3.2, con sus paneles, y
+el estado de comando de las órdenes de los módulos (fase 8).
 
 ``core.i18n`` no tiene cómo quitar traducciones: :func:`unregister` las deja (como los
 trabajos de la 004), y volver a registrar las instala otra vez sin cambiar nada.
@@ -79,9 +92,11 @@ En ``blender -b`` los temporizadores no se ejecutan: las pruebas llaman a :func:
 
 from __future__ import annotations
 
+import datetime as dt
 import functools
 import logging
 import os
+import sqlite3
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -89,6 +104,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import bpy
+from bpy.props import EnumProperty, StringProperty
 
 from ...core import i18n, params
 from ...core.content import readers as content_readers
@@ -98,9 +114,11 @@ from ...core.i18n import tr
 from ...core.inputs.guard import check_write_target as guard_write_target
 from ...core.inputs.guard import read_only_warnings
 from ...core.params import core_defs
+from ...core.params.store import DEFAULT_SOURCE_PREFIX, shown_value
 from ...core.paths import ReadOnlyDirs
 from ...core.project.migrations import m0002
 from ...core.provenance import contract, messages
+from ...core.timeutil import parse_utc
 from ...jobs import catalog as job_catalog
 from ...jobs import content_hash
 from ...jobs.protocol import new_request
@@ -109,6 +127,7 @@ from ..props.core import read_only_dirs_of
 from ..scene import project_session
 from ..ui import jobs as job_list
 from ..ui import statusbar
+from ..ui.commands import catalog, text
 from . import jobs as jobs_ops
 
 if TYPE_CHECKING:
@@ -139,8 +158,6 @@ PROVENANCE_SCHEMA = m0002.MIGRATION.to_version
 
 _OPEN = "open"  # la comprobación de apertura (los ocho pasos)
 _REQUESTS = "requests"  # los hashes que pidió la puerta (pasos 7 y 8)
-
-classes: tuple[type, ...] = ()
 
 
 class _State:
@@ -579,9 +596,15 @@ def _notify(_kind: set[str], text: str) -> None:
 
 def error_text(exc: BaseException) -> str:
     """El texto de un error para el usuario en el idioma de Geoblender: el de la procedencia
-    en su idioma; el de otro error de Geoblender, su mensaje (en español)."""
+    o el de un parámetro, en su idioma; el de otro error de Geoblender, su mensaje (en
+    español)."""
     if isinstance(exc, messages.ProvenanceError):
         return messages.render(exc.code, language=i18n.language(), **exc.values)
+    if isinstance(exc, params.ParamError):
+        language = i18n.language()
+        if language == "es":
+            return exc.text
+        return params.render(exc.code, language=language, **exc.values)
     if isinstance(exc, GeoblenderError):
         return exc.message
     return str(exc) or type(exc).__name__
@@ -936,6 +959,340 @@ class ProvenanceAwareOperator:
             self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
             return False
         return True
+
+
+# Parámetros del proyecto (T50) ------------------------------------------------------------
+
+TRANSLATION_CONTEXT = "Geoblender"
+SET_PARAMETER = "geoblender.core_set_parameter"
+SET_PARAMETER_WIDTH = 520
+_HIDDEN = {"HIDDEN", "SKIP_SAVE"}  # las pone quien la lanza (la fila, el aviso)
+_FIELD = {"SKIP_SAVE"}  # las rellena el diálogo: nunca las de la vez anterior
+
+KIND_ITEMS = [
+    ("MEDIDO", "MEASURED", ""),
+    ("CALCULADO", "CALCULATED", ""),
+    ("ADOPTADO", "ADOPTED", ""),
+    ("HIPOTESIS", "ASSUMPTION", ""),
+]
+"""Los tipos de un parámetro (identificador = nombre de ``ParamKind``). CALCULADO a mano se
+rechaza con el texto de la spec §8: solo se adopta una cifra (``from_figure_uid``)."""
+
+SOURCE_KIND_ITEMS = [
+    ("DOCUMENT", "Document", ""),
+    ("STANDARD", "Standard", ""),
+    ("PERSON", "Person", ""),
+    ("OPERATION", "Operation", ""),
+    ("ALGORITHM", "Algorithm", ""),
+]
+"""Las clases de origen (identificador = nombre de ``SourceKind``)."""
+
+
+class _DateText(ValueError):
+    """Una fecha de la decisión que no es DD/MM/AAAA (ni una hora UTC de un guion)."""
+
+
+def _call_panel(name: str) -> set[str]:
+    """Abre la ventana emergente ``name`` con ``wm.call_panel``; sigue abierta aunque el
+    ratón salga de ella (``keep_open``), hasta pulsar fuera o Esc."""
+    return bpy.ops.wm.call_panel(name=name, keep_open=True)
+
+
+def typed_value(value: Any, language: str) -> str:
+    """Un valor registrado como se teclea en el diálogo, en la unidad del parámetro y sin ella
+    («1,15», «0,35», «[5; 15]», «sí»; «» sin valor), para que el mismo texto se lea igual."""
+    if value is None:
+        return ""
+    if isinstance(value, tuple):
+        separator = "; " if language == "es" else ", "
+        return "[" + separator.join(params.format_value(item, language) for item in value) + "]"
+    return params.format_value(value, language)
+
+
+def _decision_date(typed: str) -> dt.date | str | None:
+    """La fecha de la decisión tecleada: un día DD/MM/AAAA (o, desde un guion, una hora UTC
+    ISO 8601); vacía, ahora (``None``). :class:`_DateText` si no es ninguna de las dos."""
+    shown = typed.strip()
+    if not shown:
+        return None
+    try:
+        return dt.datetime.strptime(shown, "%d/%m/%Y").date()
+    except ValueError:
+        pass
+    try:
+        parse_utc(shown)
+    except ValueError:
+        raise _DateText(shown) from None
+    return shown
+
+
+def _parameters_written() -> None:
+    """Tras escribir un parámetro: la lista y el historial del panel y los indicadores de la
+    barra de estado (lo que dependía de él puede quedar obsoleto), sin esperar al tic."""
+    from ..ui import provenance as ui  # al usarlo (ARQ-08)
+
+    try:
+        ui.fill_parameters()
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.warning("No se pudo volver a leer la lista de parámetros", exc_info=True)
+    if ui.refresh(force=True):
+        ui.redraw()
+
+
+def _write_poll(cls: type) -> bool:
+    """El ``poll`` de las órdenes que escriben en el proyecto: dice por qué no se puede."""
+    reason = write_unavailable()
+    if reason is not None:
+        cls.poll_message_set(reason)  # type: ignore[attr-defined]
+        return False
+    return True
+
+
+class GEOBLENDER_OT_core_show_parameters(bpy.types.Operator):
+    """Parameters with their type, provenance and history"""
+
+    bl_idname = "geoblender.core_show_parameters"
+    bl_label = "Project parameters…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        reason = SESSION.unavailable()
+        if reason is not None:
+            cls.poll_message_set(reason)
+            return False
+        return True
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        return self.execute(context)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import provenance as ui  # al usarlo (ARQ-08)
+
+        try:
+            ui.fill_parameters()
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}  # desde un guion sin ventana: las filas, sin la ventana
+        return _call_panel(ui.PARAMETERS_PANEL)
+
+
+class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
+    """Change the value, type, source or decider of a project parameter, with a reason"""
+
+    bl_idname = SET_PARAMETER
+    bl_label = "Change parameter…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    key: StringProperty(name="Parameter", options=_HIDDEN)  # type: ignore[valid-type]
+    value: StringProperty(  # type: ignore[valid-type]
+        name="Value",
+        description="Value as typed, with its unit if it is not the parameter's («35 %»)",
+        options=_FIELD,
+    )
+    unit: StringProperty(  # type: ignore[valid-type]
+        name="Unit",
+        description="Unit of the typed value when it does not say one (empty: the parameter's)",
+        options=_HIDDEN,
+    )
+    kind: EnumProperty(  # type: ignore[valid-type]
+        name="Type",
+        description="Type of the value: measured, calculated (only by adopting a figure), "
+                    "adopted or hypothesis",
+        items=KIND_ITEMS, default="ADOPTADO", options=_FIELD,
+    )
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Source",
+        description="Document, standard, person, operation or algorithm the value comes from",
+        options=_FIELD,
+    )
+    source_kind: EnumProperty(  # type: ignore[valid-type]
+        name="Source type", items=SOURCE_KIND_ITEMS, default="DOCUMENT", options=_FIELD,
+    )
+    decided_by: StringProperty(  # type: ignore[valid-type]
+        name="Decided by",
+        description="Who decided the value (the owner, a laboratory, a person)",
+        options=_FIELD,
+    )
+    decided_at: StringProperty(  # type: ignore[valid-type]
+        name="Decision date", description="Day of the decision, DD/MM/YYYY (empty: now)",
+        options=_FIELD,
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the parameter changes (recorded in its history)",
+        options=_FIELD,
+    )
+    from_figure_uid: StringProperty(  # type: ignore[valid-type]
+        name="Figure", description="Calculated figure that is adopted as the value of the "
+                                   "parameter",
+        options=_HIDDEN,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Rellena el diálogo con lo registrado (o, desde el aviso de divergencia, con la cifra
+        calculada y su operación) y lo abre: nada cambia hasta que la persona lo acepta."""
+        project = SESSION.project
+        language = i18n.language()
+        try:
+            with project.read() as conn:
+                record = params.ParameterStore(project).get(self.key, conn=conn)
+                if record is None:
+                    raise params.ParamError("core.param_not_registered", key=self.key)
+                warning = None
+                if self.from_figure_uid:
+                    from ...core.provenance.figures import parameter_divergence
+
+                    warning = parameter_divergence(conn, record.uid)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        user = project.session.user_host
+        if self.from_figure_uid:
+            if warning is None or warning.figure_uid != self.from_figure_uid:
+                self.report({"WARNING"}, tr("The calculated figure no longer differs from "
+                                            "«{key}»: there is nothing to adopt", key=self.key))
+                return {"CANCELLED"}
+            self.value = shown_value(warning.value, warning.unit)
+            self.kind = params.ParamKind.CALCULADO.name
+            self.decided_by = user
+            self._divergence = warning.render(language)
+        else:
+            self.value = typed_value(record.value, language)
+            self.kind = record.kind.name
+            default = record.source.startswith(DEFAULT_SOURCE_PREFIX)
+            self.source = "" if default else record.source
+            self.source_kind = record.source_kind.name
+            self.decided_by = user if record.decided_by == params.DEFAULT_DECIDER \
+                else record.decided_by
+        self.decided_at = ""
+        return context.window_manager.invoke_props_dialog(
+            self, width=SET_PARAMETER_WIDTH, translate=False,
+            title=text(catalog().commands[SET_PARAMETER].label))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.label(text=self.key, translate=False)
+        if self.from_figure_uid:
+            note = layout.row()
+            note.alert = True
+            note.label(text=getattr(self, "_divergence", ""), icon="ERROR", translate=False)
+            layout.label(text=tr("Calculated value: {value} [CAL]", value=self.value),
+                         translate=False)
+        else:
+            layout.prop(self, "value", text=tr("Value"), translate=False)
+            layout.prop(self, "kind", text=tr("Type"), translate=False)
+            layout.prop(self, "source", text=tr("Source"), translate=False)
+            layout.prop(self, "source_kind", text=tr("Source type"), translate=False)
+        layout.prop(self, "decided_by", text=tr("Decided by"), translate=False)
+        layout.prop(self, "decided_at", text=tr("Decision date"), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def _changes(self, record: Any, language: str) -> dict[str, Any]:
+        """Lo que cambia respecto de ``record``: solo lo que se puso (el diálogo, o quien la
+        llama) y es distinto; el motivo siempre (``core.params`` lo exige)."""
+        given = self.properties.is_property_set
+        changes: dict[str, Any] = {"reason": self.reason}
+        if self.from_figure_uid:
+            changes["from_figure"] = self.from_figure_uid  # su valor, su unidad, CALCULADO
+        else:
+            typed = self.value.strip()
+            if given("value") and typed != typed_value(record.value, language):
+                defn = params.DEFINITIONS.get(record.key)
+                if defn is None:
+                    raise params.ParamError("core.param_undefined", key=record.key)
+                changes["value"] = params.parse_value(
+                    defn, typed, self.unit.strip() or None,
+                    decimal="," if language == "es" else ".")
+            if given("kind") and params.ParamKind[self.kind] is not record.kind:
+                changes["kind"] = params.ParamKind[self.kind]
+        for name in ("source", "decided_by"):
+            typed = getattr(self, name).strip()
+            if given(name) and typed != getattr(record, name):
+                changes[name] = typed
+        if given("source_kind") and params.SourceKind[self.source_kind] is not \
+                record.source_kind:
+            changes["source_kind"] = params.SourceKind[self.source_kind]
+        moment = _decision_date(self.decided_at)
+        if moment is not None:
+            changes["decided_at"] = moment
+        return changes
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = SESSION.project
+        store = params.ParameterStore(project)
+        try:
+            record = store.get(self.key)
+            if record is None:
+                raise params.ParamError("core.param_not_registered", key=self.key)
+            changes = self._changes(record, i18n.language())
+            with project.write_transaction() as conn:
+                changed = store.change(conn, self.key, **changes)
+        except _DateText as exc:
+            self.report({"ERROR"}, tr("Decision date «{value}»: write it as DD/MM/YYYY",
+                                      value=str(exc)))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        _parameters_written()
+        from ..ui.provenance import badge
+
+        self.report({"INFO"}, tr("Parameter «{key}» = {value} {kind}", key=changed.key,
+                                 value=shown_value(changed.value, changed.unit),
+                                 kind=badge(changed.kind)))
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_core_confirm_parameter(bpy.types.Operator):
+    """Confirm a parameter marked «unconfirmed» or «review»"""
+
+    bl_idname = "geoblender.core_confirm_parameter"
+    bl_label = "Confirm parameter"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    key: StringProperty(name="Parameter", options=_HIDDEN)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            with project.write_transaction() as conn:
+                record = params.ParameterStore(project).confirm(conn, self.key)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        _parameters_written()
+        self.report({"INFO"}, tr("Parameter «{key}» confirmed", key=record.key))
+        return {"FINISHED"}
+
+
+classes: tuple[type, ...] = (
+    GEOBLENDER_OT_core_show_parameters,
+    GEOBLENDER_OT_core_set_parameter,
+    GEOBLENDER_OT_core_confirm_parameter,
+)
+"""Los operadores reales de la 008 (los demás siguen provisionales hasta su tarea)."""
 
 
 # Registro ---------------------------------------------------------------------------------

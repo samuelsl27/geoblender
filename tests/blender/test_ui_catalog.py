@@ -44,6 +44,9 @@ LATER = ("geoblender.core_new_version", "geoblender.core_show_decisions",
 INTERNAL = ("core_set_parameter", "core_confirm_parameter", "core_resolve_input",
             "core_discard_input", "core_edit_input", "core_resolve_dataset",
             "core_accept_review", "core_resolve_unregistered", "core_cancel_checks")
+# Las órdenes de la 008 que ya tienen su clase real (spec 008, fase 8): disponibles, sin nota.
+REAL = ("geoblender.core_show_parameters", "geoblender.core_set_parameter",
+        "geoblender.core_confirm_parameter")
 
 
 def _module(name: str) -> ModuleType:
@@ -149,8 +152,9 @@ class UiCatalogTest(unittest.TestCase):
     def test_provenance_commands_in_008(self) -> None:
         """RF-008-06, RF-008-16, RF-008-26, RF-008-28, RF-008-29: Proyecto ▸ Control dibuja
         las órdenes de la 008 con su etiqueta; mientras su operador sea provisional, salen
-        desactivadas y dicen «Disponible en 008 · …»; el panel de lo obsoleto del control 7
-        ya es el real (T49) y está disponible, sin nota; lo de la 009 sigue «Disponible en
+        desactivadas y dicen «Disponible en 008 · …», y las que ya tienen su clase real
+        (Parámetros del proyecto, T50) salen disponibles; el panel de lo obsoleto del control
+        7 ya es el real (T49) y está disponible, sin nota; lo de la 009 sigue «Disponible en
         R-07 · …»."""
         commands = _module("bl.ui.commands")
         for menu, idnames in CONTROL.items():
@@ -161,6 +165,11 @@ class UiCatalogTest(unittest.TestCase):
                     item = drawn[idname]
                     self.assertEqual(item.text, self.cat.commands[idname].label_es)
                     cls = commands.registered_class(idname)
+                    if idname in REAL:
+                        self.assertFalse(commands.is_provisional(cls))
+                        self.assertTrue(item.enabled)
+                        self.assertTrue(commands.is_available(idname))
+                        continue
                     self.assertTrue(commands.is_provisional(cls))
                     self.assertFalse(item.enabled)
                     self.assertEqual(_reported(cls), [({"INFO"}, PROVENANCE_NOTE)])
@@ -175,9 +184,10 @@ class UiCatalogTest(unittest.TestCase):
 
     def test_internal_provenance_operators(self) -> None:
         """RF-008-06, RF-008-26, RF-008-28 (plan 008 §5.3.2): las nueve órdenes internas
-        están registradas con su ``bl_idname`` (provisionales e internas: fuera de F3),
-        invocadas informan «Disponible en 008 · …» sin hacer nada y ningún menú las
-        dibuja."""
+        están registradas con su ``bl_idname`` (internas: fuera de F3) y ningún menú las
+        dibuja; las provisionales, invocadas, informan «Disponible en 008 · …» sin hacer
+        nada, y las que ya tienen su clase real (Cambiar y Confirmar parámetro, T50) están
+        disponibles."""
         commands = _module("bl.ui.commands")
         drawn = {i.target for cls in self.registry.own_classes()
                  if issubclass(cls, bpy.types.Menu)
@@ -186,11 +196,15 @@ class UiCatalogTest(unittest.TestCase):
             idname = f"geoblender.{name}"
             with self.subTest(idname=idname):
                 cls = commands.registered_class(idname)
-                self.assertTrue(commands.is_provisional(cls))
                 self.assertIn("INTERNAL", cls.bl_options)
+                self.assertNotIn(idname, drawn)
+                if idname in REAL:
+                    self.assertFalse(commands.is_provisional(cls))
+                    self.assertTrue(commands.is_available(idname))
+                    continue
+                self.assertTrue(commands.is_provisional(cls))
                 self.assertEqual(getattr(bpy.ops.geoblender, name)(), {"CANCELLED"})
                 self.assertEqual(_reported(cls), [({"INFO"}, PROVENANCE_NOTE)])
-                self.assertNotIn(idname, drawn)
 
     def test_provenance_messages_installed(self) -> None:
         """RF-008-29 (principio 10; plan 008 §5.1): al habilitar Geoblender, los textos de

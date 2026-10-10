@@ -39,6 +39,20 @@ Dar por buena… (``geoblender.core_accept_review``); al final, Recalcular lo ob
 filas de ``WindowManager.geoblender_provenance.stale`` (D16), que el temporizador regenera con
 los recuentos. Las órdenes cuya clase real aún no ha llegado se dibujan desactivadas.
 
+**Parámetros del proyecto** (:class:`GEOBLENDER_PT_core_parameters`, ventana emergente que
+abre ``geoblender.core_show_parameters``; RF-008-06, RF-008-59; T50): filtros por módulo, tipo
+y marca; la lista (:class:`GEOBLENDER_UL_core_parameters`) con la clave, el valor con su
+unidad, la insignia de tipo ([HIP] en ámbar), las marcas «sin confirmar» y «revisar», el
+origen, el decisor y la fecha; del seleccionado, su origen, su decisión, lo que hay que revisar,
+el aviso de divergencia de su última cifra calculada con «Usar el valor calculado…» (Cambiar
+relleno con la cifra), el historial completo (:class:`GEOBLENDER_UL_core_parameter_history`) y
+Cambiar parámetro… y Confirmar parámetro; en solo lectura, desactivados y con el motivo.
+:func:`fill_parameters` lee la lista de ``core.params`` (``ParameterStore.list`` con los
+filtros de la vista) y :func:`fill_history`, el historial y el aviso del seleccionado; los
+llaman la orden que abre el panel, Cambiar y Confirmar al escribir, y los filtros y la
+selección al cambiar. Las filas viven en ``WindowManager.geoblender_provenance`` (D16), como
+texto ya presentado: ningún valor pasa por una propiedad flotante.
+
 :func:`install` registra los campos, el número del control 7 y la escucha del proyecto de la
 sesión; :func:`uninstall` lo quita todo, con los temporizadores.
 """
@@ -56,9 +70,12 @@ import bpy
 from ...core.errors import GeoblenderError
 from ...core.gpkg.header import read_header
 from ...core.i18n import language, tr
+from ...core.params import HistoryAction, ParameterFilter, ParameterStore, ParamKind, ParamMark
+from ...core.params.store import shown_value
 from ...core.provenance import contract
+from ...core.timeutil import parse_utc
 from .. import compat
-from ..props.provenance import WINDOW_MANAGER_PROPERTY
+from ..props.provenance import FILTER_ALL, WINDOW_MANAGER_PROPERTY
 from ..scene import project_session
 from . import icons, quick_access, statusbar
 from .commands import catalog, is_available, registered_class, text
@@ -101,6 +118,18 @@ UNDO_ICON = "LOOP_BACK"
 STALE_PANEL_UNITS = 20
 MAX_TEXTS = 256  # textos con número guardados (después, se empieza de nuevo)
 
+PARAMETERS_PANEL = "GEOBLENDER_PT_core_parameters"
+PARAMETERS_LIST = "GEOBLENDER_UL_core_parameters"
+HISTORY_LIST = "GEOBLENDER_UL_core_parameter_history"
+SET_PARAMETER = "geoblender.core_set_parameter"
+CONFIRM_PARAMETER = "geoblender.core_confirm_parameter"
+PARAMETERS_PANEL_UNITS = 44
+PARAMETER_ROWS = 8  # filas visibles de la lista (después, se desplaza)
+HISTORY_ROWS = 5
+# Ancho (unidades) de cada columna de la lista de parámetros y del historial.
+PARAMETER_COLUMNS = (9.0, 5.5, 2.5, 5.0, 10.0, 7.0, 4.0)
+HISTORY_COLUMNS = (1.5, 3.5, 4.5, 2.5, 3.5, 5.0, 3.5, 8.0, 6.0, 5.5)
+
 _clock: Callable[[], float] = time.monotonic
 
 
@@ -115,6 +144,7 @@ class _State:
         self.undo_text = ""
         self.undo_until = 0.0
         self.properties: dict[type, frozenset[str]] = {}  # propiedades de cada operador
+        self.filling = False  # se están regenerando las filas de los parámetros
 
 
 _STATE = _State()
@@ -178,7 +208,7 @@ def refresh(*, force: bool = False) -> bool:
 
 
 def _forget() -> bool:
-    """Olvida los recuentos y las filas; dice si había algo que mostrar."""
+    """Olvida los recuentos y las filas de lo obsoleto; dice si había algo que mostrar."""
     found = _STATE.counts
     had = found is not None and (found.obsolete > 0 or found.inputs_changed > 0)
     _STATE.project = None
@@ -234,9 +264,11 @@ def indicator_tick() -> float | None:
 
 
 def on_project_changed(project: Project | None) -> None:
-    """Lo que se apunta en ``project_session``: olvida lo del proyecto anterior y, con uno
-    nuevo, pone el temporizador (lee en su primer tic, no al abrir: RNF-002-02)."""
+    """Lo que se apunta en ``project_session``: olvida lo del proyecto anterior (también la
+    lista de parámetros) y, con uno nuevo, pone el temporizador (lee en su primer tic, no al
+    abrir: RNF-002-02)."""
     had = _forget()
+    _clear_parameters()
     _retire(indicator_tick)
     if project is not None:
         bpy.app.timers.register(indicator_tick, first_interval=INDICATOR_TICK_S,
@@ -361,11 +393,11 @@ def _operator_properties(idname: str) -> frozenset[str]:
 
 
 def _operator(layout: Any, idname: str, shown: str, *, icon: str = "NONE",
-              emboss: bool = True, **values: Any) -> None:
+              emboss: bool = True, enabled: bool = True, **values: Any) -> None:
     """Un botón de una orden del catálogo con ``shown`` (desactivado si su clase real aún no
-    ha llegado) y las propiedades de ``values`` que tenga."""
+    ha llegado o sin ``enabled``) y las propiedades de ``values`` que tenga."""
     sub = layout.row(align=True)
-    sub.enabled = is_available(idname)
+    sub.enabled = enabled and is_available(idname)
     properties = sub.operator(idname, text=shown, icon=icon, translate=False, emboss=emboss)
     if values:
         names = _operator_properties(idname)
@@ -488,7 +520,325 @@ class GEOBLENDER_PT_core_stale(bpy.types.Panel):
         draw_stale(self.layout, context)
 
 
-classes: tuple[type, ...] = (GEOBLENDER_PT_core_stale,)
+# Parámetros del proyecto (T50) -----------------------------------------------------------------
+
+
+def _write_unavailable() -> str | None:
+    """Por qué no se pueden cambiar ni confirmar los parámetros ahora (sin proyecto, sin la
+    procedencia o en solo lectura), o ``None``."""
+    from ..ops import core_provenance  # al usarlo: bl/ops importa bl/ui (ARQ-08)
+
+    return core_provenance.write_unavailable()
+
+
+def _project() -> Project | None:
+    """El proyecto de la sesión, si tiene la procedencia (también en solo lectura)."""
+    session = _session()
+    return session.project if session.unavailable() is None else None
+
+
+def _filters(view: Any) -> ParameterFilter:
+    """Los filtros de la lista (``core.params``; «Cualquiera» no filtra)."""
+    module = None if view.filter_module == FILTER_ALL else view.filter_module
+    kind = None if view.filter_kind == FILTER_ALL else ParamKind[view.filter_kind]
+    mark = None if view.filter_mark == FILTER_ALL else ParamMark[view.filter_mark]
+    return ParameterFilter(module=module, kind=kind, mark=mark)
+
+
+def _selected(view: Any) -> Any | None:
+    """La fila seleccionada de la lista de parámetros, o ``None``."""
+    rows = view.parameters
+    index = view.parameter_index
+    return rows[index] if 0 <= index < len(rows) else None
+
+
+def _local(moment: str, pattern: str = "%d/%m/%Y") -> str:
+    """Una hora UTC guardada, en hora local como la lee una persona (``24/09/2026``)."""
+    try:
+        return parse_utc(moment).astimezone().strftime(pattern)
+    except ValueError:
+        return moment
+
+
+def fill_parameters() -> int:
+    """Regenera las filas de la lista de parámetros desde el proyecto de la sesión, con los
+    filtros de la vista (RF-008-06; ``ParameterStore.list``), conserva el seleccionado si
+    sigue en la lista y lee su historial (:func:`fill_history`). Sin proyecto con la
+    procedencia, la lista queda vacía. Devuelve cuántas filas hay. Si no se puede leer el
+    proyecto, el error sigue y las filas quedan como estaban."""
+    view = _view()
+    if view is None:
+        return 0
+    project = _project()
+    found = [] if project is None else ParameterStore(project).list(_filters(view))
+    chosen = _selected(view)
+    key = None if chosen is None else chosen.key
+    _STATE.filling = True
+    try:
+        rows = view.parameters
+        rows.clear()
+        for item in found:
+            record = item.record
+            row = rows.add()
+            row.uid = record.uid
+            row.key = record.key
+            row.module = record.module
+            row.value = item.shown
+            row.kind = str(record.kind)
+            row.unconfirmed = record.unconfirmed
+            row.review = ParamMark.REVIEW in item.marks
+            row.review_text = item.review_text
+            row.source = record.source
+            row.decided_by = record.decided_by
+            row.decided_at = _local(record.decided_at)
+        keys = [item.record.key for item in found]
+        view.parameter_index = keys.index(key) if key in keys else 0
+    finally:
+        _STATE.filling = False
+    fill_history()
+    return len(found)
+
+
+def fill_history() -> None:
+    """Regenera el historial del parámetro seleccionado (RF-008-06; ``ParameterStore.history``)
+    y su aviso de divergencia (RF-008-59: el de su última cifra calculada, con la cifra que se
+    adoptaría). Si no se puede leer el proyecto, el error sigue."""
+    view = _view()
+    if view is None or _STATE.filling:
+        return
+    project = _project()
+    chosen = _selected(view)
+    entries: list[Any] = []
+    warning = None
+    if project is not None and chosen is not None:
+        from ...core.provenance.figures import parameter_divergence  # al usarlo
+
+        with project.read() as conn:
+            entries = ParameterStore(project).history(chosen.key, conn=conn)
+            warning = parameter_divergence(conn, chosen.uid)
+    history = view.parameter_history
+    history.clear()
+    for entry in entries:
+        row = history.add()
+        row.rev = entry.rev
+        row.action = str(entry.action)
+        row.value = shown_value(entry.value, entry.unit)
+        row.kind = str(entry.kind)
+        row.unconfirmed = entry.unconfirmed
+        row.decided_by = entry.decided_by
+        row.decided_at = _local(entry.decided_at)
+        row.reason = entry.reason or ""
+        row.changed_by = entry.changed_by
+        row.changed_at = _local(entry.changed_at, "%d/%m/%Y %H:%M")
+    view.history_index = max(0, len(history) - 1)
+    view.parameter_divergence = "" if warning is None else warning.render(language())
+    view.parameter_figure_uid = "" if warning is None else warning.figure_uid
+
+
+def _clear_parameters() -> None:
+    """Vacía la lista de parámetros, el historial y el aviso (otro proyecto, ninguno)."""
+    view = _view()
+    if view is None or not (len(view.parameters) or len(view.parameter_history)
+                            or view.parameter_divergence):
+        return
+    _STATE.filling = True
+    try:
+        view.parameters.clear()
+        view.parameter_history.clear()
+        view.parameter_index = 0
+        view.parameter_divergence = ""
+        view.parameter_figure_uid = ""
+    finally:
+        _STATE.filling = False
+
+
+def parameters_changed() -> None:
+    """Un filtro cambió (``bl.props.provenance``): :func:`fill_parameters`; si no se puede
+    leer el proyecto, queda en el registro técnico."""
+    if _STATE.filling:
+        return
+    try:
+        fill_parameters()
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.warning("No se pudo leer la lista de parámetros del proyecto", exc_info=True)
+
+
+def selection_changed() -> None:
+    """Cambió el seleccionado (``bl.props.provenance``): :func:`fill_history`."""
+    if _STATE.filling:
+        return
+    try:
+        fill_history()
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.warning("No se pudo leer el historial del parámetro", exc_info=True)
+
+
+def badge(kind: str) -> str:
+    """La insignia de un tipo ([MED], [CAL], [ADO] o [HIP]) en el idioma de Geoblender."""
+    if kind == ParamKind.MEDIDO:
+        return tr("[MEA]")
+    if kind == ParamKind.CALCULADO:
+        return tr("[CAL]")
+    if kind == ParamKind.ADOPTADO:
+        return tr("[ADO]")
+    return tr("[HYP]")
+
+
+def _action_text(action: str) -> str:
+    if action == HistoryAction.DEFAULT:
+        return tr("Default value")
+    if action == HistoryAction.CREATE:
+        return tr("Created")
+    if action == HistoryAction.CONFIRM:
+        return tr("Confirmed")
+    return tr("Changed")
+
+
+def _cell(layout: Any, shown: str, units: float, *, alert: bool = False) -> None:
+    """Una columna de una fila de lista: ``shown`` con ``units`` de ancho."""
+    cell = layout.row(align=True)
+    cell.ui_units_x = units
+    cell.alert = alert
+    cell.label(text=shown, translate=False)
+
+
+def _marks_text(unconfirmed: bool, review: bool = False) -> str:
+    marks = []
+    if unconfirmed:
+        marks.append(tr("unconfirmed"))
+    if review:
+        marks.append(tr("review"))
+    return " · ".join(marks)
+
+
+def draw_parameter_row(layout: Any, row: Any) -> None:
+    """Una fila de la lista de parámetros (RF-008-06): clave, valor con su unidad, insignia de
+    tipo ([HIP] en ámbar), marcas, origen, decisor y fecha."""
+    line = layout.row(align=True)
+    key, value, kind, marks, source, decided_by, decided_at = PARAMETER_COLUMNS
+    _cell(line, row.key, key)
+    _cell(line, row.value, value)
+    _cell(line, badge(row.kind), kind, alert=row.kind == ParamKind.HIPOTESIS)
+    _cell(line, _marks_text(row.unconfirmed, row.review), marks, alert=row.review)
+    _cell(line, row.source, source)
+    _cell(line, row.decided_by, decided_by)
+    _cell(line, row.decided_at, decided_at)
+
+
+def draw_history_row(layout: Any, row: Any) -> None:
+    """Una fila del historial (RF-008-02, RF-008-06): revisión, qué fue, valor, insignia,
+    «sin confirmar», decisor y fecha de la decisión, motivo, y quién y cuándo lo registró."""
+    line = layout.row(align=True)
+    rev, action, value, kind, marks, decided_by, decided_at, reason, by, at = HISTORY_COLUMNS
+    _cell(line, str(row.rev), rev)
+    _cell(line, _action_text(row.action), action)
+    _cell(line, row.value, value)
+    _cell(line, badge(row.kind), kind, alert=row.kind == ParamKind.HIPOTESIS)
+    _cell(line, _marks_text(row.unconfirmed), marks)
+    _cell(line, row.decided_by, decided_by)
+    _cell(line, row.decided_at, decided_at)
+    _cell(line, row.reason, reason)
+    _cell(line, row.changed_by, by)
+    _cell(line, row.changed_at, at)
+
+
+def _draw_selected(layout: Any, view: Any, row: Any, blocked: str | None) -> None:
+    """Lo del parámetro seleccionado: su decisión, lo que hay que revisar, su aviso de
+    divergencia, su historial y Cambiar y Confirmar (desactivados con ``blocked``)."""
+    details = layout.column(align=True)
+    details.label(text=row.key, translate=False)
+    details.label(text=tr("Source: {source}", source=row.source), translate=False)
+    details.label(text=tr("Decided by {who} on {date}", who=row.decided_by,
+                          date=row.decided_at), translate=False)
+    if row.review and row.review_text:
+        note = details.row()
+        note.alert = True
+        note.label(text=row.review_text, icon="ERROR", translate=False)
+    writable = blocked is None
+    if view.parameter_divergence:
+        warning = layout.row()
+        warning.alert = True
+        warning.label(text=view.parameter_divergence, icon="ERROR", translate=False)
+        _operator(layout, SET_PARAMETER, tr("Use the calculated value…"), enabled=writable,
+                  key=row.key, from_figure_uid=view.parameter_figure_uid)
+    layout.label(text=tr("History"), translate=False)
+    layout.template_list(HISTORY_LIST, "", view, "parameter_history", view, "history_index",
+                         rows=HISTORY_ROWS)
+    buttons = layout.row(align=True)
+    commands = catalog().commands
+    _operator(buttons, SET_PARAMETER, text(commands[SET_PARAMETER].label), enabled=writable,
+              key=row.key)
+    _operator(buttons, CONFIRM_PARAMETER, text(commands[CONFIRM_PARAMETER].label),
+              enabled=writable and (row.unconfirmed or row.review), key=row.key)
+    if blocked is not None:
+        layout.label(text=blocked, icon="LOCKED", translate=False)
+
+
+def draw_parameters(layout: Any, context: Any) -> None:
+    """El contenido de :class:`GEOBLENDER_PT_core_parameters` (RF-008-06, RF-008-59)."""
+    layout.label(text=tr("Project parameters"), translate=False)
+    reason = _session().unavailable()
+    if reason is not None:
+        layout.label(text=reason, icon="INFO", translate=False)
+        return
+    view = getattr(getattr(context, "window_manager", None), WINDOW_MANAGER_PROPERTY, None)
+    if view is None:
+        return
+    filters = layout.row(align=True)
+    filters.prop(view, "filter_module", text=tr("Module"), translate=False)
+    filters.prop(view, "filter_kind", text=tr("Type"), translate=False)
+    filters.prop(view, "filter_mark", text=tr("Mark"), translate=False)
+    layout.template_list(PARAMETERS_LIST, "", view, "parameters", view, "parameter_index",
+                         rows=PARAMETER_ROWS)
+    row = _selected(view)
+    if row is None:
+        layout.label(text=tr("No parameters"), translate=False)
+        return
+    _draw_selected(layout, view, row, _write_unavailable())
+
+
+class GEOBLENDER_UL_core_parameters(bpy.types.UIList):
+    """The project parameters"""
+
+    bl_idname = PARAMETERS_LIST
+
+    def draw_item(self, _context: Any, layout: Any, _data: Any, item: Any, _icon: int,
+                  _active_data: Any, _active_property: str, _index: int = 0,
+                  _flt_flag: int = 0) -> None:
+        draw_parameter_row(layout, item)
+
+
+class GEOBLENDER_UL_core_parameter_history(bpy.types.UIList):
+    """The history of the selected parameter"""
+
+    bl_idname = HISTORY_LIST
+
+    def draw_item(self, _context: Any, layout: Any, _data: Any, item: Any, _icon: int,
+                  _active_data: Any, _active_property: str, _index: int = 0,
+                  _flt_flag: int = 0) -> None:
+        draw_history_row(layout, item)
+
+
+class GEOBLENDER_PT_core_parameters(bpy.types.Panel):
+    """Parameters with their type, provenance and history"""
+
+    bl_idname = PARAMETERS_PANEL
+    bl_label = "Project parameters"
+    bl_translation_context = "Geoblender"
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = PARAMETERS_PANEL_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_parameters(self.layout, context)
+
+
+classes: tuple[type, ...] = (
+    GEOBLENDER_PT_core_stale,
+    GEOBLENDER_UL_core_parameters,
+    GEOBLENDER_UL_core_parameter_history,
+    GEOBLENDER_PT_core_parameters,
+)
 
 
 # Instalación ----------------------------------------------------------------------------------
@@ -511,7 +861,7 @@ def install() -> None:
 
 def uninstall() -> None:
     """Quita los campos, el número del control 7, la escucha y los temporizadores, y olvida
-    los recuentos, las filas y el aviso."""
+    los recuentos, las filas (también las de los parámetros) y el aviso."""
     for key in FIELD_KEYS:
         statusbar.unregister_field(key)
     if quick_access.count_provider(REFRESH) is stale_count:
@@ -520,6 +870,7 @@ def uninstall() -> None:
     _retire(indicator_tick)
     _retire(expire_undo_notice)
     _forget()
+    _clear_parameters()
     _STATE.texts.clear()
     _STATE.properties.clear()
     _STATE.undo_text = ""

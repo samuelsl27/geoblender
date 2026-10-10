@@ -16,7 +16,8 @@
   de la 004 (:func:`ingest_job` con su :class:`JobOutcome` → :class:`IngestOutcome`).
 - :mod:`.figures`: las cifras con tipo y procedencia (:class:`FigureSpec`,
   :func:`record_figure`, :class:`FigureRecord`) y el aviso de una cifra que calcula un
-  parámetro con otro valor (:class:`Divergence`, :func:`divergence` y :func:`divergences`).
+  parámetro con otro valor (:class:`Divergence`, :func:`divergence`, :func:`divergences` y,
+  el de la última cifra que calcula un parámetro, :func:`parameter_divergence`).
 - :mod:`.graph`: el grafo por versiones (:func:`load_graph`, :class:`ProvenanceGraph`) y la
   obsolescencia deducida con sus causas (:func:`deduce`, :func:`stale_state`,
   :class:`Staleness`, :class:`Cause`).
@@ -127,6 +128,7 @@ FIGURES_API: tuple[str, ...] = (
     "FigureSpec",
     "divergence",
     "divergences",
+    "parameter_divergence",
     "record_figure",
     "scope_key",
 )
@@ -411,6 +413,7 @@ __all__ = [
     "open_check_steps",
     "operation",
     "operation_def",
+    "parameter_divergence",
     "parse_version",
     "plan_recompute",
     "recompute_steps",
