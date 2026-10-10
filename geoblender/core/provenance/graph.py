@@ -342,7 +342,9 @@ def operation_node(row: tuple[Any, ...], consumed: Iterable[Version] = (),
 
 def dataset_node(row: tuple[Any, ...]) -> DatasetNode:
     """Un :class:`DatasetNode` de una fila de :data:`DATASET_COLUMNS`."""
-    return DatasetNode(int(row[0]), *(str(value) for value in row[1:9]), row[9])
+    fid, uid, name, module, kind, status, sha, normalizer, operation_uid, input_uid = row
+    return DatasetNode(int(fid), str(uid), str(name), str(module), str(kind), str(status),
+                       str(sha), str(normalizer), str(operation_uid), input_uid)
 
 
 def input_node(row: tuple[Any, ...]) -> InputNode:
@@ -408,55 +410,65 @@ _DURING_CHUNK = 500
 """Cuántos uid van, como mucho, en cada ``IN (…)`` de :func:`changes_while_running`."""
 
 
-def changes_while_running(conn: sqlite3.Connection, operations: Iterable[str] | None = None
-                          ) -> dict[str, frozenset[Cause]]:
+def _chunks(values: Iterable[str]) -> list[list[str]]:
+    uids = sorted(set(values))
+    return [uids[start:start + _DURING_CHUNK] for start in range(0, len(uids), _DURING_CHUNK)]
+
+
+def changes_while_running(conn: sqlite3.Connection, operations: Iterable[str] | None = None, *,
+                          causes: Iterable[Cause] | None = None) -> dict[str, frozenset[Cause]]:
     """De cada operación hecha (de ``operations``; sin ellas, todas), las causas directas que
     cambiaron **mientras se calculaba** (RF-008-20): un parámetro que leyó y que al terminar
     ya tenía otro valor (la última revisión de su historial hasta su final), o un dato que
     consumió y que al terminar ya tenía otro contenido (el de la última operación que lo
     escribió entre su principio y su final, sin contarla a ella). Solo las que siguen siendo
-    causa (hoy tienen otro valor o contenido); las que no tienen ninguna no están. Lee
-    ``conn`` sin escribir."""
-    if operations is None:
-        chunks: list[list[str]] = [[]]
-    else:
-        if isinstance(operations, str):
-            raise TypeError(f"las operaciones son una lista de uid, no el texto {operations!r}")
-        uids = sorted(set(operations))
-        chunks = [uids[start:start + _DURING_CHUNK]
-                  for start in range(0, len(uids), _DURING_CHUNK)]
+    causa (hoy tienen otro valor o contenido); las que no tienen ninguna no están. Con
+    ``causes``, solo esas, buscadas por lo que cambió (con los índices de quién lo consumió):
+    lo que conviene para presentar las causas de muchas operaciones, como la lista de lo
+    obsoleto (RNF-008-02). Lee ``conn`` sin escribir."""
+    if isinstance(operations, str):
+        raise TypeError(f"las operaciones son una lista de uid, no el texto {operations!r}")
+    queries = ((_PARAMETERS_DURING, CauseKind.PARAMETER_CHANGED, "p"),
+               (_DATASETS_DURING, CauseKind.DATASET_CHANGED, "io"))
     found: dict[str, set[Cause]] = defaultdict(set)
+    if causes is not None:
+        wanted = frozenset(causes)
+        chosen = None if operations is None else set(operations)
+        columns = {CauseKind.PARAMETER_CHANGED: "p.parameter_uid",
+                   CauseKind.DATASET_CHANGED: "io.item_uid"}
+        for sql, kind, _alias in queries:
+            for chunk in _chunks(cause.subject for cause in wanted if cause.kind is kind):
+                only = f" AND {columns[kind]} IN ({', '.join('?' for _ in chunk)})"
+                for op_uid, subject in conn.execute(sql.format(only=only), tuple(chunk)):
+                    if chosen is None or op_uid in chosen:
+                        found[str(op_uid)].add(Cause(kind, str(subject)))
+        return {uid: frozenset(found_causes) for uid, found_causes in found.items()}
+    chunks: list[list[str]] = [[]] if operations is None else _chunks(operations)
     for chunk in chunks:
         marks = ", ".join("?" for _ in chunk)
-        for sql, column, kind in ((_PARAMETERS_DURING, "p.operation_uid",
-                                   CauseKind.PARAMETER_CHANGED),
-                                  (_DATASETS_DURING, "io.operation_uid",
-                                   CauseKind.DATASET_CHANGED)):
-            only = f" AND {column} IN ({marks})" if chunk else ""
+        for sql, kind, alias in queries:
+            only = f" AND {alias}.operation_uid IN ({marks})" if chunk else ""
             for op_uid, subject in conn.execute(sql.format(only=only), tuple(chunk)):
                 found[str(op_uid)].add(Cause(kind, str(subject)))
-    return {uid: frozenset(causes) for uid, causes in found.items()}
+    return {uid: frozenset(found_causes) for uid, found_causes in found.items()}
 
 
 def _load(conn: sqlite3.Connection,
           during: Mapping[str, Iterable[Cause]] | None = None) -> ProvenanceGraph:
+    """El grafo de :func:`load_graph`. Lo que consumieron, produjeron y leyeron las
+    operaciones se lee de ``gb_operation_io`` y ``gb_operation_param`` en su orden de registro,
+    sin un JOIN a ``gb_operation`` por cada fila (RNF-008-02): las operaciones hechas, leídas
+    una vez, toman lo suyo; lo de las que no terminaron se queda sin usar."""
     consumed: dict[str, list[Version]] = defaultdict(list)
     produced: dict[str, list[Version]] = defaultdict(list)
-    io_columns = ", ".join(f"io.{column}" for column in IO_COLUMNS.split(", "))
-    for row in conn.execute(
-        f"SELECT {io_columns} FROM gb_operation_io AS io JOIN gb_operation AS op "
-        "ON op.uid = io.operation_uid WHERE op.status = ? ORDER BY io.fid", (DONE,)
-    ):
-        op_uid, out, version = version_of(row)
-        (produced if out else consumed)[op_uid].append(version)
+    for op_uid, direction, item_kind, item_uid, sha, role in conn.execute(
+            f"SELECT {IO_COLUMNS} FROM gb_operation_io ORDER BY fid"):
+        (produced if direction == "out" else consumed)[op_uid].append(
+            Version(str(item_kind), str(item_uid), str(sha), str(role)))
     used: dict[str, list[ParamUse]] = defaultdict(list)
-    use_columns = ", ".join(f"p.{column}" for column in PARAM_USE_COLUMNS.split(", "))
-    for row in conn.execute(
-        f"SELECT {use_columns} FROM gb_operation_param AS p JOIN gb_operation AS op "
-        "ON op.uid = p.operation_uid WHERE op.status = ? ORDER BY p.fid", (DONE,)
-    ):
-        op_uid, use = param_use_of(row)
-        used[op_uid].append(use)
+    for op_uid, parameter_uid, key, rev, value_sha256 in conn.execute(
+            f"SELECT {PARAM_USE_COLUMNS} FROM gb_operation_param ORDER BY fid"):
+        used[op_uid].append(ParamUse(str(parameter_uid), str(key), int(rev), str(value_sha256)))
     operations = [
         operation_node(row, consumed[row[1]], produced[row[1]], used[row[1]])
         for row in conn.execute(

@@ -23,6 +23,11 @@ La caché ``gb_stale`` (``core.provenance.stale``, T27) se escribe por diferenci
 cálculo completo de estas pruebas comprueba además que la caché es, fila a fila, lo deducido.
 La propiedad «región = completo» se prueba en grafos aleatorios sobre una base en memoria con
 las tablas de la procedencia.
+
+La carga del grafo y la lista de lo obsoleto (RNF-008-02, T64) se comparan con las de antes
+(``whole_load_graph`` y ``whole_stale_items``, la referencia: un JOIN a ``gb_operation`` por
+cada fila leída, todos los nodos de lo obsoleto y un texto por elemento): idénticas en cada
+cálculo completo de estas pruebas y en grafos aleatorios.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ import random
 import re
 import sqlite3
 import unittest
+from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -46,6 +52,7 @@ from tests.unit.core.provenance.test_operations import (
 )
 from tests.unit.core.provenance.test_schema import (
     dataset_row,
+    history_row,
     input_row,
     io_row,
     op_param_row,
@@ -148,6 +155,154 @@ def _check_values(ddl: str) -> set[str]:
     return set(re.findall(r"'([a-z_]+)'", found[1]))
 
 
+# --- Las de antes de T64, la referencia (RNF-008-02) -------------------------------------------
+
+
+def whole_load_graph(conn: sqlite3.Connection, *, during: bool = False) -> Any:
+    """El grafo como lo cargaba ``load_graph`` antes de T64 (la referencia de las pruebas): lo
+    consumido, lo producido y los parámetros leídos de las operaciones hechas, con un JOIN a
+    ``gb_operation`` por cada fila, y los nodos con las funciones de ``graph``."""
+    began = not conn.in_transaction
+    if began:
+        conn.execute("BEGIN")
+    try:
+        while_running = graph_mod.changes_while_running(conn) if during else None
+        consumed: dict[str, list[Any]] = defaultdict(list)
+        produced: dict[str, list[Any]] = defaultdict(list)
+        io_columns = ", ".join(f"io.{column}" for column in graph_mod.IO_COLUMNS.split(", "))
+        for row in conn.execute(
+            f"SELECT {io_columns} FROM gb_operation_io AS io JOIN gb_operation AS op "
+            "ON op.uid = io.operation_uid WHERE op.status = 'done' ORDER BY io.fid"
+        ):
+            op_uid, out, version = graph_mod.version_of(row)
+            (produced if out else consumed)[op_uid].append(version)
+        used: dict[str, list[Any]] = defaultdict(list)
+        use_columns = ", ".join(f"p.{column}"
+                                for column in graph_mod.PARAM_USE_COLUMNS.split(", "))
+        for row in conn.execute(
+            f"SELECT {use_columns} FROM gb_operation_param AS p JOIN gb_operation AS op "
+            "ON op.uid = p.operation_uid WHERE op.status = 'done' ORDER BY p.fid"
+        ):
+            op_uid, use = graph_mod.param_use_of(row)
+            used[op_uid].append(use)
+        operations = [
+            graph_mod.operation_node(row, consumed[row[1]], produced[row[1]], used[row[1]])
+            for row in conn.execute(f"SELECT {graph_mod.OPERATION_COLUMNS} FROM gb_operation "
+                                    "WHERE status = 'done' ORDER BY fid")
+        ]
+        return graph_mod.ProvenanceGraph(
+            operations,
+            [graph_mod.dataset_node(row) for row in conn.execute(
+                f"SELECT {graph_mod.DATASET_COLUMNS} FROM gb_dataset ORDER BY fid")],
+            [graph_mod.input_node(row) for row in conn.execute(
+                f"SELECT {graph_mod.INPUT_NODE_COLUMNS} FROM gb_input ORDER BY fid")],
+            [graph_mod.parameter_node(row) for row in conn.execute(
+                f"SELECT {graph_mod.PARAMETER_COLUMNS} FROM gb_parameter ORDER BY fid")],
+            [graph_mod.FigureNode(int(fid), str(uid), str(key), str(scope_key), str(op_uid))
+             for fid, uid, key, scope_key, op_uid in conn.execute(
+                 "SELECT fid, uid, key, scope_key, operation_uid FROM gb_figure ORDER BY fid")],
+            during=while_running,
+        )
+    finally:
+        if began:
+            conn.execute("ROLLBACK")
+
+
+def same_graph(case: unittest.TestCase, graph: Any, reference: Any, what: str = "") -> None:
+    """``graph`` es ``reference``: las mismas operaciones en el mismo orden (con lo que
+    consumieron, produjeron y leyeron), los mismos datos, entradas, parámetros y cifras en su
+    orden, lo mismo cambiado mientras se calculaba cada una, y los mismos productores de cada
+    versión y miembros de cada grupo."""
+    for name in ("operations", "datasets", "inputs", "parameters"):
+        case.assertEqual(list(getattr(graph, name).items()),
+                         list(getattr(reference, name).items()), f"{what} {name}")
+    case.assertEqual(graph.figures, reference.figures, what)
+    case.assertEqual(dict(graph.during), dict(reference.during), what)
+    case.assertEqual(graph._writers, reference._writers, what)
+    case.assertEqual(graph._groups, reference._groups, what)
+
+
+def whole_stale_items(project: Any, *, conn: sqlite3.Connection | None = None,
+                      language: str = "es", versions: Mapping[str, str] | None = None) -> Any:
+    """La lista de lo obsoleto como la hacía ``stale_items`` antes de T64 (la referencia de
+    las pruebas): todas las filas de la caché con sus causas, los nodos de todos los datos
+    obsoletos y de las operaciones que los escribieron, lo que cambió mientras se calculaba
+    cada una de ellas y un texto por elemento."""
+    with stale_mod._reading(project, conn) as reading:
+        causes: dict[tuple[str, str], set[Any]] = defaultdict(set)
+        since: dict[tuple[str, str], str] = {}
+        for item_kind, item_uid, cause_kind, subject_uid, at in reading.execute(
+                "SELECT item_kind, item_uid, cause_kind, subject_uid, since FROM gb_stale"):
+            key = (str(item_kind), str(item_uid))
+            causes[key].add(Cause(CauseKind(cause_kind), str(subject_uid)))
+            since[key] = min(since.get(key, str(at)), str(at))
+        review = stale_mod.review_operations(reading)
+        found = stale_mod.counts(project, conn=reading)
+        subjects: dict[Any, set[str]] = defaultdict(set)
+        for found_causes in causes.values():
+            for cause in found_causes:
+                subjects[cause.kind].add(cause.subject)
+        named = {uid for kind, uids in subjects.items() if kind.startswith("dataset_")
+                 for uid in uids}
+        stale_data = {uid for kind, uid in causes if kind == "dataset"}
+        data = {node.uid: node for node in (
+            graph_mod.dataset_node(row)
+            for row in stale_mod._select(reading, stale_mod._DATASETS, stale_data | named))}
+        shown = sorted((node for (kind, uid) in causes if kind == "dataset"
+                        and (node := data.get(uid)) is not None and node.live),
+                       key=lambda node: (node.name, node.uid))
+        writers = review | {node.operation_uid for node in shown}
+        operations = {node.uid: node for node in (
+            *(graph_mod.operation_node(row)
+              for row in stale_mod._select(reading, stale_mod._OPERATIONS, writers)),
+            *(graph_mod.operation_node(row) for row in stale_mod._select(
+                reading, stale_mod._OPERATIONS_OF_GROUPS, subjects.get(CauseKind.GROUP, set()))),
+            *(graph_mod.operation_node(row) for row in stale_mod._select(
+                reading, stale_mod._OPERATIONS_OF_TYPES,
+                subjects.get(CauseKind.ALGORITHM, set()))),
+        )}
+        entries = (subjects.get(CauseKind.INPUT_UPDATED, set())
+                   | subjects.get(CauseKind.INPUT_DISCARDED, set()))
+        graph = graph_mod.ProvenanceGraph(
+            operations.values(), data.values(),
+            [graph_mod.input_node(row)
+             for row in stale_mod._select(reading, stale_mod._INPUTS, entries)],
+            [graph_mod.parameter_node(row) for row in stale_mod._select(
+                reading, stale_mod._PARAMETERS, subjects.get(CauseKind.PARAMETER_CHANGED, set()))],
+            during=graph_mod.changes_while_running(reading, writers),
+        )
+    chosen = dict(graph_mod.installed_versions() if versions is None else versions)
+    items: list[Any] = []
+    for node in shown:
+        writer = graph.operations.get(node.operation_uid)
+        found_causes = frozenset(causes[("dataset", node.uid)])
+        items.append(stale_mod.StaleItem(
+            "dataset", node.uid, node.name, node.module, node.operation_uid,
+            "" if writer is None else writer.op_type, node.operation_uid in review,
+            found_causes, str(graph_mod.stale_text(graph, chosen, found_causes, language=language,
+                                                   operation=node.operation_uid)),
+            since[("dataset", node.uid)],
+        ))
+    for operation in sorted((graph.operations[uid] for uid in review),
+                            key=lambda node: node.fid):
+        found_causes = frozenset(causes[("operation", operation.uid)])
+        items.append(stale_mod.StaleItem(
+            "operation", operation.uid, operation.op_type, operation.module, operation.uid,
+            operation.op_type, True, found_causes,
+            str(graph_mod.stale_text(graph, chosen, found_causes, language=language,
+                                     operation=operation.uid)),
+            since[("operation", operation.uid)],
+        ))
+    return stale_mod.StaleReport(tuple(items), found)
+
+
+def same_report(case: unittest.TestCase, report: Any, reference: Any, what: str = "") -> None:
+    """``report`` es ``reference``: los mismos elementos en el mismo orden, con los mismos
+    campos (causas, texto y desde cuándo incluidos), y los mismos recuentos."""
+    case.assertEqual(list(report.items), list(reference.items), what)
+    case.assertEqual(report.counts, reference.counts, what)
+
+
 class GraphCase(OperationsCase):
     """El proyecto de ``OperationsCase`` con los tipos, los parámetros y la cifra de prueba de
     este módulo, y ayudas para encadenar operaciones hechas."""
@@ -245,9 +400,12 @@ class GraphCase(OperationsCase):
     def stale(self, *, cache: bool = True, **kw: Any) -> Any:
         """La obsolescencia completa del proyecto; con las versiones instaladas (sin
         ``versions``) y ``cache``, comprueba además que la caché es, fila a fila, lo deducido
-        (la mantienen los caminos que escriben)."""
+        (la mantienen los caminos que escriben). El grafo cargado es siempre el de antes de
+        T64 (:func:`whole_load_graph`)."""
         with self.project.read() as conn:
-            state = graph_mod.deduce(graph_mod.load_graph(conn), **kw)
+            loaded = graph_mod.load_graph(conn)
+            same_graph(self, loaded, whole_load_graph(conn))
+            state = graph_mod.deduce(loaded, **kw)
             if cache and "versions" not in kw:
                 self.assertEqual(stale_mod.cached_rows(conn), stale_mod.expected_rows(state))
         return state
@@ -337,6 +495,33 @@ class GraphLoadTest(GraphCase):
         self.assertEqual(loaded.upstream(b.uid), (a.uid,))
         self.assertEqual(loaded.upstream(e.uid), (a.uid,))
         self.assertEqual(loaded.upstream(a.uid), ())
+
+    def test_operations_are_read_once(self) -> None:
+        """RNF-008-02, RF-008-24 (T64): la carga del grafo lee una vez las operaciones hechas
+        y reutiliza lo cargado para quedarse con lo que consumieron, produjeron y leyeron
+        (antes, un JOIN a ``gb_operation`` por cada fila de ``gb_operation_io`` y de
+        ``gb_operation_param``); lo de una operación que falló o sigue en curso no está, y el
+        grafo es el de antes."""
+        a = self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
+        failed = self.begin("res.step_b", inputs=_uses(["res_a"]), params=["res.density"])
+        failed.fail("prueba de una operación que no termina")
+        self.begin("res.step_c", inputs=_uses(["res_a"]), params=["res.production"])
+        b = self.run_op("res.step_b", {"res_b": [2.0]}, reads=["res_a"],
+                        params=["res.density"])
+        statements: list[str] = []
+        with self.project.read() as conn:
+            conn.set_trace_callback(statements.append)
+            try:
+                loaded = graph_mod.load_graph(conn)
+            finally:
+                conn.set_trace_callback(None)
+            same_graph(self, loaded, whole_load_graph(conn))
+        self.assertTrue(self.query("SELECT 1 FROM gb_operation_io AS io JOIN gb_operation AS op "
+                                   "ON op.uid = io.operation_uid WHERE op.status <> 'done'"))
+        reading = [sql for sql in statements if re.search(r"\bgb_operation\b", sql)]
+        self.assertEqual(len(reading), 1, reading)
+        self.assertEqual(list(loaded.operations), [a.uid, b.uid])
+        self.assertEqual([use.key for use in loaded.operations[b.uid].params], ["res.density"])
 
     def test_cause_kinds_are_those_of_the_cache(self) -> None:
         """RF-008-24, RF-008-25 (plan §5.2.1): las clases de causa son las de la caché
@@ -798,7 +983,7 @@ class CacheTest(GraphCase):
         """RF-008-28: la lista de lo obsoleto tiene los resultados obsoletos y las operaciones
         que esperan revisión a mano, con sus causas («Obsoleto: cambió Producción»), su
         módulo, la operación que los escribió y desde cuándo (la causa más antigua); y lo
-        mismo en inglés."""
+        mismo en inglés. Las dos, idénticas a las de antes de T64 (RNF-008-02)."""
         self.import_input(INPUT_1, "Entrada_1", "res_im1")
         a = self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
         r = self.run_op("res.digitize", {"res_r": [2.0]}, reads=["res_a"])
@@ -808,6 +993,9 @@ class CacheTest(GraphCase):
         self.change("res.production", 80000.0)
         self.write(lambda conn: inputs.discard(conn, self.project, INPUT_1, "entrega anulada"))
         report = stale_mod.stale_items(self.project)
+        same_report(self, report, whole_stale_items(self.project))  # la de antes de T64
+        same_report(self, stale_mod.stale_items(self.project, language="en"),
+                    whole_stale_items(self.project, language="en"))
         self.assertEqual(report.counts, stale_mod.counts(self.project))
         self.assertEqual(report.counts, stale_mod.Counts(stale=3, review=1, inputs_changed=0))
         self.assertEqual(
@@ -891,6 +1079,84 @@ class CacheTest(GraphCase):
             if isinstance(node, ast.ImportFrom):
                 with self.subTest(line=node.lineno):
                     self.assertNotIn("stale", [alias.name for alias in node.names])
+
+
+class ListTest(GraphCase):
+    """La lista de lo obsoleto no rehace lo que ya tiene (RNF-008-02, T64)."""
+
+    def stale_items(self, **kw: Any) -> Any:
+        """La lista de lo obsoleto, que es la de antes de T64 (:func:`whole_stale_items`)."""
+        report = stale_mod.stale_items(self.project, **kw)
+        same_report(self, report, whole_stale_items(self.project, **kw))
+        return report
+
+    def test_one_text_per_set_of_causes(self) -> None:
+        """RNF-008-02, RF-008-28: el texto de la lista se compone una vez por conjunto de
+        causas (y lo que de ellas cambió mientras se calculaba): con cuatro datos y una
+        revisión a mano obsoletos por la producción y uno por la densidad, dos textos, en
+        español y en inglés; la lista es la de antes."""
+        self.chain()
+        self.run_op("res.digitize", {"res_r": [2.0]}, reads=["res_a"])
+        self.change("res.production", 80000.0)
+        self.change("res.density", 2.6)
+        for language in ("es", "en"):
+            with self.subTest(language=language):
+                with mock.patch.object(stale_mod, "stale_text",
+                                       wraps=stale_mod.stale_text) as composed:
+                    report = stale_mod.stale_items(self.project, language=language)
+                self.assertEqual(composed.call_count, 2)
+                same_report(self, report, whole_stale_items(self.project, language=language))
+                self.assertEqual(
+                    [(item.name, item.review) for item in report.items],
+                    [("res_a", False), ("res_b", False), ("res_c", False), ("res_d", False),
+                     ("res_r", True), ("res.digitize", True)],
+                )
+                self.assertEqual(len({item.text for item in report.items}), 2)
+
+    def test_only_what_the_texts_name_is_loaded(self) -> None:
+        """RNF-008-02, RF-008-28: para los textos de la lista solo se crean los nodos que
+        nombran sus causas (el dato que cambió, la entrada descartada y el parámetro), no los
+        de los datos obsoletos ni los de las operaciones que los escribieron; la lista es la
+        de antes."""
+        self.import_input(INPUT_1, "Entrada_1", "res_im1")
+        self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
+        self.run_op("res.step_b", {"res_b": [2.0]}, reads=["res_a", "res_im1"])
+        self.run_op("res.step_c", {"res_c": [3.0]}, reads=["res_b"])
+        self.run_op("res.edit", {"res_a": [1.0, 5.0]}, reads=["res_a"])
+        self.change("res.production", 80000.0)
+        self.write(lambda conn: inputs.discard(conn, self.project, INPUT_1, "entrega anulada"))
+        built: list[Any] = []
+        original = stale_mod.ProvenanceGraph
+
+        def spy(*args: Any, **kw: Any) -> Any:
+            graph = original(*args, **kw)
+            built.append(graph)
+            return graph
+
+        with mock.patch.object(stale_mod, "ProvenanceGraph", spy):
+            report = stale_mod.stale_items(self.project)
+        same_report(self, report, whole_stale_items(self.project))
+        self.assertEqual([item.name for item in report.items],
+                         ["res_a", "res_b", "res_c", "res.edit"])
+        (graph,) = built
+        self.assertEqual(set(graph.datasets), {self.dataset("res_a")})
+        self.assertEqual(dict(graph.operations), {})
+        self.assertEqual(set(graph.inputs), {INPUT_1})
+        self.assertEqual(set(graph.parameters), {self.parameter("res.production")})
+
+    def test_while_running_of_a_review_that_only_gave_a_figure(self) -> None:
+        """RNF-008-02, RF-008-28, RF-008-20: lo que cambió mientras se calculaba se busca
+        también para las operaciones que esperan revisión a mano sin ningún dato en la lista
+        (solo dieron la cifra vigente): «… mientras se calculaba», como antes."""
+        handle = self.begin("res.digitize", params=["res.production"])
+        self.tick()
+        self.change("res.production", 80000.0)
+        self.write(lambda conn: handle.complete(
+            conn, outputs=[], figures=(figures.FigureSpec("res.marks", 7.0, "-"),)))
+        report = self.stale_items()
+        self.assertEqual([(item.item_kind, item.uid, item.text) for item in report.items],
+                         [("operation", handle.uid,
+                           "Obsoleto: cambió Producción mientras se calculaba")])
 
 
 # --- Grafos aleatorios: región = completo (T27) -------------------------------------------------
@@ -1122,6 +1388,144 @@ class RegionPropertyTest(unittest.TestCase):
             finally:
                 world.conn.close()
         self.assertGreater(smaller, total // 2)
+
+
+# --- Grafos aleatorios: la carga y la lista, las de antes (T64) --------------------------------
+
+RANDOM_LISTS = 40
+_EARLY_START = "2026-10-08T00:00:00.000Z"  # antes de todas las de un mundo aleatorio
+_WHILE_RUNNING_EN = "while it was being calculated"
+
+
+class HistoryProject(RandomProject):
+    """Un mundo aleatorio con el historial de los parámetros (cada cambio, su revisión) y
+    operaciones que empezaron antes (un trabajo largo): lo que cambió mientras se calculaban."""
+
+    def __init__(self, rng: random.Random) -> None:
+        super().__init__(rng)
+        self.conn.execute(schema.TABLES["gb_parameter_history"])
+        self.revisions = dict.fromkeys(self.params, 2)  # la que anotan las operaciones
+
+    def change_parameter(self) -> dict[str, list[str]]:
+        changes = super().change_parameter()
+        (uid,) = changes["parameters"]
+        self.revisions[uid] += 1
+        self.insert("gb_parameter_history", history_row(
+            parameter_uid=uid, rev=self.revisions[uid], value_sha256=self.params[uid],
+            changed_at=self.stamp()))
+        return changes
+
+    def start_early(self) -> None:
+        """Una de cada tres operaciones empezó antes que todas las demás."""
+        for (uid,) in self.conn.execute("SELECT uid FROM gb_operation ORDER BY fid").fetchall():
+            if self.rng.random() < 1 / 3:
+                self.conn.execute("UPDATE gb_operation SET started_at = ? WHERE uid = ?",
+                                  (_EARLY_START, uid))
+
+    def alter(self) -> None:
+        """Lo que no deja ningún camino que escribe y la lista pasa por alto como antes: la
+        operación que escribió un dato obsoleto ya no está hecha (el dato sigue vivo y en la
+        caché) y la caché tiene filas de un dato que no está vivo y de uno que no existe."""
+        writers = [str(uid) for (uid,) in self.conn.execute(
+            "SELECT DISTINCT d.operation_uid FROM gb_stale AS s JOIN gb_dataset AS d "
+            "ON d.uid = s.item_uid WHERE s.item_kind = 'dataset' ORDER BY d.fid")]
+        if writers:
+            self.conn.execute("UPDATE gb_operation SET status = 'interrupted' WHERE uid = ?",
+                              (self.rng.choice(writers),))
+        gone = [str(uid) for (uid,) in self.conn.execute(
+            "SELECT uid FROM gb_dataset WHERE status IN ('superseded', 'discarded') "
+            "ORDER BY fid")]
+        for uid in (*gone[:1], self.uid()):
+            self.insert("gb_stale", {"item_kind": "dataset", "item_uid": uid,
+                                     "cause_kind": "dataset_changed", "subject_uid": uid,
+                                     "since": self.stamp()})
+
+
+class RandomListTest(unittest.TestCase):
+    def check_changes_by_cause(self, world: HistoryProject, what: str) -> None:
+        """Lo que cambió mientras se calculaban unas operaciones, buscado por unas causas, es
+        lo de buscarlo por operación restringido a esas causas."""
+        rng = world.rng
+        everything = graph_mod.changes_while_running(world.conn)
+        operations = [str(uid) for (uid,) in world.conn.execute("SELECT uid FROM gb_operation")]
+        found = sorted({cause for causes in everything.values() for cause in causes})
+        chosen = rng.sample(operations, rng.randint(0, len(operations)))
+        causes = set(rng.sample(found, rng.randint(0, len(found))))
+        causes.add(Cause(CauseKind.PARAMETER_CHANGED, rng.choice(sorted(world.params))))
+        expected = {uid: everything[uid] & causes for uid in chosen
+                    if everything.get(uid, frozenset()) & causes}
+        self.assertEqual(graph_mod.changes_while_running(world.conn, chosen, causes=causes),
+                         expected, what)
+        self.assertEqual(graph_mod.changes_while_running(world.conn, chosen),
+                         {uid: everything[uid] for uid in chosen if uid in everything}, what)
+        everywhere = {uid: found_causes & causes for uid, found_causes in everything.items()
+                      if found_causes & causes}
+        self.assertEqual(graph_mod.changes_while_running(world.conn, causes=causes), everywhere,
+                         what)
+
+    def test_same_as_before_on_random_graphs(self) -> None:
+        """RNF-008-02, RF-008-24, RF-008-28: en grafos aleatorios —grupos acoplados,
+        operaciones sustituidas, versiones anteriores consumidas, ediciones propias, entradas
+        sustituidas y descartadas, datos que faltan, bloqueados, dañados o sustituidos,
+        parámetros que cambian con su historial, algoritmos más nuevos, operaciones que
+        empezaron antes que otras que escribieron lo que consumían y, en uno de cada tres, lo
+        que no deja ningún camino que escribe (la que escribió un dato obsoleto ya no está
+        hecha; filas de la caché de un dato que no está vivo y de uno que no existe)—, el
+        grafo cargado (con y sin lo que cambió mientras se calculaba cada operación) y la
+        lista de lo obsoleto, en español y en inglés, son idénticos a los de antes de T64; el
+        texto de cada elemento es el de ``item_text``; y lo que cambió mientras se calculaban,
+        buscado por causa, es lo buscado por operación restringido a esas causas."""
+        seeds = random.Random(20261011)
+        newer = {**_RANDOM_VERSIONS, "res.t0": "1.2"}
+        listed = while_running = 0
+        for case in range(RANDOM_LISTS):
+            world = HistoryProject(random.Random(seeds.getrandbits(64)))
+            try:
+                for _ in range(world.rng.randint(6, 18)):
+                    world.step()
+                world.start_early()
+                versions = newer if case % 2 else _RANDOM_VERSIONS
+                world.conn.execute("BEGIN")
+                stale_mod.refresh_all(world.conn, now=world.stamp(), versions=versions)
+                world.conn.execute("COMMIT")
+                if case % 3 == 2:
+                    world.alter()
+                for during in (False, True):
+                    same_graph(self, graph_mod.load_graph(world.conn, during=during),
+                               whole_load_graph(world.conn, during=during),
+                               f"caso {case}, mientras se calculaba: {during}")
+                self.check_changes_by_cause(world, f"caso {case}")
+                for language in ("es", "en"):
+                    report = stale_mod.stale_items(None, conn=world.conn, language=language,
+                                                   versions=versions)
+                    same_report(self, report, whole_stale_items(
+                        None, conn=world.conn, language=language, versions=versions),
+                        f"caso {case}, {language}")
+                    for item in report.items:
+                        self.assertEqual(stale_mod.item_text(
+                            world.conn, item.item_kind, item.uid, language=language,
+                            versions=versions), item.text, f"caso {case}, {item.uid}")
+                listed += len(report.items)
+                while_running += sum(_WHILE_RUNNING_EN in item.text for item in report.items)
+            finally:
+                world.conn.close()
+        self.assertGreater(listed, RANDOM_LISTS)
+        self.assertGreater(while_running, 0)
+
+    def test_list_query_goes_from_the_causes_to_the_data(self) -> None:
+        """RNF-008-02, RF-008-28: la consulta de la lista va de las causas agrupadas de la
+        caché a cada dato, por su uid (el ``CROSS JOIN`` fija el orden): con las estadísticas
+        de una base casi vacía (``ANALYZE``), sin él, el planificador recorría los datos vivos
+        por nombre y, por cada uno, todas las causas agrupadas."""
+        world = RandomProject(random.Random(20261011))
+        try:
+            world.conn.execute("ANALYZE")
+            plan = [str(row[3]) for row in world.conn.execute(
+                "EXPLAIN QUERY PLAN " + stale_mod._STALE_DATASETS)]
+        finally:
+            world.conn.close()
+        self.assertIn("SEARCH d USING INDEX sqlite_autoindex_gb_dataset_1 (uid=?)", plan)
+        self.assertFalse([line for line in plan if line.startswith("SCAN d")], plan)
 
 
 if __name__ == "__main__":

@@ -153,6 +153,34 @@ _LIVE_WRITERS = (
     f"AND d.operation_uid = io.operation_uid AND d.status IN ({_LIVE}) "
     "AND io.operation_uid IN ({marks})"
 )
+_STALE_COUNT = (
+    "SELECT COUNT(DISTINCT s.item_uid) FROM gb_stale AS s JOIN gb_dataset AS d "
+    f"ON d.uid = s.item_uid WHERE s.item_kind = '{DATASET}' AND d.status IN ({_LIVE})"
+)
+_CHANGED_INPUTS = "SELECT COUNT(*) FROM gb_input WHERE status = ?"
+# Las causas de cada elemento de la caché en una lista JSON de [clase, sujeto] (se memorizan
+# por conjunto: muchos elementos tienen las mismas) y desde cuándo (la más antigua).
+_GROUPED = (
+    "SELECT item_uid, json_group_array(json_array(cause_kind, subject_uid)) AS causes, "
+    "min(since) AS since FROM gb_stale WHERE item_kind = '{kind}'{only} GROUP BY item_uid"
+)
+# La lista: cada dato vivo con causas, por nombre, con el tipo de la operación hecha que
+# escribió su contenido actual (vacío si no lo es). El CROSS JOIN fija el orden (de las causas
+# agrupadas al dato, por su uid): sin él, el planificador puede recorrer los datos por nombre y
+# las causas agrupadas por cada uno.
+_STALE_DATASETS = (
+    "SELECT d.uid, d.name, d.module, d.operation_uid, op.op_type, s.causes, s.since "
+    f"FROM ({_GROUPED.format(kind=DATASET, only='')}) AS s "
+    "CROSS JOIN gb_dataset AS d ON d.uid = s.item_uid "
+    f"LEFT JOIN gb_operation AS op ON op.uid = d.operation_uid AND {_DONE} "
+    f"WHERE d.status IN ({_LIVE}) ORDER BY d.name, d.uid"
+)
+# … y las operaciones que esperan revisión a mano, con sus causas.
+_STALE_OPERATIONS = (
+    "SELECT op.fid, op.uid, op.op_type, op.module, s.causes, s.since "
+    f"FROM ({_GROUPED.format(kind=OPERATION, only=' AND item_uid IN ({marks})')}) AS s "
+    "CROSS JOIN gb_operation AS op ON op.uid = s.item_uid"
+)
 _FIGURE_KEYS = "SELECT DISTINCT key, scope_key FROM gb_figure WHERE operation_uid IN ({marks})"
 _FIGURES_OF_KEY = (
     "SELECT f.operation_uid, EXISTS (SELECT 1 FROM gb_stale AS s "
@@ -553,18 +581,51 @@ def review_operations(conn: sqlite3.Connection) -> frozenset[str]:
     return frozenset(found)
 
 
+def _changed_inputs(conn: sqlite3.Connection) -> int:
+    return int(conn.execute(_CHANGED_INPUTS, (CHANGED_INPUT,)).fetchone()[0])
+
+
 def counts(project: ReadableProject, *, conn: sqlite3.Connection | None = None) -> Counts:
     """Los recuentos de la barra de estado (:class:`Counts`), leídos de la caché y del
     registro de entradas en una instantánea (de ``conn``, si se da)."""
     with _reading(project, conn) as reading:
-        stale = reading.execute(
-            "SELECT COUNT(DISTINCT s.item_uid) FROM gb_stale AS s JOIN gb_dataset AS d "
-            f"ON d.uid = s.item_uid WHERE s.item_kind = '{DATASET}' AND d.status IN ({_LIVE})"
-        ).fetchone()[0]
+        stale = reading.execute(_STALE_COUNT).fetchone()[0]
         review = review_operations(reading)
-        changed = reading.execute("SELECT COUNT(*) FROM gb_input WHERE status = ?",
-                                  (CHANGED_INPUT,)).fetchone()[0]
-    return Counts(int(stale), len(review), int(changed))
+        changed = _changed_inputs(reading)
+    return Counts(int(stale), len(review), changed)
+
+
+_NOTHING: frozenset[Cause] = frozenset()
+
+
+class _Causes:
+    """Las causas de los elementos de la lista, una vez por conjunto: las listas JSON de la
+    caché que ya se leyeron (muchos elementos tienen las mismas) y los textos ya compuestos
+    por conjunto de causas y lo que de ellas cambió mientras se calculaba la operación."""
+
+    def __init__(self) -> None:
+        self.parsed: dict[str, frozenset[Cause]] = {}
+        self.texts: dict[tuple[frozenset[Cause], frozenset[Cause]], str] = {}
+
+    def of(self, listed: str) -> frozenset[Cause]:
+        found = self.parsed.get(listed)
+        if found is None:
+            found = self.parsed[listed] = frozenset(
+                Cause(CauseKind(kind), str(subject)) for kind, subject in json.loads(listed))
+        return found
+
+    def text(self, graph: ProvenanceGraph, versions: Mapping[str, str],
+             causes: frozenset[Cause], operation: str, language: str) -> str:
+        """El texto de :func:`.graph.stale_text` de ``causes`` de la operación ``operation``
+        (o del dato que escribió), compuesto una vez por clave: solo cambia con lo que de
+        ellas cambió mientras se calculaba."""
+        during = graph.during.get(operation)
+        key = (causes, causes & during if during else _NOTHING)
+        found = self.texts.get(key)
+        if found is None:
+            found = self.texts[key] = str(stale_text(graph, versions, causes, language=language,
+                                                     operation=operation))
+        return found
 
 
 def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = None,
@@ -572,47 +633,42 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
                 versions: Mapping[str, str] | None = None) -> StaleReport:
     """La lista de lo obsoleto (:class:`StaleReport`) según la caché, con los textos en
     ``language`` y, para un algoritmo, la versión instalada (``versions``; por defecto, la de
-    los tipos registrados)."""
+    los tipos registrados).
+
+    No rehace lo que ya tiene (RNF-008-02): lee los datos que se muestran con sus causas, ya
+    agrupadas y por nombre, en una consulta; cada conjunto de causas se lee y su texto se
+    compone una sola vez; y para los textos solo crea los nodos que nombran las causas de lo
+    que se muestra (los datos, las entradas y los parámetros que cambiaron y las operaciones
+    de sus grupos y sus algoritmos), con lo que de esas causas cambió mientras se calculaba
+    cada operación."""
+    sets = _Causes()
     with _reading(project, conn) as reading:
-        causes: dict[tuple[str, str], set[Cause]] = defaultdict(set)
-        since: dict[tuple[str, str], str] = {}
-        for item_kind, item_uid, cause_kind, subject_uid, at in reading.execute(
-                "SELECT item_kind, item_uid, cause_kind, subject_uid, since FROM gb_stale"):
-            key = (str(item_kind), str(item_uid))
-            causes[key].add(Cause(CauseKind(cause_kind), str(subject_uid)))
-            since[key] = min(since.get(key, str(at)), str(at))
         review = review_operations(reading)
-        found = counts(project, conn=reading)
-        subjects = _subjects(causes.values())
-        data = _dataset_nodes(reading, {uid for kind, uid in causes if kind == DATASET}
-                              | _named(subjects))
-        shown = sorted((node for (kind, uid) in causes if kind == DATASET
-                        and (node := data.get(uid)) is not None and node.live),
-                       key=lambda node: (node.name, node.uid))
-        writers = review | {node.operation_uid for node in shown}
-        graph = _text_graph(reading, subjects, data, writers)
+        data = [(str(uid), str(name), str(module), str(op_uid),
+                 "" if op_type is None else str(op_type), sets.of(listed), str(since))
+                for uid, name, module, op_uid, op_type, listed, since
+                in reading.execute(_STALE_DATASETS)]
+        operations = sorted(
+            ((int(fid), str(uid), str(op_type), str(module), sets.of(listed), str(since))
+             for fid, uid, op_type, module, listed, since
+             in _select(reading, _STALE_OPERATIONS, review)),
+            key=lambda row: row[0])  # por orden de registro
+        found = Counts(len(data), len(review), _changed_inputs(reading))
+        shown = sets.parsed.values()
+        writers = {row[3] for row in data} | review
+        graph = _text_graph(reading, _subjects(shown), changes_while_running(
+            reading, writers, causes={cause for causes in shown for cause in causes}))
     chosen = dict(installed_versions() if versions is None else versions)
-    items: list[StaleItem] = []
-    for node in shown:
-        writer = graph.operations.get(node.operation_uid)
-        found_causes = frozenset(causes[(DATASET, node.uid)])
-        items.append(StaleItem(
-            DATASET, node.uid, node.name, node.module, node.operation_uid,
-            "" if writer is None else writer.op_type, node.operation_uid in review,
-            found_causes, str(stale_text(graph, chosen, found_causes, language=language,
-                                         operation=node.operation_uid)),
-            since[(DATASET, node.uid)],
-        ))
-    for operation in sorted((graph.operations[uid] for uid in review),
-                            key=lambda node: node.fid):
-        found_causes = frozenset(causes[(OPERATION, operation.uid)])
-        items.append(StaleItem(
-            OPERATION, operation.uid, operation.op_type, operation.module, operation.uid,
-            operation.op_type, True, found_causes,
-            str(stale_text(graph, chosen, found_causes, language=language,
-                           operation=operation.uid)),
-            since[(OPERATION, operation.uid)],
-        ))
+    items = [
+        StaleItem(DATASET, uid, name, module, op_uid, op_type, op_uid in review, causes,
+                  sets.text(graph, chosen, causes, op_uid, language), since)
+        for uid, name, module, op_uid, op_type, causes, since in data
+    ]
+    items.extend(
+        StaleItem(OPERATION, uid, op_type, module, uid, op_type, True, causes,
+                  sets.text(graph, chosen, causes, uid, language), since)
+        for _fid, uid, op_type, module, causes, since in operations
+    )
     return StaleReport(tuple(items), found)
 
 
@@ -636,12 +692,13 @@ def item_text(conn: sqlite3.Connection, item_kind: str, uid: str, *, language: s
         causes = item_causes(conn, item_kind, uid)
         if not causes:
             return None
-        subjects = _subjects([causes])
-        data = _dataset_nodes(conn, _named(subjects) | ({uid} if item_kind == DATASET
-                                                        else set()))
-        writer = uid if item_kind == OPERATION else (
-            data[uid].operation_uid if uid in data else None)
-        graph = _text_graph(conn, subjects, data, set() if writer is None else {writer})
+        writer: str | None = uid
+        if item_kind == DATASET:
+            found = conn.execute("SELECT operation_uid FROM gb_dataset WHERE uid = ?",
+                                 (uid,)).fetchone()
+            writer = None if found is None else str(found[0])
+        graph = _text_graph(conn, _subjects([causes]), changes_while_running(
+            conn, () if writer is None else (writer,)))
     chosen = dict(installed_versions() if versions is None else versions)
     return stale_text(graph, chosen, causes, language=language, operation=writer)
 
@@ -668,12 +725,12 @@ def _dataset_nodes(conn: sqlite3.Connection, uids: Collection[str]) -> dict[str,
 
 
 def _text_graph(conn: sqlite3.Connection, subjects: Mapping[CauseKind, set[str]],
-                data: Mapping[str, DatasetNode], writers: Collection[str]) -> ProvenanceGraph:
-    """El grafo con lo que nombran los textos de las causas de ``subjects`` (los datos
-    ``data``, las operaciones ``writers``, las de los grupos y los tipos de algoritmo, las
-    entradas y los parámetros) y lo que cambió mientras se calculaban ``writers``."""
+                during: Mapping[str, Iterable[Cause]]) -> ProvenanceGraph:
+    """El grafo con solo lo que nombran los textos de las causas de ``subjects`` (los datos,
+    las entradas y los parámetros que cambiaron y las operaciones de sus grupos y de sus
+    tipos de algoritmo: :func:`.graph.describe_cause`) y lo que cambió mientras se calculaba
+    cada operación (``during``)."""
     operations = {node.uid: node for node in (
-        *(operation_node(row) for row in _select(conn, _OPERATIONS, writers)),
         *(operation_node(row) for row in _select(conn, _OPERATIONS_OF_GROUPS,
                                                  subjects.get(CauseKind.GROUP, set()))),
         *(operation_node(row) for row in _select(conn, _OPERATIONS_OF_TYPES,
@@ -682,9 +739,9 @@ def _text_graph(conn: sqlite3.Connection, subjects: Mapping[CauseKind, set[str]]
     entries = (subjects.get(CauseKind.INPUT_UPDATED, set())
                | subjects.get(CauseKind.INPUT_DISCARDED, set()))
     return ProvenanceGraph(
-        operations.values(), data.values(),
+        operations.values(), _dataset_nodes(conn, _named(subjects)).values(),
         [input_node(row) for row in _select(conn, _INPUTS, entries)],
         [parameter_node(row) for row in _select(
             conn, _PARAMETERS, subjects.get(CauseKind.PARAMETER_CHANGED, set()))],
-        during=changes_while_running(conn, writers),
+        during=during,
     )
