@@ -24,12 +24,14 @@ ADR-0025; plan 008 §5.1).
 from .external import (
     ExternalOutcome,
     Offer,
+    Unusable,
     accept_edit,
     external_check_steps,
     mark_missing,
     offers,
     original_usable,
     restore,
+    unusable,
 )
 from .model import (
     DATASET_KINDS,
@@ -88,6 +90,7 @@ __all__ = [
     "OrphanState",
     "Store",
     "TableState",
+    "Unusable",
     "accept_edit",
     "content_digest",
     "ensure_triggers",
@@ -111,4 +114,5 @@ __all__ = [
     "track_table",
     "tracking_trigger_names",
     "unregistered_tables",
+    "unusable",
 ]

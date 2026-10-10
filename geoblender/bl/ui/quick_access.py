@@ -26,12 +26,21 @@ del plegado (el estado que mostrarán con R-16 y R-09); los controles con númer
 insignia (Refrescar, Comprobar) van en icono hasta que su entrada dé el número. Encaje es
 el conmutador nativo (``tool_settings.use_snap``) y su menú ▾.
 
+El número de un control con número (``icon_text``; spec 008, T49): quien lo sabe pone con
+:func:`set_count_provider` una función que, con el contexto, da el número o ``None`` (sin
+número). El número se dibuja tras el icono del control y abre su segundo comando
+(``extra``): el control 7, «Refrescar · obsoletos (n)», con lo obsoleto del proyecto
+(RF-008-28), cuyo número abre ``GEOBLENDER_PT_core_stale``. Sin número, el control es solo
+su icono, como antes.
+
 :func:`install` añade la fila a la cabecera una sola vez (también tras una recarga) y
 :func:`uninstall` la quita.
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from typing import Any
 
 import bpy
@@ -46,8 +55,13 @@ from ...core.catalog.width import (
 from ...core.i18n import tr
 from .. import compat
 from . import gate
-from .commands import catalog, preference, preferences, text
+from .commands import catalog, is_available, preference, preferences, text
 from .drawing import draw_command
+
+LOGGER = logging.getLogger("geoblender.bl.ui")
+
+CountProvider = Callable[[Any], "int | None"]
+"""El número de un control con número: (contexto) → n, o ``None`` si no tiene número."""
 
 HEADER = "VIEW3D_HT_tool_header"
 MORE_PANEL = "GEOBLENDER_PT_ui_quick_access_more"
@@ -67,9 +81,61 @@ class _State:
         # Por ámbito: el catálogo, sus controles en orden y por clave (T46).
         self.items: dict[str, tuple[Catalog, tuple[QuickAccessItem, ...],
                                     dict[str, QuickAccessItem]]] = {}
+        self.counts: dict[str, CountProvider] = {}  # clave del control → su número (008)
 
 
 _STATE = _State()
+
+
+# Número de un control (spec 008, T49) -------------------------------------------------------
+
+
+def set_count_provider(key: str, provider: CountProvider | None) -> None:
+    """Pone quien da el número del control ``key`` (``provider(context)`` → n o ``None``) o,
+    con ``None``, lo quita (el control vuelve a ser solo su icono)."""
+    if provider is None:
+        _STATE.counts.pop(key, None)
+    else:
+        _STATE.counts[key] = provider
+
+
+def count_provider(key: str) -> CountProvider | None:
+    """Quien da el número del control ``key``, o ``None``."""
+    return _STATE.counts.get(key)
+
+
+def count_of(key: str, context: Any) -> int | None:
+    """El número del control ``key`` ahora, o ``None`` si no tiene (o si quien lo da falla:
+    la barra se dibuja igual y el error queda en el registro técnico)."""
+    provider = _STATE.counts.get(key)
+    if provider is None:
+        return None
+    try:
+        found = provider(context)
+    except Exception:  # noqa: BLE001 - un número que falla no rompe la barra superior
+        LOGGER.exception("Falló el número del control «%s»", key)
+        return None
+    return None if found is None else int(found)
+
+
+def _draw_count(layout: Any, context: Any, item: QuickAccessItem) -> None:
+    """El número de un control tras su icono, que abre su segundo comando (``extra``): sin
+    icono (el del control ya está) y desactivado si ese comando no está disponible."""
+    if not item.extra:
+        return
+    count = count_of(item.key, context)
+    cmd = catalog().commands.get(item.extra)
+    if count is None or cmd is None:
+        return
+    sub = layout.row(align=True)
+    sub.enabled = is_available(item.extra)
+    shown = str(count)
+    if cmd.kind == "panel":
+        sub.popover(cmd.idname, text=shown, translate=False)
+    elif cmd.kind == "menu":
+        sub.menu(cmd.idname, text=shown, translate=False)
+    else:
+        sub.operator(cmd.idname, text=shown, translate=False)
 
 
 def _scope(scope: str) -> tuple[tuple[QuickAccessItem, ...], dict[str, QuickAccessItem]]:
@@ -100,6 +166,8 @@ def draw_project(layout: Any, context: Any, level: Level) -> None:
             continue  # el conmutador y Disposición ▾ van al principio de la barra
         titled = item.key == VERSION_PANEL and level in TITLED_LEVELS
         draw_command(row, item.key, context=context, icon_only=not titled, inline=True)
+        if item.display == "icon_text":
+            _draw_count(row, context, item)
 
 
 # Fila 2 de la Vista 3D ---------------------------------------------------------------------
@@ -256,12 +324,14 @@ def install() -> None:
 
 
 def uninstall() -> None:
-    """Quita la fila de la vista y olvida el estado por área."""
+    """Quita la fila de la vista y olvida el estado por área y los números de los
+    controles."""
     _remove_ours()
     _STATE.installed = False
     _STATE.folds.clear()
     _STATE.folded.clear()
     _STATE.items.clear()
+    _STATE.counts.clear()
 
 
 classes: tuple[type, ...] = (GEOBLENDER_PT_ui_quick_access_more,)

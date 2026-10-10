@@ -174,6 +174,24 @@ class FigureRecord:
         """El ámbito como se guarda (JSON canónico)."""
         return canonical_json(dict(self.scope)).decode("utf-8")
 
+    def text(self, *, language: str = "es") -> str:
+        """La cifra como la lee una persona en ``language`` (RF-008-31; T55): su nombre (en
+        inglés, el ``label_msgid`` de su definición, si está registrada), los valores de su
+        ámbito y su valor con su unidad: «Años del banco (demostración) · B-1 = 2,5 año». El
+        valor va entero, sin redondear, con el separador de miles (T71); el ámbito, sin él
+        («2026», «fase 2»). :class:`ValueError` con otro idioma."""
+        if language not in LANGUAGES:
+            raise ValueError(f"el idioma «{language}» no es de Geoblender: "
+                             f"{', '.join(LANGUAGES)}")
+        name = self.label
+        declared = FIGURES.get(self.key) if language == "en" else None
+        if declared is not None:
+            name = declared.label_msgid
+        scope = ", ".join(format_value(value, language, grouped=False)
+                          for value in self.scope.values())
+        shown = f"{name} · {scope}" if scope else name
+        return f"{shown} = {_shown(self.value, self.unit, language)}"
+
 
 @dataclass(frozen=True, slots=True)
 class Divergence:
@@ -229,7 +247,8 @@ class Divergence:
 
 
 def _shown(value: ParamValue | None, unit: str, language: str = "es") -> str:
-    """Un valor con su unidad como lo lee una persona: «1,11», «90,5 %», «2,65 t/m³»."""
+    """Un valor con su unidad como lo lee una persona: «1,11», «90,5 %», «2,65 t/m³»,
+    «500 000 t/año» (con el separador de miles, como un parámetro: T71)."""
     if value is None:
         return _NO_VALUE[language]
     if isinstance(value, tuple):
@@ -631,6 +650,21 @@ def divergence(conn: sqlite3.Connection, figure: FigureRecord) -> Divergence | N
         figure.value, figure.unit, figure.parameter_uid, str(key), value, str(unit),
         ParamKind(kind), bool(unconfirmed), str(decided_by), str(decided_at),
     )
+
+
+def parameter_divergence(conn: sqlite3.Connection, parameter_uid: str) -> Divergence | None:
+    """El aviso de RF-008-59 que se enseña junto al parámetro ``parameter_uid`` (el panel de
+    parámetros, RF-008-06): el de la **última** cifra CALCULADO que lo calcula, si difiere de
+    su valor de ahora (:func:`divergence`); si la última coincide, no hay ninguna o el
+    parámetro no existe, ``None``. Solo lee: lo decide una persona (S-1)."""
+    if not isinstance(parameter_uid, str):
+        raise TypeError(f"un parámetro se indica por su uid, no {parameter_uid!r}")
+    row = conn.execute(
+        f"SELECT {RECORD_COLUMNS} FROM gb_figure WHERE parameter_uid = ? AND kind = ? "
+        "ORDER BY fid DESC LIMIT 1",
+        (parameter_uid, str(ParamKind.CALCULADO)),
+    ).fetchone()
+    return None if row is None else divergence(conn, FigureRecord.from_row(row))
 
 
 def divergences(conn: sqlite3.Connection, operation_uid: str) -> list[Divergence]:

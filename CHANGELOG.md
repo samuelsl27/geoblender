@@ -10,21 +10,140 @@ cambiar.
 ## [Sin publicar]
 
 Geoblender 0.1.0 ya se instala (spec 001), crea y abre proyectos con su sistema de
-referencia y su origen local (spec 002), tiene su interfaz (spec 003) y ejecuta los cálculos
-largos en segundo plano, con un motor de cálculo opcional (spec 004), aunque todavía no
-tiene funciones mineras. Lo de la spec 002 está comprobado también con QGIS 4.2 sin su
-interfaz (PyQGIS) y en la red con un solo equipo; falta con dos equipos a la vez, y que IMGA
-acepte esas pruebas de QGIS y, en lugar de la del panel del proyecto, las de la interfaz de la
-spec 003. Lo de la spec 003 está comprobado en una pantalla de 1920 × 1080 con Windows al 125 %,
-salvo algunas teclas en modo Blender, la lista de F3 en los dos modos, la barra T de Blender, la
-fila 1, el clic derecho, Mayús+Alt+B y la chincheta, la fila 2 en edición, dos idiomas de
-entrada, la plantilla instalada en el Blender de cada uno, la revisión de los iconos y la
-lectura de la barra con tres ingenieros. Lo de la spec 004 está comprobado en esa misma
-pantalla, con el motor de cálculo instalado desde un almacén de ruedas en el disco del equipo;
-falta el almacén del NAS de IMGA.
+referencia y su origen local (spec 002), tiene su interfaz (spec 003), ejecuta los cálculos
+largos en segundo plano, con un motor de cálculo opcional (spec 004), y registra la
+procedencia de los parámetros, las entradas, las operaciones y las cifras del proyecto (spec
+008), aunque todavía no tiene funciones mineras. Lo de la spec 002 está comprobado también
+con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un solo equipo; falta con dos equipos a
+la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar de la del panel del proyecto, las de
+la interfaz de la spec 003. Lo de la spec 003 está comprobado en una pantalla de 1920 × 1080
+con Windows al 125 %, salvo algunas teclas en modo Blender, la lista de F3 en los dos modos, la
+barra T de Blender, la fila 1, el clic derecho, Mayús+Alt+B y la chincheta, la fila 2 en
+edición, dos idiomas de entrada, la plantilla instalada en el Blender de cada uno, la revisión
+de los iconos y la lectura de la barra con tres ingenieros. Lo de la spec 004 está comprobado en
+esa misma pantalla, con el motor de cálculo instalado desde un almacén de ruedas en el disco
+del equipo; falta el almacén del NAS de IMGA. Lo de la spec 008 está comprobado con Blender
+5.2.1 sin su interfaz, con datos sintéticos (también el volumen de un proyecto grande), con el
+GDAL de QGIS 4.2 y con QGIS 4.2 sin su interfaz (PyQGIS: una capa del proyecto editada y lo
+importado protegido), y migrando un proyecto creado con la spec 002; faltan las comprobaciones
+en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su interfaz, las de
+`Z:` que se hacen a mano y la demostración de sus cuatro escenarios.
 
 ### Añadido
 
+- **Procedencia: parámetros, entradas, operaciones y cifras** (spec 008). Geoblender anota en
+  el proyecto de dónde sale cada resultado: de qué entradas, con qué parámetros (y de qué tipo),
+  con qué operación y con qué versión del programa, y avisa de lo que deja de valer cuando algo
+  cambia. Todavía ningún módulo minero registra sus entradas ni sus operaciones: lo harán la
+  topografía (spec 006) y los sondeos (spec 005). Las órdenes están en **Proyecto ▸ Control**.
+  - **Parámetros del proyecto…**: cada parámetro que mueve cifras, con su valor y su unidad
+    (como las cifras, con el separador de miles: 500 000 t/año, también en los avisos), su
+    tipo (MEDIDO, CALCULADO, ADOPTADO o HIPÓTESIS, con las insignias [MED], [CAL], [ADO] y
+    [HIP], esta con un icono ámbar, también en el historial y en la procedencia; el rojo queda
+    para los errores y los cambios), su origen (documento, norma, persona, operación o
+    algoritmo), quién lo decidió y cuándo; se filtran por módulo, tipo y marca, y el
+    seleccionado enseña su historial entero, que nunca se reescribe: una hipótesis que pasa a
+    adoptada sigue constando como hipótesis en sus entradas anteriores. **Cambiar parámetro…**
+    pide siempre el motivo y rechaza, diciendo la clave, el valor, la unidad y el rango, un
+    valor fuera de rango, vacío, NaN o en una unidad que no se convierte; un valor en otra
+    unidad de la misma magnitud se convierte (35 % en un parámetro en fracción se guarda 0,35;
+    también t y kt, o m² y ha). Un valor por defecto de Geoblender queda «sin confirmar» hasta
+    que una persona lo confirma o lo cambia, y las cifras que dependen de él lo dicen; si otra
+    versión de Geoblender cambia la definición de un parámetro (su unidad, su rango o su valor
+    por defecto), queda «revisar», sin tocar su valor.
+  - **Un cálculo nunca cambia un parámetro**: si una operación calcula un valor distinto del que
+    fijó una persona (un K de esponjamiento), lo guarda como cifra CALCULADO y avisa de la
+    diferencia; adoptarlo lo decide una persona («Usar el valor calculado…»).
+  - **Registro de entradas…**: cada fuente importada (uno o varios ficheros, o una capa), con su
+    estado (vigente, cambiada, cambiada · se mantiene la copia, no localizable, sustituida o
+    descartada), su tipo, la fecha de entrega y quién la entregó, los sistemas de referencia
+    horizontal y vertical declarados al importarla, su hash de contenido y si se guarda su
+    original. El hash de contenido no cambia si QGIS solo abre y guarda un GeoPackage o si se
+    renumeran sus entidades, y cambia con cualquier coordenada, cota, píxel, atributo, fila o
+    sistema de referencia declarado.
+  - **Una entrada que cambió bloquea lo que depende de ella.** Al abrir el proyecto, antes de
+    cada operación y con **Comprobar cambios en las entradas**, Geoblender compara cada fuente
+    con lo registrado y, si su contenido cambió, lo dice con lo que depende de ella («La entrada
+    «Limites_v1» ha cambiado desde su registro (…). Dependen de ella: 3 datos, 5 operaciones y
+    12 cifras») y no ejecuta nada que la use hasta que se decide: **Actualizar** (se reimporta
+    como una entrada nueva, y lo que dependía de la anterior queda obsoleto), **Mantener la
+    copia** (se sigue con lo importado y no se vuelve a avisar hasta otro cambio) o Cancelar.
+    Al abrir y antes de operar se miran primero el tamaño y la fecha de sus ficheros: una fuente
+    sustituida por otra del mismo tamaño y con la fecha conservada (copiada con robocopy o
+    sacada de un zip) solo la ve Comprobar cambios en las entradas, que calcula siempre el hash.
+    Una fuente que no se encuentra queda «no localizable» y se sigue con lo importado.
+  - **Lo recibido no se pierde ni se toca.** Lo importado de cada entrada queda en el proyecto
+    tal cual, también al actualizarla o descartarla (**Descartar entrada…**, con motivo, no
+    borra nada); de las fuentes tabulares y de los documentos (CSV, XLSX, bases de RecMin, PDF)
+    se guarda además una copia del original, con su huella, en `originals/` dentro del proyecto,
+    hasta 200 MB por entrada (parámetro `core.original_copy_limit`). Volver a importar el mismo
+    contenido con los mismos ajustes no duplica la entrada. Geoblender nunca escribe junto a
+    una fuente (tampoco un `-wal`, un `-shm` o un `.ldb`), y rechaza, nombrándola, una
+    exportación sobre una fuente, en su carpeta o en una carpeta de solo lectura.
+  - **Carpetas de solo lectura** (las de los expedientes de clientes), en las preferencias de
+    Geoblender y en la variable de IMGA `GEOBLENDER_READ_ONLY_DIRS`: un proyecto dentro de una
+    se abre en solo lectura, sin cerrojo y sin migrarlo, y en ellas no se crea un proyecto, ni
+    se saca o se publica una copia local, ni se exporta. Si no hay ninguna, Geoblender avisa;
+    Ayuda ▸ Diagnóstico de la instalación las muestra.
+  - **Lo obsoleto.** Cambiar el valor de un parámetro (no solo su tipo), actualizar o descartar
+    una entrada, editar un dato fuera de Geoblender, que falte uno o actualizar a un Geoblender
+    que cambia el algoritmo de una operación dejan obsoleto exactamente lo que depende del
+    cambio, con su causa («Obsoleto: cambió Producción»); las operaciones acopladas (las que
+    siempre van juntas) quedan obsoletas juntas. La barra de estado dice «! n obsoletos» y el
+    control 7 del acceso rápido, «Refrescar · obsoletos (n)» (n cuenta los datos obsoletos, los
+    cálculos obsoletos que solo dejan cifras, como un área, y lo que espera revisión a mano): al
+    pulsarlos se ve la lista, con la causa, el módulo y Recalcular en cada resultado.
+    **Recalcular lo obsoleto** lo repite en orden, como operaciones nuevas, con su avance en la
+    barra de estado y Esc para cancelar (lo ya recalculado queda); nunca se recalcula nada
+    solo. Si un recálculo da el mismo contenido,
+    lo que dependía solo de él deja de estar obsoleto sin recalcularse. Lo que no se repite solo
+    (una edición a mano) queda «revisar a mano» hasta que se rehace o se da por bueno con un
+    motivo (**Dar por buena…**). Un equipo con un Geoblender anterior no recalcula lo calculado
+    con un algoritmo más nuevo: «Calculado con gis.resample 1.1: actualice Geoblender».
+  - **Ediciones fuera de Geoblender.** Una capa del proyecto editada en QGIS se detecta al
+    abrir, antes de usarla y a petición, queda registrada como edición externa y deja obsoleto
+    lo que depende de ella; si su módulo no la declara editable a mano, queda bloqueada hasta
+    aceptar la edición con un motivo, recalcularla o reimportarla. Lo importado no se puede
+    editar (QGIS no lo guarda) y, si aun así cambia, queda dañado y solo se reimporta. Un dato
+    que falta (un fichero borrado, una capa eliminada) se marca y se ofrece recalcularlo o
+    reimportarlo. Los restos de una operación interrumpida se apartan a `orphans/`, dentro del
+    proyecto, sin borrar nada; las capas creadas desde QGIS en la base del proyecto se pueden
+    registrar como entrada o ignorar, y nada se mueve.
+  - **Al abrir un proyecto**, queda listo para trabajar igual de rápido que antes, y las
+    comprobaciones (entradas, ediciones externas, lo que falta, operaciones interrumpidas,
+    restos y versiones de los algoritmos y de los parámetros) siguen en segundo plano, con
+    «Comprobando el proyecto… n %» en la barra de estado y un botón para cancelarlas; una orden
+    que dependa de algo aún sin comprobar no se ejecuta y pide esperar a que termine. En solo
+    lectura se ve lo detectado y no se escribe nada: se registra al abrirlo en escritura.
+  - **De dónde sale una cifra** (Proyecto ▸ Control ▸ Procedencia y registro ▸ **Grafo de
+    operaciones y procedencia…**): se busca una cifra o un dato por su nombre, su clave o su
+    uid, y se ve la cadena entera hasta sus entradas, con cada operación (quién, cuándo, en qué
+    equipo y con qué versión), sus parámetros (valor, unidad, tipo y «sin confirmar») y el
+    estado de cada eslabón. Cada cifra lleva su unidad, su tipo y las marcas «depende de una
+    hipótesis», «depende de un valor sin confirmar» y «obsoleta», y ninguna cifra de un cálculo
+    se escribe en el nombre de un objeto, de una colección o de un fichero.
+  - **Ctrl+Z** deshace la escena, no lo registrado en el proyecto, y lo dice en la barra de
+    estado («Ctrl+Z no deshace la operación «…»: sigue en el proyecto»).
+  - Las órdenes que dependen de una entrada cambiada salen con ⚠ (al ejecutarlas, se decide
+    sobre la entrada), y las que tienen resultados obsoletos dicen la causa en su descripción,
+    con «Recalcular lo obsoleto» resaltado. Los avisos de la barra de estado se ven en modo
+    Geoblender y en modo Blender. Si no caben (una escala de la interfaz grande en una pantalla
+    de 1920 px), primero desaparecen el encaje y el recorte y después se pliegan, de derecha a
+    izquierda, el trabajo en segundo plano (sin su último mensaje y con una barra corta que
+    solo dice el %) y los avisos («⚠ 1», «! 3», solo el % de la comprobación), con sus botones
+    de cancelar a la vista.
+  - Medido con Blender 5.2.1 en el PC de referencia, con un proyecto sintético de 100 entradas,
+    300 parámetros, 10 000 operaciones y 20 000 datos: queda listo para trabajar en 0,1 s como
+    mucho; mientras se comprueba, la interfaz responde en menos de 0,02 s, y buscar las
+    ediciones externas y lo que falta tarda 0,77 s (2,8 s con el proyecto en `Z:`); comprobar
+    100 entradas por tamaño y fecha, 0,03 s (0,19 s con las fuentes en `Z:`); saber qué deja
+    obsoleto un cambio, 0,34 s; la procedencia de una cifra, 0,4 s; los avisos de la barra de
+    estado están al día en menos de 0,7 s. El hash de contenido de un MDT de 11,2 M celdas
+    tarda 0,5 s, el de 100 000 polígonos 1,6 s y el de 500 000 filas 3,6 s; el de una rejilla
+    de 100 M celdas, 4,6 s en segundo plano, y se cancela al instante. El de una capa de 2 M
+    polígonos (0,9 GB) tarda 37 s en segundo plano, y el de un GeoPackage de 1 GB en `Z:`,
+    48 s, con su avance también mientras cuenta las entidades y mientras cierra el hash; se
+    cancela en cualquier momento en menos de 0,5 s.
 - **Trabajos en segundo plano y motor de cálculo** (spec 004). Los cálculos largos se
   ejecutan aparte, sin congelar Blender: mientras avanzan se puede girar la vista, abrir menús
   y seguir trabajando. Todavía ningún cálculo minero los usa (llegarán con GemPy, la
@@ -250,22 +369,49 @@ falta el almacén del NAS de IMGA.
   aviso, producto 2000 × 2000, instalación del motor, longitud de sus rutas y 100 trabajos
   seguidos) y, dentro de Blender, `tests/rendimiento/blender/perf_jobs_monitor.py` (el
   seguimiento en la barra de estado).
+- `tools/check.py --rendimiento` mide también la procedencia con el volumen de un proyecto
+  grande (spec 008): `tests/rendimiento/core/test_provenance_perf.py` (registrar una operación,
+  lo obsoleto, la procedencia de una cifra, comprobar las entradas y los datos al abrir y el
+  hash de contenido, también de las fuentes grandes) y, dentro de Blender,
+  `tests/rendimiento/blender/perf_provenance_ui.py` (los avisos de la barra de estado, los
+  paneles de parámetros y de entradas, y la interfaz mientras se comprueba el proyecto). Con
+  `GEOBLENDER_NET_TEST_DIR`, algunas se miden también en esa carpeta de la red.
 
 ### Cambiado
 
+- **Formato del proyecto, versión 2** (spec 008): la base del proyecto lleva las tablas de la
+  procedencia (QGIS las ve y no las puede cambiar, como las demás internas), y el proyecto,
+  cuando hacen falta, dos carpetas nuevas: `originals/` (los originales de las entradas) y
+  `orphans/` (los restos apartados). Un proyecto creado antes se migra al abrirlo, si se
+  acepta, con una copia completa previa junto al original
+  (`<Nombre>.gbproj.respaldo-esquema-1`), y queda sin parámetros, entradas ni operaciones; sin
+  migrar, se abre en solo lectura. Un Geoblender anterior abre un proyecto migrado en solo
+  lectura, diciendo qué versión hace falta.
 - El código vive en su propio repositorio (spec 007), con la extensión en `geoblender/`; la
   documentación del proyecto, interna de IMGA, queda en otro que no se publica. Las
   herramientas encuentran la raíz del código por el manifiesto y `tools/check.py`, y la
   comprobación completa ya no necesita la documentación al lado: en el PC de referencia, con
   el código en su disco local, con las pruebas de la publicación (`--completo`) tarda unos
   62 s.
-- `tools/check.py` reparte las pruebas unitarias en 12 procesos y las de Blender en 5
+- `tools/check.py` reparte las pruebas unitarias en 16 procesos y las de Blender en 5
   Blender que se ejecutan a la vez dentro de su paso (los pasos siguen uno tras otro), sin
   quitar ni acortar ninguna. Desde la spec 004, el reparto sigue lo que tardó cada módulo de
   pruebas en la comprobación anterior (guardado fuera del repositorio, en
   `%TEMP%\geoblender-tiempos\`; la primera vez, por número de pruebas). La comprobación de
   cada tarea pasó de unos 55 s a unos 25 s en el PC de referencia; con las pruebas de la
-  spec 004 y su paso «motor» llegó a unos 40 s, y con más procesos (spec 006) vuelve a unos
-  30 s. Cada prueba se ejecuta en una sola parte, y si las partes no suman las pruebas que
-  hay, el paso falla. Una prueba con un presupuesto de milisegundos mide otra vez mientras
-  la máquina está cargada, sin cambiar el presupuesto.
+  spec 004 y su paso «motor» llegó a unos 40 s, y con más procesos (spec 006) volvió a unos
+  30 s; con las pruebas de la 006 y de la 008 juntas, y más procesos en el paso «motor»,
+  llegó a unos 40 s, y con 16 procesos de pruebas unitarias tarda unos 38 s. Ahora las
+  reglas leen y analizan cada fichero una sola vez por proceso, las pruebas que las pasan por
+  el repositorio van juntas en el mismo proceso y el paso «motor» reparte sus procesos (16
+  como mucho, antes 19) por lo que tarda cada carpeta, y tarda unos 35 s; las reglas dan los
+  mismos incumplimientos que antes. Cada prueba se
+  ejecuta en una sola parte, y si las partes no suman las pruebas que hay, el paso falla.
+  Una prueba con un presupuesto de milisegundos mide otra vez mientras la máquina está
+  cargada, sin cambiar el presupuesto.
+- Solo un `tools/check.py` a la vez en el equipo (spec 006): si hay otro en marcha (de la
+  misma carpeta, de un *worktree* o de otra sesión), el nuevo dice a cuál espera (su pid y su
+  carpeta) y empieza cuando termina; su tiempo se cuenta desde entonces. Antes los dos se
+  estorbaban: tardaban más y las pruebas que miden tiempos fallaban. Si una comprobación se
+  cierra de golpe, la siguiente no queda esperando ni hay que borrar nada a mano.
+  `tools/publish.py` espera igual.

@@ -22,6 +22,10 @@ tools_on_path()
 from gbtools.findings import format_findings  # noqa: E402
 from gbtools.rules import imports  # noqa: E402
 
+# Va en la misma parte que las demás pruebas que pasan las reglas por la extensión: así
+# la analizan una sola vez (spec 006, T47; gbtools.parts.affinity_of).
+PART_AFFINITY = "reglas-extension"
+
 SPDX = "# SPDX-License-Identifier: GPL-3.0-or-later\n"
 
 

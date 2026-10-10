@@ -15,19 +15,28 @@
 Para que las reglas recorran miles de ficheros en pocos segundos (RNF-001-02), los
 árboles y los imports se guardan en caché por ruta, fecha y tamaño, y las expresiones
 solo se recorren en busca de imports dinámicos si el texto del fichero menciona
-``import_module`` o ``__import__``.
+``import_module`` o ``__import__``. Y cada fichero se analiza una sola vez por proceso
+(spec 006, T47; RNF-001-01): su texto es el de ``repo.read_bytes``, que comparten todas
+las reglas, y su árbol se recorre una sola vez (:func:`walk`, todos los nodos en el orden
+de ``ast.walk``, e :func:`iter_statements`, las sentencias), y ese recorrido lo
+comparten todas las reglas y las pruebas que las llaman. Los árboles no se modifican.
+Al salir del proceso, las cachés se vacían (:func:`clear_caches`) antes de que Python lo
+cierre: liberar al cerrar los árboles de todo el repositorio le cuesta unos 2 s.
 """
 
 from __future__ import annotations
 
 import ast
+import atexit
 import functools
+import itertools
+import weakref
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..findings import Finding
-from ..repo import iter_py_files, relpath
+from ..repo import FileKey, clear_text_cache, file_key, iter_py_files, read_bytes, relpath
 
 RULE_UNPARSABLE = "AST-01"
 _DYNAMIC_HINTS: tuple[bytes, ...] = (b"import_module", b"__import__")
@@ -242,9 +251,70 @@ def collect_imports(
     return collector.refs
 
 
-def iter_statements(tree: ast.AST) -> Iterator[ast.stmt]:
-    """Todas las sentencias del árbol, también dentro de funciones y clases, sin
-    recorrer las expresiones."""
+@dataclass(frozen=True)
+class _Walked:
+    """El recorrido de un árbol (spec 006, T47): sus nodos sin el propio árbol (así la
+    caché no lo retiene y la entrada desaparece con él), en el orden de ``ast.walk``, el
+    tipo de cada uno y los tipos que aparecen."""
+
+    rest: tuple[ast.AST, ...]
+    kinds: tuple[type, ...]
+    present: frozenset[type]
+
+
+_WALKS: weakref.WeakKeyDictionary[ast.AST, _Walked] = weakref.WeakKeyDictionary()
+_STATEMENTS: weakref.WeakKeyDictionary[ast.AST, tuple[ast.stmt, ...]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _traverse(tree: ast.AST) -> list[ast.AST]:
+    """Los nodos de ``tree`` en el orden exacto de ``ast.walk`` (en anchura: cada nodo,
+    y después sus hijos campo a campo), sin sus generadores: la mitad de tiempo."""
+    found: list[ast.AST] = [tree]
+    append = found.append
+    for node in found:  # la lista crece mientras se recorre: es la cola
+        for name in node._fields:
+            value = getattr(node, name, None)
+            if isinstance(value, ast.AST):
+                append(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, ast.AST):
+                        append(item)
+    return found
+
+
+def _walked(tree: ast.AST) -> _Walked:
+    found = _WALKS.get(tree)
+    if found is None:
+        rest = tuple(_traverse(tree)[1:])
+        kinds = tuple(map(type, rest))
+        found = _WALKS[tree] = _Walked(rest, kinds, frozenset(kinds))
+    return found
+
+
+def walk(tree: ast.AST) -> Iterator[ast.AST]:
+    """Todos los nodos de ``tree``, en el orden de ``ast.walk`` (cada nodo antes que sus
+    hijos). El árbol se recorre una sola vez y lo comparten todas las llamadas (spec 006,
+    T47); no lo modifique."""
+    return itertools.chain((tree,), _walked(tree).rest)
+
+
+def nodes_of(
+    tree: ast.AST, types: type[ast.AST] | tuple[type[ast.AST], ...]
+) -> list[ast.AST]:
+    """Los nodos de :func:`walk` que son de ``types`` (como ``isinstance``), en su orden:
+    lo que una regla recorre sin mirar los demás nodos (spec 006, T47)."""
+    walked = _walked(tree)
+    found: list[ast.AST] = [tree] if isinstance(tree, types) else []
+    chosen = frozenset(kind for kind in walked.present if issubclass(kind, types))
+    if chosen:
+        found.extend(itertools.compress(walked.rest, map(chosen.__contains__, walked.kinds)))
+    return found
+
+
+def _statements(tree: ast.AST) -> Iterator[ast.stmt]:
     stack: list[ast.AST] = [tree]
     while stack:
         node = stack.pop()
@@ -256,17 +326,30 @@ def iter_statements(tree: ast.AST) -> Iterator[ast.stmt]:
                 stack.extend(reversed(children))
 
 
+def iter_statements(tree: ast.AST) -> Iterator[ast.stmt]:
+    """Todas las sentencias del árbol, también dentro de funciones y clases, sin
+    recorrer las expresiones. El árbol se recorre una sola vez y lo comparten todas las
+    llamadas (spec 006, T47); no lo modifique."""
+    rest = _STATEMENTS.get(tree)
+    if rest is None:
+        found = _statements(tree)
+        if isinstance(tree, ast.stmt):
+            next(found)  # el propio árbol
+        rest = _STATEMENTS[tree] = tuple(found)
+    if isinstance(tree, ast.stmt):
+        return itertools.chain((tree,), rest)
+    return iter(rest)
+
+
 @functools.lru_cache(maxsize=_CACHE_SIZE)
 def _parse_cached(path: str, mtime_ns: int, size: int) -> tuple[ast.Module, bool]:
-    del mtime_ns, size  # forman parte de la clave de la caché
-    data = Path(path).read_bytes()
+    data = read_bytes(Path(path), (path, mtime_ns, size))
     hint = any(token in data for token in _DYNAMIC_HINTS)
     return ast.parse(data, filename=path), hint
 
 
-def _key(path: Path) -> tuple[str, int, int]:
-    stat = path.stat()
-    return str(path), stat.st_mtime_ns, stat.st_size
+def _key(path: Path) -> FileKey:
+    return file_key(path)
 
 
 def parse_file(path: Path) -> ast.Module:
@@ -340,3 +423,18 @@ def iter_imports(module: PyModule) -> Iterator[ImportRef]:
         )
     else:
         yield from collect_imports(module.tree, module.name, module.is_package)
+
+
+def clear_caches() -> None:
+    """Vacía las cachés de los árboles, sus recorridos y sus imports, y la del texto
+    (``repo.read_bytes``): después, cada fichero se vuelve a leer y a analizar. Se llama
+    sola al salir del proceso (spec 006, T47): al cerrarse, Python tarda unos 2 s en
+    liberar los árboles de todo el repositorio, y vaciarlas antes cuesta unos 0,1 s."""
+    _imports_cached.cache_clear()
+    _parse_cached.cache_clear()
+    _WALKS.clear()
+    _STATEMENTS.clear()
+    clear_text_cache()
+
+
+atexit.register(clear_caches)

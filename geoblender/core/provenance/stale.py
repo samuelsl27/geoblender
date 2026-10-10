@@ -18,17 +18,27 @@ cambio; la que ya no está se borra) en la **misma transacción** de cada camino
   ``OperationHandle.complete`` (también la edición externa, ``core.external_edit``), el estado
   de un dato (``core.datasets.set_status`` y ``supersede``: falta, bloqueado, dañado, vigente,
   descartado, sustituido) y ``core.inputs.supersede``, ``discard`` y ``keep_copy``;
-- :func:`refresh_all`, la completa (la comprobación de apertura, tras cambiar la versión
-  instalada de un algoritmo o si alguien alteró la caché).
+- :func:`refresh_all`, la completa (tras cambiar la versión instalada de un algoritmo o si
+  alguien alteró la caché), en la transacción de quien la llama. La comprobación de apertura
+  la hace **por pasos y sin escribir** (T65; RNF-008-12): :func:`full_difference_steps` mira
+  primero, sin cargar el grafo, si alguna operación tiene una causa directa (sin ninguna,
+  nada está obsoleto); si la hay, lee el grafo por páginas y deduce por trozos; después lee la
+  caché y da la diferencia (:class:`CacheDifference`). Su transacción final escribe solo esa
+  diferencia (:func:`write_difference`) si la base no cambió entretanto (lo comprueba ella con el
+  contador de cambios de la cabecera). Lo que registra esa transacción después se pone al día
+  por región con las versiones de los algoritmos que declara el Geoblender que abre el proyecto
+  (:func:`declared_versions`), las mismas de la completa: la caché queda igual que si la
+  completa se hubiera hecho al final.
 
 Hacia arriba, para la procedencia (RNF-008-03): :func:`upstream_region` da en una consulta
 recursiva la región **aguas arriba** de unas operaciones (las que escribieron lo que consumen,
 hasta cerrarla); la procedencia (:mod:`.lineage`) carga solo esa parte del grafo.
 
 Para la interfaz (sin recalcular nada): :func:`counts` («! n obsoletos» = datos vivos
-obsoletos más operaciones que esperan revisión a mano; «⚠ n entradas» = las cambiadas sin
-decidir), :func:`stale_items` (lo obsoleto y lo que espera revisión a mano, con su causa, su
-módulo, la operación que lo escribió y desde cuándo) e :func:`item_causes` e
+obsoletos, más operaciones obsoletas que solo dejan cifras, más operaciones que esperan
+revisión a mano, RF-008-28 en la spec 0.3; «⚠ n entradas» = las cambiadas sin decidir),
+:func:`stale_items` (lo obsoleto y lo que espera revisión a mano, con su causa, su módulo, la
+operación que lo escribió o la que se recalcula y desde cuándo) e :func:`item_causes` e
 :func:`item_text` (las causas y el texto de una operación o un dato, los que da la
 incorporación de un trabajo). Los textos dicen «… mientras se calculaba» de lo que cambió
 mientras se calculaba la operación o la que escribió el dato (RF-008-20;
@@ -40,9 +50,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Iterator, Mapping
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, NamedTuple, Protocol
 
 from ..timeutil import parse_utc
@@ -51,11 +63,15 @@ from .graph import (
     INPUT_NODE_COLUMNS,
     IO_COLUMNS,
     OPERATION_COLUMNS,
+    PAGE_ROWS,
     PARAM_USE_COLUMNS,
     PARAMETER_COLUMNS,
     Cause,
     CauseKind,
+    CauseScan,
     DatasetNode,
+    GraphPages,
+    Lap,
     OperationNode,
     ParamUse,
     ProvenanceGraph,
@@ -63,11 +79,11 @@ from .graph import (
     Version,
     changes_while_running,
     dataset_node,
-    deduce,
     deduce_region,
+    deduce_steps,
+    drain,
     input_node,
     installed_versions,
-    load_graph,
     operation_node,
     param_use_of,
     parameter_node,
@@ -147,6 +163,15 @@ _REVIEW_CANDIDATES = (
     f"WHERE s.item_kind = '{OPERATION}' AND {_DONE} AND op.superseded_by IS NULL "
     "AND op.repeatable = 0"
 )
+# Las que se repiten solas, obsoletas, sin sustituir y con alguna cifra: de las cifras (no hay
+# índice de su operación) a su operación y a la caché, por sus índices; el CROSS JOIN fija ese
+# orden (con D-13 obsoleto entero, 100 cifras frente a 10 000 operaciones obsoletas).
+_FIGURE_CANDIDATES = (
+    "SELECT DISTINCT op.uid FROM gb_figure AS f CROSS JOIN gb_operation AS op "
+    f"ON op.uid = f.operation_uid WHERE {_DONE} AND op.superseded_by IS NULL "
+    "AND op.repeatable <> 0 AND EXISTS (SELECT 1 FROM gb_stale AS s "
+    f"WHERE s.item_kind = '{OPERATION}' AND s.item_uid = op.uid)"
+)
 _LIVE_WRITERS = (
     "SELECT DISTINCT d.operation_uid FROM gb_operation_io AS io JOIN gb_dataset AS d "
     "ON d.uid = io.item_uid WHERE io.direction = 'out' AND io.item_kind = 'dataset' "
@@ -175,7 +200,7 @@ _STALE_DATASETS = (
     f"LEFT JOIN gb_operation AS op ON op.uid = d.operation_uid AND {_DONE} "
     f"WHERE d.status IN ({_LIVE}) ORDER BY d.name, d.uid"
 )
-# … y las operaciones que esperan revisión a mano, con sus causas.
+# … y las operaciones que solo dejan cifras o esperan revisión a mano, con sus causas.
 _STALE_OPERATIONS = (
     "SELECT op.fid, op.uid, op.op_type, op.module, s.causes, s.since "
     f"FROM ({_GROUPED.format(kind=OPERATION, only=' AND item_uid IN ({marks})')}) AS s "
@@ -221,27 +246,31 @@ class CacheUpdate:
 @dataclass(frozen=True, slots=True)
 class Counts:
     """Los recuentos de la barra de estado (RF-008-28; RF-008-16): ``stale``, los datos
-    vivos obsoletos; ``review``, las operaciones que esperan revisión a mano;
-    ``inputs_changed``, las entradas cambiadas sin decidir («⚠ n entradas»)."""
+    vivos obsoletos; ``figures``, las operaciones obsoletas que solo dejan cifras (spec 0.3);
+    ``review``, las operaciones que esperan revisión a mano; ``inputs_changed``, las entradas
+    cambiadas sin decidir («⚠ n entradas»)."""
 
     stale: int
+    figures: int
     review: int
     inputs_changed: int
 
     @property
     def obsolete(self) -> int:
-        """El número de «! n obsoletos»: datos obsoletos más operaciones que esperan
-        revisión a mano."""
-        return self.stale + self.review
+        """El número de «! n obsoletos»: datos obsoletos, más operaciones obsoletas que solo
+        dejan cifras, más operaciones que esperan revisión a mano (cada operación, una vez:
+        la que deja un dato vivo cuenta por él)."""
+        return self.stale + self.figures + self.review
 
 
 @dataclass(frozen=True, slots=True)
 class StaleItem:
     """Un elemento de la lista de lo obsoleto (RF-008-28): un dato vivo obsoleto
-    (``dataset``: su nombre y su módulo) o una operación que espera revisión a mano
-    (``operation``: su tipo y su módulo), con la operación que escribió el dato (o ella
-    misma) y su tipo, si espera revisión a mano (la del dato, la de su operación), sus causas,
-    su texto («Obsoleto: cambió Producción») y desde cuándo (la causa más antigua)."""
+    (``dataset``: su nombre y su módulo) o una operación obsoleta que solo deja cifras o espera
+    revisión a mano (``operation``: su tipo y su módulo), con la operación que escribió el dato
+    (o ella misma: la que se recalcula) y su tipo, si espera revisión a mano (la del dato, la de
+    su operación), sus causas, su texto («Obsoleto: cambió Producción») y desde cuándo (la causa
+    más antigua)."""
 
     item_kind: str
     uid: str
@@ -257,8 +286,9 @@ class StaleItem:
 
 @dataclass(frozen=True, slots=True)
 class StaleReport:
-    """La lista de lo obsoleto: los datos (por nombre) y después las operaciones que esperan
-    revisión a mano (por orden de registro), con los recuentos."""
+    """La lista de lo obsoleto: los datos (por nombre) y después las operaciones que solo
+    dejan cifras y las que esperan revisión a mano (por orden de registro), con los
+    recuentos."""
 
     items: tuple[StaleItem, ...]
     counts: Counts
@@ -357,26 +387,33 @@ def cached_rows(conn: sqlite3.Connection) -> frozenset[StaleRow]:
 
 
 def _write(conn: sqlite3.Connection, now: str, items: Mapping[str, Collection[str]],
-           desired: set[StaleRow] | frozenset[StaleRow],
-           existing: set[StaleRow] | frozenset[StaleRow] | None = None) -> CacheUpdate:
+           desired: set[StaleRow] | frozenset[StaleRow]) -> CacheUpdate:
     """Escribe por diferencias las filas de ``items`` (por clase de elemento) para que sean
     ``desired``: borra las que sobran y añade las que faltan con la fecha ``now``."""
-    if existing is None:
-        existing = {StaleRow(*(str(value) for value in row))
-                    for kind, uids in items.items()
-                    for row in _select(conn, _CACHED, uids, (kind,))}
+    existing = {StaleRow(*(str(value) for value in row))
+                for kind, uids in items.items()
+                for row in _select(conn, _CACHED, uids, (kind,))}
     removed = frozenset(existing - desired)
     added = frozenset(desired - existing)
-    conn.executemany(
-        "DELETE FROM gb_stale WHERE item_kind = ? AND item_uid = ? AND cause_kind = ? "
-        "AND subject_uid = ?", sorted(removed),
-    )
-    conn.executemany(
-        "INSERT INTO gb_stale (item_kind, item_uid, cause_kind, subject_uid, since) "
-        "VALUES (?, ?, ?, ?, ?)", [(*row, now) for row in sorted(added)],
-    )
+    _apply(conn, now, added, removed)
     return CacheUpdate(frozenset(items.get(OPERATION, ())), frozenset(items.get(DATASET, ())),
                        added, removed)
+
+
+def _apply(conn: sqlite3.Connection, now: str, added: Collection[StaleRow],
+           removed: Collection[StaleRow]) -> None:
+    """Borra de la caché las filas ``removed`` y añade ``added`` con la fecha ``now``; sin
+    ninguna, no la toca."""
+    if removed:
+        conn.executemany(
+            "DELETE FROM gb_stale WHERE item_kind = ? AND item_uid = ? AND cause_kind = ? "
+            "AND subject_uid = ?", sorted(removed),
+        )
+    if added:
+        conn.executemany(
+            "INSERT INTO gb_stale (item_kind, item_uid, cause_kind, subject_uid, since) "
+            "VALUES (?, ?, ?, ?, ?)", [(*row, now) for row in sorted(added)],
+        )
 
 
 def _check_now(now: object) -> str:
@@ -465,10 +502,14 @@ def refresh_region(
     llevan la fecha ``now`` (texto UTC). ``versions``, como en :func:`.graph.deduce`.
 
     Exige que la caché de lo de fuera de la región esté al día (la mantienen todos los
-    caminos que escriben y la completa de la apertura). ``TypeError``/``ValueError`` con un
+    caminos que escriben y la completa de la apertura). Sin ``versions``, las de
+    :func:`declared_versions` si se está dentro (la transacción final de la comprobación de
+    apertura) y, si no, las de los tipos registrados. ``TypeError``/``ValueError`` con un
     argumento mal formado o fuera de una transacción, sin escribir nada."""
     _writing(conn, "refresh_region")
     _check_now(now)
+    if versions is None:
+        versions = _DECLARED.get()
     changed_operations = _uids(operations, "operations")
     changed_datasets = _uids(datasets, "datasets")
     changed_parameters = _uids(parameters, "parameters")
@@ -515,13 +556,146 @@ def refresh_all(conn: sqlite3.Connection, *, now: str,
     """Rehace la caché con la obsolescencia **completa** (:func:`.graph.deduce`), por
     diferencias, en la transacción de escritura ``conn`` (no la confirma): lo que sigue
     conserva su fecha y lo nuevo lleva ``now``. Corrige una caché alterada o que no sabe de
-    otra versión instalada de un algoritmo."""
+    otra versión instalada de un algoritmo. Es :func:`full_difference_steps` de una vez, en
+    ``conn`` (ve lo aún no confirmado), y :func:`write_difference`."""
     _writing(conn, "refresh_all")
     _check_now(now)
-    state = deduce(load_graph(conn), versions=versions)
-    return _write(conn, now, {OPERATION: state.graph.operations.keys(),
-                              DATASET: state.graph.datasets.keys()},
-                  expected_rows(state), cached_rows(conn))
+    difference = drain(full_difference_steps(lambda: nullcontext(conn), versions=versions,
+                                             rows=None))
+    return write_difference(conn, now=now, difference=difference)
+
+
+# --- La completa por pasos (la comprobación de apertura, T65) -------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CacheDifference:
+    """Lo que le falta y le sobra a la caché para ser la obsolescencia completa de una base
+    (:func:`full_difference_steps`): todas las operaciones y todos los datos (lo que rehace
+    la completa) y las filas que hay que añadir y borrar."""
+
+    operations: frozenset[str]
+    datasets: frozenset[str]
+    added: frozenset[StaleRow]
+    removed: frozenset[StaleRow]
+
+    @property
+    def empty(self) -> bool:
+        """Si la caché ya es la completa."""
+        return not (self.added or self.removed)
+
+
+_CACHE_PAGE = (
+    "SELECT rowid, item_kind, item_uid, cause_kind, subject_uid FROM gb_stale "
+    "WHERE rowid > ? ORDER BY rowid LIMIT ?"
+)
+_SCANNED = 0.3  # el progreso al saber si hay causas directas
+_LOADED = 0.6  # … y al leer el grafo (lo demás: deducir y la caché)
+
+
+def full_difference_steps(
+    read: Callable[[], AbstractContextManager[sqlite3.Connection]],
+    *,
+    versions: Mapping[str, str] | None = None,
+    lap: Lap | None = None,
+    rows: int | None = PAGE_ROWS,
+) -> Generator[float, None, CacheDifference]:
+    """La obsolescencia **completa** y lo que le falta y le sobra a la caché, por pasos y sin
+    escribir (la comprobación de apertura, T65; RNF-008-12): con una conexión de ``read`` (la
+    del proyecto, de solo lectura), mira primero si alguna operación hecha tiene una causa
+    directa (:class:`.graph.CauseScan`, sin cargar el grafo); sin ninguna, nada está obsoleto.
+    Si la hay, lee el grafo por páginas (:class:`.graph.GraphPages`), deduce por trozos
+    (:func:`.graph.deduce_steps`, con ``versions`` como :func:`refresh_all`) y lo suelta por
+    trozos. Después lee la caché y compara. Las páginas son de ``rows`` filas (``None``: cada
+    tabla de una vez). Cede —con lo hecho, de 0 a 1— cuando ``lap`` lo pide (sin ``lap``, de
+    una vez); entre pasos no hay ninguna transacción abierta, así que otro programa (o la misma
+    sesión) puede escribir: quien lo lleva por pasos tiene que comprobar que la base no cambió
+    desde que empezó antes de escribir la diferencia (:func:`write_difference`). Devuelve una
+    :class:`CacheDifference`."""
+    with read() as conn:
+        scan = CauseScan(versions)
+        while True:
+            scan.read(conn, rows=rows, lap=lap)
+            if scan.finished:
+                break
+            yield _SCANNED * scan.fraction
+        desired: set[StaleRow] = set()  # expected_rows(state), por trozos
+        if scan.caused:
+            pages = GraphPages()
+            while True:
+                pages.read(conn, rows=rows, lap=lap)
+                if pages.finished:
+                    break
+                yield _SCANNED + (_LOADED - _SCANNED) * pages.fraction
+            graph = pages.graph()
+            deducing = deduce_steps(graph, versions=versions, lap=lap)
+            while True:
+                try:
+                    next(deducing)
+                except StopIteration as stop:
+                    state: Staleness = stop.value
+                    break
+                yield 0.7
+            for item_kind, found in ((OPERATION, state.causes), (DATASET, state.datasets)):
+                for uid, causes in found.items():
+                    desired.update(_rows(item_kind, uid, causes))
+                    if lap is not None and lap():
+                        yield 0.8
+            operations, datasets = frozenset(graph.operations), frozenset(graph.datasets)
+            del graph, state
+            for _ in pages.release(lap):
+                yield 0.85
+        else:  # nada obsoleto
+            operations, datasets = frozenset(scan.operations), frozenset(scan.datasets)
+        del scan
+        cached: set[StaleRow] = set()
+        limit = -1 if rows is None else rows
+        last = 0
+        while True:
+            page = conn.execute(_CACHE_PAGE, (last, limit)).fetchall()
+            cached.update(StaleRow(str(item_kind), str(item_uid), str(cause_kind), str(subject))
+                          for _rowid, item_kind, item_uid, cause_kind, subject in page)
+            if rows is None or len(page) < rows:
+                break
+            last = int(page[-1][0])
+            if lap is not None and lap():
+                yield 0.9
+    return CacheDifference(operations, datasets, frozenset(desired - cached),
+                           frozenset(cached - desired))
+
+
+def write_difference(conn: sqlite3.Connection, *, now: str,
+                     difference: CacheDifference) -> CacheUpdate:
+    """Escribe en la caché, en la transacción de escritura ``conn`` (no la confirma), la
+    diferencia de :func:`full_difference_steps`: borra lo que sobra y añade lo que falta con la
+    fecha ``now`` (lo que sigue conserva la suya); sin nada que cambiar, no toca la caché.
+    Solo vale sobre la misma base en que se calculó (lo comprueba quien la calculó por pasos).
+    Devuelve lo que hizo, como :func:`refresh_all`."""
+    _writing(conn, "write_difference")
+    _check_now(now)
+    if not isinstance(difference, CacheDifference):
+        raise TypeError(f"la diferencia de la caché es un CacheDifference, no {difference!r}")
+    _apply(conn, now, difference.added, difference.removed)
+    return CacheUpdate(difference.operations, difference.datasets, difference.added,
+                       difference.removed)
+
+
+_DECLARED: ContextVar[Mapping[str, str] | None] = ContextVar("geoblender_stale_versions",
+                                                            default=None)
+
+
+@contextmanager
+def declared_versions(versions: Mapping[str, str] | None) -> Iterator[None]:
+    """Mientras dura, :func:`refresh_region` sin ``versions`` deduce con ``versions`` (la
+    versión de cada algoritmo que declara el Geoblender que abre el proyecto; ``None``: las de
+    los tipos registrados). La usa la transacción final de la comprobación de apertura, que
+    escribe la completa con ellas antes de registrar lo encontrado: así lo que se registra
+    después se deduce igual."""
+    token = _DECLARED.set(None if versions is None else MappingProxyType(dict(versions)))
+    try:
+        yield
+    finally:
+        _DECLARED.reset(token)
 
 
 # --- Aguas arriba (la procedencia) ----------------------------------------------------------
@@ -563,22 +737,44 @@ def upstream_region(conn: sqlite3.Connection, roots: Iterable[str]) -> frozenset
 # --- Recuentos y lista ----------------------------------------------------------------------
 
 
+def _current_writers(conn: sqlite3.Connection,
+                     candidates: set[str]) -> tuple[set[str], set[str]]:
+    """De las operaciones ``candidates``: las que escribieron el contenido actual de un dato
+    vivo y, de las demás, las que escribieron la cifra vigente de su clave y su ámbito (la
+    más reciente de una operación al día o, si todas están obsoletas, la más reciente)."""
+    data = _column(conn, _LIVE_WRITERS, candidates)
+    rest = candidates - data
+    figures: set[str] = set()
+    for key, scope_key in sorted({tuple(row) for row in _select(conn, _FIGURE_KEYS, rest)}):
+        found = [(str(op_uid), bool(stale)) for op_uid, stale in conn.execute(
+            _FIGURES_OF_KEY, (key, scope_key))]
+        fresh = [op_uid for op_uid, stale in found if not stale]
+        current = (fresh or [op_uid for op_uid, _stale in found])[-1]
+        if current in rest:
+            figures.add(current)
+    return data, figures
+
+
 def review_operations(conn: sqlite3.Connection) -> frozenset[str]:
     """Las operaciones que esperan revisión a mano según la caché (RF-008-27): obsoletas, sin
     sustituir, que no se repiten solas y que escribieron el contenido actual de un dato vivo
     o la cifra vigente de su clave y su ámbito (la más reciente de una operación al día o, si
     todas están obsoletas, la más reciente)."""
-    candidates = {str(row[0]) for row in conn.execute(_REVIEW_CANDIDATES)}
-    found = _column(conn, _LIVE_WRITERS, candidates)
-    rest = candidates - found
-    for key, scope_key in sorted({tuple(row) for row in _select(conn, _FIGURE_KEYS, rest)}):
-        figures = [(str(op_uid), bool(stale)) for op_uid, stale in conn.execute(
-            _FIGURES_OF_KEY, (key, scope_key))]
-        fresh = [op_uid for op_uid, stale in figures if not stale]
-        current = (fresh or [op_uid for op_uid, _stale in figures])[-1]
-        if current in rest:
-            found.add(current)
-    return frozenset(found)
+    data, figures = _current_writers(
+        conn, {str(row[0]) for row in conn.execute(_REVIEW_CANDIDATES)})
+    return frozenset(data | figures)
+
+
+def figure_only_operations(conn: sqlite3.Connection) -> frozenset[str]:
+    """Las operaciones obsoletas que solo dejan cifras según la caché (RF-008-28, spec 0.3):
+    sin sustituir, que se repiten solas, que no escribieron el contenido actual de ningún dato
+    vivo (la que lo escribió cuenta por él) y sí la cifra vigente de su clave y su ámbito,
+    como en :func:`review_operations` (la que no se repite sola espera revisión a mano). Va de
+    las cifras a sus operaciones: con muchas operaciones obsoletas, mira solo las que dieron
+    alguna cifra."""
+    _data, figures = _current_writers(
+        conn, {str(row[0]) for row in conn.execute(_FIGURE_CANDIDATES)})
+    return frozenset(figures)
 
 
 def _changed_inputs(conn: sqlite3.Connection) -> int:
@@ -590,9 +786,10 @@ def counts(project: ReadableProject, *, conn: sqlite3.Connection | None = None) 
     registro de entradas en una instantánea (de ``conn``, si se da)."""
     with _reading(project, conn) as reading:
         stale = reading.execute(_STALE_COUNT).fetchone()[0]
+        figures = figure_only_operations(reading)
         review = review_operations(reading)
         changed = _changed_inputs(reading)
-    return Counts(int(stale), len(review), changed)
+    return Counts(int(stale), len(figures), len(review), changed)
 
 
 _NOTHING: frozenset[Cause] = frozenset()
@@ -635,6 +832,10 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
     ``language`` y, para un algoritmo, la versión instalada (``versions``; por defecto, la de
     los tipos registrados).
 
+    Tras los datos, las operaciones obsoletas que solo dejan cifras
+    (:func:`figure_only_operations`) y las que esperan revisión a mano
+    (:func:`review_operations`), por orden de registro, cada una una vez.
+
     No rehace lo que ya tiene (RNF-008-02): lee los datos que se muestran con sus causas, ya
     agrupadas y por nombre, en una consulta; cada conjunto de causas se lee y su texto se
     compone una sola vez; y para los textos solo crea los nodos que nombran las causas de lo
@@ -644,6 +845,7 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
     sets = _Causes()
     with _reading(project, conn) as reading:
         review = review_operations(reading)
+        figure_only = figure_only_operations(reading)
         data = [(str(uid), str(name), str(module), str(op_uid),
                  "" if op_type is None else str(op_type), sets.of(listed), str(since))
                 for uid, name, module, op_uid, op_type, listed, since
@@ -651,11 +853,11 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
         operations = sorted(
             ((int(fid), str(uid), str(op_type), str(module), sets.of(listed), str(since))
              for fid, uid, op_type, module, listed, since
-             in _select(reading, _STALE_OPERATIONS, review)),
+             in _select(reading, _STALE_OPERATIONS, review | figure_only)),
             key=lambda row: row[0])  # por orden de registro
-        found = Counts(len(data), len(review), _changed_inputs(reading))
+        found = Counts(len(data), len(figure_only), len(review), _changed_inputs(reading))
         shown = sets.parsed.values()
-        writers = {row[3] for row in data} | review
+        writers = {row[3] for row in data} | review | figure_only
         graph = _text_graph(reading, _subjects(shown), changes_while_running(
             reading, writers, causes={cause for causes in shown for cause in causes}))
     chosen = dict(installed_versions() if versions is None else versions)
@@ -665,7 +867,7 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
         for uid, name, module, op_uid, op_type, causes, since in data
     ]
     items.extend(
-        StaleItem(OPERATION, uid, op_type, module, uid, op_type, True, causes,
+        StaleItem(OPERATION, uid, op_type, module, uid, op_type, uid in review, causes,
                   sets.text(graph, chosen, causes, uid, language), since)
         for _fid, uid, op_type, module, causes, since in operations
     )
@@ -701,6 +903,25 @@ def item_text(conn: sqlite3.Connection, item_kind: str, uid: str, *, language: s
             conn, () if writer is None else (writer,)))
     chosen = dict(installed_versions() if versions is None else versions)
     return stale_text(graph, chosen, causes, language=language, operation=writer)
+
+
+def review_item(conn: sqlite3.Connection, operation_uid: str, *, language: str = "es",
+                versions: Mapping[str, str] | None = None) -> StaleItem | None:
+    """La operación ``operation_uid`` como fila de lo que espera revisión a mano (como en
+    :func:`stale_items`: su tipo, su módulo, sus causas, su «Obsoleto: …» y desde cuándo) si la
+    espera según la caché de ``conn``; ``None`` si no (lo que muestra «Dar por buena…», T54;
+    RF-008-27)."""
+    with _snapshot(conn):
+        if operation_uid not in review_operations(conn):
+            return None
+        rows = list(_select(conn, _STALE_OPERATIONS, {operation_uid}))
+        text = item_text(conn, OPERATION, operation_uid, language=language, versions=versions)
+    if not rows:  # pragma: no cover - en revisión, tiene causas en la caché
+        return None
+    _fid, uid, op_type, module, listed, since = rows[0]
+    causes = _Causes().of(listed)
+    return StaleItem(OPERATION, str(uid), str(op_type), str(module), str(uid), str(op_type),
+                     True, causes, text or "", str(since))
 
 
 def _subjects(causes: Iterable[Iterable[Cause]]) -> dict[CauseKind, set[str]]:

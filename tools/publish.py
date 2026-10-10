@@ -49,7 +49,9 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio de código (
    ``--solo-espejo``; con las pruebas del arnés que lanzan Blender entero: nada se
    publica sin la comprobación completa, spec 001 0.6, RF-001-06) y siempre
    ``tools/check_docs.py <carpeta del proyecto>``; las dos tienen que terminar con 0. Después se miran otra vez los árboles: las comprobaciones
-   no deben cambiar nada.
+   no deben cambiar nada. Si hay otro ``tools/check.py`` en marcha en el equipo, el de la
+   publicación lo espera (su cerrojo del equipo; spec 006, T46), y su línea «ESPERANDO: …»
+   sale en directo.
 9. Subida (RF-007-20, RF-007-21), salvo con ``--solo-espejo``: ``git push
    --follow-tags`` de la rama actual del código a la misma rama de ``origin``, nunca
    forzada; si falla (rechazada, sin red o sin permiso), código 1 con el mensaje de git

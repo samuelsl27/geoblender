@@ -27,7 +27,8 @@ antes de operar (``core.provenance.gate``, T30) y la comprobación de los datos 
    con un motivo (:func:`accept_edit`), recalcularlo o reimportarlo (lo que se ofrece:
    :func:`offers`). Lo que falta (:func:`mark_missing`), lo que vuelve con su contenido
    (:func:`restore`) y lo dañado cambian de estado con su evento; lo dañado ya no sale de ahí:
-   solo se reimporta (nunca se acepta, se marca «falta» ni vuelve a vigente).
+   solo se reimporta (nunca se acepta, se marca «falta» ni vuelve a vigente). La lista de lo
+   que no se puede usar, con lo que se ofrece y su aviso, es :func:`unusable` (T54).
 
 :func:`external_check_steps` repasa así, por pasos que el temporizador de ``bl`` avanza
 (ninguno pasa de ``budget_s``; el trabajo de cada paso se planea para la mitad), todos los datos
@@ -107,6 +108,7 @@ __all__ = [
     "PHASES",
     "STEP_BUDGET_S",
     "SURVEYED_STATUSES",
+    "UNUSABLE_STATUSES",
     "DatasetFinding",
     "DatasetProbe",
     "DatasetVerdict",
@@ -116,11 +118,13 @@ __all__ = [
     "OriginalFinding",
     "OriginalVerdict",
     "Signal",
+    "Unusable",
     "accept_edit",
     "assess",
     "checkable",
     "content_digest",
     "external_check_steps",
+    "last_writer",
     "mark_missing",
     "offer_label",
     "offers",
@@ -129,6 +133,7 @@ __all__ = [
     "record",
     "restore",
     "spec_of",
+    "unusable",
 ]
 
 
@@ -558,28 +563,101 @@ _LAST_WRITER = (
 """La última operación hecha en Geoblender (no una edición externa) que escribió un dato."""
 
 
+UNUSABLE_STATUSES: tuple[DatasetStatus, ...] = (DatasetStatus.BLOCKED, DatasetStatus.MISSING,
+                                               DatasetStatus.DAMAGED)
+"""Los estados de un dato vivo que no se puede usar hasta resolverlo (RF-008-56, RF-008-57;
+ADR-0025 §4)."""
+
+
+def last_writer(conn: sqlite3.Connection, uid: str) -> str | None:
+    """La última operación hecha en Geoblender (no una edición externa) que escribió el dato
+    ``uid``, o ``None``. Solo lee."""
+    found = conn.execute(_LAST_WRITER, (uid,)).fetchone()
+    return None if found is None else str(found[0])
+
+
+def _resolution(conn: sqlite3.Connection,
+                current: DatasetRecord) -> tuple[tuple[Offer, ...], str | None]:
+    """Lo que se ofrece para ``current`` y la entrada que se reimportaría: la de lo importado
+    o aquella cuya importación lo escribió por última vez."""
+    if current.status not in UNUSABLE_STATUSES:
+        return (), None
+    writer = conn.execute(_LAST_WRITER, (current.uid,)).fetchone()
+    source = current.input_uid
+    if source is None and writer is not None:
+        found = conn.execute("SELECT uid FROM gb_input WHERE operation_uid = ? ORDER BY fid "
+                             "DESC LIMIT 1", (writer[0],)).fetchone()
+        source = None if found is None else str(found[0])
+    if current.status is DatasetStatus.DAMAGED:
+        return (Offer.REIMPORT,), source
+    chosen: list[Offer] = []
+    if current.status is DatasetStatus.BLOCKED:
+        chosen.append(Offer.ACCEPT)
+    if writer is not None and writer[1]:
+        chosen.append(Offer.RECOMPUTE)
+    if source is not None:
+        chosen.append(Offer.REIMPORT)
+    return tuple(chosen), source
+
+
 def offers(conn: sqlite3.Connection, key: str) -> tuple[Offer, ...]:
     """Lo que se ofrece para el dato ``key`` (uid o nombre de un dato vivo): de uno bloqueado,
     aceptar la edición; de uno bloqueado o que falta, recalcularlo si la última operación de
     Geoblender que lo escribió se puede repetir, y reimportarlo si es lo importado de una
     entrada o lo escribió una importación; de lo dañado, solo reimportarlo (ADR-0025 §4); de lo
     demás, nada. Solo lee. ``ValidationError`` (``core.dataset_unknown``) si no está."""
-    current = _required(conn, key)
-    if current.status is DatasetStatus.DAMAGED:
-        return (Offer.REIMPORT,)
-    if current.status not in (DatasetStatus.BLOCKED, DatasetStatus.MISSING):
-        return ()
-    found: list[Offer] = []
-    if current.status is DatasetStatus.BLOCKED:
-        found.append(Offer.ACCEPT)
-    writer = conn.execute(_LAST_WRITER, (current.uid,)).fetchone()
-    if writer is not None and writer[1]:
-        found.append(Offer.RECOMPUTE)
-    imported = current.input_uid is not None or (writer is not None and conn.execute(
-        "SELECT 1 FROM gb_input WHERE operation_uid = ?", (writer[0],)).fetchone() is not None)
-    if imported:
-        found.append(Offer.REIMPORT)
-    return tuple(found)
+    return _resolution(conn, _required(conn, key))[0]
+
+
+@dataclass(frozen=True)
+class Unusable:
+    """Un dato vivo que no se puede usar hasta resolverlo (RF-008-56, RF-008-57; ADR-0025
+    §4): bloqueado por una edición externa, que falta o dañado; con lo que se ofrece para
+    resolverlo (:func:`offers`), la entrada que se reimportaría (``input_uid``: la de lo
+    importado o la cuya importación lo escribió; ``None`` si no se ofrece reimportarlo) y el
+    nombre de la entrada de lo importado (para su aviso)."""
+
+    record: DatasetRecord
+    offers: tuple[Offer, ...]
+    input_uid: str | None = None
+    input_name: str | None = None
+
+    def text(self, language: str = "es") -> str:
+        """Su aviso en ``language``: el bloqueo de la spec §8, que falta (con su ubicación) o
+        que está dañado (con su entrada)."""
+        record = self.record
+        if record.status is DatasetStatus.BLOCKED:
+            return _render("core.dataset_blocked", language=language, name=record.name)
+        code = ("core.dataset_missing" if record.status is DatasetStatus.MISSING
+                else "core.dataset_damaged")
+        return _render(code, language=language, name=record.name, locator=record.locator,
+                       input=self.input_name if self.input_name is not None else record.input_uid)
+
+
+def unusable(conn: sqlite3.Connection, key: str | None = None) -> tuple[Unusable, ...]:
+    """Los datos vivos del proyecto (con la conexión ``conn``) que están bloqueados, faltan o
+    están dañados, por su nombre (sin distinguir mayúsculas), cada uno con lo que se ofrece
+    para resolverlo y su aviso (lo que lista la interfaz para resolverlos, T54); con ``key``
+    (uid o nombre de un dato vivo), solo ese dato, si lo está. Solo lee."""
+    marks = ", ".join("?" for _ in UNUSABLE_STATUSES)
+    where = f"status IN ({marks})"
+    args: list[object] = [str(status) for status in UNUSABLE_STATUSES]
+    if key is not None:
+        found = registry.get(conn, key)
+        if found is None:
+            return ()
+        where += " AND uid = ?"
+        args.append(found.uid)
+    rows = conn.execute(f"SELECT {', '.join(RECORD_COLUMNS)} FROM gb_dataset WHERE {where} "
+                        "ORDER BY name COLLATE NOCASE, fid", args).fetchall()
+    items: list[Unusable] = []
+    for row in rows:
+        record = DatasetRecord.from_row(row)
+        chosen, source = _resolution(conn, record)
+        items.append(Unusable(record, chosen,
+                              source if Offer.REIMPORT in chosen else None,
+                              _input_name(conn, record)))
+    return tuple(items)
 
 
 def accept_edit(conn: sqlite3.Connection, project: Any, key: str, reason: str) -> DatasetRecord:
@@ -875,10 +953,12 @@ def _claimed(project: Any) -> frozenset[str]:
     return frozenset(os.path.normcase(os.path.normpath(path)) for path in claimed_paths(project))
 
 
-def _check_steps(project: ExternalProject, budget: float) -> Iterator[Any]:
-    from ..project.model import Progress
-    from ..project.session import WriteState
-
+def _surveyed(project: Any) -> tuple[list[_Check], list[_OriginalCheck],
+                                     Mapping[str, TableState]]:
+    """Lo que repasa la comprobación de los datos, en una lectura: los datos seguidos vigentes,
+    bloqueados o que faltan (sin los ficheros que reclama una operación en curso de esta
+    sesión), los originales guardados y el estado de las tablas de los datos (también la
+    comprobación a petición de ``core.provenance.checks``)."""
     with project.read() as conn:
         records = [DatasetRecord.from_row(row) for row in conn.execute(_SURVEY)]
         names = {str(uid): str(name)
@@ -893,16 +973,29 @@ def _check_steps(project: ExternalProject, budget: float) -> Iterator[Any]:
         if item.store is Store.GPKG
         or os.path.normcase(os.path.normpath(_path(project, item))) not in claimed
     ]
-    originals = [_OriginalCheck(item) for item in stored]
+    return checks, [_OriginalCheck(item) for item in stored], tables
+
+
+def _prefilter_item(project: Any, item: _Check | _OriginalCheck,
+                    tables: Mapping[str, TableState]) -> None:
+    """El prefiltro de un dato (contra ``tables``) o de un original."""
+    if isinstance(item, _Check):
+        _prefilter(project, item, tables)
+    else:
+        _prefilter_original(project, item)
+
+
+def _check_steps(project: ExternalProject, budget: float) -> Iterator[Any]:
+    from ..project.model import Progress
+    from ..project.session import WriteState
+
+    checks, originals, tables = _surveyed(project)
     total = len(checks) + len(originals)
     message = "Comprobando los datos del proyecto…"
     yield Progress(PHASES[0], 0, total, message)
     pacer = _Pacer(budget)
     for index, item in enumerate((*checks, *originals), start=1):
-        if isinstance(item, _Check):
-            _prefilter(project, item, tables)
-        else:
-            _prefilter_original(project, item)
+        _prefilter_item(project, item, tables)
         if pacer.lap() and index < total:
             yield Progress(PHASES[0], index, total, message)
             pacer.restart()

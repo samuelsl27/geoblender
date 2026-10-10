@@ -10,7 +10,10 @@ de minas, para su propio trabajo de proyectos de explotación y restauración.
 > superior con los 13 menús, acceso rápido, vistas mineras, idioma, línea de comandos y
 > plantilla de aplicación (spec 003). Ejecuta los cálculos largos en segundo plano, con su
 > avance y su cancelación en la barra de estado, y tiene un motor de cálculo opcional que solo
-> se instala si se acepta (spec 004). La 002, la 003 y la 004 están comprobadas con Blender
+> se instala si se acepta (spec 004). Registra la procedencia de los parámetros, las entradas,
+> las operaciones y las cifras del proyecto, y lo que queda obsoleto cuando algo cambia (spec
+> 008, probada en Blender sin su interfaz; faltan sus comprobaciones en pantalla, y ningún
+> módulo minero la usa aún). La 002, la 003 y la 004 están comprobadas con Blender
 > 5.2.1 (la interfaz y los trabajos, en la pantalla de referencia de IMGA), y la 002 también
 > con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un equipo. Faltan comprobaciones de
 > personas: dos equipos a la vez, que IMGA acepte las de QGIS sin interfaz y las de la interfaz
@@ -125,24 +128,37 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en unos 30 s) no ejecuta las pruebas del
-propio arnés que lanzan Blender entero, y lo dice antes del resultado. Los pasos van uno
-tras otro, pero las pruebas unitarias se reparten en 12 procesos (`tools/unittest_part.py`)
+Sin `--completo` (la comprobación de cada tarea, en unos 35 s) no ejecuta las pruebas del
+propio arnés que lanzan Blender entero, y lo dice antes del resultado. Solo se ejecuta un
+`tools/check.py` a la vez en el equipo, sea de la carpeta que sea (de este repositorio o de
+un *worktree*): dos a la vez compiten por los procesadores, tardan más y las pruebas que miden
+tiempos fallan. El cerrojo es `%LOCALAPPDATA%\Geoblender\check.lock`, que el sistema suelta
+aunque la comprobación se cierre de golpe (no hay que borrarlo); si otra lo tiene, la nueva
+escribe `ESPERANDO: …` con su pid y su carpeta y espera, y su tiempo se cuenta desde que
+empieza de verdad. `tools/publish.py` espera igual. Los pasos van uno
+tras otro, pero las pruebas unitarias se reparten en 16 procesos (`tools/unittest_part.py`)
 y las de Blender en 5 Blender (`tools/run_blender_tests.py --parte i/n`) que se ejecutan a
 la vez, sin pasar del número de procesadores; cada prueba, en uno solo. El reparto es por
 la duración de cada módulo de pruebas en la comprobación anterior, que se guarda en
 `%TEMP%\geoblender-tiempos\` (un fichero por carpeta del código); sin él, la primera vez o si
-se borra, por número de pruebas. Si existe el motor de cálculo de pruebas
+se borra, por número de pruebas. Los módulos de pruebas con la misma `PART_AFFINITY` (los que
+pasan las reglas por todo el repositorio, y los que las pasan por la extensión) van al mismo
+proceso: las reglas leen y analizan cada fichero una sola vez por proceso, y así lo comparten.
+Si existe el motor de cálculo de pruebas
 (`tools/make_runtime.py`), el paso «motor» ejecuta otra vez las pruebas unitarias de los
-paquetes de dominio con su numpy, a la vez que las de Blender (spec 004, RF-004-28); sin él, se
-omite con `[ENTORNO] runtime` y el resultado es `VERDE CON OMISIONES`.
+paquetes de dominio con su numpy, a la vez que las de Blender (spec 004, RF-004-28), en 16
+procesos como mucho repartidos entre las carpetas por lo que tardaron (6 por carpeta la
+primera vez); sin él, se omite con `[ENTORNO] runtime` y el resultado es `VERDE CON
+OMISIONES`.
 
 ## Variables de entorno
 
-Todas son opcionales y empiezan por `GEOBLENDER_`.
+Todas son opcionales y empiezan por `GEOBLENDER_`. La primera la lee Geoblender en cada
+equipo; las demás, las herramientas de desarrollo y las pruebas.
 
 | Variable | Para qué |
 | --- | --- |
+| `GEOBLENDER_READ_ONLY_DIRS` | Carpetas en las que Geoblender nunca escribe (las de los expedientes de clientes), separadas por «;»: cada una, una ruta completa con su unidad (`X:\…`) o de red (`\\servidor\…`); una unidad de red y su ruta de red son la misma carpeta, y no se distinguen mayúsculas. La define IMGA en cada equipo, y cada persona puede añadir las suyas en las preferencias de Geoblender («Carpetas de solo lectura»), donde se ven también las de la variable. Un proyecto dentro de una de ellas se abre en solo lectura, sin cerrojo y sin migrarlo; en ellas no se crea un proyecto, ni se saca o se publica una copia local, ni escribe ninguna exportación. Si ni la variable ni las preferencias declaran ninguna, Geoblender avisa una vez por sesión y en Ayuda ▸ Diagnóstico de la instalación (spec 008) |
 | `GEOBLENDER_DOCS_DIR` | Carpeta de la documentación, si no es la carpeta madre de este repositorio |
 | `GEOBLENDER_NAS_ESPEJO` | Carpeta del NAS donde se refleja la carpeta del proyecto; solo la define quien publica |
 | `GEOBLENDER_BLENDER` | Ruta a `blender.exe` o a su carpeta, si Blender 5.2 no está en la ruta por defecto (también para el lanzador `Geoblender.cmd`) |
@@ -154,6 +170,7 @@ Todas son opcionales y empiezan por `GEOBLENDER_`.
 | `GEOBLENDER_NET_TEST_DIR` | Carpeta de red para las comprobaciones manuales; nunca en la carpeta de expedientes de clientes |
 | `GEOBLENDER_PROJ_BIN` | Carpeta con `projinfo` y `cs2cs`, para regenerar el catálogo de CRS |
 | `GEOBLENDER_TEST_RUNTIME_SITE` | Otra ubicación del motor de cálculo de pruebas (su carpeta `site`), en lugar del de `.deps/runtime/` |
+| `GEOBLENDER_CHECK_LOCK` | Otro fichero para el cerrojo de `tools/check.py`, en lugar de `%LOCALAPPDATA%\Geoblender\check.lock` (las pruebas lo usan en una carpeta temporal). `GEOBLENDER_CHECK_LOCK_HELD` la pone `tools/check.py` en sus órdenes: no se define a mano |
 
 Las rutas a datos reales de clientes solo llegan por variables: nunca se escriben en el código
 ni se copian al repositorio, y se leen en solo lectura.

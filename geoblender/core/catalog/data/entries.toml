@@ -26,6 +26,13 @@ title.es = "Sondeos"
 title.en = "Base topography"
 title.es = "Topografía base"
 
+# La spec 008 es el bloque A de R-07 (su D-1) y entrega sus órdenes tarea a tarea: cada una
+# está disponible cuando su operador real sustituye al provisional. Lo de la 009 sigue en R-07.
+["008"]
+title.en = "Provenance: parameters, inputs, operations and figures"
+title.es = "Procedencia: parámetros, entradas, operaciones y cifras"
+delivered = true
+
 ["R-07"]
 title.en = "Versions and provenance"
 title.es = "Versiones y procedencia"

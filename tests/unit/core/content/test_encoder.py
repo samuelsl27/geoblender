@@ -1568,5 +1568,133 @@ class NewTypesValidationTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             hasher.features(FIELDS, "XY", None, [])
 
+
+def _steps_and_value(steps: object) -> tuple[list[float], object]:
+    """Los avances de un generador de pasos y lo que devuelve al acabar."""
+    seen: list[float] = []
+    while True:
+        try:
+            seen.append(next(steps))  # type: ignore[call-overload]
+        except StopIteration as stop:
+            return seen, stop.value
+
+
+class FinishStepsTest(unittest.TestCase):
+    """RNF-008-11 y RF-008-08 (spec 008, T67; ADR-0024 §2 y §4: ningún hash cambia): una capa
+    o una tabla grande cierra su hash por pasos (``finish_steps``): los sha256 de sus
+    elementos van a la sección ``VALS`` por trozos de ``step`` elementos como poco (sin orden,
+    ordenados por grupos de su primer byte: el mismo orden que ``sorted`` sobre todos), con el
+    avance (0–1) tras cada trozo que no es el último. El hash es el de ``finish()`` y el de la
+    forma escrita a mano (``struct`` y ``hashlib``, todos los sha256 ordenados de una vez)."""
+
+    COUNT = 3_000
+    STEP = 100
+    COLUMNS = [["hole", "text"], ["z", "float"], ["n", "int"]]
+
+    def rows(self) -> list[list[object]]:
+        """Filas con repetidas (dos filas iguales cuentan dos veces)."""
+        return [[f"S-{index % 997:04d}", float(index % 7), index % 11]
+                for index in range(self.COUNT)]
+
+    def features(self) -> list[tuple[None, dict[str, object]]]:
+        return [(None, {"code": f"P-{index % 499:04d}", "area": float(index % 13),
+                        "parts": index % 3}) for index in range(self.COUNT)]
+
+    def expected_rows(self, ordered: bool) -> str:
+        each = [hashlib.sha256(hashing.canonical_json(row)).digest() for row in self.rows()]
+        head = hashing.canonical_json(
+            {"columns": self.COLUMNS, "count": self.COUNT, "ordered": ordered}
+        )
+        values = b"".join(each if ordered else sorted(each))
+        return hashlib.sha256(_section(b"TABL", head) + _section(b"VALS", values)).hexdigest()
+
+    def expected_features(self) -> str:
+        each = sorted(
+            hashlib.sha256(b"\x00" + hashing.canonical_json(attributes)).digest()
+            for _shape, attributes in self.features()
+        )
+        head = hashing.canonical_json({
+            "count": self.COUNT, "crs": LAYER_CRS, "dims": "XY",
+            "fields": [["area", "float"], ["code", "text"], ["parts", "int"]],
+        })
+        return hashlib.sha256(
+            _section(b"FEAT", head) + _section(b"VALS", b"".join(each))
+        ).hexdigest()
+
+    def assert_steps(self, seen: list[float]) -> None:
+        """Avances crecientes dentro de (0, 1), uno por trozo de ``STEP`` elementos o poco
+        más (los grupos por el primer byte no se parten)."""
+        self.assertEqual(seen, sorted(set(seen)))
+        self.assertGreater(seen[0], 0.0)
+        self.assertLess(seen[-1], 1.0)
+        self.assertGreaterEqual(len(seen), self.COUNT // (2 * self.STEP))
+        self.assertLessEqual(len(seen), self.COUNT // self.STEP)
+
+    def test_rows_by_steps(self) -> None:
+        for ordered in (False, True):
+            with self.subTest(ordered=ordered):
+                feed = encoder.RowEncoder(self.COLUMNS, ordered)
+                feed.update(self.rows())
+                seen, value = _steps_and_value(feed.finish_steps(self.STEP))
+                self.assertEqual(value, self.expected_rows(ordered))
+                self.assert_steps(seen)
+                alone = encoder.RowEncoder(self.COLUMNS, ordered)
+                alone.update(self.rows())
+                self.assertEqual(alone.finish(), value)
+
+    def test_features_by_steps(self) -> None:
+        hasher = content.ContentHasher("vector", declarations=DECLARATIONS)
+        feed = hasher.begin_features(FIELDS, "XY", LAYER_CRS)
+        feed.update(self.features())
+        seen, value = _steps_and_value(feed.finish_steps(self.STEP))
+        self.assertEqual(value, self.expected_features())
+        self.assertEqual(hasher.digest().data_sha256, value)  # entregado al acabar
+        self.assert_steps(seen)
+        alone = encoder.FeatureEncoder(FIELDS, "XY", LAYER_CRS)
+        alone.update(self.features())
+        self.assertEqual(alone.finish(), value)
+
+    def test_few_elements_in_one_step(self) -> None:
+        """Con menos elementos que ``step`` (o ninguno), un solo paso: sin avances."""
+        feed = encoder.RowEncoder(COLUMNS, False)
+        feed.update(ROWS)
+        seen, value = _steps_and_value(feed.finish_steps(len(ROWS) + 1))
+        self.assertEqual(seen, [])
+        self.assertEqual(value, row_digest().data_sha256)
+        empty = encoder.FeatureEncoder(FIELDS, "XY", None)
+        self.assertEqual(_steps_and_value(empty.finish_steps(1)),
+                         ([], encoder.FeatureEncoder(FIELDS, "XY", None).finish()))
+
+    def test_abandoned_steps_deliver_nothing(self) -> None:
+        """Pedir los pasos cierra el codificador (aunque no se recorran); dejarlos a medias
+        (cancelar) no entrega el hash: el hasher sigue sin datos."""
+        hasher = content.ContentHasher("vector", declarations=DECLARATIONS)
+        feed = hasher.begin_features(FIELDS, "XY", LAYER_CRS)
+        feed.update(self.features())
+        steps = feed.finish_steps(self.STEP)
+        with self.assertRaises(RuntimeError):
+            feed.add(None, ATTRIBUTES)
+        next(steps)
+        steps.close()
+        with self.assertRaises(RuntimeError):
+            hasher.digest()
+        with self.assertRaises(RuntimeError):
+            feed.finish()
+        rows = encoder.RowEncoder(COLUMNS, True)
+        rows.finish_steps()
+        with self.assertRaises(RuntimeError):
+            rows.add(ROWS[0])
+
+    def test_bad_step(self) -> None:
+        """Un ``step`` que no es un entero positivo se rechaza y el codificador sigue abierto."""
+        feed = encoder.RowEncoder(COLUMNS, False)
+        feed.update(ROWS)
+        for step, error in ((0, ValueError), (-3, ValueError), (2.5, TypeError),
+                            (True, TypeError)):
+            with self.subTest(step=step), self.assertRaises(error):
+                feed.finish_steps(step)
+        self.assertEqual(feed.finish(), row_digest().data_sha256)
+
+
 if __name__ == "__main__":
     unittest.main()

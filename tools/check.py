@@ -9,7 +9,16 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
 1. Entorno: localiza Blender (``GEOBLENDER_BLENDER`` o la ruta por defecto) con la
    versión mínima del manifiesto, y exige que el intérprete sea el Python de ese Blender
    y que no se ejecute dentro de Blender. Si algo falla, lo dice con la orden o la
-   variable que lo corrige y sale con 2 sin ejecutar nada.
+   variable que lo corrige y sale con 2 sin ejecutar nada. Después, el cerrojo del equipo
+   (spec 006, T46; ``gbtools.check_lock``): un solo ``check.py`` a la vez en el equipo,
+   sea de la carpeta que sea (dos a la vez compiten por los procesadores, tardan más y las
+   pruebas que miden tiempos fallan). Es ``%LOCALAPPDATA%\\Geoblender\\check.lock`` (o
+   ``GEOBLENDER_CHECK_LOCK``), con un bloqueo del sistema que se suelta solo si el proceso
+   muere. Si otro lo tiene, escribe tras la cabecera una línea «ESPERANDO: …» con su pid y
+   su carpeta, y espera; el tiempo que informa, y que se compara con RNF-001-01, empieza al
+   tomarlo. Las órdenes de los pasos llevan ``GEOBLENDER_CHECK_LOCK_HELD`` con su pid: un
+   ``check.py`` lanzado desde ellas no espera a su padre. Si no se puede usar, un aviso, y
+   sigue sin él. ``tools/publish.py``, que lo lanza, espera igual.
 2. Pasos, en este orden y todos aunque falle alguno: «unitarias» (``tests/unit``, que
    incluye las reglas de arquitectura y del repositorio), «referencia»
    (``tests/referencia``; sin casos es correcto), «licencias»
@@ -54,7 +63,10 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    (``--tiempos``) y escribe la duración de sus módulos (``--medidas``); al terminar, las
    medidas sustituyen a las guardadas (:class:`PartTimes`). Sin medidas (la primera vez,
    o un almacén borrado o ilegible), el reparto es por número de pruebas, el de la spec
-   003 (T40); la salida y los códigos no cambian. El paso dura lo que
+   003 (T40); la salida y los códigos no cambian. Los módulos con la misma afinidad
+   (``PART_AFFINITY``: los que pasan las reglas por el repositorio) van a la misma parte, y
+   con medidas las carpetas de «motor» se reparten entre ellas sus partes por su tiempo
+   (:func:`runtime_parts`; spec 006, T47). El paso dura lo que
    tarda la más lenta, y su línea suma las pruebas de todas (si alguna no llegó a
    contarlas, lo dice: «750 pruebas en 3 de 4 partes»). Un fichero de pruebas
    cuenta como cargado si lo carga cualquier parte; y si las partes no son 1…n, no
@@ -131,7 +143,8 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence  #
 from dataclasses import dataclass, field  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from gbtools import blender, discovery, layout, manifest, parts, repo, wheels  # noqa: E402
+from gbtools import blender, check_lock, discovery, layout, manifest, parts  # noqa: E402
+from gbtools import repo, wheels  # noqa: E402
 from gbtools.blender import BlenderInstall, EnvironmentProblem  # noqa: E402
 from gbtools.repo import repo_root  # noqa: E402
 from gbtools.rules import imports  # noqa: E402
@@ -174,8 +187,19 @@ PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T
 # ≈ 16 s con 6 (y ≈ 12,5 s con 10: el suelo es su módulo más lento, test_check_cli, con el
 # arranque de la parte), y 5 de «blender» con «motor» a la vez ≈ 14 s frente a ≈ 18 s con
 # 3 y ≈ 15,5 s con 4 (con 6, igual que con 5: el suelo es test_jobs, con su trabajo de
-# 10 s).
-UNIT_PARTS = 12
+# 10 s). Con las pruebas de la 006 y de la 008 juntas y test_check_cli partido en cuatro
+# (spec 006, T46), 16 partes de «unitarias» tardan ≈ 18 s frente a ≈ 19,6 s con 12 (con 20,
+# igual que con 16: el suelo es test_naming, que recorre el repositorio entero con todas
+# las reglas, con el arranque de la parte). «blender» sigue con 5, que con «motor» a la vez
+# tardan ≈ 16,5 s con sus partes ya igualadas: partir test_jobs no rinde (con 5 partes,
+# ≈ 17,6 s, porque sus trabajos reales coinciden con los de otras partes; con 6, ≈ 15,9 s,
+# pero con la CPU llena el autodiagnóstico de 10 s, que mide sus avances en tiempo real,
+# falla una de cada cuatro veces). Con las reglas analizando cada fichero una sola vez por
+# proceso y las pruebas que las pasan por el repositorio juntas (spec 006, T47:
+# PART_AFFINITY, gbtools.parts.affinity_of), los módulos de «unitarias» suman ≈ 183 s en vez
+# de ≈ 207 s, el proceso que las pasa ya no tarda ≈ 2 s en cerrarse (rules.pyast.clear_caches)
+# y el paso tarda ≈ 15 s: el suelo es el reparto, con el arranque de cada parte.
+UNIT_PARTS = 16
 BLENDER_PARTS = 5
 THREAD_PREFIX = "check-parte-"  # los hilos que esperan a cada parte
 JOIN_POLL_S = 0.1  # se espera a los hilos a ratos: así Ctrl+C llega enseguida
@@ -205,7 +229,19 @@ DOMAIN_TESTS = "tests/unit"  # tests/unit/<paquete de dominio> (imports.LEVELS)
 # tests/unit/jobs tarda ≈ 12–13,5 s, casi lo que 5 partes de «blender» (spec 006, T38);
 # con 4, «motor» acaba en ≈ 8,5 s (con 3, ≈ 9,3 s), y «blender» tarda lo mismo con 3 o 4.
 # A la vez que «unitarias» no compensa: las alarga lo mismo (≈ 2,5 s) que a «blender».
-RUNTIME_PARTS = 4
+# Con las pruebas de la 006 y de la 008 juntas, tests/unit/core suma ≈ 62 s de módulos y,
+# con 4, «motor» tarda ≈ 18,5 s, más que «blender» (≈ 16,5 s): con 6, ≈ 15,4 s (con 5,
+# ≈ 16,8 s), y el suelo vuelve a ser «blender», que tarda lo mismo.
+RUNTIME_PARTS = 6
+# Con las duraciones medidas de los módulos de todas las carpetas de dominio, «motor» no
+# reparte RUNTIME_PARTS por carpeta sino, como mucho, RUNTIME_PROCESSES entre todas, por su
+# tiempo (spec 006, T47; gbtools.parts.share), y nunca más que con RUNTIME_PARTS: con
+# tests/unit/core en ≈ 72 s de módulos, jobs en ≈ 42 s y gis en ≈ 7,5 s, 6 de cada una (19
+# órdenes) dejan «blender» ∥ «motor» en ≈ 16,8 s (core, el suelo de «motor», ≈ 15 s); 16
+# por tiempo (core 8, jobs 5, gis 2 e interop 1), en ≈ 16,4 s, con «motor» en ≈ 12,8 s; 14
+# (7, 4, 2 y 1), igual; con 18 (10, 6 y 2) acaba antes «motor», pero «blender» no, y con el
+# equipo lleno fallan las pruebas de tiempo de tests/unit/jobs (test_cancel_timeout).
+RUNTIME_PROCESSES = 16
 # Las duraciones medidas de los módulos de prueba (spec 004, T39; RNF-001-01): el almacén,
 # en la carpeta temporal del sistema (uno por raíz), y los ficheros de las partes, en la
 # de la comprobación. Cada suite con partes tiene su clave (times_key): con qué se
@@ -381,6 +417,16 @@ class Context:
     # Las duraciones medidas de los módulos de prueba (spec 004, T39); None: sin almacén,
     # las órdenes de siempre.
     times: PartTimes | None = None
+    # El pid del check.py que tiene el cerrojo del equipo (este, o su padre si lo heredó;
+    # spec 006, T46): sus órdenes lo llevan en GEOBLENDER_CHECK_LOCK_HELD, para que un
+    # check.py lanzado desde ellas no lo espere. None: sin cerrojo, las órdenes de siempre.
+    lock_owner: int | None = None
+
+    def _with_lock(self, env: dict[str, str]) -> dict[str, str]:
+        """``env`` con ``GEOBLENDER_CHECK_LOCK_HELD`` si hay cerrojo (spec 006, T46)."""
+        if self.lock_owner is not None:
+            env[check_lock.ENV_HELD] = str(self.lock_owner)
+        return env
 
     def part_options(self, flavor: str, folder: str, pattern: str,
                      part: tuple[int, int]) -> list[str]:
@@ -405,7 +451,7 @@ class Context:
         env.pop(imports.ENV_BLENDER_MODULES, None)
         if self.blender_modules:
             env[imports.ENV_BLENDER_MODULES] = ",".join(sorted(self.blender_modules))
-        return env
+        return self._with_lock(env)
 
     def part_profile(self, number: int) -> Path:
         """El perfil temporal de la parte ``number`` de unas pruebas de Blender: el de
@@ -419,7 +465,7 @@ class Context:
         """Entorno de Blender con el perfil temporal (``gbtools.blender``), el de la
         parte si se da."""
         profile = self.profile if part is None else self.part_profile(part[0])
-        return blender.isolated_env(profile)
+        return self._with_lock(blender.isolated_env(profile))
 
     def parts_of(self, folder: str, pattern: str, limit: int) -> int:
         """En cuántas partes se ejecutan las pruebas de ``folder``: ``limit``, sin pasar
@@ -621,17 +667,47 @@ def domain_test_folders(root: Path) -> list[str]:
     ]
 
 
+def runtime_parts(ctx: Context) -> dict[str, int]:
+    """En cuántas partes va cada carpeta de dominio en «motor». Sin medidas, las de
+    siempre: hasta ``RUNTIME_PARTS`` cada una (:meth:`Context.parts_of`). Con las
+    duraciones guardadas de los módulos de todas las que tienen más de uno (spec 006,
+    T47; RNF-001-01), por su tiempo (``parts.share``): entre todas, como mucho
+    ``RUNTIME_PROCESSES`` y nunca más que las de siempre; al menos dos cada una (con una,
+    iría después de las demás) y una la que tiene un solo módulo. Un módulo sin medida
+    (nuevo) cuenta lo que la media de los de su carpeta."""
+    folders = domain_test_folders(ctx.root)
+    always = {folder: ctx.parts_of(folder, UNITTEST_PATTERN, RUNTIME_PARTS) for folder in folders}
+    if ctx.times is None:
+        return always
+    seconds: dict[str, list[float]] = {}
+    limits: dict[str, int] = {}
+    for folder in folders:
+        modules = discovery.expected_modules(ctx.root / folder, UNITTEST_PATTERN, ctx.root)
+        limit = part_count(RUNTIME_PROCESSES, len(modules))
+        if limit == 1:
+            continue
+        stored = ctx.times.stored.get(times_key(TIMES_RUNTIME, folder, UNITTEST_PATTERN), {})
+        measured = [stored[name] for name in modules if name in stored]
+        if not measured:
+            return always
+        mean = sum(measured) / len(measured)
+        seconds[folder] = [max(stored.get(name, mean), parts.MIN_SECONDS) for name in modules]
+        limits[folder] = limit
+    single = sum(count for folder, count in always.items() if folder not in seconds)
+    budget = min(RUNTIME_PROCESSES, sum(always.values())) - single
+    return {**always, **parts.share(seconds, limits, budget)}
+
+
 def _runtime(ctx: Context) -> list[Run]:
     """Paso «motor» (spec 004, T30; RF-004-28, Silvestre REN-01): con el motor de cálculo
     de pruebas, ``tests/unit`` de cada paquete de dominio con su numpy (el mismo código,
-    probado también con el numpy de Blender en «unitarias»), cada carpeta en hasta
-    ``RUNTIME_PARTS`` partes. Sin motor no hay órdenes: lo omite :func:`_runtime_omit`."""
+    probado también con el numpy de Blender en «unitarias»), cada carpeta en las partes de
+    :func:`runtime_parts`. Sin motor no hay órdenes: lo omite :func:`_runtime_omit`."""
     site = ctx.test_runtime().site
     if site is None:
         return []
     runs: list[Run] = []
-    for folder in domain_test_folders(ctx.root):
-        count = ctx.parts_of(folder, UNITTEST_PATTERN, RUNTIME_PARTS)
+    for folder, count in runtime_parts(ctx).items():
         if count == 1:
             runs.append(ctx.unittest(folder, site=site))
         else:
@@ -1484,6 +1560,33 @@ def _scripts_dir(install: BlenderInstall) -> Path:
     return install.exe.parent / f"{major}.{minor}" / "scripts"
 
 
+def _print_wait(holder: check_lock.Holder | None) -> None:
+    print(check_lock.wait_message(holder), flush=True)
+
+
+def take_lock(
+    lock_file: Callable[[Mapping[str, str]], Path | None],
+    environ: Mapping[str, str],
+    root: Path,
+) -> check_lock.CheckLock | None:
+    """Toma el cerrojo del equipo (spec 006, T46; RNF-001-01, RNF-007-01): el fichero de
+    ``lock_file(environ)`` (``None``: sin cerrojo), con la carpeta ``root``; si otro
+    ``check.py`` lo tiene, escribe a quién espera y espera. Si este desciende del que lo
+    tiene (``GEOBLENDER_CHECK_LOCK_HELD`` de ``environ``), sigue con el suyo. Si no se puede
+    usar, un aviso y ``None``: la comprobación sigue sin él."""
+    try:
+        path = lock_file(environ)
+        if path is None:
+            return None
+        lock = check_lock.CheckLock(path, root)
+        lock.acquire(inherited=environ.get(check_lock.ENV_HELD), on_wait=_print_wait)
+    except check_lock.LockProblem as exc:
+        print(f"AVISO: {exc}; la comprobación sigue sin el cerrojo del equipo (otro "
+              "tools/check.py a la vez la estorbaría)", flush=True)
+        return None
+    return lock
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -1496,6 +1599,7 @@ def main(
     environ: Mapping[str, str] | None = None,
     find_runtime: Callable[[Path, Mapping[str, str]], TestRuntime] = find_test_runtime,
     times_store: Callable[[Path], Path | None] = default_times_store,
+    lock_file: Callable[[Mapping[str, str]], Path | None] = check_lock.lock_path,
 ) -> int:
     """Ejecuta la comprobación completa y devuelve el código de salida.
 
@@ -1505,7 +1609,9 @@ def main(
     cálculo de pruebas (``GEOBLENDER_TEST_RUNTIME_SITE``; por defecto, el del proceso),
     cómo se busca ese motor (``make_runtime.find_test_runtime``) y dónde está el almacén
     de tiempos de la raíz (:func:`default_times_store`; ``None``: sin almacén, las
-    partes por número de pruebas y sin medir).
+    partes por número de pruebas y sin medir) y dónde está el cerrojo del equipo según
+    ese entorno (:func:`gbtools.check_lock.lock_path`; ``None``: sin cerrojo y sin
+    esperar a nadie; spec 006, T46).
     """
     started = time.perf_counter()
     executable = sys.executable if executable is None else executable
@@ -1561,62 +1667,71 @@ def main(
         f"Geoblender · comprobación completa · Blender {version} ({install.exe})"
         + (f" · {extras}" if extras else "")
     )
-    work = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
-    results: list[StepResult] = []
+    lock = take_lock(lock_file, os.environ if environ is None else environ, root)
+    # El tiempo que se informa, y que se compara con RNF-001-01, empieza al tomar el
+    # cerrojo: no cuenta la espera a otro check.py (spec 006, T46).
+    started = time.perf_counter()
     try:
-        profile = work / PROFILE_FOLDER
-        profile.mkdir()
-        store = times_store(root)
-        times = None if store is None else PartTimes.load(store, work / TIMES_WORK_FOLDER)
-        ctx = Context(
-            root=root,
-            install=install,
-            profile=profile,
-            blender_modules=imports.installation_modules(_scripts_dir(install)),
-            environ=environ,
-            find_runtime=find_runtime,
-            times=times,
-        )
-        # Los perfiles de las demás partes de las pruebas de Blender (T40).
-        for number in range(2, BLENDER_PARTS + 1):
-            ctx.part_profile(number).mkdir()
-        # Foto del repositorio antes del primer paso, para compararla tras el último.
-        snapshot_start = time.perf_counter()
-        before = repo.snapshot(root, REPOSITORY_SKIP)
-        snapshot_seconds = time.perf_counter() - snapshot_start
-        for result in run_steps(selected, ctx, runner):
-            results.append(result)
-            print(format_step(result), flush=True)
-            for line in (*result.measurements, *result.advice):
-                print(f"            {line}", flush=True)
-        modified = repository_result(root, before, snapshot_seconds)
-        if modified is not None:
-            results.append(modified)
-            print(format_step(modified), flush=True)
-        if times is not None:
-            try:
-                times.save()
-            except OSError as exc:
-                print(f"AVISO: no se pudieron guardar las duraciones de las pruebas en "
-                      f"«{times.store}»: {exc}")
-    finally:
+        work = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
+        results: list[StepResult] = []
         try:
-            _remove_tree(work)
-        except OSError as exc:
-            print(f"AVISO: no se pudo borrar la carpeta temporal «{work}»: {exc}")
+            profile = work / PROFILE_FOLDER
+            profile.mkdir()
+            store = times_store(root)
+            times = None if store is None else PartTimes.load(store, work / TIMES_WORK_FOLDER)
+            ctx = Context(
+                root=root,
+                install=install,
+                profile=profile,
+                blender_modules=imports.installation_modules(_scripts_dir(install)),
+                environ=environ,
+                find_runtime=find_runtime,
+                times=times,
+                lock_owner=None if lock is None else lock.owner,
+            )
+            # Los perfiles de las demás partes de las pruebas de Blender (T40).
+            for number in range(2, BLENDER_PARTS + 1):
+                ctx.part_profile(number).mkdir()
+            # Foto del repositorio antes del primer paso, para compararla tras el último.
+            snapshot_start = time.perf_counter()
+            before = repo.snapshot(root, REPOSITORY_SKIP)
+            snapshot_seconds = time.perf_counter() - snapshot_start
+            for result in run_steps(selected, ctx, runner):
+                results.append(result)
+                print(format_step(result), flush=True)
+                for line in (*result.measurements, *result.advice):
+                    print(f"            {line}", flush=True)
+            modified = repository_result(root, before, snapshot_seconds)
+            if modified is not None:
+                results.append(modified)
+                print(format_step(modified), flush=True)
+            if times is not None:
+                try:
+                    times.save()
+                except OSError as exc:
+                    print(f"AVISO: no se pudieron guardar las duraciones de las pruebas en "
+                          f"«{times.store}»: {exc}")
+        finally:
+            try:
+                _remove_tree(work)
+            except OSError as exc:
+                print(f"AVISO: no se pudo borrar la carpeta temporal «{work}»: {exc}")
 
-    if any(result.skipped for result in results):
-        print("\n".join(_omissions(results)))
-    for result in results:
-        if result.status == STATUS_FAIL:
-            print(f"\n--- Salida del paso «{result.name}» ---")
-            print(result.output)
-            print(f"--- Fin de la salida del paso «{result.name}» ---")
-    note = not_complete_note(steps, options.flags)
-    if note is not None:
-        print(note)
-    print(_verdict(results, time.perf_counter() - started))
-    return 1 if any(result.status == STATUS_FAIL for result in results) else 0
+        if any(result.skipped for result in results):
+            print("\n".join(_omissions(results)))
+        for result in results:
+            if result.status == STATUS_FAIL:
+                print(f"\n--- Salida del paso «{result.name}» ---")
+                print(result.output)
+                print(f"--- Fin de la salida del paso «{result.name}» ---")
+        note = not_complete_note(steps, options.flags)
+        if note is not None:
+            print(note)
+        print(_verdict(results, time.perf_counter() - started))
+        return 1 if any(result.status == STATUS_FAIL for result in results) else 0
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 if __name__ == "__main__":

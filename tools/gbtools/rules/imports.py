@@ -344,7 +344,7 @@ def _extension_external_findings(
 
 
 def _uses_package_loader(tree: ast.Module) -> bool:
-    for node in ast.walk(tree):
+    for node in pyast.nodes_of(tree, (ast.Name, ast.Attribute, ast.ImportFrom)):
         if isinstance(node, ast.Name) and node.id == PACKAGE_LOADER:
             return True
         if isinstance(node, ast.Attribute) and node.attr == PACKAGE_LOADER:

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from ..findings import Finding
 from ..layout import ASSET_ROOTS
-from ..repo import ALWAYS_EXCLUDED, is_text_file, iter_repo_files, relpath
+from ..repo import ALWAYS_EXCLUDED, is_text_file, iter_repo_files, read_bytes, relpath
 
 RULE_ENCODING = "TXT-01"
 RULE_LINE_ENDINGS = "TXT-02"
@@ -116,7 +116,7 @@ def check(root: Path, excluded: Sequence[str] = ALWAYS_EXCLUDED) -> list[Finding
             continue
         if not is_text_file(path):
             continue
-        data = path.read_bytes()
+        data = read_bytes(path)
         findings.extend(_encoding(rel, data))
         findings.extend(_line_endings(rel, data))
     return sorted(findings)

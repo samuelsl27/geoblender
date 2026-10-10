@@ -73,8 +73,11 @@ Una versión publicada no cambia nunca (unos vectores de referencia la fijan,
 nuevo. Las entradas del lector no se modifican: el normalizador trabaja sobre copias, por
 trozos de :data:`GRID_CHUNK_CELLS` celdas como mucho (memoria acotada a un trozo más el
 bloque que da el lector, y 32 bytes por entidad o fila). Un bloque o un lote se comprueba
-entero antes de hashear nada de él: si no vale, el codificador queda como estaba. Python puro
-y numpy (ADR-0004).
+entero antes de hashear nada de él: si no vale, el codificador queda como estaba. Una capa o
+una tabla de millones de elementos cierra su hash por pasos (``finish_steps``, T67): los
+sha256 sin orden se agrupan por su primer byte, cada grupo se ordena aparte y la sección
+``VALS`` se hashea por trozos, con los mismos bytes (y el mismo hash) que ``finish()``. Python
+puro y numpy (ADR-0004).
 """
 
 from __future__ import annotations
@@ -86,7 +89,7 @@ import numbers
 import operator
 import re
 import struct
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -124,6 +127,9 @@ GRID_KEYS: frozenset[str] = frozenset(
 GRID_CHUNK_CELLS = 1 << 20
 """Celdas que se convierten y se hashean de una vez (8 MiB en float64); como poco, una fila.
 También los valores de una malla y de una nube de puntos."""
+FINISH_STEP = 1 << 15
+"""Elementos (sha256 de entidades o de filas) que se ordenan y se hashean como poco entre dos
+pasos de ``finish_steps`` (unos 20 ms; T67)."""
 FIELD_TYPES: tuple[str, ...] = ("blob", "bool", "date", "datetime", "float", "int", "text")
 """Los tipos de un campo de una capa o de una columna de una tabla. Cada valor se convierte
 al de su campo: ``float`` (un real; NaN, ±inf, −0,0 canónicos), ``int`` (un entero o un real
@@ -150,6 +156,7 @@ LABEL_VALUES = b"VALS"
 
 _CELL_BYTES = 8
 _DIGEST_BYTES = 32
+_GROUPS = 256  # los grupos de los sha256 sin orden, por su primer byte
 _INT64_MAX = (1 << 63) - 1
 _SHA256_TEXT = re.compile(r"[0-9a-f]{64}")
 _DATE_TEXT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -315,13 +322,18 @@ class DocumentEncoder:
 
 class _Collector:
     """Lo común de las entidades y las filas: el sha256 de cada elemento (32 bytes en
-    memoria por elemento), por lotes que se comprueban enteros antes de añadirse."""
+    memoria por elemento), por lotes que se comprueban enteros antes de añadirse.
+
+    Sin orden, los sha256 se guardan en :data:`_GROUPS` grupos por su primer byte: al cerrar,
+    cada grupo se ordena aparte y los grupos van en el orden de ese byte, que es el mismo
+    orden que ``sorted`` sobre todos (lexicográfico por bytes), por trozos (T67)."""
 
     _what = "los elementos"
 
-    def __init__(self, on_finish: Callable[[str], None] | None) -> None:
+    def __init__(self, on_finish: Callable[[str], None] | None, *, ordered: bool) -> None:
         self.count = 0
-        self._digests: list[bytes] = []
+        self._ordered = ordered
+        self._groups: list[list[bytes]] = [[] for _ in range(1 if ordered else _GROUPS)]
         self._on_finish = on_finish
         self._finished = False
 
@@ -335,20 +347,74 @@ class _Collector:
     def _extend(self, items: Iterable[object]) -> None:
         self._check_open()
         batch = [self._item(item) for item in items]  # todo el lote, antes de añadir nada
-        self._digests.extend(batch)
+        if self._ordered:
+            self._groups[0].extend(batch)
+        else:
+            groups = self._groups
+            for digest in batch:
+                groups[digest[0]].append(digest)
         self.count += len(batch)
 
-    def _finish(self, label: bytes, header: Mapping[str, Any], *, ordered: bool) -> str:
+    def _finish_steps(
+        self, label: bytes, header: Mapping[str, Any], step: object
+    ) -> Generator[float, None, str]:
+        """Comprueba ``step`` y cierra (aunque los pasos no se recorran): los pasos del hash
+        de datos, que se entrega (``on_finish``) y se devuelve al acabar."""
+        size = _step(step)
         self._check_open()
         self._finished = True
-        values = self._digests if ordered else sorted(self._digests)
-        stream = hashlib.sha256(_section(label, canonical_json(header)))
-        stream.update(_section(LABEL_VALUES, b"".join(values)))
-        self._digests = []
+        return self._hash_steps(label, canonical_json(header), size)
+
+    def _hash_steps(self, label: bytes, header: bytes, step: int) -> Generator[float, None, str]:
+        # La sección VALS sin juntar sus valores: etiqueta, longitud y los sha256 por trozos.
+        stream = hashlib.sha256(_section(label, header))
+        stream.update(LABEL_VALUES + _SIZE.pack(self.count * _DIGEST_BYTES))
+        groups, self._groups = self._groups, []
+        done = since = 0
+        for piece in _pieces(groups, self._ordered, step):
+            stream.update(b"".join(piece))
+            done += len(piece)
+            since += len(piece)
+            if since >= step and done < self.count:
+                since = 0
+                yield done / self.count
         data = stream.hexdigest()
         if self._on_finish is not None:
             self._on_finish(data)
         return data
+
+
+def _pieces(groups: list[list[bytes]], ordered: bool, step: int) -> Iterator[list[bytes]]:
+    """Los sha256 en el orden de la sección ``VALS``: en orden, por trozos de ``step``; sin
+    orden, cada grupo de su primer byte ordenado, de uno en uno (lo hecho se suelta)."""
+    if ordered:
+        (digests,) = groups
+        for start in range(0, len(digests), step):
+            yield digests[start:start + step]
+        return
+    for index, group in enumerate(groups):
+        groups[index] = []
+        group.sort()
+        yield group
+
+
+def _step(value: object) -> int:
+    """Los elementos de un paso de ``finish_steps``: un entero positivo."""
+    if isinstance(value, bool | np.bool_) or not isinstance(value, numbers.Integral):
+        raise TypeError(f"los elementos de un paso («step», {value!r}) son un número entero")
+    number = operator.index(value)
+    if number < 1:
+        raise ValueError(f"los elementos de un paso («step», {number}) tienen que ser positivos")
+    return number
+
+
+def _drain(steps: Generator[float, None, str]) -> str:
+    """Recorre los pasos de un cierre y devuelve su hash de datos."""
+    while True:
+        try:
+            next(steps)
+        except StopIteration as stop:
+            return stop.value
 
 
 class FeatureEncoder(_Collector):
@@ -360,7 +426,8 @@ class FeatureEncoder(_Collector):
     ``{"epsg": n}`` o ``None``. Cada entidad es ``(geometría, atributos)``: su WKB (ISO o
     extendido, de cualquier orden de bytes) o ``None`` si es nula, y ``{campo: valor}`` con
     todos los campos (``None`` es un atributo nulo). ``add`` añade una y ``update`` un lote
-    (que se comprueba entero: si una entidad no vale, no se añade ninguna)."""
+    (que se comprueba entero: si una entidad no vale, no se añade ninguna). ``finish`` da el
+    hash de una vez y ``finish_steps``, por pasos (una capa de millones de entidades)."""
 
     _what = "las entidades de la capa"
 
@@ -372,7 +439,7 @@ class FeatureEncoder(_Collector):
         *,
         on_finish: Callable[[str], None] | None = None,
     ) -> None:
-        super().__init__(on_finish)
+        super().__init__(on_finish, ordered=False)
         self.fields: list[tuple[str, str]] = sorted(_named_types(fields, FIELD_TYPES, "campo"))
         self.dims: str = check_dims(dims)
         self.crs: dict[str, int] | None = _crs(crs, "el CRS de la capa")
@@ -390,13 +457,21 @@ class FeatureEncoder(_Collector):
 
     def finish(self) -> str:
         """El hash de datos de la capa."""
+        return _drain(self.finish_steps())
+
+    def finish_steps(self, step: int = FINISH_STEP) -> Generator[float, None, str]:
+        """El hash de datos de la capa por pasos (T67; RNF-008-11): cierra la capa y devuelve
+        un generador que da el avance (0–1) cada ``step`` entidades como poco y, al acabar,
+        entrega el hash (``on_finish``) y lo devuelve (``StopIteration.value``). Cada paso es
+        un punto de cancelación: dejarlo a medias no entrega nada. El mismo hash que
+        :meth:`finish`."""
         header = {
             "count": self.count,
             "crs": self.crs,
             "dims": self.dims,
             "fields": [[name, kind] for name, kind in self.fields],
         }
-        return self._finish(LABEL_FEATURES, header, ordered=False)
+        return self._finish_steps(LABEL_FEATURES, header, step)
 
     def _item(self, item: object) -> bytes:
         geometry, attributes = _pair(item, "una entidad", "(geometría, atributos)")
@@ -422,7 +497,7 @@ class RowEncoder(_Collector):
     Cada fila es una secuencia con un valor por columna, en ese orden, o un diccionario con
     todas las columnas; sus valores llegan ya interpretados (el «1,5» de un CSV es 1.5) y se
     convierten al tipo de su columna. ``add`` añade una y ``update`` un lote (que se comprueba
-    entero)."""
+    entero). ``finish`` da el hash de una vez y ``finish_steps``, por pasos."""
 
     _what = "las filas de la tabla"
 
@@ -433,11 +508,13 @@ class RowEncoder(_Collector):
         *,
         on_finish: Callable[[str], None] | None = None,
     ) -> None:
-        super().__init__(on_finish)
-        self.columns: list[tuple[str, str]] = _named_types(columns, FIELD_TYPES, "columna")
-        if not self.columns:
+        named = _named_types(columns, FIELD_TYPES, "columna")
+        if not named:
             raise ValueError("una tabla necesita al menos una columna")
-        self.ordered: bool = _flag(ordered, "ordered")
+        flag = _flag(ordered, "ordered")
+        super().__init__(on_finish, ordered=flag)
+        self.columns: list[tuple[str, str]] = named
+        self.ordered: bool = flag
         self._names = {name: kind for name, kind in self.columns}
 
     def add(self, row: object) -> None:
@@ -450,12 +527,16 @@ class RowEncoder(_Collector):
 
     def finish(self) -> str:
         """El hash de datos de la tabla."""
+        return _drain(self.finish_steps())
+
+    def finish_steps(self, step: int = FINISH_STEP) -> Generator[float, None, str]:
+        """El hash de datos de la tabla por pasos, como :meth:`FeatureEncoder.finish_steps`."""
         header = {
             "columns": [[name, kind] for name, kind in self.columns],
             "count": self.count,
             "ordered": self.ordered,
         }
-        return self._finish(LABEL_TABLE, header, ordered=self.ordered)
+        return self._finish_steps(LABEL_TABLE, header, step)
 
     def _item(self, item: object) -> bytes:
         values: Any

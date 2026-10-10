@@ -12,11 +12,13 @@
 - :mod:`.operations`: el registro de las operaciones en dos pasos (:func:`begin_operation`,
   :class:`OperationHandle` con ``claim_paths``, ``complete``, ``fail`` y ``cancel``,
   :func:`operation` y :func:`claimed_paths`), las que su sesión no pudo terminar
-  (:func:`interrupt_orphaned` y :func:`mark_not_ingested`) y la incorporación de un trabajo
-  de la 004 (:func:`ingest_job` con su :class:`JobOutcome` → :class:`IngestOutcome`).
+  (:func:`interrupt_orphaned` y :func:`mark_not_ingested`), la incorporación de un trabajo
+  de la 004 (:func:`ingest_job` con su :class:`JobOutcome` → :class:`IngestOutcome`) y el
+  estado registrado de unas operaciones (:func:`operation_statuses`, para Ctrl+Z).
 - :mod:`.figures`: las cifras con tipo y procedencia (:class:`FigureSpec`,
   :func:`record_figure`, :class:`FigureRecord`) y el aviso de una cifra que calcula un
-  parámetro con otro valor (:class:`Divergence`, :func:`divergence` y :func:`divergences`).
+  parámetro con otro valor (:class:`Divergence`, :func:`divergence`, :func:`divergences` y,
+  el de la última cifra que calcula un parámetro, :func:`parameter_divergence`).
 - :mod:`.graph`: el grafo por versiones (:func:`load_graph`, :class:`ProvenanceGraph`) y la
   obsolescencia deducida con sus causas (:func:`deduce`, :func:`stale_state`,
   :class:`Staleness`, :class:`Cause`).
@@ -46,8 +48,9 @@
   versiones de algoritmo (:class:`AlgorithmChange`) y definiciones de parámetros
   (:func:`survey_steps`, sin leer ni escribir), la cola de hashes —con los trabajos de las
   fuentes externas grandes que pone ``bl`` (:class:`HashJobs`, :class:`HashRequest`,
-  :class:`HashResult`)— y la transacción final; y lo que la puerta pide hashear después
-  (:func:`hash_requests_steps`).
+  :class:`HashResult`)— y la transacción final; lo que la puerta pide hashear después
+  (:func:`hash_requests_steps`); y «Comprobar cambios en las entradas», a petición
+  (:func:`full_check_steps`: todas las entradas por su hash y los datos del proyecto).
 - :mod:`.undo`: el diario de Ctrl+Z de la sesión (:class:`UndoJournal`): numera cada cambio
   registrado (:class:`UndoEntry`) y dice qué deja atrás o recupera la escena que restaura
   Blender (:class:`UndoNotice`), sin deshacer nada de lo registrado.
@@ -118,6 +121,7 @@ OPERATIONS_API: tuple[str, ...] = (
     "interrupt_orphaned",
     "mark_not_ingested",
     "operation",
+    "operation_statuses",
 )
 """Lo de :mod:`.operations` que se reexporta al usarlo."""
 
@@ -127,6 +131,7 @@ FIGURES_API: tuple[str, ...] = (
     "FigureSpec",
     "divergence",
     "divergences",
+    "parameter_divergence",
     "record_figure",
     "scope_key",
 )
@@ -172,6 +177,7 @@ RECOMPUTE_API: tuple[str, ...] = (
     "UnitStatus",
     "accept_review",
     "plan_recompute",
+    "recompute_dataset_steps",
     "recompute_steps",
 )
 """Lo de :mod:`.recompute` que se reexporta al usarlo."""
@@ -210,6 +216,7 @@ LINEAGE_API: tuple[str, ...] = (
     "InputLink",
     "InputUse",
     "LineageKind",
+    "LineageMatch",
     "LineageRow",
     "LineageTree",
     "Mark",
@@ -220,12 +227,14 @@ LINEAGE_API: tuple[str, ...] = (
     "current_figure",
     "figure_marks",
     "result_state",
+    "search_items",
 )
 """Lo de :mod:`.lineage` que se reexporta al usarlo. Su función ``lineage`` no: es el nombre
 del módulo (``core.provenance.lineage.lineage``), que el paquete tiene como atributo en cuanto
 se importa."""
 
 CHECKS_API: tuple[str, ...] = (
+    "FULL_CHECK_STEPS",
     "OPEN_CHECK_STEPS",
     "REQUEST_STEPS",
     "SURVEY_STEPS",
@@ -237,6 +246,7 @@ CHECKS_API: tuple[str, ...] = (
     "OpenCheckOutcome",
     "OriginalProbe",
     "Registries",
+    "full_check_steps",
     "hash_requests_steps",
     "open_check_steps",
     "survey_steps",
@@ -294,6 +304,7 @@ __all__ = [
     "CORE_OPERATIONS",
     "EXTERNAL_EDIT",
     "FIGURES",
+    "FULL_CHECK_STEPS",
     "GROUPS",
     "IMPORTED_PREFIX",
     "IMPORTERS",
@@ -341,6 +352,7 @@ __all__ = [
     "JobOutcome",
     "LayerImport",
     "LineageKind",
+    "LineageMatch",
     "LineageRow",
     "LineageTree",
     "Mark",
@@ -399,6 +411,7 @@ __all__ = [
     "divergences",
     "figure_def",
     "figure_marks",
+    "full_check_steps",
     "group_def",
     "hash_requests_steps",
     "import_layer",
@@ -411,8 +424,11 @@ __all__ = [
     "open_check_steps",
     "operation",
     "operation_def",
+    "operation_statuses",
+    "parameter_divergence",
     "parse_version",
     "plan_recompute",
+    "recompute_dataset_steps",
     "recompute_steps",
     "record_figure",
     "refresh_all",
@@ -426,6 +442,7 @@ __all__ = [
     "render",
     "result_state",
     "scope_key",
+    "search_items",
     "stale_items",
     "stale_state",
     "survey_steps",

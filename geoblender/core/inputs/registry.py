@@ -39,7 +39,8 @@ la registra con :func:`register_input` y completa la operación.
   no usar» y lo importado de ella a «descartado»; no se borra nada; evento ``input_discarded``.
 - :func:`edit_delivery` (D-11): cambia el nombre lógico (único entre las activas), la fecha de
   entrega y quién la entrega, y nada más de la entrada; evento ``input_edited``.
-- :func:`get`: una entrada por su uid o por el nombre lógico de la activa.
+- :func:`get`: una entrada por su uid o por el nombre lógico de la activa; :func:`list_inputs`,
+  todas, para el registro de entradas (RF-008-16).
 - :func:`locate_source` y :func:`resolve_source` (RF-002-19): el ancla de un fichero de una
   fuente (dentro del proyecto, junto al original o, en otro volumen, con su ruta en los datos
   de usuario del equipo) y su ruta en este equipo (``None`` si no está anotada: «no
@@ -381,6 +382,22 @@ def get(conn: sqlite3.Connection, key: str) -> InputRecord | None:
         f"SELECT uid FROM gb_input WHERE name = ? AND status NOT IN ({_INACTIVE})", (key,)
     ).fetchone()
     return None if row is None else _load(conn, str(row[0]))
+
+
+def list_inputs(conn: sqlite3.Connection) -> list[InputRecord]:
+    """Todas las entradas del proyecto con sus ficheros (RF-008-16, el registro de entradas):
+    también las sustituidas y las descartadas, por su nombre lógico (sin distinguir
+    mayúsculas) y, con el mismo nombre, por orden de registro. Solo lee, en dos consultas."""
+    files: dict[str, list[InputFileRecord]] = {}
+    for row in conn.execute(
+        f"SELECT input_uid, {_FILES} FROM gb_input_file ORDER BY input_uid, ord"
+    ):
+        files.setdefault(str(row[0]), []).append(InputFileRecord.from_row(row[1:]))
+    return [
+        InputRecord.from_row(row, files.get(str(row[0]), ()))
+        for row in conn.execute(
+            f"SELECT {_INPUTS} FROM gb_input ORDER BY name COLLATE NOCASE, fid").fetchall()
+    ]
 
 
 # --- Registro -----------------------------------------------------------------------------------

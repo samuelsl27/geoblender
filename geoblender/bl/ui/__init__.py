@@ -13,7 +13,8 @@ activo (``headers``: ``append`` a la fila 1 y al clic derecho de la Vista 3D y d
 Outliner) → barra de estado minera (``statusbar``: un ``append`` a la barra de estado, sus
 campos y la suscripción de ``msgbus`` al cursor 3D, renovada en ``load_post``) → campo
 «jobs» de la barra de estado (``jobs``, spec 004: los trabajos en segundo plano, en los dos
-modos) → vistas
+modos) → la procedencia (``provenance``, spec 008: sus campos de la barra de estado, el
+número del control 7 y la escucha del proyecto, con su temporizador) → vistas
 (``views``: el manejador ``load_post`` que olvida su estado de sesión) → disposiciones
 (``layouts``: las comprobaciones de Quitar y Restaurar y su manejador ``load_post``; al
 desregistrar, el temporizador de lo pendiente) → proveedores de
@@ -45,6 +46,7 @@ from . import (
     keymap,
     layouts,
     menus,
+    provenance,
     quick_access,
     registry,
     statusbar,
@@ -56,7 +58,7 @@ from . import help as help_pages
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los menús y la pestaña «Proyecto» de core (spec 002), los paneles reales de
-# la interfaz (spec 003) y la lista de trabajos (spec 004).
+# la interfaz (spec 003), la lista de trabajos (spec 004) y lo obsoleto (spec 008).
 classes: tuple[type, ...] = (
     *core_menus.classes,
     *core_panel.classes,
@@ -64,6 +66,7 @@ classes: tuple[type, ...] = (
     *context.classes,
     *layouts.classes,
     *jobs.classes,
+    *provenance.classes,
 )
 
 _UNDO: list[Callable[[], None]] = []
@@ -97,6 +100,7 @@ def register() -> None:
         (headers.install, headers.uninstall),
         (statusbar.install, statusbar.uninstall),
         (jobs.install, jobs.uninstall),
+        (provenance.install, provenance.uninstall),
         (views.register, views.unregister),
         (layouts.register, layouts.unregister),
         (lambda: None, context.clear),
@@ -131,6 +135,7 @@ def repair() -> str:
     headers.install()
     statusbar.install()
     jobs.install()
+    provenance.install()
     keymap.unregister()
     keymap.register()
     commands.refresh()

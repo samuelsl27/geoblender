@@ -13,9 +13,11 @@ from __future__ import annotations
 import bpy
 from bpy.props import PointerProperty
 
-from ...core.i18n import tr
+from ...core.i18n import language, tr
+from ...core.inputs.guard import read_only_warnings
+from ...core.paths import READ_ONLY_DIRS_ENV
 from .. import ADDON_PACKAGE
-from .core import GEOBLENDER_PG_core_preferences
+from .core import GEOBLENDER_PG_core_preferences, read_only_dirs_of
 from .jobs import SET_EXTERNAL_PYTHON, GEOBLENDER_PG_jobs_preferences
 from .ui import GEOBLENDER_PG_ui_preferences
 
@@ -31,17 +33,38 @@ class GeoblenderPreferences(bpy.types.AddonPreferences):
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
-        column = layout.column()
-        column.label(text=tr("Project"), translate=False)
-        column.prop(
-            self.core, "lock_stale_minutes", text=tr("Stale lock after (min)"),
-            translate=False,
-        )
-        column.prop(
-            self.core, "checkout_dir", text=tr("Local copies folder"), translate=False
-        )
+        self.draw_core(layout.column())
         self.draw_ui(layout.column())
         self.draw_jobs(layout.column())
+
+    def draw_core(self, column: bpy.types.UILayout) -> None:
+        """El grupo ``core`` (spec 002 y spec 008): umbral del cerrojo, carpeta de las copias
+        locales y carpetas de solo lectura del usuario (separadas por «;») con, debajo, las de
+        la variable ``GEOBLENDER_READ_ONLY_DIRS``, que se ven sin poder editarlas, y los avisos
+        (ninguna carpeta, o una que no es una ruta completa; RF-008-15, plan 008 §5.5)."""
+        core = self.core
+        column.label(text=tr("Project"), translate=False)
+        column.prop(core, "lock_stale_minutes", text=tr("Stale lock after (min)"),
+                    translate=False)
+        column.prop(core, "checkout_dir", text=tr("Local copies folder"), translate=False)
+        column.prop(core, "read_only_folders", text=tr("Read-only folders"), translate=False)
+        dirs = read_only_dirs_of(core)
+        listed = column.column(align=True)
+        listed.active = False  # de la variable de la empresa: aquí solo se ven
+        if dirs.env_folders:
+            listed.label(text=tr("From the variable {variable}:", variable=READ_ONLY_DIRS_ENV),
+                         translate=False)
+            for folder in dirs.env_folders:
+                listed.label(text=str(folder), icon="LOCKED", translate=False)
+        else:
+            listed.label(text=tr("The variable {variable} declares no folder",
+                                 variable=READ_ONLY_DIRS_ENV), translate=False)
+        warnings = read_only_warnings(dirs, language())
+        if warnings:
+            alert = column.column(align=True)
+            alert.alert = True
+            for text in warnings:
+                alert.label(text=text, icon="ERROR", translate=False)
 
     def draw_ui(self, column: bpy.types.UILayout) -> None:
         """El grupo ``ui`` (spec 003): idioma, títulos de la barra, fila de acceso rápido,

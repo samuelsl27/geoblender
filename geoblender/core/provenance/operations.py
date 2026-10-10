@@ -580,6 +580,21 @@ def claimed_paths(project: OperationProject, *,
     return frozenset(found)
 
 
+def operation_statuses(project: OperationProject, uids: Iterable[str], *,
+                       conn: sqlite3.Connection | None = None) -> dict[str, OperationStatus]:
+    """El estado registrado de cada operación de ``uids`` según ``conn`` (sin ella, una
+    conexión de lectura: lo confirmado); las que el proyecto no tiene no salen. Con él, ``bl``
+    sabe cuáles de las que empezó quedaron hechas y las apunta en el diario de Ctrl+Z
+    (RF-008-32; plan §5.4.11)."""
+    wanted = list(dict.fromkeys(uids))
+    if not wanted:
+        return {}
+    reading = nullcontext(conn) if conn is not None else project.read()
+    with reading as opened:
+        found = _statuses(opened, wanted)
+    return {uid: OperationStatus(status) for uid, status in found.items()}
+
+
 # --- La operación en curso ----------------------------------------------------------------
 
 

@@ -27,13 +27,14 @@ from . import pyast
 
 RULE = "ARQ-17"
 EXTENSION = EXTENSION_DIR
+_WITH_DOCSTRING = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 WAL_LITERAL = re.compile(r"journal_mode\s*=\s*['\"]?\s*wal\b", re.IGNORECASE)
 
 
 def _docstrings(tree: ast.Module) -> set[int]:
     """``id`` de los literales que son docstrings (módulo, clases y funciones)."""
     found: set[int] = set()
-    for node in ast.walk(tree):
+    for node in pyast.nodes_of(tree, _WITH_DOCSTRING):
         if isinstance(
             node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
         ):
@@ -52,7 +53,7 @@ def module_findings(module: pyast.PyModule) -> list[Finding]:
     """Incumplimientos de ARQ-17 en un módulo analizado."""
     skip = _docstrings(module.tree)
     lines: set[int] = set()
-    for node in ast.walk(module.tree):
+    for node in pyast.nodes_of(module.tree, ast.Constant):
         if (
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)

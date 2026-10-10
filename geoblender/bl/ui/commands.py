@@ -27,11 +27,22 @@ RF-003-08; plan 003 §5.3; BS §7).
   ``bl_idname``, que recibe el contexto y el comando (con sus propiedades fijas) y
   devuelve "" o el mensaje con el paso previo; ``drawing.draw_command`` dibuja ese
   comando desactivado.
+- :func:`set_state_provider` (spec 008, RF-008-61; BS §7.3, «Entrada cambiada» y «Resultado
+  obsoleto»): quien sabe el estado de las órdenes (la procedencia, ``bl.ui.provenance``) da,
+  por ``bl_idname``, un :class:`CommandState`: la insignia que lleva delante de su etiqueta
+  (⚠), si se resalta («Recalcular lo obsoleto») y lo que añade a su descripción, en otra
+  línea (el aviso de la entrada, «Obsoleto: cambió Producción»). Lo aplican
+  ``drawing.draw_command`` (en un menú, en el acceso rápido, en un contextual) y la
+  descripción de los operadores que lo piden (:func:`described`). Sin proveedor, o sin
+  estado, todo se dibuja como antes. Responde en cada dibujo: lo calcula antes, no al
+  dibujar.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import bpy
@@ -44,10 +55,29 @@ TRANSLATION_CONTEXT = "Geoblender"
 PROVISIONAL_FLAG = "_gb_provisional"  # atributo de las clases provisionales
 NATIVE_KINDS = frozenset({"native", "property"})
 
+LOGGER = logging.getLogger("geoblender.bl.ui")
+
 _AVAILABLE: dict[str, bool] = {}
 # bl_idname → comprobación de «no aplicable ahora»: (contexto, comando) → "" o el mensaje.
 Check = Callable[[Any, core_catalog.Command], str]
 _CHECKS: dict[str, Check] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class CommandState:
+    """El estado de una orden que da el proveedor (RF-008-61; BS §7.3): ``badge``, la
+    insignia que lleva delante de su etiqueta («⚠»: activa, con una entrada cambiada aguas
+    arriba); ``highlight``, si se dibuja resaltada; ``note``, lo que añade a su descripción
+    emergente, en otra línea ("" si nada)."""
+
+    badge: str = ""
+    highlight: bool = False
+    note: str = ""
+
+
+# (contexto, bl_idname) → el estado de la orden, o None si se dibuja como siempre.
+StateProvider = Callable[[Any, str], CommandState | None]
+_provider: StateProvider | None = None
 
 
 def catalog() -> core_catalog.Catalog:
@@ -156,6 +186,40 @@ def not_applicable(context: Any, cmd: core_catalog.Command) -> str:
     previo (RF-003-09). Sin comprobación, "" (lo demás lo dice su ``poll``)."""
     check = _CHECKS.get(cmd.idname)
     return check(context, cmd) if check is not None else ""
+
+
+def set_state_provider(provider: StateProvider | None) -> None:
+    """Pone quien da el estado de las órdenes (``provider(contexto, bl_idname)`` → un
+    :class:`CommandState` o ``None``) o, con ``None``, lo quita: todas se dibujan como
+    antes."""
+    global _provider
+    _provider = provider
+
+
+def state_provider() -> StateProvider | None:
+    """Quien da el estado de las órdenes, o ``None``."""
+    return _provider
+
+
+def command_state(context: Any, idname: str) -> CommandState | None:
+    """El estado de la orden ``idname`` ahora, o ``None`` (sin proveedor, sin estado o si el
+    proveedor falla: se dibuja como siempre y el error queda en el registro técnico)."""
+    provider = _provider
+    if provider is None:
+        return None
+    try:
+        return provider(context, idname)
+    except Exception:  # noqa: BLE001 - un dibujo no se rompe por el estado de una orden
+        LOGGER.exception("Falló el estado de la orden %s", idname)
+        return None
+
+
+def described(context: Any, idname: str, about: str) -> str:
+    """La descripción emergente de la orden ``idname``: ``about`` y, en otra línea, lo que
+    dice su estado (RF-008-61: el aviso de la entrada cambiada, «Obsoleto: cambió …»); sin
+    nada que decir, ``about``."""
+    state = command_state(context, idname)
+    return with_note(about, state.note) if state is not None else about
 
 
 def preferences() -> Any:

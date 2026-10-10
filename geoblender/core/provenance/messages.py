@@ -574,6 +574,22 @@ _CATALOG: tuple[Message, ...] = (
         "Operation «{op_type}» could not be recomputed: {reason}",
         "No se pudo recalcular la operación «{op_type}»: {reason}",
     ),
+    # Recalcular o reimportar un dato bloqueado, que falta o dañado (T54; RF-008-56,
+    # RF-008-57): lo que no se ofrece.
+    Message(
+        "core.recompute_dataset_not_offered",
+        "Dataset «{name}» cannot be recomputed: only a blocked or missing dataset written by "
+        "an operation of Geoblender that can be repeated is.",
+        "El dato «{name}» no se puede recalcular: solo se recalcula un dato bloqueado o que "
+        "falta que escribió una operación de Geoblender que se puede repetir.",
+    ),
+    Message(
+        "core.reimport_dataset_not_offered",
+        "Dataset «{name}» cannot be reimported: it is not what was imported from an input nor "
+        "was it written by an import.",
+        "El dato «{name}» no se puede reimportar: no es lo importado de una entrada ni lo "
+        "escribió una importación.",
+    ),
     # «Dar por buena» una operación que espera revisión a mano (T29; RF-008-27, D-12).
     Message(
         "core.accept_review_reason_missing",
@@ -728,13 +744,14 @@ _CATALOG: tuple[Message, ...] = (
     ),
     Message("core.orphans_more", "and {count} more", "y {count} más"),
     # Ficheros ajenos y capas sin registrar (T34; RF-008-62): el aviso con la lista (nada se
-    # mueve) y lo que se ignora.
+    # mueve) y lo que se ignora. El de los ficheros solo avisa: la interfaz ofrece Ignorar…
+    # para una capa o tabla sin registrar, no para un fichero (T68).
     Message(
         "core.foreign_files",
         "Files in the project data folders that belong to no dataset (they are not moved): "
-        "{files}. You can ignore them.",
+        "{files}.",
         "Ficheros ajenos en las carpetas de datos del proyecto, que no son de ningún dato (no "
-        "se mueven): {files}. Puede ignorarlos.",
+        "se mueven): {files}.",
     ),
     Message(
         "core.unregistered_tables",
@@ -827,6 +844,10 @@ _CATALOG: tuple[Message, ...] = (
     Message("core.input_status_superseded", "superseded", "sustituida"),
     Message("core.input_status_discarded", "discarded · record, do not use",
             "descartada · registro, no usar"),
+    # Lo que no se guarda (plan D7; T51, RF-008-16, RF-008-13): mientras una comprobación la
+    # tiene pendiente y si la última no encontró su fuente.
+    Message("core.input_status_checking", "checking", "comprobando"),
+    Message("core.input_status_unreachable", "not locatable", "no localizable"),
     Message("core.mark_hypothesis", "depends on a hypothesis", "depende de una hipótesis"),
     Message("core.mark_unconfirmed", "depends on an unconfirmed value",
             "depende de un valor sin confirmar"),

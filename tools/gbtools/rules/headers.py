@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..findings import Finding
-from ..repo import iter_py_files, relpath
+from ..repo import iter_py_files, read_bytes, relpath
 
 RULE = "ARQ-12"
 HEADER = "# SPDX-License-Identifier: GPL-3.0-or-later"
@@ -37,7 +37,7 @@ def check(root: Path) -> list[Finding]:
     for path in iter_py_files(root):
         if path.is_symlink():
             continue  # lo señala TXT-03
-        problem = header_problem(path.read_bytes())
+        problem = header_problem(read_bytes(path))
         if problem is not None:
             line, message = problem
             findings.append(Finding(relpath(root, path), line, RULE, message))

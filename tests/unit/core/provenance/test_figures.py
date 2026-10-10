@@ -429,6 +429,41 @@ class ParameterTest(FiguresCase):
                     [expected.format(value=params.format_value(value), kind=kind, shown=shown)],
                 )
 
+    def test_parameter_divergence_is_the_latest_calculation(self) -> None:
+        """RF-008-59, RF-008-06 (T50): el aviso que enseña el panel de parámetros es el de la
+        última cifra que calcula el parámetro (``parameter_divergence``): ninguno sin cifras;
+        el de la última si difiere; ninguno si la última coincide, aunque una anterior
+        difiera, ni cuando una persona adopta la cifra. Solo lee: el parámetro no cambia."""
+        adopted = self.set_k(1.23)
+        with self.project.read() as conn:
+            self.assertIsNone(figures.parameter_divergence(conn, adopted.uid))
+        handles = []
+        for value in (1.11, 1.23, 1.08):
+            self.tick()
+            handles.append(self.begin())
+            self.complete(handles[-1], [FigureSpec(K, value, "-", parameter_key=K)])
+            if value == 1.11:
+                with self.project.read() as conn:
+                    first = figures.parameter_divergence(conn, adopted.uid)
+                self.assertEqual(first, self.divergences(handles[0].uid)[0])
+            if value == 1.23:
+                with self.project.read() as conn:
+                    self.assertIsNone(figures.parameter_divergence(conn, adopted.uid))
+        before = self.parameters()
+        with self.project.read() as conn:
+            latest = figures.parameter_divergence(conn, adopted.uid)
+            self.assertIsNone(figures.parameter_divergence(conn, "no-existe"))
+        self.assertEqual((latest.value, latest.operation_uid, latest.parameter_key),
+                         (1.08, handles[-1].uid, K))
+        self.assertEqual(self.parameters(), before)
+        self.tick()
+        self.write(lambda conn: self.store.change(conn, K, from_figure=latest.figure_uid,
+                                                  decided_by="Samuel (IMGA)",
+                                                  reason="Se adopta el K del balance"))
+        with self.project.read() as conn:
+            self.assertIsNone(figures.parameter_divergence(conn, adopted.uid))
+        self.assertIs(provenance.parameter_divergence, figures.parameter_divergence)
+
     def test_percent_figure_against_a_fraction_parameter(self) -> None:
         """RF-008-59: la cifra se compara con el parámetro en la unidad de este (92 % = 0,92):
         la misma no avisa y la distinta avisa con cada una en su unidad; el parámetro no

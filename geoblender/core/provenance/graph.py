@@ -30,7 +30,9 @@ procedencia, que :func:`load_graph` carga del proyecto en una sola lectura.
   las reciben, con la causa ``group`` (RF-008-25), y con ellas lo que depende de cualquiera;
 - un dato vivo está obsoleto si lo está la operación que escribió su contenido actual; una
   operación obsoleta que no se repite sola espera **revisión a mano** si no está sustituida y
-  escribió el contenido actual de un dato vivo o una cifra vigente (RF-008-27);
+  escribió el contenido actual de un dato vivo o una cifra vigente (RF-008-27); una que se
+  repite sola **solo deja cifras** si no está sustituida, no escribió el contenido actual de
+  ningún dato vivo y sí una cifra vigente (RF-008-28, spec 0.3: cuenta en «! n obsoletos»);
 - la **cifra vigente** de una clave y un ámbito es la de la operación más reciente (sin
   sustituir) que no está obsoleta; si todas lo están, la más reciente.
 
@@ -39,6 +41,13 @@ operaciones de una región cerrada hacia abajo (lo que consume lo que producen y
 grupo), con las causas ya conocidas (la caché) de las de fuera de las que depende; con ellas
 exactas, da lo mismo que :func:`deduce` (lo prueba una propiedad en grafos aleatorios). La
 región y su carga desde la base, con los índices, son de :mod:`.stale`.
+
+**Por pasos** (la comprobación de apertura, T65; RNF-008-12): :class:`CauseScan` mira en la
+base, por páginas y sin cargar el grafo, si alguna operación hecha tiene una causa directa (sin
+ninguna, nada está obsoleto); :class:`GraphPages` lee el grafo por páginas de ``fid`` de cada
+tabla, en una o varias lecturas, y :func:`deduce_steps` deduce por trozos. Paran cuando lo pide
+``lap`` (el ritmo de quien los lleva, :data:`Lap`); :func:`load_graph` y :func:`deduce` son los
+dos últimos sin parar.
 
 Cada causa (:class:`Cause`) es lo que guarda la caché ``gb_stale`` (clase y sujeto; T27) y se
 presenta con :meth:`Staleness.text` o :func:`stale_text` («Obsoleto: cambió Producción»). Una
@@ -54,11 +63,11 @@ from __future__ import annotations
 
 import sqlite3
 from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import Any, TypeVar
 
 from ..i18n import translate
 from ..params.model import DEFINITIONS
@@ -72,6 +81,24 @@ DATASET = "dataset"
 INPUT = "input"
 CAUSE_SEPARATOR = "; "
 """Entre las causas de un elemento en su texto."""
+PAGE_ROWS = 500
+"""Las filas de cada página al leer el grafo por pasos (:class:`GraphPages`)."""
+_RELEASED = 64  # nodos que se sueltan entre dos llamadas a ``lap`` (GraphPages.release)
+
+Lap = Callable[[], bool]
+"""El ritmo de quien lleva un cálculo por pasos: se llama tras cada unidad de trabajo y dice si
+el paso tiene que acabar ya (la comprobación de apertura: ≤ 20 ms por paso, RNF-008-12)."""
+
+_T = TypeVar("_T")
+
+
+def drain(steps: Generator[Any, None, _T]) -> _T:
+    """Lleva ``steps`` hasta el final de una vez y devuelve su resultado."""
+    while True:
+        try:
+            next(steps)
+        except StopIteration as stop:
+            return stop.value  # type: ignore[no-any-return]
 
 
 class CauseKind(StrEnum):
@@ -259,6 +286,27 @@ class ProvenanceGraph:
                 groups[node.group_uid].append(node.uid)
         self._writers = {version: tuple(found) for version, found in writers.items()}
         self._groups = {group: tuple(found) for group, found in groups.items()}
+
+    @classmethod
+    def _assembled(cls, operations: dict[str, OperationNode], datasets: dict[str, DatasetNode],
+                   inputs: dict[str, InputNode], parameters: dict[str, ParameterNode],
+                   figures: tuple[FigureNode, ...], during: Mapping[str, Iterable[Cause]] | None,
+                   writers: dict[tuple[str, str], tuple[str, ...]],
+                   groups: dict[str, tuple[str, ...]]) -> ProvenanceGraph:
+        """El grafo con lo que ya armó :class:`GraphPages` (las operaciones en orden de ``fid``,
+        las cifras también, y quién escribió cada versión y los miembros de cada grupo en el
+        orden de :meth:`__init__`), sin volver a recorrerlo."""
+        graph = cls.__new__(cls)
+        graph.operations = MappingProxyType(operations)
+        graph.datasets = MappingProxyType(datasets)
+        graph.inputs = MappingProxyType(inputs)
+        graph.parameters = MappingProxyType(parameters)
+        graph.figures = figures
+        graph.during = MappingProxyType(
+            {uid: frozenset(causes) for uid, causes in (during or {}).items()})
+        graph._writers = writers
+        graph._groups = groups
+        return graph
 
     def producer(self, dataset_uid: str, content_sha256: str, *,
                  excluding: str | None = None) -> str | None:
@@ -455,40 +503,169 @@ def changes_while_running(conn: sqlite3.Connection, operations: Iterable[str] | 
 
 def _load(conn: sqlite3.Connection,
           during: Mapping[str, Iterable[Cause]] | None = None) -> ProvenanceGraph:
-    """El grafo de :func:`load_graph`. Lo que consumieron, produjeron y leyeron las
-    operaciones se lee de ``gb_operation_io`` y ``gb_operation_param`` en su orden de registro,
-    sin un JOIN a ``gb_operation`` por cada fila (RNF-008-02): las operaciones hechas, leídas
-    una vez, toman lo suyo; lo de las que no terminaron se queda sin usar."""
-    consumed: dict[str, list[Version]] = defaultdict(list)
-    produced: dict[str, list[Version]] = defaultdict(list)
-    for op_uid, direction, item_kind, item_uid, sha, role in conn.execute(
-            f"SELECT {IO_COLUMNS} FROM gb_operation_io ORDER BY fid"):
-        (produced if direction == "out" else consumed)[op_uid].append(
-            Version(str(item_kind), str(item_uid), str(sha), str(role)))
-    used: dict[str, list[ParamUse]] = defaultdict(list)
-    for op_uid, parameter_uid, key, rev, value_sha256 in conn.execute(
-            f"SELECT {PARAM_USE_COLUMNS} FROM gb_operation_param ORDER BY fid"):
-        used[op_uid].append(ParamUse(str(parameter_uid), str(key), int(rev), str(value_sha256)))
-    operations = [
-        operation_node(row, consumed[row[1]], produced[row[1]], used[row[1]])
-        for row in conn.execute(
-            f"SELECT {OPERATION_COLUMNS} FROM gb_operation WHERE status = ? ORDER BY fid",
-            (DONE,),
+    """El grafo de :func:`load_graph`: :class:`GraphPages` en una sola lectura, sin páginas."""
+    pages = GraphPages()
+    pages.read(conn, rows=None)
+    return pages.graph(during)
+
+
+def _page(columns: str, table: str, where: str = "") -> str:
+    return f"SELECT {columns} FROM {table} WHERE {where}fid > ? ORDER BY fid LIMIT ?"
+
+
+# Cada tabla del grafo por páginas de su fid (la primera columna), en el orden en que se leen:
+# lo consumido, producido y leído antes que las operaciones, que toman lo suyo al leerlas.
+_PAGES: tuple[str, ...] = (
+    _page(f"fid, {IO_COLUMNS}", "gb_operation_io"),
+    _page(f"fid, {PARAM_USE_COLUMNS}", "gb_operation_param"),
+    _page(OPERATION_COLUMNS, "gb_operation", f"status = '{DONE}' AND "),
+    _page(DATASET_COLUMNS, "gb_dataset"),
+    _page(f"fid, {INPUT_NODE_COLUMNS}", "gb_input"),
+    _page(f"fid, {PARAMETER_COLUMNS}", "gb_parameter"),
+    _page("fid, uid, key, scope_key, operation_uid", "gb_figure"),
+)
+
+
+class GraphPages:
+    """El grafo de la procedencia leído por páginas del ``fid`` de cada tabla —lo consumido y
+    lo producido (``gb_operation_io``), los parámetros leídos, las operaciones hechas, los
+    datos, las entradas, los parámetros y las cifras, en ese orden—, en una lectura o en varias
+    (:meth:`read`); :meth:`graph` lo da cuando :attr:`finished`.
+
+    Lo consumido, producido y leído se lee en su orden de registro, sin un JOIN a
+    ``gb_operation`` por cada fila (RNF-008-02): las operaciones hechas, leídas una vez, toman
+    lo suyo (lo de las que no terminaron se queda sin usar) y apuntan quién escribió cada
+    versión y los miembros de cada grupo, sin volver a recorrer el grafo al darlo. Leído en una
+    lectura es :func:`load_graph`; en varias, es el mismo si todas ven la misma base: quien lee
+    en varias lo comprueba (la comprobación de apertura, con el contador de cambios de la
+    cabecera de la base)."""
+
+    def __init__(self) -> None:
+        self._table = 0
+        self._last = 0
+        self._consumed: dict[str, list[Version]] = defaultdict(list)
+        self._produced: dict[str, list[Version]] = defaultdict(list)
+        self._used: dict[str, list[ParamUse]] = defaultdict(list)
+        self._operations: dict[str, OperationNode] = {}
+        self._written: dict[tuple[str, str], tuple[tuple[str, int, str], ...]] = {}
+        self._writers: dict[tuple[str, str], tuple[str, ...]] = {}
+        self._groups: dict[str, list[str]] = defaultdict(list)
+        self._datasets: dict[str, DatasetNode] = {}
+        self._inputs: dict[str, InputNode] = {}
+        self._parameters: dict[str, ParameterNode] = {}
+        self._figures: list[FigureNode] = []
+
+    @property
+    def finished(self) -> bool:
+        """Si ya se leyó todo."""
+        return self._table >= len(_PAGES)
+
+    @property
+    def fraction(self) -> float:
+        """Lo leído, aproximado: la parte de las tablas ya terminadas."""
+        return min(self._table / len(_PAGES), 1.0)
+
+    def read(self, conn: sqlite3.Connection, *, rows: int | None = PAGE_ROWS,
+             lap: Lap | None = None) -> None:
+        """Sigue leyendo de ``conn`` páginas de ``rows`` filas (``None``: cada tabla de una
+        vez) hasta terminar o hasta que ``lap`` pida parar (tras cada página)."""
+        limit = -1 if rows is None else rows
+        while self._table < len(_PAGES):
+            found = conn.execute(_PAGES[self._table], (self._last, limit)).fetchall()
+            if found:
+                self._TAKE[self._table](self, found)
+                self._last = int(found[-1][0])
+            if rows is None or len(found) < rows:
+                self._table += 1
+                self._last = 0
+            if lap is not None and lap():
+                return
+
+    def graph(self, during: Mapping[str, Iterable[Cause]] | None = None) -> ProvenanceGraph:
+        """El grafo leído (con ``during``, como en :class:`ProvenanceGraph`).
+        :class:`ValueError` si aún no se ha leído todo."""
+        if not self.finished:
+            raise ValueError("el grafo aún no se ha leído entero")
+        return ProvenanceGraph._assembled(
+            self._operations, self._datasets, self._inputs, self._parameters,
+            tuple(self._figures), during, self._writers,
+            {group: tuple(members) for group, members in self._groups.items()},
         )
-    ]
-    datasets = [dataset_node(row) for row in conn.execute(
-        f"SELECT {DATASET_COLUMNS} FROM gb_dataset ORDER BY fid")]
-    inputs = [input_node(row) for row in conn.execute(
-        f"SELECT {INPUT_NODE_COLUMNS} FROM gb_input ORDER BY fid")]
-    parameters = [parameter_node(row) for row in conn.execute(
-        f"SELECT {PARAMETER_COLUMNS} FROM gb_parameter ORDER BY fid")]
-    figures = [
-        FigureNode(int(fid), str(uid), str(key), str(scope_key), str(operation_uid))
-        for fid, uid, key, scope_key, operation_uid in conn.execute(
-            "SELECT fid, uid, key, scope_key, operation_uid FROM gb_figure ORDER BY fid"
-        )
-    ]
-    return ProvenanceGraph(operations, datasets, inputs, parameters, figures, during=during)
+
+    def release(self, lap: Lap | None = None) -> Generator[None, None, None]:
+        """Suelta lo leído por trozos, cediendo cuando ``lap`` lo pide (soltar de una vez el
+        grafo de D-13 son unos 6 ms, que irían en un solo paso). El grafo que se dio queda
+        vacío."""
+        found: dict[Any, Any]
+        for found in (self._written, self._writers, self._operations, self._datasets,
+                      self._consumed, self._produced, self._used, self._inputs,
+                      self._parameters, self._groups):
+            count = 0
+            while found:
+                found.popitem()
+                count += 1
+                if not count % _RELEASED and lap is not None and lap():
+                    yield
+        self._figures.clear()
+
+    def _take_io(self, rows: list[tuple[Any, ...]]) -> None:
+        consumed, produced = self._consumed, self._produced
+        for _fid, op_uid, direction, item_kind, item_uid, sha, role in rows:
+            (produced if direction == "out" else consumed)[op_uid].append(
+                Version(str(item_kind), str(item_uid), str(sha), str(role)))
+
+    def _take_params(self, rows: list[tuple[Any, ...]]) -> None:
+        used = self._used
+        for _fid, op_uid, parameter_uid, key, rev, value_sha256 in rows:
+            used[op_uid].append(ParamUse(str(parameter_uid), str(key), int(rev),
+                                         str(value_sha256)))
+
+    def _take_operations(self, rows: list[tuple[Any, ...]]) -> None:
+        written, writers = self._written, self._writers
+        for row in rows:
+            uid = row[1]
+            node = operation_node(row, self._consumed.pop(uid, ()), self._produced.pop(uid, ()),
+                                  self._used.pop(uid, ()))
+            self._operations[node.uid] = node
+            if node.group_uid is not None:
+                self._groups[node.group_uid].append(node.uid)
+            entry = (node.finished_at, node.fid, node.uid)
+            for version in node.produced:
+                if version.item_kind != DATASET:
+                    continue
+                key = (version.uid, version.content_sha256)
+                found = written.get(key)
+                if found is None:  # casi siempre: un escritor por versión
+                    written[key] = (entry,)
+                    writers[key] = (node.uid,)
+                else:  # en el orden en que terminaron (y de registro)
+                    found = written[key] = tuple(sorted((*found, entry)))
+                    writers[key] = tuple(item[2] for item in found)
+
+    def _take_datasets(self, rows: list[tuple[Any, ...]]) -> None:
+        for row in rows:
+            node = dataset_node(row)
+            self._datasets[node.uid] = node
+
+    def _take_inputs(self, rows: list[tuple[Any, ...]]) -> None:
+        for row in rows:
+            node = input_node(row[1:])
+            self._inputs[node.uid] = node
+
+    def _take_parameters(self, rows: list[tuple[Any, ...]]) -> None:
+        for row in rows:
+            node = parameter_node(row[1:])
+            self._parameters[node.uid] = node
+
+    def _take_figures(self, rows: list[tuple[Any, ...]]) -> None:
+        self._figures.extend(
+            FigureNode(int(fid), str(uid), str(key), str(scope_key), str(operation_uid))
+            for fid, uid, key, scope_key, operation_uid in rows)
+
+    _TAKE: tuple[Callable[[GraphPages, list[tuple[Any, ...]]], None], ...] = (
+        _take_io, _take_params, _take_operations, _take_datasets, _take_inputs,
+        _take_parameters, _take_figures,
+    )
 
 
 # --- Obsolescencia ------------------------------------------------------------------------
@@ -547,6 +724,136 @@ def direct_causes(graph: ProvenanceGraph, node: OperationNode,
     return found
 
 
+_CAUSE_STATUSES = ", ".join(f"'{status}'" for status in (*DATASET_STATUS_CAUSES,
+                                                           *INACTIVE_CAUSES))
+_INACTIVE = ", ".join(f"'{status}'" for status in INACTIVE_CAUSES)
+# Lo que leyó una operación hecha (en un tramo de fid) y le da una causa directa
+# (direct_causes): un dato que no está vigente, o con otro contenido que no escribió ella; una
+# entrada sustituida o descartada; un parámetro con otro valor. Los CROSS JOIN fijan el orden
+# (del tramo de gb_operation_io o gb_operation_param a la operación y a lo leído, por su uid).
+_CAUSED_BY_DATA = (
+    "SELECT 1 FROM gb_operation_io AS io "
+    "CROSS JOIN gb_operation AS op ON op.uid = io.operation_uid "
+    "CROSS JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    f"WHERE io.fid > ? AND io.fid <= ? AND io.direction = 'in' AND io.item_kind = '{DATASET}' "
+    f"AND op.status = '{DONE}' AND (d.status IN ({_CAUSE_STATUSES}) "
+    "OR (d.content_sha256 <> io.content_sha256 AND NOT EXISTS (SELECT 1 FROM gb_operation_io "
+    "AS w WHERE w.operation_uid = io.operation_uid AND w.direction = 'out' "
+    f"AND w.item_kind = '{DATASET}' AND w.item_uid = io.item_uid))) LIMIT 1"
+)
+_CAUSED_BY_INPUTS = (
+    "SELECT 1 FROM gb_operation_io AS io "
+    "CROSS JOIN gb_operation AS op ON op.uid = io.operation_uid "
+    "CROSS JOIN gb_input AS i ON i.uid = io.item_uid "
+    f"WHERE io.fid > ? AND io.fid <= ? AND io.direction = 'in' AND io.item_kind = '{INPUT}' "
+    f"AND op.status = '{DONE}' AND i.status IN ({_INACTIVE}) LIMIT 1"
+)
+_CAUSED_BY_PARAMETERS = (
+    "SELECT 1 FROM gb_operation_param AS p "
+    "CROSS JOIN gb_operation AS op ON op.uid = p.operation_uid "
+    "CROSS JOIN gb_parameter AS cur ON cur.uid = p.parameter_uid "
+    f"WHERE p.fid > ? AND p.fid <= ? AND op.status = '{DONE}' "
+    "AND cur.value_sha256 <> p.value_sha256 LIMIT 1"
+)
+_DONE_PAGE = (
+    f"SELECT fid, uid, op_type, op_version FROM gb_operation WHERE status = '{DONE}' "
+    "AND fid > ? ORDER BY fid LIMIT ?"
+)
+_DATASET_PAGE = "SELECT fid, uid FROM gb_dataset WHERE fid > ? ORDER BY fid LIMIT ?"
+
+
+class CauseScan:
+    """Si alguna operación hecha tiene una **causa directa** (:func:`direct_causes`), leído de la
+    base por páginas y sin cargar el grafo (la comprobación de apertura, T65; RNF-008-12): sin
+    ninguna, nada está obsoleto (las causas raíz salen de las directas y la del grupo, de las
+    raíz), así que la obsolescencia completa no necesita el grafo. Lee, en una lectura o en
+    varias (:meth:`read`): las operaciones hechas (su uid y la versión de su algoritmo frente a
+    la instalada, ``versions`` como en :func:`deduce`), lo que leyeron por tramos de ``fid``
+    de ``gb_operation_io`` y ``gb_operation_param`` y los uid de los datos; para en cuanto
+    encuentra una causa (:attr:`caused`). Sin causas, :attr:`operations` y :attr:`datasets`
+    tienen los uid de todas las operaciones hechas y de todos los datos, en su orden."""
+
+    _PHASES = 4  # las operaciones, lo leído (datos y entradas), los parámetros y los datos
+
+    def __init__(self, versions: Mapping[str, str] | None = None) -> None:
+        _chosen, self._installed = _installed(versions)
+        self.caused = False
+        self.operations: list[str] = []
+        self.datasets: list[str] = []
+        self._phase = 0
+        self._last = 0
+        self._end: int | None = None
+
+    @property
+    def finished(self) -> bool:
+        """Si ya se sabe: encontró una causa o lo leyó todo."""
+        return self.caused or self._phase >= self._PHASES
+
+    @property
+    def fraction(self) -> float:
+        """Lo leído, aproximado: la parte de las fases ya terminadas."""
+        return 1.0 if self.finished else self._phase / self._PHASES
+
+    def read(self, conn: sqlite3.Connection, *, rows: int | None = PAGE_ROWS,
+             lap: Lap | None = None) -> None:
+        """Sigue leyendo de ``conn`` páginas de ``rows`` filas (o tramos de ``rows`` fid;
+        ``None``: cada tabla de una vez) hasta saberlo o hasta que ``lap`` pida parar (tras cada
+        página)."""
+        limit = -1 if rows is None else rows
+        while not self.finished:
+            if self._phase == 0:
+                done = self._page(conn, _DONE_PAGE, limit, self._take_operations)
+            elif self._phase == 3:
+                done = self._page(conn, _DATASET_PAGE, limit, self._take_datasets)
+            else:
+                done = self._span(conn, rows)
+            if done:
+                self._phase += 1
+                self._last = 0
+                self._end = None
+            if lap is not None and lap():
+                return
+
+    def _page(self, conn: sqlite3.Connection, sql: str, limit: int,
+              take: Callable[[list[tuple[Any, ...]]], None]) -> bool:
+        found = conn.execute(sql, (self._last, limit)).fetchall()
+        take(found)
+        if found:
+            self._last = int(found[-1][0])
+        return limit < 0 or len(found) < limit
+
+    def _span(self, conn: sqlite3.Connection, rows: int | None) -> bool:
+        table = "gb_operation_io" if self._phase == 1 else "gb_operation_param"
+        if self._end is None:
+            self._end = int(conn.execute(f"SELECT MAX(fid) FROM {table}").fetchone()[0] or 0)
+        upper = self._end if rows is None else min(self._last + rows, self._end)
+        queries = ((_CAUSED_BY_DATA, _CAUSED_BY_INPUTS) if self._phase == 1
+                   else (_CAUSED_BY_PARAMETERS,))
+        for sql in queries:
+            if conn.execute(sql, (self._last, upper)).fetchone() is not None:
+                self.caused = True
+                return True
+        self._last = upper
+        return upper >= self._end
+
+    def _take_operations(self, rows: list[tuple[Any, ...]]) -> None:
+        for _fid, uid, op_type, op_version in rows:
+            self.operations.append(str(uid))
+            target = self._installed.get(str(op_type))
+            if target is None:
+                continue
+            try:
+                registered = parse_version(str(op_version))
+            except ValueError:  # pragma: no cover - el esquema la guarda de su OperationDef
+                continue
+            if target > registered:
+                self.caused = True
+                return
+
+    def _take_datasets(self, rows: list[tuple[Any, ...]]) -> None:
+        self.datasets.extend(str(uid) for _fid, uid in rows)
+
+
 def root_causes(causes: Iterable[Cause]) -> frozenset[Cause]:
     """Las causas raíz de las causas de una operación (las de la caché): sin la de su grupo,
     que solo va en las operaciones del grupo y no se propaga ni pasa a sus datos."""
@@ -560,30 +867,40 @@ def _installed(versions: Mapping[str, str] | None) -> tuple[dict[str, str],
 
 
 def _roots(graph: ProvenanceGraph, members: Iterable[str],
-           known: Mapping[str, Iterable[Cause]],
-           installed: Mapping[str, tuple[int, int]]) -> dict[str, set[Cause]]:
+           known: Mapping[str, Iterable[Cause]], installed: Mapping[str, tuple[int, int]],
+           lap: Lap | None = None) -> Generator[None, None, dict[str, set[Cause]]]:
     """Las causas raíz de las operaciones ``members``: las directas, las ya conocidas
-    (``known``) de las de fuera de las que dependen y lo que se propaga entre ellas."""
-    roots = {uid: direct_causes(graph, graph.operations[uid], installed) for uid in members}
-    upstream = {uid: graph.upstream(uid) for uid in roots}
-    for uid, producers in upstream.items():
-        for producer in producers:
-            if producer not in roots:
-                roots[uid] |= root_causes(known.get(producer, ()))
-    _propagate(graph, roots, upstream)
+    (``known``) de las de fuera de las que dependen y lo que se propaga entre ellas. Por pasos:
+    para cuando ``lap`` lo pide (tras cada operación)."""
+    roots: dict[str, set[Cause]] = {}
+    upstream: dict[str, tuple[str, ...]] = {}
+    for uid in members:
+        roots[uid] = direct_causes(graph, graph.operations[uid], installed)
+        upstream[uid] = graph.upstream(uid)
+        if lap is not None and lap():
+            yield
+    if known:
+        for uid, producers in upstream.items():
+            for producer in producers:
+                if producer not in roots:
+                    roots[uid] |= root_causes(known.get(producer, ()))
+    yield from _propagate(graph, roots, upstream, lap)
     return roots
 
 
 def _propagate(graph: ProvenanceGraph, roots: dict[str, set[Cause]],
-               upstream: Mapping[str, tuple[str, ...]]) -> None:
+               upstream: Mapping[str, tuple[str, ...]],
+               lap: Lap | None = None) -> Generator[None, None, None]:
     """Lleva las causas raíz de cada operación de ``roots`` a lo que depende de ella y a las
     de su ejecución de grupo (todas en ``roots``), hasta un punto fijo (los conjuntos solo
-    crecen)."""
+    crecen). Por pasos, como :func:`_roots`."""
     downstream: dict[str, list[str]] = defaultdict(list)
     for uid, producers in upstream.items():
         for producer in producers:
             if producer in roots:
                 downstream[producer].append(uid)
+        if lap is not None and lap():
+            yield
     pending = deque(uid for uid, found in roots.items() if found)
     queued = set(pending)
     while pending:
@@ -600,6 +917,8 @@ def _propagate(graph: ProvenanceGraph, roots: dict[str, set[Cause]],
             if target not in queued:
                 queued.add(target)
                 pending.append(target)
+        if lap is not None and lap():
+            yield
 
 
 def _current_figures(graph: ProvenanceGraph,
@@ -616,18 +935,19 @@ def _current_figures(graph: ProvenanceGraph,
     return current
 
 
-def _with_group(graph: ProvenanceGraph,
-                roots: Mapping[str, set[Cause]]) -> dict[str, frozenset[Cause]]:
+def _with_group(graph: ProvenanceGraph, roots: Mapping[str, set[Cause]],
+                lap: Lap | None = None) -> Generator[None, None, dict[str, frozenset[Cause]]]:
     """Las causas de cada operación obsoleta: las raíz y, en una ejecución de un grupo
-    acoplado con más de una, la del grupo."""
+    acoplado con más de una, la del grupo. Por pasos, como :func:`_roots`."""
     causes: dict[str, frozenset[Cause]] = {}
     for uid, found in roots.items():
-        if not found:
-            continue
-        group_uid = graph.operations[uid].group_uid
-        if group_uid is not None and len(graph.group(group_uid)) > 1:
-            found = found | {Cause(CauseKind.GROUP, group_uid)}
-        causes[uid] = frozenset(found)
+        if found:
+            group_uid = graph.operations[uid].group_uid
+            if group_uid is not None and len(graph.group(group_uid)) > 1:
+                found = found | {Cause(CauseKind.GROUP, group_uid)}
+            causes[uid] = frozenset(found)
+        if lap is not None and lap():
+            yield
     return causes
 
 
@@ -635,30 +955,52 @@ def deduce(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None = None)
     """La obsolescencia completa de ``graph`` (véase el módulo). ``versions``: la versión
     instalada de cada tipo de operación (por defecto, la de los registrados,
     :func:`installed_versions`); un tipo que no está, no cambia de algoritmo.
-    :class:`ValueError` si una versión no es «M.m»."""
+    :class:`ValueError` si una versión no es «M.m». Es :func:`deduce_steps` de una vez."""
+    return drain(deduce_steps(graph, versions=versions))
+
+
+def deduce_steps(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None = None,
+                 lap: Lap | None = None) -> Generator[None, None, Staleness]:
+    """:func:`deduce` por pasos (la comprobación de apertura, RNF-008-12): cede cuando ``lap``
+    lo pide, tras cada operación o dato (sin ``lap``, de una vez), y devuelve lo mismo.
+    :class:`ValueError` (al empezar) si una versión no es «M.m»."""
     chosen, installed = _installed(versions)
-    roots = _roots(graph, graph.operations, {}, installed)
-    causes = _with_group(graph, roots)
-    data = {
-        dataset.uid: frozenset(roots[dataset.operation_uid])
-        for dataset in graph.datasets.values()
-        if dataset.live and roots.get(dataset.operation_uid)
-    }
+    roots = yield from _roots(graph, graph.operations, {}, installed, lap)
+    causes = yield from _with_group(graph, roots, lap)
+    data: dict[str, frozenset[Cause]] = {}
+    writers: set[str] = set()  # las que escribieron el contenido actual de un dato vivo
+    for dataset in graph.datasets.values():
+        if dataset.live:
+            writers.add(dataset.operation_uid)
+            found = roots.get(dataset.operation_uid)
+            if found:
+                data[dataset.uid] = frozenset(found)
+        if lap is not None and lap():
+            yield
     current_figures = _current_figures(graph, causes)
     figure_operations = {figure.uid: figure.operation_uid for figure in graph.figures}
-    writers = {dataset.operation_uid for dataset in graph.datasets.values() if dataset.live}
-    writers |= {figure_operations[uid] for uid in current_figures.values()}
-    operations = {uid: found for uid, found in causes.items()
-                  if graph.operations[uid].current}
-    review = frozenset(uid for uid in operations
-                       if not graph.operations[uid].repeatable and uid in writers)
+    figure_writers = {figure_operations[uid] for uid in current_figures.values()}
+    operations: dict[str, frozenset[Cause]] = {}
+    review: set[str] = set()
+    figure_only: set[str] = set()
+    for uid, found in causes.items():
+        node = graph.operations[uid]
+        if node.current:
+            operations[uid] = found
+            if not node.repeatable and (uid in writers or uid in figure_writers):
+                review.add(uid)
+            elif node.repeatable and uid in figure_writers and uid not in writers:
+                figure_only.add(uid)
+        if lap is not None and lap():
+            yield
     return Staleness(
         graph=graph,
         versions=MappingProxyType(chosen),
         causes=MappingProxyType(causes),
         operations=MappingProxyType(operations),
         datasets=MappingProxyType(data),
-        review=review,
+        review=frozenset(review),
+        figure_only=frozenset(figure_only),
         current_figures=MappingProxyType(current_figures),
     )
 
@@ -679,6 +1021,10 @@ class Staleness:
     - ``datasets``: las causas de cada dato vivo obsoleto (las raíz de la operación que
       escribió su contenido actual);
     - ``review``: las operaciones que esperan revisión a mano (RF-008-27);
+    - ``figure_only``: las operaciones obsoletas que solo dejan cifras (RF-008-28, spec 0.3):
+      sin sustituir, que se repiten solas, que no escribieron el contenido actual de ningún
+      dato vivo y sí la cifra vigente de una clave y un ámbito (la que no se repite sola espera
+      revisión a mano);
     - ``current_figures``: la cifra vigente (uid) de cada clave y ámbito (``scope_key``);
     - ``versions``: las versiones instaladas de los algoritmos con que se dedujo.
     """
@@ -689,6 +1035,7 @@ class Staleness:
     operations: Mapping[str, frozenset[Cause]]
     datasets: Mapping[str, frozenset[Cause]]
     review: frozenset[str]
+    figure_only: frozenset[str]
     current_figures: Mapping[tuple[str, str], str]
 
     def of(self, uid: str) -> frozenset[Cause]:
@@ -823,9 +1170,9 @@ def deduce_region(graph: ProvenanceGraph, region: Iterable[str],
             raise ValueError(f"la región tiene la operación {uid} de la ejecución de grupo "
                              f"{group_uid} sin las demás: {outside}")
     _chosen, installed = _installed(versions)
-    roots = _roots(graph, members, known, installed)
+    roots = drain(_roots(graph, members, known, installed))
     return RegionStaleness(
         region=members,
         roots=MappingProxyType({uid: frozenset(found) for uid, found in roots.items()}),
-        causes=MappingProxyType(_with_group(graph, roots)),
+        causes=MappingProxyType(drain(_with_group(graph, roots))),
     )

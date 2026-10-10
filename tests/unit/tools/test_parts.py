@@ -265,6 +265,70 @@ def _fixture_module(
     return loader.suiteClass([loader.loadTestsFromTestCase(cls)])
 
 
+class ShareTest(unittest.TestCase):
+    """Spec 006, T47 (RNF-001-01, RNF-007-01): las partes de unas suites que van a la vez
+    (las carpetas de «motor»), repartidas entre ellas por su tiempo."""
+
+    def test_span(self) -> None:
+        """RNF-001-01: lo que tarda la parte más cargada de unas pruebas con ``n``
+        partes, con el reparto por tiempo (``assign``)."""
+        seconds = [4.0, 3.0, 2.0, 1.0]
+        self.assertEqual([parts.span(seconds, n) for n in (1, 2, 3, 4, 5)],
+                         [10.0, 5.0, 4.0, 4.0, 4.0])
+        self.assertEqual(parts.span([], 3), 0.0)
+
+    def test_share_by_time(self) -> None:
+        """RNF-001-01, RNF-007-01: cada suite empieza con dos partes (o las que admita su
+        límite) y cada parte más va a la suite que más tarda (a igualdad, la primera),
+        aunque haga falta más de una para que tarde menos; si la que más tarda no puede
+        tardar menos con las partes que quedan, no se dan más (el paso no acabaría antes
+        y solo se cargaría el equipo). Nunca pasa del límite de cada una, ni del total
+        salvo con las partes del principio."""
+        seconds = {"a": [6.0] * 12, "b": [4.0] * 10, "c": [1.0] * 8}
+        limits = {"a": 24, "b": 24, "c": 24}
+        # a: 2 → 3 → 4 → 6 (con 5 tardaría lo mismo que con 4); b: 2 → 3 → 4; con a en
+        # 12 s, la que más tarda (empatada con b, y antes), ninguna parte más la baja.
+        self.assertEqual(parts.share(seconds, limits, 15), {"a": 6, "b": 4, "c": 2})
+        self.assertEqual(parts.share(seconds, limits, 9), {"a": 4, "b": 3, "c": 2})
+        self.assertEqual(parts.share(seconds, limits, 6), {"a": 2, "b": 2, "c": 2})
+        # b, con una sola parte, tarda 40 s: dar más partes a «a» no acabaría antes.
+        self.assertEqual(parts.share(seconds, {"a": 3, "b": 1, "c": 24}, 15),
+                         {"a": 2, "b": 1, "c": 2})
+        self.assertEqual(parts.share({"x": [1.0], "y": [2.0, 1.0]}, {"x": 1, "y": 2}, 2),
+                         {"x": 1, "y": 2})
+        self.assertEqual(list(parts.share(seconds, limits, 15)), ["a", "b", "c"])
+
+    def test_affinity_goes_together(self) -> None:
+        """RNF-001-01, RNF-007-01: los módulos con la misma afinidad (``PART_AFFINITY``,
+        las pruebas que pasan las reglas por el repositorio) van a la misma parte, como
+        uno solo con sus pesos sumados, en el lugar del primero: así su proceso analiza el
+        repositorio una sola vez. Sin afinidad (o con una que no es un texto), como
+        siempre; cada parte, en el orden de ``unittest``."""
+        sizes, weights = [1, 1, 1, 1, 1, 0], [5.0, 1.0, 1.0, 4.0, 1.0, 0.0]
+        alone = parts.assign(sizes, 2, weights)
+        self.assertEqual(parts.assign(sizes, 2, weights, [None] * 6), alone)
+        self.assertEqual(parts.assign(sizes, 2, weights, ["x", "x", None, None, "x", "x"]),
+                         [1, 1, 2, 2, 1, 1])
+        self.assertEqual(parts.assign([1, 1, 1], 2, None, ["x", None, "x"]), [1, 2, 1])
+        self.assertEqual(parts.AFFINITY_ATTRIBUTE, "PART_AFFINITY")
+        values = {0: "reglas", 1: None, 2: "reglas", 3: "", 4: 7}
+        for index, value in values.items():
+            module = types.ModuleType(f"pruebas.test_m{index}")
+            if value is not None:
+                setattr(module, parts.AFFINITY_ATTRIBUTE, value)
+            sys.modules[module.__name__] = module
+            self.addCleanup(sys.modules.pop, module.__name__, None)
+        self.assertEqual([parts.affinity_of(f"pruebas.test_m{i}") for i in range(6)],
+                         ["reglas", None, "reglas", None, None, None])
+        self.assertIsNone(parts.affinity_of(None))
+        # Sin afinidad, m0 y m2 (3 s cada uno) irían a partes distintas.
+        times = {f"pruebas.test_m{i}": seconds for i, seconds in enumerate([3.0, 1.0, 3.0, 1.0])}
+        chosen = [_ids(parts.select(_discovered(1, 1, 1, 1), part, 2, times)[0])
+                  for part in (1, 2)]
+        self.assertEqual(chosen, [["pruebas.test_m0.C0.test_0", "pruebas.test_m2.C0.test_0"],
+                                  ["pruebas.test_m1.C0.test_0", "pruebas.test_m3.C0.test_0"]])
+
+
 class TimesTest(unittest.TestCase):
     """Spec 004, T39: el reparto por tiempo (RNF-001-01, RNF-007-01)."""
 

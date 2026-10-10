@@ -55,6 +55,11 @@ con progreso y cancelación):
 - cancelar (``cancelled``) para al acabar la unidad en curso: lo ya recalculado queda (cada
   operación es completa) y lo demás sigue obsoleto (:class:`RecomputeOutcome`).
 
+**Recalcular un dato bloqueado o que falta** (:func:`recompute_dataset_steps`, T54; RF-008-56,
+RF-008-57): quien lo escribió no está obsoleto, así que no entra en el plan; se repite la última
+operación de Geoblender que lo escribió (con su ejecución de grupo) igual que una unidad del
+plan, y el dato vuelve a vigente.
+
 **Dar por buena** (:func:`accept_review`, D8): una operación nueva ``core.accept_review``, con
 el motivo, que consume las versiones vigentes de lo que consumía la revisada (menos lo que
 ella misma escribió: es lo que se da por bueno), «produce» las mismas versiones de sus datos
@@ -78,6 +83,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, NamedTuple, Protocol
 
+from ..datasets import external as dataset_external
 from ..datasets import registry as dataset_registry
 from ..datasets.model import DatasetSpec, DatasetStatus
 from ..errors import GeoblenderError
@@ -693,6 +699,65 @@ def _steps(project: OperationProject, scope: Scope, versions: Mapping[str, str] 
     message = "Recalcular lo obsoleto: cancelado." if stopped else "Recalculado lo obsoleto."
     yield Progress(RECOMPUTE_PHASE, done, done, message,
                    RecomputeOutcome(tuple(results), remaining, stopped))
+
+
+def recompute_dataset_steps(
+    project: OperationProject,
+    dataset: str,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+) -> Iterator[Progress]:
+    """«Recalcular» el dato ``dataset`` (uid o nombre de un dato vivo), bloqueado por una
+    edición externa o que falta (RF-008-56, RF-008-57; plan §5.4.9; T54): quien lo escribió no
+    está obsoleto por ello, así que «Recalcular lo obsoleto» no lo hace. Repite, como ella
+    (:func:`recompute_steps`: la función de recálculo de su tipo, lo vigente de lo que
+    consumió y la comprobación al empezar), la última operación de Geoblender que lo escribió,
+    con toda su ejecución de grupo acoplado en el orden del grupo (RF-008-25), como
+    operaciones nuevas que la sustituyen; al completarse, el dato vuelve a vigente con el
+    contenido recalculado. Los pasos: uno antes de empezar, los de espera de su trabajo de la
+    004 y el último, con el :class:`RecomputeOutcome` (una unidad; nada más en el plan de lo
+    que queda). ``cancelled()`` se consulta antes de empezar.
+
+    Al llamarla, sin escribir nada: ``ProvenanceError`` (``core.read_only``,
+    ``core.recompute_dataset_not_offered`` si no se ofrece recalcularlo: no está bloqueado ni
+    falta, o no lo escribió una operación de Geoblender que se repite); ``ValidationError``
+    (``core.dataset_unknown``) si no está."""
+    _require_writable(project)
+    with project.read() as conn:
+        offered = dataset_external.offers(conn, dataset)
+        record = dataset_registry.get(conn, dataset)
+        writer = None if record is None else dataset_external.last_writer(conn, record.uid)
+        if record is None or writer is None or dataset_external.Offer.RECOMPUTE not in offered:
+            raise ProvenanceError("core.recompute_dataset_not_offered",
+                                  name=dataset if record is None else record.name)
+        graph = load_graph(conn)
+        node = graph.operations[writer]
+        members = [node] if node.group_uid is None else [
+            graph.operations[uid] for uid in graph.group(node.group_uid)
+            if graph.operations[uid].current]
+        uids = _in_group_order(members)
+        unit = RecomputeUnit(uids, tuple(graph.operations[uid].op_type for uid in uids),
+                             node.group_uid, node.group_name)
+        group_uid = None if node.group_uid is None else new_uid()
+        built = [_request(conn, project, graph, uid, group_uid) for uid in uids]
+    return _dataset_steps(project, record, graph, unit, built, cancelled)
+
+
+def _dataset_steps(project: OperationProject, record: Any, graph: ProvenanceGraph,
+                   unit: RecomputeUnit, built: list[tuple[RecomputeRequest, str | None]],
+                   cancelled: Callable[[], bool] | None) -> Iterator[Progress]:
+    yield Progress(RECOMPUTE_PHASE, 0, 1, f"Recalculando «{record.name}»…")
+    results: list[UnitResult] = []
+    stopped = cancelled is not None and cancelled()
+    if not stopped:
+        result = _refusal(graph, unit, built)
+        if result is None:
+            result = yield from _execute(project, unit, [request for request, _ in built], 0, 1)
+        results.append(result)
+    message = (f"Recalcular «{record.name}»: cancelado." if stopped
+               else f"Recalculado «{record.name}».")
+    yield Progress(RECOMPUTE_PHASE, len(results), 1, message,
+                   RecomputeOutcome(tuple(results), RecomputePlan(record.uid, (), ()), stopped))
 
 
 def _input_successor(conn: sqlite3.Connection, uid: str) -> str | None:
