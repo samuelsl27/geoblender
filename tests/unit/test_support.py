@@ -6,7 +6,9 @@ import os
 import tempfile
 import unittest
 import unittest.mock
+from collections.abc import Iterator
 from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
 
 from tests.support import network, provenance_checks, qgis, resources, runtime, timing, trees
 from tests.support.repo import EXTENSION_DIR, ROOT, TOOLS_DIR, tools_on_path
@@ -516,6 +518,87 @@ class TimingSupportTest(unittest.TestCase):
         for attempts, most in ((0, 5), (3, 2)):
             with self.subTest(intentos=attempts, maximo=most), self.assertRaises(ValueError):
                 timing.least_of(lambda: 0.0, budget, attempts=attempts, max_attempts=most)
+
+
+class DriveStepsTest(unittest.TestCase):
+    """``timing.drive_steps`` y ``timing.SyncTimer``: dónde se va el paso más largo de una
+    copia por pasos (spec 006, T49)."""
+
+    def test_longest_step_tells_how_long_it_waited_for_the_disk(self) -> None:
+        """RNF-002-06 (spec 006, T49): recorrer una operación por pasos da el total, los
+        pasos, la llamada más larga al generador (también la última, que termina) y cuánto
+        de ella fue esperar dentro de ``os.fsync`` (forzar a disco lo escrito), lo esperado
+        en ``os.fsync`` en total y el resultado del último paso que lo lleva; al terminar,
+        también si falla, ``os.fsync`` vuelve a ser el de antes."""
+        now = [0.0]
+        waits = [0.30, 1.20, 0.10]
+
+        def fsync(_fd: int) -> None:
+            now[0] += waits.pop(0)
+
+        def steps() -> Iterator[SimpleNamespace]:
+            now[0] += 0.05
+            yield SimpleNamespace(result=None)  # 0,05 s
+            now[0] += 0.10
+            os.fsync(3)
+            yield SimpleNamespace(result=None)  # 0,40 s: 0,30 en fsync
+            now[0] += 0.02
+            os.fsync(3)
+            os.fsync(3)
+            yield SimpleNamespace(result="hecho")  # 1,32 s: 1,30 en fsync
+            now[0] += 0.01  # la llamada que termina
+
+        with unittest.mock.patch.object(os, "fsync", fsync):
+            run = timing.drive_steps(steps(), clock=lambda: now[0])
+            self.assertIs(os.fsync, fsync)
+        self.assertEqual(run.steps, 3)
+        self.assertAlmostEqual(run.total_s, 1.78)
+        self.assertAlmostEqual(run.longest_s, 1.32)
+        self.assertAlmostEqual(run.longest_sync_s, 1.30)
+        self.assertAlmostEqual(run.sync_s, 1.60)
+        self.assertEqual(run.result, "hecho")
+        self.assertTrue(run.disk_bound)  # 1,30 de 1,32 s en fsync
+        for longest, synced, bound in ((0.40, 0.20, False), (0.40, 0.21, True), (0.1, 0.0, False)):
+            with self.subTest(paso=longest, fsync=synced):
+                other = timing.StepsRun(1.0, 3, longest, synced, synced, None)
+                self.assertIs(other.disk_bound, bound)
+
+        def failing() -> Iterator[SimpleNamespace]:
+            yield SimpleNamespace(result=None)
+            raise ValueError("la copia falló")
+
+        with unittest.mock.patch.object(os, "fsync", fsync):
+            with self.assertRaises(ValueError):
+                timing.drive_steps(failing())
+            self.assertIs(os.fsync, fsync)
+
+    def test_sync_timer_counts_only_the_time_inside_fsync(self) -> None:
+        """RNF-002-06 (spec 006, T49): ``SyncTimer`` cuenta las llamadas a ``os.fsync`` y
+        el tiempo dentro de ellas mientras está activo, no lo de fuera, y deja ``os.fsync``
+        como estaba; un ``fsync`` de verdad sobre un fichero recién escrito también cuenta."""
+        now = [10.0]
+
+        def fsync(_fd: int) -> None:
+            now[0] += 0.25
+
+        with unittest.mock.patch.object(os, "fsync", fsync):
+            with timing.SyncTimer(clock=lambda: now[0]) as timer:
+                now[0] += 5.0  # fuera de fsync: no cuenta
+                os.fsync(3)
+                os.fsync(3)
+            os.fsync(3)  # ya no está activo
+            self.assertIs(os.fsync, fsync)
+        self.assertEqual(timer.calls, 2)
+        self.assertAlmostEqual(timer.total_s, 0.5)
+        real = os.fsync
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(Path(tmp) / "dato.bin", "wb") as handle, timing.SyncTimer() as timer:
+                handle.write(b"x" * 1024)
+                handle.flush()
+                os.fsync(handle.fileno())
+        self.assertIs(os.fsync, real)
+        self.assertEqual(timer.calls, 1)
+        self.assertGreaterEqual(timer.total_s, 0.0)
 
 
 class NoFiguresInNamesTest(unittest.TestCase):
