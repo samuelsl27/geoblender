@@ -1438,3 +1438,33 @@ es = "Registro de entradas"
 
 ["Operation graph and provenance"]
 es = "Grafo de operaciones y procedencia"
+
+# Filtros de la lista de parámetros (RF-008-06; T45): «Cualquiera» no filtra
+
+["Any"]
+es = "Cualquiera"
+
+# El número de Ctrl+Z en la escena (RF-008-32; T45)
+
+["Registry sequence"]
+es = "Secuencia del registro"
+
+["Number of the last change registered in the project that this scene has seen (Ctrl+Z restores it and warns that the project keeps the change)"]
+es = "Número del último cambio registrado en el proyecto que ha visto esta escena (Ctrl+Z lo restaura y avisa de que el proyecto conserva el cambio)"
+
+# Carpetas de solo lectura: preferencias y diagnóstico de la instalación (RF-008-15; T45)
+
+["Read-only folders"]
+es = "Carpetas de solo lectura"
+
+["Folders where Geoblender never writes (client dossiers), separated by «;». The GEOBLENDER_READ_ONLY_DIRS variable adds those of the company"]
+es = "Carpetas en las que Geoblender nunca escribe (expedientes de clientes), separadas por «;». La variable GEOBLENDER_READ_ONLY_DIRS añade las de la empresa"
+
+["From the variable {variable}:"]
+es = "De la variable {variable}:"
+
+["The variable {variable} declares no folder"]
+es = "La variable {variable} no declara ninguna carpeta"
+
+["{folder} (preferences)"]
+es = "{folder} (preferencias)"

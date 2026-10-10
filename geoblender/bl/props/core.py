@@ -15,14 +15,24 @@
   (de 10 a 1 440 min, 30 por defecto) y carpeta de las copias locales (vacía = la
   carpeta ``checkouts/`` de los datos de usuario, spec 002 D-4).
 
+Spec 008 (T45): ``registry_seq`` en la escena (RF-008-32; plan 008 §5.4.11), el número del
+diario de Ctrl+Z que se copia en cada cambio registrado (``IntProperty``: viaja con la escena
+que restaura deshacer); y ``read_only_folders`` en las preferencias (RF-008-15; S-3), las
+carpetas de solo lectura del usuario separadas por «;», que :func:`read_only_dirs_of` suma a
+las de la variable ``GEOBLENDER_READ_ONLY_DIRS``.
+
 Ninguna se anima (``options=set()``): un fotograma clave sobre el GeoOrigin no tiene
 sentido.
 """
 
 from __future__ import annotations
 
+import os
+
 import bpy
 from bpy.props import BoolProperty, IntProperty, PointerProperty, StringProperty
+
+from ...core.paths import READ_ONLY_DIRS_ENV, READ_ONLY_DIRS_SEPARATOR, ReadOnlyDirs
 
 # Valores por defecto y límites del umbral del cerrojo (spec 002 §11; core.project.lock).
 LOCK_STALE_DEFAULT = 30
@@ -89,6 +99,18 @@ class GEOBLENDER_PG_core_project(bpy.types.PropertyGroup):
         default=False,
         options=_STATIC,
     )
+    # Spec 008 (RF-008-32; plan 008 §5.4.11): el número del último cambio registrado en el
+    # proyecto que ha visto esta escena; Ctrl+Z restaura la escena con el suyo.
+    registry_seq: IntProperty(  # type: ignore[valid-type]
+        name="Registry sequence",
+        description=(
+            "Number of the last change registered in the project that this scene has seen "
+            "(Ctrl+Z restores it and warns that the project keeps the change)"
+        ),
+        default=0,
+        min=0,
+        options=_STATIC,
+    )
 
 
 class GEOBLENDER_PG_core_preferences(bpy.types.PropertyGroup):
@@ -110,6 +132,36 @@ class GEOBLENDER_PG_core_preferences(bpy.types.PropertyGroup):
         default="",
         subtype="DIR_PATH",
         options=_STATIC,
+    )
+    # Spec 008 (RF-008-15; S-3 del plan 008; ADR-0025 §9): las carpetas de solo lectura de
+    # este usuario, separadas por «;» como en la variable; se suman a las de la variable.
+    read_only_folders: StringProperty(  # type: ignore[valid-type]
+        name="Read-only folders",
+        description=(
+            "Folders where Geoblender never writes (client dossiers), separated by «;». "
+            "The GEOBLENDER_READ_ONLY_DIRS variable adds those of the company"
+        ),
+        default="",
+        options=_STATIC,
+    )
+
+
+def preference_folders(text: str) -> list[str]:
+    """Las carpetas de solo lectura de la preferencia ``read_only_folders``: su texto partido
+    por «;» (``core.paths.READ_ONLY_DIRS_SEPARATOR``), como lo pide
+    ``core.paths.ReadOnlyDirs.from_sources`` (que salta las vacías)."""
+    return str(text or "").split(READ_ONLY_DIRS_SEPARATOR)
+
+
+def read_only_dirs_of(preferences: object | None) -> ReadOnlyDirs:
+    """Las carpetas de solo lectura de ahora (RF-008-15; S-3): las de la variable
+    ``GEOBLENDER_READ_ONLY_DIRS`` (se lee en cada llamada) más las de ``read_only_folders`` del
+    grupo ``core`` de las preferencias ``preferences`` (``None``, aún sin preferencias:
+    ninguna). No toca el disco ni la red: eso lo hace ``ReadOnlyDirs.contains``."""
+    text = getattr(preferences, "read_only_folders", "")
+    return ReadOnlyDirs.from_sources(
+        os.environ.get(READ_ONLY_DIRS_ENV),
+        preference_folders(text if isinstance(text, str) else ""),
     )
 
 

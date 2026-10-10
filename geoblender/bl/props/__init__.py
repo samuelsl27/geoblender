@@ -8,6 +8,8 @@
   de las preferencias (spec 003);
 - ``jobs``: el grupo ``jobs`` de las preferencias (spec 004): trabajos a la vez,
   retención, origen del motor de cálculo, almacén de ruedas e intérprete externo;
+- ``provenance``: ``WindowManager.geoblender_provenance``, las filas de los paneles de la
+  procedencia (spec 008; una vista que no se guarda en el ``.blend``);
 - ``preferences``: la única ``GeoblenderPreferences``, con un grupo por módulo.
 
 Antes de registrar las clases, sus propiedades (nombre, descripción y elementos de los
@@ -21,12 +23,12 @@ from __future__ import annotations
 
 from ...core import i18n
 from ..registry import PropertyTranslator, register_classes, unregister_classes
-from . import core, jobs, preferences, ui
+from . import core, jobs, preferences, provenance, ui
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los grupos antes de quien los usa.
 classes: tuple[type, ...] = (
-    *core.classes, *ui.classes, *jobs.classes, *preferences.classes
+    *core.classes, *provenance.classes, *ui.classes, *jobs.classes, *preferences.classes
 )
 
 _PROPERTIES = PropertyTranslator()
@@ -41,9 +43,9 @@ def _localize() -> None:
 
 
 def register() -> None:
-    """Registra ``classes`` en orden y pone ``Scene.geoblender`` y
-    ``WorkSpace.geoblender_mode``; si ya lo están, no hace nada. Si algo falla, deshace lo
-    hecho antes de propagar el error."""
+    """Registra ``classes`` en orden y pone ``Scene.geoblender``,
+    ``WindowManager.geoblender_provenance`` y ``WorkSpace.geoblender_mode``; si ya lo están,
+    no hace nada. Si algo falla, deshace lo hecho antes de propagar el error."""
     _localize()
     try:
         register_classes(classes)
@@ -52,9 +54,11 @@ def register() -> None:
         raise
     try:
         core.register()
+        provenance.register()
         ui.register()
     except BaseException:
         ui.unregister()
+        provenance.unregister()
         core.unregister()
         unregister_classes(classes)
         _PROPERTIES.restore()
@@ -62,9 +66,11 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Quita ``WorkSpace.geoblender_mode`` y ``Scene.geoblender`` y desregistra ``classes``
-    en orden inverso; omite lo que no está registrado."""
+    """Quita ``WorkSpace.geoblender_mode``, ``WindowManager.geoblender_provenance`` y
+    ``Scene.geoblender`` y desregistra ``classes`` en orden inverso; omite lo que no está
+    registrado."""
     ui.unregister()
+    provenance.unregister()
     core.unregister()
     unregister_classes(classes)
     _PROPERTIES.restore()
