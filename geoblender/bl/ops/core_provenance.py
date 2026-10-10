@@ -139,8 +139,16 @@ ADR-0025).
   ``GEOBLENDER_PT_core_lineage``, también en solo lectura; lo que no está en el proyecto, el
   panel lo dice con lo que contiene el texto, y un guion sin ventana lo recibe como error.
 
-Lo demás llega con las tareas siguientes: el estado de comando de las órdenes de los módulos y
-el aviso de Ctrl+Z (fase 8).
+- Ctrl+Z (T57; RF-008-32; plan §5.4.11): cada cambio que estas órdenes registran en el
+  proyecto —un parámetro (Cambiar, Confirmar), una decisión sobre una entrada (Actualizar,
+  Mantener la copia, Descartar, Editar, Reimportar, Registrar como entrada) o una operación
+  hecha (Dar por buena, lo recalculado y, con :class:`ProvenanceAwareOperator`, la de un
+  módulo, :func:`settle_operations`, o su trabajo al incorporarlo)— se apunta en el diario de
+  Ctrl+Z de la sesión (``bl.scene.undo_watch.record``, :attr:`ProvenanceSession.journal`), que
+  sella las escenas con su número sin empujar un paso de deshacer; deshacer y rehacer lo
+  avisan en la barra de estado sin deshacer nada de lo registrado. Aceptar la edición de un
+  dato e Ignorar algo sin registrar no son ninguna de las tres clases del diario y no se
+  apuntan.
 
 ``core.i18n`` no tiene cómo quitar traducciones: :func:`unregister` las deja (como los
 trabajos de la 004), y volver a registrar las instala otra vez sin cambiar nada.
@@ -181,6 +189,7 @@ from ...core.params.store import DEFAULT_SOURCE_PREFIX, shown_value
 from ...core.paths import ReadOnlyDirs
 from ...core.project.migrations import m0002
 from ...core.provenance import contract, messages
+from ...core.provenance.undo import UndoKind
 from ...core.timeutil import parse_utc
 from ...jobs import catalog as job_catalog
 from ...jobs import content_hash
@@ -188,7 +197,7 @@ from ...jobs.protocol import new_request
 from .. import ADDON_PACKAGE
 from ..props.core import read_only_dirs_of
 from ..props.provenance import GEOBLENDER_PG_core_import_setting
-from ..scene import project_session
+from ..scene import project_session, undo_watch
 from ..ui import jobs as job_list
 from ..ui import statusbar
 from ..ui.commands import catalog, described, text
@@ -205,6 +214,7 @@ if TYPE_CHECKING:
     from ...core.provenance.figures import FigureSpec
     from ...core.provenance.gate import BlockReason, CheckState, Ready
     from ...core.provenance.operations import IngestOutcome, IngestWriter, OperationHandle
+    from ...core.provenance.undo import UndoJournal
     from ...jobs.protocol import JobRequest
     from ...jobs.runner import JobHandle, JobResult, JobRunner, JobSnapshot
 
@@ -240,6 +250,9 @@ class _State:
         self.undo: list[Callable[[], object]] = []  # cómo quitar lo que se registró
         self.jobs: dict[str, _PendingJob] = {}  # job_uid → operación pendiente de incorporar
         self.recomputing = False  # «Recalcular lo obsoleto» en marcha (uno a la vez)
+        # Lo empezado con ProvenanceAwareOperator.begin que aún no ha terminado (uid → handle):
+        # al quedar hecho, se apunta en el diario de Ctrl+Z (T57).
+        self.begun: dict[str, OperationHandle] = {}
 
 
 _STATE = _State()
@@ -344,6 +357,13 @@ class ProvenanceSession:
         if step is None or step.total <= 0:
             return 0
         return min(100, max(0, step.done * 100 // step.total))
+
+    @property
+    def journal(self) -> UndoJournal:
+        """El diario de Ctrl+Z de la sesión (``bl.scene.undo_watch.JOURNAL``; RF-008-32): lo
+        registrado en esta sesión de Blender, de este proyecto o de otro; no se olvida al
+        cambiar de proyecto."""
+        return undo_watch.JOURNAL
 
     @property
     def report(self) -> OpenCheckOutcome | None:
@@ -926,9 +946,10 @@ def ingest_job_result(
     módulo en la transacción y las devuelve), ``figures``, ``software`` y ``message`` → el
     lanzador lo da por incorporado (``mark_ingested``: se borran sus entradas y sus
     resultados). Devuelve el ``IngestOutcome`` (hecha, y obsoleta si algo de lo que consumió
-    cambió mientras se calculaba; o cancelada o fallida con el motivo de la 004). Si la
-    incorporación falla, el error sigue: la operación queda fallida y el trabajo, con sus
-    resultados, sin incorporar; en solo lectura o con el proyecto cerrado, sigue «pendiente de
+    cambió mientras se calculaba; o cancelada o fallida con el motivo de la 004); hecha, la
+    apunta en el diario de Ctrl+Z (``bl.scene.undo_watch``; RF-008-32). Si la incorporación
+    falla, el error sigue: la operación queda fallida y el trabajo, con sus resultados, sin
+    incorporar; en solo lectura o con el proyecto cerrado, sigue «pendiente de
     incorporar»."""
     from ...core.provenance.operations import ingest_job
     from ...jobs.ingest import job_outcome
@@ -943,6 +964,9 @@ def ingest_job_result(
         raise
     _STATE.jobs.pop(result.job_uid, None)
     _release(result.job_uid)
+    _STATE.begun.pop(handle.uid, None)
+    if ingested.ingested:  # hecha: Ctrl+Z no la deshace (RF-008-32)
+        undo_watch.record(UndoKind.OPERATION, handle.op_type)
     return ingested
 
 
@@ -1002,6 +1026,70 @@ def on_jobs_removed(job_uids: tuple[str, ...], why: str) -> None:
                            "incorporada»", handle.op_type, handle.uid, exc_info=True)
 
 
+def settle_operations() -> None:
+    """Lo empezado con :meth:`ProvenanceAwareOperator.begin` que ya terminó (RF-008-32; plan
+    §5.4.11): cada operación hecha se apunta en el diario de Ctrl+Z
+    (``bl.scene.undo_watch.record``, que sella las escenas), en el orden en que empezó, y se
+    olvida, como las que terminaron de otro modo; las que siguen «en curso» (un modal, un trabajo
+    aún sin incorporar) esperan. La base lo llama al volver de cada ``execute`` y cada ``modal``
+    de la orden de un módulo, antes de que Blender empuje su paso de deshacer: ese paso lleva ya
+    su número. Si no se puede leer el proyecto (cerrado, la red), las olvida y lo deja en el
+    registro técnico."""
+    begun = _STATE.begun
+    if not begun:
+        return
+    from ...core.provenance.operations import OperationStatus, operation_statuses
+
+    projects: dict[int, list[OperationHandle]] = {}
+    for handle in begun.values():
+        projects.setdefault(id(handle.project), []).append(handle)
+    for handles in projects.values():
+        project = handles[0].project
+        statuses: Mapping[str, OperationStatus] = {}
+        try:
+            if not project.closed:
+                statuses = operation_statuses(project, [handle.uid for handle in handles])
+        except (GeoblenderError, sqlite3.Error, OSError):
+            LOGGER.warning("No se pudo leer el estado de las operaciones empezadas en «%s»",
+                           project.name, exc_info=True)
+        for handle in handles:
+            status = statuses.get(handle.uid)
+            if status is OperationStatus.RUNNING:
+                continue
+            begun.pop(handle.uid, None)
+            if status is OperationStatus.DONE:
+                undo_watch.record(UndoKind.OPERATION, handle.op_type)
+
+
+def _settled_execute(method: Callable[[Any, Any], set[str]]) -> Callable[[Any, Any], set[str]]:
+    """``execute`` de la orden de un módulo y, al volver, :func:`settle_operations` (con dos
+    argumentos explícitos: Blender cuenta los de cada función de un operador)."""
+
+    @functools.wraps(method)
+    def execute(self: Any, context: Any) -> set[str]:
+        try:
+            return method(self, context)
+        finally:
+            settle_operations()
+
+    return execute
+
+
+def _settled_modal(
+    method: Callable[[Any, Any, Any], set[str]],
+) -> Callable[[Any, Any, Any], set[str]]:
+    """``modal`` de la orden de un módulo y, al volver, :func:`settle_operations`."""
+
+    @functools.wraps(method)
+    def modal(self: Any, context: Any, event: Any) -> set[str]:
+        try:
+            return method(self, context, event)
+        finally:
+            settle_operations()
+
+    return modal
+
+
 class ProvenanceAwareOperator:
     """La base de los operadores de los módulos que lanzan una operación registrada (plan
     §5.3.4 «Calcular», «Exportar» y «Mostrar»; RF-008-10, RF-008-15, RF-008-20, RF-008-23,
@@ -1023,9 +1111,22 @@ class ProvenanceAwareOperator:
     - :meth:`begin` (la puerta y ``begin_operation``), :meth:`launch_job` (su trabajo de la
       004, que el módulo incorpora con :func:`ingest_job_result`) y :meth:`check_write_target`
       (antes de escribir un entregable); cada una dice lo que impide seguir con
-      ``Operator.report`` y devuelve ``None`` o falso.
+      ``Operator.report`` y devuelve ``None`` o falso;
+    - Ctrl+Z (RF-008-32): su ``execute`` y su ``modal`` quedan envueltos al definir la clase
+      (``__init_subclass__``) y, al volver, apuntan en el diario de Ctrl+Z la operación que
+      :meth:`begin` empezó y quedó hecha (:func:`settle_operations`; la de un trabajo, al
+      incorporarla), antes del paso de deshacer de Blender.
 
     Los operadores no calculan (ARQ): validan, llaman al dominio y presentan el resultado."""
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Envuelve el ``execute`` y el ``modal`` que define la orden del módulo para que, al
+        volver, apunten en el diario de Ctrl+Z lo hecho (:func:`settle_operations`)."""
+        super().__init_subclass__(**kwargs)
+        for name, settled in (("execute", _settled_execute), ("modal", _settled_modal)):
+            method = cls.__dict__.get(name)
+            if callable(method):
+                setattr(cls, name, settled(method))
 
     # Sin anotaciones: Blender toma las de la clase por propiedades del operador.
     provenance_op_type = ""
@@ -1075,13 +1176,15 @@ class ProvenanceAwareOperator:
         from ...core.provenance.operations import begin_operation
 
         try:
-            return begin_operation(SESSION.project, self.provenance_op_type,
-                                   settings=dict(settings or {}), inputs=list(inputs),
-                                   params=list(params), executor=executor,
-                                   group_uid=group_uid, supersedes=supersedes)
+            handle = begin_operation(SESSION.project, self.provenance_op_type,
+                                     settings=dict(settings or {}), inputs=list(inputs),
+                                     params=list(params), executor=executor,
+                                     group_uid=group_uid, supersedes=supersedes)
         except GeoblenderError as exc:
             self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
             return None
+        _STATE.begun[handle.uid] = handle  # hecha, al diario de Ctrl+Z (settle_operations)
+        return handle
 
     def launch_job(self, handle: OperationHandle, worker: str, *, label: str,
                    params: Mapping[str, Any] | None = None,
@@ -1397,6 +1500,7 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
         except (GeoblenderError, sqlite3.Error, OSError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
+        undo_watch.record(UndoKind.PARAMETER, changed.key)  # Ctrl+Z no lo deshace
         _parameters_written()
         from ..ui.provenance import badge
 
@@ -1432,6 +1536,7 @@ class GEOBLENDER_OT_core_confirm_parameter(bpy.types.Operator):
         except (GeoblenderError, sqlite3.Error, OSError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
+        undo_watch.record(UndoKind.PARAMETER, record.key)
         _parameters_written()
         self.report({"INFO"}, tr("Parameter «{key}» confirmed", key=record.key))
         return {"FINISHED"}
@@ -1790,6 +1895,7 @@ class GEOBLENDER_OT_core_resolve_input(bpy.types.Operator):
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
+        undo_watch.record(UndoKind.INPUT, record.name)  # Ctrl+Z no la deshace
         _inputs_written()
         self.report({"INFO"}, done)
         return {"FINISHED"}
@@ -1849,6 +1955,7 @@ class GEOBLENDER_OT_core_discard_input(bpy.types.Operator):
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
+        undo_watch.record(UndoKind.INPUT, record.name)
         _inputs_written()
         self.report({"INFO"}, tr("Input «{name}»: {status}", name=record.name,
                                  status=_status_text(record.status, i18n.language())))
@@ -1941,6 +2048,7 @@ class GEOBLENDER_OT_core_edit_input(bpy.types.Operator):
         if record == before:
             self.report({"INFO"}, tr("Input «{name}»: nothing to change", name=record.name))
             return {"FINISHED"}
+        undo_watch.record(UndoKind.INPUT, record.name)
         _inputs_written()
         self.report({"INFO"}, tr("Input «{name}» edited", name=record.name))
         return {"FINISHED"}
@@ -2112,6 +2220,10 @@ class _RecomputeModal:
         self._steps = None  # terminado: nada que cerrar
         self._cleanup(context)
         self.result = outcome
+        for result in outcome.results:  # lo recalculado: Ctrl+Z no lo deshace (RF-008-32)
+            if result.status is UnitStatus.DONE:
+                for op_type in result.unit.op_types:
+                    undo_watch.record(UndoKind.OPERATION, op_type)
         _inputs_written()
         language = i18n.language()
         done = sum(len(result.operations) for result in outcome.results
@@ -2372,6 +2484,7 @@ class GEOBLENDER_OT_core_resolve_dataset(_RecomputeModal, bpy.types.Operator):
                 raise messages.ProvenanceError("core.reimport_dataset_not_offered", name=name)
             entry = _input_record(conn, project, found.input_uid)
         reimport_input(project, entry.uid, self.reason)
+        undo_watch.record(UndoKind.INPUT, entry.name)  # Ctrl+Z no la deshace
         return tr("Input «{name}» updated: what depended on the previous one is stale",
                   name=entry.name)
 
@@ -2439,6 +2552,7 @@ class GEOBLENDER_OT_core_accept_review(bpy.types.Operator):
         except (GeoblenderError, sqlite3.Error, OSError, TypeError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, contract.ACCEPT_REVIEW)  # la que la sustituye
         _inputs_written()
         self.report({"INFO"}, tr("Operation accepted as good: what depends on it can be "
                                  "recomputed"))
@@ -2533,7 +2647,9 @@ class GEOBLENDER_OT_core_resolve_unregistered(bpy.types.Operator):
                     return {"CANCELLED"}
                 from ...core.provenance.importer import import_layer  # al usarlo
 
-                done = import_layer(project, name).text(language)
+                imported = import_layer(project, name)
+                done = imported.text(language)
+                undo_watch.record(UndoKind.INPUT, imported.input.name)  # Ctrl+Z no la deshace
             else:
                 from ...core.datasets.orphans import ignore
 
@@ -2690,9 +2806,10 @@ def register() -> None:
 
 def unregister() -> None:
     """Deja de escuchar los cambios de proyecto y las carpetas de trabajos borradas, quita la
-    nota de la lista de trabajos y olvida lo pendiente de incorporar (sus operaciones siguen
-    «en curso»: el lanzador ya interrumpió sus trabajos), para la comprobación en marcha (quita
-    su temporizador y cancela lo pendiente) y olvida el proyecto, quita el temporizador del aviso
+    nota de la lista de trabajos y olvida lo pendiente de incorporar y lo empezado (sus
+    operaciones siguen «en curso»: el lanzador ya interrumpió sus trabajos), para la
+    comprobación en marcha (quita su temporizador y cancela lo pendiente) y olvida el
+    proyecto, quita el temporizador del aviso
     (si aún no se disparó) y olvida que se avisó (la sesión siguiente avisa otra vez), quita
     los trabajos de hash de la sesión y las declaraciones de ``core`` que registró; las
     traducciones instaladas se quedan; idempotente."""
@@ -2701,6 +2818,7 @@ def unregister() -> None:
     if job_list.note_provider() is job_note:
         job_list.set_note_provider(None)
     _STATE.jobs.clear()
+    _STATE.begun.clear()
     _STATE.recomputing = False
     SESSION.reset()
     SESSION.hash_jobs = None

@@ -12,8 +12,9 @@
 - :mod:`.operations`: el registro de las operaciones en dos pasos (:func:`begin_operation`,
   :class:`OperationHandle` con ``claim_paths``, ``complete``, ``fail`` y ``cancel``,
   :func:`operation` y :func:`claimed_paths`), las que su sesión no pudo terminar
-  (:func:`interrupt_orphaned` y :func:`mark_not_ingested`) y la incorporación de un trabajo
-  de la 004 (:func:`ingest_job` con su :class:`JobOutcome` → :class:`IngestOutcome`).
+  (:func:`interrupt_orphaned` y :func:`mark_not_ingested`), la incorporación de un trabajo
+  de la 004 (:func:`ingest_job` con su :class:`JobOutcome` → :class:`IngestOutcome`) y el
+  estado registrado de unas operaciones (:func:`operation_statuses`, para Ctrl+Z).
 - :mod:`.figures`: las cifras con tipo y procedencia (:class:`FigureSpec`,
   :func:`record_figure`, :class:`FigureRecord`) y el aviso de una cifra que calcula un
   parámetro con otro valor (:class:`Divergence`, :func:`divergence`, :func:`divergences` y,
@@ -120,6 +121,7 @@ OPERATIONS_API: tuple[str, ...] = (
     "interrupt_orphaned",
     "mark_not_ingested",
     "operation",
+    "operation_statuses",
 )
 """Lo de :mod:`.operations` que se reexporta al usarlo."""
 
@@ -422,6 +424,7 @@ __all__ = [
     "open_check_steps",
     "operation",
     "operation_def",
+    "operation_statuses",
     "parameter_divergence",
     "parse_version",
     "plan_recompute",

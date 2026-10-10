@@ -737,6 +737,18 @@ class EndTest(OperationsCase):
               None)],
         )
         self.assertNoOutputs(stopped.uid, broken.uid)
+        # RF-008-32: el estado registrado de cada una (lo que no está, no sale), para el
+        # diario de Ctrl+Z.
+        running = self.begin("res.survey")
+        status = operations.OperationStatus
+        self.assertEqual(
+            operations.operation_statuses(self.project,
+                                          [stopped.uid, broken.uid, running.uid, "op-nada"]),
+            {stopped.uid: status.CANCELLED, broken.uid: status.FAILED,
+             running.uid: status.RUNNING},
+        )
+        self.assertEqual(operations.operation_statuses(self.project, []), {})
+        running.fail("prueba")
         self.assertEqual(
             self.query("SELECT item_uid, role FROM gb_operation_io WHERE operation_uid = ? "
                        "AND direction = 'in'", (stopped.uid,)),
@@ -965,7 +977,7 @@ class VocabularyTest(unittest.TestCase):
         """Plan §5.1: ``core.provenance`` reexporta la API de las operaciones."""
         for name in ("begin_operation", "operation", "claimed_paths", "OperationHandle", "Use",
                      "OperationStatus", "Executor", "ItemKind", "interrupt_orphaned",
-                     "mark_not_ingested"):
+                     "mark_not_ingested", "operation_statuses"):
             with self.subTest(name=name):
                 self.assertIn(name, provenance.__all__)
                 self.assertIs(getattr(provenance, name), getattr(operations, name))

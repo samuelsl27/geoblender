@@ -105,6 +105,11 @@ demostración de la 008:
 - RF-008-58: «Cancelar las comprobaciones» (``geoblender.core_cancel_checks``, el botón del
   campo «Comprobando el proyecto…») para la comprobación en marcha enseguida.
 
+T57 (Ctrl+Z; el detalle, en ``test_provenance_undo.py``):
+
+- RF-008-32: Mantener la copia, Descartar…, Editar… y lo recalculado se apuntan en el diario de
+  Ctrl+Z de la sesión (su clase y su nombre o su tipo) y sellan la escena con su número.
+
 En ``blender -b`` no hay bucle de eventos: las pruebas toman el modal de
 ``window.modal_operators`` y le pasan los eventos ``TIMER`` y ``ESC``.
 
@@ -1114,6 +1119,14 @@ class ProvenanceSessionTest(unittest.TestCase):
         return project, source, imported.input, imported.dataset, area
 
     @staticmethod
+    def journaled() -> tuple[str, str, bool]:
+        """Lo último apuntado en el diario de Ctrl+Z: su clase, su etiqueta y si la escena
+        lleva su número."""
+        entry = _module("bl.scene.undo_watch").JOURNAL.entries[-1]
+        stamped = bpy.context.scene.geoblender.registry_seq
+        return str(entry.kind), entry.label, stamped == entry.seq
+
+    @staticmethod
     def registry_state(project: object) -> tuple[object, ...]:
         """Lo que guarda el proyecto de las entradas, de los datos y de las operaciones, con
         el número de eventos: lo que no debe cambiar al cancelar o al rechazar."""
@@ -1163,7 +1176,8 @@ class ProvenanceSessionTest(unittest.TestCase):
         otra vez el diálogo con ellos, que los pide) y, con ellos, la reimporta con el
         importador de ``core.import_layer`` como una entrada nueva que la sustituye: la
         anterior queda «sustituida» con lo importado intacto, y el área calculada con ella,
-        obsoleta. En solo lectura no se puede."""
+        obsoleta. En solo lectura no se puede. RF-008-32: Mantener la copia se apunta en el
+        diario de Ctrl+Z."""
         demo = self.enterContext(Demo(module_name()).registered())
         project, source, limits, imported, area = self.boundary_with_area(demo)
         shutil.copyfile(DATA / "Limites_v2.gpkg", source)
@@ -1195,6 +1209,7 @@ class ProvenanceSessionTest(unittest.TestCase):
                                                                decision="KEEP"), {"FINISHED"})
         kept = self.registry_state(project)
         self.assertEqual(kept[0][0][2:4], ("kept", project.session.user_host))
+        self.assertEqual(self.journaled(), ("input", "Limites", True))  # RF-008-32
         self.assertEqual(ui.inputs_text(), "")
         self.assertEqual(self.input_rows(self.show_inputs())[0][1], KEPT)
 
@@ -1281,7 +1296,8 @@ class ProvenanceSessionTest(unittest.TestCase):
         el proyecto, y el área calculada con ella, obsoleta. Editar… sale relleno con su nombre
         y su entrega y cambia solo eso: sus ficheros, sus hashes, su estado y lo importado no
         cambian (también la de una descartada); una fecha que no es DD/MM/AAAA se rechaza sin
-        cambiar nada. En solo lectura, ninguna de las dos."""
+        cambiar nada. En solo lectura, ninguna de las dos. RF-008-32: las dos se apuntan en el
+        diario de Ctrl+Z."""
         demo = self.enterContext(Demo(module_name()).registered())
         project, _source, limits, imported, area = self.boundary_with_area(demo)
         self.ps.attach(project)
@@ -1303,6 +1319,7 @@ class ProvenanceSessionTest(unittest.TestCase):
         inputs, datasets, _operations, _events = self.registry_state(project)
         self.assertEqual(inputs[0][2:5], ("discarded", project.session.user_host,
                                           "Importación equivocada"))
+        self.assertEqual(self.journaled(), ("input", "Limites", True))  # RF-008-32
         self.assertEqual(datasets[0][:3], (imported.uid, imported.name, "discarded"))
         with project.read() as conn:
             self.assertIsNotNone(conn.execute(
@@ -1330,6 +1347,7 @@ class ProvenanceSessionTest(unittest.TestCase):
             received_from=""), {"FINISHED"})
         inputs, datasets, operations, events = self.registry_state(project)
         self.assertEqual(inputs[0][1:3], ("Limites del cliente", "discarded"))
+        self.assertEqual(self.journaled(), ("input", "Limites del cliente", True))
         self.assertEqual(inputs[0][5:7], ("2026-09-25", None))
         self.assertEqual(inputs[0][7:], discarded[0][0][7:])  # su contenido no cambia
         self.assertEqual((datasets, operations), discarded[1:3])
@@ -1401,7 +1419,7 @@ class ProvenanceSessionTest(unittest.TestCase):
         Con la producción y el factor K cambiados otra vez, Recalcular lo obsoleto lo rehace
         todo en orden de dependencia (los años antes que los acopios), con su progreso, como
         operaciones nuevas que sustituyen a las anteriores y leen los parámetros vigentes, y la
-        cuenta vuelve a 0."""
+        cuenta vuelve a 0. RF-008-32: lo recalculado se apunta en el diario de Ctrl+Z."""
         demo = self.enterContext(Demo(module_name()).registered())
         project = self.stockpile_chain(demo)
         self.run_checks()
@@ -1424,6 +1442,7 @@ class ProvenanceSessionTest(unittest.TestCase):
         self.assertEqual(self.drive(operator), {"FINISHED"})
         self.assertEqual(self.units(operator), [((BENCH_YEARS,), "done")])
         self.assertEqual(ui.stale_text(), "! 2 obsoletos")
+        self.assertEqual(self.journaled(), ("operation", BENCH_YEARS, True))  # RF-008-32
 
         production = _module("core.params").ParameterStore(project).get(PRODUCTION).uid
         operator = self.recompute(scope="CAUSE", subject_uid=production)
