@@ -703,6 +703,25 @@ def item_text(conn: sqlite3.Connection, item_kind: str, uid: str, *, language: s
     return stale_text(graph, chosen, causes, language=language, operation=writer)
 
 
+def review_item(conn: sqlite3.Connection, operation_uid: str, *, language: str = "es",
+                versions: Mapping[str, str] | None = None) -> StaleItem | None:
+    """La operación ``operation_uid`` como fila de lo que espera revisión a mano (como en
+    :func:`stale_items`: su tipo, su módulo, sus causas, su «Obsoleto: …» y desde cuándo) si la
+    espera según la caché de ``conn``; ``None`` si no (lo que muestra «Dar por buena…», T54;
+    RF-008-27)."""
+    with _snapshot(conn):
+        if operation_uid not in review_operations(conn):
+            return None
+        rows = list(_select(conn, _STALE_OPERATIONS, {operation_uid}))
+        text = item_text(conn, OPERATION, operation_uid, language=language, versions=versions)
+    if not rows:  # pragma: no cover - en revisión, tiene causas en la caché
+        return None
+    _fid, uid, op_type, module, listed, since = rows[0]
+    causes = _Causes().of(listed)
+    return StaleItem(OPERATION, str(uid), str(op_type), str(module), str(uid), str(op_type),
+                     True, causes, text or "", str(since))
+
+
 def _subjects(causes: Iterable[Iterable[Cause]]) -> dict[CauseKind, set[str]]:
     """Los sujetos de ``causes``, por clase de causa."""
     subjects: dict[CauseKind, set[str]] = defaultdict(set)

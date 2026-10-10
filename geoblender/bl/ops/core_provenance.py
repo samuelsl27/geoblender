@@ -118,8 +118,23 @@ ADR-0025).
   terminar dice cuántas operaciones recalculó y por qué no las demás, y pone al día los
   indicadores sin esperar al tic.
 
-Lo demás llega con las tareas siguientes: los demás operadores de §5.3.2, con sus paneles, y
-el estado de comando de las órdenes de los módulos (fase 8).
+- Lo que no se puede usar, dar por buena, capas sin registrar y cancelar (T54; RF-008-56,
+  RF-008-57, RF-008-27, RF-008-62, RF-008-58; plan §5.3.2, §5.4.4 y §5.4.9):
+  ``geoblender.core_resolve_dataset`` es el diálogo de un dato bloqueado por una edición
+  externa, que falta o dañado (el aviso y lo que se ofrece, ``core.datasets.external``):
+  Aceptar la edición (con motivo), Recalcular (el mismo modal que «Recalcular lo obsoleto»,
+  :class:`_RecomputeModal`, con ``core.provenance.recompute.recompute_dataset_steps``: repite
+  la última operación de Geoblender que lo escribió) o Reimportar (el importador de su
+  entrada, con motivo); de uno dañado, solo Reimportar. ``geoblender.core_accept_review`` («Dar
+  por buena…», con motivo; ``accept_review``) es el de una operación que espera revisión a
+  mano, y ``geoblender.core_resolve_unregistered`` el de una capa o tabla del proyecto creada
+  desde QGIS (Registrar como entrada, con ``core.import_layer``) o algo sin registrar que se
+  ignora (con motivo opcional). Las tres escriben en el proyecto y no están en solo lectura.
+  ``geoblender.core_cancel_checks`` para la comprobación del proyecto en marcha
+  (:meth:`ProvenanceSession.cancel`; el botón del campo «Comprobando el proyecto…»).
+
+Lo demás llega con las tareas siguientes: la procedencia de una cifra, el estado de comando de
+las órdenes de los módulos y el aviso de Ctrl+Z (fase 8).
 
 ``core.i18n`` no tiene cómo quitar traducciones: :func:`unregister` las deja (como los
 trabajos de la 004), y volver a registrar las instala otra vez sin cambiar nada.
@@ -1958,7 +1973,150 @@ def _cause_scope(project: Project, subject: str) -> Any:
     raise _NothingToDo(subject)
 
 
-class GEOBLENDER_OT_core_recompute_stale(bpy.types.Operator):
+class _RecomputeModal:
+    """El modal de un recálculo (T53; T54): avanza unos pasos de ``core.provenance.recompute``
+    una unidad (o una espera a su trabajo de la 004) por evento de un temporizador de la
+    ventana, con el progreso en la barra de estado, y Esc para al acabar la unidad en curso
+    (lo hecho queda); al terminar dice lo que pasó y pone al día los indicadores. Uno a la vez
+    en la sesión, y no mientras se comprueba el proyecto (RF-008-58). Sin anotaciones de clase:
+    Blender las tomaría por propiedades del operador."""
+
+    def _can_start(self, context: Any) -> bool:
+        """Si se puede empezar un recálculo ahora (si no, lo dice): con una ventana (espera a
+        los trabajos de la 004, que sigue el monitor de los trabajos en el bucle de Blender),
+        sin otro en marcha y sin una comprobación del proyecto en marcha."""
+        if getattr(context, "window", None) is None:
+            self.report({"ERROR"},  # type: ignore[attr-defined]
+                        tr("Recompute the stale results from a Blender window"))
+            return False
+        if _STATE.recomputing:
+            self.report({"WARNING"},  # type: ignore[attr-defined]
+                        tr("Already recomputing the stale results"))
+            return False
+        if SESSION.running:  # RF-008-58: nada sin comprobar antes
+            self.report({"WARNING"},  # type: ignore[attr-defined]
+                        tr("Checking the project: recompute when the check finishes"))
+            return False
+        return True
+
+    def _start_modal(self, context: Any, steps: Iterator[Progress]) -> set[str]:
+        """Empieza a avanzar ``steps`` en el modal (``RUNNING_MODAL``)."""
+        self._steps = steps
+        self.progress_log = []
+        self.report_log = []
+        self.result = None
+        self._owner = True
+        _STATE.recomputing = True
+        manager = context.window_manager
+        self._timer = manager.event_timer_add(RECOMPUTE_TIMER_S, window=context.window)
+        manager.modal_handler_add(self)
+        manager.progress_begin(0, 100)
+        return {"RUNNING_MODAL"}
+
+    def _progress_text(self, step: Progress) -> str:
+        """El progreso de la barra de estado."""
+        return tr("Recomputing the stale results: {done} of {total}… Esc: cancel",
+                  done=step.done, total=step.total)
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        """Un paso por evento del temporizador; Esc para al acabar la unidad en curso: lo ya
+        recalculado queda (cada operación es completa) y lo demás sigue obsoleto."""
+        if getattr(self, "_steps", None) is None:
+            return {"CANCELLED"}
+        if event.type == "ESC" and event.value == "PRESS":
+            self._cancel = True
+            return self._advance(context)
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+        return self._advance(context)
+
+    def cancel(self, context: Any) -> None:
+        """Blender para el modal (se abre otro ``.blend``, se cierra la ventana) o se cancela
+        el diálogo antes de empezar: cerrar los pasos deja lo hecho."""
+        self._cancel = True
+        self._cleanup(context)
+
+    def _advance(self, context: Any) -> set[str]:
+        from ...core.provenance.recompute import RecomputeOutcome
+
+        try:
+            step = next(self._steps)  # type: ignore[arg-type]
+        except StopIteration:
+            step = None
+        except Exception as exc:  # noqa: BLE001 - un módulo que falla no tumba Blender
+            LOGGER.error("«Recalcular lo obsoleto» se ha parado", exc_info=exc)
+            self._cleanup(context)
+            _inputs_written()
+            self._report({"ERROR"}, tr("The recompute stopped: {error}",
+                                       error=error_text(exc)))
+            return {"CANCELLED"}
+        if step is not None and isinstance(step.result, RecomputeOutcome):
+            return self._finish(context, step.result)
+        if step is None:
+            self._cleanup(context)
+            return {"CANCELLED"}
+        self._show(context, step)
+        return {"RUNNING_MODAL"}
+
+    def _show(self, context: Any, step: Progress) -> None:
+        shown = self._progress_text(step)
+        self.progress_log.append(shown)
+        if getattr(self, "_timer", None) is None:
+            return
+        percent = step.done * 100 // step.total if step.total else 0
+        context.window_manager.progress_update(max(0, min(100, percent)))
+        workspace = getattr(context, "workspace", None)
+        if workspace is not None:
+            workspace.status_text_set(shown)
+
+    def _report(self, kind: set[str], text_: str) -> None:
+        self.report(kind, text_)
+        self.report_log.append(text_)
+
+    def _cleanup(self, context: Any) -> None:
+        steps, self._steps = getattr(self, "_steps", None), None
+        if steps is not None:
+            steps.close()  # type: ignore[attr-defined]
+        if getattr(self, "_owner", False):  # solo el recálculo que se empezó aquí
+            _STATE.recomputing = False
+            self._owner = False
+        timer, self._timer = getattr(self, "_timer", None), None
+        if timer is not None:
+            manager = context.window_manager
+            manager.event_timer_remove(timer)
+            manager.progress_end()
+            workspace = getattr(context, "workspace", None)
+            if workspace is not None:
+                workspace.status_text_set(None)
+
+    def _finish(self, context: Any, outcome: Any) -> set[str]:
+        """Lo que pasó (RF-008-26): cuántas operaciones se recalcularon, las unidades que no
+        y lo que se dejó fuera, con su motivo; los indicadores, al día sin esperar al tic."""
+        from ...core.provenance.recompute import UnitStatus
+
+        self._steps = None  # terminado: nada que cerrar
+        self._cleanup(context)
+        self.result = outcome
+        _inputs_written()
+        language = i18n.language()
+        done = sum(len(result.operations) for result in outcome.results
+                   if result.status is UnitStatus.DONE)
+        if outcome.cancelled:
+            self._report({"INFO"}, tr("Recompute cancelled: operations recomputed, {done}; "
+                                      "the rest is still stale", done=done))
+        elif outcome.results:
+            self._report({"INFO"}, tr("Operations recomputed: {done}", done=done))
+        elif not outcome.remaining.skipped:
+            self._report({"INFO"}, tr("Nothing to recompute"))
+        for result in outcome.results:
+            if result.status is not UnitStatus.DONE:
+                self._report({"WARNING"}, result.text(language=language) or "")
+        for skipped in outcome.remaining.skipped:
+            self._report({"WARNING"}, skipped.text(language=language))
+        return {"CANCELLED"} if outcome.cancelled else {"FINISHED"}
+
+
+class GEOBLENDER_OT_core_recompute_stale(_RecomputeModal, bpy.types.Operator):
     """Recompute the results whose inputs changed"""
 
     bl_idname = RECOMPUTE_STALE
@@ -2001,16 +2159,7 @@ class GEOBLENDER_OT_core_recompute_stale(bpy.types.Operator):
         if blocked is not None:
             self.report({"ERROR"}, blocked)
             return {"CANCELLED"}
-        window = getattr(context, "window", None)
-        if window is None:
-            self.report({"ERROR"}, tr("Recompute the stale results from a Blender window"))
-            return {"CANCELLED"}
-        if _STATE.recomputing:
-            self.report({"WARNING"}, tr("Already recomputing the stale results"))
-            return {"CANCELLED"}
-        if SESSION.running:  # RF-008-58: nada sin comprobar antes
-            self.report({"WARNING"}, tr("Checking the project: recompute when the check "
-                                        "finishes"))
+        if not self._can_start(context):
             return {"CANCELLED"}
         from ...core.provenance.recompute import recompute_steps
 
@@ -2032,112 +2181,396 @@ class GEOBLENDER_OT_core_recompute_stale(bpy.types.Operator):
         except (TypeError, ValueError) as exc:
             self.report({"ERROR"}, _sentence(str(exc)))
             return {"CANCELLED"}
-        self._steps: Iterator[Progress] | None = steps
-        self.progress_log: list[str] = []
-        self.report_log: list[str] = []
-        self.result: Any = None
-        _STATE.recomputing = True
-        manager = context.window_manager
-        self._timer = manager.event_timer_add(RECOMPUTE_TIMER_S, window=window)
-        manager.modal_handler_add(self)
-        manager.progress_begin(0, 100)
-        return {"RUNNING_MODAL"}
+        return self._start_modal(context, steps)
 
-    def modal(self, context: Any, event: Any) -> set[str]:
-        """Un paso por evento del temporizador; Esc para al acabar la unidad en curso: lo ya
-        recalculado queda (cada operación es completa) y lo demás sigue obsoleto."""
-        if getattr(self, "_steps", None) is None:
+
+# Lo que no se puede usar, dar por buena, capas sin registrar y cancelar (T54) ----------------
+
+RESOLVE_DATASET = "geoblender.core_resolve_dataset"
+ACCEPT_REVIEW = "geoblender.core_accept_review"
+RESOLVE_UNREGISTERED = "geoblender.core_resolve_unregistered"
+CANCEL_CHECKS = "geoblender.core_cancel_checks"
+
+OFFER_ITEMS = [
+    ("ACCEPT", "Accept the edit", "Accept the external edit with a reason: the dataset can be "
+                                  "used again"),
+    ("RECOMPUTE", "Recompute", "Repeat the operation of Geoblender that wrote the dataset"),
+    ("REIMPORT", "Reimport", "Reimport its input from the source as a new input that "
+                             "replaces it"),
+]
+"""Lo que se ofrece para un dato bloqueado, que falta o dañado (identificador = nombre de
+``core.datasets.Offer``; RF-008-56, RF-008-57)."""
+
+UNREGISTERED_KIND_ITEMS = [
+    ("TABLE", "Layer or table", "A layer or table of the project database"),
+    ("FILE", "File", "A file of the project data folders"),
+]
+"""Lo que hay sin registrar (identificador = nombre de ``core.datasets.ForeignKind``)."""
+
+UNREGISTERED_DECISION_ITEMS = [
+    ("REGISTER", "Register as input", "Register the layer as a new input of the project"),
+    ("IGNORE", "Ignore", "Stop warning about it: nothing of it is moved or changed"),
+]
+"""Las dos decisiones sobre algo sin registrar (RF-008-62)."""
+
+
+def _resolution(conn: sqlite3.Connection, key: str) -> Any:
+    """Lo que no se puede usar del dato ``key`` (uid o nombre de un dato vivo):
+    ``core.datasets.external.Unusable``, o ``None`` si se puede usar.
+    ``ValidationError`` (``core.dataset_unknown``) si no está."""
+    from ...core.datasets import external
+
+    external.offers(conn, key)  # core.dataset_unknown si no está
+    found = external.unusable(conn, key)
+    return found[0] if found else None
+
+
+class GEOBLENDER_OT_core_resolve_dataset(_RecomputeModal, bpy.types.Operator):
+    """Accept the external edit, recompute or reimport a dataset that cannot be used"""
+
+    bl_idname = RESOLVE_DATASET
+    bl_label = "Decide on a dataset edited outside…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    dataset_uid: StringProperty(  # type: ignore[valid-type]
+        name="Dataset", description="Uid or name of the dataset", options=_HIDDEN,
+    )
+    decision: EnumProperty(  # type: ignore[valid-type]
+        name="Decision", description="Accept the edit, recompute or reimport the dataset",
+        items=OFFER_ITEMS, default="ACCEPT", options=_FIELD,
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason",
+        description="Why the edit is accepted or the dataset reimported (required)",
+        options=_FIELD,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo con el aviso del dato y lo que se ofrece para resolverlo (elegida
+        la que pasó quien la lanza, o la primera): nada cambia hasta que la persona lo
+        acepta."""
+        project = SESSION.project
+        language = i18n.language()
+        try:
+            with project.read() as conn:
+                found = _resolution(conn, self.dataset_uid)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
-        if event.type == "ESC" and event.value == "PRESS":
-            self._cancel = True
-            return self._advance(context)
-        if event.type != "TIMER":
-            return {"PASS_THROUGH"}
-        return self._advance(context)
+        if found is None:
+            self._notice = tr("Dataset «{name}» can be used: there is nothing to resolve",
+                              name=self.dataset_uid)
+            self._offers = ()
+        else:
+            self._notice = found.text(language)
+            self._offers = tuple(offer.name for offer in found.offers)
+        if not self.properties.is_property_set("decision") and self._offers:
+            self.decision = self._offers[0]
+        return _dialog(self, context, RESOLVE_DATASET)
 
-    def cancel(self, context: Any) -> None:
-        """Blender para el modal (se abre otro ``.blend``, se cierra la ventana): cerrar los
-        pasos deja lo hecho."""
-        self._cancel = True
-        self._cleanup(context)
+    def draw(self, context: Any) -> None:
+        from ...core.datasets.external import Offer, offer_label
 
-    def _advance(self, context: Any) -> set[str]:
-        from ...core.provenance.recompute import RecomputeOutcome
+        layout = self.layout
+        language = i18n.language()
+        for line in textwrap.wrap(getattr(self, "_notice", ""), NOTICE_CHARS,
+                                  break_long_words=False, break_on_hyphens=False):
+            layout.label(text=line, translate=False)
+        offered = getattr(self, "_offers", tuple(offer.name for offer in Offer))
+        row = layout.row(align=True)
+        for offer in Offer:
+            sub = row.row(align=True)
+            sub.enabled = offer.name in offered
+            sub.prop_enum(self, "decision", offer.name, text=offer_label(offer, language),
+                          translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def _progress_text(self, step: Progress) -> str:
+        return tr("Recomputing «{name}»… Esc: cancel", name=getattr(self, "_name", ""))
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        if not self.properties.is_property_set("decision"):
+            self.report({"WARNING"}, tr("Choose whether to accept the edit, recompute or "
+                                        "reimport the dataset: nothing changed"))
+            return {"CANCELLED"}
+        if self.decision == "RECOMPUTE":
+            return self._recompute(context)
+        from ...core.datasets import external
+
+        project = SESSION.project
+        language = i18n.language()
+        try:
+            if self.decision == "ACCEPT":
+                with project.write_transaction() as conn:
+                    record = external.accept_edit(conn, project, self.dataset_uid, self.reason)
+                done = messages.render("core.edit_accepted", language=language,
+                                       name=record.name, reason=self.reason.strip())
+            else:
+                done = self._reimport(project)
+        except contract.SettingsNeeded as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, TypeError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        _inputs_written()
+        self.report({"INFO"}, done)
+        return {"FINISHED"}
+
+    def _recompute(self, context: Any) -> set[str]:
+        """Recalcular (``core.provenance.recompute.recompute_dataset_steps``) en el modal."""
+        if not self._can_start(context):
+            return {"CANCELLED"}
+        from ...core.provenance.recompute import recompute_dataset_steps
+
+        project = SESSION.project
+        self._cancel = False
+        try:
+            with project.read() as conn:
+                found = _resolution(conn, self.dataset_uid)
+            self._name = self.dataset_uid if found is None else found.record.name
+            steps = recompute_dataset_steps(project, self.dataset_uid,
+                                            cancelled=lambda: self._cancel)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        return self._start_modal(context, steps)
+
+    def _reimport(self, project: Project) -> str:
+        """Reimportar: la entrada de lo importado (o cuya importación lo escribió), con el
+        importador de su módulo, como una entrada nueva que la sustituye (RF-008-11)."""
+        from ...core.provenance.importer import reimport_input  # al usarlo
+
+        with project.read() as conn:
+            found = _resolution(conn, self.dataset_uid)
+            if found is None or found.input_uid is None:
+                name = self.dataset_uid if found is None else found.record.name
+                raise messages.ProvenanceError("core.reimport_dataset_not_offered", name=name)
+            entry = _input_record(conn, project, found.input_uid)
+        reimport_input(project, entry.uid, self.reason)
+        return tr("Input «{name}» updated: what depended on the previous one is stale",
+                  name=entry.name)
+
+
+class GEOBLENDER_OT_core_accept_review(bpy.types.Operator):
+    """Accept as good, with a reason, an operation that awaits review by hand"""
+
+    bl_idname = ACCEPT_REVIEW
+    bl_label = "Accept as good…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    operation_uid: StringProperty(  # type: ignore[valid-type]
+        name="Operation", description="Uid of the operation that awaits review by hand",
+        options=_HIDDEN,
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the operation is accepted as good (required)",
+        options=_FIELD,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo con la operación, por qué espera revisión a mano y el motivo: nada
+        cambia hasta que la persona lo acepta."""
+        from ...core.provenance.stale import review_item
+
+        project = SESSION.project
+        try:
+            with project.read() as conn:
+                found = review_item(conn, self.operation_uid, language=i18n.language())
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if found is None:
+            self._notice = tr("Operation «{name}» does not await review by hand: there is "
+                              "nothing to accept as good", name=self.operation_uid)
+        else:
+            defn = contract.OPERATIONS.get(found.op_type)
+            shown = text(defn.label_msgid) if defn is not None and defn.label_msgid \
+                else found.op_type
+            self._notice = tr("Operation «{name}» ({op_type}) awaits review by hand: {cause}",
+                              name=shown, op_type=found.op_type, cause=found.text)
+        return _dialog(self, context, ACCEPT_REVIEW)
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        for line in textwrap.wrap(getattr(self, "_notice", ""), NOTICE_CHARS,
+                                  break_long_words=False, break_on_hyphens=False):
+            layout.label(text=line, translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        from ...core.provenance.recompute import accept_review
 
         try:
-            step = next(self._steps)  # type: ignore[arg-type]
-        except StopIteration:
-            step = None
-        except Exception as exc:  # noqa: BLE001 - un módulo que falla no tumba Blender
-            LOGGER.error("«Recalcular lo obsoleto» se ha parado", exc_info=exc)
-            self._cleanup(context)
-            _inputs_written()
-            self._report({"ERROR"}, tr("The recompute stopped: {error}",
-                                       error=error_text(exc)))
+            accept_review(SESSION.project, self.operation_uid, self.reason)
+        except (GeoblenderError, sqlite3.Error, OSError, TypeError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
-        if step is not None and isinstance(step.result, RecomputeOutcome):
-            return self._finish(context, step.result)
-        if step is None:
-            self._cleanup(context)
-            return {"CANCELLED"}
-        self._show(context, step)
-        return {"RUNNING_MODAL"}
-
-    def _show(self, context: Any, step: Progress) -> None:
-        shown = tr("Recomputing the stale results: {done} of {total}… Esc: cancel",
-                   done=step.done, total=step.total)
-        self.progress_log.append(shown)
-        if getattr(self, "_timer", None) is None:
-            return
-        percent = step.done * 100 // step.total if step.total else 0
-        context.window_manager.progress_update(max(0, min(100, percent)))
-        workspace = getattr(context, "workspace", None)
-        if workspace is not None:
-            workspace.status_text_set(shown)
-
-    def _report(self, kind: set[str], text_: str) -> None:
-        self.report(kind, text_)
-        self.report_log.append(text_)
-
-    def _cleanup(self, context: Any) -> None:
-        steps, self._steps = getattr(self, "_steps", None), None
-        if steps is not None:
-            steps.close()  # type: ignore[attr-defined]
-        _STATE.recomputing = False
-        timer, self._timer = getattr(self, "_timer", None), None
-        if timer is not None:
-            manager = context.window_manager
-            manager.event_timer_remove(timer)
-            manager.progress_end()
-            workspace = getattr(context, "workspace", None)
-            if workspace is not None:
-                workspace.status_text_set(None)
-
-    def _finish(self, context: Any, outcome: Any) -> set[str]:
-        """Lo que pasó (RF-008-26): cuántas operaciones se recalcularon, las unidades que no
-        y lo que se dejó fuera, con su motivo; los indicadores, al día sin esperar al tic."""
-        from ...core.provenance.recompute import UnitStatus
-
-        self._steps = None  # terminado: nada que cerrar
-        self._cleanup(context)
-        self.result = outcome
         _inputs_written()
+        self.report({"INFO"}, tr("Operation accepted as good: what depends on it can be "
+                                 "recomputed"))
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_core_resolve_unregistered(bpy.types.Operator):
+    """Register as an input a layer created in the project, or ignore it"""
+
+    bl_idname = RESOLVE_UNREGISTERED
+    bl_label = "Unregistered layer or file…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    kind: EnumProperty(  # type: ignore[valid-type]
+        name="Kind", description="A layer or table of the project, or a file",
+        items=UNREGISTERED_KIND_ITEMS, default="TABLE", options=_HIDDEN,
+    )
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name",
+        description="Name of the layer or table, or path of the file in the project",
+        options=_HIDDEN,
+    )
+    decision: EnumProperty(  # type: ignore[valid-type]
+        name="Decision", description="Register the layer as an input or ignore it",
+        items=UNREGISTERED_DECISION_ITEMS, default="REGISTER", options=_FIELD,
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why it is ignored (optional)", options=_FIELD,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo con el aviso de lo que hay sin registrar y las dos decisiones
+        (registrar, solo una capa o una tabla de ``gpkg_contents``): nada cambia hasta que la
+        persona lo acepta."""
+        from ...core.datasets.orphans import unregistered_tables
+
+        project = SESSION.project
         language = i18n.language()
-        done = sum(len(result.operations) for result in outcome.results
-                   if result.status is UnitStatus.DONE)
-        if outcome.cancelled:
-            self._report({"INFO"}, tr("Recompute cancelled: operations recomputed, {done}; "
-                                      "the rest is still stale", done=done))
-        elif outcome.results:
-            self._report({"INFO"}, tr("Operations recomputed: {done}", done=done))
-        elif not outcome.remaining.skipped:
-            self._report({"INFO"}, tr("Nothing to recompute"))
-        for result in outcome.results:
-            if result.status is not UnitStatus.DONE:
-                self._report({"WARNING"}, result.text(language=language) or "")
-        for skipped in outcome.remaining.skipped:
-            self._report({"WARNING"}, skipped.text(language=language))
-        return {"CANCELLED"} if outcome.cancelled else {"FINISHED"}
+        listed = f"«{self.name}»"
+        registrable = False
+        if self.kind == "TABLE":
+            try:
+                with project.read() as conn:
+                    registrable = any(item.registrable and item.name == self.name
+                                      for item in unregistered_tables(conn))
+            except (GeoblenderError, sqlite3.Error, OSError) as exc:
+                self.report({"ERROR"}, error_text(exc))
+                return {"CANCELLED"}
+            self._notice = messages.render("core.unregistered_tables", language=language,
+                                           tables=listed)
+        else:
+            self._notice = messages.render("core.foreign_files", language=language,
+                                           files=listed)
+        self._can_register = registrable
+        if not self.properties.is_property_set("decision"):
+            self.decision = "REGISTER" if registrable else "IGNORE"
+        return _dialog(self, context, RESOLVE_UNREGISTERED)
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        for line in textwrap.wrap(getattr(self, "_notice", ""), NOTICE_CHARS,
+                                  break_long_words=False, break_on_hyphens=False):
+            layout.label(text=line, translate=False)
+        row = layout.row(align=True)
+        for value, shown, allowed in (
+            ("REGISTER", tr("Register as input"), getattr(self, "_can_register", True)),
+            ("IGNORE", tr("Ignore"), True),
+        ):
+            sub = row.row(align=True)
+            sub.enabled = allowed
+            sub.prop_enum(self, "decision", value, text=shown, translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = SESSION.project
+        language = i18n.language()
+        name = self.name.strip()
+        try:
+            if self.decision == "REGISTER":
+                if self.kind != "TABLE":
+                    self.report({"ERROR"}, tr("«{name}» is a file: only layers and tables are "
+                                              "registered as inputs", name=name))
+                    return {"CANCELLED"}
+                from ...core.provenance.importer import import_layer  # al usarlo
+
+                done = import_layer(project, name).text(language)
+            else:
+                from ...core.datasets.orphans import ignore
+
+                with project.write_transaction() as conn:
+                    ignore(conn, project, self.kind.lower(), name, self.reason.strip() or None)
+                done = tr("«{name}» ignored: it is no longer warned about", name=name)
+        except contract.SettingsNeeded as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, TypeError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        from ..ui import provenance as ui  # al usarlo (ARQ-08)
+
+        try:
+            ui.fill_inputs()
+        except (GeoblenderError, sqlite3.Error, OSError):
+            LOGGER.warning("No se pudo volver a leer el registro de entradas", exc_info=True)
+        _inputs_written()
+        self.report({"INFO"}, done)
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_core_cancel_checks(bpy.types.Operator):
+    """Stop the project checks and the hashes in progress"""
+
+    bl_idname = CANCEL_CHECKS
+    bl_label = "Cancel the checks"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        reason = SESSION.unavailable()
+        if reason is None and not SESSION.running:
+            reason = tr("No project check in progress")
+        if reason is not None:
+            cls.poll_message_set(reason)
+            return False
+        return True
+
+    def execute(self, context: Any) -> set[str]:
+        """Para la comprobación en marcha o prevista (``ProvenanceSession.cancel``: cierra sus
+        pasos, lo que tenía en trabajos de hash se cancela y no se registra nada; la puerta
+        deja de esperarla)."""
+        if not SESSION.running:
+            self.report({"INFO"}, tr("No project check in progress"))
+            return {"CANCELLED"}
+        SESSION.cancel()
+        self.report({"INFO"}, tr("Project checks cancelled: what was not checked is checked "
+                                 "before using it"))
+        return {"FINISHED"}
 
 
 classes: tuple[type, ...] = (
@@ -2150,6 +2583,10 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_discard_input,
     GEOBLENDER_OT_core_edit_input,
     GEOBLENDER_OT_core_recompute_stale,
+    GEOBLENDER_OT_core_resolve_dataset,
+    GEOBLENDER_OT_core_accept_review,
+    GEOBLENDER_OT_core_resolve_unregistered,
+    GEOBLENDER_OT_core_cancel_checks,
 )
 """Los operadores reales de la 008 (los demás siguen provisionales hasta su tarea)."""
 

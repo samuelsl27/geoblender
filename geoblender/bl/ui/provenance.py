@@ -35,9 +35,13 @@ obsoleto, solo el icono. Refrescar sigue provisional hasta la 009.
 por cada resultado obsoleto (como mucho :data:`MAX_STALE_ROWS`; los demás, «… y n más»), su
 nombre, su módulo, la causa («Obsoleto: cambió Producción») y Recalcular
 (``geoblender.core_recompute_stale`` de ese elemento) o, si espera revisión a mano, «revisar» y
-Dar por buena… (``geoblender.core_accept_review``); al final, Recalcular lo obsoleto. Dibuja las
-filas de ``WindowManager.geoblender_provenance.stale`` (D16), que el temporizador regenera con
-los recuentos. Las órdenes cuya clase real aún no ha llegado se dibujan desactivadas.
+Dar por buena… (``geoblender.core_accept_review``); después (T54; RF-008-56, RF-008-57), los
+datos que no se pueden usar (bloqueados por una edición externa, que faltan o dañados), cada uno
+con su aviso y lo que se ofrece para resolverlo (Aceptar la edición, Recalcular, Reimportar:
+``geoblender.core_resolve_dataset``); al final, Recalcular lo obsoleto. Dibuja las filas de
+``WindowManager.geoblender_provenance.stale`` y ``unusable`` (D16), que el temporizador
+regenera con los recuentos. Las órdenes cuya clase real aún no ha llegado se dibujan
+desactivadas.
 
 **Parámetros del proyecto** (:class:`GEOBLENDER_PT_core_parameters`, ventana emergente que
 abre ``geoblender.core_show_parameters``; RF-008-06, RF-008-59; T50): filtros por módulo, tipo
@@ -61,7 +65,9 @@ abreviado (12 caracteres) y si guarda su original; de la seleccionada, Actualiza
 cambiada, también con su copia mantenida, y se encuentra su fuente) y Mantener la copia (si
 está cambiada), Descartar… y Editar…, que abren sus diálogos (T52); y Comprobar cambios en las
 entradas
-(``geoblender.core_check_inputs``); en solo lectura, desactivadas y con el motivo.
+(``geoblender.core_check_inputs``); debajo (T54; RF-008-62), las capas y tablas del proyecto
+sin registrar, creadas desde QGIS, con Registrar como entrada… e Ignorar…
+(``geoblender.core_resolve_unregistered``); en solo lectura, desactivadas y con el motivo.
 :func:`fill_inputs` lee las filas (``core.inputs.list_inputs``) con el estado registrado; el
 que no se guarda (plan D7) lo dice la sesión al dibujar (:func:`input_status`):
 «comprobando» mientras una comprobación tiene pendiente la entrada y «no localizable» si la
@@ -128,6 +134,8 @@ SHOW_INPUTS = "geoblender.core_show_inputs"
 CANCEL_CHECKS = "geoblender.core_cancel_checks"
 RECOMPUTE = "geoblender.core_recompute_stale"
 ACCEPT_REVIEW = "geoblender.core_accept_review"
+RESOLVE_DATASET = "geoblender.core_resolve_dataset"
+RESOLVE_UNREGISTERED = "geoblender.core_resolve_unregistered"
 STALE_ICON = "gb_state_stale"
 STALE_FALLBACK = "COLLECTION_COLOR_01"
 CANCEL_ICON = "X"
@@ -227,12 +235,14 @@ def refresh(*, force: bool = False) -> bool:
 
     try:
         report = stale.stale_items(project, language=shown)
+        blocked = _unusable(project)
     except (GeoblenderError, sqlite3.Error, OSError):
         LOGGER.debug("No se pudo leer lo obsoleto del proyecto; se intenta después",
                      exc_info=True)
         return changed
     _STATE.signature = signature
     _fill_rows(report.items)
+    _fill_unusable(blocked, shown)
     _refill_inputs()
     if report.counts != _STATE.counts:
         _STATE.counts = report.counts
@@ -248,6 +258,7 @@ def _forget() -> bool:
     _STATE.counts = None
     _STATE.signature = None
     _fill_rows(())
+    _fill_unusable((), "")
     return had
 
 
@@ -277,6 +288,36 @@ def _fill_rows(items: Sequence[StaleItem]) -> None:
         row.text = item.text
         row.since = item.since
     view.stale_index = 0
+
+
+def _unusable(project: Project) -> tuple[Any, ...]:
+    """Los datos que no se pueden usar hasta resolverlos (``core.datasets.external.unusable``;
+    T54), leídos del proyecto."""
+    from ...core.datasets.external import unusable  # al usarlo: registrar no lo carga
+
+    with project.read() as conn:
+        return unusable(conn)
+
+
+def _fill_unusable(items: Sequence[Any], shown: str) -> None:
+    """Regenera las filas de lo que no se puede usar (RF-008-56, RF-008-57): cada dato con su
+    estado, lo que se ofrece para resolverlo y su aviso en el idioma ``shown``."""
+    view = _view()
+    if view is None:
+        return
+    rows = view.unusable
+    if not items and not len(rows):
+        return
+    rows.clear()
+    for item in items:
+        record = item.record
+        row = rows.add()
+        row.uid = record.uid
+        row.name = record.name
+        row.module = record.module
+        row.status = str(record.status)
+        row.offers = ",".join(str(offer) for offer in item.offers)
+        row.text = item.text(shown)
 
 
 def indicator_tick() -> float | None:
@@ -516,8 +557,30 @@ def _draw_stale_row(layout: Any, row: Any) -> None:
     cause.label(text=row.text, translate=False)
 
 
+def _draw_unusable_row(layout: Any, row: Any, writable: bool) -> None:
+    """Un dato que no se puede usar (T54; RF-008-56, RF-008-57): su nombre (en alerta), su
+    módulo y lo que se ofrece para resolverlo (Aceptar la edición, Recalcular, Reimportar: la
+    orden ``geoblender.core_resolve_dataset`` con esa decisión, que abre su diálogo), y debajo
+    su aviso."""
+    from ...core.datasets.external import offer_label  # al usarlo: registrar no lo carga
+
+    line = layout.row(align=True)
+    name = line.row(align=True)
+    name.alert = True
+    name.label(text=row.name, translate=False)
+    line.label(text=row.module, translate=False)
+    shown = language()
+    for offer in filter(None, row.offers.split(",")):
+        _operator(line, RESOLVE_DATASET, offer_label(offer, shown), enabled=writable,
+                  dataset_uid=row.uid, decision=offer.upper())
+    note = layout.row()
+    note.active = False
+    note.label(text=row.text, translate=False)
+
+
 def draw_stale(layout: Any, context: Any) -> None:
-    """El contenido de :class:`GEOBLENDER_PT_core_stale` (RF-008-28)."""
+    """El contenido de :class:`GEOBLENDER_PT_core_stale` (RF-008-28; y, T54, lo que no se
+    puede usar, RF-008-56 y RF-008-57)."""
     reason = _session().unavailable()
     if reason is not None:
         layout.label(text=reason, icon="INFO", translate=False)
@@ -536,6 +599,14 @@ def draw_stale(layout: Any, context: Any) -> None:
         hidden = total - len(rows)
         if hidden > 0:
             column.label(text=tr("… and {count} more", count=hidden), translate=False)
+    blocked = view.unusable if view is not None else ()
+    if len(blocked):
+        layout.separator(type="LINE")
+        layout.label(text=tr("Datasets that cannot be used"), translate=False)
+        column = layout.column()
+        writable = _write_unavailable() is None
+        for row in blocked:
+            _draw_unusable_row(column, row, writable)
     layout.separator(type="LINE")
     draw_command(layout, RECOMPUTE, context=context)
 
@@ -892,9 +963,14 @@ def fill_inputs() -> int:
         return 0
     project = _project()
     found: list[Any] = []
+    tables: tuple[Any, ...] = ()
     if project is not None:
+        from ...core.datasets.orphans import unregistered_tables  # al usarlo
+
         with project.read() as conn:
             found = list_inputs(conn)
+            tables = unregistered_tables(conn)
+    _fill_unregistered(view, tables)
     rows = view.inputs
     index = view.input_index
     chosen = rows[index].uid if 0 <= index < len(rows) else None
@@ -918,6 +994,17 @@ def fill_inputs() -> int:
     return len(found)
 
 
+def _fill_unregistered(view: Any, tables: Sequence[Any]) -> None:
+    """Regenera las capas y tablas del proyecto sin registrar (RF-008-62; T54)."""
+    rows = view.unregistered
+    rows.clear()
+    for item in tables:
+        row = rows.add()
+        row.kind = str(item.kind)
+        row.name = item.name
+        row.registrable = item.registrable
+
+
 def _refill_inputs() -> None:
     """Con el registro de entradas abierto (con filas), las vuelve a leer: el proyecto cambió
     (una comprobación, una decisión) o el idioma. Si no se puede leer, queda en el registro
@@ -938,6 +1025,8 @@ def _clear_inputs() -> None:
     if view is not None and len(view.inputs):
         view.inputs.clear()
         view.input_index = 0
+    if view is not None and len(view.unregistered):
+        view.unregistered.clear()
 
 
 def input_status(row: Any) -> str:
@@ -1066,8 +1155,29 @@ def draw_inputs(layout: Any, context: Any) -> None:
     layout.separator(type="LINE")
     _operator(layout, CHECK_INPUTS, text(catalog().commands[CHECK_INPUTS].label),
               enabled=blocked is None)
+    _draw_unregistered(layout, view, blocked is None)
     if blocked is not None:
         layout.label(text=blocked, icon="LOCKED", translate=False)
+
+
+def _draw_unregistered(layout: Any, view: Any, writable: bool) -> None:
+    """Las capas y tablas del proyecto sin registrar, creadas desde QGIS (T54; RF-008-62): cada
+    una con Registrar como entrada… (si es una capa o una tabla de ``gpkg_contents``) e
+    Ignorar…, que abren el diálogo de ``geoblender.core_resolve_unregistered``."""
+    rows = view.unregistered
+    if not len(rows):
+        return
+    layout.separator(type="LINE")
+    layout.label(text=tr("Layers and tables of the project not registered"), translate=False)
+    for row in rows:
+        line = layout.row(align=True)
+        line.label(text=row.name, translate=False)
+        kind = row.kind.upper()
+        _operator(line, RESOLVE_UNREGISTERED, tr("Register as input…"),
+                  enabled=writable and row.registrable, kind=kind, name=row.name,
+                  decision="REGISTER")
+        _operator(line, RESOLVE_UNREGISTERED, tr("Ignore…"), enabled=writable, kind=kind,
+                  name=row.name, decision="IGNORE")
 
 
 class GEOBLENDER_UL_core_inputs(bpy.types.UIList):

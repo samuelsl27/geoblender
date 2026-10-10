@@ -206,7 +206,7 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertEqual(self.both_modes(), ["Comprobando el proyecto… 0 %"])
         cancel = [item for item in self.bar().items if item.target == CANCEL_CHECKS]
         self.assertEqual(len(cancel), 1)
-        self.assertFalse(cancel[0].enabled)  # su orden real llega con T54
+        self.assertTrue(cancel[0].enabled)  # su orden real (T54)
         self.run_checks()
         self.assertEqual(self.both_modes(), [])  # aún sin leer los recuentos
 

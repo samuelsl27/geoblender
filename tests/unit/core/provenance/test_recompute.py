@@ -810,6 +810,53 @@ class RunTest(RunCase):
                           (Use(INPUT_3, "delivery", kind=ItemKind.INPUT),)])
         self.assertEqual(self.units(outcome.remaining), [(n.uid,), (k.uid,)])
 
+    def test_blocked_or_missing_dataset_is_recomputed_with_its_writer(self) -> None:
+        """RF-008-56, RF-008-57, RF-008-25 (plan §5.4.9; T54): un dato bloqueado por una
+        edición externa o que falta no lo recalcula «Recalcular lo obsoleto» (quien lo escribió
+        no está obsoleto); pedirlo para ese dato repite la última operación de Geoblender que
+        lo escribió (las de su ejecución de grupo, juntas y en su orden) como operaciones nuevas
+        que la sustituyen, y el dato vuelve a vigente. Lo que no se ofrece recalcular (un dato
+        vigente, uno que escribió una operación que no se repite) se rechaza al pedirlo, sin
+        escribir nada."""
+        a = self.run_op("res.redo_a", {"res_a": [1.0, 2.0]})
+        second = self.run_op("res.duo_second", {"res_d2": [5.0]})
+        first = self.run_op("res.duo_first", {"res_d1": [6.0]}, reads=["res_a"],
+                            group_uid=second.group_uid)
+        self.run_op("res.edit", {"res_e": [7.0]})
+        for name, status in (("res_a", "blocked"), ("res_d2", "missing"), ("res_e", "blocked")):
+            self.set_status(name, status)
+        self.assertNotIn(a.uid, self.plan().operations)
+
+        for name, old in (("res_a", (a.uid,)), ("res_d2", (first.uid, second.uid))):
+            with self.subTest(dato=name):
+                progress = list(recompute.recompute_dataset_steps(self.project, name))
+                outcome = progress[-1].result
+                self.assertIsInstance(outcome, recompute.RecomputeOutcome)
+                self.assertEqual([(step.phase, step.done, step.total) for step in progress],
+                                 [("recompute", 0, 1), ("recompute", 1, 1)])
+                self.assertEqual(self.results(outcome), [(old, DONE)])
+                self.assertFalse(outcome.cancelled)
+                for previous, new in self.replaced(outcome).items():
+                    self.assertEqual(self.row(previous)["superseded_by"], new)
+                self.assertEqual(self.column("SELECT status FROM gb_dataset WHERE name = ?",
+                                             name), ["current"])
+        (pair,) = {self.row(uid)["group_uid"] for uid in self.replaced(outcome).values()}
+        self.assertNotEqual(pair, second.group_uid)  # otra ejecución del grupo
+
+        self.set_status("res_a", "blocked")
+        before = self.snapshot()
+        progress = list(recompute.recompute_dataset_steps(self.project, "res_a",
+                                                          cancelled=lambda: True))
+        self.assertEqual((progress[-1].result.results, progress[-1].result.cancelled), ((), True))
+        self.assertEqual(self.snapshot(), before)  # cancelado antes de empezar: nada
+        self.set_status("res_a", "current")
+        for name, error, code in (("res_a", ProvenanceError, "core.recompute_dataset_not_offered"),
+                                  ("res_e", ProvenanceError, "core.recompute_dataset_not_offered"),
+                                  ("res_nada", Exception, "core.dataset_unknown")):
+            with self.subTest(rechazo=name):
+                self.assertRejected(error, code, lambda name=name: list(
+                    recompute.recompute_dataset_steps(self.project, name)))
+
 
 class AcceptReviewTest(RunCase):
     def test_accept_review_lifts_the_wait_downstream(self) -> None:
@@ -890,6 +937,12 @@ class AcceptReviewTest(RunCase):
         self.change("res.production", 90000.0)
         self.assertEqual(self.reasons(self.plan()), {e.uid: (SkipReason.REVIEW, ()),
                                                      b.uid: (SkipReason.WAITS, (e.uid,))})
+        with self.project.read() as conn:  # T54: lo que dice «Dar por buena…»
+            item = stale_mod.review_item(conn, e.uid)
+            self.assertIsNone(stale_mod.review_item(conn, b.uid))
+        self.assertEqual((item.item_kind, item.uid, item.op_type, item.module, item.review,
+                          item.text), ("operation", e.uid, "res.edit", "res", True,
+                                       "Obsoleto: cambió Producción"))
         for wrong, code in ((b.uid, "core.accept_review_not_review"),
                             (a.uid, "core.accept_review_not_review"),
                             ("00000000-0000-4000-8000-0000000003ff", "core.operation_unknown")):

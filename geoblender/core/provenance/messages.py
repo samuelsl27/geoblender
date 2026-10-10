@@ -574,6 +574,22 @@ _CATALOG: tuple[Message, ...] = (
         "Operation «{op_type}» could not be recomputed: {reason}",
         "No se pudo recalcular la operación «{op_type}»: {reason}",
     ),
+    # Recalcular o reimportar un dato bloqueado, que falta o dañado (T54; RF-008-56,
+    # RF-008-57): lo que no se ofrece.
+    Message(
+        "core.recompute_dataset_not_offered",
+        "Dataset «{name}» cannot be recomputed: only a blocked or missing dataset written by "
+        "an operation of Geoblender that can be repeated is.",
+        "El dato «{name}» no se puede recalcular: solo se recalcula un dato bloqueado o que "
+        "falta que escribió una operación de Geoblender que se puede repetir.",
+    ),
+    Message(
+        "core.reimport_dataset_not_offered",
+        "Dataset «{name}» cannot be reimported: it is not what was imported from an input nor "
+        "was it written by an import.",
+        "El dato «{name}» no se puede reimportar: no es lo importado de una entrada ni lo "
+        "escribió una importación.",
+    ),
     # «Dar por buena» una operación que espera revisión a mano (T29; RF-008-27, D-12).
     Message(
         "core.accept_review_reason_missing",

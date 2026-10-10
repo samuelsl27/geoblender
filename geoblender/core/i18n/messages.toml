@@ -1801,3 +1801,121 @@ es = "Operaciones recalculadas: {done}"
 
 ["Nothing to recompute"]
 es = "No hay nada que recalcular"
+
+# Lo que no se puede usar, dar por buena, capas sin registrar y cancelar las comprobaciones
+# (RF-008-56, RF-008-57, RF-008-27, RF-008-62, RF-008-58; T54): sus diálogos, sus
+# propiedades, lo que dicen y lo que se dibuja en los paneles
+
+["Datasets that cannot be used"]
+es = "Datos que no se pueden usar"
+
+["Layers and tables of the project not registered"]
+es = "Capas y tablas del proyecto sin registrar"
+
+["Register as input…"]
+es = "Registrar como entrada…"
+
+["Ignore…"]
+es = "Ignorar…"
+
+["Dataset"]
+es = "Dato"
+
+["Uid or name of the dataset"]
+es = "Uid o nombre del dato"
+
+["Accept the edit, recompute or reimport the dataset"]
+es = "Aceptar la edición, recalcular o reimportar el dato"
+
+["Why the edit is accepted or the dataset reimported (required)"]
+es = "Por qué se acepta la edición o se reimporta el dato (obligatorio)"
+
+["Accept the edit"]
+es = "Aceptar la edición"
+
+["Accept the external edit with a reason: the dataset can be used again"]
+es = "Acepta la edición externa con un motivo: el dato se puede usar otra vez"
+
+["Repeat the operation of Geoblender that wrote the dataset"]
+es = "Repite la operación de Geoblender que escribió el dato"
+
+["Reimport"]
+es = "Reimportar"
+
+["Reimport its input from the source as a new input that replaces it"]
+es = "Reimporta su entrada desde la fuente como una entrada nueva que la sustituye"
+
+["Dataset «{name}» can be used: there is nothing to resolve"]
+es = "El dato «{name}» se puede usar: no hay nada que resolver"
+
+["Recomputing «{name}»… Esc: cancel"]
+es = "Recalculando «{name}»… Esc: cancelar"
+
+["Choose whether to accept the edit, recompute or reimport the dataset: nothing changed"]
+es = "Elija si aceptar la edición, recalcular o reimportar el dato: no cambia nada"
+
+["Uid of the operation that awaits review by hand"]
+es = "Uid de la operación que espera revisión a mano"
+
+["Why the operation is accepted as good (required)"]
+es = "Por qué se da por buena la operación (obligatorio)"
+
+["Operation «{name}» does not await review by hand: there is nothing to accept as good"]
+es = "La operación «{name}» no espera revisión a mano: no hay nada que dar por bueno"
+
+["Operation «{name}» ({op_type}) awaits review by hand: {cause}"]
+es = "La operación «{name}» ({op_type}) espera revisión a mano: {cause}"
+
+["Operation accepted as good: what depends on it can be recomputed"]
+es = "Operación dada por buena: lo que depende de ella se puede recalcular"
+
+["Kind"]
+es = "Clase"
+
+["A layer or table of the project, or a file"]
+es = "Una capa o tabla del proyecto, o un fichero"
+
+["Layer or table"]
+es = "Capa o tabla"
+
+["A layer or table of the project database"]
+es = "Una capa o tabla de la base del proyecto"
+
+["File"]
+es = "Fichero"
+
+["A file of the project data folders"]
+es = "Un fichero de las carpetas de datos del proyecto"
+
+["Name of the layer or table, or path of the file in the project"]
+es = "Nombre de la capa o la tabla, o ruta del fichero en el proyecto"
+
+["Register the layer as an input or ignore it"]
+es = "Registrar la capa como entrada o ignorarla"
+
+["Register as input"]
+es = "Registrar como entrada"
+
+["Register the layer as a new input of the project"]
+es = "Registra la capa como una entrada nueva del proyecto"
+
+["Ignore"]
+es = "Ignorar"
+
+["Stop warning about it: nothing of it is moved or changed"]
+es = "Deja de avisar de ello: nada de ello se mueve ni cambia"
+
+["Why it is ignored (optional)"]
+es = "Por qué se ignora (opcional)"
+
+["«{name}» is a file: only layers and tables are registered as inputs"]
+es = "«{name}» es un fichero: solo se registran como entrada las capas y las tablas"
+
+["«{name}» ignored: it is no longer warned about"]
+es = "«{name}» ignorado: ya no se avisa"
+
+["No project check in progress"]
+es = "No hay ninguna comprobación del proyecto en marcha"
+
+["Project checks cancelled: what was not checked is checked before using it"]
+es = "Comprobaciones del proyecto canceladas: lo que no se comprobó se comprueba antes de usarlo"

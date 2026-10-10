@@ -24,6 +24,11 @@ seleccionado lee su historial y el aviso de divergencia de su última cifra calc
 Spec 008, T52: :class:`GEOBLENDER_PG_core_import_setting` es un ajuste de la importación que el
 importador vuelve a pedir al actualizar una entrada (la colección ``settings`` de
 ``geoblender.core_resolve_input``), también un texto.
+
+Spec 008, T54: ``unusable``, los datos bloqueados, que faltan o dañados con lo que se ofrece para
+resolverlos (los regenera el temporizador de los indicadores con lo obsoleto), y
+``unregistered``, las capas y tablas del proyecto sin registrar (las regenera el registro de
+entradas).
 """
 
 from __future__ import annotations
@@ -154,6 +159,28 @@ class GEOBLENDER_PG_core_stale_row(bpy.types.PropertyGroup):
     since: _text()  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_core_unusable_row(bpy.types.PropertyGroup):
+    """Un dato que no se puede usar hasta resolverlo: bloqueado por una edición externa, que
+    falta o dañado (RF-008-56, RF-008-57; ``core.datasets.external.Unusable``), con lo que se
+    ofrece para resolverlo y su aviso."""
+
+    uid: _text()  # type: ignore[valid-type]
+    name: _text()  # type: ignore[valid-type]
+    module: _text()  # type: ignore[valid-type]
+    status: _text()  # type: ignore[valid-type]  # DatasetStatus
+    offers: _text()  # type: ignore[valid-type]  # valores de Offer separados por «,»
+    text: _text()  # type: ignore[valid-type]  # su aviso
+
+
+class GEOBLENDER_PG_core_unregistered_row(bpy.types.PropertyGroup):
+    """Una capa o tabla del proyecto sin registrar, creada desde QGIS (RF-008-62;
+    ``core.datasets.Foreign``), y si se puede registrar como entrada."""
+
+    kind: _text()  # type: ignore[valid-type]  # ForeignKind
+    name: _text()  # type: ignore[valid-type]
+    registrable: _flag()  # type: ignore[valid-type]
+
+
 class GEOBLENDER_PG_core_lineage_row(bpy.types.PropertyGroup):
     """Una fila sangrada de la procedencia (RF-008-29; ``core.provenance.lineage.LineageRow``),
     con sus marcas (RF-008-31) y si su nudo está desplegado."""
@@ -215,6 +242,14 @@ class GEOBLENDER_PG_core_provenance(bpy.types.PropertyGroup):
         type=GEOBLENDER_PG_core_stale_row, options=_STATIC
     )
     stale_index: _index()  # type: ignore[valid-type]
+    # Spec 008, T54: lo que no se puede usar (panel de lo obsoleto) y las capas sin registrar
+    # (registro de entradas).
+    unusable: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_unusable_row, options=_STATIC
+    )
+    unregistered: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_unregistered_row, options=_STATIC
+    )
     lineage: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_lineage_row, options=_STATIC
     )
@@ -228,6 +263,8 @@ classes: tuple[type, ...] = (
     GEOBLENDER_PG_core_parameter_history_row,
     GEOBLENDER_PG_core_input_row,
     GEOBLENDER_PG_core_stale_row,
+    GEOBLENDER_PG_core_unusable_row,
+    GEOBLENDER_PG_core_unregistered_row,
     GEOBLENDER_PG_core_lineage_row,
     GEOBLENDER_PG_core_provenance,
     GEOBLENDER_PG_core_import_setting,  # el de los ajustes de geoblender.core_resolve_input

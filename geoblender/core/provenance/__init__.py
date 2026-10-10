@@ -175,6 +175,7 @@ RECOMPUTE_API: tuple[str, ...] = (
     "UnitStatus",
     "accept_review",
     "plan_recompute",
+    "recompute_dataset_steps",
     "recompute_steps",
 )
 """Lo de :mod:`.recompute` que se reexporta al usarlo."""
@@ -421,6 +422,7 @@ __all__ = [
     "parameter_divergence",
     "parse_version",
     "plan_recompute",
+    "recompute_dataset_steps",
     "recompute_steps",
     "record_figure",
     "refresh_all",
