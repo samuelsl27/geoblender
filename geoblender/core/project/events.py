@@ -29,7 +29,8 @@ LOGGER = logging.getLogger("geoblender.core.project")
 
 
 class EventKind(Enum):
-    """Tipos de evento de la spec 002 (``gb_event.kind``)."""
+    """Tipos de evento (``gb_event.kind``): los de la spec 002 y los de la procedencia de la
+    008 (plan 008 §5.2.3), que se añaden con la tarea que los registra."""
 
     CREATE = "create"
     OPEN = "open"
@@ -45,6 +46,56 @@ class EventKind(Enum):
     MOVE_ORIGIN = "move_origin"
     CHECKOUT = "checkout"
     PUBLISH = "publish"
+    # Spec 008: una operación «en curso» de una sesión que perdió el cerrojo (RF-008-19) y una
+    # cuyo trabajo se borró sin incorporarlo (RF-008-23).
+    OPERATION_INTERRUPTED = "operation_interrupted"
+    OPERATION_NOT_INGESTED = "operation_not_ingested"
+    # Una entrada registrada con su importación (RF-008-07) y una fuente que ya lo estaba, con
+    # el mismo contenido y los mismos ajustes, reutilizada (RF-008-54).
+    INPUT_REGISTERED = "input_registered"
+    INPUT_REUSED = "input_reused"
+    # Una entrada sustituida por la que la actualiza (RF-008-11), cambiada con la copia
+    # mantenida (RF-008-12), descartada (RF-008-55) y con su nombre o su entrega editados
+    # (D-11; ``input_edited`` no está en la lista del plan §5.2.3: deja quién y cuándo).
+    INPUT_UPDATED = "input_updated"
+    INPUT_KEPT = "input_kept"
+    INPUT_DISCARDED = "input_discarded"
+    INPUT_EDITED = "input_edited"
+    # Una entrada cuya fuente ya no tiene el contenido registrado (o el visto), «cambiada»
+    # (RF-008-10), y una cambiada o mantenida cuya fuente vuelve al registrado, otra vez vigente.
+    INPUT_CHANGED = "input_changed"
+    INPUT_RESTORED = "input_restored"
+    # El original de una entrada tabular o documental que pasa del límite y no se guarda
+    # (RF-008-53; D-18).
+    ORIGINAL_NOT_STORED = "original_not_stored"
+    # Una operación que esperaba revisión a mano, dada por buena con su motivo
+    # (``core.accept_review``; RF-008-27, D-12).
+    REVIEW_ACCEPTED = "review_accepted"
+    # Un dato del proyecto editado fuera de Geoblender (``core.external_edit``; RF-008-21,
+    # RF-008-56), uno que falta (RF-008-57) y lo importado que cambió o perdió su protección
+    # (ADR-0025 §4).
+    EXTERNAL_EDIT = "external_edit"
+    DATASET_MISSING = "dataset_missing"
+    DATASET_DAMAGED = "dataset_damaged"
+    # Una edición externa aceptada con su motivo (RF-008-56), un dato que faltaba y vuelve con
+    # su contenido registrado (RF-008-57) y un original de ``originals/`` con otra huella o que
+    # falta (RF-008-53; plan §5.4.9, I-13).
+    EDIT_ACCEPTED = "edit_accepted"
+    DATASET_RESTORED = "dataset_restored"
+    ORIGINAL_ALTERED = "original_altered"
+    # Restos de operaciones interrumpidas apartados a ``orphans/`` al abrir el proyecto
+    # (RF-008-22; D-19 de la spec; plan §5.2.2).
+    ORPHANS_MOVED = "orphans_moved"
+    # Ficheros ajenos y capas sin registrar encontrados en el proyecto (cuando hay algo nuevo)
+    # y uno de ellos ignorado por el usuario (RF-008-62; plan §5.4.9).
+    UNREGISTERED_FOUND = "unregistered_found"
+    ITEM_IGNORED = "item_ignored"
+    # Lo que la comprobación de apertura encuentra en lo que declara el Geoblender que abre el
+    # proyecto: la definición de un parámetro cambiada, que ya no se declara o que se vuelve a
+    # declarar (RF-008-60), y un algoritmo con una versión mayor que la de sus operaciones
+    # vigentes (RF-008-24).
+    DEFINITION_CHANGED = "definition_changed"
+    ALGORITHM_CHANGED = "algorithm_changed"
 
 
 @dataclass(frozen=True)

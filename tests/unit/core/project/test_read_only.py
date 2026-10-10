@@ -116,22 +116,23 @@ class ReadOnlyGuaranteeTest(unittest.TestCase):
         with project_tmp() as tmp:
             env = Env(tmp)
             env.created.project.close()
+            newer = schema.SCHEMA_VERSION + 1
             with gpkg.GpkgConnection.open_write(env.root / "project.gpkg") as db:
                 with db.transaction() as conn:
-                    conn.execute("UPDATE gb_project SET schema_version = 2")
+                    conn.execute("UPDATE gb_project SET schema_version = ?", (newer,))
             path = env.root / "manifest.json"
             data = json.loads(path.read_text(encoding="utf-8"))
-            data["schema_version"] = 2
+            data["schema_version"] = newer
             path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             self._assert_untouched(env, SESSION_B, model.ReadOnlyCode.SCHEMA_NEWER)
 
     def test_not_migrated(self) -> None:
         """RF-002-13, RF-002-20: esquema anterior sin migrar (simulado: esta versión
-        soportaría el 2): nada cambia."""
+        soportaría el siguiente): nada cambia."""
         with project_tmp() as tmp:
             env = Env(tmp)
             env.created.project.close()
-            with mock.patch.object(open_mod, "SCHEMA_VERSION", 2):
+            with mock.patch.object(open_mod, "SCHEMA_VERSION", schema.SCHEMA_VERSION + 1):
                 self._assert_untouched(env, SESSION_B, model.ReadOnlyCode.NOT_MIGRATED)
 
     def test_wal_busy(self) -> None:

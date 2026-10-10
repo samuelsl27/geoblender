@@ -9,9 +9,14 @@ acepta, se migra con :func:`migrate_steps` antes de abrirlo en escritura. Reglas
 
 - Cada migración (:class:`Migration`) lleva de un esquema N al N+1 y es idempotente; las
   forman una cadena sin huecos (:func:`plan_migrations`) que se comprueba **antes** de
-  tocar nada. :data:`REGISTRY` está vacío en el esquema 1; cada migración futura será un
-  módulo ``m<NNNN>.py`` de este paquete que se añade al registro y, si toca otros
-  almacenes además del GeoPackage, declara cómo se recupera.
+  tocar nada. Cada una es un módulo ``m<NNNN>.py`` de este paquete (con el tipo de
+  ``base``, para no importar el paquete) que se añade a :data:`REGISTRY` (la 1 → 2,
+  ``m0002``, de la spec 008) y, si toca otros almacenes además del GeoPackage, declara
+  cómo se recupera.
+- No se migra un proyecto que está en una carpeta de solo lectura (las que declaran la
+  variable de IMGA y la preferencia, ``read_only``: los expedientes de clientes; spec 008,
+  RF-008-15, S-3): la copia previa se haría allí. Se rechaza antes de mirar nada más, sin
+  tomar el cerrojo; el proyecto se abre en solo lectura.
 - Solo migra la sesión que tiene el cerrojo (libre, huérfano o suyo; si lo tiene otra,
   :class:`~..errors.LockError` sin tocar nada). Si otro programa dejó la base en WAL, se
   devuelve antes al diario clásico (si la tiene abierta, no se copia ni migra nada).
@@ -37,7 +42,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,7 +50,7 @@ from ...errors import DatabaseError, GeoblenderError, ProjectError
 from ...gpkg.connection import BUSY_TIMEOUT_MS, GpkgConnection
 from ...gpkg.header import read_header
 from ...gpkg.wal import WalOutcome, to_classic_journal
-from ...paths import DriveType
+from ...paths import DriveType, ReadOnlyDirs
 from ...sysinfo import SessionInfo, pid_alive
 from ...timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ...userdata import UserData
@@ -54,9 +59,11 @@ from ..copytree import DiskUsageFn, copy_steps, remove_tree
 from ..events import EventKind, log_event, record_event
 from ..lock import LockMode, LockState, PidAlive
 from ..manifest import PROJECT_STORE, Manifest, manifest_from_record, write_manifest
-from ..model import Progress
+from ..model import Progress, read_only_folder, read_only_phrase
 from ..open import WAL_WARNING, inspect_project
 from ..schema import SCHEMA_VERSION, read_project
+from .base import Migration
+from .m0002 import MIGRATION as _MIGRATION_0002
 
 BACKUP_MARK = ".respaldo-esquema-"
 BACKUP_EXCLUDE: tuple[str, ...] = ("cache", ".lock")
@@ -65,30 +72,9 @@ _CHAIN = "Migraciones del esquema del proyecto"
 
 _Event = tuple[EventKind, str, dict[str, object]]
 
-
-@dataclass(frozen=True)
-class Migration:
-    """Una migración del esquema ``from_version`` al ``from_version + 1``.
-
-    ``apply`` hace los cambios en la base dentro de la transacción de la migración (sin
-    confirmar ni deshacer: lo hace quien la llama); debe ser idempotente.
-    ``min_reader_schema``: el esquema mínimo que hay que saber leer después de aplicarla
-    (``None``: no cambia).
-    """
-
-    from_version: int
-    to_version: int
-    description: str
-    apply: Callable[[sqlite3.Connection], None]
-    min_reader_schema: int | None = None
-
-    @property
-    def step(self) -> str:
-        """``«N → N+1»``, para los mensajes."""
-        return f"{self.from_version} → {self.to_version}"
-
-
-REGISTRY: tuple[Migration, ...] = ()  # el esquema 1 no tiene migraciones
+REGISTRY: tuple[Migration, ...] = (_MIGRATION_0002,)
+"""Las migraciones de esta versión, una por esquema: 1 → 2, la procedencia (``m0002``,
+spec 008)."""
 
 
 @dataclass(frozen=True)
@@ -322,18 +308,33 @@ def migrate_steps(
     network: bool | None = None,
     drive_type: DriveType | None = None,
     disk_usage: DiskUsageFn = shutil.disk_usage,
+    read_only: ReadOnlyDirs | None = None,
 ) -> Iterator[Progress]:
     """Migra el proyecto de ``path`` al esquema ``target`` (por defecto, el de esta
     versión) por pasos (:data:`PHASES`); el último lleva el :class:`MigrationResult`.
 
     Lo llama quien ha aceptado migrar (RF-002-20). Cerrar el generador antes de la fase
-    «migración» cancela sin cambiar nada. :class:`ProjectError` (o :class:`LockError`) con
-    el motivo si no se puede migrar o si falla (RF-002-21).
+    «migración» cancela sin cambiar nada. ``read_only``: las carpetas de solo lectura (spec
+    008, S-3; ``None``, ninguna). :class:`ProjectError` (o :class:`LockError`) con el motivo
+    si no se puede migrar (también si está en una carpeta de solo lectura, RF-008-15) o si
+    falla (RF-002-21).
     """
     root = Path(path)
     goal = SCHEMA_VERSION if target is None else int(target)
     total = len(PHASES)
     yield Progress(PHASES[0], 0, total, "Comprobando el proyecto y sus migraciones…")
+    folder = read_only_folder(read_only, root)
+    if folder is not None:
+        name = root.name[: -len(".gbproj")] if root.name.endswith(".gbproj") else root.name
+        raise ProjectError(
+            "core.migration_read_only_folder",
+            f"está dentro de {read_only_phrase(folder)}: no se migra (la copia previa se haría "
+            "allí) y se abre en solo lectura; para migrarlo, cópielo a otra carpeta",
+            obj=f"Proyecto «{name}»",
+            field="carpeta",
+            value=str(root),
+            context={"read_only_folder": str(folder)},
+        )
     inspection = inspect_project(
         root, session, userdata, clock=clock, pid_alive=pid_alive,
         stale_minutes=stale_minutes, network=network, drive_type=drive_type,

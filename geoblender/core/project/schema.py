@@ -1,10 +1,24 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Esquema 1 del GeoPackage del proyecto: tablas internas y sus disparadores (spec 002;
-RF-002-05, RF-002-14, RF-002-15; ADR-0006; formato-proyecto §3.2 y §3.10; plan 002 §5.2).
+"""Esquema del GeoPackage del proyecto: tablas internas y sus disparadores (spec 002;
+RF-002-05, RF-002-14, RF-002-15, RF-002-20, RF-002-22; ADR-0006; formato-proyecto §3.2 y
+§3.10; plan 002 §5.2; spec 008, plan §5.2).
+
+- **Esquema 1** (spec 002): ``gb_project``, ``gb_event`` y ``gb_schema_migration``.
+- **Esquema 2** (spec 008): el 1 sin cambios más las tablas de la procedencia
+  (``core.provenance.schema``: parámetros, entradas, datos, operaciones, cifras, la caché de
+  obsolescencia y lo ignorado). ``min_reader_schema`` sigue en 1: como las tablas del 1 no
+  cambian, un Geoblender de la 002 abre un proyecto del 2 en solo lectura con el aviso de
+  «versión más moderna» (RF-002-22). Un proyecto nuevo se crea directamente en el 2; uno del
+  1 se migra (``core.project.migrations``).
+
+:func:`missing_objects` echa en falta lo de un esquema concreto: al abrir, lo del 1 para leer
+``gb_project`` y después lo del esquema del proyecto (de uno posterior, lo que conoce esta
+versión).
 
 Tablas internas, declaradas en ``gpkg_extensions`` (``imga_geoblender``, ``write-only``) y
 fuera de ``gpkg_contents``: QGIS 4.2 las lista igualmente (spec 002, D-5), así que las
-protegen disparadores:
+protegen disparadores (los de las tablas del 1, aquí; los de la procedencia, en
+``core.provenance.schema``):
 
 - escritura solo desde una conexión de Geoblender: ``WHEN gb_writer() IS NOT 1``; en una
   conexión ajena (QGIS, GDAL) la función no existe y la sentencia ni se prepara;
@@ -34,11 +48,14 @@ from __future__ import annotations
 import sqlite3
 
 from ..gpkg.base import register_internal_table
+from ..provenance import schema as provenance_schema
 from .model import ProjectRecord
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MIN_READER_SCHEMA = 1
-INTERNAL_TABLES: tuple[str, ...] = ("gb_project", "gb_event", "gb_schema_migration")
+SCHEMA_1_TABLES: tuple[str, ...] = ("gb_project", "gb_event", "gb_schema_migration")
+INTERNAL_TABLES: tuple[str, ...] = SCHEMA_1_TABLES + provenance_schema.INTERNAL_TABLES
+"""Las tablas internas del esquema de esta versión: las del 1 y las de la procedencia."""
 
 _TABLES: dict[str, str] = {
     "gb_project": """CREATE TABLE gb_project (
@@ -152,26 +169,40 @@ TRIGGERS: dict[str, str] = _triggers()
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
-    """Crea las tablas internas del esquema 1, sus disparadores y su declaración en
-    ``gpkg_extensions``, en la transacción de ``conn`` (tras ``core.gpkg.base.
-    create_base``)."""
+    """Crea el esquema de esta versión (:data:`SCHEMA_VERSION`, el 2): las tablas internas
+    del 1, sus disparadores y su declaración en ``gpkg_extensions``, y las de la
+    procedencia (``core.provenance.schema.create_tables``), en la transacción de ``conn``
+    (tras ``core.gpkg.base.create_base``)."""
     for table, ddl in _TABLES.items():
         conn.execute(ddl)
         register_internal_table(conn, table)
     for ddl in TRIGGERS.values():
         conn.execute(ddl)
+    provenance_schema.create_tables(conn)
 
 
-def missing_objects(conn: sqlite3.Connection) -> list[str]:
-    """Lo que le falta a la base para tener el esquema 1 (``"table gb_event"``,
-    ``"trigger gb_event_no_upd"``…), en orden; lista vacía si está completo."""
+def missing_objects(conn: sqlite3.Connection, version: int) -> list[str]:
+    """Lo que le falta a la base para tener el esquema ``version`` (``"table gb_event"``,
+    ``"trigger gb_event_no_upd"``, ``"index gb_figure_key"``…), en orden: lo del 1 y,
+    desde el 2, lo de la procedencia; lista vacía si está completo. De un esquema posterior
+    al de esta versión se echa en falta lo que esta conoce (:data:`SCHEMA_VERSION`): uno
+    posterior que se pueda leer (``min_reader_schema``) lo conserva.
+
+    ``TypeError`` si ``version`` no es un entero y ``ValueError`` si es menor que 1."""
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise TypeError(f"el esquema es un entero, no {version!r}")
+    if version < 1:
+        raise ValueError(f"no hay esquema {version}: el primero es el 1")
     present = set(
         conn.execute(
             "SELECT type || ' ' || name FROM sqlite_master WHERE type IN ('table', 'trigger')"
         ).fetchall()
     )
     expected = [f"table {table}" for table in _TABLES] + [f"trigger {name}" for name in TRIGGERS]
-    return [item for item in expected if (item,) not in present]
+    missing = [item for item in expected if (item,) not in present]
+    if min(version, SCHEMA_VERSION) >= 2:
+        missing += provenance_schema.missing_objects(conn)
+    return missing
 
 
 def insert_project(conn: sqlite3.Connection, record: ProjectRecord) -> None:

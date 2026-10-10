@@ -119,7 +119,9 @@ class CreateTest(unittest.TestCase):
             header = manifest.read_manifest(result.root)
             with gpkg.GpkgConnection.open_read(result.root / "project.gpkg") as db:
                 record = schema.read_project(db.connection)
-                self.assertEqual(schema.missing_objects(db.connection), [])
+                self.assertEqual(
+                    schema.missing_objects(db.connection, schema.SCHEMA_VERSION), []
+                )
                 self.assertEqual(
                     db.connection.execute("PRAGMA journal_mode").fetchone()[0], "delete"
                 )
@@ -147,7 +149,10 @@ class CreateTest(unittest.TestCase):
             self.assertEqual(
                 record.window, georef.Window(699_500.0, 4_399_500.0, 700_501.0, 4_400_501.0)
             )
-            self.assertEqual((record.grid_step_m, record.schema_version), (1.0, 1))
+            # El esquema de esta versión (el 2 desde la spec 008).
+            self.assertEqual(
+                (record.grid_step_m, record.schema_version), (1.0, schema.SCHEMA_VERSION)
+            )
             self.assertEqual(record.created_with, "0.1.0")
             self.assertEqual(record.created_at, "2026-10-05T08:12:44.000Z")
         with project_tmp() as tmp:

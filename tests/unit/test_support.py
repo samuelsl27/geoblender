@@ -6,9 +6,9 @@ import os
 import tempfile
 import unittest
 import unittest.mock
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
-from tests.support import qgis, resources, runtime, trees
+from tests.support import network, qgis, resources, runtime, timing, trees
 from tests.support.repo import EXTENSION_DIR, ROOT, TOOLS_DIR, tools_on_path
 
 RESOURCE = "recurso-de-prueba"
@@ -373,6 +373,117 @@ class RuntimeSupportTest(unittest.TestCase):
             with unittest.mock.patch.dict(os.environ, {variable: tmp}):
                 self.assertTrue(resources.is_available(runtime.RUNTIME))
                 self.assertEqual(runtime.runtime_site(), Path(tmp))
+
+
+class NetworkSupportTest(unittest.TestCase):
+    """``tests.support.network``: la carpeta de pruebas de la red (spec 008, T42)."""
+
+    def _environ(self, folder: object, mirror: object = None) -> dict[str, str]:
+        found = {network.NET_TEST_DIR_ENV: str(folder)}
+        if mirror is not None:
+            found[network.NAS_MIRROR_ENV] = str(mirror)
+        return found
+
+    def test_resource_is_declared_and_registered(self) -> None:
+        """RNF-008-04, RNF-008-10, RF-001-06: ``red`` está en la lista cerrada de recursos y
+        tiene comprobación registrada: sin la variable, o con una carpeta que no existe, no
+        hay red; con una que existe, esa es la carpeta de pruebas."""
+        self.assertIn(network.NET, resources.RESOURCES)
+        self.assertIn(network.NET_TEST_DIR_ENV, network.NET_HINT)
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = {key: value for key, value in os.environ.items()
+                     if key != network.NET_TEST_DIR_ENV}
+            with unittest.mock.patch.dict(os.environ, empty, clear=True):
+                self.assertFalse(resources.is_available(network.NET))
+            with unittest.mock.patch.dict(os.environ, self._environ(Path(tmp) / "no")):
+                self.assertFalse(resources.is_available(network.NET))
+            with unittest.mock.patch.dict(os.environ, self._environ(tmp)):
+                self.assertTrue(resources.is_available(network.NET))
+                self.assertEqual(network.net_test_dir(), Path(os.path.realpath(tmp)))
+
+    def test_dossiers_and_mirror_are_refused(self) -> None:
+        """RNF-008-04, RNF-008-10 (T42): una carpeta de pruebas que es la de los expedientes de
+        clientes o está dentro del espejo del repositorio es un error (nunca una omisión ni
+        una escritura); otra con un nombre que empieza como el espejo vale."""
+        dossiers = PureWindowsPath("Q:/", network.DOSSIERS, "pruebas")
+        with self.assertRaisesRegex(ValueError, "expedientes"):
+            network.check_net_dir(str(dossiers))
+        with tempfile.TemporaryDirectory() as tmp:
+            mirror = Path(tmp) / "Geo_espejo"
+            (mirror / "pruebas").mkdir(parents=True)
+            sibling = Path(tmp) / "Geo_espejo_pruebas"
+            sibling.mkdir()
+            for inside in (mirror, mirror / "pruebas"):
+                with self.assertRaisesRegex(ValueError, "espejo"):
+                    network.net_test_dir(self._environ(inside, mirror))
+            self.assertEqual(network.net_test_dir(self._environ(sibling, mirror)),
+                             Path(os.path.realpath(sibling)))
+
+    def test_net_tmp_removes_only_its_folder(self) -> None:
+        """RNF-008-04, RNF-008-10 (T42): cada prueba trabaja en una subcarpeta temporal propia de
+        la carpeta de pruebas, que se borra entera al salir; lo demás no se toca."""
+        with tempfile.TemporaryDirectory() as tmp:
+            kept = Path(tmp) / "LEEME.txt"
+            kept.write_text("carpeta de pruebas\n", encoding="utf-8")
+            with unittest.mock.patch.dict(os.environ, self._environ(tmp)):
+                with network.net_tmp("gb-prueba-") as folder:
+                    self.assertEqual(folder.parent, Path(os.path.realpath(tmp)))
+                    (folder / "sub").mkdir()
+                    (folder / "sub" / "dato.bin").write_bytes(b"x")
+            self.assertFalse(folder.exists())
+            self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["LEEME.txt"])
+
+
+class _SlowAction:
+    """Una acción que «dura» lo siguiente de ``durations`` (la última se repite) en el
+    reloj simulado :meth:`clock`, que da 0 al empezar cada medida y la duración al
+    terminarla (sin sumas: valores exactos); cuenta cuántas veces se ejecuta."""
+
+    def __init__(self, durations: list[float]) -> None:
+        self.durations = list(durations)
+        self.last = 0.0
+        self.calls = 0
+        self.ticks = 0
+
+    def clock(self) -> float:
+        self.ticks += 1
+        return 0.0 if self.ticks % 2 else self.last
+
+    def __call__(self) -> None:
+        self.last = self.durations[min(self.calls, len(self.durations) - 1)]
+        self.calls += 1
+
+
+class TimingSupportTest(unittest.TestCase):
+    """``tests.support.timing``: las pruebas de un presupuesto de tiempo con la máquina
+    cargada (spec 006, T38)."""
+
+    def test_best_of_measures_again_while_over_budget(self) -> None:
+        """RNF-001-01, RNF-007-01 (spec 006, T38): la mejor de tres medidas y, mientras
+        ninguna quepa en el presupuesto (la máquina cargada por las demás partes de
+        ``tools/check.py``), otra más, hasta ``MAX_ATTEMPTS``; con una que cabe, para. El
+        presupuesto no cambia: si ninguna cabe, devuelve la mejor, que no cabe."""
+        budget = 0.050
+        cases = {
+            "en reposo": ([0.025, 0.026, 0.024, 0.001], 3, 0.024),
+            "cargada a ratos": ([0.080, 0.070, 0.060, 0.090, 0.040, 0.001], 5, 0.040),
+            "justo en el presupuesto": ([0.060, 0.070, 0.050, 0.001], 3, 0.050),
+            "cargada siempre": ([0.060], timing.MAX_ATTEMPTS, 0.060),
+        }
+        for name, (durations, calls, best) in cases.items():
+            with self.subTest(caso=name):
+                action = _SlowAction(durations)
+                found = timing.best_of(action, budget, clock=action.clock)
+                self.assertEqual(action.calls, calls)
+                self.assertEqual(found, best)
+        self.assertEqual(timing.ATTEMPTS, 3)
+        self.assertGreater(timing.MAX_ATTEMPTS, timing.ATTEMPTS)
+        action = _SlowAction([0.060])
+        found = timing.best_of(action, budget, attempts=1, max_attempts=2, clock=action.clock)
+        self.assertEqual((action.calls, found), (2, 0.060))
+        for attempts, most in ((0, 5), (3, 2)):
+            with self.subTest(intentos=attempts, maximo=most), self.assertRaises(ValueError):
+                timing.best_of(_SlowAction([0.0]), budget, attempts=attempts, max_attempts=most)
 
 
 if __name__ == "__main__":

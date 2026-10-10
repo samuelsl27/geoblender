@@ -18,9 +18,11 @@ GeoOrigin, en metros enteros.
    extendido, se crea igual, con aviso (de las esquinas y el error estimado, RF-002-26; o
    de cuánto se sale del huso y la deformación de escala, RF-002-03 y D-12).
 2. **Crear de forma atómica** (:func:`create_project`): antes, sin tocar el disco, se
-   comprueba que ninguna ruta que se va a usar pasa del límite de rutas de Windows (259
-   caracteres; Blender 5.2.1 no admite más: ``core.path_too_long`` con la ruta y el
-   límite, T45). Todo se hace en ``<Nombre>.gbproj.creando-<8 cifras hexadecimales>``
+   comprueba que el proyecto no quedaría en una carpeta de solo lectura (las que declaran la
+   variable de IMGA y la preferencia: los expedientes de clientes; spec 008, RF-008-15, S-3;
+   ``core.project_read_only_folder`` nombrando la carpeta) y que ninguna ruta que se va a usar
+   pasa del límite de rutas de Windows (259 caracteres; Blender 5.2.1 no admite más:
+   ``core.path_too_long`` con la ruta y el límite, T45). Todo se hace en ``<Nombre>.gbproj.creando-<8 cifras hexadecimales>``
    junto al destino (subcarpetas, ``project.gpkg`` con
    el esquema 1, la fila de ``gb_project`` y el evento ``create`` en una transacción,
    ``manifest.json`` y ``.lock`` de la sesión) y se renombra al final; ante cualquier
@@ -49,7 +51,13 @@ from ..georef.transform import PrecisionReport, precision_report
 from ..gpkg.base import create_base
 from ..gpkg.connection import GpkgConnection
 from ..ids import SHORT_UID_CHARS, new_uid, short_uid
-from ..paths import DriveType, check_path_length, is_network_path, validate_project_name
+from ..paths import (
+    DriveType,
+    ReadOnlyDirs,
+    check_path_length,
+    is_network_path,
+    validate_project_name,
+)
 from ..sysinfo import SessionInfo
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
@@ -62,7 +70,13 @@ from .manifest import (
     manifest_temporary_path,
     write_manifest,
 )
-from .model import OpenMode, ProjectRecord, ProjectSettings
+from .model import (
+    OpenMode,
+    ProjectRecord,
+    ProjectSettings,
+    read_only_folder,
+    read_only_phrase,
+)
 from .schema import MIN_READER_SCHEMA, SCHEMA_VERSION, create_schema, insert_project
 from .session import Project, write_status
 
@@ -490,16 +504,30 @@ def create_project(
     network: bool | None = None,
     drive_type: DriveType | None = None,
     catalog: CrsCatalog | None = None,
+    read_only: ReadOnlyDirs | None = None,
 ) -> CreateResult:
     """Crea ``<parent_dir>/<Nombre>.gbproj`` y lo deja con el cerrojo de ``session``.
 
     ``network``: si la carpeta es de red (``None``: se detecta, con ``drive_type``
-    inyectable). :class:`ValidationError` si los ajustes no valen; :class:`ProjectError`
-    si la carpeta no existe, el destino ya existe, no se puede escribir o la creación
-    falla (sin dejar nada en el disco).
+    inyectable). ``read_only``: las carpetas de solo lectura (spec 008, S-3; ``None``,
+    ninguna). :class:`ValidationError` si los ajustes no valen; :class:`ProjectError` si el
+    proyecto quedaría en una carpeta de solo lectura (RF-008-15), la carpeta no existe, el
+    destino ya existe, no se puede escribir o la creación falla (sin dejar nada en el disco).
     """
     prepared = prepare(settings, catalog)
     parent = Path(parent_dir)
+    target = parent / project_folder_name(prepared.name)
+    folder = read_only_folder(read_only, target)
+    if folder is not None:
+        raise ProjectError(
+            "core.project_read_only_folder",
+            f"quedaría dentro de {read_only_phrase(folder)}: no se ha creado nada; elija otra "
+            "carpeta",
+            obj=_NEW,
+            field="carpeta",
+            value=str(target),
+            context={"read_only_folder": str(folder)},
+        )
     if not parent.is_dir():
         raise ProjectError(
             "core.project_parent_missing",
@@ -508,7 +536,6 @@ def create_project(
             field="carpeta",
             value=str(parent),
         )
-    target = parent / project_folder_name(prepared.name)
     if target.exists():
         raise ProjectError(
             "core.project_exists",

@@ -15,7 +15,9 @@ ya se había tomado.
 2. **Base de datos**, sin escribir en el proyecto: ``project.gpkg`` en solo lectura (una
    base en WAL o con un diario caliente se lee en una copia privada de los datos de
    usuario: abrirla en el sitio crearía ``-wal`` y ``-shm`` junto a ella); su fila de
-   ``gb_project`` y las migraciones registradas.
+   ``gb_project`` y las migraciones registradas. Si le falta algo de su esquema (del 1, para
+   leer ``gb_project``; después, del esquema del proyecto o, si es posterior y se puede
+   leer, del de esta versión: spec 008), no abre y dice qué.
 3. **Coherencia**: si la cabecera y la base difieren en identidad, CRS, GeoOrigin o
    esquema, no abre y muestra los dos valores (sin corregir ninguno). Un esquema que
    explican las migraciones registradas, o un GeoOrigin que explica el último cambio de
@@ -28,8 +30,12 @@ ya se había tomado.
    mostrar cifras erróneas) y el proyecto queda limitado a su nombre, CRS y GeoOrigin.
    Lo dice la cabecera, sin abrir la base; si la cabecera no lo dice pero la base sí (la
    base manda), también se queda en la cabecera.
-5. **Cerrojo** (:mod:`.lock`): libre, huérfano o propio → escritura (en red, en local o,
-   si la cabecera lleva la sección ``checkout``, como copia local de trabajo); otra
+5. **Cerrojo** (:mod:`.lock`): un proyecto dentro de una carpeta de solo lectura (las que
+   declaran la variable de IMGA y la preferencia, ``read_only``: los expedientes de clientes;
+   spec 008, RF-008-15, S-3) se abre en solo lectura con ese motivo (``READ_ONLY_FOLDER``),
+   que manda sobre los demás: sin cerrojo, sin migración y sin ninguna escritura (la carpeta
+   se comprueba al empezar, antes que nada). Si no, libre, huérfano o propio → escritura (en
+   red, en local o, si la cabecera lleva la sección ``checkout``, como copia local); otra
    sesión → solo lectura con quién lo tiene (y la oferta de forzarlo si está caducado o
    reservado); forzar solo con el titular que vio el usuario (``force_holder``).
 6. **Apertura**: en escritura, la base vuelve al diario clásico si otro programa la dejó
@@ -55,7 +61,7 @@ from ..errors import DatabaseError, GeoblenderError, LockError, ProjectError
 from ..gpkg.connection import BUSY_TIMEOUT_MS, GpkgConnection
 from ..gpkg.header import SqliteHeader, read_header
 from ..gpkg.wal import WalOutcome, to_classic_journal
-from ..paths import DriveType, is_network_path
+from ..paths import DriveType, ReadOnlyDirs, is_network_path
 from ..sysinfo import SessionInfo, pid_alive
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
@@ -74,7 +80,16 @@ from .manifest import (
     unknown_key_notice,
     write_manifest,
 )
-from .model import OpenMode, OpenResult, OpenStatus, ProjectRecord, Progress, ReadOnlyCode
+from .model import (
+    OpenMode,
+    OpenResult,
+    OpenStatus,
+    ProjectRecord,
+    Progress,
+    ReadOnlyCode,
+    read_only_folder,
+    read_only_phrase,
+)
 from .schema import SCHEMA_VERSION, missing_objects, read_migrations, read_project
 from .session import Project, read_only_status, write_status
 
@@ -107,7 +122,8 @@ class ProjectInspection:
 
     Con un esquema que esta versión no sabe leer (:attr:`header_only`), solo hay
     cabecera: ``record`` es ``None`` y, si la base ni se abrió, también ``check`` y
-    ``header``.
+    ``header``. ``read_only_folder``: la carpeta de solo lectura (como se declaró) que
+    contiene el proyecto, o ``None`` (spec 008, S-3).
     """
 
     root: Path
@@ -119,6 +135,7 @@ class ProjectInspection:
     header: SqliteHeader | None
     lock: LockStatus
     network: bool
+    read_only_folder: Path | None = None
 
     @property
     def header_only(self) -> bool:
@@ -175,8 +192,11 @@ def _read_database(
     try:
         with GpkgConnection.open_read(path, private_dir) as db:
             conn = db.connection
-            missing = missing_objects(conn)
+            missing = missing_objects(conn, 1)  # lo que hace falta para leer gb_project
             record = None if missing else read_project(conn)
+            if record is not None and record.min_reader_schema <= SCHEMA_VERSION:
+                # Lo de su esquema (de uno posterior que se puede leer, lo que se conoce).
+                missing = missing_objects(conn, min(record.schema_version, SCHEMA_VERSION))
             migrations = () if missing else read_migrations(conn)
             origin_move = None if missing else last_origin_move(conn)
     except (sqlite3.Error, DatabaseError) as exc:
@@ -215,12 +235,15 @@ def inspect_project(
     stale_minutes: int = lockmod.DEFAULT_STALE_MINUTES,
     network: bool | None = None,
     drive_type: DriveType | None = None,
+    read_only: ReadOnlyDirs | None = None,
 ) -> ProjectInspection:
-    """Inspecciona el proyecto sin escribir en él: cabecera, base de datos, coherencia,
-    esquema y cerrojo. :class:`ProjectError` si no se puede abrir (falta algo o la cabecera
-    y la base no coinciden)."""
+    """Inspecciona el proyecto sin escribir en él: carpeta de solo lectura (``read_only``,
+    spec 008; ``None``, ninguna), cabecera, base de datos, coherencia, esquema y cerrojo.
+    :class:`ProjectError` si no se puede abrir (falta algo o la cabecera y la base no
+    coinciden)."""
     *_, inspection = _inspect_steps(
-        Path(path), session, userdata, clock, pid_alive, stale_minutes, network, drive_type
+        Path(path), session, userdata, clock, pid_alive, stale_minutes, network, drive_type,
+        read_only,
     )
     if not isinstance(inspection, ProjectInspection):
         raise TypeError("la inspección del proyecto no ha terminado con su resultado")
@@ -236,9 +259,11 @@ def _inspect_steps(
     stale_minutes: int,
     network: bool | None,
     drive_type: DriveType | None,
+    read_only: ReadOnlyDirs | None,
 ) -> Iterator[Progress | ProjectInspection]:
     total = len(PHASES)
     yield Progress(PHASES[0], 0, total, "Leyendo la cabecera del proyecto…")
+    folder = read_only_folder(read_only, root)  # antes que nada: spec 008, S-3
     _require_folder(root)
     manifest = read_manifest(root)
     record: ProjectRecord | None = None
@@ -273,7 +298,7 @@ def _inspect_steps(
     )
     is_network = is_network_path(root, drive_type) if network is None else bool(network)
     yield ProjectInspection(
-        root, manifest, record, migrations, check, relation, header, status, is_network
+        root, manifest, record, migrations, check, relation, header, status, is_network, folder
     )
 
 
@@ -440,14 +465,18 @@ def open_steps(
     stale_minutes: int = lockmod.DEFAULT_STALE_MINUTES,
     network: bool | None = None,
     drive_type: DriveType | None = None,
+    read_only: ReadOnlyDirs | None = None,
 ) -> Iterator[Progress]:
     """Abre el proyecto por pasos (:data:`PHASES`); el último lleva el
-    :class:`OpenResult` en ``result``. :class:`ProjectError` si no se puede abrir."""
+    :class:`OpenResult` en ``result``. ``read_only``: las carpetas de solo lectura (spec
+    008, S-3; ``None``, ninguna): dentro de una, solo lectura sin cerrojo ni escritura.
+    :class:`ProjectError` si no se puede abrir."""
     root = Path(path)
     total = len(PHASES)
     inspection: ProjectInspection | None = None
     for step in _inspect_steps(
-        root, session, userdata, clock, pid_alive, stale_minutes, network, drive_type
+        root, session, userdata, clock, pid_alive, stale_minutes, network, drive_type,
+        read_only,
     ):
         if isinstance(step, ProjectInspection):
             inspection = step
@@ -479,7 +508,14 @@ def open_steps(
     acquired: Acquired | None = None
     forced = False
     record, header = inspection.record, inspection.manifest
-    if inspection.header_only:
+    if inspection.read_only_folder is not None:  # la carpeta manda (spec 008, S-3)
+        status = read_only_status(
+            ReadOnlyCode.READ_ONLY_FOLDER,
+            f"está dentro de {read_only_phrase(inspection.read_only_folder)}: no se toma su "
+            "cerrojo ni se escribe nada en él (tampoco se migra); para trabajar en él, cópielo "
+            "a otra carpeta",
+        )
+    elif inspection.header_only:
         status = read_only_status(
             ReadOnlyCode.SCHEMA_NEWER,
             f"creado con una versión más moderna de Geoblender (esquema "
@@ -565,6 +601,7 @@ def open_project(
     stale_minutes: int = lockmod.DEFAULT_STALE_MINUTES,
     network: bool | None = None,
     drive_type: DriveType | None = None,
+    read_only: ReadOnlyDirs | None = None,
 ) -> OpenResult:
     """Abre el proyecto sin pausas (el mismo recorrido que :func:`open_steps`)."""
     result: object = None
@@ -579,6 +616,7 @@ def open_project(
         stale_minutes=stale_minutes,
         network=network,
         drive_type=drive_type,
+        read_only=read_only,
     ):
         if step.result is not None:
             result = step.result

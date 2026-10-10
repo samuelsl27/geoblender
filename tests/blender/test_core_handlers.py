@@ -45,6 +45,7 @@ import bpy
 
 from tests.support import blender_ext
 from tests.support.blender_ext import module_name
+from tests.support.core_fixtures import mark_schema
 
 # Ventana sintética de la spec 002 (T01): origen (700 000; 4 400 000; 0).
 WINDOW = (699_500.4, 4_399_500.6, 700_500.2, 4_400_500.9)
@@ -239,6 +240,7 @@ class SceneSyncTest(HandlersTestCase):
         project = self.create()
         root = project.root
         self.ps.close()
+        mark_schema(root, 1)  # uno nuevo ya es del esquema 2 (spec 008)
         migrations = ext("core.project.migrations")
         registry = (
             migrations.Migration(1, 2, "tabla de prueba", _m1_2),

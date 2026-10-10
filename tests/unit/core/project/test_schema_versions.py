@@ -2,14 +2,15 @@
 """Versiones del esquema del proyecto (spec 002, T20 y T21; RF-002-13, RF-002-20,
 RF-002-21, RF-002-22; ADR-0006 §7; formato-proyecto §7; plan 002 §5.4, «Migración»).
 
-Migrar (T20): con el esquema 1 no hay migraciones (registro vacío), así que se prueban con
-migraciones de prueba inyectadas (1 → 2 → 3) y un esquema soportado 3. Antes de migrar se
-hace una copia completa junto al original (``<Nombre>.gbproj.respaldo-esquema-<N>``, con
-las mismas huellas); todas las migraciones y sus filas de ``gb_schema_migration`` van en
-una transacción, y después se regenera la cabecera desde la base de datos. Si una falla,
-el proyecto queda como estaba (volcado SQL y cabecera idénticos) y se conserva la copia
-previa. Una cadena con hueco se rechaza antes de tocar nada, y quien no acepta migrar
-abre en solo lectura «sin migrar».
+Migrar (T20): la mecánica se prueba con migraciones de prueba inyectadas (1 → 2 → 3) y un
+esquema soportado 3, sobre proyectos que dicen ser del esquema 1 (``mark_schema``: desde
+la spec 008 un proyecto nuevo es del 2, y la migración real 1 → 2 la prueba la 008).
+Antes de migrar se hace una copia completa junto al original
+(``<Nombre>.gbproj.respaldo-esquema-<N>``, con las mismas huellas); todas las migraciones
+y sus filas de ``gb_schema_migration`` van en una transacción, y después se regenera la
+cabecera desde la base de datos. Si una falla, el proyecto queda como estaba (volcado SQL
+y cabecera idénticos) y se conserva la copia previa. Una cadena con hueco se rechaza antes
+de tocar nada, y quien no acepta migrar abre en solo lectura «sin migrar».
 
 Las bases que escribe «otro programa» en estas pruebas son conexiones de ``sqlite3`` sin
 ``gb_writer()``, como QGIS.
@@ -22,7 +23,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.support.core_fixtures import FakeClock, FakePids, make_session, make_settings, project_tmp
+from tests.support.core_fixtures import (
+    FakeClock,
+    FakePids,
+    make_session,
+    make_settings,
+    mark_schema,
+    project_tmp,
+)
 from tests.support.package import import_geoblender
 
 create = import_geoblender("core.project.create")
@@ -93,9 +101,10 @@ def _snapshot(root: Path) -> dict[str, tuple[int, str, int] | str]:
 
 
 class Env:
-    """Un proyecto de esquema 1 creado y cerrado por la sesión A."""
+    """Un proyecto creado y cerrado por la sesión A que dice ser del esquema
+    ``schema_version`` (por defecto, el 1; ``None``: el de esta versión)."""
 
-    def __init__(self, tmp: Path) -> None:
+    def __init__(self, tmp: Path, schema_version: int | None = 1) -> None:
         self.parent = tmp / "proyectos"
         self.parent.mkdir()
         self.userdata = userdata_mod.UserData(tmp / "datos_usuario")
@@ -107,6 +116,8 @@ class Env:
         self.created.project.close()
         self.root = self.created.root
         self.db = self.root / "project.gpkg"
+        if schema_version is not None:
+            mark_schema(self.root, schema_version)
 
     def migrate_steps(self, registry, target=3, session=SESSION_B, **kwargs):
         kwargs.setdefault("clock", self.clock)
@@ -143,14 +154,13 @@ class Env:
 
 
 class MigrationChainTest(unittest.TestCase):
-    def test_empty_registry_in_schema_1(self) -> None:
-        """RF-002-20: el esquema 1 no tiene migraciones (registro vacío): un proyecto de
-        esquema 1 no se migra, no se copia ni cambia nada."""
-        self.assertEqual(schema.SCHEMA_VERSION, 1)
-        self.assertEqual(migrations.REGISTRY, ())
-        self.assertEqual(migrations.plan_migrations(1, 1), ())
+    def test_current_schema_is_not_migrated(self) -> None:
+        """RF-002-20: un proyecto del esquema de esta versión no se migra, no se copia ni
+        cambia nada (con el registro real de migraciones)."""
+        current = schema.SCHEMA_VERSION
+        self.assertEqual(migrations.plan_migrations(current, current), ())
         with project_tmp() as tmp:
-            env = Env(tmp)
+            env = Env(tmp, schema_version=None)
             before = _snapshot(env.parent)
             steps = list(migrations.migrate_steps(
                 env.root, SESSION_B, env.userdata, clock=env.clock, pid_alive=env.pids
@@ -470,7 +480,9 @@ class MigrateTest(unittest.TestCase):
         se migra (ni se copia): error con quién lo tiene."""
         with project_tmp() as tmp:
             env = Env(tmp)
-            holder = env.open(SESSION_A).project
+            with mock.patch.object(open_mod, "SCHEMA_VERSION", 1):  # un Geoblender del esquema 1
+                holder = env.open(SESSION_A).project
+            self.assertTrue(holder.writable)
             try:
                 before = _snapshot(env.parent)
                 with self.assertRaises(errors.LockError) as caught:
@@ -498,7 +510,7 @@ def _make_newer(env: Env, *, header_min_reader: int, db_min_reader: int, unreada
         conn = sqlite3.connect(env.db, isolation_level=None)
         try:
             conn.execute("ALTER TABLE gb_project RENAME COLUMN name TO project_name")
-            conn.execute("CREATE TABLE gb_figure (fid INTEGER PRIMARY KEY, value DOUBLE)")
+            conn.execute("CREATE TABLE gb_figure_v99 (fid INTEGER PRIMARY KEY, value DOUBLE)")
         finally:
             conn.close()
     path = env.root / "manifest.json"

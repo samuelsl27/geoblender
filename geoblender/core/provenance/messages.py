@@ -1,0 +1,985 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Mensajes de la procedencia (spec 008 §8; plan 008 §3, principio 10, y §5.1).
+
+Cada error de la procedencia que llega a una persona tiene un **código** estable en inglés
+(``"core.operation_unregistered"``), un ``msgid`` en inglés (también su versión inglesa) y su
+texto en español, con marcadores de ``str.format`` (``{op_type}``) con nombre en inglés, los
+mismos en los dos (constitución, principio 10). Los nombres visibles de las operaciones de
+``core`` (:data:`LABELS`) son también ``msgid`` con su español.
+
+- :class:`Message`: un mensaje del catálogo; :data:`MESSAGES`, el catálogo por código.
+- :data:`LABELS`: ``msgid`` → español de los nombres visibles de ``core``
+  (``OperationDef.label_msgid`` de :mod:`.contract`).
+- :data:`CATALOG_ES`: ``msgid`` → español de todo lo anterior, para ``core.i18n.install`` al
+  registrar (``bl/ops/core_provenance.py``, T44).
+- :func:`render`: el texto de un código con sus valores, en español o en inglés; el marcador
+  sin valor queda «?».
+- :class:`ProvenanceError`: el error de la procedencia para el usuario, con código,
+  ``msgid``, valores (JSON) y texto; en solo lectura, todo lo que escribiría lanza
+  ``core.read_only`` sin tocar nada (plan §5.3.1).
+
+Cada tarea de la 008 añade aquí los códigos de sus rechazos (los textos de la spec §8, tal
+cual), sus avisos (``core.figure_differs``, RF-008-59), los motivos de lo que se deja fuera de
+«Recalcular lo obsoleto» (``core.recompute_*``) y lo que muestra la procedencia: el estado de
+una entrada (``core.input_status_*``), las marcas de una cifra (``core.mark_*``), el estado de
+lo mostrado (``core.result_*``, RF-008-23) y los avisos de Ctrl+Z (``core.undo_*`` y
+``core.redo_*``, RF-008-32). Python puro (ADR-0004).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+
+from ..errors import GeoblenderError
+from ..i18n import LANGUAGES
+
+type JsonScalar = str | int | float | bool | None
+
+MISSING_VALUE = "?"
+"""Lo que se ve en lugar de un valor que falta (nunca el marcador ``{…}``)."""
+
+ERROR_OBJECT = "Procedencia"
+"""El objeto de un :class:`ProvenanceError` (``GeoblenderError.obj``)."""
+
+
+@dataclass(frozen=True, slots=True)
+class Message:
+    """Un mensaje del catálogo: código ``core.*``, ``msgid`` en inglés y texto en español."""
+
+    code: str
+    msgid: str
+    es: str
+
+
+_INACTIVE_EN = (
+    "the module that declares it is not active or belongs to another version of Geoblender."
+)
+_INACTIVE_ES = (
+    "el módulo que {pronoun} declara no está activo o es de otra versión de Geoblender."
+)
+
+_CATALOG: tuple[Message, ...] = (
+    Message(
+        "core.read_only",
+        "Project «{project}» is open read-only ({reason}): nothing has been recorded.",
+        "El proyecto «{project}» está abierto en solo lectura ({reason}): no se ha registrado "
+        "nada.",
+    ),
+    Message(
+        "core.operation_unregistered",
+        "No operation of type «{op_type}» is registered: " + _INACTIVE_EN,
+        "No hay ninguna operación registrada del tipo «{op_type}»: "
+        + _INACTIVE_ES.format(pronoun="la"),
+    ),
+    Message(
+        "core.group_unregistered",
+        "No group of coupled operations «{group}» is registered: " + _INACTIVE_EN,
+        "No hay ningún grupo de operaciones acopladas «{group}» registrado: "
+        + _INACTIVE_ES.format(pronoun="lo"),
+    ),
+    Message(
+        "core.figure_unregistered",
+        "No figure «{key}» is registered: " + _INACTIVE_EN,
+        "No hay ninguna cifra «{key}» registrada: " + _INACTIVE_ES.format(pronoun="la"),
+    ),
+    Message(
+        "core.importer_unregistered",
+        "No importer is registered for reader «{reader}»: its inputs cannot be reimported "
+        "until the module that declares it is active.",
+        "No hay ningún importador registrado para el lector «{reader}»: sus entradas no se "
+        "pueden reimportar hasta que esté activo el módulo que lo declara.",
+    ),
+    # Operaciones (T17; RF-008-18, RF-008-23, RF-008-51).
+    Message(
+        "core.operation_unknown",
+        "There is no operation {operation} in project «{project}».",
+        "No hay ninguna operación {operation} en el proyecto «{project}».",
+    ),
+    Message(
+        "core.operation_not_running",
+        "Operation «{op_type}» ({operation}) is no longer running: a finished operation does "
+        "not change.",
+        "La operación «{op_type}» ({operation}) ya no está en curso: una operación terminada "
+        "no cambia.",
+    ),
+    Message(
+        "core.operation_dataset_unknown",
+        "Operation «{op_type}» consumes dataset «{item}», which is not in the project.",
+        "La operación «{op_type}» consume el dato «{item}», que no está en el proyecto.",
+    ),
+    Message(
+        "core.operation_dataset_not_live",
+        "Operation «{op_type}» cannot consume dataset «{item}»: it is superseded or discarded "
+        "and kept as history (consume its successor).",
+        "La operación «{op_type}» no puede consumir el dato «{item}»: está sustituido o "
+        "descartado y queda como historia (consuma su sucesor).",
+    ),
+    Message(
+        "core.operation_input_unknown",
+        "Operation «{op_type}» consumes input «{item}», which is not registered in the "
+        "project.",
+        "La operación «{op_type}» consume la entrada «{item}», que no está registrada en el "
+        "proyecto.",
+    ),
+    Message(
+        "core.operation_input_not_live",
+        "Operation «{op_type}» cannot consume input «{item}»: it is superseded or discarded "
+        "and kept as history.",
+        "La operación «{op_type}» no puede consumir la entrada «{item}»: está sustituida o "
+        "descartada y queda como historia.",
+    ),
+    Message(
+        "core.operation_supersedes_unknown",
+        "Operation «{op_type}» supersedes {supersedes}, which is not an operation of the "
+        "project.",
+        "La operación «{op_type}» sustituye a {supersedes}, que no es ninguna operación del "
+        "proyecto.",
+    ),
+    Message(
+        "core.operation_supersedes_not_done",
+        "Operation «{op_type}» can only supersede a finished (done) operation, and "
+        "{supersedes} is not.",
+        "La operación «{op_type}» solo sustituye a una operación hecha, y {supersedes} no lo "
+        "está.",
+    ),
+    Message(
+        "core.operation_already_superseded",
+        "Operation {supersedes} is already superseded, or another running operation is "
+        "superseding it: «{op_type}» does not supersede it again.",
+        "La operación {supersedes} ya está sustituida, o la está sustituyendo otra en curso: "
+        "«{op_type}» no la vuelve a sustituir.",
+    ),
+    Message(
+        "core.operation_output_not_saved",
+        "Result «{name}» of operation «{op_type}» is not saved in the project ({locator}): "
+        "save it in the project before completing the operation.",
+        "El resultado «{name}» de la operación «{op_type}» no está guardado en el proyecto "
+        "({locator}): se guarda en el proyecto antes de completar la operación.",
+    ),
+    Message(
+        "core.operation_not_completed",
+        "Operation «{op_type}» ended without completing its record: it is left failed and its "
+        "results are not accepted.",
+        "La operación «{op_type}» terminó sin completar su registro: queda fallida y sus "
+        "resultados no se dan por buenos.",
+    ),
+    # Cifras (T19; RF-008-30, RF-008-59; spec §8): el rechazo nombra su clave y su operación.
+    Message(
+        "core.figure_operation_missing",
+        "Figure «{key}» has no originating operation: only a running operation records it.",
+        "La cifra «{key}» no tiene operación de origen: solo la registra una operación en "
+        "curso.",
+    ),
+    Message(
+        "core.figure_operation_not_running",
+        "Figure «{key}» of operation «{op_type}» is not recorded: the operation is no longer "
+        "running.",
+        "La cifra «{key}» de la operación «{op_type}» no se registra: la operación ya no está "
+        "en curso.",
+    ),
+    Message(
+        "core.figure_kind_missing",
+        "Figure «{key}» of operation «{op_type}» needs a type: CALCULATED, or that of the "
+        "parameter it shows.",
+        "La cifra «{key}» de la operación «{op_type}» necesita un tipo: CALCULADO, o el del "
+        "parámetro que muestra.",
+    ),
+    Message(
+        "core.figure_kind_unknown",
+        "Figure «{key}» of operation «{op_type}» has type «{kind}», which is not MEASURED, "
+        "CALCULATED, ADOPTED or HYPOTHESIS.",
+        "La cifra «{key}» de la operación «{op_type}» tiene el tipo «{kind}», que no es "
+        "MEDIDO, CALCULADO, ADOPTADO ni HIPÓTESIS.",
+    ),
+    Message(
+        "core.figure_kind_without_parameter",
+        "Figure «{key}» of operation «{op_type}» is {kind} and shows no parameter: what an "
+        "operation computes is CALCULATED, and only a figure that shows a parameter carries "
+        "its type.",
+        "La cifra «{key}» de la operación «{op_type}» es {kind} y no muestra ningún "
+        "parámetro: lo que calcula una operación es CALCULADO, y solo la cifra que muestra un "
+        "parámetro lleva su tipo.",
+    ),
+    Message(
+        "core.figure_parameter_kind",
+        "Figure «{key}» of operation «{op_type}» shows parameter «{parameter}», which is "
+        "{parameter_kind}: it carries that type, not {kind}.",
+        "La cifra «{key}» de la operación «{op_type}» muestra el parámetro «{parameter}», que "
+        "es {parameter_kind}: lleva su tipo, no {kind}.",
+    ),
+    Message(
+        "core.figure_parameter_value",
+        "Figure «{key}» of operation «{op_type}» shows parameter «{parameter}» "
+        "({parameter_value}) and is {value}: if the operation computes it, the figure is "
+        "CALCULATED.",
+        "La cifra «{key}» de la operación «{op_type}» muestra el parámetro «{parameter}» "
+        "({parameter_value}) y vale {value}: si la operación lo calcula, la cifra es "
+        "CALCULADO.",
+    ),
+    Message(
+        "core.figure_unit_missing",
+        "Figure «{key}» of operation «{op_type}» needs its unit from Geoblender's unit "
+        "catalog («-» if it is dimensionless).",
+        "La cifra «{key}» de la operación «{op_type}» necesita su unidad del catálogo de "
+        "unidades de Geoblender («-» si es adimensional).",
+    ),
+    Message(
+        "core.figure_unit_unknown",
+        "Figure «{key}» of operation «{op_type}» is in «{unit}», which is not in Geoblender's "
+        "unit catalog.",
+        "La cifra «{key}» de la operación «{op_type}» está en «{unit}», que no está en el "
+        "catálogo de unidades de Geoblender.",
+    ),
+    Message(
+        "core.figure_unit_other",
+        "Figure «{key}» of operation «{op_type}» is in «{unit}» and its definition declares "
+        "it in «{declared}».",
+        "La cifra «{key}» de la operación «{op_type}» está en «{unit}» y su definición la "
+        "declara en «{declared}».",
+    ),
+    Message(
+        "core.figure_value_missing",
+        "Figure «{key}» of operation «{op_type}» has no value: check its inputs.",
+        "La cifra «{key}» de la operación «{op_type}» no tiene valor: revise sus entradas.",
+    ),
+    Message(
+        "core.figure_nan",
+        "Figure «{key}» of operation «{op_type}» is NaN: check its inputs.",
+        "La cifra «{key}» de la operación «{op_type}» es NaN: revise sus entradas.",
+    ),
+    Message(
+        "core.figure_infinite",
+        "Figure «{key}» of operation «{op_type}» is infinite: check its inputs.",
+        "La cifra «{key}» de la operación «{op_type}» es infinita: revise sus entradas.",
+    ),
+    Message(
+        "core.figure_zero",
+        "Figure «{key}» of operation «{op_type}» is zero and its definition does not admit "
+        "it: check its inputs.",
+        "La cifra «{key}» de la operación «{op_type}» es cero y su definición no lo admite: "
+        "revise sus entradas.",
+    ),
+    Message(
+        "core.figure_negative",
+        "Figure «{key}» of operation «{op_type}» is negative ({value}) and its definition "
+        "does not admit it: check its inputs.",
+        "La cifra «{key}» de la operación «{op_type}» es negativa ({value}) y su definición no "
+        "lo admite: revise sus entradas.",
+    ),
+    # El aviso de RF-008-59 (spec §8): el parámetro no cambia.
+    Message(
+        "core.figure_differs",
+        "Operation «{op_type}» computes {name} = {value}; the {kind} value is "
+        "{parameter_value} ({decided_by}, {decided_on}).",
+        "La operación «{op_type}» calcula {name} = {value}; el valor {kind} es "
+        "{parameter_value} ({decided_by}, {decided_on}).",
+    ),
+    # Entradas (T20; RF-008-07, RF-008-11, RF-008-54): el CRS declarado nunca se supone y la
+    # misma fuente no se duplica.
+    Message(
+        "core.input_crs_missing",
+        "Input «{name}» ({kind}) does not declare its {axis} CRS: declare it when importing; "
+        "Geoblender never assumes it.",
+        "La entrada «{name}» ({kind}) no declara su CRS {axis}: declárelo al importar; "
+        "Geoblender nunca lo supone.",
+    ),
+    Message(
+        "core.input_crs_not_applicable",
+        "Input «{name}» is of type «{kind}», which has coordinates: its {axis} CRS cannot be "
+        "«not applicable».",
+        "La entrada «{name}» es de tipo «{kind}», con coordenadas: su CRS {axis} no puede ser "
+        "«no aplica».",
+    ),
+    Message(
+        "core.input_reused",
+        "Input «{name}» is already registered with the same content ({registered_on}).",
+        "La entrada «{name}» ya está registrada con el mismo contenido ({registered_on}).",
+    ),
+    Message(
+        "core.input_substitution_required",
+        "Input «{name}» has the same content as «{existing}» with other import settings "
+        "({differences}): the import replaces it, with a reason.",
+        "La entrada «{name}» tiene el mismo contenido que «{existing}» con otros ajustes de "
+        "importación ({differences}): la importación la sustituye, con un motivo.",
+    ),
+    Message(
+        "core.input_reason_missing",
+        "State the reason for replacing input «{previous}» with «{name}».",
+        "Indique el motivo de la sustitución de la entrada «{previous}» por «{name}».",
+    ),
+    Message(
+        "core.input_name_taken",
+        "There is already another input «{name}» in the project: choose another name or "
+        "update that input.",
+        "Ya hay otra entrada «{name}» en el proyecto: elija otro nombre o actualice esa "
+        "entrada.",
+    ),
+    Message(
+        "core.input_previous_unknown",
+        "The input that «{name}» replaces ({previous}) is not in the project.",
+        "La entrada a la que sustituye «{name}» ({previous}) no está en el proyecto.",
+    ),
+    Message(
+        "core.input_previous_discarded",
+        "Input «{previous}» is discarded: it is kept as a record and is not updated.",
+        "La entrada «{previous}» está descartada: queda como registro y no se actualiza.",
+    ),
+    Message(
+        "core.input_previous_replaced",
+        "Input «{previous}» is already replaced by «{other}»: «{name}» does not replace it "
+        "again.",
+        "La entrada «{previous}» ya está sustituida por «{other}»: «{name}» no la vuelve a "
+        "sustituir.",
+    ),
+    Message(
+        "core.input_operation_missing",
+        "Input «{name}» is registered with its import operation: without provenance it is not "
+        "accepted.",
+        "La entrada «{name}» se registra con su operación de importación: sin procedencia no "
+        "se admite.",
+    ),
+    Message(
+        "core.input_operation_unknown",
+        "The import operation of input «{name}» ({operation}) is not in the project.",
+        "La operación de importación de la entrada «{name}» ({operation}) no está en el "
+        "proyecto.",
+    ),
+    Message(
+        "core.input_operation_not_running",
+        "Import operation «{op_type}» of input «{name}» ({operation}) is no longer running: the "
+        "input is registered before completing it.",
+        "La operación de importación «{op_type}» de la entrada «{name}» ({operation}) ya no "
+        "está en curso: la entrada se registra antes de completarla.",
+    ),
+    Message(
+        "core.input_table_missing",
+        "Table «{table}» of input «{name}» is not a layer or table of the project.",
+        "La tabla «{table}» de la entrada «{name}» no es una capa ni una tabla del proyecto.",
+    ),
+    # Sustituir, mantener la copia, descartar y editar (T21; RF-008-11, RF-008-12,
+    # RF-008-55; D-11): una entrada sustituida o descartada queda como historia.
+    Message(
+        "core.input_unknown",
+        "There is no input {input} in project «{project}».",
+        "No hay ninguna entrada {input} en el proyecto «{project}».",
+    ),
+    Message(
+        "core.input_superseded",
+        "Input «{name}» is already superseded: it is kept as history and does not change.",
+        "La entrada «{name}» ya está sustituida: queda como historia y no cambia.",
+    ),
+    Message(
+        "core.input_discarded",
+        "Input «{name}» is discarded: it is kept as a record and does not change.",
+        "La entrada «{name}» está descartada: queda como registro y no cambia.",
+    ),
+    Message(
+        "core.input_supersede_reason_missing",
+        "State the reason for replacing input «{name}».",
+        "Indique el motivo de la sustitución de la entrada «{name}».",
+    ),
+    Message(
+        "core.input_discard_reason_missing",
+        "State the reason for discarding input «{name}».",
+        "Indique el motivo para descartar la entrada «{name}».",
+    ),
+    Message(
+        "core.input_not_changed",
+        "Input «{name}» has not changed: there is no change to decide on.",
+        "La entrada «{name}» no ha cambiado: no hay ningún cambio que decidir.",
+    ),
+    Message(
+        "core.input_already_kept",
+        "Input «{name}» is already «changed · copy kept».",
+        "La entrada «{name}» ya está «cambiada · se mantiene la copia».",
+    ),
+    # Comprobación de las fuentes (T25; RF-008-10, RF-008-13): el aviso de la spec §8 de una
+    # entrada cambiada, con la fecha de su fuente, y las que no se pueden comprobar.
+    Message(
+        "core.input_changed",
+        "Input «{name}» has changed since it was registered ({registered}). Depending on it: "
+        "{datasets}, {operations} and {figures}.",
+        "La entrada «{name}» ha cambiado desde su registro ({registered}). Dependen de ella: "
+        "{datasets}, {operations} y {figures}.",
+    ),
+    Message(
+        "core.input_changed_source",
+        "Date of the source: {source_date}.",
+        "Fecha de la fuente: {source_date}.",
+    ),
+    Message(
+        "core.input_unreachable",
+        "The source of input «{name}» cannot be found ({file}): not locatable; the imported "
+        "data is still used.",
+        "No se encuentra la fuente de la entrada «{name}» ({file}): no localizable; se sigue "
+        "con lo importado.",
+    ),
+    Message(
+        "core.input_unreadable",
+        "The source of input «{name}» cannot be read with its reader «{reader}» ({reason}): the "
+        "imported data is still used.",
+        "No se puede leer la fuente de la entrada «{name}» con su lector «{reader}» "
+        "({reason}): se sigue con lo importado.",
+    ),
+    # Originales (T22; RF-008-53, RF-008-14): el aviso de la spec §8 por encima del límite
+    # (D-18) y los rechazos de la copia verificada, que nunca se rehace desde la fuente.
+    Message(
+        "core.original_too_large",
+        "The original of «{file}» ({size} MB) exceeds the limit of {limit} MB: only the "
+        "imported data is kept.",
+        "El original de «{file}» ({size} MB) pasa del límite de {limit} MB: se guarda solo lo "
+        "importado.",
+    ),
+    Message(
+        "core.original_copy_missing",
+        "The verified copy of «{file}» of input «{name}» is missing: its original is not kept; "
+        "import it again.",
+        "Falta la copia verificada de «{file}» de la entrada «{name}»: no se guarda su "
+        "original; vuelva a importarla.",
+    ),
+    Message(
+        "core.original_copy_mismatch",
+        "The verified copy of «{file}» of input «{name}» does not match its registered "
+        "fingerprint: its original is not kept; import it again.",
+        "La copia verificada de «{file}» de la entrada «{name}» no coincide con su huella "
+        "registrada: no se guarda su original; vuelva a importarla.",
+    ),
+    Message(
+        "core.original_exists",
+        "There is already a file «{path}» in the originals of the project: it is not "
+        "overwritten.",
+        "Ya hay un fichero «{path}» en los originales del proyecto: no se sobrescribe.",
+    ),
+    Message(
+        "core.original_copy_failed",
+        "The original of «{file}» of input «{name}» could not be kept ({reason}): nothing is "
+        "left half-done.",
+        "No se ha podido guardar el original de «{file}» de la entrada «{name}» ({reason}): no "
+        "queda nada a medias.",
+    ),
+    # Guarda de las escrituras (T23; RF-008-15, RF-008-14; S-3 del plan): los rechazos de la
+    # spec §8 y los avisos de las carpetas de solo lectura.
+    Message(
+        "core.write_target_source_folder",
+        "Cannot write in folder «{folder}»: it contains the source of input «{name}».",
+        "No se puede escribir en la carpeta «{folder}»: contiene la fuente de la entrada "
+        "«{name}».",
+    ),
+    Message(
+        "core.write_target_source",
+        "Cannot write to «{file}»: it is the source of input «{name}».",
+        "No se puede escribir en «{file}»: es la fuente de la entrada «{name}».",
+    ),
+    Message(
+        "core.write_target_read_only",
+        "Folder «{folder}» is read-only in the Geoblender preferences.",
+        "La carpeta «{folder}» es de solo lectura en las preferencias de Geoblender.",
+    ),
+    Message(
+        "core.read_only_dirs_empty",
+        "There is no read-only folder: neither the variable {variable} nor the Geoblender "
+        "preferences declare any, so client dossiers are not protected from Geoblender writes.",
+        "No hay ninguna carpeta de solo lectura: ni la variable {variable} ni las preferencias "
+        "de Geoblender declaran ninguna, así que los expedientes de clientes no están "
+        "protegidos de las escrituras de Geoblender.",
+    ),
+    Message(
+        "core.read_only_dir_ignored",
+        "Read-only folder «{folder}» is ignored: it is not a full path, with its drive or on "
+        "the network.",
+        "No se tiene en cuenta la carpeta de solo lectura «{folder}»: no es una ruta completa, "
+        "con su unidad o de red.",
+    ),
+    # Obsolescencia deducida (T26; RF-008-24, RF-008-25): «Obsoleto: …» y una causa por
+    # clase de ``gb_stale.cause_kind`` (``core.cause_<clase>``).
+    Message("core.stale", "Stale: {causes}", "Obsoleto: {causes}"),
+    Message("core.cause_dataset_changed", "«{name}» changed", "cambió «{name}»"),
+    Message("core.cause_parameter_changed", "{name} changed", "cambió {name}"),
+    Message("core.cause_input_updated", "input «{name}» was updated",
+            "se actualizó la entrada «{name}»"),
+    Message("core.cause_input_discarded", "input «{name}» was discarded",
+            "se descartó la entrada «{name}»"),
+    Message("core.cause_dataset_missing", "«{name}» is missing", "falta «{name}»"),
+    Message("core.cause_dataset_blocked", "«{name}» is blocked by an external edit",
+            "«{name}» está bloqueado por una edición externa"),
+    Message("core.cause_dataset_damaged", "«{name}» is damaged: it can only be reimported",
+            "«{name}» está dañado: solo se puede reimportar"),
+    Message(
+        "core.cause_algorithm",
+        "Geoblender changes the algorithm of {op_type} ({registered} → {installed})",
+        "Geoblender cambia el algoritmo de {op_type} ({registered} → {installed})",
+    ),
+    Message("core.cause_group", "it is coupled in group «{group}»",
+            "está acoplada en el grupo «{group}»"),
+    # Una causa que cambió mientras se calculaba la operación (T31; RF-008-20): «cambió
+    # Producción mientras se calculaba».
+    Message("core.cause_while_running", "{cause} while it was being calculated",
+            "{cause} mientras se calculaba"),
+    # Incorporar un trabajo (T31; RF-008-20): una salida que falta o no coincide con su
+    # huella, con el mismo ``msgid`` y el mismo texto que la 004 (``output_hash_mismatch`` de
+    # ``jobs/messages.py``, que ``core`` no importa).
+    Message(
+        "core.job_output_mismatch",
+        "Result {path} of job «{job}» is missing or does not match its hash.",
+        "El resultado {path} del trabajo «{job}» falta o no coincide con su huella.",
+    ),
+    # Plan de «Recalcular lo obsoleto» (T28; RF-008-25, RF-008-26, RF-008-27): por qué una
+    # operación obsoleta se deja fuera (un tipo que no está instalado da
+    # ``core.operation_unregistered``).
+    Message(
+        "core.recompute_review",
+        "Review by hand: operation «{op_type}» is not repeated on its own; redo it or accept "
+        "it as good.",
+        "Revisar a mano: la operación «{op_type}» no se repite sola; rehágala o dela por "
+        "buena.",
+    ),
+    Message(
+        "core.recompute_waits",
+        "Waits for what is upstream of it and is not recomputed now: {operations}.",
+        "Espera a lo que tiene aguas arriba y no se recalcula ahora: {operations}.",
+    ),
+    Message(
+        "core.recompute_group",
+        "It is coupled in group «{group}» and is not recomputed without {operations}.",
+        "Está acoplada en el grupo «{group}» y no se recalcula sin {operations}.",
+    ),
+    Message(
+        "core.recompute_newer_algorithm",
+        "Computed with {op_type} {version}: update Geoblender",
+        "Calculado con {op_type} {version}: actualice Geoblender",
+    ),
+    # Ejecución del plan (T29; RF-008-26): una unidad que al empezar no se ejecuta (sigue
+    # obsoleta) y una que no se pudo recalcular.
+    Message(
+        "core.recompute_input_changed",
+        "Not recomputed: input «{name}» has changed and it has not been decided whether to "
+        "update it or keep the copy.",
+        "No se recalcula: la entrada «{name}» ha cambiado y no se ha decidido si actualizarla "
+        "o mantener la copia.",
+    ),
+    Message(
+        "core.recompute_dataset_unusable",
+        "Not recomputed: dataset «{name}» that it consumes is missing, blocked or damaged.",
+        "No se recalcula: el dato «{name}» que consume falta, está bloqueado o dañado.",
+    ),
+    Message(
+        "core.recompute_no_successor",
+        "Not recomputed: «{name}», which it consumed, was discarded and has no successor.",
+        "No se recalcula: «{name}», que consumía, se descartó y no tiene sucesor.",
+    ),
+    Message(
+        "core.recompute_failed",
+        "Operation «{op_type}» could not be recomputed: {reason}",
+        "No se pudo recalcular la operación «{op_type}»: {reason}",
+    ),
+    # «Dar por buena» una operación que espera revisión a mano (T29; RF-008-27, D-12).
+    Message(
+        "core.accept_review_reason_missing",
+        "A reason is missing: accepting operation «{op_type}» as good is recorded with it.",
+        "Falta el motivo: dar por buena la operación «{op_type}» queda registrado con él.",
+    ),
+    Message(
+        "core.accept_review_not_review",
+        "Operation «{op_type}» ({operation}) is not waiting for review by hand: there is "
+        "nothing to accept as good.",
+        "La operación «{op_type}» ({operation}) no espera revisión a mano: no hay nada que dar "
+        "por bueno.",
+    ),
+    Message(
+        "core.accept_review_upstream",
+        "Operation «{op_type}» cannot be accepted as good yet: what it consumes is still "
+        "stale ({names}); recompute or review it first.",
+        "La operación «{op_type}» aún no se puede dar por buena: lo que consume sigue "
+        "obsoleto ({names}); recalcúlelo o revíselo antes.",
+    ),
+    Message(
+        "core.accept_review_imported",
+        "Operation «{op_type}» wrote what was imported from input «{name}»: it is not "
+        "accepted as good; update or reimport the input.",
+        "La operación «{op_type}» escribió lo importado de la entrada «{name}»: no se da por "
+        "buena; actualice o reimporte la entrada.",
+    ),
+    Message(
+        "core.accept_review_output",
+        "Dataset «{name}» written by operation «{op_type}» is missing, blocked or damaged: "
+        "resolve it before accepting the operation as good.",
+        "El dato «{name}» que escribió la operación «{op_type}» falta, está bloqueado o "
+        "dañado: resuélvalo antes de dar la operación por buena.",
+    ),
+    Message(
+        "core.accept_review_changed",
+        "Dataset «{name}» is no longer the one written by operation «{op_type}»: check the "
+        "project data before accepting it as good.",
+        "El dato «{name}» ya no es el que escribió la operación «{op_type}»: compruebe los "
+        "datos del proyecto antes de darla por buena.",
+    ),
+    # Datos del proyecto cambiados fuera de Geoblender (T30; RF-008-21, RF-008-56,
+    # RF-008-57; ADR-0025 §4): la edición externa registrada, el bloqueo de la spec §8, lo que
+    # falta, lo dañado y lo que no se puede leer para comprobarlo.
+    Message(
+        "core.external_edit",
+        "Dataset «{name}» was edited outside Geoblender: the external edit is recorded and "
+        "what depends on it is stale.",
+        "El dato «{name}» se editó fuera de Geoblender: se registra la edición externa y lo "
+        "que depende de él queda obsoleto.",
+    ),
+    Message(
+        "core.dataset_blocked",
+        "Layer «{name}» was edited outside Geoblender and is not edited by hand: accept the "
+        "edit with a reason, recompute or reimport",
+        "La capa «{name}» se editó fuera de Geoblender y no se edita a mano: acepte la "
+        "edición con un motivo, recalcule o reimporte",
+    ),
+    Message(
+        "core.dataset_missing",
+        "Dataset «{name}» is missing ({locator}): recompute or reimport it; while it is "
+        "missing, no operation that consumes it is run.",
+        "Falta el dato «{name}» ({locator}): recalcúlelo o reimpórtelo; mientras falte, no se "
+        "ejecuta ninguna operación que lo consuma.",
+    ),
+    Message(
+        "core.dataset_damaged",
+        "Dataset «{name}», imported from input «{input}», is damaged: it changed or lost its "
+        "protection; it can only be reimported.",
+        "El dato «{name}», lo importado de la entrada «{input}», está dañado: cambió o perdió "
+        "su protección; solo se puede reimportar.",
+    ),
+    Message(
+        "core.dataset_unreadable",
+        "Dataset «{name}» cannot be read to check it ({reason}): no operation that consumes "
+        "it is run.",
+        "No se puede leer el dato «{name}» para comprobarlo ({reason}): no se ejecuta ninguna "
+        "operación que lo consuma.",
+    ),
+    # Comprobación de los datos del proyecto (T32; RF-008-56, RF-008-57, RF-008-53): un dato
+    # que vuelve, aceptar una edición externa con su motivo, lo que se ofrece para resolver un
+    # dato bloqueado, que falta o dañado, y un original que ya no coincide con su huella.
+    Message(
+        "core.dataset_restored",
+        "Dataset «{name}» is back in the project with its registered content: current again.",
+        "El dato «{name}» vuelve a estar en el proyecto con su contenido registrado: vigente "
+        "otra vez.",
+    ),
+    Message(
+        "core.edit_accepted",
+        "External edit of «{name}» accepted: {reason}",
+        "Edición externa de «{name}» aceptada: {reason}",
+    ),
+    Message(
+        "core.accept_edit_reason_missing",
+        "A reason is missing: accepting the external edit of «{name}» is recorded with it.",
+        "Falta el motivo: aceptar la edición externa de «{name}» queda registrado con él.",
+    ),
+    Message(
+        "core.accept_edit_not_blocked",
+        "Dataset «{name}» is not blocked by an external edit: there is no edit to accept.",
+        "El dato «{name}» no está bloqueado por una edición externa: no hay ninguna edición que "
+        "aceptar.",
+    ),
+    Message("core.offer_accept", "Accept the edit", "Aceptar la edición"),
+    Message("core.offer_recompute", "Recompute", "Recalcular"),
+    Message("core.offer_reimport", "Reimport", "Reimportar"),
+    Message(
+        "core.original_altered",
+        "The original «{file}» of input «{name}» no longer matches its fingerprint: it cannot "
+        "be used to reimport.",
+        "El original «{file}» de la entrada «{name}» ya no coincide con su huella: no sirve "
+        "para reimportar.",
+    ),
+    Message(
+        "core.original_missing",
+        "The original «{file}» of input «{name}» is missing from the project: it cannot be "
+        "used to reimport.",
+        "Falta el original «{file}» de la entrada «{name}» en el proyecto: no sirve para "
+        "reimportar.",
+    ),
+    # Restos de operaciones interrumpidas (T33; RF-008-22): apartados a ``orphans/``, abiertos
+    # en otro programa o que no se pudieron apartar (se reintenta al abrir otra vez) y, en
+    # solo lectura, solo el aviso.
+    Message(
+        "core.orphans_moved",
+        "Leftovers of interrupted operations set aside in «{folder}» (nothing is deleted): "
+        "{files}.",
+        "Restos de operaciones interrumpidas apartados a «{folder}» (no se borra nada): "
+        "{files}.",
+    ),
+    Message(
+        "core.orphans_locked",
+        "Leftovers open in another program, not set aside: {files}. It will be tried again "
+        "the next time the project is opened.",
+        "Restos abiertos en otro programa, sin apartar: {files}. Se reintentará al abrir el "
+        "proyecto la próxima vez.",
+    ),
+    Message(
+        "core.orphans_failed",
+        "Leftovers that could not be set aside: {files}. It will be tried again the next time "
+        "the project is opened.",
+        "Restos que no se pudieron apartar: {files}. Se reintentará al abrir el proyecto la "
+        "próxima vez.",
+    ),
+    Message(
+        "core.orphans_found",
+        "Leftovers of interrupted operations in the project: {files}. Read-only: they are set "
+        "aside when the project is opened for writing.",
+        "Restos de operaciones interrumpidas en el proyecto: {files}. En solo lectura no se "
+        "apartan: se apartarán al abrirlo en escritura.",
+    ),
+    Message("core.orphans_more", "and {count} more", "y {count} más"),
+    # Ficheros ajenos y capas sin registrar (T34; RF-008-62): el aviso con la lista (nada se
+    # mueve) y lo que se ignora.
+    Message(
+        "core.foreign_files",
+        "Files in the project data folders that belong to no dataset (they are not moved): "
+        "{files}. You can ignore them.",
+        "Ficheros ajenos en las carpetas de datos del proyecto, que no son de ningún dato (no "
+        "se mueven): {files}. Puede ignorarlos.",
+    ),
+    Message(
+        "core.unregistered_tables",
+        "Layers or tables of the project that are not registered (created outside Geoblender; "
+        "they are not touched): {tables}. Register them as inputs or ignore them.",
+        "Capas o tablas del proyecto sin registrar (creadas fuera de Geoblender; no se tocan): "
+        "{tables}. Regístrelas como entrada o ignórelas.",
+    ),
+    Message(
+        "core.ignored_file",
+        "File «{name}» is ignored: it is no longer warned about.",
+        "Se ignora el fichero «{name}»: ya no se avisa de él.",
+    ),
+    Message(
+        "core.ignored_table",
+        "Layer or table «{name}» is ignored: it is no longer warned about.",
+        "Se ignora la capa o tabla «{name}»: ya no se avisa de ella.",
+    ),
+    Message(
+        "core.ignore_not_foreign",
+        "«{name}» is not a foreign file nor an unregistered layer of the project: there is "
+        "nothing to ignore.",
+        "«{name}» no es un fichero ajeno ni una capa sin registrar del proyecto: no hay nada "
+        "que ignorar.",
+    ),
+    # Registrar una capa de un GeoPackage como entrada (``core.import_layer``, T34; RF-008-07,
+    # RF-008-11, RF-008-62): lo registrado, la capa que no está (el importador pide los
+    # ajustes), lo que no se registra y la fuente que no se encuentra al reimportar.
+    Message(
+        "core.layer_imported",
+        "Layer «{layer}» registered as input «{name}»; the imported data is in «{table}».",
+        "Capa «{layer}» registrada como entrada «{name}»; lo importado, en «{table}».",
+    ),
+    Message(
+        "core.import_layer_missing",
+        "Layer «{layer}» is not in «{source}» (it has: {layers}): indicate the import settings "
+        "again (the layer) to import «{name}».",
+        "La capa «{layer}» no está en «{source}» (tiene: {layers}): indique otra vez los "
+        "ajustes de la importación (la capa) para importar «{name}».",
+    ),
+    Message(
+        "core.import_layer_kind",
+        "«{layer}» of «{source}» is of type «{data_type}»: only feature layers and tables are "
+        "registered as inputs.",
+        "«{layer}» de «{source}» es de tipo «{data_type}»: solo se registran como entrada "
+        "capas de entidades y tablas.",
+    ),
+    Message(
+        "core.import_layer_not_gpkg",
+        "«{source}» is not a GeoPackage: it has no gpkg_contents.",
+        "«{source}» no es un GeoPackage: no tiene gpkg_contents.",
+    ),
+    Message(
+        "core.import_layer_dataset",
+        "Table «{layer}» is already a dataset of the project or an internal table: it is not "
+        "registered as an input.",
+        "La tabla «{layer}» ya es un dato del proyecto o una tabla interna: no se registra "
+        "como entrada.",
+    ),
+    Message(
+        "core.reimport_source_missing",
+        "The source of input «{name}» cannot be found ({file}): it cannot be reimported.",
+        "No se encuentra la fuente de la entrada «{name}» ({file}): no se puede reimportar.",
+    ),
+    # Puerta antes de operar (T30; RF-008-10, RF-008-58): las tres salidas del aviso de una
+    # entrada cambiada y la espera a la comprobación de apertura o a un hash largo.
+    Message("core.choice_update", "Update", "Actualizar"),
+    Message("core.choice_keep", "Keep the copy", "Mantener la copia"),
+    Message("core.choice_cancel", "Cancel", "Cancelar"),
+    Message(
+        "core.gate_checking",
+        "Checking the project…: wait until it finishes ({names}).",
+        "Comprobando el proyecto…: espere a que termine ({names}).",
+    ),
+    Message(
+        "core.gate_hashing",
+        "Checking the content of {names}: wait until it finishes and repeat the command.",
+        "Comprobando el contenido de {names}: espere a que termine y repita la orden.",
+    ),
+    # Procedencia y marcas de las cifras (T35; RF-008-29, RF-008-31): lo que no está en el
+    # proyecto, el estado de una entrada en la cadena (spec §8 y RF-008-55) y las marcas.
+    Message(
+        "core.lineage_unknown",
+        "«{item}» is not a dataset, a figure or an operation of project «{project}».",
+        "«{item}» no es un dato, una cifra ni una operación del proyecto «{project}».",
+    ),
+    Message("core.input_status_current", "current", "vigente"),
+    Message("core.input_status_changed", "changed", "cambiada"),
+    Message("core.input_status_kept", "changed · copy kept", "cambiada · se mantiene la copia"),
+    Message("core.input_status_superseded", "superseded", "sustituida"),
+    Message("core.input_status_discarded", "discarded · record, do not use",
+            "descartada · registro, no usar"),
+    Message("core.mark_hypothesis", "depends on a hypothesis", "depende de una hipótesis"),
+    Message("core.mark_unconfirmed", "depends on an unconfirmed value",
+            "depende de un valor sin confirmar"),
+    Message("core.mark_stale", "stale", "obsoleta"),
+    # Estado de lo mostrado (T35; RF-008-23, spec §8).
+    Message("core.result_result", "result", "resultado"),
+    Message("core.result_pending", "pending ingestion", "pendiente de incorporar"),
+    Message("core.result_not_ingested", "not ingested: {reason}", "no incorporada: {reason}"),
+    Message("core.result_preview", "preview, not saved", "vista previa, sin guardar"),
+    Message("core.result_measurement", "measurement, not recorded", "medición, no registrada"),
+    # Comprobaciones de apertura (T36; RF-008-19, RF-008-24): una operación «en curso» de una
+    # sesión que perdió el cerrojo (el texto que registra ``interrupt_orphaned``) y un algoritmo
+    # que el Geoblender instalado declara con una versión mayor, con sus resultados
+    # («3 resultados obsoletos»).
+    Message(
+        "core.operation_interrupted",
+        "Operation «{op_type}» was interrupted: the session of {user_host} that ran it no "
+        "longer holds the project lock (Blender closed, the network went down or another "
+        "computer forced the lock) and could not record its end",
+        "Operación «{op_type}» interrumpida: la sesión de {user_host} que la ejecutaba ya no "
+        "tiene el cerrojo del proyecto (Blender se cerró, se cayó la red u otro equipo forzó el "
+        "cerrojo) y no pudo registrar su final",
+    ),
+    Message(
+        "core.algorithm_changed",
+        "Geoblender {version} changes the algorithm of {op_type} ({registered} → {installed}): "
+        "{results}",
+        "Geoblender {version} cambia el algoritmo de {op_type} ({registered} → {installed}): "
+        "{results}",
+    ),
+    # Un parámetro marcado «revisar» cuya definición registrada se vuelve a declarar: la marca
+    # se quita (el evento de la comprobación de apertura).
+    Message(
+        "core.definition_redeclared",
+        "{key}: its registered definition is declared again; it no longer needs review.",
+        "{key}: se vuelve a declarar su definición registrada; ya no hay que revisarlo.",
+    ),
+    # Ctrl+Z (T38; RF-008-32): lo que un paso de deshacer deja atrás o uno de rehacer recupera
+    # sigue en el proyecto. Avisos de la barra de estado, sin punto final; ``{item}`` es uno de
+    # los tres primeros, ya en el idioma del aviso.
+    Message("core.undo_item_operation", "operation «{label}»", "la operación «{label}»"),
+    Message("core.undo_item_parameter", "the change of «{label}»", "el cambio de «{label}»"),
+    Message("core.undo_item_input", "the decision on input «{label}»",
+            "la decisión sobre la entrada «{label}»"),
+    Message("core.undo_kept", "Ctrl+Z does not undo {item}: it stays in the project",
+            "Ctrl+Z no deshace {item}: sigue en el proyecto"),
+    Message("core.undo_kept_one_more",
+            "Ctrl+Z does not undo {item} or another recorded change: they stay in the project",
+            "Ctrl+Z no deshace {item} ni otro cambio registrado: siguen en el proyecto"),
+    Message("core.undo_kept_more",
+            "Ctrl+Z does not undo {item} or {more} other recorded changes: they stay in the "
+            "project",
+            "Ctrl+Z no deshace {item} ni otros {more} cambios registrados: siguen en el "
+            "proyecto"),
+    Message("core.redo_kept",
+            "Ctrl+Shift+Z does not redo {item}: it was not undone and stays in the project",
+            "Ctrl+Mayús+Z no rehace {item}: no se deshizo y sigue en el proyecto"),
+    Message("core.redo_kept_one_more",
+            "Ctrl+Shift+Z does not redo {item} or another recorded change: they were not "
+            "undone and stay in the project",
+            "Ctrl+Mayús+Z no rehace {item} ni otro cambio registrado: no se deshicieron y "
+            "siguen en el proyecto"),
+    Message("core.redo_kept_more",
+            "Ctrl+Shift+Z does not redo {item} or {more} other recorded changes: they were not "
+            "undone and stay in the project",
+            "Ctrl+Mayús+Z no rehace {item} ni otros {more} cambios registrados: no se "
+            "deshicieron y siguen en el proyecto"),
+)
+
+MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in _CATALOG})
+"""Los mensajes por código (solo lectura)."""
+
+EXTERNAL_EDIT_MSGID = "External edit"
+ACCEPT_REVIEW_MSGID = "Accept as good"
+IMPORT_LAYER_MSGID = "Register layer as input"
+
+LABELS: Mapping[str, str] = MappingProxyType({
+    EXTERNAL_EDIT_MSGID: "Edición externa",
+    ACCEPT_REVIEW_MSGID: "Dar por buena",
+    IMPORT_LAYER_MSGID: "Registrar la capa como entrada",
+})
+"""Nombres visibles de las operaciones de ``core``: ``msgid`` → español (solo lectura)."""
+
+CATALOG_ES: Mapping[str, str] = MappingProxyType(
+    {**{m.msgid: m.es for m in _CATALOG}, **LABELS}
+)
+"""``msgid`` → español de los mensajes y los nombres visibles, para ``core.i18n.install``
+(solo lectura)."""
+
+
+def lookup(code: str) -> Message:
+    """El mensaje de ``code``; :class:`ValueError` si no está en el catálogo (un error del
+    programa: todo error de la procedencia tiene aquí su texto en español)."""
+    message = MESSAGES.get(code)
+    if message is None:
+        raise ValueError(
+            f"el código de mensaje «{code}» no está en el catálogo de la procedencia "
+            "(core/provenance/messages.py)"
+        )
+    return message
+
+
+def render(code: str, /, *, language: str = "es", **values: object) -> str:
+    """El texto de ``code`` con ``values`` en sus marcadores, en ``language`` (``"es"`` o
+    ``"en"``, el ``msgid``). El marcador sin valor queda :data:`MISSING_VALUE`; los valores
+    que sobran se ignoran. :class:`ValueError` si el código o el idioma no existen."""
+    if language not in LANGUAGES:
+        raise ValueError(f"el idioma «{language}» no es de Geoblender: {', '.join(LANGUAGES)}")
+    message = lookup(code)
+    template = message.es if language == "es" else message.msgid
+    shown = _Shown({name: _show(value, language) for name, value in values.items()})
+    return template.format_map(shown)
+
+
+def json_value(value: object) -> JsonScalar:
+    """``value`` como se guarda en el registro (JSON): los escalares tal cual y lo demás
+    como texto."""
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    return str(value)
+
+
+class ProvenanceError(GeoblenderError):
+    """Error de la procedencia para el usuario: ``code`` del catálogo, ``msgid``, ``values``
+    (JSON, para el registro y para mostrarlo en otro idioma con :func:`render`) y ``text`` en
+    español, que es también ``str(error)`` y ``message``."""
+
+    def __init__(self, code: str, /, **values: object) -> None:
+        message = lookup(code)
+        self.msgid = message.msgid
+        self.values: dict[str, JsonScalar] = {k: json_value(v) for k, v in values.items()}
+        self.text = render(code, **self.values)
+        super().__init__(code, self.text, obj=ERROR_OBJECT, field="código", value=code,
+                         context=self.values)
+        self.args = (self.text,)
+
+
+class _Shown(dict[str, str]):
+    """Valores ya presentados; el que falta se ve como :data:`MISSING_VALUE`."""
+
+    def __missing__(self, key: str) -> str:
+        return MISSING_VALUE
+
+
+def _show(value: object, language: str) -> str:
+    """Un valor como lo lee una persona en ``language``: decimales con coma en español."""
+    if value is None:
+        return MISSING_VALUE
+    if isinstance(value, bool):
+        if language == "es":
+            return "sí" if value else "no"
+        return "yes" if value else "no"
+    if isinstance(value, float):
+        text = str(int(value)) if value.is_integer() else repr(value)
+        return text.replace(".", ",") if language == "es" else text
+    return str(value)

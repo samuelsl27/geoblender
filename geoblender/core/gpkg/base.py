@@ -34,9 +34,9 @@ APPLICATION_ID = 1196444487  # 0x47504B47, «GPKG»
 USER_VERSION = 10400  # GeoPackage 1.4.0
 GPKG_VERSION = "1.4.0"
 EXTENSION_NAME = "imga_geoblender"
-EXTENSION_DEFINITION = (
-    "Geoblender — docs/arquitectura/datos/formato-proyecto.md (esquema 1)"
-)
+# Sin número de esquema (spec 008, plan §5.1): el esquema lo dice gb_project, y la
+# declaración de una tabla no cambia al migrar.
+EXTENSION_DEFINITION = "Geoblender — docs/arquitectura/datos/formato-proyecto.md"
 EXTENSION_SCOPE = "write-only"
 GEOMETRY_COLUMN = "geom"
 COLUMN_TYPES: frozenset[str] = frozenset(

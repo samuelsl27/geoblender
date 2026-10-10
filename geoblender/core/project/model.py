@@ -7,7 +7,10 @@
   proyecto tal como las guarda la base de datos, que es la fuente de verdad (la cabecera
   ``manifest.json`` es una copia legible que se reescribe desde ella).
 - :class:`OpenMode`, :class:`ReadOnlyCode` y :class:`OpenStatus`: cómo está abierto un
-  proyecto y, en solo lectura, por qué (RF-002-13).
+  proyecto y, en solo lectura, por qué (RF-002-13; la carpeta de solo lectura, spec 008).
+- :func:`read_only_folder` y :func:`read_only_phrase`: la carpeta de solo lectura que contiene
+  una ruta (las que declaran la variable de IMGA y la preferencia, ``core.paths.ReadOnlyDirs``),
+  para crear, abrir, migrar, sacar una copia local y publicar (spec 008; RF-008-15; S-3).
 - :class:`Progress` y :class:`OpenResult`: los pasos de una operación larga (abrir, copiar,
   migrar) y el resultado de abrir.
 
@@ -20,9 +23,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..georef.origin import DEFAULT_GRID_STEP_M, GeoOrigin, Window
+from ..paths import ReadOnlyDirs
 
 if TYPE_CHECKING:
     from .lock import LockStatus
@@ -148,6 +153,24 @@ class ReadOnlyCode(Enum):
     WAL_BUSY = "wal_busy"  # otro programa tiene la BD abierta en WAL
     LOCK_LOST = "lock_lost"  # el cerrojo dejó de ser de esta sesión
     WRITE_FAILED = "write_failed"  # falló una escritura (disco, red)
+    READ_ONLY_FOLDER = "read_only_folder"  # en una carpeta de solo lectura (spec 008, S-3)
+
+
+def read_only_folder(read_only: ReadOnlyDirs | None, path: Path | str) -> Path | None:
+    """La carpeta de solo lectura (como se declaró) que contiene ``path`` o que es ``path``, o
+    ``None``; sin carpetas (``read_only`` es ``None``), ninguna (spec 008; RF-008-15; S-3 del
+    plan 008). ``TypeError`` si ``read_only`` no es una :class:`~..paths.ReadOnlyDirs`."""
+    if read_only is None:
+        return None
+    if not isinstance(read_only, ReadOnlyDirs):
+        raise TypeError(f"las carpetas de solo lectura son una ReadOnlyDirs, no {read_only!r}")
+    return read_only.contains(path)
+
+
+def read_only_phrase(folder: Path) -> str:
+    """La carpeta como se nombra en los motivos de crear, abrir, migrar, sacar una copia local
+    y publicar: «…», una carpeta de solo lectura en las preferencias de Geoblender."""
+    return f"«{folder}», una carpeta de solo lectura en las preferencias de Geoblender"
 
 
 @dataclass(frozen=True)

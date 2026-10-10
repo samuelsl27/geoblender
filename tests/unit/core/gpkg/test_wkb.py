@@ -3,7 +3,8 @@
 T05; RF-002-14; GeoPackage 1.4 §2.1.3).
 
 Las coordenadas son absolutas (CRS del proyecto) en float64: la ida y vuelta tiene que
-ser bit a bit, sin perder los milímetros de una coordenada UTM.
+ser bit a bit, sin perder los milímetros de una coordenada UTM. ``geometry_wkb`` (spec 008,
+T12; RF-008-08) da el WKB de un blob sin su cabecera para el hash de contenido.
 """
 
 import struct
@@ -201,6 +202,59 @@ class RejectTest(unittest.TestCase):
                         gpkg.encode_geometry(name, coords, SRS, has_z)
                     continue
                 self.assertRejected(gpkg.encode_geometry, name, coords, SRS, has_z)
+
+
+def _header(flags: int, envelope: tuple[float, ...] = (), *, order: str = "<") -> bytes:
+    """Una cabecera ``GP`` de la versión 0 con ``flags``, el SRS de las pruebas y la
+    envolvente ``envelope`` en el orden de bytes ``order``."""
+    srs = struct.pack(f"{order}i", SRS)
+    return b"GP\x00" + bytes([flags]) + srs + struct.pack(f"{order}{len(envelope)}d", *envelope)
+
+
+class GeometryWkbTest(unittest.TestCase):
+    """RF-008-08 (spec 008, T12): el WKB de un blob GeoPackage sin su cabecera, tal como
+    está, para que lo normalice el hash de contenido (``core.content``)."""
+
+    def test_body_after_header_and_envelope(self) -> None:
+        """RF-008-08: tras la cabecera de 8 bytes y la envolvente que diga su código (0, 4,
+        6 u 8 dobles), en cualquier orden de bytes, queda el WKB sin tocar."""
+        point = gpkg.encode_geometry("POINT", np.array(P1[:2]), SRS, False)
+        self.assertEqual(bytes(wkb.geometry_wkb(point)), point[8:])
+        line = gpkg.encode_geometry("LINESTRING", np.array([P1, P2]), SRS, True)
+        self.assertEqual(bytes(wkb.geometry_wkb(line)), line[8 + 48:])
+        body = b"\x00" + struct.pack(">I", 1) + struct.pack(">2d", *P1[:2])
+        for code, doubles in ((0, 0), (1, 4), (2, 6), (3, 6), (4, 8)):
+            for order, little in ((">", 0), ("<", 1)):
+                with self.subTest(envolvente=code, orden=order):
+                    blob = _header(code << 1 | little, (1.5,) * doubles, order=order) + body
+                    self.assertEqual(bytes(wkb.geometry_wkb(blob)), body)
+                    self.assertEqual(bytes(wkb.geometry_wkb(bytearray(blob))), body)
+
+    def test_empty_flag_is_accepted(self) -> None:
+        """RF-008-08: un blob marcado como vacío (bandera E) da su WKB vacío: el hash de
+        contenido distingue una geometría vacía de una nula."""
+        empty_polygon = b"\x01" + struct.pack("<II", 3, 0)
+        blob = _header(0b0001_0001) + empty_polygon
+        self.assertEqual(bytes(wkb.geometry_wkb(blob)), empty_polygon)
+
+    def test_malformed_headers_are_rejected(self) -> None:
+        """RF-008-08: sin ``GP``, de otra versión, extendido, con un código de envolvente
+        que no existe o que no cabe en el blob se rechaza con mensaje."""
+        good = gpkg.encode_geometry("LINESTRING", np.array([P1[:2], P2[:2]]), SRS, False)
+        cases = {
+            "sin GP": b"XX" + good[2:],
+            "versión 1": good[:2] + b"\x01" + good[3:],
+            "extendido": good[:3] + bytes([good[3] | 0b0010_0000]) + good[4:],
+            "envolvente 5": _header(5 << 1 | 1) + good[40:],
+            "envolvente cortada": good[:20],
+            "corto": b"GP\x00\x01",
+        }
+        for label, blob in cases.items():
+            with self.subTest(label), self.assertRaises(errors.GeometryError) as caught:
+                wkb.geometry_wkb(blob)
+            self.assertTrue(caught.exception.code.startswith("core.geometry_"))
+        with self.assertRaises(TypeError):
+            wkb.geometry_wkb("GP")  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

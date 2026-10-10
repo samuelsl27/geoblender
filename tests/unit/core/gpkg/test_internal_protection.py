@@ -247,10 +247,13 @@ class GeoblenderConnectionTest(unittest.TestCase):
 
 class StructureTest(unittest.TestCase):
     def test_schema_constants_and_registration(self) -> None:
-        """RF-002-14, RF-002-15: esquema 1 (``min_reader_schema`` 1); las tres tablas
-        internas, declaradas ``write-only`` y fuera de ``gpkg_contents``; la comprobación
-        de estructura no echa nada en falta y nombra lo que falte."""
-        self.assertEqual((schema.SCHEMA_VERSION, schema.MIN_READER_SCHEMA), (1, 1))
+        """RF-002-14, RF-002-15: ``min_reader_schema`` 1 (el esquema es el 2 desde la spec
+        008, que añade las tablas de la procedencia: sus pruebas, en
+        ``tests/unit/core/provenance/test_schema.py``); las tres tablas internas, entre las
+        declaradas ``write-only`` y fuera de ``gpkg_contents``; la comprobación de
+        estructura no echa nada en falta y nombra lo que falte."""
+        self.assertEqual((schema.SCHEMA_VERSION, schema.MIN_READER_SCHEMA), (2, 1))
+        self.assertEqual(schema.INTERNAL_TABLES[: len(INTERNAL)], INTERNAL)
         with project_tmp() as tmp:
             path = tmp / "project.gpkg"
             _new_project_db(path)
@@ -267,13 +270,13 @@ class StructureTest(unittest.TestCase):
                 registered = conn.execute(
                     "SELECT count(*) FROM gpkg_contents WHERE table_name LIKE 'gb_%'"
                 ).fetchone()[0]
-                self.assertEqual(schema.missing_objects(conn), [])
-            self.assertEqual(declared, sorted(INTERNAL))
+                self.assertEqual(schema.missing_objects(conn, schema.SCHEMA_VERSION), [])
+            self.assertEqual(declared, sorted(schema.INTERNAL_TABLES))
             self.assertEqual(registered, 0)
             raw = sqlite3.connect(path, isolation_level=None)
             try:
                 raw.execute("DROP TRIGGER gb_event_no_upd")
-                missing = schema.missing_objects(raw)
+                missing = schema.missing_objects(raw, schema.SCHEMA_VERSION)
             finally:
                 raw.close()
             self.assertEqual(missing, ["trigger gb_event_no_upd"])
