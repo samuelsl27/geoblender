@@ -20,13 +20,28 @@ T45:
 - Principio 8: registrar y desregistrar deja ``WindowManager``, la escena, las preferencias y
   los temporizadores como estaban.
 
+T46:
+
+- ADR-0025 §2 (plan §5.3.4): habilitar registra las declaraciones de ``core`` (sus
+  operaciones, el importador de capas, sus lectores de contenido y el parámetro del límite de
+  los originales) y deshabilitar las quita.
+- RF-008-58, RF-008-09, RNF-008-12 (plan §5.4.6): abrir un proyecto del esquema 2 no comprueba
+  nada (la apertura no cambia): deja lo de la comprobación pendiente para la puerta y un
+  temporizador persistente que la empieza un tic después, por pasos de 20 ms; avanzar el
+  monitor a mano completa los ocho pasos y deja el informe; lo que la puerta pide hashear
+  después se hace igual. Un proyecto del esquema 1 sin migrar no arranca nada y la sesión da
+  el motivo que muestran los paneles; desactivar Geoblender quita el temporizador y cancela lo
+  pendiente.
+
 Se ejecuta con ``tools/run_blender_tests.py``. Las carpetas son de unidades simuladas: nunca
-se abren.
+se abren. En ``blender -b`` los temporizadores no corren: las pruebas avanzan el monitor
+llamando a su función.
 """
 
 import importlib
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +52,7 @@ import bpy
 
 from tests.support import blender_ext
 from tests.support.blender_ext import fingerprint_diff, module_name
+from tests.support.core_fixtures import mark_schema, settings_values
 from tests.support.fake_layout import draw
 
 VARIABLE = "GEOBLENDER_READ_ONLY_DIRS"
@@ -58,6 +74,12 @@ EMPTY_TEXT = ("No hay ninguna carpeta de solo lectura: ni la variable GEOBLENDER
               "clientes no están protegidos de las escrituras de Geoblender.")
 IGNORED_TEXT = ("No se tiene en cuenta la carpeta de solo lectura «relativa»: no es una ruta "
                 "completa, con su unidad o de red.")
+CORE_OPERATIONS = ("core.accept_review", "core.external_edit", "core.import_layer")
+CORE_READERS = ("core.document@1", "core.gpkg_layer@1", "core.npz_mesh@1")
+CORE_IMPORTERS = ("core.gpkg_layer",)
+CORE_PARAMETERS = ("core.original_copy_limit",)
+MIGRATE_TEXT = "Proyecto de esquema 1: migre el proyecto para usar la procedencia"
+MAX_TICKS = 200  # un proyecto vacío se comprueba en una decena de pasos
 
 
 def _module(name: str) -> ModuleType:
@@ -73,6 +95,18 @@ def _without_variable():
 def _core_preferences() -> object:
     addon = bpy.context.preferences.addons[module_name()]
     return addon.preferences.core
+
+
+def _core_declarations() -> dict[str, tuple[str, ...]]:
+    """Lo declarado por ``core`` en los registros de la extensión: tipos de operación,
+    importadores, lectores de contenido y parámetros."""
+    contract = _module("core.provenance.contract")
+    readers = _module("core.content.readers")
+    params = _module("core.params")
+    found = {"operations": contract.OPERATIONS, "importers": contract.IMPORTERS,
+             "readers": readers.READERS, "parameters": params.DEFINITIONS}
+    return {name: tuple(sorted(key for key in view if key.startswith("core.")))
+            for name, view in found.items()}
 
 
 def _float_properties(struct: bpy.types.Struct, path: str, seen: set[str]) -> list[str]:
@@ -106,11 +140,29 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         ``WindowManager.geoblender_provenance``, ``Scene.geoblender.registry_seq`` (entero, 0,
         no animable), la preferencia ``core.read_only_folders`` (texto vacío) y el
         temporizador del aviso de las carpetas de solo lectura; deshabilitar lo quita todo y
-        deja la huella de Blender como al principio de la sesión de pruebas."""
+        deja la huella de Blender como al principio de la sesión de pruebas. T46 (ADR-0025
+        §2): también registra las declaraciones de ``core`` y escucha los cambios de proyecto,
+        y deshabilitar lo quita."""
         self.enterContext(_without_variable())
         blender_ext.enable()
         provenance = _module("bl.props.provenance")
         session = _module("bl.ops.core_provenance")
+        project_session = _module("bl.scene.project_session")
+        self.assertEqual(_core_declarations(), {
+            "operations": CORE_OPERATIONS, "importers": CORE_IMPORTERS,
+            "readers": CORE_READERS, "parameters": CORE_PARAMETERS})
+        self.assertIn(session.on_project_changed, project_session.listeners())
+        self.assertFalse(bpy.app.timers.is_registered(session.check_tick))  # sin proyecto
+        heavy = ("core.provenance.importer", "core.provenance.gate", "core.provenance.checks")
+        self.assertEqual([name for name in heavy if f"{module_name()}.{name}" in sys.modules],
+                         [])  # se cargan al usarlos
+        importer = _module("core.provenance.importer")
+        self.assertEqual([item.reader_id for item in importer.CORE_IMPORTERS],
+                         list(CORE_IMPORTERS))
+        registered = _module("core.provenance.contract").IMPORTERS[CORE_IMPORTERS[0]]
+        with mock.patch.object(importer, "reimport_layer", return_value="hecho") as reimport:
+            self.assertEqual(registered.reimport("petición"), "hecho")
+        reimport.assert_called_once_with("petición")
         rna = bpy.types.WindowManager.bl_rna.properties[WM_PROPERTY]
         self.assertEqual((rna.type, rna.fixed_type.identifier), ("POINTER", VIEW_GROUP))
         view = getattr(bpy.context.window_manager, WM_PROPERTY)
@@ -134,6 +186,9 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         self.assertFalse(hasattr(bpy.types.WindowManager, WM_PROPERTY))
         self.assertEqual([cls.__name__ for cls in classes if cls.is_registered], [])
         self.assertFalse(bpy.app.timers.is_registered(session.warn_read_only_dirs))
+        self.assertEqual(_core_declarations(), {
+            "operations": (), "importers": (), "readers": (), "parameters": ()})
+        self.assertNotIn(session.on_project_changed, project_session.listeners())
         after = blender_ext.state_fingerprint()
         baseline = blender_ext.session_baseline()
         if after != baseline:
@@ -293,6 +348,167 @@ class ProvenancePropsTest(unittest.TestCase):
         self.assertEqual(len(logs.records), 1)
         self.session.warn_read_only_dirs()
         self.assertEqual(self.project_session.take_notices(), [])
+
+
+class ProvenanceSessionTest(unittest.TestCase):
+    """La sesión de la procedencia, con la extensión habilitada una vez para todas y una
+    carpeta temporal para los proyectos."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.unload()
+        blender_ext.load_file()
+        blender_ext.enable()
+        cls.session = _module("bl.ops.core_provenance")
+        cls.ps = _module("bl.scene.project_session")
+        cls.core = _module("core.project")
+        cls.checks = _module("core.provenance.checks")
+        cls.gate = _module("core.provenance.gate")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.load_file()
+        blender_ext.unload()
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="gb-t46-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(self.ps.take_notices)
+        self.addCleanup(self.ps.close)
+        self.ps.take_notices()
+        self.monitor = self.session.SESSION
+
+    def create(self) -> object:
+        """Un proyecto nuevo (del esquema 2), abierto en escritura y aún fuera de la sesión."""
+        settings = self.core.ProjectSettings(**settings_values())
+        return self.core.create_project(self.tmp, settings, self.ps.session(),
+                                        self.ps.userdata()).project
+
+    def run_checks(self) -> list[object]:
+        """Avanza el monitor a mano hasta que se retira; devuelve el progreso de cada tic."""
+        shown: list[object] = []
+        for _ in range(MAX_TICKS):
+            if self.session.check_tick() is None:
+                return shown
+            shown.append(self.monitor.progress)
+        self.fail("la comprobación no termina")
+
+    def test_checks_start_one_tick_after_opening(self) -> None:
+        """RF-008-58, RF-008-09, RNF-008-12: al abrir un proyecto del esquema 2 no se comprueba
+        nada (la apertura no cambia), pero la puerta ya espera por todo y queda el temporizador
+        persistente; el primer tic empieza la comprobación de apertura (con lo que se pueda
+        escribir, el ``CheckState`` del proyecto y pasos de 20 ms) y avanzarla a mano recorre
+        sus pasos sin retroceder, deja el informe registrado, sus avisos en los de la sesión, y
+        retira el temporizador. Lo que la puerta pide hashear después se hace con los pasos 7 y
+        8; cerrar el proyecto lo olvida todo."""
+        self.assertEqual(self.session.PROVENANCE_SCHEMA, self.checks.PROVENANCE_SCHEMA)
+        monitor = self.monitor
+        project = self.create()
+        foreign = project.root / "rasters" / "ajeno.txt"
+        foreign.write_text("de otro programa", encoding="utf-8")
+        with mock.patch.object(self.checks, "open_check_steps",
+                               wraps=self.checks.open_check_steps) as started:
+            self.ps.attach(project)
+            self.assertEqual(started.call_count, 0)
+            self.assertTrue(bpy.app.timers.is_registered(self.session.check_tick))
+            self.assertIs(monitor.project, project)
+            self.assertIsNone(monitor.unavailable())
+            self.assertTrue(monitor.running)
+            self.assertIsNone(monitor.progress)
+            self.assertTrue(monitor.pending.is_pending("input", "cualquiera"))
+            self.assertEqual(monitor.status_text(), "Comprobando el proyecto… 0 %")
+            shown = self.run_checks()
+        started.assert_called_once()
+        self.assertIs(started.call_args.args[0], project)
+        kwargs = started.call_args.kwargs
+        self.assertEqual((kwargs["write"], kwargs["budget_s"]), (True, 0.02))
+        self.assertIs(kwargs["pending"], monitor.pending)
+        phases = list(dict.fromkeys(step.phase for step in shown))
+        self.assertEqual((phases[0], phases[-1]), ("foto", "registro"))
+        self.assertLessEqual(set(phases), set(self.checks.OPEN_CHECK_STEPS))
+        done = [step.done for step in shown]
+        self.assertEqual(done, sorted(done))
+        report = monitor.report
+        self.assertIsInstance(report, self.checks.OpenCheckOutcome)
+        self.assertTrue(report.writing and report.recorded)
+        self.assertEqual([item.name for item in report.orphans.foreign_files],
+                         ["rasters/ajeno.txt"])
+        self.assertEqual(self.ps.take_notices(), list(report.texts("es")))
+        self.assertEqual(monitor.percent, 100)
+        self.assertFalse(monitor.running or monitor.pending.running)
+        self.assertIsNone(monitor.status_text())
+        self.assertFalse(bpy.app.timers.is_registered(self.session.check_tick))
+
+        operations = _module("core.provenance.operations")
+        asked = self.gate.PendingItem(operations.ItemKind.INPUT, "ya-no-esta", "Limites_v1",
+                                      self.gate.PendingReason.HASHING)
+        self.assertTrue(monitor.pending.request_hash(asked))
+        self.assertTrue(monitor.request_hashes())
+        self.assertTrue(bpy.app.timers.is_registered(self.session.check_tick))
+        self.assertEqual(self.run_checks()[-1].phase, "registro")
+        self.assertEqual(monitor.pending.requests, ())
+        self.assertIs(monitor.report, report)
+        self.assertFalse(monitor.request_hashes())  # nada pedido: nada que hacer
+
+        self.ps.close()
+        self.assertIsNone(monitor.project)
+        self.assertIsNone(monitor.report)
+        self.assertEqual(monitor.unavailable(), "Abra un proyecto")
+
+    def test_schema_1_project_starts_nothing(self) -> None:
+        """RF-008-58 (plan §5.3.2 y §5.4.6): un proyecto del esquema 1 sin migrar (en solo
+        lectura «sin migrar») no arranca ninguna comprobación ni deja nada pendiente para la
+        puerta, y la sesión da el motivo que muestran los paneles."""
+        project = self.create()
+        root = project.root
+        project.close()
+        mark_schema(root, 1)
+        opened = self.core.open_project(root, self.ps.session(), self.ps.userdata()).project
+        self.assertEqual(opened.read_only_reason, self.core.ReadOnlyCode.NOT_MIGRATED)
+        self.ps.attach(opened)
+        monitor = self.monitor
+        self.assertIs(monitor.project, opened)
+        self.assertEqual(monitor.unavailable(), MIGRATE_TEXT)
+        self.assertFalse(monitor.running or monitor.pending.running)
+        self.assertFalse(bpy.app.timers.is_registered(self.session.check_tick))
+        self.assertIsNone(self.session.check_tick())
+        self.assertIsNone(monitor.progress)
+        self.assertIsNone(monitor.report)
+        self.assertIsNone(monitor.status_text())
+
+    def test_a_failing_check_stops_and_says_so(self) -> None:
+        """RF-008-58: si la comprobación falla, el monitor se para (sin temporizador), la
+        puerta deja de esperar y queda un aviso con el motivo (y el error en el registro
+        técnico)."""
+        def broken(*_args: object, **_kwargs: object):
+            raise OSError("disco desconectado")
+            yield  # un generador, como el de verdad
+
+        self.ps.attach(self.create())
+        with (mock.patch.object(self.checks, "open_check_steps", broken),
+              self.assertLogs("geoblender.bl.ops", level="ERROR")):
+            self.assertIsNone(self.session.check_tick())
+        self.assertFalse(self.monitor.running or self.monitor.pending.running)
+        self.assertFalse(bpy.app.timers.is_registered(self.session.check_tick))
+        self.assertIsNone(self.monitor.report)
+        self.assertEqual(self.ps.take_notices(),
+                         ["La comprobación del proyecto se ha parado: disco desconectado"])
+
+    def test_disabling_cancels_the_checks(self) -> None:
+        """RF-008-58 (principio 8): con la comprobación a medias, desactivar Geoblender quita
+        el temporizador y cancela lo pendiente: la comprobación no sigue, la puerta deja de
+        esperar y la sesión olvida el proyecto."""
+        monitor = self.monitor
+        self.ps.attach(self.create())
+        self.assertIsNotNone(self.session.check_tick())
+        pending = monitor.pending
+        self.assertTrue(monitor.running and pending.running)
+        self.addCleanup(blender_ext.enable)
+        blender_ext.disable()
+        self.assertFalse(bpy.app.timers.is_registered(self.session.check_tick))
+        self.assertFalse(monitor.running or pending.running)
+        self.assertIsNone(monitor.project)
+        self.assertIsNone(monitor.report)
 
 
 if __name__ == "__main__":

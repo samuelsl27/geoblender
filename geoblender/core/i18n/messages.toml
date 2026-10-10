@@ -1468,3 +1468,8 @@ es = "La variable {variable} no declara ninguna carpeta"
 
 ["{folder} (preferences)"]
 es = "{folder} (preferencias)"
+
+# La comprobación de apertura (RF-008-58; T46): si falla, se para y lo dice
+
+["The project check stopped: {error}"]
+es = "La comprobación del proyecto se ha parado: {error}"
