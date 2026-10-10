@@ -191,7 +191,7 @@ from ..props.provenance import GEOBLENDER_PG_core_import_setting
 from ..scene import project_session
 from ..ui import jobs as job_list
 from ..ui import statusbar
-from ..ui.commands import catalog, text
+from ..ui.commands import catalog, described, text
 from . import jobs as jobs_ops
 
 if TYPE_CHECKING:
@@ -1014,6 +1014,9 @@ class ProvenanceAwareOperator:
 
     - ``poll``: sin proyecto, sin la procedencia o en solo lectura, no está disponible y dice
       por qué (:func:`write_unavailable`);
+    - ``description``: la suya con su estado de comando (RF-008-61; ``bl.ui.provenance``): el
+      aviso de la entrada cambiada de la que depende y «Obsoleto: cambió …» de sus
+      resultados; en los menús, la orden lleva además la insignia ⚠ (``bl.ui.drawing``);
     - ``invoke`` (desde la interfaz) → ``execute``: la puerta abrirá el diálogo de una entrada
       cambiada; un ``invoke`` propio llama a ``super().invoke`` o pone antes
       ``self.provenance_dialog = True``;
@@ -1039,6 +1042,12 @@ class ProvenanceAwareOperator:
             cls.poll_message_set(reason)  # type: ignore[attr-defined]
             return False
         return True
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        """Su descripción emergente con su estado de comando (RF-008-61; BS §7.3)."""
+        return described(context, cls.bl_idname,  # type: ignore[attr-defined]
+                         getattr(cls, "bl_description", ""))
 
     def provenance_inputs(self, context: Any) -> Sequence[Any]:
         """Lo que consume la operación (``Use``): por defecto, nada."""

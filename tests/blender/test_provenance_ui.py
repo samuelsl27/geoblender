@@ -47,11 +47,21 @@ T55 (Grafo de operaciones y procedencia):
   de aguas arriba; ningún nombre de objeto, de colección ni de fichero del proyecto contiene
   una cifra registrada (``assert_no_figures_in_names``).
 
+T56 (estados de comando, BS §7.3):
+
+- RF-008-61: con una orden sintética de un módulo (``ProvenanceAwareOperator``) que declaran
+  las operaciones de la demostración: con una entrada cambiada sin decidir aguas arriba, la
+  orden se dibuja activa con la insignia ⚠ y su descripción lleva el aviso de RF-008-10; con
+  resultados obsoletos, su descripción lleva «Obsoleto: cambió …» y «Recalcular lo obsoleto»
+  se dibuja resaltado en Proyecto ▸ Control y en el contextual; sin nada, todo se dibuja como
+  antes. Desregistrar quita el proveedor de estado.
+
 Se ejecuta con ``tools/run_blender_tests.py``. En ``blender -b`` los temporizadores no corren:
 las pruebas llaman a su función. El proyecto es sintético (la demostración de la 008 y los
 GeoPackage de ``tests/data/core/provenance/``).
 """
 
+import dataclasses
 import importlib
 import os
 import shutil
@@ -69,7 +79,7 @@ from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
 from tests.support.fake_layout import FakeLayout, draw
 from tests.support.provenance_checks import assert_no_figures_in_names
-from tests.support.provenance_demo import PRODUCTION, SWELL_FACTOR, Demo
+from tests.support.provenance_demo import AREA, BENCH_YEARS, PRODUCTION, SWELL_FACTOR, Demo
 from tests.support.repo import ROOT
 
 DATA = ROOT / "tests" / "data" / "core" / "provenance"
@@ -107,6 +117,12 @@ PRODUCTION_ROW = "Producción (demostración) · demo.production = 500000 t/año
 HYPOTHESIS = "depende de una hipótesis"
 UNCONFIRMED = "depende de un valor sin confirmar"
 STALE_CAUSE = "Obsoleto: cambió Producción (demostración)"
+SYNTHETIC = "geoblender.core_selftest_state"  # la orden sintética de un módulo (T56)
+SYNTHETIC_LABEL = "Synthetic module order"  # sin traducción: se ve el msgid
+SYNTHETIC_ABOUT = "Synthetic order of a module"
+CHANGED_WARNING = "La entrada «Limites» ha cambiado desde su registro ("
+PROJECT_MENU = "GEOBLENDER_MT_ui_project"  # Proyecto ▸ Control ▸ Recalcular lo obsoleto
+CONTEXT_MENU = "GEOBLENDER_MT_des_context_design"  # un contextual que la lleva
 
 
 def _module(name: str) -> ModuleType:
@@ -190,6 +206,61 @@ class ProvenanceUiTest(unittest.TestCase):
         start = targets.index(REFRESH)
         return layout.items[start:start + 2]
 
+    def synthetic_command(self) -> type:
+        """La orden sintética de un módulo (``ProvenanceAwareOperator`` de ``geoblender.*``),
+        registrada y en el catálogo hasta el final de la prueba (T56)."""
+        commands = _module("bl.ui.commands")
+
+        class GEOBLENDER_OT_core_selftest_state(self.session.ProvenanceAwareOperator,
+                                                bpy.types.Operator):
+            bl_idname = SYNTHETIC
+            bl_label = SYNTHETIC_LABEL
+            bl_description = SYNTHETIC_ABOUT
+            provenance_op_type = AREA
+
+            def execute(self, context: object) -> set[str]:
+                return {"FINISHED"}
+
+        cat = commands.catalog()
+        command = dataclasses.replace(
+            cat.commands[RECOMPUTE], key=SYNTHETIC, idname=SYNTHETIC, label=SYNTHETIC_LABEL,
+            label_es=SYNTHETIC_LABEL, description=SYNTHETIC_ABOUT,
+            description_es=SYNTHETIC_ABOUT, home="", aliases=())
+        self.addCleanup(commands.clear)  # el último: la disponibilidad, de nuevo al pedirla
+        self.enterContext(mock.patch.dict(cat.commands, {SYNTHETIC: command}))
+        bpy.utils.register_class(GEOBLENDER_OT_core_selftest_state)
+        self.addCleanup(bpy.utils.unregister_class, GEOBLENDER_OT_core_selftest_state)
+        return GEOBLENDER_OT_core_selftest_state
+
+    def declare(self, op_type: str) -> None:
+        """La operación ``op_type`` de la demostración declara la orden sintética entre sus
+        ``commands`` hasta el final de la prueba (antes de quitar la demostración)."""
+        contract = _module("core.provenance.contract")
+        original = contract.OPERATIONS[op_type]
+        contract.unregister_operation(op_type)
+        contract.register_operation(dataclasses.replace(original, commands=(SYNTHETIC,)))
+
+        def restore() -> None:
+            contract.unregister_operation(op_type)
+            contract.register_operation(original)
+
+        self.addCleanup(restore)
+
+    def synthetic_drawn(self, cls: type) -> tuple[str, bool, bool, str]:
+        """Cómo se dibuja la orden sintética (texto, activa y en alerta) y su descripción
+        emergente."""
+        layout = FakeLayout()
+        _module("bl.ui.drawing").draw_command(layout, SYNTHETIC, context=bpy.context)
+        (item,) = layout.items
+        return item.text, item.enabled, item.alert, cls.description(bpy.context, None)
+
+    @staticmethod
+    def recompute_highlighted() -> list[list[bool]]:
+        """Si «Recalcular lo obsoleto» está resaltado en Proyecto ▸ Control y en el
+        contextual."""
+        return [[item.alert for item in draw(getattr(bpy.types, menu), bpy.context).items
+                 if item.target == RECOMPUTE] for menu in (PROJECT_MENU, CONTEXT_MENU)]
+
     # Pruebas ------------------------------------------------------------------------------
 
     def test_fields_and_control_7_follow_the_project(self) -> None:
@@ -202,8 +273,19 @@ class ProvenanceUiTest(unittest.TestCase):
         con lo que tarda), «! 1 obsoletos» en la barra y «1» tras Refrescar en el control 7, que
         abre el panel de lo obsoleto con «Refrescar · obsoletos (1)», el dato, su módulo, la
         causa y Recalcular; otro tic sin cambios no vuelve a leer el proyecto. Dibujar los
-        campos cuesta ≤ 1 ms. Cerrar el proyecto los quita y retira el temporizador."""
+        campos cuesta ≤ 1 ms. Cerrar el proyecto los quita y retira el temporizador.
+
+        RF-008-61 (T56), con una orden sintética de un módulo que declaran el área y los años
+        por banco: sin nada, se dibuja como antes (su etiqueta, activa, sin alerta y con su
+        descripción) y «Recalcular lo obsoleto», sin resaltar; con «Limites» cambiada (de ella
+        depende el área), activa con la insignia ⚠ y el aviso de RF-008-10 en su descripción;
+        con los años obsoletos, además «Obsoleto: cambió Producción (demostración)» y Recalcular
+        lo obsoleto resaltado en Proyecto ▸ Control y en el contextual; al cerrar, como antes."""
         ui = self.ui
+        synthetic = self.synthetic_command()
+        plain = (SYNTHETIC_LABEL, True, False, SYNTHETIC_ABOUT)
+        self.assertEqual(self.synthetic_drawn(synthetic), plain)
+        self.assertEqual(self.recompute_highlighted(), [[False], [False]])
         self.assertEqual(self.both_modes(), [])
         refresh, after = self.control_7()
         self.assertEqual(refresh.target, REFRESH)
@@ -216,7 +298,10 @@ class ProvenanceUiTest(unittest.TestCase):
         source = sources / "Limites.gpkg"
         shutil.copyfile(DATA / "Limites_v1.gpkg", source)
         demo = self.enterContext(Demo(module_name()).registered())
-        demo.import_boundary(project, source)
+        self.declare(AREA)
+        self.declare(BENCH_YEARS)
+        boundary = demo.import_boundary(project, source)
+        demo.area(project, boundary.dataset.uid)
         demo.digitize(project)
         demo.bench_years(project)
         shutil.copyfile(DATA / "Limites_v2.gpkg", source)
@@ -238,6 +323,14 @@ class ProvenanceUiTest(unittest.TestCase):
         inputs = [item for item in self.bar().items if item.text == "⚠ 1 entradas"]
         self.assertEqual(inputs[0].target, SHOW_INPUTS)
         self.assertIsNone(self.quick.count_of(REFRESH, bpy.context))
+        shown, enabled, alert, about = self.synthetic_drawn(synthetic)
+        self.assertEqual((shown, enabled, alert), (f"⚠ {SYNTHETIC_LABEL}", True, False))
+        first, warning = about.split("\n")
+        self.assertEqual(first, SYNTHETIC_ABOUT)
+        self.assertTrue(warning.startswith(CHANGED_WARNING), warning)
+        self.assertTrue(warning.endswith("Dependen de ella: 1 dato, 1 operación y 1 cifra."),
+                        warning)
+        self.assertEqual(self.recompute_highlighted(), [[False], [False]])
 
         store = _module("core.params").ParameterStore(project)
         with project.write_transaction() as conn:
@@ -281,6 +374,10 @@ class ProvenanceUiTest(unittest.TestCase):
                                     ).fetchone()
         self.assertEqual([vars(item.properties) for item in recompute],
                          [{"scope": "ITEM", "subject_uid": years}, {}])
+        shown, enabled, alert, about = self.synthetic_drawn(synthetic)
+        self.assertEqual((shown, enabled, alert), (f"⚠ {SYNTHETIC_LABEL}", True, False))
+        self.assertEqual(about.split("\n")[2:], [STALE_CAUSE])
+        self.assertEqual(self.recompute_highlighted(), [[True], [True]])
 
         fields = [field for field in self.statusbar.fields() if field.key in FIELD_KEYS]
         ctx = _ctx(geoblender=True)
@@ -297,6 +394,8 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertFalse(bpy.app.timers.is_registered(ui.indicator_tick))
         self.assertEqual(len(bpy.context.window_manager.geoblender_provenance.stale), 0)
         self.assertIsNone(self.quick.count_of(REFRESH, bpy.context))
+        self.assertEqual(self.synthetic_drawn(synthetic), plain)
+        self.assertEqual(self.recompute_highlighted(), [[False], [False]])
 
     def test_undo_notice_for_ten_seconds(self) -> None:
         """RF-008-32 (plan §5.5): el aviso de Ctrl+Z se ve en la barra de estado, en los dos
@@ -315,11 +414,13 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertEqual(ui.undo_notice(), "")
 
     def test_disabling_removes_everything(self) -> None:
-        """RF-008-16, RF-008-28 (principio 8): habilitar registra el panel de lo obsoleto (real,
-        disponible), los campos y el número del control 7; desactivar Geoblender los quita,
-        con la escucha del proyecto y los temporizadores de los indicadores y del aviso."""
+        """RF-008-16, RF-008-28, RF-008-61 (principio 8): habilitar registra el panel de lo
+        obsoleto (real, disponible), los campos, el número del control 7 y el proveedor de
+        estado de las órdenes; desactivar Geoblender los quita, con la escucha del proyecto y
+        los temporizadores de los indicadores y del aviso."""
         ui = self.ui
         commands = _module("bl.ui.commands")
+        self.assertIs(commands.state_provider(), ui.command_state)
         self.assertTrue(commands.is_available(STALE_PANEL))
         self.assertFalse(commands.is_provisional(commands.registered_class(STALE_PANEL)))
         keys = {field.key for field in self.statusbar.fields()}
@@ -335,6 +436,7 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertFalse(panel.is_registered)
         self.assertFalse({field.key for field in self.statusbar.fields()} & set(FIELD_KEYS))
         self.assertIsNone(self.quick.count_provider(REFRESH))
+        self.assertIsNone(commands.state_provider())
         self.assertNotIn(ui.on_project_changed, self.ps.listeners())
         self.assertFalse(bpy.app.timers.is_registered(ui.indicator_tick))
         self.assertFalse(bpy.app.timers.is_registered(ui.expire_undo_notice))

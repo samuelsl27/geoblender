@@ -87,8 +87,18 @@ alerta. Cada nudo se pliega (``expanded``). :func:`search_lineage` lee la cadena
 panel y al cambiar la búsqueda (no en cada cambio del proyecto: con un grafo grande tarda hasta
 0,5 s); las filas viven en ``WindowManager.geoblender_provenance``, como texto ya presentado.
 
-:func:`install` registra los campos, el número del control 7 y la escucha del proyecto de la
-sesión; :func:`uninstall` lo quita todo, con los temporizadores.
+**Estados de las órdenes** (RF-008-61; BS §7.3; T56): :func:`command_state` es el proveedor de
+``bl.ui.commands.set_state_provider``. Una orden de un módulo (su ``bl_idname`` en los
+``commands`` del ``OperationDef`` de una operación hecha) de la que depende una entrada
+cambiada sin decidir (``core.inputs.dependents``) lleva la insignia ⚠ y, en su descripción, el
+aviso de RF-008-10; si alguno de sus resultados está obsoleto o espera revisión a mano, su
+descripción lleva su «Obsoleto: cambió …»; con algo obsoleto en el proyecto, «Recalcular lo
+obsoleto» se dibuja resaltado en el menú y en los contextuales. Se calcula con los recuentos
+(:func:`refresh`, solo cuando cambia el proyecto) y el dibujo solo lo busca.
+
+:func:`install` registra los campos, el número del control 7, el proveedor de estado de las
+órdenes y la escucha del proyecto de la sesión; :func:`uninstall` lo quita todo, con los
+temporizadores.
 """
 
 from __future__ import annotations
@@ -104,7 +114,16 @@ import bpy
 from ...core.errors import GeoblenderError
 from ...core.gpkg.header import read_header
 from ...core.i18n import language, tr
-from ...core.inputs import ACTIVE_STATUSES, InputStatus, OriginalState, crs_text, list_inputs
+from ...core.inputs import (
+    ACTIVE_STATUSES,
+    InputFinding,
+    InputStatus,
+    OriginalState,
+    Verdict,
+    crs_text,
+    dependents,
+    list_inputs,
+)
 from ...core.params import HistoryAction, ParameterFilter, ParameterStore, ParamKind, ParamMark
 from ...core.params.store import shown_value
 from ...core.provenance import contract
@@ -114,12 +133,21 @@ from .. import compat
 from ..props.provenance import FILTER_ALL, WINDOW_MANAGER_PROPERTY
 from ..scene import project_session
 from . import icons, quick_access, statusbar
-from .commands import catalog, is_available, registered_class, text
+from .commands import (
+    CommandState,
+    catalog,
+    is_available,
+    registered_class,
+    set_state_provider,
+    state_provider,
+    text,
+)
 from .drawing import draw_command, native_icon
 
 if TYPE_CHECKING:
+    from ...core.inputs import InputRecord
     from ...core.project.session import Project
-    from ...core.provenance.stale import Counts, StaleItem
+    from ...core.provenance.stale import Counts, StaleItem, StaleReport
     from ..ops.core_provenance import ProvenanceSession
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
@@ -209,6 +237,7 @@ class _State:
         self.properties: dict[type, frozenset[str]] = {}  # propiedades de cada operador
         self.filling = False  # se están regenerando las filas de los parámetros
         self.searching = False  # se está poniendo la búsqueda de la procedencia
+        self.command_states: dict[str, CommandState] = {}  # bl_idname → estado (T56)
 
 
 _STATE = _State()
@@ -260,11 +289,13 @@ def refresh(*, force: bool = False) -> bool:
     try:
         report = stale.stale_items(project, language=shown)
         blocked = _unusable(project)
+        states = _command_states(project, report, shown)
     except (GeoblenderError, sqlite3.Error, OSError):
         LOGGER.debug("No se pudo leer lo obsoleto del proyecto; se intenta después",
                      exc_info=True)
         return changed
     _STATE.signature = signature
+    _STATE.command_states = states
     _fill_rows(report.items)
     _fill_unusable(blocked, shown)
     _refill_inputs()
@@ -281,6 +312,7 @@ def _forget() -> bool:
     _STATE.project = None
     _STATE.counts = None
     _STATE.signature = None
+    _STATE.command_states = {}
     _fill_rows(())
     _fill_unusable((), "")
     return had
@@ -342,6 +374,70 @@ def _fill_unusable(items: Sequence[Any], shown: str) -> None:
         row.status = str(record.status)
         row.offers = ",".join(str(offer) for offer in item.offers)
         row.text = item.text(shown)
+
+
+# Los estados de las órdenes (T56) -------------------------------------------------------------
+
+INPUT_BADGE = "⚠"
+"""La insignia de una orden que depende de una entrada cambiada sin decidir (BS §7.3)."""
+
+
+def command_state(_context: Any, idname: str) -> CommandState | None:
+    """El proveedor de estado de las órdenes (``commands.set_state_provider``; RF-008-61): el
+    de ``idname`` según lo último que leyó :func:`refresh`, o ``None``. Solo lo busca."""
+    return _STATE.command_states.get(idname)
+
+
+def _changed_warning(conn: sqlite3.Connection, record: InputRecord,
+                     shown: str) -> tuple[str, tuple[str, ...]]:
+    """El aviso de RF-008-10 de la entrada cambiada ``record`` en el idioma ``shown`` (su
+    registro y lo que depende de ella ahora, sin mirar su fuente) y los tipos de las
+    operaciones hechas que dependen de ella."""
+    found = dependents(conn, record)
+    finding = InputFinding(
+        input_uid=record.uid, name=record.name, verdict=Verdict.CHANGED, before=record.status,
+        status=record.status, registered_at=record.registered_at,
+        registered_sha256=record.content_sha256, previous_seen=record.seen_sha256,
+        reader=record.reader, content_sha256=record.seen_sha256, dependents=found)
+    return finding.render(shown) or "", tuple(item.name for item in found.operations)
+
+
+def _command_states(project: Project, report: StaleReport,
+                    shown: str) -> dict[str, CommandState]:
+    """El estado de cada orden que lo tiene (RF-008-61), en el idioma ``shown``: las órdenes de
+    las operaciones que dependen de una entrada cambiada sin decidir, con la insignia y su aviso;
+    las de las operaciones que escribieron un resultado obsoleto (o esperan revisión a mano),
+    con su «Obsoleto: …»; y, con algo obsoleto, «Recalcular lo obsoleto» resaltado. Las entradas
+    solo se leen si hay alguna cambiada."""
+    notes: dict[str, list[str]] = {}
+    badges: set[str] = set()
+
+    def add(op_type: str, note: str, *, badge: bool = False) -> None:
+        definition = contract.OPERATIONS.get(op_type)
+        for idname in () if definition is None else definition.commands:
+            found = notes.setdefault(idname, [])
+            if note and note not in found:
+                found.append(note)
+            if badge:
+                badges.add(idname)
+
+    if report.counts.inputs_changed > 0:
+        with project.read() as conn:
+            for record in list_inputs(conn):
+                if record.status is InputStatus.CHANGED:
+                    warning, op_types = _changed_warning(conn, record, shown)
+                    for op_type in dict.fromkeys(op_types):
+                        add(op_type, warning, badge=True)
+    for item in report.items:
+        if item.op_type:
+            add(item.op_type, item.text)
+    states = {idname: CommandState(badge=INPUT_BADGE if idname in badges else "",
+                                   note="\n".join(found))
+              for idname, found in notes.items()}
+    if report.counts.obsolete > 0:
+        states[RECOMPUTE] = CommandState(highlight=True,
+                                         note=states.get(RECOMPUTE, CommandState()).note)
+    return states
 
 
 def indicator_tick() -> float | None:
@@ -1540,12 +1636,14 @@ classes: tuple[type, ...] = (
 
 def install() -> None:
     """Registra los campos de la barra de estado (después de ``statusbar.install``), el número
-    del control 7 y la escucha del proyecto de la sesión; con un proyecto ya abierto, pone el
-    temporizador. Idempotente («Reparar la interfaz» la vuelve a llamar)."""
+    del control 7, el proveedor de estado de las órdenes y la escucha del proyecto de la
+    sesión; con un proyecto ya abierto, pone el temporizador. Idempotente («Reparar la
+    interfaz» la vuelve a llamar)."""
     for key, order, draw, width in FIELDS:
         statusbar.register_field(key, priority=FIELD_PRIORITY, draw=draw, width_px=width,
                                  modes=FIELD_MODES, order=order)
     quick_access.set_count_provider(REFRESH, stale_count)
+    set_state_provider(command_state)
     project_session.add_listener(on_project_changed)
     if project_session.current() is not None and not bpy.app.timers.is_registered(
             indicator_tick):
@@ -1554,12 +1652,15 @@ def install() -> None:
 
 
 def uninstall() -> None:
-    """Quita los campos, el número del control 7, la escucha y los temporizadores, y olvida
-    los recuentos, las filas (también las de los parámetros) y el aviso."""
+    """Quita los campos, el número del control 7, el proveedor de estado de las órdenes, la
+    escucha y los temporizadores, y olvida los recuentos, las filas (también las de los
+    parámetros) y el aviso."""
     for key in FIELD_KEYS:
         statusbar.unregister_field(key)
     if quick_access.count_provider(REFRESH) is stale_count:
         quick_access.set_count_provider(REFRESH, None)
+    if state_provider() is command_state:
+        set_state_provider(None)
     project_session.remove_listener(on_project_changed)
     _retire(indicator_tick)
     _retire(expire_undo_notice)
