@@ -1657,3 +1657,84 @@ es = "Comprobando las entradas y los datos del proyecto…"
 
 ["Check finished: {inputs} inputs and {datasets} datasets checked"]
 es = "Comprobación terminada: {inputs} entradas y {datasets} datos comprobados"
+
+# Decidir sobre una entrada, descartarla y editarla (RF-008-10, RF-008-11, RF-008-12,
+# RF-008-55; D-11; T52): sus diálogos, sus propiedades y lo que dicen al terminar
+
+["Input"]
+es = "Entrada"
+
+["Uid or logical name of the input"]
+es = "Uid o nombre lógico de la entrada"
+
+["Decision"]
+es = "Decisión"
+
+["Keep the copy"]
+es = "Mantener la copia"
+
+["Update the input or keep the copy already imported"]
+es = "Actualizar la entrada o mantener la copia ya importada"
+
+["Reimport the input from its source as a new input that replaces it"]
+es = "Reimporta la entrada desde su fuente como una entrada nueva que la sustituye"
+
+["Keep using the copy already imported: no more warnings until the source changes again"]
+es = "Sigue usando la copia ya importada: no se vuelve a avisar hasta que la fuente cambie otra vez"
+
+["Why the input is updated (required) or its copy kept"]
+es = "Por qué se actualiza la entrada (obligatorio) o se mantiene su copia"
+
+["Import settings"]
+es = "Ajustes de la importación"
+
+["Import settings that the importer asks for again"]
+es = "Ajustes de la importación que vuelve a pedir el importador"
+
+["Values: {values}"]
+es = "Valores: {values}"
+
+["Values"]
+es = "Valores"
+
+["Values that each import setting admits (JSON)"]
+es = "Valores que admite cada ajuste de la importación (JSON)"
+
+["Indicate the import setting «{key}»"]
+es = "Indique el ajuste de la importación «{key}»"
+
+["Choose whether to update the input or keep its copy: nothing changed"]
+es = "Elija si actualizar la entrada o mantener su copia: no cambia nada"
+
+["Input «{name}»: {status}"]
+es = "Entrada «{name}»: {status}"
+
+["Input «{name}» updated: what depended on the previous one is stale"]
+es = "Entrada «{name}» actualizada: lo que dependía de la anterior queda obsoleto"
+
+["Why the input is discarded (required)"]
+es = "Por qué se descarta la entrada (obligatorio)"
+
+["Nothing is deleted: the input stays in the register as «{status}»"]
+es = "No se borra nada: la entrada sigue en el registro como «{status}»"
+
+["Logical name of the input"]
+es = "Nombre lógico de la entrada"
+
+["Delivery day, DD/MM/YYYY (empty: no date)"]
+es = "Día de la entrega, DD/MM/AAAA (vacío: sin fecha)"
+
+["Who delivered the input (empty: nobody recorded)"]
+es = "Quién entregó la entrada (vacío: nadie anotado)"
+
+["Only the name and the delivery change: its files, its content and what was imported stay the same"]
+es = "Solo cambian el nombre y la entrega: sus ficheros, su contenido y lo importado siguen igual"
+
+["Delivery date «{value}»: write it as DD/MM/YYYY"]
+es = "Fecha de entrega «{value}»: escríbala como DD/MM/AAAA"
+
+["Input «{name}» edited"]
+es = "Entrada «{name}» editada"
+
+["Input «{name}»: nothing to change"]
+es = "Entrada «{name}»: no hay nada que cambiar"

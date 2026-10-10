@@ -47,7 +47,8 @@ INTERNAL = ("core_set_parameter", "core_confirm_parameter", "core_resolve_input"
 # Las órdenes de la 008 que ya tienen su clase real (spec 008, fase 8): disponibles, sin nota.
 REAL = ("geoblender.core_show_parameters", "geoblender.core_set_parameter",
         "geoblender.core_confirm_parameter", "geoblender.core_show_inputs",
-        "geoblender.core_check_inputs")
+        "geoblender.core_check_inputs", "geoblender.core_resolve_input",
+        "geoblender.core_discard_input", "geoblender.core_edit_input")
 
 
 def _module(name: str) -> ModuleType:
@@ -188,8 +189,8 @@ class UiCatalogTest(unittest.TestCase):
         """RF-008-06, RF-008-26, RF-008-28 (plan 008 §5.3.2): las nueve órdenes internas
         están registradas con su ``bl_idname`` (internas: fuera de F3) y ningún menú las
         dibuja; las provisionales, invocadas, informan «Disponible en 008 · …» sin hacer
-        nada, y las que ya tienen su clase real (Cambiar y Confirmar parámetro, T50) están
-        disponibles."""
+        nada, y las que ya tienen su clase real (Cambiar y Confirmar parámetro, T50; Decidir
+        sobre una entrada cambiada, Descartar y Editar entrada, T52) están disponibles."""
         commands = _module("bl.ui.commands")
         drawn = {i.target for cls in self.registry.own_classes()
                  if issubclass(cls, bpy.types.Menu)

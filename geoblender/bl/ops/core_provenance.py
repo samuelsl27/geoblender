@@ -92,6 +92,20 @@ ADR-0025).
   (:meth:`ProvenanceSession.input_state`): «comprobando» mientras una comprobación la tiene
   pendiente y «no localizable» si la última que la miró no encontró su fuente.
 
+- Decidir sobre una entrada, descartarla y editarla (T52; RF-008-10, RF-008-11, RF-008-12,
+  RF-008-55, RF-008-61; D-11; plan §5.3.2 y §5.4.8): ``geoblender.core_resolve_input`` es el
+  diálogo de una entrada cambiada (el que abre la puerta, :func:`open_input_dialog`, y el
+  registro de entradas): el aviso de la spec §8, Actualizar o Mantener la copia y el motivo;
+  cancelarlo no cambia nada. Mantener la copia es ``core.inputs.keep_copy``; Actualizar,
+  ``core.provenance.importer.reimport_input`` (el importador del módulo de la entrada, con sus
+  ajustes registrados): si el importador los vuelve a pedir (``SettingsNeeded``), desde la
+  interfaz se abre otra vez el diálogo con ellos (su colección ``settings``) y, desde un
+  guion, se dice. ``geoblender.core_discard_input`` (con motivo, ``core.inputs.discard``) y
+  ``geoblender.core_edit_input`` (nombre lógico y entrega, ``core.inputs.edit_delivery``)
+  son también diálogos. Las tres escriben en una transacción del proyecto, no están
+  disponibles en solo lectura y, al terminar, ponen al día los indicadores y el registro de
+  entradas sin esperar al tic.
+
 Lo demás llega con las tareas siguientes: los demás operadores de §5.3.2, con sus paneles, y
 el estado de comando de las órdenes de los módulos (fase 8).
 
@@ -105,9 +119,12 @@ from __future__ import annotations
 
 import datetime as dt
 import functools
+import json
 import logging
 import os
+import re
 import sqlite3
+import textwrap
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -115,9 +132,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import CollectionProperty, EnumProperty, StringProperty
 
 from ...core import i18n, params
+from ...core import inputs as core_inputs
+from ...core.inputs import check as input_check
 from ...core.content import readers as content_readers
 from ...core.content.builtin import CONTENT_READERS, GPKG_LAYER
 from ...core.errors import GeoblenderError
@@ -135,6 +154,7 @@ from ...jobs import content_hash
 from ...jobs.protocol import new_request
 from .. import ADDON_PACKAGE
 from ..props.core import read_only_dirs_of
+from ..props.provenance import GEOBLENDER_PG_core_import_setting
 from ..scene import project_session
 from ..ui import jobs as job_list
 from ..ui import statusbar
@@ -759,8 +779,8 @@ def ensure_ready(op_type: str, inputs: Sequence[Any] = (), *, report: Report | N
 def open_input_dialog(reason: BlockReason) -> set[str]:
     """Abre el diálogo de la entrada cambiada de ``reason`` (RF-008-10, RF-008-61; plan
     §5.3.2): la orden :data:`RESOLVE_INPUT` con su ``input_uid`` (Actualizar, Mantener la copia
-    y Cancelar). Mientras su clase real no llegue (T52), la provisional dice «Disponible en
-    008». Si no se puede abrir, lo deja en el registro técnico y devuelve ``{"CANCELLED"}``."""
+    y Cancelar; T52). Si no se puede abrir, lo deja en el registro técnico y devuelve
+    ``{"CANCELLED"}``."""
     group, name = RESOLVE_INPUT.split(".")
     try:
         operator = getattr(getattr(bpy.ops, group), name)
@@ -1434,12 +1454,464 @@ class GEOBLENDER_OT_core_check_inputs(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Decidir sobre una entrada, descartarla y editarla (T52) ----------------------------------
+
+DISCARD_INPUT = "geoblender.core_discard_input"
+EDIT_INPUT = "geoblender.core_edit_input"
+INPUT_DIALOG_WIDTH = 560
+NOTICE_CHARS = 88
+"""El aviso del diálogo de una entrada, en líneas de como mucho tantos caracteres (una etiqueta
+de Blender no parte el texto)."""
+
+DECISION_ITEMS = [
+    ("UPDATE", "Update", "Reimport the input from its source as a new input that replaces it"),
+    ("KEEP", "Keep the copy",
+     "Keep using the copy already imported: no more warnings until the source changes again"),
+]
+"""Las dos decisiones sobre una entrada cambiada (RF-008-11, RF-008-12); cancelar el diálogo es
+la tercera (no cambia nada)."""
+
+_UPDATABLE = frozenset({core_inputs.InputStatus.CHANGED, core_inputs.InputStatus.KEPT})
+_ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+class _SettingMissing(ValueError):
+    """Un ajuste que pidió el importador se dejó vacío (su clave)."""
+
+
+def _interactive(context: Any) -> bool:
+    """Si la orden corre con una ventana en la que se puede abrir un diálogo (no en
+    ``blender -b``)."""
+    return getattr(context, "window", None) is not None and not bpy.app.background
+
+
+def _input_record(conn: sqlite3.Connection, project: Project, key: str) -> Any:
+    """La entrada ``key`` (uid o nombre lógico de una activa); si no está,
+    ``ProvenanceError`` (``core.input_unknown``)."""
+    record = core_inputs.get(conn, key)
+    if record is None:
+        raise messages.ProvenanceError("core.input_unknown", input=key, project=project.name)
+    return record
+
+
+def _status_text(status: str, language: str) -> str:
+    """El estado de una entrada como se lee («cambiada · se mantiene la copia»)."""
+    return messages.render(f"core.input_status_{status}", language=language)
+
+
+def _input_notice(project: Project, conn: sqlite3.Connection, record: Any,
+                  language: str) -> tuple[str, bool]:
+    """Lo que dice el diálogo de la entrada ``record`` y si se encuentra su fuente: de una
+    cambiada, el aviso de la spec §8 (RF-008-10: su registro, lo que depende de ella ahora y la
+    fecha de su fuente); si no, su estado; y, si su fuente no está, que no es localizable
+    (RF-008-13: no se puede actualizar). Solo lee (el tamaño y la fecha de sus ficheros)."""
+    found = True
+    probe = None
+    if record.status in _UPDATABLE:
+        probe = input_check.probe_input(project, record,
+                                        tables=input_check.table_changes(conn))
+        found = probe.missing is None
+    if record.status is core_inputs.InputStatus.CHANGED:
+        finding = core_inputs.InputFinding(
+            input_uid=record.uid, name=record.name, verdict=core_inputs.Verdict.CHANGED,
+            before=record.status, status=record.status, registered_at=record.registered_at,
+            registered_sha256=record.content_sha256, previous_seen=record.seen_sha256,
+            reader=record.reader, content_sha256=record.seen_sha256,
+            observed=() if probe is None else probe.observed,
+            source_date=None if probe is None else probe.source_date,
+            dependents=core_inputs.dependents(conn, record),
+        )
+        shown = finding.render(language) or ""
+    else:
+        shown = tr("Input «{name}»: {status}", name=record.name,
+                   status=_status_text(record.status, language))
+    if probe is not None and not found:
+        shown += " " + messages.render("core.input_unreachable", language=language,
+                                       name=record.name, file=probe.missing)
+    return shown, found
+
+
+def _inputs_written() -> None:
+    """Tras decidir sobre una entrada (o editarla): los recuentos de la barra de estado («⚠ n
+    entradas», «! n obsoletos») y las filas del registro de entradas, sin esperar al tic."""
+    from ..ui import provenance as ui  # al usarlo (ARQ-08)
+
+    if ui.refresh(force=True):
+        ui.redraw()
+
+
+def _choices_text(choices: str, key: str) -> str:
+    """Los valores que admite el ajuste ``key`` según ``choices`` (JSON, clave → lista), como
+    se leen («a», «b»); "" si no se saben."""
+    try:
+        found = json.loads(choices) if choices else {}
+    except ValueError:
+        return ""
+    values = found.get(key) if isinstance(found, dict) else None
+    if not isinstance(values, list):
+        return ""
+    return ", ".join(f"«{value}»" for value in values)
+
+
+def _settings(items: Iterable[Any]) -> dict[str, str]:
+    """Los ajustes que se indicaron en el diálogo, por su clave (``name``);
+    :class:`_SettingMissing` si uno quedó vacío."""
+    given: dict[str, str] = {}
+    for item in items:
+        value = item.value.strip()
+        if not value:
+            raise _SettingMissing(item.name)
+        given[item.name] = value
+    return given
+
+
+def _ask_settings(input_uid: str, reason: str, needed: contract.SettingsNeeded) -> None:
+    """Abre otra vez el diálogo de la entrada ``input_uid`` (Actualizar, con ``reason``) con
+    los ajustes que vuelve a pedir su importador (RF-008-11; spec §8, «Actualizar con una
+    columna que el cliente renombró»), para que la persona los indique: el valor ya escrito si
+    solo admite uno. Si no se puede abrir, queda en el registro técnico."""
+    items = []
+    choices: dict[str, list[str]] = {}
+    for key in needed.needed:
+        values = [str(value) for value in needed.choices.get(key, ())]
+        items.append({"name": key, "value": values[0] if len(values) == 1 else ""})
+        if values:
+            choices[key] = values
+    group, name = RESOLVE_INPUT.split(".")
+    try:
+        getattr(getattr(bpy.ops, group), name)("INVOKE_DEFAULT", input_uid=input_uid,
+                                               decision="UPDATE", reason=reason,
+                                               settings=items,
+                                               choices=json.dumps(choices, ensure_ascii=False))
+    except (RuntimeError, TypeError):
+        LOGGER.warning("No se pudo volver a abrir el diálogo de la entrada %s", input_uid,
+                       exc_info=True)
+
+
+def _delivery_day(typed: str) -> dt.date | None:
+    """La fecha de entrega tecleada: un día DD/MM/AAAA (o, desde un guion, AAAA-MM-DD);
+    vacía, sin fecha (``None``). :class:`_DateText` si no es un día."""
+    shown = typed.strip()
+    if not shown:
+        return None
+    try:
+        return dt.datetime.strptime(shown, "%d/%m/%Y").date()
+    except ValueError:
+        pass
+    if _ISO_DAY.fullmatch(shown):
+        try:
+            return dt.date.fromisoformat(shown)
+        except ValueError:
+            pass
+    raise _DateText(shown)
+
+
+def _shown_day(day: str | None) -> str:
+    """Una fecha de entrega guardada («2026-09-24») como se teclea («24/09/2026»); "" sin
+    fecha."""
+    if not day:
+        return ""
+    return dt.date.fromisoformat(day).strftime("%d/%m/%Y")
+
+
+def _sentence(text_: str) -> str:
+    """Un mensaje de ``core`` que empieza en minúscula, como frase."""
+    return text_[:1].upper() + text_[1:]
+
+
+def _dialog(operator: Any, context: Any, idname: str) -> set[str]:
+    """Abre el diálogo de ``operator`` con el nombre de su orden del catálogo."""
+    return context.window_manager.invoke_props_dialog(
+        operator, width=INPUT_DIALOG_WIDTH, translate=False,
+        title=text(catalog().commands[idname].label))
+
+
+class GEOBLENDER_OT_core_resolve_input(bpy.types.Operator):
+    """Update the input from its source, keep the copy already imported or cancel"""
+
+    bl_idname = RESOLVE_INPUT
+    bl_label = "Decide on a changed input…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    input_uid: StringProperty(  # type: ignore[valid-type]
+        name="Input", description="Uid or logical name of the input", options=_HIDDEN,
+    )
+    decision: EnumProperty(  # type: ignore[valid-type]
+        name="Decision", description="Update the input or keep the copy already imported",
+        items=DECISION_ITEMS, default="UPDATE", options=_FIELD,
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the input is updated (required) or its copy kept",
+        options=_FIELD,
+    )
+    settings: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_import_setting, name="Import settings",
+        description="Import settings that the importer asks for again", options=_HIDDEN,
+    )
+    choices: StringProperty(  # type: ignore[valid-type]
+        name="Values", description="Values that each import setting admits (JSON)",
+        options=_HIDDEN,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo con el aviso de la entrada (RF-008-10) y la decisión que la permite
+        su estado (la que pasó quien la lanza, o Actualizar si se puede): nada cambia hasta que
+        la persona lo acepta."""
+        project = SESSION.project
+        try:
+            with project.read() as conn:
+                record = _input_record(conn, project, self.input_uid)
+                notice, found = _input_notice(project, conn, record, i18n.language())
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._notice = notice
+        self._can_update = record.status in _UPDATABLE and found
+        self._can_keep = record.status is core_inputs.InputStatus.CHANGED
+        if not self.properties.is_property_set("decision"):
+            self.decision = "KEEP" if self._can_keep and not self._can_update else "UPDATE"
+        return _dialog(self, context, RESOLVE_INPUT)
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        language = i18n.language()
+        for line in textwrap.wrap(getattr(self, "_notice", ""), NOTICE_CHARS,
+                                  break_long_words=False, break_on_hyphens=False):
+            layout.label(text=line, translate=False)
+        if len(self.settings):
+            layout.separator()
+            layout.label(text=tr("Import settings that the importer asks for again"),
+                         translate=False)
+            for item in self.settings:
+                layout.prop(item, "value", text=item.name, translate=False)
+                values = _choices_text(self.choices, item.name)
+                if values:
+                    layout.label(text=tr("Values: {values}", values=values), translate=False)
+        row = layout.row(align=True)
+        for value, code, allowed in (
+            ("UPDATE", "core.choice_update", getattr(self, "_can_update", True)),
+            ("KEEP", "core.choice_keep", getattr(self, "_can_keep", True)),
+        ):
+            sub = row.row(align=True)
+            sub.enabled = allowed
+            sub.prop_enum(self, "decision", value, text=messages.render(code, language=language),
+                          translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        if not self.properties.is_property_set("decision"):
+            self.report({"WARNING"}, tr("Choose whether to update the input or keep its copy: "
+                                        "nothing changed"))
+            return {"CANCELLED"}
+        project = SESSION.project
+        language = i18n.language()
+        record = None
+        try:
+            if self.decision == "KEEP":
+                with project.write_transaction() as conn:
+                    record = _input_record(conn, project, self.input_uid)
+                    record = core_inputs.keep_copy(conn, project, record.uid,
+                                                   reason=self.reason.strip() or None)
+                done = tr("Input «{name}»: {status}", name=record.name,
+                          status=_status_text(record.status, language))
+            else:
+                given = _settings(self.settings)
+                with project.read() as conn:
+                    record = _input_record(conn, project, self.input_uid)
+                if record.status is core_inputs.InputStatus.CURRENT:
+                    raise messages.ProvenanceError("core.input_not_changed", name=record.name)
+                from ...core.provenance.importer import reimport_input  # al usarlo
+
+                reimport_input(project, record.uid, self.reason, settings=given or None)
+                done = tr("Input «{name}» updated: what depended on the previous one is stale",
+                          name=record.name)
+        except contract.SettingsNeeded as exc:
+            if not _interactive(context):
+                self.report({"ERROR"}, error_text(exc))
+                return {"CANCELLED"}
+            self.report({"WARNING"}, error_text(exc))
+            _ask_settings(record.uid, self.reason, exc)
+            return {"CANCELLED"}
+        except _SettingMissing as exc:
+            self.report({"ERROR"}, tr("Indicate the import setting «{key}»", key=str(exc)))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        _inputs_written()
+        self.report({"INFO"}, done)
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_core_discard_input(bpy.types.Operator):
+    """Discard an input imported by mistake, with a reason: nothing is deleted"""
+
+    bl_idname = DISCARD_INPUT
+    bl_label = "Discard input…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    input_uid: StringProperty(  # type: ignore[valid-type]
+        name="Input", description="Uid or logical name of the input", options=_HIDDEN,
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the input is discarded (required)", options=_FIELD,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo con la entrada, su estado y el motivo: nada cambia hasta que la
+        persona lo acepta."""
+        project = SESSION.project
+        try:
+            with project.read() as conn:
+                record = _input_record(conn, project, self.input_uid)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._notice = tr("Input «{name}»: {status}", name=record.name,
+                          status=_status_text(record.status, i18n.language()))
+        return _dialog(self, context, DISCARD_INPUT)
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.label(text=getattr(self, "_notice", ""), translate=False)
+        status = _status_text(core_inputs.InputStatus.DISCARDED, i18n.language())
+        layout.label(text=tr("Nothing is deleted: the input stays in the register as "
+                             "«{status}»", status=status), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            with project.write_transaction() as conn:
+                record = _input_record(conn, project, self.input_uid)
+                record = core_inputs.discard(conn, project, record.uid, self.reason)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        _inputs_written()
+        self.report({"INFO"}, tr("Input «{name}»: {status}", name=record.name,
+                                 status=_status_text(record.status, i18n.language())))
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_core_edit_input(bpy.types.Operator):
+    """Logical name and delivery data of an input; its content does not change"""
+
+    bl_idname = EDIT_INPUT
+    bl_label = "Edit input…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    input_uid: StringProperty(  # type: ignore[valid-type]
+        name="Input", description="Uid or logical name of the input", options=_HIDDEN,
+    )
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Logical name of the input", options=_FIELD,
+    )
+    received_at: StringProperty(  # type: ignore[valid-type]
+        name="Delivered on", description="Delivery day, DD/MM/YYYY (empty: no date)",
+        options=_FIELD,
+    )
+    received_from: StringProperty(  # type: ignore[valid-type]
+        name="Delivered by", description="Who delivered the input (empty: nobody recorded)",
+        options=_FIELD,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo relleno con el nombre y la entrega registrados (lo que no pasó
+        quien la lanza): nada cambia hasta que la persona lo acepta."""
+        project = SESSION.project
+        try:
+            with project.read() as conn:
+                record = _input_record(conn, project, self.input_uid)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        given = self.properties.is_property_set
+        if not given("name"):
+            self.name = record.name
+        if not given("received_at"):
+            self.received_at = _shown_day(record.received_at)
+        if not given("received_from"):
+            self.received_from = record.received_from or ""
+        return _dialog(self, context, EDIT_INPUT)
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "received_at", text=tr("Delivered on"), translate=False)
+        layout.prop(self, "received_from", text=tr("Delivered by"), translate=False)
+        layout.label(text=tr("Only the name and the delivery change: its files, its content "
+                             "and what was imported stay the same"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = SESSION.project
+        given = self.properties.is_property_set
+        changes: dict[str, Any] = {}
+        try:
+            if given("name"):
+                changes["name"] = core_inputs.check_name(self.name.strip())
+            if given("received_at"):
+                changes["received_at"] = _delivery_day(self.received_at)
+            if given("received_from"):
+                changes["received_from"] = self.received_from.strip() or None
+            with project.write_transaction() as conn:
+                before = _input_record(conn, project, self.input_uid)
+                record = core_inputs.edit_delivery(conn, project, before.uid, **changes)
+        except _DateText as exc:
+            self.report({"ERROR"}, tr("Delivery date «{value}»: write it as DD/MM/YYYY",
+                                      value=str(exc)))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        except (TypeError, ValueError) as exc:
+            self.report({"ERROR"}, _sentence(str(exc)))
+            return {"CANCELLED"}
+        if record == before:
+            self.report({"INFO"}, tr("Input «{name}»: nothing to change", name=record.name))
+            return {"FINISHED"}
+        _inputs_written()
+        self.report({"INFO"}, tr("Input «{name}» edited", name=record.name))
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_show_parameters,
     GEOBLENDER_OT_core_set_parameter,
     GEOBLENDER_OT_core_confirm_parameter,
     GEOBLENDER_OT_core_show_inputs,
     GEOBLENDER_OT_core_check_inputs,
+    GEOBLENDER_OT_core_resolve_input,
+    GEOBLENDER_OT_core_discard_input,
+    GEOBLENDER_OT_core_edit_input,
 )
 """Los operadores reales de la 008 (los demás siguen provisionales hasta su tarea)."""
 

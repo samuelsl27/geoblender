@@ -57,8 +57,10 @@ texto ya presentado: ningún valor pasa por una propiedad flotante.
 ``geoblender.core_show_inputs``; RF-008-16, RF-008-13; T51): la cabecera de las columnas y la
 lista (:class:`GEOBLENDER_UL_core_inputs`) con el nombre, el estado, el tipo, la fecha de
 entrega, quién la entrega, los CRS horizontal y vertical declarados, el hash de contenido
-abreviado (12 caracteres) y si guarda su original; de la seleccionada, Actualizar y Mantener la
-copia (si está cambiada), Descartar… y Editar… (T52); y Comprobar cambios en las entradas
+abreviado (12 caracteres) y si guarda su original; de la seleccionada, Actualizar (si está
+cambiada, también con su copia mantenida, y se encuentra su fuente) y Mantener la copia (si
+está cambiada), Descartar… y Editar…, que abren sus diálogos (T52); y Comprobar cambios en las
+entradas
 (``geoblender.core_check_inputs``); en solo lectura, desactivadas y con el motivo.
 :func:`fill_inputs` lee las filas (``core.inputs.list_inputs``) con el estado registrado; el
 que no se guarda (plan D7) lo dice la sesión al dibujar (:func:`input_status`):
@@ -1014,18 +1016,20 @@ def _selected_input(view: Any) -> Any | None:
 
 
 def _draw_input_buttons(layout: Any, row: Any, writable: bool) -> None:
-    """Las órdenes de la entrada seleccionada (plan §5.5): Actualizar y Mantener la copia de
-    una cambiada (no Actualizar si no se encuentra su fuente, RF-008-13), Descartar… de una
-    activa y Editar…; las que aún no tienen su clase real (T52), desactivadas."""
+    """Las órdenes de la entrada seleccionada (plan §5.5; T52): Actualizar de una cambiada,
+    también si se mantiene su copia (no si no se encuentra su fuente, RF-008-13), Mantener la
+    copia de una cambiada, Descartar… de una activa y Editar… de cualquiera; cada una abre su
+    diálogo con el uid de la entrada."""
     from ..ops.core_provenance import UNREACHABLE  # al usarlo: bl/ops importa bl/ui
 
     buttons = layout.row(align=True)
     changed = row.status == InputStatus.CHANGED
+    updatable = changed or row.status == InputStatus.KEPT
     found = input_status(row) != UNREACHABLE
     shown = language()
     commands = catalog().commands
     _operator(buttons, RESOLVE_INPUT, render("core.choice_update", language=shown),
-              enabled=writable and changed and found, input_uid=row.uid, decision="UPDATE")
+              enabled=writable and updatable and found, input_uid=row.uid, decision="UPDATE")
     _operator(buttons, RESOLVE_INPUT, render("core.choice_keep", language=shown),
               enabled=writable and changed, input_uid=row.uid, decision="KEEP")
     _operator(buttons, DISCARD_INPUT, text(commands[DISCARD_INPUT].label),

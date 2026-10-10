@@ -20,6 +20,10 @@ Spec 008, T50: cambiar un filtro de la lista de parámetros la vuelve a leer del
 esos filtros (``bl.ui.provenance.fill_parameters``: filtra ``core.params``), y cambiar el
 seleccionado lee su historial y el aviso de divergencia de su última cifra calculada
 (``fill_history``; ``parameter_divergence`` y ``parameter_figure_uid``).
+
+Spec 008, T52: :class:`GEOBLENDER_PG_core_import_setting` es un ajuste de la importación que el
+importador vuelve a pedir al actualizar una entrada (la colección ``settings`` de
+``geoblender.core_resolve_input``), también un texto.
 """
 
 from __future__ import annotations
@@ -164,6 +168,16 @@ class GEOBLENDER_PG_core_lineage_row(bpy.types.PropertyGroup):
     expanded: BoolProperty(default=True, options=_STATIC)  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_core_import_setting(bpy.types.PropertyGroup):
+    """Un ajuste de la importación que el importador vuelve a pedir al actualizar una entrada
+    (RF-008-11; ``core.provenance.contract.SettingsNeeded``): su clave es ``name`` (el de todo
+    grupo) y ``value``, el valor que se le da (texto). Lo usa ``geoblender.core_resolve_input``
+    (desde un guion, ``settings=[{"name": "layer", "value": "limites"}]``); no vive en
+    ``WindowManager``."""
+
+    value: StringProperty(name="Value", default="", options=_STATIC)  # type: ignore[valid-type]
+
+
 class GEOBLENDER_PG_core_provenance(bpy.types.PropertyGroup):
     """La vista de los paneles de la procedencia, en ``WindowManager.geoblender_provenance``
     (D16): filas, fila activa de cada lista y filtros de la de parámetros."""
@@ -216,6 +230,7 @@ classes: tuple[type, ...] = (
     GEOBLENDER_PG_core_stale_row,
     GEOBLENDER_PG_core_lineage_row,
     GEOBLENDER_PG_core_provenance,
+    GEOBLENDER_PG_core_import_setting,  # el de los ajustes de geoblender.core_resolve_input
 )
 
 

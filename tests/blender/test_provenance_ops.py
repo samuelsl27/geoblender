@@ -66,6 +66,18 @@ T51 (Registro de entradas y Comprobar cambios en las entradas):
   del proyecto: encuentra cambiada una fuente con otro contenido y el mismo tamaño y fecha, y
   lo dice.
 
+T52 (Actualizar, Mantener la copia, Descartar… y Editar… una entrada), con el área de la
+demostración de la 008 calculada con el límite:
+
+- RF-008-10, RF-008-11, RF-008-12, RF-008-61: ``geoblender.core_resolve_input`` abre el diálogo
+  de una entrada cambiada (el aviso de la spec §8, Actualizar, Mantener la copia y el motivo;
+  cancelarlo no cambia nada); Mantener la copia la saca de «⚠ n entradas»; Actualizar la
+  reimporta con el importador de su módulo (si pide otra vez sus ajustes, se los pide a la
+  persona) como una entrada nueva que la sustituye y deja obsoleto lo que dependía de ella.
+- RF-008-55: ``geoblender.core_discard_input`` exige el motivo, no borra nada y deja obsoleto lo
+  que dependía de la entrada; ``geoblender.core_edit_input`` (D-11) cambia el nombre y la
+  entrega sin cambiar la entrada. En solo lectura, ninguna se puede.
+
 Se ejecuta con ``tools/run_blender_tests.py``. Las carpetas son de unidades simuladas: nunca
 se abren. En ``blender -b`` los temporizadores no corren: las pruebas avanzan el monitor
 llamando a su función.
@@ -91,6 +103,7 @@ from tests.support import blender_ext
 from tests.support.blender_ext import fingerprint_diff, module_name
 from tests.support.core_fixtures import mark_schema, settings_values
 from tests.support.fake_layout import FakeLayout, draw
+from tests.support.provenance_demo import Demo
 from tests.support.repo import ROOT
 
 VARIABLE = "GEOBLENDER_READ_ONLY_DIRS"
@@ -137,6 +150,9 @@ INPUT_BUTTONS = {(RESOLVE_INPUT, "Actualizar"), (RESOLVE_INPUT, "Mantener la cop
 HEADER = ["Nombre", "Estado", "Tipo", "Entrega", "Entregada por", "CRS horizontal",
           "CRS vertical", "Hash de contenido", "Original"]
 READ_ONLY = "Proyecto en solo lectura:"  # y el motivo del proyecto
+UPDATE_REASON = "Nueva entrega del cliente"
+KEPT = "cambiada · se mantiene la copia"
+DISCARDED = "descartada · registro, no usar"
 
 
 def _module(name: str) -> ModuleType:
@@ -829,7 +845,8 @@ class ProvenanceSessionTest(unittest.TestCase):
         ((reason, result),) = opened
         self.assertEqual((reason.kind, reason.uid), (_module("core.provenance.gate").BlockKind
                                                      .INPUT_CHANGED, imported.input.uid))
-        self.assertEqual(result, {"CANCELLED"})  # la orden provisional, hasta T52
+        # En «blender -b» la orden real no abre su diálogo: ejecuta sin decisión y no cambia nada.
+        self.assertEqual(result, {"CANCELLED"})
         ((kind, text),) = reports
         self.assertEqual(kind, {"WARNING"})  # el diálogo ya lo enseña
         self.assertTrue(text.startswith("La entrada «Limites» ha cambiado desde su registro"),
@@ -904,8 +921,9 @@ class ProvenanceSessionTest(unittest.TestCase):
         «vigente», o «no localizable» si no se encuentra su fuente), su tipo, su entrega, sus
         CRS horizontal y vertical, su hash de contenido abreviado (12 caracteres) y su
         original; el panel tiene la cabecera de las columnas, la lista, Actualizar, Mantener la
-        copia, Descartar… y Editar… del seleccionado (hasta T52, desactivados) y Comprobar. En
-        solo lectura el registro se consulta, pero Comprobar está desactivado con el motivo."""
+        copia, Descartar… y Editar… del seleccionado (de una vigente, solo Descartar… y Editar…,
+        con su uid) y Comprobar. En solo lectura el registro se consulta, pero lo demás está
+        desactivado con el motivo."""
         self.assertFalse(bpy.ops.geoblender.core_show_inputs.poll())
         self.assertFalse(bpy.ops.geoblender.core_check_inputs.poll())
         project, _first, second, limits, neighbour = self.two_inputs()
@@ -934,7 +952,16 @@ class ProvenanceSessionTest(unittest.TestCase):
         self.assertEqual(texts[start:start + len(HEADER)], HEADER)
         buttons = {(item.target, item.text): item for item in panel.of_kind("operator")}
         self.assertLessEqual(INPUT_BUTTONS, set(buttons))
-        self.assertFalse(any(buttons[key].enabled for key in INPUT_BUTTONS))  # T52
+        self.assertEqual({key: buttons[key].enabled for key in INPUT_BUTTONS}, {
+            (RESOLVE_INPUT, "Actualizar"): False, (RESOLVE_INPUT, "Mantener la copia"): False,
+            (DISCARD_INPUT, "Descartar entrada…"): True, (EDIT_INPUT, "Editar entrada…"): True,
+        })  # «Limites» está vigente: no hay cambio que decidir
+        self.assertEqual(vars(buttons[(RESOLVE_INPUT, "Actualizar")].properties),
+                         {"input_uid": limits.uid, "decision": "UPDATE"})
+        self.assertEqual(vars(buttons[(RESOLVE_INPUT, "Mantener la copia")].properties),
+                         {"input_uid": limits.uid, "decision": "KEEP"})
+        for key in ((DISCARD_INPUT, "Descartar entrada…"), (EDIT_INPUT, "Editar entrada…")):
+            self.assertEqual(vars(buttons[key].properties), {"input_uid": limits.uid})
         check = buttons[(CHECK_INPUTS, "Comprobar cambios en las entradas")]
         self.assertTrue(check.enabled)
 
@@ -997,6 +1024,249 @@ class ProvenanceSessionTest(unittest.TestCase):
                                       "comprobados")
         view = self.show_inputs()
         self.assertEqual([texts[1] for texts in self.input_rows(view)], ["cambiada", "vigente"])
+
+    # Decidir sobre una entrada, descartarla y editarla (T52) -------------------------------
+
+    def boundary_with_area(self, demo: Demo) -> tuple[object, Path, object, object, object]:
+        """Un proyecto nuevo (aún fuera de la sesión) con la entrada «Limites» de
+        ``fuentes/Limites.gpkg`` (``Limites_v1``, entregada por la propiedad) y el área de la
+        demostración calculada con lo importado. Devuelve el proyecto, la fuente, la entrada, lo
+        importado y la operación del área."""
+        sources = self.tmp / "fuentes"
+        sources.mkdir()
+        source = sources / "Limites.gpkg"
+        shutil.copyfile(DATA / "Limites_v1.gpkg", source)
+        project = self.create()
+        imported = _module("core.provenance.importer").import_layer(
+            project, LAYER, source=source, received_at="2026-09-24",
+            received_from="La propiedad")
+        area = demo.area(project, imported.dataset.name)
+        return project, source, imported.input, imported.dataset, area
+
+    @staticmethod
+    def registry_state(project: object) -> tuple[object, ...]:
+        """Lo que guarda el proyecto de las entradas, de los datos y de las operaciones, con
+        el número de eventos: lo que no debe cambiar al cancelar o al rechazar."""
+        with project.read() as conn:
+            return tuple(conn.execute(sql).fetchall() for sql in (
+                "SELECT uid, name, status, status_by, status_reason, received_at, "
+                "received_from, seen_sha256, content_sha256 FROM gb_input ORDER BY fid",
+                "SELECT uid, name, status, locator FROM gb_dataset ORDER BY fid",
+                "SELECT uid, op_type, status, superseded_by FROM gb_operation ORDER BY fid",
+                "SELECT count(*) FROM gb_event",
+            ))
+
+    @staticmethod
+    def dialog(cls: type, **values: object) -> tuple[object, mock.Mock, FakeLayout]:
+        """Abre el diálogo de la orden ``cls`` (``invoke``, con ``values`` como lo que le
+        pasa quien la lanza) sin ventana y lo dibuja: devuelve sus valores tras ``invoke``,
+        la llamada a ``invoke_props_dialog`` y lo dibujado."""
+        given = set(values)
+        defaults = {"input_uid": "", "decision": "UPDATE", "reason": "", "settings": [],
+                    "choices": "", "name": "", "received_at": "", "received_from": ""}
+        group, idname = cls.bl_idname.split(".")
+        rna = getattr(getattr(bpy.ops, group), idname).get_rna_type()
+        own = {name for name in defaults if name in rna.properties.keys()}
+        operator = SimpleNamespace(**{name: values.get(name, defaults[name]) for name in own},
+                                   properties=SimpleNamespace(is_property_set=given.__contains__),
+                                   report=mock.Mock())
+        opened = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window_manager=SimpleNamespace(invoke_props_dialog=opened))
+        result = cls.invoke(operator, context, None)
+        operator.report.assert_not_called()
+        if result != {"RUNNING_MODAL"}:
+            raise AssertionError(f"el diálogo no se abre: {result}")
+        fields = {key: value for key, value in vars(operator).items()
+                  if key not in ("properties", "report")}
+        return operator, opened, draw(cls, bpy.context, **fields)
+
+    def test_changed_input_is_updated_or_its_copy_kept(self) -> None:
+        """RF-008-10, RF-008-11, RF-008-12, RF-008-61 (plan §5.3.2 y §5.4.8): con
+        ``Limites_v2`` en lugar de ``Limites_v1``, la comprobación de apertura deja «Limites»
+        cambiada y «⚠ 1 entradas». Su diálogo (el que abre la puerta, solo con su uid) dice el
+        aviso de la spec §8 —su registro, lo que depende de ella y la fecha de la fuente— con
+        Actualizar (elegida) y Mantener la copia y el motivo; abrirlo y cancelarlo no cambia
+        nada. Mantener la copia la deja «cambiada · se mantiene la copia», con quién, y la saca
+        de «⚠ n entradas». Actualizar sin motivo se rechaza sin cambiar nada; si el importador
+        vuelve a pedir sus ajustes (la capa), lo dice sin cambiar nada (desde la interfaz, abre
+        otra vez el diálogo con ellos, que los pide) y, con ellos, la reimporta con el
+        importador de ``core.import_layer`` como una entrada nueva que la sustituye: la
+        anterior queda «sustituida» con lo importado intacto, y el área calculada con ella,
+        obsoleta. En solo lectura no se puede."""
+        demo = self.enterContext(Demo(module_name()).registered())
+        project, source, limits, imported, area = self.boundary_with_area(demo)
+        shutil.copyfile(DATA / "Limites_v2.gpkg", source)
+        later = time.time() + 10
+        os.utime(source, (later, later))
+        self.ps.attach(project)
+        self.run_checks()
+        ui = _module("bl.ui.provenance")
+        ui.refresh(force=True)
+        self.assertEqual(ui.inputs_text(), "⚠ 1 entradas")
+        changed = self.registry_state(project)
+        self.assertEqual(changed[0][0][2], "changed")
+
+        cls = self.session.GEOBLENDER_OT_core_resolve_input
+        operator, opened, shown = self.dialog(cls, input_uid=limits.uid)
+        self.assertEqual(operator.decision, "UPDATE")
+        self.assertEqual(opened.call_args.kwargs["title"], "Decidir sobre una entrada cambiada…")
+        notice = " ".join(item.text for item in shown.of_kind("label"))
+        self.assertTrue(notice.startswith("La entrada «Limites» ha cambiado desde su registro ("),
+                        notice)
+        self.assertIn("Dependen de ella: 1 dato, 1 operación y 1 cifra. Fecha de la fuente: ",
+                      notice)
+        self.assertEqual([(item.text, item.enabled) for item in shown.of_kind("prop_enum")],
+                         [("Actualizar", True), ("Mantener la copia", True)])
+        self.assertEqual([item.target for item in shown.of_kind("prop")], ["reason"])
+        self.assertEqual(self.registry_state(project), changed)  # Cancelar: nada cambia
+
+        self.assertEqual(bpy.ops.geoblender.core_resolve_input(input_uid=limits.uid,
+                                                               decision="KEEP"), {"FINISHED"})
+        kept = self.registry_state(project)
+        self.assertEqual(kept[0][0][2:4], ("kept", project.session.user_host))
+        self.assertEqual(ui.inputs_text(), "")
+        self.assertEqual(self.input_rows(self.show_inputs())[0][1], KEPT)
+
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_resolve_input(input_uid=limits.uid, decision="UPDATE")
+        self.assertIn("Indique el motivo de la sustitución de la entrada «Limites».",
+                      str(caught.exception))
+        importer = _module("core.provenance.importer")
+        contract = _module("core.provenance.contract")
+        real = importer.reimport_input
+        asked: list[object] = []
+
+        def reimport(project_: object, uid: str, reason: str, **kwargs: object) -> object:
+            asked.append(kwargs.get("settings"))
+            if kwargs.get("settings") is None:  # la capa «ya no está»: pide los ajustes
+                raise contract.SettingsNeeded(
+                    "core.import_layer_missing", needed=("layer",),
+                    choices={"layer": (LAYER, "parcelas")}, layer=LAYER, source=source.name,
+                    name="Limites", layers=f"«{LAYER}», «parcelas»")
+            return real(project_, uid, reason, **kwargs)
+
+        update = {"input_uid": limits.uid, "decision": "UPDATE", "reason": UPDATE_REASON}
+        with mock.patch.object(importer, "reimport_input", reimport):
+            with self.assertRaises(RuntimeError) as caught:
+                bpy.ops.geoblender.core_resolve_input(**update)
+            self.assertIn("indique otra vez los ajustes de la importación (la capa)",
+                          str(caught.exception))
+            with (mock.patch.object(self.session, "_interactive", return_value=True),
+                  mock.patch.object(self.session, "_ask_settings") as again):
+                self.assertEqual(bpy.ops.geoblender.core_resolve_input(**update),
+                                 {"CANCELLED"})
+            ((uid, reason, needed), _kwargs) = again.call_args
+            self.assertEqual((uid, reason, needed.needed), (limits.uid, UPDATE_REASON,
+                                                            ("layer",)))
+            self.assertEqual(self.registry_state(project), kept)
+            choices = json.dumps({"layer": [LAYER, "parcelas"]})
+            _operator, _opened, shown = self.dialog(
+                cls, settings=[SimpleNamespace(name="layer", value="")], choices=choices,
+                **update)
+            texts = shown.texts()
+            self.assertIn("Ajustes de la importación que vuelve a pedir el importador", texts)
+            self.assertIn("Valores: «limites», «parcelas»", texts)
+            self.assertEqual([(item.target, item.text) for item in shown.of_kind("prop")],
+                             [("value", "layer"), ("reason", "Motivo")])
+            with self.assertRaises(RuntimeError) as caught:  # el ajuste, vacío
+                bpy.ops.geoblender.core_resolve_input(
+                    settings=[{"name": "layer", "value": " "}], **update)
+            self.assertIn("Indique el ajuste de la importación «layer»", str(caught.exception))
+            # Volver a abrir el diálogo con lo que pide: en «blender -b», abrirlo lo ejecuta,
+            # con el único valor posible ya escrito.
+            self.session._ask_settings(limits.uid, UPDATE_REASON, contract.SettingsNeeded(
+                "core.import_layer_missing", needed=("layer",), choices={"layer": (LAYER,)},
+                layer=LAYER, source=source.name, name="Limites", layers=f"«{LAYER}»"))
+        self.assertEqual(asked, [None, None, {"layer": LAYER}])
+
+        inputs, datasets, _operations, _events = self.registry_state(project)
+        (old, new) = inputs
+        self.assertEqual(old[:3], (limits.uid, "Limites", "superseded"))
+        self.assertEqual(old[4], UPDATE_REASON)
+        self.assertEqual(new[1:3], ("Limites", "current"))
+        self.assertNotEqual(new[8], limits.content_sha256)
+        with project.read() as conn:
+            previous = conn.execute("SELECT previous_uid FROM gb_input WHERE uid = ?",
+                                    (new[0],)).fetchone()[0]
+            stale = _module("core.provenance.stale").item_text(conn, "operation", area.uid)
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        self.assertEqual(previous, limits.uid)
+        self.assertEqual(stale, "Obsoleto: se actualizó la entrada «Limites»")
+        found = {uid: (status, locator) for uid, _name, status, locator in datasets}
+        self.assertEqual(found[imported.uid], ("superseded", imported.locator))
+        self.assertLessEqual({locator for _status, locator in found.values()}, tables)
+        self.assertEqual(ui.inputs_text(), "")
+
+        project.set_read_only(self.core.ReadOnlyCode.REQUESTED, "prueba")
+        self.assertFalse(bpy.ops.geoblender.core_resolve_input.poll())
+        with self.assertRaises(RuntimeError):
+            bpy.ops.geoblender.core_resolve_input(input_uid=new[0], decision="KEEP")
+
+    def test_discard_and_edit_an_input(self) -> None:
+        """RF-008-55, RF-008-07, RF-008-16 (D-11; plan §5.3.2 y §5.4.8): Descartar… pide el
+        motivo (sin él se rechaza sin cambiar nada; su diálogo dice que no se borra nada) y
+        deja la entrada «descartada · registro, no usar», con lo importado descartado pero en
+        el proyecto, y el área calculada con ella, obsoleta. Editar… sale relleno con su nombre
+        y su entrega y cambia solo eso: sus ficheros, sus hashes, su estado y lo importado no
+        cambian (también la de una descartada); una fecha que no es DD/MM/AAAA se rechaza sin
+        cambiar nada. En solo lectura, ninguna de las dos."""
+        demo = self.enterContext(Demo(module_name()).registered())
+        project, _source, limits, imported, area = self.boundary_with_area(demo)
+        self.ps.attach(project)
+        before = self.registry_state(project)
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_discard_input(input_uid=limits.uid)
+        self.assertIn("Indique el motivo para descartar la entrada «Limites».",
+                      str(caught.exception))
+        discard = self.session.GEOBLENDER_OT_core_discard_input
+        _operator, opened, shown = self.dialog(discard, input_uid=limits.uid)
+        self.assertEqual(opened.call_args.kwargs["title"], "Descartar entrada…")
+        self.assertIn(f"No se borra nada: la entrada sigue en el registro como «{DISCARDED}»",
+                      shown.texts())
+        self.assertEqual([item.target for item in shown.of_kind("prop")], ["reason"])
+        self.assertEqual(self.registry_state(project), before)
+
+        self.assertEqual(bpy.ops.geoblender.core_discard_input(
+            input_uid=limits.uid, reason="Importación equivocada"), {"FINISHED"})
+        inputs, datasets, _operations, _events = self.registry_state(project)
+        self.assertEqual(inputs[0][2:5], ("discarded", project.session.user_host,
+                                          "Importación equivocada"))
+        self.assertEqual(datasets[0][:3], (imported.uid, imported.name, "discarded"))
+        with project.read() as conn:
+            self.assertIsNotNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (imported.locator,)).fetchone())
+            stale = _module("core.provenance.stale").item_text(conn, "operation", area.uid)
+        self.assertEqual(stale, "Obsoleto: se descartó la entrada «Limites»")
+        self.assertEqual(self.input_rows(self.show_inputs())[0][1], DISCARDED)
+
+        edit = self.session.GEOBLENDER_OT_core_edit_input
+        operator, opened, shown = self.dialog(edit, input_uid=limits.uid)
+        self.assertEqual((operator.name, operator.received_at, operator.received_from),
+                         ("Limites", "24/09/2026", "La propiedad"))
+        self.assertEqual(opened.call_args.kwargs["title"], "Editar entrada…")
+        self.assertEqual([item.target for item in shown.of_kind("prop")],
+                         ["name", "received_at", "received_from"])
+        discarded = self.registry_state(project)
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_edit_input(input_uid=limits.uid, received_at="31/02/2026")
+        self.assertIn("Fecha de entrega «31/02/2026»: escríbala como DD/MM/AAAA",
+                      str(caught.exception))
+        self.assertEqual(self.registry_state(project), discarded)
+        self.assertEqual(bpy.ops.geoblender.core_edit_input(
+            input_uid=limits.uid, name="Limites del cliente", received_at="25/09/2026",
+            received_from=""), {"FINISHED"})
+        inputs, datasets, operations, events = self.registry_state(project)
+        self.assertEqual(inputs[0][1:3], ("Limites del cliente", "discarded"))
+        self.assertEqual(inputs[0][5:7], ("2026-09-25", None))
+        self.assertEqual(inputs[0][7:], discarded[0][0][7:])  # su contenido no cambia
+        self.assertEqual((datasets, operations), discarded[1:3])
+        self.assertEqual(events[0][0], discarded[3][0][0] + 1)  # input_edited
+
+        project.set_read_only(self.core.ReadOnlyCode.REQUESTED, "prueba")
+        self.assertFalse(bpy.ops.geoblender.core_discard_input.poll())
+        self.assertFalse(bpy.ops.geoblender.core_edit_input.poll())
 
 
 if __name__ == "__main__":
