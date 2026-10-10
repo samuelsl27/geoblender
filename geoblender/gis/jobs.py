@@ -1,0 +1,1410 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Los trabajos de la topografía (spec 006, T26; RF-006-28, RF-006-26; RF-008-09, RF-008-20;
+plan 006 §5.3.4 y §5.6.4; ADR-0010; plan 004 §5.3.1).
+
+Lo que puede pasar de 1 s va a los trabajos de la 004 (RF-006-28: progreso en la barra de
+estado y cancelación). Este módulo declara sus diez tipos (:data:`WORKER_INFOS`, cada uno con
+su estimador de duración y su función ``run``) y ``bl/ops/gis.py`` los registra con
+``jobs.catalog.register_worker``: ``jobs/`` no importa ``gis`` (ARQ-07). Cada
+``workers/<tipo>.py`` envuelve la misma función (registra antes los lectores de ``gis``), así
+que el hilo de Blender y el proceso aparte hacen lo mismo. Todos en el entorno ``blender``
+(sin motor de cálculo); automáticos (en el hilo si se estiman en ≤ 5 s, RF-004-03) salvo
+``gis_triangulate``, siempre en proceso aparte.
+
+**La petición nunca lleva una ruta** (ARQ-11): una fuente externa llega por la línea de
+órdenes (``JobRunner.submit(paths=…)``, ``--path source_main=…``; el ``.prj`` de un ASC,
+``source_prj``) y el trabajo la copia a ``in/`` con ``JobDir.copy_input`` (huella antes,
+durante y después); lo del proyecto (una rejilla, un TIN, puntos) lo copia ``bl`` a ``in/``
+antes de lanzarlo (``request.inputs``). Los parámetros van resueltos (los del proyecto,
+``handle.params``; los de control, su valor) y la operación, en ``operation_uid``.
+
+**Resultados** en ``out/`` con su huella (``WorkerContext.add_output``, con el papel de
+:class:`JobOutput`) y un **resumen** JSON con el ``ContentDigest`` de la fuente
+(importaciones: el que da ``core_content_hash`` con las mismas declaraciones,
+``gis.store.source_declarations``), las huellas de cada fichero de la fuente (sha256, tamaño y
+fecha) y, en ``outputs``, el ``ContentDigest`` de cada fichero que será un dato del proyecto
+(una rejilla, con ``gis.geotiff@1``; un TIN, con ``core.npz_mesh@1``; las tablas lo calcula el
+registro al escribirlas, T42). Los informes completos van en ``report.json`` (el resumen solo
+lleva recuentos: cabe en el canal). Cancelar a mitad, o un fallo, deja ``out/`` vacía: nada a
+medias ni entero (RF-006-28); un ``GisError`` (o cualquier error para el usuario) es un
+``JobFailed`` con su código, su ``msgid``, sus valores y su texto en español (RF-004-12), y una
+petición que no vale, ``request_invalid``.
+
+Los tipos, con sus parámetros (las entradas de ``in/``, las rutas de ``--path``) y sus
+resultados en ``out/``:
+
+- ``gis_read_raster``: ``reader`` (``gis.geotiff@1``, ``gis.asc@1`` o ``gis.xyz_grid@1``),
+  ``name``, ``settings`` (de lectura), ``crs`` y ``vertical`` (declarados; ``None``: los del
+  fichero), ``max_cells`` y ``size``; ``source_main`` [y ``source_prj``] → ``source.tif``.
+- ``gis_resample``: ``name``, ``source_crs``, ``source_vertical``, ``target_crs``,
+  ``target_vertical``, ``target`` (la rejilla), ``method`` (``auto``, ``area_mean``,
+  ``bilinear`` o ``mode``), ``min_valid_fraction``, ``supersample`` y ``size``; ``source``
+  (``.tif``) → ``grid.tif`` y ``report.json``.
+- ``gis_import_points``: ``reader`` (``gis.points_text@1``), ``name``, ``settings``,
+  ``crs``, ``vertical`` y ``size``; ``source_main`` → ``points.npz``, ``lines.npz`` y
+  ``report.json``.
+- ``gis_tin_prepare``: ``name``, ``tol_xy``, ``tol_z``, ``duplicate_policy`` y ``count``;
+  ``points`` y ``lines`` (``.npz``) → ``prepared.npz`` o, con conflictos,
+  ``conflicts.json``.
+- ``gis_triangulate``: ``name``, ``origin`` y ``count``; ``prepared`` → ``faces.npy``.
+- ``gis_tin_finish``: ``name``, ``origin``, ``triangulator``, ``max_edge_m``, ``crs``,
+  ``vertical`` y ``count``; ``prepared``, ``faces`` [y ``regions``]; la operación de la
+  petición (``operation_uid``) → ``tin.npz`` y ``report.json``.
+- ``gis_contours``: ``name``, ``crs``, ``vertical``, ``interval_m``, ``base_m``,
+  ``index_every_m``, ``index_offset_m``, ``simplify_m``, ``min_length_m`` y ``count``;
+  ``source`` (``.tif`` o ``.npz``) → ``contours.npz``.
+- ``gis_validate``: ``name``, ``crs``, ``vertical``, ``window``, ``z_range`` y ``count``;
+  ``source`` → ``report.json``.
+- ``gis_export``: ``name``, ``crs``, ``vertical`` y ``count``; ``source`` (``.tif``) →
+  ``export.tif``, el GeoTIFF entregable.
+- ``gis_view_arrays``: ``name``, ``crs``, ``vertical``, ``lod_steps`` y ``count``;
+  ``source`` → ``mesh.npz``.
+
+Referencias en JSON: un CRS, ``{"epsg": n}``; una referencia vertical, ``{"epsg": n}``,
+``{"local": nota}`` o ``{"ellipsoidal": 4937}`` (los de ``gis.store.declared_crs`` y
+``declared_vertical``); una rejilla, :func:`grid_json`; el GeoOrigin, :func:`origin_json`.
+Ficheros intermedios en npz sin *pickle* (:func:`write_points`, :func:`write_lines`,
+:func:`write_tin_input`, :func:`write_regions`, :func:`write_contours`, :func:`write_mesh`,
+con su lectura), para que ``bl`` los lea al incorporarlos.
+
+Una **reproyección** (otro CRS u otra referencia vertical, :func:`reprojects`) no tiene
+estimación: va a proceso aparte (D11: una de hasta 60 s en un hilo no se podría parar), con
+``--site`` a las ruedas de la extensión para pyproj (:func:`needs_site`); el servicio de CRS lo
+da ``adapters.registry`` dentro del trabajo, con su versión comprobada (RF-006-31).
+
+Python puro y numpy (ADR-0004).
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import functools
+import hashlib
+import json
+import math
+import numbers
+import os
+import shutil
+import sys
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any, Protocol
+
+import numpy as np
+
+from ..core.content.encoder import NORMALIZER, ContentDigest
+from ..core.content.readers import MAIN_ROLE, ContentReader, read_steps
+from ..core.errors import GeoblenderError
+from ..core.georef import CrsRef, GeoOrigin, VerticalRef, Window, load_catalog, world_to_local
+from ..jobs.catalog import WorkerInfo
+from ..jobs.messages import JobError
+from ..jobs.paths import JobDir
+from ..jobs.protocol import JobRequest, JsonValue
+from ..jobs.worker_api import JobCancelled, JobFailed
+from . import content as gis_content
+from .asc import read_asc
+from .cdt import PureTriangulator
+from .contours import ContourLine, contours_from_raster, contours_from_tin
+from .crs import ELLIPSOIDAL_ETRS89, Declaration, needs_transform, transformation_for
+from .crs import require_crs_service, transform_summary
+from .geotiff import GeoTiffIO
+from .geotiff.reader import read_geotiff
+from .grid import Grid
+from .mesh import MeshArrays, lod_rasters, surface_mesh_from_raster, surface_mesh_from_tin
+from .points import Breakline, ColumnMapping, DuplicatePolicy, PointSet, points_from_rows
+from .ports import Cancelled, Progress
+from .raster import Raster
+from .reports import Conflict, ConflictError, ConflictKind
+from .resample import (
+    ResampleMethod,
+    choose_method,
+    reproject_to_grid,
+    resample_classes_to_grid,
+    resample_to_grid,
+)
+from .tin import Tin, TinInput, finish_tin, load_tin, meta_vertical, prepare_tin, save_tin
+from .validate import validate_raster, validate_tin
+from .xyz_grid import read_xyz_grid
+
+__all__ = [
+    "CANCEL_GRACE_S",
+    "WORKER_INFOS",
+    "WORKER_INFOS_BY_NAME",
+    "WORKER_NAMES",
+    "JobOutput",
+    "crs_json",
+    "crs_of",
+    "digest_json",
+    "digest_of",
+    "grid_json",
+    "grid_of",
+    "needs_site",
+    "origin_json",
+    "origin_of",
+    "path_name",
+    "plain",
+    "read_conflicts",
+    "read_contours",
+    "read_lines",
+    "read_mesh",
+    "read_points",
+    "read_regions",
+    "read_tin_input",
+    "reprojects",
+    "vertical_json",
+    "vertical_of",
+    "write_contours",
+    "write_lines",
+    "write_mesh",
+    "write_points",
+    "write_regions",
+    "write_tin_input",
+]
+
+OWNER = "gis"
+"""El módulo dueño de sus trabajos (``JobRequest.owner``)."""
+CANCEL_GRACE_S = 1.0
+"""Plazo de gracia de sus peticiones (el mínimo de la 004): cancelar para en ≤ 2 s también si
+el trabajo está en un tramo sin puntos de cancelación (RF-006-28, RF-004-09)."""
+
+READ_RASTER = "gis_read_raster"
+RESAMPLE = "gis_resample"
+IMPORT_POINTS = "gis_import_points"
+TIN_PREPARE = "gis_tin_prepare"
+TRIANGULATE = "gis_triangulate"
+TIN_FINISH = "gis_tin_finish"
+CONTOURS = "gis_contours"
+VALIDATE = "gis_validate"
+EXPORT = "gis_export"
+VIEW_ARRAYS = "gis_view_arrays"
+WORKER_NAMES: tuple[str, ...] = (READ_RASTER, RESAMPLE, IMPORT_POINTS, TIN_PREPARE,
+                                 TRIANGULATE, TIN_FINISH, CONTOURS, VALIDATE, EXPORT,
+                                 VIEW_ARRAYS)
+"""Los tipos de trabajo de la 006 (y sus módulos de ``workers/``), en el orden del plan."""
+
+PATH_PREFIX = "source_"
+"""Las rutas de la fuente en la línea de órdenes: ``source_<papel>`` (``source_main``)."""
+PRJ_ROLE = gis_content.PRJ_ROLE
+"""El papel del ``.prj`` de un ASC (``source_prj``)."""
+
+INPUT_SOURCE = "source"
+"""``in/source.tif`` (una rejilla del proyecto) o ``in/source.npz`` (un TIN)."""
+INPUT_POINTS = "points"
+INPUT_LINES = "lines"
+INPUT_PREPARED = "prepared"
+INPUT_FACES = "faces"
+INPUT_REGIONS = "regions"
+
+
+@dataclass(frozen=True, slots=True)
+class JobOutput:
+    """Un resultado de un trabajo de la 006: su fichero en ``out/`` y su papel
+    (``OutputRef.role``, con el que ``bl`` lo encuentra al incorporarlo)."""
+
+    file: str
+    role: str
+
+    @property
+    def relative(self) -> str:
+        """``out/<fichero>``: su ruta en la carpeta del trabajo."""
+        return f"out/{self.file}"
+
+
+OUT_SOURCE_GRID = JobOutput("source.tif", "source_grid")
+OUT_PROJECT_GRID = JobOutput("grid.tif", "project_grid")
+OUT_POINTS = JobOutput("points.npz", "points")
+OUT_LINES = JobOutput("lines.npz", "breaklines")
+OUT_REPORT = JobOutput("report.json", "report")
+OUT_PREPARED = JobOutput("prepared.npz", "prepared")
+OUT_CONFLICTS = JobOutput("conflicts.json", "conflicts")
+OUT_FACES = JobOutput("faces.npy", "faces")
+OUT_TIN = JobOutput("tin.npz", "tin")
+OUT_CONTOURS = JobOutput("contours.npz", "contours")
+OUT_EXPORT = JobOutput("export.tif", "export")
+OUT_MESH = JobOutput("mesh.npz", "mesh")
+
+COPYING_TEXT = "Copiando la fuente…"
+READING_TEXT = "Leyendo la fuente…"
+HASHING_TEXT = "Calculando el hash de contenido de la fuente…"
+WRITING_TEXT = "Escribiendo el resultado…"
+DONE_TEXT = "Terminado"
+
+# Estimaciones [I] (plan §5.3.4: «celdas × 0,6 µs (DEFLATE)…»; medidas de T05 a T23).
+READ_PASSES = 3
+"""Una importación lee la fuente para su hash, la lee para importarla y escribe la rejilla:
+unas tres veces lo que estima su lector de contenido."""
+CELL_S = 0.6e-6
+"""Leer o escribir una celda de una rejilla del proyecto (DEFLATE + predictor 3)."""
+CONTOUR_CELL_S = 1.2e-6
+"""Curvas de una celda (2,81 M celdas en unos 3,4 s, T21) o de un vértice de un TIN."""
+MESH_CELL_S = 1.5e-6
+"""Malla de vista y niveles de detalle por celda (2,81 M celdas → malla en 2,4 s, T22)."""
+VALIDATE_CELL_S = 0.2e-6
+"""Validar una celda (2,81 M celdas en 0,02–0,22 s, T14) además de leerla."""
+TIN_POINT_S = 5e-6
+"""Preparar o acabar un TIN por punto (300.000 puntos y 200 roturas en 1,0 s, T16)."""
+PURE_POINT_S = 20e-6
+"""``PureTriangulator`` por punto (20.000 puntos en 0,34 s; mallas regulares, ×4; T17)."""
+
+_UNLIMITED = sys.maxsize
+"""Sin límite de celdas al leer lo que ya es del proyecto (lo comprobó su importación)."""
+_ELLIPSOIDAL_EPSG = 4937
+_HASH_BLOCK = 1 << 20
+_SURFACE_SUFFIXES = {".tif": "grid", ".tiff": "grid", ".npz": "tin"}
+
+
+class _Context(Protocol):
+    """Lo que usan las funciones de los trabajos del ``WorkerContext`` de la 004."""
+
+    @property
+    def request(self) -> JobRequest: ...
+
+    @property
+    def job_dir(self) -> JobDir: ...
+
+    @property
+    def paths(self) -> Mapping[str, Path]: ...
+
+    def input_path(self, name: str) -> Path: ...
+
+    def output_path(self, filename: str | os.PathLike[str]) -> Path: ...
+
+    def add_output(self, path: str | os.PathLike[str], role: str) -> Any: ...
+
+    def progress(self, frac: float, msg: str = "") -> None: ...
+
+    def check_cancelled(self) -> None: ...
+
+
+# --- Nombres, referencias y JSON ----------------------------------------------------------
+
+
+def path_name(role: str) -> str:
+    """El nombre en la línea de órdenes (``--path``) del fichero de papel ``role`` de la
+    fuente: ``source_main``, ``source_prj``."""
+    return f"{PATH_PREFIX}{role}"
+
+
+def crs_json(crs: CrsRef | None) -> dict[str, Any] | None:
+    """Un CRS horizontal en la petición: ``{"epsg": n}`` (``None``: sin declarar)."""
+    if crs is None:
+        return None
+    if not isinstance(crs, CrsRef):
+        raise TypeError(f"un CRS horizontal es un CrsRef del catálogo, no {crs!r}")
+    return {"epsg": crs.epsg}
+
+
+def vertical_json(vertical: VerticalRef | None) -> dict[str, Any] | None:
+    """Una referencia vertical en la petición: ``{"epsg": n}``, ``{"local": nota}`` o, la
+    altura elipsoidal ETRS89, ``{"ellipsoidal": 4937}`` (``None``: sin declarar)."""
+    if vertical is None:
+        return None
+    if not isinstance(vertical, VerticalRef):
+        raise TypeError(f"una referencia vertical es un VerticalRef, no {vertical!r}")
+    if vertical.kind == "epsg":
+        return {"epsg": vertical.epsg}
+    if vertical.kind == "local":
+        return {"local": vertical.note}
+    if vertical == ELLIPSOIDAL_ETRS89:
+        return {"ellipsoidal": _ELLIPSOIDAL_EPSG}
+    return {"ellipsoidal": vertical.name}
+
+
+def crs_of(value: object) -> CrsRef | None:
+    """El CRS horizontal del catálogo de :func:`crs_json`. ``ValueError`` si no lo es."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {"epsg"}:
+        raise ValueError(f"un CRS horizontal es {{\"epsg\": n}}, no {value!r}")
+    try:
+        return load_catalog().horizontal(value["epsg"])
+    except GeoblenderError as error:
+        raise ValueError(str(error)) from None
+
+
+def vertical_of(value: object) -> VerticalRef | None:
+    """La referencia vertical de :func:`vertical_json`. ``ValueError`` si no lo es."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or len(value) != 1:
+        raise ValueError(f"una referencia vertical es {{\"epsg\": n}}, {{\"local\": nota}} o "
+                         f"{{\"ellipsoidal\": {_ELLIPSOIDAL_EPSG}}}, no {value!r}")
+    try:
+        if "epsg" in value:
+            return load_catalog().vertical(value["epsg"])
+        if "local" in value:
+            return load_catalog().local_vertical(value["local"])
+    except GeoblenderError as error:
+        raise ValueError(str(error)) from None
+    if value.get("ellipsoidal") == _ELLIPSOIDAL_EPSG:
+        return ELLIPSOIDAL_ETRS89
+    raise ValueError(f"referencia vertical desconocida: {value!r}")
+
+
+def grid_json(grid: Grid) -> dict[str, Any]:
+    """Una rejilla en la petición o en el resumen: oeste, norte, pasos, columnas y filas."""
+    return {"west": grid.west, "north": grid.north, "dx": grid.dx, "dy": grid.dy,
+            "ncols": grid.ncols, "nrows": grid.nrows}
+
+
+def grid_of(value: object) -> Grid:
+    """La rejilla de :func:`grid_json`. ``ValueError`` o ``TypeError`` si no lo es."""
+    keys = ("west", "north", "dx", "dy", "ncols", "nrows")
+    if not isinstance(value, Mapping) or set(value) != set(keys):
+        raise ValueError(f"una rejilla es {{{', '.join(keys)}}}, no {value!r}")
+    return Grid(*(value[key] for key in keys))
+
+
+def origin_json(origin: GeoOrigin) -> dict[str, int]:
+    """El GeoOrigin en la petición: ``{"x0", "y0", "z0"}`` (metros enteros)."""
+    return {"x0": origin.x0, "y0": origin.y0, "z0": origin.z0}
+
+
+def origin_of(value: object) -> GeoOrigin:
+    """El GeoOrigin de :func:`origin_json`. ``ValueError`` o ``TypeError`` si no lo es."""
+    if not isinstance(value, Mapping) or set(value) != {"x0", "y0", "z0"}:
+        raise ValueError(f"el GeoOrigin es {{x0, y0, z0}}, no {value!r}")
+    return GeoOrigin(value["x0"], value["y0"], value["z0"])
+
+
+def digest_json(digest: ContentDigest) -> dict[str, str]:
+    """Un ``ContentDigest`` en el resumen (como el del trabajo ``core_content_hash``)."""
+    return {"data_sha256": digest.data_sha256, "content_sha256": digest.content_sha256,
+            "normalizer": digest.normalizer, "reader": digest.reader}
+
+
+def digest_of(value: Mapping[str, Any]) -> ContentDigest:
+    """El ``ContentDigest`` de :func:`digest_json`."""
+    return ContentDigest(value["data_sha256"], value["content_sha256"], value["normalizer"],
+                         value["reader"])
+
+
+def plain(value: object) -> Any:
+    """``value`` (un informe del dominio: ``dataclass``, tuplas, enumeraciones, números de
+    numpy) en JSON: diccionarios, listas, textos, números finitos (NaN o ±∞, como texto),
+    booleanos y ``None``."""
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {item.name: plain(getattr(value, item.name))
+                for item in dataclasses.fields(value)}
+    if isinstance(value, Mapping):
+        return {str(key): plain(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [plain(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return plain(value.tolist())
+    if isinstance(value, np.generic):
+        return plain(value.item())
+    if isinstance(value, Enum):
+        return plain(value.value)
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
+    if value is None or isinstance(value, str | int | bool):
+        return value
+    return str(value)
+
+
+def reprojects(params: Mapping[str, Any]) -> bool:
+    """Si el remuestreo de ``params`` cambia de CRS o de referencia vertical (una
+    reproyección con pyproj, RF-006-05); sin los dos CRS no se sabe: verdadero."""
+    pairs = (("source_crs", "target_crs"), ("source_vertical", "target_vertical"))
+    if any(key not in params for pair in pairs for key in pair):
+        return True
+    return any(params[first] != params[second] for first, second in pairs)
+
+
+def needs_site(worker: str, params: Mapping[str, Any]) -> bool:
+    """Si el trabajo ``worker`` con ``params`` necesita las ruedas de la extensión (pyproj)
+    en su intérprete: ``submit(..., site_override=<carpeta de las ruedas>)`` (plan §5.3.4,
+    D11). Solo una reproyección."""
+    return worker == RESAMPLE and reprojects(params)
+
+
+# --- Ficheros intermedios (npz sin pickle) -------------------------------------------------
+
+
+def _save_npz(path: Path, **arrays: np.ndarray) -> None:
+    with open(path, "wb") as stream:
+        np.savez_compressed(stream, **arrays)
+
+
+def _load_npz(path: Path, keys: Sequence[str]) -> dict[str, np.ndarray]:
+    """Los arrays ``keys`` del npz ``path`` (leído sin *pickle*, ARQ-16); ``ValueError`` si
+    no es un npz con ellos."""
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            missing = [key for key in keys if key not in data.files]
+            if missing:
+                raise ValueError(f"al npz «{Path(path).name}» le faltan {missing}")
+            return {key: data[key] for key in data.files}
+    except (OSError, EOFError) as error:
+        raise ValueError(f"«{Path(path).name}» no es un npz legible ({error})") from None
+
+
+def _texts(values: Sequence[str]) -> np.ndarray:
+    return np.array(list(values), dtype=str) if len(values) else np.zeros(0, dtype="<U1")
+
+
+def _offsets(sizes: Sequence[int]) -> np.ndarray:
+    return np.concatenate(([0], np.cumsum(np.asarray(sizes, dtype=np.int64)))).astype(np.int64)
+
+
+def _xyz_rows(arrays: Sequence[np.ndarray], columns: int = 3) -> np.ndarray:
+    if not arrays:
+        return np.zeros((0, columns), dtype=np.float64)
+    return np.ascontiguousarray(np.concatenate(arrays), dtype=np.float64)
+
+
+def write_points(path: Path | str, points: PointSet) -> None:
+    """``points`` en el npz ``path`` (``xyz`` ABSOLUTOS float64, identificadores, códigos y
+    filas de origen)."""
+    _save_npz(Path(path), xyz=points.xyz, point_ids=_texts(points.point_ids),
+              codes=_texts(points.codes),
+              source_rows=np.asarray(points.source_rows, dtype=np.int64))
+
+
+def read_points(path: Path | str) -> PointSet:
+    """El ``PointSet`` de :func:`write_points` (``xyz`` bit a bit)."""
+    data = _load_npz(Path(path), ("xyz", "point_ids", "codes", "source_rows"))
+    return PointSet(np.ascontiguousarray(data["xyz"], dtype=np.float64).reshape(-1, 3),
+                    tuple(str(text) for text in data["point_ids"]),
+                    tuple(str(text) for text in data["codes"]),
+                    tuple(int(row) for row in data["source_rows"]))
+
+
+def write_lines(path: Path | str, lines: Sequence[Breakline]) -> None:
+    """Las líneas de rotura ``lines`` en el npz ``path``: vértices seguidos (``xyz``),
+    ``offsets`` (n + 1), identificador, código, dura o blanda y filas de origen."""
+    lines = list(lines)
+    rows = [np.asarray(line.source_rows, dtype=np.int64) for line in lines]
+    _save_npz(Path(path), xyz=_xyz_rows([line.xyz for line in lines]),
+              offsets=_offsets([len(line.xyz) for line in lines]),
+              line_ids=_texts([line.line_id for line in lines]),
+              codes=_texts([line.code for line in lines]),
+              hard=np.array([line.hard for line in lines], dtype=bool),
+              rows=np.concatenate(rows) if rows else np.zeros(0, np.int64),
+              row_offsets=_offsets([len(item) for item in rows]))
+
+
+def read_lines(path: Path | str) -> list[Breakline]:
+    """Las líneas de rotura de :func:`write_lines` (vértices bit a bit)."""
+    data = _load_npz(Path(path), ("xyz", "offsets", "line_ids", "codes", "hard", "rows",
+                                  "row_offsets"))
+    xyz = np.ascontiguousarray(data["xyz"], dtype=np.float64).reshape(-1, 3)
+    offsets, row_offsets = data["offsets"], data["row_offsets"]
+    lines: list[Breakline] = []
+    for index, line_id in enumerate(data["line_ids"]):
+        start, stop = int(offsets[index]), int(offsets[index + 1])
+        rows = data["rows"][int(row_offsets[index]):int(row_offsets[index + 1])]
+        lines.append(Breakline(str(line_id), np.ascontiguousarray(xyz[start:stop]),
+                               hard=bool(data["hard"][index]), code=str(data["codes"][index]),
+                               source_rows=tuple(int(row) for row in rows)))
+    return lines
+
+
+_TIN_COUNTS = ("input_vertices", "merged", "crossings", "splits", "input_points",
+               "duplicates_merged")
+
+
+def write_tin_input(path: Path | str, source: TinInput) -> None:
+    """Lo que se triangula (``gis.tin.TinInput``) en el npz ``path``."""
+    prepared = source.prepared
+    counts = (prepared.input_vertices, prepared.merged, prepared.crossings, prepared.splits,
+              source.input_points, source.duplicates_merged)
+    _save_npz(Path(path), xyz=prepared.xyz, edges=prepared.edges,
+              vertex_source=prepared.vertex_source,
+              counts=np.asarray(counts, dtype=np.int64))
+
+
+def read_tin_input(path: Path | str) -> TinInput:
+    """El ``TinInput`` de :func:`write_tin_input` (los mismos arrays, bit a bit)."""
+    from .breaklines import PreparedInput
+
+    data = _load_npz(Path(path), ("xyz", "edges", "vertex_source", "counts"))
+    counts = dict(zip(_TIN_COUNTS, (int(value) for value in data["counts"]), strict=True))
+    prepared = PreparedInput(
+        np.ascontiguousarray(data["xyz"], dtype=np.float64).reshape(-1, 3),
+        np.ascontiguousarray(data["edges"], dtype=np.int32).reshape(-1, 2),
+        np.ascontiguousarray(data["vertex_source"], dtype=np.uint8),
+        counts["input_vertices"], counts["merged"], counts["crossings"], counts["splits"])
+    return TinInput(prepared, counts["input_points"], counts["duplicates_merged"])
+
+
+def write_regions(path: Path | str, boundary: Sequence[np.ndarray] | None,
+                  holes: Sequence[Sequence[np.ndarray]] = ()) -> None:
+    """El contorno (una región: su lista de anillos ABSOLUTOS, o ``None``) y los huecos (una
+    lista de regiones) de un TIN en el npz ``path``; de cada anillo, su X e Y."""
+    regions = ([] if boundary is None else [list(boundary)]) + [list(hole) for hole in holes]
+    rings = [np.ascontiguousarray(np.asarray(ring, dtype=np.float64)[:, :2])
+             for region in regions for ring in region]
+    _save_npz(Path(path), xy=_xyz_rows(rings, 2), ring_offsets=_offsets([len(r) for r in rings]),
+              region_offsets=_offsets([len(region) for region in regions]),
+              holes=np.array([False] * (boundary is not None) + [True] * len(holes), bool))
+
+
+def read_regions(path: Path | str) -> tuple[list[np.ndarray] | None, list[list[np.ndarray]]]:
+    """El contorno y los huecos de :func:`write_regions`."""
+    data = _load_npz(Path(path), ("xy", "ring_offsets", "region_offsets", "holes"))
+    xy = np.ascontiguousarray(data["xy"], dtype=np.float64).reshape(-1, 2)
+    rings, regions = data["ring_offsets"], data["region_offsets"]
+    boundary: list[np.ndarray] | None = None
+    holes: list[list[np.ndarray]] = []
+    for index, is_hole in enumerate(data["holes"]):
+        found = [np.ascontiguousarray(xy[int(rings[r]):int(rings[r + 1])])
+                 for r in range(int(regions[index]), int(regions[index + 1]))]
+        if is_hole:
+            holes.append(found)
+        else:
+            boundary = found
+    return boundary, holes
+
+
+def write_contours(path: Path | str, lines: Sequence[ContourLine]) -> None:
+    """Las curvas de nivel ``lines`` en el npz ``path`` (vértices seguidos y ``offsets``,
+    cota, maestra y cerrada)."""
+    lines = list(lines)
+    _save_npz(Path(path), xyz=_xyz_rows([line.xyz for line in lines]),
+              offsets=_offsets([len(line.xyz) for line in lines]),
+              elevation=np.array([line.elevation for line in lines], dtype=np.float64),
+              is_index=np.array([line.is_index for line in lines], dtype=bool),
+              closed=np.array([line.closed for line in lines], dtype=bool))
+
+
+def read_contours(path: Path | str) -> list[ContourLine]:
+    """Las curvas de :func:`write_contours` (vértices bit a bit)."""
+    data = _load_npz(Path(path), ("xyz", "offsets", "elevation", "is_index", "closed"))
+    xyz = np.ascontiguousarray(data["xyz"], dtype=np.float64).reshape(-1, 3)
+    offsets = data["offsets"]
+    return [ContourLine(np.ascontiguousarray(xyz[int(offsets[i]):int(offsets[i + 1])]),
+                        float(data["elevation"][i]), bool(data["is_index"][i]),
+                        bool(data["closed"][i]))
+            for i in range(len(data["elevation"]))]
+
+
+def write_mesh(path: Path | str, meshes: Mapping[float | None, MeshArrays]) -> None:
+    """Las mallas de vista en el npz ``path``: la de la superficie (clave ``None``) y la de
+    cada nivel de detalle por su paso (m)."""
+    steps = sorted(step for step in meshes if step is not None)
+    arrays: dict[str, np.ndarray] = {"lod_steps": np.asarray(steps, dtype=np.float64)}
+    for index, step in enumerate([None, *steps]):
+        prefix = "" if step is None else f"lod{index}_"
+        arrays[f"{prefix}vertices"] = meshes[step].vertices
+        arrays[f"{prefix}faces"] = meshes[step].faces
+    _save_npz(Path(path), **arrays)
+
+
+def read_mesh(path: Path | str) -> dict[float | None, MeshArrays]:
+    """Las mallas de :func:`write_mesh`, por paso (``None``: la de la superficie)."""
+    data = _load_npz(Path(path), ("lod_steps", "vertices", "faces"))
+    found: dict[float | None, MeshArrays] = {}
+    for index, step in enumerate([None, *(float(s) for s in data["lod_steps"])]):
+        prefix = "" if step is None else f"lod{index}_"
+        found[step] = MeshArrays(np.ascontiguousarray(data[f"{prefix}vertices"]),
+                                 np.ascontiguousarray(data[f"{prefix}faces"]))
+    return found
+
+
+def _write_conflicts(path: Path, error: ConflictError) -> None:
+    values = {key: value for key, value in error.values.items() if key not in ("value", "tin")}
+    data = {
+        "code": error.code,
+        "tin": error.tin,
+        "text": error.text,
+        "values": values,
+        "conflicts": [{"kind": str(item.kind), "ids": list(item.ids), "x": item.x,
+                       "y": item.y, "z": list(item.z), "text": text}
+                      for item, text in zip(error.conflicts, error.texts(), strict=True)],
+    }
+    path.write_text(json.dumps(plain(data), ensure_ascii=False, indent=1, allow_nan=False),
+                    encoding="utf-8")
+
+
+def read_conflicts(path: Path | str) -> ConflictError:
+    """El ``ConflictError`` del dominio que dejó ``gis_tin_prepare`` en ``conflicts.json``
+    (cada conflicto con sus identificadores, su posición y sus cotas), para presentarlo
+    (RF-006-14)."""
+    data = json.loads(Path(path).read_text("utf-8"))
+    conflicts = [Conflict(ConflictKind(item["kind"]), tuple(item["ids"]), float(item["x"]),
+                          float(item["y"]), tuple(float(z) for z in item["z"]))
+                 for item in data["conflicts"]]
+    return ConflictError(data["code"], conflicts, tin=data["tin"], **data["values"])
+
+
+# --- Lo común de los trabajos --------------------------------------------------------------
+
+
+def _job_name(request: JobRequest) -> str:
+    for candidate in (request.label, request.worker, request.job_uid):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    return OWNER
+
+
+class _Request:
+    """Los parámetros de la petición de un trabajo, comprobados: lo que no vale es
+    ``JobError`` ``request_invalid`` (nombra el trabajo y el parámetro)."""
+
+    def __init__(self, ctx: _Context) -> None:
+        self.values: Mapping[str, Any] = ctx.request.params
+        self.job = _job_name(ctx.request)
+
+    def invalid(self, detail: str) -> JobError:
+        return JobError("request_invalid", job=self.job, detail=detail)
+
+    def text(self, key: str, default: str | None = None) -> str:
+        value = self.values.get(key, default)
+        if not isinstance(value, str):
+            raise self.invalid(f"«{key}» no es un texto ({value!r})")
+        return value
+
+    def number(self, key: str, default: float | None = None) -> float | None:
+        value = self.values.get(key, default)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            raise self.invalid(f"«{key}» no es un número ({value!r})")
+        return float(value)
+
+    def integer(self, key: str) -> int | None:
+        value = self.values.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            raise self.invalid(f"«{key}» no es un entero ({value!r})")
+        return value
+
+    def mapping(self, key: str, default: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        value = self.values.get(key, default)
+        if not isinstance(value, Mapping):
+            raise self.invalid(f"«{key}» no es un objeto JSON ({value!r})")
+        return dict(value)
+
+    def parsed(self, key: str, parse: Callable[[Any], Any], *, required: bool = True) -> Any:
+        value = self.values.get(key)
+        if value is None and required:
+            raise self.invalid(f"falta «{key}»")
+        try:
+            return parse(value)
+        except (ValueError, TypeError) as error:
+            raise self.invalid(f"«{key}» no vale: {error}") from None
+
+    def crs(self, key: str, *, required: bool = True) -> CrsRef | None:
+        return self.parsed(key, crs_of, required=required)
+
+    def vertical(self, key: str, *, required: bool = True) -> VerticalRef | None:
+        return self.parsed(key, vertical_of, required=required)
+
+    def name(self) -> str:
+        return self.text("name", "")
+
+
+def _cancelled(ctx: _Context) -> Cancelled:
+    """``cancelled()`` del dominio: si se pidió parar el trabajo (sin lanzar)."""
+
+    def probe() -> bool:
+        try:
+            ctx.check_cancelled()
+        except JobCancelled:
+            return True
+        return False
+
+    return probe
+
+
+def _span(ctx: _Context, low: float, high: float) -> Progress:
+    """``progress(fracción, texto)`` del dominio en el tramo [``low``, ``high``] del
+    avance del trabajo (lanza ``JobCancelled`` si se pidió parar)."""
+
+    def progress(fraction: float, text: str = "") -> None:
+        ctx.progress(low + (high - low) * min(max(float(fraction), 0.0), 1.0), text)
+
+    return progress
+
+
+def _clear_outputs(ctx: _Context) -> None:
+    """Deja ``out/`` vacía (cancelación o fallo: ningún resultado, RF-006-28)."""
+    folder = ctx.job_dir.outputs_dir
+    if not folder.is_dir():
+        return
+    for child in folder.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+
+def _json_values(values: Mapping[str, Any]) -> dict[str, JsonValue]:
+    return {str(key): plain(value) for key, value in values.items()}
+
+
+def _failed(error: GeoblenderError) -> JobFailed:
+    """El fallo explicado (RF-004-12) de un error para el usuario del dominio."""
+    text = str(error)
+    values = getattr(error, "values", None)
+    return JobFailed(error.code, msgid=getattr(error, "msgid", None) or text, text=text,
+                     values=_json_values(values if isinstance(values, Mapping)
+                                         else error.context))
+
+
+def _job(run: Callable[[_Context], dict[str, Any]]) -> Callable[[_Context], dict[str, Any]]:
+    """La función de un trabajo: si se cancela o falla, ``out/`` queda vacía; un error del
+    dominio para el usuario es ``JobFailed``."""
+
+    @functools.wraps(run)
+    def guarded(ctx: _Context) -> dict[str, Any]:
+        try:
+            return run(ctx)
+        except BaseException as error:
+            _clear_outputs(ctx)
+            if isinstance(error, GeoblenderError) and not isinstance(error, JobError):
+                raise _failed(error) from None
+            raise
+
+    return guarded
+
+
+def _finish(ctx: _Context, outputs: Sequence[JobOutput]) -> None:
+    """El último punto de cancelación (con todo escrito) y la declaración de los
+    resultados con su huella."""
+    ctx.progress(1.0, DONE_TEXT)
+    for output in outputs:
+        ctx.add_output(ctx.output_path(output.file), output.role)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        while block := stream.read(_HASH_BLOCK):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _dataset_digest_raster(raster: Raster) -> ContentDigest:
+    from ..core.datasets.model import DATASET_DECLARATIONS  # un dato se hashea sin declaraciones
+
+    return gis_content.raster_digest(raster, DATASET_DECLARATIONS)
+
+
+def _copy_sources(ctx: _Context, request: _Request, roles: Sequence[str],
+                  ) -> tuple[dict[str, Path], dict[str, dict[str, Any]]]:
+    """Las copias verificadas en ``in/`` de los ficheros de la fuente que llegan por
+    ``--path`` (``source_<papel>``; todas con el nombre ``source_main`` y su extensión: el
+    ``.prj`` queda junto a su ASC) y sus huellas (sha256, tamaño y fecha)."""
+    files: dict[str, Path] = {}
+    prints: dict[str, dict[str, Any]] = {}
+    for role in roles:
+        source = ctx.paths.get(path_name(role))
+        if source is None:
+            if role == MAIN_ROLE:
+                raise request.invalid(f"falta la ruta «{path_name(role)}» de la fuente (--path)")
+            continue
+        ctx.check_cancelled()
+        before = _stamp(Path(source))
+        relative = ctx.job_dir.copy_input(Path(source), path_name(MAIN_ROLE), job=request.job)
+        copy = ctx.job_dir.path / relative
+        if before is None or _stamp(Path(source)) != before:
+            raise JobError("source_changed", job=request.job, path=source)
+        files[role] = copy
+        prints[role] = {"sha256": _sha256(copy), "size": before[0], "mtime_ns": before[1]}
+    return files, prints
+
+
+def _stamp(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return info.st_size, info.st_mtime_ns
+
+
+def _source_digest(ctx: _Context, reader: ContentReader, kind: str, files: Mapping[str, Path],
+                   declarations: Mapping[str, Any], settings: Mapping[str, Any],
+                   low: float, high: float) -> ContentDigest:
+    """El ``ContentDigest`` de la fuente con su lector de contenido (el mismo que da
+    ``core_content_hash``), con avance y cancelación entre trozos."""
+    request = reader.request(kind, declarations, files, settings, normalizer=NORMALIZER)
+    steps = read_steps(reader, request)
+    try:
+        ctx.check_cancelled()
+        for done in steps:
+            ctx.progress(low + (high - low) * done, HASHING_TEXT)
+    except (ValueError, TypeError) as error:  # ajustes de lectura que el lector no admite
+        raise JobError("request_invalid", job=_job_name(ctx.request), detail=str(error)) from None
+    finally:
+        steps.close()
+    return request.hasher.digest()
+
+
+def _source_summary(reader: ContentReader, digest: ContentDigest,
+                    prints: Mapping[str, Any], declarations: Mapping[str, Any],
+                    settings: Mapping[str, Any]) -> dict[str, Any]:
+    return {"reader": reader.id, "digest": digest_json(digest), "files": dict(prints),
+            "declarations": dict(declarations), "settings": plain(settings)}
+
+
+def _reader(request: _Request, allowed: Sequence[ContentReader]) -> ContentReader:
+    reader_id = request.text("reader", "")
+    for reader in allowed:
+        if reader.id == reader_id:
+            return reader
+    raise request.invalid(f"el lector «{reader_id}» no es uno de "
+                          f"{', '.join(reader.id for reader in allowed)}")
+
+
+def _settings(request: _Request, reader: ContentReader) -> dict[str, Any]:
+    settings = request.mapping("settings", {})
+    allowed = gis_content.READER_SETTINGS[reader.id]
+    unknown = sorted(key for key in settings if key not in allowed)
+    if unknown:
+        raise request.invalid(f"ajustes que no son de lectura de «{reader.id}»: {unknown}")
+    return settings
+
+
+def _column_mapping(request: _Request, settings: Mapping[str, Any]) -> ColumnMapping:
+    """La correspondencia de columnas de un texto de puntos (``settings["columns"]``: papel →
+    índice desde 0 o ``None``), con los ajustes de lectura que no pueden faltar."""
+    missing = [key for key in gis_content.POINTS_REQUIRED if key not in settings]
+    if missing:
+        raise request.invalid(f"faltan ajustes de lectura del texto de puntos: {missing}")
+    if settings.get("line_kind", "hard") not in gis_content.LINE_KINDS:
+        raise request.invalid(f"tipo de línea {settings['line_kind']!r} no admitido: "
+                              f"{list(gis_content.LINE_KINDS)}")
+    columns = settings["columns"]
+    if not isinstance(columns, Mapping) or not set(columns) <= set(gis_content.MAPPING_ROLES):
+        raise request.invalid(f"«columns» es {{papel: índice}} con los papeles "
+                              f"{list(gis_content.MAPPING_ROLES)}, no {columns!r}")
+    try:
+        return ColumnMapping(**{role: columns.get(role) for role in gis_content.MAPPING_ROLES})
+    except (ValueError, TypeError) as error:
+        raise request.invalid(str(error)) from None
+
+
+def _declarations(request: _Request, reader: ContentReader, crs: CrsRef | None,
+                  vertical: VerticalRef | None, settings: Mapping[str, Any]) -> dict[str, Any]:
+    from .store import source_declarations  # importa la procedencia: solo al usarlo
+
+    try:
+        return source_declarations(reader.id, crs, vertical, settings)
+    except (ValueError, TypeError) as error:
+        raise request.invalid(str(error)) from None
+
+
+def _surface(ctx: _Context, request: _Request, *, low: float = 0.0,
+             high: float = 0.0) -> Raster | Tin:
+    """La superficie del proyecto copiada a ``in/source``: una rejilla (``.tif``, con el CRS
+    y la referencia vertical de la petición) o un TIN (``.npz``)."""
+    path = ctx.input_path(INPUT_SOURCE)
+    kind = _SURFACE_SUFFIXES.get(path.suffix.lower())
+    if kind is None:
+        raise request.invalid(f"la superficie «{path.name}» no es una rejilla (.tif) ni un "
+                              "TIN (.npz)")
+    if kind == "tin":
+        ctx.check_cancelled()
+        return load_tin(path)
+    return _project_raster(ctx, request, path, "crs", "vertical", low, high)
+
+
+def _project_raster(ctx: _Context, request: _Request, path: Path, crs_key: str,
+                    vertical_key: str, low: float, high: float) -> Raster:
+    crs = request.crs(crs_key)
+    vertical = request.vertical(vertical_key)
+    source = read_geotiff(path, max_cells=_UNLIMITED, progress=_span(ctx, low, high),
+                          cancelled=_cancelled(ctx))
+    if source.declared_crs is not None and source.declared_crs.epsg != crs.epsg:
+        raise request.invalid(f"la rejilla «{path.name}» está en EPSG:"
+                              f"{source.declared_crs.epsg}, no en el «{crs_key}» de la "
+                              f"petición (EPSG:{crs.epsg})")
+    return Raster(source.grid, source.values, crs, vertical)
+
+
+def _write_report(ctx: _Context, report: object) -> None:
+    ctx.output_path(OUT_REPORT.file).write_text(
+        json.dumps(plain(report), ensure_ascii=False, indent=1, allow_nan=False),
+        encoding="utf-8")
+
+
+def _count_estimate(rate_s: float) -> Callable[[Mapping[str, Any]], float | None]:
+    """La estimación ``count`` × ``rate_s`` (``count``: celdas o puntos de la petición);
+    ``None`` sin ``count``."""
+
+    def estimate(params: Mapping[str, Any]) -> float | None:
+        count = params.get("count")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None
+        return count * rate_s
+
+    return estimate
+
+
+def _size_estimate(params: Mapping[str, Any], reader: ContentReader | None) -> float | None:
+    size = params.get("size")
+    if reader is None or reader.estimate_s is None:
+        return None
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        return None
+    seconds = reader.estimate_s(size)
+    return None if seconds is None else READ_PASSES * float(seconds)
+
+
+_IMPORT_READERS: Mapping[str, ContentReader] = MappingProxyType(
+    {reader.id: reader for reader in (gis_content.GEOTIFF, gis_content.ASC,
+                                      gis_content.XYZ_GRID)})
+
+
+def _read_estimate(params: Mapping[str, Any]) -> float | None:
+    reader = params.get("reader")
+    return _size_estimate(params, _IMPORT_READERS.get(reader) if isinstance(reader, str) else None)
+
+
+def _points_estimate(params: Mapping[str, Any]) -> float | None:
+    if params.get("reader") != gis_content.POINTS_TEXT.id:
+        return None
+    return _size_estimate(params, gis_content.POINTS_TEXT)
+
+
+def _resample_estimate(params: Mapping[str, Any]) -> float | None:
+    """Sin estimación (proceso aparte) si reproyecta (D11); si no, leer la fuente de
+    ``size`` bytes y calcular y escribir la rejilla destino."""
+    if reprojects(params):
+        return None
+    try:
+        target = grid_of(params.get("target"))
+    except (ValueError, TypeError):
+        return None
+    size = params.get("size")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        return None
+    return size / gis_content.GEOTIFF_BYTES_PER_S + target.ncols * target.nrows * 2 * CELL_S
+
+
+# --- Los trabajos ----------------------------------------------------------------------------
+
+
+@_job
+def run_read_raster(ctx: _Context) -> dict[str, Any]:
+    """``gis_read_raster``: una fuente GeoTIFF, ASC o XYZ en malla a ``out/source.tif``
+    (perfil ``project``, en su rejilla de origen y con su CRS y su referencia vertical
+    declarados), con el hash de la fuente y de la rejilla (RF-006-08, RF-006-26)."""
+    request = _Request(ctx)
+    reader = _reader(request, tuple(_IMPORT_READERS.values()))
+    settings = _settings(request, reader)
+    name = request.name()
+    declared_crs = request.crs("crs", required=False)
+    declared_vertical = request.vertical("vertical", required=False)
+    max_cells = request.integer("max_cells")
+    override = settings.get("nodata_override")
+    if override is not None and (isinstance(override, bool)
+                                 or not isinstance(override, numbers.Real)
+                                 or not math.isfinite(override)):
+        raise request.invalid(f"el sin dato forzado es un número finito o nada, no {override!r}")
+    ctx.progress(0.0, COPYING_TEXT)
+    roles = (MAIN_ROLE, PRJ_ROLE) if reader is gis_content.ASC else (MAIN_ROLE,)
+    files, prints = _copy_sources(ctx, request, roles)
+    main = files[MAIN_ROLE]
+    progress, cancelled = _span(ctx, 0.1, 0.45), _cancelled(ctx)
+    if reader is gis_content.GEOTIFF:
+        source = read_geotiff(main, max_cells=max_cells, progress=progress, cancelled=cancelled)
+    elif reader is gis_content.ASC:
+        source = read_asc(main, max_cells=max_cells, progress=progress, cancelled=cancelled)
+    else:
+        try:
+            source = read_xyz_grid(main, separator=settings.get("separator"),
+                                   decimal=settings.get("decimal", "."), max_cells=max_cells,
+                                   progress=progress, cancelled=cancelled)
+        except ValueError as error:
+            raise request.invalid(str(error)) from None
+    crs, vertical = Declaration(name or main.name,
+                                declared_crs or source.declared_crs,
+                                declared_vertical or source.declared_vertical).require()
+    values = source.values
+    if override is not None:
+        values = np.where(values == float(override), np.nan, values)
+    raster = Raster(source.grid, values, crs, vertical)
+    declarations = _declarations(request, reader, crs, vertical, settings)
+    digest = _source_digest(ctx, reader, "raster", files, declarations, settings, 0.45, 0.75)
+    ctx.progress(0.75, WRITING_TEXT)
+    GeoTiffIO().write(raster, ctx.output_path(OUT_SOURCE_GRID.file), profile="project",
+                      progress=_span(ctx, 0.75, 0.98), cancelled=cancelled)
+    summary = {
+        "source": _source_summary(reader, digest, prints, declarations, settings),
+        "crs": crs_json(crs),
+        "vertical": vertical_json(vertical),
+        "grid": grid_json(source.grid),
+        "encoding": source.encoding,
+        "source_dtype": source.source_dtype,
+        "nodata_value": plain(source.nodata_value),
+        "pixel_is_point": bool(source.pixel_is_point),
+        "notes": list(source.notes),
+        "valid_cells": int(np.count_nonzero(np.isfinite(values))),
+        "outputs": {OUT_SOURCE_GRID.role: {
+            "file": OUT_SOURCE_GRID.relative,
+            "digest": digest_json(_dataset_digest_raster(raster))}},
+    }
+    _finish(ctx, (OUT_SOURCE_GRID,))
+    return summary
+
+
+@_job
+def run_resample(ctx: _Context) -> dict[str, Any]:
+    """``gis_resample``: la rejilla ``in/source.tif`` a la rejilla ``target`` del proyecto
+    (media por área, bilineal o moda; RF-006-11, RF-006-30) o, con otro CRS u otra referencia
+    vertical, reproyectada con el servicio de CRS (RF-006-05; en proceso aparte con
+    ``--site``): ``grid.tif`` e informe."""
+    request = _Request(ctx)
+    name = request.name() or "MDT"
+    target = request.parsed("target", grid_of)
+    target_crs = request.crs("target_crs")
+    target_vertical = request.vertical("target_vertical")
+    method_text = request.text("method", "auto")
+    fraction = request.number("min_valid_fraction")
+    supersample = request.integer("supersample")
+    if method_text not in ("auto", *(method.value for method in ResampleMethod)):
+        raise request.invalid(f"método de remuestreo desconocido «{method_text}»")
+    ctx.progress(0.0, READING_TEXT)
+    source = _project_raster(ctx, request, ctx.input_path(INPUT_SOURCE), "source_crs",
+                             "source_vertical", 0.0, 0.2)
+    progress, cancelled = _span(ctx, 0.2, 0.85), _cancelled(ctx)
+    method = (choose_method(source.grid, target) if method_text == "auto"
+              else ResampleMethod(method_text))
+    transform = None
+    if needs_transform(source.crs, source.vertical, target_crs, target_vertical):
+        if method is ResampleMethod.MODE:
+            raise request.invalid("la moda de clases no se reproyecta")
+        service = require_crs_service()
+        transform = transformation_for(Declaration(name, source.crs, source.vertical),
+                                       target_crs, target_vertical, service=service)
+        inverse = service.transformer(target_crs, target_vertical, source.crs,
+                                      source.vertical)
+        grid, report = reproject_to_grid(
+            source, target, transform=transform, inverse=inverse, target_crs=target_crs,
+            target_vertical=target_vertical, method=method, min_valid_fraction=fraction,
+            supersample=supersample, name=name, progress=progress, cancelled=cancelled)
+    elif method is ResampleMethod.MODE:
+        grid, report = resample_classes_to_grid(source, target, min_valid_fraction=fraction,
+                                                name=name, progress=progress,
+                                                cancelled=cancelled)
+    else:
+        grid, report = resample_to_grid(source, target, method=method,
+                                        min_valid_fraction=fraction, progress=progress,
+                                        cancelled=cancelled)
+    ctx.progress(0.85, WRITING_TEXT)
+    GeoTiffIO().write(grid, ctx.output_path(OUT_PROJECT_GRID.file), profile="project",
+                      progress=_span(ctx, 0.85, 0.97), cancelled=cancelled)
+    _write_report(ctx, report)
+    summary = {
+        "method": str(report.method),
+        "cells": report.cells,
+        "valid_cells": report.valid_cells,
+        "grid": grid_json(target),
+        "reprojected": transform is not None,
+        "transform": None if transform is None else {
+            **plain(transform.info), "summary": transform_summary(transform.info)},
+        "outputs": {
+            OUT_PROJECT_GRID.role: {"file": OUT_PROJECT_GRID.relative,
+                                    "digest": digest_json(_dataset_digest_raster(grid))},
+            OUT_REPORT.role: {"file": OUT_REPORT.relative}},
+    }
+    _finish(ctx, (OUT_PROJECT_GRID, OUT_REPORT))
+    return summary
+
+
+@_job
+def run_import_points(ctx: _Context) -> dict[str, Any]:
+    """``gis_import_points``: un texto de puntos (CSV, TXT o XYZ disperso) a ``points.npz`` y
+    ``lines.npz`` (coordenadas ABSOLUTAS de la fuente, en float64) con su informe y el hash
+    de la fuente (RF-006-12, RF-006-26). Lee con el lector de tablas de ``interop`` que le da
+    su envoltorio (``gis.content.use_table_reader``)."""
+    request = _Request(ctx)
+    reader = _reader(request, (gis_content.POINTS_TEXT,))
+    settings = _settings(request, reader)
+    name = request.name()
+    crs, vertical = Declaration(name or "puntos", request.crs("crs", required=False),
+                                request.vertical("vertical", required=False)).require()
+    declarations = _declarations(request, reader, crs, vertical, settings)
+    tables = gis_content.table_reader()
+    if tables is None:
+        raise RuntimeError("el trabajo de puntos no tiene lector de tablas de texto: se lo da "
+                           "su envoltorio (gis.content.use_table_reader)")
+    mapping = _column_mapping(request, settings)
+    ctx.progress(0.0, COPYING_TEXT)
+    files, prints = _copy_sources(ctx, request, (MAIN_ROLE,))
+    digest = _source_digest(ctx, reader, "table", files, declarations, settings, 0.1, 0.45)
+    ctx.progress(0.45, READING_TEXT)
+    table = tables(files[MAIN_ROLE], encoding=settings["encoding"],
+                   separator=settings["separator"], header_row=settings.get("header_row", 0))
+    ctx.progress(0.7, READING_TEXT)
+    points, lines, report = points_from_rows(
+        table.columns, table.rows, mapping, settings["decimal"], source=name,
+        row_numbers=table.lines, hard=settings.get("line_kind", "hard") == "hard")
+    ctx.progress(0.9, WRITING_TEXT)
+    write_points(ctx.output_path(OUT_POINTS.file), points)
+    write_lines(ctx.output_path(OUT_LINES.file), lines)
+    _write_report(ctx, report)
+    summary = {
+        "source": _source_summary(reader, digest, prints, declarations, settings),
+        "crs": crs_json(crs),
+        "vertical": vertical_json(vertical),
+        "read": report.read,
+        "points": len(points),
+        "lines": len(lines),
+        "rejected": len(report.rejected),
+        "outputs": {output.role: {"file": output.relative}
+                    for output in (OUT_POINTS, OUT_LINES, OUT_REPORT)},
+    }
+    _finish(ctx, (OUT_POINTS, OUT_LINES, OUT_REPORT))
+    return summary
+
+
+@_job
+def run_tin_prepare(ctx: _Context) -> dict[str, Any]:
+    """``gis_tin_prepare``: duplicados y restricciones (``gis.tin.prepare_tin``; RF-006-13,
+    RF-006-14) de ``in/points.npz`` e ``in/lines.npz``: ``prepared.npz`` o, con conflictos,
+    ``conflicts.json`` (sin TIN)."""
+    request = _Request(ctx)
+    name = request.name()
+    tol_xy, tol_z = request.number("tol_xy"), request.number("tol_z")
+    try:
+        policy = DuplicatePolicy(request.text("duplicate_policy", DuplicatePolicy.ASK.value))
+    except ValueError as error:
+        raise request.invalid(str(error)) from None
+    entries = ctx.request.inputs
+    if INPUT_POINTS not in entries and INPUT_LINES not in entries:
+        raise request.invalid("no hay puntos ni líneas de rotura que triangular")
+    points = (read_points(ctx.input_path(INPUT_POINTS)) if INPUT_POINTS in entries
+              else PointSet(np.zeros((0, 3)), (), (), ()))
+    lines = read_lines(ctx.input_path(INPUT_LINES)) if INPUT_LINES in entries else []
+    try:
+        source = prepare_tin(points, lines, tol_xy=tol_xy, tol_z=tol_z,
+                             duplicate_policy=policy, name=name,
+                             progress=_span(ctx, 0.05, 0.9), cancelled=_cancelled(ctx))
+    except ConflictError as error:
+        _write_conflicts(ctx.output_path(OUT_CONFLICTS.file), error)
+        summary = {"conflicts": len(error.conflicts), "code": error.code, "text": error.text,
+                   "outputs": {OUT_CONFLICTS.role: {"file": OUT_CONFLICTS.relative}}}
+        _finish(ctx, (OUT_CONFLICTS,))
+        return summary
+    ctx.progress(0.9, WRITING_TEXT)
+    write_tin_input(ctx.output_path(OUT_PREPARED.file), source)
+    prepared = source.prepared
+    summary = {
+        "conflicts": 0,
+        "vertices": len(prepared.xyz),
+        "constraint_edges": len(prepared.edges),
+        "input_points": source.input_points,
+        "duplicates_merged": source.duplicates_merged + prepared.merged,
+        "crossings": prepared.crossings,
+        "splits": prepared.splits,
+        "outputs": {OUT_PREPARED.role: {"file": OUT_PREPARED.relative}},
+    }
+    _finish(ctx, (OUT_PREPARED,))
+    return summary
+
+
+@_job
+def run_triangulate(ctx: _Context) -> dict[str, Any]:
+    """``gis_triangulate``: los triángulos de ``in/prepared.npz`` con ``PureTriangulator``
+    en coordenadas locales respecto al GeoOrigin (RF-006-13; por encima del límite de la CDT
+    de Blender en el hilo, ``gis.tin.blender_cdt_max_s``), con avance y cancelación:
+    ``faces.npy``."""
+    request = _Request(ctx)
+    origin = request.parsed("origin", origin_of)
+    source = read_tin_input(ctx.input_path(INPUT_PREPARED))
+    xy = world_to_local(source.prepared.xyz[:, :2], origin)
+    triangulator = PureTriangulator(progress=_span(ctx, 0.0, 0.95), cancelled=_cancelled(ctx))
+    faces = np.ascontiguousarray(triangulator.triangulate(xy, source.prepared.edges),
+                                 dtype=np.int32)
+    ctx.progress(0.95, WRITING_TEXT)
+    with open(ctx.output_path(OUT_FACES.file), "wb") as stream:
+        np.save(stream, faces, allow_pickle=False)
+    summary = {"triangulator": triangulator.name, "triangles": len(faces),
+               "outputs": {OUT_FACES.role: {"file": OUT_FACES.relative}}}
+    _finish(ctx, (OUT_FACES,))
+    return summary
+
+
+@_job
+def run_tin_finish(ctx: _Context) -> dict[str, Any]:
+    """``gis_tin_finish``: el TIN de ``in/prepared.npz`` con los triángulos de
+    ``in/faces.npy`` (``gis.tin.finish_tin``: orientación, contorno y huecos de
+    ``in/regions.npz``, lado máximo y estadísticas; RF-006-13, RF-006-15) en ``tin.npz``, con
+    el ``meta`` del proyecto y de la operación de la petición y su hash (``core.npz_mesh@1``),
+    e informe."""
+    request = _Request(ctx)
+    operation_uid = ctx.request.operation_uid
+    if not isinstance(operation_uid, str) or not operation_uid:
+        raise request.invalid("el TIN necesita la operación que lo crea (operation_uid)")
+    name = request.name()
+    origin = request.parsed("origin", origin_of)
+    triangulator = request.text("triangulator", "")
+    if not triangulator:
+        raise request.invalid("falta el triangulador que dio los triángulos («triangulator»)")
+    max_edge = request.number("max_edge_m")
+    crs, vertical = request.crs("crs"), request.vertical("vertical")
+    source = read_tin_input(ctx.input_path(INPUT_PREPARED))
+    with open(ctx.input_path(INPUT_FACES), "rb") as stream:
+        faces = np.load(stream, allow_pickle=False)
+    boundary, holes = (read_regions(ctx.input_path(INPUT_REGIONS))
+                       if INPUT_REGIONS in ctx.request.inputs else (None, []))
+    ctx.progress(0.1, "Filtros y estadísticas del TIN…")
+    tin, report = finish_tin(source, faces, triangulator=triangulator, origin=origin,
+                             boundary=boundary, holes=holes, max_edge_m=max_edge, name=name)
+    ctx.progress(0.8, WRITING_TEXT)
+    meta = {"crs_epsg": crs.epsg, "vertical": meta_vertical(vertical),
+            "operation_uid": operation_uid}
+    save_tin(tin, ctx.output_path(OUT_TIN.file), meta)
+    _write_report(ctx, report)
+    from ..core.datasets.model import DATASET_DECLARATIONS
+
+    summary = {
+        "triangulator": triangulator,
+        "vertices": len(tin.vertices),
+        "triangles": len(tin.faces),
+        "outputs": {
+            OUT_TIN.role: {"file": OUT_TIN.relative, "digest": digest_json(
+                gis_content.tin_digest(tin, meta, DATASET_DECLARATIONS))},
+            OUT_REPORT.role: {"file": OUT_REPORT.relative}},
+    }
+    _finish(ctx, (OUT_TIN, OUT_REPORT))
+    return summary
+
+
+@_job
+def run_contours(ctx: _Context) -> dict[str, Any]:
+    """``gis_contours``: las curvas de nivel de la rejilla o del TIN de ``in/source``
+    (RF-006-18) en ``contours.npz``."""
+    request = _Request(ctx)
+    name = request.name()
+    options = {key: request.number(key) for key in ("interval_m", "index_every_m",
+                                                    "index_offset_m", "simplify_m",
+                                                    "min_length_m")}
+    base = request.number("base_m", 0.0)
+    surface = _surface(ctx, request, low=0.0, high=0.2)
+    compute: Callable[..., list[ContourLine]] = (
+        contours_from_tin if isinstance(surface, Tin) else contours_from_raster)
+    lines = compute(surface, base_m=base, name=name, progress=_span(ctx, 0.2, 0.9),
+                    cancelled=_cancelled(ctx), **options)
+    ctx.progress(0.9, WRITING_TEXT)
+    write_contours(ctx.output_path(OUT_CONTOURS.file), lines)
+    summary = {"contours": len(lines),
+               "index": sum(1 for line in lines if line.is_index),
+               "vertices": sum(len(line.xyz) for line in lines),
+               "outputs": {OUT_CONTOURS.role: {"file": OUT_CONTOURS.relative}}}
+    _finish(ctx, (OUT_CONTOURS,))
+    return summary
+
+
+@_job
+def run_validate(ctx: _Context) -> dict[str, Any]:
+    """``gis_validate``: el informe de la superficie de ``in/source`` (RF-006-23) en
+    ``report.json``."""
+    request = _Request(ctx)
+    window = request.parsed("window", lambda value: Window(**dict(value)))
+    z_range = request.values.get("z_range")
+    if z_range is not None and (not isinstance(z_range, list | tuple) or len(z_range) != 2):
+        raise request.invalid(f"«z_range» es [mínima, máxima], no {z_range!r}")
+    surface = _surface(ctx, request, low=0.0, high=0.5)
+    ctx.progress(0.5, "Validando la superficie…")
+    check = validate_tin if isinstance(surface, Tin) else validate_raster
+    report = check(surface, window=window,  # type: ignore[arg-type]
+                   z_range=None if z_range is None else tuple(z_range))
+    _write_report(ctx, report)
+    summary = {"surface": "tin" if isinstance(surface, Tin) else "grid",
+               "outputs": {OUT_REPORT.role: {"file": OUT_REPORT.relative}}}
+    _finish(ctx, (OUT_REPORT,))
+    return summary
+
+
+@_job
+def run_export(ctx: _Context) -> dict[str, Any]:
+    """``gis_export``: la rejilla de ``in/source.tif`` como GeoTIFF entregable (Float32,
+    −9999; RF-006-24) en ``export.tif``."""
+    request = _Request(ctx)
+    surface = _surface(ctx, request, low=0.0, high=0.4)
+    if isinstance(surface, Tin):
+        raise request.invalid("solo una rejilla se exporta a GeoTIFF")
+    ctx.progress(0.4, WRITING_TEXT)
+    GeoTiffIO().write(surface, ctx.output_path(OUT_EXPORT.file), profile="deliverable",
+                      progress=_span(ctx, 0.4, 0.98), cancelled=_cancelled(ctx))
+    summary = {"grid": grid_json(surface.grid),
+               "outputs": {OUT_EXPORT.role: {"file": OUT_EXPORT.relative}}}
+    _finish(ctx, (OUT_EXPORT,))
+    return summary
+
+
+@_job
+def run_view_arrays(ctx: _Context) -> dict[str, Any]:
+    """``gis_view_arrays``: la malla de vista de la superficie de ``in/source`` (ABSOLUTA,
+    float64; la vista resta el GeoOrigin) y, de una rejilla, las de sus niveles de detalle
+    (``lod_steps`` o ``gis.view.lod_steps_m``; RF-006-21, RF-006-22) en ``mesh.npz``."""
+    request = _Request(ctx)
+    steps = request.values.get("lod_steps")
+    if steps is not None and not isinstance(steps, list | tuple):
+        raise request.invalid(f"«lod_steps» es una lista de pasos (m), no {steps!r}")
+    surface = _surface(ctx, request, low=0.0, high=0.2)
+    cancelled = _cancelled(ctx)
+    meshes: dict[float | None, MeshArrays] = {}
+    if isinstance(surface, Tin):
+        meshes[None] = surface_mesh_from_tin(surface)
+    else:
+        name = request.name()
+        meshes[None] = surface_mesh_from_raster(surface, name=name,
+                                                progress=_span(ctx, 0.2, 0.6),
+                                                cancelled=cancelled)
+        levels = lod_rasters(surface, None if steps is None else list(steps),
+                             progress=_span(ctx, 0.6, 0.75), cancelled=cancelled)
+        for step, level in levels.items():
+            meshes[float(step)] = surface_mesh_from_raster(level, name=name,
+                                                           cancelled=cancelled)
+    ctx.progress(0.9, WRITING_TEXT)
+    write_mesh(ctx.output_path(OUT_MESH.file), meshes)
+    summary = {"levels": sorted(step for step in meshes if step is not None),
+               "vertices": len(meshes[None].vertices),
+               "faces": len(meshes[None].faces),
+               "outputs": {OUT_MESH.role: {"file": OUT_MESH.relative}}}
+    _finish(ctx, (OUT_MESH,))
+    return summary
+
+
+# --- Los tipos de trabajo ------------------------------------------------------------------
+
+_LABELS: Mapping[str, str] = MappingProxyType({
+    READ_RASTER: "Read a raster DTM",
+    RESAMPLE: "Resample a DTM",
+    IMPORT_POINTS: "Read points and breaklines",
+    TIN_PREPARE: "Prepare a TIN",
+    TRIANGULATE: "Triangulate a TIN",
+    TIN_FINISH: "Finish a TIN",
+    CONTOURS: "Compute contour lines",
+    VALIDATE: "Validate a surface",
+    EXPORT: "Write a deliverable GeoTIFF",
+    VIEW_ARRAYS: "View meshes of a surface",
+})
+"""El nombre visible (``msgid``) de cada tipo; su español, en ``core/i18n/messages.toml``."""
+
+WORKER_INFOS: tuple[WorkerInfo, ...] = (
+    WorkerInfo(READ_RASTER, _LABELS[READ_RASTER], estimate_s=_read_estimate,
+               run=run_read_raster),
+    WorkerInfo(RESAMPLE, _LABELS[RESAMPLE], estimate_s=_resample_estimate, run=run_resample),
+    WorkerInfo(IMPORT_POINTS, _LABELS[IMPORT_POINTS], estimate_s=_points_estimate,
+               run=run_import_points),
+    WorkerInfo(TIN_PREPARE, _LABELS[TIN_PREPARE], estimate_s=_count_estimate(TIN_POINT_S),
+               run=run_tin_prepare),
+    WorkerInfo(TRIANGULATE, _LABELS[TRIANGULATE], policy="subprocess",
+               estimate_s=_count_estimate(PURE_POINT_S), run=run_triangulate),
+    WorkerInfo(TIN_FINISH, _LABELS[TIN_FINISH], estimate_s=_count_estimate(TIN_POINT_S),
+               run=run_tin_finish),
+    WorkerInfo(CONTOURS, _LABELS[CONTOURS], estimate_s=_count_estimate(CELL_S + CONTOUR_CELL_S),
+               run=run_contours),
+    WorkerInfo(VALIDATE, _LABELS[VALIDATE], estimate_s=_count_estimate(CELL_S + VALIDATE_CELL_S),
+               run=run_validate),
+    WorkerInfo(EXPORT, _LABELS[EXPORT], estimate_s=_count_estimate(2 * CELL_S), run=run_export),
+    WorkerInfo(VIEW_ARRAYS, _LABELS[VIEW_ARRAYS], estimate_s=_count_estimate(CELL_S + MESH_CELL_S),
+               run=run_view_arrays),
+)
+"""Los tipos de trabajo de la 006 (plan §5.3.4), para ``jobs.catalog.register_worker`` desde
+``bl/ops/gis.py``: entorno ``blender``; automáticos salvo ``gis_triangulate`` (proceso
+aparte); estimación por ``size`` (bytes de la fuente) o ``count`` (celdas o puntos)."""
+
+WORKER_INFOS_BY_NAME: Mapping[str, WorkerInfo] = MappingProxyType(
+    {info.name: info for info in WORKER_INFOS})
+"""Los tipos de trabajo de la 006 por nombre (solo lectura)."""

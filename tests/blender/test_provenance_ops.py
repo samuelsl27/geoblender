@@ -137,7 +137,8 @@ SYNTHETIC_OP = "jobs.provenance_selftest"  # el tipo de operación del operador 
 SYNTHETIC_IDNAME = "gbtest.provenance_selftest"  # fuera del catálogo, como gbdemo.*
 SELFTEST_PARAMS = {"op": "chunked_sum", "n": 1000, "chunks": 1, "sleep_s": 0.0}  # en hilo
 PENDING_TEXT = "pendiente de incorporar"
-# Los lectores de contenido de la topografía (spec 006, T40), los registra bl/ops/gis.py.
+# Los lectores de contenido (spec 006, T40), los tipos de trabajo y las definiciones de
+# parámetros (T26) de la topografía, los registra bl/ops/gis.py.
 GIS_READERS = ("gis.asc@1", "gis.geotiff@1", "gis.gpkg_layer@1", "gis.points_text@1",
                "gis.xyz_grid@1")
 DATA = ROOT / "tests" / "data" / "core" / "provenance"
@@ -704,6 +705,40 @@ class ProvenanceSessionTest(unittest.TestCase):
             self.assertIs(content.table_reader(), read_table)
         gis_ops.unregister()
         self.assertEqual(dict(readers.READERS), before)
+
+    def test_gis_jobs_and_parameters_register_and_unregister(self) -> None:
+        """RF-006-28, RF-008-01, RF-008-06 (spec 006, T26; plan 006 §5.3.4 y §5.6.1;
+        principio 8): con la extensión habilitada están los diez tipos de trabajo de ``gis``
+        (``jobs.catalog``, los de ``gis.jobs``) y sus 17 definiciones de parámetros
+        (``core.params``); ``bl/ops/gis.py`` los quita y los vuelve a poner, las dos cosas
+        idempotentes, y quitarlos deja los dos registros como estaban."""
+        gis_ops = _module("bl.ops.gis")
+        catalog = _module("jobs.catalog")
+        params = _module("core.params")
+        gis_jobs = _module("gis.jobs")
+        gis_params = _module("gis.params")
+        keys = sorted(defn.key for defn in gis_params.DEFINITIONS)
+
+        def ours() -> tuple[list[str], list[str]]:
+            workers = sorted(name for name in catalog.WORKERS if name.startswith("gis_"))
+            return workers, sorted(key for key in params.DEFINITIONS if key.startswith("gis."))
+
+        expected = (sorted(gis_jobs.WORKER_NAMES), keys)
+        self.assertEqual((len(expected[0]), len(keys)), (10, 17))
+        self.assertEqual(ours(), expected)
+        for name in gis_jobs.WORKER_NAMES:
+            self.assertIs(catalog.WORKERS[name], gis_jobs.WORKER_INFOS_BY_NAME[name])
+        self.addCleanup(gis_ops.register)  # la clase sigue con la extensión habilitada
+        for _ in range(2):
+            gis_ops.unregister()
+            self.assertEqual(ours(), ([], []))
+        workers_before, params_before = dict(catalog.WORKERS), dict(params.DEFINITIONS)
+        for _ in range(2):
+            gis_ops.register()
+            self.assertEqual(ours(), expected)
+        gis_ops.unregister()
+        self.assertEqual((dict(catalog.WORKERS), dict(params.DEFINITIONS)),
+                         (workers_before, params_before))
 
     # Ayudas para los módulos (T48) --------------------------------------------------------
 

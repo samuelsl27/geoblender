@@ -85,9 +85,13 @@ __all__ = [
     "META_SCHEMA",
     "TOUCH_TOLERANCE",
     "Tin",
+    "TinInput",
     "build_tin",
     "file_meta",
+    "finish_tin",
     "load_tin",
+    "meta_vertical",
+    "prepare_tin",
     "raster_to_tin",
     "sample_tin",
     "save_tin",
@@ -210,18 +214,107 @@ def build_tin(
     no válido → ``GisError`` ``gis.tin_max_edge_invalid``; si los filtros lo quitan todo,
     ``gis.tin_empty``. Avance (``progress``) por etapas y cancelación (``cancelled`` →
     ``JobCancelled``) entre ellas. Las entradas no se modifican."""
-    if not isinstance(points, PointSet):
-        raise TypeError("points es un PointSet")
-    lines = list(breaklines)
-    if not all(isinstance(line, Breakline) for line in lines):
-        raise TypeError("breaklines son Breakline")
-    policy = DuplicatePolicy(duplicate_policy)
+    points, lines, policy = _tin_entries(points, breaklines, duplicate_policy)
     limit = _max_edge(max_edge_m, name)
     boundary_rings = None if boundary is None else _region(boundary, "boundary")
     hole_regions = [_region(hole, "holes") for hole in _hole_list(holes)]
     tol_xy, tol_z = duplicate_tolerances(tol_xy, tol_z)
-    input_points = len(points) + sum(len(line.xyz) for line in lines)
+    source = _prepare(points, lines, policy, tol_xy, tol_z, name, progress, cancelled)
+    _stage(progress, cancelled, 0.2, f"triangulación de {len(source.prepared.xyz)} vértices")
+    xy = world_to_local(source.prepared.xyz[:, :2], origin)
+    triangles = _faces(triangulator.triangulate(xy, source.prepared.edges), len(xy),
+                       triangulator.name)
+    _stage(progress, cancelled, 0.9, "orientación y filtros")
+    tin, report = _finish_tin(source, triangles, xy, origin=origin, boundary=boundary_rings,
+                              holes=hole_regions, max_edge=limit, name=name,
+                              triangulator=triangulator.name)
+    _stage(progress, None, 1.0, "terminado")
+    return tin, report
 
+
+@dataclass(frozen=True, slots=True, eq=False)
+class TinInput:
+    """Lo que se triangula para crear un TIN (pasos 1 y 2 de :func:`build_tin`, con
+    :func:`prepare_tin`): las restricciones preparadas (``PreparedInput``: vértices
+    ABSOLUTOS, aristas obligatorias y origen de cada vértice), los puntos y vértices de rotura
+    que llegaron (``input_points``) y los puntos fundidos con otro al resolver los duplicados
+    (``duplicates_merged``; los fundidos al preparar las restricciones están en
+    ``prepared.merged``). Es lo que pasa del trabajo ``gis_tin_prepare`` al triangulador y a
+    ``gis_tin_finish`` (plan §5.3.4)."""
+
+    prepared: PreparedInput
+    input_points: int
+    duplicates_merged: int
+
+
+def prepare_tin(
+    points: PointSet,
+    breaklines: Sequence[Breakline] = (),
+    *,
+    tol_xy: float | None = None,
+    tol_z: float | None = None,
+    duplicate_policy: DuplicatePolicy | str = DuplicatePolicy.ASK,
+    name: str = "",
+    progress: Progress | None = None,
+    cancelled: Cancelled | None = None,
+) -> TinInput:
+    """Los pasos 1 y 2 de :func:`build_tin` (duplicados y restricciones; RF-006-13,
+    RF-006-14), con sus mismos argumentos, errores (``ConflictError``) y avance (0 a 0,2):
+    lo que se triangula. Las entradas no se modifican."""
+    points, lines, policy = _tin_entries(points, breaklines, duplicate_policy)
+    tol_xy, tol_z = duplicate_tolerances(tol_xy, tol_z)
+    return _prepare(points, lines, policy, tol_xy, tol_z, name, progress, cancelled)
+
+
+def finish_tin(
+    source: TinInput,
+    triangles: object,
+    *,
+    triangulator: str,
+    origin: GeoOrigin,
+    boundary: object = None,
+    holes: object = (),
+    max_edge_m: float | None = None,
+    name: str = "",
+) -> tuple[Tin, TinReport]:
+    """Los pasos 4 a 6 de :func:`build_tin` sobre los triángulos ``triangles`` que dio el
+    triangulador de nombre ``triangulator`` para ``source`` en coordenadas locales respecto
+    a ``origin`` (orientación, filtros con ``boundary``, ``holes`` y ``max_edge_m``, y
+    estadísticas): el mismo TIN y el mismo informe que :func:`build_tin` con ese
+    triangulador. Errores como :func:`build_tin`."""
+    if not isinstance(source, TinInput):
+        raise TypeError(f"source es un TinInput (prepare_tin), no {type(source).__name__}")
+    limit = _max_edge(max_edge_m, name)
+    boundary_rings = None if boundary is None else _region(boundary, "boundary")
+    hole_regions = [_region(hole, "holes") for hole in _hole_list(holes)]
+    xy = world_to_local(source.prepared.xyz[:, :2], origin)
+    return _finish_tin(source, triangles, xy, origin=origin, boundary=boundary_rings,
+                       holes=hole_regions, max_edge=limit, name=name, triangulator=triangulator)
+
+
+def meta_vertical(vertical: VerticalRef) -> str:
+    """La referencia vertical como la escribe el ``meta`` de un TIN de ``meshes/``:
+    «EPSG:5782» o «Referencia local (nota)» (plan §5.2.2)."""
+    if vertical.epsg is not None:
+        return f"EPSG:{vertical.epsg}"
+    return f"{vertical.name} ({vertical.note})"
+
+
+def _tin_entries(points: object, breaklines: object, duplicate_policy: object,
+                 ) -> tuple[PointSet, list[Breakline], DuplicatePolicy]:
+    if not isinstance(points, PointSet):
+        raise TypeError("points es un PointSet")
+    lines = list(breaklines)  # type: ignore[call-overload]
+    if not all(isinstance(line, Breakline) for line in lines):
+        raise TypeError("breaklines son Breakline")
+    return points, lines, DuplicatePolicy(duplicate_policy)
+
+
+def _prepare(points: PointSet, lines: list[Breakline], policy: DuplicatePolicy, tol_xy: float,
+             tol_z: float, name: str, progress: Progress | None,
+             cancelled: Cancelled | None) -> TinInput:
+    """Pasos 1 y 2: duplicados (A7) y restricciones (A8)."""
+    input_points = len(points) + sum(len(line.xyz) for line in lines)
     _stage(progress, cancelled, 0.0, "puntos duplicados")
     merged = 0
     if len(points):
@@ -232,17 +325,19 @@ def build_tin(
         points = resolve_duplicates(points, duplicates, policy, name=name)
     _stage(progress, cancelled, 0.1, "líneas de rotura")
     prepared = prepare_constraints(points, lines, tol_xy=tol_xy, tol_z=tol_z, name=name)
-    _stage(progress, cancelled, 0.2, f"triangulación de {len(prepared.xyz)} vértices")
-    xy = world_to_local(prepared.xyz[:, :2], origin)
-    faces = _faces(triangulator.triangulate(xy, prepared.edges), len(xy), triangulator.name)
-    _stage(progress, cancelled, 0.9, "orientación y filtros")
-    faces = _oriented(xy, faces)
-    tin, report = _finish(prepared, faces, xy, origin=origin, boundary=boundary_rings,
-                          holes=hole_regions, max_edge=limit, name=name,
-                          triangulator=triangulator.name)
-    report = replace(report, input_points=input_points,
-                     duplicates_merged=merged + prepared.merged)
-    _stage(progress, None, 1.0, "terminado")
+    return TinInput(prepared, input_points, merged)
+
+
+def _finish_tin(source: TinInput, triangles: object, xy: np.ndarray, *, origin: GeoOrigin,
+                boundary: list[np.ndarray] | None, holes: list[list[np.ndarray]],
+                max_edge: float | None, name: str, triangulator: str,
+                ) -> tuple[Tin, TinReport]:
+    """Pasos 4 a 6 con ``xy`` locales ya calculadas."""
+    faces = _oriented(xy, _faces(triangles, len(xy), triangulator))
+    tin, report = _finish(source.prepared, faces, xy, origin=origin, boundary=boundary,
+                          holes=holes, max_edge=max_edge, name=name, triangulator=triangulator)
+    report = replace(report, input_points=source.input_points,
+                     duplicates_merged=source.duplicates_merged + source.prepared.merged)
     return tin, report
 
 

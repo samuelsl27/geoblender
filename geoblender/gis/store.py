@@ -179,7 +179,7 @@ from .provenance import (
     layer_family,
 )
 from .raster import Raster
-from .tin import Tin, save_tin
+from .tin import Tin, meta_vertical, save_tin
 from .tin import load_tin as read_tin_file
 
 __all__ = [
@@ -342,10 +342,8 @@ def project_references(
 
 def _vertical_text(vertical: VerticalRef) -> str:
     """La referencia vertical en el ``meta`` de un TIN: «EPSG:5782» o «Referencia local
-    (nota)»."""
-    if vertical.epsg is not None:
-        return f"EPSG:{vertical.epsg}"
-    return f"{vertical.name} ({vertical.note})"
+    (nota)» (``gis.tin.meta_vertical``, la misma que escribe el trabajo ``gis_tin_finish``)."""
+    return meta_vertical(vertical)
 
 
 def _z_description(vertical: VerticalRef) -> str:

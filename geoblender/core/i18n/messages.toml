@@ -1472,6 +1472,39 @@ es = "Exportación de un MDT ráster"
 ["Export to GeoPackage"]
 es = "Exportación a GeoPackage"
 
+# Trabajos de topografía (spec 006, T26; RF-006-28; plan 006 §5.3.4): el nombre visible
+# (label_msgid) de cada tipo de trabajo de gis/jobs.py.
+
+["Read a raster DTM"]
+es = "Lectura de un MDT ráster"
+
+["Resample a DTM"]
+es = "Remuestreo de un MDT"
+
+["Read points and breaklines"]
+es = "Lectura de puntos y líneas de rotura"
+
+["Prepare a TIN"]
+es = "Preparación de un TIN"
+
+["Triangulate a TIN"]
+es = "Triangulación de un TIN"
+
+["Finish a TIN"]
+es = "Acabado de un TIN"
+
+["Compute contour lines"]
+es = "Cálculo de curvas de nivel"
+
+["Validate a surface"]
+es = "Validación de una superficie"
+
+["Write a deliverable GeoTIFF"]
+es = "Escritura de un GeoTIFF entregable"
+
+["View meshes of a surface"]
+es = "Mallas de vista de una superficie"
+
 # Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
 # Los mensajes de la procedencia y de los parámetros (spec §8) están en
 # core/provenance/messages.py y core/params/model.py, y se instalan al registrar.
