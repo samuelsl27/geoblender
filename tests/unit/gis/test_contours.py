@@ -31,6 +31,7 @@ gis = import_geoblender("gis")
 contours = import_geoblender("gis.contours")
 messages = import_geoblender("gis.messages")
 params = import_geoblender("gis.params")
+ParamError = import_geoblender("core.params").ParamError
 points = import_geoblender("gis.points")
 cdt = import_geoblender("gis.cdt")
 georef = import_geoblender("core.georef")
@@ -568,20 +569,20 @@ class GridContoursTest(unittest.TestCase):
         self.assertEqual(sum(line.is_index for line in explicit), 3)
 
     def test_invalid_parameters(self) -> None:
-        """RF-006-18: un parámetro no válido → ``GisError`` ``gis.param_*`` con su clave; una
-        cota base que no es un número → ``gis.contours_base_invalid``; demasiadas cotas →
-        ``gis.contours_too_many``."""
+        """RF-006-18: un parámetro no válido → ``ParamError`` ``core.param_*`` con su clave;
+        una cota base que no es un número →
+        ``gis.contours_base_invalid``; demasiadas cotas → ``gis.contours_too_many``."""
         raster = _sampled(_hill, 20, 20)
         cases = (
-            ({"interval_m": 0.0}, "gis.param_out_of_range", contours.INTERVAL_KEY),
-            ({"interval_m": "1"}, "gis.param_not_number", contours.INTERVAL_KEY),
-            ({"index_every_m": -5.0}, "gis.param_out_of_range", contours.INDEX_EVERY_KEY),
-            ({"index_offset_m": 500.0}, "gis.param_out_of_range", contours.INDEX_OFFSET_KEY),
-            ({"simplify_m": -0.1}, "gis.param_out_of_range", contours.SIMPLIFY_KEY),
-            ({"min_length_m": math.nan}, "gis.param_not_number", contours.MIN_LENGTH_KEY),
+            ({"interval_m": 0.0}, "core.param_out_of_range", contours.INTERVAL_KEY),
+            ({"interval_m": "1"}, "core.param_not_number", contours.INTERVAL_KEY),
+            ({"index_every_m": -5.0}, "core.param_out_of_range", contours.INDEX_EVERY_KEY),
+            ({"index_offset_m": 500.0}, "core.param_out_of_range", contours.INDEX_OFFSET_KEY),
+            ({"simplify_m": -0.1}, "core.param_out_of_range", contours.SIMPLIFY_KEY),
+            ({"min_length_m": math.nan}, "core.param_not_number", contours.MIN_LENGTH_KEY),
         )
         for options, code, key in cases:
-            with self.subTest(options=options), self.assertRaises(messages.GisError) as caught:
+            with self.subTest(options=options), self.assertRaises(ParamError) as caught:
                 gis.contours_from_raster(raster, **options)
             self.assertEqual((caught.exception.code, caught.exception.field), (code, key))
         for base in (math.nan, math.inf, "0", True):
@@ -772,14 +773,17 @@ class TinContoursTest(unittest.TestCase):
                     [line for line in plain if line.length_m >= limit])
 
     def test_flat_tin_and_wrong_type(self) -> None:
-        """RF-006-18: un TIN llano no tiene curvas; lo que no es un ``Tin`` → ``TypeError``."""
+        """RF-006-18: un TIN llano no tiene curvas; lo que no es un ``Tin`` → ``TypeError``;
+        una equidistancia no válida → ``ParamError`` ``core.param_out_of_range`` con su
+        clave."""
         flat = gis.raster_to_tin(_raster(np.full((3, 3), 812.0)))
         self.assertEqual(gis.contours_from_tin(flat), [])
         with self.assertRaises(TypeError):
             gis.contours_from_tin(_sampled(_plane, 3, 3))
-        with self.assertRaises(messages.GisError) as caught:
+        with self.assertRaises(ParamError) as caught:
             gis.contours_from_tin(gis.raster_to_tin(_sampled(_plane, 5, 5)), interval_m=-1.0)
-        self.assertEqual(caught.exception.field, contours.INTERVAL_KEY)
+        self.assertEqual((caught.exception.code, caught.exception.field),
+                         ("core.param_out_of_range", contours.INTERVAL_KEY))
 
     def test_blocks_progress_and_cancel(self) -> None:
         """RF-006-18: por bloques de un triángulo y de una pareja el resultado es el mismo;

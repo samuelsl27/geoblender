@@ -152,7 +152,8 @@ def check_vertical_offset(
     falta un vecino) y la mediana de (nueva − MDT) en las comunes. Se avisa si hay al menos
     ``min_samples`` comunes y |mediana| está en ``band_m`` (extremos incluidos). ``band_m``
     ``None`` es la de :func:`ellipsoidal_band` (ninguna en Canarias); una explícita se
-    comprueba como el parámetro (``gis.param_*``). ``name`` es el MDT en el aviso.
+    comprueba como el parámetro (``ParamError`` ``core.param_*`` con la clave). ``name`` es
+    el MDT en el aviso.
     Entradas mal formadas: ``TypeError`` o ``ValueError`` (error del programa).
     """
     if not isinstance(reference, Raster):

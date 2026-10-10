@@ -29,6 +29,7 @@ gis = import_geoblender("gis")
 points = import_geoblender("gis.points")
 breaklines = import_geoblender("gis.breaklines")
 messages = import_geoblender("gis.messages")
+ParamError = import_geoblender("core.params").ParamError
 csv_tables = import_geoblender("interop.csv_tables")
 
 TALUDES = ROOT / "tests" / "data" / "gis" / "points" / "taludes.csv"
@@ -389,7 +390,8 @@ class RobustnessTest(unittest.TestCase):
 
     def test_inputs_and_types(self) -> None:
         """Entradas que no son un ``PointSet`` y ``Breakline`` son un error del programa;
-        las tolerancias se validan como parámetros; sin roturas no hay aristas."""
+        las tolerancias se validan como parámetros (``ParamError`` ``core.param_*`` con la
+        clave; RF-006-14); sin roturas no hay aristas."""
         with self.assertRaises(TypeError):
             breaklines.prepare_constraints(np.zeros((1, 3)), [])
         with self.assertRaises(TypeError):
@@ -398,9 +400,10 @@ class RobustnessTest(unittest.TestCase):
             _prepare(_points(("P", 0.0, 0.0, float("nan"))))
         with self.assertRaises(ValueError):
             _prepare(lines=[_line("A", (0.0, 0.0, 1.0), (1.0, 0.0, float("inf")))])
-        with self.assertRaises(messages.GisError) as caught:
+        with self.assertRaises(ParamError) as caught:
             _prepare(lines=[_line("A", (0, 0, 1), (1, 0, 1))], tol_xy=-1.0)
-        self.assertEqual(caught.exception.field, "gis.points.dup_xy_tol_m")
+        self.assertEqual((caught.exception.code, caught.exception.field),
+                         ("core.param_out_of_range", "gis.points.dup_xy_tol_m"))
         prepared = _prepare(_points(("P", 0.0, 0.0, 1.0), ("Q", 1.0, 0.0, 1.0)))
         self.assertEqual(prepared.edges.shape, (0, 2))
         self.assertEqual(prepared.vertex_source.tolist(), [0, 0])

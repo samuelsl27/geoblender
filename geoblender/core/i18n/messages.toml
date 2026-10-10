@@ -1381,3 +1381,57 @@ es = "Comprobando el intérprete externo {path}: el resultado saldrá en la barr
 
 ["External interpreter (development): {path}"]
 es = "Intérprete externo (desarrollo): {path}"
+
+# Parámetros de topografía (spec 006, T39; RF-008-06; plan 006 §5.6.1): la etiqueta
+# (label_msgid) de cada definición de gis/params.py en el panel de parámetros.
+
+["Minimum valid fraction of a cell"]
+es = "Fracción mínima con dato de una celda"
+
+["Subsamples per cell side when reprojecting"]
+es = "Submuestras por lado de celda al reproyectar"
+
+["Horizontal tolerance for duplicate points"]
+es = "Tolerancia en planta de puntos duplicados"
+
+["Elevation tolerance for duplicate points"]
+es = "Tolerancia en cota de puntos duplicados"
+
+["Spacing when densifying contours"]
+es = "Separación al densificar las curvas de nivel"
+
+["Flat triangle correction passes"]
+es = "Pasadas de corrección de triángulos planos"
+
+["Maximum share of flat triangles"]
+es = "Porcentaje máximo de triángulos planos"
+
+["Time limit of the Blender triangulation in the interface"]
+es = "Tiempo máximo de la triangulación de Blender en la interfaz"
+
+["Contour interval"]
+es = "Equidistancia de las curvas de nivel"
+
+["Index contour interval"]
+es = "Equidistancia de las curvas maestras"
+
+["Index contour offset"]
+es = "Desfase de las curvas maestras"
+
+["Contour simplification tolerance"]
+es = "Tolerancia de simplificación de las curvas de nivel"
+
+["Minimum contour length"]
+es = "Longitud mínima de una curva de nivel"
+
+["Band of suspected ellipsoidal heights"]
+es = "Banda de sospecha de alturas elipsoidales"
+
+["Plausible elevation range"]
+es = "Rango plausible de cotas"
+
+["Maximum cells of an imported grid"]
+es = "Celdas máximas de una rejilla importada"
+
+["Grid steps of the levels of detail"]
+es = "Pasos de rejilla de los niveles de detalle"

@@ -483,7 +483,7 @@ class DuplicateReport:
 def duplicate_tolerances(tol_xy: float | None = None,
                          tol_z: float | None = None) -> tuple[float, float]:
     """Las tolerancias en planta y en cota (m): las de ``gis/params.py`` si son ``None``;
-    si no, comprobadas como esos parámetros (``GisError`` ``gis.param_*`` con la clave
+    si no, comprobadas como esos parámetros (``ParamError`` ``core.param_*`` con la clave
     como campo)."""
     def value(key: str, given: float | None) -> float:
         definition = params.param(key)

@@ -34,6 +34,7 @@ gis = import_geoblender("gis")
 resample = import_geoblender("gis.resample")
 params = import_geoblender("gis.params")
 georef = import_geoblender("core.georef")
+ParamError = import_geoblender("core.params").ParamError
 worker_api = import_geoblender("jobs.worker_api")
 
 NAN = math.nan
@@ -480,13 +481,14 @@ class ContractTest(unittest.TestCase):
         _same(self, result.values, np.array([[4.0]]))
 
     def test_min_valid_fraction_checked(self) -> None:
-        """Fuera de (0; 1] o no numérica: el error del parámetro, con su clave."""
-        for value, code in ((0.0, "gis.param_out_of_range"), (1.5, "gis.param_out_of_range"),
-                            ("1", "gis.param_not_number")):
+        """RF-006-11: fuera de (0; 1] o no numérica, el error del parámetro (``ParamError``
+        ``core.param_*``), con su clave."""
+        for value, code in ((0.0, "core.param_out_of_range"), (1.5, "core.param_out_of_range"),
+                            ("1", "core.param_not_number")):
             for function, options in ((resample.resample_to_grid, {"method": AREA_MEAN}),
                                       (resample.resample_classes_to_grid, {})):
                 with self.subTest(value=value, function=function.__name__):
-                    with self.assertRaises(gis.GisError) as caught:
+                    with self.assertRaises(ParamError) as caught:
                         function(self.SRC, self.TARGET, min_valid_fraction=value, **options)
                     self.assertEqual(caught.exception.code, code)
                     self.assertEqual(caught.exception.field,

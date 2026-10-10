@@ -285,7 +285,8 @@ def check_surface_mesh(
 
 def _lod_steps(steps_m: Sequence[float] | None) -> tuple[float, ...]:
     """Los pasos de los niveles: los de ``gis.view.lod_steps_m`` si es ``None``; si no,
-    comprobados como el parámetro (``gis.param_*``). Cada uno, paso de rejilla del proyecto
+    comprobados como el parámetro (``ParamError`` ``core.param_*`` con la clave). Cada uno,
+    paso de rejilla del proyecto
     (``gis.step_invalid``)."""
     definition = params.param(LOD_STEPS_KEY)
     steps = definition.default if steps_m is None else definition.check(steps_m)
@@ -320,8 +321,8 @@ def lod_rasters(
     5 m), una por paso, la media por área (``gis.resample``, A6, con ``min_valid_fraction``;
     ``None``: ``gis.resample.min_valid_fraction``) en la rejilla alineada que cubre la suya
     (``aligned_grid``), con su CRS y su referencia vertical; si no, ninguna (``{}``). Por
-    paso, en orden creciente. Pasos que no son el parámetro → ``gis.param_*``; que no son
-    pasos de rejilla del proyecto → ``gis.step_invalid``. Avance y cancelación
+    paso, en orden creciente. Pasos que no son el parámetro → ``ParamError``
+    ``core.param_*``; que no son pasos de rejilla del proyecto → ``gis.step_invalid``. Avance y cancelación
     (``JobCancelled``) del remuestreo. La rejilla de cálculo no se modifica."""
     if not isinstance(raster, Raster):
         raise TypeError(f"raster debe ser un Raster, no {type(raster).__name__}")

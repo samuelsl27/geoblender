@@ -82,7 +82,7 @@ BLOCK_ITEMS = 1 << 22
 
 def _z_range(z_range: Sequence[float] | None) -> tuple[float, float]:
     """El rango plausible: el del parámetro, o ``z_range`` comprobado como él
-    (``gis.param_*``)."""
+    (``ParamError`` ``core.param_*`` con la clave)."""
     if z_range is None:
         low, high = params.default(Z_RANGE_KEY)  # type: ignore[misc]
     else:
@@ -192,10 +192,10 @@ def validate_raster(
     (``core.georef.Window``, absoluta) y el rango plausible de cotas (RF-006-23, A17).
 
     ``z_range`` ``None`` es el de ``gis.validate.z_range_m``; uno explícito se comprueba
-    como el parámetro (``gis.param_*``). Devuelve un :class:`~.reports.SurfaceReport` de
-    tipo ``grid``: áreas en m², huecos interiores de mayor a menor, celdas con dato fuera de
-    la ventana y cotas con dato fuera del rango. Entradas mal formadas: ``TypeError`` (error
-    del programa).
+    como el parámetro (``ParamError`` ``core.param_*``). Devuelve un
+    :class:`~.reports.SurfaceReport` de tipo ``grid``: áreas en m², huecos interiores de
+    mayor a menor, celdas con dato fuera de la ventana y cotas con dato fuera del rango.
+    Entradas mal formadas: ``TypeError`` (error del programa).
     """
     if not isinstance(raster, Raster):
         raise TypeError(f"raster debe ser un Raster, no {type(raster).__name__}")

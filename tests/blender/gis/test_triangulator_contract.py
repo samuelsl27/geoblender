@@ -199,7 +199,7 @@ class _TriangulatorTestCase(unittest.TestCase):
         cls.cdt = _module("gis.cdt")
         cls.ports = _module("gis.ports")
         cls.params = _module("gis.params")
-        cls.messages = _module("gis.messages")
+        cls.core_params = _module("core.params")
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -470,12 +470,12 @@ class EstimatorTest(_TriangulatorTestCase):
 
     def test_invalid_limit(self) -> None:
         """RF-006-13 (plan §9, D-12): el límite es un parámetro de 0 a 2 s; fuera de ese
-        rango, o si no es un número, ``gis.param_*`` con la clave."""
+        rango, o si no es un número, ``ParamError`` ``core.param_*`` con la clave."""
         choose = self.triangulator.choose_triangulation
-        for value, code in ((2.5, "gis.param_out_of_range"), (-0.1, "gis.param_out_of_range"),
-                            ("1", "gis.param_not_number"), (math.nan, "gis.param_not_number")):
+        for value, code in ((2.5, "core.param_out_of_range"), (-0.1, "core.param_out_of_range"),
+                            ("1", "core.param_not_number"), (math.nan, "core.param_not_number")):
             with self.subTest(valor=value):
-                with self.assertRaises(self.messages.GisError) as caught:
+                with self.assertRaises(self.core_params.ParamError) as caught:
                     choose(1_000, limit_s=value)
                 self.assertEqual(caught.exception.code, code)
                 self.assertEqual(caught.exception.field, MAX_S_KEY)

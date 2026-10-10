@@ -30,6 +30,7 @@ gis = import_geoblender("gis")
 points = import_geoblender("gis.points")
 reports = import_geoblender("gis.reports")
 messages = import_geoblender("gis.messages")
+ParamError = import_geoblender("core.params").ParamError
 csv_tables = import_geoblender("interop.csv_tables")
 
 ERRORES = ROOT / "tests" / "data" / "gis" / "points" / "errores.csv"
@@ -208,7 +209,7 @@ class ToleranceTest(unittest.TestCase):
 
     def test_explicit_tolerances_and_defaults(self) -> None:
         """Las tolerancias por defecto salen de ``gis/params.py``; las explícitas se validan
-        (``gis.param_*`` con la clave como campo)."""
+        (``ParamError`` ``core.param_*`` con la clave como campo; RF-006-14)."""
         self.assertEqual(points.duplicate_tolerances(None, None), (
             gis.param(XY_KEY).default, gis.param(Z_KEY).default))
         point_set = _point_set(("A", 0.0, 0.0, 800.0), ("B", 0.004, 0.0, 800.3))
@@ -218,10 +219,14 @@ class ToleranceTest(unittest.TestCase):
         for key, options in ((XY_KEY, {"tol_xy": 0.0}), (XY_KEY, {"tol_xy": 2.0}),
                              (Z_KEY, {"tol_z": -0.01}), (Z_KEY, {"tol_z": "0,01"})):
             with self.subTest(**options):
-                with self.assertRaises(messages.GisError) as caught:
+                with self.assertRaises(ParamError) as caught:
                     _find(point_set, **options)
-                self.assertTrue(caught.exception.code.startswith("gis.param_"))
+                self.assertTrue(caught.exception.code.startswith("core.param_"))
                 self.assertEqual(caught.exception.field, key)
+        with self.assertRaises(ParamError) as caught:
+            points.duplicate_tolerances(2.0, None)
+        self.assertEqual((caught.exception.code, caught.exception.field),
+                         ("core.param_out_of_range", XY_KEY))
 
     def test_identifiers_and_inputs(self) -> None:
         """Sin identificadores, cada punto se nombra por su posición («#1»…); coordenadas no

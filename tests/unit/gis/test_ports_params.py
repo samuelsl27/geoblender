@@ -5,15 +5,21 @@
 Base de RF-006-01 a RF-006-31: lo que usan todas las tareas siguientes de la 006 y la 005
 (el puerto ``CrsService``, con la convergencia de cuadrícula).
 
-- **Parámetros** (``gis.params``; plan §5.2.5): las 17 claves de la tabla, sin repetir,
-  cada una con su unidad, su valor por defecto, su rango y tipo ADOPTADO de origen
-  ``algorithm`` (``source_kind``), y con los RF que la usan: RF-006-05 (submuestreo de la
-  reproyección), RF-006-06 (banda de alturas elipsoidales, D-8), RF-006-09 (límite de
+- **Parámetros** (``gis.params``; plan §5.2.5 y, desde T39, §5.6.1): las 17 claves de la
+  tabla, sin repetir, cada una con su unidad, su valor por defecto, su rango y tipo ADOPTADO
+  de origen ``algorithm`` (``source_kind``), y con los RF que la usan: RF-006-05 (submuestreo
+  de la reproyección), RF-006-06 (banda de alturas elipsoidales, D-8), RF-006-09 (límite de
   celdas), RF-006-11 (fracción mínima, D-4), RF-006-13 y RF-006-28 (límite de la CDT de
   Blender, 2 s con la excepción de D-12 y nunca más), RF-006-14 (tolerancias de
   duplicados, D-5), RF-006-16 (corrección de triángulos planos), RF-006-18 (curvas),
   RF-006-22 (niveles de detalle) y RF-006-23 (rango plausible de cotas). ``check`` acepta
-  los extremos del rango y rechaza lo que sale de él con un código ``gis.*``.
+  los extremos del rango y rechaza lo que sale de él con ``ParamError`` (``core.param_*``).
+  Desde T39 (RF-008-01, RF-008-03, RF-008-06), ``ParamDef`` es el de ``core.params``: las 17
+  definiciones dan el mismo valor normalizado, el mismo texto y el mismo ``range_text()`` que
+  la definición provisional de ``gis`` (:data:`CHECKS` y :data:`RANGES`, copia literal de lo
+  que daba antes de T39), cada una lleva su etiqueta (``label_msgid``) con su español en el
+  catálogo de idioma y no queda ningún código de parámetro de ``gis`` (los cuatro que daba
+  ``gis/messages.py``) en el código ni en las pruebas de la 006.
 - **Puertos** (``gis.ports``; plan §5.3.1): los nombres y las firmas del contrato, y que
   ``ports.py`` solo importa la biblioteca estándar, numpy y ``core`` (ARQ-10; RF-006-01 a
   RF-006-31 lo usan a través de él): el detector ve un import prohibido sembrado a
@@ -36,7 +42,7 @@ import unittest
 from typing import is_protocol
 
 from tests.support.package import import_geoblender
-from tests.support.repo import EXTENSION_DIR
+from tests.support.repo import EXTENSION_DIR, ROOT
 
 gis = import_geoblender("gis")
 params = import_geoblender("gis.params")
@@ -44,8 +50,17 @@ ports = import_geoblender("gis.ports")
 messages = import_geoblender("gis.messages")
 reports = import_geoblender("gis.reports")
 errors = import_geoblender("core.errors")
+core_params = import_geoblender("core.params")
+i18n = import_geoblender("core.i18n")
 
 PORTS_FILE = EXTENSION_DIR / "gis" / "ports.py"
+ParamError = core_params.ParamError
+
+# El código y las pruebas de la 006 en los que no puede quedar ningún código de parámetro de
+# gis (T39): los de la 008 en core/params citan la definición provisional como historia.
+FOLDERS_OF_006 = (EXTENSION_DIR / "gis", EXTENSION_DIR / "bl", ROOT / "tests" / "unit" / "gis",
+                  ROOT / "tests" / "blender" / "gis")
+OLD_PARAM_CODE = re.compile(r"gis\.param_")
 
 # Plan 006 §5.2.5: clave → (unidad, valor por defecto, mínimo, máximo, mínimo excluido).
 # La unidad «-» es la de gb_parameter para lo adimensional (el «—» de la tabla del plan).
@@ -91,6 +106,139 @@ EXPECTED_RF: dict[str, tuple[str, ...]] = {
     "gis.import.max_cells": ("RF-006-09",),
     "gis.view.lod_steps_m": ("RF-006-22",),
 }
+
+# Lo que daba la definición provisional de gis/params.py antes de T39 (salida de su check(),
+# copiada aquí, no recalculada): (clave, valor, resultado), con el valor normalizado (con su
+# tipo) o (código, texto en español), el código ya escrito como core.param_*.
+CHECKS: tuple[tuple[str, object, object], ...] = (
+    ("gis.resample.min_valid_fraction", 1.0, 1.0),
+    ("gis.resample.min_valid_fraction", 1, 1.0),
+    ("gis.resample.min_valid_fraction", 0.0, ("core.param_out_of_range", "Parámetro «gis.resample.min_valid_fraction»: 0 está fuera de su rango (0; 1].")),
+    ("gis.resample.min_valid_fraction", 1.5, ("core.param_out_of_range", "Parámetro «gis.resample.min_valid_fraction»: 1,5 está fuera de su rango (0; 1].")),
+    ("gis.resample.min_valid_fraction", True, ("core.param_not_number", "Parámetro «gis.resample.min_valid_fraction»: «sí» no es un número.")),
+    ("gis.reproject.supersample", 4, 4),
+    ("gis.reproject.supersample", 4.0, 4),
+    ("gis.reproject.supersample", 1, 1),
+    ("gis.reproject.supersample", 16, 16),
+    ("gis.reproject.supersample", 0, ("core.param_out_of_range", "Parámetro «gis.reproject.supersample»: 0 está fuera de su rango [1; 16].")),
+    ("gis.reproject.supersample", 17, ("core.param_out_of_range", "Parámetro «gis.reproject.supersample»: 17 está fuera de su rango [1; 16].")),
+    ("gis.reproject.supersample", 4.5, ("core.param_not_integer", "Parámetro «gis.reproject.supersample»: «4,5» no es un número entero.")),
+    ("gis.points.dup_xy_tol_m", 0.001, 0.001),
+    ("gis.points.dup_xy_tol_m", 1.0, 1.0),
+    ("gis.points.dup_xy_tol_m", 0.0, ("core.param_out_of_range", "Parámetro «gis.points.dup_xy_tol_m»: 0 está fuera de su rango (0; 1] m.")),
+    ("gis.points.dup_xy_tol_m", 1.5, ("core.param_out_of_range", "Parámetro «gis.points.dup_xy_tol_m»: 1,5 está fuera de su rango (0; 1] m.")),
+    ("gis.points.dup_xy_tol_m", True, ("core.param_not_number", "Parámetro «gis.points.dup_xy_tol_m»: «sí» no es un número.")),
+    ("gis.points.dup_z_tol_m", 0.01, 0.01),
+    ("gis.points.dup_z_tol_m", 0.0, 0.0),
+    ("gis.points.dup_z_tol_m", 1.0, 1.0),
+    ("gis.points.dup_z_tol_m", -0.5, ("core.param_out_of_range", "Parámetro «gis.points.dup_z_tol_m»: -0,5 está fuera de su rango [0; 1] m.")),
+    ("gis.points.dup_z_tol_m", 1.5, ("core.param_out_of_range", "Parámetro «gis.points.dup_z_tol_m»: 1,5 está fuera de su rango [0; 1] m.")),
+    ("gis.points.dup_z_tol_m", True, ("core.param_not_number", "Parámetro «gis.points.dup_z_tol_m»: «sí» no es un número.")),
+    ("gis.tin.contour_densify_m", 5.0, 5.0),
+    ("gis.tin.contour_densify_m", 5, 5.0),
+    ("gis.tin.contour_densify_m", 100.0, 100.0),
+    ("gis.tin.contour_densify_m", 0.0, ("core.param_out_of_range", "Parámetro «gis.tin.contour_densify_m»: 0 está fuera de su rango (0; 100] m.")),
+    ("gis.tin.contour_densify_m", 100.5, ("core.param_out_of_range", "Parámetro «gis.tin.contour_densify_m»: 100,5 está fuera de su rango (0; 100] m.")),
+    ("gis.tin.contour_densify_m", True, ("core.param_not_number", "Parámetro «gis.tin.contour_densify_m»: «sí» no es un número.")),
+    ("gis.tin.flat_max_passes", 3, 3),
+    ("gis.tin.flat_max_passes", 3.0, 3),
+    ("gis.tin.flat_max_passes", 0, 0),
+    ("gis.tin.flat_max_passes", 10, 10),
+    ("gis.tin.flat_max_passes", -1, ("core.param_out_of_range", "Parámetro «gis.tin.flat_max_passes»: -1 está fuera de su rango [0; 10].")),
+    ("gis.tin.flat_max_passes", 11, ("core.param_out_of_range", "Parámetro «gis.tin.flat_max_passes»: 11 está fuera de su rango [0; 10].")),
+    ("gis.tin.flat_max_passes", 3.5, ("core.param_not_integer", "Parámetro «gis.tin.flat_max_passes»: «3,5» no es un número entero.")),
+    ("gis.tin.max_flat_pct", 1.0, 1.0),
+    ("gis.tin.max_flat_pct", 1, 1.0),
+    ("gis.tin.max_flat_pct", 0.0, 0.0),
+    ("gis.tin.max_flat_pct", 100.0, 100.0),
+    ("gis.tin.max_flat_pct", -0.5, ("core.param_out_of_range", "Parámetro «gis.tin.max_flat_pct»: -0,5 está fuera de su rango [0; 100] %.")),
+    ("gis.tin.max_flat_pct", 100.5, ("core.param_out_of_range", "Parámetro «gis.tin.max_flat_pct»: 100,5 está fuera de su rango [0; 100] %.")),
+    ("gis.tin.max_flat_pct", True, ("core.param_not_number", "Parámetro «gis.tin.max_flat_pct»: «sí» no es un número.")),
+    ("gis.tin.blender_cdt_max_s", 2.0, 2.0),
+    ("gis.tin.blender_cdt_max_s", 2, 2.0),
+    ("gis.tin.blender_cdt_max_s", 0.0, 0.0),
+    ("gis.tin.blender_cdt_max_s", -0.5, ("core.param_out_of_range", "Parámetro «gis.tin.blender_cdt_max_s»: -0,5 está fuera de su rango [0; 2] s.")),
+    ("gis.tin.blender_cdt_max_s", 2.5, ("core.param_out_of_range", "Parámetro «gis.tin.blender_cdt_max_s»: 2,5 está fuera de su rango [0; 2] s.")),
+    ("gis.tin.blender_cdt_max_s", True, ("core.param_not_number", "Parámetro «gis.tin.blender_cdt_max_s»: «sí» no es un número.")),
+    ("gis.contours.interval_m", 1.0, 1.0),
+    ("gis.contours.interval_m", 1, 1.0),
+    ("gis.contours.interval_m", 1000.0, 1000.0),
+    ("gis.contours.interval_m", 0.0, ("core.param_out_of_range", "Parámetro «gis.contours.interval_m»: 0 está fuera de su rango (0; 1000] m.")),
+    ("gis.contours.interval_m", 1000.5, ("core.param_out_of_range", "Parámetro «gis.contours.interval_m»: 1000,5 está fuera de su rango (0; 1000] m.")),
+    ("gis.contours.interval_m", True, ("core.param_not_number", "Parámetro «gis.contours.interval_m»: «sí» no es un número.")),
+    ("gis.contours.index_every_m", 5.0, 5.0),
+    ("gis.contours.index_every_m", 5, 5.0),
+    ("gis.contours.index_every_m", 10000.0, 10000.0),
+    ("gis.contours.index_every_m", 0.0, ("core.param_out_of_range", "Parámetro «gis.contours.index_every_m»: 0 está fuera de su rango (0; 10000] m.")),
+    ("gis.contours.index_every_m", 10000.5, ("core.param_out_of_range", "Parámetro «gis.contours.index_every_m»: 10000,5 está fuera de su rango (0; 10000] m.")),
+    ("gis.contours.index_every_m", True, ("core.param_not_number", "Parámetro «gis.contours.index_every_m»: «sí» no es un número.")),
+    ("gis.contours.index_offset_m", 0.0, 0.0),
+    ("gis.contours.index_offset_m", 0, 0.0),
+    ("gis.contours.index_offset_m", -100.0, -100.0),
+    ("gis.contours.index_offset_m", 100.0, 100.0),
+    ("gis.contours.index_offset_m", -100.5, ("core.param_out_of_range", "Parámetro «gis.contours.index_offset_m»: -100,5 está fuera de su rango [-100; 100] m.")),
+    ("gis.contours.index_offset_m", 100.5, ("core.param_out_of_range", "Parámetro «gis.contours.index_offset_m»: 100,5 está fuera de su rango [-100; 100] m.")),
+    ("gis.contours.index_offset_m", True, ("core.param_not_number", "Parámetro «gis.contours.index_offset_m»: «sí» no es un número.")),
+    ("gis.contours.simplify_m", 0.0, 0.0),
+    ("gis.contours.simplify_m", 0, 0.0),
+    ("gis.contours.simplify_m", 100.0, 100.0),
+    ("gis.contours.simplify_m", -0.5, ("core.param_out_of_range", "Parámetro «gis.contours.simplify_m»: -0,5 está fuera de su rango [0; 100] m.")),
+    ("gis.contours.simplify_m", 100.5, ("core.param_out_of_range", "Parámetro «gis.contours.simplify_m»: 100,5 está fuera de su rango [0; 100] m.")),
+    ("gis.contours.simplify_m", True, ("core.param_not_number", "Parámetro «gis.contours.simplify_m»: «sí» no es un número.")),
+    ("gis.contours.min_length_m", 0.0, 0.0),
+    ("gis.contours.min_length_m", 0, 0.0),
+    ("gis.contours.min_length_m", 10000.0, 10000.0),
+    ("gis.contours.min_length_m", -0.5, ("core.param_out_of_range", "Parámetro «gis.contours.min_length_m»: -0,5 está fuera de su rango [0; 10000] m.")),
+    ("gis.contours.min_length_m", 10000.5, ("core.param_out_of_range", "Parámetro «gis.contours.min_length_m»: 10000,5 está fuera de su rango [0; 10000] m.")),
+    ("gis.contours.min_length_m", True, ("core.param_not_number", "Parámetro «gis.contours.min_length_m»: «sí» no es un número.")),
+    ("gis.vertical.ellipsoidal_band_m", (40.0, 60.0), (40.0, 60.0)),
+    ("gis.vertical.ellipsoidal_band_m", [40.0, 60.0], (40.0, 60.0)),
+    ("gis.vertical.ellipsoidal_band_m", (0.0, 200.0), (0.0, 200.0)),
+    ("gis.vertical.ellipsoidal_band_m", (-1.0, 200.0), ("core.param_out_of_range", "Parámetro «gis.vertical.ellipsoidal_band_m»: [-1; 200] está fuera de su rango [0; 200] m.")),
+    ("gis.vertical.ellipsoidal_band_m", (0.0, 201.0), ("core.param_out_of_range", "Parámetro «gis.vertical.ellipsoidal_band_m»: [0; 201] está fuera de su rango [0; 200] m.")),
+    ("gis.vertical.ellipsoidal_band_m", (60.0, 40.0), ("core.param_not_list", "Parámetro «gis.vertical.ellipsoidal_band_m»: «(60.0, 40.0)» no es una lista de 2 números en orden creciente.")),
+    ("gis.validate.z_range_m", (-500.0, 5000.0), (-500.0, 5000.0)),
+    ("gis.validate.z_range_m", [-500.0, 5000.0], (-500.0, 5000.0)),
+    ("gis.validate.z_range_m", (-11000.0, 9000.0), (-11000.0, 9000.0)),
+    ("gis.validate.z_range_m", (-11001.0, 9000.0), ("core.param_out_of_range", "Parámetro «gis.validate.z_range_m»: [-11001; 9000] está fuera de su rango [-11000; 9000] m.")),
+    ("gis.validate.z_range_m", (-11000.0, 9001.0), ("core.param_out_of_range", "Parámetro «gis.validate.z_range_m»: [-11000; 9001] está fuera de su rango [-11000; 9000] m.")),
+    ("gis.validate.z_range_m", (5000.0, -500.0), ("core.param_not_list", "Parámetro «gis.validate.z_range_m»: «(5000.0, -500.0)» no es una lista de 2 números en orden creciente.")),
+    ("gis.import.max_cells", 100000000, 100000000),
+    ("gis.import.max_cells", 100000000.0, 100000000),
+    ("gis.import.max_cells", 1, 1),
+    ("gis.import.max_cells", 0, ("core.param_out_of_range", "Parámetro «gis.import.max_cells»: 0 está fuera de su rango [1; 100000000].")),
+    ("gis.import.max_cells", 100000001, ("core.param_out_of_range", "Parámetro «gis.import.max_cells»: 100000001 está fuera de su rango [1; 100000000].")),
+    ("gis.import.max_cells", 100000000.5, ("core.param_not_integer", "Parámetro «gis.import.max_cells»: «100000000,5» no es un número entero.")),
+    ("gis.view.lod_steps_m", (2.0, 5.0), (2.0, 5.0)),
+    ("gis.view.lod_steps_m", [2.0, 5.0], (2.0, 5.0)),
+    ("gis.view.lod_steps_m", (0.5, 100.0), (0.5, 100.0)),
+    ("gis.view.lod_steps_m", (-0.5, 100.0), ("core.param_out_of_range", "Parámetro «gis.view.lod_steps_m»: [-0,5; 100] está fuera de su rango [0,5; 100] m.")),
+    ("gis.view.lod_steps_m", (0.5, 101.0), ("core.param_out_of_range", "Parámetro «gis.view.lod_steps_m»: [0,5; 101] está fuera de su rango [0,5; 100] m.")),
+    ("gis.view.lod_steps_m", (5.0, 2.0), ("core.param_not_list", "Parámetro «gis.view.lod_steps_m»: «(5.0, 2.0)» no es una lista de 2 números en orden creciente.")),
+)
+
+# clave → range_text() en español y en inglés, como lo daba la provisional antes de T39.
+RANGES: dict[str, tuple[str, str]] = {
+    "gis.resample.min_valid_fraction": ("(0; 1]", "(0, 1]"),
+    "gis.reproject.supersample": ("[1; 16]", "[1, 16]"),
+    "gis.points.dup_xy_tol_m": ("(0; 1] m", "(0, 1] m"),
+    "gis.points.dup_z_tol_m": ("[0; 1] m", "[0, 1] m"),
+    "gis.tin.contour_densify_m": ("(0; 100] m", "(0, 100] m"),
+    "gis.tin.flat_max_passes": ("[0; 10]", "[0, 10]"),
+    "gis.tin.max_flat_pct": ("[0; 100] %", "[0, 100] %"),
+    "gis.tin.blender_cdt_max_s": ("[0; 2] s", "[0, 2] s"),
+    "gis.contours.interval_m": ("(0; 1000] m", "(0, 1000] m"),
+    "gis.contours.index_every_m": ("(0; 10000] m", "(0, 10000] m"),
+    "gis.contours.index_offset_m": ("[-100; 100] m", "[-100, 100] m"),
+    "gis.contours.simplify_m": ("[0; 100] m", "[0, 100] m"),
+    "gis.contours.min_length_m": ("[0; 10000] m", "[0, 10000] m"),
+    "gis.vertical.ellipsoidal_band_m": ("[0; 200] m", "[0, 200] m"),
+    "gis.validate.z_range_m": ("[-11000; 9000] m", "[-11000, 9000] m"),
+    "gis.import.max_cells": ("[1; 100000000]", "[1, 100000000]"),
+    "gis.view.lod_steps_m": ("[0,5; 100] m", "[0.5, 100] m"),
+}
+
+SPANISH_LETTERS = frozenset("áéíóúüñÁÉÍÓÚÜÑ¿¡")
 
 # Lo que puede importar un ports.py (ARQ-10; vision-general.md §2.3).
 ALLOWED_ABSOLUTE = frozenset(sys.stdlib_module_names) | {"numpy", "__future__"}
@@ -178,7 +326,8 @@ class ParamsTest(unittest.TestCase):
 
     def test_bounds_accepted_and_outside_rejected(self) -> None:
         """``check`` acepta el valor por defecto y los extremos incluidos del rango, y
-        rechaza lo que queda fuera con ``gis.param_out_of_range``, la clave y el valor."""
+        rechaza lo que queda fuera con ``ParamError`` ``core.param_out_of_range``, la clave
+        como campo y el valor."""
         for key, (_unit, default, low, high, low_excluded) in EXPECTED.items():
             definition = params.param(key)
             integer = definition.value_type == "int"
@@ -187,24 +336,26 @@ class ParamsTest(unittest.TestCase):
                 self.assertEqual(definition.check(default), default)
                 if definition.value_type == "json":
                     self.assertEqual(definition.check([low, high]), (low, high))
-                    with self.assertRaises(messages.GisError) as caught:
+                    with self.assertRaises(ParamError) as caught:
                         definition.check([low - 1.0, high])
-                    self.assertEqual(caught.exception.code, "gis.param_out_of_range")
+                    self.assertEqual(caught.exception.code, "core.param_out_of_range")
+                    self.assertEqual(caught.exception.field, key)
                     continue
                 if not low_excluded:
                     self.assertEqual(definition.check(low), low)
                 self.assertEqual(definition.check(high), high)
                 for outside in (high + step, low if low_excluded else low - step):
-                    with self.assertRaises(messages.GisError) as caught:
+                    with self.assertRaises(ParamError) as caught:
                         definition.check(outside)
-                    self.assertEqual(caught.exception.code, "gis.param_out_of_range")
+                    self.assertEqual(caught.exception.code, "core.param_out_of_range")
+                    self.assertEqual(caught.exception.field, key)
                     self.assertIn(key, str(caught.exception))
 
     def test_blender_cdt_never_above_two_seconds(self) -> None:
         """RF-006-13, RF-006-28: la excepción del principio 9 (plan §9, D-12) acaba en
         2 s; 2,5 s se rechaza y el mensaje da el rango en español."""
         definition = params.param("gis.tin.blender_cdt_max_s")
-        with self.assertRaises(messages.GisError) as caught:
+        with self.assertRaises(ParamError) as caught:
             definition.check(2.5)
         self.assertIn("2,5", str(caught.exception))
         self.assertIn("[0; 2] s", str(caught.exception))
@@ -213,20 +364,21 @@ class ParamsTest(unittest.TestCase):
         """Un booleano, un texto o un NaN no son números; 4,5 no es un entero; una lista
         descendente o de otra longitud no es un par válido."""
         cases = (
-            ("gis.points.dup_z_tol_m", True, "gis.param_not_number"),
-            ("gis.points.dup_z_tol_m", "0,01", "gis.param_not_number"),
-            ("gis.points.dup_z_tol_m", math.nan, "gis.param_not_number"),
-            ("gis.reproject.supersample", 4.5, "gis.param_not_integer"),
-            ("gis.reproject.supersample", True, "gis.param_not_integer"),
-            ("gis.vertical.ellipsoidal_band_m", (60.0, 40.0), "gis.param_not_list"),
-            ("gis.vertical.ellipsoidal_band_m", (40.0,), "gis.param_not_list"),
-            ("gis.vertical.ellipsoidal_band_m", "40;60", "gis.param_not_list"),
+            ("gis.points.dup_z_tol_m", True, "core.param_not_number"),
+            ("gis.points.dup_z_tol_m", "0,01", "core.param_not_number"),
+            ("gis.points.dup_z_tol_m", math.nan, "core.param_not_number"),
+            ("gis.reproject.supersample", 4.5, "core.param_not_integer"),
+            ("gis.reproject.supersample", True, "core.param_not_integer"),
+            ("gis.vertical.ellipsoidal_band_m", (60.0, 40.0), "core.param_not_list"),
+            ("gis.vertical.ellipsoidal_band_m", (40.0,), "core.param_not_list"),
+            ("gis.vertical.ellipsoidal_band_m", "40;60", "core.param_not_list"),
         )
         for key, value, code in cases:
             with self.subTest(key=key, value=value):
-                with self.assertRaises(messages.GisError) as caught:
+                with self.assertRaises(ParamError) as caught:
                     params.param(key).check(value)
                 self.assertEqual(caught.exception.code, code)
+                self.assertEqual(caught.exception.field, key)
         self.assertEqual(params.param("gis.reproject.supersample").check(8.0), 8)
         self.assertIs(type(params.param("gis.reproject.supersample").check(8.0)), int)
         self.assertIs(type(params.param("gis.points.dup_z_tol_m").check(0)), float)
@@ -243,6 +395,105 @@ class ParamsTest(unittest.TestCase):
                 key="gis.test.value_m", value_type="float", unit="m", default=5.0,
                 minimum=0.0, maximum=1.0, requirements=("RF-006-01",), source="prueba",
             )
+
+
+class CoreParamsTest(unittest.TestCase):
+    """T39 (plan 006 §5.6.1; RF-006-11, RF-006-14, RF-006-16, RF-006-18, RF-006-23;
+    RF-008-01, RF-008-03, RF-008-06): ``gis/params.py`` sobre ``core.params``."""
+
+    def test_param_def_is_the_one_of_core(self) -> None:
+        """RF-008-01: ``gis`` no define su ``ParamDef``: usa el de ``core.params`` (también
+        el que reexporta ``gis``), y sus 17 definiciones son del módulo ``gis``."""
+        self.assertIs(params.ParamDef, core_params.ParamDef)
+        self.assertIs(gis.ParamDef, core_params.ParamDef)
+        self.assertEqual(len(params.DEFINITIONS), 17)
+        for definition in params.DEFINITIONS:
+            with self.subTest(key=definition.key):
+                self.assertIsInstance(definition, core_params.ParamDef)
+                self.assertEqual(definition.module, "gis")
+                self.assertIs(params.param(definition.key), definition)
+
+    def test_same_normalized_values_and_texts_as_before(self) -> None:
+        """RF-006-11, RF-006-14, RF-006-16, RF-006-18, RF-006-23, RF-008-03: cada definición
+        da, para la tabla :data:`CHECKS`, el mismo valor normalizado (y del mismo tipo) que la
+        provisional, o el mismo texto con el código ``core.param_*``, en un ``ParamError`` con
+        la clave como campo."""
+        self.assertEqual(len(CHECKS), 104)
+        self.assertEqual({key for key, _value, _result in CHECKS}, set(EXPECTED))
+        for key, value, expected in CHECKS:
+            with self.subTest(key=key, value=value):
+                definition = params.param(key)
+                if isinstance(expected, tuple) and isinstance(expected[0], str):
+                    code, text = expected
+                    with self.assertRaises(ParamError) as caught:
+                        definition.check(value)
+                    self.assertEqual(caught.exception.code, code)
+                    self.assertEqual(str(caught.exception), text)
+                    self.assertEqual(caught.exception.field, key)
+                    self.assertEqual(caught.exception.obj, "Parámetro")
+                else:
+                    result = definition.check(value)
+                    self.assertEqual(result, expected)
+                    self.assertIs(type(result), type(expected))
+
+    def test_same_range_text_as_before(self) -> None:
+        """RF-008-03: ``range_text()`` en español y en inglés, como la provisional."""
+        self.assertEqual(set(RANGES), set(EXPECTED))
+        for key, (spanish, english) in RANGES.items():
+            with self.subTest(key=key):
+                self.assertEqual(params.param(key).range_text(), spanish)
+                self.assertEqual(params.param(key).range_text("en"), english)
+
+    def test_labels_with_their_spanish(self) -> None:
+        """RF-008-06 (principio 10): cada definición lleva su etiqueta para el panel de
+        parámetros, un ``msgid`` en inglés, distinto en cada una y sin marcadores, con su
+        español en ``core/i18n/messages.toml``."""
+        table = i18n.load_messages()
+        labels = [definition.label_msgid for definition in params.DEFINITIONS]
+        self.assertEqual(len(set(labels)), 17, "etiquetas repetidas o sin etiqueta")
+        for definition in params.DEFINITIONS:
+            label = definition.label_msgid
+            with self.subTest(key=definition.key, label=label):
+                self.assertIsInstance(label, str)
+                self.assertTrue(label.strip())
+                self.assertEqual(set(label) & SPANISH_LETTERS, set(), "msgid en inglés")
+                self.assertEqual(i18n.placeholders(label), set())
+                self.assertIn(label, table)
+                self.assertTrue(table[label].strip())
+                self.assertNotEqual(table[label], label)
+                self.assertEqual(i18n.translate("es", label), table[label])
+
+    def test_registered_and_removed_without_trace(self) -> None:
+        """RF-008-01: ``bl`` registra las 17 en ``core.params`` y las quita con
+        ``unregister_definitions("gis")`` sin dejar rastro."""
+        before = dict(core_params.DEFINITIONS)
+        self.addCleanup(core_params.unregister_definitions, "gis")
+        core_params.register_definitions(params.DEFINITIONS)
+        for definition in params.DEFINITIONS:
+            self.assertIs(core_params.DEFINITIONS[definition.key], definition)
+        self.assertEqual(core_params.unregister_definitions("gis"), 17)
+        self.assertEqual(dict(core_params.DEFINITIONS), before)
+
+    def test_no_gis_param_codes_left(self) -> None:
+        """Plan 006 §5.6.9: los cuatro mensajes de parámetro de ``gis`` salen de
+        ``gis/messages.py`` (los da ``core.params``), y ni el código ni las pruebas de la 006
+        nombran ya un código de parámetro de ``gis``."""
+        self.assertEqual([code for code in messages.MESSAGES if OLD_PARAM_CODE.match(code)], [])
+        for suffix in ("not_number", "not_integer", "not_list", "out_of_range"):
+            self.assertIn(f"core.param_{suffix}", core_params.MESSAGES)
+        found = [
+            f"{path.relative_to(ROOT).as_posix()}:{number}"
+            for folder in FOLDERS_OF_006
+            for path in sorted(folder.rglob("*.py"))
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if OLD_PARAM_CODE.search(line)
+        ]
+        self.assertEqual(found, [])
+
+    def test_detector_sees_old_codes(self) -> None:
+        """Control positivo: el detector ve un código de parámetro de ``gis`` en un texto."""
+        self.assertIsNotNone(OLD_PARAM_CODE.search("``GisError`` ``gis" + ".param_*``"))
+        self.assertIsNone(OLD_PARAM_CODE.search("``ParamError`` ``core.param_*``"))
 
 
 class PortsImportsTest(unittest.TestCase):

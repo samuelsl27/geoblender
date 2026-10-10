@@ -9,7 +9,8 @@
   texto del aviso es el del plan §5.5 («… es de 51,3 m …»), en español y en inglés.
 - D-8 (DP-46): la banda es la de la península y Baleares (``gis.vertical.ellipsoidal_band_m``,
   40–60 m); en Canarias (el ámbito EPSG de REGCAN95) no hay banda ni aviso hasta que se
-  fije la suya. Una banda explícita se comprueba como el parámetro (``gis.param_*``).
+  fije la suya. Una banda explícita se comprueba como el parámetro (``ParamError``
+  ``core.param_*`` con la clave).
 - A16: se comparan como mucho :data:`MAX_SAMPLES` posiciones, elegidas siempre igual.
 - Las entradas no se modifican (arrays de solo lectura).
 """
@@ -24,6 +25,7 @@ from tests.support.package import import_geoblender
 gis = import_geoblender("gis")
 vertical = import_geoblender("gis.vertical")
 georef = import_geoblender("core.georef")
+ParamError = import_geoblender("core.params").ParamError
 
 CATALOG = georef.load_catalog()
 H25830 = CATALOG.horizontal(25830)
@@ -241,17 +243,19 @@ class BandTest(unittest.TestCase):
 
     def test_explicit_band(self) -> None:
         """Una banda explícita manda (también en Canarias) y se comprueba como el
-        parámetro: desordenada o fuera de [0; 200] m → ``gis.param_*``."""
+        parámetro: desordenada o fuera de [0; 200] m → ``ParamError`` ``core.param_*`` con
+        la clave."""
         reference = _reference()
         check = vertical.check_vertical_offset(_shifted(45.0), reference, band_m=[30, 45])
         self.assertTrue(check.warn)
         self.assertEqual(check.band_m, (30.0, 45.0))
-        for band, code in (((60.0, 40.0), "gis.param_not_list"),
-                           ((40.0,), "gis.param_not_list"),
-                           ((40.0, 250.0), "gis.param_out_of_range")):
-            with self.subTest(band=band), self.assertRaises(gis.GisError) as caught:
+        for band, code in (((60.0, 40.0), "core.param_not_list"),
+                           ((40.0,), "core.param_not_list"),
+                           ((40.0, 250.0), "core.param_out_of_range")):
+            with self.subTest(band=band), self.assertRaises(ParamError) as caught:
                 vertical.check_vertical_offset(_shifted(45.0), reference, band_m=band)
             self.assertEqual(caught.exception.code, code)
+            self.assertEqual(caught.exception.field, vertical.BAND_KEY)
 
 
 class ContractTest(unittest.TestCase):

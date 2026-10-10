@@ -605,29 +605,7 @@ CATALOG: tuple[Message, ...] = (
         "queda espacio y que tiene permiso de escritura; no ha quedado ningún fichero a "
         "medias.",
     ),
-    # Parámetros (gis/params.py) ---------------------------------------------------------
-    Message(
-        "gis.param_not_number",
-        "Parameter «{key}»: «{value}» is not a number.",
-        "Parámetro «{key}»: «{value}» no es un número.",
-    ),
-    Message(
-        "gis.param_not_integer",
-        "Parameter «{key}»: «{value}» is not a whole number.",
-        "Parámetro «{key}»: «{value}» no es un número entero.",
-    ),
-    Message(
-        "gis.param_not_list",
-        "Parameter «{key}»: «{value}» is not a list of {length} numbers in ascending "
-        "order.",
-        "Parámetro «{key}»: «{value}» no es una lista de {length} números en orden "
-        "creciente.",
-    ),
-    Message(
-        "gis.param_out_of_range",
-        "Parameter «{key}»: {value} is outside its range {range}.",
-        "Parámetro «{key}»: {value} está fuera de su rango {range}.",
-    ),
+    # Los de un parámetro (gis/params.py) los da core.params (core.param_*; plan §5.6.1).
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

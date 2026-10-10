@@ -48,6 +48,7 @@ modifican. Avance y cancelación (``JobCancelled``) por bloques de cuadros o tri
 from __future__ import annotations
 
 import math
+import numbers
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -57,7 +58,6 @@ from ..core.i18n import format_number
 from ..jobs.worker_api import JobCancelled
 from . import params
 from .messages import GisError
-from .params import _is_finite_real
 from .points import _expand
 from .ports import Cancelled, Progress
 from .raster import Raster
@@ -139,9 +139,20 @@ class _Settings:
 
 def _setting(key: str, value: object) -> float:
     """El valor del parámetro ``key``: el de ``gis/params.py`` si ``value`` es ``None``; si
-    no, comprobado (``GisError`` ``gis.param_*`` con la clave como campo)."""
+    no, comprobado (``ParamError`` ``core.param_*`` con la clave como campo)."""
     definition = params.param(key)
     return float(definition.default if value is None else definition.check(value))
+
+
+def _is_finite_real(value: object) -> bool:
+    """Verdadero si ``value`` es un número real finito que cabe en un float64 (no un
+    booleano): la cota base, que no es un parámetro."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # un entero que no cabe en un float64
+        return False
 
 
 def _settings(name: str, interval_m: object, base_m: object, index_every_m: object,
@@ -325,7 +336,7 @@ def contours_from_raster(
 
     ``interval_m``, ``index_every_m``, ``index_offset_m``, ``simplify_m`` y
     ``min_length_m``: los parámetros ``gis.contours.*`` (``None``, el valor por defecto; uno
-    no válido → ``GisError`` ``gis.param_*`` con la clave); ``base_m``, la cota base (si no
+    no válido → ``ParamError`` ``core.param_*`` con la clave); ``base_m``, la cota base (si no
     es un número finito, ``gis.contours_base_invalid``); ``name``, el de la superficie en los
     mensajes. Sin cuadros con dato o sin ninguna cota que la corte, ``[]``. Avance y
     cancelación (``JobCancelled``) por bloques de filas de :data:`_QUAD_BLOCK` cuadros.

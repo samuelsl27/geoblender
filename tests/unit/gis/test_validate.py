@@ -29,6 +29,7 @@ from tests.support.package import import_geoblender
 gis = import_geoblender("gis")
 validate = import_geoblender("gis.validate")
 georef = import_geoblender("core.georef")
+ParamError = import_geoblender("core.params").ParamError
 
 NAN = math.nan
 CATALOG = georef.load_catalog()
@@ -329,7 +330,7 @@ class RangeTest(unittest.TestCase):
     def test_explicit_range(self) -> None:
         """Un rango explícito manda y se comprueba como el parámetro
         (``gis.validate.z_range_m``): desordenado o fuera de [−11.000; 9.000] m →
-        ``gis.param_*``."""
+        ``ParamError`` ``core.param_*`` con la clave (RF-006-23)."""
         raster = _raster(self._values())
         report = validate.validate_raster(raster, window=_extent(raster), z_range=[0, 1000])
         self.assertEqual(report.out_of_range, 6)  # −9999, 6000, −500, 5000, −500,001…
@@ -337,10 +338,10 @@ class RangeTest(unittest.TestCase):
         report = validate.validate_raster(raster, window=_extent(raster),
                                           z_range=(-10000.0, 5500.0))
         self.assertEqual(report.out_of_range, 1)
-        for bad, code in (((1000.0, 0.0), "gis.param_not_list"),
-                          ((0.0,), "gis.param_not_list"),
-                          ((-20000.0, 0.0), "gis.param_out_of_range")):
-            with self.subTest(z_range=bad), self.assertRaises(gis.GisError) as caught:
+        for bad, code in (((1000.0, 0.0), "core.param_not_list"),
+                          ((0.0,), "core.param_not_list"),
+                          ((-20000.0, 0.0), "core.param_out_of_range")):
+            with self.subTest(z_range=bad), self.assertRaises(ParamError) as caught:
                 validate.validate_raster(raster, window=_extent(raster), z_range=bad)
             self.assertEqual(caught.exception.code, code)
             self.assertEqual(caught.exception.field, "gis.validate.z_range_m")

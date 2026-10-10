@@ -211,7 +211,7 @@ def choose_triangulation(points: int, *, limit_s: float | None = None) -> Triang
     ``points`` puntos (plan §5.3.4; RF-006-13, RF-006-28): en proceso si la estimación
     (:func:`estimate_seconds`) no pasa de ``limit_s`` (por defecto, el parámetro
     ``gis.tin.blender_cdt_max_s``; un valor fuera de su rango de 0 a 2 s, o que no es un
-    número, da ``gis.param_*``)."""
+    número, da ``ParamError`` ``core.param_*`` con la clave)."""
     definition = params.param(MAX_SECONDS_KEY)
     limit = float(definition.default if limit_s is None else definition.check(limit_s))
     estimate = estimate_seconds(points)

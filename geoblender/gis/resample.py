@@ -214,7 +214,7 @@ def _advance(progress: Progress | None, index: int, total: int) -> None:
 
 def _fraction(value: object) -> float:
     """La fracción mínima: la de ``gis.resample.min_valid_fraction`` si es ``None``; si no,
-    comprobada en (0; 1] (``GisError`` ``gis.param_*`` con la clave)."""
+    comprobada en (0; 1] (``ParamError`` ``core.param_*`` con la clave)."""
     definition = params.param(MIN_VALID_FRACTION_KEY)
     if value is None:
         return float(definition.default)  # type: ignore[arg-type]
@@ -223,7 +223,8 @@ def _fraction(value: object) -> float:
 
 def _supersample(value: object) -> int:
     """Los subcentros por lado de la reproyección: los de ``gis.reproject.supersample`` si
-    es ``None``; si no, comprobados en [1; 16] (``GisError`` ``gis.param_*`` con la clave)."""
+    es ``None``; si no, comprobados en [1; 16] (``ParamError`` ``core.param_*`` con la
+    clave)."""
     definition = params.param(SUPERSAMPLE_KEY)
     if value is None:
         return int(definition.default)  # type: ignore[arg-type]
@@ -376,7 +377,7 @@ def resample_to_grid(
     ``min_valid_fraction`` (de 0, excluido, a 1; ``None``: ``gis.resample.min_valid_fraction``,
     1) es el área de la celda destino que deben cubrir celdas de origen con dato para que la
     media valga; si no, la celda queda sin dato. En la bilineal, una celda queda sin dato si
-    le falta un vecino. Errores: ``gis.param_*`` (fracción); un método que no es de cotas o
+    le falta un vecino. Errores: ``core.param_*`` (fracción); un método que no es de cotas o
     argumentos de otro tipo son errores del programa (``ValueError``, ``TypeError``).
     ``JobCancelled`` si ``cancelled()`` pide parar."""
     _check_inputs(src, target)
@@ -541,7 +542,7 @@ def reproject_to_grid(
     vecino. El informe lleva el método, la fracción, las celdas con dato, el área de celda
     exacta, la transformación directa y el submuestreo usado.
 
-    Errores: ``gis.transform_unknown_accuracy``, ``gis.param_*`` (fracción y submuestreo);
+    Errores: ``gis.transform_unknown_accuracy``, ``core.param_*`` (fracción y submuestreo);
     un método que no es de cotas o una pareja que no es inversa, ``ValueError``; argumentos
     de otro tipo, ``TypeError``. ``JobCancelled`` si ``cancelled()`` pide parar. La fuente
     no se modifica."""
@@ -637,7 +638,7 @@ def resample_classes_to_grid(
 
     ``name`` es el nombre de la rejilla en los mensajes. Errores: ``gis.classes_not_integer``
     (un valor no entero en la parte de la fuente que solapa la rejilla, con el primero que se
-    encuentra) y ``gis.param_*`` (fracción); argumentos de otro tipo, ``TypeError``.
+    encuentra) y ``core.param_*`` (fracción); argumentos de otro tipo, ``TypeError``.
     ``JobCancelled`` si ``cancelled()`` pide parar."""
     _check_inputs(src, target)
     fraction = _fraction(min_valid_fraction)

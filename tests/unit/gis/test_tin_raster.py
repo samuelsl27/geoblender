@@ -43,6 +43,7 @@ points = import_geoblender("gis.points")
 cdt = import_geoblender("gis.cdt")
 geotiff = import_geoblender("gis.geotiff")
 georef = import_geoblender("core.georef")
+ParamError = import_geoblender("core.params").ParamError
 csv_tables = import_geoblender("interop.csv_tables")
 worker_api = import_geoblender("jobs.worker_api")
 
@@ -680,7 +681,8 @@ class ValidateTinTest(unittest.TestCase):
     def test_window_and_range(self) -> None:
         """Triángulos con algún vértice fuera de la ventana (contados a mano) y vértices con
         la cota fuera de [−500; 5.000] m (−9999 y 6.000 m; los extremos, dentro), o de un
-        rango explícito, que se comprueba como el parámetro (``gis.param_*``)."""
+        rango explícito, que se comprueba como el parámetro (``ParamError`` ``core.param_*``
+        con la clave; RF-006-23)."""
         values = _surface(6, 8)
         values[1, 1], values[1, 2] = -9999.0, 6000.0
         values[2, 1], values[2, 2] = -500.0, 5000.0
@@ -697,9 +699,9 @@ class ValidateTinTest(unittest.TestCase):
         explicit = _validate(tin, z_range=(0.0, 1000.0))
         self.assertEqual(explicit.out_of_range, 4)
         self.assertEqual(explicit.z_range_m, (0.0, 1000.0))
-        with self.assertRaises(gis.GisError) as caught:
+        with self.assertRaises(ParamError) as caught:
             _validate(tin, z_range=(1000.0, 0.0))
-        self.assertEqual(caught.exception.code, "gis.param_not_list")
+        self.assertEqual(caught.exception.code, "core.param_not_list")
         self.assertEqual(caught.exception.field, "gis.validate.z_range_m")
 
     def test_input_untouched_and_bad_inputs(self) -> None:

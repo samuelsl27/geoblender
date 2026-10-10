@@ -33,6 +33,7 @@ from tests.support.package import import_geoblender
 gis = import_geoblender("gis")
 mesh = import_geoblender("gis.mesh")
 params = import_geoblender("gis.params")
+ParamError = import_geoblender("core.params").ParamError
 points = import_geoblender("gis.points")
 cdt = import_geoblender("gis.cdt")
 georef = import_geoblender("core.georef")
@@ -627,23 +628,26 @@ class LodRastersTest(unittest.TestCase):
 
     def test_invalid_steps(self) -> None:
         """Niveles que no son una lista creciente de dos pasos del parámetro, o que no son
-        pasos de rejilla del proyecto: ``gis.param_*`` o ``gis.step_invalid``."""
+        pasos de rejilla del proyecto: ``ParamError`` ``core.param_*`` con la clave (RF-006-22)
+        o ``gis.step_invalid``."""
         cases = (
-            ((2.0, 2.0), "gis.param_not_list"),
-            ((5.0, 2.0), "gis.param_not_list"),
-            ((2.0,), "gis.param_not_list"),
-            ("2", "gis.param_not_list"),
-            ((2.0, 300.0), "gis.param_out_of_range"),
-            ((2.0, 10.0), "gis.step_invalid"),
-            ((0.75, 2.0), "gis.step_invalid"),
+            ((2.0, 2.0), ParamError, "core.param_not_list"),
+            ((5.0, 2.0), ParamError, "core.param_not_list"),
+            ((2.0,), ParamError, "core.param_not_list"),
+            ("2", ParamError, "core.param_not_list"),
+            ((2.0, 300.0), ParamError, "core.param_out_of_range"),
+            ((2.0, 10.0), gis.GisError, "gis.step_invalid"),
+            ((0.75, 2.0), gis.GisError, "gis.step_invalid"),
         )
         coarse = _raster(_surface(4, 4, dx=5.0, dy=5.0), dx=5.0, dy=5.0)
-        for steps, code in cases:
+        for steps, error, code in cases:
             for raster in (self.raster, coarse):  # también sin niveles que calcular
                 with self.subTest(steps=steps, dx=raster.grid.dx):
-                    with self.assertRaises(gis.GisError) as caught:
+                    with self.assertRaises(error) as caught:
                         mesh.lod_rasters(raster, steps_m=steps)
                     self.assertEqual(caught.exception.code, code)
+                    if error is ParamError:
+                        self.assertEqual(caught.exception.field, mesh.LOD_STEPS_KEY)
         with self.assertRaises(TypeError):
             mesh.lod_rasters(_cloud_tin(20))
 

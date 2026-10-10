@@ -33,6 +33,7 @@ resample = import_geoblender("gis.resample")
 ports = import_geoblender("gis.ports")
 params = import_geoblender("gis.params")
 georef = import_geoblender("core.georef")
+ParamError = import_geoblender("core.params").ParamError
 worker_api = import_geoblender("jobs.worker_api")
 
 CATALOG = georef.load_catalog()
@@ -255,14 +256,19 @@ class ContractTest(unittest.TestCase):
     TARGET = CoverageTest.TARGET
 
     def test_supersample_checked(self) -> None:
-        """Fuera de [1; 16] o no entero: el error del parámetro, con su clave."""
-        for value, code in ((0, "gis.param_out_of_range"), (17, "gis.param_out_of_range"),
-                            (2.5, "gis.param_not_integer")):
+        """RF-006-05, RF-006-11: fuera de [1; 16] o no entero, el error del parámetro
+        (``ParamError`` ``core.param_*``), con su clave; la fracción mínima, igual."""
+        for value, code in ((0, "core.param_out_of_range"), (17, "core.param_out_of_range"),
+                            (2.5, "core.param_not_integer")):
             with self.subTest(value=value):
-                with self.assertRaises(gis.GisError) as caught:
+                with self.assertRaises(ParamError) as caught:
                     _call(self.SRC, self.TARGET, Rigid(), supersample=value)
                 self.assertEqual(caught.exception.code, code)
                 self.assertEqual(caught.exception.field, "gis.reproject.supersample")
+        with self.assertRaises(ParamError) as caught:
+            _call(self.SRC, self.TARGET, Rigid(), min_valid_fraction=0.0)
+        self.assertEqual((caught.exception.code, caught.exception.field),
+                         ("core.param_out_of_range", "gis.resample.min_valid_fraction"))
 
     def test_pair_must_be_inverse(self) -> None:
         """La «inversa» que no devuelve los puntos de la directa (≤ 1 mm) es un error del

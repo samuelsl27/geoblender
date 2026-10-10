@@ -29,6 +29,7 @@ tin_contours = import_geoblender("gis.tin_contours")
 points = import_geoblender("gis.points")
 cdt = import_geoblender("gis.cdt")
 georef = import_geoblender("core.georef")
+ParamError = import_geoblender("core.params").ParamError
 worker_api = import_geoblender("jobs.worker_api")
 
 E0, N0 = 700_000.0, 4_400_000.0
@@ -527,17 +528,18 @@ class ContourInputTest(unittest.TestCase):
 
     def test_parameters(self) -> None:
         """Los valores por defecto salen de ``gis/params.py``; uno fuera de rango o que no es
-        un número → ``GisError`` ``gis.param_*`` con la clave."""
+        un número → ``ParamError`` ``core.param_*`` con la clave (RF-006-16)."""
         self.assertEqual((tin_contours.params.default("gis.tin.contour_densify_m"),
                           tin_contours.params.default("gis.tin.flat_max_passes"),
                           tin_contours.params.default("gis.tin.max_flat_pct")), (5.0, 3, 1.0))
-        cases = (({"densify_m": 0.0}, "gis.tin.contour_densify_m", "gis.param_out_of_range"),
-                 ({"max_passes": 1.5}, "gis.tin.flat_max_passes", "gis.param_not_integer"),
-                 ({"max_passes": 11}, "gis.tin.flat_max_passes", "gis.param_out_of_range"),
-                 ({"max_flat_pct": 101.0}, "gis.tin.max_flat_pct", "gis.param_out_of_range"),
-                 ({"max_flat_pct": "1"}, "gis.tin.max_flat_pct", "gis.param_not_number"))
+        cases = (({"densify_m": 0.0}, "gis.tin.contour_densify_m", "core.param_out_of_range"),
+                 ({"max_passes": 1.5}, "gis.tin.flat_max_passes", "core.param_not_integer"),
+                 ({"max_passes": 11}, "gis.tin.flat_max_passes", "core.param_out_of_range"),
+                 ({"max_flat_pct": 101.0}, "gis.tin.max_flat_pct", "core.param_out_of_range"),
+                 ({"max_flat_pct": "1"}, "gis.tin.max_flat_pct", "core.param_not_number"),
+                 ({"tol_xy": 0.0}, "gis.points.dup_xy_tol_m", "core.param_out_of_range"))
         for options, key, code in cases:
-            with self.subTest(**options), self.assertRaises(gis.GisError) as caught:
+            with self.subTest(**options), self.assertRaises(ParamError) as caught:
                 _build(_circles(), **options)
             self.assertEqual((caught.exception.code, caught.exception.field), (code, key))
 

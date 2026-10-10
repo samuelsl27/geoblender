@@ -134,7 +134,7 @@ def tin_from_contours(
     ``boundary``: el contorno (una región, como en ``build_tin``); ``densify_m``,
     ``max_passes`` y ``max_flat_pct``: los parámetros ``gis.tin.contour_densify_m``,
     ``gis.tin.flat_max_passes`` y ``gis.tin.max_flat_pct`` (``None``, el valor por
-    defecto; uno no válido → ``GisError`` ``gis.param_*`` con la clave); tolerancias y
+    defecto; uno no válido → ``ParamError`` ``core.param_*`` con la clave); tolerancias y
     política de los puntos acotados duplicados como en ``build_tin``; ``name``, el del TIN en
     los mensajes. Conflictos → ``ConflictError``; un triangulador que no cumple →
     ``TriangulationError``; si el contorno lo quita todo, ``gis.tin_empty``. El informe
@@ -229,7 +229,7 @@ def tin_from_contours(
 
 def _setting(key: str, value: object) -> params.ParamValue:
     """El valor del parámetro ``key``: el de ``gis/params.py`` si ``value`` es ``None``;
-    si no, comprobado (``GisError`` ``gis.param_*`` con la clave como campo)."""
+    si no, comprobado (``ParamError`` ``core.param_*`` con la clave como campo)."""
     definition = params.param(key)
     return definition.default if value is None else definition.check(value)
 
