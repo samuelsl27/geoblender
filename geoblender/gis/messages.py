@@ -559,14 +559,8 @@ CATALOG: tuple[Message, ...] = (
         "de la superficie en {difference} m³ (se admiten {tolerance} m³). Vuelva a cargarla "
         "en la vista.",
     ),
-    # Exportar (RF-006-10) ---------------------------------------------------------------
-    Message(
-        "gis.export_over_input",
-        "«{file}» is registered as an input of the project and is never overwritten: "
-        "choose another destination.",
-        "«{file}» está registrado como entrada del proyecto y nunca se sobrescribe: elija "
-        "otro destino.",
-    ),
+    # Exportar sobre una entrada, en su carpeta o en una de solo lectura (RF-006-10): lo
+    # rechaza core.inputs.check_write_target con sus mensajes (RF-008-15; plan §5.6.6).
     # Escribir un GeoTIFF (RF-006-08, RF-006-24) -----------------------------------------
     Message(
         "gis.export_nodata_collision",

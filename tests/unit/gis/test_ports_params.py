@@ -634,10 +634,11 @@ class MessagesTest(unittest.TestCase):
                 self.assertEqual(messages.CATALOG_ES[message.msgid], message.es)
 
     def test_codes_named_by_the_plan(self) -> None:
-        """Los códigos que citan el plan y las tareas están en el catálogo."""
+        """Los códigos que citan el plan y las tareas están en el catálogo (el de exportar
+        sobre una entrada lo da la 008: ``test_inputs_untouched``)."""
         for code in ("gis.step_invalid", "gis.grid_mismatch", "gis.crs_undeclared",
                      "gis.crs_catalog_mismatch", "gis.transform_unknown_accuracy",
-                     "gis.xyz_not_grid", "gis.export_over_input"):
+                     "gis.xyz_not_grid"):
             with self.subTest(code=code):
                 self.assertIn(code, messages.MESSAGES)
 
