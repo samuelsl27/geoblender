@@ -17,6 +17,11 @@ tools_on_path()
 
 from gbtools import layout  # noqa: E402
 from gbtools.repo import iter_py_files, relpath, repo_root  # noqa: E402
+from gbtools.rules import pyast  # noqa: E402
+
+# Va en la misma parte que las demás pruebas que pasan las reglas por todo el repositorio:
+# así lo analizan una sola vez (spec 006, T47; gbtools.parts.affinity_of).
+PART_AFFINITY = "reglas-repositorio"
 
 LAYOUT_RELPATH = "tools/gbtools/layout.py"
 EXTENSION_NAMES: tuple[str, ...] = ("Geoblender", "geoblender")
@@ -63,11 +68,8 @@ ALLOWED: dict[tuple[str, str, str], str] = {
 def _docstring_nodes(tree: ast.Module) -> set[int]:
     """Los ``id`` de los nodos que son docstrings (módulo, clases y funciones)."""
     found: set[int] = set()
-    for node in ast.walk(tree):
-        if not isinstance(
-            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            continue
+    kinds = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for node in pyast.nodes_of(tree, kinds):
         body = node.body
         if (
             body
@@ -103,26 +105,35 @@ def extension_literals(root: Path) -> list[tuple[str, int, str, str]]:
     use: como parte de una ruta (operando de «/», argumento de ``Path(…)``,
     ``os.path.join(…)``, ``shutil.copytree(…)`` o ``blender.extension_cmd(…)``) o en una
     constante que después lo será. Lo que no es la carpeta (el ``id``, el paquete, el
-    nombre visible) va en ``ALLOWED`` con su motivo."""
+    nombre visible) va en ``ALLOWED`` con su motivo.
+
+    Usa los árboles y el recorrido que comparten las reglas (``rules.pyast``; spec 006,
+    T47), y busca los dueños solo en los ficheros con algún literal así."""
     found: list[tuple[str, int, str, str]] = []
     for path in iter_py_files(root, "tools", "tests"):
         rel = relpath(root, path)
         if rel == LAYOUT_RELPATH:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = pyast.parse_file(path)
+        literals = [
+            node
+            for node in pyast.nodes_of(tree, ast.Constant)
+            if isinstance(node.value, str)
+            and (
+                node.value in EXTENSION_NAMES
+                or any(piece in node.value for piece in PATH_PIECES)
+            )
+        ]
+        if not literals:
+            continue
         docstrings = _docstring_nodes(tree)
         parents: dict[int, ast.AST] = {}
-        for node in ast.walk(tree):
+        for node in pyast.walk(tree):
             for child in ast.iter_child_nodes(node):
                 parents[id(child)] = node
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
-                continue
-            if id(node) in docstrings:
-                continue
-            value = node.value
-            if value in EXTENSION_NAMES or any(piece in value for piece in PATH_PIECES):
-                found.append((rel, node.lineno, _owner(node, parents), value))
+        for node in literals:
+            if id(node) not in docstrings:
+                found.append((rel, node.lineno, _owner(node, parents), node.value))
     return sorted(found)
 
 

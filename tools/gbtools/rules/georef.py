@@ -57,10 +57,24 @@ def _operands(node: ast.AST) -> tuple[ast.AST, ...] | None:
     return None
 
 
+def _mentions_origin(tree: ast.AST) -> bool:
+    """Verdadero si el fichero tiene algún atributo o nombre del GeoOrigin: si no tiene
+    ninguno, ninguna suma ni resta lo usa, y no hace falta recorrer sus operandos (spec
+    006, T47)."""
+    for node in pyast.nodes_of(tree, (ast.Attribute, ast.Name)):
+        if isinstance(node, ast.Attribute) and node.attr in ORIGIN_IDENTIFIERS:
+            return True
+        if isinstance(node, ast.Name) and node.id in ORIGIN_IDENTIFIERS:
+            return True
+    return False
+
+
 def module_findings(module: pyast.PyModule) -> list[Finding]:
     """Incumplimientos de ARQ-14 en un módulo analizado."""
     lines: set[int] = set()
-    for node in ast.walk(module.tree):
+    if not _mentions_origin(module.tree):
+        return []
+    for node in pyast.nodes_of(module.tree, (ast.BinOp, ast.AugAssign)):
         operands = _operands(node)
         if operands is not None and any(_refers_to_origin(side) for side in operands):
             lines.add(node.lineno)

@@ -29,6 +29,10 @@ from gbtools.layout import CODE_DIR_IN_DOCS, DOCS_MARKER, ENV_DOCS_DIR  # noqa: 
 from gbtools.layout import ENV_NAS_MIRROR  # noqa: E402
 from gbtools.rules import platform  # noqa: E402
 
+# Va en la misma parte que las demás pruebas que pasan las reglas por la extensión: así
+# la analizan una sola vez (spec 006, T47; gbtools.parts.affinity_of).
+PART_AFFINITY = "reglas-extension"
+
 SPDX = "# SPDX-License-Identifier: GPL-3.0-or-later\n"
 BS = "\\"
 # «<unidad>:\an\» y «\\<IP>\», construidos en ejecución (plan 001 §5.4.1).

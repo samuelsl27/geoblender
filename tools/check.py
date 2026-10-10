@@ -63,7 +63,10 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    (``--tiempos``) y escribe la duración de sus módulos (``--medidas``); al terminar, las
    medidas sustituyen a las guardadas (:class:`PartTimes`). Sin medidas (la primera vez,
    o un almacén borrado o ilegible), el reparto es por número de pruebas, el de la spec
-   003 (T40); la salida y los códigos no cambian. El paso dura lo que
+   003 (T40); la salida y los códigos no cambian. Los módulos con la misma afinidad
+   (``PART_AFFINITY``: los que pasan las reglas por el repositorio) van a la misma parte, y
+   con medidas las carpetas de «motor» se reparten entre ellas sus partes por su tiempo
+   (:func:`runtime_parts`; spec 006, T47). El paso dura lo que
    tarda la más lenta, y su línea suma las pruebas de todas (si alguna no llegó a
    contarlas, lo dice: «750 pruebas en 3 de 4 partes»). Un fichero de pruebas
    cuenta como cargado si lo carga cualquier parte; y si las partes no son 1…n, no
@@ -191,7 +194,11 @@ PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T
 # tardan ≈ 16,5 s con sus partes ya igualadas: partir test_jobs no rinde (con 5 partes,
 # ≈ 17,6 s, porque sus trabajos reales coinciden con los de otras partes; con 6, ≈ 15,9 s,
 # pero con la CPU llena el autodiagnóstico de 10 s, que mide sus avances en tiempo real,
-# falla una de cada cuatro veces).
+# falla una de cada cuatro veces). Con las reglas analizando cada fichero una sola vez por
+# proceso y las pruebas que las pasan por el repositorio juntas (spec 006, T47:
+# PART_AFFINITY, gbtools.parts.affinity_of), los módulos de «unitarias» suman ≈ 183 s en vez
+# de ≈ 207 s, el proceso que las pasa ya no tarda ≈ 2 s en cerrarse (rules.pyast.clear_caches)
+# y el paso tarda ≈ 15 s: el suelo es el reparto, con el arranque de cada parte.
 UNIT_PARTS = 16
 BLENDER_PARTS = 5
 THREAD_PREFIX = "check-parte-"  # los hilos que esperan a cada parte
@@ -226,6 +233,15 @@ DOMAIN_TESTS = "tests/unit"  # tests/unit/<paquete de dominio> (imports.LEVELS)
 # con 4, «motor» tarda ≈ 18,5 s, más que «blender» (≈ 16,5 s): con 6, ≈ 15,4 s (con 5,
 # ≈ 16,8 s), y el suelo vuelve a ser «blender», que tarda lo mismo.
 RUNTIME_PARTS = 6
+# Con las duraciones medidas de los módulos de todas las carpetas de dominio, «motor» no
+# reparte RUNTIME_PARTS por carpeta sino, como mucho, RUNTIME_PROCESSES entre todas, por su
+# tiempo (spec 006, T47; gbtools.parts.share), y nunca más que con RUNTIME_PARTS: con
+# tests/unit/core en ≈ 72 s de módulos, jobs en ≈ 42 s y gis en ≈ 7,5 s, 6 de cada una (19
+# órdenes) dejan «blender» ∥ «motor» en ≈ 16,8 s (core, el suelo de «motor», ≈ 15 s); 16
+# por tiempo (core 8, jobs 5, gis 2 e interop 1), en ≈ 16,4 s, con «motor» en ≈ 12,8 s; 14
+# (7, 4, 2 y 1), igual; con 18 (10, 6 y 2) acaba antes «motor», pero «blender» no, y con el
+# equipo lleno fallan las pruebas de tiempo de tests/unit/jobs (test_cancel_timeout).
+RUNTIME_PROCESSES = 16
 # Las duraciones medidas de los módulos de prueba (spec 004, T39; RNF-001-01): el almacén,
 # en la carpeta temporal del sistema (uno por raíz), y los ficheros de las partes, en la
 # de la comprobación. Cada suite con partes tiene su clave (times_key): con qué se
@@ -651,17 +667,47 @@ def domain_test_folders(root: Path) -> list[str]:
     ]
 
 
+def runtime_parts(ctx: Context) -> dict[str, int]:
+    """En cuántas partes va cada carpeta de dominio en «motor». Sin medidas, las de
+    siempre: hasta ``RUNTIME_PARTS`` cada una (:meth:`Context.parts_of`). Con las
+    duraciones guardadas de los módulos de todas las que tienen más de uno (spec 006,
+    T47; RNF-001-01), por su tiempo (``parts.share``): entre todas, como mucho
+    ``RUNTIME_PROCESSES`` y nunca más que las de siempre; al menos dos cada una (con una,
+    iría después de las demás) y una la que tiene un solo módulo. Un módulo sin medida
+    (nuevo) cuenta lo que la media de los de su carpeta."""
+    folders = domain_test_folders(ctx.root)
+    always = {folder: ctx.parts_of(folder, UNITTEST_PATTERN, RUNTIME_PARTS) for folder in folders}
+    if ctx.times is None:
+        return always
+    seconds: dict[str, list[float]] = {}
+    limits: dict[str, int] = {}
+    for folder in folders:
+        modules = discovery.expected_modules(ctx.root / folder, UNITTEST_PATTERN, ctx.root)
+        limit = part_count(RUNTIME_PROCESSES, len(modules))
+        if limit == 1:
+            continue
+        stored = ctx.times.stored.get(times_key(TIMES_RUNTIME, folder, UNITTEST_PATTERN), {})
+        measured = [stored[name] for name in modules if name in stored]
+        if not measured:
+            return always
+        mean = sum(measured) / len(measured)
+        seconds[folder] = [max(stored.get(name, mean), parts.MIN_SECONDS) for name in modules]
+        limits[folder] = limit
+    single = sum(count for folder, count in always.items() if folder not in seconds)
+    budget = min(RUNTIME_PROCESSES, sum(always.values())) - single
+    return {**always, **parts.share(seconds, limits, budget)}
+
+
 def _runtime(ctx: Context) -> list[Run]:
     """Paso «motor» (spec 004, T30; RF-004-28, Silvestre REN-01): con el motor de cálculo
     de pruebas, ``tests/unit`` de cada paquete de dominio con su numpy (el mismo código,
-    probado también con el numpy de Blender en «unitarias»), cada carpeta en hasta
-    ``RUNTIME_PARTS`` partes. Sin motor no hay órdenes: lo omite :func:`_runtime_omit`."""
+    probado también con el numpy de Blender en «unitarias»), cada carpeta en las partes de
+    :func:`runtime_parts`. Sin motor no hay órdenes: lo omite :func:`_runtime_omit`."""
     site = ctx.test_runtime().site
     if site is None:
         return []
     runs: list[Run] = []
-    for folder in domain_test_folders(ctx.root):
-        count = ctx.parts_of(folder, UNITTEST_PATTERN, RUNTIME_PARTS)
+    for folder, count in runtime_parts(ctx).items():
         if count == 1:
             runs.append(ctx.unittest(folder, site=site))
         else:

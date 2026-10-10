@@ -125,7 +125,7 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en unos 38 s) no ejecuta las pruebas del
+Sin `--completo` (la comprobación de cada tarea, en unos 35 s) no ejecuta las pruebas del
 propio arnés que lanzan Blender entero, y lo dice antes del resultado. Solo se ejecuta un
 `tools/check.py` a la vez en el equipo, sea de la carpeta que sea (de este repositorio o de
 un *worktree*): dos a la vez compiten por los procesadores, tardan más y las pruebas que miden
@@ -138,10 +138,15 @@ y las de Blender en 5 Blender (`tools/run_blender_tests.py --parte i/n`) que se 
 la vez, sin pasar del número de procesadores; cada prueba, en uno solo. El reparto es por
 la duración de cada módulo de pruebas en la comprobación anterior, que se guarda en
 `%TEMP%\geoblender-tiempos\` (un fichero por carpeta del código); sin él, la primera vez o si
-se borra, por número de pruebas. Si existe el motor de cálculo de pruebas
+se borra, por número de pruebas. Los módulos de pruebas con la misma `PART_AFFINITY` (los que
+pasan las reglas por todo el repositorio, y los que las pasan por la extensión) van al mismo
+proceso: las reglas leen y analizan cada fichero una sola vez por proceso, y así lo comparten.
+Si existe el motor de cálculo de pruebas
 (`tools/make_runtime.py`), el paso «motor» ejecuta otra vez las pruebas unitarias de los
-paquetes de dominio con su numpy, a la vez que las de Blender (spec 004, RF-004-28); sin él, se
-omite con `[ENTORNO] runtime` y el resultado es `VERDE CON OMISIONES`.
+paquetes de dominio con su numpy, a la vez que las de Blender (spec 004, RF-004-28), en 16
+procesos como mucho repartidos entre las carpetas por lo que tardaron (6 por carpeta la
+primera vez); sin él, se omite con `[ENTORNO] runtime` y el resultado es `VERDE CON
+OMISIONES`.
 
 ## Variables de entorno
 

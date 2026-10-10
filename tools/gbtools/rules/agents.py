@@ -26,7 +26,7 @@ from pathlib import Path
 
 from ..findings import Finding
 from ..layout import CODE_AGENTS_MAX_LINES, ENV_DOCS_DIR
-from ..repo import ALWAYS_EXCLUDED, iter_repo_files, relpath
+from ..repo import ALWAYS_EXCLUDED, iter_repo_files, read_bytes, relpath
 
 RULE_POINTER = "AGT-01"
 RULE_SIZE = "AGT-02"
@@ -105,7 +105,7 @@ def check(root: Path, excluded: Sequence[str] = ALWAYS_EXCLUDED) -> list[Finding
                 )
             )
         if not path.is_symlink():
-            findings.extend(_size_findings(rel, path.read_bytes(), nested=bool(folder)))
+            findings.extend(_size_findings(rel, read_bytes(path), nested=bool(folder)))
     for folder, path in claudes.items():
         rel = relpath(root, path)
         if folder not in agents:
@@ -118,7 +118,7 @@ def check(root: Path, excluded: Sequence[str] = ALWAYS_EXCLUDED) -> list[Finding
                     "CLAUDE.md solo lo importa",
                 )
             )
-        if not path.is_symlink() and path.read_bytes() not in POINTER_CONTENTS:
+        if not path.is_symlink() and read_bytes(path) not in POINTER_CONTENTS:
             findings.append(
                 Finding(
                     rel,
@@ -152,7 +152,7 @@ def check_code_agents(root: Path) -> list[Finding]:
         return [
             Finding(AGENTS, 0, RULE_CODE_AGENTS, "AGENTS.md debe ser un fichero de texto")
         ]
-    data = path.read_bytes()
+    data = read_bytes(path)
     findings: list[Finding] = []
     if ENV_DOCS_DIR.encode("ascii") not in data:
         findings.append(

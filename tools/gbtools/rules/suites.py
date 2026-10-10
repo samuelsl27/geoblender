@@ -246,13 +246,26 @@ _DEPENDENT = (
 _COSTLY = (ast.Pow, ast.LShift, ast.Mult, ast.MatMult)
 
 
+# Los nodos que dan nombre a algo en el módulo (_module_constants).
+_NAMING_NODES = (
+    ast.Name,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.Import,
+    ast.ImportFrom,
+    ast.Global,
+    ast.Nonlocal,
+)
+
+
 def _module_constants(tree: ast.Module) -> dict[str, object]:
     """Nombres del módulo asignados una sola vez en todo el fichero, en su cuerpo, a
     una expresión constante (``SIEMPRE = True``): una condición que los usa no depende
     de nada. Un nombre que se asigna más veces (o se importa, o es una función) no
     cuenta."""
     stores: dict[str, int] = {}
-    for node in ast.walk(tree):
+    for node in pyast.nodes_of(tree, _NAMING_NODES):
         names: list[str] = []
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
             names = [node.id]
@@ -497,6 +510,8 @@ def _tests_not_run(rel: str, tree: ast.Module) -> list[Finding]:
     findings: list[Finding] = []
     classes = _test_classes(tree)
     waiting = _async_classes(tree, classes)
+    # Sin ningún «yield» en el fichero, ninguna prueba es generadora (spec 006, T47).
+    generators = bool(pyast.nodes_of(tree, (ast.Yield, ast.YieldFrom)))
     for node in classes:
         for item in node.body:
             if not isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -508,7 +523,7 @@ def _tests_not_run(rel: str, tree: ast.Module) -> list[Finding]:
                     f"es «async def» y «{node.name}» no hereda de {ASYNC_CASE}: unittest "
                     "crea la corrutina y no la espera"
                 )
-            elif isinstance(item, ast.FunctionDef) and _yields(item):
+            elif isinstance(item, ast.FunctionDef) and generators and _yields(item):
                 why = "tiene «yield»: unittest crea el generador y no lo recorre"
             else:
                 continue
@@ -528,13 +543,14 @@ def _tests_not_run(rel: str, tree: ast.Module) -> list[Finding]:
 # ``unittest.expectedFailure`` y el atributo que pone en la prueba o la clase.
 EXPECTED_NAMES = frozenset({"expectedFailure", "__unittest_expecting_failure__"})
 _ATTRIBUTE_CALLS = frozenset({"getattr", "setattr", "hasattr", "delattr"})
+_EXPECTED_NODES = (ast.ImportFrom, ast.Attribute, ast.Name, ast.Call)
 
 
 def _expected_failures(rel: str, tree: ast.Module) -> list[Finding]:
     """TST-07: ``expectedFailure`` (decorador, llamada, importación o nombre) y la marca
     ``__unittest_expecting_failure__``; una sola vez por línea."""
     lines: dict[int, str] = {}
-    for node in ast.walk(tree):
+    for node in pyast.nodes_of(tree, _EXPECTED_NODES):
         what: str | None = None
         if isinstance(node, ast.ImportFrom):
             names = [alias.name for alias in node.names if alias.name in EXPECTED_NAMES]

@@ -267,7 +267,11 @@ falta el almacén del NAS de IMGA.
   cada tarea pasó de unos 55 s a unos 25 s en el PC de referencia; con las pruebas de la
   spec 004 y su paso «motor» llegó a unos 40 s, y con más procesos (spec 006) volvió a unos
   30 s; con las pruebas de la 006 y de la 008 juntas, y más procesos en el paso «motor»,
-  llegó a unos 40 s, y con 16 procesos de pruebas unitarias tarda unos 38 s. Cada prueba se
+  llegó a unos 40 s, y con 16 procesos de pruebas unitarias tarda unos 38 s. Ahora las
+  reglas leen y analizan cada fichero una sola vez por proceso, las pruebas que las pasan por
+  el repositorio van juntas en el mismo proceso y el paso «motor» reparte sus procesos (16
+  como mucho, antes 19) por lo que tarda cada carpeta, y tarda unos 35 s; las reglas dan los
+  mismos incumplimientos que antes. Cada prueba se
   ejecuta en una sola parte, y si las partes no suman las pruebas que hay, el paso falla.
   Una prueba con un presupuesto de milisegundos mide otra vez mientras la máquina está
   cargada, sin cambiar el presupuesto.

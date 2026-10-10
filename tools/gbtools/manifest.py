@@ -22,6 +22,7 @@ from typing import Any
 
 from .findings import Finding
 from .layout import MANIFEST_RELPATH
+from .repo import read_bytes
 
 RULE_MANIFEST = "MAN-01"
 RULE_SEMVER = "NOM-04"
@@ -243,7 +244,7 @@ def check(root: Path) -> list[Finding]:
         return [
             Finding(rel, 0, RULE_MANIFEST, "no existe el manifiesto de la extensión")
         ]
-    raw = path.read_bytes()
+    raw = read_bytes(path)
     findings: list[Finding] = []
     if raw.startswith(_BOM):
         findings.append(
