@@ -48,6 +48,14 @@ En segundo plano (``blender -b``, scripts) no se muestran diálogos: se usan las
 propiedades tal como llegan, y forzar exige ``force_lock`` **y** el titular visto
 (``seen_lock``).
 
+Vista (spec 006, T27; RF-006-19, RF-006-20, RF-006-22, RF-006-29; plan 006 §5.3.5 y §5.6.7):
+``geoblender.core_load_into_view`` (un diálogo con los datos del proyecto que algún módulo sabe
+cargar y el nivel de detalle; por script, ``datasets`` con sus nombres o uids separados por
+comas) y ``geoblender.core_unload_from_view`` (los datos de los objetos seleccionados, o los de
+``datasets``) cargan y descargan con ``bl.scene.views``. Son los únicos de este módulo con
+``UNDO``: crean o quitan objetos de la vista y no escriben en el proyecto (Ctrl+Z deshace solo la
+vista). Un aviso o un error de un dato no impide cargar los demás.
+
 Carpetas de solo lectura (spec 008, T48; RF-008-15; S-3; plan 008 §5.4.13): crear, abrir (e
 inspeccionar), migrar, sacar copia y publicar reciben las de ahora
 (``bl.ops.core_provenance.read_only_dirs``: la variable ``GEOBLENDER_READ_ONLY_DIRS`` y la
@@ -65,7 +73,13 @@ from pathlib import Path
 from typing import Any
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    IntProperty,
+    StringProperty,
+)
 
 from ...core.errors import GeoblenderError, ValidationError
 from ...core.georef.crs import DEFAULT_HORIZONTAL_EPSG, DEFAULT_VERTICAL_EPSG, load_catalog
@@ -86,7 +100,8 @@ from ...core.project.lock import inspect as inspect_lock
 from ...core.project.migrations import MigrationResult, backup_path, migrate_steps
 from ...core.project.model import OpenResult, ProjectSettings, Progress, ReadOnlyCode
 from ...core.project.open import ProjectInspection, SchemaRelation, inspect_project, open_steps
-from ..scene import georef, project_session
+from ..props.core import OBJECT_PROPERTY, GEOBLENDER_PG_core_view_dataset
+from ..scene import georef, project_session, views
 from .core_provenance import read_only_dirs
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
@@ -1314,6 +1329,153 @@ class GEOBLENDER_OT_core_publish_project(_StepsModal, bpy.types.Operator):
         return None
 
 
+# Vista (spec 006, T27) ---------------------------------------------------------------
+
+LOD_ITEMS: list[tuple[str, str, str]] = [
+    ("FULL", "Calculation grid", "The data as they are: a grid, cell by cell"),
+    ("LOD1", "First level of detail",
+     "Grids with a step under 2 m: their first overview version (2 m by default)"),
+    ("LOD2", "Second level of detail",
+     "Grids with a step under 2 m: their second overview version (5 m by default)"),
+]
+LOD_LEVELS: dict[str, int] = {"FULL": 0, "LOD1": 1, "LOD2": 2}
+_DATASETS_DESCRIPTION = ("Names or identifiers of the project data, separated by commas "
+                         "(empty: those chosen in the dialog or selected)")
+
+
+def _refs(text: str) -> list[str]:
+    """Los nombres o uids de ``datasets``, sin repetir y en su orden."""
+    return list(dict.fromkeys(part.strip() for part in str(text).split(",") if part.strip()))
+
+
+class GEOBLENDER_OT_core_load_into_view(bpy.types.Operator):
+    """Build the geometry of project items in the 3D view"""
+
+    bl_idname = "geoblender.core_load_into_view"
+    bl_label = "Load into the view…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "UNDO"}
+
+    datasets: StringProperty(  # type: ignore[valid-type]
+        name="Data", description=_DATASETS_DESCRIPTION, default="", options={"SKIP_SAVE"},
+    )
+    lod: EnumProperty(  # type: ignore[valid-type]
+        name="Level of detail", items=LOD_ITEMS, default="FULL",
+    )
+    items: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return _poll_project(cls, context)
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        from ...core.provenance.view import live_datasets
+
+        project = project_session.current()
+        if project is None:
+            return {"CANCELLED"}
+        if _refs(self.datasets):
+            return self.execute(context)
+        try:
+            records = live_datasets(project)
+        except GeoblenderError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        selected = set(views.loaded_uids(getattr(context, "selected_objects", None) or ()))
+        self.items.clear()
+        for record in records:
+            loader = views.loader_for(record.name)
+            if loader is None:
+                continue
+            item = self.items.add()
+            item.uid = record.uid
+            item.label = views.view_name(loader, record, stale=False)
+            item.selected = record.uid in selected
+        if not self.items:
+            self.report({"INFO"}, tr("The project has no data to load into the view"))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=520, translate=False, title=tr("Load into the view")
+        )
+
+    def draw(self, context: bpy.types.Context) -> None:
+        column = self.layout.column(align=True)
+        for item in self.items:
+            column.prop(item, "selected", text=item.label, translate=False)
+        self.layout.prop(self, "lod")
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        project = project_session.current()
+        if project is None:
+            return {"CANCELLED"}
+        refs = _refs(self.datasets) or [item.uid for item in self.items if item.selected]
+        if not refs:
+            self.report({"WARNING"}, tr("Choose the data to load into the view"))
+            return {"CANCELLED"}
+        outcome = views.load_datasets(context, project, refs, lod=LOD_LEVELS[self.lod])
+        for text in outcome.notes:
+            self.report({"WARNING"}, text)
+        for text in outcome.errors:  # con algo cargado, un aviso: los demás sí se cargaron
+            self.report({"WARNING"} if outcome.loaded else {"ERROR"}, text)
+        if not outcome.loaded:
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Loaded into the view: {names}",
+                                 names=", ".join(outcome.loaded)))
+        return {"FINISHED"}
+
+
+def _loaded_anywhere() -> bool:
+    return any(getattr(obj, OBJECT_PROPERTY).dataset_uid for obj in bpy.data.objects)
+
+
+class GEOBLENDER_OT_core_unload_from_view(bpy.types.Operator):
+    """Free the geometry of the selection; the data stay in the project"""
+
+    bl_idname = "geoblender.core_unload_from_view"
+    bl_label = "Unload from the view"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "UNDO"}
+
+    datasets: StringProperty(  # type: ignore[valid-type]
+        name="Data", description=_DATASETS_DESCRIPTION, default="", options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        if not _loaded_anywhere():
+            cls.poll_message_set(tr("No project data is loaded in the view"))
+            return False
+        return True
+
+    def _chosen(self, context: bpy.types.Context) -> list[str]:
+        """Los uids de ``datasets`` (un nombre, por el proyecto abierto) o, sin ellos, los de
+        los objetos seleccionados."""
+        refs = _refs(self.datasets)
+        if not refs:
+            return views.loaded_uids(getattr(context, "selected_objects", None) or ())
+        from ...core.provenance.view import dataset_view
+
+        loaded = set(views.loaded_uids(bpy.data.objects))
+        project = project_session.current()
+        found: list[str] = []
+        for ref in refs:
+            shown = None if ref in loaded or project is None else dataset_view(project, ref)
+            found.append(ref if shown is None else shown.record.uid)
+        return found
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        uids = self._chosen(context)
+        if not uids:
+            self.report({"WARNING"}, tr("Select objects loaded from the project"))
+            return {"CANCELLED"}
+        count = views.unload_datasets(uids)
+        self.report({"INFO"}, tr("Unloaded from the view: {count} objects; the data stay in "
+                                 "the project", count=count))
+        return {"FINISHED"}
+
+
 # Avisos -------------------------------------------------------------------------------
 
 
@@ -1344,3 +1506,5 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_publish_project,
     GEOBLENDER_OT_core_clear_notices,
 )
+# Los de la vista (spec 006, T27).
+classes += (GEOBLENDER_OT_core_load_into_view, GEOBLENDER_OT_core_unload_from_view)

@@ -77,8 +77,13 @@ sesión).
 Ningún error del disco llega como ``OSError`` a la transacción del proyecto (lo pasaría a solo
 lectura): es ``gis.raster_target_locked`` o ``gis.raster_write_failed``.
 
-Para leer lo guardado: :func:`list_gis_datasets` (desde ``gb_dataset``), :func:`load_raster` y
-:func:`load_tin`. Python puro y numpy (ADR-0004).
+Para leer lo guardado: :func:`list_gis_datasets` (desde ``gb_dataset``), :func:`load_raster`,
+:func:`load_tin` y, de una tabla de puntos, líneas de rotura o curvas, :func:`load_features`
+(T27, para la vista: sus geometrías absolutas tal como están guardadas y sus atributos). Las
+referencias de un dato (:func:`dataset_references`: lo importado, las que declaró su entrada;
+lo calculado, las del proyecto) y su comprobación antes de mostrarlo en la vista, que no
+transforma coordenadas (:func:`require_project_references`, ``gis.view_references_mismatch``;
+principio 6). Python puro y numpy (ADR-0004).
 """
 
 from __future__ import annotations
@@ -109,7 +114,7 @@ from ..core.datasets.model import (
 from ..core.errors import GeoblenderError
 from ..core.georef import CrsCatalog, CrsRef, VerticalRef, load_catalog
 from ..core.gpkg.base import ColumnDef, create_feature_table
-from ..core.gpkg.wkb import Geometry, encode_geometry
+from ..core.gpkg.wkb import Geometry, decode_geometry, encode_geometry
 from ..core.hashing import HashCancelled
 from ..core.ids import SHORT_UID_CHARS
 from ..core.inputs.model import (
@@ -154,7 +159,7 @@ from .content import (
     tin_digest,
 )
 from .contours import ContourLine
-from .crs import ELLIPSOIDAL_ETRS89
+from .crs import ELLIPSOIDAL_ETRS89, reference_label
 from .geotiff.reader import read_geotiff
 from .geotiff.writer import target_locked, write_failed, write_geotiff
 from .messages import GisError
@@ -191,15 +196,20 @@ __all__ = [
     "TEMPORARY_MARK",
     "ResultWriter",
     "StoreProject",
+    "StoredFeatures",
     "TableLayout",
+    "VIEW_TABLE_FAMILIES",
     "backup_path",
     "classify_source",
+    "dataset_references",
     "declared_crs",
     "declared_vertical",
     "list_gis_datasets",
+    "load_features",
     "load_raster",
     "load_tin",
     "project_references",
+    "require_project_references",
     "session_tag",
     "source_declarations",
     "source_input",
@@ -1491,3 +1501,89 @@ def load_tin(project: StoreProject, ref: DatasetRecord | str) -> Tin:
     :func:`load_raster`; un fichero que no es el de un TIN, ``gis.tin_file_invalid``."""
     record = _resolve(project, ref, (TIN,))
     return read_tin_file(_file_of(project, record))
+
+
+# --- Para la vista (T27) -------------------------------------------------------------------------
+
+VIEW_TABLE_FAMILIES: tuple[str, ...] = (POINTS, BREAKLINES, CONTOUR_LINES)
+"""Las familias vectoriales con Z que muestra la vista (:func:`load_features`); los contornos
+(``gis_bnd_``) no llevan Z."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class StoredFeatures:
+    """Las entidades guardadas de una tabla de la topografía, en el orden de sus ``fid``:
+    ``name``, el nombre del dato; ``geometries``, las coordenadas ABSOLUTAS (float64, ``(n, 3)``;
+    un punto, ``(1, 3)``) de cada una tal como están guardadas (la curva cerrada, con su primer
+    vértice repetido al final), en el CRS y la referencia vertical del dato
+    (:func:`dataset_references`); ``attributes``, el valor de cada columna de su
+    :class:`TableLayout` por entidad (tal como lo da SQLite: un ``BOOLEAN`` es 0 o 1)."""
+
+    name: str
+    geometries: tuple[np.ndarray, ...]
+    attributes: Mapping[str, tuple[Any, ...]]
+
+
+def _family_of(record: DatasetRecord, allowed: Sequence[str]) -> str:
+    for code in allowed:
+        if record.name.startswith(FAMILIES_BY_CODE[code].prefix):
+            return code
+    raise ValueError(f"«{record.name}» no es un dato de {', '.join(allowed)}")
+
+
+def load_features(project: StoreProject, ref: DatasetRecord | str) -> StoredFeatures:
+    """Las entidades del dato ``ref`` (su registro, su uid o su nombre: ``gis_pts_``,
+    ``gis_brk_`` o ``gis_cnt_``; :data:`VIEW_TABLE_FAMILIES`), para la vista (RF-006-19): sus
+    geometrías absolutas en float64 tal como están guardadas y sus atributos
+    (:class:`StoredFeatures`). Solo lee. ``GisError`` ``gis.dataset_unknown`` si no hay un dato
+    de ``gis`` así y ``gis.dataset_file_missing`` si falta su tabla; ``ValueError`` si es de
+    otra familia."""
+    record = _resolve(project, ref, VIEW_TABLE_FAMILIES)
+    layout = TABLE_LAYOUTS[_family_of(record, VIEW_TABLE_FAMILIES)]
+    names = [column.name for column in layout.columns]
+    selected = ", ".join(f'"{name}"' for name in (_GEOMETRY_COLUMN, *names))
+    with project.read() as conn:
+        if not _table_exists(conn, record.locator):
+            raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
+                           field=_FIELD_LOCATION, value=record.locator, file=record.locator,
+                           name=record.name)
+        rows = conn.execute(f'SELECT {selected} FROM "{record.locator}" ORDER BY fid').fetchall()
+    geometries: list[np.ndarray] = []
+    for row in rows:
+        coords = np.asarray(decode_geometry(row[0]).coords, dtype=np.float64)
+        geometries.append(coords.reshape(-1, coords.shape[-1]))
+    attributes = {name: tuple(row[index + 1] for row in rows)
+                  for index, name in enumerate(names)}
+    return StoredFeatures(record.name, tuple(geometries), MappingProxyType(attributes))
+
+
+def dataset_references(project: StoreProject,
+                       ref: DatasetRecord | str) -> tuple[CrsRef, VerticalRef]:
+    """El CRS horizontal y la referencia vertical de las coordenadas del dato ``ref``: lo
+    importado, los que declaró su entrada (sin transformar, RF-006-12); lo calculado, los del
+    proyecto (``ResultWriter`` escribe en ellos). Los mismos errores que :func:`load_raster`."""
+    record = _resolve(project, ref, tuple(FAMILIES_BY_CODE))
+    if record.input_uid is None:
+        return project_references(project)
+    with project.read() as conn:
+        entry = get_input(conn, record.input_uid)
+    if entry is None:
+        raise ValueError(f"el dato «{record.name}» es lo importado de la entrada "
+                         f"«{record.input_uid}», que el proyecto no tiene")
+    return _references(entry)
+
+
+def require_project_references(project: StoreProject, ref: DatasetRecord | str) -> None:
+    """Comprueba, antes de mostrar en la vista el dato ``ref``, que está en el CRS horizontal y
+    la referencia vertical del proyecto: la vista no transforma coordenadas, y mostrarlo en
+    otros sería un supuesto silencioso (principio 6). Si no, ``GisError``
+    ``gis.view_references_mismatch`` con los dos (campo «CRS» o «referencia vertical»)."""
+    record = _resolve(project, ref, tuple(FAMILIES_BY_CODE))
+    found = dataset_references(project, record)
+    expected = project_references(project)
+    if found == expected:
+        return
+    field = "CRS" if found[0] != expected[0] else "referencia vertical"
+    raise GisError("gis.view_references_mismatch", obj=f"{_OBJ} «{record.name}»", field=field,
+                   value=reference_label(*found), name=record.name,
+                   expected=reference_label(*expected))

@@ -3,7 +3,8 @@
 (PLT-02), con el GeoOrigin en ``IntProperty`` (ARQ-13). Se registra el primero.
 
 - ``core``: ``Scene.geoblender`` (georreferencia del proyecto en la escena) y el grupo
-  ``core`` de las preferencias (spec 002);
+  ``core`` de las preferencias (spec 002); ``Object.geoblender`` (lo que muestra un objeto de
+  la vista) y las filas del diálogo de «Cargar en la vista…» (spec 006, T27);
 - ``ui``: ``WorkSpace.geoblender_mode`` (la marca del modo Geoblender) y el grupo ``ui``
   de las preferencias (spec 003);
 - ``jobs``: el grupo ``jobs`` de las preferencias (spec 004): trabajos a la vez,
@@ -43,7 +44,7 @@ def _localize() -> None:
 
 
 def register() -> None:
-    """Registra ``classes`` en orden y pone ``Scene.geoblender``,
+    """Registra ``classes`` en orden y pone ``Scene.geoblender``, ``Object.geoblender``,
     ``WindowManager.geoblender_provenance`` y ``WorkSpace.geoblender_mode``; si ya lo están,
     no hace nada. Si algo falla, deshace lo hecho antes de propagar el error."""
     _localize()
@@ -66,9 +67,9 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Quita ``WorkSpace.geoblender_mode``, ``WindowManager.geoblender_provenance`` y
-    ``Scene.geoblender`` y desregistra ``classes`` en orden inverso; omite lo que no está
-    registrado."""
+    """Quita ``WorkSpace.geoblender_mode``, ``WindowManager.geoblender_provenance``,
+    ``Object.geoblender`` y ``Scene.geoblender`` y desregistra ``classes`` en orden inverso;
+    omite lo que no está registrado."""
     ui.unregister()
     provenance.unregister()
     core.unregister()

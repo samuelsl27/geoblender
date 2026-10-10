@@ -1505,6 +1505,212 @@ es = "Escritura de un GeoTIFF entregable"
 ["View meshes of a surface"]
 es = "Mallas de vista de una superficie"
 
+# La vista de los datos del proyecto (spec 006, T27; RF-006-19 a RF-006-22, RF-006-29; plan
+# 006 §5.5 y §5.6.7): Object.geoblender, las colecciones tipadas, el ancla, los nombres
+# generados y Cargar y Descargar de la vista. «Type», «Status», «Content hash», «Project UID»,
+# «Name» y «CURRENT» ya están arriba.
+
+["Not from Geoblender"]
+es = "No es de Geoblender"
+
+["An object that does not show project data"]
+es = "Un objeto que no muestra datos del proyecto"
+
+["Project anchor"]
+es = "Ancla del proyecto"
+
+["The absolute corners of the work window, as text"]
+es = "Las esquinas absolutas de la ventana de trabajo, en texto"
+
+["DTM"]
+es = "MDT"
+
+["Source DTM"]
+es = "MDT de origen"
+
+["A grid of the project (digital terrain model)"]
+es = "Una rejilla del proyecto (modelo digital del terreno)"
+
+["TIN"]
+es = "TIN"
+
+["A triangulated surface of the project"]
+es = "Una superficie triangulada del proyecto"
+
+["Points"]
+es = "Puntos"
+
+["Survey points of the project"]
+es = "Puntos de levantamiento del proyecto"
+
+["Breaklines"]
+es = "Líneas de rotura"
+
+["Breaklines of the project"]
+es = "Líneas de rotura del proyecto"
+
+["Contour lines"]
+es = "Curvas de nivel"
+
+["Contour lines of the project"]
+es = "Curvas de nivel del proyecto"
+
+["Boundary"]
+es = "Contorno"
+
+["Boundaries and holes of the project"]
+es = "Contornos y huecos del proyecto"
+
+["Drillholes"]
+es = "Sondeos"
+
+["Drillholes of the project"]
+es = "Sondeos del proyecto"
+
+["No status"]
+es = "Sin estado"
+
+["Current"]
+es = "Vigente"
+
+["The data in force in the project"]
+es = "El dato vigente en el proyecto"
+
+["Missing"]
+es = "Falta"
+
+["Its file or table is missing from the project"]
+es = "Falta su fichero o su tabla en el proyecto"
+
+["Blocked"]
+es = "Bloqueado"
+
+["Edited outside Geoblender: accept it, recompute it or import it again"]
+es = "Editado fuera de Geoblender: acéptelo, recalcúlelo o vuelva a importarlo"
+
+["Damaged"]
+es = "Dañado"
+
+["What was imported changed: import it again"]
+es = "Lo importado cambió: vuelva a importarlo"
+
+["Type of the project data this object shows"]
+es = "Tipo del dato del proyecto que muestra este objeto"
+
+["Dataset"]
+es = "Dato"
+
+["Identity of the project data this object shows"]
+es = "Identidad del dato del proyecto que muestra este objeto"
+
+["Identity of the Geoblender project of this object"]
+es = "Identidad del proyecto de Geoblender de este objeto"
+
+["Content hash of the data when it was loaded (gbch/1)"]
+es = "Hash de contenido del dato al cargarlo (gbch/1)"
+
+["Stale"]
+es = "Obsoleto"
+
+["The data was stale when it was loaded"]
+es = "El dato estaba obsoleto al cargarlo"
+
+["Status of the data in the project when it was loaded"]
+es = "Estado del dato en el proyecto al cargarlo"
+
+["Date"]
+es = "Fecha"
+
+["When the operation that wrote its content finished (UTC)"]
+es = "Cuándo terminó la operación que escribió su contenido (UTC)"
+
+["Load"]
+es = "Cargar"
+
+["Load this data into the view"]
+es = "Cargar este dato en la vista"
+
+["Base data"]
+es = "Datos base"
+
+["Topography"]
+es = "Topografía"
+
+["MISSING"]
+es = "FALTA"
+
+["BLOCKED"]
+es = "BLOQUEADO"
+
+["DAMAGED"]
+es = "DAÑADO"
+
+["STALE"]
+es = "OBSOLETO"
+
+["local reference ({note})"]
+es = "referencia local ({note})"
+
+["There is no data «{name}» in the project"]
+es = "No hay ningún dato «{name}» en el proyecto"
+
+["«{name}» is missing from the project: it is not loaded into the view"]
+es = "«{name}» falta en el proyecto: no se carga en la vista"
+
+["«{name}» cannot be shown in the view: no module loads it"]
+es = "«{name}» no se puede mostrar en la vista: ningún módulo lo carga"
+
+["The grid «{name}» already has a step of {step} m or more: it is loaded whole"]
+es = "La rejilla «{name}» ya tiene un paso de {step} m o más: se carga entera"
+
+["Calculation grid"]
+es = "Rejilla de cálculo"
+
+["The data as they are: a grid, cell by cell"]
+es = "El dato tal como es: una rejilla, celda a celda"
+
+["First level of detail"]
+es = "Primer nivel de detalle"
+
+["Grids with a step under 2 m: their first overview version (2 m by default)"]
+es = "Rejillas de paso menor de 2 m: su primera versión para la vista general (2 m por defecto)"
+
+["Second level of detail"]
+es = "Segundo nivel de detalle"
+
+["Grids with a step under 2 m: their second overview version (5 m by default)"]
+es = "Rejillas de paso menor de 2 m: su segunda versión para la vista general (5 m por defecto)"
+
+["Data"]
+es = "Datos"
+
+["Names or identifiers of the project data, separated by commas (empty: those chosen in the dialog or selected)"]
+es = "Nombres o identificadores de los datos del proyecto, separados por comas (vacío: los elegidos en el diálogo o seleccionados)"
+
+["Level of detail"]
+es = "Nivel de detalle"
+
+["Load into the view"]
+es = "Cargar en la vista"
+
+["The project has no data to load into the view"]
+es = "El proyecto no tiene datos que cargar en la vista"
+
+["Choose the data to load into the view"]
+es = "Elija los datos que cargar en la vista"
+
+["Loaded into the view: {names}"]
+es = "Cargado en la vista: {names}"
+
+["No project data is loaded in the view"]
+es = "No hay ningún dato del proyecto cargado en la vista"
+
+["Select objects loaded from the project"]
+es = "Seleccione objetos cargados del proyecto"
+
+["Unloaded from the view: {count} objects; the data stay in the project"]
+es = "Descargado de la vista: {count} objetos; los datos siguen en el proyecto"
+
 # Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
 # Los mensajes de la procedencia y de los parámetros (spec §8) están en
 # core/provenance/messages.py y core/params/model.py, y se instalan al registrar.

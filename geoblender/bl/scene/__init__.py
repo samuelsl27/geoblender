@@ -7,13 +7,18 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
 - ``georef``: la georreferencia del proyecto en las escenas y sus manejadores
   (``load_post``, ``undo_post``, ``redo_post``, ``save_pre``, ``save_post``);
 - ``triangulator``: la CDT de Blender como ``gis.ports.Triangulator`` y la elección entre
-  ella y el trabajo ``gis_triangulate`` (spec 006; no registra nada).
+  ella y el trabajo ``gis_triangulate`` (spec 006; no registra nada);
+- ``mesh``: mallas desde arrays absolutos, pasados a locales con ``core.georef`` (spec 006);
+- ``views``: los datos del proyecto en la vista: el registro de cargadores por tipo de dato,
+  ``Object.geoblender``, las colecciones tipadas, el ancla y el recorte (spec 006, RF-006-29);
+- ``gis_views``: los cargadores de la topografía (rejillas, TIN, puntos y líneas; spec 006),
+  que :func:`register` registra en ``views``.
 """
 
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
-from . import georef, project_session
+from . import georef, gis_views, project_session
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2); vacía hasta que una spec añada la primera.
@@ -21,13 +26,15 @@ classes: tuple[type, ...] = ()
 
 
 def register() -> None:
-    """Registra ``classes``, la sesión y los manejadores; si ya lo están, no hace nada.
-    Si algo falla, deshace lo hecho antes de propagar el error."""
+    """Registra ``classes``, la sesión, los manejadores y los cargadores de vista; si ya lo
+    están, no hace nada. Si algo falla, deshace lo hecho antes de propagar el error."""
     register_classes(classes)
     try:
         project_session.register()
         georef.register()
+        gis_views.register()
     except BaseException:
+        gis_views.unregister()
         georef.unregister()
         project_session.unregister()
         unregister_classes(classes)
@@ -35,9 +42,10 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Quita los manejadores, cierra el proyecto de la sesión (libera su cerrojo) y
-    desregistra ``classes``, en orden inverso."""
+    """Quita los cargadores de vista y los manejadores, cierra el proyecto de la sesión (libera
+    su cerrojo) y desregistra ``classes``, en orden inverso."""
     try:
+        gis_views.unregister()
         georef.unregister()
         project_session.unregister()
     finally:

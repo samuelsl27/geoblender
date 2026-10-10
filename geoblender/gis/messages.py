@@ -635,6 +635,16 @@ CATALOG: tuple[Message, ...] = (
         "Falta en el proyecto el fichero «{file}» del dato «{name}»: vuelva a calcularlo o a "
         "importarlo.",
     ),
+    # La vista (RF-006-19, principio 6, T27) ------------------------------------------------
+    Message(
+        "gis.view_references_mismatch",
+        "«{name}»: it is in {value} and the project in {expected}, and the view does not "
+        "transform coordinates: show what was computed from it in the project references "
+        "(the resampled grid, the TIN).",
+        "«{name}»: está en {value} y el proyecto en {expected}, y la vista no transforma "
+        "coordenadas: muestre lo calculado a partir de él en las referencias del proyecto (la "
+        "rejilla remuestreada, el TIN).",
+    ),
     # Los de un parámetro (gis/params.py) los da core.params (core.param_*; plan §5.6.1).
 )
 
