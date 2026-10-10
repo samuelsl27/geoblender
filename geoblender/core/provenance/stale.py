@@ -21,6 +21,10 @@ cambio; la que ya no está se borra) en la **misma transacción** de cada camino
 - :func:`refresh_all`, la completa (la comprobación de apertura, tras cambiar la versión
   instalada de un algoritmo o si alguien alteró la caché).
 
+Hacia arriba, para la procedencia (RNF-008-03): :func:`upstream_region` da en una consulta
+recursiva la región **aguas arriba** de unas operaciones (las que escribieron lo que consumen,
+hasta cerrarla); la procedencia (:mod:`.lineage`) carga solo esa parte del grafo.
+
 Para la interfaz (sin recalcular nada): :func:`counts` («! n obsoletos» = datos vivos
 obsoletos más operaciones que esperan revisión a mano; «⚠ n entradas» = las cambiadas sin
 decidir), :func:`stale_items` (lo obsoleto y lo que espera revisión a mano, con su causa, su
@@ -33,6 +37,7 @@ mientras se calculaba la operación o la que escribió el dato (RF-008-20;
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Iterator, Mapping
@@ -489,6 +494,42 @@ def refresh_all(conn: sqlite3.Connection, *, now: str,
     return _write(conn, now, {OPERATION: state.graph.operations.keys(),
                               DATASET: state.graph.datasets.keys()},
                   expected_rows(state), cached_rows(conn))
+
+
+# --- Aguas arriba (la procedencia) ----------------------------------------------------------
+
+# La región aguas arriba de las operaciones de la lista JSON: ellas y, hasta cerrarla, las que
+# escribieron alguna versión de un dato que consume una de la región. Basta con eso para tener
+# quién escribió el contenido actual de cada dato (gb_dataset.operation_uid), porque se
+# registran juntos (register_dataset y set_content anotan su salida en gb_operation_io). Sin
+# mirar el estado: lo que no está hecho no tiene salidas registradas (complete las escribe en
+# la transacción que la da por hecha) y, si lo tuviera, solo sobraría. Los CROSS JOIN fijan el
+# orden de cada paso (de la operación a lo que consume y de ahí a quién lo escribió, por los
+# índices): sin ellos, el planificador recorre gb_operation_io por cada operación de la región
+# (3 s con 100).
+_UPSTREAM = (
+    "WITH RECURSIVE up(uid) AS (SELECT value FROM json_each(?) "
+    "UNION SELECT w.operation_uid FROM up "
+    "CROSS JOIN gb_operation_io AS c ON c.operation_uid = up.uid AND c.direction = 'in' "
+    "AND c.item_kind = 'dataset' "
+    "CROSS JOIN gb_operation_io AS w ON w.item_kind = 'dataset' AND w.item_uid = c.item_uid "
+    "AND w.direction = 'out') "
+    "SELECT uid FROM up"
+)
+
+
+def upstream_region(conn: sqlite3.Connection, roots: Iterable[str]) -> frozenset[str]:
+    """La región **aguas arriba** de las operaciones ``roots`` (también las que no están
+    hechas): ellas y, hasta cerrarla, las operaciones que escribieron alguna versión de un dato
+    que consume una de la región. Tiene la cadena de la procedencia de cada
+    una (quién escribió cada versión que consumió, :meth:`.graph.ProvenanceGraph.producer`,
+    también el contenido actual de un dato) y, además, quién escribió las otras versiones de
+    esos datos (la historia) y lo de aguas arriba de ellas. Una consulta recursiva; solo lee."""
+    wanted = _uids(roots, "roots")
+    if not wanted:
+        return frozenset()
+    return frozenset(str(row[0]) for row in conn.execute(_UPSTREAM,
+                                                          (json.dumps(sorted(wanted)),)))
 
 
 # --- Recuentos y lista ----------------------------------------------------------------------

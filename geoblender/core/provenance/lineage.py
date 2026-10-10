@@ -18,7 +18,9 @@ transacción de escritura de quien llama, que ve lo aún no confirmado):
   bibliotecas, quién, cuándo y dónde, y si está obsoleta, con su causa; cada entrada
   (:class:`InputLink`), con su estado (también «cambiada · se mantiene la copia» y
   «sustituida»). :meth:`LineageTree.rows` la da como filas sangradas para el panel (una
-  operación a la que se llega por dos caminos sale una vez; la segunda, marcada).
+  operación a la que se llega por dos caminos sale una vez; la segunda, marcada). Solo lee
+  lo que está aguas arriba de lo pedido (:func:`.stale.upstream_region`, RNF-008-03), una vez,
+  con el mismo resultado que sobre el grafo entero.
 - :func:`figure_marks` (RF-008-31): las marcas de cada cifra (:class:`FigureMarks`), según el
   estado **de hoy** de lo de aguas arriba: «depende de una hipótesis» si algún parámetro que
   leyó su operación o una de aguas arriba es hoy HIPÓTESIS (pasarlo a ADOPTADO con el mismo
@@ -50,6 +52,7 @@ from collections.abc import Collection, Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import StrEnum
+from operator import itemgetter
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -61,19 +64,28 @@ from .figures import RECORD_COLUMNS as FIGURE_COLUMNS
 from .figures import FigureRecord, ScopeValue, _local_date, _shown, scope_key
 from .graph import (
     DATASET,
+    DATASET_COLUMNS,
     INPUT,
+    INPUT_NODE_COLUMNS,
     IO_COLUMNS,
     OPERATION_COLUMNS,
     PARAM_USE_COLUMNS,
+    PARAMETER_COLUMNS,
     Cause,
+    CauseKind,
+    DatasetNode,
     OperationNode,
     ParamUse,
     ProvenanceGraph,
     Version,
+    changes_while_running,
+    dataset_node,
+    input_node,
     installed_versions,
     load_graph,
     operation_node,
     param_use_of,
+    parameter_node,
     root_causes,
     stale_text,
     version_of,
@@ -82,7 +94,17 @@ from .messages import ProvenanceError, render
 from .operations import JOB_EXECUTORS, OperationStatus
 from .recompute import strong_components
 from .schema import LIVE_DATASET_STATUSES
-from .stale import OPERATION, _reading, _select, review_operations
+from .stale import (
+    _OPERATIONS_OF_GROUPS,
+    _OPERATIONS_OF_TYPES,
+    OPERATION,
+    _named,
+    _reading,
+    _select,
+    _subjects,
+    review_operations,
+    upstream_region,
+)
 
 
 class LineageKind(StrEnum):
@@ -456,12 +478,12 @@ _LOOSE_IO = f"SELECT {IO_COLUMNS} FROM gb_operation_io WHERE operation_uid = ? O
 _LOOSE_PARAMS = (
     f"SELECT {PARAM_USE_COLUMNS} FROM gb_operation_param WHERE operation_uid = ? ORDER BY fid"
 )
-_OPERATION_DETAILS = (
-    "SELECT uid, op_type, op_version, module, status, status_reason, repeatable, group_name, "
+_DETAIL_COLUMNS = (
+    "uid, op_type, op_version, module, status, status_reason, repeatable, group_name, "
     "group_uid, supersedes_uid, superseded_by, geoblender_version, software, executor, job_uid, "
-    "interpreter, user_host, host, started_at, finished_at FROM gb_operation "
-    "WHERE uid IN ({marks})"
+    "interpreter, user_host, host, started_at, finished_at"
 )
+_OPERATION_DETAILS = f"SELECT {_DETAIL_COLUMNS} FROM gb_operation WHERE uid IN ({{marks}})"
 _USED_PARAMS = (
     "SELECT operation_uid, parameter_uid, key, scope, rev, value, unit, kind, unconfirmed, "
     "value_sha256 FROM gb_operation_param WHERE operation_uid IN ({marks}) ORDER BY fid"
@@ -492,6 +514,31 @@ _FIGURES_OF_KEY = (
     f"WHERE op.status = '{_DONE}' AND op.superseded_by IS NULL AND f.key = ? "
     "AND f.scope_key = ? ORDER BY f.fid"
 )
+# La región aguas arriba (_load_upstream): sus operaciones con todo lo que muestra la
+# procedencia (y su fid), lo que consumen, quién escribió alguna versión de los datos que
+# consumen, los datos con su sucesor y, enteras, las entradas y los parámetros del proyecto.
+_REGION_OPERATIONS = f"SELECT fid, {_DETAIL_COLUMNS} FROM gb_operation WHERE uid IN ({{marks}})"
+_REGION_CONSUMED = (
+    f"SELECT {IO_COLUMNS} FROM gb_operation_io WHERE direction = 'in' "
+    "AND operation_uid IN ({marks}) ORDER BY fid"
+)
+_WRITTEN = (  # sin orden: el grafo ordena a quién escribió cada versión
+    f"SELECT {IO_COLUMNS} FROM gb_operation_io WHERE item_kind = '{DATASET}' "
+    "AND direction = 'out' AND item_uid IN ({marks})"
+)
+_REGION_DATA = f"SELECT {DATASET_COLUMNS}, superseded_by FROM gb_dataset WHERE uid IN ({{marks}})"
+_ALL_INPUTS = f"SELECT {INPUT_NODE_COLUMNS} FROM gb_input ORDER BY fid"
+_ALL_PARAMETERS = f"SELECT {PARAMETER_COLUMNS} FROM gb_parameter ORDER BY fid"
+_REGION_COLUMNS = ("fid, " + _DETAIL_COLUMNS).split(", ")
+_head = itemgetter(*(_REGION_COLUMNS.index(column)
+                     for column in OPERATION_COLUMNS.split(", ")))
+"""Las columnas de :data:`OPERATION_COLUMNS` de una fila de ``_REGION_OPERATIONS``."""
+_STATUS = _REGION_COLUMNS.index("status")
+
+
+def _version(row: tuple[Any, ...]) -> Version:
+    """La versión de una fila de :data:`IO_COLUMNS` (como :func:`.graph.version_of`)."""
+    return Version(str(row[2]), str(row[3]), str(row[4]), str(row[5]))
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,15 +684,116 @@ def _param_marks(graph: ProvenanceGraph,
 # --- Procedencia ----------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class _Upstream:
+    """Lo leído de la región aguas arriba de lo pedido (:func:`_load_upstream`): la parte del
+    grafo que necesita su procedencia y, para no volver a leerlo, de cada operación de la región
+    su fila de ``_OPERATION_DETAILS`` (``details``) y las de los parámetros que leyó, en su
+    orden (``used``); las que no están hechas (la pedida, si no lo está: ``loose``); el sucesor
+    de cada dato cargado y las causas de la caché de las operaciones de la región."""
+
+    graph: ProvenanceGraph
+    region: frozenset[str]
+    details: Mapping[str, tuple[Any, ...]]
+    used: Mapping[str, list[tuple[Any, ...]]]
+    loose: Mapping[str, OperationNode]
+    successors: Mapping[str, str | None]
+    causes: Mapping[str, frozenset[Cause]]
+
+
+def _load_upstream(conn: sqlite3.Connection, found: _Found) -> _Upstream:
+    """Lo que necesita la procedencia de ``found``, de su región aguas arriba
+    (:func:`.stale.upstream_region`) y sin nada de lo demás (RNF-008-03), en la instantánea de
+    ``conn``:
+
+    - las operaciones hechas de la región con lo que consumieron y leyeron, y lo que hace
+      falta para que el productor de cada versión que consumieron
+      (:meth:`.graph.ProvenanceGraph.producer`) sea el mismo que en el grafo entero;
+    - esos datos (y el pedido), todas las entradas y todos los parámetros (los del proyecto:
+      pocos);
+    - para contar las causas de la caché de sus operaciones como el grafo entero
+      (:func:`.graph.stale_text`): los datos que nombran, las operaciones de sus grupos y de sus
+      algoritmos (sin lo que consumen) y lo que cambió mientras se calculaba cada una con
+      causas (:attr:`.graph.ProvenanceGraph.during`).
+
+    No sirve para deducir la obsolescencia: no tiene lo de aguas abajo ni todo lo que
+    produjeron."""
+    region = upstream_region(conn, (found.operation_uid,))
+    ordered = sorted(region)  # una vez: _select ordena lo que recibe en cada consulta
+    details: dict[str, tuple[Any, ...]] = {}
+    heads: dict[str, tuple[Any, ...]] = {}
+    done: set[str] = set()
+    for row in _select(conn, _REGION_OPERATIONS, ordered):
+        uid = str(row[1])
+        details[uid] = row[1:]
+        heads[uid] = _head(row)
+        if row[_STATUS] == _DONE:
+            done.add(uid)
+    consumed: dict[str, list[Version]] = defaultdict(list)
+    for row in _select(conn, _REGION_CONSUMED, ordered):
+        consumed[str(row[0])].append(_version(row))
+    data = {version.uid for found_versions in consumed.values() for version in found_versions
+            if version.item_kind == DATASET}
+    causes = _cached(conn, OPERATION, ordered)
+    subjects = _subjects(causes.values())
+    if found.kind is LineageKind.DATASET:
+        data.add(found.uid)
+    current: dict[str, DatasetNode] = {}
+    successors: dict[str, str | None] = {}
+    for row in _select(conn, _REGION_DATA, data | _named(subjects)):
+        node = current[str(row[1])] = dataset_node(row[:-1])
+        successors[node.uid] = None if row[-1] is None else str(row[-1])
+    # Quién escribió cada versión solo hace falta (ProvenanceGraph.producer) si la consumida no
+    # es el contenido actual del dato, o lo escribió quien la consume (o alguien que no está
+    # hecho): si no, su productor es quien escribió el contenido actual.
+    produced: dict[str, list[Version]] = defaultdict(list)
+    for row in _select(conn, _WRITTEN, {
+        version.uid for op_uid, found_versions in consumed.items() for version in found_versions
+        if version.item_kind == DATASET and (
+            (dataset := current.get(version.uid)) is None
+            or dataset.content_sha256 != version.content_sha256
+            or dataset.operation_uid == op_uid or dataset.operation_uid not in done)
+    }):
+        if (op_uid := str(row[0])) in done:
+            produced[op_uid].append(_version(row))
+    used: dict[str, list[tuple[Any, ...]]] = defaultdict(list)
+    uses: dict[str, list[ParamUse]] = defaultdict(list)
+    for row in _select(conn, _USED_PARAMS, ordered):
+        op_uid = str(row[0])
+        used[op_uid].append(row)
+        uses[op_uid].append(ParamUse(str(row[1]), str(row[2]), int(row[4]), str(row[9])))
+    nodes = {uid: operation_node(head, consumed[uid], produced[uid], uses[uid])
+             for uid, head in heads.items()}
+    named = {str(row[1]): operation_node(row) for row in (
+        *_select(conn, _OPERATIONS_OF_GROUPS, subjects.get(CauseKind.GROUP, set())),
+        *_select(conn, _OPERATIONS_OF_TYPES, subjects.get(CauseKind.ALGORITHM, set())),
+    ) if str(row[1]) not in done}
+    graph = ProvenanceGraph(
+        [*(nodes[uid] for uid in done), *named.values()], current.values(),
+        [input_node(row) for row in conn.execute(_ALL_INPUTS)],
+        [parameter_node(row) for row in conn.execute(_ALL_PARAMETERS)],
+        during=changes_while_running(conn, causes.keys()),
+    )
+    return _Upstream(
+        graph=graph, region=region, details=details, used=used,
+        loose={uid: node for uid, node in nodes.items() if uid not in done},
+        successors=successors, causes=causes,
+    )
+
+
 class _Builder:
-    """Construye la :class:`LineageTree` de lo pedido sobre el grafo cargado."""
+    """Construye la :class:`LineageTree` de lo pedido sobre el grafo cargado: con
+    ``upstream`` (:func:`_load_upstream`), con lo ya leído de su región; sin él (sobre el grafo
+    entero, por ejemplo), lee lo que le falta."""
 
     def __init__(self, conn: sqlite3.Connection, graph: ProvenanceGraph,
-                 versions: Mapping[str, str], language: str) -> None:
+                 versions: Mapping[str, str], language: str,
+                 upstream: _Upstream | None = None) -> None:
         self.conn = conn
         self.graph = graph
         self.versions = versions
         self.language = language
+        self.upstream = upstream
         self.decoded = _Decoded()
 
     def _loose(self, uid: str) -> OperationNode:
@@ -664,8 +812,10 @@ class _Builder:
     def walk(self, root: str) -> tuple[dict[str, OperationNode], dict[str, tuple[str, ...]]]:
         """Las operaciones de la cadena de ``root`` por orden de distancia (en anchura) y de
         cada una, las que escribieron lo que consumió."""
-        nodes: dict[str, OperationNode] = {
-            root: self.graph.operations.get(root) or self._loose(root)}
+        start = self.graph.operations.get(root)
+        if start is None:
+            start = self._loose(root) if self.upstream is None else self.upstream.loose[root]
+        nodes: dict[str, OperationNode] = {root: start}
         upstream: dict[str, tuple[str, ...]] = {}
         queue = deque([root])
         while queue:
@@ -724,12 +874,18 @@ class _Builder:
 
     def tree(self, found: _Found) -> LineageTree:
         nodes, upstream = self.walk(found.operation_uid)
-        conn, graph = self.conn, self.graph
-        used_rows = list(_select(conn, _USED_PARAMS, nodes))
+        conn, graph, read = self.conn, self.graph, self.upstream
+        if read is None:
+            used_rows = list(_select(conn, _USED_PARAMS, nodes))
+        else:
+            used_rows = [row for uid in nodes for row in read.used.get(uid, ())]
         now = {str(row[0]): row for row in _select(conn, _PARAMETERS_NOW,
                                                    {str(row[1]) for row in used_rows})}
         sources = {str(row[7]) for row in now.values() if row[7] is not None}
-        causes = _cached(conn, OPERATION, set(nodes) | sources)
+        if read is None:
+            causes = _cached(conn, OPERATION, set(nodes) | sources)
+        else:
+            causes = {**_cached(conn, OPERATION, sources - read.region), **read.causes}
         review = review_operations(conn)
         params = self.parameters(used_rows, now, causes)
         uses: dict[str, list[InputUse]] = defaultdict(list)
@@ -742,14 +898,20 @@ class _Builder:
         details = self.inputs({use.uid for found_uses in uses.values() for use in found_uses})
         entries = {use.uid: details[use.uid] for uid in nodes for use in uses[uid]
                    if use.uid in details}
-        consumed_data = {version.uid for node in nodes.values() for version in node.consumed
-                         if version.item_kind == DATASET}
-        if found.kind is LineageKind.DATASET:
-            consumed_data.add(found.uid)
-        successors = {str(uid): None if by is None else str(by)
-                      for uid, by in _select(conn, _SUPERSEDED_DATA, consumed_data)}
+        successors: Mapping[str, str | None]
+        if read is None:
+            consumed_data = {version.uid for node in nodes.values()
+                             for version in node.consumed if version.item_kind == DATASET}
+            if found.kind is LineageKind.DATASET:
+                consumed_data.add(found.uid)
+            successors = {str(uid): None if by is None else str(by)
+                          for uid, by in _select(conn, _SUPERSEDED_DATA, consumed_data)}
+            rows: Iterable[tuple[Any, ...]] = _select(conn, _OPERATION_DETAILS, nodes)
+        else:
+            successors = read.successors
+            rows = (read.details[uid] for uid in nodes)
         links: dict[str, OperationLink] = {}
-        for row in _select(conn, _OPERATION_DETAILS, nodes):
+        for row in rows:
             link = self._operation(row, nodes, upstream, params, uses, entries, successors,
                                    causes, review)
             links[link.uid] = link
@@ -849,8 +1011,8 @@ def lineage(project: ReadableProject, item: str, *, conn: sqlite3.Connection | N
         found = _find(reading, wanted)
         if found is None:
             raise ProvenanceError("core.lineage_unknown", item=wanted, project=_name(project))
-        graph = load_graph(reading, during=True)
-        return _Builder(reading, graph, chosen, language).tree(found)
+        read = _load_upstream(reading, found)
+        return _Builder(reading, read.graph, chosen, language, read).tree(found)
 
 
 # --- Marcas y cifra vigente -----------------------------------------------------------------

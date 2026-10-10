@@ -20,6 +20,10 @@ y §5.4.10).
 - ``result_state``: resultado, pendiente de incorporar, no incorporada, vista previa o
   medición.
 
+``lineage`` carga solo lo que está aguas arriba de lo pedido (T63, RNF-008-03): cada
+procedencia de estas pruebas se compara con la que da el grafo entero (``load_graph``), que tiene
+que ser idéntica, también en grafos aleatorios.
+
 Cada prueba usa el proyecto sintético de ``test_graph`` (esquema 2, reloj simulado) con sus
 tipos de operación, sus parámetros (``res.production``, HIPÓTESIS por defecto, y
 ``res.density``, ADOPTADO por defecto, los dos «sin confirmar» hasta que una persona los
@@ -29,28 +33,36 @@ confirma o los cambia) y su cifra ``res.marks``.
 from __future__ import annotations
 
 import ast
+import random
 import sqlite3
+import types
 import unittest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from tests.support.core_fixtures import make_session
 from tests.support.package import import_geoblender
+from tests.support.provenance_contract import registered
 from tests.unit.core.provenance.test_graph import (
+    _RANDOM_VERSIONS,
     INPUT_1,
     GraphCase,
+    RandomProject,
     Use,
     _replace_table,
     _spec,
     _uses,
 )
 from tests.unit.core.provenance.test_operations import INTERPRETER, SOFTWARE, _insert
-from tests.unit.core.provenance.test_schema import input_row
+from tests.unit.core.provenance.test_schema import input_row, io_row, operation_row
 
 provenance = import_geoblender("core.provenance")
 lineage_mod = import_geoblender("core.provenance.lineage")
 graph_mod = import_geoblender("core.provenance.graph")
+stale_mod = import_geoblender("core.provenance.stale")
+schema = import_geoblender("core.provenance.schema")
 figures = import_geoblender("core.provenance.figures")
 operations = import_geoblender("core.provenance.operations")
 messages = import_geoblender("core.provenance.messages")
@@ -58,6 +70,7 @@ inputs = import_geoblender("core.inputs")
 dataset_registry = import_geoblender("core.datasets.registry")
 params = import_geoblender("core.params")
 store_mod = import_geoblender("core.params.store")
+i18n = import_geoblender("core.i18n")
 timeutil = import_geoblender("core.timeutil")
 
 Cause = graph_mod.Cause
@@ -77,6 +90,28 @@ STALE_ES = "obsoleta"
 
 def _local_day(moment: str) -> str:
     return timeutil.parse_utc(moment).astimezone().strftime("%d/%m/%Y")
+
+
+def whole_graph_lineage(project: Any, item: str, *, conn: sqlite3.Connection | None = None,
+                        language: str = "es", versions: Mapping[str, str] | None = None) -> Any:
+    """La procedencia de ``item`` construida sobre el grafo **entero** del proyecto
+    (``load_graph`` con lo que cambió mientras se calculaba cada operación): la referencia con
+    que se compara la que carga solo lo de aguas arriba."""
+    chosen = dict(graph_mod.installed_versions() if versions is None else versions)
+    with lineage_mod._reading(project, conn) as reading:
+        found = lineage_mod._find(reading, item)
+        assert found is not None, item
+        whole = graph_mod.load_graph(reading, during=True)
+        return lineage_mod._Builder(reading, whole, chosen, language).tree(found)
+
+
+def same_lineage(case: unittest.TestCase, tree: Any, reference: Any, what: str = "") -> None:
+    """``tree`` es idéntica a ``reference``: lo mismo, en el mismo orden, con las mismas
+    filas."""
+    case.assertEqual(tree, reference, what)
+    case.assertEqual(list(tree.operations), list(reference.operations), what)
+    case.assertEqual(list(tree.inputs), list(reference.inputs), what)
+    case.assertEqual(tree.rows(), reference.rows(), what)
 
 
 class LineageCase(GraphCase):
@@ -128,11 +163,28 @@ class LineageCase(GraphCase):
         return imported, a, b, self.figure(b)
 
     def lineage(self, item: str, **kw: Any) -> Any:
-        """La procedencia de ``item``, comprobando que no escribe nada."""
+        """La procedencia de ``item``, comprobando que no escribe nada y que es idéntica a la
+        del grafo entero."""
         before = self.snapshot()
         tree = lineage_mod.lineage(self.project, item, **kw)
         self.assertEqual(self.snapshot(), before)
+        same_lineage(self, tree, whole_graph_lineage(self.project, item, **kw), item)
         return tree
+
+    def loaded(self, item: str, **kw: Any) -> tuple[Any, Any]:
+        """La procedencia de ``item`` y el grafo con que se construyó."""
+        seen: list[Any] = []
+        build = lineage_mod._Builder.__init__
+
+        def spy(builder: Any, conn: Any, graph: Any, *args: Any) -> None:
+            seen.append(graph)
+            build(builder, conn, graph, *args)
+
+        with mock.patch.object(lineage_mod._Builder, "__init__", spy):
+            tree = lineage_mod.lineage(self.project, item, **kw)
+        (graph,) = seen
+        same_lineage(self, tree, whole_graph_lineage(self.project, item, **kw), item)
+        return tree, graph
 
     def marks(self, *uids: str) -> Any:
         before = self.snapshot()
@@ -580,6 +632,181 @@ class ResultStateTest(LineageCase):
             lineage_mod.result_state(self.project, a.uid, view="result")
         with self.assertRaises(TypeError):
             lineage_mod.result_state(self.project)
+
+
+class UpstreamTest(LineageCase):
+    def test_only_what_is_upstream_is_loaded(self) -> None:
+        """RNF-008-03, RF-008-29: la procedencia de una cifra, de un dato o de una operación
+        (también en curso) carga solo las operaciones de aguas arriba de lo pedido (las que
+        escribieron lo que consumió cada una, hasta las importaciones) y los datos que
+        consumieron, más lo pedido: ni otra cadena ni lo que depende de lo pedido. Es idéntica
+        a la que da el grafo entero."""
+        imported, a, b, fig = self.figure_chain()
+        other = self.run_op("res.step_c", {"res_c": [9.0]}, params=["res.density"])
+        later = self.run_op("res.step_d", {"res_d": [1.0]}, reads=["res_b"])
+        uid_a, uid_im, uid_b = (self.dataset(name) for name in ("res_a", "res_im1", "res_b"))
+        chain = {b.uid, a.uid, imported.uid}
+
+        tree, graph = self.loaded(fig)
+        self.assertEqual(list(tree.operations), [b.uid, a.uid, imported.uid])
+        self.assertEqual((set(graph.operations), set(graph.datasets)), (chain, {uid_a, uid_im}))
+        self.assertTrue({other.uid, later.uid}.isdisjoint(graph.operations))
+
+        _tree, graph = self.loaded("res_b")
+        self.assertEqual((set(graph.operations), set(graph.datasets)),
+                         (chain, {uid_a, uid_im, uid_b}))
+
+        job = self.begin("res.step_c", inputs=_uses(["res_b"]), executor="job_thread",
+                         job_uid="job-0003")
+        tree, graph = self.loaded(job.uid)
+        self.assertEqual(list(tree.operations), [job.uid, b.uid, a.uid, imported.uid])
+        self.assertEqual((set(graph.operations), set(graph.datasets)),
+                         (chain, {uid_a, uid_im, uid_b}))  # la que está en curso no es del grafo
+
+    def test_causes_are_told_as_in_the_whole_graph(self) -> None:
+        """RF-008-25, RF-008-20, RF-008-29: las causas de los eslabones se cuentan como en el
+        grafo entero aunque nombren lo que no está aguas arriba: la otra operación de su grupo
+        acoplado y el parámetro que solo lee ella («cambió Densidad»); y lo que cambió
+        mientras se calculaba un eslabón, «… mientras se calculaba», que no se dice del que se
+        calculó después."""
+        first = self.run_op("res.pair_first", {"res_x1": [1.0]}, figure=5.0)
+        self.run_op("res.pair_second", {"res_x2": [2.0]}, reads=["res_x1"],
+                    params=["res.density"], group_uid=first.group_uid)
+        self.change("res.density", 2.7)
+        tree, _graph = self.loaded(self.figure(first))
+        self.assertEqual(list(tree.operations), [first.uid])
+        self.assertEqual(tree.operations[first.uid].stale_text,
+                         "Obsoleto: cambió Densidad; está acoplada en el grupo «res.pair»")
+
+        self.run_op("res.step_a", {"res_a": [1.0]})
+        running = self.begin("res.step_c", inputs=_uses(["res_a"]), params=["res.production"])
+        self.tick()
+        self.change("res.production", 90000.0)
+
+        def finish(conn: sqlite3.Connection) -> None:
+            _replace_table(conn, "res_c", [3.0])
+            running.complete(conn, outputs=[_spec("res_c")])
+
+        self.write(finish)
+        self.tick()
+        after = self.run_figures("res.step_d", reads=["res_c"], figures=[(4.0, {})])
+        tree = self.lineage(self.figure(after))
+        self.assertEqual(
+            (tree.operations[running.uid].stale_text, tree.operations[after.uid].stale_text),
+            ("Obsoleto: cambió Producción mientras se calculaba", "Obsoleto: cambió Producción"),
+        )
+
+    def test_inputs_in_their_order_and_successor_of_a_dataset(self) -> None:
+        """RF-008-29: las entradas que registró una operación salen bajo ella en el orden en
+        que se registraron, y un dato consumido que se sustituyó dice cuál lo sustituye, como
+        en el grafo entero."""
+
+        def register(conn: sqlite3.Connection, handle: Any) -> None:
+            for uid, name in ((INPUT_1, "Entrada_1"), (INPUT_3, "Entrada_3")):
+                _insert(conn, "gb_input", input_row(uid=uid, name=name,
+                                                    operation_uid=handle.uid))
+            _replace_table(conn, "res_im1", [1.0, 2.0])
+
+        imported = self.run_op("res.import_source", before=register, outputs=[
+            _spec("res_im1", role="imported", input_uid=INPUT_1)])
+        a = self.run_figures("res.step_a", {"res_a": [1.0]}, reads=["res_im1"],
+                             figures=[(2.0, {})])
+        self.run_op("res.step_c", {"res_c": [3.0]})
+        old, new = self.dataset("res_a"), self.dataset("res_c")
+        b = self.run_figures("res.step_b", reads=["res_a"], figures=[(4.0, {})])
+        self.write(lambda conn: dataset_registry.supersede(conn, self.project, old, by=new))
+        tree, _graph = self.loaded(self.figure(a))
+        self.assertEqual(tree.operations[imported.uid].inputs,
+                         (lineage_mod.InputUse(INPUT_1, None), lineage_mod.InputUse(INPUT_3, None)))
+        tree, _graph = self.loaded(self.figure(b))
+        (version,) = tree.operations[b.uid].consumed
+        self.assertEqual((version.uid, version.superseded_by), (old, new))
+
+    def test_calculated_parameter_from_outside_the_chain(self) -> None:
+        """RF-008-29 (plan §5.4.10): un parámetro CALCULADO que leyó un eslabón dice de qué
+        operación es la cifra que se adoptó y si hoy está obsoleta, aunque esa operación no
+        esté aguas arriba de lo pedido."""
+        self.enterContext(registered(MEASURED_DENSITY))
+        i18n.install({"Test measured density": "Densidad medida"})
+        measure = self.begin("res.step_c", params=["res.production"])
+        spec = figures.FigureSpec("res.measured_density", 2.6, "t/m3",
+                                  parameter_key="res.density")
+        self.write(lambda conn: measure.complete(conn, outputs=[], figures=[spec]))
+        self.tick()
+        (row,) = self.query("SELECT uid FROM gb_figure WHERE operation_uid = ?", (measure.uid,))
+        self.write(lambda conn: self.store.change(conn, "res.density", from_figure=row[0],
+                                                  decided_by="Samuel (IMGA)",
+                                                  reason="Ensayo de densidad"))
+        self.tick()
+        use = self.run_figures("res.step_d", params=["res.density"], figures=[(1.0, {})])
+        self.change("res.production", 95000.0)  # la medida queda obsoleta; la otra, no
+        tree, graph = self.loaded(self.figure(use))
+        self.assertEqual(list(tree.operations), [use.uid])
+        self.assertNotIn(measure.uid, graph.operations)
+        (density,) = tree.operations[use.uid].params
+        self.assertEqual((density.kind, density.source_operation_uid, density.source_stale),
+                         ("CALCULADO", measure.uid, True))
+
+
+MEASURED_DENSITY = provenance.FigureDef("res.measured_density", "t/m3", "Test measured density")
+
+
+class RandomUpstreamTest(unittest.TestCase):
+    def test_same_as_the_whole_graph_on_random_graphs(self) -> None:
+        """RF-008-29, RF-008-24, RF-008-25 (RNF-008-03): en grafos aleatorios —grupos
+        acoplados, operaciones sustituidas, versiones anteriores de un dato consumidas,
+        ediciones propias, entradas sustituidas y descartadas, datos que faltan, bloqueados,
+        dañados o sustituidos, parámetros que cambian y algoritmos más nuevos que nombran las
+        versiones registradas fuera de la cadena—, la procedencia de operaciones (también una
+        en curso) y datos al azar, cargando solo lo de aguas arriba, es idéntica a la del grafo
+        entero."""
+        seeds = random.Random(20261010)
+        newer = {**_RANDOM_VERSIONS, "res.t0": "1.2"}
+        project = types.SimpleNamespace(name="aleatorio")
+        compared = 0
+        for case in range(RANDOM_CASES):
+            world = RandomProject(random.Random(seeds.getrandbits(64)))
+            try:
+                world.conn.execute(schema.TABLES["gb_parameter_history"])
+                for _ in range(world.rng.randint(6, 16)):
+                    world.step()
+                versions = newer if case % 2 else _RANDOM_VERSIONS
+                world.conn.execute("BEGIN")
+                stale_mod.refresh_all(world.conn, now=world.stamp(), versions=versions)
+                world.conn.execute("COMMIT")
+                items = [str(uid) for (uid,) in world.conn.execute(
+                    "SELECT uid FROM gb_operation UNION ALL SELECT uid FROM gb_dataset")]
+                items = world.rng.sample(items, min(len(items), RANDOM_ITEMS))
+                items.append(_running(world))
+                for item in items:
+                    tree = lineage_mod.lineage(project, item, conn=world.conn,
+                                               versions=versions)
+                    reference = whole_graph_lineage(project, item, conn=world.conn,
+                                                    versions=versions)
+                    same_lineage(self, tree, reference, f"caso {case}, {item}")
+                    compared += 1
+            finally:
+                world.conn.close()
+        self.assertEqual(compared, RANDOM_CASES * (RANDOM_ITEMS + 1))
+
+
+RANDOM_CASES = 30
+RANDOM_ITEMS = 5
+
+
+def _running(world: RandomProject) -> str:
+    """Una operación en curso que consume hasta dos datos vivos del mundo aleatorio."""
+    uid = world.uid()
+    world.insert("gb_operation", operation_row(
+        uid=uid, op_type="res.t1", module="res", repeatable=1, status="running",
+        started_at=world.stamp(), finished_at=None,
+    ))
+    live = sorted(world.live)
+    for item in world.rng.sample(live, min(len(live), 2)):
+        world.insert("gb_operation_io", io_row(operation_uid=uid, direction="in", item_uid=item,
+                                               content_sha256=world.content[item],
+                                               role="source"))
+    return uid
 
 
 class ApiTest(unittest.TestCase):
