@@ -1381,3 +1381,60 @@ es = "Comprobando el intérprete externo {path}: el resultado saldrá en la barr
 
 ["External interpreter (development): {path}"]
 es = "Intérprete externo (desarrollo): {path}"
+
+# Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
+# Los mensajes de la procedencia y de los parámetros (spec §8) están en
+# core/provenance/messages.py y core/params/model.py, y se instalan al registrar.
+
+# Por qué una orden de la 008 no está disponible (su poll)
+
+["Open a project"]
+es = "Abra un proyecto"
+
+["Schema {schema} project: migrate the project to use provenance"]
+es = "Proyecto de esquema {schema}: migre el proyecto para usar la procedencia"
+
+# Barra de estado y control 7 (RF-008-16, RF-008-28, RF-008-58)
+
+["⚠ {n} inputs"]
+es = "⚠ {n} entradas"
+
+["! {n} stale"]
+es = "! {n} obsoletos"
+
+["Checking the project… {percent} %"]
+es = "Comprobando el proyecto… {percent} %"
+
+["Refresh · stale ({n})"]
+es = "Refrescar · obsoletos ({n})"
+
+# Insignias de tipo y marcas de un parámetro (RF-008-06)
+
+["[MEA]"]
+es = "[MED]"
+
+["[CAL]"]
+es = "[CAL]"
+
+["[ADO]"]
+es = "[ADO]"
+
+["[HYP]"]
+es = "[HIP]"
+
+["unconfirmed"]
+es = "sin confirmar"
+
+["review"]
+es = "revisar"
+
+# Títulos de sus paneles (RF-008-06, RF-008-16, RF-008-29)
+
+["Project parameters"]
+es = "Parámetros del proyecto"
+
+["Input register"]
+es = "Registro de entradas"
+
+["Operation graph and provenance"]
+es = "Grafo de operaciones y procedencia"
