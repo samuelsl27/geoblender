@@ -1738,3 +1738,66 @@ es = "Entrada «{name}» editada"
 
 ["Input «{name}»: nothing to change"]
 es = "Entrada «{name}»: no hay nada que cambiar"
+
+# Recalcular lo obsoleto (RF-008-26, RF-008-25, RF-008-58; T53): sus ámbitos, su
+# progreso y lo que dice al terminar
+
+["Scope"]
+es = "Ámbito"
+
+["What is recomputed: everything, what depends on a change or one result"]
+es = "Qué se recalcula: todo, lo que depende de un cambio o un resultado"
+
+["Subject"]
+es = "Sujeto"
+
+["Uid of what changed (CAUSE) or of the result (ITEM)"]
+es = "Uid de lo que cambió (CAUSE) o del resultado (ITEM)"
+
+["All the stale results"]
+es = "Todo lo obsoleto"
+
+["Everything stale in the project"]
+es = "Todo lo obsoleto del proyecto"
+
+["What depends on a change"]
+es = "Lo que depende de un cambio"
+
+["The stale results caused by a change: the uid of what changed is the subject"]
+es = "Los resultados obsoletos por un cambio: el sujeto es el uid de lo que cambió"
+
+["One result"]
+es = "Un resultado"
+
+["A stale result and what it needs upstream: its uid is the subject"]
+es = "Un resultado obsoleto y lo que necesita aguas arriba: el sujeto es su uid"
+
+["Recompute the stale results from a Blender window"]
+es = "Recalcule lo obsoleto desde una ventana de Blender"
+
+["Already recomputing the stale results"]
+es = "Ya se está recalculando lo obsoleto"
+
+["Checking the project: recompute when the check finishes"]
+es = "Comprobando el proyecto: recalcule cuando termine la comprobación"
+
+["Indicate what to recompute: the uid of what changed or of a result"]
+es = "Indique qué recalcular: el uid de lo que cambió o de un resultado"
+
+["Nothing stale depends on «{subject}»"]
+es = "Nada obsoleto depende de «{subject}»"
+
+["The recompute stopped: {error}"]
+es = "El recálculo se ha parado: {error}"
+
+["Recomputing the stale results: {done} of {total}… Esc: cancel"]
+es = "Recalculando lo obsoleto: {done} de {total}… Esc: cancelar"
+
+["Recompute cancelled: operations recomputed, {done}; the rest is still stale"]
+es = "Recálculo cancelado: operaciones recalculadas, {done}; lo demás sigue obsoleto"
+
+["Operations recomputed: {done}"]
+es = "Operaciones recalculadas: {done}"
+
+["Nothing to recompute"]
+es = "No hay nada que recalcular"

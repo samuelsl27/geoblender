@@ -106,6 +106,18 @@ ADR-0025).
   disponibles en solo lectura y, al terminar, ponen al día los indicadores y el registro de
   entradas sin esperar al tic.
 
+- Recalcular lo obsoleto (T53; RF-008-26, RF-008-25, RF-008-58; plan §5.3.2 y §5.4.4):
+  ``geoblender.core_recompute_stale`` es un modal con un temporizador de la ventana que avanza
+  ``core.provenance.recompute.recompute_steps`` una unidad por evento (o una espera a su
+  trabajo de la 004), con el progreso en la barra de estado («Recalculando lo obsoleto: 1 de
+  2… Esc: cancelar»); Esc para al acabar la unidad en curso (lo hecho queda). Su ámbito
+  (``scope``): todo (``ALL``, Proyecto ▸ Control), lo que depende de un cambio (``CAUSE``, con
+  el uid de lo que cambió en ``subject_uid``) o un elemento (``ITEM``, el uid de un dato o de
+  una operación: el botón Recalcular de cada fila del panel de lo obsoleto). No empieza
+  mientras se comprueba el proyecto (RF-008-58) ni con otro en marcha, ni en solo lectura; al
+  terminar dice cuántas operaciones recalculó y por qué no las demás, y pone al día los
+  indicadores sin esperar al tic.
+
 Lo demás llega con las tareas siguientes: los demás operadores de §5.3.2, con sus paneles, y
 el estado de comando de las órdenes de los módulos (fase 8).
 
@@ -206,6 +218,7 @@ class _State:
         self.read_only_checked = False  # ya se miró (y, si tocaba, se avisó) en esta sesión
         self.undo: list[Callable[[], object]] = []  # cómo quitar lo que se registró
         self.jobs: dict[str, _PendingJob] = {}  # job_uid → operación pendiente de incorporar
+        self.recomputing = False  # «Recalcular lo obsoleto» en marcha (uno a la vez)
 
 
 _STATE = _State()
@@ -1903,6 +1916,230 @@ class GEOBLENDER_OT_core_edit_input(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Recalcular lo obsoleto (T53) -------------------------------------------------------------
+
+RECOMPUTE_STALE = "geoblender.core_recompute_stale"
+RECOMPUTE_TIMER_S = 0.05
+"""Cada cuánto avanza el modal de «Recalcular lo obsoleto»: una unidad (o una espera a su
+trabajo) por evento del temporizador."""
+
+SCOPE_ITEMS = [
+    ("ALL", "All the stale results", "Everything stale in the project"),
+    ("CAUSE", "What depends on a change",
+     "The stale results caused by a change: the uid of what changed is the subject"),
+    ("ITEM", "One result",
+     "A stale result and what it needs upstream: its uid is the subject"),
+]
+"""Los ámbitos de «Recalcular lo obsoleto» (RF-008-26; plan §5.3.2): todo, lo que depende de un
+cambio (``subject_uid``: lo que cambió, el sujeto de la causa: un dato, un parámetro, una
+entrada, un tipo de operación o una ejecución de grupo) o un elemento (``subject_uid``: el uid
+de un dato o de una operación)."""
+
+
+class _NothingToDo(ValueError):
+    """Nada obsoleto depende del sujeto de «lo que depende de un cambio» (su uid)."""
+
+
+def _cause_scope(project: Project, subject: str) -> Any:
+    """La causa de «lo que depende de un cambio» de ``subject`` (``core.provenance.graph.Cause``)
+    según la caché de lo obsoleto. Si un mismo sujeto tiene varias clases de causa (un dato que
+    cambió y además falta), la primera en el orden de ``CauseKind``: con un dato que falta, está
+    bloqueado o dañado, nada que dependa de él se recalcula. :class:`_NothingToDo` si ninguna
+    operación obsoleta tiene una causa de ``subject``."""
+    from ...core.provenance.graph import Cause, CauseKind
+    from ...core.provenance.stale import cached_rows
+
+    with project.read() as conn:
+        kinds = {row.cause_kind for row in cached_rows(conn)
+                 if row.item_kind == "operation" and row.subject_uid == subject}
+    for kind in CauseKind:
+        if kind in kinds:
+            return Cause(kind, subject)
+    raise _NothingToDo(subject)
+
+
+class GEOBLENDER_OT_core_recompute_stale(bpy.types.Operator):
+    """Recompute the results whose inputs changed"""
+
+    bl_idname = RECOMPUTE_STALE
+    bl_label = "Recompute the stale results"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    scope: EnumProperty(  # type: ignore[valid-type]
+        name="Scope",
+        description="What is recomputed: everything, what depends on a change or one result",
+        items=SCOPE_ITEMS, default="ALL", options=_HIDDEN,
+    )
+    subject_uid: StringProperty(  # type: ignore[valid-type]
+        name="Subject", description="Uid of what changed (CAUSE) or of the result (ITEM)",
+        options=_HIDDEN,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def _scope(self, project: Project) -> Any:
+        """El ámbito de ``core.provenance.recompute`` de lo que se pidió."""
+        from ...core.provenance.recompute import SCOPE_ALL
+
+        if self.scope == "ALL":
+            return SCOPE_ALL
+        subject = self.subject_uid.strip()
+        if not subject:
+            raise _NothingToDo("")
+        if self.scope == "CAUSE":
+            return _cause_scope(project, subject)
+        return subject
+
+    def execute(self, context: Any) -> set[str]:
+        """Empieza el recálculo (``core.provenance.recompute.recompute_steps``) y lo avanza en
+        el modal, con un temporizador de la ventana (sin ventana no se puede: espera a los
+        trabajos de la 004, que sigue el monitor de los trabajos en el bucle de Blender)."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        window = getattr(context, "window", None)
+        if window is None:
+            self.report({"ERROR"}, tr("Recompute the stale results from a Blender window"))
+            return {"CANCELLED"}
+        if _STATE.recomputing:
+            self.report({"WARNING"}, tr("Already recomputing the stale results"))
+            return {"CANCELLED"}
+        if SESSION.running:  # RF-008-58: nada sin comprobar antes
+            self.report({"WARNING"}, tr("Checking the project: recompute when the check "
+                                        "finishes"))
+            return {"CANCELLED"}
+        from ...core.provenance.recompute import recompute_steps
+
+        project = SESSION.project
+        self._cancel = False
+        try:
+            steps = recompute_steps(project, scope=self._scope(project),
+                                    cancelled=lambda: self._cancel)
+        except _NothingToDo as exc:
+            if not str(exc):
+                self.report({"ERROR"}, tr("Indicate what to recompute: the uid of what changed "
+                                          "or of a result"))
+                return {"CANCELLED"}
+            self.report({"INFO"}, tr("Nothing stale depends on «{subject}»", subject=str(exc)))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        except (TypeError, ValueError) as exc:
+            self.report({"ERROR"}, _sentence(str(exc)))
+            return {"CANCELLED"}
+        self._steps: Iterator[Progress] | None = steps
+        self.progress_log: list[str] = []
+        self.report_log: list[str] = []
+        self.result: Any = None
+        _STATE.recomputing = True
+        manager = context.window_manager
+        self._timer = manager.event_timer_add(RECOMPUTE_TIMER_S, window=window)
+        manager.modal_handler_add(self)
+        manager.progress_begin(0, 100)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        """Un paso por evento del temporizador; Esc para al acabar la unidad en curso: lo ya
+        recalculado queda (cada operación es completa) y lo demás sigue obsoleto."""
+        if getattr(self, "_steps", None) is None:
+            return {"CANCELLED"}
+        if event.type == "ESC" and event.value == "PRESS":
+            self._cancel = True
+            return self._advance(context)
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+        return self._advance(context)
+
+    def cancel(self, context: Any) -> None:
+        """Blender para el modal (se abre otro ``.blend``, se cierra la ventana): cerrar los
+        pasos deja lo hecho."""
+        self._cancel = True
+        self._cleanup(context)
+
+    def _advance(self, context: Any) -> set[str]:
+        from ...core.provenance.recompute import RecomputeOutcome
+
+        try:
+            step = next(self._steps)  # type: ignore[arg-type]
+        except StopIteration:
+            step = None
+        except Exception as exc:  # noqa: BLE001 - un módulo que falla no tumba Blender
+            LOGGER.error("«Recalcular lo obsoleto» se ha parado", exc_info=exc)
+            self._cleanup(context)
+            _inputs_written()
+            self._report({"ERROR"}, tr("The recompute stopped: {error}",
+                                       error=error_text(exc)))
+            return {"CANCELLED"}
+        if step is not None and isinstance(step.result, RecomputeOutcome):
+            return self._finish(context, step.result)
+        if step is None:
+            self._cleanup(context)
+            return {"CANCELLED"}
+        self._show(context, step)
+        return {"RUNNING_MODAL"}
+
+    def _show(self, context: Any, step: Progress) -> None:
+        shown = tr("Recomputing the stale results: {done} of {total}… Esc: cancel",
+                   done=step.done, total=step.total)
+        self.progress_log.append(shown)
+        if getattr(self, "_timer", None) is None:
+            return
+        percent = step.done * 100 // step.total if step.total else 0
+        context.window_manager.progress_update(max(0, min(100, percent)))
+        workspace = getattr(context, "workspace", None)
+        if workspace is not None:
+            workspace.status_text_set(shown)
+
+    def _report(self, kind: set[str], text_: str) -> None:
+        self.report(kind, text_)
+        self.report_log.append(text_)
+
+    def _cleanup(self, context: Any) -> None:
+        steps, self._steps = getattr(self, "_steps", None), None
+        if steps is not None:
+            steps.close()  # type: ignore[attr-defined]
+        _STATE.recomputing = False
+        timer, self._timer = getattr(self, "_timer", None), None
+        if timer is not None:
+            manager = context.window_manager
+            manager.event_timer_remove(timer)
+            manager.progress_end()
+            workspace = getattr(context, "workspace", None)
+            if workspace is not None:
+                workspace.status_text_set(None)
+
+    def _finish(self, context: Any, outcome: Any) -> set[str]:
+        """Lo que pasó (RF-008-26): cuántas operaciones se recalcularon, las unidades que no
+        y lo que se dejó fuera, con su motivo; los indicadores, al día sin esperar al tic."""
+        from ...core.provenance.recompute import UnitStatus
+
+        self._steps = None  # terminado: nada que cerrar
+        self._cleanup(context)
+        self.result = outcome
+        _inputs_written()
+        language = i18n.language()
+        done = sum(len(result.operations) for result in outcome.results
+                   if result.status is UnitStatus.DONE)
+        if outcome.cancelled:
+            self._report({"INFO"}, tr("Recompute cancelled: operations recomputed, {done}; "
+                                      "the rest is still stale", done=done))
+        elif outcome.results:
+            self._report({"INFO"}, tr("Operations recomputed: {done}", done=done))
+        elif not outcome.remaining.skipped:
+            self._report({"INFO"}, tr("Nothing to recompute"))
+        for result in outcome.results:
+            if result.status is not UnitStatus.DONE:
+                self._report({"WARNING"}, result.text(language=language) or "")
+        for skipped in outcome.remaining.skipped:
+            self._report({"WARNING"}, skipped.text(language=language))
+        return {"CANCELLED"} if outcome.cancelled else {"FINISHED"}
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_show_parameters,
     GEOBLENDER_OT_core_set_parameter,
@@ -1912,6 +2149,7 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_resolve_input,
     GEOBLENDER_OT_core_discard_input,
     GEOBLENDER_OT_core_edit_input,
+    GEOBLENDER_OT_core_recompute_stale,
 )
 """Los operadores reales de la 008 (los demás siguen provisionales hasta su tarea)."""
 
@@ -1958,6 +2196,7 @@ def unregister() -> None:
     if job_list.note_provider() is job_note:
         job_list.set_note_provider(None)
     _STATE.jobs.clear()
+    _STATE.recomputing = False
     SESSION.reset()
     SESSION.hash_jobs = None
     if bpy.app.timers.is_registered(warn_read_only_dirs):

@@ -78,6 +78,20 @@ demostración de la 008 calculada con el límite:
   que dependía de la entrada; ``geoblender.core_edit_input`` (D-11) cambia el nombre y la
   entrega sin cambiar la entrada. En solo lectura, ninguna se puede.
 
+T53 (Recalcular lo obsoleto), con los bancos, los años por banco y el grupo acoplado de los
+acopios de la demostración de la 008:
+
+- RF-008-26, RF-008-25, RF-008-28: ``geoblender.core_recompute_stale`` es un modal con
+  temporizador que recalcula, en orden de dependencia y por unidades (las dos operaciones del
+  grupo juntas), lo obsoleto de un elemento (el botón Recalcular de su fila en el panel de lo
+  obsoleto), lo que depende de un cambio (la producción) o todo, como operaciones nuevas que
+  sustituyen a las anteriores, con su progreso, y deja la cuenta de «! n obsoletos» a 0; Esc a
+  mitad deja lo ya recalculado y lo demás obsoleto. No empieza mientras se comprueba el
+  proyecto ni con otro recálculo en marcha, y en solo lectura no está disponible.
+
+En ``blender -b`` no hay bucle de eventos: las pruebas toman el modal de
+``window.modal_operators`` y le pasan los eventos ``TIMER`` y ``ESC``.
+
 Se ejecuta con ``tools/run_blender_tests.py``. Las carpetas son de unidades simuladas: nunca
 se abren. En ``blender -b`` los temporizadores no corren: las pruebas avanzan el monitor
 llamando a su función.
@@ -103,7 +117,16 @@ from tests.support import blender_ext
 from tests.support.blender_ext import fingerprint_diff, module_name
 from tests.support.core_fixtures import mark_schema, settings_values
 from tests.support.fake_layout import FakeLayout, draw
-from tests.support.provenance_demo import Demo
+from tests.support.provenance_demo import (
+    BENCH_YEARS,
+    DETECT_STOCKPILES,
+    FILTER_STOCKPILES,
+    PRODUCTION,
+    SWELL_FACTOR,
+    YEARS_FIGURE,
+    YEARS_TABLE,
+    Demo,
+)
 from tests.support.repo import ROOT
 
 VARIABLE = "GEOBLENDER_READ_ONLY_DIRS"
@@ -153,6 +176,10 @@ READ_ONLY = "Proyecto en solo lectura:"  # y el motivo del proyecto
 UPDATE_REASON = "Nueva entrega del cliente"
 KEPT = "cambiada · se mantiene la copia"
 DISCARDED = "descartada · registro, no usar"
+RECOMPUTE = "geoblender.core_recompute_stale"
+TIMER = SimpleNamespace(type="TIMER", value="NOTHING")
+ESC = SimpleNamespace(type="ESC", value="PRESS")
+STOCKPILE_UNIT = (DETECT_STOCKPILES, FILTER_STOCKPILES)  # el grupo, en su orden
 
 
 def _module(name: str) -> ModuleType:
@@ -1267,6 +1294,151 @@ class ProvenanceSessionTest(unittest.TestCase):
         project.set_read_only(self.core.ReadOnlyCode.REQUESTED, "prueba")
         self.assertFalse(bpy.ops.geoblender.core_discard_input.poll())
         self.assertFalse(bpy.ops.geoblender.core_edit_input.poll())
+
+    # Recalcular lo obsoleto (T53) -----------------------------------------------------------
+
+    def stockpile_chain(self, demo: Demo) -> object:
+        """Un proyecto nuevo con los bancos, los años por banco y los acopios (el grupo
+        acoplado) de la demostración, abierto en la sesión (su comprobación de apertura, aún
+        pendiente)."""
+        project = self.create()
+        demo.digitize(project)
+        demo.bench_years(project)
+        demo.stockpiles(project)
+        self.ps.attach(project)
+        return project
+
+    @staticmethod
+    def change(project: object, key: str, value: float) -> None:
+        """Cambia el parámetro ``key`` a ``value`` (ADOPTADO, con su origen y su motivo)."""
+        store = _module("core.params").ParameterStore(project)
+        with project.write_transaction() as conn:
+            store.change(conn, key, value=value, kind="ADOPTADO", source="Plan de labores 2027",
+                         source_kind="document", decided_by="la propiedad",
+                         reason="Plan revisado")
+
+    def recompute(self, **props: object) -> object:
+        """Lanza «Recalcular lo obsoleto» con ``props`` y devuelve el modal en marcha (al
+        terminar la prueba, si sigue en marcha, se cancela)."""
+        self.assertEqual(bpy.ops.geoblender.core_recompute_stale("EXEC_DEFAULT", **props),
+                         {"RUNNING_MODAL"})
+        cls = self.session.GEOBLENDER_OT_core_recompute_stale
+        found = [op for op in bpy.context.window.modal_operators
+                 if isinstance(op, cls) and getattr(op, "_steps", None) is not None]
+        self.assertEqual(len(found), 1)
+        operator = found[0]
+        self.addCleanup(lambda: operator._steps is None or operator.cancel(bpy.context))
+        return operator
+
+    def drive(self, operator: object) -> set[str]:
+        """Pasa eventos ``TIMER`` al modal hasta que termina; devuelve su estado."""
+        for _ in range(MAX_TICKS):
+            state = operator.modal(bpy.context, TIMER)
+            if state != {"RUNNING_MODAL"}:
+                return state
+        self.fail("el recálculo no termina")
+
+    @staticmethod
+    def units(operator: object) -> list[tuple[tuple[str, ...], str]]:
+        """Las unidades que intentó el modal: sus tipos de operación y cómo terminaron."""
+        return [(result.unit.op_types, str(result.status))
+                for result in operator.result.results]
+
+    def test_recompute_one_result_a_change_and_everything(self) -> None:
+        """RF-008-26, RF-008-25, RF-008-28 (plan §5.3.2 y §5.4.4): con la producción cambiada,
+        los años por banco y los dos datos de los acopios están obsoletos («! 3 obsoletos»).
+        Recalcular en la fila de los años por banco del panel de lo obsoleto (su elemento)
+        rehace solo esa operación; Recalcular lo que depende del cambio de la producción rehace
+        después las dos del grupo de los acopios, juntas y en su orden, y la cuenta queda a 0.
+        Con la producción y el factor K cambiados otra vez, Recalcular lo obsoleto lo rehace
+        todo en orden de dependencia (los años antes que los acopios), con su progreso, como
+        operaciones nuevas que sustituyen a las anteriores y leen los parámetros vigentes, y la
+        cuenta vuelve a 0."""
+        demo = self.enterContext(Demo(module_name()).registered())
+        project = self.stockpile_chain(demo)
+        self.run_checks()
+        ui = _module("bl.ui.provenance")
+        self.change(project, PRODUCTION, 400_000.0)
+        ui.refresh(force=True)
+        self.assertEqual(ui.stale_text(), "! 3 obsoletos")
+
+        panel = draw(bpy.types.GEOBLENDER_PT_core_stale, bpy.context)
+        buttons = [item for item in panel.items if item.target == RECOMPUTE]
+        self.assertEqual([item.text for item in buttons], ["Recalcular"] * 3
+                         + ["Recalcular lo obsoleto"])
+        self.assertTrue(all(item.enabled for item in buttons))
+        with project.read() as conn:
+            (years,) = conn.execute("SELECT uid FROM gb_dataset WHERE name = ?",
+                                    (YEARS_TABLE,)).fetchone()
+        row = vars(buttons[0].properties)
+        self.assertEqual(row, {"scope": "ITEM", "subject_uid": years})
+        operator = self.recompute(**row)
+        self.assertEqual(self.drive(operator), {"FINISHED"})
+        self.assertEqual(self.units(operator), [((BENCH_YEARS,), "done")])
+        self.assertEqual(ui.stale_text(), "! 2 obsoletos")
+
+        production = _module("core.params").ParameterStore(project).get(PRODUCTION).uid
+        operator = self.recompute(scope="CAUSE", subject_uid=production)
+        self.assertEqual(self.drive(operator), {"FINISHED"})
+        self.assertEqual(self.units(operator), [(STOCKPILE_UNIT, "done")])
+        self.assertEqual((ui.stale_text(), ui.counts().obsolete), ("", 0))
+
+        self.change(project, PRODUCTION, 300_000.0)
+        self.change(project, SWELL_FACTOR, 1.2)
+        ui.refresh(force=True)
+        self.assertEqual(ui.stale_text(), "! 3 obsoletos")
+        with project.read() as conn:
+            current = dict(conn.execute("SELECT uid, op_type FROM gb_operation "
+                                        "WHERE superseded_by IS NULL"))
+        operator = self.recompute()
+        self.assertEqual(self.drive(operator), {"FINISHED"})
+        self.assertEqual(self.units(operator), [((BENCH_YEARS,), "done"),
+                                                (STOCKPILE_UNIT, "done")])
+        self.assertEqual(operator.progress_log, [
+            f"Recalculando lo obsoleto: {done} de 2… Esc: cancelar" for done in (0, 1, 2)])
+        made = [uid for result in operator.result.results for uid in result.operations]
+        with project.read() as conn:
+            rows = [conn.execute("SELECT op_type, supersedes_uid, fid FROM gb_operation "
+                                 "WHERE uid = ?", (uid,)).fetchone() for uid in made]
+        self.assertEqual([op_type for op_type, _old, _fid in rows],
+                         [BENCH_YEARS, *STOCKPILE_UNIT])
+        self.assertEqual([current[old] for _op_type, old, _fid in rows],
+                         [BENCH_YEARS, *STOCKPILE_UNIT])  # sustituyen a las anteriores
+        self.assertEqual([fid for *_rest, fid in rows], sorted(fid for *_rest, fid in rows))
+        figure = demo.current_figure(project, YEARS_FIGURE, {"bench": "B-1"})
+        self.assertAlmostEqual(figure.value, 1_250_000.0 / 300_000.0, places=12)
+        self.assertEqual((ui.stale_text(), ui.counts().obsolete), ("", 0))
+        self.assertIn("Operaciones recalculadas: 3", operator.report_log)
+
+    def test_recompute_cancelled_halfway_and_not_in_read_only(self) -> None:
+        """RF-008-26, RF-008-58 (plan §5.4.4): mientras se comprueba el proyecto, Recalcular lo
+        obsoleto no empieza (lo dice). Con la producción cambiada, Esc tras recalcular los años
+        por banco para antes del grupo de los acopios: lo recalculado queda y los acopios
+        siguen obsoletos («! 2 obsoletos»), y lo dice; con un recálculo en marcha no empieza
+        otro. En solo lectura no está disponible."""
+        demo = self.enterContext(Demo(module_name()).registered())
+        project = self.stockpile_chain(demo)
+        self.change(project, PRODUCTION, 400_000.0)
+        self.assertTrue(self.monitor.running)
+        self.assertEqual(bpy.ops.geoblender.core_recompute_stale(), {"CANCELLED"})
+        self.run_checks()
+
+        operator = self.recompute()
+        self.assertEqual(operator.modal(bpy.context, TIMER), {"RUNNING_MODAL"})  # 0 de 2
+        self.assertEqual(bpy.ops.geoblender.core_recompute_stale(), {"CANCELLED"})
+        self.assertEqual(operator.modal(bpy.context, TIMER), {"RUNNING_MODAL"})  # los años
+        self.assertEqual(operator.modal(bpy.context, ESC), {"CANCELLED"})
+        self.assertTrue(operator.result.cancelled)
+        self.assertEqual(self.units(operator), [((BENCH_YEARS,), "done")])
+        self.assertEqual(_module("bl.ui.provenance").stale_text(), "! 2 obsoletos")
+        self.assertIn("Recálculo cancelado: operaciones recalculadas, 1; lo demás sigue "
+                      "obsoleto", operator.report_log)
+
+        project.set_read_only(self.core.ReadOnlyCode.REQUESTED, "prueba")
+        self.assertFalse(bpy.ops.geoblender.core_recompute_stale.poll())
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_recompute_stale()
+        self.assertIn(READ_ONLY, str(caught.exception))
 
 
 if __name__ == "__main__":

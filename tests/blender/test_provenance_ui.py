@@ -253,7 +253,12 @@ class ProvenanceUiTest(unittest.TestCase):
         recompute = [item for item in panel.items if item.target == RECOMPUTE]
         self.assertEqual([item.text for item in recompute],
                          ["Recalcular", "Recalcular lo obsoleto"])
-        self.assertFalse(any(item.enabled for item in recompute))  # su orden llega con T53
+        self.assertTrue(all(item.enabled for item in recompute))  # su orden real (T53)
+        with project.read() as conn:
+            (years,) = conn.execute("SELECT uid FROM gb_dataset WHERE name = 'demo_bench_years'"
+                                    ).fetchone()
+        self.assertEqual([vars(item.properties) for item in recompute],
+                         [{"scope": "ITEM", "subject_uid": years}, {}])
 
         fields = [field for field in self.statusbar.fields() if field.key in FIELD_KEYS]
         ctx = _ctx(geoblender=True)
