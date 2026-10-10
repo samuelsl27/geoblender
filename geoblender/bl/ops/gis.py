@@ -23,8 +23,16 @@ Registra lo que la topografía declara a las specs 004 y 008:
 - (T30) el de ``gis.contours`` con su recálculo, y (T31) los de ``gis.export_raster`` y
   ``gis.export_gpkg`` (no se repiten solas: sin recálculo).
 
-:func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` lo quita en orden
-inverso (lo que otro cambió después es suyo). Los dos son simétricos e idempotentes.
+(T44) Las declaraciones de procedencia son constantes del módulo, construidas una vez:
+:data:`OPERATION_DEFS` (los once tipos de ``gis.provenance.OPERATION_TYPES``, cada repetible con
+su función de :data:`RECOMPUTE`) e :data:`IMPORTER_DEFS` (un importador por lector de
+importación, con su función de :data:`REIMPORT`); registrar dos veces pone los mismos objetos.
+
+:func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` quita solo eso, en
+orden inverso: lo que otro registró antes con la misma clave, o puso después en su lugar, es
+suyo y se queda (también una definición de parámetro de ``gis``). Los dos son simétricos e
+idempotentes: registrar y desregistrar deja los registros de ``core`` como estaban (ADR-0025
+§2).
 
 **Las órdenes de un MDT** (T28; HU-006-1), operadores de la procedencia de la 008
 (``ProvenanceAwareOperator``: la puerta ``ensure_ready``, ``begin_operation``, su trabajo de la
@@ -116,6 +124,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import bpy
@@ -228,11 +237,6 @@ FRACTION_KEY = "gis.resample.min_valid_fraction"
 SUPERSAMPLE_KEY = "gis.reproject.supersample"
 DTM_IMPORTERS: tuple[str, ...] = ("gis.geotiff", "gis.asc", "gis.xyz_grid")
 """Los lectores (sin versión) cuya reimportación registra esta orden (plan §5.6.8)."""
-T29_OPERATIONS: tuple[str, ...] = (
-    provenance.IMPORT_POINTS, provenance.IMPORT_VECTOR, provenance.TIN_FROM_POINTS,
-    provenance.TIN_FROM_CONTOURS, provenance.GRID_TO_TIN, provenance.TIN_TO_GRID,
-)
-"""Los tipos de operación de las órdenes de la T29 (puntos, capas, TIN y MDT ⇄ TIN)."""
 _SUCCEEDED = "succeeded"  # el final de un trabajo que terminó bien (jobs.records)
 _DTM_SOURCE_READERS = {reader.id: reader for reader in (content.GEOTIFF, content.ASC,
                                                          content.XYZ_GRID)}
@@ -285,13 +289,13 @@ _UNDO: list[Callable[[], None]] = []
 
 def register() -> None:
     """Registra las definiciones de parámetros, el lector de tablas, los lectores de contenido,
-    los tipos de trabajo y las declaraciones de procedencia de las órdenes de ``gis`` que aún no
-    están; idempotente."""
-    missing = [defn for defn in gis_params.DEFINITIONS
-               if defn.key not in core_params.DEFINITIONS]
+    los tipos de trabajo y las declaraciones de procedencia (:data:`OPERATION_DEFS`,
+    :data:`IMPORTER_DEFS`) de ``gis`` que aún no están; idempotente."""
+    missing = tuple(defn for defn in gis_params.DEFINITIONS
+                    if defn.key not in core_params.DEFINITIONS)
     if missing:
         core_params.register_definitions(missing)
-        _UNDO.append(_unregister_definitions)
+        _UNDO.append(functools.partial(_unregister_definitions, missing))
     if content.table_reader() is None:
         content.use_table_reader(read_table)
         _UNDO.append(_forget_table_reader)
@@ -305,23 +309,15 @@ def register() -> None:
             job_catalog.register_worker(info)
             _UNDO.append(_unregister_if(job_catalog.WORKERS, info.name, info,
                                         job_catalog.unregister_worker))
-    definitions = provenance.operation_defs(
-        {provenance.RESAMPLE: recompute_resample, provenance.TIN_FROM_POINTS: recompute_tin,
-         provenance.TIN_FROM_CONTOURS: recompute_tin, provenance.GRID_TO_TIN: recompute_convert,
-         provenance.TIN_TO_GRID: recompute_convert, provenance.CONTOURS: recompute_contours},
-        op_types=(provenance.IMPORT_DTM, provenance.RESAMPLE, *T29_OPERATIONS,
-                  provenance.CONTOURS, provenance.EXPORT_RASTER, provenance.EXPORT_GPKG))
-    for definition in definitions:
+    for definition in OPERATION_DEFS:
         if definition.op_type not in contract.OPERATIONS:
             contract.register_operation(definition)
             _UNDO.append(_unregister_if(contract.OPERATIONS, definition.op_type, definition,
                                         contract.unregister_operation))
-    for reader_id, reimport in ((*((r, reimport_dtm) for r in DTM_IMPORTERS),
-                                 *((r, reimport_survey) for r in SURVEY_IMPORTERS))):
-        if reader_id not in contract.IMPORTERS:
-            importer = provenance.importer_def(reader_id, reimport)
+    for importer in IMPORTER_DEFS:
+        if importer.reader_id not in contract.IMPORTERS:
             contract.register_importer(importer)
-            _UNDO.append(_unregister_if(contract.IMPORTERS, reader_id, importer,
+            _UNDO.append(_unregister_if(contract.IMPORTERS, importer.reader_id, importer,
                                         contract.unregister_importer))
 
 
@@ -345,8 +341,17 @@ def _unregister_if(view: Any, key: str, item: object,
     return undo
 
 
-def _unregister_definitions() -> None:
+def _unregister_definitions(ours: tuple[core_params.ParamDef, ...]) -> None:
+    """Quita las definiciones que puso :func:`register` (``ours``) y deja las demás de
+    ``gis``: las que otro registró antes con su clave o puso después en su lugar son suyas.
+    ``core.params`` solo las quita por módulo: se quitan todas y se vuelven a poner las de
+    otro, los mismos objetos."""
+    mine = {id(defn) for defn in ours}
+    others = [defn for defn in core_params.DEFINITIONS.values()
+              if defn.module == MODULE and id(defn) not in mine]
     core_params.unregister_definitions(MODULE)
+    if others:
+        core_params.register_definitions(others)
 
 
 def _forget_table_reader() -> None:
@@ -3905,6 +3910,36 @@ class GEOBLENDER_OT_gis_export_gpkg(ProvenanceAwareOperator, bpy.types.Operator)
             return stop
         return _start_export(self, context, target, records,
                              {"layers": [record.name for record in records]}, _start_gpkg)
+
+
+# --- Declaraciones de la procedencia (T44; ADR-0025 §2; plan §5.6.3 y §5.6.8) ---------------
+
+RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = MappingProxyType({
+    provenance.RESAMPLE: recompute_resample,
+    provenance.TIN_FROM_POINTS: recompute_tin,
+    provenance.TIN_FROM_CONTOURS: recompute_tin,
+    provenance.GRID_TO_TIN: recompute_convert,
+    provenance.TIN_TO_GRID: recompute_convert,
+    provenance.CONTOURS: recompute_contours,
+})
+"""La función de recálculo de cada tipo de operación de la 006 que se repite solo
+(RF-008-26): vuelve a lanzar la misma cadena con las entradas vigentes, los parámetros de hoy y
+los mismos ajustes."""
+REIMPORT: Mapping[str, Callable[[ReimportRequest], OperationHandle]] = MappingProxyType({
+    **{reader_id: reimport_dtm for reader_id in DTM_IMPORTERS},
+    **{reader_id: reimport_survey for reader_id in SURVEY_IMPORTERS},
+})
+"""La función de reimportación de cada lector de importación de la 006, sin versión
+(RF-008-11)."""
+OPERATION_DEFS: tuple[contract.OperationDef, ...] = provenance.operation_defs(RECOMPUTE)
+"""Los ``OperationDef`` de los once tipos de la 006, en el orden de
+``gis.provenance.OPERATION_TYPES``, cada uno que se repite solo con su recálculo (contrato de
+ADR-0025; ``operation_defs`` rechaza que falte o sobre una función)."""
+IMPORTER_DEFS: tuple[contract.ImporterDef, ...] = tuple(
+    provenance.importer_def(reader_id, REIMPORT[reader_id])
+    for reader_id in provenance.IMPORT_READERS)
+"""Los ``ImporterDef`` de los lectores de importación de la 006 (``KeyError`` al cargar el
+módulo si a uno le falta su reimportación)."""
 
 
 classes: tuple[type, ...] = (GEOBLENDER_OT_gis_import_dtm, GEOBLENDER_OT_gis_resample_to_grid,
