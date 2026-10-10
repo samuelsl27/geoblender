@@ -76,6 +76,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import numpy as np
@@ -101,10 +102,12 @@ from .tin import Tin, file_meta
 __all__ = [
     "ASC",
     "CONTENT_READERS",
+    "CONTENT_SETTINGS",
     "GEOTIFF",
     "GPKG_LAYER",
     "POINTS_TEXT",
     "POINT_COLUMNS",
+    "READER_SETTINGS",
     "XYZ_GRID",
     "raster_digest",
     "raster_header",
@@ -127,6 +130,11 @@ obligatorios: :data:`POINTS_REQUIRED`)."""
 POINTS_REQUIRED: tuple[str, ...] = ("encoding", "separator", "decimal", "columns")
 GPKG_SETTINGS: tuple[str, ...] = ("layer", "role", "elevation_field")
 """Ajustes de lectura de ``gis.gpkg_layer@1`` (``layer``, obligatorio)."""
+CONTENT_SETTINGS: tuple[str, ...] = (
+    "nodata_override", "columns", "line_kind", "role", "elevation_field",
+)
+"""Los ajustes de lectura que son contenido (las convenciones de las declaraciones de una
+entrada, ``core.inputs``): no cambian los datos, sí su hash de contenido (T43)."""
 MAPPING_ROLES: tuple[str, ...] = ("x", "y", "z", "point_id", "code", "line")
 """Los papeles de ``columns`` en el texto de puntos (X, Y y Z, obligatorios)."""
 LINE_KINDS: tuple[str, ...] = ("hard", "soft")
@@ -537,3 +545,12 @@ GPKG_LAYER = ContentReader(
 """Una capa de un GeoPackage externo (con su ``-wal``)."""
 CONTENT_READERS: tuple[ContentReader, ...] = (GEOTIFF, ASC, XYZ_GRID, POINTS_TEXT, GPKG_LAYER)
 """Los lectores de ``gis``, para registrarlos desde ``bl/`` y en el trabajo de hash."""
+READER_SETTINGS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    GEOTIFF.id: GRID_SETTINGS,
+    ASC.id: GRID_SETTINGS,
+    XYZ_GRID.id: XYZ_SETTINGS,
+    POINTS_TEXT.id: POINTS_SETTINGS,
+    GPKG_LAYER.id: GPKG_SETTINGS,
+})
+"""Los ajustes de lectura de cada lector (con versión): los únicos que guarda la entrada de
+una importación, que su lector vuelve a recibir al comprobarla (T43)."""
