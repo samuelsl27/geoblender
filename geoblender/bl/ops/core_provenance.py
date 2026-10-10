@@ -39,9 +39,14 @@ ADR-0025).
   migrar, o uno posterior del que solo se lee la cabecera) no arranca nada:
   :meth:`ProvenanceSession.unavailable` da el motivo que muestran los paneles. Cerrar o abrir
   otro proyecto, y desactivar Geoblender, paran la comprobación y cancelan lo pendiente.
+- El trabajo de hash (T47; RF-008-09, RNF-008-11; plan §5.3.3): :func:`register` registra el
+  tipo de trabajo ``core_content_hash`` (``jobs.content_hash.WORKER_INFO``) y da a la sesión
+  :data:`HASH_JOBS`, con el que la comprobación manda el hash de las fuentes externas grandes
+  al lanzador de la sesión (con el monitor de los trabajos, que lo sigue en la barra de
+  estado), con las rutas de la fuente en la línea de órdenes; :func:`unregister` lo quita.
 
-Lo demás llega con las tareas siguientes de la fase 7: el trabajo de hash (T47) y las ayudas
-para los módulos (T48); los operadores de §5.3.2, con los paneles (fase 8).
+Lo demás llega con las tareas siguientes: las ayudas para los módulos (T48); los operadores de
+§5.3.2, con los paneles (fase 8).
 
 ``core.i18n`` no tiene cómo quitar traducciones: :func:`unregister` las deja (como los
 trabajos de la 004), y volver a registrar las instala otra vez sin cambiar nada.
@@ -66,17 +71,25 @@ from ...core.params import core_defs
 from ...core.paths import ReadOnlyDirs
 from ...core.project.migrations import m0002
 from ...core.provenance import contract, messages
+from ...jobs import catalog as job_catalog
+from ...jobs import content_hash
 from .. import ADDON_PACKAGE
 from ..props.core import read_only_dirs_of
 from ..scene import project_session
 from ..ui import statusbar
+from . import jobs as jobs_ops
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from pathlib import Path
+
     from ...core.project.model import Progress
     from ...core.project.session import Project
     from ...core.provenance.checks import OpenCheckOutcome
     from ...core.provenance.contract import ReimportRequest
     from ...core.provenance.gate import CheckState
+    from ...jobs.protocol import JobRequest
+    from ...jobs.runner import JobHandle, JobRunner
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 
@@ -154,8 +167,9 @@ class ProvenanceSession:
 
     def __init__(self) -> None:
         self.hash_jobs: Any = None
-        """Los trabajos de hash de las fuentes externas grandes (``checks.HashJobs``; los pone
-        T47); ``None``: todo en el hilo, por trozos."""
+        """Los trabajos de hash de las fuentes externas grandes (``checks.HashJobs``: los de
+        :data:`HASH_JOBS` mientras Geoblender está registrado); ``None``: todo en el hilo, por
+        trozos."""
         self._project: Project | None = None
         self._pending: CheckState | None = None
         self._next: str | None = None  # lo que empieza en el próximo tic
@@ -418,6 +432,30 @@ CORE_IMPORTERS: tuple[contract.ImporterDef, ...] = (
 (el mismo lector y la misma función), sin cargar el importador al registrar."""
 
 
+# El trabajo de hash -----------------------------------------------------------------------
+
+
+def _session_runner() -> JobRunner | None:
+    """El lanzador de trabajos de la sesión (``bl.ops.jobs``), si lo hay y admite trabajos."""
+    runner = jobs_ops.MONITOR.runner
+    if runner is None or runner.closed:
+        return None
+    return runner
+
+
+def _monitor_submit(runner: JobRunner, request: JobRequest,
+                    paths: Mapping[str, Path]) -> JobHandle:
+    """Lanza un trabajo de hash con el monitor de los trabajos (que lo sigue en la barra de
+    estado); ``runner`` es su lanzador."""
+    return jobs_ops.MONITOR.submit(request, paths=paths)
+
+
+HASH_JOBS = content_hash.ContentHashJobs(_session_runner, submit=_monitor_submit)
+"""Los trabajos de hash de la sesión (T47; RF-008-09, RNF-008-11, plan §5.3.3): el trabajo
+``core_content_hash`` con el lanzador de la sesión, con la ruta de la fuente en la línea de
+órdenes. Es el ``hash_jobs`` de :data:`SESSION` mientras Geoblender está registrado."""
+
+
 def _register_declarations() -> None:
     """Registra lo que ``core`` declara y aún no está registrado, y apunta cómo quitarlo."""
     undo = _STATE.undo
@@ -440,6 +478,11 @@ def _register_declarations() -> None:
             content_readers.register_reader(reader)
             undo.append(_unregister_if(content_readers.READERS, reader.id, reader,
                                        content_readers.unregister_reader))
+    info = content_hash.WORKER_INFO
+    if info.name not in job_catalog.WORKERS:
+        job_catalog.register_worker(info)
+        undo.append(_unregister_if(job_catalog.WORKERS, info.name, info,
+                                   job_catalog.unregister_worker))
 
 
 def _unregister_if(view: Any, key: str, item: object,
@@ -461,17 +504,21 @@ def _unregister_declarations() -> None:
 
 
 def register() -> None:
-    """Instala los textos de la procedencia y de los parámetros en ``core.i18n``, registra las
-    declaraciones de ``core``, apunta la sesión a los cambios de proyecto y pone el
-    temporizador del aviso de las carpetas de solo lectura (persistente, para que no lo quite
-    abrir otro ``.blend`` antes de que se dispare); idempotente."""
+    """Instala los textos de la procedencia, de los parámetros y del trabajo de hash en
+    ``core.i18n``, registra las declaraciones de ``core`` (con el tipo de trabajo
+    ``core_content_hash``), da a la sesión sus trabajos de hash (:data:`HASH_JOBS`), la apunta
+    a los cambios de proyecto y pone el temporizador del aviso de las carpetas de solo lectura
+    (persistente, para que no lo quite abrir otro ``.blend`` antes de que se dispare);
+    idempotente."""
     i18n.install(messages.CATALOG_ES)
     i18n.install(params.CATALOG_ES)
+    i18n.install(content_hash.CATALOG_ES)
     try:
         _register_declarations()
     except BaseException:
         _unregister_declarations()
         raise
+    SESSION.hash_jobs = HASH_JOBS
     project_session.add_listener(on_project_changed)
     SESSION.on_project_changed(project_session.current())
     forget_read_only_warning()
@@ -482,11 +529,12 @@ def register() -> None:
 def unregister() -> None:
     """Deja de escuchar los cambios de proyecto, para la comprobación en marcha (quita su
     temporizador y cancela lo pendiente) y olvida el proyecto, quita el temporizador del aviso
-    (si aún no se disparó) y olvida que se avisó (la sesión siguiente avisa otra vez) y quita
-    las declaraciones de ``core`` que registró; las traducciones instaladas se quedan;
-    idempotente."""
+    (si aún no se disparó) y olvida que se avisó (la sesión siguiente avisa otra vez), quita
+    los trabajos de hash de la sesión y las declaraciones de ``core`` que registró; las
+    traducciones instaladas se quedan; idempotente."""
     project_session.remove_listener(on_project_changed)
     SESSION.reset()
+    SESSION.hash_jobs = None
     if bpy.app.timers.is_registered(warn_read_only_dirs):
         bpy.app.timers.unregister(warn_read_only_dirs)
     forget_read_only_warning()

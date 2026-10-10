@@ -33,16 +33,25 @@ T46:
   el motivo que muestran los paneles; desactivar Geoblender quita el temporizador y cancela lo
   pendiente.
 
+T47:
+
+- RF-008-09, RNF-008-11 (plan §5.3.3; ADR-0025 §2): habilitar registra el tipo de trabajo
+  ``core_content_hash`` y da a la sesión sus trabajos de hash, que van al lanzador de la sesión
+  (seguidos en la barra de estado) con la ruta de la fuente aparte de la petición; la lista
+  estática de lectores del trabajo es la de los lectores registrados que pueden ir a él.
+
 Se ejecuta con ``tools/run_blender_tests.py``. Las carpetas son de unidades simuladas: nunca
 se abren. En ``blender -b`` los temporizadores no corren: las pruebas avanzan el monitor
 llamando a su función.
 """
 
 import importlib
+import json
 import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -80,6 +89,8 @@ CORE_IMPORTERS = ("core.gpkg_layer",)
 CORE_PARAMETERS = ("core.original_copy_limit",)
 MIGRATE_TEXT = "Proyecto de esquema 1: migre el proyecto para usar la procedencia"
 MAX_TICKS = 200  # un proyecto vacío se comprueba en una decena de pasos
+HASH_WORKER = "core_content_hash"
+JOB_WAIT_S = 30.0  # plazo de seguridad de un trabajo de hash en hilo
 
 
 def _module(name: str) -> ModuleType:
@@ -142,7 +153,8 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         temporizador del aviso de las carpetas de solo lectura; deshabilitar lo quita todo y
         deja la huella de Blender como al principio de la sesión de pruebas. T46 (ADR-0025
         §2): también registra las declaraciones de ``core`` y escucha los cambios de proyecto,
-        y deshabilitar lo quita."""
+        y deshabilitar lo quita. T47 (RF-008-09; plan §5.3.3): y el tipo de trabajo
+        ``core_content_hash``, con los trabajos de hash de la sesión."""
         self.enterContext(_without_variable())
         blender_ext.enable()
         provenance = _module("bl.props.provenance")
@@ -156,6 +168,10 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         heavy = ("core.provenance.importer", "core.provenance.gate", "core.provenance.checks")
         self.assertEqual([name for name in heavy if f"{module_name()}.{name}" in sys.modules],
                          [])  # se cargan al usarlos
+        workers = _module("jobs.catalog").WORKERS
+        content_hash = _module("jobs.content_hash")
+        self.assertIs(workers.get(HASH_WORKER), content_hash.WORKER_INFO)
+        self.assertIsInstance(session.SESSION.hash_jobs, content_hash.ContentHashJobs)
         importer = _module("core.provenance.importer")
         self.assertEqual([item.reader_id for item in importer.CORE_IMPORTERS],
                          list(CORE_IMPORTERS))
@@ -189,6 +205,8 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         self.assertEqual(_core_declarations(), {
             "operations": (), "importers": (), "readers": (), "parameters": ()})
         self.assertNotIn(session.on_project_changed, project_session.listeners())
+        self.assertNotIn(HASH_WORKER, workers)
+        self.assertIsNone(session.SESSION.hash_jobs)
         after = blender_ext.state_fingerprint()
         baseline = blender_ext.session_baseline()
         if after != baseline:
@@ -509,6 +527,45 @@ class ProvenanceSessionTest(unittest.TestCase):
         self.assertFalse(monitor.running or pending.running)
         self.assertIsNone(monitor.project)
         self.assertIsNone(monitor.report)
+
+    def test_hash_jobs_go_to_the_session_runner(self) -> None:
+        """RF-008-09, RNF-008-11 (plan §5.3.3; ADR-0025 §2): la lista estática de lectores del
+        trabajo ``core_content_hash`` es la de los lectores registrados que pueden ir a él; un
+        trabajo de hash de la sesión va al lanzador de la sesión con el monitor de los trabajos
+        (que lo sigue en la barra de estado), con la ruta de la fuente aparte de la petición, da
+        el hash del hilo y, al recogerlo, queda incorporado (sin sus entradas)."""
+        worker = _module("workers.core_content_hash")
+        readers = _module("core.content.readers")
+        self.assertEqual(sorted(found.id for found in worker.worker_readers()),
+                         sorted(found.id for found in readers.READERS.values() if found.worker))
+        jobs_ops = _module("bl.ops.jobs")
+        records = _module("jobs.records")
+        self.addCleanup(jobs_ops.MONITOR.stop)
+        document = self.tmp / "fuentes" / "informe.bin"
+        document.parent.mkdir()
+        document.write_bytes(os.urandom(3 << 20))
+        found = readers.reader("core.document@1")
+        request = self.checks.HashRequest("uid-informe", "informe", found.id, "document", {},
+                                          {}, {"main": document}, "gbch/1",
+                                          document.stat().st_size)
+        hash_jobs = self.monitor.hash_jobs
+        with mock.patch.object(jobs_ops.MONITOR, "submit",
+                               wraps=jobs_ops.MONITOR.submit) as submitted:
+            handle = hash_jobs.submit(request)
+        self.assertEqual(submitted.call_args.kwargs["paths"], {"source_main": document})
+        self.assertTrue(jobs_ops.MONITOR.watching)
+        deadline = time.monotonic() + JOB_WAIT_S
+        while handle.result() is None and time.monotonic() < deadline:
+            jobs_ops.tick()  # en «blender -b» no corren los temporizadores
+            time.sleep(0.01)
+        expected = readers.read_content(found, found.request("document", {},
+                                                             {"main": document}))
+        self.assertEqual(hash_jobs.poll(handle), self.checks.HashResult(digest=expected))
+        text = (handle.job_dir.path / "request.json").read_text("utf-8")
+        for shown in (str(self.tmp), json.dumps(str(self.tmp))[1:-1]):
+            self.assertNotIn(shown, text)
+        self.assertIsNotNone(records.read_record(handle.job_dir).ingested_at)
+        self.assertEqual(records.read_record(handle.job_dir).executor, "inprocess")
 
 
 if __name__ == "__main__":
