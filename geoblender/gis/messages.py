@@ -612,6 +612,35 @@ CATALOG: tuple[Message, ...] = (
         "El nombre «{value}» no sirve para nombrar un dato: escriba al menos una letra o una "
         "cifra.",
     ),
+    # Resultados en el proyecto (plan §5.6.4 y §5.6.5, T42) ----------------------------------
+    Message(
+        "gis.output_target_taken",
+        "«{value}» is already in the project and does not belong to the dataset «{name}» (a "
+        "leftover of an interrupted operation or a layer of another program): give the "
+        "result another name; nothing has been written.",
+        "Ya hay «{value}» en el proyecto y no es del dato «{name}» (un resto de una operación "
+        "interrumpida o una capa de otro programa): dé otro nombre al resultado; no se ha "
+        "escrito nada.",
+    ),
+    Message(
+        "gis.output_copy_mismatch",
+        "The copy of «{file}» in the project does not match the fingerprint of the job "
+        "({detail}): nothing has been written; run the operation again.",
+        "La copia de «{file}» en el proyecto no coincide con la huella del trabajo ({detail}): "
+        "no se ha escrito nada; repita la operación.",
+    ),
+    Message(
+        "gis.dataset_unknown",
+        "There is no topography dataset «{value}» in the project.",
+        "No hay ningún dato de topografía «{value}» en el proyecto.",
+    ),
+    Message(
+        "gis.dataset_file_missing",
+        "The file «{file}» of the dataset «{name}» is missing from the project: compute it or "
+        "import it again.",
+        "Falta en el proyecto el fichero «{file}» del dato «{name}»: vuelva a calcularlo o a "
+        "importarlo.",
+    ),
     # Los de un parámetro (gis/params.py) los da core.params (core.param_*; plan §5.6.1).
 )
 

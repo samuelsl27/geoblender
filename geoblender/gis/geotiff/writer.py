@@ -26,13 +26,16 @@ calculan en dos pasadas: primero las teselas y después el IFD; así se sabe el 
 antes de elegir el formato: TIFF clásico hasta :data:`BIGTIFF_THRESHOLD` bytes (4 GiB −
 64 KiB) y BigTIFF por encima (el umbral se puede inyectar en las pruebas).
 
-Escritura atómica: en ``<destino>.tmp`` (:func:`temporary_path`), ``fsync`` y ``os.replace``.
-Mientras tanto el destino anterior sigue intacto; si algo falla o se cancela
+Escritura atómica: en un temporal, ``fsync`` y ``os.replace``. El temporal es
+``<destino>.tmp`` (:func:`temporary_path`) o el que da quien llama (``temporary``): en el
+proyecto, ``gis.store`` da ``<fichero>.tmp-<sesión>``, el patrón de restos de la 008 (plan
+§5.6.5), y con ``replace=False`` lo deja escrito para ponerlo en su sitio él mismo al confirmar
+la operación. Mientras tanto el destino anterior sigue intacto; si algo falla o se cancela
 (``jobs.worker_api.JobCancelled``, comprobado antes de cada tesela, con el avance después de
 cada una), el temporal se borra. Si Windows no deja sustituir el destino porque otro programa
-lo tiene abierto (QGIS), ``gis.raster_target_locked``: en ``rasters/``, ``gis.store`` escribe
-entonces ``<nombre>__<hash8>.tif`` (``formato-proyecto.md`` §4.2); en una exportación es el
-error, sin fichero a medias. Cualquier otro fallo del disco es ``gis.raster_write_failed``.
+lo tiene abierto (QGIS), ``gis.raster_target_locked``: es el error, sin fichero a medias y con
+el anterior intacto, también en ``rasters/`` (sin ``<nombre>__<hash8>.tif``, D20). Cualquier
+otro fallo del disco es ``gis.raster_write_failed``.
 """
 
 from __future__ import annotations
@@ -62,7 +65,9 @@ __all__ = [
     "TEMPORARY_SUFFIX",
     "TILE_SIZE",
     "check_bigtiff_threshold",
+    "target_locked",
     "temporary_path",
+    "write_failed",
     "write_geotiff",
 ]
 
@@ -132,23 +137,32 @@ def write_geotiff(
     path: Path | str,
     *,
     profile: WriteProfile | str,
+    temporary: Path | str | None = None,
+    replace: bool = True,
     bigtiff_threshold: int = BIGTIFF_THRESHOLD,
     progress: Progress | None = None,
     cancelled: Cancelled | None = None,
-) -> None:
+) -> Path:
     """Escribe ``raster`` en ``path`` con ``profile`` (``WriteProfile`` o su texto), con
-    temporal y renombrado: nunca un fichero a medias. ``GisError`` si una cota no se puede
-    entregar en float32, si el destino está bloqueado o si falla el disco; ``JobCancelled``
-    si ``cancelled()`` pide parar. ``raster`` no se modifica."""
+    temporal y renombrado: nunca un fichero a medias. ``temporary``: el temporal (por defecto,
+    :func:`temporary_path`); con ``replace=False`` el fichero queda escrito entero en él y
+    ``path`` no se toca (lo pone en su sitio quien llama). Devuelve lo escrito: ``path`` o,
+    sin ``replace``, el temporal. ``GisError`` si una cota no se puede entregar en float32, si
+    el destino está bloqueado o si falla el disco; ``JobCancelled`` si ``cancelled()`` pide
+    parar. ``raster`` no se modifica."""
     if not isinstance(raster, Raster):
         raise TypeError(f"se escribe un Raster, no {type(raster).__name__}")
+    if not isinstance(replace, bool):
+        raise TypeError(f"«replace» es verdadero o falso, no {replace!r}")
     chosen = _PROFILES[WriteProfile(profile)]
     threshold = check_bigtiff_threshold(bigtiff_threshold)
     path = Path(path)
     name = path.name
     if chosen.dtype == np.float32:
         _check_deliverable(raster.values, name)
-    temporary = temporary_path(path)
+    temporary = temporary_path(path) if temporary is None else Path(temporary)
+    if temporary == path:
+        raise ValueError(f"el temporal de «{name}» no puede ser el propio destino")
     check_path_length(temporary, obj=name)
     try:
         with temporary.open("wb") as stream:
@@ -158,21 +172,29 @@ def write_geotiff(
     except BaseException as error:
         _discard(temporary)
         if isinstance(error, OSError):
-            raise _write_failed(name, error) from None
+            raise write_failed(name, error) from None
         raise
+    if not replace:
+        return temporary
     try:
         os.replace(temporary, path)
     except OSError as error:
         _discard(temporary)
         if isinstance(error, PermissionError):  # Windows: otro programa lo tiene abierto
-            raise GisError(
-                "gis.raster_target_locked", obj=name, field=_FIELD_TARGET, value=name,
-                file=name,
-            ) from None
-        raise _write_failed(name, error) from None
+            raise target_locked(name) from None
+        raise write_failed(name, error) from None
+    return path
 
 
-def _write_failed(name: str, error: OSError) -> GisError:
+def target_locked(name: str) -> GisError:
+    """``gis.raster_target_locked`` de ``name``: otro programa tiene abierto el destino (D20:
+    es el error, sin escribir nada; lo usa también ``gis.store``)."""
+    return GisError("gis.raster_target_locked", obj=name, field=_FIELD_TARGET, value=name,
+                    file=name)
+
+
+def write_failed(name: str, error: OSError) -> GisError:
+    """``gis.raster_write_failed`` de ``name`` con el motivo del sistema (``error``)."""
     return GisError(
         "gis.raster_write_failed",
         obj=name,

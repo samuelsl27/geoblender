@@ -86,6 +86,7 @@ __all__ = [
     "TOUCH_TOLERANCE",
     "Tin",
     "build_tin",
+    "file_meta",
     "load_tin",
     "raster_to_tin",
     "sample_tin",
@@ -815,10 +816,12 @@ def raster_to_tin(
 # Fichero npz (plan §5.2.2) ---------------------------------------------------------------
 
 
-def _meta(tin: Tin, meta: Mapping[str, Any]) -> dict[str, Any]:
-    """El ``meta`` del npz: el de ``tin`` (si se leyó de un fichero), el de quien guarda
-    (``crs_epsg``, ``vertical`` y ``operation_uid``, obligatorias, y las que quiera) y las
-    claves que salen del TIN, que no se pueden contradecir."""
+def file_meta(tin: Tin, meta: Mapping[str, Any]) -> dict[str, Any]:
+    """El ``meta`` del npz que escribe :func:`save_tin`: el de ``tin`` (si se leyó de un
+    fichero), el de quien guarda (``crs_epsg``, ``vertical`` y ``operation_uid``,
+    obligatorias, y las que quiera) y las claves que salen del TIN, que no se pueden
+    contradecir (``ValueError``). Con él calcula ``gis.content.tin_digest`` el hash del
+    fichero sin leerlo."""
     given = dict(meta)
     triangulator = tin.triangulator or given.get("triangulator", "")
     computed = {
@@ -853,32 +856,51 @@ def _meta(tin: Tin, meta: Mapping[str, Any]) -> dict[str, Any]:
     return ordered
 
 
-def save_tin(tin: Tin, path: Path | str, meta: Mapping[str, Any]) -> None:
-    """Guarda ``tin`` en ``path`` (npz de ``meshes/``, plan §5.2.2) con su ``meta`` JSON:
-    ``schema``, ``kind``, ``surface_type``, ``closed``, ``oriented``, ``triangulator`` y
-    ``flat_faces`` salen del TIN; ``crs_epsg``, ``vertical`` y ``operation_uid`` los da
-    ``meta`` (o el ``meta`` con que se leyó el TIN), que puede añadir otras claves.
-    ``ValueError`` si falta una, contradice al TIN o no es JSON (sin escribir nada).
-    Escribe en ``<path>.tmp`` y lo renombra: nunca un fichero a medias."""
+def save_tin(
+    tin: Tin,
+    path: Path | str,
+    meta: Mapping[str, Any],
+    *,
+    temporary: Path | str | None = None,
+    replace: bool = True,
+) -> Path:
+    """Guarda ``tin`` en ``path`` (npz de ``meshes/``, plan §5.2.2) con su ``meta`` JSON
+    (:func:`file_meta`): ``schema``, ``kind``, ``surface_type``, ``closed``, ``oriented``,
+    ``triangulator`` y ``flat_faces`` salen del TIN; ``crs_epsg``, ``vertical`` y
+    ``operation_uid`` los da ``meta`` (o el ``meta`` con que se leyó el TIN), que puede añadir
+    otras claves. ``ValueError`` si falta una, contradice al TIN o no es JSON (sin escribir
+    nada). Escribe en un temporal y lo renombra: nunca un fichero a medias. ``temporary``: el
+    temporal (por defecto, ``<path>.tmp``; en el proyecto, ``gis.store`` da
+    ``<fichero>.tmp-<sesión>``); con ``replace=False`` el fichero queda entero en él y ``path``
+    no se toca. Devuelve lo escrito: ``path`` o, sin ``replace``, el temporal. Si falla, el
+    temporal se borra."""
     if not isinstance(tin, Tin):
         raise TypeError("tin es un Tin")
-    content = _meta(tin, meta)
+    if not isinstance(replace, bool):
+        raise TypeError(f"«replace» es verdadero o falso, no {replace!r}")
+    content = file_meta(tin, meta)
     try:
         text = json.dumps(content, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as error:
         raise ValueError(f"meta no se puede escribir en JSON: {error}") from None
     target = Path(path)
-    temporary = target.with_name(target.name + ".tmp")
+    written = target.with_name(target.name + ".tmp") if temporary is None else Path(temporary)
+    if written == target:
+        raise ValueError(f"el temporal de «{target.name}» no puede ser el propio destino")
     try:
-        with temporary.open("wb") as stream:
+        with written.open("wb") as stream:
             np.savez_compressed(stream, vertices=tin.vertices, faces=tin.faces,
                                 constraint_edges=tin.constraint_edges,
                                 vertex_source=tin.vertex_source, meta=np.array(text))
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
+        if not replace:
+            return written
+        os.replace(written, target)
+    except BaseException:
+        written.unlink(missing_ok=True)
+        raise
+    return target
 
 
 def load_tin(path: Path | str) -> Tin:

@@ -21,7 +21,8 @@ Lo que se hashea es lo que importa la 006 (``gbch/1``, D-8: exacto):
   sin dato y los bloques que no están en el fichero en NaN. Compresión, tiras o teselas,
   BigTIFF, orden de bytes y float32 frente a float64 no cuentan. :func:`raster_digest` da, sin
   escribirlo, el hash de lo que escribe ``GeoTiffIO`` con el perfil ``project`` (ida y
-  vuelta).
+  vuelta), y :func:`tin_digest`, el que da ``core.npz_mesh@1`` del TIN que escribe
+  ``gis.tin.save_tin`` (T42).
 - :data:`ASC` (``gis.asc@1``, ``raster`` compuesto, ADR-0024 §4): la parte ``main``, la
   rejilla (referencia: la esquina noroeste con ``xllcorner`` o el centro de la celda del
   noroeste con ``xllcenter``; el ``NODATA_value``; sin CRS), por trozos del cuerpo
@@ -95,6 +96,7 @@ from .geotiff import reader as geotiff_reader
 from .points import ColumnMapping, _field, _number, check_rows_options, row_has_columns
 from .ports import TableReader
 from .raster import Raster
+from .tin import Tin, file_meta
 
 __all__ = [
     "ASC",
@@ -107,6 +109,7 @@ __all__ = [
     "raster_digest",
     "raster_header",
     "table_reader",
+    "tin_digest",
     "use_table_reader",
 ]
 
@@ -305,6 +308,26 @@ def raster_digest(
     feed = hasher.begin_grid(raster_header(raster))
     feed.update(raster.values)
     feed.finish()
+    return hasher.digest()
+
+
+def tin_digest(
+    tin: Tin,
+    meta: Mapping[str, Any],
+    declarations: Mapping[str, Any],
+    *,
+    normalizer: str = NORMALIZER,
+) -> ContentDigest:
+    """El ``ContentDigest`` que da ``core.npz_mesh@1`` al leer el npz de ``meshes/`` que
+    escribe ``gis.tin.save_tin(tin, …, meta)`` (sus cuatro arrays y el ``meta`` de
+    ``gis.tin.file_meta``), sin escribirlo: el hash de un TIN del proyecto que escribe una
+    operación (RF-006-26, ida y vuelta). ``ValueError`` con un ``meta`` que ``save_tin`` no
+    acepta."""
+    hasher = ContentHasher("mesh", declarations=declarations, reader=builtin.NPZ_MESH.id,
+                           normalizer=normalizer)
+    arrays = {"vertices": tin.vertices, "faces": tin.faces,
+              "constraint_edges": tin.constraint_edges, "vertex_source": tin.vertex_source}
+    hasher.mesh(arrays, file_meta(tin, meta))
     return hasher.digest()
 
 

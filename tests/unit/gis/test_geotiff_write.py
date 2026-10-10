@@ -422,10 +422,31 @@ class AtomicWriteTest(_Folder, unittest.TestCase):
         self.assertEqual(self.target.read_bytes(), b"anterior")
         self.assertEqual([p.name for p in self.folder.iterdir()], ["gis_dtm_x.tif"])
 
+    def test_named_temporary_without_replacing(self) -> None:
+        """RF-006-28 (plan §5.6.5, T42): el temporal lo puede dar quien llama
+        (``gis.store``: ``<fichero>.tmp-<sesión>``); con ``replace=False`` el fichero queda
+        entero en él y el destino no cambia; con ``replace`` (por defecto) pasa a su sitio y
+        no queda el temporal. El propio destino como temporal es un error del programa."""
+        temporary = self.folder / "gis_dtm_x.tif.tmp-0a1b2c3d"
+        written = writer.write_geotiff(self.raster, self.target, profile=PROJECT,
+                                       temporary=temporary, replace=False)
+        self.assertEqual(written, temporary)
+        self.assertEqual(self.target.read_bytes(), b"anterior")
+        self.assertTrue(reader.read_geotiff(temporary).grid.same_geometry(self.raster.grid))
+        temporary.unlink()
+        written = writer.write_geotiff(self.raster, self.target, profile=PROJECT,
+                                       temporary=temporary)
+        self.assertEqual(written, self.target)
+        self.assertEqual([p.name for p in self.folder.iterdir()], ["gis_dtm_x.tif"])
+        self.assertTrue(reader.read_geotiff(self.target).grid.same_geometry(self.raster.grid))
+        with self.assertRaises(ValueError):
+            writer.write_geotiff(self.raster, self.target, profile=PROJECT,
+                                 temporary=self.target)
+
     def test_locked_target_is_an_error_without_leftovers(self) -> None:
-        """Plan §5.4 A4 (R9): si otro programa tiene abierto el destino (QGIS) y Windows no
-        deja sustituirlo, ``gis.raster_target_locked``; el destino no cambia y no queda
-        el temporal (``gis.store``, T24, escribirá entonces ``<nombre>__<hash8>.tif``)."""
+        """Plan §5.4 A4 (R9) y §5.6.5 (D20): si otro programa tiene abierto el destino (QGIS)
+        y Windows no deja sustituirlo, ``gis.raster_target_locked``; el destino no cambia y
+        no queda el temporal (tampoco en ``rasters/``: sin ``<nombre>__<hash8>.tif``)."""
         if os.name != "nt":
             self.skipTest(resources.skip_reason(resources.WINDOWS, resources.WINDOWS_HINT))
         with self.target.open("rb"), self.assertRaises(messages.GisError) as caught:
