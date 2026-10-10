@@ -7,8 +7,8 @@
   declarados) y sus declaraciones (:func:`input_declarations`).
 - :mod:`.registry`: clasificar una importación (reutilizar, sustituir o nueva), registrarla
   con su importación, reutilizarla, sustituirla (RF-008-11), mantener la copia de una cambiada
-  (RF-008-12), descartarla (RF-008-55), editar su nombre y su entrega (D-11), buscarla y anclar
-  o encontrar sus ficheros.
+  (RF-008-12), descartarla (RF-008-55), editar su nombre y su entrega (D-11), buscarla,
+  listarlas todas (el registro de entradas, RF-008-16) y anclar o encontrar sus ficheros.
 - :mod:`.originals`: guardar el original de una entrada tabular o documental desde la copia
   verificada de su importación, con su huella y el límite ``core.original_copy_limit``
   (RF-008-53, RF-008-14).
@@ -74,6 +74,7 @@ from .registry import (
     edit_delivery,
     get,
     keep_copy,
+    list_inputs,
     locate_source,
     register_input,
     resolve_source,
@@ -125,6 +126,7 @@ __all__ = [
     "get",
     "input_declarations",
     "keep_copy",
+    "list_inputs",
     "locate_source",
     "read_only_warnings",
     "reader_roles",

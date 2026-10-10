@@ -17,8 +17,9 @@ Todo se genera del **estado actual**, nunca a mano (AT §1, regla 8):
   complemento después de Geoblender, spec §8), atajos registrados y en conflicto en el
   ámbito de la Vista 3D (``keymap.conflicts``), iconos cargados, idiomas, el estado del
   motor de cálculo del lanzador de la sesión y, si lo hay, su intérprete externo (spec 004,
-  T41; :func:`engine_text`, :func:`external_interpreter`), y lo que aún no hay (PROJ) con
-  su «Disponible en …».
+  T41; :func:`engine_text`, :func:`external_interpreter`), las carpetas de solo lectura de
+  la variable y de las preferencias o el aviso si no hay ninguna (spec 008, T45;
+  :func:`read_only_text`), y lo que aún no hay (PROJ) con su «Disponible en …».
 - «Acerca de» (:func:`about`): versión, autor, licencias y la atribución de los datos de
   terceros de ``thirdparty/`` (ADR-0019), leída de su ``README.md``.
 
@@ -39,6 +40,8 @@ import bpy
 from ...core import catalog as core_catalog
 from ...core.catalog import sheets
 from ...core.i18n import language, tr
+from ...core.inputs.guard import read_only_warnings
+from ...core.paths import READ_ONLY_DIRS_ENV
 from ...core.version import geoblender_version
 from ...jobs.runtime import ComputeEnvironment
 from .. import ADDON_PACKAGE
@@ -206,6 +209,20 @@ def external_interpreter() -> Path | None:
     return runner.external_python if runner is not None else ops.configured_external_python()
 
 
+def read_only_text() -> str:
+    """Las carpetas de solo lectura de ahora (spec 008, T45; RF-008-15; S-3), cada una con su
+    origen («<carpeta> (GEOBLENDER_READ_ONLY_DIRS); <carpeta> (preferencias)»), y los
+    avisos (``core.inputs.guard.read_only_warnings``): con la variable y la preferencia
+    vacías, solo el de la lista vacía. Solo lee: no toca el disco ni la red."""
+    from ..ops import core_provenance  # al usarlo: bl/ops importa bl/ui (ARQ-08)
+
+    dirs = core_provenance.read_only_dirs()
+    shown = [f"{folder} ({READ_ONLY_DIRS_ENV})" for folder in dirs.env_folders]
+    shown += [tr("{folder} (preferences)", folder=folder) for folder in dirs.preference_folders]
+    parts = ["; ".join(shown)] if shown else []
+    return " · ".join([*parts, *read_only_warnings(dirs, language())])
+
+
 def diagnostics() -> list[tuple[str, str]]:
     """(rótulo, valor) del diagnóstico de la instalación, en el idioma de Geoblender."""
     view = bpy.context.preferences.view
@@ -231,6 +248,7 @@ def diagnostics() -> list[tuple[str, str]]:
         (tr("Blender language"), blender_language),
         (tr("Compute engine"), engine_text()),
         *([(tr("External interpreter"), str(external))] if external is not None else []),
+        (tr("Read-only folders"), read_only_text()),
         ("PROJ", _available_in("006")),
     ]
 

@@ -1435,3 +1435,360 @@ es = "Celdas máximas de una rejilla importada"
 
 ["Grid steps of the levels of detail"]
 es = "Pasos de rejilla de los niveles de detalle"
+
+# Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
+# Los mensajes de la procedencia y de los parámetros (spec §8) están en
+# core/provenance/messages.py y core/params/model.py, y se instalan al registrar.
+
+# Por qué una orden de la 008 no está disponible (su poll)
+
+["Open a project"]
+es = "Abra un proyecto"
+
+["Schema {schema} project: migrate the project to use provenance"]
+es = "Proyecto de esquema {schema}: migre el proyecto para usar la procedencia"
+
+# Barra de estado y control 7 (RF-008-16, RF-008-28, RF-008-58)
+
+["⚠ {n} inputs"]
+es = "⚠ {n} entradas"
+
+["! {n} stale"]
+es = "! {n} obsoletos"
+
+["Checking the project… {percent} %"]
+es = "Comprobando el proyecto… {percent} %"
+
+["Refresh · stale ({n})"]
+es = "Refrescar · obsoletos ({n})"
+
+# Panel de lo obsoleto del control 7 (RF-008-28; T49): Recalcular, como en la procedencia
+
+["Recompute"]
+es = "Recalcular"
+
+["Nothing is stale"]
+es = "No hay nada obsoleto"
+
+["… and {count} more"]
+es = "… y {count} más"
+
+# Insignias de tipo y marcas de un parámetro (RF-008-06)
+
+["[MEA]"]
+es = "[MED]"
+
+["[CAL]"]
+es = "[CAL]"
+
+["[ADO]"]
+es = "[ADO]"
+
+["[HYP]"]
+es = "[HIP]"
+
+["unconfirmed"]
+es = "sin confirmar"
+
+["review"]
+es = "revisar"
+
+# Títulos de sus paneles (RF-008-06, RF-008-16, RF-008-29)
+
+["Project parameters"]
+es = "Parámetros del proyecto"
+
+["Input register"]
+es = "Registro de entradas"
+
+["Operation graph and provenance"]
+es = "Grafo de operaciones y procedencia"
+
+# Filtros de la lista de parámetros (RF-008-06; T45): «Cualquiera» no filtra
+
+["Any"]
+es = "Cualquiera"
+
+# El número de Ctrl+Z en la escena (RF-008-32; T45)
+
+["Registry sequence"]
+es = "Secuencia del registro"
+
+["Number of the last change registered in the project that this scene has seen (Ctrl+Z restores it and warns that the project keeps the change)"]
+es = "Número del último cambio registrado en el proyecto que ha visto esta escena (Ctrl+Z lo restaura y avisa de que el proyecto conserva el cambio)"
+
+# Carpetas de solo lectura: preferencias y diagnóstico de la instalación (RF-008-15; T45)
+
+["Read-only folders"]
+es = "Carpetas de solo lectura"
+
+["Folders where Geoblender never writes (client dossiers), separated by «;». The GEOBLENDER_READ_ONLY_DIRS variable adds those of the company"]
+es = "Carpetas en las que Geoblender nunca escribe (expedientes de clientes), separadas por «;». La variable GEOBLENDER_READ_ONLY_DIRS añade las de la empresa"
+
+["From the variable {variable}:"]
+es = "De la variable {variable}:"
+
+["The variable {variable} declares no folder"]
+es = "La variable {variable} no declara ninguna carpeta"
+
+["{folder} (preferences)"]
+es = "{folder} (preferencias)"
+
+# La comprobación de apertura (RF-008-58; T46): si falla, se para y lo dice
+
+["The project check stopped: {error}"]
+es = "La comprobación del proyecto se ha parado: {error}"
+
+# Parámetros del proyecto (RF-008-02, RF-008-03, RF-008-06, RF-008-59; T50): el panel, su
+# lista y el historial del seleccionado
+
+["Module"]
+es = "Módulo"
+
+["Type"]
+es = "Tipo"
+
+["Mark"]
+es = "Marca"
+
+["No parameters"]
+es = "Ningún parámetro"
+
+["Source: {source}"]
+es = "Origen: {source}"
+
+["Decided by {who} on {date}"]
+es = "Decidido por {who} el {date}"
+
+["History"]
+es = "Historial"
+
+["Use the calculated value…"]
+es = "Usar el valor calculado…"
+
+["Default value"]
+es = "Valor por defecto"
+
+["Created"]
+es = "Alta"
+
+["Changed"]
+es = "Cambio"
+
+["Confirmed"]
+es = "Confirmación"
+
+# Cambiar y Confirmar un parámetro: sus campos, sus tipos y lo que dicen
+
+["Parameter"]
+es = "Parámetro"
+
+["Value"]
+es = "Valor"
+
+["Value as typed, with its unit if it is not the parameter's («35 %»)"]
+es = "Valor como se teclea, con su unidad si no es la del parámetro («35 %»)"
+
+["Unit"]
+es = "Unidad"
+
+["Unit of the typed value when it does not say one (empty: the parameter's)"]
+es = "Unidad del valor tecleado cuando no dice ninguna (vacía: la del parámetro)"
+
+["Type of the value: measured, calculated (only by adopting a figure), adopted or hypothesis"]
+es = "Tipo del valor: medido, calculado (solo al adoptar una cifra), adoptado o hipótesis"
+
+["Document, standard, person, operation or algorithm the value comes from"]
+es = "Documento, norma, persona, operación o algoritmo del que sale el valor"
+
+["Source type"]
+es = "Clase de origen"
+
+["Decided by"]
+es = "Decidido por"
+
+["Who decided the value (the owner, a laboratory, a person)"]
+es = "Quién decidió el valor (la propiedad, un laboratorio, una persona)"
+
+["Decision date"]
+es = "Fecha de la decisión"
+
+["Day of the decision, DD/MM/YYYY (empty: now)"]
+es = "Día de la decisión, DD/MM/AAAA (vacío: ahora)"
+
+["Why the parameter changes (recorded in its history)"]
+es = "Por qué cambia el parámetro (queda en su historial)"
+
+["Figure"]
+es = "Cifra"
+
+["Calculated figure that is adopted as the value of the parameter"]
+es = "Cifra calculada que se adopta como valor del parámetro"
+
+["Document"]
+es = "Documento"
+
+["Standard"]
+es = "Norma"
+
+["Person"]
+es = "Persona"
+
+["Operation"]
+es = "Operación"
+
+["Algorithm"]
+es = "Algoritmo"
+
+["Calculated value: {value} [CAL]"]
+es = "Valor calculado: {value} [CAL]"
+
+["Decision date «{value}»: write it as DD/MM/YYYY"]
+es = "Fecha de la decisión «{value}»: escríbala como DD/MM/AAAA"
+
+["The calculated figure no longer differs from «{key}»: there is nothing to adopt"]
+es = "La cifra calculada ya no difiere de «{key}»: no hay nada que adoptar"
+
+["Parameter «{key}» = {value} {kind}"]
+es = "Parámetro «{key}» = {value} {kind}"
+
+["Parameter «{key}» confirmed"]
+es = "Parámetro «{key}» confirmado"
+
+# Registro de entradas (RF-008-16, RF-008-13; T51): las columnas, los tipos de entrada, el
+# original y Comprobar cambios en las entradas (RF-008-09, RF-008-21)
+
+["Status"]
+es = "Estado"
+
+["Delivered on"]
+es = "Entrega"
+
+["Delivered by"]
+es = "Entregada por"
+
+["Content hash"]
+es = "Hash de contenido"
+
+["Original"]
+es = "Original"
+
+["No inputs"]
+es = "Ninguna entrada"
+
+["raster"]
+es = "ráster"
+
+["vector"]
+es = "vectorial"
+
+["table"]
+es = "tabla"
+
+["drillholes"]
+es = "sondeos"
+
+["mesh"]
+es = "malla"
+
+["point cloud"]
+es = "nube de puntos"
+
+["document"]
+es = "documento"
+
+["other"]
+es = "otro"
+
+["stored"]
+es = "guardado"
+
+["not stored"]
+es = "no guardado"
+
+["Checking the inputs and the project data…"]
+es = "Comprobando las entradas y los datos del proyecto…"
+
+["Check finished: {inputs} inputs and {datasets} datasets checked"]
+es = "Comprobación terminada: {inputs} entradas y {datasets} datos comprobados"
+
+# Decidir sobre una entrada, descartarla y editarla (RF-008-10, RF-008-11, RF-008-12,
+# RF-008-55; D-11; T52): sus diálogos, sus propiedades y lo que dicen al terminar
+
+["Input"]
+es = "Entrada"
+
+["Uid or logical name of the input"]
+es = "Uid o nombre lógico de la entrada"
+
+["Decision"]
+es = "Decisión"
+
+["Keep the copy"]
+es = "Mantener la copia"
+
+["Update the input or keep the copy already imported"]
+es = "Actualizar la entrada o mantener la copia ya importada"
+
+["Reimport the input from its source as a new input that replaces it"]
+es = "Reimporta la entrada desde su fuente como una entrada nueva que la sustituye"
+
+["Keep using the copy already imported: no more warnings until the source changes again"]
+es = "Sigue usando la copia ya importada: no se vuelve a avisar hasta que la fuente cambie otra vez"
+
+["Why the input is updated (required) or its copy kept"]
+es = "Por qué se actualiza la entrada (obligatorio) o se mantiene su copia"
+
+["Import settings"]
+es = "Ajustes de la importación"
+
+["Import settings that the importer asks for again"]
+es = "Ajustes de la importación que vuelve a pedir el importador"
+
+["Values: {values}"]
+es = "Valores: {values}"
+
+["Values"]
+es = "Valores"
+
+["Values that each import setting admits (JSON)"]
+es = "Valores que admite cada ajuste de la importación (JSON)"
+
+["Indicate the import setting «{key}»"]
+es = "Indique el ajuste de la importación «{key}»"
+
+["Choose whether to update the input or keep its copy: nothing changed"]
+es = "Elija si actualizar la entrada o mantener su copia: no cambia nada"
+
+["Input «{name}»: {status}"]
+es = "Entrada «{name}»: {status}"
+
+["Input «{name}» updated: what depended on the previous one is stale"]
+es = "Entrada «{name}» actualizada: lo que dependía de la anterior queda obsoleto"
+
+["Why the input is discarded (required)"]
+es = "Por qué se descarta la entrada (obligatorio)"
+
+["Nothing is deleted: the input stays in the register as «{status}»"]
+es = "No se borra nada: la entrada sigue en el registro como «{status}»"
+
+["Logical name of the input"]
+es = "Nombre lógico de la entrada"
+
+["Delivery day, DD/MM/YYYY (empty: no date)"]
+es = "Día de la entrega, DD/MM/AAAA (vacío: sin fecha)"
+
+["Who delivered the input (empty: nobody recorded)"]
+es = "Quién entregó la entrada (vacío: nadie anotado)"
+
+["Only the name and the delivery change: its files, its content and what was imported stay the same"]
+es = "Solo cambian el nombre y la entrega: sus ficheros, su contenido y lo importado siguen igual"
+
+["Delivery date «{value}»: write it as DD/MM/YYYY"]
+es = "Fecha de entrega «{value}»: escríbala como DD/MM/AAAA"
+
+["Input «{name}» edited"]
+es = "Entrada «{name}» editada"
+
+["Input «{name}»: nothing to change"]
+es = "Entrada «{name}»: no hay nada que cambiar"

@@ -64,6 +64,11 @@ al abrir después en escritura. Mientras dura, la comprobación deja en ``CheckS
 (RF-008-58). :func:`hash_requests_steps` hace los pasos 7 y 8 de lo que la puerta pide hashear
 después.
 
+:func:`full_check_steps` es «Comprobar cambios en las entradas», a petición (T51; RF-008-09,
+RF-008-21; plan §5.4.2): el hash de **todas** las entradas activas, sin prefiltro, y el
+prefiltro y el hash de lo que salte en los datos del proyecto y los originales, con los mismos
+pasos 7 y 8.
+
 Python puro (ADR-0004); ``core.provenance`` lo reexporta al usarlo.
 """
 
@@ -98,7 +103,9 @@ from ..datasets.external import (
     _hash_original,
     _Original,
     _OriginalCheck,
+    _prefilter_item,
     _record_all,
+    _surveyed,
     checkable,
     probe_dataset,
 )
@@ -162,6 +169,14 @@ OPEN_CHECK_STEPS: tuple[str, ...] = (*SURVEY_STEPS, HASH_STEP, RECORD_STEP)
 """Los pasos de la comprobación de apertura, en su orden (la fase de cada ``Progress``)."""
 REQUEST_STEPS: tuple[str, ...] = (HASH_STEP, RECORD_STEP)
 """Los pasos de :func:`hash_requests_steps`."""
+FULL_INPUTS_STEP = "entradas"
+"""El paso 1 de :func:`full_check_steps`: las entradas activas, todas a la cola de hashes."""
+FULL_DATASETS_STEP = "datos"
+"""El paso 2 de :func:`full_check_steps`: el prefiltro de los datos y de los originales."""
+FULL_CHECK_STEPS: tuple[str, ...] = (FULL_INPUTS_STEP, FULL_DATASETS_STEP, HASH_STEP,
+                                     RECORD_STEP)
+"""Los pasos de «Comprobar cambios en las entradas» (:func:`full_check_steps`), en su
+orden."""
 PROGRESS_TOTAL = 1000
 """El total del progreso (``Progress.total``): lo hecho va en milésimas de toda la
 comprobación, cada paso una parte igual."""
@@ -800,6 +815,52 @@ def _requests(project: OpenCheckProject, pending: CheckState, jobs: HashJobs | N
     yield meter.at(RECORD_STEP, 1.0, outcome)
 
 
+def full_check_steps(project: OpenCheckProject, *, pending: CheckState | None = None,
+                     jobs: HashJobs | None = None,
+                     budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """«Comprobar cambios en las entradas» (Proyecto ▸ Control; RF-008-09, RF-008-21,
+    RF-008-13; plan §5.3.2 y §5.4.2, «a petición»), por pasos de ``budget_s`` como mucho, en la
+    fase de su paso (:data:`FULL_CHECK_STEPS`):
+
+    1. ``entradas``: la fuente de **cada** entrada activa va a la cola de hashes, sin prefiltro
+       (con el mismo tamaño y la misma fecha también se hashea); la que no se encuentra queda
+       «no localizable» sin leerla;
+    2. ``datos``: el prefiltro de los datos seguidos del proyecto y de los originales, como el
+       de ``core.datasets.external_check_steps``: lo que salta, a la cola;
+    3. y 4. la cola de hashes y la transacción final de la comprobación de apertura (pasos 7 y
+       8, sin la obsolescencia completa): las fuentes externas grandes, en los trabajos de hash
+       ``jobs`` (sin ellos, en el hilo); lo que la puerta pidió hashear (``pending``) también
+       se hace y deja de esperarse; todo se registra en una sola transacción (en solo lectura,
+       nada: el resultado es el informe).
+
+    El último paso lleva un :class:`OpenCheckOutcome` con lo de las entradas, los datos y los
+    originales. Cerrar el generador a medias cancela los trabajos y no registra nada. Un
+    proyecto sin la procedencia no tiene nada que comprobar. :class:`TypeError` o
+    :class:`ValueError` (al llamarla) con un argumento mal dado."""
+    return _full_check(project, _pending(pending), _jobs(jobs), _budget(budget_s))
+
+
+def _full_check(project: OpenCheckProject, pending: CheckState | None,
+                jobs: HashJobs | None, budget: float) -> Iterator[Progress]:
+    meter = _Meter(FULL_CHECK_STEPS, "Comprobando las entradas y los datos…")
+    writing = bool(project.writable)
+    settlement = _Settlement(project, writing, jobs, pending, budget, meter)
+    try:
+        if not _provenance(project):
+            outcome = OpenCheckOutcome(writing=writing, started_at_ns=time.time_ns())
+        else:
+            yield meter.at(FULL_INPUTS_STEP, 0.0)
+            yield from settlement.full_input_steps()
+            yield from settlement.full_dataset_steps()
+            settlement.add_requests()
+            yield from settlement.hash_steps()
+            outcome = yield from settlement.record_steps(None, None)
+            settlement.release()
+    finally:
+        settlement.cancel()
+    yield meter.at(RECORD_STEP, 1.0, outcome)
+
+
 def _survey(project: OpenCheckProject, registries: Registries, writing: bool, budget: float,
             meter: _Meter, pending: CheckState | None) -> Generator[Progress, None, _Survey]:
     """Los pasos 1 a 6; lo que se comprueba sin hash deja de estar pendiente en ``pending``."""
@@ -1297,6 +1358,48 @@ class _Settlement:
                                      probe.sha256, probe.size, probe.mtime_ns), seen=probe.seen)
             for probe in outcome.original_probes
         ]
+
+    def full_input_steps(self) -> Iterator[Progress]:
+        """El paso 1 de :func:`full_check_steps`: la fuente de cada entrada activa, a la cola
+        de hashes sin prefiltro; la que no se encuentra queda «no localizable»."""
+        with self.project.read() as conn:
+            files: dict[str, list[InputFileRecord]] = {}
+            for row in conn.execute(_FILES_SQL):
+                files.setdefault(str(row[0]), []).append(InputFileRecord.from_row(row[1:]))
+            records = [InputRecord.from_row(row, files.get(str(row[0]), ()))
+                       for row in conn.execute(_INPUTS_SQL).fetchall()]
+            contents = table_changes(conn)
+        total = len(records)
+        self.pacer.restart()
+        for index, record in enumerate(records, start=1):
+            probe = probe_input(self.project, record, mode=CheckMode.FULL,  # type: ignore[arg-type]
+                                tables=contents)
+            if probe.needs_hash:
+                self.inputs.append(_InputHash(probe))
+            else:  # no localizable (RF-008-13)
+                self.concluded.append(assess_input(probe))
+            if self.pacer.lap() and index < total:
+                yield self.meter.at(FULL_INPUTS_STEP, index / total)
+                self.pacer.restart()
+        yield self.meter.at(FULL_INPUTS_STEP, 1.0)
+        self.pacer.restart()
+
+    def full_dataset_steps(self) -> Iterator[Progress]:
+        """El paso 2 de :func:`full_check_steps`: el prefiltro de los datos seguidos y de los
+        originales (``core.datasets.external``); lo que salta queda para su hash y lo que
+        falta, para registrarlo si sigue así."""
+        checks, originals, tables = _surveyed(self.project)
+        items: list[_Check | _OriginalCheck] = [*checks, *originals]
+        total = len(items)
+        for index, item in enumerate(items, start=1):
+            _prefilter_item(self.project, item, tables)
+            if self.pacer.lap() and index < total:
+                yield self.meter.at(FULL_DATASETS_STEP, index / total)
+                self.pacer.restart()
+        self.checks += checks
+        self.originals += originals
+        yield self.meter.at(FULL_DATASETS_STEP, 1.0)
+        self.pacer.restart()
 
     def add_requests(self) -> None:
         """Lo que la puerta pidió hashear (``CheckState.requests``): lo que ya está en la cola

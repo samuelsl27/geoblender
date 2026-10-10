@@ -145,3 +145,105 @@ description.es = "Descarta los avisos pendientes del proyecto"
 entry = "002"
 action = "A"
 frequency = 1
+
+# Órdenes internas de la procedencia (spec 008, plan §5.3.2): las abren sus paneles
+# (parámetros, entradas, lo obsoleto) y sus avisos, no un menú de la barra.
+
+[[command]]
+key = "geoblender.core_set_parameter"
+kind = "internal"
+label.en = "Change parameter…"
+label.es = "Cambiar parámetro…"
+description.en = "Change the value, type, source or decider of a project parameter, with a reason; from a divergence notice, filled in with the calculated figure"
+description.es = "Cambia el valor, el tipo, el origen o el decisor de un parámetro del proyecto, con un motivo; desde un aviso de divergencia, sale relleno con la cifra calculada"
+entry = "008"
+action = "D"
+frequency = 2
+
+[[command]]
+key = "geoblender.core_confirm_parameter"
+kind = "internal"
+label.en = "Confirm parameter"
+label.es = "Confirmar parámetro"
+description.en = "Confirm a parameter marked «unconfirmed» or «review»"
+description.es = "Confirma un parámetro marcado «sin confirmar» o «revisar»"
+entry = "008"
+action = "A"
+frequency = 1
+
+[[command]]
+key = "geoblender.core_resolve_input"
+kind = "internal"
+label.en = "Decide on a changed input…"
+label.es = "Decidir sobre una entrada cambiada…"
+description.en = "Update the input from its source, keep the copy already imported or cancel"
+description.es = "Actualiza la entrada desde su fuente, mantiene la copia ya importada o cancela"
+entry = "008"
+action = "D"
+frequency = 2
+
+[[command]]
+key = "geoblender.core_discard_input"
+kind = "internal"
+label.en = "Discard input…"
+label.es = "Descartar entrada…"
+description.en = "Discard an input imported by mistake, with a reason: nothing is deleted and it stays in the register"
+description.es = "Descarta una entrada importada por error, con un motivo: no se borra nada y sigue en el registro"
+entry = "008"
+action = "D"
+frequency = 1
+
+[[command]]
+key = "geoblender.core_edit_input"
+kind = "internal"
+label.en = "Edit input…"
+label.es = "Editar entrada…"
+description.en = "Logical name and delivery data (date and who delivers it) of an input; its content does not change"
+description.es = "Nombre lógico y datos de entrega (fecha y quién la entrega) de una entrada; su contenido no cambia"
+entry = "008"
+action = "D"
+frequency = 1
+
+[[command]]
+key = "geoblender.core_resolve_dataset"
+kind = "internal"
+label.en = "Decide on a dataset edited outside…"
+label.es = "Decidir sobre un dato editado fuera…"
+description.en = "Accept the external edit with a reason, recompute or reimport a blocked or missing dataset; a damaged one can only be reimported"
+description.es = "Acepta con un motivo la edición externa, recalcula o reimporta un dato bloqueado o que falta; uno dañado solo se puede reimportar"
+entry = "008"
+action = "D"
+frequency = 1
+
+[[command]]
+key = "geoblender.core_accept_review"
+kind = "internal"
+label.en = "Accept as good…"
+label.es = "Dar por buena…"
+description.en = "Accept, with a reason, an operation that awaits manual review: what depends on it can then be recomputed"
+description.es = "Da por buena, con un motivo, una operación que espera revisión a mano: lo que depende de ella se puede recalcular después"
+entry = "008"
+action = "D"
+frequency = 1
+
+[[command]]
+key = "geoblender.core_resolve_unregistered"
+kind = "internal"
+label.en = "Unregistered layer or file…"
+label.es = "Capa o fichero sin registrar…"
+description.en = "Register as an input a layer created in the project from QGIS, or ignore it or a file left there by hand"
+description.es = "Registra como entrada una capa creada en el proyecto desde QGIS, o la ignora, o ignora un fichero dejado a mano"
+entry = "008"
+action = "D"
+frequency = 1
+
+[[command]]
+key = "geoblender.core_cancel_checks"
+kind = "internal"
+label.en = "Cancel the checks"
+label.es = "Cancelar las comprobaciones"
+description.en = "Stop the project checks and the hashes in progress"
+description.es = "Para las comprobaciones del proyecto y los hashes en curso"
+entry = "008"
+action = "A"
+frequency = 1

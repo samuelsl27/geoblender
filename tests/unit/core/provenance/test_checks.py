@@ -1199,6 +1199,82 @@ class JobsTest(ChecksCase):
         self.assertEqual(self.full_state(), before)
 
 
+class FullCheckTest(ChecksCase):
+    def full_check(self, **kw: Any) -> tuple[Any, list[Any]]:
+        """Todos los pasos de «Comprobar cambios en las entradas»: su resultado (solo en el
+        último paso) y los pasos."""
+        found = list(checks.full_check_steps(self.project, **kw))
+        for step in found:
+            self.assertIsInstance(step, project_model.Progress)
+        self.assertEqual([step.result is not None for step in found],
+                         [False] * (len(found) - 1) + [True])
+        outcome = found[-1].result
+        self.assertIsInstance(outcome, checks.OpenCheckOutcome)
+        return outcome, found
+
+    def test_hashes_every_input_and_checks_the_project_data(self) -> None:
+        """RF-008-09, RF-008-21, RF-008-13 (plan §5.4.2, «a petición»; T51): «Comprobar
+        cambios en las entradas» hashea siempre la fuente de cada entrada activa —también la de
+        «Limites_v1», que tiene otro contenido con el mismo tamaño y la misma fecha, y que el
+        prefiltro de la apertura no ve— y comprueba los datos del proyecto (la edición de QGIS
+        en ``res_contorno``); una entrada cuya fuente no está queda «no localizable» sin
+        leerla. En solo lectura lo detecta todo sin escribir nada. En escritura, con sus pasos
+        en orden y su progreso, la fuente externa va a un trabajo de hash, lo que pidió la
+        puerta también se hace, y todo se registra en una sola transacción final. La fuente
+        queda intacta."""
+        self.replace(data.BOUNDARY_V2, mtime_ns=self.files(self.record.uid)[0]["mtime_ns"])
+        self.assertEqual(self.target.stat().st_size, self.record.files[0].size)
+        self.assertFalse(check.probe_input(self.project, self.record).needs_hash)
+        plans = self.plans()  # sus ficheros no están en fuentes/
+        self.qgis('UPDATE "res_contorno" SET valor = 9 WHERE codigo = ?', ("C-01",),
+                  table="res_contorno", at=EDITED_AT)
+        self.state.request_hash(gate.PendingItem(ItemKind.DATASET, self.uid("res_area"),
+                                                 "res_area", gate.PendingReason.HASHING))
+        expected = {"Limites_v1": InputVerdict.CHANGED, "planos": InputVerdict.UNREACHABLE}
+        age_folders(self.sources)
+        before = self.full_state()
+        with assert_source_untouched(self.sources), self.read_only():
+            outcome, _steps = self.full_check()
+        self.assertEqual(self.full_state(), before)
+        self.assertEqual((outcome.writing, outcome.recorded), (False, False))
+        self.assertEqual({item.name: item.verdict for item in outcome.inputs}, expected)
+        self.assertEqual({item.record.name: item.verdict for item in outcome.datasets},
+                         {"res_contorno": Verdict.EDITED})
+
+        jobs = FakeJobs()
+        real = self.project.write_transaction
+        transactions: list[int] = []
+
+        def counting() -> Any:
+            transactions.append(1)
+            return real()
+
+        with assert_source_untouched(self.sources), \
+                mock.patch.object(readers, "INLINE_LIMIT_S", 0.0), \
+                mock.patch.object(self.project, "write_transaction", counting):
+            outcome, found = self.full_check(pending=self.state, jobs=jobs)
+        self.assertEqual(len(transactions), 1)
+        self.assertEqual(list(dict.fromkeys(step.phase for step in found)),
+                         list(checks.FULL_CHECK_STEPS))
+        done = [step.done for step in found]
+        self.assertEqual((done, done[-1]), (sorted(done), checks.PROGRESS_TOTAL))
+        self.assertEqual([request.name for request in jobs.submitted], ["Limites_v1"])
+        self.assertTrue(outcome.recorded)
+        self.assertEqual({item.name: item.verdict for item in outcome.inputs}, expected)
+        self.assertEqual(self.input_row(self.record.uid)["status"], "changed")
+        self.assertEqual(self.input_row(plans.uid)["status"], "current")
+        (edit,) = self.external_edits()
+        self.assertEqual(self.dataset("res_contorno").operation_uid, edit["uid"])
+        self.assertLessEqual({self.uid(name) for name in ("res_limites", "res_area")},
+                             set(outcome.checked_datasets))
+        self.assertEqual(self.state.requests, ())
+        self.assertIn(UNREACHABLE, outcome.warnings)
+        self.assertTrue(any(text.startswith("La entrada «Limites_v1» ha cambiado")
+                            for text in outcome.warnings), outcome.warnings)
+        with self.assertRaises(TypeError):
+            checks.full_check_steps(self.project, pending="x")
+
+
 if __name__ == "__main__":
     import unittest
 

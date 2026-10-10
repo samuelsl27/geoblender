@@ -47,6 +47,12 @@ registrar la spec 003); los diálogos llevan su título traducido.
 En segundo plano (``blender -b``, scripts) no se muestran diálogos: se usan las
 propiedades tal como llegan, y forzar exige ``force_lock`` **y** el titular visto
 (``seen_lock``).
+
+Carpetas de solo lectura (spec 008, T48; RF-008-15; S-3; plan 008 §5.4.13): crear, abrir (e
+inspeccionar), migrar, sacar copia y publicar reciben las de ahora
+(``bl.ops.core_provenance.read_only_dirs``: la variable ``GEOBLENDER_READ_ONLY_DIRS`` y la
+preferencia): crear, sacar copia o publicar dentro de una se rechaza nombrándola, y un
+proyecto que está dentro se abre en solo lectura, sin cerrojo ni migración.
 """
 
 from __future__ import annotations
@@ -81,6 +87,7 @@ from ...core.project.migrations import MigrationResult, backup_path, migrate_ste
 from ...core.project.model import OpenResult, ProjectSettings, Progress, ReadOnlyCode
 from ...core.project.open import ProjectInspection, SchemaRelation, inspect_project, open_steps
 from ..scene import georef, project_session
+from .core_provenance import read_only_dirs
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 TRANSLATION_CONTEXT = "Geoblender"
@@ -230,6 +237,7 @@ class GEOBLENDER_OT_core_new_project(bpy.types.Operator):
                 settings,
                 project_session.session(),
                 project_session.userdata(),
+                read_only=read_only_dirs(),
             )
         except GeoblenderError as exc:
             LOGGER.info("Proyecto nuevo rechazado: %s", exc.message)
@@ -352,7 +360,8 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
         session, userdata = project_session.session(), project_session.userdata()
         stale = project_session.stale_minutes()
         try:
-            inspection = inspect_project(path, session, userdata, stale_minutes=stale)
+            inspection = inspect_project(path, session, userdata, stale_minutes=stale,
+                                         read_only=read_only_dirs())
         except GeoblenderError as exc:
             self.report({"ERROR"}, exc.message)
             return {"CANCELLED"}
@@ -387,6 +396,7 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
         self, context: bpy.types.Context, inspection: ProjectInspection, path: Path, stale: int
     ) -> None:
         session, userdata = project_session.session(), project_session.userdata()
+        read_only = read_only_dirs()
         opening = open_steps(
             path,
             session,
@@ -394,10 +404,12 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
             want_write=not self.read_only,
             force_holder=self._force_holder(),
             stale_minutes=stale,
+            read_only=read_only,
         )
         if self.accept_migration and self._migration_offered(inspection):
             migrating = migrate_steps(
-                path, session, userdata, migrations_mod.REGISTRY, stale_minutes=stale
+                path, session, userdata, migrations_mod.REGISTRY, stale_minutes=stale,
+                read_only=read_only,
             )
             self._steps: Iterator[Progress] | None = _chain(migrating, opening)
         else:
@@ -1135,7 +1147,7 @@ class GEOBLENDER_OT_core_checkout_project(_StepsModal, bpy.types.Operator):
             self.report({"WARNING"}, message)
         steps = checkout_steps(
             self._original, dest, project_session.session(), userdata,
-            stale_minutes=project_session.stale_minutes(),
+            stale_minutes=project_session.stale_minutes(), read_only=read_only_dirs(),
         )
         self._start(context, steps)
         return {"RUNNING_MODAL"}
@@ -1255,11 +1267,15 @@ class GEOBLENDER_OT_core_publish_project(_StepsModal, bpy.types.Operator):
             return {"CANCELLED"}
         session, userdata = project_session.session(), project_session.userdata()
         stale = project_session.stale_minutes()
-        steps: Iterator[Progress] = publish_steps(project, session, userdata, stale_minutes=stale)
+        read_only = read_only_dirs()
+        steps: Iterator[Progress] = publish_steps(
+            project, session, userdata, stale_minutes=stale, read_only=read_only
+        )
         original = self._original_path(project)
         self._open_after = bool(self.open_published and original is not None)
         if self._open_after and original is not None:
-            steps = _chain(steps, open_steps(original, session, userdata, stale_minutes=stale))
+            steps = _chain(steps, open_steps(original, session, userdata, stale_minutes=stale,
+                                             read_only=read_only))
         self._published: PublishResult | None = None
         self._start(context, steps)
         return {"RUNNING_MODAL"}

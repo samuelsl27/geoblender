@@ -1269,6 +1269,32 @@ class DiscardTest(LifecycleCase):
                                       []])
 
 
+class ListTest(LifecycleCase):
+    def test_register_lists_every_input_by_name(self) -> None:
+        """RF-008-16 (plan §5.5, registro de entradas): ``list_inputs`` da todas las entradas
+        del proyecto con sus ficheros —también las sustituidas y las descartadas— por su
+        nombre lógico (sin distinguir mayúsculas) y, con el mismo nombre, por orden de
+        registro; solo lee."""
+        self.assertEqual(self.read(registry.list_inputs), [])
+        v1, _op = self.load(self.collars(), ROWS_V1, table="res_collares_1",
+                            dataset="res_collares")
+        boundary = self.register(self.boundary())
+        v2, _op = self.load(self.collars(label="collares-v2"), ROWS_V2, table="res_collares_2",
+                            dataset="res_collares", previous=v1.uid, reason=UPDATE_REASON)
+        self.write(lambda conn: registry.discard(conn, self.project, boundary.uid,
+                                                 DISCARD_REASON))
+        snapshot = self.snapshot()
+        listed = self.read(registry.list_inputs)
+        self.assertEqual([(item.uid, item.name, item.status) for item in listed],
+                         [(v1.uid, "collares", model.InputStatus.SUPERSEDED),
+                          (v2.uid, "collares", model.InputStatus.CURRENT),
+                          (boundary.uid, "Limites_v1", model.InputStatus.DISCARDED)])
+        self.assertEqual(listed, [self.read(lambda conn, uid=item.uid: registry.get(conn, uid))
+                                  for item in listed])
+        self.assertTrue(all(item.files for item in listed))
+        self.assertEqual(self.snapshot(), snapshot)
+
+
 class EditDeliveryTest(LifecycleCase):
     def test_edit_changes_name_and_delivery_only(self) -> None:
         """RF-008-07 (D-11; spec §11): editar una entrada cambia su nombre lógico, su fecha de

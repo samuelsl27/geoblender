@@ -38,8 +38,9 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,7 +79,11 @@ params = import_geoblender("core.params")
 store_mod = import_geoblender("core.params.store")
 contract = import_geoblender("core.provenance.contract")
 figures_mod = import_geoblender("core.provenance.figures")
+checks = import_geoblender("core.provenance.checks")
+encoder = import_geoblender("core.content.encoder")
 job_paths = import_geoblender("jobs.paths")
+content_hash = import_geoblender("jobs.content_hash")
+worker_api = import_geoblender("jobs.worker_api")
 
 # --- D-13 ------------------------------------------------------------------------------------
 
@@ -614,7 +619,7 @@ BIG_HASH_BUDGET_S = 45.0  # RNF-008-11: un MDT de 100 M celdas en disco local
 BIG_MDT_SHAPE = (10_000, 10_000)
 PROGRESS_GAP_S = 1.0  # RNF-008-11: progreso cada ≤ 1 s
 CANCEL_BUDGET_S = 2.0  # RNF-008-11: cancelación efectiva en ≤ 2 s
-JOB_FOLDER_PREFIX = "20261009_100000_"  # carpetas de trabajo de la copia verificada (+ 6 hex)
+JOBS_FOLDER = "trabajos"  # la raíz de las carpetas de trabajo del arnés
 
 
 @dataclass(frozen=True)
@@ -629,18 +634,50 @@ class BigSource:
     label: str
 
 
+class _HarnessSink:
+    """Los eventos del trabajo de hash en el arnés (su ``EventSink``): cada aviso de progreso
+    de la lectura va a ``progress`` y, si después ``cancelled()`` lo pide, se activa el aviso
+    de parar del trabajo (``cancel``); apunta lo que tardó la copia verificada (de empezar a su
+    primer aviso de lectura; 0 si no hubo copia) y la última fracción leída."""
+
+    def __init__(self, progress: Callable[[float], object] | None,
+                 cancelled: Callable[[], bool] | None, cancel: threading.Event) -> None:
+        self.started = time.perf_counter()
+        self.progress = progress
+        self.cancelled = cancelled
+        self.cancel = cancel
+        self.copying = False
+        self.copy_s = 0.0
+        self.fraction = 0.0
+
+    def send(self, event: Any) -> None:
+        if event.type != "progress":
+            return
+        if event.msg == content_hash.COPYING_TEXT:
+            self.copying = True
+            return
+        if self.copying and not self.copy_s:
+            self.copy_s = time.perf_counter() - self.started
+        self.fraction = event.frac
+        if self.progress is not None:
+            self.progress(event.frac)
+        if self.cancelled is not None and self.cancelled():
+            self.cancel.set()
+
+
 class BigHashHarness:
     """El arnés de RNF-008-11 por lector (S-4): el hash de contenido de una fuente grande por
-    el camino común del trabajo de hash (la copia verificada de ``JobDir.copy_input`` si el
-    lector la pide, y ``read_content`` con su progreso y su cancelación), con su presupuesto,
-    un aviso de progreso cada ≤ 1 s y la cancelación a mitad en ≤ 2 s.
+    el camino común del trabajo de hash ``core_content_hash`` (``jobs.content_hash.run``, la
+    función que ejecuta el trabajo en el hilo y en proceso aparte, con las rutas de la fuente
+    por ``paths``, su copia verificada de ``JobDir.copy_input`` si el lector la pide y el
+    progreso y la cancelación de su ``WorkerContext``), con su presupuesto, un aviso de
+    progreso cada ≤ 1 s y la cancelación a mitad en ≤ 2 s.
 
     Se usa como mezcla de una clase de pruebas (``class X(BigHashHarness, unittest.TestCase)``)
-    que da el lector (``reader``), su presupuesto (``budget_s``) y la fuente (``make_source``,
-    que la escribe una vez para la clase en una carpeta temporal); ``report`` imprime la línea
-    de la medida. La 006 lo hereda con su GeoTIFF de 100 M celdas y la 005 con su base de RecMin
-    de 100 MB; T47 añade la ejecución en el trabajo ``core_content_hash`` (con la ruta por
-    ``paths``) cambiando :meth:`hash_source`."""
+    que da el lector (``reader``, que el arnés registra si no lo está), su presupuesto
+    (``budget_s``) y la fuente (``make_source``, que la escribe una vez para la clase en una
+    carpeta temporal); ``report`` imprime la línea de la medida. La 006 lo hereda con su GeoTIFF
+    de 100 M celdas y la 005 con su base de RecMin de 100 MB."""
 
     reader: ClassVar[Any] = None
     budget_s: ClassVar[float] = BIG_HASH_BUDGET_S
@@ -650,6 +687,7 @@ class BigHashHarness:
     source: ClassVar[BigSource]
     big_folder: ClassVar[Path]
     _big_stack: ClassVar[ExitStack]
+    sink: _HarnessSink  # los eventos del último trabajo (hash_source)
 
     @classmethod
     def make_source(cls, folder: Path) -> BigSource:
@@ -673,6 +711,9 @@ class BigHashHarness:
             folder = cls.big_folder / "fuente"
             folder.mkdir()
             cls.source = cls.make_source(folder)
+            if cls.reader.id not in readers.READERS:
+                readers.register_reader(cls.reader)
+                cls._big_stack.callback(readers.unregister_reader, cls.reader.id)
         except BaseException:
             cls._big_stack.close()
             raise
@@ -682,30 +723,27 @@ class BigHashHarness:
         cls._big_stack.close()
         super().tearDownClass()  # type: ignore[misc]
 
-    def _files(self) -> tuple[Mapping[str, Path], float]:
-        """Los ficheros que lee el lector y lo que tardó su copia verificada (0 si no la
-        pide), cada uno en ``in/<papel><extensión>`` de una carpeta de trabajo nueva."""
-        if not self.reader.needs_copy:
-            return self.source.files, 0.0
-        jobs = self.big_folder / "trabajos"
-        jobs.mkdir(exist_ok=True)
-        number = sum(1 for _ in jobs.iterdir())  # una carpeta nueva: las copias no se borran
-        job = jobs / f"{JOB_FOLDER_PREFIX}{number:06x}"
-        job.mkdir()
-        folder = job_paths.JobDir(job)
-        started = time.perf_counter()
-        copies = {role: job / folder.copy_input(path, role)
-                  for role, path in self.source.files.items()}
-        return copies, time.perf_counter() - started
-
     def hash_source(self, *, progress: Any = None, cancelled: Any = None) -> tuple[Any, float]:
-        """El hash de la fuente por el camino común y lo que tardó su copia."""
-        files, copy_s = self._files()
-        request = self.reader.request(self.source.kind, self.source.declarations, files,
-                                      self.source.settings)
-        digest = readers.read_content(self.reader, request, progress=progress,
-                                      cancelled=cancelled)
-        return digest, copy_s
+        """El hash de la fuente por el camino común (``jobs.content_hash.run`` en una carpeta
+        de trabajo nueva, con las rutas de la fuente por ``paths``) y lo que tardó su copia
+        verificada (0 si el lector no la pide). ``progress(fracción)`` recibe los avisos de
+        progreso del trabajo; si después ``cancelled()`` es verdadero, el trabajo para en el
+        trozo siguiente (``JobCancelled``)."""
+        size = sum(os.path.getsize(path) for path in self.source.files.values())
+        request = checks.HashRequest(self.requirement, self.source.label, self.reader.id,
+                                     self.source.kind, self.source.declarations,
+                                     self.source.settings, self.source.files,
+                                     encoder.NORMALIZER, size)
+        job = content_hash.new_job(request)
+        folder = job_paths.job_dir(self.big_folder / JOBS_FOLDER, job.job_uid).create()
+        cancel = threading.Event()
+        self.sink = _HarnessSink(progress, cancelled, cancel)
+        ctx = worker_api.WorkerContext(job, folder, self.sink, cancel_event=cancel,
+                                       paths=content_hash.job_paths(request))
+        summary = content_hash.run(ctx)
+        digest = encoder.ContentDigest(summary["data_sha256"], summary["content_sha256"],
+                                       summary["normalizer"], summary["reader"])
+        return digest, self.sink.copy_s
 
     def _size(self) -> str:
         total = sum(os.path.getsize(path) for path in self.source.files.values())
@@ -732,7 +770,7 @@ class BigHashHarness:
 
     def test_big_hash_cancelled_at_half(self) -> None:
         """RNF-008-11: cancelar a mitad el hash de contenido de la fuente grande del lector
-        lo para en ≤ 2 s, entre dos trozos (``ReadCancelled``)."""
+        lo para en ≤ 2 s, entre dos trozos (``JobCancelled`` del trabajo)."""
         asked: list[float] = []
 
         def progress(fraction: float) -> None:
@@ -740,13 +778,13 @@ class BigHashHarness:
                 asked.append(time.perf_counter())
 
         test: Any = self
-        with test.assertRaises(readers.ReadCancelled) as caught:
+        with test.assertRaises(worker_api.JobCancelled):
             self.hash_source(progress=progress, cancelled=lambda: bool(asked))
         took = time.perf_counter() - asked[0]
         self.report(
             f"{self.requirement}: cancelar a mitad el hash de contenido de "
             f"{self.source.label} con {self.reader.id}: parado en {_comma(took, 3)} s al "
-            f"{100 * caught.exception.progress:.0f} % (presupuesto "
+            f"{100 * self.sink.fraction:.0f} % (presupuesto "
             f"{_comma(self.cancel_budget_s, 0)} s)"
         )
         test.assertLessEqual(took, self.cancel_budget_s)
