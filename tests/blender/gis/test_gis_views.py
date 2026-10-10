@@ -146,8 +146,11 @@ class ViewProject:
                                            ps.userdata()).project
         self.root = Path(self.project.root)
         self.crs, self.vertical = gis.store.project_references(self.project)
+        registered = []  # los que la extensión aún no registra (T28 registra gis.resample)
         for definition in defs:
-            contract.register_operation(definition)
+            if definition.op_type not in contract.OPERATIONS:
+                contract.register_operation(definition)
+                registered.append(definition.op_type)
         try:
             def begin(op_type: str, **kw: Any) -> Any:
                 kw.setdefault("settings", {"nombre": "prueba"})
@@ -174,8 +177,8 @@ class ViewProject:
                   lambda out: out.contours("Curvas Lejanas", self.contours), params=[INTERVAL])
             self.points, self.lines = self._import_points(folder, begin)
         finally:
-            for definition in reversed(defs):
-                contract.unregister_operation(definition.op_type)
+            for op_type in reversed(registered):
+                contract.unregister_operation(op_type)
         self._marks()
 
     def _import_points(self, folder: Path, begin: Any) -> tuple[Any, Any]:

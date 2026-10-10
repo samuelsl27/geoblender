@@ -1711,6 +1711,168 @@ es = "Seleccione objetos cargados del proyecto"
 ["Unloaded from the view: {count} objects; the data stay in the project"]
 es = "Descargado de la vista: {count} objetos; los datos siguen en el proyecto"
 
+# Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
+# RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto
+# desde un MDT…, sus diálogos, sus informes y la decisión de una importación que espera.
+# «Name», «Reason», «Decision», «Automatic», «DTM», «Horizontal CRS», «Vertical CRS»,
+# «Delivered by» y los nombres de las operaciones ya están arriba.
+
+["open a project"]
+es = "abra un proyecto"
+
+["import a DTM"]
+es = "importe un MDT"
+
+["File"]
+es = "Fichero"
+
+["No data"]
+es = "Sin dato"
+
+["Separator"]
+es = "Separador"
+
+["Decimal mark"]
+es = "Separador decimal"
+
+["Delivery date"]
+es = "Fecha de entrega"
+
+["Method"]
+es = "Método"
+
+["Minimum covered fraction"]
+es = "Fracción mínima cubierta"
+
+["EPSG code of the source's horizontal CRS, such as EPSG:25830 (empty: the one the file declares)"]
+es = "Código EPSG del CRS horizontal de la fuente, como EPSG:25830 (vacío: el que declara el fichero)"
+
+["Value of the source that means no data (empty: the one the file declares)"]
+es = "Valor de la fuente que significa sin dato (vacío: el que declara el fichero)"
+
+["Why the input replaces the one imported with the same data and other settings"]
+es = "Por qué la entrada sustituye a la importada con los mismos datos y otros ajustes"
+
+["Name or uid of the imported DTM"]
+es = "Nombre o uid del MDT importado"
+
+["Fraction of each cell that must be covered by data, from 0 to 1 (empty or unchanged: the project's parameter)"]
+es = "Fracción de cada celda que tiene que quedar cubierta por datos, de 0 a 1 (vacía o sin cambiar: el parámetro del proyecto)"
+
+["Name of the project grid (empty: the DTM's)"]
+es = "Nombre de la rejilla del proyecto (vacío: el del MDT)"
+
+["Undeclared"]
+es = "Sin declarar"
+
+["The file's if it declares one; if not, declare it"]
+es = "El del fichero si lo declara; si no, declárelo"
+
+["The project's"]
+es = "El del proyecto"
+
+["ETRS89 ellipsoidal height"]
+es = "Altura elipsoidal ETRS89"
+
+["GNSS or drone without geoid"]
+es = "GNSS o dron sin geoide"
+
+["Detected in the first data line"]
+es = "Se detecta en la primera línea de datos"
+
+["Space"]
+es = "Espacio"
+
+["Tab"]
+es = "Tabulador"
+
+["Comma"]
+es = "Coma"
+
+["Semicolon"]
+es = "Punto y coma"
+
+["Point"]
+es = "Punto"
+
+["Area-weighted mean if the DTM cells are not larger than the project's; bilinear if they are"]
+es = "Media ponderada por área si las celdas del MDT no son mayores que las del proyecto; bilineal si lo son"
+
+["Area-weighted mean"]
+es = "Media ponderada por área"
+
+["Bilinear interpolation"]
+es = "Interpolación bilineal"
+
+["Continue the import"]
+es = "Seguir con la importación"
+
+["Cancel the import"]
+es = "Cancelar la importación"
+
+["The file «{file}» does not exist: choose the DTM to import"]
+es = "El fichero «{file}» no existe: elija el MDT que quiere importar"
+
+["Import of the DTM «{name}»"]
+es = "Importación del MDT «{name}»"
+
+["Importing «{name}» in the background…"]
+es = "Importando «{name}» en segundo plano…"
+
+["Raster DTM «{name}» imported as {dataset}: {cols} × {rows} cells of {dx} × {dy} m, {valid} with data; {encoding}"]
+es = "MDT ráster «{name}» importado como {dataset}: {cols} × {rows} celdas de {dx} × {dy} m, {valid} con dato; {encoding}"
+
+["To bring it to the project grid it will be transformed from {source} to {target}: {transform}"]
+es = "Para llevarlo a la rejilla del proyecto se transformará de {source} a {target}: {transform}"
+
+["Median difference with the DTM «{dtm}»: {median} m at {samples} positions"]
+es = "Mediana de la diferencia con el MDT «{dtm}»: {median} m en {samples} posiciones"
+
+["Confirmed by the user: {warning}"]
+es = "Confirmado por la persona: {warning}"
+
+["«{name}» has the same data as the input «{existing}» with other settings ({differences}): write why it replaces it"]
+es = "«{name}» tiene los mismos datos que la entrada «{existing}» con otros ajustes ({differences}): escriba por qué la sustituye"
+
+["«{name}» has not been imported: {reason}"]
+es = "«{name}» no se ha importado: {reason}"
+
+["No DTM import is waiting for a decision"]
+es = "Ninguna importación de un MDT espera una decisión"
+
+["Choose whether to continue the import or cancel it: nothing changed"]
+es = "Elija si sigue con la importación o la cancela: no ha cambiado nada"
+
+["Import of «{name}» cancelled: nothing has been written"]
+es = "Importación de «{name}» cancelada: no se ha escrito nada"
+
+["Write why «{name}» replaces the input with the same data"]
+es = "Escriba por qué «{name}» sustituye a la entrada con los mismos datos"
+
+["Project grid «{name}»"]
+es = "Rejilla del proyecto «{name}»"
+
+["Computing the project grid «{name}» in the background…"]
+es = "Calculando la rejilla del proyecto «{name}» en segundo plano…"
+
+["Project grid {dataset} from «{source}»: {method}, {valid} of {cells} cells with data, minimum covered fraction {fraction}"]
+es = "Rejilla del proyecto {dataset} desde «{source}»: {method}, {valid} de {cells} celdas con dato, fracción mínima cubierta {fraction}"
+
+["area-weighted mean"]
+es = "media ponderada por área"
+
+["bilinear interpolation"]
+es = "interpolación bilineal"
+
+["majority of classes"]
+es = "moda de clases"
+
+["Transformation: {transform}"]
+es = "Transformación: {transform}"
+
+["The project grid «{name}» has not been computed: {reason}"]
+es = "No se ha calculado la rejilla del proyecto «{name}»: {reason}"
+
 # Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
 # Los mensajes de la procedencia y de los parámetros (spec §8) están en
 # core/provenance/messages.py y core/params/model.py, y se instalan al registrar.

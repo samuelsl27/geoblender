@@ -22,9 +22,12 @@ delivered = true
 title.en = "Drillholes"
 title.es = "Sondeos"
 
+# La 006 entrega sus órdenes tarea a tarea (T27, T28…): cada una está disponible cuando su
+# operador real sustituye al provisional.
 ["006"]
 title.en = "Base topography"
 title.es = "Topografía base"
+delivered = true
 
 # La spec 008 es el bloque A de R-07 (su D-1) y entrega sus órdenes tarea a tarea: cada una
 # está disponible cuando su operador real sustituye al provisional. Lo de la 009 sigue en R-07.

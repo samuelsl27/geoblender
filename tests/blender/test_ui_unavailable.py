@@ -124,7 +124,10 @@ class UnavailableNoteTest(unittest.TestCase):
                     self.assertTrue(note.startswith(NOTE_START[language]), note)
                     self.assertEqual(cls.bl_description, f"{about}\n{note}")
             self.assertGreater(available, 40, language)
-            self.assertGreaterEqual(len(unavailable), 30, language)
+            # Bajan a medida que las specs entregan sus órdenes: con la 006 entregada (T28),
+            # sus menús contextuales de superficie y de puntos ya se abren (con lo que aún no
+            # está, desactivado y con su «Disponible en 006 · …»).
+            self.assertGreaterEqual(len(unavailable), 25, language)
             self.assertEqual(sorted(set(FINDING) - set(unavailable)), [], language)
 
     def test_same_format_as_operators(self) -> None:

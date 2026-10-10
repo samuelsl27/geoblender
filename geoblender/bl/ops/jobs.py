@@ -288,18 +288,21 @@ class JobMonitor:
 
     def submit(self, job: JobDir | JobRequest, *,
                on_finish: Callable[[JobResult], object] | None = None,
-               paths: Mapping[str, Path] | None = None) -> JobHandle:
+               paths: Mapping[str, Path] | None = None,
+               site_override: Path | None = None) -> JobHandle:
         """Lanza ``job`` (``JobDir`` o ``JobRequest``) con el lanzador
         (``JobRunner.submit``, que no bloquea; ``paths``, las rutas absolutas que necesita
-        fuera de su carpeta) y empieza a seguirlo: registra el temporizador si no lo estaba.
-        Si no se lanzó porque necesita el motor de cálculo y falta, ofrece instalarlo
-        (:func:`offer_runtime_setup`, RF-004-25). Sin lanzador, :class:`RuntimeError` y nada
-        más."""
+        fuera de su carpeta; ``site_override``, la carpeta ``site`` de su intérprete, como las
+        ruedas de la extensión de una reproyección, spec 006, plan 004 §5.3.3) y empieza a
+        seguirlo: registra el temporizador si no lo estaba. Si no se lanzó porque necesita el
+        motor de cálculo y falta, ofrece instalarlo (:func:`offer_runtime_setup`, RF-004-25).
+        Sin lanzador, :class:`RuntimeError` y nada más."""
         runner = self._runner
         if runner is None:
             raise RuntimeError("no hay lanzador de trabajos: Geoblender aún no ha preparado "
                                "la carpeta de los trabajos")
-        handle = runner.submit(job, on_finish=on_finish, paths=paths)
+        handle = runner.submit(job, on_finish=on_finish, paths=paths,
+                               site_override=site_override)
         self.start()
         offer_runtime_setup(runner, handle.result())
         return handle

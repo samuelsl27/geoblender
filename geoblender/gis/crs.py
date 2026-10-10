@@ -20,7 +20,9 @@ Dominio puro: las transformaciones las da el puerto ``gis.ports.CrsService`` (py
 - Disponibilidad del servicio (RF-006-31): :func:`crs_service_status` y
   :func:`require_crs_service`. Si pyproj no es la versión fijada, no carga o su ``proj.db``
   no coincide con el catálogo, las transformaciones quedan desactivadas con su mensaje y lo
-  demás sigue: lo que no transforma no necesita el servicio.
+  demás sigue: lo que no transforma no necesita el servicio. La biblioteca y su versión
+  fijada, para la procedencia de una operación que transforma (RF-006-26, T28):
+  :func:`crs_library`.
 
 Coordenadas: ABSOLUTAS en float64.
 """
@@ -42,6 +44,7 @@ __all__ = [
     "CoordinateTransform",
     "CrsServiceStatus",
     "Declaration",
+    "crs_library",
     "crs_service_status",
     "needs_transform",
     "reference_label",
@@ -175,6 +178,15 @@ def require_crs_service(resolver: Resolver | None = None) -> CrsService:
         return resolver()
     except CrsServiceUnavailable as exc:
         raise service_error(exc) from exc
+
+
+def crs_library() -> tuple[str, str]:
+    """La biblioteca de las transformaciones y su versión fijada (``("pyproj", "3.8.0")``, la
+    de ``tools/wheels.toml``): lo que anota la procedencia de una operación que transforma o
+    puede transformar (RF-006-26; ``OperationDef.libraries``). No importa pyproj."""
+    from ..adapters import registry
+
+    return registry.crs_library()
 
 
 def crs_service_status(resolver: Resolver | None = None) -> CrsServiceStatus:

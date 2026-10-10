@@ -824,19 +824,24 @@ def job_note(snapshot: JobSnapshot) -> str | None:
 def launch_job(handle: OperationHandle, worker: str, *, label: str,
                params: Mapping[str, Any] | None = None, paths: Mapping[str, Path] | None = None,
                on_finish: Callable[[JobResult], object] | None = None,
+               inputs: Mapping[str, Path] | None = None, site_override: Path | None = None,
                **request: Any) -> JobHandle:
     """Lanza el trabajo de la 004 de la operación ``handle`` («en curso» desde
     ``begin_operation``; RF-008-51, RF-008-20; plan §5.3.4 «Calcular») con el monitor de los
     trabajos, que lo sigue en la barra de estado: tipo ``worker``, nombre visible ``label``,
     ``params``, las rutas absolutas ``paths`` (en la línea de órdenes, nunca en la petición) y
     lo demás de ``jobs.protocol.new_request`` (``request``), con el ``operation_uid`` de la
-    operación, el proyecto y su módulo como dueño. Al terminar, en el hilo de Blender, llama a
-    ``on_finish`` con su ``JobResult``: ahí (o después) el módulo la incorpora con
+    operación, el proyecto y su módulo como dueño. ``inputs`` (spec 006, T28): los ficheros
+    del proyecto que lee, por nombre, que se copian a ``in/`` de su carpeta antes de lanzarlo
+    (``JobDir.copy_input``; la petición lleva su ruta relativa, ARQ-11); ``site_override``:
+    la carpeta ``site`` de su intérprete (las ruedas de la extensión, plan 004 §5.3.3). Al
+    terminar, en el hilo de Blender, llama a ``on_finish`` con su ``JobResult``: ahí (o
+    después) el módulo la incorpora con
     :func:`ingest_job_result`; si el trabajo no terminó bien y no la incorporó, la operación
     queda cancelada o fallida con el motivo de la 004. Hasta incorporarla, «pendiente de
     incorporar» (:func:`job_note`). Si no se puede lanzar, la operación queda fallida con el
     motivo y el error sigue: :class:`RuntimeError` sin lanzador de trabajos, ``JobError`` con
-    una petición que no vale y :class:`ValueError` con una ruta que no vale."""
+    una petición o una entrada que no valen y :class:`ValueError` con una ruta que no vale."""
     from ...core.provenance.operations import failure_reason
 
     try:
@@ -848,7 +853,11 @@ def launch_job(handle: OperationHandle, worker: str, *, label: str,
                                   params=params, project_uid=handle.project_uid,
                                   operation_uid=handle.uid, **request)
         finished = functools.partial(_job_finished, job_request.job_uid)
-        job = jobs_ops.MONITOR.submit(job_request, on_finish=finished, paths=paths)
+        job: Any = job_request
+        if inputs:
+            job = _prepare_inputs(runner, job_request, inputs)
+        job = jobs_ops.MONITOR.submit(job, on_finish=finished, paths=paths,
+                                      site_override=site_override)
     except Exception as exc:
         try:
             handle.fail(failure_reason(exc))
@@ -858,6 +867,30 @@ def launch_job(handle: OperationHandle, worker: str, *, label: str,
         raise
     _STATE.jobs[job.job_uid] = _PendingJob(handle, label, on_finish)
     return job
+
+
+def _prepare_inputs(runner: JobRunner, request: JobRequest,
+                    inputs: Mapping[str, Path]) -> Any:
+    """La carpeta del trabajo de ``request`` (``JobRunner.prepare``) con ``inputs`` copiados a
+    su ``in/`` (``JobDir.copy_input``, con su huella) y su petición con sus rutas relativas
+    (releída tras ``prepare``, que fija su entorno y su tiempo máximo). Si algo falla, el
+    error sigue y no queda la carpeta."""
+    import dataclasses
+    import shutil
+
+    from ...jobs.protocol import read_request, write_request
+
+    folder = runner.prepare(request)
+    try:
+        prepared = read_request(folder)
+        copied = {name: folder.copy_input(path, name, job=request.label)
+                  for name, path in inputs.items()}
+        write_request(folder, dataclasses.replace(prepared,
+                                                  inputs={**dict(prepared.inputs), **copied}))
+    except BaseException:
+        shutil.rmtree(folder.path, ignore_errors=True)
+        raise
+    return folder
 
 
 def _job_finished(job_uid: str, result: JobResult) -> None:
@@ -910,6 +943,16 @@ def ingest_job_result(
     _STATE.jobs.pop(result.job_uid, None)
     _release(result.job_uid)
     return ingested
+
+
+def release_job(job_uid: str) -> None:
+    """Da por incorporado el trabajo ``job_uid`` de :func:`launch_job` cuya operación ya
+    terminó el módulo sin incorporarlo (spec 006, T28: una importación que reutiliza su entrada
+    queda «cancelada» con el aviso, RF-008-54, o la persona cancela la que esperaba su
+    decisión): deja de estar «pendiente de incorporar» y el lanzador lo da por incorporado
+    (``mark_ingested``: se borran sus entradas y sus resultados)."""
+    _STATE.jobs.pop(job_uid, None)
+    _release(job_uid)
 
 
 def _still_pending(handle: OperationHandle) -> bool:
@@ -1044,12 +1087,15 @@ class ProvenanceAwareOperator:
                    params: Mapping[str, Any] | None = None,
                    paths: Mapping[str, Path] | None = None,
                    on_finish: Callable[[JobResult], object] | None = None,
+                   inputs: Mapping[str, Path] | None = None,
+                   site_override: Path | None = None,
                    **request: Any) -> JobHandle | None:
         """:func:`launch_job`; si no se puede lanzar (la operación queda fallida), lo dice y
         devuelve ``None``."""
         try:
             return launch_job(handle, worker, label=label, params=params, paths=paths,
-                              on_finish=on_finish, **request)
+                              on_finish=on_finish, inputs=inputs, site_override=site_override,
+                              **request)
         except RuntimeError:
             self.report({"ERROR"},  # type: ignore[attr-defined]
                         tr("Geoblender has not prepared the jobs folder yet"))

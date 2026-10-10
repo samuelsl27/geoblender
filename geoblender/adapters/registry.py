@@ -10,6 +10,8 @@ que importar el dominio no carga ninguna librería externa ni sus DLL.
   ``adapters.pyproj_crs`` (spec 006: RF-006-05, RF-006-07, RF-006-31). Si no se puede usar,
   lanza ``gis.ports.CrsServiceUnavailable``, que ``gis.crs`` convierte en el error para el
   usuario.
+- :func:`crs_library`: la biblioteca del servicio de CRS y su versión fijada (spec 006, T28:
+  la procedencia de una operación que transforma, RF-006-26), sin cargar la biblioteca.
 """
 
 from __future__ import annotations
@@ -23,3 +25,11 @@ def crs_service() -> CrsService:
     from . import pyproj_crs
 
     return pyproj_crs.load_service()
+
+
+def crs_library() -> tuple[str, str]:
+    """La biblioteca del servicio de CRS y la versión que fija Geoblender
+    (``tools/wheels.toml``), sin importarla ni comprobar la instalada."""
+    from . import pyproj_crs
+
+    return pyproj_crs.PACKAGE, pyproj_crs.PYPROJ_VERSION

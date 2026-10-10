@@ -645,6 +645,21 @@ CATALOG: tuple[Message, ...] = (
         "coordenadas: muestre lo calculado a partir de él en las referencias del proyecto (la "
         "rejilla remuestreada, el TIN).",
     ),
+    # Las órdenes de un MDT (T28; RF-006-04, RF-006-09; plan §5.3.5) ------------------------
+    Message(
+        "gis.dtm_format_unsupported",
+        "DTM «{file}»: the extension «{value}» is not a supported format (GeoTIFF .tif or "
+        ".tiff, ESRI ASCII Grid .asc or regular-grid XYZ .xyz).",
+        "MDT «{file}»: la extensión «{value}» no es de un formato admitido (GeoTIFF .tif o "
+        ".tiff, ESRI ASCII Grid .asc o XYZ en malla .xyz).",
+    ),
+    Message(
+        "gis.crs_text_invalid",
+        "«{value}» is not a horizontal CRS of Geoblender's catalog: write its EPSG code, such "
+        "as EPSG:25830, or leave it empty to use the one the file declares.",
+        "«{value}» no es un CRS horizontal del catálogo de Geoblender: escriba su código EPSG, "
+        "como EPSG:25830, o déjelo vacío para usar el que declara el fichero.",
+    ),
     # Los de un parámetro (gis/params.py) los da core.params (core.param_*; plan §5.6.1).
 )
 
