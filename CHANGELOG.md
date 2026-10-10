@@ -38,17 +38,18 @@ en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su inte
   topografía (spec 006) y los sondeos (spec 005). Las órdenes están en **Proyecto ▸ Control**.
   - **Parámetros del proyecto…**: cada parámetro que mueve cifras, con su valor y su unidad, su
     tipo (MEDIDO, CALCULADO, ADOPTADO o HIPÓTESIS, con las insignias [MED], [CAL], [ADO] y
-    [HIP], esta en ámbar), su origen (documento, norma, persona, operación o algoritmo), quién
-    lo decidió y cuándo; se filtran por módulo, tipo y marca, y el seleccionado enseña su
-    historial entero, que nunca se reescribe: una hipótesis que pasa a adoptada sigue constando
-    como hipótesis en sus entradas anteriores. **Cambiar parámetro…** pide siempre el motivo y
-    rechaza, diciendo la clave, el valor, la unidad y el rango, un valor fuera de rango, vacío,
-    NaN o en una unidad que no se convierte; un valor en otra unidad de la misma magnitud se
-    convierte (35 % en un parámetro en fracción se guarda 0,35; también t y kt, o m² y ha). Un
-    valor por defecto de Geoblender queda «sin confirmar» hasta que una persona lo confirma o lo
-    cambia, y las cifras que dependen de él lo dicen; si otra versión de Geoblender cambia la
-    definición de un parámetro (su unidad, su rango o su valor por defecto), queda «revisar»,
-    sin tocar su valor.
+    [HIP], esta con un icono ámbar, también en el historial y en la procedencia; el rojo queda
+    para los errores y los cambios), su origen (documento, norma, persona, operación o
+    algoritmo), quién lo decidió y cuándo; se filtran por módulo, tipo y marca, y el
+    seleccionado enseña su historial entero, que nunca se reescribe: una hipótesis que pasa a
+    adoptada sigue constando como hipótesis en sus entradas anteriores. **Cambiar parámetro…**
+    pide siempre el motivo y rechaza, diciendo la clave, el valor, la unidad y el rango, un
+    valor fuera de rango, vacío, NaN o en una unidad que no se convierte; un valor en otra
+    unidad de la misma magnitud se convierte (35 % en un parámetro en fracción se guarda 0,35;
+    también t y kt, o m² y ha). Un valor por defecto de Geoblender queda «sin confirmar» hasta
+    que una persona lo confirma o lo cambia, y las cifras que dependen de él lo dicen; si otra
+    versión de Geoblender cambia la definición de un parámetro (su unidad, su rango o su valor
+    por defecto), queda «revisar», sin tocar su valor.
   - **Un cálculo nunca cambia un parámetro**: si una operación calcula un valor distinto del que
     fijó una persona (un K de esponjamiento), lo guarda como cifra CALCULADO y avisa de la
     diferencia; adoptarlo lo decide una persona («Usar el valor calculado…»).

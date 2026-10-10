@@ -54,8 +54,9 @@ desactivadas.
 **Parámetros del proyecto** (:class:`GEOBLENDER_PT_core_parameters`, ventana emergente que
 abre ``geoblender.core_show_parameters``; RF-008-06, RF-008-59; T50): filtros por módulo, tipo
 y marca; la lista (:class:`GEOBLENDER_UL_core_parameters`) con la clave, el valor con su
-unidad, la insignia de tipo ([HIP] en ámbar), las marcas «sin confirmar» y «revisar», el
-origen, el decisor y la fecha; del seleccionado, su origen, su decisión, lo que hay que revisar,
+unidad, la insignia de tipo ([HIP] con su icono ámbar: :func:`badge_icon`), las marcas «sin
+confirmar» y «revisar», el origen, el decisor y la fecha; del seleccionado, su origen, su
+decisión, lo que hay que revisar,
 el aviso de divergencia de su última cifra calculada con «Usar el valor calculado…» (Cambiar
 relleno con la cifra), el historial completo (:class:`GEOBLENDER_UL_core_parameter_history`) y
 Cambiar parámetro… y Confirmar parámetro; en solo lectura, desactivados y con el motivo.
@@ -94,6 +95,14 @@ insignia y las marcas de RF-008-31 según el estado de hoy, y un eslabón obsole
 alerta. Cada nudo se pliega (``expanded``). :func:`search_lineage` lee la cadena al abrir el
 panel y al cambiar la búsqueda (no en cada cambio del proyecto: con un grafo grande tarda hasta
 0,5 s); las filas viven en ``WindowManager.geoblender_provenance``, como texto ya presentado.
+
+**Insignias de tipo** (RF-008-02, RF-008-06, RF-008-29; T70): en las tres listas (parámetros,
+su historial y la procedencia), [MED], [CAL], [ADO] y [HIP] (:func:`badge`) en una columna de
+:data:`BADGE_UNITS` unidades. Blender solo colorea un texto en rojo (``alert``), que la interfaz
+deja para los errores y los cambios: [HIP] se distingue con el icono ámbar propio
+:data:`HYPOTHESIS_ICON` de la 003 junto a la insignia, sin alerta (:func:`badge_icon`; sin él,
+su reserva nativa ámbar), y los demás tipos llevan un hueco del mismo ancho, para que el texto
+quede alineado.
 
 **Estados de las órdenes** (RF-008-61; BS §7.3; T56): :func:`command_state` es el proveedor de
 ``bl.ui.commands.set_state_provider``. Una orden de un módulo (su ``bl_idname`` en los
@@ -207,9 +216,14 @@ CONFIRM_PARAMETER = "geoblender.core_confirm_parameter"
 PARAMETERS_PANEL_UNITS = 44
 PARAMETER_ROWS = 8  # filas visibles de la lista (después, se desplaza)
 HISTORY_ROWS = 5
+HYPOTHESIS_ICON = "gb_type_assumption"  # [HIP]: «HIP» sobre ámbar (spec 003, II §1.4; T70)
+HYPOTHESIS_FALLBACK = "COLLECTION_COLOR_03"  # su reserva nativa ámbar (la de BORRADOR)
+BADGE_UNITS = 3.5
+"""Ancho de la insignia de tipo con su icono (T70): el de [HYP], el más ancho con icono, es
+65 px a escala 1,0 (blf 30 + 35)."""
 # Ancho (unidades) de cada columna de la lista de parámetros y del historial.
-PARAMETER_COLUMNS = (9.0, 5.5, 2.5, 5.0, 10.0, 7.0, 4.0)
-HISTORY_COLUMNS = (1.5, 3.5, 4.5, 2.5, 3.5, 5.0, 3.5, 8.0, 6.0, 5.5)
+PARAMETER_COLUMNS = (9.0, 5.5, BADGE_UNITS, 5.0, 9.0, 7.0, 4.0)
+HISTORY_COLUMNS = (1.5, 3.5, 4.5, BADGE_UNITS, 3.5, 5.0, 3.5, 7.0, 6.0, 5.5)
 
 INPUTS_PANEL = "GEOBLENDER_PT_core_inputs"
 INPUTS_LIST = "GEOBLENDER_UL_core_inputs"
@@ -232,7 +246,6 @@ SHOW_LINEAGE = "geoblender.core_show_lineage"
 LINEAGE_PANEL_UNITS = 56
 LINEAGE_ROWS = 12  # filas visibles de la procedencia (después, se desplaza)
 LINEAGE_INDENT = 1.5  # sangría de cada nivel (factor de ``separator``)
-BADGE_UNITS = 2.5  # ancho de la insignia de tipo
 MAX_LINEAGE_ROWS = 1000
 """Las filas de la procedencia que se guardan en la vista (las demás, «… y n más»)."""
 
@@ -960,6 +973,23 @@ def badge(kind: str) -> str:
     return tr("[HYP]")
 
 
+def badge_icon(kind: str) -> dict[str, Any]:
+    """El icono de la insignia de un tipo (T70; RF-008-02, RF-008-06, RF-008-29): de [HIP], el
+    ámbar propio :data:`HYPOTHESIS_ICON` (``{"icon_value": n}``) o, si no se puede mostrar,
+    su reserva nativa ámbar; de los demás, un hueco del mismo ancho (``BLANK1``)."""
+    if kind == ParamKind.HIPOTESIS:
+        return icons.icon_kwargs(HYPOTHESIS_ICON, native_icon(HYPOTHESIS_FALLBACK))
+    return {"icon": "BLANK1"}
+
+
+def _badge_cell(layout: Any, kind: str, units: float = BADGE_UNITS) -> None:
+    """La columna de la insignia de tipo ``kind`` con su icono y sin alerta (T70): el rojo de
+    ``alert`` es para los errores y los cambios."""
+    cell = layout.row(align=True)
+    cell.ui_units_x = units
+    cell.label(text=badge(kind), translate=False, **badge_icon(kind))
+
+
 def _action_text(action: str) -> str:
     if action == HistoryAction.DEFAULT:
         return tr("Default value")
@@ -989,12 +1019,12 @@ def _marks_text(unconfirmed: bool, review: bool = False) -> str:
 
 def draw_parameter_row(layout: Any, row: Any) -> None:
     """Una fila de la lista de parámetros (RF-008-06): clave, valor con su unidad, insignia de
-    tipo ([HIP] en ámbar), marcas, origen, decisor y fecha."""
+    tipo ([HIP] con su icono ámbar), marcas, origen, decisor y fecha."""
     line = layout.row(align=True)
     key, value, kind, marks, source, decided_by, decided_at = PARAMETER_COLUMNS
     _cell(line, row.key, key)
     _cell(line, row.value, value)
-    _cell(line, badge(row.kind), kind, alert=row.kind == ParamKind.HIPOTESIS)
+    _badge_cell(line, row.kind, kind)
     _cell(line, _marks_text(row.unconfirmed, row.review), marks, alert=row.review)
     _cell(line, row.source, source)
     _cell(line, row.decided_by, decided_by)
@@ -1002,14 +1032,15 @@ def draw_parameter_row(layout: Any, row: Any) -> None:
 
 
 def draw_history_row(layout: Any, row: Any) -> None:
-    """Una fila del historial (RF-008-02, RF-008-06): revisión, qué fue, valor, insignia,
-    «sin confirmar», decisor y fecha de la decisión, motivo, y quién y cuándo lo registró."""
+    """Una fila del historial (RF-008-02, RF-008-06): revisión, qué fue, valor, insignia ([HIP]
+    con su icono ámbar), «sin confirmar», decisor y fecha de la decisión, motivo, y quién y
+    cuándo lo registró."""
     line = layout.row(align=True)
     rev, action, value, kind, marks, decided_by, decided_at, reason, by, at = HISTORY_COLUMNS
     _cell(line, str(row.rev), rev)
     _cell(line, _action_text(row.action), action)
     _cell(line, row.value, value)
-    _cell(line, badge(row.kind), kind, alert=row.kind == ParamKind.HIPOTESIS)
+    _badge_cell(line, row.kind, kind)
     _cell(line, _marks_text(row.unconfirmed), marks)
     _cell(line, row.decided_by, decided_by)
     _cell(line, row.decided_at, decided_at)
@@ -1571,9 +1602,9 @@ def _mark_text(kind: str, mark: str) -> str:
 
 def draw_lineage_row(layout: Any, row: Any, *, children: bool) -> None:
     """Una fila de la procedencia (RF-008-29, RF-008-31): sangrada por su profundidad, con el
-    botón de plegar si tiene ramas, la insignia de tipo de una cifra o un parámetro ([HIP] en
-    ámbar), su texto, «ya mostrada arriba» si se repite, sus marcas en alerta y su nota (en
-    alerta, la causa de un eslabón obsoleto)."""
+    botón de plegar si tiene ramas, la insignia de tipo de una cifra o un parámetro ([HIP] con
+    su icono ámbar), su texto, «ya mostrada arriba» si se repite, sus marcas en alerta y su
+    nota (en alerta, la causa de un eslabón obsoleto)."""
     line = layout.row(align=True)
     if row.depth:
         line.separator(factor=LINEAGE_INDENT * row.depth)
@@ -1583,8 +1614,7 @@ def draw_lineage_row(layout: Any, row: Any, *, children: bool) -> None:
     else:
         line.label(text="", icon="BLANK1")
     if row.param_kind:
-        _cell(line, badge(row.param_kind), BADGE_UNITS,
-              alert=row.param_kind == ParamKind.HIPOTESIS)
+        _badge_cell(line, row.param_kind)
     line.label(text=row.text, translate=False)
     if row.repeated:
         again = line.row(align=True)

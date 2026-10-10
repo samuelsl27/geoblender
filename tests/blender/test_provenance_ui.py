@@ -63,6 +63,15 @@ T66 (spec 0.3; F-1 de la verificación):
   causa y Recalcular, y su orden lleva la causa en su descripción con «Recalcular lo obsoleto»
   resaltado; tras recalcular, nada.
 
+T70 (T58, M1: [HIP] salía en rojo, el color de alerta de Blender, que la interfaz deja para los
+errores y los cambios):
+
+- RF-008-02, RF-008-06, RF-008-29: la lista de parámetros, su historial y la procedencia
+  dibujan [HIP] con el icono ámbar propio ``gb_type_assumption`` (conjunto de la 003) junto a
+  la insignia y sin alerta; sin interfaz, su reserva nativa ámbar; los demás tipos, sin alerta
+  y con un hueco del ancho del icono (el texto queda alineado). La columna cabe con el icono en
+  los dos idiomas, y el icono pasa las reglas de iconos de la 003 (licencia y tamaños).
+
 Se ejecuta con ``tools/run_blender_tests.py``. En ``blender -b`` los temporizadores no corren:
 las pruebas llaman a su función. El proyecto es sintético (la demostración de la 008 y los
 GeoPackage de ``tests/data/core/provenance/``).
@@ -70,6 +79,7 @@ GeoPackage de ``tests/data/core/provenance/``).
 
 import dataclasses
 import importlib
+import json
 import os
 import shutil
 import tempfile
@@ -87,7 +97,11 @@ from tests.support.core_fixtures import settings_values
 from tests.support.fake_layout import FakeLayout, draw
 from tests.support.provenance_checks import assert_no_figures_in_names
 from tests.support.provenance_demo import AREA, BENCH_YEARS, PRODUCTION, SWELL_FACTOR, Demo
-from tests.support.repo import ROOT
+from tests.support.repo import EXTENSION_DIR, ROOT, tools_on_path
+
+tools_on_path()
+
+from gbtools import icons as icon_rules  # noqa: E402
 
 DATA = ROOT / "tests" / "data" / "core" / "provenance"
 MAX_TICKS = 300  # la comprobación de un proyecto pequeño acaba en unas decenas de pasos
@@ -133,6 +147,13 @@ SYNTHETIC_ABOUT = "Synthetic order of a module"
 CHANGED_WARNING = "La entrada «Limites» ha cambiado desde su registro ("
 PROJECT_MENU = "GEOBLENDER_MT_ui_project"  # Proyecto ▸ Control ▸ Recalcular lo obsoleto
 CONTEXT_MENU = "GEOBLENDER_MT_des_context_design"  # un contextual que la lleva
+HYPOTHESIS_ICON = "gb_type_assumption"  # [HIP]: «HIP» sobre ámbar (spec 003, II §1.4)
+HYPOTHESIS_FALLBACK = "COLLECTION_COLOR_03"  # su reserva nativa ámbar (la de BORRADOR)
+HYPOTHESIS_AMBER = "#E0A526"  # el ámbar de HIP (II §1.2)
+FAKE_ICON_ID = 4242  # el icon_id de un icono propio cargado, con interfaz
+SVG_DIR = ROOT / "assets" / "icons"
+PNG_DIR = EXTENSION_DIR / "resources" / "icons"
+MAX_PNG_BYTES = 8 * 1024  # RNF-003-09
 
 
 def _module(name: str) -> ModuleType:
@@ -591,8 +612,9 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertEqual(view.parameters[0].value, "200 MB")
         items = self.list_items(view)
         badges = [item for item in items.items if item.text in ("[HIP]", "[ADO]")]
-        self.assertEqual([(item.text, item.alert) for item in badges],
-                         [("[ADO]", False), ("[HIP]", True), ("[HIP]", True), ("[HIP]", True)])
+        amber = ("[HIP]", False, HYPOTHESIS_FALLBACK)  # sin interfaz, su reserva (T70)
+        self.assertEqual([(item.text, item.alert, item.icon) for item in badges],
+                         [("[ADO]", False, "BLANK1"), amber, amber, amber])
         texts = items.texts()
         for shown in ("1,15", "500000 t/año", "sin confirmar", swell.source, swell.decided_by,
                       swell.decided_at):
@@ -825,7 +847,7 @@ class ProvenanceUiTest(unittest.TestCase):
                          [LINEAGE_LIST])
         self.assertEqual([item.target for item in panel.of_kind("prop")], ["lineage_uid"])
         badge = [item for item in self.list_lineage(view).items if item.text == "[HIP]"]
-        self.assertTrue(badge[0].alert)
+        self.assertEqual((badge[0].alert, badge[0].icon), (False, HYPOTHESIS_FALLBACK))  # T70
 
         view.lineage[1].expanded = False  # plegar los años por banco
         self.assertEqual(self.ui.lineage_visible(view.lineage), [True, True, False, False,
@@ -883,6 +905,92 @@ class ProvenanceUiTest(unittest.TestCase):
                 SimpleNamespace(), bpy.context, layout, view, row, 0, view, "lineage_index",
                 index)
         return layout
+
+    @staticmethod
+    def badge_rows(kind: str) -> tuple[tuple[str, object, object], ...]:
+        """Una fila de tipo ``kind`` de cada una de las tres listas con insignia (T70): el
+        ``bl_idname`` de su ``UIList``, sus datos y la fila."""
+        parameter = SimpleNamespace(key="demo.k", value="1,15", kind=kind, unconfirmed=True,
+                                    review=False, source="Plan de labores",
+                                    decided_by="la propiedad", decided_at="10/10/2026")
+        history = SimpleNamespace(rev=1, action="default", value="1,15", kind=kind,
+                                  unconfirmed=True, decided_by="la propiedad",
+                                  decided_at="10/10/2026", reason="", changed_by="técnico",
+                                  changed_at="10/10/2026 10:00")
+        lineage = SimpleNamespace(depth=1, expanded=True, param_kind=kind, text="K = 1,15",
+                                  repeated=False, marks="", kind="parameter", note="")
+        return ((PARAMETERS_LIST, SimpleNamespace(), parameter),
+                (HISTORY_LIST, SimpleNamespace(), history),
+                (LINEAGE_LIST, SimpleNamespace(lineage=[lineage]), lineage))
+
+    def drawn_badges(self, kind: str) -> list[object]:
+        """La insignia de tipo ``kind`` como la dibuja cada una de las tres listas."""
+        found = []
+        for name, data, row in self.badge_rows(kind):
+            layout = FakeLayout()
+            getattr(bpy.types, name).draw_item(SimpleNamespace(), bpy.context, layout, data,
+                                               row, 0, data, "index", 0)
+            shown = [item for item in layout.items if item.text == self.ui.badge(kind)]
+            self.assertEqual(len(shown), 1, (name, layout.texts()))
+            found.append(shown[0])
+        return found
+
+    def test_hypothesis_badge_with_its_amber_icon_and_no_alert(self) -> None:
+        """RF-008-02, RF-008-06, RF-008-29 (T70; T58, M1): la lista de parámetros, su
+        historial y la procedencia dibujan [HIP] con el icono ámbar propio
+        ``gb_type_assumption`` (con interfaz, su ``icon_value``) junto a la insignia y sin
+        alerta, que la interfaz deja para los errores y los cambios; sin interfaz, su reserva
+        nativa ámbar. [MED], [CAL] y [ADO], sin alerta y con un hueco del ancho del icono
+        (``BLANK1``), para que el texto de la columna quede alineado. La columna de la
+        insignia cabe con el icono en español y en inglés (el ancho ``blf`` más lo que añade
+        el icono, como lo mide la barra de estado). El icono es el de HIP de la 003: está en
+        el catálogo, su SVG pasa las reglas (sin texto ni referencias externas, metadatos de
+        licencia CC0 de IMGA) con el ámbar de HIP, y sus PNG son de 32 y 64 px, ≤ 8 KB y con
+        el sha256 del manifiesto."""
+        kinds = list(_module("core.params").ParamKind)
+        hypothesis = _module("core.params").ParamKind.HIPOTESIS
+        icons = _module("bl.ui.icons")
+        i18n = _module("core.i18n")
+
+        loaded = {HYPOTHESIS_ICON: FAKE_ICON_ID}  # con interfaz, el icono propio cargado
+        with mock.patch.object(icons, "icon_id", side_effect=lambda name: loaded.get(name, 0)):
+            for badge in self.drawn_badges(hypothesis):
+                self.assertEqual((badge.text, badge.alert, badge.options.get("icon_value")),
+                                 ("[HIP]", False, FAKE_ICON_ID))
+        for badge in self.drawn_badges(hypothesis):  # sin interfaz, su reserva nativa
+            self.assertEqual((badge.alert, badge.icon), (False, HYPOTHESIS_FALLBACK))
+        for kind in kinds:
+            if kind == hypothesis:
+                continue
+            for badge in self.drawn_badges(kind):
+                self.assertEqual((badge.alert, badge.icon, badge.options.get("icon_value")),
+                                 (False, "BLANK1", None), badge.text)
+
+        for shown in ("es", "en"):
+            i18n.set_language(shown)
+            try:
+                for kind in kinds:
+                    for badge in self.drawn_badges(kind):
+                        self.assertLessEqual(self.statusbar.label_px(badge.text, icon=True),
+                                             self.statusbar.units_px(badge.units_x),
+                                             (shown, badge.text))
+            finally:
+                i18n.set_language("es")
+
+        self.assertIn(HYPOTHESIS_ICON, _module("bl.ui.commands").catalog().icons)
+        native = bpy.types.UILayout.bl_rna.functions["label"].parameters["icon"].enum_items
+        self.assertIn(HYPOTHESIS_FALLBACK, native.keys())
+        svg = SVG_DIR / f"{HYPOTHESIS_ICON}.svg"
+        self.assertEqual(icon_rules.svg_problems(svg), [])
+        self.assertIn(f'fill="{HYPOTHESIS_AMBER}"', svg.read_text(encoding="utf-8"))
+        manifest = json.loads((PNG_DIR / "manifest.json").read_text(encoding="utf-8"))
+        entry = manifest["icons"][HYPOTHESIS_ICON]
+        self.assertEqual(icon_rules.sha256_file(svg), entry["svg"])
+        for size in icon_rules.SIZES:
+            png = PNG_DIR / f"{HYPOTHESIS_ICON}_{size}.png"
+            self.assertEqual(icon_rules.png_size(png), (size, size))
+            self.assertLessEqual(png.stat().st_size, MAX_PNG_BYTES)
+            self.assertEqual(icon_rules.sha256_file(png), entry[f"png{size}"])
 
 
 if __name__ == "__main__":
