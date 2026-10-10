@@ -56,6 +56,13 @@ T56 (estados de comando, BS §7.3):
   se dibuja resaltado en Proyecto ▸ Control y en el contextual; sin nada, todo se dibuja como
   antes. Desregistrar quita el proveedor de estado.
 
+T66 (spec 0.3; F-1 de la verificación):
+
+- RF-008-28, RF-008-61: una operación obsoleta que solo deja cifras (el área del límite tras
+  actualizar su entrada) cuenta en «! n obsoletos» y en el control 7, sale en el panel con su
+  causa y Recalcular, y su orden lleva la causa en su descripción con «Recalcular lo obsoleto»
+  resaltado; tras recalcular, nada.
+
 Se ejecuta con ``tools/run_blender_tests.py``. En ``blender -b`` los temporizadores no corren:
 las pruebas llaman a su función. El proyecto es sintético (la demostración de la 008 y los
 GeoPackage de ``tests/data/core/provenance/``).
@@ -117,6 +124,9 @@ PRODUCTION_ROW = "Producción (demostración) · demo.production = 500000 t/año
 HYPOTHESIS = "depende de una hipótesis"
 UNCONFIRMED = "depende de un valor sin confirmar"
 STALE_CAUSE = "Obsoleto: cambió Producción (demostración)"
+AREA_UPDATE = "La propiedad entrega el límite redibujado"
+AREA_LABEL = "Calcular el área del límite (demostración)"  # la operación, en el panel
+AREA_CAUSE = "Obsoleto: se actualizó la entrada «Limites»"
 SYNTHETIC = "geoblender.core_selftest_state"  # la orden sintética de un módulo (T56)
 SYNTHETIC_LABEL = "Synthetic module order"  # sin traducción: se ve el msgid
 SYNTHETIC_ABOUT = "Synthetic order of a module"
@@ -318,7 +328,8 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertEqual(self.both_modes(), [])  # aún sin leer los recuentos
 
         self.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
-        self.assertEqual(self.stale.counts(project), self.stale.Counts(0, 0, 1))
+        self.assertEqual(self.stale.counts(project),
+                         self.stale.Counts(stale=0, figures=0, review=0, inputs_changed=1))
         self.assertEqual(self.both_modes(), ["⚠ 1 entradas"])
         inputs = [item for item in self.bar().items if item.text == "⚠ 1 entradas"]
         self.assertEqual(inputs[0].target, SHOW_INPUTS)
@@ -394,6 +405,64 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertFalse(bpy.app.timers.is_registered(ui.indicator_tick))
         self.assertEqual(len(bpy.context.window_manager.geoblender_provenance.stale), 0)
         self.assertIsNone(self.quick.count_of(REFRESH, bpy.context))
+        self.assertEqual(self.synthetic_drawn(synthetic), plain)
+        self.assertEqual(self.recompute_highlighted(), [[False], [False]])
+
+    def test_stale_area_that_only_leaves_a_figure(self) -> None:
+        """RF-008-28, RF-008-61 (spec 0.3, T66; F-1 de la verificación): importado el límite
+        y calculada su área (que solo deja la cifra), con ``Limites_v2`` en su lugar y la
+        entrada actualizada, «! 1 obsoletos» en la barra (los dos modos) y «1» en el control 7,
+        que abre el panel con la operación del área, su módulo, su causa («Obsoleto: se
+        actualizó la entrada «Limites»») y Recalcular de esa operación; la orden sintética que
+        declara el área lleva la causa en su descripción («Resultado obsoleto», sin la
+        insignia ⚠) y «Recalcular lo obsoleto» sale resaltado. Tras recalcular, el siguiente
+        tic lo quita todo: ningún campo, ningún número, «No hay nada obsoleto» y la orden como
+        antes."""
+        ui = self.ui
+        synthetic = self.synthetic_command()
+        plain = (SYNTHETIC_LABEL, True, False, SYNTHETIC_ABOUT)
+        project = self.create()
+        sources = self.tmp / "fuentes"
+        sources.mkdir()
+        source = sources / "Limites.gpkg"
+        shutil.copyfile(DATA / "Limites_v1.gpkg", source)
+        demo = self.enterContext(Demo(module_name()).registered())
+        self.declare(AREA)
+        boundary = demo.import_boundary(project, source)
+        area = demo.area(project, boundary.dataset.uid)
+        shutil.copyfile(DATA / "Limites_v2.gpkg", source)
+        _module("core.provenance.importer").reimport_input(project, "Limites", AREA_UPDATE)
+
+        self.ps.attach(project)
+        self.run_checks()
+        self.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
+        self.assertEqual(self.both_modes(), ["! 1 obsoletos"])
+        _refresh, number = self.control_7()
+        self.assertEqual((number.kind, number.target, number.text), ("popover", STALE_PANEL,
+                                                                      "1"))
+        panel = draw(bpy.types.GEOBLENDER_PT_core_stale, bpy.context)
+        texts = panel.texts()
+        self.assertEqual(texts[0], "Refrescar · obsoletos (1)")
+        self.assertIn(AREA_LABEL, texts)
+        self.assertIn("demo", texts)
+        self.assertIn(AREA_CAUSE, texts)
+        self.assertNotIn("No hay nada obsoleto", texts)
+        recompute = [item for item in panel.items if item.target == RECOMPUTE]
+        self.assertEqual([item.text for item in recompute],
+                         ["Recalcular", "Recalcular lo obsoleto"])
+        self.assertEqual([vars(item.properties) for item in recompute],
+                         [{"scope": "ITEM", "subject_uid": area.uid}, {}])
+        self.assertEqual(self.synthetic_drawn(synthetic),
+                         (SYNTHETIC_LABEL, True, False, f"{SYNTHETIC_ABOUT}\n{AREA_CAUSE}"))
+        self.assertEqual(self.recompute_highlighted(), [[True], [True]])
+
+        for _progress in _module("core.provenance.recompute").recompute_steps(project):
+            pass
+        self.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
+        self.assertEqual(self.both_modes(), [])
+        self.assertIsNone(self.quick.count_of(REFRESH, bpy.context))
+        texts = draw(bpy.types.GEOBLENDER_PT_core_stale, bpy.context).texts()
+        self.assertEqual(texts[:2], ["Refrescar · obsoletos (0)", "No hay nada obsoleto"])
         self.assertEqual(self.synthetic_drawn(synthetic), plain)
         self.assertEqual(self.recompute_highlighted(), [[False], [False]])
 

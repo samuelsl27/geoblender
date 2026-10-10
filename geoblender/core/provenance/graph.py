@@ -30,7 +30,9 @@ procedencia, que :func:`load_graph` carga del proyecto en una sola lectura.
   las reciben, con la causa ``group`` (RF-008-25), y con ellas lo que depende de cualquiera;
 - un dato vivo está obsoleto si lo está la operación que escribió su contenido actual; una
   operación obsoleta que no se repite sola espera **revisión a mano** si no está sustituida y
-  escribió el contenido actual de un dato vivo o una cifra vigente (RF-008-27);
+  escribió el contenido actual de un dato vivo o una cifra vigente (RF-008-27); una que se
+  repite sola **solo deja cifras** si no está sustituida, no escribió el contenido actual de
+  ningún dato vivo y sí una cifra vigente (RF-008-28, spec 0.3: cuenta en «! n obsoletos»);
 - la **cifra vigente** de una clave y un ámbito es la de la operación más reciente (sin
   sustituir) que no está obsoleta; si todas lo están, la más reciente.
 
@@ -966,7 +968,7 @@ def deduce_steps(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None =
     roots = yield from _roots(graph, graph.operations, {}, installed, lap)
     causes = yield from _with_group(graph, roots, lap)
     data: dict[str, frozenset[Cause]] = {}
-    writers: set[str] = set()
+    writers: set[str] = set()  # las que escribieron el contenido actual de un dato vivo
     for dataset in graph.datasets.values():
         if dataset.live:
             writers.add(dataset.operation_uid)
@@ -977,15 +979,18 @@ def deduce_steps(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None =
             yield
     current_figures = _current_figures(graph, causes)
     figure_operations = {figure.uid: figure.operation_uid for figure in graph.figures}
-    writers |= {figure_operations[uid] for uid in current_figures.values()}
+    figure_writers = {figure_operations[uid] for uid in current_figures.values()}
     operations: dict[str, frozenset[Cause]] = {}
     review: set[str] = set()
+    figure_only: set[str] = set()
     for uid, found in causes.items():
         node = graph.operations[uid]
         if node.current:
             operations[uid] = found
-            if not node.repeatable and uid in writers:
+            if not node.repeatable and (uid in writers or uid in figure_writers):
                 review.add(uid)
+            elif node.repeatable and uid in figure_writers and uid not in writers:
+                figure_only.add(uid)
         if lap is not None and lap():
             yield
     return Staleness(
@@ -995,6 +1000,7 @@ def deduce_steps(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None =
         operations=MappingProxyType(operations),
         datasets=MappingProxyType(data),
         review=frozenset(review),
+        figure_only=frozenset(figure_only),
         current_figures=MappingProxyType(current_figures),
     )
 
@@ -1015,6 +1021,10 @@ class Staleness:
     - ``datasets``: las causas de cada dato vivo obsoleto (las raíz de la operación que
       escribió su contenido actual);
     - ``review``: las operaciones que esperan revisión a mano (RF-008-27);
+    - ``figure_only``: las operaciones obsoletas que solo dejan cifras (RF-008-28, spec 0.3):
+      sin sustituir, que se repiten solas, que no escribieron el contenido actual de ningún
+      dato vivo y sí la cifra vigente de una clave y un ámbito (la que no se repite sola espera
+      revisión a mano);
     - ``current_figures``: la cifra vigente (uid) de cada clave y ámbito (``scope_key``);
     - ``versions``: las versiones instaladas de los algoritmos con que se dedujo.
     """
@@ -1025,6 +1035,7 @@ class Staleness:
     operations: Mapping[str, frozenset[Cause]]
     datasets: Mapping[str, frozenset[Cause]]
     review: frozenset[str]
+    figure_only: frozenset[str]
     current_figures: Mapping[tuple[str, str], str]
 
     def of(self, uid: str) -> frozenset[Cause]:

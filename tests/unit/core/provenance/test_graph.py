@@ -57,6 +57,7 @@ from tests.unit.core.provenance.test_operations import (
 )
 from tests.unit.core.provenance.test_schema import (
     dataset_row,
+    figure_row,
     history_row,
     input_row,
     io_row,
@@ -232,7 +233,8 @@ def whole_stale_items(project: Any, *, conn: sqlite3.Connection | None = None,
     """La lista de lo obsoleto como la hacía ``stale_items`` antes de T64 (la referencia de
     las pruebas): todas las filas de la caché con sus causas, los nodos de todos los datos
     obsoletos y de las operaciones que los escribieron, lo que cambió mientras se calculaba
-    cada una de ellas y un texto por elemento."""
+    cada una de ellas y un texto por elemento. Con las operaciones obsoletas que solo dejan
+    cifras (spec 0.3, T66), entre las que esperan revisión a mano, por orden de registro."""
     with stale_mod._reading(project, conn) as reading:
         causes: dict[tuple[str, str], set[Any]] = defaultdict(set)
         since: dict[tuple[str, str], str] = {}
@@ -242,6 +244,7 @@ def whole_stale_items(project: Any, *, conn: sqlite3.Connection | None = None,
             causes[key].add(Cause(CauseKind(cause_kind), str(subject_uid)))
             since[key] = min(since.get(key, str(at)), str(at))
         review = stale_mod.review_operations(reading)
+        figure_only = stale_mod.figure_only_operations(reading)
         found = stale_mod.counts(project, conn=reading)
         subjects: dict[Any, set[str]] = defaultdict(set)
         for found_causes in causes.values():
@@ -256,7 +259,7 @@ def whole_stale_items(project: Any, *, conn: sqlite3.Connection | None = None,
         shown = sorted((node for (kind, uid) in causes if kind == "dataset"
                         and (node := data.get(uid)) is not None and node.live),
                        key=lambda node: (node.name, node.uid))
-        writers = review | {node.operation_uid for node in shown}
+        writers = review | figure_only | {node.operation_uid for node in shown}
         operations = {node.uid: node for node in (
             *(graph_mod.operation_node(row)
               for row in stale_mod._select(reading, stale_mod._OPERATIONS, writers)),
@@ -288,12 +291,12 @@ def whole_stale_items(project: Any, *, conn: sqlite3.Connection | None = None,
                                                    operation=node.operation_uid)),
             since[("dataset", node.uid)],
         ))
-    for operation in sorted((graph.operations[uid] for uid in review),
+    for operation in sorted((graph.operations[uid] for uid in review | figure_only),
                             key=lambda node: node.fid):
         found_causes = frozenset(causes[("operation", operation.uid)])
         items.append(stale_mod.StaleItem(
             "operation", operation.uid, operation.op_type, operation.module, operation.uid,
-            operation.op_type, True, found_causes,
+            operation.op_type, operation.uid in review, found_causes,
             str(graph_mod.stale_text(graph, chosen, found_causes, language=language,
                                      operation=operation.uid)),
             since[("operation", operation.uid)],
@@ -814,6 +817,37 @@ class StaleTest(GraphCase):
         ((key, figure_uid),) = state.current_figures.items()
         (row,) = self.query("SELECT operation_uid FROM gb_figure WHERE uid = ?", (figure_uid,))
         self.assertEqual((key[0], row[0]), ("res.marks", fresh.uid))
+        self.assertEqual(state.figure_only, frozenset())  # las de cifras, por revisar
+
+    def test_operations_that_only_leave_figures(self) -> None:
+        """RF-008-28 (spec 0.3, T66; plan §5.4.3): una operación obsoleta que se repite sola y
+        solo deja cifras —no escribió el contenido actual de ningún dato vivo y sí la cifra
+        vigente de su clave y su ámbito— se deduce aparte; no, si su dato sigue vivo (cuenta
+        por él), si otra reescribió su dato y su cifra ya no es la vigente, ni si está
+        sustituida."""
+        self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
+        b = self.run_op("res.step_b", reads=["res_a"], figure=3.0)
+        self.change("res.production", 80000.0)
+        state = self.stale()
+        self.assertEqual(state.figure_only, {b.uid})
+        self.assertEqual(state.review, frozenset())
+        self.assertEqual(set(state.datasets), {self.dataset("res_a")})
+
+        c = self.run_op("res.step_c", {"res_c": [4.0]}, reads=["res_a"], figure=4.0)
+        state = self.stale()  # c, obsoleta al nacer, con un dato vivo y la cifra vigente
+        self.assertLessEqual({b.uid, c.uid}, set(state.operations))
+        self.assertEqual(state.figure_only, frozenset())
+        self.assertEqual(set(state.datasets), {self.dataset("res_a"), self.dataset("res_c")})
+
+        self.run_op("res.edit", {"res_c": [4.0, 9.0]})  # reescribe el dato de c, sin leerlo
+        state = self.stale()
+        self.assertEqual(state.figure_only, {c.uid})
+        self.assertEqual(set(state.datasets), {self.dataset("res_a")})
+
+        again = self.run_op("res.step_c", reads=["res_a"], figure=5.0, supersedes=c.uid)
+        state = self.stale()  # la sustituta, obsoleta al nacer y con la cifra vigente
+        self.assertEqual(state.figure_only, {again.uid})
+        self.assertNotIn(c.uid, state.operations)
 
 
 # --- Caché por región (T27) -------------------------------------------------------------------
@@ -956,7 +990,8 @@ class CacheTest(GraphCase):
         esperan revisión a mano (también por una cifra vigente, que deja de serlo con otra más
         reciente al día), y «⚠ n entradas», las entradas cambiadas sin decidir (ni las que
         mantienen la copia ni las descartadas)."""
-        self.assertEqual(stale_mod.counts(self.project), stale_mod.Counts(0, 0, 0))
+        nothing = stale_mod.Counts(stale=0, figures=0, review=0, inputs_changed=0)
+        self.assertEqual(stale_mod.counts(self.project), nothing)
         self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
         self.run_op("res.digitize", {"res_r": [2.0]}, reads=["res_a"])
         self.run_op("res.digitize", reads=["res_a"], figure=3.0)
@@ -964,12 +999,14 @@ class CacheTest(GraphCase):
         self.change("res.production", 80000.0)
         state = self.stale()
         found = stale_mod.counts(self.project)
-        self.assertEqual(found, stale_mod.Counts(stale=2, review=2, inputs_changed=0))
+        self.assertEqual(found, stale_mod.Counts(stale=2, figures=0, review=2, inputs_changed=0))
         self.assertEqual(found.obsolete, 4)
-        self.assertEqual((found.stale, found.review), (len(state.datasets), len(state.review)))
+        self.assertEqual((found.stale, found.figures, found.review),
+                         (len(state.datasets), len(state.figure_only), len(state.review)))
         self.run_op("res.step_d", figure=6.0)
         self.run_op("res.digitize", reads=["res_a"], figure=7.0)  # más reciente, obsoleta
-        self.assertEqual(stale_mod.counts(self.project), stale_mod.Counts(2, 1, 0))
+        two_and_one = stale_mod.Counts(stale=2, figures=0, review=1, inputs_changed=0)
+        self.assertEqual(stale_mod.counts(self.project), two_and_one)
         self.assertEqual(len(self.stale().review), 1)
 
         self.import_input(INPUT_1, "Entrada_1", "res_im1")
@@ -981,8 +1018,82 @@ class CacheTest(GraphCase):
         self.assertEqual(stale_mod.counts(self.project).inputs_changed, 1)
         self.write(lambda conn: inputs.discard(conn, self.project, INPUT_2, "entrega anulada"))
         with self.project.read() as conn:
-            self.assertEqual(stale_mod.counts(self.project, conn=conn),
-                             stale_mod.Counts(2, 1, 0))
+            self.assertEqual(stale_mod.counts(self.project, conn=conn), two_and_one)
+
+    def test_counts_operations_that_only_leave_figures(self) -> None:
+        """RF-008-28 (spec 0.3, T66; F-1 de la verificación): «! n obsoletos» cuenta también
+        las operaciones obsoletas que solo dejan cifras, una vez cada una; la que deja un dato
+        vivo y una cifra cuenta una vez, por su dato (n = datos obsoletos, más operaciones que
+        solo dejan cifras, más operaciones que esperan revisión a mano). Los recuentos son los
+        de la obsolescencia deducida."""
+        self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
+        b = self.run_op("res.step_b", reads=["res_a"], figure=3.0)
+        self.change("res.production", 80000.0)
+        state = self.stale()
+        found = stale_mod.counts(self.project)
+        self.assertEqual(found, stale_mod.Counts(stale=1, figures=1, review=0, inputs_changed=0))
+        self.assertEqual(found.obsolete, 2)
+        self.assertEqual(state.figure_only, {b.uid})
+        self.assertEqual((found.stale, found.figures, found.review),
+                         (len(state.datasets), len(state.figure_only), len(state.review)))
+
+        c = self.run_op("res.step_c", {"res_c": [4.0]}, reads=["res_a"], figure=4.0)
+        found = stale_mod.counts(self.project)  # c: un dato y una cifra, cuenta una vez
+        self.assertEqual(found, stale_mod.Counts(stale=2, figures=0, review=0, inputs_changed=0))
+        self.assertEqual(found.obsolete, 2)
+        self.assertEqual(stale_mod.stale_items(self.project).counts, found)
+        self.assertEqual(len(stale_mod.stale_items(self.project).items), found.obsolete)
+
+        self.run_op("res.edit", {"res_c": [4.0, 9.0]})  # c ya solo deja su cifra
+        found = stale_mod.counts(self.project)
+        self.assertEqual(found, stale_mod.Counts(stale=1, figures=1, review=0, inputs_changed=0))
+        self.assertEqual(self.stale().figure_only, {c.uid})
+        self.run_op("res.step_d", figure=6.0)  # una cifra más reciente, al día
+        self.assertEqual(stale_mod.counts(self.project),
+                         stale_mod.Counts(stale=1, figures=0, review=0, inputs_changed=0))
+        self.assertEqual(self.stale().figure_only, frozenset())
+
+    def test_list_of_operations_that_only_leave_figures(self) -> None:
+        """RF-008-28 (spec 0.3, T66): la lista de lo obsoleto tiene, tras los datos, las
+        operaciones obsoletas que solo dejan cifras y las que esperan revisión a mano, por orden
+        de registro: cada una con su causa, su módulo, ella misma como operación (la orden de
+        recalcularla) y desde cuándo, sin «revisar» si se repite sola; en español y en inglés,
+        como la de antes de T64 y con el texto de ``item_text``."""
+        self.import_input(INPUT_1, "Entrada_1", "res_im1")
+        a = self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
+        b = self.run_op("res.step_b", reads=["res_im1"], figure=3.0)
+        r = self.run_op("res.digitize", {"res_r": [2.0]}, reads=["res_a"])
+        changed_at = self.now()
+        self.change("res.production", 80000.0)
+        discarded_at = self.now()
+        self.write(lambda conn: inputs.discard(conn, self.project, INPUT_1, "entrega anulada"))
+        report = stale_mod.stale_items(self.project)
+        same_report(self, report, whole_stale_items(self.project))
+        english = stale_mod.stale_items(self.project, language="en")
+        same_report(self, english, whole_stale_items(self.project, language="en"))
+        self.assertEqual(report.counts, stale_mod.counts(self.project))
+        self.assertEqual(report.counts,
+                         stale_mod.Counts(stale=2, figures=1, review=1, inputs_changed=0))
+        self.assertEqual(len(report.items), report.counts.obsolete)
+        self.assertEqual(
+            [(item.item_kind, item.uid, item.name, item.module, item.operation_uid,
+              item.op_type, item.review, item.text, item.since) for item in report.items],
+            [
+                ("dataset", self.dataset("res_a"), "res_a", "res", a.uid, "res.step_a", False,
+                 "Obsoleto: cambió Producción", changed_at),
+                ("dataset", self.dataset("res_r"), "res_r", "res", r.uid, "res.digitize", True,
+                 "Obsoleto: cambió Producción", changed_at),
+                ("operation", b.uid, "res.step_b", "res", b.uid, "res.step_b", False,
+                 "Obsoleto: se descartó la entrada «Entrada_1»", discarded_at),
+                ("operation", r.uid, "res.digitize", "res", r.uid, "res.digitize", True,
+                 "Obsoleto: cambió Producción", changed_at),
+            ],
+        )
+        self.assertEqual(report.items[2].causes, {Cause(CauseKind.INPUT_DISCARDED, INPUT_1)})
+        self.assertEqual(english.items[2].text, "Stale: input «Entrada_1» was discarded")
+        with self.project.read() as conn:
+            self.assertEqual(stale_mod.item_text(conn, "operation", b.uid),
+                             report.items[2].text)
 
     def test_list_of_what_is_stale(self) -> None:
         """RF-008-28: la lista de lo obsoleto tiene los resultados obsoletos y las operaciones
@@ -1002,7 +1113,8 @@ class CacheTest(GraphCase):
         same_report(self, stale_mod.stale_items(self.project, language="en"),
                     whole_stale_items(self.project, language="en"))
         self.assertEqual(report.counts, stale_mod.counts(self.project))
-        self.assertEqual(report.counts, stale_mod.Counts(stale=3, review=1, inputs_changed=0))
+        self.assertEqual(report.counts,
+                         stale_mod.Counts(stale=3, figures=0, review=1, inputs_changed=0))
         self.assertEqual(
             [(item.item_kind, item.name, item.module, item.operation_uid, item.op_type,
               item.review, item.text) for item in report.items],
@@ -1162,6 +1274,23 @@ class ListTest(GraphCase):
         self.assertEqual([(item.item_kind, item.uid, item.text) for item in report.items],
                          [("operation", handle.uid,
                            "Obsoleto: cambió Producción mientras se calculaba")])
+
+    def test_while_running_of_an_operation_that_only_gave_a_figure(self) -> None:
+        """RF-008-28 (spec 0.3, T66), RF-008-20, RNF-008-02: una operación que se repite sola
+        y solo dio la cifra vigente está en la lista (sin «revisar»), y lo que cambió mientras
+        se calculaba se busca también para ella: «… mientras se calculaba», como antes."""
+        handle = self.begin("res.step_b", params=["res.production"])
+        self.tick()
+        self.change("res.production", 80000.0)
+        self.write(lambda conn: handle.complete(
+            conn, outputs=[], figures=(figures.FigureSpec("res.marks", 7.0, "-"),)))
+        report = self.stale_items()
+        self.assertEqual([(item.item_kind, item.uid, item.review, item.text)
+                          for item in report.items],
+                         [("operation", handle.uid, False,
+                           "Obsoleto: cambió Producción mientras se calculaba")])
+        self.assertEqual(report.counts,
+                         stale_mod.Counts(stale=0, figures=1, review=0, inputs_changed=0))
 
 
 # --- Grafos aleatorios: región = completo (T27) -------------------------------------------------
@@ -1533,6 +1662,107 @@ class RandomListTest(unittest.TestCase):
         self.assertFalse([line for line in plan if line.startswith("SCAN d")], plan)
 
 
+# --- Grafos aleatorios con cifras: lo que cuentan «! n obsoletos» y la lista (T66) -------------
+
+RANDOM_FIGURE_WORLDS = 40
+_FIGURE_KEYS = ("res.f0", "res.f1")
+
+
+class FigureProject(HistoryProject):
+    """Un mundo aleatorio con el historial de los parámetros (:class:`HistoryProject`) y
+    cifras: la mitad de las operaciones da además una cifra (de una de dos claves y uno de dos
+    ámbitos) y una de cada cinco solo da una cifra (lee datos vivos y parámetros sin escribir
+    ningún dato)."""
+
+    def step(self) -> dict[str, list[str]]:
+        if self.rng.random() < 0.2:
+            return self.figure_operation()
+        changes = super().step()
+        for uid in changes.get("operations", ()):
+            if self.rng.random() < 0.5:
+                self.figure(uid)
+        return changes
+
+    def figure(self, operation_uid: str) -> None:
+        scope = {"n": self.rng.randint(0, 1)}
+        self.insert("gb_figure", figure_row(
+            uid=self.uid(), key=self.rng.choice(_FIGURE_KEYS), operation_uid=operation_uid,
+            scope=figures.scope_json(scope), scope_key=figures.scope_key(scope),
+            created_at=self.stamp(),
+        ))
+
+    def figure_operation(self) -> dict[str, list[str]]:
+        rng = self.rng
+        uid, now = self.uid(), self.stamp()
+        op_type = rng.choice(tuple(_RANDOM_TYPES))
+        supersedes = rng.choice(self.current) if self.current and rng.random() < 0.2 else None
+        self.insert("gb_operation", operation_row(
+            uid=uid, op_type=op_type, module="res", repeatable=int(_RANDOM_TYPES[op_type]),
+            supersedes_uid=supersedes, started_at=now, finished_at=now,
+        ))
+        for item in rng.sample(sorted(self.live), min(len(self.live), rng.randint(0, 2))):
+            self.insert("gb_operation_io", io_row(
+                operation_uid=uid, direction="in", item_uid=item,
+                content_sha256=self.content[item], role="source"))
+        for parameter in rng.sample(sorted(self.params), rng.randint(0, 2)):
+            self.insert("gb_operation_param", op_param_row(
+                operation_uid=uid, parameter_uid=parameter, value_sha256=self.params[parameter]))
+        self.figure(uid)
+        if supersedes is not None:
+            self.conn.execute("UPDATE gb_operation SET superseded_by = ? WHERE uid = ?",
+                              (uid, supersedes))
+            self.current.remove(supersedes)
+        self.current.append(uid)
+        return {"operations": [uid]}
+
+
+class FigureRandomTest(unittest.TestCase):
+    def test_counts_and_list_match_the_deduction_on_random_graphs(self) -> None:
+        """RF-008-28 (spec 0.3, T66), RF-008-27: en grafos aleatorios con cifras —operaciones
+        que dejan datos y cifras, que solo dejan cifras, que no se repiten solas, sustituidas,
+        datos reescritos por otra o que ya no están vivos—, las operaciones que solo dejan
+        cifras y las que esperan revisión a mano según la caché son las deducidas, los
+        recuentos son los suyos (sin contar dos veces una operación) y la lista tiene, tras los
+        datos, esas operaciones por orden de registro, una vez cada una, como la de antes."""
+        seeds = random.Random(20261010)
+        found_figures = found_review = 0
+        for case in range(RANDOM_FIGURE_WORLDS):
+            world = FigureProject(random.Random(seeds.getrandbits(64)))
+            try:
+                for _ in range(world.rng.randint(6, 18)):
+                    world.step()
+                world.refresh()
+                state = graph_mod.deduce(graph_mod.load_graph(world.conn),
+                                         versions=_RANDOM_VERSIONS)
+                what = f"caso {case}"
+                self.assertEqual(stale_mod.figure_only_operations(world.conn),
+                                 state.figure_only, what)
+                self.assertEqual(stale_mod.review_operations(world.conn), state.review, what)
+                self.assertFalse(state.figure_only & state.review, what)
+                counted = stale_mod.counts(None, conn=world.conn)
+                self.assertEqual((counted.stale, counted.figures, counted.review),
+                                 (len(state.datasets), len(state.figure_only),
+                                  len(state.review)), what)
+                report = stale_mod.stale_items(None, conn=world.conn,
+                                               versions=_RANDOM_VERSIONS)
+                same_report(self, report, whole_stale_items(None, conn=world.conn,
+                                                            versions=_RANDOM_VERSIONS), what)
+                self.assertEqual(report.counts, counted, what)
+                self.assertEqual(len(report.items), counted.obsolete, what)
+                fids = dict(world.conn.execute("SELECT uid, fid FROM gb_operation"))
+                shown = [(item.uid, item.review) for item in report.items
+                         if item.item_kind == "operation"]
+                self.assertEqual(shown, sorted(
+                    ((uid, uid in state.review) for uid in state.figure_only | state.review),
+                    key=lambda pair: fids[pair[0]]), what)
+                found_figures += len(state.figure_only)
+                found_review += len(state.review)
+            finally:
+                world.conn.close()
+        self.assertGreater(found_figures, RANDOM_FIGURE_WORLDS // 4)
+        self.assertGreater(found_review, 0)
+
+
 # --- Grafos aleatorios: la completa por pasos (T65) --------------------------------------------
 
 RANDOM_STEPS = 30
@@ -1673,7 +1903,7 @@ class RandomStepsTest(unittest.TestCase):
                         break
                     paused += 1
                 for name in ("versions", "causes", "operations", "datasets", "review",
-                             "current_figures"):
+                             "figure_only", "current_figures"):
                     self.assertEqual(getattr(state, name), getattr(expected, name),
                                      f"{what}, {name}")
                 self.assertGreaterEqual(paused, len(graph.operations), what)

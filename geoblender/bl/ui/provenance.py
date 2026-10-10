@@ -6,8 +6,9 @@ en los dos modos, Geoblender y Blender; spec §11), cada uno solo si tiene algo 
 
 - «⚠ n entradas» (RF-008-16): las entradas cambiadas sin decidir; abre el registro de
   entradas (``geoblender.core_show_inputs``);
-- «! n obsoletos» (RF-008-28): los datos obsoletos más las operaciones que esperan revisión a
-  mano; abre lo obsoleto (:class:`GEOBLENDER_PT_core_stale`);
+- «! n obsoletos» (RF-008-28): los datos obsoletos, más las operaciones obsoletas que solo
+  dejan cifras, más las que esperan revisión a mano; abre lo obsoleto
+  (:class:`GEOBLENDER_PT_core_stale`);
 - «Comprobando el proyecto… 42 %» (RF-008-58), el progreso de la comprobación de apertura de
   la sesión de la procedencia (``bl.ops.core_provenance.SESSION``), con su botón de cancelar
   (``geoblender.core_cancel_checks``);
@@ -32,9 +33,10 @@ vez. Al abrir un proyecto no se lee nada (RNF-002-02 no cambia): el primer tic, 
 obsoleto, solo el icono. Refrescar sigue provisional hasta la 009.
 
 **Lo obsoleto** (:class:`GEOBLENDER_PT_core_stale`, RF-008-28): «Refrescar · obsoletos (n)» y,
-por cada resultado obsoleto (como mucho :data:`MAX_STALE_ROWS`; los demás, «… y n más»), su
-nombre, su módulo, la causa («Obsoleto: cambió Producción») y Recalcular
-(``geoblender.core_recompute_stale`` de ese elemento) o, si espera revisión a mano, «revisar» y
+por cada resultado obsoleto (como mucho :data:`MAX_STALE_ROWS`; los demás, «… y n más»): un
+dato o una operación que solo deja cifras, con su nombre, su módulo, la causa («Obsoleto:
+cambió Producción») y Recalcular (``geoblender.core_recompute_stale`` de ese elemento) o, si
+espera revisión a mano, «revisar» y
 Dar por buena… (``geoblender.core_accept_review``); después (T54; RF-008-56, RF-008-57), los
 datos que no se pueden usar (bloqueados por una edición externa, que faltan o dañados), cada uno
 con su aviso y lo que se ofrece para resolverlo (Aceptar la edición, Recalcular, Reimportar:
@@ -91,8 +93,9 @@ panel y al cambiar la búsqueda (no en cada cambio del proyecto: con un grafo gr
 ``bl.ui.commands.set_state_provider``. Una orden de un módulo (su ``bl_idname`` en los
 ``commands`` del ``OperationDef`` de una operación hecha) de la que depende una entrada
 cambiada sin decidir (``core.inputs.dependents``) lleva la insignia ⚠ y, en su descripción, el
-aviso de RF-008-10; si alguno de sus resultados está obsoleto o espera revisión a mano, su
-descripción lleva su «Obsoleto: cambió …»; con algo obsoleto en el proyecto, «Recalcular lo
+aviso de RF-008-10; si alguno de sus resultados (un dato o, de una operación que solo deja
+cifras, ella misma) está obsoleto o espera revisión a mano, su descripción lleva su
+«Obsoleto: cambió …»; con algo obsoleto en el proyecto, «Recalcular lo
 obsoleto» se dibuja resaltado en el menú y en los contextuales. Se calcula con los recuentos
 (:func:`refresh`, solo cuando cambia el proyecto) y el dibujo solo lo busca.
 
@@ -406,9 +409,10 @@ def _command_states(project: Project, report: StaleReport,
                     shown: str) -> dict[str, CommandState]:
     """El estado de cada orden que lo tiene (RF-008-61), en el idioma ``shown``: las órdenes de
     las operaciones que dependen de una entrada cambiada sin decidir, con la insignia y su aviso;
-    las de las operaciones que escribieron un resultado obsoleto (o esperan revisión a mano),
-    con su «Obsoleto: …»; y, con algo obsoleto, «Recalcular lo obsoleto» resaltado. Las entradas
-    solo se leen si hay alguna cambiada."""
+    las de las operaciones de la lista de lo obsoleto (las que escribieron un dato obsoleto, las
+    obsoletas que solo dejan cifras y las que esperan revisión a mano), con su «Obsoleto: …»;
+    y, con algo obsoleto, «Recalcular lo obsoleto» resaltado. Las entradas solo se leen si hay
+    alguna cambiada."""
     notes: dict[str, list[str]] = {}
     badges: set[str] = set()
 

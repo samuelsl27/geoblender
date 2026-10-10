@@ -35,9 +35,10 @@ recursiva la región **aguas arriba** de unas operaciones (las que escribieron l
 hasta cerrarla); la procedencia (:mod:`.lineage`) carga solo esa parte del grafo.
 
 Para la interfaz (sin recalcular nada): :func:`counts` («! n obsoletos» = datos vivos
-obsoletos más operaciones que esperan revisión a mano; «⚠ n entradas» = las cambiadas sin
-decidir), :func:`stale_items` (lo obsoleto y lo que espera revisión a mano, con su causa, su
-módulo, la operación que lo escribió y desde cuándo) e :func:`item_causes` e
+obsoletos, más operaciones obsoletas que solo dejan cifras, más operaciones que esperan
+revisión a mano, RF-008-28 en la spec 0.3; «⚠ n entradas» = las cambiadas sin decidir),
+:func:`stale_items` (lo obsoleto y lo que espera revisión a mano, con su causa, su módulo, la
+operación que lo escribió o la que se recalcula y desde cuándo) e :func:`item_causes` e
 :func:`item_text` (las causas y el texto de una operación o un dato, los que da la
 incorporación de un trabajo). Los textos dicen «… mientras se calculaba» de lo que cambió
 mientras se calculaba la operación o la que escribió el dato (RF-008-20;
@@ -162,6 +163,15 @@ _REVIEW_CANDIDATES = (
     f"WHERE s.item_kind = '{OPERATION}' AND {_DONE} AND op.superseded_by IS NULL "
     "AND op.repeatable = 0"
 )
+# Las que se repiten solas, obsoletas, sin sustituir y con alguna cifra: de las cifras (no hay
+# índice de su operación) a su operación y a la caché, por sus índices; el CROSS JOIN fija ese
+# orden (con D-13 obsoleto entero, 100 cifras frente a 10 000 operaciones obsoletas).
+_FIGURE_CANDIDATES = (
+    "SELECT DISTINCT op.uid FROM gb_figure AS f CROSS JOIN gb_operation AS op "
+    f"ON op.uid = f.operation_uid WHERE {_DONE} AND op.superseded_by IS NULL "
+    "AND op.repeatable <> 0 AND EXISTS (SELECT 1 FROM gb_stale AS s "
+    f"WHERE s.item_kind = '{OPERATION}' AND s.item_uid = op.uid)"
+)
 _LIVE_WRITERS = (
     "SELECT DISTINCT d.operation_uid FROM gb_operation_io AS io JOIN gb_dataset AS d "
     "ON d.uid = io.item_uid WHERE io.direction = 'out' AND io.item_kind = 'dataset' "
@@ -190,7 +200,7 @@ _STALE_DATASETS = (
     f"LEFT JOIN gb_operation AS op ON op.uid = d.operation_uid AND {_DONE} "
     f"WHERE d.status IN ({_LIVE}) ORDER BY d.name, d.uid"
 )
-# … y las operaciones que esperan revisión a mano, con sus causas.
+# … y las operaciones que solo dejan cifras o esperan revisión a mano, con sus causas.
 _STALE_OPERATIONS = (
     "SELECT op.fid, op.uid, op.op_type, op.module, s.causes, s.since "
     f"FROM ({_GROUPED.format(kind=OPERATION, only=' AND item_uid IN ({marks})')}) AS s "
@@ -236,27 +246,31 @@ class CacheUpdate:
 @dataclass(frozen=True, slots=True)
 class Counts:
     """Los recuentos de la barra de estado (RF-008-28; RF-008-16): ``stale``, los datos
-    vivos obsoletos; ``review``, las operaciones que esperan revisión a mano;
-    ``inputs_changed``, las entradas cambiadas sin decidir («⚠ n entradas»)."""
+    vivos obsoletos; ``figures``, las operaciones obsoletas que solo dejan cifras (spec 0.3);
+    ``review``, las operaciones que esperan revisión a mano; ``inputs_changed``, las entradas
+    cambiadas sin decidir («⚠ n entradas»)."""
 
     stale: int
+    figures: int
     review: int
     inputs_changed: int
 
     @property
     def obsolete(self) -> int:
-        """El número de «! n obsoletos»: datos obsoletos más operaciones que esperan
-        revisión a mano."""
-        return self.stale + self.review
+        """El número de «! n obsoletos»: datos obsoletos, más operaciones obsoletas que solo
+        dejan cifras, más operaciones que esperan revisión a mano (cada operación, una vez:
+        la que deja un dato vivo cuenta por él)."""
+        return self.stale + self.figures + self.review
 
 
 @dataclass(frozen=True, slots=True)
 class StaleItem:
     """Un elemento de la lista de lo obsoleto (RF-008-28): un dato vivo obsoleto
-    (``dataset``: su nombre y su módulo) o una operación que espera revisión a mano
-    (``operation``: su tipo y su módulo), con la operación que escribió el dato (o ella
-    misma) y su tipo, si espera revisión a mano (la del dato, la de su operación), sus causas,
-    su texto («Obsoleto: cambió Producción») y desde cuándo (la causa más antigua)."""
+    (``dataset``: su nombre y su módulo) o una operación obsoleta que solo deja cifras o espera
+    revisión a mano (``operation``: su tipo y su módulo), con la operación que escribió el dato
+    (o ella misma: la que se recalcula) y su tipo, si espera revisión a mano (la del dato, la de
+    su operación), sus causas, su texto («Obsoleto: cambió Producción») y desde cuándo (la causa
+    más antigua)."""
 
     item_kind: str
     uid: str
@@ -272,8 +286,9 @@ class StaleItem:
 
 @dataclass(frozen=True, slots=True)
 class StaleReport:
-    """La lista de lo obsoleto: los datos (por nombre) y después las operaciones que esperan
-    revisión a mano (por orden de registro), con los recuentos."""
+    """La lista de lo obsoleto: los datos (por nombre) y después las operaciones que solo
+    dejan cifras y las que esperan revisión a mano (por orden de registro), con los
+    recuentos."""
 
     items: tuple[StaleItem, ...]
     counts: Counts
@@ -722,22 +737,44 @@ def upstream_region(conn: sqlite3.Connection, roots: Iterable[str]) -> frozenset
 # --- Recuentos y lista ----------------------------------------------------------------------
 
 
+def _current_writers(conn: sqlite3.Connection,
+                     candidates: set[str]) -> tuple[set[str], set[str]]:
+    """De las operaciones ``candidates``: las que escribieron el contenido actual de un dato
+    vivo y, de las demás, las que escribieron la cifra vigente de su clave y su ámbito (la
+    más reciente de una operación al día o, si todas están obsoletas, la más reciente)."""
+    data = _column(conn, _LIVE_WRITERS, candidates)
+    rest = candidates - data
+    figures: set[str] = set()
+    for key, scope_key in sorted({tuple(row) for row in _select(conn, _FIGURE_KEYS, rest)}):
+        found = [(str(op_uid), bool(stale)) for op_uid, stale in conn.execute(
+            _FIGURES_OF_KEY, (key, scope_key))]
+        fresh = [op_uid for op_uid, stale in found if not stale]
+        current = (fresh or [op_uid for op_uid, _stale in found])[-1]
+        if current in rest:
+            figures.add(current)
+    return data, figures
+
+
 def review_operations(conn: sqlite3.Connection) -> frozenset[str]:
     """Las operaciones que esperan revisión a mano según la caché (RF-008-27): obsoletas, sin
     sustituir, que no se repiten solas y que escribieron el contenido actual de un dato vivo
     o la cifra vigente de su clave y su ámbito (la más reciente de una operación al día o, si
     todas están obsoletas, la más reciente)."""
-    candidates = {str(row[0]) for row in conn.execute(_REVIEW_CANDIDATES)}
-    found = _column(conn, _LIVE_WRITERS, candidates)
-    rest = candidates - found
-    for key, scope_key in sorted({tuple(row) for row in _select(conn, _FIGURE_KEYS, rest)}):
-        figures = [(str(op_uid), bool(stale)) for op_uid, stale in conn.execute(
-            _FIGURES_OF_KEY, (key, scope_key))]
-        fresh = [op_uid for op_uid, stale in figures if not stale]
-        current = (fresh or [op_uid for op_uid, _stale in figures])[-1]
-        if current in rest:
-            found.add(current)
-    return frozenset(found)
+    data, figures = _current_writers(
+        conn, {str(row[0]) for row in conn.execute(_REVIEW_CANDIDATES)})
+    return frozenset(data | figures)
+
+
+def figure_only_operations(conn: sqlite3.Connection) -> frozenset[str]:
+    """Las operaciones obsoletas que solo dejan cifras según la caché (RF-008-28, spec 0.3):
+    sin sustituir, que se repiten solas, que no escribieron el contenido actual de ningún dato
+    vivo (la que lo escribió cuenta por él) y sí la cifra vigente de su clave y su ámbito,
+    como en :func:`review_operations` (la que no se repite sola espera revisión a mano). Va de
+    las cifras a sus operaciones: con muchas operaciones obsoletas, mira solo las que dieron
+    alguna cifra."""
+    _data, figures = _current_writers(
+        conn, {str(row[0]) for row in conn.execute(_FIGURE_CANDIDATES)})
+    return frozenset(figures)
 
 
 def _changed_inputs(conn: sqlite3.Connection) -> int:
@@ -749,9 +786,10 @@ def counts(project: ReadableProject, *, conn: sqlite3.Connection | None = None) 
     registro de entradas en una instantánea (de ``conn``, si se da)."""
     with _reading(project, conn) as reading:
         stale = reading.execute(_STALE_COUNT).fetchone()[0]
+        figures = figure_only_operations(reading)
         review = review_operations(reading)
         changed = _changed_inputs(reading)
-    return Counts(int(stale), len(review), changed)
+    return Counts(int(stale), len(figures), len(review), changed)
 
 
 _NOTHING: frozenset[Cause] = frozenset()
@@ -794,6 +832,10 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
     ``language`` y, para un algoritmo, la versión instalada (``versions``; por defecto, la de
     los tipos registrados).
 
+    Tras los datos, las operaciones obsoletas que solo dejan cifras
+    (:func:`figure_only_operations`) y las que esperan revisión a mano
+    (:func:`review_operations`), por orden de registro, cada una una vez.
+
     No rehace lo que ya tiene (RNF-008-02): lee los datos que se muestran con sus causas, ya
     agrupadas y por nombre, en una consulta; cada conjunto de causas se lee y su texto se
     compone una sola vez; y para los textos solo crea los nodos que nombran las causas de lo
@@ -803,6 +845,7 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
     sets = _Causes()
     with _reading(project, conn) as reading:
         review = review_operations(reading)
+        figure_only = figure_only_operations(reading)
         data = [(str(uid), str(name), str(module), str(op_uid),
                  "" if op_type is None else str(op_type), sets.of(listed), str(since))
                 for uid, name, module, op_uid, op_type, listed, since
@@ -810,11 +853,11 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
         operations = sorted(
             ((int(fid), str(uid), str(op_type), str(module), sets.of(listed), str(since))
              for fid, uid, op_type, module, listed, since
-             in _select(reading, _STALE_OPERATIONS, review)),
+             in _select(reading, _STALE_OPERATIONS, review | figure_only)),
             key=lambda row: row[0])  # por orden de registro
-        found = Counts(len(data), len(review), _changed_inputs(reading))
+        found = Counts(len(data), len(figure_only), len(review), _changed_inputs(reading))
         shown = sets.parsed.values()
-        writers = {row[3] for row in data} | review
+        writers = {row[3] for row in data} | review | figure_only
         graph = _text_graph(reading, _subjects(shown), changes_while_running(
             reading, writers, causes={cause for causes in shown for cause in causes}))
     chosen = dict(installed_versions() if versions is None else versions)
@@ -824,7 +867,7 @@ def stale_items(project: ReadableProject, *, conn: sqlite3.Connection | None = N
         for uid, name, module, op_uid, op_type, causes, since in data
     ]
     items.extend(
-        StaleItem(OPERATION, uid, op_type, module, uid, op_type, True, causes,
+        StaleItem(OPERATION, uid, op_type, module, uid, op_type, uid in review, causes,
                   sets.text(graph, chosen, causes, uid, language), since)
         for _fid, uid, op_type, module, causes, since in operations
     )

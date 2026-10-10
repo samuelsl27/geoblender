@@ -88,10 +88,12 @@ en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su inte
     que cambia el algoritmo de una operación dejan obsoleto exactamente lo que depende del
     cambio, con su causa («Obsoleto: cambió Producción»); las operaciones acopladas (las que
     siempre van juntas) quedan obsoletas juntas. La barra de estado dice «! n obsoletos» y el
-    control 7 del acceso rápido, «Refrescar · obsoletos (n)»: al pulsarlos se ve la lista, con
-    la causa, el módulo y Recalcular en cada resultado. **Recalcular lo obsoleto** lo repite en
-    orden, como operaciones nuevas, con su avance en la barra de estado y Esc para cancelar (lo
-    ya recalculado queda); nunca se recalcula nada solo. Si un recálculo da el mismo contenido,
+    control 7 del acceso rápido, «Refrescar · obsoletos (n)» (n cuenta los datos obsoletos, los
+    cálculos obsoletos que solo dejan cifras, como un área, y lo que espera revisión a mano): al
+    pulsarlos se ve la lista, con la causa, el módulo y Recalcular en cada resultado.
+    **Recalcular lo obsoleto** lo repite en orden, como operaciones nuevas, con su avance en la
+    barra de estado y Esc para cancelar (lo ya recalculado queda); nunca se recalcula nada
+    solo. Si un recálculo da el mismo contenido,
     lo que dependía solo de él deja de estar obsoleto sin recalcularse. Lo que no se repite solo
     (una edición a mano) queda «revisar a mano» hasta que se rehace o se da por bueno con un
     motivo (**Dar por buena…**). Un equipo con un Geoblender anterior no recalcula lo calculado
