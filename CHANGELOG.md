@@ -265,7 +265,8 @@ falta el almacén del NAS de IMGA.
   pruebas en la comprobación anterior (guardado fuera del repositorio, en
   `%TEMP%\geoblender-tiempos\`; la primera vez, por número de pruebas). La comprobación de
   cada tarea pasó de unos 55 s a unos 25 s en el PC de referencia; con las pruebas de la
-  spec 004 y su paso «motor» llegó a unos 40 s, y con más procesos (spec 006) vuelve a unos
-  30 s. Cada prueba se ejecuta en una sola parte, y si las partes no suman las pruebas que
-  hay, el paso falla. Una prueba con un presupuesto de milisegundos mide otra vez mientras
-  la máquina está cargada, sin cambiar el presupuesto.
+  spec 004 y su paso «motor» llegó a unos 40 s, y con más procesos (spec 006) volvió a unos
+  30 s; con las pruebas de la 006 y de la 008 juntas, y más procesos en el paso «motor»,
+  tarda unos 40 s. Cada prueba se ejecuta en una sola parte, y si las partes no suman las
+  pruebas que hay, el paso falla. Una prueba con un presupuesto de milisegundos mide otra
+  vez mientras la máquina está cargada, sin cambiar el presupuesto.

@@ -205,7 +205,10 @@ DOMAIN_TESTS = "tests/unit"  # tests/unit/<paquete de dominio> (imports.LEVELS)
 # tests/unit/jobs tarda ≈ 12–13,5 s, casi lo que 5 partes de «blender» (spec 006, T38);
 # con 4, «motor» acaba en ≈ 8,5 s (con 3, ≈ 9,3 s), y «blender» tarda lo mismo con 3 o 4.
 # A la vez que «unitarias» no compensa: las alarga lo mismo (≈ 2,5 s) que a «blender».
-RUNTIME_PARTS = 4
+# Con las pruebas de la 006 y de la 008 juntas, tests/unit/core suma ≈ 62 s de módulos y,
+# con 4, «motor» tarda ≈ 18,5 s, más que «blender» (≈ 16,5 s): con 6, ≈ 15,4 s (con 5,
+# ≈ 16,8 s), y el suelo vuelve a ser «blender», que tarda lo mismo.
+RUNTIME_PARTS = 6
 # Las duraciones medidas de los módulos de prueba (spec 004, T39; RNF-001-01): el almacén,
 # en la carpeta temporal del sistema (uno por raíz), y los ficheros de las partes, en la
 # de la comprobación. Cada suite con partes tiene su clave (times_key): con qué se
