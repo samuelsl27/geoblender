@@ -52,6 +52,12 @@ resultados en ``out/``:
 - ``gis_tin_finish``: ``name``, ``origin``, ``triangulator``, ``max_edge_m``, ``crs``,
   ``vertical`` y ``count``; ``prepared``, ``faces`` [y ``regions``]; la operación de la
   petición (``operation_uid``) → ``tin.npz`` y ``report.json``.
+
+Los puntos y lo preparado de un TIN pueden llegar también como arrays sueltos
+(``points_<array>``, ``prepared_<array>``: :func:`point_inputs` y :func:`tin_inputs`), que
+``bl`` escribe en ``in/`` sin copiarlos ni releerlos (``JobDir.write_array``; spec 006, T35:
+la copia verificada de los 300.000 puntos de RNF-006-03 eran décimas de segundo del hilo de
+Blender, RNF-006-09). Los ficheros de paso van sin comprimir y sus textos, en UTF-8.
 - ``gis_contours``: ``name``, ``crs``, ``vertical``, ``interval_m``, ``base_m``,
   ``index_every_m``, ``index_offset_m``, ``simplify_m``, ``min_length_m`` y ``count``;
   ``source`` (``.tif`` o ``.npz``) → ``contours.npz``.
@@ -205,6 +211,7 @@ __all__ = [
     "origin_of",
     "path_name",
     "plain",
+    "point_inputs",
     "read_conflicts",
     "read_contours",
     "read_lines",
@@ -215,6 +222,7 @@ __all__ = [
     "read_regions",
     "read_tin_input",
     "reprojects",
+    "tin_inputs",
     "vertical_json",
     "vertical_of",
     "write_contours",
@@ -320,6 +328,7 @@ READING_TEXT = "Leyendo la fuente…"
 HASHING_TEXT = "Calculando el hash de contenido de la fuente…"
 WRITING_TEXT = "Escribiendo el resultado…"
 EXPORT_HASH_TEXT = "Calculando el hash de contenido del entregable…"
+RESULT_HASH_TEXT = "Calculando el hash de contenido del resultado…"
 DONE_TEXT = "Terminado"
 COPY_SHARE = 0.75
 """La parte del avance de copiar un fichero de la fuente que es la copia verificada (lee la
@@ -528,8 +537,11 @@ def needs_site(worker: str, params: Mapping[str, Any]) -> bool:
 
 
 def _save_npz(path: Path, **arrays: np.ndarray) -> None:
+    """Los ficheros de paso de un trabajo, sin comprimir: están en la caché local y viven lo
+    que la cadena (spec 006, T35: comprimir los 289.900 puntos de un TIN costaba 0,5 s sin
+    avance; sin comprimir, centésimas)."""
     with open(path, "wb") as stream:
-        np.savez_compressed(stream, **arrays)
+        np.savez(stream, **arrays)
 
 
 def _load_npz(path: Path, keys: Sequence[str]) -> dict[str, np.ndarray]:
@@ -546,7 +558,22 @@ def _load_npz(path: Path, keys: Sequence[str]) -> dict[str, np.ndarray]:
 
 
 def _texts(values: Sequence[str]) -> np.ndarray:
-    return np.array(list(values), dtype=str) if len(values) else np.zeros(0, dtype="<U1")
+    """Los textos ``values`` en UTF-8 (``bytes`` de numpy, sin *pickle*): de un byte por letra
+    en vez de cuatro (spec 006, T35: los 289.900 identificadores de un levantamiento pasan de
+    7 MB a menos de 2). Si son ASCII, de una vez."""
+    if not len(values):
+        return np.zeros(0, dtype="S1")
+    try:
+        return np.array(tuple(values), dtype=bytes)
+    except UnicodeEncodeError:
+        return np.array([str(value).encode("utf-8") for value in values], dtype=bytes)
+
+
+def _strings(array: np.ndarray) -> tuple[str, ...]:
+    """Los textos de :func:`_texts` (o de un array de ``str`` de antes de T35)."""
+    if array.dtype.kind == "S":
+        return tuple(value.decode("utf-8") for value in array.tolist())
+    return tuple(str(value) for value in array.tolist())
 
 
 def _offsets(sizes: Sequence[int]) -> np.ndarray:
@@ -559,21 +586,60 @@ def _xyz_rows(arrays: Sequence[np.ndarray], columns: int = 3) -> np.ndarray:
     return np.ascontiguousarray(np.concatenate(arrays), dtype=np.float64)
 
 
+_POINT_KEYS = ("xyz", "point_ids", "codes", "source_rows")
+
+
+def _point_arrays(points: PointSet) -> dict[str, np.ndarray]:
+    return {"xyz": points.xyz, "point_ids": _texts(points.point_ids),
+            "codes": _texts(points.codes),
+            "source_rows": np.asarray(points.source_rows, dtype=np.int64)}
+
+
+def _points_from(data: Mapping[str, np.ndarray]) -> PointSet:
+    return PointSet(np.ascontiguousarray(data["xyz"], dtype=np.float64).reshape(-1, 3),
+                    _strings(data["point_ids"]), _strings(data["codes"]),
+                    tuple(int(row) for row in data["source_rows"].tolist()))
+
+
 def write_points(path: Path | str, points: PointSet) -> None:
     """``points`` en el npz ``path`` (``xyz`` ABSOLUTOS float64, identificadores, códigos y
     filas de origen)."""
-    _save_npz(Path(path), xyz=points.xyz, point_ids=_texts(points.point_ids),
-              codes=_texts(points.codes),
-              source_rows=np.asarray(points.source_rows, dtype=np.int64))
+    _save_npz(Path(path), **_point_arrays(points))
 
 
 def read_points(path: Path | str) -> PointSet:
     """El ``PointSet`` de :func:`write_points` (``xyz`` bit a bit)."""
-    data = _load_npz(Path(path), ("xyz", "point_ids", "codes", "source_rows"))
-    return PointSet(np.ascontiguousarray(data["xyz"], dtype=np.float64).reshape(-1, 3),
-                    tuple(str(text) for text in data["point_ids"]),
-                    tuple(str(text) for text in data["codes"]),
-                    tuple(int(row) for row in data["source_rows"]))
+    return _points_from(_load_npz(Path(path), _POINT_KEYS))
+
+
+def _loose(name: str, arrays: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+    return {f"{name}_{key}": value for key, value in arrays.items()}
+
+
+def point_inputs(points: PointSet) -> dict[str, np.ndarray]:
+    """Los puntos de un TIN como entradas sueltas de ``gis_tin_prepare`` (``points_<array>``,
+    los arrays de :func:`write_points`), que ``bl`` escribe en ``in/`` sin copiar ni releer
+    (``JobDir.write_array``, con ``core_provenance.launch_job(arrays=…)``; spec 006, T35: la
+    copia verificada de 300.000 puntos eran 0,2 s del hilo de Blender, RNF-006-09)."""
+    return _loose(INPUT_POINTS, _point_arrays(points))
+
+
+def _input_arrays(ctx: _Context, request: _Request, name: str,
+                  keys: Sequence[str]) -> dict[str, np.ndarray] | None:
+    """Los arrays ``keys`` de la entrada ``name``: los del npz ``in/<name>.npz`` o, sueltos
+    (:func:`point_inputs`, :func:`tin_inputs`), los de ``in/<name>_<array>.npy``; ``None``
+    si no llega ni uno ni otros."""
+    entries = ctx.request.inputs
+    if name in entries:
+        return _load_npz(ctx.input_path(name), keys)
+    loose = [f"{name}_{key}" for key in keys]
+    if not any(entry in entries for entry in loose):
+        return None
+    missing = [entry for entry in loose if entry not in entries]
+    if missing:
+        raise request.invalid(f"a la entrada «{name}» le faltan {missing}")
+    return {key: np.load(ctx.input_path(entry), allow_pickle=False)
+            for key, entry in zip(keys, loose, strict=True)}
 
 
 def write_lines(path: Path | str, lines: Sequence[Breakline]) -> None:
@@ -596,12 +662,13 @@ def read_lines(path: Path | str) -> list[Breakline]:
                                   "row_offsets"))
     xyz = np.ascontiguousarray(data["xyz"], dtype=np.float64).reshape(-1, 3)
     offsets, row_offsets = data["offsets"], data["row_offsets"]
+    codes = _strings(data["codes"])
     lines: list[Breakline] = []
-    for index, line_id in enumerate(data["line_ids"]):
+    for index, line_id in enumerate(_strings(data["line_ids"])):
         start, stop = int(offsets[index]), int(offsets[index + 1])
         rows = data["rows"][int(row_offsets[index]):int(row_offsets[index + 1])]
-        lines.append(Breakline(str(line_id), np.ascontiguousarray(xyz[start:stop]),
-                               hard=bool(data["hard"][index]), code=str(data["codes"][index]),
+        lines.append(Breakline(line_id, np.ascontiguousarray(xyz[start:stop]),
+                               hard=bool(data["hard"][index]), code=codes[index],
                                source_rows=tuple(int(row) for row in rows)))
     return lines
 
@@ -610,21 +677,38 @@ _TIN_COUNTS = ("input_vertices", "merged", "crossings", "splits", "input_points"
                "duplicates_merged")
 
 
-def write_tin_input(path: Path | str, source: TinInput) -> None:
-    """Lo que se triangula (``gis.tin.TinInput``) en el npz ``path``."""
+_TIN_INPUT_KEYS = ("xyz", "edges", "vertex_source", "counts")
+
+
+def _tin_input_arrays(source: TinInput) -> dict[str, np.ndarray]:
     prepared = source.prepared
     counts = (prepared.input_vertices, prepared.merged, prepared.crossings, prepared.splits,
               source.input_points, source.duplicates_merged)
-    _save_npz(Path(path), xyz=prepared.xyz, edges=prepared.edges,
-              vertex_source=prepared.vertex_source,
-              counts=np.asarray(counts, dtype=np.int64))
+    return {"xyz": prepared.xyz, "edges": prepared.edges,
+            "vertex_source": prepared.vertex_source,
+            "counts": np.asarray(counts, dtype=np.int64)}
+
+
+def write_tin_input(path: Path | str, source: TinInput) -> None:
+    """Lo que se triangula (``gis.tin.TinInput``) en el npz ``path``."""
+    _save_npz(Path(path), **_tin_input_arrays(source))
+
+
+def tin_inputs(source: TinInput) -> dict[str, np.ndarray]:
+    """Lo que se triangula como entradas sueltas (``prepared_<array>``, los arrays de
+    :func:`write_tin_input`) de ``gis_tin_finish`` o ``gis_triangulate``, como
+    :func:`point_inputs`."""
+    return _loose(INPUT_PREPARED, _tin_input_arrays(source))
 
 
 def read_tin_input(path: Path | str) -> TinInput:
     """El ``TinInput`` de :func:`write_tin_input` (los mismos arrays, bit a bit)."""
+    return _tin_input_from(_load_npz(Path(path), _TIN_INPUT_KEYS))
+
+
+def _tin_input_from(data: Mapping[str, np.ndarray]) -> TinInput:
     from .breaklines import PreparedInput
 
-    data = _load_npz(Path(path), ("xyz", "edges", "vertex_source", "counts"))
     counts = dict(zip(_TIN_COUNTS, (int(value) for value in data["counts"]), strict=True))
     prepared = PreparedInput(
         np.ascontiguousarray(data["xyz"], dtype=np.float64).reshape(-1, 3),
@@ -1426,8 +1510,8 @@ def run_import_points(ctx: _Context) -> dict[str, Any]:
 @_job
 def run_tin_prepare(ctx: _Context) -> dict[str, Any]:
     """``gis_tin_prepare``: duplicados y restricciones (``gis.tin.prepare_tin``; RF-006-13,
-    RF-006-14) de ``in/points.npz`` e ``in/lines.npz``: ``prepared.npz`` o, con conflictos,
-    ``conflicts.json`` (sin TIN)."""
+    RF-006-14) de ``in/points.npz`` (o sus arrays sueltos, :func:`point_inputs`) e
+    ``in/lines.npz``: ``prepared.npz`` o, con conflictos, ``conflicts.json`` (sin TIN)."""
     request = _Request(ctx)
     name = request.name()
     tol_xy, tol_z = request.number("tol_xy"), request.number("tol_z")
@@ -1436,9 +1520,10 @@ def run_tin_prepare(ctx: _Context) -> dict[str, Any]:
     except ValueError as error:
         raise request.invalid(str(error)) from None
     entries = ctx.request.inputs
-    if INPUT_POINTS not in entries and INPUT_LINES not in entries:
+    found = _input_arrays(ctx, request, INPUT_POINTS, _POINT_KEYS)
+    if found is None and INPUT_LINES not in entries:
         raise request.invalid("no hay puntos ni líneas de rotura que triangular")
-    points = (read_points(ctx.input_path(INPUT_POINTS)) if INPUT_POINTS in entries
+    points = (_points_from(found) if found is not None
               else PointSet(np.zeros((0, 3)), (), (), ()))
     lines = read_lines(ctx.input_path(INPUT_LINES)) if INPUT_LINES in entries else []
     try:
@@ -1476,7 +1561,7 @@ def run_triangulate(ctx: _Context) -> dict[str, Any]:
     ``faces.npy``."""
     request = _Request(ctx)
     origin = request.parsed("origin", origin_of)
-    source = read_tin_input(ctx.input_path(INPUT_PREPARED))
+    source = _prepared_input(ctx, request)
     xy = world_to_local(source.prepared.xyz[:, :2], origin)
     triangulator = PureTriangulator(progress=_span(ctx, 0.0, 0.95), cancelled=_cancelled(ctx))
     faces = np.ascontiguousarray(triangulator.triangulate(xy, source.prepared.edges),
@@ -1490,10 +1575,18 @@ def run_triangulate(ctx: _Context) -> dict[str, Any]:
     return summary
 
 
+def _prepared_input(ctx: _Context, request: _Request) -> TinInput:
+    """Lo que se triangula: ``in/prepared.npz`` o sus arrays sueltos (:func:`tin_inputs`)."""
+    found = _input_arrays(ctx, request, INPUT_PREPARED, _TIN_INPUT_KEYS)
+    if found is None:
+        raise request.invalid("falta lo que se triangula («prepared»)")
+    return _tin_input_from(found)
+
+
 @_job
 def run_tin_finish(ctx: _Context) -> dict[str, Any]:
-    """``gis_tin_finish``: el TIN de ``in/prepared.npz`` con los triángulos de
-    ``in/faces.npy`` (``gis.tin.finish_tin``: orientación, contorno y huecos de
+    """``gis_tin_finish``: el TIN de ``in/prepared.npz`` (o sus arrays sueltos) con los
+    triángulos de ``in/faces.npy`` (``gis.tin.finish_tin``: orientación, contorno y huecos de
     ``in/regions.npz``, lado máximo y estadísticas; RF-006-13, RF-006-15) en ``tin.npz``, con
     el ``meta`` del proyecto y de la operación de la petición y su hash (``core.npz_mesh@1``),
     e informe."""
@@ -1508,19 +1601,21 @@ def run_tin_finish(ctx: _Context) -> dict[str, Any]:
         raise request.invalid("falta el triangulador que dio los triángulos («triangulator»)")
     max_edge = request.number("max_edge_m")
     crs, vertical = request.crs("crs"), request.vertical("vertical")
-    source = read_tin_input(ctx.input_path(INPUT_PREPARED))
+    source = _prepared_input(ctx, request)
     with open(ctx.input_path(INPUT_FACES), "rb") as stream:
         faces = np.load(stream, allow_pickle=False)
     boundary, holes = (read_regions(ctx.input_path(INPUT_REGIONS))
                        if INPUT_REGIONS in ctx.request.inputs else (None, []))
     ctx.progress(0.1, "Filtros y estadísticas del TIN…")
     tin, report = finish_tin(source, faces, triangulator=triangulator, origin=origin,
-                             boundary=boundary, holes=holes, max_edge_m=max_edge, name=name)
-    ctx.progress(0.8, WRITING_TEXT)
+                             boundary=boundary, holes=holes, max_edge_m=max_edge, name=name,
+                             progress=_span(ctx, 0.1, 0.5), cancelled=_cancelled(ctx))
+    ctx.progress(0.5, WRITING_TEXT)
     meta = {"crs_epsg": crs.epsg, "vertical": meta_vertical(vertical),
             "operation_uid": operation_uid}
-    save_tin(tin, ctx.output_path(OUT_TIN.file), meta)
+    save_tin(tin, ctx.output_path(OUT_TIN.file), meta, progress=_span(ctx, 0.5, 0.85))
     _write_report(ctx, report)
+    ctx.progress(0.85, RESULT_HASH_TEXT)
     from ..core.datasets.model import DATASET_DECLARATIONS
 
     summary = {

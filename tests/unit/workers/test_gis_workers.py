@@ -430,6 +430,12 @@ class ImportJobsTest(_JobCase):
         saved = json.loads(self.output(ctx, folder, gis_jobs.OUT_REPORT.role).read_text("utf-8"))
         self.assertEqual(saved, gis_jobs.plain(report))
         self.assertEqual((summary["points"], summary["lines"]), (20, 4))
+        # T35: los textos de los ficheros de paso van en UTF-8 (de una vez si son ASCII).
+        odd = points_mod.PointSet(expected_points.xyz[:2], ("Ñ-1", "2"), ("Talud ñ", ""), (5, 6))
+        gis_jobs.write_points(self.root / "odd.npz", odd)
+        back = gis_jobs.read_points(self.root / "odd.npz")
+        self.assertEqual((back.point_ids, back.codes, back.source_rows),
+                         (odd.point_ids, odd.codes, odd.source_rows))
         declarations = gis_store.source_declarations(gis_content.POINTS_TEXT.id, CRS, VERTICAL,
                                                      POINT_SETTINGS)
         gis_content.use_table_reader(csv_tables.read_table)

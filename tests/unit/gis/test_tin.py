@@ -531,8 +531,10 @@ class TinFileTest(unittest.TestCase):
         """Arrays y ``meta`` del plan, leídos con ``allow_pickle=False``; ida y vuelta bit
         a bit y sin temporales."""
         path = self.folder / "gis_tin_taludes.npz"
-        gis.save_tin(self.tin, path, META)
+        seen: list[float] = []
+        gis.save_tin(self.tin, path, META, progress=lambda done, _text: seen.append(done))
         self.assertEqual(sorted(p.name for p in self.folder.iterdir()), [path.name])
+        self.assertEqual((seen, seen[-1]), (sorted(seen), 1.0))  # T35: avance al guardar
         with np.load(path, allow_pickle=False) as data:
             self.assertEqual(set(data.files), {"vertices", "faces", "constraint_edges",
                                                "vertex_source", "meta"})
@@ -574,11 +576,11 @@ class TinFileTest(unittest.TestCase):
         gis.save_tin(self.tin, path, META)
         before = path.read_bytes()
 
-        def broken(stream, **_arrays) -> None:
+        def broken(stream, _arrays, _progress) -> None:
             stream.write(b"PK\x03\x04 a medias")
             raise OSError("disco lleno")
 
-        with mock.patch.object(np, "savez_compressed", broken), self.assertRaises(OSError):
+        with mock.patch.object(tin_module, "_write_npz", broken), self.assertRaises(OSError):
             gis.save_tin(self.tin, path, {**META, "operation_uid": "op-0002"})
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual(sorted(p.name for p in self.folder.iterdir()), [path.name])

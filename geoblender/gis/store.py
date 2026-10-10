@@ -93,6 +93,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import struct
 import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -116,7 +117,15 @@ from ..core.datasets.model import (
 from ..core.errors import GeoblenderError
 from ..core.georef import CrsCatalog, CrsRef, VerticalRef, load_catalog
 from ..core.gpkg.base import ColumnDef, create_feature_table
-from ..core.gpkg.wkb import Geometry, decode_geometry, encode_geometry
+from ..core.gpkg.wkb import (
+    MAGIC,
+    VERSION,
+    WKB_TYPES,
+    Z_OFFSET,
+    Geometry,
+    decode_geometry,
+    encode_geometry,
+)
 from ..core.hashing import HashCancelled
 from ..core.ids import SHORT_UID_CHARS
 from ..core.inputs.model import (
@@ -1659,19 +1668,65 @@ def export_layer(project: StoreProject, ref: DatasetRecord | str) -> StoredLayer
 # --- Para un TIN (T29) ---------------------------------------------------------------------------
 
 
+_POINT_Z_HEAD = 8 + 5
+"""Bytes de un ``POINT`` con Z como lo escribe ``core.gpkg.wkb.encode_geometry`` antes de sus
+coordenadas: la cabecera ``GP`` sin envolvente (8) y el orden y el tipo del WKB (5)."""
+_POINT_Z_SIZE = _POINT_Z_HEAD + 3 * 8
+_LITTLE_NO_ENVELOPE = 0b0000_0001
+"""Banderas de esa cabecera: *little endian*, sin envolvente, no vacía y no extendida."""
+_POINT_Z_WKB = struct.pack("<BI", 1, WKB_TYPES["POINT"] + Z_OFFSET)
+
+
+def _point_coords(blobs: Sequence[bytes]) -> np.ndarray | None:
+    """Las coordenadas ``(n, 3)`` float64 de ``blobs`` sin descodificarlos uno a uno, si todos
+    son un ``POINT`` con Z como los escribe ``core.gpkg.wkb.encode_geometry`` (cabecera ``GP``
+    de la versión 0 *little endian*, sin envolvente, no vacía ni extendida, el mismo SRS; WKB
+    *little endian* de tipo 1001; 37 bytes) con las tres coordenadas finitas: las mismas, bit
+    a bit, que daría ``decode_geometry`` con cada uno (spec 006, T35: 289.900 puntos en
+    centésimas de segundo en vez de segundos, RNF-006-09). Si alguno no lo es, ``None``: se
+    descodifican uno a uno, con sus errores."""
+    if not blobs:
+        return np.empty((0, 3), dtype=np.float64)
+    joined = b"".join(blobs)
+    if len(joined) != len(blobs) * _POINT_Z_SIZE:
+        return None
+    raw = np.frombuffer(joined, dtype=np.uint8).reshape(len(blobs), _POINT_Z_SIZE)
+    head = raw[0, :_POINT_Z_HEAD].tobytes()
+    if (head[:2] != MAGIC or head[2] != VERSION or head[3] != _LITTLE_NO_ENVELOPE
+            or head[8:] != _POINT_Z_WKB):
+        return None
+    if not (raw[:, :_POINT_Z_HEAD] == raw[0, :_POINT_Z_HEAD]).all():  # el mismo SRS
+        return None
+    coords = np.ascontiguousarray(raw[:, _POINT_Z_HEAD:]).view("<f8").astype(np.float64)
+    return coords if np.isfinite(coords).all() else None
+
+
 def load_points(project: StoreProject, ref: DatasetRecord | str) -> PointSet:
     """Los puntos guardados del dato ``ref`` (``gis_pts_``), como los usa un TIN
     (RF-006-13): sus coordenadas absolutas en float64 tal como están guardadas, su
     identificador, su código y su fila (o entidad) de origen, en el orden de sus ``fid``. Los
-    mismos errores que :func:`load_features`; ``ValueError`` si es de otra familia."""
+    mismos errores que :func:`load_features`; ``ValueError`` si es de otra familia. Los puntos
+    que escribe Geoblender se leen de una vez (:func:`_point_coords`), sin un bucle por
+    punto."""
     record = _resolve(project, ref, (POINTS,))
-    stored = load_features(project, record)
-    xyz = (np.ascontiguousarray(np.concatenate(stored.geometries), dtype=np.float64)
-           if stored.geometries else np.empty((0, 3), dtype=np.float64))
-    attributes = stored.attributes
-    return PointSet(xyz, tuple(str(value or "") for value in attributes["point_id"]),
-                    tuple(str(value or "") for value in attributes["code"]),
-                    tuple(int(value or 0) for value in attributes["source_row"]))
+    layout, rows = _table_rows(project, record, (POINTS,))
+    columns = list(zip(*rows, strict=True)) or [()] * (len(layout.columns) + 1)
+    xyz = _point_coords(columns[0])
+    if xyz is None:
+        stored = load_features(project, record)
+        xyz = np.ascontiguousarray(np.concatenate(stored.geometries), dtype=np.float64)
+    index = {name: number + 1 for number, name in enumerate(c.name for c in layout.columns)}
+    return PointSet(xyz, _as(columns[index["point_id"]], str, ""),
+                    _as(columns[index["code"]], str, ""),
+                    _as(columns[index["source_row"]], int, 0))
+
+
+def _as(values: tuple[Any, ...], kind: type, empty: Any) -> tuple[Any, ...]:
+    """``values`` como ``kind(valor or empty)`` cada uno: los mismos si ya son todos de
+    ``kind`` (sin un bucle de Python por valor: así quedarían)."""
+    if set(map(type, values)) <= {kind}:
+        return values
+    return tuple(kind(value or empty) for value in values)
 
 
 def load_lines(project: StoreProject, ref: DatasetRecord | str) -> list[Breakline]:

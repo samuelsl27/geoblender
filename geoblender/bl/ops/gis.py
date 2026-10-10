@@ -2186,12 +2186,16 @@ def _start_tin(plan: _Tin, launch: Callable[..., Any],
     project = plan.handle.project
     plan.work = _work_dir(plan.handle)
     inputs: dict[str, Path] = {}
+    arrays: dict[str, np.ndarray] = {}
     count = 0
     if _TIN_POINTS in uses or "spot_heights" in uses:
         record = uses.get(_TIN_POINTS) or uses["spot_heights"]
         points = _points_of(project, record, plan.notes)
-        jobs.write_points(plan.work / "points.npz", points)
-        inputs[jobs.INPUT_POINTS] = plan.work / "points.npz"
+        if plan.kind == _TIN_POINTS:  # en in/ del trabajo, sin copia (T35, RNF-006-09)
+            arrays.update(jobs.point_inputs(points))
+        else:
+            jobs.write_points(plan.work / "points.npz", points)
+            inputs[jobs.INPUT_POINTS] = plan.work / "points.npz"
         count += len(points)
     line_role = "breaklines" if plan.kind == _TIN_POINTS else _TIN_CONTOURS
     if line_role in uses:
@@ -2212,7 +2216,7 @@ def _start_tin(plan: _Tin, launch: Callable[..., Any],
                   "tol_z": resolved[DUP_Z_KEY], "duplicate_policy": settings["duplicate_policy"],
                   "count": count}
         return launch(plan.handle, jobs.TIN_PREPARE, label=tr("TIN «{name}»", name=plan.name),
-                      params=params, inputs=inputs,
+                      params=params, inputs=inputs, arrays=arrays,
                       on_finish=functools.partial(_tin_prepared, plan),
                       grace_s=jobs.CANCEL_GRACE_S)
     if plan.regions:
@@ -2310,9 +2314,9 @@ def triangulation_tick() -> float | None:
 
 def _triangulate_here(plan: _Tin) -> None:
     """La CDT de Blender en el hilo principal con lo preparado (coordenadas locales respecto
-    al GeoOrigin) y, después, ``gis_tin_finish``. Si no cumple su contrato
-    (``gis.triangulation_contract``), se repite con ``PureTriangulator`` en
-    ``gis_triangulate``."""
+    al GeoOrigin) y, después, ``gis_tin_finish`` con lo preparado y los triángulos escritos en
+    su ``in/`` sin copia (T35). Si no cumple su contrato (``gis.triangulation_contract``), se
+    repite con ``PureTriangulator`` en ``gis_triangulate``."""
     try:
         if core_provenance.SESSION.project is not plan.handle.project:
             raise GisError("gis.tin_project_closed", obj=f"TIN «{plan.name}»",
@@ -2328,10 +2332,8 @@ def _triangulate_here(plan: _Tin) -> None:
                                  reason=error_text(error)))
             _launch_triangulate(plan)
             return
-        with open(plan.work / "faces.npy", "wb") as stream:
-            np.save(stream, faces, allow_pickle=False)
         plan.triangulator = cdt_blender.NAME
-        _launch_finish(plan)
+        _launch_finish(plan, faces, source)
     except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
         _abort(plan, error)
 
@@ -2356,31 +2358,34 @@ def _tin_triangulated(plan: _Tin, result: JobResult) -> None:
         return
     try:
         outcome = job_outcome(result, result.job_dir)
-        assert plan.work is not None
-        shutil.copyfile(outcome.file(jobs.OUT_FACES.role), plan.work / "faces.npy")
+        with open(outcome.file(jobs.OUT_FACES.role), "rb") as stream:
+            faces = np.load(stream, allow_pickle=False)
         plan.triangulator = str(outcome.summary["triangulator"])
         core_provenance.release_job(result.job_uid)
-        _launch_finish(plan)
+        _launch_finish(plan, faces)
     except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
         _abort(plan, error, result)
 
 
-def _launch_finish(plan: _Tin) -> None:
-    """``gis_tin_finish``: orientación, contorno, huecos, lado máximo y estadísticas."""
+def _launch_finish(plan: _Tin, faces: np.ndarray, source: Any = None) -> None:
+    """``gis_tin_finish``: orientación, contorno, huecos, lado máximo y estadísticas, con lo
+    preparado (``source``; si no, el de la carpeta de trabajo) y los triángulos ``faces``
+    escritos en su ``in/`` sin copia (``arrays``, T35)."""
     assert plan.work is not None
     project = plan.handle.project
     crs, vertical = store.project_references(project)
-    inputs = {jobs.INPUT_PREPARED: plan.work / "prepared.npz",
-              jobs.INPUT_FACES: plan.work / "faces.npy"}
-    if plan.regions:
-        inputs[jobs.INPUT_REGIONS] = plan.work / "regions.npz"
+    if source is None:
+        source = jobs.read_tin_input(plan.work / "prepared.npz")
+    arrays = {**jobs.tin_inputs(source),
+              jobs.INPUT_FACES: np.ascontiguousarray(faces, dtype=np.int32)}
+    inputs = {jobs.INPUT_REGIONS: plan.work / "regions.npz"} if plan.regions else {}
     core_provenance.launch_job(
         plan.handle, jobs.TIN_FINISH, label=tr("TIN «{name}»", name=plan.name),
         params={"name": plan.name, "origin": jobs.origin_json(project.origin),
                 "triangulator": plan.triangulator,
                 "max_edge_m": plan.settings.get("max_edge_m"), "crs": jobs.crs_json(crs),
                 "vertical": jobs.vertical_json(vertical), "count": plan.vertices},
-        inputs=inputs, on_finish=functools.partial(_tin_finished, plan),
+        inputs=inputs, arrays=arrays, on_finish=functools.partial(_tin_finished, plan),
         grace_s=jobs.CANCEL_GRACE_S)
 
 

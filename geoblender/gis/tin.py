@@ -34,8 +34,9 @@ polígono con un hueco interior lo excluye). ``boundary`` es una región; ``hole
 lista de regiones (o una sola), y basta con estar dentro de una para quedar fuera del TIN.
 
 :func:`save_tin` y :func:`load_tin`: el npz de ``meshes/`` (``formato-proyecto.md`` §4.3)
-con ``numpy.savez_compressed``, escrito en un temporal y renombrado, y leído siempre con
-``allow_pickle=False`` (ARQ-16).
+como el de ``numpy.savez_compressed`` (un ``.npy`` por array en un zip con *deflate*, aquí de
+nivel 1: cuatro veces más rápido y un 11 % más grande; spec 006, T35), por bloques y con avance
+entre ellos, en un temporal y renombrado, y leído siempre con ``allow_pickle=False`` (ARQ-16).
 
 TIN ⇄ rejilla (RF-006-17; A13): :func:`tin_to_raster` interpola linealmente dentro de cada
 triángulo en los centros de celda (sin dato fuera del TIN), :func:`sample_tin` en puntos
@@ -46,6 +47,7 @@ esquinas con dato): la ida y vuelta rejilla → TIN → rejilla devuelve las mis
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import numbers
@@ -116,6 +118,8 @@ _PAIR_BUDGET = 1 << 22  # parejas (arista de anillo, centroide) por bloque como 
 _TRIANGLE_BATCH = 1 << 16  # triángulos por lote en TIN → rejilla (avance y cancelación)
 _SAMPLE_PAIRS = 1 << 18  # parejas (triángulo, punto) por bloque como mucho
 _QUAD_BLOCK = 1 << 18  # cuadros de 2 × 2 por bloque de filas en rejilla → TIN
+_NPZ_BLOCK = 1 << 20  # bytes por escritura al guardar el npz de un TIN (avance entre ellas)
+_NPZ_LEVEL = 1  # deflate del npz de un TIN: 300.000 vértices en 0,16 s (con el 6, 0,65 s)
 _BOX_PAD = 1e-9  # holgura de la caja de un triángulo, por metro de extensión del TIN
 _REQUIRED_META = ("crs_epsg", "vertical", "operation_uid")
 _ARRAYS = ("vertices", "faces", "constraint_edges", "vertex_source")
@@ -276,12 +280,15 @@ def finish_tin(
     holes: object = (),
     max_edge_m: float | None = None,
     name: str = "",
+    progress: Progress | None = None,
+    cancelled: Cancelled | None = None,
 ) -> tuple[Tin, TinReport]:
     """Los pasos 4 a 6 de :func:`build_tin` sobre los triángulos ``triangles`` que dio el
     triangulador de nombre ``triangulator`` para ``source`` en coordenadas locales respecto
     a ``origin`` (orientación, filtros con ``boundary``, ``holes`` y ``max_edge_m``, y
     estadísticas): el mismo TIN y el mismo informe que :func:`build_tin` con ese
-    triangulador. Errores como :func:`build_tin`."""
+    triangulador. Errores como :func:`build_tin`; avance (``progress``, de 0 a 1) y
+    cancelación (``cancelled`` → ``JobCancelled``) entre sus etapas."""
     if not isinstance(source, TinInput):
         raise TypeError(f"source es un TinInput (prepare_tin), no {type(source).__name__}")
     limit = _max_edge(max_edge_m, name)
@@ -289,7 +296,8 @@ def finish_tin(
     hole_regions = [_region(hole, "holes") for hole in _hole_list(holes)]
     xy = world_to_local(source.prepared.xyz[:, :2], origin)
     return _finish_tin(source, triangles, xy, origin=origin, boundary=boundary_rings,
-                       holes=hole_regions, max_edge=limit, name=name, triangulator=triangulator)
+                       holes=hole_regions, max_edge=limit, name=name, triangulator=triangulator,
+                       progress=progress, cancelled=cancelled)
 
 
 def meta_vertical(vertical: VerticalRef) -> str:
@@ -324,18 +332,28 @@ def _prepare(points: PointSet, lines: list[Breakline], policy: DuplicatePolicy, 
         merged = duplicates.duplicates
         points = resolve_duplicates(points, duplicates, policy, name=name)
     _stage(progress, cancelled, 0.1, "líneas de rotura")
-    prepared = prepare_constraints(points, lines, tol_xy=tol_xy, tol_z=tol_z, name=name)
+    steps = itertools.count(1)
+
+    def constraints(stage: str) -> None:  # de 0,1 hacia 0,2, sin llegar
+        _stage(progress, cancelled, 0.2 - 0.1 * 0.5 ** next(steps), stage)
+
+    prepared = prepare_constraints(points, lines, tol_xy=tol_xy, tol_z=tol_z, name=name,
+                                   progress=constraints)
     return TinInput(prepared, input_points, merged)
 
 
 def _finish_tin(source: TinInput, triangles: object, xy: np.ndarray, *, origin: GeoOrigin,
                 boundary: list[np.ndarray] | None, holes: list[list[np.ndarray]],
                 max_edge: float | None, name: str, triangulator: str,
+                progress: Progress | None = None, cancelled: Cancelled | None = None,
                 ) -> tuple[Tin, TinReport]:
-    """Pasos 4 a 6 con ``xy`` locales ya calculadas."""
+    """Pasos 4 a 6 con ``xy`` locales ya calculadas; avance de 0 a 1 entre sus etapas."""
     faces = _oriented(xy, _faces(triangles, len(xy), triangulator))
+    _stage(progress, cancelled, 0.3, "filtros del TIN")
     tin, report = _finish(source.prepared, faces, xy, origin=origin, boundary=boundary,
-                          holes=holes, max_edge=max_edge, name=name, triangulator=triangulator)
+                          holes=holes, max_edge=max_edge, name=name, triangulator=triangulator,
+                          progress=progress, cancelled=cancelled)
+    _stage(progress, None, 1.0, "estadísticas del TIN")
     report = replace(report, input_points=source.input_points,
                      duplicates_merged=source.duplicates_merged + source.prepared.merged)
     return tin, report
@@ -394,9 +412,11 @@ def _orientation(xy: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, np.ndar
     float64 (positivo si es antihorario), y su signo exacto (−1, 0 o +1, int64): el de
     float64 si es seguro y, si no, el de ``orient2d``. Coordenadas finitas, absolutas o
     locales."""
-    p = xy[faces]
-    left = (p[:, 0, 0] - p[:, 2, 0]) * (p[:, 1, 1] - p[:, 2, 1])
-    right = (p[:, 0, 1] - p[:, 2, 1]) * (p[:, 1, 0] - p[:, 2, 0])
+    x, y = np.ascontiguousarray(xy[:, 0]), np.ascontiguousarray(xy[:, 1])
+    a, b, c = faces[:, 0], faces[:, 1], faces[:, 2]
+    xc, yc = x[c], y[c]
+    left = (x[a] - xc) * (y[b] - yc)  # las operaciones de siempre, sin el array (m, 3, 2)
+    right = (y[a] - yc) * (x[b] - xc)
     det = left - right
     sign = np.sign(det).astype(np.int64)
     doubtful = np.flatnonzero(np.abs(det) <= _CCW_BOUND * (np.abs(left) + np.abs(right)))
@@ -421,8 +441,10 @@ def _oriented(xy: np.ndarray, faces: np.ndarray) -> np.ndarray:
 def _finish(prepared: PreparedInput, faces: np.ndarray, xy: np.ndarray, *,
             origin: GeoOrigin, boundary: list[np.ndarray] | None,
             holes: list[list[np.ndarray]], max_edge: float | None, name: str,
-            triangulator: str) -> tuple[Tin, TinReport]:
-    """Filtros, vértices usados, aristas obligatorias que quedan y estadísticas."""
+            triangulator: str, progress: Progress | None = None,
+            cancelled: Cancelled | None = None) -> tuple[Tin, TinReport]:
+    """Filtros, vértices usados, aristas obligatorias que quedan y estadísticas (avance de
+    0,3 a 0,9 entre ellos)."""
     total = len(faces)
     keep = np.ones(total, dtype=bool)
     if boundary is not None or holes:
@@ -442,6 +464,7 @@ def _finish(prepared: PreparedInput, faces: np.ndarray, xy: np.ndarray, *,
         raise GisError("gis.tin_empty", obj=_tin_object(name), field="triángulos",
                        value=total, tin=name)
     faces, sides = faces[keep], sides[keep]
+    _stage(progress, cancelled, 0.5, "vértices del TIN")
     used = np.zeros(len(xy), dtype=bool)
     used[faces.ravel()] = True
     index = np.cumsum(used) - 1
@@ -451,7 +474,9 @@ def _finish(prepared: PreparedInput, faces: np.ndarray, xy: np.ndarray, *,
     edges = prepared.edges.astype(np.int64)
     edges = edges[used[edges].all(axis=1)]
     edges = index[edges]
-    edges = edges[np.isin(_keys(edges, len(vertices)), _face_keys(faces, len(vertices)))]
+    _stage(progress, cancelled, 0.7, "aristas obligatorias del TIN")
+    edges = edges[_among(_keys(edges, len(vertices)), _face_keys(faces, len(vertices)))]
+    _stage(progress, cancelled, 0.9, "estadísticas del TIN")
     tin = Tin(
         vertices=vertices,
         faces=np.ascontiguousarray(faces, dtype=np.int32),
@@ -500,8 +525,18 @@ def _keys(pairs: np.ndarray, count: int) -> np.ndarray:
 
 
 def _face_keys(faces: np.ndarray, count: int) -> np.ndarray:
-    return np.unique(_keys(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]],
-                                           faces[:, [2, 0]]]), count))
+    """Las claves de las aristas de los triángulos, ordenadas (con repeticiones)."""
+    return np.sort(_keys(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]],
+                                         faces[:, [2, 0]]]), count))
+
+
+def _among(keys: np.ndarray, ordered: np.ndarray) -> np.ndarray:
+    """Si cada clave de ``keys`` está en ``ordered`` (ordenadas): lo de ``numpy.isin``, sin
+    quitar antes las repetidas de las 3·m claves de las aristas."""
+    position = np.searchsorted(ordered, keys)
+    found = position < len(ordered)
+    found[found] = ordered[position[found]] == keys[found]
+    return found
 
 
 # Contorno y huecos -----------------------------------------------------------------------
@@ -894,14 +929,18 @@ def raster_to_tin(
     if not len(cells):
         raise GisError("gis.grid_tin_empty", obj=_tin_object(name), field="celdas con dato",
                        value=int(np.count_nonzero(valid)), tin=name)
-    used = np.unique(cells)
+    taken = np.zeros(nrows * ncols, dtype=bool)  # lo de np.unique y np.searchsorted, en O(n)
+    taken[cells.ravel()] = True
+    used = np.flatnonzero(taken)
+    position = np.full(nrows * ncols, -1, dtype=np.int64)
+    position[used] = np.arange(len(used), dtype=np.int64)
     rows, cols = np.divmod(used, ncols)
     x = grid.west + (cols.astype(np.float64) + 0.5) * grid.dx
     y = grid.north - (rows.astype(np.float64) + 0.5) * grid.dy
     vertices = np.column_stack([x, y, raster.values[rows, cols]])
     return Tin(
         vertices=vertices,
-        faces=np.ascontiguousarray(np.searchsorted(used, cells), dtype=np.int32),
+        faces=np.ascontiguousarray(position[cells], dtype=np.int32),
         constraint_edges=np.empty((0, 2), dtype=np.int32),
         vertex_source=np.full(len(used), SOURCE_CELL, dtype=np.uint8),
         triangulator=GRID_TRIANGULATOR,
@@ -958,6 +997,7 @@ def save_tin(
     *,
     temporary: Path | str | None = None,
     replace: bool = True,
+    progress: Progress | None = None,
 ) -> Path:
     """Guarda ``tin`` en ``path`` (npz de ``meshes/``, plan §5.2.2) con su ``meta`` JSON
     (:func:`file_meta`): ``schema``, ``kind``, ``surface_type``, ``closed``, ``oriented``,
@@ -968,7 +1008,8 @@ def save_tin(
     temporal (por defecto, ``<path>.tmp``; en el proyecto, ``gis.store`` da
     ``<fichero>.tmp-<sesión>``); con ``replace=False`` el fichero queda entero en él y ``path``
     no se toca. Devuelve lo escrito: ``path`` o, sin ``replace``, el temporal. Si falla, el
-    temporal se borra."""
+    temporal se borra. Lo comprime (:func:`_write_npz`) con ``progress`` tras cada bloque de
+    :data:`_NPZ_BLOCK` bytes."""
     if not isinstance(tin, Tin):
         raise TypeError("tin es un Tin")
     if not isinstance(replace, bool):
@@ -984,9 +1025,10 @@ def save_tin(
         raise ValueError(f"el temporal de «{target.name}» no puede ser el propio destino")
     try:
         with written.open("wb") as stream:
-            np.savez_compressed(stream, vertices=tin.vertices, faces=tin.faces,
-                                constraint_edges=tin.constraint_edges,
-                                vertex_source=tin.vertex_source, meta=np.array(text))
+            _write_npz(stream, {"vertices": tin.vertices, "faces": tin.faces,
+                                "constraint_edges": tin.constraint_edges,
+                                "vertex_source": tin.vertex_source, "meta": np.array(text)},
+                       progress)
             stream.flush()
             os.fsync(stream.fileno())
         if not replace:
@@ -996,6 +1038,33 @@ def save_tin(
         written.unlink(missing_ok=True)
         raise
     return target
+
+
+def _write_npz(stream: Any, arrays: Mapping[str, np.ndarray],
+               progress: Progress | None) -> None:
+    """``arrays`` en ``stream`` como ``numpy.savez_compressed``: un zip con *deflate* (de nivel
+    :data:`_NPZ_LEVEL`) y un ``<nombre>.npy`` por array, con su cabecera de la versión 1.0 y sus
+    datos en orden C, escritos por bloques de :data:`_NPZ_BLOCK` bytes con
+    ``progress(fracción, texto)`` tras cada uno. Sin objetos (nada de *pickle*, ARQ-16)."""
+    chosen = {name: np.asarray(value, order="C") for name, value in arrays.items()}
+    if any(array.dtype.hasobject for array in chosen.values()):
+        raise ValueError("un npz de meshes/ no lleva objetos de Python")
+    total = max(1, sum(array.nbytes for array in chosen.values()))
+    done = 0
+    with zipfile.ZipFile(stream, mode="w", compression=zipfile.ZIP_DEFLATED,
+                         compresslevel=_NPZ_LEVEL, allowZip64=True) as archive:
+        for name, array in chosen.items():
+            with archive.open(f"{name}.npy", mode="w", force_zip64=True) as member:
+                np.lib.format.write_array_header_1_0(
+                    member, np.lib.format.header_data_from_array_1_0(array))
+                data = memoryview(array.tobytes() if array.ndim == 0 else array.reshape(-1))
+                data = data.cast("B")
+                for start in range(0, len(data), _NPZ_BLOCK):
+                    block = data[start:start + _NPZ_BLOCK]
+                    member.write(block)
+                    done += len(block)
+                    if progress is not None:
+                        progress(done / total, "Guardando el TIN…")
 
 
 def load_tin(path: Path | str) -> Tin:

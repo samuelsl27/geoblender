@@ -29,12 +29,14 @@ de lado ≈ su longitud mediana (cada segmento, en trozos de ese lado como mucho
 conflicto, no se sigue: :class:`~gis.reports.ConflictError` los lista todos (con sus
 identificadores, su posición y sus dos cotas), ordenados por su posición, y el TIN no se crea
 hasta que se corrijan las líneas en su fuente o se resuelvan los puntos
-(``gis.points.resolve_duplicates``).
+(``gis.points.resolve_duplicates``). Con ``progress``, avisa tras cada comprobación de cada
+pasada (spec 006, T35: con 300.000 vértices, ninguna pasa de unas décimas de segundo,
+RNF-006-09).
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 
@@ -135,27 +137,37 @@ def prepare_constraints(
     tol_xy: float | None = None,
     tol_z: float | None = None,
     name: str = "",
+    progress: Callable[[str], None] | None = None,
 ) -> PreparedInput:
     """Los vértices y las aristas obligatorias de un TIN desde ``points`` y ``breaklines``
     (RF-006-13, RF-006-14; plan A8): sin duplicados, sin cruces y con los vértices nuevos
     de los cruces calculados en float64. Las tolerancias, las de
     ``gis.points.duplicate_tolerances``. Si hay conflictos, :class:`ConflictError`
-    (``gis.constraint_conflicts``, TIN ``name``) con todos. Las entradas no se modifican;
-    ``TypeError`` si no son un ``PointSet`` y ``Breakline`` (error del programa)."""
+    (``gis.constraint_conflicts``, TIN ``name``) con todos. ``progress(etapa)``, si se da,
+    tras cada comprobación de cada pasada. Las entradas no se modifican; ``TypeError`` si no
+    son un ``PointSet`` y ``Breakline`` (error del programa)."""
     if not isinstance(points, PointSet):
         raise TypeError("points es un PointSet")
     lines = list(breaklines)
     if not all(isinstance(line, Breakline) for line in lines):
         raise TypeError("breaklines son Breakline")
     tol_xy, tol_z = duplicate_tolerances(tol_xy, tol_z)
+
+    def step(stage: str) -> None:
+        if progress is not None:
+            progress(stage)
+
     work = _Preparation(points, lines, tol_xy, tol_z)
     for _ in range(MAX_PASSES):
         conflicts: list[Conflict] = []
         merged = work.merge(conflicts)
+        step("vértices a menos de la tolerancia")
         segments = work.segments()
         grid = work.grid(segments)
         insertions = work.on_segments(segments, grid, conflicts)
+        step("vértices sobre las líneas de rotura")
         crossings = work.crossings(segments, grid, conflicts)
+        step("cruces de las líneas de rotura")
         if conflicts:
             conflicts.sort(key=lambda c: (c.x, c.y, c.ids, c.kind.value))
             raise ConflictError("gis.constraint_conflicts", conflicts, tin=name,

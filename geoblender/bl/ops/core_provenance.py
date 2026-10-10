@@ -825,7 +825,7 @@ def launch_job(handle: OperationHandle, worker: str, *, label: str,
                params: Mapping[str, Any] | None = None, paths: Mapping[str, Path] | None = None,
                on_finish: Callable[[JobResult], object] | None = None,
                inputs: Mapping[str, Path] | None = None, site_override: Path | None = None,
-               **request: Any) -> JobHandle:
+               arrays: Mapping[str, Any] | None = None, **request: Any) -> JobHandle:
     """Lanza el trabajo de la 004 de la operación ``handle`` («en curso» desde
     ``begin_operation``; RF-008-51, RF-008-20; plan §5.3.4 «Calcular») con el monitor de los
     trabajos, que lo sigue en la barra de estado: tipo ``worker``, nombre visible ``label``,
@@ -833,10 +833,13 @@ def launch_job(handle: OperationHandle, worker: str, *, label: str,
     lo demás de ``jobs.protocol.new_request`` (``request``), con el ``operation_uid`` de la
     operación, el proyecto y su módulo como dueño. ``inputs`` (spec 006, T28): los ficheros
     del proyecto que lee, por nombre, que se copian a ``in/`` de su carpeta antes de lanzarlo
-    (``JobDir.copy_input``; la petición lleva su ruta relativa, ARQ-11); ``site_override``:
-    la carpeta ``site`` de su intérprete (las ruedas de la extensión, plan 004 §5.3.3). Al
-    terminar, en el hilo de Blender, llama a ``on_finish`` con su ``JobResult``: ahí (o
-    después) el módulo la incorpora con
+    (``JobDir.copy_input``; la petición lleva su ruta relativa, ARQ-11); ``arrays`` (spec 006,
+    T35): los arrays de numpy que calcula el módulo, por nombre, que se escriben en ``in/``
+    tal cual, sin copia ni huellas (``JobDir.write_array``; lo que lee un TIN de 300.000
+    puntos, en centésimas en vez de décimas del hilo de Blender, RNF-006-09);
+    ``site_override``: la carpeta ``site`` de su intérprete (las ruedas de la extensión, plan
+    004 §5.3.3). Al terminar, en el hilo de Blender, llama a ``on_finish`` con su
+    ``JobResult``: ahí (o después) el módulo la incorpora con
     :func:`ingest_job_result`; si el trabajo no terminó bien y no la incorporó, la operación
     queda cancelada o fallida con el motivo de la 004. Hasta incorporarla, «pendiente de
     incorporar» (:func:`job_note`). Si no se puede lanzar, la operación queda fallida con el
@@ -854,8 +857,8 @@ def launch_job(handle: OperationHandle, worker: str, *, label: str,
                                   operation_uid=handle.uid, **request)
         finished = functools.partial(_job_finished, job_request.job_uid)
         job: Any = job_request
-        if inputs:
-            job = _prepare_inputs(runner, job_request, inputs)
+        if inputs or arrays:
+            job = _prepare_inputs(runner, job_request, inputs or {}, arrays)
         job = jobs_ops.MONITOR.submit(job, on_finish=finished, paths=paths,
                                       site_override=site_override)
     except Exception as exc:
@@ -869,12 +872,13 @@ def launch_job(handle: OperationHandle, worker: str, *, label: str,
     return job
 
 
-def _prepare_inputs(runner: JobRunner, request: JobRequest,
-                    inputs: Mapping[str, Path]) -> Any:
+def _prepare_inputs(runner: JobRunner, request: JobRequest, inputs: Mapping[str, Path],
+                    arrays: Mapping[str, Any] | None = None) -> Any:
     """La carpeta del trabajo de ``request`` (``JobRunner.prepare``) con ``inputs`` copiados a
-    su ``in/`` (``JobDir.copy_input``, con su huella) y su petición con sus rutas relativas
-    (releída tras ``prepare``, que fija su entorno y su tiempo máximo). Si algo falla, el
-    error sigue y no queda la carpeta."""
+    su ``in/`` (``JobDir.copy_input``, con su huella), ``arrays`` escritos en él
+    (``JobDir.write_array``) y su petición con sus rutas relativas (releída tras ``prepare``,
+    que fija su entorno y su tiempo máximo). Si algo falla, el error sigue y no queda la
+    carpeta."""
     import dataclasses
     import shutil
 
@@ -885,6 +889,8 @@ def _prepare_inputs(runner: JobRunner, request: JobRequest,
         prepared = read_request(folder)
         copied = {name: folder.copy_input(path, name, job=request.label)
                   for name, path in inputs.items()}
+        copied.update((name, folder.write_array(name, array))
+                      for name, array in (arrays or {}).items())
         write_request(folder, dataclasses.replace(prepared,
                                                   inputs={**dict(prepared.inputs), **copied}))
     except BaseException:
@@ -1089,13 +1095,14 @@ class ProvenanceAwareOperator:
                    on_finish: Callable[[JobResult], object] | None = None,
                    inputs: Mapping[str, Path] | None = None,
                    site_override: Path | None = None,
+                   arrays: Mapping[str, Any] | None = None,
                    **request: Any) -> JobHandle | None:
         """:func:`launch_job`; si no se puede lanzar (la operación queda fallida), lo dice y
         devuelve ``None``."""
         try:
             return launch_job(handle, worker, label=label, params=params, paths=paths,
                               on_finish=on_finish, inputs=inputs, site_override=site_override,
-                              **request)
+                              arrays=arrays, **request)
         except RuntimeError:
             self.report({"ERROR"},  # type: ignore[attr-defined]
                         tr("Geoblender has not prepared the jobs folder yet"))

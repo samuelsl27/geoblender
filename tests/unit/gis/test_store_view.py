@@ -14,6 +14,7 @@ no coincide es un error con mensaje claro, nunca un supuesto). Sobre el proyecto
 
 from __future__ import annotations
 
+import struct
 from typing import Any
 
 import numpy as np
@@ -34,6 +35,7 @@ gis_content = import_geoblender("gis.content")
 points_mod = import_geoblender("gis.points")
 messages = import_geoblender("gis.messages")
 csv_tables = import_geoblender("interop.csv_tables")
+wkb = import_geoblender("core.gpkg.wkb")
 
 POINT_MAPPING = points_mod.ColumnMapping(x=1, y=2, z=3, point_id=0, code=4, line=5)
 
@@ -80,6 +82,24 @@ class StoredFeaturesTest(ImportCase):
                 self.assertTrue(np.array_equal(got.view(np.uint64), line.xyz.view(np.uint64)))
         self.assertEqual(breaks.attributes["line_id"], tuple(line.line_id for line in lines))
         self.assertEqual(breaks.attributes["hard"], (1,) * len(lines))
+        # T35 (RNF-006-09): para un TIN, los puntos se leen de una vez, bit a bit; un blob
+        # que no es el POINT Z de Geoblender (otro SRS, con envolvente, un NaN) se lee uno a
+        # uno.
+        loaded = store.load_points(self.project, "gis_pts_taludes")
+        self.assertTrue(np.array_equal(loaded.xyz.view(np.uint64), points.xyz.view(np.uint64)))
+        self.assertEqual((loaded.point_ids, loaded.codes, loaded.source_rows),
+                         (tuple(points.point_ids), tuple(points.codes),
+                          tuple(points.source_rows)))
+        blobs = [wkb.encode_geometry("POINT", xyz, 25830, True) for xyz in points.xyz]
+        self.assertTrue(np.array_equal(store._point_coords(blobs), points.xyz))
+        self.assertEqual(store._point_coords([]).shape, (0, 3))
+        nan = wkb.encode_geometry("POINT", points.xyz[0], 25830, True)[:-8] + struct.pack(
+            "<d", float("nan"))
+        for odd in (wkb.encode_geometry("POINT", points.xyz[0], 4258, True),
+                    wkb.encode_geometry("POINT", points.xyz[0, :2], 25830, False),
+                    wkb.encode_geometry("LINESTRING", points.xyz[:1].repeat(2, 0), 25830,
+                                        True)[:len(blobs[0])], nan):
+            self.assertIsNone(store._point_coords([*blobs, odd]))
         self.assertEqual(self.state(), before)
 
     def test_contours_as_stored_and_rejections(self) -> None:
