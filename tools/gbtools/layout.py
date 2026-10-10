@@ -79,6 +79,8 @@ MIRROR_EXCLUDED: tuple[str, ...] = (
 )
 MIRROR_TEMP_SUFFIX = ".gb-espejo~"  # temporal de cada copia en el destino (§5.4.8)
 MIRROR_STATE_PARTS: tuple[str, ...] = ("Geoblender", "espejo")  # bajo %LOCALAPPDATA%
+# El cerrojo del equipo de tools/check.py, bajo %LOCALAPPDATA% (spec 006, T46).
+CHECK_LOCK_PARTS: tuple[str, ...] = ("Geoblender", "check.lock")
 
 # Plantilla de aplicación y lanzador (spec 003, T34; ADR-0003; CW §7; D-2): las fuentes
 # están en packaging/ (fuera de la extensión); el id de la plantilla es el de ADR-0003.

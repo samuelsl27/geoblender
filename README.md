@@ -125,9 +125,15 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en unos 40 s) no ejecuta las pruebas del
-propio arnés que lanzan Blender entero, y lo dice antes del resultado. Los pasos van uno
-tras otro, pero las pruebas unitarias se reparten en 12 procesos (`tools/unittest_part.py`)
+Sin `--completo` (la comprobación de cada tarea, en unos 38 s) no ejecuta las pruebas del
+propio arnés que lanzan Blender entero, y lo dice antes del resultado. Solo se ejecuta un
+`tools/check.py` a la vez en el equipo, sea de la carpeta que sea (de este repositorio o de
+un *worktree*): dos a la vez compiten por los procesadores, tardan más y las pruebas que miden
+tiempos fallan. El cerrojo es `%LOCALAPPDATA%\Geoblender\check.lock`, que el sistema suelta
+aunque la comprobación se cierre de golpe (no hay que borrarlo); si otra lo tiene, la nueva
+escribe `ESPERANDO: …` con su pid y su carpeta y espera, y su tiempo se cuenta desde que
+empieza de verdad. `tools/publish.py` espera igual. Los pasos van uno
+tras otro, pero las pruebas unitarias se reparten en 16 procesos (`tools/unittest_part.py`)
 y las de Blender en 5 Blender (`tools/run_blender_tests.py --parte i/n`) que se ejecutan a
 la vez, sin pasar del número de procesadores; cada prueba, en uno solo. El reparto es por
 la duración de cada módulo de pruebas en la comprobación anterior, que se guarda en
@@ -154,6 +160,7 @@ Todas son opcionales y empiezan por `GEOBLENDER_`.
 | `GEOBLENDER_NET_TEST_DIR` | Carpeta de red para las comprobaciones manuales; nunca en la carpeta de expedientes de clientes |
 | `GEOBLENDER_PROJ_BIN` | Carpeta con `projinfo` y `cs2cs`, para regenerar el catálogo de CRS |
 | `GEOBLENDER_TEST_RUNTIME_SITE` | Otra ubicación del motor de cálculo de pruebas (su carpeta `site`), en lugar del de `.deps/runtime/` |
+| `GEOBLENDER_CHECK_LOCK` | Otro fichero para el cerrojo de `tools/check.py`, en lugar de `%LOCALAPPDATA%\Geoblender\check.lock` (las pruebas lo usan en una carpeta temporal). `GEOBLENDER_CHECK_LOCK_HELD` la pone `tools/check.py` en sus órdenes: no se define a mano |
 
 Las rutas a datos reales de clientes solo llegan por variables: nunca se escriben en el código
 ni se copian al repositorio, y se leen en solo lectura.

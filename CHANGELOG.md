@@ -259,7 +259,7 @@ falta el almacén del NAS de IMGA.
   comprobación completa ya no necesita la documentación al lado: en el PC de referencia, con
   el código en su disco local, con las pruebas de la publicación (`--completo`) tarda unos
   62 s.
-- `tools/check.py` reparte las pruebas unitarias en 12 procesos y las de Blender en 5
+- `tools/check.py` reparte las pruebas unitarias en 16 procesos y las de Blender en 5
   Blender que se ejecutan a la vez dentro de su paso (los pasos siguen uno tras otro), sin
   quitar ni acortar ninguna. Desde la spec 004, el reparto sigue lo que tardó cada módulo de
   pruebas en la comprobación anterior (guardado fuera del repositorio, en
@@ -267,6 +267,13 @@ falta el almacén del NAS de IMGA.
   cada tarea pasó de unos 55 s a unos 25 s en el PC de referencia; con las pruebas de la
   spec 004 y su paso «motor» llegó a unos 40 s, y con más procesos (spec 006) volvió a unos
   30 s; con las pruebas de la 006 y de la 008 juntas, y más procesos en el paso «motor»,
-  tarda unos 40 s. Cada prueba se ejecuta en una sola parte, y si las partes no suman las
-  pruebas que hay, el paso falla. Una prueba con un presupuesto de milisegundos mide otra
-  vez mientras la máquina está cargada, sin cambiar el presupuesto.
+  llegó a unos 40 s, y con 16 procesos de pruebas unitarias tarda unos 38 s. Cada prueba se
+  ejecuta en una sola parte, y si las partes no suman las pruebas que hay, el paso falla.
+  Una prueba con un presupuesto de milisegundos mide otra vez mientras la máquina está
+  cargada, sin cambiar el presupuesto.
+- Solo un `tools/check.py` a la vez en el equipo (spec 006): si hay otro en marcha (de la
+  misma carpeta, de un *worktree* o de otra sesión), el nuevo dice a cuál espera (su pid y su
+  carpeta) y empieza cuando termina; su tiempo se cuenta desde entonces. Antes los dos se
+  estorbaban: tardaban más y las pruebas que miden tiempos fallaban. Si una comprobación se
+  cierra de golpe, la siguiente no queda esperando ni hay que borrar nada a mano.
+  `tools/publish.py` espera igual.
