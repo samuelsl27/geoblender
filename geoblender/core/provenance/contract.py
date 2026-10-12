@@ -11,7 +11,11 @@ los módulos (ADR-0004).
   versión ``M.m`` de su algoritmo (sube cuando un cambio puede mover una cifra), su módulo, su
   nombre visible (``msgid``), si se puede repetir sola (y entonces su función de recálculo),
   su grupo de operaciones acopladas, su ámbito (``project``; ``version`` con la 009), las
-  órdenes (``bl_idname``) que la lanzan y las bibliotecas que influyen en sus cifras.
+  órdenes (``bl_idname``) que la lanzan, las bibliotecas que influyen en sus cifras y los
+  ajustes de su orden que enseña su procedencia (:class:`SettingDef`; spec 006, T58).
+- :class:`SettingDef`: un ajuste de una operación (``gb_operation.settings``) que importa a
+  quien revisa el resultado, con su nombre visible y su unidad (un número) o sus elecciones;
+  ni las rutas ni lo interno (nombres, uids…) se declaran, así que no se enseñan.
 - :class:`CoupledGroupDef`: operaciones que siempre se ejecutan juntas, en su orden; si una
   queda obsoleta, todas, y ninguna se recalcula sin las demás (RF-008-25).
 - :class:`FigureDef`: una cifra, con su unidad del catálogo y si admite cero o negativos.
@@ -74,6 +78,7 @@ _KEY = re.compile(r"(?P<module>[a-z]+)(?:\.[a-z][a-z0-9_]*)+")
 _VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 _READER_ID = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+")
 _LIBRARY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*")
+_SETTING_KEY = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*")
 _CODES = ", ".join(MODULE_CODES)
 
 
@@ -128,6 +133,95 @@ def _check_bool(value: object, field: str, owner: str) -> None:
 
 # --- Declaraciones ----------------------------------------------------------------------------
 
+type SettingValue = str | int | float | bool | None
+"""Un valor de una elección tal como lo guarda la operación en sus ajustes (JSON)."""
+
+
+@dataclass(frozen=True, slots=True)
+class SettingDef:
+    """Un ajuste de la orden de un tipo de operación que enseña su procedencia (RF-008-29;
+    spec 006, T58), comprobado al crearlo: de los ajustes que guarda la operación
+    (``gb_operation.settings``, JSON), uno que importa a quien revisa el resultado; las rutas
+    y lo interno (nombres, uids…) no se declaran, así que nunca se enseñan.
+
+    - ``key``: dónde está en los ajustes, un nombre en minúsculas; con «.», dentro de uno
+      anidado (``read.decimal``: ``decimal`` dentro de ``read``);
+    - ``label_msgid``: su nombre visible, un ``msgid`` en inglés con su español en el
+      catálogo de su módulo (el del campo de su diálogo);
+    - con su nombre, uno de los dos: ``unit``, si es un número (el código de su unidad en
+      ``core.units``; ``-`` si es adimensional), o ``choices``, si es una elección (cada valor
+      guardado con el ``msgid`` del nombre con que se elige, sin repetir valores).
+    """
+
+    key: str
+    label_msgid: str
+    _: KW_ONLY
+    unit: str | None = None
+    choices: tuple[tuple[SettingValue, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        key = self.key
+        if not isinstance(key, str) or _SETTING_KEY.fullmatch(key) is None:
+            raise ValueError(
+                f"«key» de un ajuste es un nombre en minúsculas, con «.» para uno anidado "
+                f"(como «interval_m» o «read.decimal»), no {key!r}"
+            )
+        _check_msgid(self.label_msgid, f"del ajuste «{key}»")
+        if self.unit is not None and (not isinstance(self.unit, str) or self.unit not in UNITS):
+            raise ValueError(
+                f"«unit» del ajuste «{key}» ({self.unit!r}) no está en el catálogo de unidades "
+                "de Geoblender (core.units; se escribe su código: «m3», no «m³»)"
+            )
+        choices = _choices(self.choices, key)
+        if (self.unit is None) == (not choices):
+            raise ValueError(
+                f"el ajuste «{key}» es un número con su unidad («unit») o una elección con sus "
+                "valores («choices»): uno de los dos"
+            )
+        object.__setattr__(self, "choices", choices)
+
+    def choice_msgid(self, value: object) -> str | None:
+        """El ``msgid`` del nombre de la elección ``value``; ``None`` si no es una de las
+        declaradas."""
+        for declared, msgid in self.choices:
+            if declared == value and type(declared) is type(value):
+                return msgid
+        return None
+
+
+def _choices(value: object, key: str) -> tuple[tuple[SettingValue, str], ...]:
+    """Las elecciones de un ajuste como tupla de pares (valor guardado, ``msgid``)."""
+    if isinstance(value, str | bytes) or not isinstance(value, Iterable):
+        raise ValueError(f"«choices» del ajuste «{key}» es una lista de pares (valor, msgid), "
+                         f"no {value!r}")
+    found: list[tuple[SettingValue, str]] = []
+    for pair in value:
+        if not isinstance(pair, tuple) or len(pair) != 2 or (
+                pair[0] is not None and not isinstance(pair[0], str | int | float | bool)):
+            raise ValueError(f"«choices» del ajuste «{key}»: {pair!r} no es un par (valor "
+                             "guardado, msgid) con un valor de JSON")
+        if not isinstance(pair[1], str) or not pair[1].strip() or set(pair[1]) & SPANISH_LETTERS:
+            raise ValueError(f"«choices» del ajuste «{key}»: el nombre de {pair[0]!r} es un "
+                             f"msgid en inglés no vacío, no {pair[1]!r}")
+        if any(seen == pair[0] and type(seen) is type(pair[0]) for seen, _msgid in found):
+            raise ValueError(f"«choices» del ajuste «{key}» repite el valor {pair[0]!r}")
+        found.append((pair[0], pair[1]))
+    return tuple(found)
+
+
+def _settings(value: object, owner: str) -> tuple[SettingDef, ...]:
+    """``value`` como tupla de :class:`SettingDef` sin repetir clave."""
+    if isinstance(value, str | bytes | SettingDef) or not isinstance(value, Iterable):
+        raise ValueError(f"«settings» de «{owner}» es una lista de SettingDef, no {value!r}")
+    items = tuple(value)
+    for item in items:
+        if not isinstance(item, SettingDef):
+            raise TypeError(f"«settings» de «{owner}»: {item!r} no es un SettingDef")
+    keys = [item.key for item in items]
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"«settings» de «{owner}» repite una clave: {keys!r}")
+    return items
+
 
 @dataclass(frozen=True, slots=True)
 class OperationDef:
@@ -146,8 +240,9 @@ class OperationDef:
       (RF-008-26, RF-008-27);
     - con su nombre: ``group`` (su :class:`CoupledGroupDef`, ``<código>.<nombre>``), ``scope``
       (:data:`SCOPES`), ``commands`` (los ``bl_idname`` que la lanzan, para su estado de
-      comando, RF-008-61), ``libraries`` (las que influyen en sus cifras, RF-008-18) y
-      ``recompute``.
+      comando, RF-008-61), ``libraries`` (las que influyen en sus cifras, RF-008-18),
+      ``recompute`` y ``settings`` (los :class:`SettingDef` que enseña su procedencia, en su
+      orden y sin repetir clave; ninguno, por defecto: RF-008-29, spec 006, T58).
     """
 
     op_type: str
@@ -161,6 +256,7 @@ class OperationDef:
     commands: tuple[str, ...] = ()
     libraries: tuple[str, ...] = ()
     recompute: RecomputeFunction | None = None
+    settings: tuple[SettingDef, ...] = ()
 
     def __post_init__(self) -> None:
         op_type = self.op_type
@@ -211,6 +307,7 @@ class OperationDef:
                                                     IDNAME_RE))
         object.__setattr__(self, "libraries", _names(self.libraries, "libraries", op_type,
                                                      _LIBRARY))
+        object.__setattr__(self, "settings", _settings(self.settings, op_type))
 
     @property
     def version_tuple(self) -> tuple[int, int]:

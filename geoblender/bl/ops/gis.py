@@ -25,7 +25,8 @@ Registra lo que la topografía declara a las specs 004 y 008:
 
 (T44) Las declaraciones de procedencia son constantes del módulo, construidas una vez:
 :data:`OPERATION_DEFS` (los once tipos de ``gis.provenance.OPERATION_TYPES``, cada repetible con
-su función de :data:`RECOMPUTE`) e :data:`IMPORTER_DEFS` (un importador por lector de
+su función de :data:`RECOMPUTE`, y cada uno con los ajustes de su orden que enseña su
+procedencia, :data:`SETTING_DEFS`, T58) e :data:`IMPORTER_DEFS` (un importador por lector de
 importación, con su función de :data:`REIMPORT`); registrar dos veces pone los mismos objetos.
 
 :func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` quita solo eso, en
@@ -157,6 +158,7 @@ from ...core.numbers import parse_decimal
 from ...core.provenance import contract
 from ...core.provenance.messages import ProvenanceError
 from ...core.provenance.operations import Use, begin_operation, ingest_job
+from ...core.units import DIMENSIONLESS
 from ...gis import content, jobs, provenance, store, vector
 from ...gis import params as gis_params
 from ...gis.crs import (
@@ -4111,10 +4113,73 @@ REIMPORT: Mapping[str, Callable[[ReimportRequest], OperationHandle]] = MappingPr
 })
 """La función de reimportación de cada lector de importación de la 006, sin versión
 (RF-008-11)."""
-OPERATION_DEFS: tuple[contract.OperationDef, ...] = provenance.operation_defs(RECOMPUTE)
+
+
+def _choices(items: Sequence[tuple[str, ...]],
+             stored: Mapping[str, Any]) -> tuple[tuple[Any, str], ...]:
+    """Una elección de un diálogo como la guarda su operación: cada valor guardado
+    (``stored``, por el identificador de su ``EnumProperty``) con el ``msgid`` del nombre con
+    que se elige (``items``)."""
+    names = {item[0]: item[1] for item in items}
+    return tuple((value, names[identifier]) for identifier, value in stored.items())
+
+
+_DECIMAL_SETTING = contract.SettingDef("read.decimal", "Decimal mark",
+                                       choices=_choices(DECIMAL_ITEMS, DECIMALS))
+_POLICY_SETTING = contract.SettingDef("duplicate_policy", "Coincident points",
+                                      choices=_choices(POLICY_ITEMS, POLICIES))
+SETTING_DEFS: Mapping[str, tuple[contract.SettingDef, ...]] = MappingProxyType({
+    provenance.IMPORT_DTM: (
+        contract.SettingDef("read.nodata_override", "No data", unit=DIMENSIONLESS),
+        contract.SettingDef("read.separator", "Separator",
+                            choices=_choices(SEPARATOR_ITEMS, SEPARATORS)),
+        _DECIMAL_SETTING,
+    ),
+    provenance.IMPORT_POINTS: (
+        contract.SettingDef("read.encoding", "Encoding",
+                            choices=_choices(ENCODING_ITEMS, ENCODINGS)),
+        contract.SettingDef("read.separator", "Separator",
+                            choices=_choices(POINT_SEPARATOR_ITEMS, POINT_SEPARATORS)),
+        _DECIMAL_SETTING,
+        contract.SettingDef("read.header_row", "Lines before the header", unit=DIMENSIONLESS),
+        contract.SettingDef("read.line_kind", "Breaklines",
+                            choices=_choices(LINE_KIND_ITEMS, LINE_KINDS)),
+    ),
+    provenance.IMPORT_VECTOR: (
+        contract.SettingDef("read.role", "Role", choices=_choices(LAYER_ROLE_ITEMS, LAYER_ROLES)),
+    ),
+    provenance.RESAMPLE: (
+        contract.SettingDef("method", "Method", choices=_choices(METHOD_ITEMS, METHODS)),
+        contract.SettingDef("min_valid_fraction", "Minimum covered fraction",
+                            unit=gis_params.param(FRACTION_KEY).unit),
+    ),
+    provenance.TIN_FROM_POINTS: (
+        contract.SettingDef("max_edge_m", "Longest side", unit="m"),
+        _POLICY_SETTING,
+    ),
+    provenance.TIN_FROM_CONTOURS: (
+        contract.SettingDef("densify_m", "Densification",
+                            unit=gis_params.param(DENSIFY_KEY).unit),
+        _POLICY_SETTING,
+    ),
+    provenance.CONTOURS: (
+        *(contract.SettingDef(setting, label, unit=gis_params.param(key).unit)
+          for _prop, key, setting, label in CONTOUR_FIELDS),
+        contract.SettingDef(BASE_SETTING, "Base elevation", unit="m"),
+    ),
+})
+"""Los ajustes de la orden de cada tipo de la 006 que enseña su procedencia (RF-008-29;
+T58; el panel «Grafo de operaciones y procedencia»), con el nombre del campo de su diálogo y
+la unidad de su parámetro del proyecto (D18: un valor tecleado distinto del del proyecto es un
+ajuste) o los nombres de sus elecciones. Ni el nombre del resultado, ni lo que consume, ni el
+fichero o la capa (D21: ninguna ruta), ni los CRS (los dice la entrada), ni los parámetros de
+control (D17); las conversiones MDT ⇄ TIN y las exportaciones no tienen ninguno que enseñar."""
+OPERATION_DEFS: tuple[contract.OperationDef, ...] = provenance.operation_defs(
+    RECOMPUTE, settings=SETTING_DEFS)
 """Los ``OperationDef`` de los once tipos de la 006, en el orden de
 ``gis.provenance.OPERATION_TYPES``, cada uno que se repite solo con su recálculo (contrato de
-ADR-0025; ``operation_defs`` rechaza que falte o sobre una función)."""
+ADR-0025; ``operation_defs`` rechaza que falte o sobre una función) y con los ajustes de
+:data:`SETTING_DEFS`."""
 IMPORTER_DEFS: tuple[contract.ImporterDef, ...] = tuple(
     provenance.importer_def(reader_id, REIMPORT[reader_id])
     for reader_id in provenance.IMPORT_READERS)

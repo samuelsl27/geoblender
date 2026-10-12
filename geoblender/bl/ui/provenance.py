@@ -89,7 +89,9 @@ que abre ``geoblender.core_show_lineage``; RF-008-29, RF-008-31; T55): la búsqu
 cifra, de un dato o de una operación, o el nombre de un dato; si no es nada de eso, el motivo y
 las cifras vigentes y los datos que contienen el texto, cada uno con su procedencia) y la cadena
 (:class:`GEOBLENDER_UL_core_lineage`): lo pedido y, sangrados debajo, cada eslabón con la versión
-de su algoritmo y de Geoblender, quién y cuándo; sus parámetros con el valor y la unidad que
+de su algoritmo y de Geoblender, quién y cuándo; los ajustes de su orden que enseña su tipo, en
+una fila («Ajustes: Equidistancia = 2 m · Cota base = 0 m»; spec 006, T58: ni rutas ni lo
+interno); sus parámetros con el valor y la unidad que
 leyó, su insignia de tipo y «sin confirmar», y lo de hoy si cambió; sus entradas con su estado;
 los datos que consumió y el eslabón que escribió esa versión. La cifra lleva su unidad, su
 insignia y las marcas de RF-008-31 según el estado de hoy, y un eslabón obsoleto, su causa en
@@ -1575,6 +1577,8 @@ def _lineage_cells(tree: Any, item: Any, shown: str) -> tuple[str, str, tuple[st
         case "parameter":
             return (_parameter_text(node, shown), str(node.kind),
                     ("unconfirmed",) if node.unconfirmed else (), _parameter_note(node, shown))
+        case "settings":  # los ajustes de la orden del eslabón de encima (T58)
+            return node.settings_text or "", "", (), ""
         case "input":
             return node.text(language=shown) + _role(item.role), "", (), ""
     shown_text = node.name + _role(item.role)

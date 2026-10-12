@@ -19,7 +19,8 @@ los papeles de lo que consume, las familias de datos que produce, las biblioteca
 en sus resultados (``pyproj``, la versión fijada en ``tools/wheels.toml``; ``triangulator``,
 el triangulador usado, RF-006-26) y, una importación, sus lectores de contenido
 (``gis.content``). :func:`operation_def` y :func:`operation_defs` construyen los
-``OperationDef``; :func:`importer_def`, el ``ImporterDef`` de un lector de importación
+``OperationDef`` con lo que les da ``bl`` (su recálculo y los ajustes de su orden que enseña su
+procedencia, T58); :func:`importer_def`, el ``ImporterDef`` de un lector de importación
 (RF-008-11). Ninguna operación de la 006 registra cifras: no hay ``FigureDef`` (sus informes
 son diagnósticos, spec §11).
 
@@ -75,6 +76,7 @@ from ..core.provenance.contract import (
     OperationDef,
     RecomputeFunction,
     ReimportFunction,
+    SettingDef,
 )
 from .content import ASC, GEOTIFF, GPKG_LAYER, POINTS_TEXT, XYZ_GRID
 from .messages import GisError
@@ -145,10 +147,12 @@ class OperationType:
     libraries: tuple[str, ...] = ()
     readers: tuple[str, ...] = ()
 
-    def definition(self, recompute: RecomputeFunction | None = None) -> OperationDef:
+    def definition(self, recompute: RecomputeFunction | None = None,
+                   settings: Iterable[SettingDef] = ()) -> OperationDef:
         """Su ``OperationDef`` (versión :data:`OP_VERSION`, del proyecto, sin grupo) con la
         función de recálculo ``recompute``: la de ``bl`` si se repite solo y ``None`` si no
-        (si no, ``ValueError`` de ``OperationDef``)."""
+        (si no, ``ValueError`` de ``OperationDef``), y los ajustes de su orden que enseña su
+        procedencia (``settings``; T58)."""
         return OperationDef(
             self.op_type,
             OP_VERSION,
@@ -158,6 +162,7 @@ class OperationType:
             commands=self.commands,
             libraries=self.libraries,
             recompute=recompute,
+            settings=tuple(settings),
         )
 
 
@@ -223,25 +228,30 @@ def _operation_type(op_type: object) -> OperationType:
     return found
 
 
-def operation_def(op_type: str, recompute: RecomputeFunction | None = None) -> OperationDef:
+def operation_def(op_type: str, recompute: RecomputeFunction | None = None, *,
+                  settings: Iterable[SettingDef] = ()) -> OperationDef:
     """El ``OperationDef`` del tipo ``op_type`` con la función de recálculo ``recompute``
     que le da ``bl`` (la de un tipo que se repite solo; ``None`` en una importación o una
-    exportación). ``ValueError`` si el tipo no es de la 006, si se repite solo y no recibe su
+    exportación) y los ajustes de su orden que enseña su procedencia (``settings``, de
+    ``bl``; T58). ``ValueError`` si el tipo no es de la 006, si se repite solo y no recibe su
     función, o si no se repite y la recibe; ``TypeError`` si ``recompute`` no es una
     función."""
-    return _operation_type(op_type).definition(recompute)
+    return _operation_type(op_type).definition(recompute, settings)
 
 
 def operation_defs(
     recompute: Mapping[str, RecomputeFunction],
     *,
     op_types: Iterable[str] | None = None,
+    settings: Mapping[str, Iterable[SettingDef]] | None = None,
 ) -> tuple[OperationDef, ...]:
     """Los ``OperationDef`` de ``op_types`` (todos, por defecto, en el orden de
     :data:`OPERATION_TYPES`), cada uno con su función de ``recompute`` (por tipo: la de cada
-    uno que se repite solo, y ninguna más). ``ValueError`` si un tipo no es de la 006 o se
-    repite en ``op_types``, si falta la función de uno que se repite solo, o si ``recompute``
-    trae una para un tipo que no se construye o que no se repite."""
+    uno que se repite solo, y ninguna más) y sus ajustes de ``settings`` (por tipo: los de su
+    orden que enseña su procedencia, T58; los que no están, ninguno). ``ValueError`` si un tipo
+    no es de la 006 o se repite en ``op_types``, si falta la función de uno que se repite solo,
+    o si ``recompute`` trae una para un tipo que no se construye o que no se repite, o
+    ``settings`` unos ajustes de un tipo que no se construye."""
     chosen = OPERATION_TYPES if op_types is None else tuple(_operation_type(name)
                                                             for name in op_types)
     names = [declared.op_type for declared in chosen]
@@ -252,7 +262,13 @@ def operation_defs(
     if extra:
         raise ValueError(f"funciones de recálculo de tipos que no se construyen: "
                          f"{', '.join(map(str, extra))}")
-    return tuple(declared.definition(recompute.get(declared.op_type)) for declared in chosen)
+    shown = {} if settings is None else dict(settings)
+    extra = sorted(set(shown) - set(names))
+    if extra:
+        raise ValueError(f"ajustes de tipos que no se construyen: {', '.join(map(str, extra))}")
+    return tuple(declared.definition(recompute.get(declared.op_type),
+                                     shown.get(declared.op_type, ()))
+                 for declared in chosen)
 
 
 def importer_def(reader_id: str, reimport: ReimportFunction) -> ImporterDef:

@@ -208,6 +208,27 @@ class OperationTypesTest(_RegistryCase):
                                     if name.startswith("gis.")),
                              ["gis.import_dtm", "gis.resample"])
 
+    def test_settings_shown_in_the_provenance(self) -> None:
+        """RF-008-29 (T58): ``bl`` da a cada tipo los ajustes de su orden que enseña su
+        procedencia (``settings``, por tipo) y ``operation_def(s)`` se los pone, a los demás
+        ninguno; unos de un tipo que no se construye o que no es de la 006 son un error del
+        programa."""
+        shown = (contract.SettingDef("interval_m", "Interval", unit="m"),
+                 contract.SettingDef("base_m", "Base elevation", unit="m"))
+        definitions = provenance.operation_defs(_recompute_all(),
+                                                settings={"gis.contours": shown})
+        self.assertEqual({d.op_type: d.settings for d in definitions if d.settings},
+                         {"gis.contours": shown})
+        alone = provenance.operation_def("gis.contours", _function("gis.contours"),
+                                         settings=shown)
+        self.assertEqual(alone.settings, shown)
+        self.assertEqual(provenance.operation_def("gis.import_dtm").settings, ())
+        for op_type in ("gis.contours", "gis.unknown"):
+            with self.subTest(op_type=op_type):
+                with self.assertRaisesRegex(ValueError, op_type):
+                    provenance.operation_defs({}, op_types=("gis.import_dtm",),
+                                              settings={op_type: shown})
+
     def test_function_where_it_belongs(self) -> None:
         """RF-008-26, RF-008-27: una repetible sin su función, una importación o una
         exportación con función, un tipo que no es de la 006 o una función para un tipo que no

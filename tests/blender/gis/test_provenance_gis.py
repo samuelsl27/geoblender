@@ -20,7 +20,8 @@ Con el proyecto, las fuentes y las órdenes de ``test_ops_dtm`` y ``test_ops_tin
   el recálculo que da el mismo hash no rehace las curvas. Una cota cambiada en el CSV bloquea
   crear el TIN hasta decidir, y «Actualizar» lo reimporta con sus ajustes y deja el TIN
   obsoleto. Los parámetros de control no dejan nada obsoleto; el valor tecleado en las curvas
-  es un ajuste; la procedencia de las curvas llega al CSV y al MDT con sus parámetros.
+  es un ajuste; la procedencia de las curvas llega al CSV y al MDT con sus parámetros, y su
+  panel enseña los ajustes de cada eslabón con su unidad o su elección (T58).
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -28,18 +29,24 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 import dataclasses
 import json
 import os
+import re
 import time
 import unittest
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import bpy
 import numpy as np
 
 from tests.blender.gis.test_ops_dtm import FRACTION, RESAMPLE, WINDOW, _module
 from tests.blender.gis.test_ops_tin import TIN_POINTS, TinOperatorsCase
+from tests.support.fake_layout import FakeLayout
 
 CONTOURS = "geoblender.gis_create_contours"
+LINEAGE_PANEL = "GEOBLENDER_PT_core_lineage"
+OP_TYPE = re.compile(r"\b(gis\.[a-z_]+) \d+\.\d+\b")  # «gis.contours 1.0» en un eslabón
 RESOLVE_INPUT = "geoblender.core_resolve_input"
 INTERVAL = "gis.contours.interval_m"
 MAX_CELLS = "gis.import.max_cells"
@@ -207,6 +214,43 @@ class GisProvenanceTest(TinOperatorsCase):
                            "WHERE name = ? AND status = ?", name, status)
         return row
 
+    def show_lineage(self, name: str) -> Any:
+        """Proyecto ▸ Control ▸ Procedencia y registro ▸ Grafo de operaciones y procedencia
+        con la procedencia del dato ``name`` (``wm.call_panel`` sustituido): la vista de
+        ``WindowManager`` con sus filas."""
+        window = bpy.context.window_manager.windows[0]
+        with mock.patch.object(self.session, "_call_panel", return_value={"FINISHED"}) as call:
+            with bpy.context.temp_override(window=window):
+                self.assertEqual(bpy.ops.geoblender.core_show_lineage(item_uid=name),
+                                 {"FINISHED"})
+        call.assert_called_once_with(LINEAGE_PANEL)
+        return bpy.context.window_manager.geoblender_provenance
+
+    @staticmethod
+    def drawn_rows(view: Any) -> list[tuple[int, str, list[str]]]:
+        """Lo que dibuja la lista del panel: profundidad, clase y textos de cada fila."""
+        found = []
+        for index, row in enumerate(view.lineage):
+            layout = FakeLayout()
+            bpy.types.GEOBLENDER_UL_core_lineage.draw_item(
+                SimpleNamespace(), bpy.context, layout, view, row, 0, view, "lineage_index",
+                index)
+            found.append((row.depth, row.kind, [text for text in layout.texts() if text]))
+        return found
+
+    def drawn_settings(self, name: str) -> list[tuple[str, str]]:
+        """Las filas de ajustes del panel con la procedencia de ``name``: el tipo del eslabón
+        de encima (una fila menos sangrada) y el texto de la fila."""
+        rows = self.drawn_rows(self.show_lineage(name))
+        found = []
+        for index, (depth, kind, texts) in enumerate(rows):
+            if kind != "settings":
+                continue
+            above_depth, above_kind, above = rows[index - 1]
+            self.assertEqual((above_depth, above_kind), (depth - 1, "operation"), texts)
+            found.append((OP_TYPE.search(above[0]).group(1), " ".join(texts)))
+        return found
+
     # --- Pruebas ------------------------------------------------------------------------------
 
     def test_register_and_unregister_leave_core_as_it_was(self) -> None:
@@ -252,7 +296,9 @@ class GisProvenanceTest(TinOperatorsCase):
         ``gis``, con ámbito proyecto y sin grupo; cada orden que los lanza está en el catálogo
         de comandos y es el operador real de la procedencia (disponible); los repetibles
         (remuestreo, TIN, conversiones y curvas) llevan su recálculo y los demás no; cada
-        lector de importación tiene su reimportación."""
+        lector de importación tiene su reimportación. RF-008-29 (T58): cada tipo salvo las
+        conversiones y las exportaciones declara los ajustes que enseña su procedencia, con
+        su español."""
         commands = _module("bl.ui.commands")
         cat = commands.catalog()
         aware = self.session.ProvenanceAwareOperator
@@ -292,6 +338,16 @@ class GisProvenanceTest(TinOperatorsCase):
         for importer in self.gis_ops.IMPORTER_DEFS:
             self.assertIs(self.contract.IMPORTERS[importer.reader_id], importer)
             self.assertIs(importer.reimport, self.gis_ops.REIMPORT[importer.reader_id])
+        # RF-008-29 (T58): los ajustes que enseña la procedencia de cada tipo (ninguno en las
+        # conversiones y las exportaciones), con su español en el catálogo.
+        self.assertEqual({op_type: defn.settings for op_type, defn in found.items()
+                          if defn.settings}, dict(self.gis_ops.SETTING_DEFS))
+        self.assertEqual(sorted(self.gis_ops.SETTING_DEFS), sorted(
+            set(found) - {"gis.grid_to_tin", "gis.tin_to_grid", "gis.export_raster",
+                          "gis.export_gpkg"}))
+        msgids = {msgid for shown in self.gis_ops.SETTING_DEFS.values() for setting in shown
+                  for msgid in (setting.label_msgid, *(name for _v, name in setting.choices))}
+        self.assertEqual(_module("core.i18n").untranslated(msgids), [])
 
     def test_dtm_grid_contours_and_csv_tin_end_to_end(self) -> None:
         """RF-006-26, RF-008-05, RF-008-10, RF-008-11, RF-008-24, RF-008-26, RF-008-29, D17,
@@ -299,7 +355,10 @@ class GisProvenanceTest(TinOperatorsCase):
         proyecto, 1, consumida) → curvas con la equidistancia 2 m tecleada (un ajuste: no se
         consume ni cambia el parámetro, 1 m), y CSV de los taludes → TIN → curvas. La
         procedencia de las curvas llega a la entrada del MDT y a la del CSV con los parámetros
-        de cada operación. Subir el límite de celdas y el umbral de la CDT de Blender (de
+        de cada operación; el panel «Grafo de operaciones y procedencia» (RF-006-18, T58)
+        enseña debajo de cada eslabón los ajustes de su orden con su unidad o su elección
+        («Equidistancia = 2 m»), sin los internos ni rutas, y se pliegan con él. Subir el
+        límite de celdas y el umbral de la CDT de Blender (de
         control) no deja nada obsoleto. Con la fracción a 0,5, la rejilla y sus curvas quedan
         obsoletas por ese cambio y el TIN no; recalcular lo obsoleto (el plan: remuestreo y
         curvas) las rehace con los mismos ajustes y nada queda obsoleto. Con la fracción a 0,7
@@ -354,6 +413,34 @@ class GisProvenanceTest(TinOperatorsCase):
                        for found in link.params if found.key == FRACTION]
         self.assertEqual((fraction.value, fraction.unit, fraction.unconfirmed),
                          (1.0, "-", True))
+
+        # RF-008-29, RF-006-18 (T58, M7): el panel de la procedencia enseña, debajo de cada
+        # eslabón, los ajustes de su orden con su unidad o su elección (la equidistancia
+        # tecleada, 2 m), y no los internos (nombre, fuente, fichero) ni ninguna ruta.
+        settings = {name: self.drawn_settings(name)
+                    for name in ("gis_cnt_vuelo", "gis_cnt_taludes")}
+        self.assertEqual(settings["gis_cnt_vuelo"], [
+            ("gis.contours", "Ajustes: Equidistancia = 2 m · Cota base = 0 m"),
+            ("gis.resample", "Ajustes: Método = Automático"),
+        ])
+        self.assertEqual(settings["gis_cnt_taludes"], [
+            ("gis.contours", "Ajustes: Cota base = 0 m"),
+            ("gis.tin_from_points", "Ajustes: Puntos que coinciden = Preguntar"),
+            ("gis.import_points", "Ajustes: Codificación = UTF-8 · Separador = Punto y coma · "
+                                  "Separador decimal = Coma · Líneas antes de la cabecera = 0 · "
+                                  "Líneas de rotura = Duras"),
+        ])
+        for name, found in settings.items():
+            for op_type, text in found:
+                for internal in ("Vuelo", "Taludes", "vuelo", "taludes", "gis_", "{",
+                                 str(project.root), os.sep):
+                    self.assertNotIn(internal, text, (name, op_type))
+        view = self.show_lineage("gis_cnt_vuelo")
+        contours_row = [row.kind for row in view.lineage].index("operation")
+        self.assertEqual(view.lineage[contours_row + 1].kind, "settings")
+        view.lineage[contours_row].expanded = False  # plegar el eslabón de las curvas
+        shown = _module("bl.ui.provenance").lineage_visible(view.lineage)
+        self.assertEqual(shown[:contours_row + 2], [True] * (contours_row + 1) + [False])
 
         # D17: los parámetros de control no dejan nada obsoleto.
         self.assertEqual(self.stale(), {})
