@@ -398,6 +398,49 @@ class ImportJobsTest(_JobCase):
                                  sorted(f"{gis_jobs.path_name('main')}{path.suffix}"
                                         for path in files.values()))
 
+    def test_read_raster_notes_name_the_user_files(self) -> None:
+        """RF-006-04, RF-006-08, RF-004-12 (T52; constitución, principio 10):
+        ``gis_read_raster`` lee copias (``in/source_main…``), pero sus notas y sus fallos
+        nombran los ficheros del usuario. Sin ``prj_crs`` (la orden no reconoció el
+        ``.prj``), la nota del ``.prj`` con «mdt05.prj» y «mdt05.asc»; con él (lo que la
+        orden reconoció con el servicio de CRS), ninguna nota. La de PixelIsPoint de un
+        GeoTIFF, con «vuelo.tif»; el fallo de un XYZ que no es una malla, con «malla.xyz»."""
+        delivered = self.root / "entregas"
+        delivered.mkdir()
+        for name, relative in (("mdt05.asc", "asc/corner.asc"), ("mdt05.prj", "asc/corner.prj"),
+                               ("vuelo.tif", "geotiff/f32_pixelispoint.tif"),
+                               ("malla.xyz", "xyz/irregular.xyz")):
+            shutil.copyfile(DATA / relative, delivered / name)
+        main, prj = gis_jobs.path_name("main"), gis_jobs.path_name("prj")
+        asc_params = {"reader": gis_content.ASC.id, "name": "MDT05", "settings": {},
+                      "crs": CRS_JSON, "vertical": VERTICAL_JSON}
+        asc_paths = {main: delivered / "mdt05.asc", prj: delivered / "mdt05.prj"}
+        unrecognised = gis.messages.render("gis.prj_unidentified", file="mdt05.asc",
+                                           prj="mdt05.prj")
+        for label, extra, notes in (("sin reconocer", {}, [unrecognised]),
+                                    ("reconocido", {"prj_crs": CRS_JSON}, [])):
+            with self.subTest(prj=label):
+                summary, _ctx, _folder = self.run_job(gis_jobs.READ_RASTER,
+                                                      {**asc_params, **extra}, paths=asc_paths)
+                self.assertEqual(summary["notes"], notes)
+                self.assertEqual(summary["crs"], CRS_JSON)
+        tif_params = {"reader": gis_content.GEOTIFF.id, "name": "Vuelo", "settings": {},
+                      "crs": None, "vertical": VERTICAL_JSON}
+        summary, _ctx, _folder = self.run_job(gis_jobs.READ_RASTER, tif_params,
+                                              paths={main: delivered / "vuelo.tif"})
+        self.assertIn(gis.messages.render("gis.pixel_is_point", file="vuelo.tif"),
+                      summary["notes"])
+        self.assertFalse([note for note in summary["notes"] if "source_main" in note])
+        xyz_params = {"reader": gis_content.XYZ_GRID.id, "name": "Malla",
+                      "settings": {"decimal": "."}, "crs": CRS_JSON, "vertical": VERTICAL_JSON}
+        folder = self.prepare(gis_jobs.READ_RASTER, xyz_params)
+        ctx = self.context(folder, paths={main: delivered / "malla.xyz"})
+        with self.assertRaises(worker_api.JobFailed) as caught:
+            import_geoblender("workers.gis_read_raster").main(ctx)
+        self.assertEqual(caught.exception.code, "gis.xyz_not_grid")
+        self.assertIn("«malla.xyz»", caught.exception.text)
+        self.assertNotIn("source_main", caught.exception.text)
+
     def test_import_points_gives_points_and_breaklines(self) -> None:
         """RF-006-28, RF-006-12, RF-006-26, RF-008-09 (plan §5.3.4): ``gis_import_points``
         lee la copia del texto con la correspondencia de columnas y deja ``points.npz``,

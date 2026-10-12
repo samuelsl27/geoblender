@@ -178,19 +178,22 @@ def read_xyz_grid(
     *,
     separator: str | None = None,
     decimal: str = ".",
+    name: str | None = None,
     max_cells: int | None = None,
     progress: Progress | None = None,
     cancelled: Cancelled | None = None,
 ) -> RasterSource:
     """El MDT del XYZ en malla ``path`` en su rejilla de origen (RF-006-08).
     ``separator``: uno de :data:`SEPARATORS` o ``None`` (se detecta); ``decimal``: uno de
-    :data:`DECIMALS`; ``max_cells``: el límite de celdas (por defecto,
-    ``gis.import.max_cells`` de ``gis.params``). ``ValueError`` si las opciones no son
-    válidas (también coma como separador y como decimal); ``GisError`` si el fichero no se
-    admite (RF-006-09); ``JobCancelled`` si ``cancelled()`` pide parar."""
+    :data:`DECIMALS`; ``name``: el fichero que nombran los errores (por defecto, el de
+    ``path``; el trabajo de la importación lee una copia y nombra el fichero del usuario,
+    T52); ``max_cells``: el límite de celdas (por defecto, ``gis.import.max_cells`` de
+    ``gis.params``). ``ValueError`` si las opciones no son válidas (también coma como
+    separador y como decimal); ``GisError`` si el fichero no se admite (RF-006-09);
+    ``JobCancelled`` si ``cancelled()`` pide parar."""
     check_options(separator, decimal)
     path = Path(path)
-    name = path.name
+    name = name or path.name
     limit = int(params.default(MAX_CELLS_KEY)) if max_cells is None else int(max_cells)
     with path.open("rb") as stream:
         size = os.fstat(stream.fileno()).st_size

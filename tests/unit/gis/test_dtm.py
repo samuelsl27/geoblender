@@ -9,7 +9,9 @@
 - RF-006-04: el CRS horizontal y el datum vertical son los tecleados o, si no, los que declara
   el fichero (las claves de un GeoTIFF; el ``.prj`` de un ASC, si el servicio de CRS lo
   reconoce); sin uno de los dos, ``gis.crs_undeclared`` o ``gis.vertical_undeclared``, nunca
-  los del proyecto. Un CRS tecleado que no es del catálogo es ``gis.crs_text_invalid``.
+  los del proyecto. Un CRS tecleado que no es del catálogo es ``gis.crs_text_invalid``. Lo que
+  el servicio reconoció en el ``.prj`` (también con el CRS tecleado) va al trabajo en
+  ``prj_crs``, que no tiene el servicio (T52).
 - RF-006-08: los ajustes de lectura (el sin dato forzado, con coma o punto decimal; el
   separador y el decimal de un XYZ) son los de su lector, y el trabajo de la importación los
   recibe sin ninguna ruta: la fuente va aparte, por papel (``source_main``, ``source_prj``).
@@ -155,6 +157,39 @@ class PlanTest(unittest.TestCase):
                 dtm.plan_import(asc, name="MDT05", vertical=V5782, identify=found)
             self.assertEqual(caught.exception.code, "gis.crs_undeclared")
 
+    def test_prj_recognised_by_the_order_goes_to_the_job(self) -> None:
+        """RF-006-04 (T52): el ``.prj`` de un ASC se identifica también con el CRS tecleado
+        (que manda), y el trabajo recibe en ``prj_crs`` lo que reconoció el servicio de CRS
+        de la orden (el trabajo no tiene pyproj), para que su informe no diga que no se
+        reconoció; sin reconocerlo, sin servicio o sin ``.prj``, no lo recibe. Un GeoTIFF
+        declara su CRS con sus claves: tampoco."""
+        asc = self.copy("asc/corner.asc")
+        prj = self.copy("asc/corner.prj")
+        identify = _Identify(H25830)
+        typed = dtm.plan_import(asc, name="MDT05", crs=H23030, vertical=V5782,
+                                identify=identify)
+        self.assertEqual((typed.crs, typed.prj_crs), (H23030, H25830))
+        self.assertEqual(identify.seen, [prj.read_text("utf-8").strip()])
+        self.assertEqual(dtm.job_params(typed, max_cells=10)["prj_crs"], {"epsg": 25830})
+        self.assertEqual(dtm.identify_prj(asc, identify), H25830)
+        for found in (None, _Identify(None)):
+            with self.subTest(servicio=found):
+                source = dtm.plan_import(asc, name="MDT05", crs=H25830, vertical=V5782,
+                                         identify=found)
+                self.assertIsNone(source.prj_crs)
+                self.assertNotIn("prj_crs", dtm.job_params(source, max_cells=10))
+        prj.unlink()
+        identify = _Identify(H25830)
+        bare = dtm.plan_import(asc, name="MDT05", crs=H25830, vertical=V5782, identify=identify)
+        self.assertIsNone(bare.prj_crs)
+        self.assertIsNone(dtm.identify_prj(asc, identify))
+        self.assertEqual(identify.seen, [])
+        tif = dtm.plan_import(self.copy("geotiff/f64_strip.tif"), name="MDT dron",
+                              vertical=V5782, identify=identify)
+        self.assertIsNone(tif.prj_crs)
+        self.assertNotIn("prj_crs", dtm.job_params(tif, max_cells=10))
+        self.assertEqual(identify.seen, [])
+
     def test_nodata_override_text(self) -> None:
         """RF-006-08: el sin dato forzado se teclea con coma o punto decimal; vacío, ninguno;
         lo que no es un número se rechaza con el campo."""
@@ -177,6 +212,7 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(params, {"reader": "gis.asc@1", "name": "MDT05",
                                   "settings": {"nodata_override": -1.0},
                                   "crs": {"epsg": 25830}, "vertical": {"epsg": 5782},
+                                  "prj_crs": {"epsg": 25830},
                                   "max_cells": 1000, "size": asc.stat().st_size})
         self.assertNotIn(str(self.tmp), json.dumps(params))
         self.assertEqual(dtm.job_paths(source), {"source_main": asc, "source_prj": prj})

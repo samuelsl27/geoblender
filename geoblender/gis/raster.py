@@ -8,6 +8,10 @@
 - :class:`RasterSource`: un MDT leído de un fichero (GeoTIFF, ASC o XYZ en malla) en su
   rejilla de origen, con lo que declara la fuente: tipo de dato, sin dato, *PixelIsPoint*,
   CRS y referencia vertical (``None`` si no los declara: se piden, RF-006-04).
+- :func:`sample`: la cota de una superficie en puntos sueltos (el contrato para la 005,
+  DH-W05: la cota de boca de un sondeo frente al MDT), con la bilineal de
+  ``gis.resample`` (la misma función que la rejilla del proyecto, RF-006-11) o con la celda
+  que contiene el punto.
 
 Las coordenadas de la rejilla son **absolutas** (CRS del proyecto, m, float64).
 """
@@ -21,7 +25,10 @@ import numpy as np
 from ..core.georef import CrsRef, VerticalRef
 from .grid import Grid
 
-__all__ = ["Raster", "RasterSource"]
+__all__ = ["SAMPLE_METHODS", "Raster", "RasterSource", "sample"]
+
+SAMPLE_METHODS = ("bilinear", "nearest")
+"""Los métodos de :func:`sample`: la bilineal y la celda que contiene el punto."""
 
 
 def _check_surface(owner: str, grid: object, values: object) -> None:
@@ -118,3 +125,55 @@ class RasterSource:
             isinstance(note, str) for note in self.notes
         ):
             raise TypeError("RasterSource.notes debe ser una tupla de textos")
+
+
+def sample(raster: Raster, xy: np.ndarray, *, method: str = "bilinear") -> np.ndarray:
+    """Las cotas de ``raster`` en los puntos ``xy`` (X e Y ABSOLUTAS del CRS de ``raster``,
+    en la última dimensión: forma ``(n, 2)``, o ``(2,)`` para uno solo), en float64 y con la
+    forma de ``xy`` sin su última dimensión (plan 006 §5.3.2; para la 005, DH-W05).
+
+    - ``"bilinear"`` (por defecto): la interpolación entre los cuatro centros vecinos, con la
+      regla de RF-006-11 y la misma función que ``resample_to_grid`` (``gis.resample``): un
+      punto en un centro toma su cota bit a bit; es NaN si le falta un vecino de peso no nulo
+      (fuera de los centros de la rejilla, sin dato, ±∞) o si una coordenada no es finita.
+    - ``"nearest"``: la cota de la celda que contiene el punto (en un borde entre dos celdas,
+      la del este o la del sur; los bordes exteriores son de la rejilla); NaN fuera de la
+      rejilla, en una celda sin dato o con una coordenada que no es finita.
+
+    Las entradas no se modifican. Un método que no es de :data:`SAMPLE_METHODS`, unas
+    coordenadas sin X e Y en su última dimensión (``ValueError``) o una superficie que no es
+    un :class:`Raster` (``TypeError``) son errores del programa."""
+    if not isinstance(raster, Raster):
+        raise TypeError(f"sample: se esperaba un Raster, no {type(raster).__name__}")
+    if not isinstance(method, str) or method not in SAMPLE_METHODS:
+        raise ValueError(f"método de muestreo {method!r}: debe ser «bilinear» o «nearest»")
+    points = np.asarray(xy, dtype=np.float64)
+    if points.ndim == 0 or points.shape[-1] != 2:
+        raise ValueError(
+            "sample: xy lleva X e Y en su última dimensión (forma (n, 2)), no la forma "
+            f"{points.shape}"
+        )
+    x, y = points[..., 0].ravel(), points[..., 1].ravel()
+    if method == "bilinear":
+        from .resample import _sample  # aquí: gis.resample importa Raster de este módulo
+
+        found = _sample(raster, x, y)
+    else:
+        found = _nearest(raster, x, y)
+    return found.reshape(points.shape[:-1])
+
+
+def _nearest(raster: Raster, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """La cota de la celda de ``raster`` que contiene cada punto (``x``, ``y``) ABSOLUTO;
+    NaN fuera, sin dato o con una coordenada que no es finita (NaN no pasa las
+    comparaciones)."""
+    grid = raster.grid
+    with np.errstate(invalid="ignore", over="ignore"):
+        fx = (x - grid.west) / grid.dx
+        fy = (grid.north - y) / grid.dy
+        inside = (fx >= 0.0) & (fx <= grid.ncols) & (fy >= 0.0) & (fy <= grid.nrows)
+    column = np.clip(np.floor(np.where(inside, fx, 0.0)), 0, grid.ncols - 1).astype(np.int64)
+    row = np.clip(np.floor(np.where(inside, fy, 0.0)), 0, grid.nrows - 1).astype(np.int64)
+    found = raster.values[row, column]  # indexado por arrays: una copia
+    found[~(inside & np.isfinite(found))] = np.nan
+    return found

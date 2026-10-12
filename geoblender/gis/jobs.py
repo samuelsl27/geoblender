@@ -37,7 +37,10 @@ resultados en ``out/``:
 
 - ``gis_read_raster``: ``reader`` (``gis.geotiff@1``, ``gis.asc@1`` o ``gis.xyz_grid@1``),
   ``name``, ``settings`` (de lectura), ``crs`` y ``vertical`` (declarados; ``None``: los del
-  fichero), ``max_cells`` y ``size``; ``source_main`` [y ``source_prj``] → ``source.tif``.
+  fichero), ``prj_crs`` (el CRS que la orden reconoció en el ``.prj`` de un ASC con el
+  servicio de CRS; sin él, la nota de que no se reconoció), ``max_cells`` y ``size``;
+  ``source_main`` [y ``source_prj``] → ``source.tif``. Sus notas y sus fallos nombran el
+  fichero del usuario, no su copia en ``in/`` (T52).
 - ``gis_resample``: ``name``, ``source_crs``, ``source_vertical``, ``target_crs``,
   ``target_vertical``, ``target`` (la rejilla), ``method`` (``auto``, ``area_mean``,
   ``bilinear`` o ``mode``), ``min_valid_fraction``, ``supersample`` y ``size``; ``source``
@@ -1345,23 +1348,28 @@ def run_read_raster(ctx: _Context) -> dict[str, Any]:
                                  or not isinstance(override, numbers.Real)
                                  or not math.isfinite(override)):
         raise request.invalid(f"el sin dato forzado es un número finito o nada, no {override!r}")
+    prj_crs = request.crs("prj_crs", required=False)
     ctx.progress(0.0, COPYING_TEXT)
     roles = (MAIN_ROLE, PRJ_ROLE) if reader is gis_content.ASC else (MAIN_ROLE,)
     files, prints = _copy_sources(ctx, request, roles, low=0.0, high=0.1)
     main = files[MAIN_ROLE]
+    # Se lee la copia de in/, pero las notas y los fallos nombran el fichero del usuario (T52).
+    shown = Path(ctx.paths[path_name(MAIN_ROLE)]).name
     progress, cancelled = _span(ctx, 0.1, 0.4), _cancelled(ctx)
     if reader is gis_content.GEOTIFF:
-        source = read_geotiff(main, max_cells=max_cells, progress=progress, cancelled=cancelled)
+        source = read_geotiff(main, name=shown, max_cells=max_cells, progress=progress,
+                              cancelled=cancelled)
     elif reader is gis_content.ASC:
-        source = read_asc(main, max_cells=max_cells, progress=progress, cancelled=cancelled)
+        source = read_asc(main, name=shown, max_cells=max_cells, prj_crs=prj_crs,
+                          progress=progress, cancelled=cancelled)
     else:
         try:
             source = read_xyz_grid(main, separator=settings.get("separator"),
-                                   decimal=settings.get("decimal", "."), max_cells=max_cells,
-                                   progress=progress, cancelled=cancelled)
+                                   decimal=settings.get("decimal", "."), name=shown,
+                                   max_cells=max_cells, progress=progress, cancelled=cancelled)
         except ValueError as error:
             raise request.invalid(str(error)) from None
-    crs, vertical = Declaration(name or main.name,
+    crs, vertical = Declaration(name or shown,
                                 declared_crs or source.declared_crs,
                                 declared_vertical or source.declared_vertical).require()
     values = source.values

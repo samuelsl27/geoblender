@@ -168,6 +168,7 @@ from ...gis.dtm import (
     DtmSource,
     control_values,
     dtm_reader,
+    identify_prj,
     job_params,
     job_paths,
     parse_crs,
@@ -933,8 +934,10 @@ def reimport_dtm(request: ReimportRequest) -> OperationHandle:
     if unknown:
         raise ValueError(f"ajustes que no son de lectura de «{reader.id}»: {unknown}")
     settings.update(given)
+    # El .prj de un ASC, reconocido otra vez: el informe no dice que no se reconoció (T52).
+    prj_crs = identify_prj(files[MAIN_ROLE], _identify) if reader is content.ASC else None
     source = DtmSource(record.name, reader, files, jobs.crs_of(dict(record.crs_h)),
-                       jobs.vertical_of(dict(record.crs_v)), settings)
+                       jobs.vertical_of(dict(record.crs_v)), settings, prj_crs=prj_crs)
     transform = _transform(project, source)
     control = control_values(project, CONTROL_KEYS)
     handle = begin_operation(project, provenance.IMPORT_DTM,

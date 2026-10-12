@@ -31,6 +31,9 @@ del IGN, 0,2 m; altura elipsoidal → Alicante con el geoide, 0,05 m). :class:`D
   que la persona lo confirma (la mediana, en el aviso); declarado como altura elipsoidal, se
   transforma y no avisa. Con los mismos datos y otro datum, la importación es una sustitución
   que pide el motivo (RF-008-54, RF-008-11).
+- RF-006-04 (T52): el ``.prj`` de un ASC que reconoce el servicio de CRS de la orden no deja en
+  el informe la nota de que no se reconoció (tampoco al reimportarlo), y la de uno que no
+  reconoce nombra los ficheros del usuario, no sus copias en la carpeta del trabajo.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -104,9 +107,12 @@ class _FakeCrs:
         self.geoid = ports.TransformInfo("ETRS89 to Alicante height (egm08-rednap)", 0.05,
                                          ("es_ign_egm08-rednap.tif",))
         self.asked: list[tuple[Any, ...]] = []
+        self.recognised: Any = None  # el CRS que reconoce en el WKT de un .prj
+        self.wkts: list[str] = []
 
-    def identify_wkt(self, wkt: str) -> None:
-        return None
+    def identify_wkt(self, wkt: str) -> Any:
+        self.wkts.append(wkt)
+        return self.recognised
 
     def transformer(self, src: Any, src_v: Any, dst: Any, dst_v: Any) -> _Shift:
         self.asked.append((src.epsg, src_v.kind, dst.epsg, dst_v.epsg))
@@ -421,6 +427,44 @@ class DtmImportTest(DtmOperatorsCase):
         self.assertIn("es_ign_SPED2ETV2.tif", message)
         (crs_h,) = self.rows("SELECT crs_h FROM gb_input WHERE name = 'Plano antiguo'")[0]
         self.assertEqual(crs_h, '{"epsg":23030}')
+
+    def test_asc_prj_note_names_the_user_files(self) -> None:
+        """RF-006-04, RF-006-08, RF-008-11 (T52; constitución, principio 10): un ASC cuyo
+        ``.prj`` reconoce el servicio de CRS de la orden se importa con ese CRS y su informe no
+        dice que no se reconoció, tampoco al reimportarlo; con un ``.prj`` que no reconoce (el
+        CRS, tecleado), la nota nombra los ficheros del usuario («dxdy.prj», «dxdy.asc»),
+        nunca sus copias en la carpeta del trabajo («source_main…»)."""
+        self.open()
+        path = self.source("asc/corner.asc", "mdt/mdt05.asc")
+        self.source("asc/corner.prj", "mdt/mdt05.prj")
+        self.fake.recognised = self.crs
+        op_uid = self.import_dtm(path, "MDT05")
+        _type, status, _reason, message, *_ = self.operation(op_uid)
+        self.assertEqual(status, "done")
+        self.assertEqual(len(self.fake.wkts), 1)
+        self.assertIn("MDT ráster «MDT05» importado", message)
+        self.assertNotIn("no se ha reconocido", message)
+        self.assertNotIn("source_main", message)
+        (input_uid, crs_h), = self.rows("SELECT uid, crs_h FROM gb_input WHERE name = 'MDT05'")
+        self.assertEqual(crs_h, '{"epsg":25830}')
+        contract = _module("core.provenance.contract")
+        handle = self.gis_ops.reimport_dtm(contract.ReimportRequest(
+            self.project, input_uid, "Nueva entrega", settings={"nodata_override": 788.589}))
+        self.finish()
+        _type, status, _reason, message, *_ = self.operation(handle.uid)
+        self.assertEqual(status, "done")
+        self.assertNotIn("no se ha reconocido", message)
+        self.assertNotIn("source_main", message)
+
+        self.fake.recognised = None
+        other = self.source("asc/dxdy.asc", "malla/dxdy.asc")
+        self.source("asc/corner.prj", "malla/dxdy.prj")
+        op_uid = self.import_dtm(other, "Malla", crs="EPSG:25830")
+        _type, status, _reason, message, *_ = self.operation(op_uid)
+        self.assertEqual(status, "done")
+        self.assertIn("El CRS que declara «dxdy.prj» no se ha reconocido en el catálogo de "
+                      "Geoblender: declare el CRS de «dxdy.asc» al importarlo.", message)
+        self.assertNotIn("source_main", message)
 
     def test_ellipsoidal_heights_ask_before_finishing(self) -> None:
         """RF-006-06, RF-008-54, RF-008-11: con un MDT del proyecto, un MDT con las cotas unos

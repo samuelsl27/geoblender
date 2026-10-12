@@ -202,17 +202,20 @@ def read_bands(
 def read_geotiff(
     path: Path | str,
     *,
+    name: str | None = None,
     max_cells: int | None = None,
     catalog: CrsCatalog | None = None,
     progress: Progress | None = None,
     cancelled: Cancelled | None = None,
 ) -> RasterSource:
-    """El MDT del GeoTIFF ``path`` en su rejilla de origen (RF-006-08). ``max_cells``: el
+    """El MDT del GeoTIFF ``path`` en su rejilla de origen (RF-006-08). ``name``: el fichero
+    que nombran las notas y los errores (por defecto, el de ``path``; el trabajo de la
+    importación lee una copia y nombra el fichero del usuario, T52); ``max_cells``: el
     límite de celdas (por defecto, ``gis.import.max_cells`` de ``gis.params``); ``catalog``:
     el catálogo de CRS (por defecto, el de la extensión). ``GisError`` si el fichero no se
     admite (RF-006-09); ``JobCancelled`` si ``cancelled()`` pide parar."""
     path = Path(path)
-    name = path.name
+    name = name or path.name
     with path.open("rb") as stream:
         size = os.fstat(stream.fileno()).st_size
         header = read_header(stream, size, name, catalog=catalog)

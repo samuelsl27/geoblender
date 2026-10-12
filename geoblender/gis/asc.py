@@ -17,10 +17,14 @@ array float64. Devuelve un :class:`~.raster.RasterSource` con lo que declara la 
   adicional), por filas de norte a sur, sin que importe cómo se reparten en líneas; las
   iguales al ``NODATA_value`` (comparado en float64) y los ``nan``, NaN.
 - **CRS** (RF-006-04): el WKT del ``.prj`` del mismo nombre se identifica con el puerto
-  :class:`~.ports.CrsService` (``identify_wkt``, pyproj; T11) si se pasa; sin ``.prj``,
-  ``declared_crs = None``; con ``.prj`` pero sin servicio o sin identificar, ``None`` y
-  una nota (``gis.prj_unidentified``): lo declara el usuario, nunca se supone. Un ASC no
-  declara la referencia vertical (``None``).
+  :class:`~.ports.CrsService` (``identify_wkt``, pyproj; T11) si se pasa, o es el CRS que ya
+  se reconoció en él (``prj_crs``: el trabajo de la importación no tiene el servicio y recibe
+  lo que reconoció la orden, T52); sin ``.prj``, ``declared_crs = None``; con ``.prj`` pero
+  sin servicio o sin identificar, ``None`` y una nota (``gis.prj_unidentified``): lo declara
+  el usuario, nunca se supone. Un ASC no declara la referencia vertical (``None``).
+- **Nombres** (constitución, principio 10): las notas y los rechazos nombran el fichero
+  ``name`` (por defecto, el de ``path``) y su ``.prj`` con ese nombre: el trabajo de la
+  importación lee una copia (``in/source_main.asc``) y nombra el fichero del usuario (T52).
 - **Rechazos** (RF-006-09), con el fichero, la característica (la clave), el valor
   encontrado y qué hacer: cabecera incompleta o incoherente (``gis.asc_header_invalid``),
   un valor que no es un número, con su fila y su columna (``gis.asc_value_invalid``),
@@ -47,6 +51,7 @@ from typing import BinaryIO, NoReturn
 
 import numpy as np
 
+from ..core.georef import CrsRef
 from ..jobs.worker_api import JobCancelled
 from . import params
 from .grid import Grid
@@ -99,18 +104,22 @@ class AscHeader:
 def read_asc(
     path: Path | str,
     *,
+    name: str | None = None,
     max_cells: int | None = None,
     crs_service: CrsService | None = None,
+    prj_crs: CrsRef | None = None,
     progress: Progress | None = None,
     cancelled: Cancelled | None = None,
 ) -> RasterSource:
     """El MDT del ESRI ASCII Grid ``path`` en su rejilla de origen (RF-006-08).
+    ``name``: el fichero que nombran las notas y los errores (por defecto, el de ``path``);
     ``max_cells``: el límite de celdas (por defecto, ``gis.import.max_cells`` de
     ``gis.params``); ``crs_service``: el que identifica el WKT del ``.prj`` (sin él, el CRS
-    queda sin declarar). ``GisError`` si el fichero no se admite (RF-006-09);
-    ``JobCancelled`` si ``cancelled()`` pide parar."""
+    queda sin declarar); ``prj_crs``: el CRS que ya se reconoció en el ``.prj`` con el
+    servicio (manda sobre ``crs_service``, que no se usa). ``GisError`` si el fichero no se
+    admite (RF-006-09); ``JobCancelled`` si ``cancelled()`` pide parar."""
     path = Path(path)
-    name = path.name
+    name = name or path.name
     with path.open("rb") as stream:
         size = os.fstat(stream.fileno()).st_size
         header = read_header(stream, name)
@@ -134,11 +143,15 @@ def read_asc(
     crs, notes = None, ()
     prj = _prj_path(path)
     if prj is not None:
-        wkt = read_prj(path)
-        if wkt and crs_service is not None:
-            crs = crs_service.identify_wkt(wkt)
+        if prj_crs is not None:
+            crs = prj_crs
+        else:
+            wkt = read_prj(path)
+            if wkt and crs_service is not None:
+                crs = crs_service.identify_wkt(wkt)
         if crs is None:
-            notes = (render("gis.prj_unidentified", file=name, prj=prj.name),)
+            notes = (render("gis.prj_unidentified", file=name,
+                            prj=Path(name).stem + prj.suffix),)
     return RasterSource(
         grid=grid,
         values=values,

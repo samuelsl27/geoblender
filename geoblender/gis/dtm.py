@@ -15,9 +15,11 @@ resultado. Lo que deciden y se puede probar sin Blender está aquí:
   datum vertical, los tecleados o, si no, los que declara el fichero: las claves de un GeoTIFF,
   leídas de su cabecera (que se comprueba entera **antes de empezar**: un GeoTIFF en JPEG, con
   varias bandas o girado se rechaza sin leer ninguna celda, RF-006-09), o el ``.prj`` de un
-  ASC si el servicio de CRS lo reconoce (``identify``). Sin uno de los dos,
-  ``gis.crs_undeclared`` o ``gis.vertical_undeclared``: nunca se suponen los del proyecto
-  (RF-006-04). Un CRS tecleado se escribe con su código EPSG (:func:`parse_crs`).
+  ASC si el servicio de CRS lo reconoce (``identify``, :func:`identify_prj`; también con el
+  CRS tecleado, que manda: el trabajo recibe lo reconocido, ``DtmSource.prj_crs``, y su
+  informe no dice que no se reconoció, T52). Sin uno de los dos, ``gis.crs_undeclared`` o
+  ``gis.vertical_undeclared``: nunca se suponen los del proyecto (RF-006-04). Un CRS
+  tecleado se escribe con su código EPSG (:func:`parse_crs`).
 - **El trabajo** ``gis_read_raster`` de la importación (:func:`job_params`, sin ninguna
   ruta, ARQ-11; :func:`job_paths`, las rutas de la fuente por papel, que van por la línea de
   órdenes).
@@ -68,6 +70,7 @@ __all__ = [
     "DtmSource",
     "control_values",
     "dtm_reader",
+    "identify_prj",
     "job_params",
     "job_paths",
     "parse_crs",
@@ -110,8 +113,9 @@ class _ParameterProject(Protocol):
 class DtmSource:
     """Lo que se importa de un MDT: el nombre lógico de su entrada (``name``), su lector, sus
     ficheros por papel (``main`` y, en un ASC, ``prj``), su CRS horizontal y su datum vertical
-    declarados y sus ajustes de lectura (los de ``gis.content.READER_SETTINGS`` de su
-    lector)."""
+    declarados, sus ajustes de lectura (los de ``gis.content.READER_SETTINGS`` de su lector)
+    y, en un ASC, el CRS que el servicio de CRS reconoció en su ``.prj`` (``prj_crs``;
+    ``None`` sin ``.prj``, sin servicio o sin reconocerlo)."""
 
     name: str
     reader: ContentReader
@@ -119,6 +123,7 @@ class DtmSource:
     crs: CrsRef
     vertical: VerticalRef
     settings: Mapping[str, Any]
+    prj_crs: CrsRef | None = None
 
     @property
     def main(self) -> Path:
@@ -194,12 +199,23 @@ def _source_files(path: Path, reader: ContentReader) -> dict[str, Path]:
     return files
 
 
-def _declared(path: Path, reader: ContentReader, *, crs: CrsRef | None,
+def identify_prj(path: Path | str,
+                 identify: Callable[[str], CrsRef | None] | None) -> CrsRef | None:
+    """El CRS del catálogo que declara el ``.prj`` del ASC ``path`` si ``identify`` (el
+    ``identify_wkt`` del servicio de CRS) lo reconoce; ``None`` sin ``.prj`` (o vacío), sin
+    ``identify`` o sin reconocerlo (RF-006-04: se pide declararlo)."""
+    if identify is None:
+        return None
+    wkt = read_prj(path)
+    return identify(wkt) if wkt else None
+
+
+def _declared(path: Path, reader: ContentReader, *,
               identify: Callable[[str], CrsRef | None] | None,
               catalog: CrsCatalog | None) -> tuple[CrsRef | None, VerticalRef | None]:
     """Lo que declara el fichero (comprobada su cabecera antes de empezar, RF-006-09): las
-    claves de un GeoTIFF; el ``.prj`` de un ASC, si no se tecleó el CRS y ``identify`` lo
-    reconoce; un XYZ, nada."""
+    claves de un GeoTIFF; el ``.prj`` de un ASC, si ``identify`` lo reconoce (también con el
+    CRS tecleado: el trabajo debe saber si se reconoció); un XYZ, nada."""
     if reader is GEOTIFF:
         with open(path, "rb") as stream:
             header = read_geotiff_header(stream, path.stat().st_size, path.name,
@@ -208,10 +224,7 @@ def _declared(path: Path, reader: ContentReader, *, crs: CrsRef | None,
     if reader is ASC:
         with open(path, "rb") as stream:
             read_asc_header(stream, path.name)
-        if crs is None and identify is not None:
-            wkt = read_prj(path)
-            if wkt:
-                return identify(wkt), None
+        return identify_prj(path, identify), None
     return None, None
 
 
@@ -229,7 +242,7 @@ def plan_import(
     fichero sin extensión): su lector (:func:`dtm_reader`), sus ficheros, sus ajustes de
     lectura ``settings`` (:func:`read_settings`) y su CRS horizontal y su datum vertical, los
     tecleados (``crs``, ``vertical``) o los que declara el fichero; ``identify`` (el
-    ``identify_wkt`` del servicio de CRS) reconoce el ``.prj`` de un ASC.
+    ``identify_wkt`` del servicio de CRS) reconoce el ``.prj`` de un ASC (``prj_crs``).
 
     Sin leer ninguna celda: ``GisError`` de la cabecera de un GeoTIFF o de un ASC que no se
     admite (RF-006-09) y ``gis.crs_undeclared`` o ``gis.vertical_undeclared`` si falta uno de
@@ -242,22 +255,27 @@ def plan_import(
     unknown = sorted(key for key in chosen if key not in READER_SETTINGS[reader.id])
     if unknown:
         raise ValueError(f"ajustes que no son de lectura de «{reader.id}»: {unknown}")
-    declared_crs, declared_vertical = _declared(found, reader, crs=crs, identify=identify,
+    declared_crs, declared_vertical = _declared(found, reader, identify=identify,
                                                 catalog=catalog)
     chosen_crs, chosen_vertical = Declaration(shown, crs or declared_crs,
                                               vertical or declared_vertical).require()
     return DtmSource(shown, reader, MappingProxyType(_source_files(found, reader)), chosen_crs,
-                     chosen_vertical, MappingProxyType(chosen))
+                     chosen_vertical, MappingProxyType(chosen),
+                     prj_crs=declared_crs if reader is ASC else None)
 
 
 def job_params(source: DtmSource, *, max_cells: int) -> dict[str, Any]:
     """Los parámetros del trabajo ``gis_read_raster`` de la importación de ``source``
-    (``gis.jobs``): su lector, su nombre, sus ajustes de lectura, sus CRS declarados, el
-    límite de celdas (``max_cells``, el del proyecto) y el tamaño del fichero principal (su
-    estimación). Ninguna ruta (ARQ-11): van aparte, :func:`job_paths`."""
-    return {"reader": source.reader.id, "name": source.name, "settings": dict(source.settings),
-            "crs": crs_json(source.crs), "vertical": vertical_json(source.vertical),
-            "max_cells": int(max_cells), "size": source.main.stat().st_size}
+    (``gis.jobs``): su lector, su nombre, sus ajustes de lectura, sus CRS declarados, en un
+    ASC con su ``.prj`` reconocido, ese CRS (``prj_crs``: el trabajo no tiene el servicio de
+    CRS), el límite de celdas (``max_cells``, el del proyecto) y el tamaño del fichero
+    principal (su estimación). Ninguna ruta (ARQ-11): van aparte, :func:`job_paths`."""
+    params = {"reader": source.reader.id, "name": source.name,
+              "settings": dict(source.settings), "crs": crs_json(source.crs),
+              "vertical": vertical_json(source.vertical)}
+    if source.prj_crs is not None:
+        params["prj_crs"] = crs_json(source.prj_crs)
+    return {**params, "max_cells": int(max_cells), "size": source.main.stat().st_size}
 
 
 def job_paths(source: DtmSource) -> dict[str, Path]:

@@ -180,6 +180,31 @@ class ReadDataFilesTest(unittest.TestCase):
                 self.assertEqual(source.notes, ())
         self.assertEqual(service.seen, [])
 
+    def test_messages_name_the_given_file(self) -> None:
+        """RF-006-04, RF-006-09 (T52; constitución, principio 10): ``name`` es el fichero
+        que nombran la nota del ``.prj`` y los rechazos (el trabajo de la importación lee
+        una copia, ``in/source_main.asc``, y nombra el fichero del usuario): «mdt05.asc» y
+        su «mdt05.prj», nunca la copia; sin ``name``, el de ``path``, como antes."""
+        folder = Path(tempfile.mkdtemp(prefix="gb-t52-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        copy = folder / "source_main.asc"
+        shutil.copyfile(ASC / "corner.asc", copy)
+        shutil.copyfile(ASC / "corner.prj", folder / "source_main.prj")
+        named = asc.read_asc(copy, name="mdt05.asc")
+        self.assertEqual(named.notes, (messages.render("gis.prj_unidentified", file="mdt05.asc",
+                                                       prj="mdt05.prj"),))
+        self.assertEqual(asc.read_asc(copy).notes,
+                         (messages.render("gis.prj_unidentified", file="source_main.asc",
+                                          prj="source_main.prj"),))
+        lines = copy.read_text(encoding="ascii").splitlines(keepends=True)
+        copy.write_text("".join(lines[:-1]), encoding="ascii")  # falta la última fila
+        with self.assertRaises(messages.GisError) as caught:
+            asc.read_asc(copy, name="mdt05.asc")
+        self.assertEqual((caught.exception.code, caught.exception.obj),
+                         ("gis.asc_value_count", "mdt05.asc"))
+        self.assertIn("MDT «mdt05.asc»", str(caught.exception))
+        self.assertNotIn("source_main", str(caught.exception))
+
     def test_encoding_describes_the_file(self) -> None:
         """El informe dice cómo está escrito el fichero."""
         corner = _read("corner.asc").encoding
