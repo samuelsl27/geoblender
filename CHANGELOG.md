@@ -425,3 +425,10 @@ en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su inte
   estorbaban: tardaban más y las pruebas que miden tiempos fallaban. Si una comprobación se
   cierra de golpe, la siguiente no queda esperando ni hay que borrar nada a mano.
   `tools/publish.py` espera igual.
+- **Cubicación de la topografía con celdas de 4 m** (spec 006, versión 0.4, por decisión de
+  IMGA): el caso de referencia del volumen entre dos superficies (una corta circular de
+  1 308 944,006 m³) admite con celdas de 4 m un error de hasta el 0,025 % (antes, el 0,02 %)
+  en cualquier posición de la corta respecto a la rejilla. Con el eje de la corta sobre un
+  nodo de la rejilla da +0,0202 %, que antes quedaba fuera de la prueba y ahora se comprueba.
+  El cálculo no cambia: es exacto celda a celda, y la diferencia viene de muestrear la corta
+  con una rejilla gruesa. Con celdas de 2, 1 y 0,5 m sigue el 0,01 %.
