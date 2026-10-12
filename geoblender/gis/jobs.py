@@ -43,9 +43,12 @@ resultados en ``out/``:
   fichero), ``prj_crs`` (el CRS que la orden reconoció en el ``.prj`` de un ASC con el
   servicio de CRS; sin él, la nota de que no se reconoció), ``max_cells``, ``size`` y
   ``origin`` (opcional: el GeoOrigin del proyecto, si la fuente está en su CRS horizontal);
-  ``source_main`` [y ``source_prj``] → ``source.tif``. Sus notas y sus fallos nombran el
-  fichero del usuario, no su copia en ``in/`` (T52). Su resumen dice dónde caen las celdas
-  con dato (T51; spec §8): su extensión (``data_extent``, :func:`window_json`) y, con
+  ``source_main`` [y ``source_prj``] → ``source.tif`` y ``samples.npy`` (T54: las
+  posiciones con que la orden compara sus cotas con la rejilla del proyecto,
+  ``gis.dtm.vertical_samples`` de lo escrito, RF-006-06; así el hilo de Blender no vuelve a
+  leer la rejilla importada, RNF-006-09; :func:`write_samples`). Sus notas y sus fallos
+  nombran el fichero del usuario, no su copia en ``in/`` (T52). Su resumen dice dónde caen
+  las celdas con dato (T51; spec §8): su extensión (``data_extent``, :func:`window_json`) y, con
   ``origin``, el aviso de RF-002-26 de sus centros (``precision``, :func:`precision_json`;
   ``gis.placement``).
 - ``gis_resample``: ``name``, ``source_crs``, ``source_vertical``, ``target_crs``,
@@ -243,6 +246,7 @@ __all__ = [
     "read_export_layers",
     "read_polygons",
     "read_regions",
+    "read_samples",
     "read_tin_input",
     "reprojects",
     "tin_inputs",
@@ -255,6 +259,7 @@ __all__ = [
     "write_points",
     "write_polygons",
     "write_regions",
+    "write_samples",
     "write_tin_input",
 ]
 
@@ -337,6 +342,7 @@ OUT_EXPORT = JobOutput("export.tif", "export")
 OUT_EXPORT_GPKG = JobOutput("export.gpkg", "export")
 OUT_MESH = JobOutput("mesh.npz", "mesh")
 OUT_POLYGONS = JobOutput("polygons.npz", "boundary")
+OUT_SAMPLES = JobOutput("samples.npy", "samples")
 LAYER_OUTPUTS: Mapping[str, JobOutput] = MappingProxyType({
     "points": OUT_POINTS,
     "breaklines": OUT_LINES,
@@ -798,6 +804,28 @@ def read_regions(path: Path | str) -> tuple[list[np.ndarray] | None, list[list[n
         else:
             boundary = found
     return boundary, holes
+
+
+def write_samples(path: Path | str, xyz: np.ndarray) -> None:
+    """Las posiciones con que la orden compara un MDT importado con la rejilla del proyecto
+    (``gis.dtm.vertical_samples``: ``(n, 3)``, X, Y y Z ABSOLUTAS en float64) en el ``.npy``
+    ``path``, sin *pickle* (T54). ``ValueError`` si no son ``(n, 3)``."""
+    found = np.ascontiguousarray(xyz, dtype=np.float64)
+    if found.ndim != 2 or found.shape[1] != 3:
+        raise ValueError(f"las posiciones son (n, 3), no {found.shape}")
+    with open(path, "wb") as stream:
+        np.save(stream, found, allow_pickle=False)
+
+
+def read_samples(path: Path | str) -> np.ndarray:
+    """Las posiciones de :func:`write_samples` (``(n, 3)`` en float64); ``ValueError`` si el
+    fichero no las tiene."""
+    with open(path, "rb") as stream:
+        found = np.load(stream, allow_pickle=False)
+    if found.dtype != np.float64 or found.ndim != 2 or found.shape[1] != 3:
+        raise ValueError(f"«{Path(path).name}» no tiene posiciones (n, 3) en float64: "
+                         f"{found.dtype} {found.shape}")
+    return found
 
 
 def write_polygons(path: Path | str,
@@ -1496,6 +1524,11 @@ def run_read_raster(ctx: _Context) -> dict[str, Any]:
     GeoTiffIO().write(raster, ctx.output_path(OUT_SOURCE_GRID.file), profile="project",
                       progress=_span(ctx, 0.6, 0.9), cancelled=cancelled)
     written = _dataset_digest_raster(ctx, raster, 0.9, 0.99)
+    # Las posiciones de la comparación con la rejilla del proyecto (T54; RF-006-06): las de lo
+    # escrito, bit a bit; la orden no vuelve a leer la rejilla en el hilo de Blender.
+    from .dtm import vertical_samples  # gis.dtm importa este módulo: solo al usarlo
+
+    write_samples(ctx.output_path(OUT_SAMPLES.file), vertical_samples(raster))
     valid = np.isfinite(values)
     extent = data_extent(source.grid, valid)
     summary = {
@@ -1511,13 +1544,15 @@ def run_read_raster(ctx: _Context) -> dict[str, Any]:
         "valid_cells": int(np.count_nonzero(valid)),
         # Dónde caen sus celdas con dato (T51; spec §8, RF-002-26): la orden lo dice.
         "data_extent": None if extent is None else window_json(extent),
-        "outputs": {OUT_SOURCE_GRID.role: {
-            "file": OUT_SOURCE_GRID.relative,
-            "digest": digest_json(written)}},
+        "outputs": {
+            OUT_SOURCE_GRID.role: {"file": OUT_SOURCE_GRID.relative,
+                                   "digest": digest_json(written)},
+            OUT_SAMPLES.role: {"file": OUT_SAMPLES.relative},
+        },
     }
     if origin is not None:
         summary["precision"] = precision_json(cells_precision(source.grid, valid, origin))
-    _finish(ctx, (OUT_SOURCE_GRID,))
+    _finish(ctx, (OUT_SOURCE_GRID, OUT_SAMPLES))
     return summary
 
 

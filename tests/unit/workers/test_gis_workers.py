@@ -44,6 +44,7 @@ from tests.support.repo import EXTENSION_DIR, ROOT
 gis_jobs = import_geoblender("gis.jobs")
 gis = import_geoblender("gis")
 gis_content = import_geoblender("gis.content")
+gis_dtm = import_geoblender("gis.dtm")
 gis_store = import_geoblender("gis.store")
 gis_tin = import_geoblender("gis.tin")
 geotiff = import_geoblender("gis.geotiff")
@@ -344,7 +345,9 @@ class ImportJobsTest(_JobCase):
         fuente, el mismo que da ``core_content_hash`` con las mismas declaraciones, el de la
         rejilla escrita (el que da ``gis.geotiff@1`` al leerla) y las huellas de cada fichero
         de la fuente (sha256, tamaño y fecha). GeoTIFF, ASC con su ``.prj`` (compuesto) y XYZ
-        en malla."""
+        en malla. RF-006-06, RNF-006-09 (T54): y ``out/samples.npy``, las posiciones con que la
+        orden compara sus cotas con la rejilla del proyecto, las de ``gis.dtm.vertical_samples``
+        sobre la rejilla escrita, bit a bit (el hilo de Blender ya no la vuelve a leer)."""
         sources = _STATE["sources"]
         cases = {
             "geotiff": (gis_content.GEOTIFF, {"main": sources / "f32_strip.tif"}, {},
@@ -393,6 +396,10 @@ class ImportJobsTest(_JobCase):
                 self.assertEqual(_digest_of(output["digest"]),
                                  _read_digest(gis_content.GEOTIFF, "raster", written))
                 self.assertEqual(summary["grid"], gis_jobs.grid_json(expected.grid))
+                samples = self.output(ctx, folder, gis_jobs.OUT_SAMPLES.role)
+                self.assertEqual(samples.name, gis_jobs.OUT_SAMPLES.file)
+                _same(self, gis_jobs.read_samples(samples), gis_dtm.vertical_samples(
+                    gis.Raster(got.grid, got.values, CRS, VERTICAL)))
                 # Las copias verificadas de la fuente se quedan en in/ (el original, T43).
                 self.assertEqual(sorted(p.name for p in folder.inputs_dir.iterdir()),
                                  sorted(f"{gis_jobs.path_name('main')}{path.suffix}"

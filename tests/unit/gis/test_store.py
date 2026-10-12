@@ -623,6 +623,67 @@ class JobOutputTest(StoreCase):
         self.assertEqual(self.operation(handle.uid)["status"], "failed")
         self.assertEqual(list(self.files()), ["rasters/gis_dtm_mdt_norte.tif"])
 
+    def test_job_output_is_copied_in_steps(self) -> None:
+        """RF-006-28, RNF-006-09, RF-008-19 (T54): ``copy_file_steps`` copia el resultado de un
+        trabajo un trozo de ``COPY_CHUNK_BYTES`` por paso, con su fracción tras cada uno
+        (creciente hasta 1), y deja el mismo fichero que ``copy_file`` (los mismos bytes y la
+        misma huella) y el mismo dato al confirmar; cerrar los pasos a mitad borra el temporal
+        y no deja nada en ``rasters/``; una huella que no casa sale en el último paso como
+        ``gis.output_copy_mismatch`` sin temporal."""
+        source = self.tmp / "trabajo" / "out" / "dtm.tif"
+        source.parent.mkdir(parents=True)
+        geotiff.GeoTiffIO().write(_raster(), source, profile="project")
+        digest = gis_content.raster_digest(_raster(), {})
+        sha, size = _sha(source), source.stat().st_size
+        chunk = -(-size // 5)  # cinco trozos
+        self.enterContext(mock.patch.object(store, "COPY_CHUNK_BYTES", chunk))
+
+        def drive(steps: Any) -> tuple[list[float], Any]:
+            done: list[float] = []
+            while True:
+                try:
+                    done.append(next(steps))
+                except StopIteration as stop:
+                    return done, stop.value
+
+        handle = self.begin(provenance.RESAMPLE)
+        with store.ResultWriter(self.project, handle) as out:
+            done, spec = drive(out.copy_file_steps(provenance.PROJECT_GRID, "MDT Norte", source,
+                                                   content=digest, sha256=sha))
+            self.assertEqual(done, [k / 5 for k in range(1, 6)])
+            self.assertEqual(spec.locator, "rasters/gis_dtm_mdt_norte.tif")
+            (temporary,) = self.files().values()
+            self.assertEqual(temporary, sha)
+            (record,) = out.commit(software=PYPROJ, message="Copiado por pasos")
+        final = self.root / "rasters" / "gis_dtm_mdt_norte.tif"
+        self.assertEqual(self.files(), {"rasters/gis_dtm_mdt_norte.tif": sha})
+        self.assertEqual(record.content_sha256, digest.content_sha256)
+        self.assertEqual(digest.content_sha256,
+                         self.read_hash(gis_content.GEOTIFF, "raster", final))
+        before = self.files()
+
+        handle = self.begin(provenance.RESAMPLE)
+        out = store.ResultWriter(self.project, handle)
+        steps = out.copy_file_steps(provenance.PROJECT_GRID, "Otro", source, content=digest,
+                                    sha256=sha)
+        self.assertEqual([next(steps), next(steps)], [0.2, 0.4])
+        self.assertEqual(len(self.files()), 2)  # el temporal, a medias
+        steps.close()  # a mitad de la copia
+        self.assertEqual(self.files(), before)
+        out.close(worker_api.JobCancelled("Cancelado a mitad de la copia"))
+        self.assertEqual(self.operation(handle.uid)["status"], "cancelled")
+        self.assertEqual(self.files(), before)
+
+        handle = self.begin(provenance.RESAMPLE)
+        with (self.assertRaises(messages.GisError) as caught,
+              store.ResultWriter(self.project, handle) as out):
+            drive(out.copy_file_steps(provenance.PROJECT_GRID, "Otro", source, content=digest,
+                                      sha256="0" * 64))
+        self.assertEqual(caught.exception.code, "gis.output_copy_mismatch")
+        self.assertEqual(self.operation(handle.uid)["status"], "failed")
+        self.assertEqual(self.files(), before)
+        self.assertEqual(operations.claimed_paths(self.project), frozenset())
+
 
 class LoadTest(StoreCase):
     def test_list_and_load_what_is_registered(self) -> None:

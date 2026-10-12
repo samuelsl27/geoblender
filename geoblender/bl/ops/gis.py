@@ -48,14 +48,20 @@ idempotentes: registrar y desregistrar deja los registros de ``core`` como estab
   precisión conocida o el rechazo nombrando los dos CRS (RF-006-05), que el informe dice. Su
   trabajo ``gis_read_raster`` lee la fuente por ``--path`` y, al terminar, la importación se
   clasifica (``classify_import``: reutilizar, sustituir o nueva; RF-008-54) y se compara con el
-  MDT del proyecto (RF-006-06). Una sustitución sin motivo o un aviso de alturas elipsoidales
-  **esperan la decisión de la persona** (:func:`waiting_imports`): la misma orden con
-  ``pending`` (el uid de la operación), ``decision`` y, en una sustitución, ``reason`` la sigue
-  o la cancela; mientras, el trabajo está «pendiente de incorporar». Con el fichero ya elegido
-  y ``dialog`` (lo abre así «Importar un fichero…» de ``bl.ops.io``, T32), su diálogo. Se
-  importa entero y su informe avisa (T51; spec §8) si sus celdas con dato salen de la ventana
-  de trabajo (``gis.placement``; la rejilla del proyecto solo la cubre a ella) o si alguno de
-  sus centros pasa de 8 km del GeoOrigin (``core.georef.precision_report``, RF-002-26).
+  MDT del proyecto (RF-006-06). (T54; RNF-006-09) Se incorpora **por pasos** desde el
+  temporizador de las incorporaciones (:func:`incorporation_tick`, con su avance en la barra de
+  estado): la comparación, con las posiciones que dejó su trabajo (``samples.npy``: el hilo de
+  Blender no vuelve a leer la rejilla importada); la copia de su rejilla al proyecto con su
+  huella, un trozo por paso, y la transacción corta del final (con el MDT de RNF-006-01, pasos
+  de menos de 0,2 s en vez de una llamada de casi un segundo). Una sustitución sin motivo o un
+  aviso de alturas elipsoidales **esperan la decisión de la persona** (:func:`waiting_imports`):
+  la misma orden con ``pending`` (el uid de la operación), ``decision`` y, en una sustitución,
+  ``reason`` la sigue (por pasos) o la cancela; mientras, el trabajo está «pendiente de
+  incorporar». Con el fichero ya elegido y ``dialog`` (lo abre así «Importar un fichero…» de
+  ``bl.ops.io``, T32), su diálogo. Se importa entero y su informe avisa (T51; spec §8) si sus
+  celdas con dato salen de la ventana de trabajo (``gis.placement``; la rejilla del proyecto
+  solo la cubre a ella) o si alguno de sus centros pasa de 8 km del GeoOrigin
+  (``core.georef.precision_report``, RF-002-26).
 - ``geoblender.gis_resample_to_grid`` (Topografía ▸ Superficies ▸ Rejilla de proyecto desde un
   MDT…): el MDT importado a ``gis_dtm_<nombre>`` en la rejilla del proyecto (la ventana de
   trabajo con el paso del proyecto, ``gis.grid.project_grid``), con el método en el informe
@@ -185,7 +191,6 @@ from ...gis.dtm import (
     plan_import,
     read_settings,
     scene_origin,
-    vertical_samples,
 )
 from ...gis.contours import (
     INDEX_EVERY_KEY,
@@ -195,13 +200,11 @@ from ...gis.contours import (
     SIMPLIFY_KEY,
     ContourLine,
 )
-from ...gis.geotiff.reader import read_geotiff
 from ...gis.grid import Grid, project_grid
 from ...gis.messages import GisError
 from ...gis.placement import extent_in, outside_window
 from ...gis.points import DUP_XY_KEY, DUP_Z_KEY, Breakline, PointSet
 from ...gis.ports import TriangulationError
-from ...gis.raster import Raster
 from ...gis.reports import SurfaceReport
 from ...gis.tin_contours import DENSIFY_KEY, MAX_FLAT_KEY, PASSES_KEY
 from ...gis.validate import SURFACE_GRID, Z_RANGE_KEY
@@ -575,12 +578,13 @@ def _start_import(plan: _Import, launch: Callable[..., Any]) -> Any:
 
 
 def _import_finished(plan: _Import, result: JobResult) -> None:
-    """El final del trabajo de una importación: si terminó bien, :func:`_settle_import` (si
-    no, la procedencia la deja cancelada o fallida con el motivo de la 004)."""
+    """El final del trabajo de una importación: si terminó bien, su incorporación por pasos
+    desde el temporizador (:func:`_import_steps`, :func:`incorporation_tick`; T54,
+    RNF-006-09); si no, la procedencia la deja cancelada o fallida con el motivo de la 004."""
     if result.state != _SUCCEEDED:
         return
     plan.result = result
-    _settle_import(plan)
+    _incorporate(plan.handle.uid, plan.source.name, _import_steps(plan))
 
 
 def _input_spec(plan: _Import, summary: Mapping[str, Any]) -> Any:
@@ -601,24 +605,41 @@ def _input_spec(plan: _Import, summary: Mapping[str, Any]) -> Any:
                               received_at=plan.received_at, received_from=plan.received_from)
 
 
-def _settle_import(plan: _Import) -> str:
-    """Sigue la importación de ``plan`` (su trabajo ya terminó bien) y dice cómo quedó:
-    ``"reused"`` (la misma entrada con los mismos ajustes: cancelada con el aviso,
+COPY_SHARE = (0.2, 0.9)
+"""El tramo del avance de la incorporación de un MDT que es la copia de su rejilla al proyecto
+(T54): antes, lo que dejó el trabajo, su clasificación y la comparación de cotas; después, la
+transacción corta del final."""
+
+
+def _import_steps(plan: _Import) -> Generator[float, None, str]:
+    """Los pasos que incorporan la importación de ``plan`` (su trabajo ya terminó bien), con su
+    avance (0–1) tras cada uno; cada paso, unas décimas de segundo del hilo de Blender como
+    mucho (T54; RNF-006-09, RF-006-28; como los de los puntos, :func:`_survey_steps`): lo que
+    dejó el trabajo y su clasificación; la comparación de cotas con la rejilla del proyecto
+    (:func:`_vertical_check_steps`, con las posiciones que dejó el trabajo: el hilo de Blender
+    no vuelve a leer la rejilla importada); la entrada declarada; la copia de la rejilla al
+    proyecto con su huella, un trozo por paso (``ResultWriter.copy_file_steps``), y la
+    transacción corta del final (``ingest_job_result``). Devuelve (``StopIteration.value``)
+    cómo quedó: ``"reused"`` (la misma entrada con los mismos ajustes: cancelada con el aviso,
     RF-008-54), ``"waiting"`` (una sustitución sin motivo o el aviso de alturas elipsoidales:
-    espera la decisión de la persona, RF-008-11, RF-006-06), ``"done"`` (incorporada) o
-    ``"failed"`` (fallida con su motivo)."""
+    espera la decisión de la persona, RF-008-11, RF-006-06; la orden con ``pending`` la sigue
+    con otros pasos), ``"done"`` (incorporada) o ``"failed"`` (fallida con su motivo, sin
+    nada escrito). Cerrar los pasos antes de la transacción (al desregistrar) borra lo copiado
+    y no escribe nada: la operación sigue «en curso» y queda «interrumpida» al abrir el
+    proyecto."""
     result = plan.result
     assert result is not None
     project = plan.handle.project
     language = i18n.language()
+    out: store.ResultWriter | None = None
     try:
         outcome = job_outcome(result, result.job_dir)
         spec = _input_spec(plan, outcome.summary)
         if plan.previous_uid is None:
             found = store.classify_source(project, spec)
             if isinstance(found, Reuse):
-                with store.ResultWriter(project, plan.handle) as out:
-                    out.declare_input(spec)  # la deja cancelada con el aviso
+                with store.ResultWriter(project, plan.handle) as reused:
+                    reused.declare_input(spec)  # la deja cancelada con el aviso
                 core_provenance.release_job(result.job_uid)
                 _say(found.render(language))
                 return "reused"
@@ -630,20 +651,36 @@ def _settle_import(plan: _Import) -> str:
                         name=plan.source.name, existing=found.input.name,
                         differences=found.describe(language)))
                 plan.previous_uid = found.input.uid
+        yield 0.05
         if not plan.checked:
-            plan.check = _vertical_check(plan, outcome)
+            plan.check = yield from _vertical_check_steps(plan, outcome)
             plan.checked = True
         if plan.check is not None and plan.check.warn and not plan.confirmed:
             return _ask(plan, _CONFIRM, plan.check.message(language) or "")
         report = _import_report(plan, outcome.summary)
+        out = store.ResultWriter(project, plan.handle)
+        out.declare_input(spec, previous_uid=plan.previous_uid, reason=plan.reason)
+        low, high = COPY_SHARE
+        yield low
         role = jobs.OUT_SOURCE_GRID.role
-        with store.ResultWriter(project, plan.handle) as out:
-            out.declare_input(spec, previous_uid=plan.previous_uid, reason=plan.reason)
-            out.copy_file(provenance.SOURCE_GRID, plan.source.name, outcome.file(role),
-                          content=jobs.digest_of(outcome.summary["outputs"][role]["digest"]),
-                          sha256=outcome.output(role).sha256)
-            core_provenance.ingest_job_result(plan.handle, result, out.write, message=report)
+        copying = out.copy_file_steps(
+            provenance.SOURCE_GRID, plan.source.name, outcome.file(role),
+            content=jobs.digest_of(outcome.summary["outputs"][role]["digest"]),
+            sha256=outcome.output(role).sha256)
+        try:
+            for done in copying:
+                yield low + (high - low) * done
+        finally:
+            copying.close()  # a mitad, borra su temporal antes de deshacer lo demás
+        core_provenance.ingest_job_result(plan.handle, result, out.write, message=report)
+        out.close()
+    except GeneratorExit:
+        if out is not None:
+            out.close()  # sin escribir nada: borra lo copiado; la operación sigue «en curso»
+        raise
     except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        if out is not None:
+            out.close(error)
         plan.failure = tr("«{name}» has not been imported: {reason}", name=plan.source.name,
                           reason=_failure(plan.handle, result, error))
         _say(plan.failure)
@@ -676,22 +713,24 @@ def _open_decision(uid: str) -> None:
         LOGGER.warning("No se pudo abrir el diálogo de la importación %s", uid, exc_info=True)
 
 
-def _vertical_check(plan: _Import, outcome: Any) -> VerticalCheck | None:
+def _vertical_check_steps(plan: _Import,
+                          outcome: Any) -> Generator[float, None, VerticalCheck | None]:
     """La comparación de las cotas importadas con la primera rejilla del proyecto vigente que
     tiene posiciones comunes (RF-006-06, A16), en el CRS y la referencia del proyecto (con la
     transformación de la importación) y con la banda del proyecto; sin rejilla del proyecto,
-    ``None``."""
+    ``None``. Las posiciones (``gis.dtm.vertical_samples``) las dejó el trabajo en
+    ``samples.npy`` (T54; RNF-006-09: el hilo de Blender no vuelve a leer la rejilla
+    importada); cada rejilla del proyecto se lee en su paso."""
     project = plan.handle.project
     references = [record for record in store.list_gis_datasets(
         project, families=(provenance.PROJECT_GRID,)) if str(record.status) == "current"]
     if not references:
         return None
-    found = read_geotiff(outcome.file(jobs.OUT_SOURCE_GRID.role), max_cells=sys.maxsize)
-    xyz = vertical_samples(Raster(found.grid, found.values, plan.source.crs,
-                                  plan.source.vertical))
+    xyz = jobs.read_samples(outcome.file(jobs.OUT_SAMPLES.role))
     if plan.transform is not None:
         xyz = plan.transform.apply(xyz)
     for record in references:
+        yield 0.1
         try:
             reference = store.load_raster(project, record)
         except GeoblenderError:  # su fichero falta o no se lee: se compara con otra
@@ -964,9 +1003,9 @@ class GEOBLENDER_OT_gis_import_dtm(ProvenanceAwareOperator, bpy.types.Operator):
         else:
             plan.confirmed = True
         _WAITING.pop(self.pending, None)
-        if _settle_import(plan) == "failed":
-            self.report({"ERROR"}, plan.failure)
-            return {"CANCELLED"}
+        # Sigue por pasos desde el temporizador (T54): lo que no se haga lo dicen la barra de
+        # estado y el registro de Blender (T57).
+        _incorporate(plan.handle.uid, name, _import_steps(plan))
         return {"FINISHED"}
 
 
@@ -1512,7 +1551,8 @@ def incorporation_tick() -> float | None:
     """El temporizador de las incorporaciones por pasos (T50; RF-006-28, RNF-006-09): un paso
     de la primera de la cola por llamada (cada uno, unas décimas de segundo como mucho: leer lo
     que dejó el trabajo, codificar sus filas, la transacción corta del final, cada trozo del
-    original) y su avance en la barra de estado; lo largo (el hash de las tablas) lo hizo ya su
+    original o, en un MDT, T54, cada trozo de su rejilla) y su avance en la barra de estado; lo
+    largo (el hash de las tablas, las posiciones de la comparación de cotas) lo hizo ya su
     trabajo, con su avance y su cancelación. Devuelve cuándo volver (``None``: no queda
     ninguna)."""
     if not _INCORPORATIONS:

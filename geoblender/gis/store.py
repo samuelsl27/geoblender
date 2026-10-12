@@ -99,7 +99,7 @@ import os
 import sqlite3
 import struct
 import sys
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, TracebackType
@@ -1198,7 +1198,58 @@ class ResultWriter:
         ``gis.output_copy_mismatch``). ``crs_epsg``: por defecto, el del proyecto en la rejilla
         del proyecto y el TIN, y el declarado en lo importado. Devuelve su ``DatasetSpec``
         (lo importado, ``None``). ``JobCancelled`` si ``cancelled()`` pide parar entre
-        trozos."""
+        trozos. Lo mismo, de una vez, que :meth:`copy_file_steps` por pasos."""
+        steps = self._copy_output(family, name, source, content=content, sha256=sha256,
+                                  crs_epsg=crs_epsg, cancelled=cancelled)
+        while True:
+            try:
+                done, total, text = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            if progress is not None:
+                progress(done / total, text)
+
+    def copy_file_steps(
+        self,
+        family: str,
+        name: str,
+        source: Path | str,
+        *,
+        content: ContentDigest,
+        sha256: str | None = None,
+        crs_epsg: int | None = None,
+        cancelled: Cancelled | None = None,
+    ) -> Generator[float, None, DatasetSpec | None]:
+        """:meth:`copy_file` por pasos (spec 006, T54; RNF-006-09: el MDT de RNF-006-01 son
+        decenas de MB que el hilo de Blender copia con su huella al incorporar su
+        importación): un trozo de :data:`COPY_CHUNK_BYTES` por paso, tras el que da la
+        fracción copiada (0–1; el último, con el ``fsync``), y la comprobación de la huella al
+        final; devuelve (``StopIteration.value``) su ``DatasetSpec`` (lo importado, ``None``).
+        El mismo fichero, con los mismos bytes y la misma huella. Cerrar los pasos a mitad
+        (``close()``) borra el temporal: no queda ningún fichero a medias. Los errores de
+        :meth:`copy_file` salen en el paso en que ocurren."""
+        steps = self._copy_output(family, name, source, content=content, sha256=sha256,
+                                  crs_epsg=crs_epsg, cancelled=cancelled)
+        while True:
+            try:
+                done, total, _text = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            yield done / total
+
+    def _copy_output(
+        self,
+        family: str,
+        name: str,
+        source: Path | str,
+        *,
+        content: ContentDigest,
+        sha256: str | None,
+        crs_epsg: int | None,
+        cancelled: Cancelled | None,
+    ) -> Generator[tuple[int, int, str], None, DatasetSpec | None]:
+        """Lo común de :meth:`copy_file` y :meth:`copy_file_steps`: tras cada trozo copiado,
+        cuántos van, de cuántos y el texto del avance."""
         _family(family, FILE_FAMILIES)
         if not isinstance(content, ContentDigest):
             raise TypeError(f"el hash del trabajo es un ContentDigest, no {content!r}")
@@ -1209,7 +1260,8 @@ class ResultWriter:
         if crs_epsg is None and imported and self._declared is not None:
             crs_epsg = self._declared.crs.epsg
         entry = self._plan_file(family, name, content, crs_epsg, imported)
-        found = _copy(Path(source), entry.temporary, entry.path.name, progress, cancelled)
+        found = yield from _copy_steps(Path(source), entry.temporary, entry.path.name,
+                                       cancelled)
         if sha256 is not None and found != sha256:
             entry.temporary.unlink(missing_ok=True)
             raise GisError("gis.output_copy_mismatch", obj=f"{_OBJ} «{entry.dataset}»",
@@ -1614,7 +1666,23 @@ def _found_uid(found: Classification) -> str | None:
 def _copy(source: Path, target: Path, name: str, progress: Progress | None,
           cancelled: Cancelled | None) -> str:
     """Copia ``source`` en ``target`` por trozos con su sha256 (``fsync`` al final); si falla
-    o se cancela, borra ``target``."""
+    o se cancela, borra ``target`` (:func:`_copy_steps` de una vez)."""
+    steps = _copy_steps(source, target, name, cancelled)
+    while True:
+        try:
+            done, total, text = next(steps)
+        except StopIteration as stop:
+            return str(stop.value)
+        if progress is not None:
+            progress(done / total, text)
+
+
+def _copy_steps(source: Path, target: Path, name: str,
+                cancelled: Cancelled | None) -> Generator[tuple[int, int, str], None, str]:
+    """Copia ``source`` en ``target`` por trozos de :data:`COPY_CHUNK_BYTES` con su sha256
+    (``fsync`` al final) y devuelve la huella; tras cada trozo, cuántos van, de cuántos y el
+    texto del avance. Si falla, se cancela o se cierran los pasos a mitad, borra
+    ``target``."""
     digest = hashlib.sha256()
     try:
         size = source.stat().st_size
@@ -1627,14 +1695,14 @@ def _copy(source: Path, target: Path, name: str, progress: Progress | None,
                 chunk = reader.read(COPY_CHUNK_BYTES)
                 digest.update(chunk)
                 writer.write(chunk)
-                if progress is not None:
-                    progress((index + 1) / total,
-                             f"Copiando «{name}»: trozo {index + 1} de {total}")
+                if index + 1 < total:
+                    yield index + 1, total, f"Copiando «{name}»: trozo {index + 1} de {total}"
             rest = reader.read()
             digest.update(rest)
             writer.write(rest)
             writer.flush()
             os.fsync(writer.fileno())
+        yield total, total, f"Copiando «{name}»: trozo {total} de {total}"
     except BaseException as error:
         _discard(target)
         if isinstance(error, OSError):

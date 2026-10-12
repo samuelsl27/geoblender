@@ -600,6 +600,7 @@ class DtmImportTest(DtmOperatorsCase):
         self.assertIn(op_uid, self.gis_ops.waiting_imports())
         self.assertEqual(bpy.ops.geoblender.gis_import_dtm("EXEC_DEFAULT", pending=op_uid,
                                                            decision="CONTINUE"), {"FINISHED"})
+        self.finish()  # sigue por pasos desde el temporizador (T54)
         self.assertEqual(self.operation(op_uid)[1], "done")
         (first,) = self.rows("SELECT uid FROM gb_input WHERE name = 'Dron'")[0]
 
@@ -615,6 +616,7 @@ class DtmImportTest(DtmOperatorsCase):
         self.assertEqual(bpy.ops.geoblender.gis_import_dtm(
             "EXEC_DEFAULT", pending=op_uid, decision="CONTINUE",
             reason="El dron vuela sin geoide"), {"FINISHED"})
+        self.finish()
         _type, status, _reason, message, *_ = self.operation(op_uid)
         self.assertEqual(status, "done")
         self.assertIn("egm08-rednap", message)

@@ -21,6 +21,10 @@ su temporizador (``bl.ops.gis.incorporation_tick``, que las pruebas avanzan a ma
 hilo de Blender vuelva a leer las tablas, con el mismo hash de antes; un fallo en su
 transacción no deja nada.
 
+T54 (RNF-006-09): la de un MDT, también por pasos (la comparación de cotas con las posiciones
+que dejó su trabajo y la copia de su rejilla al proyecto, un trozo por paso); cerrarla o un
+fallo a mitad de la copia no dejan nada en el proyecto ni ningún fichero a medias.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
@@ -45,10 +49,24 @@ CONTOURS = "geoblender.gis_create_contours"
 MIDWAY = 0.5  # el primer aviso de progreso a partir de la mitad del trabajo
 NOT_PROJECT_DATA = ("cache",)  # la caché (los trabajos) no es del proyecto
 DATABASE_FILES = ("project.gpkg", "project.gpkg-journal", ".lock")
+COPY_CHUNK = 256  # trozos de la copia al proyecto (T54): la rejilla importada, en más de 8
 
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _failing_copy(real: Any, error: BaseException, *, after: int) -> Any:
+    """Los pasos de ``gis.store._copy_steps`` (``real``) que fallan con ``error`` dentro de la
+    copia, como el disco, tras ``after`` trozos."""
+
+    def copy_steps(source: Path, target: Path, name: str, cancelled: Any) -> Any:
+        steps = real(source, target, name, cancelled)
+        for _ in range(after):
+            yield next(steps)
+        steps.throw(error)
+
+    return copy_steps
 
 
 class _Gate:
@@ -281,6 +299,94 @@ class ProgressTest(TinOperatorsCase):
         self.assertIn("fallo provocado al incorporar", reason)
         self.assertNotIn(failed, self.session.pending_ingests().values())
         self.assertEqual(self.state(), before)
+
+    def finish_job(self) -> None:
+        """Avanza el monitor hasta que el trabajo de la orden termina (y se llama a su aviso
+        de fin), sin avanzar el temporizador de las incorporaciones."""
+        runner = self.jobs_ops.MONITOR.runner
+        deadline = time.monotonic() + JOB_WAIT_S
+        while any(snapshot.active for snapshot in runner.snapshots()):
+            self.assertLess(time.monotonic(), deadline, "el trabajo no termina")
+            self.jobs_ops.tick()
+            time.sleep(0.002)
+        self.jobs_ops.tick()
+
+    def test_dtm_import_is_incorporated_in_steps(self) -> None:
+        """RF-006-28, RNF-006-09, RF-006-06, RF-008-19 (T54): al terminar el trabajo de la
+        importación de un MDT no se escribe nada aún; la incorporación va por pasos desde su
+        temporizador (la comparación de cotas con la rejilla del proyecto, con las posiciones
+        que dejó el trabajo: el hilo de Blender no vuelve a leer la rejilla importada; la
+        copia de la rejilla al proyecto, un trozo por paso; la transacción del final) y deja
+        el dato con el hash de su trabajo. Cerrar los pasos a mitad de la copia (al quitar la
+        extensión) no deja nada en el proyecto ni ningún fichero a medias en ``rasters/`` (la
+        operación sigue «en curso»); un fallo del disco a mitad de la copia la deja «fallida»
+        con su motivo y el proyecto como estaba."""
+        self.start()
+        self.launch(RESAMPLE, source="gis_src_mdt_dron", name="Dron")
+        self.ps.take_notices()
+        before = self.state()
+        rasters = Path(self.project.root, "rasters")
+        registry = _module("core.datasets.registry")
+        flight = self.source("geotiff/f32_strip.tif", "mdt/vuelo.tif")
+        self.enterContext(mock.patch.object(self.store, "COPY_CHUNK_BYTES", COPY_CHUNK))
+        read = mock.Mock(wraps=self.store.read_geotiff)
+        self.enterContext(mock.patch.object(self.store, "read_geotiff", read))
+        result, op_uid = self.run_op(IMPORT, filepath=str(flight), name="MDT vuelo",
+                                     vertical="PROJECT")
+        self.assertEqual(result, {"FINISHED"})
+        self.finish_job()
+        self.assertEqual(self.gis_ops.pending_incorporations(), [op_uid])
+        self.assertEqual(self.operation(op_uid)[1], "running")
+        self.assertEqual(self.state(), before)
+        ticks = 0
+        while self.gis_ops.pending_incorporations():
+            self.gis_ops.incorporation_tick()
+            ticks += 1
+        self.assertGreaterEqual(ticks, 8)
+        _type, status, reason, message, *_ = self.operation(op_uid)
+        self.assertEqual(status, "done", reason)
+        self.assertIn("Mediana de la diferencia con el MDT «gis_dtm_dron»", message)
+        # La comparación leyó la rejilla del proyecto, nunca la importada (en el trabajo).
+        self.assertEqual({Path(call.args[0]).name for call in read.call_args_list},
+                         {"gis_dtm_dron.tif"})
+        self.assertNotIn(op_uid, self.session.pending_ingests().values())
+        with self.project.read() as conn:
+            record = registry.get(conn, "gis_src_mdt_vuelo")
+            again = registry.content_digest(conn, self.project, record)
+        self.assertEqual(again.content_sha256, record.content_sha256)
+        self.assertSameCells(self.stored("gis_src_mdt_vuelo"), self.source_raster(flight))
+
+        raster = self.source_raster(flight)
+        before = self.state()
+        disk = OSError(28, "No queda espacio en el disco")
+        failing = _failing_copy(self.store._copy_steps, disk, after=3)
+        cases = (("cerrada", "vuelo_b.tif", 1.0, self.store._copy_steps),
+                 ("fallo", "vuelo_c.tif", 2.0, failing))
+        for case, name, shift, copy_steps in cases:
+            with (self.subTest(a_mitad=case),
+                  mock.patch.object(self.store, "_copy_steps", copy_steps)):
+                path = self.written(dataclasses.replace(raster, values=raster.values + shift),
+                                    f"mdt/{name}")
+                result, op_uid = self.run_op(IMPORT, filepath=str(path), name=f"MDT {case}",
+                                             vertical="PROJECT")
+                self.finish_job()
+                while not list(rasters.glob("*.tmp-*")):  # hasta la mitad de la copia
+                    self.assertTrue(self.gis_ops.pending_incorporations(), "no copia nada")
+                    self.gis_ops.incorporation_tick()
+                self.gis_ops.incorporation_tick()
+                if case == "cerrada":
+                    self.gis_ops._drop_incorporations()  # lo que hace unregister()
+                    self.assertEqual(self.operation(op_uid)[1], "running")
+                else:
+                    while self.gis_ops.pending_incorporations():
+                        self.gis_ops.incorporation_tick()
+                    _type, status, reason, *_ = self.operation(op_uid)
+                    self.assertEqual(status, "failed")
+                    self.assertIn("No queda espacio en el disco", reason)
+                    self.assertNotIn(op_uid, self.session.pending_ingests().values())
+                self.assertEqual(self.gis_ops.pending_incorporations(), [])
+                self.assertEqual(list(rasters.glob("*.tmp-*")), [])
+                self.assertEqual(self.state(), before)
 
     def test_failure_while_ingesting_leaves_no_datasets(self) -> None:
         """RF-006-28, RF-008-19 (T33): un fallo provocado al incorporar el resultado (con su

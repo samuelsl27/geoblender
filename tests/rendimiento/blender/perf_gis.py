@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La topografía dentro de Blender sin interfaz (spec 006, T35 y T50; RNF-006-03, RNF-006-06,
-RNF-006-09; RNF-008-01; plan 006 §5.3.4, §5.4 A10, A11 y A15, §5.6.4, §7.2 y §9, D-12).
+"""La topografía dentro de Blender sin interfaz (spec 006, T35, T50 y T54; RNF-006-03,
+RNF-006-06, RNF-006-09; RNF-008-01; plan 006 §5.3.4, §5.4 A10, A11 y A15, §5.6.4, §7.2 y §9,
+D-12).
 
 Se ejecuta con ``tools/check.py --rendimiento`` (o, a mano, con ``tools/run_blender_tests.py
 -- --carpeta tests/rendimiento/blender --patron "perf_gis.py"``). Datos generados en la prueba
@@ -36,6 +37,13 @@ rejilla de 1 m (:data:`WINDOW`), la superficie de colinas de :func:`surface` y, 
   incorporación va por pasos desde su temporizador, ``bl.ops.gis.incorporation_tick``, que
   pone su avance en la barra de estado); el hash de cada tabla, el que calculó el trabajo, es
   el que da leerla en el proyecto (el mismo de antes de la T50).
+- RNF-006-09 (T54; :meth:`GisSpeedTest.test_dtm_import`): importar el MDT de RNF-006-01
+  (3.399 × 3.309 celdas de 0,5 m, float32 DEFLATE + predictor 3, generado como el de
+  ``tests/rendimiento/gis``) con ``geoblender.gis_import_dtm``, la primera vez sin rejilla del
+  proyecto y la segunda con la de 1 m (la comparación de cotas de RF-006-06): desde la orden
+  hasta su operación hecha, ninguna llamada del hilo principal pasa de 0,5 s ni pasa más de
+  0,5 s sin refrescar el progreso. La incorporación va por pasos desde su temporizador (antes
+  de la T54, en el sondeo que terminaba el trabajo: 0,49 s y, con la comparación, 0,91 s).
 - RNF-006-06 y RNF-006-09 (:meth:`GisSpeedTest.test_view_load`): cargar en la vista la rejilla
   de 1 m del proyecto (1.700 × 1.655 = 2.813.500 celdas, todas con dato) con
   ``geoblender.core_load_into_view`` como desde la interfaz (en pasos: el modal y, haciendo de
@@ -82,6 +90,7 @@ from tests.support.core_fixtures import settings_values
 from tests.support.fake_layout import FakeLayout
 
 IMPORT_POINTS = "geoblender.gis_import_points"
+IMPORT_DTM = "geoblender.gis_import_dtm"
 REPETITIONS = 5  # mediana de 5 (spec 006 §5)
 
 # El proyecto: 1.700 × 1.655 m, rejilla de 1 m (2.813.500 celdas, la de RNF-006-02 y 05).
@@ -105,6 +114,19 @@ CLEARANCE_M = 0.5  # ningún suelto a menos de 0,5 m de una línea de rotura
 NOISE_M = 0.05
 SEED = 20_261_010
 TIN_WORKERS = ("gis_tin_prepare", "gis_tin_finish")
+
+# El MDT de RNF-006-01 (spec 006 §5; las constantes de tests/support/gis_perf.py, que aquí no se
+# importa: cargaría otra copia del paquete): 3.399 × 3.309 celdas de 0,5 m (11,2 M), oeste
+# WEST y sur SOUTH (dentro de WINDOW), la superficie de surface con ruido de 5 cm y un hueco
+# sin dato de 100 × 80 celdas, en GeoTIFF float32 DEFLATE + predictor 3 (perfil «deliverable»).
+MDT_COLS = 3_399
+MDT_ROWS = 3_309
+MDT_STEP = 0.5
+MDT_HOLE = (slice(1500, 1580), slice(2000, 2100))  # filas y columnas (desde el NO) sin dato
+MDT_NOISE_M = 0.05
+MDT_SEED = 20_261_008
+MDT_SHIFT_M = 0.25  # la segunda importación: otros datos (si no, reutilizaría la entrada)
+DTM_WORKERS = ("gis_read_raster",)
 
 TIN_BUDGET_S = 5.0  # RNF-006-03
 FULL_BUDGET_S = 6.0  # RNF-006-06, la rejilla de 2,81 M celdas
@@ -458,7 +480,8 @@ class GisSpeedTest(TinOperatorsCase):
             (op_uid,) = launched
             deadline = time.monotonic() + JOB_WAIT_S
             while (op_uid in self.session.pending_ingests().values()
-                   or op_uid in self.gis_ops.pending_triangulations()):
+                   or op_uid in self.gis_ops.pending_triangulations()
+                   or op_uid in self.gis_ops.pending_incorporations()):
                 self.assertLess(time.monotonic(), deadline, "la orden no termina")
                 self.assertTrue(loop.step(), "la orden espera sin ningún temporizador")
             done = loop.calls[-1].end
@@ -589,6 +612,72 @@ class GisSpeedTest(TinOperatorsCase):
         self.assertLessEqual(max(writes), WRITE_BUDGET_S)
         self.assertLessEqual(call.blocking_s, REFRESH_BUDGET_S, call.what)
         self.assertLessEqual(max(imported.gaps), REFRESH_BUDGET_S)
+
+    # --- RNF-006-09: importar un MDT (T54) ---------------------------------------------------
+
+    def dtm_source(self, name: str, shift_m: float = 0.0) -> Any:
+        """El MDT de RNF-006-01 (:data:`MDT_COLS` × :data:`MDT_ROWS` celdas de
+        :data:`MDT_STEP` m) con sus cotas subidas ``shift_m`` m, en ``entregas/<name>``:
+        GeoTIFF float32 DEFLATE + predictor 3 en el CRS y la referencia vertical del
+        proyecto."""
+        grid_mod, raster_mod = _module("gis.grid"), _module("gis.raster")
+        grid = grid_mod.Grid(WEST, SOUTH + MDT_ROWS * MDT_STEP, MDT_STEP, MDT_STEP, MDT_COLS,
+                             MDT_ROWS)
+        x, y = grid.centers()
+        values = (surface(x, y) + shift_m
+                  + np.random.default_rng(MDT_SEED).normal(0.0, MDT_NOISE_M, grid.shape))
+        values[MDT_HOLE] = np.nan
+        crs, vertical = self.store.project_references(self.project)
+        path = self.sources / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _module("gis.geotiff").GeoTiffIO().write(raster_mod.Raster(grid, values, crs, vertical),
+                                                 path, profile="deliverable")
+        return path
+
+    def import_dtm_order(self, name: str, path: Any) -> _Order:
+        """``geoblender.gis_import_dtm`` con ``path`` (en el CRS y la referencia vertical del
+        proyecto) hasta su operación hecha, medida con :meth:`order`; comprueba que quedó
+        hecha con su rejilla de origen."""
+        imported = self.order(IMPORT_DTM, workers=DTM_WORKERS, filepath=str(path), name=name,
+                              vertical="PROJECT")
+        _type, status, reason, *_ = self.operation(imported.op_uid)
+        self.assertEqual(status, "done", reason)
+        dataset = self.gis_provenance.dataset_name(self.gis_provenance.SOURCE_GRID, name)
+        self.assertEqual(self.store.load_raster(self.project, dataset).grid.shape,
+                         (MDT_ROWS, MDT_COLS))
+        return imported
+
+    def test_dtm_import(self) -> None:
+        """RNF-006-09, RF-006-28 (T54): importar el MDT de RNF-006-01 (11,2 M celdas) con
+        ``geoblender.gis_import_dtm``, desde la orden hasta su operación hecha, la primera vez
+        sin rejilla del proyecto y la segunda con ella (la comparación de cotas de RF-006-06):
+        ninguna llamada del hilo principal pasa de 0,5 s ni pasa más de 0,5 s sin refrescar el
+        progreso (la incorporación, la copia de la rejilla al proyecto con su huella y su
+        registro, va por pasos desde su temporizador)."""
+        project = self.open_survey_project()
+        orders = [self.import_dtm_order("MDT vuelo", self.dtm_source("mdt/vuelo.tif"))]
+        self.grid_dataset(project)
+        self.ps.take_notices()
+        orders.append(self.import_dtm_order(
+            "MDT vuelo B", self.dtm_source("mdt/vuelo_b.tif", MDT_SHIFT_M)))
+        compared = " ".join(self.ps.take_notices())
+        self.assertIn("gis_dtm_mdt_1_m", compared)  # la comparación con la rejilla (RF-006-06)
+        cells = _count(MDT_COLS * MDT_ROWS)
+        for label, order in zip(("sin rejilla del proyecto", "con la rejilla del proyecto"),
+                                orders, strict=True):
+            call = order.longest_call
+            steps = sum(1 for item in order.calls if item.what == "incorporation_tick")
+            _report(f"RNF-006-09: importar el MDT de {MDT_COLS} × {MDT_ROWS} celdas ({cells}; "
+                    f"float32 DEFLATE + predictor 3), {label} ({MACHINE}), desde la orden hasta "
+                    f"su operación hecha ({_number(order.seconds)} s; la incorporación en "
+                    f"{steps} pasos del temporizador, T54): la llamada más larga del hilo "
+                    f"principal {_number(call.blocking_s)} s ({call.what}), sin refrescar el "
+                    f"progreso {_number(max(order.gaps))} s; presupuesto "
+                    f"{_number(REFRESH_BUDGET_S, 1)} s")
+        for order in orders:
+            call = order.longest_call
+            self.assertLessEqual(call.blocking_s, REFRESH_BUDGET_S, call.what)
+            self.assertLessEqual(max(order.gaps), REFRESH_BUDGET_S)
 
     # --- RNF-006-06 -------------------------------------------------------------------------
 
