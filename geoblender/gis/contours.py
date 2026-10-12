@@ -19,7 +19,8 @@ cota, marcadas como maestras o no y cerradas o abiertas (A14):
    opuestas arriba) se resuelven con el valor medio del cuadro: si es ≥ L, sus esquinas altas
    quedan unidas y se recortan las bajas; si no, al revés. Así las curvas no se cruzan. Cada
    vértice está en una arista entre dos centros, interpolado linealmente (exacto sobre la
-   superficie lineal por aristas), con la otra coordenada igual a la del centro, bit a bit.
+   superficie lineal por aristas, salvo los apartados de un nodo a la cota: 5), con la otra
+   coordenada igual a la del centro, bit a bit.
 3. **TIN**: por triángulo y cota, el segmento entre las dos aristas que cortan la cota. Los
    triángulos se orientan antes en sentido antihorario (``gis.tin._oriented``).
 4. **Encadenado**: cada punto de corte es un par (cota, arista); cada segmento va de uno a
@@ -28,15 +29,28 @@ cota, marcadas como maestras o no y cerradas o abiertas (A14):
    principio es un **anillo cerrado**, que empieza en su menor punto de corte y no repite su
    primer vértice. Una curva queda abierta solo en el borde de la superficie o de sus huecos.
    Los anillos de una cima son antihorarios y los de un fondo, horarios.
-5. **Limpieza**: fuera los vértices repetidos seguidos (una cota justo igual a la de un
+5. **Nodos a la cota** (T56; spec §8, «Silla en curvas de nivel»): un centro de la rejilla
+   o un vértice del TIN justo a la cota está arriba (≥ L), y los puntos de corte de sus
+   aristas hacia vecinos de abajo caen en él. Si las curvas de esa cota pasan por él una sola
+   vez (una racha de vértices seguidos de una cadena), la curva pasa por el nodo y nada
+   cambia. Si pasan dos veces o más (vecinos de abajo separados por otros de arriba: una
+   silla justo en el nodo, o dos curvas a lo largo de una misma arista), se tocarían: cada uno
+   de esos puntos se aparta del nodo **a lo largo de su arista**, hacia su extremo de abajo,
+   hasta donde la superficie lineal está :data:`NODE_SHIFT_DZ_M` (0,5 mm) por debajo de la
+   cota trazada (la mitad de la distancia a la siguiente cota trazada más baja, si es menor; y
+   la mitad de la arista como mucho). Así la curva rodea el nodo por el lado de abajo, como
+   pide «≥ L», ninguna curva toca a otra ni a sí misma, el vértice sigue en su arista y
+   |Δz| ≤ 0,5 mm (RF-006-18 admite 1 mm). En la silla de 1 m que baja 0,025 m al norte y al
+   sur del nodo, cada curva pasa a 0,02 m de él.
+6. **Limpieza**: fuera los vértices repetidos seguidos (una cota justo igual a la de un
    centro o un vértice hace coincidir puntos de corte de varias aristas) y las curvas que se
    quedan con menos de dos vértices (longitud nula).
-6. **Simplificación** de Douglas–Peucker en planta con ``gis.contours.simplify_m`` (0: no).
+7. **Simplificación** de Douglas–Peucker en planta con ``gis.contours.simplify_m`` (0: no).
    Una curva abierta conserva sus extremos; una cerrada, su primer vértice, el más alejado de
    él y, en cada mitad, el más alejado de su cuerda (no se reduce a un segmento). Cada
    vértice quitado queda a ≤ la tolerancia del tramo que lo sustituye. No se comprueba que una
    curva simplificada no toque a otra.
-7. **Longitud mínima** (``gis.contours.min_length_m``, 0: no): fuera las curvas más cortas
+8. **Longitud mínima** (``gis.contours.min_length_m``, 0: no): fuera las curvas más cortas
    (:attr:`ContourLine.length_m`, con el tramo de cierre de las cerradas).
 
 Orden de las curvas: por cota y, en cada cota, por su primer punto de corte (por filas y
@@ -75,6 +89,7 @@ __all__ = [
     "INTERVAL_KEY",
     "MAX_LEVELS",
     "MIN_LENGTH_KEY",
+    "NODE_SHIFT_DZ_M",
     "SIMPLIFY_KEY",
     "ContourLine",
     "contours_from_features",
@@ -94,6 +109,13 @@ INDEX_TOLERANCE = 1e-9
 MAX_LEVELS = 1_000_000
 """Como mucho tantas cotas entre la mínima y la máxima de la superficie: una equidistancia
 mucho menor que el desnivel (p. ej. 10⁻⁵ m) es un error de entrada, no un cálculo."""
+
+NODE_SHIFT_DZ_M = 0.0005
+"""Un punto de corte que cae en un nodo a la cota por el que pasarían dos veces las curvas de
+esa cota se aparta del nodo, a lo largo de su arista, hasta donde la superficie lineal está
+tantos metros por debajo de la cota trazada (0,5 mm, la mitad del |Δz| que admite RF-006-18;
+menos si la siguiente cota trazada más baja está a menos del doble; la mitad de la arista como
+mucho): ver el módulo, 5."""
 
 _QUAD_BLOCK = 1 << 18  # cuadros por bloque de filas de la rejilla (avance y cancelación)
 _TRIANGLE_BLOCK = 1 << 18  # triángulos por bloque del TIN
@@ -180,13 +202,17 @@ def _settings(name: str, interval_m: object, base_m: object, index_every_m: obje
 @dataclass(frozen=True, slots=True)
 class _Levels:
     """Las cotas, por ``elevation`` creciente: si son maestras, a qué cota se trazan
-    (``trace``: L, o L + desfase en las maestras) y su orden por ``trace``."""
+    (``trace``: L, o L + desfase en las maestras), su orden por ``trace`` y cuánto se aparta
+    de un nodo un punto de corte que se tocaría con otro (``node_drop``, m bajo su
+    ``trace``: :data:`NODE_SHIFT_DZ_M` o la mitad de la distancia a la siguiente cota
+    trazada más baja)."""
 
     elevation: np.ndarray
     is_index: np.ndarray
     trace: np.ndarray
     order: np.ndarray
     sorted_trace: np.ndarray
+    node_drop: np.ndarray
 
 
 def _k_range(low: float, high: float, shift: float, settings: _Settings) -> np.ndarray:
@@ -220,7 +246,11 @@ def _levels(low: float, high: float, settings: _Settings, name: str) -> _Levels 
         return None
     elevation, is_index, trace = elevation[keep], is_index[keep], trace[keep]
     order = np.argsort(trace, kind="stable")
-    return _Levels(elevation, is_index, trace, order, trace[order])
+    sorted_trace = trace[order]
+    lower = np.searchsorted(sorted_trace, trace, side="left") - 1  # la trazada más baja más cerca
+    gap = np.where(lower >= 0, trace - sorted_trace[np.maximum(lower, 0)], np.inf)
+    return _Levels(elevation, is_index, trace, order, sorted_trace,
+                   np.minimum(NODE_SHIFT_DZ_M, 0.5 * gap))
 
 
 def _parts(lo: np.ndarray, hi: np.ndarray) -> list[np.ndarray]:
@@ -321,6 +351,75 @@ def _block_done(progress: Progress | None, index: int, total: int) -> None:
                  f"Generando las curvas de nivel: bloque {index + 1} de {total}")
 
 
+# Puntos de corte -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _Cuts:
+    """Los puntos de corte de unas claves y la arista que contiene cada uno: sus extremos
+    ``a`` y ``b`` (número de nodo de la rejilla o de vértice del TIN) con sus coordenadas
+    ABSOLUTAS y sus cotas, la cota a la que se traza (``trace``) y cuánto se apartaría de un
+    nodo (``drop``, m bajo ``trace``)."""
+
+    a: np.ndarray
+    b: np.ndarray
+    xa: np.ndarray
+    ya: np.ndarray
+    za: np.ndarray
+    xb: np.ndarray
+    yb: np.ndarray
+    zb: np.ndarray
+    trace: np.ndarray
+    drop: np.ndarray
+
+    def xy(self) -> tuple[np.ndarray, np.ndarray]:
+        """Interpolación lineal en la arista, a s = (t − za)/(zb − za) de ``a``."""
+        s = (self.trace - self.za) / (self.zb - self.za)
+        return self.xa + s * (self.xb - self.xa), self.ya + s * (self.yb - self.ya)
+
+    def node(self) -> np.ndarray:
+        """El extremo justo a la cota trazada (el de arriba) en el que cae cada punto; −1 si
+        cae dentro de su arista."""
+        return np.where(self.za == self.trace, self.a,
+                        np.where(self.zb == self.trace, self.b, -1))
+
+    def away(self, which: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Los puntos ``which`` (que caen en su nodo) apartados de él a lo largo de su arista,
+        hacia el otro extremo, hasta donde la superficie lineal está ``drop`` por debajo de la
+        cota trazada (la mitad de la arista como mucho). En una arista de la rejilla, la
+        coordenada que no cambia queda bit a bit."""
+        at_a = self.za[which] == self.trace[which]
+        xa, ya, xb, yb = self.xa[which], self.ya[which], self.xb[which], self.yb[which]
+        node_x, node_y = np.where(at_a, xa, xb), np.where(at_a, ya, yb)
+        ux, uy = np.where(at_a, xb - xa, xa - xb), np.where(at_a, yb - ya, ya - yb)
+        fall = self.trace[which] - np.where(at_a, self.zb[which], self.za[which])  # > 0
+        t = np.minimum(self.drop[which] / fall, 0.5)
+        return node_x + t * ux, node_y + t * uy
+
+
+def _touching(node: np.ndarray, level: np.ndarray, node_count: int, chain: np.ndarray,
+              closed: np.ndarray) -> np.ndarray:
+    """Los vértices (en orden de cadena) que caen en un nodo a la cota por el que las curvas
+    de esa cota pasan más de una vez: cada paso es una racha de vértices seguidos de una
+    cadena en ese nodo y cota (en una cerrada, la racha del final sigue en la del
+    principio). ``node``: el nodo de cada vértice o −1; ``level``: su cota (índice)."""
+    moved = np.zeros(len(node), dtype=bool)
+    at = node >= 0
+    if not at.any():
+        return moved
+    group = np.where(at, level * node_count + node, -1)
+    run = at.copy()
+    run[1:] &= ~((group[1:] == group[:-1]) & (chain[1:] == chain[:-1]))
+    sizes = np.bincount(chain, minlength=len(closed))
+    first = np.cumsum(sizes) - sizes
+    last = first + sizes - 1
+    wrap = closed & (first != last) & at[first] & (group[first] == group[last])
+    run[first[wrap]] = False
+    groups, passes = np.unique(group[run], return_counts=True)
+    moved[at] = np.isin(group[at], groups[passes > 1])
+    return moved
+
+
 # Rejilla ---------------------------------------------------------------------------------
 
 
@@ -375,11 +474,11 @@ def contours_from_raster(
         ends.append(end)
         _block_done(progress, index, len(firsts))
 
-    def points(keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        return _grid_points(keys, raster, levels, edge_count)
+    def cuts(keys: np.ndarray) -> _Cuts:
+        return _grid_cuts(keys, raster, levels, edge_count)
 
-    return _lines(np.concatenate(starts), np.concatenate(ends), edge_count, points, levels,
-                  settings, progress, cancelled)
+    return _lines(np.concatenate(starts), np.concatenate(ends), edge_count, nrows * ncols,
+                  cuts, levels, settings, progress, cancelled)
 
 
 def _grid_segments(values: np.ndarray, first: int, stop: int, levels: _Levels,
@@ -413,26 +512,24 @@ def _grid_segments(values: np.ndarray, first: int, stop: int, levels: _Levels,
     return np.concatenate(starts), np.concatenate(ends)
 
 
-def _grid_points(keys: np.ndarray, raster: Raster, levels: _Levels,
-                 edge_count: int) -> tuple[np.ndarray, np.ndarray]:
-    """Las coordenadas ABSOLUTAS de los puntos de corte ``keys``: en la arista del nodo (fila,
-    columna) al de su derecha o al de debajo, a s = (t − za)/(zb − za)."""
+def _grid_cuts(keys: np.ndarray, raster: Raster, levels: _Levels, edge_count: int) -> _Cuts:
+    """Los puntos de corte ``keys``: en la arista del nodo a = (fila, columna) al de su
+    derecha o al de debajo (nodo = fila·columnas + columna), a s = (t − za)/(zb − za)."""
     grid = raster.grid
     level = keys // edge_count
     edge = keys - level * edge_count
-    row, col = np.divmod(edge >> 1, grid.ncols)
+    node = edge >> 1
+    row, col = np.divmod(node, grid.ncols)
     south = (edge & 1).astype(bool)
     row_b = row + south
     col_b = col + ~south
-    za = raster.values[row, col]
-    zb = raster.values[row_b, col_b]
-    s = (levels.trace[level] - za) / (zb - za)
     # Centros como Grid.centers, bit a bit: una de las dos coordenadas queda en el centro.
     xa = grid.west + (col.astype(np.float64) + 0.5) * grid.dx
     xb = grid.west + (col_b.astype(np.float64) + 0.5) * grid.dx
     ya = grid.north - (row.astype(np.float64) + 0.5) * grid.dy
     yb = grid.north - (row_b.astype(np.float64) + 0.5) * grid.dy
-    return xa + s * (xb - xa), ya + s * (yb - ya)
+    return _Cuts(node, row_b * grid.ncols + col_b, xa, ya, raster.values[row, col], xb, yb,
+                 raster.values[row_b, col_b], levels.trace[level], levels.node_drop[level])
 
 
 # TIN ---------------------------------------------------------------------------------------
@@ -484,16 +581,15 @@ def contours_from_tin(
         ends.append(end)
         _block_done(progress, index, len(firsts))
 
-    def points(keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def cuts(keys: np.ndarray) -> _Cuts:
         level = keys // edge_count
         low, high = np.divmod(edges[keys - level * edge_count], count)
-        za, zb = vertices[low, 2], vertices[high, 2]
-        s = (levels.trace[level] - za) / (zb - za)
-        xa, ya = vertices[low, 0], vertices[low, 1]
-        return (xa + s * (vertices[high, 0] - xa), ya + s * (vertices[high, 1] - ya))
+        return _Cuts(low, high, vertices[low, 0], vertices[low, 1], vertices[low, 2],
+                     vertices[high, 0], vertices[high, 1], vertices[high, 2],
+                     levels.trace[level], levels.node_drop[level])
 
-    return _lines(np.concatenate(starts), np.concatenate(ends), edge_count, points, levels,
-                  settings, progress, cancelled)
+    return _lines(np.concatenate(starts), np.concatenate(ends), edge_count, count, cuts,
+                  levels, settings, progress, cancelled)
 
 
 def _tin_segments(corner_z: np.ndarray, face_edges: np.ndarray, levels: _Levels,
@@ -667,19 +763,23 @@ def _simplify(x: np.ndarray, y: np.ndarray, chain: np.ndarray, closed: np.ndarra
     return result
 
 
-def _lines(start: np.ndarray, end: np.ndarray, edge_count: int,
-           points: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]], levels: _Levels,
-           settings: _Settings, progress: Progress | None,
-           cancelled: Cancelled | None) -> list[ContourLine]:
-    """Las curvas de los segmentos: encadenado, coordenadas, limpieza, simplificación y
-    longitud mínima."""
+def _lines(start: np.ndarray, end: np.ndarray, edge_count: int, node_count: int,
+           cuts: Callable[[np.ndarray], _Cuts], levels: _Levels, settings: _Settings,
+           progress: Progress | None, cancelled: Cancelled | None) -> list[ContourLine]:
+    """Las curvas de los segmentos: encadenado, coordenadas (apartadas de un nodo a la cota
+    las que se tocarían), limpieza, simplificación y longitud mínima."""
     lines: list[ContourLine] = []
     if len(start):
         _stage(progress, cancelled, 0.85, "encadenado")
         keys, chain, closed = _chains(start, end)
         level = keys[np.searchsorted(chain, np.arange(len(closed)))] // edge_count
         _stage(progress, cancelled, 0.9, "vértices")
-        x, y = points(keys)
+        found = cuts(keys)
+        x, y = found.xy()
+        moved = _touching(found.node(), keys // edge_count, node_count, chain, closed)
+        if moved.any():
+            x[moved], y[moved] = found.away(moved)
+        del found
         keep = _clean(x, y, chain, closed)
         x, y, chain = x[keep], y[keep], chain[keep]
         if settings.simplify > 0.0 and len(x):

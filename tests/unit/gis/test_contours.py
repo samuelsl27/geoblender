@@ -93,6 +93,24 @@ def _saddles(x, y):
     return 820.0 + 6.0 * np.sin(x / 2.3 + 0.1) * np.cos(y / 1.9 - 0.2)
 
 
+SADDLE_NODE = (700_030.5, 4_400_025.5)
+SADDLE_DROP_M = 0.025  # lo que baja la silla del nodo central a sus vecinos norte y sur
+
+
+def _saddle_node():
+    """La silla de la comprobación en pantalla (M4, 12/10/2026): ESRI ASCII Grid de 41 × 41
+    celdas de 1 m con la esquina suroeste en (700 010; 4 400 005) y
+    z = 800 + ((x − 700 030,5)² − (y − 4 400 025,5)²)/40 en el centro de cada celda, con 3
+    decimales. El nodo central (la silla, :data:`SADDLE_NODE`) y los de sus dos diagonales
+    están justo a 800 m; sus vecinos norte y sur, 0,025 m más abajo, y este y oeste, más
+    arriba."""
+    grid = gis.Grid(west=700_010.0, north=4_400_046.0, dx=1.0, dy=1.0, ncols=41, nrows=41)
+    x, y = grid.centers()
+    values = np.round(800.0 + ((x - SADDLE_NODE[0]) ** 2 - (y - SADDLE_NODE[1]) ** 2) / 40.0, 3)
+    values.flags.writeable = False
+    return gis.Raster(grid, values, CRS, VERTICAL)
+
+
 # Referencias -------------------------------------------------------------------------------
 
 
@@ -196,6 +214,53 @@ def _proper_crossings(segments: np.ndarray) -> int:
     d4 = orient(b[..., 0], b[..., 1], b[..., 2], b[..., 3], a[..., 2], a[..., 3])
     proper = (d1 * d2 < -eps) & (d3 * d4 < -eps)
     return int(np.count_nonzero(np.triu(proper, 1)))
+
+
+def _contacts(lines, block: int = 256) -> list:
+    """Las parejas de tramos que se tocan o se cruzan, salvo dos seguidos de la misma curva
+    (que comparten su vértice): un vértice de una curva sobre otra, un vértice compartido o
+    un cruce, de su cota o de otra (fuerza bruta por bloques de ``block`` tramos). Cada una,
+    ``((curva, tramo), (curva, tramo), (x, y))`` con (x, y) relativas a E0, N0 del primer
+    extremo del primer tramo."""
+    seg = _segments(lines)
+    sizes = [len(line.xyz) - (not line.closed) for line in lines]
+    owner = np.repeat(np.arange(len(lines)), sizes)
+    index = np.concatenate([np.arange(size) for size in sizes])
+    count = np.repeat(sizes, sizes)
+    closed = np.repeat([line.closed for line in lines], sizes)
+
+    def orient(px, py, qx, qy, rx, ry):
+        return (qx - px) * (ry - py) - (qy - py) * (rx - px)
+
+    found = []
+    b = seg[None, :, :]
+    for lo in range(0, len(seg), block):
+        a = seg[lo:lo + block, None, :]
+        d1 = orient(a[..., 0], a[..., 1], a[..., 2], a[..., 3], b[..., 0], b[..., 1])
+        d2 = orient(a[..., 0], a[..., 1], a[..., 2], a[..., 3], b[..., 2], b[..., 3])
+        d3 = orient(b[..., 0], b[..., 1], b[..., 2], b[..., 3], a[..., 0], a[..., 1])
+        d4 = orient(b[..., 0], b[..., 1], b[..., 2], b[..., 3], a[..., 2], a[..., 3])
+        overlap = np.ones(d1.shape, dtype=bool)
+        for k in (0, 1):  # cajas que se solapan (para los tramos alineados)
+            low = np.maximum(np.minimum(a[..., k], a[..., k + 2]),
+                             np.minimum(b[..., k], b[..., k + 2]))
+            high = np.minimum(np.maximum(a[..., k], a[..., k + 2]),
+                              np.maximum(b[..., k], b[..., k + 2]))
+            overlap &= low <= high
+        aligned = (d1 == 0.0) & (d2 == 0.0)
+        hit = (d1 * d2 <= 0.0) & (d3 * d4 <= 0.0) & (~aligned | overlap)
+        i = np.arange(lo, min(lo + block, len(seg)))[:, None]
+        j = np.arange(len(seg))[None, :]
+        step = np.abs(index[i] - index[j])
+        same = owner[i] == owner[j]
+        adjacent = same & ((step == 1) | (closed[i] & (step == count[i] - 1)))
+        hit &= (j > i) & ~adjacent
+        for p, q in zip(*np.nonzero(hit), strict=True):
+            first, second = lo + int(p), int(q)
+            found.append(((int(owner[first]), int(index[first])),
+                          (int(owner[second]), int(index[second])),
+                          tuple(seg[first, :2].tolist())))
+    return found
 
 
 def _signed_area(line) -> float:
@@ -385,6 +450,70 @@ class GridContoursTest(unittest.TestCase):
             if not line.closed:
                 self.assertTrue(_at_data_border(raster, *line.xyz[0, :2]))
                 self.assertTrue(_at_data_border(raster, *line.xyz[-1, :2]))
+
+    def test_saddle_node_at_the_level(self) -> None:
+        """RF-006-18 (spec §8, «Silla en curvas de nivel»; M4, T56): la silla de la pantalla,
+        con su nodo justo a 800 m. El nodo a la cota cuenta como «por encima» (≥, como la
+        media del cuadro): las dos curvas de 800 m (abiertas, de 41 vértices) no pasan por él
+        ni se tocan. El vértice de cada una que caía en el nodo se aparta de él por su arista
+        norte o sur hasta donde la superficie está ``NODE_SHIFT_DZ_M`` (0,5 mm) por debajo de
+        la cota: a 0,0005/0,025 = 0,02 m. Ningún par de tramos se toca ni se cruza; los demás
+        vértices, sobre la superficie (|Δz| ≤ 10⁻⁶ m), y ninguno en el nodo."""
+        raster = _saddle_node()
+        lines = gis.contours_from_raster(raster, interval_m=1.0, base_m=0.0)
+        self.assertEqual(_contacts(lines), [])
+        self.assertEqual(_proper_crossings(_segments(lines)), 0)
+        self.assertEqual([(len(line.xyz), line.closed) for line in lines
+                          if line.elevation == 800.0], [(41, False)] * 2)
+        xyz = np.vstack([line.xyz for line in lines])
+        self.assertTrue((xyz[:, 2] == np.concatenate(
+            [np.full(len(line.xyz), line.elevation) for line in lines])).all())
+        dz = np.abs(_edge_z(raster, xyz) - xyz[:, 2])
+        self.assertFalse(np.isnan(dz).any())
+        moved = dz > SURFACE_TOL
+        self.assertEqual(int(moved.sum()), 2)
+        self.assertEqual(contours.NODE_SHIFT_DZ_M, 0.0005)
+        np.testing.assert_allclose(dz[moved], 0.0005, rtol=0.0, atol=1e-9)
+        distance = np.hypot(xyz[:, 0] - SADDLE_NODE[0], xyz[:, 1] - SADDLE_NODE[1])
+        self.assertGreater(float(distance.min()), 0.0)
+        np.testing.assert_allclose(distance[moved], 0.0005 / SADDLE_DROP_M, rtol=0.0,
+                                   atol=1e-9)  # 0,02 m
+        self.assertTrue((xyz[moved, 0] == SADDLE_NODE[0]).all())  # en las aristas norte y sur
+        self.assertEqual(sorted(np.sign(xyz[moved, 1] - SADDLE_NODE[1]).tolist()), [-1.0, 1.0])
+
+    def test_saddle_node_next_to_another_traced_level(self) -> None:
+        """RF-006-18 (T56): con maestras cada 7 m y desfase 1,9996 m, la maestra de 798 m se
+        traza a 799,9996 m, 0,4 mm por debajo de la curva de 800 m: los puntos de 800 m que
+        se apartan del nodo de la silla bajan solo la mitad (0,2 mm), sin pasar del de
+        799,9996 m en su misma arista, y ningún par de tramos se toca ni se cruza."""
+        raster = _saddle_node()
+        lines = gis.contours_from_raster(raster, interval_m=1.0, index_every_m=7.0,
+                                         index_offset_m=1.9996)
+        self.assertEqual(_contacts(lines), [])
+        self.assertIn(798.0, [line.elevation for line in lines if line.is_index])
+        xyz = np.vstack([line.xyz for line in lines if line.elevation == 800.0])
+        dz = np.abs(_edge_z(raster, xyz) - 800.0)
+        moved = dz > SURFACE_TOL
+        self.assertEqual(int(moved.sum()), 2)
+        np.testing.assert_allclose(dz[moved], 0.0002, rtol=0.0, atol=1e-9)
+
+    def test_nodes_at_levels_never_touch(self) -> None:
+        """RF-006-18 (spec §8; T56): en una rejilla con las cotas redondeadas a 0,25 m y
+        equidistancia 0,25 m (muchos nodos justo a la cota, sillas en un nodo y en cuadros con
+        una esquina a la cota), ningún par de tramos se toca ni se cruza; los vértices, en las
+        aristas entre centros y sobre la superficie (los apartados de un nodo, a 0,5 mm)."""
+        rng = np.random.default_rng(2)
+        base = rng.normal(size=(20, 24)).cumsum(axis=0).cumsum(axis=1) * 0.05
+        raster = _raster(800.0 + np.round(base * 4.0) / 4.0)
+        lines = gis.contours_from_raster(raster, interval_m=0.25)
+        self.assertGreater(len(_segments(lines)), 200)
+        self.assertEqual(_contacts(lines), [])
+        xyz = np.vstack([line.xyz for line in lines])
+        level = np.concatenate([np.full(len(line.xyz), line.elevation) for line in lines])
+        dz = np.abs(_edge_z(raster, xyz) - level)
+        moved = dz > SURFACE_TOL
+        self.assertTrue(moved.any())
+        np.testing.assert_allclose(dz[moved], contours.NODE_SHIFT_DZ_M, rtol=0.0, atol=1e-9)
 
     def test_open_only_at_the_border_and_at_holes(self) -> None:
         """RF-006-18: con un hueco interior y sin dato en una esquina, las curvas que los
@@ -730,6 +859,54 @@ class TinContoursTest(unittest.TestCase):
         self.assertEqual(_proper_crossings(segments), 0)
         self._check_on_tin(tin, lines)
         self._check_open_at_boundary(tin, lines)
+
+    def _moved_from_vertices(self, tin, lines) -> np.ndarray:
+        """Z = cota, cada vértice en una arista del TIN y sobre él: a ≤ 10⁻⁶ m o, los que se
+        apartaron de un vértice a la cota, a ``NODE_SHIFT_DZ_M`` (0,5 mm; el requisito admite
+        1 mm), y ninguno de ellos en un vértice. Devuelve cuáles se apartaron."""
+        xyz = np.vstack([line.xyz for line in lines])
+        level = np.concatenate([np.full(len(line.xyz), line.elevation) for line in lines])
+        self.assertTrue((xyz[:, 2] == level).all())
+        distance, z, _border = _tin_reference(tin, xyz)
+        self.assertLessEqual(float(distance.max()), EDGE_TOL)
+        dz = np.abs(z - level)
+        moved = dz > SURFACE_TOL
+        np.testing.assert_allclose(dz[moved], contours.NODE_SHIFT_DZ_M, rtol=0.0, atol=1e-9)
+        apart = xyz[moved]
+        vertex = np.hypot(apart[:, None, 0] - tin.vertices[None, :, 0],
+                          apart[:, None, 1] - tin.vertices[None, :, 1])
+        self.assertTrue((vertex > 0.0).all())
+        return moved
+
+    def test_saddle_node_at_the_level(self) -> None:
+        """RF-006-18 (spec §8, «Silla en curvas de nivel»; M4, T56): en el TIN de los centros
+        de la silla de la pantalla, con su vértice central justo a 800 m, las dos curvas de
+        800 m no pasan por él ni se tocan: el punto de corte de cada una que caía en el
+        vértice se aparta por su arista (la norte o la sur) hasta 0,5 mm por debajo de la
+        cota. Ningún par de tramos se toca ni se cruza; los vértices, en aristas del TIN y
+        sobre él."""
+        tin = gis.raster_to_tin(_saddle_node())
+        lines = gis.contours_from_tin(tin, interval_m=1.0, base_m=0.0)
+        self.assertEqual(_contacts(lines), [])
+        self.assertEqual(sum(line.elevation == 800.0 for line in lines), 2)
+        moved = self._moved_from_vertices(tin, lines)
+        self.assertEqual(int(moved.sum()), 2)
+        xyz = np.vstack([line.xyz for line in lines])
+        self.assertGreater(float(np.hypot(xyz[:, 0] - SADDLE_NODE[0],
+                                          xyz[:, 1] - SADDLE_NODE[1]).min()), 0.0)
+        np.testing.assert_allclose(
+            np.hypot(xyz[moved, 0] - SADDLE_NODE[0], xyz[moved, 1] - SADDLE_NODE[1]),
+            contours.NODE_SHIFT_DZ_M / SADDLE_DROP_M, rtol=0.0, atol=1e-9)
+
+    def test_vertices_at_levels_never_touch(self) -> None:
+        """RF-006-18 (spec §8; T56): el TIN de los centros de una huevera con cotas enteras
+        (vértices justo a la cota: sillas en un vértice y dos curvas a lo largo de una misma
+        arista) da curvas que no se tocan ni se cruzan, con los vértices en aristas del TIN y
+        sobre él (los apartados de un vértice, a 0,5 mm)."""
+        tin = gis.raster_to_tin(_raster(np.round(_sampled(_saddles, 14, 18).values)))
+        lines = gis.contours_from_tin(tin, interval_m=1.0)
+        self.assertEqual(_contacts(lines), [])
+        self.assertTrue(self._moved_from_vertices(tin, lines).any())
 
     def test_clockwise_faces_give_the_same_lines(self) -> None:
         """RF-006-18: con los triángulos en sentido horario las curvas son las mismas."""
