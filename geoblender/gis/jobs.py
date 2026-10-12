@@ -38,9 +38,13 @@ resultados en ``out/``:
 - ``gis_read_raster``: ``reader`` (``gis.geotiff@1``, ``gis.asc@1`` o ``gis.xyz_grid@1``),
   ``name``, ``settings`` (de lectura), ``crs`` y ``vertical`` (declarados; ``None``: los del
   fichero), ``prj_crs`` (el CRS que la orden reconoció en el ``.prj`` de un ASC con el
-  servicio de CRS; sin él, la nota de que no se reconoció), ``max_cells`` y ``size``;
+  servicio de CRS; sin él, la nota de que no se reconoció), ``max_cells``, ``size`` y
+  ``origin`` (opcional: el GeoOrigin del proyecto, si la fuente está en su CRS horizontal);
   ``source_main`` [y ``source_prj``] → ``source.tif``. Sus notas y sus fallos nombran el
-  fichero del usuario, no su copia en ``in/`` (T52).
+  fichero del usuario, no su copia en ``in/`` (T52). Su resumen dice dónde caen las celdas
+  con dato (T51; spec §8): su extensión (``data_extent``, :func:`window_json`) y, con
+  ``origin``, el aviso de RF-002-26 de sus centros (``precision``, :func:`precision_json`;
+  ``gis.placement``).
 - ``gis_resample``: ``name``, ``source_crs``, ``source_vertical``, ``target_crs``,
   ``target_vertical``, ``target`` (la rejilla), ``method`` (``auto``, ``area_mean``,
   ``bilinear`` o ``mode``), ``min_valid_fraction``, ``supersample`` y ``size``; ``source``
@@ -135,7 +139,15 @@ from ..core.content.builtin import DOCUMENT
 from ..core.content.encoder import NORMALIZER, ContentDigest
 from ..core.content.readers import MAIN_ROLE, ContentReader, read_steps
 from ..core.errors import GeoblenderError
-from ..core.georef import CrsRef, GeoOrigin, VerticalRef, Window, load_catalog, world_to_local
+from ..core.georef import (
+    CrsRef,
+    GeoOrigin,
+    PrecisionReport,
+    VerticalRef,
+    Window,
+    load_catalog,
+    world_to_local,
+)
 from ..core.gpkg.base import ColumnDef
 from ..core.gpkg.header import side_file
 from ..jobs.catalog import WorkerInfo
@@ -158,6 +170,7 @@ from .geotiff import GeoTiffIO
 from .geotiff.reader import read_geotiff
 from .grid import Grid
 from .mesh import MeshArrays, lod_rasters, surface_mesh_from_raster, surface_mesh_from_tin
+from .placement import cells_precision, data_extent
 from .points import (
     Breakline,
     ColumnMapping,
@@ -482,6 +495,35 @@ def origin_of(value: object) -> GeoOrigin:
     if not isinstance(value, Mapping) or set(value) != {"x0", "y0", "z0"}:
         raise ValueError(f"el GeoOrigin es {{x0, y0, z0}}, no {value!r}")
     return GeoOrigin(value["x0"], value["y0"], value["z0"])
+
+
+def window_json(window: Window) -> dict[str, float]:
+    """Una extensión (``core.georef.Window``) en el resumen: ``{"xmin", "ymin", "xmax",
+    "ymax"}`` (m)."""
+    return {"xmin": window.xmin, "ymin": window.ymin, "xmax": window.xmax,
+            "ymax": window.ymax}
+
+
+def window_of(value: object) -> Window:
+    """La extensión de :func:`window_json`. ``ValueError`` o ``TypeError`` si no lo es."""
+    keys = {"xmin", "ymin", "xmax", "ymax"}
+    if not isinstance(value, Mapping) or set(value) != keys:
+        raise ValueError(f"una extensión es {{xmin, ymin, xmax, ymax}}, no {value!r}")
+    return Window(**dict(value))
+
+
+def precision_json(report: PrecisionReport) -> dict[str, Any]:
+    """El aviso de RF-002-26 (``core.georef.PrecisionReport``) en el resumen."""
+    return plain(report)
+
+
+def precision_of(value: object) -> PrecisionReport:
+    """El ``PrecisionReport`` de :func:`precision_json`. ``ValueError`` o ``TypeError`` si no
+    lo es."""
+    names = [item.name for item in dataclasses.fields(PrecisionReport)]
+    if not isinstance(value, Mapping) or set(value) != set(names):
+        raise ValueError(f"un aviso de precisión es {{{', '.join(names)}}}, no {value!r}")
+    return PrecisionReport(**{**value, "corners_outside": tuple(value["corners_outside"])})
 
 
 def digest_json(digest: ContentDigest) -> dict[str, str]:
@@ -1349,6 +1391,8 @@ def run_read_raster(ctx: _Context) -> dict[str, Any]:
                                  or not math.isfinite(override)):
         raise request.invalid(f"el sin dato forzado es un número finito o nada, no {override!r}")
     prj_crs = request.crs("prj_crs", required=False)
+    origin = request.parsed("origin", lambda value: None if value is None else origin_of(value),
+                            required=False)
     ctx.progress(0.0, COPYING_TEXT)
     roles = (MAIN_ROLE, PRJ_ROLE) if reader is gis_content.ASC else (MAIN_ROLE,)
     files, prints = _copy_sources(ctx, request, roles, low=0.0, high=0.1)
@@ -1382,6 +1426,8 @@ def run_read_raster(ctx: _Context) -> dict[str, Any]:
     GeoTiffIO().write(raster, ctx.output_path(OUT_SOURCE_GRID.file), profile="project",
                       progress=_span(ctx, 0.6, 0.9), cancelled=cancelled)
     written = _dataset_digest_raster(ctx, raster, 0.9, 0.99)
+    valid = np.isfinite(values)
+    extent = data_extent(source.grid, valid)
     summary = {
         "source": _source_summary(reader, digest, prints, declarations, settings),
         "crs": crs_json(crs),
@@ -1392,11 +1438,15 @@ def run_read_raster(ctx: _Context) -> dict[str, Any]:
         "nodata_value": plain(source.nodata_value),
         "pixel_is_point": bool(source.pixel_is_point),
         "notes": list(source.notes),
-        "valid_cells": int(np.count_nonzero(np.isfinite(values))),
+        "valid_cells": int(np.count_nonzero(valid)),
+        # Dónde caen sus celdas con dato (T51; spec §8, RF-002-26): la orden lo dice.
+        "data_extent": None if extent is None else window_json(extent),
         "outputs": {OUT_SOURCE_GRID.role: {
             "file": OUT_SOURCE_GRID.relative,
             "digest": digest_json(written)}},
     }
+    if origin is not None:
+        summary["precision"] = precision_json(cells_precision(source.grid, valid, origin))
     _finish(ctx, (OUT_SOURCE_GRID,))
     return summary
 

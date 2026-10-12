@@ -217,6 +217,22 @@ class PlanTest(unittest.TestCase):
         self.assertNotIn(str(self.tmp), json.dumps(params))
         self.assertEqual(dtm.job_paths(source), {"source_main": asc, "source_prj": prj})
 
+    def test_origin_only_for_a_source_in_the_project_crs(self) -> None:
+        """RF-002-26 (T51; spec §8): el trabajo recibe el GeoOrigin del proyecto (``origin``)
+        para decir cuántos centros de sus celdas con dato pasan de 8 km solo si la fuente
+        está en el CRS horizontal del proyecto (lo que llegaría así a la escena); en otro
+        (ED50), no, y sin él, el trabajo no lo recibe."""
+        origin = georef.GeoOrigin(700_000, 4_400_000, 0)
+        tif = dtm.plan_import(self.copy("geotiff/f64_strip.tif"), name="MDT dron",
+                              vertical=V5782)
+        ed50 = dtm.plan_import(self.copy("geotiff/f64_strip.tif", name="plano.tif"),
+                               name="Plano", crs=H23030, vertical=V5782)
+        self.assertIs(dtm.scene_origin(tif, H25830, origin), origin)
+        self.assertIsNone(dtm.scene_origin(ed50, H25830, origin))
+        params = dtm.job_params(tif, max_cells=10, origin=origin)
+        self.assertEqual(params["origin"], {"x0": 700_000, "y0": 4_400_000, "z0": 0})
+        self.assertNotIn("origin", dtm.job_params(tif, max_cells=10))
+
 
 class SamplesTest(unittest.TestCase):
     def test_samples_are_centres_with_data(self) -> None:

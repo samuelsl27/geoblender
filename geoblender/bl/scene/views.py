@@ -27,7 +27,10 @@ objetos sin enlazar, en coordenadas **locales** respecto al GeoOrigin y con matr
 - **el recorte** de cada Vista 3D (:func:`fit_clip`): su ``clip_end`` cubre lo cargado y
   ``clip_start`` lo sigue con lejano/cercano ≤ 10⁵ (``bl.ui.views.clip_range``, el del
   encuadre de la 003; los datos están a kilómetros del origen y los 1 000 m de Blender los
-  recortarían, Silvestre UI-01).
+  recortarían, Silvestre UI-01);
+- **la precisión** de lo que se lleva a la escena (:func:`scene_precision`; RF-002-26, spec
+  006 §8, T51): si algún vértice pasa de 8 000 m del GeoOrigin en X o en Y, un aviso con
+  ``core.georef.precision_report`` (cuántos puntos y el error máximo estimado en mm).
 
 **Descargar** (:func:`unload_datasets`; RF-006-20) quita los objetos de un dato, sus mallas y
 las colecciones que quedan vacías; nunca toca el proyecto. Ni cargar ni descargar escriben en el
@@ -48,8 +51,10 @@ from mathutils import Vector
 
 from ...core.datasets.model import DatasetRecord, DatasetStatus
 from ...core.errors import GeoblenderError
+from ...core.georef import PRECISION_LIMIT_M, GeoOrigin, PrecisionReport, precision_report
 from ...core.i18n import language, tr, translate
 from ..props.core import OBJECT_PROPERTY
+from .mesh import mesh_vertices_world
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
 
@@ -327,11 +332,30 @@ def _mark(obj: bpy.types.Object, kind: str, shown: Any, project: Any) -> None:
     props.stale = shown.stale
 
 
+def scene_precision(parts: ViewParts, origin: GeoOrigin) -> PrecisionReport | None:
+    """El aviso de RF-002-26 de lo que lleva a la escena un cargador (T51): el de
+    ``core.georef.precision_report`` de los vértices de sus mallas, tal como los guarda
+    Blender, vueltos a absolutas (cuántos pasan de 8 000 m del GeoOrigin en X o en Y y el
+    error máximo estimado en mm). ``None`` si su extensión local queda dentro (no se leen
+    los vértices) o si no tiene ninguna malla con vértices."""
+    if parts.bounds is None:
+        return None
+    low, high = (np.asarray(corner, dtype=np.float64)[:2] for corner in parts.bounds)
+    if max(float(np.abs(low).max()), float(np.abs(high).max())) <= PRECISION_LIMIT_M:
+        return None
+    vertices = [mesh_vertices_world(obj.data, origin) for obj in parts.objects
+                if isinstance(obj.data, bpy.types.Mesh) and len(obj.data.vertices)]
+    if not vertices:
+        return None
+    return precision_report(np.vstack(vertices), origin)
+
+
 def load_datasets(context: Any, project: Any, refs: Iterable[str], *,
                   lod: int = 0) -> LoadOutcome:
     """Carga en la escena de ``context`` los datos ``refs`` (uids o nombres) del proyecto
     abierto ``project`` con su cargador (RF-006-19, RF-006-29): cada uno, en la colección de
-    su dato con ``Object.geoblender`` y su nombre generado, sustituyendo lo que hubiera de él;
+    su dato con ``Object.geoblender`` y su nombre generado, sustituyendo lo que hubiera de él
+    y con el aviso de RF-002-26 si pasa de 8 km del GeoOrigin (:func:`scene_precision`);
     después, el ancla y el recorte. Un dato que falta se avisa y no se carga; uno que el
     proyecto no tiene, sin cargador o que su cargador rechaza (``GeoblenderError``: otro CRS,
     una malla no válida…) es un error y los demás se cargan. No escribe nada en el proyecto."""
@@ -378,6 +402,10 @@ def load_datasets(context: Any, project: Any, refs: Iterable[str], *,
         loaded.append(record.name)
         objects.extend(parts.objects)
         notes.extend(parts.notes)
+        far = scene_precision(parts, project.origin)
+        if far is not None and not far.within_limit:
+            notes.append(tr("«{name}» in the view: {warning}", name=record.name,
+                            warning=far.message))
         if parts.bounds is not None:
             lows.append(np.asarray(parts.bounds[0], dtype=np.float64))
             highs.append(np.asarray(parts.bounds[1], dtype=np.float64))

@@ -441,6 +441,39 @@ class ImportJobsTest(_JobCase):
         self.assertIn("«malla.xyz»", caught.exception.text)
         self.assertNotIn("source_main", caught.exception.text)
 
+    def test_read_raster_says_where_its_cells_with_data_fall(self) -> None:
+        """RF-006-08, RF-002-26 (T51; spec §8, «MDT que sale de la ventana de trabajo o a más
+        de 8 km del GeoOrigin»): el resumen de ``gis_read_raster`` trae la extensión de las
+        celdas con dato (``data_extent``) y, con el GeoOrigin del proyecto en la petición
+        (``origin``, que la orden pasa si la fuente está en el CRS horizontal del proyecto),
+        el informe de ``core.georef.precision_report`` de sus centros (``precision``); sin
+        él, ninguno. ``f32_strip.tif`` (64 × 48 celdas de 1 m con un hueco interior): su
+        extensión, la de la rejilla; con el GeoOrigin junto a su esquina, dentro de ±8 km;
+        con uno 8 km al oeste, sus 3 060 centros con dato pasan de 8 000 m."""
+        source = _STATE["sources"] / "f32_strip.tif"
+        expected = geotiff_reader.read_geotiff(source)
+        valid = np.isfinite(expected.values)
+        xx, yy = expected.grid.centers()
+        centres = np.column_stack([xx[valid], yy[valid]])
+        params = {"reader": gis_content.GEOTIFF.id, "name": "MDT", "settings": {},
+                  "crs": CRS_JSON, "vertical": VERTICAL_JSON}
+        paths = {gis_jobs.path_name("main"): source}
+        far = georef.GeoOrigin(692_000, 4_400_000, 0)
+        for label, origin in (("sin GeoOrigin", None), ("cerca", ORIGIN), ("a 8 km", far)):
+            with self.subTest(origen=label):
+                extra = {} if origin is None else {"origin": gis_jobs.origin_json(origin)}
+                summary, _ctx, _folder = self.run_job(gis_jobs.READ_RASTER,
+                                                      {**params, **extra}, paths=paths)
+                self.assertEqual(gis_jobs.window_of(summary["data_extent"]),
+                                 expected.grid.extent)
+                if origin is None:
+                    self.assertNotIn("precision", summary)
+                    continue
+                report = gis_jobs.precision_of(summary["precision"])
+                self.assertEqual(report, georef.precision_report(centres, origin))
+                self.assertEqual(report.within_limit, origin is ORIGIN)
+        self.assertEqual(report.points_outside, 3_060)
+
     def test_import_points_gives_points_and_breaklines(self) -> None:
         """RF-006-28, RF-006-12, RF-006-26, RF-008-09 (plan §5.3.4): ``gis_import_points``
         lee la copia del texto con la correspondencia de columnas y deja ``points.npz``,

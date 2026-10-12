@@ -22,6 +22,9 @@ como lo harán los operadores, y se abre en la sesión.
   con lejano/cercano ≤ 10⁵. Se cargan los vigentes, los bloqueados y los dañados con su marca,
   y de uno que falta se avisa sin cargarlo. Cargar no registra ninguna operación ni cambia el
   proyecto.
+- RF-002-26 (T51): lo que se lleva a la escena a más de 8 000 m del GeoOrigin (el TIN y las
+  curvas, a unos 8 001–8 005 m al norte) se avisa al cargarlo, con cuántos puntos y el error
+  máximo estimado en mm; lo que queda dentro, no.
 - RF-006-21: una malla con las caras al revés no se muestra (``gis.mesh_invalid``).
 - RF-006-22: la rejilla de 1 m se carga también en sus niveles de 2 y 5 m (media por área) y
   se pasa de uno a otro sin cambiar la rejilla de cálculo.
@@ -418,18 +421,43 @@ class ViewsTest(ViewsCase):
 
     def test_missing_is_not_loaded_and_blocked_is_marked(self) -> None:
         """Plan §5.6.7: de un dato que falta se avisa y no se carga; uno bloqueado se carga
-        con su marca; uno que el proyecto no tiene es un error; los demás se cargan."""
+        con su marca (y, con sus vértices a más de 8 000 m del GeoOrigin, con el aviso de
+        RF-002-26, T51); uno que el proyecto no tiene es un error; los demás se cargan."""
         outcome = self.views.load_datasets(
             bpy.context, self.project,
             ["gis_dtm_mdt_falta", "gis_tin_topo_lejano", "gis_nada"])
         self.assertEqual(outcome.loaded, ("gis_tin_topo_lejano",))
         self.assertEqual(self.objects_of("gis_dtm_mdt_falta"), [])
         self.assertEqual(self.only("gis_tin_topo_lejano").geoblender.status, "BLOCKED")
-        self.assertEqual(len(outcome.notes), 1)
+        self.assertEqual(len(outcome.notes), 2)
         self.assertIn("gis_dtm_mdt_falta", outcome.notes[0])
         self.assertIn("falta", outcome.notes[0])
+        self.assertTrue(outcome.notes[1].startswith("«gis_tin_topo_lejano» en la vista: 5 "
+                                                    "puntos están a más de 8"), outcome.notes)
         self.assertEqual(len(outcome.errors), 1)
         self.assertIn("gis_nada", outcome.errors[0])
+
+    def test_beyond_8_km_says_so_when_loaded(self) -> None:
+        """RF-002-26, RF-006-19 (T51; spec §8): al cargar en la vista, un dato con algún
+        vértice a más de 8 000 m del GeoOrigin en X o en Y lo avisa con el informe de
+        ``core.georef.precision_report`` de lo que se lleva a la escena (cuántos puntos y el
+        error máximo estimado en mm): el TIN (sus 5 vértices, de 8 000,8 a 8 004,8 m al
+        norte) y las curvas (sus 7, de 8 001,0 a 8 003,0 m); la rejilla y los puntos, a menos
+        de 8 000 m, sin aviso."""
+        data = self.data
+        names = ["gis_dtm_mdt_lejano", "gis_pts_taludes_lejanos", "gis_tin_topo_lejano",
+                 "gis_cnt_curvas_lejanas"]
+        outcome = self.views.load_datasets(bpy.context, self.project, names)
+        self.assertEqual(outcome.loaded, tuple(names))
+        georef = _module("core.georef")
+        tin = georef.precision_report(data.tin.vertices, self.origin)
+        rings = georef.precision_report(np.vstack([line.xyz for line in data.contours]),
+                                        self.origin)
+        self.assertEqual((tin.points_outside, rings.points_outside), (5, 7))
+        self.assertIn("0,244 mm", tin.message)
+        self.assertEqual(outcome.notes, (f"«gis_tin_topo_lejano» en la vista: {tin.message}",
+                                         f"«gis_cnt_curvas_lejanas» en la vista: "
+                                         f"{rings.message}"))
 
     def test_inverted_mesh_is_not_shown(self) -> None:
         """RF-006-21: si la malla de una superficie sale con las caras al revés, no se

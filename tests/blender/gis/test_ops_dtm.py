@@ -34,6 +34,11 @@ del IGN, 0,2 m; altura elipsoidal → Alicante con el geoide, 0,05 m). :class:`D
 - RF-006-04 (T52): el ``.prj`` de un ASC que reconoce el servicio de CRS de la orden no deja en
   el informe la nota de que no se reconoció (tampoco al reimportarlo), y la de uno que no
   reconoce nombra los ficheros del usuario, no sus copias en la carpeta del trabajo.
+- RF-006-08, RF-006-11, RF-002-26, RF-006-19 (T51; spec §8): un MDT que sale de la ventana de
+  trabajo se importa entero con un aviso en el informe, y la rejilla del proyecto solo cubre la
+  ventana; uno a 9 km del GeoOrigin, además, con el aviso de ``core.georef.precision_report``
+  (cuántos puntos y el error máximo estimado en mm), que se repite al cargarlo en la vista; uno
+  dentro, sin aviso.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -63,6 +68,8 @@ DATA = ROOT / "tests" / "data" / "gis"
 SITE = ROOT / ".deps" / "site"
 WINDOW = (699_980.0, 4_399_980.0, 700_080.0, 4_400_060.0)  # 50 × 40 celdas de 2 m
 ED50_WINDOW = (699_880.0, 4_399_780.0, 699_960.0, 4_399_860.0)  # donde cae el MDT en ED50
+# La ventana de la verificación de la 006 (F-2): GeoOrigin (700 000; 4 400 000; 0).
+EDGE_WINDOW = (699_990.0, 4_399_990.0, 700_040.0, 4_400_030.0)
 STEP = 2.0
 IMPORT = "geoblender.gis_import_dtm"
 RESAMPLE = "geoblender.gis_resample_to_grid"
@@ -408,7 +415,8 @@ class DtmImportTest(DtmOperatorsCase):
         """RF-006-05: un MDT en ED50 (EPSG:23030, declarado por el fichero) se importa en su
         CRS con la transformación al del proyecto y su precisión en el informe; sin una
         transformación de precisión conocida, se rechaza nombrando los dos CRS y no empieza
-        nada."""
+        nada. RF-006-08 (T51): el aviso de la ventana de trabajo, con su extensión
+        transformada al CRS del proyecto."""
         self.open()
         path = self.source("geotiff/f32_epsg23030.tif")
         self.fake = _FakeCrs(self.ports, known=False)
@@ -427,6 +435,15 @@ class DtmImportTest(DtmOperatorsCase):
         self.assertIn("es_ign_SPED2ETV2.tif", message)
         (crs_h,) = self.rows("SELECT crs_h FROM gb_input WHERE name = 'Plano antiguo'")[0]
         self.assertEqual(crs_h, '{"epsg":23030}')
+        # T51 (spec §8): transformado al CRS del proyecto, cae fuera de la ventana; sin el
+        # aviso de 8 km (en otro CRS, la vista no lo muestra sin transformarlo).
+        fmt = _module("core.i18n").format_number
+        self.assertIn(f"El MDT «Plano antiguo» sale de la ventana de trabajo (X "
+                      f"{fmt(699_980, 2)} a {fmt(700_080, 2)}, Y {fmt(4_399_980, 2)} a "
+                      f"{fmt(4_400_060, 2)}): sus celdas con dato, transformadas al CRS del "
+                      f"proyecto, van de X {fmt(699_890, 2)} a {fmt(699_954, 2)} y de Y "
+                      f"{fmt(4_399_793, 2)} a {fmt(4_399_841, 2)}.", message)
+        self.assertNotIn("GeoOrigin", message)
 
     def test_asc_prj_note_names_the_user_files(self) -> None:
         """RF-006-04, RF-006-08, RF-008-11 (T52; constitución, principio 10): un ASC cuyo
@@ -465,6 +482,82 @@ class DtmImportTest(DtmOperatorsCase):
         self.assertIn("El CRS que declara «dxdy.prj» no se ha reconocido en el catálogo de "
                       "Geoblender: declare el CRS de «dxdy.asc» al importarlo.", message)
         self.assertNotIn("source_main", message)
+
+    def written_dtm(self, west: float, north: float, size: int, name: str) -> tuple[Any, Path]:
+        """Un MDT de ``size`` × ``size`` celdas de 1 m con su esquina noroeste en
+        (``west``; ``north``), escrito en ``entregas/<name>``."""
+        grid = self.grid.Grid(west, north, 1.0, 1.0, size, size)
+        xx, _yy = grid.centers()
+        raster = self.raster.Raster(grid, 800.0 + 0.01 * (xx - 700_000.0), self.crs,
+                                    self.vertical)
+        return raster, self.written(raster, name)
+
+    def test_dtm_outside_the_window_or_far_from_the_origin(self) -> None:
+        """RF-006-08, RF-006-11, RF-002-26, RF-006-19 (T51; spec §8, «MDT que sale de la
+        ventana de trabajo o a más de 8 km del GeoOrigin»; reproducción de F-2 de la
+        verificación de la 006). Con el GeoOrigin en (700 000; 4 400 000) y la ventana de
+        699 990 a 700 040 y de 4 399 990 a 4 400 030:
+
+        - un MDT dentro de la ventana se importa sin aviso;
+        - uno de 40 × 40 m que sale de ella por el este y por el norte se importa entero, con
+          el aviso que dice su extensión y la de la ventana, y la rejilla del proyecto solo
+          cubre la ventana;
+        - uno a 9 km al este se importa entero con ese aviso y con el de
+          ``core.georef.precision_report`` de los centros de sus celdas con dato («100 puntos
+          están a más de 8 000 m del GeoOrigin…», 0,488 mm), y al cargarlo en la vista lo
+          vuelve a decir de lo que se carga; el de 40 × 40 m se carga sin aviso."""
+        project = self.open(window=EDGE_WINDOW)
+        self.assertEqual(project.origin.as_tuple(), (700_000, 4_400_000, 0))
+        fmt = _module("core.i18n").format_number
+        views = _module("bl.scene.views")
+
+        _inside, path = self.written_dtm(700_000.0, 4_400_020.0, 10, "dentro/dentro.tif")
+        _type, status, _reason, message, *_ = self.operation(self.import_dtm(path, "Dentro"))
+        self.assertEqual(status, "done")
+        self.assertIn("MDT ráster «Dentro» importado", message)
+        self.assertNotIn("ventana de trabajo", message)
+        self.assertNotIn("GeoOrigin", message)
+
+        def window_note(name: str, extent: tuple[float, ...]) -> str:
+            west, south, east, north = (fmt(value, 2) for value in extent)
+            return (f"El MDT «{name}» sale de la ventana de trabajo (X {fmt(699_990, 2)} a "
+                    f"{fmt(700_040, 2)}, Y {fmt(4_399_990, 2)} a {fmt(4_400_030, 2)}): sus "
+                    f"celdas con dato van de X {west} a {east} y de Y {south} a {north}. Se "
+                    "importa entero; la rejilla del proyecto solo cubre la ventana")
+
+        half, path = self.written_dtm(700_020.0, 4_400_050.0, 40, "fuera/medio.tif")
+        self.ps.take_notices()
+        _type, status, _reason, message, *_ = self.operation(
+            self.import_dtm(path, "Medio fuera"))
+        self.assertEqual(status, "done")
+        self.assertIn(window_note("Medio fuera", (700_020, 4_400_010, 700_060, 4_400_050)),
+                      message)
+        self.assertNotIn("GeoOrigin", message)
+        self.assertIn(message, self.ps.take_notices())
+        self.assertSameCells(self.stored("gis_src_medio_fuera"), half)  # entero
+        self.launch(RESAMPLE, source="gis_src_medio_fuera", name="Medio")
+        target = self.grid.project_grid(project.window, project.grid_step_m)
+        self.assertTrue(self.stored("gis_dtm_medio").grid.same_geometry(target))
+
+        far, path = self.written_dtm(709_000.0, 4_400_020.0, 10, "fuera/lejos.tif")
+        _type, status, _reason, message, *_ = self.operation(self.import_dtm(path, "Lejos"))
+        self.assertEqual(status, "done")
+        self.assertSameCells(self.stored("gis_src_lejos"), far)
+        xx, yy = far.grid.centers()
+        precision = self.georef.precision_report(np.column_stack([xx.ravel(), yy.ravel()]),
+                                                 project.origin)
+        self.assertEqual(precision.points_outside, 100)
+        self.assertIn("100 puntos están a más de 8", precision.message)
+        self.assertIn("0,488 mm", precision.message)
+        self.assertIn(window_note("Lejos", (709_000, 4_400_010, 709_010, 4_400_020)), message)
+        self.assertIn(f"MDT «Lejos», centros de las celdas con dato: {precision.message}",
+                      message)
+
+        outcome = views.load_datasets(bpy.context, project, ["gis_src_lejos",
+                                                             "gis_src_medio_fuera"])
+        self.addCleanup(views.unload_datasets, views.loaded_uids(outcome.objects))
+        self.assertEqual(outcome.loaded, ("gis_src_lejos", "gis_src_medio_fuera"))
+        self.assertEqual(outcome.notes, (f"«gis_src_lejos» en la vista: {precision.message}",))
 
     def test_ellipsoidal_heights_ask_before_finishing(self) -> None:
         """RF-006-06, RF-008-54, RF-008-11: con un MDT del proyecto, un MDT con las cotas unos

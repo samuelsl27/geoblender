@@ -51,7 +51,10 @@ idempotentes: registrar y desregistrar deja los registros de ``core`` como estab
   **esperan la decisión de la persona** (:func:`waiting_imports`): la misma orden con
   ``pending`` (el uid de la operación), ``decision`` y, en una sustitución, ``reason`` la sigue
   o la cancela; mientras, el trabajo está «pendiente de incorporar». Con el fichero ya elegido
-  y ``dialog`` (lo abre así «Importar un fichero…» de ``bl.ops.io``, T32), su diálogo.
+  y ``dialog`` (lo abre así «Importar un fichero…» de ``bl.ops.io``, T32), su diálogo. Se
+  importa entero y su informe avisa (T51; spec §8) si sus celdas con dato salen de la ventana
+  de trabajo (``gis.placement``; la rejilla del proyecto solo la cubre a ella) o si alguno de
+  sus centros pasa de 8 km del GeoOrigin (``core.georef.precision_report``, RF-002-26).
 - ``geoblender.gis_resample_to_grid`` (Topografía ▸ Superficies ▸ Rejilla de proyecto desde un
   MDT…): el MDT importado a ``gis_dtm_<nombre>`` en la rejilla del proyecto (la ventana de
   trabajo con el paso del proyecto, ``gis.grid.project_grid``), con el método en el informe
@@ -174,6 +177,7 @@ from ...gis.dtm import (
     parse_crs,
     plan_import,
     read_settings,
+    scene_origin,
     vertical_samples,
 )
 from ...gis.contours import (
@@ -187,6 +191,7 @@ from ...gis.contours import (
 from ...gis.geotiff.reader import read_geotiff
 from ...gis.grid import Grid, project_grid
 from ...gis.messages import GisError
+from ...gis.placement import extent_in, outside_window
 from ...gis.points import DUP_XY_KEY, DUP_Z_KEY, Breakline, PointSet
 from ...gis.ports import TriangulationError
 from ...gis.raster import Raster
@@ -551,9 +556,12 @@ def _start_import(plan: _Import, launch: Callable[..., Any]) -> Any:
     """Lanza el trabajo ``gis_read_raster`` de ``plan`` con ``launch`` (``launch_job`` de la
     procedencia o el del operador); al terminar, :func:`_import_finished`."""
     source = plan.source
+    project = plan.handle.project
+    origin = scene_origin(source, store.project_references(project)[0], project.origin)
     return launch(plan.handle, jobs.READ_RASTER,
                   label=tr("Import of the DTM «{name}»", name=source.name),
-                  params=job_params(source, max_cells=plan.control[MAX_CELLS_KEY]),
+                  params=job_params(source, max_cells=plan.control[MAX_CELLS_KEY],
+                                    origin=origin),
                   paths=job_paths(source), on_finish=functools.partial(_import_finished, plan),
                   grace_s=jobs.CANCEL_GRACE_S)
 
@@ -717,8 +725,53 @@ def _import_report(plan: _Import, summary: Mapping[str, Any]) -> str:
                             "positions", dtm=check.reference,
                             median=format_number(check.median_m, 1),
                             samples=format_number(check.samples, 0)))
+    lines.extend(_placement_notes(plan, summary))
     lines.extend(str(note) for note in summary.get("notes", ()))
     return "\n".join(lines)
+
+
+def _placement_notes(plan: _Import, summary: Mapping[str, Any]) -> list[str]:
+    """Los avisos de dónde caen las celdas con dato del MDT importado (T51; spec §8, «MDT que
+    sale de la ventana de trabajo o a más de 8 km del GeoOrigin»): si su extensión (en el CRS
+    del proyecto, transformada si hace falta) sale de la ventana de trabajo, que se importa
+    entero y la rejilla del proyecto solo cubre la ventana (RF-006-08, RF-006-11); y si algún
+    centro pasa de 8 000 m del GeoOrigin, el aviso de ``core.georef.precision_report``
+    (RF-002-26) que trae el resumen de su trabajo."""
+    notes: list[str] = []
+    name = plan.source.name
+    window = plan.handle.project.window
+    found = summary.get("data_extent")
+    extent = None if found is None else extent_in(jobs.window_of(found), plan.transform)
+    if window is not None and extent is not None and outside_window(extent, window):
+        xmin, ymin, xmax, ymax = (_coordinate(value) for value in (
+            extent.xmin, extent.ymin, extent.xmax, extent.ymax))
+        wxmin, wymin, wxmax, wymax = (_coordinate(value) for value in (
+            window.xmin, window.ymin, window.xmax, window.ymax))
+        if plan.transform is None:
+            notes.append(tr("The DTM «{name}» goes beyond the working window (X {wxmin} to "
+                            "{wxmax}, Y {wymin} to {wymax}): its cells with data go from X "
+                            "{xmin} to {xmax} and from Y {ymin} to {ymax}. It is imported "
+                            "whole; the project grid only covers the window", name=name,
+                            wxmin=wxmin, wxmax=wxmax, wymin=wymin, wymax=wymax, xmin=xmin,
+                            xmax=xmax, ymin=ymin, ymax=ymax))
+        else:
+            notes.append(tr("The DTM «{name}» goes beyond the working window (X {wxmin} to "
+                            "{wxmax}, Y {wymin} to {wymax}): its cells with data, transformed "
+                            "to the project CRS, go from X {xmin} to {xmax} and from Y {ymin} "
+                            "to {ymax}. It is imported whole; the project grid only covers the "
+                            "window", name=name, wxmin=wxmin, wxmax=wxmax, wymin=wymin,
+                            wymax=wymax, xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax))
+    precision = summary.get("precision")
+    report = None if precision is None else jobs.precision_of(precision)
+    if report is not None and not report.within_limit:
+        notes.append(tr("DTM «{name}», centres of the cells with data: {warning}", name=name,
+                        warning=report.message))
+    return notes
+
+
+def _coordinate(value: float) -> str:
+    """Una coordenada absoluta (m) para un aviso, con dos decimales (``format_xyz``)."""
+    return format_number(value, 2)
 
 
 class GEOBLENDER_OT_gis_import_dtm(ProvenanceAwareOperator, bpy.types.Operator):

@@ -1660,6 +1660,9 @@ es = "«{name}» falta en el proyecto: no se carga en la vista"
 ["«{name}» cannot be shown in the view: no module loads it"]
 es = "«{name}» no se puede mostrar en la vista: ningún módulo lo carga"
 
+["«{name}» in the view: {warning}"]
+es = "«{name}» en la vista: {warning}"
+
 ["The grid «{name}» already has a step of {step} m or more: it is loaded whole"]
 es = "La rejilla «{name}» ya tiene un paso de {step} m o más: se carga entera"
 
@@ -1827,6 +1830,15 @@ es = "Para llevarlo a la rejilla del proyecto se transformará de {source} a {ta
 
 ["Median difference with the DTM «{dtm}»: {median} m at {samples} positions"]
 es = "Mediana de la diferencia con el MDT «{dtm}»: {median} m en {samples} posiciones"
+
+["The DTM «{name}» goes beyond the working window (X {wxmin} to {wxmax}, Y {wymin} to {wymax}): its cells with data go from X {xmin} to {xmax} and from Y {ymin} to {ymax}. It is imported whole; the project grid only covers the window"]
+es = "El MDT «{name}» sale de la ventana de trabajo (X {wxmin} a {wxmax}, Y {wymin} a {wymax}): sus celdas con dato van de X {xmin} a {xmax} y de Y {ymin} a {ymax}. Se importa entero; la rejilla del proyecto solo cubre la ventana"
+
+["The DTM «{name}» goes beyond the working window (X {wxmin} to {wxmax}, Y {wymin} to {wymax}): its cells with data, transformed to the project CRS, go from X {xmin} to {xmax} and from Y {ymin} to {ymax}. It is imported whole; the project grid only covers the window"]
+es = "El MDT «{name}» sale de la ventana de trabajo (X {wxmin} a {wxmax}, Y {wymin} a {wymax}): sus celdas con dato, transformadas al CRS del proyecto, van de X {xmin} a {xmax} y de Y {ymin} a {ymax}. Se importa entero; la rejilla del proyecto solo cubre la ventana"
+
+["DTM «{name}», centres of the cells with data: {warning}"]
+es = "MDT «{name}», centros de las celdas con dato: {warning}"
 
 ["Confirmed by the user: {warning}"]
 es = "Confirmado por la persona: {warning}"

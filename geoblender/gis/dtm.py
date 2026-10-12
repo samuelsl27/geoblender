@@ -22,7 +22,9 @@ resultado. Lo que deciden y se puede probar sin Blender está aquí:
   tecleado se escribe con su código EPSG (:func:`parse_crs`).
 - **El trabajo** ``gis_read_raster`` de la importación (:func:`job_params`, sin ninguna
   ruta, ARQ-11; :func:`job_paths`, las rutas de la fuente por papel, que van por la línea de
-  órdenes).
+  órdenes); con el GeoOrigin del proyecto si la fuente está en su CRS horizontal
+  (:func:`scene_origin`), para decir cuántos centros de sus celdas con dato pasan de 8 km
+  (RF-002-26; T51).
 - **Los parámetros de control** de una orden (D17: los que deciden si se rechaza o se avisa
   sin cambiar ninguna salida, como ``gis.import.max_cells`` y
   ``gis.vertical.ellipsoidal_band_m``): :func:`control_values` los lee del proyecto (la
@@ -48,7 +50,7 @@ import numpy as np
 
 from ..core.content.readers import MAIN_ROLE, ContentReader
 from ..core.errors import ValidationError
-from ..core.georef import CrsCatalog, CrsRef, VerticalRef, load_catalog
+from ..core.georef import CrsCatalog, CrsRef, GeoOrigin, VerticalRef, load_catalog
 from ..core.numbers import parse_decimal
 from ..core.params.store import ParameterStore
 from .asc import read_header as read_asc_header
@@ -56,7 +58,7 @@ from .asc import read_prj
 from .content import ASC, GEOTIFF, PRJ_ROLE, READER_SETTINGS, XYZ_GRID
 from .crs import Declaration
 from .geotiff.reader import read_header as read_geotiff_header
-from .jobs import crs_json, path_name, vertical_json
+from .jobs import crs_json, origin_json, path_name, vertical_json
 from .messages import GisError
 from .raster import Raster
 from .vertical import BAND_KEY, MAX_SAMPLES
@@ -76,6 +78,7 @@ __all__ = [
     "parse_crs",
     "plan_import",
     "read_settings",
+    "scene_origin",
     "vertical_samples",
 ]
 
@@ -264,18 +267,31 @@ def plan_import(
                      prj_crs=declared_crs if reader is ASC else None)
 
 
-def job_params(source: DtmSource, *, max_cells: int) -> dict[str, Any]:
+def job_params(source: DtmSource, *, max_cells: int,
+               origin: GeoOrigin | None = None) -> dict[str, Any]:
     """Los parámetros del trabajo ``gis_read_raster`` de la importación de ``source``
     (``gis.jobs``): su lector, su nombre, sus ajustes de lectura, sus CRS declarados, en un
     ASC con su ``.prj`` reconocido, ese CRS (``prj_crs``: el trabajo no tiene el servicio de
-    CRS), el límite de celdas (``max_cells``, el del proyecto) y el tamaño del fichero
-    principal (su estimación). Ninguna ruta (ARQ-11): van aparte, :func:`job_paths`."""
+    CRS), el límite de celdas (``max_cells``, el del proyecto), el tamaño del fichero
+    principal (su estimación) y, con ``origin`` (el GeoOrigin del proyecto, si la fuente está
+    en su CRS horizontal), ese origen: el trabajo dice cuántos centros de sus celdas con dato
+    pasan de 8 km (RF-002-26; T51). Ninguna ruta (ARQ-11): van aparte, :func:`job_paths`."""
     params = {"reader": source.reader.id, "name": source.name,
               "settings": dict(source.settings), "crs": crs_json(source.crs),
               "vertical": vertical_json(source.vertical)}
     if source.prj_crs is not None:
         params["prj_crs"] = crs_json(source.prj_crs)
+    if origin is not None:
+        params["origin"] = origin_json(origin)
     return {**params, "max_cells": int(max_cells), "size": source.main.stat().st_size}
+
+
+def scene_origin(source: DtmSource, crs: CrsRef, origin: GeoOrigin) -> GeoOrigin | None:
+    """El GeoOrigin ``origin`` del proyecto (de CRS horizontal ``crs``) para el trabajo de la
+    importación de ``source`` si la fuente está en ese CRS (sus centros son los que llegarían
+    a la escena, RF-002-26); en otro, ``None``: la vista no la muestra sin transformarla y su
+    rejilla del proyecto solo cubre la ventana (T51)."""
+    return origin if source.crs.epsg == crs.epsg else None
 
 
 def job_paths(source: DtmSource) -> dict[str, Path]:
