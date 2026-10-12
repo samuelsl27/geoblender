@@ -128,6 +128,19 @@ la barra de estado, que en modo Blender también se ve), sin la puerta de modo:
 
 Todos sin ``UNDO``: no cambian la escena.
 
+La operación de un trabajo que no se hizo (spec 006, T57; RF-004-07, RF-006-28): un trabajo
+que terminó bien y cuya operación de la procedencia quedó fallida o cancelada al incorporarlo
+(un TIN con roturas que se cruzan, una entrada ya registrada) sigue «Terminado» en ``jobs/``,
+pero la procedencia (``bl.ops.core_provenance``) lo dice con :meth:`JobMonitor.end_operation`:
+su aviso en la barra de estado dice cómo quedó la operación y el principio del motivo
+(:class:`OperationEnding` en :attr:`StatusView.ending`), y con :func:`report_later` el motivo
+entero llega al registro de Blender (Info). Desde un sondeo o un temporizador no hay
+``Operator.report``, y lo que informa una orden lanzada desde un guion Blender no lo pasa a
+Info: :func:`report_later` lanza después, desde un temporizador de un solo disparo, la orden
+interna ``geoblender.jobs_report`` (del catálogo de la 003, sin menú), que informa desde su
+modal en el primer evento de la ventana. En ``blender -b`` solo se apunta
+(:func:`sent_reports`). :func:`unregister` retira su temporizador.
+
 Carpetas de trabajos borradas (spec 008, T48; RF-008-23; plan 008 §5.4.7): quien lo necesita
 se apunta con :func:`add_removal_listener` (la procedencia: una operación cuyo trabajo se borra
 sin incorporarlo pasa a «no incorporada» con el motivo) y se le avisa con los ``job_uid`` de
@@ -145,7 +158,7 @@ import math
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -237,6 +250,21 @@ def _removed(report: CleanupReport, why: str) -> None:
             LOGGER.exception("Falló el aviso de las carpetas de trabajos borradas (%s)", why)
 
 
+ENDING_STATES: tuple[str, ...] = ("failed", "cancelled")
+"""Cómo puede quedar la operación de un trabajo que terminó bien y no se incorporó (spec 006,
+T57): fallida o cancelada."""
+
+
+@dataclass(frozen=True, slots=True)
+class OperationEnding:
+    """Cómo quedó la operación de la procedencia de un trabajo que terminó bien, si no se hizo
+    al incorporarlo (spec 006, T57; RF-004-07): ``state`` (uno de :data:`ENDING_STATES`) y su
+    motivo, entero. El trabajo sigue «Terminado» en ``jobs/``: esto es lo que ve el usuario."""
+
+    state: str
+    reason: str
+
+
 @dataclass(frozen=True, slots=True)
 class StatusView:
     """Lo que muestra la barra de estado de los trabajos (RF-004-06, RF-004-07).
@@ -244,12 +272,14 @@ class StatusView:
     ``active``: trabajos en cola o en curso. ``current``: el más antiguo en curso (si todos
     esperan, el más antiguo en la cola; ``None`` sin activos). ``frac``: su avance mostrado
     (0–1, nunca menor que el anterior del mismo trabajo; 0 en la cola). ``notice``: el
-    último trabajo que llegó a un estado final, mientras dura su aviso."""
+    último trabajo que llegó a un estado final, mientras dura su aviso, y ``ending``, si su
+    operación no se hizo al incorporarlo (:meth:`JobMonitor.end_operation`; spec 006, T57)."""
 
     active: int = 0
     current: JobSnapshot | None = None
     frac: float = 0.0
     notice: JobSnapshot | None = None
+    ending: OperationEnding | None = None
 
     @property
     def percent(self) -> int:
@@ -275,6 +305,7 @@ class JobMonitor:
         self._view = EMPTY_VIEW
         self._notice_until = 0.0
         self._shown: dict[str, float] = {}
+        self._endings: dict[str, OperationEnding] = {}  # job_uid → su operación no se hizo
         self._failing = False
 
     @property
@@ -318,6 +349,45 @@ class JobMonitor:
         self._view = EMPTY_VIEW
         self._notice_until = 0.0
         self._shown.clear()
+        self._endings.clear()
+
+    def end_operation(self, job_uid: str, state: str, reason: str) -> bool:
+        """Dice en el aviso del trabajo ``job_uid``, que terminó bien, que su operación quedó
+        ``state`` (fallida o cancelada, :data:`ENDING_STATES`) con ``reason`` al incorporarlo
+        (spec 006, T57; RF-004-07): su aviso deja de decir «Terminado» y dice eso y el
+        principio del motivo (``bl/ui/jobs.py``) durante :data:`NOTICE_S` s desde ahora, aunque
+        ya hubiera caducado o mostrara otro (una incorporación por pasos acaba después del
+        sondeo que lo vio terminar); redibuja la barra de estado y sigue con el temporizador.
+        Llamado desde el ``on_finish`` del trabajo, el sondeo que lo terminó lo deja igual.
+        Devuelve si se muestra: no, si el lanzador no tiene el trabajo. El estado del trabajo
+        en ``jobs/`` no cambia. :class:`ValueError` con otro ``state``."""
+        if state not in ENDING_STATES:
+            raise ValueError(f"la operación de un trabajo que no se hizo queda "
+                             f"{' o '.join(ENDING_STATES)}, no {state!r}")
+        snapshot = self._snapshot(job_uid)
+        if snapshot is None:
+            return False
+        ending = OperationEnding(state, reason)
+        self._endings[job_uid] = ending
+        self._notice_until = self._clock() + NOTICE_S
+        self._view = replace(self._view, notice=snapshot, ending=ending)
+        statusbar.redraw()
+        self.start()
+        return True
+
+    def _snapshot(self, job_uid: str) -> JobSnapshot | None:
+        """La foto del trabajo ``job_uid`` del lanzador (la del aviso, si es él), o ``None``."""
+        notice = self._view.notice
+        if notice is not None and notice.job_uid == job_uid:
+            return notice
+        runner = self._runner
+        if runner is None:
+            return None
+        try:
+            return next((s for s in runner.snapshots() if s.job_uid == job_uid), None)
+        except Exception:  # noqa: BLE001 - el seguimiento no tumba la interfaz
+            LOGGER.warning("No se pudo leer el trabajo %s del lanzador", job_uid, exc_info=True)
+            return None
 
     @property
     def watching(self) -> bool:
@@ -374,6 +444,8 @@ class JobMonitor:
                 notice, self._notice_until = ended, now + NOTICE_S
         if notice is not None and now >= self._notice_until:
             notice = None
+        ending = self._endings.get(notice.job_uid) if notice is not None else None
+        self._endings = {notice.job_uid: ending} if notice is not None and ending else {}
         active = [snapshot for snapshot in snapshots if snapshot.active]
         shown: dict[str, float] = {}
         for snapshot in active:
@@ -383,7 +455,8 @@ class JobMonitor:
         self._shown = shown
         current = oldest_active(active)
         frac = shown.get(current.job_uid, 0.0) if current is not None else 0.0
-        return StatusView(active=len(active), current=current, frac=frac, notice=notice)
+        return StatusView(active=len(active), current=current, frac=frac, notice=notice,
+                          ending=ending)
 
 
 def oldest_active(snapshots: Iterable[JobSnapshot]) -> JobSnapshot | None:
@@ -1495,10 +1568,137 @@ def on_exit_pre(*_args: object) -> None:
     _close_session()
 
 
+# Informes diferidos (spec 006, T57) --------------------------------------------------------
+
+REPORT = "geoblender.jobs_report"
+"""La orden interna que lleva al registro de Blender lo que se dice sin ``Operator.report``
+(:func:`report_later`)."""
+REPORT_KINDS: tuple[str, ...] = ("INFO", "WARNING", "ERROR")
+"""Los tipos de informe de Blender que se llevan."""
+REPORT_KIND_ITEMS = [(kind, kind.title(), "") for kind in REPORT_KINDS]
+REPORT_EVENT_S = 0.01
+"""El temporizador de la ventana que da a la orden interna su primer evento aunque no se mueva
+el ratón (s)."""
+REPORTS_KEPT = 20
+"""Los últimos informes que se apuntan (:func:`sent_reports`)."""
+
+
+class _Reports:
+    """Los informes que esperan su temporizador y los últimos que se apuntaron."""
+
+    def __init__(self) -> None:
+        self.pending: list[tuple[str, str]] = []
+        self.sent: list[tuple[str, str]] = []
+
+
+_REPORTS = _Reports()
+
+
+def report_later(kind: str, text: str) -> None:
+    """Lleva ``text`` al registro de Blender (Info; la barra de estado de Blender lo enseña un
+    momento y, un error, en una ventana emergente) como ``kind`` (``INFO``, ``WARNING`` o
+    ``ERROR``) desde donde no hay ``Operator.report``: el sondeo de los trabajos o un
+    temporizador (spec 006, T57; RF-004-07). Lo apunta (:func:`sent_reports`) y, con una
+    ventana de Blender, lo deja en cola hasta un temporizador de un solo disparo
+    (:func:`flush_reports`), ya fuera del sondeo que lo pidió (que antes redibuja la barra de
+    estado, sin ningún modal en la ventana), que lanza en ella la orden interna
+    ``geoblender.jobs_report``: Blender solo pasa a Info lo que informa un modal suyo. Sin
+    interfaz (``blender -b``), solo se apunta. :class:`ValueError` con otro ``kind``."""
+    if kind not in REPORT_KINDS:
+        raise ValueError(f"un informe de Blender es {', '.join(REPORT_KINDS)}, no {kind!r}")
+    _REPORTS.sent.append((kind, text))
+    del _REPORTS.sent[:-REPORTS_KEPT]
+    LOGGER.info("Para el registro de Blender (%s): %s", kind, text)
+    if _report_window() is None:
+        return
+    _REPORTS.pending.append((kind, text))
+    if not bpy.app.timers.is_registered(flush_reports):
+        bpy.app.timers.register(flush_reports, first_interval=0.0, persistent=True)
+
+
+def sent_reports() -> tuple[tuple[str, str], ...]:
+    """Los últimos informes de :func:`report_later` (tipo y texto), del más antiguo al más
+    reciente; como mucho :data:`REPORTS_KEPT`."""
+    return tuple(_REPORTS.sent)
+
+
+def flush_reports() -> None:
+    """El temporizador de :func:`report_later` (un solo disparo): lanza la orden interna con
+    cada informe en cola en la primera ventana de Blender; sin ventana, los olvida. Uno que no
+    se puede lanzar va al registro técnico y no para a los demás."""
+    pending, _REPORTS.pending = _REPORTS.pending, []
+    window = _report_window()
+    if window is None:
+        return None
+    for kind, text in pending:
+        try:
+            _invoke_report(window, kind, text)
+        except Exception:  # noqa: BLE001 - un temporizador que falla no tumba la interfaz
+            LOGGER.warning("No se pudo llevar al registro de Blender: %s", text, exc_info=True)
+    return None
+
+
+def forget_reports() -> None:
+    """Olvida los informes en cola y retira su temporizador (al desregistrar); lo apuntado se
+    queda."""
+    _REPORTS.pending.clear()
+    if bpy.app.timers.is_registered(flush_reports):
+        bpy.app.timers.unregister(flush_reports)
+
+
+def _report_window() -> Any | None:
+    """La ventana donde se informa: la primera de Blender; ninguna sin interfaz (en
+    ``blender -b`` no hay registro que ver ni eventos que muevan la orden interna)."""
+    if bpy.app.background:
+        return None
+    manager = getattr(bpy.context, "window_manager", None)
+    windows = list(getattr(manager, "windows", ()) or ())
+    return windows[0] if windows else None
+
+
+def _invoke_report(window: Any, kind: str, text: str) -> None:
+    """La orden interna ``geoblender.jobs_report`` con ``INVOKE_DEFAULT`` en ``window``."""
+    with bpy.context.temp_override(window=window):
+        bpy.ops.geoblender.jobs_report("INVOKE_DEFAULT", kind=kind, message=text)
+
+
+class GEOBLENDER_OT_jobs_report(bpy.types.Operator):
+    """Show a message of a background job in Blender's reports"""
+
+    bl_idname = "geoblender.jobs_report"
+    bl_label = "Report of a job"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"INTERNAL"}
+
+    kind: EnumProperty(name="Kind", items=REPORT_KIND_ITEMS, default="WARNING",  # type: ignore[valid-type]
+                       options={"SKIP_SAVE"})
+    message: StringProperty(name="Message", default="", options={"SKIP_SAVE"})  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Un temporizador de la ventana y el manejador modal: lo que informa un modal, Blender
+        lo pasa al registro (Info), no lo que informa una orden lanzada desde un guion."""
+        manager = context.window_manager
+        self._timer = manager.event_timer_add(REPORT_EVENT_S, window=context.window)
+        manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        """En el primer evento (el de su temporizador o el que llegue antes), informa y
+        termina dejando pasar el evento."""
+        context.window_manager.event_timer_remove(self._timer)
+        self.report({self.kind}, self.message)
+        return {"FINISHED", "PASS_THROUGH"}
+
+    def execute(self, context: Any) -> set[str]:
+        self.report({self.kind}, self.message)
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_jobs_show_jobs, GEOBLENDER_OT_jobs_cancel,
                              GEOBLENDER_OT_jobs_run_selftest, GEOBLENDER_OT_jobs_clean,
                              GEOBLENDER_OT_jobs_setup_runtime,
-                             GEOBLENDER_OT_jobs_set_external_python)
+                             GEOBLENDER_OT_jobs_set_external_python,
+                             GEOBLENDER_OT_jobs_report)
 
 
 def register() -> None:
@@ -1522,12 +1722,14 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Quita el temporizador de los motores anteriores (si aún no se disparó), el aviso de
-    cambio de proyecto y el manejador ``exit_pre``, cierra el lanzador de la sesión
+    """Quita el temporizador de los motores anteriores (si aún no se disparó), los informes en
+    cola con el suyo (:func:`forget_reports`), el aviso de cambio de proyecto y el manejador
+    ``exit_pre``, cierra el lanzador de la sesión
     (``shutdown(timeout_s=3)``) antes de retirar el temporizador del monitor, lo suelta,
     olvida la cadena del motor de cálculo y quita los tipos de trabajo de la 004;
     idempotente."""
     _retire_stale_engines_timer()
+    forget_reports()
     project_session.remove_listener(on_project_changed)
     if on_exit_pre in bpy.app.handlers.exit_pre:
         bpy.app.handlers.exit_pre.remove(on_exit_pre)

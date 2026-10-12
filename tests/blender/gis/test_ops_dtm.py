@@ -568,7 +568,10 @@ class DtmImportTest(DtmOperatorsCase):
         50 m por encima declarado en el datum del proyecto no se incorpora (ni su entrada ni
         su rejilla) hasta que la persona lo confirma, con la mediana en el aviso; los mismos
         datos declarados como altura elipsoidal son una sustitución que pide el motivo y,
-        con él, se importan con la transformación al geoide en el informe y sin aviso."""
+        con él, se importan con la transformación al geoide en el informe y sin aviso.
+        RF-004-07 (T57): cancelarla en su diálogo lo informa la orden; la línea de su trabajo
+        en la barra de estado dice «Operación cancelada» y el registro de Blender no lo
+        repite."""
         self.open()
         base = self.source("geotiff/f64_strip.tif", "mdt/base.tif")
         self.import_dtm(base, "MDT base")
@@ -585,6 +588,15 @@ class DtmImportTest(DtmOperatorsCase):
                    "cotas pueden ser alturas elipsoidales")
         notices = self.ps.take_notices()
         self.assertTrue(any(warning in text for text in notices), notices)
+        self.assertIn(op_uid, self.gis_ops.waiting_imports())
+        sent = len(self.jobs_ops.sent_reports())
+        self.assertEqual(bpy.ops.geoblender.gis_import_dtm("EXEC_DEFAULT", pending=op_uid,
+                                                           decision="CANCEL"), {"FINISHED"})
+        self.assertEqual(self.operation(op_uid)[1], "cancelled")
+        self.assertEqual(self.jobs_ops.MONITOR.view().ending.state, "cancelled")
+        self.assertEqual(self.jobs_ops.sent_reports()[sent:], ())
+        result, op_uid = self.run_op(IMPORT, filepath=str(high), name="Dron", vertical="PROJECT")
+        self.finish()
         self.assertIn(op_uid, self.gis_ops.waiting_imports())
         self.assertEqual(bpy.ops.geoblender.gis_import_dtm("EXEC_DEFAULT", pending=op_uid,
                                                            decision="CONTINUE"), {"FINISHED"})

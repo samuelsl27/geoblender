@@ -955,6 +955,7 @@ class ProvenanceSessionTest(unittest.TestCase):
         self.assertEqual(state.text(), "no incorporada: se descartó su trabajo «Prueba de la "
                                        "procedencia» en la lista de trabajos sin incorporarlo")
 
+        sent = len(jobs_ops.sent_reports())
         self.assertEqual(bpy.ops.gbtest.provenance_selftest("EXEC_DEFAULT", ingest=False,
                                                             fail=True), {"FINISHED"})
         job_uid, op_uid = self.launched()
@@ -963,6 +964,10 @@ class ProvenanceSessionTest(unittest.TestCase):
         self.assertEqual(self.session.pending_ingests(), {})
         status, _executor, _job, _interpreter, reason = self.operation(project, op_uid)
         self.assertEqual((status, reason), ("failed", snapshot.error.text))
+        # RF-004-07 (spec 006, T57): un trabajo que falla ya lo dice su aviso («Fallido» y el
+        # mensaje del §8); su operación fallida no se dice otra vez.
+        self.assertIsNone(jobs_ops.MONITOR.view().ending)
+        self.assertEqual(jobs_ops.sent_reports()[sent:], ())
 
     def test_gate_and_write_target_before_operating(self) -> None:
         """RF-008-58, RF-008-10, RF-008-61, RF-008-15 (plan §5.3.4 y §5.4.13): con la

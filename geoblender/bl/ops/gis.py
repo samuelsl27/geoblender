@@ -927,7 +927,12 @@ class GEOBLENDER_OT_gis_import_dtm(ProvenanceAwareOperator, bpy.types.Operator):
         return {"FINISHED"}
 
     def _decide(self) -> set[str]:
-        """Sigue o cancela la importación ``pending`` que espera la decisión de la persona."""
+        """Sigue o cancela la importación ``pending`` que espera la decisión de la persona; lo
+        que no se hace lo informa la orden (no se repite en el registro de Blender, T57)."""
+        with core_provenance.caller_reports():
+            return self._decided()
+
+    def _decided(self) -> set[str]:
         plan = _WAITING.get(self.pending)
         if plan is None:
             self.report({"ERROR"}, tr("No DTM import is waiting for a decision"))

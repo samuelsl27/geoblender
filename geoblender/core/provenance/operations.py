@@ -595,6 +595,31 @@ def operation_statuses(project: OperationProject, uids: Iterable[str], *,
     return {uid: OperationStatus(status) for uid, status in found.items()}
 
 
+@dataclass(frozen=True, slots=True)
+class OperationState:
+    """El estado registrado de una operación (``gb_operation.status``) y su motivo
+    (``status_reason``: el de una que no terminó bien, tal como se guardó; ``None`` si no lo
+    tiene)."""
+
+    status: OperationStatus
+    reason: str | None
+
+
+def operation_state(project: OperationProject, uid: str, *,
+                    conn: sqlite3.Connection | None = None) -> OperationState | None:
+    """El estado registrado de la operación ``uid`` con su motivo según ``conn`` (sin ella, una
+    conexión de lectura: lo confirmado); ``None`` si el proyecto no la tiene. Con él, ``bl``
+    dice en la barra de estado y en el registro de Blender que la operación del trabajo que
+    acaba de soltar quedó fallida o cancelada, y por qué (spec 006, T57; RF-004-07)."""
+    reading = nullcontext(conn) if conn is not None else project.read()
+    with reading as opened:
+        row = opened.execute("SELECT status, status_reason FROM gb_operation WHERE uid = ?",
+                             (uid,)).fetchone()
+    if row is None:
+        return None
+    return OperationState(OperationStatus(row[0]), None if row[1] is None else str(row[1]))
+
+
 # --- La operación en curso ----------------------------------------------------------------
 
 

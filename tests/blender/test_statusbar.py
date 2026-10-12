@@ -155,7 +155,7 @@ class StatusbarTest(unittest.TestCase):
         finished = SimpleNamespace(name=JOB_NAME, state="succeeded", duration_s=10.0,
                                    error=None)
         view = SimpleNamespace(visible=True, active=2, current=current, percent=40,
-                               notice=finished if notice else None)
+                               notice=finished if notice else None, ending=None)
         bpy.context.scene.cursor.location = (0.0, 0.0, 0.0)
         with mock.patch.object(self.georef, "project_georeference", return_value=fake), \
                 mock.patch.object(self.provenance._STATE, "counts", counts), \

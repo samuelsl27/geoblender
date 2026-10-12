@@ -1054,6 +1054,18 @@ es = "Tiempo agotado"
 ["Interrupted"]
 es = "Interrumpido"
 
+# El aviso de un trabajo que terminó bien cuya operación de la procedencia no se hizo al
+# incorporarlo (spec 006, T57; RF-004-07): cómo quedó la operación, en lugar de «Terminado».
+
+["Operation failed"]
+es = "Operación fallida"
+
+["Operation cancelled"]
+es = "Operación cancelada"
+
+["Message"]
+es = "Mensaje"
+
 ["{percent}%"]
 es = "{percent} %"
 
