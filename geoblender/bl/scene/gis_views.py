@@ -24,19 +24,33 @@ de una superficie se **comprueba** en lo que guarda Blender, vuelta a absolutas
 (``gis.mesh.check_surface_mesh``, RF-006-21): si tiene caras hacia abajo o degeneradas o su
 volumen no es el de la superficie, se borra y no se muestra (``gis.mesh_invalid``, con las caras
 que fallan y la diferencia en m³).
+
+Las rejillas y los TIN se cargan **en pasos** (T50; RNF-006-09, RNF-006-06): leer, convertir
+la rejilla en TIN por bloques de filas (``gis.tin.raster_to_tin_steps``), crear la malla
+(``bl.scene.mesh.mesh_steps``: cada llamada de Blender, un paso) y comprobarla por trozos
+(``gis.mesh.check_surface_mesh_steps``); ninguno pasa de unas décimas de segundo con la rejilla
+de 2,81 M celdas, que se carga en unos 3 s desde el temporizador de la orden. Si se cierran
+antes de terminar (Esc), la malla a medias se borra.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 
 import bpy
 import numpy as np
 
+from ...core.georef import local_to_world
 from ...core.i18n import format_number, tr
 from ...core.params.store import ParameterStore
 from ...gis import params as gis_params
-from ...gis.mesh import LOD_STEPS_KEY, check_surface_mesh, lod_rasters, surface_mesh_from_tin
+from ...gis.mesh import (
+    LOD_STEPS_KEY,
+    MeshArrays,
+    check_surface_mesh_steps,
+    lod_rasters,
+    surface_mesh_from_tin,
+)
 from ...gis.provenance import (
     BREAKLINES,
     CONTOUR_LINES,
@@ -46,24 +60,55 @@ from ...gis.provenance import (
     SOURCE_GRID,
     TIN,
 )
-from ...gis.tin import Tin, raster_to_tin
+from ...gis.tin import Tin, raster_to_tin_steps
 from . import views
-from .mesh import mesh_from_arrays, mesh_triangles, mesh_vertices_local, mesh_vertices_world
+from .mesh import mesh_from_arrays, mesh_steps, mesh_triangles, mesh_vertices_local
 
 __all__ = ["LOADERS", "load_grid", "load_lines", "load_points", "load_tin", "register",
            "unregister"]
 
 
-def _bounds(mesh: bpy.types.Mesh) -> tuple[np.ndarray, np.ndarray] | None:
-    """Los mínimos y máximos locales de la malla, tal como los guarda Blender."""
-    local = mesh_vertices_local(mesh)
+def _bounds(local: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    """Los mínimos y máximos de los vértices locales ``local``, tal como los guarda
+    Blender."""
     if not len(local):
         return None
     return local.min(axis=0).astype(np.float64), local.max(axis=0).astype(np.float64)
 
 
-def _object(name: str, mesh: bpy.types.Mesh, notes: Sequence[str] = ()) -> views.ViewParts:
-    return views.ViewParts((bpy.data.objects.new(name, mesh),), _bounds(mesh), tuple(notes))
+def _object(name: str, mesh: bpy.types.Mesh, notes: Sequence[str] = (),
+            local: np.ndarray | None = None) -> views.ViewParts:
+    found = mesh_vertices_local(mesh) if local is None else local
+    return views.ViewParts((bpy.data.objects.new(name, mesh),), _bounds(found), tuple(notes))
+
+
+def _blocks(steps: Generator[tuple[int, int], None, Tin]) -> Generator[float, None, Tin]:
+    """Los pasos de ``gis.tin.raster_to_tin_steps`` (bloques hechos de un total) como avance
+    (0–1)."""
+    try:
+        while True:
+            try:
+                done, count = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            yield done / count if count else 1.0
+    finally:
+        steps.close()
+
+
+def _scaled(steps: Generator[float, None, object], low: float,
+            high: float) -> Generator[float, None, object]:
+    """Los avances (0–1) de unos pasos llevados al tramo [``low``, ``high``], y lo que
+    devuelven."""
+    try:
+        while True:
+            try:
+                done = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            yield low + (high - low) * min(max(float(done), 0.0), 1.0)
+    finally:
+        steps.close()
 
 
 def lod_steps(project: object) -> tuple[float, ...]:
@@ -75,32 +120,46 @@ def lod_steps(project: object) -> tuple[float, ...]:
     return tuple(float(step) for step in value)  # type: ignore[union-attr]
 
 
-def _surface(request: views.ViewRequest, tin: Tin, name: str,
-             notes: Sequence[str] = ()) -> views.ViewParts:
-    """El objeto de la malla de la superficie ``tin`` (``gis.mesh.surface_mesh_from_tin``),
-    comprobada en lo que guarda Blender frente a ``tin`` (RF-006-21): si no es válida, se
-    borra y se lanza ``gis.mesh_invalid``."""
-    arrays = surface_mesh_from_tin(tin)
-    mesh = mesh_from_arrays(name, arrays.vertices, arrays.faces, origin=request.origin)
+def _surface(request: views.ViewRequest, tin: Tin, arrays: MeshArrays, name: str,
+             notes: Sequence[str] = (), low: float = 0.0,
+             ) -> Generator[float, None, views.ViewParts]:
+    """Los pasos del objeto de la malla de la superficie ``tin`` (``arrays``: sus vértices y
+    sus caras hacia arriba), comprobada en lo que guarda Blender frente a ``tin`` (RF-006-21,
+    por trozos: ``gis.mesh.check_surface_mesh_steps``), con su avance de ``low`` a 1: si no es
+    válida, se borra y se lanza ``gis.mesh_invalid``; si se cierran antes de terminar, también
+    se borra (T50)."""
+    span = 1.0 - low
+    mesh = yield from _scaled(mesh_steps(name, arrays.vertices, arrays.faces,
+                                         origin=request.origin), low, low + 0.45 * span)
     try:
-        report = check_surface_mesh(mesh_vertices_world(mesh, request.origin),
-                                    mesh_triangles(mesh), tin, name=request.record.name)
+        local = mesh_vertices_local(mesh)
+        world = local_to_world(local, request.origin)
+        yield low + 0.5 * span
+        triangles = mesh_triangles(mesh)
+        yield low + 0.55 * span
+        report = yield from _scaled(check_surface_mesh_steps(world, triangles, tin,
+                                                             name=request.record.name),
+                                    low + 0.55 * span, 1.0)
         error = report.error()
         if error is not None:
             raise error
+        return _object(name, mesh, notes, local)
     except BaseException:
         bpy.data.meshes.remove(mesh)
         raise
-    return _object(name, mesh, notes)
 
 
-def load_grid(request: views.ViewRequest) -> views.ViewParts:
-    """Una rejilla (``gis_src_``, ``gis_dtm_``) como malla de superficie; con ``lod`` 1 o 2, su
-    versión de 2 o 5 m (RF-006-22)."""
+def load_grid(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
+    """Una rejilla (``gis_src_``, ``gis_dtm_``) como malla de superficie, en pasos (T50: la de
+    2,81 M celdas, desde el temporizador de la orden con su avance y Esc, RNF-006-09); con
+    ``lod`` 1 o 2, su versión de 2 o 5 m (RF-006-22). La malla es la de A13 (la de
+    ``gis.mesh.surface_mesh_from_raster``: los triángulos de ``raster_to_tin``, ya hacia
+    arriba)."""
     from ...gis import store  # al cargar: no al habilitar
 
     store.require_project_references(request.project, request.record)
     raster = store.load_raster(request.project, request.record)
+    yield 0.05
     surface, name, notes = raster, request.name, []
     if request.lod > 0:
         steps = lod_steps(request.project)
@@ -113,15 +172,24 @@ def load_grid(request: views.ViewRequest) -> views.ViewParts:
             notes.append(tr("The grid «{name}» already has a step of {step} m or more: it is "
                             "loaded whole", name=request.record.name,
                             step=format_number(steps[0], 1)))
-    return _surface(request, raster_to_tin(surface, name=request.record.name), name, notes)
+        yield 0.1
+    tin = yield from _scaled(_blocks(raster_to_tin_steps(surface, name=request.record.name)),
+                             0.1, 0.25)
+    arrays = MeshArrays(tin.vertices, np.ascontiguousarray(tin.faces, dtype=np.int32))
+    return (yield from _surface(request, tin, arrays, name, notes, 0.25))
 
 
-def load_tin(request: views.ViewRequest) -> views.ViewParts:
-    """Un TIN (``gis_tin_``) como malla de superficie."""
+def load_tin(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
+    """Un TIN (``gis_tin_``) como malla de superficie (sus caras horarias, vueltas hacia arriba:
+    ``gis.mesh.surface_mesh_from_tin``), en pasos."""
     from ...gis import store
 
     store.require_project_references(request.project, request.record)
-    return _surface(request, store.load_tin(request.project, request.record), request.name)
+    tin = store.load_tin(request.project, request.record)
+    yield 0.1
+    arrays = surface_mesh_from_tin(tin)
+    yield 0.2
+    return (yield from _surface(request, tin, arrays, request.name, (), 0.2))
 
 
 def load_points(request: views.ViewRequest) -> views.ViewParts:

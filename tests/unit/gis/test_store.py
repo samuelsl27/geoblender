@@ -45,6 +45,7 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import numpy as np
 
@@ -1165,6 +1166,133 @@ class ImportFailureTest(ImportCase):
         self.assertEqual(self.state(), before)
         self.assertTrue(self.project.writable)
         self.assertEqual(operations.claimed_paths(self.project), frozenset())
+
+
+class TableDigestTest(ImportCase):
+    """Las filas y el hash de una tabla de lo importado sin escribirla en el proyecto (spec
+    006, T50): lo que calcula el trabajo de la importación para que el hilo de Blender no
+    tenga que hashear la tabla al incorporarla (RNF-006-09)."""
+
+    def survey(self) -> tuple[Any, list[Any]]:
+        """Los puntos y las líneas de rotura de ``taludes.csv``."""
+        table = csv_tables.read_table(self.sources / "taludes.csv", encoding="utf-8",
+                                      separator=";", header_row=0)
+        mapping = points_mod.ColumnMapping(x=1, y=2, z=3, point_id=0, code=4, line=5)
+        points, lines, _report = points_mod.points_from_rows(
+            table.columns, table.rows, mapping, ",", row_numbers=table.lines)
+        return points, lines
+
+    def layers(self) -> tuple[list[Any], list[Any]]:
+        """El contorno (sus geometrías) y las curvas de nivel de ``capas.gpkg``."""
+        copy = vector_mod.copy_source(self.sources / "capas.gpkg", self.tmp / "copia")
+        boundary = vector_mod.read_layer(copy, "contorno").geometries
+        curves = vector_mod.read_layer(copy, "curvas_zm")
+        lines = []
+        for geometry, elevation in zip(curves.geometries, curves.attributes["cota"],
+                                       strict=True):
+            closed = bool(np.array_equal(geometry.coords[0], geometry.coords[-1]))
+            lines.append(contours_mod.ContourLine(
+                geometry.coords[:-1] if closed else geometry.coords, float(elevation),
+                False, closed))
+        return list(boundary), lines
+
+    def imported(self, name: str, crs: Any, reader: Any, settings: dict[str, Any],
+                 write: Callable[[Any], None], file: str) -> tuple[Any, ...]:
+        """Una importación con ``write(out)`` (lo importado); sus datos registrados."""
+        spec = self.source_spec(reader, name, file, crs=crs, settings=settings)
+        handle = self.begin(provenance.IMPORT_POINTS if reader is gis_content.POINTS_TEXT
+                            else provenance.IMPORT_VECTOR)
+        with store.ResultWriter(self.project, handle) as out:
+            out.declare_input(spec)
+            write(out)
+            return out.commit(message=f"«{name}» importado")
+
+    def test_rows_are_those_of_encode_geometry(self) -> None:
+        """RF-006-12 (T50): las filas de los puntos se codifican de una vez y son, bit a bit,
+        las de ``encode_geometry`` punto a punto (un ``POINT`` con Z con las coordenadas tal
+        como llegan, también −0,0 y cotas negativas) con su identificador, su código y su
+        fila; un punto no finito da el mismo error que ``encode_geometry``."""
+        points, lines = self.survey()
+        xyz = points.xyz.copy()
+        xyz[0, 2] = -0.0
+        xyz[1] = (-1.5e-300, 4_400_000.000000001, -12.25)
+        odd = points_mod.PointSet(xyz, points.point_ids, points.codes, points.source_rows)
+        for srs in (25830, 23030):
+            with self.subTest(srs=srs):
+                expected = [(wkb.encode_geometry("POINT", row, srs, True), str(pid), str(code),
+                             int(source))
+                            for row, pid, code, source in zip(
+                                odd.xyz, odd.point_ids, odd.codes, odd.source_rows, strict=True)]
+                got = store.point_rows(odd, srs)
+                self.assertEqual(got, expected)
+                self.assertEqual([type(value) for value in got[0]], [bytes, str, str, int])
+        self.assertEqual(store.point_rows(points_mod.PointSet(
+            np.empty((0, 3)), (), (), ()), 25830), [])
+        self.assertEqual(store.breakline_rows(lines, 25830), [
+            (wkb.encode_geometry("LINESTRING", line.xyz, 25830, True), str(line.line_id),
+             int(bool(line.hard)), str(line.code)) for line in lines])
+        bad = xyz.copy()
+        bad[3, 1] = np.nan
+        with self.assertRaises(wkb.GeometryError) as caught:
+            store.point_rows(points_mod.PointSet(bad, points.point_ids, points.codes,
+                                                 points.source_rows), 25830)
+        with self.assertRaises(wkb.GeometryError) as single:
+            wkb.encode_geometry("POINT", bad[3], 25830, True)
+        self.assertEqual(caught.exception.code, single.exception.code)
+
+    def test_table_digest_is_the_hash_the_registry_computes(self) -> None:
+        """RF-006-26, RNF-006-09 (T50; ADR-0024 §5 y §6): el ``ContentDigest`` de una tabla
+        calculado con ``table_digest`` (sus filas en un GeoPackage en memoria con la misma
+        estructura, leído con ``core.gpkg_layer@1``, la función del registro) es el hash que
+        da la tabla escrita en el proyecto: con él como ``content``, el registro de la 008 lo
+        guarda tal cual, sin volver a leer la tabla (los puntos y las líneas de rotura de un
+        CSV y unas curvas declaradas en ED50), y es el que da leerla después; sin él (como
+        antes de la T50, el contorno de una capa), el registro calcula el mismo."""
+        points, lines = self.survey()
+        boundary, curves = self.layers()
+        digests = {
+            provenance.POINTS: store.table_digest(provenance.POINTS,
+                                                  store.point_rows(points, CRS.epsg), CRS),
+            provenance.BREAKLINES: store.table_digest(provenance.BREAKLINES,
+                                                      store.breakline_rows(lines, CRS.epsg),
+                                                      CRS),
+            provenance.CONTOUR_LINES: store.table_digest(
+                provenance.CONTOUR_LINES, store.contour_rows(curves, ED50.epsg), ED50),
+            provenance.BOUNDARY: store.table_digest(
+                provenance.BOUNDARY, store.boundary_rows(boundary, (), CRS.epsg), CRS),
+        }
+        for digest in digests.values():
+            self.assertEqual((digest.reader, digest.normalizer),
+                             (builtin.GPKG_LAYER.id, encoder.NORMALIZER))
+        self.assertEqual(len({digest.content_sha256 for digest in digests.values()}), 4)
+
+        def survey(out: Any) -> None:
+            out.points("Taludes", points, content=digests[provenance.POINTS])
+            out.breaklines("Taludes", lines, content=digests[provenance.BREAKLINES])
+
+        with mock.patch.object(dataset_registry, "_computed",
+                               side_effect=AssertionError("el registro volvió a leer la tabla")):
+            pts, brk = self.imported("Taludes", CRS, gis_content.POINTS_TEXT, POINT_SETTINGS,
+                                     survey, "taludes.csv")
+            (cnt,) = self.imported(
+                "Curvas", ED50, gis_content.GPKG_LAYER,
+                {"layer": "curvas_zm", "role": "contours", "elevation_field": "cota"},
+                lambda out: out.contours("Curvas", curves,
+                                         content=digests[provenance.CONTOUR_LINES]),
+                "capas.gpkg")
+        (bnd,) = self.imported("Contorno", CRS, gis_content.GPKG_LAYER,
+                               {"layer": "contorno", "role": "boundary"},
+                               lambda out: out.boundary("Contorno", boundary), "capas.gpkg")
+        for record, family in ((pts, provenance.POINTS), (brk, provenance.BREAKLINES),
+                               (cnt, provenance.CONTOUR_LINES), (bnd, provenance.BOUNDARY)):
+            with self.subTest(dato=record.name):
+                self.assertEqual(record.content_sha256, digests[family].content_sha256)
+                self.assertEqual(record.content_sha256, self.read_hash(
+                    builtin.GPKG_LAYER, "vector", self.project.database_path,
+                    {"layer": record.locator}))
+        handle = self.begin(provenance.IMPORT_POINTS)
+        with store.ResultWriter(self.project, handle) as out, self.assertRaises(TypeError):
+            out.points("Otro", points, content="no es un hash")
 
 
 class SourceInputTest(unittest.TestCase):

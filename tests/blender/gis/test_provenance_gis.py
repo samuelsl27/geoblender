@@ -186,6 +186,7 @@ class GisProvenanceTest(TinOperatorsCase):
         for step in self.recompute_mod.recompute_steps(self.project):
             self.jobs_ops.tick()
             self.gis_ops.triangulation_tick()
+            self.gis_ops.incorporation_tick()
             time.sleep(0.002)
         return step.result
 

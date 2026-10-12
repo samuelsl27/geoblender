@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La topografía dentro de Blender sin interfaz (spec 006, T35; RNF-006-03, RNF-006-06,
+"""La topografía dentro de Blender sin interfaz (spec 006, T35 y T50; RNF-006-03, RNF-006-06,
 RNF-006-09; RNF-008-01; plan 006 §5.3.4, §5.4 A10, A11 y A15, §5.6.4, §7.2 y §9, D-12).
 
 Se ejecuta con ``tools/check.py --rendimiento`` (o, a mano, con ``tools/run_blender_tests.py
@@ -30,10 +30,19 @@ rejilla de 1 m (:data:`WINDOW`), la superficie de colinas de :func:`surface` y, 
   mediana), y la línea da también el máximo. El peor suele ser el sondeo que incorpora el TIN
   (el intervalo del monitor, 0,25 s, más lo que dura: copiar el TIN de 8 MB al proyecto y
   comprobar sus huellas).
-- RNF-006-06 (:meth:`GisSpeedTest.test_view_load`): cargar en la vista la rejilla de 1 m del
-  proyecto (1.700 × 1.655 = 2.813.500 celdas, todas con dato) con
-  ``geoblender.core_load_into_view``, con la comprobación de su malla, mediana de 5 ≤ 6 s; su
-  versión de 5 m (340 × 331) ≤ 1 s.
+- RNF-006-09 (T50) al importar el levantamiento (una vez, al preparar la orden del TIN): desde
+  la orden hasta su operación hecha, ninguna llamada del hilo principal pasa de 0,5 s ni pasa
+  más de 0,5 s sin refrescar el progreso (el hash de las tablas lo hace su trabajo y la
+  incorporación va por pasos desde su temporizador, ``bl.ops.gis.incorporation_tick``, que
+  pone su avance en la barra de estado); el hash de cada tabla, el que calculó el trabajo, es
+  el que da leerla en el proyecto (el mismo de antes de la T50).
+- RNF-006-06 y RNF-006-09 (:meth:`GisSpeedTest.test_view_load`): cargar en la vista la rejilla
+  de 1 m del proyecto (1.700 × 1.655 = 2.813.500 celdas, todas con dato) con
+  ``geoblender.core_load_into_view`` como desde la interfaz (en pasos: el modal y, haciendo de
+  temporizador de su ventana, un evento ``TIMER`` cada ``TIMER_INTERVAL_S``), con la
+  comprobación de su malla, mediana de 5 ≤ 6 s; su versión de 5 m (340 × 331) ≤ 1 s; y en
+  cada carga, ninguna llamada del hilo principal pasa de 0,5 s ni pasa más de 0,5 s sin
+  refrescar el progreso (cada evento lo pone en la barra de estado).
 
 En ``blender -b`` no hay bucle de eventos ni corren los temporizadores: la prueba hace de bucle
 (:class:`_EventLoop`): anota cada temporizador que se registra y lo llama cuando le toca (el
@@ -43,13 +52,12 @@ campo «jobs» de la barra de estado con un *layout* simulado (``FakeLayout``), 
 ``perf_jobs_monitor``. Los trabajos de la cadena (automáticos, en un hilo por su estimación)
 se envuelven para anotar cada aviso de avance.
 
-Fuera del escenario de T35, sin presupuesto (para la sesión principal): la importación del CSV
-de 300.000 filas y cargar la rejilla en la vista son llamadas del hilo principal de varios
-segundos (la incorporación de la importación escribe la tabla de 289.900 puntos y calcula su
-hash de contenido; cargar en la vista no es una operación, plan §5.6.4): las dos salen en una
-línea «Aviso RNF-006-09». Lo que solo se ve con la interfaz (el primer dibujo de la malla en la
-Vista 3D, el paso de deshacer con ventana, la barra de estado con el aviso de la triangulación)
-queda para la comprobación en pantalla.
+Hasta la T50, la importación del CSV de 300.000 filas (4,98 s en una llamada: el hash de la
+tabla de 289.900 puntos y su escritura) y cargar la rejilla en la vista (4,25 s en una) salían
+en dos líneas «Aviso RNF-006-09» sin presupuesto; ahora tienen el de RNF-006-09. Lo que solo
+se ve con la interfaz (el primer dibujo de la malla en la Vista 3D, el paso de deshacer con
+ventana, la barra de estado con el aviso de la triangulación y con el avance de la carga y de
+la incorporación, Esc) queda para la comprobación en pantalla.
 """
 
 import dataclasses
@@ -61,6 +69,7 @@ import sys
 import time
 import unittest
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -292,6 +301,7 @@ class _EventLoop:
             time.sleep(wait)
         cdt_before = len(self.cdt)
         waiting = bool(self.gis_ops.pending_triangulations())
+        incorporating = bool(self.gis_ops.pending_incorporations())
         start = time.perf_counter()
         interval = function()
         monitor = function is self.jobs_ops.tick
@@ -303,6 +313,8 @@ class _EventLoop:
                                 cdt_s))
         if monitor or (function is self.gis_ops.triangulation_tick and waiting and not cdt_s):
             self.refreshes.append(end)  # la barra, o el aviso «Triangulando n puntos…»
+        elif function is self.gis_ops.incorporation_tick and incorporating:
+            self.refreshes.append(end)  # el avance de la incorporación, en la barra (T50)
         if interval is None:
             self.due.pop(function, None)
             if bpy.app.timers.is_registered(function):
@@ -485,6 +497,14 @@ class GisSpeedTest(TinOperatorsCase):
         self.assertEqual(len(self.store.load_lines(self.project, "gis_brk_levantamiento")),
                          LINES)
         self.ps.take_notices()
+        # T50: el hash de cada tabla, el que calculó el trabajo, es el que da leerla en el
+        # proyecto (el de antes, cuando lo calculaba el hilo de Blender al incorporarla).
+        registry = _module("core.datasets.registry")
+        for name in ("gis_pts_levantamiento", "gis_brk_levantamiento"):
+            with self.project.read() as conn:
+                record = registry.get(conn, name)
+                again = registry.content_digest(conn, self.project, record)
+            self.assertEqual(again.content_sha256, record.content_sha256, name)
         return imported
 
     def test_tin_order(self) -> None:
@@ -554,16 +574,21 @@ class GisSpeedTest(TinOperatorsCase):
                 f"{_number(statistics.median(writes))} s), presupuesto "
                 f"{_number(WRITE_BUDGET_S, 1)} s cada escritura en disco local")
         call = imported.longest_call
-        _report(f"Aviso RNF-006-09 (fuera del escenario de T35, sin presupuesto; {MACHINE}): "
-                f"importar el CSV de {_count(POINTS)} filas tarda {_number(imported.seconds)} "
-                f"s, con una llamada del hilo principal de {_number(call.blocking_s)} s "
-                f"({call.what}: la incorporación) y {_number(max(imported.gaps))} s sin "
-                "refrescar el progreso")
+        steps = sum(1 for item in imported.calls if item.what == "incorporation_tick")
+        _report(f"RNF-006-09: importar el CSV de {_count(POINTS)} filas ({_count(SCATTERED)} "
+                f"puntos y {LINES} líneas de rotura; {MACHINE}), desde la orden hasta su "
+                f"operación hecha ({_number(imported.seconds)} s; el hash de las tablas, en su "
+                f"trabajo, y la incorporación en {steps} pasos del temporizador, T50): la "
+                f"llamada más larga del hilo principal {_number(call.blocking_s)} s "
+                f"({call.what}), sin refrescar el progreso {_number(max(imported.gaps))} s; "
+                f"presupuesto {_number(REFRESH_BUDGET_S, 1)} s")
         self.assertLessEqual(statistics.median(seconds), TIN_BUDGET_S)
         self.assertLessEqual(statistics.median(gaps), REFRESH_BUDGET_S)
         self.assertLessEqual(statistics.median(c.blocking_s for c in calls), REFRESH_BUDGET_S)
         self.assertLessEqual(statistics.median(jobs), REFRESH_BUDGET_S)
         self.assertLessEqual(max(writes), WRITE_BUDGET_S)
+        self.assertLessEqual(call.blocking_s, REFRESH_BUDGET_S, call.what)
+        self.assertLessEqual(max(imported.gaps), REFRESH_BUDGET_S)
 
     # --- RNF-006-06 -------------------------------------------------------------------------
 
@@ -586,46 +611,84 @@ class GisSpeedTest(TinOperatorsCase):
             out.commit(software={"pyproj": "3.8.0"}, message="La rejilla de la prueba")
         return self.gis_provenance.dataset_name(self.gis_provenance.PROJECT_GRID, "MDT 1 m")
 
+    def load_in_steps(self, name: str, lod: str) -> tuple[float, float, float, str]:
+        """``geoblender.core_load_into_view`` como desde la interfaz (en pasos, ``in_steps``):
+        la orden y, como el temporizador de su ventana, un evento ``TIMER`` cada
+        ``TIMER_INTERVAL_S`` al modal hasta que termina. Devuelve lo que tardó, su llamada más
+        larga del hilo principal, lo más que pasó sin refrescar el progreso (cada evento lo
+        pone en la barra de estado) y cómo terminó."""
+        ops = _module("bl.ops.core")
+        cls = ops.GEOBLENDER_OT_core_load_into_view
+        start = time.perf_counter()
+        result = bpy.ops.geoblender.core_load_into_view("EXEC_DEFAULT", datasets=name, lod=lod,
+                                                       in_steps=True)
+        end = time.perf_counter()
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        (operator,) = [op for op in bpy.context.window.modal_operators
+                       if isinstance(op, cls) and getattr(op, "_steps", None) is not None]
+        longest, refreshes = end - start, [start, end]
+        event = SimpleNamespace(type="TIMER", value="NOTHING")
+        state: set[str] = {"RUNNING_MODAL"}
+        while state == {"RUNNING_MODAL"}:
+            time.sleep(cls.TIMER_INTERVAL_S)
+            begin = time.perf_counter()
+            state = operator.modal(bpy.context, event)
+            end = time.perf_counter()
+            longest = max(longest, end - begin)
+            refreshes.append(end)
+        return (end - start, longest, float(np.max(np.diff(refreshes))),
+                next(iter(state)))
+
     def test_view_load(self) -> None:
-        """RNF-006-06: cargar en la vista una rejilla de 2,81 M celdas tarda ≤ 6 s y su versión
-        de 5 m ≤ 1 s (mediana de 5), con la malla completa (un vértice por celda y dos
-        triángulos por cuadro de cuatro centros) y comprobada."""
+        """RNF-006-06, RNF-006-09 (T50): cargar en la vista una rejilla de 2,81 M celdas tarda
+        ≤ 6 s y su versión de 5 m ≤ 1 s (mediana de 5), con la malla completa (un vértice por
+        celda y dos triángulos por cuadro de cuatro centros) y comprobada; como desde la
+        interfaz, por pasos desde el temporizador de la ventana: ninguna llamada del hilo
+        principal pasa de 0,5 s ni pasa más de 0,5 s sin refrescar el progreso (el peor caso
+        de cada carga, mediana de 5; y el máximo)."""
         name = self.grid_dataset(self.open_survey_project())
         uid = self.dataset(name)[0]
         views = _module("bl.scene.views")
 
-        def load(lod: str, columns: int, rows: int) -> list[float]:
-            times: list[float] = []
+        def load(lod: str, columns: int, rows: int) -> list[tuple[float, float, float, str]]:
+            runs = []
             for _ in range(REPETITIONS):
                 views.unload_datasets([uid])
                 gc.collect()
-                start = time.perf_counter()
-                result = bpy.ops.geoblender.core_load_into_view("EXEC_DEFAULT", datasets=name,
-                                                               lod=lod)
-                times.append(time.perf_counter() - start)
-                self.assertEqual(result, {"FINISHED"})
+                runs.append(self.load_in_steps(name, lod))
+                self.assertEqual(runs[-1][3], "FINISHED")
                 (obj,) = [obj for obj in bpy.data.objects
                           if getattr(obj, views.OBJECT_PROPERTY).dataset_uid == uid]
                 self.assertEqual((len(obj.data.vertices), len(obj.data.polygons)),
                                  (columns * rows, 2 * (columns - 1) * (rows - 1)))
-            return times
+            return runs
 
         full = load("FULL", COLS, ROWS)
         lod_cols, lod_rows = int(COLS // LOD_STEP_M), int(ROWS // LOD_STEP_M)
         coarse = load("LOD2", lod_cols, lod_rows)
         views.unload_datasets([uid])
         _report(f"RNF-006-06: cargar en la vista la rejilla de 1 m de {_count(CELLS)} celdas "
-                f"({COLS} × {ROWS}; geoblender.core_load_into_view con la comprobación de la "
-                f"malla; {MACHINE}): {_median_line(full)}, presupuesto "
-                f"{_number(FULL_BUDGET_S, 1)} s; su versión de {_number(LOD_STEP_M, 0)} m "
-                f"({lod_cols} × {lod_rows}): {_median_line(coarse)}, presupuesto "
+                f"({COLS} × {ROWS}; geoblender.core_load_into_view en pasos con la "
+                f"comprobación de la malla; {MACHINE}): {_median_line([r[0] for r in full])}, "
+                f"presupuesto {_number(FULL_BUDGET_S, 1)} s; su versión de "
+                f"{_number(LOD_STEP_M, 0)} m ({lod_cols} × {lod_rows}): "
+                f"{_median_line([r[0] for r in coarse])}, presupuesto "
                 f"{_number(LOD_BUDGET_S, 1)} s")
-        _report(f"Aviso RNF-006-09 (fuera del escenario de T35, sin presupuesto): cargar la "
-                f"rejilla de {_count(CELLS)} celdas es una sola llamada del hilo principal, sin "
-                f"avance, de {_number(statistics.median(full))} s (cargar en la vista no es una "
-                "operación, plan §5.6.4; RNF-006-06 le da 6 s)")
-        self.assertLessEqual(statistics.median(full), FULL_BUDGET_S)
-        self.assertLessEqual(statistics.median(coarse), LOD_BUDGET_S)
+        calls = [run[1] for run in full + coarse]
+        gaps = [run[2] for run in full + coarse]
+        _report(f"RNF-006-09: cargar en la vista la rejilla de {_count(CELLS)} celdas y su "
+                f"versión de {_number(LOD_STEP_M, 0)} m, {REPETITIONS} veces cada una, en "
+                f"pasos desde el temporizador de la ventana (T50; {MACHINE}), el peor caso de "
+                f"cada carga, mediana (máx.): la llamada más larga del hilo principal "
+                f"{_number(statistics.median(calls))} s ({_number(max(calls))}), sin refrescar "
+                f"el progreso {_number(statistics.median(gaps))} s ({_number(max(gaps))}); "
+                f"presupuesto {_number(REFRESH_BUDGET_S, 1)} s")
+        self.assertLessEqual(statistics.median(r[0] for r in full), FULL_BUDGET_S)
+        self.assertLessEqual(statistics.median(r[0] for r in coarse), LOD_BUDGET_S)
+        self.assertLessEqual(statistics.median(calls), REFRESH_BUDGET_S)
+        self.assertLessEqual(statistics.median(gaps), REFRESH_BUDGET_S)
+        self.assertLessEqual(max(calls), REFRESH_BUDGET_S)  # ningún tramo, en ninguna carga
+        self.assertLessEqual(max(gaps), REFRESH_BUDGET_S)
 
 
 if __name__ == "__main__":

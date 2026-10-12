@@ -25,8 +25,11 @@ T33): la copia, su huella y el hash de la rejilla escrita avisan por trozos.
 (importaciones: el que da ``core_content_hash`` con las mismas declaraciones,
 ``gis.store.source_declarations``), las huellas de cada fichero de la fuente (sha256, tamaño y
 fecha) y, en ``outputs``, el ``ContentDigest`` de cada fichero que será un dato del proyecto
-(una rejilla, con ``gis.geotiff@1``; un TIN, con ``core.npz_mesh@1``; las tablas lo calcula el
-registro al escribirlas, T42). Los informes completos van en ``report.json`` (el resumen solo
+(una rejilla, con ``gis.geotiff@1``; un TIN, con ``core.npz_mesh@1``; lo importado en una
+tabla, con ``core.gpkg_layer@1`` sobre las filas que escribirá la orden en un GeoPackage en
+memoria, :func:`_table_digests`, T50: así el hilo de Blender no vuelve a leer 300.000 puntos al
+incorporarlos, RNF-006-09; las demás tablas lo calcula el registro al escribirlas, T42). Los
+informes completos van en ``report.json`` (el resumen solo
 lleva recuentos: cabe en el canal). Cancelar a mitad, o un fallo, deja ``out/`` vacía: nada a
 medias ni entero (RF-006-28); un ``GisError`` (o cualquier error para el usuario) es un
 ``JobFailed`` con su código, su ``msgid``, sus valores y su texto en español (RF-004-12), y una
@@ -51,7 +54,7 @@ resultados en ``out/``:
   (``.tif``) → ``grid.tif`` y ``report.json``.
 - ``gis_import_points``: ``reader`` (``gis.points_text@1``), ``name``, ``settings``,
   ``crs``, ``vertical`` y ``size``; ``source_main`` → ``points.npz``, ``lines.npz`` y
-  ``report.json``.
+  ``report.json``; en el resumen, el hash de cada tabla que serán (T50).
 - ``gis_tin_prepare``: ``name``, ``tol_xy``, ``tol_z``, ``duplicate_policy`` y ``count``;
   ``points`` y ``lines`` (``.npz``) → ``prepared.npz`` o, con conflictos,
   ``conflicts.json``.
@@ -150,6 +153,7 @@ from ..core.georef import (
 )
 from ..core.gpkg.base import ColumnDef
 from ..core.gpkg.header import side_file
+from ..core.gpkg.wkb import Geometry
 from ..jobs.catalog import WorkerInfo
 from ..jobs.messages import JobError
 from ..jobs.paths import JobDir
@@ -222,12 +226,14 @@ __all__ = [
     "digest_of",
     "grid_json",
     "grid_of",
+    "imported_rows",
     "needs_site",
     "origin_json",
     "origin_of",
     "path_name",
     "plain",
     "point_inputs",
+    "read_boundary",
     "read_conflicts",
     "read_contours",
     "read_lines",
@@ -345,6 +351,7 @@ HASHING_TEXT = "Calculando el hash de contenido de la fuente…"
 WRITING_TEXT = "Escribiendo el resultado…"
 EXPORT_HASH_TEXT = "Calculando el hash de contenido del entregable…"
 RESULT_HASH_TEXT = "Calculando el hash de contenido del resultado…"
+TABLE_HASH_TEXT = "Calculando el hash de contenido de lo importado…"
 DONE_TEXT = "Terminado"
 COPY_SHARE = 0.75
 """La parte del avance de copiar un fichero de la fuente que es la copia verificada (lee la
@@ -819,6 +826,36 @@ def read_polygons(path: Path | str) -> list[list[list[np.ndarray]]]:
     return found
 
 
+def read_boundary(path: Path | str, epsg: int) -> list[Geometry]:
+    """Los contornos de :func:`write_polygons` como los guarda una importación de una capa
+    (``gis.store.ResultWriter.boundary``): una ``Geometry`` ``MULTIPOLYGON`` sin Z en ``epsg``
+    por entidad. La orden los guarda así y el trabajo calcula con ellos el hash de su tabla
+    (T50)."""
+    return [Geometry("MULTIPOLYGON", epsg, False, polygons, None)
+            for polygons in read_polygons(path)]
+
+
+def imported_rows(family: str, path: Path | str, epsg: int) -> list[tuple[Any, ...]]:
+    """Las filas de la tabla de ``family`` (``gis.provenance``: puntos, líneas de rotura,
+    curvas o contornos) con lo importado que dejó un trabajo en ``path`` (``points.npz``,
+    ``lines.npz``, ``contours.npz`` o ``polygons.npz``) y las coordenadas en ``epsg``: las que
+    escribe la orden al incorporarlo (``gis.store.point_rows`` y las demás). Con ellas calcula
+    el trabajo el hash de la tabla (T50; RNF-006-09)."""
+    from .provenance import BOUNDARY, BREAKLINES, CONTOUR_LINES, POINTS
+    from .store import boundary_rows, breakline_rows, contour_rows, point_rows
+
+    if family == POINTS:
+        return point_rows(read_points(path), epsg)
+    if family == BREAKLINES:
+        return breakline_rows(read_lines(path), epsg)
+    if family == CONTOUR_LINES:
+        return contour_rows(read_contours(path), epsg)
+    if family == BOUNDARY:
+        return boundary_rows(read_boundary(path, epsg), (), epsg)
+    raise ValueError(f"{family!r} no es lo importado en una tabla (puntos, líneas de rotura, "
+                     "curvas o contornos)")
+
+
 def write_contours(path: Path | str, lines: Sequence[ContourLine]) -> None:
     """Las curvas de nivel ``lines`` en el npz ``path`` (vértices seguidos y ``offsets``,
     cota, maestra y cerrada)."""
@@ -1128,6 +1165,32 @@ def _dataset_digest_raster(ctx: _Context, raster: Raster, low: float,
 
     return gis_content.raster_digest(raster, DATASET_DECLARATIONS,
                                      progress=_span(ctx, low, high), cancelled=_cancelled(ctx))
+
+
+def _table_digests(ctx: _Context, crs: CrsRef, tables: Sequence[tuple[JobOutput, str]],
+                   low: float, high: float) -> dict[str, dict[str, str]]:
+    """El ``ContentDigest`` de cada tabla que será lo importado (T50; RNF-006-09): de cada
+    resultado ``(JobOutput, familia)``, las filas que escribirá la orden
+    (:func:`imported_rows`, desde el fichero escrito) con su hash de ``core.gpkg_layer@1``
+    (``gis.store.table_digest``), por su papel, con el avance repartido en [``low``,
+    ``high``] por el tamaño de cada fichero y la cancelación entre trozos. Así el hilo de
+    Blender no vuelve a leer una tabla de 300.000 puntos al incorporarla."""
+    from .store import table_digest  # importa la procedencia: solo al usarlo
+
+    paths = [ctx.output_path(output.file) for output, _family in tables]
+    sizes = [max(1, _size(path)) for path in paths]
+    total = sum(sizes)
+    found: dict[str, dict[str, str]] = {}
+    start = low
+    for (output, family), path, size in zip(tables, paths, sizes, strict=True):
+        end = start + (high - low) * size / total
+        ctx.progress(start, TABLE_HASH_TEXT)
+        rows = imported_rows(family, path, crs.epsg)
+        digest = table_digest(family, rows, crs, progress=_span(ctx, start, end),
+                              cancelled=_cancelled(ctx))
+        found[output.role] = digest_json(digest)
+        start = end
+    return found
 
 
 def _copy_sources(ctx: _Context, request: _Request, roles: Sequence[str], *,
@@ -1519,9 +1582,12 @@ def run_resample(ctx: _Context) -> dict[str, Any]:
 @_job
 def run_import_points(ctx: _Context) -> dict[str, Any]:
     """``gis_import_points``: un texto de puntos (CSV, TXT o XYZ disperso) a ``points.npz`` y
-    ``lines.npz`` (coordenadas ABSOLUTAS de la fuente, en float64) con su informe y el hash
-    de la fuente (RF-006-12, RF-006-26). Lee con el lector de tablas de ``interop`` que le da
+    ``lines.npz`` (coordenadas ABSOLUTAS de la fuente, en float64) con su informe, el hash
+    de la fuente (RF-006-12, RF-006-26) y el de las tablas que serán lo importado (T50:
+    :func:`_table_digests`; RNF-006-09). Lee con el lector de tablas de ``interop`` que le da
     su envoltorio (``gis.content.use_table_reader``)."""
+    from .provenance import BREAKLINES, POINTS  # importa la procedencia: solo al usarlo
+
     request = _Request(ctx)
     reader = _reader(request, (gis_content.POINTS_TEXT,))
     settings = _settings(request, reader)
@@ -1535,20 +1601,23 @@ def run_import_points(ctx: _Context) -> dict[str, Any]:
                            "su envoltorio (gis.content.use_table_reader)")
     mapping = _column_mapping(request, settings)
     ctx.progress(0.0, COPYING_TEXT)
-    files, prints = _copy_sources(ctx, request, (MAIN_ROLE,), low=0.0, high=0.1)
-    digest = _source_digest(ctx, reader, "table", files, declarations, settings, 0.1, 0.45)
-    ctx.progress(0.45, READING_TEXT)
+    files, prints = _copy_sources(ctx, request, (MAIN_ROLE,), low=0.0, high=0.05)
+    digest = _source_digest(ctx, reader, "table", files, declarations, settings, 0.05, 0.3)
+    ctx.progress(0.3, READING_TEXT)
     table = tables(files[MAIN_ROLE], encoding=settings["encoding"],
                    separator=settings["separator"], header_row=settings.get("header_row", 0))
-    ctx.progress(0.7, READING_TEXT)
+    ctx.progress(0.45, READING_TEXT)
     points, lines, report = points_from_rows(
         table.columns, table.rows, mapping, settings["decimal"], source=name,
         row_numbers=table.lines, hard=settings.get("line_kind", "hard") == "hard")
     report = dataclasses.replace(report, duplicates=_duplicates(request, points))
-    ctx.progress(0.9, WRITING_TEXT)
+    ctx.progress(0.55, WRITING_TEXT)
     write_points(ctx.output_path(OUT_POINTS.file), points)
     write_lines(ctx.output_path(OUT_LINES.file), lines)
     _write_report(ctx, report)
+    imported = [(OUT_POINTS, POINTS)] if len(points) else []
+    imported += [(OUT_LINES, BREAKLINES)] if lines else []
+    digests = _table_digests(ctx, crs, imported, 0.6, 0.99)
     summary = {
         "source": _source_summary(reader, digest, prints, declarations, settings),
         "crs": crs_json(crs),
@@ -1558,7 +1627,9 @@ def run_import_points(ctx: _Context) -> dict[str, Any]:
         "lines": len(lines),
         "rejected": len(report.rejected),
         "duplicates": report.duplicates,
-        "outputs": {output.role: {"file": output.relative}
+        "outputs": {output.role: {"file": output.relative,
+                                  **({"digest": digests[output.role]}
+                                     if output.role in digests else {})}
                     for output in (OUT_POINTS, OUT_LINES, OUT_REPORT)},
     }
     _finish(ctx, (OUT_POINTS, OUT_LINES, OUT_REPORT))
@@ -1877,8 +1948,11 @@ def run_import_vector(ctx: _Context) -> dict[str, Any]:
     diario y leído sobre una copia consolidada (nunca el de la persona, RF-006-10), da los
     puntos, las líneas de rotura (duras), las curvas de nivel (con su cota) o el contorno con
     las coordenadas de la capa bit a bit, el informe (entidades leídas, rechazadas con su
-    número y motivo y, en puntos, duplicados) y el hash de la fuente (RF-006-26). Su CRS, el
-    de la petición o el de la capa; el datum, el de la petición (RF-006-04)."""
+    número y motivo y, en puntos, duplicados), el hash de la fuente (RF-006-26) y el de la
+    tabla que será lo importado (T50: :func:`_table_digests`; RNF-006-09). Su CRS, el de la
+    petición o el de la capa; el datum, el de la petición (RF-006-04)."""
+    from .provenance import layer_family  # importa la procedencia: solo al usarlo
+
     request = _Request(ctx)
     reader = _reader(request, (gis_content.GPKG_LAYER,))
     settings = _settings(request, reader)
@@ -1924,6 +1998,8 @@ def run_import_vector(ctx: _Context) -> dict[str, Any]:
         write_polygons(path, polygons)
         count = len(polygons)
     _write_report(ctx, report)
+    digests = _table_digests(ctx, crs, [(output, layer_family(role))] if count else [],
+                             0.75, 0.99)
     summary = {
         "source": _source_summary(reader, digest, prints, declarations, settings),
         "crs": crs_json(crs),
@@ -1934,7 +2010,10 @@ def run_import_vector(ctx: _Context) -> dict[str, Any]:
         "count": count,
         "rejected": len(report.rejected),
         **extra,
-        "outputs": {item.role: {"file": item.relative} for item in (output, OUT_REPORT)},
+        "outputs": {item.role: {"file": item.relative,
+                                **({"digest": digests[item.role]}
+                                   if item.role in digests else {})}
+                    for item in (output, OUT_REPORT)},
     }
     _finish(ctx, (output, OUT_REPORT))
     return summary

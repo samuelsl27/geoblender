@@ -17,7 +17,10 @@ Lo que produce una operación de la 006 se guarda en el proyecto con la API de p
   nombre, su almacén, su ubicación y su lector) y su ``ContentDigest``: el que da su lector al
   leer lo escrito, calculado aquí sin volver a leerlo (``gis.content.raster_digest`` y
   ``tin_digest``), el que trae el resultado de un trabajo de la 004 o, en una tabla, el que
-  calcula el registro de la 008 en la transacción que la escribe.
+  calcula el registro de la 008 en la transacción que la escribe o, si lo da su trabajo, el de
+  :func:`table_digest` (T50: sus filas, :func:`point_rows` y las demás, en un GeoPackage en
+  memoria con la misma estructura, leído con la función del registro; así el hilo de Blender
+  no vuelve a leer una tabla de 300.000 puntos al incorporarla, RNF-006-09).
 
 :class:`ResultWriter` (un gestor de contexto por operación, con su ``OperationHandle``) sigue
 el flujo del plan §5.6.4:
@@ -91,6 +94,7 @@ principio 6). Python puro y numpy (ADR-0004).
 from __future__ import annotations
 
 import hashlib
+import itertools
 import os
 import sqlite3
 import struct
@@ -103,7 +107,8 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from ..core.content.encoder import ContentDigest
+from ..core.content import builtin as core_builtin
+from ..core.content.encoder import NORMALIZER, ContentDigest
 from ..core.content.readers import ReadCancelled
 from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import (
@@ -116,7 +121,7 @@ from ..core.datasets.model import (
 )
 from ..core.errors import GeoblenderError
 from ..core.georef import CrsCatalog, CrsRef, VerticalRef, load_catalog
-from ..core.gpkg.base import ColumnDef, create_feature_table
+from ..core.gpkg.base import ColumnDef, create_base, create_feature_table
 from ..core.gpkg.wkb import (
     MAGIC,
     VERSION,
@@ -218,7 +223,11 @@ __all__ = [
     "VIEW_TABLE_FAMILIES",
     "EXPORT_TABLE_FAMILIES",
     "backup_path",
+    "boundary_rows",
+    "breakline_rows",
     "classify_source",
+    "contour_rows",
+    "insert_rows",
     "dataset_references",
     "declared_crs",
     "declared_vertical",
@@ -230,11 +239,13 @@ __all__ = [
     "load_raster",
     "load_regions",
     "load_tin",
+    "point_rows",
     "project_references",
     "require_project_references",
     "session_tag",
     "source_declarations",
     "source_input",
+    "table_digest",
     "temporary_path",
 ]
 
@@ -331,6 +342,15 @@ TABLE_LAYOUTS: Mapping[str, TableLayout] = MappingProxyType({
 """Las tablas de las familias vectoriales, por familia (plan §5.2.3). El ``CHECK`` del papel
 de un contorno (:data:`BOUNDARY_ROLES`) lo comprueba :meth:`ResultWriter.boundary`: la
 ``ColumnDef`` de la 002 no lo escribe."""
+
+DIGEST_TABLE = "tabla"
+"""El nombre de la tabla en el GeoPackage en memoria de :func:`table_digest` (no es contenido:
+el hash de ``core.gpkg_layer@1`` no lleva el nombre de la capa)."""
+INSERT_ROWS = 500
+"""Las filas de cada ``INSERT`` de una tabla (T50; RNF-006-09): con una sentencia por fila, cada
+una recorre ``sqlite_sequence`` del proyecto (las tablas con ``AUTOINCREMENT``) y lo reescribe;
+con 500 por sentencia, los 289.900 puntos de RNF-006-03 se escriben en 0,15 s en vez de 0,5 s,
+con las mismas filas y los mismos ``fid``."""
 
 
 # --- Nombres y referencias del proyecto ---------------------------------------------------------
@@ -637,8 +657,9 @@ class _File:
 class _Table:
     """Una tabla de ``project.gpkg``: su dato (nombre, familia y nombre de la orden), su
     forma, sus filas ya codificadas (geometría y columnas), su extensión, el CRS de sus
-    coordenadas, la referencia de sus Z y, cuando se conocen (lo importado, al registrar su
-    entrada), su ``DatasetSpec``, su identificador y su descripción."""
+    coordenadas, la referencia de sus Z, el hash que dio su trabajo (``None``: lo calcula el
+    registro al escribirla) y, cuando se conocen (lo importado, al registrar su entrada), su
+    ``DatasetSpec``, su identificador y su descripción."""
 
     dataset: str
     family: str
@@ -648,6 +669,7 @@ class _Table:
     extent: tuple[float, float, float, float] | None
     crs: CrsRef
     vertical: VerticalRef
+    content: ContentDigest | None = None
     spec: DatasetSpec | None = None
     identifier: str | None = None
     description: str | None = None
@@ -697,6 +719,187 @@ def _polygons(item: object) -> list[list[np.ndarray]]:
     else:
         parts = [list(item)]
     return [[_ring(ring) for ring in polygon] for polygon in parts]
+
+
+# --- Filas y hash de las tablas (T50) ----------------------------------------------------------
+
+
+def _srs_id(srs: object) -> int:
+    if isinstance(srs, bool) or not isinstance(srs, int):
+        raise TypeError(f"el SRS de las coordenadas es su código EPSG (un entero), no {srs!r}")
+    return srs
+
+
+def _content_digest(content: object) -> None:
+    """``content`` es el ``ContentDigest`` que dio el trabajo, o ``None``."""
+    if content is not None and not isinstance(content, ContentDigest):
+        raise TypeError(f"el hash de una tabla es un ContentDigest (table_digest), no "
+                        f"{content!r}")
+
+
+def point_rows(points: PointSet, srs: int) -> list[tuple[Any, ...]]:
+    """Las filas de la tabla de puntos (plan §5.2.3) de ``points`` en el SRS ``srs``: su
+    geometría (un ``POINT`` con Z: el blob de ``core.gpkg.wkb.encode_geometry`` con las
+    coordenadas tal como llegan, bit a bit), su identificador, su código y su fila de origen.
+    Los blobs se escriben de una vez con numpy (spec 006, T50: 289.900 puntos en centésimas de
+    segundo en vez de casi uno, RNF-006-09); si alguna coordenada no es finita, punto a punto,
+    con el error de ``encode_geometry``."""
+    if not isinstance(points, PointSet):
+        raise TypeError(f"los puntos son un PointSet, no {type(points).__name__}")
+    srs = _srs_id(srs)
+    xyz = np.asarray(points.xyz)
+    others = (list(map(str, points.point_ids)), list(map(str, points.codes)),
+              list(map(int, points.source_rows)))
+    if not len(xyz):
+        return []
+    if xyz.dtype == np.float64 and xyz.ndim == 2 and xyz.shape[1] == 3 and \
+            np.isfinite(xyz).all():
+        record = np.empty(len(xyz), dtype=[("head", f"S{_POINT_Z_HEAD}"), ("xyz", "<f8", (3,))])
+        record["head"] = (MAGIC + struct.pack("<BBi", VERSION, _LITTLE_NO_ENVELOPE, srs)
+                          + _POINT_Z_WKB)
+        record["xyz"] = xyz
+        data = record.tobytes()
+        blobs = [data[start:start + _POINT_Z_SIZE]
+                 for start in range(0, len(data), _POINT_Z_SIZE)]
+    else:
+        blobs = [encode_geometry("POINT", row, srs, True) for row in xyz]
+    return list(zip(blobs, *others, strict=True))
+
+
+def _breaklines(lines: Iterable[Breakline]) -> list[Breakline]:
+    chosen = list(lines)
+    for line in chosen:
+        if not isinstance(line, Breakline):
+            raise TypeError(f"una línea de rotura es un Breakline, no {line!r}")
+    return chosen
+
+
+def breakline_rows(lines: Iterable[Breakline], srs: int) -> list[tuple[Any, ...]]:
+    """Las filas de la tabla de líneas de rotura (plan §5.2.3): un ``LINESTRING`` con Z por
+    línea con sus vértices tal como llegan, su identificador, si es dura y su código."""
+    layout = TABLE_LAYOUTS[BREAKLINES]
+    srs = _srs_id(srs)
+    return [(encode_geometry(layout.geometry_type, line.xyz, srs, layout.has_z),
+             str(line.line_id), int(bool(line.hard)), str(line.code))
+            for line in _breaklines(lines)]
+
+
+def _contour_table(lines: Iterable[ContourLine],
+                   srs: int) -> tuple[list[tuple[Any, ...]], list[np.ndarray]]:
+    """Las filas de las curvas y sus coordenadas (la cerrada, con su primer vértice repetido)."""
+    chosen = list(lines)
+    for line in chosen:
+        if not isinstance(line, ContourLine):
+            raise TypeError(f"una curva de nivel es un ContourLine, no {line!r}")
+    layout = TABLE_LAYOUTS[CONTOUR_LINES]
+    srs = _srs_id(srs)
+    rows: list[tuple[Any, ...]] = []
+    coords_all: list[np.ndarray] = []
+    for line in chosen:
+        coords = np.vstack([line.xyz, line.xyz[:1]]) if line.closed else line.xyz
+        rows.append((encode_geometry(layout.geometry_type, coords, srs, layout.has_z),
+                     float(line.elevation), int(bool(line.is_index)),
+                     int(bool(line.closed)), line.length_m))
+        coords_all.append(coords)
+    return rows, coords_all
+
+
+def contour_rows(lines: Iterable[ContourLine], srs: int) -> list[tuple[Any, ...]]:
+    """Las filas de la tabla de curvas de nivel (plan §5.2.3): un ``LINESTRING`` con Z por
+    curva (la cerrada, con su primer vértice repetido al final), su cota, si es maestra, si es
+    cerrada y su longitud en planta."""
+    return _contour_table(lines, srs)[0]
+
+
+def _boundary_table(polygons: Iterable[Any], holes: Iterable[Any],
+                    srs: int) -> tuple[list[tuple[Any, ...]], list[np.ndarray]]:
+    """Las filas de los contornos y sus anillos."""
+    chosen = [(item, BOUNDARY_ROLES[0]) for item in polygons]
+    chosen += [(item, BOUNDARY_ROLES[1]) for item in holes]
+    layout = TABLE_LAYOUTS[BOUNDARY]
+    srs = _srs_id(srs)
+    rows: list[tuple[Any, ...]] = []
+    rings: list[np.ndarray] = []
+    for item, role in chosen:
+        parts = _polygons(item)
+        rows.append((encode_geometry(layout.geometry_type, parts, srs, layout.has_z), role))
+        rings += [ring for polygon in parts for ring in polygon]
+    return rows, rings
+
+
+def boundary_rows(polygons: Iterable[Any], holes: Iterable[Any],
+                  srs: int) -> list[tuple[Any, ...]]:
+    """Las filas de la tabla de contornos (plan §5.2.3): un ``MULTIPOLYGON`` sin Z por contorno
+    (``polygons``, papel «boundary») o por hueco (``holes``, «hole»), con sus X e Y tal como
+    llegan (cada anillo, cerrado)."""
+    return _boundary_table(polygons, holes, srs)[0]
+
+
+def insert_rows(conn: sqlite3.Connection, table: str, names: Sequence[str],
+                rows: Sequence[tuple[Any, ...]]) -> None:
+    """Inserta ``rows`` (en su orden) en las columnas ``names`` de ``table`` con sentencias de
+    :data:`INSERT_ROWS` filas (las que quepan en el límite de variables de SQLite)."""
+    width = len(names)
+    limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    size = max(1, min(INSERT_ROWS, limit // max(1, width)))
+    head = f'INSERT INTO "{table}" ({", ".join(names)}) VALUES '
+    one = "(" + ", ".join("?" * width) + ")"
+    full = head + ", ".join([one] * size)
+    for first in range(0, len(rows), size):
+        chunk = rows[first:first + size]
+        sql = full if len(chunk) == size else head + ", ".join([one] * len(chunk))
+        conn.execute(sql, list(itertools.chain.from_iterable(chunk)))
+
+
+def table_digest(
+    family: str,
+    rows: Sequence[tuple[Any, ...]],
+    crs: CrsRef,
+    *,
+    progress: Progress | None = None,
+    cancelled: Cancelled | None = None,
+) -> ContentDigest:
+    """El ``ContentDigest`` (``core.gpkg_layer@1``, sin declaraciones: el de un dato) de la
+    tabla de la familia ``family`` (:data:`TABLE_LAYOUTS`) con las filas ``rows`` (las de
+    :func:`point_rows`, :func:`breakline_rows`, :func:`contour_rows` o :func:`boundary_rows`)
+    y las coordenadas en ``crs``, sin escribirla en el proyecto: las filas van a un GeoPackage
+    en memoria con la misma estructura que la tabla del proyecto (``create_base`` con su CRS y
+    ``create_feature_table`` con la de su familia) y se leen con
+    ``core.content.builtin.layer_steps``, la función con que el registro de la 008 hashea una
+    tabla del proyecto (ADR-0024 §5). Es el hash que da la tabla escrita en el proyecto: así lo
+    calcula el trabajo de una importación (spec 006, T50) y el hilo de Blender no vuelve a leer
+    la tabla al incorporarla (RNF-006-09). ``progress(fracción, texto)`` tras cada trozo;
+    ``JobCancelled`` si ``cancelled()`` pide parar entre trozos."""
+    if family not in TABLE_LAYOUTS:
+        raise ValueError(f"{family!r} no es una familia con tabla: es una de "
+                         f"{', '.join(TABLE_LAYOUTS)}")
+    if not isinstance(crs, CrsRef):
+        raise TypeError(f"el CRS de las coordenadas es un CrsRef del catálogo, no {crs!r}")
+    layout = TABLE_LAYOUTS[family]
+    text = f"Calculando el hash de contenido de la tabla de {layout.label.lower()}…"
+    conn = sqlite3.connect(":memory:")
+    try:
+        create_base(conn, crs)
+        create_feature_table(conn, DIGEST_TABLE, layout.geometry_type, crs.epsg, layout.has_z,
+                             layout.columns, DIGEST_TABLE)
+        insert_rows(conn, DIGEST_TABLE,
+                    [_GEOMETRY_COLUMN, *(column.name for column in layout.columns)], rows)
+        request = core_builtin.GPKG_LAYER.request(
+            FAMILIES_BY_CODE[family].kind, DATASET_DECLARATIONS, {"main": Path(DIGEST_TABLE)},
+            {"layer": DIGEST_TABLE}, normalizer=NORMALIZER)
+        steps = core_builtin.layer_steps(conn, request)
+        try:
+            for index, done in enumerate(steps, start=1):
+                if cancelled is not None and cancelled():
+                    raise JobCancelled(f"Cancelado al calcular el hash de la tabla de "
+                                       f"{layout.label.lower()} en el trozo {index}")
+                if progress is not None:
+                    progress(done, text)
+        finally:
+            steps.close()
+        return request.hasher.digest()
+    finally:
+        conn.close()
 
 
 class ResultWriter:
@@ -1014,18 +1217,19 @@ class ResultWriter:
 
     def _plan_table(self, family: str, name: str, rows: list[tuple[Any, ...]],
                     extent: tuple[float, float, float, float] | None,
-                    imported: bool) -> DatasetSpec | None:
+                    imported: bool, content: ContentDigest | None = None) -> DatasetSpec | None:
         """Prepara la tabla de ``family``: lo calculado, con su ubicación ya comprobada; lo
         importado, en el CRS y la referencia declarados, con su ubicación al registrar su
-        entrada."""
+        entrada. ``content``: el hash que dio su trabajo (:func:`table_digest`), o ``None``
+        (lo calcula el registro al escribirla)."""
         layout = TABLE_LAYOUTS[family]
         dataset = self._dataset(family, name)
         if imported:
             assert self._declared is not None
             self._outputs.append(_Table(dataset, family, name, layout, tuple(rows), extent,
-                                        self._declared.crs, self._declared.vertical))
+                                        self._declared.crs, self._declared.vertical, content))
             return None
-        spec = dataset_spec(family, name, crs_epsg=self._crs.epsg)
+        spec = dataset_spec(family, name, crs_epsg=self._crs.epsg, content=content)
         identifier = f"{layout.label}: {name} ({spec.locator})"
         with self.project.read() as conn:
             clash = conn.execute(
@@ -1036,7 +1240,8 @@ class ResultWriter:
             self._check_place(conn, spec)
         description = f"{layout.label} de Geoblender; {_z_description(self._vertical)}"
         self._outputs.append(_Table(dataset, family, name, layout, tuple(rows), extent,
-                                    self._crs, self._vertical, spec, identifier, description))
+                                    self._crs, self._vertical, content, spec, identifier,
+                                    description))
         return spec
 
     def _srs(self, imported: bool) -> int:
@@ -1045,91 +1250,77 @@ class ResultWriter:
             return self._declared.crs.epsg
         return self._crs.epsg
 
-    def contours(self, name: str, lines: Iterable[ContourLine]) -> DatasetSpec | None:
+    def contours(self, name: str, lines: Iterable[ContourLine], *,
+                 content: ContentDigest | None = None) -> DatasetSpec | None:
         """Prepara las curvas ``lines`` como la tabla ``gis_cnt_<nombre>`` (plan §5.2.3): una
         fila por curva con su geometría ``LINESTRING`` con Z (la cerrada, con su primer
         vértice repetido al final), su cota, si es maestra, si es cerrada y su longitud en
-        planta. Calculadas (``gis.contours``), absolutas en el CRS y la referencia vertical del
-        proyecto; importadas de una capa (``gis.import_vector`` con el papel ``contours``), lo
-        importado de su entrada, en los declarados. La tabla se escribe al confirmar; su hash,
-        el del registro. Devuelve su ``DatasetSpec`` (lo importado, ``None``). ``GisError`` si
-        su sitio es de otro."""
+        planta (:func:`contour_rows`). Calculadas (``gis.contours``), absolutas en el CRS y la
+        referencia vertical del proyecto; importadas de una capa (``gis.import_vector`` con el
+        papel ``contours``), lo importado de su entrada, en los declarados. La tabla se escribe
+        al confirmar; su hash, ``content`` (el que dio su trabajo con :func:`table_digest`) o,
+        sin él, el que calcula el registro. Devuelve su ``DatasetSpec`` (lo importado,
+        ``None``). ``GisError`` si su sitio es de otro."""
         chosen = list(lines)
         for line in chosen:
             if not isinstance(line, ContourLine):
                 raise TypeError(f"una curva de nivel es un ContourLine, no {line!r}")
+        _content_digest(content)
         self._check_open()
         imported = self._imported(CONTOUR_LINES)
-        layout = TABLE_LAYOUTS[CONTOUR_LINES]
-        srs = self._srs(imported)
-        rows: list[tuple[Any, ...]] = []
-        coords_all: list[np.ndarray] = []
-        for line in chosen:
-            coords = np.vstack([line.xyz, line.xyz[:1]]) if line.closed else line.xyz
-            rows.append((encode_geometry(layout.geometry_type, coords, srs, layout.has_z),
-                         float(line.elevation), int(bool(line.is_index)),
-                         int(bool(line.closed)), line.length_m))
-            coords_all.append(coords)
-        return self._plan_table(CONTOUR_LINES, name, rows, _extent(coords_all), imported)
+        rows, coords_all = _contour_table(chosen, self._srs(imported))
+        return self._plan_table(CONTOUR_LINES, name, rows, _extent(coords_all), imported,
+                                content)
 
-    def points(self, name: str, points: PointSet) -> DatasetSpec | None:
+    def points(self, name: str, points: PointSet, *,
+               content: ContentDigest | None = None) -> DatasetSpec | None:
         """Prepara los puntos importados ``points`` (de un texto o de una capa) como la tabla
         ``gis_pts_<nombre>_<entrada8>`` (plan §5.2.3): un ``POINT`` con Z por punto, con las
         coordenadas tal como llegan (float64, en el CRS y la referencia declarados,
-        RF-006-12), su identificador, su código y su fila (o entidad) de origen. Lo importado
-        de la entrada declarada: devuelve ``None`` (su ubicación, al registrarla)."""
+        RF-006-12), su identificador, su código y su fila (o entidad) de origen
+        (:func:`point_rows`). ``content``: el hash que dio su trabajo (:func:`table_digest`);
+        sin él, lo calcula el registro. Lo importado de la entrada declarada: devuelve
+        ``None`` (su ubicación, al registrarla)."""
         if not isinstance(points, PointSet):
             raise TypeError(f"los puntos son un PointSet, no {type(points).__name__}")
+        _content_digest(content)
         self._check_open()
         imported = self._imported(POINTS)
-        layout = TABLE_LAYOUTS[POINTS]
-        srs = self._srs(imported)
-        rows = [(encode_geometry(layout.geometry_type, xyz, srs, layout.has_z), str(point_id),
-                 str(code), int(row))
-                for xyz, point_id, code, row in zip(points.xyz, points.point_ids, points.codes,
-                                                    points.source_rows, strict=True)]
+        rows = point_rows(points, self._srs(imported))
         return self._plan_table(POINTS, name, rows, _extent([points.xyz] if len(points) else []),
-                                imported)
+                                imported, content)
 
-    def breaklines(self, name: str, lines: Iterable[Breakline]) -> DatasetSpec | None:
+    def breaklines(self, name: str, lines: Iterable[Breakline], *,
+                   content: ContentDigest | None = None) -> DatasetSpec | None:
         """Prepara las líneas de rotura importadas ``lines`` como la tabla
         ``gis_brk_<nombre>_<entrada8>`` (plan §5.2.3): un ``LINESTRING`` con Z por línea, con
-        sus vértices tal como llegan, su identificador, si es dura y su código. Lo importado
-        de la entrada declarada: devuelve ``None``."""
-        chosen = list(lines)
-        for line in chosen:
-            if not isinstance(line, Breakline):
-                raise TypeError(f"una línea de rotura es un Breakline, no {line!r}")
+        sus vértices tal como llegan, su identificador, si es dura y su código
+        (:func:`breakline_rows`). ``content``: el hash que dio su trabajo; sin él, lo calcula
+        el registro. Lo importado de la entrada declarada: devuelve ``None``."""
+        chosen = _breaklines(lines)
+        _content_digest(content)
         self._check_open()
         imported = self._imported(BREAKLINES)
-        layout = TABLE_LAYOUTS[BREAKLINES]
-        srs = self._srs(imported)
-        rows = [(encode_geometry(layout.geometry_type, line.xyz, srs, layout.has_z),
-                 str(line.line_id), int(bool(line.hard)), str(line.code)) for line in chosen]
+        rows = breakline_rows(chosen, self._srs(imported))
         return self._plan_table(BREAKLINES, name, rows, _extent(line.xyz for line in chosen),
-                                imported)
+                                imported, content)
 
     def boundary(self, name: str, polygons: Iterable[Any], *,
-                 holes: Iterable[Any] = ()) -> DatasetSpec | None:
+                 holes: Iterable[Any] = (),
+                 content: ContentDigest | None = None) -> DatasetSpec | None:
         """Prepara los contornos importados como la tabla ``gis_bnd_<nombre>_<entrada8>``
         (plan §5.2.3): un ``MULTIPOLYGON`` sin Z por contorno (``polygons``, papel
         «boundary») o por hueco (``holes``, «hole»); cada uno, una ``Geometry`` de polígonos
         (de ``gis.vector.read_layer``), un anillo o una lista de anillos, con sus X e Y tal
-        como llegan (cada anillo, cerrado). Lo importado de la entrada declarada: devuelve
-        ``None``."""
-        chosen = [(item, BOUNDARY_ROLES[0]) for item in polygons]
-        chosen += [(item, BOUNDARY_ROLES[1]) for item in holes]
+        como llegan (cada anillo, cerrado; :func:`boundary_rows`). ``content``: el hash que dio
+        su trabajo; sin él, lo calcula el registro. Lo importado de la entrada declarada:
+        devuelve ``None``."""
+        chosen, chosen_holes = list(polygons), list(holes)
+        _content_digest(content)
         self._check_open()
         imported = self._imported(BOUNDARY)
-        layout = TABLE_LAYOUTS[BOUNDARY]
-        srs = self._srs(imported)
-        rows: list[tuple[Any, ...]] = []
-        rings: list[np.ndarray] = []
-        for item, role in chosen:
-            parts = _polygons(item)
-            rows.append((encode_geometry(layout.geometry_type, parts, srs, layout.has_z), role))
-            rings += [ring for polygon in parts for ring in polygon]
-        return self._plan_table(BOUNDARY, name, rows, _extent(rings), imported)
+        rows, rings = _boundary_table(chosen, chosen_holes, self._srs(imported))
+        return self._plan_table(BOUNDARY, name, rows, _extent(rings), imported, content)
 
     def export(
         self,
@@ -1257,7 +1448,7 @@ class ResultWriter:
     def _place_table(self, conn: sqlite3.Connection, table: _Table,
                      record: InputRecord) -> None:
         spec = dataset_spec(table.family, table.name, input_uid=record.uid,
-                            crs_epsg=table.crs.epsg)
+                            crs_epsg=table.crs.epsg, content=table.content)
         layout = table.layout
         identifier = f"{layout.label}: {table.name} ({spec.locator})"
         if conn.execute("SELECT 1 FROM gpkg_contents WHERE identifier = ?",
@@ -1299,12 +1490,8 @@ class ResultWriter:
             create_feature_table(conn, spec.locator, layout.geometry_type, table.crs.epsg,
                                  layout.has_z, layout.columns, table.identifier,
                                  table.description or "")
-        names = [_GEOMETRY_COLUMN, *(column.name for column in layout.columns)]
-        conn.executemany(
-            f'INSERT INTO "{spec.locator}" ({", ".join(names)}) '
-            f'VALUES ({", ".join("?" for _ in names)})',
-            table.rows,
-        )
+        insert_rows(conn, spec.locator,
+                    [_GEOMETRY_COLUMN, *(column.name for column in layout.columns)], table.rows)
         conn.execute("UPDATE gpkg_contents SET min_x = ?, min_y = ?, max_x = ?, max_y = ? "
                      "WHERE table_name = ?",
                      (*(table.extent or (None, None, None, None)), spec.locator))

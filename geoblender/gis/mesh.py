@@ -14,7 +14,8 @@ float64): la vista (``bl``) las pasa a locales respecto al GeoOrigin con
   2 × 2 con la diagonal fija, uno si tiene tres esquinas con dato).
 - :func:`surface_mesh_from_tin`: la malla de un TIN, sus vértices y sus caras (las horarias,
   vueltas hacia arriba).
-- :func:`check_surface_mesh` y :class:`MeshReport` (RF-006-21): una malla no es válida, y no
+- :func:`check_surface_mesh` (y :func:`check_surface_mesh_steps`, por trozos con su avance:
+  T50) y :class:`MeshReport` (RF-006-21): una malla no es válida, y no
   se muestra como superficie del proyecto, si tiene caras con la normal hacia abajo (área en
   planta con signo negativo) o degeneradas (área en planta nula, con signo exacto: un vértice
   repetido o tres alineados en planta; o un vértice no finito), o si su volumen sobre la cota
@@ -34,7 +35,7 @@ Las cifras de :class:`MeshReport` son diagnósticas (CALCULADO), como las de
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -48,11 +49,13 @@ from .resample import ResampleMethod, resample_to_grid
 from .tin import Tin, _orientation, _oriented, raster_to_tin
 
 __all__ = [
+    "CHECK_CHUNK_FACES",
     "LOD_STEPS_KEY",
     "VOLUME_TOLERANCE_M",
     "MeshArrays",
     "MeshReport",
     "check_surface_mesh",
+    "check_surface_mesh_steps",
     "lod_rasters",
     "surface_mesh_from_raster",
     "surface_mesh_from_tin",
@@ -234,6 +237,93 @@ def _volume(vertices: np.ndarray, faces: np.ndarray, det: np.ndarray,
     return float(np.sum(0.5 * det * height))
 
 
+CHECK_CHUNK_FACES = 1 << 20
+"""Las caras de cada trozo de :func:`check_surface_mesh_steps` (unos 0,05 s cada operación con
+el numpy de Blender): la malla de la rejilla de 2,81 M celdas (5,6 M triángulos) se comprueba en
+pasos de décimas de segundo desde un temporizador (T50; RNF-006-09). Con menos caras, un solo
+trozo: las mismas cifras, bit a bit, que en una sola operación."""
+
+
+def _spans(count: int, size: int) -> list[slice]:
+    return [slice(start, min(start + size, count)) for start in range(0, count, size)]
+
+
+def check_surface_mesh_steps(
+    vertices_abs: np.ndarray,
+    faces: np.ndarray,
+    reference: Raster | Tin,
+    *,
+    name: str = "",
+    chunk_faces: int = CHECK_CHUNK_FACES,
+) -> Generator[float, None, MeshReport]:
+    """Los pasos de :func:`check_surface_mesh` por trozos de ``chunk_faces`` caras, con su
+    avance (0–1) tras cada uno; devuelve (``StopIteration.value``) el :class:`MeshReport`
+    (T50: la vista comprueba la malla de 5,6 M triángulos desde un temporizador, con avance y
+    Esc, RNF-006-09). Las sumas son las de cada trozo, una tras otra: con un trozo, las mismas
+    cifras que en una sola operación."""
+    if isinstance(chunk_faces, bool) or not isinstance(chunk_faces, int) or chunk_faces < 1:
+        raise ValueError(f"los trozos son de al menos una cara, no {chunk_faces!r}")
+    vertices = _vertex_array(vertices_abs, "check_surface_mesh")
+    mesh_faces = _face_array(faces, len(vertices), "check_surface_mesh")
+    reference_vertices, reference_faces = _reference(reference, name)
+    reference_spans = _spans(len(reference_faces), chunk_faces)
+    mesh_spans = _spans(len(mesh_faces), chunk_faces)
+    total = max(1, 3 * len(reference_spans) + len(mesh_spans))
+    done = 0
+    yield 0.0
+
+    z = reference_vertices[:, 2]
+    base = np.inf
+    for span in reference_spans:
+        base = min(base, float(z[reference_faces[span]].min()))
+        done += 1
+        yield done / total
+    if not reference_spans:  # sin caras: el mínimo de una lista vacía, como antes
+        base = float(z[reference_faces].min())
+    reference_xy = reference_vertices[:, :2]
+    reference_area = reference_volume = 0.0
+    for span in reference_spans:
+        chunk = reference_faces[span]
+        det = np.abs(_orientation(reference_xy, chunk)[0])
+        done += 1
+        yield done / total
+        reference_volume += _volume(reference_vertices, chunk, det, base)
+        reference_area += float(np.sum(0.5 * det))
+        done += 1
+        yield done / total
+
+    finite_vertex = np.isfinite(vertices).all(axis=1)
+    xy = vertices[:, :2]
+    plan_area = volume = 0.0
+    down = degenerate = 0
+    for span in mesh_spans:
+        chunk = mesh_faces[span].astype(np.int64)
+        finite = finite_vertex[chunk].all(axis=1)
+        usable = chunk[finite]
+        det, sign = _orientation(xy, usable)
+        plan_area += float(np.sum(0.5 * np.abs(det)))
+        down += int(np.count_nonzero(sign < 0))
+        degenerate += int(np.count_nonzero(sign == 0)) + len(chunk) - len(usable)
+        volume += _volume(vertices, usable, det, base)
+        done += 1
+        yield done / total
+    if done < total:  # sin trozos
+        yield 1.0
+    return MeshReport(
+        surface=name,
+        faces=len(mesh_faces),
+        reference_faces=len(reference_faces),
+        faces_down=down,
+        faces_degenerate=degenerate,
+        base_m=float(base),
+        volume_m3=volume,
+        reference_volume_m3=reference_volume,
+        plan_area_m2=plan_area,
+        reference_area_m2=reference_area,
+        tolerance_m3=plan_area * VOLUME_TOLERANCE_M,
+    )
+
+
 def check_surface_mesh(
     vertices_abs: np.ndarray,
     faces: np.ndarray,
@@ -253,31 +343,14 @@ def check_surface_mesh(
     signo (no depende de cómo estén orientados sus triángulos). ``name`` es el de la
     superficie en el informe y en los errores. Una rejilla sin triángulos →
     ``gis.grid_tin_empty``; tipos o formas que no son → ``TypeError`` o ``ValueError``. Las
-    entradas no se modifican."""
-    vertices = _vertex_array(vertices_abs, "check_surface_mesh")
-    mesh_faces = _face_array(faces, len(vertices), "check_surface_mesh").astype(np.int64)
-    reference_vertices, reference_faces = _reference(reference, name)
-    base = float(reference_vertices[:, 2][reference_faces].min())
-    reference_det, _sign = _orientation(reference_vertices[:, :2], reference_faces)
-    reference_det = np.abs(reference_det)
-
-    finite = np.isfinite(vertices).all(axis=1)[mesh_faces].all(axis=1)
-    usable = mesh_faces[finite]
-    det, sign = _orientation(vertices[:, :2], usable)
-    plan_area = float(np.sum(0.5 * np.abs(det)))
-    return MeshReport(
-        surface=name,
-        faces=len(mesh_faces),
-        reference_faces=len(reference_faces),
-        faces_down=int(np.count_nonzero(sign < 0)),
-        faces_degenerate=int(np.count_nonzero(sign == 0)) + len(mesh_faces) - len(usable),
-        base_m=base,
-        volume_m3=_volume(vertices, usable, det, base),
-        reference_volume_m3=_volume(reference_vertices, reference_faces, reference_det, base),
-        plan_area_m2=plan_area,
-        reference_area_m2=float(np.sum(0.5 * reference_det)),
-        tolerance_m3=plan_area * VOLUME_TOLERANCE_M,
-    )
+    entradas no se modifican. Por trozos de :data:`CHECK_CHUNK_FACES` caras
+    (:func:`check_surface_mesh_steps`)."""
+    steps = check_surface_mesh_steps(vertices_abs, faces, reference, name=name)
+    while True:
+        try:
+            next(steps)
+        except StopIteration as stop:
+            return stop.value
 
 
 # Niveles de detalle (RF-006-22) ----------------------------------------------------------

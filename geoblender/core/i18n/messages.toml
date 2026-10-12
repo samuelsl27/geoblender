@@ -1705,6 +1705,18 @@ es = "Elija los datos que cargar en la vista"
 ["Loaded into the view: {names}"]
 es = "Cargado en la vista: {names}"
 
+["Loading «{name}» into the view… {percent} % · Esc: cancel"]
+es = "Cargando «{name}» en la vista… {percent} % · Esc: cancelar"
+
+["Loading into the view cancelled: nothing has been loaded"]
+es = "Carga en la vista cancelada: no se ha cargado nada"
+
+["The project was closed while loading into the view: nothing has been loaded"]
+es = "El proyecto se cerró mientras se cargaba en la vista: no se ha cargado nada"
+
+["Loading into the view stopped: {error}"]
+es = "La carga en la vista se ha parado: {error}"
+
 ["No project data is loaded in the view"]
 es = "No hay ningún dato del proyecto cargado en la vista"
 
@@ -2110,6 +2122,9 @@ es = "… y {count} conflictos más"
 
 ["Triangulating {count} points (about {seconds} s)…"]
 es = "Triangulando {count} puntos (unos {seconds} s)…"
+
+["Adding «{name}» to the project… {percent} %"]
+es = "Incorporando «{name}» al proyecto… {percent} %"
 
 ["The Blender triangulation did not fulfil its contract ({reason}): repeated with the pure triangulator"]
 es = "La triangulación de Blender no cumplió su contrato ({reason}): se repitió con el triangulador propio"

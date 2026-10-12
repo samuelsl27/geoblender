@@ -226,13 +226,17 @@ class DtmOperatorsCase(unittest.TestCase):
         return result, next(iter(launched.values()), None)
 
     def finish(self) -> None:
-        """Avanza el monitor de los trabajos a mano hasta que no queda ninguno activo."""
+        """Avanza a mano el monitor de los trabajos y el temporizador de las incorporaciones
+        por pasos (T50) hasta que no queda ningún trabajo activo ni nada por incorporar."""
         runner = self.jobs_ops.MONITOR.runner
         deadline = time.monotonic() + JOB_WAIT_S
         while time.monotonic() < deadline:
             self.jobs_ops.tick()
+            self.gis_ops.incorporation_tick()
             if not any(snapshot.active for snapshot in runner.snapshots()):
                 self.jobs_ops.tick()
+                while self.gis_ops.pending_incorporations():
+                    self.gis_ops.incorporation_tick()
                 return
             time.sleep(0.002)
         self.fail("los trabajos no terminan")

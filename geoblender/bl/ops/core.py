@@ -54,7 +54,11 @@ cargar y el nivel de detalle; por script, ``datasets`` con sus nombres o uids se
 comas) y ``geoblender.core_unload_from_view`` (los datos de los objetos seleccionados, o los de
 ``datasets``) cargan y descargan con ``bl.scene.views``. Son los únicos de este módulo con
 ``UNDO``: crean o quitan objetos de la vista y no escriben en el proyecto (Ctrl+Z deshace solo la
-vista). Un aviso o un error de un dato no impide cargar los demás.
+vista). Un aviso o un error de un dato no impide cargar los demás. Desde la interfaz (``invoke``:
+el menú y el diálogo), cargar es un modal (T50; RNF-006-09, RNF-006-06): avanza los pasos de
+``bl.scene.views.load_steps`` desde el temporizador de su ventana, unas décimas de segundo como
+mucho por evento, con su avance en la barra de estado, y Esc lo cancela sin dejar nada en la
+vista; desde un guion (``EXEC_DEFAULT``), de una vez.
 
 Transformar coordenadas (spec 006, T32; RF-006-07, RF-006-31; plan 006 §5.3.5):
 ``geoblender.core_transform_coordinates`` (Proyecto ▸ Georreferencia ▸ Transformar
@@ -1567,13 +1571,17 @@ def _refs(text: str) -> list[str]:
     return list(dict.fromkeys(part.strip() for part in str(text).split(",") if part.strip()))
 
 
-class GEOBLENDER_OT_core_load_into_view(bpy.types.Operator):
+class GEOBLENDER_OT_core_load_into_view(_StepsModal, bpy.types.Operator):
     """Build the geometry of project items in the 3D view"""
 
     bl_idname = "geoblender.core_load_into_view"
     bl_label = "Load into the view…"
     bl_translation_context = TRANSLATION_CONTEXT
     bl_options = {"REGISTER", "UNDO"}
+
+    # En pasos (T50): cada evento del temporizador avanza pasos durante, como mucho, este
+    # tiempo; los pasos más largos de la rejilla de 2,81 M celdas son de unas 0,2 s.
+    STEP_BUDGET_S = 0.05
 
     datasets: StringProperty(  # type: ignore[valid-type]
         name="Data", description=_DATASETS_DESCRIPTION, default="", options={"SKIP_SAVE"},
@@ -1584,6 +1592,9 @@ class GEOBLENDER_OT_core_load_into_view(bpy.types.Operator):
     items: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_view_dataset, options={"SKIP_SAVE"},
     )
+    # En pasos desde el temporizador de la ventana, con el avance y Esc (T50): lo pone
+    # ``invoke`` (los menús y el diálogo); desde un guion, sin él, de una vez.
+    in_steps: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})  # type: ignore[valid-type]
 
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
@@ -1595,6 +1606,7 @@ class GEOBLENDER_OT_core_load_into_view(bpy.types.Operator):
         project = project_session.current()
         if project is None:
             return {"CANCELLED"}
+        self.in_steps = getattr(context, "window", None) is not None
         if _refs(self.datasets):
             return self.execute(context)
         try:
@@ -1633,16 +1645,54 @@ class GEOBLENDER_OT_core_load_into_view(bpy.types.Operator):
         if not refs:
             self.report({"WARNING"}, tr("Choose the data to load into the view"))
             return {"CANCELLED"}
-        outcome = views.load_datasets(context, project, refs, lod=LOD_LEVELS[self.lod])
+        lod = LOD_LEVELS[self.lod]
+        if self.in_steps and getattr(context, "window", None) is not None:
+            # T50 (RNF-006-09): desde el temporizador de la ventana, con su avance y Esc.
+            self._project = project
+            self._start(context, views.load_steps(context, project, refs, lod=lod))
+            return {"RUNNING_MODAL"}
+        return self._outcome(views.load_datasets(context, project, refs, lod=lod))
+
+    def _outcome(self, outcome: views.LoadOutcome) -> set[str]:
+        """Lo que dice la orden de lo cargado: los avisos, los errores y lo que cargó."""
         for text in outcome.notes:
-            self.report({"WARNING"}, text)
+            self._report({"WARNING"}, text)
         for text in outcome.errors:  # con algo cargado, un aviso: los demás sí se cargaron
-            self.report({"WARNING"} if outcome.loaded else {"ERROR"}, text)
+            self._report({"WARNING"} if outcome.loaded else {"ERROR"}, text)
         if not outcome.loaded:
+            self.outcome = "CANCELLED"
             return {"CANCELLED"}
-        self.report({"INFO"}, tr("Loaded into the view: {names}",
-                                 names=", ".join(outcome.loaded)))
+        self._report({"INFO"}, tr("Loaded into the view: {names}",
+                                  names=", ".join(outcome.loaded)))
+        self.outcome = "FINISHED"
         return {"FINISHED"}
+
+    # En pasos (T50) ------------------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        percent = int(100 * step.done / step.total) if step.total else 0
+        return tr("Loading «{name}» into the view… {percent} % · Esc: cancel",
+                  name=step.message, percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Loading into the view cancelled: nothing has been loaded")
+
+    def _result(self, context: bpy.types.Context, step: Progress) -> set[str] | None:
+        if not isinstance(step.result, views.LoadOutcome):
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr("The project was closed while loading into the "
+                                              "view: nothing has been loaded"))
+            return None
+        self._done(context)
+        return self._outcome(step.result)
+
+    def modal(self, context: bpy.types.Context, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except Exception as exc:  # noqa: BLE001 - lo preparado ya se borró: no queda nada
+            LOGGER.error("«Cargar en la vista» se ha parado", exc_info=exc)
+            return self._fail(context, tr("Loading into the view stopped: {error}",
+                                          error=str(exc)))
 
 
 def _loaded_anywhere() -> bool:

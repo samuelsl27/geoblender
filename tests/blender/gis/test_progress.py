@@ -15,6 +15,12 @@ los datos registrados con el mismo hash; la operación queda «cancelada» o «f
 motivo (RF-008-19). El progreso de una importación de 11,2 M celdas (un aviso cada ≤ 0,5 s) lo
 mide ``tests/unit/workers/test_gis_progress.py``.
 
+T50 (RNF-006-09): una importación de puntos se cancela también mientras su trabajo calcula el
+hash de las tablas que serán lo importado; al terminar su trabajo, se incorpora por pasos desde
+su temporizador (``bl.ops.gis.incorporation_tick``, que las pruebas avanzan a mano) sin que el
+hilo de Blender vuelva a leer las tablas, con el mismo hash de antes; un fallo en su
+transacción no deja nada.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
@@ -31,8 +37,8 @@ from unittest import mock
 
 import bpy
 
-from tests.blender.gis.test_ops_dtm import IMPORT, JOB_WAIT_S, RESAMPLE, _module
-from tests.blender.gis.test_ops_tin import TIN_POINTS, TinOperatorsCase
+from tests.blender.gis.test_ops_dtm import DATA, IMPORT, JOB_WAIT_S, RESAMPLE, _module
+from tests.blender.gis.test_ops_tin import IMPORT_POINTS, TIN_POINTS, TinOperatorsCase
 from tests.support.core_fixtures import FakePids
 
 CONTOURS = "geoblender.gis_create_contours"
@@ -120,15 +126,36 @@ class ProgressTest(TinOperatorsCase):
         while not event.wait(0.002):
             self.jobs_ops.tick()
             self.gis_ops.triangulation_tick()
+            self.gis_ops.incorporation_tick()
             if time.monotonic() > deadline:
                 self.fail("el trabajo no llega a la mitad")
 
-    def cancel_midway(self, worker: str, idname: str, shown: str, **props: Any) -> str:
-        """Lanza la orden ``idname`` y, cuando su trabajo ``worker`` llega a la mitad, comprueba
-        que la barra de estado lo enseña (``shown`` en su nombre, su avance y su mensaje) y lo
-        cancela con su botón; sigue hasta que no queda nada en marcha. Devuelve el uid de la
-        operación."""
-        gate = _Gate(self.job_catalog.WORKERS[worker], MIDWAY)
+    def variant(self, name: str, z: str = "999,999") -> Path:
+        """``taludes.csv`` con la cota ``z`` en su primer punto, en ``entregas/topografia/``:
+        otros datos, otra entrada (con los mismos, la importación reutilizaría la de
+        ``start``)."""
+        lines = (DATA / "points" / "taludes.csv").read_bytes().decode("utf-8").splitlines(
+            keepends=True)
+        fields = lines[1].split(";")
+        fields[3] = z
+        lines[1] = ";".join(fields)
+        target = self.sources / "topografia" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes("".join(lines).encode("utf-8"))
+        return target
+
+    def points_props(self, path: Path, name: str) -> dict[str, Any]:
+        return {"filepath": str(path), "name": name, "encoding": "UTF8",
+                "separator": "SEMICOLON", "decimal": "COMMA", "crs": "EPSG:25830",
+                "vertical": "PROJECT"}
+
+    def cancel_midway(self, worker: str, idname: str, shown: str, at: float = MIDWAY,
+                      message: str | None = None, **props: Any) -> str:
+        """Lanza la orden ``idname`` y, cuando su trabajo ``worker`` llega a ``at`` (la mitad),
+        comprueba que la barra de estado lo enseña (``shown`` en su nombre, su avance y su
+        mensaje, que es ``message`` si se da) y lo cancela con su botón; sigue hasta que no
+        queda nada en marcha. Devuelve el uid de la operación."""
+        gate = _Gate(self.job_catalog.WORKERS[worker], at)
         with mock.patch.dict(self.job_catalog._REGISTRY, {worker: gate.info}):
             try:
                 result, op_uid = self.run_op(idname, **props)
@@ -138,10 +165,12 @@ class ProgressTest(TinOperatorsCase):
                 view = self.jobs_ui.current_view()
                 self.assertEqual(view.active, 1)
                 self.assertIn(shown, view.current.name)
-                self.assertGreaterEqual(view.percent, int(MIDWAY * 100))
+                self.assertGreaterEqual(view.percent, int(at * 100))
                 self.assertEqual(self.jobs_ui.bar_text(view.current, view.percent),
                                  f"{view.current.name} · {view.percent} %")
                 self.assertEqual(view.current.message, gate.message)
+                if message is not None:
+                    self.assertEqual(gate.message, message)
                 self.assertEqual(bpy.ops.geoblender.jobs_cancel("EXEC_DEFAULT"), {"FINISHED"})
             finally:
                 gate.release.set()
@@ -188,6 +217,70 @@ class ProgressTest(TinOperatorsCase):
             with self.subTest(trabajo=worker):
                 op_uid = self.cancel_midway(worker, idname, shown, **props)
                 self.assertCancelled(op_uid, before)
+        # T50 (RNF-006-09): importar puntos, cancelado mientras su trabajo calcula el hash de
+        # las tablas que serán lo importado (lo largo que antes hacía el hilo de Blender).
+        with self.subTest(trabajo="gis_import_points"):
+            op_uid = self.cancel_midway(
+                "gis_import_points", IMPORT_POINTS, "«Taludes B»", at=0.6,
+                message=_module("gis.jobs").TABLE_HASH_TEXT,
+                **self.points_props(self.variant("taludes_b.csv"), "Taludes B"))
+            self.assertCancelled(op_uid, before)
+            self.assertEqual(self.gis_ops.pending_incorporations(), [])
+
+    def test_import_is_incorporated_in_steps_with_the_hash_of_its_job(self) -> None:
+        """RF-006-26, RF-006-28, RNF-006-09 (T50): al terminar el trabajo de una importación de
+        puntos no se escribe nada aún; la incorporación va por pasos desde su temporizador (uno
+        por llamada, varios) y el hilo de Blender no vuelve a leer las tablas (su hash es el
+        que calculó el trabajo), que es el que da leerlas después en el proyecto (el mismo hash
+        de antes de la T50). Un fallo en su transacción la deja «fallida» con su motivo y el
+        proyecto como estaba."""
+        self.start()
+        before = self.state()
+        registry = _module("core.datasets.registry")
+        result, op_uid = self.run_op(IMPORT_POINTS, **self.points_props(
+            self.variant("taludes_b.csv"), "Taludes B"))
+        self.assertEqual(result, {"FINISHED"})
+        runner = self.jobs_ops.MONITOR.runner
+        deadline = time.monotonic() + JOB_WAIT_S
+        while any(snapshot.active for snapshot in runner.snapshots()):
+            self.assertLess(time.monotonic(), deadline, "el trabajo no termina")
+            self.jobs_ops.tick()
+            time.sleep(0.002)
+        self.jobs_ops.tick()
+        self.assertEqual(self.gis_ops.pending_incorporations(), [op_uid])
+        self.assertEqual(self.operation(op_uid)[1], "running")
+        self.assertEqual(self.state(), before)
+        ticks = 0
+        with mock.patch.object(registry, "_computed",
+                               side_effect=AssertionError("el hilo de Blender leyó la tabla")):
+            while self.gis_ops.pending_incorporations():
+                self.gis_ops.incorporation_tick()
+                ticks += 1
+        self.assertGreaterEqual(ticks, 5)
+        self.assertEqual(self.operation(op_uid)[1], "done")
+        self.assertNotIn(op_uid, self.session.pending_ingests().values())
+        for name in ("gis_pts_taludes_b", "gis_brk_taludes_b"):
+            with self.subTest(dato=name), self.project.read() as conn:
+                record = registry.get(conn, name)
+                again = registry.content_digest(conn, self.project, record)
+                self.assertEqual(again.content_sha256, record.content_sha256)
+        self.assertIn("Taludes B", " ".join(self.ps.take_notices()))
+
+        before = self.state()
+        real = self.store.ResultWriter.write
+
+        def failing(writer: Any, conn: Any) -> Any:
+            real(writer, conn)
+            raise RuntimeError("fallo provocado al incorporar")
+
+        with mock.patch.object(self.store.ResultWriter, "write", failing):
+            failed = self.launch(IMPORT_POINTS, **self.points_props(
+                self.variant("taludes_c.csv", "998,998"), "Taludes C"))
+        _type, status, reason, *_ = self.operation(failed)
+        self.assertEqual(status, "failed")
+        self.assertIn("fallo provocado al incorporar", reason)
+        self.assertNotIn(failed, self.session.pending_ingests().values())
+        self.assertEqual(self.state(), before)
 
     def test_failure_while_ingesting_leaves_no_datasets(self) -> None:
         """RF-006-28, RF-008-19 (T33): un fallo provocado al incorporar el resultado (con su

@@ -426,6 +426,52 @@ class CheckSurfaceMeshTest(unittest.TestCase):
                 self.assertTrue(math.isfinite(report.volume_m3))
                 self.assertLessEqual(abs(report.difference_m3), 1e-6)
 
+    def test_check_in_steps_is_the_check(self) -> None:
+        """RF-006-21, RNF-006-09 (T50): la comprobación por trozos (``check_surface_mesh_steps``)
+        da su avance (de 0 a 1, sin bajar) tras cada trozo y el mismo informe que de una vez:
+        los recuentos y la cota base, iguales; el volumen y las áreas, sumados por trozos, a
+        ≤ 1·10⁻¹² de ellos; con un solo trozo, bit a bit (``check_surface_mesh``). También con
+        caras hacia abajo, degeneradas y con un vértice no finito, y sin caras."""
+        vertices = self.vertices.copy()
+        vertices[5, 2] = np.nan
+        faces = self.faces.copy()
+        faces[3] = faces[3][[0, 2, 1]]
+        faces[7] = (faces[7][0], faces[7][0], faces[7][1])
+        for label, verts, tris in (("válida", self.vertices, self.faces),
+                                   ("con fallos", vertices, faces),
+                                   ("sin caras", self.vertices, np.empty((0, 3), np.int32))):
+            with self.subTest(label):
+                whole = mesh.check_surface_mesh(_frozen(verts), _frozen(tris, np.int32),
+                                                self.raster, name="mdt")
+                for chunk in (1, 7, 100, len(tris) + 1):
+                    steps = mesh.check_surface_mesh_steps(
+                        _frozen(verts), _frozen(tris, np.int32), self.raster, name="mdt",
+                        chunk_faces=chunk)
+                    done = []
+                    while True:
+                        try:
+                            done.append(next(steps))
+                        except StopIteration as stop:
+                            report = stop.value
+                            break
+                    self.assertEqual(done, sorted(done))
+                    self.assertEqual((done[0], done[-1]), (0.0, 1.0))
+                    for key in ("surface", "faces", "reference_faces", "faces_down",
+                                "faces_degenerate", "base_m"):
+                        self.assertEqual(getattr(report, key), getattr(whole, key), key)
+                    for key in ("volume_m3", "reference_volume_m3", "plan_area_m2",
+                                "reference_area_m2", "tolerance_m3"):
+                        expected = getattr(whole, key)
+                        if chunk >= max(len(tris), whole.reference_faces):  # un solo trozo
+                            self.assertEqual(getattr(report, key), expected, key)
+                        else:
+                            self.assertAlmostEqual(getattr(report, key), expected,
+                                                   delta=1e-12 * max(1.0, abs(expected)))
+                    self.assertEqual(report.valid, whole.valid)
+        with self.assertRaises(ValueError):
+            next(mesh.check_surface_mesh_steps(self.vertices, self.faces, self.raster,
+                                               chunk_faces=0))
+
     def test_tolerance_is_plan_area_times_half_a_millimetre(self) -> None:
         """La malla subida 0,4 mm cabe en la tolerancia (área en planta × 0,5 mm) y es
         válida; subida 0,6 mm, no."""

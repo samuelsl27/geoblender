@@ -30,11 +30,16 @@ como lo harán los operadores, y se abre en la sesión.
   se pasa de uno a otro sin cambiar la rejilla de cálculo.
 - RF-006-20: descargar quita los objetos y sus mallas y no cambia el proyecto (hash de sus
   ficheros); Ctrl+Z tras cargar deshace solo la vista.
+- RF-006-28, RNF-006-09 (T50): desde la interfaz, cargar es un modal que avanza por pasos desde
+  el temporizador de su ventana, con su avance, y termina como cargar de una vez; Esc a mitad no
+  deja nada en la vista. Las coordenadas y las esquinas que se escriben y se leen de una vez con
+  los atributos de la malla (``bl.compat``) son las mismas que con ``vertices``/``loops``.
 - Principio 8: registrar y desregistrar la extensión deja ``bpy.types`` como estaba.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
+import contextlib
 import hashlib
 import importlib
 import shutil
@@ -521,6 +526,117 @@ class ViewsTest(ViewsCase):
         self.assertEqual([key for key in keys if key], ["project"])  # «Proyecto», el ancla
         self.assertGreaterEqual(len(bpy.data.collections), collections)
         self.assertEqual((project_files(data.root), data.operations()), (before, operations))
+
+    def running(self) -> Any:
+        """La orden «Cargar en la vista» que está en marcha como modal (sin bucle de eventos,
+        Blender no se entera de las que ya terminaron: la que aún tiene pasos)."""
+        cls = _module("bl.ops.core").GEOBLENDER_OT_core_load_into_view
+        found = [op for op in bpy.context.window.modal_operators
+                 if isinstance(op, cls) and getattr(op, "_steps", None) is not None]
+        self.assertEqual(len(found), 1, "«Cargar en la vista» no está en marcha como modal")
+        return found[0]
+
+    def view_state(self) -> tuple[Any, ...]:
+        """Lo que hay en la vista: objetos, mallas y colecciones (por nombre)."""
+        return (sorted(obj.name for obj in bpy.data.objects),
+                sorted(mesh.name for mesh in bpy.data.meshes),
+                sorted(item.name for item in bpy.data.collections))
+
+    def test_loading_in_steps_and_esc_leaves_the_view_as_it_was(self) -> None:
+        """RF-006-19, RF-006-28, RNF-006-09 (T50): desde la interfaz, cargar en la vista es un
+        modal que avanza por pasos desde el temporizador de su ventana, con su avance (la
+        fase, lo hecho de 1000 y el dato) en cada evento; termina con los mismos objetos que
+        cargar de una vez (la rejilla y el TIN, vértices y triángulos). Esc a mitad (con la
+        rejilla ya preparada y el TIN a medias) cancela sin dejar nada en la vista: ni
+        objetos, ni mallas, ni colecciones, y lo que ya estaba cargado sigue igual; el
+        proyecto no cambia."""
+        data = self.data
+        names = ("gis_dtm_mdt_lejano", "gis_tin_topo_lejano")
+        before, operations = project_files(data.root), data.operations()
+        result = bpy.ops.geoblender.core_load_into_view("EXEC_DEFAULT", datasets=",".join(names),
+                                                       in_steps=True)
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        operator = self.running()
+        timer = SimpleNamespace(type="TIMER", value="NOTHING")
+        with mock.patch.object(type(operator), "STEP_BUDGET_S", 0.0):  # un paso por evento
+            for _ in range(500):
+                state = operator.modal(bpy.context, timer)
+                if state != {"RUNNING_MODAL"}:
+                    break
+        self.assertEqual(state, {"FINISHED"})
+        progress = operator.progress_log
+        self.assertGreater(len(progress), 2 * len(names))
+        self.assertEqual([entry[3] for entry in progress], [1000] * len(progress))
+        self.assertEqual(progress[-1][2], 1000)
+        self.assertEqual([entry[2] for entry in progress], sorted(entry[2] for entry in progress))
+        grid = self.gis_mesh.surface_mesh_from_raster(data.raster)
+        for name, (vertices, faces) in (("gis_dtm_mdt_lejano", (grid.vertices, grid.faces)),
+                                        ("gis_tin_topo_lejano",
+                                         (data.tin.vertices, data.tin.faces))):
+            with self.subTest(dato=name):
+                obj = self.only(name)
+                self.assertNear(self.world(obj), vertices)
+                self.assertTrue(np.array_equal(self.mesh.mesh_triangles(obj.data), faces))
+                self.assertFalse(obj.data.validate())  # nada que corregir
+        self.assertEqual((project_files(data.root), data.operations()), (before, operations))
+
+        # Esc a mitad: con la rejilla cargada antes y otra vez pedida junto al TIN y los puntos.
+        self.unload_all()
+        self.assertEqual(self.load("gis_dtm_mdt_lejano"), {"FINISHED"})
+        loaded = self.view_state()
+        grid_mesh = self.mesh.mesh_vertices_local(self.only("gis_dtm_mdt_lejano").data).copy()
+        result = bpy.ops.geoblender.core_load_into_view(
+            "EXEC_DEFAULT", datasets="gis_dtm_mdt_lejano,gis_tin_topo_lejano,"
+            "gis_pts_taludes_lejanos", lod="FULL", in_steps=True)
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        operator = self.running()
+        meshes = len(bpy.data.meshes)
+        with mock.patch.object(type(operator), "STEP_BUDGET_S", 0.0):
+            for _ in range(500):  # hasta que el TIN está a medias (su malla, creada)
+                self.assertEqual(operator.modal(bpy.context, timer), {"RUNNING_MODAL"})
+                if len(bpy.data.meshes) >= meshes + 2:
+                    break
+        self.assertGreaterEqual(len(bpy.data.meshes), meshes + 2)
+        self.assertEqual(operator.modal(bpy.context, SimpleNamespace(type="ESC", value="PRESS")),
+                         {"CANCELLED"})
+        self.assertIn("no se ha cargado nada", operator.report_log[-1])
+        self.assertEqual(self.view_state(), loaded)
+        self.assertTrue(np.array_equal(
+            self.mesh.mesh_vertices_local(self.only("gis_dtm_mdt_lejano").data), grid_mesh))
+        self.assertEqual(self.objects_of("gis_tin_topo_lejano"), [])
+        self.assertEqual((project_files(data.root), data.operations()), (before, operations))
+
+    def test_mesh_fast_paths_are_the_mesh(self) -> None:
+        """RF-006-19, RNF-006-06 (T50; ``bl.compat``): las coordenadas y las esquinas que se
+        escriben y se leen de una vez con los atributos de la malla («position»,
+        «.corner_vert») son las mismas que con ``vertices``/``loops`` (bit a bit), Blender no
+        tiene nada que corregir en la malla y, sin esos atributos (otra versión), se usan las
+        propiedades de siempre con el mismo resultado."""
+        compat = _module("bl.compat")
+        vertices = self.data.tin.vertices
+        faces = self.data.tin.faces
+        found = []
+        for fallback in (False, True):
+            with self.subTest(sin_atributos=fallback):
+                patch = (mock.patch.object(compat, "_mesh_attribute", return_value=None)
+                         if fallback else contextlib.nullcontext())
+                with patch:
+                    mesh = self.mesh.mesh_from_arrays("rapida", vertices, faces,
+                                                      origin=self.origin)
+                    self.addCleanup(bpy.data.meshes.remove, mesh)
+                    local = compat.mesh_positions(mesh)
+                    corners = compat.mesh_corner_verts(mesh)
+                co = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+                mesh.vertices.foreach_get("co", co)
+                loops = np.empty(len(mesh.loops), dtype=np.int32)
+                mesh.loops.foreach_get("vertex_index", loops)
+                self.assertTrue(np.array_equal(local.ravel().view(np.uint32), co.view(np.uint32)))
+                self.assertTrue(np.array_equal(corners, loops))
+                self.assertTrue(np.array_equal(corners.reshape(-1, 3), faces))
+                self.assertFalse(mesh.validate())
+                self.assertNear(self.mesh.mesh_vertices_world(mesh, self.origin), vertices)
+                found.append(co)
+        self.assertTrue(np.array_equal(found[0].view(np.uint32), found[1].view(np.uint32)))
 
     def test_undo_after_loading_undoes_only_the_view(self) -> None:
         """RF-006-20 (plan §5.3.5): Ctrl+Z tras cargar quita lo cargado de la vista; el

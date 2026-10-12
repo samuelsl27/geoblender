@@ -36,6 +36,7 @@ gis = import_geoblender("gis")
 gis_jobs = import_geoblender("gis.jobs")
 gis_content = import_geoblender("gis.content")
 gis_store = import_geoblender("gis.store")
+provenance = import_geoblender("gis.provenance")
 gis_tin = import_geoblender("gis.tin")
 contours_mod = import_geoblender("gis.contours")
 points_mod = import_geoblender("gis.points")
@@ -185,6 +186,17 @@ class ImportVectorJobTest(_LayerJobCase):
                                 _same(self, ring, np.ascontiguousarray(ring_expected[:, :2]))
                 report = json.loads(self.output(ctx, folder, "report").read_text("utf-8"))
                 self.assertEqual(report["read"], features.report.read)
+                # T50 (RNF-006-09): el hash de la tabla que será lo importado, como la
+                # escribirá la orden (gis.store.table_digest), calculado en el trabajo.
+                family = provenance.layer_family(role)
+                rows = {"points": lambda: gis_store.point_rows(got, CRS.epsg),
+                        "breaklines": lambda: gis_store.breakline_rows(got, CRS.epsg),
+                        "contours": lambda: gis_store.contour_rows(got, CRS.epsg),
+                        "boundary": lambda: gis_store.boundary_rows(
+                            gis_jobs.read_boundary(output, CRS.epsg), (), CRS.epsg)}[role]()
+                self.assertEqual(
+                    summary["outputs"][gis_jobs.LAYER_OUTPUTS[role].role]["digest"],
+                    gis_jobs.digest_json(gis_store.table_digest(family, rows, CRS)))
 
     def test_pending_wal_and_undeclared_datum(self) -> None:
         """RF-006-12, RF-006-10, RF-006-04: con un ``-wal`` pendiente junto a la fuente, el

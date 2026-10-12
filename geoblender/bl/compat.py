@@ -24,6 +24,11 @@ del modificador de Geometry Nodes en 5.2) se envuelve aquí, con su prueba en
 - :func:`ui_scale`: la escala efectiva de la interfaz (``preferences.system.ui_scale``:
   la «Escala de resolución» por la del sistema operativo, p. ej. 1,0 × 125 % = 1,25); sin
   interfaz vale 0 (``docs/trampas.md`` §3) y se toma 1,0.
+- :func:`set_mesh_positions`, :func:`mesh_positions`, :func:`set_corner_verts` y
+  :func:`mesh_corner_verts` (spec 006, T50; RNF-006-06, RNF-006-09): las coordenadas de los
+  vértices y el vértice de cada esquina de una malla grande de una vez, con sus atributos
+  («position», «.corner_vert») y ``np.intc``; si la versión no los tiene así, con
+  ``vertices``/``loops`` como siempre (``tests/blender/gis/test_gis_views.py``).
 - :data:`VIEW_SENSOR_MM` y :data:`VIEW_ZOOM` (spec 003; RF-003-13): la proyección de una
   Vista 3D que no mira por una cámara (``BKE_camera_params_from_view3d``: sensor de 36 mm
   y factor 2, con el campo en el lado mayor de la región). Comprobado en 5.2.1 con
@@ -37,6 +42,7 @@ import inspect
 from dataclasses import dataclass
 
 import bpy
+import numpy as np
 
 from ..core.catalog.width import QuickAccessWidthConstants, TopbarWidthConstants
 
@@ -204,3 +210,74 @@ def ui_scale() -> float:
     except (AttributeError, TypeError, ValueError):
         return 1.0
     return scale if scale > 0 else 1.0
+
+
+# Mallas grandes (spec 006, T50; RNF-006-06, RNF-006-09) --------------------------------
+# En 5.2 las posiciones de los vértices y el vértice de cada esquina son atributos de la
+# malla («position», POINT FLOAT_VECTOR; «.corner_vert», CORNER INT). Con sus datos,
+# ``foreach_set``/``foreach_get`` copian de una vez si el array de numpy tiene el tipo exacto
+# (en Windows, ``np.int32`` se anuncia como «l», el ``long`` de C, y Blender copia valor a
+# valor: hay que darle ``np.intc``, «i»). Medido en 5.2.1 con 2,8 M vértices y 16,9 M
+# esquinas: posiciones 0,002 s frente a 0,23 s con ``vertices.foreach_set("co")``; esquinas
+# 0,004 s frente a 0,88 s con ``loops.foreach_set("vertex_index")`` (y 0,005 s frente a 0,75 s
+# al leerlas). Si una versión no los tiene así, las propiedades de siempre.
+
+POSITION_ATTRIBUTE = ("position", "POINT", "FLOAT_VECTOR")
+CORNER_VERT_ATTRIBUTE = (".corner_vert", "CORNER", "INT")
+
+
+def _mesh_attribute(mesh: bpy.types.Mesh, spec: tuple[str, str, str], count: int) -> object:
+    """El atributo ``spec`` (nombre, dominio y tipo) de ``mesh`` con ``count`` valores, o
+    ``None`` si esta versión no lo tiene así."""
+    attributes = getattr(mesh, "attributes", None)
+    found = None if attributes is None else attributes.get(spec[0])
+    if found is None or (found.domain, found.data_type) != spec[1:]:
+        return None
+    return found if len(found.data) == count else None
+
+
+def set_mesh_positions(mesh: bpy.types.Mesh, local: np.ndarray) -> None:
+    """Las coordenadas locales (float32, ``(n, 3)``) de los ``n`` vértices ya añadidos de
+    ``mesh``, de una vez."""
+    flat = np.ascontiguousarray(local, dtype=np.float32).ravel()
+    found = _mesh_attribute(mesh, POSITION_ATTRIBUTE, len(mesh.vertices))
+    if found is None:
+        mesh.vertices.foreach_set("co", flat)
+    else:
+        found.data.foreach_set("vector", flat)  # type: ignore[attr-defined]
+
+
+def mesh_positions(mesh: bpy.types.Mesh) -> np.ndarray:
+    """Las coordenadas de los vértices de ``mesh`` tal como las guarda Blender: float32
+    ``(n, 3)``."""
+    count = len(mesh.vertices)
+    flat = np.empty(count * 3, dtype=np.float32)
+    found = _mesh_attribute(mesh, POSITION_ATTRIBUTE, count)
+    if found is None:
+        mesh.vertices.foreach_get("co", flat)
+    else:
+        found.data.foreach_get("vector", flat)  # type: ignore[attr-defined]
+    return flat.reshape(-1, 3)
+
+
+def set_corner_verts(mesh: bpy.types.Mesh, corners: np.ndarray) -> None:
+    """El vértice de cada una de las esquinas ya añadidas de ``mesh`` (enteros), de una
+    vez."""
+    flat = np.ascontiguousarray(corners, dtype=np.intc).ravel()
+    found = _mesh_attribute(mesh, CORNER_VERT_ATTRIBUTE, len(mesh.loops))
+    if found is None:
+        mesh.loops.foreach_set("vertex_index", flat)
+    else:
+        found.data.foreach_set("value", flat)  # type: ignore[attr-defined]
+
+
+def mesh_corner_verts(mesh: bpy.types.Mesh) -> np.ndarray:
+    """El vértice de cada esquina de ``mesh``, en su orden (``np.intc``)."""
+    count = len(mesh.loops)
+    flat = np.empty(count, dtype=np.intc)
+    found = _mesh_attribute(mesh, CORNER_VERT_ATTRIBUTE, count)
+    if found is None:
+        mesh.loops.foreach_get("vertex_index", flat)
+    else:
+        found.data.foreach_get("value", flat)  # type: ignore[attr-defined]
+    return flat

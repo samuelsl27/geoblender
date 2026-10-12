@@ -463,6 +463,34 @@ class RasterToTinTest(unittest.TestCase):
         self.assertEqual(steps[-1], 1.0)
         with self.assertRaises(worker_api.JobCancelled):
             gis.raster_to_tin(raster, cancelled=lambda: True)
+        calls = iter([False, False, True])
+        with mock.patch.object(tin_module, "_QUAD_BLOCK", 1), \
+                self.assertRaises(worker_api.JobCancelled) as caught:
+            gis.raster_to_tin(raster, cancelled=lambda: next(calls))
+        self.assertIn("bloque 3 de 9", str(caught.exception))
+
+    def test_steps_give_the_same_tin(self) -> None:
+        """RF-006-17, RNF-006-09 (T50): ``raster_to_tin_steps`` da ``(hechos, bloques)`` antes
+        del primer bloque y tras cada uno y el mismo TIN, bit a bit (así lo convierte la vista
+        en pasos desde un temporizador); con una sola fila, ``(0, 0)`` y el error de siempre."""
+        raster = _raster(_surface(10, 16, mask=_mask(("#" * 3 + "." * 13,) + ("." * 16,) * 9)))
+        whole = gis.raster_to_tin(raster)
+        with mock.patch.object(tin_module, "_QUAD_BLOCK", 1):
+            steps = tin_module.raster_to_tin_steps(raster)
+            seen = []
+            while True:
+                try:
+                    seen.append(next(steps))
+                except StopIteration as stop:
+                    tin = stop.value
+                    break
+        self.assertEqual(seen, [(index, 9) for index in range(10)])
+        for array in ("vertices", "faces", "constraint_edges", "vertex_source"):
+            self.assertEqual(getattr(tin, array).tobytes(), getattr(whole, array).tobytes())
+        steps = tin_module.raster_to_tin_steps(_raster(np.full((1, 6), 800.0)), name="mdt")
+        self.assertEqual(next(steps), (0, 0))
+        with self.assertRaises(gis.GisError):
+            next(steps)
 
     def test_input_untouched_and_bad_inputs(self) -> None:
         raster = _raster(_surface(5, 6))

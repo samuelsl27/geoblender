@@ -5,14 +5,18 @@ RF-006-29; plan 006 §5.1, §5.5 y §5.6.7; D12, D16; ADR-0005).
 Un mecanismo general (D-10 de la spec): cada módulo registra el **cargador** de sus datos por el
 comienzo de su nombre en ``gb_dataset`` (:func:`register_loader`: ``gis_dtm_`` → la rejilla de
 la 006; la 005 y las siguientes, los suyos), y una sola orden, «Cargar en la vista…», los carga
-todos (:func:`load_datasets`). Un cargador recibe el dato (:class:`ViewRequest`) y devuelve sus
-objetos sin enlazar, en coordenadas **locales** respecto al GeoOrigin y con matriz identidad
-(``bl.scene.mesh``), y su extensión local (:class:`ViewParts`); lo demás es de aquí:
+todos (:func:`load_steps`, en pasos, desde el temporizador de su ventana con su avance y Esc;
+:func:`load_datasets`, de una vez, desde un guion; T50, RNF-006-09). Un cargador recibe el dato
+(:class:`ViewRequest`) y devuelve sus objetos sin enlazar, en coordenadas **locales** respecto
+al GeoOrigin y con matriz identidad (``bl.scene.mesh``), y su extensión local
+(:class:`ViewParts`), o un generador que da su avance tras cada paso y los devuelve al final
+(los de la topografía: la rejilla de 2,81 M celdas en pasos de unas décimas de segundo como
+mucho); lo demás es de aquí:
 
 - **lo que dice el proyecto del dato** (``core.provenance.view``, sin escribir nada): se cargan
   los vigentes, los bloqueados y los dañados, con su estado a la vista; de uno que falta se
   avisa y no se carga (plan §5.6.7); cargar uno ya cargado lo sustituye (otro nivel de detalle,
-  o el dato al día);
+  o el dato al día), en el último paso: si se cancela antes, la vista queda como estaba;
 - **``Object.geoblender``** en cada objeto (RF-006-29): su tipo, el uid de su dato y de su
   proyecto, su hash de contenido, su estado, la fecha de la operación que escribió su
   contenido y si estaba obsoleto (la caché de la 008); nombre **generado** con su tipo, su
@@ -41,8 +45,8 @@ operadores llevan ``UNDO``).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Generator, Iterable, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 import bpy
@@ -53,6 +57,7 @@ from ...core.datasets.model import DatasetRecord, DatasetStatus
 from ...core.errors import GeoblenderError
 from ...core.georef import PRECISION_LIMIT_M, GeoOrigin, PrecisionReport, precision_report
 from ...core.i18n import language, tr, translate
+from ...core.project.model import Progress
 from ..props.core import OBJECT_PROPERTY
 from .mesh import mesh_vertices_world
 
@@ -117,7 +122,10 @@ class ViewParts:
     notes: tuple[str, ...] = ()
 
 
-ViewLoader = Callable[[ViewRequest], ViewParts]
+ViewLoader = Callable[[ViewRequest], "ViewParts | Generator[float, None, ViewParts]"]
+"""Un cargador: devuelve las partes del dato o, si lo carga en pasos (T50), un generador que da
+su avance (0–1) tras cada paso y devuelve las partes (``StopIteration.value``); cerrado antes
+de terminar, borra lo que creó."""
 
 
 @dataclass(frozen=True)
@@ -350,52 +358,133 @@ def scene_precision(parts: ViewParts, origin: GeoOrigin) -> PrecisionReport | No
     return precision_report(np.vstack(vertices), origin)
 
 
-def load_datasets(context: Any, project: Any, refs: Iterable[str], *,
-                  lod: int = 0) -> LoadOutcome:
-    """Carga en la escena de ``context`` los datos ``refs`` (uids o nombres) del proyecto
-    abierto ``project`` con su cargador (RF-006-19, RF-006-29): cada uno, en la colección de
-    su dato con ``Object.geoblender`` y su nombre generado, sustituyendo lo que hubiera de él
-    y con el aviso de RF-002-26 si pasa de 8 km del GeoOrigin (:func:`scene_precision`);
-    después, el ancla y el recorte. Un dato que falta se avisa y no se carga; uno que el
-    proyecto no tiene, sin cargador o que su cargador rechaza (``GeoblenderError``: otro CRS,
-    una malla no válida…) es un error y los demás se cargan. No escribe nada en el proyecto."""
+LOAD_PHASE = "Load into the view"
+"""La fase de los pasos de :func:`load_steps` (``Progress.phase``, un ``msgid``)."""
+STEPS_TOTAL = 1000
+"""El total de los pasos de :func:`load_steps` (``Progress.total``): su avance, en milésimas."""
+
+
+@dataclass
+class _Built:
+    """Lo que :func:`load_steps` deja preparado de un dato antes de ponerlo en la escena: los
+    avisos que van en su sitio (uno que falta) o su cargador, lo que dice el proyecto de él,
+    su nombre generado y sus partes, sin enlazar."""
+
+    notes: list[str] = field(default_factory=list)
+    loader: Loader | None = None
+    shown: Any = None
+    name: str = ""
+    parts: ViewParts | None = None
+
+
+def _parts(found: Any, start: float, width: float,
+           label: str) -> Generator[Progress, None, ViewParts]:
+    """Las partes de un cargador: las que devuelve o, si carga en pasos, las de su generador,
+    con su avance (0–1) llevado al tramo [``start``, ``start + width``] del total."""
+    if not isinstance(found, Generator):
+        return found
+    try:
+        while True:
+            try:
+                done = next(found)
+            except StopIteration as stop:
+                return stop.value
+            fraction = start + width * min(max(float(done), 0.0), 1.0)
+            yield Progress(LOAD_PHASE, int(STEPS_TOTAL * fraction), STEPS_TOTAL, label)
+    finally:
+        found.close()
+
+
+def _discard(objects: Iterable[bpy.types.Object]) -> None:
+    """Borra los objetos sin enlazar de ``objects`` y sus mallas (si nadie más las usa)."""
+    for obj in list(objects):
+        data = obj.data
+        bpy.data.objects.remove(obj)
+        owner = getattr(bpy.data, _DATA_COLLECTIONS.get(getattr(data, "id_type", ""), ""),
+                        None) if data is not None else None
+        if owner is not None and data.users == 0:
+            owner.remove(data)
+
+
+def load_steps(context: Any, project: Any, refs: Iterable[str], *,
+               lod: int = 0) -> Generator[Progress, None, None]:
+    """Los pasos que cargan en la escena de ``context`` los datos ``refs`` (uids o nombres)
+    del proyecto abierto ``project`` con su cargador (RF-006-19, RF-006-29; T50: en pasos de
+    décimas de segundo como mucho, para la orden desde el temporizador de su ventana, con su
+    avance y Esc, RNF-006-09): cada uno da su ``Progress`` (fase :data:`LOAD_PHASE`, hecho de
+    :data:`STEPS_TOTAL`, el nombre del dato) y el último, el :class:`LoadOutcome` en
+    ``result``. Primero se preparan todos sin tocar la escena (los objetos, sin enlazar) y en
+    el último paso, de una vez, cada uno pasa a la colección de su dato con
+    ``Object.geoblender`` y su nombre generado, sustituyendo lo que hubiera de él, con el aviso
+    de RF-002-26 si pasa de 8 km del GeoOrigin (:func:`scene_precision`), y después el ancla y
+    el recorte. Cerrar los pasos antes del último (Esc), o un error que no es para la persona,
+    borra lo preparado: la vista queda como estaba. Un dato que falta se avisa y no se carga;
+    uno que el proyecto no tiene, sin cargador o que su cargador rechaza (``GeoblenderError``:
+    otro CRS, una malla no válida…) es un error y los demás se cargan. No escribe nada en el
+    proyecto."""
     from ...core.provenance.view import dataset_view  # al usarlo: no al habilitar
 
     scene = getattr(context, "scene", None) or bpy.context.scene
+    wanted = list(refs)
+    built: list[_Built] = []
+    errors: list[str] = []
+    width = 1.0 / max(1, len(wanted))
+    try:
+        for index, ref in enumerate(wanted):
+            yield Progress(LOAD_PHASE, int(STEPS_TOTAL * index * width), STEPS_TOTAL, str(ref))
+            try:
+                shown = dataset_view(project, ref)
+            except GeoblenderError as error:
+                errors.append(str(error))
+                continue
+            if shown is None:
+                errors.append(tr("There is no data «{name}» in the project", name=ref))
+                continue
+            record = shown.record
+            if record.status is DatasetStatus.MISSING:
+                built.append(_Built([tr("«{name}» is missing from the project: it is not "
+                                        "loaded into the view", name=record.name)]))
+                continue
+            loader = loader_for(record.name)
+            if loader is None:
+                errors.append(tr("«{name}» cannot be shown in the view: no module loads it",
+                                 name=record.name))
+                continue
+            name = view_name(loader, record, stale=shown.stale)
+            entry = _Built([], loader, shown, name)
+            built.append(entry)
+            try:
+                entry.parts = yield from _parts(
+                    loader.load(ViewRequest(project, record, name, lod)), index * width, width,
+                    record.name)
+            except GeoblenderError as error:
+                LOGGER.info("No se carga «%s» en la vista: %s", record.name, error)
+                errors.append(str(error))
+                built.remove(entry)
+    except BaseException:
+        _discard(obj for entry in built if entry.parts is not None
+                 for obj in entry.parts.objects)
+        raise
+    yield Progress(LOAD_PHASE, STEPS_TOTAL, STEPS_TOTAL, "",
+                   _place(scene, project, built, errors))
+
+
+def _place(scene: Any, project: Any, built: Sequence[_Built],
+           errors: Sequence[str]) -> LoadOutcome:
+    """El último paso de :func:`load_steps`: lo preparado, a la escena (véase allí)."""
     loaded: list[str] = []
     objects: list[bpy.types.Object] = []
     notes: list[str] = []
-    errors: list[str] = []
     lows: list[np.ndarray] = []
     highs: list[np.ndarray] = []
-    for ref in refs:
-        try:
-            shown = dataset_view(project, ref)
-        except GeoblenderError as error:
-            errors.append(str(error))
-            continue
-        if shown is None:
-            errors.append(tr("There is no data «{name}» in the project", name=ref))
+    for entry in built:
+        notes.extend(entry.notes)
+        parts, loader, shown = entry.parts, entry.loader, entry.shown
+        if parts is None or loader is None:
             continue
         record = shown.record
-        if record.status is DatasetStatus.MISSING:
-            notes.append(tr("«{name}» is missing from the project: it is not loaded into the "
-                            "view", name=record.name))
-            continue
-        loader = loader_for(record.name)
-        if loader is None:
-            errors.append(tr("«{name}» cannot be shown in the view: no module loads it",
-                             name=record.name))
-            continue
         unload_datasets([record.uid])  # otro nivel de detalle, o el dato al día
-        name = view_name(loader, record, stale=shown.stale)
-        try:
-            parts = loader.load(ViewRequest(project, record, name, lod))
-        except GeoblenderError as error:
-            LOGGER.info("No se carga «%s» en la vista: %s", record.name, error)
-            errors.append(str(error))
-            continue
-        collection = ensure_collection(loader.kind, record, name=name, scene=scene)
+        collection = ensure_collection(loader.kind, record, name=entry.name, scene=scene)
         for obj in parts.objects:
             collection.objects.link(obj)
             _mark(obj, loader.kind, shown, project)
@@ -414,6 +503,20 @@ def load_datasets(context: Any, project: Any, refs: Iterable[str], *,
     if lows:
         fit_clip(np.min(lows, axis=0), np.max(highs, axis=0))
     return LoadOutcome(tuple(loaded), tuple(objects), tuple(notes), tuple(errors))
+
+
+def load_datasets(context: Any, project: Any, refs: Iterable[str], *,
+                  lod: int = 0) -> LoadOutcome:
+    """Carga de una vez en la escena de ``context`` los datos ``refs`` (uids o nombres) del
+    proyecto abierto ``project``: todos los pasos de :func:`load_steps` seguidos (desde un
+    guion; la orden desde la interfaz los da desde su temporizador). Devuelve su
+    :class:`LoadOutcome`."""
+    outcome: LoadOutcome | None = None
+    for step in load_steps(context, project, refs, lod=lod):
+        if isinstance(step.result, LoadOutcome):
+            outcome = step.result
+    assert outcome is not None
+    return outcome
 
 
 def loaded_uids(objects: Iterable[bpy.types.Object]) -> list[str]:

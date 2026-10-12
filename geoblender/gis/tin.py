@@ -53,7 +53,7 @@ import math
 import numbers
 import os
 import zipfile
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -95,6 +95,7 @@ __all__ = [
     "meta_vertical",
     "prepare_tin",
     "raster_to_tin",
+    "raster_to_tin_steps",
     "sample_tin",
     "save_tin",
     "tin_to_raster",
@@ -906,6 +907,29 @@ def raster_to_tin(
     triángulo → ``GisError`` ``gis.grid_tin_empty`` (``name`` es el del TIN). Por bloques de
     filas (:data:`_QUAD_BLOCK` cuadros) con avance y cancelación. La entrada no se
     modifica."""
+    steps = raster_to_tin_steps(raster, name=name)
+    try:
+        while True:
+            try:
+                done, count = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            if done and progress is not None:
+                progress(done / count, f"Convirtiendo la rejilla en TIN: bloque {done} de "
+                         f"{count}")
+            if done < count and cancelled is not None and cancelled():
+                raise JobCancelled("Cancelado al convertir la rejilla en TIN en el bloque "
+                                   f"{done + 1} de {count}")
+    finally:
+        steps.close()
+
+
+def raster_to_tin_steps(raster: Raster, *, name: str = "") -> Generator[tuple[int, int], None,
+                                                                         Tin]:
+    """Los pasos de :func:`raster_to_tin` (el mismo TIN, bit a bit): da ``(hechos, bloques)``
+    antes del primer bloque de filas (``(0, n)``) y tras cada uno, y devuelve el TIN
+    (``StopIteration.value``). Así la vista convierte la rejilla de 2,81 M celdas en pasos de
+    centésimas desde un temporizador (T50; RNF-006-09)."""
     if not isinstance(raster, Raster):
         raise TypeError(f"raster debe ser un Raster, no {type(raster).__name__}")
     grid = raster.grid
@@ -914,17 +938,15 @@ def raster_to_tin(
         raise ValueError(f"una rejilla de {nrows} × {ncols} celdas no cabe en un TIN (int32)")
     valid = np.isfinite(raster.values)
     pieces = []
+    firsts: range = range(0)
+    block = 1
     if nrows > 1 and ncols > 1:
         block = max(1, _QUAD_BLOCK // (ncols - 1))
         firsts = range(0, nrows - 1, block)
-        for index, first in enumerate(firsts):
-            if cancelled is not None and cancelled():
-                raise JobCancelled("Cancelado al convertir la rejilla en TIN en el bloque "
-                                   f"{index + 1} de {len(firsts)}")
-            pieces.append(_quad_faces(valid, first, min(first + block, nrows - 1)))
-            if progress is not None:
-                progress((index + 1) / len(firsts), "Convirtiendo la rejilla en TIN: bloque "
-                         f"{index + 1} de {len(firsts)}")
+    yield 0, len(firsts)
+    for index, first in enumerate(firsts):
+        pieces.append(_quad_faces(valid, first, min(first + block, nrows - 1)))
+        yield index + 1, len(firsts)
     cells = np.concatenate(pieces) if pieces else np.empty((0, 3), dtype=np.int64)
     if not len(cells):
         raise GisError("gis.grid_tin_empty", obj=_tin_object(name), field="celdas con dato",

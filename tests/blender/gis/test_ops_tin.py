@@ -43,16 +43,18 @@ class TinOperatorsCase(DtmOperatorsCase):
     """Lo de ``DtmOperatorsCase`` con la cadena de un TIN hasta el final."""
 
     def settle(self) -> None:
-        """Avanza a mano el monitor de los trabajos y el temporizador de la triangulación
-        hasta que no queda nada en marcha."""
+        """Avanza a mano el monitor de los trabajos y los temporizadores de la triangulación y
+        de las incorporaciones por pasos (T50) hasta que no queda nada en marcha."""
         runner = self.jobs_ops.MONITOR.runner
         deadline = time.monotonic() + JOB_WAIT_S
         idle = 0
         while time.monotonic() < deadline:
             self.jobs_ops.tick()
             self.gis_ops.triangulation_tick()
+            self.gis_ops.incorporation_tick()
             busy = (any(snapshot.active for snapshot in runner.snapshots())
-                    or self.gis_ops.pending_triangulations())
+                    or self.gis_ops.pending_triangulations()
+                    or self.gis_ops.pending_incorporations())
             idle = 0 if busy else idle + 1
             if idle >= 2:
                 return
@@ -152,6 +154,7 @@ class PointsTinTest(TinOperatorsCase):
         for step in steps:
             self.jobs_ops.tick()
             self.gis_ops.triangulation_tick()
+            self.gis_ops.incorporation_tick()
             time.sleep(0.002)
         self.assertEqual([str(unit.status) for unit in step.result.results], ["done"])
         (new_tin,) = self.rows("SELECT uid FROM gb_operation WHERE supersedes_uid = ?", tin_uid)

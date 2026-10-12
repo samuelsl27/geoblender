@@ -518,6 +518,17 @@ class ImportJobsTest(_JobCase):
         self.assertEqual(summary["source"]["digest"],
                          _hash_job(self.root, gis_content.POINTS_TEXT, "table",
                                    {"main": source}, declarations, POINT_SETTINGS))
+        # T50 (RNF-006-09): el hash de las dos tablas que serán lo importado (las de
+        # gis.store.table_digest, el que da el registro al escribirlas), calculado aquí.
+        provenance = import_geoblender("gis.provenance")
+        for output, family, rows in (
+                (gis_jobs.OUT_POINTS, provenance.POINTS,
+                 gis_store.point_rows(expected_points, CRS.epsg)),
+                (gis_jobs.OUT_LINES, provenance.BREAKLINES,
+                 gis_store.breakline_rows(expected_lines, CRS.epsg))):
+            with self.subTest(tabla=family):
+                self.assertEqual(summary["outputs"][output.role]["digest"],
+                                 gis_jobs.digest_json(gis_store.table_digest(family, rows, CRS)))
 
     def test_explained_failures_and_bad_requests(self) -> None:
         """RF-006-28, RF-006-04, RF-004-12: un fallo para el usuario (un GeoTIFF sin CRS ni

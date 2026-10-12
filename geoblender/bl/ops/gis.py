@@ -70,7 +70,13 @@ idempotentes: registrar y desregistrar deja los registros de ``core`` como estab
   disperso con su asistente (codificación, separador, decimal, cabecera y el papel de cada
   columna, ``GEOBLENDER_PG_gis_column``; sin él, adivinado por la cabecera) a ``gis_pts_`` y
   ``gis_brk_`` con su entrada y su original (trabajo ``gis_import_points``); el informe dice las
-  filas leídas, las rechazadas (número y motivo) y los duplicados.
+  filas leídas, las rechazadas (número y motivo) y los duplicados. (T50; RNF-006-09) El hash de
+  las tablas de lo importado lo calcula su trabajo (con su avance y su cancelación) y, al
+  terminar, la importación se incorpora **por pasos** desde un temporizador
+  (:func:`incorporation_tick`, :func:`pending_incorporations`): leer lo que dejó el trabajo,
+  codificar sus filas, la transacción corta del final y el original por trozos, cada paso de
+  unas décimas de segundo como mucho y con su avance en la barra de estado («Incorporando «…» al
+  proyecto… n %»); con 300.000 puntos, en vez de una llamada de 5 s.
 - ``geoblender.gis_import_vector`` (Importar ▸ Capas vectoriales…): una capa de un GeoPackage
   (listada sobre una copia en ``cache/import/``) con su papel (puntos, roturas, curvas con su
   campo de cota o contorno; trabajo ``gis_import_vector``, que copia la fuente con su ``-wal``).
@@ -124,7 +130,7 @@ import shutil
 import sys
 import unicodedata
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -142,7 +148,6 @@ from ...core.content.readers import MAIN_ROLE
 from ...core.datasets import registry as dataset_registry
 from ...core.errors import GeoblenderError
 from ...core.georef import load_catalog, world_to_local
-from ...core.gpkg.wkb import Geometry
 from ...core.i18n import format_number, tr
 from ...core.inputs import get as get_input
 from ...core.inputs import locate_source, reader_roles, resolve_source
@@ -334,6 +339,7 @@ def unregister() -> None:
     _TRIANGULATIONS.clear()
     if bpy.app.timers.is_registered(triangulation_tick):
         bpy.app.timers.unregister(triangulation_tick)
+    _drop_incorporations()
     while _UNDO:
         _UNDO.pop()()
 
@@ -1450,10 +1456,88 @@ def _start_survey(plan: _Survey, launch: Callable[..., Any]) -> Any:
 
 
 def _survey_finished(plan: _Survey, result: JobResult) -> None:
-    """El final del trabajo de una importación de puntos o de una capa: si terminó bien,
-    :func:`_settle_survey` (si no, la procedencia la deja cancelada o fallida)."""
+    """El final del trabajo de una importación de puntos o de una capa: si terminó bien, su
+    incorporación por pasos desde el temporizador (:func:`_survey_steps`,
+    :func:`incorporation_tick`; T50, RNF-006-09); si no, la procedencia la deja cancelada o
+    fallida."""
     if result.state == _SUCCEEDED:
-        _settle_survey(plan, result)
+        _incorporate(plan.handle.uid, plan.name, _survey_steps(plan, result))
+
+
+# --- Incorporar por pasos (T50) ----------------------------------------------------------------
+
+
+INCORPORATION_TICK_S = 0.0
+"""Lo que espera el temporizador de las incorporaciones entre dos pasos: nada (Blender redibuja
+la interfaz y la barra de estado entre dos llamadas)."""
+
+
+@dataclass(eq=False)
+class _Incorporation:
+    """Una incorporación por pasos en marcha (T50): su operación, el nombre que enseña la barra
+    de estado, sus pasos (un generador que da su avance, 0–1, tras cada uno) y lo hecho."""
+
+    uid: str
+    name: str
+    steps: Iterator[float]
+    done: float = 0.0
+
+
+_INCORPORATIONS: list[_Incorporation] = []
+"""Las incorporaciones que esperan su turno en el temporizador, por orden de llegada."""
+
+
+def pending_incorporations() -> list[str]:
+    """Las operaciones cuya incorporación por pasos espera el temporizador (T50)."""
+    return [item.uid for item in _INCORPORATIONS]
+
+
+def _incorporate(uid: str, name: str, steps: Iterator[float]) -> None:
+    """Pone en cola la incorporación ``steps`` de la operación ``uid`` y registra su
+    temporizador (:func:`incorporation_tick`) si no lo estaba."""
+    _INCORPORATIONS.append(_Incorporation(uid, name, steps))
+    if not bpy.app.timers.is_registered(incorporation_tick):
+        bpy.app.timers.register(incorporation_tick, first_interval=INCORPORATION_TICK_S,
+                                persistent=True)
+
+
+def incorporation_tick() -> float | None:
+    """El temporizador de las incorporaciones por pasos (T50; RF-006-28, RNF-006-09): un paso
+    de la primera de la cola por llamada (cada uno, unas décimas de segundo como mucho: leer lo
+    que dejó el trabajo, codificar sus filas, la transacción corta del final, cada trozo del
+    original) y su avance en la barra de estado; lo largo (el hash de las tablas) lo hizo ya su
+    trabajo, con su avance y su cancelación. Devuelve cuándo volver (``None``: no queda
+    ninguna)."""
+    if not _INCORPORATIONS:
+        return None
+    current = _INCORPORATIONS[0]
+    try:
+        current.done = float(next(current.steps))
+    except StopIteration:
+        _INCORPORATIONS.pop(0)
+    except Exception:  # noqa: BLE001 - los pasos tratan sus errores: esto es del programa
+        LOGGER.exception("La incorporación de «%s» (%s) se ha parado", current.name,
+                         current.uid)
+        _INCORPORATIONS.pop(0)
+    if not _INCORPORATIONS:
+        _status(None)
+        return None
+    shown = _INCORPORATIONS[0]
+    _status(tr("Adding «{name}» to the project… {percent} %", name=shown.name,
+               percent=int(100 * min(max(shown.done, 0.0), 1.0))))
+    return INCORPORATION_TICK_S
+
+
+def _drop_incorporations() -> None:
+    """Olvida las incorporaciones en cola (al desregistrar): cada una se cierra sin escribir
+    nada más en el proyecto (su operación sigue «en curso», como las que olvida la 008)."""
+    shown = bool(_INCORPORATIONS)
+    while _INCORPORATIONS:
+        _INCORPORATIONS.pop(0).steps.close()  # type: ignore[attr-defined]
+    if bpy.app.timers.is_registered(incorporation_tick):
+        bpy.app.timers.unregister(incorporation_tick)
+    if shown:
+        _status(None)
 
 
 def _survey_spec(plan: _Survey, summary: Mapping[str, Any]) -> Any:
@@ -1471,14 +1555,22 @@ def _survey_spec(plan: _Survey, summary: Mapping[str, Any]) -> Any:
                               received_from=plan.received_from)
 
 
-def _settle_survey(plan: _Survey, result: JobResult) -> str:
-    """Incorpora la importación de ``plan`` (su trabajo terminó bien) y dice cómo quedó:
-    ``"reused"`` (la misma entrada: cancelada con el aviso, RF-008-54), ``"cancelled"`` (los
-    mismos datos con otros ajustes y sin motivo: se repite con él, RF-008-11), ``"done"`` o
-    ``"failed"``. El original del texto de puntos se guarda desde la copia verificada del
-    trabajo antes de darlo por incorporado (RF-008-53)."""
+def _survey_steps(plan: _Survey, result: JobResult) -> Generator[float, None, str]:
+    """Los pasos que incorporan la importación de ``plan`` (su trabajo terminó bien), con su
+    avance (0–1) tras cada uno; cada paso, unas décimas de segundo del hilo de Blender como
+    mucho (T50; RNF-006-09): lo que dejó el trabajo y su clasificación (``"reused"``: la misma
+    entrada, cancelada con el aviso, RF-008-54; ``"cancelled"``: los mismos datos con otros
+    ajustes y sin motivo, se repite con él, RF-008-11); la entrada declarada; lo importado,
+    leído y codificado (:func:`_survey_tables`, con el hash de cada tabla que calculó su
+    trabajo); la transacción corta del final (``ingest_job``, I-7 de la 008); el original del
+    texto de puntos desde la copia verificada del trabajo, por trozos (RF-008-53), y el
+    trabajo, dado por incorporado. Devuelve (``StopIteration.value``) cómo quedó: ``"done"``,
+    ``"reused"``, ``"cancelled"`` o ``"failed"``. Un error la deja fallida con su motivo y
+    nada escrito; cerrar los pasos antes de la transacción (al desregistrar) no escribe nada
+    (la operación sigue «en curso» y queda «interrumpida» al abrir el proyecto)."""
     project = plan.handle.project
     language = i18n.language()
+    out: store.ResultWriter | None = None
     try:
         outcome = job_outcome(result, result.job_dir)
         summary = outcome.summary
@@ -1486,8 +1578,8 @@ def _settle_survey(plan: _Survey, result: JobResult) -> str:
         if plan.previous_uid is None:
             found = store.classify_source(project, spec)
             if isinstance(found, Reuse):
-                with store.ResultWriter(project, plan.handle) as out:
-                    out.declare_input(spec)  # la deja cancelada con el aviso
+                with store.ResultWriter(project, plan.handle) as reused:
+                    reused.declare_input(spec)  # la deja cancelada con el aviso
                 core_provenance.release_job(result.job_uid)
                 _say(found.render(language))
                 return "reused"
@@ -1503,65 +1595,92 @@ def _settle_survey(plan: _Survey, result: JobResult) -> str:
                     return "cancelled"
                 plan.previous_uid = found.input.uid
         report = _survey_report(plan, summary, outcome)
-        with store.ResultWriter(project, plan.handle) as out:
-            out.declare_input(spec, previous_uid=plan.previous_uid, reason=plan.reason)
-            _write_survey(out, plan, outcome, summary)
-            ingest_job(project, plan.handle, outcome, out.write, message=report)
-        if plan.reader == content.POINTS_TEXT.id:
-            _store_original(out, result.job_dir.inputs_dir / (
-                jobs.path_name(MAIN_ROLE) + plan.path.suffix))
-        core_provenance.release_job(result.job_uid)
+        yield 0.1
+        out = store.ResultWriter(project, plan.handle)
+        out.declare_input(spec, previous_uid=plan.previous_uid, reason=plan.reason)
+        yield 0.2
+        yield from _survey_tables(out, plan, outcome, summary)
+        ingest_job(project, plan.handle, outcome, out.write, message=report)
+        out.close()
+    except GeneratorExit:
+        if out is not None:
+            out.close()  # sin escribir nada: la operación sigue «en curso»
+        raise
     except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        if out is not None:
+            out.close(error)
         plan.failure = tr("«{name}» has not been imported: {reason}", name=plan.name,
                           reason=_failure(plan.handle, result, error))
         _say(plan.failure)
         return "failed"
+    yield 0.8
+    try:  # lo importado ya está en el proyecto: falta el original y dar el trabajo por hecho
+        if plan.reader == content.POINTS_TEXT.id:
+            yield from _original_steps(out, result.job_dir.inputs_dir / (
+                jobs.path_name(MAIN_ROLE) + plan.path.suffix))
+    finally:
+        core_provenance.release_job(result.job_uid)
     _say(report)
     return "done"
 
 
-def _store_original(out: store.ResultWriter, verified: Path) -> None:
-    """El original del texto de puntos desde la copia verificada (RF-008-53); si no se puede
-    guardar, la importación sigue hecha y se avisa."""
+def _original_steps(out: store.ResultWriter, verified: Path) -> Iterator[float]:
+    """El original del texto de puntos desde la copia verificada (RF-008-53), por los trozos
+    de ``store_originals_steps`` (cada uno, un paso); si no se puede guardar, la importación
+    sigue hecha y se avisa."""
     try:
-        for _step in out.originals([verified]):
-            pass
+        for step in out.originals([verified]):
+            yield 0.8 + 0.19 * (step.done / step.total if step.total else 1.0)
     except Exception as error:  # noqa: BLE001 - lo importado ya está confirmado
         LOGGER.warning("No se guardó el original de «%s»", verified.name, exc_info=True)
         _say(tr("The original of the input could not be kept: {reason}",
                 reason=error_text(error)))
 
 
-def _write_survey(out: store.ResultWriter, plan: _Survey, outcome: Any,
-                  summary: Mapping[str, Any]) -> None:
-    """Prepara lo importado del resultado del trabajo: puntos y líneas de un texto; de una
-    capa, según su papel. Sin nada que importar, ``gis.survey_empty``."""
+def _table_contents(summary: Mapping[str, Any]) -> dict[str, Any]:
+    """El hash de cada tabla de lo importado que calculó el trabajo (T50), por su papel."""
+    found: dict[str, Any] = {}
+    for role, output in dict(summary.get("outputs") or {}).items():
+        if isinstance(output, Mapping) and output.get("digest") is not None:
+            found[str(role)] = jobs.digest_of(output["digest"])
+    return found
+
+
+def _survey_tables(out: store.ResultWriter, plan: _Survey, outcome: Any,
+                   summary: Mapping[str, Any]) -> Iterator[float]:
+    """Prepara lo importado del resultado del trabajo, en pasos: puntos y líneas de un texto;
+    de una capa, según su papel; cada tabla con el hash que calculó el trabajo (T50: el hilo
+    de Blender no la vuelve a leer). Sin nada que importar, ``gis.survey_empty``."""
+    contents = _table_contents(summary)
     if plan.reader == content.POINTS_TEXT.id:
         points = jobs.read_points(outcome.file(jobs.OUT_POINTS.role))
+        yield 0.3
         lines = jobs.read_lines(outcome.file(jobs.OUT_LINES.role))
         if len(points):
-            out.points(plan.name, points)
+            out.points(plan.name, points, content=contents.get(jobs.OUT_POINTS.role))
+        yield 0.5
         if lines:
-            out.breaklines(plan.name, lines)
+            out.breaklines(plan.name, lines, content=contents.get(jobs.OUT_LINES.role))
         count = len(points) + len(lines)
     else:
         role = str(summary["role"])
-        path = outcome.file(jobs.LAYER_OUTPUTS[role].role)
+        output = jobs.LAYER_OUTPUTS[role].role
+        path = outcome.file(output)
         count = int(summary["count"])
         if count and role == "points":
-            out.points(plan.name, jobs.read_points(path))
+            out.points(plan.name, jobs.read_points(path), content=contents.get(output))
         elif count and role == "breaklines":
-            out.breaklines(plan.name, jobs.read_lines(path))
+            out.breaklines(plan.name, jobs.read_lines(path), content=contents.get(output))
         elif count and role == "contours":
-            out.contours(plan.name, jobs.read_contours(path))
+            out.contours(plan.name, jobs.read_contours(path), content=contents.get(output))
         elif count:
-            epsg = jobs.crs_of(summary["crs"]).epsg
-            out.boundary(plan.name, [Geometry("MULTIPOLYGON", epsg, False, polygons, None)
-                                     for polygons in jobs.read_polygons(path)])
+            out.boundary(plan.name, jobs.read_boundary(path, jobs.crs_of(summary["crs"]).epsg),
+                         content=contents.get(output))
     if not count:
         raise GisError("gis.survey_empty", obj=f"«{plan.path.name}»", field="filas",
                        value=0, name=plan.name, file=plan.path.name,
                        rejected=int(summary.get("rejected", 0)))
+    yield 0.6
 
 
 def _rejections(outcome: Any) -> list[str]:
