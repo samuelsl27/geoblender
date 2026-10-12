@@ -21,15 +21,21 @@ líneas de rotura, curvas de nivel, contornos y un TIN como triángulos:
   hash de contenido del fichero (``core.document@1``).
 - Con ``GEOBLENDER_QGIS_DIR`` (recurso ``qgis``), ``ogrinfo`` lo lista sin avisos y
   ``validate_gpkg.py`` lo da por bueno (también el R*Tree); si no, omisión ``[ENTORNO] qgis``.
+- **Estilo de las curvas** (T55; RF-006-18, M4): una capa con estilo (``gis.styles``, el de
+  las curvas de nivel) lo lleva en la tabla ``layer_styles`` con el esquema que escribe
+  QGIS 4.2 y ``useAsDefault = 1``, y QGIS (PyQGIS sin interfaz, recurso ``qgis``) lo carga
+  solo al abrir la capa y dibuja las maestras más gruesas que las intermedias.
 """
 
 import dataclasses
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +46,7 @@ from tests.support.package import import_geoblender
 from tests.support.resources import requires
 
 vector = import_geoblender("gis.vector")
+styles = import_geoblender("gis.styles")
 gis_jobs = import_geoblender("gis.jobs")
 gis_tin = import_geoblender("gis.tin")
 messages = import_geoblender("gis.messages")
@@ -60,6 +67,15 @@ SRS = 25830
 Column = gpkg_base.ColumnDef
 OPERATION_UID = "0f3c2a5e-7b1d-4c9e-8a6f-2d4b6c8e0a29"
 TRIGGERS = ("insert", "update2", "update4", "update5", "update6", "update7", "delete")
+# La tabla de estilos como la crea QGIS 4.2 al guardar un estilo en un GeoPackage (columnas y
+# tipos, en su orden; comprobado con PyQGIS 4.2.0, T55).
+QGIS_STYLE_COLUMNS = [
+    ("id", "INTEGER"), ("f_table_catalog", "TEXT(256)"), ("f_table_schema", "TEXT(256)"),
+    ("f_table_name", "TEXT(256)"), ("f_geometry_column", "TEXT(256)"),
+    ("styleName", "TEXT(30)"), ("styleQML", "TEXT"), ("styleSLD", "TEXT"),
+    ("useAsDefault", "BOOLEAN"), ("description", "TEXT"), ("owner", "TEXT(30)"),
+    ("ui", "TEXT(30)"), ("update_time", "DATETIME")]
+RGBA = re.compile(r"\d{1,3},\d{1,3},\d{1,3},\d{1,3}")  # «r,g,b,a» (docs/trampas.md §6)
 
 
 def _same(test: unittest.TestCase, got: Any, expected: Any) -> None:
@@ -124,7 +140,7 @@ def _layers() -> tuple[list[Any], Any]:
             (Column("elevation", "DOUBLE"), Column("is_index", "BOOLEAN"),
              Column("closed", "BOOLEAN"), Column("length_m", "DOUBLE")),
             {"elevation": (801.0, 805.0), "is_index": (0, 1), "closed": (0, 1),
-             "length_m": (12.5, 0.1 + 0.2)}),
+             "length_m": (12.5, 0.1 + 0.2)}, style=styles.CONTOUR_STYLE),
         vector.LayerToWrite(
             "gis_bnd_contorno", "MULTIPOLYGON", False, [[[outer, hole]], [[island]]],
             (Column("role", "TEXT"),), {"role": ("boundary", "hole")}),
@@ -276,6 +292,46 @@ class WriteLayersTest(_Folder):
         with self.assertRaises(ValueError):
             other.decoded(SRS)
 
+    def test_contour_style_is_the_qgis_default(self) -> None:
+        """RF-006-18, RF-006-25 (T55; M4): la capa de curvas lleva su estilo en ``layer_styles``,
+        la tabla que QGIS lee por defecto, con el esquema que escribe QGIS 4.2, registrada en
+        ``gpkg_contents`` como ``attributes``: una fila con la tabla y la columna de geometría
+        de la capa, el catálogo y el esquema vacíos, ``useAsDefault = 1``, su nombre, su
+        descripción y su QML; las capas sin estilo no tienen fila, y sin ninguna capa con
+        estilo no hay tabla. El QML dibuja por reglas sobre ``is_index``: las maestras con un
+        trazo más grueso que las intermedias, en milímetros, con los colores como «r,g,b,a»."""
+        layers, _tin_ = _layers()
+        vector.write_layers(self.target, layers, CRS, VERTICAL)
+        (sql,) = _rows(self.target, "SELECT sql FROM sqlite_master WHERE name = 'layer_styles'")
+        self.assertIn("PRIMARY KEY AUTOINCREMENT", sql[0])
+        columns = [(row[1], row[2]) for row in _rows(self.target,
+                                                     "PRAGMA table_info(layer_styles)")]
+        self.assertEqual(columns, QGIS_STYLE_COLUMNS)
+        self.assertEqual(_rows(self.target, "SELECT data_type, identifier FROM gpkg_contents "
+                                            "WHERE table_name = 'layer_styles'"),
+                         [("attributes", "layer_styles")])
+        style = styles.CONTOUR_STYLE
+        rows = _rows(self.target, "SELECT f_table_catalog, f_table_schema, f_table_name, "
+                                  "f_geometry_column, styleName, styleQML, useAsDefault, "
+                                  "description, owner FROM layer_styles")
+        self.assertEqual(rows, [("", "", "gis_cnt_dron", "geom", style.name, style.qml, 1,
+                                 style.description, "")])
+        self.assertLessEqual(len(style.name), 30)  # styleName TEXT(30) de QGIS
+        rules = _rules(style.qml)
+        self.assertEqual([(rule[0], rule[1]) for rule in rules],
+                         [('"is_index"', "Maestras"), ("ELSE", "Intermedias")])
+        (index_width, index_color), (other_width, other_color) = (rule[2:] for rule in rules)
+        self.assertGreaterEqual(index_width, 2 * other_width)
+        for color in (index_color, other_color):
+            self.assertRegex(color, RGBA)
+        plain = [dataclasses.replace(layer, style=None) for layer in layers[:4]]
+        other = self.folder / "sin_estilo.gpkg"
+        vector.write_layers(other, plain, CRS, VERTICAL)
+        self.assertEqual(_rows(other, "SELECT count(*) FROM sqlite_master WHERE name = "
+                                      "'layer_styles'"), [(0,)])
+        with self.assertRaises(TypeError):
+            dataclasses.replace(layers[2], style="estilo")
+
     def test_badly_declared_layers_write_nothing(self) -> None:
         """RF-006-25: dos capas con el mismo nombre, valores que no son uno por entidad, un
         tipo que no es de GeoPackage o coordenadas absolutas en float32 son errores del
@@ -334,14 +390,17 @@ class ExportJobTest(_Folder):
             layer.name, layer.geometry_type, layer.has_z, layer.columns,
             tuple(core_gpkg.encode_geometry(layer.geometry_type, coords, SRS, layer.has_z)
                   for coords in layer.geometries),
-            layer.values, identifier=layer.identifier) for layer in layers[:4]]
+            layer.values, identifier=layer.identifier, style=layer.style)
+            for layer in layers[:4]]
         exports = [*stored, gis_jobs.TinExport("gis_tin_dron", "tin_0", "TIN: gis_tin_dron")]
         sources = self.folder / "fuentes"
         sources.mkdir()
         gis_jobs.write_export_layers(sources / "layers.npz", exports)
-        self.assertEqual([type(item).__name__ for item in
-                          gis_jobs.read_export_layers(sources / "layers.npz")],
+        listed = gis_jobs.read_export_layers(sources / "layers.npz")
+        self.assertEqual([type(item).__name__ for item in listed],
                          ["StoredLayer"] * 4 + ["TinExport"])
+        self.assertEqual([getattr(item, "style", None) for item in listed],
+                         [None, None, styles.CONTOUR_STYLE, None, None])
         gis_tin.save_tin(tin, sources / "tin.npz", {"crs_epsg": SRS, "vertical": "EPSG:5782",
                                                      "operation_uid": OPERATION_UID})
         params = {"format": "gpkg", "name": "capas", "crs": {"epsg": SRS},
@@ -376,6 +435,9 @@ class ExportJobTest(_Folder):
             for (blob,), expected in zip(rows, layer.geometries, strict=True):
                 _same(self, core_gpkg.decode_geometry(blob).coords,
                       _structure(layer.geometry_type, expected))
+        self.assertEqual(_rows(written, "SELECT f_table_name, styleQML, useAsDefault FROM "
+                                        "layer_styles"),
+                         [("gis_cnt_dron", styles.CONTOUR_STYLE.qml, 1)])
 
 
 @requires(qgis.QGIS, qgis.QGIS_HINT)
@@ -414,10 +476,98 @@ class GdalOpensTheExportTest(unittest.TestCase):
 
     def test_validate_gpkg(self) -> None:
         """``validate_gpkg.py`` lo da por bueno (código 0, sin avisos): también el índice
-        R*Tree, declarado ``write-only`` y con sus siete disparadores de GeoPackage 1.4."""
+        R*Tree, declarado ``write-only`` y con sus siete disparadores de GeoPackage 1.4, y la
+        tabla de estilos ``layer_styles``."""
         output = qgis.output_of(self.validate)
         self.assertEqual(self.validate.returncode, 0, output)
         self.assertEqual(output, "", output)
+
+
+# Con PyQGIS: la capa de curvas abierta como la abre QGIS («Añadir capa»: carga su estilo por
+# defecto de la base de datos), y el trazo con que dibuja cada entidad: el símbolo de la regla
+# que le toca, con la regla ELSE solo si no le toca ninguna otra (``legendKeysForFeature``, la
+# lógica del dibujo; ``symbolsForFeature`` da también el de ELSE).
+_PYQGIS_CODE = r"""
+import json
+import sys
+
+from qgis.core import QgsExpressionContextUtils, QgsRenderContext, QgsVectorLayer
+
+path, name = sys.argv[1], sys.argv[2]
+layer = QgsVectorLayer(f"{path}|layername={name}", name, "ogr")
+renderer = layer.renderer()
+context = QgsRenderContext()
+context.expressionContext().appendScopes(
+    QgsExpressionContextUtils.globalProjectLayerScopes(layer))
+children = renderer.rootRule().children()
+renderer.startRender(context, layer.fields())
+drawn = []
+for feature in layer.getFeatures():
+    context.expressionContext().setFeature(feature)
+    keys = renderer.legendKeysForFeature(feature, context)
+    drawn.append([feature["elevation"], bool(feature["is_index"]),
+                  [[rule.symbol().width(), int(rule.symbol().outputUnit().value),
+                    rule.symbol().color().name(), rule.symbol().color().alpha()]
+                   for rule in children if rule.ruleKey() in keys]])
+renderer.stopRender(context)
+rules = [[rule.filterExpression(), rule.label()] for rule in children]
+count, ids, names, descriptions, error = layer.listStylesInDatabase()
+print(json.dumps({"valid": layer.isValid(), "renderer": renderer.type(), "rules": rules,
+                  "drawn": drawn, "styles": names, "error": error}))
+"""
+
+
+@requires(qgis.QGIS, qgis.QGIS_HINT)
+class QgisLoadsTheStyleTest(unittest.TestCase):
+    """RF-006-18 (T55; M4): lo que hace QGIS 4.2 con el estilo de las curvas del entregable."""
+
+    def test_qgis_draws_index_contours_thicker(self) -> None:
+        """RF-006-18, RF-006-25 (T55; M4): PyQGIS sin interfaz abre la capa de curvas del
+        GeoPackage entregable con su estilo por defecto (sin elegirlo): un renderizador por
+        reglas, «Maestras» (``"is_index"``) e «Intermedias» (el resto), y dibuja la curva
+        maestra (805 m) con un trazo más grueso que la intermedia (801 m), en milímetros y en
+        el color del estilo; la base de datos solo tiene ese estilo."""
+        folder = Path(tempfile.mkdtemp(prefix="gb-vws-"))
+        self.addCleanup(shutil.rmtree, folder, True)
+        layers, _tin_ = _layers()
+        path = folder / "capas.gpkg"
+        vector.write_layers(path, layers, CRS, VERTICAL)
+        result = qgis.run_pyqgis(_PYQGIS_CODE, str(path), "gis_cnt_dron")
+        output = qgis.output_of(result)
+        self.assertEqual(result.returncode, 0, output)
+        found = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertTrue(found["valid"], output)
+        self.assertEqual((found["renderer"], found["rules"], found["styles"], found["error"]),
+                         ("RuleRenderer", [['"is_index"', "Maestras"], ["ELSE", "Intermedias"]],
+                          [styles.CONTOUR_STYLE.name], ""))
+        widths = {}
+        for elevation, is_index, symbols in found["drawn"]:
+            ((width, unit, color, alpha),) = symbols
+            self.assertEqual(unit, 0)  # Qgis.RenderUnit.Millimeters
+            rule = _rules(styles.CONTOUR_STYLE.qml)[0 if is_index else 1]
+            self.assertEqual(width, rule[2])
+            red, green, blue, opacity = (int(value) for value in rule[3].split(","))
+            self.assertEqual((color, alpha), (f"#{red:02x}{green:02x}{blue:02x}", opacity))
+            widths[elevation] = width
+        self.assertEqual(sorted(widths), [801.0, 805.0])
+        self.assertGreater(widths[805.0], widths[801.0])
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), ["capas.gpkg"])
+
+
+def _rules(qml: str) -> list[tuple[str, str, float, str]]:
+    """Las reglas de un QML de QGIS con renderizador por reglas: su filtro, su etiqueta, el
+    ancho de la línea de su símbolo (mm) y su color, en su orden."""
+    root = ET.fromstring(qml)
+    renderer = root.find("renderer-v2")
+    assert renderer is not None and renderer.get("type") == "RuleRenderer", qml[:200]
+    symbols = {}
+    for symbol in renderer.iter("symbol"):
+        options = {option.get("name"): option.get("value")
+                   for option in symbol.iter("Option") if option.get("name")}
+        assert options["line_width_unit"] == "MM", options
+        symbols[symbol.get("name")] = (float(options["line_width"]), options["line_color"])
+    return [(rule.get("filter"), rule.get("label"), *symbols[rule.get("symbol")])
+            for rule in renderer.iter("rule")]
 
 
 def _structure(geometry_type: str, coords: Any) -> Any:

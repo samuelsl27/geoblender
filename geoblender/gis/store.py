@@ -205,6 +205,7 @@ from .provenance import (
     layer_family,
 )
 from .raster import Raster
+from .styles import CONTOUR_STYLE, LayerStyle
 from .tin import Tin, meta_vertical, save_tin
 from .tin import load_tin as read_tin_file
 from .vector import StoredLayer, z_description
@@ -221,6 +222,7 @@ __all__ = [
     "StoredFeatures",
     "TableLayout",
     "VIEW_TABLE_FAMILIES",
+    "EXPORT_STYLES",
     "EXPORT_TABLE_FAMILIES",
     "backup_path",
     "boundary_rows",
@@ -1834,22 +1836,27 @@ def _table_rows(project: StoreProject, record: DatasetRecord,
 
 EXPORT_TABLE_FAMILIES: tuple[str, ...] = (POINTS, BREAKLINES, CONTOUR_LINES, BOUNDARY)
 """Las tablas de la topografía que se exportan a GeoPackage (con el TIN, RF-006-25)."""
+EXPORT_STYLES: Mapping[str, LayerStyle] = MappingProxyType({CONTOUR_LINES: CONTOUR_STYLE})
+"""El estilo de QGIS por defecto de las tablas que lo llevan al exportarlas (T55: las curvas
+de nivel, con las maestras más gruesas; ``gis.styles``). En el proyecto no se guardan estilos."""
 
 
 def export_layer(project: StoreProject, ref: DatasetRecord | str) -> StoredLayer:
     """La tabla del dato ``ref`` (``gis_pts_``, ``gis_brk_``, ``gis_cnt_`` o ``gis_bnd_``) para
     exportarla a GeoPackage (RF-006-25): con el nombre del dato, su tipo y su Z, sus columnas,
     sus geometrías tal como están guardadas (sin descodificarlas: lo hace el trabajo) y sus
-    valores, con el identificador «<tipo>: <dato>» y la descripción de un entregable. Solo
-    lee. Los mismos errores que :func:`load_features`."""
+    valores, con el identificador «<tipo>: <dato>», la descripción de un entregable y, las
+    curvas de nivel, su estilo de QGIS por defecto (:data:`EXPORT_STYLES`, T55). Solo lee. Los
+    mismos errores que :func:`load_features`."""
     record = _resolve(project, ref, EXPORT_TABLE_FAMILIES)
     layout, rows = _table_rows(project, record, EXPORT_TABLE_FAMILIES)
+    style = EXPORT_STYLES.get(_family_of(record, EXPORT_TABLE_FAMILIES))
     values = {column.name: tuple(row[index + 1] for row in rows)
               for index, column in enumerate(layout.columns)}
     return StoredLayer(record.name, layout.geometry_type, layout.has_z, layout.columns,
                        tuple(bytes(row[0]) for row in rows), values,
                        identifier=f"{layout.label}: {record.name}",
-                       description=f"{layout.label}: entregable de Geoblender")
+                       description=f"{layout.label}: entregable de Geoblender", style=style)
 
 
 # --- Para un TIN (T29) ---------------------------------------------------------------------------

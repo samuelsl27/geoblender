@@ -27,6 +27,7 @@ from tests.unit.gis.test_store import (
     VERTICAL,
     ImportCase,
     _lines,
+    builtin,
 )
 
 store = import_geoblender("gis.store")
@@ -36,6 +37,7 @@ points_mod = import_geoblender("gis.points")
 messages = import_geoblender("gis.messages")
 csv_tables = import_geoblender("interop.csv_tables")
 wkb = import_geoblender("core.gpkg.wkb")
+styles = import_geoblender("gis.styles")
 
 POINT_MAPPING = points_mod.ColumnMapping(x=1, y=2, z=3, point_id=0, code=4, line=5)
 
@@ -121,6 +123,30 @@ class StoredFeaturesTest(ImportCase):
         self.resample("MDT Norte")
         with self.assertRaises(ValueError):
             store.load_features(self.project, "gis_dtm_mdt_norte")
+
+    def test_exported_contours_carry_their_qgis_style(self) -> None:
+        """RF-006-18, RF-006-25 (T55; M4): al exportarlas, las curvas llevan el estilo de QGIS
+        de las curvas de nivel (``gis.styles.CONTOUR_STYLE``: las maestras más gruesas) y las
+        demás tablas, ninguno; leerlas no cambia el proyecto ni el hash de contenido de las
+        curvas, que sigue siendo el de su tabla (el proyecto no guarda estilos)."""
+        table = "gis_cnt_curvas_1_m"
+        self.contour("Curvas 1 m")
+        self.import_points()
+        before = self.state()
+        exported = store.export_layer(self.project, table)
+        self.assertIs(exported.style, styles.CONTOUR_STYLE)
+        self.assertIs(exported.decoded(25830).style, styles.CONTOUR_STYLE)
+        for name in ("gis_pts_taludes", "gis_brk_taludes"):
+            self.assertIsNone(store.export_layer(self.project, name).style)
+        self.assertEqual(self.state(), before)
+        self.assertEqual(self.query("SELECT name FROM sqlite_master WHERE name = "
+                                    "'layer_styles'"), [])
+        self.assertEqual(self.dataset(table).content_sha256,
+                         self.read_hash(builtin.GPKG_LAYER, "vector", self.project.database_path,
+                                        {"layer": table}))
+        digest = store.table_digest(provenance.CONTOUR_LINES, store.contour_rows(_lines(), 25830),
+                                    CRS)
+        self.assertEqual(self.dataset(table).content_sha256, digest.content_sha256)
 
     def test_project_references_of_computed_and_imported(self) -> None:
         """Principio 6, RF-006-19: lo calculado y lo importado declarado en el CRS y la

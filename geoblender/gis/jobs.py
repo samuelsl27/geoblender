@@ -197,6 +197,7 @@ from .resample import (
     resample_classes_to_grid,
     resample_to_grid,
 )
+from .styles import LayerStyle
 from .tin import (
     Tin,
     TinInput,
@@ -929,8 +930,9 @@ def write_export_layers(path: Path | str, layers: Sequence[StoredLayer | TinExpo
     """Las capas de una exportación a GeoPackage en el npz ``path`` (sin comprimir: las
     geometrías codificadas no se comprimen apenas y así ``bl`` lo escribe enseguida): de cada
     tabla (``gis.vector.StoredLayer``), su forma, sus geometrías tal como están guardadas
-    (seguidas, con sus ``offsets``) y sus valores en JSON (los números, con todos sus
-    decimales); de cada TIN (:class:`TinExport`), su capa y su entrada."""
+    (seguidas, con sus ``offsets``), sus valores en JSON (los números, con todos sus
+    decimales) y su estilo de QGIS (``gis.styles.LayerStyle``, T55); de cada TIN
+    (:class:`TinExport`), su capa y su entrada."""
     arrays: dict[str, np.ndarray] = {"count": np.array([len(layers)], dtype=np.int64)}
     for index, layer in enumerate(layers):
         if isinstance(layer, TinExport):
@@ -944,6 +946,9 @@ def write_export_layers(path: Path | str, layers: Sequence[StoredLayer | TinExpo
             "kind": _TABLE_LAYER, "name": layer.name, "geometry_type": layer.geometry_type,
             "has_z": layer.has_z, "identifier": layer.identifier,
             "description": layer.description,
+            "style": None if layer.style is None else {
+                "name": layer.style.name, "qml": layer.style.qml,
+                "description": layer.style.description},
             "columns": [[column.name, column.sql_type, column.not_null, column.default]
                         for column in layer.columns]})
         blobs = [bytes(blob) for blob in layer.blobs]
@@ -970,9 +975,11 @@ def read_export_layers(path: Path | str) -> list[StoredLayer | TinExport]:
         blobs = tuple(raw[int(offsets[i]):int(offsets[i + 1])] for i in range(len(offsets) - 1))
         columns = tuple(ColumnDef(name, sql_type, bool(not_null), default)
                         for name, sql_type, not_null, default in meta["columns"])
+        style = meta.get("style")
         found.append(StoredLayer(meta["name"], meta["geometry_type"], bool(meta["has_z"]),
                                  columns, blobs, _json_of(data[f"values{index}"]),
-                                 meta["identifier"], meta["description"]))
+                                 meta["identifier"], meta["description"],
+                                 None if style is None else LayerStyle(**style)))
     return found
 
 

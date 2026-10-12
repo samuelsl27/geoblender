@@ -36,7 +36,9 @@ con los disparadores de GeoPackage 1.4) y el renombrado. Cada coordenada, la mis
 (``core.gpkg.encode_geometry``). Un destino abierto por otro programa es
 ``gis.raster_target_locked`` sin fichero a medias, como en los GeoTIFF. :class:`StoredLayer`:
 las filas de una tabla del proyecto tal como están guardadas, que el trabajo de exportación
-descodifica (:meth:`StoredLayer.decoded`).
+descodifica (:meth:`StoredLayer.decoded`). Una capa con estilo (``gis.styles.LayerStyle``: las
+curvas de nivel, T55) lo lleva en la tabla ``layer_styles`` (:data:`STYLES_TABLE`), con el
+esquema con que la crea QGIS 4.2 y como su estilo por defecto: QGIS lo aplica al añadir la capa.
 """
 
 from __future__ import annotations
@@ -63,6 +65,7 @@ from ..jobs.worker_api import JobCancelled
 from .geotiff.writer import target_locked
 from .messages import GisError, render
 from .reports import Rejection, TopoReport
+from .styles import LayerStyle
 
 if TYPE_CHECKING:
     from .tin import Tin
@@ -364,6 +367,21 @@ RTREE_EXTENSION = "gpkg_rtree_index"
 RTREE_DEFINITION = "http://www.geopackage.org/spec120/#extension_rtree"
 GEOMETRY_COLUMN = "geom"
 _FIELD_TARGET = "destino"
+STYLES_TABLE = "layer_styles"
+"""La tabla de los estilos de QGIS de un GeoPackage (la que QGIS lee al añadir una capa)."""
+# Como la crea QGIS 4.2 al guardar un estilo en un GeoPackage (comprobado con PyQGIS 4.2.0).
+_STYLES_DDL = (
+    f'CREATE TABLE "{STYLES_TABLE}" ( "id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, '
+    '"f_table_catalog" TEXT(256), "f_table_schema" TEXT(256), "f_table_name" TEXT(256), '
+    '"f_geometry_column" TEXT(256), "styleName" TEXT(30), "styleQML" TEXT, "styleSLD" TEXT, '
+    '"useAsDefault" BOOLEAN, "description" TEXT, "owner" TEXT(30), "ui" TEXT(30), '
+    '"update_time" DATETIME DEFAULT (strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\')))'
+)
+_STYLES_INSERT = (
+    f'INSERT INTO "{STYLES_TABLE}" (f_table_catalog, f_table_schema, f_table_name, '
+    "f_geometry_column, styleName, styleQML, styleSLD, useAsDefault, description, owner) "
+    "VALUES ('', '', ?, ?, ?, ?, '', 1, ?, '')"
+)
 
 # Los disparadores del índice R*Tree de GeoPackage 1.4 (anexo F.3; los que comprueba el
 # validate_gpkg.py de GDAL): {t} la tabla, {c} la columna de geometría, {i} la clave y {r} el
@@ -432,9 +450,10 @@ class LayerToWrite:
     ``core.gpkg.wkb`` (un punto ``(d,)``, una línea ``(n, d)``, un polígono su lista de anillos
     cerrados, un multipolígono su lista de polígonos); ``columns`` (``core.gpkg.ColumnDef``) y
     ``values``, por columna, un valor por entidad (``None``, texto, entero o número; un
-    ``BOOLEAN``, 0 o 1); ``identifier`` (``gpkg_contents``; vacío: el nombre) y
-    ``description`` (vacía: el identificador). ``ValueError`` o ``TypeError`` si no lo
-    cumple (un error del programa)."""
+    ``BOOLEAN``, 0 o 1); ``identifier`` (``gpkg_contents``; vacío: el nombre),
+    ``description`` (vacía: el identificador) y ``style``, su estilo de QGIS por defecto
+    (``gis.styles.LayerStyle``) o ``None``. ``ValueError`` o ``TypeError`` si no lo cumple
+    (un error del programa)."""
 
     name: str
     geometry_type: str
@@ -444,6 +463,7 @@ class LayerToWrite:
     values: Mapping[str, Sequence[Any]] = field(default_factory=dict)
     identifier: str = ""
     description: str = ""
+    style: LayerStyle | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -476,6 +496,9 @@ class LayerToWrite:
         for text in ("identifier", "description"):
             if not isinstance(getattr(self, text), str):
                 raise TypeError(f"«{text}» de una capa es un texto")
+        if self.style is not None and not isinstance(self.style, LayerStyle):
+            raise TypeError(f"el estilo de «{self.name}» es un LayerStyle de gis.styles o "
+                            f"None, no {self.style!r}")
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -483,8 +506,8 @@ class StoredLayer:
     """Una tabla del proyecto para exportarla tal como está guardada: el nombre con que se
     exporta, su tipo, Z y columnas, las geometrías de sus filas codificadas (cabecera ``GP`` +
     WKB, ``blobs``) y los valores de cada columna; ``identifier`` y ``description`` como en
-    :class:`LayerToWrite`. Así ``bl`` la lee del proyecto sin descodificarla y el trabajo de
-    exportación la descodifica (:meth:`decoded`)."""
+    :class:`LayerToWrite`, y su estilo (``style``). Así ``bl`` la lee del proyecto sin
+    descodificarla y el trabajo de exportación la descodifica (:meth:`decoded`)."""
 
     name: str
     geometry_type: str
@@ -494,6 +517,7 @@ class StoredLayer:
     values: Mapping[str, Sequence[Any]]
     identifier: str = ""
     description: str = ""
+    style: LayerStyle | None = None
 
     def decoded(self, srs_id: int) -> LayerToWrite:
         """La capa con las coordenadas de cada fila (``core.gpkg.decode_geometry``, bit a
@@ -511,7 +535,7 @@ class StoredLayer:
                                  f"(Z: {self.has_z})")
             geometries.append(geometry.coords)
         return LayerToWrite(self.name, kind, self.has_z, geometries, tuple(self.columns),
-                            dict(self.values), self.identifier, self.description)
+                            dict(self.values), self.identifier, self.description, self.style)
 
 
 def tin_layer(tin: Tin, name: str, *, identifier: str = "", description: str = "") -> LayerToWrite:
@@ -534,6 +558,8 @@ def _check_layers(layers: Sequence[LayerToWrite]) -> list[LayerToWrite]:
             raise TypeError(f"una capa entregable es un LayerToWrite, no {type(layer).__name__}")
         key = layer.name.casefold()
         label = layer.identifier or layer.name
+        if key == STYLES_TABLE:
+            raise ValueError(f"«{layer.name}» es la tabla de los estilos de QGIS: no es una capa")
         if key in seen or label in labels:
             raise ValueError(f"la capa «{layer.name}» ({label}) se repite: cada capa, con su "
                              "nombre y su identificador")
@@ -570,8 +596,9 @@ def write_layers(
     módulo), con el CRS horizontal ``crs`` y la referencia vertical ``vertical`` citada en la
     descripción de cada capa con Z. ``temporary``: el temporal (por defecto
     ``<destino>.tmp``); con ``replace=False`` el fichero queda entero en él y ``path`` no se
-    toca. Devuelve lo escrito: ``path`` o, sin ``replace``, el temporal. Nunca un fichero a
-    medias: si algo falla o ``cancelled()`` pide parar entre lotes (``JobCancelled``), el
+    toca. Las capas con estilo lo llevan en ``layer_styles`` como su estilo por defecto
+    (:func:`_write_styles`). Devuelve lo escrito: ``path`` o, sin ``replace``, el temporal.
+    Nunca un fichero a medias: si algo falla o ``cancelled()`` pide parar entre lotes (``JobCancelled``), el
     temporal se borra y el destino anterior sigue intacto. ``GisError``
     ``gis.raster_target_locked`` si otro programa tiene abierto el destino y
     ``gis.raster_write_failed`` si falla el disco; ``ValueError``/``TypeError`` con una capa
@@ -606,6 +633,7 @@ def write_layers(
                 create_base(conn, crs)
                 for layer in chosen:
                     _write_layer(conn, layer, crs, vertical, cancelled, advance)
+                _write_styles(conn, chosen)
     except BaseException as error:
         _discard(temporary, journal)
         if isinstance(error, OSError):
@@ -670,6 +698,22 @@ def _write_layer(
                      (float(boxes[:, 0].min()), float(boxes[:, 2].min()),
                       float(boxes[:, 1].max()), float(boxes[:, 3].max()), layer.name))
     _rtree(conn, layer.name, boxes)
+
+
+def _write_styles(conn: sqlite3.Connection, layers: Sequence[LayerToWrite]) -> None:
+    """Los estilos de ``layers`` en la tabla ``layer_styles`` (:data:`STYLES_TABLE`), con el
+    esquema y los valores que escribe QGIS 4.2 al guardar el estilo por defecto de una capa
+    de un GeoPackage (sin catálogo ni esquema, con la tabla y la columna de geometría de la
+    capa y ``useAsDefault = 1``), registrada en ``gpkg_contents`` como ``attributes``. Sin
+    ninguna capa con estilo, no se crea."""
+    rows = [(layer.name, GEOMETRY_COLUMN, layer.style.name, layer.style.qml,
+             layer.style.description) for layer in layers if layer.style is not None]
+    if not rows:
+        return
+    conn.execute(_STYLES_DDL)
+    conn.execute("INSERT INTO gpkg_contents (table_name, data_type, identifier, description) "
+                 "VALUES (?, 'attributes', ?, '')", (STYLES_TABLE, STYLES_TABLE))
+    conn.executemany(_STYLES_INSERT, rows)
 
 
 def _plain(value: Any) -> Any:

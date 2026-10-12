@@ -98,6 +98,11 @@ _PATCHES: list[tuple[object, str, object]] = []  # (objeto, atributo, valor orig
 _TRANSLATION_PROBE = {"es_ES": {("*", "geoblender: sonda de la huella"): "sonda"}}
 # Grupos de las preferencias que se vuelcan en la huella (T62).
 PREFERENCE_GROUPS: tuple[str, ...] = ("view", "system", "inputs", "edit", "filepaths")
+# Lo que Blender deduce de la GPU que ha detectado, no algo guardado que pueda cambiar la
+# extensión: en ``blender -b`` sin GPU iniciada, ``system.gpu_preferred_device`` vale «AUTO»
+# (la única opción) y, tras ``gpu.init()`` (la prueba de la superposición de las curvas
+# maestras, spec 006, T55), la GPU detectada («OPENGL»), sin que cambie la preferencia.
+DETECTED_PREFERENCES: frozenset[str] = frozenset({"system.gpu_preferred_device"})
 
 
 def module_name() -> str:
@@ -517,12 +522,15 @@ def _rna_values(struct: object, prefix: str, values: dict[str, object], depth: i
 
 
 def _preferences() -> dict[str, object]:
-    """Las preferencias de :data:`PREFERENCE_GROUPS` (unas 260, en menos de 1 ms):
-    una extensión que cambia una y no la devuelve deja rastro (T62)."""
+    """Las preferencias de :data:`PREFERENCE_GROUPS` (unas 260, en menos de 1 ms), salvo
+    las que Blender deduce de la GPU (:data:`DETECTED_PREFERENCES`): una extensión que
+    cambia una y no la devuelve deja rastro (T62)."""
     values: dict[str, object] = {}
     preferences = bpy.context.preferences
     for group in PREFERENCE_GROUPS:
         _rna_values(getattr(preferences, group), group, values, depth=1)
+    for key in DETECTED_PREFERENCES:
+        values.pop(key, None)
     return values
 
 

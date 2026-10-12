@@ -224,6 +224,9 @@ def ui_scale() -> float:
 
 POSITION_ATTRIBUTE = ("position", "POINT", "FLOAT_VECTOR")
 CORNER_VERT_ATTRIBUTE = (".corner_vert", "CORNER", "INT")
+EDGE_VERTS_ATTRIBUTE = (".edge_verts", "EDGE", "INT32_2D")
+# Los vértices de cada arista (T55): con su atributo, 1 M de aristas se leen en 0,0005 s frente a
+# 0,06 s con ``edges.foreach_get("vertices")`` (5.2.1).
 
 
 def _mesh_attribute(mesh: bpy.types.Mesh, spec: tuple[str, str, str], count: int) -> object:
@@ -281,3 +284,15 @@ def mesh_corner_verts(mesh: bpy.types.Mesh) -> np.ndarray:
     else:
         found.data.foreach_get("value", flat)  # type: ignore[attr-defined]
     return flat
+
+
+def mesh_edge_verts(mesh: bpy.types.Mesh) -> np.ndarray:
+    """Los dos vértices de cada arista de ``mesh``, en su orden (``np.intc``, ``(k, 2)``)."""
+    count = len(mesh.edges)
+    flat = np.empty(count * 2, dtype=np.intc)
+    found = _mesh_attribute(mesh, EDGE_VERTS_ATTRIBUTE, count)
+    if found is None:
+        mesh.edges.foreach_get("vertices", flat)
+    else:
+        found.data.foreach_get("value", flat)  # type: ignore[attr-defined]
+    return flat.reshape(-1, 2)

@@ -34,7 +34,14 @@ como lo harán los operadores, y se abre en la sesión.
   el temporizador de su ventana, con su avance, y termina como cargar de una vez; Esc a mitad no
   deja nada en la vista. Las coordenadas y las esquinas que se escriben y se leen de una vez con
   los atributos de la malla (``bl.compat``) son las mismas que con ``vertices``/``loops``.
-- Principio 8: registrar y desregistrar la extensión deja ``bpy.types`` como estaba.
+- RF-006-18, RF-006-19 (T55; M4): las curvas cargadas llevan el atributo de arista
+  ``is_index`` (las de las maestras) y la superposición de la vista (``bl/draw/contours.py``)
+  dibuja esas aristas con un trazo de 3 px sobre el alambre de 1 px de Blender, que dibuja
+  todas: en una imagen fuera de pantalla (``gpu``), las maestras tienen trazo propio, de unos
+  3 px, y las intermedias no; una superficie a la cota de la curva no la tapa y una por
+  encima, sí. Las líneas de rotura no llevan el atributo.
+- Principio 8: registrar y desregistrar la extensión deja ``bpy.types`` como estaba (también
+  el manejador de dibujo de las maestras).
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -52,9 +59,9 @@ from unittest import mock
 
 import bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
-from tests.support import blender_ext
+from tests.support import blender_ext, resources
 from tests.support.blender_ext import fingerprint_diff, module_name
 from tests.support.core_fixtures import settings_values
 
@@ -424,6 +431,116 @@ class ViewsTest(ViewsCase):
             self.assertGreaterEqual(space.clip_end, 2.0 * far)
             self.assertLessEqual(space.clip_end / space.clip_start, CLIP_RATIO_MAX * 1.000001)
 
+    def test_index_contours_are_marked_for_the_thicker_stroke(self) -> None:
+        """RF-006-18, RF-006-19 (T55; M4): las curvas cargadas llevan el atributo de arista
+        ``is_index`` (booleano) en las aristas de la maestra (la cerrada de 805 m, con su
+        arista de cierre) y no en las de la intermedia; la superposición de la vista está
+        registrada y dibujará con trazo grueso justo esas aristas (sus extremos, tal como los
+        guarda Blender). Las líneas de rotura no llevan el atributo. Cargar no cambia el
+        proyecto ni el hash de contenido de las curvas."""
+        data = self.data
+        name = "gis_cnt_curvas_lejanas"
+        before = project_files(data.root)
+        self.assertEqual(self.load(name, "gis_brk_taludes_lejanos"), {"FINISHED"})
+        mesh = self.only(name).data
+        found = mesh.attributes.get(self.gis_views.INDEX_ATTRIBUTE)
+        self.assertIsNotNone(found)
+        self.assertEqual((found.domain, found.data_type), ("EDGE", "BOOLEAN"))
+        flags = np.empty(len(mesh.edges), dtype=bool)
+        found.data.foreach_get("value", flags)
+        self.assertEqual(flags.tolist(), [False, False, True, True, True, True])
+        overlay = _module("bl.draw.contours")
+        self.assertTrue(overlay.drawing())
+        ring = data.contours[1].xyz
+        local = _module("core.georef").world_to_local(ring, self.origin).astype(np.float32)
+        expected = local[[0, 1, 1, 2, 2, 3, 3, 0]]
+        segments = overlay.index_segments(mesh)
+        self.assertEqual(segments.dtype, np.float32)
+        self.assertTrue(np.array_equal(segments, expected))
+        breaks = self.only("gis_brk_taludes_lejanos").data
+        self.assertIsNone(breaks.attributes.get(self.gis_views.INDEX_ATTRIBUTE))
+        self.assertEqual(overlay.index_segments(breaks).shape, (0, 3))
+        self.assertEqual(self.only(name).geoblender.content_sha256,
+                         data.record(name).content_sha256)
+        self.assertEqual(project_files(data.root), before)
+
+    def test_index_contours_drawn_thicker_off_screen(self) -> None:
+        """RF-006-18 (T55; M4): la superposición de la vista dibuja, en una imagen fuera de
+        pantalla de 128 × 128 px vista desde arriba (5 m de lado), la maestra con un trazo de
+        unos 3 px y no dibuja la intermedia (de ella solo queda el alambre de 1 px de Blender);
+        una superficie a la misma cota que la maestra no la tapa (el trazo se acerca un poco a
+        la cámara) y una superficie 1 m por encima, sí."""
+        import gpu
+        from gpu_extras.batch import batch_for_shader
+
+        try:
+            gpu.init()
+        except SystemError as error:
+            self.skipTest(resources.skip_reason(resources.BLENDER,
+                                                f"ejecute las pruebas con GPU ({error})"))
+        self.assertEqual(self.load("gis_cnt_curvas_lejanas"), {"FINISHED"})
+        obj = self.only("gis_cnt_curvas_lejanas")
+        overlay = _module("bl.draw.contours")
+        size, half, centre, eye = 128, 2.5, (8_002.0, 8_002.0), 900.0
+        near, far = 1.0, 200.0
+        view = Matrix.Translation((-centre[0], -centre[1], -eye))
+        projection = Matrix(((1 / half, 0, 0, 0), (0, 1 / half, 0, 0),
+                             (0, 0, -2 / (far - near), -(far + near) / (far - near)),
+                             (0, 0, 0, 1)))
+
+        def pixel(x: float, y: float) -> tuple[int, int]:
+            return (int((x - centre[0] + half) / (2 * half) * size),
+                    int((y - centre[1] + half) / (2 * half) * size))
+
+        def draw(surface_z: float | None) -> np.ndarray:
+            offscreen = gpu.types.GPUOffScreen(size, size)
+            try:
+                with offscreen.bind():
+                    framebuffer = gpu.state.active_framebuffer_get()
+                    framebuffer.clear(color=(1.0, 1.0, 1.0, 1.0), depth=1.0)
+                    if surface_z is not None:
+                        shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+                        low, high = 7_999.0, 8_005.0
+                        corners = [(low, low, surface_z), (high, low, surface_z),
+                                   (high, high, surface_z), (low, high, surface_z)]
+                        batch = batch_for_shader(shader, "TRIS", {"pos": corners},
+                                                 indices=((0, 1, 2), (0, 2, 3)))
+                        with gpu.matrix.push_pop(), gpu.matrix.push_pop_projection():
+                            gpu.matrix.load_matrix(view)
+                            gpu.matrix.load_projection_matrix(projection)
+                            gpu.state.depth_test_set("LESS_EQUAL")
+                            gpu.state.depth_mask_set(True)
+                            shader.uniform_float("color", (0.5, 0.5, 0.5, 1.0))
+                            batch.draw(shader)
+                            gpu.state.depth_mask_set(False)
+                            gpu.state.depth_test_set("NONE")
+                    overlay.draw_index_lines(
+                        [(obj, (0.0, 0.0, 0.0, 1.0))], view_matrix=view,
+                        projection_matrix=projection, perspective=False,
+                        view_distance=eye - 805.0, viewport_size=(size, size), pixel_size=1.0)
+                    pixels = framebuffer.read_color(0, 0, size, size, 4, 0, "FLOAT")
+            finally:
+                offscreen.free()
+            return np.array(pixels.to_list(), dtype=np.float32).reshape(size, size, 4)
+
+        image = draw(None)
+        ring = self.data.contours[1].xyz - (700_000.0, 4_400_000.0, 0.0)
+        column, row = pixel(8_002.0, float(ring[0:2, 1].mean()))
+        dark = np.nonzero(image[row - 8:row + 9, column, 0] < 0.5)[0]
+        self.assertTrue(2 <= len(dark) <= 4, f"trazo de la maestra: {len(dark)} px")
+        self.assertEqual(dark.tolist(), list(range(dark[0], dark[0] + len(dark))))
+        first = self.data.contours[0].xyz - (700_000.0, 4_400_000.0, 0.0)
+        middle = first[0:2, :2].mean(axis=0)  # la intermedia, lejos de la maestra
+        column_i, row_i = pixel(*middle)
+        self.assertTrue((image[row_i - 2:row_i + 3, column_i - 2:column_i + 3, 0] > 0.9).all(),
+                        "la superposición no dibuja las intermedias")
+        on_surface = draw(805.0)
+        self.assertTrue((on_surface[row - 8:row + 9, column, 0] < 0.25).any(),
+                        "la superficie a la cota de la maestra la tapa")
+        below = draw(806.0)
+        self.assertTrue((below[row - 8:row + 9, column, 0] > 0.25).all(),
+                        "una superficie por encima no tapa la maestra")
+
     def test_missing_is_not_loaded_and_blocked_is_marked(self) -> None:
         """Plan §5.6.7: de un dato que falta se avisa y no se carga; uno bloqueado se carga
         con su marca (y, con sus vértices a más de 8 000 m del GeoOrigin, con el aviso de
@@ -607,9 +724,10 @@ class ViewsTest(ViewsCase):
         self.assertEqual((project_files(data.root), data.operations()), (before, operations))
 
     def test_mesh_fast_paths_are_the_mesh(self) -> None:
-        """RF-006-19, RNF-006-06 (T50; ``bl.compat``): las coordenadas y las esquinas que se
-        escriben y se leen de una vez con los atributos de la malla («position»,
-        «.corner_vert») son las mismas que con ``vertices``/``loops`` (bit a bit), Blender no
+        """RF-006-19, RNF-006-06 (T50, T55; ``bl.compat``): las coordenadas, las esquinas y las
+        aristas que se escriben y se leen de una vez con los atributos de la malla («position»,
+        «.corner_vert», «.edge_verts») son las mismas que con ``vertices``/``loops``/``edges``
+        (bit a bit), Blender no
         tiene nada que corregir en la malla y, sin esos atributos (otra versión), se usan las
         propiedades de siempre con el mismo resultado."""
         compat = _module("bl.compat")
@@ -626,6 +744,7 @@ class ViewsTest(ViewsCase):
                     self.addCleanup(bpy.data.meshes.remove, mesh)
                     local = compat.mesh_positions(mesh)
                     corners = compat.mesh_corner_verts(mesh)
+                    edge_verts = compat.mesh_edge_verts(mesh)
                 co = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
                 mesh.vertices.foreach_get("co", co)
                 loops = np.empty(len(mesh.loops), dtype=np.int32)
@@ -633,6 +752,10 @@ class ViewsTest(ViewsCase):
                 self.assertTrue(np.array_equal(local.ravel().view(np.uint32), co.view(np.uint32)))
                 self.assertTrue(np.array_equal(corners, loops))
                 self.assertTrue(np.array_equal(corners.reshape(-1, 3), faces))
+                pairs = np.empty(len(mesh.edges) * 2, dtype=np.int32)
+                mesh.edges.foreach_get("vertices", pairs)
+                self.assertEqual(edge_verts.shape, (len(mesh.edges), 2))
+                self.assertTrue(np.array_equal(edge_verts.ravel(), pairs))
                 self.assertFalse(mesh.validate())
                 self.assertNear(self.mesh.mesh_vertices_world(mesh, self.origin), vertices)
                 found.append(co)
@@ -660,10 +783,11 @@ class ViewRegistrationTest(unittest.TestCase):
         self.addCleanup(blender_ext.unload)
 
     def test_register_and_unregister_leave_blender_as_it_was(self) -> None:
-        """RF-006-29, principio 8: habilitar pone ``Object.geoblender``
+        """RF-006-29, RF-006-18 (T55), principio 8: habilitar pone ``Object.geoblender``
         (``GEOBLENDER_PG_core_object``, sin propiedades flotantes), los dos operadores de la
-        vista con ``UNDO`` y los cargadores de la topografía; deshabilitar lo quita todo y
-        deja la huella de Blender como al principio de la sesión de pruebas."""
+        vista con ``UNDO``, los cargadores de la topografía y el dibujo de las maestras;
+        deshabilitar lo quita todo y deja la huella de Blender como al principio de la sesión
+        de pruebas."""
         blender_ext.enable()
         prop = _module("bl.props.core").OBJECT_PROPERTY
         rna = bpy.types.Object.bl_rna.properties[prop]
@@ -685,9 +809,12 @@ class ViewRegistrationTest(unittest.TestCase):
         self.assertEqual(sorted(views.loaders()),
                          ["gis_brk_", "gis_cnt_", "gis_dtm_", "gis_pts_", "gis_src_",
                           "gis_tin_"])
+        overlay = _module("bl.draw.contours")
+        self.assertTrue(overlay.drawing())  # el trazo grueso de las maestras (T55)
         blender_ext.disable()
         self.assertFalse(hasattr(bpy.types.Object, prop))
         self.assertEqual(views.loaders(), {})
+        self.assertFalse(overlay.drawing())
         after = blender_ext.state_fingerprint()
         baseline = blender_ext.session_baseline()
         if after != baseline:

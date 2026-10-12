@@ -15,7 +15,11 @@ plan 006 §5.1 y §5.4 A15; ADR-0005).
 - **puntos** (``gis_pts_``; :func:`load_points`): una malla de vértices sueltos;
 - **líneas de rotura y curvas** (``gis_brk_``, ``gis_cnt_``; :func:`load_lines`): una malla de
   aristas, una polilínea por entidad; la curva cerrada sin su vértice repetido y con la arista
-  que la cierra.
+  que la cierra. Las curvas llevan además el atributo de arista booleano
+  :data:`INDEX_ATTRIBUTE` (``is_index``), verdadero en las aristas de las maestras (T55; M4):
+  Blender dibuja todas las aristas sueltas con el mismo alambre de 1 px y el color del tema, y
+  la superposición de la vista (``bl.draw.contours``) dibuja encima, con trazo grueso, las
+  marcadas.
 
 Antes de nada, el dato debe estar en el CRS y la referencia vertical del proyecto
 (``gis.store.require_project_references``): la vista no transforma coordenadas (principio 6).
@@ -62,10 +66,23 @@ from ...gis.provenance import (
 )
 from ...gis.tin import Tin, raster_to_tin_steps
 from . import views
-from .mesh import mesh_from_arrays, mesh_steps, mesh_triangles, mesh_vertices_local
+from .mesh import (
+    mesh_from_arrays,
+    mesh_steps,
+    mesh_triangles,
+    mesh_vertices_local,
+    set_edge_flags,
+)
 
-__all__ = ["LOADERS", "load_grid", "load_lines", "load_points", "load_tin", "register",
-           "unregister"]
+__all__ = ["CONTOURS_KIND", "INDEX_ATTRIBUTE", "LOADERS", "load_grid", "load_lines",
+           "load_points", "load_tin", "register", "unregister"]
+
+INDEX_ATTRIBUTE = "is_index"
+"""El atributo de arista (booleano) de las curvas cargadas: verdadero en las aristas de las
+maestras (la columna ``is_index`` de su tabla), las que ``bl.draw.contours`` dibuja con trazo
+grueso (T55)."""
+CONTOURS_KIND = "CONTOURS"
+"""El tipo (``Object.geoblender.kind``) de los objetos de las curvas de nivel."""
 
 
 def _bounds(local: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
@@ -204,9 +221,10 @@ def load_points(request: views.ViewRequest) -> views.ViewParts:
                                                   origin=request.origin))
 
 
-def _polylines(geometries: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
-    """Los vértices y las aristas de unas polilíneas: cada una, sus tramos consecutivos; la
-    cerrada (último vértice igual al primero), sin el repetido y con la arista de cierre."""
+def _polylines(geometries: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Los vértices y las aristas de unas polilíneas, y la polilínea de cada arista (su índice
+    en ``geometries``): cada una, sus tramos consecutivos; la cerrada (último vértice igual al
+    primero), sin el repetido y con la arista de cierre."""
     vertices: list[np.ndarray] = []
     edges: list[np.ndarray] = []
     start = 0
@@ -222,19 +240,29 @@ def _polylines(geometries: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarray
         edges.append(pairs)
         start += count
     if not vertices:
-        return np.empty((0, 3), dtype=np.float64), np.empty((0, 2), dtype=np.int32)
-    return np.vstack(vertices), np.vstack(edges).astype(np.int32)
+        return (np.empty((0, 3), dtype=np.float64), np.empty((0, 2), dtype=np.int32),
+                np.empty(0, dtype=np.intp))
+    owners = np.repeat(np.arange(len(edges)), [len(pairs) for pairs in edges])
+    return np.vstack(vertices), np.vstack(edges).astype(np.int32), owners
 
 
 def load_lines(request: views.ViewRequest) -> views.ViewParts:
-    """Las líneas de rotura o las curvas (``gis_brk_``, ``gis_cnt_``) como aristas."""
+    """Las líneas de rotura o las curvas (``gis_brk_``, ``gis_cnt_``) como aristas; las
+    curvas, con :data:`INDEX_ATTRIBUTE` en las aristas de las maestras (T55)."""
     from ...gis import store
 
     store.require_project_references(request.project, request.record)
     found = store.load_features(request.project, request.record)
-    vertices, edges = _polylines(found.geometries)
-    return _object(request.name, mesh_from_arrays(request.name, vertices, edges=edges,
-                                                  origin=request.origin))
+    vertices, edges, owners = _polylines(found.geometries)
+    mesh = mesh_from_arrays(request.name, vertices, edges=edges, origin=request.origin)
+    index = found.attributes.get(INDEX_ATTRIBUTE)
+    if index is not None:
+        try:
+            set_edge_flags(mesh, INDEX_ATTRIBUTE, np.asarray(index, dtype=bool)[owners])
+        except BaseException:
+            bpy.data.meshes.remove(mesh)
+            raise
+    return _object(request.name, mesh)
 
 
 LOADERS: tuple[tuple[str, str, str, views.ViewLoader], ...] = (
@@ -243,7 +271,7 @@ LOADERS: tuple[tuple[str, str, str, views.ViewLoader], ...] = (
     (TIN, "TIN", "TIN", load_tin),
     (POINTS, "POINTS", "Points", load_points),
     (BREAKLINES, "BREAKLINES", "Breaklines", load_lines),
-    (CONTOUR_LINES, "CONTOURS", "Contour lines", load_lines),
+    (CONTOUR_LINES, CONTOURS_KIND, "Contour lines", load_lines),
 )
 """Los cargadores de la topografía: familia (``gis.provenance``), tipo del objeto, ``msgid`` del
 tipo en su nombre generado y función."""

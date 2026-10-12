@@ -18,6 +18,8 @@ RF-006-19, RNF-006-06, RNF-006-09; plan 006 §5.1; ADR-0005).
   mismos vueltos a absolutas con ``core.georef.local_to_world`` (float64) y los triángulos.
   Con ellos se comprueba la malla de una superficie (``gis.mesh.check_surface_mesh``) y la ida y
   vuelta (≤ 0,5 mm a ±8 km del GeoOrigin, RF-006-19).
+- :func:`mesh_edges`, :func:`set_edge_flags` y :func:`edge_flags` (T55): las aristas, y un
+  atributo booleano de arista (las de las curvas maestras), de una vez.
 
 Un array con la forma o el tipo que no es, o un índice fuera de rango, es un error del programa
 (``TypeError`` o ``ValueError``): la vista solo recibe lo que entrega el dominio.
@@ -33,8 +35,8 @@ import numpy as np
 from ...core.georef import GeoOrigin, local_to_world, world_to_local
 from .. import compat
 
-__all__ = ["mesh_from_arrays", "mesh_steps", "mesh_triangles", "mesh_vertices_local",
-           "mesh_vertices_world"]
+__all__ = ["edge_flags", "mesh_edges", "mesh_from_arrays", "mesh_steps", "mesh_triangles",
+           "mesh_vertices_local", "mesh_vertices_world", "set_edge_flags"]
 
 
 def _indices(values: np.ndarray | None, width: int, count: int, what: str) -> np.ndarray:
@@ -137,3 +139,33 @@ def mesh_triangles(mesh: bpy.types.Mesh) -> np.ndarray:
     if len(totals) and not (totals == 3).all():
         raise ValueError(f"la malla «{mesh.name}» tiene caras que no son triángulos")
     return compat.mesh_corner_verts(mesh).astype(np.int32, copy=False).reshape(-1, 3)
+
+
+def mesh_edges(mesh: bpy.types.Mesh) -> np.ndarray:
+    """Las aristas de ``mesh`` (sus dos vértices, ``np.intc`` ``(k, 2)``, en su orden)."""
+    return compat.mesh_edge_verts(mesh)
+
+
+def set_edge_flags(mesh: bpy.types.Mesh, name: str, flags: np.ndarray) -> None:
+    """El atributo booleano de arista ``name`` de ``mesh`` con un valor por arista (``flags``,
+    en el orden de sus aristas), creado o sustituido, de una vez. ``ValueError`` si no hay
+    un valor por arista."""
+    values = np.ascontiguousarray(flags, dtype=bool).ravel()
+    if len(values) != len(mesh.edges):
+        raise ValueError(f"set_edge_flags: {len(values)} valores para las {len(mesh.edges)} "
+                         f"aristas de «{mesh.name}»")
+    found = mesh.attributes.get(name)
+    if found is not None:
+        mesh.attributes.remove(found)
+    mesh.attributes.new(name, "BOOLEAN", "EDGE").data.foreach_set("value", values)
+
+
+def edge_flags(mesh: bpy.types.Mesh, name: str) -> np.ndarray | None:
+    """El atributo booleano de arista ``name`` de ``mesh`` (``bool`` ``(k,)``, en el orden de
+    sus aristas), o ``None`` si no lo tiene así."""
+    found = mesh.attributes.get(name)
+    if found is None or (found.domain, found.data_type) != ("EDGE", "BOOLEAN"):
+        return None
+    values = np.empty(len(mesh.edges), dtype=bool)
+    found.data.foreach_get("value", values)
+    return values
