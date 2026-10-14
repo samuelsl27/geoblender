@@ -12,11 +12,15 @@ que importar el dominio no carga ninguna librería externa ni sus DLL.
   usuario.
 - :func:`crs_library`: la biblioteca del servicio de CRS y su versión fijada (spec 006, T28:
   la procedencia de una operación que transforma, RF-006-26), sin cargar la biblioteca.
+- :func:`mdb_extractor`: el extractor de bases de Access (``interop.ports.MdbExtractor``) de
+  ``adapters.mdb_reader``, con el motor de Access del equipo en un ``powershell.exe`` aparte
+  (spec 005, T16: RF-005-13, RF-005-14; ADR-0018).
 """
 
 from __future__ import annotations
 
 from ..gis.ports import CrsService
+from ..interop.ports import MdbExtractor
 
 
 def crs_service() -> CrsService:
@@ -33,3 +37,11 @@ def crs_library() -> tuple[str, str]:
     from . import pyproj_crs
 
     return pyproj_crs.PACKAGE, pyproj_crs.PYPROJ_VERSION
+
+
+def mdb_extractor() -> MdbExtractor:
+    """El extractor de bases de Access con los motores por defecto (ACE de 64 bits, después
+    los de 32 y Jet 4.0 de Windows). No carga ningún motor en este proceso (ADR-0018)."""
+    from . import mdb_reader
+
+    return mdb_reader.OleDbProcessMdbExtractor()
