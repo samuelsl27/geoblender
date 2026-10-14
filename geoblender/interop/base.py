@@ -24,25 +24,46 @@ lectura y la importación pendiente (``drillholes.model.ImportDto``).
 - **La importación pendiente** (:func:`to_import_dto`): el ``ImportDto`` de una lectura, con
   sus entradas (una por fichero o por hoja, D-15: cada una con su hash de contenido y sus
   huellas) y los sondeos que ya existen en el proyecto (RF-005-11).
+- **Columnas de los lectores** (los de tablas y el de RecMin): :func:`record_columns` (las
+  columnas de una tabla del modelo con los valores por defecto de sus campos y los hijos sin
+  enlazar), :func:`concat_columns`, :func:`link_columns` (cada hijo, a la boca de su nombre),
+  :func:`object_array`, :func:`none_array` y :func:`duplicate_names` (DH-E01).
 
-Dominio puro: Python y el modelo de ``drillholes`` (ARQ-07).
+Dominio puro: Python, numpy y el modelo de ``drillholes`` (ARQ-07).
 """
 
 from __future__ import annotations
 
+import dataclasses
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import Any
+
+import numpy as np
 
 from ..core.errors import GeoblenderError
 from ..drillholes.model import (
+    AssayColumns,
+    AssayValue,
     AzimuthRef,
     Catalogs,
+    Collar,
+    CollarColumns,
     DrillholeSet,
     ImportDto,
     ImportSource,
+    IntervalColumns,
+    LithologyInterval,
     Rejection,
     SourceDeclaration,
+    StructureColumns,
+    StructureMeasure,
+    SurveyColumns,
+    SurveyStation,
+    ZoneColumns,
+    ZoneInterval,
     name_key,
 )
 
@@ -59,11 +80,17 @@ __all__ = [
     "ImportReport",
     "Needs",
     "TableCounts",
+    "concat_columns",
+    "duplicate_names",
     "existing_holes",
     "grade_unit",
+    "link_columns",
     "missing_declarations",
     "missing_unit",
     "new_codes",
+    "none_array",
+    "object_array",
+    "record_columns",
     "require_declarations",
     "spanish_list",
     "to_import_dto",
@@ -323,6 +350,15 @@ def new_codes(dset: DrillholeSet, catalogs: Catalogs | None = None
     return found
 
 
+def duplicate_names(names: Sequence[str]) -> tuple[tuple[str, ...], ...]:
+    """Los grupos de nombres iguales sin mayúsculas ni espacios exteriores (DH-E01), tal
+    como venían y en el orden de su primera aparición."""
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        groups.setdefault(name_key(name), []).append(name)
+    return tuple(tuple(group) for group in groups.values() if len(group) > 1)
+
+
 def existing_holes(dset: DrillholeSet, project_holes: Iterable[str]) -> tuple[str, ...]:
     """Los sondeos de ``dset`` que ya están en el proyecto (``project_holes``, sus nombres),
     sin distinguir mayúsculas ni espacios exteriores (RF-005-11), con la grafía de la fuente
@@ -362,3 +398,79 @@ def to_import_dto(
         counts={table: counts.as_dict() for table, counts in report.per_table.items()},
         rejected=report.rejected,
     )
+
+
+# --- Columnas de los lectores ------------------------------------------------------------------
+
+_EMPTY_EXTRA: Mapping[str, Any] = MappingProxyType({})
+_RECORDS: Mapping[type, type] = MappingProxyType({
+    CollarColumns: Collar,
+    SurveyColumns: SurveyStation,
+    IntervalColumns: LithologyInterval,
+    AssayColumns: AssayValue,
+    ZoneColumns: ZoneInterval,
+    StructureColumns: StructureMeasure,
+})
+
+
+def object_array(values: Sequence[Any]) -> np.ndarray:
+    """Los valores en un array de objetos de una dimensión (textos, fechas, ``extra``…)."""
+    return np.fromiter(values, dtype=object, count=len(values))
+
+
+def none_array(count: int) -> np.ndarray:
+    """Un array de objetos de ``count`` ``None``."""
+    return np.full(count, None, dtype=object)
+
+
+def _filled(columns: type, name: str, dtype: np.dtype, value: Any, count: int) -> np.ndarray:
+    if dtype == np.int8:
+        code = -1 if value is None else columns.code_values(name).index(value)
+        return np.full(count, code, dtype=np.int8)
+    if dtype == np.float64:
+        return np.full(count, math.nan if value is None else value, dtype=np.float64)
+    if dtype == object:
+        array = np.empty(count, dtype=object)
+        array.fill(value)
+        return array
+    return np.full(count, value, dtype=dtype)
+
+
+def record_columns(columns: type, count: int, **given: np.ndarray) -> Any:
+    """Las columnas ``columns`` (una clase de columnas de ``drillholes.model``) de ``count``
+    filas: las de ``given`` y, las demás, con el valor por defecto de su campo en el registro
+    (``hole``: −1, sin enlazar; ``extra``: vacío)."""
+    record = {item.name: item for item in dataclasses.fields(_RECORDS[columns])}
+    empty = columns.empty()
+    arrays: dict[str, np.ndarray] = {}
+    for item in dataclasses.fields(columns):
+        name = item.name
+        if name in given:
+            arrays[name] = given[name]
+            continue
+        if name == "hole":
+            arrays[name] = np.full(count, -1, dtype=np.int64)
+            continue
+        spec = record["hole" if name == "hole_name" else name]
+        if spec.default is not dataclasses.MISSING:
+            value = spec.default
+        elif spec.default_factory is not dataclasses.MISSING:
+            value = _EMPTY_EXTRA
+        else:  # pragma: no cover - error del programa
+            raise AssertionError(f"falta la columna «{name}» de {columns.__name__}")
+        arrays[name] = _filled(columns, name, getattr(empty, name).dtype, value, count)
+    return columns(**arrays)
+
+
+def concat_columns(columns: type, parts: Iterable[Any]) -> Any:
+    """Las filas de ``parts`` (columnas de la clase ``columns``) una tras otra."""
+    parts = [columns.empty(), *parts]
+    return columns(**{item.name: np.concatenate([getattr(p, item.name) for p in parts])
+                      for item in dataclasses.fields(columns)})
+
+
+def link_columns(columns: Any, collars: CollarColumns) -> Any:
+    """``columns`` (una tabla hija) con ``hole`` = la boca de su sondeo en ``collars``, por su
+    nombre sin mayúsculas ni espacios exteriores (−1 sin ella)."""
+    return columns.take(np.arange(len(columns)),
+                        hole=collars.lookup(columns.hole_name.tolist()))

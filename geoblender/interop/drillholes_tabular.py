@@ -50,12 +50,11 @@ Las tablas nunca se modifican. Dominio puro: Python y numpy (ARQ-07).
 
 from __future__ import annotations
 
-import dataclasses
 import datetime as dt
 import math
 import re
 import unicodedata
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -67,21 +66,17 @@ from ..core.errors import GeoblenderError
 from ..drillholes.model import (
     DEFAULT_COLOR,
     AssayColumns,
-    AssayValue,
     Catalogs,
-    Collar,
     CollarColumns,
     DrillholeSet,
     Element,
     HoleType,
     IntervalColumns,
     LithologyCode,
-    LithologyInterval,
     Rejection,
     SourceDeclaration,
     StationSource,
     SurveyColumns,
-    SurveyStation,
     ValueRules,
     name_key,
 )
@@ -91,8 +86,14 @@ from .base import (
     ImportReport,
     Needs,
     TableCounts,
+    concat_columns,
+    duplicate_names,
     grade_unit,
+    link_columns,
     new_codes,
+    none_array,
+    object_array,
+    record_columns,
     require_declarations,
     spanish_list,
 )
@@ -483,73 +484,14 @@ _HOLE_TYPES: Mapping[str, HoleType] = MappingProxyType({
 })
 _COLOR = re.compile(r"#?([0-9A-Fa-f]{6})")
 _OK = FLAG_CODES[DetectionFlag.OK]
-_EMPTY_EXTRA: Mapping[str, Any] = MappingProxyType({})
-_RECORDS: Mapping[type, type] = MappingProxyType({
-    CollarColumns: Collar,
-    SurveyColumns: SurveyStation,
-    IntervalColumns: LithologyInterval,
-    AssayColumns: AssayValue,
-})
 _EXACT_INT = 2.0**53
 _SPECIAL_REASON = "«<» y «>» solo valen en los valores de los análisis"
 _EXCEL_REASON = "es un error de Excel, no un dato: corrija la celda en el libro"
 
 
-def _objects(values: Sequence[Any]) -> np.ndarray:
-    return np.fromiter(values, dtype=object, count=len(values))
-
-
-def _nones(count: int) -> np.ndarray:
-    return np.full(count, None, dtype=object)
-
-
 def _shown(value: float) -> str:
     """Un número como en los mensajes: el decimal más corto, con coma."""
     return np.format_float_positional(value, unique=True, trim="-").replace(".", ",")
-
-
-def _filled(columns: type, name: str, dtype: np.dtype, value: Any, count: int) -> np.ndarray:
-    if dtype == np.int8:
-        code = -1 if value is None else columns.code_values(name).index(value)
-        return np.full(count, code, dtype=np.int8)
-    if dtype == np.float64:
-        return np.full(count, math.nan if value is None else value, dtype=np.float64)
-    if dtype == object:
-        array = np.empty(count, dtype=object)
-        array.fill(value)
-        return array
-    return np.full(count, value, dtype=dtype)
-
-
-def _columns(columns: type, count: int, **given: np.ndarray) -> Any:
-    """Las columnas ``columns`` de ``count`` filas: las de ``given`` y, las demás, con el
-    valor por defecto de su campo en el registro (``hole``: −1, sin enlazar)."""
-    record = {item.name: item for item in dataclasses.fields(_RECORDS[columns])}
-    empty = columns.empty()
-    arrays: dict[str, np.ndarray] = {}
-    for item in dataclasses.fields(columns):
-        name = item.name
-        if name in given:
-            arrays[name] = given[name]
-            continue
-        if name == "hole":
-            arrays[name] = np.full(count, -1, dtype=np.int64)
-            continue
-        spec = record["hole" if name == "hole_name" else name]
-        if spec.default is not dataclasses.MISSING:
-            value = spec.default
-        elif spec.default_factory is not dataclasses.MISSING:
-            value = _EMPTY_EXTRA
-        else:  # pragma: no cover - error del programa
-            raise AssertionError(f"falta la columna «{name}» de {columns.__name__}")
-        arrays[name] = _filled(columns, name, getattr(empty, name).dtype, value, count)
-    return columns(**arrays)
-
-
-def _concat(columns: type, parts: Iterable[Any]) -> Any:
-    parts = [columns.empty(), *parts]
-    return columns(**{item.name: np.concatenate([getattr(p, item.name) for p in parts])
-                      for item in dataclasses.fields(columns)})
 
 
 @dataclass(frozen=True, eq=False)
@@ -678,14 +620,14 @@ class _Reader:
             else:
                 found.append(None)
                 self.fail(row, position, None, missing)
-        return _objects(found)
+        return object_array(found)
 
     def optional(self, name: str) -> np.ndarray:
         """Un campo de texto opcional: tal como venía; vacío, ``None``."""
         texts = self.texts(name)
         if texts is None:
-            return _nones(self.count)
-        return _objects([text if text.strip() else None for text in texts])
+            return none_array(self.count)
+        return object_array([text if text.strip() else None for text in texts])
 
     def numbers(self, name: str) -> np.ndarray:
         """Un número que no es una ley (float64; vacío o rechazado, NaN): con el separador
@@ -740,7 +682,7 @@ class _Reader:
         """Una fecha con el formato declarado (vacía, ``None``)."""
         texts = self.texts(name)
         if texts is None:
-            return _nones(self.count)
+            return none_array(self.count)
         fmt = self.decl.date_format
         found: list[dt.date | None] = []
         for row, text in enumerate(texts):
@@ -752,7 +694,7 @@ class _Reader:
                     self.fail(row, self.position(name), text,
                               f"no es una fecha con el formato declarado «{fmt}»")
             found.append(value)
-        return _objects(found)
+        return object_array(found)
 
     def hole_types(self, name: str) -> np.ndarray:
         """El tipo de sondeo (código int8; vacío, −1) por su código o su nombre en español
@@ -855,15 +797,6 @@ def _holes(reader: _Reader, name: str) -> np.ndarray:
     return holes
 
 
-def _duplicates(names: Sequence[str]) -> tuple[tuple[str, ...], ...]:
-    """Los grupos de nombres iguales sin mayúsculas ni espacios exteriores (DH-E01), tal
-    como venían y en el orden de su primera aparición."""
-    groups: dict[str, list[str]] = {}
-    for name in names:
-        groups.setdefault(name_key(name), []).append(name)
-    return tuple(tuple(group) for group in groups.values() if len(group) > 1)
-
-
 def _read_collars(r: _Reader) -> RoleRows:
     names = _holes(r, "name")
     x, y, z = r.numbers("x"), r.numbers("y"), r.numbers("z")
@@ -877,14 +810,14 @@ def _read_collars(r: _Reader) -> RoleRows:
                                                  "survey_method", "external_id", "comments")}
     start, end = r.dates("start_date"), r.dates("end_date")
     keep = np.flatnonzero(r.ok)
-    collars = _columns(
+    collars = record_columns(
         CollarColumns, keep.size, name=names[keep], x=x[keep], y=y[keep], z=z[keep],
         depth=depth[keep], hole_type=hole_type[keep], planned=planned[keep],
-        grade_control=grade_control[keep], category=_objects(category)[keep],
-        priority=_objects(priority)[keep], start_date=start[keep], end_date=end[keep],
+        grade_control=grade_control[keep], category=object_array(category)[keep],
+        priority=object_array(priority)[keep], start_date=start[keep], end_date=end[keep],
         **{name: values[keep] for name, values in texts.items()})
     oriented = keep[~(np.isnan(azimuth[keep]) & np.isnan(inclination[keep]))]
-    surveys = _columns(
+    surveys = record_columns(
         SurveyColumns, oriented.size, hole_name=names[oriented],
         depth=np.zeros(oriented.size), azimuth=azimuth[oriented],
         inclination=inclination[oriented],
@@ -892,7 +825,7 @@ def _read_collars(r: _Reader) -> RoleRows:
             StationSource.COLLAR), dtype=np.int8))
     return r.result(keep.size, r.count - keep.size, collars=collars, surveys=surveys,
                     lines={"collars": r.lines[keep], "surveys": r.lines[oriented]},
-                    duplicate_holes=_duplicates(names[keep].tolist()))
+                    duplicate_holes=duplicate_names(names[keep].tolist()))
 
 
 def _read_surveys(r: _Reader) -> RoleRows:
@@ -902,7 +835,7 @@ def _read_surveys(r: _Reader) -> RoleRows:
     azimuth, inclination = r.numbers("azimuth"), r.numbers("inclination")
     method, external = r.optional("method"), r.optional("external_id")
     keep = np.flatnonzero(r.ok)
-    surveys = _columns(SurveyColumns, keep.size, hole_name=holes[keep], depth=depth[keep],
+    surveys = record_columns(SurveyColumns, keep.size, hole_name=holes[keep], depth=depth[keep],
                        azimuth=azimuth[keep], inclination=inclination[keep],
                        method=method[keep], external_id=external[keep])
     return r.result(keep.size, r.count - keep.size, surveys=surveys,
@@ -921,7 +854,7 @@ def _read_lithology(r: _Reader) -> RoleRows:
     codes = r.keys("code", "falta el código de litología")
     texts = {name: r.optional(name) for name in ("description", "logged_by", "external_id")}
     keep = np.flatnonzero(r.ok)
-    lithology = _columns(IntervalColumns, keep.size, hole_name=holes[keep],
+    lithology = record_columns(IntervalColumns, keep.size, hole_name=holes[keep],
                          from_m=start[keep], to_m=end[keep], code=codes[keep],
                          **{name: values[keep] for name, values in texts.items()})
     return r.result(keep.size, r.count - keep.size, lithology=lithology,
@@ -944,11 +877,11 @@ def _read_assays_long(r: _Reader) -> RoleRows:
     units, reported_units = r.units(elements)
     others = {name: r.optional(name) for name in _ASSAY_TEXTS}
     keep = np.flatnonzero(r.ok)
-    assays = _columns(
+    assays = record_columns(
         AssayColumns, keep.size, hole_name=holes[keep], from_m=start[keep], to_m=end[keep],
-        element=elements[keep], value=parsed.values[keep], unit=_objects(units)[keep],
+        element=elements[keep], value=parsed.values[keep], unit=object_array(units)[keep],
         detection_flag=parsed.flags[keep], reported_value=parsed.reported[keep],
-        reported_unit=_objects(reported_units)[keep],
+        reported_unit=object_array(reported_units)[keep],
         **{name: values[keep] for name, values in others.items()})
     return r.result(keep.size, r.count - keep.size, assays=assays,
                     lines={"assays": r.lines[keep]})
@@ -983,12 +916,12 @@ def _read_assays_wide(r: _Reader) -> RoleRows:
         units.append(grade_unit(declared[-1]))
     chosen = valid & r.ok[:, None]
     rows, columns = np.nonzero(chosen)
-    codes = _objects([code for code, _ in elements])
-    assays = _columns(
+    codes = object_array([code for code, _ in elements])
+    assays = record_columns(
         AssayColumns, rows.size, hole_name=holes[rows], from_m=start[rows], to_m=end[rows],
-        element=codes[columns], value=values[rows, columns], unit=_objects(units)[columns],
+        element=codes[columns], value=values[rows, columns], unit=object_array(units)[columns],
         detection_flag=flags[rows, columns], reported_value=reported[rows, columns],
-        reported_unit=_objects(declared)[columns],
+        reported_unit=object_array(declared)[columns],
         **{name: column_values[rows] for name, column_values in others.items()})
     return r.result(rows.size, count * width - rows.size, assays=assays,
                     lines={"assays": r.lines[rows]})
@@ -1071,12 +1004,6 @@ def read_role(role: TableRole | str, table: Table, mapping: Mapping[str, str],
 # --- Una importación con varias tablas ----------------------------------------------------------
 
 
-def _linked(columns: Any, collars: CollarColumns) -> Any:
-    """``columns`` con ``hole`` = la boca de su sondeo (−1 sin ella)."""
-    return columns.take(np.arange(len(columns)),
-                        hole=collars.lookup(columns.hole_name.tolist()))
-
-
 def _stations(collar: RoleRows | None, survey: RoleRows | None, collars: CollarColumns,
               all_vertical: bool) -> SurveyColumns:
     """Las estaciones: la orientación en boca de los sondeos sin desviaciones (spec §8),
@@ -1087,19 +1014,19 @@ def _stations(collar: RoleRows | None, survey: RoleRows | None, collars: CollarC
     surveyed = {name_key(name) for name in measured.hole_name.tolist()}
     kept = [row for row, name in enumerate(oriented.hole_name.tolist())
             if name_key(name) not in surveyed]
-    stations = _concat(SurveyColumns, [oriented.take(np.array(kept, dtype=np.int64)),
+    stations = concat_columns(SurveyColumns, [oriented.take(np.array(kept, dtype=np.int64)),
                                        measured])
     if not all_vertical:
         return stations
     with_station = {name_key(name) for name in stations.hole_name.tolist()}
     names = [name for name in collars.name.tolist() if name_key(name) not in with_station]
     count = len(names)
-    vertical = _columns(
-        SurveyColumns, count, hole_name=_objects(names), depth=np.zeros(count),
+    vertical = record_columns(
+        SurveyColumns, count, hole_name=object_array(names), depth=np.zeros(count),
         azimuth=np.zeros(count), inclination=np.full(count, -90.0),
         source=np.full(count, SurveyColumns.code_values("source").index(
             StationSource.DECLARED_VERTICAL), dtype=np.int8))
-    return _concat(SurveyColumns, [stations, vertical])
+    return concat_columns(SurveyColumns, [stations, vertical])
 
 
 def _warnings(results: Mapping[TableRole, RoleRows]) -> tuple[str, ...]:
@@ -1155,15 +1082,15 @@ def read_drillholes(
     collar = results.get(TableRole.COLLAR)
     collars = CollarColumns.empty() if collar is None else collar.collars
     stations = _stations(collar, results.get(TableRole.SURVEY), collars, decl.all_vertical)
-    lithology = _concat(IntervalColumns, [rows.lithology for rows in results.values()])
-    assays = _concat(AssayColumns, [rows.assays for rows in results.values()])
+    lithology = concat_columns(IntervalColumns, [rows.lithology for rows in results.values()])
+    assays = concat_columns(AssayColumns, [rows.assays for rows in results.values()])
     found = Catalogs(
         lithology=tuple(e for rows in results.values() for e in rows.catalogs.lithology),
         elements=tuple(e for rows in results.values() for e in rows.catalogs.elements))
     dset = deduce_depths(DrillholeSet(
         crs=decl.crs, vertical=decl.vertical, collars=collars,
-        surveys=_linked(stations, collars), lithology=_linked(lithology, collars),
-        assays=_linked(assays, collars), catalogs=found))
+        surveys=link_columns(stations, collars), lithology=link_columns(lithology, collars),
+        assays=link_columns(assays, collars), catalogs=found))
     report = ImportReport(
         per_table={str(role): rows.counts for role, rows in results.items()},
         rejected=tuple(r for rows in results.values() for r in rows.rejected),

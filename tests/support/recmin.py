@@ -17,6 +17,10 @@ una base Jet 4 (``Microsoft.Jet.OLEDB.4.0``, que solo existe en el ``powershell.
 - El recurso ``ace`` (:data:`ACE`, ``tests.support.resources``) está disponible si el
   registro de 64 bits tiene un proveedor OLE DB ACE (16.0 o 12.0); sin él, las pruebas de la
   base ACE se omiten con ``[ENTORNO] ace``. Jet 4.0 de 32 bits viene con Windows.
+- :func:`raw_tables` da las tablas de un guion como las dará el extractor de la base (T16):
+  ``interop.ports.RawTable`` en memoria, con el tipo OLE DB de cada columna (:data:`OLEDB_TYPES`)
+  y sus valores con el tipo de Python del motor (Single como ``numpy.float32``, Double como
+  ``float``). Las usan las pruebas del lector de RecMin (T15), sin motor.
 """
 
 from __future__ import annotations
@@ -30,7 +34,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+import numpy as np
+
 from tests.support import resources
+from tests.support.package import import_geoblender
 from tests.support.repo import ROOT
 
 ACE = "ace"  # el recurso de tests.support.resources
@@ -211,6 +218,54 @@ def parse_sql(path: Path) -> dict[str, SqlTable]:
     return {
         name: SqlTable(name, columns[name], tuple(rows[name])) for name in columns
     }
+
+
+# ---------------------------------------------------------------------------------------
+# Las tablas crudas en memoria (las que dará el extractor, T16)
+# ---------------------------------------------------------------------------------------
+
+# DATA_TYPE de OLE DB de cada tipo de Jet SQL de los guiones (lo que cuenta el motor).
+OLEDB_TYPES: dict[str, int] = {
+    "SHORT": 2, "LONG": 3, "COUNTER": 3, "SINGLE": 4, "DOUBLE": 5, "DATETIME": 7, "BIT": 11,
+    "TEXT": 130, "MEMO": 130,
+}
+
+
+def _raw_value(value: object, kind: str, singles_as_float: bool) -> object:
+    """Un valor del guion con el tipo de Python que da el motor para su columna."""
+    if value is None:
+        return None
+    if kind == "SINGLE":
+        single = np.float32(float(value))  # el Single de ese decimal
+        return float(single) if singles_as_float else single
+    if kind == "DOUBLE":
+        return float(value)  # el Double más próximo al decimal escrito
+    if kind == "BIT":
+        return bool(value)
+    if kind in ("SHORT", "LONG", "COUNTER"):
+        return int(value)
+    return value
+
+
+def raw_tables(path: Path, *, singles_as_float: bool = False) -> dict[str, object]:
+    """Las tablas del guion ``path`` como ``interop.ports.RawTable`` (nombre tal como lo
+    escribe el guion → tabla): columnas con su tipo OLE DB y tamaño (``TEXT(n)``: n; ``MEMO``:
+    0) y filas con el valor de cada columna (``None`` si el guion no lo da). Con
+    ``singles_as_float``, los Single llegan como el ``float`` exacto de su ``float32``."""
+    ports = import_geoblender("interop.ports")
+    found: dict[str, object] = {}
+    for name, table in parse_sql(path).items():
+        columns = tuple(
+            ports.RawColumn(c.name, OLEDB_TYPES[c.type],
+                            c.size if c.type == "TEXT" else (0 if c.type == "MEMO" else None))
+            for c in table.columns
+        )
+        rows = tuple(
+            tuple(_raw_value(row.get(c.name), c.type, singles_as_float) for c in table.columns)
+            for row in table.rows
+        )
+        found[name] = ports.RawTable(name, columns, rows)
+    return found
 
 
 # ---------------------------------------------------------------------------------------
