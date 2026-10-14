@@ -3355,3 +3355,12 @@ es = "Sin evaluar"
 
 ["Record"]
 es = "Registro"
+
+# Vista de los sondeos (spec 005, T17; RF-005-23, RF-005-24): las leyendas de la litología y de
+# las leyes (drillholes/view_data.py; «No data» ya está más arriba).
+
+["< DL"]
+es = "< LD"
+
+["All values"]
+es = "Todos los valores"
