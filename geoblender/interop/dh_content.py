@@ -108,6 +108,7 @@ __all__ = [
     "DH_CSV",
     "DH_XLSX",
     "RECMIN_MDB",
+    "hash_recmin_tables",
     "mdb_extractor",
     "read_dh_csv",
     "read_dh_xlsx",
@@ -646,31 +647,28 @@ def _raw_rows(table: RawTable) -> tuple[list[tuple[str, str]], list[tuple[object
     return columns, list(zip(*values, strict=True)) if values else []
 
 
-def read_recmin_mdb(request: ReadRequest) -> Iterator[float]:
-    """El generador de ``io.recmin_mdb@1``: copia la base a una carpeta temporal privada, la
-    extrae (con el avance del extractor) y hashea una parte por tabla que lee el importador;
-    la carpeta privada se borra al acabar, al fallar y al cancelar."""
+def _recmin_declaration(request: ReadRequest) -> SourceDeclaration:
+    """La declaración con que se lee una base de RecMin, comprobada la petición."""
     from ..drillholes import provenance
-    from .base import require_declarations
-    from .recmin.drillholes import INCLINATION_CONVENTION, needs
-    from .recmin.schema import SOURCE_LABEL, index_tables, layout, require_collars
+    from .recmin.drillholes import INCLINATION_CONVENTION
 
-    path = _main(request)
     if request.kind != "drillholes":
         raise ValueError(f"una base de RecMin es una entrada «drillholes», no «{request.kind}»")
     conventions = _conventions(request)
     _check_keys(conventions, provenance.RECMIN_CONVENTIONS, "convenciones", request.reader)
     settings = _settings(request, _RECMIN_SETTINGS, (), conventions)
-    decl = _declaration(request.declarations, conventions, settings.get("decimal", "."), None,
+    return _declaration(request.declarations, conventions, settings.get("decimal", "."), None,
                         str(INCLINATION_CONVENTION))
-    extractor = mdb_extractor()
-    with tempfile.TemporaryDirectory(prefix=PRIVATE_PREFIX,
-                                     ignore_cleanup_errors=True) as private:
-        folder = Path(private)
-        copy = folder / path.name
-        yield from _scaled(_copy_steps(path, copy, request.chunk_bytes), 0.0, COPY_SHARE)
-        tables = yield from _scaled(_extract_steps(extractor, copy, folder / EXTRACT_FOLDER),
-                                    COPY_SHARE, EXTRACT_SHARE)
+
+
+def _hash_recmin(request: ReadRequest, decl: SourceDeclaration, tables: Sequence[RawTable],
+                 start: float, end: float) -> Iterator[float]:
+    """Hashea una parte por tabla que lee el importador de las tablas extraídas ``tables``,
+    con el avance de ``start`` a ``end``."""
+    from .base import require_declarations
+    from .recmin.drillholes import needs
+    from .recmin.schema import SOURCE_LABEL, index_tables, layout, require_collars
+
     indexed = index_tables(tables)
     found = layout({table.name: [c.name for c in table.columns] for table in tables})
     require_collars(found)
@@ -682,13 +680,41 @@ def read_recmin_mdb(request: ReadRequest) -> Iterator[float]:
     for name in found.names:
         table = indexed[name.casefold()]
         columns, rows = _raw_rows(table)
-        start = EXTRACT_SHARE + (1.0 - EXTRACT_SHARE) * done / total
+        first = start + (end - start) * done / total
         done += len(rows)
-        end = EXTRACT_SHARE + (1.0 - EXTRACT_SHARE) * done / total
+        last = start + (end - start) * done / total
         feed = RowEncoder(columns, False)
-        parts[table.name] = ("table", (yield from _hash_rows(feed, rows, step, start, end)))
+        parts[table.name] = ("table", (yield from _hash_rows(feed, rows, step, first, last)))
     request.hasher.composite(parts)
-    yield 1.0
+    yield end
+
+
+def read_recmin_mdb(request: ReadRequest) -> Iterator[float]:
+    """El generador de ``io.recmin_mdb@1``: copia la base a una carpeta temporal privada, la
+    extrae (con el avance del extractor) y hashea una parte por tabla que lee el importador;
+    la carpeta privada se borra al acabar, al fallar y al cancelar."""
+    path = _main(request)
+    decl = _recmin_declaration(request)
+    extractor = mdb_extractor()
+    with tempfile.TemporaryDirectory(prefix=PRIVATE_PREFIX,
+                                     ignore_cleanup_errors=True) as private:
+        folder = Path(private)
+        copy = folder / path.name
+        yield from _scaled(_copy_steps(path, copy, request.chunk_bytes), 0.0, COPY_SHARE)
+        tables = yield from _scaled(_extract_steps(extractor, copy, folder / EXTRACT_FOLDER),
+                                    COPY_SHARE, EXTRACT_SHARE)
+    yield from _hash_recmin(request, decl, tables, EXTRACT_SHARE, 1.0)
+
+
+def hash_recmin_tables(request: ReadRequest, tables: Sequence[RawTable]) -> Iterator[float]:
+    """Lo que hace ``io.recmin_mdb@1`` tras extraer la base, sobre las tablas ya extraídas
+    ``tables`` (las de un ``MdbExtractor``): comprueba la petición (la del lector, con la
+    ruta de la copia) y escribe en su ``ContentHasher`` el mismo compuesto, con su avance
+    tras cada trozo (de 0 a 1). Así el trabajo de la importación (``interop.dh_jobs``) no
+    extrae la base dos veces: el hash es el mismo que el de :func:`read_recmin_mdb`."""
+    _main(request)
+    decl = _recmin_declaration(request)
+    yield from _hash_recmin(request, decl, list(tables), 0.0, 1.0)
 
 
 # --- Los lectores -------------------------------------------------------------------------------

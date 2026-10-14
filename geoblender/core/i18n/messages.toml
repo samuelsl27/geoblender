@@ -3413,3 +3413,27 @@ es = "Regla para los valores bajo el límite de detección"
 
 ["Factor of the detection limit"]
 es = "Factor del límite de detección"
+
+# Trabajos de los sondeos (spec 005, T23; RNF-005-06; plan 005 §5.6.7): el nombre visible
+# (label_msgid) de cada tipo de trabajo de drillholes/jobs.py.
+
+["Read a drillhole table"]
+es = "Lectura de una tabla de sondeos"
+
+["Read a RecMin database"]
+es = "Lectura de una base de RecMin"
+
+["Prepare a drillhole import"]
+es = "Preparación de lo importado de sondeos"
+
+["Build the drillhole database"]
+es = "Montaje de la base de sondeos"
+
+["Validate the drillholes"]
+es = "Validación de los sondeos"
+
+["Compute the drillhole traces"]
+es = "Trazas de los sondeos"
+
+["View arrays of the drillholes"]
+es = "Vista de los sondeos"
