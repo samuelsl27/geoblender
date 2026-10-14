@@ -104,7 +104,7 @@ class SyntheticFilter:
 class ContextControlsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.context = _module("bl.ui.context")
@@ -117,7 +117,7 @@ class ContextControlsTest(unittest.TestCase):
         del bpy.types.Object.geoblender
         bpy.utils.unregister_class(GBTEST_PG_object_kind)
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         mesh = bpy.data.meshes.new("Sintético")
@@ -214,7 +214,7 @@ class ContextMenuTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.headers = _module("bl.ui.headers")
@@ -233,7 +233,7 @@ class ContextMenuTest(unittest.TestCase):
         bpy.utils.unregister_class(GBTEST_PG_collection_version)
         bpy.utils.unregister_class(GBTEST_PG_object_kind)
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.window = bpy.context.window_manager.windows[0]

@@ -91,14 +91,14 @@ class RasterTest(unittest.TestCase):
 class StartupTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
 
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_startup_blend(self) -> None:
         """RF-003-25: el espacio principal (marcado) y «Layout», sin objetos, en metros."""

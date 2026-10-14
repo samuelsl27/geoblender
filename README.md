@@ -12,14 +12,21 @@ de minas, para su propio trabajo de proyectos de explotación y restauración.
 > avance y su cancelación en la barra de estado, y tiene un motor de cálculo opcional que solo
 > se instala si se acepta (spec 004). Registra la procedencia de los parámetros, las entradas,
 > las operaciones y las cifras del proyecto, y lo que queda obsoleto cuando algo cambia (spec
-> 008, probada en Blender sin su interfaz; faltan sus comprobaciones en pantalla, y ningún
-> módulo minero la usa aún). La 002, la 003 y la 004 están comprobadas con Blender
-> 5.2.1 (la interfaz y los trabajos, en la pantalla de referencia de IMGA), y la 002 también
-> con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un equipo. Faltan comprobaciones de
-> personas: dos equipos a la vez, que IMGA acepte las de QGIS sin interfaz y las de la interfaz
-> en lugar de la del panel del proyecto, algunas teclas y menús, los iconos, la lectura de la
-> barra y el almacén de ruedas del motor en el NAS. Todavía no hay funciones mineras.** Se
-> habilita y se desinstala sin dejar rastro, y `tools/check.py` comprueba todo el código.
+> 008, probada en Blender sin su interfaz; faltan sus comprobaciones en pantalla). Su primera
+> función minera es la **topografía base** (spec 006): importar MDT (GeoTIFF, ASC, XYZ),
+> puntos, líneas de rotura y capas de GeoPackage con su sistema de referencia y su datum
+> vertical declarados (ED50 → ETRS89 y alturas elipsoidales con las rejillas del IGN), la
+> rejilla de cálculo de paso exacto, TIN con líneas de rotura y desde curvas, curvas de nivel
+> con maestras, validar una superficie, verla en Blender sin perder precisión y entregar
+> GeoTIFF y GeoPackage que QGIS abre directamente, todo con su procedencia. La 002, la 003, la
+> 004 y la 006 están comprobadas con Blender 5.2.1 (la interfaz, los trabajos y la topografía,
+> en la pantalla de referencia de IMGA), y la 002 y la 006 también con QGIS 4.2 sin su interfaz
+> (PyQGIS); la 002, en la red con un equipo. Faltan comprobaciones de personas: dos equipos a la
+> vez, que IMGA acepte las de QGIS sin interfaz y las de la interfaz en lugar de la del panel
+> del proyecto, algunas teclas y menús, los iconos, la lectura de la barra, el almacén de ruedas
+> del motor en el NAS, un ingeniero de IMGA que haga sin ayuda el recorrido de la topografía
+> hasta QGIS y su comparación con el MDT real de Silvestre.** Se habilita y se desinstala sin
+> dejar rastro, y `tools/check.py` comprueba todo el código.
 
 Este repositorio contiene **solo el código**. La documentación del proyecto (constitución,
 proceso de trabajo, decisiones de arquitectura, specs y trampas conocidas) es interna de IMGA
@@ -50,7 +57,9 @@ Blender; cada cifra lleva su tipo y su procedencia; el proyecto es una carpeta a
 
 Requisitos: Windows de 64 bits y **Blender 5.2 LTS**.
 
-1. Genere el zip con `tools/build.py` (queda en `dist/`).
+1. Genere el zip con `tools/build.py` (queda en `dist/`). Necesita en `geoblender/wheels/` las
+   ruedas fijadas en `tools/wheels.toml` (pyproj y certifi, para las transformaciones de
+   coordenadas de la topografía), que deja ahí `tools/fetch_wheels.py`.
 2. En Blender: *Preferencias › Extensiones › Instalar desde disco* y elija ese zip.
 
 Desactivar la extensión deja Blender como estaba. Con la extensión instalada,
@@ -128,22 +137,38 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en unos 35 s) no ejecuta las pruebas del
-propio arnés que lanzan Blender entero, y lo dice antes del resultado. Solo se ejecuta un
+Sin `--completo` (la comprobación de cada tarea, en unos 37 s; con `--completo`, unos 93 s)
+no ejecuta las pruebas del propio arnés que lanzan Blender entero, y lo dice antes del
+resultado. Solo se ejecuta un
 `tools/check.py` a la vez en el equipo, sea de la carpeta que sea (de este repositorio o de
 un *worktree*): dos a la vez compiten por los procesadores, tardan más y las pruebas que miden
 tiempos fallan. El cerrojo es `%LOCALAPPDATA%\Geoblender\check.lock`, que el sistema suelta
 aunque la comprobación se cierre de golpe (no hay que borrarlo); si otra lo tiene, la nueva
 escribe `ESPERANDO: …` con su pid y su carpeta y espera, y su tiempo se cuenta desde que
 empieza de verdad. `tools/publish.py` espera igual. Los pasos van uno
-tras otro, pero las pruebas unitarias se reparten en 16 procesos (`tools/unittest_part.py`)
-y las de Blender en 5 Blender (`tools/run_blender_tests.py --parte i/n`) que se ejecutan a
-la vez, sin pasar del número de procesadores; cada prueba, en uno solo. El reparto es por
-la duración de cada módulo de pruebas en la comprobación anterior, que se guarda en
-`%TEMP%\geoblender-tiempos\` (un fichero por carpeta del código); sin él, la primera vez o si
-se borra, por número de pruebas. Los módulos de pruebas con la misma `PART_AFFINITY` (los que
-pasan las reglas por todo el repositorio, y los que las pasan por la extensión) van al mismo
-proceso: las reglas leen y analizan cada fichero una sola vez por proceso, y así lo comparten.
+tras otro, pero las pruebas unitarias se reparten en 16 procesos (`tools/unittest_part.py`),
+los casos de referencia en 6 y las de Blender en 7 Blender (`tools/run_blender_tests.py
+--parte i/n`) que se ejecutan a la vez, sin pasar del número de procesadores; cada prueba, en
+uno solo. El reparto usa la duración de cada módulo de pruebas en la comprobación anterior,
+que se guarda en `%TEMP%\geoblender-tiempos\` (un fichero por carpeta del código); sin ella,
+la primera vez o si se borra, es por número de pruebas. Con esas duraciones, los procesos de
+cada paso se reparten los módulos según acaban (`--cola`, una carpeta que comparten en la
+temporal de la comprobación): cada uno empieza por uno de los que más tardan y, al acabarlo,
+toma el siguiente que ninguno ha tomado; los de pruebas unitarias no importan los ficheros
+de los demás. Cada proceso dice al terminar `PARTE i de n: m de M módulos` (o, sin
+duraciones, antes de empezar, `PARTE i de n: r de T pruebas`). Los
+módulos de pruebas con la misma `PART_AFFINITY` (los que pasan las reglas por todo el
+repositorio, y los que las pasan por la extensión) van al mismo proceso: las reglas leen y
+analizan cada fichero una sola vez por proceso, y así lo comparten. Los Blender comparten una
+copia de la extensión que `tools/check.py` prepara y compila mientras corren las pruebas
+unitarias (en `copia\` de su carpeta temporal; `run_blender_tests.py --copia`); si no puede,
+lo avisa y cada uno hace la suya. Dentro de Blender, las clases de pruebas que no prueban el
+registro dejan la extensión deshabilitada con sus módulos cargados al terminar
+(`tests.support.blender_ext.release`), y la siguiente la vuelve a registrar sin importarla de
+nuevo; las que lo prueban parten de cero y, al terminar, devuelven esos módulos
+(`blender_ext.fresh`). Un módulo de pruebas de Blender que deja el proceso más lento para
+los que vienen detrás (el que inicia la GPU) declara `RUN_LAST = True` y se ejecuta el
+último.
 Si existe el motor de cálculo de pruebas
 (`tools/make_runtime.py`), el paso «motor» ejecuta otra vez las pruebas unitarias de los
 paquetes de dominio con su numpy, a la vez que las de Blender (spec 004, RF-004-28), en 16
@@ -164,9 +189,9 @@ equipo; las demás, las herramientas de desarrollo y las pruebas.
 | `GEOBLENDER_BLENDER` | Ruta a `blender.exe` o a su carpeta, si Blender 5.2 no está en la ruta por defecto (también para el lanzador `Geoblender.cmd`) |
 | `GEOBLENDER_DEV_PROFILE` | Perfil aislado de desarrollo; por defecto, `%LOCALAPPDATA%\Geoblender\dev\blender-5.2`. Nunca en una unidad de red |
 | `GEOBLENDER_WHEELHOUSE` | Almacén de ruedas del que `tools/fetch_wheels.py` (y `tools/lock_runtime.py`) copian sin descargarlas, que `tools/fetch_runtime_wheels.py` llena con las del motor de cálculo y del que `tools/make_runtime.py` instala el motor de pruebas. En Geoblender, el almacén se elige en las preferencias («Carpeta del almacén de ruedas») |
-| `GEOBLENDER_SILVESTRE_DIR` | Banco privado de Silvestre: solo lectura y solo con `--banco` |
+| `GEOBLENDER_SILVESTRE_DIR` | Banco privado de Silvestre: solo lectura y solo con `--banco` (la rejilla exacta de la topografía frente a la de la V10 sobre su MDT, spec 006) |
 | `GEOBLENDER_RECMIN_BANK_DIR` | Banco privado de RecMin: solo lectura |
-| `GEOBLENDER_QGIS_DIR` | Instalación de QGIS 4.2 (la carpeta con `bin\ogrinfo.exe`) para las pruebas de compatibilidad del GeoPackage con su GDAL; sin ella se omiten con `[ENTORNO] qgis` |
+| `GEOBLENDER_QGIS_DIR` | Instalación de QGIS 4.2 (la carpeta con `bin\ogrinfo.exe`) para las pruebas de compatibilidad con su GDAL (`ogrinfo`, `gdalinfo`, `validate_gpkg.py` y el Python de QGIS con `osgeo`): el GeoPackage del proyecto, los GeoTIFF y los entregables de la topografía (la misma georreferencia y las mismas cotas) y las ediciones como las de QGIS de la procedencia; y para las que preguntan a QGIS con PyQGIS sin interfaz (Qt `offscreen` y un perfil temporal, sin tocar el QGIS abierto de la persona), como que carga el estilo por defecto de las curvas de nivel y dibuja las maestras más gruesas. Sin ella se omiten con `[ENTORNO] qgis` |
 | `GEOBLENDER_NET_TEST_DIR` | Carpeta de red para las comprobaciones manuales; nunca en la carpeta de expedientes de clientes |
 | `GEOBLENDER_PROJ_BIN` | Carpeta con `projinfo` y `cs2cs`, para regenerar el catálogo de CRS |
 | `GEOBLENDER_TEST_RUNTIME_SITE` | Otra ubicación del motor de cálculo de pruebas (su carpeta `site`), en lugar del de `.deps/runtime/` |

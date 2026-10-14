@@ -79,7 +79,7 @@ def data_counts() -> dict[str, int]:
 class CommandLineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.command_line = _module("bl.ui.command_line")
@@ -93,7 +93,7 @@ class CommandLineTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.workspace.geoblender_mode = True  # la ventana, en modo Geoblender

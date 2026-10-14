@@ -1,0 +1,2072 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Resultados e importaciones de la topografía en el proyecto (spec 006, T42 y T43;
+RF-006-04, RF-006-08, RF-006-10, RF-006-12, RF-006-26, RF-006-28; RF-008-07, RF-008-11,
+RF-008-14, RF-008-17, RF-008-18, RF-008-19, RF-008-23, RF-008-52, RF-008-53, RF-008-54;
+ADR-0025 §3 y §8; plan 006 §5.2, §5.6.3, §5.6.4 y §5.6.5; D20, D22).
+
+Lo que produce una operación de la 006 se guarda en el proyecto con la API de procedencia de la
+008, nunca escribiendo en las tablas ``gb_*``:
+
+- **rejillas** en ``rasters/`` (GeoTIFF del perfil ``project``: Float64, NaN, cada celda con
+  los mismos bits, RF-006-08), **TIN** en ``meshes/`` (npz de ``gis.tin.save_tin`` con su
+  ``meta``) y **tablas** de ``project.gpkg`` (plan §5.2.3, :data:`TABLE_LAYOUTS`: puntos
+  ``POINT`` y líneas de rotura ``LINESTRING`` con Z, curvas de nivel ``LINESTRING`` con Z y
+  contornos ``MULTIPOLYGON`` sin Z, creadas con ``core.gpkg.create_feature_table``, con el SRS
+  de sus coordenadas y la referencia vertical citada en su descripción; cada curva cerrada
+  repite su primer vértice al final); cada una con la ``DatasetSpec`` de ``gis.provenance`` (su
+  nombre, su almacén, su ubicación y su lector) y su ``ContentDigest``: el que da su lector al
+  leer lo escrito, calculado aquí sin volver a leerlo (``gis.content.raster_digest`` y
+  ``tin_digest``), el que trae el resultado de un trabajo de la 004 o, en una tabla, el que
+  calcula el registro de la 008 en la transacción que la escribe o, si lo da su trabajo, el de
+  :func:`table_digest` (T50: sus filas, :func:`point_rows` y las demás, en un GeoPackage en
+  memoria con la misma estructura, leído con la función del registro; así el hilo de Blender
+  no vuelve a leer una tabla de 300.000 puntos al incorporarla, RNF-006-09).
+
+:class:`ResultWriter` (un gestor de contexto por operación, con su ``OperationHandle``) sigue
+el flujo del plan §5.6.4:
+
+1. **Preparar** (:meth:`~ResultWriter.raster`, :meth:`~ResultWriter.tin`,
+   :meth:`~ResultWriter.copy_file`, el de un trabajo, :meth:`~ResultWriter.contours`,
+   :meth:`~ResultWriter.points`, :meth:`~ResultWriter.breaklines` y
+   :meth:`~ResultWriter.boundary`): se comprueba que el sitio del resultado está libre o es
+   del mismo dato (si no, ``gis.output_target_taken``, sin escribir nada), se reclaman con
+   ``OperationHandle.claim_paths`` el temporal, el destino y la copia del anterior, y cada
+   fichero se escribe entero en su temporal ``<fichero>.tmp-<sesión>`` (el patrón de restos de
+   la 008, plan 008 §5.4.9: :func:`temporary_path`; el escritor de T07 recibe el nombre). Las
+   filas de una tabla se codifican ya.
+2. **Poner en su sitio** (:meth:`~ResultWriter.install`, antes de la transacción): el
+   fichero anterior del mismo dato se aparta a ``<fichero>.old.tmp-<sesión>`` y el temporal
+   pasa a su sitio con ``os.replace``. Si otro programa tiene abierto el destino (QGIS),
+   ``gis.raster_target_locked``: no se escribe nada y el anterior sigue intacto (sin
+   ``<nombre>__<hash8>.tif``, D20: la 008 no cambia la ubicación de un dato vivo).
+3. **Confirmar** (:meth:`~ResultWriter.commit`, o :meth:`~ResultWriter.write` como función de
+   escritura de ``ingest_job`` al incorporar un trabajo): en una transacción de
+   ``Project.write_transaction``, la entrada de una importación (abajo), las tablas y
+   ``OperationHandle.complete`` con las salidas, ``software``, el intérprete, el ejecutor y el
+   mensaje (RF-008-18). Confirmada, se borran las copias de lo anterior.
+
+**Importaciones** (``gis.import_dtm``, ``gis.import_points`` y ``gis.import_vector``; plan
+§5.6.3 y §5.6.4). La entrada que importa (:class:`~..core.inputs.InputSpec`) la construye
+:func:`source_input` con lo que da el trabajo de la importación (el ``ContentDigest`` de la
+fuente con las declaraciones de :func:`source_declarations` y la huella de cada fichero) y el
+ancla de cada fichero (``core.inputs.locate_source``: relativa al proyecto o a su original, o
+solo su nombre; nunca una ruta absoluta). Antes de escribir nada,
+:meth:`~ResultWriter.declare_input` la clasifica (``classify_import``, RF-008-54; también
+:func:`classify_source`, para preguntar el motivo de una sustitución antes): la misma entrada
+con los mismos ajustes se **reutiliza** (la operación queda «cancelada» con el aviso y no se
+escribe nada); con otros ajustes (otro CRS declarado) es una **sustitución**, que necesita la
+entrada a la que sustituye y el motivo (RF-008-11; si no, ``core.input_substitution_required``
+sin escribir nada); si no, una entrada **nueva**. Lo importado (``gis_src_``, ``gis_pts_``,
+``gis_brk_``, ``gis_cnt_`` y ``gis_bnd_``) es inmutable, con su entrada, en el CRS y la
+referencia vertical declarados (las coordenadas de la fuente sin alterar, RF-006-12), y su
+ubicación lleva el uid corto de su entrada (D22), que se conoce al registrarla: sus ficheros se
+escriben antes en un temporal con el nombre del dato y, en la transacción, tras
+``supersede`` (si sustituye) y ``register_input``, pasan a su sitio y se crean sus tablas
+(protegidas por el registro de la 008: cambiarlas desde otra conexión aborta con el nombre de la
+entrada, RF-008-52); después, ``complete``. El original del texto de puntos se guarda después
+con :meth:`~ResultWriter.originals` (``store_originals_steps``, RF-008-53) desde la copia
+verificada del trabajo, nunca desde la fuente (RF-008-14); de un ráster o una capa, no.
+
+**Fallo o cancelación antes de confirmar** (RF-006-28, RF-008-19): al salir del bloque con un
+error, o sin confirmar, lo puesto en su sitio se deshace (el anterior vuelve, lo nuevo se
+borra), los temporales se borran y ni la entrada ni las tablas existen (la transacción se
+deshizo); con un error, la operación queda «cancelada» (``JobCancelled`` de un escritor,
+``ReadCancelled``, ``HashCancelled``) o «fallida», con su motivo
+(``core.provenance.operations``). Ningún dato, fichero ni tabla nuevos. Si Blender se cierra de
+golpe, los temporales sin reclamar los aparta a ``orphans/`` la comprobación de apertura de la
+008 (ADR-0025 §8); mientras la operación está en curso, no (están reclamados y son de esta
+sesión).
+
+Ningún error del disco llega como ``OSError`` a la transacción del proyecto (lo pasaría a solo
+lectura): es ``gis.raster_target_locked`` o ``gis.raster_write_failed``.
+
+Para leer lo guardado: :func:`list_gis_datasets` (desde ``gb_dataset``), :func:`load_raster`,
+:func:`load_tin` y, de una tabla de puntos, líneas de rotura o curvas, :func:`load_features`
+(T27, para la vista: sus geometrías absolutas tal como están guardadas y sus atributos); para
+un TIN (T29), :func:`load_points`, :func:`load_lines` y :func:`load_regions` (el contorno y
+los huecos de una tabla ``gis_bnd_``). Las
+referencias de un dato (:func:`dataset_references`: lo importado, las que declaró su entrada;
+lo calculado, las del proyecto) y su comprobación antes de mostrarlo en la vista, que no
+transforma coordenadas (:func:`require_project_references`, ``gis.view_references_mismatch``;
+principio 6). Python puro y numpy (ADR-0004).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import itertools
+import os
+import sqlite3
+import struct
+import sys
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from types import MappingProxyType, TracebackType
+from typing import Any, Protocol
+
+import numpy as np
+
+from ..core.content import builtin as core_builtin
+from ..core.content.encoder import NORMALIZER, ContentDigest
+from ..core.content.readers import ReadCancelled
+from ..core.datasets import registry as dataset_registry
+from ..core.datasets.model import (
+    DATASET_DECLARATIONS,
+    LIVE_STATUSES,
+    RECORD_COLUMNS,
+    DatasetRecord,
+    DatasetSpec,
+    Store,
+)
+from ..core.errors import GeoblenderError
+from ..core.georef import CrsCatalog, CrsRef, VerticalRef, load_catalog
+from ..core.gpkg.base import ColumnDef, create_base, create_feature_table
+from ..core.gpkg.wkb import (
+    MAGIC,
+    VERSION,
+    WKB_TYPES,
+    Z_OFFSET,
+    Geometry,
+    decode_geometry,
+    encode_geometry,
+)
+from ..core.hashing import HashCancelled
+from ..core.ids import SHORT_UID_CHARS
+from ..core.inputs.model import (
+    InputRecord,
+    InputSpec,
+    InputStatus,
+    SourceFile,
+    SourcePrint,
+    input_declarations,
+)
+from ..core.inputs.originals import STEP_BUDGET_S, store_originals_steps
+from ..core.inputs.registry import (
+    Classification,
+    Reuse,
+    Substitute,
+    classify_import,
+    register_input,
+    reuse_input,
+    supersede,
+)
+from ..core.inputs.registry import get as get_input
+from ..core.paths import check_path_length
+from ..core.project.model import Progress as ProjectProgress
+from ..core.provenance.messages import ProvenanceError
+from ..core.provenance.operations import (
+    OperationHandle,
+    OperationProject,
+    OperationStatus,
+    cancel_reason,
+    failure_reason,
+)
+from ..jobs.worker_api import JobCancelled
+from .content import (
+    ASC,
+    CONTENT_SETTINGS,
+    GEOTIFF,
+    GPKG_LAYER,
+    POINTS_TEXT,
+    READER_SETTINGS,
+    XYZ_GRID,
+    raster_digest,
+    tin_digest,
+)
+from .contours import ContourLine
+from .crs import ELLIPSOIDAL_ETRS89, reference_label
+from .geotiff.reader import read_geotiff
+from .geotiff.writer import target_locked, write_failed, write_geotiff
+from .messages import GisError
+from .points import Breakline, PointSet
+from .ports import Cancelled, Progress, WriteProfile
+from .provenance import (
+    BOUNDARY,
+    BREAKLINES,
+    CONTOUR_LINES,
+    FAMILIES_BY_CODE,
+    IMPORTS,
+    MODULE,
+    OPERATION_TYPES_BY_NAME,
+    POINTS,
+    PROJECT_GRID,
+    SOURCE_GRID,
+    TIN,
+    EXPORTS,
+    EXPORTS_FOLDER,
+    DatasetFamily,
+    dataset_name,
+    dataset_spec,
+    export_locator,
+    export_spec,
+    input_kind,
+    inside_project,
+    layer_family,
+)
+from .raster import Raster
+from .styles import CONTOUR_STYLE, LayerStyle
+from .tin import Tin, meta_vertical, save_tin
+from .tin import load_tin as read_tin_file
+from .vector import StoredLayer, z_description
+
+__all__ = [
+    "BACKUP_MARK",
+    "BOUNDARY_ROLES",
+    "COPY_CHUNK_BYTES",
+    "ELLIPSOIDAL_EPSG",
+    "TABLE_LAYOUTS",
+    "TEMPORARY_MARK",
+    "ResultWriter",
+    "StoreProject",
+    "StoredFeatures",
+    "TableLayout",
+    "VIEW_TABLE_FAMILIES",
+    "EXPORT_STYLES",
+    "EXPORT_TABLE_FAMILIES",
+    "backup_path",
+    "boundary_rows",
+    "breakline_rows",
+    "classify_source",
+    "contour_rows",
+    "insert_rows",
+    "dataset_references",
+    "declared_crs",
+    "declared_vertical",
+    "export_layer",
+    "list_gis_datasets",
+    "load_features",
+    "load_lines",
+    "load_points",
+    "load_raster",
+    "load_regions",
+    "load_tin",
+    "point_rows",
+    "project_references",
+    "require_project_references",
+    "session_tag",
+    "source_declarations",
+    "source_input",
+    "table_digest",
+    "temporary_path",
+]
+
+TEMPORARY_MARK = ".tmp-"
+"""``<fichero>.tmp-<sesión>``: el temporal de un fichero que escribe una operación, con las 8
+últimas cifras de la sesión (el patrón de restos de la 008, como los de ``originals/``)."""
+BACKUP_MARK = ".old"
+"""``<fichero>.old.tmp-<sesión>``: el fichero anterior del mismo dato, apartado hasta que la
+operación se confirma (un temporal de la sesión: si Blender se cierra de golpe, va a
+``orphans/`` y no se borra)."""
+COPY_CHUNK_BYTES = 4 * 1024 * 1024
+"""Lo que se copia de una vez del resultado de un trabajo (entre dos, se mira la cancelación)."""
+CANCELLATIONS: tuple[type[BaseException], ...] = (JobCancelled, ReadCancelled, HashCancelled)
+"""Los errores con que una escritura, una lectura o una huella se paran a petición de la
+persona: la operación queda «cancelada», no «fallida»."""
+FILE_FAMILIES: tuple[str, ...] = (SOURCE_GRID, PROJECT_GRID, TIN)
+"""Las familias que son un fichero de ``rasters/`` o ``meshes/``."""
+GRID_FAMILIES: tuple[str, ...] = (SOURCE_GRID, PROJECT_GRID)
+"""Las familias de rejilla."""
+GRID_READERS: tuple[str, ...] = (GEOTIFF.id, ASC.id, XYZ_GRID.id)
+"""Los lectores de las fuentes de un MDT (lo importado es su rejilla de origen)."""
+ELLIPSOIDAL_EPSG = 4937
+"""El código con que se declara una altura elipsoidal ETRS89 en una entrada (ETRS89
+geográfico 3D; plan §5.3.3)."""
+BOUNDARY_ROLES: tuple[str, ...] = ("boundary", "hole")
+"""El papel de cada contorno en su tabla (``gis_bnd_*.role``, plan §5.2.3): contorno o hueco."""
+
+_OBJ = "Dato de topografía"
+_FIELD_LOCATION = "ubicación"
+_FIELD_DATASET = "dato"
+_GEOMETRY_COLUMN = "geom"
+
+
+class StoreProject(OperationProject, Protocol):
+    """Lo que usa del proyecto (``core.project.Project``): lo de las operaciones y las
+    entradas de la 008 y su fila de ``gb_project`` (``record``: el CRS horizontal y la
+    referencia vertical)."""
+
+    @property
+    def record(self) -> Any: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TableLayout:
+    """La tabla de una familia vectorial (plan §5.2.3): el nombre GeoPackage de su tipo de
+    geometría (``POINT``, ``LINESTRING``, ``MULTIPOLYGON``), si lleva Z, sus columnas (además
+    de ``fid`` y ``geom``) y cómo empieza su identificador en ``gpkg_contents``."""
+
+    geometry_type: str
+    has_z: bool
+    columns: tuple[ColumnDef, ...]
+    label: str
+
+
+TABLE_LAYOUTS: Mapping[str, TableLayout] = MappingProxyType({
+    POINTS: TableLayout(
+        "POINT",
+        True,
+        (
+            ColumnDef("point_id", "TEXT", not_null=True, default="''"),
+            ColumnDef("code", "TEXT", not_null=True, default="''"),
+            ColumnDef("source_row", "INTEGER"),
+        ),
+        "Puntos",
+    ),
+    BREAKLINES: TableLayout(
+        "LINESTRING",
+        True,
+        (
+            ColumnDef("line_id", "TEXT", not_null=True, default="''"),
+            ColumnDef("hard", "BOOLEAN", not_null=True),
+            ColumnDef("code", "TEXT", not_null=True, default="''"),
+        ),
+        "Líneas de rotura",
+    ),
+    CONTOUR_LINES: TableLayout(
+        "LINESTRING",
+        True,
+        (
+            ColumnDef("elevation", "DOUBLE", not_null=True),
+            ColumnDef("is_index", "BOOLEAN", not_null=True),
+            ColumnDef("closed", "BOOLEAN", not_null=True),
+            ColumnDef("length_m", "DOUBLE", not_null=True),
+        ),
+        "Curvas de nivel",
+    ),
+    BOUNDARY: TableLayout(
+        "MULTIPOLYGON",
+        False,
+        (ColumnDef("role", "TEXT", not_null=True),),
+        "Contornos",
+    ),
+})
+"""Las tablas de las familias vectoriales, por familia (plan §5.2.3). El ``CHECK`` del papel
+de un contorno (:data:`BOUNDARY_ROLES`) lo comprueba :meth:`ResultWriter.boundary`: la
+``ColumnDef`` de la 002 no lo escribe."""
+
+DIGEST_TABLE = "tabla"
+"""El nombre de la tabla en el GeoPackage en memoria de :func:`table_digest` (no es contenido:
+el hash de ``core.gpkg_layer@1`` no lleva el nombre de la capa)."""
+INSERT_ROWS = 500
+"""Las filas de cada ``INSERT`` de una tabla (T50; RNF-006-09): con una sentencia por fila, cada
+una recorre ``sqlite_sequence`` del proyecto (las tablas con ``AUTOINCREMENT``) y lo reescribe;
+con 500 por sentencia, los 289.900 puntos de RNF-006-03 se escriben en 0,15 s en vez de 0,5 s,
+con las mismas filas y los mismos ``fid``."""
+
+
+# --- Nombres y referencias del proyecto ---------------------------------------------------------
+
+
+def session_tag(project: StoreProject) -> str:
+    """Las 8 últimas cifras hexadecimales de la sesión que tiene el proyecto abierto, en
+    minúsculas (como los temporales de ``originals/`` y la carpeta de ``orphans/``)."""
+    return (project.session.session_uid.replace("-", "")[-SHORT_UID_CHARS:] or "sesion").lower()
+
+
+def temporary_path(project: StoreProject, final: Path) -> Path:
+    """El temporal de ``final`` mientras se escribe: ``<fichero>.tmp-<sesión>``, en su carpeta."""
+    final = Path(final)
+    return final.with_name(f"{final.name}{TEMPORARY_MARK}{session_tag(project)}")
+
+
+def backup_path(project: StoreProject, final: Path) -> Path:
+    """Dónde se aparta el fichero anterior de ``final`` hasta confirmar:
+    ``<fichero>.old.tmp-<sesión>``."""
+    final = Path(final)
+    return final.with_name(f"{final.name}{BACKUP_MARK}{TEMPORARY_MARK}{session_tag(project)}")
+
+
+def project_references(
+    project: StoreProject, *, catalog: CrsCatalog | None = None
+) -> tuple[CrsRef, VerticalRef]:
+    """El CRS horizontal y la referencia vertical del proyecto (``gb_project``), del catálogo
+    de la 002 (por defecto, el de la extensión). ``ValueError`` con un proyecto abierto solo
+    con su cabecera (de un esquema que esta versión no lee)."""
+    record = project.record
+    if record is None:
+        raise ValueError(f"el proyecto «{project.name}» se abrió solo con su cabecera: no se "
+                         "pueden leer ni escribir sus datos")
+    found = load_catalog() if catalog is None else catalog
+    crs = found.horizontal(record.crs_epsg)
+    if record.vcrs_epsg is None:
+        return crs, found.local_vertical(record.vcrs_note)
+    return crs, found.vertical(record.vcrs_epsg)
+
+
+def _vertical_text(vertical: VerticalRef) -> str:
+    """La referencia vertical en el ``meta`` de un TIN: «EPSG:5782» o «Referencia local
+    (nota)» (``gis.tin.meta_vertical``, la misma que escribe el trabajo ``gis_tin_finish``)."""
+    return meta_vertical(vertical)
+
+
+def _z_description(vertical: VerticalRef) -> str:
+    """Cómo se cita en ``gpkg_contents.description`` la referencia de las Z (plan §5.2.3; la
+    misma que en los entregables, ``gis.vector.z_description``)."""
+    return z_description(vertical)
+
+
+def _family(code: str, allowed: Sequence[str]) -> DatasetFamily:
+    if code not in allowed:
+        raise ValueError(f"{code!r} no es una familia de datos de esta escritura: es una de "
+                         f"{', '.join(allowed)}")
+    return FAMILIES_BY_CODE[code]
+
+
+def _disk_error(name: str, error: OSError) -> GisError:
+    """El error para la persona de un fallo del disco al escribir ``name``."""
+    if isinstance(error, PermissionError):  # Windows: otro programa lo tiene abierto
+        return target_locked(name)
+    return write_failed(name, error)
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    """Si hay una tabla (o vista) con ese nombre en la base, sin distinguir mayúsculas."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND lower(name) = lower(?)",
+        (table,),
+    ).fetchone() is not None
+
+
+def _owned(conn: sqlite3.Connection, spec: DatasetSpec) -> tuple[bool, bool]:
+    """Si la ubicación de ``spec`` es del dato vivo con su nombre (que se puede volver a
+    escribir: no es lo importado) y si es de algún otro dato, vivo o no."""
+    rows = conn.execute(
+        "SELECT name, status, immutable FROM gb_dataset WHERE store = ? AND locator = ?",
+        (str(spec.store), spec.locator),
+    ).fetchall()
+    live = {str(status) for status in LIVE_STATUSES}
+    mine = [row for row in rows if row[0] == spec.name and row[1] in live and not row[2]]
+    return bool(mine), len(mine) != len(rows)
+
+
+def _taken(spec: DatasetSpec) -> GisError:
+    return GisError("gis.output_target_taken", obj=f"{_OBJ} «{spec.name}»",
+                    field=_FIELD_LOCATION, value=spec.locator, name=spec.name)
+
+
+def _ensure_srs(conn: sqlite3.Connection, crs: CrsRef) -> None:
+    """El CRS de las coordenadas de una tabla en ``gpkg_spatial_ref_sys`` (el del proyecto ya
+    está; uno declarado en una importación, como lo escribe ``core.gpkg.create_base``)."""
+    if conn.execute("SELECT 1 FROM gpkg_spatial_ref_sys WHERE srs_id = ?",
+                    (crs.epsg,)).fetchone() is not None:
+        return
+    conn.execute(
+        "INSERT INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, "
+        "organization_coordsys_id, definition, description) VALUES (?, ?, 'EPSG', ?, ?, ?)",
+        (crs.name, crs.epsg, crs.epsg, crs.wkt1, crs.area or None),
+    )
+
+
+# --- Entradas de las importaciones (T43) -----------------------------------------------------
+
+
+def declared_crs(crs: CrsRef | None) -> dict[str, Any] | None:
+    """El CRS horizontal declarado de una entrada (``core.inputs``): ``{"epsg": n}``, o
+    ``None`` si no se declaró (nunca se supone, RF-006-04)."""
+    if crs is None:
+        return None
+    if not isinstance(crs, CrsRef):
+        raise TypeError(f"el CRS horizontal declarado es un CrsRef del catálogo, no {crs!r}")
+    return {"epsg": crs.epsg}
+
+
+def declared_vertical(vertical: VerticalRef | None) -> dict[str, Any] | None:
+    """La referencia vertical declarada de una entrada: ``{"epsg": n}``, ``{"local": nota}``
+    o, la altura elipsoidal ETRS89, ``{"ellipsoidal": 4937}``; ``None`` si no se declaró."""
+    if vertical is None:
+        return None
+    if not isinstance(vertical, VerticalRef):
+        raise TypeError(f"la referencia vertical declarada es un VerticalRef, no {vertical!r}")
+    if vertical.kind == "epsg":
+        return {"epsg": vertical.epsg}
+    if vertical.kind == "local":
+        return {"local": vertical.note}
+    if vertical == ELLIPSOIDAL_ETRS89:
+        return {"ellipsoidal": ELLIPSOIDAL_EPSG}
+    return {"ellipsoidal": vertical.name}
+
+
+def _reader_settings(reader: object, settings: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Los ajustes de lectura de la importación con ``reader`` (los únicos que guarda su
+    entrada y que vuelve a recibir su lector, ``gis.content.READER_SETTINGS``)."""
+    allowed = READER_SETTINGS.get(reader) if isinstance(reader, str) else None
+    if allowed is None:
+        raise ValueError(f"{reader!r} no es el lector de una importación de la topografía (con "
+                         f"versión): es uno de {', '.join(READER_SETTINGS)}")
+    if settings is not None and not isinstance(settings, Mapping):
+        raise TypeError(f"los ajustes de una importación son un diccionario, no {settings!r}")
+    chosen = dict(settings or {})
+    unknown = sorted(str(key) for key in chosen if key not in allowed)
+    if unknown:
+        raise ValueError(f"ajustes que no son de lectura de «{reader}»: {unknown} (son "
+                         f"{list(allowed)})")
+    if reader == POINTS_TEXT.id:
+        missing = [key for key in ("encoding", "separator", "decimal", "columns")
+                   if key not in chosen]
+        if missing:
+            raise ValueError(f"a la importación de un texto de puntos le faltan {missing}")
+    if reader == GPKG_LAYER.id:
+        layer = chosen.get("layer")
+        if not isinstance(layer, str) or not layer:
+            raise ValueError(f"la importación de una capa dice su capa («layer»), no {layer!r}")
+        layer_family(chosen.get("role"))  # el papel decide su familia (ValueError si no)
+    return chosen
+
+
+def source_declarations(
+    reader: str,
+    crs: CrsRef | None,
+    vertical: VerticalRef | None,
+    settings: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Las declaraciones (``DECL``, ADR-0024 §3) con que el trabajo de una importación con
+    ``reader`` calcula el ``ContentDigest`` de la fuente: sus CRS declarados
+    (:func:`declared_crs`, :func:`declared_vertical`) y sus convenciones, los ajustes de
+    lectura que son contenido (``gis.content.CONTENT_SETTINGS``). Las mismas que comprueba
+    :func:`source_input`."""
+    chosen = _reader_settings(reader, settings)
+    return input_declarations(declared_crs(crs), declared_vertical(vertical),
+                              {key: chosen[key] for key in CONTENT_SETTINGS if key in chosen})
+
+
+def source_input(
+    reader: str,
+    name: str,
+    *,
+    files: Sequence[SourceFile],
+    file_prints: Sequence[SourcePrint],
+    digest: ContentDigest,
+    crs: CrsRef | None,
+    vertical: VerticalRef | None,
+    settings: Mapping[str, Any] | None = None,
+    received_at: Any = None,
+    received_from: str | None = None,
+) -> InputSpec:
+    """La entrada (``InputSpec`` de la 008, RF-008-07) de una importación de la 006 con el
+    lector de importación ``reader`` (con versión): su nombre lógico ``name`` (el del
+    diálogo), su tipo (el del lector: ``raster``, ``table`` o ``vector``), ``module="gis"``,
+    sus ficheros (``files``, con el ancla de ``core.inputs.locate_source``: el principal el
+    primero; el ``.prj`` de un ASC, compañero) y sus huellas, el ``digest`` que dio el trabajo
+    con :func:`source_declarations`, sus CRS horizontal y vertical declarados (``None``: sin
+    declarar; lo rechazan la clasificación y el registro, RF-006-04), la capa de una capa,
+    los ajustes de lectura del lector (``gis.content.READER_SETTINGS``) con los que son
+    contenido (``gis.content.CONTENT_SETTINGS``), y la entrega (fecha y quién, opcionales).
+
+    ``ValueError`` (un error del programa: el diálogo solo ofrece lo válido) con un lector
+    que no es de una importación de la 006, un ajuste que no es de lectura de su lector, una
+    capa sin capa o con un papel que no es de ``gis.provenance.LAYER_ROLES``, un texto de
+    puntos sin codificación, separador, decimal o columnas, o un hash que no es el de sus
+    datos con esas declaraciones; ``TypeError`` con un argumento de otro tipo."""
+    chosen = _reader_settings(reader, settings)
+    return InputSpec(
+        name,
+        input_kind(reader),
+        MODULE,
+        reader,
+        files=files,
+        file_prints=file_prints,
+        digest=digest,
+        crs_h=declared_crs(crs),
+        crs_v=declared_vertical(vertical),
+        layer=chosen["layer"] if reader == GPKG_LAYER.id else None,
+        settings=chosen,
+        content_settings_keys=[key for key in CONTENT_SETTINGS if key in chosen],
+        received_at=received_at,
+        received_from=received_from,
+    )
+
+
+def classify_source(project: StoreProject, spec: InputSpec) -> Classification:
+    """Qué es la importación de ``spec`` frente a las entradas activas del proyecto
+    (``classify_import``, RF-008-54): ``Reuse`` (la misma, con los mismos ajustes),
+    ``Substitute`` (los mismos datos con otros ajustes: pedir el motivo) o ``New``. Solo lee.
+    ``ProvenanceError`` ``core.input_crs_missing`` si no declara su CRS o su referencia
+    vertical (RF-006-04)."""
+    with project.read() as conn:
+        return classify_import(conn, spec)
+
+
+def _references(spec: InputSpec) -> tuple[CrsRef, VerticalRef]:
+    """El CRS y la referencia vertical que declara ``spec`` (ya comprobados al
+    clasificarla), como objetos del catálogo."""
+    catalog = load_catalog()
+    crs_h = dict(spec.crs_h or {})
+    crs_v = dict(spec.crs_v or {})
+    if "epsg" not in crs_h:
+        raise ValueError(f"la entrada «{spec.name}» de la topografía declara un CRS horizontal "
+                         f"del catálogo ({{\"epsg\": n}}), no {crs_h!r}")
+    crs = catalog.horizontal(crs_h["epsg"])
+    if "epsg" in crs_v:
+        return crs, catalog.vertical(crs_v["epsg"])
+    if "local" in crs_v:
+        return crs, catalog.local_vertical(crs_v["local"])
+    if crs_v.get("ellipsoidal") == ELLIPSOIDAL_EPSG:
+        return crs, ELLIPSOIDAL_ETRS89
+    raise ValueError(f"la entrada «{spec.name}» de la topografía declara una referencia "
+                     f"vertical de la 002 o la altura elipsoidal ETRS89, no {crs_v!r}")
+
+
+def _import_families(spec: InputSpec) -> tuple[str, ...]:
+    """Las familias de lo importado de ``spec``: la rejilla de origen de un MDT, los puntos
+    y las líneas de un texto, o la de una capa según su papel."""
+    if spec.reader in GRID_READERS:
+        return (SOURCE_GRID,)
+    if spec.reader == POINTS_TEXT.id:
+        return (POINTS, BREAKLINES)
+    return (layer_family(spec.settings.get("role")),)
+
+
+@dataclass(frozen=True, slots=True)
+class _Declared:
+    """La entrada que declaró la importación: su ``InputSpec``, la que sustituye y el motivo,
+    sus referencias y las familias de lo importado."""
+
+    spec: InputSpec
+    previous: InputRecord | None
+    reason: str | None
+    crs: CrsRef
+    vertical: VerticalRef
+    families: tuple[str, ...]
+
+
+# --- Escritura de los resultados de una operación ----------------------------------------------
+
+
+@dataclass(slots=True)
+class _File:
+    """Un fichero de ``rasters/`` o ``meshes/``: su dato (nombre, familia, nombre de la orden,
+    hash y EPSG), el nombre con que se escribe (``path``: su destino o, en lo importado, el del
+    dato sin la entrada), su temporal y, cuando se conocen (lo importado, al registrar su
+    entrada), su ``DatasetSpec``, su destino y dónde se aparta el anterior; si ya está en su
+    sitio y si había uno anterior apartado."""
+
+    dataset: str
+    family: str
+    name: str
+    content: ContentDigest
+    crs_epsg: int | None
+    path: Path
+    temporary: Path
+    spec: DatasetSpec | None = None
+    final: Path | None = None
+    backup: Path | None = None
+    installed: bool = False
+    replaced: bool = False
+
+
+@dataclass(slots=True)
+class _Table:
+    """Una tabla de ``project.gpkg``: su dato (nombre, familia y nombre de la orden), su
+    forma, sus filas ya codificadas (geometría y columnas), su extensión, el CRS de sus
+    coordenadas, la referencia de sus Z, el hash que dio su trabajo (``None``: lo calcula el
+    registro al escribirla) y, cuando se conocen (lo importado, al registrar su entrada), su
+    ``DatasetSpec``, su identificador y su descripción."""
+
+    dataset: str
+    family: str
+    name: str
+    layout: TableLayout
+    rows: tuple[tuple[Any, ...], ...]
+    extent: tuple[float, float, float, float] | None
+    crs: CrsRef
+    vertical: VerticalRef
+    content: ContentDigest | None = None
+    spec: DatasetSpec | None = None
+    identifier: str | None = None
+    description: str | None = None
+
+
+def _extent(arrays: Iterable[np.ndarray]) -> tuple[float, float, float, float] | None:
+    """La extensión en planta (xmin, ymin, xmax, ymax) de unas coordenadas, o ``None``."""
+    lows: list[np.ndarray] = []
+    highs: list[np.ndarray] = []
+    for coords in arrays:
+        lows.append(coords[:, :2].min(axis=0))
+        highs.append(coords[:, :2].max(axis=0))
+    if not lows:
+        return None
+    low = np.min(lows, axis=0)
+    high = np.max(highs, axis=0)
+    return (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
+
+
+def _ring(values: object) -> np.ndarray:
+    """Un anillo en planta (X, Y; la Z se descarta: los contornos no la llevan), cerrado."""
+    array = np.asarray(values)
+    if array.ndim != 2 or array.shape[1] not in (2, 3) or len(array) < 3:
+        raise ValueError(f"un anillo de un contorno tiene al menos 3 vértices (X, Y[, Z]), no "
+                         f"la forma {array.shape}")
+    ring = np.ascontiguousarray(array[:, :2])
+    if not np.array_equal(ring[0], ring[-1]):
+        ring = np.vstack([ring, ring[:1]])
+    return ring
+
+
+def _polygons(item: object) -> list[list[np.ndarray]]:
+    """Los polígonos (cada uno, sus anillos) de un contorno: una ``Geometry`` de polígonos
+    (de ``gis.vector.read_layer``), un anillo o una lista de anillos (un polígono)."""
+    if isinstance(item, Geometry):
+        if item.geometry_type == "POLYGON":
+            parts = [item.coords]
+        elif item.geometry_type == "MULTIPOLYGON":
+            parts = list(item.coords)
+        else:
+            raise ValueError(f"un contorno es un polígono, no un {item.geometry_type}")
+    elif isinstance(item, np.ndarray):
+        parts = [[item]]
+    elif isinstance(item, str | bytes) or not isinstance(item, Iterable):
+        raise TypeError(f"un contorno es una Geometry de polígonos o una lista de anillos, no "
+                        f"{item!r}")
+    else:
+        parts = [list(item)]
+    return [[_ring(ring) for ring in polygon] for polygon in parts]
+
+
+# --- Filas y hash de las tablas (T50) ----------------------------------------------------------
+
+
+def _srs_id(srs: object) -> int:
+    if isinstance(srs, bool) or not isinstance(srs, int):
+        raise TypeError(f"el SRS de las coordenadas es su código EPSG (un entero), no {srs!r}")
+    return srs
+
+
+def _content_digest(content: object) -> None:
+    """``content`` es el ``ContentDigest`` que dio el trabajo, o ``None``."""
+    if content is not None and not isinstance(content, ContentDigest):
+        raise TypeError(f"el hash de una tabla es un ContentDigest (table_digest), no "
+                        f"{content!r}")
+
+
+def point_rows(points: PointSet, srs: int) -> list[tuple[Any, ...]]:
+    """Las filas de la tabla de puntos (plan §5.2.3) de ``points`` en el SRS ``srs``: su
+    geometría (un ``POINT`` con Z: el blob de ``core.gpkg.wkb.encode_geometry`` con las
+    coordenadas tal como llegan, bit a bit), su identificador, su código y su fila de origen.
+    Los blobs se escriben de una vez con numpy (spec 006, T50: 289.900 puntos en centésimas de
+    segundo en vez de casi uno, RNF-006-09); si alguna coordenada no es finita, punto a punto,
+    con el error de ``encode_geometry``."""
+    if not isinstance(points, PointSet):
+        raise TypeError(f"los puntos son un PointSet, no {type(points).__name__}")
+    srs = _srs_id(srs)
+    xyz = np.asarray(points.xyz)
+    others = (list(map(str, points.point_ids)), list(map(str, points.codes)),
+              list(map(int, points.source_rows)))
+    if not len(xyz):
+        return []
+    if xyz.dtype == np.float64 and xyz.ndim == 2 and xyz.shape[1] == 3 and \
+            np.isfinite(xyz).all():
+        record = np.empty(len(xyz), dtype=[("head", f"S{_POINT_Z_HEAD}"), ("xyz", "<f8", (3,))])
+        record["head"] = (MAGIC + struct.pack("<BBi", VERSION, _LITTLE_NO_ENVELOPE, srs)
+                          + _POINT_Z_WKB)
+        record["xyz"] = xyz
+        data = record.tobytes()
+        blobs = [data[start:start + _POINT_Z_SIZE]
+                 for start in range(0, len(data), _POINT_Z_SIZE)]
+    else:
+        blobs = [encode_geometry("POINT", row, srs, True) for row in xyz]
+    return list(zip(blobs, *others, strict=True))
+
+
+def _breaklines(lines: Iterable[Breakline]) -> list[Breakline]:
+    chosen = list(lines)
+    for line in chosen:
+        if not isinstance(line, Breakline):
+            raise TypeError(f"una línea de rotura es un Breakline, no {line!r}")
+    return chosen
+
+
+def breakline_rows(lines: Iterable[Breakline], srs: int) -> list[tuple[Any, ...]]:
+    """Las filas de la tabla de líneas de rotura (plan §5.2.3): un ``LINESTRING`` con Z por
+    línea con sus vértices tal como llegan, su identificador, si es dura y su código."""
+    layout = TABLE_LAYOUTS[BREAKLINES]
+    srs = _srs_id(srs)
+    return [(encode_geometry(layout.geometry_type, line.xyz, srs, layout.has_z),
+             str(line.line_id), int(bool(line.hard)), str(line.code))
+            for line in _breaklines(lines)]
+
+
+def _contour_table(lines: Iterable[ContourLine],
+                   srs: int) -> tuple[list[tuple[Any, ...]], list[np.ndarray]]:
+    """Las filas de las curvas y sus coordenadas (la cerrada, con su primer vértice repetido)."""
+    chosen = list(lines)
+    for line in chosen:
+        if not isinstance(line, ContourLine):
+            raise TypeError(f"una curva de nivel es un ContourLine, no {line!r}")
+    layout = TABLE_LAYOUTS[CONTOUR_LINES]
+    srs = _srs_id(srs)
+    rows: list[tuple[Any, ...]] = []
+    coords_all: list[np.ndarray] = []
+    for line in chosen:
+        coords = np.vstack([line.xyz, line.xyz[:1]]) if line.closed else line.xyz
+        rows.append((encode_geometry(layout.geometry_type, coords, srs, layout.has_z),
+                     float(line.elevation), int(bool(line.is_index)),
+                     int(bool(line.closed)), line.length_m))
+        coords_all.append(coords)
+    return rows, coords_all
+
+
+def contour_rows(lines: Iterable[ContourLine], srs: int) -> list[tuple[Any, ...]]:
+    """Las filas de la tabla de curvas de nivel (plan §5.2.3): un ``LINESTRING`` con Z por
+    curva (la cerrada, con su primer vértice repetido al final), su cota, si es maestra, si es
+    cerrada y su longitud en planta."""
+    return _contour_table(lines, srs)[0]
+
+
+def _boundary_table(polygons: Iterable[Any], holes: Iterable[Any],
+                    srs: int) -> tuple[list[tuple[Any, ...]], list[np.ndarray]]:
+    """Las filas de los contornos y sus anillos."""
+    chosen = [(item, BOUNDARY_ROLES[0]) for item in polygons]
+    chosen += [(item, BOUNDARY_ROLES[1]) for item in holes]
+    layout = TABLE_LAYOUTS[BOUNDARY]
+    srs = _srs_id(srs)
+    rows: list[tuple[Any, ...]] = []
+    rings: list[np.ndarray] = []
+    for item, role in chosen:
+        parts = _polygons(item)
+        rows.append((encode_geometry(layout.geometry_type, parts, srs, layout.has_z), role))
+        rings += [ring for polygon in parts for ring in polygon]
+    return rows, rings
+
+
+def boundary_rows(polygons: Iterable[Any], holes: Iterable[Any],
+                  srs: int) -> list[tuple[Any, ...]]:
+    """Las filas de la tabla de contornos (plan §5.2.3): un ``MULTIPOLYGON`` sin Z por contorno
+    (``polygons``, papel «boundary») o por hueco (``holes``, «hole»), con sus X e Y tal como
+    llegan (cada anillo, cerrado)."""
+    return _boundary_table(polygons, holes, srs)[0]
+
+
+def insert_rows(conn: sqlite3.Connection, table: str, names: Sequence[str],
+                rows: Sequence[tuple[Any, ...]]) -> None:
+    """Inserta ``rows`` (en su orden) en las columnas ``names`` de ``table`` con sentencias de
+    :data:`INSERT_ROWS` filas (las que quepan en el límite de variables de SQLite)."""
+    width = len(names)
+    limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    size = max(1, min(INSERT_ROWS, limit // max(1, width)))
+    head = f'INSERT INTO "{table}" ({", ".join(names)}) VALUES '
+    one = "(" + ", ".join("?" * width) + ")"
+    full = head + ", ".join([one] * size)
+    for first in range(0, len(rows), size):
+        chunk = rows[first:first + size]
+        sql = full if len(chunk) == size else head + ", ".join([one] * len(chunk))
+        conn.execute(sql, list(itertools.chain.from_iterable(chunk)))
+
+
+def table_digest(
+    family: str,
+    rows: Sequence[tuple[Any, ...]],
+    crs: CrsRef,
+    *,
+    progress: Progress | None = None,
+    cancelled: Cancelled | None = None,
+) -> ContentDigest:
+    """El ``ContentDigest`` (``core.gpkg_layer@1``, sin declaraciones: el de un dato) de la
+    tabla de la familia ``family`` (:data:`TABLE_LAYOUTS`) con las filas ``rows`` (las de
+    :func:`point_rows`, :func:`breakline_rows`, :func:`contour_rows` o :func:`boundary_rows`)
+    y las coordenadas en ``crs``, sin escribirla en el proyecto: las filas van a un GeoPackage
+    en memoria con la misma estructura que la tabla del proyecto (``create_base`` con su CRS y
+    ``create_feature_table`` con la de su familia) y se leen con
+    ``core.content.builtin.layer_steps``, la función con que el registro de la 008 hashea una
+    tabla del proyecto (ADR-0024 §5). Es el hash que da la tabla escrita en el proyecto: así lo
+    calcula el trabajo de una importación (spec 006, T50) y el hilo de Blender no vuelve a leer
+    la tabla al incorporarla (RNF-006-09). ``progress(fracción, texto)`` tras cada trozo;
+    ``JobCancelled`` si ``cancelled()`` pide parar entre trozos."""
+    if family not in TABLE_LAYOUTS:
+        raise ValueError(f"{family!r} no es una familia con tabla: es una de "
+                         f"{', '.join(TABLE_LAYOUTS)}")
+    if not isinstance(crs, CrsRef):
+        raise TypeError(f"el CRS de las coordenadas es un CrsRef del catálogo, no {crs!r}")
+    layout = TABLE_LAYOUTS[family]
+    text = f"Calculando el hash de contenido de la tabla de {layout.label.lower()}…"
+    conn = sqlite3.connect(":memory:")
+    try:
+        create_base(conn, crs)
+        create_feature_table(conn, DIGEST_TABLE, layout.geometry_type, crs.epsg, layout.has_z,
+                             layout.columns, DIGEST_TABLE)
+        insert_rows(conn, DIGEST_TABLE,
+                    [_GEOMETRY_COLUMN, *(column.name for column in layout.columns)], rows)
+        request = core_builtin.GPKG_LAYER.request(
+            FAMILIES_BY_CODE[family].kind, DATASET_DECLARATIONS, {"main": Path(DIGEST_TABLE)},
+            {"layer": DIGEST_TABLE}, normalizer=NORMALIZER)
+        steps = core_builtin.layer_steps(conn, request)
+        try:
+            for index, done in enumerate(steps, start=1):
+                if cancelled is not None and cancelled():
+                    raise JobCancelled(f"Cancelado al calcular el hash de la tabla de "
+                                       f"{layout.label.lower()} en el trozo {index}")
+                if progress is not None:
+                    progress(done, text)
+        finally:
+            steps.close()
+        return request.hasher.digest()
+    finally:
+        conn.close()
+
+
+class ResultWriter:
+    """Los resultados de la operación ``handle`` (``begin_operation`` de la 008, «en curso») en
+    ``project`` (véase el módulo). Se usa como gestor de contexto::
+
+        with ResultWriter(project, handle) as out:
+            out.raster("MDT Norte", rejilla)
+            out.commit(software={"pyproj": "3.8.0"}, message=informe)
+
+    o, al incorporar un trabajo de la 004, con ``out.write`` como función de escritura de
+    ``core.provenance.operations.ingest_job``. En una importación, antes de preparar lo
+    importado, :meth:`declare_input`. ``TypeError`` si ``handle`` no es un
+    ``OperationHandle``; ``ValueError`` si es de otro proyecto."""
+
+    def __init__(self, project: StoreProject, handle: OperationHandle) -> None:
+        if not isinstance(handle, OperationHandle):
+            raise TypeError(f"los resultados son de un OperationHandle, no {handle!r}")
+        if handle.project_uid != project.uid:
+            raise ValueError(f"la operación {handle.uid} es de otro proyecto")
+        self.project = project
+        self.handle = handle
+        self._crs, self._vertical = project_references(project)
+        self._outputs: list[_File | _Table] = []
+        self._declared: _Declared | None = None
+        self._record: InputRecord | None = None
+        self._reused: Reuse | None = None
+        self._committed: bool | None = None
+        self._closed = False
+
+    def __enter__(self) -> ResultWriter:
+        return self
+
+    def __exit__(self, kind: type[BaseException] | None, error: BaseException | None,
+                 traceback: TracebackType | None) -> None:
+        self.close(error)
+
+    @property
+    def specs(self) -> tuple[DatasetSpec, ...]:
+        """Las salidas preparadas con su ubicación, en su orden (lo importado, cuando se
+        registra su entrada)."""
+        return tuple(output.spec for output in self._outputs if output.spec is not None)
+
+    @property
+    def input(self) -> InputRecord | None:
+        """La entrada que registró la importación, una vez confirmada (incorporada con
+        ``ingest_job``, al cerrar los resultados); si no, ``None``."""
+        return self._record if self._committed else None
+
+    @property
+    def reused(self) -> Reuse | None:
+        """La entrada reutilizada si la importación la encontró ya registrada igual."""
+        return self._reused
+
+    def _files(self) -> list[_File]:
+        return [output for output in self._outputs if isinstance(output, _File)]
+
+    # --- La entrada de una importación (T43) -------------------------------------------------
+
+    def _previous(self, previous_uid: object, reason: object) -> tuple[InputRecord | None,
+                                                                       str | None]:
+        """La entrada activa a la que sustituye y el motivo, obligatorio (RF-008-11)."""
+        if reason is not None and not isinstance(reason, str):
+            raise TypeError(f"el motivo de una sustitución es un texto, no {reason!r}")
+        if previous_uid is None:
+            if reason is not None:
+                raise ValueError("el motivo acompaña a una sustitución: falta la entrada "
+                                 "sustituida (previous_uid)")
+            return None, None
+        if not isinstance(previous_uid, str):
+            raise TypeError(f"la entrada sustituida se indica por su uid, no {previous_uid!r}")
+        with self.project.read() as conn:
+            record = get_input(conn, previous_uid)
+        if record is None:
+            raise ProvenanceError("core.input_unknown", input=previous_uid,
+                                  project=self.project.name)
+        if record.status is InputStatus.SUPERSEDED:
+            raise ProvenanceError("core.input_superseded", name=record.name)
+        if record.status is InputStatus.DISCARDED:
+            raise ProvenanceError("core.input_previous_discarded", previous=record.name)
+        text = None if reason is None else reason.strip()
+        if not text:
+            raise ProvenanceError("core.input_supersede_reason_missing", name=record.name)
+        return record, text
+
+    def declare_input(
+        self,
+        spec: InputSpec,
+        *,
+        previous_uid: str | None = None,
+        reason: str | None = None,
+    ) -> Classification:
+        """Declara la entrada ``spec`` (:func:`source_input`) que importa esta operación (una
+        importación de la 006, con uno de sus lectores) y la clasifica antes de preparar nada
+        (RF-008-54):
+
+        - ``Reuse`` (la misma entrada con los mismos ajustes, sin ``previous_uid``): no se
+          duplica; la operación queda «cancelada» con el aviso (``Reuse.text``,
+          ``core.inputs.reuse_input``) y los resultados se cierran sin escribir nada;
+        - ``Substitute`` (los mismos datos con otros ajustes): tiene que llegar con
+          ``previous_uid`` (esa entrada) y ``reason``, el motivo (RF-008-11); si no,
+          ``ProvenanceError`` ``core.input_substitution_required`` sin escribir nada;
+        - ``New``: una entrada nueva (o la que sustituye a ``previous_uid``, al
+          actualizarla).
+
+        La entrada se registra al confirmar, en la transacción que escribe lo importado.
+        ``ProvenanceError`` también sin CRS declarado (``core.input_crs_missing``), con un
+        nombre lógico de otra entrada activa (``core.input_name_taken``) y con una
+        ``previous_uid`` que no se puede sustituir o sin motivo; ``ValueError`` si la operación
+        no es una importación con ese lector, si ya declaró una entrada o si ya preparó algún
+        resultado; ``TypeError`` si ``spec`` no es un ``InputSpec``."""
+        self._check_open()
+        if not isinstance(spec, InputSpec):
+            raise TypeError(f"una importación declara un InputSpec, no {type(spec).__name__}")
+        declared = OPERATION_TYPES_BY_NAME.get(self.handle.op_type)
+        if declared is None or not declared.readers:
+            raise ValueError(f"solo una importación de la topografía declara su entrada, no "
+                             f"«{self.handle.op_type}»")
+        if spec.module != MODULE or spec.reader not in declared.readers:
+            raise ValueError(f"«{self.handle.op_type}» importa con {list(declared.readers)}, no "
+                             f"una entrada de «{spec.module}» con «{spec.reader}»")
+        if self._declared is not None:
+            raise ValueError(f"la importación ({self.handle.uid}) ya declaró su entrada "
+                             f"«{self._declared.spec.name}»")
+        if self._outputs:
+            raise ValueError("la entrada se declara antes de preparar lo importado")
+        previous, text = self._previous(previous_uid, reason)
+        with self.project.read() as conn:
+            found = classify_import(conn, spec)
+            same_name = get_input(conn, spec.name)
+        mismatched = previous is None or _found_uid(found) != previous.uid
+        if isinstance(found, Substitute) and mismatched:
+            raise ProvenanceError("core.input_substitution_required", name=spec.name,
+                                  existing=found.input.name, differences=found.describe())
+        if isinstance(found, Reuse) and previous is None:
+            reuse_input(self.project, self.handle, found)
+            self._reused = found
+            self._closed = True
+            return found
+        if (same_name is not None and same_name.active
+                and (previous is None or same_name.uid != previous.uid)):
+            raise ProvenanceError("core.input_name_taken", name=spec.name)
+        crs, vertical = _references(spec)
+        self._declared = _Declared(spec, previous, text, crs, vertical, _import_families(spec))
+        return found
+
+    def _imported(self, family: str) -> bool:
+        """Comprueba que la operación produce la familia ``family`` y dice si es lo importado
+        de su entrada (en una importación, que ya la declaró y la produce)."""
+        declared = OPERATION_TYPES_BY_NAME.get(self.handle.op_type)
+        if declared is not None and family not in declared.outputs:
+            raise ValueError(f"«{self.handle.op_type}» no produce datos «{family}»: produce "
+                             f"{list(declared.outputs)}")
+        if self.handle.op_type not in IMPORTS:
+            return False
+        if self._declared is None:
+            raise ValueError("lo importado es de una entrada: la importación la declara antes "
+                             "(declare_input)")
+        if family not in self._declared.families:
+            raise ValueError(f"la entrada «{self._declared.spec.name}» no produce datos "
+                             f"«{family}»: produce {list(self._declared.families)}")
+        return True
+
+    # --- Preparar --------------------------------------------------------------------------
+
+    def _check_open(self) -> None:
+        if self._closed or self._committed:
+            raise RuntimeError(f"los resultados de la operación «{self.handle.op_type}» "
+                               f"({self.handle.uid}) ya se confirmaron o se cerraron")
+
+    def _dataset(self, family: str, name: str) -> str:
+        """El nombre del dato, que la operación escribe una vez."""
+        found = dataset_name(family, name)
+        if any(output.dataset == found for output in self._outputs):
+            raise ValueError(f"una operación escribe cada dato una vez: «{found}» se repite")
+        return found
+
+    def _check_place(self, conn: sqlite3.Connection, spec: DatasetSpec) -> None:
+        """El sitio de ``spec`` está libre o es del mismo dato vivo (si no, ``_taken``)."""
+        owned, others = _owned(conn, spec)
+        if spec.store is Store.GPKG:
+            exists = _table_exists(conn, spec.locator)
+        else:
+            exists = Path(self.project.root, *spec.locator.split("/")).exists()
+        if others or (exists and not owned):
+            raise _taken(spec)
+
+    def _plan_file(self, family: str, name: str, content: ContentDigest,
+                   crs_epsg: int | None, imported: bool) -> _File:
+        dataset = self._dataset(family, name)
+        if imported:  # su ubicación lleva su entrada (D22): se sabe al registrarla
+            found = FAMILIES_BY_CODE[family]
+            path = Path(self.project.root, str(found.store), dataset + found.extension)
+            entry = _File(dataset, family, name, content, crs_epsg, path,
+                          temporary_path(self.project, path))
+            check_path_length(entry.temporary, obj=path.name)
+            self.handle.claim_paths(entry.temporary)
+        else:
+            spec = dataset_spec(family, name, content=content, crs_epsg=crs_epsg)
+            final = Path(self.project.root, *spec.locator.split("/"))
+            entry = _File(dataset, family, name, content, crs_epsg, final,
+                          temporary_path(self.project, final), spec, final,
+                          backup_path(self.project, final))
+            for path in (entry.temporary, entry.backup):
+                check_path_length(path, obj=final.name)
+            with self.project.read() as conn:
+                self._check_place(conn, spec)
+            self.handle.claim_paths(entry.temporary, final, entry.backup)
+        try:
+            entry.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise write_failed(entry.path.name, error) from None
+        self._outputs.append(entry)
+        return entry
+
+    def raster(
+        self,
+        name: str,
+        raster: Raster,
+        *,
+        family: str = PROJECT_GRID,
+        progress: Progress | None = None,
+        cancelled: Cancelled | None = None,
+    ) -> DatasetSpec | None:
+        """Prepara la rejilla ``raster`` como el dato ``gis_<familia>_<nombre>``: por defecto,
+        la rejilla del proyecto (``gis_dtm_``, en su CRS y su referencia vertical; si no,
+        ``ValueError``); ``gis_src_``, lo importado de la entrada que declaró la importación,
+        en el CRS y la referencia vertical declarados. Su hash (``gis.content.raster_digest``)
+        y su GeoTIFF del perfil ``project`` en el temporal. Devuelve su ``DatasetSpec`` (lo
+        importado, ``None``: su ubicación se sabe al registrar la entrada). ``GisError`` si su
+        sitio es de otro (``gis.output_target_taken``) o falla el disco; ``JobCancelled`` si
+        ``cancelled()`` pide parar entre teselas."""
+        if not isinstance(raster, Raster):
+            raise TypeError(f"se escribe un Raster, no {type(raster).__name__}")
+        _family(family, GRID_FAMILIES)
+        if family == PROJECT_GRID and (raster.crs.epsg != self._crs.epsg
+                                       or raster.vertical != self._vertical):
+            raise ValueError(
+                f"la rejilla del proyecto «{name}» va en el CRS y la referencia vertical del "
+                f"proyecto (EPSG:{self._crs.epsg} + {_vertical_text(self._vertical)}), no en "
+                f"EPSG:{raster.crs.epsg} + {_vertical_text(raster.vertical)}: remuestréela antes"
+            )
+        self._check_open()
+        imported = self._imported(family)
+        if imported and self._declared is not None and (
+                raster.crs.epsg != self._declared.crs.epsg
+                or raster.vertical != self._declared.vertical):
+            raise ValueError(f"lo importado de «{self._declared.spec.name}» va en el CRS y la "
+                             "referencia vertical que declara su entrada")
+        entry = self._plan_file(family, name, raster_digest(raster, DATASET_DECLARATIONS),
+                                raster.crs.epsg, imported)
+        write_geotiff(raster, entry.path, profile=WriteProfile.PROJECT,
+                      temporary=entry.temporary, replace=False, progress=progress,
+                      cancelled=cancelled)
+        return entry.spec
+
+    def tin(self, name: str, tin: Tin) -> DatasetSpec:
+        """Prepara el TIN ``tin`` (absoluto, en el CRS y la referencia vertical del proyecto)
+        como ``gis_tin_<nombre>``: su ``meta`` (el EPSG y la referencia vertical del proyecto
+        y esta operación), su hash (``gis.content.tin_digest``) y su npz en el temporal.
+        ``GisError`` si su sitio es de otro o falla el disco."""
+        if not isinstance(tin, Tin):
+            raise TypeError(f"se escribe un Tin, no {type(tin).__name__}")
+        self._check_open()
+        self._imported(TIN)
+        meta = {"crs_epsg": self._crs.epsg, "vertical": _vertical_text(self._vertical),
+                "operation_uid": self.handle.uid}
+        entry = self._plan_file(TIN, name, tin_digest(tin, meta, DATASET_DECLARATIONS),
+                                self._crs.epsg, False)
+        try:
+            save_tin(tin, entry.path, meta, temporary=entry.temporary, replace=False)
+        except OSError as error:
+            raise write_failed(entry.path.name, error) from None
+        assert entry.spec is not None
+        return entry.spec
+
+    def copy_file(
+        self,
+        family: str,
+        name: str,
+        source: Path | str,
+        *,
+        content: ContentDigest,
+        sha256: str | None = None,
+        crs_epsg: int | None = None,
+        progress: Progress | None = None,
+        cancelled: Cancelled | None = None,
+    ) -> DatasetSpec | None:
+        """Prepara el fichero ``source`` que dejó un trabajo de la 004 en su ``out/`` (una
+        rejilla del perfil ``project`` o un npz de TIN) como el dato de ``family`` llamado
+        ``name`` (``gis_src_``: lo importado de la entrada declarada), con el ``content`` que
+        calculó el trabajo con el lector del dato: lo copia al temporal por trozos de
+        :data:`COPY_CHUNK_BYTES` con su huella, que tiene que ser ``sha256`` si se da (si no,
+        ``gis.output_copy_mismatch``). ``crs_epsg``: por defecto, el del proyecto en la rejilla
+        del proyecto y el TIN, y el declarado en lo importado. Devuelve su ``DatasetSpec``
+        (lo importado, ``None``). ``JobCancelled`` si ``cancelled()`` pide parar entre
+        trozos. Lo mismo, de una vez, que :meth:`copy_file_steps` por pasos."""
+        steps = self._copy_output(family, name, source, content=content, sha256=sha256,
+                                  crs_epsg=crs_epsg, cancelled=cancelled)
+        while True:
+            try:
+                done, total, text = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            if progress is not None:
+                progress(done / total, text)
+
+    def copy_file_steps(
+        self,
+        family: str,
+        name: str,
+        source: Path | str,
+        *,
+        content: ContentDigest,
+        sha256: str | None = None,
+        crs_epsg: int | None = None,
+        cancelled: Cancelled | None = None,
+    ) -> Generator[float, None, DatasetSpec | None]:
+        """:meth:`copy_file` por pasos (spec 006, T54; RNF-006-09: el MDT de RNF-006-01 son
+        decenas de MB que el hilo de Blender copia con su huella al incorporar su
+        importación): un trozo de :data:`COPY_CHUNK_BYTES` por paso, tras el que da la
+        fracción copiada (0–1; el último, con el ``fsync``), y la comprobación de la huella al
+        final; devuelve (``StopIteration.value``) su ``DatasetSpec`` (lo importado, ``None``).
+        El mismo fichero, con los mismos bytes y la misma huella. Cerrar los pasos a mitad
+        (``close()``) borra el temporal: no queda ningún fichero a medias. Los errores de
+        :meth:`copy_file` salen en el paso en que ocurren."""
+        steps = self._copy_output(family, name, source, content=content, sha256=sha256,
+                                  crs_epsg=crs_epsg, cancelled=cancelled)
+        while True:
+            try:
+                done, total, _text = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            yield done / total
+
+    def _copy_output(
+        self,
+        family: str,
+        name: str,
+        source: Path | str,
+        *,
+        content: ContentDigest,
+        sha256: str | None,
+        crs_epsg: int | None,
+        cancelled: Cancelled | None,
+    ) -> Generator[tuple[int, int, str], None, DatasetSpec | None]:
+        """Lo común de :meth:`copy_file` y :meth:`copy_file_steps`: tras cada trozo copiado,
+        cuántos van, de cuántos y el texto del avance."""
+        _family(family, FILE_FAMILIES)
+        if not isinstance(content, ContentDigest):
+            raise TypeError(f"el hash del trabajo es un ContentDigest, no {content!r}")
+        self._check_open()
+        imported = self._imported(family)
+        if crs_epsg is None and family in (PROJECT_GRID, TIN):
+            crs_epsg = self._crs.epsg
+        if crs_epsg is None and imported and self._declared is not None:
+            crs_epsg = self._declared.crs.epsg
+        entry = self._plan_file(family, name, content, crs_epsg, imported)
+        found = yield from _copy_steps(Path(source), entry.temporary, entry.path.name,
+                                       cancelled)
+        if sha256 is not None and found != sha256:
+            entry.temporary.unlink(missing_ok=True)
+            raise GisError("gis.output_copy_mismatch", obj=f"{_OBJ} «{entry.dataset}»",
+                           field="huella", value=found, file=entry.path.name,
+                           detail=f"sha256 {found[:12]}… frente a {sha256[:12]}…")
+        return entry.spec
+
+    def _plan_table(self, family: str, name: str, rows: list[tuple[Any, ...]],
+                    extent: tuple[float, float, float, float] | None,
+                    imported: bool, content: ContentDigest | None = None) -> DatasetSpec | None:
+        """Prepara la tabla de ``family``: lo calculado, con su ubicación ya comprobada; lo
+        importado, en el CRS y la referencia declarados, con su ubicación al registrar su
+        entrada. ``content``: el hash que dio su trabajo (:func:`table_digest`), o ``None``
+        (lo calcula el registro al escribirla)."""
+        layout = TABLE_LAYOUTS[family]
+        dataset = self._dataset(family, name)
+        if imported:
+            assert self._declared is not None
+            self._outputs.append(_Table(dataset, family, name, layout, tuple(rows), extent,
+                                        self._declared.crs, self._declared.vertical, content))
+            return None
+        spec = dataset_spec(family, name, crs_epsg=self._crs.epsg, content=content)
+        identifier = f"{layout.label}: {name} ({spec.locator})"
+        with self.project.read() as conn:
+            clash = conn.execute(
+                "SELECT 1 FROM gpkg_contents WHERE identifier = ? AND lower(table_name) <> "
+                "lower(?)", (identifier, spec.locator)).fetchone()
+            if clash is not None:
+                raise _taken(spec)
+            self._check_place(conn, spec)
+        description = f"{layout.label} de Geoblender; {_z_description(self._vertical)}"
+        self._outputs.append(_Table(dataset, family, name, layout, tuple(rows), extent,
+                                    self._crs, self._vertical, content, spec, identifier,
+                                    description))
+        return spec
+
+    def _srs(self, imported: bool) -> int:
+        """El SRS de las coordenadas: el declarado en lo importado; si no, el del proyecto."""
+        if imported and self._declared is not None:
+            return self._declared.crs.epsg
+        return self._crs.epsg
+
+    def contours(self, name: str, lines: Iterable[ContourLine], *,
+                 content: ContentDigest | None = None) -> DatasetSpec | None:
+        """Prepara las curvas ``lines`` como la tabla ``gis_cnt_<nombre>`` (plan §5.2.3): una
+        fila por curva con su geometría ``LINESTRING`` con Z (la cerrada, con su primer
+        vértice repetido al final), su cota, si es maestra, si es cerrada y su longitud en
+        planta (:func:`contour_rows`). Calculadas (``gis.contours``), absolutas en el CRS y la
+        referencia vertical del proyecto; importadas de una capa (``gis.import_vector`` con el
+        papel ``contours``), lo importado de su entrada, en los declarados. La tabla se escribe
+        al confirmar; su hash, ``content`` (el que dio su trabajo con :func:`table_digest`) o,
+        sin él, el que calcula el registro. Devuelve su ``DatasetSpec`` (lo importado,
+        ``None``). ``GisError`` si su sitio es de otro."""
+        chosen = list(lines)
+        for line in chosen:
+            if not isinstance(line, ContourLine):
+                raise TypeError(f"una curva de nivel es un ContourLine, no {line!r}")
+        _content_digest(content)
+        self._check_open()
+        imported = self._imported(CONTOUR_LINES)
+        rows, coords_all = _contour_table(chosen, self._srs(imported))
+        return self._plan_table(CONTOUR_LINES, name, rows, _extent(coords_all), imported,
+                                content)
+
+    def points(self, name: str, points: PointSet, *,
+               content: ContentDigest | None = None) -> DatasetSpec | None:
+        """Prepara los puntos importados ``points`` (de un texto o de una capa) como la tabla
+        ``gis_pts_<nombre>_<entrada8>`` (plan §5.2.3): un ``POINT`` con Z por punto, con las
+        coordenadas tal como llegan (float64, en el CRS y la referencia declarados,
+        RF-006-12), su identificador, su código y su fila (o entidad) de origen
+        (:func:`point_rows`). ``content``: el hash que dio su trabajo (:func:`table_digest`);
+        sin él, lo calcula el registro. Lo importado de la entrada declarada: devuelve
+        ``None`` (su ubicación, al registrarla)."""
+        if not isinstance(points, PointSet):
+            raise TypeError(f"los puntos son un PointSet, no {type(points).__name__}")
+        _content_digest(content)
+        self._check_open()
+        imported = self._imported(POINTS)
+        rows = point_rows(points, self._srs(imported))
+        return self._plan_table(POINTS, name, rows, _extent([points.xyz] if len(points) else []),
+                                imported, content)
+
+    def breaklines(self, name: str, lines: Iterable[Breakline], *,
+                   content: ContentDigest | None = None) -> DatasetSpec | None:
+        """Prepara las líneas de rotura importadas ``lines`` como la tabla
+        ``gis_brk_<nombre>_<entrada8>`` (plan §5.2.3): un ``LINESTRING`` con Z por línea, con
+        sus vértices tal como llegan, su identificador, si es dura y su código
+        (:func:`breakline_rows`). ``content``: el hash que dio su trabajo; sin él, lo calcula
+        el registro. Lo importado de la entrada declarada: devuelve ``None``."""
+        chosen = _breaklines(lines)
+        _content_digest(content)
+        self._check_open()
+        imported = self._imported(BREAKLINES)
+        rows = breakline_rows(chosen, self._srs(imported))
+        return self._plan_table(BREAKLINES, name, rows, _extent(line.xyz for line in chosen),
+                                imported, content)
+
+    def boundary(self, name: str, polygons: Iterable[Any], *,
+                 holes: Iterable[Any] = (),
+                 content: ContentDigest | None = None) -> DatasetSpec | None:
+        """Prepara los contornos importados como la tabla ``gis_bnd_<nombre>_<entrada8>``
+        (plan §5.2.3): un ``MULTIPOLYGON`` sin Z por contorno (``polygons``, papel
+        «boundary») o por hueco (``holes``, «hole»); cada uno, una ``Geometry`` de polígonos
+        (de ``gis.vector.read_layer``), un anillo o una lista de anillos, con sus X e Y tal
+        como llegan (cada anillo, cerrado; :func:`boundary_rows`). ``content``: el hash que dio
+        su trabajo; sin él, lo calcula el registro. Lo importado de la entrada declarada:
+        devuelve ``None``."""
+        chosen, chosen_holes = list(polygons), list(holes)
+        _content_digest(content)
+        self._check_open()
+        imported = self._imported(BOUNDARY)
+        rows, rings = _boundary_table(chosen, chosen_holes, self._srs(imported))
+        return self._plan_table(BOUNDARY, name, rows, _extent(rings), imported, content)
+
+    def export(
+        self,
+        source: Path | str,
+        target: Path | str,
+        *,
+        content: ContentDigest,
+        sha256: str | None = None,
+        crs_epsg: int | None = None,
+        progress: Progress | None = None,
+        cancelled: Cancelled | None = None,
+    ) -> DatasetSpec | None:
+        """Prepara el entregable que dejó el trabajo de una exportación (``gis.export_raster``
+        o ``gis.export_gpkg``; T31, plan §5.6.6) en ``source`` para ponerlo en ``target`` al
+        confirmar. Dentro de ``exports/`` del proyecto es el dato ``gis_exp_<ruta>`` del
+        almacén ``exports``, sin seguimiento (``provenance.export_spec``), con ``content``, el
+        hash que dio el trabajo con su lector; fuera del proyecto, ninguno (D21: la operación
+        queda sin salida registrada). Lo copia por trozos al temporal ``<fichero>.tmp-<sesión>``
+        junto al destino con su huella (``sha256`` si se da; si no coincide,
+        ``gis.output_copy_mismatch``); al ponerlo en su sitio (:meth:`install`), el destino
+        anterior, que la persona confirmó sustituir, se aparta hasta confirmar, y si otro
+        programa lo tiene abierto, ``gis.raster_target_locked`` sin fichero a medias. Devuelve
+        su ``DatasetSpec`` o ``None``. ``ValueError`` si la operación no es una exportación o
+        ``target`` está en otra carpeta del proyecto; ``JobCancelled`` si ``cancelled()`` pide
+        parar entre trozos."""
+        self._check_open()
+        if self.handle.op_type not in EXPORTS:
+            raise ValueError(f"solo una exportación escribe un entregable, no "
+                             f"«{self.handle.op_type}»")
+        if not isinstance(content, ContentDigest):
+            raise TypeError(f"el hash del trabajo es un ContentDigest, no {content!r}")
+        target = Path(target)
+        locator = export_locator(self.project.root, target)
+        if locator is None and inside_project(self.project.root, target):
+            raise ValueError(f"«{target.name}» está en el proyecto fuera de "
+                             f"{EXPORTS_FOLDER}/: no es el destino de un entregable")
+        spec = None if locator is None else export_spec(locator, content, crs_epsg=crs_epsg)
+        if any(isinstance(output, _File) and output.final == target for output in self._outputs):
+            raise ValueError(f"una exportación escribe «{target.name}» una vez")
+        entry = _File(target.name if spec is None else spec.name, "", target.name, content,
+                      crs_epsg, target, temporary_path(self.project, target), spec, target,
+                      backup_path(self.project, target))
+        for path in (entry.temporary, entry.backup):
+            check_path_length(path, obj=target.name)
+        if spec is not None:
+            self.handle.claim_paths(entry.temporary, target, entry.backup)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                raise write_failed(target.name, error) from None
+        self._outputs.append(entry)
+        found = _copy(Path(source), entry.temporary, target.name, progress, cancelled)
+        if sha256 is not None and found != sha256:
+            entry.temporary.unlink(missing_ok=True)
+            raise GisError("gis.output_copy_mismatch", obj=f"Entregable «{target.name}»",
+                           field="huella", value=found, file=target.name,
+                           detail=f"sha256 {found[:12]}… frente a {sha256[:12]}…")
+        return spec
+
+    # --- Poner en su sitio y confirmar --------------------------------------------------------
+
+    def install(self) -> None:
+        """Pone cada fichero preparado en su sitio: aparta el anterior del mismo dato a
+        :func:`backup_path` y pasa el temporal al destino con ``os.replace``. Si otro programa
+        tiene abierto el destino, ``gis.raster_target_locked`` (el anterior, intacto); otro
+        fallo del disco, ``gis.raster_write_failed``. Lo ya puesto se deshace al cerrar sin
+        confirmar. Lo importado espera a que se registre su entrada (su destino lleva su uid).
+        Volver a llamarla no hace nada más."""
+        self._check_open()
+        for entry in self._files():
+            if entry.installed or entry.final is None or entry.backup is None:
+                continue
+            if entry.final.exists():
+                try:
+                    os.replace(entry.final, entry.backup)
+                except OSError as error:
+                    raise _disk_error(entry.final.name, error) from None
+                entry.replaced = True
+            try:
+                os.replace(entry.temporary, entry.final)
+            except OSError as error:
+                failure = _disk_error(entry.final.name, error)
+                for problem in _restore(entry) if entry.replaced else []:
+                    failure.add_note(problem)
+                raise failure from None
+            entry.installed = True
+
+    def _register_input(self, conn: sqlite3.Connection) -> None:
+        """En la transacción ``conn``: la entrada sustituida, ``supersede``; la entrada,
+        ``register_input``; y lo importado, con su ubicación (D22), comprobada y reclamada."""
+        if self._declared is None:
+            if self.handle.op_type in IMPORTS:
+                raise ValueError(f"la importación «{self.handle.op_type}» registra su entrada: "
+                                 "declárela antes (declare_input)")
+            return
+        if self._record is not None:
+            return
+        declared = self._declared
+        previous_uid = None if declared.previous is None else declared.previous.uid
+        if previous_uid is not None:
+            supersede(conn, self.project, previous_uid, operation_uid=self.handle.uid,
+                      reason=declared.reason)
+        record = register_input(conn, self.project, declared.spec,
+                                operation_uid=self.handle.uid, previous_uid=previous_uid,
+                                reason=declared.reason)
+        self._record = record
+        for output in self._outputs:
+            if output.spec is not None:
+                continue
+            if isinstance(output, _File):
+                self._place_file(conn, output, record)
+            else:
+                self._place_table(conn, output, record)
+
+    def _place_file(self, conn: sqlite3.Connection, entry: _File, record: InputRecord) -> None:
+        spec = dataset_spec(entry.family, entry.name, input_uid=record.uid,
+                            content=entry.content, crs_epsg=entry.crs_epsg)
+        final = Path(self.project.root, *spec.locator.split("/"))
+        check_path_length(final, obj=final.name)
+        self._check_place(conn, spec)
+        self.handle.claim_paths(final)
+        entry.spec, entry.final = spec, final
+        entry.backup = backup_path(self.project, final)
+
+    def _place_table(self, conn: sqlite3.Connection, table: _Table,
+                     record: InputRecord) -> None:
+        spec = dataset_spec(table.family, table.name, input_uid=record.uid,
+                            crs_epsg=table.crs.epsg, content=table.content)
+        layout = table.layout
+        identifier = f"{layout.label}: {table.name} ({spec.locator})"
+        if conn.execute("SELECT 1 FROM gpkg_contents WHERE identifier = ?",
+                        (identifier,)).fetchone() is not None:
+            raise _taken(spec)
+        self._check_place(conn, spec)
+        description = f"{layout.label}: lo importado de la entrada «{record.name}» por Geoblender"
+        if layout.has_z:
+            description += f"; {_z_description(table.vertical)}"
+        table.spec, table.identifier, table.description = spec, identifier, description
+
+    def write(self, conn: sqlite3.Connection) -> tuple[DatasetSpec, ...]:
+        """Lo que se hace en la transacción de escritura ``conn`` que confirma la operación
+        (la de :meth:`commit` o la de ``ingest_job``): registra la entrada de una importación
+        (y marca sustituida la que sustituye), pone los ficheros en su sitio si aún no lo
+        están (:meth:`install`), escribe las tablas (una que ya es del dato, con sus filas
+        nuevas) y devuelve las salidas para ``OperationHandle.complete``."""
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("los resultados se escriben en una transacción de escritura del "
+                             "proyecto (Project.write_transaction)")
+        self._register_input(conn)
+        self.install()
+        for output in self._outputs:
+            if isinstance(output, _Table):
+                self._write_table(conn, output)
+        return self.specs
+
+    def _write_table(self, conn: sqlite3.Connection, table: _Table) -> None:
+        spec, layout = table.spec, table.layout
+        assert spec is not None and table.identifier is not None
+        owned, others = _owned(conn, spec)
+        exists = _table_exists(conn, spec.locator)
+        if others or (exists and not owned):
+            raise _taken(spec)
+        if exists:
+            conn.execute(f'DELETE FROM "{spec.locator}"')
+        else:
+            _ensure_srs(conn, table.crs)
+            create_feature_table(conn, spec.locator, layout.geometry_type, table.crs.epsg,
+                                 layout.has_z, layout.columns, table.identifier,
+                                 table.description or "")
+        insert_rows(conn, spec.locator,
+                    [_GEOMETRY_COLUMN, *(column.name for column in layout.columns)], table.rows)
+        conn.execute("UPDATE gpkg_contents SET min_x = ?, min_y = ?, max_x = ?, max_y = ? "
+                     "WHERE table_name = ?",
+                     (*(table.extent or (None, None, None, None)), spec.locator))
+
+    def commit(
+        self,
+        *,
+        software: Any = None,
+        interpreter: Any = None,
+        message: str | None = None,
+        executor: Any = None,
+        job_uid: str | None = None,
+    ) -> tuple[DatasetRecord, ...]:
+        """Confirma la operación: los ficheros en su sitio (:meth:`install`) y, en una
+        transacción, la entrada de una importación, las tablas y ``OperationHandle.complete``
+        con las salidas y ``software``, ``interpreter``, ``message``, ``executor`` y
+        ``job_uid`` (RF-008-18); después borra lo anterior apartado. Devuelve las salidas
+        registradas, en su orden. Si algo falla, se deshace todo lo de esta operación y queda
+        «fallida» o «cancelada» con su motivo (RF-008-19), y el error sigue."""
+        try:
+            self.install()
+            with self.project.write_transaction() as conn:
+                specs = self.write(conn)
+                records = self.handle.complete(
+                    conn, outputs=specs, software=software, interpreter=interpreter,
+                    message=message, executor=executor, job_uid=job_uid,
+                )
+        except BaseException as error:
+            self.close(error)
+            raise
+        self._committed = True
+        self.close()
+        return records
+
+    def originals(
+        self,
+        verified_copies: Sequence[str | os.PathLike[str]],
+        *,
+        budget_s: float = STEP_BUDGET_S,
+        same_volume: Callable[[Path, Path], bool] | None = None,
+    ) -> Iterator[ProjectProgress]:
+        """Los pasos que guardan el original de la entrada que registró esta importación
+        (RF-008-53; ``core.inputs.store_originals_steps``) desde ``verified_copies``, la copia
+        verificada de cada fichero que hizo su trabajo (``JobDir.copy_input``), nunca la
+        fuente (RF-008-14): el de un texto de puntos se guarda en ``originals/<entrada>/`` con
+        su huella; de un ráster o de una capa, no (el último paso lo dice). ``RuntimeError``
+        si la importación no se confirmó."""
+        if not self._committed or self._record is None:
+            raise RuntimeError(f"la operación «{self.handle.op_type}» ({self.handle.uid}) no "
+                               "registró ninguna entrada: el original se guarda tras confirmar "
+                               "su importación")
+        return store_originals_steps(self.project, self._record.uid, verified_copies,
+                                     budget_s=budget_s, same_volume=same_volume)
+
+    # --- Cerrar ----------------------------------------------------------------------------
+
+    def close(self, error: BaseException | None = None) -> None:
+        """Termina: si la operación quedó «hecha», borra lo anterior apartado; si no, deshace
+        lo puesto en su sitio y borra los temporales. Con ``error`` (el que paró el bloque) y la
+        operación aún «en curso», la deja «cancelada» o «fallida» con su motivo; si no se puede
+        registrar, se dice en una nota del error. Volver a llamarla no hace nada."""
+        if self._closed:
+            return
+        self._closed = True
+        problems: list[str] = []
+        files = self._files()
+        # Incorporada con ingest_job, la confirmó su transacción: se mira en el proyecto.
+        if self._committed is None and (self._record is not None
+                                        or any(entry.installed for entry in files)):
+            try:
+                self._committed = self._status() == OperationStatus.DONE
+            except (GeoblenderError, OSError, sqlite3.Error) as exc:
+                problems.append(f"no se pudo saber si la operación se confirmó ({exc}); sus "
+                                "ficheros se dejan como están")
+        if self._committed:
+            for entry in files:
+                if entry.backup is not None:
+                    _discard(entry.backup)
+        else:
+            self._record = None
+            if not problems:
+                for entry in reversed(files):
+                    problems.extend(_undo(entry))
+        if error is not None and not self._committed:
+            problems.extend(self._abandon(error))
+        if error is not None:
+            for problem in problems:
+                error.add_note(problem)
+
+    def _status(self) -> str | None:
+        with self.project.read() as conn:
+            row = conn.execute("SELECT status FROM gb_operation WHERE uid = ?",
+                               (self.handle.uid,)).fetchone()
+        return None if row is None else str(row[0])
+
+    def _abandon(self, error: BaseException) -> list[str]:
+        """La operación, si sigue «en curso», «cancelada» o «fallida» con su motivo."""
+        cancelled = isinstance(error, CANCELLATIONS)
+        what = "cancelación" if cancelled else "fallo"
+        try:
+            if self._status() != OperationStatus.RUNNING:
+                return []
+            if cancelled:
+                self.handle.cancel(cancel_reason(error))
+            else:
+                self.handle.fail(failure_reason(error))
+        except (GeoblenderError, OSError, sqlite3.Error) as exc:
+            return [f"La operación «{self.handle.op_type}» ({self.handle.uid}) sigue «en "
+                    f"curso» en el proyecto: no se pudo registrar su {what} ({exc})."]
+        return []
+
+
+def _found_uid(found: Classification) -> str | None:
+    """El uid de la entrada que encontró la clasificación (``None`` si es nueva)."""
+    return found.input.uid if isinstance(found, Reuse | Substitute) else None
+
+
+def _copy(source: Path, target: Path, name: str, progress: Progress | None,
+          cancelled: Cancelled | None) -> str:
+    """Copia ``source`` en ``target`` por trozos con su sha256 (``fsync`` al final); si falla
+    o se cancela, borra ``target`` (:func:`_copy_steps` de una vez)."""
+    steps = _copy_steps(source, target, name, cancelled)
+    while True:
+        try:
+            done, total, text = next(steps)
+        except StopIteration as stop:
+            return str(stop.value)
+        if progress is not None:
+            progress(done / total, text)
+
+
+def _copy_steps(source: Path, target: Path, name: str,
+                cancelled: Cancelled | None) -> Generator[tuple[int, int, str], None, str]:
+    """Copia ``source`` en ``target`` por trozos de :data:`COPY_CHUNK_BYTES` con su sha256
+    (``fsync`` al final) y devuelve la huella; tras cada trozo, cuántos van, de cuántos y el
+    texto del avance. Si falla, se cancela o se cierran los pasos a mitad, borra
+    ``target``."""
+    digest = hashlib.sha256()
+    try:
+        size = source.stat().st_size
+        total = max(1, -(-size // COPY_CHUNK_BYTES))
+        with source.open("rb") as reader, target.open("wb") as writer:
+            for index in range(total):
+                if cancelled is not None and cancelled():
+                    raise JobCancelled(f"Cancelado al copiar «{name}» en el trozo {index + 1} "
+                                       f"de {total}")
+                chunk = reader.read(COPY_CHUNK_BYTES)
+                digest.update(chunk)
+                writer.write(chunk)
+                if index + 1 < total:
+                    yield index + 1, total, f"Copiando «{name}»: trozo {index + 1} de {total}"
+            rest = reader.read()
+            digest.update(rest)
+            writer.write(rest)
+            writer.flush()
+            os.fsync(writer.fileno())
+        yield total, total, f"Copiando «{name}»: trozo {total} de {total}"
+    except BaseException as error:
+        _discard(target)
+        if isinstance(error, OSError):
+            raise write_failed(name, error) from None
+        raise
+    return digest.hexdigest()
+
+
+def _discard(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _restore(entry: _File) -> list[str]:
+    """Devuelve a su sitio el fichero anterior apartado."""
+    assert entry.final is not None and entry.backup is not None
+    try:
+        os.replace(entry.backup, entry.final)
+    except OSError as exc:
+        return [f"No se pudo devolver a su sitio «{entry.final.name}» ({exc}): el anterior "
+                f"está en «{entry.backup.name}» y se apartará a orphans/ al volver a abrir el "
+                "proyecto."]
+    entry.replaced = False
+    return []
+
+
+def _undo(entry: _File) -> list[str]:
+    """Deshace lo de un fichero sin confirmar: el anterior vuelve (o lo nuevo se borra) y el
+    temporal se borra."""
+    problems: list[str] = []
+    if entry.installed and entry.final is not None:
+        if entry.replaced:
+            problems.extend(_restore(entry))
+        else:
+            try:
+                entry.final.unlink(missing_ok=True)
+            except OSError as exc:
+                problems.append(f"No se pudo borrar «{entry.final.name}» ({exc}), escrito por "
+                                "una operación que no se confirmó: se apartará a orphans/ al "
+                                "volver a abrir el proyecto.")
+        entry.installed = False
+    _discard(entry.temporary)
+    return problems
+
+
+# --- Lectura de lo guardado --------------------------------------------------------------------
+
+
+def list_gis_datasets(
+    project: StoreProject,
+    kinds: Iterable[str] | None = None,
+    *,
+    families: Iterable[str] | None = None,
+) -> list[DatasetRecord]:
+    """Los datos vivos de la topografía registrados en ``gb_dataset`` (vigentes, que faltan,
+    bloqueados o dañados), por nombre; solo los de los tipos ``kinds`` (``"raster"``,
+    ``"mesh"``, ``"vector"``) o de las familias ``families`` (``"dtm"``, ``"tin"``…), si se
+    dan. ``ValueError`` con una familia que no es de la 006."""
+    chosen_kinds = None if kinds is None else frozenset(kinds)
+    prefixes = None if families is None else tuple(
+        _family(code, tuple(FAMILIES_BY_CODE)).prefix for code in families)
+    live = tuple(str(status) for status in LIVE_STATUSES)
+    with project.read() as conn:
+        rows = conn.execute(
+            f"SELECT {', '.join(RECORD_COLUMNS)} FROM gb_dataset WHERE module = ? AND status "
+            f"IN ({', '.join('?' for _ in live)}) ORDER BY name",
+            (MODULE, *live),
+        ).fetchall()
+    found = [DatasetRecord.from_row(row) for row in rows]
+    return [record for record in found
+            if (chosen_kinds is None or record.kind in chosen_kinds)
+            and (prefixes is None or record.name.startswith(prefixes))]
+
+
+def _resolve(project: StoreProject, ref: DatasetRecord | str,
+             allowed: Sequence[str]) -> DatasetRecord:
+    if isinstance(ref, DatasetRecord):
+        record: DatasetRecord | None = ref
+    elif isinstance(ref, str):
+        with project.read() as conn:
+            record = dataset_registry.get(conn, ref)
+        if record is not None and record.module != MODULE:
+            record = None
+    else:
+        raise TypeError(f"un dato se indica por su nombre, su uid o su registro, no {ref!r}")
+    if record is None:
+        raise GisError("gis.dataset_unknown", obj=_OBJ, field=_FIELD_DATASET, value=ref)
+    prefixes = tuple(FAMILIES_BY_CODE[code].prefix for code in allowed)
+    if not record.name.startswith(prefixes):
+        raise ValueError(f"«{record.name}» no es un dato de {', '.join(allowed)}")
+    return record
+
+
+def _file_of(project: StoreProject, record: DatasetRecord) -> Path:
+    path = Path(project.root, *record.locator.split("/"))
+    if not path.is_file():
+        raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
+                       field=_FIELD_LOCATION, value=record.locator, file=path.name,
+                       name=record.name)
+    return path
+
+
+def load_raster(
+    project: StoreProject,
+    ref: DatasetRecord | str,
+    *,
+    catalog: CrsCatalog | None = None,
+    progress: Progress | None = None,
+    cancelled: Cancelled | None = None,
+) -> Raster:
+    """La rejilla guardada del dato ``ref`` (su registro, su uid o su nombre: ``gis_dtm_`` o
+    ``gis_src_``), con las mismas celdas que se escribieron, el CRS que declara el fichero y su
+    referencia vertical (la del proyecto si el fichero no la declara: una referencia local).
+    Sin el límite de celdas de la importación. ``GisError`` ``gis.dataset_unknown`` si no hay
+    un dato de ``gis`` así y ``gis.dataset_file_missing`` si falta su fichero; ``ValueError``
+    si es de otra familia."""
+    record = _resolve(project, ref, GRID_FAMILIES)
+    path = _file_of(project, record)
+    source = read_geotiff(path, max_cells=sys.maxsize, catalog=catalog, progress=progress,
+                          cancelled=cancelled)
+    crs, vertical = project_references(project, catalog=catalog)
+    return Raster(source.grid, source.values, source.declared_crs or crs,
+                  source.declared_vertical or vertical)
+
+
+def load_tin(project: StoreProject, ref: DatasetRecord | str) -> Tin:
+    """El TIN guardado del dato ``ref`` (``gis_tin_``) con su ``meta``. Los mismos errores que
+    :func:`load_raster`; un fichero que no es el de un TIN, ``gis.tin_file_invalid``."""
+    record = _resolve(project, ref, (TIN,))
+    return read_tin_file(_file_of(project, record))
+
+
+# --- Para la vista (T27) -------------------------------------------------------------------------
+
+VIEW_TABLE_FAMILIES: tuple[str, ...] = (POINTS, BREAKLINES, CONTOUR_LINES)
+"""Las familias vectoriales con Z que muestra la vista (:func:`load_features`); los contornos
+(``gis_bnd_``) no llevan Z."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class StoredFeatures:
+    """Las entidades guardadas de una tabla de la topografía, en el orden de sus ``fid``:
+    ``name``, el nombre del dato; ``geometries``, las coordenadas ABSOLUTAS (float64, ``(n, 3)``;
+    un punto, ``(1, 3)``) de cada una tal como están guardadas (la curva cerrada, con su primer
+    vértice repetido al final), en el CRS y la referencia vertical del dato
+    (:func:`dataset_references`); ``attributes``, el valor de cada columna de su
+    :class:`TableLayout` por entidad (tal como lo da SQLite: un ``BOOLEAN`` es 0 o 1)."""
+
+    name: str
+    geometries: tuple[np.ndarray, ...]
+    attributes: Mapping[str, tuple[Any, ...]]
+
+
+def _family_of(record: DatasetRecord, allowed: Sequence[str]) -> str:
+    for code in allowed:
+        if record.name.startswith(FAMILIES_BY_CODE[code].prefix):
+            return code
+    raise ValueError(f"«{record.name}» no es un dato de {', '.join(allowed)}")
+
+
+def load_features(project: StoreProject, ref: DatasetRecord | str) -> StoredFeatures:
+    """Las entidades del dato ``ref`` (su registro, su uid o su nombre: ``gis_pts_``,
+    ``gis_brk_`` o ``gis_cnt_``; :data:`VIEW_TABLE_FAMILIES`), para la vista (RF-006-19): sus
+    geometrías absolutas en float64 tal como están guardadas y sus atributos
+    (:class:`StoredFeatures`). Solo lee. ``GisError`` ``gis.dataset_unknown`` si no hay un dato
+    de ``gis`` así y ``gis.dataset_file_missing`` si falta su tabla; ``ValueError`` si es de
+    otra familia."""
+    record = _resolve(project, ref, VIEW_TABLE_FAMILIES)
+    layout, rows = _table_rows(project, record, VIEW_TABLE_FAMILIES)
+    geometries: list[np.ndarray] = []
+    for row in rows:
+        coords = np.asarray(decode_geometry(row[0]).coords, dtype=np.float64)
+        geometries.append(coords.reshape(-1, coords.shape[-1]))
+    attributes = {name: tuple(row[index + 1] for row in rows)
+                  for index, name in enumerate(column.name for column in layout.columns)}
+    return StoredFeatures(record.name, tuple(geometries), MappingProxyType(attributes))
+
+
+def _table_rows(project: StoreProject, record: DatasetRecord,
+                families: Sequence[str]) -> tuple[TableLayout, list[tuple[Any, ...]]]:
+    """La forma de la tabla del dato ``record`` y sus filas en el orden de sus ``fid``: la
+    geometría tal como está guardada y el valor de cada columna; ``gis.dataset_file_missing``
+    si falta la tabla."""
+    layout = TABLE_LAYOUTS[_family_of(record, families)]
+    names = [column.name for column in layout.columns]
+    selected = ", ".join(f'"{name}"' for name in (_GEOMETRY_COLUMN, *names))
+    with project.read() as conn:
+        if not _table_exists(conn, record.locator):
+            raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
+                           field=_FIELD_LOCATION, value=record.locator, file=record.locator,
+                           name=record.name)
+        rows = conn.execute(f'SELECT {selected} FROM "{record.locator}" ORDER BY fid').fetchall()
+    return layout, rows
+
+
+# --- Para exportar (T31) ----------------------------------------------------------------------
+
+EXPORT_TABLE_FAMILIES: tuple[str, ...] = (POINTS, BREAKLINES, CONTOUR_LINES, BOUNDARY)
+"""Las tablas de la topografía que se exportan a GeoPackage (con el TIN, RF-006-25)."""
+EXPORT_STYLES: Mapping[str, LayerStyle] = MappingProxyType({CONTOUR_LINES: CONTOUR_STYLE})
+"""El estilo de QGIS por defecto de las tablas que lo llevan al exportarlas (T55: las curvas
+de nivel, con las maestras más gruesas; ``gis.styles``). En el proyecto no se guardan estilos."""
+
+
+def export_layer(project: StoreProject, ref: DatasetRecord | str) -> StoredLayer:
+    """La tabla del dato ``ref`` (``gis_pts_``, ``gis_brk_``, ``gis_cnt_`` o ``gis_bnd_``) para
+    exportarla a GeoPackage (RF-006-25): con el nombre del dato, su tipo y su Z, sus columnas,
+    sus geometrías tal como están guardadas (sin descodificarlas: lo hace el trabajo) y sus
+    valores, con el identificador «<tipo>: <dato>», la descripción de un entregable y, las
+    curvas de nivel, su estilo de QGIS por defecto (:data:`EXPORT_STYLES`, T55). Solo lee. Los
+    mismos errores que :func:`load_features`."""
+    record = _resolve(project, ref, EXPORT_TABLE_FAMILIES)
+    layout, rows = _table_rows(project, record, EXPORT_TABLE_FAMILIES)
+    style = EXPORT_STYLES.get(_family_of(record, EXPORT_TABLE_FAMILIES))
+    values = {column.name: tuple(row[index + 1] for row in rows)
+              for index, column in enumerate(layout.columns)}
+    return StoredLayer(record.name, layout.geometry_type, layout.has_z, layout.columns,
+                       tuple(bytes(row[0]) for row in rows), values,
+                       identifier=f"{layout.label}: {record.name}",
+                       description=f"{layout.label}: entregable de Geoblender", style=style)
+
+
+# --- Para un TIN (T29) ---------------------------------------------------------------------------
+
+
+_POINT_Z_HEAD = 8 + 5
+"""Bytes de un ``POINT`` con Z como lo escribe ``core.gpkg.wkb.encode_geometry`` antes de sus
+coordenadas: la cabecera ``GP`` sin envolvente (8) y el orden y el tipo del WKB (5)."""
+_POINT_Z_SIZE = _POINT_Z_HEAD + 3 * 8
+_LITTLE_NO_ENVELOPE = 0b0000_0001
+"""Banderas de esa cabecera: *little endian*, sin envolvente, no vacía y no extendida."""
+_POINT_Z_WKB = struct.pack("<BI", 1, WKB_TYPES["POINT"] + Z_OFFSET)
+
+
+def _point_coords(blobs: Sequence[bytes]) -> np.ndarray | None:
+    """Las coordenadas ``(n, 3)`` float64 de ``blobs`` sin descodificarlos uno a uno, si todos
+    son un ``POINT`` con Z como los escribe ``core.gpkg.wkb.encode_geometry`` (cabecera ``GP``
+    de la versión 0 *little endian*, sin envolvente, no vacía ni extendida, el mismo SRS; WKB
+    *little endian* de tipo 1001; 37 bytes) con las tres coordenadas finitas: las mismas, bit
+    a bit, que daría ``decode_geometry`` con cada uno (spec 006, T35: 289.900 puntos en
+    centésimas de segundo en vez de segundos, RNF-006-09). Si alguno no lo es, ``None``: se
+    descodifican uno a uno, con sus errores."""
+    if not blobs:
+        return np.empty((0, 3), dtype=np.float64)
+    joined = b"".join(blobs)
+    if len(joined) != len(blobs) * _POINT_Z_SIZE:
+        return None
+    raw = np.frombuffer(joined, dtype=np.uint8).reshape(len(blobs), _POINT_Z_SIZE)
+    head = raw[0, :_POINT_Z_HEAD].tobytes()
+    if (head[:2] != MAGIC or head[2] != VERSION or head[3] != _LITTLE_NO_ENVELOPE
+            or head[8:] != _POINT_Z_WKB):
+        return None
+    if not (raw[:, :_POINT_Z_HEAD] == raw[0, :_POINT_Z_HEAD]).all():  # el mismo SRS
+        return None
+    coords = np.ascontiguousarray(raw[:, _POINT_Z_HEAD:]).view("<f8").astype(np.float64)
+    return coords if np.isfinite(coords).all() else None
+
+
+def load_points(project: StoreProject, ref: DatasetRecord | str) -> PointSet:
+    """Los puntos guardados del dato ``ref`` (``gis_pts_``), como los usa un TIN
+    (RF-006-13): sus coordenadas absolutas en float64 tal como están guardadas, su
+    identificador, su código y su fila (o entidad) de origen, en el orden de sus ``fid``. Los
+    mismos errores que :func:`load_features`; ``ValueError`` si es de otra familia. Los puntos
+    que escribe Geoblender se leen de una vez (:func:`_point_coords`), sin un bucle por
+    punto."""
+    record = _resolve(project, ref, (POINTS,))
+    layout, rows = _table_rows(project, record, (POINTS,))
+    columns = list(zip(*rows, strict=True)) or [()] * (len(layout.columns) + 1)
+    xyz = _point_coords(columns[0])
+    if xyz is None:
+        stored = load_features(project, record)
+        xyz = np.ascontiguousarray(np.concatenate(stored.geometries), dtype=np.float64)
+    index = {name: number + 1 for number, name in enumerate(c.name for c in layout.columns)}
+    return PointSet(xyz, _as(columns[index["point_id"]], str, ""),
+                    _as(columns[index["code"]], str, ""),
+                    _as(columns[index["source_row"]], int, 0))
+
+
+def _as(values: tuple[Any, ...], kind: type, empty: Any) -> tuple[Any, ...]:
+    """``values`` como ``kind(valor or empty)`` cada uno: los mismos si ya son todos de
+    ``kind`` (sin un bucle de Python por valor: así quedarían)."""
+    if set(map(type, values)) <= {kind}:
+        return values
+    return tuple(kind(value or empty) for value in values)
+
+
+def load_lines(project: StoreProject, ref: DatasetRecord | str) -> list[Breakline]:
+    """Las líneas guardadas del dato ``ref`` como restricciones de un TIN (RF-006-13,
+    RF-006-16): las líneas de rotura (``gis_brk_``) con su identificador, si son duras y su
+    código; las curvas de nivel (``gis_cnt_``), duras, con su cota como identificador (la
+    cerrada, con su primer vértice repetido al final, como está guardada). Vértices bit a
+    bit. Los mismos errores que :func:`load_features`."""
+    record = _resolve(project, ref, (BREAKLINES, CONTOUR_LINES))
+    stored = load_features(project, record)
+    if _family_of(record, (BREAKLINES, CONTOUR_LINES)) == BREAKLINES:
+        attributes = stored.attributes
+        return [Breakline(str(line_id or index + 1), np.ascontiguousarray(xyz),
+                          hard=bool(hard), code=str(code or ""))
+                for index, (xyz, line_id, hard, code) in enumerate(zip(
+                    stored.geometries, attributes["line_id"], attributes["hard"],
+                    attributes["code"], strict=True))]
+    return [Breakline(f"{float(elevation):g} m #{index + 1}", np.ascontiguousarray(xyz))
+            for index, (xyz, elevation) in enumerate(zip(
+                stored.geometries, stored.attributes["elevation"], strict=True))]
+
+
+def load_regions(project: StoreProject, ref: DatasetRecord | str,
+                 ) -> tuple[list[list[np.ndarray]], list[list[list[np.ndarray]]]]:
+    """El contorno y los huecos guardados del dato ``ref`` (``gis_bnd_``) para un TIN
+    (RF-006-15): los polígonos de las entidades de papel «boundary» (cada uno, sus anillos en
+    planta, X e Y tal como están guardados) y, de cada entidad de papel «hole», los suyos (una
+    región por hueco). Los mismos errores que :func:`load_features`."""
+    record = _resolve(project, ref, (BOUNDARY,))
+    with project.read() as conn:
+        if not _table_exists(conn, record.locator):
+            raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
+                           field=_FIELD_LOCATION, value=record.locator, file=record.locator,
+                           name=record.name)
+        rows = conn.execute(f'SELECT "{_GEOMETRY_COLUMN}", role FROM "{record.locator}" '
+                            "ORDER BY fid").fetchall()
+    polygons: list[list[np.ndarray]] = []
+    holes: list[list[list[np.ndarray]]] = []
+    for blob, role in rows:
+        geometry = decode_geometry(blob)
+        parts = ([geometry.coords] if geometry.geometry_type == "POLYGON"
+                 else list(geometry.coords))
+        found = [[np.ascontiguousarray(np.asarray(ring, dtype=np.float64)[:, :2])
+                  for ring in polygon] for polygon in parts]
+        if role == BOUNDARY_ROLES[1]:
+            holes.append(found)
+        else:
+            polygons.extend(found)
+    return polygons, holes
+
+
+def dataset_references(project: StoreProject,
+                       ref: DatasetRecord | str) -> tuple[CrsRef, VerticalRef]:
+    """El CRS horizontal y la referencia vertical de las coordenadas del dato ``ref``: lo
+    importado, los que declaró su entrada (sin transformar, RF-006-12); lo calculado, los del
+    proyecto (``ResultWriter`` escribe en ellos). Los mismos errores que :func:`load_raster`."""
+    record = _resolve(project, ref, tuple(FAMILIES_BY_CODE))
+    if record.input_uid is None:
+        return project_references(project)
+    with project.read() as conn:
+        entry = get_input(conn, record.input_uid)
+    if entry is None:
+        raise ValueError(f"el dato «{record.name}» es lo importado de la entrada "
+                         f"«{record.input_uid}», que el proyecto no tiene")
+    return _references(entry)
+
+
+def require_project_references(project: StoreProject, ref: DatasetRecord | str) -> None:
+    """Comprueba, antes de mostrar en la vista el dato ``ref``, que está en el CRS horizontal y
+    la referencia vertical del proyecto: la vista no transforma coordenadas, y mostrarlo en
+    otros sería un supuesto silencioso (principio 6). Si no, ``GisError``
+    ``gis.view_references_mismatch`` con los dos (campo «CRS» o «referencia vertical»)."""
+    record = _resolve(project, ref, tuple(FAMILIES_BY_CODE))
+    found = dataset_references(project, record)
+    expected = project_references(project)
+    if found == expected:
+        return
+    field = "CRS" if found[0] != expected[0] else "referencia vertical"
+    raise GisError("gis.view_references_mismatch", obj=f"{_OBJ} «{record.name}»", field=field,
+                   value=reference_label(*found), name=record.name,
+                   expected=reference_label(*expected))

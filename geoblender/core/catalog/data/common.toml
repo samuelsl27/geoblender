@@ -146,6 +146,20 @@ entry = "002"
 action = "A"
 frequency = 1
 
+# Orden interna de los trabajos en segundo plano (spec 006, T57; RF-004-07): lleva al registro
+# de Blender lo que se dice desde un temporizador (la operación de un trabajo que no se hizo).
+
+[[command]]
+key = "geoblender.jobs_report"
+kind = "internal"
+label.en = "Report of a job"
+label.es = "Informe de un trabajo"
+description.en = "Show a message of a background job in Blender's reports"
+description.es = "Muestra un mensaje de un trabajo en segundo plano en el registro de Blender"
+entry = "004"
+action = "A"
+frequency = 0
+
 # Órdenes internas de la procedencia (spec 008, plan §5.3.2): las abren sus paneles
 # (parámetros, entradas, lo obsoleto) y sus avisos, no un menú de la barra.
 

@@ -30,6 +30,15 @@ acaban; cada prueba mira lo que dejó el suyo:
 
 Si un trabajo de tiempo máximo no ha acabado al pasar ``RESCUE_S``, se cancela para que el
 módulo termine y sus pruebas fallen con su motivo (``_STATE["rescued"]``).
+
+Con la máquina cargada (las partes de ``tools/check.py`` a la vez, u otro programa), un
+worker puede tardar en arrancar o en atender la petición más que los plazos de RF-004-09 a
+RF-004-11, aunque el código esté bien. Como ``tests.support.timing.least_of`` con una
+medida (spec 006, T48), si alguna medida que la carga solo puede alargar no cabe en su
+plazo (:func:`_late`: un final tardío, un trabajo que hubo que rescatar o terminar a la
+fuerza cuando debía parar solo), el escenario entero se repite, hasta
+``SCENARIO_ATTEMPTS`` veces, y las pruebas miran el último. Los plazos no cambian: si no
+caben en ninguno, las pruebas fallan igual.
 """
 
 import dataclasses
@@ -67,6 +76,8 @@ TIMEOUT_MAX_S = TIMEOUT_S + GRACE_S + 1.0
 """RF-004-11 (tarea T11): «Tiempo agotado» entre 2 s y 2 s + ``grace_s`` + 1 s."""
 RESCUE_S = TIMEOUT_MAX_S + 2.0
 DEADLINE_S = 30.0
+SCENARIO_ATTEMPTS = 5
+"""Veces que, como mucho, se ejecuta el escenario si una medida no cabe (spec 006, T48)."""
 POLL_S = 0.02
 UNKNOWN_UID = "20260101_000000_abcdef"
 TIMEOUT_JOBS = ("timeout", "timeout_forced", "timeout_catalog")
@@ -135,7 +146,6 @@ def setUpModule() -> None:
     tmp = _support.jobs_tmp()
     base = tmp.__enter__()
     unittest.addModuleCleanup(tmp.__exit__, None, None, None)
-    root = base / "jobs"
 
     registry = mock.patch.dict(catalog._REGISTRY, clear=True)
     registry.start()
@@ -143,7 +153,50 @@ def setUpModule() -> None:
     builtin = next(info for info in catalog.BUILTIN_WORKERS if info.name == "selftest")
     catalog.register_worker(dataclasses.replace(builtin, policy="subprocess",
                                                 default_timeout_s=JOB_TIMEOUT_S))
+    lateness: list[list[str]] = []
+    for attempt in range(1, SCENARIO_ATTEMPTS + 1):
+        for found in (_HANDLES, _RUNNERS, _UPDATES, _FINISHED, _STATE):
+            found.clear()
+        _scenario(base / f"jobs-{attempt}", builtin)
+        lateness.append(_late())
+        if not lateness[-1]:
+            break
+    _STATE["lateness"] = lateness
 
+
+def _late() -> list[str]:
+    """Las medidas del escenario que la carga de la máquina solo puede alargar y que no
+    cupieron en su plazo (vacía si cupieron todas): el final de una cancelación en curso,
+    de una forzada y de un tiempo máximo; un trabajo de tiempo máximo que hubo que rescatar;
+    o terminado a la fuerza (o sin avisar de que paraba) cuando debía parar solo."""
+    late: list[str] = []
+    cancel_at, dead_at, final_at = _STATE["cancel_at"], _STATE["dead_at"], _STATE["final_at"]
+    limits = {"running": STOP_MAX_S, "ignore": GRACE_S + KILL_EXTRA_S}
+    for name, limit in limits.items():
+        for what, when in (("muerte", dead_at), ("final", final_at)):
+            if when[name] - cancel_at[name] > limit:
+                late.append(f"{name}: {what} a {when[name] - cancel_at[name]:.2f} s")
+    for name in TIMEOUT_JOBS:
+        if name in _STATE["rescued"]:
+            late.append(f"{name}: rescatado")
+            continue
+        submitted = _STATE["submitted_at"][name]
+        record = records.read_record(_HANDLES[name].job_dir)
+        for what, seconds in (("muerte", dead_at[name] - submitted),
+                              ("final", final_at[name] - submitted),
+                              ("duration_s", record.duration_s)):
+            if seconds is None or seconds > TIMEOUT_MAX_S:
+                late.append(f"{name}: {what} a {seconds} s")
+    for name in ("running", "timeout", "timeout_catalog"):
+        record = records.read_record(_HANDLES[name].job_dir)
+        if record.cancel is None or record.cancel.forced or "cancelled" not in _types(name):
+            late.append(f"{name}: no paró solo")
+    return late
+
+
+def _scenario(root: Path, builtin: object) -> None:
+    """Lanza los trabajos del módulo en ``root``, los cancela y espera a que acaben,
+    anotando en ``_STATE`` lo que miran las pruebas."""
     options = {"jobs_root": root, "package_dir": EXTENSION_DIR,
                "blender_python": Path(sys.executable)}
     single = runner.JobRunner(**options, max_subprocess=1)
@@ -254,6 +307,18 @@ def _lines(name: str) -> list[dict]:
 
 def _notes(name: str) -> list[str]:
     return [line["note"] for line in _lines(name) if "note" in line]
+
+
+class ScenarioTest(unittest.TestCase):
+    """Spec 006, T48: el escenario se repite solo por una medida que no cupo."""
+
+    def test_on_time_in_some_attempt(self):
+        """RF-004-09 a RF-004-11: en alguna de las ``SCENARIO_ATTEMPTS`` veces, todas las
+        medidas que la carga puede alargar cupieron en su plazo; si no, el mensaje dice cuáles
+        no cupieron en cada vez."""
+        lateness = _STATE["lateness"]
+        self.assertLessEqual(len(lateness), SCENARIO_ATTEMPTS)
+        self.assertEqual(lateness[-1], [], f"tarde en cada vez: {lateness}")
 
 
 class CancelRunningTest(unittest.TestCase):

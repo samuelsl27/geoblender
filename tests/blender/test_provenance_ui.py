@@ -182,7 +182,7 @@ class ProvenanceUiTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ui = _module("bl.ui.provenance")
         cls.session = _module("bl.ops.core_provenance")
@@ -194,7 +194,7 @@ class ProvenanceUiTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="gb-t49-"))
@@ -266,6 +266,11 @@ class ProvenanceUiTest(unittest.TestCase):
             label_es=SYNTHETIC_LABEL, description=SYNTHETIC_ABOUT,
             description_es=SYNTHETIC_ABOUT, home="", aliases=())
         self.addCleanup(commands.clear)  # el último: la disponibilidad, de nuevo al pedirla
+        # Su texto, sin traducción, queda anotado entre los que faltan (core.i18n) solo
+        # mientras dura la prueba: las que comprueban que no falta ninguno pueden ir detrás
+        # en el mismo Blender (spec 006, T59: la cola de check.py cambia el orden).
+        i18n = _module("core.i18n")
+        self.enterContext(mock.patch.object(i18n._STATE, "missing", set(i18n._STATE.missing)))
         self.enterContext(mock.patch.dict(cat.commands, {SYNTHETIC: command}))
         bpy.utils.register_class(GEOBLENDER_OT_core_selftest_state)
         self.addCleanup(bpy.utils.unregister_class, GEOBLENDER_OT_core_selftest_state)

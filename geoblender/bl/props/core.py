@@ -21,6 +21,14 @@ que restaura deshacer); y ``read_only_folders`` en las preferencias (RF-008-15; 
 carpetas de solo lectura del usuario separadas por «;», que :func:`read_only_dirs_of` suma a
 las de la variable ``GEOBLENDER_READ_ONLY_DIRS``.
 
+Spec 006 (T27; RF-006-29; plan 006 §5.1 y §5.6.7): :class:`GEOBLENDER_PG_core_object`, en
+``Object.geoblender``, marca cada objeto que muestra un dato del proyecto en la vista: su tipo
+(``kind``; las specs siguientes añaden los suyos a :data:`OBJECT_KINDS`), el uid de su dato y de
+su proyecto, el hash de contenido de su dato, su estado (vigente, falta, bloqueado, dañado), la
+fecha (UTC) de la operación que escribió su contenido y si estaba obsoleto al cargarlo; todo en
+texto, enteros o enumerados (ninguna coordenada). :class:`GEOBLENDER_PG_core_view_dataset` es
+una fila del diálogo de «Cargar en la vista…» (el dato, su nombre visible y si se carga).
+
 Ninguna se anima (``options=set()``): un fotograma clave sobre el GeoOrigin no tiene
 sentido.
 """
@@ -30,7 +38,7 @@ from __future__ import annotations
 import os
 
 import bpy
-from bpy.props import BoolProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
 
 from ...core.paths import READ_ONLY_DIRS_ENV, READ_ONLY_DIRS_SEPARATOR, ReadOnlyDirs
 
@@ -146,6 +154,97 @@ class GEOBLENDER_PG_core_preferences(bpy.types.PropertyGroup):
     )
 
 
+# Spec 006 (T27; RF-006-29; plan 006 §5.1 y §5.6.7) ------------------------------------------
+
+# Nombre de la propiedad de los objetos: Object.geoblender (API pública de scripts).
+OBJECT_PROPERTY = "geoblender"
+# El tipo de lo que muestra un objeto (plan 006 §5.1): NONE en un objeto que no es de Geoblender.
+OBJECT_KINDS: list[tuple[str, str, str]] = [
+    ("NONE", "Not from Geoblender", "An object that does not show project data"),
+    ("PROJECT_ANCHOR", "Project anchor", "The absolute corners of the work window, as text"),
+    ("DTM", "DTM", "A grid of the project (digital terrain model)"),
+    ("TIN", "TIN", "A triangulated surface of the project"),
+    ("POINTS", "Points", "Survey points of the project"),
+    ("BREAKLINES", "Breaklines", "Breaklines of the project"),
+    ("CONTOURS", "Contour lines", "Contour lines of the project"),
+    ("BOUNDARY", "Boundary", "Boundaries and holes of the project"),
+    ("DRILLHOLES", "Drillholes", "Drillholes of the project"),
+]
+# El estado del dato al cargarlo (gb_dataset.status de un dato vivo, en mayúsculas).
+OBJECT_STATUSES: list[tuple[str, str, str]] = [
+    ("NONE", "No status", "An object that does not show project data"),
+    ("CURRENT", "Current", "The data in force in the project"),
+    ("MISSING", "Missing", "Its file or table is missing from the project"),
+    ("BLOCKED", "Blocked", "Edited outside Geoblender: accept it, recompute it or import it again"),
+    ("DAMAGED", "Damaged", "What was imported changed: import it again"),
+]
+
+
+class GEOBLENDER_PG_core_object(bpy.types.PropertyGroup):
+    """Lo que muestra un objeto de la vista: el dato del proyecto y su estado al cargarlo
+    (RF-006-29)."""
+
+    kind: EnumProperty(  # type: ignore[valid-type]
+        name="Type",
+        description="Type of the project data this object shows",
+        items=OBJECT_KINDS,
+        default="NONE",
+        options=_STATIC,
+    )
+    dataset_uid: StringProperty(  # type: ignore[valid-type]
+        name="Dataset",
+        description="Identity of the project data this object shows",
+        default="",
+        options=_STATIC,
+    )
+    project_uid: StringProperty(  # type: ignore[valid-type]
+        name="Project UID",
+        description="Identity of the Geoblender project of this object",
+        default="",
+        options=_STATIC,
+    )
+    content_sha256: StringProperty(  # type: ignore[valid-type]
+        name="Content hash",
+        description="Content hash of the data when it was loaded (gbch/1)",
+        default="",
+        options=_STATIC,
+    )
+    stale: BoolProperty(  # type: ignore[valid-type]
+        name="Stale",
+        description="The data was stale when it was loaded",
+        default=False,
+        options=_STATIC,
+    )
+    status: EnumProperty(  # type: ignore[valid-type]
+        name="Status",
+        description="Status of the data in the project when it was loaded",
+        items=OBJECT_STATUSES,
+        default="NONE",
+        options=_STATIC,
+    )
+    date: StringProperty(  # type: ignore[valid-type]
+        name="Date",
+        description="When the operation that wrote its content finished (UTC)",
+        default="",
+        options=_STATIC,
+    )
+
+
+class GEOBLENDER_PG_core_view_dataset(bpy.types.PropertyGroup):
+    """Una fila del diálogo de «Cargar en la vista…»: un dato del proyecto."""
+
+    uid: StringProperty(  # type: ignore[valid-type]
+        name="Dataset", default="", options=_STATIC,
+    )
+    label: StringProperty(  # type: ignore[valid-type]
+        name="Name", default="", options=_STATIC,
+    )
+    selected: BoolProperty(  # type: ignore[valid-type]
+        name="Load", description="Load this data into the view", default=False,
+        options=_STATIC,
+    )
+
+
 def preference_folders(text: str) -> list[str]:
     """Las carpetas de solo lectura de la preferencia ``read_only_folders``: su texto partido
     por «;» (``core.paths.READ_ONLY_DIRS_SEPARATOR``), como lo pide
@@ -167,16 +266,23 @@ def read_only_dirs_of(preferences: object | None) -> ReadOnlyDirs:
 
 # En orden de registro (los grupos, antes de quien los usa).
 classes: tuple[type, ...] = (GEOBLENDER_PG_core_project, GEOBLENDER_PG_core_preferences)
+# Los de la vista (spec 006, T27).
+classes += (GEOBLENDER_PG_core_object, GEOBLENDER_PG_core_view_dataset)
 
 
 def register() -> None:
-    """Pone ``Scene.geoblender`` (las clases ya están registradas)."""
+    """Pone ``Scene.geoblender`` y ``Object.geoblender`` (las clases ya están registradas)."""
     bpy.types.Scene.geoblender = PointerProperty(  # type: ignore[attr-defined]
         type=GEOBLENDER_PG_core_project, options=_STATIC
     )
+    setattr(bpy.types.Object, OBJECT_PROPERTY,
+            PointerProperty(type=GEOBLENDER_PG_core_object, options=_STATIC))
 
 
 def unregister() -> None:
-    """Quita ``Scene.geoblender`` (antes de desregistrar las clases); sin ella, nada."""
+    """Quita ``Object.geoblender`` y ``Scene.geoblender`` (antes de desregistrar las clases);
+    sin ellas, nada."""
+    if hasattr(bpy.types.Object, OBJECT_PROPERTY):
+        delattr(bpy.types.Object, OBJECT_PROPERTY)
     if hasattr(bpy.types.Scene, "geoblender"):
         del bpy.types.Scene.geoblender  # type: ignore[attr-defined]

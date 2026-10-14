@@ -81,12 +81,12 @@ class CheckoutOpsTestCase(unittest.TestCase):
     proyecto creado y abierto en esta sesión."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         self.tmp = Path(tempfile.mkdtemp(prefix="gb-t34-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.addCleanup(blender_ext.load_file)
-        self.addCleanup(blender_ext.unload)
+        self.addCleanup(blender_ext.release)
         blender_ext.enable()
         self.ps = ext("bl.scene.project_session")
         self.ops = ext("bl.ops.core")

@@ -21,6 +21,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.support import timing
 from tests.support.core_fixtures import FakeClock, FakePids, make_session, make_settings, project_tmp
 from tests.support.package import import_geoblender
 
@@ -41,6 +42,7 @@ SESSION_B = make_session(
 )
 WAL_PRAGMA = "PRAGMA journal_mode=" + "WAL"
 NOW = "2026-10-05T08:12:44.000Z"
+BUSY_BUDGET_S = 0.25  # RF-002-16: la escritura devuelve el control enseguida
 
 
 def _created(tmp: Path):
@@ -225,23 +227,32 @@ class BusyTest(unittest.TestCase):
     def test_foreign_reader_returns_control_and_retries(self) -> None:
         """RF-002-12, RF-002-16: con una lectura ajena abierta, la escritura devuelve el
         control enseguida (espera ≤ 0,2 s) con el estado «reintentando» sin cambiar nada y
-        sin pasar a solo lectura; cuando la lectura termina, el reintento se completa."""
+        sin pasar a solo lectura; cuando la lectura termina, el reintento se completa. Con
+        la máquina cargada (las partes de ``tools/check.py`` a la vez), el intento se
+        repite mientras pase del presupuesto (``tests.support.timing.least_of``; spec 006,
+        T48): cada vez, «reintentando»."""
         with project_tmp() as tmp:
             project, _clock = _created(tmp)
             before = _dump(project.database_path)
             reader = sqlite3.connect(project.database_path, isolation_level=None)
+            attempts: list[object] = []
+
+            def busy_write() -> float:
+                start = time.perf_counter()
+                attempts.append(project.try_write(lambda conn: _event(conn, "con QGIS leyendo")))
+                return time.perf_counter() - start
+
             try:
                 reader.execute("BEGIN")
                 reader.execute("SELECT count(*) FROM gb_event").fetchone()
-                start = time.perf_counter()
-                attempt = project.try_write(lambda conn: _event(conn, "con QGIS leyendo"))
-                elapsed = time.perf_counter() - start
+                elapsed = timing.least_of(busy_write, BUSY_BUDGET_S)
             finally:
                 reader.execute("COMMIT")
                 reader.close()
-            self.assertEqual(attempt.state, session_mod.WriteState.RETRYING)
-            self.assertIn("reintentando", attempt.message)
-            self.assertLessEqual(elapsed, 0.25, f"{elapsed:.3f} s")
+            for attempt in attempts:
+                self.assertEqual(attempt.state, session_mod.WriteState.RETRYING)
+                self.assertIn("reintentando", attempt.message)
+            self.assertLessEqual(elapsed, BUSY_BUDGET_S, f"{elapsed:.3f} s")
             self.assertEqual(_dump(project.database_path), before)
             self.assertTrue(project.writable)
             attempt = project.try_write(lambda conn: _event(conn, "con QGIS leyendo"))

@@ -852,6 +852,9 @@ _CATALOG: tuple[Message, ...] = (
     Message("core.mark_unconfirmed", "depends on an unconfirmed value",
             "depende de un valor sin confirmar"),
     Message("core.mark_stale", "stale", "obsoleta"),
+    # Los ajustes de la orden de un eslabón que declara su tipo (spec 006, T58; RF-008-29):
+    # «Ajustes: Equidistancia = 2 m · Cota base = 0 m».
+    Message("core.operation_settings", "Settings: {settings}", "Ajustes: {settings}"),
     # Estado de lo mostrado (T35; RF-008-23, spec §8).
     Message("core.result_result", "result", "resultado"),
     Message("core.result_pending", "pending ingestion", "pendiente de incorporar"),

@@ -30,8 +30,7 @@ TOLERANCE_M = 0.0005
 
 class Float32RoundTripTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
         blender_ext.import_root()
         self.georef = importlib.import_module(module_name() + ".core.georef")
         self.origin = self.georef.GeoOrigin(700_000, 4_400_000, 0)

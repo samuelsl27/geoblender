@@ -13,7 +13,13 @@ Blender, y solo mientras haya algo que mostrar). Sin ``append`` propio (contrato
   trabajos (``geoblender.jobs_show_jobs``) y cancelar el activo (``geoblender.jobs_cancel``);
 - durante 10 s tras acabar uno (RF-004-07): su nombre, su estado y su duración en s
   («Cálculo · Terminado · 2,0 s») y, si no terminó bien, el mensaje del §8 en una línea
-  (nunca una traza de Python), con el icono ``CHECKMARK``, ``ERROR`` o ``CANCEL``.
+  (nunca una traza de Python), con el icono ``CHECKMARK``, ``ERROR`` o ``CANCEL``;
+- (spec 006, T57; RF-006-28) si terminó bien, pero su operación de la procedencia quedó
+  fallida o cancelada al incorporarlo (``StatusView.ending``: un TIN con roturas que se
+  cruzan, una entrada ya registrada), no «Terminado» sino «Operación fallida» u «Operación
+  cancelada», con su icono (``ERROR`` o ``CANCEL``) y el principio de su motivo
+  (:func:`reason_head`: su primera línea, de :data:`NOTICE_REASON_CHARS` caracteres como
+  mucho); el motivo entero va al registro de Blender (``bl.ops.jobs.report_later``).
 
 Sin nada que mostrar, el campo no ocupa sitio (:func:`width_px` da 0) ni dibuja nada.
 
@@ -94,7 +100,7 @@ from ...jobs.worker_api import UNKNOWN_BLAS
 from . import commands, statusbar
 
 if TYPE_CHECKING:
-    from ..ops.jobs import JobMonitor, StatusView
+    from ..ops.jobs import JobMonitor, OperationEnding, StatusView
 
 LOGGER = logging.getLogger("geoblender.bl.ui.jobs")
 
@@ -129,6 +135,11 @@ NO_VALUE = "—"
 """La duración de un trabajo que no llegó a arrancar."""
 CANCELLING = "cancelling"
 """Lo que se muestra como estado de uno en curso al que se pidió parar («Cancelando»)."""
+NOTICE_REASON_CHARS = 60
+"""Lo que se muestra como mucho del motivo de una operación que no se hizo en el aviso de su
+trabajo (spec 006, T57): el principio, para que el aviso quepa sin plegarse; entero, en el
+registro de Blender."""
+ELLIPSIS = "…"
 
 PANEL = "GEOBLENDER_PT_jobs_list"
 PANEL_UNITS = 34
@@ -209,6 +220,14 @@ def _state_texts() -> dict[str, str]:
     }
 
 
+def _ending_texts() -> dict[str, str]:
+    """Cómo quedó la operación de un trabajo que terminó bien (spec 006, T57) → su nombre."""
+    return {
+        "failed": tr("Operation failed"),
+        "cancelled": tr("Operation cancelled"),
+    }
+
+
 def _interpreter_texts() -> dict[str, str]:
     """Tipo de intérprete → su nombre."""
     return {
@@ -252,21 +271,52 @@ def folded_bar_text(current: JobSnapshot, percent: int) -> str:
     return state_text(current.state)
 
 
-def notice_text(snapshot: JobSnapshot) -> str:
+def ending_text(state: str) -> str:
+    """Cómo quedó la operación de un trabajo que terminó bien, en el idioma de Geoblender
+    («Operación fallida», «Operación cancelada»; spec 006, T57)."""
+    return _cached("endings", _ending_texts).get(state, state)
+
+
+def reason_head(reason: str, limit: int = NOTICE_REASON_CHARS) -> str:
+    """El principio de un motivo para el aviso de la barra de estado (spec 006, T57): su
+    primera línea con texto, cortada a ``limit`` caracteres con «…» si es más larga."""
+    first = next((line.strip() for line in reason.splitlines() if line.strip()), "")
+    if len(first) <= limit:
+        return first
+    return first[: limit - len(ELLIPSIS)].rstrip() + ELLIPSIS
+
+
+def notice_text(snapshot: JobSnapshot, ending: OperationEnding | None = None) -> str:
     """El aviso de un trabajo que acabó: nombre, estado, duración en s y, si no terminó
-    bien, el mensaje del §8 (RF-004-07)."""
+    bien, el mensaje del §8 (RF-004-07). Con ``ending`` (terminó bien y su operación no se
+    hizo; spec 006, T57), cómo quedó la operación en lugar de su estado y el principio de su
+    motivo."""
     seconds = format_number(snapshot.duration_s or 0.0, 1)
+    if ending is not None:
+        parts = [snapshot.name, ending_text(ending.state), f"{seconds} s"]
+        head = reason_head(ending.reason)
+        if head:
+            parts.append(head)
+        return SEPARATOR.join(parts)
     parts = [snapshot.name, state_text(snapshot.state), f"{seconds} s"]
     if snapshot.state != "succeeded" and snapshot.error is not None:
         parts.append(error_text(snapshot.error))
     return SEPARATOR.join(parts)
 
 
-def folded_notice_text(snapshot: JobSnapshot) -> str:
+def folded_notice_text(snapshot: JobSnapshot, ending: OperationEnding | None = None) -> str:
     """El aviso plegado de un trabajo que acabó (spec 008, T69): su estado y su duración en
-    s («Terminado · 2,0 s»); el icono dice cómo terminó."""
+    s («Terminado · 2,0 s»), o con ``ending``, cómo quedó su operación («Operación fallida ·
+    0,4 s»; spec 006, T57); el icono dice cómo terminó."""
     seconds = format_number(snapshot.duration_s or 0.0, 1)
-    return SEPARATOR.join([state_text(snapshot.state), f"{seconds} s"])
+    shown = ending_text(ending.state) if ending is not None else state_text(snapshot.state)
+    return SEPARATOR.join([shown, f"{seconds} s"])
+
+
+def notice_icon(snapshot: JobSnapshot, ending: OperationEnding | None = None) -> str:
+    """El icono del aviso de un trabajo que acabó: el de su estado o, con ``ending``, el de
+    cómo quedó su operación (``ERROR`` fallida, ``CANCEL`` cancelada; spec 006, T57)."""
+    return NOTICE_ICONS.get(ending.state if ending is not None else snapshot.state, "INFO")
 
 
 def _ops() -> ModuleType:
@@ -314,8 +364,8 @@ def _draw(layout: Any, *, folded: bool) -> None:
     if notice is not None:
         if view.active:
             row.separator()
-        shown = (folded_notice_text if folded else notice_text)(notice)
-        row.label(text=shown, icon=NOTICE_ICONS.get(notice.state, "INFO"), translate=False)
+        shown = (folded_notice_text if folded else notice_text)(notice, view.ending)
+        row.label(text=shown, icon=notice_icon(notice, view.ending), translate=False)
 
 
 def _width(*, folded: bool) -> float:
@@ -334,7 +384,7 @@ def _width(*, folded: bool) -> float:
     if notice is not None:
         if view.active:
             width += statusbar.WIDTHS.spacer
-        shown = (folded_notice_text if folded else notice_text)(notice)
+        shown = (folded_notice_text if folded else notice_text)(notice, view.ending)
         width += statusbar.label_px(shown, icon=True)
     return width
 

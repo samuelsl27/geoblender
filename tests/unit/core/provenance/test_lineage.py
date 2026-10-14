@@ -406,6 +406,58 @@ class LineageTest(LineageCase):
         index = tree.rows().index(repeated[0])
         self.assertEqual(tree.rows()[index + 1:], ())  # sin ramas tras la repetida
 
+    def test_settings_of_each_link_below_it(self) -> None:
+        """RF-008-29 (spec 006, T58): debajo de cada eslabón, antes de sus parámetros, una fila
+        con los ajustes de su orden que declara su tipo (``OperationDef.settings``) y que la
+        operación guardó: un número con su unidad, una elección con el nombre de la elegida
+        (una que no declara, tal cual), en el idioma pedido; nunca los demás ajustes (nombre,
+        fichero…) ni uno sin valor. Un eslabón sin ninguno que enseñar no tiene esa fila, ni
+        uno repetido."""
+        i18n.install({"Test interval": "Equidistancia", "Test decimal": "Separador decimal",
+                       "Test comma": "Coma", "Test method": "Método", "Test passes": "Pasadas"})
+        setting = provenance.SettingDef
+        self.enterContext(registered(provenance.OperationDef(
+            "res.contours", "1.0", "res", "Test res.contours", False, settings=(
+                setting("interval_m", "Test interval", unit="m"),
+                setting("read.decimal", "Test decimal",
+                        choices=((",", "Test comma"), (".", "Test point"))),
+                setting("method", "Test method", choices=(("area_mean", "Test mean"),)),
+                setting("max_edge_m", "Test edge", unit="m"),
+                setting("passes", "Test passes", unit="-"),
+                setting("missing", "Test missing", unit="m"),
+            ))))
+        stored = {"name": "Curvas", "source": "res_im1", "interval_m": 2.5, "max_edge_m": None,
+                  "read": {"decimal": ",", "file": "puntos.csv"}, "method": "other",
+                  "passes": 3}
+        a = self.run_op("res.contours", {"res_a": [1.0]}, params=["res.production"],
+                        settings=stored)
+        b = self.run_op("res.step_b", {"res_b": [2.0]}, reads=["res_a"],
+                        settings={"interval_m": 9.0})  # su tipo no declara ajustes
+        self.run_op("res.step_c", {"res_c": [3.0]}, reads=["res_a"])
+        d = self.run_figures("res.step_d", reads=["res_b", "res_c"], figures=[(4.0, {})])
+        figure_uid = self.figure(d)
+        tree = self.lineage(figure_uid)
+        link = tree.operations[a.uid]
+        self.assertEqual(dict(link.settings), stored)
+        self.assertEqual(link.settings_text, "Ajustes: Equidistancia = 2,5 m · Separador "
+                                             "decimal = Coma · Método = other · Pasadas = 3")
+        self.assertEqual(dict(tree.operations[b.uid].settings), {"interval_m": 9.0})
+        self.assertEqual([found.settings_text for uid, found in tree.operations.items()
+                          if uid != a.uid], [None, None, None])
+        rows = _row_ids(tree)
+        at = rows.index((5, "operation", a.uid, False))
+        self.assertEqual(rows[at + 1:at + 3], [(6, "settings", a.uid, False),
+                                               (6, "parameter",
+                                                self.parameter("res.production"), False)])
+        self.assertEqual([row for row in rows if row[1] == "settings"],
+                         [(6, "settings", a.uid, False)])
+        self.assertEqual(rows[-1], (5, "operation", a.uid, True))  # la repetida, sin ajustes
+        self.assertIs(tree.rows()[at + 1].node, link)
+        english = lineage_mod.lineage(self.project, figure_uid, language="en")
+        self.assertEqual(english.operations[a.uid].settings_text,
+                         "Settings: Test interval = 2.5 m · Test decimal = Test comma · "
+                         "Test method = other · Test passes = 3")
+
     def test_stale_links_kept_and_superseded_inputs(self) -> None:
         """RF-008-29 (spec §8, «Mantener la copia» y «Actualizar dos veces una entrada»): un
         cambio de parámetro deja obsoletos los eslabones que dependen de él, con su causa; la

@@ -18,13 +18,17 @@ la red (``Z:``: RNF-002-02 ≤ 3 s y RNF-002-05 ≤ 1 s) se mide a mano en la T3
 - RNF-002-06: copia previa (migración con una migración de prueba 1 → 2), copia local y
   publicación de un proyecto sintético de 1 GiB: cada una ≤ 30 s, con un paso de progreso
   cada ≤ 1 s (la llamada más larga al generador de pasos) y la cancelación a mitad de la
-  copia, antes de sustituir nada, en ≤ 2 s (sin dejar copia ni reserva).
+  copia, antes de sustituir nada, en ≤ 2 s (sin dejar copia ni reserva). Cada línea dice
+  también cuánto del paso más largo fue esperar dentro de ``os.fsync`` y el espacio libre
+  del disco (spec 006, T49): con el disco casi lleno, un ``fsync`` de 32 MiB llega a tardar
+  más de 1 s, también con el código de la 002 (``docs/trampas.md`` §6).
 - RNF-002-07: devolver al diario clásico una base de 100 MiB con 50 MiB confirmados que
   solo están en el ``-wal`` (un escritor terminado con ``os._exit``, como un QGIS que se
   cae): ≤ 5 s.
 """
 
 import os
+import shutil
 import sqlite3
 import statistics
 import subprocess
@@ -32,11 +36,11 @@ import sys
 import time
 import unittest
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
+from tests.support import timing
 from tests.support.core_fixtures import mark_schema, make_session, make_settings, project_tmp
 from tests.support.package import import_geoblender
 from tests.support.trees import child_env, child_temp
@@ -122,35 +126,6 @@ def _write_file(path: Path, size: int, block: bytes) -> None:
         os.fsync(handle.fileno())
 
 
-@dataclass
-class Driven:
-    """Lo que tardó una operación por pasos: total, la llamada más larga al generador (el
-    mayor hueco sin progreso), cuántos pasos y el resultado del último."""
-
-    total_s: float
-    max_gap_s: float
-    steps: int
-    result: object
-
-
-def drive(steps: Iterator[object]) -> Driven:
-    """Recorre ``steps`` entero midiendo cada paso."""
-    gaps: list[float] = []
-    result: object = None
-    started = time.perf_counter()
-    while True:
-        before = time.perf_counter()
-        try:
-            step = next(steps)
-        except StopIteration:
-            gaps.append(time.perf_counter() - before)
-            break
-        gaps.append(time.perf_counter() - before)
-        if getattr(step, "result", None) is not None:
-            result = step.result
-    return Driven(time.perf_counter() - started, max(gaps), len(gaps) - 1, result)
-
-
 def cancel_at_half(steps: Iterator[object], phase: str) -> float:
     """Avanza ``steps`` hasta que la fase ``phase`` pasa de la mitad de su total (en
     bytes) y entonces cancela (``close()``); devuelve lo que tardó la cancelación."""
@@ -162,6 +137,22 @@ def cancel_at_half(steps: Iterator[object], phase: str) -> float:
     started = time.perf_counter()
     steps.close()  # type: ignore[attr-defined]
     return time.perf_counter() - started
+
+
+def gap_message(what: str, run: timing.StepsRun) -> str:
+    """El motivo de un paso de más de 1 s: cuánto de él fue ``os.fsync`` y, si fue casi
+    todo, que lo marca el disco y no la copia (spec 006, T49)."""
+    text = (
+        f"{what}: paso más largo {_seconds(run.longest_s)} s, {_seconds(run.longest_sync_s)} s "
+        "de él en os.fsync"
+    )
+    if run.disk_bound:
+        text += (
+            ": casi todo esperando a que el disco guarde lo escrito, no en la copia; mire el "
+            "disco y su espacio libre (docs/trampas.md §6, «fsync lento con el disco casi "
+            "lleno»)"
+        )
+    return text
 
 
 class ProjectSpeedTest(unittest.TestCase):
@@ -315,16 +306,21 @@ M1_2 = migrations.Migration(
 class GigabyteCopiesTest(unittest.TestCase):
     """RNF-002-06 con un proyecto sintético de 1 GiB, de disco local a disco local."""
 
-    def _check_driven(self, what: str, driven: Driven, cancel_s: float) -> None:
+    def _check_driven(
+        self, what: str, run: timing.StepsRun, cancel_s: float, folder: Path
+    ) -> None:
+        disk = shutil.disk_usage(folder)
         _report(
-            f"RNF-002-06: {what} de 1 GiB: {_seconds(driven.total_s, 2)} s en "
-            f"{driven.steps} pasos, paso más largo {_seconds(driven.max_gap_s)} s; cancelar a "
-            f"mitad de la copia: {_seconds(cancel_s)} s (presupuestos "
+            f"RNF-002-06: {what} de 1 GiB: {_seconds(run.total_s, 2)} s en {run.steps} pasos, "
+            f"paso más largo {_seconds(run.longest_s)} s ({_seconds(run.longest_sync_s)} s "
+            f"de él en fsync; {_seconds(run.sync_s, 2)} s en total); cancelar a mitad de la "
+            f"copia: {_seconds(cancel_s)} s; disco con {_seconds(disk.free / 1e9, 1)} GB "
+            f"libres, el {_seconds(100 * disk.free / disk.total, 1)} % (presupuestos "
             f"{_seconds(COPY_BUDGET_S, 0)} s, {_seconds(PROGRESS_GAP_S, 0)} s y "
             f"{_seconds(CANCEL_BUDGET_S, 0)} s)"
         )
-        self.assertLessEqual(driven.total_s, COPY_BUDGET_S, what)
-        self.assertLessEqual(driven.max_gap_s, PROGRESS_GAP_S, what)
+        self.assertLessEqual(run.total_s, COPY_BUDGET_S, what)
+        self.assertLessEqual(run.longest_s, PROGRESS_GAP_S, gap_message(what, run))
         self.assertLessEqual(cancel_s, CANCEL_BUDGET_S, what)
 
     def test_backup_checkout_and_publish_of_one_gigabyte(self) -> None:
@@ -353,9 +349,9 @@ class GigabyteCopiesTest(unittest.TestCase):
             )
             self.assertEqual(list(dest.iterdir()), [])
             self.assertFalse((root / ".lock").exists())
-            driven = drive(checkout.checkout_steps(root, dest, SESSION, userdata))
+            driven = timing.drive_steps(checkout.checkout_steps(root, dest, SESSION, userdata))
             local = driven.result.opened.project
-            self._check_driven("copia local", driven, cancel_s)
+            self._check_driven("copia local", driven, cancel_s, tmp)
 
             # Publicación: cancelada a mitad de la copia a .publicando y después entera.
             cancel_s = cancel_at_half(
@@ -365,9 +361,9 @@ class GigabyteCopiesTest(unittest.TestCase):
             self.assertEqual(
                 copytree.fingerprint(root, exclude=checkout.CHECKOUT_EXCLUDE), before
             )
-            driven = drive(checkout.publish_steps(local, SESSION, userdata))
+            driven = timing.drive_steps(checkout.publish_steps(local, SESSION, userdata))
             self.assertTrue(checkout.previous_path(root).is_dir())
-            self._check_driven("publicación", driven, cancel_s)
+            self._check_driven("publicación", driven, cancel_s, tmp)
 
             # Copia previa de una migración (1 → 2, de prueba), sin la publicación anterior
             # ni la copia local para no pasar de 3 GiB en disco. Un proyecto nuevo ya es del
@@ -381,9 +377,11 @@ class GigabyteCopiesTest(unittest.TestCase):
                 "copia previa",
             )
             self.assertFalse(backup.exists())
-            driven = drive(migrations.migrate_steps(root, SESSION, userdata, (M1_2,), target=2))
+            driven = timing.drive_steps(
+                migrations.migrate_steps(root, SESSION, userdata, (M1_2,), target=2)
+            )
             self.assertEqual(driven.result.backup, backup)
-            self._check_driven("copia previa", driven, cancel_s)
+            self._check_driven("copia previa", driven, cancel_s, tmp)
 
 
 class WalRecoverySpeedTest(unittest.TestCase):

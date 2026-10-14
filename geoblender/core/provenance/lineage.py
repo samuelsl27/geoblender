@@ -15,8 +15,10 @@ transacción de escritura de quien llama, que ve lo aún no confirmado):
   «Actualizar dos veces una entrada»). Cada operación (:class:`OperationLink`) va con los
   parámetros que leyó (:class:`ParameterLink`: valor, unidad, tipo, «sin confirmar», quién lo
   decidió y su estado de hoy), las versiones de su algoritmo, de Geoblender y de sus
-  bibliotecas, quién, cuándo y dónde, y si está obsoleta, con su causa; cada entrada
-  (:class:`InputLink`), con su estado (también «cambiada · se mantiene la copia» y
+  bibliotecas, quién, cuándo y dónde, si está obsoleta, con su causa, y los ajustes de su
+  orden que enseña su tipo (:func:`settings_text`, ``OperationDef.settings``: la
+  equidistancia tecleada de unas curvas, no su nombre ni su fichero; spec 006, T58); cada
+  entrada (:class:`InputLink`), con su estado (también «cambiada · se mantiene la copia» y
   «sustituida»). :meth:`LineageTree.rows` la da como filas sangradas para el panel (una
   operación a la que se llega por dos caminos sale una vez; la segunda, marcada). Solo lee
   lo que está aguas arriba de lo pedido (:func:`.stale.upstream_region`, RNF-008-03), una vez,
@@ -59,11 +61,12 @@ from operator import itemgetter
 from types import MappingProxyType
 from typing import Any, Protocol
 
-from ..i18n import LANGUAGES
+from ..i18n import LANGUAGES, translate
 from ..inputs.model import InputStatus
 from ..params.model import ParamKind, ParamValue
 from ..params.store import decode_value
-from .contract import FIGURES
+from ..units import DIMENSIONLESS
+from .contract import FIGURES, OPERATIONS
 from .figures import RECORD_COLUMNS as FIGURE_COLUMNS
 from .figures import FigureRecord, ScopeValue, _local_date, _shown, scope_key
 from .graph import (
@@ -119,6 +122,7 @@ class LineageKind(StrEnum):
     OPERATION = "operation"  # una operación (gb_operation)
     INPUT = "input"  # una entrada (gb_input)
     PARAMETER = "parameter"  # un parámetro que leyó una operación (gb_operation_param)
+    SETTINGS = "settings"  # los ajustes de la orden de una operación (spec 006, T58)
 
 
 class Mark(StrEnum):
@@ -346,7 +350,10 @@ class OperationLink:
     ``host``), quién la lanzó y cuándo; los parámetros que leyó, los datos que consumió (en su
     versión) y sus entradas; las operaciones de las que depende (``upstream``), sus causas de
     obsolescencia con su texto («Obsoleto: cambió Producción»), si espera revisión a mano y
-    cómo se presenta lo suyo (:class:`ResultStatus`)."""
+    cómo se presenta lo suyo (:class:`ResultStatus`). Y los ajustes de su orden
+    (``settings``, los de ``gb_operation.settings``) con el texto de los que enseña su tipo
+    (``settings_text``: «Ajustes: Equidistancia = 2 m · Cota base = 0 m», o ``None``;
+    :func:`settings_text`; spec 006, T58)."""
 
     uid: str
     op_type: str
@@ -368,6 +375,7 @@ class OperationLink:
     host: str
     started_at: str
     finished_at: str | None
+    settings: Mapping[str, Any]
     params: tuple[ParameterLink, ...]
     consumed: tuple[DatasetLink, ...]
     inputs: tuple[InputUse, ...]
@@ -376,6 +384,7 @@ class OperationLink:
     stale_text: str | None
     review: bool
     result: ResultStatus
+    settings_text: str | None
 
     @property
     def stale(self) -> bool:
@@ -388,9 +397,9 @@ type LineageNode = FigureRecord | OperationLink | DatasetLink | InputLink | Para
 
 @dataclass(frozen=True, slots=True)
 class LineageRow:
-    """Una fila sangrada de la procedencia (``depth``) con lo que muestra (``node``), el
-    papel con que se consumió (un dato o una entrada) y si es una operación ya mostrada más
-    arriba (``repeated``: sin sus ramas)."""
+    """Una fila sangrada de la procedencia (``depth``) con lo que muestra (``node``; la de
+    los ajustes de una operación, la operación), el papel con que se consumió (un dato o una
+    entrada) y si es una operación ya mostrada más arriba (``repeated``: sin sus ramas)."""
 
     depth: int
     kind: LineageKind
@@ -428,9 +437,10 @@ class LineageTree:
 
     def rows(self) -> tuple[LineageRow, ...]:
         """La cadena como filas sangradas, de lo pedido hacia sus entradas: bajo cada
-        operación, sus parámetros, sus entradas y los datos que consumió, cada uno seguido de
-        la operación que escribió su versión. Una operación a la que se llega otra vez sale
-        marcada como repetida y sin sus ramas."""
+        operación, sus ajustes (una fila, la de :attr:`OperationLink.settings_text`, si su tipo
+        enseña alguno; T58), sus parámetros, sus entradas y los datos que consumió, cada uno
+        seguido de la operación que escribió su versión. Una operación a la que se llega otra
+        vez sale marcada como repetida y sin sus ramas."""
         found: list[LineageRow] = []
         depth = 0
         if self.figure is not None:
@@ -444,7 +454,7 @@ class LineageTree:
             (depth, LineageKind.OPERATION, self.operations[self.root], None)]
         while pending:
             level, kind, node, role = pending.pop()
-            if isinstance(node, OperationLink):
+            if isinstance(node, OperationLink) and kind is LineageKind.OPERATION:
                 if node.uid in shown:
                     found.append(LineageRow(level, kind, node, repeated=True))
                     continue
@@ -452,6 +462,8 @@ class LineageTree:
                 found.append(LineageRow(level, kind, node))
                 below = level + 1
                 children: list[tuple[int, LineageKind, LineageNode, str | None]] = [
+                    *(((below, LineageKind.SETTINGS, node, None),) if node.settings_text
+                      else ()),
                     *((below, LineageKind.PARAMETER, used, None) for used in node.params),
                     *((below, LineageKind.INPUT, self.inputs[use.uid], use.role)
                       for use in node.inputs),
@@ -485,7 +497,7 @@ _LOOSE_PARAMS = (
 _DETAIL_COLUMNS = (
     "uid, op_type, op_version, module, status, status_reason, repeatable, group_name, "
     "group_uid, supersedes_uid, superseded_by, geoblender_version, software, executor, job_uid, "
-    "interpreter, user_host, host, started_at, finished_at"
+    "interpreter, user_host, host, started_at, finished_at, settings"
 )
 _OPERATION_DETAILS = f"SELECT {_DETAIL_COLUMNS} FROM gb_operation WHERE uid IN ({{marks}})"
 _USED_PARAMS = (
@@ -629,6 +641,52 @@ def _current_of(conn: sqlite3.Connection, key: str, wanted: str) -> str | None:
 
 def _json_mapping(text: object) -> Mapping[str, Any]:
     return MappingProxyType(dict(json.loads(str(text))))
+
+
+def _setting(settings: Mapping[str, Any], key: str) -> tuple[bool, Any]:
+    """Si ``settings`` tiene el ajuste ``key`` («.» entra en uno anidado) y su valor."""
+    found: Any = settings
+    for part in key.split("."):
+        if not isinstance(found, Mapping) or part not in found:
+            return False, None
+        found = found[part]
+    return True, found
+
+
+def settings_text(op_type: str, settings: Mapping[str, Any], *,
+                  language: str = "es") -> str | None:
+    """Los ajustes de la orden de una operación de ``op_type`` que enseña su procedencia
+    (RF-008-29; spec 006, T58): los que declara su tipo registrado (``OperationDef.settings``,
+    en su orden) y guardó la operación (``settings``), cada uno con su nombre y su valor en
+    ``language`` («Ajustes: Equidistancia = 2 m · Cota base = 0 m»): un número con su unidad
+    y una elección con el nombre de la elegida (una que su tipo no declara, tal cual). Un
+    número sin valor o que no es un número, un valor que no es de JSON simple y lo que el
+    tipo no declara (nombres, ficheros, uids…) no se enseñan. ``None`` si no queda ninguno o
+    si el tipo no está registrado."""
+    defn = OPERATIONS.get(op_type)
+    if defn is None:
+        return None
+    shown: list[str] = []
+    for declared in defn.settings:
+        present, value = _setting(settings, declared.key)
+        if not present:
+            continue
+        if declared.unit is not None:
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                continue
+            text = _shown(value, declared.unit, language)
+        else:
+            msgid = declared.choice_msgid(value)
+            if msgid is not None:
+                text = translate(language, msgid)
+            elif value is not None and isinstance(value, str | int | float | bool):
+                text = _shown(value, DIMENSIONLESS, language)
+            else:
+                continue
+        shown.append(f"{translate(language, declared.label_msgid)} = {text}")
+    if not shown:
+        return None
+    return render("core.operation_settings", language=language, settings=" · ".join(shown))
 
 
 class _Decoded:
@@ -966,7 +1024,7 @@ class _Builder:
                    review: frozenset[str]) -> OperationLink:
         (uid, op_type, op_version, module, status, status_reason, repeatable, group_name,
          group_uid, supersedes_uid, superseded_by, geoblender_version, software, executor,
-         job_uid, interpreter, user_host, host, started_at, finished_at) = row
+         job_uid, interpreter, user_host, host, started_at, finished_at, settings) = row
         uid = str(uid)
         node = nodes[uid]
         consumed = tuple(
@@ -978,6 +1036,7 @@ class _Builder:
             if version.item_kind == DATASET and version.uid in self.graph.datasets
         )
         found_causes = causes.get(uid, frozenset())
+        stored = self.decoded.mapping(settings)
         return OperationLink(
             uid=uid, op_type=str(op_type), op_version=str(op_version), module=str(module),
             status=str(status), status_reason=status_reason, repeatable=bool(repeatable),
@@ -987,7 +1046,8 @@ class _Builder:
             job_uid=job_uid,
             interpreter=None if interpreter is None else self.decoded.mapping(interpreter),
             user_host=str(user_host), host=str(host), started_at=str(started_at),
-            finished_at=finished_at, params=tuple(params.get(uid, ())), consumed=consumed,
+            finished_at=finished_at, settings=stored, params=tuple(params.get(uid, ())),
+            consumed=consumed,
             inputs=tuple(use for use in uses.get(uid, ()) if use.uid in entries),
             upstream=upstream[uid], causes=found_causes,
             stale_text=stale_text(self.graph, self.versions, found_causes,
@@ -995,6 +1055,7 @@ class _Builder:
             if found_causes else None,
             review=uid in review,
             result=_operation_status(uid, uid, status, executor, status_reason),
+            settings_text=settings_text(str(op_type), stored, language=self.language),
         )
 
 

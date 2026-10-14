@@ -10,6 +10,12 @@ la vez al empezar el módulo (``setUpModule``), con un tamaño declarado enorme 
 estimación pase de 5 s (RF-004-03). Lo que necesita provocar algo a mitad (la fuente que cambia
 mientras se copia, cancelar entre dos trozos) se prueba con ``run`` en el hilo, con su
 ``WorkerContext``.
+
+Con la máquina cargada, el worker del trabajo que se cancela nada más lanzarlo puede no
+arrancar antes de que venza su plazo de gracia (1 s), y el lanzador lo termina sin que diga
+que para: entonces se lanza otra vez ese trabajo, hasta ``CANCEL_ATTEMPTS`` veces, y la
+prueba mira el último (spec 006, T59; como ``tests/unit/jobs/test_cancel_timeout.py``). Los
+plazos no cambian.
 """
 
 import dataclasses
@@ -48,6 +54,9 @@ DOC_BYTES = 5 * (1 << 20) // 2  # 2,5 MiB: tres trozos de 1 MiB
 GPKG_DECLARATIONS = {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": None}
 LAYER_SETTINGS = {"layer": LAYER}
 CANCEL_BUDGET_S = 2.0  # RNF-008-11: cancelación efectiva en ≤ 2 s
+# Veces que, como mucho, se lanza el trabajo que se cancela si la carga de la máquina no
+# deja medirlo (spec 006, T59; _cancel_late): el plazo no cambia.
+CANCEL_ATTEMPTS = 5
 WAIT_S = 60.0  # plazo de seguridad: un trabajo colgado no cuelga la prueba
 
 _STATE: dict = {}
@@ -127,6 +136,19 @@ def setUpModule() -> None:
     jobs = content_hash.ContentHashJobs(lambda: runner)
     _STATE["jobs"] = jobs
 
+    _launch(requests)
+    attempts = 1
+    while attempts < CANCEL_ATTEMPTS and _cancel_late():
+        _launch({"cancel": requests["cancel"]})
+        attempts += 1
+    _STATE["cancel_attempts"] = attempts
+    _STATE["after"] = (source_state(sources), source_state(wal_folder))
+
+
+def _launch(requests: dict) -> None:
+    """Lanza los trabajos de ``requests`` (cancela el de «cancel» nada más lanzarlo),
+    espera a que acaben todos y anota sus eventos, sus entradas y su resultado."""
+    runner, jobs = _STATE["runner"], _STATE["jobs"]
     real_build = interpreter.build_command
 
     def build(*args, **kwargs):
@@ -137,18 +159,34 @@ def setUpModule() -> None:
     with mock.patch.object(runner_mod.interpreter, "build_command", side_effect=build):
         for name, request in requests.items():
             _HANDLES[name] = jobs.submit(request)
-        jobs.cancel(_HANDLES["cancel"])
+        if "cancel" in requests:
+            jobs.cancel(_HANDLES["cancel"])
     deadline = time.monotonic() + WAIT_S
-    while any(handle.result() is None for handle in _HANDLES.values()):
+    while any(_HANDLES[name].result() is None for name in requests):
         if time.monotonic() > deadline:
             raise AssertionError("los trabajos de hash no terminan")
         for update in runner.poll():
             _EVENTS.setdefault(update.job_uid, []).extend(update.events)
         time.sleep(0.02)
-    for name, handle in _HANDLES.items():
+    for name in requests:
+        handle = _HANDLES[name]
         _INPUTS[name] = sorted(path.name for path in handle.job_dir.inputs_dir.iterdir())
         _RESULTS[name] = jobs.poll(handle)
-    _STATE["after"] = (source_state(sources), source_state(wal_folder))
+
+
+def _cancel_late() -> bool:
+    """Si la cancelación no se pudo medir por la carga de la máquina (spec 006, T59; como
+    ``tests/unit/jobs/test_cancel_timeout.py``): el worker no llegó a decir que paraba (lo
+    terminó el lanzador al vencer el plazo de gracia, sin que arrancase) o tardó más de
+    ``CANCEL_BUDGET_S``. Entonces se repite solo ese trabajo, con el mismo plazo."""
+    handle = _HANDLES["cancel"]
+    events = {event.type: event for event in _EVENTS.get(handle.job_uid, ())}
+    record = records.read_record(handle.job_dir)
+    if record.cancel is None or record.cancel.forced:
+        return True
+    if "cancelled" not in events or "start" not in events:
+        return True
+    return events["cancelled"].ts - events["start"].ts > CANCEL_BUDGET_S
 
 
 class SubprocessTest(unittest.TestCase):
@@ -354,18 +392,25 @@ class InThreadTest(unittest.TestCase):
 class WorkerReadersTest(unittest.TestCase):
     """La lista estática de lectores del envoltorio en proceso aparte."""
 
-    def test_static_list_is_core(self) -> None:
-        """ADR-0025 §2 (plan §5.3.3): ``workers/core_content_hash.py`` carga los lectores de
-        su lista estática de paquetes (``("core",)`` en la 008): los de ``core`` que pueden
-        ir al trabajo, y los registra antes de llamar a ``jobs.content_hash.run`` (la
-        comparación con lo que registra ``bl`` está en ``tests/blender``)."""
-        self.assertEqual(tuple(worker.READER_PACKAGES), ("core",))
-        expected = tuple(found for found in builtin.CONTENT_READERS if found.worker)
+    def test_static_list_is_core_and_gis(self) -> None:
+        """ADR-0025 §2 (plan §5.3.3; plan 006 §5.6.2, RF-006-26):
+        ``workers/core_content_hash.py`` carga los lectores de su lista estática de paquetes
+        (``("core", "gis")`` desde la 006, T40): los de ``core`` y los de ``gis`` que pueden
+        ir al trabajo, y los registra antes de llamar a ``jobs.content_hash.run``, con el
+        lector de tablas que necesitan los de ``gis`` (la comparación con lo que registra
+        ``bl`` está en ``tests/blender``; el trabajo con ellos, en
+        ``tests/unit/gis/test_content_readers.py``)."""
+        self.assertEqual(tuple(worker.READER_PACKAGES), ("core", "gis"))
+        gis_content = worker.READER_PACKAGES["gis"]
+        expected = tuple(found for found in (*builtin.CONTENT_READERS,
+                                             *gis_content.CONTENT_READERS) if found.worker)
         self.assertEqual(worker.worker_readers(), expected)
+        self.addCleanup(gis_content.use_table_reader, gis_content.use_table_reader(None))
         with mock.patch.dict(readers._REGISTRY, clear=True):
             worker.register_readers()
             worker.register_readers()  # idempotente
             self.assertEqual(sorted(readers.READERS), sorted(found.id for found in expected))
+        self.assertIs(gis_content.table_reader(), worker.read_table)
         self.assertIs(worker.run, content_hash.run)
 
 

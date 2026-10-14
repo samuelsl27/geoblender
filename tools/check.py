@@ -47,23 +47,33 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06), salvo «motor», que va a
    la vez que «blender» (spec 004, T30: después de él no cabría en RNF-001-01; su línea
    va en su lugar y el paso siguiente espera a los dos; a la vez que «unitarias» no
-   compensa, spec 006, T38). Dentro de un paso,
-   «unitarias» y «blender» reparten sus pruebas en partes que se ejecutan a la vez
-   (spec 003, T40; RNF-007-01: ≤ 40 s sin quitar ninguna prueba): hasta ``UNIT_PARTS``
-   procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender con
-   ``run_blender_tests.py --parte i/n``, sin pasar del número de módulos de prueba en
+   compensa, spec 006, T38). Dentro de un paso, «unitarias», «referencia» (spec 006,
+   T59) y «blender» reparten sus pruebas en partes que se ejecutan a la vez (spec 003,
+   T40; RNF-007-01: ≤ 40 s sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
+   ``REFERENCE_PARTS`` procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender
+   con ``run_blender_tests.py --parte i/n``, sin pasar del número de módulos de prueba en
    disco ni del de procesadores (con uno, la orden de siempre). Cada parte descubre
-   todas las pruebas y ejecuta las de sus módulos (``gbtools.parts``); cada Blender, con
-   su propio perfil temporal (la parte 1, el de «manifiesto»). Los módulos se reparten
+   todas las pruebas y ejecuta las de sus módulos (``gbtools.parts``); con los tiempos
+   medidos, las de ``unittest_part.py`` reparten los ficheros sin importarlos y solo
+   importan los suyos (spec 006, T48). Cada Blender, con su propio perfil temporal (la
+   parte 1, el de «manifiesto») y con la copia de la extensión que comparten todos
+   (``--copia``: ``gbtools.ext_copy.prepare`` la hace en otro hilo, mientras corren los
+   pasos anteriores, y la compila; si no se puede, un aviso y cada parte hace la suya;
+   :class:`SharedCopy`, spec 006, T48). Los módulos se reparten
    por su duración medida en la comprobación anterior (spec 004, T39; RNF-001-01): un
    almacén fuera del repositorio, en la carpeta temporal del sistema y uno por raíz
    (:func:`default_times_store`), guarda la de cada módulo de cada suite con partes
-   («unitarias», «blender» y las de «motor»); antes de los pasos se copia a la carpeta
-   temporal de la comprobación y cada parte recibe el fichero de su suite
+   («unitarias», «referencia», «blender» y las de «motor»); antes de los pasos se copia a
+   la carpeta temporal de la comprobación y cada parte recibe el fichero de su suite
    (``--tiempos``) y escribe la duración de sus módulos (``--medidas``); al terminar, las
    medidas sustituyen a las guardadas (:class:`PartTimes`). Sin medidas (la primera vez,
    o un almacén borrado o ilegible), el reparto es por número de pruebas, el de la spec
-   003 (T40); la salida y los códigos no cambian. Los módulos con la misma afinidad
+   003 (T40); la salida y los códigos no cambian. Con medidas, además, las partes de cada
+   suite se reparten los módulos según acaban (spec 006, T59; ``--cola``,
+   ``gbtools.parts.Queue``): cada una empieza por uno de los que más tardan y toma después
+   el siguiente que ninguna ha tomado de una cola que comparten, en la carpeta temporal de
+   la comprobación; así acaban casi a la vez aunque un módulo tarde más o menos que la vez
+   anterior, y cada una escribe su línea «PARTE …» al terminar. Los módulos con la misma afinidad
    (``PART_AFFINITY``: los que pasan las reglas por el repositorio) van a la misma parte, y
    con medidas las carpetas de «motor» se reparten entre ellas sus partes por su tiempo
    (:func:`runtime_parts`; spec 006, T47). El paso dura lo que
@@ -143,8 +153,8 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence  #
 from dataclasses import dataclass, field  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from gbtools import blender, check_lock, discovery, layout, manifest, parts  # noqa: E402
-from gbtools import repo, wheels  # noqa: E402
+from gbtools import blender, check_lock, discovery, ext_copy, layout, manifest  # noqa: E402
+from gbtools import parts, repo, wheels  # noqa: E402
 from gbtools.blender import BlenderInstall, EnvironmentProblem  # noqa: E402
 from gbtools.repo import repo_root  # noqa: E402
 from gbtools.rules import imports  # noqa: E402
@@ -176,6 +186,12 @@ RESOURCES_RELPATH = "tests/support/resources.py"  # su lista cerrada de recursos
 RESOURCES_NAME = "RESOURCES"
 TEMP_PREFIX = "geoblender-check-"
 PROFILE_FOLDER = "perfil"
+# La copia de pruebas de la extensión que comparten las partes de «blender» (spec 006, T48;
+# gbtools.ext_copy), en la carpeta temporal de la comprobación, y la opción del lanzador
+# que la recibe (run_blender_tests.COPY_OPTION).
+COPY_FOLDER = "copia"
+COPY_OPTION = "--copia"
+COPY_THREAD = "check-copia"
 STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 40 s (RNF-001-01)
 LAUNCHER_RELPATH = "tools/run_blender_tests.py"
 PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T40)
@@ -198,9 +214,33 @@ PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T
 # proceso y las pruebas que las pasan por el repositorio juntas (spec 006, T47:
 # PART_AFFINITY, gbtools.parts.affinity_of), los módulos de «unitarias» suman ≈ 183 s en vez
 # de ≈ 207 s, el proceso que las pasa ya no tarda ≈ 2 s en cerrarse (rules.pyast.clear_caches)
-# y el paso tarda ≈ 15 s: el suelo es el reparto, con el arranque de cada parte.
+# y el paso tarda ≈ 15 s: el suelo es el reparto, con el arranque de cada parte. Con las
+# pruebas de la fase 5 de la 006 y la 008 completa (spec 006, T48), cada parte de
+# «unitarias» importaba todos los módulos de prueba para ejecutar los suyos (≈ 1,7 s en
+# reposo): repartiendo los ficheros por su tiempo y cargando solo los suyos
+# (gbtools.parts.select_files), 16 partes tardan ≈ 15,5 s frente a ≈ 17,5 s (con 20, igual).
+# Y las clases de las pruebas de Blender que no prueban el registro ya no vuelven a importar
+# la extensión al habilitarla (tests.support.blender_ext.release: 76 → 44 s en serie), las
+# partes de «blender» comparten una copia de la extensión ya compilada (SharedCopy) y su
+# código compilado se guarda tras descubrir las pruebas: con «motor» a la vez, 6 partes de
+# «blender» tardan ≈ 17 s frente a ≈ 19 s con 5 (con 7, ≈ 16,3 s). Con las pruebas de la
+# fase 5 de la 006 (spec 006, T59), y sin las importaciones de más (la prueba de la GPU al
+# final de su parte, run_blender_tests.py, y las clases del registro con
+# tests.support.blender_ext.fresh), con «motor» a la vez y el almacén de tiempos medido con
+# las mismas partes, 7 partes tardan ≈ 19,0 s (18,6–19,9) frente a ≈ 20,2 s (19,2–20,4)
+# con 6: el suelo vuelve a ser test_jobs, con sus trabajos reales. Y cada parte de
+# «unitarias» ya no analiza todos los ficheros para leer su afinidad (solo los que la
+# nombran: ≈ 0,64 s menos por parte; gbtools.parts.source_affinity): con 20 partes, ≈ 16,1 s
+# frente a ≈ 16,7 s con 16, pero el equipo va más cargado y la cancelación del trabajo de
+# hash de la 008 (tests/unit/workers/test_core_content_hash.py, frágil con carga) falló 5
+# de 5 veces frente a 0 de 3 con 16; con 24, ≈ 17,3 s.
 UNIT_PARTS = 16
-BLENDER_PARTS = 5
+BLENDER_PARTS = 7
+# Partes de «referencia» (spec 006, T59; RNF-001-01): el paso va solo, con el equipo casi
+# libre, y en una orden tardaba ≈ 2,0 s con sus 28 casos (dos de ellos lanzan el Python de
+# QGIS). En reposo, con 2 partes ≈ 1,36 s, con 3 ≈ 1,14 s, con 4 ≈ 1,0 s y con 5, 6 o 9
+# ≈ 0,87 s: el suelo es su módulo más lento (el de GDAL), con el arranque de la parte.
+REFERENCE_PARTS = 6
 THREAD_PREFIX = "check-parte-"  # los hilos que esperan a cada parte
 JOIN_POLL_S = 0.1  # se espera a los hilos a ratos: así Ctrl+C llega enseguida
 SIGINT_WAIT_S = 0.25  # tras Ctrl+C, lo que espera subprocess antes de parar la orden
@@ -372,14 +412,21 @@ class PartTimes:
         """El fichero en que escribe sus medidas la parte ``part`` de la suite ``key``."""
         return self.folder / f"{self._name(key)}-{part[0]}de{part[1]}.json"
 
+    def queue_folder(self, key: str) -> Path:
+        """La carpeta de la cola que comparten las partes de la suite ``key`` (spec 006,
+        T59; ``--cola``, ``gbtools.parts.Queue``): una por suite y comprobación."""
+        return self.folder / f"{self._name(key)}-cola"
+
     def options(self, key: str, part: tuple[int, int]) -> list[str]:
-        """Las opciones de la orden de la parte ``part`` de la suite ``key``: el fichero
-        de sus tiempos, si hay medidas guardadas (sin él, la parte reparte por número de
-        pruebas), y el de sus medidas."""
+        """Las opciones de la orden de la parte ``part`` de la suite ``key``: si hay
+        medidas guardadas, el fichero de sus tiempos y la cola que comparten sus partes
+        (spec 006, T59: se reparten los módulos según acaban; sin ellas, la parte reparte
+        por número de pruebas), y el fichero de sus medidas."""
         self.parts_of[key] = part[1]
         found: list[str] = []
         if key in self.stored:
-            found += [parts.TIMES_OPTION, str(self.times_file(key))]
+            found += [parts.TIMES_OPTION, str(self.times_file(key)),
+                      parts.QUEUE_OPTION, str(self.queue_folder(key))]
         return [*found, parts.MEASURES_OPTION, str(self.measures_file(key, part))]
 
     def save(self) -> None:
@@ -399,6 +446,42 @@ class PartTimes:
                 suites[key] = parts.merge(self.stored.get(key, {}), measures)
         if suites != self.stored:
             parts.write_store(self.store, suites)
+
+
+class SharedCopy:
+    """La copia de pruebas de la extensión que usan todas las partes de «blender» (spec
+    006, T48; RNF-001-01): ``prepare(raíz, destino)`` (``gbtools.ext_copy.prepare``) la
+    hace en otro hilo mientras corren los pasos anteriores; :meth:`result` espera a que
+    termine y da la carpeta, o ``None`` si no se pudo (entonces, la primera vez, un aviso
+    con el motivo, y cada parte hace la suya, como antes)."""
+
+    def __init__(self, prepare: Callable[[Path, Path], Path], root: Path, target: Path) -> None:
+        self._prepare = prepare
+        self._root = root
+        self._target = target
+        self._folder: Path | None = None
+        self.problem: str | None = None
+        self._warned = False
+        self._thread = threading.Thread(target=self._run, name=COPY_THREAD, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            self._folder = self._prepare(self._root, self._target)
+        except Exception as exc:  # noqa: BLE001 - sin copia compartida, la de cada parte
+            self.problem = f"{type(exc).__name__}: {exc}"
+
+    def result(self) -> Path | None:
+        """La carpeta de la copia, cuando está hecha, o ``None`` si no se pudo hacer."""
+        self._thread.join()
+        if self._folder is None and not self._warned:
+            self._warned = True
+            print(
+                "AVISO: no se pudo preparar la copia de la extensión para las partes de "
+                f"«blender» ({self.problem}): cada parte hace la suya",
+                flush=True,
+            )
+        return self._folder
 
 
 @dataclass(frozen=True)
@@ -421,6 +504,9 @@ class Context:
     # spec 006, T46): sus órdenes lo llevan en GEOBLENDER_CHECK_LOCK_HELD, para que un
     # check.py lanzado desde ellas no lo espere. None: sin cerrojo, las órdenes de siempre.
     lock_owner: int | None = None
+    # La copia de pruebas de la extensión que comparten las partes de «blender» (spec 006,
+    # T48); None: cada parte hace la suya, las órdenes de siempre.
+    shared_copy: SharedCopy | None = None
 
     def _with_lock(self, env: dict[str, str]) -> dict[str, str]:
         """``env`` con ``GEOBLENDER_CHECK_LOCK_HELD`` si hay cerrojo (spec 006, T46)."""
@@ -520,13 +606,16 @@ class Context:
             part,
         )
 
-    def unittest_parts(self, folder: str, limit: int) -> list[Run]:
+    def unittest_parts(self, folder: str, limit: int, empty: str | None = None) -> list[Run]:
         """Las pruebas de ``folder`` (``unittest``) en tantas partes como
-        :meth:`parts_of`; con una, la orden de siempre (T40)."""
+        :meth:`parts_of`; con una, la orden de siempre (T40). ``empty``, el de cada orden
+        (:meth:`unittest`)."""
         count = self.parts_of(folder, UNITTEST_PATTERN, limit)
         if count == 1:
-            return [self.unittest(folder)]
-        return [self.unittest(folder, part=(i, count)) for i in range(1, count + 1)]
+            return [self.unittest(folder, empty=empty)]
+        return [
+            self.unittest(folder, empty=empty, part=(i, count)) for i in range(1, count + 1)
+        ]
 
     def blender_tests(
         self,
@@ -536,7 +625,8 @@ class Context:
         part: tuple[int, int] | None = None,
     ) -> Run:
         """``tools/run_blender_tests.py`` sobre ``folder``, dentro de Blender; con
-        ``part``, solo esa parte (``--parte i/n``) y con su perfil (T40)."""
+        ``part``, solo esa parte (``--parte i/n``) y con su perfil (T40); con la copia
+        compartida, ``--copia`` (spec 006, T48)."""
         args = ["--carpeta", folder]
         if pattern is not None:
             args += ["--patron", pattern]
@@ -544,6 +634,9 @@ class Context:
             args += [parts.OPTION, parts.label(*part)]
             suite_pattern = LAUNCHER_PATTERN if pattern is None else pattern
             args += self.part_options(TIMES_BLENDER, folder, suite_pattern, part)
+        copy = self.shared_copy.result() if self.shared_copy is not None else None
+        if copy is not None:
+            args += [COPY_OPTION, str(copy)]
         command = blender.background_cmd(self.install, self.root / LAUNCHER_RELPATH, *args)
         return Run(
             command,
@@ -628,7 +721,7 @@ def _unit(ctx: Context) -> list[Run]:
 
 
 def _reference(ctx: Context) -> list[Run]:
-    return [ctx.unittest("tests/referencia", empty=NO_CASES)]
+    return ctx.unittest_parts("tests/referencia", REFERENCE_PARTS, empty=NO_CASES)
 
 
 def _licenses(ctx: Context) -> list[Run]:
@@ -1270,7 +1363,8 @@ def _interpret_all(
         failed = any(outcomes[i].status == STATUS_FAIL for i in group)
         problem = different_distribution(group_runs, texts, root)
         if problem is None and not unloaded and not failed:
-            problem = parts.consistency([parts.last_line(t) for t in texts], len(group))
+            found, unit = parts.part_lines(texts)
+            problem = parts.consistency(found, len(group), unit=unit)
         if problem is not None:
             first.detail = f"{first.detail}, {PARTS_PROBLEM}" if first.detail else PARTS_PROBLEM
             first.status = STATUS_FAIL
@@ -1301,12 +1395,13 @@ def repeated_files(run: Run, root: Path, texts: Sequence[str]) -> dict[str, list
 def different_distribution(runs: Sequence[Run], texts: Sequence[str], root: Path) -> str | None:
     """Por qué las partes de unas pruebas (``runs`` y su salida, en su orden) no
     repartieron igual, o ``None``: todas dicen su línea «PARTE i de n: r de T pruebas»
-    y no cuadran (``gbtools.parts.consistency``), o un mismo fichero se ejecutó en más de
-    una (:func:`repeated_files`). Cada parte calcula el reparto por su cuenta: si no
+    (o, por ficheros, «PARTE i de n: m de M módulos»; spec 006, T48) y no cuadran
+    (``gbtools.parts.consistency``), o un mismo fichero se ejecutó en más de una
+    (:func:`repeated_files`). Cada parte calcula el reparto por su cuenta: si no
     descubren lo mismo, un fichero puede quedar sin ejecutar en ninguna (T45)."""
-    found = [parts.last_line(text) for text in texts]
+    found, unit = parts.part_lines(texts)
     if all(info is not None for info in found):
-        problem = parts.consistency(found, len(runs))
+        problem = parts.consistency(found, len(runs), unit=unit)
         if problem is not None:
             return problem
     repeated = repeated_files(runs[0], root, texts)
@@ -1324,9 +1419,9 @@ def parts_message(
 ) -> str:
     """La explicación de un reparto que no cuadra (``problem``), con la línea y la orden
     de cada parte y, si los hay, los ficheros que por eso no cargó ninguna (T45)."""
-    found = [parts.last_line(text) for text in texts]
+    found, unit = parts.part_lines(texts)
     listed = "\n".join(
-        f"  {parts.line(*info) if info is not None else '(sin línea)'}: "
+        f"  {parts.describe(info, unit) if info is not None else '(sin línea)'}: "
         f"{' '.join(run.command)}"
         for run, info in zip(runs, found)
     )
@@ -1600,6 +1695,7 @@ def main(
     find_runtime: Callable[[Path, Mapping[str, str]], TestRuntime] = find_test_runtime,
     times_store: Callable[[Path], Path | None] = default_times_store,
     lock_file: Callable[[Mapping[str, str]], Path | None] = check_lock.lock_path,
+    test_copy: Callable[[Path, Path], Path] | None = ext_copy.prepare,
 ) -> int:
     """Ejecuta la comprobación completa y devuelve el código de salida.
 
@@ -1611,7 +1707,9 @@ def main(
     de tiempos de la raíz (:func:`default_times_store`; ``None``: sin almacén, las
     partes por número de pruebas y sin medir) y dónde está el cerrojo del equipo según
     ese entorno (:func:`gbtools.check_lock.lock_path`; ``None``: sin cerrojo y sin
-    esperar a nadie; spec 006, T46).
+    esperar a nadie; spec 006, T46) y cómo se prepara la copia de pruebas de la extensión
+    que comparten las partes de «blender» (``gbtools.ext_copy.prepare``; ``None``: cada
+    parte hace la suya; spec 006, T48).
     """
     started = time.perf_counter()
     executable = sys.executable if executable is None else executable
@@ -1674,7 +1772,10 @@ def main(
     try:
         work = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
         results: list[StepResult] = []
+        shared: SharedCopy | None = None
         try:
+            if test_copy is not None and any(s.runs is _blender for s in selected):
+                shared = SharedCopy(test_copy, root, work / COPY_FOLDER)
             profile = work / PROFILE_FOLDER
             profile.mkdir()
             store = times_store(root)
@@ -1688,6 +1789,7 @@ def main(
                 find_runtime=find_runtime,
                 times=times,
                 lock_owner=None if lock is None else lock.owner,
+                shared_copy=shared,
             )
             # Los perfiles de las demás partes de las pruebas de Blender (T40).
             for number in range(2, BLENDER_PARTS + 1):
@@ -1712,6 +1814,8 @@ def main(
                     print(f"AVISO: no se pudieron guardar las duraciones de las pruebas en "
                           f"«{times.store}»: {exc}")
         finally:
+            if shared is not None:
+                shared.result()  # que termine antes de borrar su carpeta
             try:
                 _remove_tree(work)
             except OSError as exc:

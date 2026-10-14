@@ -36,11 +36,11 @@ EXPECTED_SUBPACKAGES = ("props", "scene", "draw", "gn", "ops", "ui")
 
 
 class RegistrationTestCase(unittest.TestCase):
-    """Cada prueba parte de la extensión deshabilitada y fuera de ``sys.modules``."""
+    """Cada prueba parte de la extensión deshabilitada y fuera de ``sys.modules``
+    (``blender_ext.fresh``)."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def bl_name(self) -> str:
         return module_name() + ".bl"

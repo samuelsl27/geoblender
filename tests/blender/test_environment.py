@@ -30,8 +30,7 @@ BLENDER_NUMPY = "2.3.4"  # numpy de Blender 5.2 (ADR-0009)
 
 class EnvironmentTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_blender_at_least_manifest_min(self) -> None:
         """RF-001-07: ``bl.compat.blender_version()`` es la versión de Blender, como tupla
@@ -63,6 +62,16 @@ class EnvironmentTest(unittest.TestCase):
             [part.lower() for part in numpy_file.relative_to(blender_dir).parts],
             "numpy no puede venir de una carpeta de extensiones",
         )
+
+    def test_test_copy_without_wheels(self) -> None:
+        """RNF-001-01 (spec 006, T11): la copia de pruebas va sin ``wheels/`` y con
+        ``wheels = []`` (con ruedas, Blender instalaría y quitaría pyproj en cada habilitar
+        y deshabilitar), y lo demás de la extensión sí está (``thirdparty/proj/``)."""
+        copy = Path(blender_ext.import_root().__file__).resolve().parent
+        self.assertFalse((copy / "wheels").exists())
+        copied = manifest.load(copy / "blender_manifest.toml")
+        self.assertEqual(manifest.wheel_files(copied), [])
+        self.assertTrue((copy / "thirdparty" / "proj" / "es_ign_SPED2ETV2.tif").is_file())
 
 
 if __name__ == "__main__":

@@ -100,14 +100,14 @@ def _conflicts(combo: tuple[str, bool, bool, bool], select_mouse: str) -> list[s
 class KeymapConflictTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
         cls.keymap = _module("bl.ui.keymap")
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_registered(self) -> None:
         """RF-003-18: las 49 del catálogo, en su mapa y con sus propiedades; Ctrl+F10 en
@@ -175,8 +175,7 @@ class KeymapConflictTest(unittest.TestCase):
 
 class KeymapCycleTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_unregister_leaves_no_items(self) -> None:
         """RF-003-18, RF-003-23: deshabilitar no deja ningún atajo de Geoblender en el

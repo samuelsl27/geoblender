@@ -15,7 +15,10 @@ copyright = ["2026 IMGA"]
 
 platforms = ["windows-x64"]
 
-wheels = []
+wheels = [
+  "./wheels/pyproj-3.8.0-cp313-cp313-win_amd64.whl",
+  "./wheels/certifi-2026.7.22-py3-none-any.whl",
+]
 
 [permissions]
 files = "Leer y escribir proyectos, importar datos y exportar resultados"

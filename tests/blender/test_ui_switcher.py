@@ -36,13 +36,13 @@ class ChooseTargetTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.switcher = _module("bl.ui.switcher")
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def choose(self, current: str, names: list[str], marked: set[str], **kw: object) -> object:
         return self.switcher.choose_target(current=current, names=names, marked=marked,
@@ -111,10 +111,10 @@ class ToggleOperatorTest(unittest.TestCase):
     pendiente)."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
-        self.addCleanup(blender_ext.unload)
+        self.addCleanup(blender_ext.release)
         self.addCleanup(blender_ext.load_file)
         self.switcher = _module("bl.ui.switcher")
         self.window = bpy.context.window_manager.windows[0]

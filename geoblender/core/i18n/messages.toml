@@ -1054,6 +1054,18 @@ es = "Tiempo agotado"
 ["Interrupted"]
 es = "Interrumpido"
 
+# El aviso de un trabajo que terminó bien cuya operación de la procedencia no se hizo al
+# incorporarlo (spec 006, T57; RF-004-07): cómo quedó la operación, en lugar de «Terminado».
+
+["Operation failed"]
+es = "Operación fallida"
+
+["Operation cancelled"]
+es = "Operación cancelada"
+
+["Message"]
+es = "Mensaje"
+
 ["{percent}%"]
 es = "{percent} %"
 
@@ -1381,6 +1393,1105 @@ es = "Comprobando el intérprete externo {path}: el resultado saldrá en la barr
 
 ["External interpreter (development): {path}"]
 es = "Intérprete externo (desarrollo): {path}"
+
+# Parámetros de topografía (spec 006, T39; RF-008-06; plan 006 §5.6.1): la etiqueta
+# (label_msgid) de cada definición de gis/params.py en el panel de parámetros.
+
+["Minimum valid fraction of a cell"]
+es = "Fracción mínima con dato de una celda"
+
+["Subsamples per cell side when reprojecting"]
+es = "Submuestras por lado de celda al reproyectar"
+
+["Horizontal tolerance for duplicate points"]
+es = "Tolerancia en planta de puntos duplicados"
+
+["Elevation tolerance for duplicate points"]
+es = "Tolerancia en cota de puntos duplicados"
+
+["Spacing when densifying contours"]
+es = "Separación al densificar las curvas de nivel"
+
+["Flat triangle correction passes"]
+es = "Pasadas de corrección de triángulos planos"
+
+["Maximum share of flat triangles"]
+es = "Porcentaje máximo de triángulos planos"
+
+["Time limit of the Blender triangulation in the interface"]
+es = "Tiempo máximo de la triangulación de Blender en la interfaz"
+
+["Contour interval"]
+es = "Equidistancia de las curvas de nivel"
+
+["Index contour interval"]
+es = "Equidistancia de las curvas maestras"
+
+["Index contour offset"]
+es = "Desfase de las curvas maestras"
+
+["Contour simplification tolerance"]
+es = "Tolerancia de simplificación de las curvas de nivel"
+
+["Minimum contour length"]
+es = "Longitud mínima de una curva de nivel"
+
+["Band of suspected ellipsoidal heights"]
+es = "Banda de sospecha de alturas elipsoidales"
+
+["Plausible elevation range"]
+es = "Rango plausible de cotas"
+
+["Maximum cells of an imported grid"]
+es = "Celdas máximas de una rejilla importada"
+
+["Grid steps of the levels of detail"]
+es = "Pasos de rejilla de los niveles de detalle"
+
+# Operaciones de topografía (spec 006, T41; RF-006-26; plan 006 §5.6.3): el nombre visible
+# (label_msgid) de cada tipo de operación de gis/provenance.py.
+
+["Import of a raster DTM"]
+es = "Importación de un MDT ráster"
+
+["Import of points and breaklines"]
+es = "Importación de puntos y líneas de rotura"
+
+["Import of a vector layer"]
+es = "Importación de una capa vectorial"
+
+["Resampling to the project grid"]
+es = "Remuestreo a la rejilla del proyecto"
+
+["TIN from points and breaklines"]
+es = "TIN desde puntos y líneas de rotura"
+
+["TIN from contour lines"]
+es = "TIN desde curvas de nivel"
+
+["DTM to TIN conversion"]
+es = "Conversión de MDT a TIN"
+
+["TIN to DTM conversion"]
+es = "Conversión de TIN a MDT"
+
+["Contour lines of a surface"]
+es = "Curvas de nivel de una superficie"
+
+["Export of a raster DTM"]
+es = "Exportación de un MDT ráster"
+
+["Export to GeoPackage"]
+es = "Exportación a GeoPackage"
+
+# Trabajos de topografía (spec 006, T26; RF-006-28; plan 006 §5.3.4): el nombre visible
+# (label_msgid) de cada tipo de trabajo de gis/jobs.py.
+
+["Read a raster DTM"]
+es = "Lectura de un MDT ráster"
+
+["Resample a DTM"]
+es = "Remuestreo de un MDT"
+
+["Read points and breaklines"]
+es = "Lectura de puntos y líneas de rotura"
+
+["Prepare a TIN"]
+es = "Preparación de un TIN"
+
+["Triangulate a TIN"]
+es = "Triangulación de un TIN"
+
+["Finish a TIN"]
+es = "Acabado de un TIN"
+
+["Compute contour lines"]
+es = "Cálculo de curvas de nivel"
+
+["Validate a surface"]
+es = "Validación de una superficie"
+
+["Write a deliverable"]
+es = "Escritura de un entregable"
+
+["View meshes of a surface"]
+es = "Mallas de vista de una superficie"
+
+# La vista de los datos del proyecto (spec 006, T27; RF-006-19 a RF-006-22, RF-006-29; plan
+# 006 §5.5 y §5.6.7): Object.geoblender, las colecciones tipadas, el ancla, los nombres
+# generados y Cargar y Descargar de la vista. «Type», «Status», «Content hash», «Project UID»,
+# «Name» y «CURRENT» ya están arriba.
+
+["Not from Geoblender"]
+es = "No es de Geoblender"
+
+["An object that does not show project data"]
+es = "Un objeto que no muestra datos del proyecto"
+
+["Project anchor"]
+es = "Ancla del proyecto"
+
+["The absolute corners of the work window, as text"]
+es = "Las esquinas absolutas de la ventana de trabajo, en texto"
+
+["DTM"]
+es = "MDT"
+
+["Source DTM"]
+es = "MDT de origen"
+
+["A grid of the project (digital terrain model)"]
+es = "Una rejilla del proyecto (modelo digital del terreno)"
+
+["TIN"]
+es = "TIN"
+
+["A triangulated surface of the project"]
+es = "Una superficie triangulada del proyecto"
+
+["Points"]
+es = "Puntos"
+
+["Survey points of the project"]
+es = "Puntos de levantamiento del proyecto"
+
+["Breaklines"]
+es = "Líneas de rotura"
+
+["Breaklines of the project"]
+es = "Líneas de rotura del proyecto"
+
+["Contour lines"]
+es = "Curvas de nivel"
+
+["Contour lines of the project"]
+es = "Curvas de nivel del proyecto"
+
+["Boundary"]
+es = "Contorno"
+
+["Boundaries and holes of the project"]
+es = "Contornos y huecos del proyecto"
+
+["Drillholes"]
+es = "Sondeos"
+
+["Drillholes of the project"]
+es = "Sondeos del proyecto"
+
+["No status"]
+es = "Sin estado"
+
+["Current"]
+es = "Vigente"
+
+["The data in force in the project"]
+es = "El dato vigente en el proyecto"
+
+["Missing"]
+es = "Falta"
+
+["Its file or table is missing from the project"]
+es = "Falta su fichero o su tabla en el proyecto"
+
+["Blocked"]
+es = "Bloqueado"
+
+["Edited outside Geoblender: accept it, recompute it or import it again"]
+es = "Editado fuera de Geoblender: acéptelo, recalcúlelo o vuelva a importarlo"
+
+["Damaged"]
+es = "Dañado"
+
+["What was imported changed: import it again"]
+es = "Lo importado cambió: vuelva a importarlo"
+
+["Type of the project data this object shows"]
+es = "Tipo del dato del proyecto que muestra este objeto"
+
+["Dataset"]
+es = "Dato"
+
+["Identity of the project data this object shows"]
+es = "Identidad del dato del proyecto que muestra este objeto"
+
+["Identity of the Geoblender project of this object"]
+es = "Identidad del proyecto de Geoblender de este objeto"
+
+["Content hash of the data when it was loaded (gbch/1)"]
+es = "Hash de contenido del dato al cargarlo (gbch/1)"
+
+["Stale"]
+es = "Obsoleto"
+
+["The data was stale when it was loaded"]
+es = "El dato estaba obsoleto al cargarlo"
+
+["Status of the data in the project when it was loaded"]
+es = "Estado del dato en el proyecto al cargarlo"
+
+["Date"]
+es = "Fecha"
+
+["When the operation that wrote its content finished (UTC)"]
+es = "Cuándo terminó la operación que escribió su contenido (UTC)"
+
+["Load"]
+es = "Cargar"
+
+["Load this data into the view"]
+es = "Cargar este dato en la vista"
+
+["Base data"]
+es = "Datos base"
+
+["Topography"]
+es = "Topografía"
+
+["MISSING"]
+es = "FALTA"
+
+["BLOCKED"]
+es = "BLOQUEADO"
+
+["DAMAGED"]
+es = "DAÑADO"
+
+["STALE"]
+es = "OBSOLETO"
+
+["local reference ({note})"]
+es = "referencia local ({note})"
+
+["There is no data «{name}» in the project"]
+es = "No hay ningún dato «{name}» en el proyecto"
+
+["«{name}» is missing from the project: it is not loaded into the view"]
+es = "«{name}» falta en el proyecto: no se carga en la vista"
+
+["«{name}» cannot be shown in the view: no module loads it"]
+es = "«{name}» no se puede mostrar en la vista: ningún módulo lo carga"
+
+["«{name}» in the view: {warning}"]
+es = "«{name}» en la vista: {warning}"
+
+["The grid «{name}» already has a step of {step} m or more: it is loaded whole"]
+es = "La rejilla «{name}» ya tiene un paso de {step} m o más: se carga entera"
+
+["Calculation grid"]
+es = "Rejilla de cálculo"
+
+["The data as they are: a grid, cell by cell"]
+es = "El dato tal como es: una rejilla, celda a celda"
+
+["First level of detail"]
+es = "Primer nivel de detalle"
+
+["Grids with a step under 2 m: their first overview version (2 m by default)"]
+es = "Rejillas de paso menor de 2 m: su primera versión para la vista general (2 m por defecto)"
+
+["Second level of detail"]
+es = "Segundo nivel de detalle"
+
+["Grids with a step under 2 m: their second overview version (5 m by default)"]
+es = "Rejillas de paso menor de 2 m: su segunda versión para la vista general (5 m por defecto)"
+
+["Data"]
+es = "Datos"
+
+["Names or identifiers of the project data, separated by commas (empty: those chosen in the dialog or selected)"]
+es = "Nombres o identificadores de los datos del proyecto, separados por comas (vacío: los elegidos en el diálogo o seleccionados)"
+
+["Level of detail"]
+es = "Nivel de detalle"
+
+["Load into the view"]
+es = "Cargar en la vista"
+
+["The project has no data to load into the view"]
+es = "El proyecto no tiene datos que cargar en la vista"
+
+["Choose the data to load into the view"]
+es = "Elija los datos que cargar en la vista"
+
+["Loaded into the view: {names}"]
+es = "Cargado en la vista: {names}"
+
+["Loading «{name}» into the view… {percent} % · Esc: cancel"]
+es = "Cargando «{name}» en la vista… {percent} % · Esc: cancelar"
+
+["Loading into the view cancelled: nothing has been loaded"]
+es = "Carga en la vista cancelada: no se ha cargado nada"
+
+["The project was closed while loading into the view: nothing has been loaded"]
+es = "El proyecto se cerró mientras se cargaba en la vista: no se ha cargado nada"
+
+["Loading into the view stopped: {error}"]
+es = "La carga en la vista se ha parado: {error}"
+
+["No project data is loaded in the view"]
+es = "No hay ningún dato del proyecto cargado en la vista"
+
+["Select objects loaded from the project"]
+es = "Seleccione objetos cargados del proyecto"
+
+["Unloaded from the view: {count} objects; the data stay in the project"]
+es = "Descargado de la vista: {count} objetos; los datos siguen en el proyecto"
+
+# Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
+# RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto
+# desde un MDT…, sus diálogos, sus informes y la decisión de una importación que espera.
+# «Name», «Reason», «Decision», «Automatic», «DTM», «Horizontal CRS», «Vertical CRS»,
+# «Delivered by» y los nombres de las operaciones ya están arriba.
+
+["open a project"]
+es = "abra un proyecto"
+
+["import a DTM"]
+es = "importe un MDT"
+
+["File"]
+es = "Fichero"
+
+["No data"]
+es = "Sin dato"
+
+["Separator"]
+es = "Separador"
+
+["Decimal mark"]
+es = "Separador decimal"
+
+["Delivery date"]
+es = "Fecha de entrega"
+
+["Method"]
+es = "Método"
+
+["Minimum covered fraction"]
+es = "Fracción mínima cubierta"
+
+["EPSG code of the source's horizontal CRS, such as EPSG:25830 (empty: the one the file declares)"]
+es = "Código EPSG del CRS horizontal de la fuente, como EPSG:25830 (vacío: el que declara el fichero)"
+
+["Value of the source that means no data (empty: the one the file declares)"]
+es = "Valor de la fuente que significa sin dato (vacío: el que declara el fichero)"
+
+["Why the input replaces the one imported with the same data and other settings"]
+es = "Por qué la entrada sustituye a la importada con los mismos datos y otros ajustes"
+
+["Name or uid of the imported DTM"]
+es = "Nombre o uid del MDT importado"
+
+["Fraction of each cell that must be covered by data, from 0 to 1 (empty or unchanged: the project's parameter)"]
+es = "Fracción de cada celda que tiene que quedar cubierta por datos, de 0 a 1 (vacía o sin cambiar: el parámetro del proyecto)"
+
+["Name of the project grid (empty: the DTM's)"]
+es = "Nombre de la rejilla del proyecto (vacío: el del MDT)"
+
+["Undeclared"]
+es = "Sin declarar"
+
+["The file's if it declares one; if not, declare it"]
+es = "El del fichero si lo declara; si no, declárelo"
+
+["The project's"]
+es = "El del proyecto"
+
+["ETRS89 ellipsoidal height"]
+es = "Altura elipsoidal ETRS89"
+
+["GNSS or drone without geoid"]
+es = "GNSS o dron sin geoide"
+
+["Detected in the first data line"]
+es = "Se detecta en la primera línea de datos"
+
+["Space"]
+es = "Espacio"
+
+["Tab"]
+es = "Tabulador"
+
+["Comma"]
+es = "Coma"
+
+["Semicolon"]
+es = "Punto y coma"
+
+["Point"]
+es = "Punto"
+
+["Area-weighted mean if the DTM cells are not larger than the project's; bilinear if they are"]
+es = "Media ponderada por área si las celdas del MDT no son mayores que las del proyecto; bilineal si lo son"
+
+["Area-weighted mean"]
+es = "Media ponderada por área"
+
+["Bilinear interpolation"]
+es = "Interpolación bilineal"
+
+["Continue the import"]
+es = "Seguir con la importación"
+
+["Cancel the import"]
+es = "Cancelar la importación"
+
+["The file «{file}» does not exist: choose the DTM to import"]
+es = "El fichero «{file}» no existe: elija el MDT que quiere importar"
+
+["Import of the DTM «{name}»"]
+es = "Importación del MDT «{name}»"
+
+["Importing «{name}» in the background…"]
+es = "Importando «{name}» en segundo plano…"
+
+["Raster DTM «{name}» imported as {dataset}: {cols} × {rows} cells of {dx} × {dy} m, {valid} with data; {encoding}"]
+es = "MDT ráster «{name}» importado como {dataset}: {cols} × {rows} celdas de {dx} × {dy} m, {valid} con dato; {encoding}"
+
+["To bring it to the project grid it will be transformed from {source} to {target}: {transform}"]
+es = "Para llevarlo a la rejilla del proyecto se transformará de {source} a {target}: {transform}"
+
+["Median difference with the DTM «{dtm}»: {median} m at {samples} positions"]
+es = "Mediana de la diferencia con el MDT «{dtm}»: {median} m en {samples} posiciones"
+
+["The DTM «{name}» goes beyond the working window (X {wxmin} to {wxmax}, Y {wymin} to {wymax}): its cells with data go from X {xmin} to {xmax} and from Y {ymin} to {ymax}. It is imported whole; the project grid only covers the window"]
+es = "El MDT «{name}» sale de la ventana de trabajo (X {wxmin} a {wxmax}, Y {wymin} a {wymax}): sus celdas con dato van de X {xmin} a {xmax} y de Y {ymin} a {ymax}. Se importa entero; la rejilla del proyecto solo cubre la ventana"
+
+["The DTM «{name}» goes beyond the working window (X {wxmin} to {wxmax}, Y {wymin} to {wymax}): its cells with data, transformed to the project CRS, go from X {xmin} to {xmax} and from Y {ymin} to {ymax}. It is imported whole; the project grid only covers the window"]
+es = "El MDT «{name}» sale de la ventana de trabajo (X {wxmin} a {wxmax}, Y {wymin} a {wymax}): sus celdas con dato, transformadas al CRS del proyecto, van de X {xmin} a {xmax} y de Y {ymin} a {ymax}. Se importa entero; la rejilla del proyecto solo cubre la ventana"
+
+["DTM «{name}», centres of the cells with data: {warning}"]
+es = "MDT «{name}», centros de las celdas con dato: {warning}"
+
+["Confirmed by the user: {warning}"]
+es = "Confirmado por la persona: {warning}"
+
+["«{name}» has the same data as the input «{existing}» with other settings ({differences}): write why it replaces it"]
+es = "«{name}» tiene los mismos datos que la entrada «{existing}» con otros ajustes ({differences}): escriba por qué la sustituye"
+
+["«{name}» has not been imported: {reason}"]
+es = "«{name}» no se ha importado: {reason}"
+
+["No DTM import is waiting for a decision"]
+es = "Ninguna importación de un MDT espera una decisión"
+
+["Choose whether to continue the import or cancel it: nothing changed"]
+es = "Elija si sigue con la importación o la cancela: no ha cambiado nada"
+
+["Import of «{name}» cancelled: nothing has been written"]
+es = "Importación de «{name}» cancelada: no se ha escrito nada"
+
+["Write why «{name}» replaces the input with the same data"]
+es = "Escriba por qué «{name}» sustituye a la entrada con los mismos datos"
+
+["Project grid «{name}»"]
+es = "Rejilla del proyecto «{name}»"
+
+["Computing the project grid «{name}» in the background…"]
+es = "Calculando la rejilla del proyecto «{name}» en segundo plano…"
+
+["Project grid {dataset} from «{source}»: {method}, {valid} of {cells} cells with data, minimum covered fraction {fraction}"]
+es = "Rejilla del proyecto {dataset} desde «{source}»: {method}, {valid} de {cells} celdas con dato, fracción mínima cubierta {fraction}"
+
+["area-weighted mean"]
+es = "media ponderada por área"
+
+["bilinear interpolation"]
+es = "interpolación bilineal"
+
+["majority of classes"]
+es = "moda de clases"
+
+["Transformation: {transform}"]
+es = "Transformación: {transform}"
+
+["The project grid «{name}» has not been computed: {reason}"]
+es = "No se ha calculado la rejilla del proyecto «{name}»: {reason}"
+
+# Puntos, capas, TIN y MDT ⇄ TIN (spec 006, T29; RF-006-12 a RF-006-17, RF-006-27; plan 006
+# §5.3.4, §5.3.5 y §5.6.1 a §5.6.4): Importar ▸ Puntos y líneas de rotura… y Capas
+# vectoriales…, TIN desde puntos y líneas de rotura…, TIN desde curvas de nivel…, MDT ⇄ TIN…,
+# sus diálogos (el asistente de columnas: GEOBLENDER_PG_gis_column), sus informes, el aviso
+# de la triangulación en el hilo y los trabajos nuevos. «Name», «Reason», «Separator»,
+# «Decimal mark», «Points», «Breaklines», «Boundary» y «Contour lines» ya están arriba.
+
+["Read a vector layer"]
+es = "Lectura de una capa vectorial"
+
+["Convert a surface"]
+es = "Conversión de una superficie"
+
+["Not imported"]
+es = "No se importa"
+
+["The column is not imported"]
+es = "La columna no se importa"
+
+["Point (P)"]
+es = "Punto (P)"
+
+["Identifier of the point"]
+es = "Identificador del punto"
+
+["X (east)"]
+es = "X (este)"
+
+["Y (north)"]
+es = "Y (norte)"
+
+["Z (elevation)"]
+es = "Z (cota)"
+
+["Code"]
+es = "Código"
+
+["Survey code of the point"]
+es = "Código topográfico del punto"
+
+["Line"]
+es = "Línea"
+
+["Breakline the point belongs to"]
+es = "Línea de rotura a la que pertenece el punto"
+
+["Column"]
+es = "Columna"
+
+["Column of the file, from 0"]
+es = "Columna del fichero, desde 0"
+
+["UTF-8"]
+es = "UTF-8"
+
+["Windows-1252"]
+es = "Windows-1252"
+
+["ISO-8859-1 (Latin-1)"]
+es = "ISO-8859-1 (Latin-1)"
+
+["DOS (CP850)"]
+es = "DOS (CP850)"
+
+["One or more blanks"]
+es = "Uno o varios espacios"
+
+["Hard"]
+es = "Duras"
+
+["Soft"]
+es = "Blandas"
+
+["The breaklines are edges of the TIN"]
+es = "Las líneas de rotura son aristas del TIN"
+
+["The breaklines only add their points"]
+es = "Las líneas de rotura solo aportan sus puntos"
+
+["Boundary and holes of a TIN"]
+es = "Contorno y huecos de un TIN"
+
+["Encoding"]
+es = "Codificación"
+
+["Header"]
+es = "Cabecera"
+
+["The file has a header row with the column names"]
+es = "El fichero tiene una fila de cabecera con los nombres de las columnas"
+
+["Lines before the header"]
+es = "Líneas antes de la cabecera"
+
+["EPSG code of the points' horizontal CRS, such as EPSG:25830"]
+es = "Código EPSG del CRS horizontal de los puntos, como EPSG:25830"
+
+["Columns (preview of the first rows)"]
+es = "Columnas (vista previa de las primeras filas)"
+
+["Two columns have the role «{role}»: choose one"]
+es = "Dos columnas tienen el papel «{role}»: elija una"
+
+["The file «{file}» does not exist: choose the file to import"]
+es = "El fichero «{file}» no existe: elija el fichero que quiere importar"
+
+["Choose the columns X, Y and Z of «{file}» in the wizard"]
+es = "Elija en el asistente las columnas X, Y y Z de «{file}»"
+
+["Layer"]
+es = "Capa"
+
+["Layer of the GeoPackage to import"]
+es = "Capa del GeoPackage que se importa"
+
+["Role"]
+es = "Papel"
+
+["Elevation field"]
+es = "Campo de cota"
+
+["Field with the elevation of each contour line (empty: the Z of its vertices)"]
+es = "Campo con la cota de cada curva de nivel (vacío: la Z de sus vértices)"
+
+["EPSG code of the layer's horizontal CRS, such as EPSG:25830 (empty: the one the layer declares)"]
+es = "Código EPSG del CRS horizontal de la capa, como EPSG:25830 (vacío: el que declara la capa)"
+
+["Choose the layer of «{file}» to import"]
+es = "Elija la capa de «{file}» que quiere importar"
+
+["Import of the points «{name}»"]
+es = "Importación de los puntos «{name}»"
+
+["Import of the layer «{name}»"]
+es = "Importación de la capa «{name}»"
+
+["«{name}» has the same data as the input «{existing}» with other settings ({differences}): import it again with the reason why it replaces it"]
+es = "«{name}» tiene los mismos datos que la entrada «{existing}» con otros ajustes ({differences}): vuelva a importarlo con el motivo por el que la sustituye"
+
+["The original of the input could not be kept: {reason}"]
+es = "No se ha podido guardar el original de la entrada: {reason}"
+
+["… and {count} more rejected"]
+es = "… y {count} rechazadas más"
+
+["Points «{name}» imported as {datasets}: rows read {read}, points {points}, breaklines {lines}, rejected {rejected}, duplicates {duplicates}"]
+es = "Puntos «{name}» importados como {datasets}: filas leídas {read}, puntos {points}, líneas de rotura {lines}, rechazadas {rejected}, duplicados {duplicates}"
+
+[" and "]
+es = " y "
+
+["points"]
+es = "puntos"
+
+["breaklines"]
+es = "líneas de rotura"
+
+["contour lines"]
+es = "curvas de nivel"
+
+["boundaries"]
+es = "contornos"
+
+["Layer «{layer}» of «{file}» imported as {dataset}: {count} {what} of {read} features read, {rejected} rejected"]
+es = "Capa «{layer}» de «{file}» importada como {dataset}: {count} {what} de {read} entidades leídas, {rejected} rechazadas"
+
+["duplicates {duplicates}"]
+es = "duplicados {duplicates}"
+
+["Ask"]
+es = "Preguntar"
+
+["List the conflicts and do not create the TIN"]
+es = "Lista los conflictos y no crea el TIN"
+
+["Mean"]
+es = "Media"
+
+["The mean elevation of the coincident points"]
+es = "La cota media de los puntos que coinciden"
+
+["Minimum"]
+es = "Mínima"
+
+["The point with the lowest elevation"]
+es = "El punto de cota mínima"
+
+["Maximum"]
+es = "Máxima"
+
+["The point with the highest elevation"]
+es = "El punto de cota máxima"
+
+["First"]
+es = "Primero"
+
+["The first point of the file"]
+es = "El primer punto del fichero"
+
+["Do not create the TIN if there are conflicts"]
+es = "No crea el TIN si hay conflictos"
+
+["DTM → TIN"]
+es = "MDT → TIN"
+
+["Triangulate the centres of the cells with data"]
+es = "Triangula los centros de las celdas con dato"
+
+["TIN → DTM"]
+es = "TIN → MDT"
+
+["Interpolate the TIN at the centres of the project grid"]
+es = "Interpola el TIN en los centros de la rejilla del proyecto"
+
+["TIN «{name}» has not been created: {reason}"]
+es = "No se ha creado el TIN «{name}»: {reason}"
+
+["«{name}» transformed from {source} to {target}: {transform}"]
+es = "«{name}» transformado de {source} a {target}: {transform}"
+
+["… and {count} more conflicts"]
+es = "… y {count} conflictos más"
+
+["Triangulating {count} points (about {seconds} s)…"]
+es = "Triangulando {count} puntos (unos {seconds} s)…"
+
+["Adding «{name}» to the project… {percent} %"]
+es = "Incorporando «{name}» al proyecto… {percent} %"
+
+["The Blender triangulation did not fulfil its contract ({reason}): repeated with the pure triangulator"]
+es = "La triangulación de Blender no cumplió su contrato ({reason}): se repitió con el triangulador propio"
+
+["TIN «{name}» ({dataset}): {vertices} vertices, {triangles} triangles, {constraints} constraint edges; flat triangles {flat} %, longest side {side} m, degenerate {degenerate}; triangulator {triangulator}"]
+es = "TIN «{name}» ({dataset}): {vertices} vértices, {triangles} triángulos, {constraints} aristas obligatorias; triángulos planos {flat} %, lado máximo {side} m, degenerados {degenerate}; triangulador {triangulator}"
+
+["Duplicate points merged: {count}"]
+es = "Puntos duplicados fundidos: {count}"
+
+["Triangles removed by the boundary and the holes: {outside}; by the longest side: {long}"]
+es = "Triángulos quitados por el contorno y los huecos: {outside}; por el lado máximo: {long}"
+
+["Flat triangles before the correction: {before} %; after: {after} %; points added: {added}"]
+es = "Triángulos planos antes de la corrección: {before} %; después: {after} %; puntos añadidos: {added}"
+
+["Creating the TIN «{name}» in the background…"]
+es = "Creando el TIN «{name}» en segundo plano…"
+
+["Name or uid of the imported points"]
+es = "Nombre o uid de los puntos importados"
+
+["Name or uid of the imported breaklines (optional)"]
+es = "Nombre o uid de las líneas de rotura importadas (opcional)"
+
+["Name or uid of the imported boundary (optional)"]
+es = "Nombre o uid del contorno importado (opcional)"
+
+["Longest side"]
+es = "Lado máximo"
+
+["Triangles with a longer side in plan are removed, m (empty: none)"]
+es = "Se quitan los triángulos con un lado en planta más largo, m (vacío: ninguno)"
+
+["Coincident points"]
+es = "Puntos que coinciden"
+
+["Name of the TIN (empty: the points')"]
+es = "Nombre del TIN (vacío: el de los puntos)"
+
+["import points"]
+es = "importe puntos"
+
+["Choose the points or the breaklines of the TIN"]
+es = "Elija los puntos o las líneas de rotura del TIN"
+
+["Name or uid of the contour lines"]
+es = "Nombre o uid de las curvas de nivel"
+
+["Spot heights"]
+es = "Puntos acotados"
+
+["Name or uid of the imported points (optional)"]
+es = "Nombre o uid de los puntos importados (opcional)"
+
+["Densification"]
+es = "Densificación"
+
+["Longest segment of a contour line, m (empty or unchanged: the project's parameter)"]
+es = "Tramo más largo de una curva de nivel, m (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Name of the TIN (empty: the contour lines')"]
+es = "Nombre del TIN (vacío: el de las curvas)"
+
+["import contour lines"]
+es = "importe curvas de nivel"
+
+["Choose the contour lines of the TIN"]
+es = "Elija las curvas de nivel del TIN"
+
+["TIN «{name}»"]
+es = "TIN «{name}»"
+
+["TIN «{name}» ({dataset}) from the DTM «{source}»: {vertices} vertices and {triangles} triangles at the centres of the cells with data"]
+es = "TIN «{name}» ({dataset}) desde el MDT «{source}»: {vertices} vértices y {triangles} triángulos en los centros de las celdas con dato"
+
+["Project grid {dataset} from the TIN «{source}»: {valid} of {cells} cells with data (linear interpolation in each triangle)"]
+es = "Rejilla del proyecto {dataset} desde el TIN «{source}»: {valid} de {cells} celdas con dato (interpolación lineal en cada triángulo)"
+
+["«{name}» has not been converted: {reason}"]
+es = "No se ha convertido «{name}»: {reason}"
+
+["Direction"]
+es = "Sentido"
+
+["Surface"]
+es = "Superficie"
+
+["Name or uid of the DTM or the TIN"]
+es = "Nombre o uid del MDT o del TIN"
+
+["Name of the result (empty: the source's)"]
+es = "Nombre del resultado (vacío: el de la fuente)"
+
+["DTM ⇄ TIN conversion"]
+es = "Conversión MDT ⇄ TIN"
+
+["Converting «{name}» in the background…"]
+es = "Convirtiendo «{name}» en segundo plano…"
+
+# Curvas de nivel y validar una superficie (spec 006, T30; RF-006-18, RF-006-23, RF-006-27;
+# plan 006 §5.3.5 y §5.6.1): Curvas de nivel… y Validar la superficie, sus diálogos y sus
+# informes. «Surface», «Name», «Contour lines of a surface» y «… and {count} more» ya están
+# arriba.
+
+["Interval"]
+es = "Equidistancia"
+
+["Height between contour lines, m (empty or unchanged: the project's parameter)"]
+es = "Desnivel entre curvas, m (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Base elevation"]
+es = "Cota base"
+
+["Elevation from which the levels are counted, m (empty: 0)"]
+es = "Cota desde la que se cuentan las curvas, m (vacío: 0)"
+
+["Index contours every"]
+es = "Maestras cada"
+
+["Height between index contours, m (empty or unchanged: the project's parameter)"]
+es = "Desnivel entre curvas maestras, m (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Index offset"]
+es = "Desfase de las maestras"
+
+["Offset of the index contours, m (empty or unchanged: the project's parameter)"]
+es = "Desfase de las curvas maestras, m (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Simplification"]
+es = "Simplificación"
+
+["Douglas–Peucker tolerance, m; 0 does not simplify (empty or unchanged: the project's parameter)"]
+es = "Tolerancia de Douglas–Peucker, m; 0 no simplifica (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Minimum length"]
+es = "Longitud mínima"
+
+["Shorter contour lines are dropped, m (empty or unchanged: the project's parameter)"]
+es = "Se quitan las curvas más cortas, m (vacío o sin cambiar: el parámetro del proyecto)"
+
+["Name of the contour lines (empty: the surface's)"]
+es = "Nombre de las curvas (vacío: el de la superficie)"
+
+["Name or uid of the DTM or the TIN (empty: the active surface in the view)"]
+es = "Nombre o uid del MDT o del TIN (vacío: la superficie activa en la vista)"
+
+["Choose the surface: select it in the view or give its name"]
+es = "Elija la superficie: selecciónela en la vista o dé su nombre"
+
+["Contour lines «{name}»"]
+es = "Curvas de nivel «{name}»"
+
+["Contour lines {dataset} of «{source}»: {count} lines ({index} index, {closed} closed), {vertices} vertices, {length} m in plan; interval {interval} m, base elevation {base} m, index every {index_every} m"]
+es = "Curvas de nivel {dataset} de «{source}»: {count} curvas ({index} maestras, {closed} cerradas), {vertices} vértices, {length} m en planta; equidistancia {interval} m, cota base {base} m, maestras cada {index_every} m"
+
+["Index offset {offset} m, simplification {simplify} m, minimum length {min_length} m"]
+es = "Desfase de las maestras {offset} m, simplificación {simplify} m, longitud mínima {min_length} m"
+
+["The contour lines «{name}» have not been computed: {reason}"]
+es = "No se han calculado las curvas de nivel «{name}»: {reason}"
+
+["Computing the contour lines «{name}» in the background…"]
+es = "Calculando las curvas de nivel «{name}» en segundo plano…"
+
+["Validation of a surface"]
+es = "Validación de una superficie"
+
+["Validation of «{name}»"]
+es = "Validación de «{name}»"
+
+["Validating «{name}» in the background…"]
+es = "Validando «{name}» en segundo plano…"
+
+["The validation of «{name}» was cancelled"]
+es = "Se canceló la validación de «{name}»"
+
+["«{name}» has not been validated: {reason}"]
+es = "No se ha validado «{name}»: {reason}"
+
+["Validation of the grid «{name}»: area {area} m², without data {nodata} m² ({pct} %)"]
+es = "Validación de la rejilla «{name}»: área {area} m², sin dato {nodata} m² ({pct} %)"
+
+["Validation of the TIN «{name}»: area {area} m², without data {nodata} m² ({pct} %)"]
+es = "Validación del TIN «{name}»: área {area} m², sin dato {nodata} m² ({pct} %)"
+
+["Interior holes: none"]
+es = "Huecos interiores: ninguno"
+
+["Interior holes: {count} ({areas})"]
+es = "Huecos interiores: {count} ({areas})"
+
+["Cells with data outside the work window: {count}"]
+es = "Celdas con dato fuera de la ventana de trabajo: {count}"
+
+["Triangles with a vertex outside the work window: {count}"]
+es = "Triángulos con algún vértice fuera de la ventana de trabajo: {count}"
+
+["Cells with the elevation outside the plausible range from {low} to {high} m: {count}"]
+es = "Celdas con la cota fuera del rango plausible de {low} a {high} m: {count}"
+
+["Vertices with the elevation outside the plausible range from {low} to {high} m: {count}"]
+es = "Vértices con la cota fuera del rango plausible de {low} a {high} m: {count}"
+
+["Elevations outside the plausible range may be an undeclared no-data value"]
+es = "Las cotas fuera del rango plausible pueden ser un sin dato no declarado"
+
+["Flat triangles: {flat} %; longest side: {side} m; degenerate triangles: {degenerate}"]
+es = "Triángulos planos: {flat} %; lado máximo: {side} m; triángulos degenerados: {degenerate}"
+
+# Exportar (spec 006, T31; RF-006-24, RF-006-25; plan 006 §5.3.5 y §5.6.6): Superficie o
+# rejilla a GeoTIFF… y Capas a GeoPackage…, sus diálogos (GEOBLENDER_PG_gis_export_item), la
+# confirmación de sustituir un fichero y sus informes. «File», «First {step} ({path})»,
+# «import a DTM» y «Choose the surface: …» ya están arriba.
+
+["Grid"]
+es = "Rejilla"
+
+["Name or uid of the DTM or the project grid (empty: the active surface in the view)"]
+es = "Nombre o uid del MDT o de la rejilla del proyecto (vacío: la superficie activa en la vista)"
+
+["Replace"]
+es = "Sustituir"
+
+["Replace the file if it already exists"]
+es = "Sustituir el fichero si ya existe"
+
+["Replace the file"]
+es = "Sustituir el fichero"
+
+["«{file}» already exists: replace it?"]
+es = "Ya existe «{file}»: ¿sustituirlo?"
+
+["Export the layer"]
+es = "Exportar la capa"
+
+["Write this layer to the GeoPackage"]
+es = "Escribir esta capa en el GeoPackage"
+
+["Layers"]
+es = "Capas"
+
+["import or compute a layer"]
+es = "importe o calcule una capa"
+
+["Choose the file to export to"]
+es = "Elija el fichero al que exportar"
+
+["Choose at least one layer to export"]
+es = "Elija al menos una capa que exportar"
+
+["Export of «{file}»"]
+es = "Exportación de «{file}»"
+
+["Exporting «{file}» in the background…"]
+es = "Exportando «{file}» en segundo plano…"
+
+["«{file}» has not been exported: {reason}"]
+es = "No se ha exportado «{file}»: {reason}"
+
+["GeoTIFF «{file}» exported from «{source}»: {cols} × {rows} cells of {dx} × {dy} m, {valid} with data, in float32 with no data −9999; {references}"]
+es = "GeoTIFF «{file}» exportado desde «{source}»: {cols} × {rows} celdas de {dx} × {dy} m, {valid} con dato, en float32 con sin dato −9999; {references}"
+
+["GeoPackage «{file}» exported with {count} layers: {layers}; {references}"]
+es = "GeoPackage «{file}» exportado con {count} capas: {layers}; {references}"
+
+["In the project as the deliverable {dataset}"]
+es = "En el proyecto, como el entregable {dataset}"
+
+["Written outside the project: it is not a dataset of the project"]
+es = "Escrito fuera del proyecto: no es un dato del proyecto"
+
+# Transformar coordenadas e importar un fichero (spec 006, T32; RF-006-07, RF-006-27; plan 006
+# §5.3.5 y §5.5): Proyecto ▸ Georreferencia ▸ Transformar coordenadas… (su diálogo, su resultado
+# y «Copiar») e Importar ▸ Importar un fichero… (también al soltarlo en la vista). «File», «Copy»,
+# «Copy to the clipboard», «ETRS89 ellipsoidal height» y «The file «{file}» does not exist…» ya
+# están arriba.
+
+["Source CRS"]
+es = "CRS de origen"
+
+["Horizontal CRS of the typed coordinates"]
+es = "CRS horizontal de las coordenadas tecleadas"
+
+["Source vertical CRS"]
+es = "CRS vertical de origen"
+
+["Vertical reference of the typed elevations"]
+es = "Referencia vertical de las cotas tecleadas"
+
+["Target CRS"]
+es = "CRS de destino"
+
+["Horizontal CRS of the result"]
+es = "CRS horizontal del resultado"
+
+["Target vertical CRS"]
+es = "CRS vertical de destino"
+
+["Vertical reference of the result"]
+es = "Referencia vertical del resultado"
+
+["Coordinates"]
+es = "Coordenadas"
+
+["One point per line, or points separated by «;»: X Y or X Y Z separated by spaces, with decimal comma or point"]
+es = "Un punto por línea, o puntos separados por «;»: X Y o X Y Z separados por espacios, con coma o punto decimal"
+
+["Type the coordinates: X Y or X Y Z, one point per line or separated by «;»"]
+es = "Escriba las coordenadas: X Y o X Y Z, un punto por línea o separados por «;»"
+
+["Point {index} «{text}»: write X Y or X Y Z separated by spaces, with decimal comma or point"]
+es = "Punto {index} «{text}»: escriba X Y o X Y Z separados por espacios, con coma o punto decimal"
+
+["Point {index}"]
+es = "Punto {index}"
+
+["Coordinates from {source} to {target}"]
+es = "Coordenadas de {source} a {target}"
+
+["Transformation: {summary}"]
+es = "Transformación: {summary}"
+
+["Point {index}: {typed} → {result} m; scale factor {scale}; convergence {convergence}°"]
+es = "Punto {index}: {typed} → {result} m; factor de escala {scale}; convergencia {convergence}°"
+
+["Scale factor and grid convergence in {target}; the convergence in degrees, positive east of the central meridian"]
+es = "Factor de escala y convergencia de cuadrícula en {target}; la convergencia en grados, positiva al este del meridiano central"
+
+["Transform coordinates"]
+es = "Transformar coordenadas"
+
+["Transform"]
+es = "Transformar"
+
+["There are no transformed coordinates to copy"]
+es = "No hay coordenadas transformadas que copiar"
+
+["Transformed coordinates copied to the clipboard"]
+es = "Coordenadas transformadas copiadas al portapapeles"
+
+["Transformed coordinates"]
+es = "Coordenadas transformadas"
+
+["«{file}»: Geoblender does not import {extension} files yet. {available}"]
+es = "«{file}»: Geoblender aún no importa ficheros {extension}. {available}"
+
+["«{file}»: shapefiles are not imported. Convert it to GeoPackage in QGIS and import the GeoPackage"]
+es = "«{file}»: los shapefiles no se importan. Conviértalo a GeoPackage en QGIS e importe el GeoPackage"
+
+["«{file}»: Geoblender does not know how to import files with the extension «{extension}». It imports {extensions}"]
+es = "«{file}»: Geoblender no sabe importar ficheros con la extensión «{extension}». Importa {extensions}"
+
+["Importing «{file}» with {command}"]
+es = "Importando «{file}» con {command}"
 
 # Procedencia (spec 008, T44; plan 008 §5.3.2 y §5.5) --------------------------------------
 # Los mensajes de la procedencia y de los parámetros (spec §8) están en
@@ -1834,9 +2945,6 @@ es = "Registrar como entrada…"
 ["Ignore…"]
 es = "Ignorar…"
 
-["Dataset"]
-es = "Dato"
-
 ["Uid or name of the dataset"]
 es = "Uid o nombre del dato"
 
@@ -1896,9 +3004,6 @@ es = "Capa o tabla"
 
 ["A layer or table of the project database"]
 es = "Una capa o tabla de la base del proyecto"
-
-["File"]
-es = "Fichero"
 
 ["A file of the project data folders"]
 es = "Un fichero de las carpetas de datos del proyecto"

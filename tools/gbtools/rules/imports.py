@@ -14,8 +14,8 @@
   Los módulos de Blender (ARQ-01) y los nombres propios de Geoblender (ARQ-09) tienen
   su regla.
 - ARQ-05 (RF-001-13): en ``adapters/``, cada librería externa la importa solo el
-  módulo o subpaquete dueño que fija ``ADAPTER_OWNERS`` (vacía en esta spec: la 006
-  registra pyproj).
+  módulo o subpaquete dueño que fija ``ADAPTER_OWNERS`` (pyproj, de la spec 006:
+  ``adapters.pyproj_crs``).
 - HER-01 (RF-001-13): ``tools/`` (salvo ``run_blender_tests.py`` y ``tools/inblender/``)
   solo importa biblioteca estándar, ``gbtools``, los scripts hermanos de ``tools/`` y
   ``geoblender`` cargado por ruta con ``gbtools.package.load_geoblender`` (nunca
@@ -171,8 +171,9 @@ ARQ01_ALLOWED: tuple[str, ...] = (
 HER01_EXEMPT: tuple[str, ...] = ("tools/run_blender_tests.py", "tools/inblender/")
 
 # Librería (primer nivel del import) → módulo o subpaquete dueño dentro de la
-# extensión (p. ej. "adapters.pyproj_crs"). Vacía hasta que una spec añada un adaptador.
-ADAPTER_OWNERS: Mapping[str, str] = {}
+# extensión; cada spec que añade un adaptador registra aquí su librería, con el ADR que la
+# admite (pyproj: spec 006, ADR-0005; certifi no se importa: es dependencia de pyproj).
+ADAPTER_OWNERS: Mapping[str, str] = {"pyproj": "adapters.pyproj_crs"}
 
 TOOLS_LIBRARY = "gbtools"
 PACKAGE_LOADER = "load_geoblender"

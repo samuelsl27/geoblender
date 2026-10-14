@@ -57,7 +57,7 @@ class ProvenanceUndoTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.watch = _module("bl.scene.undo_watch")
         cls.ui = _module("bl.ui.provenance")
@@ -67,7 +67,7 @@ class ProvenanceUndoTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         if not blender_ext.is_enabled():  # otra prueba la desactivó

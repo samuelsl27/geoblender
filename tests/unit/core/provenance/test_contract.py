@@ -215,6 +215,74 @@ class FigureDefTest(unittest.TestCase):
                 figure(**{name: 1})
 
 
+def setting(key: str = "interval_m", label: str = "Interval", **kw: Any) -> Any:
+    """Un :class:`SettingDef` válido salvo lo que se cambie; un número en metros."""
+    kw.setdefault("unit", "m")
+    return contract.SettingDef(key, label, **kw)
+
+
+class SettingDefTest(unittest.TestCase):
+    def test_declaration(self) -> None:
+        """RF-008-29 (spec 006, T58): un ajuste que enseña la procedencia de una operación
+        dice dónde está en sus ajustes («.» entra en uno anidado), su nombre visible y su
+        unidad (un número) o sus elecciones (cada valor guardado con el nombre con que se
+        elige); un ``OperationDef`` los lleva en su orden (ninguno, por defecto), y los dos se
+        comparan y no se pueden cambiar."""
+        number = setting()
+        choice = setting("read.decimal", "Decimal mark", unit=None,
+                         choices=[(".", "Point"), (",", "Comma"), (None, "Automatic")])
+        self.assertEqual((number.key, number.label_msgid, number.unit, number.choices),
+                         ("interval_m", "Interval", "m", ()))
+        self.assertEqual((choice.unit, choice.choices),
+                         (None, ((".", "Point"), (",", "Comma"), (None, "Automatic"))))
+        self.assertEqual([choice.choice_msgid(value) for value in (",", None, ";")],
+                         ["Comma", "Automatic", None])
+        self.assertEqual(setting("count", "Count", unit="-").unit, "-")
+        defn = op(settings=[number, choice])
+        self.assertEqual(defn.settings, (number, choice))
+        self.assertEqual(defn, op(settings=(setting(), choice)))
+        self.assertEqual(hash(defn), hash(op(settings=(setting(), choice))))
+        self.assertEqual(op().settings, ())
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            number.unit = "km"
+
+    def test_malformed_settings_are_rejected(self) -> None:
+        """RF-008-29 (spec 006, T58): una clave que no es un nombre en minúsculas, un nombre
+        visible que no es un ``msgid`` en inglés, una unidad fuera del catálogo, un ajuste
+        con unidad y elecciones o sin ninguna de las dos, una elección mal formada o repetida
+        y un ``OperationDef`` con dos ajustes con la misma clave son errores del programa
+        (``ValueError``); un ajuste que no es un ``SettingDef``, ``TypeError``."""
+        cases: tuple[tuple[str, dict[str, Any]], ...] = (
+            ("key", {"key": "Interval"}),
+            ("key", {"key": "read..decimal"}),
+            ("key", {"key": "read.decimal."}),
+            ("key", {"key": ""}),
+            ("key", {"key": None}),
+            ("label_msgid", {"label": ""}),
+            ("label_msgid", {"label": "Método"}),
+            ("unit", {"unit": "m³"}),
+            ("unit", {"unit": "metros"}),
+            ("unit", {"unit": None}),
+            ("unit", {"choices": [("a", "A")]}),
+            ("choices", {"unit": None, "choices": [("a",)]}),
+            ("choices", {"unit": None, "choices": [("a", "Opción")]}),
+            ("choices", {"unit": None, "choices": [(["a"], "A")]}),
+            ("choices", {"unit": None, "choices": [("a", "A"), ("a", "B")]}),
+            ("choices", {"unit": None, "choices": "ab"}),
+        )
+        for name, change in cases:
+            with self.subTest(name=name, change=change), self.assertRaises(ValueError) as caught:
+                setting(**change)
+            self.assertIn(name, str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            op(settings=[setting(), setting(label="Contour interval")])
+        self.assertIn("settings", str(caught.exception))
+        with self.assertRaises(ValueError):
+            op(settings=setting())
+        with self.assertRaises(TypeError):
+            op(settings=[setting(), "interval_m"])
+
+
 class ImporterDefTest(unittest.TestCase):
     def test_declaration(self) -> None:
         """RF-008-11 (ADR-0025 §2): un importador nombra el lector de contenido de sus
@@ -552,7 +620,7 @@ class PackageTest(unittest.TestCase):
         """Plan §5.1: ``core.provenance`` reexporta la API pública del contrato y de los
         mensajes."""
         for name in ("OperationDef", "CoupledGroupDef", "FigureDef", "ImporterDef",
-                     "register_operation", "unregister_operation", "register_group",
+                     "SettingDef", "register_operation", "unregister_operation", "register_group",
                      "unregister_group", "register_figure", "unregister_figure",
                      "register_importer", "unregister_importer", "OPERATIONS", "GROUPS",
                      "FIGURES", "IMPORTERS", "CORE_OPERATIONS", "ProvenanceError",

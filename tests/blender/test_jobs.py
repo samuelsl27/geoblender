@@ -26,7 +26,10 @@ de la barra de estado de la 003 (``bl/ui/jobs.py``), declarado para los dos modo
   retrocede y se acota a 0–100 %) y el último mensaje del más antiguo en curso, en modo
   Geoblender y en modo Blender;
 - RF-004-07: al acabar un trabajo, durante 10 s, su nombre, su estado y su duración en s
-  y, si no terminó bien, el mensaje del §8 en una línea, sin traza de Python.
+  y, si no terminó bien, el mensaje del §8 en una línea, sin traza de Python; (spec 006,
+  T57) si terminó bien y su operación quedó fallida o cancelada al incorporarlo, eso y el
+  principio de su motivo, y el motivo entero, en el registro de Blender (``report_later`` y
+  la orden interna ``geoblender.jobs_report``).
 
 En ``blender -b`` los temporizadores no se ejecutan: las pruebas llaman a ``tick()`` a mano
 cada 0,05 s y dibujan el campo con un *layout* simulado. Un trabajo real de unos 2 s (el
@@ -241,14 +244,14 @@ class JobsPreferencesTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.prefs = _addon_preferences()
         cls.i18n = _module("core.i18n")
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def jobs(self) -> object:
         return getattr(self.prefs, GROUP)
@@ -362,11 +365,11 @@ class JobsPreferencesTest(unittest.TestCase):
 
 
 class JobsPreferencesRegistrationTest(unittest.TestCase):
-    """Cada prueba parte de la extensión deshabilitada y fuera de ``sys.modules``."""
+    """Cada prueba parte de la extensión deshabilitada y fuera de ``sys.modules``
+    (``blender_ext.fresh``)."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def assertSessionFingerprint(self) -> None:
         after = state_fingerprint()
@@ -488,7 +491,7 @@ class JobStatusFieldTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -566,7 +569,7 @@ class JobStatusFieldTest(unittest.TestCase):
         cls.monitor.stop()
         cls.patch.stop()
         cls.catalog.unregister_worker(BOOM_WORKER)
-        blender_ext.unload()
+        blender_ext.release()
         cls.tmp.cleanup()
 
     def test_field_registered_for_both_modes(self) -> None:
@@ -697,7 +700,7 @@ class JobMonitorLogicTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -709,10 +712,11 @@ class JobMonitorLogicTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
-        self.monitor = self.ops.JobMonitor(clock=_Clock())
+        self.clock = _Clock()
+        self.monitor = self.ops.JobMonitor(clock=self.clock)
         patch = mock.patch.object(self.ops, "MONITOR", self.monitor)
         patch.start()
         self.addCleanup(patch.stop)
@@ -818,6 +822,105 @@ class JobMonitorLogicTest(unittest.TestCase):
         english = self.messages.render("worker_crashed", language="en", job="T", exit_code=1)
         self.assertEqual(self.field().notice, f"T · Failed · 0.5 s · {english}")
 
+    def test_operation_not_done_after_its_job(self) -> None:
+        """RF-004-07, RF-006-28 (spec 006, T57; M3): un trabajo que terminó bien cuya operación
+        quedó fallida o cancelada al incorporarlo no dice «Terminado»: su nombre, «Operación
+        fallida» (con el icono de error) u «Operación cancelada» (con el de cancelado), su
+        duración y el principio de su motivo (su primera línea, de 60 caracteres como mucho),
+        en los dos modos; plegado, sin el motivo. En ``jobs/`` sigue «Terminado». Dicho
+        cuando su aviso ya caducó (una incorporación por pasos), vuelve 10 s con el
+        temporizador; de un trabajo que el lanzador no tiene, nada. En inglés, en inglés."""
+        reason = ("No se ha creado el TIN «Cruce»: 1 conflictos entre líneas de rotura y "
+                  "puntos a ≤ 0,001 m\nTIN «Cruce»: las líneas de rotura «PIE_3» y «CAB_2» "
+                  "se cruzan")
+        self.fake.snapshots_now = [self.snapshot("a", "TIN «Cruce»", "succeeded", frac=1.0,
+                                                 duration_s=0.04)]
+        self.fake.finished_now = ["a"]
+        self.assertTrue(self.monitor.end_operation("a", "failed", reason))  # su on_finish
+        self.assertEqual(self.ops.tick(), 0.25)
+        head = reason.splitlines()[0][:59].rstrip() + "…"
+        self.assertEqual(self.ui.reason_head(reason), head)
+        frame = self.field()
+        self.assertEqual((frame.notice, frame.notice_icon),
+                         (f"TIN «Cruce» · Operación fallida · 0,0 s · {head}", "ERROR"))
+        self.assertEqual(self.field(geoblender=False).notice, frame.notice)
+        self.assertEqual(self.monitor.view().notice.state, "succeeded")
+        folded = FakeLayout()
+        self.ui.draw_folded(folded, _context(geoblender=True))
+        self.assertEqual((_Frame(folded).notice, _Frame(folded).notice_icon),
+                         ("Operación fallida · 0,0 s", "ERROR"))
+        self.clock.offset = NOTICE_S + 0.5
+        self.assertIsNone(self.ops.tick())
+        self.assertTrue(self.field().empty)
+        cancelled = "La entrada «Taludes» ya está registrada con el mismo contenido (12/10/2026)."
+        self.assertTrue(self.monitor.end_operation("a", "cancelled", cancelled))
+        self.assertTrue(bpy.app.timers.is_registered(self.ops.tick))
+        frame = self.field()
+        self.assertEqual(self.ui.reason_head(cancelled), cancelled[:59] + "…")
+        self.assertEqual((frame.notice, frame.notice_icon),
+                         (f"TIN «Cruce» · Operación cancelada · 0,0 s · {cancelled[:59]}…",
+                          "CANCEL"))
+        self.clock.offset += NOTICE_S - 0.5
+        self.assertEqual(self.ops.tick(), 0.25)
+        self.assertEqual(self.field().notice, frame.notice)
+        self.clock.offset += 1.0
+        self.assertIsNone(self.ops.tick())
+        self.assertFalse(self.monitor.end_operation("z", "failed", reason))
+        self.assertTrue(self.field().empty)
+        self.i18n.set_language("en")
+        self.addCleanup(self.i18n.set_language, "es")
+        self.assertTrue(self.monitor.end_operation("a", "failed", "x"))
+        self.assertEqual(self.field().notice, "TIN «Cruce» · Operation failed · 0.0 s · x")
+
+    def test_reports_reach_blender_later(self) -> None:
+        """RF-004-07 (spec 006, T57): lo que se dice desde un temporizador, sin
+        ``Operator.report``, llega al registro de Blender (Info) con ``report_later``: queda
+        apuntado y, con ventana, en cola hasta un temporizador de un solo disparo que lanza en
+        ella la orden interna ``geoblender.jobs_report`` con ``INVOKE_DEFAULT``; su ``invoke``
+        pone un temporizador de la ventana y su manejador modal, y su ``modal``, en el primer
+        evento, informa (Blender lo pasa entonces a Info) y termina dejando pasar el evento.
+        Ejecutada, informa sin más (un error, en un guion, es un RuntimeError). Sin ventana
+        (``blender -b``), solo se apunta."""
+        ops = self.ops
+        self.addCleanup(ops.forget_reports)
+        before = len(ops.sent_reports())
+        ops.report_later("ERROR", "Motivo entero\nsegunda línea")
+        self.assertEqual(ops.sent_reports()[before:], (("ERROR", "Motivo entero\nsegunda línea"),))
+        self.assertFalse(bpy.app.timers.is_registered(ops.flush_reports))
+        window = bpy.context.window_manager.windows[0]
+        with mock.patch.object(ops, "_report_window", return_value=window), \
+                mock.patch.object(ops, "_invoke_report") as invoke:
+            ops.report_later("WARNING", "La entrada «Taludes» ya está registrada")
+            self.assertTrue(bpy.app.timers.is_registered(ops.flush_reports))
+            invoke.assert_not_called()
+            self.assertIsNone(ops.flush_reports())
+        invoke.assert_called_once_with(window, "WARNING",
+                                       "La entrada «Taludes» ya está registrada")
+        with self.assertRaises(ValueError):
+            ops.report_later("DEBUG", "x")
+        report = bpy.types.GEOBLENDER_OT_jobs_report
+        self.assertIn("INTERNAL", report.bl_options)
+        self.assertEqual(bpy.ops.geoblender.jobs_report(kind="WARNING", message="aviso"),
+                         {"FINISHED"})
+        with self.assertRaisesRegex(RuntimeError, "fallo de prueba"):
+            bpy.ops.geoblender.jobs_report(kind="ERROR", message="fallo de prueba")
+        calls: list[tuple[object, ...]] = []
+        reports: list[tuple[set[str], str]] = []
+        manager = SimpleNamespace(
+            event_timer_add=lambda step, window: calls.append(("timer", step, window)) or "T",
+            modal_handler_add=lambda operator: calls.append(("modal",)),
+            event_timer_remove=lambda timer: calls.append(("remove", timer)))
+        fake = SimpleNamespace(kind="ERROR", message="motivo",
+                               report=lambda kind, text: reports.append((kind, text)))
+        context = SimpleNamespace(window_manager=manager, window=window)
+        self.assertEqual(report.invoke(fake, context, None), {"RUNNING_MODAL"})
+        self.assertEqual(reports, [])
+        self.assertEqual(report.modal(fake, context, SimpleNamespace(type="MOUSEMOVE")),
+                         {"FINISHED", "PASS_THROUGH"})
+        self.assertEqual(reports, [({"ERROR"}, "motivo")])
+        self.assertEqual(calls, [("timer", ops.REPORT_EVENT_S, window), ("modal",),
+                                 ("remove", "T")])
+
     def test_redraw_skips_modal_windows(self) -> None:
         """RF-004-06: el redibujo fuerza la barra de estado de cada ventana sin operadores
         modales (con uno, su texto es suyo) y cuenta cuántas."""
@@ -837,8 +940,7 @@ class JobMonitorLogicTest(unittest.TestCase):
 
 class JobMonitorRegistrationTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_disable_retires_timer_and_field(self) -> None:
         """RF-004-06, RF-004-07, RF-004-27: desactivar Geoblender retira el temporizador del
@@ -942,7 +1044,7 @@ class JobOperatorsCatalogTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
         cls.commands = _module("bl.ui.commands")
@@ -952,7 +1054,7 @@ class JobOperatorsCatalogTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_real_operators_replace_the_provisionals(self) -> None:
         """RF-004-08, RF-004-09: ``geoblender.jobs_show_jobs`` y ``geoblender.jobs_cancel``
@@ -1016,7 +1118,7 @@ class JobCancelTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -1106,7 +1208,7 @@ class JobCancelTest(unittest.TestCase):
         cls.monitor.stop()
         cls.patch.stop()
         cls.catalog.unregister_worker(GATED_WORKER)
-        blender_ext.unload()
+        blender_ext.release()
         cls.tmp.cleanup()
 
     def test_poll_false_explains_why(self) -> None:
@@ -1201,7 +1303,7 @@ class JobsListPanelTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -1213,7 +1315,7 @@ class JobsListPanelTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.monitor = self.ops.JobMonitor(clock=_Clock())
@@ -1385,7 +1487,7 @@ class ShowJobsTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -1393,7 +1495,7 @@ class ShowJobsTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.monitor = self.ops.JobMonitor(clock=_Clock())
@@ -1473,6 +1575,9 @@ SAMPLED_CHUNKS = 3
 PROGRESS_EVERY_S = 0.25
 SUM_10S_S = 10.0
 SUM_10S_TOLERANCE_S = 0.5
+# Con la máquina cargada, la suma se lanza otra vez mientras su ritmo pase del plazo, hasta
+# estas veces (spec 006, T48; como tests.support.timing.least_of).
+RHYTHM_ATTEMPTS = 5
 
 
 def _chunk_number(message: str) -> int:
@@ -1538,7 +1643,7 @@ class SelftestCleanCatalogTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
         cls.commands = _module("bl.ui.commands")
@@ -1549,7 +1654,7 @@ class SelftestCleanCatalogTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_real_operators_replace_the_provisionals(self) -> None:
         """RF-004-03, RF-004-17: ``geoblender.jobs_run_selftest`` y ``geoblender.jobs_clean``
@@ -1640,7 +1745,7 @@ class RunSelftestTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.protocol = _module("jobs.protocol")
@@ -1679,12 +1784,53 @@ class RunSelftestTest(unittest.TestCase):
         matmul = launched[SELFTEST_NAMES["MATMUL_BLENDER"]]
         cls._wait(lambda: _chunk_number(cls.by_name()[total.name].message) >= SAMPLED_CHUNKS
                   and not cls.by_name()[matmul.name].active)
+        cls._sample_sum(started)
+        # Con la máquina cargada (las partes de tools/check.py a la vez, u otro programa),
+        # el worker puede ir más despacio que su ritmo aunque el código esté bien: como
+        # tests.support.timing.least_of (spec 006, T48), mientras el ritmo medido pase de
+        # su plazo, se lanza otra vez (solo la suma), hasta RHYTHM_ATTEMPTS veces; los
+        # plazos no cambian.
+        cls.rhythm_attempts = 1
+        while not cls._on_rhythm() and cls.rhythm_attempts < RHYTHM_ATTEMPTS:
+            cls.rhythm_attempts += 1
+            started = time.monotonic()
+            cls.sum_run = _reports(operator, mode="SUM_10S")
+            cls._wait(lambda: _chunk_number(cls.by_name()[total.name].message)
+                      >= SAMPLED_CHUNKS)
+            cls._sample_sum(started)
+
+    @classmethod
+    def _sample_sum(cls, started: float) -> None:
+        """Lo que miran las pruebas de la última suma de 10 s, ya en su tercer trozo: el
+        tiempo desde ``started``, su foto y su registro; después la cancela, espera a que
+        termine y lee sus eventos."""
+        total = cls.by_name()[SELFTEST_NAMES["SUM_10S"]]
         cls.sampled_s = time.monotonic() - started
-        cls.sum_running = cls.by_name()[total.name]
+        cls.sum_running = total
         cls.sum_record = cls.records.read_record(cls.root / total.job_uid)
         cls.runner.cancel(total.job_uid)
         cls._wait(lambda: not cls.by_name()[total.name].active)
         cls.sum_events = _channel_events(cls.root / total.job_uid)
+
+    @classmethod
+    def _intervals(cls) -> list[float]:
+        """Lo que hubo entre el inicio de la última suma y cada uno de sus tres primeros
+        avances, en su proceso."""
+        start = next(event for event in cls.sum_events if event["t"] == "start")
+        progress = [event for event in cls.sum_events
+                    if event["t"] == "progress"][:SAMPLED_CHUNKS]
+        times = [start["ts"], *(event["ts"] for event in progress)]
+        return [later - earlier for earlier, later in zip(times, times[1:])]
+
+    @classmethod
+    def _on_rhythm(cls) -> bool:
+        """Si la última suma fue a su ritmo: sus avances con ≤ 0,25 s entre uno y otro y,
+        a ese ritmo, sus 50 trozos en ≤ 10,5 s (lo que la carga de la máquina solo puede
+        alargar)."""
+        intervals = cls._intervals()
+        chunks = cls.ops.SELFTEST_PARAMS["SUM_10S"]["chunks"]
+        return (len(intervals) == SAMPLED_CHUNKS and max(intervals) <= PROGRESS_EVERY_S
+                and statistics.median(intervals) * chunks <= SUM_10S_S + SUM_10S_TOLERANCE_S)
 
     @classmethod
     def by_name(cls) -> dict[str, object]:
@@ -1711,7 +1857,7 @@ class RunSelftestTest(unittest.TestCase):
         cls.runner.shutdown(timeout_s=2.0)
         cls.monitor.stop()
         cls.patch.stop()
-        blender_ext.unload()
+        blender_ext.release()
         cls.tmp.cleanup()
 
     def request(self, mode: str) -> object:
@@ -1735,7 +1881,9 @@ class RunSelftestTest(unittest.TestCase):
         segundo): trozos de ≤ 0,25 s, uno por avance, que el límite de 10 avances por
         segundo del worker no retiene. En su proceso, el inicio y los tres primeros avances
         llegan con ≤ 0,25 s entre uno y otro, y a ese ritmo los 50 trozos duran 10 ± 0,5 s;
-        se cancela al momento."""
+        se cancela al momento. Con la máquina cargada, la suma se lanza otra vez mientras su
+        ritmo pase del plazo, hasta ``RHYTHM_ATTEMPTS`` veces (spec 006, T48), y se mira la
+        última."""
         result, reports = self.sum_run
         self.assertEqual(result, {"FINISHED"})
         self.assertEqual(reports, [({"INFO"},
@@ -1813,7 +1961,7 @@ class CleanJobsTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -1832,7 +1980,7 @@ class CleanJobsTest(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.gates.release_all()
         cls.catalog.unregister_worker(CLEAN_WORKER)
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))
@@ -2053,7 +2201,7 @@ class SessionRunnerTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         cls.user = _user_dir()
         cls.no_project_root = cls.user.joinpath(*NO_PROJECT_JOBS)
@@ -2080,7 +2228,7 @@ class SessionRunnerTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.gates.release_all()
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         if not cls.root_existed:
             _remove_tree(cls.no_project_root)
@@ -2286,10 +2434,9 @@ class SessionShutdownTest(unittest.TestCase):
     autodiagnóstico de 10 s (proceso aparte) y un trabajo en hilo que espera, y cierra."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
         self.folders: list[Path] = []
         self.addCleanup(self.remove_folders)  # lo último: con todo ya cerrado
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
         self.sys_path = list(sys.path)
         blender_ext.enable()
         self.ops = _module("bl.ops.jobs")
@@ -2444,7 +2591,7 @@ class RuntimeSetupTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -2461,7 +2608,7 @@ class RuntimeSetupTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))
@@ -2912,7 +3059,7 @@ class ExternalPythonTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.ops = _module("bl.ops.jobs")
         cls.ui = _module("bl.ui.jobs")
@@ -2930,7 +3077,7 @@ class ExternalPythonTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))

@@ -41,7 +41,7 @@ def _module(name: str) -> ModuleType:
 class IconsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.icons = _module("bl.ui.icons")
@@ -51,7 +51,7 @@ class IconsTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_sources_pngs_and_manifest(self) -> None:
         """RNF-003-09: cada icono con su SVG, sus dos PNG (≤ 8 KB) y su entrada al día; no

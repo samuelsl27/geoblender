@@ -23,6 +23,7 @@ un trabajo real del autodiagnóstico de la 004.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import os
 import sqlite3
@@ -32,10 +33,17 @@ from pathlib import Path
 from typing import Any
 
 from tests.support.package import import_geoblender
-from tests.unit.core.provenance.test_graph import GraphCase, _replace_table, _spec, _uses
+from tests.unit.core.provenance.test_graph import (
+    STEP_B,
+    GraphCase,
+    _replace_table,
+    _spec,
+    _uses,
+)
 from tests.unit.core.provenance.test_operations import _now
 
 provenance = import_geoblender("core.provenance")
+contract = import_geoblender("core.provenance.contract")
 operations = import_geoblender("core.provenance.operations")
 graph_mod = import_geoblender("core.provenance.graph")
 stale_mod = import_geoblender("core.provenance.stale")
@@ -272,6 +280,29 @@ class EndedTest(IngestCase):
                     (status, text),
                 )
                 self.assertNoOutputs(handle.uid)
+        self.assertEqual(self.written, [])
+
+    def test_ended_job_of_an_operation_with_libraries(self) -> None:
+        """RF-008-19, RF-008-20 (regresión de la spec 006, T33; RF-006-28): el trabajo
+        cancelado o fallido de una operación que declara las bibliotecas que influyen en sus
+        cifras (``OperationDef.libraries``) la deja cancelada o fallida con el motivo de la
+        004 sin las versiones, que no hacen falta sin cifras: es lo que hace la sesión de
+        Blender al terminar un trabajo que el módulo no incorporó (antes, ``ValueError`` y la
+        operación seguía «en curso»). Terminado bien, sin ellas sigue siendo un error del
+        programa."""
+        self.base()
+        contract.unregister_operation(STEP_B.op_type)
+        contract.register_operation(dataclasses.replace(STEP_B, libraries=("numpy",)))
+        for state, text in (("cancelled", "Trabajo «Años por banco» cancelado."),
+                            ("failed", "Autodiagnóstico: fallo provocado en el trozo 2 de 4.")):
+            with self.subTest(state=state):
+                handle = self.start()
+                outcome = self.outcome(state, outputs=(), error_code="x", error_text=text)
+                result = self.ingest(handle, outcome)
+                self.assertEqual((result.status, result.reason), (state, text))
+                self.assertEqual(self.status(handle.uid), state)
+        handle = self.start()
+        self.assertRejected(ValueError, None, lambda: self.ingest(handle, self.outcome()))
         self.assertEqual(self.written, [])
 
     def test_module_failure_leaves_the_operation_failed(self) -> None:

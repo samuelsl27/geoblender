@@ -187,6 +187,10 @@ SYNTHETIC_OP = "jobs.provenance_selftest"  # el tipo de operación del operador 
 SYNTHETIC_IDNAME = "gbtest.provenance_selftest"  # fuera del catálogo, como gbdemo.*
 SELFTEST_PARAMS = {"op": "chunked_sum", "n": 1000, "chunks": 1, "sleep_s": 0.0}  # en hilo
 PENDING_TEXT = "pendiente de incorporar"
+# Los lectores de contenido (spec 006, T40), los tipos de trabajo y las definiciones de
+# parámetros (T26) de la topografía, los registra bl/ops/gis.py.
+GIS_READERS = ("gis.asc@1", "gis.geotiff@1", "gis.gpkg_layer@1", "gis.points_text@1",
+               "gis.xyz_grid@1")
 DATA = ROOT / "tests" / "data" / "core" / "provenance"
 LAYER = "limites"
 INPUTS_PANEL = "GEOBLENDER_PT_core_inputs"
@@ -318,11 +322,11 @@ def _float_properties(struct: bpy.types.Struct, path: str, seen: set[str]) -> li
 
 
 class ProvenanceRegistrationTest(unittest.TestCase):
-    """Parte de la extensión deshabilitada y fuera de ``sys.modules``."""
+    """Parte de la extensión deshabilitada y fuera de ``sys.modules``
+    (``blender_ext.fresh``)."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_register_and_unregister_leave_blender_as_it_was(self) -> None:
         """RF-008-32, RF-008-15, D16 (principio 8): habilitar pone
@@ -447,7 +451,7 @@ class ProvenancePropsTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.session = _module("bl.ops.core_provenance")
@@ -458,7 +462,7 @@ class ProvenancePropsTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.enterContext(_without_variable())
@@ -602,7 +606,7 @@ class ProvenanceSessionTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.session = _module("bl.ops.core_provenance")
@@ -614,7 +618,7 @@ class ProvenanceSessionTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="gb-t46-"))
@@ -795,6 +799,68 @@ class ProvenanceSessionTest(unittest.TestCase):
         self.assertIsNotNone(records.read_record(handle.job_dir).ingested_at)
         self.assertEqual(records.read_record(handle.job_dir).executor, "inprocess")
 
+    def test_gis_readers_register_and_unregister(self) -> None:
+        """RF-006-26, RF-008-09 (spec 006, T40; ADR-0025 §2; principio 8): con la extensión
+        habilitada están los cinco lectores de contenido de ``gis`` y su lector de tablas de
+        ``interop`` (``gis`` no puede importarlo, ARQ-07); ``bl/ops/gis.py`` los quita y los
+        vuelve a poner, las dos cosas idempotentes, y quitarlos deja el registro como
+        estaba."""
+        gis_ops = _module("bl.ops.gis")
+        readers = _module("core.content.readers")
+        content = _module("gis.content")
+        read_table = _module("interop.csv_tables").read_table
+
+        def ours() -> list[str]:
+            return sorted(key for key in readers.READERS if key.startswith("gis."))
+
+        self.assertEqual(ours(), list(GIS_READERS))
+        self.assertIs(content.table_reader(), read_table)
+        self.addCleanup(gis_ops.register)  # la clase sigue con la extensión habilitada
+        for _ in range(2):
+            gis_ops.unregister()
+            self.assertEqual((ours(), content.table_reader()), ([], None))
+        before = dict(readers.READERS)
+        for _ in range(2):
+            gis_ops.register()
+            self.assertEqual(ours(), list(GIS_READERS))
+            self.assertIs(content.table_reader(), read_table)
+        gis_ops.unregister()
+        self.assertEqual(dict(readers.READERS), before)
+
+    def test_gis_jobs_and_parameters_register_and_unregister(self) -> None:
+        """RF-006-28, RF-008-01, RF-008-06 (spec 006, T26; plan 006 §5.3.4 y §5.6.1;
+        principio 8): con la extensión habilitada están los trece tipos de trabajo de ``gis``
+        (``jobs.catalog``, los de ``gis.jobs``) y sus 17 definiciones de parámetros
+        (``core.params``); ``bl/ops/gis.py`` los quita y los vuelve a poner, las dos cosas
+        idempotentes, y quitarlos deja los dos registros como estaban."""
+        gis_ops = _module("bl.ops.gis")
+        catalog = _module("jobs.catalog")
+        params = _module("core.params")
+        gis_jobs = _module("gis.jobs")
+        gis_params = _module("gis.params")
+        keys = sorted(defn.key for defn in gis_params.DEFINITIONS)
+
+        def ours() -> tuple[list[str], list[str]]:
+            workers = sorted(name for name in catalog.WORKERS if name.startswith("gis_"))
+            return workers, sorted(key for key in params.DEFINITIONS if key.startswith("gis."))
+
+        expected = (sorted(gis_jobs.WORKER_NAMES), keys)
+        self.assertEqual((len(expected[0]), len(keys)), (13, 17))  # 3 tipos de la T29
+        self.assertEqual(ours(), expected)
+        for name in gis_jobs.WORKER_NAMES:
+            self.assertIs(catalog.WORKERS[name], gis_jobs.WORKER_INFOS_BY_NAME[name])
+        self.addCleanup(gis_ops.register)  # la clase sigue con la extensión habilitada
+        for _ in range(2):
+            gis_ops.unregister()
+            self.assertEqual(ours(), ([], []))
+        workers_before, params_before = dict(catalog.WORKERS), dict(params.DEFINITIONS)
+        for _ in range(2):
+            gis_ops.register()
+            self.assertEqual(ours(), expected)
+        gis_ops.unregister()
+        self.assertEqual((dict(catalog.WORKERS), dict(params.DEFINITIONS)),
+                         (workers_before, params_before))
+
     # Ayudas para los módulos (T48) --------------------------------------------------------
 
     def synthetic(self) -> type:
@@ -889,6 +955,7 @@ class ProvenanceSessionTest(unittest.TestCase):
         self.assertEqual(state.text(), "no incorporada: se descartó su trabajo «Prueba de la "
                                        "procedencia» en la lista de trabajos sin incorporarlo")
 
+        sent = len(jobs_ops.sent_reports())
         self.assertEqual(bpy.ops.gbtest.provenance_selftest("EXEC_DEFAULT", ingest=False,
                                                             fail=True), {"FINISHED"})
         job_uid, op_uid = self.launched()
@@ -897,6 +964,10 @@ class ProvenanceSessionTest(unittest.TestCase):
         self.assertEqual(self.session.pending_ingests(), {})
         status, _executor, _job, _interpreter, reason = self.operation(project, op_uid)
         self.assertEqual((status, reason), ("failed", snapshot.error.text))
+        # RF-004-07 (spec 006, T57): un trabajo que falla ya lo dice su aviso («Fallido» y el
+        # mensaje del §8); su operación fallida no se dice otra vez.
+        self.assertIsNone(jobs_ops.MONITOR.view().ending)
+        self.assertEqual(jobs_ops.sent_reports()[sent:], ())
 
     def test_gate_and_write_target_before_operating(self) -> None:
         """RF-008-58, RF-008-10, RF-008-61, RF-008-15 (plan §5.3.4 y §5.4.13): con la

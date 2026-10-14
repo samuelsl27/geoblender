@@ -11,3 +11,42 @@ schema_version = 1
 # spec = "006"               # spec que la pide
 # adr = "ADR-NNNN"           # ADR que la aprueba (constitución, principio 4)
 # unmodified = true          # obligatorio y verdadero para LGPL-* y EUPL-1.2
+
+# Servicio de CRS de la spec 006 (D-2): pyproj con PROJ aislado, sin red
+# (adapters/pyproj_crs.py fija la misma versión: RF-006-31).
+[[wheel]]
+name = "pyproj"
+version = "3.8.0"
+filename = "pyproj-3.8.0-cp313-cp313-win_amd64.whl"
+sha256 = "d7b542e249eb593c1af737b7124648868383b69744ab6a1a0a2ffd0113c997f4"
+license = "MIT"
+# Auditoría ADR-0017 §4 (2026-10-07): pyproj.libs/ con 8 DLL (delvewheel 1.13.0, vcpkg
+# x64-windows). PROJ 9.8.1 (proj_9) y nlohmann-json, MIT: ya en «license» (LICENSE_proj).
+# proj_dir/share/proj/: proj.db (EPSG v12.029) y datos de PROJ, MIT según su «copyright»;
+# el contenido EPSG y NKG del proj.db, con sus términos (decisión de Samuel, 07/10/2026).
+bundled_licenses = [
+  "blessing",                       # SQLite 3.53.0 (sqlite3-9415ebc4….dll)
+  "curl AND ISC AND BSD-3-Clause",  # libcurl 8.19.0, Schannel (libcurl-f49442d4….dll)
+  "libtiff AND BSD-4.3TAHOE",       # libtiff 4.7.1 (tiff-69dcdf91….dll; tif_lzw.c)
+  "IJG AND BSD-3-Clause AND Zlib",  # libjpeg-turbo 3.1.4.1 (jpeg62-971fedc8….dll)
+  "0BSD",                           # liblzma 5.8.3 (liblzma-3c4c8780….dll)
+  "Zlib",                           # zlib 1.3.1 (zlib1-985e9fef….dll)
+  "LicenseRef-MSVC-Runtime",        # msvcp140 14.51.36247.0 (msvcp140-7c26614e….dll)
+  "LicenseRef-EPSG-terms-of-use",   # datos EPSG del proj.db (IOGP)
+  "CC-BY-4.0",                      # datos NKG del proj.db
+]
+target = "extension"
+spec = "006"
+adr = "ADR-0005"
+
+# Dependencia de pyproj (Requires-Dist: certifi, sin versión): la última publicada al
+# fijarla. Solo la usa la red de PROJ, que Geoblender desactiva.
+[[wheel]]
+name = "certifi"
+version = "2026.7.22"
+filename = "certifi-2026.7.22-py3-none-any.whl"
+sha256 = "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775"
+license = "MPL-2.0"
+target = "extension"
+spec = "006"
+adr = "ADR-0005"

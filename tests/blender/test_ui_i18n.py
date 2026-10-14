@@ -39,7 +39,7 @@ def _module(name: str) -> ModuleType:
 class LanguageTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.ui_i18n = _module("bl.ui.i18n")
@@ -56,7 +56,7 @@ class LanguageTest(unittest.TestCase):
         view = bpy.context.preferences.view
         view.language, view.use_translate_interface = cls.blender_language
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def tearDown(self) -> None:
         prefs = self.commands.preferences()

@@ -54,7 +54,7 @@ def area_types(workspace: bpy.types.WorkSpace) -> list[str]:
 class LayoutsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.layouts = _module("bl.ui.layouts")
@@ -64,7 +64,7 @@ class LayoutsTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         blender_ext.load_file()

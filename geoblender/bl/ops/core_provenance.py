@@ -66,7 +66,13 @@ ADR-0025).
     (descartarlo, limpiar o la purga), :func:`on_jobs_removed` la deja «no incorporada» con
     el motivo (:data:`NOT_INGESTED_REASONS`). Lo pendiente de incorporar es de esta sesión de
     Blender (el equipo que lanzó el trabajo): las operaciones que quedan «en curso» al
-    cerrarla se registran «interrumpidas» al abrir el proyecto en escritura otra sesión;
+    cerrarla se registran «interrumpidas» al abrir el proyecto en escritura otra sesión.
+    (Spec 006, T57; RF-004-07, RF-006-28) Un trabajo que terminó bien y cuya operación quedó
+    fallida o cancelada al incorporarlo (:func:`ingest_job_result` o, cuando la termina el
+    módulo, :func:`release_job`) lo dice: su aviso en la barra de estado, «Operación
+    fallida/cancelada» y el principio del motivo en lugar de «Terminado», y el motivo entero
+    en el registro de Blender, como error o aviso (``bl.ops.jobs.report_later``), salvo que
+    lo informe quien llama (:func:`caller_reports`);
   - :func:`check_write_target`: antes de escribir un entregable, la guarda de ``core`` con el
     proyecto de la sesión y :func:`read_only_dirs` (RF-008-15).
 
@@ -171,6 +177,7 @@ import sqlite3
 import textwrap
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -256,6 +263,9 @@ class _State:
         # Lo empezado con ProvenanceAwareOperator.begin que aún no ha terminado (uid → handle):
         # al quedar hecho, se apunta en el diario de Ctrl+Z (T57).
         self.begun: dict[str, OperationHandle] = {}
+        # Dentro de caller_reports(): quien llama informa él del final de la operación (spec
+        # 006, T57), que no se repite en el registro de Blender.
+        self.caller_reports = 0
 
 
 _STATE = _State()
@@ -907,19 +917,27 @@ def job_note(snapshot: JobSnapshot) -> str | None:
 def launch_job(handle: OperationHandle, worker: str, *, label: str,
                params: Mapping[str, Any] | None = None, paths: Mapping[str, Path] | None = None,
                on_finish: Callable[[JobResult], object] | None = None,
-               **request: Any) -> JobHandle:
+               inputs: Mapping[str, Path] | None = None, site_override: Path | None = None,
+               arrays: Mapping[str, Any] | None = None, **request: Any) -> JobHandle:
     """Lanza el trabajo de la 004 de la operación ``handle`` («en curso» desde
     ``begin_operation``; RF-008-51, RF-008-20; plan §5.3.4 «Calcular») con el monitor de los
     trabajos, que lo sigue en la barra de estado: tipo ``worker``, nombre visible ``label``,
     ``params``, las rutas absolutas ``paths`` (en la línea de órdenes, nunca en la petición) y
     lo demás de ``jobs.protocol.new_request`` (``request``), con el ``operation_uid`` de la
-    operación, el proyecto y su módulo como dueño. Al terminar, en el hilo de Blender, llama a
-    ``on_finish`` con su ``JobResult``: ahí (o después) el módulo la incorpora con
+    operación, el proyecto y su módulo como dueño. ``inputs`` (spec 006, T28): los ficheros
+    del proyecto que lee, por nombre, que se copian a ``in/`` de su carpeta antes de lanzarlo
+    (``JobDir.copy_input``; la petición lleva su ruta relativa, ARQ-11); ``arrays`` (spec 006,
+    T35): los arrays de numpy que calcula el módulo, por nombre, que se escriben en ``in/``
+    tal cual, sin copia ni huellas (``JobDir.write_array``; lo que lee un TIN de 300.000
+    puntos, en centésimas en vez de décimas del hilo de Blender, RNF-006-09);
+    ``site_override``: la carpeta ``site`` de su intérprete (las ruedas de la extensión, plan
+    004 §5.3.3). Al terminar, en el hilo de Blender, llama a ``on_finish`` con su
+    ``JobResult``: ahí (o después) el módulo la incorpora con
     :func:`ingest_job_result`; si el trabajo no terminó bien y no la incorporó, la operación
     queda cancelada o fallida con el motivo de la 004. Hasta incorporarla, «pendiente de
     incorporar» (:func:`job_note`). Si no se puede lanzar, la operación queda fallida con el
     motivo y el error sigue: :class:`RuntimeError` sin lanzador de trabajos, ``JobError`` con
-    una petición que no vale y :class:`ValueError` con una ruta que no vale."""
+    una petición o una entrada que no valen y :class:`ValueError` con una ruta que no vale."""
     from ...core.provenance.operations import failure_reason
 
     try:
@@ -931,7 +949,11 @@ def launch_job(handle: OperationHandle, worker: str, *, label: str,
                                   params=params, project_uid=handle.project_uid,
                                   operation_uid=handle.uid, **request)
         finished = functools.partial(_job_finished, job_request.job_uid)
-        job = jobs_ops.MONITOR.submit(job_request, on_finish=finished, paths=paths)
+        job: Any = job_request
+        if inputs or arrays:
+            job = _prepare_inputs(runner, job_request, inputs or {}, arrays)
+        job = jobs_ops.MONITOR.submit(job, on_finish=finished, paths=paths,
+                                      site_override=site_override)
     except Exception as exc:
         try:
             handle.fail(failure_reason(exc))
@@ -941,6 +963,33 @@ def launch_job(handle: OperationHandle, worker: str, *, label: str,
         raise
     _STATE.jobs[job.job_uid] = _PendingJob(handle, label, on_finish)
     return job
+
+
+def _prepare_inputs(runner: JobRunner, request: JobRequest, inputs: Mapping[str, Path],
+                    arrays: Mapping[str, Any] | None = None) -> Any:
+    """La carpeta del trabajo de ``request`` (``JobRunner.prepare``) con ``inputs`` copiados a
+    su ``in/`` (``JobDir.copy_input``, con su huella), ``arrays`` escritos en él
+    (``JobDir.write_array``) y su petición con sus rutas relativas (releída tras ``prepare``,
+    que fija su entorno y su tiempo máximo). Si algo falla, el error sigue y no queda la
+    carpeta."""
+    import dataclasses
+    import shutil
+
+    from ...jobs.protocol import read_request, write_request
+
+    folder = runner.prepare(request)
+    try:
+        prepared = read_request(folder)
+        copied = {name: folder.copy_input(path, name, job=request.label)
+                  for name, path in inputs.items()}
+        copied.update((name, folder.write_array(name, array))
+                      for name, array in (arrays or {}).items())
+        write_request(folder, dataclasses.replace(prepared,
+                                                  inputs={**dict(prepared.inputs), **copied}))
+    except BaseException:
+        shutil.rmtree(folder.path, ignore_errors=True)
+        raise
+    return folder
 
 
 def _job_finished(job_uid: str, result: JobResult) -> None:
@@ -996,7 +1045,73 @@ def ingest_job_result(
     _STATE.begun.pop(handle.uid, None)
     if ingested.ingested:  # hecha: Ctrl+Z no la deshace (RF-008-32)
         undo_watch.record(UndoKind.OPERATION, handle.op_type)
+    elif result.state == _SUCCEEDED:  # el trabajo terminó bien y la operación, no (T57)
+        _tell_ending(result.job_uid, str(ingested.status), ingested.reason)
     return ingested
+
+
+def release_job(job_uid: str) -> None:
+    """Da por incorporado el trabajo ``job_uid`` de :func:`launch_job` cuya operación ya
+    terminó el módulo sin incorporarlo (spec 006, T28: una importación que reutiliza su entrada
+    queda «cancelada» con el aviso, RF-008-54, o la persona cancela la que esperaba su
+    decisión): deja de estar «pendiente de incorporar» y el lanzador lo da por incorporado
+    (``mark_ingested``: se borran sus entradas y sus resultados). Si su operación quedó
+    fallida o cancelada (un TIN con roturas que se cruzan, una entrada ya registrada), lo dice
+    (:func:`_tell_ending`; spec 006, T57)."""
+    entry = _STATE.jobs.pop(job_uid, None)
+    _release(job_uid)
+    if entry is not None:
+        _tell_state(job_uid, entry.handle)
+
+
+ENDING_REPORTS: Mapping[str, str] = MappingProxyType({"failed": "ERROR",
+                                                       "cancelled": "WARNING"})
+"""Cómo va al registro de Blender el motivo de una operación que no se hizo al incorporar su
+trabajo (spec 006, T57): fallida, como error; cancelada, como aviso."""
+
+
+def _tell_state(job_uid: str, handle: OperationHandle) -> None:
+    """Lee cómo quedó la operación ``handle`` del trabajo ``job_uid`` que se acaba de soltar
+    y, si quedó fallida o cancelada, lo dice (:func:`_tell_ending`). Si no se puede leer (el
+    proyecto cerrado, la red), solo queda en el registro técnico."""
+    from ...core.provenance.operations import operation_state
+
+    try:
+        state = operation_state(handle.project, handle.uid)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.warning("No se pudo leer cómo quedó la operación «%s» (%s)", handle.op_type,
+                       handle.uid, exc_info=True)
+        return
+    if state is not None:
+        _tell_ending(job_uid, str(state.status), state.reason)
+
+
+def _tell_ending(job_uid: str, status: str, reason: str | None) -> None:
+    """Un trabajo que terminó bien cuya operación quedó ``status`` con ``reason`` al
+    incorporarlo (spec 006, T57; RF-004-07, RF-006-28): si quedó fallida o cancelada, su
+    aviso en la barra de estado lo dice con el principio del motivo, no «Terminado»
+    (``JobMonitor.end_operation``), y el motivo entero va al registro de Blender como error o
+    como aviso (``report_later``, :data:`ENDING_REPORTS`), salvo dentro de
+    :func:`caller_reports`; si no (hecha, en curso), nada."""
+    kind = ENDING_REPORTS.get(status)
+    if kind is None:
+        return
+    text = (reason or "").strip() or status
+    jobs_ops.MONITOR.end_operation(job_uid, status, text)
+    if not _STATE.caller_reports:
+        jobs_ops.report_later(kind, text)
+
+
+@contextmanager
+def caller_reports() -> Iterator[None]:
+    """Lo que acaba dentro lo informa quien llama (un operador, con ``Operator.report``): el
+    final de una operación que no se hizo se dice en la barra de estado, pero no se repite en
+    el registro de Blender (spec 006, T57)."""
+    _STATE.caller_reports += 1
+    try:
+        yield
+    finally:
+        _STATE.caller_reports -= 1
 
 
 def _still_pending(handle: OperationHandle) -> bool:
@@ -1219,12 +1334,16 @@ class ProvenanceAwareOperator:
                    params: Mapping[str, Any] | None = None,
                    paths: Mapping[str, Path] | None = None,
                    on_finish: Callable[[JobResult], object] | None = None,
+                   inputs: Mapping[str, Path] | None = None,
+                   site_override: Path | None = None,
+                   arrays: Mapping[str, Any] | None = None,
                    **request: Any) -> JobHandle | None:
         """:func:`launch_job`; si no se puede lanzar (la operación queda fallida), lo dice y
         devuelve ``None``."""
         try:
             return launch_job(handle, worker, label=label, params=params, paths=paths,
-                              on_finish=on_finish, **request)
+                              on_finish=on_finish, inputs=inputs, site_override=site_override,
+                              arrays=arrays, **request)
         except RuntimeError:
             self.report({"ERROR"},  # type: ignore[attr-defined]
                         tr("Geoblender has not prepared the jobs folder yet"))

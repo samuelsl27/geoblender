@@ -19,13 +19,21 @@ cerrando el GeoPackage, y dice de cada una si GDAL la dio por buena o el error c
 El recurso ``qgis`` (:data:`QGIS`, ``tests.support.resources``) está disponible si la
 variable apunta a una carpeta con ``bin\\ogrinfo.exe`` y un Python en ``apps\\Python3*``
 con ``osgeo`` y el ``validate_gpkg.py`` de ``osgeo_utils``.
+
+Lo que solo sabe QGIS (spec 006, T55: si carga el estilo por defecto de una capa) se pregunta
+a PyQGIS sin interfaz con :func:`run_pyqgis`: un proceso del Python de QGIS con su paquete
+``qgis``, la plataforma ``offscreen`` de Qt y un perfil de QGIS temporal (nunca el del
+usuario ni su QGIS abierto); tarda alrededor de 1 s.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
+import textwrap
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -166,6 +174,58 @@ def run_python(*args: str) -> subprocess.CompletedProcess[str]:
     return blender.run(
         [str(install.python), "-B", "-s", *args], env=gdal_env(install), timeout=RUN_TIMEOUT_S
     )
+
+
+PYQGIS_PROFILE_ENV = "GEOBLENDER_PYQGIS_PROFILE"
+_PYQGIS_START = (
+    "import os as _gb_os\n"
+    "from qgis.core import QgsApplication as _GbApplication\n"
+    f"_gb_app = _GbApplication([], False, _gb_os.environ[{PYQGIS_PROFILE_ENV!r}])\n"
+    "_gb_app.initQgis()\n"
+    "try:\n"
+)
+_PYQGIS_END = "finally:\n    _gb_app.exitQgis()\n"
+
+
+def pyqgis_env(install: QgisInstall, profile: Path) -> dict[str, str]:
+    """El entorno de :func:`gdal_env` con lo que necesita PyQGIS sin interfaz (spec 006, T55):
+    su paquete ``qgis`` y sus bibliotecas (``apps\\qgis`` y ``apps\\qt6``), la plataforma
+    ``offscreen`` de Qt con las fuentes de Windows (sin ellas, los textos salen como cuadros:
+    ``docs/trampas.md`` §6) y el perfil de QGIS ``profile`` (no el del usuario)."""
+    env = gdal_env(install)
+    apps = install.root / "apps"
+    windir = env.get("WINDIR") or env.get("SystemRoot") or r"C:\Windows"
+    env.update({
+        "PATH": os.pathsep.join([str(apps / "qgis" / "bin"), str(apps / "qt6" / "bin"),
+                                 env["PATH"]]),
+        "PYTHONPATH": str(apps / "qgis" / "python"),
+        "QGIS_PREFIX_PATH": str(apps / "qgis"),
+        "QT_PLUGIN_PATH": os.pathsep.join([str(apps / "qgis" / "qtplugins"),
+                                           str(apps / "qt6" / "plugins")]),
+        "QT_QPA_PLATFORM": "offscreen",
+        "QT_QPA_FONTDIR": str(Path(windir) / "Fonts"),
+        "QGIS_CUSTOM_CONFIG_PATH": str(profile),
+        PYQGIS_PROFILE_ENV: str(profile),
+    })
+    return env
+
+
+def run_pyqgis(code: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """Ejecuta ``code`` con PyQGIS sin interfaz (``-c``, con ``args`` en ``sys.argv[1:]``)
+    dentro de una ``QgsApplication`` ya iniciada con un perfil de QGIS temporal, que se borra
+    al terminar: no se toca el QGIS del usuario ni su perfil. :class:`RuntimeError` si la
+    instalación no tiene PyQGIS (``apps\\qgis\\python\\qgis``)."""
+    install = _install()
+    if not (install.root / "apps" / "qgis" / "python" / "qgis").is_dir():
+        raise RuntimeError(f"la instalación de QGIS de {ENV_QGIS_DIR} no tiene PyQGIS "
+                           "(apps\\qgis\\python\\qgis)")
+    profile = Path(tempfile.mkdtemp(prefix="gb-pyqgis-"))
+    try:
+        script = _PYQGIS_START + textwrap.indent(textwrap.dedent(code), "    ") + _PYQGIS_END
+        return blender.run([str(install.python), "-B", "-s", "-c", script, *args],
+                           env=pyqgis_env(install, profile), timeout=RUN_TIMEOUT_S)
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 def validate_gpkg_script() -> str:

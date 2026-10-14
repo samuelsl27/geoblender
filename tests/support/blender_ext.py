@@ -65,11 +65,12 @@ carpeta de pruebas un ``.py`` que no case con su patrón, y ARQ-01 solo deja imp
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import importlib
 import os
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -98,6 +99,11 @@ _PATCHES: list[tuple[object, str, object]] = []  # (objeto, atributo, valor orig
 _TRANSLATION_PROBE = {"es_ES": {("*", "geoblender: sonda de la huella"): "sonda"}}
 # Grupos de las preferencias que se vuelcan en la huella (T62).
 PREFERENCE_GROUPS: tuple[str, ...] = ("view", "system", "inputs", "edit", "filepaths")
+# Lo que Blender deduce de la GPU que ha detectado, no algo guardado que pueda cambiar la
+# extensión: en ``blender -b`` sin GPU iniciada, ``system.gpu_preferred_device`` vale «AUTO»
+# (la única opción) y, tras ``gpu.init()`` (la prueba de la superposición de las curvas
+# maestras, spec 006, T55), la GPU detectada («OPENGL»), sin que cambie la preferencia.
+DETECTED_PREFERENCES: frozenset[str] = frozenset({"system.gpu_preferred_device"})
 
 
 def module_name() -> str:
@@ -163,6 +169,51 @@ def unload() -> None:
         disable()
     for key in loaded_modules():
         del sys.modules[key]
+
+
+def release() -> None:
+    """Deshabilita la extensión si lo está y deja sus módulos en ``sys.modules`` (spec 006,
+    T48; RNF-001-01): la siguiente :func:`enable` la registra otra vez sobre los mismos
+    módulos, como al desactivarla y activarla en las preferencias, sin importarla de nuevo.
+
+    Es lo que usan las clases que solo necesitan la extensión habilitada (operadores,
+    paneles, trabajos…), al empezar y al terminar: habilitarla tras :func:`unload` importa
+    otra vez ``core``, ``gis``, ``bl``… y lee el catálogo (unos 0,26 s cada vez, y con unas
+    170 habilitaciones, más de la mitad del paso «blender» de ``tools/check.py``); tras
+    ``release``, unos 0,03 s. Las que prueban el registro, la huella o lo que carga la
+    importación parten de cero con :func:`fresh` (spec 006, T59), que al terminar devuelve
+    estos módulos; :func:`unload` los quita del todo. Deshabilitada, Blender queda
+    como al principio de la sesión (``unregister()`` deshace todo lo que hizo
+    ``register()``; lo comprueba la huella del lanzador al terminar)."""
+    if is_enabled():
+        disable()
+
+
+@contextlib.contextmanager
+def fresh() -> Iterator[None]:
+    """La extensión de cero mientras dura (spec 006, T59; RNF-001-01), para las clases que
+    prueban el registro, la huella o lo que carga la importación: al entrar la deshabilita
+    si lo está y aparta de ``sys.modules`` sus módulos (los que comparten las clases que
+    usan :func:`release`), así que habilitarla o importarla la importa otra vez; al salir,
+    pase lo que pase, la deshabilita, quita lo importado dentro (:func:`unload`) y devuelve
+    los módulos apartados, sin importarlos de nuevo (también el que cuelga del paquete del
+    repositorio de pruebas, que la importación de dentro sustituyó). Con :func:`unload` al
+    terminar, la clase siguiente que solo la habilita tenía que importarla entera (≈ 0,3 s
+    en reposo y hasta 0,8 s con el equipo cargado, unas diez veces por comprobación)."""
+    if is_enabled():
+        disable()
+    kept = {name: sys.modules.pop(name) for name in loaded_modules()}
+    try:
+        yield
+    finally:
+        try:
+            unload()
+        finally:
+            sys.modules.update(kept)
+            root = module_name()
+            parent, _, child = root.rpartition(".")
+            if root in kept and parent in sys.modules:
+                setattr(sys.modules[parent], child, kept[root])
 
 
 def import_root() -> ModuleType:
@@ -500,12 +551,15 @@ def _rna_values(struct: object, prefix: str, values: dict[str, object], depth: i
 
 
 def _preferences() -> dict[str, object]:
-    """Las preferencias de :data:`PREFERENCE_GROUPS` (unas 260, en menos de 1 ms):
-    una extensión que cambia una y no la devuelve deja rastro (T62)."""
+    """Las preferencias de :data:`PREFERENCE_GROUPS` (unas 260, en menos de 1 ms), salvo
+    las que Blender deduce de la GPU (:data:`DETECTED_PREFERENCES`): una extensión que
+    cambia una y no la devuelve deja rastro (T62)."""
     values: dict[str, object] = {}
     preferences = bpy.context.preferences
     for group in PREFERENCE_GROUPS:
         _rna_values(getattr(preferences, group), group, values, depth=1)
+    for key in DETECTED_PREFERENCES:
+        values.pop(key, None)
     return values
 
 

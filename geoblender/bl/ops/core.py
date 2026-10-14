@@ -48,6 +48,29 @@ En segundo plano (``blender -b``, scripts) no se muestran diálogos: se usan las
 propiedades tal como llegan, y forzar exige ``force_lock`` **y** el titular visto
 (``seen_lock``).
 
+Vista (spec 006, T27; RF-006-19, RF-006-20, RF-006-22, RF-006-29; plan 006 §5.3.5 y §5.6.7):
+``geoblender.core_load_into_view`` (un diálogo con los datos del proyecto que algún módulo sabe
+cargar y el nivel de detalle; por script, ``datasets`` con sus nombres o uids separados por
+comas) y ``geoblender.core_unload_from_view`` (los datos de los objetos seleccionados, o los de
+``datasets``) cargan y descargan con ``bl.scene.views``. Son los únicos de este módulo con
+``UNDO``: crean o quitan objetos de la vista y no escriben en el proyecto (Ctrl+Z deshace solo la
+vista). Un aviso o un error de un dato no impide cargar los demás. Desde la interfaz (``invoke``:
+el menú y el diálogo), cargar es un modal (T50; RNF-006-09, RNF-006-06): avanza los pasos de
+``bl.scene.views.load_steps`` desde el temporizador de su ventana, unas décimas de segundo como
+mucho por evento, con su avance en la barra de estado, y Esc lo cancela sin dejar nada en la
+vista; desde un guion (``EXEC_DEFAULT``), de una vez.
+
+Transformar coordenadas (spec 006, T32; RF-006-07, RF-006-31; plan 006 §5.3.5):
+``geoblender.core_transform_coordinates`` (Proyecto ▸ Georreferencia ▸ Transformar
+coordenadas…) transforma coordenadas tecleadas (:func:`typed_coordinates`: un punto por línea o
+separados por «;», ``X Y [Z]`` con coma o punto decimal) entre dos CRS del catálogo y sus
+referencias verticales (o la altura elipsoidal ETRS89) con ``gis.crs.transform_coordinates`` y
+el servicio de CRS de las órdenes (``bl.ops.gis.crs_resolver``), y muestra cada punto con 1 mm,
+la transformación usada y su precisión, y el factor de escala y la convergencia de cuadrícula en
+el destino (:func:`transform_lines`), en un diálogo con «Copiar al portapapeles» y en el registro.
+No necesita proyecto ni escribe en él (no es una operación de la 008); con uno abierto, el
+destino es su CRS. Sin el servicio de CRS (otra versión de pyproj), no se abre y dice por qué.
+
 Carpetas de solo lectura (spec 008, T48; RF-008-15; S-3; plan 008 §5.4.13): crear, abrir (e
 inspeccionar), migrar, sacar copia y publicar reciben las de ahora
 (``bl.ops.core_provenance.read_only_dirs``: la variable ``GEOBLENDER_READ_ONLY_DIRS`` y la
@@ -59,13 +82,21 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
+import numpy as np
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    IntProperty,
+    StringProperty,
+)
 
 from ...core.errors import GeoblenderError, ValidationError
 from ...core.georef.crs import DEFAULT_HORIZONTAL_EPSG, DEFAULT_VERTICAL_EPSG, load_catalog
@@ -86,8 +117,9 @@ from ...core.project.lock import inspect as inspect_lock
 from ...core.project.migrations import MigrationResult, backup_path, migrate_steps
 from ...core.project.model import OpenResult, ProjectSettings, Progress, ReadOnlyCode
 from ...core.project.open import ProjectInspection, SchemaRelation, inspect_project, open_steps
-from ..scene import georef, project_session
-from .core_provenance import read_only_dirs
+from ..props.core import OBJECT_PROPERTY, GEOBLENDER_PG_core_view_dataset
+from ..scene import georef, project_session, views
+from .core_provenance import error_text, read_only_dirs
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 TRANSLATION_CONTEXT = "Geoblender"
@@ -956,6 +988,212 @@ class GEOBLENDER_OT_core_set_work_window(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Transformar coordenadas (spec 006, T32) ------------------------------------------------
+
+ELLIPSOIDAL_ID = "ELLIPSOIDAL"
+_SOURCE_DEFAULT = "23030" if any(item[0] == "23030" for item in HORIZONTAL_ITEMS) else (
+    HORIZONTAL_ITEMS[0][0])
+_POINT_BREAKS = re.compile(r"[;\r\n]+")
+_LAST_TRANSFORM: list[str] = []
+_COORDINATES_DESCRIPTION = ("One point per line, or points separated by «;»: X Y or X Y Z "
+                            "separated by spaces, with decimal comma or point")
+
+
+def _transform_vertical_items() -> list[tuple[str, str, str]]:
+    items = [
+        (str(ref.epsg), f"EPSG:{ref.epsg} · {ref.name}", ref.name)
+        for ref in load_catalog().verticals()
+        if ref.epsg is not None
+    ]
+    items.append((ELLIPSOIDAL_ID, "ETRS89 ellipsoidal height", "GNSS or drone without geoid"))
+    return items
+
+
+TRANSFORM_VERTICAL_ITEMS = _transform_vertical_items()
+
+
+def _vertical_of(choice: str) -> Any:
+    """La referencia vertical elegida: una del catálogo o la altura elipsoidal ETRS89."""
+    from ...gis.crs import ELLIPSOIDAL_ETRS89
+
+    if choice == ELLIPSOIDAL_ID:
+        return ELLIPSOIDAL_ETRS89
+    return load_catalog().vertical(int(choice))
+
+
+def typed_coordinates(text: str) -> tuple[np.ndarray, list[bool]]:
+    """Las coordenadas tecleadas (RF-006-07): un punto por línea o separados por «;», cada uno
+    ``X Y`` o ``X Y Z`` separados por espacios, con coma o punto decimal; en float64 (n, 3)
+    ABSOLUTAS (Z = 0 si no se tecleó) y, por punto, si se tecleó Z. ``ValueError`` (en el
+    idioma de Geoblender) sin puntos o con un punto sin X e Y; ``ValidationError`` de
+    ``core.numbers`` con un número mal escrito (el punto y el eje)."""
+    lines = [line.strip() for line in _POINT_BREAKS.split(str(text)) if line.strip()]
+    if not lines:
+        raise ValueError(tr("Type the coordinates: X Y or X Y Z, one point per line or "
+                            "separated by «;»"))
+    rows: list[list[float]] = []
+    with_z: list[bool] = []
+    for index, line in enumerate(lines, start=1):
+        parts = line.split()
+        if len(parts) not in (2, 3):
+            raise ValueError(tr("Point {index} «{text}»: write X Y or X Y Z separated by spaces, "
+                                "with decimal comma or point", index=index, text=line))
+        point = tr("Point {index}", index=index)
+        values = [parse_decimal(part, obj=point, field=axis)
+                  for axis, part in zip("XYZ", parts, strict=False)]
+        with_z.append(len(values) == 3)
+        rows.append(values if len(values) == 3 else [*values, 0.0])
+    return np.array(rows, dtype=np.float64), with_z
+
+
+def _point_text(xyz: np.ndarray, with_z: bool) -> str:
+    """Un punto con 1 mm, con su Z si se tecleó."""
+    text = format_xyz(float(xyz[0]), float(xyz[1]), float(xyz[2]), 3)
+    return text if with_z else text.rsplit("  ", 1)[0]
+
+
+def transform_lines(result: Any, typed: np.ndarray, with_z: list[bool], source: str,
+                    target: str) -> list[str]:
+    """El resultado de RF-006-07 en el idioma de Geoblender: los dos CRS, la transformación
+    usada y su precisión, y cada punto tecleado y transformado (1 mm) con el factor de escala
+    y la convergencia de cuadrícula en el destino."""
+    from ...gis.crs import transform_summary
+
+    lines = [tr("Coordinates from {source} to {target}", source=source, target=target),
+             tr("Transformation: {summary}", summary=transform_summary(result.info))]
+    for index, row in enumerate(typed):
+        lines.append(tr(
+            "Point {index}: {typed} → {result} m; scale factor {scale}; convergence "
+            "{convergence}°", index=index + 1, typed=_point_text(row, with_z[index]),
+            result=_point_text(result.xyz[index], with_z[index]),
+            scale=format_number(float(result.scale_factor[index]), 9),
+            convergence=format_number(float(result.convergence_deg[index]), 6)))
+    lines.append(tr("Scale factor and grid convergence in {target}; the convergence in degrees, "
+                    "positive east of the central meridian", target=target))
+    return lines
+
+
+def last_transform() -> list[str]:
+    """Las líneas de la última transformación hecha en la sesión (lo que copia «Copiar»)."""
+    return list(_LAST_TRANSFORM)
+
+
+def _crs_resolver() -> Any:
+    """El servicio de CRS de las órdenes (``bl.ops.gis.crs_resolver``: las pruebas lo
+    cambian; ``None``, el del registro de adaptadores)."""
+    from . import gis as gis_ops
+
+    return gis_ops.crs_resolver
+
+
+def _draw_transform(menu: Any, context: bpy.types.Context) -> None:
+    column = menu.layout.column(align=True)
+    for line in _LAST_TRANSFORM:
+        column.label(text=line, translate=False)
+    props = menu.layout.operator(GEOBLENDER_OT_core_transform_coordinates.bl_idname,
+                                 text=tr("Copy to the clipboard"), icon="COPYDOWN",
+                                 translate=False)
+    props.copy = True
+
+
+class GEOBLENDER_OT_core_transform_coordinates(bpy.types.Operator):
+    """Between reference systems: ED50 to ETRS89, UTM zones"""
+
+    bl_idname = "geoblender.core_transform_coordinates"
+    bl_label = "Transform coordinates…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    source_crs: EnumProperty(  # type: ignore[valid-type]
+        name="Source CRS", description="Horizontal CRS of the typed coordinates",
+        items=HORIZONTAL_ITEMS, default=_SOURCE_DEFAULT,
+    )
+    source_vertical: EnumProperty(  # type: ignore[valid-type]
+        name="Source vertical CRS", description="Vertical reference of the typed elevations",
+        items=TRANSFORM_VERTICAL_ITEMS, default=str(DEFAULT_VERTICAL_EPSG),
+    )
+    target_crs: EnumProperty(  # type: ignore[valid-type]
+        name="Target CRS", description="Horizontal CRS of the result",
+        items=HORIZONTAL_ITEMS, default=str(DEFAULT_HORIZONTAL_EPSG),
+    )
+    target_vertical: EnumProperty(  # type: ignore[valid-type]
+        name="Target vertical CRS", description="Vertical reference of the result",
+        items=TRANSFORM_VERTICAL_ITEMS, default=str(DEFAULT_VERTICAL_EPSG),
+    )
+    text: StringProperty(  # type: ignore[valid-type]
+        name="Coordinates", description=_COORDINATES_DESCRIPTION,
+    )
+    copy: BoolProperty(  # type: ignore[valid-type]
+        name="Copy", default=False, options={"HIDDEN", "SKIP_SAVE"},
+    )
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        from ...gis.crs import crs_service_status
+
+        if self.copy:
+            return self.execute(context)
+        status = crs_service_status(_crs_resolver())  # RF-006-31: sin servicio, no se abre
+        if status.error is not None:
+            self.report({"ERROR"}, error_text(status.error))
+            return {"CANCELLED"}
+        project = project_session.current()
+        if project is not None and not self.properties.is_property_set("target_crs"):
+            header = project.manifest
+            if any(item[0] == str(header.crs_epsg) for item in HORIZONTAL_ITEMS):
+                self.target_crs = str(header.crs_epsg)
+            if any(item[0] == str(header.vcrs_epsg) for item in TRANSFORM_VERTICAL_ITEMS):
+                self.target_vertical = str(header.vcrs_epsg)
+        return context.window_manager.invoke_props_dialog(
+            self, width=560, translate=False, title=tr("Transform coordinates"),
+            confirm_text=tr("Transform"),
+        )
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        for prop, label in (("source_crs", tr("Source CRS")),
+                            ("source_vertical", tr("Source vertical CRS")),
+                            ("target_crs", tr("Target CRS")),
+                            ("target_vertical", tr("Target vertical CRS")),
+                            ("text", tr("Coordinates"))):
+            layout.prop(self, prop, text=label, translate=False)
+        layout.label(text=tr("One point per line, or points separated by «;»: X Y or X Y Z "
+                             "separated by spaces, with decimal comma or point"), translate=False)
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        from ...gis.crs import reference_label, require_crs_service, transform_coordinates
+
+        if self.copy:
+            if not _LAST_TRANSFORM:
+                self.report({"WARNING"}, tr("There are no transformed coordinates to copy"))
+                return {"CANCELLED"}
+            context.window_manager.clipboard = "\n".join(_LAST_TRANSFORM)
+            self.report({"INFO"}, tr("Transformed coordinates copied to the clipboard"))
+            return {"FINISHED"}
+        catalog = load_catalog()
+        src, dst = catalog.horizontal(int(self.source_crs)), catalog.horizontal(
+            int(self.target_crs))
+        src_v, dst_v = _vertical_of(self.source_vertical), _vertical_of(self.target_vertical)
+        try:
+            service = require_crs_service(_crs_resolver())  # RF-006-31, antes que lo tecleado
+            typed, with_z = typed_coordinates(self.text)
+            result = transform_coordinates(typed, src, src_v, dst, dst_v, service=service)
+        except (GeoblenderError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        lines = transform_lines(result, typed, with_z, reference_label(src, src_v),
+                                reference_label(dst, dst_v))
+        _LAST_TRANSFORM[:] = lines
+        text = "\n".join(lines)
+        LOGGER.info("Coordenadas transformadas:\n%s", text)
+        self.report({"INFO"}, text)
+        manager = context.window_manager
+        if not bpy.app.background and manager is not None and manager.windows:
+            manager.popup_menu(_draw_transform, title=tr("Transformed coordinates"),
+                               icon="INFO")
+        return {"FINISHED"}
+
+
 # Copia local y publicación -------------------------------------------------------------
 
 
@@ -1314,6 +1552,199 @@ class GEOBLENDER_OT_core_publish_project(_StepsModal, bpy.types.Operator):
         return None
 
 
+# Vista (spec 006, T27) ---------------------------------------------------------------
+
+LOD_ITEMS: list[tuple[str, str, str]] = [
+    ("FULL", "Calculation grid", "The data as they are: a grid, cell by cell"),
+    ("LOD1", "First level of detail",
+     "Grids with a step under 2 m: their first overview version (2 m by default)"),
+    ("LOD2", "Second level of detail",
+     "Grids with a step under 2 m: their second overview version (5 m by default)"),
+]
+LOD_LEVELS: dict[str, int] = {"FULL": 0, "LOD1": 1, "LOD2": 2}
+_DATASETS_DESCRIPTION = ("Names or identifiers of the project data, separated by commas "
+                         "(empty: those chosen in the dialog or selected)")
+
+
+def _refs(text: str) -> list[str]:
+    """Los nombres o uids de ``datasets``, sin repetir y en su orden."""
+    return list(dict.fromkeys(part.strip() for part in str(text).split(",") if part.strip()))
+
+
+class GEOBLENDER_OT_core_load_into_view(_StepsModal, bpy.types.Operator):
+    """Build the geometry of project items in the 3D view"""
+
+    bl_idname = "geoblender.core_load_into_view"
+    bl_label = "Load into the view…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "UNDO"}
+
+    # En pasos (T50): cada evento del temporizador avanza pasos durante, como mucho, este
+    # tiempo; los pasos más largos de la rejilla de 2,81 M celdas son de unas 0,2 s.
+    STEP_BUDGET_S = 0.05
+
+    datasets: StringProperty(  # type: ignore[valid-type]
+        name="Data", description=_DATASETS_DESCRIPTION, default="", options={"SKIP_SAVE"},
+    )
+    lod: EnumProperty(  # type: ignore[valid-type]
+        name="Level of detail", items=LOD_ITEMS, default="FULL",
+    )
+    items: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options={"SKIP_SAVE"},
+    )
+    # En pasos desde el temporizador de la ventana, con el avance y Esc (T50): lo pone
+    # ``invoke`` (los menús y el diálogo); desde un guion, sin él, de una vez.
+    in_steps: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return _poll_project(cls, context)
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        from ...core.provenance.view import live_datasets
+
+        project = project_session.current()
+        if project is None:
+            return {"CANCELLED"}
+        self.in_steps = getattr(context, "window", None) is not None
+        if _refs(self.datasets):
+            return self.execute(context)
+        try:
+            records = live_datasets(project)
+        except GeoblenderError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        selected = set(views.loaded_uids(getattr(context, "selected_objects", None) or ()))
+        self.items.clear()
+        for record in records:
+            loader = views.loader_for(record.name)
+            if loader is None:
+                continue
+            item = self.items.add()
+            item.uid = record.uid
+            item.label = views.view_name(loader, record, stale=False)
+            item.selected = record.uid in selected
+        if not self.items:
+            self.report({"INFO"}, tr("The project has no data to load into the view"))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=520, translate=False, title=tr("Load into the view")
+        )
+
+    def draw(self, context: bpy.types.Context) -> None:
+        column = self.layout.column(align=True)
+        for item in self.items:
+            column.prop(item, "selected", text=item.label, translate=False)
+        self.layout.prop(self, "lod")
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        project = project_session.current()
+        if project is None:
+            return {"CANCELLED"}
+        refs = _refs(self.datasets) or [item.uid for item in self.items if item.selected]
+        if not refs:
+            self.report({"WARNING"}, tr("Choose the data to load into the view"))
+            return {"CANCELLED"}
+        lod = LOD_LEVELS[self.lod]
+        if self.in_steps and getattr(context, "window", None) is not None:
+            # T50 (RNF-006-09): desde el temporizador de la ventana, con su avance y Esc.
+            self._project = project
+            self._start(context, views.load_steps(context, project, refs, lod=lod))
+            return {"RUNNING_MODAL"}
+        return self._outcome(views.load_datasets(context, project, refs, lod=lod))
+
+    def _outcome(self, outcome: views.LoadOutcome) -> set[str]:
+        """Lo que dice la orden de lo cargado: los avisos, los errores y lo que cargó."""
+        for text in outcome.notes:
+            self._report({"WARNING"}, text)
+        for text in outcome.errors:  # con algo cargado, un aviso: los demás sí se cargaron
+            self._report({"WARNING"} if outcome.loaded else {"ERROR"}, text)
+        if not outcome.loaded:
+            self.outcome = "CANCELLED"
+            return {"CANCELLED"}
+        self._report({"INFO"}, tr("Loaded into the view: {names}",
+                                  names=", ".join(outcome.loaded)))
+        self.outcome = "FINISHED"
+        return {"FINISHED"}
+
+    # En pasos (T50) ------------------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        percent = int(100 * step.done / step.total) if step.total else 0
+        return tr("Loading «{name}» into the view… {percent} % · Esc: cancel",
+                  name=step.message, percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Loading into the view cancelled: nothing has been loaded")
+
+    def _result(self, context: bpy.types.Context, step: Progress) -> set[str] | None:
+        if not isinstance(step.result, views.LoadOutcome):
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr("The project was closed while loading into the "
+                                              "view: nothing has been loaded"))
+            return None
+        self._done(context)
+        return self._outcome(step.result)
+
+    def modal(self, context: bpy.types.Context, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except Exception as exc:  # noqa: BLE001 - lo preparado ya se borró: no queda nada
+            LOGGER.error("«Cargar en la vista» se ha parado", exc_info=exc)
+            return self._fail(context, tr("Loading into the view stopped: {error}",
+                                          error=str(exc)))
+
+
+def _loaded_anywhere() -> bool:
+    return any(getattr(obj, OBJECT_PROPERTY).dataset_uid for obj in bpy.data.objects)
+
+
+class GEOBLENDER_OT_core_unload_from_view(bpy.types.Operator):
+    """Free the geometry of the selection; the data stay in the project"""
+
+    bl_idname = "geoblender.core_unload_from_view"
+    bl_label = "Unload from the view"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "UNDO"}
+
+    datasets: StringProperty(  # type: ignore[valid-type]
+        name="Data", description=_DATASETS_DESCRIPTION, default="", options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        if not _loaded_anywhere():
+            cls.poll_message_set(tr("No project data is loaded in the view"))
+            return False
+        return True
+
+    def _chosen(self, context: bpy.types.Context) -> list[str]:
+        """Los uids de ``datasets`` (un nombre, por el proyecto abierto) o, sin ellos, los de
+        los objetos seleccionados."""
+        refs = _refs(self.datasets)
+        if not refs:
+            return views.loaded_uids(getattr(context, "selected_objects", None) or ())
+        from ...core.provenance.view import dataset_view
+
+        loaded = set(views.loaded_uids(bpy.data.objects))
+        project = project_session.current()
+        found: list[str] = []
+        for ref in refs:
+            shown = None if ref in loaded or project is None else dataset_view(project, ref)
+            found.append(ref if shown is None else shown.record.uid)
+        return found
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        uids = self._chosen(context)
+        if not uids:
+            self.report({"WARNING"}, tr("Select objects loaded from the project"))
+            return {"CANCELLED"}
+        count = views.unload_datasets(uids)
+        self.report({"INFO"}, tr("Unloaded from the view: {count} objects; the data stay in "
+                                 "the project", count=count))
+        return {"FINISHED"}
+
+
 # Avisos -------------------------------------------------------------------------------
 
 
@@ -1344,3 +1775,7 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_publish_project,
     GEOBLENDER_OT_core_clear_notices,
 )
+# Los de la vista (spec 006, T27).
+classes += (GEOBLENDER_OT_core_load_into_view, GEOBLENDER_OT_core_unload_from_view)
+# Transformar coordenadas (spec 006, T32).
+classes += (GEOBLENDER_OT_core_transform_coordinates,)

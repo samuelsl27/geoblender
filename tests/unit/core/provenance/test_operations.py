@@ -709,7 +709,8 @@ class EndTest(OperationsCase):
         """RF-008-19, RF-008-23: cancelar o fallar deja la operación cancelada o fallida, con
         su motivo (sin rutas absolutas) y su hora, sin salidas (tampoco lo que el módulo
         escribió en una transacción que se deshizo) y sin rutas reclamadas; lo que consumió
-        queda anotado. Una operación terminada ya no se completa, ni se cancela, ni falla."""
+        queda anotado. Una operación terminada ya no se completa, ni se cancela, ni falla.
+        RF-004-07 (spec 006, T57): su estado registrado con su motivo se lee por su uid."""
         _survey, terrain = self.survey()
         stopped = self.begin(inputs=[operations.Use("res_terreno", "terrain")],
                              params=["res.recovery"])
@@ -748,6 +749,16 @@ class EndTest(OperationsCase):
              running.uid: status.RUNNING},
         )
         self.assertEqual(operations.operation_statuses(self.project, []), {})
+        # Spec 006, T57 (RF-004-07): el estado de una con su motivo, para decir en la barra de
+        # estado y en el registro de Blender que la operación de un trabajo no se hizo.
+        state = operations.OperationState
+        self.assertEqual(
+            [operations.operation_state(self.project, uid)
+             for uid in (stopped.uid, broken.uid, running.uid, "op-nada")],
+            [state(status.CANCELLED, "Cancelado por la persona desde la barra de estado"),
+             state(status.FAILED, "No se pudo leer cotas.csv: falta la columna «cota»"),
+             state(status.RUNNING, None), None],
+        )
         running.fail("prueba")
         self.assertEqual(
             self.query("SELECT item_uid, role FROM gb_operation_io WHERE operation_uid = ? "

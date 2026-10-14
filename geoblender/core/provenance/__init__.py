@@ -4,8 +4,9 @@
 
 - :mod:`.schema`: las tablas internas del esquema 2 del GeoPackage del proyecto (no se
   reexporta: lo importa ``core.project.schema``).
-- :mod:`.contract`: lo que declara cada módulo (:class:`OperationDef`,
-  :class:`CoupledGroupDef`, :class:`FigureDef` e :class:`ImporterDef`), sus registros y las
+- :mod:`.contract`: lo que declara cada módulo (:class:`OperationDef` con sus
+  :class:`SettingDef`, :class:`CoupledGroupDef`, :class:`FigureDef` e
+  :class:`ImporterDef`), sus registros y las
   operaciones de ``core`` (:data:`CORE_OPERATIONS`).
 - :mod:`.messages`: los mensajes de la procedencia (código, ``msgid`` en inglés y español) y
   :class:`ProvenanceError`.
@@ -85,6 +86,7 @@ from .contract import (
     ImporterDef,
     OperationDef,
     ReimportRequest,
+    SettingDef,
     SettingsNeeded,
     figure_def,
     group_def,
@@ -382,6 +384,7 @@ __all__ = [
     "ReimportRequest",
     "ResultState",
     "ResultStatus",
+    "SettingDef",
     "SettingsNeeded",
     "SkipReason",
     "Skipped",

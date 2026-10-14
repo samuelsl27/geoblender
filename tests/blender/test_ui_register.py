@@ -67,7 +67,7 @@ class EnabledUiTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.enable()
         cls.cat = _module("core.catalog").load()
         cls.commands = _module("bl.ui.commands")
@@ -77,7 +77,7 @@ class EnabledUiTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
 
     def test_each_operator_registered_once(self) -> None:
         """RF-003-07: cada ``bl_idname`` del catálogo tiene una clase registrada, real o
@@ -89,7 +89,10 @@ class EnabledUiTest(unittest.TestCase):
             cls = self.commands.registered_class(idname)
             self.assertIsNotNone(cls, idname)
             self.assertEqual(cls.bl_idname, idname)
-        real = {cls.bl_idname for cls in self.ops.classes}
+        # Los operadores de bl/ops (también registra el manejador de ficheros de «Importar un
+        # fichero», spec 006, T32, que no es un comando).
+        real = {cls.bl_idname for cls in self.ops.classes
+                if issubclass(cls, bpy.types.Operator)}
         provisional = {cls.bl_idname for cls in self.registry.provisional_classes()
                        if issubclass(cls, bpy.types.Operator)}
         self.assertEqual(real & provisional, set())
@@ -187,8 +190,7 @@ class EnabledUiTest(unittest.TestCase):
 
 class UiRegisterCycleTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_disable_restores_snapshot(self) -> None:
         """RF-003-23: habilitar y deshabilitar deja la instantánea de la interfaz
@@ -225,9 +227,8 @@ class RepairTest(unittest.TestCase):
     """Ciclo, recarga y «Reparar la interfaz» (RF-003-23, RF-003-24; CW §5 y §8)."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
+        self.enterContext(blender_ext.fresh())
         blender_ext.load_file()
-        self.addCleanup(blender_ext.unload)
         self.addCleanup(blender_ext.load_file)
         self.header = bpy.types.TOPBAR_HT_upper_bar
         self.saved = {"draw_left": self.header.draw_left}

@@ -132,7 +132,7 @@ class ViewsTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        blender_ext.release()
         blender_ext.load_file()
         blender_ext.enable()
         cls.views = _module("bl.ui.views")
@@ -141,7 +141,7 @@ class ViewsTestCase(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         blender_ext.load_file()
-        blender_ext.unload()
+        blender_ext.release()
 
     def setUp(self) -> None:
         self.views.forget()  # sin «última Vista 3D usada»

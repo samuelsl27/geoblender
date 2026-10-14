@@ -46,6 +46,7 @@ from tests.support.check_cli import (
     _unittest_output,
     blender_part_cmd,
     many_cpus,
+    reference_part_cmd,
     run_check,
     unit_part_cmd,
 )
@@ -66,34 +67,24 @@ class StepsTest(unittest.TestCase):
     def test_steps_run_in_order(self) -> None:
         """RF-001-06: unitarias, referencia, licencias, manifiesto y blender, en ese
         orden, con las órdenes del plan (§5.4.7) y desde la raíz del repositorio; las
-        unitarias, repartidas en partes con ``tools/unittest_part.py`` (T40; con un solo
-        módulo, la orden de siempre: ``PartsTest``)."""
+        unitarias y los casos de referencia, repartidos en partes con
+        ``tools/unittest_part.py`` (T40 y, la referencia, spec 006, T59; con un solo módulo,
+        la orden de siempre: ``PartsTest``)."""
         with many_cpus():
             result = run_check()
         self.assertEqual(result.code, 0, result.out + result.err)
         runner = result.runner
         self.assertEqual(runner.steps(), MANDATORY)
-        units = runner.calls_of("unitarias")
-        count = len(units)
-        self.assertEqual([call.part for call in units], [(i, count) for i in range(1, count + 1)])
-        for call in units:
-            with self.subTest(parte=call.part):
-                self.assertEqual(call.cmd, unit_part_cmd(*(call.part or (1, 1))))
-        self.assertEqual(
-            runner.call("referencia").cmd,
-            blender.python_cmd(
-                INSTALL,
-                *RETURN_VALUE_IS_ERROR,
-                "-m",
-                "unittest",
-                "discover",
-                "-v",
-                "-s",
-                "tests/referencia",
-                "-t",
-                ".",
-            ),
-        )
+        for step, command in (("unitarias", unit_part_cmd),
+                              ("referencia", reference_part_cmd)):
+            calls = runner.calls_of(step)
+            count = len(calls)
+            self.assertGreaterEqual(count, 2)
+            self.assertEqual([call.part for call in calls],
+                             [(i, count) for i in range(1, count + 1)])
+            for call in calls:
+                with self.subTest(paso=step, parte=call.part):
+                    self.assertEqual(call.cmd, command(*(call.part or (1, 1))))
         self.assertEqual(
             runner.call("licencias").cmd,
             blender.python_cmd(INSTALL, "tools/check_licenses.py"),
