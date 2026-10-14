@@ -40,13 +40,35 @@ de alcance S, ``drillholes.validate``) y pasa los demás en ``holes``; si llega 
 calcula a medias: ``ValueError`` con su nombre y su código. Las estaciones sin boca
 (DH-E04) no entran en ninguna traza.
 
-Nada modifica el conjunto de sondeos. Las posiciones de una profundidad cualquiera
-(``md_to_xyz``) y las polilíneas densificadas (``polylines``) son de la tarea T07, sobre las
-:class:`Traces` de aquí. Python puro y numpy (ADR-0004).
+**Posición de cualquier profundidad** (:func:`md_to_xyz`; RF-005-21; tarea T07): sobre la
+misma curva que la traza, desde el nodo anterior (p₁, t₁, a la profundidad MD₁) y el
+siguiente (t₂, a ΔMD), con s = MD − MD₁ y f = s/ΔMD:
+
+- mínima curvatura: el arco de circunferencia entre los dos nodos,
+  p = p₁ + s/2·(t₁ + t(f))·RF(f·β), con t(f) = slerp(t₁, t₂, f) (exacto en un arco; la
+  interpolación lineal normalizada por debajo de :data:`RF_SERIES_LIMIT_RAD`);
+- tangente: p₁ + s·t₁;
+- tangente equilibrada: t₁ hasta ΔMD/2 y t₂ después.
+
+En un nodo (s = 0) da exactamente su punto de la traza. Por debajo del último nodo (un tramo
+que llega algo más abajo que el fondo, dentro de la tolerancia de la validación, DH-E09) se
+prolonga la orientación del fondo, como manda RF-005-20 hasta el fondo. Por encima de la
+boca, en un sondeo sin traza o con una profundidad no finita, no hay posición: error.
+
+**Polilíneas densificadas** (:func:`polylines`, :func:`polyline_md`): por sondeo con traza,
+sus nodos (boca, estaciones y fondo) y las profundidades pedidas (los límites de los tramos),
+con puntos intermedios en partes iguales de cada intervalo para que ninguno pase de
+``max_step_m`` (``dh.desurvey.trace_step_m``, plan §5.2.3); sus puntos son los de
+:func:`md_to_xyz`. Son la geometría de ``dh_trace`` y de la vista; la posición exacta de una
+profundidad no se lee de ellas, se calcula con :func:`md_to_xyz` (plan D7).
+
+Nada modifica el conjunto de sondeos ni las trazas. Python puro y numpy (ADR-0004).
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -64,6 +86,9 @@ __all__ = [
     "desurvey",
     "direction",
     "dogleg",
+    "md_to_xyz",
+    "polyline_md",
+    "polylines",
     "ratio_factor",
 ]
 
@@ -335,3 +360,232 @@ def desurvey(dset: DrillholeSet, method: Method | str = Method.MINIMUM_CURVATURE
     found.sort(key=lambda item: (item.hole, item.code))
     return Traces(hole_start=hole_start, md=node_md, xyz=xyz, tangent=node_t, method=method,
                   warnings=tuple(found))
+
+
+def _depths(value: object, what: str) -> np.ndarray:
+    """Unas profundidades (m) en float64: float64 o enteras (exactas); otra precisión de
+    coma flotante se rechaza, como en el modelo (RF-005-02)."""
+    found = np.asarray(value)
+    if found.dtype.kind == "f" and found.dtype != np.float64:
+        raise TypeError(f"{what} van en float64, no en {found.dtype}")
+    if found.dtype.kind not in "fiu":
+        raise TypeError(f"{what} son números, no {found.dtype}")
+    return found.astype(np.float64, copy=False)
+
+
+def _without_trace(traces: Traces, holes: np.ndarray) -> None:
+    """``ValueError`` si alguno de ``holes`` (posiciones ya en rango) no tiene traza."""
+    missing = np.unique(holes[~traces.computed[holes]])
+    if missing.size:
+        listed = ", ".join(str(k) for k in missing[:_NAMES_SHOWN].tolist())
+        more = missing.size - min(missing.size, _NAMES_SHOWN)
+        raise ValueError(f"sondeos sin traza (posiciones {listed}"
+                         f"{f' y {more} más' if more else ''}): no se calculó, o la "
+                         "validación los excluye")
+
+
+def _check_depths(traces: Traces, holes: np.ndarray, md: np.ndarray, what: str) -> None:
+    """``ValueError`` si alguna de ``md`` no es finita o está por encima de la boca (del
+    primer nodo de su sondeo)."""
+    if not np.isfinite(md).all():
+        raise ValueError(f"{what} no finitas: {md[~np.isfinite(md)][:_NAMES_SHOWN].tolist()}")
+    above = md < traces.md[traces.hole_start[holes]]
+    if above.any():
+        raise ValueError(f"{what} por encima de la boca: {md[above][:_NAMES_SHOWN].tolist()}")
+
+
+def _slerp(t1: np.ndarray, t2: np.ndarray, f: np.ndarray, beta: np.ndarray) -> np.ndarray:
+    """La dirección unitaria a la fracción ``f`` del arco de ``t1`` a ``t2`` (ángulo
+    ``beta``): sin((1 − f)β)/sin β·t₁ + sin(fβ)/sin β·t₂; por debajo de
+    :data:`RF_SERIES_LIMIT_RAD`, la interpolación lineal normalizada (sin división por
+    sin β ≈ 0; su error angular es del orden de β³)."""
+    found = t1 + f[:, None] * (t2 - t1)
+    big = beta >= RF_SERIES_LIMIT_RAD
+    if big.any():
+        b, fb = beta[big], f[big]
+        sin_b = np.sin(b)
+        found[big] = ((np.sin((1.0 - fb) * b) / sin_b)[:, None] * t1[big]
+                      + (np.sin(fb * b) / sin_b)[:, None] * t2[big])
+    small = ~big
+    found[small] /= np.linalg.norm(found[small], axis=1)[:, None]
+    return found
+
+
+def _position(traces: Traces, node: np.ndarray, s: np.ndarray) -> np.ndarray:
+    """La posición absoluta (n, 3) a ``s`` m (≥ 0) por debajo de cada nodo ``node``, por el
+    método de las trazas (véase el módulo)."""
+    tangent = traces.tangent
+    delta = s[:, None] * tangent[node]  # tangente, y por debajo del último nodo
+    last = traces.hole_start[1:][traces.node_hole[node]] - 1
+    inner = np.flatnonzero(node != last)
+    if inner.size and traces.method is not Method.TANGENT:
+        j = node[inner]
+        t1, t2 = tangent[j], tangent[j + 1]
+        part = s[inner]
+        length = traces.md[j + 1] - traces.md[j]
+        if traces.method is Method.BALANCED_TANGENT:
+            first = np.minimum(part, 0.5 * length)
+            delta[inner] = first[:, None] * t1 + (part - first)[:, None] * t2
+        else:
+            beta = dogleg(t1, t2)
+            f = part / length
+            along = 0.5 * part * ratio_factor(f * beta)
+            delta[inner] = along[:, None] * (t1 + _slerp(t1, t2, f, beta))
+    return traces.xyz[node] + delta
+
+
+def _locate(traces: Traces, hole: np.ndarray, md: np.ndarray) -> np.ndarray:
+    """El último nodo del sondeo ``hole`` a profundidad ≤ ``md``, para cada consulta (ya
+    comprobadas: con traza y no por encima de la boca). Nodos y consultas se ordenan juntos
+    por (sondeo, profundidad, nodo antes que consulta): exacto, sin la clave
+    sondeo·L + profundidad, que redondea."""
+    nodes = traces.md.size
+    query = np.zeros(nodes + md.size, dtype=np.bool_)
+    query[nodes:] = True
+    order = np.lexsort((query, np.concatenate((traces.md, md)),
+                        np.concatenate((traces.node_hole, hole))))
+    upto = np.cumsum(~query[order])  # nodos hasta cada posición del orden, incluida
+    rank = np.empty_like(order)
+    rank[order] = np.arange(order.size)
+    return upto[rank[nodes:]] - 1
+
+
+def _positions(traces: object, hole: object) -> np.ndarray:
+    """Unas posiciones de sondeo (int64) de ``traces`` en rango y con traza."""
+    if not isinstance(traces, Traces):
+        raise TypeError(f"las posiciones se calculan sobre unas Traces, no {traces!r}")
+    found = np.asarray(hole)
+    if found.dtype.kind not in "iu":
+        raise TypeError(f"los sondeos son posiciones enteras entre las bocas, no {found.dtype}")
+    found = found.astype(np.int64, copy=False)
+    count = traces.hole_start.size - 1
+    if found.size and (found.min() < 0 or found.max() >= count):
+        raise IndexError(f"posiciones de sondeo fuera de [0, {count})")
+    _without_trace(traces, found.ravel())
+    return found
+
+
+def md_to_xyz(traces: Traces, hole: np.ndarray | int, md: np.ndarray | float) -> np.ndarray:
+    """La posición absoluta (E, N, Z; float64, (n, 3)) de la profundidad ``md`` (m) de cada
+    sondeo ``hole`` (su posición entre las bocas), sobre la misma curva que su traza
+    (RF-005-21; véase el módulo). ``hole`` y ``md`` se combinan como en numpy (un sondeo y
+    muchas profundidades, por ejemplo) y dan un array de una dimensión.
+
+    ``TypeError`` si ``hole`` no es entero o ``md`` no es float64 ni entero; ``IndexError``
+    con un sondeo fuera de rango; ``ValueError`` con uno sin traza, una profundidad no finita
+    o por encima de la boca, o más de una dimensión."""
+    holes = _positions(traces, hole)
+    depth = _depths(md, "las profundidades")
+    holes, depth = np.broadcast_arrays(holes, depth)
+    if holes.ndim > 1:
+        raise ValueError(f"las profundidades que se sitúan van en una dimensión, no en "
+                         f"{holes.ndim}")
+    holes, depth = holes.ravel(), depth.ravel()
+    _check_depths(traces, holes, depth, "profundidades")
+    node = _locate(traces, holes, depth)
+    return _position(traces, node, depth - traces.md[node])
+
+
+def _step(max_step_m: object) -> float:
+    step = float(max_step_m)  # TypeError si no es un número
+    if not (math.isfinite(step) and step > 0.0):
+        raise ValueError(f"el paso de la polilínea es un número de metros positivo y finito, "
+                         f"no {max_step_m!r}")
+    return step
+
+
+def _extra(traces: Traces, extra_md: Mapping[int, object] | None
+           ) -> tuple[np.ndarray, np.ndarray]:
+    """Los sondeos (int64) y las profundidades (float64) de ``extra_md``, comprobados."""
+    if extra_md is None:
+        return np.zeros(0, dtype=np.int64), np.zeros(0)
+    if not isinstance(extra_md, Mapping):
+        raise TypeError(f"las profundidades pedidas van por sondeo en un Mapping, no "
+                        f"{extra_md!r}")
+    count = traces.hole_start.size - 1
+    holes, depths = [], []
+    for key, values in extra_md.items():
+        if isinstance(key, bool | np.bool_) or not isinstance(key, int | np.integer):
+            raise TypeError(f"las profundidades pedidas van por posición entera de sondeo, "
+                            f"no por {key!r}")
+        if not 0 <= key < count:
+            raise IndexError(f"posición de sondeo {key} fuera de [0, {count})")
+        depth = _depths(values, f"las profundidades pedidas del sondeo {key}")
+        if depth.ndim != 1:
+            raise ValueError(f"las profundidades pedidas del sondeo {key} van en una "
+                             f"dimensión, no en {depth.ndim}")
+        holes.append(np.full(depth.size, int(key), dtype=np.int64))
+        depths.append(depth)
+    if not holes:
+        return np.zeros(0, dtype=np.int64), np.zeros(0)
+    hole, depth = np.concatenate(holes), np.concatenate(depths)
+    _without_trace(traces, hole)
+    _check_depths(traces, hole, depth, "profundidades pedidas")
+    return hole, depth
+
+
+def _polyline(traces: object, extra_md: Mapping[int, object] | None, max_step_m: object
+              ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Los desplazamientos por boca, el último nodo anterior de cada vértice y su
+    profundidad (véase :func:`polyline_md`)."""
+    if not isinstance(traces, Traces):
+        raise TypeError(f"las polilíneas se calculan sobre unas Traces, no {traces!r}")
+    step = _step(max_step_m)
+    extra_hole, extra_depth = _extra(traces, extra_md)
+
+    # Nodos y profundidades pedidas, por sondeo y profundidad, sin repetir (el nodo primero).
+    nodes = traces.md.size
+    is_extra = np.zeros(nodes + extra_depth.size, dtype=np.bool_)
+    is_extra[nodes:] = True
+    hole = np.concatenate((traces.node_hole, extra_hole))
+    md = np.concatenate((traces.md, extra_depth))
+    order = np.lexsort((is_extra, md, hole))
+    hole, md, is_extra = hole[order], md[order], is_extra[order]
+    keep = np.ones(md.size, dtype=np.bool_)
+    keep[1:] = (hole[1:] != hole[:-1]) | (md[1:] != md[:-1])
+    hole, md, is_extra = hole[keep], md[keep], is_extra[keep]
+    # El primer punto de cada sondeo es su nodo de la boca: lo anterior de cada punto,
+    # el último nodo hasta él.
+    node_of = np.cumsum(~is_extra) - 1
+
+    # Partes iguales de ≤ step en cada intervalo hasta el punto siguiente del sondeo.
+    gap = np.zeros(md.size)
+    same = hole[1:] == hole[:-1]
+    gap[:-1][same] = (md[1:] - md[:-1])[same]
+    pieces = np.maximum(np.ceil(gap / step), 1.0)
+    pieces += gap / pieces > step  # por si el cociente redondeó hacia abajo
+    pieces = pieces.astype(np.int64)
+    rep = np.repeat(np.arange(md.size), pieces)
+    k = np.arange(rep.size) - np.repeat(np.cumsum(pieces) - pieces, pieces)
+    vertex_md = md[rep] + gap[rep] * k / pieces[rep]
+    count = traces.hole_start.size - 1
+    offsets = np.zeros(count + 1, dtype=np.int64)
+    np.cumsum(np.bincount(hole[rep], minlength=count), out=offsets[1:])
+    return offsets, node_of[rep], vertex_md
+
+
+def polyline_md(traces: Traces, extra_md: Mapping[int, np.ndarray] | None,
+                max_step_m: float) -> tuple[np.ndarray, np.ndarray]:
+    """Las profundidades de los vértices de la polilínea de cada sondeo con traza (véase el
+    módulo): ``offsets`` (int64, una más que bocas; los vértices del sondeo k son
+    ``offsets[k]:offsets[k + 1]``, ninguno sin traza) y ``md`` (float64, crecientes en cada
+    sondeo). Tienen los nodos de la traza y las profundidades ``extra_md`` (por posición de
+    sondeo; una por debajo del fondo prolonga la polilínea) y, entre cada dos, puntos en
+    partes iguales de a lo sumo ``max_step_m`` (m; salvo el redondeo de float64).
+
+    ``TypeError`` con una clave que no es una posición entera o profundidades que no son
+    float64 ni enteras; ``IndexError`` con una posición fuera de rango; ``ValueError`` con un
+    paso que no es positivo y finito, profundidades de un sondeo sin traza, no finitas, por
+    encima de la boca o en más de una dimensión."""
+    offsets, _, md = _polyline(traces, extra_md, max_step_m)
+    return offsets, md
+
+
+def polylines(traces: Traces, extra_md: Mapping[int, np.ndarray] | None,
+              max_step_m: float) -> tuple[np.ndarray, np.ndarray]:
+    """Las polilíneas densificadas de los sondeos con traza (RF-005-21; ``dh_trace`` y la
+    vista): ``offsets`` como en :func:`polyline_md` y ``xyz`` (float64, (n, 3), absolutas),
+    la posición de :func:`md_to_xyz` de cada vértice (exactamente la de la traza en sus
+    nodos). Mismos errores que :func:`polyline_md`."""
+    offsets, node, md = _polyline(traces, extra_md, max_step_m)
+    return offsets, _position(traces, node, md - traces.md[node])

@@ -13,9 +13,15 @@
   los desplazamientos ``hole_start``, el método registrado (también por su texto), sondeos
   que no se pueden calcular (con su código de la validación) y la entrada sin modificar.
 - ``tests/data/dh/csv_basico``: el fondo de cada sondeo, el analítico de ``esperado.json``.
+- **Posiciones y polilíneas** (T07; RF-005-21): ``md_to_xyz`` en las estaciones da los puntos
+  de la traza, prolonga la orientación del fondo por debajo de él, no deja avisos de numpy
+  con β ≈ 0 y rechaza lo que no se puede situar; ``polyline_md`` y ``polylines`` juntan
+  estaciones y límites pedidos, densifican, dan los desplazamientos por boca y rechazan
+  límites de sondeos sin traza.
 
 Los casos analíticos (recto por los tres métodos, arco en plano inclinado y tres estaciones a
-mano) están en ``tests/referencia/dh/test_desurvey_reference.py``.
+mano) están en ``tests/referencia/dh/test_desurvey_reference.py``, y los de las posiciones
+intermedias y la polilínea densificada, en ``tests/referencia/dh/test_md_to_xyz.py``.
 """
 
 from __future__ import annotations
@@ -327,6 +333,184 @@ class ContractTest(unittest.TestCase):
         with self.assertRaises((TypeError, ValueError)):
             desurvey.Traces(hole_start=traces.hole_start, md=traces.md, xyz=traces.xyz[:-1],
                             tangent=traces.tangent, method=traces.method, warnings=())
+
+
+def _multi():
+    """Tres sondeos: A-1 con tres estaciones, B-1 prolongado hasta el fondo (120 m) y C-1
+    con una sola estación a 10 m (recto de la boca al fondo, 30 m)."""
+    return _dset([("A-1", 100.0), ("B-1", 120.0), ("C-1", 30.0)], [
+        _station("A-1", 0.0, 10.0, -60.0), _station("A-1", 50.0, 12.0, -61.0),
+        _station("A-1", 100.0, 15.0, -62.0),
+        _station("B-1", 0.0, 200.0, -80.0), _station("B-1", 60.0, 205.0, -78.0),
+        _station("C-1", 10.0, 90.0, -45.0),
+    ])
+
+
+def _snapshot(traces) -> dict[str, np.ndarray]:
+    return {name: getattr(traces, name).copy() for name in ("hole_start", "md", "xyz",
+                                                            "tangent")}
+
+
+class PositionsTest(unittest.TestCase):
+    def test_nodes_in_any_order(self) -> None:
+        """RF-005-21: en las profundidades de los nodos, en cualquier orden y de varios
+        sondeos, ``md_to_xyz`` da exactamente los puntos de la traza (la misma curva), por
+        los tres métodos; un sondeo solo con muchas profundidades y profundidades enteras
+        también valen."""
+        dset = _multi()
+        for method in Method:
+            with self.subTest(method=method):
+                traces = desurvey.desurvey(dset, method)
+                order = np.random.default_rng(7).permutation(traces.md.size)
+                found = desurvey.md_to_xyz(traces, traces.node_hole[order], traces.md[order])
+                np.testing.assert_array_equal(found, traces.xyz[order])
+                np.testing.assert_array_equal(
+                    desurvey.md_to_xyz(traces, 1, traces.md[3:6]), traces.xyz[3:6])
+                np.testing.assert_array_equal(
+                    desurvey.md_to_xyz(traces, np.array([0]), np.array([50])), traces.xyz[1:2])
+
+    def test_straight_and_beyond_the_bottom(self) -> None:
+        """RF-005-21: un sondeo de una sola estación es recto de la boca al fondo, y por
+        debajo del fondo (un tramo dentro de la tolerancia de la validación) se prolonga la
+        orientación del fondo, por los tres métodos."""
+        dset = _multi()
+        for method in Method:
+            with self.subTest(method=method):
+                traces = desurvey.desurvey(dset, method)
+                c1 = np.array([COLLAR[0] + 20.0, COLLAR[1], COLLAR[2]])
+                md = np.array([0.0, 4.5, 10.0, 17.25, 30.0, 30.004])
+                # 10⁻⁸ m: unos ulp de una coordenada absoluta (ulp de 4,4·10⁶ m ≈ 10⁻⁹ m).
+                np.testing.assert_allclose(desurvey.md_to_xyz(traces, 2, md),
+                                           c1 + md[:, None] * _t(90.0, -45.0), rtol=0,
+                                           atol=1e-8)
+                below = desurvey.md_to_xyz(traces, np.array([1, 0]), np.array([120.25, 101.0]))
+                np.testing.assert_allclose(below[0], traces.xyz[5] + 0.25 * _t(205.0, -78.0),
+                                           rtol=0, atol=1e-8)
+                np.testing.assert_allclose(below[1], traces.xyz[2] + 1.0 * _t(15.0, -62.0),
+                                           rtol=0, atol=1e-8)
+
+    def test_parallel_stations(self) -> None:
+        """RF-005-21 (β ≈ 0): entre estaciones paralelas o casi (10⁻⁹° y 10⁻⁷°), ninguna
+        posición intermedia da avisos de numpy ni NaN; con β = 0 es la recta, y a 10⁻⁹ m de
+        una estación, su punto."""
+        md = np.array([0.0, 7.5, 15.0, 30.0 - 1e-9, 30.0, 61.0, 89.9, 90.0])
+        for delta in (0.0, 1e-9, 1e-7):
+            with self.subTest(delta=delta), _no_numpy_warnings():
+                dset = _dset([("B-1", 90.0)], [
+                    _station("B-1", 0.0, 77.0, -63.0),
+                    _station("B-1", 30.0, 77.0, -63.0 + delta),
+                    _station("B-1", 90.0, 77.0 + delta, -63.0 + delta),
+                ])
+                for method in Method:
+                    traces = desurvey.desurvey(dset, method)
+                    found = desurvey.md_to_xyz(traces, 0, md)
+                    self.assertTrue(np.isfinite(found).all())
+                    np.testing.assert_allclose(found, np.array(COLLAR) + md[:, None]
+                                               * _t(77.0, -63.0), rtol=0, atol=1e-6)
+                    if delta == 0.0:
+                        np.testing.assert_allclose(found, np.array(COLLAR) + md[:, None]
+                                                   * _t(77.0, -63.0), rtol=0, atol=1e-8)
+                    np.testing.assert_allclose(found[3], traces.xyz[1], rtol=0, atol=1e-8)
+
+    def test_refused_queries(self) -> None:
+        """RF-005-21: no se sitúa una profundidad de un sondeo sin traza, fuera de las
+        bocas, por encima de la boca o no finita; las profundidades van en float64 (o
+        enteras) y los sondeos son posiciones enteras; sin profundidades, ningún punto."""
+        traces = desurvey.desurvey(_multi(), holes=np.array([0, 2]))
+        md = np.array([10.0])
+        with self.assertRaises(ValueError) as caught:
+            desurvey.md_to_xyz(traces, np.array([0, 1]), np.array([10.0, 10.0]))
+        self.assertIn("sin traza", str(caught.exception))
+        with self.assertRaises(IndexError):
+            desurvey.md_to_xyz(traces, np.array([3]), md)
+        with self.assertRaises(IndexError):
+            desurvey.md_to_xyz(traces, np.array([-1]), md)
+        for bad in (-0.001, math.nan, math.inf, -math.inf):
+            with self.subTest(md=bad), self.assertRaises(ValueError):
+                desurvey.md_to_xyz(traces, np.array([0]), np.array([bad]))
+        with self.assertRaises(TypeError):
+            desurvey.md_to_xyz(traces, np.array([0]), np.array([10.0], dtype=np.float32))
+        for hole in (np.array([0.0]), np.array([True])):
+            with self.subTest(hole=hole), self.assertRaises(TypeError):
+                desurvey.md_to_xyz(traces, hole, md)
+        with self.assertRaises(ValueError):
+            desurvey.md_to_xyz(traces, np.array([[0]]), np.array([[10.0]]))
+        with self.assertRaises(ValueError):
+            desurvey.md_to_xyz(traces, np.array([0, 2]), np.array([1.0, 2.0, 3.0]))
+        empty = desurvey.md_to_xyz(traces, np.array([], dtype=np.int64), np.array([]))
+        self.assertEqual((empty.shape, empty.dtype), ((0, 3), np.float64))
+
+    def test_traces_are_not_modified(self) -> None:
+        """RF-005-21: situar profundidades y densificar no cambia las trazas."""
+        traces = desurvey.desurvey(_multi())
+        before = _snapshot(traces)
+        desurvey.md_to_xyz(traces, traces.node_hole, traces.md + 0.5)
+        desurvey.polylines(traces, {0: np.array([33.0])}, 5.0)
+        for name, values in before.items():
+            np.testing.assert_array_equal(getattr(traces, name), values)
+
+
+class PolylinesTest(unittest.TestCase):
+    def test_offsets_limits_and_steps(self) -> None:
+        """RF-005-21: la polilínea de cada sondeo con traza junta sus nodos y los límites
+        pedidos (una vez cada uno), los densifica en partes iguales de ≤ ``max_step_m``,
+        da los desplazamientos por boca (vacío sin traza) y sus puntos son los de
+        ``md_to_xyz``."""
+        traces = desurvey.desurvey(_multi(), holes=np.array([0, 2]))
+        extra = {0: np.array([75.5, 25.0, 50.0]), np.int64(2): [20.0, 20.0]}
+        offsets, md = desurvey.polyline_md(traces, extra, 10.0)
+        np.testing.assert_array_equal(offsets, [0, 13, 13, 17])
+        third = 25.0 / 3.0
+        np.testing.assert_allclose(md[:4], [0.0, third, 2 * third, 25.0], rtol=0, atol=1e-12)
+        self.assertTrue(np.isin([0.0, 25.0, 50.0, 75.5, 100.0], md[:13]).all())
+        np.testing.assert_array_equal(md[13:], [0.0, 10.0, 20.0, 30.0])
+        for k in (0, 2):
+            part = md[offsets[k]:offsets[k + 1]]
+            self.assertTrue((np.diff(part) > 0.0).all())
+            self.assertLessEqual(np.diff(part).max(), 10.0)
+        offsets_xyz, xyz = desurvey.polylines(traces, extra, 10.0)
+        np.testing.assert_array_equal(offsets_xyz, offsets)
+        hole = np.repeat(np.arange(3), np.diff(offsets))
+        np.testing.assert_array_equal(xyz, desurvey.md_to_xyz(traces, hole, md))
+        np.testing.assert_array_equal(xyz[[0, 6, 12, 13, 14, 16]],
+                                      traces.xyz[[0, 1, 2, 3, 4, 5]])
+
+    def test_without_limits_and_beyond_the_bottom(self) -> None:
+        """RF-005-21: sin límites y con un paso mayor que los tramos, la polilínea son los
+        nodos de la traza; un límite por debajo del fondo (tolerancia de la validación) la
+        prolonga con la orientación del fondo; sin trazas, nada."""
+        traces = desurvey.desurvey(_multi())
+        offsets, xyz = desurvey.polylines(traces, None, 1000.0)
+        np.testing.assert_array_equal(offsets, traces.hole_start)
+        np.testing.assert_array_equal(xyz, traces.xyz)
+        offsets, md = desurvey.polyline_md(traces, {1: np.array([120.004])}, 1000.0)
+        np.testing.assert_array_equal(md[offsets[1]:offsets[2]], [0.0, 60.0, 120.0, 120.004])
+        empty = desurvey.desurvey(model.DrillholeSet(crs=H25830, vertical=V5782))
+        offsets, xyz = desurvey.polylines(empty, {}, 2.0)
+        np.testing.assert_array_equal(offsets, [0])
+        self.assertEqual(xyz.shape, (0, 3))
+
+    def test_refused_limits_and_steps(self) -> None:
+        """RF-005-21: no se densifica con un paso que no es un número positivo finito, ni con
+        límites de un sondeo sin traza, de uno que no existe, por encima de la boca o no
+        finitos."""
+        traces = desurvey.desurvey(_multi(), holes=np.array([0, 2]))
+        for step in (0.0, -1.0, math.nan, math.inf):
+            with self.subTest(step=step), self.assertRaises(ValueError):
+                desurvey.polylines(traces, None, step)
+        with self.assertRaises(ValueError) as caught:
+            desurvey.polylines(traces, {1: np.array([5.0])}, 2.0)
+        self.assertIn("sin traza", str(caught.exception))
+        with self.assertRaises(IndexError):
+            desurvey.polylines(traces, {3: np.array([5.0])}, 2.0)
+        for key in (True, 0.0, "0"):
+            with self.subTest(key=key), self.assertRaises(TypeError):
+                desurvey.polylines(traces, {key: np.array([5.0])}, 2.0)
+        for bad in ([-0.5], [math.nan], [[5.0]]):
+            with self.subTest(limits=bad), self.assertRaises(ValueError):
+                desurvey.polylines(traces, {0: np.array(bad)}, 2.0)
+        with self.assertRaises(TypeError):
+            desurvey.polylines(traces, {0: np.array([5.0], dtype=np.float32)}, 2.0)
 
 
 def _basico():
