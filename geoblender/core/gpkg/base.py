@@ -14,6 +14,15 @@ formato-proyecto §3.1; plan 002 §5.2 y §6).
   lista igualmente y la protegen los disparadores (spec 002, D-5).
 - :func:`create_feature_table` y :func:`create_attribute_table`: capas y tablas de
   atributos registradas, con ``fid INTEGER PRIMARY KEY AUTOINCREMENT``.
+- :func:`set_column_titles`: los títulos (alias) de las columnas de una capa o tabla
+  registrada, que QGIS muestra en lugar del nombre (spec 005, T36; RF-005-01). Van en
+  ``gpkg_data_columns`` (extensión ``gpkg_schema``), en ``name`` y en ``title``: el GDAL de
+  QGIS 4.2 (3.13.1) toma el alias de ``name`` y no lee ``title``. Las dos tablas de la
+  extensión y sus filas en ``gpkg_extensions`` se crean la primera vez que un módulo pone
+  títulos: un proyecto nuevo o migrado no las tiene.
+- :func:`create_index`: un índice de una capa o tabla, único o no, con columnas que se
+  comparan sin distinguir mayúsculas (``COLLATE NOCASE``), con el nombre de
+  :func:`index_name` (spec 005, T36).
 
 Todas reciben la conexión de una transacción de escritura
 (``GpkgConnection.transaction()``) y no la confirman.
@@ -23,7 +32,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from ..errors import ValidationError
@@ -45,6 +54,16 @@ COLUMN_TYPES: frozenset[str] = frozenset(
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _RESERVED_COLUMNS = frozenset({"fid", GEOMETRY_COLUMN})
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+# Extensión «schema» de GeoPackage 1.4 (anexo F.9): los títulos de las columnas. La
+# definición y el alcance, los que escribe el GDAL de QGIS 4.2 (3.13.1) al poner un alias y
+# los que exige su validate_gpkg.py (read-write, sin columna, una fila por tabla).
+DATA_COLUMNS_TABLE = "gpkg_data_columns"
+DATA_COLUMN_CONSTRAINTS_TABLE = "gpkg_data_column_constraints"
+SCHEMA_EXTENSION = "gpkg_schema"
+SCHEMA_EXTENSION_DEFINITION = "http://www.geopackage.org/spec121/#extension_schema"
+SCHEMA_EXTENSION_SCOPE = "read-write"
+INDEX_PREFIX = "idx_"
+"""El prefijo del nombre de un índice de :func:`create_index` (:func:`index_name`)."""
 
 # GeoPackage 1.4, tabla 21 (WKT de EPSG:4326 que exige el estándar).
 WGS84_WKT = (
@@ -123,6 +142,33 @@ _DDL: tuple[str, ...] = (
   CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name)
 )""",
 )
+
+# Las tablas de la extensión «schema» con la estructura de GeoPackage 1.4, como las crea el
+# GDAL de QGIS 4.2 (``min_is_inclusive`` y ``max_is_inclusive``, no los nombres de la 1.0).
+_SCHEMA_DDL: dict[str, str] = {
+    DATA_COLUMNS_TABLE: f"""CREATE TABLE {DATA_COLUMNS_TABLE} (
+  table_name TEXT NOT NULL,
+  column_name TEXT NOT NULL,
+  name TEXT,
+  title TEXT,
+  description TEXT,
+  mime_type TEXT,
+  constraint_name TEXT,
+  CONSTRAINT pk_gdc PRIMARY KEY (table_name, column_name),
+  CONSTRAINT gdc_tn UNIQUE (table_name, name)
+)""",
+    DATA_COLUMN_CONSTRAINTS_TABLE: f"""CREATE TABLE {DATA_COLUMN_CONSTRAINTS_TABLE} (
+  constraint_name TEXT NOT NULL,
+  constraint_type TEXT NOT NULL,
+  value TEXT,
+  min NUMERIC,
+  min_is_inclusive BOOLEAN,
+  max NUMERIC,
+  max_is_inclusive BOOLEAN,
+  description TEXT,
+  CONSTRAINT gdcc_ntv UNIQUE (constraint_name, constraint_type, value)
+)""",
+}
 
 
 @dataclass(frozen=True)
@@ -267,3 +313,181 @@ def create_attribute_table(
         "VALUES (?, 'attributes', ?, ?)",
         (name, identifier, description),
     )
+
+
+# --- Títulos e índices (spec 005, T36) ----------------------------------------------------------
+
+
+def _quote(identifier: str) -> str:
+    """Un identificador de SQLite entre comillas dobles (las de dentro, dobladas)."""
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def _existing_table(conn: sqlite3.Connection, table: str) -> list[str]:
+    """Las columnas de ``table`` (un identificador del proyecto que existe), en su orden;
+    ``ValidationError`` si el nombre no es válido o la tabla no existe."""
+    _check_name(table, "tabla")
+    if not _table_exists(conn, table):
+        raise _invalid("table_unknown", "no existe en la base de datos", "tabla", table)
+    return [str(row[1]) for row in conn.execute(f"PRAGMA table_info({_quote(table)})")]
+
+
+def _known_column(columns: Sequence[str], table: str, column: object) -> str:
+    if not isinstance(column, str) or column not in columns:
+        reason = f"la tabla «{table}» no tiene esa columna"
+        raise _invalid("column_unknown", reason, "columna", column)
+    return column
+
+
+def _create_schema_tables(conn: sqlite3.Connection) -> None:
+    """Las dos tablas de la extensión «schema» y sus filas en ``gpkg_extensions``, las que
+    falten (también si otro programa creó una tabla sin declararla)."""
+    for table, ddl in _SCHEMA_DDL.items():
+        if not _table_exists(conn, table):
+            conn.execute(ddl)
+        declared = conn.execute(
+            "SELECT 1 FROM gpkg_extensions WHERE table_name = ? AND extension_name = ?",
+            (table, SCHEMA_EXTENSION),
+        ).fetchone()
+        if declared is None:
+            conn.execute(
+                "INSERT INTO gpkg_extensions (table_name, column_name, extension_name, "
+                "definition, scope) VALUES (?, NULL, ?, ?, ?)",
+                (table, SCHEMA_EXTENSION, SCHEMA_EXTENSION_DEFINITION, SCHEMA_EXTENSION_SCOPE),
+            )
+
+
+def set_column_titles(
+    conn: sqlite3.Connection, table: str, titles: Mapping[str, str]
+) -> None:
+    """Pone a las columnas de la capa o tabla ``table`` (registrada en ``gpkg_contents``) los
+    títulos de ``titles`` (columna → título), que QGIS muestra como alias de cada campo
+    (RF-005-01; plan 005 §5.2.1).
+
+    Cada título va a ``gpkg_data_columns`` en ``name`` y en ``title``: el estándar llama
+    ``title`` al título, pero el GDAL de QGIS 4.2 (3.13.1) toma el alias de ``name`` y no lee
+    ``title``. La primera vez crea ``gpkg_data_columns`` y ``gpkg_data_column_constraints`` y
+    las declara en ``gpkg_extensions`` (``gpkg_schema``, ``read-write``); sin títulos no crea
+    nada. Volver a llamarla cambia los títulos de esas columnas y deja los de las demás y lo
+    que otro programa escribió en sus filas (``description``…).
+
+    Rechaza sin escribir nada, con ``ValidationError``: una tabla que no existe
+    (``core.gpkg_table_unknown``) o que no está en ``gpkg_contents``
+    (``core.gpkg_table_unregistered``), un nombre que no es un identificador, una columna
+    que no tiene (``core.gpkg_column_unknown``), un título que no es un texto con algo
+    escrito (``core.gpkg_title_invalid``) y dos columnas de la tabla con el mismo título sin
+    distinguir mayúsculas (``core.gpkg_title_repeated``); ``TypeError`` si ``titles`` no es
+    un diccionario."""
+    if not isinstance(titles, Mapping):
+        raise TypeError(f"los títulos son un diccionario columna → título, no {titles!r}")
+    columns = _existing_table(conn, table)
+    registered = conn.execute(
+        "SELECT 1 FROM gpkg_contents WHERE table_name = ?", (table,)
+    ).fetchone()
+    if registered is None:
+        reason = "no es una capa ni una tabla registrada en gpkg_contents"
+        raise _invalid("table_unregistered", reason, "tabla", table)
+    wanted: dict[str, str] = {}
+    for column, title in titles.items():
+        _known_column(columns, table, column)
+        if not isinstance(title, str) or not title.strip():
+            reason = "un título es un texto con algo escrito"
+            raise _invalid("title_invalid", reason, f"título de «{column}»", title)
+        wanted[column] = title
+    if not wanted:
+        return
+    existing: dict[str, str] = {}
+    if _table_exists(conn, DATA_COLUMNS_TABLE):
+        existing = {
+            str(column): str(name)
+            for column, name in conn.execute(
+                f"SELECT column_name, name FROM {DATA_COLUMNS_TABLE} "
+                "WHERE table_name = ? AND name IS NOT NULL",
+                (table,),
+            )
+        }
+    seen: dict[str, str] = {}
+    for column, title in {**existing, **wanted}.items():
+        other = seen.setdefault(title.casefold(), column)
+        if other != column:
+            reason = f"es ya el título de la columna «{other}» de «{table}»"
+            raise _invalid("title_repeated", reason, f"título de «{column}»", title)
+    _create_schema_tables(conn)
+    marks = ", ".join("?" for _ in wanted)
+    # Sin el título de antes primero: intercambiar dos títulos chocaría con UNIQUE (tabla, name).
+    conn.execute(
+        f"UPDATE {DATA_COLUMNS_TABLE} SET name = NULL "
+        f"WHERE table_name = ? AND column_name IN ({marks})",
+        (table, *wanted),
+    )
+    conn.executemany(
+        f"INSERT INTO {DATA_COLUMNS_TABLE} (table_name, column_name, name, title) "
+        "VALUES (?, ?, ?, ?) ON CONFLICT (table_name, column_name) "
+        "DO UPDATE SET name = excluded.name, title = excluded.title",
+        [(table, column, title, title) for column, title in wanted.items()],
+    )
+
+
+def index_name(table: str, columns: Sequence[str]) -> str:
+    """El nombre del índice de las columnas ``columns`` de ``table`` que crea
+    :func:`create_index`: ``idx_<tabla>_<columna>[_<columna>…]``."""
+    return f"{INDEX_PREFIX}{table}_{'_'.join(columns)}"
+
+
+def create_index(
+    conn: sqlite3.Connection,
+    table: str,
+    columns: Sequence[str],
+    *,
+    unique: bool = False,
+    nocase: Sequence[str] = (),
+) -> str:
+    """Crea el índice de las columnas ``columns`` (en su orden) de la capa o tabla ``table``,
+    único si ``unique``, y devuelve su nombre (:func:`index_name`). Las columnas de ``nocase``
+    se comparan sin distinguir mayúsculas (``COLLATE NOCASE``): un índice único así rechaza
+    «s-12» junto a «S-12». ``NOCASE`` de SQLite solo iguala las letras sin tilde (A–Z);
+    una consulta lo usa con ``= ? COLLATE NOCASE``.
+
+    Rechaza sin crear nada, con ``ValidationError``: una tabla que no existe
+    (``core.gpkg_table_unknown``) o un nombre que no es un identificador, ninguna columna,
+    una repetida o una de ``nocase`` que no está en el índice (``core.gpkg_index_columns``),
+    una columna que la tabla no tiene (``core.gpkg_column_unknown``) y un índice que ya
+    existe (``core.gpkg_index_exists``); ``TypeError`` si ``columns`` o ``nocase`` son un
+    texto y no una lista."""
+    if isinstance(columns, str) or isinstance(nocase, str):
+        raise TypeError("las columnas del índice son una lista de nombres, no un texto")
+    if not isinstance(unique, bool):
+        raise TypeError(f"«unique» es sí o no, no {unique!r}")
+    known = _existing_table(conn, table)
+    names = list(columns)
+    folded = set(nocase)
+    shown = ", ".join(str(name) for name in names)
+    if not names or len(set(names)) != len(names):
+        reason = "un índice lleva al menos una columna, ninguna repetida"
+        raise _invalid("index_columns", reason, "columnas del índice", shown)
+    for column in names:
+        _known_column(known, table, column)
+    outside = sorted(str(column) for column in folded if column not in names)
+    if outside:
+        reason = f"tienen que ser columnas del índice ({shown})"
+        raise _invalid("index_columns", reason, "columnas sin mayúsculas", ", ".join(outside))
+    name = index_name(table, names)
+    taken = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    if taken is not None:
+        raise _invalid("index_exists", "ya existe en la base de datos", "índice", name)
+    keys = ", ".join(
+        f"{_quote(column)} COLLATE NOCASE" if column in folded else _quote(column)
+        for column in names
+    )
+    kind = "UNIQUE INDEX" if unique else "INDEX"
+    conn.execute(f"CREATE {kind} {_quote(name)} ON {_quote(table)} ({keys})")
+    return name

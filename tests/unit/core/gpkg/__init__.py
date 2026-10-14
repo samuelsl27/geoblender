@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pruebas de ``geoblender.core.gpkg``: geometría GeoPackage, cabecera SQLite, conexión,
-estructura del GeoPackage, protección de las tablas internas y vuelta desde WAL (spec 002).
+estructura del GeoPackage, protección de las tablas internas y vuelta desde WAL (spec 002);
+títulos de las columnas e índices de las tablas de un módulo (spec 005, T36).
 
 Los GeoPackage de prueba se crean en carpetas temporales (``tests.support.core_fixtures.
 project_tmp``), nunca en el repositorio.
