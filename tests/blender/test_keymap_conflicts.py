@@ -175,8 +175,7 @@ class KeymapConflictTest(unittest.TestCase):
 
 class KeymapCycleTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_unregister_leaves_no_items(self) -> None:
         """RF-003-18, RF-003-23: deshabilitar no deja ningún atajo de Geoblender en el

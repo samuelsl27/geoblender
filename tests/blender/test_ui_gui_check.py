@@ -49,8 +49,7 @@ measure = importlib.import_module("inblender.measure_topbar")
 
 class GuiCheckSnapshotTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_snapshot_cycle(self) -> None:
         """RF-003-23, CE-003-02: JSON, dos tomas iguales, cambios al habilitar y ninguno

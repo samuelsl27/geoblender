@@ -128,22 +128,26 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en unos 37 s) no ejecuta las pruebas del
-propio arnés que lanzan Blender entero, y lo dice antes del resultado. Solo se ejecuta un
+Sin `--completo` (la comprobación de cada tarea, en unos 37 s; con `--completo`, unos 93 s)
+no ejecuta las pruebas del propio arnés que lanzan Blender entero, y lo dice antes del
+resultado. Solo se ejecuta un
 `tools/check.py` a la vez en el equipo, sea de la carpeta que sea (de este repositorio o de
 un *worktree*): dos a la vez compiten por los procesadores, tardan más y las pruebas que miden
 tiempos fallan. El cerrojo es `%LOCALAPPDATA%\Geoblender\check.lock`, que el sistema suelta
 aunque la comprobación se cierre de golpe (no hay que borrarlo); si otra lo tiene, la nueva
 escribe `ESPERANDO: …` con su pid y su carpeta y espera, y su tiempo se cuenta desde que
 empieza de verdad. `tools/publish.py` espera igual. Los pasos van uno
-tras otro, pero las pruebas unitarias se reparten en 16 procesos (`tools/unittest_part.py`)
-y las de Blender en 6 Blender (`tools/run_blender_tests.py --parte i/n`) que se ejecutan a
-la vez, sin pasar del número de procesadores; cada prueba, en uno solo. El reparto es por
-la duración de cada módulo de pruebas en la comprobación anterior, que se guarda en
-`%TEMP%\geoblender-tiempos\` (un fichero por carpeta del código); sin él, la primera vez o si
-se borra, por número de pruebas. Con esas duraciones, cada proceso de pruebas unitarias
-reparte los ficheros de prueba sin importarlos y solo importa los suyos, y dice `PARTE i de
-n: m de M módulos`; sin ellas, los importa todos y dice `PARTE i de n: r de T pruebas`. Los
+tras otro, pero las pruebas unitarias se reparten en 16 procesos (`tools/unittest_part.py`),
+los casos de referencia en 6 y las de Blender en 7 Blender (`tools/run_blender_tests.py
+--parte i/n`) que se ejecutan a la vez, sin pasar del número de procesadores; cada prueba, en
+uno solo. El reparto usa la duración de cada módulo de pruebas en la comprobación anterior,
+que se guarda en `%TEMP%\geoblender-tiempos\` (un fichero por carpeta del código); sin ella,
+la primera vez o si se borra, es por número de pruebas. Con esas duraciones, los procesos de
+cada paso se reparten los módulos según acaban (`--cola`, una carpeta que comparten en la
+temporal de la comprobación): cada uno empieza por uno de los que más tardan y, al acabarlo,
+toma el siguiente que ninguno ha tomado; los de pruebas unitarias no importan los ficheros
+de los demás. Cada proceso dice al terminar `PARTE i de n: m de M módulos` (o, sin
+duraciones, antes de empezar, `PARTE i de n: r de T pruebas`). Los
 módulos de pruebas con la misma `PART_AFFINITY` (los que pasan las reglas por todo el
 repositorio, y los que las pasan por la extensión) van al mismo proceso: las reglas leen y
 analizan cada fichero una sola vez por proceso, y así lo comparten. Los Blender comparten una
@@ -152,7 +156,10 @@ unitarias (en `copia\` de su carpeta temporal; `run_blender_tests.py --copia`); 
 lo avisa y cada uno hace la suya. Dentro de Blender, las clases de pruebas que no prueban el
 registro dejan la extensión deshabilitada con sus módulos cargados al terminar
 (`tests.support.blender_ext.release`), y la siguiente la vuelve a registrar sin importarla de
-nuevo.
+nuevo; las que lo prueban parten de cero y, al terminar, devuelven esos módulos
+(`blender_ext.fresh`). Un módulo de pruebas de Blender que deja el proceso más lento para
+los que vienen detrás (el que inicia la GPU) declara `RUN_LAST = True` y se ejecuta el
+último.
 Si existe el motor de cálculo de pruebas
 (`tools/make_runtime.py`), el paso «motor» ejecuta otra vez las pruebas unitarias de los
 paquetes de dominio con su numpy, a la vez que las de Blender (spec 004, RF-004-28), en 16

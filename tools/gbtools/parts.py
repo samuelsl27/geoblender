@@ -40,6 +40,22 @@ unidad (:func:`part_lines`) y comprueba igual que todas dicen el mismo total de 
 que los suyos lo suman; que ningún fichero quede sin cargar ni se ejecute en dos partes lo
 comprueba aparte, como siempre. Sin tiempos, y en Blender, se descubre todo, como antes.
 
+Lo último (spec 006, T59; RNF-001-01): un módulo de pruebas que deja el proceso más lento
+para los que vienen detrás pide ejecutarse el último con ``RUN_LAST = True``
+(:func:`last_at_the_end`, que aplica ``tools/run_blender_tests.py`` a sus pruebas). En
+Blender 5.2.1, tras ``gpu.init()`` (la prueba de la superposición de las curvas maestras,
+spec 006, T55), abrir un ``.blend`` tarda en ese proceso 0,11 s en lugar de 0,004 s, y las
+pruebas que abren ficheros detrás de ella en su parte tardaban segundos de más.
+
+La cola (spec 006, T59; RNF-001-01): un módulo no tarda lo mismo en dos comprobaciones (con
+el equipo lleno, un ±20 %), y con el reparto fijo por los tiempos de la anterior la parte
+más cargada acababa ≈ 2 s después de la media. Con tiempos y una carpeta que comparten
+(:class:`Queue`, ``--cola``), las partes se reparten las unidades (:func:`queue_order`: un
+módulo, o los de una misma afinidad) según acaban: cada una empieza por una de las que más
+tardan y, al acabarla, toma la siguiente que ninguna ha tomado (:class:`QueuedSuite`, que
+también las mide). Cada una dice su línea al terminar; ``tools/check.py`` la comprueba
+igual.
+
 Los tiempos (spec 004, T39; RNF-001-01, RNF-007-01): ``tools/check.py`` guarda la
 duración de cada módulo de cada suite con partes en un almacén fuera del repositorio
 (:func:`read_store`, :func:`write_store`; lo sitúa ``check.default_times_store``, en la
@@ -80,6 +96,11 @@ MIN_SECONDS = 0.001  # el peso mínimo de un módulo: así ninguna parte queda v
 # Los módulos de pruebas con el mismo valor en esta constante van a la misma parte (spec
 # 006, T47; affinity_of).
 AFFINITY_ATTRIBUTE = "PART_AFFINITY"
+# Un módulo de pruebas con esta constante a True se ejecuta el último de su proceso (spec
+# 006, T59; last_at_the_end): el que deja el proceso más lento para los que vienen detrás.
+RUN_LAST_ATTRIBUTE = "RUN_LAST"
+QUEUE_OPTION = "--cola"  # la carpeta de la cola que comparten las partes (spec 006, T59)
+TAKEN_SUFFIX = ".tomada"  # el fichero de cada unidad que ha tomado una parte (Queue)
 DECIMALS = 3  # los segundos se guardan en milésimas
 
 # La unidad de las líneas «PARTE …»: pruebas (descubiertas todas) o módulos (por
@@ -165,9 +186,13 @@ def source_affinity(path: Path) -> str | None:
     """La afinidad de un módulo de pruebas leída de su fuente ``path``, sin importarlo
     (spec 006, T48): el texto no vacío que se asigna a ``AFFINITY_ATTRIBUTE`` al nivel del
     módulo (con anotación o sin ella); si no hay, o el fichero no se puede leer o no es
-    Python, ``None``."""
+    Python, ``None``. Solo analiza la fuente que nombra ``AFFINITY_ATTRIBUTE`` (spec 006,
+    T59): analizar los 195 ficheros de ``tests/unit`` costaba ≈ 0,64 s en cada parte."""
     try:
-        tree = ast.parse(Path(path).read_bytes())
+        source = Path(path).read_bytes()
+        if AFFINITY_ATTRIBUTE.encode("ascii") not in source:
+            return None
+        tree = ast.parse(source)
     except (OSError, SyntaxError, ValueError):
         return None
     found: str | None = None
@@ -285,6 +310,25 @@ def module_of(group: unittest.TestSuite | unittest.TestCase) -> str | None:
                 return found
         return None
     return type(group).__module__
+
+
+def runs_last(name: str | None) -> bool:
+    """Si el módulo de pruebas ``name`` pide ejecutarse el último de su proceso (spec 006,
+    T59): su ``RUN_LAST_ATTRIBUTE`` es ``True`` y está importado (``discover`` los
+    importa); si no, falso."""
+    module = sys.modules.get(name) if name is not None else None
+    return getattr(module, RUN_LAST_ATTRIBUTE, False) is True
+
+
+def last_at_the_end(suite: unittest.TestSuite) -> unittest.TestSuite:
+    """La suite ``suite`` (un hijo por módulo: la de ``unittest discover`` o la de una parte,
+    :func:`select`) con los módulos que piden ejecutarse los últimos (:func:`runs_last`) al
+    final, en su orden; los demás, en el suyo (spec 006, T59; RNF-001-01). No cambia
+    ``suite``."""
+    groups = list(suite)
+    flags = [runs_last(module_of(group)) for group in groups]
+    first = [group for group, last in zip(groups, flags) if not last]
+    return unittest.TestSuite([*first, *(group for group, last in zip(groups, flags) if last)])
 
 
 def select(
@@ -507,19 +551,141 @@ def measured(
         else:
             groups.append(_TimedGroup(group, name, record, clock))
 
-    def write() -> None:
-        try:
-            write_times(path, record, part=part, parts=parts)
-        except OSError as exc:
-            print(f"AVISO: no se pudieron escribir las medidas de la parte en «{path}»: "
-                  f"{exc}", file=sys.stderr, flush=True)
+    return _MeasuredSuite(groups, lambda: write_measures(path, record, part, parts))
 
-    return _MeasuredSuite(groups, write)
+
+def queue_order(
+    weights: Sequence[float],
+    affinities: Sequence[str | None] | None = None,
+    last: Sequence[bool] | None = None,
+) -> list[list[int]]:
+    """Las unidades de la cola de unas pruebas (spec 006, T59): los índices de sus grupos
+    (un módulo cada uno) con peso positivo, los de la misma afinidad juntos en una unidad
+    (como en :func:`assign`), de más a menos peso (a igualdad, en su orden), y al final, en
+    su orden, las unidades con algún grupo que pide ir el último (``last``). Los grupos sin
+    peso (sin pruebas) no van en ninguna. Depende solo de lo que recibe: todas las partes
+    calculan la misma."""
+    units: dict[tuple[int, object], list[int]] = {}
+    for index, weight in enumerate(weights):
+        if weight > 0:
+            shared = affinities[index] if affinities is not None else None
+            units.setdefault((0, index) if shared is None else (1, shared), []).append(index)
+    found = list(units.values())
+    flags = [last is not None and any(last[index] for index in unit) for unit in found]
+    order = sorted(
+        range(len(found)),
+        key=lambda n: (flags[n], 0.0 if flags[n] else -sum(weights[i] for i in found[n]),
+                       found[n][0]),
+    )
+    return [found[n] for n in order]
+
+
+class Queue:
+    """La cola que comparten las partes de unas pruebas (spec 006, T59; RNF-001-01): la
+    carpeta ``folder`` y ``count`` unidades en el orden de :func:`queue_order`. La parte
+    ``part`` de ``parts`` empieza por la unidad ``part`` (las ``parts`` primeras, las que
+    más tardan, una a cada parte: así ninguna se queda sin pruebas) y, cada vez que acaba
+    una, toma la siguiente de las demás que nadie ha tomado: crea en exclusiva su fichero
+    «<n>.tomada» en ``folder`` (``os.O_EXCL``). Cada unidad la ejecuta una sola parte, y las
+    partes acaban casi a la vez aunque una unidad tarde más o menos que en la comprobación
+    anterior. :attr:`taken`, las que ha tomado esta parte."""
+
+    def __init__(self, folder: Path, count: int, part: int, parts: int) -> None:
+        self.folder = Path(folder)
+        self.count = count
+        self.taken: list[int] = []
+        self._first: int | None = part - 1 if part - 1 < min(count, parts) else None
+        self._next = min(count, parts)
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+    def take(self) -> int | None:
+        """La siguiente unidad de esta parte, o ``None`` si ya no queda ninguna."""
+        if self._first is not None:
+            index, self._first = self._first, None
+            self.taken.append(index)
+            return index
+        while self._next < self.count:
+            index = self._next
+            self._next += 1
+            try:
+                handle = os.open(self.folder / f"{index}{TAKEN_SUFFIX}",
+                                 os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                continue
+            os.close(handle)
+            self.taken.append(index)
+            return index
+        return None
+
+
+class QueuedSuite(unittest.TestSuite):
+    """La suite de una parte con cola (spec 006, T59): al ejecutarse, toma de ``queue`` una
+    unidad tras otra (``load(n)`` da sus grupos, un hijo por módulo, como ``unittest
+    discover``) y la ejecuta, hasta que no queda ninguna, tras los grupos de ``first``. Con
+    ``record``, suma ahí la duración de cada módulo (como :func:`measured`). Al terminar,
+    llama a ``done``. Contarla no toma ninguna unidad: solo cuenta lo que ya tiene."""
+
+    def __init__(
+        self,
+        queue: Queue,
+        load: Callable[[int], Sequence[unittest.TestSuite]],
+        done: Callable[[], None],
+        *,
+        first: Sequence[unittest.TestSuite] = (),
+        record: dict[str, float] | None = None,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        super().__init__()
+        self._queue = queue
+        self._load = load
+        self._done = done
+        self._record = record
+        self._clock = clock
+        self._running = False
+        self._tests.extend(self._timed(group) for group in first)
+
+    def _timed(self, group: unittest.TestSuite) -> unittest.TestSuite:
+        name = module_of(group)
+        if self._record is None or name is None or not isinstance(group, unittest.TestSuite):
+            return group
+        return _TimedGroup(group, name, self._record, self._clock)
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        position = 0
+        while True:
+            while position < len(self._tests):
+                yield self._tests[position]
+                position += 1
+            if not self._running:
+                return
+            index = self._queue.take()
+            if index is None:
+                return
+            self._tests.extend(self._timed(group) for group in self._load(index))
+
+    def run(self, result: unittest.TestResult, debug: bool = False) -> unittest.TestResult:
+        self._running = True
+        try:
+            super().run(result, debug)
+        finally:
+            self._running = False
+        self._done()
+        return result
+
+
+def write_measures(path: Path, record: Mapping[str, float], part: int, parts: int) -> None:
+    """Escribe las medidas de la parte (:func:`write_times`); si no puede, lo dice en la
+    salida de errores y las pruebas no cambian."""
+    try:
+        write_times(path, record, part=part, parts=parts)
+    except OSError as exc:
+        print(f"AVISO: no se pudieron escribir las medidas de la parte en «{path}»: "
+              f"{exc}", file=sys.stderr, flush=True)
 
 
 def line(part: int, parts: int, selected: int, total: int) -> str:
     """«PARTE 2 de 4: 241 de 966 pruebas»: lo que escribe cada parte antes de
-    ejecutar."""
+    ejecutar (con cola, al terminar)."""
     noun = "prueba" if total == 1 else "pruebas"
     return f"{LINE_PREFIX} {part} de {parts}: {selected} de {total} {noun}"
 

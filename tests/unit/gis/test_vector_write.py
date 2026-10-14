@@ -38,6 +38,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import numpy as np
 
@@ -55,6 +56,7 @@ gpkg_base = import_geoblender("core.gpkg.base")
 georef = import_geoblender("core.georef")
 builtin = import_geoblender("core.content.builtin")
 readers = import_geoblender("core.content.readers")
+gis_content = import_geoblender("gis.content")
 encoder = import_geoblender("core.content.encoder")
 protocol = import_geoblender("jobs.protocol")
 job_paths = import_geoblender("jobs.paths")
@@ -415,6 +417,11 @@ class ExportJobTest(_Folder):
         protocol.write_request(folder, dataclasses.replace(request, inputs=copied))
         ctx = worker_api.WorkerContext(protocol.read_request(folder), folder,
                                        worker_api.QueueSink())
+        # El envoltorio registra los lectores de su lista y da a los de gis el lector de
+        # tablas (workers/_gis.py): en este proceso, sin rastro para los módulos que vienen
+        # detrás (spec 006, T59: con la cola de check.py, cualquiera puede venir detrás).
+        self.enterContext(mock.patch.dict(readers._REGISTRY))
+        self.addCleanup(gis_content.use_table_reader, gis_content.use_table_reader(None))
         summary = import_geoblender("workers.gis_export").main(ctx)
         json.dumps(summary, allow_nan=False)
         (ref,) = ctx.outputs

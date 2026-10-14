@@ -14,6 +14,8 @@ T40).
   medida de cada módulo y con ``--medidas`` escribe la de los suyos. Con tiempos (spec 006,
   T48), reparte los ficheros sin importarlos todos, solo importa los suyos y escribe
   «PARTE i de n: m de M módulos».
+- RNF-001-01 (spec 006, T59): con ``--cola`` las partes se reparten los módulos según
+  acaban (una cola en una carpeta que comparten), y cada una escribe su línea al terminar.
 
 Lanza el Python en uso (el de Blender en ``tools/check.py``) sobre árboles temporales.
 """
@@ -180,6 +182,7 @@ class PartsTest(unittest.TestCase):
             "sin discover": (parts.OPTION, "1/2", "tests.unit.test_a"),
             "nada tras la parte": (parts.OPTION, "1/2"),
             "tiempos sin valor": (parts.OPTION, "1/2", parts.TIMES_OPTION),
+            "cola sin valor": (parts.OPTION, "1/2", parts.QUEUE_OPTION),
             "sin la opción": DISCOVER,
             "nada": (),
         }
@@ -265,6 +268,63 @@ class PartsTest(unittest.TestCase):
                     self.assertEqual(ran, modules - {"tests.unit.test_roto"})
                     self.assertEqual(parts.last_module_line(text), (part, 2, len(modules), 5))
                     self.assertEqual("no se importa" in text, bool(code), text)
+
+
+    def test_queue(self) -> None:
+        """RNF-001-01 (spec 006, T59): con ``--cola DIR`` (y ``--tiempos``), las dos
+        unidades que más tardan, una a cada parte, y las demás, para la que acabe antes:
+        cada parte, al acabar una, toma la siguiente que nadie ha tomado (de más a menos
+        tiempo). Una tras otra, la 1 ejecuta la suya y todas las de la cola, y la 2 solo la
+        suya; a la vez, entre las dos, cada módulo una sola vez. Su línea «PARTE i de 2: m de
+        M módulos», al terminar, y las dos cuadran; ``--medidas``, la duración de los
+        suyos; el código, el de ``unittest``."""
+        tree = {**TREE, "tests/unit/test_e.py": _module("test_e1"),
+                "tests/unit/test_f.py": _module("test_f1", "test_f2")}
+        modules = {**MODULES, "tests.unit.test_e": 1, "tests.unit.test_f": 2}
+        times = {"tests.unit.test_a": 5.0, "tests.unit.test_c": 3.0, "tests.unit.test_e": 0.4,
+                 "tests.unit.test_d": 0.3, "tests.unit.sub.test_b": 0.2,
+                 "tests.unit.test_f": 0.1}
+        queued = set(modules) - {"tests.unit.test_a", "tests.unit.test_c"}
+        with temp_tree(tree) as root, tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            parts.write_times(folder / "tiempos.json", times)
+
+            def arguments(part: int, queue: str) -> list[str]:
+                return [parts.OPTION, f"{part}/2", parts.TIMES_OPTION,
+                        str(folder / "tiempos.json"), parts.MEASURES_OPTION,
+                        str(folder / f"medidas-{queue}-{part}.json"), parts.QUEUE_OPTION,
+                        str(folder / queue), *DISCOVER]
+
+            texts = [_text(run_script(root, *arguments(part, "una"))) for part in (1, 2)]
+            self.assertEqual([_modules(text) for text in texts],
+                             [{"tests.unit.test_a", *queued}, {"tests.unit.test_c"}])
+            self.assertEqual([parts.last_module_line(text) for text in texts],
+                             [(1, 2, 5, 6), (2, 2, 1, 6)])
+            found = parts.read_measures(folder / "medidas-una-1.json")
+            assert found is not None
+            self.assertEqual(set(found.modules), {"tests.unit.test_a", *queued})
+
+            command = [sys.executable, "-B", "-s", "-X", "utf8", "-W",
+                       discovery.UNITTEST_WARNINGS, str(SCRIPT)]
+            with child_temp() as temp:
+                env = child_env(blender.python_env(root), temp)
+                running = [subprocess.Popen([*command, *arguments(part, "ambas")], env=env,
+                                            cwd=root, stdin=subprocess.DEVNULL,
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                            text=True, encoding="utf-8", errors="replace")
+                           for part in (1, 2)]
+                outputs = [process.communicate(timeout=TIMEOUT_S) for process in running]
+            texts = [f"{out}\n{err}" for out, err in outputs]
+        self.assertEqual([process.returncode for process in running], [0, 0], texts)
+        loaded = [_modules(text) for text in texts]
+        self.assertEqual(loaded[0] & loaded[1], set())
+        self.assertEqual(loaded[0] | loaded[1], set(modules))
+        self.assertIn("tests.unit.test_a", loaded[0])
+        self.assertIn("tests.unit.test_c", loaded[1])
+        lines = [parts.last_module_line(text) for text in texts]
+        self.assertIsNone(parts.consistency(lines, 2, unit=parts.MODULES_UNIT))
+        for text, found in zip(texts, loaded):
+            self.assertRegex(text, rf"(?m)^Ran {sum(modules[m] for m in found)} tests? in ")
 
 
 if __name__ == "__main__":

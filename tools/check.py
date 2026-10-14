@@ -47,11 +47,11 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06), salvo «motor», que va a
    la vez que «blender» (spec 004, T30: después de él no cabría en RNF-001-01; su línea
    va en su lugar y el paso siguiente espera a los dos; a la vez que «unitarias» no
-   compensa, spec 006, T38). Dentro de un paso,
-   «unitarias» y «blender» reparten sus pruebas en partes que se ejecutan a la vez
-   (spec 003, T40; RNF-007-01: ≤ 40 s sin quitar ninguna prueba): hasta ``UNIT_PARTS``
-   procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender con
-   ``run_blender_tests.py --parte i/n``, sin pasar del número de módulos de prueba en
+   compensa, spec 006, T38). Dentro de un paso, «unitarias», «referencia» (spec 006,
+   T59) y «blender» reparten sus pruebas en partes que se ejecutan a la vez (spec 003,
+   T40; RNF-007-01: ≤ 40 s sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
+   ``REFERENCE_PARTS`` procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender
+   con ``run_blender_tests.py --parte i/n``, sin pasar del número de módulos de prueba en
    disco ni del de procesadores (con uno, la orden de siempre). Cada parte descubre
    todas las pruebas y ejecuta las de sus módulos (``gbtools.parts``); con los tiempos
    medidos, las de ``unittest_part.py`` reparten los ficheros sin importarlos y solo
@@ -63,12 +63,17 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    por su duración medida en la comprobación anterior (spec 004, T39; RNF-001-01): un
    almacén fuera del repositorio, en la carpeta temporal del sistema y uno por raíz
    (:func:`default_times_store`), guarda la de cada módulo de cada suite con partes
-   («unitarias», «blender» y las de «motor»); antes de los pasos se copia a la carpeta
-   temporal de la comprobación y cada parte recibe el fichero de su suite
+   («unitarias», «referencia», «blender» y las de «motor»); antes de los pasos se copia a
+   la carpeta temporal de la comprobación y cada parte recibe el fichero de su suite
    (``--tiempos``) y escribe la duración de sus módulos (``--medidas``); al terminar, las
    medidas sustituyen a las guardadas (:class:`PartTimes`). Sin medidas (la primera vez,
    o un almacén borrado o ilegible), el reparto es por número de pruebas, el de la spec
-   003 (T40); la salida y los códigos no cambian. Los módulos con la misma afinidad
+   003 (T40); la salida y los códigos no cambian. Con medidas, además, las partes de cada
+   suite se reparten los módulos según acaban (spec 006, T59; ``--cola``,
+   ``gbtools.parts.Queue``): cada una empieza por uno de los que más tardan y toma después
+   el siguiente que ninguna ha tomado de una cola que comparten, en la carpeta temporal de
+   la comprobación; así acaban casi a la vez aunque un módulo tarde más o menos que la vez
+   anterior, y cada una escribe su línea «PARTE …» al terminar. Los módulos con la misma afinidad
    (``PART_AFFINITY``: los que pasan las reglas por el repositorio) van a la misma parte, y
    con medidas las carpetas de «motor» se reparten entre ellas sus partes por su tiempo
    (:func:`runtime_parts`; spec 006, T47). El paso dura lo que
@@ -218,9 +223,24 @@ PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T
 # la extensión al habilitarla (tests.support.blender_ext.release: 76 → 44 s en serie), las
 # partes de «blender» comparten una copia de la extensión ya compilada (SharedCopy) y su
 # código compilado se guarda tras descubrir las pruebas: con «motor» a la vez, 6 partes de
-# «blender» tardan ≈ 17 s frente a ≈ 19 s con 5 (con 7, ≈ 16,3 s).
+# «blender» tardan ≈ 17 s frente a ≈ 19 s con 5 (con 7, ≈ 16,3 s). Con las pruebas de la
+# fase 5 de la 006 (spec 006, T59), y sin las importaciones de más (la prueba de la GPU al
+# final de su parte, run_blender_tests.py, y las clases del registro con
+# tests.support.blender_ext.fresh), con «motor» a la vez y el almacén de tiempos medido con
+# las mismas partes, 7 partes tardan ≈ 19,0 s (18,6–19,9) frente a ≈ 20,2 s (19,2–20,4)
+# con 6: el suelo vuelve a ser test_jobs, con sus trabajos reales. Y cada parte de
+# «unitarias» ya no analiza todos los ficheros para leer su afinidad (solo los que la
+# nombran: ≈ 0,64 s menos por parte; gbtools.parts.source_affinity): con 20 partes, ≈ 16,1 s
+# frente a ≈ 16,7 s con 16, pero el equipo va más cargado y la cancelación del trabajo de
+# hash de la 008 (tests/unit/workers/test_core_content_hash.py, frágil con carga) falló 5
+# de 5 veces frente a 0 de 3 con 16; con 24, ≈ 17,3 s.
 UNIT_PARTS = 16
-BLENDER_PARTS = 6
+BLENDER_PARTS = 7
+# Partes de «referencia» (spec 006, T59; RNF-001-01): el paso va solo, con el equipo casi
+# libre, y en una orden tardaba ≈ 2,0 s con sus 28 casos (dos de ellos lanzan el Python de
+# QGIS). En reposo, con 2 partes ≈ 1,36 s, con 3 ≈ 1,14 s, con 4 ≈ 1,0 s y con 5, 6 o 9
+# ≈ 0,87 s: el suelo es su módulo más lento (el de GDAL), con el arranque de la parte.
+REFERENCE_PARTS = 6
 THREAD_PREFIX = "check-parte-"  # los hilos que esperan a cada parte
 JOIN_POLL_S = 0.1  # se espera a los hilos a ratos: así Ctrl+C llega enseguida
 SIGINT_WAIT_S = 0.25  # tras Ctrl+C, lo que espera subprocess antes de parar la orden
@@ -392,14 +412,21 @@ class PartTimes:
         """El fichero en que escribe sus medidas la parte ``part`` de la suite ``key``."""
         return self.folder / f"{self._name(key)}-{part[0]}de{part[1]}.json"
 
+    def queue_folder(self, key: str) -> Path:
+        """La carpeta de la cola que comparten las partes de la suite ``key`` (spec 006,
+        T59; ``--cola``, ``gbtools.parts.Queue``): una por suite y comprobación."""
+        return self.folder / f"{self._name(key)}-cola"
+
     def options(self, key: str, part: tuple[int, int]) -> list[str]:
-        """Las opciones de la orden de la parte ``part`` de la suite ``key``: el fichero
-        de sus tiempos, si hay medidas guardadas (sin él, la parte reparte por número de
-        pruebas), y el de sus medidas."""
+        """Las opciones de la orden de la parte ``part`` de la suite ``key``: si hay
+        medidas guardadas, el fichero de sus tiempos y la cola que comparten sus partes
+        (spec 006, T59: se reparten los módulos según acaban; sin ellas, la parte reparte
+        por número de pruebas), y el fichero de sus medidas."""
         self.parts_of[key] = part[1]
         found: list[str] = []
         if key in self.stored:
-            found += [parts.TIMES_OPTION, str(self.times_file(key))]
+            found += [parts.TIMES_OPTION, str(self.times_file(key)),
+                      parts.QUEUE_OPTION, str(self.queue_folder(key))]
         return [*found, parts.MEASURES_OPTION, str(self.measures_file(key, part))]
 
     def save(self) -> None:
@@ -579,13 +606,16 @@ class Context:
             part,
         )
 
-    def unittest_parts(self, folder: str, limit: int) -> list[Run]:
+    def unittest_parts(self, folder: str, limit: int, empty: str | None = None) -> list[Run]:
         """Las pruebas de ``folder`` (``unittest``) en tantas partes como
-        :meth:`parts_of`; con una, la orden de siempre (T40)."""
+        :meth:`parts_of`; con una, la orden de siempre (T40). ``empty``, el de cada orden
+        (:meth:`unittest`)."""
         count = self.parts_of(folder, UNITTEST_PATTERN, limit)
         if count == 1:
-            return [self.unittest(folder)]
-        return [self.unittest(folder, part=(i, count)) for i in range(1, count + 1)]
+            return [self.unittest(folder, empty=empty)]
+        return [
+            self.unittest(folder, empty=empty, part=(i, count)) for i in range(1, count + 1)
+        ]
 
     def blender_tests(
         self,
@@ -691,7 +721,7 @@ def _unit(ctx: Context) -> list[Run]:
 
 
 def _reference(ctx: Context) -> list[Run]:
-    return [ctx.unittest("tests/referencia", empty=NO_CASES)]
+    return ctx.unittest_parts("tests/referencia", REFERENCE_PARTS, empty=NO_CASES)
 
 
 def _licenses(ctx: Context) -> list[Run]:

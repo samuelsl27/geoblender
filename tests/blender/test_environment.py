@@ -30,8 +30,7 @@ BLENDER_NUMPY = "2.3.4"  # numpy de Blender 5.2 (ADR-0009)
 
 class EnvironmentTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_blender_at_least_manifest_min(self) -> None:
         """RF-001-07: ``bl.compat.blender_version()`` es la versión de Blender, como tupla

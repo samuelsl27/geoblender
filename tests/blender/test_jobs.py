@@ -365,11 +365,11 @@ class JobsPreferencesTest(unittest.TestCase):
 
 
 class JobsPreferencesRegistrationTest(unittest.TestCase):
-    """Cada prueba parte de la extensión deshabilitada y fuera de ``sys.modules``."""
+    """Cada prueba parte de la extensión deshabilitada y fuera de ``sys.modules``
+    (``blender_ext.fresh``)."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def assertSessionFingerprint(self) -> None:
         after = state_fingerprint()
@@ -940,8 +940,7 @@ class JobMonitorLogicTest(unittest.TestCase):
 
 class JobMonitorRegistrationTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_disable_retires_timer_and_field(self) -> None:
         """RF-004-06, RF-004-07, RF-004-27: desactivar Geoblender retira el temporizador del
@@ -2435,10 +2434,9 @@ class SessionShutdownTest(unittest.TestCase):
     autodiagnóstico de 10 s (proceso aparte) y un trabajo en hilo que espera, y cierra."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
         self.folders: list[Path] = []
         self.addCleanup(self.remove_folders)  # lo último: con todo ya cerrado
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
         self.sys_path = list(sys.path)
         blender_ext.enable()
         self.ops = _module("bl.ops.jobs")

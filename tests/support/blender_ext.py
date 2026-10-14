@@ -65,11 +65,12 @@ carpeta de pruebas un ``.py`` que no case con su patrón, y ARQ-01 solo deja imp
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import importlib
 import os
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -180,11 +181,39 @@ def release() -> None:
     otra vez ``core``, ``gis``, ``bl``… y lee el catálogo (unos 0,26 s cada vez, y con unas
     170 habilitaciones, más de la mitad del paso «blender» de ``tools/check.py``); tras
     ``release``, unos 0,03 s. Las que prueban el registro, la huella o lo que carga la
-    importación siguen con :func:`unload`, que parte de cero. Deshabilitada, Blender queda
+    importación parten de cero con :func:`fresh` (spec 006, T59), que al terminar devuelve
+    estos módulos; :func:`unload` los quita del todo. Deshabilitada, Blender queda
     como al principio de la sesión (``unregister()`` deshace todo lo que hizo
     ``register()``; lo comprueba la huella del lanzador al terminar)."""
     if is_enabled():
         disable()
+
+
+@contextlib.contextmanager
+def fresh() -> Iterator[None]:
+    """La extensión de cero mientras dura (spec 006, T59; RNF-001-01), para las clases que
+    prueban el registro, la huella o lo que carga la importación: al entrar la deshabilita
+    si lo está y aparta de ``sys.modules`` sus módulos (los que comparten las clases que
+    usan :func:`release`), así que habilitarla o importarla la importa otra vez; al salir,
+    pase lo que pase, la deshabilita, quita lo importado dentro (:func:`unload`) y devuelve
+    los módulos apartados, sin importarlos de nuevo (también el que cuelga del paquete del
+    repositorio de pruebas, que la importación de dentro sustituyó). Con :func:`unload` al
+    terminar, la clase siguiente que solo la habilita tenía que importarla entera (≈ 0,3 s
+    en reposo y hasta 0,8 s con el equipo cargado, unas diez veces por comprobación)."""
+    if is_enabled():
+        disable()
+    kept = {name: sys.modules.pop(name) for name in loaded_modules()}
+    try:
+        yield
+    finally:
+        try:
+            unload()
+        finally:
+            sys.modules.update(kept)
+            root = module_name()
+            parent, _, child = root.rpartition(".")
+            if root in kept and parent in sys.modules:
+                setattr(sys.modules[parent], child, kept[root])
 
 
 def import_root() -> ModuleType:

@@ -88,6 +88,10 @@ CSV_TEXT = """P;X;Y;Z;Código;Línea
 OBJECT_PROPS = ("kind", "dataset_uid", "project_uid", "content_sha256", "stale", "status",
                 "date")
 STATUS = {"current": "CURRENT", "blocked": "BLOCKED", "damaged": "DAMAGED"}
+# La prueba de la superposición inicia la GPU (gpu.init) y, después, abrir un .blend tarda
+# en el mismo Blender unas 25 veces más (0,11 s frente a 0,004 s): este módulo se ejecuta
+# el último de su proceso (gbtools.parts.last_at_the_end; spec 006, T59).
+RUN_LAST = True
 
 
 def _module(name: str) -> ModuleType:
@@ -776,11 +780,11 @@ class ViewsTest(ViewsCase):
 
 
 class ViewRegistrationTest(unittest.TestCase):
-    """La extensión deshabilitada y fuera de ``sys.modules`` al empezar y al terminar."""
+    """La extensión deshabilitada y fuera de ``sys.modules`` al empezar
+    (``blender_ext.fresh``)."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_register_and_unregister_leave_blender_as_it_was(self) -> None:
         """RF-006-29, RF-006-18 (T55), principio 8: habilitar pone ``Object.geoblender``

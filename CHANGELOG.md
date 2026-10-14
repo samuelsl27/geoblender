@@ -418,7 +418,19 @@ en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su inte
   las duraciones guardadas, solo importa sus módulos de prueba (antes, todos), y dice
   cuántos módulos tiene de cuántos hay. Las pruebas que miden cuánto tarda en pararse un
   trabajo, en devolver «ocupado» una escritura o en vencer un tiempo máximo miden otra vez
-  mientras la máquina está cargada, también sin cambiar sus plazos.
+  mientras la máquina está cargada, también sin cambiar sus plazos. Con las últimas pruebas
+  de la topografía volvió a unos 40 s (44 s con otros programas abiertos en el equipo); ahora
+  tarda unos 37 s (con esos programas abiertos) con las mismas pruebas y alguna más: los
+  procesos de cada paso se reparten los módulos según acaban, de una cola que comparten, y
+  no por lo que tardaron la vez anterior, así que acaban casi a la vez; los casos de
+  referencia también van en 6 procesos (de 2,0 a 0,9 s); las de Blender, en 7 Blender; la
+  prueba que inicia la GPU (tras ella, abrir un `.blend` tarda 25 veces más en ese Blender)
+  va la última de su proceso; las clases que prueban el registro devuelven al terminar los
+  módulos de la extensión que tenían cargados las demás, que ya no la importan otra vez; y
+  cada proceso de pruebas unitarias ya no analiza todos los ficheros de prueba para saber
+  cuáles van juntos (0,6 s menos cada uno). Tres pruebas que dependían del orden (lo que
+  dejaban registrado otras en el mismo proceso, o una cancelación que la carga no dejaba
+  medir) ya no dependen de él.
 - Solo un `tools/check.py` a la vez en el equipo (spec 006): si hay otro en marcha (de la
   misma carpeta, de un *worktree* o de otra sesión), el nuevo dice a cuál espera (su pid y su
   carpeta) y empieza cuando termina; su tiempo se cuenta desde entonces. Antes los dos se

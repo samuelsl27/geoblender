@@ -428,6 +428,24 @@ def unit_part_cmd(part: int, count: int) -> list[str]:
     )
 
 
+def reference_part_cmd(part: int, count: int) -> list[str]:
+    """La orden de la parte ``part`` de ``count`` de los casos de referencia (spec 006,
+    T59)."""
+    return blender.python_cmd(
+        INSTALL,
+        *RETURN_VALUE_IS_ERROR,
+        "tools/unittest_part.py",
+        parts.OPTION,
+        parts.label(part, count),
+        "discover",
+        "-v",
+        "-s",
+        "tests/referencia",
+        "-t",
+        ".",
+    )
+
+
 def blender_part_cmd(part: int, count: int) -> list[str]:
     """La orden de la parte ``part`` de ``count`` de las pruebas de Blender (T40)."""
     return blender.background_cmd(

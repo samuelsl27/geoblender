@@ -10,6 +10,12 @@ la vez al empezar el módulo (``setUpModule``), con un tamaño declarado enorme 
 estimación pase de 5 s (RF-004-03). Lo que necesita provocar algo a mitad (la fuente que cambia
 mientras se copia, cancelar entre dos trozos) se prueba con ``run`` en el hilo, con su
 ``WorkerContext``.
+
+Con la máquina cargada, el worker del trabajo que se cancela nada más lanzarlo puede no
+arrancar antes de que venza su plazo de gracia (1 s), y el lanzador lo termina sin que diga
+que para: entonces se lanza otra vez ese trabajo, hasta ``CANCEL_ATTEMPTS`` veces, y la
+prueba mira el último (spec 006, T59; como ``tests/unit/jobs/test_cancel_timeout.py``). Los
+plazos no cambian.
 """
 
 import dataclasses
@@ -48,6 +54,9 @@ DOC_BYTES = 5 * (1 << 20) // 2  # 2,5 MiB: tres trozos de 1 MiB
 GPKG_DECLARATIONS = {"conventions": {}, "crs_h": {"epsg": 25830}, "crs_v": None}
 LAYER_SETTINGS = {"layer": LAYER}
 CANCEL_BUDGET_S = 2.0  # RNF-008-11: cancelación efectiva en ≤ 2 s
+# Veces que, como mucho, se lanza el trabajo que se cancela si la carga de la máquina no
+# deja medirlo (spec 006, T59; _cancel_late): el plazo no cambia.
+CANCEL_ATTEMPTS = 5
 WAIT_S = 60.0  # plazo de seguridad: un trabajo colgado no cuelga la prueba
 
 _STATE: dict = {}
@@ -127,6 +136,19 @@ def setUpModule() -> None:
     jobs = content_hash.ContentHashJobs(lambda: runner)
     _STATE["jobs"] = jobs
 
+    _launch(requests)
+    attempts = 1
+    while attempts < CANCEL_ATTEMPTS and _cancel_late():
+        _launch({"cancel": requests["cancel"]})
+        attempts += 1
+    _STATE["cancel_attempts"] = attempts
+    _STATE["after"] = (source_state(sources), source_state(wal_folder))
+
+
+def _launch(requests: dict) -> None:
+    """Lanza los trabajos de ``requests`` (cancela el de «cancel» nada más lanzarlo),
+    espera a que acaben todos y anota sus eventos, sus entradas y su resultado."""
+    runner, jobs = _STATE["runner"], _STATE["jobs"]
     real_build = interpreter.build_command
 
     def build(*args, **kwargs):
@@ -137,18 +159,34 @@ def setUpModule() -> None:
     with mock.patch.object(runner_mod.interpreter, "build_command", side_effect=build):
         for name, request in requests.items():
             _HANDLES[name] = jobs.submit(request)
-        jobs.cancel(_HANDLES["cancel"])
+        if "cancel" in requests:
+            jobs.cancel(_HANDLES["cancel"])
     deadline = time.monotonic() + WAIT_S
-    while any(handle.result() is None for handle in _HANDLES.values()):
+    while any(_HANDLES[name].result() is None for name in requests):
         if time.monotonic() > deadline:
             raise AssertionError("los trabajos de hash no terminan")
         for update in runner.poll():
             _EVENTS.setdefault(update.job_uid, []).extend(update.events)
         time.sleep(0.02)
-    for name, handle in _HANDLES.items():
+    for name in requests:
+        handle = _HANDLES[name]
         _INPUTS[name] = sorted(path.name for path in handle.job_dir.inputs_dir.iterdir())
         _RESULTS[name] = jobs.poll(handle)
-    _STATE["after"] = (source_state(sources), source_state(wal_folder))
+
+
+def _cancel_late() -> bool:
+    """Si la cancelación no se pudo medir por la carga de la máquina (spec 006, T59; como
+    ``tests/unit/jobs/test_cancel_timeout.py``): el worker no llegó a decir que paraba (lo
+    terminó el lanzador al vencer el plazo de gracia, sin que arrancase) o tardó más de
+    ``CANCEL_BUDGET_S``. Entonces se repite solo ese trabajo, con el mismo plazo."""
+    handle = _HANDLES["cancel"]
+    events = {event.type: event for event in _EVENTS.get(handle.job_uid, ())}
+    record = records.read_record(handle.job_dir)
+    if record.cancel is None or record.cancel.forced:
+        return True
+    if "cancelled" not in events or "start" not in events:
+        return True
+    return events["cancelled"].ts - events["start"].ts > CANCEL_BUDGET_S
 
 
 class SubprocessTest(unittest.TestCase):

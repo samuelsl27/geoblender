@@ -19,8 +19,12 @@ ni acortar ninguna prueba: cada proceso descubre todas y ejecuta solo las de su 
   el de siempre. Cada parte mide la duración de sus módulos (con sus preparaciones de
   módulo y de clase) y la escribe en un fichero, y las medidas de todas las partes
   sustituyen a las guardadas.
+- RNF-001-01 (spec 006, T59): los módulos que piden ejecutarse los últimos de su proceso
+  (``RUN_LAST = True``) van al final, en su orden; y, con una cola en una carpeta que
+  comparten (``Queue``), las partes se reparten las unidades según acaban.
 """
 
+import ast
 import json
 import math
 import sys
@@ -28,6 +32,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.support.repo import tools_on_path
 
@@ -274,6 +279,22 @@ class FilesTest(unittest.TestCase):
                                  "g.py": None})
         self.assertIsNone(missing)
 
+    def test_source_affinity_parses_only_what_names_it(self) -> None:
+        """RNF-001-01 (spec 006, T59): solo se analiza (``ast.parse``) la fuente que nombra
+        ``PART_AFFINITY``; la que no lo nombra no tiene afinidad sin analizarla. Cada parte
+        de «unitarias» y de «motor» lee así los ficheros de su carpeta: analizarlos todos
+        costaba ≈ 0,64 s por parte con los 195 de ``tests/unit``, y solo 13 lo nombran."""
+        sources = {"a.py": 'PART_AFFINITY = "x"\n', "c.py": "import unittest\n" * 50,
+                   "h.py": '# PART_AFFINITY en un comentario\nX = "PART_AFFINITY"\n'}
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            for name, text in sources.items():
+                (folder / name).write_text(text, encoding="utf-8")
+            with mock.patch.object(parts.ast, "parse", wraps=ast.parse) as parse:
+                found = {name: parts.source_affinity(folder / name) for name in sources}
+        self.assertEqual(found, {"a.py": "x", "c.py": None, "h.py": None})
+        self.assertEqual(parse.call_count, 2)  # a.py y h.py, no c.py
+
     def test_select_files(self) -> None:
         """RNF-001-01, RNF-007-01: los ficheros de ``{módulo: ruta}`` repartidos por su
         tiempo medido (uno nuevo, sin medida, cuenta la media de los medidos) y con su
@@ -421,6 +442,110 @@ class ShareTest(unittest.TestCase):
                   for part in (1, 2)]
         self.assertEqual(chosen, [["pruebas.test_m0.C0.test_0", "pruebas.test_m2.C0.test_0"],
                                   ["pruebas.test_m1.C0.test_0", "pruebas.test_m3.C0.test_0"]])
+
+
+class RunLastTest(unittest.TestCase):
+    """Spec 006, T59 (RNF-001-01): un módulo de pruebas de Blender que deja el proceso más
+    lento para los que vienen detrás (el que inicia la GPU con ``gpu.init()``: después,
+    abrir un ``.blend`` tarda unas 25 veces más) pide ejecutarse el último."""
+
+    def test_modules_that_run_last_go_to_the_end(self) -> None:
+        """RNF-001-01: los módulos con ``RUN_LAST = True`` van al final de la suite, en su
+        orden, y los demás quedan en el suyo; un valor que no es ``True`` no cuenta, ni un
+        módulo que no está en ``sys.modules``; la suite de partida no cambia y el reparto
+        de las partes es el mismo."""
+        self.assertEqual(parts.RUN_LAST_ATTRIBUTE, "RUN_LAST")
+        values = {1: True, 3: 1, 4: True, 5: "sí"}
+        for index in range(7):
+            module = types.ModuleType(f"pruebas.test_m{index}")
+            if index in values:
+                setattr(module, parts.RUN_LAST_ATTRIBUTE, values[index])
+            if index != 6:
+                sys.modules[module.__name__] = module
+                self.addCleanup(sys.modules.pop, module.__name__, None)
+        self.assertEqual([parts.runs_last(f"pruebas.test_m{i}") for i in range(7)],
+                         [False, True, False, False, True, False, False])
+        self.assertFalse(parts.runs_last(None))
+        suite = _discovered(1, 1, 0, 1, 1, 1, 1)
+        before = _ids(suite)
+        ordered = parts.last_at_the_end(suite)
+        self.assertIsInstance(ordered, unittest.TestSuite)
+        self.assertEqual(_ids(suite), before)
+        expected = [f"pruebas.test_m{i}.C0.test_0" for i in (0, 3, 5, 6, 1, 4)]
+        self.assertEqual(_ids(ordered), expected)
+        self.assertEqual(ordered.countTestCases(), suite.countTestCases())
+        chosen, _total = parts.select(suite, 2, 2)
+        self.assertEqual(_ids(parts.last_at_the_end(chosen)),
+                         [i for i in expected if i in _ids(chosen)])
+        self.assertEqual(_ids(parts.last_at_the_end(_discovered())), [])
+
+
+class QueueTest(unittest.TestCase):
+    """Spec 006, T59 (RNF-001-01): con una cola que comparten, las partes se reparten las
+    pruebas según acaban, y no por el tiempo que tardaron en la comprobación anterior."""
+
+    def test_queue_order(self) -> None:
+        """RNF-001-01: las unidades de la cola, de más a menos tiempo (a igualdad, en su
+        orden), con los módulos de una misma afinidad juntos y sin los que no tienen
+        pruebas; las que tienen un módulo que pide ir el último, al final y en su orden."""
+        weights = [1.0, 5.0, 0.0, 3.0, 2.0, 0.5]
+        affinities = [None, None, None, "x", "x", None]
+        self.assertEqual(parts.queue_order(weights), [[1], [3], [4], [0], [5]])
+        self.assertEqual(parts.queue_order(weights, affinities), [[1], [3, 4], [0], [5]])
+        last = [False, True, False, False, False, True]
+        self.assertEqual(parts.queue_order(weights, affinities, last),
+                         [[3, 4], [0], [1], [5]])
+        self.assertEqual(parts.queue_order([]), [])
+
+    def test_each_unit_taken_once(self) -> None:
+        """RNF-001-01: la parte i empieza por la unidad i (las que más tardan, una a cada
+        parte) y después toma, una a una, las demás que ninguna ha tomado (su fichero
+        «n.tomada», creado en exclusiva): entre todas, cada unidad una vez; con menos
+        unidades que partes, a la que no le toca ninguna, nada. La opción es «--cola»."""
+        self.assertEqual(parts.QUEUE_OPTION, "--cola")
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "cola"
+            first, second = (parts.Queue(folder, 5, part, 2) for part in (1, 2))
+            taken = [first.take(), second.take(), second.take(), first.take(), first.take(),
+                     second.take(), first.take()]
+            self.assertEqual(taken, [0, 1, 2, 3, 4, None, None])
+            self.assertEqual((first.taken, second.taken), ([0, 3, 4], [1, 2]))
+            self.assertEqual(sorted(path.name for path in folder.iterdir()),
+                             ["2.tomada", "3.tomada", "4.tomada"])
+            alone = parts.Queue(Path(tmp) / "otra", 1, 2, 3)
+            self.assertIsNone(alone.take())
+            self.assertEqual(parts.Queue(Path(tmp) / "otra", 1, 1, 3).take(), 0)
+
+    def test_queued_suite_runs_what_it_takes(self) -> None:
+        """RNF-001-01: la suite de una parte con cola ejecuta lo de ``first`` y después cada
+        unidad que toma, al tomarla, con las preparaciones y los cierres de cada módulo una
+        vez y en orden, y mide cada uno (como ``measured``); al terminar, llama a ``done``
+        una vez. Contarla antes de ejecutarla no toma ninguna unidad."""
+        log: list[str] = []
+        clock = _Clock()
+        modules = [_fixture_module(self, f"pruebas.test_q{i}", log, clock, (0.5, i + 1.0, 0.25))
+                   for i in range(3)]
+        record: dict[str, float] = {}
+        finished: list[list[int]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = parts.Queue(Path(tmp), 2, 1, 1)
+            suite = parts.QueuedSuite(queue, lambda n: [modules[n + 1]],
+                                      lambda: finished.append(list(queue.taken)),
+                                      first=[modules[0]], record=record, clock=clock)
+            self.assertEqual(suite.countTestCases(), 1)
+            self.assertEqual(queue.taken, [])
+            result = unittest.TestResult()
+            suite.run(result)
+        self.assertTrue(result.wasSuccessful(), result.errors)
+        self.assertEqual(result.testsRun, 3)
+        self.assertEqual(finished, [[0, 1]])
+        expected: list[str] = []
+        for i in range(3):
+            name = f"pruebas.test_q{i}"
+            expected += [f"{name}.setUpModule", f"{name}.setUpClass", f"{name}.test",
+                         f"{name}.tearDownClass", f"{name}.tearDownModule"]
+        self.assertEqual(log, expected)
+        self.assertEqual(record, {f"pruebas.test_q{i}": 0.5 + i + 1.0 + 0.25 for i in range(3)})
 
 
 class TimesTest(unittest.TestCase):

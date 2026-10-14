@@ -192,7 +192,7 @@ class _TriangulatorTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        blender_ext.unload()
+        cls.enterClassContext(blender_ext.fresh())
         blender_ext.import_root()
         cls.triangulator = _module("bl.scene.triangulator")
         cls.real_cdt = cls.triangulator.delaunay_2d_cdt
@@ -200,10 +200,6 @@ class _TriangulatorTestCase(unittest.TestCase):
         cls.ports = _module("gis.ports")
         cls.params = _module("gis.params")
         cls.core_params = _module("core.params")
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        blender_ext.unload()
 
     def blender(self, xy, edges=None) -> np.ndarray:
         return self.triangulator.BlenderTriangulator().triangulate(

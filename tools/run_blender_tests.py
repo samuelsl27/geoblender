@@ -28,6 +28,11 @@ Opciones (tras ``--``):
   suya, y no la borra al terminar: ``tools/check.py`` la prepara una vez, mientras corren
   las unitarias, para todas las partes de «blender» (spec 006, T48; RNF-001-01). Una ruta
   relativa se toma desde la raíz del repositorio.
+- ``--cola DIR``: con ``--parte`` y ``--tiempos``, las partes se reparten los módulos según
+  acaban (spec 006, T59; ``gbtools.parts.Queue``): cada una empieza por uno de los que más
+  tardan y, al acabar uno, toma el siguiente que ninguna ha tomado de la cola que comparten
+  en DIR (de más a menos tiempo, y los de ``RUN_LAST`` al final); escribe su línea «PARTE i
+  de n: r de T pruebas» al terminar. Una ruta relativa se toma desde la raíz.
 
 Pasos: copia ``geoblender/`` con las exclusiones del manifiesto a
 ``%TEMP%\\geoblender-pruebas-*\\geoblender``, sin ``wheels/`` y con ``wheels = []`` en
@@ -37,9 +42,12 @@ paso «blender» de ``check.py``, RNF-001-01; ninguna prueba de Blender las usa)
 de ``--copia``; la registra como repositorio de extensiones ``gb_tests`` (sin habilitarla:
 lo hacen las pruebas, con ``tests.support.blender_ext``), descubre y ejecuta las pruebas
 con ``unittest`` y, pase lo que pase, deshabilita la extensión, retira el repositorio y
-borra la carpeta temporal (la de ``--copia``, no). No escribe en el repositorio ni en el
-perfil de Blender del usuario. El código compilado de lo que se importa durante las
-pruebas se guarda en ``pyc/`` de la carpeta temporal (o de la copia de ``--copia``), y solo
+borra la carpeta temporal (la de ``--copia``, no). Los módulos de prueba con
+``RUN_LAST = True`` se ejecutan los últimos (``gbtools.parts.last_at_the_end``; spec 006,
+T59): el que inicia la GPU deja el proceso más lento para los que vienen detrás. No
+escribe en el repositorio ni en el perfil de Blender del usuario. El código compilado de
+lo que se importa durante las pruebas se guarda en ``pyc/`` de la carpeta temporal (o de
+la copia de ``--copia``), y solo
 desde que se han descubierto las pruebas: lo que importan los módulos de prueba al
 descubrirlos (numpy, la biblioteca estándar) se lee del código compilado de la instalación
 de Blender en vez de compilarse otra vez (spec 006, T48). Justo después de registrar el
@@ -103,11 +111,12 @@ PART_OPTION = "--parte"  # gbtools.parts.OPTION (lo comprueba una prueba)
 TIMES_OPTION = "--tiempos"  # gbtools.parts.TIMES_OPTION (spec 004, T39)
 MEASURES_OPTION = "--medidas"  # gbtools.parts.MEASURES_OPTION (spec 004, T39)
 COPY_OPTION = "--copia"  # la copia compartida que prepara tools/check.py (spec 006, T48)
+QUEUE_OPTION = "--cola"  # gbtools.parts.QUEUE_OPTION: la cola de las partes (spec 006, T59)
 
 COMMAND = (
     "& $B -b --factory-startup --python-exit-code 1 --python tools/run_blender_tests.py "
     "-- [--carpeta DIR] [--patron PATRÓN] [--parte i/n] [--tiempos F] [--medidas F] "
-    "[--copia DIR]"
+    "[--copia DIR] [--cola DIR]"
 )
 USAGE = f"""Uso (dentro de Blender, desde la raíz del repositorio):
   {COMMAND}
@@ -118,6 +127,8 @@ USAGE = f"""Uso (dentro de Blender, desde la raíz del repositorio):
   --tiempos F        con --parte, reparte por la duración de cada módulo del fichero F
   --medidas F        al terminar, escribe en F la duración de cada módulo ejecutado
   --copia DIR        usa la copia de la extensión preparada en DIR y no la borra
+  --cola DIR         con --parte y --tiempos, toma los módulos de la cola que comparten
+                     las partes en DIR según acaba (al terminar escribe su línea)
   --ayuda, -h        muestra esta ayuda"""
 
 
@@ -134,6 +145,7 @@ class Options:
     times: Path | None = None  # --tiempos: la duración de cada módulo (spec 004, T39)
     measures: Path | None = None  # --medidas: donde se escribe la de los ejecutados
     copy: Path | None = None  # --copia: la copia compartida (spec 006, T48)
+    queue: Path | None = None  # --cola: la cola que comparten las partes (spec 006, T59)
 
 
 def _script_args(argv: Sequence[str]) -> list[str]:
@@ -143,8 +155,8 @@ def _script_args(argv: Sequence[str]) -> list[str]:
 
 
 def parse_args(args: Sequence[str]) -> Options:
-    """Lee ``--carpeta``, ``--patron``, ``--parte``, ``--tiempos``, ``--medidas`` y
-    ``--copia``; lanza :class:`UsageError` si algo sobra, falta o no vale."""
+    """Lee ``--carpeta``, ``--patron``, ``--parte``, ``--tiempos``, ``--medidas``,
+    ``--copia`` y ``--cola``; lanza :class:`UsageError` si algo sobra, falta o no vale."""
     values = {
         "--carpeta": DEFAULT_FOLDER,
         "--patron": DEFAULT_PATTERN,
@@ -152,6 +164,7 @@ def parse_args(args: Sequence[str]) -> Options:
         TIMES_OPTION: "",
         MEASURES_OPTION: "",
         COPY_OPTION: "",
+        QUEUE_OPTION: "",
     }
     show_help = False
     pending = list(args)
@@ -190,6 +203,7 @@ def parse_args(args: Sequence[str]) -> Options:
         times=_file_option(values[TIMES_OPTION]),
         measures=_file_option(values[MEASURES_OPTION]),
         copy=_file_option(values[COPY_OPTION]),
+        queue=_file_option(values[QUEUE_OPTION]),
     )
 
 
@@ -311,21 +325,25 @@ def _run_tests(
         on_discovered()
     missing = discovery.missing_modules(expected, _suite_modules(suite))
     count = suite.countTestCases()
-    if count != 0 and options.part is not None:
+    queued = _queued(suite, options, count) if count != 0 else None
+    if queued is not None:
+        suite = queued
+    elif count != 0:
         from gbtools import parts
 
-        times = parts.read_times(options.times) if options.times is not None else None
-        suite, _total = parts.select(suite, *options.part, times)
-        print(
-            parts.line(*options.part, suite.countTestCases(), count),
-            file=sys.stderr,
-            flush=True,
-        )
-    if count != 0 and options.measures is not None:
-        from gbtools import parts
-
-        part, total_parts = options.part if options.part is not None else (1, 1)
-        suite = parts.measured(suite, part, total_parts, options.measures)
+        if options.part is not None:
+            times = parts.read_times(options.times) if options.times is not None else None
+            suite, _total = parts.select(suite, *options.part, times)
+            print(
+                parts.line(*options.part, suite.countTestCases(), count),
+                file=sys.stderr,
+                flush=True,
+            )
+        # Lo que deja el proceso más lento para los que vienen detrás, al final (T59).
+        suite = parts.last_at_the_end(suite)
+        if options.measures is not None:
+            part, total_parts = options.part if options.part is not None else (1, 1)
+            suite = parts.measured(suite, part, total_parts, options.measures)
     if count == 0:
         if missing:
             _report_unloaded(options, missing)
@@ -353,6 +371,50 @@ def _run_tests(
         _report_unloaded(options, missing)
         return 1, result.testsRun
     return code, result.testsRun
+
+
+def _queued(
+    suite: unittest.TestSuite, options: Options, count: int
+) -> unittest.TestSuite | None:
+    """La suite de la parte con la cola de ``--cola`` (spec 006, T59; ``gbtools.parts``):
+    los módulos descubiertos, en el orden de la cola por sus tiempos (los que piden ir los
+    últimos, ``RUN_LAST``, al final), que las partes se reparten según acaban; los grupos
+    sin pruebas, en la parte 1. Al terminar escribe su línea «PARTE i de n: r de T
+    pruebas» y, con ``--medidas``, la duración de cada módulo. ``None`` sin ``--parte``,
+    sin ``--cola`` o sin tiempos medidos: el reparto de siempre."""
+    if options.part is None or options.queue is None or options.times is None:
+        return None
+    from gbtools import parts
+
+    groups = list(suite)
+    sizes = [group.countTestCases() for group in groups]
+    names = [parts.module_of(group) for group in groups]
+    weights = parts.weights(sizes, names, parts.read_times(options.times))
+    if weights is None:
+        return None
+    units = parts.queue_order(
+        weights,
+        [parts.affinity_of(name) for name in names],
+        [parts.runs_last(name) for name in names],
+    )
+    part, total_parts = options.part
+    queue = parts.Queue(options.queue, len(units), part, total_parts)
+    record: dict[str, float] = {}
+
+    def done() -> None:
+        ran = sum(sizes[index] for unit in queue.taken for index in units[unit])
+        print(parts.line(part, total_parts, ran, count), file=sys.stderr, flush=True)
+        if options.measures is not None:
+            parts.write_measures(options.measures, record, part, total_parts)
+
+    first = [group for group, size in zip(groups, sizes) if size == 0] if part == 1 else []
+    return parts.QueuedSuite(
+        queue,
+        lambda unit: [groups[index] for index in units[unit]],
+        done,
+        first=first,
+        record=record if options.measures is not None else None,
+    )
 
 
 def _disable_and_unload(module: str) -> list[str]:

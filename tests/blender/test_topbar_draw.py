@@ -283,9 +283,8 @@ class TopbarSearchCycleTest(unittest.TestCase):
     """Lo añadido para F3 a lo largo del ciclo de la extensión (RF-003-23, RF-003-24; T41)."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
+        self.enterContext(blender_ext.fresh())
         blender_ext.load_file()
-        self.addCleanup(blender_ext.unload)
         self.addCleanup(blender_ext.load_file)
 
     def count(self, topbar: ModuleType) -> int:
@@ -325,8 +324,7 @@ class TopbarCompatTest(unittest.TestCase):
     """Respaldo de compatibilidad (RF-003-05; ADR-0012, técnica A; CW §5)."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
         self.header = bpy.types.TOPBAR_HT_upper_bar
         self.saved = {"draw_left": self.header.__dict__["draw_left"]}
 

@@ -190,8 +190,7 @@ class EnabledUiTest(unittest.TestCase):
 
 class UiRegisterCycleTest(unittest.TestCase):
     def setUp(self) -> None:
-        blender_ext.unload()
-        self.addCleanup(blender_ext.unload)
+        self.enterContext(blender_ext.fresh())
 
     def test_disable_restores_snapshot(self) -> None:
         """RF-003-23: habilitar y deshabilitar deja la instantánea de la interfaz
@@ -228,9 +227,8 @@ class RepairTest(unittest.TestCase):
     """Ciclo, recarga y «Reparar la interfaz» (RF-003-23, RF-003-24; CW §5 y §8)."""
 
     def setUp(self) -> None:
-        blender_ext.unload()
+        self.enterContext(blender_ext.fresh())
         blender_ext.load_file()
-        self.addCleanup(blender_ext.unload)
         self.addCleanup(blender_ext.load_file)
         self.header = bpy.types.TOPBAR_HT_upper_bar
         self.saved = {"draw_left": self.header.draw_left}
