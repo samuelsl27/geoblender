@@ -3242,3 +3242,63 @@ es = "La boca de la capa no está en su X, Y, Z (se movió fuera de Geoblender):
 
 ["The source did not give the total depth: {depth} m has been deduced from the deepest station or interval (CALCULADO). If you know it, enter it in the collar table."]
 es = "La fuente no traía la profundidad total: se han deducido {depth} m de la estación o el tramo más profundos (CALCULADO). Si la conoce, escríbala en la tabla de bocas."
+
+# Validación de los sondeos (spec 005, T09; RF-005-16): los mensajes de las incidencias de los
+# tramos, los valores y los catálogos (drillholes/validate.py, MESSAGES).
+
+["The interval starts above the collar (negative depth) or has no from depth: correct its from depth."]
+es = "El tramo empieza por encima de la boca (profundidad negativa) o no tiene desde: corrija su desde."
+
+["The interval has no to depth: enter it."]
+es = "El tramo no tiene hasta: escríbalo."
+
+["The interval ends at {depth_to} m, not below its start at {depth_from} m: correct its from or to depth."]
+es = "El tramo acaba a {depth_to} m, que no está por debajo de su desde, a {depth_from} m: corrija su desde o su hasta."
+
+["The interval ends at {depth_to} m, below the bottom of the hole ({bottom} m, with a tolerance of {tolerance} m): correct its to depth or the total depth."]
+es = "El tramo acaba a {depth_to} m, por debajo del fondo del sondeo ({bottom} m, con una tolerancia de {tolerance} m): corrija su hasta o la profundidad total."
+
+["The interval overlaps another one of the logging scheme «{log_set}» from {depth_from} to {depth_to} m: correct their from and to depths."]
+es = "El tramo se solapa con otro del esquema de logueo «{log_set}» de {depth_from} a {depth_to} m: corrija sus desde y hasta."
+
+["The {element} value overlaps another primary value of the same element from {depth_from} to {depth_to} m: correct their from and to depths, or mark one of them as not primary."]
+es = "El valor de {element} se solapa con otro valor primario del mismo elemento de {depth_from} a {depth_to} m: corrija sus desde y hasta, o marque uno de los dos como no primario."
+
+["The lithology code «{code}» is not in the catalog of the logging scheme «{log_set}»: add it to the catalog or correct the code."]
+es = "El código de litología «{code}» no está en el catálogo del esquema de logueo «{log_set}»: dele de alta en el catálogo o corrija el código."
+
+["The element «{code}» is not in the element catalog: add it to the catalog or correct the code."]
+es = "El elemento «{code}» no está en el catálogo de elementos: dele de alta en el catálogo o corrija el código."
+
+["The sector «{code}» is not in the sector catalog: add it to the catalog or correct the code."]
+es = "El sector «{code}» no está en el catálogo de sectores: dele de alta en el catálogo o corrija el código."
+
+["The group «{code}» is not in the group catalog: add it to the catalog or correct the code."]
+es = "El grupo «{code}» no está en el catálogo de grupos: dele de alta en el catálogo o corrija el código."
+
+["The zone «{code}» is not in the zone catalog: add it to the catalog or correct the code."]
+es = "La zona «{code}» no está en el catálogo de zonas: dele de alta en el catálogo o corrija el código."
+
+["There is more than one primary {element} value for the interval from {depth_from} to {depth_to} m: keep one as primary and mark the others as duplicates, or remove them."]
+es = "Hay más de un valor primario de {element} para el tramo de {depth_from} a {depth_to} m: deje uno como primario y marque los demás como duplicados, o quítelos."
+
+["There is a gap with no interval from {depth_from} to {depth_to} m (more than {tolerance} m): add the missing interval or correct the depths."]
+es = "Hay un hueco sin tramos de {depth_from} a {depth_to} m (más de {tolerance} m): añada el tramo que falta o corrija las profundidades."
+
+["The value is in {unit} and the catalog unit of {element} is {catalog_unit}; it could not be converted: check the unit."]
+es = "El valor está en {unit} y la unidad de {element} en el catálogo es {catalog_unit}; no se ha podido convertir: revise la unidad."
+
+["The value, {value}, is zero or negative and has no detection limit mark: if it is below the detection limit, write it as «<limit» (or declare when importing that a negative value means «<x»); if it is missing, leave it empty."]
+es = "El valor, {value}, es cero o negativo y no tiene la marca de límite de detección: si está por debajo del límite, escríbalo como «<límite» (o declare al importar que un valor negativo significa «<x»); si falta, déjelo vacío."
+
+["The interval from {depth_from} to {depth_to} m is shorter than the minimum length ({limit} m): check its depths or join it to the next one."]
+es = "El tramo de {depth_from} a {depth_to} m es más corto que la longitud mínima ({limit} m): revise sus profundidades o únalo al siguiente."
+
+["The lithology «{code}» has no density: enter it in the lithology catalog, with its kind, before using it to calculate tonnes."]
+es = "La litología «{code}» no tiene densidad: escríbala en el catálogo de litologías, con su tipo, antes de usarla para calcular toneladas."
+
+["The sample code «{sample}» is also used in hole «{hole}» from {depth_from} to {depth_to} m: give each sample its own code."]
+es = "El código de muestra «{sample}» se usa también en el sondeo «{hole}» de {depth_from} a {depth_to} m: dé a cada muestra su propio código."
+
+["The hole is planned but has assays: if it has been drilled, mark it as not planned; if not, check which hole the assays belong to."]
+es = "El sondeo está planificado pero tiene análisis: si ya se ha perforado, quítele la marca de planificado; si no, revise de qué sondeo son los análisis."

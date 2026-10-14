@@ -12,9 +12,9 @@ profundidad, el campo, el valor y un mensaje en español que dice qué corregir
 (RF-005-17, :class:`Exclusions`): los sondeos enteros (alcance S), las tablas, esquemas o
 elementos de un sondeo (T) y los registros (R); nada más.
 
-Esta tarea hace **la parte de las bocas y las desviaciones**: DH-E01 a DH-E08, DH-W02, DH-W03,
-DH-W04, DH-W06, DH-W14, DH-W15 y DH-W16. Las de los tramos y los catálogos (DH-E09 a E12,
-DH-W01 y DH-W07 a W12) llegan con la T09 y la diferencia con el MDT (DH-W05) con la T10.
+**La parte de las bocas y las desviaciones** (T08): DH-E01 a DH-E08, DH-W02, DH-W03, DH-W04,
+DH-W06, DH-W14, DH-W15 y DH-W16. **La de los tramos, los valores y los catálogos** (T09):
+DH-E09 a DH-E12, DH-W01 y DH-W07 a DH-W12. La diferencia con el MDT (DH-W05) llega con la T10.
 
 **La parte de alcance S, para la desviación** (plan §5.6.6): :func:`hole_exclusions` da la
 máscara de los sondeos con un error de alcance S (los que ``desurvey`` no puede calcular), sin
@@ -44,9 +44,42 @@ Reglas que la spec no fija (decisiones de la T08, revisables; las mismas que los
   cuando la fuente no la trae; la aplican los lectores (T14, T15). Sin nada de donde deducirla,
   sigue ausente y es DH-E03.
 
+Las de los tramos, los valores y los catálogos (decisiones de la T09, revisables; las mismas
+que los casos de ``csv_errores``):
+
+- **Qué filas**: las de un sondeo con boca y sin DH-E01 (las demás ya son DH-E04 o DH-E01: no
+  se sabe de qué boca son), aunque la boca tenga otro error de alcance S: los tramos no
+  dependen de la traza.
+- **Tramos** (DH-E09, E10, E12, W01 y W09): en la litología, por sondeo y esquema de logueo;
+  en los análisis, por sondeo y elemento, solo los valores primarios (DH-E09, todos los que
+  tienen tramo; un material de referencia o un blanco sin tramo, no); en las intersecciones
+  con zonas, solo DH-E09. **DH-E09**, una incidencia por campo: desde ausente o < 0; hasta
+  ausente, ≤ desde o por debajo del fondo más la tolerancia (esta, solo con una profundidad
+  total válida). Los tramos con DH-E09 no entran en las demás comprobaciones de tramos.
+- **Solape y hueco** (DH-E10, W01), contra el hasta más hondo de los tramos anteriores del
+  grupo (ordenados por desde, hasta y fila): solape si el desde queda por encima (exacto, sin
+  margen: los contiguos tienen el mismo número); hueco si queda más de la tolerancia por
+  debajo. El tramo de la incidencia es el solape (del desde al menor de los dos hasta) o el
+  hueco; el campo, ``from_m``. **Tramo corto** (DH-W09): hasta < desde + longitud mínima. Los
+  umbrales, sumados como en DH-E07: un hueco o un tramo justo en el umbral no avisa.
+- **DH-E12**: dos valores primarios del mismo elemento con el mismo desde y hasta; una
+  incidencia por cada repetido (queda el primero en orden de filas), que no es DH-E10 ni entra
+  en las demás comprobaciones de tramos.
+- **DH-E11**: la litología por esquema de logueo y código; el elemento; el sector y el grupo de
+  la boca (excluye ``(sondeo, "dh_collar", None)``, que no quita la traza); la zona de una
+  intersección (``(sondeo, "dh_zone_interval", None)``) o de un corte. Una por fila.
+- **DH-W07**: la unidad guardada distinta (en el texto) de la del catálogo del elemento: la
+  que la conversión (``conventions.convert_assays``) no pudo llevar a la del catálogo. Un
+  elemento sin catálogo es DH-E11, no DH-W07. **DH-W08**: un valor finito ≤ 0 con la marca
+  «ok», de cualquier análisis con boca.
+- **DH-W10**: cada litología del catálogo sin densidad, sin sondeo (al final del informe).
+  **DH-W11**: el mismo código de muestra (sin mayúsculas ni espacios exteriores) en otro tramo
+  (sondeo, desde y hasta): una incidencia por tramo repetido, no por elemento, tras el primero
+  en orden de sondeo y desde. **DH-W12**: un sondeo planificado con algún análisis.
+
 **Valor** de una incidencia: el número, el texto o el sí/no guardado en el campo; «» si el
 campo está vacío (un número ausente o, en DH-W16, la profundidad que la fuente no traía);
-``None`` si la comprobación es de un cálculo (DH-E05, W04, W06, W14, W15).
+``None`` si la comprobación es de un cálculo (DH-E05, W04, W06, W09, W14, W15).
 
 El orden es determinista: por boca (los registros sin boca, al final), código, tabla y fila.
 Nada modifica la entrada. Python puro y numpy (ADR-0004); vectorial salvo al crear las
@@ -72,6 +105,7 @@ from .desurvey import direction, dogleg
 from .model import (
     AssayColumns,
     CollarColumns,
+    DetectionFlag,
     DrillholeSet,
     QaqcType,
     StationSource,
@@ -174,6 +208,34 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
                       "north, clockwise).",
     "DH-E08.inclination": "The inclination is not between −90° and 90°: correct it (degrees "
                           "from the horizontal, negative downwards).",
+    "DH-E09.from": "The interval starts above the collar (negative depth) or has no from "
+                   "depth: correct its from depth.",
+    "DH-E09.no_to": "The interval has no to depth: enter it.",
+    "DH-E09.reversed": "The interval ends at {depth_to} m, not below its start at "
+                       "{depth_from} m: correct its from or to depth.",
+    "DH-E09.below": "The interval ends at {depth_to} m, below the bottom of the hole "
+                    "({bottom} m, with a tolerance of {tolerance} m): correct its to depth or "
+                    "the total depth.",
+    "DH-E10": "The interval overlaps another one of the logging scheme «{log_set}» from "
+              "{depth_from} to {depth_to} m: correct their from and to depths.",
+    "DH-E10.assay": "The {element} value overlaps another primary value of the same element "
+                    "from {depth_from} to {depth_to} m: correct their from and to depths, or "
+                    "mark one of them as not primary.",
+    "DH-E11.lithology": "The lithology code «{code}» is not in the catalog of the logging "
+                        "scheme «{log_set}»: add it to the catalog or correct the code.",
+    "DH-E11.element": "The element «{code}» is not in the element catalog: add it to the "
+                      "catalog or correct the code.",
+    "DH-E11.sector": "The sector «{code}» is not in the sector catalog: add it to the catalog "
+                     "or correct the code.",
+    "DH-E11.group": "The group «{code}» is not in the group catalog: add it to the catalog or "
+                    "correct the code.",
+    "DH-E11.zone": "The zone «{code}» is not in the zone catalog: add it to the catalog or "
+                   "correct the code.",
+    "DH-E12": "There is more than one primary {element} value for the interval from "
+              "{depth_from} to {depth_to} m: keep one as primary and mark the others as "
+              "duplicates, or remove them.",
+    "DH-W01": "There is a gap with no interval from {depth_from} to {depth_to} m (more than "
+              "{tolerance} m): add the missing interval or correct the depths.",
     "DH-W02": "The first survey station is at {depth} m, below the collar: its orientation "
               "is extended up to the collar. If there is a measurement at the collar, add "
               "it.",
@@ -184,6 +246,19 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
               "{depth_to} m (more than {limit}°/30 m): check their azimuth and inclination.",
     "DH-W06": "The collar is outside the project work window: check its coordinates and the "
               "declared CRS, or enlarge the work window.",
+    "DH-W07": "The value is in {unit} and the catalog unit of {element} is {catalog_unit}; it "
+              "could not be converted: check the unit.",
+    "DH-W08": "The value, {value}, is zero or negative and has no detection limit mark: if it "
+              "is below the detection limit, write it as «<limit» (or declare when importing "
+              "that a negative value means «<x»); if it is missing, leave it empty.",
+    "DH-W09": "The interval from {depth_from} to {depth_to} m is shorter than the minimum "
+              "length ({limit} m): check its depths or join it to the next one.",
+    "DH-W10": "The lithology «{code}» has no density: enter it in the lithology catalog, with "
+              "its kind, before using it to calculate tonnes.",
+    "DH-W11": "The sample code «{sample}» is also used in hole «{hole}» from {depth_from} to "
+              "{depth_to} m: give each sample its own code.",
+    "DH-W12": "The hole is planned but has assays: if it has been drilled, mark it as not "
+              "planned; if not, check which hole the assays belong to.",
     "DH-W14": "All survey stations of the hole have a positive inclination: check the "
               "declared inclination convention (here it is negative downwards).",
     "DH-W15": "The collar in the layer is not at its X, Y, Z (it was moved outside "
@@ -205,6 +280,12 @@ _MISSING_SHOWN = "?"
 _MEASURED = SurveyColumns.code_values("source").index(StationSource.MEASURED)
 _CALCULADO = CollarColumns.code_values("depth_kind").index(ParamKind.CALCULADO)
 _SAMPLE = AssayColumns.code_values("qaqc_type").index(QaqcType.SAMPLE)
+_FLAG_OK = AssayColumns.code_values("detection_flag").index(DetectionFlag.OK)
+_LITHOLOGY = TABLE_NAMES["lithology"]
+_ASSAY = TABLE_NAMES["assays"]
+_LITHOLOGY_CODE = CATALOG_TABLES[0]
+_COLLAR_CODES = (("sector", "sectors"), ("group", "groups"))
+"""Los códigos de catálogo de una boca (DH-E11): campo y catálogo de ``Catalogs``."""
 
 
 # --- Umbrales, incidencias, exclusiones e informe ---------------------------------------------
@@ -727,6 +808,325 @@ def _survey_warnings(dset: DrillholeSet, found: _Findings,
     return issues
 
 
+# --- Las comprobaciones de los tramos, los valores y los catálogos (T09) -----------------------
+
+
+def _key_codes(texts: np.ndarray) -> tuple[np.ndarray, list[str]]:
+    """El código (int64) de cada texto de ``texts`` (sin ``None``): el mismo para los que
+    tienen la misma :func:`~.model.name_key`; y las claves de los códigos, en el orden en que
+    aparecen. Con un diccionario de los textos distintos, sin ordenarlos: O(n)."""
+    raw: dict[str, int] = {}
+    found = np.fromiter((raw.setdefault(text, len(raw)) for text in texts.tolist()),
+                        dtype=np.int64, count=len(texts))
+    keys: dict[str, int] = {}
+    key_of_raw = np.array([keys.setdefault(name_key(text), len(keys)) for text in raw],
+                          dtype=np.int64)
+    return key_of_raw[found], list(keys)
+
+
+def _known(texts: np.ndarray, catalog: Mapping[str, Any]) -> np.ndarray:
+    """Si cada texto de ``texts`` (sin ``None``) está en ``catalog`` (por su ``name_key``)."""
+    codes, keys = _key_codes(texts)
+    return np.array([key in catalog for key in keys], dtype=np.bool_)[codes]
+
+
+def _known_lithology(log_sets: np.ndarray, codes: np.ndarray,
+                     catalog: set[tuple[str, str]]) -> np.ndarray:
+    """Si cada código de litología está en el catálogo de su esquema de logueo."""
+    set_of, set_keys = _key_codes(log_sets)
+    code_of, code_keys = _key_codes(codes)
+    width = max(len(code_keys), 1)
+    pairs, inverse = np.unique(set_of * width + code_of, return_inverse=True)
+    member = [(set_keys[pair // width], code_keys[pair % width]) in catalog
+              for pair in pairs.tolist()]
+    return np.array(member, dtype=np.bool_)[inverse.reshape(-1)]
+
+
+def _linked(hole: np.ndarray, checked: np.ndarray) -> np.ndarray:
+    """La máscara de las filas de una tabla hija con boca, de una boca sin DH-E01 (las demás
+    son DH-E04 o DH-E01: no se sabe de qué boca son y no se comprueban aquí)."""
+    linked = hole >= 0
+    found = linked.copy()
+    found[linked] = checked[hole[linked]]
+    return found
+
+
+def _same(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Igualdad de números en la que un vacío (NaN) es igual a otro vacío."""
+    return (a == b) | (np.isnan(a) & np.isnan(b))
+
+
+def _running_max(values: np.ndarray, first: np.ndarray) -> np.ndarray:
+    """El máximo acumulado de ``values`` (finitos) dentro de cada grupo de filas seguidas que
+    empieza donde ``first`` es verdadero. Exacto: sobre el rango entero de cada valor, sin
+    sumar desplazamientos a los números."""
+    unique, rank = np.unique(values, return_inverse=True)
+    group = np.cumsum(first, dtype=np.int64) - 1
+    key = group * unique.size + rank.reshape(-1)
+    return unique[np.maximum.accumulate(key) - group * unique.size]
+
+
+def _interval_fields(name: str, columns: Any, row: int) -> dict[str, Any]:
+    """El esquema de logueo o el elemento de un tramo (lo que excluye su alcance T)."""
+    if name == "lithology":
+        return {"log_set": columns.log_set[row]}
+    if name == "assays":
+        return {"element": columns.element[row]}
+    return {}
+
+
+def _range_errors(dset: DrillholeSet, name: str, rows: np.ndarray, names: list[str],
+                  tolerance: float) -> tuple[list[Issue], np.ndarray]:
+    """DH-E09 de las filas ``rows`` de la tabla de tramos ``name``: desde ausente o < 0
+    (campo ``from_m``); hasta ausente, ≤ desde o por debajo del fondo más la tolerancia (solo
+    con una profundidad total válida; campo ``to_m``). Da las incidencias y la máscara (una
+    por fila de ``rows``) de los tramos con error."""
+    columns = getattr(dset, name)
+    table = TABLE_NAMES[name]
+    start, end = columns.from_m[rows], columns.to_m[rows]
+    hole = columns.hole[rows]
+    bottom = dset.collars.depth[hole]
+    bad_from = ~(np.isfinite(start) & (start >= 0.0))
+    no_end = ~np.isfinite(end)
+    reversed_ = ~no_end & (end <= start)
+    below = (~no_end & ~reversed_ & np.isfinite(bottom) & (bottom > 0.0)
+             & (end > bottom + tolerance))
+    bad_to = no_end | reversed_ | below
+    issues = []
+    for i in np.flatnonzero(bad_from | bad_to).tolist():
+        row, k = int(rows[i]), int(hole[i])
+        s, e = float(start[i]), float(end[i])
+        common = {"row_ref": row, "depth_from": _depth(s), "depth_to": _depth(e),
+                  **_interval_fields(name, columns, row)}
+        if bad_from[i]:
+            issues.append(_issue("DH-E09", k, names[k], table, message="DH-E09.from",
+                                 field="from_m", value=_number(s), **common))
+        if not bad_to[i]:
+            continue
+        if no_end[i]:
+            message, args = "DH-E09.no_to", None
+        elif reversed_[i]:
+            message, args = "DH-E09.reversed", {"depth_from": s, "depth_to": e}
+        else:
+            message = "DH-E09.below"
+            args = {"depth_to": e, "bottom": float(bottom[i]), "tolerance": tolerance}
+        issues.append(_issue("DH-E09", k, names[k], table, message=message, args=args,
+                             field="to_m", value=_number(e), **common))
+    return issues, bad_from | bad_to
+
+
+def _sequence_issues(dset: DrillholeSet, name: str, rows: np.ndarray, group: np.ndarray,
+                     names: list[str], params: ValidationParams) -> list[Issue]:
+    """DH-E12 (en los análisis), DH-E10, DH-W01 y DH-W09 de los tramos ``rows`` (sin DH-E09)
+    por grupo (``group``, int64: el sondeo y el esquema de logueo o el elemento), ordenados
+    por grupo, desde, hasta y fila; solape y hueco, contra el hasta más hondo anterior."""
+    columns = getattr(dset, name)
+    table = TABLE_NAMES[name]
+    order = np.lexsort((rows, columns.to_m[rows], columns.from_m[rows], group))
+    rows, group = rows[order], group[order]
+    start, end = columns.from_m[rows], columns.to_m[rows]
+    assays = name == "assays"
+    issues = []
+    if assays and rows.size:
+        repeated = np.zeros(rows.size, dtype=np.bool_)
+        repeated[1:] = ((group[1:] == group[:-1]) & (start[1:] == start[:-1])
+                        & (end[1:] == end[:-1]))
+        for i in np.flatnonzero(repeated).tolist():
+            row = int(rows[i])
+            k, element = int(columns.hole[row]), columns.element[row]
+            issues.append(_issue(
+                "DH-E12", k, names[k], table, row_ref=row, element=element,
+                depth_from=float(start[i]), depth_to=float(end[i]), field="value",
+                value=_number(float(columns.value[row])),
+                args={"element": element, "depth_from": float(start[i]),
+                      "depth_to": float(end[i])}))
+        keep = ~repeated
+        rows, group, start, end = rows[keep], group[keep], start[keep], end[keep]
+    if not rows.size:
+        return issues
+    first = np.ones(rows.size, dtype=np.bool_)
+    first[1:] = group[1:] != group[:-1]
+    previous = np.full(rows.size, np.nan)
+    previous[1:] = _running_max(end, first)[:-1]
+    previous[first] = np.nan
+    overlap = start < previous
+    gap = start > previous + params.gap_tolerance_m
+    short = end < start + params.min_interval_m
+    for i in np.flatnonzero(overlap | gap | short).tolist():
+        row = int(rows[i])
+        k = int(columns.hole[row])
+        s, e, above = float(start[i]), float(end[i]), float(previous[i])
+        fields = _interval_fields(name, columns, row)
+        if overlap[i]:
+            to = min(above, e)
+            message, args = (("DH-E10.assay", {"element": fields["element"]}) if assays
+                             else ("DH-E10", {"log_set": fields["log_set"]}))
+            issues.append(_issue("DH-E10", k, names[k], table, message=message,
+                                 args={**args, "depth_from": s, "depth_to": to}, row_ref=row,
+                                 depth_from=s, depth_to=to, field="from_m", value=s,
+                                 **fields))
+        elif gap[i]:
+            issues.append(_issue("DH-W01", k, names[k], table,
+                                 args={"depth_from": above, "depth_to": s,
+                                       "tolerance": params.gap_tolerance_m},
+                                 row_ref=row, depth_from=above, depth_to=s, field="from_m",
+                                 value=s, **fields))
+        if short[i]:
+            issues.append(_issue("DH-W09", k, names[k], table,
+                                 args={"depth_from": s, "depth_to": e,
+                                       "limit": params.min_interval_m},
+                                 row_ref=row, depth_from=s, depth_to=e, **fields))
+    return issues
+
+
+def _lithology_issues(dset: DrillholeSet, checked: np.ndarray, names: list[str],
+                      params: ValidationParams) -> list[Issue]:
+    """DH-E09, DH-E10, DH-E11, DH-W01 y DH-W09 de la litología."""
+    lithology = dset.lithology
+    rows = np.flatnonzero(_linked(lithology.hole, checked))
+    issues, bad = _range_errors(dset, "lithology", rows, names, params.depth_tolerance_m)
+    catalog = {(name_key(code.log_set), name_key(code.code))
+               for code in dset.catalogs.lithology}
+    known = _known_lithology(lithology.log_set[rows], lithology.code[rows], catalog)
+    for row in rows[~known].tolist():
+        k, code, log_set = int(lithology.hole[row]), lithology.code[row], lithology.log_set[row]
+        issues.append(_issue("DH-E11", k, names[k], _LITHOLOGY, message="DH-E11.lithology",
+                             args={"code": code, "log_set": log_set}, row_ref=row,
+                             log_set=log_set, depth_from=_depth(float(lithology.from_m[row])),
+                             depth_to=_depth(float(lithology.to_m[row])), field="lithology",
+                             value=code))
+    rows = rows[~bad]
+    set_of, set_keys = _key_codes(lithology.log_set[rows])
+    group = lithology.hole[rows] * max(len(set_keys), 1) + set_of
+    return issues + _sequence_issues(dset, "lithology", rows, group, names, params)
+
+
+def _assay_issues(dset: DrillholeSet, checked: np.ndarray, names: list[str],
+                  params: ValidationParams) -> list[Issue]:
+    """DH-E09 a DH-E12, DH-W01, DH-W07, DH-W08, DH-W09, DH-W11 y DH-W12 de los análisis."""
+    assays = dset.assays
+    linked = _linked(assays.hole, checked)
+    rows = np.flatnonzero(linked)
+    issues = []
+    units = {name_key(element.code): element.unit for element in dset.catalogs.elements}
+    element_of, keys = _key_codes(assays.element[rows])
+    known = np.array([key in units for key in keys], dtype=np.bool_)[element_of]
+    unit_of = np.array([units.get(key) for key in keys], dtype=object)[element_of]
+    other_unit = known & (assays.unit[rows] != unit_of)
+    value = assays.value[rows]
+    not_positive = (assays.detection_flag[rows] == _FLAG_OK) & (value <= 0.0)
+    for code, mask in (("DH-E11", ~known), ("DH-W07", other_unit), ("DH-W08", not_positive)):
+        for i in np.flatnonzero(mask).tolist():
+            row = int(rows[i])
+            k, element = int(assays.hole[row]), assays.element[row]
+            common = {"row_ref": row, "element": element,
+                      "depth_from": _depth(float(assays.from_m[row])),
+                      "depth_to": _depth(float(assays.to_m[row]))}
+            if code == "DH-E11":
+                issues.append(_issue(code, k, names[k], _ASSAY, message="DH-E11.element",
+                                     args={"code": element}, field="element", value=element,
+                                     **common))
+            elif code == "DH-W07":
+                unit = assays.unit[row]
+                issues.append(_issue(code, k, names[k], _ASSAY,
+                                     args={"unit": unit, "element": element,
+                                           "catalog_unit": unit_of[i]},
+                                     field="unit", value=unit, **common))
+            else:
+                number = float(value[i])
+                issues.append(_issue(code, k, names[k], _ASSAY, args={"value": number},
+                                     field="value", value=number, **common))
+
+    has_interval = ((assays.qaqc_type[rows] == _SAMPLE) | np.isfinite(assays.from_m[rows])
+                    | np.isfinite(assays.to_m[rows]))
+    intervals = rows[has_interval]
+    found, bad = _range_errors(dset, "assays", intervals, names, params.depth_tolerance_m)
+    issues += found
+    primary = intervals[~bad & assays.is_primary[intervals]]
+    element_of, keys = _key_codes(assays.element[primary])
+    group = assays.hole[primary] * max(len(keys), 1) + element_of
+    issues += _sequence_issues(dset, "assays", primary, group, names, params)
+    issues += _repeated_samples(dset, linked, names)
+
+    collars = dset.collars
+    has_assays = np.zeros(len(collars), dtype=np.bool_)
+    has_assays[assays.hole[rows]] = True
+    for k in np.flatnonzero(collars.planned & checked & has_assays).tolist():
+        issues.append(_issue("DH-W12", k, names[k], _COLLAR, row_ref=k, field="planned",
+                             value=True))
+    return issues
+
+
+def _repeated_samples(dset: DrillholeSet, linked: np.ndarray, names: list[str]) -> list[Issue]:
+    """DH-W11: el mismo código de muestra en otro tramo (sondeo, desde y hasta); una
+    incidencia por tramo repetido, tras el primero en orden de sondeo, desde, hasta y fila."""
+    assays = dset.assays
+    rows = np.flatnonzero(linked & ~np.equal(assays.sample_id, None))
+    if not rows.size:
+        return []
+    key, _keys = _key_codes(assays.sample_id[rows])
+    hole, start, end = assays.hole[rows], assays.from_m[rows], assays.to_m[rows]
+    order = np.lexsort((rows, end, start, hole, key))
+    rows, key, hole, start, end = rows[order], key[order], hole[order], start[order], end[order]
+    same_key = key[1:] == key[:-1]
+    same_interval = (same_key & (hole[1:] == hole[:-1]) & _same(start[1:], start[:-1])
+                     & _same(end[1:], end[:-1]))
+    first = np.ones(rows.size, dtype=np.bool_)
+    first[1:] = ~same_key
+    repeated = np.zeros(rows.size, dtype=np.bool_)
+    repeated[1:] = same_key & ~same_interval
+    origin = np.maximum.accumulate(np.where(first, np.arange(rows.size), 0))
+    issues = []
+    for i in np.flatnonzero(repeated).tolist():
+        row, k, o = int(rows[i]), int(hole[i]), int(origin[i])
+        sample = assays.sample_id[row]
+        issues.append(_issue(
+            "DH-W11", k, names[k], _ASSAY, row_ref=row, depth_from=_depth(float(start[i])),
+            depth_to=_depth(float(end[i])), field="sample_id", value=sample,
+            args={"sample": sample, "hole": names[int(hole[o])],
+                  "depth_from": _depth(float(start[o])), "depth_to": _depth(float(end[o]))}))
+    return issues
+
+
+def _catalog_issues(dset: DrillholeSet, checked: np.ndarray, names: list[str],
+                    params: ValidationParams) -> list[Issue]:
+    """DH-E11 del sector y el grupo de las bocas y de la zona de las intersecciones y los
+    cortes; DH-E09 de las intersecciones; DH-W10 de las litologías sin densidad."""
+    collars, catalogs = dset.collars, dset.catalogs
+    issues = []
+    for field, kind in _COLLAR_CODES:
+        catalog = {name_key(entry.code): entry for entry in getattr(catalogs, kind)}
+        column = getattr(collars, field)
+        rows = np.flatnonzero(checked & ~np.equal(column, None))
+        for k in rows[~_known(column[rows], catalog)].tolist():
+            issues.append(_issue("DH-E11", k, names[k], _COLLAR, message=f"DH-E11.{field}",
+                                 args={"code": column[k]}, row_ref=k, field=field,
+                                 value=column[k]))
+    zones = {name_key(entry.code): entry for entry in catalogs.zones}
+    for name in ("zones", "structures"):
+        columns = getattr(dset, name)
+        table = TABLE_NAMES[name]
+        linked = _linked(columns.hole, checked)
+        rows = np.flatnonzero(linked & ~np.equal(columns.zone, None))
+        for row in rows[~_known(columns.zone[rows], zones)].tolist():
+            k, zone = int(columns.hole[row]), columns.zone[row]
+            start, end = ((columns.from_m[row], columns.to_m[row]) if name == "zones"
+                          else (columns.depth[row], columns.depth[row]))
+            issues.append(_issue("DH-E11", k, names[k], table, message="DH-E11.zone",
+                                 args={"code": zone}, row_ref=row,
+                                 depth_from=_depth(float(start)), depth_to=_depth(float(end)),
+                                 field="zone", value=zone))
+        if name == "zones":
+            issues += _range_errors(dset, name, np.flatnonzero(linked), names,
+                                    params.depth_tolerance_m)[0]
+    for row, code in enumerate(catalogs.lithology):
+        if code.density is None:
+            issues.append(_issue("DH-W10", -1, None, _LITHOLOGY_CODE, args={"code": code.code},
+                                 row_ref=row, log_set=code.log_set, catalog_code=code.code,
+                                 field="density", value=""))
+    return issues
+
+
 def validate(dset: DrillholeSet, params: ValidationParams, *,
              work_window: Window | None = None,
              stored_geom_xyz: np.ndarray | None = None) -> ValidationReport:
@@ -743,11 +1143,15 @@ def validate(dset: DrillholeSet, params: ValidationParams, *,
     geom = None if stored_geom_xyz is None else _stored_geom(stored_geom_xyz, count)
     found = _find(dset, params.depth_tolerance_m)
     checked = ~found.repeated
+    names = dset.collars.name.tolist()
     issues = (_collar_errors(dset, found, checked)
               + _station_errors(dset, found, checked, params.depth_tolerance_m)
               + _orphans(dset)
               + _collar_warnings(dset, checked, work_window, geom)
-              + _survey_warnings(dset, found, params))
+              + _survey_warnings(dset, found, params)
+              + _lithology_issues(dset, checked, names, params)
+              + _assay_issues(dset, checked, names, params)
+              + _catalog_issues(dset, checked, names, params))
 
     def order(issue: Issue) -> tuple[int, str, int, int]:
         hole = issue.hole if issue.hole >= 0 else count

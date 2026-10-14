@@ -39,8 +39,11 @@ i18n = import_geoblender("core.i18n")
 IMPLEMENTED = frozenset({
     "DH-E01", "DH-E02", "DH-E03", "DH-E04", "DH-E05", "DH-E06", "DH-E07", "DH-E08",
     "DH-W02", "DH-W03", "DH-W04", "DH-W06", "DH-W14", "DH-W15", "DH-W16",
+    # T09 (tramos, valores y catálogos; sus pruebas, en test_validate_intervals)
+    "DH-E09", "DH-E10", "DH-E11", "DH-E12",
+    "DH-W01", "DH-W07", "DH-W08", "DH-W09", "DH-W10", "DH-W11", "DH-W12",
 })
-"""Los códigos de esta tarea (T08); T09 y T10 añaden los suyos."""
+"""Los códigos que valida ``validate`` (T08 y T09); T10 añade DH-W05."""
 
 PARAMS = dh_sets.params()
 TOLERANCE = PARAMS.depth_tolerance_m
@@ -142,7 +145,8 @@ class CsvErrorsTest(unittest.TestCase):
     def test_scope_s_exclusions(self) -> None:
         """RF-005-17: ``hole_exclusions`` da los sondeos del informe con un error de alcance
         S, y solo esos; quitándolos, las trazas de los demás se calculan; los avisos no
-        excluyen y DH-E04 solo excluye sus registros."""
+        excluyen, DH-E04 solo excluye sus registros y los errores de alcance T (T09), solo
+        su tabla de su sondeo."""
         for case in CASES:
             with self.subTest(case=case.code):
                 report = _run(case)
@@ -158,7 +162,10 @@ class CsvErrorsTest(unittest.TestCase):
                 np.testing.assert_array_equal(traces.computed, ~mask)
                 records = {(i.table, i.row_ref) for i in report.issues if i.code == "DH-E04"}
                 self.assertEqual(excluded.records, frozenset(records))
-                self.assertEqual(excluded.tables, frozenset())
+                tables = {(int(case.dset.hole_index([item["hole"]])[0]), item["table"])
+                          for item in case.issues if item["scope"] == "table"}
+                self.assertEqual({(hole, table) for hole, table, _ in excluded.tables},
+                                 tables)
 
 
 class HoleChecksTest(unittest.TestCase):
