@@ -23,6 +23,7 @@ import shutil
 import sqlite3
 import unittest
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -427,7 +428,9 @@ class GuardTest(InputsCase):
         self.blocked(READ_ONLY_CODE, self.tmp / "expedientes" / "plano.dxf", dossiers,
                      project=None)
         self.accepted(self.sources / "plano.dxf", read_only=dossiers, project=None)
-        with sqlite3.connect(":memory:") as empty:
+        # closing: el «with» de una conexión no la cierra (docs/trampas.md), y el aviso de la
+        # conexión abierta saltaría en otra prueba de la misma parte (test_readers).
+        with closing(sqlite3.connect(":memory:")) as empty:
             self.accepted(self.sources / "plano.dxf", conn=empty)
         with self.project.read() as conn:
             self.blocked(FOLDER_CODE, self.sources / "plano.dxf", conn=conn)
