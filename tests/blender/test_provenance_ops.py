@@ -191,6 +191,7 @@ PENDING_TEXT = "pendiente de incorporar"
 # parámetros (T26) de la topografía, los registra bl/ops/gis.py.
 GIS_READERS = ("gis.asc@1", "gis.geotiff@1", "gis.gpkg_layer@1", "gis.points_text@1",
                "gis.xyz_grid@1")
+DH_READERS = ("io.dh_csv@1", "io.dh_xlsx@1", "io.recmin_mdb@1")
 DATA = ROOT / "tests" / "data" / "core" / "provenance"
 LAYER = "limites"
 INPUTS_PANEL = "GEOBLENDER_PT_core_inputs"
@@ -825,6 +826,29 @@ class ProvenanceSessionTest(unittest.TestCase):
             self.assertEqual(ours(), list(GIS_READERS))
             self.assertIs(content.table_reader(), read_table)
         gis_ops.unregister()
+        self.assertEqual(dict(readers.READERS), before)
+
+    def test_dh_readers_register_and_unregister(self) -> None:
+        """RF-005-12, RF-008-09 (spec 005, T39; plan 005 §5.6.2; ADR-0025 §2; principio 8):
+        con la extensión habilitada están los tres lectores de contenido de los sondeos
+        (``interop.dh_content``); ``bl/ops/dh.py`` los quita y los vuelve a poner, las dos cosas
+        idempotentes, y quitarlos deja el registro como estaba."""
+        dh_ops = _module("bl.ops.dh")
+        readers = _module("core.content.readers")
+
+        def ours() -> list[str]:
+            return sorted(key for key in readers.READERS if key.startswith("io."))
+
+        self.assertEqual(ours(), list(DH_READERS))
+        self.addCleanup(dh_ops.register)  # la clase sigue con la extensión habilitada
+        for _ in range(2):
+            dh_ops.unregister()
+            self.assertEqual(ours(), [])
+        before = dict(readers.READERS)
+        for _ in range(2):
+            dh_ops.register()
+            self.assertEqual(ours(), list(DH_READERS))
+        dh_ops.unregister()
         self.assertEqual(dict(readers.READERS), before)
 
     def test_gis_jobs_and_parameters_register_and_unregister(self) -> None:

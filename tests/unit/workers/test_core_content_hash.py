@@ -392,18 +392,22 @@ class InThreadTest(unittest.TestCase):
 class WorkerReadersTest(unittest.TestCase):
     """La lista estática de lectores del envoltorio en proceso aparte."""
 
-    def test_static_list_is_core_and_gis(self) -> None:
-        """ADR-0025 §2 (plan §5.3.3; plan 006 §5.6.2, RF-006-26):
+    def test_static_list_is_core_gis_and_interop(self) -> None:
+        """ADR-0025 §2 (plan §5.3.3; plan 006 §5.6.2, RF-006-26; plan 005 §5.6.2, RF-005-12):
         ``workers/core_content_hash.py`` carga los lectores de su lista estática de paquetes
-        (``("core", "gis")`` desde la 006, T40): los de ``core`` y los de ``gis`` que pueden
-        ir al trabajo, y los registra antes de llamar a ``jobs.content_hash.run``, con el
-        lector de tablas que necesitan los de ``gis`` (la comparación con lo que registra
-        ``bl`` está en ``tests/blender``; el trabajo con ellos, en
-        ``tests/unit/gis/test_content_readers.py``)."""
-        self.assertEqual(tuple(worker.READER_PACKAGES), ("core", "gis"))
+        (``("core", "gis")`` desde la 006, T40; ``"interop"``, los de los sondeos, desde la
+        005, T39): los de ``core``, los de ``gis`` y los de ``interop`` que pueden ir al
+        trabajo, y los registra antes de llamar a ``jobs.content_hash.run``, con el lector de
+        tablas que necesitan los de ``gis`` (la comparación con lo que registra ``bl`` está
+        en ``tests/blender``; el trabajo con ellos, en
+        ``tests/unit/gis/test_content_readers.py`` y ``tests/unit/interop/
+        test_dh_content.py``)."""
+        self.assertEqual(tuple(worker.READER_PACKAGES), ("core", "gis", "interop"))
         gis_content = worker.READER_PACKAGES["gis"]
+        dh_content = worker.READER_PACKAGES["interop"]
         expected = tuple(found for found in (*builtin.CONTENT_READERS,
-                                             *gis_content.CONTENT_READERS) if found.worker)
+                                             *gis_content.CONTENT_READERS,
+                                             *dh_content.CONTENT_READERS) if found.worker)
         self.assertEqual(worker.worker_readers(), expected)
         self.addCleanup(gis_content.use_table_reader, gis_content.use_table_reader(None))
         with mock.patch.dict(readers._REGISTRY, clear=True):

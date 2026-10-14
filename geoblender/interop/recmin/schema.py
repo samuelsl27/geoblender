@@ -60,6 +60,7 @@ __all__ = [
     "index_tables",
     "layout",
     "log_set",
+    "require_collars",
     "require_schema",
     "schema_version",
     "version_warning",
@@ -356,6 +357,17 @@ def version_warning(version: int | None) -> str | None:
             else f"declara la versión de esquema {version}")
     return (f"{SOURCE_LABEL}: la base {said} ({VERSION_FIELD}) y Geoblender conoce las de "
             f"RecMin {known}: solo se importa lo que se reconoce (sus tablas y columnas)")
+
+
+def require_collars(found: SchemaLayout) -> None:
+    """Comprueba que la base tiene la tabla de sondeos (``SONDEOS``): sin ella,
+    :class:`RecminSchemaError` ``dh.recmin_table_missing`` (no es una base de sondeos de
+    RecMin). La usan el importador y el lector de contenido ``io.recmin_mdb@1``."""
+    if found.table(TableKind.COLLARS) is None:
+        raise RecminSchemaError(
+            "dh.recmin_table_missing",
+            "la base no tiene la tabla de sondeos de RecMin: ¿es una base de sondeos de RecMin?",
+            obj=SOURCE_LABEL, field="tablas", value="SONDEOS", shown="sin SONDEOS")
 
 
 def require_schema(version: int | None, *, accept: bool) -> str | None:

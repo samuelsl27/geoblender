@@ -8,7 +8,8 @@ segundo plano (``JobMonitor``), los textos de los trabajos y sus tipos de trabaj
 ``core_provenance`` (spec 008): los textos de la procedencia y de los parámetros.
 
 ``gis`` (spec 006) registra lo que la topografía declara a la 008 (hoy, sus lectores de
-contenido), después de lo de ``core``.
+contenido), después de lo de ``core``. ``dh`` (spec 005), lo de los sondeos (hoy, sus lectores
+de contenido), después de lo de ``gis``.
 
 ``io`` (spec 006, T32): «Importar un fichero» y su manejador de ficheros (soltar en la vista).
 """
@@ -16,7 +17,7 @@ contenido), después de lo de ``core``.
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
-from . import core, core_provenance, geo, gis, io, jobs, ui
+from . import core, core_provenance, dh, geo, gis, io, jobs, ui
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): core (spec 002), ui y geo (spec 003; geo: el recorte de la vista, D-1), jobs
@@ -24,8 +25,9 @@ from . import core, core_provenance, geo, gis, io, jobs, ui
 classes: tuple[type, ...] = (*core.classes, *ui.classes, *geo.classes, *jobs.classes,
                              *core_provenance.classes)
 
-# Los de la topografía (spec 006), después.
+# Los de la topografía (spec 006) y los de los sondeos (spec 005), después.
 classes += gis.classes
+classes += dh.classes
 
 # «Importar un fichero» y su manejador (spec 006, T32), que abre los de la topografía.
 classes += io.classes
@@ -34,7 +36,8 @@ classes += io.classes
 def register() -> None:
     """Registra ``classes`` en orden y después lo propio de ``core_provenance`` y de
     ``jobs``; si ya lo están, no hace nada. Si uno de los dos falla, deshace lo anterior
-    antes de propagar el error. Después, lo de ``gis``: si falla, lo deshace todo."""
+    antes de propagar el error. Después, lo de ``gis`` y lo de ``dh``: si falla, lo deshace
+    todo."""
     register_classes(classes)
     try:
         core_provenance.register()
@@ -45,14 +48,16 @@ def register() -> None:
         raise
     try:
         gis.register()
+        dh.register()
     except BaseException:
         unregister()
         raise
 
 
 def unregister() -> None:
-    """Deshace lo propio de ``gis``, de ``jobs`` y de ``core_provenance`` y desregistra
-    ``classes`` en orden inverso; omite lo que no está registrado."""
+    """Deshace lo propio de ``dh``, de ``gis``, de ``jobs`` y de ``core_provenance`` y
+    desregistra ``classes`` en orden inverso; omite lo que no está registrado."""
+    dh.unregister()
     gis.unregister()
     jobs.unregister()
     core_provenance.unregister()

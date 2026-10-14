@@ -124,13 +124,13 @@ from .schema import (
     ID_COLUMNS,
     KNOWN_SCHEMA_VERSIONS,
     SOURCE_LABEL,
-    RecminSchemaError,
     SchemaLayout,
     TableKind,
     TableUse,
     element_number,
     index_tables,
     layout,
+    require_collars,
     require_schema,
     schema_version,
 )
@@ -1001,11 +1001,7 @@ def read_drillholes(
     decl = _check_decl(decl)
     tables = index_tables(raw)
     found = _layout(tables)
-    if found.table(TableKind.COLLARS) is None:
-        raise RecminSchemaError(
-            "dh.recmin_table_missing",
-            "la base no tiene la tabla de sondeos de RecMin: ¿es una base de sondeos de RecMin?",
-            obj=SOURCE_LABEL, field="tablas", value="SONDEOS", shown="sin SONDEOS")
+    require_collars(found)
     warning = require_schema(schema_version(tables), accept=accept_schema)
     require_declarations(decl, _needs(tables, found), obj=SOURCE_LABEL)
 

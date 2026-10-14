@@ -607,11 +607,12 @@ class WorkerTest(_Temp):
     """El envoltorio en proceso aparte de ``core_content_hash`` (RF-008-09; ADR-0025 §2)."""
 
     def test_worker_registers_gis_readers_with_the_table_reader(self) -> None:
-        """RF-008-09: ``workers/core_content_hash.py`` tiene ``gis`` en su lista estática;
+        """RF-008-09: ``workers/core_content_hash.py`` tiene ``gis`` en su lista estática
+        (también ``interop``, los de los sondeos de la 005, T39);
         ``main`` registra sus lectores y les da el lector de tablas de ``interop`` (en un
         proceso nuevo no hay nada registrado), y el texto de puntos y una capa de GeoPackage
         (copiada con ``needs_copy``) dan el hash del hilo."""
-        self.assertEqual(tuple(worker.READER_PACKAGES), ("core", "gis"))
+        self.assertEqual(tuple(worker.READER_PACKAGES), ("core", "gis", "interop"))
         self.assertIs(worker.READER_PACKAGES["gis"], content)
         sources = {
             "puntos": (content.POINTS_TEXT, "table", {"main": POINTS / "taludes.csv"},

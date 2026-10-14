@@ -326,18 +326,21 @@ def _base(record: dict) -> BuiltBase:
                      tables)
 
 
-def build_bases(out_dir: Path, engines: tuple[str, ...] = tuple(ENGINES)) -> Build:
+def build_bases(out_dir: Path, engines: tuple[str, ...] = tuple(ENGINES), *,
+                sql: Path | None = None) -> Build:
     """Crea en ``out_dir`` (que no debe tener ya esas bases) las bases de los dos guiones
-    con cada motor de ``engines`` (``jet4``, ``ace``), un ``powershell.exe`` por motor y
-    todos a la vez; ``RuntimeError`` con la salida de errores si alguno falla."""
+    (con ``sql``, solo las de ese guion, que puede estar en otra carpeta: una variante escrita
+    por la prueba) con cada motor de ``engines`` (``jet4``, ``ace``), un ``powershell.exe`` por
+    motor y todos a la vez; ``RuntimeError`` con la salida de errores si alguno falla."""
     processes: dict[str, subprocess.Popen[bytes]] = {}
+    chosen = [] if sql is None else ["-Sql", str(sql)]
     for engine in engines:
         argument, bits = ENGINES[engine]
         processes[engine] = subprocess.Popen(
             [
                 str(powershell(bits)), "-NoProfile", "-NonInteractive",
                 "-ExecutionPolicy", "Bypass", "-File", str(BUILD_SCRIPT),
-                "-OutDir", str(out_dir), "-Engine", argument,
+                "-OutDir", str(out_dir), "-Engine", argument, *chosen,
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,

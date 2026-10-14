@@ -9,6 +9,10 @@ dos ejecutores calculan el mismo hash. Cada spec que declara lectores añade aqu
 006, ``gis``; la 005, los suyos), y una prueba de ``tests/blender`` comprueba que la lista da
 los mismos lectores que registra ``bl`` (los que pueden ir al trabajo, ``worker``).
 
+Los de ``interop`` (spec 005, T39) son los de los sondeos (``interop.dh_content``): leen las
+tablas con ``interop`` mismo y una base de RecMin con el extractor de
+``adapters.registry.mdb_extractor()``, que resuelven ellos; no hay que darles nada.
+
 Los de ``gis`` (spec 006, T40) leen el texto de puntos con ``interop.csv_tables``, que ``gis``
 no puede importar (ARQ-07): :func:`register_readers` se lo da (``gis.content.
 use_table_reader``), como ``bl/ops/gis.py`` en Blender. Importar ``gis`` cuesta unas décimas
@@ -36,6 +40,12 @@ def _gis_readers() -> ModuleType:
     return content
 
 
+def _interop_readers() -> ModuleType:
+    from ..interop import dh_content  # al pedirlo, como gis (spec 005, T39)
+
+    return dh_content
+
+
 class _ReaderPackages(Mapping[str, ModuleType]):
     """La lista estática de paquetes con lectores: su nombre y cómo se carga el módulo donde
     los declara (se importa al pedirlo)."""
@@ -56,6 +66,7 @@ class _ReaderPackages(Mapping[str, ModuleType]):
 READER_PACKAGES: Mapping[str, ModuleType] = _ReaderPackages({
     "core": lambda: core_readers,
     "gis": _gis_readers,
+    "interop": _interop_readers,
 })
 """Los paquetes con lectores de contenido que puede usar el trabajo, con el módulo donde cada
 uno los declara (su ``CONTENT_READERS``)."""
