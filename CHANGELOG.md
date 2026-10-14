@@ -26,9 +26,9 @@ esa misma pantalla, con el motor de cálculo instalado desde un almacén de rued
 del equipo; falta el almacén del NAS de IMGA. Lo de la spec 008 está comprobado con Blender
 5.2.1 sin su interfaz, con datos sintéticos (también el volumen de un proyecto grande), con el
 GDAL de QGIS 4.2 y con QGIS 4.2 sin su interfaz (PyQGIS: una capa del proyecto editada y lo
-importado protegido), y migrando un proyecto creado con la spec 002; faltan las comprobaciones
-en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su interfaz, las de
-`Z:` que se hacen a mano y la demostración de sus cuatro escenarios. Lo de la spec 006 está
+importado protegido), migrando un proyecto creado con la spec 002, en la pantalla de referencia
+(paneles, diálogos, barra de estado y Ctrl+Z) y en `Z:` con un proyecto entero el 10/10/2026;
+faltan con QGIS con su interfaz y la demostración de sus cuatro escenarios con un ingeniero. Lo de la spec 006 está
 comprobado con Blender 5.2.1 sin su interfaz, con datos sintéticos y casos de referencia
 analíticos (también del tamaño de Silvestre), con el GDAL de QGIS 4.2 y con QGIS 4.2 sin su
 interfaz (PyQGIS), y en la pantalla de referencia el 12 y el 14/10/2026 (del MDT a la vista, el
