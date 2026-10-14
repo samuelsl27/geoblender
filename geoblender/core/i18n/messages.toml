@@ -3364,3 +3364,24 @@ es = "< LD"
 
 ["All values"]
 es = "Todos los valores"
+
+# Operaciones de los sondeos (spec 005, T40; RF-005-12; plan 005 §5.6.4): el nombre visible
+# (label_msgid) de cada tipo de operación de drillholes/provenance.py.
+
+["Import of drillhole tables"]
+es = "Importación de tablas de sondeos"
+
+["Import of a RecMin drillhole database"]
+es = "Importación de una base de sondeos de RecMin"
+
+["Build of the drillhole database"]
+es = "Construcción de la base de sondeos"
+
+["Validation of the drillhole database"]
+es = "Validación de la base de sondeos"
+
+["Computation of the drillhole traces"]
+es = "Cálculo de las trazas de los sondeos"
+
+["Export of the validation report"]
+es = "Exportación del informe de validación"
