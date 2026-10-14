@@ -37,6 +37,9 @@ README = DATA / "README.md"
 # Lo que no es un dato: la descripción, el generador y el paquete que permite ejecutarlo
 # con «-m» (TST-01).
 NOT_DATA = frozenset({"README.md", "sintetico.py", "__init__.py"})
+# Lo que no escribe sintetico.py: las bases RecMin sintéticas (T02), con su propia prueba
+# (tests/unit/interop/test_recmin_fixture.py).
+NOT_GENERATED = frozenset({"recmin"})
 # Una fila de la tabla de ficheros: | `ruta` | … | `sha256` |
 ROW = re.compile(r"^\| `(?P<path>[^`]+)` \|.*\| `(?P<sha>[0-9a-f]{64})` \|\s*$")
 
@@ -103,11 +106,15 @@ def _listed() -> dict[str, str]:
 
 
 def _files(folder: Path) -> dict[str, str]:
-    """Los ficheros de datos de ``folder`` (rutas relativas con «/») con su sha256."""
+    """Los ficheros de datos de ``folder`` (rutas relativas con «/») con su sha256, sin
+    los de las carpetas de :data:`NOT_GENERATED`."""
     return {
         path.relative_to(folder).as_posix(): _sha(path)
         for path in sorted(folder.rglob("*"))
-        if path.is_file() and path.name not in NOT_DATA and "__pycache__" not in path.parts
+        if path.is_file()
+        and path.name not in NOT_DATA
+        and "__pycache__" not in path.parts
+        and path.relative_to(folder).parts[0] not in NOT_GENERATED
     }
 
 

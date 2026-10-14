@@ -795,19 +795,24 @@ def _runtime(ctx: Context) -> list[Run]:
     """Paso «motor» (spec 004, T30; RF-004-28, Silvestre REN-01): con el motor de cálculo
     de pruebas, ``tests/unit`` de cada paquete de dominio con su numpy (el mismo código,
     probado también con el numpy de Blender en «unitarias»), cada carpeta en las partes de
-    :func:`runtime_parts`. Sin motor no hay órdenes: lo omite :func:`_runtime_omit`."""
+    :func:`runtime_parts`. Las carpetas en una sola parte van después de todas las partes:
+    :func:`_launch_all` lanza a la vez solo las partes seguidas, y una orden sin partes
+    entre dos carpetas con partes dejaría las de detrás para después (spec 005, T02:
+    ``tests/unit/drillholes``, de un módulo, delante de ``tests/unit/interop``, de dos).
+    Sin motor no hay órdenes: lo omite :func:`_runtime_omit`."""
     site = ctx.test_runtime().site
     if site is None:
         return []
     runs: list[Run] = []
+    singles: list[Run] = []
     for folder, count in runtime_parts(ctx).items():
         if count == 1:
-            runs.append(ctx.unittest(folder, site=site))
+            singles.append(ctx.unittest(folder, site=site))
         else:
             runs.extend(
                 ctx.unittest(folder, part=(i, count), site=site) for i in range(1, count + 1)
             )
-    return runs
+    return runs + singles
 
 
 def _runtime_omit(ctx: Context) -> str | None:

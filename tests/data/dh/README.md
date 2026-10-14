@@ -119,6 +119,39 @@ semilla, los mismos bytes; la prueba lo comprueba a escala 1/100 (`scale=0.01`:
 exactamente las filas de V-ref entre 100). Lo usan las pruebas de rendimiento (T31), en la
 carpeta temporal.
 
+## `recmin/`: bases RecMin sintéticas (T02)
+
+Dos guiones de Jet SQL **escritos a mano** (no los escribe `sintetico.py` ni están en la
+tabla «Ficheros»; los comprueba `tests/unit/interop/test_recmin_fixture.py`) describen dos
+bases RecMin inventadas, y `build_mdb.ps1` crea con cada uno una base Jet 4
+(`<guion>_jet4.mdb`, con `Microsoft.Jet.OLEDB.4.0`, que solo existe en el `powershell.exe`
+de 32 bits) y otra ACE (`<guion>_ace.mdb`, con ACE 16 o 12 de 64 bits si lo hay: formato ACE
+con extensión `.mdb`, como el `default.mdb` de RecMin Pro), siempre en la carpeta que se le
+da. **Ninguna base se versiona.** Las pruebas usan `tests.support.recmin`: `build_bases`
+(los dos `powershell.exe` a la vez, en una carpeta temporal) y `parse_sql` (las tablas y las
+filas del guion, sin motor, con los números como `Decimal` de su texto exacto). A mano:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\data\dh\recmin\build_mdb.ps1 -OutDir $env:TEMP\recmin
+```
+
+| Guion | Esquema | Contenido |
+| --- | --- | --- |
+| `recmin_v12.sql` | 12: el de `default.mdb` (plan 005 §2.1) | Tablas en minúsculas; R-01 (recto, 45° / −60°), R-02 (vertical, con una `DIRECCION` = 360), R-03 (arco hasta 90 m, con litología hasta 92,5 m: profundidad deducida mayor que la última estación) y R-04 (planificado, sin tramos); au en ppb, cu en % y oxid en «txt»; tablas adicionales `alteracion` (litología) y `duplicados` (muestras); grupos, fórmulas, zonas, intersecciones, cortes, secciones y `giros` sin filas |
+| `recmin_v11.sql` | 11: el de la investigación 01 §6.1 | Tablas en mayúsculas, sin `GRUPOS` (ni `IDGRUPO`) ni `FORMULAS`, `ANGULOS.DISTANCIA` en Single; SV-1 (vertical), SV-2 y SV-3; Au en g/t, Cu en ppm y Tex en «txt»; tablas adicionales `LITOLOGIA2` y `MUESTRAS2`; `GIROS` sin filas |
+
+Los dos: bocas sobre la superficie de `tests/data/gis` (la base no guarda el CRS: se declara
+EPSG:25830 al importar), coordenadas y ángulos en Double, tramos, leyes, densidades y `CL *`
+en Single con 0,1 y 4,35 (en doble precisión serían 0,100000001490116 y 4,349999904632568),
+`COLOR` en BGR de Windows con rojo y azul distintos (3368652 = 0x3366CC → `#CC6633`), el
+elemento de texto en una columna `TEXT(50)` de cada tabla de muestras, un análisis sin dato
+(y en el esquema 12 uno negativo, −5 ppb), campos sin equivalente (`CL *`, `COLORPRINT`,
+`BMP`…) e identificadores de RecMin que no son el orden de las filas. Lo que RecMin no
+documenta y fijan estos guiones (semántica sin verificar, D-7 de la spec): los nombres de
+las tablas adicionales, el tipo de la columna de un elemento de texto y los de `CORTES`
+(Double). Las filas de cada tabla están en `EXPECTED_ROWS` de la prueba: si cambia un guion,
+cambian también ahí y en las pruebas que lo lean (T15, T16).
+
 ## Ficheros
 
 <!-- ficheros: inicio -->
