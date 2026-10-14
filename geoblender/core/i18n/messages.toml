@@ -3315,3 +3315,43 @@ es = "No se eligió ningún MDT: las cotas de las bocas no se han comparado con 
 
 ["The collar is outside the DTM or next to cells without data: its elevation has not been compared with the terrain (DH-W05 not evaluated)."]
 es = "La boca está fuera del MDT o junto a celdas sin dato: su cota no se ha comparado con el terreno (DH-W05 sin evaluar)."
+
+# Informe de validación en CSV (spec 005, T11; RF-005-19): la cabecera, los niveles y los
+# alcances (drillholes/report.py, MESSAGE_IDS; «Code», «Field», «Value» y «Message» ya están
+# más arriba).
+
+["Hole"]
+es = "Sondeo"
+
+["Level"]
+es = "Nivel"
+
+["Error scope"]
+es = "Alcance"
+
+["Table"]
+es = "Tabla"
+
+["Logging scheme or element"]
+es = "Esquema o elemento"
+
+["Catalog code"]
+es = "Código del catálogo"
+
+["From (m)"]
+es = "Desde (m)"
+
+["To (m)"]
+es = "Hasta (m)"
+
+["Error"]
+es = "Error"
+
+["Warning"]
+es = "Aviso"
+
+["Not evaluated"]
+es = "Sin evaluar"
+
+["Record"]
+es = "Registro"
