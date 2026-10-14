@@ -18,7 +18,9 @@ diferencia de las bocas con el MDT; :mod:`.ports` (T10), el puerto de la cota de
 :mod:`.view_data` (T17), los arrays de la vista 3D: curvas de litología, barras de leyes con
 su leyenda de clases y etiquetas; :mod:`.schema` (T37), las tablas de los sondeos en el
 proyecto y su hash; :mod:`.provenance` (T40), lo que los sondeos declaran a la procedencia
-de la 008: sus tipos de operación, sus datos y sus entradas, y :mod:`.params` (T20), sus
+de la 008: sus tipos de operación, sus datos y sus entradas; :mod:`.params` (T20), sus
 parámetros (``core.params``): los umbrales de la validación, el paso de las trazas y la regla
-de los valores bajo el límite de detección.
+de los valores bajo el límite de detección, y :mod:`.build_base` (T41), la base de los sondeos
+desde lo importado: precedencia, conversiones de CRS, datum, azimut, inclinación y unidades,
+identificadores deterministas y la huella de la desviación de cada sondeo.
 """
