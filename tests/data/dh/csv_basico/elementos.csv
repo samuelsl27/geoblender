@@ -1,0 +1,4 @@
+Código;Nombre;Unidad;Decimales;Límite de detección
+Au;Oro;g/t;2;0,01
+Ag;Plata;ppm;1;0,5
+Cu;Cobre;%;3;0,001

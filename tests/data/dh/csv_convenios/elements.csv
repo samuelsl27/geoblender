@@ -1,0 +1,4 @@
+Code,Name,Unit,Decimals,DetectionLimit
+Au,Oro,g/t,2,0.01
+Ag,Plata,ppm,1,0.5
+Cu,Cobre,%,3,0.001

@@ -1,0 +1,9 @@
+Code,Description,Color,Density,Order
+SUE,Suelo vegetal,#8B6B3D,1.80,1
+ARC,Arcilla,#C49A6C,2.00,2
+ARE,Arenisca,#E3C16F,2.40,3
+MAR,Marga,#A9B18F,2.30,4
+CAL,Caliza,#9DB7D5,2.65,5
+DOL,Dolomía,#7F9CC0,2.80,6
+PIZ,Pizarra,#5A5F6B,2.75,7
+MIN,Mineralización,#C0392B,3.10,8
