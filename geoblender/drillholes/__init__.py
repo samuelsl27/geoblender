@@ -8,6 +8,9 @@ columnar, la declaración de una fuente y el DTO de una importación; :mod:`.con
 (T04), el paso de los convenios de la fuente a los internos (inclinación, azimut de
 cuadrícula con la convergencia de las bocas y unidades de las leyes); :mod:`.values` (T05),
 los valores de las columnas de texto (vacíos, centinelas, «<x», «>x», negativos y
-rechazos) y los Single de RecMin por su decimal más corto, y :mod:`.desurvey` (T06), las
-trazas por mínima curvatura, tangente o tangente equilibrada.
+rechazos) y los Single de RecMin por su decimal más corto; :mod:`.desurvey` (T06 y T07), las
+trazas por mínima curvatura, tangente o tangente equilibrada, la posición de cualquier
+profundidad y las polilíneas densificadas, y :mod:`.validate` (T08), las comprobaciones de la
+tabla 4.4.1 de la spec (las de las bocas y las desviaciones), lo que excluyen sus errores y la
+profundidad deducida.
 """

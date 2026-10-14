@@ -3181,3 +3181,64 @@ es = "Desplegado"
 
 ["Show or hide what this link depends on"]
 es = "Muestra u oculta de qué depende este eslabón"
+
+# Validación de los sondeos (spec 005, T08; RF-005-16): los mensajes de las incidencias de las
+# bocas y las desviaciones (drillholes/validate.py, MESSAGES). El informe enseña aparte el
+# sondeo, la tabla, el tramo, el campo y el valor.
+
+["Hole name «{hole}» is repeated as «{repeated}» (names are compared ignoring case and outer spaces): rename or remove one of them."]
+es = "El nombre de sondeo «{hole}» está repetido como «{repeated}» (los nombres se comparan sin distinguir mayúsculas ni espacios exteriores): cambie el nombre de uno de los dos o quítelo."
+
+["Collar {axis} is missing or is not a finite number: enter the coordinate in the collar table."]
+es = "Falta la {axis} de la boca o no es un número finito: escriba la coordenada en la tabla de bocas."
+
+["The total depth is missing and cannot be deduced (the hole has no stations or intervals below the collar): enter it in the collar table."]
+es = "Falta la profundidad total y no se puede deducir (el sondeo no tiene estaciones ni tramos por debajo de la boca): escríbala en la tabla de bocas."
+
+["The total depth, {depth} m, is not a finite number greater than 0: correct it in the collar table."]
+es = "La profundidad total, {depth} m, no es un número finito mayor que 0: corríjala en la tabla de bocas."
+
+["Hole «{hole}» of this record has no collar: add its collar or correct the hole name."]
+es = "El sondeo «{hole}» de este registro no tiene boca: añada su boca o corrija el nombre del sondeo."
+
+["This sample has no hole: give it its hole and its interval."]
+es = "Esta muestra no tiene sondeo: dele su sondeo y su tramo."
+
+["The hole has no survey stations and no collar orientation, and it is not declared vertical: import its surveys, give its collar orientation or declare it vertical when importing."]
+es = "El sondeo no tiene estaciones de desviación ni orientación en la boca, y no está declarado vertical: importe sus desviaciones, dé la orientación en la boca o declárelo vertical al importar."
+
+["Two survey stations at the same depth, {depth} m: remove the repeated one or correct its depth."]
+es = "Dos estaciones de desviación a la misma profundidad, {depth} m: quite la repetida o corrija su profundidad."
+
+["The survey station is above the collar (negative depth) or has no depth: correct its depth."]
+es = "La estación de desviación está por encima de la boca (profundidad negativa) o no tiene profundidad: corrija su profundidad."
+
+["The survey station at {depth} m is below the bottom of the hole ({bottom} m, with a tolerance of {tolerance} m): correct its depth or the total depth."]
+es = "La estación de desviación a {depth} m está por debajo del fondo del sondeo ({bottom} m, con una tolerancia de {tolerance} m): corrija su profundidad o la profundidad total."
+
+["The azimuth is not between 0° and 360°: correct it (degrees from north, clockwise)."]
+es = "El azimut no está entre 0° y 360°: corríjalo (grados desde el norte, en el sentido de las agujas del reloj)."
+
+["The inclination is not between −90° and 90°: correct it (degrees from the horizontal, negative downwards)."]
+es = "La inclinación no está entre −90° y 90°: corríjala (grados desde la horizontal, negativa hacia abajo)."
+
+["The first survey station is at {depth} m, below the collar: its orientation is extended up to the collar. If there is a measurement at the collar, add it."]
+es = "La primera estación de desviación está a {depth} m, por debajo de la boca: se prolonga su orientación hasta la boca. Si hay una medida en la boca, añádala."
+
+["The last survey station is at {depth} m, above the bottom ({bottom} m): its orientation is extended down to the bottom. If there are deeper measurements, add them."]
+es = "La última estación de desviación está a {depth} m, por encima del fondo ({bottom} m): se prolonga su orientación hasta el fondo. Si hay medidas más abajo, añádalas."
+
+["The direction changes {rate}°/30 m between the stations at {depth_from} and {depth_to} m (more than {limit}°/30 m): check their azimuth and inclination."]
+es = "La dirección cambia {rate}°/30 m entre las estaciones de {depth_from} y {depth_to} m (más de {limit}°/30 m): revise su azimut y su inclinación."
+
+["The collar is outside the project work window: check its coordinates and the declared CRS, or enlarge the work window."]
+es = "La boca está fuera de la ventana de trabajo del proyecto: revise sus coordenadas y el CRS declarado, o amplíe la ventana de trabajo."
+
+["All survey stations of the hole have a positive inclination: check the declared inclination convention (here it is negative downwards)."]
+es = "Todas las estaciones de desviación del sondeo tienen la inclinación positiva: revise el convenio de inclinación declarado (aquí es negativa hacia abajo)."
+
+["The collar in the layer is not at its X, Y, Z (it was moved outside Geoblender): the stored X, Y, Z prevails; recompute the base to put it back."]
+es = "La boca de la capa no está en su X, Y, Z (se movió fuera de Geoblender): manda la X, Y, Z guardada; recalcule la base para volver a ponerla en su sitio."
+
+["The source did not give the total depth: {depth} m has been deduced from the deepest station or interval (CALCULADO). If you know it, enter it in the collar table."]
+es = "La fuente no traía la profundidad total: se han deducido {depth} m de la estación o el tramo más profundos (CALCULADO). Si la conoce, escríbala en la tabla de bocas."
