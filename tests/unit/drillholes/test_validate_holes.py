@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Validación de las bocas y las desviaciones (spec 005, T08; HU-005-3; RF-005-16,
-RF-005-17; spec §4.4.1 y §8; plan 005 §5.3.2, §5.4 y §5.6.6).
+"""Validación de las bocas y las desviaciones (spec 005, T08 y T10; HU-005-3; RF-005-16,
+RF-005-17, RF-005-18; spec §4.4.1 y §8; plan 005 §5.3.2, §5.4 y §5.6.6).
 
-- ``tests/data/dh/csv_errores``: cada caso de DH-E01 a DH-E08, DH-W02, DH-W03, DH-W04,
-  DH-W06, DH-W14, DH-W15 y DH-W16 da **exactamente** sus incidencias (código, nivel, alcance,
-  sondeo, tabla, tramo o profundidad, campo y valor), y los demás casos, ninguna de esos
-  códigos (0 falsos positivos); ``csv_basico`` da 0 incidencias.
+- ``tests/data/dh/csv_errores``: cada caso de DH-E01 a DH-E08, DH-W02 a DH-W06, DH-W14,
+  DH-W15 y DH-W16 da **exactamente** sus incidencias (código, nivel, alcance, sondeo, tabla,
+  tramo o profundidad, campo y valor), y los demás casos, ninguna de esos códigos (0 falsos
+  positivos); ``csv_basico`` da 0 incidencias. Con la ventana de trabajo y la superficie de
+  ``esperado.json`` (un ``SurfaceSampler`` falso con su fórmula): CE-005-01 con los 27
+  códigos de la tabla 4.4.1.
+- **Diferencia con el MDT** (T10; RF-005-18, DH-W05): la de cada boca, con su umbral en el
+  límite; sin MDT, o con la boca fuera del MDT, no se evalúa y el informe lo dice; el MDT, en
+  el CRS y la referencia vertical de los sondeos; con el GeoTIFF de ``tests/data/gis`` (la
+  bilineal de la 006), ``csv_basico`` sin avisos y el caso de DH-W05 con el suyo.
 - **Alcance S** (RF-005-17): ``hole_exclusions`` (la parte de ``dh.desurvey``) da los mismos
   sondeos que el informe, solo los de los errores de alcance S; con ellos fuera, las trazas
   de los demás se calculan; un aviso no excluye nada y DH-E04 solo excluye su registro.
@@ -28,13 +34,19 @@ import unittest
 import numpy as np
 
 from tests.support import dh_sets
+from tests.support.dh_fakes import FakeSurface
 from tests.support.package import import_geoblender
+from tests.support.repo import ROOT
 
 validate = import_geoblender("drillholes.validate")
 desurvey = import_geoblender("drillholes.desurvey")
 model = import_geoblender("drillholes.model")
+ports = import_geoblender("drillholes.ports")
+surface = import_geoblender("drillholes.surface")
 georef = import_geoblender("core.georef")
 i18n = import_geoblender("core.i18n")
+raster = import_geoblender("gis.raster")
+geotiff = import_geoblender("gis.geotiff.reader")
 
 IMPLEMENTED = frozenset({
     "DH-E01", "DH-E02", "DH-E03", "DH-E04", "DH-E05", "DH-E06", "DH-E07", "DH-E08",
@@ -42,19 +54,32 @@ IMPLEMENTED = frozenset({
     # T09 (tramos, valores y catálogos; sus pruebas, en test_validate_intervals)
     "DH-E09", "DH-E10", "DH-E11", "DH-E12",
     "DH-W01", "DH-W07", "DH-W08", "DH-W09", "DH-W10", "DH-W11", "DH-W12",
+    # T10 (la diferencia con el MDT)
+    "DH-W05",
 })
-"""Los códigos que valida ``validate`` (T08 y T09); T10 añade DH-W05."""
+"""Los códigos que valida ``validate`` (T08, T09 y T10): todos los de la tabla 4.4.1."""
 
 PARAMS = dh_sets.params()
 TOLERANCE = PARAMS.depth_tolerance_m
+DEM_TOLERANCE = PARAMS.collar_dem_tolerance_m
 CASES = dh_sets.error_cases()
 WINDOW = dh_sets.work_window()
 X0, Y0, Z0 = 700_010.5, 4_400_040.5, 800.0
 NAN = math.nan
+DTM_006 = ROOT / "tests" / "data" / "gis" / "geotiff" / "f64_strip.tif"
+"""El MDT de 1 m de ``tests/data/gis`` (``base_1m`` en Float64, con su hueco sin dato)."""
+
+
+def _surface(z=None) -> FakeSurface:
+    """Un ``SurfaceSampler`` falso en el CRS y la referencia vertical de los sondeos; por
+    defecto, con la superficie de ``esperado.json``."""
+    if z is None:
+        return FakeSurface(dh_sets.H25830, dh_sets.V5782)
+    return FakeSurface(dh_sets.H25830, dh_sets.V5782, z)
 
 
 def _run(case: dh_sets.ErrorCase):
-    return validate.validate(case.dset, PARAMS, work_window=WINDOW,
+    return validate.validate(case.dset, PARAMS, surface=_surface(), work_window=WINDOW,
                              stored_geom_xyz=case.stored_geom_xyz)
 
 
@@ -104,10 +129,10 @@ class CsvErrorsTest(unittest.TestCase):
     """CE-005-01 (lo de esta tarea): un caso por código y el juego limpio."""
 
     def test_each_case_gives_exactly_its_issues(self) -> None:
-        """RF-005-16: cada caso de ``csv_errores`` da exactamente sus incidencias de
-        DH-E01 a E08, W02, W03, W04, W06, W14, W15 y W16, con código, nivel, alcance,
-        sondeo, tabla, tramo o profundidad, campo y valor; los casos de los demás códigos
-        no dan ninguna de estos (0 falsos positivos)."""
+        """CE-005-01, RF-005-16, RF-005-18: con la ventana de trabajo y la superficie de
+        ``esperado.json``, cada caso de ``csv_errores`` da exactamente sus incidencias de
+        todos los códigos (también DH-W05), con código, nivel, alcance, sondeo, tabla, tramo
+        o profundidad, campo y valor; ningún falso positivo."""
         for case in CASES:
             with self.subTest(case=case.code):
                 got = [dh_sets.issue_key(issue) for issue in _run(case).issues]
@@ -116,26 +141,33 @@ class CsvErrorsTest(unittest.TestCase):
                 self.assertCountEqual(got, want)
 
     def test_every_code_is_detected(self) -> None:
-        """RF-005-16: cada código de esta tarea sale en su caso, con un mensaje en español
-        que no es su ``msgid`` (inglés) y sin marcadores sin rellenar."""
+        """CE-005-01, RF-005-16: cada código de la tabla 4.4.1 (los 27) sale en su caso, con
+        un mensaje en español que no es su ``msgid`` (inglés) y sin marcadores sin rellenar;
+        con el MDT, ninguna nota de comprobaciones sin evaluar."""
         seen = set()
         for case in CASES:
-            for issue in _run(case).issues:
+            report = _run(case)
+            self.assertEqual(report.notes, ())
+            for issue in report.issues:
                 seen.add(issue.code)
                 text = issue.message()
                 self.assertNotEqual(text, issue.message_id)
                 self.assertNotIn("{", text)
                 self.assertTrue(issue.message("en"))
         self.assertEqual(seen, IMPLEMENTED)
+        self.assertEqual(IMPLEMENTED, set(validate.CODES))
 
     def test_clean_set_has_no_issues(self) -> None:
-        """RF-005-16: ``csv_basico`` (con los análisis en columnas o en filas) da 0
-        incidencias con la ventana de trabajo, y no excluye nada."""
+        """RF-005-16, RF-005-18: ``csv_basico`` (con los análisis en columnas o en filas) da
+        0 incidencias y ninguna nota con la ventana de trabajo y la superficie (cada boca a
+        ≤ 0,5 mm: su cota está escrita con 3 decimales), y no excluye nada."""
         for assays in ("assay_wide", "assay_long"):
             with self.subTest(assays=assays):
                 dset = dh_sets.basico_set(assays)
-                report = _check(dset, work_window=WINDOW)
+                report = _check(dset, surface=_surface(), work_window=WINDOW)
                 self.assertEqual(report.issues, ())
+                self.assertEqual(report.notes, ())
+                self.assertLessEqual(float(np.max(np.abs(report.collar_dem_dz))), 0.0005)
                 excluded = report.excluded()
                 self.assertFalse(excluded.holes.any())
                 self.assertEqual(excluded.records, frozenset())
@@ -401,6 +433,115 @@ class HoleChecksTest(unittest.TestCase):
             ("dh_zone_interval", 0), ("dh_structure", 0)}))
         self.assertEqual(report.issues[1].log_set, "lithology")
         self.assertEqual(report.issues[2].element, "Au")
+
+
+class DemChecksTest(unittest.TestCase):
+    """La diferencia de la cota de las bocas con el MDT (T10; RF-005-18; DH-W05)."""
+
+    @staticmethod
+    def _offsets(offsets: dict[int, float]):
+        """Una superficie que deja la boca k (en X0 + 10·k) a ``offsets[k]`` m por encima
+        del MDT (NaN: fuera del MDT)."""
+        def z(xy: np.ndarray) -> np.ndarray:
+            k = np.rint((xy[:, 0] - X0) / 10.0).astype(np.int64)
+            return np.array([Z0 - offsets[int(i)] for i in k.tolist()], dtype=np.float64)
+        return z
+
+    def test_dem_difference(self) -> None:
+        """RF-005-18, DH-W05: dz = Z de la boca − z del MDT en su posición, de cada boca con
+        X, Y y Z; aviso si |dz| pasa de la tolerancia (justo en ella, no), con el campo
+        ``z``, sin valor (es un cálculo) y el mensaje con la cota, la del MDT y dz; una boca
+        fuera del MDT, sin evaluar y con su nota; una boca sin Z (DH-E02) o de un nombre
+        repetido (DH-E01) no se muestrea. Una sola llamada al MDT."""
+        fake = _surface(self._offsets({0: DEM_TOLERANCE, 1: 2.001, 2: -2.5, 3: NAN,
+                                       4: -DEM_TOLERANCE, 7: 0.25}))
+        dset = _set([_collar("H-1"), _collar("H-2", k=1), _collar("H-3", k=2),
+                     _collar("H-4", k=3), _collar("H-5", k=4), _collar("H-6", k=5, z=None),
+                     _collar("H-7", k=6, x=None), _collar("H-8", k=7), _collar("h-8 ", k=8)],
+                    [_vertical(f"H-{k}") for k in range(1, 9)])
+        report = _check(dset, surface=fake)
+        dem = [i for i in report.issues if i.code == "DH-W05"]
+        self.assertEqual([(i.hole_name, i.hole, i.table, i.row_ref, i.field, i.value,
+                           i.depth_from, i.depth_to) for i in dem],
+                         [("H-2", 1, "dh_collar", 1, "z", None, None, None),
+                          ("H-3", 2, "dh_collar", 2, "z", None, None, None)])
+        self.assertEqual(dict(dem[1].message_args),
+                         {"z": Z0, "dem": 802.5, "dz": -2.5, "tolerance": DEM_TOLERANCE})
+        self.assertIn("802,5 m", dem[1].message())
+        self.assertIn("-2,5 m", dem[1].message())
+        self.assertIn("802.5 m", dem[1].message("en"))
+        dz = report.collar_dem_dz
+        np.testing.assert_array_equal(dz[[0, 2, 4]], [DEM_TOLERANCE, -2.5, -DEM_TOLERANCE])
+        self.assertAlmostEqual(float(dz[1]), 2.001, delta=1e-9)
+        self.assertTrue(np.isnan(dz[[3, 5, 6, 7, 8]]).all())
+        self.assertEqual([(n.code, n.hole, n.hole_name) for n in report.notes],
+                         [("DH-W05", 3, "H-4")])
+        self.assertEqual(len(fake.calls), 1)
+        np.testing.assert_array_equal(
+            fake.calls[0], [[X0 + 10.0 * k, Y0] for k in (0, 1, 2, 3, 4)])
+
+    def test_without_dem(self) -> None:
+        """RF-005-18 (spec §8): sin MDT, DH-W05 no se evalúa (tampoco en el caso de
+        ``csv_errores`` que lo tiene), no hay diferencias y el informe lo dice con una nota
+        general, en español."""
+        case = next(c for c in CASES if c.code == "DH-W05")
+        report = validate.validate(case.dset, PARAMS, work_window=WINDOW)
+        self.assertEqual(report.issues, ())
+        self.assertIsNone(report.collar_dem_dz)
+        note = report.notes[0]
+        self.assertEqual((len(report.notes), note.code, note.hole, note.hole_name),
+                         (1, "DH-W05", -1, None))
+        self.assertIn("MDT", note.message())
+        self.assertNotEqual(note.message(), note.message("en"))
+        with self.assertRaises(ValueError):
+            note.message("fr")
+
+    def test_dem_reference_system(self) -> None:
+        """RF-005-18 (principio 6): el MDT tiene que estar en el CRS y la referencia vertical
+        de los sondeos (los del proyecto), o es un error del programa; un MDT que no es un
+        ``SurfaceSampler`` o que no da una cota float64 por boca, también; sin bocas que
+        muestrear, no se le llama."""
+        dset = _set([_collar("J-1"), _collar("J-2", k=1)], [_vertical("J-1"), _vertical("J-2")])
+        catalog = georef.load_catalog()
+        for crs, vertical in ((catalog.horizontal(25831), dh_sets.V5782),
+                              (dh_sets.H25830, catalog.vertical(9392)),
+                              (dh_sets.H25830, catalog.local_vertical("cota de la mina"))):
+            with self.subTest(crs=crs.epsg, vertical=vertical.name):
+                with self.assertRaises(ValueError):
+                    _check(dset, surface=FakeSurface(crs, vertical))
+        for z, error in ((lambda xy: np.zeros(len(xy), dtype=np.float32), TypeError),
+                         (lambda xy: np.zeros(len(xy) + 1), ValueError),
+                         (lambda xy: [800.0] * len(xy), TypeError)):
+            raw = FakeSurface(dh_sets.H25830, dh_sets.V5782)
+            raw.sample = z  # lo que dé, sin pasarlo a float64
+            with self.subTest(error=error), self.assertRaises(error):
+                _check(dset, surface=raw)
+        with self.assertRaises(TypeError):
+            _check(dset, surface=object())
+        fake = _surface()
+        report = _check(_set([_collar("J-3", z=None)], [_vertical("J-3")]), surface=fake)
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(report.notes, ())
+        self.assertTrue(np.isnan(report.collar_dem_dz).all())
+
+    def test_with_the_dtm_of_the_006(self) -> None:
+        """RF-005-18, D-19: con el MDT de ``tests/data/gis`` leído por la 006 y la bilineal
+        de ``gis.raster.sample`` (``surface.raster_sampler``), ``csv_basico`` no da ningún
+        aviso ni nota (sus bocas están en centros de celda, a ≤ 0,5 mm) y el caso de DH-W05
+        de ``csv_errores`` da exactamente el suyo."""
+        source = geotiff.read_geotiff(DTM_006)
+        dtm = raster.Raster(source.grid, source.values, dh_sets.H25830, dh_sets.V5782)
+        sampler = surface.raster_sampler(dtm)
+        self.assertIsInstance(sampler, ports.SurfaceSampler)
+        report = _check(dh_sets.basico_set(), surface=sampler, work_window=WINDOW)
+        self.assertEqual((report.issues, report.notes), ((), ()))
+        self.assertLessEqual(float(np.max(np.abs(report.collar_dem_dz))), 0.0005)
+        case = next(c for c in CASES if c.code == "DH-W05")
+        report = _check(case.dset, surface=sampler, work_window=WINDOW)
+        self.assertEqual([dh_sets.issue_key(issue) for issue in report.issues],
+                         [dh_sets.expected_key(item) for item in case.issues])
+        hole = int(case.dset.hole_index(["S-12"])[0])
+        self.assertAlmostEqual(float(report.collar_dem_dz[hole]), 5.0, delta=0.0005)
 
 
 class ContractTest(unittest.TestCase):

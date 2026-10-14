@@ -10,7 +10,8 @@ cuadrícula con la convergencia de las bocas y unidades de las leyes); :mod:`.va
 los valores de las columnas de texto (vacíos, centinelas, «<x», «>x», negativos y
 rechazos) y los Single de RecMin por su decimal más corto; :mod:`.desurvey` (T06 y T07), las
 trazas por mínima curvatura, tangente o tangente equilibrada, la posición de cualquier
-profundidad y las polilíneas densificadas, y :mod:`.validate` (T08), las comprobaciones de la
-tabla 4.4.1 de la spec (las de las bocas y las desviaciones), lo que excluyen sus errores y la
-profundidad deducida.
+profundidad y las polilíneas densificadas; :mod:`.validate` (T08 a T10), las comprobaciones
+de la tabla 4.4.1 de la spec, lo que excluyen sus errores, la profundidad deducida y la
+diferencia de las bocas con el MDT; :mod:`.ports` (T10), el puerto de la cota del MDT
+(``SurfaceSampler``), y :mod:`.surface` (T10), su implementación con una rejilla de la 006.
 """

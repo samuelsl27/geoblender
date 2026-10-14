@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Validación de los sondeos (spec 005, T08; RF-005-16, RF-005-17; spec §4.4.1 y §8; plan 005
-§5.3.2, §5.4 y §5.6.6).
+"""Validación de los sondeos (spec 005, T08 a T10; RF-005-16, RF-005-17, RF-005-18; spec §4.4.1
+y §8; plan 005 §5.3.2, §5.4 y §5.6.6).
 
 :func:`validate` aplica a un ``DrillholeSet`` las comprobaciones de la tabla 4.4.1 de la spec
 y da un :class:`ValidationReport`: una :class:`Issue` por incidencia, con su código, su nivel
@@ -14,7 +14,20 @@ elementos de un sondeo (T) y los registros (R); nada más.
 
 **La parte de las bocas y las desviaciones** (T08): DH-E01 a DH-E08, DH-W02, DH-W03, DH-W04,
 DH-W06, DH-W14, DH-W15 y DH-W16. **La de los tramos, los valores y los catálogos** (T09):
-DH-E09 a DH-E12, DH-W01 y DH-W07 a DH-W12. La diferencia con el MDT (DH-W05) llega con la T10.
+DH-E09 a DH-E12, DH-W01 y DH-W07 a DH-W12. **La diferencia con el MDT** (T10; RF-005-18):
+DH-W05 y ``ValidationReport.collar_dem_dz``.
+
+**El MDT** (RF-005-18; plan §5.6.6, D-19): un :class:`~.ports.SurfaceSampler` (en el trabajo,
+``drillholes.surface.raster_sampler`` del ``gis_dtm_*`` elegido: la bilineal de la 006) en el
+CRS y la referencia vertical de los sondeos (los del proyecto; otros son un error del
+programa: nunca se suponen). Se le pide una vez la cota de las bocas que se comprueban (sin
+DH-E01) con X, Y y Z; la diferencia de cada una es dz = Z de la boca − z del MDT en su
+posición (m, CALCULADO), y DH-W05 avisa si |dz| pasa de ``collar_dem_tolerance_m`` (justo en
+ella, no), con el campo ``z`` y sin valor (es un cálculo). **Lo que no se evalúa, el informe
+lo dice** (spec §8) con una :class:`Note`: sin MDT, una nota general (``hole`` −1) y ninguna
+diferencia (``collar_dem_dz`` es ``None``); una boca fuera del MDT (o con un vecino sin dato),
+una nota suya y su diferencia vacía (NaN). Una boca sin X, Y o Z ya tiene su DH-E02, y una de
+un nombre repetido, su DH-E01: no se muestrean ni llevan nota.
 
 **La parte de alcance S, para la desviación** (plan §5.6.6): :func:`hole_exclusions` da la
 máscara de los sondeos con un error de alcance S (los que ``desurvey`` no puede calcular), sin
@@ -79,7 +92,7 @@ que los casos de ``csv_errores``):
 
 **Valor** de una incidencia: el número, el texto o el sí/no guardado en el campo; «» si el
 campo está vacío (un número ausente o, en DH-W16, la profundidad que la fuente no traía);
-``None`` si la comprobación es de un cálculo (DH-E05, W04, W06, W09, W14, W15).
+``None`` si la comprobación es de un cálculo (DH-E05, W04, W05, W06, W09, W14, W15).
 
 El orden es determinista: por boca (los registros sin boca, al final), código, tabla y fila.
 Nada modifica la entrada. Python puro y numpy (ADR-0004); vectorial salvo al crear las
@@ -98,7 +111,7 @@ from typing import Any
 
 import numpy as np
 
-from ..core.georef import Window
+from ..core.georef import CrsRef, Window
 from ..core.i18n import LANGUAGES, translate
 from ..core.params import ParamKind
 from .desurvey import direction, dogleg
@@ -112,6 +125,7 @@ from .model import (
     SurveyColumns,
     name_key,
 )
+from .ports import SurfaceSampler
 
 __all__ = [
     "CATALOG_TABLES",
@@ -121,6 +135,7 @@ __all__ = [
     "Exclusions",
     "Issue",
     "Level",
+    "Note",
     "Scope",
     "ValidationParams",
     "ValidationReport",
@@ -244,6 +259,15 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
               "measurements, add them.",
     "DH-W04": "The direction changes {rate}°/30 m between the stations at {depth_from} and "
               "{depth_to} m (more than {limit}°/30 m): check their azimuth and inclination.",
+    "DH-W05": "The collar elevation, {z} m, minus the DTM elevation at its position, {dem} m, "
+              "is {dz} m (more than {tolerance} m either way): check the collar Z and its "
+              "vertical datum, or the DTM.",
+    "DH-W05.no_dem": "No DTM was chosen: the collar elevations have not been compared with "
+                     "the terrain (DH-W05 not evaluated). Choose a DTM when validating to "
+                     "compare them.",
+    "DH-W05.outside": "The collar is outside the DTM or next to cells without data: its "
+                      "elevation has not been compared with the terrain (DH-W05 not "
+                      "evaluated).",
     "DH-W06": "The collar is outside the project work window: check its coordinates and the "
               "declared CRS, or enlarge the work window.",
     "DH-W07": "The value is in {unit} and the catalog unit of {element} is {catalog_unit}; it "
@@ -268,7 +292,9 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
               "collar table.",
 })
 """El ``msgid`` (inglés) del mensaje de cada comprobación (o de cada variante,
-``código.variante``); su español está en ``core/i18n/messages.toml``."""
+``código.variante``, también las de las notas de :class:`Note`); su español está en
+``core/i18n/messages.toml``."""
+_DEM_DECIMALS = 3  # la cota del MDT y la diferencia que se muestran (mm)
 
 _AXES = ("x", "y", "z")
 _FULL_TURN_DEG = 360.0
@@ -388,11 +414,47 @@ class Issue:
     def message(self, language: str = "es") -> str:
         """El mensaje en ``language`` (``"es"``, por defecto, o ``"en"``, el ``msgid``), con
         sus números en el formato del idioma (coma decimal en español)."""
-        if language not in LANGUAGES:
-            raise ValueError(f"el idioma «{language}» no es de Geoblender: "
-                             f"{', '.join(LANGUAGES)}")
-        shown = {name: _shown(value, language) for name, value in self.message_args}
-        return translate(language, self.message_id, **shown)
+        return _message(self.message_id, self.message_args, language)
+
+
+@dataclass(frozen=True, slots=True)
+class Note:
+    """Lo que el informe dice de una comprobación que no se evaluó (spec §8; RF-005-18): sin
+    MDT, DH-W05 en ninguna boca; con la boca fuera del MDT, en esa. ``code``, la comprobación
+    (de :data:`CODES`); ``hole`` y ``hole_name``, la boca (posición y nombre; −1 y ``None``:
+    todas); ``message_id`` y ``message_args``, como en :class:`Issue`. No es una incidencia:
+    no tiene nivel ni excluye nada."""
+
+    code: str
+    hole: int
+    hole_name: str | None
+    _: KW_ONLY
+    message_id: str
+    message_args: tuple[tuple[str, JsonScalar], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.code not in CODES:
+            raise ValueError(f"«{self.code}» no es un código de la tabla 4.4.1 de la spec 005")
+        if isinstance(self.hole, bool) or not isinstance(self.hole, int | np.integer):
+            raise TypeError(f"la boca de una nota es su posición (int), no {self.hole!r}")
+        if self.hole < -1:
+            raise ValueError(f"la boca de una nota es su posición o −1, no {self.hole}")
+        object.__setattr__(self, "hole", int(self.hole))
+        if not isinstance(self.message_id, str) or not self.message_id:
+            raise ValueError("una nota lleva el msgid de su mensaje")
+        object.__setattr__(self, "message_args", _args(self.message_args))
+
+    def message(self, language: str = "es") -> str:
+        """El mensaje en ``language`` (como :meth:`Issue.message`)."""
+        return _message(self.message_id, self.message_args, language)
+
+
+def _message(message_id: str, message_args: tuple[tuple[str, JsonScalar], ...],
+             language: str) -> str:
+    if language not in LANGUAGES:
+        raise ValueError(f"el idioma «{language}» no es de Geoblender: {', '.join(LANGUAGES)}")
+    shown = {name: _shown(value, language) for name, value in message_args}
+    return translate(language, message_id, **shown)
 
 
 def _shown(value: JsonScalar, language: str) -> str:
@@ -428,10 +490,15 @@ class Exclusions:
 @dataclass(frozen=True)
 class ValidationReport:
     """Las incidencias de una validación, en su orden (véase el módulo), de un conjunto de
-    ``hole_count`` bocas."""
+    ``hole_count`` bocas; ``notes``, lo que no se evaluó (:class:`Note`), y
+    ``collar_dem_dz``, la diferencia de cada boca con el MDT (RF-005-18; m, float64, de solo
+    lectura; NaN en las que no se evaluaron), o ``None`` si no hubo MDT. La diferencia no
+    entra en la comparación de dos informes (``==``)."""
 
     issues: tuple[Issue, ...]
     hole_count: int
+    notes: tuple[Note, ...] = ()
+    collar_dem_dz: np.ndarray | None = dataclasses.field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         found = tuple(self.issues)
@@ -442,6 +509,19 @@ class ValidationReport:
         if any(issue.hole >= self.hole_count for issue in found):
             raise ValueError(f"una incidencia apunta a una boca fuera de [0, {self.hole_count})")
         object.__setattr__(self, "issues", found)
+        notes = tuple(self.notes)
+        if not all(isinstance(note, Note) for note in notes):
+            raise TypeError("las notas de un informe son Note")
+        if any(note.hole >= self.hole_count for note in notes):
+            raise ValueError(f"una nota apunta a una boca fuera de [0, {self.hole_count})")
+        object.__setattr__(self, "notes", notes)
+        dz = self.collar_dem_dz
+        if dz is not None:
+            if not isinstance(dz, np.ndarray) or dz.dtype != np.float64:
+                raise TypeError(f"la diferencia con el MDT es un array float64, no {dz!r}")
+            if dz.shape != (self.hole_count,):
+                raise ValueError(f"la diferencia con el MDT es una por boca "
+                                 f"({self.hole_count},), no {dz.shape}")
 
     def excluded(self) -> Exclusions:
         """Lo que excluyen sus errores (RF-005-17): el sondeo de cada error S (y, en uno de
@@ -747,6 +827,59 @@ def _collar_warnings(dset: DrillholeSet, checked: np.ndarray, window: Window | N
         issues.append(_issue("DH-W16", k, names[k], _COLLAR, row_ref=k, field="depth",
                              value="", args={"depth": float(collars.depth[k])}))
     return issues
+
+
+def _check_surface(surface: object, dset: DrillholeSet) -> SurfaceSampler:
+    """El MDT, si es un :class:`~.ports.SurfaceSampler` en el CRS y la referencia vertical de
+    los sondeos (los del proyecto): otros, o algo que no lo es, son un error del programa."""
+    if not isinstance(surface, SurfaceSampler):
+        raise TypeError(f"el MDT de la validación es un drillholes.ports.SurfaceSampler, no "
+                        f"{surface!r}")
+    if not isinstance(surface.crs, CrsRef) or surface.crs.epsg != dset.crs.epsg:
+        raise ValueError(f"el MDT está en {getattr(surface.crs, 'name', surface.crs)!r} y los "
+                         f"sondeos en EPSG:{dset.crs.epsg}: se valida con un MDT del proyecto")
+    if surface.vertical != dset.vertical:
+        raise ValueError(f"las cotas del MDT están en {getattr(surface.vertical, 'name', '?')!r}"
+                         f" y las de los sondeos en {dset.vertical.name!r}: se valida con un "
+                         "MDT del proyecto")
+    return surface
+
+
+def _dem_issues(dset: DrillholeSet, checked: np.ndarray, surface: SurfaceSampler | None,
+                tolerance: float) -> tuple[list[Issue], list[Note], np.ndarray | None]:
+    """DH-W05 (RF-005-18; véase el módulo): las incidencias, las notas de lo que no se evaluó
+    y la diferencia de cada boca con el MDT (``None`` sin MDT)."""
+    if surface is None:
+        return [], [Note("DH-W05", -1, None, message_id=MESSAGES["DH-W05.no_dem"])], None
+    collars = dset.collars
+    count = len(collars)
+    dz = np.full(count, np.nan)
+    wanted = np.flatnonzero(checked & np.isfinite(collars.x) & np.isfinite(collars.y)
+                            & np.isfinite(collars.z))
+    issues: list[Issue] = []
+    notes: list[Note] = []
+    if wanted.size:
+        xy = np.column_stack((collars.x[wanted], collars.y[wanted]))
+        found = surface.sample(xy)
+        if not isinstance(found, np.ndarray) or found.dtype != np.float64:
+            raise TypeError(f"el MDT da sus cotas en un array float64, no {found!r}")
+        if found.shape != (wanted.size,):
+            raise ValueError(f"el MDT da una cota por punto ({wanted.size},), no {found.shape}")
+        dem = np.where(np.isfinite(found), found, np.nan)
+        dz[wanted] = collars.z[wanted] - dem
+        names = collars.name.tolist()
+        for i, k in enumerate(wanted.tolist()):
+            if math.isnan(dz[k]):
+                notes.append(Note("DH-W05", k, names[k],
+                                  message_id=MESSAGES["DH-W05.outside"]))
+            elif abs(dz[k]) > tolerance:
+                issues.append(_issue(
+                    "DH-W05", k, names[k], _COLLAR, row_ref=k, field="z",
+                    args={"z": float(collars.z[k]),
+                          "dem": round(float(dem[i]), _DEM_DECIMALS),
+                          "dz": round(float(dz[k]), _DEM_DECIMALS), "tolerance": tolerance}))
+    dz.flags.writeable = False
+    return issues, notes, dz
 
 
 def _changed_field(az1: float, az2: float, inc1: float, inc2: float) -> str:
@@ -1128,26 +1261,32 @@ def _catalog_issues(dset: DrillholeSet, checked: np.ndarray, names: list[str],
 
 
 def validate(dset: DrillholeSet, params: ValidationParams, *,
+             surface: SurfaceSampler | None = None,
              work_window: Window | None = None,
              stored_geom_xyz: np.ndarray | None = None) -> ValidationReport:
     """Las incidencias de ``dset`` con los umbrales ``params`` (RF-005-16; véase el módulo):
-    ``work_window``, la ventana de trabajo del proyecto (DH-W06; sin ella, no se evalúa);
-    ``stored_geom_xyz``, la posición absoluta (bocas, 3) de cada boca en la capa (DH-W15; sin
-    ella, no se evalúa). ``dset`` no cambia."""
+    ``surface``, el MDT del proyecto (DH-W05 y la diferencia de cada boca, RF-005-18; sin él,
+    no se evalúa y el informe lo dice); ``work_window``, la ventana de trabajo del proyecto
+    (DH-W06; sin ella, no se evalúa); ``stored_geom_xyz``, la posición absoluta (bocas, 3) de
+    cada boca en la capa (DH-W15; sin ella, no se evalúa). ``dset`` no cambia."""
     dset = _check_set(dset)
     if not isinstance(params, ValidationParams):
         raise TypeError(f"los umbrales de la validación son ValidationParams, no {params!r}")
     if work_window is not None and not isinstance(work_window, Window):
         raise TypeError(f"la ventana de trabajo es un core.georef.Window, no {work_window!r}")
+    if surface is not None:
+        surface = _check_surface(surface, dset)
     count = len(dset.collars)
     geom = None if stored_geom_xyz is None else _stored_geom(stored_geom_xyz, count)
     found = _find(dset, params.depth_tolerance_m)
     checked = ~found.repeated
     names = dset.collars.name.tolist()
+    dem_issues, notes, dz = _dem_issues(dset, checked, surface, params.collar_dem_tolerance_m)
     issues = (_collar_errors(dset, found, checked)
               + _station_errors(dset, found, checked, params.depth_tolerance_m)
               + _orphans(dset)
               + _collar_warnings(dset, checked, work_window, geom)
+              + dem_issues
               + _survey_warnings(dset, found, params)
               + _lithology_issues(dset, checked, names, params)
               + _assay_issues(dset, checked, names, params)
@@ -1159,4 +1298,5 @@ def validate(dset: DrillholeSet, params: ValidationParams, *,
         return (hole, issue.code, _TABLE_ORDER[issue.table], row)
 
     issues.sort(key=order)
-    return ValidationReport(issues=tuple(issues), hole_count=count)
+    return ValidationReport(issues=tuple(issues), hole_count=count, notes=tuple(notes),
+                            collar_dem_dz=dz)

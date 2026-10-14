@@ -3302,3 +3302,16 @@ es = "El código de muestra «{sample}» se usa también en el sondeo «{hole}»
 
 ["The hole is planned but has assays: if it has been drilled, mark it as not planned; if not, check which hole the assays belong to."]
 es = "El sondeo está planificado pero tiene análisis: si ya se ha perforado, quítele la marca de planificado; si no, revise de qué sondeo son los análisis."
+
+# Validación de los sondeos (spec 005, T10; RF-005-18): la diferencia de la cota de las bocas
+# con el MDT (DH-W05) y las notas del informe cuando no se evalúa (drillholes/validate.py,
+# MESSAGES).
+
+["The collar elevation, {z} m, minus the DTM elevation at its position, {dem} m, is {dz} m (more than {tolerance} m either way): check the collar Z and its vertical datum, or the DTM."]
+es = "La cota de la boca, {z} m, menos la del MDT en su posición, {dem} m, da {dz} m (más de {tolerance} m por encima o por debajo): revise la Z de la boca y su datum vertical, o el MDT."
+
+["No DTM was chosen: the collar elevations have not been compared with the terrain (DH-W05 not evaluated). Choose a DTM when validating to compare them."]
+es = "No se eligió ningún MDT: las cotas de las bocas no se han comparado con el terreno (DH-W05 sin evaluar). Elija un MDT al validar para compararlas."
+
+["The collar is outside the DTM or next to cells without data: its elevation has not been compared with the terrain (DH-W05 not evaluated)."]
+es = "La boca está fuera del MDT o junto a celdas sin dato: su cota no se ha comparado con el terreno (DH-W05 sin evaluar)."
