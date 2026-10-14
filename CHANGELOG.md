@@ -11,9 +11,10 @@ cambiar.
 
 Geoblender 0.1.0 ya se instala (spec 001), crea y abre proyectos con su sistema de
 referencia y su origen local (spec 002), tiene su interfaz (spec 003), ejecuta los cálculos
-largos en segundo plano, con un motor de cálculo opcional (spec 004), y registra la
-procedencia de los parámetros, las entradas, las operaciones y las cifras del proyecto (spec
-008), aunque todavía no tiene funciones mineras. Lo de la spec 002 está comprobado también
+largos en segundo plano, con un motor de cálculo opcional (spec 004), registra la procedencia
+de los parámetros, las entradas, las operaciones y las cifras del proyecto (spec 008) y tiene
+su primera función minera, la topografía base: MDT, rejilla de cálculo de paso exacto, TIN,
+curvas de nivel y su intercambio con QGIS (spec 006). Lo de la spec 002 está comprobado también
 con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un solo equipo; falta con dos equipos a
 la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar de la del panel del proyecto, las de
 la interfaz de la spec 003. Lo de la spec 003 está comprobado en una pantalla de 1920 × 1080
@@ -27,15 +28,155 @@ del equipo; falta el almacén del NAS de IMGA. Lo de la spec 008 está comprobad
 GDAL de QGIS 4.2 y con QGIS 4.2 sin su interfaz (PyQGIS: una capa del proyecto editada y lo
 importado protegido), y migrando un proyecto creado con la spec 002; faltan las comprobaciones
 en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su interfaz, las de
-`Z:` que se hacen a mano y la demostración de sus cuatro escenarios.
+`Z:` que se hacen a mano y la demostración de sus cuatro escenarios. Lo de la spec 006 está
+comprobado con Blender 5.2.1 sin su interfaz, con datos sintéticos y casos de referencia
+analíticos (también del tamaño de Silvestre), con el GDAL de QGIS 4.2 y con QGIS 4.2 sin su
+interfaz (PyQGIS), y en la pantalla de referencia el 12 y el 14/10/2026 (del MDT a la vista, el
+TIN con roturas, las curvas con maestras, los niveles de detalle, la interfaz y la procedencia);
+faltan que un ingeniero de IMGA haga sin ayuda el recorrido completo hasta QGIS (CE-006-04) y la
+comparación con el MDT real de Silvestre (CE-006-05), que se ejecuta a petición.
 
 ### Añadido
 
+- **Topografía base** (spec 006). La primera función minera: el terreno con el que se diseña y
+  se cubica, exacto, en el sistema de referencia del proyecto y con su procedencia. Las órdenes
+  están en el menú **Topografía** (Importar, Superficies, Analizar y Exportar) y en **Proyecto ▸
+  Intercambio** (Importar un fichero…, Cargar en la vista…, Descargar de la vista); sin proyecto
+  abierto salen desactivadas y dicen el paso previo («Primero abra un proyecto (Proyecto ▸
+  Proyecto ▸ Abrir proyecto…)»), y en solo lectura, el motivo. La barra superior no cambia.
+  - **Importar un MDT** (Topografía ▸ Importar ▸ MDT ráster…): GeoTIFF de una banda (sin
+    compresión, DEFLATE, LZW o PackBits; cotas en coma flotante o enteras; TIFF o BigTIFF),
+    ESRI ASCII Grid con su `.prj` y XYZ en malla regular. Se guarda en el proyecto en su rejilla
+    de origen, cada cota igual a la del fichero y las celdas sin dato como sin dato; el informe
+    dice la rejilla, la codificación y cuántas celdas tienen dato. **El sistema de referencia y
+    el datum vertical son obligatorios**: si el fichero no los declara, se declaran en el
+    diálogo (el datum empieza «Sin declarar»; «El del proyecto» lo propone, pero hay que
+    elegirlo) y nunca se supone el del proyecto. Se rechaza, diciendo el fichero, lo que tiene y
+    qué hacer, sin importar nada: compresión JPEG, ZSTD o LERC («Guárdelo en QGIS con
+    compresión DEFLATE o LZW…»), varias bandas, georreferencia girada, escala u offset de
+    valores, más de 100 millones de celdas (recortarlo en QGIS) o un XYZ que no forma una malla.
+    Un GeoTIFF *PixelIsPoint* se desplaza medio paso, con aviso. Avisa si el MDT sale de la
+    ventana de trabajo (se importa entero; la rejilla del proyecto solo cubre la ventana) o si
+    alguna celda queda a más de 8 km del origen local, con el error estimado en mm.
+  - **Otro sistema de referencia u otro datum**: se transforma al del proyecto con una
+    transformación de precisión conocida que no depende de la configuración de PROJ ni de GDAL
+    del equipo ni de internet, y el informe dice cuál y su precisión: de **ED50 a ETRS89 con la
+    rejilla del IGN** `es_ign_SPED2ETV2` (0,2 m; comprobado en el vértice REGENTE 55901, a
+    0,009 m de su reseña) y de **alturas elipsoidales ETRS89 a altitudes con el geoide del IGN**
+    (0,05 m; también en Canarias). Sin una transformación de precisión conocida, no se importa,
+    y se nombran los dos sistemas. Si la mediana de la diferencia con un MDT del proyecto está
+    entre 40 y 60 m (posibles alturas elipsoidales de un GNSS o un dron sin geoide), se avisa
+    con la mediana y la importación espera a que la persona la confirme.
+  - **Rejilla de cálculo de paso exacto** (Topografía ▸ Superficies ▸ Rejilla de proyecto desde
+    un MDT…): el MDT en la rejilla del proyecto (su paso, de 0,5 a 5 m; 1,000 m por defecto,
+    alineada a metros enteros), con el área real de cada celda en todo cálculo de áreas y
+    volúmenes. Por defecto, **media ponderada por área** si las celdas del MDT no son mayores
+    que las del proyecto (un MDT de dron de 0,5 m a 1 m: conserva el volumen) e **interpolación
+    bilineal** si lo son (un MDT05 del IGN de 5 m a 1 m, sin escalones de 5 m); el informe dice
+    el método. Una celda que el MDT no cubre del todo queda sin dato: nunca se rellena con
+    ningún valor. Un ráster ya alineado con el paso del proyecto sale idéntico. Desde ED50, se
+    reproyecta en segundo plano.
+  - **Puntos y líneas de rotura** (Topografía ▸ Importar ▸ Puntos y líneas de rotura…): un CSV,
+    TXT o XYZ de levantamiento con su asistente (codificación UTF-8, Windows-1252, Latin-1 o DOS;
+    separador; coma o punto decimal; cabecera; y el papel de cada columna: punto, X, Y, Z, código
+    y línea, con una vista previa de las primeras filas). Las coordenadas se guardan tal cual,
+    en doble precisión; el informe da las filas leídas, las rechazadas (con su número y el
+    motivo) y los duplicados. Las roturas, duras (son aristas del TIN) o blandas (solo aportan
+    sus puntos); una rotura sin cota o de un solo punto se rechaza. Del fichero se guarda una
+    copia en el proyecto. **Capas vectoriales** (Importar ▸ Capas vectoriales…): una capa de un
+    GeoPackage, también uno que QGIS tiene abierto (se lee una copia), como puntos, líneas de
+    rotura, curvas de nivel (con su campo de cota o la Z de sus vértices) o contorno y huecos;
+    las geometrías curvas se rechazan y los valores M se descartan con aviso.
+  - **TIN** (Topografía ▸ Superficies ▸ TIN desde puntos y líneas de rotura…): triangulación de
+    Delaunay restringida en la que cada rotura dura es una sucesión de aristas, con los vértices
+    en sus coordenadas exactas y todos los triángulos con la normal hacia arriba; con contorno,
+    huecos y lado máximo opcionales. Si dos puntos coinciden en planta, dos roturas se cruzan o
+    una pasa por un punto con cotas que difieren más de 0,01 m, no se crea el TIN y se lista cada
+    conflicto con sus nombres, su posición y sus dos cotas («las líneas de rotura «PIE_3» y
+    «CAB_2» se cruzan en (700 020,000; 4 400 020,000) con cotas 805,000 m y 825,000 m»); para
+    los puntos que coinciden se elige media, mínima, máxima, el primero o cancelar, y las roturas
+    se corrigen en su fuente. Dos roturas que se cruzan a la misma cota comparten el vértice. Un
+    levantamiento de hasta unos 350 000 puntos lo triangula Blender al momento (si tarda más de
+    1 s, la barra de estado lo avisa antes: «Triangulando 300 000 puntos (unos 1,9 s)…», la
+    única pausa de la interfaz, aprobada por IMGA); uno mayor, en segundo plano, más despacio.
+    **Desde curvas de nivel** (TIN desde curvas de nivel…): añade puntos entre curvas vecinas
+    donde quedan triángulos planos, hasta menos del 1 % (en el caso de referencia, del 19,3 % al
+    0 %), y dice el porcentaje antes y después y los puntos añadidos; una cima o un fondo sin
+    punto acotado queda plano, y se dice. **MDT ⇄ TIN…** convierte una rejilla en TIN y al
+    revés con las mismas cotas.
+  - **Curvas de nivel** (Topografía ▸ Analizar ▸ Curvas de nivel…): de una rejilla o de un TIN,
+    3D con la Z igual a su cota y marcadas como maestras o no, con equidistancia, cota base,
+    maestras cada n m (por defecto, 1 m y maestras cada 5 m), desfase de las maestras,
+    simplificación y longitud mínima. Solo quedan abiertas en el borde de la superficie o de sus
+    huecos, sus vértices están sobre la superficie (a 1 mm como mucho) y en una silla no se
+    cruzan ni se tocan, también con un punto de la rejilla justo a la cota de una curva (pasan
+    a 2 cm de él). En la vista, las maestras se dibujan con un trazo más grueso.
+  - **Validar la superficie** (Topografía ▸ Superficies): el área y el % sin dato, cada hueco
+    interior con su área, las celdas fuera de la ventana de trabajo, las cotas fuera del rango
+    plausible (−500 a 5 000 m: un −9999 que nadie declaró como sin dato) y, en un TIN, el % de
+    triángulos planos, el lado máximo y los degenerados.
+  - **Verlo en Blender** (Proyecto ▸ Intercambio ▸ Cargar en la vista… y Descargar de la vista):
+    rejillas, TIN, puntos, roturas y curvas, en la colección «Datos base / Topografía» con su
+    estado y su fecha, sin perder precisión (de vuelta a coordenadas reales, 0,24 mm de error a
+    8 km del origen); el objeto «Ancla del proyecto» lleva las esquinas de la ventana de
+    trabajo, el recorte de la vista se ajusta a lo cargado y, con el cursor 3D sobre un
+    vértice, la barra de estado da sus coordenadas reales. Una malla con caras hacia abajo o
+    cuyo volumen no cuadra con el de la rejilla no se muestra como superficie. Una rejilla de
+    menos de 2 m se puede ver con versiones de 2 y 5 m para la vista general («Nivel de
+    detalle»), sin tocar la de cálculo. La carga va por pasos, con su avance en la barra de
+    estado, y Esc la cancela sin dejar nada a medias; descargar quita los objetos y no toca el
+    proyecto. **Importar un fichero…** (o soltarlo sobre la Vista 3D) abre el importador que
+    corresponde a su extensión (`.tif`, `.asc`, `.xyz`, `.csv`, `.txt`, `.gpkg`).
+  - **Entregables y QGIS** (Topografía ▸ Exportar): **Superficie o rejilla a GeoTIFF…** escribe
+    un GeoTIFF float32 con sin dato −9999, compresión sin pérdida y el sistema de referencia del
+    proyecto (cada cota, la del proyecto redondeada a float32: menos de 0,12 mm por debajo de
+    4 096 m); **Capas a GeoPackage…**, puntos, roturas, el TIN como triángulos, curvas (con
+    `elevation` e `is_index`) y contornos, con Z, coordenadas idénticas a las del proyecto y un
+    **estilo por defecto de QGIS para las curvas** que dibuja las maestras más gruesas (0,5 mm
+    frente a 0,25 mm). QGIS 4.2 abre sin avisos de sistema de referencia las rejillas del
+    proyecto (`rasters/`) y los entregables, con la misma cota en cada celda. Nunca se escribe
+    sobre una fuente, en su carpeta o en una carpeta de solo lectura (se nombra), ni sobre un
+    fichero que ya existe sin confirmarlo; uno abierto en QGIS da error sin dejar un fichero a
+    medias. Dentro del proyecto, solo en `exports/`.
+  - **Transformar coordenadas** (Proyecto ▸ Georreferencia ▸ Transformar coordenadas…): puntos
+    tecleados entre dos sistemas del catálogo (ED50 → ETRS89, de un huso a otro), con 1 mm, la
+    transformación y su precisión, el factor de escala y la convergencia de cuadrícula. Si otra
+    extensión de Blender trae otra versión de pyproj, las transformaciones se desactivan con un
+    mensaje que dice las dos versiones, y el resto de Geoblender sigue funcionando.
+  - **Procedencia** (spec 008): cada importación registra su entrada con su hash de contenido y
+    los sistemas de referencia declarados, y cada operación sus parámetros, el triangulador, la
+    versión de su algoritmo y el hash de sus resultados. Los 17 parámetros de la topografía
+    (tolerancias de duplicados, fracción mínima cubierta, umbral de triángulos planos, los de
+    las curvas, el límite de celdas…) salen en Parámetros del proyecto como ADOPTADO «sin
+    confirmar» hasta que alguien los confirma; un valor tecleado en un diálogo vale para esa
+    orden y no cambia el parámetro. Importar otra vez lo mismo no lo duplica; si un levantamiento
+    cambia fuera de Geoblender, el TIN que depende de él espera a que se decida (Actualizar ·
+    Mantener la copia · Cancelar), y al actualizarlo el TIN y sus curvas quedan obsoletos y
+    **Recalcular lo obsoleto** los rehace.
+  - **Sin parar la interfaz**: lo que tarda (importar, remuestrear, triangular, curvas, validar,
+    exportar) va en segundo plano, con su avance en la barra de estado y su cancelación, y lo
+    que vuelve al proyecto se incorpora por pasos («Incorporando «…» al proyecto… n %»).
+    Cancelar o fallar a mitad no deja nada escrito en el proyecto.
+  - **Casos de referencia** (los cálculos son exactos celda a celda): la corta circular de
+    1 308 944,006 m³ con celdas de 1 m, a +0,0005 % como mucho (≤ 0,01 %; con 4 m, ≤ 0,025 %);
+    un prisma de 10 m sobre celdas de 1,000294 × 1,000302 m, 10 005 966,77 m³ exactos (suponer
+    1 m² por celda habría dado −0,06 %, como en Silvestre); remuestrear a la rejilla del
+    proyecto conserva el volumen de la zona cubierta (error 0); las curvas de un cono de
+    referencia, a 0,006 m del círculo teórico (≤ 0,01 m).
+  - Medido en el PC de referencia con datos del tamaño de Silvestre: importar un MDT de 3 399 ×
+    3 309 celdas (11,2 M) tarda 5,8 s con DEFLATE y 14,3 s con LZW (0,11 GB más de memoria); su
+    rejilla de 1 m (2,81 M celdas), 2,2 s, y desde ED50, 26,5 s; un TIN de 300 000 puntos y
+    10 000 tramos de rotura, 4,4 s (el triangulador propio, 20 000 puntos en 0,35 s); las curvas
+    de 1 m de esa rejilla con 150 m de desnivel (2 235 curvas), 2,0 s; cargarla en la vista,
+    3,0 s, y su versión de 5 m, 0,45 s; exportarla a GeoTIFF, 0,26 s, y 50 000 polilíneas con
+    1,5 M de vértices a GeoPackage, 1,4 s; el hash de contenido de un MDT de 100 M celdas, 6,4 s
+    en segundo plano. La interfaz nunca pasa más de 0,5 s sin refrescar el avance, salvo la
+    triangulación de Blender avisada antes.
 - **Procedencia: parámetros, entradas, operaciones y cifras** (spec 008). Geoblender anota en
   el proyecto de dónde sale cada resultado: de qué entradas, con qué parámetros (y de qué tipo),
   con qué operación y con qué versión del programa, y avisa de lo que deja de valer cuando algo
-  cambia. Todavía ningún módulo minero registra sus entradas ni sus operaciones: lo harán la
-  topografía (spec 006) y los sondeos (spec 005). Las órdenes están en **Proyecto ▸ Control**.
+  cambia. La topografía (spec 006) ya registra así sus entradas, sus operaciones y sus
+  resultados; los sondeos (spec 005) lo harán. Las órdenes están en **Proyecto ▸ Control**.
   - **Parámetros del proyecto…**: cada parámetro que mueve cifras, con su valor y su unidad
     (como las cifras, con el separador de miles: 500 000 t/año, también en los avisos), su
     tipo (MEDIDO, CALCULADO, ADOPTADO o HIPÓTESIS, con las insignias [MED], [CAL], [ADO] y
@@ -376,6 +517,14 @@ en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su inte
   `tests/rendimiento/blender/perf_provenance_ui.py` (los avisos de la barra de estado, los
   paneles de parámetros y de entradas, y la interfaz mientras se comprueba el proyecto). Con
   `GEOBLENDER_NET_TEST_DIR`, algunas se miden también en esa carpeta de la red.
+- `tools/check.py --rendimiento` mide también la topografía (spec 006) con datos generados del
+  tamaño de Silvestre: `tests/rendimiento/gis/test_perf_gis.py` y `test_perf_gis_hash.py`
+  (importar un MDT, la rejilla del proyecto, también desde ED50, el triangulador propio, las
+  curvas, las exportaciones, la memoria y el hash de un MDT de 100 M celdas) y, dentro de
+  Blender, `tests/rendimiento/blender/perf_gis.py` (el TIN de 300 000 puntos, importar un
+  levantamiento y un MDT, cargar en la vista y la interfaz sin pararse). `tools/check.py
+  --banco` compara, con `GEOBLENDER_SILVESTRE_DIR`, la rejilla exacta con la de la V10 de
+  Silvestre sobre su MDT real, en solo lectura (`tests/banco/silvestre/test_gis_grid_area.py`).
 
 ### Cambiado
 
@@ -444,3 +593,15 @@ en pantalla (paneles, diálogos, barra de estado y Ctrl+Z), con QGIS con su inte
   nodo de la rejilla da +0,0202 %, que antes quedaba fuera de la prueba y ahora se comprueba.
   El cálculo no cambia: es exacto celda a celda, y la diferencia viene de muestrear la corta
   con una rejilla gruesa. Con celdas de 2, 1 y 0,5 m sigue el 0,01 %.
+- **Una orden que no se hace ya no dice «Terminado»** (trabajos en segundo plano, spec 004; por
+  la 006): si el cálculo termina bien pero su operación no se hace al incorporarla al proyecto
+  (un TIN con roturas que se cruzan, una entrada que ya estaba registrada), la línea del trabajo
+  en la barra de estado dice durante 10 s «Operación fallida» (con el icono de error) u
+  «Operación cancelada», su duración y el principio del motivo, y el motivo entero llega al
+  registro de Blender (Info) como error, con su ventana emergente, o como aviso. Antes decía
+  «Terminado» y el motivo solo quedaba en los avisos del panel Proyecto, cortado a su anchura.
+- **Los ajustes de cada operación en su procedencia** (spec 008; por la 006): en Grafo de
+  operaciones y procedencia, debajo de cada operación sale una fila con los ajustes de su orden,
+  con su nombre y su unidad («Ajustes: Equidistancia = 2 m · Cota base = 0 m»; «Puntos que
+  coinciden = Preguntar»), antes de sus parámetros; nunca un nombre de fichero ni una ruta.
+  Antes solo se veían los parámetros, y no con qué equidistancia se habían hecho unas curvas.
