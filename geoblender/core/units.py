@@ -9,8 +9,11 @@ forma exacta: el factor de cada una es un :class:`~fractions.Fraction` y el resu
 redondea una sola vez a float64, así que t ↔ kt, m² ↔ ha o B ↔ MB dan el número decimal
 esperado. MB = 10⁶ B (los tamaños de la spec son decimales).
 
-- ``%``, ``-`` (adimensional), ``g/t`` y ``ppm`` son la misma magnitud, una proporción:
-  «35 %» en un parámetro declarado en fracción es 0,35, y 1 % = 10 000 g/t.
+- ``%``, ``-`` (adimensional), ``g/t``, ``ppm`` y ``ppb`` son la misma magnitud, una
+  proporción: «35 %» en un parámetro declarado en fracción es 0,35, 1 % = 10 000 g/t y
+  1 g/t = 1 ppm = 1000 ppb (las leyes de los sondeos; spec 005, D-18 del plan 005).
+- ``deg/30m`` («°/30 m»), el cambio de dirección entre estaciones de un sondeo (DH-W04 de
+  la spec 005), es una magnitud propia: no se convierte a grados.
 - Un **año** (``yr``) no se convierte a días ni a segundos: cuántos días tiene el año de una
   explotación lo decide su calendario de trabajo, no el catálogo. Por eso ``t/yr`` y
   ``m3/yr`` son también magnitudes propias.
@@ -46,6 +49,7 @@ _DIMENSION_NAMES_ES: Mapping[str, str] = MappingProxyType({
     "density": "una densidad",
     "ratio": "una proporción",
     "angle": "un ángulo",
+    "angle_per_length": "un cambio de dirección por longitud",
     "time": "un tiempo",
     "year": "años (sin equivalencia fija en días)",
     "mass_per_year": "una masa por año",
@@ -110,7 +114,9 @@ _CATALOG: tuple[Unit, ...] = (
     _unit("%", "%", "ratio", Fraction(1, 100)),
     _unit("g/t", "g/t", "ratio", Fraction(1, 1_000_000)),
     _unit("ppm", "ppm", "ratio", Fraction(1, 1_000_000)),
+    _unit("ppb", "ppb", "ratio", Fraction(1, 1_000_000_000)),
     _unit("deg", "°", "angle"),
+    _unit("deg/30m", "°/30 m", "angle_per_length"),
     _unit("s", "s", "time"),
     _unit("min", "min", "time", 60),
     _unit("h", "h", "time", 3600),
@@ -128,7 +134,7 @@ UNITS: Mapping[str, Unit] = MappingProxyType({unit.code: unit for unit in _CATAL
 
 # Lo que se acepta como unidad al teclear una cantidad: el código, el símbolo y dos formas
 # habituales del teclado español («º», el ordinal, por «°»; «años»).
-_EXTRA_ALIASES = {"º": "deg", "años": "yr"}
+_EXTRA_ALIASES = {"º": "deg", "º/30 m": "deg/30m", "años": "yr"}
 
 
 def _build_aliases() -> Mapping[str, str]:
