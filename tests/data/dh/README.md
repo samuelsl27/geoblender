@@ -152,6 +152,27 @@ las tablas adicionales, el tipo de la columna de un elemento de texto y los de `
 (Double). Las filas de cada tabla están en `EXPECTED_ROWS` de la prueba: si cambia un guion,
 cambian también ahí y en las pruebas que lo lean (T15, T16).
 
+## `build_xlsx.py`: libros XLSX sintéticos (T13)
+
+Escribe libros de Excel con `zipfile` y XML hecho a mano (sin bibliotecas de hojas de
+cálculo), siempre con los mismos bytes, en la carpeta que se le da; **ningún libro se
+versiona** (no está en la tabla «Ficheros»). Los lee `tests/unit/interop/
+test_xlsx_tables.py`, que los escribe en la carpeta temporal. A mano, para abrirlos en Excel:
+
+```powershell
+& $PY -B -s -X utf8 -m tests.data.dh.build_xlsx --out $env:TEMP\xlsx
+```
+
+| Libro | Contenido |
+| --- | --- |
+| `csv_basico.xlsx` | Una hoja por CSV de `csv_basico/`, con el nombre del fichero y sus valores con el tipo que les daría Excel en español: números, fechas del sistema 1900 (formatos 14 y «dd/mm/yyyy») y textos (cadenas compartidas; «Muestra» en línea; la descripción de las litologías con formato y lectura fonética). Leída con coma decimal y fechas «%d/%m/%Y», cada hoja da su CSV |
+| `csv_basico_1904.xlsx` | Lo mismo con el sistema de fechas 1904 y todos los textos en línea (sin cadenas compartidas), y la hoja `fechas_1904` |
+| `tipos.xlsx` | `tipos`: un caso por fila (`KINDS`: textos compartidos y en línea, con formato y con escapes `_x000D_`, booleanos, números, fechas, horas, duraciones, fórmulas con valor en caché, errores); `huecos`: cabecera en la fila 3, celdas y filas que faltan, filas en blanco; `sin_cache`: una fórmula sin valor calculado |
+| `recalcular.xlsx` | `formulas`: una fórmula con un 0 provisional en un libro que pide recalcular al abrirlo (`fullCalcOnLoad`); `valores`: sin fórmulas |
+
+Los libros rotos de las pruebas (XML cortado, entidades, celdas mal escritas) los monta la
+propia prueba con `build_xlsx.Book`.
+
 ## Ficheros
 
 <!-- ficheros: inicio -->

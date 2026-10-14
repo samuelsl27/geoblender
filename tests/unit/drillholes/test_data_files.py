@@ -34,9 +34,10 @@ BASICO = DATA / "csv_basico"
 CONVENIOS = DATA / "csv_convenios"
 ERRORES = DATA / "csv_errores"
 README = DATA / "README.md"
-# Lo que no es un dato: la descripción, el generador y el paquete que permite ejecutarlo
+# Lo que no es un dato: la descripción, los generadores (el de los libros XLSX de T13 los
+# escribe en una carpeta temporal: no se versionan) y el paquete que permite ejecutarlos
 # con «-m» (TST-01).
-NOT_DATA = frozenset({"README.md", "sintetico.py", "__init__.py"})
+NOT_DATA = frozenset({"README.md", "sintetico.py", "build_xlsx.py", "__init__.py"})
 # Lo que no escribe sintetico.py: las bases RecMin sintéticas (T02), con su propia prueba
 # (tests/unit/interop/test_recmin_fixture.py).
 NOT_GENERATED = frozenset({"recmin"})
