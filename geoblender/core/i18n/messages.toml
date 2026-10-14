@@ -3385,3 +3385,31 @@ es = "Cálculo de las trazas de los sondeos"
 
 ["Export of the validation report"]
 es = "Exportación del informe de validación"
+
+# Parámetros de los sondeos (spec 005, T20; RF-005-16, RF-005-26; RF-008-06; plan 005 §5.6.3):
+# la etiqueta (label_msgid) de cada definición de drillholes/params.py en el panel de
+# parámetros.
+
+["Depth tolerance of the drillhole validation"]
+es = "Tolerancia de profundidad de la validación de sondeos"
+
+["Gap tolerance between drillhole intervals"]
+es = "Hueco admitido entre tramos de sondeo"
+
+["Minimum length of a drillhole interval"]
+es = "Longitud mínima de un tramo de sondeo"
+
+["Maximum change of direction between survey stations"]
+es = "Cambio de dirección máximo entre estaciones de desviación"
+
+["Tolerance between collar elevation and terrain model"]
+es = "Diferencia admitida entre la cota de la boca y el MDT"
+
+["Maximum vertex spacing of the drillhole traces"]
+es = "Separación máxima entre vértices de las trazas de sondeo"
+
+["Rule for values below the detection limit"]
+es = "Regla para los valores bajo el límite de detección"
+
+["Factor of the detection limit"]
+es = "Factor del límite de detección"

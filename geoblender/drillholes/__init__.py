@@ -17,6 +17,8 @@ diferencia de las bocas con el MDT; :mod:`.ports` (T10), el puerto de la cota de
 :mod:`.report` (T11), el informe de validación en CSV para Excel en español;
 :mod:`.view_data` (T17), los arrays de la vista 3D: curvas de litología, barras de leyes con
 su leyenda de clases y etiquetas; :mod:`.schema` (T37), las tablas de los sondeos en el
-proyecto y su hash, y :mod:`.provenance` (T40), lo que los sondeos declaran a la procedencia
-de la 008: sus tipos de operación, sus datos y sus entradas.
+proyecto y su hash; :mod:`.provenance` (T40), lo que los sondeos declaran a la procedencia
+de la 008: sus tipos de operación, sus datos y sus entradas, y :mod:`.params` (T20), sus
+parámetros (``core.params``): los umbrales de la validación, el paso de las trazas y la regla
+de los valores bajo el límite de detección.
 """

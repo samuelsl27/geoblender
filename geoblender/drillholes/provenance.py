@@ -72,6 +72,7 @@ from ..core.provenance.contract import (
     SettingDef,
 )
 from .model import SourceDeclaration
+from .params import DESURVEY_KEYS, VALIDATION_KEYS
 from .schema import (
     BASE_TABLES,
     COMPUTED_TABLES,
@@ -161,14 +162,6 @@ _RECMIN_COMMAND = "geoblender.dh_import_recmin_mdb"
 _AZIMUTH_COMMAND = "geoblender.dh_set_azimuth_reference"  # reimporta (plan §5.6.10)
 
 _TABULAR_SOURCES = ("collar", "survey", "lithology", "assay", "catalog")
-_VALIDATION_PARAMS = (
-    "dh.validation.depth_tolerance_m",
-    "dh.validation.gap_tolerance_m",
-    "dh.validation.min_interval_m",
-    "dh.validation.dogleg_max_deg_30m",
-    "dh.validation.collar_dem_tolerance_m",
-)
-_DESURVEY_PARAMS = ("dh.validation.depth_tolerance_m", "dh.desurvey.trace_step_m")
 
 
 def _output_role(table: str) -> str:
@@ -194,7 +187,7 @@ class OperationType:
     repite solo, las órdenes que lo lanzan (``commands``), los papeles de lo que consume
     (``inputs``, los de ``Use``), las tablas que escribe (``outputs``, por el nombre de su
     ``TableLayout``: lo importado, ``dh_src_<rol>``), las bibliotecas que influyen en sus
-    resultados (``libraries``), los parámetros que lee (``params``, de ``core.params``) y, una
+    resultados (``libraries``), los parámetros que lee (``params``, de :mod:`.params`) y, una
     importación, los lectores de su entrada (``readers``, con versión)."""
 
     op_type: str
@@ -242,10 +235,10 @@ OPERATION_TYPES: tuple[OperationType, ...] = (
                   inputs=("source", "imports"), outputs=BASE_TABLES, libraries=(PYPROJ,)),
     OperationType(VALIDATE, "Validation of the drillhole database", True,
                   ("geoblender.dh_validate",), inputs=(*_BASE_ROLES, "terrain"),
-                  outputs=("dh_validation_issue",), params=_VALIDATION_PARAMS),
+                  outputs=("dh_validation_issue",), params=VALIDATION_KEYS),
     OperationType(DESURVEY, "Computation of the drillhole traces", True,
                   ("geoblender.dh_desurvey",), inputs=("collar", "survey"),
-                  outputs=("dh_trace",), params=_DESURVEY_PARAMS),
+                  outputs=("dh_trace",), params=DESURVEY_KEYS),
     OperationType(EXPORT_VALIDATION, "Export of the validation report", False,
                   ("geoblender.dh_export_validation_report",), inputs=("exported",)),
 )
