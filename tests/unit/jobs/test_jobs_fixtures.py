@@ -168,6 +168,29 @@ class PidAliveTest(unittest.TestCase):
         self.assertTrue(pid_alive(os.getpid()))
 
 
+class ProcessesTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "CreateToolhelp32Snapshot es de Windows")
+    def test_processes_include_this_one_with_its_parent(self) -> None:
+        """Spec 004, T01; spec 005, T33 (instrumento de RNF-004-07 y RNF-005-05): la foto de
+        los procesos del equipo tiene este, con su padre y el nombre de su ejecutable."""
+        parent, exe = jobs_fixtures.processes()[os.getpid()]
+        self.assertEqual(parent, os.getppid())
+        self.assertEqual(exe.casefold(), Path(sys.executable).name.casefold())
+
+    def test_descendants_are_the_new_processes_under_the_roots(self) -> None:
+        """Spec 004, T01; spec 005, T33 (instrumento de RNF-004-07 y RNF-005-05): los
+        descendientes de unas raíces son los procesos nuevos que cuelgan de ellas, también los
+        nietos y el huérfano de una raíz que ya terminó; no los que ya estaban ni los de otro
+        padre, y un pid que se reutiliza con otro padre es nuevo."""
+        before = {10: (1, "lanzador.exe"), 11: (10, "viejo.exe"), 30: (1, "otro.exe")}
+        after = {10: (1, "lanzador.exe"), 11: (10, "viejo.exe"), 12: (10, "hijo.exe"),
+                 13: (12, "nieto.exe"), 21: (20, "huérfano.exe"), 31: (30, "ajeno.exe")}
+        self.assertEqual(jobs_fixtures.descendants(before, after, [10, 20]),
+                         {12: "hijo.exe", 13: "nieto.exe", 21: "huérfano.exe"})
+        self.assertEqual(jobs_fixtures.descendants({12: (5, "a.exe")}, {12: (10, "b.exe")},
+                                                   [10]), {12: "b.exe"})
+
+
 def _record_hash(data: bytes) -> str:
     digest = hashlib.sha256(data).digest()
     return "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")

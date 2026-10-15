@@ -61,7 +61,7 @@ import statistics
 import sys
 import time
 import unittest
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,7 +149,7 @@ EXPECTED: Mapping[str, Expected] = {
 }
 
 
-# --- Memoria y procesos de Windows (ctypes) ----------------------------------------------
+# --- Memoria de Windows (ctypes) --------------------------------------------------------
 
 
 class _MemoryCounters(ctypes.Structure):
@@ -170,27 +170,6 @@ class _MemoryCounters(ctypes.Structure):
     ]
 
 
-class _ProcessEntry(ctypes.Structure):
-    """``PROCESSENTRY32W`` de ``Process32FirstW``/``Process32NextW``."""
-
-    _fields_ = [
-        ("dwSize", wintypes.DWORD),
-        ("cntUsage", wintypes.DWORD),
-        ("th32ProcessID", wintypes.DWORD),
-        ("th32DefaultHeapID", ctypes.c_size_t),
-        ("th32ModuleID", wintypes.DWORD),
-        ("cntThreads", wintypes.DWORD),
-        ("th32ParentProcessID", wintypes.DWORD),
-        ("pcPriClassBase", wintypes.LONG),
-        ("dwFlags", wintypes.DWORD),
-        ("szExeFile", wintypes.WCHAR * 260),
-    ]
-
-
-_TH32CS_SNAPPROCESS = 0x00000002
-_ERROR_NO_MORE_FILES = 18
-
-
 def _kernel32() -> ctypes.WinDLL:
     """``kernel32`` propio (no el compartido de ``ctypes.windll``), con sus firmas."""
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -198,13 +177,6 @@ def _kernel32() -> ctypes.WinDLL:
     kernel32.K32GetProcessMemoryInfo.argtypes = (
         wintypes.HANDLE, ctypes.POINTER(_MemoryCounters), wintypes.DWORD)
     kernel32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
-    kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
-    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-    for name in ("Process32FirstW", "Process32NextW"):
-        function = getattr(kernel32, name)
-        function.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ProcessEntry))
-        function.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
     return kernel32
 
 
@@ -226,51 +198,6 @@ def _memory() -> Memory:
                                             ctypes.byref(counters), counters.cb):
         raise ctypes.WinError(ctypes.get_last_error())
     return Memory(int(counters.WorkingSetSize), int(counters.PrivateUsage))
-
-
-def _processes() -> dict[int, tuple[int, str]]:
-    """Los procesos de este equipo ahora: pid → (pid del padre, ejecutable)."""
-    kernel32 = _kernel32()
-    snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
-    if snapshot is None or snapshot == wintypes.HANDLE(-1).value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    found: dict[int, tuple[int, str]] = {}
-    try:
-        entry = _ProcessEntry()
-        entry.dwSize = ctypes.sizeof(entry)
-        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
-        while more:
-            found[int(entry.th32ProcessID)] = (int(entry.th32ParentProcessID),
-                                               entry.szExeFile)
-            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
-        error = ctypes.get_last_error()
-        if error not in (0, _ERROR_NO_MORE_FILES):
-            raise ctypes.WinError(error)
-    finally:
-        kernel32.CloseHandle(snapshot)
-    return found
-
-
-def _descendants(
-    before: Mapping[int, tuple[int, str]],
-    after: Mapping[int, tuple[int, str]],
-    roots: Iterable[int],
-) -> dict[int, str]:
-    """Los procesos de ``after`` que no estaban en ``before`` (mismo pid y mismo padre) y
-    descienden de algún pid de ``roots``: pid → ejecutable."""
-    new = {pid: entry for pid, entry in after.items()
-           if before.get(pid, (None,))[0] != entry[0]}
-    ancestors = set(roots)
-    found: dict[int, str] = {}
-    grew = True
-    while grew:
-        grew = False
-        for pid, (parent, exe) in new.items():
-            if pid not in found and parent in ancestors:
-                found[pid] = exe
-                ancestors.add(pid)
-                grew = True
-    return found
 
 
 # --- Ayudas ------------------------------------------------------------------------------
@@ -362,7 +289,7 @@ def _wait_for_exit(run: Run, before: Mapping[int, tuple[int, str]], pids: list[i
     started = time.monotonic()
     while True:
         run.alive_workers = [pid for pid in pids if _support.pid_alive(pid)]
-        run.descendants = _descendants(before, _processes(), pids)
+        run.descendants = _support.descendants(before, _support.processes(), pids)
         run.exit_wait_s = time.monotonic() - started
         if not run.alive_workers and not run.descendants:
             return
@@ -404,7 +331,7 @@ class HundredJobsTest(unittest.TestCase):
         cls.addClassCleanup(job_runner.shutdown, timeout_s=3.0)
 
         run = Run(ORDER, [])
-        processes_before = _processes()
+        processes_before = _support.processes()
         run.memory_before = _memory()
         started = time.monotonic()
         run.handles = [job_runner.submit(_request(index, case))

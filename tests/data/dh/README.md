@@ -116,8 +116,8 @@ el volumen de referencia de la spec 005 §5 en el formato de `csv_basico`: 2 000
 y 12 o 13 tramos analizados (alternos: 25 000) de 20 elementos (500 000 valores; «<LD» un
 3 % al azar y los que no llegan al límite), unos 5 MB en menos de 1 s. Con la misma
 semilla, los mismos bytes; la prueba lo comprueba a escala 1/100 (`scale=0.01`:
-exactamente las filas de V-ref entre 100). Lo usan las pruebas de rendimiento (T31), en la
-carpeta temporal.
+exactamente las filas de V-ref entre 100). Lo usan las pruebas de rendimiento (T31; y T33,
+como base de RecMin: abajo), en la carpeta temporal.
 
 ## `recmin/`: bases RecMin sintéticas (T02)
 
@@ -151,6 +151,16 @@ documenta y fijan estos guiones (semántica sin verificar, D-7 de la spec): los 
 las tablas adicionales, el tipo de la columna de un elemento de texto y los de `CORTES`
 (Double). Las filas de cada tabla están en `EXPECTED_ROWS` de la prueba: si cambia un guion,
 cambian también ahí y en las pruebas que lo lean (T15, T16).
+
+**V-ref como base de RecMin** (T33; no se versiona): `tests.support.recmin.vref_script`
+escribe V-ref (las tablas de `sintetico.vref_tables`) como un guion con el esquema de
+`recmin_v12.sql`, sin sus tablas adicionales y con `muestras` de 20 `ELEMENTO n` Single (uno
+por elemento, en el orden de su catálogo), y `vref_base` crea con él la base ACE
+(`recmin_vref_ace.mdb`, unos 6 MB) con `build_mdb.ps1` por `shared_bases`: unas 97 000
+sentencias, alrededor de un minuto la primera vez; después, del almacén. «<LD» queda como el
+valor negativo (se importa declarando «−x = <x»); RecMin no guarda la profundidad ni el tipo
+de los sondeos (la profundidad se deduce: DH-W16) ni el nombre de las muestras. La usa la
+prueba de rendimiento de la importación de RecMin (`tests/rendimiento/test_dh_mdb_perf.py`).
 
 ## `build_xlsx.py`: libros XLSX sintéticos (T13)
 

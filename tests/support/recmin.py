@@ -31,11 +31,16 @@ una base Jet 4 (``Microsoft.Jet.OLEDB.4.0``, que solo existe en el ``powershell.
   ``interop.ports.RawTable`` en memoria, con el tipo OLE DB de cada columna (:data:`OLEDB_TYPES`)
   y sus valores con el tipo de Python del motor (Single como ``numpy.float32``, Double como
   ``float``). Las usan las pruebas del lector de RecMin (T15), sin motor.
+- :func:`vref_script` escribe V-ref (``tests/data/dh/sintetico.py``; spec 005 §5) como el guion
+  de una base de RecMin con el esquema de ``recmin_v12.sql`` y :func:`vref_base` crea con él la
+  base ACE (``build_mdb.ps1``, por :func:`shared_bases`) de la prueba de rendimiento de la
+  importación de RecMin (T33). Ni el guion ni la base se versionan.
 """
 
 from __future__ import annotations
 
 import datetime
+import functools
 import hashlib
 import json
 import os
@@ -45,7 +50,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -53,6 +58,7 @@ from types import ModuleType
 
 import numpy as np
 
+from tests.data.dh import sintetico
 from tests.support import resources
 from tests.support.package import import_geoblender
 from tests.support.repo import ROOT
@@ -348,11 +354,12 @@ def _base(record: dict) -> BuiltBase:
 
 
 def build_bases(out_dir: Path, engines: tuple[str, ...] = tuple(ENGINES), *,
-                sql: Path | None = None) -> Build:
+                sql: Path | None = None, timeout_s: float = BUILD_TIMEOUT_S) -> Build:
     """Crea en ``out_dir`` (que no debe tener ya esas bases) las bases de los dos guiones
     (con ``sql``, solo las de ese guion, que puede estar en otra carpeta: una variante escrita
     por la prueba) con cada motor de ``engines`` (``jet4``, ``ace``), un ``powershell.exe`` por
-    motor y todos a la vez; ``RuntimeError`` con la salida de errores si alguno falla."""
+    motor y todos a la vez; ``RuntimeError`` con la salida de errores si alguno falla o tarda
+    más de ``timeout_s`` segundos."""
     processes: dict[str, subprocess.Popen[bytes]] = {}
     chosen = [] if sql is None else ["-Sql", str(sql)]
     for engine in engines:
@@ -373,11 +380,11 @@ def build_bases(out_dir: Path, engines: tuple[str, ...] = tuple(ENGINES), *,
     failures: list[str] = []
     for engine, process in processes.items():
         try:
-            out, err = process.communicate(timeout=BUILD_TIMEOUT_S)
+            out, err = process.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             process.kill()
             out, err = process.communicate()
-            failures.append(f"{engine}: más de {BUILD_TIMEOUT_S:.0f} s")
+            failures.append(f"{engine}: más de {timeout_s:.0f} s")
             continue
         if process.returncode != 0:
             failures.append(
@@ -586,3 +593,164 @@ def shared_bases(
             found[(base.sql, engine)] = base
     _prune(store)
     return Build(found, frozenset(missing))
+
+
+# ---------------------------------------------------------------------------------------
+# V-ref como base de RecMin (spec 005, T33)
+# ---------------------------------------------------------------------------------------
+
+VREF_SQL = "recmin_vref.sql"
+"""El nombre del guion de V-ref (:func:`vref_script`); su base ACE es ``recmin_vref_ace.mdb``."""
+VREF_SCHEMA = RECMIN_DIR / "recmin_v12.sql"
+"""El guion del que toma su esquema: el 12, el de ``default.mdb`` de RecMin Pro."""
+VREF_EXTRA_TABLES = frozenset({"alteracion", "duplicados"})
+"""Las tablas adicionales de ese guion, que V-ref no tiene."""
+VREF_SAMPLES = "muestras"
+"""La tabla de las muestras, que en V-ref tiene un ``ELEMENTO n`` Single por cada elemento."""
+VREF_BUILD_TIMEOUT_S = 900.0
+"""Lo que puede tardar ``build_mdb.ps1`` con V-ref (unas 97.000 sentencias: alrededor de un
+minuto en el PC de referencia, lo que tarda el motor en cada una)."""
+_VREF_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _vref_number(text: str) -> str:
+    """Un número de V-ref (coma decimal; «<x» bajo el límite de detección) en Jet SQL, con
+    punto: «<x» es el valor negativo −x (como lo guarda RecMin, «−x = <x»)."""
+    number = text.replace(",", ".")
+    if number.startswith("<"):
+        number = "-" + number[1:]
+    if _VREF_NUMBER.fullmatch(number) is None:
+        raise ValueError(f"V-ref: {text!r} no es un número")
+    return number
+
+
+def _vref_date(text: str) -> str:
+    """Una fecha de V-ref (dd/mm/aaaa) como literal de Jet SQL (#aaaa-mm-dd#)."""
+    day = datetime.datetime.strptime(text, "%d/%m/%Y").date()
+    return f"#{day.isoformat()}#"
+
+
+def _vref_text(text: str) -> str:
+    """Un texto como literal de Jet SQL, entre comillas simples."""
+    quote = "'"
+    return quote + text.replace(quote, quote * 2) + quote
+
+
+def _vref_bgr(color: str) -> int:
+    """El ``COLOR`` de RecMin (BGR de Windows) de un color «#RRGGBB»."""
+    red, green, blue = (int(color[k:k + 2], 16) for k in (1, 3, 5))
+    return blue * 65536 + green * 256 + red
+
+
+def _vref_insert(table: str, columns: tuple[str, ...], values: list[object]) -> str:
+    names = ", ".join(f"[{name}]" for name in columns)
+    return f"INSERT INTO [{table}] ({names}) VALUES ({', '.join(map(str, values))});"
+
+
+def _vref_schema(elements: int) -> list[str]:
+    """Los ``CREATE TABLE`` de :data:`VREF_SCHEMA` sin :data:`VREF_EXTRA_TABLES` y con
+    ``muestras`` de ``elements`` columnas ``ELEMENTO n`` Single."""
+    text = VREF_SCHEMA.read_text(encoding="utf-8")
+    found: list[str] = []
+    for statement in _statements(text, str(VREF_SCHEMA)):
+        create = _CREATE.match(statement)
+        if create is None or create["name"] in VREF_EXTRA_TABLES:
+            continue
+        name = create["name"]
+        if name == VREF_SAMPLES:
+            fields = [f"[ID] COUNTER CONSTRAINT [pk_{name}] PRIMARY KEY", "[DESDE] SINGLE",
+                      "[HASTA] SINGLE", "[IDSONDEO] LONG",
+                      *(f"[ELEMENTO {n}] SINGLE" for n in range(1, elements + 1))]
+            statement = f"CREATE TABLE [{name}] (\n  " + ",\n  ".join(fields) + "\n)"
+        found.append(statement + ";")
+    return found
+
+
+def vref_script(tables: Mapping[str, sintetico.Table] | None = None) -> str:
+    """V-ref (``tables``: las seis tablas de ``sintetico.vref_tables``, en el formato de
+    ``csv_basico``; por defecto, las de su semilla) como guion de una base de RecMin con el
+    esquema de :data:`VREF_SCHEMA` (``build_mdb.ps1`` lo convierte en una base): los mismos
+    sondeos, estaciones, tramos y valores, con las coordenadas y los ángulos en Double, los
+    tramos y las leyes en Single (``DESDE``, ``HASTA`` y un ``ELEMENTO n`` por cada elemento, en
+    el orden de su catálogo), «<x» como el valor negativo −x, los colores en BGR y la versión
+    de esquema 12. RecMin no guarda la profundidad ni el tipo de los sondeos (la profundidad se
+    deduce de sus estaciones y sus tramos) ni el nombre de cada muestra."""
+    tables = sintetico.vref_tables() if tables is None else tables
+    elements = tables["elementos.csv"].rows
+    codes = [row[0] for row in elements]
+    assays = tables["analisis_columnas.csv"]
+    if list(assays.header[4:]) != codes:
+        raise ValueError(f"V-ref: las leyes {assays.header[4:]} no son las de su catálogo "
+                         f"{codes}")
+    lines = [
+        "-- V-ref (spec 005 §5) como base de RecMin con el esquema 12; lo escribe",
+        "-- tests.support.recmin.vref_script y no se versiona.",
+        *_vref_schema(len(codes)),
+    ]
+    holes: dict[str, int] = {}
+    planned = {"sí": "TRUE", "no": "FALSE"}
+    for number, row in enumerate(tables["bocas.csv"].rows, start=1):
+        name, east, north, elevation = row[:4]
+        holes[name] = number
+        lines.append(_vref_insert(
+            "sondeos", ("IDSONDEO", "SONDEO", "ESTE", "NORTE", "ELEVACION", "PLAN",
+                        "FECHA INI", "FECHA FIN", "CONTROL"),
+            [number, _vref_text(name), _vref_number(east), _vref_number(north),
+             _vref_number(elevation), planned[row[11]], _vref_date(row[9]),
+             _vref_date(row[10]), "FALSE"]))
+    for number, (name, depth, azimuth, inclination) in enumerate(
+            tables["desviaciones.csv"].rows, start=1):
+        lines.append(_vref_insert(
+            "angulos", ("ID", "IDSONDEO", "DISTANCIA", "INCLINACION", "DIRECCION"),
+            [number, holes[name], _vref_number(depth), _vref_number(inclination),
+             _vref_number(azimuth)]))
+    lithology_codes = tables["litologias.csv"].rows
+    catalog = {row[0]: number for number, row in enumerate(lithology_codes, start=1)}
+    for number, (name, start, end, code) in enumerate(tables["litologia.csv"].rows, start=1):
+        lines.append(_vref_insert("litologia", ("ID", "DESDE", "HASTA", "IDSONDEO", "IDLITO"),
+                                  [number, _vref_number(start), _vref_number(end),
+                                   holes[name], catalog[code]]))
+    for number, (code, description, color, density, order) in enumerate(lithology_codes,
+                                                                         start=1):
+        bgr = _vref_bgr(color)
+        lines.append(_vref_insert(
+            "idlitologia", ("IDLITO", "NOMBRE CORTO", "COLOR", "ESTILO", "DESCRIPCION",
+                            "COLORPRINT", "ESTILOPRINT", "VER", "DENSIDAD", "ORDEN"),
+            [number, _vref_text(code), bgr, 0, _vref_text(description), bgr, 0, "TRUE",
+             _vref_number(density), int(order)]))
+    value_columns = tuple(f"ELEMENTO {n}" for n in range(1, len(codes) + 1))
+    for number, (name, start, end, _sample, *values) in enumerate(assays.rows, start=1):
+        lines.append(_vref_insert(
+            VREF_SAMPLES, ("ID", "DESDE", "HASTA", "IDSONDEO", *value_columns),
+            [number, _vref_number(start), _vref_number(end), holes[name],
+             *(_vref_number(value) for value in values)]))
+    for number, (code, _name, unit, decimals, _limit) in enumerate(elements, start=1):
+        lines.append(_vref_insert(
+            "elementos", ("ELEMENTO", "NOMBRE", "UNIDAD", "TABLA", "CALCULO", "ORDEN",
+                          "DECIMALES", "CONTADOR"),
+            [number, _vref_text(code), _vref_text(unit), "TRUE", "TRUE", number,
+             int(decimals), number]))
+    lines.append(_vref_insert("actualizacion", ("ULTIMA",), [12]))
+    return "\n".join(lines) + "\n"
+
+
+def vref_base(out_dir: Path, tables: Mapping[str, sintetico.Table] | None = None, *,
+              store: Path | None = None) -> BuiltBase:
+    """V-ref (``tables``, como en :func:`vref_script`) como base de RecMin en formato ACE en
+    ``out_dir`` (que no debe tenerla ya): su guion (:data:`VREF_SQL`, escrito en ``out_dir`` y
+    borrado después) y su base, que crea ``build_mdb.ps1`` con el motor por
+    :func:`shared_bases` (del almacén ``store``, :func:`default_store`, si ya se creó con el
+    mismo guion; plazo :data:`VREF_BUILD_TIMEOUT_S`). ``RuntimeError`` sin ACE."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    script = out_dir / VREF_SQL
+    script.write_text(vref_script(tables), encoding="utf-8", newline="\n")
+    try:
+        made = shared_bases(out_dir, (ACE,), sql=script, store=store,
+                            build=functools.partial(build_bases,
+                                                    timeout_s=VREF_BUILD_TIMEOUT_S))
+    finally:
+        script.unlink(missing_ok=True)
+    if ACE in made.missing:
+        raise RuntimeError(f"sin el motor ACE no se crea la base de V-ref: {ACE_HINT}")
+    return made.bases[(VREF_SQL, ACE)]
