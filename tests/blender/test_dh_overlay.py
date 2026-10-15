@@ -17,7 +17,8 @@ validación (las filas de ``dh_validation_issue``) y C-1 de traza obsoleta.
   también la del fondo; sin etiquetas, ninguna) y abajo a la izquierda la leyenda de la
   litología del esquema y la de las clases del elemento con su «< LD», con sus colores.
 - RF-005-17, RF-005-22 (plan §5.6.8): un aspa roja con su código en la boca de B-1, el código
-  de C-1 en rojo sin aspa y «Traza obsoleta» en la de C-1; nada en A-1.
+  de C-1 en rojo sin aspa y «Traza obsoleta» en la de C-1; nada en A-1. T47: la traza
+  obsoleta en otro sondeo, sin recargar (``with_stale``), da las marcas de ``build_overlay``.
 - Principio 8: habilitar pone el manejador ``POST_PIXEL`` y la Leyenda genérica de los
   sondeos; quitarlos y ponerlos otra vez es idempotente.
 - Plan §5.3.1 y §5.5: ``geoblender.dh_show_display`` abre la barra lateral en la pestaña
@@ -197,6 +198,16 @@ class DrillholeOverlayTest(unittest.TestCase):
                          [("B-1", ov.EXCLUDED, ("DH-E06",)), ("C-1", ov.PARTIAL, ("DH-E10",)),
                           ("C-1", ov.STALE, ())])
         self.assertEqual(found.marks[0].xyz, tuple(local[1].tolist()))
+        # T47 (RF-005-22): la traza obsoleta en otros sondeos sin recargar (with_stale): las
+        # marcas que daría build_overlay con ellos; las de la validación y lo demás, igual.
+        moved = self.dh_view.with_stale(found, ("A-1",))
+        self.assertEqual([(mark.hole, mark.kind, mark.codes) for mark in moved.marks],
+                         [("A-1", ov.STALE, ()), ("B-1", ov.EXCLUDED, ("DH-E06",)),
+                          ("C-1", ov.PARTIAL, ("DH-E10",))])
+        self.assertEqual(moved.marks[0].xyz, tuple(local[0].tolist()))
+        self.assertEqual((moved.labels, moved.grade, moved.holes),
+                         (found.labels, found.grade, ("A-1", "B-1", "C-1")))
+        self.assertEqual(self.dh_view.with_stale(moved, STALE).marks, found.marks)
         self.assertEqual((found.lithology, found.grade, found.element),
                          (view.lithology_legend, view.grade_legend, "Au"))
         self.assertEqual(found.log_sets, ("lithology",))

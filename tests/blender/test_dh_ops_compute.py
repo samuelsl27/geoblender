@@ -18,7 +18,9 @@ filas de ``dh_trace`` (``jobs.trace_rows``) con la huella de la desviación de c
   sustitución de la entrada que reconstruye la base y deja obsoletas (por ``survey_sha256``)
   solo las trazas de los sondeos de esa entrada; sin motivo, sin referencia, con una entrada
   que no tiene azimuts o con la misma referencia no hace nada. «Solo las obsoletas» las vuelve a
-  calcular (las del dominio) y conserva tal cual las demás.
+  calcular (las del dominio) y conserva tal cual las demás. T47: la vista de las trazas
+  cargada antes marca esos sondeos y dice «OBSOLETO» en cuanto lee el proyecto el temporizador
+  de los indicadores, sin recalcular nada (``test_dh_view.check_stale_view``).
 - RF-005-26 (plan §5.6.3): la primera importación registra la regla con su valor por defecto,
   «sin confirmar»; ``geoblender.dh_set_detection_limit_policy`` la registra si falta (no otra
   vez) y abre ``geoblender.core_set_parameter`` con su clave; cambiarla queda en su historial.
@@ -34,6 +36,7 @@ from unittest import mock
 import bpy
 
 from tests.blender.test_dh_import_tabular import DrillholeImportCase, _module
+from tests.blender.test_dh_view import check_stale_view
 from tests.support.dh_fakes import FakeCrsService
 
 DESURVEY = "geoblender.dh_desurvey"
@@ -133,8 +136,9 @@ class ComputeOpsTest(DrillholeImportCase):
         azimut sin motivo, sin referencia, de una entrada sin azimuts o igual a la registrada no
         cambia nada; con el norte geográfico y su motivo sustituye la entrada de las
         desviaciones, la base gira sus azimuts γ y solo las trazas de S-01 a S-04 quedan
-        obsoletas; «solo las obsoletas» las rehace (las del dominio) y conserva tal cual las
-        otras dos."""
+        obsoletas, y la vista de las trazas cargada lo dice en cuanto el temporizador de los
+        indicadores lee el proyecto (T47); «solo las obsoletas» las rehace (las del dominio) y
+        conserva tal cual las otras dos."""
         ops = self.dh_ops
         # Tras cada base, sin su validación: no la necesita ninguna de estas órdenes (T27 la
         # prueba) y son dos trabajos menos (el presupuesto de tools/check.py).
@@ -189,6 +193,11 @@ class ComputeOpsTest(DrillholeImportCase):
         first = self.traces()
         self.assertEqual(first, expected)
         self.assertEqual(self.stale_holes(), ())
+        # La vista de las trazas (la que se carga sola, aquí a mano: T29), al día (T47).
+        self.assertEqual(bpy.ops.geoblender.core_load_into_view("EXEC_DEFAULT",
+                                                                datasets="dh_trace"),
+                         {"FINISHED"})
+        check_stale_view(self, (), stale=False)
 
         # La referencia del azimut: lo que no vale no cambia nada (D-22).
         self.assertIn("motivo", self.refused(AZIMUTH, input_uid="desviaciones",
@@ -238,6 +247,7 @@ class ComputeOpsTest(DrillholeImportCase):
         self.assertEqual(self.stale_holes(), SURVEYED)
         stale = _module("core.provenance.stale")
         self.assertIn("dh_trace", {item.name for item in stale.stale_items(self.project).items})
+        check_stale_view(self, SURVEYED, stale=True)  # T47: sin recalcular nada
 
         # «Solo las obsoletas»: las de S-01 a S-04 otra vez; las demás, conservadas.
         self.assertEqual(bpy.ops.geoblender.dh_desurvey("EXEC_DEFAULT", scope="STALE"),

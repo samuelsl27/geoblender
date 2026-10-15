@@ -25,6 +25,10 @@ trabajos menos por cálculo de las trazas (el presupuesto de ``tools/check.py``)
   Geoblender impide calcular las trazas hasta decidir; «Actualizar» lo reimporta con sus
   ajustes como una entrada nueva que sustituye a la anterior, la base se reconstruye y solo
   la traza de S-03 queda obsoleta (el detalle de ``dh_collar``) hasta que se recalcula.
+- T47 (RF-005-22): la vista de las trazas, cargada una vez, dice lo obsoleto en cuanto el
+  temporizador de los indicadores lee el proyecto, sin recalcular nada: «OBSOLETO» sin marcas
+  con S-20 (sin traza), otra vez al día al recalcular la base con su mismo hash y «OBSOLETO» con
+  la marca de S-03 tras «Actualizar» (``test_dh_view.check_stale_view``).
 
 Lo que la tarea pide además lo prueban otras: registrar y desregistrar deja los registros de
 ``core`` como estaban (``test_dh_registration``, T24) y la referencia del azimut con motivo
@@ -51,6 +55,7 @@ from tests.blender.test_dh_import_tabular import (
     _module,
 )
 from tests.blender.test_dh_ops_compute import _drive
+from tests.blender.test_dh_view import check_stale_view
 from tests.support.fake_layout import FakeLayout
 
 FILES = ("bocas.csv", "desviaciones.csv")  # lo que necesitan las trazas
@@ -218,7 +223,8 @@ class DrillholeProvenanceTest(DrillholeImportCase):
         de S-20 lo saca de la base al recalcularla; con el mismo hash que consumieron la
         validación y las trazas, las deja al día sin rehacerlas. Una desviación de S-03
         cambiada fuera de Geoblender impide las trazas hasta decidir; «Actualizar» deja
-        obsoleta solo la traza de S-03, hasta que se recalcula."""
+        obsoleta solo la traza de S-03, hasta que se recalcula. La vista de las trazas lo dice
+        en cuanto lo está, sin recalcular nada (T47)."""
         kinds = self.graph.CauseKind
         cause = self.graph.Cause
         # Sin la vista que se carga sola tras las trazas (T29 la prueba).
@@ -261,6 +267,11 @@ class DrillholeProvenanceTest(DrillholeImportCase):
                                                       "scope": "all"})
         self.assertNotEqual(self.digest("dh_trace"), traces_before)
         self.assertEqual(self.traces(), self.expected_traces(1.0))
+        # T47: la vista de estas trazas (la que se carga sola, aquí a mano: T29), al día.
+        self.assertEqual(bpy.ops.geoblender.core_load_into_view("EXEC_DEFAULT",
+                                                                datasets="dh_trace"),
+                         {"FINISHED"})
+        check_stale_view(self, (), stale=False)
 
         # RF-008-29: la procedencia de las trazas, hasta los dos CSV.
         lineage = _module("core.provenance.lineage").lineage(self.project, "dh_trace")
@@ -301,6 +312,7 @@ class DrillholeProvenanceTest(DrillholeImportCase):
         self.assertEqual(self.holes(), [*HOLES, "S-20"])
         self.assertEqual(sorted(self.stale()), ["dh_trace", "dh_validation_issue"])
         self.assertEqual(self.collar_detail(), {"holes": ["S-20"]})
+        check_stale_view(self, (), stale=True)  # T47: obsoletas, sin ningún sondeo marcado
         base_op = self.last(BUILD_BASE)
         self.assertEqual(bpy.ops.geoblender.core_discard_input(
             input_uid="bocas_s20", reason="El sondeo S-20 no se perforó"), {"FINISHED"})
@@ -318,6 +330,7 @@ class DrillholeProvenanceTest(DrillholeImportCase):
         self.assertEqual(self.digest("dh_collar"), collar_digest)
         self.assertEqual((self.successor(validate_op), self.successor(desurvey_op)),
                          (None, None))
+        check_stale_view(self, (), stale=False)  # T47: otra vez al día, sin recargarla
         consumed = {name for (name,) in self.rows(
             "SELECT d.name FROM gb_operation_io o JOIN gb_dataset d ON d.uid = o.item_uid "
             "WHERE o.operation_uid = ? AND o.direction = 'in'", self.successor(base_op))}
@@ -357,6 +370,7 @@ class DrillholeProvenanceTest(DrillholeImportCase):
         with self.project.read() as conn:
             self.assertEqual(self.store.stale_holes(conn), ("S-03",))
         self.assertEqual(self.collar_detail(), {"holes": ["S-03"]})
+        check_stale_view(self, ("S-03",), stale=True)  # T47: S-03 marcado, sin recalcular
         uses = self.dh_ops.desurvey_uses()
         self.assertIsNotNone(self.session.ensure_ready(DESURVEY, uses))
 

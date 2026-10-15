@@ -40,6 +40,12 @@ mucho); lo demás es de aquí:
 las colecciones que quedan vacías; nunca toca el proyecto. Ni cargar ni descargar escriben en el
 proyecto ni registran una operación (plan §5.6.4): solo la vista, que deshace Ctrl+Z (los
 operadores llevan ``UNDO``).
+
+**Al día sin recargar** (spec 005, T47): :func:`show_state` pone en los objetos ya cargados de
+un dato su estado y si está obsoleto según lo que dice ahora el proyecto, con su nombre
+generado y el de su colección; lo llama el módulo de la vista que sigue los cambios del
+proyecto (los sondeos, ``bl.scene.dh_view.show_stale``; la marca en vivo de los demás es de la
+009).
 """
 
 from __future__ import annotations
@@ -347,6 +353,47 @@ def _mark(obj: bpy.types.Object, kind: str, shown: Any, project: Any) -> None:
     props.status = STATUS_TEXT.get(record.status, "NONE")
     props.date = shown.date
     props.stale = shown.stale
+
+
+def _shown_name(obj: bpy.types.Object, collection: bpy.types.Collection | None) -> str | None:
+    """El nombre generado con que se cargó ``obj``: el de la colección de su dato si su nombre
+    empieza por él; si no, hasta el «]» de su estado; ``None`` si no lo lleva."""
+    if collection is not None and obj.name.startswith(collection.name):
+        return collection.name
+    end = obj.name.find("]")
+    return obj.name[:end + 1] if end >= 0 else None
+
+
+def show_state(objects: Sequence[bpy.types.Object], loader: Loader, shown: Any) -> bool:
+    """Pone al día, sin recargar nada, lo que dicen del dato ``shown``
+    (``core.provenance.view.DatasetView``, leído ahora) los objetos ``objects`` de su vista
+    cargada (spec 005, T47; RF-006-29): ``Object.geoblender`` (su estado y si está obsoleto) y,
+    si cambia, el nombre generado de los objetos (lo que sigue al de la carga, como « · Au»,
+    se conserva) y de la colección del dato («Sondeos [VIGENTE · OBSOLETO]»). No escribe en el
+    proyecto. Devuelve si cambió algo."""
+    record = shown.record
+    status = STATUS_TEXT.get(record.status, "NONE")
+    found = [obj for obj in objects
+             if (getattr(obj, OBJECT_PROPERTY).status, getattr(obj, OBJECT_PROPERTY).stale)
+             != (status, bool(shown.stale))]
+    if not found:
+        return False
+    name = view_name(loader, record, stale=bool(shown.stale))
+    key = f"{DATASET_KEY}{record.uid}"
+    collections = {collection for obj in objects for collection in obj.users_collection
+                   if collection.get(KEY_PROPERTY) == key}
+    collection = next(iter(collections), None)
+    for obj in found:
+        props = getattr(obj, OBJECT_PROPERTY)
+        props.status = status
+        props.stale = bool(shown.stale)
+        before = _shown_name(obj, collection)
+        if before is not None and before != name:
+            obj.name = name + obj.name[len(before):]
+    for item in collections:
+        if item.name != name:
+            item.name = name
+    return True
 
 
 def scene_precision(parts: ViewParts, origin: GeoOrigin) -> PrecisionReport | None:

@@ -359,8 +359,10 @@ def register() -> None:
     """Registra las definiciones de parámetros, los lectores de contenido, los tipos de trabajo
     y las declaraciones de procedencia (:data:`OPERATION_DEFS`, :data:`IMPORTER_DEFS`) de los
     sondeos que aún no están, (T27) apunta en la sesión :func:`on_project_changed` (la lista
-    de incidencias del proyecto abierto) y (T30) pone la Leyenda genérica de los sondeos
-    (:data:`LEGEND_PROVIDER`) si el tipo no tiene otra; idempotente."""
+    de incidencias del proyecto abierto), (T30) pone la Leyenda genérica de los sondeos
+    (:data:`LEGEND_PROVIDER`) si el tipo no tiene otra y (T47) apunta en los indicadores de la
+    procedencia ``bl.scene.dh_view.show_stale`` (la vista, al día de lo obsoleto cuando el
+    proyecto cambia); idempotente."""
     missing = tuple(defn for defn in dh_params.DEFINITIONS
                     if defn.key not in core_params.DEFINITIONS)
     if missing:
@@ -392,6 +394,12 @@ def register() -> None:
     if ui_context.kind_legend_provider(dh_view.KIND) is None:
         ui_context.register_legend_provider(dh_view.KIND, LEGEND_PROVIDER)
         _UNDO.append(_unregister_legend)
+    from ..ui import provenance as ui_provenance  # al usarlo (ARQ-08)
+
+    if dh_view.show_stale not in ui_provenance.change_listeners():
+        ui_provenance.add_change_listener(dh_view.show_stale)
+        _UNDO.append(functools.partial(ui_provenance.remove_change_listener,
+                                       dh_view.show_stale))
 
 
 def _unregister_legend() -> None:

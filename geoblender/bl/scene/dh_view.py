@@ -51,14 +51,21 @@ la memoria del módulo con sus objetos (:func:`remember`, :func:`overlay_of`): n
 ``.blend`` ni al proyecto, y se rehace al cargar otra vez. :func:`display_key` es la
 representación con que se cargó (:func:`up_to_date`); :func:`apply_radius` cambia en vivo el
 radio de los tubos y :func:`fill_classes`, las clases propias desde la leyenda de la vista.
+
+**Lo obsoleto, en cuanto lo está** (T47; RF-005-22): cuando el proyecto cambia, el temporizador
+de los indicadores de la procedencia (``bl.ui.provenance``, que ``bl.ops.dh`` apunta) llama a
+:func:`show_stale`: sin recargar la vista ni recalcular nada, pone en ella los sondeos de traza
+obsoleta de ahora (:data:`STALE` y las marcas, :func:`with_stale`) y, en su nombre y en
+``Object.geoblender``, si las trazas están obsoletas.
 """
 
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -85,6 +92,7 @@ from . import views
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
 from .mesh import (
+    attribute_values,
     curves_positions_local,
     curves_steps,
     mesh_steps,
@@ -441,7 +449,10 @@ class Overlay:
     (en locales), el esquema de logueo y la leyenda de su litología, el elemento y la leyenda
     de sus barras (``None`` sin barras), los esquemas y los elementos de ley del catálogo
     (código y unidad: los campos de la Leyenda genérica) y la representación con que se
-    cargó (:func:`display_key`)."""
+    cargó (:func:`display_key`). Para rehacer sus marcas de traza obsoleta sin recargar
+    (T47, :func:`with_stale`): los sondeos de la base con que se cargó, por su posición (la de
+    :data:`HOLE`; ``holes``), la boca de cada uno en locales (``collars``; ``None`` sin X, Y y
+    Z) y las marcas de la validación (``checks``: posición, clase y códigos)."""
 
     labels: tuple[ViewLabel, ...]
     marks: tuple[Mark, ...]
@@ -452,6 +463,9 @@ class Overlay:
     log_sets: tuple[str, ...]
     elements: tuple[tuple[str, str], ...]
     display_key: tuple[Any, ...] = ()
+    holes: tuple[str, ...] = ()
+    collars: tuple[tuple[float, ...] | None, ...] = ()
+    checks: tuple[tuple[int, str, tuple[str, ...]], ...] = ()
 
 
 def _local(points: Sequence[Sequence[float]], origin: GeoOrigin) -> list[tuple[float, ...]]:
@@ -481,16 +495,14 @@ def build_overlay(dset: DrillholeSet, view: jobs.ViewArrays, *, origin: GeoOrigi
         partial = validate.stored_codes(records, validate.Scope.TABLE)
     except ValueError:
         partial = {}
-    wanted = set(stale)
-    marks: list[Mark] = []
+    checks: list[tuple[int, str, tuple[str, ...]]] = []
     for k in placed:
-        where = local[k]
         if codes[k]:
-            marks.append(Mark(names[k], MARK_EXCLUDED, codes[k], where))
+            checks.append((k, MARK_EXCLUDED, tuple(codes[k])))
         elif k in partial:
-            marks.append(Mark(names[k], MARK_PARTIAL, partial[k], where))
-        if names[k] in wanted:
-            marks.append(Mark(names[k], MARK_STALE, (), where))
+            checks.append((k, MARK_PARTIAL, tuple(partial[k])))
+    collars_local = tuple(local.get(k) for k in range(len(names)))
+    marks = _marks(names, collars_local, checks, stale)
     labels = tuple(ViewLabel(label.text, where, bool(label.bottom)) for label, where in zip(
         view.labels, _local([label.xyz for label in view.labels], origin), strict=True))
     log_sets: dict[str, str] = {name_key(log_set): log_set}
@@ -499,9 +511,41 @@ def build_overlay(dset: DrillholeSet, view: jobs.ViewArrays, *, origin: GeoOrigi
     elements = tuple((item.code, item.unit) for item in dset.catalogs.elements
                      if name_key(item.unit) != TEXT_UNIT)
     grade = view.grade_legend
-    return Overlay(labels, tuple(marks), log_set, tuple(view.lithology_legend),
+    return Overlay(labels, marks, log_set, tuple(view.lithology_legend),
                    element if grade is not None else "", grade, tuple(log_sets.values()),
-                   elements, tuple(display_key))
+                   elements, tuple(display_key), tuple(names), collars_local,
+                   tuple(checks))
+
+
+def _marks(holes: Sequence[str], collars: Sequence[tuple[float, ...] | None],
+           checks: Iterable[tuple[int, str, tuple[str, ...]]],
+           stale: Iterable[str]) -> tuple[Mark, ...]:
+    """Las marcas de las bocas con X, Y y Z (``collars``, en locales, por su posición en la
+    base; ``holes``, sus nombres), en el orden de la base: la de la validación de cada una
+    (``checks``: posición, clase y códigos) y, si su sondeo es uno de ``stale``, la de traza
+    obsoleta."""
+    wanted = set(stale)
+    found = {k: (kind, codes) for k, kind, codes in checks}
+    marks: list[Mark] = []
+    for k, where in enumerate(collars):
+        if where is None:
+            continue
+        if k in found:
+            kind, codes = found[k]
+            marks.append(Mark(holes[k], kind, codes, where))
+        if holes[k] in wanted:
+            marks.append(Mark(holes[k], MARK_STALE, (), where))
+    return tuple(marks)
+
+
+def with_stale(overlay: Overlay, stale: Iterable[str]) -> Overlay:
+    """La superposición ``overlay`` con la marca de traza obsoleta en los sondeos ``stale``
+    (sus nombres) en vez de en los de su carga (T47; RF-005-22): las marcas que daría
+    :func:`build_overlay` con ellos; lo demás, igual. Sin los sondeos de su carga (``holes``),
+    ella misma."""
+    if not overlay.holes or len(overlay.collars) != len(overlay.holes):
+        return overlay
+    return replace(overlay, marks=_marks(overlay.holes, overlay.collars, overlay.checks, stale))
 
 
 _OVERLAYS: dict[int, Overlay] = {}
@@ -557,6 +601,92 @@ def up_to_date(project: Any, display: Any) -> bool:
     key = display_key(display)
     found = (overlay_of(obj) for obj in loaded_objects(project))
     return all(item is not None and item.display_key == key for item in found)
+
+
+def _redraw() -> None:
+    """Redibuja las vistas 3D y los esquemas (la vista de los sondeos cambió sin recargarla)."""
+    manager = getattr(bpy.context, "window_manager", None)
+    for window in list(getattr(manager, "windows", ()) or ()):
+        screen = getattr(window, "screen", None)
+        for area in getattr(screen, "areas", ()) or ():
+            if area.type in ("VIEW_3D", "OUTLINER"):
+                area.tag_redraw()
+
+
+def _mark_stale(objects: Sequence[bpy.types.Object], stale: Sequence[str],
+                names: Sequence[str]) -> bool:
+    """:data:`STALE` de las curvas y las barras de ``objects`` (los de una vista) y las marcas
+    de su superposición con los sondeos de traza obsoleta ``stale``; las posiciones de
+    :data:`HOLE`, las de la base con que se cargó la vista (su superposición) o, si no la
+    tiene en esta sesión, las de ``names`` (la base de ahora). Devuelve si cambió algo."""
+    overlay = next((item for item in map(overlay_of, objects) if item is not None), None)
+    holes = overlay.holes if overlay is not None and overlay.holes else tuple(names)
+    wanted = set(stale)
+    marked = np.array([name in wanted for name in holes] + [False], dtype=np.bool_)
+    changed = False
+    for obj in objects:
+        data = obj.data
+        hole = None if data is None else attribute_values(data, HOLE)
+        before = None if data is None else attribute_values(data, STALE)
+        if hole is None or before is None or len(hole) != len(before):
+            continue
+        values = marked[np.where((hole >= 0) & (hole < len(holes)), hole, len(holes))]
+        if np.array_equal(values, before.astype(np.bool_)):
+            continue
+        set_attribute(data, STALE, data.attributes[STALE].domain, "BOOLEAN", values)
+        data.update_tag()
+        changed = True
+    if overlay is not None:
+        fresh = with_stale(overlay, stale)
+        if fresh.marks != overlay.marks:
+            remember(objects, fresh)
+            changed = True
+    return changed
+
+
+def show_stale(project: Any) -> bool:
+    """Pone al día de lo obsoleto la vista de los sondeos de ``project`` cargada en el fichero,
+    sin recargarla, sin recalcular nada y sin escribir en el proyecto (T47; RF-005-22): lee
+    del proyecto si su dato (``dh_trace``) está obsoleto (``core.provenance.view.dataset_view``)
+    y los sondeos de traza obsoleta (``drillholes.store.stale_holes``) y, en los objetos que
+    enseñan su contenido de ahora, cambia :data:`STALE` de sus curvas y sus barras, las marcas
+    de su superposición (:func:`with_stale`) y su nombre generado y ``Object.geoblender``
+    («Sondeos [VIGENTE · OBSOLETO]»; ``bl.scene.views.show_state``). La de otro contenido (las
+    trazas se acaban de recalcular) la pone al día su recarga. La llama el temporizador de los
+    indicadores de la procedencia cuando el proyecto cambia (``bl.ui.provenance``). Devuelve
+    si cambió algo."""
+    from ...core.provenance.view import dataset_view  # al usarlo: no al habilitar
+
+    objects = loaded_objects(project)
+    loader = views.loaders().get(PREFIX)
+    if not objects or loader is None:
+        return False
+    groups: dict[str, list[bpy.types.Object]] = {}
+    for obj in objects:
+        groups.setdefault(getattr(obj, OBJECT_PROPERTY).dataset_uid, []).append(obj)
+    try:
+        with project.read() as conn:
+            conn.execute("BEGIN")  # todo en la misma instantánea
+            try:
+                shown = {uid: dataset_view(project, uid, conn=conn) for uid in groups}
+                stale = store.stale_holes(conn)
+                names = store.existing_holes(conn)
+            finally:
+                conn.execute("ROLLBACK")
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.info("No se pudo leer lo obsoleto de los sondeos para la vista", exc_info=True)
+        return False
+    changed = False
+    for uid, group in groups.items():
+        found = shown[uid]
+        if found is None or any(getattr(obj, OBJECT_PROPERTY).content_sha256
+                                != found.record.content_sha256 for obj in group):
+            continue
+        changed = _mark_stale(group, stale, names) | changed
+        changed = views.show_state(group, loader, found) | changed
+    if changed:
+        _redraw()
+    return changed
 
 
 def apply_radius(radius_m: float) -> int:
@@ -619,4 +749,5 @@ __all__ = ["CLASS", "COLOR", "HOLE", "JOB_LABEL", "KIND", "LABEL", "MARK_EXCLUDE
            "MARK_PARTIAL", "MARK_STALE", "NOT_DELIVERED", "PREFIX", "ROW", "STALE",
            "VIEW_FAILED", "Mark", "Overlay", "ViewLabel", "apply_radius", "build_overlay",
            "display_key", "fill_classes", "forget_overlays", "grade_legend", "load_traces",
-           "loaded_objects", "overlay_of", "register", "remember", "unregister", "up_to_date"]
+           "loaded_objects", "overlay_of", "register", "remember", "show_stale", "unregister",
+           "up_to_date", "with_stale"]

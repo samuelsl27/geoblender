@@ -25,7 +25,8 @@ RF-006-19, RNF-006-06, RNF-006-09; plan 006 §5.1; ADR-0005).
   (``bpy.data.hair_curves``, el tipo ``Curves``: nacen Catmull-Rom y ``set_types`` las pasa a
   poligonales, plan 005 §2.1) con los puntos ABSOLUTOS pasados a locales igual que una malla, y
   :func:`curves_positions_local` los lee; :func:`set_attribute` pone un atributo (un color
-  lineal, un entero, un sí/no…) de una vez a una malla o a unas curvas.
+  lineal, un entero, un sí/no…) de una vez a una malla o a unas curvas, y (T47)
+  :func:`attribute_values` lee uno de un componente.
 
 Un array con la forma o el tipo que no es, o un índice fuera de rango, es un error del programa
 (``TypeError`` o ``ValueError``): la vista solo recibe lo que entrega el dominio.
@@ -41,9 +42,9 @@ import numpy as np
 from ...core.georef import GeoOrigin, local_to_world, world_to_local
 from .. import compat
 
-__all__ = ["curves_positions_local", "curves_steps", "edge_flags", "mesh_edges",
-           "mesh_from_arrays", "mesh_steps", "mesh_triangles", "mesh_vertices_local",
-           "mesh_vertices_world", "set_attribute", "set_edge_flags"]
+__all__ = ["attribute_values", "curves_positions_local", "curves_steps", "edge_flags",
+           "mesh_edges", "mesh_from_arrays", "mesh_steps", "mesh_triangles",
+           "mesh_vertices_local", "mesh_vertices_world", "set_attribute", "set_edge_flags"]
 
 
 def _indices(values: np.ndarray | None, width: int, count: int, what: str) -> np.ndarray:
@@ -258,3 +259,16 @@ def set_attribute(data: bpy.types.ID, name: str, domain: str, data_type: str,
         raise ValueError(f"set_attribute: {len(flat) // width} valores de «{name}» para los "
                          f"{len(attribute.data)} elementos de «{data.name}»")
     attribute.data.foreach_set(key, flat)
+
+
+def attribute_values(data: bpy.types.ID, name: str) -> np.ndarray | None:
+    """Los valores del atributo de un componente ``name`` de ``data`` (una malla o unas
+    curvas; ``INT``, ``BOOLEAN`` o ``FLOAT``, con el tipo de numpy de :func:`set_attribute`),
+    uno por elemento de su dominio, de una vez; ``None`` si no lo tiene así (spec 005, T47)."""
+    found = data.attributes.get(name)
+    if found is None or found.data_type not in ("INT", "BOOLEAN", "FLOAT"):
+        return None
+    key, kind, _width = _ATTRIBUTE_VALUES[found.data_type]
+    values = np.empty(len(found.data), dtype=kind)
+    found.data.foreach_get(key, values)
+    return values

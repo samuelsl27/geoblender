@@ -34,6 +34,9 @@ leyenda por defecto o con la de la representación).
   la boca: los sondeos de traza obsoleta y, con una validación guardada con un error de
   alcance T (la litología de S-01), su código; esa litología no se pinta (el trabajo recibe lo
   que excluye la validación). Lo que dibuja la superposición lo prueba ``test_dh_overlay``.
+- T47 (RF-005-22): :func:`check_stale_view`, la vista cargada al día de lo obsoleto sin
+  recargarla; la usan ``test_dh_ops_compute`` (tras cambiar la referencia del azimut) y
+  ``dh/test_provenance_dh`` (tras añadir y descartar una entrada y tras «Actualizar» otra).
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -84,6 +87,46 @@ def _values(data: Any, name: str) -> np.ndarray:
     listed = [0] * count
     found.data.foreach_get("value", listed)
     return np.array(listed)
+
+
+def check_stale_view(case: DrillholeImportCase, holes: tuple[str, ...], *,
+                     stale: bool) -> None:
+    """T47 (RF-005-22; plan §5.6.8): tras un tic del temporizador de los indicadores de la
+    procedencia (``bl.ui.provenance.indicator_tick``, que lee el proyecto cuando cambia), la
+    vista de las trazas ya cargada en la escena de ``case`` dice lo que dice el proyecto, sin
+    recalcular nada (ningún trabajo nuevo) ni escribir en él: los sondeos de traza obsoleta
+    ``holes`` (los de ``drillholes.store.stale_holes``, en el orden de la base) llevan
+    ``gb_stale`` en sus curvas (y en sus barras, si las hay) y su marca en la superposición, y
+    el nombre generado de sus objetos y de la colección de su dato y ``Object.geoblender.stale``
+    dicen si ``dh_trace`` está obsoleto (``stale``: «Sondeos [VIGENTE · OBSOLETO]»)."""
+    dh_view = _module("bl.scene.dh_view")
+    views = _module("bl.scene.views")
+    ui = _module("bl.ui.provenance")
+    runner = case.jobs_ops.MONITOR.runner
+    jobs = {snapshot.job_uid for snapshot in runner.snapshots()}
+    before = case.counts()
+    case.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
+    case.assertEqual(case.counts(), before)  # nada escrito en el proyecto
+    case.assertEqual({snapshot.job_uid for snapshot in runner.snapshots()}, jobs)
+    with case.project.read() as conn:
+        case.assertEqual(_module("drillholes.store").stale_holes(conn), holes)
+        record = _module("core.datasets.registry").get(conn, TRACE)
+    name = views.view_name(views.loader_for(TRACE), record, stale=stale)
+    case.assertEqual("OBSOLETO" in name, stale, name)
+    objects = dh_view.loaded_objects(case.project)
+    case.assertTrue(objects)
+    names = [row[0] for row in case.rows("SELECT name FROM dh_collar ORDER BY fid")]
+    marked = np.array([item in holes for item in names])
+    for obj in objects:
+        case.assertTrue(obj.name.startswith(name), obj.name)  # « · Au», «.001» (T48)
+        case.assertEqual((obj.geoblender.dataset_uid, obj.geoblender.stale), (record.uid, stale))
+        (collection,) = obj.users_collection
+        case.assertEqual(collection.name, name)
+        case.assertEqual(_values(obj.data, "gb_stale").tolist(),
+                         marked[_values(obj.data, "gb_hole")].tolist(), obj.name)
+    overlay = dh_view.overlay_of(objects[0])
+    case.assertEqual([mark.hole for mark in overlay.marks if mark.kind == dh_view.MARK_STALE],
+                     list(holes))
 
 
 class DrillholeViewTest(DrillholeImportCase):
@@ -219,7 +262,8 @@ class DrillholeViewTest(DrillholeImportCase):
         de traza obsoleta, con las clases de la representación; cerrar sus pasos a mitad deja
         la vista como estaba. T30 (RF-005-25, RF-005-17): cada carga deja a la superposición
         sus etiquetas, sus leyendas y sus marcas, y no pinta lo que excluye la validación
-        guardada (alcance T)."""
+        guardada (alcance T). T47: sin recargarla, la vista vuelve a lo que dice el proyecto
+        (ningún sondeo obsoleto) en sus curvas, sus barras y sus marcas."""
         ops = self.dh_ops
         store = _module("drillholes.store")
         drill_tubes = _module("bl.gn.drill_tubes")
@@ -301,6 +345,13 @@ class DrillholeViewTest(DrillholeImportCase):
         print(f"\nRF-005-23: error máximo de la ida y vuelta a ±8 km: {max(self.errors) * 1000:.4f}"
               f" mm (≤ {LIMIT_M * 1000:.1f} mm); {len(curves.curve_sizes)} curvas, "
               f"{len(bars.faces)} caras")
+
+        # T47 (RF-005-22): lo que dice ahora el proyecto (ningún sondeo de traza obsoleta), sin
+        # recargar: ni en las curvas ni en las barras ni en las marcas; la de la validación sigue.
+        self.assertTrue(_module("bl.scene.dh_view").show_stale(self.project))
+        check_stale_view(self, (), stale=False)
+        self.assertEqual([(mark.hole, mark.kind, mark.codes) for mark in _module(
+            "bl.scene.dh_view").overlay_of(bar_object).marks], [("S-01", "partial", ("DH-E10",))])
 
         # Esc a mitad: la vista queda como estaba.
         before = (sorted(obj.name for obj in bpy.data.objects), len(bpy.data.hair_curves),
