@@ -32,7 +32,9 @@ Ninguna tabla se crea al abrir ni al migrar un proyecto (sin paso de esquema, RF
 ``core.gpkg.wkb.encode_geometry``, y las columnas). :func:`table_digest` da el hash de contenido
 de una tabla (``core.gpkg_layer@1``, el lector con que la hashea el registro de la 008) sin
 escribirla en el proyecto, como ``gis.store.table_digest``: así lo calcula un trabajo y el hilo
-de Blender no vuelve a leer la tabla al incorporarla (plan §5.6.5 y §5.6.7).
+de Blender no vuelve a leer la tabla al incorporarla (plan §5.6.5 y §5.6.7). Una tabla sin
+geometría la hashea sin pasar por SQLite, con lo que SQLite haría con cada valor (T52); lo que
+no sabe emular, por :func:`stored_digest` (un GeoPackage en memoria), con el mismo hash.
 
 **Valores** (RF-005-02; plan §5.2.2): los números, en float64 tal como llegan (el Single de
 RecMin, por su decimal más corto, ``drillholes.values.from_single``); un NaN se guarda como
@@ -48,6 +50,7 @@ Python puro y ``sqlite3`` (ADR-0004).
 from __future__ import annotations
 
 import itertools
+import math
 import re
 import sqlite3
 import unicodedata
@@ -58,8 +61,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from ..core.content.builtin import GPKG_LAYER, layer_steps
-from ..core.content.encoder import NORMALIZER, ContentDigest
+from ..core.content.builtin import GPKG_LAYER, GPKG_TYPES, layer_steps
+from ..core.content.encoder import NORMALIZER, ContentDigest, ContentHasher
 from ..core.datasets.model import DATASET_DECLARATIONS
 from ..core.errors import ValidationError
 from ..core.georef import CrsRef
@@ -79,6 +82,7 @@ __all__ = [
     "ALIASES",
     "BASE_TABLES",
     "COMPUTED_TABLES",
+    "DIGEST_ROWS",
     "INSERT_ROWS",
     "LAYOUTS",
     "MAX_SLUG_CHARS",
@@ -96,6 +100,7 @@ __all__ = [
     "source_layout",
     "source_name",
     "source_table",
+    "stored_digest",
     "table_digest",
 ]
 
@@ -111,9 +116,16 @@ INSERT_ROWS = 500
 sentencia por fila, cada una reescribe ``sqlite_sequence`` del proyecto)."""
 TAG_CHARS = 8
 """Las cifras del uid de una entrada en el nombre de lo importado (D22 de la 006)."""
+DIGEST_ROWS = 1 << 14
+"""Las filas de cada trozo de :func:`table_digest` sin SQLite (un punto de cancelación y de
+avance; unos 0,1 s con las 20 columnas de ``dh_assay``)."""
 
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
 _HEX = re.compile(r"[0-9a-f]+")
+_DATE_TEXT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_NONE = type(None)
+_INT64_MIN = -(1 << 63)
+_INT64_MAX = (1 << 63) - 1
 _OBJ = "Tabla de sondeos"
 _DATA_OBJ = "Datos de sondeos"
 
@@ -653,16 +665,153 @@ def table_digest(
 ) -> ContentDigest:
     """El ``ContentDigest`` (``core.gpkg_layer@1``, sin declaraciones: el de un dato del
     proyecto) de la tabla de ``layout`` con las filas ``rows`` (las de :func:`insert_rows`) y
-    las coordenadas de su geometría en ``crs``, sin escribirla en el proyecto: las filas van a
-    un GeoPackage en memoria con la misma estructura (``create_base`` con ``crs`` y la tabla
-    con sus columnas y su geometría; los títulos y los índices no cuentan) y se leen con
-    ``core.content.builtin.layer_steps``, la función con que el registro de la 008 hashea una
-    tabla del proyecto (ADR-0024 §5). Es el hash que da la tabla escrita en el proyecto (el
-    ``fid`` no cuenta, ni el orden de las filas); el de una tabla sin geometría no depende de
-    ``crs``. ``progress(fracción, texto)`` tras cada trozo; ``JobCancelled`` si
-    ``cancelled()`` pide parar entre trozos; ``TypeError`` si ``layout`` no es un
-    :class:`TableLayout` o ``crs`` no es un ``CrsRef``; ``ValueError`` si una fila no tiene
-    el número de valores de la tabla."""
+    las coordenadas de su geometría en ``crs``, sin escribirla en el proyecto: el hash que da
+    la tabla escrita en el proyecto y leída con ``core.content.builtin.layer_steps``, la
+    función con que el registro de la 008 hashea una tabla del proyecto (ADR-0024 §5); el
+    ``fid`` no cuenta, ni el orden de las filas, y el de una tabla sin geometría no depende de
+    ``crs``.
+
+    Una tabla sin geometría cuyos valores SQLite guarda tal como llegan se hashea sin pasar por
+    él (spec 005, T52; RNF-005-01): sus columnas, con lo que SQLite haría al guardarlas (un NaN
+    en una columna de números es ``NULL``; un sí/no, 0 o 1), por lotes de
+    :data:`DIGEST_ROWS` filas con ``RowEncoder.update_columns``. Lo demás —una capa, un valor
+    de otro tipo que SQLite convertiría (un entero en una columna de reales, un texto en una
+    de sí/no…), un nulo en una columna ``NOT NULL``, una fila de otro largo— va por
+    :func:`stored_digest`, que lo guarda de verdad en un GeoPackage en memoria; el hash es el
+    mismo por los dos caminos, y también los errores. ``progress(fracción, texto)`` tras cada
+    trozo; ``JobCancelled`` si ``cancelled()`` pide parar entre trozos; ``TypeError`` si
+    ``layout`` no es un :class:`TableLayout` o ``crs`` no es un ``CrsRef``; ``ValueError`` si
+    una fila no tiene el número de valores de la tabla."""
+    _check_layout(layout)
+    if not isinstance(crs, CrsRef):
+        raise TypeError(f"el CRS de las coordenadas es un CrsRef del catálogo, no {crs!r}")
+    columns = _stored_columns(layout, rows)
+    if columns is None:
+        return stored_digest(layout, rows, crs, progress=progress, cancelled=cancelled)
+    try:
+        return _columns_digest(layout, columns, len(rows), progress, cancelled)
+    except (TypeError, ValueError, ArithmeticError):
+        # Un valor que no vale (un texto con un sustituto suelto…): el error, el de SQLite.
+        return stored_digest(layout, rows, crs, cancelled=cancelled)
+
+
+def _stored_columns(layout: TableLayout,
+                    rows: Sequence[Sequence[Any]]) -> list[Sequence[Any]] | None:
+    """Las columnas de ``rows`` como las devuelve SQLite tras guardarlas en una tabla de
+    ``layout`` sin geometría, o ``None`` si eso no se sabe sin SQLite (véase
+    :func:`table_digest`)."""
+    if layout.geometry_type is not None:
+        return None
+    width = len(layout.columns)
+    try:
+        if len(rows) and set(map(len, rows)) != {width}:
+            return None
+        values = list(zip(*rows, strict=True)) if len(rows) else [()] * width
+    except TypeError:
+        return None
+    found: list[Sequence[Any]] = []
+    for column, column_values in zip(layout.columns, values, strict=True):
+        stored = _stored_values(column, column_values)
+        if stored is None:
+            return None
+        found.append(stored)
+    return found
+
+
+def _stored_values(column: ColumnDef, values: Sequence[Any]) -> Sequence[Any] | None:
+    """Los valores de una columna como los devuelve SQLite tras guardarlos, si los guarda tal
+    cual o se sabe cómo (un NaN en una de reales es ``NULL``; un sí/no, 0 o 1), o ``None``."""
+    types = set(map(type, values))
+    nulls = _NONE in types
+    types.discard(_NONE)
+    sql_type = column.sql_type
+    stored: Sequence[Any] = values
+    if sql_type == "DOUBLE":
+        if not types <= {float}:
+            return None
+        if nulls or any(map(math.isnan, values)):
+            stored = [None if value != value else value for value in values]  # NaN → NULL
+            nulls = nulls or None in stored
+    elif sql_type == "INTEGER":
+        if not types <= {int}:
+            return None
+        numbers = [value for value in values if value is not None] if nulls else values
+        if numbers and (min(numbers) < _INT64_MIN or max(numbers) > _INT64_MAX):
+            return None
+    elif sql_type == "BOOLEAN":
+        if not types <= {bool, int}:
+            return None
+        if int in types:  # 0 o 1, como sí/no
+            if any(value not in (0, 1) for value in values if value is not None):
+                return None
+            stored = [None if value is None else value == 1 for value in values]
+    elif sql_type in ("TEXT", "DATE"):
+        if not types <= {str}:
+            return None
+        if sql_type == "DATE" and not all(_DATE_TEXT.fullmatch(value) for value in values
+                                          if value is not None):
+            return None  # SQLite tomaría por número algún otro texto
+    else:
+        return None
+    if column.not_null and nulls:
+        return None  # SQLite no lo guarda: su error
+    return stored
+
+
+def _columns_digest(layout: TableLayout, columns: Sequence[Sequence[Any]], count: int,
+                    progress: Callable[[float, str], object] | None,
+                    cancelled: Callable[[], bool] | None) -> ContentDigest:
+    """El hash de una tabla sin geometría con sus columnas ya como las guarda SQLite."""
+    name = layout.name
+    text = f"Calculando el hash de contenido de la tabla «{name}»…"
+    hasher = ContentHasher(layout.kind, declarations=DATASET_DECLARATIONS, reader=GPKG_LAYER.id,
+                           normalizer=NORMALIZER)
+    feed = hasher.begin_rows([[column.name, GPKG_TYPES[column.sql_type]]
+                              for column in layout.columns], False)
+    pieces = max(1, -(-count // DIGEST_ROWS))
+    total = pieces + 1
+    for index, first in enumerate(range(0, count, DIGEST_ROWS), start=1):
+        _check_cancelled(cancelled, name, index)
+        feed.update_columns([column[first:first + DIGEST_ROWS] for column in columns])
+        if progress is not None:
+            progress(index / total, text)
+    steps = feed.finish_steps(DIGEST_ROWS)
+    try:
+        while True:
+            _check_cancelled(cancelled, name, pieces + 1)
+            try:
+                done = next(steps)
+            except StopIteration:
+                break
+            if progress is not None:
+                progress((pieces + done) / total, text)
+    finally:
+        steps.close()
+    if progress is not None:
+        progress(1.0, text)
+    return hasher.digest()
+
+
+def _check_cancelled(cancelled: Callable[[], bool] | None, name: str, index: int) -> None:
+    if cancelled is not None and cancelled():
+        raise JobCancelled(f"Cancelado al calcular el hash de la tabla «{name}» en el trozo "
+                           f"{index}")
+
+
+def stored_digest(
+    layout: TableLayout,
+    rows: Sequence[Sequence[Any]],
+    crs: CrsRef,
+    *,
+    progress: Callable[[float, str], object] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> ContentDigest:
+    """El hash de :func:`table_digest` con las filas guardadas de verdad: van a un GeoPackage
+    en memoria con la misma estructura (``create_base`` con ``crs`` y la tabla con sus
+    columnas y su geometría; los títulos y los índices no cuentan) y se leen con
+    ``core.content.builtin.layer_steps``. Lo usa :func:`table_digest` con lo que no sabe
+    hashear sin SQLite (las capas, los valores que SQLite convierte, las filas que no valen);
+    los errores, los mismos."""
     _check_layout(layout)
     if not isinstance(crs, CrsRef):
         raise TypeError(f"el CRS de las coordenadas es un CrsRef del catálogo, no {crs!r}")

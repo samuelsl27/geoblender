@@ -88,6 +88,10 @@ _CATALOG_PARTS: tuple[tuple[str, type], ...] = (
 _FLOAT_TYPES = frozenset({"DOUBLE", "REAL", "FLOAT"})
 _INT_TYPES = frozenset({"INTEGER", "BOOLEAN"})
 _TEXT_TYPES = frozenset({"TEXT", "DATE"})
+_NONE = type(None)
+_STR = frozenset({str})
+_NUMBERS = frozenset({float, int, _NONE})  # los de una columna de reales sin más comprobar
+_INTEGERS = frozenset({int, bool, _NONE})  # ídem, de enteros
 
 
 # --- Textos ------------------------------------------------------------------------------------
@@ -97,13 +101,16 @@ def _encode_texts(values: Sequence[Any], what: str) -> tuple[np.ndarray, np.ndar
     """Unos textos (o ``None``) en UTF-8 (``S``) y su máscara de nulos (``None`` si no hay
     ninguno). ``TypeError`` con lo que no es un texto."""
     items = list(values)
+    types = set(map(type, items))  # de una vez: el caso de casi todas las columnas (T52)
     nulls: np.ndarray | None = None
-    if any(item is None for item in items):
-        nulls = np.fromiter((item is None for item in items), dtype=np.bool_, count=len(items))
+    if _NONE in types:
+        nulls = np.array([item is None for item in items], dtype=np.bool_)
         items = ["" if item is None else item for item in items]
-    for item in items:
-        if not isinstance(item, str):
-            raise TypeError(f"{what} es un texto o None, no {item!r}")
+        types.discard(_NONE)
+    if not types <= _STR:
+        for item in items:
+            if not isinstance(item, str):
+                raise TypeError(f"{what} es un texto o None, no {item!r}")
     if not items:
         return np.zeros(0, dtype="S1"), nulls
     try:
@@ -200,10 +207,14 @@ def _put_columns(arrays: dict[str, np.ndarray], key: str, columns: Any) -> None:
         elif item.name in _DATES:
             _put_texts(arrays, name, [None if day is None else day.isoformat()
                                       for day in values.tolist()], name)
-        elif any(isinstance(v, int) and not isinstance(v, bool) for v in values.tolist()):
-            _put_integers(arrays, name, values.tolist(), name)  # un entero opcional
         else:
-            _put_texts(arrays, name, values.tolist(), name)
+            plain = values.tolist()
+            # Un entero (no un sí/no) entre los valores, mirado por sus tipos (T52).
+            if any(issubclass(kind, int) and not issubclass(kind, bool)
+                   for kind in set(map(type, plain))):
+                _put_integers(arrays, name, plain, name)  # un entero opcional
+            else:
+                _put_texts(arrays, name, plain, name)
 
 
 def _get_columns(arrays: Mapping[str, np.ndarray], key: str, kind: type,
@@ -429,7 +440,7 @@ def rows_arrays(layout: Any, rows: Sequence[Sequence[Any]], *,
     """Los arrays de las filas ``rows`` de la tabla de ``layout`` (las de
     ``schema.insert_rows``), una entrada por columna (véase el módulo), con
     ``progress(fracción)`` antes de cada columna (las 500 000 filas de los análisis de V-ref,
-    1,5 s). ``ValueError`` con una fila de otro ancho; ``TypeError`` con un valor que no es de
+    1 s). ``ValueError`` con una fila de otro ancho; ``TypeError`` con un valor que no es de
     su tipo."""
     columns = _layout_columns(layout)
     width = len(columns)
@@ -453,20 +464,27 @@ def rows_arrays(layout: Any, rows: Sequence[Sequence[Any]], *,
                 ([0], np.cumsum([len(blob) for blob in blobs], dtype=np.int64))).astype(np.int64)
             arrays[name + NULL_SUFFIX] = nulls
         elif sql_type in _FLOAT_TYPES:
-            for value in column:
-                if value is not None and (isinstance(value, bool)
-                                          or not isinstance(value, int | float)):
-                    raise TypeError(f"{what} es un número o None, no {value!r}")
+            if not set(map(type, column)) <= _NUMBERS:  # de una vez si son de su tipo (T52)
+                for value in column:
+                    if value is not None and (isinstance(value, bool)
+                                              or not isinstance(value, int | float)):
+                        raise TypeError(f"{what} es un número o None, no {value!r}")
             arrays[name] = np.array([math.nan if value is None else value for value in column],
                                     dtype=np.float64)
         elif sql_type in _INT_TYPES:
-            for value in column:
-                if value is not None and not isinstance(value, int | np.integer):
-                    raise TypeError(f"{what} es un entero o None, no {value!r}")
-            arrays[name] = np.array([0 if value is None else int(value) for value in column],
-                                    dtype=np.int64)
-            arrays[name + NULL_SUFFIX] = np.fromiter((value is None for value in column),
-                                                     dtype=np.bool_, count=len(column))
+            types = set(map(type, column))
+            if types <= _INTEGERS:  # int, bool o None: de una vez (T52)
+                plain = column if _NONE not in types else [0 if value is None else value
+                                                           for value in column]
+                arrays[name] = np.array(plain, dtype=np.int64)
+            else:
+                for value in column:
+                    if value is not None and not isinstance(value, int | np.integer):
+                        raise TypeError(f"{what} es un entero o None, no {value!r}")
+                arrays[name] = np.array([0 if value is None else int(value)
+                                         for value in column], dtype=np.int64)
+            arrays[name + NULL_SUFFIX] = np.array([value is None for value in column],
+                                                  dtype=np.bool_)
         elif sql_type in _TEXT_TYPES:
             _put_texts(arrays, name, column, what)
         else:  # pragma: no cover - un tipo de SQL nuevo en drillholes.schema

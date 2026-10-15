@@ -620,3 +620,8 @@ comparación con el MDT real de Silvestre (CE-006-05), que se ejecuta a petició
   con su nombre y su unidad («Ajustes: Equidistancia = 2 m · Cota base = 0 m»; «Puntos que
   coinciden = Preguntar»), antes de sus parámetros; nunca un nombre de fichero ni una ruta.
   Antes solo se veían los parámetros, y no con qué equidistancia se habían hecho unas curvas.
+- **El hash de contenido de una tabla, unas cuatro veces más deprisa** (spec 008; por la 005):
+  las filas de una tabla se hashean por columnas y, las de una tabla que se acaba de calcular,
+  sin guardarlas antes en una base temporal. Los hashes son los mismos, bit a bit (los de los
+  vectores de referencia y los de los proyectos ya creados). Las 500 000 filas de los
+  análisis de una campaña de 2 000 sondeos, de 7,9 s a 1,7 s.

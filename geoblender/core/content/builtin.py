@@ -434,6 +434,22 @@ def _add(feed: Any, layer: _Layer, row: Sequence[Any], ordinal: int) -> None:
         ) from error
 
 
+def _add_columns(feed: Any, layer: _Layer, rows: Sequence[Sequence[Any]]) -> bool:
+    """Añade un trozo de filas leídas de una tabla a su ``RowEncoder`` por columnas (spec 005,
+    T52: el mismo hash, más deprisa) y dice si lo hizo. No lo hace, y no añade nada, si una
+    columna de números trae un texto (se interpreta fila a fila) o si un valor no vale: fila a
+    fila, :func:`_add` da el error con su ``fid``."""
+    columns = list(zip(*rows, strict=True))[1:]  # sin la clave
+    for index in layer.numeric:
+        if str in set(map(type, columns[index])):
+            return False
+    try:
+        feed.update_columns(columns)
+    except (TypeError, ValueError, GeoblenderError):
+        return False
+    return True
+
+
 def _count_steps(
     conn: sqlite3.Connection, layer: _Layer, limit: int
 ) -> Generator[float, None, int]:
@@ -504,9 +520,12 @@ def layer_steps(conn: sqlite3.Connection, request: ReadRequest) -> Iterator[floa
     try:
         done = 0
         while rows := cursor.fetchmany(step):
-            for row in rows:
-                done += 1
-                _add(feed, layer, row, done)
+            if layer.kind == "table" and _add_columns(feed, layer, rows):
+                done += len(rows)
+            else:
+                for row in rows:
+                    done += 1
+                    _add(feed, layer, row, done)
             if done < total:
                 yield min(COUNT_SHARE + READ_SHARE * (done / total), finishing)
     finally:
