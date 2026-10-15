@@ -242,7 +242,12 @@ class OperationDef:
       (:data:`SCOPES`), ``commands`` (los ``bl_idname`` que la lanzan, para su estado de
       comando, RF-008-61), ``libraries`` (las que influyen en sus cifras, RF-008-18),
       ``recompute`` y ``settings`` (los :class:`SettingDef` que enseña su procedencia, en su
-      orden y sin repetir clave; ninguno, por defecto: RF-008-29, spec 006, T58).
+      orden y sin repetir clave; ninguno, por defecto: RF-008-29, spec 006, T58);
+    - ``drops_discarded`` (spec 005, T42; plan 005 §5.6.10): si su recálculo reúne él mismo
+      todo lo vigente que consume (como la base de los sondeos, con todo lo importado vigente):
+      lo que consumió y después se descartó sin sucesor sale de su recálculo en vez de
+      impedirlo (``core.recompute_no_successor``, RF-008-55); solo en una que se repite sola.
+      Por defecto, no.
     """
 
     op_type: str
@@ -257,6 +262,7 @@ class OperationDef:
     libraries: tuple[str, ...] = ()
     recompute: RecomputeFunction | None = None
     settings: tuple[SettingDef, ...] = ()
+    drops_discarded: bool = False
 
     def __post_init__(self) -> None:
         op_type = self.op_type
@@ -293,6 +299,12 @@ class OperationDef:
             raise ValueError(
                 f"la operación «{op_type}» no se puede repetir sola (queda «revisar a mano»): "
                 "no tiene función de recálculo («recompute»)"
+            )
+        _check_bool(self.drops_discarded, "drops_discarded", op_type)
+        if self.drops_discarded and not self.repeatable:
+            raise ValueError(
+                f"la operación «{op_type}» no se puede repetir sola: «drops_discarded» solo lo "
+                "declara una que se recalcula reuniendo lo vigente"
             )
         if self.group is not None and _module_name(self.group, _OP_TYPE) is None:
             raise ValueError(

@@ -294,6 +294,9 @@ class OperationTypesTest(_RegistryCase):
                     self.assertEqual(definition.commands, declared.commands)
                     self.assertEqual(definition.libraries, declared.libraries)
                     self.assertEqual(definition.settings, ())
+                    # T42 (plan §5.6.10): solo la base reúne ella misma todo lo vigente; lo
+                    # descartado sale de su recálculo en vez de impedirlo.
+                    self.assertEqual(definition.drops_discarded, op_type == BUILD_BASE)
                     if PLAN[op_type][0]:
                         self.assertTrue(definition.repeatable)
                         self.assertIs(definition.recompute, functions[op_type])

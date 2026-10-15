@@ -36,8 +36,8 @@ informe, calcular las trazas y la referencia del azimut) son operadores de la 00
 solo escriben en el proyecto llevan ``{'REGISTER'}``; calcular las trazas, que rehace la vista,
 también ``UNDO``. Mientras su orden no llega (:data:`UNDELIVERED`), una no está disponible y
 dice dónde estará («Disponible en 005 · Sondeos», :func:`unavailable_reason`), como un
-provisional, y los recálculos (T42) lo dicen con ``dh.not_delivered`` sin hacer nada. La
-entrada 005 del catálogo entrega sus órdenes tarea a tarea (``entries.toml``).
+provisional. La entrada 005 del catálogo entrega sus órdenes tarea a tarea
+(``entries.toml``).
 
 **Importar tablas de sondeos** (T25; HU-005-1; RF-005-05 a RF-005-07, RF-005-09 a RF-005-12;
 plan §5.6.4 y §5.6.5): ``geoblender.dh_import_drillholes`` (Sondeos ▸ Importar ▸ «Sondeos
@@ -125,6 +125,13 @@ representación, nada), y el radio cambia los tubos en vivo (``bl.props.dh``). C
 activos, la Leyenda genérica de la 003 (:data:`LEGEND_PROVIDER`, registrada para
 ``DRILLHOLES``) ofrece «Litología (esquema)» y cada elemento de ley y los aplica a la
 representación. Las etiquetas, las leyendas y las marcas las dibuja ``bl.draw.dh_overlay``.
+
+**Recalcular lo obsoleto** (T42; RF-008-26, RF-005-22; plan §5.6.10): las funciones de
+:data:`RECOMPUTE` repiten la base (desde todo lo importado vigente: lo de una entrada
+descartada sale de ella, ``drops_discarded``), la validación (con la misma rejilla) y las
+trazas (con el mismo método y los mismos sondeos) con los parámetros de hoy, como operaciones
+nuevas que sustituyen a las anteriores, con su trabajo por la cola de los sondeos; la base
+recalculada no lanza su validación (si queda obsoleta, la rehace el mismo recálculo).
 
 **La cola de incorporación** de los sondeos (:data:`INCORPORATIONS`, su temporizador
 :func:`incorporation_tick` y :func:`pending_incorporations`; RNF-005-06, plan §5.6.7) es suya,
@@ -214,7 +221,6 @@ from ..props.dh import (
     table_mapping,
 )
 from ..scene import dh_view, project_session, undo_watch, views
-from ..scene.dh_view import NOT_DELIVERED
 from ..ui import context as ui_context
 from ..ui.commands import UNDELIVERED_FLAG, unavailable_note
 from ..ui.commands import catalog as command_catalog
@@ -1536,28 +1542,40 @@ def start_build_base(project: Any, *, validate: bool = True) -> None:
                        _build_base_steps(project, validate))
 
 
-def _build_base_steps(project: Any, validate: bool) -> Generator[float, None, str]:
+def _live_sources(project: Any) -> tuple[list[store.LiveSource], list[Use]]:
+    """Lo importado vigente (``drillholes.store.live_sources``, en el orden en que se
+    registró) y lo que consume con ello ``dh.build_base``: cada ``dh_src_*`` vigente (papel
+    ``source``) y, si lo hay, ``dh_import_log`` (``imports``)."""
+    with project.read() as conn:
+        sources = store.live_sources(conn)
+        has_log = dataset_registry.get(conn, store.IMPORT_LOG) is not None
+    uses = [Use(dataset.name, "source") for source in sources
+            for dataset in source.datasets.values()]
+    if has_log:
+        uses.append(Use(store.IMPORT_LOG, "imports"))
+    return sources, uses
+
+
+def _build_base_steps(project: Any, validate: bool, *, handle: OperationHandle | None = None,
+                      sources: Sequence[store.LiveSource] = ()
+                      ) -> Generator[float, None, str]:
     """Los pasos que lanzan ``dh.build_base``: la operación «en curso» con lo que consume
-    (cada ``dh_src_*`` vigente, papel ``source``, y ``dh_import_log``, ``imports``), lo
+    (cada ``dh_src_*`` vigente, papel ``source``, y ``dh_import_log``, ``imports``) si no la
+    empezó ya su recálculo (``handle``, con lo importado vigente que leyó, ``sources``), lo
     importado leído por pasos (``drillholes.store.source_entry_steps``) a arrays sueltos y su
     trabajo ``dh_build_base`` (con las ruedas de la extensión si transforma)."""
-    try:
-        with project.read() as conn:
-            sources = store.live_sources(conn)
-            has_log = dataset_registry.get(conn, store.IMPORT_LOG) is not None
-        if not sources:
-            return "empty"
-        uses = [Use(dataset.name, "source") for source in sources
-                for dataset in source.datasets.values()]
-        if has_log:
-            uses.append(Use(store.IMPORT_LOG, "imports"))
-        handle = begin_operation(project, provenance.BUILD_BASE, settings={}, inputs=uses,
-                                 executor="job_thread")
-    except Exception as error:  # noqa: BLE001 - lo dice y no empieza nada
-        LOGGER.warning("No se pudo empezar la base de los sondeos", exc_info=True)
-        _say(tr("The drillhole database has not been built: {reason}",
-                reason=error_text(error)))
-        return "failed"
+    if handle is None:
+        try:
+            sources, uses = _live_sources(project)
+            if not sources:
+                return "empty"
+            handle = begin_operation(project, provenance.BUILD_BASE, settings={}, inputs=uses,
+                                     executor="job_thread")
+        except Exception as error:  # noqa: BLE001 - lo dice y no empieza nada
+            LOGGER.warning("No se pudo empezar la base de los sondeos", exc_info=True)
+            _say(tr("The drillhole database has not been built: {reason}",
+                    reason=error_text(error)))
+            return "failed"
     try:
         entries: list[dict[str, Any]] = []
         loose: dict[str, np.ndarray] = {}
@@ -3459,31 +3477,60 @@ def display_changed() -> bool:
 # --- Recálculo y reimportación (plan §5.6.10) --------------------------------------------------
 
 
-def _not_delivered(what: str, value: str) -> GeoblenderError:
-    """Lo que dice una función de la procedencia de los sondeos que aún no ha llegado (los
-    recálculos, T42): ``dh.not_delivered``, sin hacer nada."""
-    found = command_catalog().commands.get(SHOW_DISPLAY)
-    note = unavailable_note(found) if found is not None else ""
-    return GeoblenderError(NOT_DELIVERED, f"aún no está disponible ({note})", obj="Sondeos",
-                           field=what, value=value)
+NOTHING_IMPORTED = "dh.nothing_imported"
+"""El código del recálculo de la base sin nada importado vigente (todo descartado)."""
 
 
 def recompute_build_base(request: RecomputeRequest) -> OperationHandle:
-    """El recálculo de ``dh.build_base`` (RF-008-26): la base con todo lo importado vigente.
-    Aún no está disponible: ``dh.not_delivered``."""
-    raise _not_delivered("recálculo", provenance.BUILD_BASE)
+    """El recálculo de ``dh.build_base`` (T42; RF-008-26; plan §5.6.10): la base otra vez
+    desde **todo** lo importado vigente (``drillholes.store.live_sources``), no solo desde el
+    sucesor de lo que consumió: una entrada nueva, sustituida o descartada cambia el conjunto
+    (lo de una descartada sale de la base: su tipo lo declara, ``drops_discarded``). Una
+    operación nueva que sustituye a la antigua, con su trabajo por la cola de los sondeos y sin
+    lanzar después la validación (si queda obsoleta, la rehace el mismo recálculo). Devuelve la
+    operación, aún «en curso». Sin nada importado vigente, ``ValidationError``
+    ``dh.nothing_imported``, sin empezar nada."""
+    project = request.project
+    sources, uses = _live_sources(project)
+    if not sources:
+        raise ValidationError(NOTHING_IMPORTED, "no queda nada importado vigente de los sondeos "
+                              "(todo se descartó): importe sondeos", obj=_text(BASE_LABEL),
+                              field="importado", value=len(sources))
+    handle = begin_operation(project, provenance.BUILD_BASE, executor="job_thread",
+                             **{**request.arguments(), "inputs": uses})
+    INCORPORATIONS.add(handle.uid, _text(BASE_LABEL),
+                       _build_base_steps(project, False, handle=handle, sources=sources))
+    return handle
 
 
 def recompute_validate(request: RecomputeRequest) -> OperationHandle:
-    """El recálculo de ``dh.validate`` con los parámetros de hoy. Aún no está disponible:
-    ``dh.not_delivered``."""
-    raise _not_delivered("recálculo", provenance.VALIDATE)
+    """El recálculo de ``dh.validate`` (T42; RF-008-26): la base vigente con la misma rejilla
+    del proyecto (``terrain``, la vigente que la sigue) o sin ninguna, como sus ajustes, y los
+    umbrales de hoy, en una operación nueva que sustituye a la antigua (su trabajo, por la cola
+    de los sondeos: :func:`start_validate`). Devuelve la operación, aún «en curso»."""
+    project = request.project
+    surface = None
+    terrain = [use for use in request.inputs if use.role == "terrain"]
+    if terrain:
+        with project.read() as conn:
+            surface = dataset_registry.get(conn, terrain[0].item)
+    handle = request.begin(executor="job_thread")
+    start_validate(project, surface=surface, handle=handle)
+    return handle
 
 
 def recompute_desurvey(request: RecomputeRequest) -> OperationHandle:
-    """El recálculo de ``dh.desurvey`` con los mismos ajustes y los parámetros de hoy. Aún no
-    está disponible: ``dh.not_delivered``."""
-    raise _not_delivered("recálculo", provenance.DESURVEY)
+    """El recálculo de ``dh.desurvey`` (T42; RF-008-26, RF-005-22): las trazas de la base
+    vigente con el mismo método y los mismos sondeos (todos, o solo los de traza obsoleta) y la
+    tolerancia y el paso de hoy, en una operación nueva que sustituye a la antigua (su trabajo,
+    por la cola de los sondeos: :func:`start_desurvey`; escritas, la vista se recarga).
+    Devuelve la operación, aún «en curso»."""
+    settings = request.settings
+    method = str(settings.get("method", Method.MINIMUM_CURVATURE))
+    scope = str(settings.get("scope", SCOPES["ALL"]))
+    handle = request.begin(executor="job_thread")
+    start_desurvey(request.project, handle, method=method, scope=scope)
+    return handle
 
 
 def reimport_tabular(request: ReimportRequest) -> OperationHandle:

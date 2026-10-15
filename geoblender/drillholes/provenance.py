@@ -197,8 +197,10 @@ class OperationType:
     repite solo, las órdenes que lo lanzan (``commands``), los papeles de lo que consume
     (``inputs``, los de ``Use``), las tablas que escribe (``outputs``, por el nombre de su
     ``TableLayout``: lo importado, ``dh_src_<rol>``), las bibliotecas que influyen en sus
-    resultados (``libraries``), los parámetros que lee (``params``, de :mod:`.params`) y, una
-    importación, los lectores de su entrada (``readers``, con versión)."""
+    resultados (``libraries``), los parámetros que lee (``params``, de :mod:`.params`), una
+    importación, los lectores de su entrada (``readers``, con versión) y (T42) si su recálculo
+    reúne él mismo todo lo vigente (``drops_discarded``: la base, con todo lo importado
+    vigente; plan §5.6.10)."""
 
     op_type: str
     label_msgid: str
@@ -209,6 +211,7 @@ class OperationType:
     libraries: tuple[str, ...] = ()
     params: tuple[str, ...] = ()
     readers: tuple[str, ...] = ()
+    drops_discarded: bool = False
 
     def definition(self, recompute: RecomputeFunction | None = None,
                    settings: Iterable[SettingDef] = ()) -> OperationDef:
@@ -226,6 +229,7 @@ class OperationType:
             libraries=self.libraries,
             recompute=recompute,
             settings=tuple(settings),
+            drops_discarded=self.drops_discarded,
         )
 
 
@@ -242,7 +246,8 @@ OPERATION_TYPES: tuple[OperationType, ...] = (
                   libraries=(PYPROJ,), readers=(RECMIN_MDB,)),
     OperationType(BUILD_BASE, "Build of the drillhole database", True,
                   (_IMPORT_COMMAND, _RECMIN_COMMAND, _AZIMUTH_COMMAND),
-                  inputs=("source", "imports"), outputs=BASE_TABLES, libraries=(PYPROJ,)),
+                  inputs=("source", "imports"), outputs=BASE_TABLES, libraries=(PYPROJ,),
+                  drops_discarded=True),
     OperationType(VALIDATE, "Validation of the drillhole database", True,
                   ("geoblender.dh_validate",), inputs=(*_BASE_ROLES, "terrain"),
                   outputs=("dh_validation_issue",), params=VALIDATION_KEYS),
