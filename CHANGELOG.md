@@ -587,7 +587,14 @@ comparación con el MDT real de Silvestre (CE-006-05), que se ejecuta a petició
   sintéticas se crean una vez y se copian a cada prueba que las necesita
   (`%TEMP%\geoblender-datos\`); las pruebas unitarias van en 18 procesos (antes 16); y la
   prueba de Blender que va la última de su proceso ya no espera al final de la cola, que
-  dejaba a su Blender casi 1 s detrás de los demás.
+  dejaba a su Blender casi 1 s detrás de los demás. Con las últimas pruebas de los sondeos
+  volvió a unos 42 s, limitada por los procesadores del equipo; ahora la comprobación de
+  cada tarea ya no ejecuta el paso «motor» (las mismas pruebas unitarias de los paquetes
+  de dominio, otra vez con el numpy del motor de cálculo): lo ejecuta `--completo`, que la
+  publicación pide siempre (spec 004, versión 0.4), y el resumen lo dice. Tarda unos 34 s
+  (con `--completo`, unos 97 s). Las pruebas que copiaban entradas a la carpeta de un
+  trabajo ya no dejan una carpeta en `%TEMP%` cada vez (las entradas son de solo lectura y
+  no se borraban).
 - Solo un `tools/check.py` a la vez en el equipo (spec 006): si hay otro en marcha (de la
   misma carpeta, de un *worktree* o de otra sesión), el nuevo dice a cuál espera (su pid y su
   carpeta) y empieza cuando termina; su tiempo se cuenta desde entonces. Antes los dos se

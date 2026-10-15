@@ -45,6 +45,7 @@ import numpy as np
 from tests.support import qgis
 from tests.support.package import import_geoblender
 from tests.support.resources import requires
+from tests.support.trees import temp_folder
 
 vector = import_geoblender("gis.vector")
 styles = import_geoblender("gis.styles")
@@ -161,8 +162,7 @@ def _rows(path: Path, sql: str, *args: Any) -> list[tuple[Any, ...]]:
 
 class _Folder(unittest.TestCase):
     def setUp(self) -> None:
-        self.folder = Path(tempfile.mkdtemp(prefix="gb-vw-"))
-        self.addCleanup(shutil.rmtree, self.folder, True)
+        self.folder = temp_folder(self, "gb-vw-")
         self.target = self.folder / "capas.gpkg"
 
     def listing(self) -> list[str]:

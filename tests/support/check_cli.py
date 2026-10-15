@@ -47,7 +47,8 @@ INSTALL = BlenderInstall(
 )
 MANDATORY = ["unitarias", "referencia", "licencias", "iconos", "manifiesto", "blender"]
 # El paso de la spec 004 (T30): las pruebas de dominio con el numpy del motor de cálculo de
-# pruebas, a la vez que «blender». Salvo en RuntimeStepTest, el motor es este, simulado.
+# pruebas, a la vez que «blender», con --completo (spec 004 0.4; spec 005, T50). Salvo en
+# RuntimeStepTest, el motor es este, simulado.
 RUNTIME = "motor"
 FAKE_SITE = Path(tempfile.gettempdir()) / "geoblender-falso" / "motor" / "site"
 DOMAIN_FOLDERS = [

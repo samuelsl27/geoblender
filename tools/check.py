@@ -23,22 +23,23 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    incluye las reglas de arquitectura y del repositorio), «referencia»
    (``tests/referencia``; sin casos es correcto), «licencias»
    (``tools/check_licenses.py``), «manifiesto» (``blender --command extension
-   validate``), «blender» (``tools/run_blender_tests.py`` dentro de Blender, en segundo
-   plano, de fábrica, con ``--python-exit-code 1``) y «motor» (spec 004, RF-004-28:
-   ``tests/unit`` de los paquetes de dominio con el numpy del motor de cálculo de pruebas,
-   el Python de Blender con ``-S`` y la carpeta ``site`` del motor en ``PYTHONPATH``; el
-   motor lo crea ``tools/make_runtime.py`` en ``.deps/runtime/<lock_id>/``, o lo da
-   ``GEOBLENDER_TEST_RUNTIME_SITE``; sin motor, el paso se omite por el recurso
-   ``runtime`` con la orden que lo crea: «VERDE CON OMISIONES»). Con ``--completo``,
-   justo después, «arnés» (``tests/arnes`` como «unitarias»: las pruebas del propio
-   arnés que lanzan Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de la spec
-   002); sin la opción no se ejecuta, y el resumen lo dice antes de ``RESULTADO``: la
-   comprobación de cada tarea va sin ella (RNF-001-01, ≤ 40 s) y ``tools/publish.py``
-   la pide siempre. Solo si se piden, y después de los obligatorios: «rendimiento»
-   (``--rendimiento``:
-   ``tests/rendimiento`` con el Python de Blender y ``tests/rendimiento/blender/perf_*.py``
-   dentro de Blender), «banco» (``--banco``: ``tools/bench_silvestre.py``; sin banco
-   disponible, «omitido», que no es un fallo) y «documentación» (``--documentacion``,
+   validate``) y «blender» (``tools/run_blender_tests.py`` dentro de Blender, en segundo
+   plano, de fábrica, con ``--python-exit-code 1``). Con ``--completo``, además, «motor»
+   (spec 004, RF-004-28: ``tests/unit`` de los paquetes de dominio con el numpy del motor
+   de cálculo de pruebas, el Python de Blender con ``-S`` y la carpeta ``site`` del motor
+   en ``PYTHONPATH``; el motor lo crea ``tools/make_runtime.py`` en
+   ``.deps/runtime/<lock_id>/``, o lo da ``GEOBLENDER_TEST_RUNTIME_SITE``; sin motor, el
+   paso se omite por el recurso ``runtime`` con la orden que lo crea: «VERDE CON
+   OMISIONES») y, justo después, «arnés» (``tests/arnes`` como «unitarias»: las pruebas
+   del propio arnés que lanzan Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de
+   la spec 002). Sin la opción no se ejecutan (ni se busca el motor), y el resumen lo dice
+   antes de ``RESULTADO``: la comprobación de cada tarea va sin ella (RNF-001-01, ≤ 40 s;
+   «motor» solo con ella desde la spec 004 0.4 y la 001 0.7, tarea 005/T50) y
+   ``tools/publish.py`` la pide siempre. Solo si se piden, y después de los obligatorios:
+   «rendimiento» (``--rendimiento``: ``tests/rendimiento`` con el Python de Blender y
+   ``tests/rendimiento/blender/perf_*.py`` dentro de Blender), «banco» (``--banco``:
+   ``tools/bench_silvestre.py``; sin banco disponible, «omitido», que no es un fallo) y
+   «documentación» (``--documentacion``,
    spec 007, RF-007-14: ``tools/check_docs.py`` sobre la documentación que encuentra
    ``repo.find_docs``, la de ``GEOBLENDER_DOCS_DIR`` o la carpeta madre; si no hay o no
    se alcanza, «omitido» con el motivo, que no es un fallo). Los pasos de Blender usan
@@ -46,8 +47,8 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
 
    Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06), salvo «motor», que va a
    la vez que «blender» (spec 004, T30: después de él no cabría en RNF-001-01; su línea
-   va en su lugar y el paso siguiente espera a los dos; a la vez que «unitarias» no
-   compensa, spec 006, T38). Dentro de un paso, «unitarias», «referencia» (spec 006,
+   va tras la de «blender» y el paso siguiente espera a los dos; a la vez que «unitarias»
+   no compensa, spec 006, T38). Dentro de un paso, «unitarias», «referencia» (spec 006,
    T59) y «blender» reparten sus pruebas en partes que se ejecutan a la vez (spec 003,
    T40; RNF-007-01: ≤ 40 s sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
    ``REFERENCE_PARTS`` procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender
@@ -105,7 +106,9 @@ No hay modo «solo una parte»: un verde parcial se confunde con el verde. Para 
 ejecuta ``unittest`` directamente (órdenes en ``AGENTS.md``). ``--completo`` no es una
 parte: sin él se ejecutan todas las reglas y todas las pruebas de la extensión, dentro y
 fuera de Blender; solo quedan fuera las autopruebas del arnés que relanzan Blender entero,
-que prueban ``tools/`` y ``tests/support/`` y no la extensión (plan 001 §5.4.7).
+que prueban ``tools/`` y ``tests/support/`` y no la extensión (plan 001 §5.4.7), y la
+segunda pasada de las pruebas unitarias de dominio con el numpy del motor, que «unitarias»
+ya ejecuta con el de Blender (spec 004 0.4, RF-004-28).
 
 En los pasos con pruebas, un fichero de pruebas en disco que ``unittest`` no cargó (en
 una carpeta sin ``__init__.py``, con un nombre que no es un módulo válido o sin pruebas)
@@ -264,19 +267,21 @@ STOP_WAIT_S = 30.0  # después, lo que se espera a cada hilo con su orden ya par
 PARTS_PROBLEM = "reparto incompleto"
 UNITTEST_PATTERN = discovery.UNITTEST_PATTERN  # el de unittest discover sin «-p»
 LAUNCHER_PATTERN = "test_*.py"  # el del lanzador sin «--patron» (DEFAULT_PATTERN)
-OPTION_COMPLETE = layout.CHECK_COMPLETE_OPTION  # «--completo»: el paso «arnés»
+OPTION_COMPLETE = layout.CHECK_COMPLETE_OPTION  # «--completo»: los pasos «motor» y «arnés»
 OPTION_PERFORMANCE = "--rendimiento"
 OPTION_BANK = "--banco"
 OPTION_DOCS = "--documentacion"
 OPTIONS: tuple[str, ...] = (OPTION_COMPLETE, OPTION_PERFORMANCE, OPTION_BANK, OPTION_DOCS)
 HARNESS_STEP = "arnés"
 HARNESS_FOLDER = layout.HARNESS_TESTS_RELPATH
+RUNTIME_STEP = "motor"
+# La línea del resumen sin --completo (RF-001-06; spec 001 0.7, spec 004 0.4: RF-004-28).
 NOT_COMPLETE = (
     f"Sin {OPTION_COMPLETE}: no se han ejecutado las pruebas del arnés que lanzan Blender "
-    f"entero ({HARNESS_FOLDER}); las ejecuta tools/check.py {OPTION_COMPLETE}, y la "
-    "publicación (tools/publish.py) las pide siempre."
+    f"entero ({HARNESS_FOLDER}) ni las unitarias de los paquetes de dominio con el motor "
+    f"de cálculo de pruebas («{RUNTIME_STEP}», RF-004-28); las ejecuta tools/check.py "
+    f"{OPTION_COMPLETE}, y la publicación (tools/publish.py) las pide siempre."
 )
-RUNTIME_STEP = "motor"
 RUNTIME_RESOURCE = "runtime"  # el recurso de tests/support/resources.py (spec 004)
 DOMAIN_TESTS = "tests/unit"  # tests/unit/<paquete de dominio> (imports.LEVELS)
 # Partes de cada carpeta de dominio en «motor», que va a la vez que «blender» (spec 004,
@@ -317,9 +322,11 @@ REPOSITORY_SKIP = (".git",)  # lo cambia git, no la comprobación
 USAGE = """Uso (con el Python de Blender, desde la raíz del repositorio):
   & "<Blender>\\5.2\\python\\bin\\python.exe" tools/check.py [--completo] [--rendimiento] [--banco] [--documentacion]
 
-  --completo        añade, tras «blender», las pruebas del arnés que lanzan Blender
-                    entero (tests/arnes); la publicación (tools/publish.py) la pide
-                    siempre, y la comprobación de cada tarea va sin ella
+  --completo        añade, a la vez que «blender», las pruebas unitarias de los
+                    paquetes de dominio con el motor de cálculo de pruebas («motor»,
+                    tools/make_runtime.py) y, tras ellas, las del arnés que lanzan
+                    Blender entero (tests/arnes); la publicación (tools/publish.py) la
+                    pide siempre, y la comprobación de cada tarea va sin ella
   --rendimiento     añade las pruebas de rendimiento (también las de dentro de Blender)
   --banco           añade el banco privado de Silvestre (GEOBLENDER_SILVESTRE_DIR)
   --documentacion   añade la comprobación de la documentación (tools/check_docs.py en
@@ -856,7 +863,8 @@ def runtime_parts(ctx: Context) -> dict[str, int]:
 
 
 def _runtime(ctx: Context) -> list[Run]:
-    """Paso «motor» (spec 004, T30; RF-004-28, Silvestre REN-01): con el motor de cálculo
+    """Paso «motor» (spec 004, T30; RF-004-28, Silvestre REN-01; solo con ``--completo``,
+    spec 004 0.4): con el motor de cálculo
     de pruebas, ``tests/unit`` de cada paquete de dominio con su numpy (el mismo código,
     probado también con el numpy de Blender en «unitarias»), cada carpeta en las partes de
     :func:`runtime_parts`. Las carpetas en una sola parte van después de todas las partes:
@@ -927,8 +935,10 @@ def _docs_omit(ctx: Context) -> str | None:
 # Tabla de pasos (plan 001 §5.4.7). Las specs siguientes añaden el suyo en su lugar:
 # «iconos» (003, T30) tras «licencias» y «motor» (004) tras «blender», a la vez que él
 # (T30: después no cabe en RNF-001-01). Los opcionales se ejecutan siempre después de los
-# obligatorios (RF-001-10), en el orden de la tabla: «arnés» (--completo; spec 001 0.6) el
-# primero, tras «blender» y «motor»; «documentación» (spec 007, RF-007-14), el último.
+# obligatorios (RF-001-10), en el orden de la tabla: los de --completo los primeros, tras
+# «blender»: «motor» (a la vez que él; spec 004 0.4, RF-004-28: con la CPU llena, la
+# comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01; spec 005,
+# T50) y «arnés» (spec 001 0.6); «documentación» (spec 007, RF-007-14), el último.
 STEPS: tuple[Step, ...] = (
     Step("unitarias", _unit),
     Step("referencia", _reference),
@@ -939,6 +949,7 @@ STEPS: tuple[Step, ...] = (
     Step(
         RUNTIME_STEP,
         _runtime,
+        option=OPTION_COMPLETE,
         omit=_runtime_omit,
         resource=RUNTIME_RESOURCE,
         alongside="blender",
@@ -1706,9 +1717,9 @@ def _remove_tree(folder: Path, attempts: int = 5) -> None:
 
 def not_complete_note(steps: Sequence[Step], flags: Collection[str]) -> str | None:
     """La línea del resumen, antes de ``RESULTADO``, si la tabla tiene pasos de
-    ``--completo`` y no se pidió: esas pruebas no se han ejecutado y la publicación las
-    pide siempre (RF-001-06, spec 001 0.6). No es una omisión por un recurso: el
-    resultado no cambia."""
+    ``--completo`` y no se pidió: esas pruebas («arnés» y «motor») no se han ejecutado y la
+    publicación las pide siempre (RF-001-06, spec 001 0.6 y 0.7; RF-004-28). No es una
+    omisión por un recurso: el resultado no cambia."""
     if OPTION_COMPLETE in flags or not any(s.option == OPTION_COMPLETE for s in steps):
         return None
     return NOT_COMPLETE
@@ -1867,7 +1878,10 @@ def main(
                 bytecode=bytecode(root),
             )
             if ctx.bytecode is not None:
-                site = ctx.test_runtime().site
+                # La carpeta site del motor, solo si se ejecuta «motor» (--completo; spec
+                # 005, T50): sin él, ni se busca el motor ni se repasa lo compilado de su numpy.
+                engine = any(step.runs is _runtime for step in selected)
+                site = ctx.test_runtime().site if engine else None
                 refreshing = BytecodeRefresh(refresh_bytecode, ctx.bytecode, root,
                                              [] if site is None else [site])
             # Los perfiles de las demás partes de las pruebas de Blender (T40).

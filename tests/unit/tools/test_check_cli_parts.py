@@ -10,14 +10,15 @@ cada paso, el paso «motor» y el reparto por tiempo.
   cuenta como cargado; si las partes no suman las pruebas que dicen haber descubierto,
   el paso falla («reparto incompleto»); y con Ctrl+C se paran las partes en marcha y se
   borra la carpeta temporal.
-- RF-004-28 (spec 004, T30): con el motor de cálculo de pruebas, el paso «motor» ejecuta
-  ``tests/unit`` de cada paquete de dominio con el numpy del motor (el Python de Blender con
-  ``-S`` y la carpeta ``site`` del motor al principio de ``PYTHONPATH``), a la vez que
-  «blender» (no cabe después: RNF-001-01), y su línea va tras la de «blender»; sin motor, se
-  omite con ``[ENTORNO] runtime`` y la orden ``tools/make_runtime.py``: «VERDE CON
-  OMISIONES». Salvo en esas pruebas, el motor de las demás es uno simulado
-  (``find_runtime``), y el paso «motor» no cuenta en el orden de los pasos
-  (``FakeRunner.steps``): va a la vez que «blender».
+- RF-004-28 (spec 004, T30; 0.4, spec 005, T50): con ``--completo`` y el motor de cálculo
+  de pruebas, el paso «motor» ejecuta ``tests/unit`` de cada paquete de dominio con el numpy
+  del motor (el Python de Blender con ``-S`` y la carpeta ``site`` del motor al principio de
+  ``PYTHONPATH``), a la vez que «blender» (no cabe después: RNF-001-01), y su línea va tras
+  la de «blender»; sin motor, se omite con ``[ENTORNO] runtime`` y la orden
+  ``tools/make_runtime.py``: «VERDE CON OMISIONES»; sin ``--completo``, no se ejecuta
+  (``test_check_cli_options.CompleteStepTest``). Salvo en esas pruebas, el motor de las
+  demás es uno simulado (``find_runtime``), y el paso «motor» no cuenta en el orden de los
+  pasos (``FakeRunner.steps``): va a la vez que «blender».
 - RNF-001-01, RNF-007-01 (spec 004, T39): las partes de «unitarias», «blender» y «motor»
   se reparten por la duración medida de cada módulo, guardada fuera del repositorio (un
   almacén en la carpeta temporal del sistema, uno por raíz): sin medidas, como siempre;
@@ -221,11 +222,12 @@ class PartsTest(unittest.TestCase):
     def test_bytecode_folder_for_the_python_steps(self) -> None:
         """RNF-001-01 (spec 005, T44): el código compilado de las órdenes de Python va en la
         carpeta de la raíz fuera del repositorio (``gbtools.pyc_cache.default_folder``), que
-        se refresca una vez, en otro hilo, con la raíz y la carpeta ``site`` del motor de
-        cálculo de pruebas (``pyc_cache.prepare``); cada orden de Python («unitarias»,
-        «referencia», «motor», «licencias») la recibe en ``PYTHONPYCACHEPREFIX``, y las de
-        Blender no. Sin carpeta, las órdenes de siempre, sin la variable; si el refresco
-        falla, un aviso y el resultado no cambia."""
+        se refresca una vez, en otro hilo, con la raíz y, con ``--completo``, la carpeta
+        ``site`` del motor de cálculo de pruebas (``pyc_cache.prepare``; sin la opción,
+        «motor» no se ejecuta y su carpeta no se repasa: spec 005, T50); cada orden de Python
+        («unitarias», «referencia», «motor», «licencias») la recibe en
+        ``PYTHONPYCACHEPREFIX``, y las de Blender no. Sin carpeta, las órdenes de siempre, sin
+        la variable; si el refresco falla, un aviso y el resultado no cambia."""
         folder = Path(tempfile.mkdtemp(prefix="gb-pyc-check-"))
         self.addCleanup(shutil.rmtree, folder, True)
         prepared: list[tuple[Path, Path, list[Path], str]] = []
@@ -234,7 +236,8 @@ class PartsTest(unittest.TestCase):
             prepared.append((target, root, list(sites), threading.current_thread().name))
 
         with many_cpus():
-            result = run_check(bytecode=lambda root: folder, refresh_bytecode=prepare)
+            result = run_check("--completo", bytecode=lambda root: folder,
+                               refresh_bytecode=prepare)
         self.assertEqual(result.code, 0, result.out)
         ((target, root, sites, thread),) = prepared
         self.assertEqual((target, root, sites), (folder, ROOT, [FAKE_SITE]))
@@ -247,6 +250,14 @@ class PartsTest(unittest.TestCase):
                     self.assertEqual(call.env[check.ENV_BYTECODE], str(folder))
         for call in result.runner.calls_of("blender"):
             self.assertNotEqual(call.env.get(check.ENV_BYTECODE), str(folder))
+
+        prepared.clear()
+        with many_cpus():
+            result = run_check(bytecode=lambda root: folder, refresh_bytecode=prepare)
+        self.assertEqual(result.code, 0, result.out)
+        ((target, root, sites, _thread),) = prepared
+        self.assertEqual((target, root, sites), (folder, ROOT, []))
+        self.assertEqual([call.part for call in result.runner.calls_of(RUNTIME)], [])
 
         with many_cpus():
             result = run_check()
@@ -551,7 +562,7 @@ class PartsTest(unittest.TestCase):
             many_cpus(),
             self.assertRaises(KeyboardInterrupt),
         ):
-            run_check(runner=runner)
+            run_check("--completo", runner=runner)
         stop.assert_called()
         self.assertTrue(stopped.is_set())
         profiles = [Path(c.env["BLENDER_USER_RESOURCES"]) for c in runner.calls_of("blender")]
@@ -588,7 +599,8 @@ def runtime_counts() -> dict[str, int]:
 
 
 class RuntimeStepTest(unittest.TestCase):
-    """RF-004-28 (spec 004, T30): el paso «motor»."""
+    """RF-004-28 (spec 004, T30): el paso «motor», con ``--completo`` (spec 004 0.4; spec 005,
+    T50)."""
 
     def test_domain_tests_with_the_engine_numpy(self) -> None:
         """RF-004-28: con el motor de pruebas, «motor» ejecuta ``tests/unit`` de cada
@@ -611,11 +623,11 @@ class RuntimeStepTest(unittest.TestCase):
                 together.wait()
 
         with many_cpus():
-            result = run_check(runner=FakeRunner(on_call=meet))
+            result = run_check("--completo", runner=FakeRunner(on_call=meet))
         self.assertEqual(result.code, 0, result.out)
         self.assertFalse(together.broken)
         runner = result.runner
-        self.assertEqual(runner.steps(), MANDATORY)
+        self.assertEqual(runner.steps(), [*MANDATORY, HARNESS])
         calls = runner.calls_of(RUNTIME)
         expected = [runtime_part_cmd(folder, i, count)
                     for folder, count in counts.items() for i in range(1, count + 1)]
@@ -643,7 +655,7 @@ class RuntimeStepTest(unittest.TestCase):
         salida, «blender» sigue correcto y el código es 1."""
         broken = FakeRunner({f"{RUNTIME}#1": (1, "", "RuntimeError: rota\n")})
         with many_cpus():
-            result = run_check(runner=broken)
+            result = run_check("--completo", runner=broken)
         self.assertEqual(result.code, 1, result.out)
         self.assertTrue(_step_line(result.out, RUNTIME).lstrip().startswith("fallo"))
         self.assertTrue(_step_line(result.out, "blender").lstrip().startswith("correcto"))
@@ -654,16 +666,17 @@ class RuntimeStepTest(unittest.TestCase):
         """RF-004-28, RF-001-06: sin motor de pruebas (``make_runtime.find_test_runtime``;
         aquí, ``GEOBLENDER_TEST_RUNTIME_SITE`` con una carpeta que no existe), «motor» no
         ejecuta nada y se omite por el recurso ``runtime`` con el motivo y la orden
-        ``tools/make_runtime.py``: código 0 y «VERDE CON OMISIONES (1)»."""
+        ``tools/make_runtime.py``: código 0 y «VERDE CON OMISIONES (1)». Sin ``--completo``
+        (spec 005, T50), ni su línea ni la omisión: «VERDE»."""
         variable = check.ENV_TEST_RUNTIME_SITE
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "no_esta"
             with many_cpus():
-                result = run_check(find_runtime=check.find_test_runtime,
+                result = run_check("--completo", find_runtime=check.find_test_runtime,
                                    environ={variable: str(missing)})
             self.assertEqual(result.code, 0, result.out)
-            self.assertEqual(result.runner.calls_of(RUNTIME), [])
-            self.assertEqual(result.runner.steps(), MANDATORY)
+            self.assertEqual([call.part for call in result.runner.calls_of(RUNTIME)], [])
+            self.assertEqual(result.runner.steps(), [*MANDATORY, HARNESS])
             line = _step_line(result.out, RUNTIME)
             self.assertTrue(line.lstrip().startswith("omitido"), line)
             self.assertIn(variable, line)
@@ -672,6 +685,15 @@ class RuntimeStepTest(unittest.TestCase):
             self.assertIn(f"el paso «{RUNTIME}»", result.out)
             self.assertRegex(result.out.strip().splitlines()[-1],
                              r"^RESULTADO: VERDE CON OMISIONES \(1\) \(\d+,\d s\)$")
+
+            with many_cpus():
+                result = run_check(find_runtime=check.find_test_runtime,
+                                   environ={variable: str(missing)})
+            self.assertEqual(result.code, 0, result.out)
+            self.assertNotRegex(result.out, rf"(?m)^  \S+\s+{RUNTIME}\s")
+            self.assertNotIn(f"\n  {check.RUNTIME_RESOURCE} (1): ", result.out)
+            self.assertRegex(result.out.strip().splitlines()[-1],
+                             r"^RESULTADO: VERDE \(\d+,\d s\)$")
 
     def test_runtime_parts_by_time(self) -> None:
         """RF-004-28, RNF-001-01, RNF-007-01 (spec 006, T47): con medidas guardadas de las
@@ -705,7 +727,7 @@ class RuntimeStepTest(unittest.TestCase):
                 with self.subTest(medidas=name):
                     parts.write_store(store, saved)
                     with many_cpus():
-                        result = run_check(times_store=lambda root: store)
+                        result = run_check("--completo", times_store=lambda root: store)
                     self.assertEqual(result.code, 0, result.out)
                     found: dict[str, list[tuple[int, int] | None]] = {}
                     for call in result.runner.calls_of(RUNTIME):
@@ -741,7 +763,7 @@ class RuntimeStepTest(unittest.TestCase):
         variable = check.ENV_TEST_RUNTIME_SITE
         with tempfile.TemporaryDirectory() as tmp:
             with many_cpus():
-                result = run_check(find_runtime=check.find_test_runtime,
+                result = run_check("--completo", find_runtime=check.find_test_runtime,
                                    environ={variable: tmp})
         self.assertEqual(result.code, 0, result.out)
         calls = result.runner.calls_of(RUNTIME)
@@ -801,8 +823,8 @@ class PartTimesTest(unittest.TestCase):
         puede leer), las partes son las de siempre, sin ``--tiempos``, y cada una escribe
         la duración de sus módulos (``--medidas``, un fichero por parte en la carpeta
         temporal de la comprobación, que se borra); al terminar, el almacén guarda las de
-        cada suite con partes («unitarias», «referencia», «blender» y las de «motor»). La
-        salida y el
+        cada suite con partes («unitarias», «referencia», «blender» y, con ``--completo``,
+        las de «motor»). La salida y el
         código, los de siempre. El almacén por defecto está en la carpeta temporal del
         sistema, fuera del repositorio, uno por raíz del código."""
         default = check.default_times_store(ROOT)
@@ -819,7 +841,8 @@ class PartTimesTest(unittest.TestCase):
                         store.write_text(text, encoding="utf-8")
                     runner = FakeRunner(on_call=_write_measures)
                     with many_cpus():
-                        result = run_check(runner=runner, times_store=lambda root: store)
+                        result = run_check("--completo", runner=runner,
+                                           times_store=lambda root: store)
                     self.assertEqual(result.code, 0, result.out)
                     for call in runner.calls_of("unitarias"):
                         assert call.part is not None
@@ -885,7 +908,7 @@ class PartTimesTest(unittest.TestCase):
             parts.write_store(store, stored)
             runner = FakeRunner(on_call=measure)
             with many_cpus():
-                result = run_check(runner=runner, times_store=lambda root: store)
+                result = run_check("--completo", runner=runner, times_store=lambda root: store)
             self.assertEqual(result.code, 0, result.out)
             queues: dict[str, set[str | None]] = {}
             for call in runner.calls_of("unitarias"):

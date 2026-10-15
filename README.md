@@ -103,7 +103,7 @@ Desde la raíz de este repositorio, en PowerShell y siempre con el Python de Ble
 ```powershell
 $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe"
 & $PY -B tools/check.py          # comprobación completa: la definición de «verde»
-& $PY -B tools/check.py --completo  # además, las pruebas del arnés que lanzan Blender entero
+& $PY -B tools/check.py --completo  # además, las del motor de cálculo y las del arnés
 & $PY -B tools/check_docs.py     # comprobación de la documentación
 & $PY -B tools/dev_install.py    # instala la extensión en un perfil de Blender aislado
 & $PY -B tools/build.py          # valida el manifiesto y genera el zip en dist/
@@ -120,7 +120,7 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 
 | Orden | Opciones |
 | --- | --- |
-| `tools/check.py` | `--completo` (añade las pruebas del arnés que lanzan Blender entero, `tests/arnes`: la publicación las pide siempre), `--rendimiento` (requisitos de rendimiento, también dentro de Blender), `--banco` (bancos privados) y `--documentacion` (añade la comprobación de la documentación; sin ella, «omitido») |
+| `tools/check.py` | `--completo` (añade las pruebas unitarias de los paquetes de dominio con el motor de cálculo de pruebas, el paso «motor», y las del arnés que lanzan Blender entero, `tests/arnes`: la publicación las pide siempre), `--rendimiento` (requisitos de rendimiento, también dentro de Blender), `--banco` (bancos privados) y `--documentacion` (añade la comprobación de la documentación; sin ella, «omitido») |
 | `tools/check_docs.py` | `CARPETA` (la documentación, si no es la carpeta madre ni la de `GEOBLENDER_DOCS_DIR`) |
 | `tools/dev_install.py` | `--perfil CARPETA`, `--abrir` (Blender con interfaz) y `--desinstalar` |
 | `tools/build.py` | `--probar-instalacion` (instala el zip en un perfil limpio y lo desinstala) |
@@ -137,9 +137,9 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en unos 37 s; con `--completo`, unos 93 s)
-no ejecuta las pruebas del propio arnés que lanzan Blender entero, y lo dice antes del
-resultado. Solo se ejecuta un
+Sin `--completo` (la comprobación de cada tarea, en unos 34 s; con `--completo`, unos 97 s)
+no ejecuta las pruebas del propio arnés que lanzan Blender entero ni el paso «motor», y lo
+dice antes del resultado. Solo se ejecuta un
 `tools/check.py` a la vez en el equipo, sea de la carpeta que sea (de este repositorio o de
 un *worktree*): dos a la vez compiten por los procesadores, tardan más y las pruebas que miden
 tiempos fallan. El cerrojo es `%LOCALAPPDATA%\Geoblender\check.lock`, que el sistema suelta
@@ -179,12 +179,13 @@ nunca usa lo compilado antes). Las bases de RecMin sintéticas de las pruebas se
 vez por guion y motor en `%TEMP%\geoblender-datos\` (se comprueba la huella de cada una
 antes de copiarla, y la que nadie usa en 30 días se borra); las pruebas de su guion las
 crean cada vez.
-Si existe el motor de cálculo de pruebas
+Con `--completo`, si existe el motor de cálculo de pruebas
 (`tools/make_runtime.py`), el paso «motor» ejecuta otra vez las pruebas unitarias de los
 paquetes de dominio con su numpy, a la vez que las de Blender (spec 004, RF-004-28), en 16
 procesos como mucho repartidos entre las carpetas por lo que tardaron (6 por carpeta la
 primera vez); sin él, se omite con `[ENTORNO] runtime` y el resultado es `VERDE CON
-OMISIONES`.
+OMISIONES`. La comprobación de cada tarea no lo ejecuta (spec 004, versión 0.4): son las
+mismas pruebas que ya pasan con el numpy de Blender, y con él no cabía en 40 s.
 
 ## Variables de entorno
 

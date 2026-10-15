@@ -53,7 +53,7 @@ from tests.support.provenance_checks import (
     source_state,
 )
 from tests.support.resources import WINDOWS, WINDOWS_HINT, is_available, requires, skip_reason
-from tests.support.trees import age_folders
+from tests.support.trees import age_folders, temp_folder
 
 dh_content = import_geoblender("interop.dh_content")
 tabular = import_geoblender("interop.drillholes_tabular")
@@ -183,8 +183,7 @@ class _Temp(unittest.TestCase):
     """Una carpeta temporal por prueba, de ruta corta."""
 
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="gb-dhc-"))
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.tmp = temp_folder(self, "gb-dhc-")
 
     def progress_and_cancel(self, reader: Any, path: Path, role: str | None,
                             **options: Any) -> None:

@@ -3,6 +3,7 @@
 
 import io
 import os
+import stat
 import tempfile
 import unittest
 import unittest.mock
@@ -168,6 +169,46 @@ class ChildTempTest(unittest.TestCase):
         result = runner(["blender", "-b"], env={"A": "1"}, cwd=ROOT, timeout=5.0)
         self.assertEqual(result, "hecho")
         self.assertEqual(calls, [(["blender", "-b"], trees.child_env({"A": "1"}, temp), ROOT, 5.0)])
+
+
+class TempFolderTest(unittest.TestCase):
+    """``trees.temp_folder`` y ``trees.remove_tree`` (spec 005, T50): la carpeta temporal de
+    una prueba se borra entera al terminar, también lo de solo lectura (las entradas que un
+    trabajo copia a su carpeta son de solo lectura, ``jobs.paths``, y ``shutil.rmtree(...,
+    True)`` las dejaba en ``%TEMP%`` sin decir nada: miles de carpetas), y si no se puede
+    borrar, la prueba lo dice."""
+
+    def test_folder_removed_with_read_only_files(self) -> None:
+        """RF-001-09: la carpeta es nueva, con el prefijo dado, en el ``%TEMP%`` de este
+        proceso; al terminar la prueba se borra entera, con un fichero de solo lectura en
+        una subcarpeta (como ``jobs/<uid>/in/``); borrar una que ya no está no es un
+        error."""
+        case = unittest.TestCase()
+        folder = trees.temp_folder(case, "gb-t50-")
+        self.addCleanup(trees.remove_tree, folder)
+        self.assertTrue(folder.name.startswith("gb-t50-"))
+        self.assertEqual(folder.resolve().parent, Path(tempfile.gettempdir()).resolve())
+        self.assertEqual(list(folder.iterdir()), [])
+        inputs = folder / "jobs" / "x" / "in"
+        inputs.mkdir(parents=True)
+        source = inputs / "source_main.gpkg"
+        source.write_bytes(b"x")
+        os.chmod(source, stat.S_IREAD)
+        os.chmod(inputs, stat.S_IREAD)
+        case.doCleanups()
+        self.assertFalse(folder.exists())
+        trees.remove_tree(folder)
+
+    @unittest.skipUnless(os.name == "nt", resources.skip_reason(resources.WINDOWS,
+                                                             resources.WINDOWS_HINT))
+    def test_open_file_fails_aloud(self) -> None:
+        """RF-001-09: si algo sigue abierto en la carpeta (Windows no lo borra), lo intenta
+        otra vez y, si no puede, lanza el error: no se queda en ``%TEMP%`` en silencio."""
+        folder = Path(tempfile.mkdtemp(prefix="gb-t50-"))
+        self.addCleanup(trees.remove_tree, folder)
+        with (folder / "abierto.bin").open("wb"), self.assertRaises(PermissionError):
+            trees.remove_tree(folder, attempts=2)
+        self.assertTrue(folder.exists())
 
 
 class FakeLayoutTest(unittest.TestCase):

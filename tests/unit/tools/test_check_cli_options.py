@@ -8,7 +8,9 @@ opcionales y la orden que descarga las ruedas que faltan.
 - RF-001-06, RF-001-07 (spec 001 0.6; spec 002, D-9 y T48): con ``--completo``, tras
   «blender», el paso «arnés» (``unittest`` de ``tests/arnes``, las pruebas del arnés que
   lanzan Blender entero), en el que «sin pruebas» o un fichero sin cargar son un fallo;
-  sin la opción no se ejecuta, y el resumen lo dice antes de ``RESULTADO``.
+  sin la opción no se ejecuta, y el resumen lo dice antes de ``RESULTADO``. Lo mismo el
+  paso «motor» (RF-004-28; spec 001 0.7, spec 004 0.4 y spec 005, T50), que con la opción
+  va a la vez que «blender».
 - RF-007-14 (spec 007, T18): con ``--documentacion``, tras los obligatorios y los demás
   opcionales, ``tools/check_docs.py`` sobre la documentación que encuentra
   ``repo.find_docs``; sin documentación, «omitido» con el motivo, sin ser un fallo.
@@ -27,6 +29,7 @@ from unittest import mock
 
 from tests.support.check_cli import (
     DOCS_STEP,
+    FAKE_SITE,
     FakeRunner,
     HARNESS,
     INSTALL,
@@ -38,6 +41,7 @@ from tests.support.check_cli import (
     OPTIONAL,
     Outcome,
     RETURN_VALUE_IS_ERROR,
+    RUNTIME,
     SPDX,
     _launcher_output,
     _manifest_root,
@@ -210,21 +214,35 @@ class CompleteStepTest(unittest.TestCase):
         return [line for line in out.splitlines() if NOT_COMPLETE_NOTE in line]
 
     def test_without_completo_no_harness_and_summary_says_so(self) -> None:
-        """RF-001-06: sin ``--completo``, solo los pasos obligatorios (ningún «arnés») y,
-        justo antes de ``RESULTADO``, una línea que dice que no se han ejecutado las
-        pruebas del arnés que lanzan Blender entero (``tests/arnes``), que las ejecuta
+        """RF-001-06, RF-004-28 (spec 001 0.7; spec 004 0.4; spec 005, T50): sin
+        ``--completo``, solo los pasos obligatorios: ni «arnés» ni «motor» (las unitarias
+        de los paquetes de dominio con el motor de cálculo de pruebas, aunque lo haya), sin
+        su línea ni sus órdenes, y sin buscar el motor; justo antes de ``RESULTADO``, una
+        línea que dice que no se han ejecutado las pruebas del arnés que lanzan Blender
+        entero (``tests/arnes``) ni las del motor de cálculo, que las ejecuta
         ``--completo`` y que la publicación las pide siempre. El resultado sigue siendo
         «VERDE»: no es una omisión por un recurso."""
-        result = run_check()
+        searched: list[Path] = []
+
+        def find_runtime(root: Path, environ: object) -> check.TestRuntime:
+            searched.append(root)
+            return check.TestRuntime(FAKE_SITE)
+
+        result = run_check(find_runtime=find_runtime)
         self.assertEqual(result.code, 0, result.out)
         self.assertEqual(result.runner.steps(), MANDATORY)
-        self.assertNotRegex(result.out, rf"(?m)^  \S+\s+{HARNESS}\s")
+        self.assertEqual([call.part for call in result.runner.calls_of(RUNTIME)], [])
+        self.assertEqual(searched, [])
+        for step in (HARNESS, RUNTIME):
+            with self.subTest(paso=step):
+                self.assertNotRegex(result.out, rf"(?m)^  \S+\s+{step}\s")
         self.assertNotIn("--completo", result.out.splitlines()[0])
         lines = result.out.strip().splitlines()
         self.assertRegex(lines[-1], r"^RESULTADO: VERDE \(\d+,\d s\)$")
         (note,) = self._note_lines(result.out)
         self.assertEqual(lines[-2], note)
-        for text in ("no se han ejecutado", "tests/arnes", "Blender entero", "publicación"):
+        for text in ("no se han ejecutado", "tests/arnes", "Blender entero",
+                     "motor de cálculo", f"«{RUNTIME}»", "publicación"):
             with self.subTest(texto=text):
                 self.assertIn(text, note)
 
@@ -236,14 +254,19 @@ class CompleteStepTest(unittest.TestCase):
         self.assertEqual(lines[-2], self._note_lines(result.out)[0])
 
     def test_completo_runs_harness_after_blender(self) -> None:
-        """RF-001-06: con ``--completo``, el paso «arnés» va justo después de «blender»
-        (y antes de los opcionales pedidos), con ``unittest discover -v`` de
-        ``tests/arnes`` como «unitarias», desde la raíz; su línea lleva el número de
-        pruebas, la cabecera nombra la opción y el resumen ya no dice que falten."""
+        """RF-001-06, RF-004-28: con ``--completo``, «motor» a la vez que «blender», con su
+        línea tras la de él, y el paso «arnés» justo después (y antes de los opcionales
+        pedidos), con ``unittest discover -v`` de ``tests/arnes`` como «unitarias», desde la
+        raíz; su línea lleva el número de pruebas, la cabecera nombra la opción y el resumen
+        ya no dice que falten."""
         result = run_check("--completo")
         self.assertEqual(result.code, 0, result.out)
         runner = result.runner
         self.assertEqual(runner.steps(), [*MANDATORY, HARNESS])
+        self.assertTrue(runner.calls_of(RUNTIME))
+        names = ["blender", RUNTIME, HARNESS]
+        positions = [result.out.index(_step_line(result.out, name)) for name in names]
+        self.assertEqual(positions, sorted(positions))
         call = runner.call(HARNESS)
         self.assertEqual(
             call.cmd,
@@ -275,6 +298,7 @@ class CompleteStepTest(unittest.TestCase):
 
         options = {step.name: step.option for step in check.STEPS}
         self.assertEqual(options[HARNESS], "--completo")
+        self.assertEqual(options[RUNTIME], "--completo")
 
     def test_completo_failures(self) -> None:
         """RF-001-06, RF-001-07: con ``--completo``, una prueba del arnés que falla, una
@@ -320,11 +344,15 @@ class CompleteStepTest(unittest.TestCase):
         self.assertIn("tests/arnes/otra/test_falla.py", result.out)
 
     def test_usage_names_completo(self) -> None:
-        """RF-001-06: la ayuda explica ``--completo``."""
+        """RF-001-06, RF-004-28: la ayuda explica ``--completo``: las pruebas del arnés y
+        las unitarias con el motor de cálculo de pruebas."""
         result = run_check("--ayuda")
         self.assertEqual(result.code, 0)
         self.assertIn("--completo", result.out)
         self.assertIn("tests/arnes", result.out)
+        usage = result.out[result.out.index("Uso (con el Python de Blender"):]
+        option = usage[usage.index("  --completo"):usage.index("  --rendimiento")]
+        self.assertIn("motor de cálculo", option)
 
 
 class DocsStepTest(unittest.TestCase):
