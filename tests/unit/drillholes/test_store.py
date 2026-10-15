@@ -22,6 +22,7 @@ Cada prueba crea su proyecto y deja los registros de ``core`` como los encontró
 
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 import unittest
@@ -799,6 +800,62 @@ class BaseWriterTest(_StoreCase):
         self.assertEqual(self.query("SELECT count(*) FROM gb_dataset_change"), changes)
         self.assertEqual(self.query("SELECT seq FROM sqlite_sequence WHERE name = 'dh_collar'"),
                          [(len(HOLES),)])
+
+    def test_reading_by_steps_does_not_count_the_rows(self) -> None:
+        """RNF-005-06 (T53; riesgo R13): leer por pasos la base (``read_steps``) o lo importado
+        de una entrada (``source_entry_steps``) no cuenta las filas de cada tabla
+        (``count(*)`` recorre la tabla entera: en ``Z:``, con V-ref, de 0,3 a 1,0 s en un solo
+        paso); el avance sale del ``fid`` mayor y llega a 1, sin bajar nunca."""
+        base = build.build_base(_entries(), FakeCrsService(), CRS, VERTICAL,
+                                project_uid=self.project.uid)
+        self.write_base(base)
+        _drive(self.order(("collar", "assay_wide")).steps(software=PYPROJ))
+        statements: list[str] = []
+        with self.project.read() as conn:
+            conn.set_trace_callback(statements.append)
+            try:
+                seen, _dset = _drive(store.read_steps(conn, clock=_Ticks()))
+                source = store.live_sources(conn)[1]
+                more, _entry = _drive(store.source_entry_steps(conn, source, clock=_Ticks()))
+            finally:
+                conn.set_trace_callback(None)
+        self.assertEqual([sql for sql in statements if "count(" in sql.lower()], [])
+        for progress in (seen, more):
+            self.assertTrue(progress)
+            self.assertEqual(progress, sorted(progress))
+            self.assertEqual(progress[-1], 1.0)
+
+    def test_on_the_network_each_step_sends_what_it_wrote(self) -> None:
+        """RNF-005-06 (T53; riesgo R13, D-13): con el proyecto en la red, cada paso de una
+        escritura por pasos (lo importado, ``SourceWriter``, y la base, ``BaseWriter``) envía
+        al servidor lo que escribió (``FlushFileBuffers`` por un descriptor aparte de solo esa
+        llamada: ``os.fsync``) al acabar, y no el ``COMMIT`` todo de una vez (V-ref en
+        ``Z:``: 0,5–0,74 s en una sola llamada); en disco local, ninguno. Lo escrito,
+        igual."""
+        base = build.build_base(_entries(), FakeCrsService(), CRS, VERTICAL,
+                                project_uid=self.project.uid)
+        flushed: list[int] = []
+        real = os.fsync
+        database = os.stat(self.project.database_path)
+
+        def fsync(handle: int) -> None:
+            if os.path.samestat(os.fstat(handle), database):
+                flushed.append(handle)
+            real(handle)
+
+        for network, roles in ((False, ("collar",)), (True, ("survey", "lithology"))):
+            with self.subTest(red=network), \
+                    mock.patch.object(self.project, "is_network", network), \
+                    mock.patch.object(os, "fsync", fsync):
+                del flushed[:]
+                steps, _ = _drive(self.order(roles).steps(software=PYPROJ, clock=_Ticks()))
+                self.assertTrue(steps)
+                handle = self.begin(provenance.BUILD_BASE)
+                writer = store.BaseWriter(self.project, handle)
+                writer.base(base)
+                more, _ = _drive(writer.steps(software=PYPROJ, clock=_Ticks()))
+                self.assertEqual(len(flushed), len(steps) + len(more) if network else 0)
+        self.assertEqual(self.stored_rows("dh_assay"), base.rows("dh_assay"))
 
     def test_stale_holes_by_survey_hash(self) -> None:
         """RF-005-22 (plan §5.6.6, D-21): con las trazas hechas, ningún sondeo obsoleto; la base

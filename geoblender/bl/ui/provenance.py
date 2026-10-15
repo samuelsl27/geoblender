@@ -298,7 +298,8 @@ def refresh(*, force: bool = False) -> bool:
     cambió desde la última lectura (otro proyecto, otro contador de cambios en la cabecera de
     ``project.gpkg`` u otro idioma) o con ``force``. Devuelve si cambió lo que muestran la barra
     de estado y el control 7. Si no se puede leer ahora (otro programa escribe, WAL), lo deja
-    como estaba y lo intenta en la próxima."""
+    como estaba y lo intenta en la próxima; mientras esta sesión tiene abierta una
+    transacción de escritura (``Project.writing``), sin ``force``, tampoco lo lee."""
     session = _session()
     project = session.project if session.unavailable() is None else None
     changed = False
@@ -306,6 +307,11 @@ def refresh(*, force: bool = False) -> bool:
         changed = _forget()
         _STATE.project = project
     if project is None:
+        return changed
+    if getattr(project, "writing", False) and not force:
+        # Esta sesión escribe (una incorporación por pasos sostiene su transacción): nadie
+        # más confirma nada hasta que acabe, y en la red abrir y cerrar el fichero entonces
+        # costaba 0,2–0,45 s por tic (spec 005, T53; RNF-005-06). Se lee en un tic después.
         return changed
     try:
         header = read_header(project.database_path)

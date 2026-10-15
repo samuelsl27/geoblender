@@ -22,11 +22,14 @@ motor de cálculo):
 
 **La petición nunca lleva una ruta** (ARQ-11): la fuente de una importación llega por la línea
 de órdenes (``--path source_main=…``) y el trabajo la copia a ``in/`` con
-``JobDir.copy_input`` (huella antes, durante y después; si cambia, ``source_changed``); lo del
-proyecto lo escribe ``bl`` en ``in/`` antes de lanzarlo, leído por pasos (``launch_job(arrays=
-…)`` sueltos, :func:`loose_arrays`, o ``inputs=`` con un npz). **Ningún trabajo abre
-``project.gpkg``** ni escribe fuera de su carpeta. Los parámetros van resueltos (los del
-proyecto, ``handle.params``).
+``JobDir.copy_input`` (huella antes, durante y después; si cambia, ``source_changed``); lo
+mismo lo que pesa y ya es un fichero (T53, RNF-005-06: la rejilla de la validación, ``--path
+dem=…``, y lo leído que se aplica, ``--path source=…``), para que no lo copie el hilo de
+Blender. Lo del proyecto lo escribe ``bl`` en ``in/`` antes de lanzarlo, leído por pasos
+(``launch_job(arrays=…)`` sueltos, :func:`loose_arrays`, por partes de una tabla,
+:func:`packed_parts`, o ``inputs=`` con un npz). **Ningún trabajo abre ``project.gpkg``** ni
+escribe fuera de su carpeta. Los parámetros van resueltos (los del proyecto,
+``handle.params``).
 
 **Resultados** en ``out/`` con su huella (``WorkerContext.add_output``, con el papel de
 :class:`~..gis.jobs.JobOutput`) y un resumen JSON. Cada tabla que será un dato del proyecto va
@@ -66,8 +69,9 @@ Los tipos, con sus parámetros, sus entradas (``in/``) y sus resultados (``out/`
   los del proyecto: se cuentan, RF-005-12; por tabla, ``{tabla: [sondeos]}``, o una lista
   para todas), ``register_codes`` (los códigos nuevos que se dan
   de alta, RF-005-10; las litologías, con un color determinista distinto de
-  ``taken_colors``); ``source`` (el ``source.npz`` de la lectura) → ``dh_src_<rol>.npz`` por
-  papel con sus filas y su hash;
+  ``taken_colors``); ``source`` (el ``source.npz`` de la lectura: por ``--path source=…``,
+  que el trabajo copia a ``in/``, o ya en ``in/``) → ``dh_src_<rol>.npz`` por papel con sus
+  filas y su hash;
 - ``dh_build_base``: ``crs``, ``vertical``, ``project_uid``, ``entries`` (cada entrada vigente
   en el orden en que se registró: ``input``, el nombre de sus arrays en ``in/``; ``uid``;
   ``label``; ``declaration``) y ``previous`` (``{sondeo: survey_sha256}`` de la base anterior)
@@ -77,7 +81,8 @@ Los tipos, con sus parámetros, sus entradas (``in/``) y sus resultados (``out/`
 - ``dh_validate``: ``crs``, ``vertical``, ``thresholds`` (los cinco umbrales,
   ``ValidationParams``), ``work_window`` y, con MDT, ``dem_crs`` y ``dem_vertical`` (por
   defecto, los de la base: un ``gis_dtm_*`` del proyecto); ``base`` (la base), ``dem`` (el
-  MDT, un ``.tif``) y ``stored_xyz`` → ``dh_validation_issue.npz`` con su hash y
+  MDT, un ``.tif``: por ``--path dem=…``, que el trabajo copia a ``in/``, o ya en ``in/``) y
+  ``stored_xyz`` → ``dh_validation_issue.npz`` con su hash y
   ``report.json`` (las notas y la diferencia de cada boca con el MDT);
 - ``dh_desurvey``: ``crs``, ``vertical``, ``method``, ``depth_tolerance_m``,
   ``trace_step_m`` y, opcional (T28, «solo las obsoletas»), ``holes`` (las posiciones de las
@@ -110,7 +115,7 @@ import numbers
 import os
 import shutil
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -145,9 +150,12 @@ from .arrays import (
     dataclass_of,
     entry_of,
     load_npz,
+    merge_parts,
     rows_arrays,
     save_npz,
     set_of,
+    table_parts,
+    tables_arrays,
     tables_of,
 )
 from .model import (
@@ -167,6 +175,7 @@ from .schema import BASE_TABLES, LAYOUTS, source_layout, table_digest
 __all__ = [
     "BUILD_BASE",
     "CANCEL_GRACE_S",
+    "CATALOGS_PART",
     "DESURVEY",
     "IMPORT_APPLY",
     "IMPORT_RECMIN",
@@ -202,6 +211,7 @@ __all__ = [
     "needs_site",
     "new_colors",
     "packed_arrays",
+    "packed_parts",
     "read_table_output",
     "read_view",
     "run_build_base",
@@ -596,6 +606,25 @@ def copy_source(ctx: _Context, request: JobParams, *, low: float,
     return copy, {"sha256": sha256, "size": before[0], "mtime_ns": before[1]}
 
 
+def _path_input(ctx: _Context, request: JobParams, name: str, *, low: float,
+                high: float) -> Path | None:
+    """La entrada ``name`` que llega por ruta (``--path <name>=…``; T53, RNF-005-06 y riesgo
+    R16: lo que pesa, la rejilla de la validación o lo leído que se aplica, lo copia el trabajo
+    y no el hilo de Blender) copiada a ``in/`` con su huella (``JobDir.copy_input``: si cambia
+    mientras se copia, ``source_changed``; si no se puede leer, ``request_invalid``), con el
+    avance en [``low``, ``high``]; o la que ya está en ``in/`` (``launch_job(inputs=…)``).
+    ``None`` si no llega de ninguna de las dos maneras."""
+    if name in ctx.request.inputs:
+        return ctx.input_path(name)
+    source = (getattr(ctx, "paths", None) or {}).get(name)
+    if source is None:
+        return None
+    progress = span(ctx, low, high, COPYING_TEXT)
+    ctx.check_cancelled()
+    relative = ctx.job_dir.copy_input(Path(source), name, job=request.job, progress=progress)
+    return ctx.job_dir.path / relative
+
+
 def source_digest(ctx: _Context, reader: ContentReader, kind: str, files: Mapping[str, Path],
                   declarations: Mapping[str, Any], settings: Mapping[str, Any], low: float,
                   high: float) -> ContentDigest:
@@ -647,6 +676,29 @@ def packed_arrays(name: str, part: str,
     return {f"{name}_{PACKED_TAG}{part}": np.frombuffer(buffer.getbuffer(), dtype=np.uint8)}
 
 
+CATALOGS_PART = "catalogs"
+"""La parte con los catálogos de :func:`packed_parts`."""
+
+
+def packed_parts(name: str, tables: Mapping[str, Any], catalogs: Catalogs | None, *,
+                 rows: int | None = None) -> Iterator[dict[str, np.ndarray]]:
+    """Las tablas ``tables`` (nombre de ``drillholes.model.TABLES`` → sus columnas) y los
+    catálogos ``catalogs`` de la entrada ``name`` para ``launch_job(arrays=…)``, **una
+    entrada por paso** (T53; RNF-005-06): cada parte de como mucho ``rows`` filas de una tabla
+    (``drillholes.arrays.table_parts``; por defecto, ``arrays.PART_ROWS``: los 500 000
+    análisis de V-ref en diez pasos de unas centésimas en vez de uno de 0,9 s), empaquetada
+    en ``<name>_npz-<tabla>-<n>`` (:func:`packed_arrays`), y al final los catálogos
+    (``<name>_npz-catalogs``, si tienen algo). :func:`input_arrays` junta otra vez las
+    partes de cada tabla."""
+    for table, columns in tables.items():
+        for number, arrays in enumerate(table_parts(table, columns, rows=rows)):
+            yield packed_arrays(name, f"{table}-{number}", arrays)
+    if catalogs is not None:
+        found = packed_arrays(name, CATALOGS_PART, tables_arrays({}, catalogs))
+        if found:
+            yield found
+
+
 def _unpacked(path: Path) -> dict[str, np.ndarray]:
     """Los arrays de una parte empaquetada (:func:`packed_arrays`), sin *pickle*."""
     with open(path, "rb") as stream:
@@ -658,18 +710,32 @@ def _unpacked(path: Path) -> dict[str, np.ndarray]:
 def input_arrays(ctx: _Context, name: str) -> dict[str, np.ndarray] | None:
     """Los arrays de la entrada ``name``: los del npz ``in/<name>.npz`` o, sueltos
     (:func:`loose_arrays`), los de ``in/<name>_<clave>.npy`` y los de sus partes empaquetadas
-    (:func:`packed_arrays`, ``in/<name>_npz-<parte>.npy``); ``None`` si no llega."""
+    (:func:`packed_arrays`, ``in/<name>_npz-<parte>.npy``; las de una tabla por partes,
+    ``<name>_npz-<tabla>-<n>`` de :func:`packed_parts`, juntas en su orden con
+    ``drillholes.arrays.merge_parts``); ``None`` si no llega."""
     entries = ctx.request.inputs
     if name in entries:
         return load_npz(ctx.input_path(name))
     head = f"{name}_"
     found: dict[str, np.ndarray] = {}
+    split: dict[str, list[tuple[int, str]]] = {}
     for entry in entries:
         if entry.startswith(head + PACKED_TAG):
-            found.update(_unpacked(ctx.input_path(entry)))
+            part, dash, number = entry[len(head + PACKED_TAG):].rpartition("-")
+            if dash and number.isdigit():
+                split.setdefault(part, []).append((int(number), entry))
+            else:
+                found.update(_unpacked(ctx.input_path(entry)))
         elif entry.startswith(head):
             with open(ctx.input_path(entry), "rb") as stream:
                 found[entry[len(head):]] = np.load(stream, allow_pickle=False)
+    for numbered in split.values():
+        try:
+            found.update(merge_parts([_unpacked(ctx.input_path(entry))
+                                      for _number, entry in sorted(numbered)]))
+        except ValueError as error:
+            raise JobError("request_invalid", job=_job_name(ctx.request),
+                           detail=f"la entrada «{name}» no vale: {error}") from None
     return found or None
 
 
@@ -854,7 +920,8 @@ def _registered(catalogs: Catalogs, codes: Mapping[str, Any], taken: Sequence[st
 
 @job_function
 def run_import_apply(ctx: _Context) -> dict[str, Any]:
-    """``dh_import_apply``: lo leído de una entrada (``in/source``) con las decisiones de la
+    """``dh_import_apply``: lo leído de una entrada (``in/source``, o su ruta ``--path
+    source=…``, que copia aquí) con las decisiones de la
     persona (RF-005-10, RF-005-11): los sondeos que conservan sus registros del proyecto
     (``keep_holes``) fuera de todas sus tablas y los códigos nuevos dados de alta en sus
     catálogos (``register_codes``; las litologías con un color determinista distinto de los
@@ -878,9 +945,11 @@ def run_import_apply(ctx: _Context) -> dict[str, Any]:
     codes = request.mapping("register_codes", {})
     taken = request.texts("taken_colors")
     ctx.progress(0.0, READING_TEXT)
-    arrays = _required_arrays(ctx, request, INPUT_SOURCE)
+    copied = _path_input(ctx, request, INPUT_SOURCE, low=0.0, high=0.1)
     try:
-        tables, catalogs = tables_of(arrays, progress=span(ctx, 0.0, 0.2, READING_TEXT))
+        arrays = (_required_arrays(ctx, request, INPUT_SOURCE) if copied is None
+                  else load_npz(copied))
+        tables, catalogs = tables_of(arrays, progress=span(ctx, 0.1, 0.2, READING_TEXT))
     except (ValueError, TypeError) as error:
         raise request.invalid(f"lo leído de «{INPUT_SOURCE}» no vale: {error}") from None
     removed: dict[str, int] = {}
@@ -1007,7 +1076,8 @@ def issue_rows(report: Any) -> list[tuple[Any, ...]]:
 def run_validate(ctx: _Context) -> dict[str, Any]:
     """``dh_validate``: las incidencias de la base (``drillholes.validate``; RF-005-16 a
     RF-005-18) con los umbrales de la petición, la ventana de trabajo y, si llega, el MDT
-    (``in/dem.tif``, bilineal con ``gis.raster.sample``) y la posición de cada boca en la capa
+    (``in/dem.tif``, o su ruta ``--path dem=…``, que copia aquí; bilineal con
+    ``gis.raster.sample``) y la posición de cada boca en la capa
     (DH-W15): ``dh_validation_issue.npz`` con su hash y ``report.json`` (las notas, sin evaluar,
     y la diferencia de cada boca con el MDT)."""
     from ..gis.geotiff.reader import read_geotiff
@@ -1023,12 +1093,13 @@ def run_validate(ctx: _Context) -> dict[str, Any]:
     ctx.progress(0.0, READING_TEXT)
     dset = _base(ctx, request, crs, vertical, 0.0, 0.1)
     surface = None
-    if INPUT_DEM in ctx.request.inputs:  # un MDT del proyecto: por defecto, en su CRS y datum
+    dem = _path_input(ctx, request, INPUT_DEM, low=0.1, high=0.2)
+    if dem is not None:  # un MDT del proyecto: por defecto, en su CRS y datum
         dem_crs = request.crs("dem_crs") if "dem_crs" in request.values else crs
         dem_vertical = (request.vertical("dem_vertical") if "dem_vertical" in request.values
                         else vertical)
-        source = read_geotiff(ctx.input_path(INPUT_DEM), max_cells=sys.maxsize,
-                              progress=span(ctx, 0.1, 0.3), cancelled=cancelled_probe(ctx))
+        source = read_geotiff(dem, max_cells=sys.maxsize, progress=span(ctx, 0.2, 0.3),
+                              cancelled=cancelled_probe(ctx))
         surface = raster_sampler(Raster(source.grid, source.values, dem_crs, dem_vertical))
     stored = None
     if INPUT_STORED in ctx.request.inputs:

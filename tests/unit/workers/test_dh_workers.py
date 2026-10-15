@@ -963,6 +963,46 @@ class BaseJobsTest(_JobCase):
                                  [note.code for note in report.notes])
                 self.assertEqual(summary["excluded_holes"], int(report.excluded().holes.sum()))
 
+    def test_large_inputs_by_path_are_copied_inside_the_job(self) -> None:
+        """RNF-005-06 (T53; riesgo R16; RF-004-01): lo leído que se aplica (``source``) y la
+        rejilla de la validación (``dem``) llegan por ruta (``--path``, como la fuente de una
+        importación) y el trabajo los copia a ``in/`` con su huella (``JobDir.copy_input``,
+        de solo lectura): el hilo de Blender ya no copia nada. El resultado, el mismo que con
+        la copia hecha antes en ``in/``; una ruta que no existe, ``request_invalid``."""
+        inputs = _STATE["inputs"]
+        params = {"name": "Campaña 2026", "crs": CRS_JSON, "keep_holes": ["S-12"],
+                  "replace_holes": [], "register_codes": {}, "taken_colors": [], "count": 50}
+        copied, _ctx, _folder = self.run_job(dh_jobs.IMPORT_APPLY, params,
+                                             inputs={"source": "leido_collar.npz"})
+        by_path, _ctx, folder = self.run_job(dh_jobs.IMPORT_APPLY, params,
+                                             paths={"source": inputs / "leido_collar.npz"})
+        self.assertEqual(by_path, copied)
+        copy = folder.inputs_dir / "source.npz"
+        self.assertEqual(copy.read_bytes(), (inputs / "leido_collar.npz").read_bytes())
+        self.assertFalse(os.access(copy, os.W_OK))
+        params = _base_params(thresholds=THRESHOLDS,
+                              work_window=gis_jobs.window_json(dh_sets.work_window()),
+                              dem_crs=CRS_JSON, dem_vertical=VERTICAL_JSON)
+        copied, ctx, folder = self.run_job(dh_jobs.VALIDATE, params,
+                                           inputs={"base": "base.npz", "dem": "dem.tif"})
+        report = self.output(ctx, folder, dh_jobs.OUT_REPORT.role).read_text("utf-8")
+        by_path, ctx, folder = self.run_job(dh_jobs.VALIDATE, params, inputs={"base": "base.npz"},
+                                            paths={"dem": inputs / "dem.tif"})
+        self.assertEqual(by_path, copied)
+        self.assertEqual(self.output(ctx, folder, dh_jobs.OUT_REPORT.role).read_text("utf-8"),
+                         report)
+        self.assertIsNotNone(json.loads(report)["collar_dem_dz"])
+        self.assertEqual((folder.inputs_dir / "dem.tif").read_bytes(),
+                         (inputs / "dem.tif").read_bytes())
+        for worker, given, missing in ((dh_jobs.IMPORT_APPLY, {}, "source"),
+                                       (dh_jobs.VALIDATE, {"base": "base.npz"}, "dem")):
+            with self.subTest(trabajo=worker), \
+                    self.assertRaises(job_messages.JobError) as caught:
+                self.run_job(worker, params if worker == dh_jobs.VALIDATE else {
+                    "crs": CRS_JSON, "count": 1}, inputs=given,
+                    paths={missing: inputs / "no_existe.bin"})
+            self.assertEqual(caught.exception.code, "request_invalid")
+
     def test_desurvey_traces_without_the_excluded_holes(self) -> None:
         """RF-005-20, RF-005-17, RF-005-22 (plan §5.6.6): ``dh_desurvey`` sobre la base de
         ``in/`` da una fila de ``dh_trace`` por sondeo con traza (la polilínea cada 2 m por

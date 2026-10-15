@@ -612,9 +612,45 @@ class _Pacer:
         self.start = self.clock()
 
 
+def _sent(project: Any) -> None:
+    """Con el proyecto en la red (``Project.is_network``), lo que ya escribió la transacción
+    en curso, al servidor (``os.fsync``, ``FlushFileBuffers``, por un descriptor de
+    ``project.gpkg`` abierto solo para eso; no se escribe nada por él): T53, RNF-005-06 y
+    riesgo R13. Sin esto, el redirector de Windows guarda las páginas que SQLite va escribiendo
+    y el ``COMMIT`` espera a enviar decenas de MB en una sola llamada del hilo de Blender (V-ref
+    en ``Z:``, 0,5–0,74 s); así cada paso envía lo suyo. SQLite solo escribe páginas en la base
+    con su diario ya sincronizado: enviarlas antes no cambia lo que se confirma o se deshace. Si
+    no se puede (un error del sistema), nada: lo envía el ``COMMIT`` (un ``OSError`` dentro de
+    la transacción dejaría el proyecto en solo lectura)."""
+    if not getattr(project, "is_network", False):
+        return
+    try:
+        handle = os.open(project.database_path, os.O_RDWR | getattr(os, "O_BINARY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? "
                         "COLLATE NOCASE", (table,)).fetchone() is not None
+
+
+def _last_fid(conn: sqlite3.Connection, table: str) -> int:
+    """El ``fid`` mayor de ``table`` (0 si está vacía), en vez de sus filas, para el avance de
+    una lectura por pasos (T53; RNF-005-06, R13): ``count(*)`` recorre la tabla entera (en
+    ``Z:``, con V-ref, de 0,3 a 1,0 s en un solo paso) y el ``fid`` mayor sale del índice. Las
+    tablas de los sondeos se escriben con el ``fid`` desde 1 (``BaseWriter``,
+    ``SourceWriter``): son sus filas."""
+    return int(conn.execute(f'SELECT max(fid) FROM "{table}"').fetchone()[0] or 0)
 
 
 def _rows(value: object, layout: TableLayout, what: str) -> Sequence[Sequence[Any]]:
@@ -934,12 +970,14 @@ class SourceWriter:
                     for count in self._write(conn, item, pacer):
                         _check_cancelled(cancelled, f"Importación de «{item.spec.name}» "
                                          "cancelada")
+                        _sent(self.project)
                         yield (done + count) / total
                         pacer.restart()
                     item.datasets = self._complete(conn, item, software)
                     done += item.rows + 1
                     # Un paso por entrada completada: el COMMIT, en el suyo.
                     _check_cancelled(cancelled, f"Importación de «{item.spec.name}» cancelada")
+                    _sent(self.project)
                     yield done / total
                     pacer.restart()
         except GeneratorExit:
@@ -1174,6 +1212,7 @@ class BaseWriter:
                     create_table(conn, layout, name, srs, description=description)
                     for count in _insert_steps(conn, layout, name, planned.rows, pacer):
                         _check_cancelled(cancelled, text)
+                        _sent(self.project)
                         yield (done + count) / total
                         pacer.restart()
                     done += len(planned.rows) + 1
@@ -1181,12 +1220,14 @@ class BaseWriter:
                                               detail=detail))
                     if pacer.due():
                         _check_cancelled(cancelled, text)
+                        _sent(self.project)
                         yield done / total
                         pacer.restart()
                 records = self.handle.complete(conn, outputs=specs, software=software,
                                                message=message, interpreter=interpreter,
                                                executor=executor, job_uid=job_uid)
                 _check_cancelled(cancelled, text)
+                _sent(self.project)
                 yield 1.0  # el COMMIT, en su paso
         except GeneratorExit:
             raise
@@ -1513,8 +1554,7 @@ def source_entry_steps(
     entrada y su nombre lógico como ``label``. Cede el avance (0–1) cada vez que un paso gasta
     ``budget_s``."""
     pacer = _Pacer(budget_s, clock)
-    total = max(1, sum(conn.execute(f'SELECT count(*) FROM "{dataset.locator}"').fetchone()[0]
-                       for dataset in source.datasets.values()))
+    total = max(1, sum(_last_fid(conn, dataset.locator) for dataset in source.datasets.values()))
     done = 0
     parts: dict[str, Any] = {}
     catalogs = Catalogs()
@@ -1685,7 +1725,7 @@ def read_steps(
             catalog_fids[table], catalogs[attribute] = _catalog_records(conn, table, record)
     codes = {table: [item.code for item in catalogs[attribute]]
              for table, (attribute, _) in _BASE_CATALOGS.items()}
-    total = sum(conn.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
+    total = sum(_last_fid(conn, name)
                 for name, _, _ in (("dh_collar", "", ""), *_BASE_PARTS) if name in tables)
     reading = _Reading(conn, _Pacer(budget_s, clock), total)
 

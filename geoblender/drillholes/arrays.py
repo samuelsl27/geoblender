@@ -13,7 +13,10 @@ Lo que va del hilo de Blender a los trabajos de la 005 y vuelve (``drillholes.jo
   cual; los textos, en UTF-8 (``S``) con su máscara de nulos ``…_null`` (solo si hay alguno);
   los enteros opcionales (``category``, ``priority``), en int64 con su máscara; las fechas, en
   ISO («AAAA-MM-DD»); ``extra``, su JSON canónico; los catálogos, un JSON
-  (``uint8``). Las tablas sin filas no van. Así viajan un :class:`~.model.DrillholeSet`
+  (``uint8``). Las tablas sin filas no van. Una tabla grande se convierte por partes de
+  :data:`PART_ROWS` filas (:func:`table_parts`, una por paso del hilo de Blender; T53,
+  RNF-005-06) que :func:`merge_parts` junta en los mismos arrays, bit a bit. Así viajan un
+  :class:`~.model.DrillholeSet`
   (:func:`set_arrays`, :func:`set_of`), lo importado de una entrada
   (:func:`entry_arrays`, :func:`entry_of`) y lo que lee una importación; los catálogos del
   proyecto en una petición, :func:`catalogs_json` y :func:`catalogs_of`; los arrays de la
@@ -55,6 +58,7 @@ from .model import (
 __all__ = [
     "CATALOGS",
     "NULL_SUFFIX",
+    "PART_ROWS",
     "TableRows",
     "catalogs_json",
     "catalogs_of",
@@ -63,10 +67,12 @@ __all__ = [
     "entry_arrays",
     "entry_of",
     "load_npz",
+    "merge_parts",
     "rows_arrays",
     "save_npz",
     "set_arrays",
     "set_of",
+    "table_parts",
     "tables_arrays",
     "tables_of",
 ]
@@ -75,6 +81,9 @@ NULL_SUFFIX = "_null"
 """La máscara de nulos de un array de textos (o de enteros de una tabla): ``<clave>_null``."""
 CATALOGS = "catalogs"
 """La clave de los catálogos (``<prefijo>catalogs``): un JSON en UTF-8 (``uint8``)."""
+PART_ROWS = 50_000
+"""Las filas de una parte de :func:`table_parts` (T53): convertir 50 000 filas de los análisis
+de V-ref cuesta en el hilo de Blender unas centésimas (las 500 000, 0,9 s; RNF-005-06)."""
 GEOMETRY_OFFSETS = "_offsets"
 """Los ``offsets`` (n + 1) de los blobs de la geometría de unas filas (``geom_offsets``)."""
 
@@ -195,10 +204,12 @@ def _extra_of(text: str | None) -> Mapping[str, Any]:
     return MappingProxyType(json.loads(text))
 
 
-def _put_columns(arrays: dict[str, np.ndarray], key: str, columns: Any) -> None:
-    """Las columnas ``columns`` (una clase de columnas del modelo) con el prefijo ``key``."""
+def _put_columns(arrays: dict[str, np.ndarray], key: str, columns: Any,
+                 rows: slice = slice(None)) -> None:
+    """Las filas ``rows`` (todas, por defecto) de las columnas ``columns`` (una clase de
+    columnas del modelo) con el prefijo ``key``."""
     for item in dataclasses.fields(columns):
-        values = getattr(columns, item.name)
+        values = getattr(columns, item.name)[rows]
         name = f"{key}_{item.name}"
         if values.dtype != object:
             arrays[name] = np.ascontiguousarray(values)
@@ -294,11 +305,7 @@ def tables_arrays(tables: Mapping[str, Any], catalogs: Catalogs | None = None, *
     una tabla que no es del modelo; ``TypeError`` con columnas de otra clase."""
     arrays: dict[str, np.ndarray] = {}
     for name, columns in tables.items():
-        kind = TABLES.get(name)
-        if kind is None:
-            raise ValueError(f"«{name}» no es una tabla de sondeos: es una de {list(TABLES)}")
-        if type(columns) is not kind:
-            raise TypeError(f"«{name}» son unas {kind.__name__}, no {columns!r}")
+        _check_table(name, columns)
         if len(columns):
             _put_columns(arrays, f"{prefix}{name}", columns)
     if catalogs is not None:
@@ -308,6 +315,91 @@ def tables_arrays(tables: Mapping[str, Any], catalogs: Catalogs | None = None, *
         if found:
             arrays[f"{prefix}{CATALOGS}"] = _json_array(found)
     return arrays
+
+
+def _check_table(name: str, columns: Any) -> None:
+    """``ValueError`` si ``name`` no es una tabla del modelo; ``TypeError`` si ``columns`` no
+    son sus columnas."""
+    kind = TABLES.get(name)
+    if kind is None:
+        raise ValueError(f"«{name}» no es una tabla de sondeos: es una de {list(TABLES)}")
+    if type(columns) is not kind:
+        raise TypeError(f"«{name}» son unas {kind.__name__}, no {columns!r}")
+
+
+def table_parts(name: str, columns: Any, *, rows: int | None = None,
+                prefix: str = "") -> Iterator[dict[str, np.ndarray]]:
+    """Los arrays de :func:`tables_arrays` de la tabla ``name`` (sus columnas ``columns``)
+    por partes de como mucho ``rows`` filas (por defecto, :data:`PART_ROWS`), en su orden:
+    :func:`merge_parts` de todas da los de la tabla entera, bit a bit (T53: el hilo de
+    Blender convierte una parte por paso; RNF-005-06). Una tabla vacía no da ninguna.
+    ``ValueError`` o ``TypeError`` como :func:`tables_arrays`, también si una columna de
+    enteros opcionales (``category``, ``priority``) trae un entero en una parte y un texto en
+    otra; ``ValueError`` si ``rows`` no es un entero ≥ 1."""
+    size = PART_ROWS if rows is None else rows
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        raise ValueError(f"las filas de una parte son un entero ≥ 1, no {size!r}")
+    _check_table(name, columns)
+    key = f"{prefix}{name}"
+    optional = [f"{key}_{item.name}" for item in dataclasses.fields(columns)
+                if getattr(columns, item.name).dtype == object
+                and item.name != _EXTRA and item.name not in _DATES]
+    kinds: dict[str, set[str]] = {column: set() for column in optional}
+    for start in range(0, len(columns), size):
+        arrays: dict[str, np.ndarray] = {}
+        _put_columns(arrays, key, columns, slice(start, start + size))
+        for column in optional:  # enteros en una parte y textos en otra: no se juntarían
+            found = kinds[column]
+            if arrays[column].dtype.kind == "i":
+                found.add("i")
+            elif not bool(np.all(arrays.get(column + NULL_SUFFIX, False))):
+                found.add("S")  # algún texto (una parte sin ningún valor vale para las dos)
+            if len(found) > 1:
+                raise TypeError(f"{column} es un entero o None en unas filas y un texto en "
+                                "otras")
+        yield arrays
+
+
+def merge_parts(parts: Sequence[Mapping[str, np.ndarray]]) -> dict[str, np.ndarray]:
+    """Los arrays de una tabla juntos desde sus partes de :func:`table_parts` (en su orden):
+    los de :func:`tables_arrays` de la tabla entera, bit a bit (los textos, con el ancho
+    mayor; la máscara de nulos de una parte que no la trae, sin nulos; los enteros opcionales
+    de una parte sin ninguno, ceros con su máscara). Sin partes, ninguno. ``ValueError`` si
+    no son partes de una misma tabla."""
+    if len(parts) < 2:
+        return {key: value for part in parts for key, value in part.items()}
+    sizes = []
+    for part in parts:
+        lengths = {len(array) for array in part.values()}
+        if len(lengths) != 1:
+            raise ValueError("una parte de una tabla tiene arrays de longitudes distintas")
+        sizes.append(lengths.pop())
+    keys = list(dict.fromkeys(key for part in parts for key in part))
+    merged: dict[str, np.ndarray] = {}
+    for key in keys:
+        if key.endswith(NULL_SUFFIX) and key.removesuffix(NULL_SUFFIX) in keys:
+            continue  # va con su columna
+        if any(key not in part for part in parts):
+            raise ValueError(f"a una parte de la tabla le falta «{key}»")
+        masks = [part.get(key + NULL_SUFFIX) for part in parts]
+        values = [np.asarray(part[key]) for part in parts]
+        kinds = {array.dtype.kind for array in values}
+        if kinds == {"i", "S"}:  # enteros opcionales y una parte sin ninguno
+            for index, (array, mask) in enumerate(zip(values, masks, strict=True)):
+                if array.dtype.kind == "S":
+                    if mask is None or not bool(np.all(mask)):
+                        raise ValueError(f"«{key}» trae enteros en unas partes y textos en "
+                                         "otras")
+                    values[index] = np.zeros(len(array), dtype=np.int64)
+        elif len({array.dtype for array in values if array.dtype.kind != "S"}) > 1 or (
+                "S" in kinds and len(kinds) > 1):
+            raise ValueError(f"«{key}» tiene tipos distintos en sus partes")
+        merged[key] = np.concatenate(values)
+        if any(mask is not None for mask in masks):
+            merged[key + NULL_SUFFIX] = np.concatenate([
+                np.zeros(size, dtype=np.bool_) if mask is None else mask
+                for mask, size in zip(masks, sizes, strict=True)])
+    return merged
 
 
 def tables_of(arrays: Mapping[str, np.ndarray], *, prefix: str = "",

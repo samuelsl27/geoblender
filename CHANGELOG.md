@@ -625,3 +625,14 @@ comparación con el MDT real de Silvestre (CE-006-05), que se ejecuta a petició
   sin guardarlas antes en una base temporal. Los hashes son los mismos, bit a bit (los de los
   vectores de referencia y los de los proyectos ya creados). Las 500 000 filas de los
   análisis de una campaña de 2 000 sondeos, de 7,9 s a 1,7 s.
+- **La interfaz ya no se para al terminar un trabajo ni al importar una campaña grande**
+  (spec 004 y 008; por la 005): la comprobación de los resultados de un trabajo en segundo
+  plano (su huella) se hace en otro hilo, y el trabajo sigue «En curso» hasta que acaba; la
+  rejilla con que se valida y lo leído al aplicar una importación los copia su trabajo; lo que
+  se envía a un trabajo va por partes; los trabajos de una importación se sueltan de uno en
+  uno; los indicadores de la procedencia no leen el proyecto mientras Geoblender escribe en
+  él, y, con el proyecto en la red, cada paso de una escritura envía lo suyo al servidor en
+  vez de dejarlo todo para el final. Con una campaña de 2 000 sondeos y 500 000 análisis,
+  ninguna espera de la interfaz pasa de 0,13 s en disco local (antes, hasta 1,2 s); en la red,
+  solo la orden de importar seis ficheros (0,24–0,26 s) y, a veces, un paso de la base que
+  espera al servidor (antes, hasta 1,9 s).

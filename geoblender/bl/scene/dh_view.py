@@ -76,8 +76,8 @@ from ...core.errors import GeoblenderError, ValidationError
 from ...core.georef import GeoOrigin, world_to_local
 from ...core.i18n import format_number, language, tr, translate
 from ...core.numbers import parse_decimal
+from ...drillholes import arrays as dh_arrays
 from ...drillholes import jobs, store, validate
-from ...drillholes.arrays import tables_arrays
 from ...drillholes.model import DrillholeSet, name_key
 from ...drillholes.params import DEPTH_TOLERANCE, TRACE_STEP
 from ...drillholes.provenance import MODULE
@@ -246,15 +246,16 @@ def _job_params(dset: Any, source: store.TraceView, display: Any,
 
 
 def _base_arrays(dset: Any) -> Generator[float, None, dict[str, np.ndarray]]:
-    """La base de la vista para ``in/`` (``drillholes.jobs.packed_arrays``): una parte por
-    tabla y una con los catálogos, una por paso."""
+    """La base de la vista para ``in/`` (``drillholes.jobs.packed_parts``): una parte de una
+    tabla por paso (como mucho ``drillholes.arrays.PART_ROWS`` filas; T53, RNF-005-06) y, al
+    final, los catálogos."""
     found: dict[str, np.ndarray] = {}
-    for index, table in enumerate(SENT_TABLES, start=1):
-        found.update(jobs.packed_arrays(jobs.INPUT_BASE, table,
-                                        tables_arrays({table: getattr(dset, table)})))
-        yield index / (len(SENT_TABLES) + 1)
-    found.update(jobs.packed_arrays(jobs.INPUT_BASE, "catalogs",
-                                    tables_arrays({}, dset.catalogs)))
+    tables = {table: getattr(dset, table) for table in SENT_TABLES}
+    count = 1 + sum(-(-len(columns) // dh_arrays.PART_ROWS) for columns in tables.values())
+    for number, part in enumerate(jobs.packed_parts(jobs.INPUT_BASE, tables, dset.catalogs),
+                                  start=1):
+        found.update(part)
+        yield min(number / count, 1.0)
     return found
 
 
@@ -350,10 +351,12 @@ def load_traces(request: views.ViewRequest) -> Generator[float, None, views.View
             raise GeoblenderError(VIEW_FAILED, "el proyecto no tiene las trazas de los "
                                   "sondeos: calcúlelas antes", obj=_OBJ, field="dato",
                                   value=request.record.name)
+        yield 0.0  # en la red, cada lectura en su paso (T53; RNF-005-06)
         dset = yield from _span(store.read_steps(conn, parts=READ_PARTS), 0.0, 0.2)
         stored = store.stored_validation(conn)
     records = () if stored is None else stored.records
     params, notes = _job_params(dset, source, display, records)
+    yield 0.2
     arrays = yield from _span(_base_arrays(dset), 0.2, 0.3)
     abandoned: list[bool] = []
 

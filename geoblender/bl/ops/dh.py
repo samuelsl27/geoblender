@@ -195,7 +195,7 @@ from ...core.provenance.operations import Use, begin_operation
 from ...core.provenance.undo import UndoKind
 from ...drillholes import jobs, provenance, store
 from ...drillholes import params as dh_params
-from ...drillholes.arrays import catalogs_json, rows_arrays, tables_arrays
+from ...drillholes.arrays import catalogs_json, rows_arrays
 from ...drillholes.desurvey import Method
 from ...drillholes.model import (
     LITHOLOGY_LOG_SET,
@@ -1419,11 +1419,11 @@ def _apply(order: _Order) -> None:
                   "replace_holes": _replaced_tables(entry, keep),
                   "register_codes": _register_for(order, entry) if order.register else {},
                   "taken_colors": taken, "count": _imported(entry.outcome.summary) + 1}
-        try:
+        try:  # lo leído, por ruta: lo copia su trabajo, no este hilo (T53; RNF-005-06)
             core_provenance.launch_job(
                 entry.handle, jobs.IMPORT_APPLY,
                 label=tr("Import of «{name}»", name=entry.choice.label), params=params,
-                inputs={jobs.INPUT_SOURCE: entry.outcome.file(jobs.OUT_SOURCE.role)},
+                paths={jobs.INPUT_SOURCE: entry.outcome.file(jobs.OUT_SOURCE.role)},
                 on_finish=functools.partial(_apply_finished, order, entry),
                 grace_s=jobs.CANCEL_GRACE_S)
         except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
@@ -1619,9 +1619,15 @@ def _import_steps(order: _Order) -> Generator[float, None, str]:
                            exc_info=True)
             _say(tr("The original of the input could not be kept: {reason}",
                     reason=error_text(error)))
-    for entry in order.live:
-        _release(entry.read)
-        _release(entry.applied)
+    finished = [job for entry in order.live for job in (entry.read, entry.applied)]
+    for number, job in enumerate(finished):  # uno por paso: en la red, unas centésimas cada
+        _release(job)                        # uno (T53; RNF-005-06)
+        try:
+            yield 0.99
+        except GeneratorExit:  # al desregistrar: los que quedan, de una vez
+            for rest in finished[number + 1:]:
+                _release(rest)
+            raise
     _ORDERS.pop(order.uid, None)
     for _entry, _item, message in written:
         _say(message)
@@ -1637,13 +1643,12 @@ VALIDATION_LABEL = "Validation of the drillhole database"
 
 def _loose_set(name: str, tables: Mapping[str, Any], catalogs: Catalogs
                ) -> Iterator[dict[str, np.ndarray]]:
-    """Los arrays (``drillholes.arrays.tables_arrays``) de unas tablas y unos catálogos para
-    ``launch_job(arrays=…)``, una tabla por paso y cada una empaquetada en una sola entrada
-    (``drillholes.jobs.packed_arrays``: un fichero por tabla en ``in/``, no uno por columna;
-    T28)."""
-    for table in TABLES:
-        yield jobs.packed_arrays(name, table, tables_arrays({table: tables[table]}))
-    yield jobs.packed_arrays(name, "catalogs", tables_arrays({}, catalogs))
+    """Los arrays de unas tablas y unos catálogos para ``launch_job(arrays=…)``, **una parte
+    por paso** (``drillholes.jobs.packed_parts``: cada parte de una tabla, como mucho
+    ``drillholes.arrays.PART_ROWS`` filas, empaquetada en una entrada de ``in/``; T53,
+    RNF-005-06: los 500 000 análisis de V-ref eran un paso de 0,9 s), y al final los
+    catálogos."""
+    yield from jobs.packed_parts(name, {table: tables[table] for table in TABLES}, catalogs)
 
 
 def start_build_base(project: Any, *, validate: bool = True) -> None:
@@ -1694,6 +1699,7 @@ def _build_base_steps(project: Any, validate: bool, *, handle: OperationHandle |
         with project.read() as conn:
             for number, source in enumerate(sources, start=1):
                 entry = yield from store.source_entry_steps(conn, source)
+                yield 0.5 * (number - 0.5) / len(sources)  # sus arrays, en los pasos siguientes
                 name = f"e{number}"
                 for arrays in _loose_set(name, {table: getattr(entry, table)
                                                 for table in TABLES}, entry.catalogs):
@@ -1849,7 +1855,8 @@ def _validate_steps(project: Any, surface: Any,
     """Los pasos que lanzan ``dh.validate``: la operación «en curso» con lo que consume (las
     once tablas de la base y, si lo hay, el MDT, papel ``terrain``) y sus parámetros (si no
     la empezó ya su orden), la base leída por pasos (``drillholes.store.read_steps``) a arrays
-    sueltos y su trabajo ``dh_validate`` (el MDT, copiado a ``in/``)."""
+    sueltos y su trabajo ``dh_validate`` (el MDT, por ruta: lo copia a ``in/`` el trabajo, no
+    este hilo; T53, riesgo R16)."""
     if handle is None:
         try:
             if surface is MOST_RECENT_SURFACE:
@@ -1864,11 +1871,12 @@ def _validate_steps(project: Any, surface: Any,
                     reason=error_text(error)))
             return "failed"
     try:
-        inputs: dict[str, Path] = {}
+        paths: dict[str, Path] = {}
         if surface is not None:
-            inputs[jobs.INPUT_DEM] = Path(project.root, *surface.locator.split("/"))
+            paths[jobs.INPUT_DEM] = Path(project.root, *surface.locator.split("/"))
         with project.read() as conn:
             dset = yield from store.read_steps(conn)
+        yield 0.5  # sus arrays, en los pasos siguientes (T53)
         loose: dict[str, np.ndarray] = {}
         for arrays in _loose_set(jobs.INPUT_BASE, {table: getattr(dset, table)
                                                    for table in TABLES}, dset.catalogs):
@@ -1885,7 +1893,7 @@ def _validate_steps(project: Any, surface: Any,
                   "work_window": None if window is None else gis_jobs.window_json(window),
                   "count": rows + 1}
         core_provenance.launch_job(handle, jobs.VALIDATE, label=_text(VALIDATION_LABEL),
-                                   params=params, arrays=loose, inputs=inputs or None,
+                                   params=params, arrays=loose, paths=paths or None,
                                    on_finish=functools.partial(_validate_finished, handle),
                                    grace_s=jobs.CANCEL_GRACE_S)
     except GeneratorExit:
