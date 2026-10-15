@@ -49,6 +49,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 
@@ -263,12 +264,16 @@ def _raw_value(value: object, kind: str, singles_as_float: bool) -> object:
     return value
 
 
-def raw_tables(path: Path, *, singles_as_float: bool = False) -> dict[str, object]:
+def raw_tables(path: Path, *, singles_as_float: bool = False,
+               ports: ModuleType | None = None) -> dict[str, object]:
     """Las tablas del guion ``path`` como ``interop.ports.RawTable`` (nombre tal como lo
     escribe el guion → tabla): columnas con su tipo OLE DB y tamaño (``TEXT(n)``: n; ``MEMO``:
     0) y filas con el valor de cada columna (``None`` si el guion no lo da). Con
-    ``singles_as_float``, los Single llegan como el ``float`` exacto de su ``float32``."""
-    ports = import_geoblender("interop.ports")
+    ``singles_as_float``, los Single llegan como el ``float`` exacto de su ``float32``.
+    ``ports``: el módulo ``interop.ports`` que las crea (en Blender, el de la extensión
+    habilitada); por defecto, el del paquete de las pruebas sin Blender."""
+    if ports is None:
+        ports = import_geoblender("interop.ports")
     found: dict[str, object] = {}
     for name, table in parse_sql(path).items():
         columns = tuple(

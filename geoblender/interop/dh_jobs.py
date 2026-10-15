@@ -192,10 +192,12 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
     ``io.mdb_engine_missing``), su versión de esquema (otra que 11 o 12 sin
     ``accept_schema``: ``needs_confirmation`` y ningún resultado), su ``ContentDigest`` (el de
     ``io.recmin_mdb@1`` sobre las mismas tablas, sin extraerla otra vez) y lo leído
-    (``interop.recmin.drillholes.read_drillholes``) en ``source.npz``, con su informe."""
+    (``interop.recmin.drillholes.read_drillholes``) en ``source.npz``, con su informe (que
+    dice además, por tabla de RecMin, los registros de cada sondeo que ya está en el proyecto,
+    ``hole_rows``: los que quita conservarlo o sustituye importarlo, RF-005-12)."""
     from ..drillholes.provenance import RECMIN_MDB
     from .base import existing_holes, registrations
-    from .recmin.drillholes import read_drillholes
+    from .recmin.drillholes import hole_rows, read_drillholes
     from .recmin.schema import schema_version, version_warning
 
     request = JobParams(ctx)
@@ -235,6 +237,7 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
              tables_arrays({name: getattr(dset, name) for name in
                             ("collars", "surveys", "lithology", "assays", "zones",
                              "structures")}, dset.catalogs))
+    existing = list(existing_holes(dset, project_holes))
     found = {
         "schema_version": version,
         "counts": {table: counts.as_dict() for table, counts in report.per_table.items()},
@@ -243,7 +246,8 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
         "warnings": list(report.warnings),
         "new_codes": {kind: list(codes) for kind, codes in report.unknown_codes.items()},
         "register_codes": registrations(dset, catalogs),
-        "existing_holes": list(existing_holes(dset, project_holes)),
+        "existing_holes": existing,
+        "hole_rows": hole_rows(dset, existing, report.per_table),
     }
     write_json(ctx, OUT_REPORT, found)
     raw = sorted(path for path in out_dir.rglob("*") if path.is_file()) if out_dir.exists() \

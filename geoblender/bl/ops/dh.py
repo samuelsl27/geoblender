@@ -66,6 +66,22 @@ copia verificada del trabajo; después, la **base** (``dh.build_base``,
 si hay alguno, D-19), cuyas incidencias pasan a la lista de la pestaña «Sondeos». Cancelar o
 fallar antes de un ``COMMIT`` no deja nada de esa operación.
 
+**Importar una base de RecMin** (T26; HU-005-2; RF-005-07, RF-005-11 a RF-005-15; plan §5.3.1,
+§5.6.4 y §5.6.5): ``geoblender.dh_import_recmin_mdb`` (Sondeos ▸ Importar ▸ «Base de sondeos
+RecMin»; también un ``.mdb`` en «Importar un fichero…»). Tras elegir la base, su diálogo: su
+formato (por su cabecera, sin motor), las declaraciones (el CRS y el datum de las bocas, la
+referencia del azimut y la declinación, las unidades de los elementos que no son de ley, los
+valores sin dato, «−x = <x», el tipo de la densidad), la entrega y, si otro programa la tiene
+abierta (su ``.ldb`` o ``.laccdb`` junto a ella), el aviso y su confirmación: sin ella, ni sin
+el CRS, el datum o la referencia del azimut, no empieza nada (RF-005-15, RF-005-07). Lo demás,
+como las tablas: la base entera es **una** entrada (D-15) con su operación ``dh.import_recmin``
+y su lectura (``dh_import_recmin``, en proceso aparte: copia la base y la extrae con el motor de
+Access del equipo; sin motor, la operación falla con el formato y qué instalar, RF-005-14); una
+versión de esquema que no es 11 ni 12 espera en «Importación pendiente» la confirmación de que
+se lea igualmente (la misma orden con ``stage``: se lee otra vez con ``accept_schema``); su
+informe en ``dh_import_log`` tiene una línea por tabla de RecMin, con los registros de los
+sondeos que se conservan fuera y los de los que se sustituyen contados (RF-005-12).
+
 **La cola de incorporación** de los sondeos (:data:`INCORPORATIONS`, su temporizador
 :func:`incorporation_tick` y :func:`pending_incorporations`; RNF-005-06, plan §5.6.7) es suya,
 aparte de la de la topografía: lo que deja un trabajo entra en el proyecto por pasos;
@@ -110,6 +126,7 @@ from ...drillholes import params as dh_params
 from ...drillholes.arrays import catalogs_json, tables_arrays
 from ...drillholes.desurvey import Method
 from ...drillholes.model import (
+    LITHOLOGY_LOG_SET,
     TABLES,
     AzimuthRef,
     Catalogs,
@@ -129,7 +146,9 @@ from ...gis.crs import ELLIPSOIDAL_ETRS89, crs_library
 from ...gis.dtm import parse_crs
 from ...interop import csv_tables, dh_content, xlsx_tables
 from ...interop import drillholes_tabular as tabular
+from ...interop import ports as mdb_ports
 from ...interop.base import DeclarationError, Needs, missing_declarations, spanish_list
+from ...interop.recmin.schema import SOURCE_LABEL as RECMIN_LABEL
 from ...jobs import catalog as job_catalog
 from ...jobs.ingest import job_outcome
 from ..props.dh import (
@@ -176,9 +195,10 @@ SHOW_DISPLAY = "geoblender.dh_show_display"
 COMMANDS: tuple[str, ...] = (IMPORT_DRILLHOLES, IMPORT_RECMIN, SET_DETECTION_LIMIT, VALIDATE,
                              EXPORT_REPORT, DESURVEY, SET_AZIMUTH, SHOW_DISPLAY)
 """Las órdenes de la 005 (entrada ``005`` del catálogo), en el orden del menú Sondeos."""
-UNDELIVERED: frozenset[str] = frozenset(COMMANDS) - {IMPORT_DRILLHOLES}
+UNDELIVERED: frozenset[str] = frozenset(COMMANDS) - {IMPORT_DRILLHOLES, IMPORT_RECMIN}
 """Las órdenes cuya ejecución aún no ha llegado (plan 005, fase 3): no están disponibles y
-dicen dónde estarán. La tarea que entrega una la quita de aquí (T25: importar tablas)."""
+dicen dónde estarán. La tarea que entrega una la quita de aquí (T25: importar tablas; T26, una
+base de RecMin)."""
 _PROJECT_ONLY: frozenset[str] = frozenset({SHOW_DISPLAY})
 """Las que no escriben en el proyecto: les basta tenerlo abierto."""
 
@@ -496,6 +516,8 @@ PREVIEW_LINES = csv_tables.PREVIEW_ROWS
 SAMPLE_ROWS = 3
 """Los valores de ejemplo de cada columna en el asistente."""
 DIALOG_WIDTH = 720
+RECMIN_DIALOG_WIDTH = 600
+"""El ancho del diálogo de una base de RecMin (sin tablas que enseñar: solo lo declarado)."""
 _PREVIEWS_KEPT = 64
 _ROLE_MSGIDS: Mapping[str, str] = MappingProxyType(
     {ROLES[identifier]: name for identifier, name, _description in ROLE_ITEMS})
@@ -520,7 +542,9 @@ class ReadOptions:
     def reading(self, reader: str, sheet: str | None) -> dict[str, Any]:
         """Los ajustes de lectura de una entrada (``drillholes.provenance.READING_SETTINGS``:
         de un CSV, su codificación, su separador y su cabecera; de una hoja, su nombre y su
-        cabecera)."""
+        cabecera; de una base de RecMin, ninguno)."""
+        if reader == provenance.RECMIN_MDB:
+            return {}
         if reader == provenance.DH_XLSX:
             return {"sheet": sheet or "", "header_row": self.header_row}
         return {"encoding": self.encoding, "separator": self.separator,
@@ -528,7 +552,9 @@ class ReadOptions:
 
     def job_settings(self, reader: str, sheet: str | None) -> dict[str, Any]:
         """Los ajustes de la lectura de su trabajo: los de :meth:`reading`, el decimal y el
-        formato de las fechas."""
+        formato de las fechas (una base de RecMin, solo el decimal)."""
+        if reader == provenance.RECMIN_MDB:
+            return {"decimal": self.decimal}
         return {**self.reading(reader, sheet), "decimal": self.decimal,
                 "date_format": self.date_format}
 
@@ -536,8 +562,8 @@ class ReadOptions:
 @dataclass(frozen=True)
 class TableChoice:
     """Una tabla de una importación (D-15: una entrada): su fichero, su lector, su papel
-    (``""`` si no se sabe), su correspondencia de columnas (campo → columna), su hoja (de un
-    XLSX), el nombre lógico de su entrada y sus columnas."""
+    (``""`` si no se sabe; una base de RecMin no tiene), su correspondencia de columnas
+    (campo → columna), su hoja (de un XLSX), el nombre lógico de su entrada y sus columnas."""
 
     path: Path
     reader: str
@@ -793,9 +819,10 @@ class _Entry:
 
 @dataclass(eq=False)
 class _Order:
-    """Una orden de importación de tablas de sondeos en marcha: sus entradas, lo declarado,
-    cómo se leen, los catálogos y los sondeos del proyecto al empezar, la entrega, el motivo
-    de una sustitución, lo que hay que decidir y lo decidido."""
+    """Una orden de importación de sondeos en marcha (de tablas o de una base de RecMin): sus
+    entradas, lo declarado, cómo se leen, los catálogos y los sondeos del proyecto al empezar,
+    la entrega, el motivo de una sustitución, la orden que la aplica o la descarta, lo que hay
+    que decidir (también lo que hay que confirmar antes de leer, RF-005-15) y lo decidido."""
 
     entries: list[_Entry]
     declaration: SourceDeclaration
@@ -805,7 +832,11 @@ class _Order:
     received_at: Any = None
     received_from: str | None = None
     reason: str | None = None
+    command: str = IMPORT_DRILLHOLES
+    accept_schema: bool = False
     failure: str = ""
+    failure_text: str = ""
+    confirm: str = ""
     codes: dict[str, list[Any]] = field(default_factory=dict)
     holes: list[str] = field(default_factory=list)
     keep: tuple[str, ...] = ()
@@ -844,7 +875,11 @@ def _code_key(kind: str, item: Any) -> Any:
 
 
 def _code_text(kind: str, item: Any) -> str:
+    """Cómo se enseña un código nuevo: el suyo; el de una litología de otro esquema de logueo
+    que la litología (las tablas adicionales de RecMin), con su esquema («SIL · recmin_…»)."""
     if kind == "lithology":
+        if name_key(item[0]) != LITHOLOGY_LOG_SET:
+            return f"{item[1]} · {item[0]}"
         return str(item[1])
     if kind == "element":
         return str(item[0])
@@ -858,9 +893,9 @@ def _codes_text(codes: Mapping[str, Sequence[Any]]) -> str:
 
 
 def _decision_text(order: _Order) -> str:
-    """Lo que hay que decidir de ``order``: los códigos nuevos, los sondeos que ya están en el
-    proyecto y las sustituciones sin motivo."""
-    parts: list[str] = []
+    """Lo que hay que decidir de ``order``: lo que hay que confirmar antes de leer, los códigos
+    nuevos, los sondeos que ya están en el proyecto y las sustituciones sin motivo."""
+    parts: list[str] = [order.confirm] if order.confirm else []
     if order.codes:
         parts.append(tr("New codes: {codes}", codes=_codes_text(order.codes)))
     if order.holes:
@@ -890,10 +925,12 @@ def _release(result: JobResult | None) -> None:
         core_provenance.release_job(result.job_uid)
 
 
-def _abandon(order: _Order, reason: str, *, failed: bool = False) -> None:
+def _abandon(order: _Order, reason: str, *, failed: bool = False,
+             said: str | None = None) -> None:
     """La orden ``order`` no se escribe (RF-005-04): cada importación que sigue «en curso»
     queda cancelada (o fallida) con ``reason`` (las que no se leyeron o no se aplicaron, con
-    el motivo de la 004), sus trabajos se dan por incorporados y la orden se olvida."""
+    el motivo de la 004), sus trabajos se dan por incorporados y la orden se olvida. El aviso
+    dice ``said`` (por defecto, ``reason``)."""
     for entry in order.entries:
         ended = any(result is not None and result.state != _SUCCEEDED
                     for result in (entry.read, entry.applied))
@@ -908,12 +945,14 @@ def _abandon(order: _Order, reason: str, *, failed: bool = False) -> None:
     if order.uid in _WAITING:
         _WAITING.remove(order.uid)
         _show_pending()
-    _say(tr("The import of the drillholes has not been written: {reason}", reason=reason))
+    _say(tr("The import of the drillholes has not been written: {reason}",
+            reason=said or reason))
 
 
 def _show_pending() -> None:
     """La primera importación que espera la decisión, en «Importación pendiente»
-    (``WindowManager.geoblender_dh_import``); sin ninguna, vacía."""
+    (``WindowManager.geoblender_dh_import``), con la orden que la aplica o la descarta; sin
+    ninguna, vacía."""
     manager = getattr(bpy.context, "window_manager", None)
     pending = getattr(manager, IMPORT_PROPERTY, None)
     if pending is None:
@@ -921,6 +960,8 @@ def _show_pending() -> None:
     order = next((_ORDERS[uid] for uid in _WAITING if uid in _ORDERS), None)
     pending.holes.clear()
     pending.operation_uid = "" if order is None else order.uid
+    pending.command = "" if order is None else order.command
+    pending.confirm = "" if order is None else order.confirm
     pending.new_codes = "" if order is None else _codes_text(order.codes)
     pending.register_codes = True
     pending.question = "" if order is None else "\n".join(
@@ -933,18 +974,25 @@ def _show_pending() -> None:
     _redraw()
 
 
+def _is_recmin(choice: TableChoice) -> bool:
+    """Si la entrada es una base de RecMin (sin papel ni correspondencia)."""
+    return choice.reader == provenance.RECMIN_MDB
+
+
 def _input_spec(order: _Order, entry: _Entry) -> Any:
-    """La entrada de una tabla con lo que trae el resumen de su lectura: su
-    ``ContentDigest``, la huella de su fichero y su ancla (RF-008-07)."""
+    """La entrada de una tabla (o de una base de RecMin) con lo que trae el resumen de su
+    lectura: su ``ContentDigest``, la huella de su fichero y su ancla (RF-008-07)."""
     project = entry.handle.project
     found = entry.outcome.summary["source"]
     main = found["files"]["main"]
     anchor = locate_source(entry.choice.path, project, project.userdata, role="main")
     prints = [SourcePrint(main["sha256"], size=main["size"], mtime_ns=main["mtime_ns"])]
+    recmin = _is_recmin(entry.choice)
     return provenance.input_spec(
         entry.choice.reader, entry.choice.name, files=[anchor], file_prints=prints,
         digest=gis_jobs.digest_of(found["digest"]), declaration=order.declaration,
-        role=entry.choice.role, mapping=dict(entry.choice.mapping),
+        role=None if recmin else entry.choice.role,
+        mapping=None if recmin else dict(entry.choice.mapping),
         settings=order.options.reading(entry.choice.reader, entry.choice.sheet),
         received_at=order.received_at, received_from=order.received_from)
 
@@ -952,29 +1000,60 @@ def _input_spec(order: _Order, entry: _Entry) -> Any:
 def _operation_settings(choice: TableChoice, declaration: SourceDeclaration,
                         options: ReadOptions) -> dict[str, Any]:
     """Los ajustes de la operación de una entrada: su nombre, su fichero (sin su ruta), su
-    lector, su papel y su correspondencia, los de lectura y lo declarado (las claves de
-    :data:`SETTING_DEFS`; los valores sin dato, su texto «−99;ND»)."""
+    lector, su papel y su correspondencia (una base de RecMin no tiene), los de lectura y lo
+    declarado (las claves de :data:`SETTING_DEFS`; los valores sin dato, su texto «−99;ND»)."""
     conventions = declaration.conventions()
     conventions["sentinels"] = ";".join(conventions["sentinels"])
+    if _is_recmin(choice):
+        return {"name": choice.name, "file": choice.path.name, "reader": choice.reader,
+                "decimal": options.decimal, **conventions}
     return {"name": choice.name, "file": choice.path.name, "reader": choice.reader,
             "role": choice.role, "mapping": dict(choice.mapping),
             **options.reading(choice.reader, choice.sheet), "decimal": options.decimal,
             "date_format": options.date_format, **conventions}
 
 
+def _read_job(order: _Order, entry: _Entry) -> dict[str, Any]:
+    """Lo que lanza la lectura de una entrada (``launch_job``): su trabajo
+    (``dh_import_tabular`` o ``dh_import_recmin``, con lo declarado, los ajustes de lectura,
+    los CRS del proyecto, sus sondeos y sus catálogos), su fichero por ``paths`` y, al
+    terminar, :func:`_read_finished`."""
+    choice = entry.choice
+    crs, vertical = gis_store.project_references(entry.handle.project)
+    params: dict[str, Any] = {
+        "name": choice.name, "declaration": jobs.declaration_json(order.declaration),
+        "settings": order.options.job_settings(choice.reader, choice.sheet),
+        "crs": gis_jobs.crs_json(crs), "vertical": gis_jobs.vertical_json(vertical),
+        "project_holes": list(order.project_holes), "catalogs": catalogs_json(order.catalogs),
+        "size": choice.path.stat().st_size}
+    if _is_recmin(choice):
+        worker = jobs.IMPORT_RECMIN
+        params["accept_schema"] = order.accept_schema
+    else:
+        worker = jobs.IMPORT_TABULAR
+        params.update(reader=choice.reader, role=choice.role, mapping=dict(choice.mapping))
+    return {"worker": worker, "label": tr("Reading «{name}»", name=choice.label),
+            "params": params, "paths": {gis_jobs.path_name("main"): choice.path},
+            "on_finish": functools.partial(_read_finished, order, entry),
+            "grace_s": jobs.CANCEL_GRACE_S}
+
+
 def start_order(operator: Any, context: Any, project: Any, choices: Sequence[TableChoice],
                 declaration: SourceDeclaration, options: ReadOptions, *,
                 received_at: Any = None, received_from: str | None = None,
-                reason: str | None = None) -> set[str]:
-    """Empieza la importación de ``choices`` con la orden ``operator`` (una operación
-    ``dh.import_tabular`` por tabla, con la puerta de la 008, y su lectura); devuelve el final
-    de la orden. Si una no puede empezar, las demás quedan canceladas."""
+                reason: str | None = None, accept_schema: bool = False,
+                command: str = IMPORT_DRILLHOLES) -> set[str]:
+    """Empieza la importación de ``choices`` con la orden ``operator`` (una operación de su
+    tipo por tabla, o por la base de RecMin, con la puerta de la 008, y su lectura; la de una
+    base de RecMin de esquema desconocido, ya confirmada si ``accept_schema``); devuelve el
+    final de la orden. ``command``: el ``bl_idname`` de la orden, la que aplica o descarta lo
+    que espere la decisión de la persona. Si una no puede empezar, las demás quedan
+    canceladas."""
     with project.read() as conn:
         catalogs = store.read_catalogs(conn)
         holes = store.existing_holes(conn)
-    crs, vertical = gis_store.project_references(project)
     order = _Order([], declaration, options, catalogs, holes, received_at, received_from,
-                   reason)
+                   reason, command=command, accept_schema=accept_schema)
     for choice in choices:
         handle = operator.begin(context, settings=_operation_settings(choice, declaration,
                                                                       options),
@@ -987,18 +1066,8 @@ def start_order(operator: Any, context: Any, project: Any, choices: Sequence[Tab
     _ORDERS[order.uid] = order
     for entry in order.entries:
         choice = entry.choice
-        params = {"reader": choice.reader, "name": choice.name, "role": choice.role,
-                  "mapping": dict(choice.mapping),
-                  "declaration": jobs.declaration_json(declaration),
-                  "settings": options.job_settings(choice.reader, choice.sheet),
-                  "crs": gis_jobs.crs_json(crs), "vertical": gis_jobs.vertical_json(vertical),
-                  "project_holes": list(holes), "catalogs": catalogs_json(catalogs),
-                  "size": choice.path.stat().st_size}
-        job = operator.launch_job(
-            entry.handle, jobs.IMPORT_TABULAR, label=tr("Reading «{name}»", name=choice.label),
-            params=params, paths={gis_jobs.path_name("main"): choice.path},
-            on_finish=functools.partial(_read_finished, order, entry),
-            grace_s=jobs.CANCEL_GRACE_S)
+        launch = _read_job(order, entry)
+        job = operator.launch_job(entry.handle, launch.pop("worker"), **launch)
         if job is None:  # la operación queda fallida con el motivo (ya dicho)
             order.failure = choice.label
             break
@@ -1019,6 +1088,7 @@ def _read_finished(order: _Order, entry: _Entry, result: JobResult) -> None:
     entry.read = result
     if result.state != _SUCCEEDED and not order.failure:
         order.failure = entry.choice.label
+        order.failure_text = result.error_text or ""
     if all(item.read is not None for item in order.entries if item.started):
         try:
             _after_reading(order)
@@ -1027,18 +1097,41 @@ def _read_finished(order: _Order, entry: _Entry, result: JobResult) -> None:
             _abandon(order, error_text(error), failed=True)
 
 
+def _confirmation(entry: _Entry) -> str:
+    """Lo que hay que confirmar antes de leer una base de RecMin (RF-005-15: una versión de
+    esquema que no es 11 ni 12), si su lectura terminó sin leerla; si no, ``""``."""
+    found = entry.outcome.summary.get("needs_confirmation") if entry.outcome else None
+    if not found:
+        return ""
+    return tr("{warning}. Confirm it to read «{name}» anyway", warning=str(found["text"]),
+              name=entry.choice.label)
+
+
 def _after_reading(order: _Order) -> None:
-    """Leídas todas las entradas: si una falló, la orden no sigue (RF-005-04); si no, cada
-    una se clasifica (RF-008-54: reutilizada, cancelada con el aviso; los mismos datos con
+    """Leídas todas las entradas: si una falló, la orden no sigue (RF-005-04); si una base de
+    RecMin necesita una confirmación antes de leerla (RF-005-15), la orden la espera; si no,
+    cada una se clasifica (RF-008-54: reutilizada, cancelada con el aviso; los mismos datos con
     otros ajustes, una sustitución) y, si hay algo que decidir (códigos nuevos, sondeos que ya
     están o una sustitución sin motivo), la orden espera; si no, se aplica."""
     if order.failure:
-        _abandon(order, OTHER_FAILED.format(name=order.failure))
+        said = None
+        if order.failure_text:
+            said = tr("«{name}» has not been read: {reason}", name=order.failure,
+                      reason=order.failure_text)
+        _abandon(order, OTHER_FAILED.format(name=order.failure), said=said)
         return
     project = order.entries[0].handle.project
     language = i18n.language()
     for entry in order.live:
         entry.outcome = job_outcome(entry.read, entry.read.job_dir)
+    order.confirm = "\n".join(text for text in map(_confirmation, order.live) if text)
+    if order.confirm:
+        _WAITING.append(order.uid)
+        _show_pending()
+        _say(tr("The import of the drillholes waits for your decision in Drillholes ▸ "
+                "Pending import:\n{decision}", decision=_decision_text(order)))
+        return
+    for entry in order.live:
         entry.spec = _input_spec(order, entry)
     with project.read() as conn:
         classified = [(entry, classify_import(conn, entry.spec)) for entry in order.live]
@@ -1104,6 +1197,15 @@ def _register_for(order: _Order, entry: _Entry) -> dict[str, list[Any]]:
     return {kind: items for kind, items in chosen.items() if items}
 
 
+def _imported(summary: Mapping[str, Any]) -> int:
+    """Los registros importados de la lectura de una entrada: los de su tabla o, de una base
+    de RecMin, los de todas (sus recuentos van por tabla de RecMin)."""
+    counts = dict(summary.get("counts") or {})
+    if "imported" in counts:
+        return int(counts["imported"])
+    return sum(int(dict(found).get("imported", 0)) for found in counts.values())
+
+
 def _apply(order: _Order) -> None:
     """Aplica las entradas de ``order`` con lo decidido (``dh_import_apply``: los sondeos que
     se conservan fuera, los que se sustituyen contados, los códigos nuevos dados de alta)."""
@@ -1113,11 +1215,10 @@ def _apply(order: _Order) -> None:
     replace = [name for name in order.holes if name_key(name) not in keep]
     taken = [code.color for code in order.catalogs.lithology]
     for entry in order.live:
-        counts = dict(entry.outcome.summary.get("counts") or {})
         params = {"name": entry.choice.name, "crs": gis_jobs.crs_json(crs),
                   "keep_holes": list(order.keep), "replace_holes": replace,
                   "register_codes": _register_for(order, entry) if order.register else {},
-                  "taken_colors": taken, "count": int(counts.get("imported", 0)) + 1}
+                  "taken_colors": taken, "count": _imported(entry.outcome.summary) + 1}
         try:
             core_provenance.launch_job(
                 entry.handle, jobs.IMPORT_APPLY,
@@ -1165,10 +1266,38 @@ def _counts(entry: _Entry, report: Mapping[str, Any],
             int(counts.get("rejected", 0)), replaced)
 
 
-def _log_lines(entry: _Entry, report: Mapping[str, Any],
+def _recmin_counts(order: _Order,
+                   report: Mapping[str, Any]) -> list[tuple[str, int, int, int, int]]:
+    """Por tabla de una base de RecMin: leídos, importados, rechazados y sustituidos
+    (RF-005-12). Los registros de los sondeos que ya estaban y se conservan no se importan, y
+    los de los que se sustituyen se cuentan (``hole_rows`` de su lectura: los de cada sondeo
+    que ya estaba, por tabla)."""
+    keep = {name_key(name) for name in order.keep}
+    replace = {name_key(name) for name in order.holes} - keep
+    rows = dict(report.get("hole_rows") or {})
+    found = []
+    for table, counts in dict(report.get("counts") or {}).items():
+        per_hole = dict(rows.get(table) or {})
+        kept = sum(int(n) for hole, n in per_hole.items() if name_key(hole) in keep)
+        replaced = sum(int(n) for hole, n in per_hole.items() if name_key(hole) in replace)
+        found.append((str(table), int(counts.get("read", 0)),
+                      max(int(counts.get("imported", 0)) - kept, 0),
+                      int(counts.get("rejected", 0)), replaced))
+    return found
+
+
+def _log_lines(order: _Order, entry: _Entry, report: Mapping[str, Any],
                applied: Mapping[str, Any]) -> list[store.LogLine]:
-    """El informe de una entrada en ``dh_import_log`` (RF-005-12): sus recuentos, cada registro
-    rechazado con su motivo y los avisos."""
+    """El informe de una entrada en ``dh_import_log`` (RF-005-12): sus recuentos (de una base
+    de RecMin, por cada una de sus tablas), cada registro rechazado con su motivo y los
+    avisos."""
+    if _is_recmin(entry.choice):  # sus avisos ya dicen los sondeos repetidos (DH-E01)
+        lines = [store.LogLine.summary(*counts) for counts in _recmin_counts(order, report)]
+        lines += [store.LogLine.rejection(Rejection(*item))
+                  for item in report.get("rejected", ())]
+        lines += [store.LogLine.warning(RECMIN_LABEL, str(text))
+                  for text in report.get("warnings", ())]
+        return lines
     role = entry.choice.role
     read, imported, rejected, replaced = _counts(entry, report, applied)
     lines = [store.LogLine.summary(role, read, imported, rejected, replaced)]
@@ -1179,10 +1308,38 @@ def _log_lines(entry: _Entry, report: Mapping[str, Any],
     return lines
 
 
-def _entry_report(entry: _Entry, report: Mapping[str, Any], applied: Mapping[str, Any]) -> str:
+def _recmin_report(order: _Order, entry: _Entry, report: Mapping[str, Any]) -> str:
+    """El informe de una base de RecMin (su mensaje y el aviso de la sesión; RF-005-12): su
+    fichero, su versión de esquema, los recuentos de cada tabla, su hash de contenido, los
+    rechazos (los primeros, con su tabla) y los avisos."""
+    version = report.get("schema_version")
+    tables = "; ".join(
+        tr("{table}: {read} read, {imported} imported, {rejected} rejected, {replaced} "
+           "replaced", table=table, read=format_number(read, 0),
+           imported=format_number(imported, 0), rejected=format_number(rejected, 0),
+           replaced=format_number(replaced, 0))
+        for table, read, imported, rejected, replaced in _recmin_counts(order, report))
+    lines = [tr("RecMin drillhole database «{file}» (schema {version}) imported as «{name}»: "
+                "{tables}; content hash {digest}", file=entry.choice.label,
+                version="—" if version is None else str(version), name=entry.choice.name,
+                tables=tables, digest=entry.spec.digest.content_sha256[:12])]
+    items = list(report.get("rejected", ()))
+    lines += [tr("{table}, row {row}, {field}: {reason}", table=item[0], row=item[1],
+                 field=item[2], reason=item[4]) for item in items[:REJECTIONS_SHOWN]]
+    if len(items) > REJECTIONS_SHOWN:
+        lines.append(tr("… and {count} more rejected",
+                        count=format_number(len(items) - REJECTIONS_SHOWN, 0)))
+    lines += [str(text) for text in report.get("warnings", ())]
+    return "\n".join(lines)
+
+
+def _entry_report(order: _Order, entry: _Entry, report: Mapping[str, Any],
+                  applied: Mapping[str, Any]) -> str:
     """El informe de una entrada (su mensaje y el aviso de la sesión; RF-005-12): su tabla y
     su papel, sus recuentos, el hash de contenido de su fichero, los rechazos (los primeros) y
-    los avisos."""
+    los avisos; el de una base de RecMin, :func:`_recmin_report`."""
+    if _is_recmin(entry.choice):
+        return _recmin_report(order, entry, report)
     read, imported, rejected, replaced = _counts(entry, report, applied)
     lines = [tr("Drillhole table «{file}» ({role}) imported as «{name}»: {read} rows read, "
                 "{imported} records imported, {rejected} rejected, {replaced} replaced; "
@@ -1224,10 +1381,10 @@ def _import_steps(order: _Order) -> Generator[float, None, str]:
                 tables[role] = jobs.read_table_output(applied.file(name), name)
                 contents[role] = gis_jobs.digest_of(output["digest"])
             report = _read_report(entry)
-            message = _entry_report(entry, report, applied.summary)
+            message = _entry_report(order, entry, report, applied.summary)
             item = writer.add(
                 entry.handle, entry.spec, tables, name=entry.choice.name, contents=contents,
-                log=_log_lines(entry, report, applied.summary),
+                log=_log_lines(order, entry, report, applied.summary),
                 previous_uid=entry.previous_uid,
                 reason=order.reason if entry.previous_uid else None, message=message,
                 interpreter=entry.outcome.interpreter, executor=entry.outcome.executor,
@@ -1573,9 +1730,29 @@ _KEPT_PROPS: tuple[str, ...] = tuple(
     name for name, _text in (*_DECLARATION_PROPS, *_READING_PROPS, *_DELIVERY_PROPS)) + (
     "sheet",)
 """Lo que el asistente recibe de la orden que lo abre (tras elegir los ficheros)."""
+_RECMIN_DECLARATION_PROPS: tuple[tuple[str, str], ...] = (
+    ("crs", "Horizontal CRS"), ("vertical", "Vertical CRS"),
+    ("azimuth_ref", "Azimuth reference"), ("declination_deg", "Magnetic declination"),
+    ("units", "Units of the elements"), ("sentinels", "No-data values"),
+    ("negative_is_below_dl", "Negative means below the detection limit"),
+    ("density_kind", "Density"),
+)
+_RECMIN_READING_PROPS: tuple[tuple[str, str], ...] = (
+    ("decimal_mark", "Decimal mark"), ("accept_schema", "Read an unknown schema"),
+)
+LOCKED_LABEL = "Read it although it is open"
+_RECMIN_KEPT_PROPS: tuple[str, ...] = tuple(
+    name for name, _text in (*_RECMIN_DECLARATION_PROPS, *_RECMIN_READING_PROPS,
+                             *_DELIVERY_PROPS)) + ("accept_locked",)
+"""Lo que el diálogo de una base de RecMin recibe de la orden que lo abre (tras elegirla)."""
+RECMIN_NEEDS = Needs(crs=True, vertical=True, azimuth=True)
+"""Lo que se declara siempre al importar una base de RecMin (RF-005-07): el CRS y el datum de
+sus bocas y la referencia de sus azimuts (con la declinación, si es magnético). La unidad de un
+elemento cuya unidad en la base no es de ley la pide su lectura, que ve la base."""
 SHOWN_MSGIDS: tuple[str, ...] = (
-    BASE_LABEL, VALIDATION_LABEL, *_KIND_MSGIDS.values(), *_ROLE_MSGIDS.values(),
-    *(text for _prop, text in (*_DECLARATION_PROPS, *_READING_PROPS, *_DELIVERY_PROPS)))
+    BASE_LABEL, VALIDATION_LABEL, LOCKED_LABEL, *_KIND_MSGIDS.values(), *_ROLE_MSGIDS.values(),
+    *(text for _prop, text in (*_DECLARATION_PROPS, *_READING_PROPS, *_DELIVERY_PROPS,
+                               *_RECMIN_READING_PROPS)))
 """Los ``msgid`` de las constantes del módulo que se enseñan sin un ``tr`` literal (la prueba
 de la importación comprueba que tienen su español)."""
 
@@ -1610,23 +1787,91 @@ def _options_of(operator: Any) -> ReadOptions:
                        operator.date_format.strip() or None)
 
 
-def _open_wizard(values: Mapping[str, Any]) -> None:
-    """Abre el asistente de la importación con ``values`` (tras elegir los ficheros); sin
-    ventana, nada."""
+def _open_wizard(values: Mapping[str, Any], idname: str = IMPORT_DRILLHOLES) -> None:
+    """Abre el asistente (o el diálogo) de la importación ``idname`` con ``values`` (tras
+    elegir los ficheros: en un temporizador, después del navegador de ficheros); sin ventana,
+    nada."""
     manager = getattr(bpy.context, "window_manager", None)
     windows = list(getattr(manager, "windows", ()) or ())
     if not windows:
         return
+    name = idname.partition(".")[2]
 
     def call() -> None:
         try:
             with bpy.context.temp_override(window=windows[0]):
-                bpy.ops.geoblender.dh_import_drillholes("INVOKE_DEFAULT", wizard=True, **values)
+                getattr(bpy.ops.geoblender, name)("INVOKE_DEFAULT", wizard=True, **values)
         except (RuntimeError, TypeError, AttributeError):
             LOGGER.warning("No se pudo abrir el asistente de la importación de sondeos",
                            exc_info=True)
 
     bpy.app.timers.register(call, first_interval=0.0)
+
+
+def _reread(order: _Order) -> None:
+    """Lee otra vez, con la confirmación (``accept_schema``), las bases de RecMin de ``order``
+    que la pedían (RF-005-15): su lectura anterior, dada por incorporada; la nueva, en la
+    misma operación. Si una no se puede lanzar, la orden no se escribe."""
+    asking = [entry for entry in order.live if _confirmation(entry)]
+    order.confirm = ""
+    order.accept_schema = True
+    for entry in asking:
+        _release(entry.read)
+        entry.read = None
+        entry.outcome = None
+    for entry in asking:
+        try:
+            launch = _read_job(order, entry)
+            core_provenance.launch_job(entry.handle, launch.pop("worker"), **launch)
+        except Exception as error:  # noqa: BLE001 - la operación ya quedó fallida o se deja
+            LOGGER.warning("No se pudo leer otra vez «%s»", entry.choice.label, exc_info=True)
+            _abandon(order, error_text(error), failed=True)
+            return
+
+
+def decide_pending(operator: Any, context: Any) -> set[str]:
+    """Aplica o descarta la importación ``operator.pending`` que espera la decisión de la
+    persona (``operator.stage``; RF-005-10, RF-005-11, RF-005-15): lo decidido, el de
+    «Importación pendiente» si la enseña. Si lo que espera es la confirmación de leer una base
+    de RecMin de esquema desconocido, «Aplicar» la lee otra vez con ella."""
+    uid = operator.pending
+    order = _ORDERS.get(uid) if uid in _WAITING else None
+    if order is None:
+        operator.report({"ERROR"}, tr("No drillhole import is waiting for a decision"))
+        return {"CANCELLED"}
+    if operator.stage == STAGE_DISCARD:
+        _abandon(order, DISCARDED)
+        operator.report({"INFO"}, tr("Import of the drillholes discarded: nothing has been "
+                                     "written"))
+        return {"FINISHED"}
+    if order.confirm:
+        _WAITING.remove(uid)
+        _show_pending()
+        _reread(order)
+        operator.report({"INFO"}, tr("Reading the RecMin drillhole database again…"))
+        return {"FINISHED"}
+    shown = getattr(context.window_manager, IMPORT_PROPERTY, None)
+    if shown is not None and shown.operation_uid != uid:
+        shown = None
+    register = True if shown is None else bool(shown.register_codes)
+    if order.codes and not register:
+        operator.report({"ERROR"}, tr("Without registering the new codes nothing is "
+                                      "imported: register them or discard the import"))
+        return {"CANCELLED"}
+    reason = (operator.reason.strip() or (shown.reason.strip() if shown is not None else "")
+              or (order.reason or ""))
+    if any(entry.substitute for entry in order.live) and not reason:
+        operator.report({"ERROR"}, tr("Write why the inputs replace those with the same data "
+                                      "and other settings"))
+        return {"CANCELLED"}
+    order.reason = reason or None
+    order.keep = tuple(hole.name for hole in shown.holes if hole.keep) if shown else ()
+    order.register = bool(order.codes)
+    _WAITING.remove(uid)
+    _show_pending()
+    _apply(order)
+    operator.report({"INFO"}, tr("Applying the import of the drillholes…"))
+    return {"FINISHED"}
 
 
 class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOperator,
@@ -1870,7 +2115,7 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
             return {"CANCELLED"}
         if self.stage != STAGE_NEW:
             with core_provenance.caller_reports():
-                return self._decide(context)
+                return decide_pending(self, context)
         project = core_provenance.SESSION.project
         options = _options_of(self)
         if self.provenance_dialog and not self.wizard and not self.mapping_json.strip():
@@ -1905,41 +2150,20 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
                                      count=format_number(len(choices), 0)))
         return result
 
-    def _decide(self, context: Any) -> set[str]:
-        """Aplica o descarta la importación ``pending`` que espera la decisión de la persona
-        (RF-005-10, RF-005-11): lo decidido, el de «Importación pendiente» si la enseña."""
-        uid = self.pending
-        order = _ORDERS.get(uid) if uid in _WAITING else None
-        if order is None:
-            self.report({"ERROR"}, tr("No drillhole import is waiting for a decision"))
-            return {"CANCELLED"}
-        if self.stage == STAGE_DISCARD:
-            _abandon(order, DISCARDED)
-            self.report({"INFO"}, tr("Import of the drillholes discarded: nothing has been "
-                                     "written"))
-            return {"FINISHED"}
-        shown = getattr(context.window_manager, IMPORT_PROPERTY, None)
-        if shown is not None and shown.operation_uid != uid:
-            shown = None
-        register = True if shown is None else bool(shown.register_codes)
-        if order.codes and not register:
-            self.report({"ERROR"}, tr("Without registering the new codes nothing is "
-                                      "imported: register them or discard the import"))
-            return {"CANCELLED"}
-        reason = (self.reason.strip() or (shown.reason.strip() if shown is not None else "")
-                  or (order.reason or ""))
-        if any(entry.substitute for entry in order.live) and not reason:
-            self.report({"ERROR"}, tr("Write why the inputs replace those with the same data "
-                                      "and other settings"))
-            return {"CANCELLED"}
-        order.reason = reason or None
-        order.keep = tuple(hole.name for hole in shown.holes if hole.keep) if shown else ()
-        order.register = bool(order.codes)
-        _WAITING.remove(uid)
-        _show_pending()
-        _apply(order)
-        self.report({"INFO"}, tr("Applying the import of the drillholes…"))
-        return {"FINISHED"}
+
+def _locked_text(path: Path, lock: Path) -> str:
+    """El aviso de una base que otro programa tiene abierta (RF-005-15)."""
+    return tr("«{file}» is open in another program (it has «{lock}»): close it, or confirm "
+              "that it is read anyway", file=path.name, lock=lock.name)
+
+
+def check_recmin(declaration: SourceDeclaration) -> None:
+    """RF-005-07: lo que se declara siempre al importar una base de RecMin
+    (:data:`RECMIN_NEEDS`) y no está en ``declaration``: ``interop.base.DeclarationError``,
+    que lo nombra todo."""
+    missing = missing_declarations(declaration, RECMIN_NEEDS)
+    if missing:
+        raise DeclarationError(RECMIN_LABEL, missing)
 
 
 class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOperator,
@@ -1979,6 +2203,12 @@ class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOper
     decimal_mark: EnumProperty(  # type: ignore[valid-type]
         name="Decimal mark", items=DECIMAL_ITEMS, default="COMMA", options=_FIELD,
     )
+    units: StringProperty(  # type: ignore[valid-type]
+        name="Units of the elements",
+        description="Unit of each element whose unit in the database is not g/t, ppm, ppb or "
+                    "%, such as Au=g/t; Cu=%",
+        options=_FIELD,
+    )
     sentinels: StringProperty(  # type: ignore[valid-type]
         name="No-data values",
         description="Values of the source that mean no data, separated by «;», such as "
@@ -1993,7 +2223,7 @@ class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOper
         name="Density", items=DENSITY_ITEMS, default="ADOPTADO", options=_FIELD,
     )
     accept_locked: BoolProperty(  # type: ignore[valid-type]
-        name="Read it although it is open",
+        name=LOCKED_LABEL,
         description="Read the database although another program has it open (it has its lock "
                     "file)",
         options=_FIELD,
@@ -2016,6 +2246,126 @@ class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOper
                     "settings",
         options=_FIELD,
     )
+    # El diálogo (tras elegir la base) y lo que decide la persona en «Importación pendiente»
+    # (la misma orden con ``stage`` y ``pending``).
+    wizard: BoolProperty(options=_HIDDEN)  # type: ignore[valid-type]
+    stage: EnumProperty(  # type: ignore[valid-type]
+        items=STAGE_ITEMS, default=STAGE_NEW, options=_HIDDEN,
+    )
+    pending: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
+
+    def _path(self) -> Path | None:
+        """La base elegida (``None`` si no hay ninguna)."""
+        return Path(bpy.path.abspath(self.filepath)) if self.filepath.strip() else None
+
+    def _options(self) -> ReadOptions:
+        """Cómo se lee la base: solo su separador decimal (el de los números escritos como
+        texto); lo demás no se usa."""
+        return ReadOptions(ENCODINGS["UTF8"], SEPARATORS["SEMICOLON"], 0,
+                           DECIMALS[self.decimal_mark], None)
+
+    def _declaration(self, project: Any, options: ReadOptions) -> SourceDeclaration:
+        """Lo declarado en la orden, con la inclinación de RecMin (negativa hacia abajo, que no
+        se declara: ``interop.recmin``); los errores, como en las tablas."""
+        typed = self.declination_deg.strip()
+        return SourceDeclaration(
+            crs=parse_crs(self.crs), vertical=vertical_choice(self.vertical, project),
+            azimuth_ref=AZIMUTH_REFS[self.azimuth_ref],
+            declination_deg=parse_declination(typed) if typed else None,
+            inclination_convention=InclinationConvention.NEGATIVE_DOWN,
+            units=parse_units(self.units),
+            value_rules=ValueRules(decimal_mark=options.decimal,
+                                   sentinels=parse_sentinels(self.sentinels),
+                                   negative_is_below_dl=self.negative_is_below_dl),
+            density_kind=DENSITY_KINDS[self.density_kind])
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        if self.stage != STAGE_NEW:
+            return self.execute(context)
+        if self.wizard or self.filepath.strip():
+            self.wizard = True
+            return context.window_manager.invoke_props_dialog(
+                self, width=RECMIN_DIALOG_WIDTH, translate=False,
+                title=tr("Import of a RecMin drillhole database"))
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, context: Any) -> None:
+        """La base (su formato y, si otro programa la tiene abierta, el aviso y su
+        confirmación: RF-005-15), las declaraciones y la entrega y, si falta alguna
+        declaración, cuál (RF-005-07)."""
+        layout = self.layout
+        path = self._path()
+        box = layout.box()
+        if path is None:
+            box.label(text=tr("Choose the RecMin drillhole database to import"), icon="ERROR",
+                      translate=False)
+        else:
+            try:
+                found, _version = mdb_ports.read_format(path)
+                shown = " · ".join((path.name, found.label))  # el formato, del dominio
+                box.label(text=shown, icon="FILE", translate=False)
+            except (GeoblenderError, OSError) as exc:
+                box.label(text=error_text(exc), icon="ERROR", translate=False)
+            lock = mdb_ports.lock_file(path)
+            if lock is not None:
+                box.label(text=_locked_text(path, lock), icon="ERROR", translate=False)
+                box.prop(self, "accept_locked", text=_text(LOCKED_LABEL), translate=False)
+        split = layout.split(factor=0.5)
+        for column, props in ((split.column(), _RECMIN_DECLARATION_PROPS),
+                              (split.column(), (*_RECMIN_READING_PROPS, *_DELIVERY_PROPS))):
+            column.use_property_split = True
+            for prop, text in props:
+                column.prop(self, prop, text=_text(text), translate=False)
+        try:
+            check_recmin(self._declaration(core_provenance.SESSION.project, self._options()))
+        except DeclarationError as exc:
+            layout.label(text=tr("Missing declarations: {missing}",
+                                 missing=spanish_list(exc.missing)),
+                         icon="ERROR", translate=False)
+        except (GeoblenderError, ValueError) as exc:
+            layout.label(text=error_text(exc), icon="ERROR", translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason(IMPORT_RECMIN)
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        if self.stage != STAGE_NEW:
+            with core_provenance.caller_reports():
+                return decide_pending(self, context)
+        path = self._path()
+        if path is None or not path.is_file():
+            self.report({"ERROR"}, tr("Choose the RecMin drillhole database to import"))
+            return {"CANCELLED"}
+        if self.provenance_dialog and not self.wizard:  # tras elegirla: su diálogo
+            values = {name: getattr(self, name) for name in _RECMIN_KEPT_PROPS}
+            _open_wizard({**values, "filepath": self.filepath}, IMPORT_RECMIN)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        options = self._options()
+        try:
+            mdb_ports.read_format(path)  # una base de Access (sin motor: su cabecera)
+            lock = mdb_ports.lock_file(path)
+            if lock is not None and not self.accept_locked:  # RF-005-15
+                raise ValueError(_locked_text(path, lock))
+            declaration = self._declaration(project, options)
+            check_recmin(declaration)
+            received_at = _delivery_day(self.received_at)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        choice = TableChoice(path, provenance.RECMIN_MDB, "", {}, None, entry_name(path))
+        result = start_order(self, context, project, [choice], declaration, options,
+                             received_at=received_at,
+                             received_from=self.received_from.strip() or None,
+                             reason=self.reason.strip() or None,
+                             accept_schema=self.accept_schema, command=IMPORT_RECMIN)
+        if result == {"FINISHED"}:
+            self.report({"INFO"}, tr("Importing the RecMin drillhole database «{file}» in the "
+                                     "background…", file=path.name))
+        return result
 
 
 class GEOBLENDER_OT_dh_set_detection_limit_policy(_DrillholesCommand, bpy.types.Operator):

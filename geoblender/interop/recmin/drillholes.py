@@ -137,14 +137,20 @@ from .schema import (
 
 __all__ = [
     "EMPTY_FIELDS_WARNING",
+    "EXTERNAL_PREFIX",
     "INCLINATION_CONVENTION",
     "KNOWN_SCHEMA_VERSIONS",
     "OUTPUT_ROLES",
     "TEXT_UNIT",
     "element_unit",
+    "external_table",
+    "hole_rows",
     "needs",
     "read_drillholes",
 ]
+
+EXTERNAL_PREFIX = "recmin:"
+"""El principio del ``external_id`` de un registro de RecMin: ``recmin:<TABLA>:<id>``."""
 
 INCLINATION_CONVENTION = InclinationConvention.NEGATIVE_DOWN
 """El convenio de la inclinación de RecMin (desde la horizontal, negativa hacia abajo, el de
@@ -193,6 +199,45 @@ def element_unit(text: object) -> str | None:
     if text.strip().casefold() in _TEXT_UNITS:
         return TEXT_UNIT
     return grade_unit(text)
+
+
+def external_table(external_id: object) -> str | None:
+    """La tabla de RecMin de un registro por su ``external_id`` (``recmin:<TABLA>:<id>``, la
+    tabla en mayúsculas); ``None`` si no es el de un registro de RecMin."""
+    if not isinstance(external_id, str) or not external_id.startswith(EXTERNAL_PREFIX):
+        return None
+    table, sep, _ident = external_id.removeprefix(EXTERNAL_PREFIX).partition(":")
+    return table if sep and table else None
+
+
+_HOLE_TABLES = ("collars", "surveys", "lithology", "assays", "zones", "structures")
+
+
+def hole_rows(dset: DrillholeSet, holes: Iterable[str],
+              tables: Iterable[str] = ()) -> dict[str, dict[str, int]]:
+    """Los registros de cada sondeo de ``holes`` (sin distinguir mayúsculas ni espacios) en lo
+    leído de una base de RecMin (``dset``), por la tabla de RecMin de la que vienen (su
+    ``external_id``; :func:`external_table`): ``{tabla: {sondeo: registros}}``, con el sondeo
+    como lo escribe la base y la tabla como la nombra ``tables`` (las de
+    ``ImportReport.per_table``) si está, sin distinguir mayúsculas. Son los que quita conservar
+    un sondeo que ya está en el proyecto, o los que sustituye (RF-005-11, RF-005-12): un valor
+    de un análisis es un registro, como en los recuentos del informe."""
+    wanted = {name_key(hole) for hole in holes}
+    named = {table.casefold(): table for table in tables}
+    found: dict[str, dict[str, int]] = {}
+    if not wanted:
+        return found
+    for attribute in _HOLE_TABLES:
+        columns = getattr(dset, attribute)
+        field = "name" if attribute == "collars" else "hole_name"
+        for hole, external in zip(getattr(columns, field).tolist(),
+                                  columns.external_id.tolist(), strict=True):
+            table = external_table(external)
+            if hole is None or table is None or name_key(hole) not in wanted:
+                continue
+            per = found.setdefault(named.get(table.casefold(), table), {})
+            per[hole] = per.get(hole, 0) + 1
+    return found
 
 
 # --- Valores crudos ------------------------------------------------------------------------------
@@ -462,7 +507,7 @@ class _Source:
         ident = _text_of(self.ids[row], self.ident_single)
         if ident is None or not ident.strip():
             return None
-        return f"recmin:{self.name.upper()}:{ident}"
+        return f"{EXTERNAL_PREFIX}{self.name.upper()}:{ident}"
 
     def extra(self, row: int, **more: object) -> Mapping[str, Any]:
         """Las columnas sin campo de la fila ``row`` (y ``more``), para ``extra``."""

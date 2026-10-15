@@ -3966,3 +3966,39 @@ es = "Dos columnas de «{table}» dan «{field}»: elija una"
 
 ["{names} and {count} more"]
 es = "{names} y {count} más"
+
+# Importar una base de RecMin (spec 005, T26; plan 005 §5.3.1, §5.6.4 y §5.6.5): su diálogo, el
+# aviso de una base abierta, la confirmación de un esquema desconocido y su informe.
+
+["Unit of each element whose unit in the database is not g/t, ppm, ppb or %, such as Au=g/t; Cu=%"]
+es = "Unidad de cada elemento cuya unidad en la base no es g/t, ppm, ppb ni %, como Au=g/t; Cu=%"
+
+["Choose the RecMin drillhole database to import"]
+es = "Elija la base de sondeos de RecMin que importar"
+
+["«{file}» is open in another program (it has «{lock}»): close it, or confirm that it is read anyway"]
+es = "«{file}» está abierta en otro programa (tiene «{lock}»): ciérrela, o confirme que se lea igualmente"
+
+["Importing the RecMin drillhole database «{file}» in the background…"]
+es = "Importando la base de sondeos de RecMin «{file}» en segundo plano…"
+
+["«{name}» has not been read: {reason}"]
+es = "«{name}» no se ha leído: {reason}"
+
+["{warning}. Confirm it to read «{name}» anyway"]
+es = "{warning}. Confírmelo para leer «{name}» igualmente"
+
+["Read it anyway"]
+es = "Leer igualmente"
+
+["Reading the RecMin drillhole database again…"]
+es = "Leyendo otra vez la base de sondeos de RecMin…"
+
+["{table}: {read} read, {imported} imported, {rejected} rejected, {replaced} replaced"]
+es = "{table}: {read} leídos, {imported} importados, {rejected} rechazados, {replaced} sustituidos"
+
+["RecMin drillhole database «{file}» (schema {version}) imported as «{name}»: {tables}; content hash {digest}"]
+es = "Base de sondeos de RecMin «{file}» (esquema {version}) importada como «{name}»: {tables}; hash de contenido {digest}"
+
+["{table}, row {row}, {field}: {reason}"]
+es = "{table}, fila {row}, {field}: {reason}"

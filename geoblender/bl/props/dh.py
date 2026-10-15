@@ -314,13 +314,17 @@ class GEOBLENDER_PG_dh_pending_hole(bpy.types.PropertyGroup):
 
 class GEOBLENDER_PG_dh_import(bpy.types.PropertyGroup):
     """La importación de sondeos que espera la decisión de la persona (RF-005-10,
-    RF-005-11): su orden, los códigos nuevos, los sondeos que ya están, y (``question``) las
-    sustituciones que piden el motivo (RF-008-11)."""
+    RF-005-11): su orden, la orden que la aplica o la descarta (``command``: la de las tablas
+    o la de una base de RecMin, T26), lo que hay que confirmar antes de leer (``confirm``:
+    una base de RecMin de esquema desconocido, RF-005-15), los códigos nuevos, los sondeos que
+    ya están, y (``question``) las sustituciones que piden el motivo (RF-008-11)."""
 
     operation_uid: StringProperty(  # type: ignore[valid-type]
         default="", options=_STATIC, name="Pending import",
         description="Uid of the import operation that waits for a decision",
     )
+    command: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    confirm: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     new_codes: StringProperty(  # type: ignore[valid-type]
         default="", options=_STATIC, name="New codes",
         description="Codes of the source that are not in the catalogs of the project",

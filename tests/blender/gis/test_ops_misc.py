@@ -40,6 +40,7 @@ IMPORT_DTM = "geoblender.gis_import_dtm"
 IMPORT_POINTS = "geoblender.gis_import_points"
 IMPORT_VECTOR = "geoblender.gis_import_vector"
 IMPORT_DRILLHOLES = "geoblender.dh_import_drillholes"
+IMPORT_RECMIN = "geoblender.dh_import_recmin_mdb"
 EXTENSIONS = ".tif;.tiff;.asc;.xyz;.csv;.txt;.gpkg"
 # La traslación de ED50 a ETRS89 en el vértice 55901 «IGNE» (reseña del IGN; la prueba con
 # pyproj y la rejilla está en tests/unit/adapters/test_pyproj_crs.py) y su factor de escala.
@@ -228,7 +229,8 @@ class MiscOperatorsTest(DtmOperatorsCase):
         con su diálogo; ``.xyz`` en malla, el de MDT con su decimal, y disperso, el de puntos
         con su separador, su decimal y sin cabecera; CSV y TXT, el de puntos; GeoPackage, el de
         capas. Si la entrada que trae un formato ya estuviera entregada, se abriría su orden
-        (spec 005, T25: un libro XLSX, la importación de tablas de sondeos)."""
+        (spec 005, T25: un libro XLSX, la importación de tablas de sondeos; T26: una base
+        ``.mdb``, la de una base de sondeos de RecMin)."""
         self.open()
         opened: list[tuple[str, dict[str, Any]]] = []
         self.enterContext(mock.patch.object(
@@ -247,6 +249,7 @@ class MiscOperatorsTest(DtmOperatorsCase):
             (self.source("points/taludes.csv", "estacion.txt"), IMPORT_POINTS, {}),
             (self.source("gpkg/capas.gpkg"), IMPORT_VECTOR, {}),
             (self.written_bytes("sondeos.xlsx"), IMPORT_DRILLHOLES, {}),
+            (self.written_bytes("base.mdb"), IMPORT_RECMIN, {}),
         )
         for path, idname, extra in cases:
             with self.subTest(fichero=path.name):
@@ -281,7 +284,7 @@ class MiscOperatorsTest(DtmOperatorsCase):
             ("vuelo.laz", ("Disponible en R-72 · Nubes de puntos y mallas de levantamiento",)),
             ("malla.OBJ", ("Disponible en R-72",)),
             ("cantera.sup", ("Disponible en R-64 · RecMin", "Disponible en R-68 · Aplitop MDT")),
-            ("base.mdb", ("Disponible en 005 · Sondeos",)),  # su orden aún no ha llegado
+            ("modelo.blk", ("Disponible en R-64 · RecMin",)),
             ("parcelas.shp", ("los shapefiles no se importan", "GeoPackage en QGIS")),
             ("notas.docx", ("la extensión «.docx»",
                             "Importa .tif, .tiff, .asc, .xyz, .csv, .txt, .gpkg")),

@@ -50,8 +50,10 @@ Los tipos, con sus parámetros, sus entradas (``in/``) y sus resultados (``out/`
   ``ContentDigest`` de la fuente (el de ``core_content_hash``) y la huella de su fichero;
 - ``dh_import_recmin`` (``interop.dh_jobs.run_import_recmin``): ``declaration``, ``settings``
   (el decimal, si se da), ``accept_schema``, ``crs``, ``vertical``, ``project_holes``,
-  ``catalogs`` y ``size``; ``source_main`` → ``source.npz``, ``report.json`` y lo que extrae el
-  motor en ``mdb/`` (el crudo). Una versión de esquema que no es 11 ni 12 sin
+  ``catalogs`` y ``size``; ``source_main`` → ``source.npz``, ``report.json`` (con los
+  recuentos por tabla de RecMin y, de cada sondeo que ya está, sus registros por tabla,
+  ``hole_rows``) y lo que extrae el motor en ``mdb/`` (el crudo). Una versión de esquema que
+  no es 11 ni 12 sin
   ``accept_schema``: termina sin resultados con ``needs_confirmation`` en el resumen
   (RF-005-15), y se vuelve a lanzar con la confirmación;
 - ``dh_import_apply``: ``name``, ``crs``, ``keep_holes`` (los sondeos que conservan los

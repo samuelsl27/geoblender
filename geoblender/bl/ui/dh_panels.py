@@ -8,7 +8,8 @@ Con un proyecto abierto, en la región lateral N de la Vista 3D, pestaña «Sond
   sondeos espera la decisión de la persona (``WindowManager.geoblender_dh_import``): los
   códigos nuevos y si se dan de alta (RF-005-10), cada sondeo que el proyecto ya tiene y si se
   conservan sus registros (RF-005-11), la sustitución que pide motivo y el motivo, y (T25)
-  «Aplicar» y «Descartar» (la orden de la importación con ``stage`` y ``pending``);
+  «Aplicar» y «Descartar» (la orden de la importación con ``stage`` y ``pending``); (T26) de
+  una base de RecMin de esquema desconocido, el aviso y «Leer igualmente» (RF-005-15);
 - ``GEOBLENDER_PT_dh_validation`` («Validación»): la lista de incidencias de la última
   validación (``GEOBLENDER_UL_dh_issues``), que se filtra por nivel y por código (RF-005-16), y
   las órdenes de validar, exportar el informe (RF-005-19) y calcular las trazas (RF-005-20);
@@ -41,7 +42,7 @@ LIST = "GEOBLENDER_UL_dh_issues"
 LIST_ROWS = 6
 IMPORT_DRILLHOLES = "geoblender.dh_import_drillholes"
 """La orden de «Aplicar» y «Descartar» de la importación pendiente (con ``stage`` y
-``pending``: plan 005 §5.3.1)."""
+``pending``: plan 005 §5.3.1) si no dice otra (``command``: la de una base de RecMin, T26)."""
 _ICONS = {"ERROR": "ERROR", "WARNING": "INFO"}
 
 
@@ -88,6 +89,10 @@ class GEOBLENDER_PT_dh_pending(_DrillholesTab, bpy.types.Panel):
             layout.label(text=tr("No drillhole import is waiting for a decision"),
                          icon="INFO", translate=False)
             return
+        if pending.confirm:  # una base de RecMin de esquema desconocido (RF-005-15)
+            column = layout.column(align=True)
+            for line in pending.confirm.splitlines():
+                column.label(text=line, icon="ERROR", translate=False)
         if pending.new_codes:
             layout.label(text=tr("New codes: {codes}", codes=pending.new_codes),
                          icon="ERROR", translate=False)
@@ -105,9 +110,11 @@ class GEOBLENDER_PT_dh_pending(_DrillholesTab, bpy.types.Panel):
                 column.label(text=line, icon="QUESTION", translate=False)
             layout.prop(pending, "reason", text=tr("Reason"), translate=False)
         row = layout.row(align=True)
-        for stage, text, icon in (("APPLY", tr("Apply"), "CHECKMARK"),
+        apply = tr("Read it anyway") if pending.confirm else tr("Apply")
+        for stage, text, icon in (("APPLY", apply, "CHECKMARK"),
                                   ("DISCARD", tr("Discard"), "CANCEL")):
-            button = row.operator(IMPORT_DRILLHOLES, text=text, icon=icon, translate=False)
+            button = row.operator(pending.command or IMPORT_DRILLHOLES, text=text, icon=icon,
+                                  translate=False)
             button.stage = stage
             button.pending = pending.operation_uid
 

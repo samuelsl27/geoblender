@@ -650,6 +650,12 @@ class ImportRecminTest(_JobCase):
         saved = json.loads(self.output(ctx, folder, dh_jobs.OUT_REPORT.role).read_text("utf-8"))
         self.assertEqual(saved["counts"], {table: counts.as_dict()
                                            for table, counts in report.per_table.items()})
+        # Los registros de cada sondeo que ya está, por tabla de RecMin (spec 005, T26: los
+        # sustituidos o conservados de cada tabla, RF-005-12), contados en el guion.
+        self.assertEqual(saved["hole_rows"], {
+            "sondeos": {"R-01": 1}, "angulos": {"R-01": 3}, "litologia": {"R-01": 4},
+            "muestras": {"R-01": 11}, "intersecciones": {"R-01": 1}, "cortes": {"R-01": 1},
+            "alteracion": {"R-01": 2}, "duplicados": {"R-01": 3}})
         self.assertEqual((summary["schema_version"], summary["existing_holes"]), (12, ["R-01"]))
         self.assertEqual(summary["register_codes"], interop_base.registrations(dset))
         declarations = provenance.source_declarations(provenance.RECMIN_MDB, decl)
