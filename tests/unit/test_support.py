@@ -519,6 +519,36 @@ class TimingSupportTest(unittest.TestCase):
             with self.subTest(intentos=attempts, maximo=most), self.assertRaises(ValueError):
                 timing.least_of(lambda: 0.0, budget, attempts=attempts, max_attempts=most)
 
+    def test_best_of_measures_with_the_thread_priority_raised(self) -> None:
+        """RNF-001-01, RNF-007-01 (spec 005, T45): ``best_of`` toma cada medida con la
+        prioridad del hilo subida (``raised_priority``; en Windows, la «más alta» de su
+        proceso, ``PRIORITY_HIGHEST``): con la máquina llena, el hilo que mide no espera su
+        turno tras los demás procesos, que es lo que la carga alarga, y lo medido es el
+        código. Al salir vuelve la prioridad de antes, también si la acción falla; una que
+        ya era más alta no se toca, y fuera de Windows no cambia nada. El presupuesto no
+        cambia."""
+        before = timing.thread_priority()
+        seen: list[int | None] = []
+        found = timing.best_of(lambda: seen.append(timing.thread_priority()), 1.0)
+        self.assertLessEqual(found, 1.0)
+        self.assertEqual(timing.thread_priority(), before)
+        if os.name != "nt":
+            self.assertIsNone(before)
+            self.assertEqual(seen, [None] * timing.ATTEMPTS)
+            return
+        self.assertEqual(before, 0, "las pruebas corren con la prioridad normal")
+        self.assertEqual(seen, [timing.PRIORITY_HIGHEST] * timing.ATTEMPTS)
+        with self.assertRaises(ZeroDivisionError):
+            timing.best_of(lambda: 1 / 0, 1.0)
+        self.assertEqual(timing.thread_priority(), before)
+        with timing.raised_priority() as raised:
+            self.assertTrue(raised)
+            with timing.raised_priority() as again:
+                self.assertFalse(again, "ya era la más alta: no se toca")
+                self.assertEqual(timing.thread_priority(), timing.PRIORITY_HIGHEST)
+            self.assertEqual(timing.thread_priority(), timing.PRIORITY_HIGHEST)
+        self.assertEqual(timing.thread_priority(), before)
+
 
 class DriveStepsTest(unittest.TestCase):
     """``timing.drive_steps`` y ``timing.SyncTimer``: dónde se va el paso más largo de una

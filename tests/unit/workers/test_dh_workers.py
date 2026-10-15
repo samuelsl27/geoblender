@@ -93,6 +93,7 @@ runner_mod = import_geoblender("jobs.runner")
 worker_api = import_geoblender("jobs.worker_api")
 job_messages = import_geoblender("jobs.messages")
 records = import_geoblender("jobs.records")
+timeutil = import_geoblender("core.timeutil")
 
 CRS, VERTICAL = dh_sets.H25830, dh_sets.V5782
 CRS_JSON, VERTICAL_JSON = {"epsg": 25830}, {"epsg": 5782}
@@ -109,10 +110,17 @@ THRESHOLDS = {"depth_tolerance_m": 0.01, "gap_tolerance_m": 0.01, "min_interval_
               "dogleg_max_deg_30m": 3.0, "collar_dem_tolerance_m": 2.0}
 TRACE_STEP_M = 2.0
 CANCEL_BUDGET_S = 2.0  # RF-004-09: cancelar para en ≤ 2 s
+# Veces que, como mucho, se lanza la lectura grande que se cancela si la carga de la máquina no
+# deja medirlo (spec 005, T45; como tests/unit/workers/test_core_content_hash.py): el plazo no
+# cambia.
+CANCEL_ATTEMPTS = 5
 WAIT_S = 60.0  # plazo de seguridad: un trabajo colgado no cuelga la prueba
 EXPECTED_WORKERS = ("dh_import_tabular", "dh_import_recmin", "dh_import_apply",
                     "dh_build_base", "dh_validate", "dh_desurvey", "dh_view_arrays")
 BIG_COPIES = 1500  # análisis en columnas de csv_basico repetidos: unos 2 MB, segundos de hash
+# Las lecturas en proceso aparte (SubprocessTest): clave → (papel, fichero de fuentes/).
+SUBPROCESS_READS: dict[str, tuple[str, str]] = {
+    "bocas": ("collar", FILES["collar"]), "grande": ("assay_wide", "analisis_grande.csv")}
 
 _STATE: dict[str, Any] = {}
 
@@ -376,16 +384,7 @@ def _launch_subprocesses() -> None:
                                   blender_python=Path(sys.executable), max_subprocess=2,
                                   forbidden_roots=[project])
     unittest.addModuleCleanup(runner.shutdown)
-    sources = _STATE["sources"]
-    handles = {}
-    for key, role, file in (("bocas", "collar", FILES["collar"]),
-                            ("grande", "assay_wide", "analisis_grande.csv")):
-        request = protocol.new_request(
-            dh_jobs.IMPORT_TABULAR, label=f"Lectura de {file}", owner="dh",
-            params=_tabular_params(role), operation_uid=OPERATION_UID,
-            grace_s=dh_jobs.CANCEL_GRACE_S)
-        handles[key] = runner.submit(runner.prepare(request),
-                                     paths={"source_main": sources / file})
+    handles = {key: _submit_read(runner, key) for key in SUBPROCESS_READS}
     watched: dict[str, Any] = {"stop": threading.Event()}
     watcher = threading.Thread(target=_watch, args=(runner, handles, watched), daemon=True)
     watcher.start()
@@ -397,6 +396,18 @@ def _launch_subprocesses() -> None:
     unittest.addModuleCleanup(stop)  # antes de cerrar el lanzador (las limpiezas, al revés)
     _STATE["subprocess"] = {"runner": runner, "handles": handles, "base": base,
                             "watcher": watcher, "watched": watched}
+
+
+def _submit_read(runner: Any, key: str) -> Any:
+    """Lanza con ``runner`` la lectura ``key`` de :data:`SUBPROCESS_READS` (un
+    ``dh_import_tabular`` de su papel y su fichero de ``fuentes/``) y da su ``JobHandle``."""
+    role, file = SUBPROCESS_READS[key]
+    request = protocol.new_request(
+        dh_jobs.IMPORT_TABULAR, label=f"Lectura de {file}", owner="dh",
+        params=_tabular_params(role), operation_uid=OPERATION_UID,
+        grace_s=dh_jobs.CANCEL_GRACE_S)
+    return runner.submit(runner.prepare(request),
+                         paths={"source_main": _STATE["sources"] / file})
 
 
 def _watch(runner: Any, handles: Mapping[str, Any], watched: dict[str, Any]) -> None:
@@ -1281,7 +1292,13 @@ class WorkerInfoTest(unittest.TestCase):
 class SubprocessTest(unittest.TestCase):
     """Las dos lecturas en proceso aparte, lanzadas al empezar el módulo
     (:func:`_launch_subprocesses`) y seguidas desde otro hilo (:func:`_watch`): las bocas
-    terminan; los análisis grandes se cancelan a mitad."""
+    terminan; los análisis grandes se cancelan a mitad.
+
+    Con la máquina cargada (las partes de ``tools/check.py`` y otros programas a la vez), la
+    lectura grande puede no quedar parada en el plazo aunque el código esté bien: entonces se
+    lanza otra vez, sola y seguida desde aquí, hasta ``CANCEL_ATTEMPTS`` veces, y la prueba
+    mira la última (spec 005, T45; como ``tests.support.timing.least_of``). El plazo no
+    cambia: si no cabe en ninguna, la prueba falla igual."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1290,8 +1307,46 @@ class SubprocessTest(unittest.TestCase):
         watched = launched["watched"]
         if "error" in watched:
             raise watched["error"]
-        cls.handles, cls.events, cls.asked = (launched["handles"], watched["events"],
-                                              watched["asked"])
+        cls.handles = dict(launched["handles"])
+        cls.events, cls.asked = dict(watched["events"]), dict(watched["asked"])
+        cls.cancel_attempts = 1
+        while cls.cancel_attempts < CANCEL_ATTEMPTS and cls.stopped_after() > CANCEL_BUDGET_S:
+            cls.cancel_again(launched["runner"])
+            cls.cancel_attempts += 1
+
+    @classmethod
+    def cancel_again(cls, runner: Any) -> None:
+        """Lanza otra vez la lectura grande y la sigue en este hilo (:func:`_watch`) hasta
+        que acaba, cancelada como la primera."""
+        watched: dict[str, Any] = {"stop": threading.Event()}
+        handle = _submit_read(runner, "grande")
+        _watch(runner, {"grande": handle}, watched)
+        if "error" in watched:
+            raise watched["error"]
+        cls.handles["grande"] = handle
+        cls.events.update(watched["events"])
+        cls.asked.pop("grande", None)
+        cls.asked.update(watched["asked"])
+
+    @classmethod
+    def stopped_after(cls) -> float:
+        """Lo que tardó la lectura grande en quedar parada desde que se pidió cancelarla:
+        hasta su evento ``cancelled`` si el worker dijo que paraba en un punto de
+        cancelación; si no, hasta que acabó su proceso (``ended_at`` de su ``state.json``):
+        el lanzador lo terminó al vencer el plazo de gracia (``CANCEL_GRACE_S``, 1 s), en un
+        tramo sin puntos de cancelación. ``inf`` si no se llegó a pedir o no ha acabado."""
+        handle = cls.handles["grande"]
+        asked = cls.asked.get("grande")
+        if asked is None:
+            return math.inf
+        stopped = [event.ts for event in cls.events.get(handle.job_uid, ())
+                   if event.type == "cancelled"]
+        if not stopped:
+            ended = records.read_record(handle.job_dir).ended_at
+            if ended is None:
+                return math.inf
+            stopped = [timeutil.parse_utc(ended).timestamp()]
+        return stopped[0] - asked
 
     def test_import_runs_in_a_subprocess(self) -> None:
         """RF-005-05, RF-004-03, ARQ-11 (plan §5.6.7): ``dh_import_tabular`` va en proceso
@@ -1320,15 +1375,17 @@ class SubprocessTest(unittest.TestCase):
         _same_tables(self, tables, {"collars": rows.collars, "surveys": rows.surveys})
 
     def test_import_cancels_within_two_seconds(self) -> None:
-        """RF-005-04 (RF-004-09): cancelar una lectura grande en curso (ya calculando el hash
-        de la fuente) la para en ≤ 2 s, sin resultado y con ``out/`` vacía."""
+        """RF-005-04 (RF-004-09, RF-004-10): cancelar una lectura grande en curso (ya
+        calculando el hash de la fuente) la para en ≤ 2 s (el worker en su siguiente punto de
+        cancelación o, en un tramo sin ellos, el lanzador al vencer el plazo de gracia), sin
+        resultado y con ``out/`` vacía; con la máquina cargada, la última de hasta
+        ``CANCEL_ATTEMPTS`` lecturas (spec 005, T45)."""
         handle = self.handles["grande"]
         self.assertEqual(handle.state, "cancelled", handle.message)
-        events = self.events[handle.job_uid]
+        events = self.events.get(handle.job_uid, [])
         self.assertNotIn("result", [event.type for event in events])
-        cancelled = [event for event in events if event.type == "cancelled"]
-        took = (cancelled[0].ts if cancelled else time.time()) - self.asked["grande"]
-        self.assertLessEqual(took, CANCEL_BUDGET_S)
+        self.assertLessEqual(self.stopped_after(), CANCEL_BUDGET_S,
+                             f"lecturas lanzadas: {self.cancel_attempts}")
         self.assertEqual(list(handle.job_dir.outputs_dir.iterdir()), [])
 
 

@@ -130,7 +130,9 @@ class LoadTest(unittest.TestCase):
         """T02: un catálogo válido del tamaño del real (400 comandos en 13 menús) se carga
         en ≤ 50 ms (la mejor de tres cargas sin caché, con el Python de Blender; con la
         máquina cargada por las demás partes de ``tools/check.py``, de más, hasta que una
-        quepa: ``tests.support.timing.best_of``, spec 006, T38)."""
+        quepa: ``tests.support.timing.best_of``, spec 006, T38; cada una con la prioridad
+        del hilo subida, para que lo medido sea la carga y no la espera tras los demás
+        procesos: spec 005, T45)."""
         loaded = []
         with temp_tree(big_catalog(400)) as root:
             best = timing.best_of(lambda: loaded.append(loader.load_catalog(Path(root))),
