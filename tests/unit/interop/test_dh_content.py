@@ -668,7 +668,8 @@ def _variant(folder: Path, name: str, notes: str, *, single: bool = False) -> Pa
 
 
 class EngineTest(unittest.TestCase):
-    """``io.recmin_mdb@1`` con las bases sintéticas que crea ``build_mdb.ps1`` y el extractor
+    """``io.recmin_mdb@1`` con las bases sintéticas que crea ``build_mdb.ps1``
+    (``recmin.shared_bases``: una vez por guion y motor, y aquí su copia) y el extractor
     de ``adapters.registry`` (Jet 4 de Windows; ACE, si está)."""
 
     @classmethod
@@ -691,7 +692,7 @@ class EngineTest(unittest.TestCase):
             "single": (_variant(scripts, "single.sql", "nota inicial", single=True), (other,)),
         }
         with concurrent.futures.ThreadPoolExecutor(len(plan)) as pool:
-            built = list(pool.map(lambda item: recmin.build_bases(cls.source, item[1],
+            built = list(pool.map(lambda item: recmin.shared_bases(cls.source, item[1],
                                                                   sql=item[0]),
                                   plan.values()))
         cls.paths = {(Path(sql).stem, engine): found.path

@@ -21,7 +21,10 @@ ni acortar ninguna prueba: cada proceso descubre todas y ejecuta solo las de su 
   sustituyen a las guardadas.
 - RNF-001-01 (spec 006, T59): los módulos que piden ejecutarse los últimos de su proceso
   (``RUN_LAST = True``) van al final, en su orden; y, con una cola en una carpeta que
-  comparten (``Queue``), las partes se reparten las unidades según acaban.
+  comparten (``Queue``), las partes se reparten las unidades según acaban. Con la cola y el
+  número de partes (spec 005, T44), la unidad de uno de esos módulos va donde lo que queda
+  detrás reparte entre las demás partes lo que tarda ella, y la parte que la toma ya no toma
+  más (``QueuedSuite`` con ``final``).
 """
 
 import ast
@@ -497,6 +500,29 @@ class QueueTest(unittest.TestCase):
                          [[3, 4], [0], [1], [5]])
         self.assertEqual(parts.queue_order([]), [])
 
+    def test_queue_order_with_the_parts(self) -> None:
+        """RNF-001-01 (spec 005, T44): sabiendo cuántas partes hay, una unidad que pide ir la
+        última no espera al final de la cola (la parte que la tomaba acababa después que
+        todas: en «blender», ≈ 1 s): va donde lo que queda detrás de ella da a cada una de las
+        demás partes, a lo sumo, lo que tarda ella, y nunca entre las primeras (las que toma
+        cada parte al empezar); las demás, de más a menos tiempo."""
+        weights = [4.0, 3.0, 2.0, 1.0, 1.0, 1.0, 0.5, 2.0]
+        last = [False, False, False, False, False, False, False, True]
+        # Con 2 partes, detrás de ella ≤ 1 × 2 s: 1 y 0,5 s caben; con otro de 1 s, no.
+        self.assertEqual(parts.queue_order(weights, None, last, parts=2),
+                         [[0], [1], [2], [3], [4], [7], [5], [6]])
+        # Con 3, ≤ 2 × 2 s cabría todo desde la cuarta, pero no va entre las tres primeras.
+        self.assertEqual(parts.queue_order(weights, None, last, parts=3),
+                         [[0], [1], [2], [7], [3], [4], [5], [6]])
+        # Con 7 (≤ 12 s detrás), justo tras las siete primeras: al final; con 1, al final.
+        for count in (7, 1):
+            self.assertEqual(parts.queue_order(weights, None, last, parts=count),
+                             [[0], [1], [2], [3], [4], [5], [6], [7]])
+        self.assertEqual(parts.queue_order([1.0, 9.0], None, [False, True], parts=2),
+                         [[0], [1]])
+        self.assertEqual(parts.queue_order(weights, None, None, parts=3),
+                         parts.queue_order(weights))
+
     def test_each_unit_taken_once(self) -> None:
         """RNF-001-01: la parte i empieza por la unidad i (las que más tardan, una a cada
         parte) y después toma, una a una, las demás que ninguna ha tomado (su fichero
@@ -546,6 +572,26 @@ class QueueTest(unittest.TestCase):
                          f"{name}.tearDownClass", f"{name}.tearDownModule"]
         self.assertEqual(log, expected)
         self.assertEqual(record, {f"pruebas.test_q{i}": 0.5 + i + 1.0 + 0.25 for i in range(3)})
+
+    def test_queued_suite_stops_after_a_final_unit(self) -> None:
+        """RNF-001-01 (spec 005, T44): una unidad de ``final`` (la de un módulo que pide ir el
+        último) es lo último que ejecuta la parte que la toma: después no toma ninguna más, y
+        las que quedan en la cola las toman las demás."""
+        log: list[str] = []
+        clock = _Clock()
+        modules = [_fixture_module(self, f"pruebas.test_f{i}", log, clock, (0.0, 1.0, 0.0))
+                   for i in range(4)]
+        with tempfile.TemporaryDirectory() as tmp:
+            first = parts.Queue(Path(tmp), 4, 1, 2)
+            second = parts.Queue(Path(tmp), 4, 2, 2)
+            suites = [parts.QueuedSuite(queue, lambda n: [modules[n]], lambda: None,
+                                        final={2}, clock=clock) for queue in (first, second)]
+            results = [unittest.TestResult() for _ in suites]
+            for suite, result in zip(suites, results):
+                suite.run(result)
+        self.assertTrue(all(result.wasSuccessful() for result in results))
+        self.assertEqual((first.taken, second.taken), ([0, 2], [1, 3]))
+        self.assertEqual([r.testsRun for r in results], [2, 2])
 
 
 class TimesTest(unittest.TestCase):

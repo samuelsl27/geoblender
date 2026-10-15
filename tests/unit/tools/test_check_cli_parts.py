@@ -31,6 +31,7 @@ Las ayudas (el ejecutor simulado y ``run_check``), en ``tests/support/check_cli.
 
 import _thread
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -216,6 +217,52 @@ class PartsTest(unittest.TestCase):
         self.assertIn("No queda espacio en el disco (simulado)", result.out)
         for call in result.runner.calls_of("blender"):
             self.assertEqual(call.cmd, blender_part_cmd(*(call.part or (1, 1))))
+
+    def test_bytecode_folder_for_the_python_steps(self) -> None:
+        """RNF-001-01 (spec 005, T44): el código compilado de las órdenes de Python va en la
+        carpeta de la raíz fuera del repositorio (``gbtools.pyc_cache.default_folder``), que
+        se refresca una vez, en otro hilo, con la raíz y la carpeta ``site`` del motor de
+        cálculo de pruebas (``pyc_cache.prepare``); cada orden de Python («unitarias»,
+        «referencia», «motor», «licencias») la recibe en ``PYTHONPYCACHEPREFIX``, y las de
+        Blender no. Sin carpeta, las órdenes de siempre, sin la variable; si el refresco
+        falla, un aviso y el resultado no cambia."""
+        folder = Path(tempfile.mkdtemp(prefix="gb-pyc-check-"))
+        self.addCleanup(shutil.rmtree, folder, True)
+        prepared: list[tuple[Path, Path, list[Path], str]] = []
+
+        def prepare(target: Path, root: Path, sites: Sequence[Path]) -> None:
+            prepared.append((target, root, list(sites), threading.current_thread().name))
+
+        with many_cpus():
+            result = run_check(bytecode=lambda root: folder, refresh_bytecode=prepare)
+        self.assertEqual(result.code, 0, result.out)
+        ((target, root, sites, thread),) = prepared
+        self.assertEqual((target, root, sites), (folder, ROOT, [FAKE_SITE]))
+        self.assertNotEqual(thread, threading.main_thread().name)
+        python_steps = ("unitarias", "referencia", RUNTIME, "licencias")
+        for step in python_steps:
+            self.assertTrue(result.runner.calls_of(step), step)
+            for call in result.runner.calls_of(step):
+                with self.subTest(paso=step, parte=call.part):
+                    self.assertEqual(call.env[check.ENV_BYTECODE], str(folder))
+        for call in result.runner.calls_of("blender"):
+            self.assertNotEqual(call.env.get(check.ENV_BYTECODE), str(folder))
+
+        with many_cpus():
+            result = run_check()
+        self.assertEqual(result.code, 0, result.out)
+        for step in python_steps:
+            for call in result.runner.calls_of(step):
+                self.assertNotIn(check.ENV_BYTECODE, call.env)
+
+        def broken(target: Path, root: Path, sites: Sequence[Path]) -> None:
+            raise OSError(28, "No queda espacio en el disco (simulado)")
+
+        with many_cpus():
+            result = run_check(bytecode=lambda root: folder, refresh_bytecode=broken)
+        self.assertEqual(result.code, 0, result.out)
+        self.assertIn("AVISO: no se pudo preparar el código compilado de las pruebas", result.out)
+        self.assertIn("No queda espacio en el disco (simulado)", result.out)
 
     def test_few_modules(self) -> None:
         """RNF-007-01: con un solo módulo de prueba en disco, la orden de siempre, sin

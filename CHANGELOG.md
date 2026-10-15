@@ -579,7 +579,15 @@ comparación con el MDT real de Silvestre (CE-006-05), que se ejecuta a petició
   cada proceso de pruebas unitarias ya no analiza todos los ficheros de prueba para saber
   cuáles van juntos (0,6 s menos cada uno). Tres pruebas que dependían del orden (lo que
   dejaban registrado otras en el mismo proceso, o una cancelación que la carga no dejaba
-  medir) ya no dependen de él.
+  medir) ya no dependen de él. Con las pruebas de la importación de los sondeos (spec 005)
+  llegó a unos 42 s; ahora tarda unos 37,5 s con las mismas pruebas y alguna más: las órdenes
+  de Python leen el código compilado de una carpeta de la temporal del sistema
+  (`%TEMP%\geoblender-pyc\`, al día al empezar la comprobación; lo del repositorio,
+  validado por el hash de cada fuente) en vez de compilarlo cada una; las bases de RecMin
+  sintéticas se crean una vez y se copian a cada prueba que las necesita
+  (`%TEMP%\geoblender-datos\`); las pruebas unitarias van en 18 procesos (antes 16); y la
+  prueba de Blender que va la última de su proceso ya no espera al final de la cola, que
+  dejaba a su Blender casi 1 s detrás de los demás.
 - Solo un `tools/check.py` a la vez en el equipo (spec 006): si hay otro en marcha (de la
   misma carpeta, de un *worktree* o de otra sesión), el nuevo dice a cuál espera (su pid y su
   carpeta) y empieza cuando termina; su tiempo se cuenta desde entonces. Antes los dos se

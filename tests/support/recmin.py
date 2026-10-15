@@ -14,6 +14,16 @@ una base Jet 4 (``Microsoft.Jet.OLEDB.4.0``, que solo existe en el ``powershell.
 - :func:`build_bases` crea las bases de los dos guiones con los motores pedidos, los dos a
   la vez (un ``powershell.exe`` por motor, sin ventana), y devuelve lo que el motor contó en
   cada una (tablas, filas y tipos OLE DB de las columnas).
+- :func:`shared_bases` da lo mismo, con las bases copiadas de un almacén de la carpeta
+  temporal del sistema (:func:`default_store`) donde :func:`build_bases` las crea una sola
+  vez por guion y motor (spec 005, T44; RNF-001-01): crear una base lanza un
+  ``powershell.exe`` (≈ 2 s de procesador) y varias pruebas, en cada comprobación y en dos
+  pasos («unitarias» y «motor»), necesitan las mismas. Cada entrada (:func:`store_key`)
+  depende del motor, del nombre y del texto de cada guion y de ``build_mdb.ps1``; guarda la
+  huella de cada base, que se comprueba antes de copiarla (una que ya no es la que se guardó
+  se crea otra vez), y se borra si nadie la usa en :data:`STORE_KEEP_DAYS` días. Un motor
+  que falta no se guarda. Las pruebas del propio guion (``test_recmin_fixture``) siguen
+  creándolas con :func:`build_bases`.
 - El recurso ``ace`` (:data:`ACE`, ``tests.support.resources``) está disponible si el
   registro de 64 bits tiene un proveedor OLE DB ACE (16.0 o 12.0); sin él, las pruebas de la
   base ACE se omiten con ``[ENTORNO] ace``. Jet 4.0 de 32 bits viene con Windows.
@@ -26,10 +36,16 @@ una base Jet 4 (``Microsoft.Jet.OLEDB.4.0``, que solo existe en el ``powershell.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
+import time
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -375,3 +391,193 @@ def build_bases(out_dir: Path, engines: tuple[str, ...] = tuple(ENGINES), *,
     if failures:
         raise RuntimeError("build_mdb.ps1 no creó las bases: " + " | ".join(failures))
     return Build(bases, frozenset(missing))
+
+
+# ---------------------------------------------------------------------------------------
+# Bases compartidas entre pruebas (spec 005, T44)
+# ---------------------------------------------------------------------------------------
+
+STORE_FOLDER = "geoblender-datos"  # el almacén, en la carpeta temporal del sistema
+STORE_SCHEMA = "geoblender.recmin_bases/1"
+STORE_ENTRY_PREFIX = "recmin-"  # una entrada por guiones y motor: recmin-<clave>
+STORE_TEMP_PREFIX = ".a-medias-"  # lo que se está creando (o quedó a medias)
+STORE_INDEX = "bases.json"  # en cada entrada: sus bases, con su huella y lo que contó el motor
+STORE_KEEP_DAYS = 30  # una entrada que nadie usa en estos días se borra
+_TEMP_KEEP_S = 86400.0  # un resto a medias de más de un día se borra
+# La carpeta temporal del sistema al importar este módulo: la de una prueba que cambia la de
+# su proceso (``tempfile.tempdir``, como test_dh_workers) no se lleva el almacén.
+_SYSTEM_TEMP = Path(tempfile.gettempdir())
+
+
+def default_store() -> Path:
+    """El almacén de :func:`shared_bases`: en la carpeta temporal del sistema, fuera del
+    repositorio (RF-001-09), compartido por todas las raíces (las bases solo dependen de los
+    guiones), aunque una prueba cambie la carpeta temporal de su proceso."""
+    return _SYSTEM_TEMP / STORE_FOLDER
+
+
+def _scripts(sql: Path | None) -> list[Path]:
+    """Los guiones que crea ``build_mdb.ps1``: el dado o, sin él, los ``*.sql`` de su
+    carpeta, por su nombre."""
+    return [Path(sql)] if sql is not None else sorted(RECMIN_DIR.glob("*.sql"))
+
+
+def store_key(engine: str, sql: Path | None = None) -> str:
+    """La clave de la entrada de las bases de ``engine`` con el guion ``sql`` (o los de la
+    carpeta): el motor, el nombre y el texto de cada guion y ``build_mdb.ps1``."""
+    digest = hashlib.sha256()
+    for part in (STORE_SCHEMA.encode(), engine.encode(), BUILD_SCRIPT.read_bytes()):
+        digest.update(part + b"\0")
+    for script in _scripts(sql):
+        digest.update(script.name.encode("utf-8") + b"\0" + script.read_bytes() + b"\0")
+    return digest.hexdigest()[:16]
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _record(base: BuiltBase, path: Path) -> dict:
+    return {
+        "sql": base.sql,
+        "file": path.name,
+        "size": path.stat().st_size,
+        "sha256": _sha256(path),
+        "provider": base.provider,
+        "tables": [
+            {"name": table.name, "rows": table.rows,
+             "columns": [[c.name, c.type, c.size] for c in table.columns]}
+            for table in base.tables.values()
+        ],
+    }
+
+
+def _built(record: dict, engine: str, path: Path) -> BuiltBase:
+    tables = {
+        t["name"]: BuiltTable(t["name"], int(t["rows"]),
+                              tuple(BuiltColumn(n, int(k), s) for n, k, s in t["columns"]))
+        for t in record["tables"]
+    }
+    return BuiltBase(engine, record["sql"], path, record["provider"], tables)
+
+
+def _discard(folder: Path, store: Path) -> None:
+    """Quita una carpeta del almacén: primero la aparta (nadie la toma ya por buena) y
+    después la borra."""
+    aside = store / f"{STORE_TEMP_PREFIX}{uuid.uuid4().hex}"
+    try:
+        os.rename(folder, aside)
+    except OSError:
+        return
+    shutil.rmtree(aside, ignore_errors=True)
+
+
+def _entry(store: Path, key: str) -> list[dict] | None:
+    """Las bases de la entrada ``key`` si existe y cada una es la que se guardó (tamaño y
+    sha256); si no vale, se quita y ``None``. Al usarla, cuenta como usada hoy."""
+    folder = store / f"{STORE_ENTRY_PREFIX}{key}"
+    index = folder / STORE_INDEX
+    try:
+        data = json.loads(index.read_text(encoding="utf-8"))
+        records = data["bases"] if data.get("schema") == STORE_SCHEMA else None
+        if not records or not all(
+            (folder / r["file"]).stat().st_size == r["size"]
+            and _sha256(folder / r["file"]) == r["sha256"]
+            for r in records
+        ):
+            records = None
+    except (OSError, ValueError, KeyError, TypeError):
+        records = None
+    if records is None:
+        if folder.exists():
+            _discard(folder, store)
+        return None
+    os.utime(index)
+    return records
+
+
+def _keep(store: Path, key: str, engine: str, bases: list[BuiltBase]) -> list[dict] | None:
+    """Guarda como entrada ``key`` las bases recién creadas de ``engine`` (se mueven a una
+    carpeta a medias que, completa, toma su nombre de golpe). Si otra prueba la guardó antes,
+    se usa la suya."""
+    folder = store / f"{STORE_TEMP_PREFIX}{engine}-{uuid.uuid4().hex}"
+    folder.mkdir()
+    records = []
+    for base in bases:
+        target = folder / base.path.name
+        os.replace(base.path, target)
+        records.append(_record(base, target))
+    index = {"schema": STORE_SCHEMA, "engine": engine, "bases": records}
+    (folder / STORE_INDEX).write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    try:
+        os.rename(folder, store / f"{STORE_ENTRY_PREFIX}{key}")
+    except OSError:  # ya existe: la guardó otra prueba a la vez
+        shutil.rmtree(folder, ignore_errors=True)
+        return _entry(store, key)
+    return records
+
+
+def _prune(store: Path) -> None:
+    """Borra las entradas que nadie usa desde hace :data:`STORE_KEEP_DAYS` días y los restos
+    a medias de más de un día."""
+    now = time.time()
+    for folder in store.iterdir():
+        try:
+            if folder.name.startswith(STORE_ENTRY_PREFIX):
+                index = folder / STORE_INDEX
+                used = (index if index.exists() else folder).stat().st_mtime
+                if now - used > STORE_KEEP_DAYS * 86400:
+                    _discard(folder, store)
+            elif folder.name.startswith(STORE_TEMP_PREFIX):
+                if now - folder.stat().st_mtime > _TEMP_KEEP_S:
+                    shutil.rmtree(folder, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def shared_bases(
+    out_dir: Path,
+    engines: tuple[str, ...] = tuple(ENGINES),
+    *,
+    sql: Path | None = None,
+    store: Path | None = None,
+    build: Callable[..., Build] | None = None,
+) -> Build:
+    """Lo mismo que :func:`build_bases` en ``out_dir`` (que no debe tener ya esas bases),
+    con cada base copiada del almacén ``store`` (:func:`default_store`); las que no están,
+    o ya no son las que se guardaron, las crea ``build`` (:func:`build_bases`), todos esos
+    motores a la vez, y se guardan. Un motor que falta (sin ACE) no se guarda."""
+    store = default_store() if store is None else Path(store)
+    build = build_bases if build is None else build
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    store.mkdir(parents=True, exist_ok=True)
+    keys = {engine: store_key(engine, sql) for engine in engines}
+    entries = {engine: _entry(store, keys[engine]) for engine in engines}
+    absent = tuple(engine for engine in engines if entries[engine] is None)
+    missing: set[str] = set()
+    if absent:
+        with tempfile.TemporaryDirectory(prefix=STORE_TEMP_PREFIX, dir=store) as work:
+            made = build(Path(work), absent, sql=sql)
+            for engine in absent:
+                if engine in made.missing:
+                    missing.add(engine)
+                    continue
+                bases = [base for (_sql, made_engine), base in sorted(made.bases.items())
+                         if made_engine == engine]
+                entries[engine] = _keep(store, keys[engine], engine, bases)
+    found: dict[tuple[str, str], BuiltBase] = {}
+    for engine in engines:
+        records = entries[engine]
+        if records is None:
+            continue
+        folder = store / f"{STORE_ENTRY_PREFIX}{keys[engine]}"
+        for record in records:
+            target = out_dir / record["file"]
+            if target.exists():
+                raise FileExistsError(f"{target}: ya existe; no se sustituye")
+            shutil.copyfile(folder / record["file"], target)
+            base = _built(record, engine, target)
+            found[(base.sql, engine)] = base
+    _prune(store)
+    return Build(found, frozenset(missing))

@@ -11,7 +11,8 @@ sin Blender (spec 003, T40).
 - RNF-001-01, RNF-007-01 (spec 006, T48): ``--copia`` da la copia de la extensión que
   prepara ``tools/check.py`` para todas las partes.
 - RNF-001-01 (spec 006, T59): los módulos con ``RUN_LAST = True`` se ejecutan los últimos de
-  su proceso, y lo declara todo módulo de ``tests/blender`` que inicia la GPU.
+  su proceso, y lo declara todo módulo de ``tests/blender`` que inicia la GPU. Con la cola
+  (spec 005, T44), no esperan al final de ella: la parte que toma uno no toma nada más.
 
 Lo que hace dentro de Blender con la parte (la línea «PARTE i de n: …» y solo sus
 pruebas) lo prueba ``tests/arnes/test_harness_blender.py`` con el Blender real y, en
@@ -195,12 +196,14 @@ class RunLastTest(unittest.TestCase):
                                          ["test_t59_b", "test_t59_c", "test_t59_a"])
 
     def test_queue(self) -> None:
-        """RNF-001-01 (spec 006, T59): con ``--parte``, ``--tiempos`` y ``--cola DIR``, las
-        partes se reparten los módulos según acaban (``gbtools.parts.Queue``), de más a
-        menos tiempo y el de ``RUN_LAST`` el último aunque tarde más: una tras otra, la 1
-        ejecuta el que más tarda y los que quedan en la cola, y la 2 solo el segundo; cada
-        una escribe al terminar su línea «PARTE i de 2: r de 4 pruebas», y cuadran; con
-        ``--medidas``, la duración de los suyos."""
+        """RNF-001-01 (spec 006, T59; spec 005, T44): con ``--parte``, ``--tiempos`` y
+        ``--cola DIR``, las partes se reparten los módulos según acaban
+        (``gbtools.parts.Queue``), de más a menos tiempo, y el de ``RUN_LAST``, aunque tarde
+        más, donde lo que queda detrás no pasa de lo que tarda él por cada otra parte
+        (``parts.queue_order`` con las partes) y nunca entre los primeros: una tras otra, la
+        1 ejecuta el que más tarda y después el de ``RUN_LAST``, y ya no toma más; la 2, el
+        segundo y el que queda. Cada una escribe al terminar su línea «PARTE i de 2: r de 4
+        pruebas», y cuadran; con ``--medidas``, la duración de los suyos."""
         names = {"test_t59_a": True, "test_t59_b": False, "test_t59_c": False,
                  "test_t59_d": False}
         times = {"test_t59_a": 9.0, "test_t59_b": 1.0, "test_t59_c": 5.0, "test_t59_d": 3.0}
@@ -233,9 +236,10 @@ class RunLastTest(unittest.TestCase):
                     self.assertEqual(code, 0, errors.getvalue())
                     self.assertEqual(count, len(orders[-1]))
             measures = parts.read_measures(folder / "medidas-1.json")
-        # c (5 s) a la 1, d (3 s) a la 2; en la cola, b (1 s) y a (9 s, pero el último).
-        self.assertEqual(orders, [["test_t59_c", "test_t59_b", "test_t59_a"], ["test_t59_d"]])
-        self.assertEqual(lines, [(1, 2, 3, 4), (2, 2, 1, 4)])
+        # c (5 s) a la 1, d (3 s) a la 2; en la cola, a (9 s, el último de la parte que lo
+        # toma: con b detrás, 1 s ≤ 9 s) y b (1 s).
+        self.assertEqual(orders, [["test_t59_c", "test_t59_a"], ["test_t59_d", "test_t59_b"]])
+        self.assertEqual(lines, [(1, 2, 2, 4), (2, 2, 2, 4)])
         self.assertIsNone(parts.consistency(lines, 2))
         assert measures is not None
         self.assertEqual(set(measures.modules), set(orders[0]))

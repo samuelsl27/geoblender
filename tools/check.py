@@ -59,7 +59,14 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    parte 1, el de «manifiesto») y con la copia de la extensión que comparten todos
    (``--copia``: ``gbtools.ext_copy.prepare`` la hace en otro hilo, mientras corren los
    pasos anteriores, y la compila; si no se puede, un aviso y cada parte hace la suya;
-   :class:`SharedCopy`, spec 006, T48). Los módulos se reparten
+   :class:`SharedCopy`, spec 006, T48). Las órdenes de Python (las partes de «unitarias»,
+   «referencia» y «motor», «licencias»…) van con ``-B`` y reciben en ``PYTHONPYCACHEPREFIX``
+   la carpeta del código compilado de la raíz, fuera del repositorio
+   (``gbtools.pyc_cache``: la extensión, las pruebas y las herramientas, validadas por el
+   hash de su fuente, y la biblioteca de Python), que se refresca al empezar en otro hilo
+   (:class:`BytecodeRefresh`; spec 005, T44): leen lo compilado en vez de compilarlo cada
+   una; lo que falte o ya no valga lo compila Python en memoria, como antes, y si no se
+   puede refrescar, un aviso. Los módulos se reparten
    por su duración medida en la comprobación anterior (spec 004, T39; RNF-001-01): un
    almacén fuera del repositorio, en la carpeta temporal del sistema y uno por raíz
    (:func:`default_times_store`), guarda la de cada módulo de cada suite con partes
@@ -154,7 +161,7 @@ from dataclasses import dataclass, field  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from gbtools import blender, check_lock, discovery, ext_copy, layout, manifest  # noqa: E402
-from gbtools import parts, repo, wheels  # noqa: E402
+from gbtools import parts, pyc_cache, repo, wheels  # noqa: E402
 from gbtools.blender import BlenderInstall, EnvironmentProblem  # noqa: E402
 from gbtools.repo import repo_root  # noqa: E402
 from gbtools.rules import imports  # noqa: E402
@@ -192,6 +199,10 @@ PROFILE_FOLDER = "perfil"
 COPY_FOLDER = "copia"
 COPY_OPTION = "--copia"
 COPY_THREAD = "check-copia"
+# El código compilado de las órdenes de Python (spec 005, T44; gbtools.pyc_cache): la
+# variable con que lo reciben y el hilo que lo refresca.
+ENV_BYTECODE = pyc_cache.ENV_PREFIX
+BYTECODE_THREAD = "check-pyc"
 STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 40 s (RNF-001-01)
 LAUNCHER_RELPATH = "tools/run_blender_tests.py"
 PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T40)
@@ -233,8 +244,13 @@ PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T
 # nombran: ≈ 0,64 s menos por parte; gbtools.parts.source_affinity): con 20 partes, ≈ 16,1 s
 # frente a ≈ 16,7 s con 16, pero el equipo va más cargado y la cancelación del trabajo de
 # hash de la 008 (tests/unit/workers/test_core_content_hash.py, frágil con carga) falló 5
-# de 5 veces frente a 0 de 3 con 16; con 24, ≈ 17,3 s.
-UNIT_PARTS = 16
+# de 5 veces frente a 0 de 3 con 16; con 24, ≈ 17,3 s. Con las pruebas de la fase 2 de la
+# 005 (spec 005, T44), las órdenes de Python leen su código compilado (gbtools.pyc_cache) y
+# las bases de RecMin se crean una vez (tests.support.recmin.shared_bases): cada parte
+# importa en ≈ 1 s en vez de ≈ 1,4 s y el equipo va menos cargado, y 18 partes tardan
+# ≈ 18,8 s frente a ≈ 19,5 s con 16 (con 20, igual que con 18), sin fallos en las 11 veces
+# que se midió.
+UNIT_PARTS = 18
 BLENDER_PARTS = 7
 # Partes de «referencia» (spec 006, T59; RNF-001-01): el paso va solo, con el equipo casi
 # libre, y en una orden tardaba ≈ 2,0 s con sus 28 casos (dos de ellos lanzan el Python de
@@ -484,6 +500,46 @@ class SharedCopy:
         return self._folder
 
 
+class BytecodeRefresh:
+    """El refresco de la carpeta del código compilado de las órdenes de Python (spec 005,
+    T44; RNF-001-01; ``gbtools.pyc_cache.prepare``): ``refresh(carpeta, raíz, sites)`` en
+    otro hilo desde que empieza la comprobación. No hay que esperarlo: lo que una orden
+    importe antes de que esté compilado (o lo que no se pudo compilar), Python lo compila
+    en memoria, como sin la carpeta. :meth:`wait` espera a que acabe y, si falló, da el
+    aviso con el motivo; la comprobación no cambia."""
+
+    def __init__(
+        self,
+        refresh: Callable[[Path, Path, Sequence[Path]], object],
+        folder: Path,
+        root: Path,
+        sites: Sequence[Path],
+    ) -> None:
+        self.folder = folder
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._run, args=(refresh, folder, root, list(sites)),
+            name=BYTECODE_THREAD, daemon=True,
+        )
+        self._thread.start()
+
+    def _run(self, refresh: Callable[[Path, Path, Sequence[Path]], object], folder: Path,
+             root: Path, sites: list[Path]) -> None:
+        try:
+            refresh(folder, root, sites)
+        except Exception as exc:  # noqa: BLE001 - se avisa; sin la carpeta, como antes
+            self._error = exc
+
+    def wait(self) -> str | None:
+        """Espera a que termine; si falló, el aviso (si no, ``None``)."""
+        self._thread.join()
+        if self._error is None:
+            return None
+        return (f"AVISO: no se pudo preparar el código compilado de las pruebas en "
+                f"«{self.folder}»: {self._error}; las órdenes compilan lo que les falte, "
+                "como antes")
+
+
 @dataclass(frozen=True)
 class Context:
     """Lo que necesitan los pasos para construir sus órdenes."""
@@ -507,6 +563,9 @@ class Context:
     # La copia de pruebas de la extensión que comparten las partes de «blender» (spec 006,
     # T48); None: cada parte hace la suya, las órdenes de siempre.
     shared_copy: SharedCopy | None = None
+    # La carpeta del código compilado de las órdenes de Python (spec 005, T44;
+    # gbtools.pyc_cache); None: sin PYTHONPYCACHEPREFIX, las órdenes de siempre.
+    bytecode: Path | None = None
 
     def _with_lock(self, env: dict[str, str]) -> dict[str, str]:
         """``env`` con ``GEOBLENDER_CHECK_LOCK_HELD`` si hay cerrojo (spec 006, T46)."""
@@ -532,11 +591,16 @@ class Context:
         return self.find_runtime(self.root, self.docs_environ())
 
     def python_env(self) -> dict[str, str]:
-        """Entorno del Python de Blender fuera de Blender (``gbtools.blender``)."""
+        """Entorno del Python de Blender fuera de Blender (``gbtools.blender``), con la
+        carpeta del código compilado en ``PYTHONPYCACHEPREFIX`` si la hay (spec 005, T44);
+        si no, sin esa variable."""
         env = blender.python_env(self.root)
         env.pop(imports.ENV_BLENDER_MODULES, None)
         if self.blender_modules:
             env[imports.ENV_BLENDER_MODULES] = ",".join(sorted(self.blender_modules))
+        env.pop(ENV_BYTECODE, None)
+        if self.bytecode is not None:
+            env[ENV_BYTECODE] = str(self.bytecode)
         return self._with_lock(env)
 
     def part_profile(self, number: int) -> Path:
@@ -1701,6 +1765,8 @@ def main(
     times_store: Callable[[Path], Path | None] = default_times_store,
     lock_file: Callable[[Mapping[str, str]], Path | None] = check_lock.lock_path,
     test_copy: Callable[[Path, Path], Path] | None = ext_copy.prepare,
+    bytecode: Callable[[Path], Path | None] = pyc_cache.default_folder,
+    refresh_bytecode: Callable[[Path, Path, Sequence[Path]], object] = pyc_cache.prepare,
 ) -> int:
     """Ejecuta la comprobación completa y devuelve el código de salida.
 
@@ -1714,7 +1780,9 @@ def main(
     ese entorno (:func:`gbtools.check_lock.lock_path`; ``None``: sin cerrojo y sin
     esperar a nadie; spec 006, T46) y cómo se prepara la copia de pruebas de la extensión
     que comparten las partes de «blender» (``gbtools.ext_copy.prepare``; ``None``: cada
-    parte hace la suya; spec 006, T48).
+    parte hace la suya; spec 006, T48), dónde va el código compilado de las órdenes de
+    Python de la raíz (``gbtools.pyc_cache.default_folder``; ``None``: sin carpeta, las
+    órdenes de siempre) y cómo se refresca (``gbtools.pyc_cache.prepare``; spec 005, T44).
     """
     started = time.perf_counter()
     executable = sys.executable if executable is None else executable
@@ -1778,6 +1846,7 @@ def main(
         work = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
         results: list[StepResult] = []
         shared: SharedCopy | None = None
+        refreshing: BytecodeRefresh | None = None
         try:
             if test_copy is not None and any(s.runs is _blender for s in selected):
                 shared = SharedCopy(test_copy, root, work / COPY_FOLDER)
@@ -1795,7 +1864,12 @@ def main(
                 times=times,
                 lock_owner=None if lock is None else lock.owner,
                 shared_copy=shared,
+                bytecode=bytecode(root),
             )
+            if ctx.bytecode is not None:
+                site = ctx.test_runtime().site
+                refreshing = BytecodeRefresh(refresh_bytecode, ctx.bytecode, root,
+                                             [] if site is None else [site])
             # Los perfiles de las demás partes de las pruebas de Blender (T40).
             for number in range(2, BLENDER_PARTS + 1):
                 ctx.part_profile(number).mkdir()
@@ -1819,6 +1893,10 @@ def main(
                     print(f"AVISO: no se pudieron guardar las duraciones de las pruebas en "
                           f"«{times.store}»: {exc}")
         finally:
+            if refreshing is not None:
+                warning = refreshing.wait()
+                if warning is not None:
+                    print(warning, flush=True)
             if shared is not None:
                 shared.result()  # que termine antes de borrar su carpeta
             try:

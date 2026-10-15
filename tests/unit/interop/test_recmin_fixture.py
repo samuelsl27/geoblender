@@ -19,19 +19,27 @@
   cada base tiene las tablas, el número de filas de cada una (:data:`EXPECTED_ROWS`) y los
   tipos de columna del guion, y la cabecera de su formato (byte 0x14: 1 en Jet 4, 2 en ACE;
   plan 005 §5.3.4). Ninguna base se versiona.
+- **RNF-001-01** (spec 005, T44): ``recmin.shared_bases`` da a cada prueba que las pide su
+  copia de esas bases, creadas una vez por guion y motor en un almacén de la carpeta temporal
+  del sistema (con la huella de cada base, que se comprueba antes de copiarla); este módulo
+  sigue creándolas con ``build_bases`` cada vez.
 
 Sin el motor ACE de 64 bits, las pruebas de la base ACE se omiten con ``[ENTORNO] ace``.
 """
 
+import concurrent.futures
 import hashlib
 import os
 import shutil
 import struct
 import tempfile
+import threading
+import time
 import unittest
 from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
+from unittest import mock
 
 from tests.support import recmin
 from tests.support.resources import WINDOWS, WINDOWS_HINT, is_available, requires, skip_reason
@@ -430,6 +438,193 @@ class AceBasesTest(_BuiltBasesChecks, unittest.TestCase):
     """Las bases ACE (ACE 16 o 12, ``powershell.exe`` de 64 bits), como ``default.mdb``."""
 
     ENGINE = "ace"
+
+
+class _FakeBuilder:
+    """Un ``build_bases`` simulado, sin motor: escribe ``<guion>_<motor>.mdb`` con un texto
+    propio y anota con qué motores se le llamó; con ``missing``, esos motores faltan."""
+
+    def __init__(self, missing: Iterable[str] = (), delay_s: float = 0.0) -> None:
+        self.calls: list[tuple[str, ...]] = []
+        self.missing = frozenset(missing)
+        self.delay_s = delay_s
+        self.lock = threading.Lock()
+
+    def __call__(self, out_dir: Path, engines: tuple[str, ...] = tuple(recmin.ENGINES), *,
+                 sql: Path | None = None) -> recmin.Build:
+        with self.lock:
+            self.calls.append(tuple(engines))
+        time.sleep(self.delay_s)
+        scripts = [Path(sql)] if sql is not None else sorted(recmin.RECMIN_DIR.glob("*.sql"))
+        bases: dict[tuple[str, str], recmin.BuiltBase] = {}
+        for engine in engines:
+            if engine in self.missing:
+                continue
+            for script in scripts:
+                path = out_dir / f"{script.stem}_{engine}.mdb"
+                path.write_bytes(f"{engine}:{script.read_text(encoding='utf-8')}".encode())
+                column = recmin.BuiltColumn("ID", 3, None)
+                bases[(script.name, engine)] = recmin.BuiltBase(
+                    engine, script.name, path, f"proveedor-{engine}",
+                    {"t": recmin.BuiltTable("t", 2, (column,))})
+        return recmin.Build(bases, self.missing & set(engines))
+
+
+def _without_paths(build: recmin.Build) -> dict[tuple[str, str], tuple[object, ...]]:
+    return {key: (b.engine, b.sql, b.path.name, b.provider, b.tables)
+            for key, b in build.bases.items()}
+
+
+def _entries(store: Path) -> list[str]:
+    return sorted(p.name for p in store.iterdir()) if store.exists() else []
+
+
+class SharedBasesTest(unittest.TestCase):
+    """``recmin.shared_bases`` (spec 005, T44; RNF-001-01): las bases de :func:`build_bases`
+    se crean una vez por guion y motor en un almacén de la carpeta temporal del sistema, y
+    cada prueba recibe su copia, en su carpeta, como si las hubiera creado."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="gbrs")
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.store = self.tmp / "almacen"
+
+    def _shared(self, name: str, builder: _FakeBuilder, engines: tuple[str, ...] = ("jet4", "ace"),
+                sql: Path | None = None) -> recmin.Build:
+        return recmin.shared_bases(self.tmp / name, engines, sql=sql, store=self.store,
+                                   build=builder)
+
+    def test_built_once_then_copied(self) -> None:
+        """RNF-001-01, RF-005-13: la primera vez se crean (todos los motores a la vez, como
+        ``build_bases``) y se guardan, una entrada por motor; las siguientes se copian de
+        ahí sin crear nada: cada carpeta recibe los mismos ficheros y lo que el motor contó
+        de cada base, con la ruta de su copia."""
+        builder = _FakeBuilder()
+        first = self._shared("a", builder)
+        second = self._shared("b", builder)
+        self.assertEqual(builder.calls, [("jet4", "ace")])
+        self.assertEqual(_without_paths(first), _without_paths(second))
+        self.assertEqual(len(first.bases), 4)
+        for build, folder in ((first, self.tmp / "a"), (second, self.tmp / "b")):
+            for base in build.bases.values():
+                self.assertEqual(base.path.parent, folder)
+                self.assertTrue(base.path.read_bytes().startswith(base.engine.encode() + b":"))
+        self.assertEqual(len([n for n in _entries(self.store)
+                              if n.startswith(recmin.STORE_ENTRY_PREFIX)]), 2)
+
+    def test_damaged_or_missing_engine_is_built_again(self) -> None:
+        """RNF-001-01: una base guardada que ya no es la que se guardó (otro tamaño u otro
+        contenido) se crea otra vez, solo la de ese motor; un motor que faltaba (sin ACE) no
+        se guarda y se vuelve a probar la vez siguiente."""
+        builder = _FakeBuilder(missing=("ace",))
+        found = self._shared("a", builder)
+        self.assertEqual(found.missing, frozenset({"ace"}))
+        self.assertEqual({key[1] for key in found.bases}, {"jet4"})
+        (entry,) = [p for p in self.store.iterdir() if p.name.startswith(
+            recmin.STORE_ENTRY_PREFIX)]
+        stored = next(entry.glob("*.mdb"))
+        stored.write_bytes(stored.read_bytes()[:-1] + b"X")
+        builder.missing = frozenset()
+        again = self._shared("b", builder)
+        self.assertEqual(builder.calls, [("jet4", "ace"), ("jet4", "ace")])
+        self.assertEqual(again.missing, frozenset())
+        self.assertEqual(_without_paths(again)[(V12, "jet4")],
+                         _without_paths(found)[(V12, "jet4")])
+        third = self._shared("c", builder)
+        self.assertEqual(len(builder.calls), 2)
+        self.assertEqual(_without_paths(third), _without_paths(again))
+
+    def test_the_key_is_the_script_and_the_builder(self) -> None:
+        """RNF-001-01: la entrada depende del motor, del nombre y del texto de cada guion y de
+        ``build_mdb.ps1``: el mismo guion en otra carpeta da la misma; otro texto, otra."""
+        one = _write_script(self.tmp / "x", "v.sql", "-- uno\n")
+        same = _write_script(self.tmp / "y", "v.sql", "-- uno\n")
+        other = _write_script(self.tmp / "z", "v.sql", "-- dos\n")
+        renamed = _write_script(self.tmp / "z", "w.sql", "-- uno\n")
+        key = recmin.store_key("jet4", one)
+        self.assertEqual(key, recmin.store_key("jet4", same))
+        self.assertNotEqual(key, recmin.store_key("ace", one))
+        self.assertNotEqual(key, recmin.store_key("jet4", other))
+        self.assertNotEqual(key, recmin.store_key("jet4", renamed))
+        self.assertNotEqual(key, recmin.store_key("jet4"))
+        default = recmin.store_key("jet4")
+        with mock.patch.object(recmin, "BUILD_SCRIPT", one):
+            self.assertNotEqual(recmin.store_key("jet4"), default)
+        builder = _FakeBuilder()
+        self._shared("a", builder, ("jet4",), sql=one)
+        self._shared("b", builder, ("jet4",), sql=same)
+        self._shared("c", builder, ("jet4",), sql=other)
+        self.assertEqual(builder.calls, [("jet4",), ("jet4",)])
+
+    def test_at_the_same_time_one_entry(self) -> None:
+        """RNF-001-01: varias pruebas que las piden a la vez (cada parte de la comprobación es
+        un proceso) acaban con las mismas bases y una sola entrada por motor, sin restos."""
+        builder = _FakeBuilder(delay_s=0.2)
+        with concurrent.futures.ThreadPoolExecutor(4) as pool:
+            builds = list(pool.map(lambda n: self._shared(f"p{n}", builder), range(4)))
+        self.assertTrue(all(_without_paths(b) == _without_paths(builds[0]) for b in builds))
+        self.assertEqual(len(_entries(self.store)), 2, _entries(self.store))
+
+    def test_default_store_in_the_system_temp(self) -> None:
+        """RF-001-09, RNF-001-01: el almacén está en la carpeta temporal del sistema, fuera
+        del repositorio, también si una prueba cambia la de su proceso (``tempfile.tempdir``)."""
+        system = Path(tempfile.gettempdir())
+        self.assertEqual(recmin.default_store(), system / recmin.STORE_FOLDER)
+        with mock.patch.object(tempfile, "tempdir", str(self.tmp)):
+            self.assertEqual(recmin.default_store(), system / recmin.STORE_FOLDER)
+
+    def test_old_entries_are_removed(self) -> None:
+        """RF-001-09 (la carpeta temporal no crece sin fin): una entrada que nadie usa desde
+        hace más de ``STORE_KEEP_DAYS`` días, y un resto a medias de más de un día, se
+        borran; la que se usa, no."""
+        builder = _FakeBuilder()
+        self._shared("a", builder, ("jet4",))
+        old = self.store / f"{recmin.STORE_ENTRY_PREFIX}0123456789abcdef"
+        (old / "x.mdb").parent.mkdir(parents=True)
+        (old / "x.mdb").write_bytes(b"x")
+        leftover = self.store / f"{recmin.STORE_TEMP_PREFIX}resto"
+        leftover.mkdir()
+        long_ago = time.time() - (recmin.STORE_KEEP_DAYS + 1) * 86400
+        for path in (old, old / "x.mdb", leftover):
+            os.utime(path, (long_ago, long_ago))
+        self._shared("b", builder, ("jet4",))
+        self.assertFalse(old.exists())
+        self.assertFalse(leftover.exists())
+        self.assertEqual(len(_entries(self.store)), 1)
+        self.assertEqual(builder.calls, [("jet4",)])
+
+
+def _write_script(folder: Path, name: str, text: str) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+@unittest.skipUnless(os.name == "nt", skip_reason(WINDOWS, WINDOWS_HINT))
+class SharedRealBasesTest(unittest.TestCase):
+    """``recmin.shared_bases`` con ``build_mdb.ps1`` y su almacén de verdad."""
+
+    def test_same_bases_as_build_bases(self) -> None:
+        """RF-005-13, RNF-001-01: las bases compartidas (Jet 4 y, si hay, ACE) tienen la
+        cabecera de su formato y las mismas tablas, filas y tipos que las que acaba de crear
+        ``build_bases`` (:func:`setUpModule`), en la carpeta de la prueba."""
+        assert _build is not None
+        engines = ("jet4", "ace") if is_available(recmin.ACE) else ("jet4",)
+        with tempfile.TemporaryDirectory(prefix="gbrsr") as tmp:
+            shared = recmin.shared_bases(Path(tmp), engines)
+            self.assertEqual(shared.missing, _build.missing)
+            self.assertEqual(sorted(shared.bases), sorted(_build.bases))
+            for key, base in shared.bases.items():
+                with self.subTest(base=key):
+                    fresh = _build.bases[key]
+                    self.assertEqual(base.path.parent, Path(tmp))
+                    self.assertEqual(base.path.name, fresh.path.name)
+                    self.assertEqual(base.tables, fresh.tables)
+                    header, version = HEADERS[base.engine]
+                    data = base.path.read_bytes()[:0x15]
+                    self.assertEqual((data[4:4 + len(header)], data[0x14]), (header, version))
 
 
 if __name__ == "__main__":

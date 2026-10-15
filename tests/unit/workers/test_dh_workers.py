@@ -291,6 +291,15 @@ def setUpModule() -> None:  # noqa: N802 (nombre de unittest)
     tmp = _support.jobs_tmp(prefix="gb23-")
     base = tmp.__enter__()
     unittest.addModuleCleanup(tmp.__exit__, None, None, None)
+    # Mientras dura el módulo, la carpeta temporal de este proceso es una suya: las carpetas
+    # privadas del lector de RecMin que mira tearDownModule son solo las de sus pruebas, y no
+    # las de otro módulo que lee una base a la vez en otra parte de la comprobación (spec 005,
+    # T44: con las bases compartidas, test_dh_content lee las suyas en ese momento).
+    private = base / "temp"
+    private.mkdir()
+    temp = mock.patch.object(tempfile, "tempdir", str(private))
+    temp.start()
+    unittest.addModuleCleanup(temp.stop)
     sources = base / "fuentes"
     sources.mkdir()
     for name in FILES.values():
@@ -328,14 +337,15 @@ def setUpModule() -> None:  # noqa: N802 (nombre de unittest)
 def _build_jet4(folder: Path) -> None:
     try:
         folder.mkdir()
-        built = recmin.build_bases(folder, ("jet4",), sql=V12)
+        built = recmin.shared_bases(folder, ("jet4",), sql=V12)
         (_STATE["jet4_base"],) = [item.path for item in built.bases.values()]
     except Exception as error:  # noqa: BLE001 - lo dice la prueba que la usa
         _STATE["jet4_error"] = error
 
 
 def _private_folders() -> set[str]:
-    """Las carpetas privadas del lector de RecMin en ``%TEMP%`` (no debe quedar ninguna)."""
+    """Las carpetas privadas del lector de RecMin en la carpeta temporal del proceso (la del
+    módulo, :func:`setUpModule`): no debe quedar ninguna."""
     return {path.name for path in Path(tempfile.gettempdir()).glob(
         f"{dh_content.PRIVATE_PREFIX}*")}
 

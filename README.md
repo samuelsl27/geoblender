@@ -146,7 +146,7 @@ tiempos fallan. El cerrojo es `%LOCALAPPDATA%\Geoblender\check.lock`, que el sis
 aunque la comprobación se cierre de golpe (no hay que borrarlo); si otra lo tiene, la nueva
 escribe `ESPERANDO: …` con su pid y su carpeta y espera, y su tiempo se cuenta desde que
 empieza de verdad. `tools/publish.py` espera igual. Los pasos van uno
-tras otro, pero las pruebas unitarias se reparten en 16 procesos (`tools/unittest_part.py`),
+tras otro, pero las pruebas unitarias se reparten en 18 procesos (`tools/unittest_part.py`),
 los casos de referencia en 6 y las de Blender en 7 Blender (`tools/run_blender_tests.py
 --parte i/n`) que se ejecutan a la vez, sin pasar del número de procesadores; cada prueba, en
 uno solo. El reparto usa la duración de cada módulo de pruebas en la comprobación anterior,
@@ -168,7 +168,17 @@ registro dejan la extensión deshabilitada con sus módulos cargados al terminar
 nuevo; las que lo prueban parten de cero y, al terminar, devuelven esos módulos
 (`blender_ext.fresh`). Un módulo de pruebas de Blender que deja el proceso más lento para
 los que vienen detrás (el que inicia la GPU) declara `RUN_LAST = True` y se ejecuta el
-último.
+último de su Blender, que después no toma más módulos; en la cola no va al final, sino
+donde lo que queda detrás ocupa a los demás Blender mientras tanto. Las órdenes de Python
+de la comprobación van con `-B` (nada compilado junto a las fuentes) y leen el código
+compilado de la extensión, las pruebas, las herramientas y la biblioteca de Python de
+`%TEMP%\geoblender-pyc\` (una carpeta por carpeta del código, que la comprobación pone al
+día al empezar, en otro hilo, y que se borra sola cuando su carpeta del código ya no
+existe; lo del repositorio se valida por el hash de cada fuente, así que una fuente cambiada
+nunca usa lo compilado antes). Las bases de RecMin sintéticas de las pruebas se crean una
+vez por guion y motor en `%TEMP%\geoblender-datos\` (se comprueba la huella de cada una
+antes de copiarla, y la que nadie usa en 30 días se borra); las pruebas de su guion las
+crean cada vez.
 Si existe el motor de cálculo de pruebas
 (`tools/make_runtime.py`), el paso «motor» ejecuta otra vez las pruebas unitarias de los
 paquetes de dominio con su numpy, a la vez que las de Blender (spec 004, RF-004-28), en 16

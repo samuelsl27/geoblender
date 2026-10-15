@@ -3,7 +3,7 @@
 §5.3.4, §5.6.12 y §7): ``interop.ports`` (``MdbExtractor``, ``MdbInfo``, el formato y el
 fichero de bloqueo), ``adapters/mdb_reader.py`` y ``adapters/mdb_reader.ps1``, con las bases
 RecMin sintéticas Jet 4 y ACE que crea ``tests/data/dh/recmin/build_mdb.ps1`` en una carpeta
-temporal (``tests.support.recmin``).
+temporal (``tests.support.recmin.shared_bases``: una vez por guion y motor, y aquí su copia).
 
 - **RF-005-13** (incorporar sin pérdida una base RecMin, MDB o ACCDB, Jet 4 o ACE, esquema 11
   o 12): cada tabla de usuario de las cuatro bases (los dos guiones con los dos motores) sale
@@ -121,10 +121,10 @@ def _extract(done: _Done, engines: tuple[object, ...] | None) -> object:
 
 
 def setUpModule() -> None:
-    """Crea una sola vez las bases de los dos guiones, Jet 4 y, si hay ACE, ACE, en la
-    carpeta de la «fuente», anota su huella y hace a la vez (un ``powershell.exe`` por
-    motor y por base) las detecciones y extracciones que no miden tiempos, cada una sobre su
-    copia: lo que dan lo comprueban las pruebas."""
+    """Copia una sola vez las bases de los dos guiones, Jet 4 y, si hay ACE, ACE, en la
+    carpeta de la «fuente» (``recmin.shared_bases``), anota su huella y hace a la vez (un
+    ``powershell.exe`` por motor y por base) las detecciones y extracciones que no miden
+    tiempos, cada una sobre su copia: lo que dan lo comprueban las pruebas."""
     global _tmp, _source
     if os.name != "nt":
         raise unittest.SkipTest(skip_reason(WINDOWS, WINDOWS_HINT))
@@ -132,7 +132,7 @@ def setUpModule() -> None:
     _source = _tmp / "fuente"
     _source.mkdir()
     ace = is_available(recmin.ACE)
-    build = recmin.build_bases(_source, ("jet4", "ace") if ace else ("jet4",))
+    build = recmin.shared_bases(_source, ("jet4", "ace") if ace else ("jet4",))
     for (sql, engine), base in build.bases.items():
         _bases[(sql, engine)] = base.path
     _source_before.update(_fingerprint(_source))

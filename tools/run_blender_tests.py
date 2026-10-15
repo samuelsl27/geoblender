@@ -378,8 +378,9 @@ def _queued(
 ) -> unittest.TestSuite | None:
     """La suite de la parte con la cola de ``--cola`` (spec 006, T59; ``gbtools.parts``):
     los módulos descubiertos, en el orden de la cola por sus tiempos (los que piden ir los
-    últimos, ``RUN_LAST``, al final), que las partes se reparten según acaban; los grupos
-    sin pruebas, en la parte 1. Al terminar escribe su línea «PARTE i de n: r de T
+    últimos, ``RUN_LAST``, donde lo que queda detrás cubre a las demás partes, y la parte que
+    toma uno ya no toma más: ``parts.queue_order`` con las partes; spec 005, T44), que las
+    partes se reparten según acaban; los grupos sin pruebas, en la parte 1. Al terminar escribe su línea «PARTE i de n: r de T
     pruebas» y, con ``--medidas``, la duración de cada módulo. ``None`` sin ``--parte``,
     sin ``--cola`` o sin tiempos medidos: el reparto de siempre."""
     if options.part is None or options.queue is None or options.times is None:
@@ -392,12 +393,15 @@ def _queued(
     weights = parts.weights(sizes, names, parts.read_times(options.times))
     if weights is None:
         return None
+    part, total_parts = options.part
+    last = [parts.runs_last(name) for name in names]
     units = parts.queue_order(
         weights,
         [parts.affinity_of(name) for name in names],
-        [parts.runs_last(name) for name in names],
+        last,
+        parts=total_parts,
     )
-    part, total_parts = options.part
+    final = {n for n, unit in enumerate(units) if any(last[index] for index in unit)}
     queue = parts.Queue(options.queue, len(units), part, total_parts)
     record: dict[str, float] = {}
 
@@ -414,6 +418,7 @@ def _queued(
         done,
         first=first,
         record=record if options.measures is not None else None,
+        final=final,
     )
 
 
