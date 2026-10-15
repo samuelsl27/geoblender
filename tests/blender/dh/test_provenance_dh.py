@@ -29,6 +29,14 @@ trabajos menos por cálculo de las trazas (el presupuesto de ``tools/check.py``)
   temporizador de los indicadores lee el proyecto, sin recalcular nada: «OBSOLETO» sin marcas
   con S-20 (sin traza), otra vez al día al recalcular la base con su mismo hash y «OBSOLETO» con
   la marca de S-03 tras «Actualizar» (``test_dh_view.check_stale_view``).
+- T48 (RF-005-23, RF-005-25; M3 y M5 de la comprobación en pantalla del 15/10/2026), con la
+  litología y los análisis en columnas también, y la vista que se carga sola, con las barras
+  del oro: desactivar Geoblender (cierra el proyecto y olvida lo que dibuja la
+  superposición), activarlo y abrir otra vez el proyecto deja la vista con su superposición
+  (sus etiquetas y sus leyendas, sin recalcular nada) y con los nombres de la primera carga: la
+  recarga sustituye los objetos anteriores sin «.001» en los objetos ni en sus datos; abrirlo
+  con la vista ya al día no pone otra recarga. Cambiar el radio del tubo en la representación
+  cambia la malla evaluada de los tubos sin otra acción.
 
 Lo que la tarea pide además lo prueban otras: registrar y desregistrar deja los registros de
 ``core`` como estaban (``test_dh_registration``, T24) y la referencia del azimut con motivo
@@ -47,18 +55,25 @@ from typing import Any
 from unittest import mock
 
 import bpy
+import numpy as np
 
 from tests.blender.test_dh_import_tabular import (
     HOLES,
     JOB_WAIT_S,
+    MAX_TICKS,
     DrillholeImportCase,
     _module,
 )
 from tests.blender.test_dh_ops_compute import _drive
 from tests.blender.test_dh_view import check_stale_view
+from tests.support import blender_ext
 from tests.support.fake_layout import FakeLayout
 
 FILES = ("bocas.csv", "desviaciones.csv")  # lo que necesitan las trazas
+VIEW_FILES = (*FILES, "litologia.csv", "analisis_columnas.csv")  # y la vista con el oro (T48)
+VIEW_NAMES = ["Sondeos [VIGENTE]", "Sondeos [VIGENTE] · Au"]  # los tubos y las barras del oro
+RADIUS, OTHER_RADIUS = 0.5, 1.25
+SUFFIX = re.compile(r"\.\d{3,}$")  # el que pone Blender a un nombre que ya está
 GAP = "dh.validation.gap_tolerance_m"
 STEP = "dh.desurvey.trace_step_m"
 DESURVEY_KEYS = ["dh.desurvey.trace_step_m", "dh.validation.depth_tolerance_m"]
@@ -75,6 +90,19 @@ IMPORT_SETTINGS = ("Ajustes: Papel = {role} · Separador = Punto y coma · Separ
 S03_BEFORE = b"S-03;120,00;359,50;-72,00"
 S03_AFTER = b"S-03;120,00;359,50;-71,50"
 S20 = "S-20;700100,000;4400100,000;805,000;50,00;;;DD;C-2026;;;no\n"
+
+
+def _ring_radius(obj: Any) -> float:
+    """El radio de los tubos de ``obj`` en su malla evaluada ahora (T48): lo más que se aparta
+    de su centro un vértice de la sección del primer punto (``Curve to Mesh`` pone las
+    secciones por puntos)."""
+    sides = _module("bl.gn.drill_tubes").PROFILE_RESOLUTION
+    geometry = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).evaluated_geometry()
+    mesh = geometry.mesh  # vive mientras ``geometry``
+    found = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get("co", found)
+    ring = found.reshape(-1, 3)[:sides].astype(np.float64)
+    return float(np.linalg.norm(ring - ring.mean(axis=0), axis=1).max())
 
 
 class DrillholeProvenanceTest(DrillholeImportCase):
@@ -211,7 +239,34 @@ class DrillholeProvenanceTest(DrillholeImportCase):
             found.append((OP_TYPE.search(" ".join(above)).group(1), " ".join(texts)))
         return found
 
-    # --- La prueba ----------------------------------------------------------------------------
+    def read_in_thread(self) -> None:
+        self.reader = self.catalog.WORKERS[self.dh_jobs.IMPORT_TABULAR]
+        super().read_in_thread()
+
+    def read_in_process(self) -> None:
+        """La lectura de una tabla, otra vez la que registró ``bl.ops.dh`` (al desactivar
+        Geoblender, la quita; T48)."""
+        self.catalog.unregister_worker(self.reader.name)
+        self.catalog.register_worker(self.reader)
+
+    def view(self) -> tuple[Any, Any]:
+        """Los tubos y las barras de la vista de los sondeos del proyecto abierto."""
+        objects = _module("bl.scene.dh_view").loaded_objects(self.project)
+        tubes = [obj for obj in objects if obj.type == "CURVES"]
+        bars = [obj for obj in objects if obj.type == "MESH"]
+        self.assertEqual((len(tubes), len(bars), len(objects)), (1, 1, 2))
+        return tubes[0], bars[0]
+
+    def reopen(self) -> None:
+        """Abre otra vez el proyecto en la sesión, con su comprobación de apertura hecha."""
+        root = self.project.root
+        self.project = self.core.open_project(root, self.ps.session(), self.ps.userdata()).project
+        self.ps.attach(self.project)
+        for _ in range(MAX_TICKS):
+            if self.session.check_tick() is None:
+                break
+
+    # --- Las pruebas --------------------------------------------------------------------------
 
     def test_import_base_validation_and_traces_end_to_end(self) -> None:
         """RF-005-11, RF-005-16, RF-005-20, RF-005-22, RF-008-05, RF-008-10, RF-008-11,
@@ -383,6 +438,65 @@ class DrillholeProvenanceTest(DrillholeImportCase):
         with self.project.read() as conn:
             self.assertEqual(self.store.stale_holes(conn), ())
         self.assertEqual(self.traces(), self.expected_traces(1.0))
+
+    def test_view_after_reenabling_and_reopening_and_live_radius(self) -> None:
+        """RF-005-23, RF-005-25 (T48; M3, M5): tras desactivar Geoblender, activarlo y abrir
+        otra vez el proyecto, la vista de los sondeos vuelve con su superposición (las mismas
+        etiquetas, leyendas y representación) y los nombres de la primera carga, sin «.001»
+        en los objetos ni en sus datos; abrirlo con la vista al día no la recarga. Cambiar el
+        radio del tubo cambia la malla evaluada sin otra acción."""
+        dh_view = _module("bl.scene.dh_view")
+        drill_tubes = _module("bl.gn.drill_tubes")
+        views = _module("bl.scene.views")
+        ops = self.dh_ops
+        # Fuera la vista que otra prueba de la clase dejó en la escena (de su proyecto): sus
+        # nombres no se cruzan con los de esta.
+        views.unload_datasets(views.loaded_uids(bpy.data.objects))
+        self.enterContext(mock.patch.object(ops, "start_validate", lambda project, **_: None))
+        self.import_all(VIEW_FILES)
+        display = getattr(bpy.context.scene, self.props.SCENE_PROPERTY)
+        display.element, display.tube_radius = "Au", RADIUS
+        self.assertEqual(bpy.ops.geoblender.dh_desurvey("EXEC_DEFAULT"), {"FINISHED"})
+        self.finish()  # las trazas y, después, su vista
+        tubes, bars = self.view()
+        self.assertEqual([tubes.name, bars.name], VIEW_NAMES)
+        self.assertEqual([tubes.data.name, bars.data.name], VIEW_NAMES)
+        before = dh_view.overlay_of(tubes)
+        self.assertIsNotNone(before)
+        self.assertIn("S-12 (160,00 m)", [item.text for item in before.labels])
+
+        # Desactivar (cierra el proyecto y olvida la superposición), activar y abrir otra vez.
+        self.read_in_process()
+        blender_ext.disable()
+        blender_ext.enable()
+        self.assertIsNone(dh_view.overlay_of(tubes))
+        self.reopen()
+        self.finish()  # la recarga de la vista
+        tubes, bars = self.view()
+        self.assertEqual([tubes.name, bars.name], VIEW_NAMES)
+        self.assertEqual([tubes.data.name, bars.data.name], VIEW_NAMES)
+        for collection in (bpy.data.hair_curves, bpy.data.meshes):  # ni datos de antes
+            self.assertEqual([item.name for item in collection if SUFFIX.search(item.name)], [])
+        self.assertEqual(len(bpy.data.hair_curves), 1)
+        found = dh_view.overlay_of(tubes)
+        self.assertIsNotNone(found)
+        self.assertIs(dh_view.overlay_of(bars), found)
+        self.assertEqual([(item.text, item.xyz, item.bottom) for item in found.labels],
+                         [(item.text, item.xyz, item.bottom) for item in before.labels])
+        self.assertEqual((found.lithology, found.element, found.grade, found.marks,
+                          found.display_key),
+                         (before.lithology, before.element, before.grade, before.marks,
+                          before.display_key))
+        ops.on_project_changed(self.project)  # al día: no la recarga otra vez
+        self.assertEqual(ops.pending_incorporations(), [])
+
+        # El radio, en vivo (M3): la malla evaluada cambia sin otra acción.
+        display = getattr(bpy.context.scene, self.props.SCENE_PROPERTY)  # la de su registro
+        self.assertEqual(drill_tubes.tube_radius(tubes), RADIUS)
+        first = _ring_radius(tubes)
+        display.tube_radius = OTHER_RADIUS
+        self.assertEqual(drill_tubes.tube_radius(tubes), OTHER_RADIUS)
+        self.assertAlmostEqual(_ring_radius(tubes), first * OTHER_RADIUS / RADIUS, delta=1e-4)
 
 
 if __name__ == "__main__":

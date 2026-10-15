@@ -118,7 +118,7 @@ def check_stale_view(case: DrillholeImportCase, holes: tuple[str, ...], *,
     names = [row[0] for row in case.rows("SELECT name FROM dh_collar ORDER BY fid")]
     marked = np.array([item in holes for item in names])
     for obj in objects:
-        case.assertTrue(obj.name.startswith(name), obj.name)  # « · Au», «.001» (T48)
+        case.assertTrue(obj.name.startswith(name), obj.name)  # « · Au»
         case.assertEqual((obj.geoblender.dataset_uid, obj.geoblender.stale), (record.uid, stale))
         (collection,) = obj.users_collection
         case.assertEqual(collection.name, name)

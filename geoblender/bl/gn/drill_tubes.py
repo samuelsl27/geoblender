@@ -174,10 +174,13 @@ def tube_radius(obj: bpy.types.Object) -> float | None:
 
 
 def set_tube_radius(obj: bpy.types.Object, radius_m: float) -> None:
-    """Cambia el radio (m) de los tubos de ``obj`` (sin reconstruir nada: lo evalúa Blender).
-    ``ValueError`` si ``obj`` no tiene su modificador."""
+    """Cambia el radio (m) de los tubos de ``obj`` (sin reconstruir nada: lo evalúa Blender) y
+    marca ``obj`` para evaluarlo otra vez (spec 005, T48: la entrada del modificador cambiada
+    desde Python no lo marca, y la malla no cambiaba hasta otra evaluación). ``ValueError`` si
+    ``obj`` no tiene su modificador."""
     modifier = _modifier(obj)
     if modifier is None:
         raise ValueError(f"«{obj.name}» no tiene los tubos de los sondeos ({GROUP_NAME})")
     socket = _radius_socket(modifier.node_group)
     compat.set_modifier_input(modifier, socket.identifier, float(radius_m))
+    obj.update_tag()

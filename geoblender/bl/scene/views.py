@@ -51,6 +51,7 @@ proyecto (los sondeos, ``bl.scene.dh_view.show_stale``; la marca en vivo de los 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Generator, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -475,7 +476,8 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *,
     :data:`STEPS_TOTAL`, el nombre del dato) y el último, el :class:`LoadOutcome` en
     ``result``. Primero se preparan todos sin tocar la escena (los objetos, sin enlazar) y en
     el último paso, de una vez, cada uno pasa a la colección de su dato con
-    ``Object.geoblender`` y su nombre generado, sustituyendo lo que hubiera de él, con el aviso
+    ``Object.geoblender`` y su nombre generado, sustituyendo lo que hubiera de él (sin el
+    «.001» que les puso Blender al crearlos mientras estaba, spec 005, T48), con el aviso
     de RF-002-26 si pasa de 8 km del GeoOrigin (:func:`scene_precision`), y después el ancla y
     el recorte. Cerrar los pasos antes del último (Esc), o un error que no es para la persona,
     borra lo preparado: la vista queda como estaba. Un dato que falta se avisa y no se carga;
@@ -529,6 +531,20 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *,
                    _place(scene, project, built, errors))
 
 
+_SUFFIX = re.compile(r"(.+)\.\d{3,}")
+"""Un nombre con el número que le pone Blender si ya está en uso («Sondeos [VIGENTE].001»)."""
+
+
+def _unsuffixed(obj: bpy.types.Object, name: str) -> None:
+    """Quita a ``obj`` y a sus datos el número que les puso Blender por crearlos mientras
+    estaba lo de la carga anterior (spec 005, T48), si sin él su nombre empieza por el generado
+    ``name``: quitado eso, su nombre queda libre (si otro lo usa, Blender les pone otro)."""
+    for item in (obj, obj.data):
+        found = None if item is None else _SUFFIX.fullmatch(item.name)
+        if found is not None and found.group(1).startswith(name):
+            item.name = found.group(1)
+
+
 def _place(scene: Any, project: Any, built: Sequence[_Built],
            errors: Sequence[str]) -> LoadOutcome:
     """El último paso de :func:`load_steps`: lo preparado, a la escena (véase allí)."""
@@ -546,6 +562,7 @@ def _place(scene: Any, project: Any, built: Sequence[_Built],
         unload_datasets([record.uid])  # otro nivel de detalle, o el dato al día
         collection = ensure_collection(loader.kind, record, name=entry.name, scene=scene)
         for obj in parts.objects:
+            _unsuffixed(obj, entry.name)
             collection.objects.link(obj)
             _mark(obj, loader.kind, shown, project)
         loaded.append(record.name)

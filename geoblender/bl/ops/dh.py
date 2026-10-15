@@ -121,7 +121,10 @@ cambia ningún valor guardado.
 ``geoblender.dh_show_display`` abre la barra lateral de la Vista 3D en la pestaña «Sondeos»
 («Representación»). Cambiar la representación de la escena con la vista cargada la recarga por
 la cola de los sondeos (:func:`display_changed`: una sola en espera; si al empezar ya es la de la
-representación, nada), y el radio cambia los tubos en vivo (``bl.props.dh``). Con unos sondeos
+representación, nada), y el radio cambia los tubos en vivo (``bl.props.dh``). Al abrir el
+proyecto con su vista en la escena sin lo que dibuja la superposición (cargada antes de
+desactivar Geoblender o de abrir el fichero), la vista se recarga igual (T48,
+:func:`on_project_changed`, :func:`refresh_view`). Con unos sondeos
 activos, la Leyenda genérica de la 003 (:data:`LEGEND_PROVIDER`, registrada para
 ``DRILLHOLES``) ofrece «Litología (esquema)» y cada elemento de ley y los aplica a la
 representación. Las etiquetas, las leyendas y las marcas las dibuja ``bl.draw.dh_overlay``.
@@ -1885,11 +1888,18 @@ def load_issues(project: Any) -> None:
 
 def on_project_changed(project: Any) -> None:
     """Al cambiar el proyecto de la sesión (``bl.scene.project_session.add_listener``): la
-    lista de incidencias es la de la última validación del nuevo (sin ninguno, vacía)."""
+    lista de incidencias es la de la última validación del nuevo (sin ninguno, vacía) y (T48;
+    RF-005-23, RF-005-25) si la vista de sus sondeos está en la escena sin lo que dibuja su
+    superposición (se cargó antes de desactivar Geoblender o de abrir el fichero) o con otra
+    representación, su recarga (:func:`refresh_view`)."""
     try:
         load_issues(project)
     except Exception:  # noqa: BLE001 - la sesión sigue: la lista no es imprescindible
         LOGGER.exception("No se pudo poner la lista de la validación de los sondeos")
+    try:
+        refresh_view(project, check=True)
+    except Exception:  # noqa: BLE001 - la sesión sigue: la vista se recarga a mano
+        LOGGER.exception("No se pudo poner la recarga de la vista de los sondeos")
 
 
 def _validated_steps(handle: OperationHandle, result: JobResult) -> Generator[float, None, str]:
@@ -3481,18 +3491,26 @@ LEGEND_PROVIDER = DrillholeLegend()
 mismo)."""
 
 
-def display_changed() -> bool:
-    """La representación de los sondeos cambió (T30; RF-005-23, RF-005-24): con la vista del
-    proyecto abierto cargada, su recarga en la cola de los sondeos, una sola mientras no
-    empieza (al empezar lee la representación de ese momento; si la vista ya es la de la
-    representación, no carga nada). Devuelve si puso una."""
-    project = project_session.current()
+def refresh_view(project: Any, *, check: bool = False) -> bool:
+    """Con la vista de los sondeos de ``project`` en la escena, su recarga en la cola de los
+    sondeos, una sola mientras no empieza (al empezar lee la representación de ese momento; si
+    la vista ya es la de la representación, no carga nada; T30); con ``check`` (T48: al abrir
+    el proyecto), solo si ahora no lo es (``bl.scene.dh_view.up_to_date``: sus objetos sin
+    superposición en esta sesión, o de otra representación). Devuelve si puso una."""
     if project is None or not dh_view.loaded_objects(project):
         return False
     if INCORPORATIONS.waiting(VIEW_QUEUE):
         return False
+    if check and dh_view.up_to_date(project, _scene_display(bpy.context)):
+        return False
     start_view(project, refresh=True)
     return True
+
+
+def display_changed() -> bool:
+    """La representación de los sondeos cambió (T30; RF-005-23, RF-005-24): con la vista del
+    proyecto abierto cargada, su recarga (:func:`refresh_view`). Devuelve si puso una."""
+    return refresh_view(project_session.current())
 
 
 # --- Recálculo y reimportación (plan §5.6.10) --------------------------------------------------

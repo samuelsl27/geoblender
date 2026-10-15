@@ -691,12 +691,15 @@ def show_stale(project: Any) -> bool:
 
 def apply_radius(radius_m: float) -> int:
     """El radio ``radius_m`` (m) en los tubos de todas las vistas de los sondeos, en vivo
-    (``bl.gn.drill_tubes.set_tube_radius``: sin recargar nada); devuelve cuántos cambió."""
+    (``bl.gn.drill_tubes.set_tube_radius``: sin recargar nada, con cada objeto marcado para
+    evaluarlo otra vez), y las vistas 3D redibujadas (T48); devuelve cuántos cambió."""
     changed = 0
     for obj in bpy.data.objects:
         if getattr(obj, OBJECT_PROPERTY).kind == KIND and drill_tubes.tube_radius(obj) is not None:
             drill_tubes.set_tube_radius(obj, radius_m)
             changed += 1
+    if changed:
+        _redraw()
     return changed
 
 
