@@ -104,7 +104,9 @@ repetible, con el método y los sondeos en sus ajustes, la tolerancia de profund
 las trazas de ``core.params``, y su trabajo ``dh_desurvey`` por la cola de incorporación,
 :func:`start_desurvey`): de todos los sondeos o solo de los de traza obsoleta, que conserva las
 demás si la desviación anterior usó el mismo método y los mismos parámetros
-(``drillholes.store.kept_traces``); rehace la vista (``UNDO``). ``geoblender.
+(``drillholes.store.kept_traces``); rehace la vista (``UNDO``; T29: escritas las trazas, su
+vista se carga sola por la misma cola, :func:`start_view`, con el cargador de
+``bl.scene.dh_view``). ``geoblender.
 dh_set_azimuth_reference`` es «Actualizar» una entrada de bocas, desviaciones o una base de
 RecMin con la referencia del azimut y la declinación nuevas y su motivo (``reimport_input``,
 :func:`_reimport`: una sustitución de la entrada que, aplicada, reconstruye la base y deja
@@ -201,7 +203,7 @@ from ..props.dh import (
     suggest_fields,
     table_mapping,
 )
-from ..scene import project_session, undo_watch
+from ..scene import project_session, undo_watch, views
 from ..scene.dh_view import NOT_DELIVERED
 from ..ui.commands import UNDELIVERED_FLAG, unavailable_note
 from ..ui.commands import catalog as command_catalog
@@ -1996,6 +1998,46 @@ def _traced_steps(handle: OperationHandle, result: JobResult) -> Generator[float
         return "failed"
     _release(result)
     _say(report)
+    start_view(project)
+    return "done"
+
+
+# --- La vista de las trazas (T29; RF-005-23, RF-005-24; plan §5.6.8) -----------------------------
+
+VIEW_LABEL = "View arrays of the drillholes"
+VIEW_QUEUE = "dh.view"
+"""La «operación» de la carga de la vista en la cola de incorporación (no es una operación de
+la procedencia: la vista no escribe en el proyecto)."""
+VIEW_STATUS = "Loading «{name}» into the view… {percent} %"
+
+
+def start_view(project: Any) -> None:
+    """Pone en la cola de incorporación de los sondeos la carga de sus trazas en la vista
+    (plan §5.6.8: calculadas las trazas, la vista se recarga sola; RF-005-23): los pasos de
+    ``bl.scene.views.load_steps`` con el cargador de ``bl.scene.dh_view``, detrás de la
+    escritura de ``dh_trace``."""
+    INCORPORATIONS.add(VIEW_QUEUE, _text(VIEW_LABEL), _view_steps(project), status=VIEW_STATUS)
+
+
+def _view_steps(project: Any) -> Generator[float, None, str]:
+    """Los pasos que cargan ``dh_trace`` en la escena (``bl.scene.views.load_steps``: lo
+    cargado de antes, sustituido en el último) y lo que dice la carga, en los avisos de la
+    sesión."""
+    outcome: views.LoadOutcome | None = None
+    try:
+        for step in views.load_steps(bpy.context, project, [TRACE_TABLE]):
+            if isinstance(step.result, views.LoadOutcome):
+                outcome = step.result
+            yield step.done / step.total if step.total else 1.0
+    except GeneratorExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - la vista no se carga: se dice
+        LOGGER.warning("Las trazas de los sondeos no se cargaron en la vista", exc_info=True)
+        _say(tr("The drillhole traces have not been loaded into the view: {reason}",
+                reason=error_text(error)))
+        return "failed"
+    for text in () if outcome is None else (*outcome.notes, *outcome.errors):
+        _say(text)
     return "done"
 
 

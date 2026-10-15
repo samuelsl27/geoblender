@@ -80,8 +80,9 @@ Los tipos, con sus parámetros, sus entradas (``in/``) y sus resultados (``out/`
   hash (los sondeos con errores de alcance S, sin traza: RF-005-17);
 - ``dh_view_arrays``: ``crs``, ``vertical``, ``method``, ``depth_tolerance_m``,
   ``max_step_m``, ``log_set``, ``element`` (con ``legend`` o, sin ella, ``unit`` y la leyenda
-  por defecto; ``offset_m`` y ``width_m``), ``labels_at_end`` y ``excluded``; ``base`` →
-  ``view.npz`` (:func:`write_view`).
+  por defecto; ``offset_m`` y ``width_m``), ``labels_at_end``, ``excluded`` y, opcional (T29),
+  ``holes`` (las posiciones de las bocas que se dibujan: las que tienen traza en el
+  proyecto); ``base`` → ``view.npz`` (:func:`write_view`).
 
 La base (``base``), lo leído (``source``) y lo importado de cada entrada son los arrays de
 ``drillholes.arrays`` (:func:`loose_arrays` para ``launch_job(arrays=…)``, o un npz por
@@ -1025,8 +1026,9 @@ def trace_rows(dset: DrillholeSet, traces: Any, step_m: float, hashes: Sequence[
 
 
 def _chosen_holes(request: JobParams, count: int) -> np.ndarray:
-    """``holes`` de ``dh_desurvey`` (T28): la máscara de las bocas cuyas trazas se calculan
-    (sus posiciones en la base, sin repetir); sin ``holes``, todas."""
+    """``holes`` de ``dh_desurvey`` (T28) y de ``dh_view_arrays`` (T29): la máscara de las
+    bocas cuyas trazas se calculan o se dibujan (sus posiciones en la base, sin repetir); sin
+    ``holes``, todas."""
     chosen = np.zeros(count, dtype=np.bool_)
     holes = request.values.get("holes")
     if holes is None:
@@ -1194,7 +1196,9 @@ def run_view_arrays(ctx: _Context) -> dict[str, Any]:
     RF-005-23 a RF-005-25) con las trazas del método de la petición (sin los sondeos con
     errores de alcance S): las curvas de la litología del esquema ``log_set`` y su leyenda,
     las barras del elemento ``element`` con la leyenda ``legend`` (o la de
-    ``default_grade_legend``) y las etiquetas, en ``view.npz``."""
+    ``default_grade_legend``) y las etiquetas, en ``view.npz``. Con ``holes`` (T29: las
+    posiciones de las bocas con traza en el proyecto, «cada sondeo calculado»), solo se
+    dibujan esas; las trazas son las de todas las calculables, como en ``dh_desurvey``."""
     from .desurvey import Method, desurvey
     from .validate import hole_exclusions
     from .view_data import (
@@ -1218,8 +1222,9 @@ def run_view_arrays(ctx: _Context) -> dict[str, Any]:
     element = request.optional_text("element")
     ctx.progress(0.0, READING_TEXT)
     dset = _base(ctx, request, crs, vertical, 0.0, 0.2)
+    chosen = _chosen_holes(request, len(dset.collars))
     holes = hole_exclusions(dset, depth_tolerance_m=tolerance)
-    excluded = _exclusions(request, holes)
+    excluded = _exclusions(request, holes | ~chosen)
     traces = desurvey(dset, method, holes=~holes)
     ctx.progress(0.3, "Calculando la vista…")
     curves, legend = None, ()

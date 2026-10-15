@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Grupos de nodos de Geometry Nodes construidos en código; las entradas del
 modificador, siempre a través de ``bl/compat.py``.
+
+- ``drill_tubes``: los tubos de los sondeos (``GB_DrillTubes``) y el material de su vista
+  (spec 005, T29). Son datos de la escena, que se crean al cargar la vista: no registra nada.
 """
 
 from __future__ import annotations

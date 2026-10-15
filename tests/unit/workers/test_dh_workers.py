@@ -980,7 +980,8 @@ class BaseJobsTest(_JobCase):
         """RF-005-23, RF-005-24, RF-005-25 (plan §5.6.8): ``dh_view_arrays`` sobre la base de
         ``in/`` da en ``view.npz`` las curvas de la litología (con su leyenda), las barras del
         oro con la leyenda por defecto y las etiquetas con la profundidad en el fondo: las de
-        ``drillholes.view_data`` con las trazas por mínima curvatura, bit a bit."""
+        ``drillholes.view_data`` con las trazas por mínima curvatura, bit a bit; (T29) con
+        ``holes``, solo las de esas bocas, con las mismas trazas."""
         built = _STATE["built"]
         params = _base_params(method="minimum_curvature", depth_tolerance_m=0.01,
                               max_step_m=TRACE_STEP_M, log_set="lithology", element="Au",
@@ -1004,6 +1005,25 @@ class BaseJobsTest(_JobCase):
         self.assertEqual(view.labels, tuple(view_data.labels(dset, traces, True)))
         self.assertEqual((summary["curves"], summary["labels"]),
                          (len(curves.curve_sizes), 2 * len(dset.collars)))
+
+        # T29 (RF-005-23, «cada sondeo calculado»): con ``holes``, solo esas bocas (las que
+        # tienen traza en el proyecto), con las mismas trazas. Las posiciones que no valen las
+        # rechaza lo mismo que en ``dh_desurvey`` (``_chosen_holes``, probado arriba).
+        chosen = [0, 2]
+        summary, ctx, folder = self.run_job(dh_jobs.VIEW_ARRAYS, dict(params, holes=chosen),
+                                            inputs={"base": "base.npz"})
+        view = dh_jobs.read_view(self.output(ctx, folder, dh_jobs.OUT_VIEW.role))
+        others = np.ones(len(dset.collars), dtype=bool)
+        others[chosen] = False
+        excluded = validate.Exclusions(others)
+        self.assertEqual(_columns(view.curves), _columns(view_data.lithology_curves(
+            dset, traces, "lithology", TRACE_STEP_M, excluded=excluded)))
+        legend = view_data.default_grade_legend(
+            view_data.grade_values(dset, "Au", "g/t", excluded=excluded), "g/t")
+        self.assertEqual(_columns(view.bars), _columns(view_data.grade_bars(
+            dset, traces, "Au", legend, 1.0, 0.5, max_step_m=TRACE_STEP_M, excluded=excluded)))
+        self.assertEqual(set(view.curves.hole.tolist()), set(chosen))
+        self.assertEqual(view.labels, tuple(view_data.labels(dset, traces, True)))
 
 
 class RegistryTest(_JobCase):

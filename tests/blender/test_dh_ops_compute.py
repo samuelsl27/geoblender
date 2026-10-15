@@ -139,6 +139,8 @@ class ComputeOpsTest(DrillholeImportCase):
         # Tras cada base, sin su validación: no la necesita ninguna de estas órdenes (T27 la
         # prueba) y son dos trabajos menos (el presupuesto de tools/check.py).
         self.enterContext(mock.patch.object(ops, "start_validate", lambda project, **_: None))
+        # Ni la vista que se carga sola tras las trazas (T29 la prueba): dos trabajos menos.
+        self.enterContext(mock.patch.object(ops, "start_view", lambda project: None))
         commands = _module("bl.ui.commands")
         for idname in (DESURVEY, AZIMUTH, POLICY):
             self.assertTrue(commands.is_available(idname), idname)

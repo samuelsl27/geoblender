@@ -965,6 +965,30 @@ def launch_job(handle: OperationHandle, worker: str, *, label: str,
     return job
 
 
+def submit_job(worker: str, *, label: str, owner: str, params: Mapping[str, Any] | None = None,
+               arrays: Mapping[str, Any] | None = None,
+               on_finish: Callable[[JobResult], object] | None = None,
+               **request: Any) -> JobHandle:
+    """Lanza con el monitor de los trabajos (que lo sigue en la barra de estado) un trabajo de
+    la 004 que **no es de ninguna operación** (spec 005, T29: los arrays de la vista de los
+    sondeos, que no escriben en el proyecto ni registran nada): tipo ``worker``, nombre visible
+    ``label``, dueño ``owner`` (su módulo), ``params``, los arrays de numpy ``arrays``
+    escritos en su ``in/`` (como en :func:`launch_job`) y lo demás de
+    ``jobs.protocol.new_request`` (``request``). Al terminar, en el hilo de Blender, llama a
+    ``on_finish`` con su ``JobResult``. Quien lo lanza lee sus resultados y lo da por
+    incorporado (:func:`release_job`). :class:`RuntimeError` sin lanzador de trabajos;
+    ``JobError`` con una petición que no vale."""
+    runner = _session_runner()
+    if runner is None:
+        raise RuntimeError("no hay lanzador de trabajos: Geoblender aún no ha preparado la "
+                           "carpeta de los trabajos")
+    job_request = new_request(worker, label=label, owner=owner, params=params, **request)
+    job: Any = job_request
+    if arrays:
+        job = _prepare_inputs(runner, job_request, {}, arrays)
+    return jobs_ops.MONITOR.submit(job, on_finish=on_finish)
+
+
 def _prepare_inputs(runner: JobRunner, request: JobRequest, inputs: Mapping[str, Path],
                     arrays: Mapping[str, Any] | None = None) -> Any:
     """La carpeta del trabajo de ``request`` (``JobRunner.prepare``) con ``inputs`` copiados a

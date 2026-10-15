@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import bpy
 
-from ...core.i18n import tr
+from ...core.i18n import language, translate
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 TICK_S = 0.0
@@ -43,15 +43,20 @@ def status_text(text: str | None) -> None:
             LOGGER.debug("Sin barra de estado en una ventana", exc_info=True)
 
 
+ADDING = "Adding «{name}» to the project… {percent} %"
+"""Lo que dice la barra de estado de una incorporación (``msgid`` con ``name`` y ``percent``)."""
+
+
 @dataclass(eq=False)
 class _Incorporation:
     """Una incorporación en la cola: su operación, el nombre que enseña la barra de estado, sus
-    pasos y lo hecho."""
+    pasos, lo hecho y el texto de la barra de estado (``msgid``)."""
 
     uid: str
     name: str
     steps: Iterator[float]
     done: float = 0.0
+    status: str = ADDING
 
 
 class StepQueue:
@@ -63,10 +68,14 @@ class StepQueue:
         """La función del temporizador: la misma siempre (Blender la reconoce por el
         objeto)."""
 
-    def add(self, uid: str, name: str, steps: Iterator[float]) -> None:
+    def add(self, uid: str, name: str, steps: Iterator[float], *,
+            status: str = ADDING) -> None:
         """Pone en cola la incorporación ``steps`` de la operación ``uid`` (``name``, el
-        nombre que enseña la barra de estado) y registra el temporizador si no lo estaba."""
-        self._items.append(_Incorporation(uid, name, steps))
+        nombre que enseña la barra de estado con el texto ``status``, un ``msgid`` con
+        ``name`` y ``percent``: por defecto, «Incorporando «…» al proyecto… n %»; spec 005,
+        T29: otros pasos de la cola, como cargar la vista) y registra el temporizador si no lo
+        estaba."""
+        self._items.append(_Incorporation(uid, name, steps, status=status))
         if not bpy.app.timers.is_registered(self.timer):
             bpy.app.timers.register(self.timer, first_interval=TICK_S, persistent=True)
 
@@ -94,8 +103,8 @@ class StepQueue:
             status_text(None)
             return None
         shown = self._items[0]
-        status_text(tr("Adding «{name}» to the project… {percent} %", name=shown.name,
-                       percent=int(100 * min(max(shown.done, 0.0), 1.0))))
+        status_text(translate(language(), shown.status, name=shown.name,
+                              percent=int(100 * min(max(shown.done, 0.0), 1.0))))
         return TICK_S
 
     def drop(self) -> None:

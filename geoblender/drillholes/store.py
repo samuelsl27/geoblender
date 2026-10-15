@@ -58,7 +58,9 @@ la última validación (``dh_validation_issue`` y lo que su operación dice que 
 que enseña la lista de la pestaña «Sondeos» y se exporta; (T28) :func:`survey_hashes`, la
 huella de la desviación de cada boca, :func:`kept_traces`, las trazas que conserva un cálculo
 de «solo las obsoletas», y :func:`source_holes`, los sondeos de lo importado de una entrada (los
-que su reimportación sustituye sin preguntar).
+que su reimportación sustituye sin preguntar); (T29) :func:`trace_view`, lo que la vista de las
+trazas toma de la desviación que escribió ``dh_trace`` (su método, sus parámetros, sus sondeos
+y los de traza obsoleta).
 
 **Valores** (plan §5.2.2): los números, en float64 tal como llegan (NaN = ``NULL``; −0 = 0);
 sí/no, 0 o 1; las enumeraciones, su texto; las fechas, «AAAA-MM-DD»; ``extra``, su JSON
@@ -174,6 +176,7 @@ __all__ = [
     "SourceWriter",
     "StoreProject",
     "StoredValidation",
+    "TraceView",
     "existing_holes",
     "export_report",
     "kept_traces",
@@ -187,6 +190,7 @@ __all__ = [
     "stale_holes",
     "stored_validation",
     "survey_hashes",
+    "trace_view",
 ]
 
 STEP_BUDGET_S = 0.05
@@ -1249,6 +1253,49 @@ def kept_traces(conn: sqlite3.Connection, *, method: str,
     return [tuple(row) for row in conn.execute(
         f"SELECT {columns} FROM dh_trace t JOIN dh_collar c ON t.hole_id = c.fid "
         f"WHERE t.survey_sha256 IS c.survey_sha256 ORDER BY t.hole_id, t.fid")]
+
+
+@dataclass(frozen=True)
+class TraceView:
+    """Lo que la vista de las trazas toma del proyecto (T29; RF-005-23, RF-005-22; plan
+    §5.6.8): de la desviación que escribió ``dh_trace``, su método (``method``) y los
+    parámetros que leyó (``params``, ``{clave: valor}``: los de
+    ``drillholes.params.DESURVEY_KEYS``; uno que no anotó, su valor por defecto); las bocas con
+    traza (``holes``: sus posiciones en la base, ``fid`` − 1, en orden) y los sondeos de traza
+    obsoleta (``stale``, los de :func:`stale_holes`)."""
+
+    method: str
+    params: Mapping[str, Any]
+    holes: tuple[int, ...]
+    stale: tuple[str, ...]
+
+
+def trace_view(conn: sqlite3.Connection) -> TraceView | None:
+    """Lo que la vista de las trazas toma del proyecto (``conn``, de lectura;
+    :class:`TraceView`): con ellos, sus arrays (``dh_view_arrays``) son los de las trazas
+    guardadas, y los sondeos de traza obsoleta se marcan (RF-005-22). ``None`` sin las tablas
+    o sin el dato vivo ``dh_trace``."""
+    from .desurvey import Method
+    from .params import DESURVEY_KEYS, default
+
+    if not (_table_exists(conn, "dh_collar") and _table_exists(conn, "dh_trace")):
+        return None
+    live = ", ".join(f"'{status}'" for status in LIVE_STATUSES)
+    found = conn.execute(
+        f"SELECT o.uid, o.settings FROM gb_dataset d JOIN gb_operation o ON "
+        f"o.uid = d.operation_uid WHERE d.name = 'dh_trace' AND d.store = 'gpkg' AND "
+        f"d.status IN ({live})").fetchone()
+    if found is None:
+        return None
+    settings = json.loads(found[1] or "{}")
+    used = {key: json.loads(value) for key, value in conn.execute(
+        "SELECT key, value FROM gb_operation_param WHERE operation_uid = ?", (found[0],))
+        if value is not None}
+    params = MappingProxyType({key: used.get(key, default(key)) for key in DESURVEY_KEYS})
+    holes = tuple(row[0] - 1 for row in conn.execute(
+        "SELECT DISTINCT hole_id FROM dh_trace ORDER BY hole_id"))
+    method = str(settings.get("method") or Method.MINIMUM_CURVATURE)
+    return TraceView(method, params, holes, stale_holes(conn))
 
 
 VALIDATION_TABLE = "dh_validation_issue"

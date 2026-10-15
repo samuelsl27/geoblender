@@ -16,7 +16,8 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
   ``Object.geoblender``, las colecciones tipadas, el ancla y el recorte (spec 006, RF-006-29);
 - ``gis_views``: los cargadores de la topografía (rejillas, TIN, puntos y líneas; spec 006),
   que :func:`register` registra en ``views``;
-- ``dh_view``: el cargador de las trazas de los sondeos (spec 005, T24), después.
+- ``dh_view``: el cargador de las trazas de los sondeos (spec 005, T24; T29: sus tubos y sus
+  barras de leyes, en pasos, con el trabajo ``dh_view_arrays``), después.
 """
 
 from __future__ import annotations

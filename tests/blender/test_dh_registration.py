@@ -6,8 +6,8 @@
   la clase real de ``bl/ops/dh.py``, registrada una vez (ninguno provisional), y las órdenes
   de los sondeos de otras entradas (R-78, R-14) siguen provisionales. Mientras su orden no
   llega, cada una no está disponible y dice dónde estará («Disponible en 005 · Sondeos»), y
-  los recálculos y el cargador de la vista lo dicen sin hacer nada (la reimportación llega
-  con la referencia del azimut, T28).
+  los recálculos lo dicen sin hacer nada (la reimportación llega con la referencia del
+  azimut, T28; el cargador de la vista, con la vista, T29).
 - ``bl/props/dh.py`` y ``bl/ui/dh_panels.py``: la representación en la escena, la
   importación pendiente y la validación en ``WindowManager``, y los tres paneles y la lista
   de incidencias en la pestaña «Sondeos».
@@ -27,6 +27,7 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 
 import dataclasses
 import importlib
+import inspect
 import unittest
 from collections.abc import Callable, Iterator
 from types import ModuleType, SimpleNamespace
@@ -256,11 +257,12 @@ class DrillholesRegisteredTest(unittest.TestCase):
     def test_undelivered_commands_say_where_they_will_be(self) -> None:
         """RF-003-07 (plan 005 §5.6.10): mientras no llega su orden, cada una no está
         disponible (``poll`` falso) y dice dónde estará, como un provisional («Disponible en
-        005 · Sondeos»); los recálculos y el cargador de las trazas lo dicen con un error
-        para la persona, sin hacer nada. Las que ya han llegado (T25: importar tablas; T26:
-        una base de RecMin; T27: validar y exportar el informe; T28: las trazas, la referencia
-        del azimut, que es la reimportación, y la regla bajo el límite) lo están en el
-        catálogo y, sin proyecto, dicen el paso previo."""
+        005 · Sondeos»); los recálculos lo dicen con un error para la persona, sin hacer nada.
+        Las que ya han llegado (T25: importar tablas; T26: una base de RecMin; T27: validar y
+        exportar el informe; T28: las trazas, la referencia del azimut, que es la
+        reimportación, y la regla bajo el límite) lo están en el catálogo y, sin proyecto,
+        dicen el paso previo; el cargador de las trazas en la vista (T29) es el de
+        ``bl.scene.dh_view``, en pasos."""
         catalog = _module("core.catalog")
         i18n = _module("core.i18n")
         errors = _module("core.errors")
@@ -278,8 +280,10 @@ class DrillholesRegisteredTest(unittest.TestCase):
                 self.assertEqual(self.m.dh_ops.unavailable_reason(idname), note)
                 group, _, name = idname.partition(".")
                 self.assertFalse(getattr(getattr(bpy.ops, group), name).poll())
-        calls = [*self.m.dh_ops.RECOMPUTE.values(), self.m.dh_view.load_traces]
-        for function in calls:
+        loader = _module("bl.scene.views").loader_for(self.m.dh_view.PREFIX)
+        self.assertIs(loader.load, self.m.dh_view.load_traces)
+        self.assertTrue(inspect.isgeneratorfunction(loader.load))
+        for function in self.m.dh_ops.RECOMPUTE.values():
             with self.subTest(función=function.__name__):
                 with self.assertRaises(errors.GeoblenderError) as caught:
                     function(SimpleNamespace())

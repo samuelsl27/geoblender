@@ -90,7 +90,10 @@ def _folder_state(folder: Path) -> dict[str, tuple[int, int, str]]:
 
 
 class DrillholeImportCase(unittest.TestCase):
-    """La extensión habilitada una vez para todas; cada prueba, con su proyecto."""
+    """La extensión habilitada una vez para todas; cada prueba, con su proyecto (su ventana
+    de trabajo, :attr:`window`: por defecto, la de ``csv_basico``)."""
+
+    window: tuple[float, float, float, float] = WINDOW
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -154,11 +157,11 @@ class DrillholeImportCase(unittest.TestCase):
     # --- Ayudas -----------------------------------------------------------------------------
 
     def open(self) -> Any:
-        """Un proyecto nuevo con la ventana de ``csv_basico`` abierto en la sesión, con su
+        """Un proyecto nuevo con la ventana :attr:`window` abierto en la sesión, con su
         comprobación de apertura hecha."""
         parent = self.tmp / "proyectos"
         parent.mkdir(parents=True, exist_ok=True)
-        settings = self.core.ProjectSettings(**settings_values(window=WINDOW))
+        settings = self.core.ProjectSettings(**settings_values(window=self.window))
         project = self.core.create_project(parent, settings, self.ps.session(),
                                            self.ps.userdata()).project
         self.ps.attach(project)

@@ -55,11 +55,17 @@ from mathutils import Vector
 
 from ...core.datasets.model import DatasetRecord, DatasetStatus
 from ...core.errors import GeoblenderError
-from ...core.georef import PRECISION_LIMIT_M, GeoOrigin, PrecisionReport, precision_report
+from ...core.georef import (
+    PRECISION_LIMIT_M,
+    GeoOrigin,
+    PrecisionReport,
+    local_to_world,
+    precision_report,
+)
 from ...core.i18n import language, tr, translate
 from ...core.project.model import Progress
 from ..props.core import OBJECT_PROPERTY
-from .mesh import mesh_vertices_world
+from .mesh import curves_positions_local, mesh_vertices_world
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
 
@@ -91,7 +97,8 @@ STATUS_TEXT: dict[DatasetStatus, str] = {
     DatasetStatus.BLOCKED: "BLOCKED",
     DatasetStatus.DAMAGED: "DAMAGED",
 }
-_DATA_COLLECTIONS = {"MESH": "meshes", "CURVE": "curves", "POINTCLOUD": "pointclouds"}
+_DATA_COLLECTIONS = {"MESH": "meshes", "CURVE": "curves", "CURVES": "hair_curves",
+                     "POINTCLOUD": "pointclouds"}
 
 
 @dataclass(frozen=True)
@@ -206,7 +213,9 @@ def view_name(loader: Loader, record: DatasetRecord, *, stale: bool) -> str:
     state = _text(STATUS_TEXT.get(record.status, "CURRENT"))
     if stale:
         state = f"{state} · {tr('STALE')}"
-    return f"{_text(loader.label)} {short} [{state}]"
+    # Sin nombre corto (el dato es su familia entera: las trazas de los sondeos, dh_trace),
+    # «Sondeos [VIGENTE]».
+    return " ".join(part for part in (_text(loader.label), short, f"[{state}]") if part)
 
 
 def _child(parent: bpy.types.Collection, key: str, name: str) -> bpy.types.Collection:
@@ -342,10 +351,11 @@ def _mark(obj: bpy.types.Object, kind: str, shown: Any, project: Any) -> None:
 
 def scene_precision(parts: ViewParts, origin: GeoOrigin) -> PrecisionReport | None:
     """El aviso de RF-002-26 de lo que lleva a la escena un cargador (T51): el de
-    ``core.georef.precision_report`` de los vértices de sus mallas, tal como los guarda
-    Blender, vueltos a absolutas (cuántos pasan de 8 000 m del GeoOrigin en X o en Y y el
-    error máximo estimado en mm). ``None`` si su extensión local queda dentro (no se leen
-    los vértices) o si no tiene ninguna malla con vértices."""
+    ``core.georef.precision_report`` de los vértices de sus mallas (y, spec 005, de los
+    puntos de sus curvas), tal como los guarda Blender, vueltos a absolutas (cuántos pasan de
+    8 000 m del GeoOrigin en X o en Y y el error máximo estimado en mm). ``None`` si su
+    extensión local queda dentro (no se leen los vértices) o si no tiene ninguna malla ni
+    curvas con puntos."""
     if parts.bounds is None:
         return None
     low, high = (np.asarray(corner, dtype=np.float64)[:2] for corner in parts.bounds)
@@ -353,6 +363,9 @@ def scene_precision(parts: ViewParts, origin: GeoOrigin) -> PrecisionReport | No
         return None
     vertices = [mesh_vertices_world(obj.data, origin) for obj in parts.objects
                 if isinstance(obj.data, bpy.types.Mesh) and len(obj.data.vertices)]
+    vertices += [local_to_world(curves_positions_local(obj.data), origin)
+                 for obj in parts.objects
+                 if isinstance(obj.data, bpy.types.Curves) and len(obj.data.points)]
     if not vertices:
         return None
     return precision_report(np.vstack(vertices), origin)

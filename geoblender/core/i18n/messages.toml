@@ -4108,3 +4108,20 @@ es = "Se cambia con su motivo en los parámetros del proyecto; los valores guard
 
 ["Change the parameter «{key}» with its reason: the values stored do not change"]
 es = "Cambie el parámetro «{key}» con su motivo: los valores guardados no cambian"
+
+# La vista de los sondeos (spec 005, T29; plan 005 §5.6.8).
+
+["Loading «{name}» into the view… {percent} %"]
+es = "Cargando «{name}» en la vista… {percent} %"
+
+["The drillhole traces have not been loaded into the view: {reason}"]
+es = "Las trazas de los sondeos no se han cargado en la vista: {reason}"
+
+["«{element}» is not an element of the drillhole catalog: it has no grade bars"]
+es = "«{element}» no es un elemento del catálogo de los sondeos: no tiene barras de leyes"
+
+["«{element}» is a text element: it has no grade bars"]
+es = "«{element}» es un elemento de texto: no tiene barras de leyes"
+
+["{count} values of «{element}» are not in «{unit}»: they have no bar (DH-W07)"]
+es = "{count} valores de «{element}» no están en «{unit}»: no tienen barra (DH-W07)"
