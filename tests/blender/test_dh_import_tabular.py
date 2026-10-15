@@ -31,6 +31,12 @@ proceso aparte, va aquí en el hilo con la misma función (la de proceso aparte 
 - RF-005-05 (riesgo R9): el asistente propone el papel y el campo de cada columna (también por
   hoja de un XLSX); los elementos de la enumeración dinámica del campo viven en una caché del
   módulo.
+- RF-005-07, RF-005-05 (T49; M1 en pantalla): con lo que falta, «Importar» está desactivado con
+  el motivo encima y «Cancelar» activo; con todo, su botón lanza la orden con las tablas y lo
+  declarado del asistente. Si el «Aceptar» del propio diálogo llega con algo que falta, el
+  asistente se abre otra vez como estaba, con el motivo. Los textos de los diálogos caben a su
+  ancho con escala 1,0 y 1,25; en el explorador de ficheros, solo una nota; la siguiente
+  importación de la sesión empieza en la carpeta y con lo declarado de la anterior.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -43,9 +49,10 @@ import json
 import shutil
 import tempfile
 import time
+import os
 import unittest
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -56,7 +63,7 @@ from tests.data.dh import build_xlsx
 from tests.support import blender_ext
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
-from tests.support.fake_layout import draw
+from tests.support.fake_layout import FakeLayout, draw, operator_self
 from tests.support.repo import ROOT
 
 DATA = ROOT / "tests" / "data" / "dh" / "csv_basico"
@@ -75,10 +82,39 @@ DECLARED = {"crs": "EPSG:25830", "vertical": "PROJECT", "azimuth_ref": "GRID",
 JOB_WAIT_S = 60.0
 MAX_TICKS = 300
 TEST_TABLES = "gb_t25_tables"  # una colección de tablas del asistente, solo en la prueba
+OTHER_TABLES = "gb_t49_tables"  # otra, para abrir el asistente otra vez (T49)
+WIZARD = {**DECLARED, "declination_deg": "", "sentinels": "", "negative_is_below_dl": False,
+          "header_row": 0, "received_at": "", "received_from": "", "reason": "", "sheet": "",
+          "wizard": True, "stage": "NEW", "pending": "", "mapping_json": "", "wizard_state": "",
+          "files": [], "directory": "", "filepath": ""}
+"""Todas las propiedades del asistente, con lo declarado de ``csv_basico`` (T49)."""
+SCALES = (1.0, 1.25)
+"""Las escalas efectivas de la interfaz a las que se leen enteros los textos (T49)."""
 
 
 def _module(name: str) -> ModuleType:
     return importlib.import_module(f"{module_name()}.{name}")
+
+
+def assert_fits(case: unittest.TestCase, layout: FakeLayout, width_px: float, *,
+                scale: float, props: bool = False) -> None:
+    """Cada etiqueta de ``layout`` (y, con ``props``, el texto de cada propiedad: una casilla o
+    un campo) cabe entera en ``width_px`` con la fuente a la escala ``scale`` (T49)."""
+    labels = _module("bl.ui.labels")
+    for item in layout.items:
+        if item.text and (item.kind == "label" or (props and item.kind == "prop")):
+            icon = item.kind == "prop" or item.icon != "NONE"
+            with case.subTest(texto=item.text, escala=scale):
+                case.assertLessEqual(labels.label_px(item.text, icon=icon, scale=scale),
+                                     width_px)
+
+
+def at_scales() -> Any:
+    """Cada escala de :data:`SCALES` con ``bl.compat.ui_scale`` simulada (T49)."""
+    compat = _module("bl.compat")
+    for scale in SCALES:
+        with mock.patch.object(compat, "ui_scale", return_value=scale):
+            yield scale
 
 
 def _sha(path: Path) -> str:
@@ -575,6 +611,176 @@ class WizardTest(DrillholeImportCase):
                          [(sheet, ROLE_OF[f"{sheet}.csv"], f"csv_basico · {sheet}")
                           for sheet in build_xlsx.BASICO_SHEETS])
         self.assertEqual(sheets[0].mapping, choices[0].mapping)
+
+    # --- T49 --------------------------------------------------------------------------------
+
+    def wizard_tables(self, files: tuple[str, ...], attribute: str = TEST_TABLES) -> Any:
+        """Una colección de tablas del asistente (en ``WindowManager``, solo en la prueba) con
+        las de ``files`` de ``entregas/`` como las propone."""
+        setattr(bpy.types.WindowManager, attribute,
+                CollectionProperty(type=self.props.GEOBLENDER_PG_dh_table))
+        self.addCleanup(delattr, bpy.types.WindowManager, attribute)
+        tables = getattr(bpy.context.window_manager, attribute)
+        self.props.fill_tables(tables, self.dh_ops.suggested_tables(
+            [self.sources / name for name in files], self.options))
+        return tables
+
+    def test_import_button_reason_and_the_order_it_runs(self) -> None:
+        """RF-005-07, RF-005-05 (T49; M1 en pantalla: «Aceptar» cerraba el asistente con el
+        error): sin el datum vertical, «Importar» se dibuja desactivado, con el motivo encima,
+        que se lee entero al ancho del diálogo con escala 1,0 y 1,25, y «Cancelar» activo (el de
+        Geoblender: ``template_popup_confirm``, que sustituye a los botones del diálogo). Con
+        todo declarado, «Importar» es el botón de la plantilla, activo, que lanza la orden
+        desde la interfaz (``INVOKE_DEFAULT``) con lo declarado y las tablas del asistente en
+        ``mapping_json`` (las mismas que el asistente: también una correspondencia cambiada).
+        Lanzada así, empieza una importación por tabla con esa correspondencia; el aviso dice
+        «1 tabla» o «3 tablas». La siguiente importación de la sesión en el mismo proyecto
+        abre el explorador en la carpeta de esta y lleva ya lo declarado (no la entrega)."""
+        wizard = self.dh_ops.GEOBLENDER_OT_dh_import_drillholes
+        labels = _module("bl.ui.labels")
+        files = ("litologia.csv", "litologias.csv", "bocas.csv")
+        tables = self.wizard_tables(files)
+        (column,) = [column for column in tables[2].columns if column.name == "Tipo"]
+        self.assertEqual(column.field, "hole_type")
+        column.field = "NONE"  # el tipo de las bocas, que no se importa (lo propuesto, sí)
+        values = {**WIZARD, "tables": tables}
+        for scale in at_scales():
+            layout = draw(wizard, bpy.context, **{**values, "vertical": "UNDECLARED"})
+            (disabled,) = [item for item in layout.of_kind("operator") if item.target == IMPORT]
+            self.assertEqual((disabled.text, disabled.enabled), ("Importar", False))
+            (cancel,) = layout.of_kind("template_popup_confirm")
+            self.assertEqual((cancel.target, cancel.options.get("cancel_text"), cancel.enabled),
+                             ("", "Cancelar", True))
+            items = layout.items
+            reason = next(index for index, item in enumerate(items)
+                          if item.text == "Falta declarar: el datum vertical de las cotas")
+            last_table = max(index for index, item in enumerate(items)
+                             if item.text in {table.name for table in tables})
+            self.assertLess(last_table, reason)
+            self.assertLess(reason, items.index(disabled))
+            assert_fits(self, layout, labels.dialog_width(self.dh_ops.DIALOG_WIDTH),
+                        scale=scale)
+
+        layout = draw(wizard, bpy.context, **values)
+        self.assertEqual([item.target for item in layout.of_kind("operator")], [])
+        (confirm,) = layout.of_kind("template_popup_confirm")
+        self.assertEqual((confirm.target, confirm.text, confirm.options.get("cancel_text"),
+                          confirm.enabled, confirm.operator_context),
+                         (IMPORT, "Importar", "Cancelar", True, "INVOKE_DEFAULT"))
+        sent = vars(confirm.properties)
+        for key, value in DECLARED.items():
+            self.assertEqual(sent[key], value, key)
+        choices = [self.dh_ops._table_choice(table) for table in tables]
+        self.assertNotIn("hole_type", choices[2].mapping)
+        self.assertEqual(self.dh_ops.json_tables(sent["mapping_json"], None, self.options),
+                         choices)
+        self.assertEqual(self.dh_ops.importing_text(choices[:1]),
+                         "Importando la tabla de sondeos «litologia.csv» en segundo plano…")
+        self.assertEqual(self.dh_ops.importing_text(choices),
+                         "Importando 3 tablas de sondeos en segundo plano…")
+
+        pending = dict(self.session.pending_ingests())
+        self.assertEqual(bpy.ops.geoblender.dh_import_drillholes("INVOKE_DEFAULT", **sent),
+                         {"FINISHED"})
+        launched = [op for job, op in self.session.pending_ingests().items()
+                    if job not in pending]
+        settings = sorted((json.loads(self.rows("SELECT settings FROM gb_operation "
+                                                "WHERE uid = ?", uid)[0][0])
+                           for uid in launched), key=lambda item: item["file"])
+        self.assertEqual([(item["file"], item["role"], item["mapping"]) for item in settings],
+                         sorted((choice.path.name, choice.role, dict(choice.mapping))
+                                for choice in choices))
+        self.finish()
+        uid, _pending = self.waiting()
+        self.assertEqual(self.decide("DISCARD", uid), {"FINISHED"})
+
+        browser = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window_manager=SimpleNamespace(fileselect_add=browser))
+        empty = {**WIZARD, "crs": "", "vertical": "UNDECLARED", "azimuth_ref": "NONE",
+                 "inclination_convention": "NONE", "units": "", "all_vertical": False,
+                 "date_format": "", "wizard": False, "received_from": "Sondeos del Sur"}
+        fresh = operator_self(wizard, **empty, report=mock.Mock(),
+                              properties=SimpleNamespace(
+                                  is_property_set=lambda name: name == "received_from"))
+        self.assertEqual(wizard.invoke(fresh, context, None), {"RUNNING_MODAL"})
+        browser.assert_called_once_with(fresh)
+        self.assertEqual(fresh.directory, str(self.sources) + os.sep)
+        for key, value in DECLARED.items():
+            self.assertEqual(getattr(fresh, key), value, key)
+        self.assertEqual((fresh.received_from, fresh.reason), ("Sondeos del Sur", ""))
+
+    def test_the_wizard_opens_again_as_it_was_and_the_dialog_texts(self) -> None:
+        """RF-005-07 (T49): si el «Aceptar» del propio asistente llega con algo que falta (en
+        Blender, sin el botón de Geoblender), no se importa nada, lo que falta se avisa y el
+        asistente se abre otra vez con lo declarado y sus tablas como estaban (también una
+        que no se importa y un campo cambiado a mano); al abrirse, las tablas quedan así. En
+        el explorador de ficheros, la orden enseña solo una nota (lo demás, su diálogo). Las
+        notas de los diálogos de la referencia del azimut, de la regla bajo el límite de
+        detección y de la validación se leen enteras a su ancho con escala 1,0 y 1,25."""
+        wizard = self.dh_ops.GEOBLENDER_OT_dh_import_drillholes
+        labels = _module("bl.ui.labels")
+        tables = self.wizard_tables(("litologia.csv", "bocas.csv"))
+        tables[0].role = self.props.NOT_IMPORTED
+        (column,) = [column for column in tables[1].columns if column.name == "Tipo"]
+        column.field = "comments"
+        state = self.props.tables_state(tables)
+        reports: list[tuple[set[str], str]] = []
+        files = [SimpleNamespace(name=name) for name in ("litologia.csv", "bocas.csv")]
+        owner = operator_self(wizard, **{**WIZARD, "vertical": "UNDECLARED", "tables": tables,
+                                         "directory": str(self.sources), "files": files},
+                              provenance_dialog=True,
+                              report=lambda kind, text: reports.append((set(kind), text)))
+        before = self.counts()
+        with mock.patch.object(self.dh_ops, "_open_wizard") as reopen:
+            self.assertEqual(wizard.execute(owner, bpy.context), {"CANCELLED"})
+        self.assertEqual(reports, [({"WARNING"},
+                                    "Falta declarar: el datum vertical de las cotas")])
+        self.assertEqual(self.counts(), before)
+        (sent,), extra = reopen.call_args
+        self.assertEqual(extra, {})
+        self.assertEqual(json.loads(sent["wizard_state"]), json.loads(json.dumps(state)))
+        self.assertEqual((sent["vertical"], sent["crs"], sent["directory"]),
+                         ("UNDECLARED", "EPSG:25830", str(self.sources)))
+        self.assertEqual(sent["files"], [{"name": "litologia.csv"}, {"name": "bocas.csv"}])
+
+        other = self.wizard_tables((), OTHER_TABLES)
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window_manager=SimpleNamespace(invoke_props_dialog=dialog))
+        again = operator_self(wizard, **{**WIZARD, **sent, "tables": other, "wizard": True},
+                              report=mock.Mock(),
+                              properties=SimpleNamespace(is_property_set=lambda name: True))
+        self.assertEqual(wizard.invoke(again, context, None), {"RUNNING_MODAL"})
+        dialog.assert_called_once()
+        self.assertEqual(json.loads(json.dumps(self.props.tables_state(other))),
+                         json.loads(json.dumps(state)))
+        self.assertEqual(again.wizard_state, "")
+
+        browser = SimpleNamespace(space_data=SimpleNamespace(type="FILE_BROWSER"), region=None)
+        layout = draw(wizard, browser, **{**WIZARD, "wizard": False, "tables": other})
+        self.assertEqual([item.kind for item in layout.items if item.kind != "label"], [])
+        self.assertTrue(layout.texts())
+        recmin = self.dh_ops.GEOBLENDER_OT_dh_import_recmin_mdb
+        layout = draw(recmin, browser, filepath="", **{key: WIZARD[key] for key in (
+            "crs", "vertical", "azimuth_ref", "declination_deg", "units", "sentinels",
+            "negative_is_below_dl", "density_kind", "received_at", "received_from", "reason")},
+                      decimal_mark="POINT", accept_locked=False, accept_schema=False,
+                      wizard=False, stage="NEW", pending="", confirmed=False)
+        self.assertEqual([item.kind for item in layout.items if item.kind != "label"], [])
+        self.assertTrue(layout.texts())
+
+        dialogs = (
+            (self.dh_ops.GEOBLENDER_OT_dh_set_azimuth_reference,
+             {"input_uid": "bocas", "inputs": [], "azimuth_ref": "MAGNETIC",
+              "declination_deg": "", "reason": ""}),
+            (self.dh_ops.GEOBLENDER_OT_dh_set_detection_limit_policy, {"parameter": "METHOD"}),
+            (self.dh_ops.GEOBLENDER_OT_dh_validate, {"surface": "", "surfaces": []}),
+        )
+        for scale in at_scales():
+            for cls, attributes in dialogs:
+                layout = draw(cls, bpy.context, **attributes)
+                self.assertTrue(layout.of_kind("label"), cls.__name__)
+                assert_fits(self, layout, labels.dialog_width(self.dh_ops.NOTE_DIALOG_WIDTH),
+                            scale=scale)
 
 
 if __name__ == "__main__":

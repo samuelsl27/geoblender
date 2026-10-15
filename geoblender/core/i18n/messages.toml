@@ -3754,9 +3754,6 @@ es = "Mostrar solo las incidencias de este nivel"
 ["Show only the issues whose code contains this text"]
 es = "Mostrar solo las incidencias cuyo código contiene este texto"
 
-["{hole}: keep the existing records"]
-es = "{hole}: conservar los registros existentes"
-
 ["No drillhole import is waiting for a decision"]
 es = "Ninguna importación de sondeos espera una decisión"
 
@@ -4140,3 +4137,31 @@ es = "Clases propias"
 
 ["Edit the classes of the grade legend, starting from those of the view, instead of the default ones (quintiles)"]
 es = "Editar las clases de la leyenda de leyes, a partir de las de la vista, en vez de las de por defecto (quintiles)"
+
+# Textos y diálogos de la importación de sondeos (spec 005, T49; M1, M2 y M5 en pantalla):
+# «Importar» desactivado con su motivo, las notas del explorador de ficheros y la importación
+# pendiente en líneas que caben en la barra lateral.
+
+["Import"]
+es = "Importar"
+
+["Importing the drillhole table «{table}» in the background…"]
+es = "Importando la tabla de sondeos «{table}» en segundo plano…"
+
+["Confirm above that it is read although it is open"]
+es = "Confirme arriba que se lea aunque esté abierta"
+
+["Choose the drillhole tables (CSV, TXT or XLSX): the role of each one, its columns and what must be declared are asked next"]
+es = "Elija las tablas de sondeos (CSV, TXT o XLSX): el papel de cada una, sus columnas y lo que hay que declarar se piden después"
+
+["Choose the RecMin drillhole database (MDB or ACCDB): what must be declared is asked next"]
+es = "Elija la base de sondeos de RecMin (MDB o ACCDB): lo que hay que declarar se pide después"
+
+["Register them"]
+es = "Darlos de alta"
+
+["{kind}: {codes}"]
+es = "{kind}: {codes}"
+
+["Drillholes already in the project: check those whose records are kept"]
+es = "Sondeos que ya están en el proyecto: marque los que conservan sus registros"

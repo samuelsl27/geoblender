@@ -174,3 +174,10 @@ def draw(cls: type, context: Any, *, method: str = "draw", **attributes: Any) ->
     layout = FakeLayout()
     getattr(cls, method)(_Owner(cls, layout, attributes), context)
     return layout
+
+
+def operator_self(cls: type, **attributes: Any) -> Any:
+    """Un ``self`` simulado de la clase ``cls`` (un operador) con ``attributes``, para llamar
+    a mano a su ``invoke`` o a su ``execute`` (``cls.invoke(fake, contexto, None)``; spec 005,
+    T49): sus métodos, los de la clase, ligados a él; lo que se le asigna queda en él."""
+    return _Owner(cls, FakeLayout(), attributes)

@@ -9,7 +9,10 @@ Con un proyecto abierto, en la región lateral N de la Vista 3D, pestaña «Sond
   códigos nuevos y si se dan de alta (RF-005-10), cada sondeo que el proyecto ya tiene y si se
   conservan sus registros (RF-005-11), la sustitución que pide motivo y el motivo, y (T25)
   «Aplicar» y «Descartar» (la orden de la importación con ``stage`` y ``pending``); (T26) de
-  una base de RecMin de esquema desconocido, el aviso y «Leer igualmente» (RF-005-15);
+  una base de RecMin de esquema desconocido, el aviso y «Leer igualmente» (RF-005-15). (T49)
+  Cada texto, partido en líneas que caben en la barra lateral (``bl.ui.labels``): los códigos
+  nuevos, uno por catálogo («Litologías: SUE, MIN»), y cada sondeo que ya está, con su nombre
+  en la casilla;
 - ``GEOBLENDER_PT_dh_validation`` («Validación»): la lista de incidencias de la última
   validación del proyecto abierto (``GEOBLENDER_UL_dh_issues``; T27: y lo que no se evaluó,
   «Sin evaluar»), que se filtra por nivel y por código (RF-005-16), y las órdenes de validar,
@@ -40,7 +43,7 @@ from ..props.dh import (
     VALIDATION_PROPERTY,
 )
 from ..scene import project_session
-from . import commands
+from . import commands, labels
 
 TRANSLATION_CONTEXT = "Geoblender"
 TAB = "Drillholes"  # msgid de la pestaña
@@ -93,32 +96,29 @@ class GEOBLENDER_PT_dh_pending(_DrillholesTab, bpy.types.Panel):
 
     def draw(self, context: Any) -> None:
         layout = self.layout
+        width = labels.sidebar_width(context)
         pending = getattr(context.window_manager, IMPORT_PROPERTY)
         if not pending.operation_uid:
-            layout.label(text=tr("No drillhole import is waiting for a decision"),
-                         icon="INFO", translate=False)
+            labels.draw_wrapped(layout, tr("No drillhole import is waiting for a decision"),
+                                width, icon="INFO")
             return
         if pending.confirm:  # una base de RecMin de esquema desconocido (RF-005-15)
-            column = layout.column(align=True)
-            for line in pending.confirm.splitlines():
-                column.label(text=line, icon="ERROR", translate=False)
-        if pending.new_codes:
-            layout.label(text=tr("New codes: {codes}", codes=pending.new_codes),
-                         icon="ERROR", translate=False)
-            layout.prop(pending, "register_codes", text=tr("Register the new codes"),
-                        translate=False)
+            labels.draw_wrapped(layout, pending.confirm, width, icon="ERROR")
+        if pending.new_codes:  # una línea por catálogo (T49)
+            layout.label(text=tr("New codes"), icon="ERROR", translate=False)
+            labels.draw_wrapped(layout, pending.new_codes, width, icon="BLANK1")
+            layout.prop(pending, "register_codes", text=tr("Register them"), translate=False)
         if pending.holes:
-            layout.label(text=tr("Drillholes already in the project"), translate=False)
+            labels.draw_wrapped(layout, tr("Drillholes already in the project: check those "
+                                           "whose records are kept"), width)
             column = layout.column(align=True)
             for hole in pending.holes:
-                text = tr("{hole}: keep the existing records", hole=hole.name)
-                column.prop(hole, "keep", text=text, translate=False)
+                column.prop(hole, "keep", text=hole.name, translate=False)
         if pending.question:
-            column = layout.column(align=True)
-            for line in pending.question.splitlines():
-                column.label(text=line, icon="QUESTION", translate=False)
+            labels.draw_wrapped(layout, pending.question, width, icon="QUESTION")
             layout.prop(pending, "reason", text=tr("Reason"), translate=False)
-        row = layout.row(align=True)
+        # Los dos botones en una fila; «Leer igualmente», más largo, en una columna (T49).
+        row = layout.column(align=True) if pending.confirm else layout.row(align=True)
         apply = tr("Read it anyway") if pending.confirm else tr("Apply")
         for stage, text, icon in (("APPLY", apply, "CHECKMARK"),
                                   ("DISCARD", tr("Discard"), "CANCEL")):

@@ -82,6 +82,19 @@ se lea igualmente (la misma orden con ``stage``: se lee otra vez con ``accept_sc
 informe en ``dh_import_log`` tiene una línea por tabla de RecMin, con los registros de los
 sondeos que se conservan fuera y los de los que se sustituyen contados (RF-005-12).
 
+**Los diálogos de las dos importaciones** (T49; RF-005-07; M1, M2 y M5 en pantalla): al final,
+lo que impide importar (lo que falta declarar, una base abierta sin confirmar…) encima de
+«Importar», desactivado mientras tanto, y «Cancelar»: los de Geoblender
+(:func:`draw_import_buttons`, ``template_popup_confirm``), que sustituyen a los del diálogo.
+«Importar» lanza la orden desde la interfaz con lo del diálogo (las tablas del asistente, en
+``mapping_json``: :func:`order_json`; la base, con ``confirmed``). Si el «Aceptar» del propio
+diálogo llega con algo que falta, se avisa y el diálogo se abre otra vez como estaba (las
+tablas, con ``wizard_state``). En el explorador de ficheros, la orden enseña solo una nota: lo
+declarado lo pide su diálogo. La siguiente importación de la sesión con la misma orden empieza
+en la carpeta de la anterior y, en el mismo proyecto, con lo que se declaró
+(:func:`remember_import`, :func:`recall_import`). Los textos largos, en líneas que caben
+(``bl.ui.labels``).
+
 **Validar y exportar el informe** (T27; HU-005-3; RF-005-16 a RF-005-19; plan §5.3.1, §5.6.6 y
 §5.6.9; D-19): ``geoblender.dh_validate`` valida la base con la rejilla del proyecto
 (``gis_dtm_*``) que se elige en su diálogo (por defecto, la vigente más reciente,
@@ -150,6 +163,7 @@ import functools
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
@@ -220,11 +234,14 @@ from ..props.dh import (
     VALIDATION_PROPERTY,
     GEOBLENDER_PG_dh_table,
     fill_tables,
+    restore_tables,
     suggest_fields,
     table_mapping,
+    tables_state,
 )
 from ..scene import dh_view, project_session, undo_watch, views
 from ..ui import context as ui_context
+from ..ui import labels
 from ..ui.commands import UNDELIVERED_FLAG, unavailable_note
 from ..ui.commands import catalog as command_catalog
 from . import core_provenance
@@ -420,6 +437,7 @@ def unregister() -> None:
     _WAITING.clear()
     _ORDERS.clear()
     _PREVIEWS.clear()
+    _LAST_IMPORTS.clear()
     while _UNDO:
         _UNDO.pop()()
 
@@ -610,6 +628,9 @@ SAMPLE_ROWS = 3
 DIALOG_WIDTH = 720
 RECMIN_DIALOG_WIDTH = 600
 """El ancho del diálogo de una base de RecMin (sin tablas que enseñar: solo lo declarado)."""
+NOTE_DIALOG_WIDTH = 400
+"""El ancho de los diálogos pequeños de los sondeos (la referencia del azimut, la regla bajo el
+límite de detección y la validación): su nota, en pocas líneas que se leen enteras (T49)."""
 _PREVIEWS_KEPT = 64
 _ROLE_MSGIDS: Mapping[str, str] = MappingProxyType(
     {ROLES[identifier]: name for identifier, name, _description in ROLE_ITEMS})
@@ -741,11 +762,12 @@ def suggested_tables(paths: Sequence[Path], options: ReadOptions, *,
 
 
 def json_tables(text: str, directory: Path | None, options: ReadOptions) -> list[TableChoice]:
-    """Las tablas de ``mapping_json`` (para guiones y pruebas): una lista de objetos con su
-    fichero (``file``, relativo a ``directory``), su papel (``role``, uno de
-    ``drillholes.provenance.TABLE_ROLES``) y, si se quiere, su correspondencia (``mapping``;
-    si no, la propuesta), su hoja (``sheet``, obligatoria en un XLSX) y el nombre de su entrada
-    (``name``). ``ValueError`` con el aviso si no lo es."""
+    """Las tablas de ``mapping_json`` (para guiones y pruebas, y el botón «Importar» del
+    asistente: :func:`order_json`): una lista de objetos con su fichero (``file``, relativo a
+    ``directory``), su papel (``role``, uno de ``drillholes.provenance.TABLE_ROLES``) y, si se
+    quiere, su correspondencia (``mapping``, tal cual, también vacía; sin ella, la propuesta),
+    su hoja (``sheet``, obligatoria en un XLSX) y el nombre de su entrada (``name``).
+    ``ValueError`` con el aviso si no lo es."""
     try:
         data = json.loads(text)
     except ValueError:
@@ -773,10 +795,32 @@ def json_tables(text: str, directory: Path | None, options: ReadOptions) -> list
         probe = TableChoice(path, reader, role, {}, sheet,
                             str(item.get("name") or entry_name(path, sheet)))
         table = preview(probe, options)
-        mapping = item.get("mapping") or tabular.suggest_mapping(role, table.columns)
+        mapping = item.get("mapping")
+        if mapping is None:
+            mapping = tabular.suggest_mapping(role, table.columns)
         found.append(dataclasses.replace(probe, mapping=dict(mapping),
                                          columns=tuple(table.columns)))
     return found
+
+
+def order_json(choices: Sequence[TableChoice]) -> str:
+    """Las tablas ``choices`` (las del asistente) en el JSON de ``mapping_json``, que
+    :func:`json_tables` lee igual: su fichero (la ruta entera), su papel, su correspondencia tal
+    cual, su hoja y el nombre de su entrada (T49: el botón «Importar» del asistente lanza así la
+    orden)."""
+    return json.dumps([{"file": str(choice.path), "role": choice.role,
+                        "mapping": dict(choice.mapping), "sheet": choice.sheet or "",
+                        "name": choice.name} for choice in choices], ensure_ascii=False)
+
+
+def importing_text(choices: Sequence[TableChoice]) -> str:
+    """El aviso de una importación de tablas que empieza: la tabla que se importa o cuántas
+    (T49: «Importando 1 tablas»)."""
+    if len(choices) == 1:
+        return tr("Importing the drillhole table «{table}» in the background…",
+                  table=choices[0].label)
+    return tr("Importing {count} drillhole tables in the background…",
+              count=format_number(len(choices), 0))
 
 
 def check_declarations(choices: Sequence[TableChoice], declaration: SourceDeclaration,
@@ -989,6 +1033,18 @@ def _codes_text(codes: Mapping[str, Sequence[Any]]) -> str:
                      f"({_text(_KIND_MSGIDS[kind])})" for kind, items in codes.items() if items)
 
 
+def _codes_lines(codes: Mapping[str, Sequence[Any]]) -> list[str]:
+    """Los códigos nuevos, una línea por catálogo, como los enseña «Importación pendiente»
+    (T49): «Litologías: SUE, ARC», «Elementos: Au, Cu»."""
+    lines = []
+    for kind, items in codes.items():
+        if items:
+            name = _text(_KIND_MSGIDS[kind])
+            lines.append(tr("{kind}: {codes}", kind=name[:1].upper() + name[1:],
+                            codes=", ".join(_code_text(kind, item) for item in items)))
+    return lines
+
+
 def _decision_text(order: _Order) -> str:
     """Lo que hay que decidir de ``order``: lo que hay que confirmar antes de leer, los códigos
     nuevos, los sondeos que ya están en el proyecto y las sustituciones sin motivo."""
@@ -1059,7 +1115,7 @@ def _show_pending() -> None:
     pending.operation_uid = "" if order is None else order.uid
     pending.command = "" if order is None else order.command
     pending.confirm = "" if order is None else order.confirm
-    pending.new_codes = "" if order is None else _codes_text(order.codes)
+    pending.new_codes = "" if order is None else "\n".join(_codes_lines(order.codes))
     pending.register_codes = True
     pending.question = "" if order is None else "\n".join(
         entry.substitute for entry in order.live if entry.substitute)
@@ -2356,6 +2412,83 @@ def _open_wizard(values: Mapping[str, Any], idname: str = IMPORT_DRILLHOLES) -> 
     bpy.app.timers.register(call, first_interval=0.0)
 
 
+# --- Los diálogos de las importaciones (T49; RF-005-07; M1, M2 y M5 en pantalla) ---------------
+
+_REMEMBERED: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    IMPORT_DRILLHOLES: tuple(name for name, _text in (*_DECLARATION_PROPS, *_READING_PROPS)),
+    IMPORT_RECMIN: (*(name for name, _text in _RECMIN_DECLARATION_PROPS), "decimal_mark"),
+})
+"""Lo que se recuerda de la última importación de la sesión con cada orden: lo declarado y cómo
+se lee (no la entrega, el motivo, la hoja ni las confirmaciones de una base)."""
+
+
+@dataclass(frozen=True)
+class _LastImport:
+    """La última importación de la sesión con una orden: su carpeta, su proyecto y lo que se
+    recuerda de ella (:data:`_REMEMBERED`)."""
+
+    folder: Path
+    project_uid: str
+    values: Mapping[str, Any]
+
+
+_LAST_IMPORTS: dict[str, _LastImport] = {}
+
+
+def remember_import(idname: str, operator: Any, project: Any, folder: Path) -> None:
+    """Recuerda, de la importación que empezó la orden ``operator`` (``idname``) en ``project``,
+    la carpeta ``folder`` y lo declarado (T49: la siguiente empieza ahí y con ello)."""
+    values = {name: getattr(operator, name) for name in _REMEMBERED[idname]}
+    _LAST_IMPORTS[idname] = _LastImport(Path(folder), project.uid, MappingProxyType(values))
+
+
+def recall_import(operator: Any, idname: str) -> Path | None:
+    """Lo de la última importación de la sesión con la orden ``idname``: lo declarado, en lo
+    que ``operator`` no trae (solo en el mismo proyecto: lo declarado es de sus fuentes; el
+    diálogo lo enseña antes de importar), y su carpeta, si sigue ahí (``None`` si no)."""
+    last = _LAST_IMPORTS.get(idname)
+    if last is None:
+        return None
+    project = core_provenance.SESSION.project
+    if project is not None and project.uid == last.project_uid:
+        for name, value in last.values.items():
+            if not operator.properties.is_property_set(name):
+                setattr(operator, name, value)
+    return last.folder if last.folder.is_dir() else None
+
+
+def _missing_text(exc: DeclarationError) -> str:
+    """Lo que falta declarar, como lo enseñan los diálogos (RF-005-07)."""
+    return tr("Missing declarations: {missing}", missing=spanish_list(exc.missing))
+
+
+def draw_import_buttons(layout: Any, idname: str, problem: str | None, width_px: float,
+                        properties: Mapping[str, Any]) -> None:
+    """El final de un diálogo de importación (T49; RF-005-07): lo que impide importar, si algo
+    lo impide (``problem``, en líneas que caben en ``width_px``), y los botones de Geoblender,
+    que sustituyen a los del diálogo (``template_popup_confirm``; trampas §5): «Importar»,
+    desactivado mientras algo lo impida, y «Cancelar». «Importar» lanza la orden ``idname``
+    desde la interfaz (``INVOKE_DEFAULT``: sin volver a abrir el diálogo, que lo evitan
+    ``properties``) con ``properties``; los dos cierran el diálogo."""
+    if problem:
+        labels.draw_wrapped(layout, problem, width_px, icon="ERROR")
+    layout.operator_context = "INVOKE_DEFAULT"
+    if problem:
+        split = layout.split(factor=0.5)
+        blocked = split.row()
+        blocked.enabled = False
+        blocked.operator(idname, text=tr("Import"), translate=False)
+        split.row().template_popup_confirm("", text="", cancel_text=tr("Cancel"),
+                                           translate=False)
+        return
+    buttons = layout.template_popup_confirm(idname, text=tr("Import"), translate=False,
+                                            cancel_text=tr("Cancel"))
+    if buttons is None:  # fuera de un diálogo, Blender no los dibuja
+        return
+    for name, value in properties.items():
+        setattr(buttons, name, value)
+
+
 def _reread(order: _Order) -> None:
     """Lee otra vez, con la confirmación (``accept_schema``), las bases de RecMin de ``order``
     que la pedían (RF-005-15): su lectura anterior, dada por incorporada; la nueva, en la
@@ -2535,6 +2668,9 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
     tables: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_dh_table, options=_HIDDEN,
     )
+    # (T49) Las tablas del asistente tal como estaban (``tables_state`` en JSON), para abrirlo
+    # otra vez igual si su «Aceptar» llega con algo que falta.
+    wizard_state: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
     stage: EnumProperty(  # type: ignore[valid-type]
         items=STAGE_ITEMS, default=STAGE_NEW, options=_HIDDEN,
     )
@@ -2585,50 +2721,98 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
             date_format=options.date_format)
 
     def invoke(self, context: Any, event: Any) -> set[str]:
+        """Desde la interfaz: con ``mapping_json`` (el botón «Importar» del asistente) o
+        ``stage``, la orden; con ficheros, el asistente (con ``wizard_state``, como estaba);
+        sin ellos, el explorador de ficheros, en la carpeta de la última importación de la
+        sesión (T49). Lo declarado en ella en el mismo proyecto, en lo que la orden no trae."""
         self.provenance_dialog = True
         if self.stage != STAGE_NEW or self.mapping_json.strip():
             return self.execute(context)
-        if self.wizard or len(self.files) or self.filepath:
+        folder = recall_import(self, IMPORT_DRILLHOLES)
+        if self.wizard_state or self.wizard or len(self.files) or self.filepath:
             try:
-                fill_tables(self.tables, suggested_tables(self._paths(), _options_of(self),
-                                                          sheet=self.sheet.strip() or None))
-            except (GeoblenderError, OSError, ValueError) as exc:
+                if self.wizard_state:
+                    restore_tables(self.tables, json.loads(self.wizard_state))
+                    self.wizard_state = ""
+                else:
+                    fill_tables(self.tables, suggested_tables(
+                        self._paths(), _options_of(self), sheet=self.sheet.strip() or None))
+            except (GeoblenderError, OSError, ValueError, KeyError, TypeError) as exc:
                 self.report({"ERROR"}, error_text(exc))
                 return {"CANCELLED"}
             self.wizard = True
             return context.window_manager.invoke_props_dialog(
                 self, width=DIALOG_WIDTH, translate=False, title=tr("Import of drillholes"))
+        if folder is not None and not self.directory:
+            self.directory = str(folder) + os.sep
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
-    def draw(self, context: Any) -> None:
-        layout = self.layout
-        project = core_provenance.SESSION.project
-        options = _options_of(self)
-        split = layout.split(factor=0.5)
-        for column, props in ((split.column(), _DECLARATION_PROPS),
-                              (split.column(), (*_READING_PROPS, *_DELIVERY_PROPS))):
-            column.use_property_split = True
-            for prop, text in props:
-                column.prop(self, prop, text=_text(text), translate=False)
+    def _checked(self, project: Any, options: ReadOptions,
+                 ) -> tuple[SourceDeclaration | None, list[TableChoice], str | None]:
+        """Lo declarado, las tablas que se importan del asistente y lo que impide importarlas
+        (RF-005-07; ``None`` si nada): lo que falta declarar, una correspondencia que no vale,
+        ninguna tabla que importar o la fecha de entrega. Sin declaración, ``None``."""
         try:
             declaration = self._declaration(project, options)
             choices = [_table_choice(table) for table in self.tables
                        if table.role != NOT_IMPORTED]
             check_declarations(choices, declaration, options)
         except DeclarationError as exc:
-            layout.label(text=tr("Missing declarations: {missing}",
-                                 missing=spanish_list(exc.missing)),
-                         icon="ERROR", translate=False)
-            declaration = None
+            return None, [], _missing_text(exc)
         except (GeoblenderError, OSError, ValueError) as exc:
-            layout.label(text=error_text(exc), icon="ERROR", translate=False)
-            declaration = None
+            return None, [], error_text(exc)
+        if not choices:
+            return declaration, [], tr("Choose the drillhole tables to import")
+        try:
+            _delivery_day(self.received_at)
+        except (GeoblenderError, ValueError) as exc:
+            return declaration, choices, error_text(exc)
+        return declaration, choices, None
+
+    def _order_values(self, choices: Sequence[TableChoice]) -> dict[str, Any]:
+        """Lo que lleva el botón «Importar» del asistente (T49): lo declarado, cómo se leen y
+        la entrega, y las tablas con su correspondencia en ``mapping_json``."""
+        values = {name: getattr(self, name) for name in _KEPT_PROPS if name != "sheet"}
+        values["mapping_json"] = order_json(choices)
+        return values
+
+    def _wizard_values(self) -> dict[str, Any]:
+        """Lo que hace falta para abrir otra vez el asistente como está (T49): lo de la orden,
+        sus ficheros y sus tablas (``wizard_state``)."""
+        values: dict[str, Any] = {name: getattr(self, name) for name in _KEPT_PROPS}
+        return {**values, "directory": self.directory, "filepath": self.filepath,
+                "files": [{"name": item.name} for item in self.files if item.name],
+                "wizard_state": json.dumps(tables_state(self.tables), ensure_ascii=False)}
+
+    def draw(self, context: Any) -> None:
+        """El asistente: lo declarado, cómo se leen y la entrega; cada tabla (RF-005-05); y
+        (T49) lo que impide importar, encima de «Importar» (desactivado mientras tanto) y
+        «Cancelar». En el explorador de ficheros, solo una nota: lo demás, después."""
+        layout = self.layout
+        if labels.in_file_browser(context):
+            labels.draw_wrapped(layout, tr("Choose the drillhole tables (CSV, TXT or XLSX): "
+                                           "the role of each one, its columns and what must "
+                                           "be declared are asked next"),
+                                labels.sidebar_width(context), icon="INFO")
+            return
+        project = core_provenance.SESSION.project
+        options = _options_of(self)
+        width = labels.dialog_width(DIALOG_WIDTH)
+        split = layout.split(factor=0.5)
+        for column, props in ((split.column(), _DECLARATION_PROPS),
+                              (split.column(), (*_READING_PROPS, *_DELIVERY_PROPS))):
+            column.use_property_split = True
+            for prop, text in props:
+                column.prop(self, prop, text=_text(text), translate=False)
+        declaration, choices, problem = self._checked(project, options)
         for table in self.tables:
-            self._draw_table(layout.box(), table, options, declaration)
+            self._draw_table(layout.box(), table, options, declaration, width)
+        draw_import_buttons(layout, IMPORT_DRILLHOLES, problem, width,
+                            self._order_values(choices))
 
     def _draw_table(self, box: Any, table: Any, options: ReadOptions,
-                    declaration: SourceDeclaration | None) -> None:
+                    declaration: SourceDeclaration | None, width: float) -> None:
         """Una tabla del asistente: su papel, el campo de cada columna con unos valores de
         ejemplo y sus primeras filas tal como se van a interpretar (RF-005-05)."""
         row = box.row()
@@ -2640,7 +2824,7 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
             choice = _table_choice(table)
             rows = preview(choice, options).rows
         except (GeoblenderError, OSError, ValueError) as exc:
-            box.label(text=error_text(exc), icon="ERROR", translate=False)
+            labels.draw_wrapped(box, error_text(exc), width, icon="ERROR")
             return
         grid = box.grid_flow(columns=3, even_columns=False, align=True)
         for column in table.columns:
@@ -2654,7 +2838,7 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
         lines = box.column(align=True)
         lines.label(text=tr("As it will be read (first rows)"), translate=False)
         for line in preview_lines(choice, options, declaration):
-            lines.label(text=line, translate=False)
+            labels.draw_wrapped(lines, line, width)
 
     def execute(self, context: Any) -> set[str]:
         blocked = unavailable_reason(IMPORT_DRILLHOLES)
@@ -2676,27 +2860,35 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
             return {"CANCELLED"}
         try:
             choices = self._choices(options)
-        except (GeoblenderError, OSError, ValueError) as exc:
-            self.report({"ERROR"}, error_text(exc))
-            return {"CANCELLED"}
-        if not choices:
-            self.report({"ERROR"}, tr("Choose the drillhole tables to import"))
-            return {"CANCELLED"}
-        try:
+            if not choices:
+                raise ValueError(tr("Choose the drillhole tables to import"))
             declaration = self._declaration(project, options)
             check_declarations(choices, declaration, options)
             received_at = _delivery_day(self.received_at)
+        except DeclarationError as exc:
+            return self._refuse(_missing_text(exc), error_text(exc))
         except (GeoblenderError, OSError, ValueError) as exc:
-            self.report({"ERROR"}, error_text(exc))
-            return {"CANCELLED"}
+            return self._refuse(error_text(exc))
         result = start_order(self, context, project, choices, declaration, options,
                              received_at=received_at,
                              received_from=self.received_from.strip() or None,
                              reason=self.reason.strip() or None)
         if result == {"FINISHED"}:
-            self.report({"INFO"}, tr("Importing {count} drillhole tables in the background…",
-                                     count=format_number(len(choices), 0)))
+            remember_import(IMPORT_DRILLHOLES, self, project, choices[0].path.parent)
+            self.report({"INFO"}, importing_text(choices))
         return result
+
+    def _refuse(self, shown: str, said: str | None = None) -> set[str]:
+        """Lo que impide importar (RF-005-07; T49): si llega del «Aceptar» del propio
+        asistente, que Blender cierra antes, se avisa (``shown``) y el asistente se abre otra
+        vez como estaba, que lo enseña encima de «Importar»; si no (un guion), el error
+        (``said``: el texto entero)."""
+        if self.wizard and self.provenance_dialog and len(self.tables):
+            self.report({"WARNING"}, shown)
+            _open_wizard(self._wizard_values())
+        else:
+            self.report({"ERROR"}, said or shown)
+        return {"CANCELLED"}
 
 
 def _locked_text(path: Path, lock: Path) -> str:
@@ -2801,6 +2993,8 @@ class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOper
         items=STAGE_ITEMS, default=STAGE_NEW, options=_HIDDEN,
     )
     pending: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
+    # (T49) Lanzada por el botón «Importar» de su diálogo: la orden, sin abrirlo otra vez.
+    confirmed: BoolProperty(options=_HIDDEN)  # type: ignore[valid-type]
 
     def _path(self) -> Path | None:
         """La base elegida (``None`` si no hay ninguna)."""
@@ -2828,37 +3022,71 @@ class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOper
             density_kind=DENSITY_KINDS[self.density_kind])
 
     def invoke(self, context: Any, event: Any) -> set[str]:
+        """Desde la interfaz: con ``stage`` o lanzada por su botón «Importar» (``confirmed``),
+        la orden; con la base, su diálogo; sin ella, el explorador de ficheros, en la carpeta
+        de la última base de la sesión (T49). Lo declarado en ella en el mismo proyecto, en lo
+        que la orden no trae."""
         self.provenance_dialog = True
-        if self.stage != STAGE_NEW:
+        if self.stage != STAGE_NEW or self.confirmed:
             return self.execute(context)
+        folder = recall_import(self, IMPORT_RECMIN)
         if self.wizard or self.filepath.strip():
             self.wizard = True
             return context.window_manager.invoke_props_dialog(
                 self, width=RECMIN_DIALOG_WIDTH, translate=False,
                 title=tr("Import of a RecMin drillhole database"))
+        if folder is not None:
+            self.filepath = str(folder) + os.sep
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
+    def _problem(self, path: Path | None) -> str | None:
+        """Lo que impide importar la base ``path`` (RF-005-07, RF-005-15; ``None`` si nada):
+        ninguna base o una que no es de Access; lo que falta declarar; otro programa la tiene
+        abierta sin confirmar que se lea; la fecha de entrega."""
+        if path is None:
+            return tr("Choose the RecMin drillhole database to import")
+        try:
+            mdb_ports.read_format(path)
+            check_recmin(self._declaration(core_provenance.SESSION.project, self._options()))
+            _delivery_day(self.received_at)
+        except DeclarationError as exc:
+            return _missing_text(exc)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            return error_text(exc)
+        if mdb_ports.lock_file(path) is not None and not self.accept_locked:
+            return tr("Confirm above that it is read although it is open")
+        return None
+
+    def _dialog_values(self) -> dict[str, Any]:
+        """Lo de la orden que recibe su diálogo (al abrirlo otra vez, T49)."""
+        values = {name: getattr(self, name) for name in _RECMIN_KEPT_PROPS}
+        return {**values, "filepath": self.filepath}
+
     def draw(self, context: Any) -> None:
         """La base (su formato y, si otro programa la tiene abierta, el aviso y su
-        confirmación: RF-005-15), las declaraciones y la entrega y, si falta alguna
-        declaración, cuál (RF-005-07)."""
+        confirmación: RF-005-15), las declaraciones y la entrega y (T49) lo que impide
+        importar, encima de «Importar» (desactivado mientras tanto) y «Cancelar»
+        (RF-005-07). En el explorador de ficheros, solo una nota: lo demás, después."""
         layout = self.layout
+        if labels.in_file_browser(context):
+            labels.draw_wrapped(layout, tr("Choose the RecMin drillhole database (MDB or "
+                                           "ACCDB): what must be declared is asked next"),
+                                labels.sidebar_width(context), icon="INFO")
+            return
+        width = labels.dialog_width(RECMIN_DIALOG_WIDTH)
         path = self._path()
-        box = layout.box()
-        if path is None:
-            box.label(text=tr("Choose the RecMin drillhole database to import"), icon="ERROR",
-                      translate=False)
-        else:
+        if path is not None:
+            box = layout.box()
             try:
                 found, _version = mdb_ports.read_format(path)
                 shown = " · ".join((path.name, found.label))  # el formato, del dominio
-                box.label(text=shown, icon="FILE", translate=False)
+                labels.draw_wrapped(box, shown, width, icon="FILE")
             except (GeoblenderError, OSError) as exc:
-                box.label(text=error_text(exc), icon="ERROR", translate=False)
+                labels.draw_wrapped(box, error_text(exc), width, icon="ERROR")
             lock = mdb_ports.lock_file(path)
             if lock is not None:
-                box.label(text=_locked_text(path, lock), icon="ERROR", translate=False)
+                labels.draw_wrapped(box, _locked_text(path, lock), width, icon="ERROR")
                 box.prop(self, "accept_locked", text=_text(LOCKED_LABEL), translate=False)
         split = layout.split(factor=0.5)
         for column, props in ((split.column(), _RECMIN_DECLARATION_PROPS),
@@ -2866,14 +3094,8 @@ class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOper
             column.use_property_split = True
             for prop, text in props:
                 column.prop(self, prop, text=_text(text), translate=False)
-        try:
-            check_recmin(self._declaration(core_provenance.SESSION.project, self._options()))
-        except DeclarationError as exc:
-            layout.label(text=tr("Missing declarations: {missing}",
-                                 missing=spanish_list(exc.missing)),
-                         icon="ERROR", translate=False)
-        except (GeoblenderError, ValueError) as exc:
-            layout.label(text=error_text(exc), icon="ERROR", translate=False)
+        draw_import_buttons(layout, IMPORT_RECMIN, self._problem(path), width,
+                            {**self._dialog_values(), "wizard": True, "confirmed": True})
 
     def execute(self, context: Any) -> set[str]:
         blocked = unavailable_reason(IMPORT_RECMIN)
@@ -2885,11 +3107,9 @@ class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOper
                 return decide_pending(self, context)
         path = self._path()
         if path is None or not path.is_file():
-            self.report({"ERROR"}, tr("Choose the RecMin drillhole database to import"))
-            return {"CANCELLED"}
+            return self._refuse(tr("Choose the RecMin drillhole database to import"))
         if self.provenance_dialog and not self.wizard:  # tras elegirla: su diálogo
-            values = {name: getattr(self, name) for name in _RECMIN_KEPT_PROPS}
-            _open_wizard({**values, "filepath": self.filepath}, IMPORT_RECMIN)
+            _open_wizard(self._dialog_values(), IMPORT_RECMIN)
             return {"CANCELLED"}
         project = core_provenance.SESSION.project
         options = self._options()
@@ -2901,9 +3121,10 @@ class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOper
             declaration = self._declaration(project, options)
             check_recmin(declaration)
             received_at = _delivery_day(self.received_at)
+        except DeclarationError as exc:
+            return self._refuse(_missing_text(exc), error_text(exc))
         except (GeoblenderError, OSError, ValueError) as exc:
-            self.report({"ERROR"}, error_text(exc))
-            return {"CANCELLED"}
+            return self._refuse(error_text(exc))
         choice = TableChoice(path, provenance.RECMIN_MDB, "", {}, None, entry_name(path))
         result = start_order(self, context, project, [choice], declaration, options,
                              received_at=received_at,
@@ -2911,9 +3132,22 @@ class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOper
                              reason=self.reason.strip() or None,
                              accept_schema=self.accept_schema, command=IMPORT_RECMIN)
         if result == {"FINISHED"}:
+            remember_import(IMPORT_RECMIN, self, project, path.parent)
             self.report({"INFO"}, tr("Importing the RecMin drillhole database «{file}» in the "
                                      "background…", file=path.name))
         return result
+
+    def _refuse(self, shown: str, said: str | None = None) -> set[str]:
+        """Lo que impide importar (RF-005-07, RF-005-15; T49): si llega de su diálogo (su
+        «Aceptar», que Blender cierra antes), se avisa (``shown``) y el diálogo se abre otra
+        vez como estaba, que lo enseña encima de «Importar»; si no (un guion), el error
+        (``said``: el texto entero)."""
+        if self.wizard and self.provenance_dialog:
+            self.report({"WARNING"}, shown)
+            _open_wizard(self._dialog_values(), IMPORT_RECMIN)
+        else:
+            self.report({"ERROR"}, said or shown)
+        return {"CANCELLED"}
 
 
 class GEOBLENDER_OT_dh_set_detection_limit_policy(_DrillholesCommand, bpy.types.Operator):
@@ -2930,13 +3164,14 @@ class GEOBLENDER_OT_dh_set_detection_limit_policy(_DrillholesCommand, bpy.types.
 
     def invoke(self, context: Any, event: Any) -> set[str]:
         return context.window_manager.invoke_props_dialog(
-            self, translate=False, title=_text(RULE_LABEL))
+            self, width=NOTE_DIALOG_WIDTH, translate=False, title=_text(RULE_LABEL))
 
     def draw(self, context: Any) -> None:
         layout = self.layout
         layout.prop(self, "parameter", text=tr("Change"), translate=False)
-        layout.label(text=tr("It is changed with its reason in the project parameters; the "
-                             "values stored do not change"), icon="INFO", translate=False)
+        labels.draw_wrapped(layout, tr("It is changed with its reason in the project "
+                                       "parameters; the values stored do not change"),
+                            labels.dialog_width(NOTE_DIALOG_WIDTH), icon="INFO")
 
     def execute(self, context: Any) -> set[str]:
         """La regla bajo el límite de detección (RF-005-26; plan §5.6.10, D-22): la registra
@@ -3001,14 +3236,14 @@ class GEOBLENDER_OT_dh_validate(_DrillholesCommand, ProvenanceAwareOperator,
         if not self.surface:
             self.surface = records[-1].name
         return context.window_manager.invoke_props_dialog(
-            self, translate=False, title=_text(VALIDATION_LABEL))
+            self, width=NOTE_DIALOG_WIDTH, translate=False, title=_text(VALIDATION_LABEL))
 
     def draw(self, context: Any) -> None:
         layout = self.layout
         layout.prop_search(self, "surface", self, "surfaces", text=tr("Surface"),
                            translate=False)
-        layout.label(text=tr("The collar elevations are compared with it (DH-W05)"),
-                     icon="INFO", translate=False)
+        labels.draw_wrapped(layout, tr("The collar elevations are compared with it (DH-W05)"),
+                            labels.dialog_width(NOTE_DIALOG_WIDTH), icon="INFO")
 
     def execute(self, context: Any) -> set[str]:
         blocked = unavailable_reason(VALIDATE)
@@ -3331,7 +3566,7 @@ class GEOBLENDER_OT_dh_set_azimuth_reference(_DrillholesCommand, ProvenanceAware
         declination = chosen.settings.get("declination_deg")
         self.declination_deg = "" if declination is None else _number(float(declination))
         return context.window_manager.invoke_props_dialog(
-            self, translate=False, title=_text(AZIMUTH_LABEL))
+            self, width=NOTE_DIALOG_WIDTH, translate=False, title=_text(AZIMUTH_LABEL))
 
     def draw(self, context: Any) -> None:
         layout = self.layout
@@ -3342,8 +3577,9 @@ class GEOBLENDER_OT_dh_set_azimuth_reference(_DrillholesCommand, ProvenanceAware
         row.enabled = self.azimuth_ref == "MAGNETIC"
         row.prop(self, "declination_deg", text=tr("Magnetic declination"), translate=False)
         layout.prop(self, "reason", text=tr("Reason"), translate=False)
-        layout.label(text=tr("The input is replaced: the traces of its drillholes become "
-                             "stale"), icon="INFO", translate=False)
+        labels.draw_wrapped(layout, tr("The input is replaced: the traces of its drillholes "
+                                       "become stale"),
+                            labels.dialog_width(NOTE_DIALOG_WIDTH), icon="INFO")
 
     def _changes(self, record: InputRecord) -> dict[str, Any]:
         """Lo que cambia de la entrada ``record`` (sus ajustes ``azimuth_ref`` y

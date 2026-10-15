@@ -34,7 +34,9 @@ del módulo (:func:`field_items`, riesgo R9 del plan: Blender no guarda los text
 elementos que devuelve una función, y si Python libera la lista, la interfaz lee basura), con
 un número fijo por campo en todos los papeles. Cambiar el papel de una tabla propone otra vez
 sus campos (``interop.drillholes_tabular.suggest_mapping``); :func:`table_mapping` da la
-correspondencia de una tabla y :func:`fill_tables`, las tablas de unos ficheros.
+correspondencia de una tabla y :func:`fill_tables`, las tablas de unos ficheros. (T49)
+:func:`tables_state` y :func:`restore_tables` las guardan y las ponen tal cual, para abrir otra
+vez el asistente como estaba.
 """
 
 from __future__ import annotations
@@ -222,6 +224,38 @@ def fill_tables(tables: Any, choices: Iterable[Any]) -> None:
             column.index = index
         table.role = choice.role.upper() if choice.role else NOT_IMPORTED
         apply_mapping(table, choice.mapping)
+
+
+def tables_state(tables: Any) -> list[dict[str, Any]]:
+    """Lo que tiene cada tabla del asistente (``tables``) tal cual: su fichero, su hoja, su
+    nombre, su papel (también «No se importa») y el campo de cada columna (también dos con el
+    mismo), en datos de Python, para abrirlo otra vez igual (:func:`restore_tables`; T49)."""
+    return [{"name": table.name, "path": table.path, "sheet": table.sheet,
+             "entry": table.entry, "role": table.role,
+             "columns": [(column.name, column.index, column.field)
+                         for column in table.columns]}
+            for table in tables]
+
+
+def restore_tables(tables: Any, state: Iterable[Mapping[str, Any]]) -> None:
+    """Las tablas del asistente (``tables``) como las dejó :func:`tables_state`: el papel antes
+    que los campos, que dependen de él."""
+    tables.clear()
+    for item in state:
+        table = tables.add()
+        table.name = item["name"]
+        table.path = item["path"]
+        table.sheet = item["sheet"]
+        table.entry = item["entry"]
+        for name, index, _field in item["columns"]:
+            column = table.columns.add()
+            column.name = name
+            column.index = index
+        table.role = item["role"]
+        role = ROLES.get(table.role, "")
+        for column, (_name, _index, field) in zip(table.columns, item["columns"], strict=True):
+            column.table_role = role
+            column.field = field
 
 
 class GEOBLENDER_PG_dh_column(bpy.types.PropertyGroup):

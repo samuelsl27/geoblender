@@ -29,22 +29,35 @@ función (el extractor real y el proceso aparte los prueban ``test_mdb_reader_co
 - RF-005-15, RF-005-14, RF-005-07: con su fichero de bloqueo junto a la base, nada empieza sin
   confirmarlo (el diálogo lo avisa); sin motor, la operación falla con el formato detectado y
   qué instalar, sin escribir nada; sin el CRS, el datum o la referencia del azimut, nada
-  empieza.
+  empieza. T49 (M2 en pantalla): el aviso de la base abierta se lee entero; «Importar» está
+  desactivado hasta confirmarlo y declararlo todo, y su botón lanza la orden desde la
+  interfaz sin abrir otra vez el diálogo; la siguiente base de la sesión empieza en la carpeta
+  y con lo declarado de la anterior. «Importación pendiente» se lee entera en la barra
+  lateral por defecto con escala 1,0 y 1,25 (códigos nuevos, esquema desconocido, sondeos).
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
 import dataclasses
 import json
+import os
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import bpy
 
-from tests.blender.test_dh_import_tabular import DrillholeImportCase, _folder_state, _module
+from tests.blender.test_dh_import_tabular import (
+    DrillholeImportCase,
+    _folder_state,
+    _module,
+    assert_fits,
+    at_scales,
+)
 from tests.support import recmin
-from tests.support.fake_layout import draw
+from tests.support.fake_layout import draw, operator_self
 
 V12 = recmin.RECMIN_DIR / "recmin_v12.sql"
 IMPORT_RECMIN = "geoblender.dh_import_recmin_mdb"
@@ -54,7 +67,7 @@ DECLARED = {"crs": "EPSG:25830", "vertical": "PROJECT", "azimuth_ref": "GRID",
 DIALOG = {**DECLARED, "declination_deg": "", "units": "", "sentinels": "",
           "negative_is_below_dl": False, "density_kind": "ADOPTADO", "accept_locked": False,
           "accept_schema": False, "received_at": "", "received_from": "", "reason": "",
-          "wizard": True, "stage": "NEW", "pending": ""}
+          "wizard": True, "stage": "NEW", "pending": "", "confirmed": False}
 HOLES = ("R-01", "R-02", "R-03", "R-04")
 ELEMENT_COLUMNS = ("ELEMENTO ",)
 
@@ -191,6 +204,20 @@ class RecminImportTest(DrillholeImportCase):
             inclination_convention=model.InclinationConvention.NEGATIVE_DOWN, units={},
             value_rules=model.ValueRules(decimal_mark="."))
 
+    def panel(self, *words: str) -> Any:
+        """«Importación pendiente» dibujada con escala 1,0 y 1,25 (T49; M2 en pantalla): cada
+        texto se lee entero en la barra lateral de su ancho por defecto y están ``words``;
+        devuelve la última."""
+        labels = _module("bl.ui.labels")
+        width = labels.SIDEBAR_WIDTH_PX - labels.SIDEBAR_MARGIN_PX
+        for scale in at_scales():
+            layout = draw(bpy.types.GEOBLENDER_PT_dh_pending, bpy.context)
+            assert_fits(self, layout, width, scale=scale, props=True)
+            shown = " ".join(layout.texts()).replace(",", " ").split()
+            for word in words:
+                self.assertIn(word, shown)
+        return layout
+
     def log(self, operation: str) -> dict[str, tuple[int, int, int, int]]:
         return {table: tuple(rest) for table, *rest in self.rows(
             "SELECT table_role, n_read, n_imported, n_rejected, n_replaced FROM dh_import_log "
@@ -223,7 +250,7 @@ class RecminImportTest(DrillholeImportCase):
         self.assertEqual((len(pending.holes), pending.confirm), (0, ""))
         self.assertEqual(self.rows("SELECT count(*) FROM gb_input"), [(0,)])
         self.assertEqual(self.statuses(launched), ["running"])
-        layout = draw(bpy.types.GEOBLENDER_PT_dh_pending, bpy.context)
+        layout = self.panel(*pending.new_codes.replace(",", " ").replace(";", " ").split())
         self.assertEqual([(button.target, button.properties.stage, button.properties.pending)
                           for button in layout.of_kind("operator")],
                          [(IMPORT_RECMIN, "APPLY", uid), (IMPORT_RECMIN, "DISCARD", uid)])
@@ -276,8 +303,9 @@ class RecminImportTest(DrillholeImportCase):
         uid, pending = self.waiting()
         self.assertIn("13", pending.confirm)
         self.assertEqual((pending.new_codes, len(pending.holes)), ("", 0))
-        layout = draw(bpy.types.GEOBLENDER_PT_dh_pending, bpy.context)
-        self.assertIn(pending.confirm.splitlines()[0], layout.texts())
+        layout = self.panel()
+        # Entero, partido en líneas (también «(ACTUALIZACION.ULTIMA)», que no cabe sola).
+        self.assertIn("".join(pending.confirm.split()), "".join("".join(layout.texts()).split()))
         self.assertEqual(self.statuses([second]), ["running"])
         self.assertEqual(self.decide_recmin("APPLY", uid), {"FINISHED"})
         self.finish()
@@ -285,6 +313,7 @@ class RecminImportTest(DrillholeImportCase):
         uid, pending = self.waiting()
         self.assertEqual(pending.confirm, "")
         self.assertEqual(sorted(hole.name for hole in pending.holes), list(HOLES))
+        self.panel(*HOLES)
         for hole in pending.holes:
             hole.keep = hole.name == "R-02"
         self.assertEqual(self.decide_recmin("APPLY", uid), {"FINISHED"})
@@ -348,19 +377,62 @@ class RecminImportTest(DrillholeImportCase):
         self.assertEqual(self.session.pending_ingests(), pending)
         self.assertEqual(self.extractor.opened, [])
         dialog = self.dh_ops.GEOBLENDER_OT_dh_import_recmin_mdb
-        texts = draw(dialog, bpy.context, filepath=str(self.base), **DIALOG).texts()
-        self.assertTrue(any("base_recmin.laccdb" in text for text in texts), texts)
-        self.assertTrue(any(self.ports.MdbFormat.ACE.label in text for text in texts), texts)
-        self.assertFalse(any(text.startswith("Falta declarar") for text in texts))
+        labels = _module("bl.ui.labels")
+        for scale in at_scales():
+            layout = draw(dialog, bpy.context, filepath=str(self.base), **DIALOG)
+            texts = layout.texts()
+            self.assertTrue(any("base_recmin.laccdb" in text for text in texts), texts)
+            self.assertTrue(any(self.ports.MdbFormat.ACE.label in text for text in texts), texts)
+            self.assertFalse(any(text.startswith("Falta declarar") for text in texts))
+            # T49 (M2): el aviso de la base abierta, entero; «Importar», desactivado hasta
+            # confirmar que se lea.
+            self.assertIn(self.dh_ops._locked_text(self.base, lock), " ".join(texts))
+            assert_fits(self, layout, labels.dialog_width(self.dh_ops.RECMIN_DIALOG_WIDTH),
+                        scale=scale)
+            (disabled,) = [item for item in layout.of_kind("operator")
+                           if item.target == IMPORT_RECMIN]
+            self.assertEqual((disabled.text, disabled.enabled), ("Importar", False))
         texts = draw(dialog, bpy.context, filepath=str(self.base),
-                     **{**DIALOG, "vertical": "UNDECLARED"}).texts()
+                     **{**DIALOG, "vertical": "UNDECLARED", "accept_locked": True}).texts()
         self.assertIn("Falta declarar: el datum vertical de las cotas", texts)
+        layout = draw(dialog, bpy.context, filepath=str(self.base),
+                      **{**DIALOG, "accept_locked": True})
+        (confirm,) = layout.of_kind("template_popup_confirm")
+        self.assertEqual((confirm.target, confirm.text, confirm.options.get("cancel_text"),
+                          confirm.enabled, confirm.operator_context),
+                         (IMPORT_RECMIN, "Importar", "Cancelar", True, "INVOKE_DEFAULT"))
+        sent = vars(confirm.properties)
+        self.assertEqual((sent["filepath"], sent["accept_locked"], sent["wizard"],
+                          sent["confirmed"]), (str(self.base), True, True, True))
+        for key, value in DECLARED.items():
+            self.assertEqual(sent[key], value, key)
+        run = mock.Mock(return_value={"FINISHED"})
+        confirmed = operator_self(dialog, **{**DIALOG, **sent}, execute=run,
+                                  report=mock.Mock())
+        self.assertEqual(dialog.invoke(confirmed, SimpleNamespace(), None), {"FINISHED"})
+        run.assert_called_once()
+        self.assertTrue(confirmed.provenance_dialog)
 
         missing = self.ports.engine_missing(BASE, self.ports.MdbFormat.ACE,
                                             ("ACE.16 (64 bits): no está registrado",))
         self.use(_FakeExtractor({}, error=missing))
         result, (operation,) = self.run_recmin(accept_locked=True)
         self.assertEqual(result, {"FINISHED"})
+        # T49 (M2): la siguiente base de la sesión, en la carpeta de esta y con lo declarado
+        # (no la confirmación del bloqueo).
+        browser = mock.Mock(return_value={"RUNNING_MODAL"})
+        fresh = operator_self(dialog, **{**DIALOG, "crs": "", "vertical": "UNDECLARED",
+                                         "azimuth_ref": "NONE", "decimal_mark": "COMMA",
+                                         "wizard": False, "confirmed": False},
+                              filepath="", report=mock.Mock(),
+                              properties=SimpleNamespace(is_property_set=lambda name: False))
+        context = SimpleNamespace(window_manager=SimpleNamespace(fileselect_add=browser))
+        self.assertEqual(dialog.invoke(fresh, context, None), {"RUNNING_MODAL"})
+        browser.assert_called_once_with(fresh)
+        self.assertEqual(fresh.filepath, str(self.sources) + os.sep)
+        for key, value in DECLARED.items():
+            self.assertEqual(getattr(fresh, key), value, key)
+        self.assertFalse(fresh.accept_locked)
         self.finish()
         status, reason = self.rows("SELECT status, status_reason FROM gb_operation "
                                    "WHERE uid = ?", operation)[0]
