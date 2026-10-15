@@ -13,7 +13,9 @@ elemento) o en filas (elemento, valor y unidad), catálogo de litologías o de e
   de un campo es un elemento (``"element:Au": "Au"``, :data:`ELEMENT_PREFIX`). El usuario
   la edita; una correspondencia que no vale (campo obligatorio sin columna, columna que no
   está, repetida o con dos columnas del mismo nombre, campo desconocido) se rechaza con
-  :class:`MappingError` (``dh.mapping_*``) nombrando el campo.
+  :class:`MappingError` (``dh.mapping_*``) nombrando el campo. (T25) :func:`suggest_role`
+  propone el papel de una tabla por el nombre de su fichero o de su hoja (o, si no lo dice,
+  por sus columnas).
 - **Declaraciones** (RF-005-07): :func:`needs` dice lo que hay que declarar para leer la
   tabla (``interop.base.Needs``): el CRS y el datum vertical de las bocas; la referencia del
   azimut y el convenio de la inclinación de las desviaciones y de una orientación en boca
@@ -116,6 +118,7 @@ __all__ = [
     "read_role",
     "required_fields",
     "suggest_mapping",
+    "suggest_role",
 ]
 
 
@@ -330,6 +333,60 @@ def suggest_mapping(role: TableRole | str, columns: Sequence[str]) -> dict[str, 
             seen.add(name_key(code))
             mapping[ELEMENT_PREFIX + code] = column
     return mapping
+
+
+_ROLE_NAMES: tuple[tuple[TableRole, tuple[str, ...]], ...] = (
+    # Los catálogos, antes que la litología y los análisis («litologias» empieza por
+    # «litologia»).
+    (TableRole.LITHOLOGY_CATALOG, ("litologias", "lithologies", "lithologycodes", "lithcodes",
+                                   "codigoslitologia", "codigosdelitologia",
+                                   "catalogolitologias", "catalogodelitologias")),
+    (TableRole.ELEMENT_CATALOG, ("elementos", "elements", "analitos", "analytes",
+                                 "catalogoelementos", "catalogodeelementos")),
+    (TableRole.COLLAR, ("bocas", "boca", "collar", "sondeos", "holes", "drillholes")),
+    (TableRole.SURVEY, ("desviacion", "survey", "levantamiento", "downhole")),
+    (TableRole.LITHOLOGY, ("litologia", "lithology", "geologia", "geology", "logueo")),
+    (TableRole.ASSAY_WIDE, ("analisis", "assay", "leyes", "muestras", "samples", "quimica")),
+)
+"""Cómo empieza el nombre (con :func:`header_key`) de un fichero o de una hoja de cada papel;
+los análisis, en columnas o en filas según sus columnas."""
+_ROLES_BY_COLUMNS: tuple[TableRole, ...] = (
+    TableRole.COLLAR, TableRole.SURVEY, TableRole.ASSAY_LONG, TableRole.LITHOLOGY)
+"""Sin nombre reconocible, los papeles que se proponen por sus columnas (todas las
+obligatorias), en este orden."""
+
+
+def _assays(columns: Sequence[str]) -> TableRole:
+    """Unos análisis en filas si tienen columnas de elemento y de valor; si no, en
+    columnas."""
+    found = suggest_mapping(TableRole.ASSAY_LONG, columns)
+    if "element" in found and "value" in found:
+        return TableRole.ASSAY_LONG
+    return TableRole.ASSAY_WIDE
+
+
+def suggest_role(name: str, columns: Sequence[str]) -> TableRole | None:
+    """El papel propuesto para la tabla de un fichero o de una hoja llamado ``name`` (sin la
+    carpeta; la extensión no cuenta) con las columnas ``columns`` (RF-005-05): por cómo
+    empieza su nombre, en español o en inglés («bocas», «collars_2026», «desviaciones»,
+    «litologia», «analisis_filas», «litologias», «elements»…; los análisis, en filas si tienen
+    columnas de elemento y valor y si no, en columnas); si el nombre no lo dice, el primero de
+    bocas, desviaciones, análisis en filas y litología cuyos campos obligatorios están todos
+    entre sus columnas. ``None`` si nada encaja: lo elige quien importa."""
+    if not isinstance(name, str):
+        raise TypeError(f"el nombre de una tabla es un texto, no {name!r}")
+    if isinstance(columns, str) or not isinstance(columns, Sequence):
+        raise TypeError(f"las columnas son una lista de nombres, no {columns!r}")
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    key = header_key(stem)
+    for role, starts in _ROLE_NAMES:
+        if key and any(key.startswith(start) for start in starts):
+            return _assays(columns) if role is TableRole.ASSAY_WIDE else role
+    for role in _ROLES_BY_COLUMNS:
+        found = suggest_mapping(role, columns)
+        if all(field in found for field in required_fields(role)):
+            return role
+    return None
 
 
 class MappingError(GeoblenderError):

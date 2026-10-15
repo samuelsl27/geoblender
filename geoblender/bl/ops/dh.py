@@ -37,7 +37,34 @@ solo escriben en el proyecto llevan ``{'REGISTER'}``; calcular las trazas, que r
 también ``UNDO``. Mientras su orden no llega (:data:`UNDELIVERED`), una no está disponible y
 dice dónde estará («Disponible en 005 · Sondeos», :func:`unavailable_reason`), como un
 provisional, y su recálculo y su reimportación lo dicen con ``dh.not_delivered`` sin hacer
-nada. La entrada 005 del catálogo no está entregada todavía (``entries.toml``).
+nada. La entrada 005 del catálogo entrega sus órdenes tarea a tarea (``entries.toml``).
+
+**Importar tablas de sondeos** (T25; HU-005-1; RF-005-05 a RF-005-07, RF-005-09 a RF-005-12;
+plan §5.6.4 y §5.6.5): ``geoblender.dh_import_drillholes`` (Sondeos ▸ Importar ▸ «Sondeos
+(CSV, XLSX…)»). Tras elegir los ficheros, el **asistente**: las declaraciones de la orden (el
+CRS y el datum vertical de las bocas, la referencia del azimut y la declinación, el convenio de
+la inclinación, la unidad de cada elemento, los valores sin dato, la entrega…), y cada fichero
+(cada hoja de un XLSX) como una tabla con su papel y el campo de cada columna propuestos
+(``interop.drillholes_tabular.suggest_role`` y ``suggest_mapping``; ``bl.props.dh``) y sus
+primeras filas tal como se van a interpretar; si falta una declaración, lo dice y no se importa
+nada (RF-005-07). Desde un guion, ``mapping_json`` da el papel (y, si se quiere, la
+correspondencia y la hoja) de cada fichero. **Una entrada por fichero** (D-15): cada una, una
+operación ``dh.import_tabular`` «en curso» y su lectura (``dh_import_tabular``, en proceso
+aparte). Leídas todas, cada entrada se clasifica (``classify_import``; RF-008-54): la misma
+entrada con los mismos ajustes se reutiliza (cancelada con el aviso); los mismos datos con
+otros ajustes, una sustitución que necesita el motivo. Si hay códigos nuevos (RF-005-10),
+sondeos que el proyecto ya tiene (RF-005-11) o una sustitución sin motivo, la orden espera la
+decisión de la persona en «Importación pendiente» (``GEOBLENDER_PT_dh_pending``,
+:func:`waiting_imports`): la misma orden con ``stage`` ``'APPLY'`` (dar de alta los códigos,
+conservar o sustituir cada sondeo, el motivo) o ``'DISCARD'`` y ``pending`` (el uid de la
+orden). Aplicada, cada entrada con su ``dh_import_apply`` y, todas, **por pasos** en una
+transacción (``drillholes.store.SourceWriter``, RF-005-04): su entrada, lo importado con el
+hash que dio su trabajo, su informe en ``dh_import_log`` (RF-005-12) y su original desde la
+copia verificada del trabajo; después, la **base** (``dh.build_base``,
+:func:`start_build_base`, desde lo importado vigente, ``drillholes.store.live_sources``) y su
+**validación** (``dh.validate``, :func:`start_validate`, con el MDT del proyecto más reciente
+si hay alguno, D-19), cuyas incidencias pasan a la lista de la pestaña «Sondeos». Cancelar o
+fallar antes de un ``COMMIT`` no deja nada de esa operación.
 
 **La cola de incorporación** de los sondeos (:data:`INCORPORATIONS`, su temporizador
 :func:`incorporation_tick` y :func:`pending_incorporations`; RNF-005-06, plan §5.6.7) es suya,
@@ -47,41 +74,92 @@ desregistrar la cierra sin escribir nada más.
 
 from __future__ import annotations
 
+import dataclasses
+import datetime as dt
 import functools
-from collections.abc import Callable, Mapping, Sequence
+import json
+import logging
+import math
+import re
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import bpy
+import numpy as np
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, StringProperty
 
 from ...core import i18n
 from ...core import params as core_params
 from ...core.catalog.search import path_text
 from ...core.content import readers as content_readers
+from ...core.datasets import registry as dataset_registry
 from ...core.errors import GeoblenderError
 from ...core.georef import load_catalog
-from ...core.i18n import tr
+from ...core.i18n import format_number, tr, translate
+from ...core.inputs import locate_source
+from ...core.inputs.model import SourcePrint
+from ...core.inputs.registry import Reuse, Substitute, classify_import, reuse_input
 from ...core.params.model import ParamKind
 from ...core.provenance import contract
-from ...drillholes import jobs, provenance
+from ...core.provenance.operations import Use, begin_operation
+from ...drillholes import jobs, provenance, store
 from ...drillholes import params as dh_params
+from ...drillholes.arrays import catalogs_json, tables_arrays
 from ...drillholes.desurvey import Method
-from ...drillholes.model import AzimuthRef, InclinationConvention
-from ...interop import dh_content
+from ...drillholes.model import (
+    TABLES,
+    AzimuthRef,
+    Catalogs,
+    DetectionFlag,
+    InclinationConvention,
+    Rejection,
+    SourceDeclaration,
+    ValueRules,
+    name_key,
+    parse_declination,
+)
+from ...drillholes.schema import BASE_TABLES, LAYOUTS
+from ...gis import jobs as gis_jobs
+from ...gis import provenance as gis_provenance
+from ...gis import store as gis_store
+from ...gis.crs import ELLIPSOIDAL_ETRS89, crs_library
+from ...gis.dtm import parse_crs
+from ...interop import csv_tables, dh_content, xlsx_tables
+from ...interop import drillholes_tabular as tabular
+from ...interop.base import DeclarationError, Needs, missing_declarations, spanish_list
 from ...jobs import catalog as job_catalog
+from ...jobs.ingest import job_outcome
+from ..props.dh import (
+    IMPORT_PROPERTY,
+    NOT_IMPORTED,
+    ROLE_ITEMS,
+    ROLES,
+    VALIDATION_PROPERTY,
+    GEOBLENDER_PG_dh_table,
+    fill_tables,
+    suggest_fields,
+    table_mapping,
+)
 from ..scene import project_session
 from ..scene.dh_view import NOT_DELIVERED
+from ..ui.commands import UNDELIVERED_FLAG, unavailable_note
 from ..ui.commands import catalog as command_catalog
-from ..ui.commands import unavailable_note
-from .core_provenance import ProvenanceAwareOperator, write_unavailable
+from . import core_provenance
+from .core_provenance import ProvenanceAwareOperator, error_text, write_unavailable
 from .incorporation import StepQueue
 
 if TYPE_CHECKING:
+    from ...core.georef import VerticalRef
     from ...core.provenance.contract import ReimportRequest
     from ...core.provenance.operations import OperationHandle
     from ...core.provenance.recompute import RecomputeRequest
+    from ...interop.csv_tables import Table
+    from ...jobs.runner import JobResult
 
+LOGGER = logging.getLogger("geoblender.bl.ops")
 TRANSLATION_CONTEXT = "Geoblender"
 MODULE = provenance.MODULE
 """El módulo de las definiciones de parámetros de los sondeos (``dh``)."""
@@ -98,9 +176,9 @@ SHOW_DISPLAY = "geoblender.dh_show_display"
 COMMANDS: tuple[str, ...] = (IMPORT_DRILLHOLES, IMPORT_RECMIN, SET_DETECTION_LIMIT, VALIDATE,
                              EXPORT_REPORT, DESURVEY, SET_AZIMUTH, SHOW_DISPLAY)
 """Las órdenes de la 005 (entrada ``005`` del catálogo), en el orden del menú Sondeos."""
-UNDELIVERED: frozenset[str] = frozenset(COMMANDS)
+UNDELIVERED: frozenset[str] = frozenset(COMMANDS) - {IMPORT_DRILLHOLES}
 """Las órdenes cuya ejecución aún no ha llegado (plan 005, fase 3): no están disponibles y
-dicen dónde estarán. La tarea que entrega una la quita de aquí."""
+dicen dónde estarán. La tarea que entrega una la quita de aquí (T25: importar tablas)."""
 _PROJECT_ONLY: frozenset[str] = frozenset({SHOW_DISPLAY})
 """Las que no escriben en el proyecto: les basta tenerlo abierto."""
 
@@ -136,19 +214,6 @@ INCLINATIONS: Mapping[str, str | None] = MappingProxyType({
     NOT_DECLARED: None, "NEGATIVE_DOWN": str(InclinationConvention.NEGATIVE_DOWN),
     "POSITIVE_DOWN": str(InclinationConvention.POSITIVE_DOWN),
     "FROM_VERTICAL": str(InclinationConvention.FROM_VERTICAL)})
-ROLE_ITEMS = [
-    ("COLLAR", "Collars", ""),
-    ("SURVEY", "Surveys", ""),
-    ("LITHOLOGY", "Lithology", ""),
-    ("ASSAY_WIDE", "Assays in columns", "One column per element"),
-    ("ASSAY_LONG", "Assays in rows", "Element, value and unit in each row"),
-    ("LITHOLOGY_CATALOG", "Lithology catalog", ""),
-    ("ELEMENT_CATALOG", "Element catalog", ""),
-]
-ROLES: Mapping[str, str] = MappingProxyType(
-    {identifier: identifier.lower() for identifier, *_rest in ROLE_ITEMS})
-"""El papel de una tabla (``interop.drillholes_tabular.TableRole``, los de
-``drillholes.provenance.TABLE_ROLES``)."""
 SEPARATOR_ITEMS = [
     ("SEMICOLON", "Semicolon", ""),
     ("COMMA", "Comma", ""),
@@ -186,6 +251,14 @@ SCOPE_ITEMS = [
     ("STALE", "Only the stale ones", "The drillholes whose trace is stale"),
 ]
 SCOPES: Mapping[str, str] = MappingProxyType({"ALL": "all", "STALE": "stale"})
+STAGE_NEW = "NEW"
+STAGE_APPLY = "APPLY"
+STAGE_DISCARD = "DISCARD"
+STAGE_ITEMS = [
+    (STAGE_NEW, "New import", ""),
+    (STAGE_APPLY, "Apply", ""),
+    (STAGE_DISCARD, "Discard", ""),
+]
 _FIELD = {"SKIP_SAVE"}
 _HIDDEN = {"HIDDEN", "SKIP_SAVE"}
 
@@ -227,9 +300,14 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Cierra las incorporaciones en cola (sin escribir nada más) y quita lo que puso
-    :func:`register`, en orden inverso (lo que otro cambió después es suyo); idempotente."""
+    """Cierra las incorporaciones en cola (sin escribir nada más), olvida las importaciones
+    que esperaban (su operación sigue «en curso» y queda «interrumpida» al abrir el proyecto) y
+    quita lo que puso :func:`register`, en orden inverso (lo que otro cambió después es suyo);
+    idempotente."""
     INCORPORATIONS.drop()
+    _WAITING.clear()
+    _ORDERS.clear()
+    _PREVIEWS.clear()
     while _UNDO:
         _UNDO.pop()()
 
@@ -317,7 +395,1238 @@ class _DrillholesCommand:
         return {"CANCELLED"}
 
 
+# --- Ayudas -------------------------------------------------------------------------------------
+
+
+def _text(msgid: str) -> str:
+    """El texto de un ``msgid`` de una constante del módulo en el idioma de Geoblender."""
+    return translate(i18n.language(), msgid)
+
+
+def _say(text: str) -> None:
+    """Lo que dice una orden al terminar su trabajo: en los avisos de la sesión (el panel del
+    proyecto y el registro técnico)."""
+    project_session.notify(text)
+
+
+def _redraw() -> None:
+    """Redibuja las vistas 3D (la pestaña «Sondeos» cambió)."""
+    manager = getattr(bpy.context, "window_manager", None)
+    for window in list(getattr(manager, "windows", ()) or ()):
+        screen = getattr(window, "screen", None)
+        for area in getattr(screen, "areas", ()) or ():
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+
+def _number(value: Any) -> str:
+    """Un número leído para enseñarlo: con los decimales que tiene (hasta 6), en el formato
+    del idioma; sin valor, «—»."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "—"
+    if isinstance(value, bool) or not isinstance(value, int | float | np.integer | np.floating):
+        return str(value)
+    if isinstance(value, int | np.integer):
+        return format_number(int(value), 0)
+    text = np.format_float_positional(float(value), unique=True, trim="-")
+    decimals = min(len(text.partition(".")[2]), 6)
+    return format_number(float(value), decimals)
+
+
+def _delivery_day(typed: str) -> dt.date | None:
+    """La fecha de entrega tecleada: un día DD/MM/AAAA (o, desde un guion, AAAA-MM-DD); vacía,
+    sin fecha. ``ValueError`` con el aviso si no es un día."""
+    shown = typed.strip()
+    if not shown:
+        return None
+    try:
+        return dt.datetime.strptime(shown, "%d/%m/%Y").date()
+    except ValueError:
+        pass
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", shown):
+        try:
+            return dt.date.fromisoformat(shown)
+        except ValueError:
+            pass
+    raise ValueError(tr("Delivery date «{value}»: write it as DD/MM/YYYY", value=shown))
+
+
+def vertical_choice(choice: str, project: Any) -> VerticalRef | None:
+    """El datum vertical de las cotas elegido en el diálogo (``None``: «Sin declarar»)."""
+    if choice == UNDECLARED:
+        return None
+    if choice == PROJECT_VERTICAL:
+        return gis_store.project_references(project)[1]
+    if choice == ELLIPSOIDAL:
+        return ELLIPSOIDAL_ETRS89
+    return load_catalog().vertical(int(choice.removeprefix("EPSG:")))
+
+
+def parse_units(text: str) -> dict[str, str]:
+    """La unidad de cada elemento tecleada («Au=g/t; Cu=%», también con «:»); vacía, ninguna.
+    ``ValueError`` con el aviso si una parte no es «código=unidad»."""
+    found: dict[str, str] = {}
+    for part in re.split(r"[;\n]", text):
+        shown = part.strip()
+        if not shown:
+            continue
+        code, sep, unit = shown.partition("=")
+        if not sep:
+            code, sep, unit = shown.partition(":")
+        if not sep or not code.strip() or not unit.strip():
+            raise ValueError(tr("Unit «{text}»: write each element with its unit, such as "
+                                "Au=g/t, separated by «;»", text=shown))
+        found[code.strip()] = unit.strip()
+    return found
+
+
+def parse_sentinels(text: str) -> frozenset[str]:
+    """Los valores sin dato tecleados («−99;−999;ND»)."""
+    return frozenset(part.strip() for part in text.split(";") if part.strip())
+
+
+# --- Las tablas de una importación (T25; RF-005-05) ---------------------------------------------
+
+READERS: Mapping[str, str] = MappingProxyType({".csv": provenance.DH_CSV,
+                                               ".txt": provenance.DH_CSV,
+                                               ".xlsx": provenance.DH_XLSX})
+"""El lector de una tabla de sondeos por la extensión de su fichero."""
+PREVIEW_LINES = csv_tables.PREVIEW_ROWS
+"""Las filas de una tabla que enseña el asistente tal como se van a interpretar (RF-005-05)."""
+SAMPLE_ROWS = 3
+"""Los valores de ejemplo de cada columna en el asistente."""
+DIALOG_WIDTH = 720
+_PREVIEWS_KEPT = 64
+_ROLE_MSGIDS: Mapping[str, str] = MappingProxyType(
+    {ROLES[identifier]: name for identifier, name, _description in ROLE_ITEMS})
+_KIND_MSGIDS: Mapping[str, str] = MappingProxyType({
+    "lithology": "lithologies", "element": "elements", "sector": "sectors",
+    "group": "groups", "zone": "zones"})
+_CATALOG_ROLES = frozenset({str(tabular.TableRole.LITHOLOGY_CATALOG),
+                            str(tabular.TableRole.ELEMENT_CATALOG)})
+
+
+@dataclass(frozen=True)
+class ReadOptions:
+    """Cómo se leen las tablas de una orden: la codificación y el separador de un CSV, las
+    filas antes de la cabecera, el separador decimal y el formato de las fechas."""
+
+    encoding: str
+    separator: str
+    header_row: int
+    decimal: str
+    date_format: str | None
+
+    def reading(self, reader: str, sheet: str | None) -> dict[str, Any]:
+        """Los ajustes de lectura de una entrada (``drillholes.provenance.READING_SETTINGS``:
+        de un CSV, su codificación, su separador y su cabecera; de una hoja, su nombre y su
+        cabecera)."""
+        if reader == provenance.DH_XLSX:
+            return {"sheet": sheet or "", "header_row": self.header_row}
+        return {"encoding": self.encoding, "separator": self.separator,
+                "header_row": self.header_row}
+
+    def job_settings(self, reader: str, sheet: str | None) -> dict[str, Any]:
+        """Los ajustes de la lectura de su trabajo: los de :meth:`reading`, el decimal y el
+        formato de las fechas."""
+        return {**self.reading(reader, sheet), "decimal": self.decimal,
+                "date_format": self.date_format}
+
+
+@dataclass(frozen=True)
+class TableChoice:
+    """Una tabla de una importación (D-15: una entrada): su fichero, su lector, su papel
+    (``""`` si no se sabe), su correspondencia de columnas (campo → columna), su hoja (de un
+    XLSX), el nombre lógico de su entrada y sus columnas."""
+
+    path: Path
+    reader: str
+    role: str
+    mapping: Mapping[str, str]
+    sheet: str | None = None
+    name: str = ""
+    columns: tuple[str, ...] = ()
+
+    @property
+    def label(self) -> str:
+        """Cómo se nombra: su fichero y, si es de un XLSX, su hoja."""
+        return f"{self.path.name} · {self.sheet}" if self.sheet else self.path.name
+
+
+def entry_name(path: Path, sheet: str | None = None) -> str:
+    """El nombre lógico de la entrada de un fichero (sin la extensión) o de una hoja de un
+    XLSX («libro · hoja»)."""
+    return f"{path.stem} · {sheet}" if sheet else path.stem
+
+
+def reader_of(path: Path) -> str:
+    """El lector de una tabla de sondeos por su extensión; ``ValueError`` con el aviso si no es
+    un CSV, un TXT ni un XLSX."""
+    found = READERS.get(Path(path).suffix.lower())
+    if found is None:
+        raise ValueError(tr("«{file}» is not a CSV, TXT or XLSX file: choose the drillhole "
+                            "tables to import", file=Path(path).name))
+    return found
+
+
+_PREVIEWS: dict[tuple[Any, ...], Table] = {}
+"""Las primeras filas de las tablas que enseña el asistente, por fichero (su tamaño y su
+fecha), hoja y ajustes de lectura."""
+
+
+def preview(choice: TableChoice, options: ReadOptions) -> Table:
+    """Las primeras filas de la tabla de ``choice`` leídas con ``options``
+    (``interop.csv_tables.preview_table`` o ``interop.xlsx_tables.preview_sheet``), con su
+    cabecera; los errores de lectura, los suyos."""
+    path = Path(choice.path)
+    info = path.stat()
+    key = (str(path), info.st_size, info.st_mtime_ns, choice.reader, choice.sheet, options)
+    found = _PREVIEWS.get(key)
+    if found is None:
+        if choice.reader == provenance.DH_XLSX:
+            found = xlsx_tables.preview_sheet(path, choice.sheet or "",
+                                              header_row=options.header_row,
+                                              decimal_mark=options.decimal,
+                                              date_format=options.date_format)
+        else:
+            found = csv_tables.preview_table(path, encoding=options.encoding,
+                                             separator=options.separator,
+                                             header_row=options.header_row)
+        if len(_PREVIEWS) >= _PREVIEWS_KEPT:
+            _PREVIEWS.clear()
+        _PREVIEWS[key] = found
+    return found
+
+
+def suggested_tables(paths: Sequence[Path], options: ReadOptions, *,
+                     sheet: str | None = None) -> list[TableChoice]:
+    """Las tablas de los ficheros ``paths`` con su papel y su correspondencia propuestos
+    (``interop.drillholes_tabular.suggest_role`` por el nombre del fichero o de la hoja, y
+    ``suggest_mapping``; RF-005-05): una por CSV o TXT y, de un XLSX, una por hoja de datos (o
+    solo ``sheet``). Un papel que no se sabe queda ``""``."""
+    found: list[TableChoice] = []
+    for given in paths:
+        path = Path(given)
+        reader = reader_of(path)
+        if reader == provenance.DH_XLSX:
+            sheets: list[str | None] = [sheet] if sheet else list(xlsx_tables.list_sheets(path))
+        else:
+            sheets = [None]
+        for chosen in sheets:
+            probe = TableChoice(path, reader, "", {}, chosen, entry_name(path, chosen))
+            table = preview(probe, options)
+            role = tabular.suggest_role(chosen or path.name, table.columns)
+            mapping = {} if role is None else tabular.suggest_mapping(role, table.columns)
+            found.append(dataclasses.replace(probe, role="" if role is None else str(role),
+                                             mapping=mapping, columns=tuple(table.columns)))
+    return found
+
+
+def json_tables(text: str, directory: Path | None, options: ReadOptions) -> list[TableChoice]:
+    """Las tablas de ``mapping_json`` (para guiones y pruebas): una lista de objetos con su
+    fichero (``file``, relativo a ``directory``), su papel (``role``, uno de
+    ``drillholes.provenance.TABLE_ROLES``) y, si se quiere, su correspondencia (``mapping``;
+    si no, la propuesta), su hoja (``sheet``, obligatoria en un XLSX) y el nombre de su entrada
+    (``name``). ``ValueError`` con el aviso si no lo es."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise ValueError(tr("The column mapping (mapping_json) is not JSON")) from None
+    items = data if isinstance(data, list) else [data]
+    found: list[TableChoice] = []
+    for item in items:
+        if (not isinstance(item, Mapping) or not isinstance(item.get("file"), str)
+                or not isinstance(item.get("role"), str)):
+            raise ValueError(tr("Each table of the column mapping (mapping_json) says its file "
+                                "and its role: {item}",
+                                item=json.dumps(item, ensure_ascii=False)))
+        path = Path(item["file"])
+        if not path.is_absolute():
+            path = (directory or Path.cwd()) / path
+        reader = reader_of(path)
+        role = item["role"].strip().lower()
+        if role not in ROLES.values():
+            raise ValueError(tr("«{role}» is not the role of a drillhole table: it is one of "
+                                "{roles}", role=item["role"], roles=", ".join(ROLES.values())))
+        sheet = item.get("sheet") or None
+        if reader == provenance.DH_XLSX and not sheet:
+            raise ValueError(tr("Say the sheet of «{file}» in the column mapping",
+                                file=path.name))
+        probe = TableChoice(path, reader, role, {}, sheet,
+                            str(item.get("name") or entry_name(path, sheet)))
+        table = preview(probe, options)
+        mapping = item.get("mapping") or tabular.suggest_mapping(role, table.columns)
+        found.append(dataclasses.replace(probe, mapping=dict(mapping),
+                                         columns=tuple(table.columns)))
+    return found
+
+
+def check_declarations(choices: Sequence[TableChoice], declaration: SourceDeclaration,
+                       options: ReadOptions) -> None:
+    """RF-005-07: lo que las tablas necesitan que se declare (``interop.drillholes_tabular.
+    needs`` de sus primeras filas) y no está en ``declaration``:
+    ``interop.base.DeclarationError``, que lo nombra todo; una correspondencia que no vale,
+    su ``MappingError``."""
+    needs = Needs()
+    for choice in choices:
+        needs = needs | tabular.needs(choice.role, preview(choice, options), choice.mapping)
+    missing = missing_declarations(declaration, needs)
+    if missing:
+        raise DeclarationError(tabular.SOURCE_LABEL, missing)
+
+
+_FLAG_SIGNS: Mapping[str, str] = MappingProxyType({
+    str(DetectionFlag.BELOW_DL): "<", str(DetectionFlag.ABOVE_UL): ">"})
+"""Cómo se enseña la marca de un valor de un análisis («<0,01», «>100»)."""
+
+
+def _shown_value(values: Any, row: int) -> str:
+    """Un valor leído de una columna para la vista previa."""
+    value = values[row]
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return "—"
+    return _number(value.item() if hasattr(value, "item") else value)
+
+
+def _records(rows: Any, role: str) -> list[str]:
+    """Los registros de una tabla leída (``RoleRows``) en texto, como los ve el asistente:
+    los números con el separador decimal del idioma; un valor bajo el límite de detección,
+    con su «<»."""
+    if role == "lithology_catalog":
+        return [" · ".join((code.code, code.color, _number(code.density)))
+                for code in rows.catalogs.lithology]
+    if role == "element_catalog":
+        return [" · ".join((element.code, element.unit))
+                for element in rows.catalogs.elements]
+    part, names = {
+        "collar": (rows.collars, ("name", "x", "y", "z", "depth")),
+        "survey": (rows.surveys, ("hole_name", "depth", "azimuth", "inclination")),
+        "lithology": (rows.lithology, ("hole_name", "from_m", "to_m", "code")),
+    }.get(role, (rows.assays, ("hole_name", "from_m", "to_m", "element", "value", "unit")))
+    flags = None
+    if part is rows.assays:
+        codes = type(part).code_values("detection_flag")
+        flags = [str(codes[code]) if code >= 0 else "" for code in part.detection_flag.tolist()]
+    lines = []
+    for row in range(len(part)):
+        shown = []
+        for name in names:
+            text = _shown_value(getattr(part, name), row)
+            if name == "value" and flags is not None:
+                text = _FLAG_SIGNS.get(flags[row], "") + text
+            shown.append(text)
+        lines.append(" · ".join(shown))
+    return lines
+
+
+def preview_lines(choice: TableChoice, options: ReadOptions,
+                  declaration: SourceDeclaration) -> list[str]:
+    """Las primeras filas de la tabla de ``choice`` tal como se van a interpretar (RF-005-05):
+    sus registros leídos con la correspondencia y la declaración (números con el separador
+    decimal del idioma) y sus rechazos; si falta una declaración o la correspondencia no vale,
+    qué pasa."""
+    try:
+        rows = tabular.read_role(choice.role, preview(choice, options), choice.mapping,
+                                 declaration)
+    except DeclarationError as exc:
+        return [tr("Missing declarations: {missing}", missing=spanish_list(exc.missing))]
+    except (GeoblenderError, ValueError) as exc:
+        return [error_text(exc)]
+    lines = _records(rows, choice.role)[:PREVIEW_LINES]
+    lines += [tr("Row {row}, {field}: {reason}", row=item.row, field=item.field,
+                 reason=item.reason) for item in rows.rejected]
+    return lines
+
+
+def _table_choice(table: Any) -> TableChoice:
+    """La tabla del asistente ``table`` (``GEOBLENDER_PG_dh_table``) como :class:`TableChoice`
+    (``ValueError`` si dos columnas dan el mismo campo)."""
+    path = Path(table.path)
+    sheet = table.sheet or None
+    return TableChoice(path, reader_of(path), ROLES.get(table.role, ""), table_mapping(table),
+                       sheet, table.entry or entry_name(path, sheet),
+                       tuple(column.name for column in table.columns))
+
+
+# --- La importación en marcha (T25; plan §5.6.5) ------------------------------------------------
+
+_SUCCEEDED = "succeeded"  # el final de un trabajo que terminó bien (jobs.records)
+DISCARDED = "La persona descartó la importación de los sondeos"
+"""El motivo (en español, como los demás motivos guardados) de una importación descartada."""
+OTHER_FAILED = "Otra tabla de la misma importación no se leyó o no se aplicó: {name}"
+"""El motivo de las demás importaciones de una orden cuando una falla (RF-005-04)."""
+NOT_STARTED = "Otra tabla de la misma importación no pudo empezar: {name}"
+"""El motivo de las importaciones de una orden ya empezadas cuando otra no puede empezar."""
+DUPLICATES_WARNING = "Sondeos repetidos en la fuente (DH-E01; no pasan a la base): {holes}"
+"""El aviso de ``dh_import_log`` de unas bocas repetidas en la fuente."""
+REJECTIONS_SHOWN = 50
+"""Los registros rechazados que se citan en el informe de una entrada."""
+NAMES_SHOWN = 20
+"""Los sondeos que ya están en el proyecto que se citan en el aviso de una importación que
+espera (el panel los lista todos)."""
+_MAIN_TABLES: Mapping[str, str] = MappingProxyType({
+    "collar": "collars", "survey": "surveys", "lithology": "lithology",
+    "assay_wide": "assays", "assay_long": "assays"})
+"""La tabla de lo leído que cuenta los registros de cada papel (los catálogos, sus filas)."""
+
+
+@dataclass(eq=False)
+class _Entry:
+    """Una entrada de una orden de importación (un fichero o una hoja): su tabla, su
+    operación, su lectura y su resultado, su entrada (``InputSpec``), cómo se clasificó y su
+    aplicación."""
+
+    choice: TableChoice
+    handle: OperationHandle
+    started: bool = False
+    read: JobResult | None = None
+    outcome: Any = None
+    spec: Any = None
+    reused: bool = False
+    previous_uid: str | None = None
+    substitute: str = ""
+    applying: bool = False
+    applied: JobResult | None = None
+
+
+@dataclass(eq=False)
+class _Order:
+    """Una orden de importación de tablas de sondeos en marcha: sus entradas, lo declarado,
+    cómo se leen, los catálogos y los sondeos del proyecto al empezar, la entrega, el motivo
+    de una sustitución, lo que hay que decidir y lo decidido."""
+
+    entries: list[_Entry]
+    declaration: SourceDeclaration
+    options: ReadOptions
+    catalogs: Catalogs
+    project_holes: tuple[str, ...]
+    received_at: Any = None
+    received_from: str | None = None
+    reason: str | None = None
+    failure: str = ""
+    codes: dict[str, list[Any]] = field(default_factory=dict)
+    holes: list[str] = field(default_factory=list)
+    keep: tuple[str, ...] = ()
+    register: bool = False
+
+    @property
+    def uid(self) -> str:
+        """El uid de la orden: el de su primera operación."""
+        return self.entries[0].handle.uid
+
+    @property
+    def live(self) -> list[_Entry]:
+        """Las entradas que siguen en la orden (lanzadas y no reutilizadas)."""
+        return [entry for entry in self.entries if entry.started and not entry.reused]
+
+
+_ORDERS: dict[str, _Order] = {}
+"""Las órdenes de importación en marcha, por su uid."""
+_WAITING: list[str] = []
+"""Las que esperan la decisión de la persona, por orden de llegada (el panel enseña la
+primera)."""
+
+
+def waiting_imports() -> dict[str, str]:
+    """Las importaciones de sondeos que esperan la decisión de la persona («Importación
+    pendiente»): el uid de su orden (el de su primera operación) y lo que hay que decidir."""
+    return {uid: _decision_text(_ORDERS[uid]) for uid in _WAITING if uid in _ORDERS}
+
+
+def _code_key(kind: str, item: Any) -> Any:
+    if kind == "lithology":
+        return name_key(item[0]), name_key(item[1])
+    if kind == "element":
+        return name_key(item[0])
+    return name_key(item)
+
+
+def _code_text(kind: str, item: Any) -> str:
+    if kind == "lithology":
+        return str(item[1])
+    if kind == "element":
+        return str(item[0])
+    return str(item)
+
+
+def _codes_text(codes: Mapping[str, Sequence[Any]]) -> str:
+    """Los códigos nuevos por catálogo: «SUE, ARC (litologías); Au, Cu (elementos)»."""
+    return "; ".join(f"{', '.join(_code_text(kind, item) for item in items)} "
+                     f"({_text(_KIND_MSGIDS[kind])})" for kind, items in codes.items() if items)
+
+
+def _decision_text(order: _Order) -> str:
+    """Lo que hay que decidir de ``order``: los códigos nuevos, los sondeos que ya están en el
+    proyecto y las sustituciones sin motivo."""
+    parts: list[str] = []
+    if order.codes:
+        parts.append(tr("New codes: {codes}", codes=_codes_text(order.codes)))
+    if order.holes:
+        shown = ", ".join(order.holes[:NAMES_SHOWN])
+        if len(order.holes) > NAMES_SHOWN:
+            shown = tr("{names} and {count} more", names=shown,
+                       count=format_number(len(order.holes) - NAMES_SHOWN, 0))
+        parts.append(tr("Drillholes already in the project: {holes}", holes=shown))
+    parts.extend(entry.substitute for entry in order.live if entry.substitute)
+    return "\n".join(parts)
+
+
+def _end(handle: OperationHandle, reason: str, *, failed: bool = False) -> None:
+    """Deja cancelada (o fallida) con su motivo la operación ``handle`` si sigue «en curso»."""
+    try:
+        if failed:
+            handle.fail(reason)
+        else:
+            handle.cancel(reason)
+    except (GeoblenderError, TypeError, ValueError):
+        pass  # ya terminó, o el proyecto no se puede escribir
+
+
+def _release(result: JobResult | None) -> None:
+    """Da por incorporado el trabajo de ``result`` si aún está pendiente."""
+    if result is not None and result.job_uid in core_provenance.pending_ingests():
+        core_provenance.release_job(result.job_uid)
+
+
+def _abandon(order: _Order, reason: str, *, failed: bool = False) -> None:
+    """La orden ``order`` no se escribe (RF-005-04): cada importación que sigue «en curso»
+    queda cancelada (o fallida) con ``reason`` (las que no se leyeron o no se aplicaron, con
+    el motivo de la 004), sus trabajos se dan por incorporados y la orden se olvida."""
+    for entry in order.entries:
+        ended = any(result is not None and result.state != _SUCCEEDED
+                    for result in (entry.read, entry.applied))
+        if entry.started and not entry.reused and not ended:
+            _end(entry.handle, reason, failed=failed)
+        elif not entry.started:
+            _end(entry.handle, reason)
+        for result in (entry.read, entry.applied):
+            if result is not None and result.state == _SUCCEEDED:
+                _release(result)
+    _ORDERS.pop(order.uid, None)
+    if order.uid in _WAITING:
+        _WAITING.remove(order.uid)
+        _show_pending()
+    _say(tr("The import of the drillholes has not been written: {reason}", reason=reason))
+
+
+def _show_pending() -> None:
+    """La primera importación que espera la decisión, en «Importación pendiente»
+    (``WindowManager.geoblender_dh_import``); sin ninguna, vacía."""
+    manager = getattr(bpy.context, "window_manager", None)
+    pending = getattr(manager, IMPORT_PROPERTY, None)
+    if pending is None:
+        return
+    order = next((_ORDERS[uid] for uid in _WAITING if uid in _ORDERS), None)
+    pending.holes.clear()
+    pending.operation_uid = "" if order is None else order.uid
+    pending.new_codes = "" if order is None else _codes_text(order.codes)
+    pending.register_codes = True
+    pending.question = "" if order is None else "\n".join(
+        entry.substitute for entry in order.live if entry.substitute)
+    pending.reason = "" if order is None else order.reason or ""
+    for name in ([] if order is None else order.holes):
+        item = pending.holes.add()
+        item.name = name
+        item.keep = False
+    _redraw()
+
+
+def _input_spec(order: _Order, entry: _Entry) -> Any:
+    """La entrada de una tabla con lo que trae el resumen de su lectura: su
+    ``ContentDigest``, la huella de su fichero y su ancla (RF-008-07)."""
+    project = entry.handle.project
+    found = entry.outcome.summary["source"]
+    main = found["files"]["main"]
+    anchor = locate_source(entry.choice.path, project, project.userdata, role="main")
+    prints = [SourcePrint(main["sha256"], size=main["size"], mtime_ns=main["mtime_ns"])]
+    return provenance.input_spec(
+        entry.choice.reader, entry.choice.name, files=[anchor], file_prints=prints,
+        digest=gis_jobs.digest_of(found["digest"]), declaration=order.declaration,
+        role=entry.choice.role, mapping=dict(entry.choice.mapping),
+        settings=order.options.reading(entry.choice.reader, entry.choice.sheet),
+        received_at=order.received_at, received_from=order.received_from)
+
+
+def _operation_settings(choice: TableChoice, declaration: SourceDeclaration,
+                        options: ReadOptions) -> dict[str, Any]:
+    """Los ajustes de la operación de una entrada: su nombre, su fichero (sin su ruta), su
+    lector, su papel y su correspondencia, los de lectura y lo declarado (las claves de
+    :data:`SETTING_DEFS`; los valores sin dato, su texto «−99;ND»)."""
+    conventions = declaration.conventions()
+    conventions["sentinels"] = ";".join(conventions["sentinels"])
+    return {"name": choice.name, "file": choice.path.name, "reader": choice.reader,
+            "role": choice.role, "mapping": dict(choice.mapping),
+            **options.reading(choice.reader, choice.sheet), "decimal": options.decimal,
+            "date_format": options.date_format, **conventions}
+
+
+def start_order(operator: Any, context: Any, project: Any, choices: Sequence[TableChoice],
+                declaration: SourceDeclaration, options: ReadOptions, *,
+                received_at: Any = None, received_from: str | None = None,
+                reason: str | None = None) -> set[str]:
+    """Empieza la importación de ``choices`` con la orden ``operator`` (una operación
+    ``dh.import_tabular`` por tabla, con la puerta de la 008, y su lectura); devuelve el final
+    de la orden. Si una no puede empezar, las demás quedan canceladas."""
+    with project.read() as conn:
+        catalogs = store.read_catalogs(conn)
+        holes = store.existing_holes(conn)
+    crs, vertical = gis_store.project_references(project)
+    order = _Order([], declaration, options, catalogs, holes, received_at, received_from,
+                   reason)
+    for choice in choices:
+        handle = operator.begin(context, settings=_operation_settings(choice, declaration,
+                                                                      options),
+                                executor="job_process")
+        if handle is None:  # ya dicho por qué
+            for entry in order.entries:
+                _end(entry.handle, NOT_STARTED.format(name=choice.label))
+            return {"CANCELLED"}
+        order.entries.append(_Entry(choice, handle))
+    _ORDERS[order.uid] = order
+    for entry in order.entries:
+        choice = entry.choice
+        params = {"reader": choice.reader, "name": choice.name, "role": choice.role,
+                  "mapping": dict(choice.mapping),
+                  "declaration": jobs.declaration_json(declaration),
+                  "settings": options.job_settings(choice.reader, choice.sheet),
+                  "crs": gis_jobs.crs_json(crs), "vertical": gis_jobs.vertical_json(vertical),
+                  "project_holes": list(holes), "catalogs": catalogs_json(catalogs),
+                  "size": choice.path.stat().st_size}
+        job = operator.launch_job(
+            entry.handle, jobs.IMPORT_TABULAR, label=tr("Reading «{name}»", name=choice.label),
+            params=params, paths={gis_jobs.path_name("main"): choice.path},
+            on_finish=functools.partial(_read_finished, order, entry),
+            grace_s=jobs.CANCEL_GRACE_S)
+        if job is None:  # la operación queda fallida con el motivo (ya dicho)
+            order.failure = choice.label
+            break
+        entry.started = True
+    if order.failure:
+        for entry in order.entries:
+            if not entry.started:
+                _end(entry.handle, OTHER_FAILED.format(name=order.failure))
+        if not any(entry.started for entry in order.entries):
+            _ORDERS.pop(order.uid, None)
+        return {"CANCELLED"}
+    return {"FINISHED"}
+
+
+def _read_finished(order: _Order, entry: _Entry, result: JobResult) -> None:
+    """El final de la lectura de una entrada: cuando terminan todas las de la orden, se sigue
+    (:func:`_after_reading`)."""
+    entry.read = result
+    if result.state != _SUCCEEDED and not order.failure:
+        order.failure = entry.choice.label
+    if all(item.read is not None for item in order.entries if item.started):
+        try:
+            _after_reading(order)
+        except Exception as error:  # noqa: BLE001 - la orden no sigue: nada escrito
+            LOGGER.exception("La importación de sondeos %s se ha parado", order.uid)
+            _abandon(order, error_text(error), failed=True)
+
+
+def _after_reading(order: _Order) -> None:
+    """Leídas todas las entradas: si una falló, la orden no sigue (RF-005-04); si no, cada
+    una se clasifica (RF-008-54: reutilizada, cancelada con el aviso; los mismos datos con
+    otros ajustes, una sustitución) y, si hay algo que decidir (códigos nuevos, sondeos que ya
+    están o una sustitución sin motivo), la orden espera; si no, se aplica."""
+    if order.failure:
+        _abandon(order, OTHER_FAILED.format(name=order.failure))
+        return
+    project = order.entries[0].handle.project
+    language = i18n.language()
+    for entry in order.live:
+        entry.outcome = job_outcome(entry.read, entry.read.job_dir)
+        entry.spec = _input_spec(order, entry)
+    with project.read() as conn:
+        classified = [(entry, classify_import(conn, entry.spec)) for entry in order.live]
+    for entry, found in classified:
+        if isinstance(found, Reuse):
+            reuse_input(project, entry.handle, found)  # cancelada con el aviso
+            entry.reused = True
+            _release(entry.read)
+            _say(found.render(language))
+        elif isinstance(found, Substitute):
+            entry.previous_uid = found.input.uid
+            entry.substitute = tr("«{name}» has the same data as the input «{existing}» with "
+                                  "other settings ({differences}): write why it replaces it",
+                                  name=entry.choice.name, existing=found.input.name,
+                                  differences=found.describe(language))
+    if not order.live:
+        _ORDERS.pop(order.uid, None)
+        return
+    order.codes, order.holes = _decisions(order)
+    unexplained = any(entry.substitute for entry in order.live) and not order.reason
+    if order.codes or order.holes or unexplained:
+        _WAITING.append(order.uid)
+        _show_pending()
+        _say(tr("The import of the drillholes waits for your decision in Drillholes ▸ "
+                "Pending import:\n{decision}", decision=_decision_text(order)))
+        return
+    _apply(order)
+
+
+def _decisions(order: _Order) -> tuple[dict[str, list[Any]], list[str]]:
+    """Lo que hay que decidir de ``order``: los códigos nuevos de sus entradas (cómo se darían
+    de alta, sin repetir; RF-005-10) y los sondeos que el proyecto ya tiene (RF-005-11)."""
+    codes: dict[str, list[Any]] = {}
+    seen: dict[str, set[Any]] = {}
+    holes: dict[str, str] = {}
+    for entry in order.live:
+        summary = entry.outcome.summary
+        for kind, items in dict(summary.get("register_codes") or {}).items():
+            for item in items:
+                key = _code_key(kind, item)
+                if key not in seen.setdefault(kind, set()):
+                    seen[kind].add(key)
+                    codes.setdefault(kind, []).append(item)
+        for name in summary.get("existing_holes") or ():
+            holes.setdefault(name_key(name), name)
+    return codes, list(holes.values())
+
+
+def _register_for(order: _Order, entry: _Entry) -> dict[str, list[Any]]:
+    """Los códigos nuevos que da de alta la entrada ``entry``: los suyos, salvo los que trae
+    un catálogo de la misma orden (con su color y su unidad: RF-005-10)."""
+    found = dict(entry.outcome.summary.get("register_codes") or {})
+    if entry.choice.role in _CATALOG_ROLES:
+        return found
+    provided: dict[str, set[Any]] = {}
+    for other in order.live:
+        if other.choice.role in _CATALOG_ROLES:
+            for kind, items in dict(other.outcome.summary.get("register_codes") or {}).items():
+                provided.setdefault(kind, set()).update(_code_key(kind, item) for item in items)
+    chosen = {kind: [item for item in items
+                     if _code_key(kind, item) not in provided.get(kind, set())]
+              for kind, items in found.items()}
+    return {kind: items for kind, items in chosen.items() if items}
+
+
+def _apply(order: _Order) -> None:
+    """Aplica las entradas de ``order`` con lo decidido (``dh_import_apply``: los sondeos que
+    se conservan fuera, los que se sustituyen contados, los códigos nuevos dados de alta)."""
+    project = order.entries[0].handle.project
+    crs, _vertical = gis_store.project_references(project)
+    keep = {name_key(name) for name in order.keep}
+    replace = [name for name in order.holes if name_key(name) not in keep]
+    taken = [code.color for code in order.catalogs.lithology]
+    for entry in order.live:
+        counts = dict(entry.outcome.summary.get("counts") or {})
+        params = {"name": entry.choice.name, "crs": gis_jobs.crs_json(crs),
+                  "keep_holes": list(order.keep), "replace_holes": replace,
+                  "register_codes": _register_for(order, entry) if order.register else {},
+                  "taken_colors": taken, "count": int(counts.get("imported", 0)) + 1}
+        try:
+            core_provenance.launch_job(
+                entry.handle, jobs.IMPORT_APPLY,
+                label=tr("Import of «{name}»", name=entry.choice.label), params=params,
+                inputs={jobs.INPUT_SOURCE: entry.outcome.file(jobs.OUT_SOURCE.role)},
+                on_finish=functools.partial(_apply_finished, order, entry),
+                grace_s=jobs.CANCEL_GRACE_S)
+        except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+            LOGGER.warning("No se pudo aplicar «%s»", entry.choice.label, exc_info=True)
+            order.failure = order.failure or entry.choice.label
+            if not any(item.applying for item in order.live):
+                _abandon(order, error_text(error))
+            return
+        entry.applying = True
+
+
+def _apply_finished(order: _Order, entry: _Entry, result: JobResult) -> None:
+    """El final de la aplicación de una entrada: cuando terminan todas, la incorporación por
+    pasos (:func:`_import_steps`) o, si una falló, nada (RF-005-04)."""
+    entry.applied = result
+    if result.state != _SUCCEEDED and not order.failure:
+        order.failure = entry.choice.label
+    if not all(item.applied is not None for item in order.live if item.applying):
+        return
+    if order.failure:
+        _abandon(order, OTHER_FAILED.format(name=order.failure))
+        return
+    INCORPORATIONS.add(order.uid, tr("Drillhole import"), _import_steps(order))
+
+
+def _read_report(entry: _Entry) -> dict[str, Any]:
+    """El informe de la lectura de una entrada (``report.json``)."""
+    path = entry.outcome.file(jobs.OUT_REPORT.role)
+    return dict(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _counts(entry: _Entry, report: Mapping[str, Any],
+            applied: Mapping[str, Any]) -> tuple[int, int, int, int]:
+    """Leídos, importados, rechazados y sustituidos de la tabla de una entrada (RF-005-12)."""
+    counts = dict(report.get("counts") or {})
+    main = _MAIN_TABLES.get(entry.choice.role)
+    removed = int(dict(applied.get("removed") or {}).get(main, 0)) if main else 0
+    replaced = int(dict(applied.get("replaced") or {}).get(main, 0)) if main else 0
+    return (int(counts.get("read", 0)), max(int(counts.get("imported", 0)) - removed, 0),
+            int(counts.get("rejected", 0)), replaced)
+
+
+def _log_lines(entry: _Entry, report: Mapping[str, Any],
+               applied: Mapping[str, Any]) -> list[store.LogLine]:
+    """El informe de una entrada en ``dh_import_log`` (RF-005-12): sus recuentos, cada registro
+    rechazado con su motivo y los avisos."""
+    role = entry.choice.role
+    read, imported, rejected, replaced = _counts(entry, report, applied)
+    lines = [store.LogLine.summary(role, read, imported, rejected, replaced)]
+    lines += [store.LogLine.rejection(Rejection(*item)) for item in report.get("rejected", ())]
+    lines += [store.LogLine.warning(role, str(text)) for text in report.get("warnings", ())]
+    lines += [store.LogLine.warning(role, DUPLICATES_WARNING.format(holes=", ".join(group)))
+              for group in report.get("duplicate_holes", ())]
+    return lines
+
+
+def _entry_report(entry: _Entry, report: Mapping[str, Any], applied: Mapping[str, Any]) -> str:
+    """El informe de una entrada (su mensaje y el aviso de la sesión; RF-005-12): su tabla y
+    su papel, sus recuentos, el hash de contenido de su fichero, los rechazos (los primeros) y
+    los avisos."""
+    read, imported, rejected, replaced = _counts(entry, report, applied)
+    lines = [tr("Drillhole table «{file}» ({role}) imported as «{name}»: {read} rows read, "
+                "{imported} records imported, {rejected} rejected, {replaced} replaced; "
+                "content hash {digest}", file=entry.choice.label,
+                role=_text(_ROLE_MSGIDS[entry.choice.role]), name=entry.choice.name,
+                read=format_number(read, 0), imported=format_number(imported, 0),
+                rejected=format_number(rejected, 0), replaced=format_number(replaced, 0),
+                digest=entry.spec.digest.content_sha256[:12])]
+    items = list(report.get("rejected", ()))
+    lines += [tr("Row {row}, {field}: {reason}", row=item[1], field=item[2], reason=item[4])
+              for item in items[:REJECTIONS_SHOWN]]
+    if len(items) > REJECTIONS_SHOWN:
+        lines.append(tr("… and {count} more rejected",
+                        count=format_number(len(items) - REJECTIONS_SHOWN, 0)))
+    lines += [str(text) for text in report.get("warnings", ())]
+    return "\n".join(lines)
+
+
+def _import_steps(order: _Order) -> Generator[float, None, str]:
+    """Los pasos que escriben la orden ``order`` aplicada (RF-005-04, RF-005-12; plan §5.6.5),
+    con su avance (0–1): lo importado de cada entrada (las filas y el hash que dio su
+    aplicación, su informe) en una transacción por pasos (``drillholes.store.SourceWriter``);
+    confirmada, el original de cada fichero desde la copia verificada de su lectura
+    (RF-008-53), sus trabajos dados por incorporados y, después, la base y su validación
+    (:func:`start_build_base`). Devuelve cómo quedó: ``"done"`` o ``"failed"`` (cada
+    importación fallida con su motivo y nada escrito). Cerrar los pasos antes del ``COMMIT``
+    (al desregistrar) no escribe nada: sus operaciones siguen «en curso»."""
+    project = order.entries[0].handle.project
+    writer = store.SourceWriter(project)
+    written: list[tuple[_Entry, Any, str]] = []
+    try:
+        for entry in order.live:
+            assert entry.applied is not None and entry.read is not None
+            applied = job_outcome(entry.applied, entry.applied.job_dir)
+            tables: dict[str, Any] = {}
+            contents: dict[str, Any] = {}
+            for name, output in dict(applied.summary["outputs"]).items():
+                role = name.removeprefix("dh_src_")
+                tables[role] = jobs.read_table_output(applied.file(name), name)
+                contents[role] = gis_jobs.digest_of(output["digest"])
+            report = _read_report(entry)
+            message = _entry_report(entry, report, applied.summary)
+            item = writer.add(
+                entry.handle, entry.spec, tables, name=entry.choice.name, contents=contents,
+                log=_log_lines(entry, report, applied.summary),
+                previous_uid=entry.previous_uid,
+                reason=order.reason if entry.previous_uid else None, message=message,
+                interpreter=entry.outcome.interpreter, executor=entry.outcome.executor,
+                job_uid=entry.read.job_uid)
+            written.append((entry, item, message))
+            yield 0.05
+        library, version = crs_library()
+        for done in writer.steps(software={library: version}):
+            yield 0.05 + 0.75 * done
+    except GeneratorExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - las importaciones quedan fallidas, sin nada
+        LOGGER.warning("La importación de sondeos %s no se escribió", order.uid, exc_info=True)
+        _abandon(order, error_text(error), failed=True)
+        return "failed"
+    for number, (entry, item, _message) in enumerate(written):
+        assert entry.read is not None
+        verified = entry.read.job_dir.inputs_dir / (gis_jobs.path_name("main")
+                                                    + entry.choice.path.suffix)
+        try:
+            for step in writer.originals(item, [verified]):
+                share = step.done / step.total if step.total else 1.0
+                yield 0.8 + 0.19 * (number + share) / len(written)
+        except Exception as error:  # noqa: BLE001 - lo importado ya está confirmado
+            LOGGER.warning("No se guardó el original de «%s»", entry.choice.label,
+                           exc_info=True)
+            _say(tr("The original of the input could not be kept: {reason}",
+                    reason=error_text(error)))
+    for entry in order.live:
+        _release(entry.read)
+        _release(entry.applied)
+    _ORDERS.pop(order.uid, None)
+    for _entry, _item, message in written:
+        _say(message)
+    start_build_base(project)
+    return "done"
+
+
+# --- La base y su validación (T25; plan §5.6.1, §5.6.5 y §5.6.6) ---------------------------------
+
+BASE_LABEL = "Drillhole database"
+VALIDATION_LABEL = "Validation of the drillhole database"
+
+
+def _loose_set(name: str, tables: Mapping[str, Any], catalogs: Catalogs
+               ) -> Iterator[dict[str, np.ndarray]]:
+    """Los arrays sueltos (``drillholes.jobs.loose_arrays``) de unas tablas y unos catálogos,
+    una tabla por paso (``drillholes.arrays.tables_arrays``)."""
+    for table in TABLES:
+        yield jobs.loose_arrays(name, tables_arrays({table: tables[table]}))
+    yield jobs.loose_arrays(name, tables_arrays({}, catalogs))
+
+
+def start_build_base(project: Any, *, validate: bool = True) -> None:
+    """Pone en la cola de incorporación de los sondeos la base desde lo importado vigente
+    (``dh.build_base``; plan §5.6.1) y, hecha, su validación (:func:`start_validate`)."""
+    INCORPORATIONS.add(provenance.BUILD_BASE, _text(BASE_LABEL),
+                       _build_base_steps(project, validate))
+
+
+def _build_base_steps(project: Any, validate: bool) -> Generator[float, None, str]:
+    """Los pasos que lanzan ``dh.build_base``: la operación «en curso» con lo que consume
+    (cada ``dh_src_*`` vigente, papel ``source``, y ``dh_import_log``, ``imports``), lo
+    importado leído por pasos (``drillholes.store.source_entry_steps``) a arrays sueltos y su
+    trabajo ``dh_build_base`` (con las ruedas de la extensión si transforma)."""
+    try:
+        with project.read() as conn:
+            sources = store.live_sources(conn)
+            has_log = dataset_registry.get(conn, store.IMPORT_LOG) is not None
+        if not sources:
+            return "empty"
+        uses = [Use(dataset.name, "source") for source in sources
+                for dataset in source.datasets.values()]
+        if has_log:
+            uses.append(Use(store.IMPORT_LOG, "imports"))
+        handle = begin_operation(project, provenance.BUILD_BASE, settings={}, inputs=uses,
+                                 executor="job_thread")
+    except Exception as error:  # noqa: BLE001 - lo dice y no empieza nada
+        LOGGER.warning("No se pudo empezar la base de los sondeos", exc_info=True)
+        _say(tr("The drillhole database has not been built: {reason}",
+                reason=error_text(error)))
+        return "failed"
+    try:
+        entries: list[dict[str, Any]] = []
+        loose: dict[str, np.ndarray] = {}
+        rows = 0
+        with project.read() as conn:
+            for number, source in enumerate(sources, start=1):
+                entry = yield from store.source_entry_steps(conn, source)
+                name = f"e{number}"
+                for arrays in _loose_set(name, {table: getattr(entry, table)
+                                                for table in TABLES}, entry.catalogs):
+                    loose.update(arrays)
+                    yield 0.5 * number / len(sources)
+                rows += sum(len(getattr(entry, table)) for table in TABLES)
+                entries.append({"input": name, "uid": entry.input_uid, "label": entry.label,
+                                "declaration": jobs.declaration_json(entry.declaration)})
+        crs, vertical = gis_store.project_references(project)
+        params = {"crs": gis_jobs.crs_json(crs), "vertical": gis_jobs.vertical_json(vertical),
+                  "project_uid": project.uid, "entries": entries, "count": rows + 1}
+        from .gis import wheels_site
+
+        site = wheels_site() if jobs.needs_site(jobs.BUILD_BASE, params) else None
+        core_provenance.launch_job(handle, jobs.BUILD_BASE, label=_text(BASE_LABEL), params=params,
+                                   arrays=loose, site_override=site,
+                                   on_finish=functools.partial(_base_finished, handle,
+                                                               validate),
+                                   grace_s=jobs.CANCEL_GRACE_S)
+    except GeneratorExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        LOGGER.warning("No se pudo lanzar la base de los sondeos", exc_info=True)
+        _end(handle, error_text(error), failed=True)
+        _say(tr("The drillhole database has not been built: {reason}",
+                reason=error_text(error)))
+        return "failed"
+    return "launched"
+
+
+def _base_finished(handle: OperationHandle, validate: bool, result: JobResult) -> None:
+    """El final del trabajo de la base: si terminó bien, su escritura por pasos (si no, la
+    procedencia la deja cancelada o fallida con el motivo de la 004)."""
+    if result.state == _SUCCEEDED:
+        INCORPORATIONS.add(handle.uid, _text(BASE_LABEL), _base_steps(handle, result, validate))
+
+
+def _base_report(summary: Mapping[str, Any]) -> str:
+    """El informe de la base: sus sondeos, las transformaciones y las notas (lo que no
+    pasa)."""
+    lines = [tr("Drillhole database: {holes} drillholes",
+                holes=format_number(int(summary.get("holes", 0)), 0))]
+    lines += [tr("Transformation: {transform}", transform=item["summary"])
+              for item in summary.get("transforms", ())]
+    lines += [str(note["message"]) for note in summary.get("notes", ())]
+    return "\n".join(lines)
+
+
+def _base_steps(handle: OperationHandle, result: JobResult,
+                validate: bool) -> Generator[float, None, str]:
+    """Los pasos que escriben la base (``drillholes.store.BaseWriter``: las once tablas con el
+    hash que dio su trabajo, en una transacción) y, hecha, lanzan su validación."""
+    project = handle.project
+    try:
+        outcome = job_outcome(result, result.job_dir)
+        summary = outcome.summary
+        writer = store.BaseWriter(project, handle)
+        for name in BASE_TABLES:
+            writer.table(name, jobs.read_table_output(outcome.file(name), name),
+                         content=gis_jobs.digest_of(summary["outputs"][name]["digest"]))
+        report = _base_report(summary)
+        yield 0.05
+        library, version = crs_library()
+        for done in writer.steps(software={library: version}, message=report,
+                                 interpreter=outcome.interpreter, executor=outcome.executor,
+                                 job_uid=result.job_uid):
+            yield 0.05 + 0.95 * done
+    except GeneratorExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        LOGGER.warning("La base de los sondeos no se escribió", exc_info=True)
+        _end(handle, error_text(error), failed=True)
+        _release(result)
+        _say(tr("The drillhole database has not been built: {reason}",
+                reason=error_text(error)))
+        return "failed"
+    _release(result)
+    _say(report)
+    if validate:
+        start_validate(project)
+    return "done"
+
+
+def project_surface(project: Any) -> Any:
+    """El MDT del proyecto con que se comparan las cotas de las bocas (DH-W05; D-19): la
+    rejilla del proyecto vigente más reciente (``gis_dtm_*``); sin ninguna, ``None``."""
+    records = [record for record in gis_store.list_gis_datasets(
+        project, families=(gis_provenance.PROJECT_GRID,)) if str(record.status) == "current"]
+    return max(records, key=lambda record: (record.modified_at, record.created_at),
+               default=None)
+
+
+def start_validate(project: Any) -> None:
+    """Pone en la cola de incorporación de los sondeos la validación de la base
+    (``dh.validate``; RF-005-16)."""
+    INCORPORATIONS.add(provenance.VALIDATE, _text(VALIDATION_LABEL), _validate_steps(project))
+
+
+def _validate_steps(project: Any) -> Generator[float, None, str]:
+    """Los pasos que lanzan ``dh.validate``: la operación «en curso» con lo que consume (las
+    once tablas de la base y, si lo hay, el MDT, papel ``terrain``) y sus parámetros, la base
+    leída por pasos (``drillholes.store.read_steps``) a arrays sueltos y su trabajo
+    ``dh_validate`` (el MDT, copiado a ``in/``)."""
+    try:
+        surface = project_surface(project)
+        uses = [Use(table, provenance.OUTPUT_ROLES[table]) for table in BASE_TABLES]
+        inputs: dict[str, Path] = {}
+        if surface is not None:
+            uses.append(Use(surface.name, "terrain"))
+            inputs[jobs.INPUT_DEM] = Path(project.root, *surface.locator.split("/"))
+        handle = begin_operation(
+            project, provenance.VALIDATE,
+            settings={"surface": None if surface is None else surface.name}, inputs=uses,
+            params=list(dh_params.VALIDATION_KEYS), executor="job_thread")
+    except Exception as error:  # noqa: BLE001 - lo dice y no empieza nada
+        LOGGER.warning("No se pudo empezar la validación de los sondeos", exc_info=True)
+        _say(tr("The drillhole database has not been validated: {reason}",
+                reason=error_text(error)))
+        return "failed"
+    try:
+        with project.read() as conn:
+            dset = yield from store.read_steps(conn)
+        loose: dict[str, np.ndarray] = {}
+        for arrays in _loose_set(jobs.INPUT_BASE, {table: getattr(dset, table)
+                                                   for table in TABLES}, dset.catalogs):
+            loose.update(arrays)
+            yield 0.6
+        resolved = {param.key: param.value for param in handle.params}
+        thresholds = {key.rpartition(".")[2]: resolved[key]
+                      for key in dh_params.VALIDATION_KEYS}
+        window = project.window
+        rows = sum(len(getattr(dset, table)) for table in TABLES)
+        params = {"crs": gis_jobs.crs_json(dset.crs),
+                  "vertical": gis_jobs.vertical_json(dset.vertical),
+                  "thresholds": thresholds,
+                  "work_window": None if window is None else gis_jobs.window_json(window),
+                  "count": rows + 1}
+        core_provenance.launch_job(handle, jobs.VALIDATE, label=_text(VALIDATION_LABEL),
+                                   params=params, arrays=loose, inputs=inputs or None,
+                                   on_finish=functools.partial(_validate_finished, handle),
+                                   grace_s=jobs.CANCEL_GRACE_S)
+    except GeneratorExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        LOGGER.warning("No se pudo lanzar la validación de los sondeos", exc_info=True)
+        _end(handle, error_text(error), failed=True)
+        _say(tr("The drillhole database has not been validated: {reason}",
+                reason=error_text(error)))
+        return "failed"
+    return "launched"
+
+
+def _validate_finished(handle: OperationHandle, result: JobResult) -> None:
+    """El final del trabajo de la validación: si terminó bien, su escritura por pasos."""
+    if result.state == _SUCCEEDED:
+        INCORPORATIONS.add(handle.uid, _text(VALIDATION_LABEL),
+                           _validated_steps(handle, result))
+
+
+def _validation_report(summary: Mapping[str, Any], notes: Sequence[Mapping[str, Any]]) -> str:
+    """El informe de una validación (RF-005-16): las incidencias por nivel, los sondeos
+    excluidos y lo que no se evaluó."""
+    lines = [tr("Validation of the drillhole database: {issues} issues ({errors} errors and "
+                "{warnings} warnings); {excluded} drillholes excluded",
+                issues=format_number(int(summary.get("issues", 0)), 0),
+                errors=format_number(int(summary.get("errors", 0)), 0),
+                warnings=format_number(int(summary.get("warnings", 0)), 0),
+                excluded=format_number(int(summary.get("excluded_holes", 0)), 0))]
+    lines += [str(note["message"]) for note in notes]
+    return "\n".join(lines)
+
+
+def _depth_text(start: Any, end: Any) -> str:
+    """El tramo o la profundidad de una incidencia («12,5–13,0»; sin ninguno, «»)."""
+    shown = [_number(value) for value in (start, end)
+             if value is not None and not (isinstance(value, float) and math.isnan(value))]
+    return "–".join(shown)
+
+
+def show_issues(rows: Sequence[Sequence[Any]]) -> None:
+    """Las incidencias de la última validación (las filas de ``dh_validation_issue``) en la
+    lista de la pestaña «Sondeos» (``WindowManager.geoblender_dh_validation``; RF-005-16)."""
+    manager = getattr(bpy.context, "window_manager", None)
+    validation = getattr(manager, VALIDATION_PROPERTY, None)
+    if validation is None:
+        return
+    names = LAYOUTS["dh_validation_issue"].insert_columns
+    validation.issues.clear()
+    for row in rows:
+        values = dict(zip(names, row, strict=True))
+        item = validation.issues.add()
+        item.code = str(values["code"])
+        item.level = str(values["level"]).upper()
+        item.hole = str(values["hole_name"] or "")
+        item.table = str(values["table_name"] or "")
+        item.depth = _depth_text(values["depth_from"], values["depth_to"])
+        item.field = str(values["field"] or "")
+        item.value = str(values["value"] or "")
+        item.message = str(values["message"])
+    validation.issue_index = 0
+    _redraw()
+
+
+def _validated_steps(handle: OperationHandle, result: JobResult) -> Generator[float, None, str]:
+    """Los pasos que escriben ``dh_validation_issue`` con el hash que dio su trabajo y llevan
+    sus incidencias a la lista de la pestaña."""
+    project = handle.project
+    try:
+        outcome = job_outcome(result, result.job_dir)
+        summary = outcome.summary
+        name = "dh_validation_issue"
+        rows = jobs.read_table_output(outcome.file(name), name)
+        notes = json.loads(outcome.file(jobs.OUT_REPORT.role).read_text(encoding="utf-8"))
+        report = _validation_report(summary, list(notes.get("notes", ())))
+        writer = store.BaseWriter(project, handle)
+        writer.table(name, rows, content=gis_jobs.digest_of(summary["outputs"][name]["digest"]))
+        yield 0.05
+        for done in writer.steps(message=report, interpreter=outcome.interpreter,
+                                 executor=outcome.executor, job_uid=result.job_uid):
+            yield 0.05 + 0.9 * done
+    except GeneratorExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        LOGGER.warning("La validación de los sondeos no se escribió", exc_info=True)
+        _end(handle, error_text(error), failed=True)
+        _release(result)
+        _say(tr("The drillhole database has not been validated: {reason}",
+                reason=error_text(error)))
+        return "failed"
+    _release(result)
+    show_issues(rows)
+    _say(report)
+    return "done"
+
+
 # --- Las órdenes (plan §5.3.1 y §5.6) -----------------------------------------------------------
+
+_DECLARATION_PROPS: tuple[tuple[str, str], ...] = (
+    ("crs", "Horizontal CRS"), ("vertical", "Vertical CRS"),
+    ("azimuth_ref", "Azimuth reference"), ("declination_deg", "Magnetic declination"),
+    ("inclination_convention", "Inclination"), ("all_vertical", "All vertical"),
+    ("units", "Units of the elements"), ("sentinels", "No-data values"),
+    ("negative_is_below_dl", "Negative means below the detection limit"),
+    ("density_kind", "Density"),
+)
+_READING_PROPS: tuple[tuple[str, str], ...] = (
+    ("encoding", "Encoding"), ("separator", "Separator"), ("decimal_mark", "Decimal mark"),
+    ("header_row", "Lines before the header"), ("date_format", "Date format"),
+)
+_DELIVERY_PROPS: tuple[tuple[str, str], ...] = (
+    ("received_at", "Delivery date"), ("received_from", "Delivered by"), ("reason", "Reason"),
+)
+_KEPT_PROPS: tuple[str, ...] = tuple(
+    name for name, _text in (*_DECLARATION_PROPS, *_READING_PROPS, *_DELIVERY_PROPS)) + (
+    "sheet",)
+"""Lo que el asistente recibe de la orden que lo abre (tras elegir los ficheros)."""
+SHOWN_MSGIDS: tuple[str, ...] = (
+    BASE_LABEL, VALIDATION_LABEL, *_KIND_MSGIDS.values(), *_ROLE_MSGIDS.values(),
+    *(text for _prop, text in (*_DECLARATION_PROPS, *_READING_PROPS, *_DELIVERY_PROPS)))
+"""Los ``msgid`` de las constantes del módulo que se enseñan sin un ``tr`` literal (la prueba
+de la importación comprueba que tienen su español)."""
+
+
+def _reading_changed(self: Any, context: Any) -> None:
+    """Con otra codificación, otro separador u otras filas antes de la cabecera, las columnas
+    de cada tabla del asistente se leen otra vez y sus campos se proponen de nuevo."""
+    if not getattr(self, "wizard", False):
+        return
+    options = _options_of(self)
+    for table in self.tables:
+        try:
+            choice = _table_choice(table)
+            header = list(preview(choice, options).columns)
+        except (GeoblenderError, OSError, ValueError):
+            LOGGER.info("No se pudo leer otra vez «%s»", table.name, exc_info=True)
+            continue
+        if [column.name for column in table.columns] == header:
+            continue
+        table.columns.clear()
+        for index, name in enumerate(header):
+            column = table.columns.add()
+            column.name = name
+            column.index = index
+        suggest_fields(table)
+
+
+def _options_of(operator: Any) -> ReadOptions:
+    """Los ajustes de lectura de la orden ``operator``."""
+    return ReadOptions(ENCODINGS[operator.encoding], SEPARATORS[operator.separator],
+                       int(operator.header_row), DECIMALS[operator.decimal_mark],
+                       operator.date_format.strip() or None)
+
+
+def _open_wizard(values: Mapping[str, Any]) -> None:
+    """Abre el asistente de la importación con ``values`` (tras elegir los ficheros); sin
+    ventana, nada."""
+    manager = getattr(bpy.context, "window_manager", None)
+    windows = list(getattr(manager, "windows", ()) or ())
+    if not windows:
+        return
+
+    def call() -> None:
+        try:
+            with bpy.context.temp_override(window=windows[0]):
+                bpy.ops.geoblender.dh_import_drillholes("INVOKE_DEFAULT", wizard=True, **values)
+        except (RuntimeError, TypeError, AttributeError):
+            LOGGER.warning("No se pudo abrir el asistente de la importación de sondeos",
+                           exc_info=True)
+
+    bpy.app.timers.register(call, first_interval=0.0)
 
 
 class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOperator,
@@ -334,6 +1643,8 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
         type=bpy.types.OperatorFileListElement, options=_HIDDEN,
     )
     directory: StringProperty(subtype="DIR_PATH", options=_HIDDEN)  # type: ignore[valid-type]
+    # Un fichero ya elegido (Importar un fichero…, soltado en la vista): el asistente con él.
+    filepath: StringProperty(subtype="FILE_PATH", options=_HIDDEN)  # type: ignore[valid-type]
     filter_glob: StringProperty(  # type: ignore[valid-type]
         default="*.csv;*.txt;*.xlsx", options={"HIDDEN"},
     )
@@ -367,17 +1678,26 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
         name="All vertical", description="The drillholes without surveys are vertical",
         options=_FIELD,
     )
+    units: StringProperty(  # type: ignore[valid-type]
+        name="Units of the elements",
+        description="Unit of each element of the assays that does not come in the file, "
+                    "such as Au=g/t; Cu=% (g/t, ppm, ppb or %)",
+        options=_FIELD,
+    )
     decimal_mark: EnumProperty(  # type: ignore[valid-type]
         name="Decimal mark", items=DECIMAL_ITEMS, default="COMMA", options=_FIELD,
     )
     separator: EnumProperty(  # type: ignore[valid-type]
         name="Separator", items=SEPARATOR_ITEMS, default="SEMICOLON", options=_FIELD,
+        update=_reading_changed,
     )
     encoding: EnumProperty(  # type: ignore[valid-type]
         name="Encoding", items=ENCODING_ITEMS, default="UTF8", options=_FIELD,
+        update=_reading_changed,
     )
     header_row: IntProperty(  # type: ignore[valid-type]
         name="Lines before the header", default=0, min=0, options=_FIELD,
+        update=_reading_changed,
     )
     date_format: StringProperty(  # type: ignore[valid-type]
         name="Date format",
@@ -386,7 +1706,7 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
         options=_FIELD,
     )
     sheet: StringProperty(  # type: ignore[valid-type]
-        name="Sheet", description="Sheet of an XLSX workbook (empty: the first one)",
+        name="Sheet", description="Sheet of an XLSX workbook (empty: every sheet)",
         options=_FIELD,
     )
     sentinels: StringProperty(  # type: ignore[valid-type]
@@ -416,6 +1736,210 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
                     "settings",
         options=_FIELD,
     )
+    # El asistente (tras elegir los ficheros) y lo que decide la persona en «Importación
+    # pendiente» (la misma orden con ``stage`` y ``pending``).
+    wizard: BoolProperty(options=_HIDDEN)  # type: ignore[valid-type]
+    tables: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_dh_table, options=_HIDDEN,
+    )
+    stage: EnumProperty(  # type: ignore[valid-type]
+        items=STAGE_ITEMS, default=STAGE_NEW, options=_HIDDEN,
+    )
+    pending: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
+
+    def _paths(self) -> list[Path]:
+        """Los ficheros elegidos."""
+        folder = Path(bpy.path.abspath(self.directory)) if self.directory else None
+        found = [(folder / item.name) if folder is not None
+                 else Path(bpy.path.abspath(item.name)) for item in self.files if item.name]
+        if self.filepath and not found:
+            found.append(Path(bpy.path.abspath(self.filepath)))
+        return found
+
+    def _choices(self, options: ReadOptions) -> list[TableChoice]:
+        """Las tablas de la orden: las del asistente, las de ``mapping_json`` o, sin ninguno,
+        las propuestas de los ficheros elegidos (``ValueError`` si de un CSV no se sabe el
+        papel; las hojas de un XLSX sin papel no se importan)."""
+        if self.wizard and len(self.tables):
+            return [_table_choice(table) for table in self.tables
+                    if table.role != NOT_IMPORTED]
+        if self.mapping_json.strip():
+            folder = Path(bpy.path.abspath(self.directory)) if self.directory else None
+            return json_tables(self.mapping_json, folder, options)
+        found = suggested_tables(self._paths(), options, sheet=self.sheet.strip() or None)
+        unknown = [choice.label for choice in found
+                   if not choice.role and choice.reader == provenance.DH_CSV]
+        if unknown:
+            raise ValueError(tr("Choose the role of {tables} in the import wizard",
+                                tables=", ".join(f"«{name}»" for name in unknown)))
+        return [choice for choice in found if choice.role]
+
+    def _declaration(self, project: Any, options: ReadOptions) -> SourceDeclaration:
+        """Lo declarado en la orden (``GisError`` con un CRS que no es del catálogo,
+        ``ValidationError`` con una declinación que no vale y ``ValueError`` con unas
+        unidades que no lo son)."""
+        typed = self.declination_deg.strip()
+        return SourceDeclaration(
+            crs=parse_crs(self.crs), vertical=vertical_choice(self.vertical, project),
+            azimuth_ref=AZIMUTH_REFS[self.azimuth_ref],
+            declination_deg=parse_declination(typed) if typed else None,
+            inclination_convention=INCLINATIONS[self.inclination_convention],
+            units=parse_units(self.units),
+            value_rules=ValueRules(decimal_mark=options.decimal,
+                                   sentinels=parse_sentinels(self.sentinels),
+                                   negative_is_below_dl=self.negative_is_below_dl),
+            all_vertical=self.all_vertical, density_kind=DENSITY_KINDS[self.density_kind],
+            date_format=options.date_format)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        if self.stage != STAGE_NEW or self.mapping_json.strip():
+            return self.execute(context)
+        if self.wizard or len(self.files) or self.filepath:
+            try:
+                fill_tables(self.tables, suggested_tables(self._paths(), _options_of(self),
+                                                          sheet=self.sheet.strip() or None))
+            except (GeoblenderError, OSError, ValueError) as exc:
+                self.report({"ERROR"}, error_text(exc))
+                return {"CANCELLED"}
+            self.wizard = True
+            return context.window_manager.invoke_props_dialog(
+                self, width=DIALOG_WIDTH, translate=False, title=tr("Import of drillholes"))
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        project = core_provenance.SESSION.project
+        options = _options_of(self)
+        split = layout.split(factor=0.5)
+        for column, props in ((split.column(), _DECLARATION_PROPS),
+                              (split.column(), (*_READING_PROPS, *_DELIVERY_PROPS))):
+            column.use_property_split = True
+            for prop, text in props:
+                column.prop(self, prop, text=_text(text), translate=False)
+        try:
+            declaration = self._declaration(project, options)
+            choices = [_table_choice(table) for table in self.tables
+                       if table.role != NOT_IMPORTED]
+            check_declarations(choices, declaration, options)
+        except DeclarationError as exc:
+            layout.label(text=tr("Missing declarations: {missing}",
+                                 missing=spanish_list(exc.missing)),
+                         icon="ERROR", translate=False)
+            declaration = None
+        except (GeoblenderError, OSError, ValueError) as exc:
+            layout.label(text=error_text(exc), icon="ERROR", translate=False)
+            declaration = None
+        for table in self.tables:
+            self._draw_table(layout.box(), table, options, declaration)
+
+    def _draw_table(self, box: Any, table: Any, options: ReadOptions,
+                    declaration: SourceDeclaration | None) -> None:
+        """Una tabla del asistente: su papel, el campo de cada columna con unos valores de
+        ejemplo y sus primeras filas tal como se van a interpretar (RF-005-05)."""
+        row = box.row()
+        row.label(text=table.name, icon="FILE", translate=False)
+        row.prop(table, "role", text="")
+        if table.role == NOT_IMPORTED:
+            return
+        try:
+            choice = _table_choice(table)
+            rows = preview(choice, options).rows
+        except (GeoblenderError, OSError, ValueError) as exc:
+            box.label(text=error_text(exc), icon="ERROR", translate=False)
+            return
+        grid = box.grid_flow(columns=3, even_columns=False, align=True)
+        for column in table.columns:
+            sample = " · ".join(values[column.index].strip() for values in rows[:SAMPLE_ROWS]
+                                if column.index < len(values))
+            grid.label(text=column.name, translate=False)
+            grid.label(text=sample, translate=False)
+            grid.prop(column, "field", text="")
+        if declaration is None:
+            return
+        lines = box.column(align=True)
+        lines.label(text=tr("As it will be read (first rows)"), translate=False)
+        for line in preview_lines(choice, options, declaration):
+            lines.label(text=line, translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason(IMPORT_DRILLHOLES)
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        if self.stage != STAGE_NEW:
+            with core_provenance.caller_reports():
+                return self._decide(context)
+        project = core_provenance.SESSION.project
+        options = _options_of(self)
+        if self.provenance_dialog and not self.wizard and not self.mapping_json.strip():
+            if not self._paths():  # tras elegir los ficheros: el asistente
+                self.report({"ERROR"}, tr("Choose the drillhole tables to import"))
+                return {"CANCELLED"}
+            values: dict[str, Any] = {name: getattr(self, name) for name in _KEPT_PROPS}
+            _open_wizard({**values, "directory": self.directory, "filepath": self.filepath,
+                          "files": [{"name": item.name} for item in self.files if item.name]})
+            return {"CANCELLED"}
+        try:
+            choices = self._choices(options)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if not choices:
+            self.report({"ERROR"}, tr("Choose the drillhole tables to import"))
+            return {"CANCELLED"}
+        try:
+            declaration = self._declaration(project, options)
+            check_declarations(choices, declaration, options)
+            received_at = _delivery_day(self.received_at)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        result = start_order(self, context, project, choices, declaration, options,
+                             received_at=received_at,
+                             received_from=self.received_from.strip() or None,
+                             reason=self.reason.strip() or None)
+        if result == {"FINISHED"}:
+            self.report({"INFO"}, tr("Importing {count} drillhole tables in the background…",
+                                     count=format_number(len(choices), 0)))
+        return result
+
+    def _decide(self, context: Any) -> set[str]:
+        """Aplica o descarta la importación ``pending`` que espera la decisión de la persona
+        (RF-005-10, RF-005-11): lo decidido, el de «Importación pendiente» si la enseña."""
+        uid = self.pending
+        order = _ORDERS.get(uid) if uid in _WAITING else None
+        if order is None:
+            self.report({"ERROR"}, tr("No drillhole import is waiting for a decision"))
+            return {"CANCELLED"}
+        if self.stage == STAGE_DISCARD:
+            _abandon(order, DISCARDED)
+            self.report({"INFO"}, tr("Import of the drillholes discarded: nothing has been "
+                                     "written"))
+            return {"FINISHED"}
+        shown = getattr(context.window_manager, IMPORT_PROPERTY, None)
+        if shown is not None and shown.operation_uid != uid:
+            shown = None
+        register = True if shown is None else bool(shown.register_codes)
+        if order.codes and not register:
+            self.report({"ERROR"}, tr("Without registering the new codes nothing is "
+                                      "imported: register them or discard the import"))
+            return {"CANCELLED"}
+        reason = (self.reason.strip() or (shown.reason.strip() if shown is not None else "")
+                  or (order.reason or ""))
+        if any(entry.substitute for entry in order.live) and not reason:
+            self.report({"ERROR"}, tr("Write why the inputs replace those with the same data "
+                                      "and other settings"))
+            return {"CANCELLED"}
+        order.reason = reason or None
+        order.keep = tuple(hole.name for hole in shown.holes if hole.keep) if shown else ()
+        order.register = bool(order.codes)
+        _WAITING.remove(uid)
+        _show_pending()
+        _apply(order)
+        self.report({"INFO"}, tr("Applying the import of the drillholes…"))
+        return {"FINISHED"}
 
 
 class GEOBLENDER_OT_dh_import_recmin_mdb(_DrillholesCommand, ProvenanceAwareOperator,
@@ -606,7 +2130,7 @@ class GEOBLENDER_OT_dh_show_display(_DrillholesCommand, bpy.types.Operator):
 def _not_delivered(what: str, value: str) -> GeoblenderError:
     """Lo que dice una función de la procedencia de los sondeos cuya orden aún no ha llegado:
     ``dh.not_delivered``, sin hacer nada."""
-    found = command_catalog().commands.get(IMPORT_DRILLHOLES)
+    found = command_catalog().commands.get(SET_AZIMUTH)
     note = unavailable_note(found) if found is not None else ""
     return GeoblenderError(NOT_DELIVERED, f"aún no está disponible ({note})", obj="Sondeos",
                            field=what, value=value)
@@ -731,3 +2255,13 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_dh_set_azimuth_reference, GEOBLENDER_OT_dh_show_display,
 )
 """Las órdenes de la 005, en el orden de :data:`COMMANDS`."""
+
+
+def _mark_undelivered() -> None:
+    """Las órdenes que aún no han llegado no están disponibles en el catálogo (su entrada sí:
+    ``bl.ui.commands.is_undelivered``; T25), como un provisional."""
+    for cls in classes:
+        setattr(cls, UNDELIVERED_FLAG, cls.bl_idname in UNDELIVERED)
+
+
+_mark_undelivered()

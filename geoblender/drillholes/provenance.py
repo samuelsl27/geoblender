@@ -46,7 +46,8 @@ datos (:data:`ROLE_CONVENTIONS`, :data:`RECMIN_CONVENTIONS`): así el mismo CSV 
 con «,» y punto da el mismo hash de contenido, y otra referencia del azimut, otro. Una
 convención de otro papel (la densidad en unas desviaciones) ni se guarda ni cuenta.
 :func:`source_declarations` da esas declaraciones al trabajo que calcula el hash de la fuente:
-son las mismas que comprueba la entrada.
+son las mismas que comprueba la entrada. (T25) :func:`input_declaration` es lo contrario de
+:func:`input_spec`: lo que declaró el fichero de una entrada registrada, para ``dh.build_base``.
 
 ``core.inputs`` carga ``core.project``, y ``gis``, todo su paquete: este módulo los importa solo
 al construir una entrada (los lectores y los trabajos pueden importarlo por sus claves). Python
@@ -71,7 +72,7 @@ from ..core.provenance.contract import (
     ReimportFunction,
     SettingDef,
 )
-from .model import SourceDeclaration
+from .model import InclinationConvention, SourceDeclaration, ValueRules
 from .params import DESURVEY_KEYS, VALIDATION_KEYS
 from .schema import (
     BASE_TABLES,
@@ -118,6 +119,7 @@ __all__ = [
     "declared_crs",
     "declared_vertical",
     "importer_def",
+    "input_declaration",
     "input_kind",
     "input_spec",
     "operation_def",
@@ -639,3 +641,81 @@ def input_spec(
         received_at=received_at,
         received_from=received_from,
     )
+
+
+def _declared_horizontal(crs: object) -> CrsRef | None:
+    """El CRS horizontal registrado de una entrada (``{"epsg": n}``); ``None`` sin declarar o
+    si no aplica."""
+    if crs is None or (isinstance(crs, Mapping) and crs.get("not_applicable") is True):
+        return None
+    if isinstance(crs, Mapping) and set(crs) == {"epsg"}:
+        from ..core.georef import load_catalog
+
+        return load_catalog().horizontal(crs["epsg"])
+    raise ValueError(f"el CRS horizontal registrado de una entrada de sondeos es "
+                     f"{{\"epsg\": n}}, no {crs!r}")
+
+
+def _declared_vertical_ref(crs: object) -> VerticalRef | None:
+    """El datum vertical registrado de una entrada (los de :func:`declared_vertical`);
+    ``None`` sin declarar o si no aplica."""
+    if crs is None or (isinstance(crs, Mapping) and crs.get("not_applicable") is True):
+        return None
+    if isinstance(crs, Mapping) and len(crs) == 1:
+        from ..core.georef import load_catalog
+
+        ((form, value),) = crs.items()
+        if form == "epsg":
+            return load_catalog().vertical(value)
+        if form == "local":
+            return load_catalog().local_vertical(value)
+        if form == "ellipsoidal" and value == ELLIPSOIDAL_EPSG:
+            from ..gis.crs import ELLIPSOIDAL_ETRS89  # carga gis: solo con una cota elipsoidal
+
+            return ELLIPSOIDAL_ETRS89
+        if form == "ellipsoidal" and isinstance(value, str) and value.strip():
+            return VerticalRef(kind="ellipsoidal", epsg=None, name=value, wkt2=None, note=None)
+    raise ValueError(f"el datum vertical registrado de una entrada de sondeos no se "
+                     f"reconoce: {crs!r}")
+
+
+def input_declaration(reader: str, crs_h: object, crs_v: object,
+                      settings: Mapping[str, Any]) -> SourceDeclaration:
+    """Lo que declara una entrada registrada (``core.inputs.InputRecord``: su lector con
+    versión, sus CRS declarados y sus ajustes, como los guardó :func:`input_spec`), como
+    ``SourceDeclaration``: lo que necesita ``dh.build_base`` para llevar lo importado de esa
+    entrada a la base (plan §5.6.1 y §5.6.10). Lo contrario de :func:`input_spec`: los CRS de
+    unas bocas o de una base de RecMin (``None`` si «no aplica»), las convenciones de su papel,
+    el separador decimal y el formato de las fechas; lo que su papel no declara queda sin
+    declarar (``None``, sin unidades, sin centinelas, no «todos verticales»). Una base de
+    RecMin da siempre la inclinación negativa hacia abajo (``interop.recmin``). ``ValueError``
+    con un lector que no es de una importación de la 005 o unos CRS o unos ajustes que no son
+    los de una entrada de los sondeos."""
+    found = _reader(reader)
+    if not isinstance(settings, Mapping):
+        raise TypeError(f"los ajustes de una entrada son un diccionario, no {settings!r}")
+    values = dict(settings)
+    if not isinstance(values.get("decimal"), str):
+        raise ValueError(f"los ajustes de una entrada de sondeos dicen su separador decimal "
+                         f"(decimal), no {values.get('decimal')!r}")
+    inclination = values.get("inclination_convention")
+    if found == RECMIN_MDB:  # la de RecMin, siempre (interop.recmin.INCLINATION_CONVENTION)
+        inclination = InclinationConvention.NEGATIVE_DOWN
+    chosen: dict[str, Any] = dict(
+        crs=_declared_horizontal(crs_h),
+        vertical=_declared_vertical_ref(crs_v),
+        azimuth_ref=values.get("azimuth_ref"),
+        declination_deg=values.get("declination_deg"),
+        inclination_convention=inclination,
+        units=dict(values.get("units") or {}),
+        value_rules=ValueRules(
+            decimal_mark=values["decimal"],
+            sentinels=frozenset(values.get("sentinels") or ()),
+            negative_is_below_dl=bool(values.get("negative_is_below_dl", False)),
+        ),
+        all_vertical=bool(values.get("all_vertical", False)),
+        date_format=values.get("date_format"),
+    )
+    if "density_kind" in values:
+        chosen["density_kind"] = values["density_kind"]
+    return SourceDeclaration(**chosen)

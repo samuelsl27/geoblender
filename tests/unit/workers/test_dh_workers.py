@@ -568,6 +568,9 @@ class ImportTabularTest(_JobCase):
                 new = {kind: list(codes) for kind, codes in
                        interop_base.new_codes(container, project).items()}
                 self.assertEqual((summary["new_codes"], report["new_codes"]), (new, new))
+                register = interop_base.registrations(container, project)  # T25
+                self.assertEqual((summary["register_codes"], report["register_codes"]),
+                                 (register, register))
                 self.assertEqual(summary["existing_holes"],
                                  ["S-01"] if role == "collar" else [])
         self.assertTrue(read[("lithology", provenance.DH_CSV)]["lithology"].code.size)
@@ -648,6 +651,7 @@ class ImportRecminTest(_JobCase):
         self.assertEqual(saved["counts"], {table: counts.as_dict()
                                            for table, counts in report.per_table.items()})
         self.assertEqual((summary["schema_version"], summary["existing_holes"]), (12, ["R-01"]))
+        self.assertEqual(summary["register_codes"], interop_base.registrations(dset))
         declarations = provenance.source_declarations(provenance.RECMIN_MDB, decl)
         request = dh_content.RECMIN_MDB.request(
             "drillholes", declarations, {"main": _STATE["sources"] / "base.mdb"},
@@ -781,7 +785,8 @@ class ApplyTest(_JobCase):
         codes = {"lithology": [["lithology", "NUEVA"]], "element": [["Zn", "ppm"]],
                  "sector": ["Norte"]}
         params = {"name": "Campaña 2026", "crs": CRS_JSON, "keep_holes": ["s-12 "],
-                  "register_codes": codes, "taken_colors": taken, "count": 50}
+                  "replace_holes": ["S-01", "s-12"], "register_codes": codes,
+                  "taken_colors": taken, "count": 50}
         summary, ctx, folder = self.run_job(dh_jobs.IMPORT_APPLY, params,
                                             inputs={"source": "leido_collar.npz"})
         rows = _read_role("collar")
@@ -804,6 +809,11 @@ class ApplyTest(_JobCase):
                     schema.table_digest(schema.source_layout(role), table_rows, CRS)))
         self.assertEqual(summary["removed"]["collars"], 1)
         self.assertEqual(summary["removed"]["surveys"], int((~stations).sum()))
+        # RF-005-12 (T25): las filas de los sondeos que sustituyen a los del proyecto (S-12 se
+        # conserva: no cuenta).
+        s01 = rows.surveys.hole_name == "S-01"
+        self.assertEqual((summary["replaced"]["collars"], summary["replaced"]["surveys"]),
+                         (1, int(s01.sum())))
         self.assertEqual(summary["registered"]["lithology"], [["lithology", "NUEVA", color]])
         self.assertEqual(dh_jobs.new_colors(3, taken), dh_jobs.new_colors(3, taken))
         self.assertEqual(len(set(dh_jobs.new_colors(40, taken))), 40)

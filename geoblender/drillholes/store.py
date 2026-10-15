@@ -47,10 +47,13 @@ abrir el proyecto (como las incorporaciones de ``bl/ops/gis.py``).
 **Lectura**: :func:`read_steps` lee la base por pasos a un ``DrillholeSet`` en el CRS y el
 datum del proyecto (el de ``dh.validate``, ``dh.desurvey`` y la vista); :func:`existing_holes`,
 los sondeos de la base (los que una importación pregunta si sustituir, RF-005-11), y
-:func:`stale_holes`, los de trazas obsoletas: su huella de la desviación (``survey_sha256``)
-en ``dh_collar`` no es la que usó su traza en ``dh_trace`` (RF-005-22). :func:`source_entry` es
-lo contrario de :func:`source_tables`: las filas de lo importado de una entrada como el
-``SourceEntry`` de ``dh.build_base``.
+:func:`read_catalogs`, sus catálogos (con los que una importación compara sus códigos,
+RF-005-10); :func:`stale_holes`, los de trazas obsoletas: su huella de la desviación
+(``survey_sha256``) en ``dh_collar`` no es la que usó su traza en ``dh_trace`` (RF-005-22).
+:func:`source_entry` es lo contrario de :func:`source_tables`: las filas de lo importado de una
+entrada como el ``SourceEntry`` de ``dh.build_base``; (T25) :func:`live_sources` da lo importado
+vigente, entrada a entrada en el orden en que se registraron, y :func:`source_entry_steps` lee
+el de una, por pasos, como su ``SourceEntry``.
 
 **Valores** (plan §5.2.2): los números, en float64 tal como llegan (NaN = ``NULL``; −0 = 0);
 sí/no, 0 o 1; las enumeraciones, su texto; las fechas, «AAAA-MM-DD»; ``extra``, su JSON
@@ -76,6 +79,7 @@ import numpy as np
 from ..core.content.encoder import ContentDigest
 from ..core.content.readers import ReadCancelled
 from ..core.datasets.model import LIVE_STATUSES, DatasetRecord, DatasetSpec
+from ..core.datasets.registry import get as get_dataset
 from ..core.errors import GeoblenderError, ValidationError
 from ..core.georef import CrsRef, VerticalRef, load_catalog
 from ..core.hashing import HashCancelled, canonical_json
@@ -126,6 +130,7 @@ from .provenance import (
     OPERATION_TYPES_BY_NAME,
     VALIDATE,
     dataset_spec,
+    input_declaration,
     source_spec,
 )
 from .schema import (
@@ -137,6 +142,7 @@ from .schema import (
     TableLayout,
     create_table,
     insert_rows,
+    layout_of,
     source_layout,
     source_name,
     source_table,
@@ -147,13 +153,17 @@ __all__ = [
     "LOG_KINDS",
     "STEP_BUDGET_S",
     "BaseWriter",
+    "LiveSource",
     "LogLine",
     "SourceInput",
     "SourceWriter",
     "StoreProject",
     "existing_holes",
+    "live_sources",
+    "read_catalogs",
     "read_steps",
     "source_entry",
+    "source_entry_steps",
     "source_tables",
     "stale_holes",
 ]
@@ -1180,6 +1190,122 @@ def stale_holes(conn: sqlite3.Connection) -> tuple[str, ...]:
     return tuple(row[0] for row in conn.execute(
         "SELECT c.name FROM dh_collar c JOIN dh_trace t ON t.hole_id = c.fid "
         "WHERE t.survey_sha256 IS NOT c.survey_sha256 ORDER BY c.fid"))
+
+
+def read_catalogs(conn: sqlite3.Connection) -> Catalogs:
+    """Los catálogos de la base de los sondeos del proyecto (``dh_lithology_code``,
+    ``dh_element``, ``dh_sector``, ``dh_group`` y ``dh_zone``, por su ``fid``; los que no
+    están, vacíos): con los que una importación compara los códigos de su fuente
+    (RF-005-10). Pocas filas: de una vez."""
+    found: dict[str, list[Any]] = {}
+    for table, (attribute, record) in _BASE_CATALOGS.items():
+        found[attribute] = (_catalog_records(conn, table, record)[1]
+                            if _table_exists(conn, table) else [])
+    return Catalogs(**found)
+
+
+@dataclass(frozen=True)
+class LiveSource:
+    """Lo importado vigente de una entrada de los sondeos (plan §5.6.1 y §5.6.10): la entrada
+    activa (``record``, su fila de ``gb_input``) y sus datos vivos de lo importado por papel
+    (``datasets``: ``dh_src_<rol>_<nombre>``, en el orden de
+    ``drillholes.schema.SOURCE_ROLES``)."""
+
+    record: InputRecord
+    datasets: Mapping[str, DatasetRecord]
+
+    @property
+    def declaration(self) -> SourceDeclaration:
+        """Lo que declara su entrada (``provenance.input_declaration``)."""
+        record = self.record
+        return input_declaration(record.reader, record.crs_h, record.crs_v, record.settings)
+
+
+def live_sources(conn: sqlite3.Connection) -> tuple[LiveSource, ...]:
+    """Lo importado vigente del proyecto (``conn``, de lectura; plan §5.6.1 y §5.6.10): cada
+    entrada activa de los sondeos con sus datos vivos de lo importado, **en el orden en que se
+    registraron** (su ``registered_at`` y, si empatan, el de su fila en ``gb_input``): el que
+    ``dh.build_base`` necesita para la precedencia (la más reciente manda, RF-005-11). Vacío
+    sin nada importado."""
+    live = ", ".join(f"'{status}'" for status in LIVE_STATUSES)
+    rows = conn.execute(
+        f"SELECT d.uid, d.name, d.input_uid FROM gb_dataset d JOIN gb_input i ON "
+        f"i.uid = d.input_uid WHERE d.module = ? AND d.status IN ({live}) "
+        f"ORDER BY i.registered_at, i.rowid", (MODULE,)).fetchall()
+    grouped: dict[str, list[DatasetRecord]] = {}
+    for dataset_uid, name, input_uid in rows:
+        record = get_dataset(conn, dataset_uid) if name.startswith(SOURCE_PREFIX) else None
+        if record is not None:
+            grouped.setdefault(input_uid, []).append(record)
+    found: list[LiveSource] = []
+    for input_uid, datasets in grouped.items():
+        record = get_input(conn, input_uid)
+        if record is None or not record.active:
+            continue
+        by_role = {layout_of(dataset.locator).role: dataset for dataset in datasets}
+        found.append(LiveSource(record, MappingProxyType(
+            {role: by_role[role] for role in SOURCE_ROLES if role in by_role})))
+    return tuple(found)
+
+
+def _join(columns: type, parts: Sequence[Any]) -> Any:
+    """Unas columnas (de la clase ``columns``) una tras otra."""
+    if len(parts) == 1:
+        return parts[0]
+    chosen = [columns.empty(), *parts]
+    return columns(**{item.name: np.concatenate([getattr(part, item.name) for part in chosen])
+                      for item in fields(columns)})
+
+
+def source_entry_steps(
+    conn: sqlite3.Connection,
+    source: LiveSource,
+    *,
+    budget_s: float = STEP_BUDGET_S,
+    clock: Callable[[], float] = time.perf_counter,
+) -> Generator[float, None, SourceEntry]:
+    """Lee por pasos lo importado de la entrada ``source`` (``conn``, de lectura) y lo
+    devuelve (``StopIteration.value``) como el ``SourceEntry`` de ``dh.build_base``: las filas
+    de cada ``dh_src_*`` en el orden de su ``fid``, por trozos de :data:`READ_ROWS` filas
+    convertidos al leerlos (los de :func:`source_entry`, bit a bit), con lo que declara su
+    entrada y su nombre lógico como ``label``. Cede el avance (0–1) cada vez que un paso gasta
+    ``budget_s``."""
+    pacer = _Pacer(budget_s, clock)
+    total = max(1, sum(conn.execute(f'SELECT count(*) FROM "{dataset.locator}"').fetchone()[0]
+                       for dataset in source.datasets.values()))
+    done = 0
+    parts: dict[str, Any] = {}
+    catalogs = Catalogs()
+    for role, dataset in source.datasets.items():
+        layout = source_layout(role)
+        quoted = ", ".join(f'"{column}"' for column in layout.insert_columns)
+        sql = (f'SELECT fid, {quoted} FROM "{dataset.locator}" WHERE fid > ? ORDER BY fid '
+               f"LIMIT {READ_ROWS}")
+        chunks: list[Any] = []
+        catalog_rows: list[tuple[Any, ...]] = []
+        last = -1
+        while True:
+            rows = conn.execute(sql, (last,)).fetchall()
+            if not rows:
+                break
+            last = rows[-1][0]
+            stored = [tuple(row[1:]) for row in rows]
+            if role == "catalog":
+                catalog_rows.extend(stored)
+            else:
+                chunks.append(_source_columns(role, stored))
+            done += len(rows)
+            if pacer.due():
+                yield min(done / total, 1.0)
+                pacer.restart()
+        if role == "catalog":
+            catalogs = _catalogs_of(catalog_rows)
+        else:
+            attribute, columns = _SOURCE_PARTS[role]
+            parts[attribute] = _join(columns, chunks) if chunks else columns.empty()
+    record = source.record
+    return SourceEntry(record.uid, source.declaration, catalogs=catalogs, label=record.name,
+                       **parts)
 
 
 def _ids(values: Sequence[Any]) -> np.ndarray:

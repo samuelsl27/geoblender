@@ -97,7 +97,7 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
     la lectura del importador) en ``source.npz``, con su informe en ``report.json``. Sin las
     declaraciones que hacen falta, ``dh.declaration_missing`` (RF-005-07)."""
     from ..drillholes.provenance import TABLE_ROLES, input_kind
-    from .base import existing_holes, new_codes
+    from .base import existing_holes, new_codes, registrations
     from .csv_tables import read_table
     from .drillholes_tabular import read_role
     from .xlsx_tables import read_sheet
@@ -151,6 +151,7 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
         "duplicate_holes": [list(group) for group in rows.duplicate_holes],
         "warnings": [],
         "new_codes": {kind: list(codes) for kind, codes in new_codes(found, catalogs).items()},
+        "register_codes": registrations(found, catalogs),
         "existing_holes": list(existing_holes(found, project_holes)),
     }
     write_json(ctx, OUT_REPORT, report)
@@ -160,6 +161,7 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
         "counts": report["counts"],
         "rejected": len(rows.rejected),
         "new_codes": report["new_codes"],
+        "register_codes": report["register_codes"],
         "existing_holes": report["existing_holes"],
         "outputs": {OUT_SOURCE.role: {"file": OUT_SOURCE.relative},
                     OUT_REPORT.role: {"file": OUT_REPORT.relative}},
@@ -192,7 +194,7 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
     ``io.recmin_mdb@1`` sobre las mismas tablas, sin extraerla otra vez) y lo leído
     (``interop.recmin.drillholes.read_drillholes``) en ``source.npz``, con su informe."""
     from ..drillholes.provenance import RECMIN_MDB
-    from .base import existing_holes
+    from .base import existing_holes, registrations
     from .recmin.drillholes import read_drillholes
     from .recmin.schema import schema_version, version_warning
 
@@ -240,6 +242,7 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
         "duplicate_holes": [list(group) for group in report.duplicate_holes],
         "warnings": list(report.warnings),
         "new_codes": {kind: list(codes) for kind, codes in report.unknown_codes.items()},
+        "register_codes": registrations(dset, catalogs),
         "existing_holes": list(existing_holes(dset, project_holes)),
     }
     write_json(ctx, OUT_REPORT, found)
@@ -252,6 +255,7 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
         "rejected": len(report.rejected),
         "warnings": found["warnings"],
         "new_codes": found["new_codes"],
+        "register_codes": found["register_codes"],
         "existing_holes": found["existing_holes"],
         "outputs": {OUT_SOURCE.role: {"file": OUT_SOURCE.relative},
                     OUT_REPORT.role: {"file": OUT_REPORT.relative},

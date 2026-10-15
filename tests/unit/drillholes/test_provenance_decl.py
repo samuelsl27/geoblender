@@ -31,6 +31,7 @@ importadores y lectores) como los encontró.
 from __future__ import annotations
 
 import dataclasses
+import json
 import unittest
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -701,6 +702,66 @@ class InputSpecTest(unittest.TestCase):
             provenance.declared_vertical(5782)
         with self.assertRaises(TypeError):
             provenance.declared_crs(25830)
+
+    def test_declaration_back_from_the_input(self) -> None:
+        """RF-005-07, RF-005-08, RF-005-27 a RF-005-29 (spec 005, T25; plan §5.6.1 y §5.6.10):
+        de lo que guarda una entrada (sus CRS y sus ajustes, también tras pasar por JSON, como
+        en ``gb_input``) vuelve lo que declaró su fichero para ``dh.build_base``: los CRS de
+        unas bocas o de RecMin (``None`` en las demás tablas), las convenciones de su papel, el
+        decimal y el formato de las fechas; lo que su papel no declara queda sin declarar. Una
+        base de RecMin, con la inclinación negativa hacia abajo; un datum local o una altura
+        elipsoidal, los mismos."""
+        declaration = _declaration(
+            azimuth_ref=model.AzimuthRef.MAGNETIC, declination_deg=0.25,
+            inclination_convention=model.InclinationConvention.POSITIVE_DOWN,
+            value_rules=model.ValueRules(",", frozenset({"-99", "ND"}), True),
+            density_kind="MEDIDO")
+        nothing = {"azimuth_ref": None, "declination_deg": None,
+                   "inclination_convention": None, "units": {}, "all_vertical": False,
+                   "sentinels": [], "negative_is_below_dl": False, "density_kind": "ADOPTADO"}
+        for reader in (CSV, XLSX, RECMIN):
+            for role in (ROLE_CONVENTIONS if reader != RECMIN else (None,)):
+                with self.subTest(reader=reader, role=role):
+                    spec = provenance.input_spec(reader, "fichero",
+                                                 **_arguments(reader, role, declaration))
+                    stored = json.loads(json.dumps(dict(spec.settings)))
+                    found = provenance.input_declaration(
+                        reader, json.loads(json.dumps(dict(spec.crs_h))),
+                        json.loads(json.dumps(dict(spec.crs_v))), stored)
+                    self.assertIsInstance(found, model.SourceDeclaration)
+                    kept = RECMIN_CONVENTIONS if role is None else ROLE_CONVENTIONS[role]
+                    expected = {**nothing, **{key: declaration.conventions()[key]
+                                              for key in kept}}
+                    if reader == RECMIN:
+                        expected["inclination_convention"] = "negative_down"
+                    self.assertEqual(found.conventions(), expected)
+                    located = role in (None, "collar")
+                    self.assertEqual((found.crs, found.vertical),
+                                     (H25830, V5782) if located else (None, None))
+                    self.assertEqual(found.value_rules.decimal_mark, ",")
+                    self.assertEqual(found.date_format,
+                                     None if reader == RECMIN else "%d/%m/%Y")
+        for vertical in (georef.load_catalog().local_vertical("NP-0 del plano 3"),
+                         gis_crs.ELLIPSOIDAL_ETRS89):
+            with self.subTest(vertical=vertical.name):
+                spec = provenance.input_spec(CSV, "bocas", **_arguments(
+                    CSV, "collar", _declaration(vertical=vertical)))
+                found = provenance.input_declaration(CSV, dict(spec.crs_h), dict(spec.crs_v),
+                                                     dict(spec.settings))
+                self.assertEqual(found.vertical, vertical)
+        settings = dict(provenance.input_spec(CSV, "bocas", **_arguments(
+            CSV, "collar", _declaration())).settings)
+        for crs_h, crs_v, changes, error in (
+                ({"epsg": 25830}, {"epsg": 5782}, {"decimal": None}, ValueError),
+                ({"wkt": "x"}, {"epsg": 5782}, {}, ValueError),
+                ({"epsg": 25830}, {"geoid": 1}, {}, ValueError)):
+            with self.subTest(crs_h=crs_h, crs_v=crs_v, changes=changes):
+                with self.assertRaises(error):
+                    provenance.input_declaration(CSV, crs_h, crs_v, {**settings, **changes})
+        with self.assertRaises(ValueError):
+            provenance.input_declaration("gis.points_text@1", None, None, settings)
+        with self.assertRaises(TypeError):
+            provenance.input_declaration(CSV, None, None, [("decimal", ",")])
 
     def test_wrong_arguments(self) -> None:
         """RF-008-07: un lector que no es de una importación de la 005, un papel o una

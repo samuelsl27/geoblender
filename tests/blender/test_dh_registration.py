@@ -46,6 +46,7 @@ PANELS = ("GEOBLENDER_PT_dh_pending", "GEOBLENDER_PT_dh_validation",
           "GEOBLENDER_PT_dh_display")
 LIST = "GEOBLENDER_UL_dh_issues"
 WITH_SETTINGS = ("dh.import_tabular", "dh.import_recmin", "dh.desurvey")
+DELIVERED = frozenset({"geoblender.dh_import_drillholes"})  # T25
 
 
 def _module(name: str) -> ModuleType:
@@ -249,12 +250,19 @@ class DrillholesRegisteredTest(unittest.TestCase):
         """RF-003-07 (plan 005 §5.6.10): mientras no llega su orden, cada una no está
         disponible (``poll`` falso) y dice dónde estará, como un provisional («Disponible en
         005 · Sondeos»); su recálculo, su reimportación y el cargador de las trazas lo dicen
-        con un error para la persona, sin hacer nada."""
+        con un error para la persona, sin hacer nada. Las que ya han llegado (T25: importar
+        tablas) lo están en el catálogo y, sin proyecto, dicen el paso previo."""
         catalog = _module("core.catalog")
         i18n = _module("core.i18n")
         errors = _module("core.errors")
-        self.assertEqual(sorted(self.m.dh_ops.UNDELIVERED), sorted(self.m.dh_ops.COMMANDS))
-        for idname in self.m.dh_ops.COMMANDS:
+        self.assertEqual(sorted(self.m.dh_ops.UNDELIVERED),
+                         sorted(set(self.m.dh_ops.COMMANDS) - DELIVERED))
+        for idname in sorted(DELIVERED):
+            with self.subTest(entregada=idname):
+                self.assertTrue(self.m.commands.is_available(idname))
+                self.assertEqual(self.m.dh_ops.unavailable_reason(idname),
+                                 self.m.dh_ops.open_reason())
+        for idname in sorted(self.m.dh_ops.UNDELIVERED):
             with self.subTest(orden=idname):
                 note = catalog.unavailable_text(self.cat, self.cat.commands[idname],
                                                 i18n.language())

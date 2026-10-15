@@ -20,7 +20,8 @@ lectura y la importación pendiente (``drillholes.model.ImportDto``).
 - **Códigos nuevos** (RF-005-10, :func:`new_codes`): los de litología (por esquema de
   logueo), elemento, sector, grupo y zona que trae la fuente, en sus filas o en sus
   catálogos, y no están en los del proyecto, sin distinguir mayúsculas ni espacios
-  exteriores.
+  exteriores; (T25) :func:`registrations`, los mismos como se dan de alta (la litología con su
+  esquema, el elemento con su unidad).
 - **La importación pendiente** (:func:`to_import_dto`): el ``ImportDto`` de una lectura, con
   sus entradas (una por fichero o por hoja, D-15: cada una con su hash de contenido y sus
   huellas) y los sondeos que ya existen en el proyecto (RF-005-11).
@@ -91,6 +92,7 @@ __all__ = [
     "none_array",
     "object_array",
     "record_columns",
+    "registrations",
     "require_declarations",
     "spanish_list",
     "to_import_dto",
@@ -347,6 +349,48 @@ def new_codes(dset: DrillholeSet, catalogs: Catalogs | None = None
             _collect(codes, seen, part)
         if codes:
             found[kind] = tuple(codes.values())
+    return found
+
+
+def registrations(dset: DrillholeSet, catalogs: Catalogs | None = None
+                  ) -> dict[str, list[Any]]:
+    """Los códigos nuevos de ``dset`` frente a ``catalogs`` (los de :func:`new_codes`, en su
+    orden) como se dan de alta si la persona lo decide (RF-005-10; el parámetro
+    ``register_codes`` del trabajo ``dh_import_apply``): las litologías con su esquema de
+    logueo (``[esquema, código]``), los elementos con su unidad (``[código, unidad]``: la de
+    su catálogo de la fuente o, si no, la de su primer análisis con unidad; ``None`` si no se
+    sabe) y los sectores, grupos y zonas por su código. Solo los catálogos con alguno."""
+    project = Catalogs() if catalogs is None else catalogs
+    if not isinstance(project, Catalogs):
+        raise TypeError(f"los catálogos del proyecto son un Catalogs, no {project!r}")
+    codes = new_codes(dset, project)
+    found: dict[str, list[Any]] = {}
+    if "lithology" in codes:
+        known = {(name_key(c.log_set), name_key(c.code)) for c in project.lithology}
+        pairs = [(c.log_set, c.code) for c in dset.catalogs.lithology]
+        pairs += zip(dset.lithology.log_set.tolist(), dset.lithology.code.tolist(),
+                     strict=True)
+        chosen: dict[tuple[str, str], list[str]] = {}
+        for log_set, code in pairs:
+            if log_set is None or code is None:
+                continue
+            key = (name_key(log_set), name_key(code))
+            if key not in known:
+                chosen.setdefault(key, [log_set, code])
+        found["lithology"] = list(chosen.values())
+    if "element" in codes:
+        units: dict[str, str] = {}
+        for element in dset.catalogs.elements:
+            if element.unit:
+                units.setdefault(name_key(element.code), element.unit)
+        for code, unit in zip(dset.assays.element.tolist(), dset.assays.unit.tolist(),
+                              strict=True):
+            if code is not None and unit:
+                units.setdefault(name_key(code), unit)
+        found["element"] = [[code, units.get(name_key(code))] for code in codes["element"]]
+    for kind in ("sector", "group", "zone"):
+        if kind in codes:
+            found[kind] = list(codes[kind])
     return found
 
 

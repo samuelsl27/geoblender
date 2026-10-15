@@ -46,8 +46,8 @@ Los tipos, con sus parámetros, sus entradas (``in/``) y sus resultados (``out/`
   de la base, RF-005-11), ``catalogs`` (los del proyecto, ``drillholes.arrays.catalogs_json``)
   y ``size``; ``source_main`` → ``source.npz`` (lo leído, en lo declarado: las columnas del
   modelo, ``drillholes.arrays.tables_arrays``) y ``report.json`` (recuentos, rechazos, códigos
-  nuevos y sondeos que ya están), con el ``ContentDigest`` de la fuente (el de
-  ``core_content_hash``) y la huella de su fichero;
+  nuevos, cómo se darían de alta, ``register_codes``, y sondeos que ya están), con el
+  ``ContentDigest`` de la fuente (el de ``core_content_hash``) y la huella de su fichero;
 - ``dh_import_recmin`` (``interop.dh_jobs.run_import_recmin``): ``declaration``, ``settings``
   (el decimal, si se da), ``accept_schema``, ``crs``, ``vertical``, ``project_holes``,
   ``catalogs`` y ``size``; ``source_main`` → ``source.npz``, ``report.json`` y lo que extrae el
@@ -55,8 +55,9 @@ Los tipos, con sus parámetros, sus entradas (``in/``) y sus resultados (``out/`
   ``accept_schema``: termina sin resultados con ``needs_confirmation`` en el resumen
   (RF-005-15), y se vuelve a lanzar con la confirmación;
 - ``dh_import_apply``: ``name``, ``crs``, ``keep_holes`` (los sondeos que conservan los
-  registros del proyecto: no se importan, RF-005-11), ``register_codes`` (los códigos nuevos
-  que se dan de alta, RF-005-10; las litologías, con un color determinista distinto de
+  registros del proyecto: no se importan, RF-005-11), ``replace_holes`` (los que sustituyen a
+  los del proyecto: se cuentan, RF-005-12), ``register_codes`` (los códigos nuevos que se dan
+  de alta, RF-005-10; las litologías, con un color determinista distinto de
   ``taken_colors``); ``source`` (el ``source.npz`` de la lectura) → ``dh_src_<rol>.npz`` por
   papel con sus filas y su hash;
 - ``dh_build_base``: ``crs``, ``vertical``, ``project_uid``, ``entries`` (cada entrada vigente
@@ -699,6 +700,15 @@ def _kept(columns: Any, keep: frozenset[str], field: str) -> tuple[Any, int]:
     return columns.take(np.flatnonzero(stay)), int((~stay).sum())
 
 
+def _counted(columns: Any, holes: frozenset[str], field: str) -> int:
+    """Cuántas filas de ``columns`` son de un sondeo (``field``) de ``holes`` (sin
+    mayúsculas)."""
+    if not holes or not len(columns):
+        return 0
+    return sum(1 for name in getattr(columns, field).tolist()
+               if name is not None and name_key(name) in holes)
+
+
 def _registered(catalogs: Catalogs, codes: Mapping[str, Any], taken: Sequence[str],
                 request: JobParams) -> tuple[Catalogs, dict[str, list[Any]]]:
     """Los catálogos de la entrada con los códigos nuevos que se dan de alta (los que no
@@ -747,12 +757,15 @@ def run_import_apply(ctx: _Context) -> dict[str, Any]:
     catálogos (``register_codes``; las litologías con un color determinista distinto de los
     del proyecto, ``taken_colors``). Deja las filas de cada ``dh_src_<rol>`` (las de
     ``drillholes.store.source_tables``) con su hash (``schema.table_digest``), las que
-    escribe ``SourceWriter``."""
+    escribe ``SourceWriter``. El resumen dice, por tabla, las filas quitadas (``removed``) y
+    las de los sondeos que ya están en el proyecto y se sustituyen (``replace_holes``:
+    ``replaced``, el informe de RF-005-12)."""
     from .store import source_tables  # importa la procedencia: solo al usarlo
 
     request = JobParams(ctx)
     crs = request.crs()
     keep = frozenset(name_key(name) for name in request.texts("keep_holes"))
+    replace = frozenset(name_key(name) for name in request.texts("replace_holes")) - keep
     codes = request.mapping("register_codes", {})
     taken = request.texts("taken_colors")
     ctx.progress(0.0, READING_TEXT)
@@ -762,9 +775,11 @@ def run_import_apply(ctx: _Context) -> dict[str, Any]:
     except (ValueError, TypeError) as error:
         raise request.invalid(f"lo leído de «{INPUT_SOURCE}» no vale: {error}") from None
     removed: dict[str, int] = {}
+    replaced: dict[str, int] = {}
     for name in TABLES:
         field = "name" if name == "collars" else "hole_name"
         tables[name], removed[name] = _kept(tables[name], keep, field)
+        replaced[name] = _counted(tables[name], replace, field)
     try:
         catalogs, added = _registered(catalogs, codes, taken, request)
     except (ValueError, TypeError) as error:
@@ -776,8 +791,8 @@ def run_import_apply(ctx: _Context) -> dict[str, Any]:
                          catalogs=catalogs)
     found = _tables(ctx, crs, [(f"dh_src_{role}", source_layout(role), table_rows)
                                for role, table_rows in rows.items()], 0.3, 0.99)
-    summary = {"name": request.text("name", ""), "removed": removed, "registered": added,
-               "outputs": found}
+    summary = {"name": request.text("name", ""), "removed": removed, "replaced": replaced,
+               "registered": added, "outputs": found}
     finish(ctx, [table_output(name) for name in found])
     return summary
 

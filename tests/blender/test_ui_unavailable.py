@@ -165,7 +165,8 @@ class UnavailableNoteTest(unittest.TestCase):
                         first = labels[1]
                     self.assertEqual(first.text, note)
                     self.assertFalse(first.enabled and first.active)
-            self.assertGreaterEqual(checked, 20, language)
+            # Los de las entradas aún no entregadas (desde la 005/T25, sin los de Sondeos).
+            self.assertGreaterEqual(checked, 19, language)
 
     def drawn_menus(self, hide: bool) -> dict[str, list]:
         """Lo que dibuja cada menú generado (salvo los circulares) con «Ocultar lo no

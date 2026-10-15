@@ -7,7 +7,8 @@ Con un proyecto abierto, en la región lateral N de la Vista 3D, pestaña «Sond
 - ``GEOBLENDER_PT_dh_pending`` («Importación pendiente»), solo mientras una importación de
   sondeos espera la decisión de la persona (``WindowManager.geoblender_dh_import``): los
   códigos nuevos y si se dan de alta (RF-005-10), cada sondeo que el proyecto ya tiene y si se
-  conservan sus registros (RF-005-11), y el motivo de una sustitución;
+  conservan sus registros (RF-005-11), la sustitución que pide motivo y el motivo, y (T25)
+  «Aplicar» y «Descartar» (la orden de la importación con ``stage`` y ``pending``);
 - ``GEOBLENDER_PT_dh_validation`` («Validación»): la lista de incidencias de la última
   validación (``GEOBLENDER_UL_dh_issues``), que se filtra por nivel y por código (RF-005-16), y
   las órdenes de validar, exportar el informe (RF-005-19) y calcular las trazas (RF-005-20);
@@ -38,6 +39,9 @@ VALIDATION_LABEL = "Validation"
 DISPLAY_LABEL = "Display"
 LIST = "GEOBLENDER_UL_dh_issues"
 LIST_ROWS = 6
+IMPORT_DRILLHOLES = "geoblender.dh_import_drillholes"
+"""La orden de «Aplicar» y «Descartar» de la importación pendiente (con ``stage`` y
+``pending``: plan 005 §5.3.1)."""
 _ICONS = {"ERROR": "ERROR", "WARNING": "INFO"}
 
 
@@ -95,7 +99,17 @@ class GEOBLENDER_PT_dh_pending(_DrillholesTab, bpy.types.Panel):
             for hole in pending.holes:
                 text = tr("{hole}: keep the existing records", hole=hole.name)
                 column.prop(hole, "keep", text=text, translate=False)
-        layout.prop(pending, "reason", text=tr("Reason"), translate=False)
+        if pending.question:
+            column = layout.column(align=True)
+            for line in pending.question.splitlines():
+                column.label(text=line, icon="QUESTION", translate=False)
+            layout.prop(pending, "reason", text=tr("Reason"), translate=False)
+        row = layout.row(align=True)
+        for stage, text, icon in (("APPLY", tr("Apply"), "CHECKMARK"),
+                                  ("DISCARD", tr("Discard"), "CANCEL")):
+            button = row.operator(IMPORT_DRILLHOLES, text=text, icon=icon, translate=False)
+            button.stage = stage
+            button.pending = pending.operation_uid
 
 
 class GEOBLENDER_UL_dh_issues(bpy.types.UIList):

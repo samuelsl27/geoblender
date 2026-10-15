@@ -251,6 +251,49 @@ class MappingTest(unittest.TestCase):
                                                  ["Sondeo", "Hole", "De", "A", "Lito"]),
                          {"hole": "Sondeo", "from_m": "De", "to_m": "A", "code": "Lito"})
 
+    def test_suggested_role_by_name_or_columns(self) -> None:
+        """RF-005-05 (spec 005, T25: la correspondencia propuesta es la correcta sin tocarla):
+        el papel de cada fichero de ``csv_basico``, de ``csv_convenios`` y de cada hoja del
+        libro sale de su nombre (en español o en inglés, sin la extensión, con lo que siga:
+        «collars_magnetic»); unos análisis, en filas si tienen elemento y valor y si no, en
+        columnas; sin un nombre reconocible, el de sus columnas (bocas, desviaciones,
+        análisis en filas, litología); si nada encaja, ninguno."""
+        files = {name: role for role, name in dh_sets.basico_expected()["files"].items()}
+        for name, role in files.items():
+            table = _read(dh_sets.BASICO / name)
+            with self.subTest(fichero=name):
+                self.assertEqual(tabular.suggest_role(name, table.columns), Role(role))
+                stem = name.removesuffix(".csv")
+                self.assertEqual(tabular.suggest_role(stem.upper(), table.columns), Role(role))
+        convenios = {"collars_magnetic.csv": Role.COLLAR, "surveys_positive_dip.csv":
+                     Role.SURVEY, "lithology.csv": Role.LITHOLOGY, "assays.csv":
+                     Role.ASSAY_LONG, "lithology_codes.csv": Role.LITHOLOGY_CATALOG,
+                     "elements.csv": Role.ELEMENT_CATALOG}
+        for name, role in convenios.items():
+            with self.subTest(fichero=name):
+                table = _read(CONVENIOS / name, ",")
+                self.assertEqual(tabular.suggest_role(name, table.columns), role)
+        for sheet in build_xlsx.BASICO_SHEETS:
+            with self.subTest(hoja=sheet):
+                columns = _read(dh_sets.BASICO / f"{sheet}.csv").columns
+                self.assertEqual(tabular.suggest_role(sheet, columns),
+                                 Role(files[f"{sheet}.csv"]))
+        by_columns = {
+            Role.COLLAR: ["HoleID", "East", "North", "RL"],
+            Role.SURVEY: ["BHID", "Depth", "Azimuth", "Dip"],
+            Role.ASSAY_LONG: ["BHID", "From", "To", "Element", "Value"],
+            Role.LITHOLOGY: ["BHID", "From", "To", "Lith"],
+        }
+        for role, columns in by_columns.items():
+            with self.subTest(columnas=columns):
+                self.assertEqual(tabular.suggest_role("datos_2026.csv", columns), role)
+        self.assertIsNone(tabular.suggest_role("datos.csv", ["A", "B", "C"]))
+        self.assertIsNone(tabular.suggest_role("", []))
+        with self.assertRaises(TypeError):
+            tabular.suggest_role(None, [])
+        with self.assertRaises(TypeError):
+            tabular.suggest_role("bocas", "Sondeo;X")
+
     def test_aliases_are_unambiguous(self) -> None:
         """Cada nombre habitual es de un solo campo de su papel."""
         for role in Role:
@@ -724,6 +767,40 @@ class HolesAndCodesTest(unittest.TestCase):
             model.LithologyCode(code) for code in report.unknown_codes["lithology"]),
             elements=dset.catalogs.elements)
         self.assertEqual(base.new_codes(dset, with_all), {})
+
+    def test_registrations_of_the_new_codes(self) -> None:
+        """RF-005-10 (spec 005, T25): los códigos nuevos como se dan de alta (el parámetro
+        ``register_codes`` de ``dh_import_apply``): cada litología con su esquema de logueo
+        (también la que el proyecto tiene en otro esquema), cada elemento con la unidad de su
+        catálogo de la fuente o, sin catálogo, la de sus análisis; con todo dado de alta,
+        nada."""
+        tables = _basico_tables()
+        tables[Role.LITHOLOGY] = dh_sets._read(dh_sets.ERRORES / "dh_e11_litologia.csv")
+        project = model.Catalogs(
+            lithology=(model.LithologyCode(" sue"), model.LithologyCode("CAL"),
+                       model.LithologyCode("MIN", log_set="recmin_alteracion")),
+            elements=(model.Element("au", "g/t"),))
+        dset, report = tabular.read_drillholes(tables, None, _declaration(), project)
+        found = base.registrations(dset, project)
+        self.assertEqual(found, {
+            "lithology": [["lithology", code] for code in report.unknown_codes["lithology"]],
+            "element": [["Ag", "ppm"], ["Cu", "%"]],
+        })
+        # Sin catálogo de elementos: la unidad escrita en los análisis en filas.
+        without = {role: table for role, table in _basico_tables("assay_long").items()
+                   if role is not Role.ELEMENT_CATALOG}
+        long_set, _ = tabular.read_drillholes(without, None, _declaration(units={}), project)
+        self.assertEqual(long_set.catalogs.elements, ())
+        self.assertEqual(base.registrations(long_set, project)["element"],
+                         [["Ag", "ppm"], ["Cu", "%"]])
+        with_all = dataclasses.replace(project, lithology=project.lithology + tuple(
+            model.LithologyCode(code) for code in report.unknown_codes["lithology"]),
+            elements=dset.catalogs.elements)
+        self.assertEqual(base.registrations(dset, with_all), {})
+        self.assertEqual(base.registrations(dset, None)["element"],
+                         [["Au", "g/t"], ["Ag", "ppm"], ["Cu", "%"]])
+        with self.assertRaises(TypeError):
+            base.registrations(dset, {})
 
 
 if __name__ == "__main__":

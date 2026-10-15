@@ -470,6 +470,65 @@ class SourceWriterTest(_StoreCase):
         self.assertEqual(self.stored_rows(new_table), old_rows)
         self.assert_protected(old_table, old.name)
 
+    def test_live_sources_back_as_entries(self) -> None:
+        """RF-005-01, RF-005-02, RF-005-11 (spec 005, T25; plan §5.6.1 y §5.6.10): lo importado
+        vigente vuelve, para ``dh.build_base``, como una entrada por fichero en el orden en que
+        se registraron (``live_sources``), cada una con sus datos de lo importado por papel y
+        lo que declaró su fichero; leída por pasos (``source_entry_steps``, un paso por trozo
+        con el reloj de prueba), sus columnas son las de ``source_entry``, bit a bit, con su
+        nombre lógico. Una entrada sustituida deja de estar: manda la que la sustituye; sin
+        nada importado, ninguna. Sin la base, ``read_catalogs`` da los catálogos vacíos."""
+        with self.project.read() as conn:
+            self.assertEqual(store.live_sources(conn), ())
+            self.assertEqual(store.read_catalogs(conn), model.Catalogs())
+        roles = ("lithology_catalog", "collar", "survey", "lithology")
+        found = {role: self.file_input(role) for role in roles}
+        writer = store.SourceWriter(self.project)
+        items = [writer.add(self.begin(), found[role]["spec"], found[role]["tables"])
+                 for role in roles]
+        _drive(writer.steps(software=PYPROJ))
+        with self.project.read() as conn:
+            sources = store.live_sources(conn)
+            self.assertEqual([source.record.uid for source in sources],
+                             [item.record.uid for item in items])
+            for role, source in zip(roles, sources, strict=True):
+                with self.subTest(papel=role):
+                    self.assertEqual(tuple(source.datasets), SOURCE_ROLES[role])
+                    for part, dataset in source.datasets.items():
+                        self.assertEqual(dataset.name, schema.source_name(
+                            part, found[role]["spec"].name))
+                    decl = source.declaration
+                    self.assertEqual((decl.crs, decl.vertical),
+                                     (CRS, VERTICAL) if role == "collar" else (None, None))
+                    expected = store.source_entry(source.record.uid, decl,
+                                                  found[role]["tables"])
+                    steps, entry = _drive(store.source_entry_steps(conn, source,
+                                                                   clock=_Ticks()))
+                    self.assertGreaterEqual(len(steps), len(SOURCE_ROLES[role]))
+                    self.assertEqual(entry.label, found[role]["spec"].name)
+                    self.assertIs(entry.declaration.crs, decl.crs)
+                    for name in ("collars", "surveys", "lithology", "assays"):
+                        given, back = getattr(expected, name), getattr(entry, name)
+                        for item in fields(given):
+                            self.assertEqual(_bits(getattr(back, item.name)),
+                                             _bits(getattr(given, item.name)),
+                                             (name, item.name))
+                    self.assertEqual(entry.catalogs, expected.catalogs)
+        magnetic = _declaration(azimuth_ref=model.AzimuthRef.MAGNETIC,
+                                declination_deg=model.parse_declination("1,5"))
+        other = self.file_input("survey", declaration=magnetic)
+        writer = store.SourceWriter(self.project)
+        item = writer.add(self.begin(), other["spec"], other["tables"],
+                          previous_uid=items[2].record.uid, reason="Otra declinación")
+        _drive(writer.steps(software=PYPROJ))
+        with self.project.read() as conn:
+            uids = [source.record.uid for source in store.live_sources(conn)]
+            self.assertEqual(uids, [items[0].record.uid, items[1].record.uid,
+                                    items[3].record.uid, item.record.uid])
+            (survey,) = [source for source in store.live_sources(conn)
+                         if source.record.uid == item.record.uid]
+            self.assertEqual(survey.declaration.declination_deg, 1.5)
+
     def test_failure_or_cancellation_between_steps_leaves_nothing(self) -> None:
         """RF-005-04, RF-008-19: un fallo inyectado o una cancelación entre pasos dejan cada
         importación de la orden «fallida» o «cancelada» con su motivo y ninguna entrada, dato,
@@ -711,6 +770,8 @@ class BaseWriterTest(_StoreCase):
                     self.assertEqual(_bits(getattr(back, item.name)),
                                      _bits(getattr(given, item.name)))
         self.assertEqual(dset.catalogs, base.dset.catalogs)
+        with self.project.read() as conn:  # RF-005-10 (T25): los de una importación
+            self.assertEqual(store.read_catalogs(conn), base.dset.catalogs)
         self.assertEqual((dset.crs, dset.vertical), (CRS, VERTICAL))
         changes = self.query("SELECT count(*) FROM gb_dataset_change")
         again = build.build_base(_entries(), FakeCrsService(), CRS, VERTICAL,
