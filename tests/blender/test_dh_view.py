@@ -146,11 +146,11 @@ class DrillholeViewTest(DrillholeImportCase):
         self.assertEqual((len(tubes), len(bars), len(found)), (1, 1, 2))
         return tubes[0], bars[0]
 
-    def expected(self, legend: Any = None,
-                 tables: frozenset = frozenset()) -> tuple[Any, Any, Any, Any]:
+    def expected(self, legend: Any = None, tables: frozenset = frozenset(),
+                 records: frozenset = frozenset()) -> tuple[Any, Any, Any, Any]:
         """La base del proyecto, sus curvas de litología, las barras del oro del dominio
-        (con ``legend`` o la leyenda por defecto; sin las tablas de alcance T ``tables``) y
-        las etiquetas, con las del fondo."""
+        (con ``legend`` o la leyenda por defecto; sin las tablas de alcance T ``tables`` ni
+        los registros de alcance R ``records``) y las etiquetas, con las del fondo."""
         store = _module("drillholes.store")
         params = _module("drillholes.params")
         validate = _module("drillholes.validate")
@@ -161,7 +161,7 @@ class DrillholeViewTest(DrillholeImportCase):
             dset, depth_tolerance_m=params.default(params.DEPTH_TOLERANCE))
         traces = _module("drillholes.desurvey").desurvey(dset, "minimum_curvature",
                                                          holes=~excluded)
-        exclusions = validate.Exclusions(excluded, tables)
+        exclusions = validate.Exclusions(excluded, tables, records)
         step = params.default(params.TRACE_STEP)
         curves = view_data.lithology_curves(dset, traces, "lithology", step, excluded=exclusions)
         if legend is None:
@@ -217,6 +217,7 @@ class DrillholeViewTest(DrillholeImportCase):
         self.assertEqual(np.diff(offsets).tolist(), curves.curve_sizes.tolist())
         self.assertTrue((_values(data, "curve_type") == 1).all())  # POLY
         self.assertEqual(_values(data, "gb_hole").tolist(), curves.hole.tolist())
+        self.assertEqual(_values(data, "gb_row").tolist(), curves.row.tolist())  # T54
         self.assertTrue(np.array_equal(_values(data, "gb_color"), curves.color_linear))
         local = _values(data, "position")
         self.assertNear(local, curves.points_abs)
@@ -236,6 +237,7 @@ class DrillholeViewTest(DrillholeImportCase):
         self.assertTrue(np.array_equal(_values(mesh, "gb_color"), expected.color_linear))
         self.assertEqual(_values(mesh, "gb_class").tolist(), expected.grade_class.tolist())
         self.assertEqual(_values(mesh, "gb_hole").tolist(), expected.hole.tolist())
+        self.assertEqual(_values(mesh, "gb_row").tolist(), expected.row.tolist())  # T54
 
     def check_object(self, obj: Any, record: Any) -> None:
         """La matriz identidad, ``Object.geoblender`` y la colección del dato de ``obj``."""
@@ -263,11 +265,25 @@ class DrillholeViewTest(DrillholeImportCase):
         la vista como estaba. T30 (RF-005-25, RF-005-17): cada carga deja a la superposición
         sus etiquetas, sus leyendas y sus marcas, y no pinta lo que excluye la validación
         guardada (alcance T). T47: sin recargarla, la vista vuelve a lo que dice el proyecto
-        (ningún sondeo obsoleto) en sus curvas, sus barras y sus marcas."""
+        (ningún sondeo obsoleto) en sus curvas, sus barras y sus marcas. T54 (RNF-005-04): cada
+        carga lee y manda a su trabajo solo los análisis del oro (no los de la plata ni los del
+        cobre) y dibuja lo mismo que el dominio con la base entera, también la fila de la base
+        de cada curva y de cada barra (``gb_row``) y sin los registros que excluye la
+        validación guardada (alcance R), del oro o de otro elemento."""
         ops = self.dh_ops
         store = _module("drillholes.store")
         drill_tubes = _module("bl.gn.drill_tubes")
+        dh_view = _module("bl.scene.dh_view")
         self.errors: list[float] = []
+        sent: list[tuple[int, int, int, int]] = []  # T54: las filas que van al trabajo
+        real_arrays = dh_view._base_arrays
+
+        def base_arrays(dset: Any) -> Any:
+            sent.append((len(dset.collars), len(dset.surveys), len(dset.lithology),
+                         len(dset.assays)))
+            return real_arrays(dset)
+
+        self.enterContext(mock.patch.object(dh_view, "_base_arrays", base_arrays))
         # Sin validar la base: la vista no la necesita (el presupuesto de tools/check.py).
         self.enterContext(mock.patch.object(ops, "start_validate", lambda project, **_: None))
         self.import_all(FILES)
@@ -285,6 +301,11 @@ class DrillholeViewTest(DrillholeImportCase):
         self.assertEqual(dict(source.params), {"dh.validation.depth_tolerance_m": 0.01,
                                                "dh.desurvey.trace_step_m": 2.0})
         dset, curves, bars, labels = self.expected()
+        elements = dset.assays.element.tolist()
+        gold = [k for k, text in enumerate(elements) if text == "Au"]
+        only_gold = (len(dset.collars), len(dset.surveys), len(dset.lithology), len(gold))
+        self.assertEqual(sent, [only_gold])
+        self.assertLess(len(gold), len(dset.assays))
         tubes, bar_object = self.shown(record)
         self.check_tubes(tubes, curves)
         self.check_bars(bar_object, bars)
@@ -316,7 +337,12 @@ class DrillholeViewTest(DrillholeImportCase):
         overlapped = {"hole_id": 2, "hole_name": "S-01", "code": "DH-E10", "level": "error",
                       "scope": "table", "table_name": "dh_lithology", "row_fid": 3,
                       "log_set": "lithology", "element": None}
-        stored = store.StoredValidation("validación", (overlapped,))
+        # T54: y con un análisis del oro y otro del cobre de alcance R (por su fid).
+        removed = (gold[1], elements.index("Cu"))
+        stored = store.StoredValidation("validación", (overlapped, *(
+            {**overlapped, "hole_id": int(dset.assays.hole[row]) + 1, "code": "DH-E04",
+             "scope": "record", "table_name": "dh_assay", "row_fid": row + 1,
+             "log_set": None} for row in removed)))
         with mock.patch.object(store, "stale_holes", lambda conn: STALE), \
                 mock.patch.object(store, "stored_validation", lambda conn: stored):
             self.assertEqual(bpy.ops.geoblender.core_load_into_view("EXEC_DEFAULT",
@@ -325,7 +351,8 @@ class DrillholeViewTest(DrillholeImportCase):
         legend = _module("drillholes.view_data").GradeLegend("g/t", (1.0,),
                                                               ("#0000FF", "#FF0000"))
         _dset, curves, bars, labels = self.expected(
-            legend, frozenset({(1, "dh_lithology", "lithology")}))
+            legend, frozenset({(1, "dh_lithology", "lithology")}),
+            frozenset(("dh_assay", row) for row in removed))
         tubes, bar_object = self.shown(record)
         self.check_overlay((tubes, bar_object), dset, labels, legend,
                            [("S-01", "partial", ("DH-E10",)), ("S-02", "stale", ()),
@@ -369,6 +396,7 @@ class DrillholeViewTest(DrillholeImportCase):
         self.finish()
         self.assertEqual((sorted(obj.name for obj in bpy.data.objects),
                           len(bpy.data.hair_curves), len(bpy.data.meshes)), before)
+        self.assertEqual(sent, [only_gold] * 3)  # T54: en las tres cargas, solo el oro
 
 
 if __name__ == "__main__":

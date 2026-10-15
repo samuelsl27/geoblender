@@ -714,6 +714,23 @@ def _entries(*, s01_azimuth: float = 0.0) -> list[Any]:
     return found
 
 
+ALTERATION = "Alteración"
+
+
+def _alteration() -> Any:
+    """Una entrada más con la litología de otro esquema de logueo (:data:`ALTERATION`): dos
+    tramos de S-01 y uno de S-02, con su código en el catálogo."""
+    records = [model.LithologyInterval("S-01", 0.0, 10.0, "ARG", log_set=ALTERATION),
+               model.LithologyInterval("S-01", 10.0, 30.0, "SIL", log_set=ALTERATION),
+               model.LithologyInterval("S-02", 5.0, 15.0, "ARG", log_set=ALTERATION)]
+    return build.SourceEntry(
+        "00000007-0000-4000-8000-000000000007", _declaration(),
+        lithology=model.IntervalColumns.from_records(records, model.CollarColumns.empty()),
+        catalogs=model.Catalogs(lithology=(model.LithologyCode("ARG", log_set=ALTERATION),
+                                           model.LithologyCode("SIL", log_set=ALTERATION))),
+        label="alteración")
+
+
 def _trace_rows(base: Any) -> list[tuple[Any, ...]]:
     """Las filas de ``dh_trace`` de la base (trazas por mínima curvatura cada 2 m) con la
     huella de la desviación de cada boca."""
@@ -906,6 +923,90 @@ class BaseWriterTest(_StoreCase):
         details = self.query("SELECT c.detail FROM gb_dataset_change c JOIN gb_dataset d ON "
                              "d.uid = c.dataset_uid WHERE d.name = 'dh_collar' ORDER BY c.fid")
         self.assertEqual(details[-1], ('{"holes":["S-01"]}',))
+
+    def test_view_reads_only_its_log_set_and_its_element(self) -> None:
+        """RNF-005-04 (T54; RF-005-23, RF-005-24, RF-005-17): la vista lee de la base solo lo
+        que dibuja (``view_steps``): las bocas, las desviaciones y los catálogos enteros, la
+        litología de su esquema de logueo y los análisis de su elemento (sin distinguir
+        mayúsculas ni espacios exteriores; sin elemento, o con uno que no está en el catálogo,
+        ningún análisis), por pasos (también con tramos de ``SCAN_ROWS`` y trozos de
+        ``READ_ROWS`` pequeños) y con el avance hasta 1. Cada fila leída es la de
+        ``read_steps`` bit a bit, con su fila en la base (``fid`` − 1, la de las incidencias
+        guardadas); las filas de lo que dibuja vuelven a las de la base y las de la base que
+        excluye la validación guardada (alcance R) pasan a las leídas (las demás, fuera)."""
+        base = build.build_base([*_entries(), _alteration()], FakeCrsService(), CRS, VERTICAL,
+                                project_uid=self.project.uid)
+        self.write_base(base)
+        fetched = {"rows": 0}
+        real = store._transpose
+
+        def transpose(rows: Any, width: int) -> Any:
+            fetched["rows"] += len(rows)
+            return real(rows, width)
+
+        cases = ((" ALTERACIÓN ", "au "), (model.LITHOLOGY_LOG_SET, None),
+                 (model.LITHOLOGY_LOG_SET, "Zn"), ("ninguno", "CU"))
+        found: dict[tuple[str, str | None, int], Any] = {}
+        with self.project.read() as conn, mock.patch.object(store, "_transpose", transpose):
+            _, full = _drive(store.read_steps(conn))
+            everything = fetched["rows"]
+            # Con tramos de 7 fid y trozos de 2 filas, también: lo mismo.
+            for scan, rows in ((store.SCAN_ROWS, store.READ_ROWS), (7, 2)):
+                with mock.patch.object(store, "SCAN_ROWS", scan), \
+                        mock.patch.object(store, "READ_ROWS", rows):
+                    for log_set, element in cases:
+                        fetched["rows"] = 0
+                        seen, view = _drive(store.view_steps(
+                            conn, log_set=log_set, element=element, clock=_Ticks()))
+                        found[(log_set, element, scan)] = (seen, view, fetched["rows"])
+
+        def positions(values: np.ndarray, key: str | None) -> np.ndarray:
+            if key is None:
+                return np.zeros(0, dtype=np.int64)
+            return np.flatnonzero([model.name_key(text) == model.name_key(key)
+                                   for text in values.tolist()])
+
+        self.assertEqual(len(positions(full.lithology.log_set, ALTERATION)), 3)
+        self.assertEqual(len(found), 2 * len(cases))
+        for (log_set, element, scan), (seen, view, read) in found.items():
+            with self.subTest(esquema=log_set, elemento=element, tramo=scan):
+                dset = view.dset
+                rows = {"dh_lithology": positions(full.lithology.log_set, log_set),
+                        "dh_assay": positions(full.assays.element, element)}
+                for table, expected in rows.items():
+                    self.assertEqual(view.rows[table].tolist(), expected.tolist())
+                for name, table in (("lithology", "dh_lithology"), ("assays", "dh_assay")):
+                    given, back = getattr(full, name), getattr(dset, name)
+                    for item in fields(given):
+                        self.assertEqual(_bits(getattr(back, item.name)),
+                                         _bits(getattr(given, item.name)[rows[table]]),
+                                         (name, item.name))
+                for name in ("collars", "surveys"):
+                    given, back = getattr(full, name), getattr(dset, name)
+                    for item in fields(given):
+                        self.assertEqual(_bits(getattr(back, item.name)),
+                                         _bits(getattr(given, item.name)), (name, item.name))
+                self.assertEqual((len(dset.zones), len(dset.structures)), (0, 0))
+                self.assertEqual((dset.catalogs, dset.crs, dset.vertical),
+                                 (full.catalogs, CRS, VERTICAL))
+                self.assertEqual(read, len(full.collars) + len(full.surveys)
+                                 + sum(len(item) for item in rows.values()))
+                self.assertLess(read, everything)
+                self.assertTrue(seen)
+                self.assertEqual((seen, seen[-1]), (sorted(seen), 1.0))
+        view = found[(*cases[0], 7)][1]
+        gold = positions(full.assays.element, "Au")
+        other = int(positions(full.assays.element, "Cu")[0])
+        litho = positions(full.lithology.log_set, ALTERATION)
+        self.assertEqual(view.base_rows("dh_assay", np.array([2, -1, 0])).tolist(),
+                         [gold[2], -1, gold[0]])
+        self.assertEqual(view.base_rows("dh_lithology", np.array([-1, 1])).tolist(),
+                         [-1, litho[1]])
+        self.assertEqual(view.read_records([("dh_assay", int(gold[3])), ("dh_assay", other),
+                                            ("dh_survey", 4), ("dh_lithology", int(litho[2]))]),
+                         [("dh_assay", 3), ("dh_survey", 4), ("dh_lithology", 2)])
+        with self.assertRaises(ValueError):
+            view.base_rows("dh_assay", np.array([len(gold)]))
 
     def test_failure_leaves_the_previous_base(self) -> None:
         """RF-005-04, RF-008-19 (plan §5.6.5, D-14): un fallo al reescribir la base la deja

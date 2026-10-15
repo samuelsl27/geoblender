@@ -61,7 +61,9 @@ huella de la desviación de cada boca, :func:`kept_traces`, las trazas que conse
 de «solo las obsoletas», y :func:`source_holes`, los sondeos de lo importado de una entrada (los
 que su reimportación sustituye sin preguntar); (T29) :func:`trace_view`, lo que la vista de las
 trazas toma de la desviación que escribió ``dh_trace`` (su método, sus parámetros, sus sondeos
-y los de traza obsoleta).
+y los de traza obsoleta); (T54) :func:`view_steps`, solo lo que dibuja la vista (las bocas, las
+desviaciones, la litología de un esquema de logueo y los análisis de un elemento, con su fila
+en la base: :class:`ViewBase`).
 
 **Valores** (plan §5.2.2): los números, en float64 tal como llegan (NaN = ``NULL``; −0 = 0);
 sí/no, 0 o 1; las enumeraciones, su texto; las fechas, «AAAA-MM-DD»; ``extra``, su JSON
@@ -78,7 +80,7 @@ import json
 import os
 import sqlite3
 import time
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from types import MappingProxyType
@@ -178,6 +180,7 @@ __all__ = [
     "StoreProject",
     "StoredValidation",
     "TraceView",
+    "ViewBase",
     "existing_holes",
     "export_report",
     "holes_by_table",
@@ -193,6 +196,7 @@ __all__ = [
     "stored_validation",
     "survey_hashes",
     "trace_view",
+    "view_steps",
 ]
 
 STEP_BUDGET_S = 0.05
@@ -205,6 +209,10 @@ LOG_KINDS: tuple[str, ...] = ("summary", "rejected", "warning")
 motivo) y un aviso."""
 READ_ROWS = 5_000
 """Las filas de cada lectura de :func:`read_steps` (entre dos, se mira el presupuesto)."""
+SCAN_ROWS = 50_000
+"""Los ``fid`` que recorre como mucho cada lectura con filtro de :func:`view_steps` (T54): con
+un elemento de pocos análisis, ninguna sentencia recorre la tabla entera de una vez
+(RNF-005-06; en ``Z:``, cada página leída viene por la red)."""
 CANCELLATIONS: tuple[type[BaseException], ...] = (JobCancelled, ReadCancelled, HashCancelled)
 """Los errores con que se para a petición de la persona: la operación queda «cancelada»."""
 
@@ -1597,12 +1605,15 @@ def _ids(values: Sequence[Any]) -> np.ndarray:
 
 
 class _Reading:
-    """Una lectura por pasos de la base: su presupuesto y el avance que cede."""
+    """Una lectura por pasos de la base: su presupuesto y el avance que cede (por el ``fid``
+    mayor de cada tabla que se lee, ``lasts``)."""
 
-    def __init__(self, conn: sqlite3.Connection, pacer: _Pacer, total: int) -> None:
+    def __init__(self, conn: sqlite3.Connection, pacer: _Pacer,
+                 lasts: Mapping[str, int]) -> None:
         self.conn = conn
         self.pacer = pacer
-        self.total = max(total, 1)
+        self.lasts = dict(lasts)
+        self.total = max(sum(self.lasts.values()), 1)
         self.done = 0
 
     def pause(self) -> Iterator[float]:
@@ -1611,29 +1622,54 @@ class _Reading:
             yield min(self.done / self.total, 1.0)
             self.pacer.restart()
 
-    def table(self, table: str, convert: Mapping[str, Callable[[list[Any]], np.ndarray]]
+    def table(self, table: str, convert: Mapping[str, Callable[[list[Any]], np.ndarray]],
+              where: tuple[str, Sequence[Any]] | None = None
               ) -> Generator[float, None, tuple[np.ndarray, dict[str, np.ndarray]]]:
         """El ``fid`` y las columnas ``convert`` de ``table`` (cada una con su conversión),
         por trozos de :data:`READ_ROWS` filas en el orden del ``fid``: cada trozo se convierte
-        al leerlo y cede el avance si el paso gastó su presupuesto."""
+        al leerlo y cede el avance si el paso gastó su presupuesto. Con ``where`` (T54: una
+        columna y sus valores), solo las filas con uno de esos valores, recorriendo como mucho
+        :data:`SCAN_ROWS` ``fid`` en cada sentencia; sin valores, ninguna (sin leerla)."""
         names = list(convert)
         quoted = ", ".join(f'"{column}"' for column in names)
-        sql = (f'SELECT fid, {quoted} FROM "{table}" WHERE fid > ? ORDER BY fid '
-               f"LIMIT {READ_ROWS}")
         fids: list[np.ndarray] = [np.zeros(0, dtype=np.int64)]
         found: dict[str, list[np.ndarray]] = {name: [] for name in names}
-        last = -1
-        while True:
-            rows = self.conn.execute(sql, (last,)).fetchall()
-            if not rows:
-                break
+
+        def keep(rows: list[Any]) -> None:
             parts = _transpose(rows, len(names) + 1)
             fids.append(np.array(parts[0], dtype=np.int64))
             for name, values in zip(names, parts[1:], strict=True):
                 found[name].append(convert[name](values))
-            last = rows[-1][0]
-            self.done += len(rows)
-            yield from self.pause()
+
+        if where is None:
+            sql = (f'SELECT fid, {quoted} FROM "{table}" WHERE fid > ? ORDER BY fid '
+                   f"LIMIT {READ_ROWS}")
+            last = -1
+            while True:
+                rows = self.conn.execute(sql, (last,)).fetchall()
+                if not rows:
+                    break
+                keep(rows)
+                last = rows[-1][0]
+                self.done += len(rows)
+                yield from self.pause()
+        else:
+            column, values = where
+            end = self.lasts.get(table, 0) if values else 0
+            marks = ", ".join("?" * len(values))
+            sql = (f'SELECT fid, {quoted} FROM "{table}" WHERE fid > ? AND fid <= ? AND '
+                   f'"{column}" IN ({marks}) ORDER BY fid LIMIT {READ_ROWS}')
+            last = 0
+            while last < end:
+                top = min(last + SCAN_ROWS, end)
+                rows = self.conn.execute(sql, (last, top, *values)).fetchall()
+                if rows:
+                    keep(rows)
+                reached = rows[-1][0] if len(rows) == READ_ROWS else top
+                self.done += reached - last
+                last = reached
+                yield from self.pause()
+            self.done += self.lasts.get(table, 0) - last
         yield from self.pause()
         columns = {name: (np.concatenate(parts) if parts else convert[name]([]))
                    for name, parts in found.items()}
@@ -1711,10 +1747,58 @@ def read_steps(
     if unknown or isinstance(parts, str):
         raise ValueError(f"las tablas que se leen además de las bocas son de {list(known)}, "
                          f"no {unknown or parts!r}")
+    dset, _fids = yield from _read_base(conn, crs, vertical, chosen, None, budget_s, clock)
+    return dset
+
+
+@dataclass(frozen=True)
+class _Only:
+    """Lo que se lee de la litología y de los análisis (T54): las filas de un esquema de
+    logueo y las de un elemento, por su ``name_key`` (``None``: ninguna)."""
+
+    log_set: str | None
+    element: str | None
+
+
+def _only_where(conn: sqlite3.Connection, table: str, only: _Only | None,
+                elements: tuple[np.ndarray, Sequence[Element]]
+                ) -> tuple[str, list[Any]] | None:
+    """El filtro de :meth:`_Reading.table` de ``table`` con ``only`` (``None``: entera): de la
+    litología, los esquemas guardados con el ``name_key`` de ``only.log_set``; de los análisis,
+    los ids de los elementos del catálogo (``elements``: sus ``fid`` y sus registros) con el de
+    ``only.element``."""
+    if only is None:
+        return None
+    if table == "dh_lithology":
+        if only.log_set is None:
+            return "log_set", []
+        stored = conn.execute('SELECT DISTINCT "log_set" FROM "dh_lithology"').fetchall()
+        return "log_set", sorted(value for (value,) in stored
+                                 if isinstance(value, str) and name_key(value) == only.log_set)
+    if table == "dh_assay":
+        fids, records = elements
+        return "element_id", [fid for fid, item in zip(fids.tolist(), records, strict=True)
+                              if only.element is not None and name_key(item.code) == only.element]
+    return None
+
+
+def _read_base(
+    conn: sqlite3.Connection,
+    crs: CrsRef | None,
+    vertical: VerticalRef | None,
+    chosen: Sequence[str],
+    only: _Only | None,
+    budget_s: float,
+    clock: Callable[[], float],
+) -> Generator[float, None, tuple[DrillholeSet, dict[str, np.ndarray]]]:
+    """:func:`read_steps` de las tablas ``chosen`` (con ``only``, la litología y los análisis
+    de :class:`_Only`): el ``DrillholeSet`` y el ``fid`` de cada fila de cada tabla hija
+    leída."""
     if crs is None or vertical is None:
         crs, vertical = _project_references(conn)
     if not _table_exists(conn, "dh_collar"):
-        return DrillholeSet(crs=crs, vertical=vertical)
+        return DrillholeSet(crs=crs, vertical=vertical), {}
+    known = tuple(table for table, _, _ in _BASE_PARTS)
     tables = [name for name in BASE_TABLES if _table_exists(conn, name)
               and (name not in known or name in chosen)]
     catalogs: dict[str, list[Any]] = {}
@@ -1725,9 +1809,11 @@ def read_steps(
             catalog_fids[table], catalogs[attribute] = _catalog_records(conn, table, record)
     codes = {table: [item.code for item in catalogs[attribute]]
              for table, (attribute, _) in _BASE_CATALOGS.items()}
-    total = sum(_last_fid(conn, name)
-                for name, _, _ in (("dh_collar", "", ""), *_BASE_PARTS) if name in tables)
-    reading = _Reading(conn, _Pacer(budget_s, clock), total)
+    reading = _Reading(conn, _Pacer(budget_s, clock), {
+        name: _last_fid(conn, name)
+        for name, _, _ in (("dh_collar", "", ""), *_BASE_PARTS) if name in tables})
+    elements = (catalog_fids["dh_element"], catalogs["elements"])
+    row_fids: dict[str, np.ndarray] = {}
 
     collar_fids, stored = yield from reading.table(
         "dh_collar", _converters(CollarColumns, "dh_collar", ("sector_id", "group_id")))
@@ -1746,7 +1832,9 @@ def read_steps(
             continue
         catalog = _CATALOG_ID.get(table)
         ids = ("hole_id",) if catalog is None else ("hole_id", catalog[0])
-        _, stored = yield from reading.table(table, _converters(columns, table, ids))
+        where = _only_where(conn, table, only, elements)
+        row_fids[table], stored = yield from reading.table(
+            table, _converters(columns, table, ids), where)
         yield from reading.pause()
         hole = _positions(collar_fids, stored.pop("hole_id"))
         stored["hole"], stored["hole_name"] = hole, _codes(hole, names)
@@ -1758,4 +1846,81 @@ def read_steps(
         parts[attribute] = columns(**stored)
         yield from reading.pause()
     return DrillholeSet(crs=crs, vertical=vertical, collars=collars,
-                        catalogs=Catalogs(**catalogs), **parts)
+                        catalogs=Catalogs(**catalogs), **parts), row_fids
+
+
+VIEW_PARTS: tuple[str, ...] = ("dh_survey", "dh_lithology", "dh_assay")
+"""Las tablas que lee la vista además de las bocas y los catálogos (:func:`view_steps`)."""
+_VIEW_FILTERED: tuple[str, ...] = ("dh_lithology", "dh_assay")
+
+
+@dataclass(frozen=True, eq=False)
+class ViewBase:
+    """Lo que la vista lee de la base (T54; RNF-005-04; :func:`view_steps`): ``dset``, las
+    bocas, las desviaciones y los catálogos enteros, la litología de un esquema de logueo y los
+    análisis de un elemento, y ``rows``, la fila en la base de cada tramo de litología y de
+    cada análisis leídos (por el nombre de su tabla, ``dh_lithology`` y ``dh_assay``; int64):
+    su ``fid`` − 1, la fila con que las guardan las incidencias de la validación (la base se
+    reescribe entera con los ``fid`` desde 1; ``drillholes.validate.stored_exclusions``)."""
+
+    dset: DrillholeSet
+    rows: Mapping[str, np.ndarray]
+
+    def base_rows(self, table: str, rows: np.ndarray) -> np.ndarray:
+        """La fila en la base (int64) de cada fila ``rows`` de lo leído de ``table`` (−1, un
+        hueco, sigue −1); las de una tabla leída entera, las mismas. ``ValueError`` con una
+        fila que no se leyó."""
+        found = np.asarray(rows, dtype=np.int64)
+        read = self.rows.get(table)
+        if read is None:
+            return found.copy()
+        wrong = found[(found < -1) | (found >= read.size)]
+        if wrong.size:
+            raise ValueError(f"de «{table}» se leyeron {read.size} filas: la {int(wrong[0])} "
+                             "no es una de ellas")
+        if not read.size:
+            return np.full(found.shape, -1, dtype=np.int64)
+        return np.where(found >= 0, read[np.maximum(found, 0)], -1).astype(np.int64)
+
+    def read_records(self, records: Iterable[tuple[str, int]]) -> list[tuple[str, int]]:
+        """Los registros ``records`` (tabla, fila en la base; los de alcance R de la
+        validación guardada) como filas de lo leído, en su orden: los de una tabla leída por
+        partes, su posición en ella (si no se leyó, fuera); los de una leída entera, tal
+        cual."""
+        found: list[tuple[str, int]] = []
+        for table, row in records:
+            read = self.rows.get(table)
+            if read is None:
+                found.append((table, row))
+                continue
+            at = int(np.searchsorted(read, row))
+            if at < read.size and int(read[at]) == row:
+                found.append((table, at))
+        return found
+
+
+def view_steps(
+    conn: sqlite3.Connection,
+    *,
+    log_set: str,
+    element: str | None,
+    budget_s: float = STEP_BUDGET_S,
+    clock: Callable[[], float] = time.perf_counter,
+) -> Generator[float, None, ViewBase]:
+    """Lee por pasos, como :func:`read_steps` (en el CRS y el datum del proyecto), solo lo
+    que necesita la vista de los sondeos (T54; RNF-005-04; RF-005-23, RF-005-24): las bocas,
+    las desviaciones y los catálogos enteros, la litología del esquema de logueo ``log_set``
+    y los análisis del elemento ``element`` (sin distinguir mayúsculas ni espacios exteriores,
+    como la vista, ``model.name_key``; sin elemento o con uno que no está en el catálogo,
+    ninguno), con su fila en la base (:class:`ViewBase`). Las tablas de los análisis y de la
+    litología se recorren por tramos de :data:`SCAN_ROWS` ``fid``: ninguna sentencia las
+    recorre enteras de una vez."""
+    if not isinstance(log_set, str):
+        raise TypeError(f"el esquema de logueo es un texto, no {log_set!r}")
+    if element is not None and not isinstance(element, str):
+        raise TypeError(f"el elemento es un texto o None, no {element!r}")
+    only = _Only(name_key(log_set), None if element is None else name_key(element))
+    dset, fids = yield from _read_base(conn, None, None, VIEW_PARTS, only, budget_s, clock)
+    rows = {table: (fids[table] - 1 if table in fids else np.zeros(0, dtype=np.int64))
+            for table in _VIEW_FILTERED}
+    return ViewBase(dset, MappingProxyType(rows))

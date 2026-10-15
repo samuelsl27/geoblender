@@ -13,25 +13,28 @@ los sondeos (``bl.ops.dh.start_view``: la vista se recarga sola, plan §5.6.8):
 
 1. lee del proyecto, por pasos, lo que dice la desviación que escribió ``dh_trace``
    (``drillholes.store.trace_view``: su método, sus parámetros, sus sondeos y los de traza
-   obsoleta) y la base que necesita la vista (las bocas, las desviaciones, la litología, los
-   análisis y los catálogos; ``drillholes.store.read_steps``);
+   obsoleta) y solo lo que la vista dibuja de la base (T54, RNF-005-04;
+   ``drillholes.store.view_steps``): las bocas, las desviaciones y los catálogos, la litología
+   del esquema elegido y los análisis del elemento elegido (con V-ref, 25 000 de los 500 000);
 2. lanza el trabajo ``dh_view_arrays`` (``bl.ops.core_provenance.submit_job``: no es de
-   ninguna operación, porque la vista no escribe en el proyecto) con la base en ``in/`` (una
-   parte por tabla), la representación de la escena (``Scene.geoblender_dh_display``: el
-   esquema de logueo, el elemento con su leyenda, que es la de sus clases si la representación
-   las tiene, RF-005-24, y si no la de por defecto, y la separación y el ancho de las barras) y
-   los sondeos con traza («cada sondeo calculado», RF-005-23), y espera a que acabe sondeando
-   el lanzador (en ``blender -b`` no corren los temporizadores);
+   ninguna operación, porque la vista no escribe en el proyecto) con eso en ``in/`` (por
+   partes; lo que excluye la validación guardada, con las filas de lo leído:
+   ``ViewBase.read_records``), la representación de la escena
+   (``Scene.geoblender_dh_display``: el esquema de logueo, el elemento con su leyenda, que es
+   la de sus clases si la representación las tiene, RF-005-24, y si no la de por defecto, y
+   la separación y el ancho de las barras) y los sondeos con traza («cada sondeo calculado»,
+   RF-005-23), y espera a que acabe sondeando el lanzador (en ``blender -b`` no corren los
+   temporizadores);
 3. con sus arrays (``drillholes.jobs.read_view``, absolutos en float64) crea **los tubos**:
    unas curvas ``POLY`` (``bl.scene.mesh.curves_steps``, en locales respecto al GeoOrigin), una
    por tramo del esquema y por hueco, con los atributos :data:`COLOR` (de punto: el color
    lineal de su litología; gris en los huecos), :data:`HOLE` y :data:`ROW` (de curva: la
    posición de la boca en la base y la fila del tramo, −1 en un hueco) y :data:`STALE` (de
-   curva: su sondeo tiene la traza obsoleta, RF-005-22), con el modificador de
-   ``GB_DrillTubes`` (``bl.gn.drill_tubes``) y el radio de la representación; y **las barras**
-   del elemento: una malla de cuadriláteros con, por cara, :data:`COLOR` (el color de su
-   clase), :data:`CLASS` (su entrada en la leyenda), :data:`HOLE`, :data:`ROW` y
-   :data:`STALE`, y el material de la vista.
+   curva: su sondeo tiene la traza obsoleta, RF-005-22; las filas, las de la base,
+   ``ViewBase.base_rows``), con el modificador de ``GB_DrillTubes`` (``bl.gn.drill_tubes``) y
+   el radio de la representación; y **las barras** del elemento: una malla de cuadriláteros
+   con, por cara, :data:`COLOR` (el color de su clase), :data:`CLASS` (su entrada en la
+   leyenda), :data:`HOLE`, :data:`ROW` y :data:`STALE`, y el material de la vista.
 
 Devuelve los objetos sin enlazar y con matriz identidad (``bl.scene.views`` les pone
 ``Object.geoblender`` y los lleva a la colección del dato en «Sondeos»), su extensión local y
@@ -122,8 +125,6 @@ STALE = "gb_stale"
 """El atributo que marca los sondeos de traza obsoleta (RF-005-22)."""
 CLASS = "gb_class"
 """El atributo de cara de las barras con su entrada en la leyenda de clases."""
-READ_PARTS: tuple[str, ...] = ("dh_survey", "dh_lithology", "dh_assay")
-"""Lo que se lee de la base además de las bocas y los catálogos."""
 SENT_TABLES: tuple[str, ...] = ("collars", "surveys", "lithology", "assays")
 """Las tablas del ``DrillholeSet`` que van al trabajo (una parte de ``in/`` cada una)."""
 WAIT_S = 0.005
@@ -189,36 +190,44 @@ def grade_legend(display: Any, element: str, unit: str) -> GradeLegend | None:
                               value=" · ".join(item.lower for item in classes)) from None
 
 
-def _excluded(records: Sequence[Mapping[str, Any]], count: int) -> dict[str, list[Any]]:
+def _excluded(records: Sequence[Mapping[str, Any]], base: store.ViewBase
+              ) -> dict[str, list[Any]]:
     """Lo que excluye la validación guardada (``records``, las filas de
     ``dh_validation_issue``) para ``excluded`` del trabajo: sus tablas (alcance T) y sus
-    registros (R). Si no es de esta base (apunta a otras bocas), nada (queda en el registro
+    registros (R), estos con su fila en lo leído de la base ``base`` (T54: los de lo que no
+    se leyó, fuera). Si no es de esta base (apunta a otras bocas), nada (queda en el registro
     técnico)."""
     try:
-        found = validate.stored_exclusions(records, count)
+        found = validate.stored_exclusions(records, len(base.dset.collars))
     except ValueError:
         LOGGER.info("La validación guardada no es de la base de los sondeos de ahora: la vista "
                     "no la usa", exc_info=True)
         return {}
     return {"tables": [[hole, table, key] for hole, table, key in
                        sorted(found.tables, key=lambda item: (item[0], item[1], item[2] or ""))],
-            "records": [[table, row] for table, row in sorted(found.records)]}
+            "records": [[table, row] for table, row in
+                        base.read_records(sorted(found.records))]}
 
 
-def _job_params(dset: Any, source: store.TraceView, display: Any,
+def _log_set(display: Any) -> str:
+    """El esquema de logueo de la representación ``display`` (sin él, el de por defecto)."""
+    return display.log_set.strip() or LOG_SET
+
+
+def _job_params(base: store.ViewBase, source: store.TraceView, display: Any,
                 records: Sequence[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], list[str]]:
-    """Los parámetros de ``dh_view_arrays`` (la desviación de ``source``, la representación
-    ``display`` y lo que excluye la validación guardada ``records``) y los avisos de lo que no
-    se dibuja. Las etiquetas, siempre con las del fondo (T30: la superposición enseña las que
-    pide la representación)."""
+    """Los parámetros de ``dh_view_arrays`` (lo leído de la base ``base``, la desviación de
+    ``source``, la representación ``display`` y lo que excluye la validación guardada
+    ``records``) y los avisos de lo que no se dibuja. Las etiquetas, siempre con las del fondo
+    (T30: la superposición enseña las que pide la representación)."""
+    dset = base.dset
     rows = sum(len(getattr(dset, table)) for table in SENT_TABLES)
     params: dict[str, Any] = {
         "crs": gis_jobs.crs_json(dset.crs), "vertical": gis_jobs.vertical_json(dset.vertical),
         "method": source.method, "depth_tolerance_m": source.params[DEPTH_TOLERANCE],
-        "max_step_m": source.params[TRACE_STEP],
-        "log_set": display.log_set.strip() or LOG_SET,
+        "max_step_m": source.params[TRACE_STEP], "log_set": _log_set(display),
         "labels_at_end": True, "holes": list(source.holes),
-        "excluded": _excluded(records, len(dset.collars)), "count": rows + 1,
+        "excluded": _excluded(records, base), "count": rows + 1,
     }
     notes: list[str] = []
     typed = display.element.strip()
@@ -352,10 +361,13 @@ def load_traces(request: views.ViewRequest) -> Generator[float, None, views.View
                                   "sondeos: calcúlelas antes", obj=_OBJ, field="dato",
                                   value=request.record.name)
         yield 0.0  # en la red, cada lectura en su paso (T53; RNF-005-06)
-        dset = yield from _span(store.read_steps(conn, parts=READ_PARTS), 0.0, 0.2)
+        base = yield from _span(store.view_steps(
+            conn, log_set=_log_set(display), element=display.element.strip() or None),
+            0.0, 0.2)  # solo lo que se dibuja (T54; RNF-005-04)
         stored = store.stored_validation(conn)
+    dset = base.dset
     records = () if stored is None else stored.records
-    params, notes = _job_params(dset, source, display, records)
+    params, notes = _job_params(base, source, display, records)
     yield 0.2
     arrays = yield from _span(_base_arrays(dset), 0.2, 0.3)
     abandoned: list[bool] = []
@@ -388,7 +400,12 @@ def load_traces(request: views.ViewRequest) -> Generator[float, None, views.View
         stale = np.array([name in wanted for name in dset.collars.name.tolist()],
                          dtype=np.bool_)
         objects: list[bpy.types.Object] = []
-        curves, bars = view.curves, view.bars
+        curves, bars = view.curves, view.bars  # sus filas, las de la base (T54)
+        if curves is not None:
+            curves = replace(curves, row=base.base_rows(validate.TABLE_NAMES["lithology"],
+                                                        curves.row))
+        if bars is not None:
+            bars = replace(bars, row=base.base_rows(validate.TABLE_NAMES["assays"], bars.row))
         if curves is not None and len(curves.curve_sizes):
             objects.append((yield from _span(_tubes(request.name, curves, stale,
                                                     float(display.tube_radius),
