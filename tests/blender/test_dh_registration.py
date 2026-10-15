@@ -47,7 +47,9 @@ PANELS = ("GEOBLENDER_PT_dh_pending", "GEOBLENDER_PT_dh_validation",
 LIST = "GEOBLENDER_UL_dh_issues"
 WITH_SETTINGS = ("dh.import_tabular", "dh.import_recmin", "dh.desurvey")
 DELIVERED = frozenset({"geoblender.dh_import_drillholes",  # T25
-                       "geoblender.dh_import_recmin_mdb"})  # T26
+                       "geoblender.dh_import_recmin_mdb",  # T26
+                       "geoblender.dh_validate",  # T27
+                       "geoblender.dh_export_validation_report"})  # T27
 
 
 def _module(name: str) -> ModuleType:
@@ -252,8 +254,8 @@ class DrillholesRegisteredTest(unittest.TestCase):
         disponible (``poll`` falso) y dice dónde estará, como un provisional («Disponible en
         005 · Sondeos»); su recálculo, su reimportación y el cargador de las trazas lo dicen
         con un error para la persona, sin hacer nada. Las que ya han llegado (T25: importar
-        tablas; T26: una base de RecMin) lo están en el catálogo y, sin proyecto, dicen el paso
-        previo."""
+        tablas; T26: una base de RecMin; T27: validar y exportar el informe) lo están en el
+        catálogo y, sin proyecto, dicen el paso previo."""
         catalog = _module("core.catalog")
         i18n = _module("core.i18n")
         errors = _module("core.errors")

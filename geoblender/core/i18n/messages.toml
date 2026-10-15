@@ -4002,3 +4002,34 @@ es = "Base de sondeos de RecMin «{file}» (esquema {version}) importada como «
 
 ["{table}, row {row}, {field}: {reason}"]
 es = "{table}, fila {row}, {field}: {reason}"
+
+# Validar los sondeos y exportar su informe (spec 005, T27; plan 005 §5.3.1, §5.6.6 y §5.6.9;
+# D-19): la rejilla con que se comparan las bocas, la lista de lo que no se evaluó y la
+# exportación del CSV.
+
+["import drillholes"]
+es = "importe sondeos"
+
+["validate the drillhole database"]
+es = "valide la base de los sondeos"
+
+["The collar elevations are compared with it (DH-W05)"]
+es = "Con ella se comparan las cotas de las bocas (DH-W05)"
+
+["Validating the drillhole database in the background…"]
+es = "Validando la base de los sondeos en segundo plano…"
+
+["What the validation could not check"]
+es = "Lo que la validación no pudo comprobar"
+
+["«{file}»: the validation report has the extension .csv, not «{suffix}»; nothing has been written"]
+es = "«{file}»: el informe de validación lleva la extensión .csv, no «{suffix}»; no se ha escrito nada"
+
+["«{file}» is inside the project but not in its exports folder: export to exports/ or outside the project; nothing has been written"]
+es = "«{file}» está dentro del proyecto pero no en su carpeta de entregables: exporte a exports/ o fuera del proyecto; no se ha escrito nada"
+
+["«{file}» already exists: confirm that it is replaced; nothing has been written"]
+es = "Ya existe «{file}»: confirme que se sustituye; no se ha escrito nada"
+
+["Validation report «{file}» exported: {issues} issues; not evaluated: {notes}"]
+es = "Informe de validación «{file}» exportado: {issues} incidencias; sin evaluar: {notes}"

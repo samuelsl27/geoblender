@@ -92,7 +92,9 @@ que los casos de ``csv_errores``):
 
 **Valor** de una incidencia: el número, el texto o el sí/no guardado en el campo; «» si el
 campo está vacío (un número ausente o, en DH-W16, la profundidad que la fuente no traía);
-``None`` si la comprobación es de un cálculo (DH-E05, W04, W05, W06, W09, W14, W15).
+``None`` si la comprobación es de un cálculo (DH-E05, W04, W05, W06, W09, W14, W15). El valor
+es un número solo en los campos de :data:`NUMBER_FIELDS` (T27: así se lee otra vez el que
+guarda ``dh_validation_issue`` en texto).
 
 El orden es determinista: por boca (los registros sin boca, al final), código, tabla y fila.
 Nada modifica la entrada. Python puro y numpy (ADR-0004); vectorial salvo al crear las
@@ -131,6 +133,7 @@ __all__ = [
     "CATALOG_TABLES",
     "CODES",
     "MESSAGES",
+    "NUMBER_FIELDS",
     "TABLE_NAMES",
     "Exclusions",
     "Issue",
@@ -141,6 +144,7 @@ __all__ = [
     "ValidationReport",
     "deduce_depths",
     "hole_exclusions",
+    "no_dem_note",
     "validate",
 ]
 
@@ -192,7 +196,13 @@ TABLE_NAMES: Mapping[str, str] = MappingProxyType({
 CATALOG_TABLES: tuple[str, ...] = ("dh_lithology_code", "dh_element", "dh_sector", "dh_group",
                                    "dh_zone")
 """Las tablas de los catálogos (las incidencias de un catálogo no tienen sondeo)."""
-_TABLE_ORDER = {name: k for k, name in enumerate((*TABLE_NAMES.values(), *CATALOG_TABLES))}
+NUMBER_FIELDS: frozenset[str] = frozenset({"x", "y", "z", "depth", "azimuth", "inclination",
+                                           "from_m", "to_m", "value", "density"})
+"""Los campos de una incidencia cuyo valor es un número (o «» si el campo está vacío): las
+coordenadas y la profundidad de una boca, la profundidad y los ángulos de una estación, el
+tramo, el valor de un análisis y la densidad de una litología. En los demás es un texto o un
+sí/no."""
+_TABLE_ORDER ={name: k for k, name in enumerate((*TABLE_NAMES.values(), *CATALOG_TABLES))}
 _COLLAR = TABLE_NAMES["collars"]
 _SURVEY = TABLE_NAMES["surveys"]
 
@@ -447,6 +457,13 @@ class Note:
     def message(self, language: str = "es") -> str:
         """El mensaje en ``language`` (como :meth:`Issue.message`)."""
         return _message(self.message_id, self.message_args, language)
+
+
+def no_dem_note() -> Note:
+    """La nota de una validación sin MDT (D-19; spec §8): DH-W05 no se evaluó en ninguna
+    boca. La que da :func:`validate` y la que lee la exportación de la que guardó el proyecto
+    (T27)."""
+    return Note("DH-W05", -1, None, message_id=MESSAGES["DH-W05.no_dem"])
 
 
 def _message(message_id: str, message_args: tuple[tuple[str, JsonScalar], ...],
@@ -850,7 +867,7 @@ def _dem_issues(dset: DrillholeSet, checked: np.ndarray, surface: SurfaceSampler
     """DH-W05 (RF-005-18; véase el módulo): las incidencias, las notas de lo que no se evaluó
     y la diferencia de cada boca con el MDT (``None`` sin MDT)."""
     if surface is None:
-        return [], [Note("DH-W05", -1, None, message_id=MESSAGES["DH-W05.no_dem"])], None
+        return [], [no_dem_note()], None
     collars = dset.collars
     count = len(collars)
     dz = np.full(count, np.nan)

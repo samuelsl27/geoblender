@@ -302,7 +302,9 @@ class ImportTabularTest(DrillholeImportCase):
         self.assertEqual((colors["SUE"], colors["MIN"]), ("#8B6B3D", "#C0392B"))
         self.assertEqual(self.rows("SELECT count(*) FROM dh_validation_issue"), [(0,)])
         validation = getattr(bpy.context.window_manager, self.props.VALIDATION_PROPERTY)
-        self.assertEqual(len(validation.issues), 0)
+        # Sin incidencias; sin MDT, la nota de que DH-W05 no se evaluó (T27, D-19).
+        self.assertEqual([(item.code, item.level) for item in validation.issues],
+                         [("DH-W05", self.props.NOT_EVALUATED)])
         self.assertIn("0 incidencias", operations[-1][3])
         self.assertTrue(any("bocas.csv" in text for text in self.ps.take_notices()))
 

@@ -32,7 +32,9 @@ de lo calculado (su nombre es el de su tabla); :func:`source_spec`, la de lo imp
 papel de una entrada: el dato ``dh_src_<rol>_<nombre>`` en la tabla
 ``dh_src_<rol>_<nombre>_<entrada8>`` (``drillholes.schema``), inmutable con su entrada y sin
 selector (RF-008-52). Cada tabla tiene su papel de salida (:data:`OUTPUT_ROLES`), distinto en
-cada una: por él se busca el sucesor de lo sustituido.
+cada una: por él se busca el sucesor de lo sustituido. (T27) :func:`export_spec`, la del informe
+de validación exportado a ``exports/`` (``dh_exp_<ruta>``, un ``report`` sin seguimiento; fuera
+del proyecto, ninguno: D21 de la 006).
 
 **Entradas** (D-15): una por fichero (por hoja de un XLSX; la base de RecMin, una).
 :func:`input_spec` da su ``InputSpec`` (módulo ``dh``): unas bocas y una base de RecMin son
@@ -61,7 +63,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from ..core.content.builtin import GPKG_LAYER
+from ..core.content.builtin import DOCUMENT, GPKG_LAYER
 from ..core.content.encoder import ContentDigest
 from ..core.datasets.model import DatasetSpec, Store
 from ..core.georef import CrsRef, VerticalRef
@@ -95,6 +97,10 @@ __all__ = [
     "DH_XLSX",
     "ELLIPSOIDAL_EPSG",
     "EXPORTS",
+    "EXPORTS_FOLDER",
+    "EXPORT_KIND",
+    "EXPORT_PREFIX",
+    "EXPORT_ROLE",
     "EXPORT_VALIDATION",
     "IMPORTS",
     "IMPORT_READERS",
@@ -117,6 +123,8 @@ __all__ = [
     "OperationType",
     "dataset_spec",
     "declared_crs",
+    "export_name",
+    "export_spec",
     "declared_vertical",
     "importer_def",
     "input_declaration",
@@ -338,6 +346,46 @@ def dataset_spec(table: str, *, content: ContentDigest | None = None,
     return DatasetSpec(table, MODULE, LAYOUTS[table].kind, Store.GPKG, table,
                        reader=GPKG_LAYER.id, role=OUTPUT_ROLES[table], content=content,
                        crs_epsg=crs_epsg, detail=detail)
+
+
+EXPORTS_FOLDER = str(Store.EXPORTS)
+"""La carpeta de los entregables dentro del proyecto (``exports/``)."""
+EXPORT_PREFIX = f"{MODULE}_exp_"
+"""El comienzo del nombre del dato de un entregable de ``exports/``: ``dh_exp_<ruta>``."""
+EXPORT_ROLE = "export"
+"""Su papel de salida en la operación que lo escribe."""
+EXPORT_KIND = "report"
+"""Su tipo: el informe de la validación (``core.document@1``, sus bytes)."""
+_DOCUMENT_READER = DOCUMENT.id
+
+
+def export_name(locator: str) -> str:
+    """El nombre del dato del informe exportado a ``exports/`` en ``locator``
+    (``exports/<ruta con «/»>``): ``dh_exp_<ruta>`` (``schema.slug``). ``ValueError`` si no
+    está en ``exports/``."""
+    from .schema import slug
+
+    prefix = f"{EXPORTS_FOLDER}/"
+    if not isinstance(locator, str) or not locator.startswith(prefix) or locator == prefix:
+        raise ValueError(f"un entregable está en {prefix}, no en {locator!r}")
+    return EXPORT_PREFIX + slug(locator.removeprefix(prefix))
+
+
+def export_spec(locator: str, content: ContentDigest) -> DatasetSpec:
+    """La ``DatasetSpec`` del informe de validación exportado a ``exports/`` en ``locator``
+    (``exports/<ruta con «/»>``; T27, plan §5.6.4 y §5.6.9, D21 de la 006) con su ``content``
+    (``core.document@1``, sus bytes): ``dh_exp_<ruta>`` (la ruta dentro de ``exports/`` con
+    ``schema.slug``: un entregable con la misma ruta es el mismo dato con otro contenido),
+    tipo ``report``, almacén ``exports`` (sin seguimiento) y papel ``export``. Fuera del
+    proyecto no hay dato. ``ValueError`` si ``locator`` no está en ``exports/`` o ``content``
+    no es de ``core.document@1``; ``TypeError`` si no es un ``ContentDigest``."""
+    if not isinstance(content, ContentDigest):
+        raise TypeError(f"el hash de un entregable es un ContentDigest, no {content!r}")
+    if content.reader != _DOCUMENT_READER:
+        raise ValueError(f"el informe exportado se lee con «{_DOCUMENT_READER}», no con "
+                         f"«{content.reader}»")
+    return DatasetSpec(export_name(locator), MODULE, EXPORT_KIND, Store.EXPORTS, locator,
+                       reader=content.reader, role=EXPORT_ROLE, content=content)
 
 
 def source_spec(role: str, name: str, input_uid: str, *, content: ContentDigest | None = None,

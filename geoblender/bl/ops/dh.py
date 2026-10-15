@@ -82,6 +82,21 @@ se lea igualmente (la misma orden con ``stage``: se lee otra vez con ``accept_sc
 informe en ``dh_import_log`` tiene una línea por tabla de RecMin, con los registros de los
 sondeos que se conservan fuera y los de los que se sustituyen contados (RF-005-12).
 
+**Validar y exportar el informe** (T27; HU-005-3; RF-005-16 a RF-005-19; plan §5.3.1, §5.6.6 y
+§5.6.9; D-19): ``geoblender.dh_validate`` valida la base con la rejilla del proyecto
+(``gis_dtm_*``) que se elige en su diálogo (por defecto, la vigente más reciente,
+:func:`project_surfaces`; sin ninguna, DH-W05 no se evalúa y el informe lo dice): la operación
+``dh.validate`` con la puerta de la 008 y su trabajo, por la cola de incorporación
+(:func:`start_validate`). La lista de la pestaña «Sondeos» enseña el informe guardado de la
+última validación del proyecto abierto (``drillholes.store.stored_validation``: las incidencias
+y lo que no se evaluó, :func:`load_issues`), al validar y al cambiar de proyecto.
+``geoblender.dh_export_validation_report`` lo exporta en proceso como la operación
+``dh.export_validation``, que consume ``dh_validation_issue``: el destino, un CSV fuera del
+proyecto o en su ``exports/`` (:func:`report_target`), pasa la guarda de las escrituras de la
+008 (``check_write_target``, RF-008-15); uno que ya existe no se sustituye sin confirmarlo
+(desde la interfaz, una confirmación; desde un guion, ``overwrite``); el CSV es el de T11
+(``drillholes.store.export_report``) y, en ``exports/``, un dato del proyecto.
+
 **La cola de incorporación** de los sondeos (:data:`INCORPORATIONS`, su temporizador
 :func:`incorporation_tick` y :func:`pending_incorporations`; RNF-005-06, plan §5.6.7) es suya,
 aparte de la de la topografía: lo que deja un trabajo entra en el proyecto por pasos;
@@ -97,6 +112,7 @@ import json
 import logging
 import math
 import re
+import sqlite3
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -112,7 +128,7 @@ from ...core import params as core_params
 from ...core.catalog.search import path_text
 from ...core.content import readers as content_readers
 from ...core.datasets import registry as dataset_registry
-from ...core.errors import GeoblenderError
+from ...core.errors import GeoblenderError, ValidationError
 from ...core.georef import load_catalog
 from ...core.i18n import format_number, tr, translate
 from ...core.inputs import locate_source
@@ -138,7 +154,7 @@ from ...drillholes.model import (
     name_key,
     parse_declination,
 )
-from ...drillholes.schema import BASE_TABLES, LAYOUTS
+from ...drillholes.schema import BASE_TABLES
 from ...gis import jobs as gis_jobs
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
@@ -151,8 +167,10 @@ from ...interop.base import DeclarationError, Needs, missing_declarations, spani
 from ...interop.recmin.schema import SOURCE_LABEL as RECMIN_LABEL
 from ...jobs import catalog as job_catalog
 from ...jobs.ingest import job_outcome
+from ..props.core import GEOBLENDER_PG_core_view_dataset
 from ..props.dh import (
     IMPORT_PROPERTY,
+    NOT_EVALUATED,
     NOT_IMPORTED,
     ROLE_ITEMS,
     ROLES,
@@ -195,10 +213,11 @@ SHOW_DISPLAY = "geoblender.dh_show_display"
 COMMANDS: tuple[str, ...] = (IMPORT_DRILLHOLES, IMPORT_RECMIN, SET_DETECTION_LIMIT, VALIDATE,
                              EXPORT_REPORT, DESURVEY, SET_AZIMUTH, SHOW_DISPLAY)
 """Las órdenes de la 005 (entrada ``005`` del catálogo), en el orden del menú Sondeos."""
-UNDELIVERED: frozenset[str] = frozenset(COMMANDS) - {IMPORT_DRILLHOLES, IMPORT_RECMIN}
+UNDELIVERED: frozenset[str] = frozenset(COMMANDS) - {IMPORT_DRILLHOLES, IMPORT_RECMIN, VALIDATE,
+                                                     EXPORT_REPORT}
 """Las órdenes cuya ejecución aún no ha llegado (plan 005, fase 3): no están disponibles y
 dicen dónde estarán. La tarea que entrega una la quita de aquí (T25: importar tablas; T26, una
-base de RecMin)."""
+base de RecMin; T27, validar y exportar el informe de validación)."""
 _PROJECT_ONLY: frozenset[str] = frozenset({SHOW_DISPLAY})
 """Las que no escriben en el proyecto: les basta tenerlo abierto."""
 
@@ -291,7 +310,8 @@ _UNDO: list[Callable[[], None]] = []
 def register() -> None:
     """Registra las definiciones de parámetros, los lectores de contenido, los tipos de trabajo
     y las declaraciones de procedencia (:data:`OPERATION_DEFS`, :data:`IMPORTER_DEFS`) de los
-    sondeos que aún no están; idempotente."""
+    sondeos que aún no están y (T27) apunta en la sesión :func:`on_project_changed` (la lista
+    de incidencias del proyecto abierto); idempotente."""
     missing = tuple(defn for defn in dh_params.DEFINITIONS
                     if defn.key not in core_params.DEFINITIONS)
     if missing:
@@ -317,6 +337,9 @@ def register() -> None:
             contract.register_importer(importer)
             _UNDO.append(_unregister_if(contract.IMPORTERS, importer.reader_id, importer,
                                         contract.unregister_importer))
+    if on_project_changed not in project_session.listeners():
+        project_session.add_listener(on_project_changed)
+        _UNDO.append(functools.partial(project_session.remove_listener, on_project_changed))
 
 
 def unregister() -> None:
@@ -1557,43 +1580,96 @@ def _base_steps(handle: OperationHandle, result: JobResult,
     return "done"
 
 
-def project_surface(project: Any) -> Any:
-    """El MDT del proyecto con que se comparan las cotas de las bocas (DH-W05; D-19): la
-    rejilla del proyecto vigente más reciente (``gis_dtm_*``); sin ninguna, ``None``."""
+def project_surfaces(project: Any) -> list[Any]:
+    """Las rejillas del proyecto vigentes (``gis_dtm_*``; D-19) con que se pueden comparar
+    las cotas de las bocas (DH-W05), de la más antigua a la más reciente (por su último cambio
+    y su creación)."""
     records = [record for record in gis_store.list_gis_datasets(
         project, families=(gis_provenance.PROJECT_GRID,)) if str(record.status) == "current"]
-    return max(records, key=lambda record: (record.modified_at, record.created_at),
-               default=None)
+    return sorted(records, key=lambda record: (record.modified_at, record.created_at))
 
 
-def start_validate(project: Any) -> None:
+def project_surface(project: Any) -> Any:
+    """El MDT del proyecto con que se comparan las cotas de las bocas por defecto (DH-W05;
+    D-19): la rejilla del proyecto vigente más reciente (``gis_dtm_*``); sin ninguna,
+    ``None``."""
+    surfaces = project_surfaces(project)
+    return surfaces[-1] if surfaces else None
+
+
+def chosen_surface(project: Any, typed: str) -> Any:
+    """La rejilla del proyecto que se elige al validar (D-19): la de nombre o uid ``typed``
+    entre las vigentes (:func:`project_surfaces`); vacío, la más reciente (sin ninguna,
+    ``None``: DH-W05 no se evalúa). ``ValidationError`` ``dh.surface_unknown`` si no es
+    ninguna de ellas, nombrándolas."""
+    surfaces = project_surfaces(project)
+    shown = typed.strip()
+    if not shown:
+        return surfaces[-1] if surfaces else None
+    for record in surfaces:
+        if shown in (record.name, record.uid):
+            return record
+    names = ", ".join(f"«{record.name}»" for record in surfaces)
+    reason = (f"no es una rejilla del proyecto vigente: elija una de {names}" if surfaces else
+              "el proyecto no tiene ninguna rejilla vigente (Rejilla de proyecto desde un "
+              "MDT…): valide sin superficie")
+    raise ValidationError("dh.surface_unknown", reason, obj=_text(VALIDATION_LABEL),
+                          field="superficie", value=shown)
+
+
+def validation_uses(surface: Any) -> list[Use]:
+    """Lo que consume ``dh.validate`` (plan §5.6.4): las once tablas de la base y, si se
+    eligió, la rejilla del proyecto ``surface`` (papel ``terrain``)."""
+    uses = [Use(table, provenance.OUTPUT_ROLES[table]) for table in BASE_TABLES]
+    if surface is not None:
+        uses.append(Use(surface.name, "terrain"))
+    return uses
+
+
+def validation_settings(surface: Any) -> dict[str, Any]:
+    """Los ajustes de ``dh.validate``: el nombre de la rejilla del proyecto elegida, o
+    ``None`` sin ninguna (D-19: el informe guardado dice entonces que DH-W05 no se
+    evaluó)."""
+    return {"surface": None if surface is None else surface.name}
+
+
+MOST_RECENT_SURFACE: Any = object()
+"""La superficie por defecto de :func:`start_validate`: la rejilla vigente más reciente."""
+
+
+def start_validate(project: Any, *, surface: Any = MOST_RECENT_SURFACE,
+                   handle: OperationHandle | None = None) -> None:
     """Pone en la cola de incorporación de los sondeos la validación de la base
-    (``dh.validate``; RF-005-16)."""
-    INCORPORATIONS.add(provenance.VALIDATE, _text(VALIDATION_LABEL), _validate_steps(project))
+    (``dh.validate``; RF-005-16) con la rejilla del proyecto ``surface`` (``None``, sin
+    ninguna; por defecto, la vigente más reciente) y, si ya la empezó su orden con la puerta de
+    la 008, su operación ``handle``."""
+    INCORPORATIONS.add(provenance.VALIDATE if handle is None else handle.uid,
+                       _text(VALIDATION_LABEL), _validate_steps(project, surface, handle))
 
 
-def _validate_steps(project: Any) -> Generator[float, None, str]:
+def _validate_steps(project: Any, surface: Any,
+                    handle: OperationHandle | None) -> Generator[float, None, str]:
     """Los pasos que lanzan ``dh.validate``: la operación «en curso» con lo que consume (las
-    once tablas de la base y, si lo hay, el MDT, papel ``terrain``) y sus parámetros, la base
-    leída por pasos (``drillholes.store.read_steps``) a arrays sueltos y su trabajo
-    ``dh_validate`` (el MDT, copiado a ``in/``)."""
+    once tablas de la base y, si lo hay, el MDT, papel ``terrain``) y sus parámetros (si no
+    la empezó ya su orden), la base leída por pasos (``drillholes.store.read_steps``) a arrays
+    sueltos y su trabajo ``dh_validate`` (el MDT, copiado a ``in/``)."""
+    if handle is None:
+        try:
+            if surface is MOST_RECENT_SURFACE:
+                surface = project_surface(project)
+            handle = begin_operation(
+                project, provenance.VALIDATE, settings=validation_settings(surface),
+                inputs=validation_uses(surface), params=list(dh_params.VALIDATION_KEYS),
+                executor="job_thread")
+        except Exception as error:  # noqa: BLE001 - lo dice y no empieza nada
+            LOGGER.warning("No se pudo empezar la validación de los sondeos", exc_info=True)
+            _say(tr("The drillhole database has not been validated: {reason}",
+                    reason=error_text(error)))
+            return "failed"
     try:
-        surface = project_surface(project)
-        uses = [Use(table, provenance.OUTPUT_ROLES[table]) for table in BASE_TABLES]
         inputs: dict[str, Path] = {}
         if surface is not None:
-            uses.append(Use(surface.name, "terrain"))
             inputs[jobs.INPUT_DEM] = Path(project.root, *surface.locator.split("/"))
-        handle = begin_operation(
-            project, provenance.VALIDATE,
-            settings={"surface": None if surface is None else surface.name}, inputs=uses,
-            params=list(dh_params.VALIDATION_KEYS), executor="job_thread")
-    except Exception as error:  # noqa: BLE001 - lo dice y no empieza nada
-        LOGGER.warning("No se pudo empezar la validación de los sondeos", exc_info=True)
-        _say(tr("The drillhole database has not been validated: {reason}",
-                reason=error_text(error)))
-        return "failed"
-    try:
         with project.read() as conn:
             dset = yield from store.read_steps(conn)
         loose: dict[str, np.ndarray] = {}
@@ -1642,7 +1718,8 @@ def _validation_report(summary: Mapping[str, Any], notes: Sequence[Mapping[str, 
                 errors=format_number(int(summary.get("errors", 0)), 0),
                 warnings=format_number(int(summary.get("warnings", 0)), 0),
                 excluded=format_number(int(summary.get("excluded_holes", 0)), 0))]
-    lines += [str(note["message"]) for note in notes]
+    lines += [f"{note['hole_name']}: {note['message']}" if note.get("hole_name")
+              else str(note["message"]) for note in notes]
     return "\n".join(lines)
 
 
@@ -1653,17 +1730,17 @@ def _depth_text(start: Any, end: Any) -> str:
     return "–".join(shown)
 
 
-def show_issues(rows: Sequence[Sequence[Any]]) -> None:
-    """Las incidencias de la última validación (las filas de ``dh_validation_issue``) en la
-    lista de la pestaña «Sondeos» (``WindowManager.geoblender_dh_validation``; RF-005-16)."""
+def show_issues(stored: store.StoredValidation | None) -> None:
+    """El informe guardado de la última validación (``drillholes.store.stored_validation``:
+    cada fila de ``dh_validation_issue`` y, después, lo que no se evaluó, con el nivel «Sin
+    evaluar») en la lista de la pestaña «Sondeos» (``WindowManager.geoblender_dh_validation``;
+    RF-005-16); sin informe, vacía."""
     manager = getattr(bpy.context, "window_manager", None)
     validation = getattr(manager, VALIDATION_PROPERTY, None)
     if validation is None:
         return
-    names = LAYOUTS["dh_validation_issue"].insert_columns
     validation.issues.clear()
-    for row in rows:
-        values = dict(zip(names, row, strict=True))
+    for values in () if stored is None else stored.records:
         item = validation.issues.add()
         item.code = str(values["code"])
         item.level = str(values["level"]).upper()
@@ -1673,13 +1750,44 @@ def show_issues(rows: Sequence[Sequence[Any]]) -> None:
         item.field = str(values["field"] or "")
         item.value = str(values["value"] or "")
         item.message = str(values["message"])
+    language = i18n.language()
+    for note in () if stored is None else stored.notes:
+        item = validation.issues.add()
+        item.code = note.code
+        item.level = NOT_EVALUATED
+        item.hole = note.hole_name or ""
+        item.message = note.message(language)
     validation.issue_index = 0
     _redraw()
 
 
+def load_issues(project: Any) -> None:
+    """La lista de la pestaña «Sondeos» con el informe guardado de la última validación de
+    ``project`` (:func:`show_issues`); sin proyecto, sin validación o si no se puede leer
+    (queda en el registro técnico), vacía."""
+    stored = None
+    if project is not None and not getattr(project, "closed", False) \
+            and not getattr(project, "header_only", False):
+        try:
+            with project.read() as conn:
+                stored = store.stored_validation(conn)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+            LOGGER.info("No se pudo leer la última validación de los sondeos", exc_info=True)
+    show_issues(stored)
+
+
+def on_project_changed(project: Any) -> None:
+    """Al cambiar el proyecto de la sesión (``bl.scene.project_session.add_listener``): la
+    lista de incidencias es la de la última validación del nuevo (sin ninguno, vacía)."""
+    try:
+        load_issues(project)
+    except Exception:  # noqa: BLE001 - la sesión sigue: la lista no es imprescindible
+        LOGGER.exception("No se pudo poner la lista de la validación de los sondeos")
+
+
 def _validated_steps(handle: OperationHandle, result: JobResult) -> Generator[float, None, str]:
     """Los pasos que escriben ``dh_validation_issue`` con el hash que dio su trabajo y llevan
-    sus incidencias a la lista de la pestaña."""
+    el informe guardado a la lista de la pestaña (:func:`load_issues`)."""
     project = handle.project
     try:
         outcome = job_outcome(result, result.job_dir)
@@ -1704,7 +1812,8 @@ def _validated_steps(handle: OperationHandle, result: JobResult) -> Generator[fl
                 reason=error_text(error)))
         return "failed"
     _release(result)
-    show_issues(rows)
+    yield 0.95
+    load_issues(project)
     _say(report)
     return "done"
 
@@ -2393,6 +2502,124 @@ class GEOBLENDER_OT_dh_validate(_DrillholesCommand, ProvenanceAwareOperator,
                     "recent one; without any, that check is not evaluated)",
         options=_FIELD,
     )
+    surfaces: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options=_FIELD,
+    )
+
+    def provenance_inputs(self, context: Any) -> tuple[Use, ...]:
+        return tuple(getattr(self, "_uses", ()))
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        project = core_provenance.SESSION.project
+        try:
+            records = project_surfaces(project) if project is not None else []
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if not records:  # nada que elegir: sin MDT (D-19)
+            return self.execute(context)
+        self.surfaces.clear()
+        for record in records:
+            item = self.surfaces.add()
+            item.name = item.label = record.name
+            item.uid = record.uid
+        if not self.surface:
+            self.surface = records[-1].name
+        return context.window_manager.invoke_props_dialog(
+            self, translate=False, title=_text(VALIDATION_LABEL))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.prop_search(self, "surface", self, "surfaces", text=tr("Surface"),
+                           translate=False)
+        layout.label(text=tr("The collar elevations are compared with it (DH-W05)"),
+                     icon="INFO", translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason(VALIDATE)
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        try:
+            with project.read() as conn:
+                built = dataset_registry.get(conn, BASE_TABLES[0]) is not None
+            if not built:
+                raise ValueError(tr("First {step} ({path})", step=tr("import drillholes"),
+                                    path=path_text(command_catalog(), IMPORT_DRILLHOLES,
+                                                   i18n.language())))
+            surface = chosen_surface(project, self.surface)
+        except (GeoblenderError, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._uses = tuple(validation_uses(surface))
+        handle = self.begin(context, settings=validation_settings(surface),
+                            params=list(dh_params.VALIDATION_KEYS), executor="job_thread")
+        if handle is None:  # ya dicho por qué
+            return {"CANCELLED"}
+        start_validate(project, surface=surface, handle=handle)
+        self.report({"INFO"}, tr("Validating the drillhole database in the background…"))
+        return {"FINISHED"}
+
+
+REPORT_SUFFIX = ".csv"
+"""La extensión del informe de validación exportado (RF-005-19)."""
+REPORT_NAME = "validacion_sondeos"
+"""El nombre que propone el diálogo de la exportación, en ``exports/`` del proyecto."""
+EXPORTED_ROLE = "exported"
+"""El papel de lo que consume la exportación (``dh_validation_issue``)."""
+
+
+def report_target(project: Any, filepath: str) -> Path:
+    """El destino del informe de validación (la ruta del diálogo): un ``.csv`` fuera del
+    proyecto o en su ``exports/`` (nunca sobre lo que gestiona el proyecto); si no,
+    ``ValueError`` con el motivo. Sin escribir nada."""
+    shown = filepath.strip()
+    if not shown:
+        raise ValueError(tr("Choose the file to export to"))
+    path = Path(bpy.path.abspath(shown))
+    if path.suffix.lower() != REPORT_SUFFIX:
+        raise ValueError(tr("«{file}»: the validation report has the extension .csv, not "
+                            "«{suffix}»; nothing has been written", file=path.name,
+                            suffix=path.suffix or "—"))
+    if (gis_provenance.inside_project(project.root, path)
+            and gis_provenance.export_locator(project.root, path) is None):
+        raise ValueError(tr("«{file}» is inside the project but not in its exports folder: "
+                            "export to exports/ or outside the project; nothing has been "
+                            "written", file=path.name))
+    return path
+
+
+def stored_report(project: Any) -> store.StoredValidation:
+    """El informe guardado de la última validación de ``project`` (lo que se exporta); sin
+    ninguna, ``ValueError`` con el paso previo."""
+    with project.read() as conn:
+        stored = store.stored_validation(conn)
+    if stored is None:
+        raise ValueError(tr("First {step} ({path})",
+                            step=tr("validate the drillhole database"),
+                            path=path_text(command_catalog(), VALIDATE, i18n.language())))
+    return stored
+
+
+def _open_confirm(idname: str, values: Mapping[str, Any]) -> None:
+    """Pide confirmar que se sustituye el destino que ya existe: la misma orden con
+    ``confirm`` en cuanto acaba esta; sin ventana, nada (lo dice el aviso)."""
+    manager = getattr(bpy.context, "window_manager", None)
+    windows = list(getattr(manager, "windows", ()) or ())
+    if not windows:
+        return
+    name = idname.partition(".")[2]
+
+    def call() -> None:
+        try:
+            with bpy.context.temp_override(window=windows[0]):
+                getattr(bpy.ops.geoblender, name)("INVOKE_DEFAULT", confirm=True, **values)
+        except (RuntimeError, TypeError, AttributeError):
+            LOGGER.warning("No se pudo pedir confirmación en %s", idname, exc_info=True)
+
+    bpy.app.timers.register(call, first_interval=0.0)
 
 
 class GEOBLENDER_OT_dh_export_validation_report(_DrillholesCommand, ProvenanceAwareOperator,
@@ -2409,9 +2636,97 @@ class GEOBLENDER_OT_dh_export_validation_report(_DrillholesCommand, ProvenanceAw
         name="File", subtype="FILE_PATH", options=_FIELD,
     )
     filter_glob: StringProperty(default="*.csv", options={"HIDDEN"})  # type: ignore[valid-type]
+    check_existing: BoolProperty(  # type: ignore[valid-type]
+        default=True, options=_HIDDEN,
+    )
     overwrite: BoolProperty(  # type: ignore[valid-type]
         name="Replace it", description="Replace the file if it already exists", options=_FIELD,
     )
+    confirm: BoolProperty(options=_HIDDEN)  # type: ignore[valid-type]
+
+    def provenance_inputs(self, context: Any) -> tuple[Use, ...]:
+        return tuple(getattr(self, "_uses", ()))
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        if self.confirm:  # sustituir el destino que ya existe (spec §8: nunca sin confirmarlo)
+            self.overwrite = True
+            return context.window_manager.invoke_confirm(
+                self, event, title=tr("Replace the file"),
+                message=tr("«{file}» already exists: replace it?",
+                           file=Path(self.filepath).name),
+                confirm_text=tr("Replace"), translate=False)
+        project = core_provenance.SESSION.project
+        try:
+            stored_report(project)
+        except (GeoblenderError, OSError, ValueError, sqlite3.Error) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if not self.filepath:
+            self.filepath = str(Path(project.root, provenance.EXPORTS_FOLDER,
+                                     REPORT_NAME + REPORT_SUFFIX))
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, context: Any) -> None:
+        self.layout.prop(self, "overwrite", text=tr("Replace"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = unavailable_reason(EXPORT_REPORT)
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        try:
+            target = report_target(project, self.filepath)
+            stored = stored_report(project)
+        except (GeoblenderError, OSError, ValueError, sqlite3.Error) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if not self.check_write_target(target):  # RF-008-15: ya dicho, nombrando la carpeta
+            return {"CANCELLED"}
+        if target.exists() and not self.overwrite:
+            text = tr("«{file}» already exists: confirm that it is replaced; nothing has been "
+                      "written", file=target.name)
+            if self.provenance_dialog:
+                self.report({"WARNING"}, text)
+                _open_confirm(EXPORT_REPORT, {"filepath": str(target)})
+            else:
+                self.report({"ERROR"}, text)
+            return {"CANCELLED"}
+        locator = gis_provenance.export_locator(project.root, target)
+        self._uses = (Use(stored.dataset_uid, EXPORTED_ROLE),)
+        # Solo el nombre del fichero: ninguna ruta en el proyecto (D21 de la 006).
+        handle = self.begin(context, settings={"file": target.name,
+                                               "in_exports": locator is not None})
+        if handle is None:  # ya dicho por qué
+            return {"CANCELLED"}
+        lines = [tr("Validation report «{file}» exported: {issues} issues; not evaluated: "
+                    "{notes}", file=target.name,
+                    issues=format_number(len(stored.records), 0),
+                    notes=format_number(len(stored.notes), 0))]
+        if locator is not None:
+            lines.append(tr("In the project as the deliverable {dataset}",
+                            dataset=provenance.export_name(locator)))
+        else:
+            lines.append(tr("Written outside the project: it is not a dataset of the project"))
+        text = "\n".join(lines)
+        try:
+            core_provenance.check_write_target(target)  # otra vez, justo antes de escribir
+            store.export_report(project, handle, stored, target, locator=locator, message=text)
+        except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+            LOGGER.warning("El informe de validación no se exportó", exc_info=True)
+            reason = error_text(error)
+            try:
+                handle.fail(reason)
+            except GeoblenderError:
+                pass
+            self.report({"ERROR"}, tr("«{file}» has not been exported: {reason}",
+                                      file=target.name, reason=reason))
+            return {"CANCELLED"}
+        _say(text)
+        self.report({"INFO"}, text.splitlines()[0])
+        return {"FINISHED"}
 
 
 class GEOBLENDER_OT_dh_desurvey(_DrillholesCommand, ProvenanceAwareOperator,

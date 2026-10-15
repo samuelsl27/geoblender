@@ -53,7 +53,9 @@ RF-005-10); :func:`stale_holes`, los de trazas obsoletas: su huella de la desvia
 :func:`source_entry` es lo contrario de :func:`source_tables`: las filas de lo importado de una
 entrada como el ``SourceEntry`` de ``dh.build_base``; (T25) :func:`live_sources` da lo importado
 vigente, entrada a entrada en el orden en que se registraron, y :func:`source_entry_steps` lee
-el de una, por pasos, como su ``SourceEntry``.
+el de una, por pasos, como su ``SourceEntry``; (T27) :func:`stored_validation`, el informe de
+la última validación (``dh_validation_issue`` y lo que su operación dice que no se evaluó), el
+que enseña la lista de la pestaña «Sondeos» y se exporta.
 
 **Valores** (plan §5.2.2): los números, en float64 tal como llegan (NaN = ``NULL``; −0 = 0);
 sí/no, 0 o 1; las enumeraciones, su texto; las fechas, «AAAA-MM-DD»; ``extra``, su JSON
@@ -67,18 +69,21 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import sqlite3
 import time
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
 
 import numpy as np
 
+from ..core.content.builtin import DOCUMENT
 from ..core.content.encoder import ContentDigest
-from ..core.content.readers import ReadCancelled
-from ..core.datasets.model import LIVE_STATUSES, DatasetRecord, DatasetSpec
+from ..core.content.readers import MAIN_ROLE, ReadCancelled, read_content
+from ..core.datasets.model import DATASET_DECLARATIONS, LIVE_STATUSES, DatasetRecord, DatasetSpec
 from ..core.datasets.registry import get as get_dataset
 from ..core.errors import GeoblenderError, ValidationError
 from ..core.georef import CrsRef, VerticalRef, load_catalog
@@ -122,14 +127,18 @@ from .model import (
     SurveyColumns,
     ZoneColumns,
 )
+from . import report
 from .provenance import (
     BUILD_BASE,
     DESURVEY,
+    EXPORT_KIND,
+    EXPORT_VALIDATION,
     IMPORTS,
     MODULE,
     OPERATION_TYPES_BY_NAME,
     VALIDATE,
     dataset_spec,
+    export_spec,
     input_declaration,
     source_spec,
 )
@@ -147,18 +156,22 @@ from .schema import (
     source_name,
     source_table,
 )
+from .validate import Note, no_dem_note
 
 __all__ = [
     "IMPORT_LOG",
     "LOG_KINDS",
     "STEP_BUDGET_S",
+    "VALIDATION_TABLE",
     "BaseWriter",
     "LiveSource",
     "LogLine",
     "SourceInput",
     "SourceWriter",
     "StoreProject",
+    "StoredValidation",
     "existing_holes",
+    "export_report",
     "live_sources",
     "read_catalogs",
     "read_steps",
@@ -166,6 +179,7 @@ __all__ = [
     "source_entry_steps",
     "source_tables",
     "stale_holes",
+    "stored_validation",
 ]
 
 STEP_BUDGET_S = 0.05
@@ -1190,6 +1204,87 @@ def stale_holes(conn: sqlite3.Connection) -> tuple[str, ...]:
     return tuple(row[0] for row in conn.execute(
         "SELECT c.name FROM dh_collar c JOIN dh_trace t ON t.hole_id = c.fid "
         "WHERE t.survey_sha256 IS NOT c.survey_sha256 ORDER BY c.fid"))
+
+
+VALIDATION_TABLE = "dh_validation_issue"
+"""La tabla (y el dato) del informe de la última validación (``dh.validate``)."""
+
+
+@dataclass(frozen=True)
+class StoredValidation:
+    """El informe de la última validación de los sondeos guardado en el proyecto (T27;
+    RF-005-16, RF-005-19; plan §5.6.4 y §5.6.9): el dato ``dh_validation_issue`` (su uid), sus
+    filas en el orden de su ``fid`` (cada una, por el nombre de sus columnas: las de
+    ``drillholes.jobs.issue_rows``) y la operación ``dh.validate`` que lo escribió por última
+    vez (su uid y sus ajustes; ``None`` y vacíos si no se encuentra)."""
+
+    dataset_uid: str
+    records: tuple[Mapping[str, Any], ...]
+    operation_uid: str | None = None
+    settings: Mapping[str, Any] = MappingProxyType({})
+
+    @property
+    def notes(self) -> tuple[Note, ...]:
+        """Lo que el informe dice que no se evaluó (``drillholes.validate.Note``), de los
+        ajustes de su operación: sin MDT (``surface`` vacío, D-19), DH-W05 en ninguna boca.
+        Las bocas fuera del MDT no se guardan en el proyecto (las dice el informe de la
+        operación al validar)."""
+        if "surface" in self.settings and self.settings["surface"] is None:
+            return (no_dem_note(),)
+        return ()
+
+
+def stored_validation(conn: sqlite3.Connection) -> StoredValidation | None:
+    """El informe de la última validación guardado en el proyecto (``conn``, de lectura):
+    :class:`StoredValidation`; ``None`` si el proyecto no tiene el dato vivo
+    ``dh_validation_issue`` o su tabla. Pocas filas: de una vez."""
+    record = get_dataset(conn, VALIDATION_TABLE)
+    if record is None or not record.live or not _table_exists(conn, record.locator):
+        return None
+    names = LAYOUTS[VALIDATION_TABLE].column_names
+    listed = ", ".join(f'"{name}"' for name in names)
+    records = tuple(MappingProxyType(dict(zip(names, row, strict=True))) for row in conn.execute(
+        f'SELECT {listed} FROM "{record.locator}" ORDER BY fid'))
+    found = conn.execute(
+        "SELECT o.uid, o.settings FROM gb_operation_io i JOIN gb_operation o "
+        "ON o.uid = i.operation_uid WHERE i.direction = 'out' AND i.item_kind = 'dataset' "
+        "AND i.item_uid = ? AND o.op_type = ? AND o.status = ? "
+        "ORDER BY o.finished_at DESC, o.fid DESC LIMIT 1",
+        (record.uid, VALIDATE, str(OperationStatus.DONE))).fetchone()
+    if found is None:
+        return StoredValidation(record.uid, records)
+    return StoredValidation(record.uid, records, found[0],
+                            MappingProxyType(json.loads(found[1])))
+
+
+def export_report(project: StoreProject, handle: OperationHandle, stored: StoredValidation,
+                  target: str | os.PathLike[str], *, locator: str | None,
+                  message: str) -> DatasetSpec | None:
+    """Exporta el informe guardado ``stored`` a ``target`` con la operación
+    ``dh.export_validation`` ``handle`` (T27; RF-005-19; plan §5.6.4 y §5.6.9): el CSV de T11
+    (``report.stored_rows``) por un temporal y ``os.replace`` y, en una transacción,
+    ``OperationHandle.complete`` con ``message``. Dentro de ``exports/`` (``locator``, su
+    ubicación ``exports/<ruta>``) es el dato ``dh_exp_<ruta>`` con el hash de sus bytes
+    (``core.document@1``), que devuelve; fuera del proyecto (``None``), ninguno (D21 de la
+    006). Comprobar el destino (``check_write_target``, su extensión, que no esté en otra
+    carpeta del proyecto) y confirmar la sustitución es de quien llama. Los errores de
+    ``report.write_rows`` (el destino abierto por otro programa, el disco) y los de la 008, tal
+    cual, con la operación «en curso» (quien llama la deja fallida); ``ValueError`` si
+    ``handle`` no es una exportación."""
+    _check_handle(project, handle, (EXPORT_VALIDATION,), "exportar el informe de validación")
+    path = Path(target)
+    rows = report.stored_rows(stored.records, stored.notes)
+    if locator is not None:
+        handle.claim_paths(path, path.with_name(path.name + report.TEMPORARY_SUFFIX))
+        path.parent.mkdir(parents=True, exist_ok=True)
+    report.write_rows(rows, path)
+    spec = None
+    if locator is not None:
+        request = DOCUMENT.request(EXPORT_KIND, DATASET_DECLARATIONS, {MAIN_ROLE: path})
+        spec = export_spec(locator, read_content(DOCUMENT, request))
+    with project.write_transaction() as conn:
+        handle.complete(conn, outputs=() if spec is None else (spec,), message=message)
+    return spec
 
 
 def read_catalogs(conn: sqlite3.Connection) -> Catalogs:

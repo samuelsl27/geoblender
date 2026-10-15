@@ -34,6 +34,13 @@ disco, ``dh.report_write_failed``; una ruta más larga de lo que admite Blender 
 ``core.path_too_long`` sin escribir nada. Comprobar que el destino se puede escribir
 (``check_write_target``, RF-008-15) y confirmar la sustitución de uno que ya existe es de la
 operación que exporta (``dh.export_validation``, T27). Nada modifica el informe.
+
+**El informe guardado** (T27; plan §5.6.4 y §5.6.9): la exportación lee lo que guardó
+``dh.validate`` en ``dh_validation_issue`` (una fila por incidencia, con el valor en texto y
+el mensaje en español) y las notas de su operación; :func:`stored_rows` da con ellas las mismas
+filas que :func:`rows` con el informe que las produjo (el valor de un campo de
+``validate.NUMBER_FIELDS``, guardado con punto, vuelve con coma), :func:`rows_bytes` sus bytes
+y :func:`write_rows` las escribe como :func:`write_csv`.
 """
 
 from __future__ import annotations
@@ -43,15 +50,16 @@ import csv
 import io
 import math
 import os
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from ..core.errors import GeoblenderError
 from ..core.i18n import translate
 from ..core.paths import check_path_length
-from .validate import Issue, Level, Note, Scope, ValidationReport
+from .validate import NUMBER_FIELDS, Issue, Level, Note, Scope, ValidationReport
 
 __all__ = [
     "BOM",
@@ -63,7 +71,10 @@ __all__ = [
     "csv_bytes",
     "header",
     "rows",
+    "rows_bytes",
+    "stored_rows",
     "write_csv",
+    "write_rows",
 ]
 
 LANGUAGE = "es"
@@ -180,11 +191,52 @@ def _csv_text(table: Sequence[Row]) -> str:
     return stream.getvalue()
 
 
+def _stored_value(field: str | None, value: Any) -> str:
+    """El valor guardado de una incidencia como celda: el de un campo numérico
+    (``validate.NUMBER_FIELDS``), guardado como su decimal más corto con punto, vuelve a ser
+    el número con coma; los demás, el texto tal cual (como :func:`_value`)."""
+    if field in NUMBER_FIELDS and isinstance(value, str) and value:
+        return _number(float(value))
+    return _value(value)
+
+
+def _stored_row(record: Mapping[str, Any]) -> Row:
+    scope = record["scope"]
+    return (
+        _text(record["hole_name"]),
+        record["code"],
+        _es(_LEVELS[Level(record["level"])]),
+        _EMPTY if scope is None else _es(_SCOPES[Scope(scope)]),
+        record["table_name"],
+        _text(record["log_set"] or record["element"]),
+        _text(record["catalog_code"]),
+        _depth(record["depth_from"]),
+        _depth(record["depth_to"]),
+        _text(record["field"]),
+        _stored_value(record["field"], record["value"]),
+        record["message"],
+    )
+
+
+def stored_rows(records: Iterable[Mapping[str, Any]], notes: Iterable[Note] = ()) -> list[Row]:
+    """Las filas del CSV del informe guardado (sin la cabecera): una por fila de
+    ``dh_validation_issue`` (``records``, cada una por el nombre de sus columnas, en el orden
+    de su ``fid``) y, después, una por nota de ``notes``; las mismas que :func:`rows` con el
+    informe que las produjo (véase el módulo). ``KeyError`` si a una fila le falta una
+    columna; ``ValueError`` si su nivel o su alcance no son de la spec."""
+    return [*(_stored_row(record) for record in records), *(_note_row(note) for note in notes)]
+
+
+def rows_bytes(table: Sequence[Row]) -> bytes:
+    """El CSV de unas filas (las de :func:`rows` o :func:`stored_rows`) tal como lo escribe
+    :func:`write_rows`: BOM UTF-8, cabecera y las filas, separados por «;» y con CRLF."""
+    return _csv_text([header(), *table]).encode(ENCODING)
+
+
 def csv_bytes(report: ValidationReport) -> bytes:
     """El CSV de ``report`` tal como lo escribe :func:`write_csv`: BOM UTF-8, cabecera y
     :func:`rows`, separados por «;» y con CRLF."""
-    found = rows(report)
-    return _csv_text([header(), *found]).encode(ENCODING)
+    return rows_bytes(rows(report))
 
 
 def write_csv(report: ValidationReport, path: str | os.PathLike[str]) -> Path:
@@ -193,7 +245,13 @@ def write_csv(report: ValidationReport, path: str | os.PathLike[str]) -> Path:
     ``dh.report_target_locked`` si otro programa tiene abierto el destino,
     ``dh.report_write_failed`` si falla el disco y ``core.path_too_long`` si la ruta no
     cabe; en todos, el destino anterior sigue intacto y no queda el temporal."""
-    data = csv_bytes(report)
+    return write_rows(rows(report), path)
+
+
+def write_rows(table: Sequence[Row], path: str | os.PathLike[str]) -> Path:
+    """Escribe el CSV de unas filas (las de :func:`rows` o :func:`stored_rows`) en ``path``
+    como :func:`write_csv` (con sus mismos errores); devuelve ``path``."""
+    data = rows_bytes(table)
     target = Path(path)
     name = target.name
     temporary = target.with_name(name + TEMPORARY_SUFFIX)

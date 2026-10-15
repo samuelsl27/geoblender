@@ -284,5 +284,33 @@ class WriteTest(_FolderTest):
         self.assertEqual(self._listing(), [])
 
 
+class StoredRowsTest(_FolderTest):
+    """RF-005-19, RF-005-16 (T27; plan §5.6.9): el informe que se exporta desde el proyecto
+    (las filas de ``dh_validation_issue`` y las notas de su operación) es el CSV de T11."""
+
+    def test_stored_rows_are_the_rows_of_the_report(self) -> None:
+        """RF-005-19: las filas de ``dh_validation_issue`` que escribe ``dh.validate``
+        (``drillholes.jobs.issue_rows``, el valor en texto con punto decimal) con sus notas dan
+        las mismas filas que el informe (cada clase de valor y todas las incidencias de
+        ``csv_errores``), y escritas, los mismos bytes por un temporal; una columna que falta
+        es un error del programa."""
+        jobs = import_geoblender("drillholes.jobs")
+        schema = import_geoblender("drillholes.schema")
+        columns = schema.LAYOUTS["dh_validation_issue"].insert_columns
+        for name, found in (("muestra", _sample_report()), ("csv_errores", _csv_errores_report())):
+            with self.subTest(informe=name):
+                records = [dict(zip(columns, row, strict=True))
+                           for row in jobs.issue_rows(found)]
+                rows = report.stored_rows(records, found.notes)
+                self.assertEqual(rows, report.rows(found))
+                self.assertEqual(report.rows_bytes(rows), report.csv_bytes(found))
+                path = self.folder / f"{name}.csv"
+                self.assertEqual(report.write_rows(rows, path), path)
+                self.assertEqual(path.read_bytes(), report.csv_bytes(found))
+        self.assertEqual(self._listing(), ["csv_errores.csv", "muestra.csv"])
+        with self.assertRaises(KeyError):
+            report.stored_rows([{"code": "DH-W12"}])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11,8 +11,9 @@ Con un proyecto abierto, en la región lateral N de la Vista 3D, pestaña «Sond
   «Aplicar» y «Descartar» (la orden de la importación con ``stage`` y ``pending``); (T26) de
   una base de RecMin de esquema desconocido, el aviso y «Leer igualmente» (RF-005-15);
 - ``GEOBLENDER_PT_dh_validation`` («Validación»): la lista de incidencias de la última
-  validación (``GEOBLENDER_UL_dh_issues``), que se filtra por nivel y por código (RF-005-16), y
-  las órdenes de validar, exportar el informe (RF-005-19) y calcular las trazas (RF-005-20);
+  validación del proyecto abierto (``GEOBLENDER_UL_dh_issues``; T27: y lo que no se evaluó,
+  «Sin evaluar»), que se filtra por nivel y por código (RF-005-16), y las órdenes de validar,
+  exportar el informe (RF-005-19) y calcular las trazas (RF-005-20);
 - ``GEOBLENDER_PT_dh_display`` («Representación»): el esquema de logueo y el radio de los
   tubos, el elemento y las clases de las barras de leyes, su ancho y su separación, las
   etiquetas y la leyenda (RF-005-23 a RF-005-25), de ``Scene.geoblender_dh_display``.
@@ -29,7 +30,13 @@ from typing import Any
 import bpy
 
 from ...core.i18n import language, tr, translate
-from ..props.dh import FILTER_ALL, IMPORT_PROPERTY, SCENE_PROPERTY, VALIDATION_PROPERTY
+from ..props.dh import (
+    FILTER_ALL,
+    IMPORT_PROPERTY,
+    NOT_EVALUATED,
+    SCENE_PROPERTY,
+    VALIDATION_PROPERTY,
+)
 from ..scene import project_session
 from . import commands
 
@@ -43,7 +50,7 @@ LIST_ROWS = 6
 IMPORT_DRILLHOLES = "geoblender.dh_import_drillholes"
 """La orden de «Aplicar» y «Descartar» de la importación pendiente (con ``stage`` y
 ``pending``: plan 005 §5.3.1) si no dice otra (``command``: la de una base de RecMin, T26)."""
-_ICONS = {"ERROR": "ERROR", "WARNING": "INFO"}
+_ICONS = {"ERROR": "ERROR", "WARNING": "INFO", NOT_EVALUATED: "QUESTION"}
 
 
 def _project_open() -> bool:

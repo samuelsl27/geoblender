@@ -16,7 +16,7 @@ RF-005-23 a RF-005-25; plan 005 §5.1 y §5.5).
   cada uno (:class:`GEOBLENDER_PG_dh_pending_hole`) y el motivo de una sustitución.
 - ``WindowManager.geoblender_dh_validation`` (:class:`GEOBLENDER_PG_dh_validation`): la
   **validación** («Validación», RF-005-16): las incidencias (:class:`GEOBLENDER_PG_dh_issue`,
-  ya en texto) con los filtros por nivel y código de la lista.
+  ya en texto) y (T27) lo que no se evaluó, con los filtros por nivel y código de la lista.
 
 Las dos de ``WindowManager`` son una vista que se regenera desde el proyecto y no se guarda en
 el ``.blend`` (como la de la procedencia, D16 de la 008). Las propiedades de las filas no
@@ -63,13 +63,16 @@ VALIDATION_PROPERTY = "geoblender_dh_validation"
 LOG_SET = "lithology"
 """El esquema de logueo por defecto: la litología (``drillholes.model.LITHOLOGY_LOG_SET``)."""
 FILTER_ALL = "ALL"
+NOT_EVALUATED = "NOT_EVALUATED"
+"""El nivel de una fila de la lista que dice lo que no se evaluó (una nota del informe)."""
 LEVEL_FILTER_ITEMS = [
     (FILTER_ALL, "Any", ""),
     ("ERROR", "Error", ""),
     ("WARNING", "Warning", ""),
+    (NOT_EVALUATED, "Not evaluated", "What the validation could not check"),
 ]
 """Los niveles de la lista de incidencias (el de una incidencia, ``drillholes.validate.Level``
-en mayúsculas)."""
+en mayúsculas; el de una nota, :data:`NOT_EVALUATED`)."""
 _STATIC: set[str] = set()  # ni animable ni nada más
 
 # --- El asistente de la importación de tablas (T25) --------------------------------------------
@@ -350,7 +353,8 @@ class GEOBLENDER_PG_dh_import(bpy.types.PropertyGroup):
 
 class GEOBLENDER_PG_dh_issue(bpy.types.PropertyGroup):
     """Una incidencia de la validación, ya en texto (RF-005-16): código, nivel, sondeo,
-    tabla, tramo o profundidad, campo, valor y mensaje."""
+    tabla, tramo o profundidad, campo, valor y mensaje; o (T27) una nota de lo que no se
+    evaluó, con el nivel :data:`NOT_EVALUATED`."""
 
     code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     level: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
