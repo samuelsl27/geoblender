@@ -73,9 +73,11 @@ Los tipos, con sus parámetros, sus entradas (``in/``) y sus resultados (``out/`
   defecto, los de la base: un ``gis_dtm_*`` del proyecto); ``base`` (la base), ``dem`` (el
   MDT, un ``.tif``) y ``stored_xyz`` → ``dh_validation_issue.npz`` con su hash y
   ``report.json`` (las notas y la diferencia de cada boca con el MDT);
-- ``dh_desurvey``: ``crs``, ``vertical``, ``method``, ``depth_tolerance_m`` y
-  ``trace_step_m``; ``base`` y ``survey_sha256`` (la huella de cada boca) → ``dh_trace.npz``
-  con su hash (los sondeos con errores de alcance S, sin traza: RF-005-17);
+- ``dh_desurvey``: ``crs``, ``vertical``, ``method``, ``depth_tolerance_m``,
+  ``trace_step_m`` y, opcional (T28, «solo las obsoletas»), ``holes`` (las posiciones de las
+  bocas que se calculan); ``base``, ``survey_sha256`` (la huella de cada boca) y, con
+  ``holes``, ``kept`` (las trazas de las demás, que pasan tal cual) → ``dh_trace.npz`` con su
+  hash (los sondeos con errores de alcance S, sin traza: RF-005-17);
 - ``dh_view_arrays``: ``crs``, ``vertical``, ``method``, ``depth_tolerance_m``,
   ``max_step_m``, ``log_set``, ``element`` (con ``legend`` o, sin ella, ``unit`` y la leyenda
   por defecto; ``offset_m`` y ``width_m``), ``labels_at_end`` y ``excluded``; ``base`` →
@@ -94,6 +96,7 @@ from __future__ import annotations
 import colorsys
 import functools
 import hashlib
+import io
 import json
 import math
 import numbers
@@ -164,6 +167,7 @@ __all__ = [
     "INPUT_BASE",
     "INPUT_DEM",
     "INPUT_HASHES",
+    "INPUT_KEPT",
     "INPUT_SOURCE",
     "INPUT_STORED",
     "MDB_FOLDER",
@@ -171,6 +175,7 @@ __all__ = [
     "OUT_REPORT",
     "OUT_SOURCE",
     "OUT_VIEW",
+    "PACKED_TAG",
     "VALIDATE",
     "VIEW_ARRAYS",
     "WORKER_INFOS",
@@ -189,6 +194,7 @@ __all__ = [
     "loose_arrays",
     "needs_site",
     "new_colors",
+    "packed_arrays",
     "read_table_output",
     "read_view",
     "run_build_base",
@@ -241,6 +247,9 @@ INPUT_STORED = "stored_xyz"
 """``dh_validate``: la posición de cada boca en la capa (``(bocas, 3)`` en float64)."""
 INPUT_HASHES = "survey_sha256"
 """``dh_desurvey``: la huella de la desviación de cada boca (``S64``, una por boca)."""
+INPUT_KEPT = "kept"
+"""``dh_desurvey`` (T28): las trazas que se conservan, filas de ``dh_trace``
+(``drillholes.arrays.rows_arrays``), de las bocas que no están en ``holes``."""
 
 COPYING_TEXT = "Copiando la fuente…"
 READING_TEXT = "Leyendo la fuente…"
@@ -557,16 +566,50 @@ def loose_arrays(name: str, arrays: Mapping[str, np.ndarray]) -> dict[str, np.nd
     return {f"{name}_{key}": value for key, value in arrays.items()}
 
 
+PACKED_TAG = "npz-"
+"""Lo que distingue una parte empaquetada de una entrada (:func:`packed_arrays`) de sus
+arrays sueltos (cuyas claves empiezan por el nombre de una tabla)."""
+
+
+def packed_arrays(name: str, part: str,
+                  arrays: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Los arrays ``arrays`` de la parte ``part`` (una tabla, los catálogos…) de la entrada
+    ``name`` como **una** entrada suelta de ``launch_job(arrays=…)``
+    (``<name>_npz-<part>``): un npz sin comprimir en un array de bytes (``uint8``), que
+    :func:`input_arrays` abre y junta con las demás partes (T28: un fichero por tabla en
+    ``in/`` en vez de uno por columna; cada uno, la 004 lo escribe y lo sincroniza aparte).
+    Sin arrays, ninguna; ``ValueError`` con un array de objetos de Python (sin *pickle*)."""
+    if not arrays:
+        return {}
+    for key, array in arrays.items():
+        if not isinstance(array, np.ndarray) or array.dtype.hasobject:
+            raise ValueError(f"«{key}» no es un array de numpy sin objetos de Python")
+    buffer = io.BytesIO()
+    np.savez(buffer, **arrays)
+    return {f"{name}_{PACKED_TAG}{part}": np.frombuffer(buffer.getbuffer(), dtype=np.uint8)}
+
+
+def _unpacked(path: Path) -> dict[str, np.ndarray]:
+    """Los arrays de una parte empaquetada (:func:`packed_arrays`), sin *pickle*."""
+    with open(path, "rb") as stream:
+        raw = np.load(stream, allow_pickle=False)
+    with np.load(io.BytesIO(raw.tobytes()), allow_pickle=False) as data:
+        return {key: data[key] for key in data.files}
+
+
 def input_arrays(ctx: _Context, name: str) -> dict[str, np.ndarray] | None:
     """Los arrays de la entrada ``name``: los del npz ``in/<name>.npz`` o, sueltos
-    (:func:`loose_arrays`), los de ``in/<name>_<clave>.npy``; ``None`` si no llega."""
+    (:func:`loose_arrays`), los de ``in/<name>_<clave>.npy`` y los de sus partes empaquetadas
+    (:func:`packed_arrays`, ``in/<name>_npz-<parte>.npy``); ``None`` si no llega."""
     entries = ctx.request.inputs
     if name in entries:
         return load_npz(ctx.input_path(name))
     head = f"{name}_"
     found: dict[str, np.ndarray] = {}
     for entry in entries:
-        if entry.startswith(head):
+        if entry.startswith(head + PACKED_TAG):
+            found.update(_unpacked(ctx.input_path(entry)))
+        elif entry.startswith(head):
             with open(ctx.input_path(entry), "rb") as stream:
                 found[entry[len(head):]] = np.load(stream, allow_pickle=False)
     return found or None
@@ -981,12 +1024,49 @@ def trace_rows(dset: DrillholeSet, traces: Any, step_m: float, hashes: Sequence[
     return rows
 
 
+def _chosen_holes(request: JobParams, count: int) -> np.ndarray:
+    """``holes`` de ``dh_desurvey`` (T28): la máscara de las bocas cuyas trazas se calculan
+    (sus posiciones en la base, sin repetir); sin ``holes``, todas."""
+    chosen = np.zeros(count, dtype=np.bool_)
+    holes = request.values.get("holes")
+    if holes is None:
+        chosen[:] = True
+        return chosen
+    if not isinstance(holes, list) or any(
+            isinstance(hole, bool) or not isinstance(hole, int) or not 0 <= hole < count
+            for hole in holes) or len(set(holes)) != len(holes):
+        raise request.invalid(f"«holes» son posiciones distintas de las {count} bocas de la "
+                              f"base, no {holes!r}")
+    chosen[holes] = True
+    return chosen
+
+
+def _kept_rows(ctx: _Context, request: JobParams, chosen: np.ndarray) -> list[tuple[Any, ...]]:
+    """Las trazas que llegan hechas (``kept``, filas de ``dh_trace``; T28), de sondeos de la
+    base que no se calculan."""
+    arrays = input_arrays(ctx, INPUT_KEPT)
+    if arrays is None:
+        return []
+    try:
+        rows = list(TableRows(LAYOUTS["dh_trace"], arrays))
+    except (ValueError, TypeError) as error:
+        raise request.invalid(f"las trazas de «{INPUT_KEPT}» no valen: {error}") from None
+    for row in rows:
+        hole = row[1] - 1
+        if not 0 <= hole < len(chosen) or chosen[hole]:
+            raise request.invalid(f"la traza conservada del sondeo {row[1]} no es de una boca "
+                                  "de la base que no se calcula")
+    return rows
+
+
 @job_function
 def run_desurvey(ctx: _Context) -> dict[str, Any]:
     """``dh_desurvey``: las trazas de la base (RF-005-20) por el método de la petición, sin
     los sondeos con errores de alcance S (``validate.hole_exclusions``; RF-005-17), en
     ``dh_trace.npz`` con su hash: cada una con la huella de la desviación de su boca
-    (``in/survey_sha256``), la que usa ``drillholes.store.stale_holes`` (RF-005-22)."""
+    (``in/survey_sha256``), la que usa ``drillholes.store.stale_holes`` (RF-005-22). Con
+    ``holes`` (T28, «solo las obsoletas»), solo las de esas bocas; las de las demás llegan
+    hechas en ``kept`` y pasan tal cual: la tabla entera, por su sondeo."""
     from .desurvey import Method, desurvey
     from .validate import hole_exclusions
 
@@ -1007,21 +1087,29 @@ def run_desurvey(ctx: _Context) -> dict[str, Any]:
     if len(hashes) != len(dset.collars):
         raise request.invalid(f"«{INPUT_HASHES}» tiene {len(hashes)} huellas y la base "
                               f"{len(dset.collars)} bocas")
+    chosen = _chosen_holes(request, len(dset.collars))
+    kept = _kept_rows(ctx, request, chosen)
     ctx.progress(0.2, "Calculando las trazas…")
     excluded = hole_exclusions(dset, depth_tolerance_m=tolerance)
+    # Todas las calculables, como sin «holes»: la suma acumulada de los desplazamientos es
+    # de todos los sondeos (desurvey), y así cada traza calculada tiene los mismos bits.
     traces = desurvey(dset, method, holes=~excluded)
     ctx.progress(0.4, WRITING_TEXT)
     try:
-        rows = trace_rows(dset, traces, step, hashes, crs.epsg)
+        computed = [row for row in trace_rows(dset, traces, step, hashes, crs.epsg)
+                    if chosen[row[1] - 1]]
     except ValueError as error:
         raise request.invalid(str(error)) from None
+    rows = sorted([*computed, *kept], key=lambda row: row[1])
     found = _tables(ctx, crs, [("dh_trace", LAYOUTS["dh_trace"], rows)], 0.5, 0.99)
     names = dset.collars.name.tolist()
     summary = {
         "method": method,
         "traces": len(rows),
-        "excluded": [names[hole] for hole in np.flatnonzero(excluded).tolist()],
-        "warnings": [plain(warning) for warning in traces.warnings],
+        "computed": len(computed),
+        "kept": len(kept),
+        "excluded": [names[hole] for hole in np.flatnonzero(chosen & excluded).tolist()],
+        "warnings": [plain(warning) for warning in traces.warnings if chosen[warning.hole]],
         "outputs": found,
     }
     finish(ctx, [table_output("dh_trace")])

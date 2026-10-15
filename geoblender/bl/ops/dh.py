@@ -36,8 +36,8 @@ informe, calcular las trazas y la referencia del azimut) son operadores de la 00
 solo escriben en el proyecto llevan ``{'REGISTER'}``; calcular las trazas, que rehace la vista,
 también ``UNDO``. Mientras su orden no llega (:data:`UNDELIVERED`), una no está disponible y
 dice dónde estará («Disponible en 005 · Sondeos», :func:`unavailable_reason`), como un
-provisional, y su recálculo y su reimportación lo dicen con ``dh.not_delivered`` sin hacer
-nada. La entrada 005 del catálogo entrega sus órdenes tarea a tarea (``entries.toml``).
+provisional, y los recálculos (T42) lo dicen con ``dh.not_delivered`` sin hacer nada. La
+entrada 005 del catálogo entrega sus órdenes tarea a tarea (``entries.toml``).
 
 **Importar tablas de sondeos** (T25; HU-005-1; RF-005-05 a RF-005-07, RF-005-09 a RF-005-12;
 plan §5.6.4 y §5.6.5): ``geoblender.dh_import_drillholes`` (Sondeos ▸ Importar ▸ «Sondeos
@@ -97,6 +97,24 @@ proyecto o en su ``exports/`` (:func:`report_target`), pasa la guarda de las esc
 (desde la interfaz, una confirmación; desde un guion, ``overwrite``); el CSV es el de T11
 (``drillholes.store.export_report``) y, en ``exports/``, un dato del proyecto.
 
+**Las trazas, la referencia del azimut y la regla bajo el límite de detección** (T28; HU-005-4;
+RF-005-20, RF-005-22, RF-005-26; plan §5.3.1, §5.6.3, §5.6.6 y §5.6.10; D-22):
+``geoblender.dh_desurvey`` calcula las trazas de la base (la operación ``dh.desurvey``,
+repetible, con el método y los sondeos en sus ajustes, la tolerancia de profundidad y el paso de
+las trazas de ``core.params``, y su trabajo ``dh_desurvey`` por la cola de incorporación,
+:func:`start_desurvey`): de todos los sondeos o solo de los de traza obsoleta, que conserva las
+demás si la desviación anterior usó el mismo método y los mismos parámetros
+(``drillholes.store.kept_traces``); rehace la vista (``UNDO``). ``geoblender.
+dh_set_azimuth_reference`` es «Actualizar» una entrada de bocas, desviaciones o una base de
+RecMin con la referencia del azimut y la declinación nuevas y su motivo (``reimport_input``,
+:func:`_reimport`: una sustitución de la entrada que, aplicada, reconstruye la base y deja
+obsoletas, por la huella de la desviación, las trazas de sus sondeos); la reimportación de los
+tres lectores (:data:`REIMPORT`) es la misma, con los ajustes registrados. ``geoblender.
+dh_set_detection_limit_policy`` registra la regla bajo el límite con su valor por defecto si el
+proyecto no la tiene (también la primera importación, :func:`ensure_detection_limit_rule`) y
+abre ``geoblender.core_set_parameter`` con su clave: cambiarla queda en su historial y no
+cambia ningún valor guardado.
+
 **La cola de incorporación** de los sondeos (:data:`INCORPORATIONS`, su temporizador
 :func:`incorporation_tick` y :func:`pending_incorporations`; RNF-005-06, plan §5.6.7) es suya,
 aparte de la de la topografía: lo que deja un trabajo entra en el proyecto por pasos;
@@ -131,15 +149,18 @@ from ...core.datasets import registry as dataset_registry
 from ...core.errors import GeoblenderError, ValidationError
 from ...core.georef import load_catalog
 from ...core.i18n import format_number, tr, translate
-from ...core.inputs import locate_source
-from ...core.inputs.model import SourcePrint
+from ...core.inputs import get as get_input
+from ...core.inputs import list_inputs, locate_source, resolve_source
+from ...core.inputs.model import InputRecord, SourcePrint
 from ...core.inputs.registry import Reuse, Substitute, classify_import, reuse_input
 from ...core.params.model import ParamKind
 from ...core.provenance import contract
+from ...core.provenance.messages import ProvenanceError
 from ...core.provenance.operations import Use, begin_operation
+from ...core.provenance.undo import UndoKind
 from ...drillholes import jobs, provenance, store
 from ...drillholes import params as dh_params
-from ...drillholes.arrays import catalogs_json, tables_arrays
+from ...drillholes.arrays import catalogs_json, rows_arrays, tables_arrays
 from ...drillholes.desurvey import Method
 from ...drillholes.model import (
     LITHOLOGY_LOG_SET,
@@ -154,7 +175,7 @@ from ...drillholes.model import (
     name_key,
     parse_declination,
 )
-from ...drillholes.schema import BASE_TABLES
+from ...drillholes.schema import BASE_TABLES, LAYOUTS
 from ...gis import jobs as gis_jobs
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
@@ -180,12 +201,17 @@ from ..props.dh import (
     suggest_fields,
     table_mapping,
 )
-from ..scene import project_session
+from ..scene import project_session, undo_watch
 from ..scene.dh_view import NOT_DELIVERED
 from ..ui.commands import UNDELIVERED_FLAG, unavailable_note
 from ..ui.commands import catalog as command_catalog
 from . import core_provenance
-from .core_provenance import ProvenanceAwareOperator, error_text, write_unavailable
+from .core_provenance import (
+    ProvenanceAwareOperator,
+    ensure_ready,
+    error_text,
+    write_unavailable,
+)
 from .incorporation import StepQueue
 
 if TYPE_CHECKING:
@@ -213,11 +239,13 @@ SHOW_DISPLAY = "geoblender.dh_show_display"
 COMMANDS: tuple[str, ...] = (IMPORT_DRILLHOLES, IMPORT_RECMIN, SET_DETECTION_LIMIT, VALIDATE,
                              EXPORT_REPORT, DESURVEY, SET_AZIMUTH, SHOW_DISPLAY)
 """Las órdenes de la 005 (entrada ``005`` del catálogo), en el orden del menú Sondeos."""
-UNDELIVERED: frozenset[str] = frozenset(COMMANDS) - {IMPORT_DRILLHOLES, IMPORT_RECMIN, VALIDATE,
-                                                     EXPORT_REPORT}
+UNDELIVERED: frozenset[str] = frozenset(COMMANDS) - {
+    IMPORT_DRILLHOLES, IMPORT_RECMIN, VALIDATE, EXPORT_REPORT, DESURVEY, SET_AZIMUTH,
+    SET_DETECTION_LIMIT}
 """Las órdenes cuya ejecución aún no ha llegado (plan 005, fase 3): no están disponibles y
 dicen dónde estarán. La tarea que entrega una la quita de aquí (T25: importar tablas; T26, una
-base de RecMin; T27, validar y exportar el informe de validación)."""
+base de RecMin; T27, validar y exportar el informe de validación; T28, calcular las trazas, la
+referencia del azimut y la regla bajo el límite de detección)."""
 _PROJECT_ONLY: frozenset[str] = frozenset({SHOW_DISPLAY})
 """Las que no escriben en el proyecto: les basta tenerlo abierto."""
 
@@ -845,7 +873,9 @@ class _Order:
     """Una orden de importación de sondeos en marcha (de tablas o de una base de RecMin): sus
     entradas, lo declarado, cómo se leen, los catálogos y los sondeos del proyecto al empezar,
     la entrega, el motivo de una sustitución, la orden que la aplica o la descarta, lo que hay
-    que decidir (también lo que hay que confirmar antes de leer, RF-005-15) y lo decidido."""
+    que decidir (también lo que hay que confirmar antes de leer, RF-005-15) y lo decidido. La
+    reimportación de una entrada (``reimport``, T28; RF-008-11) sustituye sin preguntar los
+    sondeos que ya traía (``replaced``)."""
 
     entries: list[_Entry]
     declaration: SourceDeclaration
@@ -864,6 +894,8 @@ class _Order:
     holes: list[str] = field(default_factory=list)
     keep: tuple[str, ...] = ()
     register: bool = False
+    reimport: bool = False
+    replaced: tuple[str, ...] = ()
 
     @property
     def uid(self) -> str:
@@ -1156,8 +1188,9 @@ def _after_reading(order: _Order) -> None:
         return
     for entry in order.live:
         entry.spec = _input_spec(order, entry)
-    with project.read() as conn:
-        classified = [(entry, classify_import(conn, entry.spec)) for entry in order.live]
+    with project.read() as conn:  # una reimportación ya sabe a qué entrada sustituye
+        classified = [(entry, classify_import(conn, entry.spec)) for entry in order.live
+                      if entry.previous_uid is None]
     for entry, found in classified:
         if isinstance(found, Reuse):
             reuse_input(project, entry.handle, found)  # cancelada con el aviso
@@ -1174,6 +1207,10 @@ def _after_reading(order: _Order) -> None:
         _ORDERS.pop(order.uid, None)
         return
     order.codes, order.holes = _decisions(order)
+    if order.reimport:  # los sondeos que ya traía la entrada se sustituyen sin preguntar
+        known = {name_key(name) for name in order.replaced}
+        order.replaced = tuple(name for name in order.holes if name_key(name) in known)
+        order.holes = [name for name in order.holes if name_key(name) not in known]
     unexplained = any(entry.substitute for entry in order.live) and not order.reason
     if order.codes or order.holes or unexplained:
         _WAITING.append(order.uid)
@@ -1236,6 +1273,7 @@ def _apply(order: _Order) -> None:
     crs, _vertical = gis_store.project_references(project)
     keep = {name_key(name) for name in order.keep}
     replace = [name for name in order.holes if name_key(name) not in keep]
+    replace += order.replaced
     taken = [code.color for code in order.catalogs.lithology]
     for entry in order.live:
         params = {"name": entry.choice.name, "crs": gis_jobs.crs_json(crs),
@@ -1296,7 +1334,7 @@ def _recmin_counts(order: _Order,
     los de los que se sustituyen se cuentan (``hole_rows`` de su lectura: los de cada sondeo
     que ya estaba, por tabla)."""
     keep = {name_key(name) for name in order.keep}
-    replace = {name_key(name) for name in order.holes} - keep
+    replace = {name_key(name) for name in (*order.holes, *order.replaced)} - keep
     rows = dict(report.get("hole_rows") or {})
     found = []
     for table, counts in dict(report.get("counts") or {}).items():
@@ -1423,6 +1461,10 @@ def _import_steps(order: _Order) -> Generator[float, None, str]:
         LOGGER.warning("La importación de sondeos %s no se escribió", order.uid, exc_info=True)
         _abandon(order, error_text(error), failed=True)
         return "failed"
+    try:  # la regla bajo el límite de detección, con la primera importación (RF-005-26)
+        ensure_detection_limit_rule(project)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.warning("No se registró la regla bajo el límite de detección", exc_info=True)
     for number, (entry, item, _message) in enumerate(written):
         assert entry.read is not None
         verified = entry.read.job_dir.inputs_dir / (gis_jobs.path_name("main")
@@ -1454,11 +1496,13 @@ VALIDATION_LABEL = "Validation of the drillhole database"
 
 def _loose_set(name: str, tables: Mapping[str, Any], catalogs: Catalogs
                ) -> Iterator[dict[str, np.ndarray]]:
-    """Los arrays sueltos (``drillholes.jobs.loose_arrays``) de unas tablas y unos catálogos,
-    una tabla por paso (``drillholes.arrays.tables_arrays``)."""
+    """Los arrays (``drillholes.arrays.tables_arrays``) de unas tablas y unos catálogos para
+    ``launch_job(arrays=…)``, una tabla por paso y cada una empaquetada en una sola entrada
+    (``drillholes.jobs.packed_arrays``: un fichero por tabla en ``in/``, no uno por columna;
+    T28)."""
     for table in TABLES:
-        yield jobs.loose_arrays(name, tables_arrays({table: tables[table]}))
-    yield jobs.loose_arrays(name, tables_arrays({}, catalogs))
+        yield jobs.packed_arrays(name, table, tables_arrays({table: tables[table]}))
+    yield jobs.packed_arrays(name, "catalogs", tables_arrays({}, catalogs))
 
 
 def start_build_base(project: Any, *, validate: bool = True) -> None:
@@ -1818,6 +1862,281 @@ def _validated_steps(handle: OperationHandle, result: JobResult) -> Generator[fl
     return "done"
 
 
+# --- Las trazas (T28; RF-005-20, RF-005-22; plan §5.3.1, §5.6.4 y §5.6.6) -----------------------
+
+TRACES_LABEL = "Drillhole traces"
+TRACE_TABLE = "dh_trace"
+STALE_SCOPE = SCOPES["STALE"]
+"""El ámbito de «solo las obsoletas» en los ajustes de ``dh.desurvey``."""
+
+
+def desurvey_uses() -> list[Use]:
+    """Lo que consume ``dh.desurvey`` (plan §5.6.4): las bocas y las desviaciones de la base
+    (no el informe de validación: sus exclusiones de alcance S las calcula ella misma)."""
+    return [Use(table, provenance.OUTPUT_ROLES[table]) for table in ("dh_collar", "dh_survey")]
+
+
+def desurvey_settings(method: str, scope: str) -> dict[str, Any]:
+    """Los ajustes de ``dh.desurvey`` (los de :data:`SETTING_DEFS`): el método
+    (``drillholes.desurvey.Method``) y los sondeos (``all`` o ``stale``)."""
+    return {"method": method, "scope": scope}
+
+
+def start_desurvey(project: Any, handle: OperationHandle, *, method: str, scope: str) -> None:
+    """Pone en la cola de incorporación de los sondeos el cálculo de las trazas de la
+    operación ``handle`` (``dh.desurvey``, ya empezada por su orden): por ``method``, de todos
+    los sondeos (``scope="all"``) o solo de los de traza obsoleta (``"stale"``)."""
+    INCORPORATIONS.add(handle.uid, _text(TRACES_LABEL),
+                       _desurvey_steps(project, handle, method, scope))
+
+
+def _desurvey_steps(project: Any, handle: OperationHandle, method: str,
+                    scope: str) -> Generator[float, None, str]:
+    """Los pasos que lanzan ``dh.desurvey``: las bocas y las desviaciones de la base leídas
+    por pasos (``drillholes.store.read_steps``) a arrays sueltos, la huella de la desviación
+    de cada boca y, con «solo las obsoletas», las trazas que se conservan
+    (``drillholes.store.kept_traces``: las demás, si la última desviación usó el mismo método
+    y los mismos parámetros) y las bocas que se calculan; y su trabajo ``dh_desurvey`` con los
+    parámetros que resolvió la operación."""
+    try:
+        resolved = {param.key: param for param in handle.params}
+        with project.read() as conn:
+            dset = yield from store.read_steps(conn, parts=("dh_survey",))
+            hashes = store.survey_hashes(conn)
+            kept = [] if scope != STALE_SCOPE else store.kept_traces(
+                conn, method=method,
+                params={key: param.value_sha256 for key, param in resolved.items()})
+        yield 0.3
+        loose: dict[str, np.ndarray] = {}
+        for arrays in _loose_set(jobs.INPUT_BASE, {table: getattr(dset, table)
+                                                   for table in TABLES}, dset.catalogs):
+            loose.update(arrays)
+            yield 0.6
+        loose[jobs.INPUT_HASHES] = np.array(hashes, dtype="S64")
+        params = {"crs": gis_jobs.crs_json(dset.crs),
+                  "vertical": gis_jobs.vertical_json(dset.vertical), "method": method,
+                  "depth_tolerance_m": resolved[dh_params.DEPTH_TOLERANCE].value,
+                  "trace_step_m": resolved[dh_params.TRACE_STEP].value,
+                  "count": len(dset.collars) + 1}
+        if scope == STALE_SCOPE:
+            done = {row[1] - 1 for row in kept}
+            params["holes"] = [hole for hole in range(len(dset.collars)) if hole not in done]
+            if kept:
+                loose.update(jobs.packed_arrays(jobs.INPUT_KEPT, "rows",
+                                                rows_arrays(LAYOUTS[TRACE_TABLE], kept)))
+        yield 0.9
+        core_provenance.launch_job(handle, jobs.DESURVEY, label=_text(TRACES_LABEL),
+                                   params=params, arrays=loose,
+                                   on_finish=functools.partial(_desurvey_finished, handle),
+                                   grace_s=jobs.CANCEL_GRACE_S)
+    except GeneratorExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        LOGGER.warning("No se pudo lanzar el cálculo de las trazas", exc_info=True)
+        _end(handle, error_text(error), failed=True)
+        _say(tr("The drillhole traces have not been computed: {reason}",
+                reason=error_text(error)))
+        return "failed"
+    return "launched"
+
+
+def _desurvey_finished(handle: OperationHandle, result: JobResult) -> None:
+    """El final del trabajo de las trazas: si terminó bien, su escritura por pasos."""
+    if result.state == _SUCCEEDED:
+        INCORPORATIONS.add(handle.uid, _text(TRACES_LABEL), _traced_steps(handle, result))
+
+
+def _traces_report(summary: Mapping[str, Any]) -> str:
+    """El informe de un cálculo de las trazas (RF-005-20): el método, las calculadas y las
+    conservadas, los sondeos sin traza (errores de alcance S, RF-005-17) y dónde se prolongó
+    la orientación de la estación más próxima."""
+    method = next((name for identifier, name, _description in METHOD_ITEMS
+                   if METHODS[identifier] == summary.get("method")), str(summary.get("method")))
+    lines = [tr("Drillhole traces by {method}: {computed} computed and {kept} kept",
+                method=_text(method).lower(),
+                computed=format_number(int(summary.get("computed", 0)), 0),
+                kept=format_number(int(summary.get("kept", 0)), 0))]
+    excluded = list(summary.get("excluded", ()))
+    if excluded:
+        lines.append(tr("Without trace (errors of scope S): {holes}",
+                        holes=", ".join(map(str, excluded))))
+    extended = [f"{item['name']} ({item['code']}, "
+                f"{_depth_text(item['depth_from'], item['depth_to'])} m)"
+                for item in summary.get("warnings", ())]
+    if extended:
+        lines.append(tr("Orientation extended where there are no stations: {items}",
+                        items="; ".join(extended)))
+    return "\n".join(lines)
+
+
+def _traced_steps(handle: OperationHandle, result: JobResult) -> Generator[float, None, str]:
+    """Los pasos que escriben ``dh_trace`` con el hash que dio su trabajo
+    (``drillholes.store.BaseWriter``, en una transacción)."""
+    project = handle.project
+    try:
+        outcome = job_outcome(result, result.job_dir)
+        summary = outcome.summary
+        rows = jobs.read_table_output(outcome.file(TRACE_TABLE), TRACE_TABLE)
+        report = _traces_report(summary)
+        writer = store.BaseWriter(project, handle)
+        writer.table(TRACE_TABLE, rows,
+                     content=gis_jobs.digest_of(summary["outputs"][TRACE_TABLE]["digest"]))
+        yield 0.05
+        for done in writer.steps(message=report, interpreter=outcome.interpreter,
+                                 executor=outcome.executor, job_uid=result.job_uid):
+            yield 0.05 + 0.95 * done
+    except GeneratorExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - la operación queda fallida con el motivo
+        LOGGER.warning("Las trazas de los sondeos no se escribieron", exc_info=True)
+        _end(handle, error_text(error), failed=True)
+        _release(result)
+        _say(tr("The drillhole traces have not been computed: {reason}",
+                reason=error_text(error)))
+        return "failed"
+    _release(result)
+    _say(report)
+    return "done"
+
+
+# --- La referencia del azimut: reimportar una entrada (T28; RF-005-22, RF-008-11; plan §5.6.10)
+
+AZIMUTH_LABEL = "Azimuth reference of an import"
+
+
+def azimuth_inputs(project: Any) -> list[InputRecord]:
+    """Las entradas vigentes de los sondeos con azimuts (D-22): las de unas bocas, unas
+    desviaciones o una base de RecMin (la referencia del azimut es contenido de la entrada),
+    en el orden en que se registraron."""
+    with project.read() as conn:
+        records = list_inputs(conn)
+    found = [record for record in records if record.active
+             and record.reader in provenance.READER_IDS
+             and "azimuth_ref" in record.content_settings_keys]
+    return sorted(found, key=lambda record: record.registered_at)
+
+
+def azimuth_input(project: Any, typed: str) -> InputRecord:
+    """La entrada con azimuts (:func:`azimuth_inputs`) de uid o nombre ``typed``;
+    ``ValidationError`` ``dh.input_without_azimuth`` si no es ninguna de ellas, nombrándolas."""
+    shown = typed.strip()
+    records = azimuth_inputs(project)
+    for record in records:
+        if shown and shown in (record.uid, record.name):
+            return record
+    names = ", ".join(f"«{record.name}»" for record in records)
+    reason = (f"no es una importación vigente de bocas, desviaciones o una base de RecMin: "
+              f"elija una de {names}" if records else
+              "el proyecto no tiene ninguna importación vigente de bocas, desviaciones o una "
+              "base de RecMin (Sondeos ▸ Importar)")
+    raise ValidationError("dh.input_without_azimuth", reason, obj=_text(AZIMUTH_LABEL),
+                          field="importación", value=shown)
+
+
+def _reimport(request: ReimportRequest) -> OperationHandle:
+    """«Actualizar» una entrada de los sondeos (RF-008-11; plan §5.6.4 y §5.6.10): su fuente
+    (la del registro, resuelta desde su ancla) leída otra vez con sus ajustes registrados (y
+    los que pide ``request.settings``, de los que tiene) en una operación nueva de su tipo que
+    sustituye a la de la entrada (``supersedes``), como una orden de importación de una
+    entrada que la sustituye con el motivo (no se clasifica: ya se sabe a cuál sustituye); los
+    sondeos que ya traía la entrada se sustituyen sin preguntar y lo demás, como al importar
+    (los códigos nuevos y los sondeos que vienen de otra entrada esperan la decisión).
+    Aplicada, la base se reconstruye (y su validación). Devuelve la operación, aún «en curso».
+    Sin escribir nada: ``core.input_unknown``, ``core.reimport_source_missing`` (no se
+    encuentra su fuente), una base de RecMin abierta en otro programa (``ValueError``) y
+    ``ValueError`` con un ajuste que la entrada no tiene."""
+    project = request.project
+    with project.read() as conn:
+        record = get_input(conn, request.input_uid)
+        source = None if record is None else next(
+            (item for item in store.live_sources(conn) if item.record.uid == record.uid), None)
+        replaced = () if source is None else store.source_holes(conn, source)
+        catalogs = store.read_catalogs(conn)
+        existing = store.existing_holes(conn)
+    if record is None:
+        raise ProvenanceError("core.input_unknown", input=request.input_uid,
+                              project=project.name)
+    if record.reader not in provenance.READER_IDS or len(record.files) != 1:
+        raise ValueError(f"la entrada «{record.name}» no es la de una importación de sondeos "
+                         f"({record.reader})")
+    (main,) = record.files
+    path = resolve_source(main, project, project.userdata)
+    if path is None or not path.is_file():
+        raise ProvenanceError("core.reimport_source_missing", name=record.name, file=main.path)
+    settings = dict(record.settings)
+    given = dict(request.settings or {})
+    unknown = sorted(str(key) for key in given if key not in settings)
+    if unknown:
+        raise ValueError(f"la entrada «{record.name}» no tiene los ajustes {unknown}")
+    settings.update(given)
+    declaration = provenance.input_declaration(record.reader, record.crs_h, record.crs_v,
+                                               settings)
+    if record.reader == provenance.RECMIN_MDB:
+        lock = mdb_ports.lock_file(path)
+        if lock is not None:  # RF-005-15: sin la confirmación del diálogo, no se lee
+            raise ValueError(tr("«{file}» is open in another program (it has «{lock}»): "
+                                "close it and update the input again", file=path.name,
+                                lock=lock.name))
+        choice = TableChoice(path, record.reader, "", {}, None, record.name)
+        options = ReadOptions("utf-8", ";", 0, str(settings["decimal"]), None)
+        op_type, command = provenance.IMPORT_RECMIN, IMPORT_RECMIN
+    else:
+        sheet = record.layer if record.reader == provenance.DH_XLSX else None
+        choice = TableChoice(path, record.reader, str(settings["role"]),
+                             dict(settings["mapping"]), sheet, record.name)
+        options = ReadOptions(str(settings.get("encoding", "utf-8")),
+                              str(settings.get("separator", ";")),
+                              int(settings.get("header_row", 0)), str(settings["decimal"]),
+                              settings.get("date_format"))
+        op_type, command = provenance.IMPORT_TABULAR, IMPORT_DRILLHOLES
+    handle = begin_operation(project, op_type,
+                             settings=_operation_settings(choice, declaration, options),
+                             executor="job_process", supersedes=record.operation_uid)
+    order = _Order([_Entry(choice, handle, previous_uid=record.uid)], declaration, options,
+                   catalogs, existing, request.received_at, request.received_from,
+                   request.reason, command=command, reimport=True, replaced=replaced)
+    _ORDERS[order.uid] = order
+    (entry,) = order.entries
+    try:
+        launch = _read_job(order, entry)
+        core_provenance.launch_job(handle, launch.pop("worker"), **launch)
+    except BaseException:  # la operación ya quedó fallida con el motivo
+        _ORDERS.pop(order.uid, None)
+        raise
+    entry.started = True
+    return handle
+
+
+# --- La regla bajo el límite de detección (T28; RF-005-26; plan §5.6.3 y §5.6.10, D-22) ---------
+
+RULE_ITEMS = [
+    ("METHOD", "Rule", "How the values below the detection limit are replaced in later "
+                       "calculations: a factor of the limit, the limit, zero or absent"),
+    ("FACTOR", "Factor of the limit", "Fraction of the detection limit with the rule «factor»"),
+]
+RULE_KEYS: Mapping[str, str] = MappingProxyType({"METHOD": dh_params.BELOW_DL_METHOD,
+                                                 "FACTOR": dh_params.BELOW_DL_FACTOR})
+"""La clave de ``core.params`` de cada parte de la regla (D-17)."""
+RULE_LABEL = "Values below the detection limit"
+
+
+def ensure_detection_limit_rule(project: Any) -> tuple[str, ...]:
+    """Registra en ``project`` la regla bajo el límite de detección (``dh.below_dl.*``) con su
+    valor por defecto «sin confirmar» si aún no la tiene (RF-005-26, RF-008-04; plan §5.6.3),
+    en una transacción; devuelve las claves que registró (ninguna si ya estaban). No la anota
+    ninguna operación: ningún cálculo de la 005 la consume."""
+    parameters = core_params.ParameterStore(project)
+    with project.read() as conn:
+        missing = tuple(key for key in dh_params.BELOW_DL_KEYS
+                        if parameters.get(key, conn=conn) is None)
+    if missing:
+        with project.write_transaction() as conn:
+            for key in missing:
+                parameters.ensure_default(
+                    conn, key, geoblender_version=project.session.geoblender_version)
+    return missing
+
+
 # --- Las órdenes (plan §5.3.1 y §5.6) -----------------------------------------------------------
 
 _DECLARATION_PROPS: tuple[tuple[str, str], ...] = (
@@ -1861,7 +2180,9 @@ elemento cuya unidad en la base no es de ley la pide su lectura, que ve la base.
 SHOWN_MSGIDS: tuple[str, ...] = (
     BASE_LABEL, VALIDATION_LABEL, LOCKED_LABEL, *_KIND_MSGIDS.values(), *_ROLE_MSGIDS.values(),
     *(text for _prop, text in (*_DECLARATION_PROPS, *_READING_PROPS, *_DELIVERY_PROPS,
-                               *_RECMIN_READING_PROPS)))
+                               *_RECMIN_READING_PROPS)),
+    TRACES_LABEL, AZIMUTH_LABEL, RULE_LABEL, *(name for _id, name, _text in RULE_ITEMS),
+    *(name for _id, name, _text in METHOD_ITEMS))
 """Los ``msgid`` de las constantes del módulo que se enseñan sin un ``tr`` literal (la prueba
 de la importación comprueba que tienen su español)."""
 
@@ -2485,6 +2806,41 @@ class GEOBLENDER_OT_dh_set_detection_limit_policy(_DrillholesCommand, bpy.types.
     bl_translation_context = TRANSLATION_CONTEXT
     bl_options = {"REGISTER"}
 
+    parameter: EnumProperty(  # type: ignore[valid-type]
+        name="Part of the rule", items=RULE_ITEMS, default="METHOD", options=_FIELD,
+    )
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        return context.window_manager.invoke_props_dialog(
+            self, translate=False, title=_text(RULE_LABEL))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.prop(self, "parameter", text=tr("Change"), translate=False)
+        layout.label(text=tr("It is changed with its reason in the project parameters; the "
+                             "values stored do not change"), icon="INFO", translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """La regla bajo el límite de detección (RF-005-26; plan §5.6.10, D-22): la registra
+        con su valor por defecto si el proyecto aún no la tiene y abre el diálogo de
+        ``geoblender.core_set_parameter`` con la clave de la parte elegida (desde un guion,
+        sin ventana, se cambia con esa orden). No cambia ningún valor guardado."""
+        blocked = unavailable_reason(SET_DETECTION_LIMIT)
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        try:
+            ensure_detection_limit_rule(project)
+        except (GeoblenderError, OSError, sqlite3.Error, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        key = RULE_KEYS[self.parameter]
+        open_later(core_provenance.SET_PARAMETER, {"key": key})
+        self.report({"INFO"}, tr("Change the parameter «{key}» with its reason: the values "
+                                 "stored do not change", key=key))
+        return {"FINISHED"}
+
 
 class GEOBLENDER_OT_dh_validate(_DrillholesCommand, ProvenanceAwareOperator,
                                 bpy.types.Operator):
@@ -2603,9 +2959,10 @@ def stored_report(project: Any) -> store.StoredValidation:
     return stored
 
 
-def _open_confirm(idname: str, values: Mapping[str, Any]) -> None:
-    """Pide confirmar que se sustituye el destino que ya existe: la misma orden con
-    ``confirm`` en cuanto acaba esta; sin ventana, nada (lo dice el aviso)."""
+def open_later(idname: str, values: Mapping[str, Any]) -> None:
+    """Abre la orden ``idname`` (``geoblender.*``) desde la interfaz (``INVOKE_DEFAULT``)
+    con ``values`` en cuanto acaba la que la llama (en un temporizador: su diálogo, encima);
+    sin ventana (un guion, ``blender -b``), nada: lo dice el aviso de quien la llama."""
     manager = getattr(bpy.context, "window_manager", None)
     windows = list(getattr(manager, "windows", ()) or ())
     if not windows:
@@ -2615,11 +2972,17 @@ def _open_confirm(idname: str, values: Mapping[str, Any]) -> None:
     def call() -> None:
         try:
             with bpy.context.temp_override(window=windows[0]):
-                getattr(bpy.ops.geoblender, name)("INVOKE_DEFAULT", confirm=True, **values)
+                getattr(bpy.ops.geoblender, name)("INVOKE_DEFAULT", **values)
         except (RuntimeError, TypeError, AttributeError):
-            LOGGER.warning("No se pudo pedir confirmación en %s", idname, exc_info=True)
+            LOGGER.warning("No se pudo abrir %s", idname, exc_info=True)
 
     bpy.app.timers.register(call, first_interval=0.0)
+
+
+def _open_confirm(idname: str, values: Mapping[str, Any]) -> None:
+    """Pide confirmar que se sustituye el destino que ya existe: la misma orden con
+    ``confirm`` en cuanto acaba esta; sin ventana, nada (lo dice el aviso)."""
+    open_later(idname, {"confirm": True, **values})
 
 
 class GEOBLENDER_OT_dh_export_validation_report(_DrillholesCommand, ProvenanceAwareOperator,
@@ -2746,6 +3109,48 @@ class GEOBLENDER_OT_dh_desurvey(_DrillholesCommand, ProvenanceAwareOperator,
         name="Drillholes", items=SCOPE_ITEMS, default="ALL", options=_FIELD,
     )
 
+    def provenance_inputs(self, context: Any) -> tuple[Use, ...]:
+        return tuple(desurvey_uses())
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        self.provenance_dialog = True
+        return context.window_manager.invoke_props_dialog(
+            self, translate=False, title=_text(TRACES_LABEL))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.prop(self, "method", text=tr("Method"), translate=False)
+        layout.prop(self, "scope", text=tr("Drillholes"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Las trazas de la base (RF-005-20; plan §5.6.6): la operación ``dh.desurvey`` con la
+        puerta de la 008, su método y sus sondeos en los ajustes y sus parámetros
+        (``drillholes.params.DESURVEY_KEYS``), y su trabajo por la cola de incorporación
+        (:func:`start_desurvey`). Sin base, no empieza."""
+        blocked = unavailable_reason(DESURVEY)
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        try:
+            with project.read() as conn:
+                built = dataset_registry.get(conn, BASE_TABLES[0]) is not None
+            if not built:
+                raise ValueError(tr("First {step} ({path})", step=tr("import drillholes"),
+                                    path=path_text(command_catalog(), IMPORT_DRILLHOLES,
+                                                   i18n.language())))
+        except (GeoblenderError, OSError, ValueError, sqlite3.Error) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        method, scope = METHODS[self.method], SCOPES[self.scope]
+        handle = self.begin(context, settings=desurvey_settings(method, scope),
+                            params=list(dh_params.DESURVEY_KEYS), executor="job_thread")
+        if handle is None:  # ya dicho por qué
+            return {"CANCELLED"}
+        start_desurvey(project, handle, method=method, scope=scope)
+        self.report({"INFO"}, tr("Computing the drillhole traces in the background…"))
+        return {"FINISHED"}
+
 
 class GEOBLENDER_OT_dh_set_azimuth_reference(_DrillholesCommand, ProvenanceAwareOperator,
                                              bpy.types.Operator):
@@ -2778,6 +3183,112 @@ class GEOBLENDER_OT_dh_set_azimuth_reference(_DrillholesCommand, ProvenanceAware
         description="Why the azimuth reference or the declination changes (required)",
         options=_FIELD,
     )
+    inputs: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_view_dataset, options=_FIELD,
+    )
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """El diálogo: las importaciones con azimuts para elegir (la más reciente, si no se
+        dio ninguna) con su referencia y su declinación de ahora."""
+        self.provenance_dialog = True
+        project = core_provenance.SESSION.project
+        try:
+            records = azimuth_inputs(project)
+            if not records:
+                azimuth_input(project, self.input_uid)  # lo que falta, dicho
+        except (GeoblenderError, OSError, ValueError, sqlite3.Error) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.inputs.clear()
+        for record in records:
+            item = self.inputs.add()
+            item.name = item.label = record.name
+            item.uid = record.uid
+        chosen = next((record for record in records
+                       if self.input_uid in (record.uid, record.name)), records[-1])
+        self.input_uid = chosen.name
+        current = chosen.settings.get("azimuth_ref")
+        self.azimuth_ref = next((identifier for identifier, value in AZIMUTH_REFS.items()
+                                 if value == current), NOT_DECLARED)
+        declination = chosen.settings.get("declination_deg")
+        self.declination_deg = "" if declination is None else _number(float(declination))
+        return context.window_manager.invoke_props_dialog(
+            self, translate=False, title=_text(AZIMUTH_LABEL))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.prop_search(self, "input_uid", self, "inputs", text=tr("Input"),
+                           translate=False)
+        layout.prop(self, "azimuth_ref", text=tr("Azimuth reference"), translate=False)
+        row = layout.row()
+        row.enabled = self.azimuth_ref == "MAGNETIC"
+        row.prop(self, "declination_deg", text=tr("Magnetic declination"), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+        layout.label(text=tr("The input is replaced: the traces of its drillholes become "
+                             "stale"), icon="INFO", translate=False)
+
+    def _changes(self, record: InputRecord) -> dict[str, Any]:
+        """Lo que cambia de la entrada ``record`` (sus ajustes ``azimuth_ref`` y
+        ``declination_deg``, como los guarda su declaración); ``ValueError`` con el aviso si
+        falta la referencia, la declinación de un norte magnético o el motivo, sobra la
+        declinación o no cambia nada."""
+        name = record.name
+        reference = AZIMUTH_REFS[self.azimuth_ref]
+        if reference is None:
+            raise ValueError(tr("Declare the azimuth reference of «{name}»: grid, true or "
+                                "magnetic north", name=name))
+        typed = self.declination_deg.strip()
+        declination = None
+        if reference == str(AzimuthRef.MAGNETIC):
+            if not typed:
+                raise ValueError(tr("With the magnetic north, write the magnetic declination "
+                                    "of «{name}» in degrees, positive to the east", name=name))
+            declination = parse_declination(typed)
+        elif typed:
+            raise ValueError(tr("The magnetic declination of «{name}» is only declared with "
+                                "the magnetic north", name=name))
+        if not self.reason.strip():
+            raise ValueError(tr("Write why the azimuth reference of «{name}» changes: the "
+                                "input is replaced", name=name))
+        changes = {"azimuth_ref": reference, "declination_deg": declination}
+        if all(record.settings.get(key) == value for key, value in changes.items()):
+            raise ValueError(tr("«{name}» already has that azimuth reference and "
+                                "declination: nothing changes", name=name))
+        return changes
+
+    def execute(self, context: Any) -> set[str]:
+        """«Actualizar» la entrada elegida con la referencia del azimut y la declinación
+        nuevas y su motivo (D-22; plan §5.6.10): ``reimport_input``, una sustitución de la
+        entrada (RF-008-54) que, aplicada, reconstruye la base y deja obsoletas, por la huella
+        de la desviación, las trazas de sus sondeos (RF-005-22). Lo que no vale no cambia
+        nada."""
+        blocked = unavailable_reason(SET_AZIMUTH)
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        try:
+            record = azimuth_input(project, self.input_uid)
+            changes = self._changes(record)
+        except (GeoblenderError, OSError, ValueError, sqlite3.Error) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        op_type = (provenance.IMPORT_RECMIN if record.reader == provenance.RECMIN_MDB
+                   else provenance.IMPORT_TABULAR)
+        if ensure_ready(op_type, report=self.report, dialog=self.provenance_dialog) is None:
+            return {"CANCELLED"}  # ya dicho por qué
+        from ...core.provenance.importer import reimport_input  # al usarlo
+
+        try:
+            reimport_input(project, record.uid, self.reason.strip(), settings=changes)
+        except (GeoblenderError, OSError, ValueError, sqlite3.Error) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.INPUT, record.name)  # Ctrl+Z no la deshace
+        self.report({"INFO"}, tr("Updating «{name}» with the new azimuth reference in the "
+                                 "background: the traces of its drillholes become stale",
+                                 name=record.name))
+        return {"FINISHED"}
 
 
 class GEOBLENDER_OT_dh_show_display(_DrillholesCommand, bpy.types.Operator):
@@ -2793,9 +3304,9 @@ class GEOBLENDER_OT_dh_show_display(_DrillholesCommand, bpy.types.Operator):
 
 
 def _not_delivered(what: str, value: str) -> GeoblenderError:
-    """Lo que dice una función de la procedencia de los sondeos cuya orden aún no ha llegado:
-    ``dh.not_delivered``, sin hacer nada."""
-    found = command_catalog().commands.get(SET_AZIMUTH)
+    """Lo que dice una función de la procedencia de los sondeos que aún no ha llegado (los
+    recálculos, T42): ``dh.not_delivered``, sin hacer nada."""
+    found = command_catalog().commands.get(SHOW_DISPLAY)
     note = unavailable_note(found) if found is not None else ""
     return GeoblenderError(NOT_DELIVERED, f"aún no está disponible ({note})", obj="Sondeos",
                            field=what, value=value)
@@ -2821,14 +3332,15 @@ def recompute_desurvey(request: RecomputeRequest) -> OperationHandle:
 
 def reimport_tabular(request: ReimportRequest) -> OperationHandle:
     """La reimportación de una entrada de una tabla de sondeos (CSV o XLSX) con sus ajustes
-    registrados (RF-008-11). Aún no está disponible: ``dh.not_delivered``."""
-    raise _not_delivered("reimportación", provenance.IMPORT_TABULAR)
+    registrados o los que pide ``request.settings`` (RF-008-11; T28: la referencia del
+    azimut, D-22): véase :func:`_reimport`."""
+    return _reimport(request)
 
 
 def reimport_recmin(request: ReimportRequest) -> OperationHandle:
-    """La reimportación de una base de RecMin con sus ajustes registrados (RF-008-11). Aún no
-    está disponible: ``dh.not_delivered``."""
-    raise _not_delivered("reimportación", provenance.IMPORT_RECMIN)
+    """La reimportación de una base de RecMin con sus ajustes registrados o los que pide
+    ``request.settings`` (RF-008-11; T28): véase :func:`_reimport`."""
+    return _reimport(request)
 
 
 # --- Declaraciones de la procedencia (ADR-0025 §2; plan §5.6.4 y §5.6.10) ----------------------

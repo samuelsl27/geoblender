@@ -906,7 +906,11 @@ class BaseJobsTest(_JobCase):
         ``in/`` da una fila de ``dh_trace`` por sondeo con traza (la polilínea cada 2 m por
         mínima curvatura, ``LINESTRING`` con Z en el CRS del proyecto, la longitud, el fondo y
         la huella de la desviación de su boca) y su hash; un sondeo con un error de alcance S
-        (DH-E06) no tiene traza y se nombra."""
+        (DH-E06) no tiene traza y se nombra. T28 (RF-005-22, «solo las obsoletas»): con
+        ``holes`` calcula solo esas bocas y las trazas de las demás llegan hechas en ``kept``:
+        la misma tabla y el mismo hash, también con la base y las conservadas empaquetadas
+        (``packed_arrays``, una entrada de ``in/`` por parte); una conservada de una boca que
+        se calcula, una posición fuera de la base o un nombre son una petición que no vale."""
         built = _STATE["built"]
         params = _base_params(method="minimum_curvature", depth_tolerance_m=0.01,
                               trace_step_m=TRACE_STEP_M)
@@ -928,6 +932,38 @@ class BaseJobsTest(_JobCase):
         self.assertEqual(summary["outputs"]["dh_trace"]["digest"], dh_jobs.digest_json(
             schema.table_digest(schema.LAYOUTS["dh_trace"], expected, CRS)))
         self.assertEqual((summary["traces"], summary["excluded"]), (len(expected), []))
+        self.assertEqual((summary["computed"], summary["kept"]), (len(expected), 0))
+        # «Solo las obsoletas» (T28, RF-005-22): las de ``holes`` se calculan y las demás
+        # llegan hechas (``kept``, las filas de dh_trace): la misma tabla, el mismo hash.
+        # La base y las conservadas, empaquetadas (packed_arrays: una entrada por parte).
+        chosen = [1, 2]
+        kept = [row for row in expected if row[1] - 1 not in chosen]
+        base = arrays.set_arrays(built.dset)
+        collars = {key: value for key, value in base.items() if key.startswith("collars_")}
+        packed = {**dh_jobs.packed_arrays("base", "collars", collars),
+                  **dh_jobs.packed_arrays("base", "rest", {
+                      key: value for key, value in base.items() if key not in collars}),
+                  **dh_jobs.packed_arrays(dh_jobs.INPUT_KEPT, "rows", arrays.rows_arrays(
+                      schema.LAYOUTS["dh_trace"], kept))}
+        self.assertEqual(sorted(packed), ["base_npz-collars", "base_npz-rest", "kept_npz-rows"])
+        self.assertEqual(dh_jobs.packed_arrays("base", "vacia", {}), {})
+        summary, ctx, folder = self.run_job(
+            dh_jobs.DESURVEY, dict(params, holes=chosen),
+            inputs={"survey_sha256": "hashes.npy"}, loose=packed)
+        self.assertEqual(list(self.table(ctx, folder, "dh_trace")), expected)
+        self.assertEqual(summary["outputs"]["dh_trace"]["digest"], dh_jobs.digest_json(
+            schema.table_digest(schema.LAYOUTS["dh_trace"], expected, CRS)))
+        self.assertEqual((summary["computed"], summary["kept"]), (2, len(expected) - 2))
+        for wrong in ([0, 1], [99], ["S-01"]):  # una conservada, fuera de la base, no es posición
+            with self.subTest(sondeos=wrong):
+                with self.assertRaises(job_messages.JobError) as caught:
+                    self.run_job(dh_jobs.DESURVEY, dict(params, holes=wrong),
+                                 inputs={"base": "base.npz", "survey_sha256": "hashes.npy"},
+                                 loose=dh_jobs.loose_arrays(dh_jobs.INPUT_KEPT,
+                                                            arrays.rows_arrays(
+                                                                schema.LAYOUTS["dh_trace"],
+                                                                kept)))
+                self.assertEqual(caught.exception.code, "request_invalid")
         case = _STATE["errors"]["DH-E06"]
         hashes = np.array(["0" * 64] * len(case.dset.collars), dtype=np.bytes_)
         summary, ctx, folder = self.run_job(dh_jobs.DESURVEY, params,

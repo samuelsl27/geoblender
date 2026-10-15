@@ -187,14 +187,16 @@ class DrillholeImportCase(unittest.TestCase):
 
     def finish(self) -> None:
         """Avanza a mano el monitor de los trabajos y la cola de incorporación de los sondeos
-        hasta que no queda ningún trabajo activo ni nada por incorporar."""
+        hasta que no queda ningún trabajo activo ni nada por incorporar: los pasos de una
+        incorporación, seguidos; solo se espera (2 ms) a los trabajos."""
         runner = self.jobs_ops.MONITOR.runner
         deadline = time.monotonic() + JOB_WAIT_S
         while time.monotonic() < deadline:
             self.jobs_ops.tick()
             self.dh_ops.incorporation_tick()
-            if (not any(snapshot.active for snapshot in runner.snapshots())
-                    and not self.dh_ops.pending_incorporations()):
+            if self.dh_ops.pending_incorporations():
+                continue  # el paso siguiente enseguida, como el temporizador (T28)
+            if not any(snapshot.active for snapshot in runner.snapshots()):
                 self.jobs_ops.tick()
                 if (not any(snapshot.active for snapshot in runner.snapshots())
                         and not self.dh_ops.pending_incorporations()):

@@ -6,7 +6,8 @@
   la clase real de ``bl/ops/dh.py``, registrada una vez (ninguno provisional), y las órdenes
   de los sondeos de otras entradas (R-78, R-14) siguen provisionales. Mientras su orden no
   llega, cada una no está disponible y dice dónde estará («Disponible en 005 · Sondeos»), y
-  su recálculo, su reimportación y el cargador de la vista lo dicen sin hacer nada.
+  los recálculos y el cargador de la vista lo dicen sin hacer nada (la reimportación llega
+  con la referencia del azimut, T28).
 - ``bl/props/dh.py`` y ``bl/ui/dh_panels.py``: la representación en la escena, la
   importación pendiente y la validación en ``WindowManager``, y los tres paneles y la lista
   de incidencias en la pestaña «Sondeos».
@@ -49,7 +50,10 @@ WITH_SETTINGS = ("dh.import_tabular", "dh.import_recmin", "dh.desurvey")
 DELIVERED = frozenset({"geoblender.dh_import_drillholes",  # T25
                        "geoblender.dh_import_recmin_mdb",  # T26
                        "geoblender.dh_validate",  # T27
-                       "geoblender.dh_export_validation_report"})  # T27
+                       "geoblender.dh_export_validation_report",  # T27
+                       "geoblender.dh_desurvey",  # T28
+                       "geoblender.dh_set_azimuth_reference",  # T28
+                       "geoblender.dh_set_detection_limit_policy"})  # T28
 
 
 def _module(name: str) -> ModuleType:
@@ -252,9 +256,10 @@ class DrillholesRegisteredTest(unittest.TestCase):
     def test_undelivered_commands_say_where_they_will_be(self) -> None:
         """RF-003-07 (plan 005 §5.6.10): mientras no llega su orden, cada una no está
         disponible (``poll`` falso) y dice dónde estará, como un provisional («Disponible en
-        005 · Sondeos»); su recálculo, su reimportación y el cargador de las trazas lo dicen
-        con un error para la persona, sin hacer nada. Las que ya han llegado (T25: importar
-        tablas; T26: una base de RecMin; T27: validar y exportar el informe) lo están en el
+        005 · Sondeos»); los recálculos y el cargador de las trazas lo dicen con un error
+        para la persona, sin hacer nada. Las que ya han llegado (T25: importar tablas; T26:
+        una base de RecMin; T27: validar y exportar el informe; T28: las trazas, la referencia
+        del azimut, que es la reimportación, y la regla bajo el límite) lo están en el
         catálogo y, sin proyecto, dicen el paso previo."""
         catalog = _module("core.catalog")
         i18n = _module("core.i18n")
@@ -273,8 +278,7 @@ class DrillholesRegisteredTest(unittest.TestCase):
                 self.assertEqual(self.m.dh_ops.unavailable_reason(idname), note)
                 group, _, name = idname.partition(".")
                 self.assertFalse(getattr(getattr(bpy.ops, group), name).poll())
-        calls = [*self.m.dh_ops.RECOMPUTE.values(), *self.m.dh_ops.REIMPORT.values(),
-                 self.m.dh_view.load_traces]
+        calls = [*self.m.dh_ops.RECOMPUTE.values(), self.m.dh_view.load_traces]
         for function in calls:
             with self.subTest(función=function.__name__):
                 with self.assertRaises(errors.GeoblenderError) as caught:

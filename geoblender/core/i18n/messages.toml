@@ -4033,3 +4033,78 @@ es = "Ya existe «{file}»: confirme que se sustituye; no se ha escrito nada"
 
 ["Validation report «{file}» exported: {issues} issues; not evaluated: {notes}"]
 es = "Informe de validación «{file}» exportado: {issues} incidencias; sin evaluar: {notes}"
+
+# Calcular las trazas, la referencia del azimut y la regla bajo el límite de detección (spec
+# 005, T28; plan 005 §5.3.1, §5.6.3, §5.6.6 y §5.6.10; D-22).
+
+["Drillhole traces"]
+es = "Trazas de los sondeos"
+
+["Computing the drillhole traces in the background…"]
+es = "Calculando las trazas de los sondeos en segundo plano…"
+
+["The drillhole traces have not been computed: {reason}"]
+es = "Las trazas de los sondeos no se han calculado: {reason}"
+
+["Drillhole traces by {method}: {computed} computed and {kept} kept"]
+es = "Trazas de los sondeos por {method}: {computed} calculadas y {kept} conservadas"
+
+["Without trace (errors of scope S): {holes}"]
+es = "Sin traza (errores de alcance S): {holes}"
+
+["Orientation extended where there are no stations: {items}"]
+es = "Orientación prolongada donde no hay estaciones: {items}"
+
+["Azimuth reference of an import"]
+es = "Referencia del azimut de una importación"
+
+["The input is replaced: the traces of its drillholes become stale"]
+es = "La entrada se sustituye: las trazas de sus sondeos quedan obsoletas"
+
+["Declare the azimuth reference of «{name}»: grid, true or magnetic north"]
+es = "Declare la referencia del azimut de «{name}»: norte de cuadrícula, geográfico o magnético"
+
+["With the magnetic north, write the magnetic declination of «{name}» in degrees, positive to the east"]
+es = "Con el norte magnético, escriba la declinación magnética de «{name}» en grados, positiva al este"
+
+["The magnetic declination of «{name}» is only declared with the magnetic north"]
+es = "La declinación magnética de «{name}» solo se declara con el norte magnético"
+
+["Write why the azimuth reference of «{name}» changes: the input is replaced"]
+es = "Escriba el motivo del cambio de la referencia del azimut de «{name}»: la entrada se sustituye"
+
+["«{name}» already has that azimuth reference and declination: nothing changes"]
+es = "«{name}» ya tiene esa referencia del azimut y esa declinación: no cambia nada"
+
+["Updating «{name}» with the new azimuth reference in the background: the traces of its drillholes become stale"]
+es = "Actualizando «{name}» con la referencia del azimut nueva en segundo plano: las trazas de sus sondeos quedan obsoletas"
+
+["«{file}» is open in another program (it has «{lock}»): close it and update the input again"]
+es = "«{file}» está abierta en otro programa (tiene «{lock}»): ciérrela y actualice otra vez la entrada"
+
+["Values below the detection limit"]
+es = "Valores bajo el límite de detección"
+
+["Part of the rule"]
+es = "Parte de la regla"
+
+["Rule"]
+es = "Regla"
+
+["How the values below the detection limit are replaced in later calculations: a factor of the limit, the limit, zero or absent"]
+es = "Cómo se sustituyen los valores bajo el límite de detección en los cálculos posteriores: un factor del límite, el límite, cero o ausente"
+
+["Factor of the limit"]
+es = "Factor del límite"
+
+["Fraction of the detection limit with the rule «factor»"]
+es = "Fracción del límite de detección con la regla «factor»"
+
+["Change"]
+es = "Cambiar"
+
+["It is changed with its reason in the project parameters; the values stored do not change"]
+es = "Se cambia con su motivo en los parámetros del proyecto; los valores guardados no cambian"
+
+["Change the parameter «{key}» with its reason: the values stored do not change"]
+es = "Cambie el parámetro «{key}» con su motivo: los valores guardados no cambian"

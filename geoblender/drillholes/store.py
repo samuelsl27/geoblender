@@ -55,7 +55,10 @@ entrada como el ``SourceEntry`` de ``dh.build_base``; (T25) :func:`live_sources`
 vigente, entrada a entrada en el orden en que se registraron, y :func:`source_entry_steps` lee
 el de una, por pasos, como su ``SourceEntry``; (T27) :func:`stored_validation`, el informe de
 la última validación (``dh_validation_issue`` y lo que su operación dice que no se evaluó), el
-que enseña la lista de la pestaña «Sondeos» y se exporta.
+que enseña la lista de la pestaña «Sondeos» y se exporta; (T28) :func:`survey_hashes`, la
+huella de la desviación de cada boca, :func:`kept_traces`, las trazas que conserva un cálculo
+de «solo las obsoletas», y :func:`source_holes`, los sondeos de lo importado de una entrada (los
+que su reimportación sustituye sin preguntar).
 
 **Valores** (plan §5.2.2): los números, en float64 tal como llegan (NaN = ``NULL``; −0 = 0);
 sí/no, 0 o 1; las enumeraciones, su texto; las fechas, «AAAA-MM-DD»; ``extra``, su JSON
@@ -126,6 +129,7 @@ from .model import (
     StructureColumns,
     SurveyColumns,
     ZoneColumns,
+    name_key,
 )
 from . import report
 from .provenance import (
@@ -172,14 +176,17 @@ __all__ = [
     "StoredValidation",
     "existing_holes",
     "export_report",
+    "kept_traces",
     "live_sources",
     "read_catalogs",
     "read_steps",
     "source_entry",
     "source_entry_steps",
+    "source_holes",
     "source_tables",
     "stale_holes",
     "stored_validation",
+    "survey_hashes",
 ]
 
 STEP_BUDGET_S = 0.05
@@ -1206,6 +1213,44 @@ def stale_holes(conn: sqlite3.Connection) -> tuple[str, ...]:
         "WHERE t.survey_sha256 IS NOT c.survey_sha256 ORDER BY c.fid"))
 
 
+def survey_hashes(conn: sqlite3.Connection) -> list[str]:
+    """La huella de la desviación (``survey_sha256``) de cada boca de ``dh_collar``, por su
+    ``fid`` (T28): la que guarda cada traza de ``dh.desurvey`` (RF-005-22). Vacía sin la
+    tabla."""
+    if not _table_exists(conn, "dh_collar"):
+        return []
+    return [row[0] for row in conn.execute("SELECT survey_sha256 FROM dh_collar ORDER BY fid")]
+
+
+def kept_traces(conn: sqlite3.Connection, *, method: str,
+                params: Mapping[str, str]) -> list[tuple[Any, ...]]:
+    """Las trazas que conserva un cálculo de «solo las obsoletas» (T28; RF-005-22, plan
+    §5.3.1): las filas de ``dh_trace`` (en el orden de ``TableLayout.insert_columns`` y de su
+    sondeo) de los sondeos cuya traza no está obsoleta (:func:`stale_holes`: la huella de su
+    desviación es la de su boca), si la operación que escribió ``dh_trace`` usó el método
+    ``method`` y los mismos parámetros (``params``: ``{clave: value_sha256}``, los que resuelve
+    la operación nueva); si no, ninguna: con otro método u otros parámetros todas están
+    obsoletas. Sin las tablas, ninguna."""
+    if not (_table_exists(conn, "dh_collar") and _table_exists(conn, "dh_trace")):
+        return []
+    live = ", ".join(f"'{status}'" for status in LIVE_STATUSES)
+    found = conn.execute(
+        f"SELECT o.uid, o.settings FROM gb_dataset d JOIN gb_operation o ON "
+        f"o.uid = d.operation_uid WHERE d.name = 'dh_trace' AND d.store = 'gpkg' AND "
+        f"d.status IN ({live})").fetchone()
+    if found is None:
+        return []
+    settings = json.loads(found[1] or "{}")
+    used = dict(conn.execute("SELECT key, value_sha256 FROM gb_operation_param WHERE "
+                             "operation_uid = ?", (found[0],)).fetchall())
+    if settings.get("method") != method or used != dict(params):
+        return []
+    columns = ", ".join(f't."{name}"' for name in LAYOUTS["dh_trace"].insert_columns)
+    return [tuple(row) for row in conn.execute(
+        f"SELECT {columns} FROM dh_trace t JOIN dh_collar c ON t.hole_id = c.fid "
+        f"WHERE t.survey_sha256 IS c.survey_sha256 ORDER BY t.hole_id, t.fid")]
+
+
 VALIDATION_TABLE = "dh_validation_issue"
 """La tabla (y el dato) del informe de la última validación (``dh.validate``)."""
 
@@ -1341,6 +1386,28 @@ def live_sources(conn: sqlite3.Connection) -> tuple[LiveSource, ...]:
         found.append(LiveSource(record, MappingProxyType(
             {role: by_role[role] for role in SOURCE_ROLES if role in by_role})))
     return tuple(found)
+
+
+_HOLE_COLUMNS: Mapping[str, str] = MappingProxyType({
+    role: ("name" if role == "collar" else "hole_name")
+    for role in SOURCE_ROLES if role != "catalog"})
+"""La columna del sondeo de lo importado de cada papel (los catálogos no tienen)."""
+
+
+def source_holes(conn: sqlite3.Connection, source: LiveSource) -> tuple[str, ...]:
+    """Los sondeos de lo importado vigente de la entrada de ``source`` (T28; RF-005-11): los
+    nombres de sus bocas y de las filas de sus demás tablas, como se escribieron, sin repetir
+    (sin distinguir mayúsculas) y por orden alfabético; los que una reimportación de esa
+    entrada sustituye sin preguntar. Un catálogo, ninguno."""
+    found: dict[str, str] = {}
+    for role, dataset in source.datasets.items():
+        column = _HOLE_COLUMNS.get(role)
+        if column is None:
+            continue
+        for (name,) in conn.execute(f'SELECT DISTINCT "{column}" FROM "{dataset.locator}" '
+                                    f'WHERE "{column}" IS NOT NULL'):
+            found.setdefault(name_key(name), name)
+    return tuple(found[key] for key in sorted(found))
 
 
 def _join(columns: type, parts: Sequence[Any]) -> Any:
@@ -1503,6 +1570,7 @@ def read_steps(
     *,
     crs: CrsRef | None = None,
     vertical: VerticalRef | None = None,
+    parts: Sequence[str] | None = None,
     budget_s: float = STEP_BUDGET_S,
     clock: Callable[[], float] = time.perf_counter,
 ) -> Generator[float, None, DrillholeSet]:
@@ -1511,14 +1579,24 @@ def read_steps(
     ``gb_project``) y lo devuelve (``StopIteration.value``): las bocas y cada tabla en el orden
     de su ``fid`` (``hole`` = la posición de su boca), los códigos de catálogo y el sondeo de
     cada fila por su id (con la grafía de su catálogo y de su boca) y los catálogos. Sin las
-    tablas, un conjunto vacío. Cede el avance (0–1) cada vez que un paso gasta ``budget_s``."""
+    tablas, un conjunto vacío. Cede el avance (0–1) cada vez que un paso gasta ``budget_s``.
+    ``parts`` (T28): las tablas de los tramos y las estaciones que se leen además de las bocas
+    y los catálogos (``("dh_survey",)``, lo que necesitan las trazas); las demás, vacías. Por
+    defecto, todas. ``ValueError`` con una que no es de la base."""
     if (crs is None) != (vertical is None):
         raise ValueError("se dan los dos, el CRS y la referencia vertical, o ninguno")
+    known = tuple(table for table, _, _ in _BASE_PARTS)
+    chosen = known if parts is None else tuple(parts)
+    unknown = sorted(set(chosen) - set(known))
+    if unknown or isinstance(parts, str):
+        raise ValueError(f"las tablas que se leen además de las bocas son de {list(known)}, "
+                         f"no {unknown or parts!r}")
     if crs is None or vertical is None:
         crs, vertical = _project_references(conn)
     if not _table_exists(conn, "dh_collar"):
         return DrillholeSet(crs=crs, vertical=vertical)
-    tables = [name for name in BASE_TABLES if _table_exists(conn, name)]
+    tables = [name for name in BASE_TABLES if _table_exists(conn, name)
+              and (name not in known or name in chosen)]
     catalogs: dict[str, list[Any]] = {}
     catalog_fids: dict[str, np.ndarray] = {}
     for table, (attribute, record) in _BASE_CATALOGS.items():

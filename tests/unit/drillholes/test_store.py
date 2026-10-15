@@ -77,6 +77,7 @@ PYPROJ = {"pyproj": "3.7.2"}
 ORIGINAL_LIMIT = "core.original_copy_limit"
 CAMPAIGN = "Campaña 2026"
 HOLES = ("C-01", "S-01", "S-02", "S-03", "S-04", "S-12")
+MC = "minimum_curvature"
 # Lo importado de cada fichero de csv_basico: la boca y su orientación en boca (S-12), las
 # desviaciones, la litología, los análisis y los catálogos.
 SOURCE_ROLES = {"collar": ("collar", "survey"), "survey": ("survey",),
@@ -514,6 +515,11 @@ class SourceWriterTest(_StoreCase):
                                              _bits(getattr(given, item.name)),
                                              (name, item.name))
                     self.assertEqual(entry.catalogs, expected.catalogs)
+                    # T28 (RF-005-11): los sondeos de lo importado de la entrada.
+                    self.assertEqual(store.source_holes(conn, source), {
+                        "lithology_catalog": (), "collar": HOLES,
+                        "survey": ("S-01", "S-02", "S-03", "S-04"),
+                        "lithology": HOLES}[role])
         magnetic = _declaration(azimuth_ref=model.AzimuthRef.MAGNETIC,
                                 declination_deg=model.parse_declination("1,5"))
         other = self.file_input("survey", declaration=magnetic)
@@ -787,21 +793,49 @@ class BaseWriterTest(_StoreCase):
     def test_stale_holes_by_survey_hash(self) -> None:
         """RF-005-22 (plan §5.6.6, D-21): con las trazas hechas, ningún sondeo obsoleto; la base
         reconstruida con otras estaciones de S-01 deja obsoleta solo su traza
-        (``stale_holes``) y lo anota en el detalle de ``dh_collar``."""
+        (``stale_holes``) y lo anota en el detalle de ``dh_collar``. T28: ``survey_hashes`` da
+        la huella de cada boca; ``kept_traces``, las trazas que «solo las obsoletas» conserva
+        (las de los demás sondeos, si la desviación anterior usó el mismo método y los mismos
+        parámetros); ``read_steps`` con ``parts`` lee solo las bocas y esas tablas."""
         base = build.build_base(_entries(), FakeCrsService(), CRS, VERTICAL,
                                 project_uid=self.project.uid)
         self.write_base(base)
-        writer = store.BaseWriter(self.project, self.begin(provenance.DESURVEY))
-        writer.table("dh_trace", _trace_rows(base))
+        with self.project.read() as conn:  # T28: sin trazas, ninguna que conservar
+            self.assertEqual(store.kept_traces(conn, method=MC, params={}), [])
+        handle = operations.begin_operation(self.project, provenance.DESURVEY,
+                                            settings={"method": MC, "scope": "all"},
+                                            executor="blender")
+        writer = store.BaseWriter(self.project, handle)
+        rows = _trace_rows(base)
+        writer.table("dh_trace", rows)
         _, (trace,) = _drive(writer.steps())
         self.assertEqual((trace.name, trace.kind, trace.crs_epsg), ("dh_trace", "vector", 25830))
         with self.project.read() as conn:
             self.assertEqual(store.stale_holes(conn), ())
+            self.assertEqual(store.survey_hashes(conn),
+                             list(base.columns["dh_collar"]["survey_sha256"]))
+            self.assertEqual(store.kept_traces(conn, method=MC, params={}), rows)
         moved = build.build_base(_entries(s01_azimuth=1.0), FakeCrsService(), CRS, VERTICAL,
                                  project_uid=self.project.uid)
         self.write_base(moved)
         with self.project.read() as conn:
             self.assertEqual(store.stale_holes(conn), ("S-01",))
+            # T28 (RF-005-22): «solo las obsoletas» conserva las demás, si la última
+            # desviación usó el mismo método y los mismos parámetros; si no, ninguna.
+            self.assertEqual(store.kept_traces(conn, method=MC, params={}),
+                             [row for row in rows if row[1] != 2])  # S-01 es el fid 2
+            self.assertEqual(store.kept_traces(conn, method="tangent", params={}), [])
+            self.assertEqual(store.kept_traces(conn, method=MC, params={"k": "0" * 64}), [])
+            # Solo las bocas y las desviaciones (T28): lo que necesitan las trazas.
+            _, full = _drive(store.read_steps(conn))
+            _, part = _drive(store.read_steps(conn, parts=("dh_survey",)))
+        for name in ("collars", "surveys"):
+            given, back = getattr(full, name), getattr(part, name)
+            for item in fields(given):
+                self.assertEqual(_bits(getattr(back, item.name)),
+                                 _bits(getattr(given, item.name)), (name, item.name))
+        self.assertEqual((len(part.lithology), len(part.assays), part.catalogs),
+                         (0, 0, full.catalogs))
         details = self.query("SELECT c.detail FROM gb_dataset_change c JOIN gb_dataset d ON "
                              "d.uid = c.dataset_uid WHERE d.name = 'dh_collar' ORDER BY c.fid")
         self.assertEqual(details[-1], ('{"holes":["S-01"]}',))
