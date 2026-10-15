@@ -3437,3 +3437,331 @@ es = "Trazas de los sondeos"
 
 ["View arrays of the drillholes"]
 es = "Vista de los sondeos"
+
+# Los sondeos en Blender (spec 005, T24; plan 005 §5.3.1, §5.5 y §5.6.4): las elecciones y
+# las propiedades de sus órdenes, los paneles de la pestaña «Sondeos», los ajustes que
+# enseña su procedencia y la representación.
+
+["Declare it: without it nothing is imported"]
+es = "Declárelo: sin él no se importa nada"
+
+["Collars measured with GNSS, without geoid"]
+es = "Bocas medidas con GNSS, sin geoide"
+
+["Declare it if there are surveys or a collar orientation"]
+es = "Declárelo si hay desviaciones u orientación en boca"
+
+["Grid north"]
+es = "Norte de cuadrícula"
+
+["True north"]
+es = "Norte geográfico"
+
+["Geographic north"]
+es = "El norte de los meridianos"
+
+["Magnetic north"]
+es = "Norte magnético"
+
+["With its magnetic declination"]
+es = "Con su declinación magnética"
+
+["Negative downwards"]
+es = "Negativa hacia abajo"
+
+["From the horizontal: −90 is vertical downwards"]
+es = "Desde la horizontal: −90 es vertical hacia abajo"
+
+["Positive downwards"]
+es = "Positiva hacia abajo"
+
+["From the horizontal: 90 is vertical downwards"]
+es = "Desde la horizontal: 90 es vertical hacia abajo"
+
+["From the vertical"]
+es = "Desde la vertical"
+
+["0 is vertical downwards"]
+es = "0 es vertical hacia abajo"
+
+["Collars"]
+es = "Bocas"
+
+["Surveys"]
+es = "Desviaciones"
+
+["Lithology"]
+es = "Litología"
+
+["Assays in columns"]
+es = "Análisis en columnas"
+
+["One column per element"]
+es = "Una columna por elemento"
+
+["Assays in rows"]
+es = "Análisis en filas"
+
+["Element, value and unit in each row"]
+es = "Elemento, valor y unidad en cada fila"
+
+["Lithology catalog"]
+es = "Catálogo de litologías"
+
+["Element catalog"]
+es = "Catálogo de elementos"
+
+["Measured"]
+es = "Medida"
+
+["The densities of the catalog were measured"]
+es = "Las densidades del catálogo se midieron"
+
+["Adopted"]
+es = "Adoptada"
+
+["The densities of the catalog are adopted values"]
+es = "Las densidades del catálogo son valores adoptados"
+
+["Hypothesis"]
+es = "Hipótesis"
+
+["The densities of the catalog are a hypothesis"]
+es = "Las densidades del catálogo son una hipótesis"
+
+["Minimum curvature"]
+es = "Mínima curvatura"
+
+["Tangent"]
+es = "Tangente"
+
+["Balanced tangent"]
+es = "Tangente equilibrada"
+
+["All the drillholes"]
+es = "Todos los sondeos"
+
+["Only the stale ones"]
+es = "Solo los obsoletos"
+
+["The drillholes whose trace is stale"]
+es = "Los sondeos cuya traza está obsoleta"
+
+["Column mapping"]
+es = "Correspondencia de columnas"
+
+["Role and columns of each file, in JSON (for scripts and tests)"]
+es = "Papel y columnas de cada fichero, en JSON (para guiones y pruebas)"
+
+["EPSG code of the horizontal CRS of the collars, such as EPSG:25830 (empty: undeclared, and nothing is imported)"]
+es = "Código EPSG del CRS horizontal de las bocas, como EPSG:25830 (vacío: sin declarar, y no se importa nada)"
+
+["Azimuth reference"]
+es = "Referencia del azimut"
+
+["Magnetic declination"]
+es = "Declinación magnética"
+
+["Magnetic declination in degrees, positive to the east, as written (only with magnetic azimuths)"]
+es = "Declinación magnética en grados, positiva al este, tal como se escribe (solo con azimuts magnéticos)"
+
+["Inclination"]
+es = "Inclinación"
+
+["All vertical"]
+es = "Todos verticales"
+
+["The drillholes without surveys are vertical"]
+es = "Los sondeos sin desviaciones son verticales"
+
+["Date format"]
+es = "Formato de las fechas"
+
+["Format of the dates of the source, such as %d/%m/%Y (empty: ISO, YYYY-MM-DD)"]
+es = "Formato de las fechas de la fuente, como %d/%m/%Y (vacío: ISO, AAAA-MM-DD)"
+
+["Sheet"]
+es = "Hoja"
+
+["Sheet of an XLSX workbook (empty: the first one)"]
+es = "Hoja de un libro XLSX (vacío: la primera)"
+
+["No-data values"]
+es = "Valores sin dato"
+
+["Values of the source that mean no data, separated by «;», such as −99;−999;ND"]
+es = "Valores de la fuente que significan «sin dato», separados por «;», como −99;−999;ND"
+
+["Negative means below the detection limit"]
+es = "Negativo es bajo el límite de detección"
+
+["A negative value −x of an assay means «<x»"]
+es = "Un valor negativo −x de un análisis significa «<x»"
+
+["Density"]
+es = "Densidad"
+
+["Read it although it is open"]
+es = "Leerla aunque esté abierta"
+
+["Read the database although another program has it open (it has its lock file)"]
+es = "Leer la base aunque otro programa la tenga abierta (tiene su fichero de bloqueo)"
+
+["Read an unknown schema"]
+es = "Leer un esquema desconocido"
+
+["Read a database whose schema version is not 11 or 12"]
+es = "Leer una base cuya versión de esquema no es 11 ni 12"
+
+["Terrain model to compare the collar elevations with (empty: the most recent one; without any, that check is not evaluated)"]
+es = "Modelo del terreno con que se comparan las cotas de las bocas (vacío: el más reciente; sin ninguno, esa comprobación no se evalúa)"
+
+["Replace it"]
+es = "Sustituirlo"
+
+["Import whose azimuth reference or declination changes (its uid or its name)"]
+es = "Importación cuya referencia del azimut o cuya declinación cambia (su uid o su nombre)"
+
+["Why the azimuth reference or the declination changes (required)"]
+es = "Por qué cambia la referencia del azimut o la declinación (obligatorio)"
+
+["Yes"]
+es = "Sí"
+
+["No"]
+es = "No"
+
+["None"]
+es = "Ninguno"
+
+["Pending import"]
+es = "Importación pendiente"
+
+["Validation"]
+es = "Validación"
+
+["Display"]
+es = "Representación"
+
+["From"]
+es = "Desde"
+
+["Lower limit of the class, as written, in the unit of the element (empty: from the lowest value)"]
+es = "Límite inferior de la clase, tal como se escribe, en la unidad del elemento (vacío: desde el valor más bajo)"
+
+["Color"]
+es = "Color"
+
+["Color of the class"]
+es = "Color de la clase"
+
+["Logging scheme"]
+es = "Esquema de logueo"
+
+["Lithology logging scheme that colors the tubes (lithology, or an extra table of RecMin)"]
+es = "Esquema de logueo de litología con que se colorean los tubos (lithology, o una tabla adicional de RecMin)"
+
+["Tube radius"]
+es = "Radio del tubo"
+
+["Radius of the drillhole tubes, in metres"]
+es = "Radio de los tubos de los sondeos, en metros"
+
+["Element"]
+es = "Elemento"
+
+["Element whose grade bars are drawn beside each interval (empty: none)"]
+es = "Elemento cuyas barras de leyes se dibujan junto a cada tramo (vacío: ninguno)"
+
+["Grade classes"]
+es = "Clases de leyes"
+
+["Classes of the grade legend, in the unit of the element"]
+es = "Clases de la leyenda de leyes, en la unidad del elemento"
+
+["Bar width"]
+es = "Ancho de las barras"
+
+["Width of the grade bars, in metres"]
+es = "Ancho de las barras de leyes, en metros"
+
+["Bar separation"]
+es = "Separación de las barras"
+
+["Separation of the grade bars from the drillhole trace, in metres"]
+es = "Separación de las barras de leyes desde la traza del sondeo, en metros"
+
+["Labels"]
+es = "Etiquetas"
+
+["Name and total depth of each drillhole at its collar"]
+es = "Nombre y profundidad total de cada sondeo en su boca"
+
+["Depth at the bottom"]
+es = "Profundidad en el fondo"
+
+["Also the depth at the bottom of each drillhole"]
+es = "También la profundidad en el fondo de cada sondeo"
+
+["Legend"]
+es = "Leyenda"
+
+["Legend of the lithology and of the grade classes"]
+es = "Leyenda de la litología y de las clases de leyes"
+
+["Keep the existing records"]
+es = "Conservar los registros existentes"
+
+["Keep the records of this drillhole already in the project instead of replacing them with those of the source"]
+es = "Conservar los registros de este sondeo que ya tiene el proyecto en vez de sustituirlos por los de la fuente"
+
+["Uid of the import operation that waits for a decision"]
+es = "Uid de la operación de importación que espera una decisión"
+
+["New codes"]
+es = "Códigos nuevos"
+
+["Codes of the source that are not in the catalogs of the project"]
+es = "Códigos de la fuente que no están en los catálogos del proyecto"
+
+["Register the new codes"]
+es = "Dar de alta los códigos nuevos"
+
+["Add the new codes to the catalogs of the project (the lithologies, with a color of their own); without it, the import is cancelled"]
+es = "Añadir los códigos nuevos a los catálogos del proyecto (las litologías, con un color propio); sin ello, la importación se cancela"
+
+["Drillholes already in the project"]
+es = "Sondeos que ya están en el proyecto"
+
+["Drillholes of the source that the project already has"]
+es = "Sondeos de la fuente que el proyecto ya tiene"
+
+["Validation issues"]
+es = "Incidencias de la validación"
+
+["Issues of the last validation of the drillhole database"]
+es = "Incidencias de la última validación de la base de sondeos"
+
+["Selected issue"]
+es = "Incidencia seleccionada"
+
+["Selected row of the validation issues"]
+es = "Fila seleccionada de las incidencias de la validación"
+
+["Show only the issues of this level"]
+es = "Mostrar solo las incidencias de este nivel"
+
+["Show only the issues whose code contains this text"]
+es = "Mostrar solo las incidencias cuyo código contiene este texto"
+
+["{hole}: keep the existing records"]
+es = "{hole}: conservar los registros existentes"
+
+["No drillhole import is waiting for a decision"]
+es = "Ninguna importación de sondeos espera una decisión"
+
+["New codes: {codes}"]
+es = "Códigos nuevos: {codes}"
+
+["No validation issues to show"]
+es = "No hay incidencias de la validación que mostrar"

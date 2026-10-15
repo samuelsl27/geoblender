@@ -7,9 +7,10 @@ resultado.
 segundo plano (``JobMonitor``), los textos de los trabajos y sus tipos de trabajo. También
 ``core_provenance`` (spec 008): los textos de la procedencia y de los parámetros.
 
-``gis`` (spec 006) registra lo que la topografía declara a la 008 (hoy, sus lectores de
-contenido), después de lo de ``core``. ``dh`` (spec 005), lo de los sondeos (hoy, sus lectores
-de contenido), después de lo de ``gis``.
+``gis`` (spec 006) registra lo que la topografía declara a las specs 004 y 008, después de lo
+de ``core``. ``dh`` (spec 005), lo de los sondeos (sus parámetros, sus lectores de contenido,
+sus tipos de trabajo, sus operaciones y sus importadores; T24), después de lo de ``gis``; sus
+órdenes, en ``classes``, después de las de ``gis``.
 
 ``io`` (spec 006, T32): «Importar un fichero» y su manejador de ficheros (soltar en la vista).
 """

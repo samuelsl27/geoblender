@@ -810,7 +810,8 @@ class ViewRegistrationTest(unittest.TestCase):
             self.assertTrue(cls.is_registered)
             self.assertEqual(cls.bl_options, {"REGISTER", "UNDO"})
         views = _module("bl.scene.views")
-        self.assertEqual(sorted(views.loaders()),
+        # Los de la topografía (el de los sondeos, ``dh_trace``, lo mira la 005, T24).
+        self.assertEqual(sorted(key for key in views.loaders() if key.startswith("gis_")),
                          ["gis_brk_", "gis_cnt_", "gis_dtm_", "gis_pts_", "gis_src_",
                           "gis_tin_"])
         overlay = _module("bl.draw.contours")
