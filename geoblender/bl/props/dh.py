@@ -9,7 +9,11 @@ RF-005-23 a RF-005-25; plan 005 §5.1 y §5.5).
   ancho y la separación de las barras, las etiquetas (RF-005-25) y la leyenda. Es de la escena:
   se guarda con el ``.blend``. Ningún valor es una coordenada (ADR-0005): radio, ancho y
   separación son longitudes de dibujo; el límite de cada clase, el texto tal como se escribe
-  (un ``FloatProperty`` lo redondearía a float32).
+  (un ``FloatProperty`` lo redondearía a float32). (T30) Cambiar el esquema, el elemento, una
+  clase, el ancho o la separación con la vista cargada la recarga (``bl.ops.dh.
+  display_changed``, por la cola de los sondeos); el radio cambia en vivo los tubos; las
+  etiquetas y la leyenda las lee la superposición al dibujar; «Clases propias» parte de la
+  leyenda de la vista del elemento.
 - ``WindowManager.geoblender_dh_import`` (:class:`GEOBLENDER_PG_dh_import`): la **importación
   pendiente** («Importación pendiente», RF-005-10 y RF-005-11): su operación, los códigos
   nuevos y si se dan de alta, los sondeos que ya están en el proyecto con lo que se hace con
@@ -243,6 +247,37 @@ class GEOBLENDER_PG_dh_table(bpy.types.PropertyGroup):
     )
 
 
+def _display_changed(self: Any, context: Any) -> None:
+    """La representación cambió (T30; RF-005-23, RF-005-24): con la vista de los sondeos
+    cargada, su recarga en la cola (``bl.ops.dh.display_changed``)."""
+    from ..ops import dh as dh_ops  # diferido: bl/ops importa bl/props
+
+    dh_ops.display_changed()
+
+
+def _radius_changed(self: Any, context: Any) -> None:
+    """El radio de los tubos, en vivo, sin recargar la vista (T30)."""
+    from ..scene import dh_view  # diferido: bl/scene importa bl/props
+
+    dh_view.apply_radius(self.tube_radius)
+
+
+def _own_classes(self: Any) -> bool:
+    return len(self.grade_classes) > 0
+
+
+def _set_own_classes(self: Any, value: bool) -> None:
+    """Con clases propias, las de la leyenda de la vista del elemento (``bl.scene.dh_view.
+    fill_classes``); sin ellas, ninguna (la leyenda por defecto)."""
+    from ..scene import dh_view  # diferido: bl/scene importa bl/props
+
+    if value and not self.grade_classes:
+        dh_view.fill_classes(self)
+    elif not value and self.grade_classes:
+        self.grade_classes.clear()
+        _display_changed(self, None)
+
+
 class GEOBLENDER_PG_dh_grade_class(bpy.types.PropertyGroup):
     """Una clase de la leyenda de leyes: desde dónde empieza y su color (RF-005-24)."""
 
@@ -250,11 +285,11 @@ class GEOBLENDER_PG_dh_grade_class(bpy.types.PropertyGroup):
         name="From",
         description="Lower limit of the class, as written, in the unit of the element "
                     "(empty: from the lowest value)",
-        default="", options=_STATIC,
+        default="", options=_STATIC, update=_display_changed,
     )
     color: FloatVectorProperty(  # type: ignore[valid-type]
         name="Color", description="Color of the class", subtype="COLOR_GAMMA", size=3,
-        min=0.0, max=1.0, default=(0.5, 0.5, 0.5), options=_STATIC,
+        min=0.0, max=1.0, default=(0.5, 0.5, 0.5), options=_STATIC, update=_display_changed,
     )
 
 
@@ -265,29 +300,35 @@ class GEOBLENDER_PG_dh_display(bpy.types.PropertyGroup):
         name="Logging scheme",
         description="Lithology logging scheme that colors the tubes (lithology, or an extra "
                     "table of RecMin)",
-        default=LOG_SET, options=_STATIC,
+        default=LOG_SET, options=_STATIC, update=_display_changed,
     )
     tube_radius: FloatProperty(  # type: ignore[valid-type]
         name="Tube radius", description="Radius of the drillhole tubes, in metres",
-        default=0.5, min=0.01, soft_max=10.0, options=_STATIC,
+        default=0.5, min=0.01, soft_max=10.0, options=_STATIC, update=_radius_changed,
     )
     element: StringProperty(  # type: ignore[valid-type]
         name="Element",
         description="Element whose grade bars are drawn beside each interval (empty: none)",
-        default="", options=_STATIC,
+        default="", options=_STATIC, update=_display_changed,
     )
     grade_classes: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_dh_grade_class, options=_STATIC, name="Grade classes",
         description="Classes of the grade legend, in the unit of the element",
     )
+    own_classes: BoolProperty(  # type: ignore[valid-type]
+        name="Own classes",
+        description="Edit the classes of the grade legend, starting from those of the view, "
+                    "instead of the default ones (quintiles)",
+        get=_own_classes, set=_set_own_classes, options=_STATIC,
+    )
     bar_width: FloatProperty(  # type: ignore[valid-type]
         name="Bar width", description="Width of the grade bars, in metres",
-        default=2.0, min=0.01, soft_max=50.0, options=_STATIC,
+        default=2.0, min=0.01, soft_max=50.0, options=_STATIC, update=_display_changed,
     )
     bar_offset: FloatProperty(  # type: ignore[valid-type]
         name="Bar separation",
         description="Separation of the grade bars from the drillhole trace, in metres",
-        default=1.0, min=0.0, soft_max=50.0, options=_STATIC,
+        default=1.0, min=0.0, soft_max=50.0, options=_STATIC, update=_display_changed,
     )
     show_labels: BoolProperty(  # type: ignore[valid-type]
         name="Labels", description="Name and total depth of each drillhole at its collar",

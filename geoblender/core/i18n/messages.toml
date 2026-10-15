@@ -4125,3 +4125,18 @@ es = "«{element}» es un elemento de texto: no tiene barras de leyes"
 
 ["{count} values of «{element}» are not in «{unit}»: they have no bar (DH-W07)"]
 es = "{count} valores de «{element}» no están en «{unit}»: no tienen barra (DH-W07)"
+
+# La superposición, la representación y la Leyenda genérica de los sondeos (spec 005, T30;
+# plan 005 §5.5 y §5.6.8).
+
+["Lithology ({scheme})"]
+es = "Litología ({scheme})"
+
+["Stale trace"]
+es = "Traza obsoleta"
+
+["Own classes"]
+es = "Clases propias"
+
+["Edit the classes of the grade legend, starting from those of the view, instead of the default ones (quintiles)"]
+es = "Editar las clases de la leyenda de leyes, a partir de las de la vista, en vez de las de por defecto (quintiles)"

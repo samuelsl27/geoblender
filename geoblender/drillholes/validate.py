@@ -33,7 +33,11 @@ un nombre repetido, su DH-E01: no se muestrean ni llevan nota.
 máscara de los sondeos con un error de alcance S (los que ``desurvey`` no puede calcular), sin
 crear incidencias; ``dh.desurvey`` la calcula ella misma con
 ``desurvey(dset, holes=~hole_exclusions(dset, depth_tolerance_m=…))`` y no consume el informe.
-Es la misma máscara que ``validate(...).excluded().holes``.
+Es la misma máscara que ``validate(...).excluded().holes``. **Para la vista** (T30; RF-005-17,
+plan §5.6.8): :func:`exclusion_codes` da los códigos de alcance S de cada boca (los que marca
+la superposición en las que no tienen traza), y :func:`stored_exclusions` y
+:func:`stored_codes`, lo que excluye el informe guardado en ``dh_validation_issue`` (sus
+tablas y registros, que no se pintan, y los códigos de alcance T de cada sondeo).
 
 Reglas que la spec no fija (decisiones de la T08, revisables; las mismas que los casos de
 ``tests/data/dh/csv_errores``):
@@ -105,7 +109,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import KW_ONLY, dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -143,8 +147,11 @@ __all__ = [
     "ValidationParams",
     "ValidationReport",
     "deduce_depths",
+    "exclusion_codes",
     "hole_exclusions",
     "no_dem_note",
+    "stored_codes",
+    "stored_exclusions",
     "validate",
 ]
 
@@ -667,6 +674,95 @@ def hole_exclusions(dset: DrillholeSet, *, depth_tolerance_m: float) -> np.ndarr
     crear las incidencias; ``depth_tolerance_m`` es ``dh.validation.depth_tolerance_m``."""
     tolerance = _threshold(depth_tolerance_m, "la tolerancia de profundidad")
     return _find(_check_set(dset), tolerance).excluded.copy()
+
+
+def exclusion_codes(dset: DrillholeSet, *,
+                    depth_tolerance_m: float) -> tuple[tuple[str, ...], ...]:
+    """Los códigos de los errores de alcance S de cada boca de ``dset`` (en orden; vacía si el
+    sondeo tiene traza), los que la vista marca en su boca (RF-005-17; spec 005, T30): los de
+    :func:`validate` sin crear las incidencias (una boca de un nombre repetido, solo DH-E01).
+    Sus bocas con algún código son la máscara de :func:`hole_exclusions`."""
+    tolerance = _threshold(depth_tolerance_m, "la tolerancia de profundidad")
+    found = _find(_check_set(dset), tolerance)
+    count = len(dset.collars)
+    st = found.stations
+    per_hole: dict[str, np.ndarray] = {
+        "DH-E02": found.bad_xyz.any(axis=1),
+        "DH-E03": found.bad_depth,
+        "DH-E05": found.no_stations,
+    }
+    for code, index in (("DH-E06", (found.same,)), ("DH-E07", (found.above, found.below)),
+                        ("DH-E08", (found.bad_azimuth, found.bad_inclination))):
+        mask = np.zeros(count, dtype=np.bool_)
+        for positions in index:
+            mask[st.hole[positions]] = True
+        per_hole[code] = mask
+    codes: list[tuple[str, ...]] = []
+    for k in range(count):
+        if found.repeated[k]:
+            codes.append(("DH-E01",))
+        else:
+            codes.append(tuple(code for code in sorted(per_hole) if per_hole[code][k]))
+    return tuple(codes)
+
+
+# --- Lo que excluye el informe guardado (T30) --------------------------------------------------
+
+
+def _stored_errors(records: Iterable[Mapping[str, Any]]) -> Iterator[tuple[Mapping[str, Any],
+                                                                           Scope]]:
+    """Las filas de ``dh_validation_issue`` de nivel «error» con alcance, y su alcance."""
+    for record in records:
+        if record["level"] != Level.ERROR or record["scope"] is None:
+            continue
+        yield record, Scope(record["scope"])
+
+
+def _position(fid: object, what: str, count: int | None = None) -> int:
+    """La posición (``fid`` − 1) de un ``fid`` guardado; ``ValueError`` si no vale."""
+    if isinstance(fid, bool) or not isinstance(fid, int | np.integer) or int(fid) < 1:
+        raise ValueError(f"{what} de una incidencia guardada no es un fid: {fid!r}")
+    if count is not None and int(fid) > count:
+        raise ValueError(f"{what} de una incidencia guardada ({fid}) pasa de las {count} bocas")
+    return int(fid) - 1
+
+
+def stored_exclusions(records: Iterable[Mapping[str, Any]], hole_count: int) -> Exclusions:
+    """Lo que excluyen los errores del informe guardado en el proyecto (RF-005-17; spec 005,
+    T30): ``records``, las filas de ``dh_validation_issue`` por el nombre de sus columnas (las
+    de ``drillholes.jobs.issue_rows``: el sondeo y la fila por su ``fid``, posición + 1), de
+    una base de ``hole_count`` bocas. Es :meth:`ValidationReport.excluded` del informe que las
+    escribió; ``ValueError`` si una apunta fuera de las bocas."""
+    holes = np.zeros(hole_count, dtype=np.bool_)
+    tables: set[tuple[int, str, str | None]] = set()
+    rows: set[tuple[str, int]] = set()
+    for record, scope in _stored_errors(records):
+        hole_id, row_fid, table = record["hole_id"], record["row_fid"], record["table_name"]
+        if scope is Scope.HOLE:
+            if hole_id is not None:
+                holes[_position(hole_id, "el sondeo", hole_count)] = True
+            if table == _COLLAR and row_fid is not None:
+                holes[_position(row_fid, "la boca", hole_count)] = True
+        elif scope is Scope.TABLE:
+            tables.add((_position(hole_id, "el sondeo", hole_count), str(table),
+                        record["log_set"] or record["element"]))
+        elif row_fid is not None:
+            rows.add((str(table), _position(row_fid, "la fila")))
+    return Exclusions(holes=holes, tables=frozenset(tables), records=frozenset(rows))
+
+
+def stored_codes(records: Iterable[Mapping[str, Any]],
+                 scope: Scope | str) -> dict[int, tuple[str, ...]]:
+    """Los códigos de los errores de alcance ``scope`` del informe guardado (``records``, como
+    en :func:`stored_exclusions`) por la posición de su sondeo, en orden (spec 005, T30: los
+    de alcance T, que la vista marca en la boca de un sondeo con traza)."""
+    wanted = Scope(scope)
+    found: dict[int, set[str]] = {}
+    for record, found_scope in _stored_errors(records):
+        if found_scope is wanted and record["hole_id"] is not None:
+            found.setdefault(_position(record["hole_id"], "el sondeo"), set()).add(
+                str(record["code"]))
+    return {hole: tuple(sorted(codes)) for hole, codes in sorted(found.items())}
 
 
 # --- La profundidad deducida (DH-W16) ----------------------------------------------------------

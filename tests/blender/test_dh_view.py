@@ -29,6 +29,11 @@ leyenda por defecto o con la de la representación).
   ``drillholes.store.stale_holes``, cuya detección prueba T28) llevan ``gb_stale`` en sus
   curvas y en sus barras, y cargar otra vez sustituye los objetos sin dejar datos huérfanos.
 - Plan §5.6.8: cerrar a mitad los pasos de la carga (Esc) deja la vista como estaba.
+- T30 (RF-005-25, RF-005-17; plan §5.6.8): la carga deja a la superposición de sus objetos
+  las etiquetas «S-12 (160,00 m)» (y las del fondo) en locales, las leyendas y las marcas de
+  la boca: los sondeos de traza obsoleta y, con una validación guardada con un error de
+  alcance T (la litología de S-01), su código; esa litología no se pinta (el trabajo recibe lo
+  que excluye la validación). Lo que dibuja la superposición lo prueba ``test_dh_overlay``.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -98,9 +103,11 @@ class DrillholeViewTest(DrillholeImportCase):
         self.assertEqual((len(tubes), len(bars), len(found)), (1, 1, 2))
         return tubes[0], bars[0]
 
-    def expected(self, legend: Any = None) -> tuple[Any, Any, Any]:
-        """La base del proyecto, sus curvas de litología y las barras del oro del dominio
-        (con ``legend`` o la leyenda por defecto)."""
+    def expected(self, legend: Any = None,
+                 tables: frozenset = frozenset()) -> tuple[Any, Any, Any, Any]:
+        """La base del proyecto, sus curvas de litología, las barras del oro del dominio
+        (con ``legend`` o la leyenda por defecto; sin las tablas de alcance T ``tables``) y
+        las etiquetas, con las del fondo."""
         store = _module("drillholes.store")
         params = _module("drillholes.params")
         validate = _module("drillholes.validate")
@@ -111,7 +118,7 @@ class DrillholeViewTest(DrillholeImportCase):
             dset, depth_tolerance_m=params.default(params.DEPTH_TOLERANCE))
         traces = _module("drillholes.desurvey").desurvey(dset, "minimum_curvature",
                                                          holes=~excluded)
-        exclusions = validate.Exclusions(excluded)
+        exclusions = validate.Exclusions(excluded, tables)
         step = params.default(params.TRACE_STEP)
         curves = view_data.lithology_curves(dset, traces, "lithology", step, excluded=exclusions)
         if legend is None:
@@ -119,7 +126,35 @@ class DrillholeViewTest(DrillholeImportCase):
                 view_data.grade_values(dset, "Au", "g/t", excluded=exclusions), "g/t")
         bars = view_data.grade_bars(dset, traces, "Au", legend, OFFSET_M, WIDTH_M,
                                     max_step_m=step, excluded=exclusions)
-        return dset, curves, bars
+        return dset, curves, bars, view_data.labels(dset, traces, True)
+
+    def check_overlay(self, objects: tuple[Any, Any], dset: Any, labels: Any, legend: Any,
+                      marks: list[tuple[str, str, tuple[str, ...]]]) -> None:
+        """T30 (RF-005-25, RF-005-17): lo que la carga deja a la superposición de sus dos
+        objetos: las etiquetas (con las del fondo, en locales), las leyendas de la litología y
+        del oro y las marcas ``marks`` (sondeo, clase, códigos) en la boca."""
+        dh_view = _module("bl.scene.dh_view")
+        georef = _module("core.georef")
+        found = dh_view.overlay_of(objects[0])
+        self.assertIsNotNone(found)
+        self.assertIs(dh_view.overlay_of(objects[1]), found)
+        self.assertEqual([(item.text, item.bottom) for item in found.labels],
+                         [(item.text, item.bottom) for item in labels])
+        self.assertIn("S-12 (160,00 m)", [item.text for item in found.labels])
+        local = georef.world_to_local(np.array([item.xyz for item in labels]),
+                                      self.project.origin)
+        self.assertEqual([item.xyz for item in found.labels], [tuple(row) for row in
+                                                               local.tolist()])
+        self.assertEqual(found.lithology,
+                         _module("drillholes.view_data").lithology_legend(dset, "lithology"))
+        self.assertEqual((found.element, found.grade), ("Au", legend))
+        self.assertEqual([(mark.hole, mark.kind, mark.codes) for mark in found.marks], marks)
+        names = dset.collars.name.tolist()
+        for mark in found.marks:
+            k = names.index(mark.hole)
+            collar = (dset.collars.x[k], dset.collars.y[k], dset.collars.z[k])
+            self.assertEqual(mark.xyz, tuple(georef.world_to_local(
+                np.array(collar), self.project.origin).tolist()))
 
     def world(self, local: np.ndarray) -> np.ndarray:
         return _module("core.georef").local_to_world(local, self.project.origin)
@@ -182,7 +217,9 @@ class DrillholeViewTest(DrillholeImportCase):
         colección de su dato. La vista toma de la desviación su método, sus parámetros y sus
         sondeos; cargarla otra vez sustituye los objetos y marca con ``gb_stale`` los sondeos
         de traza obsoleta, con las clases de la representación; cerrar sus pasos a mitad deja
-        la vista como estaba."""
+        la vista como estaba. T30 (RF-005-25, RF-005-17): cada carga deja a la superposición
+        sus etiquetas, sus leyendas y sus marcas, y no pinta lo que excluye la validación
+        guardada (alcance T)."""
         ops = self.dh_ops
         store = _module("drillholes.store")
         drill_tubes = _module("bl.gn.drill_tubes")
@@ -203,13 +240,16 @@ class DrillholeViewTest(DrillholeImportCase):
                          ("minimum_curvature", tuple(range(6)), ()))
         self.assertEqual(dict(source.params), {"dh.validation.depth_tolerance_m": 0.01,
                                                "dh.desurvey.trace_step_m": 2.0})
-        dset, curves, bars = self.expected()
+        dset, curves, bars, labels = self.expected()
         tubes, bar_object = self.shown(record)
         self.check_tubes(tubes, curves)
         self.check_bars(bar_object, bars)
         for obj in (tubes, bar_object):
             self.check_object(obj, record)
         self.assertFalse(_values(tubes.data, "gb_stale").any())
+        view_data = _module("drillholes.view_data")
+        self.check_overlay((tubes, bar_object), dset, labels, view_data.default_grade_legend(
+            view_data.grade_values(dset, "Au", "g/t"), "g/t"), [])
         (modifier,) = tubes.modifiers
         group = modifier.node_group
         self.assertEqual((modifier.type, group.name), ("NODES", "GB_DrillTubes"))
@@ -224,18 +264,28 @@ class DrillholeViewTest(DrillholeImportCase):
                                                                           bar_object.data)]
         self.assertEqual(materials, [[drill_tubes.MATERIAL_NAME]] * 2)
 
-        # Otra vez, con dos sondeos de traza obsoleta y la leyenda de la representación.
+        # Otra vez, con dos sondeos de traza obsoleta, la leyenda de la representación y una
+        # validación guardada con la litología de S-01 solapada (alcance T, RF-005-17, T30).
         for lower, color in CLASSES:
             item = display.grade_classes.add()
             item.lower, item.color = lower, color
-        with mock.patch.object(store, "stale_holes", lambda conn: STALE):
+        overlapped = {"hole_id": 2, "hole_name": "S-01", "code": "DH-E10", "level": "error",
+                      "scope": "table", "table_name": "dh_lithology", "row_fid": 3,
+                      "log_set": "lithology", "element": None}
+        stored = store.StoredValidation("validación", (overlapped,))
+        with mock.patch.object(store, "stale_holes", lambda conn: STALE), \
+                mock.patch.object(store, "stored_validation", lambda conn: stored):
             self.assertEqual(bpy.ops.geoblender.core_load_into_view("EXEC_DEFAULT",
                                                                     datasets=TRACE),
                              {"FINISHED"})
         legend = _module("drillholes.view_data").GradeLegend("g/t", (1.0,),
                                                               ("#0000FF", "#FF0000"))
-        _dset, curves, bars = self.expected(legend)
+        _dset, curves, bars, labels = self.expected(
+            legend, frozenset({(1, "dh_lithology", "lithology")}))
         tubes, bar_object = self.shown(record)
+        self.check_overlay((tubes, bar_object), dset, labels, legend,
+                           [("S-01", "partial", ("DH-E10",)), ("S-02", "stale", ()),
+                            ("S-12", "stale", ())])
         self.assertEqual(len(bpy.data.hair_curves), 1)  # sin las curvas de antes
         self.assertEqual([item.name for item in bpy.data.node_groups
                           if item.name.startswith(drill_tubes.GROUP_NAME)],

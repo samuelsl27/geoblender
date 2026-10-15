@@ -54,7 +54,8 @@ DELIVERED = frozenset({"geoblender.dh_import_drillholes",  # T25
                        "geoblender.dh_export_validation_report",  # T27
                        "geoblender.dh_desurvey",  # T28
                        "geoblender.dh_set_azimuth_reference",  # T28
-                       "geoblender.dh_set_detection_limit_policy"})  # T28
+                       "geoblender.dh_set_detection_limit_policy",  # T28
+                       "geoblender.dh_show_display"})  # T30
 
 
 def _module(name: str) -> ModuleType:
@@ -260,7 +261,8 @@ class DrillholesRegisteredTest(unittest.TestCase):
         005 · Sondeos»); los recálculos lo dicen con un error para la persona, sin hacer nada.
         Las que ya han llegado (T25: importar tablas; T26: una base de RecMin; T27: validar y
         exportar el informe; T28: las trazas, la referencia del azimut, que es la
-        reimportación, y la regla bajo el límite) lo están en el catálogo y, sin proyecto,
+        reimportación, y la regla bajo el límite; T30: la representación, con lo que no queda
+        ninguna sin entregar) lo están en el catálogo y, sin proyecto,
         dicen el paso previo; el cargador de las trazas en la vista (T29) es el de
         ``bl.scene.dh_view``, en pasos."""
         catalog = _module("core.catalog")

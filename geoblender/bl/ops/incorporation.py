@@ -57,6 +57,7 @@ class _Incorporation:
     steps: Iterator[float]
     done: float = 0.0
     status: str = ADDING
+    started: bool = False
 
 
 class StepQueue:
@@ -83,6 +84,12 @@ class StepQueue:
         """Las operaciones cuya incorporación espera en la cola, en orden."""
         return [item.uid for item in self._items]
 
+    def waiting(self, uid: str) -> bool:
+        """Si una incorporación de ``uid`` espera en la cola sin haber dado aún ningún paso
+        (spec 005, T30: una recarga de la vista que, al empezar, ya leerá la representación
+        de ese momento)."""
+        return any(item.uid == uid and not item.started for item in self._items)
+
     def tick(self) -> float | None:
         """Un paso de la primera de la cola y su avance en la barra de estado; devuelve
         cuándo volver (``None``: no queda ninguna). Un paso que falla (un error del programa:
@@ -90,6 +97,7 @@ class StepQueue:
         if not self._items:
             return None
         current = self._items[0]
+        current.started = True
         try:
             current.done = float(next(current.steps))
         except StopIteration:

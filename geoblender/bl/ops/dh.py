@@ -117,6 +117,15 @@ proyecto no la tiene (también la primera importación, :func:`ensure_detection_
 abre ``geoblender.core_set_parameter`` con su clave: cambiarla queda en su historial y no
 cambia ningún valor guardado.
 
+**La representación** (T30; HU-005-5; RF-005-23 a RF-005-25; plan §5.3.1 y §5.5):
+``geoblender.dh_show_display`` abre la barra lateral de la Vista 3D en la pestaña «Sondeos»
+(«Representación»). Cambiar la representación de la escena con la vista cargada la recarga por
+la cola de los sondeos (:func:`display_changed`: una sola en espera; si al empezar ya es la de la
+representación, nada), y el radio cambia los tubos en vivo (``bl.props.dh``). Con unos sondeos
+activos, la Leyenda genérica de la 003 (:data:`LEGEND_PROVIDER`, registrada para
+``DRILLHOLES``) ofrece «Litología (esquema)» y cada elemento de ley y los aplica a la
+representación. Las etiquetas, las leyendas y las marcas las dibuja ``bl.draw.dh_overlay``.
+
 **La cola de incorporación** de los sondeos (:data:`INCORPORATIONS`, su temporizador
 :func:`incorporation_tick` y :func:`pending_incorporations`; RNF-005-06, plan §5.6.7) es suya,
 aparte de la de la topografía: lo que deja un trabajo entra en el proyecto por pasos;
@@ -197,14 +206,16 @@ from ..props.dh import (
     NOT_IMPORTED,
     ROLE_ITEMS,
     ROLES,
+    SCENE_PROPERTY,
     VALIDATION_PROPERTY,
     GEOBLENDER_PG_dh_table,
     fill_tables,
     suggest_fields,
     table_mapping,
 )
-from ..scene import project_session, undo_watch, views
+from ..scene import dh_view, project_session, undo_watch, views
 from ..scene.dh_view import NOT_DELIVERED
+from ..ui import context as ui_context
 from ..ui.commands import UNDELIVERED_FLAG, unavailable_note
 from ..ui.commands import catalog as command_catalog
 from . import core_provenance
@@ -243,11 +254,12 @@ COMMANDS: tuple[str, ...] = (IMPORT_DRILLHOLES, IMPORT_RECMIN, SET_DETECTION_LIM
 """Las órdenes de la 005 (entrada ``005`` del catálogo), en el orden del menú Sondeos."""
 UNDELIVERED: frozenset[str] = frozenset(COMMANDS) - {
     IMPORT_DRILLHOLES, IMPORT_RECMIN, VALIDATE, EXPORT_REPORT, DESURVEY, SET_AZIMUTH,
-    SET_DETECTION_LIMIT}
+    SET_DETECTION_LIMIT, SHOW_DISPLAY}
 """Las órdenes cuya ejecución aún no ha llegado (plan 005, fase 3): no están disponibles y
 dicen dónde estarán. La tarea que entrega una la quita de aquí (T25: importar tablas; T26, una
 base de RecMin; T27, validar y exportar el informe de validación; T28, calcular las trazas, la
-referencia del azimut y la regla bajo el límite de detección)."""
+referencia del azimut y la regla bajo el límite de detección; T30, la representación): desde
+T30, ninguna."""
 _PROJECT_ONLY: frozenset[str] = frozenset({SHOW_DISPLAY})
 """Las que no escriben en el proyecto: les basta tenerlo abierto."""
 
@@ -340,8 +352,9 @@ _UNDO: list[Callable[[], None]] = []
 def register() -> None:
     """Registra las definiciones de parámetros, los lectores de contenido, los tipos de trabajo
     y las declaraciones de procedencia (:data:`OPERATION_DEFS`, :data:`IMPORTER_DEFS`) de los
-    sondeos que aún no están y (T27) apunta en la sesión :func:`on_project_changed` (la lista
-    de incidencias del proyecto abierto); idempotente."""
+    sondeos que aún no están, (T27) apunta en la sesión :func:`on_project_changed` (la lista
+    de incidencias del proyecto abierto) y (T30) pone la Leyenda genérica de los sondeos
+    (:data:`LEGEND_PROVIDER`) si el tipo no tiene otra; idempotente."""
     missing = tuple(defn for defn in dh_params.DEFINITIONS
                     if defn.key not in core_params.DEFINITIONS)
     if missing:
@@ -370,6 +383,15 @@ def register() -> None:
     if on_project_changed not in project_session.listeners():
         project_session.add_listener(on_project_changed)
         _UNDO.append(functools.partial(project_session.remove_listener, on_project_changed))
+    if ui_context.kind_legend_provider(dh_view.KIND) is None:
+        ui_context.register_legend_provider(dh_view.KIND, LEGEND_PROVIDER)
+        _UNDO.append(_unregister_legend)
+
+
+def _unregister_legend() -> None:
+    """Quita la Leyenda genérica de los sondeos si sigue siendo la suya (T30)."""
+    if ui_context.kind_legend_provider(dh_view.KIND) is LEGEND_PROVIDER:
+        ui_context.unregister_legend_provider(dh_view.KIND)
 
 
 def unregister() -> None:
@@ -2011,18 +2033,23 @@ la procedencia: la vista no escribe en el proyecto)."""
 VIEW_STATUS = "Loading «{name}» into the view… {percent} %"
 
 
-def start_view(project: Any) -> None:
+def start_view(project: Any, *, refresh: bool = False) -> None:
     """Pone en la cola de incorporación de los sondeos la carga de sus trazas en la vista
     (plan §5.6.8: calculadas las trazas, la vista se recarga sola; RF-005-23): los pasos de
     ``bl.scene.views.load_steps`` con el cargador de ``bl.scene.dh_view``, detrás de la
-    escritura de ``dh_trace``."""
-    INCORPORATIONS.add(VIEW_QUEUE, _text(VIEW_LABEL), _view_steps(project), status=VIEW_STATUS)
+    escritura de ``dh_trace``. Con ``refresh`` (T30, un cambio de la representación), si al
+    empezar la vista ya es la de la representación, no carga nada."""
+    INCORPORATIONS.add(VIEW_QUEUE, _text(VIEW_LABEL), _view_steps(project, refresh),
+                       status=VIEW_STATUS)
 
 
-def _view_steps(project: Any) -> Generator[float, None, str]:
+def _view_steps(project: Any, refresh: bool = False) -> Generator[float, None, str]:
     """Los pasos que cargan ``dh_trace`` en la escena (``bl.scene.views.load_steps``: lo
     cargado de antes, sustituido en el último) y lo que dice la carga, en los avisos de la
-    sesión."""
+    sesión; con ``refresh``, nada si la vista ya es la de la representación
+    (``bl.scene.dh_view.up_to_date``)."""
+    if refresh and dh_view.up_to_date(project, _scene_display(bpy.context)):
+        return "done"
     outcome: views.LoadOutcome | None = None
     try:
         for step in views.load_steps(bpy.context, project, [TRACE_TABLE]):
@@ -3340,6 +3367,93 @@ class GEOBLENDER_OT_dh_show_display(_DrillholesCommand, bpy.types.Operator):
     bl_label = "Display…"
     bl_translation_context = TRANSLATION_CONTEXT
     bl_options = {"REGISTER"}
+
+    def execute(self, context: Any) -> set[str]:
+        """Abre la barra lateral de la Vista 3D de destino en la pestaña «Sondeos», donde está
+        «Representación» (T30; plan §5.3.1): es interfaz, sin ``UNDO``; lo que cambia la
+        vista son las propiedades de la representación."""
+        from ..ui import views as ui_views  # bl/ui se registra después: al usarlo
+
+        target = ui_views.target_view3d(context)
+        if target is None:
+            self.report({"ERROR"}, tr("There is no 3D view in this window"))
+            return {"CANCELLED"}
+        target.space.show_region_ui = True
+        tab = tr("Drillholes")  # la pestaña de bl/ui/dh_panels.py, en el idioma de Geoblender
+        for region in target.area.regions:
+            if region.type == "UI":
+                try:
+                    region.active_panel_category = tab
+                except (AttributeError, TypeError, ValueError):
+                    pass  # la pestaña aún no se ha dibujado: queda abierta la barra
+        target.area.tag_redraw()
+        return {"FINISHED"}
+
+
+# --- La representación y la Leyenda genérica (T30; RF-005-23, RF-005-24; plan §5.5) ------------
+
+LOG_SET_FIELD = "log_set:"
+"""El comienzo del campo de la Leyenda genérica que colorea por un esquema de logueo."""
+ELEMENT_FIELD = "element:"
+"""El comienzo del campo de la Leyenda genérica que dibuja las barras de un elemento."""
+
+
+def _scene_display(context: Any) -> Any:
+    scene = getattr(context, "scene", None) or bpy.context.scene
+    return getattr(scene, SCENE_PROPERTY)
+
+
+class DrillholeLegend:
+    """La Leyenda genérica de la 003 (``geoblender.ui_edit_legend``, contrato 6) con unos
+    sondeos activos (``DRILLHOLES``): colorear por la litología de un esquema de logueo
+    («Litología (esquema)», sin barras) o por las leyes de un elemento (sus barras), los del
+    catálogo de la vista cargada (sin ella, los de la representación). Aplicar uno cambia la
+    representación de la escena, y su cambio, la vista."""
+
+    def fields(self, context: Any) -> list[ui_context.Field]:
+        display = _scene_display(context)
+        found = dh_view.overlay_of(ui_context.active_object(context))
+        log_sets = (found.log_sets if found is not None
+                    else (display.log_set.strip() or LITHOLOGY_LOG_SET,))
+        elements = (found.elements if found is not None
+                    else ((display.element.strip(), ""),) if display.element.strip() else ())
+        return [*(ui_context.Field(LOG_SET_FIELD + name, tr("Lithology ({scheme})", scheme=name))
+                  for name in log_sets),
+                *(ui_context.Field(ELEMENT_FIELD + code, f"{code} ({unit})" if unit else code)
+                  for code, unit in elements)]
+
+    def current(self, context: Any) -> str:
+        display = _scene_display(context)
+        if display.element.strip():
+            return ELEMENT_FIELD + display.element.strip()
+        return LOG_SET_FIELD + (display.log_set.strip() or LITHOLOGY_LOG_SET)
+
+    def apply(self, context: Any, field: str) -> None:
+        display = _scene_display(context)
+        if field.startswith(LOG_SET_FIELD):
+            display.log_set = field.removeprefix(LOG_SET_FIELD)
+            display.element = ""
+        elif field.startswith(ELEMENT_FIELD):
+            display.element = field.removeprefix(ELEMENT_FIELD)
+
+
+LEGEND_PROVIDER = DrillholeLegend()
+"""El proveedor de la Leyenda genérica de los sondeos (uno: registrarlo dos veces pone el
+mismo)."""
+
+
+def display_changed() -> bool:
+    """La representación de los sondeos cambió (T30; RF-005-23, RF-005-24): con la vista del
+    proyecto abierto cargada, su recarga en la cola de los sondeos, una sola mientras no
+    empieza (al empezar lee la representación de ese momento; si la vista ya es la de la
+    representación, no carga nada). Devuelve si puso una."""
+    project = project_session.current()
+    if project is None or not dh_view.loaded_objects(project):
+        return False
+    if INCORPORATIONS.waiting(VIEW_QUEUE):
+        return False
+    start_view(project, refresh=True)
+    return True
 
 
 # --- Recálculo y reimportación (plan §5.6.10) --------------------------------------------------

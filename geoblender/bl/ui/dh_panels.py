@@ -15,8 +15,10 @@ Con un proyecto abierto, en la región lateral N de la Vista 3D, pestaña «Sond
   «Sin evaluar»), que se filtra por nivel y por código (RF-005-16), y las órdenes de validar,
   exportar el informe (RF-005-19) y calcular las trazas (RF-005-20);
 - ``GEOBLENDER_PT_dh_display`` («Representación»): el esquema de logueo y el radio de los
-  tubos, el elemento y las clases de las barras de leyes, su ancho y su separación, las
-  etiquetas y la leyenda (RF-005-23 a RF-005-25), de ``Scene.geoblender_dh_display``.
+  tubos, el elemento y las clases de las barras de leyes (T30: «Clases propias», que parten
+  de la leyenda de la vista, y cada clase con desde dónde empieza y su color), su ancho y su
+  separación, las etiquetas y la leyenda (RF-005-23 a RF-005-25), de
+  ``Scene.geoblender_dh_display``; ``geoblender.dh_show_display`` abre esta pestaña.
 
 Las órdenes se dibujan con su etiqueta del catálogo de la 003; las que aún no están disponibles
 salen desactivadas con su motivo (su ``poll``). Los textos pasan por ``core.i18n.tr``; la
@@ -187,6 +189,7 @@ class GEOBLENDER_PT_dh_display(_DrillholesTab, bpy.types.Panel):
         layout.prop(display, "log_set", text=tr("Logging scheme"), translate=False)
         layout.prop(display, "tube_radius", text=tr("Tube radius"), translate=False)
         layout.prop(display, "element", text=tr("Element"), translate=False)
+        layout.prop(display, "own_classes", text=tr("Own classes"), translate=False)
         if display.grade_classes:
             column = layout.column(align=True)
             for grade_class in display.grade_classes:

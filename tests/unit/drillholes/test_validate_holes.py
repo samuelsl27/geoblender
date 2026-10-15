@@ -199,6 +199,62 @@ class CsvErrorsTest(unittest.TestCase):
                 self.assertEqual({(hole, table) for hole, table, _ in excluded.tables},
                                  tables)
 
+    def test_marks_and_stored_exclusions(self) -> None:
+        """RF-005-17 (T30; plan §5.6.8): ``exclusion_codes`` da, por boca, los códigos de sus
+        errores de alcance S (los del informe, también la boca repetida de DH-E01; ninguno en
+        las que tienen traza: la máscara de ``hole_exclusions``), los que la vista marca en su
+        boca; lo que excluye el informe guardado en el proyecto (las filas de
+        ``dh_validation_issue``, ``drillholes.jobs.issue_rows``) es lo de
+        ``ValidationReport.excluded`` (``stored_exclusions``) y sus códigos de alcance T, por
+        sondeo (``stored_codes``). ``csv_basico`` no marca nada."""
+        jobs = import_geoblender("drillholes.jobs")
+        columns = import_geoblender("drillholes.schema").LAYOUTS[
+            "dh_validation_issue"].insert_columns
+        seen: set[str] = set()
+        for case in CASES:
+            with self.subTest(case=case.code):
+                report = _run(case)
+                count = len(case.dset.collars)
+                holes: list[set[str]] = [set() for _ in range(count)]
+                partial: dict[int, set[str]] = {}
+                for issue in report.issues:
+                    level, scope = validate.CODES[issue.code]
+                    if level is not validate.Level.ERROR:
+                        continue
+                    if scope is validate.Scope.HOLE:
+                        holes[issue.hole].add(issue.code)
+                        if issue.table == "dh_collar" and issue.row_ref is not None:
+                            holes[issue.row_ref].add(issue.code)
+                    elif scope is validate.Scope.TABLE:
+                        partial.setdefault(issue.hole, set()).add(issue.code)
+                codes = validate.exclusion_codes(case.dset, depth_tolerance_m=TOLERANCE)
+                self.assertEqual(codes, tuple(tuple(sorted(found)) for found in holes))
+                mask = validate.hole_exclusions(case.dset, depth_tolerance_m=TOLERANCE)
+                self.assertEqual([bool(found) for found in codes], mask.tolist())
+                records = [dict(zip(columns, row, strict=True))
+                           for row in jobs.issue_rows(report)]
+                stored = validate.stored_exclusions(records, count)
+                excluded = report.excluded()
+                np.testing.assert_array_equal(stored.holes, excluded.holes)
+                self.assertEqual((stored.tables, stored.records),
+                                 (excluded.tables, excluded.records))
+                self.assertEqual(validate.stored_codes(records, validate.Scope.TABLE),
+                                 {hole: tuple(sorted(found)) for hole, found in partial.items()})
+                seen.update(code for found in codes for code in found)
+                seen.update(code for found in partial.values() for code in found)
+        # Control positivo: los casos marcan cada código de alcance S y T.
+        self.assertEqual(seen, {code for code, (level, scope) in validate.CODES.items()
+                                if level is validate.Level.ERROR
+                                and scope is not validate.Scope.RECORD})
+        clean = dh_sets.basico_set("assay_wide")
+        self.assertEqual(validate.exclusion_codes(clean, depth_tolerance_m=TOLERANCE),
+                         ((),) * len(clean.collars))
+        self.assertEqual(validate.stored_exclusions([], 2).tables, frozenset())
+        with self.assertRaises(ValueError):
+            validate.stored_exclusions([{"hole_id": 3, "code": "DH-E02", "level": "error",
+                                         "scope": "hole", "table_name": "dh_collar",
+                                         "row_fid": 3, "log_set": None, "element": None}], 2)
+
 
 class HoleChecksTest(unittest.TestCase):
     """Cada comprobación de las bocas y las desviaciones (spec §4.4.1)."""
