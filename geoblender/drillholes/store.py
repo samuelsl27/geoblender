@@ -46,7 +46,8 @@ abrir el proyecto (como las incorporaciones de ``bl/ops/gis.py``).
 
 **Lectura**: :func:`read_steps` lee la base por pasos a un ``DrillholeSet`` en el CRS y el
 datum del proyecto (el de ``dh.validate``, ``dh.desurvey`` y la vista); :func:`existing_holes`,
-los sondeos de la base (los que una importación pregunta si sustituir, RF-005-11), y
+los sondeos de la base, y (T46) :func:`holes_by_table`, los que tienen registros en cada una
+de sus tablas (los que una importación de esa tabla pregunta si sustituir, RF-005-11), y
 :func:`read_catalogs`, sus catálogos (con los que una importación compara sus códigos,
 RF-005-10); :func:`stale_holes`, los de trazas obsoletas: su huella de la desviación
 (``survey_sha256``) en ``dh_collar`` no es la que usó su traza en ``dh_trace`` (RF-005-22).
@@ -179,6 +180,7 @@ __all__ = [
     "TraceView",
     "existing_holes",
     "export_report",
+    "holes_by_table",
     "kept_traces",
     "live_sources",
     "read_catalogs",
@@ -1199,10 +1201,41 @@ class BaseWriter:
 
 def existing_holes(conn: sqlite3.Connection) -> tuple[str, ...]:
     """Los sondeos de la base del proyecto (``dh_collar``), por su ``fid``: los que una
-    importación pregunta si sustituir o conservar (RF-005-11). Vacío sin la tabla."""
+    importación de bocas pregunta si sustituir o conservar (RF-005-11; los de cada tabla,
+    :func:`holes_by_table`). Vacío sin la tabla."""
     if not _table_exists(conn, "dh_collar"):
         return ()
     return tuple(row[0] for row in conn.execute("SELECT name FROM dh_collar ORDER BY fid"))
+
+
+_HOLE_TABLES: Mapping[str, tuple[str, str]] = MappingProxyType({
+    "surveys": ("dh_survey", f" AND t.source = '{StationSource.MEASURED.value}'"),
+    "lithology": ("dh_lithology", ""),
+    "assays": ("dh_assay", ""),
+    "zones": ("dh_zone_interval", ""),
+    "structures": ("dh_structure", ""),
+})
+"""La tabla de la base de cada tabla hija de un ``DrillholeSet`` y qué registros cuentan (de
+las desviaciones, las estaciones medidas)."""
+
+
+def holes_by_table(conn: sqlite3.Connection) -> dict[str, tuple[str, ...]]:
+    """Los sondeos de la base del proyecto con registros en cada tabla (T46; RF-005-11): por
+    tabla de un ``DrillholeSet`` (las de ``drillholes.model.TABLES``), los nombres de sus bocas
+    por su ``fid``; de las desviaciones, solo los que tienen estaciones medidas (la orientación
+    en boca y la vertical declarada no se sustituyen: las medidas de cualquier entrada mandan
+    sobre ellas, ``build_base``). Son los que una importación de esa tabla pregunta si
+    sustituir o conservar (``interop.base.existing_tables``). Sin la tabla, ninguno."""
+    found = dict.fromkeys(("collars", *_HOLE_TABLES), ())
+    if not _table_exists(conn, "dh_collar"):
+        return found
+    found["collars"] = existing_holes(conn)
+    for name, (table, condition) in _HOLE_TABLES.items():
+        if _table_exists(conn, table):
+            found[name] = tuple(row[0] for row in conn.execute(
+                f'SELECT c.name FROM dh_collar c WHERE EXISTS (SELECT 1 FROM "{table}" t '
+                f"WHERE t.hole_id = c.fid{condition}) ORDER BY c.fid"))
+    return found
 
 
 def stale_holes(conn: sqlite3.Connection) -> tuple[str, ...]:

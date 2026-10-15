@@ -528,18 +528,22 @@ class ImportTabularTest(_JobCase):
         que lee el importador, ``read_role``, en lo declarado, bit a bit y sin *pickle*) y
         ``report.json``; su resumen trae el ``ContentDigest`` de la fuente (el que da su lector
         de la T39 con las declaraciones de la entrada), la huella del fichero, los códigos
-        nuevos frente a los catálogos del proyecto y los sondeos que ya están en la base. Un
-        CSV de bocas, de litología y de análisis en columnas, y la hoja «bocas» del XLSX
-        equivalente, que da lo mismo que el CSV (RF-005-06)."""
+        nuevos frente a los catálogos del proyecto y los sondeos que ya están en la base (T46:
+        los que tienen registros en el proyecto en la tabla que trae la fuente, por tabla,
+        ``existing_tables``). Un CSV de bocas, de litología y de análisis en columnas, y la
+        hoja «bocas» del XLSX equivalente, que da lo mismo que el CSV (RF-005-06)."""
         sources = _STATE["sources"]
         project = model.Catalogs(lithology=(model.LithologyCode("PZ"),))
         cases = [(role, provenance.DH_CSV, sources / FILES[role])
                  for role in ("collar", "lithology", "assay_wide")]
         cases.append(("collar", provenance.DH_XLSX, sources / "csv_basico.xlsx"))
         read: dict[tuple[str, str], Any] = {}
+        holes = {"collars": ["s-01 ", "Z-9"], "lithology": ["s-02"], "assays": ["S-03", "C-01"]}
+        existing = {"collar": {"collars": ["S-01"]}, "lithology": {"lithology": ["S-02"]},
+                    "assay_wide": {"assays": ["S-03"]}}
         for role, reader_id, path in cases:
             with self.subTest(papel=role, lector=reader_id):
-                params = _tabular_params(role, reader_id, project_holes=["s-01 ", "Z-9"],
+                params = _tabular_params(role, reader_id, project_holes=holes,
                                          catalogs=arrays.catalogs_json(project))
                 summary, ctx, folder = self.run_job(dh_jobs.IMPORT_TABULAR, params,
                                                     paths={"source_main": path})
@@ -582,8 +586,10 @@ class ImportTabularTest(_JobCase):
                 register = interop_base.registrations(container, project)  # T25
                 self.assertEqual((summary["register_codes"], report["register_codes"]),
                                  (register, register))
-                self.assertEqual(summary["existing_holes"],
-                                 ["S-01"] if role == "collar" else [])
+                (names,) = existing[role].values()
+                self.assertEqual(summary["existing_holes"], names)
+                self.assertEqual((summary["existing_tables"], report["existing_tables"]),
+                                 (existing[role], existing[role]))
         self.assertTrue(read[("lithology", provenance.DH_CSV)]["lithology"].code.size)
         _same_tables(self, read[("collar", provenance.DH_XLSX)],
                      read[("collar", provenance.DH_CSV)])
@@ -628,7 +634,8 @@ class ImportRecminTest(_JobCase):
     def recmin_params(self, **changes: Any) -> dict:
         params = {"name": "Base de RecMin", "declaration": dh_jobs.declaration_json(
             _recmin_declaration()), "settings": {"decimal": "."}, "accept_schema": False,
-            "crs": CRS_JSON, "vertical": VERTICAL_JSON, "project_holes": ["r-01"],
+            "crs": CRS_JSON, "vertical": VERTICAL_JSON,
+            "project_holes": {"collars": ["r-01"], "surveys": ["R-01 "], "zones": ["R-01"]},
             "catalogs": None}
         params.update(changes)
         return params
@@ -644,7 +651,9 @@ class ImportRecminTest(_JobCase):
         nunca junto a la fuente), deja su crudo en ``out/mdb``, lee las tablas con
         ``read_drillholes`` (``source.npz``, bit a bit) y su informe, y da el ``ContentDigest``
         de ``io.recmin_mdb@1`` sin extraer la base otra vez: el mismo que da el lector sobre la
-        fuente con el mismo extractor."""
+        fuente con el mismo extractor. T46 (RF-005-11, RF-005-12): de cada sondeo que ya está,
+        sus registros por tabla de RecMin y, aparte, los de las tablas en las que ya tenía
+        registros en el proyecto."""
         tables = _v12()
         fake = _FakeExtractor(tables)
         summary, ctx, folder = self.run_recmin(fake)
@@ -667,6 +676,14 @@ class ImportRecminTest(_JobCase):
             "sondeos": {"R-01": 1}, "angulos": {"R-01": 3}, "litologia": {"R-01": 4},
             "muestras": {"R-01": 11}, "intersecciones": {"R-01": 1}, "cortes": {"R-01": 1},
             "alteracion": {"R-01": 2}, "duplicados": {"R-01": 3}})
+        # T46 (RF-005-11, RF-005-12): los que sustituye importarlo son solo los de las tablas
+        # en las que el sondeo ya tenía registros en el proyecto (aquí, bocas, desviaciones y
+        # zonas), por tabla de RecMin.
+        self.assertEqual(saved["existing_rows"], {
+            "sondeos": {"R-01": 1}, "angulos": {"R-01": 3}, "intersecciones": {"R-01": 1}})
+        tables = {"collars": ["R-01"], "surveys": ["R-01"], "zones": ["R-01"]}
+        self.assertEqual((summary["existing_tables"], saved["existing_tables"]),
+                         (tables, tables))
         self.assertEqual((summary["schema_version"], summary["existing_holes"]), (12, ["R-01"]))
         self.assertEqual(summary["register_codes"], interop_base.registrations(dset))
         declarations = provenance.source_declarations(provenance.RECMIN_MDB, decl)
@@ -797,7 +814,9 @@ class ApplyTest(_JobCase):
         registros (``keep_holes``, sin mayúsculas: sus bocas y su orientación en boca), da de
         alta los códigos nuevos (la litología con un color determinista distinto de los del
         proyecto) y deja las filas de cada ``dh_src_<rol>`` (las de ``store.source_tables``,
-        bit a bit) con el hash de ``schema.table_digest``."""
+        bit a bit) con el hash de ``schema.table_digest``. T46: con los sondeos que se
+        sustituyen por tabla (los que ya tenían registros en esa tabla del proyecto), cada
+        tabla cuenta solo los suyos."""
         taken = ["#4DD9A6", "#808080"]
         codes = {"lithology": [["lithology", "NUEVA"]], "element": [["Zn", "ppm"]],
                  "sector": ["Norte"]}
@@ -831,6 +850,15 @@ class ApplyTest(_JobCase):
         s01 = rows.surveys.hole_name == "S-01"
         self.assertEqual((summary["replaced"]["collars"], summary["replaced"]["surveys"]),
                          (1, int(s01.sum())))
+        by_table = dict(params, keep_holes=[], replace_holes={"collars": ["S-01", "s-12 "]})
+        summary, _ctx, _folder = self.run_job(dh_jobs.IMPORT_APPLY, by_table,
+                                              inputs={"source": "leido_collar.npz"})
+        self.assertEqual(summary["replaced"], {"collars": 2, "surveys": 0, "lithology": 0,
+                                               "assays": 0, "zones": 0, "structures": 0})
+        with self.assertRaises(job_messages.JobError) as caught:
+            self.run_job(dh_jobs.IMPORT_APPLY, dict(by_table, replace_holes={"bocas": ["S-01"]}),
+                         inputs={"source": "leido_collar.npz"})
+        self.assertEqual(caught.exception.code, "request_invalid")
         self.assertEqual(summary["registered"]["lithology"], [["lithology", "NUEVA", color]])
         self.assertEqual(dh_jobs.new_colors(3, taken), dh_jobs.new_colors(3, taken))
         self.assertEqual(len(set(dh_jobs.new_colors(40, taken))), 40)

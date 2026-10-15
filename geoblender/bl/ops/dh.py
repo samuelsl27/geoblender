@@ -901,8 +901,9 @@ class _Entry:
 @dataclass(eq=False)
 class _Order:
     """Una orden de importación de sondeos en marcha (de tablas o de una base de RecMin): sus
-    entradas, lo declarado, cómo se leen, los catálogos y los sondeos del proyecto al empezar,
-    la entrega, el motivo de una sustitución, la orden que la aplica o la descarta, lo que hay
+    entradas, lo declarado, cómo se leen, los catálogos y los sondeos del proyecto al empezar
+    (los que tienen registros en cada tabla de la base, ``store.holes_by_table``: T46), la
+    entrega, el motivo de una sustitución, la orden que la aplica o la descarta, lo que hay
     que decidir (también lo que hay que confirmar antes de leer, RF-005-15) y lo decidido. La
     reimportación de una entrada (``reimport``, T28; RF-008-11) sustituye sin preguntar los
     sondeos que ya traía (``replaced``)."""
@@ -911,7 +912,7 @@ class _Order:
     declaration: SourceDeclaration
     options: ReadOptions
     catalogs: Catalogs
-    project_holes: tuple[str, ...]
+    project_holes: Mapping[str, tuple[str, ...]]
     received_at: Any = None
     received_from: str | None = None
     reason: str | None = None
@@ -1109,8 +1110,8 @@ def _read_job(order: _Order, entry: _Entry) -> dict[str, Any]:
         "name": choice.name, "declaration": jobs.declaration_json(order.declaration),
         "settings": order.options.job_settings(choice.reader, choice.sheet),
         "crs": gis_jobs.crs_json(crs), "vertical": gis_jobs.vertical_json(vertical),
-        "project_holes": list(order.project_holes), "catalogs": catalogs_json(order.catalogs),
-        "size": choice.path.stat().st_size}
+        "project_holes": {table: list(names) for table, names in order.project_holes.items()},
+        "catalogs": catalogs_json(order.catalogs), "size": choice.path.stat().st_size}
     if _is_recmin(choice):
         worker = jobs.IMPORT_RECMIN
         params["accept_schema"] = order.accept_schema
@@ -1136,7 +1137,7 @@ def start_order(operator: Any, context: Any, project: Any, choices: Sequence[Tab
     canceladas."""
     with project.read() as conn:
         catalogs = store.read_catalogs(conn)
-        holes = store.existing_holes(conn)
+        holes = store.holes_by_table(conn)
     order = _Order([], declaration, options, catalogs, holes, received_at, received_from,
                    reason, command=command, accept_schema=accept_schema)
     for choice in choices:
@@ -1296,18 +1297,28 @@ def _imported(summary: Mapping[str, Any]) -> int:
     return sum(int(dict(found).get("imported", 0)) for found in counts.values())
 
 
+def _replaced_tables(entry: _Entry, keep: set[str]) -> dict[str, list[str]]:
+    """Los sondeos de ``entry`` cuyos registros sustituyen a los del proyecto, por tabla (T46;
+    RF-005-11, RF-005-12): los que ya tenían registros en esa tabla del proyecto (los de su
+    lectura, ``existing_tables``; también los que una reimportación sustituye sin preguntar),
+    salvo los que se conservan (``keep``, sin mayúsculas)."""
+    tables = dict(entry.outcome.summary.get("existing_tables") or {})
+    return {str(table): [name for name in names if name_key(name) not in keep]
+            for table, names in tables.items()}
+
+
 def _apply(order: _Order) -> None:
     """Aplica las entradas de ``order`` con lo decidido (``dh_import_apply``: los sondeos que
-    se conservan fuera, los que se sustituyen contados, los códigos nuevos dados de alta)."""
+    se conservan fuera, los que se sustituyen contados por tabla, los códigos nuevos dados de
+    alta)."""
     project = order.entries[0].handle.project
     crs, _vertical = gis_store.project_references(project)
     keep = {name_key(name) for name in order.keep}
-    replace = [name for name in order.holes if name_key(name) not in keep]
-    replace += order.replaced
     taken = [code.color for code in order.catalogs.lithology]
     for entry in order.live:
         params = {"name": entry.choice.name, "crs": gis_jobs.crs_json(crs),
-                  "keep_holes": list(order.keep), "replace_holes": replace,
+                  "keep_holes": list(order.keep),
+                  "replace_holes": _replaced_tables(entry, keep),
                   "register_codes": _register_for(order, entry) if order.register else {},
                   "taken_colors": taken, "count": _imported(entry.outcome.summary) + 1}
         try:
@@ -1360,17 +1371,19 @@ def _counts(entry: _Entry, report: Mapping[str, Any],
 def _recmin_counts(order: _Order,
                    report: Mapping[str, Any]) -> list[tuple[str, int, int, int, int]]:
     """Por tabla de una base de RecMin: leídos, importados, rechazados y sustituidos
-    (RF-005-12). Los registros de los sondeos que ya estaban y se conservan no se importan, y
-    los de los que se sustituyen se cuentan (``hole_rows`` de su lectura: los de cada sondeo
-    que ya estaba, por tabla)."""
+    (RF-005-12). Los registros de los sondeos que ya estaban y se conservan no se importan
+    (``hole_rows`` de su lectura: los de cada sondeo que ya estaba, por tabla), y los que
+    sustituyen a los del proyecto se cuentan (T46, ``existing_rows``: los de las tablas en las
+    que el sondeo ya tenía registros en el proyecto, salvo los que se conservan)."""
     keep = {name_key(name) for name in order.keep}
-    replace = {name_key(name) for name in (*order.holes, *order.replaced)} - keep
     rows = dict(report.get("hole_rows") or {})
+    existing = dict(report.get("existing_rows") or {})
     found = []
     for table, counts in dict(report.get("counts") or {}).items():
         per_hole = dict(rows.get(table) or {})
         kept = sum(int(n) for hole, n in per_hole.items() if name_key(hole) in keep)
-        replaced = sum(int(n) for hole, n in per_hole.items() if name_key(hole) in replace)
+        replaced = sum(int(n) for hole, n in dict(existing.get(table) or {}).items()
+                       if name_key(hole) not in keep)
         found.append((str(table), int(counts.get("read", 0)),
                       max(int(counts.get("imported", 0)) - kept, 0),
                       int(counts.get("rejected", 0)), replaced))
@@ -2139,7 +2152,7 @@ def _reimport(request: ReimportRequest) -> OperationHandle:
             (item for item in store.live_sources(conn) if item.record.uid == record.uid), None)
         replaced = () if source is None else store.source_holes(conn, source)
         catalogs = store.read_catalogs(conn)
-        existing = store.existing_holes(conn)
+        existing = store.holes_by_table(conn)
     if record is None:
         raise ProvenanceError("core.input_unknown", input=request.input_uid,
                               project=project.name)

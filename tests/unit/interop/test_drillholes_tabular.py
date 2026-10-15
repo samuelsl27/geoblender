@@ -768,6 +768,26 @@ class HolesAndCodesTest(unittest.TestCase):
             elements=dset.catalogs.elements)
         self.assertEqual(base.new_codes(dset, with_all), {})
 
+    def test_existing_holes_by_table(self) -> None:
+        """RF-005-11 (spec 005, T46; M1 y M5 en pantalla): los sondeos de la fuente que ya
+        tienen registros en el proyecto en alguna de las tablas que trae (``project_holes``,
+        por tabla de un ``DrillholeSet``; sin distinguir mayúsculas ni espacios), con la grafía
+        de la fuente: de las desviaciones solo cuentan las medidas (la orientación en boca de
+        S-12 no sustituye ninguna) y un sondeo sin registros en esas tablas no está (C-01 no
+        tiene análisis en la fuente). Una lista de nombres son las bocas del proyecto, como
+        antes; una tabla que no es de un ``DrillholeSet``, un error."""
+        dset, _report = tabular.read_drillholes(_basico_tables(), None, _declaration())
+        project = {"collars": [], "surveys": ["s-01 ", "S-12", "S-77"], "lithology": ["S-02"],
+                   "assays": ["c-01", "S-03"], "zones": ["S-04"]}
+        self.assertEqual(base.existing_tables(dset, project),
+                         {"surveys": ("S-01",), "lithology": ("S-02",), "assays": ("S-03",)})
+        self.assertEqual(base.existing_holes(dset, project), ("S-01", "S-02", "S-03"))
+        self.assertEqual(base.existing_tables(dset, ["s-01 ", "S-77"]), {"collars": ("S-01",)})
+        self.assertEqual(base.existing_holes(dset, ["s-01 ", "S-77"]), ("S-01",))
+        self.assertEqual(base.existing_tables(dset, {}), {})
+        with self.assertRaises(ValueError):
+            base.existing_tables(dset, {"bocas": ["S-01"]})
+
     def test_registrations_of_the_new_codes(self) -> None:
         """RF-005-10 (spec 005, T25): los códigos nuevos como se dan de alta (el parámetro
         ``register_codes`` de ``dh_import_apply``): cada litología con su esquema de logueo

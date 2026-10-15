@@ -26,7 +26,8 @@ proceso aparte, va aquí en el hilo con la misma función (la de proceso aparte 
   mensaje dice qué falta; unas tablas que no lo necesitan sí empiezan.
 - RF-005-11, RF-005-04, RF-008-54: el mismo fichero otra vez se reutiliza; otro con los mismos
   sondeos espera y, descartado, no deja nada; aplicado conservando uno, los demás se sustituyen
-  en la base y el informe los cuenta.
+  en la base y el informe los cuenta. T46: también una orden solo de tablas hijas (desviaciones,
+  litología, análisis) de sondeos con registros en ellas.
 - RF-005-05 (riesgo R9): el asistente propone el papel y el campo de cada columna (también por
   hoja de un XLSX); los elementos de la enumeración dinámica del campo viven en una caché del
   módulo.
@@ -46,6 +47,7 @@ import unittest
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from unittest import mock
 
 import bpy
 from bpy.props import CollectionProperty
@@ -423,6 +425,76 @@ class ImportTabularTest(DrillholeImportCase):
         self.assertEqual(self.rows("SELECT n_read, n_imported, n_replaced FROM dh_import_log "
                                    "WHERE kind = 'summary' AND operation_uid = ?", second),
                          [(7, 6, 5)])
+
+    def test_child_tables_of_existing_holes_kept_or_replaced(self) -> None:
+        """RF-005-11, RF-005-12 (regresión de M1 y M5 en pantalla, 15/10/2026): con
+        ``csv_basico`` importado, otra orden solo con desviaciones, litología y análisis de
+        sondeos que ya tienen registros en esas tablas espera la decisión como la de las bocas,
+        con esos sondeos (S-01, S-02, S-03 y S-04; no S-12, que solo tenía la orientación en
+        boca, ni C-01, que no tenía análisis). Aplicada conservando S-03, la base sigue con sus
+        estaciones de antes y toma las nuevas de los demás, y el informe de cada tabla
+        (``dh_import_log`` y el mensaje de su operación) cuenta los registros sustituidos. Sin
+        catálogos ni validación, que no mira (el presupuesto de ``tools/check.py``)."""
+        self.enterContext(mock.patch.object(self.dh_ops, "start_validate",
+                                            lambda project, **_: None))
+        self.import_all(("bocas.csv", "desviaciones.csv", "litologia.csv",
+                         "analisis_columnas.csv"))
+        survey_sql = ("SELECT s.depth, s.azimuth, s.inclination, s.source FROM dh_survey s "
+                      "JOIN dh_collar c ON c.fid = s.hole_id WHERE c.name = ? ORDER BY s.depth")
+        s03_before = self.rows(survey_sql, "S-03")
+        self.assertEqual([row[3] for row in self.rows(survey_sql, "S-12")], ["collar"])
+        revised = {
+            "desviaciones_revisadas.csv": (
+                "Sondeo;Profundidad;Azimut;Inclinación",
+                *(f"S-01;{depth},00;46,00;-60,00" for depth in range(0, 151, 30)),
+                *(f"S-03;{depth},00;359,50;-79,50" for depth in range(0, 241, 30)),
+                *(f"S-04;{depth},00;0,00;-89,50" for depth in (0, 50, 100)),
+                "S-12;0,00;300,00;-75,00", "S-12;160,00;300,00;-74,00"),
+            "litologia_revisada.csv": (
+                "Sondeo;Desde;Hasta;Litología", "S-02;0,00;2,40;SUE", "S-02;2,40;85,00;ARE",
+                "S-02;85,00;190,00;PIZ", "S-02;190,00;206,00;MIN", "S-02;206,00;300,00;PIZ"),
+            "analisis_revisados.csv": (
+                "Sondeo;Desde;Hasta;Muestra;Au;Ag;Cu", "S-01;60,50;62,50;M-0102;4,90;28,0;0,380",
+                "S-01;62,50;64,50;M-0103;5,90;25,0;0,240", "C-01;0,00;0,60;M-C01;0,02;1,0;0,010"),
+        }
+        for name, lines in revised.items():
+            (self.sources / name).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        roles = dict(zip(revised, ("survey", "lithology", "assay_wide"), strict=True))
+        result, launched = self.run_import(tuple(revised), roles)
+        self.assertEqual(result, {"FINISHED"})
+        self.finish()
+        uid, pending = self.waiting()
+        self.assertEqual(sorted(hole.name for hole in pending.holes),
+                         ["S-01", "S-02", "S-03", "S-04"])
+        self.assertEqual(self.statuses(launched), ["running"] * 3)
+        for hole in pending.holes:
+            hole.keep = hole.name == "S-03"
+        self.assertEqual(self.decide("APPLY", uid), {"FINISHED"})
+        self.finish()
+        self.assertEqual(self.statuses(launched), ["done"] * 3)
+        self.assertEqual(self.rows(survey_sql, "S-03"), s03_before)
+        self.assertEqual({row[1] for row in self.rows(survey_sql, "S-01")}, {46.0})
+        self.assertEqual({row[2] for row in self.rows(survey_sql, "S-04")}, {-89.5})
+        self.assertEqual([row[3] for row in self.rows(survey_sql, "S-12")], ["measured"] * 2)
+        self.assertIn((190.0, 206.0, "MIN"), self.rows(
+            "SELECT l.from_m, l.to_m, k.code FROM dh_lithology l JOIN dh_collar c ON "
+            "c.fid = l.hole_id JOIN dh_lithology_code k ON k.fid = l.lithology_id "
+            "WHERE c.name = 'S-02'"))
+        self.assertEqual(self.rows(
+            "SELECT c.name, count(*) FROM dh_assay a JOIN dh_collar c ON c.fid = a.hole_id "
+            "GROUP BY c.name ORDER BY c.name"), [("C-01", 3), ("S-01", 6), ("S-02", 30),
+                                                 ("S-03", 30)])
+        log = {role: (rest, message) for role, *rest, message in self.rows(
+            "SELECT l.table_role, l.n_read, l.n_imported, l.n_rejected, l.n_replaced, "
+            "o.message FROM dh_import_log l JOIN gb_operation o ON o.uid = l.operation_uid "
+            f"WHERE l.kind = 'summary' AND l.operation_uid IN ({', '.join('?' * 3)})",
+            *launched)}
+        expected = {"survey": [20, 11, 0, 9], "lithology": [5, 5, 0, 5],
+                    "assay_wide": [3, 9, 0, 6]}
+        self.assertEqual({role: counts for role, (counts, _) in log.items()}, expected)
+        for role, (counts, message) in log.items():
+            with self.subTest(tabla=role):
+                self.assertIn(f"{counts[3]} sustituidos", message)
 
 
 class WizardTest(DrillholeImportCase):

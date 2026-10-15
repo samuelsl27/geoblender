@@ -213,7 +213,7 @@ def external_table(external_id: object) -> str | None:
 _HOLE_TABLES = ("collars", "surveys", "lithology", "assays", "zones", "structures")
 
 
-def hole_rows(dset: DrillholeSet, holes: Iterable[str],
+def hole_rows(dset: DrillholeSet, holes: Iterable[str] | Mapping[str, Iterable[str]],
               tables: Iterable[str] = ()) -> dict[str, dict[str, int]]:
     """Los registros de cada sondeo de ``holes`` (sin distinguir mayúsculas ni espacios) en lo
     leído de una base de RecMin (``dset``), por la tabla de RecMin de la que vienen (su
@@ -221,19 +221,27 @@ def hole_rows(dset: DrillholeSet, holes: Iterable[str],
     como lo escribe la base y la tabla como la nombra ``tables`` (las de
     ``ImportReport.per_table``) si está, sin distinguir mayúsculas. Son los que quita conservar
     un sondeo que ya está en el proyecto, o los que sustituye (RF-005-11, RF-005-12): un valor
-    de un análisis es un registro, como en los recuentos del informe."""
-    wanted = {name_key(hole) for hole in holes}
+    de un análisis es un registro, como en los recuentos del informe. Con ``holes`` por tabla
+    de un ``DrillholeSet`` (T46, ``{"surveys": [sondeos], …}``, los de
+    ``interop.base.existing_tables``), solo los de esas tablas: los que sustituye importarlo,
+    los de las tablas en las que el sondeo ya tenía registros en el proyecto."""
+    if isinstance(holes, Mapping):
+        wanted = {table: {name_key(hole) for hole in names} for table, names in holes.items()}
+    else:
+        every = {name_key(hole) for hole in holes}
+        wanted = dict.fromkeys(_HOLE_TABLES, every)
     named = {table.casefold(): table for table in tables}
     found: dict[str, dict[str, int]] = {}
-    if not wanted:
-        return found
     for attribute in _HOLE_TABLES:
+        keys = wanted.get(attribute)
+        if not keys:
+            continue
         columns = getattr(dset, attribute)
         field = "name" if attribute == "collars" else "hole_name"
         for hole, external in zip(getattr(columns, field).tolist(),
                                   columns.external_id.tolist(), strict=True):
             table = external_table(external)
-            if hole is None or table is None or name_key(hole) not in wanted:
+            if hole is None or table is None or name_key(hole) not in keys:
                 continue
             per = found.setdefault(named.get(table.casefold(), table), {})
             per[hole] = per.get(hole, 0) + 1

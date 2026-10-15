@@ -24,7 +24,8 @@ lectura y la importación pendiente (``drillholes.model.ImportDto``).
   esquema, el elemento con su unidad).
 - **La importación pendiente** (:func:`to_import_dto`): el ``ImportDto`` de una lectura, con
   sus entradas (una por fichero o por hoja, D-15: cada una con su hash de contenido y sus
-  huellas) y los sondeos que ya existen en el proyecto (RF-005-11).
+  huellas) y los sondeos que ya existen en el proyecto (RF-005-11; T46,
+  :func:`existing_tables`: por tabla, los que ya tienen registros en la que trae la fuente).
 - **Columnas de los lectores** (los de tablas y el de RecMin): :func:`record_columns` (las
   columnas de una tabla del modelo con los valores por defecto de sus campos y los hijos sin
   enlazar), :func:`concat_columns`, :func:`link_columns` (cada hijo, a la boca de su nombre),
@@ -57,8 +58,10 @@ from ..drillholes.model import (
     ImportSource,
     IntervalColumns,
     LithologyInterval,
+    TABLES,
     Rejection,
     SourceDeclaration,
+    StationSource,
     StructureColumns,
     StructureMeasure,
     SurveyColumns,
@@ -80,11 +83,14 @@ __all__ = [
     "DeclarationError",
     "ImportReport",
     "Needs",
+    "ProjectHoles",
     "TableCounts",
     "concat_columns",
     "duplicate_names",
     "existing_holes",
+    "existing_tables",
     "grade_unit",
+    "holes_of",
     "link_columns",
     "missing_declarations",
     "missing_unit",
@@ -403,19 +409,81 @@ def duplicate_names(names: Sequence[str]) -> tuple[tuple[str, ...], ...]:
     return tuple(tuple(group) for group in groups.values() if len(group) > 1)
 
 
-def existing_holes(dset: DrillholeSet, project_holes: Iterable[str]) -> tuple[str, ...]:
-    """Los sondeos de ``dset`` que ya están en el proyecto (``project_holes``, sus nombres),
-    sin distinguir mayúsculas ni espacios exteriores (RF-005-11), con la grafía de la fuente
-    y en su orden, sin repetir."""
+ProjectHoles = Iterable[str] | Mapping[str, Iterable[str]]
+"""Los sondeos del proyecto con los que se compara una fuente: por tabla de un
+``DrillholeSet`` (``{"surveys": [nombres], …}``, los que tienen registros en esa tabla de la
+base, ``drillholes.store.holes_by_table``) o, una lista de nombres, sus bocas."""
+_MEASURED = SurveyColumns.code_values("source").index(StationSource.MEASURED)
+
+
+def _project_tables(project_holes: ProjectHoles) -> dict[str, frozenset[str]]:
+    """Los sondeos del proyecto por tabla de un ``DrillholeSet``, sin mayúsculas ni espacios
+    exteriores (una lista, los de las bocas)."""
     if isinstance(project_holes, str):
         raise TypeError(f"los sondeos del proyecto son una lista de nombres, no {project_holes!r}")
-    known = {name_key(name) for name in project_holes}
+    if not isinstance(project_holes, Mapping):
+        return {"collars": frozenset(name_key(name) for name in project_holes)}
+    unknown = sorted(str(table) for table in project_holes if table not in TABLES)
+    if unknown:
+        raise ValueError(f"los sondeos del proyecto van por tabla de un DrillholeSet "
+                         f"({', '.join(TABLES)}), no {unknown}")
+    found: dict[str, frozenset[str]] = {}
+    for table, names in project_holes.items():
+        if isinstance(names, str):
+            raise TypeError(f"los sondeos de «{table}» son una lista de nombres, no {names!r}")
+        found[table] = frozenset(name_key(name) for name in names)
+    return found
+
+
+def existing_tables(dset: DrillholeSet,
+                    project_holes: ProjectHoles) -> dict[str, tuple[str, ...]]:
+    """Por cada tabla de ``dset`` (las de ``drillholes.model.TABLES``), sus sondeos que ya
+    tienen registros en esa tabla del proyecto (``project_holes``; una lista de nombres, las
+    bocas): los que sus registros sustituyen si se importan, o se conservan (RF-005-11, «sus
+    registros de las tablas que trae la fuente»; la base toma cada tabla de un sondeo de una
+    sola entrada, ``drillholes.build_base``). Sin distinguir mayúsculas ni espacios
+    exteriores, con la grafía de la fuente y en su orden, sin repetir; solo las tablas con
+    alguno. De las desviaciones solo cuentan las estaciones medidas: la orientación en boca y
+    la vertical declarada no sustituyen ni se sustituyen (las medidas mandan sobre ellas)."""
+    known = _project_tables(project_holes)
+    found: dict[str, tuple[str, ...]] = {}
+    for table, keys in known.items():
+        columns = getattr(dset, table)
+        names = (columns.name if table == "collars" else columns.hole_name).tolist()
+        if table == "surveys":
+            names = [name for name, source in zip(names, columns.source.tolist(), strict=True)
+                     if source == _MEASURED]
+        chosen: dict[str, str] = {}
+        seen: dict[str, str] = {}  # name_key una vez por texto distinto
+        for name in names:
+            if name is None:
+                continue
+            key = seen.get(name)
+            if key is None:
+                key = seen[name] = name_key(name)
+            if key in keys:
+                chosen.setdefault(key, name)
+        if chosen:
+            found[table] = tuple(chosen.values())
+    return {table: found[table] for table in TABLES if table in found}
+
+
+def holes_of(tables: Mapping[str, Iterable[str]]) -> tuple[str, ...]:
+    """Los sondeos de ``tables`` (por tabla, los de :func:`existing_tables`) sin repetir (sin
+    distinguir mayúsculas ni espacios exteriores), tabla a tabla y en su orden."""
     found: dict[str, str] = {}
-    for name in dset.collars.name.tolist():
-        key = name_key(name)
-        if key in known:
-            found.setdefault(key, name)
+    for names in tables.values():
+        for name in names:
+            found.setdefault(name_key(name), name)
     return tuple(found.values())
+
+
+def existing_holes(dset: DrillholeSet, project_holes: ProjectHoles) -> tuple[str, ...]:
+    """Los sondeos de ``dset`` que ya están en el proyecto (``project_holes``: por tabla, los
+    que tienen registros en alguna de las tablas que trae la fuente, :func:`existing_tables`;
+    una lista de nombres, los de sus bocas), sin distinguir mayúsculas ni espacios exteriores
+    (RF-005-11), con la grafía de la fuente y en su orden (tabla a tabla), sin repetir."""
+    return holes_of(existing_tables(dset, project_holes))
 
 
 def to_import_dto(

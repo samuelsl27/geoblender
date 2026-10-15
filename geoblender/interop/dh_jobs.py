@@ -15,7 +15,8 @@ Cada lectura deja lo leído **en lo declarado** (el CRS, el datum y los convenio
 sin transformar: lo transforma ``dh_build_base``) con las columnas del modelo de
 ``drillholes.model`` (``drillholes.arrays.tables_arrays``, sin *pickle*), su informe
 (RF-005-12: recuentos, rechazos con su motivo, avisos), los códigos que no están en los
-catálogos del proyecto (RF-005-10) y los sondeos que ya están en la base (RF-005-11), y el
+catálogos del proyecto (RF-005-10) y los sondeos que ya están en la base (RF-005-11; T46: por
+tabla, los que ya tienen registros en la que trae la fuente, ``existing_tables``), y el
 ``ContentDigest`` de la fuente con su lector de ``interop.dh_content`` (el mismo que da
 ``core_content_hash``). La fuente no se toca: se lee su copia de ``in/`` (RF-005-03).
 
@@ -78,6 +79,18 @@ def _source_summary(reader_id: str, digest: Any, prints: Mapping[str, Any],
             "declarations": dict(declarations), "settings": plain(settings)}
 
 
+def _existing(request: JobParams, found: DrillholeSet) -> dict[str, list[str]]:
+    """Por tabla de lo leído (``found``), sus sondeos que ya tienen registros en esa tabla del
+    proyecto (``project_holes`` de la petición; RF-005-11, T46): los que se preguntan."""
+    from .base import existing_tables
+
+    try:
+        return {table: list(names) for table, names in
+                existing_tables(found, request.holes("project_holes")).items()}
+    except (ValueError, TypeError) as error:
+        raise request.invalid(str(error)) from None
+
+
 def _declarations(request: JobParams, reader_id: str, decl: SourceDeclaration,
                   **entry: Any) -> dict[str, Any]:
     from ..drillholes.provenance import source_declarations
@@ -97,7 +110,7 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
     la lectura del importador) en ``source.npz``, con su informe en ``report.json``. Sin las
     declaraciones que hacen falta, ``dh.declaration_missing`` (RF-005-07)."""
     from ..drillholes.provenance import TABLE_ROLES, input_kind
-    from .base import existing_holes, new_codes, registrations
+    from .base import holes_of, new_codes, registrations
     from .csv_tables import read_table
     from .drillholes_tabular import read_role
     from .xlsx_tables import read_sheet
@@ -118,7 +131,7 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
         raise request.invalid(f"«mapping» es {{campo: columna}}, no {mapping!r}")
     decl = request.declaration()
     settings = request.mapping("settings", {})
-    project_holes = request.texts("project_holes")
+    request.holes("project_holes")  # que valga antes de copiar nada
     catalogs = request.catalogs()
     declarations = _declarations(request, reader.id, decl, role=role, mapping=mapping)
     kind = input_kind(reader.id, role)
@@ -144,6 +157,7 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
              "assays": rows.assays}
     found = _container(decl, request, **parts, catalogs=rows.catalogs)
     save_npz(ctx.output_path(OUT_SOURCE.file), tables_arrays(parts, rows.catalogs))
+    existing = _existing(request, found)
     report = {
         "role": role,
         "counts": rows.counts.as_dict(),
@@ -152,7 +166,8 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
         "warnings": [],
         "new_codes": {kind: list(codes) for kind, codes in new_codes(found, catalogs).items()},
         "register_codes": registrations(found, catalogs),
-        "existing_holes": list(existing_holes(found, project_holes)),
+        "existing_holes": list(holes_of(existing)),
+        "existing_tables": existing,
     }
     write_json(ctx, OUT_REPORT, report)
     summary = {
@@ -163,6 +178,7 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
         "new_codes": report["new_codes"],
         "register_codes": report["register_codes"],
         "existing_holes": report["existing_holes"],
+        "existing_tables": existing,
         "outputs": {OUT_SOURCE.role: {"file": OUT_SOURCE.relative},
                     OUT_REPORT.role: {"file": OUT_REPORT.relative}},
     }
@@ -194,9 +210,10 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
     ``io.recmin_mdb@1`` sobre las mismas tablas, sin extraerla otra vez) y lo leído
     (``interop.recmin.drillholes.read_drillholes``) en ``source.npz``, con su informe (que
     dice además, por tabla de RecMin, los registros de cada sondeo que ya está en el proyecto,
-    ``hole_rows``: los que quita conservarlo o sustituye importarlo, RF-005-12)."""
+    ``hole_rows``: los que quita conservarlo, RF-005-12; y, T46, los de las tablas en las que
+    ya tenía registros en el proyecto, ``existing_rows``: los que sustituye importarlo)."""
     from ..drillholes.provenance import RECMIN_MDB
-    from .base import existing_holes, registrations
+    from .base import holes_of, registrations
     from .recmin.drillholes import hole_rows, read_drillholes
     from .recmin.schema import schema_version, version_warning
 
@@ -204,7 +221,7 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
     decl = request.declaration()
     settings = request.mapping("settings", {})
     accept = request.boolean("accept_schema")
-    project_holes = request.texts("project_holes")
+    request.holes("project_holes")  # que valga antes de copiar nada
     catalogs = request.catalogs()
     declarations = _declarations(request, RECMIN_MDB, decl)
     reader = dh_content.RECMIN_MDB
@@ -237,7 +254,8 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
              tables_arrays({name: getattr(dset, name) for name in
                             ("collars", "surveys", "lithology", "assays", "zones",
                              "structures")}, dset.catalogs))
-    existing = list(existing_holes(dset, project_holes))
+    tables_with = _existing(request, dset)
+    existing = list(holes_of(tables_with))
     found = {
         "schema_version": version,
         "counts": {table: counts.as_dict() for table, counts in report.per_table.items()},
@@ -247,7 +265,9 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
         "new_codes": {kind: list(codes) for kind, codes in report.unknown_codes.items()},
         "register_codes": registrations(dset, catalogs),
         "existing_holes": existing,
+        "existing_tables": tables_with,
         "hole_rows": hole_rows(dset, existing, report.per_table),
+        "existing_rows": hole_rows(dset, tables_with, report.per_table),
     }
     write_json(ctx, OUT_REPORT, found)
     raw = sorted(path for path in out_dir.rglob("*") if path.is_file()) if out_dir.exists() \
@@ -261,6 +281,7 @@ def run_import_recmin(ctx: Any) -> dict[str, Any]:
         "new_codes": found["new_codes"],
         "register_codes": found["register_codes"],
         "existing_holes": found["existing_holes"],
+        "existing_tables": tables_with,
         "outputs": {OUT_SOURCE.role: {"file": OUT_SOURCE.relative},
                     OUT_REPORT.role: {"file": OUT_REPORT.relative},
                     OUT_RAW_ROLE: {"files": [path.relative_to(ctx.job_dir.path).as_posix()

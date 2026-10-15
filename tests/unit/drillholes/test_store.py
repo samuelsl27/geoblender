@@ -744,11 +744,14 @@ class BaseWriterTest(_StoreCase):
         de ``schema.table_digest`` (el que da el trabajo o, sin él, el registro): las bocas,
         capa ``POINT`` con Z en el CRS del proyecto, con los ``fid`` desde 1 y, de detalle,
         los sondeos nuevos; ``read_steps`` devuelve la base bit a bit. Reescrita con el mismo
-        contenido (otra operación), los mismos ``fid``, el mismo hash y ningún cambio."""
+        contenido (otra operación), los mismos ``fid``, el mismo hash y ningún cambio. RF-005-11
+        (T46): ``holes_by_table`` da los sondeos con registros en cada tabla de la base."""
         base = build.build_base(_entries(), FakeCrsService(), CRS, VERTICAL,
                                 project_uid=self.project.uid)
         digests = {name: schema.table_digest(schema.LAYOUTS[name], base.rows(name), CRS)
                    for name in ("dh_collar", "dh_assay")}
+        with self.project.read() as conn:  # T46: sin la base, ningún sondeo en ninguna tabla
+            self.assertEqual(store.holes_by_table(conn), dict.fromkeys(model.TABLES, ()))
         _, first = self.write_base(base, contents=digests)
         self.assertEqual(sorted(first), sorted(schema.BASE_TABLES))
         for name, record in first.items():
@@ -769,6 +772,13 @@ class BaseWriterTest(_StoreCase):
         with self.project.read() as conn:
             _, dset = _drive(store.read_steps(conn, clock=_Ticks(), budget_s=0.5))
             self.assertEqual(store.existing_holes(conn), HOLES)
+            # RF-005-11 (T46): los sondeos con registros en cada tabla de la base (de las
+            # desviaciones, solo las medidas: S-12 tiene la orientación en boca y C-01 la
+            # vertical declarada), los que una importación de esa tabla pregunta si sustituir.
+            self.assertEqual(store.holes_by_table(conn), {
+                "collars": HOLES, "surveys": ("S-01", "S-02", "S-03", "S-04"),
+                "lithology": HOLES, "assays": ("S-01", "S-02", "S-03"), "zones": (),
+                "structures": ()})
         for name in ("collars", "surveys", "lithology", "assays", "zones", "structures"):
             back, given = getattr(dset, name), getattr(base.dset, name)
             for item in fields(given):

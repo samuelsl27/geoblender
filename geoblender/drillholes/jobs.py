@@ -43,22 +43,28 @@ Los tipos, con sus parámetros, sus entradas (``in/``) y sus resultados (``out/`
   ``io.dh_xlsx@1``), ``name``, ``role`` (el papel de la tabla), ``mapping`` (campo → columna),
   ``declaration`` (:func:`declaration_json`), ``settings`` (los de lectura, el decimal y el
   formato de fecha), ``crs`` y ``vertical`` (los del proyecto), ``project_holes`` (los sondeos
-  de la base, RF-005-11), ``catalogs`` (los del proyecto, ``drillholes.arrays.catalogs_json``)
+  de la base con registros en cada tabla, ``{tabla: [sondeos]}`` con las tablas de
+  ``drillholes.model.TABLES``, ``store.holes_by_table``; una lista, los de sus bocas;
+  RF-005-11, T46), ``catalogs`` (los del proyecto, ``drillholes.arrays.catalogs_json``)
   y ``size``; ``source_main`` → ``source.npz`` (lo leído, en lo declarado: las columnas del
   modelo, ``drillholes.arrays.tables_arrays``) y ``report.json`` (recuentos, rechazos, códigos
-  nuevos, cómo se darían de alta, ``register_codes``, y sondeos que ya están), con el
-  ``ContentDigest`` de la fuente (el de ``core_content_hash``) y la huella de su fichero;
+  nuevos, cómo se darían de alta, ``register_codes``, y sondeos que ya están, en conjunto,
+  ``existing_holes``, y por tabla, ``existing_tables``: los de las tablas que trae la fuente
+  con registros en el proyecto), con el ``ContentDigest`` de la fuente (el de
+  ``core_content_hash``) y la huella de su fichero;
 - ``dh_import_recmin`` (``interop.dh_jobs.run_import_recmin``): ``declaration``, ``settings``
   (el decimal, si se da), ``accept_schema``, ``crs``, ``vertical``, ``project_holes``,
   ``catalogs`` y ``size``; ``source_main`` → ``source.npz``, ``report.json`` (con los
   recuentos por tabla de RecMin y, de cada sondeo que ya está, sus registros por tabla,
-  ``hole_rows``) y lo que extrae el motor en ``mdb/`` (el crudo). Una versión de esquema que
+  ``hole_rows``, y los de las tablas en las que ya tenía registros en el proyecto,
+  ``existing_rows``) y lo que extrae el motor en ``mdb/`` (el crudo). Una versión de esquema que
   no es 11 ni 12 sin
   ``accept_schema``: termina sin resultados con ``needs_confirmation`` en el resumen
   (RF-005-15), y se vuelve a lanzar con la confirmación;
 - ``dh_import_apply``: ``name``, ``crs``, ``keep_holes`` (los sondeos que conservan los
   registros del proyecto: no se importan, RF-005-11), ``replace_holes`` (los que sustituyen a
-  los del proyecto: se cuentan, RF-005-12), ``register_codes`` (los códigos nuevos que se dan
+  los del proyecto: se cuentan, RF-005-12; por tabla, ``{tabla: [sondeos]}``, o una lista
+  para todas), ``register_codes`` (los códigos nuevos que se dan
   de alta, RF-005-10; las litologías, con un color determinista distinto de
   ``taken_colors``); ``source`` (el ``source.npz`` de la lectura) → ``dh_src_<rol>.npz`` por
   papel con sus filas y su hash;
@@ -394,6 +400,19 @@ class JobParams:
         if not isinstance(value, list | tuple) or not all(isinstance(v, str) for v in value):
             raise self.invalid(f"«{key}» es una lista de textos, no {value!r}")
         return list(value)
+
+    def holes(self, key: str) -> list[str] | dict[str, list[str]]:
+        """Unos sondeos (T46): una lista de nombres o, por tabla de un ``DrillholeSet``
+        (``drillholes.model.TABLES``), ``{tabla: [nombres]}``."""
+        value = self.values.get(key, [])
+        if not isinstance(value, Mapping):
+            return self.texts(key)
+        if any(table not in TABLES for table in value) or not all(
+                isinstance(names, list | tuple) and all(isinstance(n, str) for n in names)
+                for names in value.values()):
+            raise self.invalid(f"«{key}» es una lista de sondeos o {{tabla: [sondeos]}} con "
+                               f"las tablas {list(TABLES)}, no {value!r}")
+        return {str(table): list(names) for table, names in value.items()}
 
     def parsed(self, key: str, parse: Callable[[Any], Any], *, required: bool = True) -> Any:
         value = self.values.get(key)
@@ -805,13 +824,19 @@ def run_import_apply(ctx: _Context) -> dict[str, Any]:
     ``drillholes.store.source_tables``) con su hash (``schema.table_digest``), las que
     escribe ``SourceWriter``. El resumen dice, por tabla, las filas quitadas (``removed``) y
     las de los sondeos que ya están en el proyecto y se sustituyen (``replace_holes``:
-    ``replaced``, el informe de RF-005-12)."""
+    ``replaced``, el informe de RF-005-12; T46: por tabla, ``{tabla: [sondeos]}``, los que ya
+    tenían registros en esa tabla del proyecto; una lista, en todas)."""
     from .store import source_tables  # importa la procedencia: solo al usarlo
 
     request = JobParams(ctx)
     crs = request.crs()
     keep = frozenset(name_key(name) for name in request.texts("keep_holes"))
-    replace = frozenset(name_key(name) for name in request.texts("replace_holes")) - keep
+    listed = request.holes("replace_holes")
+    if isinstance(listed, dict):
+        replace = {table: frozenset(name_key(name) for name in names) - keep
+                   for table, names in listed.items()}
+    else:
+        replace = dict.fromkeys(TABLES, frozenset(name_key(name) for name in listed) - keep)
     codes = request.mapping("register_codes", {})
     taken = request.texts("taken_colors")
     ctx.progress(0.0, READING_TEXT)
@@ -825,7 +850,7 @@ def run_import_apply(ctx: _Context) -> dict[str, Any]:
     for name in TABLES:
         field = "name" if name == "collars" else "hole_name"
         tables[name], removed[name] = _kept(tables[name], keep, field)
-        replaced[name] = _counted(tables[name], replace, field)
+        replaced[name] = _counted(tables[name], replace.get(name, frozenset()), field)
     try:
         catalogs, added = _registered(catalogs, codes, taken, request)
     except (ValueError, TypeError) as error:
