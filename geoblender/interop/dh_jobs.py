@@ -47,6 +47,7 @@ from ..drillholes.jobs import (
     finish,
     job_function,
     source_digest,
+    source_named,
     span,
     write_json,
 )
@@ -189,12 +190,18 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
 def _extract(ctx: Any, copy: Path, out_dir: Path, low: float, high: float) -> list[Any]:
     """Las tablas de la copia de la base con el extractor de ``interop.dh_content`` (el de
     ``adapters.registry`` o el que se le dio), con su avance en [``low``, ``high``] y la
-    cancelación del trabajo: el extractor para su ``powershell.exe`` hijo en ≤ 2 s."""
+    cancelación del trabajo: el extractor para su ``powershell.exe`` hijo en ≤ 2 s. Su avance,
+    como su error, nombra la base que eligió el usuario, no su copia (T51)."""
     from .ports import MdbCancelled
 
     progress = span(ctx, low, high)
+    named = source_named(ctx)
+
+    def told(fraction: float, shown: str = "") -> None:
+        progress(fraction, named(shown))
+
     try:
-        return list(dh_content.mdb_extractor().extract(copy, out_dir, progress,
+        return list(dh_content.mdb_extractor().extract(copy, out_dir, told,
                                                        cancelled_probe(ctx)))
     except MdbCancelled:
         raise JobCancelled("Lectura de la base de RecMin cancelada") from None

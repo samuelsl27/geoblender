@@ -245,6 +245,7 @@ from ..ui import labels
 from ..ui.commands import UNDELIVERED_FLAG, unavailable_note
 from ..ui.commands import catalog as command_catalog
 from . import core_provenance
+from . import jobs as jobs_ops
 from .core_provenance import (
     ProvenanceAwareOperator,
     ensure_ready,
@@ -915,6 +916,7 @@ def _table_choice(table: Any) -> TableChoice:
 # --- La importación en marcha (T25; plan §5.6.5) ------------------------------------------------
 
 _SUCCEEDED = "succeeded"  # el final de un trabajo que terminó bien (jobs.records)
+_CANCELLED = "cancelled"  # el de uno que se canceló
 DISCARDED = "La persona descartó la importación de los sondeos"
 """El motivo (en español, como los demás motivos guardados) de una importación descartada."""
 OTHER_FAILED = "Otra tabla de la misma importación no se leyó o no se aplicó: {name}"
@@ -958,9 +960,10 @@ class _Order:
     """Una orden de importación de sondeos en marcha (de tablas o de una base de RecMin): sus
     entradas, lo declarado, cómo se leen, los catálogos y los sondeos del proyecto al empezar
     (los que tienen registros en cada tabla de la base, ``store.holes_by_table``: T46), la
-    entrega, el motivo de una sustitución, la orden que la aplica o la descarta, lo que hay
-    que decidir (también lo que hay que confirmar antes de leer, RF-005-15) y lo decidido. La
-    reimportación de una entrada (``reimport``, T28; RF-008-11) sustituye sin preguntar los
+    entrega, el motivo de una sustitución, la orden que la aplica o la descarta, la lectura que
+    no terminó bien (su tabla, su motivo y, si falló y no se canceló, su trabajo: T51), lo que
+    hay que decidir (también lo que hay que confirmar antes de leer, RF-005-15) y lo decidido.
+    La reimportación de una entrada (``reimport``, T28; RF-008-11) sustituye sin preguntar los
     sondeos que ya traía (``replaced``)."""
 
     entries: list[_Entry]
@@ -975,6 +978,7 @@ class _Order:
     accept_schema: bool = False
     failure: str = ""
     failure_text: str = ""
+    failure_job: str = ""
     confirm: str = ""
     codes: dict[str, list[Any]] = field(default_factory=dict)
     holes: list[str] = field(default_factory=list)
@@ -1079,11 +1083,11 @@ def _release(result: JobResult | None) -> None:
 
 
 def _abandon(order: _Order, reason: str, *, failed: bool = False,
-             said: str | None = None) -> None:
+             said: str | None = None) -> str:
     """La orden ``order`` no se escribe (RF-005-04): cada importación que sigue «en curso»
     queda cancelada (o fallida) con ``reason`` (las que no se leyeron o no se aplicaron, con
     el motivo de la 004), sus trabajos se dan por incorporados y la orden se olvida. El aviso
-    dice ``said`` (por defecto, ``reason``)."""
+    dice ``said`` (por defecto, ``reason``); lo devuelve."""
     for entry in order.entries:
         ended = any(result is not None and result.state != _SUCCEEDED
                     for result in (entry.read, entry.applied))
@@ -1098,8 +1102,28 @@ def _abandon(order: _Order, reason: str, *, failed: bool = False,
     if order.uid in _WAITING:
         _WAITING.remove(order.uid)
         _show_pending()
-    _say(tr("The import of the drillholes has not been written: {reason}",
-            reason=said or reason))
+    text = tr("The import of the drillholes has not been written: {reason}",
+              reason=said or reason)
+    _say(text)
+    return text
+
+
+def _without_file(text: str, name: str) -> str:
+    """El error de la lectura del fichero ``name`` sin su nombre al principio («base.mdb:
+    formato = …» → «formato = …»): quien lo dice ya lo nombra (T51)."""
+    prefix = f"{name}: "
+    return text[len(prefix):] if text.startswith(prefix) else text
+
+
+def _tell_failure(job_uid: str, reason: str, text: str) -> None:
+    """La lectura del trabajo ``job_uid`` falló y la importación no se escribe (T51;
+    RF-005-14, RF-005-04): se dice como una operación que no se hizo (spec 006, T57;
+    RF-004-07): su aviso en la barra de estado dice «Operación fallida» y el principio de
+    ``reason`` (el motivo, del fichero que nombra el trabajo) en lugar de «Fallido» y el error
+    de la 004, y ``text``, entero, va al registro de Blender como error (Info y, un error, su
+    ventana emergente; ``report_later``)."""
+    jobs_ops.MONITOR.end_operation(job_uid, "failed", reason)
+    jobs_ops.report_later("ERROR", text)
 
 
 def _show_pending() -> None:
@@ -1237,11 +1261,14 @@ def start_order(operator: Any, context: Any, project: Any, choices: Sequence[Tab
 
 def _read_finished(order: _Order, entry: _Entry, result: JobResult) -> None:
     """El final de la lectura de una entrada: cuando terminan todas las de la orden, se sigue
-    (:func:`_after_reading`)."""
+    (:func:`_after_reading`). La primera que no terminó bien para la orden; si falló (no se
+    canceló), su trabajo lo dirá (T51)."""
     entry.read = result
     if result.state != _SUCCEEDED and not order.failure:
         order.failure = entry.choice.label
-        order.failure_text = result.error_text or ""
+        order.failure_text = _without_file(result.error_text or "", entry.choice.path.name)
+        if result.state != _CANCELLED:
+            order.failure_job = result.job_uid
     if all(item.read is not None for item in order.entries if item.started):
         try:
             _after_reading(order)
@@ -1261,17 +1288,21 @@ def _confirmation(entry: _Entry) -> str:
 
 
 def _after_reading(order: _Order) -> None:
-    """Leídas todas las entradas: si una falló, la orden no sigue (RF-005-04); si una base de
-    RecMin necesita una confirmación antes de leerla (RF-005-15), la orden la espera; si no,
-    cada una se clasifica (RF-008-54: reutilizada, cancelada con el aviso; los mismos datos con
-    otros ajustes, una sustitución) y, si hay algo que decidir (códigos nuevos, sondeos que ya
-    están o una sustitución sin motivo), la orden espera; si no, se aplica."""
+    """Leídas todas las entradas: si una falló, la orden no sigue (RF-005-04) y, si su lectura
+    falló, se dice como una operación que no se hizo (:func:`_tell_failure`; T51,
+    RF-005-14); si una base de RecMin necesita una confirmación antes de leerla (RF-005-15), la
+    orden la espera; si no, cada una se clasifica (RF-008-54: reutilizada, cancelada con el
+    aviso; los mismos datos con otros ajustes, una sustitución) y, si hay algo que decidir
+    (códigos nuevos, sondeos que ya están o una sustitución sin motivo), la orden espera; si
+    no, se aplica."""
     if order.failure:
         said = None
         if order.failure_text:
             said = tr("«{name}» has not been read: {reason}", name=order.failure,
                       reason=order.failure_text)
-        _abandon(order, OTHER_FAILED.format(name=order.failure), said=said)
+        text = _abandon(order, OTHER_FAILED.format(name=order.failure), said=said)
+        if order.failure_job:
+            _tell_failure(order.failure_job, order.failure_text or text, text)
         return
     project = order.entries[0].handle.project
     language = i18n.language()

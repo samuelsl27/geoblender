@@ -34,6 +34,11 @@ función (el extractor real y el proceso aparte los prueban ``test_mdb_reader_co
   interfaz sin abrir otra vez el diálogo; la siguiente base de la sesión empieza en la carpeta
   y con lo declarado de la anterior. «Importación pendiente» se lee entera en la barra
   lateral por defecto con escala 1,0 y 1,25 (códigos nuevos, esquema desconocido, sondeos).
+- RF-005-14, RF-005-04 (T51; M2 en pantalla, «sin ACE»): la lectura de una base que no se puede
+  leer (y la de una tabla CSV) llega al usuario como una operación que falla (spec 006, T57):
+  su línea de la barra de estado dice «Operación fallida» con el principio del motivo y el
+  motivo entero va al registro de Blender (Info, y su ventana emergente) como error, nombrando
+  el fichero elegido, nunca la copia interna del trabajo.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -50,6 +55,7 @@ from unittest import mock
 import bpy
 
 from tests.blender.test_dh_import_tabular import (
+    DATA,
     DrillholeImportCase,
     _folder_state,
     _module,
@@ -57,7 +63,7 @@ from tests.blender.test_dh_import_tabular import (
     at_scales,
 )
 from tests.support import recmin
-from tests.support.fake_layout import draw, operator_self
+from tests.support.fake_layout import FakeLayout, draw, operator_self
 
 V12 = recmin.RECMIN_DIR / "recmin_v12.sql"
 IMPORT_RECMIN = "geoblender.dh_import_recmin_mdb"
@@ -70,6 +76,9 @@ DIALOG = {**DECLARED, "declination_deg": "", "units": "", "sentinels": "",
           "wizard": True, "stage": "NEW", "pending": "", "confirmed": False}
 HOLES = ("R-01", "R-02", "R-03", "R-04")
 ELEMENT_COLUMNS = ("ELEMENTO ",)
+COPY_STEM = "source_main"
+"""El nombre de la copia de la fuente en ``in/`` de su trabajo (``JobDir.copy_input``)."""
+TRIED = ("ACE.16 (64 bits): no está registrado",)
 
 
 def _ace_base(path: Path) -> Path:
@@ -104,6 +113,21 @@ class _FakeExtractor:
             raise self.error
         on_progress(1.0, "Leída")
         return list(self.tables.values())
+
+
+class _WithoutEngine(_FakeExtractor):
+    """El extractor de un equipo sin motor para las bases ACE: como el real
+    (``adapters.mdb_reader``), da su avance y su error con el nombre del fichero que abre, la
+    copia del trabajo."""
+
+    def __init__(self, ports: Any) -> None:
+        super().__init__({})
+        self.ports = ports
+
+    def extract(self, path: Path, out_dir: Path, on_progress: Any, cancelled: Any) -> list:
+        self.opened.append(Path(path))
+        on_progress(0.0, f"Abriendo «{Path(path).name}»")
+        raise self.ports.engine_missing(Path(path).name, self.ports.MdbFormat.ACE, TRIED)
 
 
 def _hole_records(script: Path) -> dict[str, dict[str, int]]:
@@ -217,6 +241,16 @@ class RecminImportTest(DrillholeImportCase):
             for word in words:
                 self.assertIn(word, shown)
         return layout
+
+    def notice(self, *, folded: bool = False) -> tuple[str, str]:
+        """La línea del trabajo que acaba de terminar en la barra de estado (el campo «jobs»,
+        dibujado con un *layout* simulado; plegado con ``folded``): su texto y su icono."""
+        jobs_ui = _module("bl.ui.jobs")
+        layout = FakeLayout()
+        (jobs_ui.draw_folded if folded else jobs_ui.draw)(layout, None)
+        (label,) = [item for item in layout.of_kind("label")
+                    if item.icon in set(jobs_ui.NOTICE_ICONS.values())]
+        return label.text, label.icon
 
     def log(self, operation: str) -> dict[str, tuple[int, int, int, int]]:
         return {table: tuple(rest) for table, *rest in self.rows(
@@ -444,6 +478,88 @@ class RecminImportTest(DrillholeImportCase):
         self.assertEqual(self.dh_ops.waiting_imports(), {})
         self.assertEqual(_folder_state(self.sources), folder)
         self.assertTrue(any(self.ports.ACCESS_ENGINE in text for text in self.ps.take_notices()))
+
+    def test_failed_reading_said_like_a_failed_operation(self) -> None:
+        """RF-005-14, RF-005-04 (T51; M2 en pantalla, «sin ACE»; spec 006, T57; RF-004-07): en
+        un equipo sin motor para las bases ACE (el extractor dice su avance y su error con la
+        copia del trabajo, como el real), la lectura falla con ``io.mdb_engine_missing`` y la
+        importación llega al usuario como una operación que falla: su línea de la barra de
+        estado dice «Lectura de «base_recmin.mdb» · Operación fallida · <s> s · formato =
+        «ACE…»…» con el icono de error (plegada, «Operación fallida · <s> s»), y el motivo
+        entero (el formato, qué instalar, la alternativa, los motores probados y que no se
+        importa nada) va al registro de Blender como error (Info y su ventana emergente) y a
+        los avisos del proyecto. Todo, también el motivo guardado en la operación y el error
+        del trabajo, nombra la base elegida y nunca la copia interna («source_main.mdb»); nada
+        se escribe y la carpeta de la base no cambia. Lo mismo con una tabla CSV cuyas filas,
+        tras las de la vista previa, no son UTF-8: el error, con su línea y su byte, nombra
+        «bocas_ansi.csv»."""
+        i18n = _module("core.i18n")
+        jobs_ui = _module("bl.ui.jobs")
+        ace = self.ports.MdbFormat.ACE.label
+        before = self.counts()
+        folder = _folder_state(self.sources)
+        sent = len(self.jobs_ops.sent_reports())
+        self.use(_WithoutEngine(self.ports))
+        result, (operation,) = self.run_recmin()
+        self.assertEqual(result, {"FINISHED"})
+        self.finish()
+        status, reason = self.rows("SELECT status, status_reason FROM gb_operation "
+                                   "WHERE uid = ?", operation)[0]
+        view = self.jobs_ops.MONITOR.view()
+        self.assertEqual((status, view.notice.state, view.notice.error.code),
+                         ("failed", "failed", self.ports.MDB_ENGINE_MISSING))
+        reports = self.jobs_ops.sent_reports()[sent:]
+        notices = self.ps.take_notices()
+        seconds = i18n.format_number(view.notice.duration_s or 0.0, 1)
+        with self.subTest("el fichero elegido, nunca la copia del trabajo"):
+            for text in (reason, view.notice.error.text, *notices):
+                self.assertIn(BASE, text)
+                self.assertNotIn(COPY_STEM, text)
+        with self.subTest("el registro de Blender (Info y su ventana emergente)"):
+            self.assertEqual([kind for kind, _text in reports], ["ERROR"])
+            said = reports[0][1]
+            for text in (f"«{BASE}»", f"formato = «{ace}»", self.ports.ACCESS_ENGINE,
+                         self.ports.ENGINE_ALTERNATIVE, "no se ha importado nada", TRIED[0]):
+                self.assertIn(text, said)
+            self.assertNotIn(COPY_STEM, said)
+            self.assertIn(said, notices)
+        with self.subTest("la barra de estado"):
+            text, icon = self.notice()
+            self.assertEqual(icon, "ERROR")
+            self.assertTrue(text.startswith(f"Lectura de «{BASE}» · Operación fallida · "
+                                            f"{seconds} s · formato = «{ace}»"), text)
+            self.assertEqual(text.rpartition(" · ")[2], jobs_ui.reason_head(view.ending.reason))
+            self.assertIn(view.ending.reason, said)
+            self.assertEqual(self.notice(folded=True),
+                             (f"Operación fallida · {seconds} s", "ERROR"))
+        self.assertEqual(self.counts()[1:], before[1:])  # ni datos ni entradas
+        self.assertEqual(self.dh_ops.waiting_imports(), {})
+        self.assertEqual(_folder_state(self.sources), folder)
+
+        # Una tabla de bocas con su última fila en ANSI, tras las 20 de la vista previa.
+        name = "bocas_ansi.csv"
+        header = (DATA / "bocas.csv").read_text(encoding="utf-8").splitlines()[0]
+        rows = [f"S-{n:02d};700010,500;4400040,500;798,117;150,00;;;DD;C-2025;03/03/2025;"
+                f"07/03/2025;no" for n in range(1, 25)]
+        last = "S-25;700011,500;4400041,500;798,117;150,00;;;DD;Peña;03/03/2025;07/03/2025;no\n"
+        (self.sources / name).write_bytes("\n".join([header, *rows, ""]).encode("utf-8")
+                                          + last.encode("cp1252"))
+        sent = len(self.jobs_ops.sent_reports())
+        result, (operation,) = self.run_import((name,), roles={name: "collar"})
+        self.assertEqual(result, {"FINISHED"})
+        self.finish()
+        view = self.jobs_ops.MONITOR.view()
+        self.assertEqual((self.statuses([operation]), view.notice.error.code),
+                         (["failed"], "io.csv_not_decodable"))
+        reports = self.jobs_ops.sent_reports()[sent:]
+        self.assertEqual([kind for kind, _text in reports], ["ERROR"])
+        for text in (f"«{name}»", "línea = 26", "0xF1", "UTF-8"):
+            self.assertIn(text, reports[0][1])
+        text, icon = self.notice()
+        self.assertEqual(icon, "ERROR")
+        self.assertTrue(text.startswith(f"Lectura de «{name}» · Operación fallida · "), text)
+        for shown in (reports[0][1], text, view.notice.error.text):
+            self.assertNotIn(COPY_STEM, shown)
 
 
 if __name__ == "__main__":

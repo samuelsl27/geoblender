@@ -354,7 +354,8 @@ class JobMonitor:
     def end_operation(self, job_uid: str, state: str, reason: str) -> bool:
         """Dice en el aviso del trabajo ``job_uid``, que terminó bien, que su operación quedó
         ``state`` (fallida o cancelada, :data:`ENDING_STATES`) con ``reason`` al incorporarlo
-        (spec 006, T57; RF-004-07): su aviso deja de decir «Terminado» y dice eso y el
+        (spec 006, T57; RF-004-07; también la lectura de una importación de sondeos que falló,
+        spec 005, T51): su aviso deja de decir «Terminado» (o «Fallido») y dice eso y el
         principio del motivo (``bl/ui/jobs.py``) durante :data:`NOTICE_S` s desde ahora, aunque
         ya hubiera caducado o mostrara otro (una incorporación por pasos acaba después del
         sondeo que lo vio terminar); redibuja la barra de estado y sigue con el temporizador.

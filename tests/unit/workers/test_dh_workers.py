@@ -295,6 +295,20 @@ class _FakeExtractor:
         return list(self.tables.values())
 
 
+class _WithoutEngine(_FakeExtractor):
+    """El extractor de un equipo sin motor que, como el real, dice su avance y su error con el
+    nombre (y la ruta) de la copia que abre."""
+
+    def __init__(self) -> None:
+        super().__init__({})
+
+    def extract(self, path: Path, out_dir: Path, on_progress: Any, cancelled: Any) -> list:
+        self.opened.append(Path(path))
+        on_progress(0.1, f"Abriendo «{Path(path).name}»")
+        raise ports.engine_missing(Path(path).name, ports.MdbFormat.ACE,
+                                   (f"ACE.16 (64 bits): no abre {path}",))
+
+
 def setUpModule() -> None:  # noqa: N802 (nombre de unittest)
     tmp = _support.jobs_tmp(prefix="gb23-")
     base = tmp.__enter__()
@@ -736,15 +750,24 @@ class ImportRecminTest(_JobCase):
 
     def test_engine_missing_and_cancellation(self) -> None:
         """RF-005-14, RF-005-04 (RF-004-09): sin motor, ``io.mdb_engine_missing`` con el formato
-        y ``out/`` vacía; cancelar mientras el extractor lee para el trabajo en ≤ 2 s
-        (``JobCancelled``), el extractor ve la cancelación y ``out/`` queda vacía."""
-        missing = ports.engine_missing("base.mdb", ports.MdbFormat.ACE, ("ACE.16",))
-        dh_content.use_mdb_extractor(_FakeExtractor({}, error=missing))
+        y ``out/`` vacía; T51: el error y el avance del extractor, que nombran la copia que abre
+        (su nombre y su ruta, como el real), nombran la base elegida y nunca la copia; cancelar
+        mientras el extractor lee para el trabajo en ≤ 2 s (``JobCancelled``), el extractor ve
+        la cancelación y ``out/`` queda vacía."""
+        dh_content.use_mdb_extractor(_WithoutEngine())
         folder = self.prepare(dh_jobs.IMPORT_RECMIN, self.recmin_params())
-        with self.assertRaises(worker_api.JobFailed) as caught:
-            import_geoblender("workers.dh_import_recmin").main(
-                self.context(folder, paths={"source_main": _STATE["sources"] / "base.mdb"}))
-        self.assertEqual(caught.exception.code, ports.MDB_ENGINE_MISSING)
+        ctx = self.context(folder, paths={"source_main": _STATE["sources"] / "base.mdb"})
+        with (mock.patch.object(ctx, "progress", wraps=ctx.progress) as progress,
+              self.assertRaises(worker_api.JobFailed) as caught):
+            import_geoblender("workers.dh_import_recmin").main(ctx)
+        failed = caught.exception
+        self.assertEqual(failed.code, ports.MDB_ENGINE_MISSING)
+        self.assertTrue(failed.text.startswith("base.mdb: formato = «ACE"), failed.text)
+        self.assertIn("ACE.16 (64 bits): no abre base.mdb", failed.text)
+        shown = [call.args[1] for call in progress.call_args_list if len(call.args) > 1]
+        self.assertIn("Abriendo «base.mdb»", shown)
+        for text in (failed.text, failed.msgid, json.dumps(failed.values), *shown):
+            self.assertNotIn("source_main", text)
         self.assertEqual(list(folder.outputs_dir.iterdir()), [])
         fake = _FakeExtractor(_v12(), block=True)
         dh_content.use_mdb_extractor(fake)

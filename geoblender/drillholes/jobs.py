@@ -210,6 +210,7 @@ __all__ = [
     "run_validate",
     "run_view_arrays",
     "source_digest",
+    "source_named",
     "span",
     "table_output",
     "trace_rows",
@@ -473,18 +474,55 @@ def _clear_outputs(ctx: _Context) -> None:
             child.unlink(missing_ok=True)
 
 
-def _failed(error: GeoblenderError) -> JobFailed:
-    """El fallo explicado (RF-004-12) de un error para el usuario del dominio."""
-    text = str(error)
+def _same(text: str) -> str:
+    return text
+
+
+def source_named(ctx: _Context) -> Callable[[str], str]:
+    """Cómo se nombra la fuente de una importación en lo que dice su trabajo (spec 005, T51;
+    RF-005-14): la copia de ``in/`` que leen el lector y el extractor de RecMin
+    (``source_main.<extensión>``, :func:`copy_source`), por su ruta o por su nombre, pasa a ser
+    el nombre del fichero que eligió el usuario (el de ``--path``; sin su carpeta, que no va al
+    proyecto). Sin fuente (los trabajos que no importan), el texto tal cual."""
+    source = (getattr(ctx, "paths", None) or {}).get(path_name("main"))
+    if source is None:
+        return _same
+    source = Path(source)
+    copy = ctx.job_dir.inputs_dir / f"{path_name('main')}{source.suffix}"
+    pairs = ((str(copy), source.name), (copy.name, source.name))
+
+    def named(text: str) -> str:
+        for old, new in pairs:
+            text = text.replace(old, new)
+        return text
+
+    return named
+
+
+def _named_value(value: Any, named: Callable[[str], str]) -> Any:
+    if isinstance(value, str):
+        return named(value)
+    if isinstance(value, list):
+        return [named(item) if isinstance(item, str) else item for item in value]
+    return value
+
+
+def _failed(error: GeoblenderError, named: Callable[[str], str] = _same) -> JobFailed:
+    """El fallo explicado (RF-004-12) de un error para el usuario del dominio; ``named``, cómo
+    se nombra en él la fuente (:func:`source_named`)."""
+    text = named(str(error))
     values = getattr(error, "values", None)
     found = values if isinstance(values, Mapping) else error.context
-    return JobFailed(error.code, msgid=getattr(error, "msgid", None) or text, text=text,
-                     values={str(key): plain(value) for key, value in found.items()})
+    msgid = getattr(error, "msgid", None)
+    return JobFailed(error.code, msgid=named(msgid) if msgid else text, text=text,
+                     values={str(key): _named_value(plain(value), named)
+                             for key, value in found.items()})
 
 
 def job_function(run: Callable[[Any], dict[str, Any]]) -> Callable[[Any], dict[str, Any]]:
     """La función de un trabajo: si se cancela o falla, ``out/`` queda vacía; un error del
-    dominio para el usuario es ``JobFailed``."""
+    dominio para el usuario es ``JobFailed``, que nombra la fuente de una importación por el
+    fichero que eligió el usuario, no por su copia de ``in/`` (:func:`source_named`; T51)."""
 
     @functools.wraps(run)
     def guarded(ctx: Any) -> dict[str, Any]:
@@ -493,7 +531,7 @@ def job_function(run: Callable[[Any], dict[str, Any]]) -> Callable[[Any], dict[s
         except BaseException as error:
             _clear_outputs(ctx)
             if isinstance(error, GeoblenderError) and not isinstance(error, JobError):
-                raise _failed(error) from None
+                raise _failed(error, source_named(ctx)) from None
             raise
 
     return guarded
