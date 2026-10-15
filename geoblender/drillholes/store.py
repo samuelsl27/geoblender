@@ -1760,23 +1760,27 @@ class _Only:
     element: str | None
 
 
-def _only_where(conn: sqlite3.Connection, table: str, only: _Only | None,
-                elements: tuple[np.ndarray, Sequence[Element]]
+def _only_where(table: str, only: _Only | None,
+                catalogs: Mapping[str, tuple[np.ndarray, Sequence[Any]]]
                 ) -> tuple[str, list[Any]] | None:
-    """El filtro de :meth:`_Reading.table` de ``table`` con ``only`` (``None``: entera): de la
-    litología, los esquemas guardados con el ``name_key`` de ``only.log_set``; de los análisis,
-    los ids de los elementos del catálogo (``elements``: sus ``fid`` y sus registros) con el de
-    ``only.element``."""
+    """El filtro de :meth:`_Reading.table` de ``table`` con ``only`` (``None``: entera), por
+    los ids de su catálogo (``catalogs``: el ``fid`` y los registros de cada catálogo de la
+    base, por su tabla): de la litología, los de los códigos del esquema de logueo con el
+    ``name_key`` de ``only.log_set``; de los análisis, los de los elementos con el de
+    ``only.element``. La base guarda cada tramo de litología con el código de su esquema
+    (``build_base``: su ``lithology_id`` es el de su esquema y su código), así que no hace
+    falta recorrer la tabla para saber cómo se escribe cada esquema (T55; RNF-005-06: en
+    ``Z:``, ``SELECT DISTINCT log_set`` de toda la litología de V-ref tardaba 0,12–0,16 s en
+    un paso)."""
     if only is None:
         return None
     if table == "dh_lithology":
-        if only.log_set is None:
-            return "log_set", []
-        stored = conn.execute('SELECT DISTINCT "log_set" FROM "dh_lithology"').fetchall()
-        return "log_set", sorted(value for (value,) in stored
-                                 if isinstance(value, str) and name_key(value) == only.log_set)
+        fids, codes = catalogs["dh_lithology_code"]
+        return "lithology_id", [fid for fid, item in zip(fids.tolist(), codes, strict=True)
+                                if only.log_set is not None
+                                and name_key(item.log_set) == only.log_set]
     if table == "dh_assay":
-        fids, records = elements
+        fids, records = catalogs["dh_element"]
         return "element_id", [fid for fid, item in zip(fids.tolist(), records, strict=True)
                               if only.element is not None and name_key(item.code) == only.element]
     return None
@@ -1812,7 +1816,8 @@ def _read_base(
     reading = _Reading(conn, _Pacer(budget_s, clock), {
         name: _last_fid(conn, name)
         for name, _, _ in (("dh_collar", "", ""), *_BASE_PARTS) if name in tables})
-    elements = (catalog_fids["dh_element"], catalogs["elements"])
+    by_table = {table: (catalog_fids[table], catalogs[attribute])
+                for table, (attribute, _) in _BASE_CATALOGS.items()}
     row_fids: dict[str, np.ndarray] = {}
 
     collar_fids, stored = yield from reading.table(
@@ -1832,7 +1837,7 @@ def _read_base(
             continue
         catalog = _CATALOG_ID.get(table)
         ids = ("hole_id",) if catalog is None else ("hole_id", catalog[0])
-        where = _only_where(conn, table, only, elements)
+        where = _only_where(table, only, by_table)
         row_fids[table], stored = yield from reading.table(
             table, _converters(columns, table, ids), where)
         yield from reading.pause()

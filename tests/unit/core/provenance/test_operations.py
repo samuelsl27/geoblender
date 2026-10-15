@@ -22,7 +22,9 @@ RF-008-18, RF-008-23, RF-008-51; ADR-0025 §3; plan 008 §5.3.1 y §5.4.7).
   salidas; ``interrupt_orphaned``, al abrir en escritura, deja «interrumpida», con su evento, la
   que sigue en curso de otra sesión (no las de esta); ``mark_not_ingested`` deja «no
   incorporada», con el motivo, la que sigue en curso cuando se borra su trabajo; ninguna deja un
-  dato registrado como bueno (RF-008-19, RF-008-23).
+  dato registrado como bueno (RF-008-19, RF-008-23);
+- (spec 005, T55) ``begin_operations`` deja «en curso» varias operaciones del mismo tipo en una
+  sola transacción, cada una como con ``begin_operation``.
 
 Cada prueba crea su proyecto sintético (esquema 2) con un reloj simulado, registra los
 parámetros y los tipos de operación de prueba de ``res`` y los quita al acabar.
@@ -38,6 +40,7 @@ import unittest
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from tests.support.core_fixtures import (
     CLOCK_START,
@@ -440,6 +443,72 @@ class BeginTest(OperationsCase):
         self.assertRejected(
             provenance.ProvenanceError, "core.operation_input_not_live",
             lambda: self.begin(inputs=[operations.Use(INPUT_UID, "boundary", kind="input")]))
+
+    def test_several_in_one_transaction(self) -> None:
+        """RF-008-51, RF-008-04, RF-008-05 (spec 005, T55; RNF-005-06): ``begin_operations``
+        deja «en curso» varias operaciones del mismo tipo, una por cada uno de sus ajustes, en
+        una sola transacción de escritura y en su orden, cada una con lo mismo que
+        ``begin_operation`` (sus campos, lo que consume y los parámetros resueltos; el que
+        faltaba, registrado una vez); sin ajustes, ninguna y sin escribir; si una no se puede
+        empezar, ninguna."""
+        survey, _terrain = self.survey()
+        self.add_input(survey.uid)
+        self.tick()
+        common: dict[str, Any] = {
+            "inputs": [operations.Use("res_terreno", "terrain"),
+                       operations.Use(INPUT_UID, "boundary", kind="input")],
+            "params": ["res.swell_factor", "res.recovery"], "executor": "job_process"}
+        settings = [{"tabla": "bocas", "n": 1}, {"tabla": "litología", "n": 2},
+                    {"tabla": "análisis", "n": 3}]
+        writes = mock.patch.object(self.project, "write_transaction",
+                                   wraps=self.project.write_transaction)
+        with writes as writing:
+            together = operations.begin_operations(self.project, "res.balance",
+                                                   settings=settings, **common)
+            self.assertEqual(writing.call_count, 1)
+            self.assertEqual(operations.begin_operations(self.project, "res.balance",
+                                                         settings=[], **common), [])
+            self.assertEqual(writing.call_count, 1)
+        one_by_one = [self.begin(settings=item, **common) for item in settings]
+
+        def recorded(handles: Sequence[Any]) -> list[Any]:
+            found = []
+            for handle in handles:
+                row = self.row(handle.uid)
+                found.append(({name: value for name, value in row.items()
+                               if name not in ("fid", "uid")},
+                              self.query("SELECT direction, item_kind, item_uid, "
+                                         "content_sha256, role FROM gb_operation_io WHERE "
+                                         "operation_uid = ? ORDER BY fid", (handle.uid,)),
+                              self.query("SELECT parameter_uid, key, scope, rev, value, unit, "
+                                         "kind, unconfirmed, value_sha256 FROM "
+                                         "gb_operation_param WHERE operation_uid = ? ORDER BY "
+                                         "fid", (handle.uid,)),
+                              (handle.op_type, handle.started_at, handle.executor,
+                               handle.inputs, handle.params)))
+            return found
+
+        self.assertEqual(recorded(together), recorded(one_by_one))
+        self.assertEqual([_json(item) for item in settings],
+                         [self.row(handle.uid)["settings"] for handle in together])
+        fids = [self.row(handle.uid)["fid"] for handle in together]
+        self.assertEqual(fids, sorted(fids))
+        self.assertEqual(
+            [row[0] for row in self.query("SELECT key FROM gb_parameter ORDER BY fid")],
+            ["res.swell_factor", "res.recovery"])
+        self.assertEqual({self.status(handle.uid) for handle in together}, {"running"})
+        self.assertRejected(
+            ValueError, None,
+            lambda: operations.begin_operations(
+                self.project, "res.balance",
+                settings=[{"n": 4}, {"fuente": "C:\\Datos\\cliente\\limites.gpkg"}], **common))
+        self.assertRejected(
+            provenance.ProvenanceError, "core.operation_dataset_unknown",
+            lambda: operations.begin_operations(
+                self.project, "res.balance", settings=[{"n": 5}],
+                inputs=[operations.Use("res_nada", "terrain")], executor="blender"))
+        self.assertRejected(TypeError, None, lambda: operations.begin_operations(
+            self.project, "res.balance", settings={"n": 6}, executor="blender"))
 
 
 class CompleteTest(OperationsCase):

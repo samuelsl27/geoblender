@@ -1008,6 +1008,35 @@ class BaseWriterTest(_StoreCase):
         with self.assertRaises(ValueError):
             view.base_rows("dh_assay", np.array([len(gold)]))
 
+    def test_the_view_does_not_scan_its_lithology_or_its_assays(self) -> None:
+        """RNF-005-06 (T55; RNF-005-04, RF-005-23): ninguna sentencia de la lectura de la vista
+        (``view_steps``) recorre entera la litología ni los análisis: el plan de cada una que
+        los lee es una búsqueda por ``fid`` (en ``Z:``, ``SELECT DISTINCT log_set`` de toda la
+        litología de V-ref tardaba 0,12–0,16 s en un paso); los esquemas de logueo salen de su
+        catálogo, y se lee lo mismo (``test_view_reads_only_its_log_set_and_its_element``)."""
+        base = build.build_base([*_entries(), _alteration()], FakeCrsService(), CRS, VERTICAL,
+                                project_uid=self.project.uid)
+        self.write_base(base)
+        statements: list[str] = []
+        with self.project.read() as conn:
+            conn.set_trace_callback(statements.append)
+            try:
+                for log_set, element in ((ALTERATION, "Au"), (model.LITHOLOGY_LOG_SET, None),
+                                         ("ninguno", "Cu")):
+                    _drive(store.view_steps(conn, log_set=log_set, element=element,
+                                            clock=_Ticks()))
+            finally:
+                conn.set_trace_callback(None)
+            plans = {sql: [str(row[-1]) for row in conn.execute(f"EXPLAIN QUERY PLAN {sql}")]
+                     for sql in dict.fromkeys(statements)
+                     if '"dh_lithology"' in sql or '"dh_assay"' in sql}
+        self.assertTrue(plans)
+        for sql, plan in plans.items():
+            with self.subTest(sentencia=sql):
+                self.assertEqual([line for line in plan
+                                  if line.startswith(("SCAN dh_lithology", "SCAN dh_assay"))],
+                                 [], plan)
+
     def test_failure_leaves_the_previous_base(self) -> None:
         """RF-005-04, RF-008-19 (plan §5.6.5, D-14): un fallo al reescribir la base la deja
         como estaba y la operación «fallida» con su motivo; una tabla con el nombre de una de

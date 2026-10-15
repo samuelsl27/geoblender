@@ -15,7 +15,10 @@ pruebas fijan cada arreglo con datos pequeños, contando lo que hace cada paso (
   por paso de la cola);
 - los indicadores de la procedencia no leen la cabecera del proyecto mientras esta sesión
   escribe en él (en ``Z:``, abrir y cerrar el fichero con la transacción abierta tardaba
-  0,2–0,45 s por tic).
+  0,2–0,45 s por tic);
+- (T55) la orden «Importar sondeos» pasa la puerta de la procedencia una vez y da de alta las
+  operaciones de sus ficheros en una sola transacción (en ``Z:``, una puerta y una transacción
+  por fichero: 0,24–0,25 s con los seis de V-ref).
 
 Con el proyecto y las ayudas de ``test_dh_import_tabular`` (``DrillholeImportCase``). La cifra
 con V-ref la da ``tests/rendimiento/blender/perf_dh_steps.py``.
@@ -23,6 +26,7 @@ con V-ref la da ``tests/rendimiento/blender/perf_dh_steps.py``.
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
+import json
 import threading
 from collections.abc import Generator
 from typing import Any
@@ -173,6 +177,54 @@ class DrillholeStepsTest(DrillholeImportCase):
                          [("dh.import_tabular", "done")] * len(FILES)
                          + [("dh.build_base", "done"), ("dh.validate", "done")])
         self.assertIn('"gis_dtm_terreno"', operations[-1][2])
+
+    def test_an_order_begins_its_operations_at_once(self) -> None:
+        """RNF-005-06 (T55; RF-008-51, RF-008-10, RF-005-04): la orden «Importar sondeos» con
+        los seis ficheros de ``csv_basico`` pasa la puerta de la procedencia una vez
+        (``gate.can_run``) y da de alta sus seis operaciones «en curso» en una sola
+        transacción de escritura del hilo de Blender; cada una, como antes: su tipo, dónde
+        corre, sus ajustes (los de su fichero) y en el orden de los ficheros, con la lectura
+        de su fichero lanzada; y se importa lo mismo."""
+        gate = _module("core.provenance.gate")
+        counted = {"gates": 0, "writes": 0}
+        inside = {"order": False}
+        real_start, real_can_run = self.dh_ops.start_order, gate.can_run
+        real_write = self.project.write_transaction
+
+        def start_order(*args: Any, **options: Any) -> set[str]:
+            inside["order"] = True
+            try:
+                return real_start(*args, **options)
+            finally:
+                inside["order"] = False
+
+        def can_run(*args: Any, **options: Any) -> Any:
+            counted["gates"] += inside["order"]
+            return real_can_run(*args, **options)
+
+        def write_transaction() -> Any:
+            counted["writes"] += inside["order"] and threading.current_thread() is self.main
+            return real_write()
+
+        with mock.patch.object(self.dh_ops, "start_order", start_order), \
+                mock.patch.object(gate, "can_run", can_run), \
+                mock.patch.object(self.project, "write_transaction", write_transaction):
+            result, launched = self.run_import(FILES)
+        self.assertEqual(result, {"FINISHED"})
+        self.assertEqual(counted, {"gates": 1, "writes": 1})
+        begun = self.rows("SELECT uid, op_type, status, executor, settings FROM gb_operation "
+                          "WHERE op_type LIKE 'dh.%' ORDER BY fid")
+        self.assertEqual(sorted(row[0] for row in begun), sorted(launched))
+        self.assertEqual([json.loads(row[4])["file"] for row in begun], list(FILES))
+        self.assertEqual({row[1:4] for row in begun},
+                         {("dh.import_tabular", "running", "job_process")})
+        self.finish()
+        uid, pending = self.waiting()
+        pending.register_codes = True
+        self.assertEqual(self.decide("APPLY", uid), {"FINISHED"})
+        self.finish()
+        self.assertEqual(self.statuses([row[0] for row in begun]), ["done"] * len(FILES))
+        self.assertEqual(self.rows("SELECT count(*) FROM dh_collar"), [(6,)])
 
     def test_indicators_wait_while_this_session_writes(self) -> None:
         """RNF-005-06 (T53; R13): con una transacción de escritura de esta sesión abierta (la

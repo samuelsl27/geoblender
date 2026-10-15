@@ -921,8 +921,6 @@ DISCARDED = "La persona descartó la importación de los sondeos"
 """El motivo (en español, como los demás motivos guardados) de una importación descartada."""
 OTHER_FAILED = "Otra tabla de la misma importación no se leyó o no se aplicó: {name}"
 """El motivo de las demás importaciones de una orden cuando una falla (RF-005-04)."""
-NOT_STARTED = "Otra tabla de la misma importación no pudo empezar: {name}"
-"""El motivo de las importaciones de una orden ya empezadas cuando otra no puede empezar."""
 DUPLICATES_WARNING = "Sondeos repetidos en la fuente (DH-E01; no pasan a la base): {holes}"
 """El aviso de ``dh_import_log`` de unas bocas repetidas en la fuente."""
 REJECTIONS_SHOWN = 50
@@ -1221,25 +1219,24 @@ def start_order(operator: Any, context: Any, project: Any, choices: Sequence[Tab
                 reason: str | None = None, accept_schema: bool = False,
                 command: str = IMPORT_DRILLHOLES) -> set[str]:
     """Empieza la importación de ``choices`` con la orden ``operator`` (una operación de su
-    tipo por tabla, o por la base de RecMin, con la puerta de la 008, y su lectura; la de una
-    base de RecMin de esquema desconocido, ya confirmada si ``accept_schema``); devuelve el
-    final de la orden. ``command``: el ``bl_idname`` de la orden, la que aplica o descarta lo
-    que espere la decisión de la persona. Si una no puede empezar, las demás quedan
-    canceladas."""
+    tipo por tabla, o por la base de RecMin, y su lectura; la de una base de RecMin de esquema
+    desconocido, ya confirmada si ``accept_schema``); devuelve el final de la orden.
+    ``command``: el ``bl_idname`` de la orden, la que aplica o descarta lo que espere la
+    decisión de la persona. Las operaciones pasan la puerta de la 008 una vez y empiezan
+    juntas, en una sola transacción (T55; RNF-005-06: en ``Z:``, una por fichero pasaba de
+    0,2 s con seis): si una no puede empezar, ninguna."""
     with project.read() as conn:
         catalogs = store.read_catalogs(conn)
         holes = store.holes_by_table(conn)
     order = _Order([], declaration, options, catalogs, holes, received_at, received_from,
                    reason, command=command, accept_schema=accept_schema)
-    for choice in choices:
-        handle = operator.begin(context, settings=_operation_settings(choice, declaration,
-                                                                      options),
-                                executor="job_process")
-        if handle is None:  # ya dicho por qué
-            for entry in order.entries:
-                _end(entry.handle, NOT_STARTED.format(name=choice.label))
-            return {"CANCELLED"}
-        order.entries.append(_Entry(choice, handle))
+    handles = operator.begin_each(
+        context, [_operation_settings(choice, declaration, options) for choice in choices],
+        executor="job_process")
+    if handles is None:  # ya dicho por qué; ninguna empezó
+        return {"CANCELLED"}
+    order.entries.extend(_Entry(choice, handle)
+                         for choice, handle in zip(choices, handles, strict=True))
     _ORDERS[order.uid] = order
     for entry in order.entries:
         choice = entry.choice

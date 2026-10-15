@@ -917,6 +917,42 @@ def begin_operation(
     return handle
 
 
+def begin_operations(
+    project: OperationProject,
+    op_type: str,
+    *,
+    settings: Sequence[Mapping[str, Any]],
+    inputs: Sequence[Use] = (),
+    params: Sequence[str] = (),
+    executor: Executor | str,
+    group_uid: str | None = None,
+) -> list[OperationHandle]:
+    """Registra «en curso» varias operaciones de tipo ``op_type``, una por cada uno de los
+    ``settings`` y en su orden, en **una sola** transacción (spec 005, T55; RNF-005-06: una
+    orden que lee varios ficheros, cada uno con su operación; en ``Z:``, una transacción por
+    operación tardaba ≈ 0,035 s cada una) y devuelve sus :class:`OperationHandle` en ese
+    orden. Cada una queda como con :func:`begin_operation` con sus ajustes y los mismos
+    ``inputs``, ``params``, ``executor`` y ``group_uid`` (los parámetros que faltaban se
+    registran por defecto una vez). Sin ajustes, ninguna, sin escribir nada. Los mismos
+    rechazos que :func:`begin_operation`, sin escribir nada: si una no se puede empezar,
+    ninguna; :class:`TypeError` si ``settings`` no es una secuencia de ajustes."""
+    if isinstance(settings, Mapping | str | bytes) or not isinstance(settings, Sequence):
+        raise TypeError(f"los ajustes de varias operaciones son una secuencia (una por "
+                        f"operación), no {settings!r}")
+    starts = [_Start.of(project, op_type, settings=item, inputs=inputs, params=params,
+                        executor=executor, job_uid=None, group_uid=group_uid,
+                        supersedes=None) for item in settings]
+    if not starts:
+        return []
+    with project.write_transaction() as conn:
+        _prune(project, conn)
+        handles = [start.insert(conn, project) for start in starts]
+    with _LOCK:
+        for handle in handles:
+            _HANDLES[handle.uid] = handle
+    return handles
+
+
 def begin_in_transaction(
     conn: sqlite3.Connection,
     project: OperationProject,
