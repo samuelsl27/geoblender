@@ -17,29 +17,22 @@ base), con la regla bajo el límite de detección de la primera importación.
 
 Lo usan el rendimiento de la importación de una base de RecMin
 (``tests/rendimiento/test_dh_mdb_perf.py``, T33, que añade la base y su validación) y el
-banco de RecMin (``tests/banco/recmin/``, T34). :func:`registrations` registra lo que
-registra Blender al habilitar Geoblender y usa la importación; :func:`new_runner`, el
-lanzador; :func:`drive`, los pasos de una escritura seguidos.
+banco de RecMin (``tests/banco/recmin/``, T34). Lo común de una importación de sondeos (los
+trabajos, la base y su validación) está en ``tests.support.dh_import``; de allí vienen
+también :func:`registrations` (lo que registra Blender al habilitar Geoblender y usa la
+importación), :func:`new_runner` (el lanzador) y :func:`drive` (los pasos de una escritura
+seguidos).
 """
 
 from __future__ import annotations
 
-import dataclasses
 import json
-import sys
-import time
-from collections.abc import Generator, Iterator, Mapping
-from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
+from tests.support.dh_import import ImportDriver, drive, new_runner, registrations
 from tests.support.package import import_geoblender
-from tests.support.provenance_contract import registered
-from tests.support.repo import EXTENSION_DIR
 
-dh_content = import_geoblender("interop.dh_content")
 recmin_schema = import_geoblender("interop.recmin.schema")
 model = import_geoblender("drillholes.model")
 dh_arrays = import_geoblender("drillholes.arrays")
@@ -47,77 +40,17 @@ dh_jobs = import_geoblender("drillholes.jobs")
 dh_params = import_geoblender("drillholes.params")
 provenance = import_geoblender("drillholes.provenance")
 store = import_geoblender("drillholes.store")
-readers = import_geoblender("core.content.readers")
-builtin = import_geoblender("core.content.builtin")
 inputs_mod = import_geoblender("core.inputs")
 operations = import_geoblender("core.provenance.operations")
 core_params = import_geoblender("core.params")
-core_defs = import_geoblender("core.params.core_defs")
-gis_crs = import_geoblender("gis.crs")
 gis_jobs = import_geoblender("gis.jobs")
-gis_provenance = import_geoblender("gis.provenance")
-gis_store = import_geoblender("gis.store")
-catalog = import_geoblender("jobs.catalog")
-ingest = import_geoblender("jobs.ingest")
-protocol = import_geoblender("jobs.protocol")
-runner_mod = import_geoblender("jobs.runner")
 
-MAX_SUBPROCESS = 2  # los trabajos a la vez en proceso aparte de Blender (MAX_PARALLEL_DEFAULT)
-POLL_S = 0.005  # sondeo del lanzador mientras espera un trabajo
-WAIT_S = 600.0  # plazo de seguridad: un trabajo colgado no cuelga la prueba
+__all__ = ["DECIMAL", "RecminImport", "drive", "new_runner", "registrations"]
+
 DECIMAL = ","  # el de los números escritos como texto (RecMin no tiene)
-SUCCEEDED = "succeeded"
 
 
-def _recompute(request: Any) -> Any:  # pragma: no cover - nada se recalcula aquí
-    raise AssertionError("no se recalcula en estas pruebas")
-
-
-def registrations(stack: ExitStack) -> None:
-    """Lo que registra Blender al habilitar Geoblender y usa la importación (``bl/ops/dh.py``
-    y ``bl/ops/gis.py``), en ``stack``, que lo quita al cerrarse: los tipos de operación de la
-    005 y el de la rejilla del proyecto de la 006, los lectores de contenido (de la 005 y el de
-    las tablas del proyecto), los parámetros (de ``core`` y de los sondeos) y los tipos de
-    trabajo de la 005."""
-    stack.enter_context(registered(
-        *provenance.operation_defs({name: _recompute for name in provenance.REPEATABLE}),
-        *gis_provenance.operation_defs({gis_provenance.RESAMPLE: _recompute},
-                                       op_types=(gis_provenance.RESAMPLE,))))
-    for reader in (builtin.GPKG_LAYER, *dh_content.CONTENT_READERS):
-        if reader.id not in readers.READERS:
-            readers.register_reader(reader)
-            stack.callback(readers.unregister_reader, reader.id)
-    for definitions in (core_defs.DEFINITIONS, dh_params.DEFINITIONS):
-        if definitions[0].key not in core_params.DEFINITIONS:
-            core_params.register_definitions(definitions)
-            stack.callback(core_params.unregister_definitions, definitions[0].module)
-    for info in dh_jobs.WORKER_INFOS:
-        if info.name not in catalog.WORKERS:
-            catalog.register_worker(info)
-            stack.callback(catalog.unregister_worker, info.name)
-
-
-def new_runner(folder: Path, project: Any) -> Any:
-    """El lanzador de trabajos de la importación, como el de Blender: dos a la vez en proceso
-    aparte y uno en el hilo, con la carpeta del proyecto prohibida y sus trabajos en
-    ``folder/trabajos``."""
-    return runner_mod.JobRunner(jobs_root=folder / "trabajos", package_dir=EXTENSION_DIR,
-                                blender_python=Path(sys.executable),
-                                max_subprocess=MAX_SUBPROCESS,
-                                forbidden_roots=[Path(project.root)])
-
-
-def drive[T](steps: Generator[Any, None, T] | Iterator[Any]) -> T | None:
-    """Recorre los pasos ``steps`` seguidos (sin las pausas del temporizador de Blender) y da
-    lo que devuelven."""
-    while True:
-        try:
-            next(steps)
-        except StopIteration as stop:
-            return stop.value
-
-
-class RecminImport:
+class RecminImport(ImportDriver):
     """La importación de la base ``path`` en ``project`` con el lanzador ``runner`` (véase el
     módulo), con lo que declara quien la importa (``declaration``, un
     ``drillholes.model.SourceDeclaration``), el separador decimal de sus ajustes
@@ -128,16 +61,12 @@ class RecminImport:
     def __init__(self, project: Any, runner: Any, path: Path, declaration: Any, *,
                  decimal: str = DECIMAL, accept_schema: bool = False, name: str | None = None,
                  job_label: str = "Prueba") -> None:
-        self.project = project
-        self.runner = runner
+        super().__init__(project, runner, job_label=job_label)
         self.path = Path(path)
         self.name = self.path.stem if name is None else name
         self.declaration = declaration
         self.decimal = decimal
         self.accept_schema = accept_schema
-        self.job_label = job_label
-        self.crs, self.vertical = gis_store.project_references(project)
-        self.software = dict([gis_crs.crs_library()])
         self.catalogs: Any = None  # los del proyecto al empezar la orden
         self.holes: Any = None  # sus sondeos con registros en cada tabla, al empezar
         self.handle: Any = None  # la operación dh.import_recmin
@@ -147,57 +76,6 @@ class RecminImport:
         self.applied: Any = None  # el JobHandle y, terminado, el JobResult de su aplicación
         self.item: Any = None  # la entrada escrita (store.SourceInput)
         self.report: dict[str, Any] = {}  # el informe de su lectura (report.json)
-        self.workers: dict[str, str] = {}  # el tipo de cada trabajo lanzado, por su uid
-        self.jobs: dict[str, str] = {}  # el ejecutor de cada tipo de trabajo
-
-    # --- Lo común --------------------------------------------------------------------------
-
-    def submit(self, handle: Any, worker: str, params: Mapping[str, Any], *,
-               paths: Mapping[str, Path] | None = None,
-               arrays: Mapping[str, np.ndarray] | None = None) -> Any:
-        """Lanza el trabajo ``worker`` de la operación ``handle`` como
-        ``core_provenance.launch_job``: la petición con la operación y el proyecto, ``arrays``
-        escritos en ``in/`` antes de lanzarlo y ``paths`` por la línea de órdenes."""
-        request = protocol.new_request(worker, label=f"{self.job_label}: {worker}",
-                                       owner=handle.definition.module, params=dict(params),
-                                       project_uid=handle.project_uid, operation_uid=handle.uid,
-                                       grace_s=dh_jobs.CANCEL_GRACE_S)
-        job: Any = request
-        if arrays:
-            folder = self.runner.prepare(request)
-            prepared = protocol.read_request(folder)
-            written = {name: folder.write_array(name, array) for name, array in arrays.items()}
-            protocol.write_request(folder, dataclasses.replace(
-                prepared, inputs={**dict(prepared.inputs), **written}))
-            job = folder
-        self.workers[request.job_uid] = worker
-        return self.runner.submit(job, paths=paths)
-
-    def wait(self, handle: Any) -> Any:
-        """Espera a que termine el trabajo ``handle`` sondeando el lanzador; su ``JobResult``.
-        Falla si no termina bien."""
-        deadline = time.perf_counter() + WAIT_S
-        while handle.result() is None:
-            if time.perf_counter() > deadline:
-                raise AssertionError(f"el trabajo no termina en {WAIT_S:.0f} s")
-            self.runner.poll()
-            time.sleep(POLL_S)
-        result = handle.result()
-        if result.state != SUCCEEDED:
-            raise AssertionError(f"un trabajo terminó «{result.state}»: {result.error_code} "
-                                 f"{result.error_text}")
-        return result
-
-    def outcome(self, result: Any) -> Any:
-        outcome = ingest.job_outcome(result, result.job_dir)
-        self.jobs[self.workers[result.job_uid]] = str(outcome.executor)
-        return outcome
-
-    def release(self, *results: Any) -> None:
-        """Da por incorporados los trabajos de ``results`` (se borran sus entradas y sus
-        resultados), como ``core_provenance.release_job``."""
-        for result in results:
-            self.runner.mark_ingested(result.job_uid)
 
     def import_source(self) -> None:
         """La importación entera (lectura, aplicación y escritura), hasta que se confirma lo
@@ -234,7 +112,7 @@ class RecminImport:
                   "project_holes": {table: list(names) for table, names in self.holes.items()},
                   "catalogs": dh_arrays.catalogs_json(self.catalogs),
                   "size": self.path.stat().st_size, "accept_schema": self.accept_schema}
-        self.read = self.submit(self.handle, dh_jobs.IMPORT_RECMIN, params,
+        self.read = self.submit(self.handle, dh_jobs.IMPORT_RECMIN, params, name=self.name,
                                 paths={gis_jobs.path_name("main"): self.path})
         return self.read
 
@@ -272,7 +150,7 @@ class RecminImport:
                   "taken_colors": [code.color for code in self.catalogs.lithology],
                   "count": imported + 1}
         self.applied = self.wait(self.submit(
-            self.handle, dh_jobs.IMPORT_APPLY, params,
+            self.handle, dh_jobs.IMPORT_APPLY, params, name=self.name,
             paths={dh_jobs.INPUT_SOURCE: self.found.file(dh_jobs.OUT_SOURCE.role)}))
 
     # --- Lo importado (_import_steps) -------------------------------------------------------

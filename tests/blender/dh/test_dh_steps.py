@@ -18,7 +18,10 @@ pruebas fijan cada arreglo con datos pequeños, contando lo que hace cada paso (
   0,2–0,45 s por tic);
 - (T55) la orden «Importar sondeos» pasa la puerta de la procedencia una vez y da de alta las
   operaciones de sus ficheros en una sola transacción (en ``Z:``, una puerta y una transacción
-  por fichero: 0,24–0,25 s con los seis de V-ref).
+  por fichero: 0,24–0,25 s con los seis de V-ref);
+- (T31; RNF-005-01) la orden lanza primero la lectura del fichero más grande (con V-ref, la de
+  los análisis, la más larga, iba cuarta en la cola de dos a la vez y alargaba la importación
+  casi 1 s).
 
 Con el proyecto y las ayudas de ``test_dh_import_tabular`` (``DrillholeImportCase``). La cifra
 con V-ref la da ``tests/rendimiento/blender/perf_dh_steps.py``.
@@ -225,6 +228,28 @@ class DrillholeStepsTest(DrillholeImportCase):
         self.finish()
         self.assertEqual(self.statuses([row[0] for row in begun]), ["done"] * len(FILES))
         self.assertEqual(self.rows("SELECT count(*) FROM dh_collar"), [(6,)])
+
+    def test_an_order_reads_its_largest_file_first(self) -> None:
+        """RNF-005-01 (T31; RF-005-04): la orden «Importar sondeos» con los seis ficheros de
+        ``csv_basico`` lanza sus lecturas del fichero más grande al más pequeño (el lanzador
+        lleva dos a la vez en proceso aparte, por orden de llegada: con V-ref, la de los
+        análisis, la más larga, iba cuarta y alargaba la importación casi 1 s); sus
+        operaciones siguen en el orden de los ficheros, y la orden espera la decisión como
+        antes."""
+        result, launched = self.run_import(FILES)
+        self.assertEqual(result, {"FINISHED"})
+        read = [json.loads(self.rows("SELECT settings FROM gb_operation WHERE uid = ?",
+                                     uid)[0][0])["file"] for uid in launched]
+        sizes = {name: (self.sources / name).stat().st_size for name in FILES}
+        self.assertEqual(read, sorted(FILES, key=sizes.__getitem__, reverse=True))
+        self.assertEqual(read[0], "analisis_columnas.csv")
+        begun = self.rows("SELECT settings FROM gb_operation WHERE op_type = "
+                          "'dh.import_tabular' ORDER BY fid")
+        self.assertEqual([json.loads(row[0])["file"] for row in begun], list(FILES))
+        self.finish()
+        uid, _pending = self.waiting()
+        self.assertEqual(self.decide("DISCARD", uid), {"FINISHED"})
+        self.assertEqual(self.statuses(launched), ["cancelled"] * len(FILES))
 
     def test_indicators_wait_while_this_session_writes(self) -> None:
         """RNF-005-06 (T53; R13): con una transacción de escritura de esta sesión abierta (la

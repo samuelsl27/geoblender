@@ -67,21 +67,15 @@ from tests.support.package import import_geoblender
 from tests.support.resources import is_available, requires, skip_reason
 
 model = import_geoblender("drillholes.model")
-dh_jobs = import_geoblender("drillholes.jobs")
-dh_params = import_geoblender("drillholes.params")
 provenance = import_geoblender("drillholes.provenance")
-schema = import_geoblender("drillholes.schema")
-store = import_geoblender("drillholes.store")
 georef = import_geoblender("core.georef")
 originals_mod = import_geoblender("core.inputs.originals")
-dataset_registry = import_geoblender("core.datasets.registry")
 operations = import_geoblender("core.provenance.operations")
 create = import_geoblender("core.project.create")
 userdata_mod = import_geoblender("core.userdata")
 grid = import_geoblender("gis.grid")
 raster = import_geoblender("gis.raster")
 gis_crs = import_geoblender("gis.crs")
-gis_jobs = import_geoblender("gis.jobs")
 gis_provenance = import_geoblender("gis.provenance")
 gis_store = import_geoblender("gis.store")
 ingest = import_geoblender("jobs.ingest")
@@ -221,9 +215,10 @@ def _new_project(folder: Path, *, surface: bool) -> tuple[Any, Any]:
 class _Importer(recmin_import.RecminImport):
     """La importación de la base de V-ref en ``project`` con el lanzador ``runner``, como la
     hace ``bl/ops/dh.py`` con una base de RecMin (la de ``tests.support.recmin_import`` y,
-    después, ``_build_base_steps``, ``_base_steps``, ``_validate_steps`` y
-    ``_validated_steps``): sus pasos seguidos, con la hora en que acaba cada fase
-    (:data:`PHASES`). ``surface``: la rejilla del proyecto con que se valida."""
+    después, la base y su validación de ``tests.support.dh_import``: ``_build_base_steps``,
+    ``_base_steps``, ``_validate_steps`` y ``_validated_steps``): sus pasos seguidos, con la
+    hora en que acaba cada fase (:data:`PHASES`). ``surface``: la rejilla del proyecto con que
+    se valida."""
 
     def __init__(self, project: Any, runner: Any, surface: Any) -> None:
         super().__init__(project, runner, _DATA.base, _declaration(), decimal=DECIMAL,
@@ -247,98 +242,9 @@ class _Importer(recmin_import.RecminImport):
         self.mark()
         self.build_base()
         self.mark()
-        self.validate()
+        self.validate(self.surface)
         self.mark()
         return self.marks
-
-    # --- La base (_build_base_steps, _base_steps) --------------------------------------------
-
-    def build_base(self) -> Any:
-        """``dh.build_base`` desde lo importado vigente: leído por pasos, sus arrays por partes
-        (``drillholes.jobs.packed_parts``), su trabajo ``dh_build_base`` y la base escrita por
-        pasos (``BaseWriter``); su ``JobOutcome``."""
-        with self.project.read() as conn:
-            sources = store.live_sources(conn)
-            has_log = dataset_registry.get(conn, store.IMPORT_LOG) is not None
-        uses = [operations.Use(dataset.name, "source") for source in sources
-                for dataset in source.datasets.values()]
-        if has_log:
-            uses.append(operations.Use(store.IMPORT_LOG, "imports"))
-        handle = operations.begin_operation(self.project, provenance.BUILD_BASE, settings={},
-                                            inputs=uses, executor="job_thread")
-        entries: list[dict[str, Any]] = []
-        loose: dict[str, Any] = {}
-        rows = 0
-        with self.project.read() as conn:
-            for number, source in enumerate(sources, start=1):
-                entry = recmin_import.drive(store.source_entry_steps(conn, source))
-                name = f"e{number}"
-                for arrays in dh_jobs.packed_parts(name, {table: getattr(entry, table)
-                                                          for table in model.TABLES},
-                                                   entry.catalogs):
-                    loose.update(arrays)
-                rows += sum(len(getattr(entry, table)) for table in model.TABLES)
-                entries.append({"input": name, "uid": entry.input_uid, "label": entry.label,
-                                "declaration": dh_jobs.declaration_json(entry.declaration)})
-        params = {"crs": gis_jobs.crs_json(self.crs),
-                  "vertical": gis_jobs.vertical_json(self.vertical),
-                  "project_uid": self.project.uid, "entries": entries, "count": rows + 1}
-        if dh_jobs.needs_site(dh_jobs.BUILD_BASE, params):
-            raise AssertionError("V-ref no necesita transformar nada")
-        result = self.wait(self.submit(handle, dh_jobs.BUILD_BASE, params, arrays=loose))
-        outcome = self.outcome(result)
-        writer = store.BaseWriter(self.project, handle)
-        for name in schema.BASE_TABLES:
-            writer.table(name, dh_jobs.read_table_output(outcome.file(name), name),
-                         content=gis_jobs.digest_of(outcome.summary["outputs"][name]["digest"]))
-        recmin_import.drive(writer.steps(software=self.software, message="Base de los sondeos",
-                            interpreter=outcome.interpreter, executor=outcome.executor,
-                            job_uid=result.job_uid))
-        self.release(result)
-        return outcome
-
-    # --- La validación (_validate_steps, _validated_steps) -----------------------------------
-
-    def validate(self) -> Any:
-        """``dh.validate`` con la rejilla del proyecto: la base leída por pasos, sus arrays por
-        partes, su trabajo ``dh_validate`` (el MDT por ruta: lo copia el trabajo) y
-        ``dh_validation_issue`` escrita; su ``JobOutcome``."""
-        surface = self.surface
-        uses = [operations.Use(table, provenance.OUTPUT_ROLES[table])
-                for table in schema.BASE_TABLES]
-        uses.append(operations.Use(surface.name, "terrain"))
-        handle = operations.begin_operation(
-            self.project, provenance.VALIDATE, settings={"surface": surface.name},
-            inputs=uses, params=list(dh_params.VALIDATION_KEYS), executor="job_thread")
-        with self.project.read() as conn:
-            dset = recmin_import.drive(store.read_steps(conn))
-        loose: dict[str, Any] = {}
-        for arrays in dh_jobs.packed_parts(dh_jobs.INPUT_BASE,
-                                           {table: getattr(dset, table)
-                                            for table in model.TABLES}, dset.catalogs):
-            loose.update(arrays)
-        resolved = {param.key: param.value for param in handle.params}
-        thresholds = {key.rpartition(".")[2]: resolved[key]
-                      for key in dh_params.VALIDATION_KEYS}
-        rows = sum(len(getattr(dset, table)) for table in model.TABLES)
-        params = {"crs": gis_jobs.crs_json(dset.crs),
-                  "vertical": gis_jobs.vertical_json(dset.vertical),
-                  "thresholds": thresholds,
-                  "work_window": gis_jobs.window_json(self.project.window),
-                  "count": rows + 1}
-        dem = Path(self.project.root, *surface.locator.split("/"))
-        result = self.wait(self.submit(handle, dh_jobs.VALIDATE, params, arrays=loose,
-                                       paths={dh_jobs.INPUT_DEM: dem}))
-        outcome = self.outcome(result)
-        name = store.VALIDATION_TABLE
-        writer = store.BaseWriter(self.project, handle)
-        writer.table(name, dh_jobs.read_table_output(outcome.file(name), name),
-                     content=gis_jobs.digest_of(outcome.summary["outputs"][name]["digest"]))
-        recmin_import.drive(writer.steps(message="Validación de la base de los sondeos",
-                            interpreter=outcome.interpreter, executor=outcome.executor,
-                            job_uid=result.job_uid))
-        self.release(result)
-        return outcome
 
 
 def _project_stack(stack: ExitStack, *, surface: bool) -> tuple[Path, Any, Any, Any]:

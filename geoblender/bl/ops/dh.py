@@ -1213,6 +1213,22 @@ def _read_job(order: _Order, entry: _Entry) -> dict[str, Any]:
             "grace_s": jobs.CANCEL_GRACE_S}
 
 
+def _file_size(path: Path) -> int:
+    """El tamaño de ``path``; si no se puede leer, 0 (su lectura dirá por qué)."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def launch_order(entries: Sequence[_Entry]) -> list[_Entry]:
+    """El orden en que se lanzan las lecturas de una orden: la del fichero más grande primero
+    y las del mismo tamaño (las hojas de un XLSX), en su orden (T31; RNF-005-01). El lanzador
+    lleva dos a la vez en proceso aparte, por orden de llegada: con V-ref, la de los análisis,
+    la más larga (unos 4,5 s), iba cuarta y alargaba la orden casi 1 s."""
+    return sorted(entries, key=lambda entry: _file_size(entry.choice.path), reverse=True)
+
+
 def start_order(operator: Any, context: Any, project: Any, choices: Sequence[TableChoice],
                 declaration: SourceDeclaration, options: ReadOptions, *,
                 received_at: Any = None, received_from: str | None = None,
@@ -1224,7 +1240,8 @@ def start_order(operator: Any, context: Any, project: Any, choices: Sequence[Tab
     ``command``: el ``bl_idname`` de la orden, la que aplica o descarta lo que espere la
     decisión de la persona. Las operaciones pasan la puerta de la 008 una vez y empiezan
     juntas, en una sola transacción (T55; RNF-005-06: en ``Z:``, una por fichero pasaba de
-    0,2 s con seis): si una no puede empezar, ninguna."""
+    0,2 s con seis): si una no puede empezar, ninguna. Las lecturas se lanzan del fichero más
+    grande al más pequeño (:func:`launch_order`)."""
     with project.read() as conn:
         catalogs = store.read_catalogs(conn)
         holes = store.holes_by_table(conn)
@@ -1238,7 +1255,7 @@ def start_order(operator: Any, context: Any, project: Any, choices: Sequence[Tab
     order.entries.extend(_Entry(choice, handle)
                          for choice, handle in zip(choices, handles, strict=True))
     _ORDERS[order.uid] = order
-    for entry in order.entries:
+    for entry in launch_order(order.entries):
         choice = entry.choice
         launch = _read_job(order, entry)
         job = operator.launch_job(entry.handle, launch.pop("worker"), **launch)
