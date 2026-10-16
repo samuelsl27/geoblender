@@ -70,7 +70,8 @@ de RecMin (CE-005-05), que se ejecuta a petición, y los puestos de IMGA con el 
     «>x», con la marca «sobre el límite»; uno que no es un número, o con el otro separador
     decimal, se rechaza con su fila, su sondeo, su tramo, su campo y su valor. Las leyes se
     convierten de forma exacta a la unidad de su catálogo, con el valor y la unidad del
-    laboratorio conservados. Un XLSX da lo mismo que su CSV.
+    laboratorio conservados. Un XLSX da lo mismo que su CSV. Un fichero o una hoja sin filas
+    (solo la cabecera) no se importa: la importación falla diciendo cuál y que no tiene filas.
   - **Importación pendiente** (N ▸ Sondeos): antes de escribir nada, los códigos nuevos (darlos de
     alta; las litologías, con un color propio distinto de los demás) y los sondeos que el
     proyecto ya tiene en alguna tabla que trae la fuente (sustituir sus registros o conservarlos:

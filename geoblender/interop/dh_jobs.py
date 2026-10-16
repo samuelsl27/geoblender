@@ -109,11 +109,13 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
     ``ContentDigest`` (``io.dh_csv@1`` o ``io.dh_xlsx@1``) y lo leído con la correspondencia
     de columnas y la declaración de la petición (``interop.drillholes_tabular.read_role``,
     la lectura del importador) en ``source.npz``, con su informe en ``report.json``. Sin las
-    declaraciones que hacen falta, ``dh.declaration_missing`` (RF-005-07)."""
+    declaraciones que hacen falta, ``dh.declaration_missing`` (RF-005-07); una tabla sin
+    filas de datos (solo la cabecera) no se importa: ``dh.table_without_rows``, que nombra el
+    fichero elegido y su hoja (spec §8, T57)."""
     from ..drillholes.provenance import TABLE_ROLES, input_kind
     from .base import holes_of, new_codes, registrations
     from .csv_tables import read_table
-    from .drillholes_tabular import read_role
+    from .drillholes_tabular import read_role, require_rows
     from .xlsx_tables import read_sheet
 
     request = JobParams(ctx)
@@ -142,15 +144,18 @@ def run_import_tabular(ctx: Any) -> dict[str, Any]:
     ctx.progress(0.6, READING_TEXT)
     try:
         if reader is dh_content.DH_CSV:
+            sheet = None
             table = read_table(copy, encoding=settings["encoding"],
                                separator=settings["separator"],
                                header_row=settings["header_row"])
         else:
-            table = read_sheet(copy, settings["sheet"], header_row=settings["header_row"],
+            sheet = settings["sheet"]
+            table = read_sheet(copy, sheet, header_row=settings["header_row"],
                                decimal_mark=settings["decimal"],
                                date_format=settings.get("date_format"))
     except KeyError as error:
         raise request.invalid(f"falta el ajuste de lectura {error}") from None
+    require_rows(table, copy.name, sheet)  # solo la cabecera: no se importa (T57)
     ctx.check_cancelled()
     rows = read_role(role, table, mapping, decl)
     ctx.progress(0.8, WRITING_TEXT)

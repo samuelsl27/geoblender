@@ -28,6 +28,8 @@
   (``drillholes.conventions``); el de ``csv_basico`` y el de cada caso de ``csv_errores``
   son exactamente los que montan las pruebas de la validación (``tests.support.dh_sets``,
   T08–T10), y el libro ``csv_basico.xlsx`` da el mismo que sus CSV (RF-005-06).
+- **RF-005-12**, spec §8 (T57): una tabla sin filas de datos (un CSV o una hoja solo con la
+  cabecera, o vacíos) se rechaza nombrando su fichero y su hoja.
 
 Las tablas nunca cambian al leerlas (lo comprueba cada lectura de los juegos de datos).
 """
@@ -821,6 +823,50 @@ class HolesAndCodesTest(unittest.TestCase):
                          [["Au", "g/t"], ["Ag", "ppm"], ["Cu", "%"]])
         with self.assertRaises(TypeError):
             base.registrations(dset, {})
+
+
+class WithoutRowsTest(unittest.TestCase):
+    """Spec 005 §8: un fichero vacío o solo con cabecera no se importa (T57; F-2)."""
+
+    def test_a_table_without_rows_is_refused_naming_its_file(self) -> None:
+        """RF-005-12, spec §8 (T57; F-2 de la verificación: un CSV con solo la cabecera se
+        importaba como una entrada con 0 filas): una tabla sin filas de datos (solo la
+        cabecera, la cabecera y filas en blanco o solo con separadores, o nada) no se importa:
+        ``require_rows`` da ``EmptyTableError`` (``dh.table_without_rows``) que nombra el
+        fichero (``filas = 0``) o, de un libro XLSX, el libro y su hoja, y dice que no tiene
+        filas. Una tabla con filas pasa tal cual."""
+        folder = Path(tempfile.mkdtemp(prefix="gb-t57-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        header = (dh_sets.BASICO / "bocas.csv").read_text(encoding="utf-8").splitlines()[0]
+        cases = {"cabecera.csv": f"{header}\n", "separadores.csv": f"{header}\n;;;;\n\n",
+                 "vacio.csv": ""}
+        for name, text in cases.items():
+            (folder / name).write_bytes(text.encode("utf-8"))
+            with (self.subTest(fichero=name),
+                  self.assertRaises(tabular.EmptyTableError) as caught):
+                tabular.require_rows(_read(folder / name), name)
+            error = caught.exception
+            self.assertEqual((error.code, error.obj, error.field, error.value),
+                             (tabular.EMPTY_TABLE, name, "filas", 0))
+            self.assertTrue(str(error).startswith(f"{name}: filas = 0: "), str(error))
+            self.assertIn("no tiene filas", str(error))
+        book = build_xlsx.Book()
+        book.sheet("bocas", [build_xlsx.row(1, [
+            book.text(build_xlsx.ref(column, 1), title)
+            for column, title in enumerate(header.split(";"), start=1)])])
+        book.write(folder / "libro.xlsx")
+        sheet = xlsx_tables.read_sheet(folder / "libro.xlsx", "bocas")
+        self.assertEqual((len(sheet.columns), sheet.rows), (len(header.split(";")), []))
+        with self.assertRaises(tabular.EmptyTableError) as caught:
+            tabular.require_rows(sheet, "libro.xlsx", "bocas")
+        error = caught.exception
+        self.assertEqual((error.code, error.obj, error.field, error.value),
+                         (tabular.EMPTY_TABLE, "libro.xlsx", "hoja", "bocas"))
+        self.assertIn("no tiene filas", str(error))
+        full = _read(dh_sets.BASICO / "bocas.csv")
+        self.assertIs(tabular.require_rows(full, "bocas.csv"), full)
+        with self.assertRaises(TypeError):
+            tabular.require_rows([], "bocas.csv")
 
 
 if __name__ == "__main__":

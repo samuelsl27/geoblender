@@ -24,6 +24,8 @@ proceso aparte, va aquí en el hilo con la misma función (la de proceso aparte 
 - RF-005-07: sin el CRS, el datum vertical, la referencia del azimut (o la declinación de uno
   magnético), el convenio de la inclinación o la unidad de un elemento, nada empieza y el
   mensaje dice qué falta; unas tablas que no lo necesitan sí empiezan.
+- RF-005-12, spec §8 (T57): un CSV o una hoja de un XLSX con solo la cabecera no se importa; su
+  lectura falla como una operación que no se hizo, nombrando el fichero y que no tiene filas.
 - RF-005-11, RF-005-04, RF-008-54: el mismo fichero otra vez se reutiliza; otro con los mismos
   sondeos espera y, descartado, no deja nada; aplicado conservando uno, los demás se sustituyen
   en la base y el informe los cuenta. T46: también una orden solo de tablas hijas (desviaciones,
@@ -405,6 +407,64 @@ class ImportTabularTest(DrillholeImportCase):
         self.assertEqual(self.dh_ops.waiting_imports(), {})
         self.assertEqual(pending_panel.operation_uid, "")
         self.assertEqual(self.session.pending_ingests(), pending)
+
+    def test_a_table_without_rows_is_not_imported(self) -> None:
+        """RF-005-12, RF-005-04, spec §8 (T57; F-2 de la verificación: un CSV de bocas con solo
+        la cabecera quedaba como una entrada vigente y una operación hecha con «0 filas
+        leídas»): un fichero, o una hoja de un XLSX, con solo la cabecera no se importa. Su
+        lectura falla con ``dh.table_without_rows`` y se dice como una operación que no se hizo
+        (T51): su operación, «failed»; el aviso de la barra de estado, «Operación fallida» con
+        el motivo; y el informe al registro de Blender (y a los avisos del proyecto) nombra el
+        fichero (con su hoja) y dice que no tiene filas. Ni entradas, ni datos, ni tablas
+        nuevas, ni nada que decidir. Un fichero vacío sigue sin empezar: la orden lo rechaza
+        (no tiene la columna del sondeo)."""
+        header = (DATA / "bocas.csv").read_text(encoding="utf-8").splitlines()[0]
+        (self.sources / "bocas_cabecera.csv").write_bytes(f"{header}\n".encode())
+        (self.sources / "bocas_vacio.csv").write_bytes(b"")
+        book = build_xlsx.Book()
+        book.sheet("bocas", [build_xlsx.row(1, [
+            book.text(build_xlsx.ref(column, 1), title)
+            for column, title in enumerate(header.split(";"), start=1)])])
+        book.write(self.sources / "cabecera.xlsx")
+        tables = "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        cases = ((("bocas_cabecera.csv", None), "«bocas_cabecera.csv»", "filas = 0"),
+                 (("cabecera.xlsx", "bocas"), "«cabecera.xlsx · bocas»", "hoja = «bocas»"))
+        for (name, sheet), shown, said in cases:
+            with self.subTest(fichero=name):
+                before, existing = self.counts(), self.rows(tables)
+                sent = len(self.jobs_ops.sent_reports())
+                pending = dict(self.session.pending_ingests())
+                self.ps.take_notices()
+                item = {"file": name, "role": "collar", **({"sheet": sheet} if sheet else {})}
+                result = bpy.ops.geoblender.dh_import_drillholes(
+                    "EXEC_DEFAULT", directory=str(self.sources), files=[{"name": name}],
+                    mapping_json=json.dumps([item]), **DECLARED)
+                launched = [op for job, op in self.session.pending_ingests().items()
+                            if job not in pending]
+                self.assertEqual((result, len(launched)), ({"FINISHED"}, 1))
+                self.finish()
+                view = self.jobs_ops.MONITOR.view()
+                error = view.notice.error
+                self.assertEqual((self.statuses(launched), view.notice.state,
+                                  error and error.code, self.rows("SELECT name FROM gb_input")),
+                                 (["failed"], "failed", "dh.table_without_rows", []))
+                self.assertTrue(view.ending.reason.startswith(f"{said}: "), view.ending.reason)
+                self.assertIn("no tiene filas", view.ending.reason)
+                reports = self.jobs_ops.sent_reports()[sent:]
+                self.assertEqual([kind for kind, _text in reports], ["ERROR"])
+                for text in (shown, said, "no tiene filas", "no se ha escrito"):
+                    self.assertIn(text, reports[0][1])
+                self.assertNotIn("source_main", reports[0][1])
+                self.assertIn(reports[0][1], self.ps.take_notices())
+                self.assertEqual((self.counts()[1:], self.rows(tables)),
+                                 (before[1:], existing))  # ni datos, ni entradas, ni tablas
+                self.assertEqual(self.dh_ops.waiting_imports(), {})
+                self.assertEqual(self.session.pending_ingests(), pending)
+        before, pending = self.counts(), dict(self.session.pending_ingests())
+        with self.assertRaises(RuntimeError) as caught:
+            self.run_import(("bocas_vacio.csv",), {"bocas_vacio.csv": "collar"})
+        self.assertIn("sondeo", str(caught.exception))
+        self.assertEqual((self.counts(), self.session.pending_ingests()), (before, pending))
 
     def test_existing_holes_kept_or_replaced(self) -> None:
         """RF-005-11, RF-005-04, RF-005-12, RF-008-54: el mismo fichero de bocas otra vez

@@ -27,6 +27,9 @@ elemento) o en filas (elemento, valor y unidad), catálogo de litologías o de e
   de ``drillholes.model`` (:class:`RoleRows`; los registros hijos, sin enlazar a sus bocas:
   ``hole`` = −1). Es la lectura que usa el lector de contenido ``io.dh_csv@1``. Leer la
   vista previa (``preview_table``, 20 filas) da las filas tal como se van a interpretar.
+  (T57; spec §8, RF-005-12) Una tabla sin filas de datos (un fichero o una hoja solo con la
+  cabecera, o vacíos) no se importa: :func:`require_rows` la rechaza con
+  :class:`EmptyTableError` (``dh.table_without_rows``), que nombra el fichero y su hoja.
 - **Valores** (RF-005-09): los de los análisis, con ``drillholes.values.parse_column`` y
   las reglas declaradas (vacío o centinela, ausente; «<x» y «>x», x con su marca; negativo,
   tal cual o «<x» si se declara), conservando el texto original; los demás números, con el
@@ -104,10 +107,12 @@ from .xlsx_tables import ERROR_VALUES
 
 __all__ = [
     "ELEMENT_PREFIX",
+    "EMPTY_TABLE",
     "FIELD_LABELS",
     "ROLE_LABELS",
     "ROW_FIELD",
     "SOURCE_LABEL",
+    "EmptyTableError",
     "MappingError",
     "RoleRows",
     "TableRole",
@@ -116,6 +121,7 @@ __all__ = [
     "needs",
     "read_drillholes",
     "read_role",
+    "require_rows",
     "required_fields",
     "suggest_mapping",
     "suggest_role",
@@ -520,6 +526,35 @@ def needs(role: TableRole | str, table: Table, mapping: Mapping[str, str]) -> Ne
     role = _role(role)
     table = _check_table(table)
     return _needs(role, table, _layout(role, table.columns, mapping))
+
+
+EMPTY_TABLE = "dh.table_without_rows"
+"""El código de una tabla sin filas de datos, que no se importa (spec 005 §8; T57)."""
+_FIELD_ROWS = "filas"
+_FIELD_SHEET = "hoja"
+
+
+class EmptyTableError(GeoblenderError):
+    """Una tabla sin filas de datos (:data:`EMPTY_TABLE`): el objeto es su fichero; el
+    campo, sus filas (0) o, de un libro XLSX, su hoja."""
+
+
+def require_rows(table: Table, file: str, sheet: str | None = None) -> Table:
+    """``table`` si tiene alguna fila de datos. Si no (un CSV o una hoja con solo la
+    cabecera, con filas en blanco o solo con separadores, o vacíos), :class:`EmptyTableError`,
+    que nombra el fichero ``file`` (su nombre, sin carpeta) y, de un libro, su hoja ``sheet``,
+    y dice que no tiene filas: una tabla así no se importa (spec 005 §8; RF-005-12, T57)."""
+    table = _check_table(table)
+    if table.rows:
+        return table
+    what = "no tiene filas de datos, solo la cabecera" if table.columns else \
+        "no tiene filas ni cabecera: está vacía"
+    field, value = (_FIELD_ROWS, 0) if sheet is None else (_FIELD_SHEET, sheet)
+    raise EmptyTableError(
+        EMPTY_TABLE,
+        f"{what}: no se ha importado nada; compruebe que es la tabla que quería importar y "
+        "las líneas antes de la cabecera",
+        obj=file, field=field, value=value, context={"file": file, "sheet": sheet})
 
 
 # --- La lectura de una tabla -------------------------------------------------------------------

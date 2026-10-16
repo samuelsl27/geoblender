@@ -14,8 +14,8 @@ fuente (``dh_import_tabular``, ``dh_import_recmin``), siempre en proceso aparte,
   ``schema.table_digest``, que es el que calcula el registro de la 008 al escribirla);
 - lo leído y las tablas viajan en npz sin *pickle* (``drillholes.arrays``), bit a bit;
 - cancelar a mitad (también con todo escrito) deja ``out/`` vacía; un fallo explicado es un
-  ``JobFailed`` con su código; una base de RecMin de esquema desconocido termina con
-  ``needs_confirmation`` y sin resultados (RF-005-15);
+  ``JobFailed`` con su código (T57: también una tabla con solo la cabecera); una base de RecMin
+  de esquema desconocido termina con ``needs_confirmation`` y sin resultados (RF-005-15);
 - la petición nunca lleva una ruta (la fuente llega por ``--path`` y se copia, verificada, a
   ``in/``; lo del proyecto, a ``in/``), ningún trabajo abre ``project.gpkg`` ni escribe fuera de
   su carpeta, y la carpeta de la fuente no cambia (RF-005-03);
@@ -642,6 +642,37 @@ class ImportTabularTest(_JobCase):
                 self.context(folder, paths={"source_main": path}))
         self.assertEqual(caught.exception.code, "source_changed")
         self.assertEqual(list(folder.outputs_dir.iterdir()), [])
+
+    def test_a_table_without_rows_is_not_read(self) -> None:
+        """RF-005-12, RF-004-12, spec §8 (T57; F-2 de la verificación: un CSV con solo la
+        cabecera se leía como una tabla de 0 filas y se importaba): unas bocas en un CSV, o en
+        la hoja de un XLSX, con solo la cabecera no se leen: ``dh.table_without_rows``, un
+        ``JobFailed`` que nombra el fichero elegido (y su hoja), nunca su copia de ``in/``
+        (T51), y dice que no tiene filas; ``out/`` queda vacía."""
+        given = self.root / "fuentes"
+        given.mkdir()
+        header = (dh_sets.BASICO / FILES["collar"]).read_text("utf-8").splitlines()[0]
+        (given / "bocas_cabecera.csv").write_bytes(f"{header}\n".encode())
+        book = build_xlsx.Book()
+        book.sheet("bocas", [build_xlsx.row(1, [
+            book.text(build_xlsx.ref(column, 1), title)
+            for column, title in enumerate(header.split(";"), start=1)])])
+        book.write(given / "cabecera.xlsx")
+        cases = (("bocas_cabecera.csv", provenance.DH_CSV, "filas = 0"),
+                 ("cabecera.xlsx", provenance.DH_XLSX, "hoja = «bocas»"))
+        for name, reader, said in cases:
+            with self.subTest(lector=reader):
+                folder = self.prepare(dh_jobs.IMPORT_TABULAR, _tabular_params("collar", reader))
+                with self.assertRaises(worker_api.JobFailed) as caught:
+                    import_geoblender("workers.dh_import_tabular").main(
+                        self.context(folder, paths={"source_main": given / name}))
+                error = caught.exception
+                self.assertEqual(error.code, tabular.EMPTY_TABLE)
+                self.assertTrue(error.text.startswith(f"{name}: {said}: "), error.text)
+                self.assertIn("no tiene filas", error.text)
+                self.assertNotIn("source_main", error.text + error.msgid + json.dumps(
+                    error.values, ensure_ascii=False))
+                self.assertEqual(list(folder.outputs_dir.iterdir()), [])
 
 
 class ImportRecminTest(_JobCase):
