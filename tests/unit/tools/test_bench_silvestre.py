@@ -7,6 +7,9 @@
 - RNF-001-05: el banco deja su carpeta como estaba (rutas, tamaños y fechas idénticos
   antes y después); una comparación que escribe en ella hace fallar el banco con la
   lista de cambios.
+- RF-005-13 (spec 005, T34; D-3, DP-65): el banco de RecMin, con
+  ``GEOBLENDER_RECMIN_BANK_DIR`` y sus comparaciones en ``tests/banco/recmin/``, en el
+  mismo arnés.
 
 Las carpetas de banco y las comparaciones son sintéticas y se crean en ``%TEMP%``.
 """
@@ -29,6 +32,7 @@ import bench_silvestre  # noqa: E402
 from gbtools import repo as gbrepo  # noqa: E402
 
 ENV = "GEOBLENDER_SILVESTRE_DIR"
+RECMIN_ENV = "GEOBLENDER_RECMIN_BANK_DIR"
 SPDX = "# SPDX-License-Identifier: GPL-3.0-or-later\n"
 
 BANK_FILES: Mapping[str, str] = {
@@ -124,9 +128,11 @@ def _run(
 
 class BanksTableTest(unittest.TestCase):
     def test_banks_table(self) -> None:
-        """RF-001-11: un arnés para todos los bancos: Silvestre con su variable, y cada
-        banco con su carpeta de comparaciones en ``tests/banco/<banco>/``."""
-        self.assertEqual(dict(bench_silvestre.BANKS), {"silvestre": ENV})
+        """RF-001-11, RF-005-13: un arnés para todos los bancos: Silvestre y RecMin (spec
+        005, D-3) con su variable, y cada banco con su carpeta de comparaciones en
+        ``tests/banco/<banco>/``."""
+        self.assertEqual(dict(bench_silvestre.BANKS),
+                         {"silvestre": ENV, "recmin": RECMIN_ENV})
         for name in bench_silvestre.BANKS:
             self.assertTrue((ROOT / "tests" / "banco" / name / "__init__.py").is_file())
 
@@ -292,11 +298,42 @@ class ComparisonsTest(unittest.TestCase):
                 contextlib.redirect_stdout(out),
                 contextlib.redirect_stderr(err),
             ):
+                os.environ.pop(RECMIN_ENV, None)  # el banco de RecMin del puesto, no
                 code = bench_silvestre.main([])
         self.assertEqual(code, 1, out.getvalue() + err.getvalue())
         self.assertIn("test_gis_grid_area", err.getvalue())
         self.assertIn("ningún MDT como el de Silvestre", err.getvalue())
         self.assertIn("la carpeta no ha cambiado", out.getvalue())
+        self.assertIn(f"OMITIDO: recmin: la variable {RECMIN_ENV}", out.getvalue())
+
+    def test_real_recmin_comparisons_folder(self) -> None:
+        """RF-005-13, RF-005-03, CE-005-05 (spec 005, T34): con la carpeta real
+        ``tests/banco/recmin`` y una carpeta de banco sintética sin ninguna base de Access,
+        el arnés carga y ejecuta las comparaciones del banco de RecMin
+        (``test_dh_recmin_bank``): no encuentran ninguna base de RecMin y fallan con el
+        motivo, sin el motor y sin importar nada (un banco sin sus datos nunca da verde,
+        código 1), y la carpeta del banco no cambia."""
+        with temp_tree(BANK_FILES) as tmp:
+            folder = tmp / "banco"
+            age_folders(folder)
+            before = bench_silvestre.snapshot(folder)
+            out, err = io.StringIO(), io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {RECMIN_ENV: str(folder)}),
+                contextlib.redirect_stdout(out),
+                contextlib.redirect_stderr(err),
+            ):
+                os.environ.pop(ENV, None)
+                code = bench_silvestre.main([])
+            after = bench_silvestre.snapshot(folder)
+        self.assertEqual(code, 1, out.getvalue() + err.getvalue())
+        self.assertIn("test_dh_recmin_bank", err.getvalue())
+        self.assertIn("ninguna base de RecMin", err.getvalue())
+        self.assertIn("OMITIDO: silvestre: ", out.getvalue())
+        self.assertIn("Banco «recmin»: FALLO", out.getvalue())
+        self.assertIn("la carpeta no ha cambiado", out.getvalue())
+        self.assertNotIn(str(folder), out.getvalue() + err.getvalue())
+        self.assertEqual(before, after)
 
     def test_modules_do_not_leak(self) -> None:
         """RF-001-11: las comparaciones se cargan y se descargan en cada ejecución: dos

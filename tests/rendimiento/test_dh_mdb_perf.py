@@ -44,16 +44,13 @@ las bocas) y la ventana de trabajo de las bocas.
 
 from __future__ import annotations
 
-import dataclasses
 import gc
-import json
 import math
 import statistics
-import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -61,46 +58,33 @@ from typing import Any
 import numpy as np
 
 from tests.data.dh import sintetico
-from tests.support import dh_sets, recmin
+from tests.support import dh_sets, recmin, recmin_import
 from tests.support import gis_perf as perf
 from tests.support import jobs_fixtures
 from tests.support.core_fixtures import make_session, make_settings
 from tests.support.dh_fakes import gis_surface
 from tests.support.package import import_geoblender
-from tests.support.provenance_contract import registered
-from tests.support.repo import EXTENSION_DIR
 from tests.support.resources import is_available, requires, skip_reason
 
-dh_content = import_geoblender("interop.dh_content")
-recmin_schema = import_geoblender("interop.recmin.schema")
 model = import_geoblender("drillholes.model")
-dh_arrays = import_geoblender("drillholes.arrays")
 dh_jobs = import_geoblender("drillholes.jobs")
 dh_params = import_geoblender("drillholes.params")
 provenance = import_geoblender("drillholes.provenance")
 schema = import_geoblender("drillholes.schema")
 store = import_geoblender("drillholes.store")
 georef = import_geoblender("core.georef")
-readers = import_geoblender("core.content.readers")
-builtin = import_geoblender("core.content.builtin")
-inputs_mod = import_geoblender("core.inputs")
 originals_mod = import_geoblender("core.inputs.originals")
 dataset_registry = import_geoblender("core.datasets.registry")
 operations = import_geoblender("core.provenance.operations")
 create = import_geoblender("core.project.create")
 userdata_mod = import_geoblender("core.userdata")
-core_params = import_geoblender("core.params")
-core_defs = import_geoblender("core.params.core_defs")
 grid = import_geoblender("gis.grid")
 raster = import_geoblender("gis.raster")
 gis_crs = import_geoblender("gis.crs")
 gis_jobs = import_geoblender("gis.jobs")
 gis_provenance = import_geoblender("gis.provenance")
 gis_store = import_geoblender("gis.store")
-catalog = import_geoblender("jobs.catalog")
 ingest = import_geoblender("jobs.ingest")
-protocol = import_geoblender("jobs.protocol")
-runner_mod = import_geoblender("jobs.runner")
 
 IMPORT_BUDGET_S = 60.0  # RNF-005-05: la importación
 CANCEL_BUDGET_S = 2.0  # RNF-005-05: la cancelación
@@ -116,7 +100,6 @@ CANCEL_REPETITIONS = 3
 CANCEL_AT = 0.3
 """El avance de la lectura en que se cancela: a mitad de las tablas de la base (el extractor
 va de 0,05 a 0,6), con su ``powershell.exe`` hijo leyendo."""
-MAX_SUBPROCESS = 2  # los trabajos a la vez en proceso aparte de Blender (MAX_PARALLEL_DEFAULT)
 POLL_S = 0.005  # sondeo del lanzador mientras espera un trabajo
 PROCESS_POLL_S = 0.02  # lo que se espera entre dos miradas a los procesos del equipo
 WAIT_S = 600.0  # plazo de seguridad: un trabajo colgado no cuelga la prueba
@@ -125,7 +108,6 @@ PROJECT_SURFACE = "terreno"  # la rejilla del proyecto con que se valida (gis_dt
 DTM_STEP_M = 1.0
 DTM_MARGIN_M = 20.0
 WINDOW_MARGIN_M = 50.0
-SUCCEEDED = "succeeded"
 CANCELLED = "cancelled"
 DEDUCED_DEPTH = "DH-W16"  # RecMin no da la profundidad: la validación avisa de la deducida
 COUNTED = ("dh_collar", "dh_survey", "dh_lithology", "dh_assay", "dh_validation_issue")
@@ -209,34 +191,6 @@ def _volume() -> str:
 # --- Lo que hace Blender (bl/ops/dh.py), sin Blender ----------------------------------------
 
 
-def _recompute(request: Any) -> Any:  # pragma: no cover - nada se recalcula aquí
-    raise AssertionError("no se recalcula en estas pruebas")
-
-
-def _registrations(stack: ExitStack) -> None:
-    """Lo que registra Blender al habilitar Geoblender y usa la importación (``bl/ops/dh.py``
-    y ``bl/ops/gis.py``), en ``stack``, que lo quita al cerrarse: los tipos de operación de la
-    005 y el de la rejilla del proyecto de la 006, los lectores de contenido (de la 005 y el de
-    las tablas del proyecto), los parámetros (de ``core`` y de los sondeos) y los tipos de
-    trabajo de la 005."""
-    stack.enter_context(registered(
-        *provenance.operation_defs({name: _recompute for name in provenance.REPEATABLE}),
-        *gis_provenance.operation_defs({gis_provenance.RESAMPLE: _recompute},
-                                       op_types=(gis_provenance.RESAMPLE,))))
-    for reader in (builtin.GPKG_LAYER, *dh_content.CONTENT_READERS):
-        if reader.id not in readers.READERS:
-            readers.register_reader(reader)
-            stack.callback(readers.unregister_reader, reader.id)
-    for definitions in (core_defs.DEFINITIONS, dh_params.DEFINITIONS):
-        if definitions[0].key not in core_params.DEFINITIONS:
-            core_params.register_definitions(definitions)
-            stack.callback(core_params.unregister_definitions, definitions[0].module)
-    for info in dh_jobs.WORKER_INFOS:
-        if info.name not in catalog.WORKERS:
-            catalog.register_worker(info)
-            stack.callback(catalog.unregister_worker, info.name)
-
-
 def _new_project(folder: Path, *, surface: bool) -> tuple[Any, Any]:
     """Un proyecto nuevo en ``folder`` (EPSG:25830 y EPSG:5782, con la ventana de trabajo de
     V-ref) y, con ``surface``, su rejilla del proyecto ``gis_dtm_terreno`` (el MDT de 1 m de
@@ -264,100 +218,18 @@ def _new_project(folder: Path, *, surface: bool) -> tuple[Any, Any]:
     return project, found
 
 
-def _runner(folder: Path, project: Any) -> Any:
-    """El lanzador de trabajos de la importación, como el de Blender: dos a la vez en proceso
-    aparte y uno en el hilo, con la carpeta del proyecto prohibida."""
-    return runner_mod.JobRunner(jobs_root=folder / "trabajos", package_dir=EXTENSION_DIR,
-                                blender_python=Path(sys.executable),
-                                max_subprocess=MAX_SUBPROCESS,
-                                forbidden_roots=[Path(project.root)])
-
-
-def _drive[T](steps: Generator[Any, None, T] | Iterator[Any]) -> T | None:
-    """Recorre los pasos ``steps`` seguidos (sin las pausas del temporizador de Blender) y da
-    lo que devuelven."""
-    while True:
-        try:
-            next(steps)
-        except StopIteration as stop:
-            return stop.value
-
-
-class _Importer:
+class _Importer(recmin_import.RecminImport):
     """La importación de la base de V-ref en ``project`` con el lanzador ``runner``, como la
-    hace ``bl/ops/dh.py`` con una base de RecMin (``start_order``, ``_after_reading``,
-    ``_apply``, ``_import_steps``, ``_build_base_steps``, ``_base_steps``, ``_validate_steps``
-    y ``_validated_steps``): sus pasos seguidos, con la hora en que acaba cada fase
+    hace ``bl/ops/dh.py`` con una base de RecMin (la de ``tests.support.recmin_import`` y,
+    después, ``_build_base_steps``, ``_base_steps``, ``_validate_steps`` y
+    ``_validated_steps``): sus pasos seguidos, con la hora en que acaba cada fase
     (:data:`PHASES`). ``surface``: la rejilla del proyecto con que se valida."""
 
     def __init__(self, project: Any, runner: Any, surface: Any) -> None:
-        self.project = project
-        self.runner = runner
+        super().__init__(project, runner, _DATA.base, _declaration(), decimal=DECIMAL,
+                         job_label="Rendimiento")
         self.surface = surface
-        self.path = _DATA.base
-        self.name = self.path.stem
-        self.declaration = _declaration()
-        self.crs, self.vertical = gis_store.project_references(project)
-        self.software = dict([gis_crs.crs_library()])
-        self.catalogs: Any = None  # los del proyecto al empezar la orden
-        self.holes: Any = None  # sus sondeos con registros en cada tabla, al empezar
-        self.handle: Any = None  # la operación dh.import_recmin
-        self.read: Any = None  # el JobHandle y, terminado, el JobResult de su lectura
-        self.found: Any = None  # el JobOutcome de su lectura
-        self.spec: Any = None  # su entrada (InputSpec)
-        self.applied: Any = None  # el JobHandle y, terminado, el JobResult de su aplicación
         self.marks: list[float] = []
-        self.workers: dict[str, str] = {}  # el tipo de cada trabajo lanzado, por su uid
-        self.jobs: dict[str, str] = {}  # el ejecutor de cada tipo de trabajo
-
-    # --- Lo común --------------------------------------------------------------------------
-
-    def submit(self, handle: Any, worker: str, params: Mapping[str, Any], *,
-               paths: Mapping[str, Path] | None = None,
-               arrays: Mapping[str, np.ndarray] | None = None) -> Any:
-        """Lanza el trabajo ``worker`` de la operación ``handle`` como
-        ``core_provenance.launch_job``: la petición con la operación y el proyecto, ``arrays``
-        escritos en ``in/`` antes de lanzarlo y ``paths`` por la línea de órdenes."""
-        request = protocol.new_request(worker, label=f"Rendimiento de {worker}",
-                                       owner=handle.definition.module, params=dict(params),
-                                       project_uid=handle.project_uid, operation_uid=handle.uid,
-                                       grace_s=dh_jobs.CANCEL_GRACE_S)
-        job: Any = request
-        if arrays:
-            folder = self.runner.prepare(request)
-            prepared = protocol.read_request(folder)
-            written = {name: folder.write_array(name, array) for name, array in arrays.items()}
-            protocol.write_request(folder, dataclasses.replace(
-                prepared, inputs={**dict(prepared.inputs), **written}))
-            job = folder
-        self.workers[request.job_uid] = worker
-        return self.runner.submit(job, paths=paths)
-
-    def wait(self, handle: Any) -> Any:
-        """Espera a que termine el trabajo ``handle`` sondeando el lanzador; su ``JobResult``.
-        Falla si no termina bien."""
-        deadline = time.perf_counter() + WAIT_S
-        while handle.result() is None:
-            if time.perf_counter() > deadline:
-                raise AssertionError(f"el trabajo no termina en {WAIT_S:.0f} s")
-            self.runner.poll()
-            time.sleep(POLL_S)
-        result = handle.result()
-        if result.state != SUCCEEDED:
-            raise AssertionError(f"un trabajo terminó «{result.state}»: {result.error_code} "
-                                 f"{result.error_text}")
-        return result
-
-    def outcome(self, result: Any) -> Any:
-        outcome = ingest.job_outcome(result, result.job_dir)
-        self.jobs[self.workers[result.job_uid]] = str(outcome.executor)
-        return outcome
-
-    def release(self, *results: Any) -> None:
-        """Da por incorporados los trabajos de ``results`` (se borran sus entradas y sus
-        resultados), como ``core_provenance.release_job``."""
-        for result in results:
-            self.runner.mark_ingested(result.job_uid)
 
     def mark(self) -> None:
         self.marks.append(time.perf_counter())
@@ -379,115 +251,6 @@ class _Importer:
         self.mark()
         return self.marks
 
-    # --- La lectura (start_order, _read_job) ------------------------------------------------
-
-    def begin(self) -> None:
-        """La operación ``dh.import_recmin`` de la base, «en curso» (``begin_each``: una sola
-        transacción), con los catálogos y los sondeos del proyecto al empezar."""
-        with self.project.read() as conn:
-            self.catalogs = store.read_catalogs(conn)
-            self.holes = store.holes_by_table(conn)
-        conventions = self.declaration.conventions()
-        conventions["sentinels"] = ";".join(conventions["sentinels"])
-        settings = {"name": self.name, "file": self.path.name, "reader": provenance.RECMIN_MDB,
-                    "decimal": DECIMAL, **conventions}
-        (self.handle,) = operations.begin_operations(
-            self.project, provenance.IMPORT_RECMIN, settings=[settings],
-            executor="job_process")
-
-    def launch_read(self) -> Any:
-        """Lanza la lectura de la base (``dh_import_recmin``, en proceso aparte) con la base
-        por ``paths``; su ``JobHandle``."""
-        params = {"name": self.name, "declaration": dh_jobs.declaration_json(self.declaration),
-                  "settings": {"decimal": DECIMAL}, "crs": gis_jobs.crs_json(self.crs),
-                  "vertical": gis_jobs.vertical_json(self.vertical),
-                  "project_holes": {table: list(names) for table, names in self.holes.items()},
-                  "catalogs": dh_arrays.catalogs_json(self.catalogs),
-                  "size": self.path.stat().st_size, "accept_schema": False}
-        self.read = self.submit(self.handle, dh_jobs.IMPORT_RECMIN, params,
-                                paths={gis_jobs.path_name("main"): self.path})
-        return self.read
-
-    # --- La aplicación (_after_reading, _apply) ---------------------------------------------
-
-    def input_spec(self) -> Any:
-        found = self.found.summary["source"]
-        main = found["files"]["main"]
-        anchor = inputs_mod.locate_source(self.path, self.project, self.project.userdata,
-                                          role="main")
-        prints = [inputs_mod.SourcePrint(main["sha256"], size=main["size"],
-                                         mtime_ns=main["mtime_ns"])]
-        return provenance.input_spec(
-            provenance.RECMIN_MDB, self.name, files=[anchor], file_prints=prints,
-            digest=gis_jobs.digest_of(found["digest"]), declaration=self.declaration,
-            role=None, mapping=None, settings={})
-
-    def apply(self) -> None:
-        """La base clasificada (una entrada nueva) y aplicada con los códigos nuevos dados de
-        alta (``dh_import_apply``, con lo leído por ruta), hasta que termina."""
-        summary = self.found.summary
-        if summary.get("needs_confirmation"):
-            raise AssertionError(f"la base pide confirmación: {summary['needs_confirmation']}")
-        self.spec = self.input_spec()
-        with self.project.read() as conn:
-            found = inputs_mod.classify_import(conn, self.spec)
-        if not isinstance(found, inputs_mod.New):
-            raise AssertionError(f"«{self.path.name}» no es una entrada nueva: {found}")
-        counts = dict(summary.get("counts") or {})
-        imported = sum(int(dict(table).get("imported", 0)) for table in counts.values())
-        params = {"name": self.name, "crs": gis_jobs.crs_json(self.crs), "keep_holes": [],
-                  "replace_holes": {str(table): list(names) for table, names in
-                                    dict(summary.get("existing_tables") or {}).items()},
-                  "register_codes": dict(summary.get("register_codes") or {}),
-                  "taken_colors": [code.color for code in self.catalogs.lithology],
-                  "count": imported + 1}
-        self.applied = self.wait(self.submit(
-            self.handle, dh_jobs.IMPORT_APPLY, params,
-            paths={dh_jobs.INPUT_SOURCE: self.found.file(dh_jobs.OUT_SOURCE.role)}))
-
-    # --- Lo importado (_import_steps) -------------------------------------------------------
-
-    def log_lines(self, report: Mapping[str, Any]) -> list[Any]:
-        """El informe de la base en ``dh_import_log``: los recuentos de cada tabla de RecMin,
-        cada registro rechazado y los avisos (``_log_lines`` de una base de RecMin)."""
-        lines = [store.LogLine.summary(str(table), int(found.get("read", 0)),
-                                       int(found.get("imported", 0)),
-                                       int(found.get("rejected", 0)))
-                 for table, found in dict(report.get("counts") or {}).items()]
-        lines += [store.LogLine.rejection(model.Rejection(*item))
-                  for item in report.get("rejected", ())]
-        lines += [store.LogLine.warning(recmin_schema.SOURCE_LABEL, str(text))
-                  for text in report.get("warnings", ())]
-        return lines
-
-    def write_source(self) -> None:
-        """Lo importado por pasos en una transacción (``SourceWriter``), la regla bajo el
-        límite de detección de la primera importación y el original de la base desde la copia
-        verificada de su lectura; los trabajos, incorporados."""
-        applied = self.outcome(self.applied)
-        tables: dict[str, Any] = {}
-        contents: dict[str, Any] = {}
-        for name, output in dict(applied.summary["outputs"]).items():
-            role = name.removeprefix("dh_src_")
-            tables[role] = dh_jobs.read_table_output(applied.file(name), name)
-            contents[role] = gis_jobs.digest_of(output["digest"])
-        report = json.loads(self.found.file(dh_jobs.OUT_REPORT.role).read_text(encoding="utf-8"))
-        writer = store.SourceWriter(self.project)
-        item = writer.add(self.handle, self.spec, tables, name=self.name, contents=contents,
-                          log=self.log_lines(report),
-                          message=f"Base de sondeos de RecMin «{self.path.name}» importada",
-                          interpreter=self.found.interpreter, executor=self.found.executor,
-                          job_uid=self.read.job_uid)
-        _drive(writer.steps(software=self.software))
-        parameters = core_params.ParameterStore(self.project)
-        with self.project.write_transaction() as conn:
-            for key in dh_params.BELOW_DL_KEYS:
-                parameters.ensure_default(
-                    conn, key, geoblender_version=self.project.session.geoblender_version)
-        verified = self.read.job_dir.inputs_dir / (gis_jobs.path_name("main") + self.path.suffix)
-        _drive(writer.originals(item, [verified]))
-        self.release(self.read, self.applied)
-
     # --- La base (_build_base_steps, _base_steps) --------------------------------------------
 
     def build_base(self) -> Any:
@@ -508,7 +271,7 @@ class _Importer:
         rows = 0
         with self.project.read() as conn:
             for number, source in enumerate(sources, start=1):
-                entry = _drive(store.source_entry_steps(conn, source))
+                entry = recmin_import.drive(store.source_entry_steps(conn, source))
                 name = f"e{number}"
                 for arrays in dh_jobs.packed_parts(name, {table: getattr(entry, table)
                                                           for table in model.TABLES},
@@ -528,7 +291,7 @@ class _Importer:
         for name in schema.BASE_TABLES:
             writer.table(name, dh_jobs.read_table_output(outcome.file(name), name),
                          content=gis_jobs.digest_of(outcome.summary["outputs"][name]["digest"]))
-        _drive(writer.steps(software=self.software, message="Base de los sondeos",
+        recmin_import.drive(writer.steps(software=self.software, message="Base de los sondeos",
                             interpreter=outcome.interpreter, executor=outcome.executor,
                             job_uid=result.job_uid))
         self.release(result)
@@ -548,7 +311,7 @@ class _Importer:
             self.project, provenance.VALIDATE, settings={"surface": surface.name},
             inputs=uses, params=list(dh_params.VALIDATION_KEYS), executor="job_thread")
         with self.project.read() as conn:
-            dset = _drive(store.read_steps(conn))
+            dset = recmin_import.drive(store.read_steps(conn))
         loose: dict[str, Any] = {}
         for arrays in dh_jobs.packed_parts(dh_jobs.INPUT_BASE,
                                            {table: getattr(dset, table)
@@ -571,7 +334,7 @@ class _Importer:
         writer = store.BaseWriter(self.project, handle)
         writer.table(name, dh_jobs.read_table_output(outcome.file(name), name),
                      content=gis_jobs.digest_of(outcome.summary["outputs"][name]["digest"]))
-        _drive(writer.steps(message="Validación de la base de los sondeos",
+        recmin_import.drive(writer.steps(message="Validación de la base de los sondeos",
                             interpreter=outcome.interpreter, executor=outcome.executor,
                             job_uid=result.job_uid))
         self.release(result)
@@ -586,7 +349,7 @@ def _project_stack(stack: ExitStack, *, surface: bool) -> tuple[Path, Any, Any, 
         prefix="gb-dhm-p-", ignore_cleanup_errors=True)))
     project, found = _new_project(folder, surface=surface)
     stack.callback(project.close)
-    runner = _runner(folder, project)
+    runner = recmin_import.new_runner(folder, project)
     stack.callback(runner.shutdown)
     return folder, project, found, runner
 
@@ -617,7 +380,7 @@ class ImportTest(unittest.TestCase):
         con su MDT; de la última se anotan las filas y las operaciones."""
         stack = ExitStack()
         cls.addClassCleanup(stack.close)
-        _registrations(stack)
+        recmin_import.registrations(stack)
         cls.times, cls.phases = [], []
         for _number in range(IMPORT_REPETITIONS):
             with ExitStack() as run_stack:
@@ -737,7 +500,7 @@ class CancelTest(unittest.TestCase):
         proceso suyo, y cómo quedó el proyecto."""
         stack = ExitStack()
         cls.addClassCleanup(stack.close)
-        _registrations(stack)
+        recmin_import.registrations(stack)
         cls.runs = []
         for _number in range(CANCEL_REPETITIONS):
             with ExitStack() as run_stack:

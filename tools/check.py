@@ -328,7 +328,8 @@ USAGE = """Uso (con el Python de Blender, desde la raíz del repositorio):
                     Blender entero (tests/arnes); la publicación (tools/publish.py) la
                     pide siempre, y la comprobación de cada tarea va sin ella
   --rendimiento     añade las pruebas de rendimiento (también las de dentro de Blender)
-  --banco           añade el banco privado de Silvestre (GEOBLENDER_SILVESTRE_DIR)
+  --banco           añade los bancos privados: Silvestre (GEOBLENDER_SILVESTRE_DIR) y
+                    la base de RecMin (GEOBLENDER_RECMIN_BANK_DIR)
   --documentacion   añade la comprobación de la documentación (tools/check_docs.py en
                     GEOBLENDER_DOCS_DIR o en la carpeta madre; sin ella, «omitido»)
   --ayuda, -h       muestra esta ayuda
