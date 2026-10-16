@@ -40,17 +40,19 @@ provisional. La entrada 005 del catálogo entrega sus órdenes tarea a tarea
 (``entries.toml``).
 
 **Importar tablas de sondeos** (T25; HU-005-1; RF-005-05 a RF-005-07, RF-005-09 a RF-005-12;
-plan §5.6.4 y §5.6.5): ``geoblender.dh_import_drillholes`` (Sondeos ▸ Importar ▸ «Sondeos
-(CSV, XLSX…)»). Tras elegir los ficheros, el **asistente**: las declaraciones de la orden (el
-CRS y el datum vertical de las bocas, la referencia del azimut y la declinación, el convenio de
-la inclinación, la unidad de cada elemento, los valores sin dato, la entrega…), y cada fichero
-(cada hoja de un XLSX) como una tabla con su papel y el campo de cada columna propuestos
-(``interop.drillholes_tabular.suggest_role`` y ``suggest_mapping``; ``bl.props.dh``) y sus
-primeras filas tal como se van a interpretar; si falta una declaración, lo dice y no se importa
-nada (RF-005-07). Desde un guion, ``mapping_json`` da el papel (y, si se quiere, la
-correspondencia y la hoja) de cada fichero. **Una entrada por fichero** (D-15): cada una, una
-operación ``dh.import_tabular`` «en curso» y su lectura (``dh_import_tabular``, en proceso
-aparte). Leídas todas, cada entrada se clasifica (``classify_import``; RF-008-54): la misma
+plan §5.6.4 y §5.6.5): ``geoblender.dh_import_drillholes`` (Sondeos ▸ Importar ▸ «Sondeos…»,
+de CSV, TXT o XLSX; también un ``.xlsx`` en «Importar un fichero…»: un ``.csv`` ahí abre el
+importador de puntos de la 006). Tras elegir los ficheros, el **asistente**: las declaraciones
+de la orden (el CRS y el datum vertical de las bocas, la referencia del azimut y la
+declinación, el convenio de la inclinación, la unidad de cada elemento, los valores sin dato,
+el formato de las fechas, la entrega…), y cada fichero (cada hoja de un XLSX) como una tabla
+con su papel y el campo de cada columna propuestos (``interop.drillholes_tabular.suggest_role``
+y ``suggest_mapping``; ``bl.props.dh``) y sus primeras filas tal como se van a interpretar; si
+falta una declaración, lo dice y no se importa nada (RF-005-07). Desde un guion,
+``mapping_json`` da el papel (y, si se quiere, la correspondencia y la hoja) de cada fichero.
+**Una entrada por fichero** (D-15): cada una, una operación ``dh.import_tabular`` «en curso» y
+su lectura (``dh_import_tabular``, en proceso aparte). Leídas todas, cada entrada se clasifica
+(``classify_import``; RF-008-54): la misma
 entrada con los mismos ajustes se reutiliza (cancelada con el aviso); los mismos datos con
 otros ajustes, una sustitución que necesita el motivo. Si hay códigos nuevos (RF-005-10),
 sondeos que el proyecto ya tiene (RF-005-11) o una sustitución sin motivo, la orden espera la
@@ -2697,8 +2699,8 @@ class GEOBLENDER_OT_dh_import_drillholes(_DrillholesCommand, ProvenanceAwareOper
     )
     date_format: StringProperty(  # type: ignore[valid-type]
         name="Date format",
-        description="Format of the dates of the source, such as %d/%m/%Y (empty: ISO, "
-                    "YYYY-MM-DD)",
+        description="Format of the dates of the source, such as %d/%m/%Y or %Y-%m-%d (empty: "
+                    "undeclared, and nothing is imported if a table has dates)",
         options=_FIELD,
     )
     sheet: StringProperty(  # type: ignore[valid-type]

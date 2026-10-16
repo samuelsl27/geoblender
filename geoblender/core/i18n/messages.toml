@@ -3583,8 +3583,8 @@ es = "Los sondeos sin desviaciones son verticales"
 ["Date format"]
 es = "Formato de las fechas"
 
-["Format of the dates of the source, such as %d/%m/%Y (empty: ISO, YYYY-MM-DD)"]
-es = "Formato de las fechas de la fuente, como %d/%m/%Y (vacío: ISO, AAAA-MM-DD)"
+["Format of the dates of the source, such as %d/%m/%Y or %Y-%m-%d (empty: undeclared, and nothing is imported if a table has dates)"]
+es = "Formato de las fechas de la fuente, como %d/%m/%Y o %Y-%m-%d (vacío: sin declarar, y no se importa nada si una tabla trae fechas)"
 
 ["Sheet"]
 es = "Hoja"

@@ -53,19 +53,23 @@ de RecMin (CE-005-05), que se ejecuta a petición, y los puestos de IMGA con el 
   de datos, Validar y desviar, Ver) y en la pestaña **«Sondeos»** de la barra lateral de la Vista
   3D (N); sin proyecto abierto salen desactivadas y dicen el paso previo. La barra superior no
   cambia.
-  - **Importar tablas** (Sondeos ▸ Importar ▸ Sondeos…, o «Importar un fichero…» con un CSV o un
-    XLSX): bocas, desviaciones, litología, análisis (en columnas por elemento o en filas) y
-    catálogos de litologías y elementos, todos los ficheros de una vez, en CSV, TXT o XLSX (una
-    tabla por hoja). Un asistente propone el papel de cada tabla y el campo de cada columna por
-    sus nombres habituales en español y en inglés, y enseña sus 20 primeras filas tal como se van
-    a leer. **Se declara siempre**, y nunca se supone: el sistema de referencia y el datum
-    vertical de las bocas (el datum empieza «Sin declarar»; una altura elipsoidal de un GNSS se
-    lleva al datum del proyecto con el geoide del IGN), la referencia del azimut (cuadrícula,
-    geográfico, o magnético con su declinación), el convenio de la inclinación (negativa o
-    positiva hacia abajo, o desde la vertical), la unidad de cada elemento (g/t, ppm, ppb o %),
-    los valores sin dato («−99;ND») y si un negativo es «bajo el límite»; mientras falte algo,
+  - **Importar tablas** (Sondeos ▸ Importar ▸ Sondeos…, o un `.xlsx` en «Importar un
+    fichero…»; un CSV o un TXT ahí abre el importador de puntos de la topografía): bocas,
+    desviaciones, litología, análisis (en columnas por elemento o en filas) y catálogos de
+    litologías y elementos, todos los ficheros de una vez, en CSV, TXT o XLSX (una tabla por
+    hoja). Un asistente propone el papel de cada tabla por el nombre del fichero o de la hoja
+    («bocas», «collars», «desviaciones»…) o, si no lo dice, por sus columnas (una tabla que no
+    reconoce queda «No se importa»), y el campo de cada columna por su nombre habitual en
+    español o en inglés; y enseña sus 20 primeras filas tal como se van a leer. **Se declara
+    siempre**, y nunca se supone: el sistema de referencia y el datum vertical de las bocas (el
+    datum empieza «Sin declarar»; una altura elipsoidal de un GNSS se lleva al datum del
+    proyecto con el geoide del IGN), la referencia del azimut (cuadrícula, geográfico, o
+    magnético con su declinación) y el convenio de la inclinación de las desviaciones y de la
+    orientación en boca (negativa o positiva hacia abajo, o desde la vertical), la unidad de
+    cada elemento (g/t, ppm, ppb o %), el formato de las fechas de una tabla que las trae, los
+    valores sin dato («−99;ND») y si un negativo es «bajo el límite»; mientras falte algo,
     «Importar» está desactivado y dice qué falta. El separador, el decimal, la codificación
-    (UTF-8, Windows-1252, Latin-1 o DOS), la cabecera y la hoja son ajustes de lectura. Un valor
+    (UTF-8, Windows-1252, Latin-1 o DOS) y la cabecera son ajustes de lectura. Un valor
     vacío o sin dato queda sin dato; «<0,01», como 0,01 con la marca «bajo el límite» y su texto;
     «>x», con la marca «sobre el límite»; uno que no es un número, o con el otro separador
     decimal, se rechaza con su fila, su sondeo, su tramo, su campo y su valor. Las leyes se
@@ -78,10 +82,11 @@ de RecMin (CE-005-05), que se ejecuta a petición, y los puestos de IMGA con el 
     nunca se mezclan dos importaciones en una tabla de un sondeo), con Aplicar y Descartar. Si no
     hay nada que decidir, se aplica sola. El informe de cada tabla (leídos, importados, rechazados
     con su motivo y sustituidos) queda en el proyecto. Cancelar o fallar a mitad no deja nada.
-  - **Bases de RecMin** (Sondeos ▸ Importar ▸ Base de sondeos RecMin…): una base de RecMin Free o
-    Pro (MDB o ACCDB, formatos Jet 4 y ACE, esquemas 11 y 12) **en solo lectura**: se lee una
-    copia con el motor de Access del equipo en un proceso aparte, con su avance y cancelable, y
-    junto a la base no aparece ningún fichero. Entran sin pérdida las bocas, las desviaciones,
+  - **Bases de RecMin** (Sondeos ▸ Importar ▸ Base de sondeos RecMin…, o un `.mdb` en
+    «Importar un fichero…»): una base de RecMin Free o Pro (MDB o ACCDB, formatos Jet 4 y ACE,
+    esquemas 11 y 12) **en solo lectura**: se lee una copia con el motor de Access del equipo
+    en un proceso aparte, con su avance y cancelable, y junto a la base no aparece ningún
+    fichero. Entran sin pérdida las bocas, las desviaciones,
     todas sus tablas de litología y de muestras (de columnas por elemento a un valor por tramo),
     los catálogos (litologías con su color, densidad y orden; elementos; sectores, grupos y
     zonas), las intersecciones y los cortes: los valores en precisión simple, por su decimal más
@@ -110,8 +115,9 @@ de RecMin (CE-005-05), que se ejecuta a petición, y los puestos de IMGA con el 
   - **Trazas** (Calcular trazas…): por mínima curvatura (o tangente, o tangente equilibrada), de
     todos los sondeos o solo de los de traza obsoleta; la posición de cualquier profundidad, sobre
     el mismo arco y a menos de 1 mm a 500 m de la solución analítica. Si cambian la boca, las
-    desviaciones, la referencia del azimut, la declinación o el método de un sondeo, su traza
-    queda obsoleta y la vista lo marca en ese sondeo. **Referencia de azimut y declinación…**
+    desviaciones, la referencia del azimut o la declinación de un sondeo, su traza queda obsoleta
+    y la vista lo marca en ese sondeo; el método es el de cada cálculo: con otro, o con otros
+    parámetros de las trazas, se recalculan todas. **Referencia de azimut y declinación…**
     corrige la de una importación, con su motivo, sin tocar lo medido, y deja obsoletas solo las
     trazas de sus sondeos.
   - **Vista 3D**: tubos coloreados por la litología del esquema elegido con los colores del
@@ -137,9 +143,10 @@ de RecMin (CE-005-05), que se ejecuta a petición, y los puestos de IMGA con el 
     tramos y 500 000 análisis: importar sus seis CSV de principio a fin, 29,5–30,0 s (≤ 30 s);
     desde una base de RecMin, 32,5 s (cancelar, 0,11 s, sin dejar ningún proceso); validar,
     0,3 s; las trazas y 100 000 posiciones, 0,05 s; la vista, 1,4 s; el hash de una base de
-    RecMin de 100 MB, 22 s. La interfaz no se para más de unos 0,15 s en ningún paso, también con
-    el proyecto en la red (una vez se vio una espera del servidor de 0,39 s: cuánto se admite en
-    la red lo decide IMGA).
+    RecMin de 100 MB, 22 s. La interfaz no se para más de unos 0,15 s en ningún paso con el
+    proyecto en el disco del equipo; con el proyecto en la red, lo que hace Geoblender en cada
+    paso no pasa de unos 0,18 s, y las esperas del servidor al guardar y al enviar lo escrito
+    (vistas de hasta 0,5 s) se miden aparte, sin límite (lo decidió IMGA: spec 005, 0.5).
 
 - **Topografía base** (spec 006). La primera función minera: el terreno con el que se diseña y
   se cubica, exacto, en el sistema de referencia del proyecto y con su procedencia. Las órdenes

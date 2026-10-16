@@ -356,12 +356,15 @@ class ImportTabularTest(DrillholeImportCase):
     def test_incomplete_declarations_start_nothing(self) -> None:
         """RF-005-07 (spec 0.4): sin el CRS de las coordenadas, el datum vertical («Sin
         declarar»), la referencia del azimut, la declinación de un azimut magnético, el
-        convenio de la inclinación o la unidad de un elemento, la orden se niega diciendo qué
-        falta (sin suponer nada) y no empieza ninguna operación; un CRS que no es del catálogo,
-        tampoco. Control positivo: la litología y su catálogo, que no necesitan ninguno,
-        empiezan desde el asistente (``INVOKE_DEFAULT`` con los ficheros: sin interfaz, se
-        ejecuta con el papel y la correspondencia que propone, RF-005-05); esperando su
-        decisión, descartarlos no deja nada (RF-005-04)."""
+        convenio de la inclinación, la unidad de un elemento o el formato de las fechas de unas
+        bocas que las traen, la orden se niega diciendo qué falta (sin suponer nada) y no
+        empieza ninguna operación; un CRS que no es del catálogo, tampoco. (T59; F-5 de la
+        verificación: la descripción del formato de las fechas decía «vacío: ISO») Las
+        descripciones del CRS y del formato de las fechas en el asistente dicen que, vacíos,
+        quedan sin declarar, como hace la orden. Control positivo: la litología y su catálogo,
+        que no necesitan ninguno, empiezan desde el asistente (``INVOKE_DEFAULT`` con los
+        ficheros: sin interfaz, se ejecuta con el papel y la correspondencia que propone,
+        RF-005-05); esperando su decisión, descartarlos no deja nada (RF-005-04)."""
         before = self.counts()
         pending = dict(self.session.pending_ingests())
         cases = (
@@ -371,6 +374,7 @@ class ImportTabularTest(DrillholeImportCase):
             ({"azimuth_ref": "MAGNETIC"}, "la declinación magnética"),
             ({"inclination_convention": "NONE"}, "el convenio de la inclinación"),
             ({"units": "Au=g/t; Ag=ppm"}, "la unidad de «Cu»"),
+            ({"date_format": ""}, "el formato de las fechas"),
             ({"crs": "EPSG:99999"}, "EPSG:99999"),
         )
         for change, text in cases:
@@ -380,6 +384,13 @@ class ImportTabularTest(DrillholeImportCase):
         self.assertEqual(self.counts(), before)
         self.assertEqual(self.session.pending_ingests(), pending)
         self.assertEqual(self.dh_ops.waiting_imports(), {})
+        i18n = _module("core.i18n")
+        described = bpy.ops.geoblender.dh_import_drillholes.get_rna_type().properties
+        for name in ("crs", "date_format"):
+            with self.subTest(propiedad=name):
+                description = i18n.translate("es", described[name].description)
+                self.assertIn("vacío: sin declarar", description)
+                self.assertNotIn("ISO", description)
 
         result = bpy.ops.geoblender.dh_import_drillholes(
             "INVOKE_DEFAULT", directory=str(self.sources),
