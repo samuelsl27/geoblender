@@ -34,7 +34,9 @@ una base Jet 4 (``Microsoft.Jet.OLEDB.4.0``, que solo existe en el ``powershell.
 - :func:`vref_script` escribe V-ref (``tests/data/dh/sintetico.py``; spec 005 §5) como el guion
   de una base de RecMin con el esquema de ``recmin_v12.sql`` y :func:`vref_base` crea con él la
   base ACE (``build_mdb.ps1``, por :func:`shared_bases`) de la prueba de rendimiento de la
-  importación de RecMin (T33). Ni el guion ni la base se versionan.
+  importación de RecMin (T33); con ``scale``, la de unos 100 MB del hash de contenido de
+  RNF-008-11 (T43: sus muestras multiplicadas con ``build_mdb.ps1 -Scale``, fuera del
+  almacén). Ni el guion ni la base se versionan.
 """
 
 from __future__ import annotations
@@ -354,14 +356,20 @@ def _base(record: dict) -> BuiltBase:
 
 
 def build_bases(out_dir: Path, engines: tuple[str, ...] = tuple(ENGINES), *,
-                sql: Path | None = None, timeout_s: float = BUILD_TIMEOUT_S) -> Build:
+                sql: Path | None = None, timeout_s: float = BUILD_TIMEOUT_S,
+                scale: int = 1) -> Build:
     """Crea en ``out_dir`` (que no debe tener ya esas bases) las bases de los dos guiones
     (con ``sql``, solo las de ese guion, que puede estar en otra carpeta: una variante escrita
     por la prueba) con cada motor de ``engines`` (``jet4``, ``ace``), un ``powershell.exe`` por
     motor y todos a la vez; ``RuntimeError`` con la salida de errores si alguno falla o tarda
-    más de ``timeout_s`` segundos."""
+    más de ``timeout_s`` segundos. Con ``scale`` > 1 (``build_mdb.ps1 -Scale``; spec 005,
+    T43), la tabla de muestras de cada base tiene ``scale`` veces sus filas."""
+    if isinstance(scale, bool) or not isinstance(scale, int) or scale < 1:
+        raise ValueError(f"la escala de las muestras es un entero ≥ 1, no {scale!r}")
     processes: dict[str, subprocess.Popen[bytes]] = {}
     chosen = [] if sql is None else ["-Sql", str(sql)]
+    if scale > 1:
+        chosen += ["-Scale", str(scale)]
     for engine in engines:
         argument, bits = ENGINES[engine]
         processes[engine] = subprocess.Popen(
@@ -735,20 +743,27 @@ def vref_script(tables: Mapping[str, sintetico.Table] | None = None) -> str:
 
 
 def vref_base(out_dir: Path, tables: Mapping[str, sintetico.Table] | None = None, *,
-              store: Path | None = None) -> BuiltBase:
+              store: Path | None = None, scale: int = 1) -> BuiltBase:
     """V-ref (``tables``, como en :func:`vref_script`) como base de RecMin en formato ACE en
     ``out_dir`` (que no debe tenerla ya): su guion (:data:`VREF_SQL`, escrito en ``out_dir`` y
     borrado después) y su base, que crea ``build_mdb.ps1`` con el motor por
     :func:`shared_bases` (del almacén ``store``, :func:`default_store`, si ya se creó con el
-    mismo guion; plazo :data:`VREF_BUILD_TIMEOUT_S`). ``RuntimeError`` sin ACE."""
+    mismo guion; plazo :data:`VREF_BUILD_TIMEOUT_S`). Con ``scale`` > 1 (spec 005, T43), sus
+    muestras (:data:`VREF_SAMPLES`) ``scale`` veces (``build_mdb.ps1 -Scale``): una base grande
+    se crea cada vez con :func:`build_bases`, sin pasar por el almacén (no ocupa disco
+    después). ``RuntimeError`` sin ACE."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     script = out_dir / VREF_SQL
     script.write_text(vref_script(tables), encoding="utf-8", newline="\n")
     try:
-        made = shared_bases(out_dir, (ACE,), sql=script, store=store,
-                            build=functools.partial(build_bases,
-                                                    timeout_s=VREF_BUILD_TIMEOUT_S))
+        if scale == 1:
+            made = shared_bases(out_dir, (ACE,), sql=script, store=store,
+                                build=functools.partial(build_bases,
+                                                        timeout_s=VREF_BUILD_TIMEOUT_S))
+        else:
+            made = build_bases(out_dir, (ACE,), sql=script, timeout_s=VREF_BUILD_TIMEOUT_S,
+                               scale=scale)
     finally:
         script.unlink(missing_ok=True)
     if ACE in made.missing:

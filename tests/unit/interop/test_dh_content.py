@@ -573,6 +573,38 @@ class RecminTest(_Temp):
         self.assertNotIn("secciones", parts)
         self.assertEqual(self.read(tables).data_sha256, encoder.composite_sha256(parts))
 
+    def test_a_big_table_by_chunks(self) -> None:
+        """RNF-008-11 (spec 005, T43): las filas de una tabla se convierten y se hashean por
+        trozos de ``chunk_bytes`` (a ``ROW_BYTES`` por fila), con un aviso de avance tras cada
+        uno: ninguna conversión de una columna pasa de las filas de un trozo, y el hash es el
+        mismo que de una vez (con los Single como ``float32`` o como su float exacto y con un
+        análisis sin dato), aunque la tabla tenga muchas más filas que un trozo."""
+        samples = _v12()["muestras"]
+        many = _v12(muestras=_with_rows(samples, list(samples.rows) * 10))
+        floats = dict(recmin.raw_tables(V12, singles_as_float=True))
+        floats["muestras"] = _with_rows(floats["muestras"],
+                                        list(floats["muestras"].rows) * 10)
+        self.assertIn(None, [row[samples.position("ELEMENTO 1")] for row in samples.rows])
+        step = SMALL_CHUNK // dh_content.ROW_BYTES
+        real = dh_content._cell_values
+        for name, tables in {"float32": many, "float": floats}.items():
+            with self.subTest(single=name):
+                whole = self.read(tables)
+                sizes: list[int] = []
+
+                def spy(column: Any, kind: str, single: bool, sizes: list = sizes) -> Any:
+                    sizes.append(len(column))
+                    return real(column, kind, single)
+
+                seen: list[float] = []
+                with mock.patch.object(dh_content, "_cell_values", side_effect=spy):
+                    chunked = self.read(tables, chunk_bytes=SMALL_CHUNK, progress=seen.append)
+                self.assertEqual(chunked, whole)
+                self.assertEqual(max(sizes), step)
+                self.assertGreaterEqual(len(seen), 70 // step)
+                self.assertEqual(seen, sorted(seen))
+        self.assertEqual(self.read(floats), self.read(many))
+
     def test_declarations_are_content(self) -> None:
         """RF-005-07, RF-008-08: otro CRS, otro datum u otra referencia del azimut, otro hash
         de contenido y el mismo de datos; sin CRS ni datum, ``dh.declaration_missing``; una

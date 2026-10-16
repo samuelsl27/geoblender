@@ -19,8 +19,10 @@ del worker (``JobRunner.submit(paths=…)``, ``--path source_<papel>=<ruta>``), 
   ``-journal``—, la copia antes a ``in/`` con ``JobDir.copy_input`` (huella antes, durante y
   después: ``source_changed`` si cambia), con su ``-wal`` o su diario junto a ella (y, si el
   fichero principal cambió mientras se copiaban, también ``source_changed``: un volcado del
-  ``-wal`` entre las dos copias). Avanza el lector registrado con el progreso y la
-  cancelación del contexto (cada trozo es un punto de cancelación) y devuelve
+  ``-wal`` entre las dos copias), con su avance cada MiB en el tramo [0, :data:`COPY_SHARE`]
+  (spec 005, T43). Avanza el lector registrado con el progreso (tras una copia, de
+  :data:`COPY_SHARE` a 1; si no, de 0 a 1: nunca retrocede) y la cancelación del contexto
+  (cada trozo, y cada aviso de la copia, es un punto de cancelación) y devuelve
   ``{"data_sha256", "content_sha256", "normalizer", "reader", "bytes"}`` (``bytes``: lo que
   medía cada fichero leído, por papel; el ``-wal`` como ``main-wal``). Si la fuente ya no está,
   falla con :data:`SOURCE_MISSING`; si su lector no la puede leer, con :data:`UNREADABLE`.
@@ -34,9 +36,9 @@ del worker (``JobRunner.submit(paths=…)``, ``--path source_<papel>=<ruta>``), 
   ``HashResult`` (:func:`hash_result`) y lo da por incorporado (``mark_ingested``: se borran
   sus copias), y ``cancel`` lo cancela.
 
-Cancelar para en ≤ 2 s (RNF-008-11): el trabajo mira la cancelación antes de copiar y entre dos
-trozos del lector; durante la copia verificada no la mira, y el lanzador lo termina al vencer
-su plazo de gracia (:data:`CANCEL_GRACE_S`).
+Cancelar para en ≤ 2 s (RNF-008-11): el trabajo mira la cancelación antes de copiar, en cada
+aviso de la copia verificada y entre dos trozos del lector; si no llega a mirarla, el lanzador
+lo termina al vencer su plazo de gracia (:data:`CANCEL_GRACE_S`).
 
 ``core`` no importa ``jobs`` (ADR-0004 R4): ``HashRequest`` y ``HashResult`` se importan al
 usarlos (importar este módulo no carga las comprobaciones). Python puro (ADR-0004).
@@ -96,6 +98,9 @@ UNREADABLE = "content_hash_unreadable"
 
 COPYING_TEXT = "Copiando la fuente…"
 READING_TEXT = "Calculando el hash de contenido…"
+COPY_SHARE = 0.1
+"""La parte del avance que es la copia verificada de la fuente, si su lector la pide (spec 005,
+T43): la lectura sigue desde ahí hasta 1 (sin copia, va de 0 a 1)."""
 
 _CATALOG: tuple[Message, ...] = (
     Message(
@@ -262,15 +267,17 @@ def run(ctx: _Context) -> dict[str, JsonValue]:
             raise _missing(job, path) from None
         if not path.is_file():
             raise _missing(job, path)
+    start = 0.0
     if found.needs_copy or sides:
         ctx.progress(0.0, COPYING_TEXT)
-        files = _copies(ctx, files, sides, job)
+        files = _copies(ctx, files, sides, job, sizes)
+        start = COPY_SHARE
     try:
         read = found.request(params.kind, params.declarations, files, params.settings,
                              normalizer=params.normalizer)
     except (GeoblenderError, ValueError, TypeError) as exc:
         raise JobError("request_invalid", job=job, detail=str(exc)) from None
-    digest = _read(ctx, found, read, job)
+    digest = _read(ctx, found, read, job, start)
     return {
         "data_sha256": digest.data_sha256,
         "content_sha256": digest.content_sha256,
@@ -287,17 +294,22 @@ def _sides(main: Path) -> dict[str, Path]:
 
 
 def _copies(ctx: _Context, files: Mapping[str, Path], sides: Mapping[str, Path],
-            job: str) -> dict[str, Path]:
+            job: str, sizes: Mapping[str, JsonValue]) -> dict[str, Path]:
     """Las copias verificadas de la fuente en ``in/`` (``in/source_<papel><extensión>``), con
-    el ``-wal`` o el diario de la principal junto a su copia (``in/source_main.gpkg-wal``)."""
+    el ``-wal`` o el diario de la principal junto a su copia (``in/source_main.gpkg-wal``),
+    con su avance (:class:`_Copying`; ``sizes``, los bytes de cada fichero como en el
+    resumen)."""
     folder = ctx.job_dir
     main = files[MAIN_ROLE]
     before = _stamp(main)
-    copies = {role: folder.path / folder.copy_input(path, path_name(role), job=job)
+    copying = _Copying(ctx, sizes)
+    copies = {role: folder.path / folder.copy_input(path, path_name(role), job=job,
+                                                    progress=copying.file(role))
               for role, path in files.items()}
     for suffix, path in sides.items():
         ctx.check_cancelled()
-        copy = folder.path / folder.copy_input(path, path_name(MAIN_ROLE), job=job)
+        copy = folder.path / folder.copy_input(path, path_name(MAIN_ROLE), job=job,
+                                               progress=copying.file(f"{MAIN_ROLE}{suffix}"))
         if copy != side_file(copies[MAIN_ROLE], suffix):
             raise JobError("request_invalid", job=job,
                            detail=f"la fuente SQLite «{main.name}» no tiene extensión: no se "
@@ -305,6 +317,34 @@ def _copies(ctx: _Context, files: Mapping[str, Path], sides: Mapping[str, Path],
     if sides and _stamp(main) != before:
         raise JobError("source_changed", job=job, path=main)
     return copies
+
+
+class _Copying:
+    """El avance de las copias verificadas de una fuente (``JobDir.copy_input`` avisa tras
+    cada MiB de sus tres lecturas): sus ficheros (``sizes``: los bytes de cada uno, por
+    papel), uno tras otro y cada uno por su tamaño, en el tramo [0, :data:`COPY_SHARE`] con
+    :data:`COPYING_TEXT`. Cada aviso es un punto de cancelación (``ctx.progress``): una fuente
+    grande o en la red no deja de avisar ni de poder pararse mientras se copia (spec 005,
+    T43; RNF-008-11)."""
+
+    def __init__(self, ctx: _Context, sizes: Mapping[str, JsonValue]) -> None:
+        self._ctx = ctx
+        self._sizes = {key: max(1, int(value)) for key, value in sizes.items()
+                       if isinstance(value, int) and not isinstance(value, bool)}
+        self._total = sum(self._sizes.values()) or 1
+        self._done = 0
+
+    def file(self, key: str) -> Callable[[float], None]:
+        """``progress(fracción)`` de la copia del fichero ``key`` (la siguiente)."""
+        size = self._sizes.get(key, 1)
+        offset = self._done
+        self._done += size
+
+        def progress(fraction: float) -> None:
+            done = (offset + min(1.0, max(0.0, fraction)) * size) / self._total
+            self._ctx.progress(COPY_SHARE * min(1.0, done), COPYING_TEXT)
+
+        return progress
 
 
 def _stamp(path: Path) -> tuple[int, int] | None:
@@ -316,13 +356,14 @@ def _stamp(path: Path) -> tuple[int, int] | None:
 
 
 def _read(ctx: _Context, found: ContentReader, request: ReadRequest,
-          job: str) -> ContentDigest:
-    """Avanza el lector con el progreso y la cancelación del contexto."""
+          job: str, start: float = 0.0) -> ContentDigest:
+    """Avanza el lector con el progreso (de ``start``, tras la copia, a 1) y la cancelación
+    del contexto."""
     steps = read_steps(found, request)
     try:
         ctx.check_cancelled()
         for done in steps:
-            ctx.progress(done, READING_TEXT)
+            ctx.progress(start + (1.0 - start) * done, READING_TEXT)
     except FileNotFoundError as exc:
         raise _missing(job, Path(exc.filename or request.files[MAIN_ROLE])) from None
     except (GeoblenderError, OSError, ValueError, sqlite3.Error) as exc:

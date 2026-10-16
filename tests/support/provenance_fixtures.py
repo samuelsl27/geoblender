@@ -677,11 +677,11 @@ class BigSource:
 
 
 class _HarnessSink:
-    """Los eventos del trabajo de hash en el arnés (su ``EventSink``): cada aviso de progreso
-    de la lectura va a ``progress`` y, si después ``cancelled()`` lo pide, se activa el aviso
-    de parar del trabajo (``cancel``); apunta lo que tardó la copia verificada (de empezar a su
-    primer aviso de lectura; 0 si no hubo copia), cuándo llegó ese aviso y la última fracción
-    leída."""
+    """Los eventos del trabajo de hash en el arnés (su ``EventSink``): cada aviso de progreso,
+    de la copia verificada (si el lector la pide; spec 005, T43) o de la lectura, va a
+    ``progress`` y, si después ``cancelled()`` lo pide, se activa el aviso de parar del
+    trabajo (``cancel``); apunta lo que tardó la copia verificada (de empezar a su primer
+    aviso de lectura; 0 si no hubo copia), cuándo llegó ese aviso y la última fracción."""
 
     def __init__(self, progress: Callable[[float], object] | None,
                  cancelled: Callable[[], bool] | None, cancel: threading.Event) -> None:
@@ -699,11 +699,10 @@ class _HarnessSink:
             return
         if event.msg == content_hash.COPYING_TEXT:
             self.copying = True
-            return
-        if self.reading_at is None:
+        elif self.reading_at is None:
             self.reading_at = time.perf_counter()
-        if self.copying and not self.copy_s:
-            self.copy_s = self.reading_at - self.started
+            if self.copying:
+                self.copy_s = self.reading_at - self.started
         self.fraction = event.frac
         if self.progress is not None:
             self.progress(event.frac)
@@ -717,8 +716,9 @@ class BigHashHarness:
     función que ejecuta el trabajo en el hilo y en proceso aparte, con las rutas de la fuente
     por ``paths``, su copia verificada de ``JobDir.copy_input`` si el lector la pide y el
     progreso y la cancelación de su ``WorkerContext``), con su presupuesto, un aviso de
-    progreso cada ≤ 1 s y la cancelación en ≤ 2 s: mirada cada ≤ 2 s mientras lee (lo más que
-    tardaría en parar si se cancelase en cualquier momento; T67), al empezar y a mitad.
+    progreso cada ≤ 1 s y la cancelación en ≤ 2 s: mirada cada ≤ 2 s mientras copia y lee (lo
+    más que tardaría en parar si se cancelase en cualquier momento; T67 y, con la copia, spec
+    005 T43), al empezar y a mitad.
 
     Se usa como mezcla de una clase de pruebas (``class X(BigHashHarness, unittest.TestCase)``)
     que da el lector (``reader``, que el arnés registra si no lo está), su presupuesto
@@ -798,16 +798,18 @@ class BigHashHarness:
         return f"{total / 1e6:.0f} MB"
 
     def _looks_gap(self, end: float) -> float:
-        """El mayor intervalo sin mirar la cancelación desde que empieza a leer (tras la copia
-        verificada, si la hay) hasta ``end``."""
-        start = self.sink.reading_at or self.sink.started
+        """El mayor intervalo sin mirar la cancelación desde que empieza el trabajo (también
+        mientras copia la fuente, si su lector lo pide: cada aviso de la copia la mira; spec
+        005, T43) hasta ``end``."""
+        start = self.sink.started
         moments = [start, *(look for look in self.cancel_event.looks if look >= start), end]
         return max(later - earlier for earlier, later in zip(moments, moments[1:]))
 
     def test_big_hash(self) -> None:
         """RNF-008-11: el hash de contenido en segundo plano de la fuente grande del lector
         tarda lo que su presupuesto (un MDT de 100 M celdas, ≤ 45 s en disco local), con un
-        aviso de progreso cada ≤ 1 s y, mientras lee, la cancelación mirada cada ≤ 2 s."""
+        aviso de progreso cada ≤ 1 s y, mientras copia y lee, la cancelación mirada cada
+        ≤ 2 s."""
         clock = ProgressClock()
         digest, copy_s = self.hash_source(progress=clock.tick)
         total, gap = clock.finish()

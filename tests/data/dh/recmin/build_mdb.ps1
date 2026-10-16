@@ -28,16 +28,27 @@
     {"engine":"ace","missing":true,"tried":[...]}. Codigo de salida 0 si todo fue bien; 1,
     con el motivo en la salida de errores, si no.
 
+    Con -Scale n (spec 005, T43: la base de unos 100 MB de RNF-008-11), cada base tiene n
+    veces las filas de la tabla -ScaleTable (por defecto, la de muestras): ejecutado el
+    guion, sus filas se copian n - 1 veces con INSERT ... SELECT, sin su columna
+    autonumerica (cada copia, con su numero nuevo), y la linea JSON da las filas de
+    despues. La tabla necesita una columna autonumerica (COUNTER); si no, es un error.
+
     Lo usan las pruebas de la spec 005 (tests/unit/interop/test_recmin_fixture.py, con
     tests.support.recmin), siempre con una carpeta temporal. Ninguna base se versiona.
 
 .EXAMPLE
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File build_mdb.ps1 -OutDir $env:TEMP\recmin
+
+.EXAMPLE
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File build_mdb.ps1 -OutDir $env:TEMP\grande -Engine Ace -Sql recmin_vref.sql -Scale 35
 #>
 param(
     [Parameter(Mandatory = $true)][string] $OutDir,
     [ValidateSet('All', 'Jet4', 'Ace')][string] $Engine = 'All',
-    [string] $Sql = ''
+    [string] $Sql = '',
+    [ValidateRange(1, 1000)][int] $Scale = 1,
+    [string] $ScaleTable = 'muestras'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -108,6 +119,40 @@ function Invoke-SqlScript([string] $Target, [string] $Provider, [string] $SqlPat
     }
 }
 
+# Con -Scale n > 1: copia n - 1 veces las filas que tiene ahora la tabla $ScaleTable, sin su
+# columna autonumerica, que el motor numera en cada copia.
+function Expand-Table([string] $Target, [string] $Provider) {
+    if ($Scale -le 1) { return }
+    $connection = New-Object System.Data.OleDb.OleDbConnection(
+        "Provider=$Provider;Data Source=$Target;$NoPooling")
+    $connection.Open()
+    try {
+        $command = $connection.CreateCommand()
+        $command.CommandText = "SELECT * FROM [$ScaleTable] WHERE 1 = 0"
+        $reader = $command.ExecuteReader([System.Data.CommandBehavior]::KeyInfo)
+        try { $columns = $reader.GetSchemaTable() } finally { $reader.Close() }
+        $counter = New-Object 'System.Collections.Generic.List[string]'
+        $copied = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($column in $columns.Rows) {
+            $name = '[' + [string]$column['ColumnName'] + ']'
+            if ([bool]$column['IsAutoIncrement']) { $counter.Add($name) } else { $copied.Add($name) }
+        }
+        if ($counter.Count -ne 1) {
+            throw "${Target}: [$ScaleTable] no tiene una columna autonumerica: no se multiplica"
+        }
+        $command.CommandText = "SELECT MAX($($counter[0])) FROM [$ScaleTable]"
+        $last = $command.ExecuteScalar()
+        if ($last -is [DBNull]) { return }
+        $list = $copied -join ', '
+        $command.CommandText = ("INSERT INTO [$ScaleTable] ($list) SELECT $list " +
+            "FROM [$ScaleTable] WHERE $($counter[0]) <= $last")
+        for ($copy = 1; $copy -lt $Scale; $copy++) { [void]$command.ExecuteNonQuery() }
+    } finally {
+        $connection.Close()
+        $connection.Dispose()
+    }
+}
+
 function Get-BaseReport([string] $Target, [string] $Provider) {
     $connection = New-Object System.Data.OleDb.OleDbConnection(
         "Provider=$Provider;Data Source=$Target;Mode=Read;$NoPooling")
@@ -166,6 +211,7 @@ function New-RecminBase([string] $SqlPath, [string] $Which) {
         throw ("{0}: no se pudo crear la base Jet 4 ({1})" -f $target, ($reasons -join '; '))
     }
     Invoke-SqlScript $target $used $SqlPath
+    Expand-Table $target $used
     $report = [ordered]@{
         engine   = $Which.ToLowerInvariant()
         sql      = [IO.Path]::GetFileName($SqlPath)
@@ -191,7 +237,8 @@ try {
         if ([Environment]::Is64BitProcess) {
             $ps32 = Join-Path $env:SystemRoot 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
             $childArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-                '-File', $PSCommandPath, '-OutDir', $OutDir, '-Engine', 'Jet4')
+                '-File', $PSCommandPath, '-OutDir', $OutDir, '-Engine', 'Jet4',
+                '-Scale', $Scale, '-ScaleTable', $ScaleTable)
             if ($Sql) { $childArgs += @('-Sql', $sqlFiles[0]) }
             $lines = & $ps32 @childArgs
             if ($LASTEXITCODE -ne 0) {

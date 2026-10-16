@@ -314,19 +314,20 @@ class InThreadTest(unittest.TestCase):
                 variant = make_wal_variant(folder)
                 calls: list[Path] = []
 
-                def tampering(path, sink=None, variant=variant, changed=changed, calls=calls):
+                def tampering(path, sink=None, *, done=None, variant=variant, changed=changed,
+                              calls=calls):
                     calls.append(Path(path))
                     if Path(path) != variant.wal:
-                        return real(path, sink)
+                        return real(path, sink, done=done)
                     if changed == "wal" and sink is not None:  # mientras se copia el -wal
-                        digest = real(path, sink)
+                        digest = real(path, sink, done=done)
                         with open(variant.wal, "ab") as stream:
                             stream.write(b"\x00" * 512)
                         return digest
                     if changed == "principal" and calls.count(variant.wal) == 1:
                         with open(variant.path, "ab") as stream:  # el volcado del -wal
                             stream.write(b"\x00" * 1024)
-                    return real(path, sink)
+                    return real(path, sink, done=done)
 
                 request = _request("limites", builtin.GPKG_LAYER, "vector",
                                    {"main": variant.path}, declarations=GPKG_DECLARATIONS,
@@ -364,6 +365,51 @@ class InThreadTest(unittest.TestCase):
         took = time.perf_counter() - asked[0]
         self.assertLess(max(sent), 1.0)
         self.assertLessEqual(took, CANCEL_BUDGET_S)
+
+    def test_the_copy_reports_its_progress_and_stops_when_cancelled(self) -> None:
+        """RNF-008-11 (spec 005, T43; RF-004-06): la copia verificada de la fuente (aquí, un
+        GeoPackage con su ``-wal``) avisa de su avance con «Copiando la fuente…» entre 0 y
+        ``COPY_SHARE``, y la lectura sigue desde ahí hasta 1, sin retroceder; cada aviso de la
+        copia es un punto de cancelación: cancelar mientras copia para el trabajo
+        (``JobCancelled``) sin leer la fuente y sin dejar nada en ``in/``."""
+        variant = make_wal_variant(self.root)
+        request = _request("limites_wal", builtin.GPKG_LAYER, "vector", {"main": variant.path},
+                           declarations=GPKG_DECLARATIONS, settings=LAYER_SETTINGS)
+        events: list[tuple[str, float]] = []
+        cancel = threading.Event()
+
+        class Sink:
+            def __init__(self, stop: bool) -> None:
+                self.stop = stop
+
+            def send(self, event: object) -> None:
+                if event.type != "progress":
+                    return
+                events.append((event.msg, event.frac))
+                if (self.stop and event.msg == content_hash.COPYING_TEXT
+                        and event.frac > 0.0):
+                    cancel.set()
+
+        with mock.patch.object(worker_api, "PROGRESS_INTERVAL_S", 0.0):
+            summary = content_hash.run(self.context(request, sink=Sink(False)))
+        self.assertEqual(summary["data_sha256"], _thread_digest(request).data_sha256)
+        copying = [frac for msg, frac in events if msg == content_hash.COPYING_TEXT]
+        reading = [frac for msg, frac in events if msg == content_hash.READING_TEXT]
+        fractions = [frac for _msg, frac in events]
+        self.assertGreater(max(copying), 0.0)
+        self.assertLessEqual(max(copying), content_hash.COPY_SHARE)
+        self.assertGreaterEqual(min(reading), content_hash.COPY_SHARE)
+        self.assertEqual(fractions, sorted(fractions))
+        self.assertEqual(fractions[-1], 1.0)
+
+        events.clear()
+        ctx = self.context(request, sink=Sink(True), cancel=cancel)
+        with mock.patch.object(worker_api, "PROGRESS_INTERVAL_S", 0.0):
+            with self.assertRaises(worker_api.JobCancelled):
+                content_hash.run(ctx)
+        self.assertTrue(cancel.is_set())
+        self.assertNotIn(content_hash.READING_TEXT, [msg for msg, _frac in events])
+        self.assertEqual(list(ctx.job_dir.inputs_dir.iterdir()), [])
 
     def test_request_names_roles_and_never_paths(self) -> None:
         """RF-008-09 (plan §5.3.3): la petición lleva el lector, el tipo, lo declarado, los

@@ -636,3 +636,10 @@ comparación con el MDT real de Silvestre (CE-006-05), que se ejecuta a petició
   ninguna espera de la interfaz pasa de 0,13 s en disco local (antes, hasta 1,2 s); en la red,
   solo la orden de importar seis ficheros (0,24–0,26 s) y, a veces, un paso de la base que
   espera al servidor (antes, hasta 1,9 s).
+- **El hash de contenido de una base de RecMin grande avisa siempre de su avance** (spec 008;
+  por la 005): el trabajo de hash de una fuente que se copia antes de leerla (una base de
+  Access) avisa de su avance mientras la copia y comprueba su huella, y se puede cancelar en
+  ese momento; las tablas de una base de RecMin se convierten y se hashean por trozos. Con una
+  base de 101 MB (2 000 sondeos y 875 000 muestras de 20 elementos), 22 s, con un aviso cada
+  0,24 s como mucho (antes, la copia pasaba 1,9 s sin avisar y la tabla de muestras, 4,4 s), y
+  cancelar la para en 0,12 s sin dejar ningún proceso vivo. Los hashes son los mismos.

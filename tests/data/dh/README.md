@@ -162,6 +162,14 @@ valor negativo (se importa declarando «−x = <x»); RecMin no guarda la profun
 de los sondeos (la profundidad se deduce: DH-W16) ni el nombre de las muestras. La usa la
 prueba de rendimiento de la importación de RecMin (`tests/rendimiento/test_dh_mdb_perf.py`).
 
+**La base de RecMin de 100 MB** (T43; no se versiona ni pasa por el almacén):
+`vref_base(..., scale=35)` crea la misma base con `build_mdb.ps1 -Scale 35`, que, ejecutado
+el guion, copia 34 veces las filas de `muestras` con `INSERT … SELECT` (sin su columna
+autonumérica, que el motor numera en cada copia): 875 000 muestras de 20 elementos y unos
+101 MB, en alrededor de un minuto. `-Scale n` multiplica así la tabla de `-ScaleTable` (por
+defecto `muestras`) de cualquier guion, con los dos motores. La usa la prueba del hash de
+contenido de una base grande (`tests/rendimiento/dh/test_perf_dh_hash.py`, RNF-008-11).
+
 ## `build_xlsx.py`: libros XLSX sintéticos (T13)
 
 Escribe libros de Excel con `zipfile` y XML hecho a mano (sin bibliotecas de hojas de

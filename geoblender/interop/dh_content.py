@@ -203,7 +203,8 @@ base con el motor (más de :data:`~..core.content.readers.INLINE_LIMIT_S`: una b
 se hashea siempre en el trabajo ``core_content_hash`` si hay quien lo lance)."""
 MDB_BYTES_PER_S = 3_000_000
 """Los bytes de una base de RecMin que extrae y hashea ``io.recmin_mdb@1`` por segundo, a la
-baja (medido: una base ACE de 25 MB con 458 752 muestras, 6,4 s, 3,9 MB/s)."""
+baja (medido: una base ACE de 25 MB con 458 752 muestras, 6,4 s, 3,9 MB/s; la de 101 MB de la
+T43, V-ref con 875.000 muestras de 20 elementos, unos 21 s, 4,8 MB/s)."""
 PRIVATE_PREFIX = "gbdh-"
 """El prefijo de la carpeta temporal privada de una base de RecMin (corto: rutas < 260)."""
 EXTRACT_FOLDER = "crudo"
@@ -214,6 +215,7 @@ _ROLES = ("collar", "survey", "lithology", "assay_wide", "assay_long", "litholog
 _EXTRA_SETTINGS = ("decimal", "date_format")
 _RECMIN_SETTINGS = ("decimal",)
 _ELLIPSOIDAL_ETRS89 = 4937
+_NONE_TYPE = type(None)
 _PORTS: dict[str, MdbExtractor] = {}
 _LOCK = threading.Lock()
 _MDB = "mdb"
@@ -602,21 +604,38 @@ def _extract_steps(extractor: MdbExtractor, copy: Path,
     return list(outcome["tables"])
 
 
+def _float_column(column: Sequence[object]) -> tuple[np.ndarray, bool]:
+    """Los valores de una columna Double o Single en float64 (NaN donde no hay dato) y si le
+    falta alguno. De una vez si son todos ``float`` o todos ``numpy.float32`` (lo que da el
+    extractor), con los mismos bits que valor a valor; si no, valor a valor."""
+    types = set(map(type, column))
+    nulls = _NONE_TYPE in types
+    types.discard(_NONE_TYPE)
+    if types <= {float}:
+        return np.array(column, dtype=np.float64), nulls  # un None da NaN
+    if types <= {np.float32}:
+        return np.array(column, dtype=np.float32).astype(np.float64), nulls
+    numbers = [math.nan if value is None else float(value)  # type: ignore[arg-type]
+               for value in column]
+    return np.array(numbers, dtype=np.float64), nulls
+
+
 def _cell_values(column: Sequence[object], kind: str, single: bool) -> Sequence[object]:
     """Los valores de una columna cruda con el tipo de su campo (:data:`DBTYPE_FIELDS`): los
     Single, por su decimal más corto; los enteros y los sí/no, tal cual (el codificador los
     comprueba: un 1,5 en un entero no se lee); los textos, con las fechas en ISO y los
     decimales exactos por su texto."""
     if kind == _FLOAT:
-        missing = [value is None for value in column]
-        numbers = np.array([math.nan if value is None else float(value)  # type: ignore[arg-type]
-                            for value in column], dtype=np.float64)
+        numbers, nulls = _float_column(column)
         if single:
             from ..drillholes.values import from_single_column
 
             numbers = from_single_column(numbers)
-        return [None if absent else number
-                for absent, number in zip(missing, numbers.tolist(), strict=True)]
+        values: list[object] = numbers.tolist()
+        if not nulls:
+            return values
+        return [None if original is None else value
+                for original, value in zip(column, values, strict=True)]
     if kind in (_INT, _BOOL):
         return column
     found: list[object] = []
@@ -632,19 +651,28 @@ def _cell_values(column: Sequence[object], kind: str, single: bool) -> Sequence[
     return found
 
 
-def _raw_rows(table: RawTable) -> tuple[list[tuple[str, str]], list[tuple[object, ...]]]:
-    """Las columnas (por nombre, sin mayúsculas) y las filas de una tabla cruda con el tipo de
-    cada una."""
+def _hash_table(table: RawTable, step: int, start: float,
+                end: float) -> Generator[float, None, str]:
+    """El hash de datos de una tabla cruda: una tabla sin orden con sus columnas por nombre
+    (sin mayúsculas) y el tipo de su ``DBTYPE``, y sus filas convertidas (:func:`_cell_values`)
+    y añadidas por trozos de ``step``, con el avance de ``start`` a ``end`` tras cada trozo
+    (una tabla grande no deja de avisar mientras se convierte; spec 005, T43); devuelve su
+    hash."""
     order = sorted(range(len(table.columns)), key=lambda i: table.columns[i].name.casefold())
-    columns: list[tuple[str, str]] = []
-    values: list[Sequence[object]] = []
-    for position in order:
-        column = table.columns[position]
-        kind = DBTYPE_FIELDS.get(column.type, _TEXT)
-        columns.append((column.name, kind))
-        values.append(_cell_values([row[position] for row in table.rows], kind,
-                                   column.type == DBTYPE_R4))
-    return columns, list(zip(*values, strict=True)) if values else []
+    fields = [(position, DBTYPE_FIELDS.get(table.columns[position].type, _TEXT),
+               table.columns[position].type == DBTYPE_R4) for position in order]
+    feed = RowEncoder([(table.columns[position].name, kind) for position, kind, _ in fields],
+                      False)
+    rows = table.rows
+    total = len(rows)
+    middle = start + (end - start) * ROWS_SHARE
+    for first in range(0, total, step):
+        columns = list(zip(*rows[first:first + step], strict=True))
+        feed.update_columns([_cell_values(columns[position], kind, single)
+                             for position, kind, single in fields])
+        if first + step < total:
+            yield start + (middle - start) * (first + step) / total
+    return (yield from _scaled(feed.finish_steps(max(step, FINISH_STEP)), middle, end))
 
 
 def _recmin_declaration(request: ReadRequest) -> SourceDeclaration:
@@ -679,12 +707,10 @@ def _hash_recmin(request: ReadRequest, decl: SourceDeclaration, tables: Sequence
     done = 0
     for name in found.names:
         table = indexed[name.casefold()]
-        columns, rows = _raw_rows(table)
         first = start + (end - start) * done / total
-        done += len(rows)
+        done += len(table.rows)
         last = start + (end - start) * done / total
-        feed = RowEncoder(columns, False)
-        parts[table.name] = ("table", (yield from _hash_rows(feed, rows, step, first, last)))
+        parts[table.name] = ("table", (yield from _hash_table(table, step, first, last)))
     request.hasher.composite(parts)
     yield end
 
