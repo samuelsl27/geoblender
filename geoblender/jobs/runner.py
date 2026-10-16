@@ -49,7 +49,9 @@ Ciclo de vida de un trabajo en proceso aparte:
   T53), ``state.json`` atómico con el registro completo (RF-004-15), cierre de su *Job
   Object* (termina lo que el worker dejara vivo) y, por último, ``on_finish`` con su
   :class:`JobResult`. Después arranca de la cola lo que quepa (un trabajo cuyos resultados se
-  están comprobando sigue «En curso» y ocupa su hueco, RF-004-04).
+  están comprobando sigue «En curso» y ocupa su hueco, RF-004-04). Mientras alguno se
+  comprueba, :meth:`JobRunner.verifying` lo dice: el monitor de Blender sondea entonces más a
+  menudo y el final llega en cuanto acaba la comprobación (spec 005, T58).
 - :meth:`JobRunner.snapshots` y :meth:`JobRunner.active_count`: cómo está cada trabajo
   (:class:`JobSnapshot`: nombre, estado, avance, último mensaje, duración, intérprete y
   error) y cuántos están en cola o en curso; es lo que muestra la interfaz (RF-004-06,
@@ -822,6 +824,15 @@ class JobRunner:
         """Cuántos trabajos de este lanzador están en cola o en curso (RF-004-06)."""
         with self._lock:
             return sum(1 for item in self._jobs.values() if item.state in ACTIVE_STATES)
+
+    def verifying(self) -> bool:
+        """Si algún trabajo terminó bien y aún no tiene final porque se están comprobando sus
+        resultados en otro hilo (:class:`_Verification`; o porque ya acabó esa comprobación y
+        su final lo da el siguiente :meth:`poll`). Mientras, quien sondea lo hace más a
+        menudo, para dar el final en cuanto acaba la comprobación y no un tic después (spec
+        005, T58; RNF-006-03: la orden del TIN de la 006 tardaba 0,25 s más por trabajo)."""
+        with self._lock:
+            return any(item.verification is not None for item in self._running.values())
 
     def locks_in_use(self) -> set[str]:
         """Los ``lock_id`` de los motores de cálculo que usan sus trabajos en curso (los

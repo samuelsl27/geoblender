@@ -104,11 +104,13 @@ class VerificationTest(unittest.TestCase):
             time.sleep(POLL_S)
 
     def test_poll_never_hashes_and_the_job_ends_after_the_check(self) -> None:
-        """RNF-005-06, RF-004-05, RF-004-04 (T53): el sondeo que ve acabar el trabajo no
+        """RNF-005-06, RF-004-05, RF-004-04 (T53, T58): el sondeo que ve acabar el trabajo no
         calcula ninguna huella: la comprobación va en otro hilo y, mientras dura, el trabajo
         sigue «En curso» (en su hueco: el siguiente de la cola espera) sin final ni
-        ``on_finish``. Acabada, un sondeo da «Terminado» con sus dos resultados y su
-        ``on_finish``, una vez, y arranca el siguiente."""
+        ``on_finish``, y ``verifying()`` lo dice (T58: quien sondea lo hace entonces más a
+        menudo). Acabada, un sondeo da «Terminado» con sus dos resultados y su
+        ``on_finish``, una vez, arranca el siguiente y ``verifying()`` deja de decirlo."""
+        self.assertFalse(self.runner.verifying())
         handle = self.submit()
         queued = self.submit("selftest", n=1000, chunks=1)
         self.until(lambda: self.hashing.started.is_set() or bool(self.hashing.in_poll),
@@ -118,8 +120,10 @@ class VerificationTest(unittest.TestCase):
             self.runner.poll()
         self.assertEqual((handle.state, handle.result(), self.finished, queued.state),
                          ("running", None, [], "queued"))
+        self.assertTrue(self.runner.verifying())
         self.hashing.release.set()
         self.until(lambda: queued.result() is not None, "el siguiente trabajo de la cola")
+        self.assertFalse(self.runner.verifying())
         result = handle.result()
         self.assertEqual(result.state, "succeeded")
         self.assertEqual(sorted(ref.role for ref in result.outputs), ["tabla_0", "tabla_1"])
