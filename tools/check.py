@@ -346,7 +346,17 @@ _TEST_HEAD = discovery.TEST_HEAD
 _SKIPPED = re.compile(
     r"\.\.\. skipped (?P<reason>'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")\s*$"
 )
-_MEASURE_START = re.compile(r"(?=RNF-\d{3}-\d{2}: )")
+# Donde empieza una medida «RNF-NNN-nn: …»; no tras otro requisito de la misma lista
+# («RNF-008-11, RNF-005-05: …» es una sola: spec 005, T60).
+_MEASURE_START = re.compile(r"(?<!-\d{3}-\d{2}, )(?=RNF-\d{3}-\d{2}: )")
+# La cabecera de una prueba sola en su línea (``unittest -v``; spec 005, T60): la línea
+# siguiente es la primera de su docstring. Al empezar la prueba, «nombre (módulo.Clase.
+# nombre)»; la de una subprueba que falla, con sangría y sus parámetros; en el informe de
+# un fallo, tras «FAIL: », «ERROR: » o «UNEXPECTED SUCCESS: ».
+_DESCRIBED_HEAD = re.compile(
+    r"^(?:(?:FAIL|ERROR|UNEXPECTED SUCCESS): | *)"
+    r"(?P<name>[A-Za-z_]\w*) \([\w.]+\.(?P=name)\)(?: .*)?$"
+)
 _OMITTED_BANK = re.compile(r"^OMITIDO: (?P<bank>[^:]+): (?P<why>.+)$", re.MULTILINE)
 _CLASS_FIXTURES = frozenset(
     {"setUpClass", "tearDownClass", "setUpModule", "tearDownModule"}
@@ -1112,12 +1122,21 @@ def parse_bank_omissions(text: str) -> list[Skip]:
 def parse_measurements(text: str) -> list[str]:
     """Líneas de medida «RNF-NNN-nn: …» que imprimen las pruebas de rendimiento.
 
-    La primera línea del docstring de la prueba, que ``unittest -v`` escribe delante y
-    termina en « ... », no cuenta.
+    La primera línea del docstring de la prueba no cuenta, empiece por uno o por varios
+    requisitos («RNF-001-01, RNF-007-01: …»; spec 005, T60): ``unittest -v`` la escribe en
+    la línea siguiente a la cabecera de la prueba (``_DESCRIBED_HEAD``), seguida de « ... »
+    al empezarla (lo que la prueba imprime después sí cuenta) y sola en el informe de un
+    fallo. Una medida que empieza por varios RNF sale entera.
     """
     found: list[str] = []
+    described = False  # la línea anterior es la cabecera de una prueba
     for line in text.splitlines():
-        for chunk in _MEASURE_START.split(line):
+        rest = line
+        if described:
+            # Sin « ... » (el informe de un fallo), toda la línea es el docstring.
+            rest = line.partition(" ... ")[2]
+        described = " ... " not in line and _DESCRIBED_HEAD.match(line) is not None
+        for chunk in _MEASURE_START.split(rest):
             chunk = chunk.strip()
             if not chunk.startswith("RNF-") or chunk.endswith("...") or " ... " in chunk:
                 continue

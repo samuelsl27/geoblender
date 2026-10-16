@@ -34,6 +34,7 @@ from tests.support import resources
 from tests.support.check_cli import (
     FakeRunner,
     INSTALL,
+    LINE,
     MANDATORY,
     RETURN_VALUE_IS_ERROR,
     SPDX,
@@ -710,6 +711,48 @@ class ParsingTest(unittest.TestCase):
         self.assertIn("RNF-001-03: habilitar Geoblender, mediana de 3 ciclos: 0,006 s", result.out)
         self.assertNotIn("doc de la prueba", result.out)
         self.assertNotIn("habilitar tarda poco", result.out)
+
+    def test_docstrings_with_several_requirements_are_not_measurements(self) -> None:
+        """RNF-001-01 (spec 005, T60; O-8 de su verificación): la primera línea del docstring
+        de una prueba no es una medida aunque empiece por varios RNF («RNF-001-01,
+        RNF-007-01: …»), ni en la salida detallada (antes de « ... », también la de una
+        subprueba) ni en el informe de un fallo (sin « ... »): el resumen no tiene líneas
+        sueltas «RNF-001-01,». Una medida que empieza por varios RNF sale entera."""
+        tin = "test_tin (tests.rendimiento.blender.perf_gis.G.test_tin)"
+        case = "test_case (tests.unit.drillholes.test_v.V.test_case)"
+        body = (
+            "test_parts (tests.unit.tools.test_parts.P.test_parts)\n"
+            "RNF-001-01, RNF-007-01: los ficheros repartidos por su tiempo ... ok\n"
+            f"{tin}\nRNF-006-03, RNF-006-09, RNF-008-01: la orden del TIN con un ... "
+            "RNF-006-03: TIN de 300.000 puntos: mediana 5,019 s de 5\nFAIL\n"
+            f"{case}\nRNF-005-02, RNF-005-03: el V-ref leído ... \n"
+            f"  {case} (caso=1)\nRNF-005-02, RNF-005-03: el V-ref leído ... FAIL\n"
+            "test_cancel (tests.rendimiento.dh.test_h.H.test_cancel)\n"
+            "RNF-008-11, RNF-005-05: cancelar a mitad ... "
+            "RNF-008-11, RNF-005-05: cancelar a mitad: parado en 0,083 s al 52 %\nok\n"
+            f"{'=' * 70}\nFAIL: {tin}\n"
+            "RNF-006-03, RNF-006-09, RNF-008-01: la orden del TIN con un\n"
+            f"{LINE}\nTraceback (most recent call last):\nAssertionError: 5,019 s > 5 s\n\n"
+            f"{'=' * 70}\nFAIL: {case} (caso=1)\nRNF-005-02, RNF-005-03: el V-ref leído\n"
+            f"{LINE}\nTraceback (most recent call last):\nAssertionError: 1 != 2\n"
+        )
+        output = _unittest_output(4, "FAILED (failures=2)", body)
+        result = run_check(runner=FakeRunner({"unitarias": (1, "", output)}))
+        self.assertEqual(result.code, 1, result.out)
+        lines = result.out.splitlines()
+        shown: list[str] = []
+        for line in lines[lines.index(_step_line(result.out, "unitarias")) + 1 :]:
+            if not line.startswith(" " * 12):
+                break
+            shown.append(line.strip())
+        self.assertEqual(
+            shown,
+            [
+                "RNF-006-03: TIN de 300.000 puntos: mediana 5,019 s de 5",
+                "RNF-008-11, RNF-005-05: cancelar a mitad: parado en 0,083 s al 52 %",
+            ],
+            result.out,
+        )
 
 
 if __name__ == "__main__":
