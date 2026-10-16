@@ -18,15 +18,20 @@ de minas, para su propio trabajo de proyectos de explotación y restauración.
 > vertical declarados (ED50 → ETRS89 y alturas elipsoidales con las rejillas del IGN), la
 > rejilla de cálculo de paso exacto, TIN con líneas de rotura y desde curvas, curvas de nivel
 > con maestras, validar una superficie, verla en Blender sin perder precisión y entregar
-> GeoTIFF y GeoPackage que QGIS abre directamente, todo con su procedencia. La 002, la 003, la
-> 004 y la 006 están comprobadas con Blender 5.2.1 (la interfaz, los trabajos y la topografía,
-> en la pantalla de referencia de IMGA), y la 002 y la 006 también con QGIS 4.2 sin su interfaz
-> (PyQGIS); la 002, en la red con un equipo. Faltan comprobaciones de personas: dos equipos a la
-> vez, que IMGA acepte las de QGIS sin interfaz y las de la interfaz en lugar de la del panel
-> del proyecto, algunas teclas y menús, los iconos, la lectura de la barra, el almacén de ruedas
-> del motor en el NAS, un ingeniero de IMGA que haga sin ayuda el recorrido de la topografía
-> hasta QGIS y su comparación con el MDT real de Silvestre.** Se habilita y se desinstala sin
-> dejar rastro, y `tools/check.py` comprueba todo el código.
+> GeoTIFF y GeoPackage que QGIS abre directamente, todo con su procedencia. La segunda son los
+> **sondeos** (spec 005, aún sin integrar en la rama principal): importar bocas, desviaciones,
+> litología y análisis desde CSV, XLSX o una base de RecMin (en solo lectura), con sus convenios
+> declarados, validarlos, calcular sus trazas y verlos en 3D con litología y leyes, también en
+> QGIS. La 002, la 003, la 004, la 006 y la 005 están comprobadas con Blender 5.2.1 (la
+> interfaz, los trabajos, la topografía y los sondeos, en la pantalla de referencia de IMGA), y
+> la 002, la 006 y la 005 también con QGIS 4.2 sin su interfaz (PyQGIS); la 002, en la red con
+> un equipo. Faltan comprobaciones de personas: dos equipos a la vez, que IMGA acepte las de
+> QGIS sin interfaz y las de la interfaz en lugar de la del panel del proyecto, algunas teclas y
+> menús, los iconos, la lectura de la barra, el almacén de ruedas del motor en el NAS, un
+> ingeniero de IMGA que haga sin ayuda el recorrido de la topografía hasta QGIS y su
+> comparación con el MDT real de Silvestre, y, de los sondeos, el recorrido de un ingeniero, la
+> comparación con una base real de RecMin y los puestos con el motor de Access.** Se habilita y
+> se desinstala sin dejar rastro, y `tools/check.py` comprueba todo el código.
 
 Este repositorio contiene **solo el código**. La documentación del proyecto (constitución,
 proceso de trabajo, decisiones de arquitectura, specs y trampas conocidas) es interna de IMGA
@@ -102,8 +107,8 @@ Desde la raíz de este repositorio, en PowerShell y siempre con el Python de Ble
 
 ```powershell
 $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe"
-& $PY -B tools/check.py          # comprobación completa: la definición de «verde»
-& $PY -B tools/check.py --completo  # además, las del motor de cálculo y las del arnés
+& $PY -B tools/check.py          # la definición de «verde» (unos 35 s, sin el paso «motor»)
+& $PY -B tools/check.py --completo  # además, el paso «motor» y las del arnés (unos 97 s)
 & $PY -B tools/check_docs.py     # comprobación de la documentación
 & $PY -B tools/dev_install.py    # instala la extensión en un perfil de Blender aislado
 & $PY -B tools/build.py          # valida el manifiesto y genera el zip en dist/
@@ -137,7 +142,7 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en unos 34 s; con `--completo`, unos 97 s)
+Sin `--completo` (la comprobación de cada tarea, en unos 35 s; con `--completo`, unos 97 s)
 no ejecuta las pruebas del propio arnés que lanzan Blender entero ni el paso «motor», y lo
 dice antes del resultado. Solo se ejecuta un
 `tools/check.py` a la vez en el equipo, sea de la carpeta que sea (de este repositorio o de
