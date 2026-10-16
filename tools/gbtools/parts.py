@@ -81,7 +81,7 @@ import re
 import sys
 import time
 import unittest
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -558,13 +558,22 @@ def queue_order(
     weights: Sequence[float],
     affinities: Sequence[str | None] | None = None,
     last: Sequence[bool] | None = None,
+    parts: int | None = None,
 ) -> list[list[int]]:
     """Las unidades de la cola de unas pruebas (spec 006, T59): los índices de sus grupos
     (un módulo cada uno) con peso positivo, los de la misma afinidad juntos en una unidad
     (como en :func:`assign`), de más a menos peso (a igualdad, en su orden), y al final, en
     su orden, las unidades con algún grupo que pide ir el último (``last``). Los grupos sin
     peso (sin pruebas) no van en ninguna. Depende solo de lo que recibe: todas las partes
-    calculan la misma."""
+    calculan la misma.
+
+    Con el número de partes ``parts`` (spec 005, T44; RNF-001-01), cada unidad que pide ir la
+    última no espera al final de la cola, donde la parte que la tomaba acababa después que
+    las demás (en «blender», ≈ 1 s): va donde lo que queda detrás de ella (sin las otras que
+    piden ir las últimas) da a cada una de las demás partes, a lo sumo, lo que tarda ella, y
+    nunca entre las ``parts`` primeras (las que toma cada parte al empezar). La parte que la
+    toma no toma ninguna más (``QueuedSuite`` con ``final``): sigue siendo lo último de su
+    proceso."""
     units: dict[tuple[int, object], list[int]] = {}
     for index, weight in enumerate(weights):
         if weight > 0:
@@ -572,11 +581,27 @@ def queue_order(
             units.setdefault((0, index) if shared is None else (1, shared), []).append(index)
     found = list(units.values())
     flags = [last is not None and any(last[index] for index in unit) for unit in found]
+
+    def weight_of(n: int) -> float:
+        return sum(weights[i] for i in found[n])
+
     order = sorted(
         range(len(found)),
-        key=lambda n: (flags[n], 0.0 if flags[n] else -sum(weights[i] for i in found[n]),
-                       found[n][0]),
+        key=lambda n: (flags[n], 0.0 if flags[n] else -weight_of(n), found[n][0]),
     )
+    if parts is not None:
+        order = [n for n in order if not flags[n]]
+        for n in (n for n in range(len(found)) if flags[n]):
+            budget = (parts - 1) * weight_of(n)
+            position, behind = len(order), 0.0
+            while position > parts:
+                previous = order[position - 1]
+                ahead = 0.0 if flags[previous] else weight_of(previous)
+                if behind + ahead > budget:
+                    break
+                behind += ahead
+                position -= 1
+            order.insert(position, n)
     return [found[n] for n in order]
 
 
@@ -621,9 +646,11 @@ class Queue:
 class QueuedSuite(unittest.TestSuite):
     """La suite de una parte con cola (spec 006, T59): al ejecutarse, toma de ``queue`` una
     unidad tras otra (``load(n)`` da sus grupos, un hijo por módulo, como ``unittest
-    discover``) y la ejecuta, hasta que no queda ninguna, tras los grupos de ``first``. Con
-    ``record``, suma ahí la duración de cada módulo (como :func:`measured`). Al terminar,
-    llama a ``done``. Contarla no toma ninguna unidad: solo cuenta lo que ya tiene."""
+    discover``) y la ejecuta, hasta que no queda ninguna, tras los grupos de ``first``; tras
+    una unidad de ``final`` (la de un módulo que pide ir el último; spec 005, T44), no toma
+    ninguna más. Con ``record``, suma ahí la duración de cada módulo (como
+    :func:`measured`). Al terminar, llama a ``done``. Contarla no toma ninguna unidad: solo
+    cuenta lo que ya tiene."""
 
     def __init__(
         self,
@@ -634,6 +661,7 @@ class QueuedSuite(unittest.TestSuite):
         first: Sequence[unittest.TestSuite] = (),
         record: dict[str, float] | None = None,
         clock: Callable[[], float] = time.perf_counter,
+        final: Collection[int] = (),
     ) -> None:
         super().__init__()
         self._queue = queue
@@ -641,7 +669,9 @@ class QueuedSuite(unittest.TestSuite):
         self._done = done
         self._record = record
         self._clock = clock
+        self._final = frozenset(final)
         self._running = False
+        self._closed = False
         self._tests.extend(self._timed(group) for group in first)
 
     def _timed(self, group: unittest.TestSuite) -> unittest.TestSuite:
@@ -656,12 +686,13 @@ class QueuedSuite(unittest.TestSuite):
             while position < len(self._tests):
                 yield self._tests[position]
                 position += 1
-            if not self._running:
+            if not self._running or self._closed:
                 return
             index = self._queue.take()
             if index is None:
                 return
             self._tests.extend(self._timed(group) for group in self._load(index))
+            self._closed = index in self._final
 
     def run(self, result: unittest.TestResult, debug: bool = False) -> unittest.TestResult:
         self._running = True

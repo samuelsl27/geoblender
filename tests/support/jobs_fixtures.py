@@ -15,6 +15,10 @@ las ayudas a ``tests/support/`` (como ``core_fixtures.py`` en la 002). Se import
 - :func:`pid_alive` y :func:`wait_until_dead`: si un proceso de este equipo sigue en
   ejecución, con ``OpenProcess`` + ``GetExitCodeProcess`` (``ctypes``). **Nunca**
   ``os.kill(pid, 0)``: en Windows termina el proceso (docs/trampas.md §2).
+- :func:`processes` y :func:`descendants`: la foto de los procesos del equipo
+  (``CreateToolhelp32Snapshot``) y, entre dos fotos, los nuevos que descienden de unos
+  workers: lo que queda vivo de un trabajo (RNF-004-07; spec 005, T33: el ``powershell.exe``
+  hijo de la lectura de una base de RecMin cancelada).
 - :func:`make_wheel`: rueda sintética ``gbtestpkg`` ``py3-none-any`` construida con
   ``zipfile``, reproducible (la misma entrada da la misma huella), para la instalación del
   motor sin red (plan 004 §7.1).
@@ -43,7 +47,7 @@ import sysconfig
 import tempfile
 import time
 import zipfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -175,6 +179,92 @@ def wait_until_dead(pid: int, *, timeout_s: float = 5.0) -> bool:
         if time.monotonic() >= deadline:
             return False
         time.sleep(_POLL_S)
+
+
+_TH32CS_SNAPPROCESS = 0x00000002
+_ERROR_NO_MORE_FILES = 18
+
+
+def _process_entry() -> type:
+    """``PROCESSENTRY32W`` de ``Process32FirstW``/``Process32NextW`` (``ctypes``)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    return ProcessEntry
+
+
+def processes() -> dict[int, tuple[int, str]]:
+    """Los procesos de este equipo ahora (Windows, ``CreateToolhelp32Snapshot`` con
+    ``ctypes``): pid → (pid del padre, nombre del ejecutable). Con :func:`descendants`, los
+    que quedan vivos de un trabajo (spec 004, RNF-004-07; spec 005, RNF-005-05: el
+    ``powershell.exe`` hijo de la lectura de una base de RecMin)."""
+    import ctypes
+    from ctypes import wintypes
+
+    entry_type = _process_entry()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # propio, con sus firmas
+    kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for name in ("Process32FirstW", "Process32NextW"):
+        function = getattr(kernel32, name)
+        function.argtypes = (wintypes.HANDLE, ctypes.POINTER(entry_type))
+        function.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if snapshot is None or snapshot == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    found: dict[int, tuple[int, str]] = {}
+    try:
+        entry = entry_type()
+        entry.dwSize = ctypes.sizeof(entry)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            found[int(entry.th32ProcessID)] = (int(entry.th32ParentProcessID),
+                                               entry.szExeFile)
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        error = ctypes.get_last_error()
+        if error not in (0, _ERROR_NO_MORE_FILES):
+            raise ctypes.WinError(error)
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return found
+
+
+def descendants(
+    before: Mapping[int, tuple[int, str]],
+    after: Mapping[int, tuple[int, str]],
+    roots: Iterable[int],
+) -> dict[int, str]:
+    """Los procesos de ``after`` (:func:`processes`) que no estaban en ``before`` (mismo pid y
+    mismo padre) y descienden de algún pid de ``roots`` (también si ese ya terminó: su hijo
+    huérfano sigue diciendo su padre): pid → ejecutable."""
+    new = {pid: entry for pid, entry in after.items()
+           if before.get(pid, (None,))[0] != entry[0]}
+    ancestors = set(roots)
+    found: dict[int, str] = {}
+    grew = True
+    while grew:
+        grew = False
+        for pid, (parent, exe) in new.items():
+            if pid not in found and parent in ancestors:
+                found[pid] = exe
+                ancestors.add(pid)
+                grew = True
+    return found
 
 
 @dataclass(frozen=True)

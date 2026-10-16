@@ -1,0 +1,134 @@
+{
+  "about": "Juego limpio de la spec 005: seis sondeos con solución analítica, cero incidencias con estas declaraciones, la ventana de trabajo y la superficie (DH-W05). «rows» son las filas de datos de cada fichero (el informe de importación de M1); análisis en columnas y en filas son los mismos valores: se importa uno de los dos.",
+  "declaration": {
+    "crs_epsg": 25830,
+    "azimuth_ref": "grid",
+    "declination_deg": null,
+    "inclination_convention": "negative_down",
+    "units": {
+      "Au": "g/t",
+      "Ag": "ppm",
+      "Cu": "%"
+    },
+    "separator": ";",
+    "decimal_mark": ",",
+    "encoding": "utf-8",
+    "sentinels": [],
+    "negative_is_below_dl": false,
+    "all_vertical": true,
+    "density_kind": "ADOPTADO",
+    "date_format": "%d/%m/%Y"
+  },
+  "files": {
+    "collar": "bocas.csv",
+    "survey": "desviaciones.csv",
+    "lithology": "litologia.csv",
+    "assay_wide": "analisis_columnas.csv",
+    "assay_long": "analisis_filas.csv",
+    "lithology_catalog": "litologias.csv",
+    "element_catalog": "elementos.csv"
+  },
+  "rows": {
+    "collar": 6,
+    "survey": 29,
+    "lithology": 24,
+    "assay_wide": 28,
+    "assay_long": 84,
+    "lithology_catalog": 8,
+    "element_catalog": 3
+  },
+  "values": {
+    "read": 84,
+    "absent": 1,
+    "below_dl": 2,
+    "above_ul": 1
+  },
+  "work_window": [
+    699900.0,
+    4399900.0,
+    700200.0,
+    4400200.0
+  ],
+  "surface": "z = 800 + 0,5·x − 0,25·y + 3·sin(x/7), con x = E − 700 000 e y = N − 4 400 000 (m), la de tests/data/gis/README.md",
+  "issues": [],
+  "holes": [
+    {
+      "name": "S-01",
+      "trajectory": "straight",
+      "azimuth": 45.0,
+      "inclination_top": -60.0,
+      "inclination_bottom": -60.0,
+      "depth": 150.0,
+      "bottom": [
+        700063.533009,
+        4400093.533009,
+        668.213189
+      ]
+    },
+    {
+      "name": "S-02",
+      "trajectory": "arc",
+      "azimuth": 120.0,
+      "inclination_top": -50.0,
+      "inclination_bottom": -70.0,
+      "depth": 300.0,
+      "bottom": [
+        700179.745298,
+        4399965.880192,
+        559.041403
+      ]
+    },
+    {
+      "name": "S-03",
+      "trajectory": "arc",
+      "azimuth": 359.5,
+      "inclination_top": -80.0,
+      "inclination_bottom": -64.0,
+      "depth": 240.0,
+      "bottom": [
+        700029.854905,
+        4400084.420521,
+        582.299367
+      ]
+    },
+    {
+      "name": "S-04",
+      "trajectory": "vertical",
+      "azimuth": 0.0,
+      "inclination_top": -90.0,
+      "inclination_bottom": -90.0,
+      "depth": 100.0,
+      "bottom": [
+        700020.5,
+        4400020.5,
+        705.759
+      ]
+    },
+    {
+      "name": "S-12",
+      "trajectory": "collar",
+      "azimuth": 300.0,
+      "inclination_top": -75.0,
+      "inclination_bottom": -75.0,
+      "depth": 160.0,
+      "bottom": [
+        700019.636981,
+        4400036.205524,
+        672.318868
+      ]
+    },
+    {
+      "name": "C-01",
+      "trajectory": "declared_vertical",
+      "azimuth": 0.0,
+      "inclination_top": -90.0,
+      "inclination_bottom": -90.0,
+      "depth": 4.5,
+      "bottom": [
+        700005.5,
+        4400005.5,
+        798.997
+      ]
+    }
+  ]
+}

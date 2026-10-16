@@ -32,7 +32,9 @@ y solo si cambió el contador de cambios de la cabecera de ``project.gpkg`` (lo 
 transacción confirmada, sea de quien sea) o el idioma; si no, el tic lee 100 bytes. Un
 proyecto que QGIS dejó en WAL no se lee hasta que vuelva al diario clásico (lo que escribe
 Geoblender lo devuelve antes). Los campos dibujan lo último leído, con sus textos medidos una
-vez. Al abrir un proyecto no se lee nada (RNF-002-02 no cambia): el primer tic, después.
+vez. Al abrir un proyecto no se lee nada (RNF-002-02 no cambia): el primer tic, después. Tras
+cada lectura se avisa, con el proyecto, a lo apuntado con :func:`add_change_listener` (spec
+005, T47: la vista de los sondeos marca sus trazas obsoletas en cuanto lo están).
 
 **Control 7** (RF-008-28): el número de lo obsoleto tras el icono de Refrescar
 (``quick_access.set_count_provider``), que abre :class:`GEOBLENDER_PT_core_stale`; sin nada
@@ -296,7 +298,8 @@ def refresh(*, force: bool = False) -> bool:
     cambió desde la última lectura (otro proyecto, otro contador de cambios en la cabecera de
     ``project.gpkg`` u otro idioma) o con ``force``. Devuelve si cambió lo que muestran la barra
     de estado y el control 7. Si no se puede leer ahora (otro programa escribe, WAL), lo deja
-    como estaba y lo intenta en la próxima."""
+    como estaba y lo intenta en la próxima; mientras esta sesión tiene abierta una
+    transacción de escritura (``Project.writing``), sin ``force``, tampoco lo lee."""
     session = _session()
     project = session.project if session.unavailable() is None else None
     changed = False
@@ -304,6 +307,11 @@ def refresh(*, force: bool = False) -> bool:
         changed = _forget()
         _STATE.project = project
     if project is None:
+        return changed
+    if getattr(project, "writing", False) and not force:
+        # Esta sesión escribe (una incorporación por pasos sostiene su transacción): nadie
+        # más confirma nada hasta que acabe, y en la red abrir y cerrar el fichero entonces
+        # costaba 0,2–0,45 s por tic (spec 005, T53; RNF-005-06). Se lee en un tic después.
         return changed
     try:
         header = read_header(project.database_path)
@@ -330,10 +338,46 @@ def refresh(*, force: bool = False) -> bool:
     _fill_rows(report.items)
     _fill_unusable(blocked, shown)
     _refill_inputs()
+    _changed(project)
     if report.counts != _STATE.counts:
         _STATE.counts = report.counts
         changed = True
     return changed
+
+
+type ChangeListener = Callable[[Project], object]
+"""Lo que se avisa tras cada lectura de :func:`refresh` (el proyecto cambió): el proyecto."""
+
+_LISTENERS: list[ChangeListener] = []
+
+
+def add_change_listener(listener: ChangeListener) -> None:
+    """Apunta ``listener`` para llamarlo, con el proyecto, cada vez que :func:`refresh` lo lee
+    porque cambió (spec 005, T47: la vista de los sondeos, al día de lo obsoleto sin
+    recargarla); si ya lo estaba, no hace nada."""
+    if listener not in _LISTENERS:
+        _LISTENERS.append(listener)
+
+
+def remove_change_listener(listener: ChangeListener) -> None:
+    """Deja de avisar a ``listener``; si no estaba, no hace nada."""
+    if listener in _LISTENERS:
+        _LISTENERS.remove(listener)
+
+
+def change_listeners() -> tuple[ChangeListener, ...]:
+    """Lo apuntado con :func:`add_change_listener`, por orden."""
+    return tuple(_LISTENERS)
+
+
+def _changed(project: Project) -> None:
+    """Avisa a cada apuntado de que :func:`refresh` leyó ``project``; uno que falla va al
+    registro técnico y no para a los demás ni a los indicadores."""
+    for listener in list(_LISTENERS):
+        try:
+            listener(project)
+        except Exception:  # noqa: BLE001 - los indicadores siguen
+            LOGGER.exception("Falló lo que se pone al día al cambiar el proyecto")
 
 
 def _forget() -> bool:

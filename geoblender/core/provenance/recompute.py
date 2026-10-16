@@ -43,7 +43,9 @@ con progreso y cancelación):
 - **al empezarla** comprueba que sus entradas siguen vigentes: si una entrada de aguas arriba
   cambió y no se ha decidido (RF-008-10), o consume un dato que falta, está bloqueado o
   dañado, o uno descartado sin sucesor, no se ejecuta y sigue obsoleta, con el motivo
-  (:attr:`UnitStatus.REFUSED`), y lo que depende de ella espera;
+  (:attr:`UnitStatus.REFUSED`), y lo que depende de ella espera; en un tipo que reúne él
+  mismo todo lo vigente (``OperationDef.drops_discarded``, como la base de los sondeos; spec
+  005, T42), lo descartado sin sucesor sale de su petición y se recalcula sin ello;
 - cada operación se repite con la función de recálculo de su tipo
   (``OperationDef.recompute``), que recibe una :class:`RecomputeRequest` (los mismos
   ajustes, lo que consumió en sus versiones vigentes —el sucesor de lo sustituido— y las
@@ -90,7 +92,7 @@ from ..errors import GeoblenderError
 from ..ids import new_uid
 from ..project.model import Progress
 from ..timeutil import format_utc
-from .contract import ACCEPT_REVIEW, GROUPS, operation_def, parse_version
+from .contract import ACCEPT_REVIEW, GROUPS, OPERATIONS, operation_def, parse_version
 from .figures import RECORD_COLUMNS as FIGURE_COLUMNS
 from .figures import FigureRecord, FigureSpec
 from .graph import (
@@ -783,10 +785,13 @@ def _input_successor(conn: sqlite3.Connection, uid: str) -> str | None:
 def _request(conn: sqlite3.Connection, project: OperationProject, graph: ProvenanceGraph,
              uid: str, group_uid: str | None) -> tuple[RecomputeRequest, str | None]:
     """La petición de recálculo de la operación ``uid`` y, si consumió algo descartado sin
-    sucesor, su nombre."""
+    sucesor, su nombre (nunca en un tipo que reúne él mismo lo vigente,
+    ``OperationDef.drops_discarded``: lo descartado sale de su petición)."""
     node = graph.operations[uid]
     (settings,) = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?",
                                (uid,)).fetchone()
+    definition = OPERATIONS.get(node.op_type)
+    drops = definition is not None and definition.drops_discarded
     uses: list[Use] = []
     dropped: str | None = None
     for version in node.consumed:
@@ -801,7 +806,8 @@ def _request(conn: sqlite3.Connection, project: OperationProject, graph: Provena
                                                      kind=ItemKind.INPUT)
             known = graph.inputs.get(version.uid)
         if use is None:
-            dropped = dropped or (version.uid if known is None else known.name)
+            if not drops:
+                dropped = dropped or (version.uid if known is None else known.name)
         elif use not in uses:
             uses.append(use)
     request = RecomputeRequest(

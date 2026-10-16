@@ -158,6 +158,15 @@ quitar el motor seguían con el «Cancel» de Blender, en el idioma de Blender):
   con «Quitar» y «Cancelar» («Remove» y «Cancel»); el de confirmar ejecuta lo que enseña el
   diálogo y «Cancelar» no borra nada.
 
+T58 de la spec 005 — el final de un trabajo, en cuanto acaba la comprobación de sus
+resultados (en la 005, T53, esa comprobación pasó a un hilo y el final llegaba un tic del
+monitor después, 0,25 s por trabajo: la orden del TIN de la 006 pasó de 4,4 a 4,8 s):
+
+- RNF-006-03, RNF-005-06, RF-004-05: mientras un trabajo comprueba sus resultados, el monitor
+  sondea más a menudo y su final llega ≤ 0,05 s (en tiempo de los temporizadores: la suma de los
+  intervalos que pide el monitor, no el reloj) después de acabar la comprobación, que sigue
+  fuera del hilo que sondea.
+
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
@@ -535,6 +544,7 @@ class JobStatusFieldTest(unittest.TestCase):
     def _run_scenario(cls) -> None:
         """Sondea a mano hasta que acaban los dos; después adelanta el reloj del monitor."""
         cls.running: list[tuple[object, _Frame, _Frame]] = []
+        cls.intervals: list[tuple[object, bool]] = []  # lo que pidió cada sondeo, comprobando
         cls.sum_notice: tuple[_Frame, _Frame] | None = None
         total, failing = cls.handles
         deadline = time.monotonic() + SCENARIO_DEADLINE_S
@@ -542,6 +552,7 @@ class JobStatusFieldTest(unittest.TestCase):
                                wraps=cls.statusbar.redraw) as redraw:
             while failing.result() is None and time.monotonic() < deadline:
                 returned = cls.ops.tick()
+                cls.intervals.append((returned, cls.runner.verifying()))
                 frames = (_field(cls.ui), _field(cls.ui, geoblender=False))
                 if total.result() is None:
                     cls.running.append((returned, *frames))
@@ -590,12 +601,16 @@ class JobStatusFieldTest(unittest.TestCase):
 
     def test_timer_from_the_first_job(self) -> None:
         """RF-004-06: lanzar el primer trabajo registra el temporizador (persistente, cada
-        0,25 s) una sola vez; mientras hay trabajos, ``tick`` pide seguir cada 0,25 s y
-        redibuja la barra de estado."""
+        0,25 s) una sola vez; mientras hay trabajos, ``tick`` pide seguir cada 0,25 s (cada
+        0,02 s mientras el de 2 s comprueba su resultado: spec 005, T58) y redibuja la barra
+        de estado."""
         self.assertEqual(self.timer_calls, [TIMER_KWARGS])
         self.assertTrue(self.registered_after_submit)
         self.assertGreaterEqual(len(self.running), 10)
-        self.assertEqual({returned for returned, _g, _b in self.running}, {0.25})
+        self.assertEqual({returned for returned, checking in self.intervals if not checking},
+                         {0.25})
+        self.assertEqual({returned for returned, checking in self.intervals if checking},
+                         {0.02})
         self.assertGreaterEqual(self.redraws, len(self.running))
 
     def test_number_name_and_rising_percent(self) -> None:
@@ -689,6 +704,9 @@ class _FakeRunner:
 
     def snapshots(self) -> list[object]:
         return list(self.snapshots_now)
+
+    def verifying(self) -> bool:
+        return False
 
     def stored_snapshots(self, *, extra_roots: object = ()) -> list[object]:
         return list(self.stored_now)
@@ -936,6 +954,137 @@ class JobMonitorLogicTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.monitor.submit(object())
         self.assertFalse(bpy.app.timers.is_registered(self.ops.tick))
+
+
+OUTPUTS_WORKER = "gbtest_outputs"
+CHECK_S = 0.1
+"""Lo que dura la comprobación de los resultados en la prueba de T58 (spec 005), en tiempo de
+los temporizadores: la suma de los intervalos que pide el monitor desde el sondeo que la
+empieza."""
+FINAL_LATE_S = 0.05
+"""Lo más que puede llegar el final de un trabajo tras acabar la comprobación de sus resultados,
+en tiempo de los temporizadores (antes de T58, un tic entero del monitor: 0,25 s)."""
+
+
+def _two_outputs(ctx: object) -> dict[str, object]:
+    """El tipo de trabajo :data:`OUTPUTS_WORKER`: dos resultados declarados con su huella."""
+    for index in range(2):
+        path = ctx.output_path(f"tabla_{index}.bin")
+        path.write_bytes(bytes(range(256)) * 64)
+        ctx.add_output(path, f"tabla_{index}")
+    return {"tablas": 2}
+
+
+class _HeldHashing:
+    """``jobs.runner._sha256`` vigilado: anota las huellas que se calculan en el hilo que
+    sondea y, fuera de él, las de los resultados de :data:`OUTPUTS_WORKER` esperan a
+    :attr:`release` (la comprobación dura lo que diga la prueba)."""
+
+    def __init__(self, runner_mod: ModuleType) -> None:
+        self.real = runner_mod._sha256
+        self.polling = threading.current_thread()
+        self.in_poll: list[str] = []
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, path: Path) -> object:
+        if threading.current_thread() is self.polling:
+            self.in_poll.append(path.name)
+        elif path.name.startswith("tabla_"):
+            self.started.set()
+            self.release.wait(SCENARIO_DEADLINE_S)
+        return self.real(path)
+
+
+class JobMonitorVerificationTest(unittest.TestCase):
+    """El monitor con un lanzador real y un trabajo en hilo con dos resultados cuya
+    comprobación espera a que la prueba la suelte (spec 005, T58)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.release()
+        blender_ext.enable()
+        cls.ops = _module("bl.ops.jobs")
+        cls.catalog = _module("jobs.catalog")
+        cls.protocol = _module("jobs.protocol")
+        cls.runner_mod = _module("jobs.runner")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.release()
+
+    def setUp(self) -> None:
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="gb4-")))
+        package_dir = Path(sys.modules[module_name()].__file__).parent
+        self.runner = self.runner_mod.JobRunner(jobs_root=folder / "jobs",
+                                                package_dir=package_dir,
+                                                blender_python=Path(sys.executable))
+        self.addCleanup(self.runner.shutdown, timeout_s=2.0)
+        self.monitor = self.ops.JobMonitor()
+        self.enterContext(mock.patch.object(self.ops, "MONITOR", self.monitor))
+        self.addCleanup(self.monitor.stop)
+        self.monitor.attach(self.runner)
+        self.catalog.register_worker(self.catalog.WorkerInfo(
+            OUTPUTS_WORKER, "Outputs test job", policy="auto",
+            estimate_s=lambda _params: 0.01, run=_two_outputs,
+        ))
+        self.addCleanup(self.catalog.unregister_worker, OUTPUTS_WORKER)
+        self.hashing = _HeldHashing(self.runner_mod)
+        self.enterContext(mock.patch.object(self.runner_mod, "_sha256", self.hashing))
+        self.addCleanup(self.hashing.release.set)
+
+    def test_the_final_comes_as_soon_as_the_check_ends(self) -> None:
+        """RNF-006-03, RNF-005-06, RF-004-05 (spec 005, T58): el sondeo que ve acabar el
+        trabajo empieza la comprobación de sus resultados en otro hilo; mientras dura, el
+        trabajo sigue «En curso» sin final y el monitor sondea más a menudo, de modo que su
+        final («Terminado» con sus dos resultados y un solo ``on_finish``) llega como mucho
+        :data:`FINAL_LATE_S` después de acabar la comprobación (antes, un tic entero: 0,25 s).
+        Se cuenta en tiempo de los temporizadores (la suma de los intervalos que pide el
+        monitor), no con el reloj. Ninguna huella se calcula en el hilo que sondea, y con el
+        aviso del final el monitor vuelve a su tic de 0,25 s."""
+        finished: list[object] = []
+        request = self.protocol.new_request(OUTPUTS_WORKER, label="Resultados", owner="jobs")
+        handle = self.monitor.submit(request, on_finish=finished.append)
+        thread_name = self.runner_mod.VERIFY_THREAD_PREFIX + handle.job_uid
+
+        def checking() -> threading.Thread | None:
+            return next((t for t in threading.enumerate() if t.name == thread_name), None)
+
+        deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        while True:  # hasta el sondeo que empieza la comprobación
+            self.assertLess(time.monotonic(), deadline, "no empieza la comprobación")
+            interval = self.ops.tick()
+            if checking() is not None:
+                break
+            time.sleep(TICK_SLEEP_S / 5)
+        self.assertTrue(self.hashing.started.wait(SCENARIO_DEADLINE_S))
+        now = interval  # la hora del siguiente sondeo, en tiempo de los temporizadores
+        ticks = 0
+        while True:
+            self.assertLess(time.monotonic(), deadline, "no llega el final")
+            if now >= CHECK_S and not self.hashing.release.is_set():
+                self.hashing.release.set()  # la comprobación acaba en CHECK_S
+                thread = checking()
+                if thread is not None:
+                    thread.join(SCENARIO_DEADLINE_S)
+            if not self.hashing.release.is_set():
+                self.assertEqual((handle.state, handle.result(), finished),
+                                 ("running", None, []))
+            interval = self.ops.tick()
+            ticks += 1
+            if handle.result() is not None:
+                break
+            self.assertIsNotNone(interval)
+            now += interval
+        self.assertLessEqual(now, CHECK_S + FINAL_LATE_S,
+                             f"el final llega {now:.3f} s después de empezar la comprobación "
+                             f"({ticks} sondeos)")
+        result = handle.result()
+        self.assertEqual(result.state, "succeeded")
+        self.assertEqual(sorted(ref.role for ref in result.outputs), ["tabla_0", "tabla_1"])
+        self.assertEqual([item.job_uid for item in finished], [handle.job_uid])
+        self.assertEqual(self.hashing.in_poll, [])
+        self.assertEqual(interval, 0.25)
 
 
 class JobMonitorRegistrationTest(unittest.TestCase):

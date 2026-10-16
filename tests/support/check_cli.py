@@ -47,7 +47,8 @@ INSTALL = BlenderInstall(
 )
 MANDATORY = ["unitarias", "referencia", "licencias", "iconos", "manifiesto", "blender"]
 # El paso de la spec 004 (T30): las pruebas de dominio con el numpy del motor de cálculo de
-# pruebas, a la vez que «blender». Salvo en RuntimeStepTest, el motor es este, simulado.
+# pruebas, a la vez que «blender», con --completo (spec 004 0.4; spec 005, T50). Salvo en
+# RuntimeStepTest, el motor es este, simulado.
 RUNTIME = "motor"
 FAKE_SITE = Path(tempfile.gettempdir()) / "geoblender-falso" / "motor" / "site"
 DOMAIN_FOLDERS = [
@@ -377,9 +378,10 @@ def run_check(
     **kwargs: object,
 ) -> Outcome:
     """Ejecuta ``check.main`` con el ejecutor simulado y recoge la salida; si la prueba no
-    dice otra cosa (``find_runtime``, ``times_store``, ``lock_file``, ``test_copy``), con
-    un motor de cálculo de pruebas simulado (:data:`FAKE_SITE`), sin almacén de tiempos,
-    sin el cerrojo del equipo y sin la copia compartida de la extensión."""
+    dice otra cosa (``find_runtime``, ``times_store``, ``lock_file``, ``test_copy``,
+    ``bytecode``), con un motor de cálculo de pruebas simulado (:data:`FAKE_SITE`), sin
+    almacén de tiempos, sin el cerrojo del equipo, sin la copia compartida de la extensión y
+    sin la carpeta del código compilado."""
     runner = FakeRunner() if runner is None else runner
     kwargs.setdefault("find_runtime", lambda root, environ: check.TestRuntime(FAKE_SITE))
     # Sin almacén de tiempos (spec 004, T39): las órdenes de siempre, y nada se escribe
@@ -392,6 +394,10 @@ def run_check(
     # orden de siempre, y no se copia la extensión; lo prueba
     # PartsTest.test_shared_copy_for_the_blender_parts.
     kwargs.setdefault("test_copy", None)
+    # Sin la carpeta del código compilado (spec 005, T44): las órdenes de Python sin
+    # PYTHONPYCACHEPREFIX, y no se compila nada en la carpeta temporal del sistema; lo prueba
+    # PartsTest.test_bytecode_folder_for_the_python_steps.
+    kwargs.setdefault("bytecode", lambda root: None)
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = check.main(

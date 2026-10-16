@@ -23,22 +23,23 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    incluye las reglas de arquitectura y del repositorio), «referencia»
    (``tests/referencia``; sin casos es correcto), «licencias»
    (``tools/check_licenses.py``), «manifiesto» (``blender --command extension
-   validate``), «blender» (``tools/run_blender_tests.py`` dentro de Blender, en segundo
-   plano, de fábrica, con ``--python-exit-code 1``) y «motor» (spec 004, RF-004-28:
-   ``tests/unit`` de los paquetes de dominio con el numpy del motor de cálculo de pruebas,
-   el Python de Blender con ``-S`` y la carpeta ``site`` del motor en ``PYTHONPATH``; el
-   motor lo crea ``tools/make_runtime.py`` en ``.deps/runtime/<lock_id>/``, o lo da
-   ``GEOBLENDER_TEST_RUNTIME_SITE``; sin motor, el paso se omite por el recurso
-   ``runtime`` con la orden que lo crea: «VERDE CON OMISIONES»). Con ``--completo``,
-   justo después, «arnés» (``tests/arnes`` como «unitarias»: las pruebas del propio
-   arnés que lanzan Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de la spec
-   002); sin la opción no se ejecuta, y el resumen lo dice antes de ``RESULTADO``: la
-   comprobación de cada tarea va sin ella (RNF-001-01, ≤ 40 s) y ``tools/publish.py``
-   la pide siempre. Solo si se piden, y después de los obligatorios: «rendimiento»
-   (``--rendimiento``:
-   ``tests/rendimiento`` con el Python de Blender y ``tests/rendimiento/blender/perf_*.py``
-   dentro de Blender), «banco» (``--banco``: ``tools/bench_silvestre.py``; sin banco
-   disponible, «omitido», que no es un fallo) y «documentación» (``--documentacion``,
+   validate``) y «blender» (``tools/run_blender_tests.py`` dentro de Blender, en segundo
+   plano, de fábrica, con ``--python-exit-code 1``). Con ``--completo``, además, «motor»
+   (spec 004, RF-004-28: ``tests/unit`` de los paquetes de dominio con el numpy del motor
+   de cálculo de pruebas, el Python de Blender con ``-S`` y la carpeta ``site`` del motor
+   en ``PYTHONPATH``; el motor lo crea ``tools/make_runtime.py`` en
+   ``.deps/runtime/<lock_id>/``, o lo da ``GEOBLENDER_TEST_RUNTIME_SITE``; sin motor, el
+   paso se omite por el recurso ``runtime`` con la orden que lo crea: «VERDE CON
+   OMISIONES») y, justo después, «arnés» (``tests/arnes`` como «unitarias»: las pruebas
+   del propio arnés que lanzan Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de
+   la spec 002). Sin la opción no se ejecutan (ni se busca el motor), y el resumen lo dice
+   antes de ``RESULTADO``: la comprobación de cada tarea va sin ella (RNF-001-01, ≤ 40 s;
+   «motor» solo con ella desde la spec 004 0.4 y la 001 0.7, tarea 005/T50) y
+   ``tools/publish.py`` la pide siempre. Solo si se piden, y después de los obligatorios:
+   «rendimiento» (``--rendimiento``: ``tests/rendimiento`` con el Python de Blender y
+   ``tests/rendimiento/blender/perf_*.py`` dentro de Blender), «banco» (``--banco``:
+   ``tools/bench_silvestre.py``; sin banco disponible, «omitido», que no es un fallo) y
+   «documentación» (``--documentacion``,
    spec 007, RF-007-14: ``tools/check_docs.py`` sobre la documentación que encuentra
    ``repo.find_docs``, la de ``GEOBLENDER_DOCS_DIR`` o la carpeta madre; si no hay o no
    se alcanza, «omitido» con el motivo, que no es un fallo). Los pasos de Blender usan
@@ -46,8 +47,8 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
 
    Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06), salvo «motor», que va a
    la vez que «blender» (spec 004, T30: después de él no cabría en RNF-001-01; su línea
-   va en su lugar y el paso siguiente espera a los dos; a la vez que «unitarias» no
-   compensa, spec 006, T38). Dentro de un paso, «unitarias», «referencia» (spec 006,
+   va tras la de «blender» y el paso siguiente espera a los dos; a la vez que «unitarias»
+   no compensa, spec 006, T38). Dentro de un paso, «unitarias», «referencia» (spec 006,
    T59) y «blender» reparten sus pruebas en partes que se ejecutan a la vez (spec 003,
    T40; RNF-007-01: ≤ 40 s sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
    ``REFERENCE_PARTS`` procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender
@@ -59,7 +60,14 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    parte 1, el de «manifiesto») y con la copia de la extensión que comparten todos
    (``--copia``: ``gbtools.ext_copy.prepare`` la hace en otro hilo, mientras corren los
    pasos anteriores, y la compila; si no se puede, un aviso y cada parte hace la suya;
-   :class:`SharedCopy`, spec 006, T48). Los módulos se reparten
+   :class:`SharedCopy`, spec 006, T48). Las órdenes de Python (las partes de «unitarias»,
+   «referencia» y «motor», «licencias»…) van con ``-B`` y reciben en ``PYTHONPYCACHEPREFIX``
+   la carpeta del código compilado de la raíz, fuera del repositorio
+   (``gbtools.pyc_cache``: la extensión, las pruebas y las herramientas, validadas por el
+   hash de su fuente, y la biblioteca de Python), que se refresca al empezar en otro hilo
+   (:class:`BytecodeRefresh`; spec 005, T44): leen lo compilado en vez de compilarlo cada
+   una; lo que falte o ya no valga lo compila Python en memoria, como antes, y si no se
+   puede refrescar, un aviso. Los módulos se reparten
    por su duración medida en la comprobación anterior (spec 004, T39; RNF-001-01): un
    almacén fuera del repositorio, en la carpeta temporal del sistema y uno por raíz
    (:func:`default_times_store`), guarda la de cada módulo de cada suite con partes
@@ -98,7 +106,9 @@ No hay modo «solo una parte»: un verde parcial se confunde con el verde. Para 
 ejecuta ``unittest`` directamente (órdenes en ``AGENTS.md``). ``--completo`` no es una
 parte: sin él se ejecutan todas las reglas y todas las pruebas de la extensión, dentro y
 fuera de Blender; solo quedan fuera las autopruebas del arnés que relanzan Blender entero,
-que prueban ``tools/`` y ``tests/support/`` y no la extensión (plan 001 §5.4.7).
+que prueban ``tools/`` y ``tests/support/`` y no la extensión (plan 001 §5.4.7), y la
+segunda pasada de las pruebas unitarias de dominio con el numpy del motor, que «unitarias»
+ya ejecuta con el de Blender (spec 004 0.4, RF-004-28).
 
 En los pasos con pruebas, un fichero de pruebas en disco que ``unittest`` no cargó (en
 una carpeta sin ``__init__.py``, con un nombre que no es un módulo válido o sin pruebas)
@@ -154,7 +164,7 @@ from dataclasses import dataclass, field  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from gbtools import blender, check_lock, discovery, ext_copy, layout, manifest  # noqa: E402
-from gbtools import parts, repo, wheels  # noqa: E402
+from gbtools import parts, pyc_cache, repo, wheels  # noqa: E402
 from gbtools.blender import BlenderInstall, EnvironmentProblem  # noqa: E402
 from gbtools.repo import repo_root  # noqa: E402
 from gbtools.rules import imports  # noqa: E402
@@ -192,6 +202,10 @@ PROFILE_FOLDER = "perfil"
 COPY_FOLDER = "copia"
 COPY_OPTION = "--copia"
 COPY_THREAD = "check-copia"
+# El código compilado de las órdenes de Python (spec 005, T44; gbtools.pyc_cache): la
+# variable con que lo reciben y el hilo que lo refresca.
+ENV_BYTECODE = pyc_cache.ENV_PREFIX
+BYTECODE_THREAD = "check-pyc"
 STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 40 s (RNF-001-01)
 LAUNCHER_RELPATH = "tools/run_blender_tests.py"
 PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T40)
@@ -233,8 +247,13 @@ PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T
 # nombran: ≈ 0,64 s menos por parte; gbtools.parts.source_affinity): con 20 partes, ≈ 16,1 s
 # frente a ≈ 16,7 s con 16, pero el equipo va más cargado y la cancelación del trabajo de
 # hash de la 008 (tests/unit/workers/test_core_content_hash.py, frágil con carga) falló 5
-# de 5 veces frente a 0 de 3 con 16; con 24, ≈ 17,3 s.
-UNIT_PARTS = 16
+# de 5 veces frente a 0 de 3 con 16; con 24, ≈ 17,3 s. Con las pruebas de la fase 2 de la
+# 005 (spec 005, T44), las órdenes de Python leen su código compilado (gbtools.pyc_cache) y
+# las bases de RecMin se crean una vez (tests.support.recmin.shared_bases): cada parte
+# importa en ≈ 1 s en vez de ≈ 1,4 s y el equipo va menos cargado, y 18 partes tardan
+# ≈ 18,8 s frente a ≈ 19,5 s con 16 (con 20, igual que con 18), sin fallos en las 11 veces
+# que se midió.
+UNIT_PARTS = 18
 BLENDER_PARTS = 7
 # Partes de «referencia» (spec 006, T59; RNF-001-01): el paso va solo, con el equipo casi
 # libre, y en una orden tardaba ≈ 2,0 s con sus 28 casos (dos de ellos lanzan el Python de
@@ -248,19 +267,21 @@ STOP_WAIT_S = 30.0  # después, lo que se espera a cada hilo con su orden ya par
 PARTS_PROBLEM = "reparto incompleto"
 UNITTEST_PATTERN = discovery.UNITTEST_PATTERN  # el de unittest discover sin «-p»
 LAUNCHER_PATTERN = "test_*.py"  # el del lanzador sin «--patron» (DEFAULT_PATTERN)
-OPTION_COMPLETE = layout.CHECK_COMPLETE_OPTION  # «--completo»: el paso «arnés»
+OPTION_COMPLETE = layout.CHECK_COMPLETE_OPTION  # «--completo»: los pasos «motor» y «arnés»
 OPTION_PERFORMANCE = "--rendimiento"
 OPTION_BANK = "--banco"
 OPTION_DOCS = "--documentacion"
 OPTIONS: tuple[str, ...] = (OPTION_COMPLETE, OPTION_PERFORMANCE, OPTION_BANK, OPTION_DOCS)
 HARNESS_STEP = "arnés"
 HARNESS_FOLDER = layout.HARNESS_TESTS_RELPATH
+RUNTIME_STEP = "motor"
+# La línea del resumen sin --completo (RF-001-06; spec 001 0.7, spec 004 0.4: RF-004-28).
 NOT_COMPLETE = (
     f"Sin {OPTION_COMPLETE}: no se han ejecutado las pruebas del arnés que lanzan Blender "
-    f"entero ({HARNESS_FOLDER}); las ejecuta tools/check.py {OPTION_COMPLETE}, y la "
-    "publicación (tools/publish.py) las pide siempre."
+    f"entero ({HARNESS_FOLDER}) ni las unitarias de los paquetes de dominio con el motor "
+    f"de cálculo de pruebas («{RUNTIME_STEP}», RF-004-28); las ejecuta tools/check.py "
+    f"{OPTION_COMPLETE}, y la publicación (tools/publish.py) las pide siempre."
 )
-RUNTIME_STEP = "motor"
 RUNTIME_RESOURCE = "runtime"  # el recurso de tests/support/resources.py (spec 004)
 DOMAIN_TESTS = "tests/unit"  # tests/unit/<paquete de dominio> (imports.LEVELS)
 # Partes de cada carpeta de dominio en «motor», que va a la vez que «blender» (spec 004,
@@ -301,11 +322,14 @@ REPOSITORY_SKIP = (".git",)  # lo cambia git, no la comprobación
 USAGE = """Uso (con el Python de Blender, desde la raíz del repositorio):
   & "<Blender>\\5.2\\python\\bin\\python.exe" tools/check.py [--completo] [--rendimiento] [--banco] [--documentacion]
 
-  --completo        añade, tras «blender», las pruebas del arnés que lanzan Blender
-                    entero (tests/arnes); la publicación (tools/publish.py) la pide
-                    siempre, y la comprobación de cada tarea va sin ella
+  --completo        añade, a la vez que «blender», las pruebas unitarias de los
+                    paquetes de dominio con el motor de cálculo de pruebas («motor»,
+                    tools/make_runtime.py) y, tras ellas, las del arnés que lanzan
+                    Blender entero (tests/arnes); la publicación (tools/publish.py) la
+                    pide siempre, y la comprobación de cada tarea va sin ella
   --rendimiento     añade las pruebas de rendimiento (también las de dentro de Blender)
-  --banco           añade el banco privado de Silvestre (GEOBLENDER_SILVESTRE_DIR)
+  --banco           añade los bancos privados: Silvestre (GEOBLENDER_SILVESTRE_DIR) y
+                    la base de RecMin (GEOBLENDER_RECMIN_BANK_DIR)
   --documentacion   añade la comprobación de la documentación (tools/check_docs.py en
                     GEOBLENDER_DOCS_DIR o en la carpeta madre; sin ella, «omitido»)
   --ayuda, -h       muestra esta ayuda
@@ -322,7 +346,17 @@ _TEST_HEAD = discovery.TEST_HEAD
 _SKIPPED = re.compile(
     r"\.\.\. skipped (?P<reason>'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")\s*$"
 )
-_MEASURE_START = re.compile(r"(?=RNF-\d{3}-\d{2}: )")
+# Donde empieza una medida «RNF-NNN-nn: …»; no tras otro requisito de la misma lista
+# («RNF-008-11, RNF-005-05: …» es una sola: spec 005, T60).
+_MEASURE_START = re.compile(r"(?<!-\d{3}-\d{2}, )(?=RNF-\d{3}-\d{2}: )")
+# La cabecera de una prueba sola en su línea (``unittest -v``; spec 005, T60): la línea
+# siguiente es la primera de su docstring. Al empezar la prueba, «nombre (módulo.Clase.
+# nombre)»; la de una subprueba que falla, con sangría y sus parámetros; en el informe de
+# un fallo, tras «FAIL: », «ERROR: » o «UNEXPECTED SUCCESS: ».
+_DESCRIBED_HEAD = re.compile(
+    r"^(?:(?:FAIL|ERROR|UNEXPECTED SUCCESS): | *)"
+    r"(?P<name>[A-Za-z_]\w*) \([\w.]+\.(?P=name)\)(?: .*)?$"
+)
 _OMITTED_BANK = re.compile(r"^OMITIDO: (?P<bank>[^:]+): (?P<why>.+)$", re.MULTILINE)
 _CLASS_FIXTURES = frozenset(
     {"setUpClass", "tearDownClass", "setUpModule", "tearDownModule"}
@@ -484,6 +518,46 @@ class SharedCopy:
         return self._folder
 
 
+class BytecodeRefresh:
+    """El refresco de la carpeta del código compilado de las órdenes de Python (spec 005,
+    T44; RNF-001-01; ``gbtools.pyc_cache.prepare``): ``refresh(carpeta, raíz, sites)`` en
+    otro hilo desde que empieza la comprobación. No hay que esperarlo: lo que una orden
+    importe antes de que esté compilado (o lo que no se pudo compilar), Python lo compila
+    en memoria, como sin la carpeta. :meth:`wait` espera a que acabe y, si falló, da el
+    aviso con el motivo; la comprobación no cambia."""
+
+    def __init__(
+        self,
+        refresh: Callable[[Path, Path, Sequence[Path]], object],
+        folder: Path,
+        root: Path,
+        sites: Sequence[Path],
+    ) -> None:
+        self.folder = folder
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._run, args=(refresh, folder, root, list(sites)),
+            name=BYTECODE_THREAD, daemon=True,
+        )
+        self._thread.start()
+
+    def _run(self, refresh: Callable[[Path, Path, Sequence[Path]], object], folder: Path,
+             root: Path, sites: list[Path]) -> None:
+        try:
+            refresh(folder, root, sites)
+        except Exception as exc:  # noqa: BLE001 - se avisa; sin la carpeta, como antes
+            self._error = exc
+
+    def wait(self) -> str | None:
+        """Espera a que termine; si falló, el aviso (si no, ``None``)."""
+        self._thread.join()
+        if self._error is None:
+            return None
+        return (f"AVISO: no se pudo preparar el código compilado de las pruebas en "
+                f"«{self.folder}»: {self._error}; las órdenes compilan lo que les falte, "
+                "como antes")
+
+
 @dataclass(frozen=True)
 class Context:
     """Lo que necesitan los pasos para construir sus órdenes."""
@@ -507,6 +581,9 @@ class Context:
     # La copia de pruebas de la extensión que comparten las partes de «blender» (spec 006,
     # T48); None: cada parte hace la suya, las órdenes de siempre.
     shared_copy: SharedCopy | None = None
+    # La carpeta del código compilado de las órdenes de Python (spec 005, T44;
+    # gbtools.pyc_cache); None: sin PYTHONPYCACHEPREFIX, las órdenes de siempre.
+    bytecode: Path | None = None
 
     def _with_lock(self, env: dict[str, str]) -> dict[str, str]:
         """``env`` con ``GEOBLENDER_CHECK_LOCK_HELD`` si hay cerrojo (spec 006, T46)."""
@@ -532,11 +609,16 @@ class Context:
         return self.find_runtime(self.root, self.docs_environ())
 
     def python_env(self) -> dict[str, str]:
-        """Entorno del Python de Blender fuera de Blender (``gbtools.blender``)."""
+        """Entorno del Python de Blender fuera de Blender (``gbtools.blender``), con la
+        carpeta del código compilado en ``PYTHONPYCACHEPREFIX`` si la hay (spec 005, T44);
+        si no, sin esa variable."""
         env = blender.python_env(self.root)
         env.pop(imports.ENV_BLENDER_MODULES, None)
         if self.blender_modules:
             env[imports.ENV_BLENDER_MODULES] = ",".join(sorted(self.blender_modules))
+        env.pop(ENV_BYTECODE, None)
+        if self.bytecode is not None:
+            env[ENV_BYTECODE] = str(self.bytecode)
         return self._with_lock(env)
 
     def part_profile(self, number: int) -> Path:
@@ -792,22 +874,28 @@ def runtime_parts(ctx: Context) -> dict[str, int]:
 
 
 def _runtime(ctx: Context) -> list[Run]:
-    """Paso «motor» (spec 004, T30; RF-004-28, Silvestre REN-01): con el motor de cálculo
+    """Paso «motor» (spec 004, T30; RF-004-28, Silvestre REN-01; solo con ``--completo``,
+    spec 004 0.4): con el motor de cálculo
     de pruebas, ``tests/unit`` de cada paquete de dominio con su numpy (el mismo código,
     probado también con el numpy de Blender en «unitarias»), cada carpeta en las partes de
-    :func:`runtime_parts`. Sin motor no hay órdenes: lo omite :func:`_runtime_omit`."""
+    :func:`runtime_parts`. Las carpetas en una sola parte van después de todas las partes:
+    :func:`_launch_all` lanza a la vez solo las partes seguidas, y una orden sin partes
+    entre dos carpetas con partes dejaría las de detrás para después (spec 005, T02:
+    ``tests/unit/drillholes``, de un módulo, delante de ``tests/unit/interop``, de dos).
+    Sin motor no hay órdenes: lo omite :func:`_runtime_omit`."""
     site = ctx.test_runtime().site
     if site is None:
         return []
     runs: list[Run] = []
+    singles: list[Run] = []
     for folder, count in runtime_parts(ctx).items():
         if count == 1:
-            runs.append(ctx.unittest(folder, site=site))
+            singles.append(ctx.unittest(folder, site=site))
         else:
             runs.extend(
                 ctx.unittest(folder, part=(i, count), site=site) for i in range(1, count + 1)
             )
-    return runs
+    return runs + singles
 
 
 def _runtime_omit(ctx: Context) -> str | None:
@@ -858,8 +946,10 @@ def _docs_omit(ctx: Context) -> str | None:
 # Tabla de pasos (plan 001 §5.4.7). Las specs siguientes añaden el suyo en su lugar:
 # «iconos» (003, T30) tras «licencias» y «motor» (004) tras «blender», a la vez que él
 # (T30: después no cabe en RNF-001-01). Los opcionales se ejecutan siempre después de los
-# obligatorios (RF-001-10), en el orden de la tabla: «arnés» (--completo; spec 001 0.6) el
-# primero, tras «blender» y «motor»; «documentación» (spec 007, RF-007-14), el último.
+# obligatorios (RF-001-10), en el orden de la tabla: los de --completo los primeros, tras
+# «blender»: «motor» (a la vez que él; spec 004 0.4, RF-004-28: con la CPU llena, la
+# comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01; spec 005,
+# T50) y «arnés» (spec 001 0.6); «documentación» (spec 007, RF-007-14), el último.
 STEPS: tuple[Step, ...] = (
     Step("unitarias", _unit),
     Step("referencia", _reference),
@@ -870,6 +960,7 @@ STEPS: tuple[Step, ...] = (
     Step(
         RUNTIME_STEP,
         _runtime,
+        option=OPTION_COMPLETE,
         omit=_runtime_omit,
         resource=RUNTIME_RESOURCE,
         alongside="blender",
@@ -1031,12 +1122,21 @@ def parse_bank_omissions(text: str) -> list[Skip]:
 def parse_measurements(text: str) -> list[str]:
     """Líneas de medida «RNF-NNN-nn: …» que imprimen las pruebas de rendimiento.
 
-    La primera línea del docstring de la prueba, que ``unittest -v`` escribe delante y
-    termina en « ... », no cuenta.
+    La primera línea del docstring de la prueba no cuenta, empiece por uno o por varios
+    requisitos («RNF-001-01, RNF-007-01: …»; spec 005, T60): ``unittest -v`` la escribe en
+    la línea siguiente a la cabecera de la prueba (``_DESCRIBED_HEAD``), seguida de « ... »
+    al empezarla (lo que la prueba imprime después sí cuenta) y sola en el informe de un
+    fallo. Una medida que empieza por varios RNF sale entera.
     """
     found: list[str] = []
+    described = False  # la línea anterior es la cabecera de una prueba
     for line in text.splitlines():
-        for chunk in _MEASURE_START.split(line):
+        rest = line
+        if described:
+            # Sin « ... » (el informe de un fallo), toda la línea es el docstring.
+            rest = line.partition(" ... ")[2]
+        described = " ... " not in line and _DESCRIBED_HEAD.match(line) is not None
+        for chunk in _MEASURE_START.split(rest):
             chunk = chunk.strip()
             if not chunk.startswith("RNF-") or chunk.endswith("...") or " ... " in chunk:
                 continue
@@ -1637,9 +1737,9 @@ def _remove_tree(folder: Path, attempts: int = 5) -> None:
 
 def not_complete_note(steps: Sequence[Step], flags: Collection[str]) -> str | None:
     """La línea del resumen, antes de ``RESULTADO``, si la tabla tiene pasos de
-    ``--completo`` y no se pidió: esas pruebas no se han ejecutado y la publicación las
-    pide siempre (RF-001-06, spec 001 0.6). No es una omisión por un recurso: el
-    resultado no cambia."""
+    ``--completo`` y no se pidió: esas pruebas («arnés» y «motor») no se han ejecutado y la
+    publicación las pide siempre (RF-001-06, spec 001 0.6 y 0.7; RF-004-28). No es una
+    omisión por un recurso: el resultado no cambia."""
     if OPTION_COMPLETE in flags or not any(s.option == OPTION_COMPLETE for s in steps):
         return None
     return NOT_COMPLETE
@@ -1696,6 +1796,8 @@ def main(
     times_store: Callable[[Path], Path | None] = default_times_store,
     lock_file: Callable[[Mapping[str, str]], Path | None] = check_lock.lock_path,
     test_copy: Callable[[Path, Path], Path] | None = ext_copy.prepare,
+    bytecode: Callable[[Path], Path | None] = pyc_cache.default_folder,
+    refresh_bytecode: Callable[[Path, Path, Sequence[Path]], object] = pyc_cache.prepare,
 ) -> int:
     """Ejecuta la comprobación completa y devuelve el código de salida.
 
@@ -1709,7 +1811,9 @@ def main(
     ese entorno (:func:`gbtools.check_lock.lock_path`; ``None``: sin cerrojo y sin
     esperar a nadie; spec 006, T46) y cómo se prepara la copia de pruebas de la extensión
     que comparten las partes de «blender» (``gbtools.ext_copy.prepare``; ``None``: cada
-    parte hace la suya; spec 006, T48).
+    parte hace la suya; spec 006, T48), dónde va el código compilado de las órdenes de
+    Python de la raíz (``gbtools.pyc_cache.default_folder``; ``None``: sin carpeta, las
+    órdenes de siempre) y cómo se refresca (``gbtools.pyc_cache.prepare``; spec 005, T44).
     """
     started = time.perf_counter()
     executable = sys.executable if executable is None else executable
@@ -1773,6 +1877,7 @@ def main(
         work = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
         results: list[StepResult] = []
         shared: SharedCopy | None = None
+        refreshing: BytecodeRefresh | None = None
         try:
             if test_copy is not None and any(s.runs is _blender for s in selected):
                 shared = SharedCopy(test_copy, root, work / COPY_FOLDER)
@@ -1790,7 +1895,15 @@ def main(
                 times=times,
                 lock_owner=None if lock is None else lock.owner,
                 shared_copy=shared,
+                bytecode=bytecode(root),
             )
+            if ctx.bytecode is not None:
+                # La carpeta site del motor, solo si se ejecuta «motor» (--completo; spec
+                # 005, T50): sin él, ni se busca el motor ni se repasa lo compilado de su numpy.
+                engine = any(step.runs is _runtime for step in selected)
+                site = ctx.test_runtime().site if engine else None
+                refreshing = BytecodeRefresh(refresh_bytecode, ctx.bytecode, root,
+                                             [] if site is None else [site])
             # Los perfiles de las demás partes de las pruebas de Blender (T40).
             for number in range(2, BLENDER_PARTS + 1):
                 ctx.part_profile(number).mkdir()
@@ -1814,6 +1927,10 @@ def main(
                     print(f"AVISO: no se pudieron guardar las duraciones de las pruebas en "
                           f"«{times.store}»: {exc}")
         finally:
+            if refreshing is not None:
+                warning = refreshing.wait()
+                if warning is not None:
+                    print(warning, flush=True)
             if shared is not None:
                 shared.result()  # que termine antes de borrar su carpeta
             try:

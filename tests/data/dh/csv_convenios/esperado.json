@@ -1,0 +1,64 @@
+{
+  "about": "Los sondeos de csv_basico con otros convenios: «,» y punto decimal, cabeceras en inglés, fechas ISO y análisis en ppb, g/t y ppm. Cada variante cambia un convenio en las bocas y en las desviaciones; litología, análisis y catálogos son comunes. Al deshacer el convenio (y dividir por «divide_by»), los valores de csv_basico, bit a bit. Las coordenadas son las mismas cifras: el CRS no va en el fichero, lo declara quien importa. «convergence_deg» es la γ que da el CrsService falso de las pruebas en todas las bocas.",
+  "same_holes_as": "csv_basico",
+  "declaration": {
+    "crs_epsg": 25830,
+    "separator": ",",
+    "decimal_mark": ".",
+    "encoding": "utf-8",
+    "sentinels": [],
+    "negative_is_below_dl": false,
+    "all_vertical": true,
+    "density_kind": "ADOPTADO",
+    "date_format": "%Y-%m-%d"
+  },
+  "files": {
+    "lithology": "lithology.csv",
+    "assay_long": "assays.csv",
+    "lithology_catalog": "lithology_codes.csv",
+    "element_catalog": "elements.csv"
+  },
+  "variants": {
+    "positive_dip": {
+      "collar": "collars_positive_dip.csv",
+      "survey": "surveys_positive_dip.csv",
+      "inclination_convention": "positive_down",
+      "azimuth_ref": "grid",
+      "declination_deg": null,
+      "convergence_deg": null
+    },
+    "from_vertical": {
+      "collar": "collars_from_vertical.csv",
+      "survey": "surveys_from_vertical.csv",
+      "inclination_convention": "from_vertical",
+      "azimuth_ref": "grid",
+      "declination_deg": null,
+      "convergence_deg": null
+    },
+    "magnetic": {
+      "collar": "collars_magnetic.csv",
+      "survey": "surveys_magnetic.csv",
+      "inclination_convention": "negative_down",
+      "azimuth_ref": "magnetic",
+      "declination_deg": 0.25,
+      "convergence_deg": 1.5
+    }
+  },
+  "unit_factors": {
+    "Au": {
+      "from": "ppb",
+      "to": "g/t",
+      "divide_by": 1000
+    },
+    "Ag": {
+      "from": "g/t",
+      "to": "ppm",
+      "divide_by": 1
+    },
+    "Cu": {
+      "from": "ppm",
+      "to": "%",
+      "divide_by": 10000
+    }
+  }
+}

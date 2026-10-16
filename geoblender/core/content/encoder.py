@@ -54,7 +54,8 @@ hash siempre va en sus 32 bytes (no en hexadecimal). Por tipo:
   ``{"columns", "count", "ordered"}`` —columnas ``[nombre, tipo]`` en el orden declarado— y
   sección ``VALS`` con el sha256 del JSON canónico de los valores de cada fila (ya
   interpretados y convertidos al tipo de su columna): en orden si ``ordered`` es verdadero y,
-  si el importador declara que el orden no importa, ordenados.
+  si el importador declara que el orden no importa, ordenados. Un lote grande se codifica
+  por columnas (spec 005, T52), con los mismos bytes.
 - **Malla** (:meth:`ContentHasher.mesh`): sección ``MESH`` con ``{"arrays", "meta"}``
   —``[nombre, clase, forma]`` de cada array, ordenados por nombre, y de ``meta`` solo las
   claves que son contenido (:data:`MESH_META_KEYS`; la que falta, ``null``)— y sección
@@ -89,14 +90,21 @@ import numbers
 import operator
 import re
 import struct
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from json.encoder import encode_basestring
 from typing import Any
 
 import numpy as np
 
 from ..hashing import CANONICAL_NAN_BITS, canonical_float, canonical_json
 from .wkb import canonical_wkb, check_dims
+
+try:  # el sha256 de HACL* de CPython (biblioteca estándar): el mismo resultado, unas 3 veces
+    # más deprisa que el de OpenSSL con los cientos de bytes de una fila o una entidad (T52)
+    from _sha2 import sha256 as _item_sha256
+except ImportError:  # pragma: no cover - un Python compilado sin él
+    _item_sha256 = hashlib.sha256
 
 NORMALIZER = "gbch/1"
 """El normalizador vigente: el de las entradas y los datos nuevos (ADR-0024 §6)."""
@@ -130,6 +138,9 @@ También los valores de una malla y de una nube de puntos."""
 FINISH_STEP = 1 << 15
 """Elementos (sha256 de entidades o de filas) que se ordenan y se hashean como poco entre dos
 pasos de ``finish_steps`` (unos 20 ms; T67)."""
+COLUMN_BATCH_ROWS = 16
+"""Filas de un lote desde las que :meth:`RowEncoder.update` lo codifica por columnas (spec 005,
+T52); un lote más corto, fila a fila."""
 FIELD_TYPES: tuple[str, ...] = ("blob", "bool", "date", "datetime", "float", "int", "text")
 """Los tipos de un campo de una capa o de una columna de una tabla. Cada valor se convierte
 al de su campo: ``float`` (un real; NaN, ±inf, −0,0 canónicos), ``int`` (un entero o un real
@@ -163,6 +174,17 @@ _DATE_TEXT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _EXACT_TYPES: dict[str, type] = {"float": float, "int": int, "bool": bool, "text": str}
 """El tipo de Python que ya tiene la forma canónica de cada tipo de campo (un ``float`` la
 toma en ``canonical_json``: NaN, infinitos y −0,0)."""
+_NONE_TYPE = type(None)
+_NULL_TEXT = "null"
+_FLOAT_MARKS: dict[str, str] = {
+    "nan": '{"nan":true}',
+    "inf": '{"inf":1}',
+    "-inf": '{"inf":-1}',
+    "-0.0": "0.0",
+}
+"""El JSON canónico de los reales cuyo ``repr`` no lo es (``repr`` da «nan» con cualquier NaN)."""
+_FLOAT_MARK_TEXTS = frozenset(_FLOAT_MARKS)
+_ROW_TYPES = frozenset({list, tuple})
 _READER_ID = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+@[1-9][0-9]*")
 _SIZE = struct.Struct("<Q")
 
@@ -346,7 +368,10 @@ class _Collector:
 
     def _extend(self, items: Iterable[object]) -> None:
         self._check_open()
-        batch = [self._item(item) for item in items]  # todo el lote, antes de añadir nada
+        self._add_digests([self._item(item) for item in items])  # todo el lote, antes
+
+    def _add_digests(self, batch: list[bytes]) -> None:
+        """Añade los sha256 de un lote ya comprobado entero."""
         if self._ordered:
             self._groups[0].extend(batch)
         else:
@@ -486,7 +511,7 @@ class FeatureEncoder(_Collector):
             name: _field_value(kind, attributes[name], f"el atributo «{name}»")
             for name, kind in self.fields
         }
-        return hashlib.sha256(shape + canonical_json(values)).digest()
+        return _item_sha256(shape + canonical_json(values)).digest()
 
 
 class RowEncoder(_Collector):
@@ -496,8 +521,18 @@ class RowEncoder(_Collector):
     una; tipos de :data:`FIELD_TYPES`); ``ordered``: si el orden de las filas es contenido.
     Cada fila es una secuencia con un valor por columna, en ese orden, o un diccionario con
     todas las columnas; sus valores llegan ya interpretados (el «1,5» de un CSV es 1.5) y se
-    convierten al tipo de su columna. ``add`` añade una y ``update`` un lote (que se comprueba
-    entero). ``finish`` da el hash de una vez y ``finish_steps``, por pasos."""
+    convierten al tipo de su columna. ``add`` añade una, ``update`` un lote y
+    ``update_columns`` un lote dado por columnas (cada lote se comprueba entero). ``finish`` da
+    el hash de una vez y ``finish_steps``, por pasos.
+
+    Un lote de :data:`COLUMN_BATCH_ROWS` filas o más (en listas o tuplas) o dado por columnas
+    se codifica **por columnas** (spec 005, T52): el texto JSON canónico de cada valor de una
+    columna cuyos valores son todos de su tipo exacto (``float``, ``int``, ``str`` o ``bool``,
+    o nulos) sale de una vez para toda la columna (``repr``, el de ``json`` para los textos,
+    las marcas de NaN e infinitos y 0,0 por −0,0), y el de las demás, valor a valor con
+    ``canonical_json``; cada fila es ``[`` + sus textos separados por comas + ``]``, el mismo
+    JSON canónico, y el mismo hash, que fila a fila. Si algo no vale, el lote se vuelve a
+    hacer fila a fila: el error es el de siempre (el de la primera fila que no vale)."""
 
     _what = "las filas de la tabla"
 
@@ -524,6 +559,72 @@ class RowEncoder(_Collector):
     def update(self, rows: Iterable[object]) -> None:
         """Añade un lote de filas."""
         self._extend(rows)
+
+    def update_columns(self, columns: Sequence[Sequence[object]]) -> None:
+        """Añade un lote de filas dado por columnas: una secuencia por columna de la tabla, en
+        su orden y del mismo largo (las filas); el mismo hash que :meth:`update` con esas
+        filas. ``ValueError`` con otro número de columnas o columnas de distinto largo y
+        ``TypeError`` si no son secuencias, sin añadir nada."""
+        self._check_open()
+        if isinstance(columns, str | bytes | bytearray) or not isinstance(columns, Sequence):
+            raise TypeError(
+                f"las columnas de un lote son una secuencia por columna, no "
+                f"{type(columns).__name__}"
+            )
+        if len(columns) != len(self.columns):
+            raise ValueError(
+                f"el lote tiene {len(columns)} columnas y la tabla {len(self.columns)}"
+            )
+        for (name, _kind), column in zip(self.columns, columns, strict=True):
+            if isinstance(column, str | bytes | bytearray | Mapping) or not isinstance(
+                column, Sequence
+            ):
+                raise TypeError(
+                    f"la columna «{name}» de un lote es una secuencia de valores, no "
+                    f"{type(column).__name__}"
+                )
+        lengths = {len(column) for column in columns}
+        if len(lengths) != 1:
+            raise ValueError(
+                f"las columnas de un lote tienen largos distintos: {sorted(lengths)}"
+            )
+        (count,) = lengths
+        if not count:
+            return
+        digests = self._column_digests(columns)
+        if digests is None:  # fila a fila: el error de siempre
+            digests = [self._item(row) for row in zip(*columns, strict=True)]
+        self._add_digests(digests)
+
+    def _extend(self, items: Iterable[object]) -> None:
+        self._check_open()
+        batch = items if type(items) is list else list(items)
+        digests = None
+        if len(batch) >= COLUMN_BATCH_ROWS and self._plain_rows(batch):
+            digests = self._column_digests(list(zip(*batch, strict=True)))
+        if digests is None:  # todo el lote, antes de añadir nada
+            digests = [self._item(item) for item in batch]
+        self._add_digests(digests)
+
+    def _plain_rows(self, batch: list[object]) -> bool:
+        """Si todas las filas son listas o tuplas con un valor por columna."""
+        return set(map(type, batch)) <= _ROW_TYPES and set(map(len, batch)) == {
+            len(self.columns)
+        }
+
+    def _column_digests(self, columns: Sequence[Sequence[object]]) -> list[bytes] | None:
+        """Los sha256 de las filas de un lote dado por columnas, o ``None`` si algún valor no
+        vale (el lote se hace entonces fila a fila, con su error)."""
+        try:
+            texts = [
+                _column_texts(kind, column, name)
+                for (name, kind), column in zip(self.columns, columns, strict=True)
+            ]
+            lines: Iterable[str] = texts[0] if len(texts) == 1 else map(",".join, zip(*texts))
+            sha256 = _item_sha256
+            return [sha256(f"[{line}]".encode()).digest() for line in lines]
+        except (TypeError, ValueError, ArithmeticError):  # UnicodeEncodeError es ValueError
+            return None
 
     def finish(self) -> str:
         """El hash de datos de la tabla."""
@@ -562,7 +663,7 @@ class RowEncoder(_Collector):
             _field_value(kind, value, f"la columna «{name}»")
             for (name, kind), value in zip(self.columns, values, strict=True)
         ]
-        return hashlib.sha256(canonical_json(converted)).digest()
+        return _item_sha256(canonical_json(converted)).digest()
 
 
 class PointEncoder:
@@ -1168,6 +1269,37 @@ def _field_value(kind: str, value: object, where: str) -> object:
     if isinstance(value, bytes | bytearray | memoryview):
         return bytes(value)
     raise TypeError(f"{where} es un binario y su valor ({type(value).__name__}) no son bytes")
+
+
+def _column_texts(kind: str, column: Sequence[object], name: str) -> list[str]:
+    """El JSON canónico (en texto) de cada valor de la columna ``name`` de tipo ``kind`` de un
+    lote: de una vez si todos son de su tipo exacto o nulos; si no, valor a valor
+    (:func:`_field_value` y ``canonical_json``, con sus errores)."""
+    types = set(map(type, column))
+    nulls = _NONE_TYPE in types
+    types.discard(_NONE_TYPE)
+    exact = _EXACT_TYPES.get(kind)
+    if exact is not None and types <= {exact}:
+        if kind == "float":
+            texts = _texts(float.__repr__, column, nulls)
+            if not _FLOAT_MARK_TEXTS.isdisjoint(texts):
+                texts = [_FLOAT_MARKS.get(text, text) for text in texts]
+            return texts
+        if kind == "int":
+            return _texts(int.__repr__, column, nulls)
+        if kind == "text":
+            return _texts(encode_basestring, column, nulls)
+        return [_NULL_TEXT if value is None else ("true" if value else "false")
+                for value in column]
+    where = f"la columna «{name}»"
+    return [canonical_json(_field_value(kind, value, where)).decode("utf-8") for value in column]
+
+
+def _texts(text: Callable[[Any], str], column: Sequence[object], nulls: bool) -> list[str]:
+    """``text(valor)`` de cada valor de ``column`` y «null» por cada nulo."""
+    if not nulls:
+        return list(map(text, column))
+    return [_NULL_TEXT if value is None else text(value) for value in column]
 
 
 def _date(value: object, where: str) -> dt.date:

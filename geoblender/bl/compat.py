@@ -29,6 +29,11 @@ del modificador de Geometry Nodes en 5.2) se envuelve aquí, con su prueba en
   vértices y el vértice de cada esquina de una malla grande de una vez, con sus atributos
   («position», «.corner_vert») y ``np.intc``; si la versión no los tiene así, con
   ``vertices``/``loops`` como siempre (``tests/blender/gis/test_gis_views.py``).
+- :func:`modifier_input` y :func:`set_modifier_input` (spec 005, T29; RF-005-23): el valor de
+  una entrada de un modificador de Geometry Nodes por el identificador de su socket
+  («Socket_1»). En 5.2 es ``mod.properties.inputs.Socket_1.value`` (``mod["Socket_1"]`` da
+  ``TypeError``: el modificador ya no admite propiedades de ID); antes, ``mod["Socket_1"]``
+  (``tests/blender/test_dh_view.py``, el radio de los tubos de los sondeos).
 - :data:`VIEW_SENSOR_MM` y :data:`VIEW_ZOOM` (spec 003; RF-003-13): la proyección de una
   Vista 3D que no mira por una cámara (``BKE_camera_params_from_view3d``: sensor de 36 mm
   y factor 2, con el campo en el lado mayor de la región). Comprobado en 5.2.1 con
@@ -296,3 +301,38 @@ def mesh_edge_verts(mesh: bpy.types.Mesh) -> np.ndarray:
     else:
         found.data.foreach_get("value", flat)  # type: ignore[attr-defined]
     return flat.reshape(-1, 2)
+
+
+# Entradas del modificador de Geometry Nodes (spec 005, T29; docs/trampas.md) --------------
+# En 5.2 se leen y se escriben en ``mod.properties.inputs.<identificador>.value``; el
+# modificador ya no admite propiedades de ID (``mod["Socket_1"]`` da ``TypeError``). Las
+# versiones anteriores las guardaban como propiedades de ID del modificador.
+
+
+def _modifier_socket(modifier: bpy.types.Modifier, identifier: str) -> object | None:
+    """La entrada ``identifier`` de ``modifier`` en ``properties.inputs`` (5.2), o ``None``
+    si esta versión no la tiene así."""
+    properties = getattr(modifier, "properties", None)
+    inputs = None if properties is None else getattr(properties, "inputs", None)
+    return None if inputs is None else getattr(inputs, identifier, None)
+
+
+def modifier_input(modifier: bpy.types.Modifier, identifier: str) -> object:
+    """El valor de la entrada ``identifier`` («Socket_1») del modificador de Geometry Nodes
+    ``modifier``. ``KeyError`` si no la tiene."""
+    socket = _modifier_socket(modifier, identifier)
+    if socket is not None:
+        return socket.value  # type: ignore[attr-defined]
+    return modifier[identifier]
+
+
+def set_modifier_input(modifier: bpy.types.Modifier, identifier: str, value: object) -> None:
+    """Pone ``value`` en la entrada ``identifier`` («Socket_1») del modificador de Geometry
+    Nodes ``modifier``. ``KeyError`` si no la tiene."""
+    socket = _modifier_socket(modifier, identifier)
+    if socket is not None:
+        socket.value = value  # type: ignore[attr-defined]
+        return
+    if identifier not in modifier.keys():
+        raise KeyError(f"el modificador «{modifier.name}» no tiene la entrada {identifier!r}")
+    modifier[identifier] = value

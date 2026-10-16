@@ -39,6 +39,8 @@ IMPORT_FILE = "geoblender.io_import_file"
 IMPORT_DTM = "geoblender.gis_import_dtm"
 IMPORT_POINTS = "geoblender.gis_import_points"
 IMPORT_VECTOR = "geoblender.gis_import_vector"
+IMPORT_DRILLHOLES = "geoblender.dh_import_drillholes"
+IMPORT_RECMIN = "geoblender.dh_import_recmin_mdb"
 EXTENSIONS = ".tif;.tiff;.asc;.xyz;.csv;.txt;.gpkg"
 # La traslación de ED50 a ETRS89 en el vértice 55901 «IGNE» (reseña del IGN; la prueba con
 # pyproj y la rejilla está en tests/unit/adapters/test_pyproj_crs.py) y su factor de escala.
@@ -102,6 +104,13 @@ class MiscOperatorsTest(DtmOperatorsCase):
                                                                **values)
         self.assertEqual(result, {"FINISHED"})
         return self.core_ops.last_transform()
+
+    def written_bytes(self, name: str) -> Path:
+        """Un fichero cualquiera ``name`` en ``entregas/`` (el importador no se abre)."""
+        path = self.sources / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        return path
 
     def refused(self, idname: str, **props: Any) -> str:
         """El mensaje con el que la orden ``idname`` se niega."""
@@ -219,7 +228,9 @@ class MiscOperatorsTest(DtmOperatorsCase):
         """RF-006-27: cada extensión abre su importador con el fichero: GeoTIFF y ASC, el de MDT
         con su diálogo; ``.xyz`` en malla, el de MDT con su decimal, y disperso, el de puntos
         con su separador, su decimal y sin cabecera; CSV y TXT, el de puntos; GeoPackage, el de
-        capas. Si la entrada que trae un formato ya estuviera entregada, se abriría su orden."""
+        capas. Si la entrada que trae un formato ya estuviera entregada, se abriría su orden
+        (spec 005, T25: un libro XLSX, la importación de tablas de sondeos; T26: una base
+        ``.mdb``, la de una base de sondeos de RecMin)."""
         self.open()
         opened: list[tuple[str, dict[str, Any]]] = []
         self.enterContext(mock.patch.object(
@@ -237,6 +248,8 @@ class MiscOperatorsTest(DtmOperatorsCase):
             (self.source("points/taludes.csv"), IMPORT_POINTS, {}),
             (self.source("points/taludes.csv", "estacion.txt"), IMPORT_POINTS, {}),
             (self.source("gpkg/capas.gpkg"), IMPORT_VECTOR, {}),
+            (self.written_bytes("sondeos.xlsx"), IMPORT_DRILLHOLES, {}),
+            (self.written_bytes("base.mdb"), IMPORT_RECMIN, {}),
         )
         for path, idname, extra in cases:
             with self.subTest(fichero=path.name):
@@ -271,7 +284,7 @@ class MiscOperatorsTest(DtmOperatorsCase):
             ("vuelo.laz", ("Disponible en R-72 · Nubes de puntos y mallas de levantamiento",)),
             ("malla.OBJ", ("Disponible en R-72",)),
             ("cantera.sup", ("Disponible en R-64 · RecMin", "Disponible en R-68 · Aplitop MDT")),
-            ("sondeos.xlsx", ("Disponible en 005",)),
+            ("modelo.blk", ("Disponible en R-64 · RecMin",)),
             ("parcelas.shp", ("los shapefiles no se importan", "GeoPackage en QGIS")),
             ("notas.docx", ("la extensión «.docx»",
                             "Importa .tif, .tiff, .asc, .xyz, .csv, .txt, .gpkg")),

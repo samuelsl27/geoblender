@@ -156,6 +156,27 @@ class FailureTest(unittest.TestCase):
                              SESSION_B.session_uid)
 
 
+class WritingTest(unittest.TestCase):
+    def test_writing_while_a_transaction_is_open(self) -> None:
+        """RF-002-12, RNF-005-06 (spec 005, T53): ``Project.writing`` dice si esta sesión
+        tiene abierta una transacción de escritura (la de una incorporación por pasos la
+        sostiene entre pasos): falso antes, verdadero dentro y falso otra vez al confirmarla
+        o al deshacerla por un error."""
+        with project_tmp() as tmp:
+            project, _clock = _created(tmp)
+            self.assertFalse(project.writing)
+            with project.write_transaction() as conn:
+                self.assertTrue(project.writing)
+                _event(conn, "dentro")
+            self.assertFalse(project.writing)
+            with self.assertRaises(RuntimeError), project.write_transaction():
+                self.assertTrue(project.writing)
+                raise RuntimeError("fallo provocado")
+            self.assertFalse(project.writing)
+            self.assertTrue(project.writable)
+            project.close()
+
+
 class JournalTest(unittest.TestCase):
     def test_classic_journal_after_each_write(self) -> None:
         """RF-002-16: tras cada escritura la base sigue en diario clásico y sin ``-wal``."""

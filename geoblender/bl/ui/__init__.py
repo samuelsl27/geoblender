@@ -39,6 +39,7 @@ from . import (
     context,
     core_menus,
     core_panel,
+    dh_panels,
     headers,
     i18n,
     icons,
@@ -58,7 +59,8 @@ from . import help as help_pages
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los menús y la pestaña «Proyecto» de core (spec 002), los paneles reales de
-# la interfaz (spec 003), la lista de trabajos (spec 004) y lo obsoleto (spec 008).
+# la interfaz (spec 003), la lista de trabajos (spec 004), lo obsoleto (spec 008) y la pestaña
+# «Sondeos» (spec 005).
 classes: tuple[type, ...] = (
     *core_menus.classes,
     *core_panel.classes,
@@ -67,6 +69,7 @@ classes: tuple[type, ...] = (
     *layouts.classes,
     *jobs.classes,
     *provenance.classes,
+    *dh_panels.classes,
 )
 
 _UNDO: list[Callable[[], None]] = []
@@ -74,6 +77,7 @@ _UNDO: list[Callable[[], None]] = []
 
 def _register_classes() -> None:
     core_panel.localize()
+    dh_panels.localize()
     register_classes(classes)
 
 

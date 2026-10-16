@@ -25,7 +25,6 @@
 import json
 import shutil
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -33,6 +32,7 @@ import numpy as np
 
 from tests.support.package import import_geoblender
 from tests.support.repo import ROOT
+from tests.support.trees import temp_folder
 
 dtm = import_geoblender("gis.dtm")
 content = import_geoblender("gis.content")
@@ -96,8 +96,7 @@ class ReaderTest(unittest.TestCase):
 
 class PlanTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="gb-t28-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.tmp = temp_folder(self, "gb-t28-")
 
     def copy(self, relative: str, *, name: str | None = None) -> Path:
         source = DATA / relative

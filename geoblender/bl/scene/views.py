@@ -40,11 +40,18 @@ mucho); lo demás es de aquí:
 las colecciones que quedan vacías; nunca toca el proyecto. Ni cargar ni descargar escriben en el
 proyecto ni registran una operación (plan §5.6.4): solo la vista, que deshace Ctrl+Z (los
 operadores llevan ``UNDO``).
+
+**Al día sin recargar** (spec 005, T47): :func:`show_state` pone en los objetos ya cargados de
+un dato su estado y si está obsoleto según lo que dice ahora el proyecto, con su nombre
+generado y el de su colección; lo llama el módulo de la vista que sigue los cambios del
+proyecto (los sondeos, ``bl.scene.dh_view.show_stale``; la marca en vivo de los demás es de la
+009).
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Generator, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -55,11 +62,17 @@ from mathutils import Vector
 
 from ...core.datasets.model import DatasetRecord, DatasetStatus
 from ...core.errors import GeoblenderError
-from ...core.georef import PRECISION_LIMIT_M, GeoOrigin, PrecisionReport, precision_report
+from ...core.georef import (
+    PRECISION_LIMIT_M,
+    GeoOrigin,
+    PrecisionReport,
+    local_to_world,
+    precision_report,
+)
 from ...core.i18n import language, tr, translate
 from ...core.project.model import Progress
 from ..props.core import OBJECT_PROPERTY
-from .mesh import mesh_vertices_world
+from .mesh import curves_positions_local, mesh_vertices_world
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
 
@@ -91,7 +104,8 @@ STATUS_TEXT: dict[DatasetStatus, str] = {
     DatasetStatus.BLOCKED: "BLOCKED",
     DatasetStatus.DAMAGED: "DAMAGED",
 }
-_DATA_COLLECTIONS = {"MESH": "meshes", "CURVE": "curves", "POINTCLOUD": "pointclouds"}
+_DATA_COLLECTIONS = {"MESH": "meshes", "CURVE": "curves", "CURVES": "hair_curves",
+                     "POINTCLOUD": "pointclouds"}
 
 
 @dataclass(frozen=True)
@@ -206,7 +220,9 @@ def view_name(loader: Loader, record: DatasetRecord, *, stale: bool) -> str:
     state = _text(STATUS_TEXT.get(record.status, "CURRENT"))
     if stale:
         state = f"{state} · {tr('STALE')}"
-    return f"{_text(loader.label)} {short} [{state}]"
+    # Sin nombre corto (el dato es su familia entera: las trazas de los sondeos, dh_trace),
+    # «Sondeos [VIGENTE]».
+    return " ".join(part for part in (_text(loader.label), short, f"[{state}]") if part)
 
 
 def _child(parent: bpy.types.Collection, key: str, name: str) -> bpy.types.Collection:
@@ -340,12 +356,54 @@ def _mark(obj: bpy.types.Object, kind: str, shown: Any, project: Any) -> None:
     props.stale = shown.stale
 
 
+def _shown_name(obj: bpy.types.Object, collection: bpy.types.Collection | None) -> str | None:
+    """El nombre generado con que se cargó ``obj``: el de la colección de su dato si su nombre
+    empieza por él; si no, hasta el «]» de su estado; ``None`` si no lo lleva."""
+    if collection is not None and obj.name.startswith(collection.name):
+        return collection.name
+    end = obj.name.find("]")
+    return obj.name[:end + 1] if end >= 0 else None
+
+
+def show_state(objects: Sequence[bpy.types.Object], loader: Loader, shown: Any) -> bool:
+    """Pone al día, sin recargar nada, lo que dicen del dato ``shown``
+    (``core.provenance.view.DatasetView``, leído ahora) los objetos ``objects`` de su vista
+    cargada (spec 005, T47; RF-006-29): ``Object.geoblender`` (su estado y si está obsoleto) y,
+    si cambia, el nombre generado de los objetos (lo que sigue al de la carga, como « · Au»,
+    se conserva) y de la colección del dato («Sondeos [VIGENTE · OBSOLETO]»). No escribe en el
+    proyecto. Devuelve si cambió algo."""
+    record = shown.record
+    status = STATUS_TEXT.get(record.status, "NONE")
+    found = [obj for obj in objects
+             if (getattr(obj, OBJECT_PROPERTY).status, getattr(obj, OBJECT_PROPERTY).stale)
+             != (status, bool(shown.stale))]
+    if not found:
+        return False
+    name = view_name(loader, record, stale=bool(shown.stale))
+    key = f"{DATASET_KEY}{record.uid}"
+    collections = {collection for obj in objects for collection in obj.users_collection
+                   if collection.get(KEY_PROPERTY) == key}
+    collection = next(iter(collections), None)
+    for obj in found:
+        props = getattr(obj, OBJECT_PROPERTY)
+        props.status = status
+        props.stale = bool(shown.stale)
+        before = _shown_name(obj, collection)
+        if before is not None and before != name:
+            obj.name = name + obj.name[len(before):]
+    for item in collections:
+        if item.name != name:
+            item.name = name
+    return True
+
+
 def scene_precision(parts: ViewParts, origin: GeoOrigin) -> PrecisionReport | None:
     """El aviso de RF-002-26 de lo que lleva a la escena un cargador (T51): el de
-    ``core.georef.precision_report`` de los vértices de sus mallas, tal como los guarda
-    Blender, vueltos a absolutas (cuántos pasan de 8 000 m del GeoOrigin en X o en Y y el
-    error máximo estimado en mm). ``None`` si su extensión local queda dentro (no se leen
-    los vértices) o si no tiene ninguna malla con vértices."""
+    ``core.georef.precision_report`` de los vértices de sus mallas (y, spec 005, de los
+    puntos de sus curvas), tal como los guarda Blender, vueltos a absolutas (cuántos pasan de
+    8 000 m del GeoOrigin en X o en Y y el error máximo estimado en mm). ``None`` si su
+    extensión local queda dentro (no se leen los vértices) o si no tiene ninguna malla ni
+    curvas con puntos."""
     if parts.bounds is None:
         return None
     low, high = (np.asarray(corner, dtype=np.float64)[:2] for corner in parts.bounds)
@@ -353,6 +411,9 @@ def scene_precision(parts: ViewParts, origin: GeoOrigin) -> PrecisionReport | No
         return None
     vertices = [mesh_vertices_world(obj.data, origin) for obj in parts.objects
                 if isinstance(obj.data, bpy.types.Mesh) and len(obj.data.vertices)]
+    vertices += [local_to_world(curves_positions_local(obj.data), origin)
+                 for obj in parts.objects
+                 if isinstance(obj.data, bpy.types.Curves) and len(obj.data.points)]
     if not vertices:
         return None
     return precision_report(np.vstack(vertices), origin)
@@ -415,7 +476,8 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *,
     :data:`STEPS_TOTAL`, el nombre del dato) y el último, el :class:`LoadOutcome` en
     ``result``. Primero se preparan todos sin tocar la escena (los objetos, sin enlazar) y en
     el último paso, de una vez, cada uno pasa a la colección de su dato con
-    ``Object.geoblender`` y su nombre generado, sustituyendo lo que hubiera de él, con el aviso
+    ``Object.geoblender`` y su nombre generado, sustituyendo lo que hubiera de él (sin el
+    «.001» que les puso Blender al crearlos mientras estaba, spec 005, T48), con el aviso
     de RF-002-26 si pasa de 8 km del GeoOrigin (:func:`scene_precision`), y después el ancla y
     el recorte. Cerrar los pasos antes del último (Esc), o un error que no es para la persona,
     borra lo preparado: la vista queda como estaba. Un dato que falta se avisa y no se carga;
@@ -469,6 +531,20 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *,
                    _place(scene, project, built, errors))
 
 
+_SUFFIX = re.compile(r"(.+)\.\d{3,}")
+"""Un nombre con el número que le pone Blender si ya está en uso («Sondeos [VIGENTE].001»)."""
+
+
+def _unsuffixed(obj: bpy.types.Object, name: str) -> None:
+    """Quita a ``obj`` y a sus datos el número que les puso Blender por crearlos mientras
+    estaba lo de la carga anterior (spec 005, T48), si sin él su nombre empieza por el generado
+    ``name``: quitado eso, su nombre queda libre (si otro lo usa, Blender les pone otro)."""
+    for item in (obj, obj.data):
+        found = None if item is None else _SUFFIX.fullmatch(item.name)
+        if found is not None and found.group(1).startswith(name):
+            item.name = found.group(1)
+
+
 def _place(scene: Any, project: Any, built: Sequence[_Built],
            errors: Sequence[str]) -> LoadOutcome:
     """El último paso de :func:`load_steps`: lo preparado, a la escena (véase allí)."""
@@ -486,6 +562,7 @@ def _place(scene: Any, project: Any, built: Sequence[_Built],
         unload_datasets([record.uid])  # otro nivel de detalle, o el dato al día
         collection = ensure_collection(loader.kind, record, name=entry.name, scene=scene)
         for obj in parts.objects:
+            _unsuffixed(obj, entry.name)
             collection.objects.link(obj)
             _mark(obj, loader.kind, shown, project)
         loaded.append(record.name)

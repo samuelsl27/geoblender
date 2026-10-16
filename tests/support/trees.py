@@ -11,19 +11,32 @@ Un proceso hijo que lanza una prueba (Blender, el Python de Blender, una orden d
 carpeta de sesión de Blender) se borra con ella, y la prueba no tiene que buscarlo en el
 ``%TEMP%`` compartido, donde otra comprobación que se ejecute a la vez tiene las suyas
 (convergencia de la spec 001, T61).
+
+La carpeta temporal de una prueba (:func:`temp_folder`) se borra al terminar con
+:func:`remove_tree`, también lo de solo lectura: las entradas que un trabajo copia a su
+carpeta lo son (``jobs.paths``), y ``shutil.rmtree(..., True)`` no las borra en Windows y no
+dice nada (spec 005, T50: miles de carpetas en ``%TEMP%``).
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import stat
 import tempfile
 import time
+import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TypeVar
 
 _Result = TypeVar("_Result")
+
+# Intentos de remove_tree y la espera entre ellos (0,1 s, 0,2 s…): un proceso hijo que acaba
+# de terminar puede tardar un poco en soltar sus ficheros.
+REMOVE_ATTEMPTS = 4
+REMOVE_WAIT_S = 0.1
 
 DAY_S = 86_400.0
 # Las variables con que Python (TMPDIR, TEMP, TMP, en ese orden) y Blender (TEMP, TMP)
@@ -62,6 +75,40 @@ def child_runner(temp: Path, run: Callable[..., _Result]) -> Callable[..., _Resu
         return run(cmd, env=child_env(env, temp), cwd=cwd, timeout=timeout)
 
     return runner
+
+
+def _writable_and_again(function: Callable[[str], object], path: str,
+                        error: BaseException) -> None:
+    """Para ``shutil.rmtree``: lo de solo lectura, con permiso de escritura y otra vez;
+    cualquier otro fallo (un fichero abierto) se propaga."""
+    if not isinstance(error, PermissionError):
+        raise error
+    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    function(path)
+
+
+def remove_tree(folder: Path, *, attempts: int = REMOVE_ATTEMPTS) -> None:
+    """Borra ``folder`` entera, también lo de solo lectura; si no existe, nada. Si algo no se
+    puede borrar (un fichero abierto), lo intenta ``attempts`` veces y lanza el error: nada
+    se queda en ``%TEMP%`` en silencio (spec 005, T50)."""
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(folder, onexc=_writable_and_again)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(REMOVE_WAIT_S * (attempt + 1))
+
+
+def temp_folder(case: unittest.TestCase, prefix: str) -> Path:
+    """Carpeta temporal nueva de la prueba ``case``, de ruta corta (``prefix`` y unas letras,
+    en el ``%TEMP%`` de este proceso), que se borra al terminar con :func:`remove_tree`."""
+    folder = Path(tempfile.mkdtemp(prefix=prefix))
+    case.addCleanup(remove_tree, folder)
+    return folder
 
 
 @contextmanager

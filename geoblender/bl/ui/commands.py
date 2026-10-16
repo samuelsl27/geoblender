@@ -15,7 +15,9 @@ RF-003-08; plan 003 §5.3; BS §7).
   de un menú o un panel (por su clase);
 - :func:`is_available`: si un comando está **disponible** (BS §7.3): un nativo de
   Blender, siempre; uno de Geoblender, si su entrada ya está entregada (``delivered`` en
-  ``entries.toml``) y su clase registrada es la real, no la provisional. Así una variante
+  ``entries.toml``) y su clase registrada es la real, no la provisional, y su orden ya ha
+  llegado (:func:`is_undelivered`; spec 005, T25: la entrada 005 entrega sus órdenes tarea a
+  tarea con todas sus clases ya reales). Así una variante
   de una entrada posterior (``geo_set_clip_mode?mode=FRONT``, R-16) sale no disponible
   aunque el operador sea real. Un menú generado del catálogo cuya entrada aún no se ha
   entregado está disponible si lo está alguno de sus elementos (Encaje ▾, de R-09, con el
@@ -53,6 +55,7 @@ from .. import ADDON_PACKAGE
 
 TRANSLATION_CONTEXT = "Geoblender"
 PROVISIONAL_FLAG = "_gb_provisional"  # atributo de las clases provisionales
+UNDELIVERED_FLAG = "_gb_undelivered"  # atributo de las clases reales aún no entregadas
 NATIVE_KINDS = frozenset({"native", "property"})
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
@@ -124,6 +127,13 @@ def is_provisional(cls: type | None) -> bool:
     return bool(cls is not None and cls.__dict__.get(PROVISIONAL_FLAG, False))
 
 
+def is_undelivered(cls: type | None) -> bool:
+    """Verdadero si ``cls`` es la clase real de una orden que su spec aún no ha entregado
+    (``UNDELIVERED_FLAG``: la 005 entrega sus órdenes tarea a tarea con todas sus clases ya
+    reales, spec 005, T25): no está disponible, como un provisional, aunque su entrada sí."""
+    return bool(cls is not None and cls.__dict__.get(UNDELIVERED_FLAG, False))
+
+
 def _delivered(cat: core_catalog.Catalog, entry: str) -> bool:
     if not entry:
         return True
@@ -142,7 +152,7 @@ def _compute(cat: core_catalog.Catalog, cmd: core_catalog.Command) -> bool:
         return any(is_available(item.key) for group in spec.groups for item in group.items
                    if item.key is not None)
     cls = registered_class(cmd.idname)
-    return cls is not None and not is_provisional(cls)
+    return cls is not None and not is_provisional(cls) and not is_undelivered(cls)
 
 
 def refresh() -> None:

@@ -48,7 +48,6 @@ import hashlib
 import importlib
 import json
 import shutil
-import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -63,6 +62,7 @@ from tests.support import blender_ext
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
 from tests.support.repo import ROOT
+from tests.support.trees import temp_folder
 
 DATA = ROOT / "tests" / "data" / "gis"
 SITE = ROOT / ".deps" / "site"
@@ -160,8 +160,7 @@ class DtmOperatorsCase(unittest.TestCase):
         blender_ext.release()
 
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="gb-t28-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.tmp = temp_folder(self, "gb-t28-")
         self.addCleanup(self.jobs_ops.MONITOR.stop)
         self.addCleanup(self.ps.close)
         self.ps.take_notices()

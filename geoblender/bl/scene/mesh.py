@@ -20,6 +20,13 @@ RF-006-19, RNF-006-06, RNF-006-09; plan 006 §5.1; ADR-0005).
   vuelta (≤ 0,5 mm a ±8 km del GeoOrigin, RF-006-19).
 - :func:`mesh_edges`, :func:`set_edge_flags` y :func:`edge_flags` (T55): las aristas, y un
   atributo booleano de arista (las de las curvas maestras), de una vez.
+- (spec 005, T29) las caras de :func:`mesh_steps` pueden ser cuadriláteros (``(m, 4)``: las
+  barras de leyes de los sondeos); :func:`curves_steps` crea unas curvas ``POLY``
+  (``bpy.data.hair_curves``, el tipo ``Curves``: nacen Catmull-Rom y ``set_types`` las pasa a
+  poligonales, plan 005 §2.1) con los puntos ABSOLUTOS pasados a locales igual que una malla, y
+  :func:`curves_positions_local` los lee; :func:`set_attribute` pone un atributo (un color
+  lineal, un entero, un sí/no…) de una vez a una malla o a unas curvas, y (T47)
+  :func:`attribute_values` lee uno de un componente.
 
 Un array con la forma o el tipo que no es, o un índice fuera de rango, es un error del programa
 (``TypeError`` o ``ValueError``): la vista solo recibe lo que entrega el dominio.
@@ -35,8 +42,9 @@ import numpy as np
 from ...core.georef import GeoOrigin, local_to_world, world_to_local
 from .. import compat
 
-__all__ = ["edge_flags", "mesh_edges", "mesh_from_arrays", "mesh_steps", "mesh_triangles",
-           "mesh_vertices_local", "mesh_vertices_world", "set_edge_flags"]
+__all__ = ["attribute_values", "curves_positions_local", "curves_steps", "edge_flags",
+           "mesh_edges", "mesh_from_arrays", "mesh_steps", "mesh_triangles",
+           "mesh_vertices_local", "mesh_vertices_world", "set_attribute", "set_edge_flags"]
 
 
 def _indices(values: np.ndarray | None, width: int, count: int, what: str) -> np.ndarray:
@@ -54,6 +62,21 @@ def _indices(values: np.ndarray | None, width: int, count: int, what: str) -> np
     return np.ascontiguousarray(array, dtype=np.intc)
 
 
+def _local(points_world: np.ndarray, origin: GeoOrigin, what: str) -> np.ndarray:
+    """Los puntos ABSOLUTOS ``points_world`` (float64 ``(n, 3)``, finitos) en locales respecto
+    a ``origin`` con ``core.georef.world_to_local`` (en float64) y solo después en float32,
+    como los guarda Blender."""
+    world = np.asarray(points_world)
+    if world.dtype != np.float64:
+        raise TypeError(f"{what}: las coordenadas absolutas llegan en {world.dtype} y deben "
+                        "llegar en float64 (ADR-0005)")
+    if world.ndim != 2 or world.shape[1] != 3:
+        raise ValueError(f"{what}: los vértices son (n, 3), no {world.shape}")
+    if not np.isfinite(world).all():
+        raise ValueError(f"{what}: hay coordenadas no finitas")
+    return world_to_local(world, origin).astype(np.float32)
+
+
 def mesh_steps(
     name: str,
     vertices_world: np.ndarray,
@@ -65,17 +88,10 @@ def mesh_steps(
     """Los pasos que crean la malla nueva ``name`` (véase :func:`mesh_from_arrays`), con su
     avance (0–1) tras cada uno; devuelve (``StopIteration.value``) la malla, sin enlazar a
     ningún objeto. Si se cierran o fallan antes de terminar, la malla se borra."""
-    world = np.asarray(vertices_world)
-    if world.dtype != np.float64:
-        raise TypeError(f"mesh_from_arrays: las coordenadas absolutas llegan en {world.dtype} y "
-                        "deben llegar en float64 (ADR-0005)")
-    if world.ndim != 2 or world.shape[1] != 3:
-        raise ValueError(f"mesh_from_arrays: los vértices son (n, 3), no {world.shape}")
-    if not np.isfinite(world).all():
-        raise ValueError("mesh_from_arrays: hay coordenadas no finitas")
-    triangles = _indices(faces, 3, len(world), "mesh_from_arrays (caras)")
-    lines = _indices(edges, 2, len(world), "mesh_from_arrays (aristas)")
-    local = world_to_local(world, origin).astype(np.float32)
+    local = _local(vertices_world, origin, "mesh_from_arrays")
+    corners = 4 if faces is not None and np.ndim(faces) == 2 and np.shape(faces)[1] == 4 else 3
+    polygons = _indices(faces, corners, len(local), "mesh_from_arrays (caras)")
+    lines = _indices(edges, 2, len(local), "mesh_from_arrays (aristas)")
     yield 0.2
     mesh = bpy.data.meshes.new(name)
     try:
@@ -84,15 +100,15 @@ def mesh_steps(
         if len(lines):
             mesh.edges.add(len(lines))
             mesh.edges.foreach_set("vertices", lines.ravel())
-        if len(triangles):
-            mesh.loops.add(triangles.size)
-            compat.set_corner_verts(mesh, triangles.ravel())
+        if len(polygons):
+            mesh.loops.add(polygons.size)
+            compat.set_corner_verts(mesh, polygons.ravel())
             yield 0.4
-            mesh.polygons.add(len(triangles))
+            mesh.polygons.add(len(polygons))
             mesh.polygons.foreach_set("loop_start",
-                                      np.arange(0, triangles.size, 3, dtype=np.intc))
+                                      np.arange(0, polygons.size, corners, dtype=np.intc))
             yield 0.7
-        mesh.update(calc_edges=bool(len(triangles)))
+        mesh.update(calc_edges=bool(len(polygons)))
     except BaseException:
         bpy.data.meshes.remove(mesh)
         raise
@@ -109,9 +125,9 @@ def mesh_from_arrays(
 ) -> bpy.types.Mesh:
     """Una malla nueva ``name`` con los vértices ABSOLUTOS ``vertices_world`` (float64
     ``(n, 3)``, finitos) en locales respecto a ``origin``, los triángulos ``faces`` (enteros
-    ``(m, 3)``, en el orden de sus vértices: antihorarios vistos desde arriba, normal +Z) y las
-    aristas ``edges`` (enteros ``(k, 2)``). Con caras, Blender añade sus aristas. No se enlaza a
-    ningún objeto."""
+    ``(m, 3)``, en el orden de sus vértices: antihorarios vistos desde arriba, normal +Z; o
+    cuadriláteros, ``(m, 4)``) y las aristas ``edges`` (enteros ``(k, 2)``). Con caras, Blender
+    añade sus aristas. No se enlaza a ningún objeto."""
     steps = mesh_steps(name, vertices_world, faces, edges, origin=origin)
     while True:
         try:
@@ -168,4 +184,91 @@ def edge_flags(mesh: bpy.types.Mesh, name: str) -> np.ndarray | None:
         return None
     values = np.empty(len(mesh.edges), dtype=bool)
     found.data.foreach_get("value", values)
+    return values
+
+
+# Curvas y atributos (spec 005, T29) ----------------------------------------------------------
+
+_ATTRIBUTE_VALUES: dict[str, tuple[str, type, int]] = {
+    "FLOAT_COLOR": ("color", np.float32, 4),
+    "FLOAT": ("value", np.float32, 1),
+    "INT": ("value", np.intc, 1),
+    "BOOLEAN": ("value", np.bool_, 1),
+}
+"""Lo que se escribe de cada tipo de atributo (:func:`set_attribute`): la propiedad de cada
+valor, el tipo exacto de numpy (con él, ``foreach_set`` copia de una vez) y sus componentes."""
+
+
+def curves_steps(
+    name: str,
+    points_world: np.ndarray,
+    sizes: np.ndarray,
+    *,
+    origin: GeoOrigin,
+) -> Generator[float, None, bpy.types.Curves]:
+    """Los pasos que crean las curvas nuevas ``name`` (``bpy.data.hair_curves``): ``sizes``
+    (enteros ≥ 1) puntos cada una, de los puntos ABSOLUTOS ``points_world`` (float64 ``(n, 3)``,
+    finitos, en orden), en locales respecto a ``origin`` (como :func:`mesh_steps`) y todas
+    ``POLY`` (nacen Catmull-Rom: así sus tubos pasan por los puntos, plan 005 §2.1). Da su
+    avance (0–1) tras cada paso y devuelve (``StopIteration.value``) las curvas, sin enlazar a
+    ningún objeto. Si se cierran o fallan antes de terminar, se borran."""
+    local = _local(points_world, origin, "curves_steps")
+    counts = np.asarray(sizes)
+    if counts.dtype.kind not in "iu" or counts.ndim != 1:
+        raise TypeError(f"curves_steps: los puntos de cada curva son enteros (n,), no "
+                        f"{counts.dtype} {counts.shape}")
+    if len(counts) and int(counts.min()) < 1:
+        raise ValueError("curves_steps: cada curva tiene al menos un punto")
+    if int(counts.sum()) != len(local):
+        raise ValueError(f"curves_steps: las curvas suman {int(counts.sum())} puntos y llegan "
+                         f"{len(local)}")
+    yield 0.2
+    curves = bpy.data.hair_curves.new(name)
+    try:
+        curves.add_curves(counts.tolist())
+        yield 0.5
+        curves.set_types(type="POLY")
+        curves.position_data.foreach_set("vector", np.ascontiguousarray(local).ravel())
+    except BaseException:
+        bpy.data.hair_curves.remove(curves)
+        raise
+    return curves
+
+
+def curves_positions_local(curves: bpy.types.Curves) -> np.ndarray:
+    """Los puntos de ``curves`` tal como los guarda Blender: locales, float32 ``(n, 3)``."""
+    flat = np.empty(len(curves.points) * 3, dtype=np.float32)
+    curves.position_data.foreach_get("vector", flat)
+    return flat.reshape(-1, 3)
+
+
+def set_attribute(data: bpy.types.ID, name: str, domain: str, data_type: str,
+                  values: np.ndarray) -> None:
+    """El atributo ``name`` de ``data`` (una malla o unas curvas) en el dominio ``domain``
+    (``POINT``, ``CURVE``, ``FACE``…) del tipo ``data_type`` (``FLOAT_COLOR``, lineal con alfa,
+    ``(k, 4)``; ``FLOAT``; ``INT``; ``BOOLEAN``) con un valor por elemento, creado o sustituido,
+    de una vez. ``ValueError`` si no hay uno por elemento; ``KeyError`` con otro tipo."""
+    key, kind, width = _ATTRIBUTE_VALUES[data_type]
+    flat = np.ascontiguousarray(values, dtype=kind).ravel()
+    found = data.attributes.get(name)
+    if found is not None:
+        data.attributes.remove(found)
+    attribute = data.attributes.new(name, data_type, domain)
+    if len(flat) != width * len(attribute.data):
+        data.attributes.remove(attribute)
+        raise ValueError(f"set_attribute: {len(flat) // width} valores de «{name}» para los "
+                         f"{len(attribute.data)} elementos de «{data.name}»")
+    attribute.data.foreach_set(key, flat)
+
+
+def attribute_values(data: bpy.types.ID, name: str) -> np.ndarray | None:
+    """Los valores del atributo de un componente ``name`` de ``data`` (una malla o unas
+    curvas; ``INT``, ``BOOLEAN`` o ``FLOAT``, con el tipo de numpy de :func:`set_attribute`),
+    uno por elemento de su dominio, de una vez; ``None`` si no lo tiene así (spec 005, T47)."""
+    found = data.attributes.get(name)
+    if found is None or found.data_type not in ("INT", "BOOLEAN", "FLOAT"):
+        return None
+    key, kind, _width = _ATTRIBUTE_VALUES[found.data_type]
+    values = np.empty(len(found.data), dtype=kind)
+    found.data.foreach_get(key, values)
     return values

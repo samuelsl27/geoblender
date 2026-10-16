@@ -1,0 +1,673 @@
+{
+  "about": "Un caso por código de la tabla 4.4.1 de la spec 005 (sin DH-W13). Cada fichero sustituye la tabla de csv_basico de su papel («role»; con «assay_long», los análisis en filas en lugar de en columnas); «collar_geom» es la posición de las bocas en la capa (DH-W15; en los demás casos, la de sus X, Y, Z). Validando el DrillholeSet de los ficheros tal como están (sin convertir unidades), con la declaración de csv_basico cambiada por «declaration», los umbrales, la ventana de trabajo y la superficie (DH-W05) de aquí, salen exactamente sus «issues». «value» es el texto de la fuente del campo; null si la comprobación es de un cálculo. Los tramos con DH-E09 no entran en las demás comprobaciones de tramos, y un tramo repetido entero es DH-E12, no DH-E10.",
+  "base": "csv_basico",
+  "params": {
+    "depth_tolerance_m": 0.01,
+    "gap_tolerance_m": 0.01,
+    "min_interval_m": 0.05,
+    "dogleg_max_deg_30m": 3.0,
+    "collar_dem_tolerance_m": 2.0
+  },
+  "work_window": [
+    699900.0,
+    4399900.0,
+    700200.0,
+    4400200.0
+  ],
+  "surface": "z = 800 + 0,5·x − 0,25·y + 3·sin(x/7), con x = E − 700 000 e y = N − 4 400 000 (m), la de tests/data/gis/README.md",
+  "cases": [
+    {
+      "code": "DH-E01",
+      "file": "dh_e01_bocas.csv",
+      "role": "collar",
+      "about": "«S-90» y « s-90 », dos bocas nuevas sin tramos",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E01",
+          "level": "error",
+          "scope": "hole",
+          "hole": "S-90",
+          "table": "dh_collar",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": "name",
+          "value": " s-90 "
+        }
+      ]
+    },
+    {
+      "code": "DH-E02",
+      "file": "dh_e02_bocas.csv",
+      "role": "collar",
+      "about": "S-04 sin Z",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E02",
+          "level": "error",
+          "scope": "hole",
+          "hole": "S-04",
+          "table": "dh_collar",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": "z",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "code": "DH-E03",
+      "file": "dh_e03_bocas.csv",
+      "role": "collar",
+      "about": "S-97 con 0 m y S-98 sin profundidad ni tramos",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E03",
+          "level": "error",
+          "scope": "hole",
+          "hole": "S-97",
+          "table": "dh_collar",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": "depth",
+          "value": "0,00"
+        },
+        {
+          "code": "DH-E03",
+          "level": "error",
+          "scope": "hole",
+          "hole": "S-98",
+          "table": "dh_collar",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": "depth",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "code": "DH-E04",
+      "file": "dh_e04_litologia.csv",
+      "role": "lithology",
+      "about": "dos tramos de S-99, que no tiene boca",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E04",
+          "level": "error",
+          "scope": "record",
+          "hole": "S-99",
+          "table": "dh_lithology",
+          "catalog_code": null,
+          "depth_from": 0.0,
+          "depth_to": 10.0,
+          "field": "hole",
+          "value": "S-99"
+        },
+        {
+          "code": "DH-E04",
+          "level": "error",
+          "scope": "record",
+          "hole": "S-99",
+          "table": "dh_lithology",
+          "catalog_code": null,
+          "depth_from": 10.0,
+          "depth_to": 25.0,
+          "field": "hole",
+          "value": "S-99"
+        }
+      ]
+    },
+    {
+      "code": "DH-E05",
+      "file": "dh_e05_desviaciones.csv",
+      "role": "survey",
+      "about": "S-02 sin estaciones y «all_vertical» falso (también C-01)",
+      "declaration": {
+        "all_vertical": false
+      },
+      "issues": [
+        {
+          "code": "DH-E05",
+          "level": "error",
+          "scope": "hole",
+          "hole": "S-02",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": null,
+          "value": null
+        },
+        {
+          "code": "DH-E05",
+          "level": "error",
+          "scope": "hole",
+          "hole": "C-01",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": null,
+          "value": null
+        }
+      ]
+    },
+    {
+      "code": "DH-E06",
+      "file": "dh_e06_desviaciones.csv",
+      "role": "survey",
+      "about": "la estación de 60 m de S-02, repetida",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E06",
+          "level": "error",
+          "scope": "hole",
+          "hole": "S-02",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": 60.0,
+          "depth_to": 60.0,
+          "field": "depth",
+          "value": "60,00"
+        }
+      ]
+    },
+    {
+      "code": "DH-E07",
+      "file": "dh_e07_desviaciones.csv",
+      "role": "survey",
+      "about": "S-01 con una estación a 155 m (fondo 150) y S-03 a −2 m",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E07",
+          "level": "error",
+          "scope": "hole",
+          "hole": "S-01",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": 155.0,
+          "depth_to": 155.0,
+          "field": "depth",
+          "value": "155,00"
+        },
+        {
+          "code": "DH-E07",
+          "level": "error",
+          "scope": "hole",
+          "hole": "S-03",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": -2.0,
+          "depth_to": -2.0,
+          "field": "depth",
+          "value": "-2,00"
+        }
+      ]
+    },
+    {
+      "code": "DH-E08",
+      "file": "dh_e08_desviaciones.csv",
+      "role": "survey",
+      "about": "S-04 (vertical): azimut 361 a 50 m; 360 y −90,5° a 100 m",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E08",
+          "level": "error",
+          "scope": "hole",
+          "hole": "S-04",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": 50.0,
+          "depth_to": 50.0,
+          "field": "azimuth",
+          "value": "361,00"
+        },
+        {
+          "code": "DH-E08",
+          "level": "error",
+          "scope": "hole",
+          "hole": "S-04",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": 100.0,
+          "depth_to": 100.0,
+          "field": "inclination",
+          "value": "-90,50"
+        }
+      ]
+    },
+    {
+      "code": "DH-E09",
+      "file": "dh_e09_litologia.csv",
+      "role": "lithology",
+      "about": "S-01 desde −0,5 m y S-12 hasta 165 m (fondo 160)",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E09",
+          "level": "error",
+          "scope": "table",
+          "hole": "S-01",
+          "table": "dh_lithology",
+          "catalog_code": null,
+          "depth_from": -0.5,
+          "depth_to": 3.0,
+          "field": "from_m",
+          "value": "-0,50"
+        },
+        {
+          "code": "DH-E09",
+          "level": "error",
+          "scope": "table",
+          "hole": "S-12",
+          "table": "dh_lithology",
+          "catalog_code": null,
+          "depth_from": 150.0,
+          "depth_to": 165.0,
+          "field": "to_m",
+          "value": "165,00"
+        }
+      ]
+    },
+    {
+      "code": "DH-E10",
+      "file": "dh_e10_litologia.csv",
+      "role": "lithology",
+      "about": "S-03: CAL hasta 125 m y DOL desde 120 m",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E10",
+          "level": "error",
+          "scope": "table",
+          "hole": "S-03",
+          "table": "dh_lithology",
+          "catalog_code": null,
+          "depth_from": 120.0,
+          "depth_to": 125.0,
+          "field": "from_m",
+          "value": "120,00"
+        }
+      ]
+    },
+    {
+      "code": "DH-E11",
+      "file": "dh_e11_litologia.csv",
+      "role": "lithology",
+      "about": "S-02 con «GRA», que no está en el catálogo",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E11",
+          "level": "error",
+          "scope": "table",
+          "hole": "S-02",
+          "table": "dh_lithology",
+          "catalog_code": null,
+          "depth_from": 85.0,
+          "depth_to": 190.7,
+          "field": "lithology",
+          "value": "GRA"
+        }
+      ]
+    },
+    {
+      "code": "DH-E12",
+      "file": "dh_e12_analisis_filas.csv",
+      "role": "assay_long",
+      "about": "Au de M-0103 (S-01) repetido como M-0103B con otro valor",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-E12",
+          "level": "error",
+          "scope": "table",
+          "hole": "S-01",
+          "table": "dh_assay",
+          "catalog_code": null,
+          "depth_from": 62.5,
+          "depth_to": 64.5,
+          "field": "value",
+          "value": "5,98"
+        }
+      ]
+    },
+    {
+      "code": "DH-W01",
+      "file": "dh_w01_litologia.csv",
+      "role": "lithology",
+      "about": "S-03: hueco de 120 a 121 m",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W01",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-03",
+          "table": "dh_lithology",
+          "catalog_code": null,
+          "depth_from": 120.0,
+          "depth_to": 121.0,
+          "field": "from_m",
+          "value": "121,00"
+        }
+      ]
+    },
+    {
+      "code": "DH-W02",
+      "file": "dh_w02_desviaciones.csv",
+      "role": "survey",
+      "about": "S-01 sin la estación de 0 m",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W02",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-01",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": 0.0,
+          "depth_to": 30.0,
+          "field": "depth",
+          "value": "30,00"
+        }
+      ]
+    },
+    {
+      "code": "DH-W03",
+      "file": "dh_w03_desviaciones.csv",
+      "role": "survey",
+      "about": "S-01 sin la estación de 150 m (fondo 150)",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W03",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-01",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": 120.0,
+          "depth_to": 150.0,
+          "field": "depth",
+          "value": "120,00"
+        }
+      ]
+    },
+    {
+      "code": "DH-W04",
+      "file": "dh_w04_desviaciones.csv",
+      "role": "survey",
+      "about": "S-01 a −50° en la estación de 150 m (−60° a 120 m)",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W04",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-01",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": 120.0,
+          "depth_to": 150.0,
+          "field": "inclination",
+          "value": null
+        }
+      ]
+    },
+    {
+      "code": "DH-W05",
+      "file": "dh_w05_bocas.csv",
+      "role": "collar",
+      "about": "S-12 5 m por encima de la superficie (MDT)",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W05",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-12",
+          "table": "dh_collar",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": "z",
+          "value": null
+        }
+      ]
+    },
+    {
+      "code": "DH-W06",
+      "file": "dh_w06_bocas.csv",
+      "role": "collar",
+      "about": "S-96, una boca nueva a 300 m al este de la ventana",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W06",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-96",
+          "table": "dh_collar",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": null,
+          "value": null
+        }
+      ]
+    },
+    {
+      "code": "DH-W07",
+      "file": "dh_w07_analisis_filas.csv",
+      "role": "assay_long",
+      "about": "Cu de M-0205 (S-02) en ppm (el catálogo, en %)",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W07",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-02",
+          "table": "dh_assay",
+          "catalog_code": null,
+          "depth_from": 196.0,
+          "depth_to": 198.0,
+          "field": "unit",
+          "value": "ppm"
+        }
+      ]
+    },
+    {
+      "code": "DH-W08",
+      "file": "dh_w08_analisis_filas.csv",
+      "role": "assay_long",
+      "about": "Ag de M-0102 (S-01) = 0 y de M-0302 (S-03) = −0,5",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W08",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-01",
+          "table": "dh_assay",
+          "catalog_code": null,
+          "depth_from": 60.5,
+          "depth_to": 62.5,
+          "field": "value",
+          "value": "0"
+        },
+        {
+          "code": "DH-W08",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-03",
+          "table": "dh_assay",
+          "catalog_code": null,
+          "depth_from": 180.0,
+          "depth_to": 182.0,
+          "field": "value",
+          "value": "-0,5"
+        }
+      ]
+    },
+    {
+      "code": "DH-W09",
+      "file": "dh_w09_litologia.csv",
+      "role": "lithology",
+      "about": "S-02: ARE partido con un tramo de 2 cm (84,98–85 m)",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W09",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-02",
+          "table": "dh_lithology",
+          "catalog_code": null,
+          "depth_from": 84.98,
+          "depth_to": 85.0,
+          "field": null,
+          "value": null
+        }
+      ]
+    },
+    {
+      "code": "DH-W10",
+      "file": "dh_w10_litologias.csv",
+      "role": "lithology_catalog",
+      "about": "PIZ sin densidad",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W10",
+          "level": "warning",
+          "scope": null,
+          "hole": null,
+          "table": "dh_lithology_code",
+          "catalog_code": "PIZ",
+          "depth_from": null,
+          "depth_to": null,
+          "field": "density",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "code": "DH-W11",
+      "file": "dh_w11_analisis_columnas.csv",
+      "role": "assay_wide",
+      "about": "la primera muestra de S-03 se llama M-0101, como la de S-01",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W11",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-03",
+          "table": "dh_assay",
+          "catalog_code": null,
+          "depth_from": 178.0,
+          "depth_to": 180.0,
+          "field": "sample_id",
+          "value": "M-0101"
+        }
+      ]
+    },
+    {
+      "code": "DH-W12",
+      "file": "dh_w12_bocas.csv",
+      "role": "collar",
+      "about": "S-02 planificado, con análisis",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W12",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-02",
+          "table": "dh_collar",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": "planned",
+          "value": "sí"
+        }
+      ]
+    },
+    {
+      "code": "DH-W14",
+      "file": "dh_w14_desviaciones.csv",
+      "role": "survey",
+      "about": "S-01 con +60° en todas sus estaciones",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W14",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-01",
+          "table": "dh_survey",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": "inclination",
+          "value": null
+        }
+      ]
+    },
+    {
+      "code": "DH-W15",
+      "file": "dh_w15_geom.csv",
+      "role": "collar_geom",
+      "about": "posición de las bocas en la capa: S-04, 2 m al este",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W15",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-04",
+          "table": "dh_collar",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": "geom",
+          "value": null
+        }
+      ]
+    },
+    {
+      "code": "DH-W16",
+      "file": "dh_w16_bocas.csv",
+      "role": "collar",
+      "about": "S-01 sin profundidad: se deduce 150 m",
+      "declaration": {},
+      "issues": [
+        {
+          "code": "DH-W16",
+          "level": "warning",
+          "scope": null,
+          "hole": "S-01",
+          "table": "dh_collar",
+          "catalog_code": null,
+          "depth_from": null,
+          "depth_to": null,
+          "field": "depth",
+          "value": ""
+        }
+      ]
+    }
+  ]
+}

@@ -151,6 +151,19 @@ class OperationDefTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             op(recompute="res.balance")
 
+    def test_drops_discarded_only_in_a_repeatable_type(self) -> None:
+        """RF-008-26, RF-008-55 (spec 005, T42; plan 005 §5.6.10): un tipo cuyo recálculo
+        reúne él mismo todo lo vigente (la base de los sondeos) lo declara con
+        ``drops_discarded`` (por defecto, no); solo uno que se repite solo, y es verdadero o
+        falso."""
+        self.assertFalse(op().drops_discarded)
+        self.assertTrue(op(drops_discarded=True).drops_discarded)
+        with self.assertRaises(ValueError) as caught:
+            op(repeatable=False, drops_discarded=True)
+        self.assertIn("drops_discarded", str(caught.exception))
+        with self.assertRaises(TypeError):
+            op(drops_discarded=1)
+
     def test_other_fields_are_checked(self) -> None:
         """RF-008-17 (ADR-0025 §2): el módulo es el del tipo, el nombre visible un ``msgid``
         en inglés, el ámbito de proyecto o de versión, el grupo ``<código>.<nombre>``, las

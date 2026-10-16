@@ -10,6 +10,12 @@ mientras ninguna quepa en el presupuesto mide otra vez, hasta ``MAX_ATTEMPTS``: 
 máquina en reposo es la misma medida de siempre, con carga a ratos encuentra un momento
 tranquilo, y el presupuesto no cambia (si ninguna cabe, la prueba falla igual).
 
+Con ``tools/check.py`` y otros programas ocupando todos los procesadores, ninguna de esas
+medidas cabía a veces (spec 005, T45: la carga del catálogo, 25 ms en reposo, en 50,4–51,7 ms
+la mejor de veinte): el hilo que mide esperaba su turno tras los demás procesos. Por eso
+:func:`best_of` toma cada medida con la prioridad del hilo subida (:func:`raised_priority`):
+lo medido es el código, con la máquina llena o no, y el presupuesto sigue siendo el mismo.
+
 :func:`least_of` hace lo mismo con lo que mide la propia prueba (spec 006, T48): una
 latencia, como el tiempo desde que se pide parar un cálculo hasta que para, o desde que se
 pide escribir hasta que llega «ocupado». Una medida, la de siempre, y otra mientras pase del
@@ -24,14 +30,67 @@ el disco, no la copia (spec 006, T49; ``docs/trampas.md`` §6).
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import os
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from types import TracebackType
+from typing import Any
 
 ATTEMPTS = 3  # las medidas de siempre: la mejor de tres
 MAX_ATTEMPTS = 20  # con carga, hasta 20 (unos 0,5 s más en una prueba de 25 ms)
+# La prioridad con que mide best_of (spec 005, T45): THREAD_PRIORITY_HIGHEST de Windows, dos
+# niveles sobre la normal de su proceso (la de los demás procesos de la comprobación), sin
+# llegar a la de tiempo real ni pedir permisos. GetThreadPriority da _PRIORITY_ERROR si falla.
+PRIORITY_HIGHEST = 2
+_PRIORITY_ERROR = 0x7FFFFFFF
+
+
+@functools.cache
+def _kernel32() -> Any:
+    """Las funciones de prioridad de los hilos de ``kernel32`` (solo en Windows)."""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentThread.restype = ctypes.c_void_p
+    kernel32.GetThreadPriority.argtypes = (ctypes.c_void_p,)
+    kernel32.GetThreadPriority.restype = ctypes.c_int
+    kernel32.SetThreadPriority.argtypes = (ctypes.c_void_p, ctypes.c_int)
+    kernel32.SetThreadPriority.restype = ctypes.c_int
+    return kernel32
+
+
+def thread_priority() -> int | None:
+    """La prioridad del hilo actual relativa a la de su proceso (0, la normal); ``None``
+    fuera de Windows o si no se puede leer."""
+    if os.name != "nt":
+        return None
+    kernel32 = _kernel32()
+    value = kernel32.GetThreadPriority(kernel32.GetCurrentThread())
+    return None if value == _PRIORITY_ERROR else value
+
+
+@contextlib.contextmanager
+def raised_priority() -> Iterator[bool]:
+    """Mientras está activo (``with``), el hilo actual tiene la prioridad
+    :data:`PRIORITY_HIGHEST` (spec 005, T45): con todos los procesadores ocupados no espera su
+    turno tras los demás procesos, de prioridad normal. Al salir vuelve la de antes, también si
+    algo falla. Da ``True`` si la subió; ``False``, sin tocar nada, si ya era esa o más alta, si
+    no se pudo o fuera de Windows."""
+    before = thread_priority()
+    if before is None or before >= PRIORITY_HIGHEST:
+        yield False
+        return
+    kernel32 = _kernel32()
+    if not kernel32.SetThreadPriority(kernel32.GetCurrentThread(), PRIORITY_HIGHEST):
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        kernel32.SetThreadPriority(kernel32.GetCurrentThread(), before)
 
 
 def best_of(
@@ -43,14 +102,16 @@ def best_of(
     clock: Callable[[], float] = time.perf_counter,
 ) -> float:
     """La menor duración, en segundos, de ``action``: la ejecuta ``attempts`` veces y,
-    mientras la mejor pase de ``budget_s``, otra vez, hasta ``max_attempts`` en total.
-    Lanza ``ValueError`` si ``attempts`` < 1 o ``max_attempts`` < ``attempts``. La prueba
-    compara el resultado con el mismo presupuesto (``assertLessEqual``)."""
+    mientras la mejor pase de ``budget_s``, otra vez, hasta ``max_attempts`` en total, cada
+    vez con la prioridad del hilo subida (:func:`raised_priority`). Lanza ``ValueError`` si
+    ``attempts`` < 1 o ``max_attempts`` < ``attempts``. La prueba compara el resultado con el
+    mismo presupuesto (``assertLessEqual``)."""
 
     def measure() -> float:
-        start = clock()
-        action()
-        return clock() - start
+        with raised_priority():
+            start = clock()
+            action()
+            return clock() - start
 
     return least_of(measure, budget_s, attempts=attempts, max_attempts=max_attempts)
 

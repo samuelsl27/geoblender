@@ -109,6 +109,12 @@ def unregister_legend_provider(kind: str) -> None:
     _LEGEND.pop(kind, None)
 
 
+def kind_legend_provider(kind: str) -> LegendProvider | None:
+    """El proveedor de la Leyenda registrado para el tipo ``kind``, o ``None`` (spec 005,
+    T30: quien lo registró lo quita solo si sigue siendo el suyo)."""
+    return _LEGEND.get(kind)
+
+
 def register_data_filter_provider(kind: str, provider: DataFilterProvider) -> None:
     """Pone el proveedor del Filtro de datos del tipo ``kind``."""
     _DATA_FILTER[kind] = provider

@@ -60,9 +60,10 @@ BLENDER = "blender"  # el motivo es el mensaje del localizador (gbtools.blender)
 # documentación, contra la que se comprueba el catálogo de comandos, que lo registra
 # tests.support.docs; «runtime» la 004, el motor de cálculo de pruebas de
 # tools/make_runtime.py, que lo registra tests.support.runtime; «red» la 008, la carpeta de
-# pruebas de la red de GEOBLENDER_NET_TEST_DIR, que lo registra tests.support.network).
+# pruebas de la red de GEOBLENDER_NET_TEST_DIR, que lo registra tests.support.network; «ace»
+# la 005, el motor ACE de 64 bits de las bases RecMin, que lo registra tests.support.recmin).
 RESOURCES: tuple[str, ...] = (
-    "symlink", "windows", "blender", "git", "qgis", "docs", "runtime", "red"
+    "symlink", "windows", "blender", "git", "qgis", "docs", "runtime", "red", "ace"
 )
 
 T = TypeVar("T")

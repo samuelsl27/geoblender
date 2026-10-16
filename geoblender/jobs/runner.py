@@ -44,9 +44,14 @@ Ciclo de vida de un trabajo en proceso aparte:
   cada trabajo en curso y, cuando su proceso terminó y el canal se cerró, lo finaliza: estado
   según el código de salida (plan §5.3.4), comprobación de cada resultado declarado (existe
   dentro de ``out/`` y casa con su huella sha256: si no, «Fallido» con ``output_missing`` u
-  ``output_hash_mismatch``, RF-004-05), ``state.json`` atómico con el registro completo
-  (RF-004-15), cierre de su *Job Object* (termina lo que el worker dejara vivo) y, por
-  último, ``on_finish`` con su :class:`JobResult`. Después arranca de la cola lo que quepa.
+  ``output_hash_mismatch``, RF-004-05; en un hilo aparte, y el final lo da el sondeo que la
+  ve acabada: el sha256 de unos resultados grandes no para el hilo de Blender, spec 005,
+  T53), ``state.json`` atómico con el registro completo (RF-004-15), cierre de su *Job
+  Object* (termina lo que el worker dejara vivo) y, por último, ``on_finish`` con su
+  :class:`JobResult`. Después arranca de la cola lo que quepa (un trabajo cuyos resultados se
+  están comprobando sigue «En curso» y ocupa su hueco, RF-004-04). Mientras alguno se
+  comprueba, :meth:`JobRunner.verifying` lo dice: el monitor de Blender sondea entonces más a
+  menudo y el final llega en cuanto acaba la comprobación (spec 005, T58).
 - :meth:`JobRunner.snapshots` y :meth:`JobRunner.active_count`: cómo está cada trabajo
   (:class:`JobSnapshot`: nombre, estado, avance, último mensaje, duración, intérprete y
   error) y cuántos están en cola o en curso; es lo que muestra la interfaz (RF-004-06,
@@ -820,6 +825,15 @@ class JobRunner:
         with self._lock:
             return sum(1 for item in self._jobs.values() if item.state in ACTIVE_STATES)
 
+    def verifying(self) -> bool:
+        """Si algún trabajo terminó bien y aún no tiene final porque se están comprobando sus
+        resultados en otro hilo (:class:`_Verification`; o porque ya acabó esa comprobación y
+        su final lo da el siguiente :meth:`poll`). Mientras, quien sondea lo hace más a
+        menudo, para dar el final en cuanto acaba la comprobación y no un tic después (spec
+        005, T58; RNF-006-03: la orden del TIN de la 006 tardaba 0,25 s más por trabajo)."""
+        with self._lock:
+            return any(item.verification is not None for item in self._running.values())
+
     def locks_in_use(self) -> set[str]:
         """Los ``lock_id`` de los motores de cálculo que usan sus trabajos en curso (los
         ``compute`` lanzados con un motor): la limpieza de los motores anteriores no los
@@ -945,7 +959,7 @@ class JobRunner:
             return
         self._abandoned = [executor for executor in self._abandoned if executor.alive]
         busy = {EXECUTOR_SUBPROCESS: 0, EXECUTOR_INPROCESS: len(self._abandoned)}
-        for running in self._running.values():
+        for running in self._running.values():  # también comprobando sus resultados
             busy[running.record.executor] += 1
         limits = {EXECUTOR_SUBPROCESS: self._max_subprocess,
                   EXECUTOR_INPROCESS: self._max_inprocess}
@@ -1158,6 +1172,9 @@ class JobRunner:
                 pass
 
     def _poll_job(self, item: _Job) -> JobUpdate | None:
+        if item.verification is not None:
+            self._poll_verification(item)
+            return None
         if item.thread is not None:
             return self._poll_thread(item)
         reader = item.reader
@@ -1213,27 +1230,32 @@ class JobRunner:
             item.events_log.event(event)
         item.pending_events.extend(self._take(item, events))
 
-    def _finalize_thread(self, item: _Job) -> None:
+    def _finalize_thread(self, item: _Job, *, sync: bool = False) -> None:
         """Finaliza un trabajo en hilo que acabó, con su código y la hora en que acabó."""
         thread = item.thread
         assert thread is not None and thread.ended_at is not None
         assert thread.ended_wall is not None
         item.mark_exit(thread.ended_at, thread.ended_wall)
-        self._finalize(item, thread.exit_code, channel_closed=True)
+        self._finalize(item, thread.exit_code, channel_closed=True, sync=sync)
 
     def _close_at_shutdown(self, item: _Job) -> None:
         """Finaliza en el cierre un trabajo que estaba en curso, con los eventos que hayan
         llegado (plan §5.3.4; «Interrumpido» si se le pidió parar por el cierre). Si su
         proceso no terminó a tiempo, queda sin código de salida: al finalizar se cierra su
         *Job Object*, que lo termina, y su entrada estándar. Un hilo que sigue en marcha
-        (ya abandonado) también queda sin código."""
+        (ya abandonado) también queda sin código. La comprobación de los resultados de uno
+        que ya había acabado se espera (o, si aún no había empezado, se hace aquí)."""
+        if item.verification is not None:
+            item.verification.wait()
+            self._complete(item)
+            return
         if item.thread is not None:
             done = item.thread.finished
             self._pump(item)
             if done:
-                self._finalize_thread(item)
+                self._finalize_thread(item, sync=True)
             else:
-                self._finalize(item, None, channel_closed=True)
+                self._finalize(item, None, channel_closed=True, sync=True)
             return
         reader = item.reader
         process = item.process
@@ -1245,7 +1267,7 @@ class JobRunner:
             item.mark_exit(self._clock(), _now())
         if not closed:
             item.events_log.note("channel_open", reason="shutdown")
-        self._finalize(item, exit_code, channel_closed=closed)
+        self._finalize(item, exit_code, channel_closed=closed, sync=True)
 
     def _take(self, item: _Job, items: Iterable[JobEvent | InvalidLine]) -> list[JobEvent]:
         """Los eventos de ``items`` (las líneas inválidas ya están en ``events.jsonl``),
@@ -1288,23 +1310,59 @@ class JobRunner:
                 item.cancelled_event = event
                 item.message = event.msg or item.message
 
-    def _finalize(self, item: _Job, exit_code: int | None, *, channel_closed: bool) -> None:
+    def _finalize(self, item: _Job, exit_code: int | None, *, channel_closed: bool,
+                  sync: bool = False) -> None:
         """Estado según el código de salida (plan §5.3.4), resultados verificados
         (RF-004-05), ``state.json`` y avisos en ``job.log`` (RF-004-15). Con el canal aún
         abierto, su lectura no se toca: cerrarla bloquearía hasta que el hilo lector
-        vuelva."""
+        vuelva.
+
+        Los resultados de un trabajo que terminó bien se comprueban en un hilo
+        (:class:`_Verification`; spec 005, T53, RNF-005-06: el sha256 de unos resultados
+        grandes no para el hilo de Blender) y el final lo da el sondeo que la ve acabada
+        (:meth:`_poll_verification`); mientras, el trabajo sigue «En curso» (en su hueco,
+        RF-004-04). Con ``sync`` (al cerrar el lanzador), aquí mismo."""
         item.channel_closed = channel_closed
         exit_at = item.exit_seen_at if item.exit_seen_at is not None else self._clock()
         duration = max(0.0, exit_at - (item.started_at or exit_at))
         state, error = _outcome(item, exit_code)
-        outputs: tuple[OutputRef, ...] = ()
         if state == "succeeded" and item.result_event is not None:
-            try:
-                verify_outputs(item.folder, item.result_event.outputs, job=item.name)
-            except JobError as exc:
-                state, error = "failed", ErrorInfo.from_job_error(exc)
-            else:
-                outputs = item.result_event.outputs
+            outputs = item.result_event.outputs
+            item.verification = _Verification(item.folder, outputs, job=item.name,
+                                              start=bool(outputs) and not sync)
+            item.final = (exit_code, duration)
+            if not item.verification.done:
+                return
+            self._complete(item)
+            return
+        self._finish(item, state=state, exit_code=exit_code, duration_s=duration,
+                     error=error, ended=item.exit_wall)
+
+    def _poll_verification(self, item: _Job) -> None:
+        """El sondeo de un trabajo cuyos resultados se están comprobando: si ya acabó la
+        comprobación, su final (:meth:`_complete`)."""
+        verification = item.verification
+        assert verification is not None
+        if verification.done:
+            self._complete(item)
+
+    def _complete(self, item: _Job) -> None:
+        """El final de un trabajo que terminó bien, con sus resultados ya comprobados:
+        «Terminado» con ellos o, si alguno falta o no casa con su huella, «Fallido»
+        (RF-004-05). Un error del programa al comprobarlos sigue (como sin hilo)."""
+        verification = item.verification
+        assert verification is not None and item.final is not None
+        assert item.result_event is not None
+        failure = verification.error
+        if failure is not None and not isinstance(failure, JobError):
+            raise failure
+        item.verification = None
+        exit_code, duration = item.final
+        if isinstance(failure, JobError):
+            state, error = "failed", ErrorInfo.from_job_error(failure)
+            outputs: tuple[OutputRef, ...] = ()
+        else:
+            state, error, outputs = "succeeded", None, item.result_event.outputs
         self._finish(item, state=state, exit_code=exit_code, duration_s=duration,
                      error=error, outputs=outputs, ended=item.exit_wall)
 
@@ -1424,6 +1482,50 @@ class JobRunner:
                              item.folder.job_uid)
 
 
+VERIFY_THREAD_PREFIX = "geoblender-verify-"
+"""El nombre de los hilos que comprueban los resultados de un trabajo (+ su ``job_uid``)."""
+
+
+class _Verification:
+    """La comprobación de los resultados de un trabajo (:func:`verify_outputs`, RF-004-05)
+    en un hilo *daemon* (spec 005, T53; RNF-005-06: con las once tablas de una base de V-ref,
+    0,45 s de sha256 que eran del hilo de Blender) o, sin ``start`` (al cerrar el lanzador,
+    o si no hay resultados), aquí mismo. :attr:`error`: lo que lanzó (``JobError``
+    ``output_missing`` u ``output_hash_mismatch``, u otro error del programa) o ``None``."""
+
+    def __init__(self, folder: JobDir, outputs: Iterable[OutputRef], *, job: str,
+                 start: bool) -> None:
+        self._args = (folder, tuple(outputs), job)
+        self.error: BaseException | None = None
+        self._done = threading.Event()
+        if start:
+            try:
+                threading.Thread(target=self._run, name=VERIFY_THREAD_PREFIX + folder.job_uid,
+                                 daemon=True).start()
+                return
+            except RuntimeError:  # el sistema no da más hilos: aquí mismo
+                LOGGER.warning("Sin hilo para comprobar los resultados del trabajo %s",
+                               folder.job_uid, exc_info=True)
+        self._run()
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def wait(self) -> None:
+        """Espera a que acabe (la lectura de los resultados no se puede interrumpir)."""
+        self._done.wait()
+
+    def _run(self) -> None:
+        folder, outputs, job = self._args
+        try:
+            verify_outputs(folder, outputs, job=job)
+        except BaseException as exc:  # noqa: BLE001 - lo trata quien da el final
+            self.error = exc
+        finally:
+            self._done.set()
+
+
 def verify_outputs(folder: JobDir, outputs: Iterable[OutputRef], *, job: str) -> None:
     """Comprueba cada resultado declarado (RF-004-05): que es un fichero que existe dentro
     de ``out/`` de la carpeta del trabajo (también tras resolver enlaces) y que su sha256 y
@@ -1498,6 +1600,10 @@ class _Job:
         self.pending_events: list[JobEvent] = []
         self.channel_closed = False
         self.result: JobResult | None = None
+        self.verification: _Verification | None = None
+        """La comprobación de sus resultados en marcha (terminó bien; aún sin final)."""
+        self.final: tuple[int | None, float] | None = None
+        """Su código de salida y su duración, mientras se comprueban sus resultados."""
         self._exit_lock = threading.Lock()
 
     @property

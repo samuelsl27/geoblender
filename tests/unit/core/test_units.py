@@ -39,7 +39,9 @@ REQUIRED = (
     ("%", "%", "proporción", Fraction(1, 100)),
     ("g/t", "g/t", "proporción", Fraction(1, 1_000_000)),
     ("ppm", "ppm", "proporción", Fraction(1, 1_000_000)),
+    ("ppb", "ppb", "proporción", Fraction(1, 1_000_000_000)),
     ("deg", "°", "ángulo", Fraction(1)),
+    ("deg/30m", "°/30 m", "cambio de dirección", Fraction(1)),
     ("s", "s", "tiempo", Fraction(1)),
     ("min", "min", "tiempo", Fraction(60)),
     ("h", "h", "tiempo", Fraction(3600)),
@@ -192,6 +194,31 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual(units.convert(0.35, "-", "%"), 35.0)
         self.assertEqual(units.convert(1, "%", "g/t"), 10_000.0)
         self.assertEqual(units.convert(5, "ppm", "g/t"), 5.0)
+
+    def test_grades_with_ppb(self) -> None:
+        """RF-005-29 (spec 005, T04; D-18 del plan 005): las leyes en g/t, ppm, ppb y % son
+        una misma proporción con factores exactos (1 g/t = 1 ppm = 1000 ppb = 10⁻⁴ %); el
+        cambio de dirección entre estaciones (DH-W04) va en «°/30 m», una magnitud propia que
+        no se convierte a grados."""
+        cases = (
+            (4860, "ppb", "g/t", 4.86),
+            (350, "ppb", "ppm", 0.35),
+            (1, "ppm", "ppb", 1000.0),
+            (1, "%", "ppb", 10_000_000.0),
+            (25_000_000, "ppb", "%", 2.5),
+            (1050, "ppm", "%", 0.105),
+            (0.35, "g/t", "ppb", 350.0),
+            (2.9, "g/t", "ppm", 2.9),
+        )
+        for value, source, target, expected in cases:
+            with self.subTest(valor=value, de=source, a=target):
+                self.assertEqual(units.convert(value, source, target), expected)
+        self.assertEqual(units.parse_quantity("3 °/30 m"), (3.0, "deg/30m"))
+        self.assertEqual(units.parse_quantity("2,5 deg/30m"), (2.5, "deg/30m"))
+        self.assertEqual(units.parse_quantity("120 ppb"), (120.0, "ppb"))
+        with self.assertRaises(ValueError) as caught:
+            units.convert(3.0, "deg/30m", "deg")
+        self.assertEqual(caught.exception.code, "core.unit_not_convertible")
 
     def test_exact_conversions(self) -> None:
         """RF-008-03: t ↔ kt, m² ↔ ha y B ↔ MB (10⁶) exactos: el resultado es el número

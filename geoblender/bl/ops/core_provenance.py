@@ -965,6 +965,30 @@ def launch_job(handle: OperationHandle, worker: str, *, label: str,
     return job
 
 
+def submit_job(worker: str, *, label: str, owner: str, params: Mapping[str, Any] | None = None,
+               arrays: Mapping[str, Any] | None = None,
+               on_finish: Callable[[JobResult], object] | None = None,
+               **request: Any) -> JobHandle:
+    """Lanza con el monitor de los trabajos (que lo sigue en la barra de estado) un trabajo de
+    la 004 que **no es de ninguna operación** (spec 005, T29: los arrays de la vista de los
+    sondeos, que no escriben en el proyecto ni registran nada): tipo ``worker``, nombre visible
+    ``label``, dueño ``owner`` (su módulo), ``params``, los arrays de numpy ``arrays``
+    escritos en su ``in/`` (como en :func:`launch_job`) y lo demás de
+    ``jobs.protocol.new_request`` (``request``). Al terminar, en el hilo de Blender, llama a
+    ``on_finish`` con su ``JobResult``. Quien lo lanza lee sus resultados y lo da por
+    incorporado (:func:`release_job`). :class:`RuntimeError` sin lanzador de trabajos;
+    ``JobError`` con una petición que no vale."""
+    runner = _session_runner()
+    if runner is None:
+        raise RuntimeError("no hay lanzador de trabajos: Geoblender aún no ha preparado la "
+                           "carpeta de los trabajos")
+    job_request = new_request(worker, label=label, owner=owner, params=params, **request)
+    job: Any = job_request
+    if arrays:
+        job = _prepare_inputs(runner, job_request, {}, arrays)
+    return jobs_ops.MONITOR.submit(job, on_finish=on_finish)
+
+
 def _prepare_inputs(runner: JobRunner, request: JobRequest, inputs: Mapping[str, Path],
                     arrays: Mapping[str, Any] | None = None) -> Any:
     """La carpeta del trabajo de ``request`` (``JobRunner.prepare``) con ``inputs`` copiados a
@@ -1252,7 +1276,8 @@ class ProvenanceAwareOperator:
     - ``invoke`` (desde la interfaz) → ``execute``: la puerta abrirá el diálogo de una entrada
       cambiada; un ``invoke`` propio llama a ``super().invoke`` o pone antes
       ``self.provenance_dialog = True``;
-    - :meth:`begin` (la puerta y ``begin_operation``), :meth:`launch_job` (su trabajo de la
+    - :meth:`begin` (la puerta y ``begin_operation``; :meth:`begin_each`, varias de una vez,
+      spec 005, T55), :meth:`launch_job` (su trabajo de la
       004, que el módulo incorpora con :func:`ingest_job_result`) y :meth:`check_write_target`
       (antes de escribir un entregable); cada una dice lo que impide seguir con
       ``Operator.report`` y devuelve ``None`` o falso;
@@ -1329,6 +1354,35 @@ class ProvenanceAwareOperator:
             return None
         _STATE.begun[handle.uid] = handle  # hecha, al diario de Ctrl+Z (settle_operations)
         return handle
+
+    def begin_each(self, context: Any, settings: Sequence[Mapping[str, Any]], *,
+                   params: Sequence[str] = (), executor: str = "blender",
+                   group_uid: str | None = None) -> list[OperationHandle] | None:
+        """:meth:`begin` de varias operaciones de su tipo, una por cada uno de los
+        ``settings`` (spec 005, T55; RNF-005-06: una orden que lee varios ficheros): la puerta
+        **una vez** y todas «en curso» en una sola transacción
+        (``core.provenance.operations.begin_operations``), en su orden y cada una como con
+        :meth:`begin`. ``None`` si no se puede empezar ninguna (ya dicho): si una no se
+        puede, ninguna."""
+        inputs = tuple(self.provenance_inputs(context))
+        ready = ensure_ready(self.provenance_op_type, inputs,
+                             report=self.report,  # type: ignore[attr-defined]
+                             dialog=self.provenance_dialog)
+        if ready is None:
+            return None
+        from ...core.provenance.operations import begin_operations
+
+        try:
+            handles = begin_operations(SESSION.project, self.provenance_op_type,
+                                       settings=[dict(item) for item in settings],
+                                       inputs=list(inputs), params=list(params),
+                                       executor=executor, group_uid=group_uid)
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
+            return None
+        for handle in handles:  # hechas, al diario de Ctrl+Z (settle_operations)
+            _STATE.begun[handle.uid] = handle
+        return handles
 
     def launch_job(self, handle: OperationHandle, worker: str, *, label: str,
                    params: Mapping[str, Any] | None = None,

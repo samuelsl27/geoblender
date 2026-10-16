@@ -51,8 +51,12 @@ TOOLS_DIR = Path(__file__).resolve().parent
 ROOT = TOOLS_DIR.parent
 TESTS_RELPATH = Path("tests") / "banco"
 
-# Banco → variable de entorno con su carpeta (solo lectura).
-BANKS: Mapping[str, str] = {"silvestre": "GEOBLENDER_SILVESTRE_DIR"}
+# Banco → variable de entorno con su carpeta (solo lectura): Silvestre (spec 001, U4) y la
+# base de sondeos de RecMin (spec 005, D-3, DP-65).
+BANKS: Mapping[str, str] = {
+    "silvestre": "GEOBLENDER_SILVESTRE_DIR",
+    "recmin": "GEOBLENDER_RECMIN_BANK_DIR",
+}
 
 EXIT_OK = 0
 EXIT_FAILED = 1

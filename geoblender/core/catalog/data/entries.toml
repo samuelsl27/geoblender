@@ -18,9 +18,12 @@ title.en = "Background jobs"
 title.es = "Trabajos en segundo plano"
 delivered = true
 
+# La 005 entrega sus órdenes tarea a tarea (T25…): todas son ya clases reales, y cada una
+# está disponible cuando llega su orden (bl.ops.dh.UNDELIVERED; las demás dicen dónde estarán).
 ["005"]
 title.en = "Drillholes"
 title.es = "Sondeos"
+delivered = true
 
 # La 006 entrega sus órdenes tarea a tarea (T27, T28…): cada una está disponible cuando su
 # operador real sustituye al provisional.

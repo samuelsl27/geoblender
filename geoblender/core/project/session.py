@@ -165,6 +165,7 @@ class Project:
         self._closed = False
         self._notices: list[str] = []
         self._pending_wal: int | None = None
+        self._writing = 0  # transacciones de escritura abiertas (write_transaction)
         # Si esta sesión puede tener aún el cerrojo del proyecto: lo tomó al abrir en
         # escritura y no consta que lo haya soltado (lo suelta al cerrar, T41).
         self._may_hold_lock = status.writable
@@ -243,6 +244,14 @@ class Project:
     def closed(self) -> bool:
         """Verdadero tras :meth:`close`."""
         return self._closed
+
+    @property
+    def writing(self) -> bool:
+        """Verdadero mientras esta sesión tiene abierta una transacción de escritura
+        (:meth:`write_transaction`; la de una incorporación por pasos sigue abierta entre sus
+        pasos): hasta que la confirme o la deshaga, nadie más cambia la base (spec 005, T53:
+        los indicadores no la leen entonces)."""
+        return self._writing > 0
 
     def set_read_only(self, code: ReadOnlyCode, detail: str) -> None:
         """Pasa a solo lectura con su motivo."""
@@ -391,6 +400,7 @@ class Project:
             raise
         except (OSError, sqlite3.Error, DatabaseError) as exc:
             raise self._write_failed(exc) from exc
+        self._writing += 1
         try:
             with db.transaction() as conn:
                 if self._pending_wal is not None:
@@ -413,6 +423,7 @@ class Project:
         except (OSError, sqlite3.Error) as exc:
             raise self._write_failed(exc) from exc
         finally:
+            self._writing -= 1
             db.close()
 
     def try_write(self, work: Callable[[sqlite3.Connection], Any]) -> WriteAttempt:

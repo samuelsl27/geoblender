@@ -1010,6 +1010,29 @@ class GpkgLayerReaderTest(_TempCase):
         self.assertIn("ley", str(caught.exception))
         self.assertIn("fid 2", str(caught.exception))
 
+    def test_rows_by_columns_and_errors_by_fid(self) -> None:
+        """RF-008-08, RNF-005-01 (spec 005, T52): una tabla se lee por trozos y cada trozo
+        va al ``RowEncoder`` por columnas: el hash de sus 3.000 filas, en trozos de 500, es el
+        de ``ContentHasher.rows`` con ellas; un valor que no vale en un trozo (un 2,5 en una
+        columna INTEGER, que SQLite guarda como real) se rechaza fila a fila con su
+        columna y su ``fid``, como antes."""
+        columns = "codigo TEXT, ley REAL, n INTEGER, ok BOOLEAN"
+        rows = [(f"S-{k:04d}", None if k % 7 == 0 else k / 8, k % 11, k % 2 == 0)
+                for k in range(3000)]
+        path = _attributes(self.tmp / "muchas.gpkg", columns, rows)
+        request = _gpkg_request(path, "ensayos", kind="table", chunk_bytes=500 * 256)
+        expected = _rows([["codigo", "text"], ["ley", "float"], ["n", "int"], ["ok", "bool"]],
+                         [list(row) for row in rows])
+        self.assertEqual(readers.read_content(GPKG_LAYER, request), expected)
+        rows[1233] = ("S-1233", 1.0, 2.5, True)
+        bad = _attributes(self.tmp / "mala.gpkg", columns, rows)
+        with self.assertRaises(errors.ValidationError) as caught:
+            readers.read_content(GPKG_LAYER, _gpkg_request(bad, "ensayos", kind="table",
+                                                           chunk_bytes=500 * 256))
+        self.assertEqual(caught.exception.code, "core.content_value_invalid")
+        self.assertIn("fid 1234", str(caught.exception))
+        self.assertIn("«n»", str(caught.exception))
+
     def test_column_types(self) -> None:
         """RF-008-08: cada tipo de columna del estándar GeoPackage se hashea con su tipo
         (BOOLEAN, enteros, reales, TEXT y BLOB con tamaño, DATE y DATETIME, sin distinguir

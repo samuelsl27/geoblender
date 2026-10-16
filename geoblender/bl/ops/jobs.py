@@ -5,7 +5,9 @@
 hilo de Blender, sin hilos propios (ARQ-19): un temporizador **persistente**
 (``bpy.app.timers``, sobrevive a abrir otro ``.blend``) llama a :func:`tick` cada
 :data:`TICK_S` s desde que se lanza el primer trabajo (:meth:`JobMonitor.submit`) y se
-retira solo cuando no queda nada que mostrar. Cada ``tick`` (objetivo ≤ 5 ms, RNF-004-03):
+retira solo cuando no queda nada que mostrar; mientras un trabajo comprueba sus resultados
+en otro hilo, cada :data:`VERIFY_TICK_S` s, para dar su final en cuanto acaba (spec 005,
+T58). Cada ``tick`` (objetivo ≤ 5 ms, RNF-004-03):
 
 1. sondea el lanzador (``JobRunner.poll``, que no bloquea) y lee cómo está cada trabajo
    (``JobRunner.snapshots``);
@@ -188,6 +190,11 @@ if TYPE_CHECKING:
 
 TICK_S = 0.25
 """Cada cuánto sondea el temporizador (plan §5.4.4)."""
+VERIFY_TICK_S = 0.02
+"""Cada cuánto sondea mientras un trabajo comprueba sus resultados en otro hilo
+(``JobRunner.verifying``; spec 005, T58): su final llega en cuanto acaba la comprobación, no
+un tic de :data:`TICK_S` después (RNF-006-03: 0,25 s más por trabajo en la orden del TIN).
+Son unos pocos sondeos más, de ≤ 5 ms cada uno (RNF-004-03), solo mientras dura."""
 NOTICE_S = 10.0
 """Lo que dura en la barra de estado el aviso de un trabajo que acabó (RF-004-07)."""
 TRANSLATION_CONTEXT = "Geoblender"
@@ -354,7 +361,8 @@ class JobMonitor:
     def end_operation(self, job_uid: str, state: str, reason: str) -> bool:
         """Dice en el aviso del trabajo ``job_uid``, que terminó bien, que su operación quedó
         ``state`` (fallida o cancelada, :data:`ENDING_STATES`) con ``reason`` al incorporarlo
-        (spec 006, T57; RF-004-07): su aviso deja de decir «Terminado» y dice eso y el
+        (spec 006, T57; RF-004-07; también la lectura de una importación de sondeos que falló,
+        spec 005, T51): su aviso deja de decir «Terminado» (o «Fallido») y dice eso y el
         principio del motivo (``bl/ui/jobs.py``) durante :data:`NOTICE_S` s desde ahora, aunque
         ya hubiera caducado o mostrara otro (una incorporación por pasos acaba después del
         sondeo que lo vio terminar); redibuja la barra de estado y sigue con el temporizador.
@@ -409,15 +417,18 @@ class JobMonitor:
 
     def tick(self) -> float | None:
         """Un sondeo (plan §5.4.4): el lanzador, lo que se muestra y el redibujo de la
-        barra de estado. Devuelve :data:`TICK_S` mientras haya algo que mostrar; si no,
+        barra de estado. Devuelve :data:`TICK_S` mientras haya algo que mostrar
+        (:data:`VERIFY_TICK_S` si algún trabajo está comprobando sus resultados, T58); si no,
         retira el temporizador y devuelve ``None``."""
         snapshots: list[JobSnapshot] = []
         finished: list[str] = []
+        verifying = False
         runner = self._runner
         if runner is not None:
             try:
                 finished = [update.job_uid for update in runner.poll() if update.finished]
                 snapshots = list(runner.snapshots())
+                verifying = runner.verifying()
             except Exception:  # noqa: BLE001 - el seguimiento no tumba la interfaz
                 if not self._failing:
                     LOGGER.exception("Falló el seguimiento de los trabajos en segundo plano")
@@ -430,7 +441,7 @@ class JobMonitor:
         if changed:
             statusbar.redraw()
         if view.visible:
-            return TICK_S
+            return VERIFY_TICK_S if verifying else TICK_S
         _retire()
         return None
 

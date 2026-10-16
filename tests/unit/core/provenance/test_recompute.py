@@ -382,9 +382,9 @@ def _redo(request: Any) -> Any:
     return _RUNNING[-1].redo(request)
 
 
-def _redo_op(op_type: str, *, group: str | None = None) -> Any:
+def _redo_op(op_type: str, *, group: str | None = None, drops_discarded: bool = False) -> Any:
     return provenance.OperationDef(op_type, "1.0", "res", f"Test {op_type}", True, group=group,
-                                   recompute=_redo)
+                                   recompute=_redo, drops_discarded=drops_discarded)
 
 
 RUN_DECLARATIONS = (
@@ -809,6 +809,37 @@ class RunTest(RunCase):
                          [(Use(new_a, "source"),),
                           (Use(INPUT_3, "delivery", kind=ItemKind.INPUT),)])
         self.assertEqual(self.units(outcome.remaining), [(n.uid,), (k.uid,)])
+
+    def test_type_that_gathers_what_is_current_drops_the_discarded(self) -> None:
+        """RF-008-26, RF-008-55 (spec 005, T42; plan 005 §5.6.10): un tipo cuyo recálculo
+        reúne él mismo todo lo vigente (``OperationDef.drops_discarded``, como la base de los
+        sondeos con lo importado) se recalcula sin lo que consumió y luego se descartó sin
+        sucesor: su petición no lo trae y lo demás sí; la operación nueva no lo consume y queda
+        al día. Uno que no lo declara sigue sin recalcularse, con su motivo."""
+        self.enterContext(registered(_redo_op("res.gather", drops_discarded=True)))
+        self.import_input(INPUT_1, "Entrada_1", "res_im1")
+        self.import_input(INPUT_2, "Entrada_2", "res_im2")
+        g = self.run_op("res.gather", {"res_g": [1.0]}, reads=["res_im1", "res_im2"])
+        k = self.run_op("res.redo_c", {"res_k": [2.0]}, reads=["res_im1"])
+        kept = self.dataset("res_im2")
+        self.write(lambda conn: inputs.discard(conn, self.project, INPUT_1, "entrega anulada"))
+        self.assertLessEqual({g.uid, k.uid}, set(self.stale().operations))
+
+        self.values = {"res_g": [2.0]}
+        outcome, _progress = self.run_all()
+        self.assertEqual(self.results(outcome), [((g.uid,), DONE), ((k.uid,), REFUSED)])
+        self.assertEqual(outcome.results[1].reason,
+                         "No se recalcula: «res_im1», que consumía, se descartó y no tiene "
+                         "sucesor.")
+        self.assertEqual([request.inputs for request in self.requests],
+                         [(Use(kept, "source"),)])
+        new = self.replaced(outcome)[g.uid]
+        self.assertEqual(self.column("SELECT item_uid FROM gb_operation_io WHERE "
+                                     "operation_uid = ? AND direction = 'in'", new), [kept])
+        state = self.stale()
+        self.assertNotIn(new, state.operations)
+        self.assertIn(k.uid, state.operations)
+        self.assertEqual(self.units(outcome.remaining), [(k.uid,)])
 
     def test_blocked_or_missing_dataset_is_recomputed_with_its_writer(self) -> None:
         """RF-008-56, RF-008-57, RF-008-25 (plan §5.4.9; T54): un dato bloqueado por una

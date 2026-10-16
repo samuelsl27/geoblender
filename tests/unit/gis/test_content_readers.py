@@ -33,7 +33,6 @@ de ``tests/data/gis/``:
 
 import os
 import shutil
-import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -45,7 +44,7 @@ from tests.support.package import import_geoblender
 from tests.support.provenance_checks import assert_source_untouched
 from tests.support.provenance_data import BOUNDARY_V2, DATA_DIR, LAYER, make_wal_variant
 from tests.support.repo import ROOT
-from tests.support.trees import age_folders
+from tests.support.trees import age_folders, temp_folder
 from tests.unit.gis import test_geotiff_read as built
 
 content = import_geoblender("gis.content")
@@ -129,8 +128,7 @@ class _Temp(unittest.TestCase):
     """Una carpeta temporal por prueba, de ruta corta."""
 
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="gb-cr-"))
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.tmp = temp_folder(self, "gb-cr-")
 
     def progress_and_cancel(self, reader: object, files: dict, **options: object) -> None:
         """Ayuda: avance creciente tras cada trozo hasta 1; cancelar tras el primero para
@@ -607,11 +605,12 @@ class WorkerTest(_Temp):
     """El envoltorio en proceso aparte de ``core_content_hash`` (RF-008-09; ADR-0025 §2)."""
 
     def test_worker_registers_gis_readers_with_the_table_reader(self) -> None:
-        """RF-008-09: ``workers/core_content_hash.py`` tiene ``gis`` en su lista estática;
+        """RF-008-09: ``workers/core_content_hash.py`` tiene ``gis`` en su lista estática
+        (también ``interop``, los de los sondeos de la 005, T39);
         ``main`` registra sus lectores y les da el lector de tablas de ``interop`` (en un
         proceso nuevo no hay nada registrado), y el texto de puntos y una capa de GeoPackage
         (copiada con ``needs_copy``) dan el hash del hilo."""
-        self.assertEqual(tuple(worker.READER_PACKAGES), ("core", "gis"))
+        self.assertEqual(tuple(worker.READER_PACKAGES), ("core", "gis", "interop"))
         self.assertIs(worker.READER_PACKAGES["gis"], content)
         sources = {
             "puntos": (content.POINTS_TEXT, "table", {"main": POINTS / "taludes.csv"},
