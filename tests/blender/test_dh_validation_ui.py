@@ -15,6 +15,11 @@ dominio: la base leída del proyecto (``drillholes.store.read_steps``) validada 
 - D-19, RF-005-18: ``geoblender.dh_validate`` usa la rejilla del proyecto (``gis_dtm_*``)
   vigente más reciente (consumida como ``terrain``) o la que se nombra; sin ninguna, DH-W05 no
   se evalúa y el informe lo dice; una que no está se rechaza nombrándola. Sin base, no empieza.
+- RF-005-18, spec §8 (T56; F-1 de la verificación única): con la rejilla, la diferencia de
+  cada boca con el MDT (su cota menos la del MDT en su posición, en m) queda guardada con la
+  validación y se ve: una fila DH-W05 por boca en la lista y en el CSV exportado (el aviso, si
+  pasa de la tolerancia; si no, «Información»; una boca fuera del MDT, «Sin evaluar») y su
+  resumen en el informe de la operación. Sin rejilla, ``dh_validation_issue`` no cambia.
 - RF-005-19, RF-008-15, D21: ``geoblender.dh_export_validation_report`` (la operación
   ``dh.export_validation``, que consume ``dh_validation_issue``) escribe exactamente el CSV de
   T11; dentro de ``exports/`` es un dato del proyecto; fuera, ninguno; un destino que ya existe
@@ -24,7 +29,10 @@ dominio: la base leída del proyecto (``drillholes.store.read_steps``) validada 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
+import csv
+import io
 import json
+import math
 import os
 import shutil
 import unittest
@@ -34,6 +42,7 @@ from typing import Any
 from unittest import mock
 
 import bpy
+import numpy as np
 
 from tests.blender.test_dh_import_tabular import DrillholeImportCase, _module
 from tests.support.fake_layout import draw
@@ -48,6 +57,22 @@ EXPORT = "geoblender.dh_export_validation_report"
 DESURVEY = "geoblender.dh_desurvey"
 ISSUES = "dh_validation_issue"
 FILTER_ITEM = 1 << 30
+OUTSIDE_DTM = "S-30"
+OUTSIDE_LINE = f"{OUTSIDE_DTM};700100,500;4400040,500;805,000;50,00;;;DD;C-2025;14/04/2025;" \
+               "15/04/2025;no\n"
+"""Una boca dentro de la ventana de trabajo y fuera del MDT de ``tests/data/gis`` (E 700 000
+a 700 064, N 4 400 000 a 4 400 048), añadida a la copia de las bocas de DH-W05 (T56)."""
+DEM_TOLERANCE_M = 2.0  # dh.validation.collar_dem_tolerance_m, por defecto
+LISTED_LEVELS = {"Error": "ERROR", "Aviso": "WARNING", "Información": "INFO",
+                 "Sin evaluar": "NOT_EVALUATED"}
+"""El nivel de una fila de la lista por el de su fila del CSV (en español)."""
+
+
+def _metres(value: float) -> str:
+    """Una diferencia como la dice un mensaje de la validación en español: redondeada al mm,
+    con coma y sin decimales si es entera («0», «5», «-2,5»)."""
+    shown = round(value, 3) + 0.0
+    return str(int(shown)) if shown.is_integer() else repr(shown).replace(".", ",")
 
 
 def _drive(steps: Any) -> Any:
@@ -64,6 +89,8 @@ class ValidationUiTest(DrillholeImportCase):
         super().setUp()
         for name in ROLES:
             shutil.copyfile(ERRORS / name, self.sources / name)
+        with open(self.sources / "dh_w05_bocas.csv", "a", encoding="utf-8", newline="") as out:
+            out.write(OUTSIDE_LINE)
         validation = getattr(bpy.context.window_manager, self.props.VALIDATION_PROPERTY)
         self.addCleanup(setattr, validation, "code_filter", "")
         self.addCleanup(setattr, validation, "level_filter", "ALL")
@@ -118,13 +145,11 @@ class ValidationUiTest(DrillholeImportCase):
                 for item in self.validation.issues]
 
     def assertListed(self, found: Any) -> None:  # noqa: N802 - unittest
-        """La lista de la pestaña: las filas del informe ``found``, en su orden, con su
-        nivel."""
+        """La lista de la pestaña: las filas del informe ``found`` (las de su CSV), en su
+        orden, con su nivel."""
         rows = _module("drillholes.report").rows(found)
-        levels = [str(issue.level).upper() for issue in found.issues]
-        levels += ["NOT_EVALUATED"] * len(found.notes)
-        self.assertEqual(self.listed(), [(row[0], row[1], level, row[11])
-                                         for row, level in zip(rows, levels, strict=True)])
+        self.assertEqual(self.listed(), [(row[0], row[1], LISTED_LEVELS[row[2]], row[11])
+                                         for row in rows])
 
     def shown(self) -> list[str]:
         """Los códigos de las filas que deja ver el filtro de la lista."""
@@ -163,7 +188,11 @@ class ValidationUiTest(DrillholeImportCase):
         espera la confirmación; una carpeta de solo lectura, otra del proyecto u otra
         extensión no escriben nada. Con la rejilla del proyecto, la validación la consume
         (``terrain``) y compara las cotas (DH-W05 en S-12); otra que no está se rechaza.
-        Cerrar el proyecto vacía la lista."""
+        RF-005-18 y spec §8 (T56): la diferencia de cada boca con el MDT se ve en una fila
+        DH-W05 por boca de la lista y del CSV exportado (el aviso de S-12; «Información», con
+        su diferencia al mm, las demás; «Sin evaluar», la que está fuera del MDT) y en el
+        informe de la operación (la boca fuera y el resumen); sin rejilla, la tabla de
+        incidencias no cambia. Cerrar el proyecto vacía la lista."""
         commands = _module("bl.ui.commands")
         for idname in (VALIDATE, EXPORT):
             self.assertTrue(commands.is_available(idname), idname)
@@ -209,6 +238,9 @@ class ValidationUiTest(DrillholeImportCase):
         self.assertIn("DH-W05 sin evaluar", message)
         self.assertEqual(len(self.io(uid, "in")), 11)  # las once tablas de la base
         self.assertListed(found)
+        # Sin rejilla, solo incidencias: la tabla (y su hash) como antes de T56.
+        self.assertLessEqual({level for (level,) in self.rows(
+            f"SELECT DISTINCT level FROM {ISSUES}")}, {"error", "warning"})
 
         # Exportar: fuera del proyecto, sin dato; en exports/, un dato del proyecto (D21).
         export = bpy.ops.geoblender.dh_export_validation_report
@@ -285,15 +317,47 @@ class ValidationUiTest(DrillholeImportCase):
         uid, status, settings, message = self.operation("dh.validate")
         self.assertEqual((status, settings), ("done", {"surface": "gis_dtm_terreno"}))
         self.assertIn((dtm_uid, "terrain"), self.io(uid, "in"))
-        self.assertNotIn("sin evaluar", message)
-        found, expected = self.expected(_module("drillholes.surface").raster_sampler(raster))
-        self.assertEqual(found.notes, ())
-        self.assertIn(("DH-W05", "S-12"), [(issue.code, issue.hole_name)
-                                           for issue in found.issues])
+        # RF-005-18 (T56): la diferencia de cada boca con el MDT (la bilineal de la 006), a la
+        # vista: una fila DH-W05 por boca en la lista, con su diferencia al mm en el mensaje.
+        sampler = _module("drillholes.surface").raster_sampler(raster)
+        collars = self.rows("SELECT name, x, y, z FROM dh_collar ORDER BY fid")
+        dem = sampler.sample(np.array([[x, y] for _name, x, y, _z in collars]))
+        dz = {name: z - float(value)
+              for (name, _x, _y, z), value in zip(collars, dem, strict=True)}
+        self.assertTrue(math.isnan(dz.pop(OUTSIDE_DTM)))
+        listed = [(hole, level, text) for hole, code, level, text in self.listed()
+                  if code == "DH-W05"]
+        self.assertEqual(sorted(hole for hole, _level, _text in listed),
+                         sorted([*dz, OUTSIDE_DTM]))
+        for hole, level, text in listed:
+            with self.subTest(sondeo=hole):
+                if hole == OUTSIDE_DTM:
+                    self.assertEqual(level, "NOT_EVALUATED")
+                    self.assertIn("fuera del MDT", text)
+                else:
+                    self.assertEqual(level, "WARNING" if abs(dz[hole]) > DEM_TOLERANCE_M
+                                     else "INFO")
+                    self.assertIn(f"da {_metres(dz[hole])} m", text)
+        self.assertEqual([hole for hole, level, _text in listed if level == "WARNING"],
+                         ["S-12"])
+        found, expected = self.expected(sampler)
+        self.assertEqual([(note.code, note.hole_name) for note in found.notes],
+                         [("DH-W05", OUTSIDE_DTM)])
         self.assertListed(found)
+        # El informe de la operación: la boca fuera del MDT y el resumen de las diferencias.
+        i18n = _module("core.i18n")
+        self.assertIn(f"{OUTSIDE_DTM}: La boca está fuera del MDT", message)
+        self.assertIn(f"Cota de las bocas menos la del MDT: {len(dz)} bocas comparadas, de "
+                      f"{i18n.format_number(min(dz.values()), 3)} m a "
+                      f"{i18n.format_number(max(dz.values()), 3)} m", message)
+        # El CSV exportado (el informe guardado): la misma fila DH-W05 de cada boca.
         self.assertEqual(export("EXEC_DEFAULT", filepath=str(outside), overwrite=True),
                          {"FINISHED"})
         self.assertEqual(outside.read_bytes(), expected)
+        exported = csv.reader(io.StringIO(expected.decode("utf-8-sig")), delimiter=";")
+        self.assertEqual(sorted((row[0], row[2]) for row in exported if row[1] == "DH-W05"),
+                         sorted([*((hole, "Información") for hole in dz if hole != "S-12"),
+                                 ("S-12", "Aviso"), (OUTSIDE_DTM, "Sin evaluar")]))
 
         self.ps.close()
         self.assertEqual(self.listed(), [])

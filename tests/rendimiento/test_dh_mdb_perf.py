@@ -104,6 +104,7 @@ DTM_MARGIN_M = 20.0
 WINDOW_MARGIN_M = 50.0
 CANCELLED = "cancelled"
 DEDUCED_DEPTH = "DH-W16"  # RecMin no da la profundidad: la validación avisa de la deducida
+DEM_DIFFERENCE = "DH-W05"  # la diferencia de cada boca con el MDT (T56)
 COUNTED = ("dh_collar", "dh_survey", "dh_lithology", "dh_assay", "dh_validation_issue")
 """Las tablas cuyas filas se comprueban tras la importación."""
 PHASES = ("lectura", "aplicación", "lo importado", "base", "validación")
@@ -313,7 +314,8 @@ class ImportTest(unittest.TestCase):
         el extractor y el hash de la fuente, su aplicación con el de lo importado, su escritura
         con el original, la base con su hash y su validación con el MDT) en ≤ 60 s (mediana
         de :data:`IMPORT_REPETITIONS`); el proyecto queda con la base de V-ref entera, cada
-        operación hecha y, de la validación, solo la profundidad deducida de cada sondeo."""
+        operación hecha y, de la validación, solo la profundidad deducida de cada sondeo (y,
+        T56, la diferencia de cada boca con el MDT, dentro de la tolerancia)."""
         phases = [statistics.median(run[index] for run in self.phases)
                   for index in range(len(PHASES))]
         shown = ", ".join(f"{name} {perf.number(value)} s"
@@ -324,9 +326,12 @@ class ImportTest(unittest.TestCase):
                     f"({_volume()}; {shown}; trabajos: {executors}; {MACHINE}): "
                     f"{perf.median_line(self.times)}, presupuesto "
                     f"{perf.number(IMPORT_BUDGET_S, 0)} s")
+        # Y (T56, RF-005-18) la diferencia de cada boca con el MDT, dentro de la tolerancia.
         self.assertEqual(self.counts, dict(zip(COUNTED, (
-            VREF_HOLES, VREF_STATIONS, VREF_LITHOLOGY, VREF_VALUES, VREF_HOLES), strict=True)))
-        self.assertEqual(self.issues, [(DEDUCED_DEPTH, "warning", VREF_HOLES)])
+            VREF_HOLES, VREF_STATIONS, VREF_LITHOLOGY, VREF_VALUES, 2 * VREF_HOLES),
+            strict=True)))
+        self.assertEqual(self.issues, [(DEM_DIFFERENCE, "info", VREF_HOLES),
+                                       (DEDUCED_DEPTH, "warning", VREF_HOLES)])
         self.assertEqual(self.statuses, [("dh.build_base", "done", 1),
                                          ("dh.import_recmin", "done", 1),
                                          ("dh.validate", "done", 1),

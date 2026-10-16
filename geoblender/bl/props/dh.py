@@ -71,14 +71,18 @@ LOG_SET = "lithology"
 FILTER_ALL = "ALL"
 NOT_EVALUATED = "NOT_EVALUATED"
 """El nivel de una fila de la lista que dice lo que no se evaluó (una nota del informe)."""
+INFO = "INFO"
+"""El nivel de una fila de la lista con la diferencia de una boca con el MDT dentro de la
+tolerancia (T56; RF-005-18)."""
 LEVEL_FILTER_ITEMS = [
     (FILTER_ALL, "Any", ""),
     ("ERROR", "Error", ""),
     ("WARNING", "Warning", ""),
+    (INFO, "Information", "The difference of each collar with the DTM, within the tolerance"),
     (NOT_EVALUATED, "Not evaluated", "What the validation could not check"),
 ]
-"""Los niveles de la lista de incidencias (el de una incidencia, ``drillholes.validate.Level``
-en mayúsculas; el de una nota, :data:`NOT_EVALUATED`)."""
+"""Los niveles de la lista de incidencias (el de una fila, ``drillholes.validate.Level`` en
+mayúsculas; el de una nota general, :data:`NOT_EVALUATED`)."""
 _STATIC: set[str] = set()  # ni animable ni nada más
 
 # --- El asistente de la importación de tablas (T25) --------------------------------------------
@@ -429,7 +433,8 @@ class GEOBLENDER_PG_dh_import(bpy.types.PropertyGroup):
 class GEOBLENDER_PG_dh_issue(bpy.types.PropertyGroup):
     """Una incidencia de la validación, ya en texto (RF-005-16): código, nivel, sondeo,
     tabla, tramo o profundidad, campo, valor y mensaje; o (T27) una nota de lo que no se
-    evaluó, con el nivel :data:`NOT_EVALUATED`."""
+    evaluó, con el nivel :data:`NOT_EVALUATED`; o (T56) la diferencia de una boca con el MDT,
+    con el nivel :data:`INFO`."""
 
     code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     level: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]

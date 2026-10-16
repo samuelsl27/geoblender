@@ -101,6 +101,9 @@ de RecMin (CE-005-05), que se ejecuta a petición, y los puestos de IMGA con el 
     proyecto o fuera de la ventana de trabajo, unidades distintas, valores ≤ 0 sin marca…), cada
     una con su código (DH-E o DH-W), su alcance y un mensaje que dice qué corregir; un error
     excluye solo lo que fija su alcance (el sondeo, o esa tabla de ese sondeo), y lo demás sigue.
+    Con el MDT del proyecto, la diferencia de cada boca con él (su cota menos la del MDT, en m)
+    se ve en una fila por boca: el aviso, si pasa de la tolerancia; si no, «Información»; y
+    «Sin evaluar», si la boca queda fuera del MDT.
     La lista, con filtros por nivel y código, en N ▸ Sondeos ▸ Validación; **Exportar el informe
     de validación…**, a un CSV para Excel en español (punto y coma, coma decimal y tildes).
   - **Trazas** (Calcular trazas…): por mínima curvatura (o tangente, o tangente equilibrada), de

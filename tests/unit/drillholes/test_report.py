@@ -12,6 +12,9 @@ plan 005 §3, §5.3 y §5.6.9).
   que dice qué corregir; la cabecera, el nivel y el alcance, en el catálogo de idioma.
 - **Con todo ``tests/data/dh/csv_errores``**: las incidencias de sus casos (los 27 códigos de
   la tabla 4.4.1) y la nota sin MDT, una fila cada una, en el orden del informe.
+- **La diferencia con el MDT** (T56; RF-005-18, spec §8): la de cada boca dentro de la
+  tolerancia, una fila DH-W05 de nivel «Información» tras las incidencias; la boca fuera del
+  MDT, «Sin evaluar» sobre su boca; las dos, también en lo que guarda ``dh.validate``.
 - **Escritura** (plan §5.6.9): por un temporal y ``os.replace`` (el destino anterior se
   sustituye entero, sin restos); con el destino abierto por otro programa,
   ``dh.report_target_locked`` y el anterior intacto; en una carpeta que no existe,
@@ -81,9 +84,12 @@ def _sample_report():
         _issue("DH-W10", -1, None, "dh_lithology_code", None, {"code": "CAL"}, row_ref=0,
                log_set="lithology", catalog_code="CAL", field="density", value=""),
     )
-    notes = (validate.Note("DH-W05", 1, "Sondeo-Ñ",
-                           message_id=MESSAGES["DH-W05.outside"]),)
-    return validate.ValidationReport(issues, 2, notes)
+    notes = (validate.Note("DH-W05", 1, "Sondeo-Ñ", message_id=MESSAGES["DH-W05.outside"],
+                           table="dh_collar", row_ref=1, field="z"),)
+    differences = (validate.DemDifference(
+        2, "S-02", -0.0004, message_args={"z": 805.759, "dem": 805.759, "dz": -0.0,
+                                          "tolerance": 2.0}),)
+    return validate.ValidationReport(issues, 3, notes, differences=differences)
 
 
 def _csv_errores_report():
@@ -129,16 +135,17 @@ class SpanishCsvTest(_FolderTest):
         data = path.read_bytes()
         self.assertTrue(data.startswith(codecs.BOM_UTF8))
         self.assertEqual(data.count(codecs.BOM_UTF8), 1)
-        self.assertEqual(data.count(b"\r\n"), 1 + len(found.issues) + len(found.notes))
+        count = len(found.issues) + len(found.differences) + len(found.notes)
+        self.assertEqual(data.count(b"\r\n"), 1 + count)
         self.assertEqual(data.count(b"\n"), data.count(b"\r\n"))
         text = data.decode("utf-8-sig")
         for word in ("Código del catálogo", "Sondeo-Ñ", "alteración", "Sin evaluar",
-                     "está por debajo del fondo"):
+                     "Información", "está por debajo del fondo"):
             self.assertIn(word, text)
         rows = _parse(data)
         self.assertEqual(rows[0], HEADER)
         body = rows[1:]
-        self.assertEqual(len(body), len(found.issues) + len(found.notes))
+        self.assertEqual(len(body), count)
         message = [issue.message("es") for issue in found.issues]
         self.assertEqual(body[0], ["S-01", "DH-E07", "Error", "Sondeo", "dh_survey", "", "",
                                    "150,02", "150,02", "depth", "150,02", message[0]])
@@ -157,8 +164,13 @@ class SpanishCsvTest(_FolderTest):
                                        "alteración", "", "10", "12,5"])
         self.assertEqual(body[7], ["", "DH-W10", "Aviso", "", "dh_lithology_code",
                                    "lithology", "CAL", "", "", "density", "", message[7]])
-        self.assertEqual(body[8], ["Sondeo-Ñ", "DH-W05", "Sin evaluar", "", "", "", "", "",
-                                   "", "", "", found.notes[0].message("es")])
+        # RF-005-18 (T56): la diferencia de una boca dentro de la tolerancia, después de las
+        # incidencias; la boca fuera del MDT, sobre su boca y al final.
+        self.assertEqual(body[8], ["S-02", "DH-W05", "Información", "", "dh_collar", "", "",
+                                   "", "", "z", "", found.differences[0].message("es")])
+        self.assertIn("da 0 m", body[8][-1])
+        self.assertEqual(body[9], ["Sondeo-Ñ", "DH-W05", "Sin evaluar", "", "dh_collar", "",
+                                   "", "", "", "z", "", found.notes[0].message("es")])
         self.assertEqual([tuple(row) for row in body], list(report.rows(found)))
         self.assertEqual(tuple(rows[0]), report.header())
         self.assertEqual(self._listing(), [path.name])
@@ -179,8 +191,8 @@ class SpanishCsvTest(_FolderTest):
 
     def test_texts_in_the_language_catalog(self) -> None:
         """Principio 10 de la constitución, RF-005-16: la cabecera, los niveles (error,
-        aviso, sin evaluar) y los alcances (sondeo, tabla, registro) tienen su ``msgid`` en
-        inglés y su español en ``core/i18n/messages.toml``."""
+        aviso, información, sin evaluar) y los alcances (sondeo, tabla, registro) tienen su
+        ``msgid`` en inglés y su español en ``core/i18n/messages.toml``."""
         self.assertEqual(i18n.untranslated(report.MESSAGE_IDS), [])
         self.assertEqual(list(report.header()), HEADER)
         record = _issue("DH-E04", -1, "X-9", "dh_lithology", row_ref=0, depth_from=0.0,
@@ -289,9 +301,11 @@ class StoredRowsTest(_FolderTest):
     (las filas de ``dh_validation_issue`` y las notas de su operación) es el CSV de T11."""
 
     def test_stored_rows_are_the_rows_of_the_report(self) -> None:
-        """RF-005-19: las filas de ``dh_validation_issue`` que escribe ``dh.validate``
-        (``drillholes.jobs.issue_rows``, el valor en texto con punto decimal) con sus notas dan
-        las mismas filas que el informe (cada clase de valor y todas las incidencias de
+        """RF-005-19, RF-005-18: las filas de ``dh_validation_issue`` que escribe
+        ``dh.validate`` (``drillholes.jobs.issue_rows``, el valor en texto con punto decimal:
+        las incidencias, la diferencia de cada boca con el MDT y las bocas fuera de él) con
+        las notas que no se guardan (las generales, de los ajustes de su operación) dan las
+        mismas filas que el informe (cada clase de valor y todas las incidencias de
         ``csv_errores``), y escritas, los mismos bytes por un temporal; una columna que falta
         es un error del programa."""
         jobs = import_geoblender("drillholes.jobs")
@@ -301,7 +315,10 @@ class StoredRowsTest(_FolderTest):
             with self.subTest(informe=name):
                 records = [dict(zip(columns, row, strict=True))
                            for row in jobs.issue_rows(found)]
-                rows = report.stored_rows(records, found.notes)
+                general = [note for note in found.notes if note.hole < 0]
+                self.assertEqual(len(records), len(found.issues) + len(found.differences)
+                                 + len(found.notes) - len(general))
+                rows = report.stored_rows(records, general)
                 self.assertEqual(rows, report.rows(found))
                 self.assertEqual(report.rows_bytes(rows), report.csv_bytes(found))
                 path = self.folder / f"{name}.csv"

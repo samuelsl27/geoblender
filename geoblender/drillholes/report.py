@@ -8,9 +8,11 @@ tildes; spec §11 y plan D13; los demás ficheros de Geoblender van sin BOM), **
 separador, **coma decimal** y filas acabadas en CRLF; los campos con «;», comillas o saltos de
 línea, entre comillas dobles al estilo de Excel (``csv`` de Python).
 
-**Las filas** (:func:`rows`), en el orden del informe: una por incidencia (RF-005-16) y,
-después, una por cada nota de lo que no se evaluó (spec §8: sin MDT, o una boca fuera de él,
-DH-W05 no se evalúa y el informe lo dice), con el nivel «Sin evaluar». **Las columnas**
+**Las filas** (:func:`rows`), en el orden del informe: una por incidencia (RF-005-16);
+después (T56; RF-005-18), la diferencia con el MDT de cada boca dentro de la tolerancia, con
+el nivel «Información» (las que pasan de ella tienen su aviso DH-W05), y una por cada nota de
+lo que no se evaluó (spec §8: una boca fuera del MDT, sobre su boca, y sin MDT, DH-W05 no se
+evalúa y el informe lo dice), con el nivel «Sin evaluar». **Las columnas**
 (:func:`header`): el sondeo (vacío en las de un catálogo), el código, el nivel (error o
 aviso), el alcance de un error (sondeo, tabla o registro, spec §4.4.1: lo que excluye; vacío
 en un aviso), la tabla y el campo con sus identificadores del modelo de datos (los de las
@@ -37,10 +39,12 @@ operación que exporta (``dh.export_validation``, T27). Nada modifica el informe
 
 **El informe guardado** (T27; plan §5.6.4 y §5.6.9): la exportación lee lo que guardó
 ``dh.validate`` en ``dh_validation_issue`` (una fila por incidencia, con el valor en texto y
-el mensaje en español) y las notas de su operación; :func:`stored_rows` da con ellas las mismas
-filas que :func:`rows` con el informe que las produjo (el valor de un campo de
-``validate.NUMBER_FIELDS``, guardado con punto, vuelve con coma), :func:`rows_bytes` sus bytes
-y :func:`write_rows` las escribe como :func:`write_csv`.
+el mensaje en español; desde T56, también la diferencia de cada boca con el MDT y las bocas
+fuera de él, ``drillholes.jobs.issue_rows``) y las notas generales de su operación (las de
+sus ajustes: sin MDT); :func:`stored_rows` da con ellas las mismas filas que :func:`rows` con
+el informe que las produjo (el valor de un campo de ``validate.NUMBER_FIELDS``, guardado con
+punto, vuelve con coma), :func:`rows_bytes` sus bytes y :func:`write_rows` las escribe como
+:func:`write_csv`.
 """
 
 from __future__ import annotations
@@ -59,7 +63,15 @@ import numpy as np
 from ..core.errors import GeoblenderError
 from ..core.i18n import translate
 from ..core.paths import check_path_length
-from .validate import NUMBER_FIELDS, Issue, Level, Note, Scope, ValidationReport
+from .validate import (
+    NUMBER_FIELDS,
+    DemDifference,
+    Issue,
+    Level,
+    Note,
+    Scope,
+    ValidationReport,
+)
 
 __all__ = [
     "BOM",
@@ -90,11 +102,12 @@ TEMPORARY_SUFFIX = ".tmp"
 
 _COLUMNS = ("Hole", "Code", "Level", "Error scope", "Table", "Logging scheme or element",
             "Catalog code", "From (m)", "To (m)", "Field", "Value", "Message")
-_LEVELS = {Level.ERROR: "Error", Level.WARNING: "Warning"}
 _NOT_EVALUATED = "Not evaluated"
+_LEVELS = {Level.ERROR: "Error", Level.WARNING: "Warning", Level.INFO: "Information",
+           Level.NOT_EVALUATED: _NOT_EVALUATED}
 _SCOPES = {Scope.HOLE: "Hole", Scope.TABLE: "Table", Scope.RECORD: "Record"}
 MESSAGE_IDS: tuple[str, ...] = tuple(dict.fromkeys(
-    (*_COLUMNS, *_LEVELS.values(), _NOT_EVALUATED, *_SCOPES.values())))
+    (*_COLUMNS, *_LEVELS.values(), *_SCOPES.values())))
 """Los ``msgid`` (inglés) de la cabecera, los niveles y los alcances; su español está en
 ``core/i18n/messages.toml``."""
 
@@ -168,20 +181,25 @@ def _issue_row(issue: Issue) -> Row:
     )
 
 
-def _note_row(note: Note) -> Row:
-    return (_text(note.hole_name), note.code, _es(_NOT_EVALUATED), *([_EMPTY] * 8),
-            note.message(LANGUAGE))
+def _collar_row(found: Note | DemDifference) -> Row:
+    """La fila de una nota o de una diferencia con el MDT: su boca, su código, su nivel, su
+    tabla y su campo (los de una nota general, vacíos), sin valor (es un cálculo) y su
+    mensaje."""
+    return (_text(found.hole_name), found.code, _es(_LEVELS[found.level]), _EMPTY,
+            _text(found.table), _EMPTY, _EMPTY, _EMPTY, _EMPTY, _text(found.field), _EMPTY,
+            found.message(LANGUAGE))
 
 
 def rows(report: ValidationReport) -> list[Row]:
-    """Las filas del CSV de ``report`` (sin la cabecera), en español: una por incidencia y,
-    después, una por nota (véase el módulo). ``TypeError`` si no es un
-    ``ValidationReport`` o si el valor de una incidencia no es texto, número, sí/no ni
-    vacío."""
+    """Las filas del CSV de ``report`` (sin la cabecera), en español: una por incidencia, una
+    por diferencia con el MDT y una por nota, primero las de una boca y después las generales
+    (véase el módulo). ``TypeError`` si no es un ``ValidationReport`` o si el valor de una
+    incidencia no es texto, número, sí/no ni vacío."""
     if not isinstance(report, ValidationReport):
         raise TypeError(f"el informe es un ValidationReport, no {type(report).__name__}")
+    notes = sorted(report.notes, key=lambda note: note.hole < 0)  # estable
     return [*(_issue_row(issue) for issue in report.issues),
-            *(_note_row(note) for note in report.notes)]
+            *(_collar_row(found) for found in (*report.differences, *notes))]
 
 
 def _csv_text(table: Sequence[Row]) -> str:
@@ -221,10 +239,13 @@ def _stored_row(record: Mapping[str, Any]) -> Row:
 def stored_rows(records: Iterable[Mapping[str, Any]], notes: Iterable[Note] = ()) -> list[Row]:
     """Las filas del CSV del informe guardado (sin la cabecera): una por fila de
     ``dh_validation_issue`` (``records``, cada una por el nombre de sus columnas, en el orden
-    de su ``fid``) y, después, una por nota de ``notes``; las mismas que :func:`rows` con el
-    informe que las produjo (véase el módulo). ``KeyError`` si a una fila le falta una
-    columna; ``ValueError`` si su nivel o su alcance no son de la spec."""
-    return [*(_stored_row(record) for record in records), *(_note_row(note) for note in notes)]
+    de su ``fid``: las incidencias, la diferencia de cada boca con el MDT y las bocas fuera de
+    él) y, después, una por nota de ``notes`` (las que no se guardan: las generales, de los
+    ajustes de su operación); las mismas que :func:`rows` con el informe que las produjo
+    (véase el módulo). ``KeyError`` si a una fila le falta una columna; ``ValueError`` si su
+    nivel o su alcance no son de la spec."""
+    return [*(_stored_row(record) for record in records),
+            *(_collar_row(note) for note in notes)]
 
 
 def rows_bytes(table: Sequence[Row]) -> bytes:

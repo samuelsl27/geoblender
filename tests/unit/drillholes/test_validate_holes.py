@@ -536,6 +536,49 @@ class DemChecksTest(unittest.TestCase):
         np.testing.assert_array_equal(
             fake.calls[0], [[X0 + 10.0 * k, Y0] for k in (0, 1, 2, 3, 4)])
 
+    def test_difference_of_each_collar(self) -> None:
+        """RF-005-18, spec §8 (T56; F-1): el informe da la diferencia de cada boca evaluada:
+        la de una boca dentro de la tolerancia (justo en ella, también), con el nivel
+        «información», su cota, la del MDT y dz (al mm) en el mensaje y su boca en
+        ``dh_collar`` (campo ``z``, sin valor); la de una boca que pasa de ella, en su aviso
+        DH-W05; una boca fuera del MDT, su nota «sin evaluar» sobre su boca. Una fila DH-W05
+        por boca evaluada; las de DH-E01 o sin Z, ninguna."""
+        fake = _surface(self._offsets({0: DEM_TOLERANCE, 1: 2.001, 2: -2.5, 3: NAN,
+                                       4: -DEM_TOLERANCE, 7: 0.25, 9: 0.0004}))
+        dset = _set([_collar("H-1"), _collar("H-2", k=1), _collar("H-3", k=2),
+                     _collar("H-4", k=3), _collar("H-5", k=4), _collar("H-6", k=5, z=None),
+                     _collar("H-7", k=6, x=None), _collar("H-8", k=7), _collar("h-8 ", k=8),
+                     _collar("H-10", k=9)],
+                    [_vertical(f"H-{k}") for k in (1, 2, 3, 4, 5, 6, 7, 8, 10)])
+        report = _check(dset, surface=fake)
+        found = report.differences
+        self.assertEqual([(d.code, d.hole, d.hole_name, d.table, d.row_ref, d.field, d.level)
+                          for d in found],
+                         [("DH-W05", k, name, "dh_collar", k, "z", validate.Level.INFO)
+                          for k, name in ((0, "H-1"), (4, "H-5"), (9, "H-10"))])
+        np.testing.assert_array_equal([d.dz for d in found],
+                                      report.collar_dem_dz[[0, 4, 9]])
+        self.assertEqual(dict(found[1].message_args),
+                         {"z": Z0, "dem": Z0 + DEM_TOLERANCE, "dz": -DEM_TOLERANCE,
+                          "tolerance": DEM_TOLERANCE})
+        self.assertEqual(dict(found[2].message_args)["dz"], 0.0)  # 0,4 mm: al mm, 0
+        message = found[1].message()
+        for text in ("MDT", "-2 m", "tolerancia"):
+            self.assertIn(text, message)
+        self.assertIn("-2 m", found[1].message("en"))
+        self.assertNotEqual(message, found[1].message("en"))
+        (note,) = report.notes
+        self.assertEqual((note.code, note.hole, note.table, note.row_ref, note.field,
+                          note.level), ("DH-W05", 3, "dh_collar", 3, "z",
+                                        validate.Level.NOT_EVALUATED))
+        warned = sorted(i.hole for i in report.issues if i.code == "DH-W05")
+        self.assertEqual(sorted([*warned, *(d.hole for d in found), note.hole]),
+                         [0, 1, 2, 3, 4, 9])
+        without = _check(dset)
+        self.assertEqual((without.differences, [n.hole for n in without.notes]), ((), [-1]))
+        with self.assertRaises(ValueError):  # una diferencia apunta a una boca del informe
+            validate.ValidationReport((), 2, differences=found)
+
     def test_without_dem(self) -> None:
         """RF-005-18 (spec §8): sin MDT, DH-W05 no se evalúa (tampoco en el caso de
         ``csv_errores`` que lo tiene), no hay diferencias y el informe lo dice con una nota

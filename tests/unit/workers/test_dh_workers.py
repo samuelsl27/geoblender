@@ -920,8 +920,9 @@ class BaseJobsTest(_JobCase):
         """RF-005-16, RF-005-17, RF-005-18 (plan §5.6.6): ``dh_validate`` sobre la base de
         ``in/`` da las filas de ``dh_validation_issue`` de ``validate`` (con su mensaje en
         español) y su hash: ``csv_basico`` con el MDT de ``in/dem.tif`` (bilineal) y la ventana,
-        sin incidencias y con la diferencia de cada boca; tres casos de ``csv_errores`` sin MDT
-        (la nota «sin MDT») y, en DH-W15, con la posición de las bocas en la capa."""
+        sin incidencias y con la diferencia de cada boca (T56: guardada, una fila DH-W05
+        «información» por boca, y su resumen); tres casos de ``csv_errores`` sin MDT (la nota
+        «sin MDT», que no se guarda) y, en DH-W15, con la posición de las bocas en la capa."""
         built = _STATE["built"]
         window = dh_sets.work_window()
         params = _base_params(thresholds=THRESHOLDS, work_window=gis_jobs.window_json(window),
@@ -932,9 +933,18 @@ class BaseJobsTest(_JobCase):
         sampler = surface.raster_sampler(gis.Raster(source.grid, source.values, CRS, VERTICAL))
         report = validate.validate(built.dset, validate.ValidationParams(**THRESHOLDS),
                                    surface=sampler, work_window=window)
-        self.assertEqual((summary["issues"], list(self.table(ctx, folder,
-                                                             "dh_validation_issue"))),
-                         (0, []))
+        # RF-005-18 (T56): sin incidencias, la diferencia de cada boca con el MDT, guardada.
+        rows = dh_jobs.issue_rows(report)
+        dz = report.collar_dem_dz
+        self.assertEqual((summary["issues"], [(row[1], row[2], row[3]) for row in rows]),
+                         (0, [(name, "DH-W05", "info") for name in built.dset.collars.name]))
+        self.assertEqual(list(self.table(ctx, folder, "dh_validation_issue")), _stored(rows))
+        self.assertEqual(summary["outputs"]["dh_validation_issue"]["digest"],
+                         dh_jobs.digest_json(schema.table_digest(
+                             schema.LAYOUTS["dh_validation_issue"], rows, CRS)))
+        self.assertEqual(summary["dem"], {"compared": len(dz), "outside": 0,
+                                          "dz_min": float(dz.min()),
+                                          "dz_max": float(dz.max())})
         saved = json.loads(self.output(ctx, folder, dh_jobs.OUT_REPORT.role).read_text("utf-8"))
         self.assertEqual(saved["collar_dem_dz"], report.collar_dem_dz.tolist())
         self.assertEqual(saved["notes"], [])
@@ -962,6 +972,7 @@ class BaseJobsTest(_JobCase):
                 self.assertEqual([note["code"] for note in saved["notes"]],
                                  [note.code for note in report.notes])
                 self.assertEqual(summary["excluded_holes"], int(report.excluded().holes.sum()))
+                self.assertIsNone(summary["dem"])  # sin MDT
 
     def test_large_inputs_by_path_are_copied_inside_the_job(self) -> None:
         """RNF-005-06 (T53; riesgo R16; RF-004-01): lo leído que se aplica (``source``) y la

@@ -82,8 +82,9 @@ Los tipos, con sus parámetros, sus entradas (``in/``) y sus resultados (``out/`
   ``ValidationParams``), ``work_window`` y, con MDT, ``dem_crs`` y ``dem_vertical`` (por
   defecto, los de la base: un ``gis_dtm_*`` del proyecto); ``base`` (la base), ``dem`` (el
   MDT, un ``.tif``: por ``--path dem=…``, que el trabajo copia a ``in/``, o ya en ``in/``) y
-  ``stored_xyz`` → ``dh_validation_issue.npz`` con su hash y
-  ``report.json`` (las notas y la diferencia de cada boca con el MDT);
+  ``stored_xyz`` → ``dh_validation_issue.npz`` con su hash (las incidencias y, T56, la
+  diferencia de cada boca con el MDT y las bocas fuera de él) y ``report.json`` (las notas y
+  la diferencia de cada boca con el MDT); en el resumen, ``dem`` (lo comparado con el MDT);
 - ``dh_desurvey``: ``crs``, ``vertical``, ``method``, ``depth_tolerance_m``,
   ``trace_step_m`` y, opcional (T28, «solo las obsoletas»), ``holes`` (las posiciones de las
   bocas que se calculan); ``base``, ``survey_sha256`` (la huella de cada boca) y, con
@@ -1059,7 +1060,12 @@ def issue_rows(report: Any) -> list[tuple[Any, ...]]:
     """Las filas de ``dh_validation_issue`` de un informe de ``drillholes.validate`` (las de
     ``schema.insert_rows``): el sondeo por su id (``fid`` = posición + 1) y su nombre, el
     código, el nivel, el alcance, la tabla, la fila (su ``fid``), el esquema, el elemento, el
-    código del catálogo, el tramo, el campo, el valor en texto y el mensaje en español."""
+    código del catálogo, el tramo, el campo, el valor en texto y el mensaje en español. Una
+    por incidencia y después (T56; RF-005-18) una por diferencia de una boca con el MDT (nivel
+    ``info``) y una por boca fuera de él (``not_evaluated``), en el orden de
+    ``report.rows``. Las notas generales (sin MDT) no se guardan: las dan los ajustes de la
+    operación (D-19), y así la tabla de una validación sin MDT es la de antes de T56.
+    ``ValueError`` si la nota de una boca no dice su tabla."""
     rows = []
     for issue in report.issues:
         scope = issue.scope
@@ -1069,7 +1075,29 @@ def issue_rows(report: Any) -> list[tuple[Any, ...]]:
             None if issue.row_ref is None else issue.row_ref + 1, issue.log_set,
             issue.element, issue.catalog_code, issue.depth_from, issue.depth_to, issue.field,
             _value_text(issue.value), issue.message("es")))
+    collar_notes = [note for note in report.notes if note.hole >= 0]
+    for found in (*report.differences, *collar_notes):
+        if found.table is None:
+            raise ValueError(f"la nota de «{found.hole_name}» no dice su tabla: no se guarda")
+        rows.append((
+            found.hole + 1, found.hole_name, found.code, str(found.level), None, found.table,
+            None if found.row_ref is None else found.row_ref + 1, None, None, None, None,
+            None, found.field, None, found.message("es")))
     return rows
+
+
+def _dem_summary(report: Any) -> dict[str, Any] | None:
+    """El resumen de la diferencia de las bocas con el MDT (T56; RF-005-18) para el informe
+    de la operación: las bocas comparadas, las que quedan fuera y la menor y la mayor
+    diferencia (m; ``None`` sin ninguna comparada); ``None`` sin MDT."""
+    dz = report.collar_dem_dz
+    if dz is None:
+        return None
+    compared = dz[np.isfinite(dz)]
+    return {"compared": int(compared.size),
+            "outside": sum(1 for note in report.notes if note.hole >= 0),
+            "dz_min": float(compared.min()) if compared.size else None,
+            "dz_max": float(compared.max()) if compared.size else None}
 
 
 @job_function
@@ -1078,8 +1106,9 @@ def run_validate(ctx: _Context) -> dict[str, Any]:
     RF-005-18) con los umbrales de la petición, la ventana de trabajo y, si llega, el MDT
     (``in/dem.tif``, o su ruta ``--path dem=…``, que copia aquí; bilineal con
     ``gis.raster.sample``) y la posición de cada boca en la capa
-    (DH-W15): ``dh_validation_issue.npz`` con su hash y ``report.json`` (las notas, sin evaluar,
-    y la diferencia de cada boca con el MDT)."""
+    (DH-W15): ``dh_validation_issue.npz`` con su hash (:func:`issue_rows`) y ``report.json``
+    (las notas, sin evaluar, y la diferencia de cada boca con el MDT); en el resumen, ``dem``
+    (:func:`_dem_summary`)."""
     from ..gis.geotiff.reader import read_geotiff
     from ..gis.raster import Raster
     from .surface import raster_sampler
@@ -1121,11 +1150,12 @@ def run_validate(ctx: _Context) -> dict[str, Any]:
     })
     levels = [str(issue.level) for issue in report.issues]
     summary = {
-        "issues": len(rows),
+        "issues": len(report.issues),
         "errors": levels.count(str(Level.ERROR)),
         "warnings": levels.count(str(Level.WARNING)),
         "excluded_holes": int(report.excluded().holes.sum()),
         "notes": len(report.notes),
+        "dem": _dem_summary(report),
         "outputs": {**found, OUT_REPORT.role: {"file": OUT_REPORT.relative}},
     }
     finish(ctx, [table_output("dh_validation_issue"), OUT_REPORT])

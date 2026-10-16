@@ -27,7 +27,12 @@ ella, no), con el campo ``z`` y sin valor (es un cálculo). **Lo que no se eval�
 lo dice** (spec §8) con una :class:`Note`: sin MDT, una nota general (``hole`` −1) y ninguna
 diferencia (``collar_dem_dz`` es ``None``); una boca fuera del MDT (o con un vecino sin dato),
 una nota suya y su diferencia vacía (NaN). Una boca sin X, Y o Z ya tiene su DH-E02, y una de
-un nombre repetido, su DH-E01: no se muestrean ni llevan nota.
+un nombre repetido, su DH-E01: no se muestrean ni llevan nota. **La diferencia de cada boca, a
+la vista** (T56; RF-005-18, spec §6 y §8): el informe da una entrada DH-W05 por boca que se
+muestrea, sobre su boca (``dh_collar``, campo ``z``): el aviso, si pasa de la tolerancia; si
+no, su :class:`DemDifference` (nivel «información», con su cota, la del MDT y dz al mm en el
+mensaje); fuera del MDT, su nota «sin evaluar» (con su boca). No son incidencias: no cuentan
+ni excluyen nada.
 
 **La parte de alcance S, para la desviación** (plan §5.6.6): :func:`hole_exclusions` da la
 máscara de los sondeos con un error de alcance S (los que ``desurvey`` no puede calcular), sin
@@ -113,7 +118,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import KW_ONLY, dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -139,6 +144,7 @@ __all__ = [
     "MESSAGES",
     "NUMBER_FIELDS",
     "TABLE_NAMES",
+    "DemDifference",
     "Exclusions",
     "Issue",
     "Level",
@@ -159,10 +165,15 @@ type JsonScalar = str | int | float | bool | None
 
 
 class Level(StrEnum):
-    """El nivel de una comprobación (``dh_validation_issue.level``)."""
+    """El nivel de una fila del informe (``dh_validation_issue.level``): el de una
+    incidencia (:data:`CODES`: error o aviso) o, en lo que no es una incidencia (T56), el de
+    la diferencia de una boca con el MDT dentro de la tolerancia (:class:`DemDifference`) y el
+    de lo que no se evaluó (:class:`Note`)."""
 
     ERROR = "error"
     WARNING = "warning"
+    INFO = "info"
+    NOT_EVALUATED = "not_evaluated"
 
 
 class Scope(StrEnum):
@@ -279,6 +290,8 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
     "DH-W05": "The collar elevation, {z} m, minus the DTM elevation at its position, {dem} m, "
               "is {dz} m (more than {tolerance} m either way): check the collar Z and its "
               "vertical datum, or the DTM.",
+    "DH-W05.dz": "The collar elevation, {z} m, minus the DTM elevation at its position, "
+                 "{dem} m, is {dz} m (within the tolerance of {tolerance} m).",
     "DH-W05.no_dem": "No DTM was chosen: the collar elevations have not been compared with "
                      "the terrain (DH-W05 not evaluated). Choose a DTM when validating to "
                      "compare them.",
@@ -439,8 +452,10 @@ class Note:
     """Lo que el informe dice de una comprobación que no se evaluó (spec §8; RF-005-18): sin
     MDT, DH-W05 en ninguna boca; con la boca fuera del MDT, en esa. ``code``, la comprobación
     (de :data:`CODES`); ``hole`` y ``hole_name``, la boca (posición y nombre; −1 y ``None``:
-    todas); ``message_id`` y ``message_args``, como en :class:`Issue`. No es una incidencia:
-    no tiene nivel ni excluye nada."""
+    todas); ``message_id`` y ``message_args``, como en :class:`Issue`; ``table``, ``row_ref``
+    y ``field``, lo que no se comprobó en una boca (T56: la de una boca fuera del MDT,
+    ``dh_collar``, su fila y ``z``; ``None`` en una general). No es una incidencia: su nivel
+    es «sin evaluar» y no excluye nada."""
 
     code: str
     hole: int
@@ -448,6 +463,9 @@ class Note:
     _: KW_ONLY
     message_id: str
     message_args: tuple[tuple[str, JsonScalar], ...] = ()
+    table: str | None = None
+    row_ref: int | None = None
+    field: str | None = None
 
     def __post_init__(self) -> None:
         if self.code not in CODES:
@@ -460,6 +478,64 @@ class Note:
         if not isinstance(self.message_id, str) or not self.message_id:
             raise ValueError("una nota lleva el msgid de su mensaje")
         object.__setattr__(self, "message_args", _args(self.message_args))
+        if self.table is not None and self.table not in _TABLE_ORDER:
+            raise ValueError(f"«{self.table}» no es una tabla de los sondeos")
+        if self.row_ref is not None:
+            if isinstance(self.row_ref, bool) or not isinstance(self.row_ref,
+                                                                int | np.integer):
+                raise TypeError(f"la fila de una nota es su posición (int), no "
+                                f"{self.row_ref!r}")
+            object.__setattr__(self, "row_ref", int(self.row_ref))
+
+    @property
+    def level(self) -> Level:
+        """Sin evaluar."""
+        return Level.NOT_EVALUATED
+
+    def message(self, language: str = "es") -> str:
+        """El mensaje en ``language`` (como :meth:`Issue.message`)."""
+        return _message(self.message_id, self.message_args, language)
+
+
+@dataclass(frozen=True, slots=True)
+class DemDifference:
+    """La diferencia de la cota de una boca con la del MDT en su posición, dentro de la
+    tolerancia (T56; RF-005-18): ``hole`` y ``hole_name``, la boca (posición y nombre);
+    ``dz``, su cota menos la del MDT (m, float64, CALCULADO); ``message_args``, la cota, la del
+    MDT y dz al mm y la tolerancia (los de DH-W05). Es la fila DH-W05 de su boca (``dh_collar``,
+    su fila, campo ``z``, sin valor: es un cálculo) con el nivel «información»: no es una
+    incidencia y no excluye nada. Una boca que pasa de la tolerancia tiene, en su lugar, su
+    aviso DH-W05 (con la diferencia en el mensaje)."""
+
+    hole: int
+    hole_name: str | None
+    dz: float
+    _: KW_ONLY
+    message_args: tuple[tuple[str, JsonScalar], ...] = ()
+
+    code: ClassVar[str] = "DH-W05"
+    table: ClassVar[str] = _COLLAR
+    field: ClassVar[str] = "z"
+    level: ClassVar[Level] = Level.INFO
+    message_id: ClassVar[str] = MESSAGES["DH-W05.dz"]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.hole, bool) or not isinstance(self.hole, int | np.integer):
+            raise TypeError(f"la boca de una diferencia es su posición (int), no {self.hole!r}")
+        if self.hole < 0:
+            raise ValueError(f"la boca de una diferencia es su posición, no {self.hole}")
+        object.__setattr__(self, "hole", int(self.hole))
+        if isinstance(self.dz, bool) or not isinstance(self.dz, int | float | np.floating):
+            raise TypeError(f"la diferencia con el MDT es un número, no {self.dz!r}")
+        if not math.isfinite(self.dz):
+            raise ValueError(f"la diferencia con el MDT es un número finito, no {self.dz!r}")
+        object.__setattr__(self, "dz", float(self.dz))
+        object.__setattr__(self, "message_args", _args(self.message_args))
+
+    @property
+    def row_ref(self) -> int:
+        """La fila de su boca en ``dh_collar`` (su posición)."""
+        return self.hole
 
     def message(self, language: str = "es") -> str:
         """El mensaje en ``language`` (como :meth:`Issue.message`)."""
@@ -517,12 +593,15 @@ class ValidationReport:
     ``hole_count`` bocas; ``notes``, lo que no se evaluó (:class:`Note`), y
     ``collar_dem_dz``, la diferencia de cada boca con el MDT (RF-005-18; m, float64, de solo
     lectura; NaN en las que no se evaluaron), o ``None`` si no hubo MDT. La diferencia no
-    entra en la comparación de dos informes (``==``)."""
+    entra en la comparación de dos informes (``==``). ``differences`` (T56), la de cada boca
+    dentro de la tolerancia, por boca (:class:`DemDifference`: las que el informe muestra
+    con el nivel «información»)."""
 
     issues: tuple[Issue, ...]
     hole_count: int
     notes: tuple[Note, ...] = ()
     collar_dem_dz: np.ndarray | None = dataclasses.field(default=None, compare=False)
+    differences: tuple[DemDifference, ...] = ()
 
     def __post_init__(self) -> None:
         found = tuple(self.issues)
@@ -539,6 +618,13 @@ class ValidationReport:
         if any(note.hole >= self.hole_count for note in notes):
             raise ValueError(f"una nota apunta a una boca fuera de [0, {self.hole_count})")
         object.__setattr__(self, "notes", notes)
+        differences = tuple(self.differences)
+        if not all(isinstance(found, DemDifference) for found in differences):
+            raise TypeError("las diferencias con el MDT de un informe son DemDifference")
+        if any(found.hole >= self.hole_count for found in differences):
+            raise ValueError(f"una diferencia con el MDT apunta a una boca fuera de "
+                             f"[0, {self.hole_count})")
+        object.__setattr__(self, "differences", differences)
         dz = self.collar_dem_dz
         if dz is not None:
             if not isinstance(dz, np.ndarray) or dz.dtype != np.float64:
@@ -958,12 +1044,24 @@ def _check_surface(surface: object, dset: DrillholeSet) -> SurfaceSampler:
     return surface
 
 
+@dataclass(frozen=True, eq=False)
+class _DemFindings:
+    """Lo de DH-W05 de una validación: los avisos, las notas de lo que no se evaluó, la
+    diferencia de cada boca (``None`` sin MDT) y las de las bocas dentro de la tolerancia."""
+
+    issues: list[Issue]
+    notes: list[Note]
+    dz: np.ndarray | None
+    differences: list[DemDifference]
+
+
 def _dem_issues(dset: DrillholeSet, checked: np.ndarray, surface: SurfaceSampler | None,
-                tolerance: float) -> tuple[list[Issue], list[Note], np.ndarray | None]:
-    """DH-W05 (RF-005-18; véase el módulo): las incidencias, las notas de lo que no se evaluó
-    y la diferencia de cada boca con el MDT (``None`` sin MDT)."""
+                tolerance: float) -> _DemFindings:
+    """DH-W05 (RF-005-18; véase el módulo): las incidencias, las notas de lo que no se evaluó,
+    la diferencia de cada boca con el MDT (``None`` sin MDT) y (T56) las de las bocas dentro
+    de la tolerancia."""
     if surface is None:
-        return [], [no_dem_note()], None
+        return _DemFindings([], [no_dem_note()], None, [])
     collars = dset.collars
     count = len(collars)
     dz = np.full(count, np.nan)
@@ -971,6 +1069,7 @@ def _dem_issues(dset: DrillholeSet, checked: np.ndarray, surface: SurfaceSampler
                             & np.isfinite(collars.z))
     issues: list[Issue] = []
     notes: list[Note] = []
+    differences: list[DemDifference] = []
     if wanted.size:
         xy = np.column_stack((collars.x[wanted], collars.y[wanted]))
         found = surface.sample(xy)
@@ -984,15 +1083,18 @@ def _dem_issues(dset: DrillholeSet, checked: np.ndarray, surface: SurfaceSampler
         for i, k in enumerate(wanted.tolist()):
             if math.isnan(dz[k]):
                 notes.append(Note("DH-W05", k, names[k],
-                                  message_id=MESSAGES["DH-W05.outside"]))
-            elif abs(dz[k]) > tolerance:
-                issues.append(_issue(
-                    "DH-W05", k, names[k], _COLLAR, row_ref=k, field="z",
-                    args={"z": float(collars.z[k]),
-                          "dem": round(float(dem[i]), _DEM_DECIMALS),
-                          "dz": round(float(dz[k]), _DEM_DECIMALS), "tolerance": tolerance}))
+                                  message_id=MESSAGES["DH-W05.outside"], table=_COLLAR,
+                                  row_ref=k, field="z"))
+                continue
+            args = {"z": float(collars.z[k]), "dem": round(float(dem[i]), _DEM_DECIMALS),
+                    "dz": round(float(dz[k]), _DEM_DECIMALS), "tolerance": tolerance}
+            if abs(dz[k]) > tolerance:
+                issues.append(_issue("DH-W05", k, names[k], _COLLAR, row_ref=k, field="z",
+                                     args=args))
+            else:
+                differences.append(DemDifference(k, names[k], float(dz[k]), message_args=args))
     dz.flags.writeable = False
-    return issues, notes, dz
+    return _DemFindings(issues, notes, dz, differences)
 
 
 def _changed_field(az1: float, az2: float, inc1: float, inc2: float) -> str:
@@ -1394,12 +1496,12 @@ def validate(dset: DrillholeSet, params: ValidationParams, *,
     found = _find(dset, params.depth_tolerance_m)
     checked = ~found.repeated
     names = dset.collars.name.tolist()
-    dem_issues, notes, dz = _dem_issues(dset, checked, surface, params.collar_dem_tolerance_m)
+    dem = _dem_issues(dset, checked, surface, params.collar_dem_tolerance_m)
     issues = (_collar_errors(dset, found, checked)
               + _station_errors(dset, found, checked, params.depth_tolerance_m)
               + _orphans(dset)
               + _collar_warnings(dset, checked, work_window, geom)
-              + dem_issues
+              + dem.issues
               + _survey_warnings(dset, found, params)
               + _lithology_issues(dset, checked, names, params)
               + _assay_issues(dset, checked, names, params)
@@ -1411,5 +1513,5 @@ def validate(dset: DrillholeSet, params: ValidationParams, *,
         return (hole, issue.code, _TABLE_ORDER[issue.table], row)
 
     issues.sort(key=order)
-    return ValidationReport(issues=tuple(issues), hole_count=count, notes=tuple(notes),
-                            collar_dem_dz=dz)
+    return ValidationReport(issues=tuple(issues), hole_count=count, notes=tuple(dem.notes),
+                            collar_dem_dz=dem.dz, differences=tuple(dem.differences))

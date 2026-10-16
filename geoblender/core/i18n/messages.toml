@@ -3316,6 +3316,9 @@ es = "No se eligió ningún MDT: las cotas de las bocas no se han comparado con 
 ["The collar is outside the DTM or next to cells without data: its elevation has not been compared with the terrain (DH-W05 not evaluated)."]
 es = "La boca está fuera del MDT o junto a celdas sin dato: su cota no se ha comparado con el terreno (DH-W05 sin evaluar)."
 
+["The collar elevation, {z} m, minus the DTM elevation at its position, {dem} m, is {dz} m (within the tolerance of {tolerance} m)."]
+es = "La cota de la boca, {z} m, menos la del MDT en su posición, {dem} m, da {dz} m (dentro de la tolerancia de {tolerance} m)."
+
 # Informe de validación en CSV (spec 005, T11; RF-005-19): la cabecera, los niveles y los
 # alcances (drillholes/report.py, MESSAGE_IDS; «Code», «Field», «Value» y «Message» ya están
 # más arriba).
@@ -3352,6 +3355,9 @@ es = "Aviso"
 
 ["Not evaluated"]
 es = "Sin evaluar"
+
+["Information"]
+es = "Información"
 
 ["Record"]
 es = "Registro"
@@ -4165,3 +4171,12 @@ es = "{kind}: {codes}"
 
 ["Drillholes already in the project: check those whose records are kept"]
 es = "Sondeos que ya están en el proyecto: marque los que conservan sus registros"
+
+# La diferencia de cada boca con el MDT, a la vista (spec 005, T56; RF-005-18): el nivel de la
+# lista de la validación y el resumen del informe de la operación (bl/props/dh.py, bl/ops/dh.py).
+
+["The difference of each collar with the DTM, within the tolerance"]
+es = "La diferencia de cada boca con el MDT, dentro de la tolerancia"
+
+["Collar elevation minus the DTM elevation: {count} collars compared, from {low} m to {high} m"]
+es = "Cota de las bocas menos la del MDT: {count} bocas comparadas, de {low} m a {high} m"

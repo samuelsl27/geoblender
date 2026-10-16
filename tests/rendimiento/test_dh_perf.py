@@ -607,6 +607,9 @@ class ImportTest(unittest.TestCase):
                 with project.read() as conn:
                     cls.counts = {table: conn.execute(f'SELECT count(*) FROM "{table}"')
                                   .fetchone()[0] for table in COUNTED}
+                    cls.levels = conn.execute(
+                        "SELECT level, count(*) FROM dh_validation_issue GROUP BY level "
+                        "ORDER BY level").fetchall()
                     cls.statuses = conn.execute(
                         "SELECT op_type, status, count(*) FROM gb_operation "
                         "GROUP BY op_type, status ORDER BY op_type").fetchall()
@@ -632,8 +635,11 @@ class ImportTest(unittest.TestCase):
                     f"({_volume()}; {shown}; trabajos: {self.executors}; {MACHINE}): "
                     f"{perf.median_line(self.times)}, presupuesto "
                     f"{perf.number(IMPORT_BUDGET_S, 0)} s")
+        # Sin incidencias: en dh_validation_issue (T56, RF-005-18), solo la diferencia de cada
+        # boca con el MDT, dentro de la tolerancia.
         self.assertEqual(self.counts, dict(zip(COUNTED, (
-            VREF_HOLES, VREF_STATIONS, VREF_LITHOLOGY, VREF_VALUES, 0), strict=True)))
+            VREF_HOLES, VREF_STATIONS, VREF_LITHOLOGY, VREF_VALUES, VREF_HOLES), strict=True)))
+        self.assertEqual(self.levels, [("info", VREF_HOLES)])
         self.assertEqual(self.statuses, [("dh.build_base", "done", 1),
                                          ("dh.import_tabular", "done", len(FILES)),
                                          ("dh.validate", "done", 1),

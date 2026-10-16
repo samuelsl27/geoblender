@@ -102,7 +102,8 @@ en la carpeta de la anterior y, en el mismo proyecto, con lo que se declaró
 ``dh.validate`` con la puerta de la 008 y su trabajo, por la cola de incorporación
 (:func:`start_validate`). La lista de la pestaña «Sondeos» enseña el informe guardado de la
 última validación del proyecto abierto (``drillholes.store.stored_validation``: las incidencias
-y lo que no se evaluó, :func:`load_issues`), al validar y al cambiar de proyecto.
+y lo que no se evaluó, :func:`load_issues`; T56, RF-005-18: con MDT, una fila DH-W05 por boca,
+con su diferencia con el MDT), al validar y al cambiar de proyecto.
 ``geoblender.dh_export_validation_report`` lo exporta en proceso como la operación
 ``dh.export_validation``, que consume ``dh_validation_issue``: el destino, un CSV fuera del
 proyecto o en su ``exports/`` (:func:`report_target`), pasa la guarda de las escrituras de la
@@ -1653,6 +1654,9 @@ def _import_steps(order: _Order) -> Generator[float, None, str]:
 
 BASE_LABEL = "Drillhole database"
 VALIDATION_LABEL = "Validation of the drillhole database"
+DEM_DECIMALS = 3
+"""Los decimales (mm) de la diferencia con el MDT en el informe de la validación (los de los
+mensajes de DH-W05)."""
 
 
 def _loose_set(name: str, tables: Mapping[str, Any], catalogs: Catalogs
@@ -1930,13 +1934,22 @@ def _validate_finished(handle: OperationHandle, result: JobResult) -> None:
 
 def _validation_report(summary: Mapping[str, Any], notes: Sequence[Mapping[str, Any]]) -> str:
     """El informe de una validación (RF-005-16): las incidencias por nivel, los sondeos
-    excluidos y lo que no se evaluó."""
+    excluidos, (T56; RF-005-18) con MDT, cuántas bocas se compararon con él y su menor y su
+    mayor diferencia (la de cada una, en la lista y en el informe exportado), y lo que no se
+    evaluó."""
     lines = [tr("Validation of the drillhole database: {issues} issues ({errors} errors and "
                 "{warnings} warnings); {excluded} drillholes excluded",
                 issues=format_number(int(summary.get("issues", 0)), 0),
                 errors=format_number(int(summary.get("errors", 0)), 0),
                 warnings=format_number(int(summary.get("warnings", 0)), 0),
                 excluded=format_number(int(summary.get("excluded_holes", 0)), 0))]
+    dem = summary.get("dem") or {}
+    if dem.get("compared"):
+        lines.append(tr("Collar elevation minus the DTM elevation: {count} collars compared, "
+                        "from {low} m to {high} m",
+                        count=format_number(int(dem["compared"]), 0),
+                        low=format_number(float(dem["dz_min"]), DEM_DECIMALS),
+                        high=format_number(float(dem["dz_max"]), DEM_DECIMALS)))
     lines += [f"{note['hole_name']}: {note['message']}" if note.get("hole_name")
               else str(note["message"]) for note in notes]
     return "\n".join(lines)
@@ -1951,9 +1964,11 @@ def _depth_text(start: Any, end: Any) -> str:
 
 def show_issues(stored: store.StoredValidation | None) -> None:
     """El informe guardado de la última validación (``drillholes.store.stored_validation``:
-    cada fila de ``dh_validation_issue`` y, después, lo que no se evaluó, con el nivel «Sin
-    evaluar») en la lista de la pestaña «Sondeos» (``WindowManager.geoblender_dh_validation``;
-    RF-005-16); sin informe, vacía."""
+    cada fila de ``dh_validation_issue``, con su nivel en mayúsculas, y, después, lo que no se
+    evaluó en general, con el nivel «Sin evaluar») en la lista de la pestaña «Sondeos»
+    (``WindowManager.geoblender_dh_validation``; RF-005-16); sin informe, vacía. Las filas de
+    ``dh_validation_issue`` son las incidencias y (T56; RF-005-18) la diferencia de cada boca
+    con el MDT (nivel ``INFO``) y las bocas fuera de él (``NOT_EVALUATED``)."""
     manager = getattr(bpy.context, "window_manager", None)
     validation = getattr(manager, VALIDATION_PROPERTY, None)
     if validation is None:
@@ -2012,8 +2027,10 @@ def on_project_changed(project: Any) -> None:
 
 
 def _validated_steps(handle: OperationHandle, result: JobResult) -> Generator[float, None, str]:
-    """Los pasos que escriben ``dh_validation_issue`` con el hash que dio su trabajo y llevan
-    el informe guardado a la lista de la pestaña (:func:`load_issues`)."""
+    """Los pasos que escriben ``dh_validation_issue`` con el hash que dio su trabajo (las
+    incidencias y, T56, la diferencia de cada boca con el MDT y las bocas fuera de él) y llevan
+    el informe guardado a la lista de la pestaña (:func:`load_issues`) y el de la operación
+    (:func:`_validation_report`) a su mensaje y a la barra de estado."""
     project = handle.project
     try:
         outcome = job_outcome(result, result.job_dir)
@@ -3472,8 +3489,8 @@ class GEOBLENDER_OT_dh_export_validation_report(_DrillholesCommand, ProvenanceAw
             return {"CANCELLED"}
         lines = [tr("Validation report «{file}» exported: {issues} issues; not evaluated: "
                     "{notes}", file=target.name,
-                    issues=format_number(len(stored.records), 0),
-                    notes=format_number(len(stored.notes), 0))]
+                    issues=format_number(stored.issue_count, 0),
+                    notes=format_number(stored.not_evaluated_count, 0))]
         if locator is not None:
             lines.append(tr("In the project as the deliverable {dataset}",
                             dataset=provenance.export_name(locator)))

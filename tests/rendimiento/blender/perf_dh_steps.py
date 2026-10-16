@@ -637,12 +637,18 @@ class VrefCase(unittest.TestCase):
         for op_type, total in (("dh.import_tabular", len(FILES)), ("dh.build_base", 1),
                                ("dh.validate", 1)):
             self.assertEqual(self.operations(op_type), [("done", "")] * total, op_type)
+        # Sin incidencias; y (T56, RF-005-18) la diferencia de cada boca con el MDT, dentro de
+        # la tolerancia (el ruido de la rejilla es de SURFACE_NOISE_M), guardada con la
+        # validación: una fila «info» por boca.
         counted = self.rows("SELECT (SELECT count(*) FROM dh_collar), "
                             "(SELECT count(*) FROM dh_survey), "
                             "(SELECT count(*) FROM dh_lithology), "
                             "(SELECT count(*) FROM dh_assay), "
-                            "(SELECT count(*) FROM dh_validation_issue)")
-        self.assertEqual(counted, [(VREF_HOLES, VREF_STATIONS, VREF_LITHOLOGY, VREF_VALUES, 0)])
+                            "(SELECT count(*) FROM dh_validation_issue "
+                            "WHERE level IN ('error', 'warning')), "
+                            "(SELECT count(*) FROM dh_validation_issue WHERE level = 'info')")
+        self.assertEqual(counted, [(VREF_HOLES, VREF_STATIONS, VREF_LITHOLOGY, VREF_VALUES, 0,
+                                    VREF_HOLES)])
         return read + (end - decided), end
 
     def traces_and_view(self, loop: EventLoop) -> tuple[float, float]:

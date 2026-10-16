@@ -15,7 +15,8 @@ Con un proyecto abierto, en la región lateral N de la Vista 3D, pestaña «Sond
   en la casilla;
 - ``GEOBLENDER_PT_dh_validation`` («Validación»): la lista de incidencias de la última
   validación del proyecto abierto (``GEOBLENDER_UL_dh_issues``; T27: y lo que no se evaluó,
-  «Sin evaluar»), que se filtra por nivel y por código (RF-005-16), y las órdenes de validar,
+  «Sin evaluar»; T56: y la diferencia de cada boca con el MDT dentro de la tolerancia,
+  «Información»), que se filtra por nivel y por código (RF-005-16), y las órdenes de validar,
   exportar el informe (RF-005-19) y calcular las trazas (RF-005-20);
 - ``GEOBLENDER_PT_dh_display`` («Representación»): el esquema de logueo y el radio de los
   tubos, el elemento y las clases de las barras de leyes (T30: «Clases propias», que parten
@@ -38,6 +39,7 @@ from ...core.i18n import language, tr, translate
 from ..props.dh import (
     FILTER_ALL,
     IMPORT_PROPERTY,
+    INFO,
     NOT_EVALUATED,
     SCENE_PROPERTY,
     VALIDATION_PROPERTY,
@@ -55,7 +57,7 @@ LIST_ROWS = 6
 IMPORT_DRILLHOLES = "geoblender.dh_import_drillholes"
 """La orden de «Aplicar» y «Descartar» de la importación pendiente (con ``stage`` y
 ``pending``: plan 005 §5.3.1) si no dice otra (``command``: la de una base de RecMin, T26)."""
-_ICONS = {"ERROR": "ERROR", "WARNING": "INFO", NOT_EVALUATED: "QUESTION"}
+_ICONS = {"ERROR": "ERROR", "WARNING": "INFO", INFO: "CHECKMARK", NOT_EVALUATED: "QUESTION"}
 
 
 def _project_open() -> bool:

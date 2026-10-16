@@ -55,8 +55,9 @@ RF-005-10); :func:`stale_holes`, los de trazas obsoletas: su huella de la desvia
 entrada como el ``SourceEntry`` de ``dh.build_base``; (T25) :func:`live_sources` da lo importado
 vigente, entrada a entrada en el orden en que se registraron, y :func:`source_entry_steps` lee
 el de una, por pasos, como su ``SourceEntry``; (T27) :func:`stored_validation`, el informe de
-la última validación (``dh_validation_issue`` y lo que su operación dice que no se evaluó), el
-que enseña la lista de la pestaña «Sondeos» y se exporta; (T28) :func:`survey_hashes`, la
+la última validación (``dh_validation_issue`` y lo que su operación dice que no se evaluó; T56:
+también la diferencia de cada boca con el MDT y las bocas fuera de él), el que enseña la lista
+de la pestaña «Sondeos» y se exporta; (T28) :func:`survey_hashes`, la
 huella de la desviación de cada boca, :func:`kept_traces`, las trazas que conserva un cálculo
 de «solo las obsoletas», y :func:`source_holes`, los sondeos de lo importado de una entrada (los
 que su reimportación sustituye sin preguntar); (T29) :func:`trace_view`, lo que la vista de las
@@ -165,7 +166,7 @@ from .schema import (
     source_name,
     source_table,
 )
-from .validate import Note, no_dem_note
+from .validate import Level, Note, no_dem_note
 
 __all__ = [
     "IMPORT_LOG",
@@ -1382,6 +1383,7 @@ def trace_view(conn: sqlite3.Connection) -> TraceView | None:
 
 VALIDATION_TABLE = "dh_validation_issue"
 """La tabla (y el dato) del informe de la última validación (``dh.validate``)."""
+_ISSUE_LEVELS = frozenset({str(Level.ERROR), str(Level.WARNING)})
 
 
 @dataclass(frozen=True)
@@ -1399,13 +1401,25 @@ class StoredValidation:
 
     @property
     def notes(self) -> tuple[Note, ...]:
-        """Lo que el informe dice que no se evaluó (``drillholes.validate.Note``), de los
-        ajustes de su operación: sin MDT (``surface`` vacío, D-19), DH-W05 en ninguna boca.
-        Las bocas fuera del MDT no se guardan en el proyecto (las dice el informe de la
-        operación al validar)."""
+        """Lo que el informe dice que no se evaluó en general (``drillholes.validate.Note``),
+        de los ajustes de su operación: sin MDT (``surface`` vacío, D-19), DH-W05 en ninguna
+        boca. Las bocas fuera del MDT (T56) están en ``records``, con el nivel
+        ``not_evaluated``."""
         if "surface" in self.settings and self.settings["surface"] is None:
             return (no_dem_note(),)
         return ()
+
+    @property
+    def issue_count(self) -> int:
+        """Las incidencias del informe (errores y avisos); las demás filas (T56) son la
+        diferencia de una boca con el MDT y lo que no se evaluó."""
+        return sum(1 for record in self.records if record["level"] in _ISSUE_LEVELS)
+
+    @property
+    def not_evaluated_count(self) -> int:
+        """Lo que no se evaluó: las bocas fuera del MDT (sus filas) y las notas generales."""
+        return len(self.notes) + sum(1 for record in self.records
+                                     if record["level"] == Level.NOT_EVALUATED)
 
 
 def stored_validation(conn: sqlite3.Connection) -> StoredValidation | None:
