@@ -39,6 +39,13 @@ title.en = "Provenance: parameters, inputs, operations and figures"
 title.es = "Procedencia: parámetros, entradas, operaciones y cifras"
 delivered = true
 
+# La spec 010 (vistas regenerables) también sale de R-07 (D-18 de su plan) y entrega sus órdenes
+# tarea a tarea: Refrescar las vistas desde el proyecto (T11), la primera.
+["010"]
+title.en = "Regenerable views"
+title.es = "Vistas regenerables"
+delivered = true
+
 ["R-07"]
 title.en = "Versions and provenance"
 title.es = "Versiones y procedencia"

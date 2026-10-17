@@ -21,7 +21,9 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
 - ``live``: la marca en vivo de la vista (spec 010, T08): lo cargado, al día de lo que dice el
   proyecto sin volver a cargarlo, tras cada lectura de los indicadores de la procedencia y tras
   deshacer, rehacer, abrir un ``.blend``, cargar o descargar (``undo_post``, ``redo_post``,
-  ``load_post``), por tandas desde su temporizador; el último.
+  ``load_post``), por tandas desde su temporizador; el último;
+- ``refresh``: los pasos de Refrescar las vistas desde el proyecto, F5 (spec 010, T11): vuelve
+  a cargar lo que no está al día con los pasos de ``views`` (no registra nada).
 """
 
 from __future__ import annotations

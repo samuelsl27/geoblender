@@ -1805,6 +1805,45 @@ es = "1 dato de la vista no está al día: Refrescar (F5)"
 ["{n} data items in the view are not up to date: Refresh (F5)"]
 es = "{n} datos de la vista no están al día: Refrescar (F5)"
 
+# Refrescar las vistas desde el proyecto, F5: su avance, su final y su cancelación (spec 010,
+# T11; RF-010-01; plan 010 §5.5).
+
+["Refreshing «{name}» in the view… {percent} % · Esc: cancel"]
+es = "Refrescando «{name}» en la vista… {percent} % · Esc: cancelar"
+
+["Refresh cancelled: the view stays as it was"]
+es = "Refrescar cancelado: la vista queda como estaba"
+
+["The view is up to date"]
+es = "La vista está al día"
+
+["View up to date: {parts}"]
+es = "Vista al día: {parts}"
+
+["1 data item reloaded"]
+es = "1 dato vuelto a cargar"
+
+["{n} data items reloaded"]
+es = "{n} datos vueltos a cargar"
+
+["{n} unbacked in the project"]
+es = "{n} sin respaldo en el proyecto"
+
+["1 missing from the project"]
+es = "1 falta en el proyecto"
+
+["{n} missing from the project"]
+es = "{n} faltan en el proyecto"
+
+["{n} up to date"]
+es = "{n} al día"
+
+["The project was closed while refreshing the view: the view stays as it was"]
+es = "Se cerró el proyecto mientras se refrescaba la vista: la vista queda como estaba"
+
+["Refreshing the view stopped: {error}"]
+es = "Refrescar la vista se ha parado: {error}"
+
 # Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
 # RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto
 # desde un MDT…, sus diálogos, sus informes y la decisión de una importación que espera.

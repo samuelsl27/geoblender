@@ -194,7 +194,7 @@ def _mark() -> float | None:
             return MARK_RETRY_S
         _STATE.requested = False
         try:
-            groups, states, live = _read(project)
+            groups, states, live = read_view(project)
         except (GeoblenderError, sqlite3.Error, OSError):
             LOGGER.info("No se pudo leer el proyecto para la marca en vivo de la vista; se "
                         "pide otra vez con el próximo cambio", exc_info=True)
@@ -234,12 +234,13 @@ def _in_wal(project: Project) -> bool:
         return False
 
 
-def _read(project: Project) -> tuple[dict[str, tuple[bpy.types.Object, ...]],
-                                     dict[str, state.ItemView], dict[str, Any]]:
-    """Los objetos de la escena por dato y, en una instantánea del proyecto, lo que dice de cada
-    dato (``view_states``) y lo que leen los cargadores con marca en vivo de lo que la muestra
-    hoy (``live_reads``: solo los de esos cargadores). Sin datos cargados, no abre el
-    proyecto. No escribe."""
+def read_view(project: Project) -> tuple[dict[str, tuple[bpy.types.Object, ...]],
+                                         dict[str, state.ItemView], dict[str, Any]]:
+    """Los objetos de la escena por dato (``views.loaded_items``, los de todos los proyectos)
+    y, en una instantánea del proyecto, lo que dice de cada dato (``view_states``) y lo que
+    leen los cargadores con marca en vivo de lo que la muestra hoy (``live_reads``: solo los
+    de esos cargadores). Sin datos cargados, no abre el proyecto. No escribe. Lo usan la marca
+    y Refrescar (``bl.scene.refresh``, spec 010, T11)."""
     groups = views.loaded_items()
     if not groups:
         return groups, {}, {}
