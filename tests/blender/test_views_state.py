@@ -275,7 +275,7 @@ class ViewsStateTest(ViewsStateCase):
         def mark() -> tuple[bool, list[str]]:
             states = self.states()
             with data.project.read() as conn:
-                live = views.live_reads(conn)
+                live = views.live_reads(conn, [GRID])  # solo lo de los cargadores pedidos
             self.assertEqual(live, {GRID: "leído"})
             return views.show_view_state(views.loaded_items(data.project.uid), states,
                                          live=live)
@@ -320,8 +320,7 @@ class ViewsStateTest(ViewsStateCase):
     def test_show_view_state_within_budget(self) -> None:
         """RF-010-02 (T07; plan A3, D-12): con presupuesto, ``show_view_state`` pone al día
         datos hasta pasarlo (al menos uno) y devuelve los que quedan, que la siguiente llamada
-        sigue; sin presupuesto, todos de una vez. ``show_state`` (005, T47) es su envoltorio
-        para un dato."""
+        sigue; sin presupuesto, todos de una vez."""
         data, views = self.data, self.views
         data.load(bpy.context)
         records = [data.record(name) for name in data.names]
@@ -348,7 +347,7 @@ class ViewsStateTest(ViewsStateCase):
         self.assertEqual(marked(), sorted(groups))
         self.assertEqual(views.show_view_state(groups, states), (False, []))
 
-        # Sin presupuesto, todos; y el envoltorio de la 005 con lo que dice el proyecto.
+        # Sin presupuesto, todos.
         current = {record.uid: self.state.ItemView(record.uid, self.state.ItemState.CURRENT,
                                                    record, False, None) for record in records}
         started = time.perf_counter()
@@ -356,14 +355,6 @@ class ViewsStateTest(ViewsStateCase):
         self.assertLess(time.perf_counter() - started, 1.0)
         self.assertEqual([self.only(record.uid).name for record in records],
                          [f"MDT {self.short(record)} [VIGENTE]" for record in records])
-        shown = vf.extension("core.provenance.view").dataset_view(data.project, records[0].uid)
-        stale = type(shown)(shown.record, True, shown.date)
-        obj = self.only(records[0].uid)
-        loader = views.loader_for(records[0].name)
-        self.assertTrue(views.show_state([obj], loader, stale))
-        self.assertEqual((obj.name, obj.geoblender.stale, obj.geoblender.view_state),
-                         ("MDT rejilla_01 [VIGENTE · OBSOLETO]", True, "CURRENT"))
-        self.assertFalse(views.show_state([obj], loader, stale))
 
     def test_extend_loader(self) -> None:
         """RF-010-02, RF-010-03 (T07; plan §5.3.2, D-13): un cargador declara su marca en vivo

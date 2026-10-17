@@ -30,6 +30,13 @@ vistas 3D. Mientras esta sesión escribe en el proyecto (``Project.writing``) o 
 en WAL (QGIS: leerlo haría una copia privada), espera :data:`MARK_RETRY_S` s; si no se puede
 leer (otro programa lo bloquea), deja la petición: el siguiente cambio la vuelve a pedir.
 
+**Lo de cada cargador** (spec 010, T09; plan §5.6, D-13): lo que declara con
+``views.extend_loader``. Su ``LiveHook`` (los sondeos: sus sondeos de traza obsoleta) se lee en
+la misma instantánea, solo el de los cargadores de lo que muestra el contenido de hoy, y se
+aplica con lo general; y la primera lectura tras abrir el proyecto (RF-010-03; plan A4) rehace
+lo que su ``SessionParts`` dice que les falta a sus objetos (la superposición de los sondeos, por
+la cola de los sondeos, con su avance), una vez por apertura.
+
 Al cambiar el proyecto de la sesión (``project_session.add_listener``), olvida lo leído y
 retira el temporizador. Los manejadores son ``@persistent`` (sin ello se pierden al abrir otro
 ``.blend``) y :func:`unregister` los quita con el temporizador (``docs/trampas.md`` §3).
@@ -173,6 +180,8 @@ def _mark() -> float | None:
                         "pide otra vez con el próximo cambio", exc_info=True)
             _STATE.remaining = []
             return None
+        if _STATE.project is not project:  # la primera lectura tras abrirlo
+            _rebuild(project, groups, states)
         _STATE.project = project
         _STATE.states = states
         _STATE.live = live
@@ -204,8 +213,9 @@ def _in_wal(project: Project) -> bool:
 def _read(project: Project) -> tuple[dict[str, tuple[bpy.types.Object, ...]],
                                      dict[str, state.ItemView], dict[str, Any]]:
     """Los objetos de la escena por dato y, en una instantánea del proyecto, lo que dice de cada
-    dato (``view_states``) y lo que leen los cargadores con marca en vivo (``live_reads``). Sin
-    datos cargados, no abre el proyecto. No escribe."""
+    dato (``view_states``) y lo que leen los cargadores con marca en vivo de lo que la muestra
+    hoy (``live_reads``: solo los de esos cargadores). Sin datos cargados, no abre el
+    proyecto. No escribe."""
     groups = views.loaded_items()
     if not groups:
         return groups, {}, {}
@@ -216,10 +226,48 @@ def _read(project: Project) -> tuple[dict[str, tuple[bpy.types.Object, ...]],
         try:
             states = state.view_states(project, items, project_uid=project.uid,
                                        origin=project.origin, view_stale=view_stale, conn=conn)
-            live = views.live_reads(conn)
+            live = views.live_reads(conn, _hooked(states))
         finally:
             conn.execute("ROLLBACK")
     return groups, states, live
+
+
+def _loader_of(view: state.ItemView) -> views.Loader | None:
+    """El cargador del dato de ``view`` (``None`` sin registro en el proyecto o sin cargador)."""
+    return None if view.record is None else views.loader_for(view.record.name)
+
+
+def _hooked(states: dict[str, state.ItemView]) -> set[str]:
+    """Los cargadores con marca en vivo (``LiveHook``) de lo que muestra el contenido de hoy
+    (``CURRENT``, ``RESTATE``: lo único en que se aplica), por su comienzo."""
+    found: set[str] = set()
+    for view in states.values():
+        if view.state in (state.ItemState.CURRENT, state.ItemState.RESTATE):
+            loader = _loader_of(view)
+            if loader is not None and loader.live is not None:
+                found.add(loader.prefix)
+    return found
+
+
+def _rebuild(project: Project, groups: dict[str, tuple[bpy.types.Object, ...]],
+             states: dict[str, state.ItemView]) -> None:
+    """La primera lectura tras abrir el proyecto (RF-010-03; plan A4, D-13): por cada cargador
+    que declara lo que no se guarda en el ``.blend`` (``SessionParts``), con sus objetos de
+    datos que el proyecto tiene (vivos o con sucesor: no lo sin respaldo ni lo que falta), si
+    les falta (``missing``), lo rehace (``rebuild``: en segundo plano, con su avance; la
+    superposición de los sondeos). Uno que falla va al registro técnico: la marca sigue."""
+    wanted: dict[str, tuple[views.SessionParts, list[bpy.types.Object]]] = {}
+    for uid, view in states.items():
+        loader = _loader_of(view)
+        if loader is None or loader.session_parts is None or view.target_uid() is None:
+            continue
+        wanted.setdefault(loader.prefix, (loader.session_parts, []))[1].extend(groups.get(uid, ()))
+    for prefix, (parts, objects) in wanted.items():
+        try:
+            if objects and parts.missing(project, objects):
+                parts.rebuild(project)
+        except Exception:  # noqa: BLE001 - lo de la sesión no tumba la marca
+            LOGGER.exception("No se pudo rehacer lo de la sesión de la vista «%s…»", prefix)
 
 
 def _forget() -> bool:

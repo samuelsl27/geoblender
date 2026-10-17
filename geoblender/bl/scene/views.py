@@ -56,11 +56,12 @@ A3, D-9 a D-13 y D-17; generaliza lo de los sondeos, spec 005, T47):
   estado y si está obsoleto en ``Object.geoblender`` y el nombre generado de sus objetos y de la
   colección del dato (:func:`view_name`: «MDT mdt_norte [VIGENTE · NO AL DÍA]», «… [SIN
   RESPALDO]»), con las colecciones buscadas una vez por su clave, ``ID.rename`` y, si se le da,
-  un presupuesto de tiempo por tanda; :func:`show_state` es su envoltorio para un dato (005);
+  un presupuesto de tiempo por tanda (sustituye a la marca propia de los sondeos de la 005,
+  T47: spec 010, T09);
 - un cargador declara con :func:`extend_loader` lo suyo que se pone al día en vivo
   (:class:`LiveHook`: lo que lee en la misma instantánea, :func:`live_reads`, y cómo lo aplica)
   y lo que no se guarda en el ``.blend`` (:class:`SessionParts`; la superposición de los
-  sondeos);
+  sondeos, ``bl.scene.dh_view``, que la marca en vivo rehace tras abrir el proyecto);
 - :func:`load_steps` vuelve a cargar con Refrescar (F5): en su último paso, además, quita lo
   sustituido por lo que carga (``replaces``), marca «sin respaldo en el proyecto» sin borrarlos
   los objetos de los datos ``unbacked`` y, con ``clear_view_stale``, quita la marca de vista
@@ -273,12 +274,15 @@ def extend_loader(prefix: str, *, live: LiveHook | None = None,
     _LOADERS[prefix] = replace(found, live=live, session_parts=session_parts)
 
 
-def live_reads(conn: sqlite3.Connection) -> dict[str, Any]:
+def live_reads(conn: sqlite3.Connection,
+               prefixes: Collection[str] | None = None) -> dict[str, Any]:
     """Lo que lee de ``conn`` (en la instantánea de quien llama) el :class:`LiveHook` de cada
     cargador que lo declara, por su comienzo: lo que :func:`show_view_state` le da a su
-    ``apply``. No escribe."""
+    ``apply``. Con ``prefixes``, solo el de esos cargadores (la marca en vivo pide solo los de
+    lo que está en la escena: un proyecto con sondeos sin su vista no los lee). No
+    escribe."""
     return {prefix: loader.live.read(conn) for prefix, loader in _LOADERS.items()
-            if loader.live is not None}
+            if loader.live is not None and (prefixes is None or prefix in prefixes)}
 
 
 def loaders() -> dict[str, Loader]:
@@ -662,21 +666,6 @@ def show_view_state(groups: Mapping[str, Sequence[bpy.types.Object]],
         loader = None if view.record is None else loader_for(view.record.name)
         changed = _show_group(groups[uid], view, loader, collections.get(uid), shared) or changed
     return changed, []
-
-
-def show_state(objects: Sequence[bpy.types.Object], loader: Loader, shown: Any) -> bool:
-    """Pone al día, sin recargar nada, lo que dicen del dato ``shown``
-    (``core.provenance.view.DatasetView``, leído ahora) los objetos ``objects`` de su vista
-    cargada, que muestran su contenido de hoy (spec 005, T47; RF-006-29): ``Object.geoblender``
-    (su estado, si está obsoleto y «al día») y el nombre generado de los objetos (lo que sigue
-    al de la carga, como « · Au», se conserva) y de la colección del dato («Sondeos [VIGENTE ·
-    OBSOLETO]»). Es :func:`show_view_state` de un dato (spec 010, T07). No escribe en el
-    proyecto. Devuelve si cambió algo."""
-    record = shown.record
-    if not objects:
-        return False
-    view = ItemView(record.uid, ItemState.RESTATE, record, bool(shown.stale), None)
-    return _show_group(objects, view, loader, _dataset_collections().get(record.uid), {})
 
 
 def _mark_unbacked(uids: Collection[str]) -> bool:

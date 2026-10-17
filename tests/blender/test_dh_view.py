@@ -34,9 +34,12 @@ leyenda por defecto o con la de la representación).
   la boca: los sondeos de traza obsoleta y, con una validación guardada con un error de
   alcance T (la litología de S-01), su código; esa litología no se pinta (el trabajo recibe lo
   que excluye la validación). Lo que dibuja la superposición lo prueba ``test_dh_overlay``.
-- T47 (RF-005-22): :func:`check_stale_view`, la vista cargada al día de lo obsoleto sin
-  recargarla; la usan ``test_dh_ops_compute`` (tras cambiar la referencia del azimut) y
-  ``dh/test_provenance_dh`` (tras añadir y descartar una entrada y tras «Actualizar» otra).
+- T47 (RF-005-22), con el mecanismo general de la spec 010 (T09; RF-010-02):
+  :func:`check_stale_view`, la vista cargada al día de lo obsoleto sin recargarla, por la marca
+  en vivo de la vista (``bl.scene.live``) con el ``LiveHook`` de los sondeos y una sola lectura
+  del proyecto por cambio; la usan ``test_dh_ops_compute`` (tras cambiar la referencia del
+  azimut) y ``dh/test_provenance_dh`` (tras añadir y descartar una entrada y tras «Actualizar»
+  otra).
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -89,10 +92,27 @@ def _values(data: Any, name: str) -> np.ndarray:
     return np.array(listed)
 
 
+def run_marks(case: unittest.TestCase) -> int:
+    """Los tics de la marca en vivo de la vista (``bl.scene.live.mark_tick``; en ``blender
+    -b`` no corren los temporizadores) hasta que acaba y se retira; devuelve cuántos."""
+    live = _module("bl.scene.live")
+    for count in range(1, MAX_TICKS + 1):
+        interval = live.mark_tick()
+        if interval is None:
+            case.assertFalse(bpy.app.timers.is_registered(live.mark_tick))
+            return count
+        case.assertEqual(interval, live.MARK_TICK_S)
+    case.fail("la marca en vivo de la vista no acaba")
+
+
 def check_stale_view(case: DrillholeImportCase, holes: tuple[str, ...], *,
                      stale: bool) -> None:
-    """T47 (RF-005-22; plan §5.6.8): tras un tic del temporizador de los indicadores de la
-    procedencia (``bl.ui.provenance.indicator_tick``, que lee el proyecto cuando cambia), la
+    """T47 (RF-005-22; plan §5.6.8), con el mecanismo general de la spec 010 (T09; RF-010-02;
+    plan 010 §5.6, A3, D-13): tras un tic del temporizador de los indicadores de la procedencia
+    (``bl.ui.provenance.indicator_tick``, que lee el proyecto cuando cambia y pide la marca en
+    vivo sin leer nada de la vista) y los de la marca (``bl.scene.live.mark_tick``, que lee una
+    sola vez lo que dice el proyecto de lo cargado, ``core.views.state.view_states``, y en la
+    misma instantánea lo de los sondeos, su ``LiveHook``: ``drillholes.store.stale_holes``), la
     vista de las trazas ya cargada en la escena de ``case`` dice lo que dice el proyecto, sin
     recalcular nada (ningún trabajo nuevo) ni escribir en él: los sondeos de traza obsoleta
     ``holes`` (los de ``drillholes.store.stale_holes``, en el orden de la base) llevan
@@ -102,10 +122,19 @@ def check_stale_view(case: DrillholeImportCase, holes: tuple[str, ...], *,
     dh_view = _module("bl.scene.dh_view")
     views = _module("bl.scene.views")
     ui = _module("bl.ui.provenance")
+    store = _module("drillholes.store")
+    state = _module("core.views.state")
     runner = case.jobs_ops.MONITOR.runner
     jobs = {snapshot.job_uid for snapshot in runner.snapshots()}
     before = case.counts()
-    case.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
+    with mock.patch.object(store, "stale_holes", wraps=store.stale_holes) as stale_reads, \
+            mock.patch.object(state, "view_states", wraps=state.view_states) as reads:
+        case.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
+        # Los indicadores solo piden la marca: nada de la vista se lee en su tic.
+        case.assertEqual((reads.call_count, stale_reads.call_count), (0, 0))
+        run_marks(case)
+        # Una sola lectura del proyecto por cambio: la de la marca, con lo de los sondeos.
+        case.assertEqual((reads.call_count, stale_reads.call_count), (1, 1))
     case.assertEqual(case.counts(), before)  # nada escrito en el proyecto
     case.assertEqual({snapshot.job_uid for snapshot in runner.snapshots()}, jobs)
     with case.project.read() as conn:
@@ -264,8 +293,9 @@ class DrillholeViewTest(DrillholeImportCase):
         de traza obsoleta, con las clases de la representación; cerrar sus pasos a mitad deja
         la vista como estaba. T30 (RF-005-25, RF-005-17): cada carga deja a la superposición
         sus etiquetas, sus leyendas y sus marcas, y no pinta lo que excluye la validación
-        guardada (alcance T). T47: sin recargarla, la vista vuelve a lo que dice el proyecto
-        (ningún sondeo obsoleto) en sus curvas, sus barras y sus marcas. T54 (RNF-005-04): cada
+        guardada (alcance T). T47 (con la marca en vivo de la 010, RF-010-02): sin recargarla,
+        la vista vuelve a lo que dice el proyecto (ningún sondeo obsoleto) en sus curvas, sus
+        barras y sus marcas. T54 (RNF-005-04): cada
         carga lee y manda a su trabajo solo los análisis del oro (no los de la plata ni los del
         cobre) y dibuja lo mismo que el dominio con la base entera, también la fila de la base
         de cada curva y de cada barra (``gb_row``) y sin los registros que excluye la
@@ -373,9 +403,9 @@ class DrillholeViewTest(DrillholeImportCase):
               f" mm (≤ {LIMIT_M * 1000:.1f} mm); {len(curves.curve_sizes)} curvas, "
               f"{len(bars.faces)} caras")
 
-        # T47 (RF-005-22): lo que dice ahora el proyecto (ningún sondeo de traza obsoleta), sin
-        # recargar: ni en las curvas ni en las barras ni en las marcas; la de la validación sigue.
-        self.assertTrue(_module("bl.scene.dh_view").show_stale(self.project))
+        # T47 (RF-005-22), con la marca en vivo de la 010 (T09, RF-010-02): lo que dice ahora el
+        # proyecto (ningún sondeo de traza obsoleta), sin recargar: ni en las curvas ni en las
+        # barras ni en las marcas; la de la validación sigue.
         check_stale_view(self, (), stale=False)
         self.assertEqual([(mark.hole, mark.kind, mark.codes) for mark in _module(
             "bl.scene.dh_view").overlay_of(bar_object).marks], [("S-01", "partial", ("DH-E10",))])

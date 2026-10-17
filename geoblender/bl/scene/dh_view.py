@@ -55,11 +55,16 @@ la memoria del módulo con sus objetos (:func:`remember`, :func:`overlay_of`): n
 representación con que se cargó (:func:`up_to_date`); :func:`apply_radius` cambia en vivo el
 radio de los tubos y :func:`fill_classes`, las clases propias desde la leyenda de la vista.
 
-**Lo obsoleto, en cuanto lo está** (T47; RF-005-22): cuando el proyecto cambia, el temporizador
-de los indicadores de la procedencia (``bl.ui.provenance``, que ``bl.ops.dh`` apunta) llama a
-:func:`show_stale`: sin recargar la vista ni recalcular nada, pone en ella los sondeos de traza
-obsoleta de ahora (:data:`STALE` y las marcas, :func:`with_stale`) y, en su nombre y en
-``Object.geoblender``, si las trazas están obsoletas.
+**Lo obsoleto, en cuanto lo está** (T47; RF-005-22), con el mecanismo general de la vista
+(spec 010, T09; RF-010-02, RF-010-03; plan 010 §5.6, D-13): :func:`register` declara con el
+cargador (``bl.scene.views.extend_loader``) su marca en vivo, :data:`LIVE`, y lo que no se
+guarda en el ``.blend``, :data:`SESSION_PARTS`. Cuando el proyecto cambia, la marca en vivo de
+la vista (``bl.scene.live``) pone en ``Object.geoblender`` y en su nombre si las trazas están
+obsoletas, como en cualquier dato, y lee en la misma instantánea (:func:`read_stale`) y aplica
+(:func:`apply_stale`) en lo que muestra el contenido de hoy los sondeos de traza obsoleta
+(:data:`STALE` y las marcas, :func:`with_stale`), sin recargar la vista ni recalcular nada; la
+primera tras abrir el proyecto rehace la superposición que le falte (:func:`overlay_missing`,
+:func:`rebuild_overlay`: la recarga de ``bl.ops.dh.refresh_view``; T48).
 """
 
 from __future__ import annotations
@@ -664,49 +669,50 @@ def _mark_stale(objects: Sequence[bpy.types.Object], stale: Sequence[str],
     return changed
 
 
-def show_stale(project: Any) -> bool:
-    """Pone al día de lo obsoleto la vista de los sondeos de ``project`` cargada en el fichero,
-    sin recargarla, sin recalcular nada y sin escribir en el proyecto (T47; RF-005-22): lee
-    del proyecto si su dato (``dh_trace``) está obsoleto (``core.provenance.view.dataset_view``)
-    y los sondeos de traza obsoleta (``drillholes.store.stale_holes``) y, en los objetos que
-    enseñan su contenido de ahora, cambia :data:`STALE` de sus curvas y sus barras, las marcas
-    de su superposición (:func:`with_stale`) y su nombre generado y ``Object.geoblender``
-    («Sondeos [VIGENTE · OBSOLETO]»; ``bl.scene.views.show_state``). La de otro contenido (las
-    trazas se acaban de recalcular) la pone al día su recarga. La llama el temporizador de los
-    indicadores de la procedencia cuando el proyecto cambia (``bl.ui.provenance``). Devuelve
-    si cambió algo."""
-    from ...core.provenance.view import dataset_view  # al usarlo: no al habilitar
+def read_stale(conn: sqlite3.Connection) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Lo que lee la marca en vivo de los sondeos (el ``read`` de :data:`LIVE`), en la
+    instantánea de quien llama (``bl.scene.live``): los sondeos de traza obsoleta
+    (``drillholes.store.stale_holes``) y los de la base, por su ``fid``
+    (``drillholes.store.existing_holes``). No escribe."""
+    return store.stale_holes(conn), store.existing_holes(conn)
 
-    objects = loaded_objects(project)
-    loader = views.loaders().get(PREFIX)
-    if not objects or loader is None:
-        return False
-    groups: dict[str, list[bpy.types.Object]] = {}
-    for obj in objects:
-        groups.setdefault(getattr(obj, OBJECT_PROPERTY).dataset_uid, []).append(obj)
-    try:
-        with project.read() as conn:
-            conn.execute("BEGIN")  # todo en la misma instantánea
-            try:
-                shown = {uid: dataset_view(project, uid, conn=conn) for uid in groups}
-                stale = store.stale_holes(conn)
-                names = store.existing_holes(conn)
-            finally:
-                conn.execute("ROLLBACK")
-    except (GeoblenderError, sqlite3.Error, OSError):
-        LOGGER.info("No se pudo leer lo obsoleto de los sondeos para la vista", exc_info=True)
-        return False
-    changed = False
-    for uid, group in groups.items():
-        found = shown[uid]
-        if found is None or any(getattr(obj, OBJECT_PROPERTY).content_sha256
-                                != found.record.content_sha256 for obj in group):
-            continue
-        changed = _mark_stale(group, stale, names) | changed
-        changed = views.show_state(group, loader, found) | changed
-    if changed:
-        _redraw()
-    return changed
+
+def apply_stale(objects: Sequence[bpy.types.Object], _view: Any,
+                found: tuple[Sequence[str], Sequence[str]]) -> bool:
+    """Lo que pone la marca en vivo en los objetos ``objects`` de una vista de los sondeos que
+    muestra el contenido de hoy (el ``apply`` de :data:`LIVE`), con lo que leyó
+    :func:`read_stale` (``found``): :data:`STALE` de sus curvas y sus barras y las marcas de su
+    superposición (:func:`with_stale`). Devuelve si cambió algo."""
+    stale, names = found
+    return _mark_stale(objects, stale, names)
+
+
+def overlay_missing(_project: Any, objects: Sequence[bpy.types.Object]) -> bool:
+    """Si a los objetos ``objects`` de una vista de los sondeos les falta lo que no se guarda
+    en el ``.blend`` (el ``missing`` de :data:`SESSION_PARTS`; T48): alguno sin superposición
+    de esta sesión (se cargó antes de desactivar Geoblender o de abrir el fichero) o con la de
+    otra representación."""
+    key = display_key(_display())
+    return any(found is None or found.display_key != key for found in map(overlay_of, objects))
+
+
+def rebuild_overlay(project: Any) -> bool:
+    """Rehace lo que dibuja la superposición de la vista de los sondeos de ``project`` (el
+    ``rebuild`` de :data:`SESSION_PARTS`; T48): su recarga en la cola de los sondeos, con su
+    trabajo y su avance (``bl.ops.dh.refresh_view`` con ``check``: solo si no es ya la de la
+    representación, y una sola en espera). Devuelve si la puso."""
+    from ..ops import dh as dh_ops  # bl/ops importa bl/scene: al usarlo
+
+    return dh_ops.refresh_view(project, check=True)
+
+
+LIVE = views.LiveHook(read=read_stale, apply=apply_stale)
+"""La marca en vivo de los sondeos (spec 010, T09; RF-005-22, RF-010-02): además de lo general
+de ``bl.scene.live`` (estado, obsoleto y nombre), los sondeos de traza obsoleta."""
+SESSION_PARTS = views.SessionParts(missing=overlay_missing, rebuild=rebuild_overlay)
+"""Lo de la vista de los sondeos que no se guarda en el ``.blend`` (spec 010, T09; RF-005-23,
+RF-005-25, RF-010-03): la superposición, que la primera marca en vivo tras abrir el proyecto
+rehace (``bl.scene.live``)."""
 
 
 def apply_radius(radius_m: float) -> int:
@@ -754,9 +760,13 @@ def fill_classes(display: Any) -> int:
 
 
 def register() -> None:
-    """Registra el cargador de las trazas si no hay otro para su comienzo; idempotente."""
+    """Registra el cargador de las trazas si no hay otro para su comienzo, con su marca en vivo
+    (:data:`LIVE`) y lo que no se guarda en el ``.blend`` (:data:`SESSION_PARTS`; spec 010,
+    T09; ``bl.scene.views.extend_loader``); el de otro no se toca. Idempotente."""
     if PREFIX not in views.loaders():
         views.register_loader(PREFIX, KIND, LABEL, load_traces)
+    if views.loaders()[PREFIX].load is load_traces:
+        views.extend_loader(PREFIX, live=LIVE, session_parts=SESSION_PARTS)
 
 
 def unregister() -> None:
@@ -768,9 +778,10 @@ def unregister() -> None:
         views.unregister_loader(PREFIX)
 
 
-__all__ = ["CLASS", "COLOR", "HOLE", "JOB_LABEL", "KIND", "LABEL", "MARK_EXCLUDED",
-           "MARK_PARTIAL", "MARK_STALE", "NOT_DELIVERED", "PREFIX", "ROW", "STALE",
-           "VIEW_FAILED", "Mark", "Overlay", "ViewLabel", "apply_radius", "build_overlay",
-           "display_key", "fill_classes", "forget_overlays", "grade_legend", "load_traces",
-           "loaded_objects", "overlay_of", "register", "remember", "show_stale", "unregister",
-           "up_to_date", "with_stale"]
+__all__ = ["CLASS", "COLOR", "HOLE", "JOB_LABEL", "KIND", "LABEL", "LIVE", "MARK_EXCLUDED",
+           "MARK_PARTIAL", "MARK_STALE", "NOT_DELIVERED", "PREFIX", "ROW", "SESSION_PARTS",
+           "STALE", "VIEW_FAILED", "Mark", "Overlay", "ViewLabel", "apply_radius",
+           "apply_stale", "build_overlay", "display_key", "fill_classes", "forget_overlays",
+           "grade_legend", "load_traces", "loaded_objects", "overlay_missing", "overlay_of",
+           "read_stale", "rebuild_overlay", "register", "remember", "unregister", "up_to_date",
+           "with_stale"]

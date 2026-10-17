@@ -140,7 +140,8 @@ la cola de los sondeos (:func:`display_changed`: una sola en espera; si al empez
 representación, nada), y el radio cambia los tubos en vivo (``bl.props.dh``). Al abrir el
 proyecto con su vista en la escena sin lo que dibuja la superposición (cargada antes de
 desactivar Geoblender o de abrir el fichero), la vista se recarga igual (T48,
-:func:`on_project_changed`, :func:`refresh_view`). Con unos sondeos
+:func:`refresh_view`), desde la primera marca en vivo tras abrirlo (spec 010, T09:
+``bl.scene.dh_view.SESSION_PARTS``). Con unos sondeos
 activos, la Leyenda genérica de la 003 (:data:`LEGEND_PROVIDER`, registrada para
 ``DRILLHOLES``) ofrece «Litología (esquema)» y cada elemento de ley y los aplica a la
 representación. Las etiquetas, las leyendas y las marcas las dibuja ``bl.draw.dh_overlay``.
@@ -383,10 +384,11 @@ def register() -> None:
     """Registra las definiciones de parámetros, los lectores de contenido, los tipos de trabajo
     y las declaraciones de procedencia (:data:`OPERATION_DEFS`, :data:`IMPORTER_DEFS`) de los
     sondeos que aún no están, (T27) apunta en la sesión :func:`on_project_changed` (la lista
-    de incidencias del proyecto abierto), (T30) pone la Leyenda genérica de los sondeos
-    (:data:`LEGEND_PROVIDER`) si el tipo no tiene otra y (T47) apunta en los indicadores de la
-    procedencia ``bl.scene.dh_view.show_stale`` (la vista, al día de lo obsoleto cuando el
-    proyecto cambia); idempotente."""
+    de incidencias del proyecto abierto) y (T30) pone la Leyenda genérica de los sondeos
+    (:data:`LEGEND_PROVIDER`) si el tipo no tiene otra; idempotente. La vista, al día de lo
+    obsoleto cuando el proyecto cambia (T47) y con su superposición al abrirlo (T48), la pone la
+    marca en vivo de la vista con lo que declara su cargador (spec 010, T09;
+    ``bl.scene.dh_view.LIVE`` y ``SESSION_PARTS``)."""
     missing = tuple(defn for defn in dh_params.DEFINITIONS
                     if defn.key not in core_params.DEFINITIONS)
     if missing:
@@ -418,12 +420,6 @@ def register() -> None:
     if ui_context.kind_legend_provider(dh_view.KIND) is None:
         ui_context.register_legend_provider(dh_view.KIND, LEGEND_PROVIDER)
         _UNDO.append(_unregister_legend)
-    from ..ui import provenance as ui_provenance  # al usarlo (ARQ-08)
-
-    if dh_view.show_stale not in ui_provenance.change_listeners():
-        ui_provenance.add_change_listener(dh_view.show_stale)
-        _UNDO.append(functools.partial(ui_provenance.remove_change_listener,
-                                       dh_view.show_stale))
 
 
 def _unregister_legend() -> None:
@@ -2014,18 +2010,15 @@ def load_issues(project: Any) -> None:
 
 def on_project_changed(project: Any) -> None:
     """Al cambiar el proyecto de la sesión (``bl.scene.project_session.add_listener``): la
-    lista de incidencias es la de la última validación del nuevo (sin ninguno, vacía) y (T48;
-    RF-005-23, RF-005-25) si la vista de sus sondeos está en la escena sin lo que dibuja su
-    superposición (se cargó antes de desactivar Geoblender o de abrir el fichero) o con otra
-    representación, su recarga (:func:`refresh_view`)."""
+    lista de incidencias es la de la última validación del nuevo (sin ninguno, vacía). La
+    recarga de la vista de sus sondeos sin lo que dibuja su superposición (T48; RF-005-23,
+    RF-005-25) ya no va aquí: la pone la primera marca en vivo tras abrir el proyecto (spec
+    010, T09; RF-010-03: ``bl.scene.dh_view.SESSION_PARTS``, que llama a
+    :func:`refresh_view`), sin alargar la apertura."""
     try:
         load_issues(project)
     except Exception:  # noqa: BLE001 - la sesión sigue: la lista no es imprescindible
         LOGGER.exception("No se pudo poner la lista de la validación de los sondeos")
-    try:
-        refresh_view(project, check=True)
-    except Exception:  # noqa: BLE001 - la sesión sigue: la vista se recarga a mano
-        LOGGER.exception("No se pudo poner la recarga de la vista de los sondeos")
 
 
 def _validated_steps(handle: OperationHandle, result: JobResult) -> Generator[float, None, str]:

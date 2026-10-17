@@ -25,18 +25,22 @@ trabajos menos por cálculo de las trazas (el presupuesto de ``tools/check.py``)
   Geoblender impide calcular las trazas hasta decidir; «Actualizar» lo reimporta con sus
   ajustes como una entrada nueva que sustituye a la anterior, la base se reconstruye y solo
   la traza de S-03 queda obsoleta (el detalle de ``dh_collar``) hasta que se recalcula.
-- T47 (RF-005-22): la vista de las trazas, cargada una vez, dice lo obsoleto en cuanto el
-  temporizador de los indicadores lee el proyecto, sin recalcular nada: «OBSOLETO» sin marcas
-  con S-20 (sin traza), otra vez al día al recalcular la base con su mismo hash y «OBSOLETO» con
-  la marca de S-03 tras «Actualizar» (``test_dh_view.check_stale_view``).
-- T48 (RF-005-23, RF-005-25; M3 y M5 de la comprobación en pantalla del 15/10/2026), con la
-  litología y los análisis en columnas también, y la vista que se carga sola, con las barras
-  del oro: desactivar Geoblender (cierra el proyecto y olvida lo que dibuja la
-  superposición), activarlo y abrir otra vez el proyecto deja la vista con su superposición
-  (sus etiquetas y sus leyendas, sin recalcular nada) y con los nombres de la primera carga: la
-  recarga sustituye los objetos anteriores sin «.001» en los objetos ni en sus datos; abrirlo
-  con la vista ya al día no pone otra recarga. Cambiar el radio del tubo en la representación
-  cambia la malla evaluada de los tubos sin otra acción.
+- T47 (RF-005-22), con la marca en vivo de la spec 010 (T09; RF-010-02): la vista de las
+  trazas, cargada una vez, dice lo obsoleto en cuanto el temporizador de los indicadores lee el
+  proyecto y la marca en vivo lo aplica, con una sola lectura por cambio y sin recalcular nada:
+  «OBSOLETO» sin marcas con S-20 (sin traza), otra vez al día al recalcular la base con su mismo
+  hash y «OBSOLETO» con la marca de S-03 tras «Actualizar» (``test_dh_view.check_stale_view``).
+- T48 (RF-005-23, RF-005-25; M3 y M5 de la comprobación en pantalla del 15/10/2026), con el
+  mecanismo general de la spec 010 (T09; RF-010-03: lo que no se guarda en el ``.blend``, el
+  ``SessionParts`` de los sondeos), con la litología y los análisis en columnas también, y la
+  vista que se carga sola, con las barras del oro: desactivar Geoblender (cierra el proyecto y
+  olvida lo que dibuja la superposición), activarlo y abrir otra vez el proyecto no lee ni pone
+  nada al abrir; la primera marca en vivo tras abrir (tras el primer tic de los indicadores)
+  pone una recarga, y una sola, que deja la vista con su superposición (sus etiquetas y sus
+  leyendas, sin recalcular nada) y con los nombres de la primera carga: la recarga sustituye los
+  objetos anteriores sin «.001» en los objetos ni en sus datos; las marcas siguientes, y abrirlo
+  otra vez con la vista ya al día, no ponen otra. Cambiar el radio del tubo en la
+  representación cambia la malla evaluada de los tubos sin otra acción.
 
 Lo que la tarea pide además lo prueban otras: registrar y desregistrar deja los registros de
 ``core`` como estaban (``test_dh_registration``, T24) y la referencia del azimut con motivo
@@ -65,7 +69,7 @@ from tests.blender.test_dh_import_tabular import (
     _module,
 )
 from tests.blender.test_dh_ops_compute import _drive
-from tests.blender.test_dh_view import check_stale_view
+from tests.blender.test_dh_view import check_stale_view, run_marks
 from tests.support import blender_ext
 from tests.support.fake_layout import FakeLayout
 
@@ -270,16 +274,18 @@ class DrillholeProvenanceTest(DrillholeImportCase):
 
     def test_import_base_validation_and_traces_end_to_end(self) -> None:
         """RF-005-11, RF-005-16, RF-005-20, RF-005-22, RF-008-05, RF-008-10, RF-008-11,
-        RF-008-24, RF-008-26, RF-008-29 (plan §5.6.4, §5.6.6 y §5.6.10; ADR-0025): bocas y
-        desviaciones de ``csv_basico`` → base → validación → trazas. Cambiar la tolerancia de
-        huecos deja obsoleta solo la validación, y el paso de las trazas, las trazas; «Recalcular
-        lo obsoleto» las rehace con los parámetros de hoy y los mismos ajustes. La procedencia
+        RF-008-24, RF-008-26, RF-008-29, RF-010-02 (plan §5.6.4, §5.6.6 y §5.6.10; ADR-0025;
+        plan 010 §5.6): bocas y desviaciones de ``csv_basico`` → base → validación → trazas.
+        Cambiar la tolerancia de huecos deja obsoleta solo la validación, y el paso de las
+        trazas, las trazas; «Recalcular lo obsoleto» las rehace con los parámetros de hoy y los
+        mismos ajustes. La procedencia
         de las trazas llega a los dos CSV con sus parámetros y sus ajustes. Descartar la entrada
         de S-20 lo saca de la base al recalcularla; con el mismo hash que consumieron la
         validación y las trazas, las deja al día sin rehacerlas. Una desviación de S-03
         cambiada fuera de Geoblender impide las trazas hasta decidir; «Actualizar» deja
         obsoleta solo la traza de S-03, hasta que se recalcula. La vista de las trazas lo dice
-        en cuanto lo está, sin recalcular nada (T47)."""
+        en cuanto lo está, con la marca en vivo y una sola lectura, sin recalcular nada (T47;
+        010, T09)."""
         kinds = self.graph.CauseKind
         cause = self.graph.Cause
         # Sin la vista que se carga sola tras las trazas (T29 la prueba).
@@ -440,11 +446,14 @@ class DrillholeProvenanceTest(DrillholeImportCase):
         self.assertEqual(self.traces(), self.expected_traces(1.0))
 
     def test_view_after_reenabling_and_reopening_and_live_radius(self) -> None:
-        """RF-005-23, RF-005-25 (T48; M3, M5): tras desactivar Geoblender, activarlo y abrir
-        otra vez el proyecto, la vista de los sondeos vuelve con su superposición (las mismas
-        etiquetas, leyendas y representación) y los nombres de la primera carga, sin «.001»
-        en los objetos ni en sus datos; abrirlo con la vista al día no la recarga. Cambiar el
-        radio del tubo cambia la malla evaluada sin otra acción."""
+        """RF-005-23, RF-005-25 (T48; M3, M5), RF-010-03 (010, T09; plan 010 A4, D-13): tras
+        desactivar Geoblender, activarlo y abrir otra vez el proyecto, al abrir no se pone
+        nada; la primera marca en vivo tras abrir pone, por el ``SessionParts`` de los sondeos,
+        una sola recarga, y la vista de los sondeos vuelve con su superposición (las mismas
+        etiquetas, leyendas y representación) y los nombres de la primera carga, sin «.001» en
+        los objetos ni en sus datos; las marcas siguientes, y abrirlo otra vez con la vista al
+        día, no la recargan. Cambiar el radio del tubo cambia la malla evaluada sin otra
+        acción."""
         dh_view = _module("bl.scene.dh_view")
         drill_tubes = _module("bl.gn.drill_tubes")
         views = _module("bl.scene.views")
@@ -470,7 +479,17 @@ class DrillholeProvenanceTest(DrillholeImportCase):
         blender_ext.disable()
         blender_ext.enable()
         self.assertIsNone(dh_view.overlay_of(tubes))
+        live = _module("bl.scene.live")
+        ui = _module("bl.ui.provenance")
+        started = self.enterContext(mock.patch.object(ops, "start_view", wraps=ops.start_view))
         self.reopen()
+        self.assertEqual(ops.pending_incorporations(), [])  # al abrir, nada (RNF-002-02)
+        # RF-010-03: el primer tic de los indicadores lee el proyecto y pide la marca; la
+        # primera marca tras abrir rehace lo de la sesión (la superposición): una recarga.
+        self.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
+        run_marks(self)
+        self.assertEqual(ops.pending_incorporations(), [ops.VIEW_QUEUE])
+        self.assertEqual(started.call_count, 1)
         self.finish()  # la recarga de la vista
         tubes, bars = self.view()
         self.assertEqual([tubes.name, bars.name], VIEW_NAMES)
@@ -487,8 +506,14 @@ class DrillholeProvenanceTest(DrillholeImportCase):
                           found.display_key),
                          (before.lithology, before.element, before.grade, before.marks,
                           before.display_key))
-        ops.on_project_changed(self.project)  # al día: no la recarga otra vez
+        # Una sola vez: la marca que pide la recarga al terminar no pone otra, ni la primera
+        # tras abrirlo otra vez con la vista al día.
+        run_marks(self)
+        live.on_project_changed(self.project)
+        live.request(self.project)
+        run_marks(self)
         self.assertEqual(ops.pending_incorporations(), [])
+        self.assertEqual(started.call_count, 1)
 
         # El radio, en vivo (M3): la malla evaluada cambia sin otra acción.
         display = getattr(bpy.context.scene, self.props.SCENE_PROPERTY)  # la de su registro

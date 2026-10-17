@@ -15,7 +15,8 @@
   RF-008-26, RF-008-29): habilitar registra en ``core`` las ocho definiciones de parámetros,
   los tres lectores de contenido, los siete tipos de trabajo, los seis tipos de operación
   (los repetibles con su recálculo y los ajustes que enseña su procedencia) y los tres
-  importadores, y en la vista el cargador ``dh_trace``; quitarlos y ponerlos deja los
+  importadores, y en la vista el cargador ``dh_trace`` (con su marca en vivo y lo que no se
+  guarda en el ``.blend``: spec 010, T09; RF-010-02, RF-010-03); quitarlos y ponerlos deja los
   registros como estaban, también con lo que otro registró antes con las mismas claves.
 - RNF-005-06 (plan §5.6.7): la cola de incorporación de los sondeos avanza un paso por
   llamada de su temporizador y desregistrar la cierra sin escribir nada más.
@@ -371,13 +372,22 @@ class DrillholesRegisteredTest(unittest.TestCase):
         """ADR-0025 §2, principio 8 (RF-005-12, RF-005-26, RF-008-01, RF-008-09): con la
         extensión habilitada, la 005 tiene en ``core`` sus 8 definiciones de parámetros, sus 3
         lectores, sus 7 tipos de trabajo, sus 6 operaciones y sus 3 importadores (ni grupos ni
-        cifras), y en la vista el cargador ``dh_trace``. ``bl/ops/dh.py`` y
-        ``bl/scene/dh_view.py`` lo quitan todo (dos veces: nada más cambia) y lo vuelven a
-        poner (dos veces) con los mismos objetos. Con lo que «otro» registró antes con las
-        mismas claves, registrar pone solo lo que falta (lo de otro se queda) y desregistrar
-        deja los registros exactamente como estaban; lo que otro pone después en lugar de lo
-        suyo, también se queda."""
+        cifras), y en la vista el cargador ``dh_trace`` con su marca en vivo y lo que no se
+        guarda en el ``.blend`` (spec 010, T09; RF-010-02, RF-010-03: ``LiveHook`` y
+        ``SessionParts``). ``bl/ops/dh.py`` y ``bl/scene/dh_view.py`` lo quitan todo (dos
+        veces: nada más cambia) y lo vuelven a poner (dos veces) con los mismos objetos. Con lo
+        que «otro» registró antes con las mismas claves, registrar pone solo lo que falta (lo
+        de otro se queda, sin declarar nada en su cargador) y desregistrar deja los registros
+        exactamente como estaban; lo que otro pone después en lugar de lo suyo, también se
+        queda."""
+        dh_view = self.m.dh_view
+
+        def declared() -> tuple[Any, Any]:
+            found = self.m.views.loaders()[dh_view.PREFIX]
+            return found.live, found.session_parts
+
         enabled = self.m.registries()
+        self.assertEqual(declared(), (dh_view.LIVE, dh_view.SESSION_PARTS))
         ours = self.m.ours()
         self.assertEqual({name: len(keys) for name, keys in ours.items()}, COUNTS)
         bare = {name: {key: item for key, item in found.items() if not key.startswith(OURS)}
@@ -390,6 +400,7 @@ class DrillholesRegisteredTest(unittest.TestCase):
         for _ in range(2):
             self.register_dh()
             self.assertSameRegistries(self.m.registries(), enabled)
+            self.assertEqual(declared(), (dh_view.LIVE, dh_view.SESSION_PARTS))
 
         self.unregister_dh()
         others.extend(self.register_others())
@@ -401,6 +412,7 @@ class DrillholesRegisteredTest(unittest.TestCase):
             with self.subTest(de_otro=f"{name}: {key}"):
                 self.assertIs(after[name][key], item)
         self.assertIs(after["cargadores"]["dh_trace"], _other_loader)
+        self.assertEqual(declared(), (None, None))
         self.unregister_dh()
         self.assertSameRegistries(self.m.registries(), before)
 
