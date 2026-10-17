@@ -17,9 +17,12 @@
    lo sustituido sin sucesor vivo, lo que el proyecto no tiene y lo de otro proyecto
    (``unbacked``); pone al día, sin volver a cargarlos, el estado y la marca de obsoleto de lo
    demás (``RESTATE``) y «FALTA» en lo que falta, que no se puede volver a cargar (D-11)
-   (``bl.scene.views.show_view_state``, con lo leído por los cargadores); y quita la marca de
-   vista desfasada de las escenas (RF-002-29; D-9: sin errores, la vista queda al día del
-   proyecto abierto). Después pide la marca en vivo, que lo cuenta otra vez (control 7).
+   (``bl.scene.views.show_view_state``, con lo leído por los cargadores); pone en lo que
+   muestra el contenido de hoy de su dato, sin volver a cargarlo, sus cifras registradas de hoy
+   (``Object.geoblender.figures``, ``bl.scene.views.show_figures``; spec 010, T16, RF-010-08:
+   lo que se vuelve a cargar ya las trae); y quita la marca de vista desfasada de las escenas
+   (RF-002-29; D-9: sin errores, la vista queda al día del proyecto abierto). Después pide la
+   marca en vivo, que lo cuenta otra vez (control 7).
 
 Hasta ese último paso la escena no cambia: cerrar los pasos antes (Esc) la deja como estaba
 (lo preparado se borra, como al cargar). Lo que no tiene dato del proyecto (lo del usuario, «99
@@ -29,16 +32,21 @@ cargó, no la geometría, plan D3). Nada se escribe en el proyecto: los cargador
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
 import bpy
 
+from ...core.errors import GeoblenderError
 from ...core.i18n import tr
 from ...core.project.model import Progress
 from ...core.views.state import ItemState, ItemView, refresh_plan
 from . import live, views
+
+LOGGER = logging.getLogger("geoblender.bl.scene")
 
 _SHOWN = frozenset({ItemState.CURRENT, ItemState.RESTATE})
 """Lo que muestra el contenido de hoy de su dato: no se vuelve a cargar."""
@@ -123,6 +131,15 @@ def refresh_steps(context: Any, project: Any) -> Generator[Progress, None, None]
     rest = {uid: objects for uid, objects in views.loaded_items().items()
             if uid in states and uid not in placed}
     views.show_view_state(rest, states, live=read)
+    # Las cifras registradas de hoy en lo que muestra su contenido de hoy (lo vuelto a cargar
+    # ya las tiene): RF-010-08, «al cargar y al refrescar». Son solo para mostrarlas: si no se
+    # pueden leer, quedan las que había y Refrescar sigue (lo demás ya está en la escena).
+    try:
+        views.show_figures(project, {uid: objects for uid, objects in rest.items()
+                                     if uid in shown})
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.warning("Refrescar no pudo leer las cifras registradas de la vista",
+                       exc_info=True)
     if load is None:
         _clear_view_stale()
     live.request(project)

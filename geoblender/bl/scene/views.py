@@ -47,7 +47,9 @@ A3, D-9 a D-13 y D-17; generaliza lo de los sondeos, spec 005, T47):
 - cada objeto cargado anota además el GeoOrigin con que se cargó (``Object.geoblender.origin``,
   «X0 Y0 Z0» en metros enteros), «al día» (``view_state``) y las cifras registradas de su dato
   como texto ya escrito (``figures``: las de la operación que escribió su contenido, sin marcas,
-  ``core.views.card.dataset_figures``; solo para mostrarlas);
+  ``core.views.card.dataset_figures``; solo para mostrarlas: solo las escribe este módulo y
+  solo las lee ``bl/ui``, D-17), que Refrescar vuelve a poner también en lo que no vuelve a
+  cargar (:func:`show_figures`; spec 010, T16);
 - :func:`loaded_items` agrupa por dato los objetos de Geoblender de la escena (no los del
   usuario ni los de «99 Trabajo», que no tienen dato) y :func:`loaded_item` dice con qué se
   cargaron (``core.views.state.LoadedItem``), para ``core.views.state.view_states``;
@@ -472,7 +474,9 @@ class FigureText:
 
 def _put_figures(props: Any, figures: Sequence[FigureText]) -> None:
     """Las cifras ``figures`` en ``Object.geoblender.figures`` (``props``), en lugar de las que
-    tuviera."""
+    tuviera. Solo este módulo las escribe y solo ``bl/ui`` las lee (spec 010, D-17; lo vigila
+    ``tests/unit/architecture/test_views_figures.py``): son para mostrarlas; ningún cálculo las
+    lee (las cifras se leen del proyecto, con su tipo y su procedencia)."""
     props.figures.clear()
     for figure in figures:
         item = props.figures.add()
@@ -482,6 +486,36 @@ def _put_figures(props: Any, figures: Sequence[FigureText]) -> None:
         item.value_text = figure.value_text
         item.unit = figure.unit
         item.kind = figure.kind
+
+
+def _figure_texts(project: Any, uids: Iterable[str]) -> dict[str, tuple[FigureText, ...]]:
+    """Las cifras registradas de hoy de los datos ``uids`` del proyecto ``project`` (las de la
+    operación que escribió su contenido, sin marcas: ``core.views.card.dataset_figures``),
+    escritas en el idioma de la interfaz, por el uid de cada dato que tiene el proyecto. No
+    escribe en el proyecto."""
+    from ...core.views import card  # al usarlo: no al habilitar
+
+    shown_language = language()
+    return {item.record.uid: tuple(FigureText.of(figure, shown_language)
+                                   for figure in item.figures)
+            for item in card.dataset_figures(project, list(uids), marks=False)}
+
+
+def show_figures(project: Any, groups: Mapping[str, Sequence[bpy.types.Object]]) -> int:
+    """Pone en los objetos de cada dato de ``groups`` (los de :func:`loaded_items`) las cifras
+    registradas de hoy de su dato en el proyecto abierto ``project``, en lugar de las que
+    anotaran (``Object.geoblender.figures``; spec 010, RF-010-08; plan A2, A8, D-17): lo que
+    hace Refrescar con lo que no vuelve a cargar (lo que sí, las pone al cargarlo). Un dato que
+    el proyecto no tiene no se toca. No escribe en el proyecto; devuelve en cuántos datos las
+    puso."""
+    wanted = [uid for uid, objects in groups.items() if objects]
+    if not wanted:
+        return 0
+    found = _figure_texts(project, wanted)
+    for uid, texts in found.items():
+        for obj in groups[uid]:
+            _put_figures(getattr(obj, OBJECT_PROPERTY), texts)
+    return len(found)
 
 
 def _mark(obj: bpy.types.Object, kind: str, shown: Any, project: Any, origin: str,
@@ -795,7 +829,6 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *, lod: int = 0,
     ``clear_view_stale`` y sin errores, se quita la marca de vista desfasada de las escenas
     (RF-002-29; D-9)."""
     from ...core.provenance.view import dataset_view  # al usarlo: no al habilitar
-    from ...core.views import card
 
     scene = getattr(context, "scene", None) or bpy.context.scene
     wanted = list(refs)
@@ -840,10 +873,7 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *, lod: int = 0,
                 built.remove(entry)
         placed = [entry.shown.record.uid for entry in built
                   if entry.parts is not None and entry.loader is not None]
-        shown_language = language()
-        figures = {item.record.uid: tuple(FigureText.of(figure, shown_language)
-                                          for figure in item.figures)
-                   for item in card.dataset_figures(project, placed, marks=False)}
+        figures = _figure_texts(project, placed)
     except BaseException:
         _discard(obj for entry in built if entry.parts is not None
                  for obj in entry.parts.objects)

@@ -25,6 +25,11 @@ el idioma de Geoblender), la fila elegida (``inventory_index``), de qué proyect
 filtros, enumerados fijos (los identificadores son los de ``core.views.inventory``; el tipo
 «Entradas» es la categoría): cambiar uno vuelve a filtrar lo ya leído, sin leer el proyecto
 (``bl.ui.view_panels.inventory_filtered``); el texto, a cada tecla.
+
+Spec 010, T16 (RF-010-08; plan A8, D-17): las filas de la ventana de «Cifras de la selección»
+(``selection``, como las de la ficha: el nombre de cada dato, cada cifra con su insignia y sus
+marcas, o que no tiene), leídas del proyecto al pedir la orden, y de qué proyecto son
+(``selection_project``).
 """
 
 from __future__ import annotations
@@ -84,11 +89,12 @@ def _inventory_filtered(_view: object, _context: object) -> None:
 
 
 class GEOBLENDER_PG_core_card_row(bpy.types.PropertyGroup):
-    """Una línea de la ficha de «Elemento activo» (spec 010, RF-010-06), ya presentada:
-    ``kind`` dice cómo se dibuja (``bl.ui.view_panels``: su nombre, un dato de la ficha, el
-    título de un apartado, una entrada o un derivado, una cifra, «ninguno» o el lugar de «al
-    día», que se dibuja con el objeto activo), su texto en el idioma de Geoblender al leerla, su
-    icono, si va en alerta y el uid de lo que nombra (una entrada o un dato)."""
+    """Una línea de la ficha de «Elemento activo» (spec 010, RF-010-06) o de la ventana de
+    «Cifras de la selección» (RF-010-08), ya presentada: ``kind`` dice cómo se dibuja
+    (``bl.ui.view_panels``: su nombre, un dato de la ficha, el título de un apartado, una
+    entrada o un derivado, una cifra, sus marcas, «ninguno», un aviso o el lugar de «al día»,
+    que se dibuja con el objeto activo), su texto en el idioma de Geoblender al leerla, su
+    icono, si va en alerta y el uid de lo que nombra (una entrada, un dato o una cifra)."""
 
     kind: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     text: StringProperty(options=_STATIC)  # type: ignore[valid-type]
@@ -162,6 +168,11 @@ class GEOBLENDER_PG_core_view_panels(bpy.types.PropertyGroup):
         update=_inventory_filtered, name="In the scene",
         description="Only what is loaded in the scene, or only what is not",
     )
+
+    # Cifras de la selección (T16; RF-010-08).
+    selection: CollectionProperty(type=GEOBLENDER_PG_core_card_row,  # type: ignore[valid-type]
+                                  options=_STATIC)
+    selection_project: StringProperty(options=_STATIC)  # type: ignore[valid-type]
 
 
 # En orden de registro (las filas, antes del grupo que las usa).

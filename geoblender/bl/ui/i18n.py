@@ -64,11 +64,11 @@ def install() -> str:
 
 def _relabel_core_panel() -> None:
     """La pestaña y el título de «Proyecto» (spec 002) y de los paneles de la vista regenerable
-    que van en ella (spec 010: Elemento activo e Inventario; su lista no tiene pestaña),
-    registrados otra vez si cambian (si no, tras cambiar el idioma quedarían en otra
-    pestaña)."""
+    que van en ella (spec 010: Elemento activo e Inventario; su lista y la ventana de «Cifras de
+    la selección» no tienen pestaña), registrados otra vez si cambian (si no, tras cambiar el
+    idioma quedarían en otra pestaña)."""
     panels = [cls for cls in (*core_panel.classes, *view_panels.classes)
-              if issubclass(cls, bpy.types.Panel)]
+              if issubclass(cls, bpy.types.Panel) and hasattr(cls, "bl_category")]
     before = {cls: (cls.bl_category, cls.bl_label) for cls in panels}
     core_panel.localize()
     view_panels.localize()

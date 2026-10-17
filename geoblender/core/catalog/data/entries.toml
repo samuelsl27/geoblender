@@ -41,7 +41,7 @@ delivered = true
 
 # La spec 010 (vistas regenerables) también sale de R-07 (D-18 de su plan) y entrega sus órdenes
 # tarea a tarea: Refrescar las vistas desde el proyecto (T11), la primera; la interna «Abrir el
-# proyecto de esta vista» (T12), en common.toml.
+# proyecto de esta vista» (T12), en common.toml; Cifras de la selección (T16), la última.
 ["010"]
 title.en = "Regenerable views"
 title.es = "Vistas regenerables"

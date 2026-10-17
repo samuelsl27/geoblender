@@ -2062,6 +2062,19 @@ es = "No está cargado en la escena: no hay nada que descargar"
 ["An input has no provenance: the data imported from it have it"]
 es = "Una entrada no tiene procedencia: la tienen los datos importados de ella"
 
+# Cifras de la selección (control 29): su ventana, con las cifras registradas de los datos
+# seleccionados, sin medir (spec 010, T16; RF-010-08; plan 010 §5.5, A8). «No figures
+# recorded» y «No project is open» ya están.
+
+["Selection figures"]
+es = "Cifras de la selección"
+
+["No selected object shows data of this project"]
+es = "Ningún objeto seleccionado muestra un dato de este proyecto"
+
+["No figures recorded: no operation of these data recorded figures (the cubature records them, for example)"]
+es = "Sin cifras registradas: ninguna operación de estos datos registró cifras (las registra, por ejemplo, la cubicación)"
+
 # Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
 # RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto
 # desde un MDT…, sus diálogos, sus informes y la decisión de una importación que espera.

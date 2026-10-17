@@ -38,8 +38,9 @@ PENDING_REFS: frozenset[str] = frozenset()
 # Entradas aprobadas con un plan que BS §8 aún no dice (la T37 de la 003 escribió en BS las
 # del plan 003 §11, Manual y Novedades en R-13; D-4). Plan 008 §5.1 y §5.5 (T44): las
 # órdenes de Proyecto ▸ Control de la 008 pasan de R-07 a 008 (R-07 se partió en la 008 y
-# la 009; lo de la 009 sigue en R-07). Plan 010 D-18 (T11): Refrescar pasa de R-07 a 010 hasta
-# que la T19 de la 010 lo escriba en BS. identificador → entrada.
+# la 009; lo de la 009 sigue en R-07). Plan 010 D-18 (T11, T16): Refrescar y Cifras de la
+# selección pasan de R-07 a 010 hasta que la T19 de la 010 lo escriba en BS. identificador →
+# entrada.
 APPROVED_ENTRIES: dict[str, str] = {
     "core_show_parameters": "008",
     "core_show_inputs": "008",
@@ -47,6 +48,7 @@ APPROVED_ENTRIES: dict[str, str] = {
     "core_recompute_stale": "008",
     "core_show_lineage": "008",
     "core_refresh": "010",
+    "core_show_selection_figures": "010",
 }
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,

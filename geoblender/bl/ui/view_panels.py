@@ -54,11 +54,22 @@ solo lectura, igual. La lectura se guarda como tuplas de textos y booleanos (el 
 ``docs/trampas.md`` §2); las filas, con los valores del proyecto, que el dibujo presenta.
 ``core.views.inventory`` se importa al usarlo, como ``core.views.card``.
 
+**Cifras de la selección** (la ventana emergente :class:`GEOBLENDER_PT_core_selection_figures`;
+T16, RF-010-08; plan A8, D-17), que abre la orden ``geoblender.core_show_selection_figures``
+(control 29, ``bl.ops.views``) tras leer con :func:`fill_selection_figures`: de los datos de
+este proyecto que muestran los objetos seleccionados (sin repetir, por nombre), las cifras
+registradas, leídas del proyecto con sus marcas (``core.views.card.dataset_figures``), cada una
+con su insignia de tipo, su nombre y su valor con su unidad, y sus marcas de hoy en alerta
+(«depende de una hipótesis», «obsoleta»…), o «Sin cifras registradas» (con el porqué si ninguno
+tiene: hasta que la cubicación, R-38, registre las primeras). **No mide nada**: ni áreas ni
+volúmenes de la geometría; y las cifras que anota cada objeto (``Object.geoblender.figures``,
+solo para mostrarlas) no son su fuente.
+
 :func:`register` suscribe y apunta el manejador ``@persistent`` y las escuchas; :func:`unregister`
 lo quita todo (también el temporizador del inventario). Los paneles (con la pestaña y el título
 traducidos por :func:`localize` antes de registrar, y registrados otra vez al cambiar el idioma,
 ``bl.ui.i18n``) van tras el panel Proyecto (``bl_order``): Elemento activo y, después,
-Inventario.
+Inventario; la ventana de las cifras no tiene pestaña.
 """
 
 from __future__ import annotations
@@ -79,14 +90,17 @@ from ...core.i18n import format_number, language, tr, translate
 from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
+from .. import compat
 from ..props.core import OBJECT_PROPERTY
 from ..props.views import INVENTORY_INPUT, WINDOW_MANAGER_PROPERTY
 from ..scene import live, project_session, views
 from . import core_panel, gate, labels, provenance
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from ...core.project.session import Project
-    from ...core.views.card import ItemCard, Link
+    from ...core.views.card import DatasetFigures, ItemCard, Link
     from ...core.views.inventory import InventoryFilter, InventorySnapshot
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
@@ -109,6 +123,8 @@ ROW_HEADING = "heading"  # el título de un apartado (↑ entradas, ↓ derivado
 ROW_ITEM = "item"  # una entrada o un derivado
 ROW_FIGURE = "figure"  # una cifra con su insignia
 ROW_NONE = "none"  # un apartado vacío («Ninguna entrada»)
+ROW_MARKS = "marks"  # las marcas de una cifra (Cifras de la selección, en alerta)
+ROW_NOTE = "note"  # un aviso de la ventana de Cifras de la selección
 
 # El icono del tipo de un dato (core.datasets.DATASET_KINDS); otro, el de un fichero.
 KIND_ICONS: dict[str, str] = {
@@ -161,6 +177,13 @@ LOAD_ICON = "ADD"
 UNLOAD_ICON = "REMOVE"
 _HISTORY = frozenset({str(DatasetStatus.SUPERSEDED), str(DatasetStatus.DISCARDED)})
 _MISSING = str(DatasetStatus.MISSING)
+
+# Cifras de la selección (T16).
+SELECTION_FIGURES_PANEL = "GEOBLENDER_PT_core_selection_figures"
+SELECTION_FIGURES_LABEL = "Selection figures"  # msgid del título
+SELECTION_FIGURES_UNITS = 28
+"""El ancho de la ventana, en unidades de interfaz (560 px a escala 1,0)."""
+SELECTION_FIGURES_WIDTH_PX = SELECTION_FIGURES_UNITS * compat.UI_UNIT_PX
 
 
 @dataclass(frozen=True)
@@ -359,19 +382,25 @@ def _clear(view: Any) -> bool:
     return had
 
 
-def _fill(view: Any, project_uid: str, uid: str, found: ItemCard | None) -> None:
-    """Pone la ficha leída del dato ``uid`` (``None``: el proyecto ya no lo tiene)."""
-    view.card.clear()
-    view.card_uid = uid
-    view.card_project = project_uid
-    view.card_found = found is not None
-    for line in card_lines(found) if found is not None else ():
-        row = view.card.add()
+def _put_lines(rows: Any, lines: Sequence[CardLine]) -> None:
+    """Las líneas ``lines`` en las filas ``rows`` (``GEOBLENDER_PG_core_card_row``), en lugar de
+    las que hubiera."""
+    rows.clear()
+    for line in lines:
+        row = rows.add()
         row.kind = line.kind
         row.text = line.text
         row.icon = line.icon
         row.alert = line.alert
         row.uid = line.uid
+
+
+def _fill(view: Any, project_uid: str, uid: str, found: ItemCard | None) -> None:
+    """Pone la ficha leída del dato ``uid`` (``None``: el proyecto ya no lo tiene)."""
+    view.card_uid = uid
+    view.card_project = project_uid
+    view.card_found = found is not None
+    _put_lines(view.card, card_lines(found) if found is not None else ())
 
 
 def read_card(context: Any = None) -> bool:
@@ -901,6 +930,120 @@ class GEOBLENDER_PT_core_project_inventory(bpy.types.Panel):
         draw_inventory(self.layout, context)
 
 
+# Cifras de la selección (T16) -----------------------------------------------------------------
+
+
+def selected_objects(context: Any) -> list[Any]:
+    """Los objetos seleccionados de ``context`` (``selected_objects``) o, si no los da, los de
+    su capa que lo están."""
+    found = getattr(context, "selected_objects", None)
+    if found is not None:
+        return list(found)
+    layer = getattr(context, "view_layer", None)
+    if layer is None:
+        return []
+    return [obj for obj in layer.objects if obj.select_get(view_layer=layer)]
+
+
+def selection_lines(found: Sequence[DatasetFigures]) -> list[CardLine]:
+    """Las líneas de la ventana de «Cifras de la selección» (RF-010-08) con las cifras de cada
+    dato (``core.views.card.DatasetFigures``, con sus marcas), en el idioma de Geoblender: de
+    cada uno, su nombre y cada cifra registrada con su insignia de tipo, su nombre y su valor con
+    su unidad y, debajo, sus marcas de hoy (RF-008-31: «depende de una hipótesis», «obsoleta»…,
+    en alerta), o «Sin cifras registradas»; si ninguno tiene, sus nombres y por qué; sin
+    ninguno, que la selección no muestra datos del proyecto. Nada se mide."""
+    shown = language()
+    recorded = any(item.figures for item in found)
+    lines: list[CardLine] = []
+    for item in found:
+        record = item.record
+        lines.append(CardLine(ROW_NAME, record.name, KIND_ICONS.get(record.kind, OTHER_ICON),
+                              uid=record.uid))
+        for figure in item.figures:
+            lines.append(CardLine(
+                ROW_FIGURE, f"{provenance.badge(figure.kind)} {figure.text(language=shown)}",
+                uid=figure.uid))
+            marks = item.marks.get(figure.uid)
+            texts = () if marks is None else marks.texts(language=shown)
+            if texts:
+                lines.append(CardLine(ROW_MARKS, " · ".join(texts), alert=True, uid=figure.uid))
+        if recorded and not item.figures:
+            lines.append(CardLine(ROW_NONE, tr("No figures recorded")))
+    if not found:
+        lines.append(CardLine(ROW_NOTE, tr("No selected object shows data of this project"),
+                              "INFO"))
+    elif not recorded:
+        lines.append(CardLine(ROW_NOTE, tr("No figures recorded: no operation of these data "
+                                           "recorded figures (the cubature records them, for "
+                                           "example)"), "INFO"))
+    return lines
+
+
+def fill_selection_figures(context: Any = None) -> int:
+    """Lee del proyecto de la sesión, en una instantánea, las cifras registradas con sus marcas
+    de los datos de este proyecto que muestran los objetos seleccionados de ``context`` (por
+    defecto, ``bpy.context``), sin repetir (``core.views.card.dataset_figures``: las de la
+    operación que escribió el contenido de cada uno; sus marcas leen el grafo, por eso solo al
+    pedirlo), y pone sus líneas, por nombre, en ``WindowManager.geoblender_view_panels``
+    (:func:`selection_lines`). No mide nada ni escribe en el proyecto; las cifras de los
+    objetos (``Object.geoblender.figures``) no cuentan: el proyecto es la fuente. Devuelve de
+    cuántos datos; sin proyecto, 0. Si no se puede leer el proyecto, el error sigue y las filas
+    quedan como estaban."""
+    context = bpy.context if context is None else context
+    view = _view(context)
+    project = project_session.current()
+    if view is None or project is None:
+        return 0
+    uids: dict[str, None] = {}
+    for obj in selected_objects(context):
+        uid, owner = shown_by(obj)
+        if uid and owner == project.uid:
+            uids[uid] = None
+    # Al usarlo: registrar no carga core.provenance.importer (spec 008, T65).
+    from ...core.views import card
+
+    found = sorted(card.dataset_figures(project, list(uids), marks=True) if uids else (),
+                   key=lambda item: (item.record.name.casefold(), item.record.name))
+    view.selection_project = project.uid
+    _put_lines(view.selection, selection_lines(found))
+    return len(found)
+
+
+def draw_selection_figures(layout: Any, context: Any) -> None:
+    """El contenido de :class:`GEOBLENDER_PT_core_selection_figures`: las líneas ya leídas al
+    pedir la orden, partidas al ancho de la ventana. No lee el proyecto."""
+    layout.label(text=tr("Selection figures"), translate=False)
+    width = labels.dialog_width(SELECTION_FIGURES_WIDTH_PX)
+    view = _view(context)
+    project = project_session.current()
+    if project is None:
+        _draw_lines(layout, tr("No project is open"), width, icon="INFO")
+        return
+    if view is None or view.selection_project != project.uid:
+        return
+    for index, row in enumerate(view.selection):
+        if row.kind == ROW_NAME and index:
+            layout.separator()
+        sub = layout.column(align=True)
+        sub.active = row.kind != ROW_NONE
+        icon = row.icon or ("NONE" if row.kind == ROW_NOTE else "BLANK1")
+        _draw_lines(sub, row.text, width, icon=icon, alert=row.alert)
+
+
+class GEOBLENDER_PT_core_selection_figures(bpy.types.Panel):
+    """Registered figures of the selected data, with their unit, their type and their marks"""
+
+    bl_idname = SELECTION_FIGURES_PANEL
+    bl_label = SELECTION_FIGURES_LABEL
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = SELECTION_FIGURES_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_selection_figures(self.layout, context)
+
+
 def localize() -> None:
     """La pestaña y los títulos en el idioma de la interfaz (antes de registrar)."""
     GEOBLENDER_PT_core_active_item.bl_category = tr("Project")
@@ -910,10 +1053,11 @@ def localize() -> None:
 
 
 # En orden de registro (tras los de core_panel: la pestaña «Proyecto»; la lista, antes del panel
-# que la dibuja).
+# que la dibuja; la ventana de las cifras, sin pestaña).
 classes: tuple[type, ...] = (GEOBLENDER_PT_core_active_item,
                              GEOBLENDER_UL_core_project_inventory,
-                             GEOBLENDER_PT_core_project_inventory)
+                             GEOBLENDER_PT_core_project_inventory,
+                             GEOBLENDER_PT_core_selection_figures)
 
 
 def register() -> None:

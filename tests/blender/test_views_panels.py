@@ -44,6 +44,19 @@ D-15), con el mismo proyecto:
 - **como mucho 500 filas**: 20 100 elementos dan 500 y «… y 19 600 más: afine el filtro»;
 - el panel, en el modo Geoblender, y sus textos caben a 1920 px con escala 1,0 y 1,25.
 
+«Cifras de la selección» (control 29; spec 010, T16; RF-010-08; plan 010 §5.3.3, §5.5, A8, D-17
+y D-18), con el mismo proyecto y la cadena de la demostración de la 008:
+
+- **la orden real** de la entrada «010», entregada (ni provisional ni «Disponible en R-07»):
+  lee del proyecto, con sus marcas, las cifras registradas de los datos de los objetos
+  seleccionados (sin repetir) y abre su ventana (``wm.call_panel``: en ``-b`` no hay región
+  donde abrirla y se sustituye); **no mide**: con la rejilla, que no tiene cifras, «Sin cifras
+  registradas: …» y nada más; con los años por banco, cada cifra con su valor y su unidad, su
+  insignia ([CAL]) y sus marcas («depende de una hipótesis»…) y, tras cambiar la producción,
+  «obsoleta»; no escribe en el proyecto;
+- **las cifras de cada objeto** (``Object.geoblender.figures``, solo para mostrarlas): las de su
+  dato al cargarlo y tras cada Refrescar (F5), también en lo que F5 no vuelve a cargar.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
@@ -59,8 +72,8 @@ from tests.blender.test_dh_import_tabular import assert_fits, at_scales
 from tests.support import blender_ext
 from tests.support import views_fixtures as vf
 from tests.support.blender_ext import fingerprint_diff, module_name
-from tests.support.fake_layout import FakeLayout, Item, draw
-from tests.support.provenance_demo import Demo
+from tests.support.fake_layout import FakeLayout, Item, draw, operator_self
+from tests.support.provenance_demo import PRODUCTION, YEARS_TABLE, Demo
 from tests.support.repo import ROOT
 from tests.support.trees import temp_folder
 
@@ -85,6 +98,20 @@ WIDE_PX = 5000.0  # una barra lateral en la que nada se parte (para leer cada l�
 NOT_OURS = "El objeto activo no muestra un dato de este proyecto"
 GONE = "El proyecto ya no tiene el dato de este objeto"
 NO_FIGURES = "Sin cifras registradas"
+# Cifras de la selección (T16).
+SELECTION_FIGURES = "geoblender.core_show_selection_figures"
+SELECTION_PANEL = "GEOBLENDER_PT_core_selection_figures"
+SELECTION_TITLE = "Cifras de la selección"
+NONE_RECORDED = ("Sin cifras registradas: ninguna operación de estos datos registró cifras (las "
+                 "registra, por ejemplo, la cubicación)")
+NOTHING_SELECTED = "Ningún objeto seleccionado muestra un dato de este proyecto"
+SELECTION_DESCRIPTION = ("Cifras registradas de los datos seleccionados, con su unidad, su tipo y "
+                         "sus marcas; no mide")
+HYPOTHESIS = "depende de una hipótesis"
+STALE_FIGURE = "obsoleta"
+DEMO_PREFIX = "demo_"  # el cargador de la prueba para los datos de la demostración
+DEMO_LABEL = "Demo bench years"  # su msgid (la demostración pone su español)
+FIGURE_PROPS = ("uid", "key", "label", "value_text", "unit", "kind")
 
 
 class ActiveItemTest(unittest.TestCase):
@@ -207,6 +234,92 @@ class ActiveItemTest(unittest.TestCase):
         layout = FakeLayout()
         self.panels.draw_inventory_row(layout, row)
         return layout
+
+    # --- Ayudas de las cifras de la selección (T16) -------------------------------------------
+
+    def demo_years(self) -> Any:
+        """La cadena de la demostración de la 008 en el proyecto de la prueba: los bancos y sus
+        años (``demo_bench_years``, con 3 cifras [CAL] de la producción, HIPÓTESIS sin
+        confirmar); devuelve la demostración."""
+        demo = self.enterContext(Demo(module_name()).registered())
+        demo.digitize(self.data.project)
+        demo.bench_years(self.data.project)
+        return demo
+
+    def change_production(self, value: float) -> None:
+        """Otra producción de la demostración (sigue HIPÓTESIS), con su motivo: lo que la leyó
+        queda obsoleto."""
+        store = vf.extension("core.params").ParameterStore(self.data.project)
+        with self.data.project.write_transaction() as conn:
+            store.change(conn, PRODUCTION, value=value, source="Prueba de la vista",
+                         source_kind="document", decided_by="la prueba", reason=vf.REASON)
+
+    def showing(self, record: Any, name: str) -> bpy.types.Object:
+        """Un objeto vacío que muestra el dato ``record`` del proyecto de la prueba (como su
+        vista: la demostración no tiene cargador)."""
+        obj = bpy.data.objects.new(name, None)
+        bpy.context.scene.collection.objects.link(obj)
+        obj.geoblender.dataset_uid = record.uid
+        obj.geoblender.project_uid = self.data.project.uid
+        return obj
+
+    def figures_drawn(self, *, width_px: float = WIDE_PX) -> FakeLayout:
+        """La ventana de «Cifras de la selección» dibujada (con ``width_px`` para sus
+        etiquetas)."""
+        panel = getattr(bpy.types, SELECTION_PANEL)
+        with mock.patch.object(self.labels, "dialog_width", return_value=width_px):
+            return draw(panel, bpy.context)
+
+    def selection_figures(self, *objects: bpy.types.Object) -> list[str]:
+        """Selecciona solo ``objects``, pide «Cifras de la selección» con una ventana (la suya
+        se abre con ``wm.call_panel``, sustituido: en ``-b`` no hay región donde abrirla) y
+        devuelve las etiquetas de su ventana, una por línea."""
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(obj in objects)
+        ops_views = vf.extension("bl.ops.views")
+        window = bpy.context.window_manager.windows[0]
+        with mock.patch.object(ops_views, "_call_panel", return_value={"FINISHED"}) as call:
+            with bpy.context.temp_override(window=window):
+                self.assertEqual(bpy.ops.geoblender.core_show_selection_figures(),
+                                 {"FINISHED"})
+        call.assert_called_once_with(SELECTION_PANEL)
+        return self.label_texts(self.figures_drawn())
+
+    def figure_lines(self, record: Any) -> list[str]:
+        """Lo que dice la ventana de las cifras de ``record``: cada una con su insignia de tipo,
+        su nombre y su valor con su unidad, y sus marcas de hoy («depende de una hipótesis»,
+        «obsoleta»…), leídas del proyecto."""
+        card = vf.extension("core.views.card")
+        ui = vf.extension("bl.ui.provenance")
+        (found,) = card.dataset_figures(self.data.project, [record.uid])
+        lines: list[str] = []
+        for figure in found.figures:
+            lines.append(f"{ui.badge(figure.kind)} {figure.text(language='es')}")
+            marks = found.marks[figure.uid].texts(language="es")
+            if marks:
+                lines.append(" · ".join(marks))
+        return lines
+
+    @staticmethod
+    def object_figures(obj: bpy.types.Object) -> list[tuple[str, ...]]:
+        """Las cifras que anota ``obj`` (``Object.geoblender.figures``)."""
+        return [tuple(getattr(item, key) for key in FIGURE_PROPS)
+                for item in obj.geoblender.figures]
+
+    def registered_figures(self, record: Any) -> list[tuple[str, ...]]:
+        """Las cifras registradas de ``record`` como las anota un objeto: las de la operación
+        que escribió su contenido, leídas del proyecto, en el idioma de la interfaz."""
+        card = vf.extension("core.views.card")
+        views = vf.extension("bl.scene.views")
+        (found,) = card.dataset_figures(self.data.project, [record.uid], marks=False)
+        return [tuple(getattr(views.FigureText.of(figure, "es"), key) for key in FIGURE_PROPS)
+                for figure in found.figures]
+
+    @staticmethod
+    def load_demo(request: Any) -> Any:
+        """El cargador de la prueba para los datos de la demostración: un objeto vacío."""
+        obj = bpy.data.objects.new(request.name, None)
+        return vf.extension("bl.scene.views").ViewParts((obj,), None)
 
     # --- Pruebas ------------------------------------------------------------------------------
 
@@ -606,6 +719,138 @@ class ActiveItemTest(unittest.TestCase):
         self.assertFalse([text for text in self.label_texts(self.inventory_drawn())
                           if text.startswith("… y")])
 
+    def test_selection_figures_without_measuring(self) -> None:
+        """RF-010-08 (plan A8, D-17, D-18; §5.5): «Cifras de la selección» (control 29) es la
+        orden real de la entrada «010», entregada, con la descripción que no dice que mide; con
+        los datos de los objetos seleccionados (sin repetir) lee del proyecto sus cifras
+        registradas con sus marcas y abre su ventana: con la rejilla, que no tiene cifras,
+        «Sin cifras registradas: …» y nada más (no mide); con los años por banco de la
+        demostración, cada cifra con su valor y su unidad, su insignia ([CAL]) y sus marcas
+        («depende de una hipótesis»), y tras cambiar la producción, también «obsoleta»; las
+        dos a la vez, cada una con lo suyo; sin un dato del proyecto seleccionado, lo dice.
+        No escribe en el proyecto; los textos caben a escala 1,0 y 1,25; sin proyecto, no se
+        puede."""
+        commands = vf.extension("bl.ui.commands")
+        command = commands.catalog().commands[SELECTION_FIGURES]
+        self.assertEqual((command.entry, command.action, command.description_es),
+                         ("010", "P", SELECTION_DESCRIPTION))
+        cls = commands.registered_class(SELECTION_FIGURES)
+        self.assertFalse(commands.is_provisional(cls))
+        self.assertTrue(commands.is_available(SELECTION_FIGURES))
+        self.assertNotIn("R-07", cls.bl_description)
+
+        data = self.data
+        self.demo_years()
+        data.attach()
+        data.load(bpy.context, data.names[0])
+        grid = data.record(data.names[0])
+        years = data.record(YEARS_TABLE)
+        shown = [self.showing(years, name) for name in ("Años por banco", "Años por banco 2")]
+        (grid_obj,) = vf.objects_of(bpy.data, grid.uid)
+        _work, (sketch, *_rest) = vf.user_objects(bpy.data, bpy.context.scene, count=1)
+        counter = data.change_counter()
+
+        # La rejilla no tiene cifras: «Sin cifras registradas: …» y nada más (no mide).
+        self.assertEqual(self.selection_figures(grid_obj),
+                         [SELECTION_TITLE, grid.name, NONE_RECORDED])
+
+        # Los años por banco (dos objetos del mismo dato: una vez), con sus marcas; se leen
+        # con ellas (marks=True), una vez por dato.
+        card = vf.extension("core.views.card")
+        with mock.patch.object(card, "dataset_figures", wraps=card.dataset_figures) as reads:
+            lines = self.selection_figures(*shown)
+        ((asked, options),) = [(list(call.args[1]), call.kwargs)
+                               for call in reads.call_args_list]
+        self.assertEqual((asked, options.get("marks")), ([years.uid], True))
+        expected = self.figure_lines(years)
+        self.assertEqual(lines, [SELECTION_TITLE, years.name, *expected])
+        self.assertEqual(len([line for line in lines if line.startswith("[CAL] ")]), 3)
+        self.assertIn("[CAL] Años del banco (demostración) · B-1 = 2,5 año", lines)
+        self.assertIn(HYPOTHESIS, expected[1].split(" · "))
+        layout = self.figures_drawn()
+        marked = [item for item in layout.of_kind("label") if item.text == expected[1]]
+        self.assertEqual([item.alert for item in marked], [True] * 3)  # bajo cada cifra
+        self.assertEqual(data.change_counter(), counter)
+
+        # Otra producción: las cifras, «obsoleta».
+        self.change_production(400_000.0)
+        counter = data.change_counter()
+        lines = self.selection_figures(grid_obj, *shown)
+        stale = self.figure_lines(years)
+        self.assertIn(STALE_FIGURE, stale[1].split(" · "))
+        self.assertIn(HYPOTHESIS, stale[1].split(" · "))
+        # Las dos a la vez, por nombre: la rejilla dice que no tiene.
+        self.assertEqual(lines, [SELECTION_TITLE, years.name, *stale, grid.name, NO_FIGURES])
+
+        # Sin un dato del proyecto seleccionado (un objeto del usuario), lo dice.
+        self.assertEqual(self.selection_figures(sketch), [SELECTION_TITLE, NOTHING_SELECTED])
+        self.assertEqual(data.change_counter(), counter)
+
+        # Desde un guion sin ventana: las filas, sin abrirla (tras cargar un .blend, en -b
+        # bpy.context sí tiene ventana: un contexto sin ella). Los textos caben a escala 1,0 y
+        # 1,25 en el ancho de la ventana.
+        ops_views = vf.extension("bl.ops.views")
+        operator = ops_views.GEOBLENDER_OT_core_show_selection_figures
+        script = SimpleNamespace(window=None, window_manager=bpy.context.window_manager,
+                                 selected_objects=[grid_obj, *shown])
+        with mock.patch.object(ops_views, "_call_panel") as call:
+            self.assertEqual(operator.execute(operator_self(operator), script), {"FINISHED"})
+        self.assertEqual(call.call_count, 0)
+        self.assertEqual(self.label_texts(self.figures_drawn()), lines)
+        width = self.labels.dialog_width(self.panels.SELECTION_FIGURES_WIDTH_PX)
+        for scale in at_scales():
+            layout = draw(getattr(bpy.types, SELECTION_PANEL), bpy.context)
+            self.assertGreaterEqual(len(layout.of_kind("label")), len(lines))
+            assert_fits(self, layout, width, scale=scale)
+
+        # Sin proyecto, no se puede.
+        data.close()
+        self.assertFalse(bpy.ops.geoblender.core_show_selection_figures.poll())
+
+    def test_object_figures_after_loading_and_refresh(self) -> None:
+        """RF-010-08 (plan A2, A8, D-17): las cifras de cada objeto (``Object.geoblender
+        .figures``, solo para mostrarlas) son las registradas de su dato al cargarlo y tras cada
+        Refrescar (F5): también en lo que F5 no vuelve a cargar (sin cifras, como un objeto
+        cargado antes de la 010, las vuelve a tener), y con las de su operación nueva en lo que
+        vuelve a cargar. La rejilla, sin cifras. Refrescar no escribe en el proyecto."""
+        data = self.data
+        views = vf.extension("bl.scene.views")
+        demo = self.demo_years()
+        views.register_loader(DEMO_PREFIX, "POINTS", DEMO_LABEL, self.load_demo)
+        self.addCleanup(views.unregister_loader, DEMO_PREFIX)
+        data.attach()
+        years = data.record(YEARS_TABLE)
+        data.load(bpy.context, data.names[0], years.uid)
+        grid = data.record(data.names[0])
+        obj = self.only(years.uid)
+        loaded = self.registered_figures(years)
+        self.assertEqual(len(loaded), 3)
+        self.assertEqual(self.object_figures(obj), loaded)
+        self.assertEqual({figure[4:] for figure in loaded}, {("yr", "CALCULADO")})
+        self.assertIn(("Años del banco (demostración) · B-1", "2,5 año"),
+                      [figure[2:4] for figure in loaded])
+        self.assertEqual(self.object_figures(self.only(grid.uid)), [])
+
+        # Sin cifras en el objeto: F5 no lo vuelve a cargar (está al día) y se las pone.
+        obj.geoblender.figures.clear()
+        counter = data.change_counter()
+        self.assertEqual(bpy.ops.geoblender.core_refresh("EXEC_DEFAULT"), {"CANCELLED"})
+        self.assertEqual(self.only(years.uid).name, obj.name)  # el mismo objeto
+        self.assertEqual(self.object_figures(self.only(years.uid)), loaded)
+        self.assertEqual(data.change_counter(), counter)
+
+        # Otra producción y los años otra vez: F5 los vuelve a cargar con sus cifras nuevas.
+        self.change_production(400_000.0)
+        demo.bench_years(data.project)
+        after = data.record(YEARS_TABLE)
+        counter = data.change_counter()
+        self.assertEqual(bpy.ops.geoblender.core_refresh("EXEC_DEFAULT"), {"FINISHED"})
+        renewed = self.registered_figures(after)
+        self.assertNotEqual(renewed, loaded)
+        self.assertEqual(self.object_figures(self.only(after.uid)), renewed)
+        self.assertEqual(self.object_figures(self.only(grid.uid)), [])
+        self.assertEqual(data.change_counter(), counter)
+
 
 class ActiveItemRegistrationTest(unittest.TestCase):
     """La extensión deshabilitada al empezar y al terminar (``blender_ext.release``)."""
@@ -615,9 +860,10 @@ class ActiveItemRegistrationTest(unittest.TestCase):
         self.addCleanup(blender_ext.release)
 
     def test_register_and_unregister_leave_no_trace(self) -> None:
-        """RF-010-06, RF-010-07 (plan §5.3.3, §2.1), principio 8: habilitar registra el panel
-        en la pestaña «Proyecto» tras el panel Proyecto y, tras él, el del inventario con su
-        lista (también tras cambiar el idioma), suscribe la ficha al objeto activo y apunta su
+        """RF-010-06, RF-010-07, RF-010-08 (plan §5.3.3, §2.1), principio 8: habilitar registra
+        el panel en la pestaña «Proyecto» tras el panel Proyecto y, tras él, el del inventario
+        con su lista (también tras cambiar el idioma), la ventana emergente de «Cifras de la
+        selección» con su orden real (T16), suscribe la ficha al objeto activo y apunta su
         manejador ``@persistent`` de ``load_post``, su escucha del proyecto de la sesión y la
         de cada lectura de los indicadores; deshabilitar lo quita todo (la suscripción, también
         en Blender; el temporizador del inventario) y deja la huella de Blender como al
@@ -642,6 +888,12 @@ class ActiveItemRegistrationTest(unittest.TestCase):
                          ("VIEW_3D", "UI", "Proyecto", "Inventario"))
         self.assertGreater(inventory.bl_order, panel.bl_order)
         self.assertTrue(getattr(bpy.types, INVENTORY_LIST).is_registered)
+        # T16: la ventana de «Cifras de la selección» (emergente, sin pestaña) y su orden.
+        window = getattr(bpy.types, SELECTION_PANEL)
+        self.assertEqual((window.bl_space_type, window.bl_region_type),
+                         ("TOPBAR", "HEADER"))
+        self.assertFalse(vf.extension("bl.ui.commands").is_provisional(
+            vf.extension("bl.ui.commands").registered_class(SELECTION_FIGURES)))
         self.addCleanup(ui_i18n.apply, "es")
         ui_i18n.apply("en")
         panel = getattr(bpy.types, PANEL)
@@ -667,6 +919,7 @@ class ActiveItemRegistrationTest(unittest.TestCase):
         self.assertFalse(hasattr(bpy.types, PANEL))
         self.assertFalse(hasattr(bpy.types, INVENTORY_PANEL))
         self.assertFalse(hasattr(bpy.types, INVENTORY_LIST))
+        self.assertFalse(hasattr(bpy.types, SELECTION_PANEL))
         self.assertFalse(bpy.app.timers.is_registered(panels.inventory_tick))
         after = blender_ext.state_fingerprint()
         baseline = blender_ext.session_baseline()

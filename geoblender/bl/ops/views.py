@@ -34,11 +34,20 @@
   (``core.views.locate.check_chosen``: solo la lee) y la abre como arriba; si no, dice de qué
   proyecto es (o que no es un proyecto) y no abre ni escribe nada. Nunca usa la vista como
   fuente de datos (RF-002-29).
+- ``geoblender.core_show_selection_figures`` (T16; RF-010-08; plan A8, D-17, D-18): «Cifras de
+  la selección», el control 29 y el menú de la selección. Lee del proyecto las cifras
+  registradas, con su unidad, su tipo y sus marcas, de los datos que muestran los objetos
+  seleccionados (``bl.ui.view_panels.fill_selection_figures``) y abre su ventana
+  (``GEOBLENDER_PT_core_selection_figures``, con ``wm.call_panel``, como las ventanas de la 008);
+  sin ventana (un guion), solo las lee. No mide nada ni escribe en el proyecto; sin ``UNDO``: no
+  cambia la escena. Con el proyecto abierto (también en solo lectura) y en el modo Geoblender
+  desde una Vista 3D (la puerta de la 003).
 """
 
 from __future__ import annotations
 
 import logging
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -305,9 +314,55 @@ class GEOBLENDER_OT_core_locate_project(bpy.types.Operator):
         return _open_located(found.root)
 
 
+# Cifras de la selección --------------------------------------------------------------------
+
+
+def _call_panel(name: str) -> set[str]:
+    """Abre la ventana emergente ``name`` con ``wm.call_panel``; sigue abierta aunque el ratón
+    salga de ella (``keep_open``), hasta pulsar fuera o Esc (como las de la 008)."""
+    return bpy.ops.wm.call_panel(name=name, keep_open=True)
+
+
+class GEOBLENDER_OT_core_show_selection_figures(bpy.types.Operator):
+    """Registered figures of the selected data, with unit, type and marks; it does not measure"""
+
+    bl_idname = "geoblender.core_show_selection_figures"
+    bl_label = "Selection figures"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return gate.poll(cls, context) and _poll_project(cls, context)
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        return self.execute(context)
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        """Lee del proyecto las cifras registradas de los datos seleccionados, con sus marcas
+        (``bl.ui.view_panels.fill_selection_figures``: no mide ni escribe nada), y abre su
+        ventana; desde un guion sin ventana, solo las lee."""
+        from ..ui import view_panels  # al usarlo, como la 008 con sus ventanas
+
+        if project_session.current() is None:
+            return {"CANCELLED"}
+        try:
+            view_panels.fill_selection_figures(context)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            from .core_provenance import error_text  # el texto de la 008, en su idioma
+
+            LOGGER.warning("No se pudieron leer las cifras de la selección", exc_info=True)
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}  # desde un guion sin ventana: las filas, sin la ventana
+        return _call_panel(view_panels.SELECTION_FIGURES_PANEL)
+
+
 # En orden de registro.
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_refresh,
     GEOBLENDER_OT_core_open_view_project,
     GEOBLENDER_OT_core_locate_project,
+    GEOBLENDER_OT_core_show_selection_figures,
 )
