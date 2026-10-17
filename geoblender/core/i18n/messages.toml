@@ -1738,6 +1738,55 @@ es = "Seleccione objetos cargados del proyecto"
 ["Unloaded from the view: {count} objects; the data stay in the project"]
 es = "Descargado de la vista: {count} objetos; los datos siguen en el proyecto"
 
+# La vista regenerable: las marcas de los objetos y sus nombres generados (spec 010, T07;
+# RF-010-01, RF-010-02, RF-010-08; plan 010 §5.2 y §5.5, D-10 y D-17). «Figure», «Name»,
+# «Value», «Unit» y «Type» ya están.
+
+["NOT UP TO DATE"]
+es = "NO AL DÍA"
+
+["UNBACKED"]
+es = "SIN RESPALDO"
+
+["In the view"]
+es = "En la vista"
+
+["Whether the object shows what its data has now in the project"]
+es = "Si el objeto muestra lo que tiene ahora su dato en el proyecto"
+
+["Up to date"]
+es = "Al día"
+
+["It shows the content, the status and the GeoOrigin that its data has now in the project"]
+es = "Muestra el contenido, el estado y el GeoOrigin que tiene ahora su dato en el proyecto"
+
+["Not up to date"]
+es = "No al día"
+
+["It shows an earlier content of its data, or it was loaded with another GeoOrigin: Refresh (F5)"]
+es = "Muestra un contenido anterior de su dato, o se cargó con otro GeoOrigin: Refrescar (F5)"
+
+["Unbacked in the project"]
+es = "Sin respaldo en el proyecto"
+
+["Its data is no longer in the project or was discarded: it is not deleted"]
+es = "Su dato ya no está en el proyecto o se descartó: no se borra"
+
+["GeoOrigin"]
+es = "GeoOrigin"
+
+["GeoOrigin with which it was loaded, «X0 Y0 Z0» in whole metres"]
+es = "GeoOrigin con que se cargó, «X0 Y0 Z0» en metros enteros"
+
+["Figures"]
+es = "Cifras"
+
+["Figures recorded for its data when it was loaded or refreshed, as text: only to show them"]
+es = "Cifras registradas de su dato al cargarlo o al refrescar, en texto: solo para mostrarlas"
+
+["Key"]
+es = "Clave"
+
 # Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
 # RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto
 # desde un MDT…, sus diálogos, sus informes y la decisión de una importación que espera.

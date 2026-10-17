@@ -29,6 +29,15 @@ fecha (UTC) de la operación que escribió su contenido y si estaba obsoleto al 
 texto, enteros o enumerados (ninguna coordenada). :class:`GEOBLENDER_PG_core_view_dataset` es
 una fila del diálogo de «Cargar en la vista…» (el dato, su nombre visible y si se carga).
 
+Spec 010 (T07; RF-010-01, RF-010-02, RF-010-08; plan 010 §5.2, D-9, D-10 y D-17): tres campos
+más en ``Object.geoblender``: ``view_state``, si el objeto está al día, no al día (muestra un
+contenido anterior o se cargó con otro GeoOrigin) o sin respaldo en el proyecto
+(:data:`VIEW_STATES`); ``origin``, el GeoOrigin con que se cargó, «X0 Y0 Z0» en metros enteros
+(texto, como el ``geoorigin`` del ancla; vacío en lo cargado antes de la 010); y ``figures``, las
+cifras registradas de su dato al cargarlo o al refrescar (:class:`GEOBLENDER_PG_core_figure`), en
+texto ya escrito con su unidad y su tipo: solo para mostrarlas, nunca para calcular (principio 2;
+ninguna propiedad flotante, principio 6).
+
 Ninguna se anima (``options=set()``): un fotograma clave sobre el GeoOrigin no tiene
 sentido.
 """
@@ -38,7 +47,14 @@ from __future__ import annotations
 import os
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    IntProperty,
+    PointerProperty,
+    StringProperty,
+)
 
 from ...core.paths import READ_ONLY_DIRS_ENV, READ_ONLY_DIRS_SEPARATOR, ReadOnlyDirs
 
@@ -178,6 +194,42 @@ OBJECT_STATUSES: list[tuple[str, str, str]] = [
     ("BLOCKED", "Blocked", "Edited outside Geoblender: accept it, recompute it or import it again"),
     ("DAMAGED", "Damaged", "What was imported changed: import it again"),
 ]
+# Spec 010 (T07; RF-010-02; plan 010 §5.2, D-10): si el objeto muestra lo que dice hoy el proyecto.
+VIEW_STATES: list[tuple[str, str, str]] = [
+    ("CURRENT", "Up to date",
+     "It shows the content, the status and the GeoOrigin that its data has now in the project"),
+    ("OUTDATED", "Not up to date",
+     "It shows an earlier content of its data, or it was loaded with another GeoOrigin: "
+     "Refresh (F5)"),
+    ("UNBACKED", "Unbacked in the project",
+     "Its data is no longer in the project or was discarded: it is not deleted"),
+]
+
+
+class GEOBLENDER_PG_core_figure(bpy.types.PropertyGroup):
+    """Una cifra registrada del dato de un objeto (spec 010, RF-010-08; D-17), en texto ya
+    escrito: su uid y su clave, su nombre con su ámbito y su valor con su unidad en el idioma de
+    la interfaz al cargarlo («1 563 631 m³»), el código de su unidad y su tipo («CALCULADO»).
+    Solo para mostrarla: la regenera la vista desde el proyecto y ningún cálculo la lee."""
+
+    uid: StringProperty(  # type: ignore[valid-type]
+        name="Figure", default="", options=_STATIC,
+    )
+    key: StringProperty(  # type: ignore[valid-type]
+        name="Key", default="", options=_STATIC,
+    )
+    label: StringProperty(  # type: ignore[valid-type]
+        name="Name", default="", options=_STATIC,
+    )
+    value_text: StringProperty(  # type: ignore[valid-type]
+        name="Value", default="", options=_STATIC,
+    )
+    unit: StringProperty(  # type: ignore[valid-type]
+        name="Unit", default="", options=_STATIC,
+    )
+    kind: StringProperty(  # type: ignore[valid-type]
+        name="Type", default="", options=_STATIC,
+    )
 
 
 class GEOBLENDER_PG_core_object(bpy.types.PropertyGroup):
@@ -228,6 +280,29 @@ class GEOBLENDER_PG_core_object(bpy.types.PropertyGroup):
         default="",
         options=_STATIC,
     )
+    # Spec 010 (T07; plan 010 §5.2).
+    view_state: EnumProperty(  # type: ignore[valid-type]
+        name="In the view",
+        description="Whether the object shows what its data has now in the project",
+        items=VIEW_STATES,
+        default="CURRENT",
+        options=_STATIC,
+    )
+    origin: StringProperty(  # type: ignore[valid-type]
+        name="GeoOrigin",
+        description="GeoOrigin with which it was loaded, «X0 Y0 Z0» in whole metres",
+        default="",
+        options=_STATIC,
+    )
+    figures: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_figure,
+        name="Figures",
+        description=(
+            "Figures recorded for its data when it was loaded or refreshed, as text: only to "
+            "show them"
+        ),
+        options=_STATIC,
+    )
 
 
 class GEOBLENDER_PG_core_view_dataset(bpy.types.PropertyGroup):
@@ -266,8 +341,9 @@ def read_only_dirs_of(preferences: object | None) -> ReadOnlyDirs:
 
 # En orden de registro (los grupos, antes de quien los usa).
 classes: tuple[type, ...] = (GEOBLENDER_PG_core_project, GEOBLENDER_PG_core_preferences)
-# Los de la vista (spec 006, T27).
-classes += (GEOBLENDER_PG_core_object, GEOBLENDER_PG_core_view_dataset)
+# Los de la vista (spec 006, T27); la cifra, antes del objeto que la usa (spec 010, T07).
+classes += (GEOBLENDER_PG_core_figure, GEOBLENDER_PG_core_object,
+            GEOBLENDER_PG_core_view_dataset)
 
 
 def register() -> None:
