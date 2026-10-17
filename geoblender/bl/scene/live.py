@@ -33,9 +33,17 @@ leer (otro programa lo bloquea), deja la petición: el siguiente cambio la vuelv
 **Lo de cada cargador** (spec 010, T09; plan §5.6, D-13): lo que declara con
 ``views.extend_loader``. Su ``LiveHook`` (los sondeos: sus sondeos de traza obsoleta) se lee en
 la misma instantánea, solo el de los cargadores de lo que muestra el contenido de hoy, y se
-aplica con lo general; y la primera lectura tras abrir el proyecto (RF-010-03; plan A4) rehace
-lo que su ``SessionParts`` dice que les falta a sus objetos (la superposición de los sondeos, por
-la cola de los sondeos, con su avance), una vez por apertura.
+aplica con lo general.
+
+**Al abrir** (spec 010, T10; RF-010-03; plan A4, D-2, D-13): abrir el proyecto no lee nada
+(RNF-002-02: lo pide el primer tic de sus indicadores). La primera lectura tras abrir el
+proyecto, o tras abrir un ``.blend`` con el proyecto abierto (``load_post``), dice cuántos datos
+de la vista no están al día («3 datos de la vista no están al día: Refrescar (F5)»,
+:func:`opening_text`; ninguno si todo lo está) en el registro de Blender
+(``bl.ops.jobs.report_later``: Blender no pasa a Info lo que dice un temporizador) y en los
+avisos del proyecto (``project_session.notify``), y rehace lo que el ``SessionParts`` de cada
+cargador dice que les falta a sus objetos (la superposición de los sondeos, por la cola de los
+sondeos, con su avance), una vez por apertura.
 
 Al cambiar el proyecto de la sesión (``project_session.add_listener``), olvida lo leído y
 retira el temporizador. Los manejadores son ``@persistent`` (sin ello se pierden al abrir otro
@@ -75,6 +83,8 @@ MARK_RETRY_S = 0.5
 la de los indicadores de la procedencia."""
 REFRESH = "geoblender.core_refresh"
 """La orden que se resalta mientras algo no está al día (Refrescar, control 7)."""
+OPENING_REPORT = "WARNING"
+"""Cómo va al registro de Blender el aviso de lo que no está al día al abrir (RF-010-03)."""
 MAX_NOTES = 64  # estados de Refrescar guardados (por número e idioma); después, de nuevo
 
 
@@ -83,6 +93,7 @@ class _State:
 
     def __init__(self) -> None:
         self.requested = False  # hay una petición sin leer
+        self.opened = False  # se abrió un .blend: la próxima lectura es la primera
         self.project: Project | None = None  # el proyecto de la última lectura
         self.states: dict[str, state.ItemView] = {}  # lo leído, por uid de dato
         self.live: dict[str, Any] = {}  # lo que leyeron los cargadores, por su comienzo
@@ -118,6 +129,15 @@ def pending_text(count: int) -> str:
     if count == 1:
         return tr("1 data item in the view is not up to date")
     return tr("{n} data items in the view are not up to date", n=count)
+
+
+def opening_text(count: int) -> str:
+    """El aviso de la primera lectura tras abrir (RF-010-03): «1 dato de la vista no está al
+    día: Refrescar (F5)» o «3 datos de la vista no están al día: Refrescar (F5)», en el idioma
+    de Geoblender."""
+    if count == 1:
+        return tr("1 data item in the view is not up to date: Refresh (F5)")
+    return tr("{n} data items in the view are not up to date: Refresh (F5)", n=count)
 
 
 def refresh_state(_context: Any, idname: str) -> CommandState | None:
@@ -180,8 +200,9 @@ def _mark() -> float | None:
                         "pide otra vez con el próximo cambio", exc_info=True)
             _STATE.remaining = []
             return None
-        if _STATE.project is not project:  # la primera lectura tras abrirlo
-            _rebuild(project, groups, states)
+        # La primera lectura tras abrir el proyecto o un .blend con él abierto (RF-010-03).
+        first = _STATE.project is not project or _STATE.opened
+        _STATE.opened = False
         _STATE.project = project
         _STATE.states = states
         _STATE.live = live
@@ -189,6 +210,9 @@ def _mark() -> float | None:
         count = state.pending(states)
         counted = count != _STATE.pending
         _STATE.pending = count
+        if first:
+            _announce(count)
+            _rebuild(project, groups, states)
     else:
         groups = views.loaded_items()
     budget = max(0.0, MARK_BUDGET_S - (time.perf_counter() - started))
@@ -249,13 +273,27 @@ def _hooked(states: dict[str, state.ItemView]) -> set[str]:
     return found
 
 
+def _announce(count: int) -> None:
+    """La primera lectura tras abrir (RF-010-03; plan A4): si ``count`` datos de la vista no
+    están al día (alguno), lo dice (:func:`opening_text`) en el registro de Blender y en los
+    avisos del proyecto; si todo lo está, nada."""
+    if count <= 0:
+        return
+    from ..ops import jobs as jobs_ops  # al usarlo: bl.ops importa bl.scene
+
+    text = opening_text(count)
+    project_session.notify(text)
+    jobs_ops.report_later(OPENING_REPORT, text)
+
+
 def _rebuild(project: Project, groups: dict[str, tuple[bpy.types.Object, ...]],
              states: dict[str, state.ItemView]) -> None:
-    """La primera lectura tras abrir el proyecto (RF-010-03; plan A4, D-13): por cada cargador
-    que declara lo que no se guarda en el ``.blend`` (``SessionParts``), con sus objetos de
-    datos que el proyecto tiene (vivos o con sucesor: no lo sin respaldo ni lo que falta), si
-    les falta (``missing``), lo rehace (``rebuild``: en segundo plano, con su avance; la
-    superposición de los sondeos). Uno que falla va al registro técnico: la marca sigue."""
+    """La primera lectura tras abrir el proyecto o un ``.blend`` con él abierto (RF-010-03;
+    plan A4, D-13): por cada cargador que declara lo que no se guarda en el ``.blend``
+    (``SessionParts``), con sus objetos de datos que el proyecto tiene (vivos o con sucesor: no
+    lo sin respaldo ni lo que falta), si les falta (``missing``), lo rehace (``rebuild``: en
+    segundo plano, con su avance; la superposición de los sondeos). Uno que falla va al
+    registro técnico: la marca sigue."""
     wanted: dict[str, tuple[views.SessionParts, list[bpy.types.Object]]] = {}
     for uid, view in states.items():
         loader = _loader_of(view)
@@ -275,6 +313,7 @@ def _forget() -> bool:
     cambia)."""
     had = _STATE.pending > 0
     _STATE.requested = False
+    _STATE.opened = False
     _STATE.project = None
     _STATE.states = {}
     _STATE.live = {}
@@ -332,7 +371,9 @@ def on_redo_post(*_args: Any) -> None:
 @persistent
 def on_load_post(*_args: Any) -> None:
     """Tras abrir un ``.blend``: si sigue abierto su proyecto (``bl.scene.georef`` cierra el
-    de otro), pide la marca de lo que trae."""
+    de otro), pide la marca de lo que trae, que será la primera tras abrirlo (el aviso de lo
+    que no está al día y lo que no guarda el ``.blend``: RF-010-03)."""
+    _STATE.opened = True
     _request_safely()
 
 

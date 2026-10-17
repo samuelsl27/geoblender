@@ -1796,6 +1796,15 @@ es = "1 dato de la vista no está al día"
 ["{n} data items in the view are not up to date"]
 es = "{n} datos de la vista no están al día"
 
+# El aviso de la primera lectura tras abrir el proyecto o un .blend con él abierto (spec 010,
+# T10; RF-010-03; plan 010 §5.5, A4).
+
+["1 data item in the view is not up to date: Refresh (F5)"]
+es = "1 dato de la vista no está al día: Refrescar (F5)"
+
+["{n} data items in the view are not up to date: Refresh (F5)"]
+es = "{n} datos de la vista no están al día: Refrescar (F5)"
+
 # Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
 # RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto
 # desde un MDT…, sus diálogos, sus informes y la decisión de una importación que espera.

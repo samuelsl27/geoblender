@@ -25,11 +25,21 @@ que acaba):
 - **nada escrito en el proyecto** (el contador de cambios de su cabecera);
 - **registro y desregistro sin rastro**: los manejadores ``@persistent`` de ``undo_post``,
   ``redo_post`` y ``load_post``, la petición tras cada lectura de los indicadores y el
-  proveedor de estado de las órdenes; desactivada, la huella de Blender como al principio.
+  proveedor de estado de las órdenes; desactivada, la huella de Blender como al principio;
+- **al abrir el proyecto** (T10; RF-010-03; plan A4, D-13), con dos rejillas y los sondeos de
+  ``csv_basico`` (``ViewsOpenTest``, con las ayudas de ``test_dh_import_tabular``): una vista
+  guardada y una rejilla cambiada desde otra sesión (otro ``Project`` sobre la misma carpeta),
+  abrir el proyecto no lee nada de la vista; tras el primer tic de los indicadores y la marca,
+  la rejilla «NO AL DÍA», «1 dato de la vista no está al día: Refrescar (F5)» en el registro de
+  Blender y en los avisos del proyecto (ninguno si todo está al día) y la superposición de los
+  sondeos rehecha en su cola, sin volver a cargar las rejillas; lo mismo al abrir un ``.blend``
+  del proyecto abierto; y abrir tarda lo mismo con y sin la vista (RNF-002-02).
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
+import dataclasses
+import statistics
 import time
 import unittest
 from collections.abc import Callable
@@ -38,6 +48,7 @@ from unittest import mock
 
 import bpy
 
+from tests.blender.test_dh_import_tabular import DrillholeImportCase, _module
 from tests.support import blender_ext
 from tests.support import views_fixtures as vf
 from tests.support.blender_ext import fingerprint_diff
@@ -50,6 +61,14 @@ MARKED_BUDGET_S = 1.0
 """RNF-010-03: todos al día tras el cambio."""
 MAX_TICKS = 400
 LIVE_HANDLERS = ("load_post", "undo_post", "redo_post")
+DH_FILES = ("bocas.csv", "desviaciones.csv")  # lo que necesitan las trazas y su vista
+OPEN_BUDGET_S = 0.5
+"""RNF-002-02: abrir el proyecto (sin migrar) en disco local."""
+OPEN_SLACK_S = 0.05
+"""Lo que puede tardar de más abrir con la vista que sin ella (la mediana de 5): nada que medir
+en un PC tranquilo (abrir no lee la vista); con la máquina ocupada, se mide otra vez."""
+OPENINGS = 5
+ONE_OUTDATED = "1 dato de la vista no está al día: Refrescar (F5)"
 
 
 def marks(obj: bpy.types.Object) -> tuple[Any, ...]:
@@ -415,6 +434,237 @@ class ViewsLiveTest(unittest.TestCase):
         self.assertLessEqual(min(latencies), MARKED_BUDGET_S)
         self.assertEqual(data.change_counter(), counter)
         self.assertPending(0, "")
+
+
+class ViewsOpenTest(DrillholeImportCase):
+    """Al abrir el proyecto (T10): la extensión habilitada una vez para todas
+    (``DrillholeImportCase``); cada prueba, con su proyecto de la vista
+    (``views_fixtures.ViewsProject``, dos rejillas) abierto en la sesión, en el que se importan
+    los sondeos de ``csv_basico`` (sus bocas están dentro de su ventana)."""
+
+    def open(self) -> Any:
+        """El proyecto de la vista con dos rejillas, abierto en la sesión con su comprobación
+        de apertura hecha (lo que hace ``DrillholeImportCase.open`` con el suyo)."""
+        self.data = vf.ViewsProject(self.tmp, grids=2)
+        self.data.attach()
+        self.addCleanup(self.data.close)
+        self.check_opening()
+        self.project = self.data.project
+        return self.project
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.live = _module("bl.scene.live")
+        self.ui = _module("bl.ui.provenance")
+        self.views = _module("bl.scene.views")
+        self.dh_view = _module("bl.scene.dh_view")
+        i18n = _module("core.i18n")
+        self.addCleanup(i18n.set_language, i18n.language())
+        i18n.set_language("es")
+        self.addCleanup(blender_ext.load_file)
+
+    # --- Ayudas ---------------------------------------------------------------------------------
+
+    def check_opening(self) -> None:
+        """La comprobación de apertura de la 008, entera, y sus avisos fuera."""
+        for _ in range(MAX_TICKS):
+            if self.session.check_tick() is None:
+                break
+        self.ps.take_notices()
+
+    def reopen(self, *, session: Any = None) -> Any:
+        """Abre otra vez el proyecto de la vista en la sesión de Blender (con ``session``, el
+        de otra sesión, fuera de ella, en escritura); devuelve el ``Project``."""
+        opened = self.core.open_project(self.data.root, session or self.ps.session(),
+                                        self.ps.userdata()).project
+        if session is None:
+            self.ps.attach(opened)
+            self.check_opening()
+            self.project = opened
+        self.data.project = opened
+        return opened
+
+    def first_tick(self) -> None:
+        """El primer tic de los indicadores de la procedencia (lee el proyecto y pide la
+        marca) y los de la marca, hasta que acaba (``live.mark_tick``)."""
+        self.assertEqual(self.ui.indicator_tick(), self.ui.INDICATOR_TICK_S)
+        self.run_marks()
+
+    def run_marks(self) -> None:
+        live = self.live
+        for _ in range(MAX_TICKS):
+            interval = live.mark_tick()
+            if interval is None:
+                self.assertFalse(bpy.app.timers.is_registered(live.mark_tick))
+                return
+            self.assertEqual(interval, live.MARK_TICK_S)
+        self.fail("la marca en vivo no acaba")
+
+    def shown(self) -> dict[str, tuple[Any, ...]]:
+        """Lo que muestra cada objeto de un dato: su nombre, «al día» y el hash de su carga."""
+        return {obj.name: (obj.geoblender.view_state, obj.geoblender.content_sha256)
+                for obj in bpy.data.objects if obj.geoblender.dataset_uid}
+
+    def grid_objects(self) -> dict[str, int]:
+        """Los objetos de las rejillas (no se vuelven a cargar), por el uid de su dato."""
+        uids = {self.data.record(name).uid for name in self.data.names}
+        return {uid: obj.as_pointer() for uid, (obj,) in vf.loaded(bpy.data).items()
+                if uid in uids}
+
+    def tubes(self) -> Any:
+        (found,) = self.dh_view.loaded_objects(self.project)
+        return found
+
+    def labels(self) -> list[tuple[Any, ...]]:
+        """Las etiquetas de la superposición de los sondeos (``None`` si no la tienen)."""
+        found = self.dh_view.overlay_of(self.tubes())
+        self.assertIsNotNone(found, "la vista de los sondeos sin superposición")
+        return [(item.text, item.xyz, item.bottom) for item in found.labels]
+
+    def announced(self, since: int) -> list[str]:
+        """Los avisos de lo que no está al día que llevó la marca al registro de Blender
+        (``report_later``) desde el informe número ``since``, como aviso."""
+        sent = self.jobs_ops.sent_reports()[since:]
+        return [text for kind, text in sent
+                if kind == "WARNING" and text.endswith(" al día: Refrescar (F5)")]
+
+    def timed_open(self) -> float:
+        """Lo que tarda abrir el proyecto en la sesión (abrirlo y dejarlo en ella, sin su
+        comprobación de apertura, que va por pasos en su temporizador); después, lo cierra."""
+        started = time.perf_counter()
+        opened = self.core.open_project(self.data.root, self.ps.session(), self.ps.userdata())
+        self.ps.attach(opened.project)
+        took = time.perf_counter() - started
+        self.ps.close()
+        return took
+
+    # --- La prueba ----------------------------------------------------------------------------
+
+    def test_opening_the_project_of_a_saved_view(self) -> None:
+        """RF-010-03, RNF-002-02 (T10; plan A4, D-2, D-13): una vista guardada con las dos
+        rejillas y los sondeos y, con el proyecto cerrado, la segunda rejilla recalculada desde
+        otra sesión (otro ``Project`` sobre la misma carpeta). Al abrir el proyecto con la
+        vista cargada no se lee nada de ella ni se pone nada en la cola de los sondeos; tras el
+        primer tic de los indicadores y los de la marca (una lectura): la rejilla «[VIGENTE · NO
+        AL DÍA]» con el contenido que se cargó (no se vuelve a cargar: los mismos objetos), la
+        otra y los sondeos, al día; «1 dato de la vista no está al día: Refrescar (F5)» una vez,
+        en el registro de Blender (``report_later``) y en los avisos del proyecto; la
+        superposición de los sondeos, que no se guarda en el ``.blend``, rehecha en su cola (una
+        recarga) con las mismas etiquetas; nada escrito en el proyecto; las marcas siguientes
+        no avisan ni rehacen nada. Ningún aviso si todo está al día. Lo mismo al abrir un
+        ``.blend`` del proyecto abierto (``load_post``). Abrir el proyecto con la vista tarda lo
+        mismo que sin ella (la mediana de 5) y ≤ 0,5 s (RNF-002-02)."""
+        data, ops, ps, live = self.data, self.dh_ops, self.ps, self.live
+        state = _module("core.views.state")
+        self.enterContext(mock.patch.object(ops, "start_validate", lambda project, **_: None))
+        self.import_all(DH_FILES)
+        self.assertEqual(bpy.ops.geoblender.dh_desurvey("EXEC_DEFAULT"), {"FINISHED"})
+        self.finish()  # las trazas y, después, su vista
+        data.load(bpy.context)
+        grids = [data.record(name) for name in data.names]
+        reports = len(self.jobs_ops.sent_reports())
+        self.first_tick()  # la primera lectura tras abrir, todo al día: sin aviso
+        current = {"MDT rejilla_01 [VIGENTE]": ("CURRENT", grids[0].content_sha256),
+                   "MDT rejilla_02 [VIGENTE]": ("CURRENT", grids[1].content_sha256)}
+        drillholes = {name: value for name, value in self.shown().items()
+                      if name.startswith("Sondeos")}
+        self.assertEqual(list(drillholes), ["Sondeos [VIGENTE]"])
+        self.assertEqual(self.shown(), {**drillholes, **current})
+        self.assertEqual(self.announced(reports), [])
+        before = self.labels()
+        view = self.tmp / "vista.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(view))
+
+        # Cerrado el proyecto, otra sesión recalcula la segunda rejilla.
+        data.close()
+        other = self.reopen(session=dataclasses.replace(
+            ps.session(), session_uid=_module("core.ids").new_uid()))
+        try:
+            self.assertTrue(other.writable)
+            changed = data.recompute(grids[1].uid)
+        finally:
+            other.close()
+        self.assertNotEqual(changed.content_sha256, grids[1].content_sha256)
+
+        # La vista, sin su proyecto; después, abrir el proyecto: nada se lee de la vista.
+        blender_ext.load_file(view)
+        self.assertIsNone(ps.current())
+        objects = self.grid_objects()
+        reads = self.enterContext(mock.patch.object(state, "view_states",
+                                                    wraps=state.view_states))
+        started = self.enterContext(mock.patch.object(ops, "start_view", wraps=ops.start_view))
+        project = self.reopen()
+        self.assertEqual((reads.call_count, started.call_count), (0, 0))
+        self.assertEqual(ops.pending_incorporations(), [])
+        self.assertFalse(bpy.app.timers.is_registered(live.mark_tick))
+        self.assertEqual(self.shown(), {**drillholes, **current})
+
+        # El primer tic: la rejilla marcada, el aviso y la superposición en su cola.
+        counter = data.change_counter()
+        reports = len(self.jobs_ops.sent_reports())
+        ps.take_notices()
+        self.first_tick()
+        self.assertEqual(reads.call_count, 1)
+        outdated = {"MDT rejilla_01 [VIGENTE]": current["MDT rejilla_01 [VIGENTE]"],
+                    "MDT rejilla_02 [VIGENTE · NO AL DÍA]": ("OUTDATED",
+                                                             grids[1].content_sha256)}
+        self.assertEqual(self.shown(), {**drillholes, **outdated})
+        self.assertEqual(self.grid_objects(), objects)  # no se vuelven a cargar
+        self.assertEqual(self.announced(reports), [ONE_OUTDATED])
+        self.assertEqual(ps.notices(), (ONE_OUTDATED,))
+        self.assertEqual(ops.pending_incorporations(), [ops.VIEW_QUEUE])
+        self.assertEqual(started.call_count, 1)
+        self.finish()  # la recarga de la vista de los sondeos, por su cola
+        self.assertEqual(self.labels(), before)
+        self.assertEqual(self.shown(), {**drillholes, **outdated})
+        self.run_marks()  # la que pide la recarga: ni otro aviso ni otra recarga
+        self.assertEqual(self.announced(reports), [ONE_OUTDATED])
+        self.assertEqual((started.call_count, ops.pending_incorporations()), (1, []))
+        self.assertEqual(data.change_counter(), counter)
+
+        # Lo mismo al abrir un .blend del proyecto abierto.
+        again = self.tmp / "vista-2.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(again))
+        counter = data.change_counter()
+        reports = len(self.jobs_ops.sent_reports())
+        ps.take_notices()
+        blender_ext.load_file(again)
+        self.assertIs(ps.current(), project)
+        self.assertTrue(bpy.app.timers.is_registered(live.mark_tick))
+        self.run_marks()
+        self.assertEqual(self.shown(), {**drillholes, **outdated})
+        self.assertEqual(self.announced(reports), [ONE_OUTDATED])
+        self.assertEqual(ps.notices(), (ONE_OUTDATED,))
+        self.assertEqual((started.call_count, ops.pending_incorporations()),
+                         (2, [ops.VIEW_QUEUE]))
+        self.finish()
+        self.assertEqual(self.labels(), before)
+        self.run_marks()
+        self.assertEqual(self.announced(reports), [ONE_OUTDATED])
+        self.assertEqual(started.call_count, 2)
+        self.assertEqual(data.change_counter(), counter)
+
+        # RNF-002-02: abrir con la vista tarda lo mismo que sin ella.
+        ps.close()
+        counted = reads.call_count
+        timings: list[tuple[float, float]] = []
+
+        def extra() -> float:
+            blender_ext.load_file(again)
+            with_view = statistics.median(self.timed_open() for _ in range(OPENINGS))
+            blender_ext.load_file()
+            without = statistics.median(self.timed_open() for _ in range(OPENINGS))
+            timings.append((with_view, without))
+            return with_view - without
+
+        added = least_of(extra, OPEN_SLACK_S, max_attempts=3)
+        with_view, without = min(timings, key=lambda pair: pair[0] - pair[1])
+        print(f"\nRNF-002-02: abrir el proyecto con la vista (dos rejillas y los sondeos), "
+              f"mediana de {OPENINGS} {1000 * with_view:.1f} ms; sin ella "
+              f"{1000 * without:.1f} ms (≤ {1000 * OPEN_BUDGET_S:.0f} ms)")
+        self.assertEqual(reads.call_count, counted)  # ni una lectura al abrir
+        self.assertLessEqual(added, OPEN_SLACK_S)
+        self.assertLessEqual(with_view, OPEN_BUDGET_S)
 
 
 class ViewsLiveRegistrationTest(unittest.TestCase):
