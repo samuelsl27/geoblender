@@ -15,6 +15,8 @@ de la procedencia tras cada lectura del proyecto cambiado (``bl.ui.provenance``,
 con ``add_change_listener``: así la marca no alarga su tic); deshacer y rehacer, que devuelven
 los objetos a otra carga (``undo_post``, ``redo_post``); abrir un ``.blend`` (``load_post``); y
 cargar o descargar datos de la vista (``bl.scene.views``), que cambia lo que no está al día.
+Cada petición cambia :func:`view_generation`, con la que el inventario de N ▸ Proyecto sabe que
+lo suyo puede ser viejo (spec 010, T15).
 
 **El temporizador** (:func:`mark_tick`, persistente, cada :data:`MARK_TICK_S` s mientras queda
 algo): con una petición, agrupa los objetos de la escena por dato (``views.loaded_items``, los de
@@ -100,6 +102,7 @@ class _State:
         self.remaining: list[str] = []  # los datos que quedan por aplicar, en orden
         self.pending = 0  # cuántos no están al día (control 7)
         self.notes: dict[tuple[int, str], CommandState] = {}
+        self.generation = 0  # cuántas peticiones (solo crece: no se olvida)
 
 
 _STATE = _State()
@@ -107,14 +110,24 @@ _STATE = _State()
 
 def request(project: Project | None) -> None:
     """Pide la marca en vivo del proyecto de la sesión (con ``None``, sin proyecto, nada): la
-    apunta y pone el temporizador (:func:`mark_tick`, persistente, al siguiente ciclo), sin
-    leer nada. Es lo que se apunta en los indicadores de la procedencia
-    (``bl.ui.provenance.add_change_listener``: se llama con el proyecto tras cada lectura)."""
+    apunta, cambia :func:`view_generation` y pone el temporizador (:func:`mark_tick`,
+    persistente, al siguiente ciclo), sin leer nada. Es lo que se apunta en los indicadores de
+    la procedencia (``bl.ui.provenance.add_change_listener``: se llama con el proyecto tras cada
+    lectura)."""
     if project is None:
         return
     _STATE.requested = True
+    _STATE.generation += 1
     if not bpy.app.timers.is_registered(mark_tick):
         bpy.app.timers.register(mark_tick, first_interval=0.0, persistent=True)
+
+
+def view_generation() -> int:
+    """Un número que cambia con cada petición de la marca (:func:`request`): tras cada lectura
+    del proyecto cambiado, al cargar o descargar datos de la vista, al deshacer o rehacer y al
+    abrir un ``.blend``. Así sabe el inventario (spec 010, T15; ``bl.ui.view_panels``), sin leer
+    nada, que lo que enseña puede ser viejo (otro proyecto, otra escena)."""
+    return _STATE.generation
 
 
 def pending_count() -> int:

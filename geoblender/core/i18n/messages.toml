@@ -1937,6 +1937,131 @@ es = "Sin cifras registradas"
 ["Provenance"]
 es = "Procedencia"
 
+# N ▸ Proyecto ▸ Inventario: lo registrado en el proyecto, sus filtros (enumerados fijos), la fila
+# elegida y sus órdenes (spec 010, T15; RF-010-07; plan 010 §5.5, A7, D-15). «Type», «Status»,
+# «Version», «Text», «Drillholes», «Input», «Load into the view», «Provenance», los estados
+# («CURRENT», «STALE»…) y «Type: {kind}», «Status: {status}» y «Version: {version}» ya están.
+
+["Inventory"]
+es = "Inventario"
+
+["What is registered in the project, loaded in the view or not"]
+es = "Lo registrado en el proyecto, cargado o no en la vista"
+
+["Chosen row"]
+es = "Fila elegida"
+
+["Row whose orders are shown below the list"]
+es = "Fila cuyas órdenes se muestran bajo la lista"
+
+["Words that the name has to contain, without telling capitals or accents apart"]
+es = "Palabras que tiene que tener el nombre, sin distinguir mayúsculas ni tildes"
+
+["Only the inputs, or the data of this type"]
+es = "Solo las entradas, o los datos de este tipo"
+
+["Only what has this status"]
+es = "Solo lo que tiene este estado"
+
+["Only what has this version"]
+es = "Solo lo que tiene esta versión"
+
+["Only what is loaded in the scene, or only what is not"]
+es = "Solo lo cargado en la escena, o solo lo que no"
+
+["Everything"]
+es = "Todo"
+
+["Inputs"]
+es = "Entradas"
+
+["Grids"]
+es = "Rejillas"
+
+["Meshes"]
+es = "Mallas"
+
+["Vector data"]
+es = "Vectoriales"
+
+["Tables"]
+es = "Tablas"
+
+["Others"]
+es = "Otros"
+
+["Live items"]
+es = "Vivos"
+
+["Current items"]
+es = "Vigentes"
+
+["Stale items"]
+es = "Obsoletos"
+
+["Changed input"]
+es = "Entrada cambiada"
+
+["Unusable items"]
+es = "No se pueden usar"
+
+["Project history"]
+es = "Historia"
+
+["Any status"]
+es = "Todos"
+
+["All versions"]
+es = "Todas"
+
+["Without version"]
+es = "Sin versión"
+
+["In the scene"]
+es = "En la escena"
+
+["Not in the scene"]
+es = "Fuera de la escena"
+
+["Reading the project inventory…"]
+es = "Leyendo el inventario del proyecto…"
+
+["Nothing in the project matches the filter"]
+es = "Nada del proyecto cumple el filtro"
+
+["… and {count} more: refine the filter"]
+es = "… y {count} más: afine el filtro"
+
+["INPUT CHANGED"]
+es = "ENTRADA CAMBIADA"
+
+["Loaded in the scene"]
+es = "Cargado en la escena"
+
+["Not loaded in the scene"]
+es = "No cargado en la escena"
+
+["Unload"]
+es = "Descargar"
+
+["An input is not loaded into the view: the data imported from it are"]
+es = "Una entrada no se carga en la vista: se cargan los datos importados de ella"
+
+["A superseded or discarded dataset is not loaded into the view"]
+es = "Un dato sustituido o descartado no se carga en la vista"
+
+["Its file or its table is missing: it cannot be loaded into the view"]
+es = "Falta su fichero o su tabla: no se puede cargar en la vista"
+
+["No module loads this dataset into the view"]
+es = "Ningún módulo carga este dato en la vista"
+
+["Not loaded in the scene: there is nothing to unload"]
+es = "No está cargado en la escena: no hay nada que descargar"
+
+["An input has no provenance: the data imported from it have it"]
+es = "Una entrada no tiene procedencia: la tienen los datos importados de ella"
+
 # Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
 # RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto
 # desde un MDT…, sus diálogos, sus informes y la decisión de una importación que espera.

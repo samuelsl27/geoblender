@@ -17,16 +17,70 @@ Spec 010, T14 (RF-010-06; plan A6, D-16): la ficha de «Elemento activo» (``car
 (``card_found`` falso si el proyecto ya no lo tiene), que ``bl.ui.view_panels`` lee al cambiar
 el objeto activo o el proyecto. Las propiedades de las filas no tienen nombre ni descripción: no
 se dibujan con los suyos (como las de la procedencia). Ninguna se anima.
+
+Spec 010, T15 (RF-010-07; plan A7, D-15): el inventario (``inventory``, filas
+:class:`GEOBLENDER_PG_core_inventory_row` con los valores del proyecto, que el panel presenta en
+el idioma de Geoblender), la fila elegida (``inventory_index``), de qué proyecto son
+(``inventory_project``), cuántas cumplen el filtro y cuántas no caben («… y n más»), y sus
+filtros, enumerados fijos (los identificadores son los de ``core.views.inventory``; el tipo
+«Entradas» es la categoría): cambiar uno vuelve a filtrar lo ya leído, sin leer el proyecto
+(``bl.ui.view_panels.inventory_filtered``); el texto, a cada tecla.
 """
 
 from __future__ import annotations
 
 import bpy
-from bpy.props import BoolProperty, CollectionProperty, PointerProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    IntProperty,
+    PointerProperty,
+    StringProperty,
+)
 
 # Nombre de la propiedad de WindowManager (la usan los paneles de la vista, spec 010).
 WINDOW_MANAGER_PROPERTY = "geoblender_view_panels"
 _STATIC: set[str] = set()  # ni animable ni nada más
+
+# Filtros del inventario (T15; core.views.inventory: KindFilter, StatusFilter, PresenceFilter y
+# VERSION_NONE). El tipo «Entradas» es la categoría INPUT; los demás tipos, los de los datos.
+INVENTORY_INPUT = "INPUT"
+INVENTORY_KIND_ITEMS = [
+    ("ALL", "Everything", ""),
+    (INVENTORY_INPUT, "Inputs", ""),
+    ("RASTER", "Grids", ""),
+    ("MESH", "Meshes", ""),
+    ("VECTOR", "Vector data", ""),
+    ("TABLE", "Tables", ""),
+    ("DRILLHOLES", "Drillholes", ""),
+    ("OTHER", "Others", ""),
+]
+INVENTORY_STATUS_ITEMS = [
+    ("LIVE", "Live items", ""),
+    ("CURRENT", "Current items", ""),
+    ("STALE", "Stale items", ""),
+    ("INPUT_CHANGED", "Changed input", ""),
+    ("UNUSABLE", "Unusable items", ""),
+    ("HISTORY", "Project history", ""),
+    ("ALL", "Any status", ""),
+]
+INVENTORY_VERSION_ITEMS = [
+    ("ALL", "All versions", ""),
+    ("NONE", "Without version", ""),
+]
+INVENTORY_PRESENCE_ITEMS = [
+    ("ALL", "Everything", ""),
+    ("IN", "In the scene", ""),
+    ("OUT", "Not in the scene", ""),
+]
+
+
+def _inventory_filtered(_view: object, _context: object) -> None:
+    """Cambió un filtro del inventario: se vuelve a filtrar lo leído (sin leer el proyecto)."""
+    from ..ui import view_panels  # al usarlo: bl/ui importa bl/props
+
+    view_panels.inventory_filtered()
 
 
 class GEOBLENDER_PG_core_card_row(bpy.types.PropertyGroup):
@@ -43,6 +97,25 @@ class GEOBLENDER_PG_core_card_row(bpy.types.PropertyGroup):
     uid: StringProperty(options=_STATIC)  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_core_inventory_row(bpy.types.PropertyGroup):
+    """Una fila del inventario (spec 010, RF-010-07; ``core.views.inventory.InventoryItem``):
+    su nombre (``name``, el de todo grupo), su categoría («INPUT» o «DATASET»), su uid, su
+    módulo, su tipo, su estado como lo guarda el proyecto («current»…), su versión (vacía:
+    «—», hasta la spec 009), si está en la escena, si está obsoleto, si depende de una entrada
+    cambiada y si se puede cargar en la vista."""
+
+    category: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    uid: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    module: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    kind: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    status: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    version: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    in_scene: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+    stale: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+    input_changed: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+    loadable: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+
+
 class GEOBLENDER_PG_core_view_panels(bpy.types.PropertyGroup):
     """Lo que dibujan los paneles de la vista regenerable (spec 010): una vista del proyecto,
     regenerada desde él."""
@@ -54,9 +127,46 @@ class GEOBLENDER_PG_core_view_panels(bpy.types.PropertyGroup):
     card_project: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     card_found: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
 
+    # Inventario (T15; RF-010-07).
+    inventory: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_inventory_row, options=_STATIC, name="Inventory",
+        description="What is registered in the project, loaded in the view or not",
+    )
+    inventory_index: IntProperty(  # type: ignore[valid-type]
+        default=0, min=0, options=_STATIC, name="Chosen row",
+        description="Row whose orders are shown below the list",
+    )
+    inventory_project: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    inventory_total: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    inventory_more: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    inventory_text: StringProperty(  # type: ignore[valid-type]
+        default="", options={"TEXTEDIT_UPDATE"}, update=_inventory_filtered, name="Text",
+        description="Words that the name has to contain, without telling capitals or accents "
+                    "apart",
+    )
+    inventory_kind: EnumProperty(  # type: ignore[valid-type]
+        items=INVENTORY_KIND_ITEMS, default="ALL", options=_STATIC,
+        update=_inventory_filtered, name="Type",
+        description="Only the inputs, or the data of this type",
+    )
+    inventory_status: EnumProperty(  # type: ignore[valid-type]
+        items=INVENTORY_STATUS_ITEMS, default="LIVE", options=_STATIC,
+        update=_inventory_filtered, name="Status", description="Only what has this status",
+    )
+    inventory_version: EnumProperty(  # type: ignore[valid-type]
+        items=INVENTORY_VERSION_ITEMS, default="ALL", options=_STATIC,
+        update=_inventory_filtered, name="Version", description="Only what has this version",
+    )
+    inventory_presence: EnumProperty(  # type: ignore[valid-type]
+        items=INVENTORY_PRESENCE_ITEMS, default="ALL", options=_STATIC,
+        update=_inventory_filtered, name="In the scene",
+        description="Only what is loaded in the scene, or only what is not",
+    )
 
-# En orden de registro (la fila, antes del grupo que la usa).
-classes: tuple[type, ...] = (GEOBLENDER_PG_core_card_row, GEOBLENDER_PG_core_view_panels)
+
+# En orden de registro (las filas, antes del grupo que las usa).
+classes: tuple[type, ...] = (GEOBLENDER_PG_core_card_row, GEOBLENDER_PG_core_inventory_row,
+                             GEOBLENDER_PG_core_view_panels)
 
 
 def register() -> None:

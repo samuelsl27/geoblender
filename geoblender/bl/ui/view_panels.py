@@ -29,10 +29,36 @@ los indicadores): lo hará su siguiente lectura. En solo lectura, igual: solo le
 ``core.views.card`` se importa al usarlo: registrar no carga ``core.provenance.importer`` (spec
 008, T65).
 
+**Inventario** (:class:`GEOBLENDER_PT_core_project_inventory` con la lista
+:class:`GEOBLENDER_UL_core_project_inventory`; T15, RF-010-07; plan A7, D-15), en el modo
+Geoblender y cerrado al empezar: lo registrado en el proyecto, cargado o no en la vista
+(entradas y datos en todos sus estados, ``core.views.inventory``), con su tipo, su estado, su
+versión («—» hasta la spec 009), si está en la escena y sus marcas (obsoleto, entrada cambiada),
+filtrable por tipo, estado, versión, presencia en la escena y texto, con como mucho 500 filas
+(«… y 19 600 más: afine el filtro», D-7), y, de la fila elegida, sus datos y las órdenes Cargar
+en la vista (``geoblender.core_load_into_view`` con su dato), Descargar
+(``geoblender.core_unload_from_view``) y Procedencia (la de la 008), desactivadas con el motivo
+si no se puede (una entrada no se carga ni tiene procedencia; lo sustituido, lo descartado, lo
+que falta o lo que ningún módulo carga, no se carga; lo que no está en la escena, no se
+descarga).
+
+**Cuándo se lee** (A7): la lectura entera (``read_inventory``, 22–30 ms con 20 000 datos) se
+guarda con el contador de cambios de la cabecera de ``project.gpkg``, y cada filtro filtra lo
+leído (``page``), sin leer el proyecto. Lo que enseña se hace viejo con cada petición de la
+marca en vivo (``bl.scene.live.view_generation``: el proyecto cambió, se cargó o descargó algo,
+se deshizo…), pero no se lee nada hasta que el panel se dibuja: entonces pide un temporizador
+de un disparo (:func:`inventory_tick`) que vuelve a leer si cambió el contador (si no, solo
+vuelve a filtrar con lo que está ahora en la escena, ``views.loaded_items``). Así no se lee si
+el panel no está a la vista. Mientras esta sesión escribe o el proyecto está en WAL, espera. En
+solo lectura, igual. La lectura se guarda como tuplas de textos y booleanos (el GC no las sigue,
+``docs/trampas.md`` §2); las filas, con los valores del proyecto, que el dibujo presenta.
+``core.views.inventory`` se importa al usarlo, como ``core.views.card``.
+
 :func:`register` suscribe y apunta el manejador ``@persistent`` y las escuchas; :func:`unregister`
-lo quita todo. El panel (con la pestaña y el título traducidos por :func:`localize` antes de
-registrar, y registrado otra vez al cambiar el idioma, ``bl.ui.i18n``) va tras el panel Proyecto
-(``bl_order``).
+lo quita todo (también el temporizador del inventario). Los paneles (con la pestaña y el título
+traducidos por :func:`localize` antes de registrar, y registrados otra vez al cambiar el idioma,
+``bl.ui.i18n``) van tras el panel Proyecto (``bl_order``): Elemento activo y, después,
+Inventario.
 """
 
 from __future__ import annotations
@@ -46,20 +72,22 @@ from typing import TYPE_CHECKING, Any
 import bpy
 from bpy.app.handlers import persistent
 
+from ...core.datasets.model import DatasetStatus
 from ...core.errors import GeoblenderError
 from ...core.gpkg.header import read_header
-from ...core.i18n import language, tr, translate
+from ...core.i18n import format_number, language, tr, translate
 from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
 from ..props.core import OBJECT_PROPERTY
-from ..props.views import WINDOW_MANAGER_PROPERTY
-from ..scene import project_session, views
-from . import core_panel, labels, provenance
+from ..props.views import INVENTORY_INPUT, WINDOW_MANAGER_PROPERTY
+from ..scene import live, project_session, views
+from . import core_panel, gate, labels, provenance
 
 if TYPE_CHECKING:
     from ...core.project.session import Project
     from ...core.views.card import ItemCard, Link
+    from ...core.views.inventory import InventoryFilter, InventorySnapshot
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
 
@@ -107,6 +135,33 @@ STATUS_MSGIDS: dict[str, str] = {
 }
 STALE_MSGID = "STALE"
 
+# El inventario (T15).
+INVENTORY_PANEL = "GEOBLENDER_PT_core_project_inventory"
+INVENTORY_LIST = "GEOBLENDER_UL_core_project_inventory"
+INVENTORY_LABEL = "Inventory"  # msgid del título
+INVENTORY_ORDER = 2
+"""El orden del panel en la pestaña: tras Elemento activo."""
+INVENTORY_ROWS = 6
+"""Las filas que se ven de la lista (se puede agrandar)."""
+INVENTORY_NAME_FACTOR = 0.6
+"""Lo que ocupa el nombre en una fila de la lista (Blender lo acorta si no cabe; entero, en lo
+de la fila elegida)."""
+INVENTORY_RETRY_S = 0.5
+"""La espera del temporizador mientras el proyecto no se puede leer sin coste (esta sesión
+escribe, o en WAL): la de la marca en vivo."""
+LOAD_INTO_VIEW = "geoblender.core_load_into_view"
+UNLOAD_FROM_VIEW = "geoblender.core_unload_from_view"
+INPUT_CATEGORY = INVENTORY_INPUT  # core.views.inventory.Category.INPUT
+DATASET_CATEGORY = "DATASET"  # core.views.inventory.Category.DATASET
+INPUT_CHANGED_MSGID = "INPUT CHANGED"
+IN_SCENE_ICON = "HIDE_OFF"
+STALE_ICON = "ERROR"
+INPUT_CHANGED_ICON = "FILE_REFRESH"
+LOAD_ICON = "ADD"
+UNLOAD_ICON = "REMOVE"
+_HISTORY = frozenset({str(DatasetStatus.SUPERSEDED), str(DatasetStatus.DISCARDED)})
+_MISSING = str(DatasetStatus.MISSING)
+
 
 @dataclass(frozen=True)
 class CardLine:
@@ -133,6 +188,25 @@ class _State:
 
 
 _STATE = _State()
+
+
+class _Inventory:
+    """La última lectura del inventario (no se guarda en el ``.blend``): la instantánea (tuplas
+    de textos y booleanos), de qué proyecto y con qué :func:`~..scene.live.view_generation` se
+    filtró por última vez."""
+
+    def __init__(self) -> None:
+        self.snapshot: InventorySnapshot | None = None
+        self.project: Project | None = None
+        self.generation = -1
+
+    def forget(self) -> None:
+        self.snapshot = None
+        self.project = None
+        self.generation = -1
+
+
+_INVENTORY = _Inventory()
 
 
 # Las filas ------------------------------------------------------------------------------------
@@ -365,10 +439,12 @@ def on_project_read(_project: Project) -> None:
 
 
 def on_project_changed(_project: Project | None) -> None:
-    """Lo que se apunta en ``project_session``: olvida la ficha del proyecto anterior (con uno
-    nuevo, la lee el primer tic de sus indicadores: al abrir no se lee nada, RNF-002-02)."""
+    """Lo que se apunta en ``project_session``: olvida la ficha y el inventario del proyecto
+    anterior (con uno nuevo, la ficha la lee el primer tic de sus indicadores y el inventario,
+    el primer dibujo de su panel: al abrir no se lee nada, RNF-002-02)."""
     view = _view(bpy.context)
-    if view is not None and _clear(view):
+    forgot = _forget_inventory(view)
+    if (view is not None and _clear(view)) or forgot:
         _redraw()
 
 
@@ -480,14 +556,364 @@ class GEOBLENDER_PT_core_active_item(bpy.types.Panel):
         draw_card(self.layout, context)
 
 
+# El inventario (T15) --------------------------------------------------------------------------
+
+
+def _forget_inventory(view: Any) -> bool:
+    """Olvida la lectura del inventario, retira su temporizador y vacía sus filas (con
+    ``view``); dice si había filas."""
+    _INVENTORY.forget()
+    if bpy.app.timers.is_registered(inventory_tick):
+        bpy.app.timers.unregister(inventory_tick)
+    if view is None:
+        return False
+    had = bool(view.inventory_project) or len(view.inventory) > 0
+    if had:
+        view.inventory.clear()
+        view.inventory_index = 0
+        view.inventory_project = ""
+        view.inventory_total = 0
+        view.inventory_more = 0
+    return had
+
+
+def inventory_filter(view: Any) -> InventoryFilter:
+    """Lo que piden los filtros del panel (``core.views.inventory.InventoryFilter``): el tipo
+    «Entradas» es la categoría de las entradas; los demás tipos, los de los datos."""
+    from ...core.views import inventory  # al usarlo, como card
+
+    kind = str(view.inventory_kind)
+    if kind == INPUT_CATEGORY:
+        category, kind = INPUT_CATEGORY, inventory.ALL
+    else:
+        category = inventory.ALL if kind == inventory.ALL else DATASET_CATEGORY
+    return inventory.InventoryFilter(category=category, kind=kind,
+                                     status=str(view.inventory_status),
+                                     version=str(view.inventory_version),
+                                     presence=str(view.inventory_presence),
+                                     text=str(view.inventory_text))
+
+
+def _fill_inventory(view: Any, project_uid: str, snapshot: InventorySnapshot) -> None:
+    """Filtra ``snapshot`` con los filtros del panel y lo que está ahora en la escena, y pone la
+    página en las filas (la elegida sigue elegida si sigue en ella). No lee el proyecto."""
+    from ...core.views import inventory  # al usarlo, como card
+
+    in_scene = frozenset(views.loaded_items(project_uid))
+    found = inventory.page(snapshot, inventory_filter(view), in_scene)
+    rows = view.inventory
+    index = view.inventory_index
+    chosen = rows[index].uid if 0 <= index < len(rows) else ""
+    rows.clear()
+    selected = 0
+    for position, item in enumerate(found.items):
+        row = rows.add()
+        row.name = item.name
+        row.category = str(item.category)
+        row.uid = item.uid
+        row.module = item.module
+        row.kind = item.kind
+        row.status = item.status
+        row.version = item.version or ""
+        row.in_scene = item.category == DATASET_CATEGORY and item.uid in in_scene
+        row.stale = item.stale
+        row.input_changed = item.input_changed
+        row.loadable = item.loadable
+        if item.uid == chosen:
+            selected = position
+    view.inventory_index = selected
+    view.inventory_project = project_uid
+    view.inventory_total = found.total
+    view.inventory_more = found.more
+
+
+def inventory_is_old(project: Project) -> bool:
+    """Si lo que enseña el inventario puede ser viejo: no leído aún, de otro proyecto o filtrado
+    antes de la última petición de la marca en vivo (el proyecto cambió, se cargó o descargó
+    algo…). No lee nada: lo usa el dibujo del panel."""
+    return (_INVENTORY.snapshot is None or _INVENTORY.project is not project
+            or _INVENTORY.generation != live.view_generation())
+
+
+def _loadable(name: str) -> bool:
+    """Si algún módulo carga el dato ``name`` en la vista (tiene cargador)."""
+    return views.loader_for(name) is not None
+
+
+def refresh_inventory(context: Any = None) -> float | None:
+    """La lectura del inventario del proyecto de la sesión (lo que hace :func:`inventory_tick`):
+    si cambió el contador de cambios de la cabecera desde la última lectura (u otro proyecto),
+    lo lee entero (``core.views.inventory.read_inventory``, en una instantánea y sin escribir
+    nada); después, lo filtra con los filtros del panel y lo que está ahora en la escena y llena
+    las filas. Mientras esta sesión escribe o el proyecto está en WAL, no lee: devuelve la
+    espera (:data:`INVENTORY_RETRY_S`); si no, ``None``. Sin proyecto, olvida el inventario. Si
+    no se puede leer, el error sigue (las filas, como estaban)."""
+    context = bpy.context if context is None else context
+    view = _view(context)
+    project = project_session.current()
+    if view is None or project is None:
+        _forget_inventory(view)
+        return None
+    try:
+        header = read_header(project.database_path)
+    except GeoblenderError:
+        header = None  # lo dirá la lectura
+    if getattr(project, "writing", False) or (header is not None and header.needs_recovery):
+        return INVENTORY_RETRY_S
+    generation = live.view_generation()
+    snapshot = _INVENTORY.snapshot
+    if snapshot is None or _INVENTORY.project is not project or header is None or \
+            header.change_counter != snapshot.change_counter:
+        from ...core.views import inventory  # al usarlo, como card
+
+        snapshot = inventory.read_inventory(project, loadable=_loadable)
+    _INVENTORY.snapshot = snapshot
+    _INVENTORY.project = project
+    _INVENTORY.generation = generation
+    _fill_inventory(view, project.uid, snapshot)
+    _redraw()
+    return None
+
+
+def inventory_tick() -> float | None:
+    """El temporizador de un disparo que pide el dibujo del panel cuando el inventario es viejo
+    (:func:`refresh_inventory`); lo que falla queda en el registro técnico y lo vuelve a
+    intentar el siguiente dibujo."""
+    try:
+        return refresh_inventory()
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.info("No se pudo leer el inventario del proyecto", exc_info=True)
+    except Exception:  # noqa: BLE001 - lo que llama Blender no lo tumba
+        LOGGER.exception("Falló la lectura del inventario del proyecto")
+    return None
+
+
+def _request_inventory() -> None:
+    """Pide la lectura del inventario al siguiente ciclo (una vez)."""
+    if not bpy.app.timers.is_registered(inventory_tick):
+        bpy.app.timers.register(inventory_tick, first_interval=0.0)
+
+
+def inventory_filtered() -> None:
+    """Cambió un filtro del panel (``bl.props.views``): vuelve a filtrar lo leído con lo que
+    está ahora en la escena, sin leer el proyecto (lo viejo lo lee el siguiente dibujo)."""
+    try:
+        view = _view(bpy.context)
+        project = project_session.current()
+        snapshot = _INVENTORY.snapshot
+        if view is None or project is None or snapshot is None or \
+                _INVENTORY.project is not project:
+            return
+        _fill_inventory(view, project.uid, snapshot)
+        _redraw()
+    except Exception:  # noqa: BLE001 - lo que llama Blender no lo tumba
+        LOGGER.exception("Falló el filtro del inventario del proyecto")
+
+
+def _row_icon(row: Any) -> str:
+    """El icono de una fila: el de una entrada o el del tipo de un dato."""
+    if row.category == INPUT_CATEGORY:
+        return INPUT_ICON
+    return KIND_ICONS.get(row.kind, OTHER_ICON)
+
+
+def _row_status(row: Any) -> str:
+    """El estado de una fila como se lee: el de una entrada («vigente», «cambiada»…) o el de un
+    dato como en su nombre generado («VIGENTE»)."""
+    if row.category == INPUT_CATEGORY:
+        try:
+            return render(f"core.input_status_{row.status}", language=language())
+        except ValueError:
+            return row.status
+    return status_text(row.status)
+
+
+def inventory_status_text(row: Any) -> str:
+    """El estado de una fila con sus marcas: «VIGENTE · OBSOLETO · ENTRADA CAMBIADA»."""
+    parts = [_row_status(row)]
+    if row.stale:
+        parts.append(translate(language(), STALE_MSGID))
+    if row.input_changed:
+        parts.append(translate(language(), INPUT_CHANGED_MSGID))
+    return " · ".join(part for part in parts if part)
+
+
+def inventory_kind_text(row: Any) -> str:
+    """El tipo de una fila: «Entrada · ráster · gis» o, de un dato, su nombre de cargador, su
+    tipo y su módulo («MDT de origen · ráster · gis»)."""
+    if row.category == INPUT_CATEGORY:
+        first = tr("Input")
+    else:
+        loader = views.loader_for(row.name)
+        first = translate(language(), loader.label) if loader is not None else ""
+    parts = (first, provenance.kind_text(row.kind), row.module)
+    return " · ".join(part for part in parts if part)
+
+
+def load_refusal(row: Any) -> str:
+    """Por qué no se puede cargar en la vista el elemento de una fila ("" si se puede)."""
+    if row.category == INPUT_CATEGORY:
+        return tr("An input is not loaded into the view: the data imported from it are")
+    if row.loadable:
+        return ""
+    if row.status in _HISTORY:
+        return tr("A superseded or discarded dataset is not loaded into the view")
+    if row.status == _MISSING:
+        return tr("Its file or its table is missing: it cannot be loaded into the view")
+    return tr("No module loads this dataset into the view")
+
+
+def unload_refusal(row: Any) -> str:
+    """Por qué no se puede descargar de la vista ("" si se puede)."""
+    return "" if row.in_scene else tr("Not loaded in the scene: there is nothing to unload")
+
+
+def lineage_refusal(row: Any) -> str:
+    """Por qué no tiene procedencia ("" si la tiene: un dato)."""
+    if row.category == INPUT_CATEGORY:
+        return tr("An input has no provenance: the data imported from it have it")
+    return ""
+
+
+def draw_inventory_row(layout: Any, row: Any) -> None:
+    """Una fila de la lista (``draw_item`` de :class:`GEOBLENDER_UL_core_project_inventory`): el
+    icono de su tipo y su nombre; a la derecha, su estado, su versión («—»), si está en la
+    escena (un ojo) y sus marcas, en alerta (obsoleto; entrada cambiada)."""
+    line = layout.split(factor=INVENTORY_NAME_FACTOR, align=True)
+    line.label(text=row.name, icon=_row_icon(row), translate=False)
+    right = line.row(align=True)
+    right.alignment = "RIGHT"
+    right.label(text=_row_status(row), translate=False)
+    right.label(text=row.version or NO_VALUE, translate=False)
+    right.label(text="", icon=IN_SCENE_ICON if row.in_scene else "BLANK1")
+    marks = right.row(align=True)
+    marks.alert = True
+    if row.stale:
+        marks.label(text="", icon=STALE_ICON)
+    if row.input_changed:
+        marks.label(text="", icon=INPUT_CHANGED_ICON)
+
+
+def _chosen(view: Any) -> Any:
+    """La fila elegida de la lista, o ``None``."""
+    rows = view.inventory
+    index = view.inventory_index
+    return rows[index] if 0 <= index < len(rows) else None
+
+
+def _order(layout: Any, idname: str, text: str, icon: str, refusal: str, width: float,
+           **values: Any) -> None:
+    """Un botón de una orden de la fila elegida, con ``values`` en sus propiedades;
+    desactivado y con el motivo debajo si ``refusal``."""
+    row = layout.row(align=True)
+    row.enabled = not refusal
+    properties = row.operator(idname, text=text, icon=icon, translate=False)
+    for name, value in values.items():
+        setattr(properties, name, value)
+    if refusal:
+        _draw_lines(layout, refusal, width, icon="INFO")
+
+
+def draw_chosen(layout: Any, row: Any, width: float) -> None:
+    """Lo de la fila elegida: su nombre, su tipo, su estado con sus marcas (en alerta), su
+    versión, si está en la escena, y Cargar en la vista, Descargar y Procedencia."""
+    column = layout.column(align=True)
+    _draw_lines(column, row.name, width, icon=_row_icon(row))
+    _draw_lines(column, tr("Type: {kind}", kind=inventory_kind_text(row)), width)
+    _draw_lines(column, tr("Status: {status}", status=inventory_status_text(row)), width,
+                alert=row.stale or row.input_changed)
+    _draw_lines(column, tr("Version: {version}", version=row.version or NO_VALUE), width)
+    _draw_lines(column, tr("Loaded in the scene") if row.in_scene else
+                tr("Not loaded in the scene"), width)
+    orders = layout.column(align=True)
+    _order(orders, LOAD_INTO_VIEW, tr("Load into the view"), LOAD_ICON, load_refusal(row),
+           width, datasets=row.uid)
+    _order(orders, UNLOAD_FROM_VIEW, tr("Unload"), UNLOAD_ICON, unload_refusal(row), width,
+           datasets=row.uid)
+    _order(orders, SHOW_LINEAGE, tr("Provenance"), "NODETREE", lineage_refusal(row), width,
+           item_uid=row.uid)
+
+
+def draw_inventory(layout: Any, context: Any) -> None:
+    """El contenido de :class:`GEOBLENDER_PT_core_project_inventory`: los filtros, la lista
+    (o por qué no hay filas), «… y n más: afine el filtro» y lo de la fila elegida. No lee el
+    proyecto: si lo que enseña es viejo, pide su lectura (:func:`inventory_tick`)."""
+    view = _view(context)
+    project = project_session.current()
+    if view is None or project is None:
+        return
+    if inventory_is_old(project):
+        _request_inventory()
+    width = labels.sidebar_width(context)
+    filters = layout.column(align=True)
+    filters.prop(view, "inventory_text", text="", icon="VIEWZOOM", translate=False)
+    filters.prop(view, "inventory_kind", text=tr("Type"), translate=False)
+    filters.prop(view, "inventory_status", text=tr("Status"), translate=False)
+    filters.prop(view, "inventory_version", text=tr("Version"), translate=False)
+    filters.prop(view, "inventory_presence", text=tr("In the scene"), translate=False)
+    if view.inventory_project != project.uid:
+        _draw_lines(layout, tr("Reading the project inventory…"), width, icon="TIME")
+        return
+    if not len(view.inventory):
+        _draw_lines(layout, tr("Nothing in the project matches the filter"), width,
+                    icon="INFO")
+        return
+    layout.template_list(INVENTORY_LIST, "", view, "inventory", view, "inventory_index",
+                         rows=INVENTORY_ROWS)
+    if view.inventory_more:
+        _draw_lines(layout, tr("… and {count} more: refine the filter",
+                               count=format_number(view.inventory_more, 0)), width)
+    row = _chosen(view)
+    if row is not None:
+        layout.separator()
+        draw_chosen(layout, row, width)
+
+
+class GEOBLENDER_UL_core_project_inventory(bpy.types.UIList):
+    """What is registered in the project, loaded in the view or not"""
+
+    bl_idname = INVENTORY_LIST
+
+    def draw_item(self, _context: Any, layout: Any, _data: Any, item: Any, _icon: int,
+                  _active_data: Any, _active_property: str, _index: int = 0,
+                  _flt_flag: int = 0) -> None:
+        draw_inventory_row(layout, item)
+
+
+class GEOBLENDER_PT_core_project_inventory(bpy.types.Panel):
+    """What is registered in the project, loaded in the view or not, with its marks and the
+    orders of the chosen row"""
+
+    bl_idname = INVENTORY_PANEL
+    bl_label = INVENTORY_LABEL
+    bl_category = core_panel.PANEL_LABEL
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_order = INVENTORY_ORDER
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return project_session.current() is not None and gate.in_geoblender_scope(context)
+
+    def draw(self, context: Any) -> None:
+        draw_inventory(self.layout, context)
+
+
 def localize() -> None:
-    """La pestaña y el título en el idioma de la interfaz (antes de registrar)."""
+    """La pestaña y los títulos en el idioma de la interfaz (antes de registrar)."""
     GEOBLENDER_PT_core_active_item.bl_category = tr("Project")
     GEOBLENDER_PT_core_active_item.bl_label = tr("Active item")
+    GEOBLENDER_PT_core_project_inventory.bl_category = tr("Project")
+    GEOBLENDER_PT_core_project_inventory.bl_label = tr("Inventory")
 
 
-# En orden de registro (tras los de core_panel: la pestaña «Proyecto»).
-classes: tuple[type, ...] = (GEOBLENDER_PT_core_active_item,)
+# En orden de registro (tras los de core_panel: la pestaña «Proyecto»; la lista, antes del panel
+# que la dibuja).
+classes: tuple[type, ...] = (GEOBLENDER_PT_core_active_item,
+                             GEOBLENDER_UL_core_project_inventory,
+                             GEOBLENDER_PT_core_project_inventory)
 
 
 def register() -> None:
@@ -501,8 +927,8 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Quita las escuchas, el manejador (todas sus apariciones) y la suscripción, y olvida la
-    ficha; idempotente."""
+    """Quita las escuchas, el manejador (todas sus apariciones), la suscripción y el
+    temporizador del inventario, y olvida la ficha y el inventario; idempotente."""
     provenance.remove_change_listener(on_project_read)
     project_session.remove_listener(on_project_changed)
     while on_load_post in bpy.app.handlers.load_post:
@@ -510,5 +936,6 @@ def unregister() -> None:
     bpy.msgbus.clear_by_owner(_STATE.owner)
     _STATE.token = None
     view = _view(bpy.context)
+    _forget_inventory(view)
     if view is not None:
         _clear(view)

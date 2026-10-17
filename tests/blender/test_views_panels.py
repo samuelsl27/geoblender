@@ -28,11 +28,28 @@ hace llamando a la función que tiene suscrita:
 - **registro y desregistro sin rastro**: el manejador ``load_post``, la suscripción, la escucha
   del proyecto y de los indicadores; desactivada, la huella de Blender como al principio.
 
+N ▸ Proyecto ▸ Inventario (spec 010, T15; HU-010-3; RF-010-07; plan 010 §5.3.3, §5.5, A7 y
+D-15), con el mismo proyecto:
+
+- **lo registrado en el proyecto**, cargado o no: entradas y datos, con su tipo, su estado, su
+  versión («—»), si está en la escena y sus marcas, por nombre; el filtro de texto (y los de
+  tipo, estado y presencia) **no lee el proyecto**: filtra lo ya leído;
+- **las órdenes de la fila elegida**: «Cargar en la vista» (``geoblender.core_load_into_view``
+  con su dato) lo carga, «Descargar» (``geoblender.core_unload_from_view``) lo quita y
+  «Procedencia» abre la de la 008 con ese dato; una entrada no se carga ni tiene procedencia
+  (botones desactivados, con el motivo); «en la escena», al día tras cargar y descargar;
+- **cuándo se lee**: un cambio en el proyecto deja vieja la lectura, pero no se lee nada hasta
+  que el panel se dibuja, que pide un temporizador de un disparo (en ``-b`` no corre: la prueba
+  llama a su función); en **solo lectura**, igual; nada escrito en el proyecto;
+- **como mucho 500 filas**: 20 100 elementos dan 500 y «… y 19 600 más: afine el filtro»;
+- el panel, en el modo Geoblender, y sus textos caben a 1920 px con escala 1,0 y 1,25.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
 import shutil
 import unittest
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -42,14 +59,24 @@ from tests.blender.test_dh_import_tabular import assert_fits, at_scales
 from tests.support import blender_ext
 from tests.support import views_fixtures as vf
 from tests.support.blender_ext import fingerprint_diff, module_name
-from tests.support.fake_layout import FakeLayout, draw
+from tests.support.fake_layout import FakeLayout, Item, draw
 from tests.support.provenance_demo import Demo
 from tests.support.repo import ROOT
 from tests.support.trees import temp_folder
 
 PANEL = "GEOBLENDER_PT_core_active_item"
 PROJECT_PANEL = "GEOBLENDER_PT_core_project"
+INVENTORY_PANEL = "GEOBLENDER_PT_core_project_inventory"
+INVENTORY_LIST = "GEOBLENDER_UL_core_project_inventory"
 SHOW_LINEAGE = "geoblender.core_show_lineage"
+LOAD = "geoblender.core_load_into_view"
+UNLOAD = "geoblender.core_unload_from_view"
+READING = "Leyendo el inventario del proyecto…"
+INPUT_NOT_LOADED = "Una entrada no se carga en la vista: se cargan los datos importados de ella"
+INPUT_NO_LINEAGE = "Una entrada no tiene procedencia: la tienen los datos importados de ella"
+NOT_LOADED = "No está cargado en la escena: no hay nada que descargar"
+MANY = 20_100  # los elementos de D-13 (20 000 datos y 100 entradas)
+ROWS = 500
 DEMO_DATA = ROOT / "tests" / "data" / "core" / "provenance"
 MDT = "MDT norte"
 DERIVED = "Derivada"
@@ -131,6 +158,55 @@ class ActiveItemTest(unittest.TestCase):
                 "WHERE uid = ?", (record.operation_uid,)).fetchone()
         moment = vf.extension("core.timeutil").parse_utc(finished).astimezone()
         return op_type, op_version, moment.strftime("%d/%m/%Y %H:%M"), version
+
+    # --- Ayudas del inventario (T15) ----------------------------------------------------------
+
+    @staticmethod
+    def view() -> Any:
+        """``WindowManager.geoblender_view_panels`` (leída otra vez: docs/trampas.md §4)."""
+        name = vf.extension("bl.props.views").WINDOW_MANAGER_PROPERTY
+        return getattr(bpy.context.window_manager, name)
+
+    def inventory_drawn(self, *, width_px: float = WIDE_PX) -> FakeLayout:
+        """El panel del inventario dibujado (con ``width_px`` de barra lateral)."""
+        panel = getattr(bpy.types, INVENTORY_PANEL)
+        with mock.patch.object(self.labels, "sidebar_width", return_value=width_px):
+            return draw(panel, bpy.context)
+
+    def read_inventory(self) -> None:
+        """Lo que hace el temporizador de un disparo que ha pedido el dibujo del panel (en
+        ``-b`` no corre): se retira y se llama a su función, que acaba."""
+        tick = self.panels.inventory_tick
+        self.assertTrue(bpy.app.timers.is_registered(tick), "el dibujo no pidió la lectura")
+        bpy.app.timers.unregister(tick)
+        self.assertIsNone(tick())
+
+    def shown(self) -> dict[str, tuple[str, bool, bool]]:
+        """Las filas del inventario: por nombre, su categoría, si está en la escena y si está
+        obsoleto."""
+        return {row.name: (row.category, row.in_scene, row.stale)
+                for row in self.view().inventory}
+
+    def choose(self, name: str) -> Any:
+        """Elige la fila de ``name`` (como un clic en la lista)."""
+        view = self.view()
+        view.inventory_index = [row.name for row in view.inventory].index(name)
+        return view.inventory[view.inventory_index]
+
+    @staticmethod
+    def button(layout: FakeLayout, target: str) -> Item:
+        (found,) = [item for item in layout.of_kind("operator") if item.target == target]
+        return found
+
+    @staticmethod
+    def label_texts(layout: FakeLayout) -> list[str]:
+        return [item.text for item in layout.of_kind("label") if item.text]
+
+    def row_drawn(self, row: Any) -> FakeLayout:
+        """Una fila de la lista (``draw_item`` de su ``UIList``) dibujada."""
+        layout = FakeLayout()
+        self.panels.draw_inventory_row(layout, row)
+        return layout
 
     # --- Pruebas ------------------------------------------------------------------------------
 
@@ -313,6 +389,223 @@ class ActiveItemTest(unittest.TestCase):
         self.activate(self.only(mdt.uid))
         self.assertEqual(self.lines()[0], mdt.name)
 
+    def test_inventory_finds_loads_and_unloads_a_dataset(self) -> None:
+        """RF-010-07 (HU-010-3; plan A7, D-15): el inventario da lo registrado, cargado o no
+        (la entrada del MDT, lo importado de ella y la rejilla, que está en la escena), sin
+        leer nada hasta que el panel se dibuja; el texto encuentra el dato no cargado sin leer
+        el proyecto; «Cargar en la vista» lo carga, «Descargar» lo quita (y «en la escena»
+        está al día tras cada uno) y «Procedencia» abre la de la 008 con él; una entrada no se
+        carga ni tiene procedencia (botones desactivados, con el motivo). El panel, en el modo
+        Geoblender; los textos caben a escala 1,0 y 1,25; nada escrito en el proyecto."""
+        data = self.data
+        mdt = data.import_grid(MDT)
+        data.attach()
+        data.load(bpy.context, data.names[0])
+        grid = data.record(data.names[0])
+        counter = data.change_counter()
+        view = self.view()
+        inventory = vf.extension("core.views.inventory")
+        tick = self.panels.inventory_tick
+
+        # Abrir el proyecto no lee el inventario: lo pide el dibujo del panel.
+        self.assertFalse(bpy.app.timers.is_registered(tick))
+        self.assertEqual(len(view.inventory), 0)
+        self.assertEqual(self.label_texts(self.inventory_drawn()), [READING])
+        self.read_inventory()
+        self.assertEqual([row.name for row in view.inventory],
+                         sorted((MDT, mdt.name, grid.name), key=inventory.fold))
+        self.assertEqual(self.shown(), {MDT: ("INPUT", False, False),
+                                        mdt.name: ("DATASET", False, False),
+                                        grid.name: ("DATASET", True, False)})
+        self.assertEqual({row.version for row in view.inventory}, {""})  # «—» hasta la 009
+        self.assertEqual(view.inventory_more, 0)
+
+        # El texto encuentra el dato no cargado, filtrando lo leído: no lee el proyecto.
+        with mock.patch.object(inventory, "read_inventory",
+                               wraps=inventory.read_inventory) as reads:
+            with mock.patch.object(data.project, "read", wraps=data.project.read) as opens:
+                view.inventory_text = "NORTE"
+                self.assertEqual(set(self.shown()), {MDT, mdt.name})
+                row = self.choose(mdt.name)
+                layout = self.inventory_drawn()
+            self.assertEqual(opens.call_count, 0)
+            self.assertFalse(bpy.app.timers.is_registered(tick))  # nada viejo: no lo pide
+            load, unload = self.button(layout, LOAD), self.button(layout, UNLOAD)
+            lineage = self.button(layout, SHOW_LINEAGE)
+            self.assertEqual((load.text, load.enabled, load.properties.datasets),
+                             ("Cargar en la vista", True, mdt.uid))
+            self.assertEqual((unload.text, unload.enabled, unload.properties.datasets),
+                             ("Descargar", False, mdt.uid))
+            self.assertEqual((lineage.text, lineage.enabled, lineage.properties.item_uid),
+                             ("Procedencia", True, mdt.uid))
+            texts = self.label_texts(layout)
+            self.assertIn(NOT_LOADED, texts)
+            for expected in (mdt.name, "Tipo: MDT de origen · ráster · gis",
+                             "Estado: VIGENTE", "Versión: —", "No cargado en la escena"):
+                self.assertIn(expected, texts)
+
+            # «Cargar en la vista» lo carga; «en la escena», al día al dibujarlo otra vez.
+            self.assertEqual(bpy.ops.geoblender.core_load_into_view(
+                "EXEC_DEFAULT", datasets=load.properties.datasets), {"FINISHED"})
+            self.assertEqual(len(vf.objects_of(bpy.data, mdt.uid)), 1)
+            self.assertFalse(row.in_scene)  # hasta que el panel se dibuje
+            self.inventory_drawn()
+            self.read_inventory()
+            row = view.inventory[view.inventory_index]
+            self.assertEqual((row.name, row.in_scene), (mdt.name, True))  # sigue elegida
+            layout = self.inventory_drawn()
+            self.assertTrue(self.button(layout, UNLOAD).enabled)
+            self.assertIn("Cargado en la escena", self.label_texts(layout))
+            self.assertIn("HIDE_OFF", [item.icon for item in self.row_drawn(row).items])
+
+            # «Descargar» lo quita.
+            self.assertEqual(bpy.ops.geoblender.core_unload_from_view(
+                "EXEC_DEFAULT", datasets=unload.properties.datasets), {"FINISHED"})
+            self.assertEqual(vf.objects_of(bpy.data, mdt.uid), [])
+            self.inventory_drawn()
+            self.read_inventory()
+            self.assertEqual(self.shown()[mdt.name], ("DATASET", False, False))
+            self.assertNotIn("HIDE_OFF", [item.icon for item in self.row_drawn(
+                view.inventory[view.inventory_index]).items])
+        self.assertEqual(reads.call_count, 0)  # cargar y descargar no cambian el proyecto
+
+        # «Procedencia» abre la de la 008 con ese dato (su ventana, con wm.call_panel sustituido:
+        # en -b no hay región donde abrirla).
+        lineage_ops = vf.extension("bl.ops.core_provenance")
+        window = bpy.context.window_manager.windows[0]
+        with mock.patch.object(lineage_ops, "_call_panel", return_value={"FINISHED"}) as call:
+            with bpy.context.temp_override(window=window):
+                self.assertEqual(bpy.ops.geoblender.core_show_lineage(
+                    item_uid=lineage.properties.item_uid), {"FINISHED"})
+        call.assert_called_once_with(vf.extension("bl.ui.provenance").LINEAGE_PANEL)
+        lineage_view = getattr(bpy.context.window_manager,
+                               vf.extension("bl.props.provenance").WINDOW_MANAGER_PROPERTY)
+        self.assertEqual((lineage_view.lineage_uid, lineage_view.lineage[0].uid),
+                         (mdt.uid, mdt.uid))
+
+        # Una entrada no se carga ni tiene procedencia: desactivados, con el motivo.
+        view.inventory_kind = "INPUT"
+        self.assertEqual(list(self.shown()), [MDT])
+        self.choose(MDT)
+        layout = self.inventory_drawn()
+        for target, reason in ((LOAD, INPUT_NOT_LOADED), (UNLOAD, NOT_LOADED),
+                               (SHOW_LINEAGE, INPUT_NO_LINEAGE)):
+            self.assertFalse(self.button(layout, target).enabled, target)
+            self.assertIn(reason, self.label_texts(layout))
+        self.assertIn("Estado: vigente", self.label_texts(layout))
+
+        # En la escena, sin texto: solo la rejilla cargada.
+        view.inventory_kind = "ALL"
+        view.inventory_text = ""
+        view.inventory_presence = "IN"
+        self.assertEqual(self.shown(), {grid.name: ("DATASET", True, False)})
+        view.inventory_presence = "ALL"
+        view.inventory_kind = "RASTER"
+        self.assertEqual(set(self.shown()), {mdt.name, grid.name})
+
+        # Los textos caben en la barra lateral a escala 1,0 y 1,25; los iconos son de 5.2.
+        icons = set(bpy.types.UILayout.bl_rna.functions["label"].parameters["icon"]
+                    .enum_items.keys())
+        sidebar = self.labels.sidebar_width(bpy.context)
+        for name in (MDT, grid.name):
+            view.inventory_kind = "ALL"
+            self.choose(name)
+            for scale in at_scales():
+                layout = self.inventory_drawn(width_px=sidebar)
+                assert_fits(self, layout, sidebar, scale=scale)
+                for item in layout.of_kind("operator"):
+                    self.assertLessEqual(self.labels.label_px(item.text, icon=True, scale=scale),
+                                         sidebar)
+            drawn = [*layout.items, *self.row_drawn(view.inventory[view.inventory_index]).items]
+            self.assertLessEqual({item.icon for item in drawn}, icons)
+        self.assertEqual([item.target for item in layout.of_kind("template_list")],
+                         [INVENTORY_LIST])
+
+        # En el modo Geoblender: en una Vista 3D en modo Blender, no.
+        panel = getattr(bpy.types, INVENTORY_PANEL)
+        mode = vf.extension("bl.props.ui").WORKSPACE_PROPERTY
+        for marked in (False, True):
+            context = SimpleNamespace(area=SimpleNamespace(type="VIEW_3D"),
+                                      workspace=SimpleNamespace(**{mode: marked}))
+            self.assertIs(panel.poll(context), marked)
+        self.assertEqual(data.change_counter(), counter)
+
+    def test_inventory_reads_the_project_only_when_drawn(self) -> None:
+        """RF-010-07 (plan A7, D-15): un cambio en el proyecto (la rejilla calculada del MDT,
+        obsoleta) deja vieja la lectura del inventario, pero no se lee nada (ni tras la lectura
+        de los indicadores de la procedencia) hasta que el panel se dibuja: entonces, una vez,
+        y la fila dice «obsoleto»; el filtro de estado lo encuentra. En solo lectura, igual:
+        se vuelve a leer y se puede cargar; nada escrito."""
+        data = self.data
+        mdt = data.import_grid(MDT)
+        derived = data.derive(mdt.uid, DERIVED)
+        data.attach()
+        view = self.view()
+        tick = self.panels.inventory_tick
+        self.inventory_drawn()
+        self.read_inventory()
+        self.assertEqual(self.shown()[derived.name], ("DATASET", False, False))
+        inventory = vf.extension("core.views.inventory")
+        with mock.patch.object(inventory, "read_inventory",
+                               wraps=inventory.read_inventory) as reads:
+            self.assertEqual(data.make_stale(), ())
+            self.assertEqual(self.ui.indicator_tick(), self.ui.INDICATOR_TICK_S)
+            self.assertEqual(reads.call_count, 0)
+            self.assertFalse(bpy.app.timers.is_registered(tick))
+            self.assertEqual(self.shown()[derived.name], ("DATASET", False, False))
+            with mock.patch.object(data.project, "read", wraps=data.project.read) as opens:
+                self.inventory_drawn()  # dibujar no lee: lo pide
+            self.assertEqual((reads.call_count, opens.call_count), (0, 0))
+            self.read_inventory()
+            self.assertEqual(reads.call_count, 1)
+        self.assertEqual(self.shown()[derived.name], ("DATASET", False, True))
+        row = self.choose(derived.name)
+        flags = [item for item in self.row_drawn(row).items if item.icon == "ERROR"]
+        self.assertEqual([item.alert for item in flags], [True])
+        self.assertIn("Estado: VIGENTE · OBSOLETO", self.label_texts(self.inventory_drawn()))
+        view.inventory_status = "STALE"
+        self.assertEqual(list(self.shown()), [derived.name])
+
+        # En solo lectura, igual: al cambiar el proyecto de la sesión se olvida y se vuelve a
+        # leer al dibujarlo; se puede cargar.
+        changed = data.change_counter()
+        data.project.set_read_only(vf.extension("core.project").ReadOnlyCode.REQUESTED,
+                                   "prueba")
+        self.panels.on_project_changed(data.project)
+        self.assertEqual(len(view.inventory), 0)
+        self.assertEqual(self.label_texts(self.inventory_drawn()), [READING])
+        self.read_inventory()
+        self.assertEqual(self.shown(), {derived.name: ("DATASET", False, True)})
+        self.choose(derived.name)
+        self.assertTrue(self.button(self.inventory_drawn(), LOAD).enabled)
+        self.assertEqual(data.change_counter(), changed)
+
+    def test_inventory_shows_at_most_500_rows(self) -> None:
+        """RF-010-07 (D-7, RNF-010-02): con 20 100 elementos, 500 filas por nombre y «… y
+        19 600 más: afine el filtro»; un filtro que deja menos, todas y sin la línea."""
+        data = self.data
+        data.attach()
+        inventory = vf.extension("core.views.inventory")
+        i18n = vf.extension("core.i18n")
+        rows = tuple(("DATASET", f"{index:032x}", f"dato_{index:05d}", "gis", "raster",
+                      "current", None, False, False, True) for index in range(MANY))
+        snapshot = inventory.InventorySnapshot(rows, data.change_counter())
+        view = self.view()
+        with mock.patch.object(inventory, "read_inventory", return_value=snapshot) as reads:
+            self.inventory_drawn()
+            self.read_inventory()
+        self.assertEqual(reads.call_count, 1)
+        self.assertEqual(len(view.inventory), ROWS)
+        self.assertEqual((view.inventory[0].name, view.inventory[ROWS - 1].name),
+                         ("dato_00000", f"dato_{ROWS - 1:05d}"))
+        more = f"… y {i18n.format_number(MANY - ROWS, 0)} más: afine el filtro"
+        self.assertEqual(more, "… y 19\N{NARROW NO-BREAK SPACE}600 más: afine el filtro")
+        self.assertIn(more, self.label_texts(self.inventory_drawn()))
+        view.inventory_text = "dato_000"
+        self.assertEqual(len(view.inventory), 100)
+        self.assertFalse([text for text in self.label_texts(self.inventory_drawn())
+                          if text.startswith("… y")])
+
 
 class ActiveItemRegistrationTest(unittest.TestCase):
     """La extensión deshabilitada al empezar y al terminar (``blender_ext.release``)."""
@@ -322,11 +615,12 @@ class ActiveItemRegistrationTest(unittest.TestCase):
         self.addCleanup(blender_ext.release)
 
     def test_register_and_unregister_leave_no_trace(self) -> None:
-        """RF-010-06 (plan §5.3.3, §2.1), principio 8: habilitar registra el panel en la pestaña
-        «Proyecto» tras el panel Proyecto (también tras cambiar el idioma), suscribe la ficha
-        al objeto activo y apunta su manejador ``@persistent`` de ``load_post``, su escucha del
-        proyecto de la sesión y la de cada lectura de los indicadores; deshabilitar lo quita
-        todo (la suscripción, también en Blender) y deja la huella de Blender como al
+        """RF-010-06, RF-010-07 (plan §5.3.3, §2.1), principio 8: habilitar registra el panel
+        en la pestaña «Proyecto» tras el panel Proyecto y, tras él, el del inventario con su
+        lista (también tras cambiar el idioma), suscribe la ficha al objeto activo y apunta su
+        manejador ``@persistent`` de ``load_post``, su escucha del proyecto de la sesión y la
+        de cada lectura de los indicadores; deshabilitar lo quita todo (la suscripción, también
+        en Blender; el temporizador del inventario) y deja la huella de Blender como al
         principio de la sesión de pruebas."""
         blender_ext.enable()
         panels = vf.extension("bl.ui.view_panels")
@@ -341,13 +635,24 @@ class ActiveItemRegistrationTest(unittest.TestCase):
         self.assertEqual(project.bl_category, "Proyecto")
         self.assertNotIn("bl_order", vars(project))  # el de por defecto, 0
         self.assertGreater(panel.bl_order, 0)  # tras el panel Proyecto
+        # T15: el inventario, tras Elemento activo, con su lista.
+        inventory = getattr(bpy.types, INVENTORY_PANEL)
+        self.assertEqual((inventory.bl_space_type, inventory.bl_region_type,
+                          inventory.bl_category, inventory.bl_label),
+                         ("VIEW_3D", "UI", "Proyecto", "Inventario"))
+        self.assertGreater(inventory.bl_order, panel.bl_order)
+        self.assertTrue(getattr(bpy.types, INVENTORY_LIST).is_registered)
         self.addCleanup(ui_i18n.apply, "es")
         ui_i18n.apply("en")
         panel = getattr(bpy.types, PANEL)
         self.assertEqual((panel.bl_category, panel.bl_label), ("Project", "Active item"))
         self.assertTrue(panel.is_registered)
+        inventory = getattr(bpy.types, INVENTORY_PANEL)
+        self.assertEqual((inventory.bl_category, inventory.bl_label), ("Project", "Inventory"))
+        self.assertTrue(inventory.is_registered)
         ui_i18n.apply("es")
         self.assertEqual(getattr(bpy.types, PANEL).bl_category, "Proyecto")
+        self.assertEqual(getattr(bpy.types, INVENTORY_PANEL).bl_category, "Proyecto")
         self.assertTrue(panels.is_subscribed())
         self.assertIn(panels.on_load_post, bpy.app.handlers.load_post)
         self.assertTrue(hasattr(panels.on_load_post, "_bpy_persistent"))
@@ -360,6 +665,9 @@ class ActiveItemRegistrationTest(unittest.TestCase):
         self.assertNotIn(panels.on_project_changed, ps.listeners())
         self.assertNotIn(panels.on_project_read, ui.change_listeners())
         self.assertFalse(hasattr(bpy.types, PANEL))
+        self.assertFalse(hasattr(bpy.types, INVENTORY_PANEL))
+        self.assertFalse(hasattr(bpy.types, INVENTORY_LIST))
+        self.assertFalse(bpy.app.timers.is_registered(panels.inventory_tick))
         after = blender_ext.state_fingerprint()
         baseline = blender_ext.session_baseline()
         if after != baseline:
