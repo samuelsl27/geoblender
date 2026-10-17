@@ -19,8 +19,9 @@ retirados en :func:`unregister`:
   el abierto; si es del mismo con **otra** georreferencia, se sincronizan sus escenas con
   la del proyecto; si es de un proyecto y no hay ninguno abierto, no se usa. En los tres
   casos queda un aviso con las dos georreferencias y la vista, desfasada
-  (``view_stale``). Comprueba además que el temporizador de la marca del cerrojo sigue
-  registrado.
+  (``view_stale``). Sin proyecto, o tras cerrar el de otro, se ofrece abrir el de la vista
+  (spec 010, T12; RF-010-04: ``bl.scene.view_link``). Comprueba además que el temporizador
+  de la marca del cerrojo sigue registrado.
 - ``undo_post`` y ``redo_post``: deshacer puede devolver una escena a antes de abrir el
   proyecto, o a antes de un cambio de la ventana de trabajo; se vuelven a sincronizar
   todas (ninguna operación de la spec 002 entra en la pila de deshacer) y, si alguna
@@ -54,7 +55,7 @@ from ...core.paths import (
     same_volume,
 )
 from ..props.core import LOCAL_VERTICAL
-from . import project_session
+from . import project_session, view_link
 
 if TYPE_CHECKING:
     from ...core.project.session import Project
@@ -207,22 +208,26 @@ def check_loaded_file(filepath: object = None) -> None:
     """Lo que hace ``load_post`` con el ``.blend`` recién cargado (RF-002-06, RF-002-28,
     RF-002-29): cerrar el proyecto si el fichero es de otro, sincronizar sus escenas si
     es del abierto y avisar (con la vista desfasada) si su georreferencia no es la del
-    proyecto abierto o no hay ninguno abierto."""
+    proyecto abierto o no hay ninguno abierto. Sin proyecto, o tras cerrar el de otro,
+    ofrece además abrir el de la vista (spec 010, RF-010-04: ``view_link.offer_after_load``,
+    con ``filepath``, el fichero que se leyó); la oferta del fichero anterior se olvida."""
     view = _view_name(filepath)
     found = file_georeferences()
     project = project_session.current()
+    loaded = filepath if isinstance(filepath, str) else None
+    view_link.withdraw()  # la oferta del fichero anterior, si la había
     if project is None:
         if found:
             mark_stale()
-            project_session.notify(
-                tr(
-                    "The view «{view}» belongs to project {projects}, which is not open: "
-                    "Geoblender does not use its georeference and marks it out of date; open "
-                    "the project to work with it.",
-                    view=view,
-                    projects=_listed(found),
-                )
+            notice = tr(
+                "The view «{view}» belongs to project {projects}, which is not open: "
+                "Geoblender does not use its georeference and marks it out of date; open "
+                "the project to work with it.",
+                view=view,
+                projects=_listed(found),
             )
+            project_session.notify(notice)
+            view_link.offer_after_load(loaded, found, notice=notice)
         return
     expected = project_georeference()
     if expected is None:  # inalcanzable: hay proyecto
@@ -231,17 +236,17 @@ def check_loaded_file(filepath: object = None) -> None:
     if others:
         project_session.close()
         mark_stale()
-        project_session.notify(
-            tr(
-                "The view «{view}» belongs to another project ({projects}), not to the open "
-                "one («{name}», {georef}): «{name}» has been closed and the view is out of "
-                "date; open its project to work with it.",
-                view=view,
-                projects=_listed(others),
-                name=expected.name,
-                georef=expected.describe(),
-            )
+        notice = tr(
+            "The view «{view}» belongs to another project ({projects}), not to the open "
+            "one («{name}», {georef}): «{name}» has been closed and the view is out of "
+            "date; open its project to work with it.",
+            view=view,
+            projects=_listed(others),
+            name=expected.name,
+            georef=expected.describe(),
         )
+        project_session.notify(notice)
+        view_link.offer_after_load(loaded, found, notice=notice)
         return
     if not project.writable and is_within(filepath if isinstance(filepath, str) else None,
                                           project.root):

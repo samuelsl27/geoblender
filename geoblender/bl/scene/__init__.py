@@ -23,13 +23,16 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
   deshacer, rehacer, abrir un ``.blend``, cargar o descargar (``undo_post``, ``redo_post``,
   ``load_post``), por tandas desde su temporizador; el último;
 - ``refresh``: los pasos de Refrescar las vistas desde el proyecto, F5 (spec 010, T11): vuelve
-  a cargar lo que no está al día con los pasos de ``views`` (no registra nada).
+  a cargar lo que no está al día con los pasos de ``views`` (no registra nada);
+- ``view_link``: ofrecer abrir el proyecto de una vista cargada sin él (spec 010, T12): la
+  oferta que apunta ``georef`` al cargar el fichero y su temporizador de un disparo, que
+  ``unregister`` retira.
 """
 
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
-from . import dh_view, georef, gis_views, live, project_session, undo_watch
+from . import dh_view, georef, gis_views, live, project_session, undo_watch, view_link
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2); vacía hasta que una spec añada la primera.
@@ -42,6 +45,7 @@ def register() -> None:
     register_classes(classes)
     try:
         project_session.register()
+        view_link.register()
         georef.register()
         undo_watch.register()
         gis_views.register()
@@ -53,20 +57,23 @@ def register() -> None:
         gis_views.unregister()
         undo_watch.unregister()
         georef.unregister()
+        view_link.unregister()
         project_session.unregister()
         unregister_classes(classes)
         raise
 
 
 def unregister() -> None:
-    """Quita los cargadores de vista y los manejadores, cierra el proyecto de la sesión (libera
-    su cerrojo) y desregistra ``classes``, en orden inverso."""
+    """Quita los cargadores de vista y los manejadores, olvida la oferta de abrir el proyecto
+    de la vista, cierra el proyecto de la sesión (libera su cerrojo) y desregistra
+    ``classes``, en orden inverso."""
     try:
         live.unregister()
         dh_view.unregister()
         gis_views.unregister()
         undo_watch.unregister()
         georef.unregister()
+        view_link.unregister()
         project_session.unregister()
     finally:
         unregister_classes(classes)

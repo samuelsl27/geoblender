@@ -1844,6 +1844,30 @@ es = "Se cerró el proyecto mientras se refrescaba la vista: la vista queda como
 ["Refreshing the view stopped: {error}"]
 es = "Refrescar la vista se ha parado: {error}"
 
+# Abrir el proyecto de una vista cargada sin él: el diálogo, el panel Proyecto y lo que dice al
+# aceptar (spec 010, T12; RF-010-04; plan 010 §5.5, A5, R3).
+
+["Open the project of this view"]
+es = "Abrir el proyecto de esta vista"
+
+["Not now"]
+es = "Ahora no"
+
+["Open the project «{name}» of this view? It is in «{path}» (relative to the view)."]
+es = "¿Abrir el proyecto «{name}» de esta vista? Está en «{path}» (relativa a la vista)."
+
+["Open the project «{name}» of this view? The view does not say where it is: it is looked for among the recent projects of this computer."]
+es = "¿Abrir el proyecto «{name}» de esta vista? La vista no dice dónde está: se busca entre los proyectos recientes de este equipo."
+
+["This view is of the project «{name}», which is not open"]
+es = "Esta vista es del proyecto «{name}», que no está abierto"
+
+["The project «{name}» of this view is already open"]
+es = "El proyecto «{name}» de esta vista ya está abierto"
+
+["The project «{name}» of this view is not where the view saved it nor among the recent projects of this computer"]
+es = "El proyecto «{name}» de esta vista no está donde lo guardó la vista ni entre los proyectos recientes de este equipo"
+
 # Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
 # RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto
 # desde un MDT…, sus diálogos, sus informes y la decisión de una importación que espera.

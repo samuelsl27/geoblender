@@ -477,16 +477,28 @@ def load_file(filepath: str | os.PathLike[str] | None = None) -> None:
     ``load_post``: no son un rastro de la extensión, pero el seguimiento de
     :func:`track_registrations` las vería como nuevas. Las de la extensión se conservan:
     una que no se quite sigue siendo un rastro."""
+    with loading():
+        if filepath is None:
+            bpy.ops.wm.read_homefile(use_factory_startup=True)
+        else:
+            bpy.ops.wm.open_mainfile(filepath=os.fspath(filepath))
+
+
+@contextlib.contextmanager
+def loading() -> Iterator[None]:
+    """Para abrir un fichero con otra orden de Blender (``wm.recover_last_session``,
+    ``wm.recover_auto_save``; spec 010, T12): al salir del bloque, olvida como
+    :func:`load_file` las suscripciones de msgbus que hicieron dentro los complementos de
+    **Blender** (las de la extensión se conservan)."""
     before = list(_SUBSCRIPTIONS)
-    if filepath is None:
-        bpy.ops.wm.read_homefile(use_factory_startup=True)
-    else:
-        bpy.ops.wm.open_mainfile(filepath=os.fspath(filepath))
-    _SUBSCRIPTIONS[:] = [
-        entry
-        for entry in _SUBSCRIPTIONS
-        if any(entry is old for old in before) or _from_extension(entry[1].target)
-    ]
+    try:
+        yield
+    finally:
+        _SUBSCRIPTIONS[:] = [
+            entry
+            for entry in _SUBSCRIPTIONS
+            if any(entry is old for old in before) or _from_extension(entry[1].target)
+        ]
 
 
 def registered_timers() -> list[CallableRef]:

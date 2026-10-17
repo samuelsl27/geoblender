@@ -261,3 +261,17 @@ description.es = "Para las comprobaciones del proyecto y los hashes en curso"
 entry = "008"
 action = "A"
 frequency = 1
+
+# Órdenes internas de la vista regenerable (spec 010, plan §5.3.3, D-18): las abren el aviso de
+# una vista cargada sin su proyecto y el panel Proyecto, no un menú de la barra.
+
+[[command]]
+key = "geoblender.core_open_view_project"
+kind = "internal"
+label.en = "Open the project of this view"
+label.es = "Abrir el proyecto de esta vista"
+description.en = "Look for the project of the loaded view, where the view saved it or among the recent projects of this computer, and open it with its lock, read-only and migration rules"
+description.es = "Busca el proyecto de la vista cargada, donde lo guardó la vista o entre los proyectos recientes de este equipo, y lo abre con sus reglas de cerrojo, solo lectura y migración"
+entry = "010"
+action = "D"
+frequency = 1
