@@ -64,7 +64,9 @@ A3, D-9 a D-13 y D-17; generaliza lo de los sondeos, spec 005, T47):
 - :func:`load_steps` vuelve a cargar con Refrescar (F5): en su último paso, además, quita lo
   sustituido por lo que carga (``replaces``), marca «sin respaldo en el proyecto» sin borrarlos
   los objetos de los datos ``unbacked`` y, con ``clear_view_stale``, quita la marca de vista
-  desfasada de las escenas (RF-002-29).
+  desfasada de las escenas (RF-002-29);
+- cargar y descargar piden la marca en vivo (``bl.scene.live.request``; spec 010, T08): lo que
+  no está al día cambia, y con él el control 7.
 """
 
 from __future__ import annotations
@@ -926,7 +928,18 @@ def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[s
         for item in bpy.data.scenes:
             if item.geoblender.view_stale:
                 item.geoblender.view_stale = False
+    if loaded or gone:
+        _view_changed()
     return LoadOutcome(tuple(loaded), tuple(objects), tuple(notes), tuple(errors))
+
+
+def _view_changed() -> None:
+    """Lo cargado o descargado cambia lo que no está al día: pide la marca en vivo del proyecto
+    de la sesión (``bl.scene.live.request``, spec 010, T08), que lo cuenta otra vez (control 7)
+    desde su temporizador. No lee nada."""
+    from . import live, project_session  # al usarlo: live importa este módulo
+
+    live.request(project_session.current())
 
 
 def load_datasets(context: Any, project: Any, refs: Iterable[str], *,
@@ -969,7 +982,7 @@ def _remove_empty(collection: bpy.types.Collection) -> None:
 def unload_datasets(uids: Iterable[str]) -> int:
     """Quita de la escena los objetos que muestran los datos ``uids``, sus mallas (si nadie
     más las usa) y las colecciones de la vista que quedan vacías (RF-006-20); devuelve
-    cuántos objetos quitó. No toca el proyecto."""
+    cuántos objetos quitó. No toca el proyecto; si quitó algo, pide la marca en vivo."""
     wanted = set(uids)
     found = [obj for obj in bpy.data.objects
              if getattr(obj, OBJECT_PROPERTY).dataset_uid in wanted]
@@ -984,4 +997,6 @@ def unload_datasets(uids: Iterable[str]) -> int:
             owner.remove(data)
     for collection in collections:
         _remove_empty(collection)
+    if found:
+        _view_changed()
     return len(found)

@@ -17,13 +17,17 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
 - ``gis_views``: los cargadores de la topografía (rejillas, TIN, puntos y líneas; spec 006),
   que :func:`register` registra en ``views``;
 - ``dh_view``: el cargador de las trazas de los sondeos (spec 005, T24; T29: sus tubos y sus
-  barras de leyes, en pasos, con el trabajo ``dh_view_arrays``), después.
+  barras de leyes, en pasos, con el trabajo ``dh_view_arrays``), después;
+- ``live``: la marca en vivo de la vista (spec 010, T08): lo cargado, al día de lo que dice el
+  proyecto sin volver a cargarlo, tras cada lectura de los indicadores de la procedencia y tras
+  deshacer, rehacer, abrir un ``.blend``, cargar o descargar (``undo_post``, ``redo_post``,
+  ``load_post``), por tandas desde su temporizador; el último.
 """
 
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
-from . import dh_view, georef, gis_views, project_session, undo_watch
+from . import dh_view, georef, gis_views, live, project_session, undo_watch
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2); vacía hasta que una spec añada la primera.
@@ -40,7 +44,9 @@ def register() -> None:
         undo_watch.register()
         gis_views.register()
         dh_view.register()
+        live.register()
     except BaseException:
+        live.unregister()
         dh_view.unregister()
         gis_views.unregister()
         undo_watch.unregister()
@@ -54,6 +60,7 @@ def unregister() -> None:
     """Quita los cargadores de vista y los manejadores, cierra el proyecto de la sesión (libera
     su cerrojo) y desregistra ``classes``, en orden inverso."""
     try:
+        live.unregister()
         dh_view.unregister()
         gis_views.unregister()
         undo_watch.unregister()

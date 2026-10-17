@@ -94,10 +94,13 @@ class ViewsProject:
     """El proyecto sintético de la vista, creado en ``folder/proyectos`` (las fuentes de sus
     importaciones, en ``folder/fuentes``) con ``grids`` rejillas (``gis_dtm_rejilla_01``…, en
     :attr:`names`); las operaciones de las de los índices ``param_readers`` leen
-    :data:`STALE_PARAM`. Queda abierto en escritura (no en la sesión: :meth:`attach`)."""
+    :data:`STALE_PARAM`. Con ``one_operation`` (spec 010, T08: para medir con muchas, unas 2,5
+    veces más rápido), todas las escribe una sola operación, que lee :data:`STALE_PARAM` si
+    ``param_readers`` no está vacío (todas quedan obsoletas a la vez) y que no se recalculan una
+    a una. Queda abierto en escritura (no en la sesión: :meth:`attach`)."""
 
     def __init__(self, folder: Path, *, grids: int = GRIDS,
-                 param_readers: Collection[int] = (0,)) -> None:
+                 param_readers: Collection[int] = (0,), one_operation: bool = False) -> None:
         if not 0 < grids <= SLOTS * SLOTS:
             raise ValueError(f"caben de 1 a {SLOTS * SLOTS} rejillas en la ventana, no {grids}")
         self._prov = extension("gis.provenance")
@@ -123,14 +126,22 @@ class ViewsProject:
         self._labels: dict[str, str] = {}  # por nombre de dato: el nombre de su orden
         self._readers: set[str] = set()  # los datos cuya operación lee STALE_PARAM
         self._entries: dict[str, str] = {}  # por nombre de la importación: su entrada activa
+        self._shared: set[str] = set()  # las rejillas de una operación de varias
         names = []
+        batch: list[tuple[str, str, Any]] = []
         for index in range(grids):
             label = f"Rejilla {index + 1:02d}"
             name = self._prov.dataset_name(self._prov.PROJECT_GRID, label)
-            if index in param_readers:
+            if index in param_readers or (one_operation and param_readers):
                 self._readers.add(name)
-            self._write_grid(label, name, self._raster(self._next_slot()))
+            batch.append((label, name, self._raster(self._next_slot())))
+            if not one_operation:
+                self._write_grids(batch)
+                batch = []
             names.append(name)
+        if batch:
+            self._write_grids(batch)
+            self._shared.update(name for _label, name, _raster in batch)
         self.names: tuple[str, ...] = tuple(names)
         """Los nombres de las rejillas del proyecto (``gis_dtm_``), en su orden."""
 
@@ -204,9 +215,12 @@ class ViewsProject:
         record = self.record(ref)
         if record.name not in self._labels or record.input_uid is not None:
             raise ValueError(f"«{record.name}» no es una rejilla calculada de la prueba")
+        if record.name in self._shared:
+            raise ValueError(f"«{record.name}» la escribió una operación de varias "
+                             "(one_operation): no se recalcula sola")
         raster = self._shifted(record.name, shift_m)
-        self._write_grid(self._labels[record.name], record.name, raster,
-                         supersedes=record.operation_uid)
+        self._write_grids([(self._labels[record.name], record.name, raster)],
+                          supersedes=record.operation_uid)
         return self.record(record.uid)
 
     def make_stale(self) -> tuple[str, ...]:
@@ -222,7 +236,11 @@ class ViewsProject:
             store.change(conn, STALE_PARAM, value=value, kind="ADOPTADO",
                          source="Prueba de la vista", source_kind="document",
                          decided_by="la prueba", reason=REASON)
-        return tuple(name for name in self.names if self.stale(name))
+        with self.project.read() as conn:  # una lectura para todas (T08: con 200)
+            stale = {row[0] for row in conn.execute(
+                "SELECT item_uid FROM gb_stale WHERE item_kind = 'dataset'")}
+            return tuple(name for name in self.names
+                         if self._registry.get(conn, name).uid in stale)
 
     def import_grid(self, label: str) -> Any:
         """Importa como MDT (``gis.import_dtm``) un GeoTIFF nuevo de ``fuentes/`` con una
@@ -288,20 +306,24 @@ class ViewsProject:
         return type(raster)(raster.grid, raster.values + float(shift_m), raster.crs,
                             raster.vertical)
 
-    def _write_grid(self, label: str, name: str, raster: Any, *,
-                    supersedes: str | None = None) -> None:
-        """La rejilla ``raster`` del proyecto como el dato ``name`` de la orden ``label``,
-        en su operación ``gis.resample`` (que lee :data:`STALE_PARAM` si ``name`` lo lee)."""
-        params = [STALE_PARAM] if name in self._readers else []
+    def _write_grids(self, grids: list[tuple[str, str, Any]], *,
+                     supersedes: str | None = None) -> None:
+        """Las rejillas ``grids`` del proyecto (orden ``label``, dato ``name`` y ``raster`` de
+        cada una) en una operación ``gis.resample`` (la de la primera orden), que lee
+        :data:`STALE_PARAM` si alguna lo lee."""
+        reads = any(name in self._readers for _label, name, _raster in grids)
         handle = self._ops.begin_operation(self.project, self._prov.RESAMPLE,
-                                           settings={"nombre": label}, params=params,
+                                           settings={"nombre": grids[0][0]},
+                                           params=[STALE_PARAM] if reads else [],
                                            executor="blender", supersedes=supersedes)
         library, version = extension("gis.crs").crs_library()
         with self._store.ResultWriter(self.project, handle) as out:
-            out.raster(label, raster)
+            for label, _name, raster in grids:
+                out.raster(label, raster)
             out.commit(software={library: version}, message=REASON)
-        self._rasters[name] = raster
-        self._labels[name] = label
+        for label, name, raster in grids:
+            self._rasters[name] = raster
+            self._labels[name] = label
 
     def _source(self, label: str, raster: Any) -> Any:
         """El GeoTIFF de ``raster`` en ``fuentes/`` y su entrada ``label`` (``InputSpec``,

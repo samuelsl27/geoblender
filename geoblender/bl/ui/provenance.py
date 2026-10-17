@@ -34,11 +34,15 @@ proyecto que QGIS dejó en WAL no se lee hasta que vuelva al diario clásico (lo
 Geoblender lo devuelve antes). Los campos dibujan lo último leído, con sus textos medidos una
 vez. Al abrir un proyecto no se lee nada (RNF-002-02 no cambia): el primer tic, después. Tras
 cada lectura se avisa, con el proyecto, a lo apuntado con :func:`add_change_listener` (spec
-005, T47: la vista de los sondeos marca sus trazas obsoletas en cuanto lo están).
+005, T47: la vista de los sondeos marca sus trazas obsoletas en cuanto lo están; spec 010,
+T08: la marca en vivo de la vista, ``bl.scene.live.request``, que :func:`install` apunta y que
+solo pide su temporizador, para no alargar este tic).
 
 **Control 7** (RF-008-28): el número de lo obsoleto tras el icono de Refrescar
 (``quick_access.set_count_provider``), que abre :class:`GEOBLENDER_PT_core_stale`; sin nada
-obsoleto, solo el icono. Refrescar sigue provisional hasta la 009.
+obsoleto, solo el icono. Refrescar se dibuja además **resaltado** mientras la marca en vivo
+cuente datos de la vista que no están al día (spec 010, RF-010-02), con cuántos en su
+descripción («3 datos de la vista no están al día»): véase «Estados de las órdenes».
 
 **Lo obsoleto** (:class:`GEOBLENDER_PT_core_stale`, RF-008-28): «Refrescar · obsoletos (n)» y,
 por cada resultado obsoleto (como mucho :data:`MAX_STALE_ROWS`; los demás, «… y n más»): un
@@ -117,11 +121,14 @@ aviso de RF-008-10; si alguno de sus resultados (un dato o, de una operación qu
 cifras, ella misma) está obsoleto o espera revisión a mano, su descripción lleva su
 «Obsoleto: cambió …»; con algo obsoleto en el proyecto, «Recalcular lo
 obsoleto» se dibuja resaltado en el menú y en los contextuales. Se calcula con los recuentos
-(:func:`refresh`, solo cuando cambia el proyecto) y el dibujo solo lo busca.
+(:func:`refresh`, solo cuando cambia el proyecto) y el dibujo solo lo busca. Refrescar
+(``geoblender.core_refresh``) lleva además el de la marca en vivo de la vista
+(``bl.scene.live.refresh_state``; spec 010, RF-010-02): resaltado, con cuántos datos no están
+al día, mientras haya alguno; lo calcula la marca, y el dibujo solo lo busca.
 
 :func:`install` registra los campos, el número del control 7, el proveedor de estado de las
-órdenes y la escucha del proyecto de la sesión; :func:`uninstall` lo quita todo, con los
-temporizadores.
+órdenes, la marca en vivo tras cada lectura y la escucha del proyecto de la sesión;
+:func:`uninstall` lo quita todo, con los temporizadores.
 """
 
 from __future__ import annotations
@@ -154,7 +161,7 @@ from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
 from ..props.provenance import FILTER_ALL, WINDOW_MANAGER_PROPERTY
-from ..scene import project_session
+from ..scene import live, project_session
 from . import icons, quick_access, statusbar
 from .commands import (
     CommandState,
@@ -457,10 +464,20 @@ INPUT_BADGE = "⚠"
 """La insignia de una orden que depende de una entrada cambiada sin decidir (BS §7.3)."""
 
 
-def command_state(_context: Any, idname: str) -> CommandState | None:
+def command_state(context: Any, idname: str) -> CommandState | None:
     """El proveedor de estado de las órdenes (``commands.set_state_provider``; RF-008-61): el
-    de ``idname`` según lo último que leyó :func:`refresh`, o ``None``. Solo lo busca."""
-    return _STATE.command_states.get(idname)
+    de ``idname`` según lo último que leyó :func:`refresh`, o ``None``; Refrescar
+    (:data:`REFRESH`), además, resaltado con cuántos datos de la vista no están al día en su
+    descripción mientras la marca en vivo cuente alguno (``bl.scene.live.refresh_state``; spec
+    010, RF-010-02). Solo lo busca."""
+    found = _STATE.command_states.get(idname)
+    if idname != REFRESH:
+        return found
+    marked = live.refresh_state(context, idname)
+    if marked is None or found is None:
+        return found if marked is None else marked
+    note = "\n".join(part for part in (found.note, marked.note) if part)
+    return CommandState(badge=found.badge, highlight=True, note=note)
 
 
 def _changed_warning(conn: sqlite3.Connection, record: InputRecord,
@@ -1769,7 +1786,8 @@ classes: tuple[type, ...] = (
 
 def install() -> None:
     """Registra los campos de la barra de estado (después de ``statusbar.install``), el número
-    del control 7, el proveedor de estado de las órdenes y la escucha del proyecto de la
+    del control 7, el proveedor de estado de las órdenes, la marca en vivo de la vista tras
+    cada lectura (``bl.scene.live.request``; spec 010) y la escucha del proyecto de la
     sesión; con un proyecto ya abierto, pone el temporizador. Idempotente («Reparar la
     interfaz» la vuelve a llamar)."""
     for key, order, draw, width in FIELDS:
@@ -1779,6 +1797,7 @@ def install() -> None:
                                  folded_width_px=partial(width, folded=True))
     quick_access.set_count_provider(REFRESH, stale_count)
     set_state_provider(command_state)
+    add_change_listener(live.request)
     project_session.add_listener(on_project_changed)
     if project_session.current() is not None and not bpy.app.timers.is_registered(
             indicator_tick):
@@ -1788,14 +1807,15 @@ def install() -> None:
 
 def uninstall() -> None:
     """Quita los campos, el número del control 7, el proveedor de estado de las órdenes, la
-    escucha y los temporizadores, y olvida los recuentos, las filas (también las de los
-    parámetros) y el aviso."""
+    marca en vivo tras cada lectura, la escucha y los temporizadores, y olvida los recuentos,
+    las filas (también las de los parámetros) y el aviso."""
     for key in FIELD_KEYS:
         statusbar.unregister_field(key)
     if quick_access.count_provider(REFRESH) is stale_count:
         quick_access.set_count_provider(REFRESH, None)
     if state_provider() is command_state:
         set_state_provider(None)
+    remove_change_listener(live.request)
     project_session.remove_listener(on_project_changed)
     _retire(indicator_tick)
     _retire(expire_undo_notice)

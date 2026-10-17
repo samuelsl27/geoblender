@@ -4,7 +4,7 @@
 Al cargar un dato en la vista de Blender, cada objeto lleva en ``Object.geoblender`` lo que el
 proyecto sabe de él en ese momento: su registro de ``gb_dataset`` (uid, nombre, módulo, estado
 y hash de contenido ``gbch/1``), si está obsoleto según la caché ``gb_stale`` de la 008
-(``core.provenance.stale``; la marca en vivo y «Refrescar» son de la 009) y la fecha en que
+(``core.provenance.stale``; la marca en vivo y «Refrescar» son de la 010) y la fecha en que
 terminó la operación que escribió su contenido. :func:`dataset_view` lo lee de un dato vivo
 (vigente, que falta, bloqueado o dañado) y :func:`live_datasets` lista los vivos de todos los
 módulos (lo que el diálogo de «Cargar en la vista…» ofrece si su módulo registró su cargador).
