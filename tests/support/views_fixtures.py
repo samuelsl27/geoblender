@@ -223,6 +223,19 @@ class ViewsProject:
                           supersedes=record.operation_uid)
         return self.record(record.uid)
 
+    def derive(self, ref: str, label: str) -> Any:
+        """Una rejilla del proyecto nueva (``gis_dtm_<label>``, en el siguiente sitio libre)
+        calculada del dato ``ref`` (spec 010, T14): su operación ``gis.resample`` consume ``ref``
+        (papel ``source``, como «Rejilla del proyecto desde un MDT») y lee :data:`STALE_PARAM`,
+        así que es un derivado de ``ref`` que :meth:`make_stale` deja obsoleto. Devuelve su
+        registro."""
+        source = self.record(ref)
+        name = self._prov.dataset_name(self._prov.PROJECT_GRID, label)
+        self._readers.add(name)
+        use = self._ops.Use(source.uid, "source")
+        self._write_grids([(label, name, self._raster(self._next_slot()))], inputs=(use,))
+        return self.record(name)
+
     def make_stale(self) -> tuple[str, ...]:
         """Cambia :data:`STALE_PARAM` (:data:`STALE_STEP` menos), con su motivo: queda
         obsoleto lo que lo leyó. Devuelve las rejillas de :attr:`names` obsoletas."""
@@ -307,13 +320,13 @@ class ViewsProject:
                             raster.vertical)
 
     def _write_grids(self, grids: list[tuple[str, str, Any]], *,
-                     supersedes: str | None = None) -> None:
+                     supersedes: str | None = None, inputs: tuple[Any, ...] = ()) -> None:
         """Las rejillas ``grids`` del proyecto (orden ``label``, dato ``name`` y ``raster`` de
-        cada una) en una operación ``gis.resample`` (la de la primera orden), que lee
-        :data:`STALE_PARAM` si alguna lo lee."""
+        cada una) en una operación ``gis.resample`` (la de la primera orden), que consume
+        ``inputs`` (``Use``) y lee :data:`STALE_PARAM` si alguna lo lee."""
         reads = any(name in self._readers for _label, name, _raster in grids)
         handle = self._ops.begin_operation(self.project, self._prov.RESAMPLE,
-                                           settings={"nombre": grids[0][0]},
+                                           settings={"nombre": grids[0][0]}, inputs=inputs,
                                            params=[STALE_PARAM] if reads else [],
                                            executor="blender", supersedes=supersedes)
         library, version = extension("gis.crs").crs_library()

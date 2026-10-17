@@ -1886,6 +1886,57 @@ es = "La carpeta «{folder}» es el proyecto «{other}» (identidad {found}), no
 ["The folder «{folder}» is not a Geoblender project nor the one of the view ({uid}): it is not opened"]
 es = "La carpeta «{folder}» no es un proyecto de Geoblender ni el de la vista ({uid}): no se abre"
 
+# N ▸ Proyecto ▸ Elemento activo: la ficha del dato del objeto activo (spec 010, T14; RF-010-06;
+# plan 010 §5.5, A6, D-16). «Figures», «No inputs» y los estados («CURRENT», «STALE»…) ya están.
+
+["Active item"]
+es = "Elemento activo"
+
+["The active object does not show data of this project"]
+es = "El objeto activo no muestra un dato de este proyecto"
+
+["Reading the project data of the active object…"]
+es = "Leyendo del proyecto el dato del objeto activo…"
+
+["The project no longer has the data of this object"]
+es = "El proyecto ya no tiene el dato de este objeto"
+
+["Type: {kind}"]
+es = "Tipo: {kind}"
+
+["Status: {status}"]
+es = "Estado: {status}"
+
+["In the view: up to date"]
+es = "En la vista: al día"
+
+["In the view: not up to date: Refresh (F5)"]
+es = "En la vista: no al día: Refrescar (F5)"
+
+["In the view: unbacked in the project"]
+es = "En la vista: sin respaldo en el proyecto"
+
+["Version: {version}"]
+es = "Versión: {version}"
+
+["Operation: {operation}"]
+es = "Operación: {operation}"
+
+["↑ Inputs"]
+es = "↑ Entradas"
+
+["↓ Derived data"]
+es = "↓ Derivados"
+
+["No derived data"]
+es = "Ningún derivado"
+
+["No figures recorded"]
+es = "Sin cifras registradas"
+
+["Provenance"]
+es = "Procedencia"
+
 # Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
 # RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto
 # desde un MDT…, sus diálogos, sus informes y la decisión de una importación que espera.
