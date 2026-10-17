@@ -14,7 +14,7 @@ interfaz y sin escribir nada:
   (``<Nombre>.gbproj.anterior``, ``.publicando`` o ``.respaldo-esquema-N[-n]``, con las marcas de
   ``core.project``): allí la ruta relativa lleva a la copia, que tiene la misma identidad.
 - :func:`project_identity`: el ``project_uid`` del ``manifest.json`` de una carpeta, leído sin
-  cerrojo y sin escribir (``None`` si no lo tiene).
+  cerrojo y sin escribir (``None`` si no lo tiene); :func:`project_name`, su nombre, igual.
 - :func:`find_project`: (1) la ruta relativa de la vista desde la carpeta del ``.blend``, si allí
   está ese proyecto; (2) si no, entre los recientes del equipo (RF-002-08), el de esa identidad que
   existe y la tiene; (3) si no, :class:`NotFound` con la ubicación y la identidad esperadas y lo
@@ -65,6 +65,7 @@ __all__ = [
     "find_project",
     "offer_refusal",
     "project_identity",
+    "project_name",
     "relative_root",
 ]
 
@@ -189,20 +190,34 @@ def offer_refusal(
     return None
 
 
-def project_identity(folder: Path) -> str | None:
-    """El ``project_uid`` del ``manifest.json`` de ``folder``, o ``None`` si no hay carpeta,
-    cabecera legible de Geoblender o identidad de texto. Solo lee la cabecera: sin cerrojo, sin
-    abrir la base de datos y sin escribir nada (RF-010-04, RF-010-05)."""
+def _header_text(folder: Path, key: str) -> str | None:
+    """El texto ``key`` del ``manifest.json`` de Geoblender de ``folder`` (``None`` si no hay
+    carpeta, cabecera legible de Geoblender o un texto no vacío). Solo lee la cabecera."""
     try:
         data = json.loads(manifest_path(Path(folder)).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError):
         return None
     if not isinstance(data, dict) or data.get("format") != MANIFEST_FORMAT:
         return None
-    uid = data.get("project_uid")
-    if not isinstance(uid, str) or not uid.strip():
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
         return None
-    return uid
+    return value
+
+
+def project_identity(folder: Path) -> str | None:
+    """El ``project_uid`` del ``manifest.json`` de ``folder``, o ``None`` si no hay carpeta,
+    cabecera legible de Geoblender o identidad de texto. Solo lee la cabecera: sin cerrojo, sin
+    abrir la base de datos y sin escribir nada (RF-010-04, RF-010-05)."""
+    return _header_text(folder, "project_uid")
+
+
+def project_name(folder: Path) -> str | None:
+    """El nombre (``name``) del proyecto del ``manifest.json`` de ``folder``, o ``None`` si no
+    hay carpeta, cabecera legible de Geoblender o nombre de texto: para decir qué proyecto es el
+    que no se abre en «Localizar el proyecto…» (RF-010-05). Solo lee la cabecera, como
+    :func:`project_identity`."""
+    return _header_text(folder, "name")
 
 
 def relative_root(relative_path: str, blend_file: Path | str | None) -> Path | None:

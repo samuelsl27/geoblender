@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Ofrecer abrir el proyecto de una vista (spec 010, T12; HU-010-2; RF-010-04, RF-002-29; plan
-010 §5.3.2, §5.3.3, A5 y D-14).
+"""Ofrecer abrir el proyecto de una vista (spec 010, T12 y T13; HU-010-2; RF-010-04, RF-010-05,
+RF-002-29; plan 010 §5.3.2, §5.3.3, §5.5, A5 y D-14).
 
 Con el proyecto sintético de ``tests/support/views_fixtures.py`` (una rejilla, cargada en la
 escena) y su vista guardada en ``scenes/`` con el proyecto abierto (``save_post`` la reescribe
@@ -35,7 +35,12 @@ lleva); y «Abrir proyecto…» de la 002, que lanza aceptar, con eventos ``TIME
   (``wm.save_auto_save`` y ``wm.recover_auto_save``) o la última sesión (``quit.blend``,
   ``wm.recover_last_session``) con la carpeta temporal de Blender en la de la prueba, ni en una
   vista dentro de ``.anterior``, ``.respaldo-esquema-N`` o ``.publicando``;
-- **la orden** es interna, de la entrada «010», real y con su ``bl_idname``.
+- **el proyecto movido** (T13; RF-010-05): el diálogo da el aviso con la ubicación y la
+  identidad esperadas (también si allí hay otro proyecto) y ofrece «Localizar el proyecto…»
+  (``geoblender.core_locate_project``, con el explorador de carpetas), que no abre otro proyecto
+  ni una carpeta sin proyecto (los dos sin cambios) y abre el movido; mientras, sin proyecto
+  abierto ni georreferencia (la vista no es fuente de nada, RF-002-29);
+- **las órdenes** son internas, de la entrada «010», reales y con su ``bl_idname``.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -62,7 +67,9 @@ from tests.support.provenance_checks import assert_source_untouched
 from tests.support.trees import temp_folder
 
 OPEN_VIEW_PROJECT = "geoblender.core_open_view_project"
+LOCATE_PROJECT = "geoblender.core_locate_project"
 OPEN_THIS = "Abrir el proyecto de esta vista"
+LOCATE = "Localizar el proyecto…"
 NOT_NOW = "Ahora no"
 NAME = "Cantera Prueba"  # el de los proyectos sintéticos (core_fixtures)
 ONE_OUTDATED = "1 dato de la vista no está al día: Refrescar (F5)"
@@ -101,6 +108,12 @@ def _text(layout: FakeLayout, kind: str = "label") -> str:
 
 def _flat(text: str) -> str:
     return " ".join(text.split())
+
+
+def _squeezed(text: str) -> str:
+    """``text`` sin ningún espacio: una ruta larga se parte en trozos de línea en línea, y
+    :func:`_text` los une con uno."""
+    return "".join(text.split())
 
 
 class ViewLinkTest(unittest.TestCase):
@@ -174,17 +187,29 @@ class ViewLinkTest(unittest.TestCase):
         self.data.project = other
         return other
 
-    def dialog(self, offer: Any) -> tuple[Any, mock.Mock]:
+    def dialog(self, offer: Any) -> tuple[Any, mock.Mock, Any]:
         """El diálogo de la oferta abierto a mano (``invoke`` con ``invoke_props_dialog``
-        simulado): lo que devuelve y el simulado."""
+        simulado): lo que devuelve, el simulado y la orden (su ``self`` simulado)."""
         cls = self.views_ops.GEOBLENDER_OT_core_open_view_project
         shown = mock.Mock(return_value={"RUNNING_MODAL"})
         context = SimpleNamespace(window_manager=SimpleNamespace(invoke_props_dialog=shown))
-        return cls.invoke(operator_self(cls, **offer.properties()), context, None), shown
+        operator = operator_self(cls, not_found="", **offer.properties())
+        return cls.invoke(operator, context, None), shown, operator
 
-    def drawn(self, offer: Any) -> FakeLayout:
+    def drawn(self, offer: Any, not_found: str = "") -> FakeLayout:
         cls = self.views_ops.GEOBLENDER_OT_core_open_view_project
-        return draw(cls, bpy.context, **offer.properties())
+        return draw(cls, bpy.context, not_found=not_found, **offer.properties())
+
+    def located(self, folder: Path) -> tuple[set[str], list[tuple[set[str], str]]]:
+        """«Localizar el proyecto…» tras elegir ``folder`` en el explorador de carpetas (su
+        ``execute``, con la identidad y el nombre del proyecto de la vista): lo que devuelve y
+        lo que dice."""
+        cls = self.views_ops.GEOBLENDER_OT_core_locate_project
+        reports: list[tuple[set[str], str]] = []
+        operator = operator_self(cls, directory=str(folder), project_uid=self.uid,
+                                 project_name=NAME,
+                                 report=lambda kind, text: reports.append((kind, text)))
+        return cls.execute(operator, bpy.context), reports
 
     def accept(self, offer: Any) -> mock.Mock:
         """El botón «Abrir el proyecto de esta vista» del diálogo (la orden con lo que lleva,
@@ -290,7 +315,8 @@ class ViewLinkTest(unittest.TestCase):
         question = (f"¿Abrir el proyecto «{NAME}» de esta vista? Está en «..{os.sep}» "
                     "(relativa a la vista).")
         with assert_source_untouched(data.root):
-            result, shown = self.dialog(offer)
+            result, shown, operator = self.dialog(offer)
+            self.assertEqual(operator.not_found, "")
             self.assertEqual(result, {"RUNNING_MODAL"})
             shown.assert_called_once()
             self.assertEqual(shown.call_args.kwargs["title"], OPEN_THIS)
@@ -387,6 +413,149 @@ class ViewLinkTest(unittest.TestCase):
         opener = self.accept(offer)
         self.assertTrue(_same(opener.call_args.args[0], data.root))
         self.assertTrue(_same(self.finish_opening().root, data.root))
+
+    def test_moved_project_not_found_and_located(self) -> None:
+        """RF-010-05, RF-010-04, RF-002-29, HU-010-2 (T13; plan A5, §5.3.3, §5.5): una vista
+        guardada fuera del proyecto, en el mismo volumen (guarda su ruta relativa), y el
+        proyecto movido después a otra carpeta sin abrirlo. Al cargarla, el diálogo de la oferta
+        no lo encuentra (ni allí ni entre los recientes, que lo tienen donde estaba) y lo dice
+        con la ubicación y la identidad esperadas, en líneas que caben con la escala 1,0 y 1,25,
+        con los botones «Localizar el proyecto…» (la orden interna con la identidad y el nombre
+        del proyecto, desde la interfaz: el explorador de carpetas, en la de la vista) y «Ahora
+        no»; si allí hay ahora otro proyecto (el mismo nombre, otra identidad), lo dice también.
+        Aceptar desde un guion da el mismo aviso y, con interfaz, vuelve a abrir el diálogo con
+        él. «Localizar el proyecto…» con ese otro proyecto: «… es el proyecto «…» (identidad …),
+        no el de la vista (…): no se abre»; con una carpeta que no es un proyecto, tampoco; nada
+        abierto ni escrito en ninguno de los dos, sin proyecto abierto ni georreferencia (la
+        vista no es fuente de nada) y la vista desfasada. Con el movido, lo abre con «Abrir
+        proyecto…» de la 002, en escritura. La orden es interna, de la entrada «010», real y no
+        deshace la vista."""
+        data, ps, link, locate = self.data, self.ps, self.link, self.locate
+        commands = vf.extension("bl.ui.commands")
+        command = commands.catalog().commands[LOCATE_PROJECT]
+        self.assertEqual((command.kind, command.entry, command.label_es),
+                         ("internal", "010", LOCATE))
+        cls = commands.registered_class(LOCATE_PROJECT)
+        self.assertFalse(commands.is_provisional(cls))
+        self.assertTrue(commands.is_available(LOCATE_PROJECT))
+        self.assertIn("INTERNAL", cls.bl_options)
+        self.assertNotIn("UNDO", cls.bl_options)
+
+        # La vista, fuera del proyecto en el mismo volumen; después, el proyecto movido.
+        outside = self.folder / "planos" / "vista.blend"
+        self.save(outside)
+        relative = bpy.context.scene.geoblender.project_path
+        self.assertTrue(relative.startswith("//../"), relative)
+        data.close()
+        old = data.root
+        moved = self.folder / "movido" / old.name
+        moved.parent.mkdir()
+        old.rename(moved)
+        offer = self.offered(outside)
+        self.assertEqual(offer.link, locate.ViewLink(self.uid, NAME, relative))
+        expected = locate.relative_root(relative, outside)
+        self.assertTrue(_same(expected, old))
+        self.assertFalse(expected.exists())
+
+        # El diálogo: el aviso de RF-010-05 y «Localizar el proyecto…».
+        labels = vf.extension("bl.ui.labels")
+        missing = (f"No se encuentra el proyecto «{NAME}» de la vista «vista.blend»: se "
+                   f"esperaba en «{expected}» con la identidad {self.uid}; no está allí ni entre "
+                   "los proyectos recientes de este equipo. Localícelo o ábralo a mano.")
+        with assert_source_untouched(moved):
+            result, shown, operator = self.dialog(offer)
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        shown.assert_called_once()
+        self.assertEqual(operator.not_found, missing)
+        width = labels.dialog_width(shown.call_args.kwargs["width"])
+        start = os.path.join(os.fspath(outside.parent), "")
+        for scale in at_scales():
+            layout = self.drawn(offer, operator.not_found)
+            self.assertEqual(_squeezed(_text(layout)), _squeezed(f"{offer.notice} {missing}"))
+            assert_fits(self, layout, width, scale=scale)
+            (buttons,) = layout.of_kind("template_popup_confirm")
+            self.assertEqual((buttons.target, buttons.text, buttons.options.get("cancel_text"),
+                              buttons.operator_context),
+                             (LOCATE_PROJECT, LOCATE, NOT_NOW, "INVOKE_DEFAULT"))
+            self.assertEqual(vars(buttons.properties),
+                             {"project_uid": self.uid, "project_name": NAME,
+                              "directory": start})
+        self.assertEqual(
+            _squeezed(link.not_found_text(locate.NotFound(None, offer.link, None), str(outside))),
+            _squeezed(f"No se encuentra el proyecto «{NAME}» de la vista «vista.blend»: la "
+                      "vista no dice dónde está y ningún proyecto reciente de este equipo tiene "
+                      f"su identidad, {self.uid}. Localícelo o ábralo a mano."))
+
+        # Allí, ahora, otro proyecto con el mismo nombre y otra identidad.
+        settings = self.core.ProjectSettings(**settings_values(name=NAME, window=vf.WINDOW))
+        impostor = self.core.create_project(old.parent, settings, ps.session(),
+                                            ps.userdata()).project
+        impostor.close()
+        self.assertTrue(_same(impostor.root, old))
+        self.assertNotEqual(impostor.uid, self.uid)
+        elsewhere = (f"No se encuentra el proyecto «{NAME}» de la vista «vista.blend»: se "
+                     f"esperaba en «{expected}» con la identidad {self.uid}, pero allí hay otro "
+                     f"proyecto (identidad {impostor.uid}) y no está entre los proyectos "
+                     "recientes de este equipo. Localícelo o ábralo a mano.")
+        with assert_source_untouched(old), assert_source_untouched(moved):
+            _result, _shown, operator = self.dialog(offer)
+            self.assertEqual(operator.not_found, elsewhere)
+
+            # Aceptar desde un guion: el aviso; con interfaz, el diálogo otra vez con él.
+            opener_cls = self.views_ops.GEOBLENDER_OT_core_open_view_project
+            reports: list[tuple[set[str], str]] = []
+            accepted = operator_self(opener_cls, not_found="", **offer.properties(),
+                                     report=lambda kind, text: reports.append((kind, text)))
+            self.assertEqual(opener_cls.execute(accepted, bpy.context), {"CANCELLED"})
+            self.assertEqual(reports, [({"WARNING"}, elsewhere)])
+            shown = mock.Mock(return_value={"RUNNING_MODAL"})
+            context = SimpleNamespace(window_manager=SimpleNamespace(invoke_props_dialog=shown))
+            accepted = operator_self(opener_cls, not_found="", **offer.properties(),
+                                     report=lambda kind, text: None)
+            with self.interface():
+                self.assertEqual(opener_cls.execute(accepted, context), {"RUNNING_MODAL"})
+            shown.assert_called_once()
+            self.assertEqual(accepted.not_found, elsewhere)
+
+            # «Localizar el proyecto…»: el explorador de carpetas; otro proyecto u otra
+            # carpeta, no.
+            browse = mock.Mock()
+            chooser = operator_self(cls, directory=start, project_uid=self.uid,
+                                    project_name=NAME)
+            context = SimpleNamespace(window_manager=SimpleNamespace(fileselect_add=browse))
+            self.assertEqual(cls.invoke(chooser, context, None), {"RUNNING_MODAL"})
+            browse.assert_called_once_with(chooser)
+            self.assertEqual(self.located(old), ({"CANCELLED"}, [({"WARNING"}, (
+                f"La carpeta «{old}» es el proyecto «{NAME}» (identidad {impostor.uid}), no el "
+                f"de la vista ({self.uid}): no se abre"))]))
+            self.assertEqual(self.located(outside.parent), ({"CANCELLED"}, [({"WARNING"}, (
+                f"La carpeta «{outside.parent}» no es un proyecto de Geoblender ni el de la "
+                f"vista ({self.uid}): no se abre"))]))
+        self.assertIsNone(ps.current())
+        self.assertIsNone(self.georef.project_georeference())
+        self.assertFalse((old / ".lock").exists())
+        self.assertFalse((moved / ".lock").exists())
+        self.assertTrue(all(scene.geoblender.view_stale for scene in bpy.data.scenes))
+        self.assertEqual(link.current_offer(), offer)
+
+        # Con el movido: lo abre con «Abrir proyecto…» de la 002 (la vista, la misma).
+        (shown_grid,) = vf.objects_of(bpy.data, self.grid.uid)
+        pointer = shown_grid.as_pointer()
+        opener = mock.patch.object(self.views_ops, "open_project_folder",
+                                   wraps=self.views_ops.open_project_folder)
+        with opener as called:
+            self.assertEqual(bpy.ops.geoblender.core_locate_project(
+                "EXEC_DEFAULT", directory=str(moved), project_uid=self.uid, project_name=NAME),
+                {"FINISHED"})
+        called.assert_called_once()
+        self.assertTrue(_same(called.call_args.args[0], moved))
+        project = self.finish_opening()
+        self.assertEqual(project.uid, self.uid)
+        self.assertTrue(_same(project.root, moved))
+        self.assertTrue(project.writable)
+        self.assertIsNone(link.current_offer())
+        (obj,) = vf.objects_of(bpy.data, self.grid.uid)
+        self.assertEqual(obj.as_pointer(), pointer)
 
     def test_opening_follows_the_rules_of_002(self) -> None:
         """RF-010-04, RF-002-09, RF-002-20 (T12; plan A5): aceptar abre con las reglas de la

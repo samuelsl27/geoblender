@@ -24,6 +24,11 @@ principio de ``check_loaded_file``): mientras no haya un proyecto abierto y el f
 de ese proyecto, el panel Proyecto la ofrece también (:func:`current_offer`), por si el diálogo se
 cerró sin respuesta o se pulsó «Ahora no» (R3). :func:`unregister` la olvida y retira el
 temporizador.
+
+Si el proyecto no está donde lo guardó la vista ni entre los recientes (o allí hay otro), el
+diálogo lo dice con :func:`not_found_text` (RF-010-05, T13) y ofrece «Localizar el proyecto…»
+(:data:`LOCATE_PROJECT`, con :func:`locate_properties`), que rechaza otra carpeta con
+:func:`refused_text`.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ import bpy
 
 from ...core.i18n import tr
 from ...core.paths import BLEND_RELATIVE_PREFIX
-from ...core.views.locate import ViewLink, offer_refusal
+from ...core.views.locate import NotFound, ViewLink, offer_refusal
 from . import project_session
 
 if TYPE_CHECKING:
@@ -52,6 +57,8 @@ OFFER_DELAY_S = 0.1
 """Cuándo se abre el diálogo tras cargar la vista: tras el primer ciclo de eventos (plan A5)."""
 OPEN_VIEW_PROJECT = "geoblender.core_open_view_project"
 """La orden interna del diálogo «Abrir el proyecto de esta vista» (``bl/ops/views.py``)."""
+LOCATE_PROJECT = "geoblender.core_locate_project"
+"""La orden interna «Localizar el proyecto…» del aviso de RF-010-05 (``bl/ops/views.py``)."""
 
 
 @dataclass(frozen=True)
@@ -210,6 +217,54 @@ def location_text(link: ViewLink) -> str:
     return tr("Open the project «{name}» of this view? The view does not say where it is: it "
               "is looked for among the recent projects of this computer.",
               name=link.project_name)
+
+
+def not_found_text(found: NotFound, blend_file: str) -> str:
+    """El aviso de RF-010-05 cuando no se encuentra el proyecto de la vista ``blend_file``: dónde
+    se esperaba (la carpeta de su ruta relativa o la del reciente de esa identidad) y con qué
+    identidad, y, si allí hay otro proyecto, con cuál; si la vista no dice dónde está ni hay un
+    reciente con su identidad, eso. Termina pidiendo localizarlo o abrirlo a mano."""
+    name, uid = found.link.project_name, found.link.project_uid
+    view = os.path.basename(blend_file) or blend_file
+    if found.expected is None:
+        return tr("The project «{name}» of the view «{view}» cannot be found: the view does not "
+                  "say where it is and no recent project of this computer has its identity, "
+                  "{uid}. Locate it or open it by hand.", name=name, view=view, uid=uid)
+    path = os.fspath(found.expected)
+    if found.found_uid is None:
+        return tr("The project «{name}» of the view «{view}» cannot be found: it was expected in "
+                  "«{path}» with the identity {uid}; it is not there nor among the recent "
+                  "projects of this computer. Locate it or open it by hand.",
+                  name=name, view=view, path=path, uid=uid)
+    return tr("The project «{name}» of the view «{view}» cannot be found: it was expected in "
+              "«{path}» with the identity {uid}, but there is another project there (identity "
+              "{other}) and it is not among the recent projects of this computer. Locate it or "
+              "open it by hand.", name=name, view=view, path=path, uid=uid, other=found.found_uid)
+
+
+def refused_text(found: NotFound, other_name: str | None) -> str:
+    """Lo que dice «Localizar el proyecto…» cuando la carpeta elegida (``found.expected``) no
+    es el proyecto de la vista (RF-010-05): de qué proyecto es (``other_name``, el nombre de su
+    cabecera) y con qué identidad, o que no es un proyecto de Geoblender; no se abre."""
+    folder = os.fspath(found.expected) if found.expected is not None else ""
+    expected = found.link.project_uid
+    if found.found_uid is None:
+        return tr("The folder «{folder}» is not a Geoblender project nor the one of the view "
+                  "({uid}): it is not opened", folder=folder, uid=expected)
+    return tr("The folder «{folder}» is the project «{other}» (identity {found}), not the one "
+              "of the view ({uid}): it is not opened", folder=folder,
+              other=other_name or found.found_uid, found=found.found_uid, uid=expected)
+
+
+def locate_properties(link: ViewLink, blend_file: str) -> dict[str, str]:
+    """Las propiedades de «Localizar el proyecto…» para la vista ``blend_file``: la identidad
+    y el nombre de su proyecto y, para empezar a buscar, la carpeta de la vista."""
+    folder = os.path.dirname(blend_file) if blend_file else ""
+    return {
+        "project_uid": link.project_uid,
+        "project_name": link.project_name,
+        "directory": os.path.join(folder, "") if folder else "",
+    }
 
 
 def panel_text(offer: Offer) -> str:

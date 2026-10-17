@@ -1865,8 +1865,26 @@ es = "Esta vista es del proyecto «{name}», que no está abierto"
 ["The project «{name}» of this view is already open"]
 es = "El proyecto «{name}» de esta vista ya está abierto"
 
-["The project «{name}» of this view is not where the view saved it nor among the recent projects of this computer"]
-es = "El proyecto «{name}» de esta vista no está donde lo guardó la vista ni entre los proyectos recientes de este equipo"
+# El proyecto de la vista no se encuentra y «Localizar el proyecto…» (spec 010, T13; RF-010-05;
+# plan 010 §5.5, A5).
+
+["Locate the project…"]
+es = "Localizar el proyecto…"
+
+["The project «{name}» of the view «{view}» cannot be found: it was expected in «{path}» with the identity {uid}; it is not there nor among the recent projects of this computer. Locate it or open it by hand."]
+es = "No se encuentra el proyecto «{name}» de la vista «{view}»: se esperaba en «{path}» con la identidad {uid}; no está allí ni entre los proyectos recientes de este equipo. Localícelo o ábralo a mano."
+
+["The project «{name}» of the view «{view}» cannot be found: it was expected in «{path}» with the identity {uid}, but there is another project there (identity {other}) and it is not among the recent projects of this computer. Locate it or open it by hand."]
+es = "No se encuentra el proyecto «{name}» de la vista «{view}»: se esperaba en «{path}» con la identidad {uid}, pero allí hay otro proyecto (identidad {other}) y no está entre los proyectos recientes de este equipo. Localícelo o ábralo a mano."
+
+["The project «{name}» of the view «{view}» cannot be found: the view does not say where it is and no recent project of this computer has its identity, {uid}. Locate it or open it by hand."]
+es = "No se encuentra el proyecto «{name}» de la vista «{view}»: la vista no dice dónde está y ningún proyecto reciente de este equipo tiene su identidad, {uid}. Localícelo o ábralo a mano."
+
+["The folder «{folder}» is the project «{other}» (identity {found}), not the one of the view ({uid}): it is not opened"]
+es = "La carpeta «{folder}» es el proyecto «{other}» (identidad {found}), no el de la vista ({uid}): no se abre"
+
+["The folder «{folder}» is not a Geoblender project nor the one of the view ({uid}): it is not opened"]
+es = "La carpeta «{folder}» no es un proyecto de Geoblender ni el de la vista ({uid}): no se abre"
 
 # Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
 # RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto

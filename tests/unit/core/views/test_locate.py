@@ -230,6 +230,26 @@ class ProjectIdentityTest(LocateTestCase):
         (listed / "manifest.json").write_text("[1, 2]", encoding="utf-8")
         self.assertIsNone(locate.project_identity(listed))
 
+    def test_name_of_a_project_folder(self) -> None:
+        """RF-010-05 (T13): el nombre del proyecto de una carpeta (``name`` de su
+        ``manifest.json``), para decir qué proyecto es el que no se abre en «Localizar el
+        proyecto…»; sin carpeta, sin cabecera de Geoblender o sin un nombre de texto, ninguno.
+        Nada cambia en la carpeta."""
+        root = write_manifest(self.tmp / f"{NAME}.gbproj")
+        with self.untouched(root):
+            self.assertEqual(locate.project_name(root), NAME)
+        self.assertFalse((root / ".lock").exists())
+        self.assertIsNone(locate.project_name(self.tmp / "no-existe"))
+        other = write_manifest(self.tmp / "otro-formato", fmt="otra-cosa")
+        self.assertIsNone(locate.project_name(other))
+        for name, value in {"sin-texto": 12, "vacio": "  ", "nulo": None}.items():
+            with self.subTest(name=name):
+                folder = write_manifest(self.tmp / name)
+                data = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+                data["name"] = value
+                (folder / "manifest.json").write_text(json.dumps(data), encoding="utf-8")
+                self.assertIsNone(locate.project_name(folder))
+
 
 class FindProjectTest(LocateTestCase):
     """RF-010-04, RF-010-05: dónde está el proyecto de una vista."""

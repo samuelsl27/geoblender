@@ -275,3 +275,14 @@ description.es = "Busca el proyecto de la vista cargada, donde lo guardó la vis
 entry = "010"
 action = "D"
 frequency = 1
+
+[[command]]
+key = "geoblender.core_locate_project"
+kind = "internal"
+label.en = "Locate the project…"
+label.es = "Localizar el proyecto…"
+description.en = "Choose the folder of the project of the loaded view when it is not found: only a project with the identity of the view is opened"
+description.es = "Elige la carpeta del proyecto de la vista cargada cuando no se encuentra: solo abre un proyecto con la identidad de la vista"
+entry = "010"
+action = "D"
+frequency = 1

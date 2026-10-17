@@ -23,7 +23,17 @@
   (``core.views.locate.find_project``: la carpeta relativa a la vista y, si no, por su identidad
   entre los recientes del equipo; solo lee cabeceras) y lo abre con «Abrir proyecto…» de la 002
   desde la interfaz (:func:`open_project_folder`: su cerrojo, solo lectura y migración); después,
-  lo de la marca en vivo al abrir (RF-010-03). Sin ``UNDO``: no cambia la vista.
+  lo de la marca en vivo al abrir (RF-010-03). Sin ``UNDO``: no cambia la vista. Si no lo
+  encuentra (T13; RF-010-05), ya al abrir el diálogo (``invoke`` lo busca: solo lee cabeceras)
+  o al aceptar, el diálogo da el aviso con la ubicación y la identidad esperadas
+  (``not_found``) y, en lugar de abrir, ofrece «Localizar el proyecto…» y «Ahora no»; aceptar
+  desde un guion solo avisa.
+- ``geoblender.core_locate_project`` (T13; RF-010-05; plan A5; interna): «Localizar el
+  proyecto…». Desde la interfaz, el explorador de carpetas (en la de la vista); con la carpeta
+  elegida, solo la acepta si su cabecera tiene la identidad del proyecto de la vista
+  (``core.views.locate.check_chosen``: solo la lee) y la abre como arriba; si no, dice de qué
+  proyecto es (o que no es un proyecto) y no abre ni escribe nada. Nunca usa la vista como
+  fuente de datos (RF-002-29).
 """
 
 from __future__ import annotations
@@ -41,7 +51,7 @@ from ...core.project.model import Progress
 from ...core.views import locate
 from ..scene import project_session, refresh, view_link
 from ..ui import gate, labels
-from .core import TRANSLATION_CONTEXT, _poll_project, _StepsModal
+from .core import TRANSLATION_CONTEXT, _folder, _poll_project, _StepsModal
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 DIALOG_WIDTH = 560
@@ -145,6 +155,27 @@ def open_project_folder(root: Path) -> set[str]:
     return bpy.ops.geoblender.core_open_project("INVOKE_DEFAULT", directory=str(root))
 
 
+def _open_located(root: Path) -> set[str]:
+    """Abre el proyecto de la vista, ya encontrado en ``root``, con :func:`open_project_folder`;
+    lo que devuelve una orden que lo pidió."""
+    try:
+        result = open_project_folder(root)
+    except RuntimeError as exc:  # lo que dijo «Abrir proyecto…» ya está en el registro
+        LOGGER.warning("No se pudo abrir el proyecto de la vista «%s»: %s", root, exc)
+        return {"CANCELLED"}
+    return {"FINISHED"} if result & {"FINISHED", "RUNNING_MODAL"} else {"CANCELLED"}
+
+
+def _already_open(operator: Any, project_uid: str) -> bool:
+    """Si el proyecto de la vista ya es el abierto (y entonces lo dice ``operator``)."""
+    current = project_session.current()
+    if current is None or current.uid != project_uid:
+        return False
+    operator.report({"INFO"}, tr("The project «{name}» of this view is already open",
+                                 name=current.name))
+    return True
+
+
 class GEOBLENDER_OT_core_open_view_project(bpy.types.Operator):
     """Open the project of the loaded view: where the view saved it or among the recents"""
 
@@ -160,6 +191,8 @@ class GEOBLENDER_OT_core_open_view_project(bpy.types.Operator):
     project_name: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
     relative_path: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
     notice: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
+    # El aviso de RF-010-05 si no se encuentra el proyecto (lo pone la búsqueda; vacío si sí).
+    not_found: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
 
     def _link(self) -> locate.ViewLink:
         return locate.ViewLink(self.project_uid, self.project_name, self.relative_path)
@@ -168,20 +201,48 @@ class GEOBLENDER_OT_core_open_view_project(bpy.types.Operator):
         return {name: getattr(self, name) for name in
                 ("filepath", "project_uid", "project_name", "relative_path", "notice")}
 
-    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+    def _find(self) -> locate.Located | locate.NotFound:
+        """Dónde está el proyecto de la vista (``core.views.locate.find_project``: la carpeta
+        relativa a la vista y los recientes del equipo; solo lee cabeceras); apunta en
+        ``not_found`` el aviso de RF-010-05 si no está."""
+        recent = project_session.userdata().recent_projects()
+        found = locate.find_project(self._link(), self.filepath or None, recent)
+        self.not_found = (view_link.not_found_text(found, self.filepath)
+                          if isinstance(found, locate.NotFound) else "")
+        return found
+
+    def _dialog(self, context: bpy.types.Context) -> set[str]:
         return context.window_manager.invoke_props_dialog(
             self, width=DIALOG_WIDTH, translate=False, title=tr("Open the project of this view")
         )
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        self._find()  # el diálogo dice ya si no se encuentra (RF-010-05)
+        return self._dialog(context)
 
     def draw(self, context: bpy.types.Context) -> None:
         """El aviso de RF-002-29, la pregunta con dónde está el proyecto y los botones de
         Geoblender: «Abrir el proyecto de esta vista» (esta orden con lo mismo,
         ``EXEC_DEFAULT``: sin volver a abrir el diálogo) y «Ahora no» (cierra sin hacer
-        nada)."""
+        nada). Si no se encuentra, en lugar de la pregunta, el aviso de RF-010-05 y
+        «Localizar el proyecto…» (``INVOKE_DEFAULT``: su explorador de carpetas)."""
         layout = self.layout
         width = labels.dialog_width(DIALOG_WIDTH)
         if self.notice:
             labels.draw_wrapped(layout, self.notice, width, icon="INFO")
+        if self.not_found:
+            labels.draw_wrapped(layout, self.not_found, width, icon="ERROR")
+            layout.operator_context = "INVOKE_DEFAULT"
+            buttons = layout.template_popup_confirm(
+                view_link.LOCATE_PROJECT, text=tr("Locate the project…"),
+                cancel_text=tr("Not now"), translate=False,
+            )
+            if buttons is None:
+                return
+            for name, value in view_link.locate_properties(self._link(),
+                                                           self.filepath).items():
+                setattr(buttons, name, value)
+            return
         labels.draw_wrapped(layout, view_link.location_text(self._link()), width,
                             icon="FILE_FOLDER")
         layout.operator_context = "EXEC_DEFAULT"
@@ -195,27 +256,58 @@ class GEOBLENDER_OT_core_open_view_project(bpy.types.Operator):
             setattr(buttons, name, value)
 
     def execute(self, context: bpy.types.Context) -> set[str]:
-        """Aceptar: busca el proyecto de la vista y lo abre con «Abrir proyecto…» (002)."""
-        current = project_session.current()
-        if current is not None and current.uid == self.project_uid:
-            self.report({"INFO"}, tr("The project «{name}» of this view is already open",
-                                     name=current.name))
+        """Aceptar: busca el proyecto de la vista y lo abre con «Abrir proyecto…» (002). Si no
+        lo encuentra, el aviso de RF-010-05 y, con interfaz, el diálogo otra vez con él y
+        «Localizar el proyecto…»."""
+        if _already_open(self, self.project_uid):
             return {"CANCELLED"}
-        recent = project_session.userdata().recent_projects()
-        found = locate.find_project(self._link(), self.filepath or None, recent)
+        found = self._find()
         if isinstance(found, locate.NotFound):
-            self.report({"WARNING"}, tr(
-                "The project «{name}» of this view is not where the view saved it nor among "
-                "the recent projects of this computer", name=self.project_name))
+            self.report({"WARNING"}, self.not_found)
+            if view_link.background():
+                return {"CANCELLED"}
+            return self._dialog(context)
+        return _open_located(found.root)
+
+
+class GEOBLENDER_OT_core_locate_project(bpy.types.Operator):
+    """Choose the folder of the project of the view: only a project with its identity opens"""
+
+    bl_idname = view_link.LOCATE_PROJECT
+    bl_label = "Locate the project…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    # La carpeta elegida en el explorador (al lanzarlo, la de la vista) y el proyecto que se
+    # busca (``bl.scene.view_link.locate_properties``).
+    directory: StringProperty(subtype="DIR_PATH", options=_HIDDEN)  # type: ignore[valid-type]
+    filter_folder: BoolProperty(default=True, options=_HIDDEN)  # type: ignore[valid-type]
+    project_uid: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
+    project_name: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        """El explorador de carpetas; al aceptar en él, :meth:`execute` con la elegida."""
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        """Solo abre la carpeta elegida si es el proyecto de la vista (su identidad); si no,
+        dice de qué proyecto es o que no es un proyecto, sin abrir ni escribir nada."""
+        if not self.directory or _already_open(self, self.project_uid):
             return {"CANCELLED"}
-        try:
-            result = open_project_folder(found.root)
-        except RuntimeError as exc:  # lo que dijo «Abrir proyecto…» ya está en el registro
-            LOGGER.warning("No se pudo abrir el proyecto de la vista «%s»: %s",
-                           found.root, exc)
+        link = locate.ViewLink(self.project_uid, self.project_name, "")
+        found = locate.check_chosen(_folder(self.directory), link)
+        if isinstance(found, locate.NotFound):
+            other = (locate.project_name(found.expected)
+                     if found.found_uid is not None and found.expected is not None else None)
+            self.report({"WARNING"}, view_link.refused_text(found, other))
             return {"CANCELLED"}
-        return {"FINISHED"} if result & {"FINISHED", "RUNNING_MODAL"} else {"CANCELLED"}
+        return _open_located(found.root)
 
 
 # En orden de registro.
-classes: tuple[type, ...] = (GEOBLENDER_OT_core_refresh, GEOBLENDER_OT_core_open_view_project)
+classes: tuple[type, ...] = (
+    GEOBLENDER_OT_core_refresh,
+    GEOBLENDER_OT_core_open_view_project,
+    GEOBLENDER_OT_core_locate_project,
+)
