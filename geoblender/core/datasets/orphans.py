@@ -19,7 +19,15 @@ con la lista. **Nunca borra nada** (un destino que ya existe no se sustituye: se
   otra sesión (``<nombre>.tmp-<sesión>``, como los de ``originals/``) o una salida con huella
   (``<nombre>__<hash8>.<ext>``);
 - en ``originals/``, una carpeta ``<uid>`` con forma de uid cuya entrada no está registrada (se
-  aparta entera).
+  aparta entera);
+- en ``snapshots/`` (spec 009, RF-009-07; plan 009 A6 (5)), una carpeta con nombre de
+  instantánea que no es la de ninguna revisión congelada (``gb_revision.snapshot_dir``): la
+  temporal de una congelación que no terminó (``V10.r2.congelando-<8 hex>``) o una ya
+  renombrada sin su fila (``V10.r2``), que se aparta entera, como la de un original. La
+  temporal de la congelación en curso de esta sesión
+  (``core.versions.freeze.freezing_paths``) no se aparta nunca, y lo que no lleva nombre de
+  instantánea no se mira. Un proyecto sin revisiones (un esquema anterior al 3, en solo
+  lectura) no tiene restos en ``snapshots/``.
 
 **No es un resto** (no se aparta ni se toca): lo que es de un dato registrado
 (``gb_dataset.locator`` en cualquier estado, también lo sustituido y lo descartado), un original
@@ -86,6 +94,7 @@ from ..content.builtin import LAYER_KINDS
 from ..ids import SHORT_UID_CHARS
 from ..paths import MAX_FILE_PATH_CHARS, MAX_FOLDER_PATH_CHARS
 from ..timeutil import format_utc
+from ..versions.model import FREEZING_MARK, SNAPSHOTS_DIR
 from .external import _budget, _Pacer, _reason
 from .model import FILE_STORES, Store
 from .tracking import RESERVED_PREFIXES
@@ -120,6 +129,9 @@ _SESSION_TEMPORARY = re.compile(r"\.tmp-([0-9A-Za-z]{1,32})$")
 _TEMPORARY = re.compile(r"\.tmp(?:-[0-9A-Za-z]{1,32})?$")
 _HASHED = re.compile(r"__[0-9a-f]{8}\.[^.]+$")
 _UID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_SNAPSHOT = re.compile(rf"V[0-9]{{2,}}\.r[1-9][0-9]*(?:{re.escape(FREEZING_MARK)}[0-9a-f]{{8}})?")
+"""El nombre de la carpeta de una instantánea (``V10.r2``) o de su temporal
+(``V10.r2.congelando-<8 hex>``) en ``snapshots/`` (spec 009, plan §5.2.5 y A6)."""
 _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
 __all__ = [
@@ -456,15 +468,22 @@ _PROTECTED = (
 dentro del proyecto."""
 
 
+_SNAPSHOT_DIRS = "SELECT snapshot_dir FROM gb_revision WHERE snapshot_dir IS NOT NULL"
+"""Las carpetas de las instantáneas de las revisiones congeladas (spec 009)."""
+
+
 @dataclass(frozen=True)
 class _Protected:
-    """Lo que no se aparta: ficheros (sus claves), las carpetas que los contienen, los nombres
-    de cada carpeta (para lo que los acompaña) y los uid de las entradas registradas."""
+    """Lo que no se aparta: ficheros y carpetas de instantáneas (sus claves), las carpetas que
+    los contienen, los nombres de cada carpeta (para lo que los acompaña), los uid de las
+    entradas registradas y si el proyecto tiene revisiones (sin ellas, ``snapshots/`` no se
+    mira)."""
 
     files: frozenset[str]
     folders: frozenset[str]
     names: Mapping[str, tuple[str, ...]]
     inputs: frozenset[str]
+    revisions: bool = False
 
     def companion(self, key: str) -> bool:
         """Si el fichero ``key`` acompaña a uno de ellos (su nombre y otra extensión)."""
@@ -478,9 +497,11 @@ class _Protected:
 
 def _protection(project: OrphanProject, root: Path, extra: frozenset[str],
                 conn: sqlite3.Connection | None = None) -> _Protected:
-    """Una lectura (con ``conn`` o una propia) de lo registrado más lo reclamado ahora por
-    esta sesión y ``extra``."""
+    """Una lectura (con ``conn`` o una propia) de lo registrado (también las carpetas de las
+    instantáneas) más lo reclamado ahora por esta sesión (también la temporal de su
+    congelación en curso) y ``extra``."""
     from ..provenance.operations import claimed_paths
+    from ..versions.freeze import freezing_paths
 
     reading = nullcontext(conn) if conn is not None else project.read()
     with reading as opened:
@@ -488,8 +509,12 @@ def _protection(project: OrphanProject, root: Path, extra: frozenset[str],
         inputs = frozenset(str(row[0]).lower()
                            for row in opened.execute("SELECT uid FROM gb_input"))
         claimed = claimed_paths(project, conn=opened)  # type: ignore[arg-type]
+        revisions = opened.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                                   "AND name = 'gb_revision'").fetchone() is not None
+        if revisions:
+            found.extend(str(row[0]) for row in opened.execute(_SNAPSHOT_DIRS))
     keys = {_key(rel) for rel in found} | set(extra)
-    for path in claimed:
+    for path in (*claimed, *freezing_paths(project)):
         key = _claimed_key(root, path)
         if key:
             keys.add(key)
@@ -502,7 +527,8 @@ def _protection(project: OrphanProject, root: Path, extra: frozenset[str],
             folders.add(parent)
             parent = os.path.dirname(parent)
     return _Protected(frozenset(keys), frozenset(folders),
-                      {parent: tuple(items) for parent, items in names.items()}, inputs)
+                      {parent: tuple(items) for parent, items in names.items()}, inputs,
+                      revisions)
 
 
 # --- Capas y tablas sin registrar (RF-008-62) -------------------------------------------------
@@ -809,6 +835,58 @@ def _list_steps(project: OrphanProject, sweep: _Sweep, protected: _Protected,
                     pacer.restart()
 
 
+def _examine_snapshot(sweep: _Sweep, protected: _Protected, entry: os.DirEntry[str]) -> None:
+    """Clasifica una entrada de ``snapshots/``: la carpeta con nombre de instantánea que no es
+    de ninguna revisión congelada (ni la temporal de esta sesión) es un resto entero."""
+    if entry.is_symlink() or entry.is_junction() or not entry.is_dir(follow_symlinks=False):
+        return
+    if _SNAPSHOT.fullmatch(entry.name) is None:
+        return  # no lleva nombre de instantánea: no es de Geoblender
+    rel = f"{SNAPSHOTS_DIR}/{entry.name}"
+    key = _key(rel)
+    if key in protected.files:
+        return
+    contents = _folder_contents(Path(entry.path))
+    if contents is None:
+        return
+    if _newest(contents) >= sweep.limit:
+        sweep.stale.append(rel)
+    else:
+        sweep.found.append(_Candidate(rel, key, True, contents))
+
+
+def _snapshot_steps(sweep: _Sweep, protected: _Protected, pacer: _Pacer) -> Iterator[Any]:
+    """El listado de ``snapshots/`` (solo su primer nivel), por pasos, si el proyecto tiene
+    revisiones (spec 009, plan A6 (5))."""
+    from ..project.model import Progress
+
+    folder = sweep.root / SNAPSHOTS_DIR
+    if not protected.revisions or not _real_dir(folder):
+        return
+    try:
+        entries = os.scandir(folder)
+    except OSError:
+        return  # no se puede leer: lo que tenga, la próxima vez
+    examined = 0
+    with entries:
+        while True:
+            try:
+                entry = next(entries)
+            except StopIteration:
+                break
+            except OSError:  # se cayó la red a mitad: el resto, la próxima vez
+                break
+            try:
+                _examine_snapshot(sweep, protected, entry)
+            except OSError:
+                pass  # la entrada desapareció o no se puede leer: no es un resto ahora
+            examined += 1
+            if pacer.lap():
+                yield Progress(PHASES[0], examined, 0,
+                               "Buscando restos de congelaciones interrumpidas…")
+                pacer.restart()
+
+
 # --- Apartar ---------------------------------------------------------------------------------
 
 
@@ -935,6 +1013,7 @@ def _steps(project: OrphanProject, root: Path, *, write: bool, limit: int,
     survey = _survey(project, protected)
     sweep = _Sweep(root, _tag(project), limit, survey.ignored)
     yield from _list_steps(project, sweep, survey.protected, pacer)
+    yield from _snapshot_steps(sweep, survey.protected, pacer)
     sweep.found.sort(key=lambda item: item.path.casefold())
     total = len(sweep.found)
     yield Progress(PHASES[0], total, total, f"Restos encontrados: {total}.")

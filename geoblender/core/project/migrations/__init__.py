@@ -54,6 +54,7 @@ from ...paths import DriveType, ReadOnlyDirs
 from ...sysinfo import SessionInfo, pid_alive
 from ...timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ...userdata import UserData
+from ...versions.read import snapshot_index
 from .. import lock as lockmod
 from ..copytree import DiskUsageFn, copy_steps, remove_tree
 from ..events import EventKind, log_event, record_event
@@ -278,12 +279,13 @@ def _rewrite_header(
     try:
         with GpkgConnection.open_read(database) as db:
             record = read_project(db.connection)
+            inventory = snapshot_index(db.connection)  # spec 009, plan §5.2.4
         if record is None:
             raise ProjectError(
                 "core.gpkg_project_missing", "falta la fila de gb_project",
                 obj="Base de datos del proyecto", field="gb_project", value=str(database),
             )
-        header = manifest_from_record(record, previous=previous)
+        header = manifest_from_record(record, previous=previous, inventory=inventory)
         write_manifest(root, header, session.session_uid)
     except (GeoblenderError, OSError, sqlite3.Error) as exc:
         message = (

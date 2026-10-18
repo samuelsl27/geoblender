@@ -56,6 +56,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from ..errors import DatabaseError, GeoblenderError, LockError, ProjectError
 from ..gpkg.connection import BUSY_TIMEOUT_MS, GpkgConnection
@@ -65,6 +66,7 @@ from ..paths import DriveType, ReadOnlyDirs, is_network_path
 from ..sysinfo import SessionInfo, pid_alive
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
+from ..versions.read import snapshot_index
 from . import lock as lockmod
 from .events import LOGGER, EventKind, last_origin_move, log_event, record_event
 from .lock import Acquired, LockInfo, LockMode, LockState, LockStatus, PidAlive
@@ -123,7 +125,8 @@ class ProjectInspection:
     Con un esquema que esta versión no sabe leer (:attr:`header_only`), solo hay
     cabecera: ``record`` es ``None`` y, si la base ni se abrió, también ``check`` y
     ``header``. ``read_only_folder``: la carpeta de solo lectura (como se declaró) que
-    contiene el proyecto, o ``None`` (spec 008, S-3).
+    contiene el proyecto, o ``None`` (spec 008, S-3). ``inventory``: el inventario de lo
+    congelado de la base (spec 009, plan §5.2.4; ``None`` si no se leyó o no tiene revisiones).
     """
 
     root: Path
@@ -136,6 +139,7 @@ class ProjectInspection:
     lock: LockStatus
     network: bool
     read_only_folder: Path | None = None
+    inventory: tuple[Any, ...] | None = None
 
     @property
     def header_only(self) -> bool:
@@ -173,7 +177,8 @@ def _database_error(root: Path, code: str, reason: str, exc: BaseException) -> P
 
 def _read_database(
     root: Path, private_dir: Path
-) -> tuple[SqliteHeader, ProjectRecord, tuple[tuple[int, int], ...], OriginMove | None]:
+) -> tuple[SqliteHeader, ProjectRecord, tuple[tuple[int, int], ...], OriginMove | None,
+           tuple[Any, ...] | None]:
     path = root / PROJECT_STORE
     try:
         header = read_header(path)
@@ -199,6 +204,7 @@ def _read_database(
                 missing = missing_objects(conn, min(record.schema_version, SCHEMA_VERSION))
             migrations = () if missing else read_migrations(conn)
             origin_move = None if missing else last_origin_move(conn)
+            inventory = None if missing else snapshot_index(conn)  # spec 009, plan §5.2.4
     except (sqlite3.Error, DatabaseError) as exc:
         raise _database_error(
             root,
@@ -216,7 +222,7 @@ def _read_database(
             "de Geoblender o está dañada; el proyecto no se abre",
             ValueError(absent),
         )
-    return header, record, migrations, origin_move
+    return header, record, migrations, origin_move, inventory
 
 
 def _schema_relation(version: int) -> SchemaRelation:
@@ -270,6 +276,7 @@ def _inspect_steps(
     migrations: tuple[tuple[int, int], ...] = ()
     check: ManifestCheck | None = None
     header: SqliteHeader | None = None
+    inventory: tuple[Any, ...] | None = None
     if manifest.min_reader_schema > SCHEMA_VERSION:
         relation = SchemaRelation.HEADER_ONLY
         yield Progress(
@@ -280,11 +287,11 @@ def _inspect_steps(
         yield Progress(PHASES[3], 3, total, "Comprobando la versión del esquema…")
     else:
         yield Progress(PHASES[1], 1, total, "Leyendo la base de datos…")
-        header, record, migrations, origin_move = _read_database(
+        header, record, migrations, origin_move, inventory = _read_database(
             root, userdata.private_read_dir(session.session_uid)
         )
         yield Progress(PHASES[2], 2, total, "Comprobando la cabecera con la base de datos…")
-        check = compare(manifest, record, migrations, origin_move)
+        check = compare(manifest, record, migrations, origin_move, inventory)
         error = check.error(record.name)
         if error is not None:
             raise error
@@ -298,7 +305,8 @@ def _inspect_steps(
     )
     is_network = is_network_path(root, drive_type) if network is None else bool(network)
     yield ProjectInspection(
-        root, manifest, record, migrations, check, relation, header, status, is_network, folder
+        root, manifest, record, migrations, check, relation, header, status, is_network, folder,
+        inventory,
     )
 
 
@@ -445,7 +453,8 @@ def _open_for_writing(
             )
         header = inspection.manifest
         if record != inspection.record or inspection.check.status is ManifestStatus.REWRITE:
-            header = manifest_from_record(record, previous=inspection.manifest)
+            header = manifest_from_record(record, previous=inspection.manifest,
+                                          inventory=inspection.inventory)
             write_manifest(root, header, session.session_uid)
     except (OSError, sqlite3.Error, DatabaseError, ProjectError) as exc:
         detail = f"no se ha podido escribir al abrir ({exc}); compruebe el disco o la red"

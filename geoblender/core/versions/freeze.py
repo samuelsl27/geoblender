@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""El plan de una congelación (spec 009; RF-009-06, RF-009-07, RF-009-08; plan 009 A5, D-16,
-D-18, D-27, D-37 y D-40).
+"""El plan de una congelación y la congelación por pasos (spec 009; RF-009-06, RF-009-07,
+RF-009-08; plan 009 A5, A7, §5.2.4, D-16, D-18, D-27, D-37, D-40 y D-41).
 
 :func:`freeze_plan` dice qué se congelaría en la revisión abierta de una versión
 (:class:`FreezePlan`), **sin escribir nada** y leyendo la base en **una sola instantánea** (una
 transacción de lectura: de la conexión que se le da o de una suya). Lo usan el diálogo de
-«Nueva revisión…» (lo que hay que aceptar y lo que lo impide, antes de empezar) y la congelación
-por pasos (la copia, A6, y la confirmación, A7: otras tareas).
+«Nueva revisión…» (lo que hay que aceptar y lo que lo impide, antes de empezar) y
+:func:`freeze_steps`, que congela de verdad: el plan, la copia (A6, ``core.versions.copy``) y
+la confirmación (A7, al final de este docstring).
 
 1. **Lo que se congela** (:attr:`FreezePlan.items`, cada cosa en su parte, :class:`ItemPart`):
    las operaciones hechas de la versión (de cualquiera de sus revisiones, D-23) que escribieron
@@ -42,8 +43,24 @@ por pasos (la copia, A6, y la confirmación, A7: otras tareas).
    valores) más un 10 %, como la copia de la 002 (:attr:`FreezePlan.space_needed`; el
    GeoPackage, que se arma en la caché, :attr:`FreezePlan.cache_needed`).
 
-Python puro (ADR-0004): lee la base del proyecto y los metadatos de las fuentes de sus entradas
-(RF-008-13) y de ``snapshots/``, sin abrir ni escribir ningún fichero.
+:func:`freeze_steps` (A5 → A6 → A7) hace el plan al llamarla y se niega, sin escribir nada, si
+algo lo impide o si hay algo que aceptar que el usuario no aceptó (:class:`Acceptance`); después
+copia la instantánea por pasos a su carpeta temporal, ``snapshots/V10.r2.congelando-<8 hex>``
+(:func:`freezing_paths`: el barrido de restos de la apertura no aparta la de esta sesión), y la
+**confirma en una transacción corta**: comprueba que lo congelado sigue siendo lo vigente (el
+hash de contenido de cada dato y ninguna operación nueva de la versión desde el plan, D-40: si
+no, se cancela y no queda nada), escribe lo congelado (``gb_revision_item``, en sentencias de 500
+filas), la revisión congelada (su carpeta, la huella de su manifiesto, sus bytes, la versión de
+Geoblender, lo aceptado, quién y cuándo), la siguiente abierta con el motivo dado y los eventos
+``revision_frozen`` y ``revision_opened``, y da a la temporal su nombre (``snapshots/V10.r2``)
+antes del ``COMMIT``. Después, la cabecera con su inventario (§5.2.4); si no se puede escribir,
+la base manda: se avisa y se regenera al abrir. Una revisión vacía se congela con su manifiesto
+solo (D-41). Cerrar los pasos antes del final (Esc), ``cancelled`` o un fallo no dejan nada; si
+Blender se cierra a medias, la temporal (o la carpeta ya renombrada sin su fila) la aparta a
+``orphans/`` la comprobación de apertura (``core.datasets.orphans``).
+
+Python puro (ADR-0004): el plan lee la base del proyecto y los metadatos de las fuentes de sus
+entradas (RF-008-13) y de ``snapshots/``, sin abrir ni escribir ningún fichero.
 """
 
 from __future__ import annotations
@@ -51,8 +68,9 @@ from __future__ import annotations
 import math
 import os
 import sqlite3
+import threading
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -61,20 +79,31 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from ..content.builtin import _selector as selector_condition
 from ..datasets.model import RECORD_COLUMNS, DatasetRecord, DatasetStatus, Store
+from ..errors import GeoblenderError
+from ..hashing import canonical_json
+from ..ids import new_uid
 from ..inputs import registry as input_registry
 from ..inputs.check import probe_input, table_changes
 from ..inputs.model import FileAnchor, InputRecord, InputStatus
+from ..paths import find_absolute_paths
 from ..project.copytree import SPACE_MARGIN
+from ..project.events import EventKind, log_event, record_event
+from ..project.model import Progress
+from ..project.session import WriteAttempt, WriteState
 from ..provenance import messages as provenance_messages
 from ..provenance import stale
 from ..provenance.lineage import figures_in
+from ..timeutil import format_utc
 from . import read
 from .model import (
+    FREEZING_MARK,
+    SNAPSHOTS_DIR,
     ItemKind,
     ItemPart,
     ItemState,
     Revision,
     RevisionItem,
+    RevisionState,
     Version,
     VersionError,
     ensure_editable,
@@ -82,14 +111,13 @@ from .model import (
 )
 
 if TYPE_CHECKING:
+    from ..project.model import ProjectRecord
     from ..provenance.gate import CheckState
+    from ..sysinfo import SessionInfo
+    from ..timeutil import Clock
     from ..userdata import UserData
+    from .copy import SnapshotCopy, SnapshotFile
 
-SNAPSHOTS_DIR = "snapshots"
-"""La carpeta de las instantáneas en el proyecto (``snapshots/V10.r2/``)."""
-FREEZING_MARK = ".congelando-"
-"""Lo que lleva el nombre de la carpeta temporal de una congelación en curso
-(``snapshots/V10.r2.congelando-<8 hex>``, plan A6)."""
 COPIED_STORES: tuple[Store, ...] = (Store.GPKG, Store.RASTERS, Store.MESHES)
 """Los almacenes cuyo contenido copia una instantánea (ADR-0026: GeoPackage, GeoTIFF y npz)."""
 GPKG_BASE_BYTES = 48 * 1024
@@ -852,3 +880,378 @@ class _Planner:
                                     if FREEZING_MARK in entry.name and entry.is_dir()))
         except OSError:
             return ()
+
+
+# --- Congelar: el plan, la copia y la confirmación (A5 → A6 → A7) ---------------------------
+
+CONFIRM_PHASE = "confirmación"
+"""La fase de la confirmación (A7), tras las de la copia (``core.versions.copy.PHASES``)."""
+STEP_BUDGET_S = 0.05
+"""El trabajo entre dos progresos de la copia (como el modal de la 010)."""
+_ROWS_PER_STATEMENT = 500
+"""Las filas de ``gb_revision_item`` de cada ``INSERT`` (trampa §6: no una sentencia por
+fila; 12 columnas: 6 000 parámetros)."""
+_ITEM_COLUMNS = (
+    "revision_uid, item_kind, item_uid, part, item_rev, content_sha256, copied, snapshot_path, "
+    "snapshot_layer, file_sha256, file_size, state"
+)
+_REVISION_OPERATIONS = (  # por gb_operation_revision
+    f"{QUERY_TAG} SELECT uid, op_type, status FROM gb_operation WHERE revision_uid = ? "
+    "AND revision_uid <> '' ORDER BY fid"
+)
+_CONTENTS = f"{QUERY_TAG} SELECT uid, name, content_sha256 FROM gb_dataset WHERE uid IN ({{marks}})"
+
+
+@dataclass(frozen=True)
+class Acceptance:
+    """Lo que el usuario aceptó al congelar (RF-009-08): cada elemento de la lista que vio
+    (:attr:`FreezePlan.accept`), por su clase (``dataset``, ``operation``, ``input``) y su uid.
+    Congelar exige que cubra todo lo que el plan pide aceptar en ese momento."""
+
+    items: frozenset[tuple[str, str]]
+
+    @classmethod
+    def of(cls, plan: FreezePlan) -> Acceptance:
+        """La aceptación de todo lo que pide aceptar ``plan`` («Aceptar y congelar»)."""
+        return cls(frozenset((str(entry.item_kind), entry.item_uid) for entry in plan.accept))
+
+    def covers(self, plan: FreezePlan) -> bool:
+        """Si acepta todo lo que pide aceptar ``plan``."""
+        return Acceptance.of(plan).items <= self.items
+
+
+@dataclass(frozen=True)
+class FreezeOutcome:
+    """El final de una congelación (:func:`freeze_steps`): la revisión (``label``, «V10.r2»),
+    la congelada y la siguiente, abierta (``None`` las dos si se canceló), los ficheros que
+    copió su instantánea y lo que suman (sin el manifiesto), lo que referencia a otra
+    instantánea (D-28), los avisos (la cabecera que no se pudo escribir) y si se canceló."""
+
+    label: str
+    frozen: Revision | None
+    opened: Revision | None
+    files: tuple[SnapshotFile, ...]
+    copied_bytes: int
+    referenced: tuple[RevisionItem, ...]
+    warnings: tuple[str, ...] = ()
+    cancelled: bool = False
+
+
+class FreezeProject(PlanProject, Protocol):
+    """Lo que usa :func:`freeze_steps` del proyecto (``core.project.Project``): lo del plan y
+    lo de la copia (su identidad, su registro, la sesión y el reloj, su caché) y escribir con
+    reintento y regenerar la cabecera."""
+
+    @property
+    def uid(self) -> str: ...
+
+    record: ProjectRecord | None
+    session: SessionInfo
+    clock: Clock
+
+    def cache_dir(self) -> Path: ...
+
+    def try_write(self, work: Callable[[sqlite3.Connection], Any]) -> WriteAttempt: ...
+
+    def refresh_header(self) -> bool: ...
+
+
+_FREEZING_LOCK = threading.Lock()
+_FREEZING: dict[Path, tuple[str, str]] = {}
+"""Las carpetas temporales de las congelaciones en curso de este proceso → la raíz de su
+proyecto (normalizada) y su sesión."""
+
+
+def _owner(project: Any) -> tuple[str, str]:
+    return (os.path.normcase(os.path.normpath(os.fspath(project.root))),
+            str(project.session.session_uid))
+
+
+def freezing_paths(project: Any) -> frozenset[Path]:
+    """Las carpetas temporales de las congelaciones en curso de esta sesión en ``project``
+    (su raíz y su sesión): el barrido de restos no las aparta (``core.datasets.orphans``;
+    plan A6, RF-008-22)."""
+    owner = _owner(project)
+    with _FREEZING_LOCK:
+        return frozenset(path for path, who in _FREEZING.items() if who == owner)
+
+
+def _budget(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"el presupuesto de un paso es un número de segundos, no {value!r}")
+    if not value > 0:
+        raise ValueError(f"el presupuesto de un paso es positivo, no {value!r}")
+    return float(value)
+
+
+def _reason(value: object) -> str:
+    """El motivo de la revisión nueva (RF-009-06: obligatorio), sin rutas absolutas."""
+    if value is not None and not isinstance(value, str):
+        raise TypeError(f"el motivo es un texto, no {type(value).__name__} ({value!r})")
+    text = (value or "").strip()
+    if not text:
+        raise VersionError("core.version_freeze_reason", field="motivo", value=value)
+    if find_absolute_paths(text):
+        raise VersionError("core.version_text_path", field="motivo", value=value, text=text)
+    return text
+
+
+def _names(names: Iterable[str]) -> str:
+    return ", ".join(f"«{name}»" for name in names)
+
+
+def freeze_steps(project: FreezeProject, version_uid: str, *, reason: str,
+                 accepted: Acceptance | None = None, pending: CheckState | None = None,
+                 budget_s: float = STEP_BUDGET_S,
+                 cancelled: Callable[[], bool] | None = None) -> Iterator[Progress]:
+    """Congela la revisión abierta de la versión ``version_uid`` (uid o código) y abre la
+    siguiente con el motivo ``reason`` (RF-009-06, RF-009-07; plan A5 → A6 → A7): véase el
+    módulo. Los pasos son ``core.project.model.Progress`` en las fases de la copia
+    (``core.versions.copy.PHASES``, cada ``budget_s`` s de trabajo) y, al final, en
+    :data:`CONFIRM_PHASE`; el último lleva el :class:`FreezeOutcome`. ``accepted``: lo que el
+    usuario aceptó (RF-009-08); ``pending``: lo que la comprobación de apertura aún no ha
+    comprobado (si sigue, lo impide, D-40); ``cancelled()``, si se consulta verdadero tras un
+    paso, cancela como cerrar los pasos (Esc), pero termina con un :class:`FreezeOutcome`
+    cancelado. Cancelar, fallar o un cambio en lo congelado no dejan nada.
+
+    Al llamarla, sin escribir nada: los rechazos de :func:`freeze_plan`; ``VersionError``
+    sin motivo (``core.version_freeze_reason``) o con una ruta absoluta en él
+    (``core.version_text_path``), con algo que lo impide (el código de lo primero que lo
+    impide: ``core.version_freeze_read_only``, ``…_checking``, ``…_in_progress``,
+    ``…_running`` o ``…_input_changed``) o con algo que aceptar que ``accepted`` no cubre
+    (``core.version_freeze_accept``); :class:`TypeError` o :class:`ValueError` con un
+    argumento mal dado. Al confirmar: ``core.version_freeze_operation`` si se registró una
+    operación de la versión mientras se copiaba y ``core.version_freeze_changed`` si cambió el
+    contenido de algo congelado (D-40); los de la copia (``core.versions.copy.copy_steps``),
+    tal cual."""
+    text = _reason(reason)
+    budget = _budget(budget_s)
+    if accepted is not None and not isinstance(accepted, Acceptance):
+        raise TypeError(f"lo aceptado es una Acceptance, no {accepted!r}")
+    if cancelled is not None and not callable(cancelled):
+        raise TypeError(f"«cancelled» es una función sin argumentos, no {cancelled!r}")
+    with project.read() as conn:
+        conn.execute("BEGIN")  # el plan y las operaciones de la revisión, en una instantánea
+        try:
+            plan = freeze_plan(project, version_uid, conn=conn, pending=pending)
+            stamp = frozenset((str(uid), str(status)) for uid, _op_type, status
+                              in conn.execute(_REVISION_OPERATIONS, (plan.revision.uid,)))
+        finally:
+            conn.execute("ROLLBACK")
+    if plan.blockers:
+        blocker = plan.blockers[0]
+        raise VersionError(_BLOCK_MESSAGES[blocker.reason], field="revisión", value=plan.label,
+                           version=plan.version.code, revision=plan.label,
+                           names=_names(blocker.names))
+    if plan.accept and (accepted is None or not accepted.covers(plan)):
+        raise VersionError("core.version_freeze_accept", field="aceptación", value=plan.label,
+                           version=plan.version.code, revision=plan.label,
+                           names=_names(dict.fromkeys(entry.name for entry in plan.accept)))
+    return _freeze(project, plan, stamp, reason=text, budget=budget, cancelled=cancelled)
+
+
+def _freeze(project: FreezeProject, plan: FreezePlan, stamp: frozenset[tuple[str, str]], *,
+            reason: str, budget: float,
+            cancelled: Callable[[], bool] | None) -> Iterator[Progress]:
+    # Aquí: core.versions.copy importa este módulo (ARQ-08).
+    from .copy import (
+        SnapshotCopy,
+        _failed,
+        _size_text,
+        acceptance,
+        copy_steps,
+        discard,
+        rename_snapshot,
+        temporary_path,
+    )
+
+    root = Path(project.root)
+    temporary = temporary_path(root, plan.label)
+    final = root.joinpath(*plan.snapshot_dir.split("/"))
+    copied: SnapshotCopy | None = None
+    renamed = False
+    with _FREEZING_LOCK:
+        _FREEZING[temporary] = _owner(project)
+    try:
+        steps = copy_steps(project, plan, temporary, project.cache_dir(), budget_s=budget,
+                           accepted=acceptance(plan, reason=reason))
+        stopped = False
+        total = 1
+        try:
+            for step in steps:
+                total = step.total
+                if isinstance(step.result, SnapshotCopy):
+                    copied = step.result
+                    step = Progress(step.phase, step.done, step.total, step.message)
+                yield step
+                if cancelled is not None and cancelled():
+                    stopped = True
+                    break
+        finally:
+            steps.close()  # a medias, la copia no deja nada
+        if stopped or copied is None:
+            yield Progress(CONFIRM_PHASE, 0, total,
+                           "Congelación cancelada: no ha quedado nada a medias",
+                           FreezeOutcome(plan.label, None, None, (), 0, (), cancelled=True))
+            return
+        snapshot = copied
+
+        def work(conn: sqlite3.Connection) -> tuple[Revision, Revision]:
+            nonlocal renamed
+            revisions = _confirm(conn, project, plan, snapshot, stamp, reason=reason)
+            rename_snapshot(temporary, final, clock=project.clock)  # antes del COMMIT (A6 (4))
+            renamed = True
+            return revisions
+
+        yield Progress(CONFIRM_PHASE, total, total, f"Confirmando {plan.label}…")
+        while True:
+            attempt = project.try_write(work)
+            if attempt.state is WriteState.DONE:
+                break
+            if renamed:  # otro programa leía: la transacción no se confirmó; otra vez
+                try:
+                    os.rename(final, temporary)
+                except OSError as exc:
+                    raise _failed(plan.label, exc, plan.snapshot_dir, plan.version.code) from exc
+                renamed = False
+            yield Progress(CONFIRM_PHASE, total, total, attempt.message)
+        frozen, opened = attempt.value
+    finally:
+        with _FREEZING_LOCK:
+            _FREEZING.pop(temporary, None)
+        if copied is not None and not renamed:
+            discard(temporary, clock=project.clock)
+    warnings: list[str] = []
+    try:
+        project.refresh_header()
+    except (GeoblenderError, OSError) as exc:
+        message = (f"La revisión {plan.label} está congelada, pero no se ha podido actualizar la "
+                   f"cabecera (manifest.json): {exc}. Se regenerará desde la base de datos al "
+                   "abrir el proyecto.")
+        log_event(EventKind.WRITE_FAILED, message, project=project.uid)
+        warnings.append(message)
+    referenced = tuple(item for item in snapshot.items if item.item_kind is ItemKind.DATASET
+                       and not item.copied and item.snapshot_path is not None
+                       and item.part is not ItemPart.INHERITED)
+    shown = f"{_size_text(snapshot.copied_bytes)} copiados"
+    if referenced:
+        shown += f"; {len(referenced)} contenidos ya congelados, referenciados"
+    yield Progress(CONFIRM_PHASE, total, total,
+                   f"{plan.label} congelada ({shown}); "
+                   f"{opened.label(plan.version.code)} abierta",
+                   FreezeOutcome(plan.label, frozen, opened, snapshot.files,
+                                 snapshot.copied_bytes, referenced, tuple(warnings)))
+
+
+def _confirm(conn: sqlite3.Connection, project: FreezeProject, plan: FreezePlan,
+             snapshot: SnapshotCopy, stamp: frozenset[tuple[str, str]], *,
+             reason: str) -> tuple[Revision, Revision]:
+    """A7 en la transacción ``conn``: lo congelado sigue siendo lo vigente; sus elementos; la
+    revisión congelada; la siguiente, abierta; sus eventos. Devuelve las dos revisiones."""
+    version = read.version(conn, plan.version.uid)
+    if version is None:  # pragma: no cover - nada se borra
+        raise VersionError("core.version_unknown", field="versión", value=plan.version.code,
+                           version=plan.version.code)
+    ensure_editable(version)  # descartada mientras se copiaba
+    current = read.open_revision(conn, version.uid)
+    if current is None or current.uid != plan.revision.uid:  # pragma: no cover - un escritor
+        raise VersionError("core.version_freeze_changed", field="revisión", value=plan.label,
+                           version=version.code, revision=plan.label, dataset=plan.label)
+    _check_current(conn, plan, snapshot.items, stamp)
+    now = format_utc(project.clock.now())
+    user = project.session.user_host
+    items = [_item_row(item) for item in snapshot.items]
+    for start in range(0, len(items), _ROWS_PER_STATEMENT):
+        chunk = items[start:start + _ROWS_PER_STATEMENT]
+        marks = ", ".join("(" + ", ".join("?" * 12) + ")" for _ in chunk)
+        conn.execute(f"INSERT INTO gb_revision_item ({_ITEM_COLUMNS}) VALUES {marks}",
+                     [value for row in chunk for value in row])
+    accepted = (None if snapshot.accepted is None
+                else canonical_json(snapshot.accepted).decode("utf-8"))
+    conn.execute(
+        "UPDATE gb_revision SET state = ?, closed_at = ?, closed_by = ?, snapshot_dir = ?, "
+        "snapshot_sha256 = ?, snapshot_bytes = ?, geoblender_version = ?, accepted = ? "
+        "WHERE uid = ?",
+        (RevisionState.FROZEN.value, snapshot.frozen_at, snapshot.frozen_by, plan.snapshot_dir,
+         snapshot.manifest_sha256, snapshot.copied_bytes, snapshot.geoblender_version, accepted,
+         plan.revision.uid))
+    following = new_uid()
+    conn.execute(
+        "INSERT INTO gb_revision (uid, version_uid, number, state, reason, created_at, "
+        "created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (following, version.uid, plan.revision.number + 1, RevisionState.OPEN.value, reason, now,
+         user))
+    _record(conn, project, plan, snapshot, version, following, reason=reason, now=now)
+    frozen, opened = read.revision(conn, plan.revision.uid), read.revision(conn, following)
+    if frozen is None or opened is None:  # pragma: no cover - se acaban de escribir
+        raise RuntimeError(f"la revisión {plan.label} no se ha podido leer tras congelarla")
+    return frozen, opened
+
+
+def _check_current(conn: sqlite3.Connection, plan: FreezePlan, items: Iterable[RevisionItem],
+                   stamp: frozenset[tuple[str, str]]) -> None:
+    """Lo congelado sigue siendo lo vigente (A7, D-40): ninguna operación de la revisión nueva
+    o que cambió de estado desde el plan, y el mismo contenido en cada dato congelado (lo
+    heredado de la padre está congelado en ella)."""
+    for uid, op_type, status in conn.execute(_REVISION_OPERATIONS, (plan.revision.uid,)):
+        if (str(uid), str(status)) not in stamp:
+            raise VersionError("core.version_freeze_operation", field="operación",
+                               value=str(op_type), version=plan.version.code,
+                               revision=plan.label, op_type=str(op_type))
+    wanted = {item.item_uid: item.content_sha256 for item in items
+              if item.item_kind is ItemKind.DATASET and item.part is not ItemPart.INHERITED}
+    uids = sorted(wanted)
+    for start in range(0, len(uids), _CHUNK):
+        chunk = uids[start:start + _CHUNK]
+        for uid, name, content in conn.execute(
+                _CONTENTS.format(marks=", ".join("?" for _ in chunk)), chunk):
+            if str(content) != wanted[str(uid)]:
+                raise VersionError("core.version_freeze_changed", field="dato", value=str(name),
+                                   version=plan.version.code, revision=plan.label,
+                                   dataset=str(name))
+
+
+def _item_row(item: RevisionItem) -> tuple[Any, ...]:
+    return (item.revision_uid, str(item.item_kind), item.item_uid, str(item.part), item.item_rev,
+            item.content_sha256, int(item.copied), item.snapshot_path, item.snapshot_layer,
+            item.file_sha256, item.file_size, str(item.state))
+
+
+def _record(conn: sqlite3.Connection, project: FreezeProject, plan: FreezePlan,
+            snapshot: SnapshotCopy, version: Version, following: str, *, reason: str,
+            now: str) -> None:
+    """Los eventos ``revision_frozen`` (con lo copiado y lo referenciado) y
+    ``revision_opened`` (con su motivo), sin rutas absolutas."""
+    from .copy import _size_text
+
+    user = project.session.user_host
+    referenced = [{"uid": item.item_uid, "path": item.snapshot_path,
+                   "layer": item.snapshot_layer}
+                  for item in snapshot.items
+                  if item.item_kind is ItemKind.DATASET and not item.copied
+                  and item.snapshot_path is not None and item.part is not ItemPart.INHERITED]
+    accepted = 0 if snapshot.accepted is None else len(snapshot.accepted.get("items", ()))
+    message = (f"Revisión {plan.label} congelada por {user}: {len(snapshot.files)} fichero(s) "
+               f"copiado(s) ({_size_text(snapshot.copied_bytes)}), {len(referenced)} "
+               f"contenido(s) ya congelado(s), referenciado(s), y {len(snapshot.items)} "
+               "elemento(s) anotado(s)")
+    if accepted:
+        message += f"; aceptado(s) {accepted}: {snapshot.accepted['reason']}"  # type: ignore[index]
+    record_event(conn, EventKind.REVISION_FROZEN, message, session=project.session, at=now,
+                 entity_kind="revision", entity_uid=plan.revision.uid, data={
+                     "version": version.code, "revision": plan.label,
+                     "snapshot_dir": plan.snapshot_dir,
+                     "snapshot_sha256": snapshot.manifest_sha256,
+                     "snapshot_bytes": snapshot.copied_bytes,
+                     "geoblender_version": snapshot.geoblender_version,
+                     "items": len(snapshot.items),
+                     "copied": [{"path": item.path, "size": item.size}
+                                for item in snapshot.files],
+                     "referenced": referenced, "accepted": accepted,
+                 })
+    label = f"{version.code}.r{plan.revision.number + 1}"
+    record_event(conn, EventKind.REVISION_OPENED,
+                 f"Revisión {label} abierta por {user} tras congelar {plan.label}. Motivo: "
+                 f"{reason}", session=project.session, at=now, entity_kind="revision",
+                 entity_uid=following, data={"version": version.code, "revision": label,
+                                             "previous": plan.label, "reason": reason})

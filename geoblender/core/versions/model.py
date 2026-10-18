@@ -14,6 +14,8 @@ ADR-0013).
   (dato, entrada, parámetro, operación o cifra), :class:`ItemPart` (lo producido por la
   versión, lo de aguas arriba, lo inmutable del proyecto o lo heredado de la padre),
   :class:`ItemState` (el estado que tenía al congelarse) y :class:`RevisionItem`, una fila.
+- Dónde van las instantáneas: :data:`SNAPSHOTS_DIR`, :data:`FREEZING_MARK` (la carpeta
+  temporal de una congelación en curso) y :data:`SNAPSHOT_MANIFEST`.
 - :func:`version_code` (1 → «V01») y :func:`revision_label` («V10.r2»);
   :func:`version_locator`, la ubicación de un dato de una versión con su código
   («des_final_v10.tif», D-34).
@@ -89,6 +91,14 @@ class RevisionState(StrEnum):
     FROZEN = "frozen"
     CLOSED = "closed"
 
+
+SNAPSHOTS_DIR = "snapshots"
+"""La carpeta de las instantáneas en el proyecto (``snapshots/V10.r2/``; plan §5.2.5)."""
+FREEZING_MARK = ".congelando-"
+"""Lo que lleva el nombre de la carpeta temporal de una congelación en curso
+(``snapshots/V10.r2.congelando-<8 hex>``, plan A6)."""
+SNAPSHOT_MANIFEST = "manifest.json"
+"""El manifiesto de una instantánea (``snapshots/V10.r2/manifest.json``; plan §5.2.5)."""
 
 FIRST_REVISION_REASON = "Revisión inicial"
 """El motivo de la r1 que abre crear una versión (plan A1)."""
@@ -346,6 +356,15 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
     "core.version_freeze_leftover": (
         "There are leftovers of an earlier freeze in «{folder}»: open the project again to set "
         "them aside"
+    ),
+    # Congelar: el motivo, lo aceptado y la confirmación (RF-009-06, RF-009-08; plan A7, D-40).
+    "core.version_freeze_reason": "State the reason for the new revision",
+    "core.version_freeze_accept": (
+        "To freeze {revision}, first accept what will be recorded as it is ({names})"
+    ),
+    "core.version_freeze_operation": (
+        "«{op_type}» was registered in {version} while {revision} was being frozen: nothing "
+        "has been left half-done; freeze it again"
     ),
 })
 """Código → ``msgid`` (en inglés; su español, en ``core/i18n/messages.toml``)."""

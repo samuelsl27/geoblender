@@ -76,13 +76,13 @@ from ..provenance.contract import OPERATIONS
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..version import geoblender_version
 from .freeze import FREEZING_MARK, GPKG_BASE_BYTES, SNAPSHOTS_DIR, CopyItem, FreezePlan
-from .model import ItemKind, ItemPart, RevisionItem, VersionError
+from .model import SNAPSHOT_MANIFEST, ItemKind, ItemPart, RevisionItem, VersionError
 
 if TYPE_CHECKING:
     from ..project.model import ProjectRecord
     from ..sysinfo import SessionInfo
 
-MANIFEST_NAME = "manifest.json"
+MANIFEST_NAME = SNAPSHOT_MANIFEST
 """El manifiesto de una instantánea (``snapshots/V10.r2/manifest.json``)."""
 MANIFEST_FORMAT = "geoblender-snapshot"
 MANIFEST_SCHEMA = 1

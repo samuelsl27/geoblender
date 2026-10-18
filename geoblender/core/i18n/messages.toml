@@ -4625,3 +4625,15 @@ es = "No se ha podido congelar {revision} ({reason}): no ha quedado nada a media
 
 ["There are leftovers of an earlier freeze in «{folder}»: open the project again to set them aside"]
 es = "Hay restos de una congelación anterior en «{folder}»: abra otra vez el proyecto para apartarlos"
+
+# Congelar: el motivo, lo aceptado y la confirmación (spec 009, T13; RF-009-06, RF-009-08;
+# plan 009 A7, D-40).
+
+["State the reason for the new revision"]
+es = "Indique el motivo de la revisión nueva"
+
+["To freeze {revision}, first accept what will be recorded as it is ({names})"]
+es = "Para congelar {revision}, acepte antes lo que quedará anotado tal como está ({names})"
+
+["«{op_type}» was registered in {version} while {revision} was being frozen: nothing has been left half-done; freeze it again"]
+es = "«{op_type}» se registró en {version} mientras se congelaba {revision}: no ha quedado nada a medias; vuelva a congelarla"

@@ -17,6 +17,7 @@ operaciones de versión y la cascada) ni nada que la importe: solo :mod:`.model`
 - :func:`dataset_versions`: la versión de cada dato (``''``, del proyecto; RF-009-05).
 - :func:`version_figures`: las cifras vigentes de una versión, las de su última revisión
   congelada (D-9), o las «en curso» (RF-009-20).
+- :func:`snapshot_index`: el inventario de lo congelado para la cabecera (``manifest.json``).
 """
 
 from __future__ import annotations
@@ -25,7 +26,14 @@ import sqlite3
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
-from .model import Revision, RevisionState, Version, VersionStatus
+from .model import (
+    SNAPSHOT_MANIFEST,
+    Revision,
+    RevisionState,
+    Version,
+    VersionStatus,
+    revision_label,
+)
 
 if TYPE_CHECKING:
     from ..provenance.figures import FigureRecord
@@ -167,6 +175,33 @@ def version_figures(conn: sqlite3.Connection, version_uid: str, *,
         return ()
     rows = conn.execute(_FROZEN_FIGURES.format(columns=records.RECORD_COLUMNS), (revision.uid,))
     return tuple(records.FigureRecord.from_row(row) for row in rows)
+
+
+_FROZEN_REVISIONS = (  # por el índice único de gb_version.uid; las congeladas son pocas
+    "SELECT r.uid, v.code, r.number, r.snapshot_dir, r.snapshot_sha256, r.closed_at "
+    "FROM gb_revision AS r CROSS JOIN gb_version AS v ON v.uid = r.version_uid "
+    "WHERE r.state = 'frozen' ORDER BY CAST(substr(v.code, 2) AS INTEGER), v.code, r.number"
+)
+
+type InventoryEntry = dict[str, str]
+
+
+def snapshot_index(conn: sqlite3.Connection) -> tuple[InventoryEntry, ...] | None:
+    """El inventario de la cabecera del proyecto (``manifest.json``; plan §5.2.4,
+    formato-proyecto §2): una entrada por revisión congelada, por versión y número, con su
+    etiqueta (``revision``, «V10.r2»), su uid, la ruta de su manifiesto (relativa al proyecto),
+    su huella (``sha256``) y cuándo se congeló (``frozen_at``). ``None`` si el proyecto no tiene
+    revisiones que leer (un esquema anterior al 3, abierto en solo lectura): entonces la
+    cabecera conserva el que tenía."""
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'gb_revision'").fetchone() is None:
+        return None
+    return tuple(
+        {"revision": revision_label(str(code), int(number)), "revision_uid": str(uid),
+         "manifest": f"{snapshot_dir}/{SNAPSHOT_MANIFEST}", "sha256": str(sha256),
+         "frozen_at": str(frozen_at)}
+        for uid, code, number, snapshot_dir, sha256, frozen_at in conn.execute(_FROZEN_REVISIONS)
+    )
 
 
 def default_active(conn: sqlite3.Connection) -> Version | None:

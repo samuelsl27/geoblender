@@ -105,6 +105,10 @@ class EventKind(Enum):
     STATUS_CHANGE = "status_change"
     REVISION_CLOSED = "revision_closed"
     TITLE_CHANGED = "title_changed"
+    # Una revisión congelada, con lo copiado y lo referenciado (RF-009-06, RF-009-07), y la
+    # siguiente, abierta con su motivo.
+    REVISION_FROZEN = "revision_frozen"
+    REVISION_OPENED = "revision_opened"
 
 
 @dataclass(frozen=True)

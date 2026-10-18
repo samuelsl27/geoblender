@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La copia de una instantánea por pasos (spec 009, T12; RF-009-07; plan 009 A6, §5.2.5, D-11,
-D-28, D-29, D-30, D-41; ADR-0026).
+"""La copia de una instantánea por pasos y su confirmación (spec 009, T12 y T13; RF-009-06,
+RF-009-07; plan 009 A6, A7, §5.2.4, §5.2.5, D-11, D-28, D-29, D-30, D-40, D-41; ADR-0026).
 
 ``core.versions.copy.copy_steps`` copia lo que dice el plan de una congelación
 (``core.versions.freeze.freeze_plan``) a la carpeta temporal de la instantánea
@@ -18,10 +18,17 @@ D-28, D-29, D-30, D-41; ADR-0026).
 5. cancelar en cada fase, un dato que cambia mientras se copia (otra conexión, como QGIS), una
    copia que no tiene el contenido registrado y la falta de espacio: no queda nada (la temporal,
    borrada) y nada se escribe en la base; el progreso de cada paso; renombrar la temporal sin
-   sustituir los restos de otra congelación.
+   sustituir los restos de otra congelación;
+6. congelar de verdad (``core.versions.freeze.freeze_steps``: el plan, la copia y la
+   confirmación, A7): la revisión congelada con sus elementos, su huella, sus bytes, lo
+   aceptado y la versión de Geoblender, y la siguiente abierta con su motivo, en una sola
+   transacción; la cabecera con su inventario (y, si no se pudo escribir, regenerada al abrir);
+   una revisión vacía; lo que hay que aceptar y lo que lo impide; una operación terminada
+   entretanto que cambió algo congelado cancela (D-40); un cierre a medias va a ``orphans/`` al
+   abrir sin borrar nada, y la temporal de esta sesión no se aparta; lo que crece el proyecto
+   (RNF-009-06, preliminar).
 
-La confirmación (la revisión congelada y la siguiente abierta, A7) es de la T13. Datos solo
-sintéticos.
+Datos solo sintéticos.
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 import types
 import unittest
 from collections.abc import Callable, Iterator
@@ -52,11 +60,23 @@ builtin = import_geoblender("core.content.builtin")
 dataset_model = import_geoblender("core.datasets.model")
 gpkg_base = import_geoblender("core.gpkg.base")
 hashing = import_geoblender("core.hashing")
+versions_read = import_geoblender("core.versions.read")
+events_mod = import_geoblender("core.project.events")
+session_mod = import_geoblender("core.project.session")
+open_mod = import_geoblender("core.project.open")
+errors = import_geoblender("core.errors")
+orphans = import_geoblender("core.datasets.orphans")
+version_mod = import_geoblender("core.version")
+project_model = import_geoblender("core.project.model")
 
 ItemKind = model.ItemKind
 ItemPart = model.ItemPart
+EVENT = events_mod.EventKind
 TINY = 1e-9
 """Un presupuesto por paso tan pequeño que cada paso de dentro da su ``Progress``."""
+MB = 1_000_000
+"""RNF-009-06: lo que puede crecer el proyecto además de lo copiado (1 MB)."""
+HOUR_NS = 3600 * 10**9
 TABLES = (vdemo.PIT_BENCHES, vdemo.PIT_STOCKPILES_TABLE, vdemo.SKETCH_LAYER)
 """Las tablas y capas de V01 que copia la instantánea, además de las de aguas arriba."""
 UPSTREAM_TABLES = (demo_support.STOCKPILES_TABLE, demo_support.CANDIDATES_TABLE,
@@ -718,6 +738,405 @@ class SpaceAndLeftoversTest(FreezeCopyCase):
         steps = copy_mod.copy_steps(self.project, plan, taken, self.cache(), budget_s=TINY)
         self.assertRefused("core.version_freeze_failed", lambda: list(steps))
         self.assertEqual([path.name for path in taken.iterdir()], ["ajeno.txt"])
+
+
+# --- Congelar: el plan, la copia y la confirmación (T13) -------------------------------------
+
+
+def _folder_size(root: Path) -> int:
+    """Lo que ocupa la carpeta del proyecto sin su caché (RNF-009-06)."""
+    total = 0
+    for folder, dirs, names in os.walk(root):
+        if Path(folder) == Path(root) and "cache" in dirs:
+            dirs.remove("cache")
+        total += sum(os.stat(os.path.join(folder, name)).st_size for name in names)
+    return total
+
+
+def _row(item: Any) -> tuple[Any, ...]:
+    """Un ``RevisionItem`` como su fila de ``gb_revision_item`` (sin ``fid``)."""
+    return (item.revision_uid, str(item.item_kind), item.item_uid, str(item.part), item.item_rev,
+            item.content_sha256, int(item.copied), item.snapshot_path, item.snapshot_layer,
+            item.file_sha256, item.file_size, str(item.state))
+
+
+class FreezeStepsCase(FreezeCopyCase):
+    """Ayudas para congelar con ``freeze_steps`` (el plan, la copia y la confirmación)."""
+
+    def freeze_steps(self, version: str, reason: str = "Siguiente revisión", *,
+                     at: dict[str, Callable[[], Any]] | None = None,
+                     **kw: Any) -> tuple[Any, list[Any]]:
+        """Congela la revisión abierta de ``version`` (un minuto después) hasta el final: su
+        ``FreezeOutcome`` y los pasos. ``at``: lo que se hace, una vez, al ver el primer paso de
+        cada fase, con los pasos parados (otra operación, el barrido de restos)."""
+        self.tick()
+        steps = freeze.freeze_steps(self.project, version, reason=reason, **kw)
+        pending = dict(at or {})
+        seen: list[Any] = []
+        try:
+            for step in steps:
+                seen.append(step)
+                work = pending.pop(step.phase, None)
+                if work is not None:
+                    work()
+        finally:
+            steps.close()
+        self.assertEqual([step.result is not None for step in seen].count(True), 1)
+        self.assertIsNotNone(seen[-1].result)
+        return seen[-1].result, seen
+
+    def revision(self, uid: str) -> Any:
+        return self.read(lambda conn: versions_read.revision(conn, uid))
+
+    def opened(self, version: Any) -> Any:
+        return self.read(lambda conn: versions_read.open_revision(conn, version.uid))
+
+    def items(self, revision_uid: str) -> list[tuple[Any, ...]]:
+        """Las filas de ``gb_revision_item`` de una revisión, sin ``fid``, en su orden."""
+        return self.query(
+            "SELECT revision_uid, item_kind, item_uid, part, item_rev, content_sha256, copied, "
+            "snapshot_path, snapshot_layer, file_sha256, file_size, state FROM gb_revision_item "
+            "WHERE revision_uid = ? ORDER BY fid", (revision_uid,))
+
+    def events(self, kind: Any) -> list[Any]:
+        return self.read(lambda conn: events_mod.read_events(conn, kind))
+
+    def header(self) -> dict[str, Any]:
+        """La cabecera del proyecto (``manifest.json``) tal como está en el disco."""
+        return json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
+
+    def bench(self, value: float) -> None:
+        self.tick()
+        self.write(lambda conn: self.store.change(
+            conn, vdemo.BENCH_HEIGHT, value=value, source="Plan de labores (prueba)",
+            decided_by="Samuel (IMGA)", reason="Banco de la prueba", version="V01"))
+
+
+def _entry(revision: Any, label: str) -> dict[str, Any]:
+    """La línea de una revisión congelada en el inventario de la cabecera (§5.2.4)."""
+    return {"revision": label, "revision_uid": revision.uid,
+            "manifest": f"snapshots/{label}/manifest.json", "sha256": revision.snapshot_sha256,
+            "frozen_at": revision.closed_at}
+
+
+class ConfirmTest(FreezeStepsCase):
+    def test_frozen_and_next_opened_in_one_transaction(self) -> None:
+        """RF-009-06, RF-009-07, D-28, D-41, RNF-009-06 (plan A7, §5.2.4): con el hueco, su
+        volumen y los acopios en V01, ``freeze_steps`` copia la instantánea y, en **una**
+        transacción (la base cambia una vez), deja V01.r1 congelada con sus elementos (los del
+        plan, con la huella y el tamaño de su copia), la huella de su manifiesto, sus bytes, lo
+        aceptado (nada) y la versión de Geoblender, quién y cuándo, y V01.r2 abierta con el motivo
+        dado; los eventos ``revision_frozen`` y ``revision_opened``; la carpeta con su nombre
+        (ninguna temporal); la cabecera con su inventario; las cifras vigentes de V01, ya las
+        congeladas (D-9); el progreso por fases. V01.r2, sin cambios, se congela con su
+        manifiesto solo (todo referenciado). El proyecto crece como mucho lo copiado + 1 MB
+        (RNF-009-06, preliminar)."""
+        self.demo.pit(self.project, "V01")
+        self.demo.pit_volume(self.project, "V01")
+        self.demo.pit_stockpiles(self.project, "V01")
+        plan = self.plan()
+        self.assertFalse(plan.accept or plan.blockers)
+        self.assertTrue(plan.to_copy and plan.referenced == ())
+        counter, size = self.change_counter(), _folder_size(self.root)
+        outcome, progress = self.freeze_steps("V01", "Entrega al cliente")
+
+        self.assertEqual(self.change_counter(), counter + 1)
+        self.assertEqual(self.snapshots(), ["V01.r1"])
+        self.assertEqual(freeze.freezing_paths(self.project), frozenset())
+        if self.cache().is_dir():
+            self.assertEqual([path.name for path in self.cache().iterdir()
+                              if freeze.FREEZING_MARK in path.name], [])
+        folder = self.root / "snapshots" / "V01.r1"
+        raw = (folder / copy_mod.MANIFEST_NAME).read_bytes()
+        body = json.loads(raw)
+        files = {item["path"]: item for item in body["files"]}
+        frozen = self.revision(plan.revision.uid)
+        self.assertEqual(
+            (frozen.state, frozen.snapshot_dir, frozen.snapshot_sha256, frozen.snapshot_bytes,
+             frozen.geoblender_version, frozen.accepted, frozen.closed_at, frozen.closed_by,
+             frozen.altered_at),
+            (model.RevisionState.FROZEN, "snapshots/V01.r1", hashlib.sha256(raw).hexdigest(),
+             sum(item["size"] for item in body["files"]), version_mod.geoblender_version(), None,
+             self.now(), fixtures.USER, None))
+        self.assertEqual((body["revision_uid"], body["frozen_at"], body["frozen_by"]),
+                         (frozen.uid, frozen.closed_at, frozen.closed_by))
+        expected = []
+        for item in plan.items:
+            path = item.snapshot_path or ""
+            if path.startswith("snapshots/V01.r1/"):
+                found = files[path.removeprefix("snapshots/V01.r1/")]
+                item = dataclasses.replace(item, file_sha256=found["sha256"],
+                                           file_size=found["size"])
+            expected.append(_row(item))
+        self.assertEqual(self.items(frozen.uid), expected)
+        self.assertTrue(all(row[9] and row[10] for row in expected if row[6]))
+
+        opened = self.opened(self.v1)
+        self.assertEqual((opened.number, opened.state, opened.reason, opened.created_at,
+                          opened.created_by),
+                         (2, model.RevisionState.OPEN, "Entrega al cliente", self.now(),
+                          fixtures.USER))
+        self.assertEqual((outcome.frozen, outcome.opened, outcome.cancelled, outcome.warnings),
+                         (frozen, opened, False, ()))
+        self.assertEqual(outcome.files, tuple(copy_mod.SnapshotFile(**item)
+                                              for item in body["files"]))
+        self.assertEqual(outcome.copied_bytes, frozen.snapshot_bytes)
+        self.assertEqual(outcome.referenced, ())
+        (event,) = self.events(EVENT.REVISION_FROZEN)
+        self.assertEqual((event.entity_kind, event.entity_uid, event.at, event.user_host),
+                         ("revision", frozen.uid, self.now(), fixtures.USER))
+        self.assertEqual({key: event.data[key] for key in (
+            "version", "revision", "snapshot_dir", "snapshot_sha256", "snapshot_bytes", "items")},
+            {"version": "V01", "revision": "V01.r1", "snapshot_dir": "snapshots/V01.r1",
+             "snapshot_sha256": frozen.snapshot_sha256, "snapshot_bytes": frozen.snapshot_bytes,
+             "items": len(plan.items)})
+        self.assertEqual(sorted(entry["path"] for entry in event.data["copied"]),
+                         sorted(files))
+        (event,) = self.events(EVENT.REVISION_OPENED)
+        self.assertEqual((event.entity_uid, event.data["revision"], event.data["reason"]),
+                         (opened.uid, "V01.r2", "Entrega al cliente"))
+        self.assertEqual(self.header()["inventory"], [_entry(frozen, "V01.r1")])
+        figures = self.read(lambda conn: versions_read.version_figures(conn, "V01"))
+        self.assertEqual([figure.key for figure in figures], [vdemo.PIT_VOLUME_FIGURE])
+
+        phases = list(dict.fromkeys(step.phase for step in progress))
+        every = [*copy_mod.PHASES, freeze.CONFIRM_PHASE]
+        self.assertEqual(phases, [phase for phase in every if phase in phases])
+        self.assertEqual((phases[0], phases[-1]), (every[0], every[-1]))
+        done = [step.done for step in progress]
+        self.assertEqual(done, sorted(done))
+        self.assertEqual((done[-1], progress[-1].phase), (progress[-1].total,
+                                                          freeze.CONFIRM_PHASE))
+        self.assertIn("V01.r1 congelada", progress[-1].message)
+        self.assertIn("V01.r2 abierta", progress[-1].message)
+        self.assertLessEqual(_folder_size(self.root) - size, outcome.copied_bytes + MB)
+
+        # V01.r2, sin cambios: nada copiado, todo referenciado a V01.r1 (D-28, RNF-009-06).
+        size = _folder_size(self.root)
+        again, _progress = self.freeze_steps("V01", "Sin cambios")
+        self.assertEqual((again.copied_bytes, again.files, again.frozen.snapshot_bytes),
+                         (0, (), 0))
+        self.assertEqual([path.name for path in (self.root / "snapshots" / "V01.r2").iterdir()],
+                         [copy_mod.MANIFEST_NAME])
+        self.assertEqual({item.item_uid for item in again.referenced},
+                         {item.item_uid for item in plan.items
+                          if item.item_kind is ItemKind.DATASET and item.copied})
+        self.assertEqual({row[1:3] for row in self.items(again.frozen.uid)},
+                         {row[1:3] for row in expected})
+        self.assertLessEqual(_folder_size(self.root) - size, MB)
+        self.assertEqual(self.header()["inventory"],
+                         [_entry(frozen, "V01.r1"), _entry(again.frozen, "V01.r2")])
+        self.assertEqual(self.opened(self.v1).number, 3)
+
+
+class AcceptTest(FreezeStepsCase):
+    def test_acceptance_and_what_prevents_it(self) -> None:
+        """RF-009-06, RF-009-08 (plan A5 (1) y (3), A7): sin motivo no se congela; con algo
+        que aceptar (el banco de V01 cambiado: lo del hueco, obsoleto) no se congela sin la
+        aceptación del usuario de **todo** lo que lo pide (nombrado en el rechazo), sin escribir
+        nada; con ella, lo aceptado queda en la revisión y en su manifiesto con su motivo, y
+        cada elemento con su estado al congelarse; en solo lectura, tampoco."""
+        self.demo.pit(self.project, "V01")
+        self.bench(12.0)
+        plan = self.plan()
+        self.assertTrue(plan.accept)
+        before = self.state()
+        for reason in ("", "   "):
+            with self.subTest(reason=reason):
+                self.assertRefused("core.version_freeze_reason", lambda: freeze.freeze_steps(
+                    self.project, "V01", reason=reason))
+        error = self.assertRefused("core.version_freeze_accept", lambda: freeze.freeze_steps(
+            self.project, "V01", reason="Entrega"))
+        for entry in plan.accept:
+            self.assertIn(entry.name, str(error))
+        whole = freeze.Acceptance.of(plan)
+        self.assertEqual(whole.items, frozenset((str(entry.item_kind), entry.item_uid)
+                                                for entry in plan.accept))
+        partial = freeze.Acceptance(frozenset(sorted(whole.items)[1:]))
+        self.assertRefused("core.version_freeze_accept", lambda: freeze.freeze_steps(
+            self.project, "V01", reason="Entrega", accepted=partial))
+        self.assertEqual(self.state(), before)
+
+        reason = "Se entrega con el banco anterior"
+        outcome, _progress = self.freeze_steps("V01", reason, accepted=whole)
+        accepted = copy_mod.acceptance(plan, reason=reason)
+        self.assertEqual(json.loads(str(outcome.frozen.accepted)), accepted)
+        body = json.loads((self.root / "snapshots" / "V01.r1" / copy_mod.MANIFEST_NAME)
+                          .read_bytes())
+        self.assertEqual(body["accepted"], accepted)
+        states = {(row[1], row[2]): row[11] for row in self.items(outcome.frozen.uid)}
+        self.assertEqual(states, {(str(item.item_kind), item.item_uid): str(item.state)
+                                  for item in plan.items})
+        self.assertIn(str(model.ItemState.STALE), states.values())
+        self.assertTrue(self.events(EVENT.REVISION_FROZEN)[0].data["accepted"])
+
+        self.project.set_read_only(project_model.ReadOnlyCode.REQUESTED, "a petición (prueba)")
+        self.assertRefused("core.version_freeze_read_only", lambda: freeze.freeze_steps(
+            self.project, "V01", reason="Otra"))
+
+
+class EmptyAndHeaderTest(FreezeStepsCase):
+    def test_empty_revision_and_header_regenerated_at_opening(self) -> None:
+        """D-41, RF-009-06, RF-009-07 (plan A7, §5.2.4): V02, sin nada, se congela con su
+        manifiesto solo (ningún elemento, 0 bytes) y abre V02.r2. Si la cabecera no se puede
+        escribir tras confirmar, la revisión queda congelada (la base manda) con un aviso; al
+        volver a abrir el proyecto en escritura, la cabecera se regenera con su inventario
+        (aviso y evento ``manifest_rewritten`` con «inventory»)."""
+        failed = errors.ProjectError("core.manifest_write_failed", "no se ha podido escribir "
+                                     "(prueba)", obj="Proyecto", field="manifest.json")
+        with mock.patch.object(session_mod, "write_manifest", side_effect=failed), \
+                self.assertLogs(events_mod.LOGGER, "WARNING") as logged:
+            outcome, _progress = self.freeze_steps("V02", "Primera entrega")
+            self.assertEqual(len(self.project.close()), 1)
+        self.assertTrue(any("V02.r1" in line for line in logged.output))
+        frozen = outcome.frozen
+        self.assertEqual((frozen.state, frozen.snapshot_bytes, outcome.files),
+                         (model.RevisionState.FROZEN, 0, ()))
+        self.assertEqual(self.items(frozen.uid), [])
+        self.assertEqual([path.name for path in (self.root / "snapshots" / "V02.r1").iterdir()],
+                         [copy_mod.MANIFEST_NAME])
+        self.assertEqual((outcome.opened.number, outcome.opened.reason), (2, "Primera entrega"))
+        (warning,) = outcome.warnings
+        self.assertIn("manifest.json", warning)
+        self.assertEqual(self.header()["inventory"], [])
+
+        reopened = open_mod.open_project(self.root, fixtures.SESSION, self.userdata,
+                                         clock=self.clock, pid_alive=fixtures.PIDS)
+        self.addCleanup(reopened.project.close)
+        self.assertTrue(any("inventory" in text for text in reopened.warnings))
+        self.assertEqual(self.header()["inventory"], [_entry(frozen, "V02.r1")])
+        self.assertEqual(reopened.project.manifest.inventory, (_entry(frozen, "V02.r1"),))
+        with reopened.project.read() as conn:
+            (event,) = events_mod.read_events(conn, EVENT.MANIFEST_REWRITTEN)
+        self.assertEqual(event.data["fields"], ["inventory"])
+
+
+class ConcurrentTest(FreezeStepsCase):
+    def test_operation_finished_meanwhile(self) -> None:
+        """D-40, RF-009-06, RF-009-07 (plan A7): mientras se congela, una operación de V01 que
+        se registra (``demo.pit_volume``) o una del proyecto que cambia algo congelado
+        (``demo.digitize`` con otros tonelajes: los bancos, aguas arriba) cancelan la
+        congelación al confirmar, sin dejar nada (ni la temporal, ni filas: la revisión sigue
+        abierta); una del proyecto que no cambia nada congelado (``demo.balance``) no la
+        impide."""
+        self.demo.pit(self.project, "V01")
+        self.demo.pit_stockpiles(self.project, "V01")
+        open_uid = self.opened(self.v1).uid
+        benches = [(name, 2 * tonnes) for name, tonnes in demo_support.DEFAULT_BENCHES]
+        cases = (
+            ("core.version_freeze_operation", vdemo.PIT_VOLUME,
+             lambda: self.demo.pit_volume(self.project, "V01")),
+            ("core.version_freeze_changed", demo_support.BENCHES_TABLE,
+             lambda: self.demo.digitize(self.project, benches=benches)),
+        )
+        for code, name, work in cases:
+            with self.subTest(code=code):
+                error = self.assertRefused(code, lambda work=work: self.freeze_steps(
+                    "V01", "Entrega", at={freeze.CONFIRM_PHASE: work}))
+                self.assertIn(f"«{name}»", str(error))
+                self.assertEqual(self.snapshots(), [])
+                self.assertEqual(self.query("SELECT state FROM gb_revision WHERE uid = ?",
+                                            (open_uid,)), [("open",)])
+                self.assertEqual(self.query("SELECT count(*) FROM gb_revision_item"), [(0,)])
+                self.assertEqual(freeze.freezing_paths(self.project), frozenset())
+        plan = self.plan()  # los bancos cambiados dejan obsoleto lo de aguas arriba
+        outcome, _progress = self.freeze_steps(
+            "V01", "Entrega", accepted=freeze.Acceptance.of(plan),
+            at={freeze.CONFIRM_PHASE: lambda: self.demo.balance(self.project, loose_m3=1300.0)})
+        self.assertEqual((outcome.frozen.uid, outcome.frozen.state),
+                         (open_uid, model.RevisionState.FROZEN))
+        self.assertEqual(self.snapshots(), ["V01.r1"])
+
+
+class LeftoversTest(FreezeStepsCase):
+    def put(self, rel: str, data: bytes) -> Path:
+        """Escribe ``rel`` con la fecha de hace una hora (lo que deja un cierre a medias)."""
+        path = self.root.joinpath(*rel.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        old = time.time_ns() - HOUR_NS
+        os.utime(path, ns=(old, old))
+        return path
+
+    def sweep(self, **kw: Any) -> Any:
+        """El barrido de restos de la comprobación de apertura, entero; su resultado."""
+        return list(orphans.orphan_steps(self.project, write=True, **kw))[-1].result
+
+    def test_half_closed_freeze_goes_to_orphans(self) -> None:
+        """RF-009-07, RF-008-22, D-11 (plan A6 (5)): un cierre a medias —la temporal de una
+        congelación (con sus ficheros o vacía) y una carpeta ya renombrada sin su revisión
+        congelada— impide congelar («ya se está congelando») hasta que el barrido de restos de
+        la apertura la aparta, entera y sin borrar nada, a ``orphans/<fecha>_<sesión>/snapshots/``;
+        la instantánea de una revisión congelada y lo que no lleva nombre de instantánea no se
+        tocan; después se congela como siempre."""
+        first, _progress = self.freeze_steps("V02", "Primera")
+        leftovers = {
+            "snapshots/V01.r1.congelando-0a1b2c3d/manifest.json": b"{}",
+            "snapshots/V01.r1.congelando-0a1b2c3d/rasters/demo_pit_grid_v01.tif": b"tif",
+            "snapshots/V01.r1/manifest.json": b'{"revision": "V01.r1"}',
+            "snapshots/notas/leeme.txt": b"nota",
+        }
+        for rel, data in leftovers.items():
+            self.put(rel, data)
+        (self.root / "snapshots" / "V01.r2.congelando-99999999").mkdir()
+        error = self.assertRefused("core.version_freeze_in_progress",
+                                   lambda: freeze.freeze_steps(self.project, "V01",
+                                                               reason="Otra"))
+        self.assertIn("V01.r1.congelando-0a1b2c3d", str(error))
+
+        found = self.sweep()
+        moved = {item.path: (item.folder, item.moved_to) for item in found.moved}
+        names = ("V01.r1", "V01.r1.congelando-0a1b2c3d", "V01.r2.congelando-99999999")
+        self.assertEqual(moved, {f"snapshots/{name}": (True, f"{found.folder}/snapshots/{name}")
+                                 for name in names})
+        for rel, data in leftovers.items():
+            where = rel if rel.startswith("snapshots/notas/") else f"{found.folder}/{rel}"
+            self.assertEqual(self.root.joinpath(*where.split("/")).read_bytes(), data)
+        self.assertTrue((self.root / found.folder / "snapshots" / names[2]).is_dir())
+        self.assertEqual(self.snapshots(), ["V02.r1", "notas"])
+        self.assertEqual(json.loads((self.root / "snapshots" / "V02.r1" / copy_mod.MANIFEST_NAME)
+                                    .read_bytes())["revision_uid"], first.frozen.uid)
+        (event,) = self.events(EVENT.ORPHANS_MOVED)
+        self.assertEqual(sorted(path for path, _target in event.data["moved"]),
+                         sorted(moved))
+
+        outcome, _progress = self.freeze_steps("V01", "Tras apartar los restos")
+        self.assertEqual(outcome.frozen.snapshot_dir, "snapshots/V01.r1")
+        self.assertEqual(self.snapshots(), ["V01.r1", "V02.r1", "notas"])
+
+    def test_this_sessions_temporary_is_not_set_aside(self) -> None:
+        """RF-009-07, D-40 (plan A6): la temporal de la congelación en curso de esta sesión no
+        se aparta aunque el barrido de restos corra a mitad de la copia (tampoco por su fecha:
+        se barre como si hubiera empezado después); Esc la borra; ``cancelled`` cancela sin
+        dejar nada; y la congelación que termina deja la instantánea, que el barrido ya no
+        toca."""
+        self.demo.pit(self.project, "V01")
+        later = time.time_ns() + HOUR_NS
+        before = self.state()
+        steps = freeze.freeze_steps(self.project, "V01", reason="Entrega", budget_s=TINY)
+        try:
+            for step in steps:
+                if step.phase == "comprobación":
+                    break
+            (temporary,) = freeze.freezing_paths(self.project)
+            self.assertRegex(temporary.name, r"^V01\.r1\.congelando-[0-9a-f]{8}$")
+            self.assertTrue(temporary.is_dir())
+            self.assertEqual(self.sweep(started_at=later).orphans, ())
+            self.assertTrue(temporary.is_dir())
+        finally:
+            steps.close()  # Esc
+        self.assertFalse(temporary.exists())
+        self.assertEqual(freeze.freezing_paths(self.project), frozenset())
+        self.assertEqual(self.state(), before)
+
+        stopped, _progress = self.freeze_steps("V01", "Entrega", cancelled=lambda: True)
+        self.assertEqual((stopped.cancelled, stopped.frozen, stopped.opened), (True, None, None))
+        self.assertEqual(self.state(), before)
+
+        outcome, _progress = self.freeze_steps("V01", "Entrega")
+        self.assertEqual(self.sweep(started_at=later).orphans, ())
+        self.assertEqual(self.snapshots(), ["V01.r1"])
+        self.assertEqual(outcome.frozen.state, model.RevisionState.FROZEN)
 
 
 if __name__ == "__main__":
