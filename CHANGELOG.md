@@ -96,7 +96,8 @@ referencia (el resaltado de Refrescar, abrir una vista con doble clic y los pane
     filtros por tipo, estado (los vivos, por defecto), versión, presencia en la escena y texto
     (sin distinguir mayúsculas ni tildes), como mucho 500 filas a la vez («… y 19 500 más: afine
     el filtro»), y Cargar en la vista, Descargar y Procedencia de la fila elegida (desactivadas
-    con su motivo si no se puede).
+    con su motivo si no se puede). Al cargar o descargar (desde el inventario, el menú o un
+    guion), sus filas se ponen al día sin volver a leer el proyecto.
   - **Cifras de la selección** (control 29; Herramientas ▸ Consulta): las cifras registradas de
     los datos de los objetos seleccionados, con su insignia de tipo, su unidad y sus marcas
     («depende de una hipótesis», «obsoleta»). No mide nada; hasta que la cubicación registre las
@@ -107,8 +108,8 @@ referencia (el resaltado de Refrescar, abrir una vista con doble clic y los pane
     que cambiaron 10 (uno, una malla de 1 millón de vértices), 1,3 s (≤ 5 s), con el avance cada
     0,13 s como mucho y Esc en 0,12 s; el inventario de un proyecto de 20 000 datos se abre y se
     filtra en 0,08 s como mucho (≤ 0,5 s; en `Z:`, 0,07 s); la marca de 200 datos que quedan
-    obsoletos a la vez, al día en 0,63 s (≤ 1 s), sin que ningún paso pase de 20 ms (en `Z:`,
-    tampoco).
+    obsoletos a la vez, al día en 0,63 s (≤ 1 s), sin que ningún paso pase de 20 ms; en `Z:` se
+    midió sin cambios y con 10 de 200 no al día: ningún paso pasa de 20 ms (15,3 ms el más largo).
 
 - **Sondeos** (spec 005). La rama geológica empieza: bocas, desviaciones, litología y análisis en
   el proyecto, validados, con su traza 3D y visibles en Blender y en QGIS, sin tocar nunca las
