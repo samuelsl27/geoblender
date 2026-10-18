@@ -4591,3 +4591,20 @@ es = "«{dataset}» no está congelado en {revision}"
 
 ["«{dataset}» belongs to the project: its current content is used, not the one frozen in {revision}"]
 es = "«{dataset}» es del proyecto: se usa su contenido vigente, no el congelado en {revision}"
+
+# Lo que impide congelar una revisión (spec 009, T10; RF-009-08; plan 009 A5 (1), D-40).
+
+["The project is open read-only: {revision} cannot be frozen"]
+es = "El proyecto está abierto en solo lectura: no se puede congelar {revision}"
+
+["Checking the project…: wait until it finishes to freeze {revision}"]
+es = "Comprobando el proyecto…: espere a que termine para congelar {revision}"
+
+["A revision is already being frozen ({names}): wait until it finishes"]
+es = "Ya se está congelando una revisión ({names}): espere a que termine"
+
+["{revision} has operations in progress ({names}): wait until they finish to freeze it"]
+es = "{revision} tiene operaciones en curso ({names}): espere a que terminen para congelarla"
+
+["Inputs upstream of {revision} changed and are not decided yet ({names}): update them or keep the copy before freezing it"]
+es = "Hay entradas aguas arriba de {revision} cambiadas sin decidir ({names}): actualícelas o mantenga la copia antes de congelarla"

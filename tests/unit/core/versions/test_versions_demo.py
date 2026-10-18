@@ -62,6 +62,7 @@ VERSION_TYPES = {
     "demo.pit_volume": (True, True),
     "demo.sketch": (False, False),
     "demo.design_from_parent": (True, True),
+    "demo.pit_stockpiles": (True, True),  # T10: con lo derivado del proyecto aguas arriba
 }
 BENCH_REASON = "Banco de 12 m del diseño de V01"
 CELL_M2 = 100.0
@@ -89,7 +90,7 @@ def expected_benches(bench_m: float, benches: int = 3, berm_m: float = 25.0,
 class VersionsDemoRegistrationTest(unittest.TestCase):
     def test_register_and_unregister_leave_no_trace(self) -> None:
         """RF-009-05, RF-009-11, RF-009-24 (plan §5.3.3 y §7.1): la demostración de versiones
-        registra la de la 008 y sus cuatro tipos de versión (``scope="version"``; los que se
+        registra la de la 008 y sus cinco tipos de versión (``scope="version"``; los que se
         repiten, con su recálculo; los que se reproducen, con su función de reproducir y
         ``demo.pit_volume`` con su tolerancia relativa 1e-12; la edición a mano, sin ninguna),
         su cifra ``demo.pit_volume`` en m³, su parámetro de versión ``demo.bench_height`` (m) y

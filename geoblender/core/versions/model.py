@@ -10,6 +10,10 @@ ADR-0013).
   solo al declarar VIGENTE otra).
 - :class:`RevisionState`: abierta, congelada o cerrada («cerrada al superarse», RF-009-25).
 - :class:`Version` y :class:`Revision`: una fila de ``gb_version`` y de ``gb_revision``.
+- Lo congelado de una revisión (``gb_revision_item``, RF-009-07, RF-009-19): :class:`ItemKind`
+  (dato, entrada, parámetro, operación o cifra), :class:`ItemPart` (lo producido por la
+  versión, lo de aguas arriba, lo inmutable del proyecto o lo heredado de la padre),
+  :class:`ItemState` (el estado que tenía al congelarse) y :class:`RevisionItem`, una fila.
 - :func:`version_code` (1 → «V01») y :func:`revision_label` («V10.r2»);
   :func:`version_locator`, la ubicación de un dato de una versión con su código
   («des_final_v10.tif», D-34).
@@ -200,6 +204,63 @@ class Revision:
         return self.altered_at is not None
 
 
+class ItemKind(StrEnum):
+    """Qué es un elemento de lo congelado (``gb_revision_item.item_kind``)."""
+
+    DATASET = "dataset"  # un dato (gb_dataset)
+    INPUT = "input"  # una entrada (gb_input), con su original
+    PARAMETER = "parameter"  # una fila de parámetro (gb_parameter), con la rev que se usó
+    OPERATION = "operation"  # una operación (gb_operation)
+    FIGURE = "figure"  # una cifra (gb_figure)
+
+
+class ItemPart(StrEnum):
+    """De dónde es un elemento de lo congelado (``gb_revision_item.part``; plan A5 (2))."""
+
+    PRODUCED = "produced"  # lo producido por la versión (sus datos, operaciones y cifras)
+    UPSTREAM = "upstream"  # lo derivado o editable a mano del proyecto, aguas arriba
+    IMMUTABLE = "immutable"  # lo inmutable del proyecto: lo importado y sus entradas (D-18)
+    INHERITED = "inherited"  # lo congelado de la versión de la que parte (Use.frozen, D-27)
+
+
+class ItemState(StrEnum):
+    """El estado que tenía un elemento al congelarse (``gb_revision_item.state``; RF-009-08,
+    RF-009-19): al día, obsoleto, a la espera de revisión a mano, una entrada no localizable o
+    lo que no se puede reproducir (consumió un contenido que ya no existe ni está congelado, o
+    un modelo de bloques hasta R-22, D-37)."""
+
+    CURRENT = "current"
+    STALE = "stale"
+    REVIEW = "review"
+    UNLOCATABLE = "unlocatable"
+    NOT_REPRODUCIBLE = "not_reproducible"
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionItem:
+    """Una fila de ``gb_revision_item``: lo congelado en una revisión (RF-009-07). De qué
+    revisión; qué es (:class:`ItemKind`) y su uid; de dónde es (:class:`ItemPart`); de un
+    parámetro, la fila de su historial que se usó (``item_rev``); el contenido congelado (de un
+    dato o una entrada, su hash de contenido; de un parámetro, su ``value_sha256``); si su
+    contenido se copia en **esta** instantánea (``copied``) y dónde está la copia, en esta o
+    en otra (``snapshot_path``, relativa al proyecto, y su capa en el GeoPackage, con la huella
+    y el tamaño del fichero cuando se conocen; ``None`` en lo inmutable del proyecto), y el
+    estado que tenía al congelarse (:class:`ItemState`)."""
+
+    revision_uid: str
+    item_kind: ItemKind
+    item_uid: str
+    part: ItemPart
+    item_rev: int | None
+    content_sha256: str | None
+    copied: bool
+    snapshot_path: str | None
+    snapshot_layer: str | None
+    file_sha256: str | None
+    file_size: int | None
+    state: ItemState
+
+
 # --- Mensajes ---------------------------------------------------------------------------------
 
 MESSAGES: Mapping[str, str] = MappingProxyType({
@@ -249,6 +310,21 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
     "core.version_frozen_project": (
         "«{dataset}» belongs to the project: its current content is used, not the one frozen "
         "in {revision}"
+    ),
+    # Lo que impide congelar una revisión (RF-009-08; plan A5 (1), D-40).
+    "core.version_freeze_read_only": "The project is open read-only: {revision} cannot be frozen",
+    "core.version_freeze_checking": (
+        "Checking the project…: wait until it finishes to freeze {revision}"
+    ),
+    "core.version_freeze_in_progress": (
+        "A revision is already being frozen ({names}): wait until it finishes"
+    ),
+    "core.version_freeze_running": (
+        "{revision} has operations in progress ({names}): wait until they finish to freeze it"
+    ),
+    "core.version_freeze_input_changed": (
+        "Inputs upstream of {revision} changed and are not decided yet ({names}): update them "
+        "or keep the copy before freezing it"
     ),
 })
 """Código → ``msgid`` (en inglés; su español, en ``core/i18n/messages.toml``)."""

@@ -91,6 +91,10 @@ VERSIONS: tuple[tuple[str, str], ...] = (("definitiva", "Definitiva"),
 VERSION_REASON = "Alternativa de la demostración"
 SNAPSHOT_SHA256 = "a" * 64
 """La huella simulada del manifiesto de una revisión congelada por SQL."""
+COPIED_PARTS: tuple[str, ...] = ("produced", "upstream")
+"""Las partes de lo congelado cuyo contenido se copia a la instantánea (plan A5): lo
+producido y lo derivado o editable de aguas arriba; lo inmutable y lo heredado de la padre se
+referencian."""
 
 
 # --- El disco ------------------------------------------------------------------------------
@@ -354,9 +358,10 @@ class VersionsProjectCase(unittest.TestCase):
         y abre la siguiente con ``reason``; devuelve el uid de la congelada. Lo congelado
         (``gb_revision_item``): cada elemento de ``items`` es ``(registro, parte)`` o
         ``(registro, parte, snapshot_path, snapshot_layer)``; por defecto, cada dato vivo de la
-        versión como ``produced``. Lo de una parte distinta de ``upstream`` queda copiado: una
-        tabla, en el GeoPackage de la instantánea (``snapshots/V01.r1/V01.r1.gpkg``) con su
-        nombre; un fichero, en la carpeta de la instantánea con su ruta. Y las cifras
+        versión como ``produced``. Lo de las partes :data:`COPIED_PARTS` (``produced`` y
+        ``upstream``, plan A5) queda copiado: una tabla, en el GeoPackage de la instantánea
+        (``snapshots/V01.r1/V01.r1.gpkg``) con su nombre; un fichero, en la carpeta de la
+        instantánea con su ruta; lo inmutable y lo heredado, sin copia. Y las cifras
         ``figures`` (uid; por defecto, las de las operaciones hechas y sin sustituir de la
         versión), como ``produced`` (T09: las vigentes de la versión, D-9). No escribe ningún
         fichero (eso lo hará la T13): solo las filas."""
@@ -384,7 +389,7 @@ class VersionsProjectCase(unittest.TestCase):
                 (now, USER, folder, SNAPSHOT_SHA256, "0.1.0", uid))
             for item in chosen:
                 record, part, *where = item
-                copied = part != "upstream"
+                copied = part in COPIED_PARTS
                 if where:
                     path, layer = where
                 elif not copied:

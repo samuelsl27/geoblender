@@ -30,7 +30,12 @@ salidas son datos de esa versión, con el código de la versión en la ubicació
   en la revisión de la que parte su versión (``Use(…, frozen=<revisión>)``, D-27) y escribe
   ``demo_design``, los bancos con su área y su volumen por ``widening``. Lo congelado se lee del
   dato vivo si aún tiene el contenido congelado y, si no, de la copia de su instantánea
-  (``gb_revision_item.snapshot_path`` y ``snapshot_layer``); si no está en ninguno, error.
+  (``gb_revision_item.snapshot_path`` y ``snapshot_layer``); si no está en ninguno, error;
+- ``demo.pit_stockpiles`` (se repite y se reproduce; spec 009, T10): sitúa los acopios del
+  **proyecto** (``demo_stockpiles``, lo derivado de la cadena de la 008: filtrar, detectar, los
+  años por banco y lo dibujado a mano) en el fondo del primer banco del hueco de su versión
+  (``demo_pit_benches``) y escribe ``demo_pit_stockpiles`` (marca, volumen esponjado en m³ y
+  cota). Es lo que tiene, aguas arriba, datos derivados del proyecto (plan A5).
 
 **Reproducir.** La función de reproducir de estos tipos (``OperationDef.reproduce``) solo
 declara que se reproducen: la escribe la T15 con ``core.versions.reproduce``; mientras tanto,
@@ -55,13 +60,14 @@ from typing import Any
 
 import numpy as np
 
-from tests.support.provenance_demo import DEMO_CODE, LABELS_ES, Demo
+from tests.support.provenance_demo import DEMO_CODE, LABELS_ES, STOCKPILES_TABLE, Demo
 
 PIT = "demo.pit"
 PIT_VOLUME = "demo.pit_volume"
 SKETCH = "demo.sketch"
 DESIGN_FROM_PARENT = "demo.design_from_parent"
-VERSION_TYPES: tuple[str, ...] = (PIT, PIT_VOLUME, SKETCH, DESIGN_FROM_PARENT)
+PIT_STOCKPILES = "demo.pit_stockpiles"
+VERSION_TYPES: tuple[str, ...] = (PIT, PIT_VOLUME, SKETCH, DESIGN_FROM_PARENT, PIT_STOCKPILES)
 """Los tipos de versión de la demostración, en su orden de registro."""
 
 BENCH_HEIGHT = "demo.bench_height"
@@ -75,6 +81,7 @@ PIT_MESH = "demo_pit_mesh"
 PIT_BENCHES = "demo_pit_benches"
 SKETCH_LAYER = "demo_sketch"
 DESIGN_TABLE = "demo_design"
+PIT_STOCKPILES_TABLE = "demo_pit_stockpiles"
 GRID_LOCATOR = f"rasters/{PIT_GRID}.tif"
 MESH_LOCATOR = f"meshes/{PIT_MESH}.npz"
 """Las ubicaciones sin versión: la de cada dato lleva el código de su versión (D-34)."""
@@ -125,6 +132,7 @@ VERSION_LABELS_ES: Mapping[str, str] = {
     "Demo compute pit volume": "Calcular el volumen del hueco (demostración)",
     "Demo sketch ramps": "Dibujar las rampas (demostración)",
     "Demo design from parent": "Diseñar desde la versión padre (demostración)",
+    "Demo place stockpiles in pit": "Situar los acopios en el hueco (demostración)",
     "Demo pit volume": "Volumen del hueco (demostración)",
     "Demo bench height": "Altura de banco (demostración)",
 }
@@ -133,10 +141,13 @@ VERSION_LABELS_ES: Mapping[str, str] = {
 _BENCH_COLUMNS: tuple[tuple[str, str], ...] = (
     ("bench", "INTEGER"), ("floor_z", "DOUBLE"), ("area_m2", "DOUBLE"), ("volume_m3", "DOUBLE"))
 _SKETCH_COLUMNS: tuple[tuple[str, str], ...] = (("ramp", "TEXT"), ("bench", "INTEGER"))
+_STOCKPILE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("mark", "TEXT"), ("loose_m3", "DOUBLE"), ("floor_z", "DOUBLE"))
 _TITLES: Mapping[str, str] = {
     PIT_BENCHES: "Bancos del hueco (demostración)",
     SKETCH_LAYER: "Rampas (demostración)",
     DESIGN_TABLE: "Diseño desde la padre (demostración)",
+    PIT_STOCKPILES_TABLE: "Acopios en el hueco (demostración)",
 }
 """El identificador de cada tabla en ``gpkg_contents`` (único: se le añade el código de la
 versión)."""
@@ -208,6 +219,7 @@ class VersionsDemo(Demo):
             PIT_VOLUME: self._pit_volume,
             SKETCH: self._sketch,
             DESIGN_FROM_PARENT: self._design,
+            PIT_STOCKPILES: self._pit_stockpiles,
         }
 
     def __repr__(self) -> str:
@@ -249,6 +261,9 @@ class VersionsDemo(Demo):
                                   scope="version"),
             contract.OperationDef(DESIGN_FROM_PARENT, "1.0", DEMO_CODE,
                                   "Demo design from parent", True, scope="version",
+                                  recompute=redo, reproduce=again),
+            contract.OperationDef(PIT_STOCKPILES, "1.0", DEMO_CODE,
+                                  "Demo place stockpiles in pit", True, scope="version",
                                   recompute=redo, reproduce=again),
         )
 
@@ -323,10 +338,17 @@ class VersionsDemo(Demo):
         return self._run_version(project, DESIGN_FROM_PARENT, version, settings=settings,
                                  inputs=self.version_uses(DESIGN_FROM_PARENT, frozen=frozen))
 
+    def pit_stockpiles(self, project: Any, version: str | None) -> Any:
+        """``demo.pit_stockpiles`` en ``version``: los acopios del proyecto en el fondo del
+        primer banco de su hueco."""
+        return self._run_version(project, PIT_STOCKPILES, version,
+                                 inputs=self.version_uses(PIT_STOCKPILES))
+
     def version_uses(self, op_type: str, *, boundary: str | None = None,
                      frozen: str | None = None) -> tuple[Any, ...]:
         """Lo que consume un tipo de versión (``Use``): ``demo.pit``, el límite
-        (``boundary``); ``demo.design_from_parent``, la revisión congelada (``frozen``)."""
+        (``boundary``); ``demo.design_from_parent``, la revisión congelada (``frozen``);
+        ``demo.pit_stockpiles``, los acopios del proyecto y los bancos de su versión."""
         use = self.module("core.provenance.operations").Use
         if op_type == PIT:
             if boundary is None:
@@ -338,7 +360,9 @@ class VersionsDemo(Demo):
                 raise ValueError("el diseño desde la padre necesita la revisión congelada")
             return (use(PIT_BENCHES, "parent_pit", frozen=frozen),)
         return {PIT_VOLUME: (use(PIT_GRID, "pit_grid"),),
-                SKETCH: (use(PIT_BENCHES, "pit"),)}[op_type]
+                SKETCH: (use(PIT_BENCHES, "pit"),),
+                PIT_STOCKPILES: (use(STOCKPILES_TABLE, "stockpiles"),
+                                 use(PIT_BENCHES, "pit"))}[op_type]
 
     # --- Ejecución --------------------------------------------------------------------------
 
@@ -566,6 +590,29 @@ class VersionsDemo(Demo):
             table = self.module("core.versions.model").version_locator(DESIGN_TABLE, code)
             self._write_rows(conn, DESIGN_TABLE, table, code, rows)
             handle.complete(conn, outputs=[self._table_spec(DESIGN_TABLE, table, "design")])
+
+    def _pit_stockpiles(self, handle: Any) -> None:
+        base = self.module("core.gpkg.base")
+        project = handle.project
+        with project.write_transaction() as conn:
+            code = self._code(conn, handle)
+            piles = self._record(conn, handle, "stockpiles")
+            benches = self._record(conn, handle, "pit")
+            (floor,) = conn.execute(f'SELECT floor_z FROM "{benches.locator}" '
+                                    "ORDER BY bench LIMIT 1").fetchone()
+            rows = [(str(mark), float(loose), float(floor)) for mark, loose in conn.execute(
+                f'SELECT mark, loose_m3 FROM "{piles.locator}" ORDER BY fid')]
+            table = self.module("core.versions.model").version_locator(PIT_STOCKPILES_TABLE,
+                                                                          code)
+            self._clear_or_create(
+                conn, PIT_STOCKPILES_TABLE, table, code, lambda title: base.create_attribute_table(
+                    conn, table,
+                    [base.ColumnDef(column, kind) for column, kind in _STOCKPILE_COLUMNS], title,
+                    "Tabla sintética de la demostración de versiones (spec 009)"))
+            conn.executemany(f'INSERT INTO "{table}" (mark, loose_m3, floor_z) VALUES (?, ?, ?)',
+                             rows)
+            handle.complete(conn, outputs=[self._table_spec(PIT_STOCKPILES_TABLE, table,
+                                                            "pit_stockpiles")])
 
 
 def source_cells(path: Path, reader: Any) -> int:
