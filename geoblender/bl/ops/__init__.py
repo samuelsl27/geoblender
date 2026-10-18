@@ -16,18 +16,21 @@ sus tipos de trabajo, sus operaciones y sus importadores; T24), después de lo d
 
 ``views`` (spec 010): las órdenes de la vista regenerable (T11: Refrescar las vistas desde el
 proyecto, F5), después de las de ``core``.
+
+``versions`` (spec 009): las órdenes de las versiones (T18: Fijar la versión activa), después de
+las de ``core_provenance``.
 """
 
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
-from . import core, core_provenance, dh, geo, gis, io, jobs, ui, views
+from . import core, core_provenance, dh, geo, gis, io, jobs, ui, versions, views
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): core (spec 002) y views (spec 010), ui y geo (spec 003; geo: el recorte de la
-# vista, D-1), jobs (spec 004) y core_provenance (spec 008).
+# vista, D-1), jobs (spec 004), core_provenance (spec 008) y versions (spec 009).
 classes: tuple[type, ...] = (*core.classes, *views.classes, *ui.classes, *geo.classes,
-                             *jobs.classes, *core_provenance.classes)
+                             *jobs.classes, *core_provenance.classes, *versions.classes)
 
 # Los de la topografía (spec 006) y los de los sondeos (spec 005), después.
 classes += gis.classes

@@ -28,8 +28,10 @@ de cada texto más lo que añade su elemento (:func:`label_px`, :func:`button_px
 separador entre campos (:data:`SEPARATOR_PX`), frente a la región menos
 ``bl.compat.STATUSBAR_RESERVED_PX``, todo a escala 1,0.
 
-Los campos de la 003 (AR §6): el **proyecto** («Sin proyecto» si no hay ninguno abierto), su
-**EPSG** y las coordenadas **absolutas** X, Y, Z del cursor 3D («Cursor: X 736 512,34  Y …»;
+Los campos de la 003 (AR §6): el **proyecto** («Sin proyecto» si no hay ninguno abierto) y, con
+uno abierto, su **versión activa** («Silvestre · V10.r2 VIGENTE» o «Sin versión», que abre la
+ventana de la versión activa; spec 009, T18, RF-009-10, de ``bl.scene.versions`` sin leer el
+proyecto), su **EPSG** y las coordenadas **absolutas** X, Y, Z del cursor 3D («Cursor: X 736 512,34  Y …»;
 GeoOrigin entero más la posición local, en float64, con ``core.georef.local_to_world`` y
 ``core.i18n.format_xyz``), todos de prioridad 1; el **encaje** nativo (prioridad 3; un clic
 abre el menú circular de encaje) y el **recorte** de la Vista 3D de destino si hay alguno
@@ -62,10 +64,12 @@ from ...core.georef import GeoOrigin, local_to_world
 from ...core.i18n import format_xyz, language, tr
 from .. import compat
 from ..scene import georef as scene_georef
+from ..scene import versions as scene_versions
 from . import gate, views
 from .commands import preference
 
 HEADER = "STATUSBAR_HT_header"
+VERSION_PANEL = "GEOBLENDER_PT_core_version"  # la ventana de la versión activa (spec 009)
 GEOBLENDER = "GEOBLENDER"
 BLENDER = "BLENDER"
 ONLY_GEOBLENDER = frozenset({GEOBLENDER})
@@ -393,8 +397,22 @@ def clip_text(context: Any) -> str:
     return ""
 
 
+def version_text() -> str:
+    """La versión activa tras el proyecto (spec 009, T18; RF-009-10; AR §6): «V10.r2 VIGENTE» o
+    «Sin versión»; "" sin proyecto abierto (``bl.scene.versions``, sin leer el proyecto)."""
+    return scene_versions.status_text()
+
+
 def _draw_project(layout: Any, _context: Any) -> None:
     layout.label(text=project_text(), translate=False)
+    shown = version_text()
+    if shown:  # «Silvestre · V10.r2 VIGENTE»: un clic abre la ventana de la versión activa
+        layout.popover(VERSION_PANEL, text=shown, translate=False)
+
+
+def _project_px(_context: Any) -> float:
+    shown = version_text()
+    return text_px(project_text()) + (popover_px(shown) if shown else 0.0)
 
 
 def _draw_epsg(layout: Any, _context: Any) -> None:
@@ -427,7 +445,7 @@ def _optional_px(text: str) -> float:
 
 
 OWN_FIELDS: tuple[tuple[str, int, float, DrawField, WidthField], ...] = (
-    ("project", 1, 10.0, _draw_project, lambda _context: text_px(project_text())),
+    ("project", 1, 10.0, _draw_project, _project_px),
     ("epsg", 1, 20.0, _draw_epsg, lambda _context: _optional_px(epsg_text())),
     ("cursor", 1, 30.0, _draw_cursor, _cursor_px),
     ("snap", 3, 40.0, _draw_snap, lambda context: button_px(snap_text(context))),

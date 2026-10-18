@@ -5,7 +5,8 @@ RF-002-13, RF-002-18, RF-002-19, RF-002-30, RF-002-31; plan 002 §5.2).
 Lo que es de un equipo y no de un proyecto: los 10 proyectos recientes, las rutas
 completas de las fuentes de otro volumen, el registro de una copia local, la caché de un
 proyecto abierto desde la red o en solo lectura, las copias privadas de lectura y la
-carpeta de copias locales. ``bl`` calcula la raíz con ``extension_path_user`` y se la
+carpeta de copias locales; y, desde la spec 009 (T18; RF-009-10, D-25), la versión activa de
+cada proyecto en este equipo. ``bl`` calcula la raíz con ``extension_path_user`` y se la
 pasa a ``core`` como ``Path``. Nada de esto entra en un proyecto.
 """
 
@@ -82,6 +83,51 @@ class CheckoutRecordTest(unittest.TestCase):
             data.clear_checkout_record(UID)
             self.assertIsNone(data.checkout_record(UID))
             data.clear_checkout_record(UID)  # sin registro, no hace nada
+
+
+class ActiveVersionTest(unittest.TestCase):
+    """Spec 009, T18 (RF-009-10; plan 009 §5.3.2, D-25): la versión activa de un proyecto en
+    este equipo."""
+
+    def test_active_version_per_project(self) -> None:
+        """RF-009-10 (D-25, D-8): la versión activa que se eligió en este equipo se guarda por
+        proyecto en ``projects/<uid>/session.json`` (nunca en el proyecto), se lee y, sin
+        ninguna («Sin versión»), se olvida; la de otro proyecto no cambia; sin fichero, o con
+        uno ilegible, no hay ninguna."""
+        version = "0123456789abcdef0123456789abcdef"
+        other_project = "00000000-0000-4000-8000-0000000000bb"
+        with project_tmp() as tmp:
+            data = userdata_mod.UserData(tmp)
+            self.assertIsNone(data.active_version(UID))
+            self.assertEqual(list(tmp.iterdir()), [])  # leer no crea nada
+            data.set_active_version(UID, version)
+            data.set_active_version(other_project, "fedcba9876543210fedcba9876543210")
+            self.assertEqual(data.active_version(UID), version)
+            target = tmp / "projects" / UID / "session.json"
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")),
+                             {"active_version": version})
+            data.set_active_version(UID, None)
+            self.assertIsNone(data.active_version(UID))
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {})
+            self.assertEqual(data.active_version(other_project),
+                             "fedcba9876543210fedcba9876543210")
+            target.write_text("{no es json", encoding="utf-8")
+            self.assertIsNone(data.active_version(UID))
+            target.write_text('{"active_version": 3}', encoding="utf-8")
+            self.assertIsNone(data.active_version(UID))
+            data.set_active_version(UID, version)  # se rehace
+            self.assertEqual(data.active_version(UID), version)
+
+    def test_unsafe_version(self) -> None:
+        """RF-002-18: la versión es un identificador; una con barras, ``..`` o vacía se
+        rechaza sin escribir nada."""
+        with project_tmp() as tmp:
+            data = userdata_mod.UserData(tmp)
+            for bad in ("..", "a/b", "", "C:x"):
+                with self.subTest(bad=bad):
+                    with self.assertRaises(errors.ValidationError):
+                        data.set_active_version(UID, bad)
+            self.assertEqual(list(tmp.iterdir()), [])
 
 
 class RecentProjectsTest(unittest.TestCase):

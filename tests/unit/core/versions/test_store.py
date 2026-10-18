@@ -678,6 +678,45 @@ class TitleTest(StoreCase):
                          [("Diseño final",)])
 
 
+class SessionReadTest(StoreCase):
+    """Lo que lee la versión activa de la sesión (spec 009, T18; RF-009-10; plan A11)."""
+
+    def test_latest_revision_of_each_version_and_versioned_schema(self) -> None:
+        """RF-009-10 (plan A11): ``latest_revisions`` da de cada versión la revisión que se
+        enseña con ella («● V03.r2»): la abierta o, si ya no tiene (SUPERADO, DESCARTADO), la
+        última, cerrada; ``has_versions`` dice si la base tiene versiones (el esquema 3 sí; un
+        proyecto del esquema 2, no). Ninguna de las dos escribe nada."""
+        with self.project.read() as conn:
+            self.assertTrue(read.has_versions(conn))
+            self.assertEqual(read.latest_revisions(conn), {})
+        v1, r1 = self.create(feature="a", title="A")
+        v2, _ = self.create(feature="b", title="B")
+        v3, _ = self.create(feature="c", title="C")
+        self.freeze(v1)
+        self.set_status(v1, "VIGENTE")
+        self.freeze(v2)
+        self.set_status(v2, "VIGENTE")  # V01 a SUPERADO: su r2 se cierra
+        self.set_status(v3, "DESCARTADO", reason="Prueba")
+        counter = self.counter()
+        with self.project.read() as conn:
+            found = read.latest_revisions(conn)
+        self.assertEqual(self.counter(), counter)
+        shown = {uid: (revision.number, str(revision.state)) for uid, revision in found.items()}
+        self.assertEqual(shown, {v1.uid: (2, "closed"), v2.uid: (2, "open"),
+                                 v3.uid: (1, "closed")})
+        with self.project.read() as conn:
+            self.assertEqual(found[v2.uid], read.open_revision(conn, v2.uid))
+            self.assertEqual(found[v1.uid], read.revisions(conn, v1.uid)[-1])
+        self.assertNotEqual(found[v1.uid].uid, r1.uid)
+        with project_tmp("gb-v5r-") as tmp:
+            old = fixture.extract(tmp)  # el proyecto del esquema 2, sin migrar
+            conn = sqlite3.connect(f"file:{(old / DATABASE).as_posix()}?mode=ro", uri=True)
+            try:
+                self.assertFalse(read.has_versions(conn))
+            finally:
+                conn.close()
+
+
 class NoDeleteTest(StoreCase):
     def test_no_api_deletes_and_reads_do_not_write(self) -> None:
         """RF-009-12: ninguna función de ``core.versions.store`` borra ni sustituye una fila

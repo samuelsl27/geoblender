@@ -197,7 +197,7 @@ label.en = "Active version"
 label.es = "Versión activa"
 description.en = "The versions with the state of each one; choose the active one"
 description.es = "Las versiones con el estado de cada una; elegir la activa"
-entry = "R-07"
+entry = "009"
 action = "S"
 frequency = 3
 doc_id = ["GEOBLENDER_MT_core_versions", "core_set_active_version"]
@@ -209,7 +209,7 @@ label.en = "Set the active version"
 label.es = "Fijar la versión activa"
 description.en = "Make this version the active one"
 description.es = "Hace activa esta versión"
-entry = "R-07"
+entry = "009"
 action = "A"
 frequency = 3
 

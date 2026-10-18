@@ -33,6 +33,12 @@ número). El número se dibuja tras el icono del control y abre su segundo coman
 (RF-008-28), cuyo número abre ``GEOBLENDER_PT_core_stale``. Sin número, el control es solo
 su icono, como antes.
 
+El texto y el icono de un control que los cambia (spec 009, T18): quien los sabe pone con
+:func:`set_label_provider` una función que, con el contexto, da el texto y los argumentos del
+icono, o ``None`` (su título y su icono del catálogo): el control 8, «● V10.r2» con el icono del
+estado de la versión activa o «Sin versión» (``bl.ui.version_panels``; RF-009-10). En los niveles
+C a E de la barra, solo su icono.
+
 :func:`install` añade la fila a la cabecera una sola vez (también tras una recarga) y
 :func:`uninstall` la quita.
 """
@@ -62,6 +68,9 @@ LOGGER = logging.getLogger("geoblender.bl.ui")
 
 CountProvider = Callable[[Any], "int | None"]
 """El número de un control con número: (contexto) → n, o ``None`` si no tiene número."""
+LabelProvider = Callable[[Any], "tuple[str, dict[str, Any]] | None"]
+"""El texto y el icono de un control que los cambia (la versión activa, spec 009): (contexto) →
+(texto, argumentos del icono), o ``None`` para dibujarlo con los de su comando."""
 
 HEADER = "VIEW3D_HT_tool_header"
 MORE_PANEL = "GEOBLENDER_PT_ui_quick_access_more"
@@ -82,6 +91,7 @@ class _State:
         self.items: dict[str, tuple[Catalog, tuple[QuickAccessItem, ...],
                                     dict[str, QuickAccessItem]]] = {}
         self.counts: dict[str, CountProvider] = {}  # clave del control → su número (008)
+        self.labels: dict[str, LabelProvider] = {}  # clave del control → su texto (009)
 
 
 _STATE = _State()
@@ -116,6 +126,37 @@ def count_of(key: str, context: Any) -> int | None:
         LOGGER.exception("Falló el número del control «%s»", key)
         return None
     return None if found is None else int(found)
+
+
+# Texto de un control (spec 009, T18) -------------------------------------------------------
+
+
+def set_label_provider(key: str, provider: LabelProvider | None) -> None:
+    """Pone quien da el texto y el icono del control ``key`` (``provider(context)`` → (texto,
+    argumentos del icono) o ``None``) o, con ``None``, lo quita (el control vuelve a dibujarse
+    con su título y su icono del catálogo)."""
+    if provider is None:
+        _STATE.labels.pop(key, None)
+    else:
+        _STATE.labels[key] = provider
+
+
+def label_provider(key: str) -> LabelProvider | None:
+    """Quien da el texto y el icono del control ``key``, o ``None``."""
+    return _STATE.labels.get(key)
+
+
+def label_of(key: str, context: Any) -> tuple[str, dict[str, Any]] | None:
+    """El texto y el icono del control ``key`` ahora, o ``None`` (sin quien los dé, o si falla:
+    la barra se dibuja igual y el error queda en el registro técnico)."""
+    provider = _STATE.labels.get(key)
+    if provider is None:
+        return None
+    try:
+        return provider(context)
+    except Exception:  # noqa: BLE001 - un texto que falla no rompe la barra superior
+        LOGGER.exception("Falló el texto del control «%s»", key)
+        return None
 
 
 def _draw_count(layout: Any, context: Any, item: QuickAccessItem) -> None:
@@ -165,7 +206,12 @@ def draw_project(layout: Any, context: Any, level: Level) -> None:
         if item.key in (TOGGLE, LAYOUTS_PANEL):
             continue  # el conmutador y Disposición ▾ van al principio de la barra
         titled = item.key == VERSION_PANEL and level in TITLED_LEVELS
-        draw_command(row, item.key, context=context, icon_only=not titled, inline=True)
+        shown = label_of(item.key, context)
+        if shown is None:
+            draw_command(row, item.key, context=context, icon_only=not titled, inline=True)
+        else:
+            draw_command(row, item.key, context=context, label=shown[0], icon=shown[1],
+                         icon_only=not titled, inline=True)
         if item.display == "icon_text":
             _draw_count(row, context, item)
 
@@ -332,6 +378,7 @@ def uninstall() -> None:
     _STATE.folded.clear()
     _STATE.items.clear()
     _STATE.counts.clear()
+    _STATE.labels.clear()
 
 
 classes: tuple[type, ...] = (GEOBLENDER_PT_ui_quick_access_more,)

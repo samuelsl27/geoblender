@@ -48,17 +48,16 @@ INTERNAL = (
     "geoblender.core_resolve_unregistered",
     "geoblender.core_cancel_checks",
 )
-# Lo de la 009 (versiones, revisiones y vistas): sigue «Disponible en R-07». Refrescar ya no:
-# es de la 010 (T11; plan 010 D-18).
+# Lo de la 009 (versiones, revisiones y vistas) que aún no ha llegado: sigue «Disponible en
+# R-07». Refrescar ya no: es de la 010 (T11; plan 010 D-18); la versión activa (Versión activa ▸,
+# Fijar la versión activa y la ventana del control 8), tampoco: es de la 009 (T18; plan 009
+# D-38).
 LATER = (
-    "GEOBLENDER_MT_core_versions",
-    "geoblender.core_set_active_version",
     "geoblender.core_new_version",
     "geoblender.core_new_revision",
     "geoblender.core_set_version_state",
     "geoblender.core_reproduce_version",
     "geoblender.core_show_decisions",
-    "GEOBLENDER_PT_core_version",
 )
 # Textos de la interfaz de la 008 en messages.toml (plan §5.3.2 y §5.5).
 INTERFACE_TEXTS = {

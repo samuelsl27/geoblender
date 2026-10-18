@@ -38,6 +38,9 @@ cifras registradas de su dato al cargarlo o al refrescar (:class:`GEOBLENDER_PG_
 texto ya escrito con su unidad y su tipo: solo para mostrarlas, nunca para calcular (principio 2;
 ninguna propiedad flotante, principio 6).
 
+Spec 009 (T18; RF-009-10; plan 009 §5.2.7, D-8, D-25): ``active_version_uid`` en la escena, la
+versión activa de la sesión que se guarda con la vista (la elige ``bl.scene.versions``).
+
 Ninguna se anima (``options=set()``): un fotograma clave sobre el GeoOrigin no tiene
 sentido.
 """
@@ -133,6 +136,15 @@ class GEOBLENDER_PG_core_project(bpy.types.PropertyGroup):
         ),
         default=0,
         min=0,
+        options=_STATIC,
+    )
+    # Spec 009 (T18; RF-009-10; plan 009 §5.2.7, D-8, D-25): la versión activa de la sesión, que
+    # se guarda con la vista (su uid; "" sin versión). La elige bl.scene.versions al abrir el
+    # proyecto y al cargar la vista; nunca se guarda en el proyecto.
+    active_version_uid: StringProperty(  # type: ignore[valid-type]
+        name="Active version",
+        description="Identity of the version that this view works on (empty: no version)",
+        default="",
         options=_STATIC,
     )
 

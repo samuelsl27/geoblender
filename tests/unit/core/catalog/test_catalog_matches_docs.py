@@ -39,13 +39,17 @@ PENDING_REFS: frozenset[str] = frozenset()
 # del plan 003 §11, Manual y Novedades en R-13; D-4). Plan 008 §5.1 y §5.5 (T44): las
 # órdenes de Proyecto ▸ Control de la 008 pasan de R-07 a 008 (R-07 se partió en la 008 y
 # la 009; lo de la 009 sigue en R-07). Las de la 010 (plan 010 D-18: Refrescar y Cifras de la
-# selección, de R-07 a 010) ya las dice BS desde la T19 de la 010. identificador → entrada.
+# selección, de R-07 a 010) ya las dice BS desde la T19 de la 010. Plan 009 D-38 (T18): la
+# versión activa (Proyecto ▸ Versiones ▸ Versión activa y su orden) pasa de R-07 a 009; BS lo
+# dirá en la T31 de la 009. identificador → entrada.
 APPROVED_ENTRIES: dict[str, str] = {
     "core_show_parameters": "008",
     "core_show_inputs": "008",
     "core_check_inputs": "008",
     "core_recompute_stale": "008",
     "core_show_lineage": "008",
+    "GEOBLENDER_MT_core_versions": "009",
+    "core_set_active_version": "009",
 }
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,

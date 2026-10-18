@@ -36,9 +36,9 @@ from tests.support.blender_ext import module_name
 from tests.support.fake_layout import draw
 
 # Los 15 elementos del hallazgo (Sección ▾ de la fila 2 es el mismo menú que Geología ▸
-# Nueva sección ▸).
+# Nueva sección ▸), sin Versión activa ▸ ni la ventana del control 8, que ya son de la 009,
+# entregadas (T18).
 FINDING = (
-    "GEOBLENDER_MT_core_versions",
     "GEOBLENDER_MT_ui_work_profile",
     "GEOBLENDER_MT_gis_web_services",
     "GEOBLENDER_MT_geo_new_section",
@@ -51,7 +51,6 @@ FINDING = (
     "GEOBLENDER_PT_ui_work_plane",
     "GEOBLENDER_PT_ui_current_object",
     "GEOBLENDER_PT_ui_selection_filter",
-    "GEOBLENDER_PT_core_version",
 )
 NOTE_START = {"es": "Disponible en ", "en": "Available in "}
 
@@ -165,8 +164,9 @@ class UnavailableNoteTest(unittest.TestCase):
                         first = labels[1]
                     self.assertEqual(first.text, note)
                     self.assertFalse(first.enabled and first.active)
-            # Los de las entradas aún no entregadas (desde la 005/T25, sin los de Sondeos).
-            self.assertGreaterEqual(checked, 19, language)
+            # Los de las entradas aún no entregadas (desde la 005/T25, sin los de Sondeos; desde
+            # la 009/T18, sin Versión activa ▸, que ya es real).
+            self.assertGreaterEqual(checked, 18, language)
 
     def drawn_menus(self, hide: bool) -> dict[str, list]:
         """Lo que dibuja cada menú generado (salvo los circulares) con «Ocultar lo no

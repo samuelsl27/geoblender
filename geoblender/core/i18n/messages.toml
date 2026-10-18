@@ -4787,3 +4787,57 @@ es = "cerrada ({revision})"
 
 ["{revision} (altered)"]
 es = "{revision} (alterada)"
+
+# La versión activa de la sesión (spec 009, T18; RF-009-10; plan 009 §5.5, A11, D-25): el control
+# 8, su ventana, Proyecto ▸ Versiones ▸ Versión activa y la barra de estado.
+
+["No version"]
+es = "Sin versión"
+
+["Revisions of {version}"]
+es = "Revisiones de {version}"
+
+["{version} · active"]
+es = "{version} · activa"
+
+["Active version: {version}"]
+es = "Versión activa: {version}"
+
+["Choose the version in Project ▸ Versions ▸ Active version: nothing has changed"]
+es = "Elija la versión en Proyecto ▸ Versiones ▸ Versión activa: no ha cambiado nada"
+
+["The active version could not be remembered on this computer: {detail}"]
+es = "No se ha podido recordar la versión activa en este equipo: {detail}"
+
+["The versions of the project could not be read: {detail}"]
+es = "No se han podido leer las versiones del proyecto: {detail}"
+
+["Identity of the version to make active (empty: no version)"]
+es = "Identidad de la versión que se hace activa (vacía: sin versión)"
+
+["Identity of the version that this view works on (empty: no version)"]
+es = "Identidad de la versión con la que trabaja esta vista (vacía: sin versión)"
+
+["Identity of the version whose collection this is (empty: not a version)"]
+es = "Identidad de la versión de la que es esta colección (vacía: no es de una versión)"
+
+["Status of its version when the collection was named"]
+es = "Estado de su versión cuando se nombró la colección"
+
+["Not a version"]
+es = "No es de una versión"
+
+["A collection that is not the one of a version"]
+es = "Una colección que no es la de una versión"
+
+["A version being worked on, not yet delivered"]
+es = "Una versión en la que se trabaja, aún sin entregar"
+
+["The version in force"]
+es = "La versión vigente"
+
+["A version replaced by another one: kept as a record"]
+es = "Una versión sustituida por otra: se conserva como registro"
+
+["A discarded version: kept as a record"]
+es = "Una versión descartada: se conserva como registro"

@@ -18,6 +18,9 @@ operaciones de versión y la cascada) ni nada que la importe: solo :mod:`.model`
 - :func:`version_figures`: las cifras vigentes de una versión, las de su última revisión
   congelada (D-9), o las «en curso» (RF-009-20).
 - :func:`snapshot_index`: el inventario de lo congelado para la cabecera (``manifest.json``).
+- :func:`has_versions` y :func:`latest_revisions` (T18; RF-009-10, plan A11): si la base tiene
+  versiones (un proyecto del esquema 2 abierto en solo lectura, no) y la revisión que se enseña
+  con cada versión («● V10.r2»: la abierta o, si ya no tiene, la última).
 """
 
 from __future__ import annotations
@@ -202,6 +205,30 @@ def snapshot_index(conn: sqlite3.Connection) -> tuple[InventoryEntry, ...] | Non
          "frozen_at": str(frozen_at)}
         for uid, code, number, snapshot_dir, sha256, frozen_at in conn.execute(_FROZEN_REVISIONS)
     )
+
+
+def has_versions(conn: sqlite3.Connection) -> bool:
+    """Si la base de ``conn`` tiene versiones que leer (``gb_version``: el esquema 3 o
+    posterior); un proyecto del esquema 2 abierto en solo lectura, no."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gb_version'"
+    ).fetchone() is not None
+
+
+def latest_revisions(conn: sqlite3.Connection) -> dict[str, Revision]:
+    """La revisión que se enseña con cada versión (el control 8, «● V10.r2»; RF-009-10, plan
+    A11), por uid de versión: la abierta o, si ya no tiene ninguna (SUPERADO, DESCARTADO), la
+    de número mayor. Una versión sin revisiones no está. Una sola consulta: las revisiones son
+    pocas."""
+    found: dict[str, Revision] = {}
+    for row in conn.execute(
+        f"SELECT {_REVISION_COLUMNS} FROM gb_revision ORDER BY version_uid, number"
+    ):
+        revision = _revision(row)
+        kept = found.get(revision.version_uid)
+        if kept is None or kept.state is not RevisionState.OPEN:
+            found[revision.version_uid] = revision
+    return found
 
 
 def default_active(conn: sqlite3.Connection) -> Version | None:

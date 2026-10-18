@@ -10,6 +10,8 @@
   otro volumen (RF-002-19);
 - ``projects/<uid>/checkout.json``: el registro de una copia local (original, copia,
   sesión, huellas de partida; RF-002-31);
+- ``projects/<uid>/session.json``: la versión activa que se eligió en este equipo (spec 009,
+  T18; RF-009-10, D-25: al abrir el proyecto, si la vista no trae la suya);
 - ``cache/<uid>/``: la caché de un proyecto abierto desde la red o en solo lectura
   (RF-002-30), y ``cache/_sin_proyecto/`` sin proyecto;
 - ``readonly/<sesión>/``: las copias privadas de lectura (RF-002-13);
@@ -34,6 +36,7 @@ from .errors import ValidationError
 
 RECENT_LIMIT = 10
 NO_PROJECT_CACHE = "_sin_proyecto"
+ACTIVE_VERSION = "active_version"  # la clave de session.json (spec 009, D-25)
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
@@ -154,6 +157,32 @@ class UserData:
         record = self.checkout_record(uid)
         original = None if record is None else record.get("original")
         return Path(original) if isinstance(original, str) and original else None
+
+    # Versión activa en este equipo (spec 009, RF-009-10, D-25) ------------------------------
+
+    def _session_file(self, uid: str) -> Path:
+        return self.project_dir(uid) / "session.json"
+
+    def active_version(self, uid: str) -> str | None:
+        """El uid de la versión activa que se eligió en este equipo para el proyecto ``uid``, o
+        ``None`` si no se eligió ninguna (o el fichero no se puede leer)."""
+        data = _read_json(self._session_file(uid))
+        value = data.get(ACTIVE_VERSION) if isinstance(data, dict) else None
+        return value if isinstance(value, str) and _IDENTIFIER.match(value) else None
+
+    def set_active_version(self, uid: str, version_uid: str | None) -> None:
+        """Recuerda ``version_uid`` como la versión activa del proyecto ``uid`` en este equipo
+        o, con ``None`` («Sin versión»), la olvida; conserva lo demás de ``session.json``."""
+        if version_uid is not None:
+            _check_id(version_uid, "versión activa")
+        target = self._session_file(uid)
+        data = _read_json(target)
+        found = dict(data) if isinstance(data, dict) else {}
+        if version_uid is None:
+            found.pop(ACTIVE_VERSION, None)
+        else:
+            found[ACTIVE_VERSION] = version_uid
+        _write_json(target, found)
 
     # Proyectos recientes (RF-002-08) --------------------------------------------------
 

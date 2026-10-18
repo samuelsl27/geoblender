@@ -14,7 +14,9 @@ Outliner) → barra de estado minera (``statusbar``: un ``append`` a la barra de
 campos y la suscripción de ``msgbus`` al cursor 3D, renovada en ``load_post``) → campo
 «jobs» de la barra de estado (``jobs``, spec 004: los trabajos en segundo plano, en los dos
 modos) → la procedencia (``provenance``, spec 008: sus campos de la barra de estado, el
-número del control 7 y la escucha del proyecto, con su temporizador) → vistas
+número del control 7 y la escucha del proyecto, con su temporizador) → la versión activa
+(``version_panels``, spec 009: el texto del control 8 y las escuchas de las versiones y de los
+indicadores) → vistas
 (``views``: el manejador ``load_post`` que olvida su estado de sesión) → Elemento activo
 (``view_panels``, spec 010: la suscripción de ``msgbus`` al objeto activo, renovada en
 ``load_post``, y las escuchas del proyecto y de sus indicadores) → disposiciones
@@ -55,6 +57,7 @@ from . import (
     statusbar,
     switcher,
     topbar,
+    version_panels,
     view_panels,
     views,
 )
@@ -63,8 +66,8 @@ from . import help as help_pages
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los menús y la pestaña «Proyecto» de core (spec 002) con los paneles de la
 # vista regenerable que van en ella (spec 010: Elemento activo), los paneles reales de
-# la interfaz (spec 003), la lista de trabajos (spec 004), lo obsoleto (spec 008) y la pestaña
-# «Sondeos» (spec 005).
+# la interfaz (spec 003), la lista de trabajos (spec 004), lo obsoleto (spec 008), la ventana y
+# el menú de la versión activa (spec 009) y la pestaña «Sondeos» (spec 005).
 classes: tuple[type, ...] = (
     *core_menus.classes,
     *core_panel.classes,
@@ -74,6 +77,7 @@ classes: tuple[type, ...] = (
     *layouts.classes,
     *jobs.classes,
     *provenance.classes,
+    *version_panels.classes,
     *dh_panels.classes,
 )
 
@@ -111,6 +115,7 @@ def register() -> None:
         (statusbar.install, statusbar.uninstall),
         (jobs.install, jobs.uninstall),
         (provenance.install, provenance.uninstall),
+        (version_panels.install, version_panels.uninstall),
         (views.register, views.unregister),
         (view_panels.register, view_panels.unregister),
         (layouts.register, layouts.unregister),
@@ -147,6 +152,7 @@ def repair() -> str:
     statusbar.install()
     jobs.install()
     provenance.install()
+    version_panels.install()
     keymap.unregister()
     keymap.register()
     commands.refresh()

@@ -27,12 +27,25 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
 - ``view_link``: ofrecer abrir el proyecto de una vista cargada sin él (spec 010, T12): la
   oferta que apunta ``georef`` al cargar el fichero y su temporizador de un disparo, que
   ``unregister`` retira.
+- ``versions``: la versión activa de la sesión (spec 009, T18; RF-009-10): se elige al abrir el
+  proyecto (la escucha de ``project_session``) y al cargar la vista (``load_post``), se guarda con
+  la vista (``save_pre``) y en los datos de usuario; después de ``georef``, cuyos manejadores
+  corren antes.
 """
 
 from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
-from . import dh_view, georef, gis_views, live, project_session, undo_watch, view_link
+from . import (
+    dh_view,
+    georef,
+    gis_views,
+    live,
+    project_session,
+    undo_watch,
+    versions,
+    view_link,
+)
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2); vacía hasta que una spec añada la primera.
@@ -51,7 +64,9 @@ def register() -> None:
         gis_views.register()
         dh_view.register()
         live.register()
+        versions.register()
     except BaseException:
+        versions.unregister()
         live.unregister()
         dh_view.unregister()
         gis_views.unregister()
@@ -68,6 +83,7 @@ def unregister() -> None:
     de la vista, cierra el proyecto de la sesión (libera su cerrojo) y desregistra
     ``classes``, en orden inverso."""
     try:
+        versions.unregister()
         live.unregister()
         dh_view.unregister()
         gis_views.unregister()
