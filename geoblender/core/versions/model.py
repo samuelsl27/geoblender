@@ -19,6 +19,8 @@ ADR-0013).
 - :func:`version_code` (1 → «V01») y :func:`revision_label` («V10.r2»);
   :func:`version_locator`, la ubicación de un dato de una versión con su código
   («des_final_v10.tif», D-34).
+- :class:`Decision`: una decisión de la propiedad con sus enlaces (RF-009-13, D-33) y cómo se
+  muestra como decisor.
 - :class:`VersionError`: el rechazo para el usuario, con un código ``core.version_*`` del
   catálogo :data:`MESSAGES` (``msgid`` en inglés, con su español en
   ``core/i18n/messages.toml``) y :func:`render`, el texto en los dos idiomas;
@@ -271,6 +273,43 @@ class RevisionItem:
     state: ItemState
 
 
+@dataclass(frozen=True, slots=True)
+class Decision:
+    """Una decisión de la propiedad (``gb_decision`` con sus enlaces de ``gb_decision_link``;
+    RF-009-13, D-33): quién decide (``decided_by``), el día en que se decidió (``decided_at``,
+    «AAAA-MM-DD»), qué se decide, su origen (una entrada registrada de tipo documento,
+    ``source_input_uid``, con el nombre que tiene hoy, ``source_name``, o una referencia en
+    texto, ``source_text``, o las dos), quién y cuándo la registró, y a qué afecta: las claves
+    de parámetro (``parameters``: todos sus ámbitos) y las versiones (``versions``, sus uid, y
+    ``version_codes``, sus códigos, en el mismo orden), en el orden en que se enlazaron. Nada de
+    ella cambia nunca (RF-009-12)."""
+
+    uid: str
+    decided_by: str
+    decided_at: str
+    what: str
+    source_input_uid: str | None
+    source_name: str | None
+    source_text: str | None
+    recorded_by: str
+    recorded_at: str
+    parameters: tuple[str, ...]
+    versions: tuple[str, ...]
+    version_codes: tuple[str, ...]
+
+    @property
+    def day(self) -> str:
+        """El día de la decisión como se muestra: «03/10/2026»."""
+        year, month, day = self.decided_at.split("-")
+        return f"{day}/{month}/{year}"
+
+    def decider(self, language: str = "es") -> str:
+        """Cómo se muestra como decisor de un parámetro o de una versión (plan A10):
+        «Propiedad: D. Juan … · 03/10/2026» (``language`` ``"en"``: «Owner: …»)."""
+        return render("core.version_decision_decider", language=language, who=self.decided_by,
+                      date=self.day)
+
+
 # --- Mensajes ---------------------------------------------------------------------------------
 
 MESSAGES: Mapping[str, str] = MappingProxyType({
@@ -423,6 +462,24 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
     "core.version_cause_unknown": "no known cause",
     "core.version_cause_missing": "{op_type} did not give it again",
     "core.version_cause_unreadable": "it cannot be read ({reason})",
+    # Las decisiones de la propiedad (RF-009-13; plan A10, D-33).
+    "core.version_decision_by_required": "State who decides",
+    "core.version_decision_what_required": "State what is decided",
+    "core.version_decision_date_required": "State when it was decided",
+    "core.version_decision_date": (
+        "The date of the decision is a day («YYYY-MM-DD»), not «{date}»"
+    ),
+    "core.version_decision_source_required": (
+        "State the document or the reference of the decision (a document registered as an "
+        "input or a text, such as «email of 03/10/2026»)"
+    ),
+    "core.version_decision_input_unknown": "There is no input {input} in the project",
+    "core.version_decision_input_kind": (
+        "Input «{input}» is not a document (it is of type {kind}): an owner decision rests on a "
+        "registered document or on a text reference"
+    ),
+    "core.version_decision_parameter_unknown": "There is no parameter «{key}» in the project",
+    "core.version_decision_decider": "Owner: {who} · {date}",
 })
 """Código → ``msgid`` (en inglés; su español, en ``core/i18n/messages.toml``)."""
 

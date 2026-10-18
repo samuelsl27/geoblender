@@ -4741,3 +4741,32 @@ es = "{op_type} no la ha vuelto a dar"
 
 ["it cannot be read ({reason})"]
 es = "no se puede leer ({reason})"
+
+# Las decisiones de la propiedad (spec 009, T16; RF-009-13; plan 009 A10, D-33).
+
+["State who decides"]
+es = "Indique quién decide"
+
+["State what is decided"]
+es = "Indique qué se decide"
+
+["State when it was decided"]
+es = "Indique cuándo se decidió"
+
+["The date of the decision is a day («YYYY-MM-DD»), not «{date}»"]
+es = "La fecha de la decisión es un día («AAAA-MM-DD»), no «{date}»"
+
+["State the document or the reference of the decision (a document registered as an input or a text, such as «email of 03/10/2026»)"]
+es = "Indique el documento o la referencia de la decisión (un documento registrado como entrada o un texto, como «correo del 03/10/2026»)"
+
+["There is no input {input} in the project"]
+es = "No hay ninguna entrada {input} en el proyecto"
+
+["Input «{input}» is not a document (it is of type {kind}): an owner decision rests on a registered document or on a text reference"]
+es = "La entrada «{input}» no es un documento (es de tipo {kind}): una decisión de la propiedad se apoya en un documento registrado o en una referencia en texto"
+
+["There is no parameter «{key}» in the project"]
+es = "No hay ningún parámetro «{key}» en el proyecto"
+
+["Owner: {who} · {date}"]
+es = "Propiedad: {who} · {date}"

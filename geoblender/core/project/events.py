@@ -113,6 +113,9 @@ class EventKind(Enum):
     # no coincide), y una alterada que vuelve a coincidir (RF-009-09; D-31).
     REVISION_ALTERED = "revision_altered"
     REVISION_RESTORED = "revision_restored"
+    # Una decisión de la propiedad registrada, con sus enlaces a parámetros y versiones
+    # (RF-009-13).
+    DECISION_RECORDED = "decision_recorded"
 
 
 @dataclass(frozen=True)
