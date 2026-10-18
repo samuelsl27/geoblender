@@ -76,8 +76,8 @@ referencia (el resaltado de Refrescar, abrir una vista con doble clic y los pane
     cambió): primero Recalcular lo obsoleto. Antes, F5 decía «Disponible en R-07».
   - **Al abrir el proyecto** (o otra vista suya con él abierto), lo que no está al día se marca
     sin volver a cargarlo y se dice una vez («3 datos de la vista no están al día: Refrescar
-    (F5)»), y la superposición de los sondeos (etiquetas, leyendas y marcas) se rehace en
-    segundo plano. Abrir tarda lo mismo con la vista que sin ella.
+    (F5)»), y la superposición de los sondeos al día (etiquetas, leyendas y marcas) se rehace
+    en segundo plano, sin volver a cargarlos. Abrir tarda lo mismo con la vista que sin ella.
   - **Abrir el proyecto de una vista.** Al abrir con doble clic una vista sin su proyecto, además
     del aviso de siempre, un diálogo ofrece «Abrir el proyecto de esta vista»: lo busca donde lo
     guardó la vista y, si no está, entre los proyectos recientes del equipo por su identidad, y

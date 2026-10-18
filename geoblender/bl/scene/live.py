@@ -44,8 +44,9 @@ de la vista no están al día («3 datos de la vista no están al día: Refresca
 :func:`opening_text`; ninguno si todo lo está) en el registro de Blender
 (``bl.ops.jobs.report_later``: Blender no pasa a Info lo que dice un temporizador) y en los
 avisos del proyecto (``project_session.notify``), y rehace lo que el ``SessionParts`` de cada
-cargador dice que les falta a sus objetos (la superposición de los sondeos, por la cola de los
-sondeos, con su avance), una vez por apertura.
+cargador dice que les falta a sus objetos que muestran el contenido de hoy (la superposición de
+los sondeos, por la cola de los sondeos, con su avance, sin volver a cargarlos; lo que no está
+al día se queda marcado para Refrescar: spec 010, T20), una vez por apertura.
 
 Al cambiar el proyecto de la sesión (``project_session.add_listener``), olvida lo leído y
 retira el temporizador. Los manejadores son ``@persistent`` (sin ello se pierden al abrir otro
@@ -270,6 +271,12 @@ def read_view(project: Project) -> tuple[dict[str, tuple[bpy.types.Object, ...]]
     return groups, states, live
 
 
+_SHOWS_TODAY = frozenset({state.ItemState.CURRENT, state.ItemState.RESTATE})
+"""Lo que muestra el contenido de hoy: lo único en que se aplica el ``LiveHook`` de un cargador
+y se rehace lo que no guarda el ``.blend`` (``SessionParts``); lo demás lo pone al día volver a
+cargarlo (Refrescar)."""
+
+
 def _loader_of(view: state.ItemView) -> views.Loader | None:
     """El cargador del dato de ``view`` (``None`` sin registro en el proyecto o sin cargador)."""
     return None if view.record is None else views.loader_for(view.record.name)
@@ -280,7 +287,7 @@ def _hooked(states: dict[str, state.ItemView]) -> set[str]:
     (``CURRENT``, ``RESTATE``: lo único en que se aplica), por su comienzo."""
     found: set[str] = set()
     for view in states.values():
-        if view.state in (state.ItemState.CURRENT, state.ItemState.RESTATE):
+        if view.state in _SHOWS_TODAY:
             loader = _loader_of(view)
             if loader is not None and loader.live is not None:
                 found.add(loader.prefix)
@@ -304,14 +311,15 @@ def _rebuild(project: Project, groups: dict[str, tuple[bpy.types.Object, ...]],
              states: dict[str, state.ItemView]) -> None:
     """La primera lectura tras abrir el proyecto o un ``.blend`` con él abierto (RF-010-03;
     plan A4, D-13): por cada cargador que declara lo que no se guarda en el ``.blend``
-    (``SessionParts``), con sus objetos de datos que el proyecto tiene (vivos o con sucesor: no
-    lo sin respaldo ni lo que falta), si les falta (``missing``), lo rehace (``rebuild``: en
-    segundo plano, con su avance; la superposición de los sondeos). Uno que falla va al
-    registro técnico: la marca sigue."""
+    (``SessionParts``), con sus objetos de datos que muestran el contenido de hoy (``CURRENT``,
+    ``RESTATE``), si les falta (``missing``), lo rehace (``rebuild``: en segundo plano, con su
+    avance y sin volver a cargarlos; la superposición de los sondeos). Lo que no está al día se
+    queda marcado, sin volver a cargarlo ni rehacer nada: es lo de Refrescar (spec 010, T20).
+    Uno que falla va al registro técnico: la marca sigue."""
     wanted: dict[str, tuple[views.SessionParts, list[bpy.types.Object]]] = {}
     for uid, view in states.items():
         loader = _loader_of(view)
-        if loader is None or loader.session_parts is None or view.target_uid() is None:
+        if loader is None or loader.session_parts is None or view.state not in _SHOWS_TODAY:
             continue
         wanted.setdefault(loader.prefix, (loader.session_parts, []))[1].extend(groups.get(uid, ()))
     for prefix, (parts, objects) in wanted.items():

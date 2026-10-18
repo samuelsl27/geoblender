@@ -4457,6 +4457,17 @@ es = "Cargando «{name}» en la vista… {percent} %"
 ["The drillhole traces have not been loaded into the view: {reason}"]
 es = "Las trazas de los sondeos no se han cargado en la vista: {reason}"
 
+# Su superposición, rehecha al abrir sin volver a cargarla (spec 010, T20; RF-010-03).
+
+["Restoring the overlay of «{name}»… {percent} %"]
+es = "Rehaciendo la superposición de «{name}»… {percent} %"
+
+["The overlay of the drillhole view has not been restored: {reason}"]
+es = "La superposición de la vista de los sondeos no se ha rehecho: {reason}"
+
+["The overlay of the drillhole view has not been restored: its objects are not those of today's base and display; load it again (Load into the view…)"]
+es = "La superposición de la vista de los sondeos no se ha rehecho: sus objetos no son los de la base y la representación de hoy; vuelva a cargarla (Cargar en la vista…)"
+
 ["«{element}» is not an element of the drillhole catalog: it has no grade bars"]
 es = "«{element}» no es un elemento del catálogo de los sondeos: no tiene barras de leyes"
 

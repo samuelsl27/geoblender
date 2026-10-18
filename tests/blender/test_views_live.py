@@ -69,6 +69,9 @@ OPEN_SLACK_S = 0.05
 en un PC tranquilo (abrir no lee la vista); con la máquina ocupada, se mide otra vez."""
 OPENINGS = 5
 ONE_OUTDATED = "1 dato de la vista no está al día: Refrescar (F5)"
+NOT_RESTORED = ("La superposición de la vista de los sondeos no se ha rehecho: sus objetos no "
+                "son los de la base y la representación de hoy; vuelva a cargarla (Cargar en la "
+                "vista…)")
 
 
 def marks(obj: bpy.types.Object) -> tuple[Any, ...]:
@@ -515,6 +518,18 @@ class ViewsOpenTest(DrillholeImportCase):
         (found,) = self.dh_view.loaded_objects(self.project)
         return found
 
+    def drillholes(self) -> dict[int, str]:
+        """Los objetos de la vista de los sondeos (``session_uid`` → nombre): uno nuevo, con
+        otro ``session_uid``, es que se volvió a cargar."""
+        return {obj.session_uid: obj.name for obj in self.dh_view.loaded_objects(self.project)}
+
+    def overlay(self) -> tuple[Any, ...]:
+        """Lo que dibuja la superposición de los sondeos además de las etiquetas: las marcas,
+        las leyendas y la representación con que se cargó."""
+        found = self.dh_view.overlay_of(self.tubes())
+        self.assertIsNotNone(found, "la vista de los sondeos sin superposición")
+        return (found.marks, found.lithology, found.element, found.grade, found.display_key)
+
     def labels(self) -> list[tuple[Any, ...]]:
         """Las etiquetas de la superposición de los sondeos (``None`` si no la tienen)."""
         found = self.dh_view.overlay_of(self.tubes())
@@ -541,19 +556,26 @@ class ViewsOpenTest(DrillholeImportCase):
     # --- La prueba ----------------------------------------------------------------------------
 
     def test_opening_the_project_of_a_saved_view(self) -> None:
-        """RF-010-03, RNF-002-02 (T10; plan A4, D-2, D-13): una vista guardada con las dos
-        rejillas y los sondeos y, con el proyecto cerrado, la segunda rejilla recalculada desde
-        otra sesión (otro ``Project`` sobre la misma carpeta). Al abrir el proyecto con la
-        vista cargada no se lee nada de ella ni se pone nada en la cola de los sondeos; tras el
-        primer tic de los indicadores y los de la marca (una lectura): la rejilla «[VIGENTE · NO
-        AL DÍA]» con el contenido que se cargó (no se vuelve a cargar: los mismos objetos), la
-        otra y los sondeos, al día; «1 dato de la vista no está al día: Refrescar (F5)» una vez,
-        en el registro de Blender (``report_later``) y en los avisos del proyecto; la
-        superposición de los sondeos, que no se guarda en el ``.blend``, rehecha en su cola (una
-        recarga) con las mismas etiquetas; nada escrito en el proyecto; las marcas siguientes
-        no avisan ni rehacen nada. Ningún aviso si todo está al día. Lo mismo al abrir un
-        ``.blend`` del proyecto abierto (``load_post``). Abrir el proyecto con la vista tarda lo
-        mismo que sin ella (la mediana de 5) y ≤ 0,5 s (RNF-002-02)."""
+        """RF-010-03, RNF-002-02 (T10; plan A4, D-2, D-13; T20, F-1 de la verificación): una
+        vista guardada con las dos rejillas y los sondeos y, con el proyecto cerrado, la segunda
+        rejilla recalculada desde otra sesión (otro ``Project`` sobre la misma carpeta). Al
+        abrir el proyecto con la vista cargada no se lee nada de ella ni se pone nada en la cola
+        de los sondeos; tras el primer tic de los indicadores y los de la marca (una lectura):
+        la rejilla «[VIGENTE · NO AL DÍA]» con el contenido que se cargó (no se vuelve a cargar:
+        los mismos objetos), la otra y los sondeos, al día; «1 dato de la vista no está al día:
+        Refrescar (F5)» una vez, en el registro de Blender (``report_later``) y en los avisos
+        del proyecto; de los sondeos, que están al día, solo su superposición, que no se guarda
+        en el ``.blend``, rehecha en su cola (las mismas etiquetas, marcas y leyendas) **sin
+        volver a cargarlos** (los mismos objetos, por su ``session_uid``; ni ``load_steps`` ni
+        ``start_view``); nada escrito en el proyecto; las marcas siguientes no avisan ni rehacen
+        nada. Ningún aviso si todo está al día. Lo mismo al abrir un ``.blend`` del proyecto
+        abierto (``load_post``). Una vista cuyos sondeos muestran otro contenido que el de hoy:
+        al abrir, «[VIGENTE · NO AL DÍA]», contados en el aviso, sin volver a cargarlos ni
+        rehacer su superposición (nada en su cola: es lo de Refrescar); unos al día cuyos tubos
+        no son los que crearía la carga de hoy, sin superposición (no sería la suya), con su
+        aviso y sin volver a cargarlos; una recarga pedida mientras la superposición espera en
+        su cola no se pierde. Abrir el proyecto con la vista tarda lo mismo que sin ella (la
+        mediana de 5) y ≤ 0,5 s (RNF-002-02)."""
         data, ops, ps, live = self.data, self.dh_ops, self.ps, self.live
         state = _module("core.views.state")
         self.enterContext(mock.patch.object(ops, "start_validate", lambda project, **_: None))
@@ -571,7 +593,7 @@ class ViewsOpenTest(DrillholeImportCase):
         self.assertEqual(list(drillholes), ["Sondeos [VIGENTE]"])
         self.assertEqual(self.shown(), {**drillholes, **current})
         self.assertEqual(self.announced(reports), [])
-        before = self.labels()
+        before, drawn = self.labels(), self.overlay()
         view = self.tmp / "vista.blend"
         bpy.ops.wm.save_as_mainfile(filepath=str(view))
 
@@ -590,9 +612,12 @@ class ViewsOpenTest(DrillholeImportCase):
         blender_ext.load_file(view)
         self.assertIsNone(ps.current())
         objects = self.grid_objects()
+        kept = self.drillholes()
         reads = self.enterContext(mock.patch.object(state, "view_states",
                                                     wraps=state.view_states))
         started = self.enterContext(mock.patch.object(ops, "start_view", wraps=ops.start_view))
+        loads = self.enterContext(mock.patch.object(self.views, "load_steps",
+                                                    wraps=self.views.load_steps))
         project = self.reopen()
         self.assertEqual((reads.call_count, started.call_count), (0, 0))
         self.assertEqual(ops.pending_incorporations(), [])
@@ -612,14 +637,16 @@ class ViewsOpenTest(DrillholeImportCase):
         self.assertEqual(self.grid_objects(), objects)  # no se vuelven a cargar
         self.assertEqual(self.announced(reports), [ONE_OUTDATED])
         self.assertEqual(ps.notices(), (ONE_OUTDATED,))
-        self.assertEqual(ops.pending_incorporations(), [ops.VIEW_QUEUE])
-        self.assertEqual(started.call_count, 1)
-        self.finish()  # la recarga de la vista de los sondeos, por su cola
-        self.assertEqual(self.labels(), before)
+        self.assertEqual(ops.pending_incorporations(), [ops.OVERLAY_QUEUE])
+        self.finish()  # la superposición de los sondeos, por su cola
+        # RF-010-03 (T20): los sondeos, al día, no se vuelven a cargar: los mismos objetos.
+        self.assertEqual(self.drillholes(), kept)
+        self.assertEqual((started.call_count, loads.call_count), (0, 0))
+        self.assertEqual((self.labels(), self.overlay()), (before, drawn))
         self.assertEqual(self.shown(), {**drillholes, **outdated})
-        self.run_marks()  # la que pide la recarga: ni otro aviso ni otra recarga
+        self.run_marks()  # ni otro aviso ni otra superposición
         self.assertEqual(self.announced(reports), [ONE_OUTDATED])
-        self.assertEqual((started.call_count, ops.pending_incorporations()), (1, []))
+        self.assertEqual(ops.pending_incorporations(), [])
         self.assertEqual(data.change_counter(), counter)
 
         # Lo mismo al abrir un .blend del proyecto abierto.
@@ -629,20 +656,79 @@ class ViewsOpenTest(DrillholeImportCase):
         reports = len(self.jobs_ops.sent_reports())
         ps.take_notices()
         blender_ext.load_file(again)
+        kept = self.drillholes()
         self.assertIs(ps.current(), project)
         self.assertTrue(bpy.app.timers.is_registered(live.mark_tick))
         self.run_marks()
         self.assertEqual(self.shown(), {**drillholes, **outdated})
         self.assertEqual(self.announced(reports), [ONE_OUTDATED])
         self.assertEqual(ps.notices(), (ONE_OUTDATED,))
-        self.assertEqual((started.call_count, ops.pending_incorporations()),
-                         (2, [ops.VIEW_QUEUE]))
+        self.assertEqual(ops.pending_incorporations(), [ops.OVERLAY_QUEUE])
         self.finish()
-        self.assertEqual(self.labels(), before)
+        self.assertEqual(self.drillholes(), kept)
+        self.assertEqual((self.labels(), self.overlay()), (before, drawn))
         self.run_marks()
         self.assertEqual(self.announced(reports), [ONE_OUTDATED])
-        self.assertEqual(started.call_count, 2)
+        self.assertEqual((started.call_count, loads.call_count), (0, 0))
         self.assertEqual(data.change_counter(), counter)
+
+        # Unos sondeos con otro contenido que el de hoy (el hash de otra carga, como si otra
+        # sesión hubiera calculado otra vez las trazas): al abrir, marcados y contados, sin
+        # volver a cargarlos ni rehacer su superposición (es lo de Refrescar, F5).
+        for obj in self.dh_view.loaded_objects(project):
+            obj.geoblender.content_sha256 = "0" * 64
+        earlier = self.tmp / "vista-3.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(earlier))
+        ps.close()
+        blender_ext.load_file(earlier)
+        kept = self.drillholes()
+        reports = len(self.jobs_ops.sent_reports())
+        project = self.reopen()
+        counter = data.change_counter()
+        self.first_tick()
+        two = "2 datos de la vista no están al día: Refrescar (F5)"
+        self.assertEqual(self.announced(reports), [two])
+        self.assertEqual(self.shown(), {"Sondeos [VIGENTE · NO AL DÍA]": ("OUTDATED", "0" * 64),
+                                        **outdated})
+        self.assertEqual(ops.pending_incorporations(), [])
+        self.assertEqual(list(self.drillholes()), list(kept))  # los mismos, ya marcados
+        self.assertIsNone(self.dh_view.overlay_of(self.tubes()))
+        self.assertEqual(live.pending_count(), 2)
+        self.assertEqual((started.call_count, loads.call_count), (0, 0))
+        self.assertEqual(data.change_counter(), counter)
+
+        # Unos sondeos al día cuyos tubos no son los que crearía la carga de hoy (otra fila de
+        # la base en cada curva): su superposición no se rehace (no sería la suya) y se dice,
+        # sin volver a cargarlos.
+        ps.close()
+        blender_ext.load_file(again)
+        mesh = _module("bl.scene.mesh")
+        tubes = self.tubes()
+        rows = mesh.attribute_values(tubes.data, self.dh_view.ROW)
+        mesh.set_attribute(tubes.data, self.dh_view.ROW, "CURVE", "INT", rows + 1)
+        kept = self.drillholes()
+        self.reopen()
+        counter = data.change_counter()
+        ps.take_notices()
+        self.first_tick()
+        self.assertEqual(ops.pending_incorporations(), [ops.OVERLAY_QUEUE])
+        self.finish()
+        self.assertEqual(self.drillholes(), kept)
+        self.assertIsNone(self.dh_view.overlay_of(self.tubes()))
+        self.assertEqual(ps.notices(), (ONE_OUTDATED, NOT_RESTORED))
+        self.assertEqual((started.call_count, loads.call_count), (0, 0))
+        self.assertEqual(data.change_counter(), counter)
+        # Una recarga pedida mientras la superposición espera (otra representación) no se
+        # pierde; con ella en espera no se pone otra superposición, y la que esperaba, al
+        # empezar, no hace nada: la trae la recarga (sin trabajos: la cola se vacía después).
+        self.assertTrue(ops.start_overlay(project))
+        self.assertTrue(ops.display_changed())
+        self.assertFalse(ops.start_overlay(project))
+        self.assertEqual(ops.pending_incorporations(), [ops.OVERLAY_QUEUE, ops.VIEW_QUEUE])
+        ops.incorporation_tick()
+        self.assertEqual(ops.pending_incorporations(), [ops.VIEW_QUEUE])
+        ops.INCORPORATIONS.drop()
+        self.assertEqual((started.call_count, loads.call_count), (1, 0))
 
         # RNF-002-02: abrir con la vista tarda lo mismo que sin ella.
         ps.close()

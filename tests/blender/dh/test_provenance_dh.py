@@ -36,11 +36,11 @@ trabajos menos por cálculo de las trazas (el presupuesto de ``tools/check.py``)
   vista que se carga sola, con las barras del oro: desactivar Geoblender (cierra el proyecto y
   olvida lo que dibuja la superposición), activarlo y abrir otra vez el proyecto no lee ni pone
   nada al abrir; la primera marca en vivo tras abrir (tras el primer tic de los indicadores)
-  pone una recarga, y una sola, que deja la vista con su superposición (sus etiquetas y sus
-  leyendas, sin recalcular nada) y con los nombres de la primera carga: la recarga sustituye los
-  objetos anteriores sin «.001» en los objetos ni en sus datos; las marcas siguientes, y abrirlo
-  otra vez con la vista ya al día, no ponen otra. Cambiar el radio del tubo en la
-  representación cambia la malla evaluada de los tubos sin otra acción.
+  pone su superposición, y una sola vez, sin volver a cargar la vista, que está al día (spec
+  010, T20: los mismos objetos): sus etiquetas, sus marcas y sus leyendas, sin recalcular nada,
+  y los nombres de la primera carga, sin «.001» en los objetos ni en sus datos; las marcas
+  siguientes, y abrirlo otra vez con la superposición hecha, no ponen otra. Cambiar el radio
+  del tubo en la representación cambia la malla evaluada de los tubos sin otra acción.
 
 Lo que la tarea pide además lo prueban otras: registrar y desregistrar deja los registros de
 ``core`` como estaban (``test_dh_registration``, T24) y la referencia del azimut con motivo
@@ -446,13 +446,14 @@ class DrillholeProvenanceTest(DrillholeImportCase):
         self.assertEqual(self.traces(), self.expected_traces(1.0))
 
     def test_view_after_reenabling_and_reopening_and_live_radius(self) -> None:
-        """RF-005-23, RF-005-25 (T48; M3, M5), RF-010-03 (010, T09; plan 010 A4, D-13): tras
-        desactivar Geoblender, activarlo y abrir otra vez el proyecto, al abrir no se pone
+        """RF-005-23, RF-005-25 (T48; M3, M5), RF-010-03 (010, T09 y T20; plan 010 A4, D-13):
+        tras desactivar Geoblender, activarlo y abrir otra vez el proyecto, al abrir no se pone
         nada; la primera marca en vivo tras abrir pone, por el ``SessionParts`` de los sondeos,
-        una sola recarga, y la vista de los sondeos vuelve con su superposición (las mismas
-        etiquetas, leyendas y representación) y los nombres de la primera carga, sin «.001» en
-        los objetos ni en sus datos; las marcas siguientes, y abrirlo otra vez con la vista al
-        día, no la recargan. Cambiar el radio del tubo cambia la malla evaluada sin otra
+        una sola vez su superposición, sin volver a cargar la vista, que está al día (los
+        mismos objetos, los tubos y las barras del oro): vuelve con las mismas etiquetas,
+        marcas, leyendas y representación, y los nombres de la primera carga, sin «.001» en los
+        objetos ni en sus datos; las marcas siguientes, y abrirlo otra vez con la superposición
+        hecha, no ponen otra. Cambiar el radio del tubo cambia la malla evaluada sin otra
         acción."""
         dh_view = _module("bl.scene.dh_view")
         drill_tubes = _module("bl.gn.drill_tubes")
@@ -479,19 +480,24 @@ class DrillholeProvenanceTest(DrillholeImportCase):
         blender_ext.disable()
         blender_ext.enable()
         self.assertIsNone(dh_view.overlay_of(tubes))
+        kept = (tubes.session_uid, bars.session_uid)
         live = _module("bl.scene.live")
         ui = _module("bl.ui.provenance")
         started = self.enterContext(mock.patch.object(ops, "start_view", wraps=ops.start_view))
+        restored = self.enterContext(mock.patch.object(ops, "start_overlay",
+                                                       wraps=ops.start_overlay))
         self.reopen()
         self.assertEqual(ops.pending_incorporations(), [])  # al abrir, nada (RNF-002-02)
         # RF-010-03: el primer tic de los indicadores lee el proyecto y pide la marca; la
-        # primera marca tras abrir rehace lo de la sesión (la superposición): una recarga.
+        # primera marca tras abrir rehace lo de la sesión (la superposición) sin volver a
+        # cargar la vista, que está al día (spec 010, T20).
         self.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
         run_marks(self)
-        self.assertEqual(ops.pending_incorporations(), [ops.VIEW_QUEUE])
-        self.assertEqual(started.call_count, 1)
-        self.finish()  # la recarga de la vista
+        self.assertEqual(ops.pending_incorporations(), [ops.OVERLAY_QUEUE])
+        self.assertEqual((restored.call_count, started.call_count), (1, 0))
+        self.finish()  # la superposición, por la cola de los sondeos
         tubes, bars = self.view()
+        self.assertEqual((tubes.session_uid, bars.session_uid), kept)  # los mismos objetos
         self.assertEqual([tubes.name, bars.name], VIEW_NAMES)
         self.assertEqual([tubes.data.name, bars.data.name], VIEW_NAMES)
         for collection in (bpy.data.hair_curves, bpy.data.meshes):  # ni datos de antes
@@ -506,14 +512,14 @@ class DrillholeProvenanceTest(DrillholeImportCase):
                           found.display_key),
                          (before.lithology, before.element, before.grade, before.marks,
                           before.display_key))
-        # Una sola vez: la marca que pide la recarga al terminar no pone otra, ni la primera
-        # tras abrirlo otra vez con la vista al día.
+        # Una sola vez: las marcas siguientes no ponen otra, ni la primera tras abrirlo otra vez
+        # con la superposición ya hecha.
         run_marks(self)
         live.on_project_changed(self.project)
         live.request(self.project)
         run_marks(self)
         self.assertEqual(ops.pending_incorporations(), [])
-        self.assertEqual(started.call_count, 1)
+        self.assertEqual((restored.call_count, started.call_count), (1, 0))
 
         # El radio, en vivo (M3): la malla evaluada cambia sin otra acción.
         display = getattr(bpy.context.scene, self.props.SCENE_PROPERTY)  # la de su registro
