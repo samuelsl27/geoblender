@@ -87,7 +87,16 @@ ADR-0025).
   ``core.params.parse_value`` a la unidad declarada: nunca pasa por una propiedad flotante.
   Desde el aviso de divergencia (``from_figure_uid``), el diálogo sale relleno con la cifra
   calculada y su operación, y el parámetro solo pasa a CALCULADO cuando la persona lo acepta
-  (S-1). Lo que no se toca en el diálogo ni se pasa desde un guion no cambia.
+  (S-1). Lo que no se toca en el diálogo ni se pasa desde un guion no cambia. Spec 009 (T20;
+  RF-009-29): de un parámetro que su módulo admite por versión, con una versión activa,
+  Cambiar pregunta el ámbito (``scope``: el proyecto o solo la versión activa,
+  :func:`scope_choice`); con la activa no editable, solo el del proyecto.
+
+- La versión activa en las órdenes de los módulos (spec 009, T20; RF-009-05, RF-009-04,
+  RF-009-21): :class:`ProvenanceAwareOperator` registra las de un tipo de versión en la revisión
+  abierta de la versión activa; sin ella, pide elegir o crear una (:func:`open_version_dialog`,
+  la ventana :data:`CHOOSE_VERSION_PANEL`); con una SUPERADO o DESCARTADO, «Versión no editable»
+  (:func:`version_unavailable`). Los textos de las versiones, con :func:`error_text`.
 
 - Registro de entradas (T51; RF-008-16, RF-008-13, RF-008-09, RF-008-21; plan §5.3.2):
   ``geoblender.core_show_inputs`` lee la lista (``bl.ui.provenance.fill_inputs``) y abre
@@ -201,6 +210,8 @@ from ...core.project.migrations import m0002
 from ...core.provenance import contract, messages
 from ...core.provenance.undo import UndoKind
 from ...core.timeutil import parse_utc
+from ...core.versions.model import VersionError
+from ...core.versions.model import render as version_render
 from ...jobs import catalog as job_catalog
 from ...jobs import content_hash
 from ...jobs.protocol import new_request
@@ -208,9 +219,11 @@ from .. import ADDON_PACKAGE
 from ..props.core import read_only_dirs_of
 from ..props.provenance import GEOBLENDER_PG_core_import_setting
 from ..scene import project_session, undo_watch
+from ..scene import versions as scene_versions
 from ..ui import jobs as job_list
 from ..ui import statusbar
-from ..ui.commands import catalog, described, text
+from ..ui.commands import catalog, described, text, with_note
+from ..ui.version_panels import CHOOSE_PANEL
 from . import jobs as jobs_ops
 
 if TYPE_CHECKING:
@@ -786,9 +799,9 @@ def _notify(_kind: set[str], text: str) -> None:
 
 
 def error_text(exc: BaseException) -> str:
-    """El texto de un error para el usuario en el idioma de Geoblender: el de la procedencia
-    o el de un parámetro, en su idioma; el de otro error de Geoblender, su mensaje (en
-    español)."""
+    """El texto de un error para el usuario en el idioma de Geoblender: el de la procedencia,
+    el de un parámetro o el de una versión (spec 009), en su idioma; el de otro error de
+    Geoblender, su mensaje (en español)."""
     if isinstance(exc, messages.ProvenanceError):
         return messages.render(exc.code, language=i18n.language(), **exc.values)
     if isinstance(exc, params.ParamError):
@@ -796,6 +809,8 @@ def error_text(exc: BaseException) -> str:
         if language == "es":
             return exc.text
         return params.render(exc.code, language=language, **exc.values)
+    if isinstance(exc, VersionError):
+        return version_render(exc.code, language=i18n.language(), **exc.values)
     if isinstance(exc, GeoblenderError):
         return exc.message
     return str(exc) or type(exc).__name__
@@ -821,6 +836,47 @@ def read_only_text(project: Project) -> str:
 
     reason = str(project.status.message).removeprefix(READ_ONLY_PREFIX)
     return tr("Read-only project: {reason}", reason=reason)
+
+
+# La versión activa (spec 009, T20) ---------------------------------------------------------
+
+CHOOSE_VERSION_PANEL = CHOOSE_PANEL
+"""La ventana que pide elegir o crear una versión (``bl.ui.version_panels``; RF-009-05)."""
+
+
+def requires_version(op_type: str) -> bool:
+    """Si ``op_type`` es un tipo de operación de versión (``OperationDef.scope``; RF-009-05):
+    se registra en la revisión abierta de la versión activa. Uno sin registrar, no."""
+    definition = contract.OPERATIONS.get(op_type)
+    return definition is not None and definition.scope == params.VERSION_SCOPE
+
+
+def version_unavailable(op_type: str) -> str | None:
+    """«Versión no editable» (RF-009-21): si ``op_type`` es de versión y la versión activa es
+    SUPERADO o DESCARTADO, el texto de RF-009-04 en el idioma de Geoblender («V01 está en estado
+    SUPERADO: cree una versión nueva a partir de ella»); si no, ``None``. Sin versión activa,
+    ``None``: la orden sigue disponible y, al lanzarla, pide una (:func:`open_version_dialog`).
+    Con lo ya leído de las versiones (``bl.scene.versions``): no lee el proyecto."""
+    if not requires_version(op_type):
+        return None
+    return scene_versions.not_editable_text()
+
+
+def version_required_text() -> str:
+    """«Esta orden es de una versión: elija la versión activa o cree una (Proyecto ▸
+    Versiones)», en el idioma de Geoblender (RF-009-05; ``core.version_required``)."""
+    return version_render("core.version_required", language=i18n.language())
+
+
+def open_version_dialog() -> set[str]:
+    """Abre la ventana que pide elegir o crear una versión (:data:`CHOOSE_VERSION_PANEL`;
+    RF-009-05); si no se puede abrir (sin ventana), lo deja en el registro técnico y devuelve
+    ``{"CANCELLED"}``."""
+    try:
+        return set(_call_panel(CHOOSE_VERSION_PANEL))
+    except RuntimeError:
+        LOGGER.warning("No se pudo abrir la ventana que pide la versión activa", exc_info=True)
+        return {"CANCELLED"}
 
 
 def ensure_ready(op_type: str, inputs: Sequence[Any] = (), *, report: Report | None = None,
@@ -1284,7 +1340,15 @@ class ProvenanceAwareOperator:
     - Ctrl+Z (RF-008-32): su ``execute`` y su ``modal`` quedan envueltos al definir la clase
       (``__init_subclass__``) y, al volver, apuntan en el diario de Ctrl+Z la operación que
       :meth:`begin` empezó y quedó hecha (:func:`settle_operations`; la de un trabajo, al
-      incorporarla), antes del paso de deshacer de Blender.
+      incorporarla), antes del paso de deshacer de Blender;
+    - la versión activa (spec 009, T20; RF-009-05, RF-009-04, RF-009-21; plan A3, A11): una orden
+      de un tipo de **versión** se registra en la revisión abierta de la versión activa de la
+      sesión (:meth:`begin` la pasa a ``begin_operation``; a uno de proyecto no le cambia nada).
+      Sin versión activa, lanzada desde la interfaz abre la ventana que pide elegir o crear una
+      (:func:`open_version_dialog`) y no hace nada más; desde un guion, se niega con su texto.
+      Con la activa SUPERADO o DESCARTADO, «Versión no editable»: su ``poll`` y su descripción
+      dicen el texto de RF-009-04 y los menús la dibujan desactivada (``bl.ui.provenance``,
+      ``commands.register_check`` de las órdenes que declaran los tipos de versión).
 
     Los operadores no calculan (ARQ): validan, llaman al dominio y presentan el resultado."""
 
@@ -1307,7 +1371,7 @@ class ProvenanceAwareOperator:
 
     @classmethod
     def poll(cls, context: Any) -> bool:
-        reason = write_unavailable()
+        reason = write_unavailable() or version_unavailable(cls.provenance_op_type)
         if reason is not None:
             cls.poll_message_set(reason)  # type: ignore[attr-defined]
             return False
@@ -1315,17 +1379,41 @@ class ProvenanceAwareOperator:
 
     @classmethod
     def description(cls, context: Any, properties: Any) -> str:
-        """Su descripción emergente con su estado de comando (RF-008-61; BS §7.3)."""
-        return described(context, cls.bl_idname,  # type: ignore[attr-defined]
-                         getattr(cls, "bl_description", ""))
+        """Su descripción emergente con su estado de comando (RF-008-61; BS §7.3) y, con la
+        versión activa no editable, el porqué (RF-009-21)."""
+        about = described(context, cls.bl_idname,  # type: ignore[attr-defined]
+                          getattr(cls, "bl_description", ""))
+        note = version_unavailable(cls.provenance_op_type)
+        return about if note is None else with_note(about, note)
 
     def provenance_inputs(self, context: Any) -> Sequence[Any]:
         """Lo que consume la operación (``Use``): por defecto, nada."""
         return ()
 
     def invoke(self, context: Any, event: Any) -> set[str]:
+        """Desde la interfaz: sin versión activa, una orden de un tipo de versión abre la
+        ventana que pide elegir o crear una y no hace nada más (RF-009-05); si no, ``execute``
+        (la puerta abrirá el diálogo de una entrada cambiada)."""
         self.provenance_dialog = True
+        if requires_version(self.provenance_op_type) and \
+                scene_versions.active_version() is None:
+            open_version_dialog()
+            return {"CANCELLED"}
         return self.execute(context)  # type: ignore[attr-defined]
+
+    def _version_refusal(self) -> str | None:
+        """Lo que impide empezar una operación de su tipo por la versión activa (RF-009-05,
+        RF-009-04): de un tipo de versión sin versión activa, :func:`version_required_text` (y,
+        lanzada desde la interfaz, abre :func:`open_version_dialog`); con una SUPERADO o
+        DESCARTADO, «Versión no editable»; si nada, ``None``."""
+        op_type = self.provenance_op_type
+        if not requires_version(op_type):
+            return None
+        if scene_versions.active_version() is None:
+            if self.provenance_dialog:
+                open_version_dialog()
+            return version_required_text()
+        return version_unavailable(op_type)
 
     def begin(self, context: Any, *, settings: Mapping[str, Any] | None = None,
               params: Sequence[str] = (), executor: str = "blender",
@@ -1335,7 +1423,12 @@ class ProvenanceAwareOperator:
         se puede, la operación «en curso» (``begin_operation`` con ``settings``, lo de
         :meth:`provenance_inputs`, los parámetros ``params`` y ``executor``: ``blender``, o
         ``job_thread``/``job_process`` para un trabajo, que al incorporarla dice dónde corrió
-        de verdad). ``None`` si no se puede (ya dicho)."""
+        de verdad), con la versión activa de la sesión (spec 009: una de un tipo de versión,
+        en su revisión abierta). ``None`` si no se puede (ya dicho)."""
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)  # type: ignore[attr-defined]
+            return None
         inputs = tuple(self.provenance_inputs(context))
         ready = ensure_ready(self.provenance_op_type, inputs,
                              report=self.report,  # type: ignore[attr-defined]
@@ -1348,7 +1441,8 @@ class ProvenanceAwareOperator:
             handle = begin_operation(SESSION.project, self.provenance_op_type,
                                      settings=dict(settings or {}), inputs=list(inputs),
                                      params=list(params), executor=executor,
-                                     group_uid=group_uid, supersedes=supersedes)
+                                     group_uid=group_uid, supersedes=supersedes,
+                                     version=scene_versions.active_version())
         except GeoblenderError as exc:
             self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
             return None
@@ -1364,6 +1458,10 @@ class ProvenanceAwareOperator:
         (``core.provenance.operations.begin_operations``), en su orden y cada una como con
         :meth:`begin`. ``None`` si no se puede empezar ninguna (ya dicho): si una no se
         puede, ninguna."""
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)  # type: ignore[attr-defined]
+            return None
         inputs = tuple(self.provenance_inputs(context))
         ready = ensure_ready(self.provenance_op_type, inputs,
                              report=self.report,  # type: ignore[attr-defined]
@@ -1376,7 +1474,8 @@ class ProvenanceAwareOperator:
             handles = begin_operations(SESSION.project, self.provenance_op_type,
                                        settings=[dict(item) for item in settings],
                                        inputs=list(inputs), params=list(params),
-                                       executor=executor, group_uid=group_uid)
+                                       executor=executor, group_uid=group_uid,
+                                       version=scene_versions.active_version())
         except GeoblenderError as exc:
             self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
             return None
@@ -1441,6 +1540,36 @@ SOURCE_KIND_ITEMS = [
     ("ALGORITHM", "Algorithm", ""),
 ]
 """Las clases de origen (identificador = nombre de ``SourceKind``)."""
+
+PARAMETER_SCOPE_ITEMS = [
+    ("PROJECT", "The project", ""),
+    ("VERSION", "Only the active version", ""),
+]
+"""Para quién es el cambio de un parámetro que su módulo admite por versión, con una versión
+activa (spec 009, RF-009-29; D-19): el proyecto (vale en las versiones sin valor propio) o solo
+la versión activa."""
+
+
+@dataclass(frozen=True)
+class ScopeChoice:
+    """Lo que pregunta Cambiar parámetro… de un parámetro de versión con una versión activa
+    (spec 009, RF-009-29): su uid, su código y, si es SUPERADO o DESCARTADO, por qué no se
+    puede elegir (el texto de RF-009-04; ``None`` si es editable)."""
+
+    version_uid: str
+    code: str
+    refusal: str | None = None
+
+
+def scope_choice(key: str) -> ScopeChoice | None:
+    """Si Cambiar parámetro… de ``key`` pregunta el ámbito (RF-009-29, D-19): su módulo lo
+    admite por versión y hay una versión activa; si no (o el parámetro es de un módulo que no
+    está cargado), ``None``: solo el del proyecto. Con lo ya leído: no lee el proyecto."""
+    definition = params.DEFINITIONS.get(key)
+    shown = scene_versions.active()
+    if definition is None or definition.scope != params.VERSION_SCOPE or shown is None:
+        return None
+    return ScopeChoice(shown.uid, shown.code, scene_versions.not_editable_text())
 
 
 class _DateText(ValueError):
@@ -1540,6 +1669,13 @@ class GEOBLENDER_OT_core_show_parameters(bpy.types.Operator):
 class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
     """Change the value, type, source or decider of a project parameter, with a reason"""
 
+    # Spec 009 (T20; RF-009-29, RF-009-04, RF-009-21; plan A3 y §5.5): de un parámetro que su
+    # módulo admite por versión, con una versión activa, el diálogo pregunta «¿Para el proyecto
+    # o solo para V02?» (``scope``: PROJECT o VERSION) y registra el cambio en ese ámbito, con
+    # su historial, sin tocar el otro ni el de otra versión; con la activa SUPERADO o
+    # DESCARTADO, «Solo V01» desactivada con el texto de RF-009-04 (por un guion, rechazada con
+    # él). Sin versión activa, o de un parámetro del proyecto, como en la 008: el del proyecto.
+
     bl_idname = SET_PARAMETER
     bl_label = "Change parameter…"
     bl_translation_context = TRANSLATION_CONTEXT
@@ -1588,6 +1724,12 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
                                    "parameter",
         options=_HIDDEN,
     )
+    scope: EnumProperty(  # type: ignore[valid-type]
+        name="Scope",
+        description="Whether the change is for the project or only for the active version (a "
+                    "parameter that its module admits by version)",
+        items=PARAMETER_SCOPE_ITEMS, default="PROJECT", options=_FIELD,
+    )
 
     @classmethod
     def poll(cls, context: Any) -> bool:
@@ -1595,14 +1737,21 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
 
     def invoke(self, context: Any, event: Any) -> set[str]:
         """Rellena el diálogo con lo registrado (o, desde el aviso de divergencia, con la cifra
-        calculada y su operación) y lo abre: nada cambia hasta que la persona lo acepta."""
+        calculada y su operación) y lo abre: nada cambia hasta que la persona lo acepta. De un
+        parámetro de versión con una versión activa (RF-009-29), propone el ámbito de lo que
+        vale en ella: la versión si ya tiene valor propio (con él) y, si no, el proyecto; con
+        la activa no editable, el proyecto."""
         project = SESSION.project
         language = i18n.language()
+        choice = scope_choice(self.key)
         try:
             with project.read() as conn:
-                record = params.ParameterStore(project).get(self.key, conn=conn)
+                store = params.ParameterStore(project)
+                record = store.get(self.key, conn=conn)
                 if record is None:
                     raise params.ParamError("core.param_not_registered", key=self.key)
+                own = None if choice is None else store.get(
+                    self.key, version=choice.version_uid, conn=conn)
                 warning = None
                 if self.from_figure_uid:
                     from ...core.provenance.figures import parameter_divergence
@@ -1611,6 +1760,12 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
         except (GeoblenderError, sqlite3.Error, OSError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
+        if choice is None or choice.refusal is not None:
+            self.scope = "PROJECT"
+        elif not self.properties.is_property_set("scope"):
+            self.scope = "PROJECT" if own is None else "VERSION"
+        if self.scope == "VERSION" and own is not None:
+            record = own
         user = project.session.user_host
         if self.from_figure_uid:
             if warning is None or warning.figure_uid != self.from_figure_uid:
@@ -1638,6 +1793,21 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
         layout = self.layout
         layout.use_property_split = True
         layout.label(text=self.key, translate=False)
+        choice = scope_choice(self.key)
+        if choice is not None:  # «¿Para el proyecto o solo para V02?» (RF-009-29)
+            layout.label(text=tr("For the project or only for {version}?",
+                                 version=choice.code), translate=False)
+            row = layout.row(align=True)
+            row.prop_enum(self, "scope", "PROJECT", text=tr("The project"), translate=False)
+            only = row.row(align=True)
+            only.enabled = choice.refusal is None  # «Versión no editable» (RF-009-21)
+            only.prop_enum(self, "scope", "VERSION", text=tr("Only {version}",
+                                                             version=choice.code),
+                           translate=False)
+            if choice.refusal is not None:
+                refused = layout.row()
+                refused.alert = True
+                refused.label(text=choice.refusal, icon="ERROR", translate=False)
         if self.from_figure_uid:
             note = layout.row()
             note.alert = True
@@ -1690,13 +1860,23 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
             return {"CANCELLED"}
         project = SESSION.project
         store = params.ParameterStore(project)
+        version = None
+        if self.scope == "VERSION":  # solo la versión activa (RF-009-29)
+            version = scene_versions.active()
+            if version is None:
+                self.report({"ERROR"}, tr("Choose the active version first: Project ▸ "
+                                          "Versions ▸ Active version"))
+                return {"CANCELLED"}
         try:
             record = store.get(self.key)
             if record is None:
                 raise params.ParamError("core.param_not_registered", key=self.key)
+            if version is not None:  # sin valor propio, se crea a partir del del proyecto
+                record = store.get(self.key, version=version.uid) or record
             changes = self._changes(record, i18n.language())
             with project.write_transaction() as conn:
-                changed = store.change(conn, self.key, **changes)
+                changed = store.change(conn, self.key, **changes,
+                                       version=None if version is None else version.uid)
         except _DateText as exc:
             self.report({"ERROR"}, tr("Decision date «{value}»: write it as DD/MM/YYYY",
                                       value=str(exc)))
@@ -1708,10 +1888,14 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
         _parameters_written()
         from ..ui.provenance import badge
 
-        self.report({"INFO"}, tr("Parameter «{key}» = {value} {kind}", key=changed.key,
-                                 value=shown_value(changed.value, changed.unit,
-                                                   i18n.language()),
-                                 kind=badge(changed.kind)))
+        shown = shown_value(changed.value, changed.unit, i18n.language())
+        if version is None:
+            self.report({"INFO"}, tr("Parameter «{key}» = {value} {kind}", key=changed.key,
+                                     value=shown, kind=badge(changed.kind)))
+        else:
+            self.report({"INFO"}, tr("Parameter «{key}» = {value} {kind} in {version}",
+                                     key=changed.key, value=shown, kind=badge(changed.kind),
+                                     version=version.code))
         return {"FINISHED"}
 
 

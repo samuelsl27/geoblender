@@ -23,7 +23,8 @@ o DESCARTADO, que se consulta y no se edita (D-42; lo de editar dirá «Versión
 - Lo leído queda en la sesión (:func:`versions`, :func:`revisions`, :func:`active`) y en las filas
   de ``WindowManager.geoblender_version_panels`` (``bl.props.versions``), que dibujan la ventana
   del control 8 y el menú: **nada se lee del proyecto al dibujar**. :func:`control_text` y
-  :func:`status_text` son los textos del control y de la barra de estado.
+  :func:`status_text` son los textos del control y de la barra de estado;
+  :func:`not_editable_text`, el de «Versión no editable» (T20) con una SUPERADO o DESCARTADO.
 - Cada cambio de lo que se ve avisa a lo apuntado con :func:`add_listener` (la interfaz, que
   redibuja la barra superior y la de estado).
 - Manejadores ``@persistent``: ``load_post`` (:func:`on_load_post`: elige otra vez con la vista
@@ -49,7 +50,14 @@ from bpy.app.handlers import persistent
 from ...core.errors import GeoblenderError
 from ...core.i18n import language, tr, translate
 from ...core.versions import read as versions_read
-from ...core.versions.model import RevisionState, Version, VersionError, VersionStatus
+from ...core.versions.model import (
+    EDITABLE,
+    RevisionState,
+    Version,
+    VersionError,
+    VersionStatus,
+    render,
+)
 from ..props.versions import WINDOW_MANAGER_PROPERTY
 from . import project_session
 
@@ -186,6 +194,18 @@ def versions() -> tuple[ShownVersion, ...]:
 def revisions() -> tuple[ShownRevision, ...]:
     """Las revisiones de la versión activa, por número (lo último leído)."""
     return _STATE.revisions if active_version() is not None else ()
+
+
+def not_editable_text() -> str | None:
+    """Si la versión activa es SUPERADO o DESCARTADO, por qué no se edita ni se calcula en ella
+    («Versión no editable», spec 009, T20; RF-009-21): el texto de RF-009-04 en el idioma de
+    Geoblender («V01 está en estado SUPERADO: cree una versión nueva a partir de ella»); si no
+    (o sin versión activa), ``None``. Con lo ya leído: no lee el proyecto."""
+    shown = active()
+    if shown is None or shown.status in EDITABLE:
+        return None
+    return render("core.version_not_editable", language=language(), version=shown.code,
+                  state=shown.status)
 
 
 def control_text() -> str | None:

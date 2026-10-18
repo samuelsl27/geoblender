@@ -29,10 +29,29 @@ error que lanza.
 - **El catálogo**: las dos órdenes y el menú contextual de la versión son de la entrada «009»,
   reales y disponibles; Nueva revisión… y Reproducir… siguen en R-07 hasta su tarea.
 
+T20 (RF-009-04, RF-009-05, RF-009-21, RF-009-29; plan 009 A3, A11, §5.3.5 y §5.5), con una orden
+sintética de la demostración de un tipo de versión (``demo.pit``, ``ProvenanceAwareOperator``) que
+la demostración declara entre sus ``commands`` y el catálogo enseña mientras dura la prueba:
+
+- **Órdenes de versión**: sin versión activa, abrirla desde la interfaz abre la ventana que pide
+  elegir o crear una versión (``GEOBLENDER_PT_core_choose_version``) y, desde un guion, se rechaza
+  con su texto, sin escribir nada; con V02 activa, registra la operación en su revisión abierta;
+  con V01 SUPERADO activa, desactivada con «V01 está en estado SUPERADO: cree una versión nueva a
+  partir de ella» en su ``poll_message_set``, en su descripción y en los menús
+  (``commands.register_check``, «Versión no editable»).
+- **El ámbito en Parámetros** (``geoblender.core_set_parameter``): con V02 activa, cambiar
+  ``demo.bench_height`` (de versión) pregunta «¿Para el proyecto o solo para V02?» y registra el
+  cambio en el ámbito elegido sin tocar el otro; Parámetros del proyecto enseña los dos valores
+  («V02: 12 m [HIP] · proyecto: 11 m [HIP]»); con V01 activa, solo el del proyecto, y «solo V01»
+  desactivada con el texto de RF-009-04; sin versión activa o con un parámetro del proyecto, no
+  pregunta.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
+import dataclasses
 import hashlib
+import shutil
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,8 +66,10 @@ from tests.support import views_fixtures as vf
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
 from tests.support.fake_layout import FakeLayout, draw, operator_self
+from tests.support.provenance_demo import PRODUCTION
+from tests.support.repo import ROOT
 from tests.support.trees import temp_folder
-from tests.support.versions_demo import BENCH_HEIGHT, VersionsDemo
+from tests.support.versions_demo import BENCH_HEIGHT, PIT, VersionsDemo
 
 NEW_VERSION = "geoblender.core_new_version"
 SET_STATE = "geoblender.core_set_version_state"
@@ -63,6 +84,20 @@ cabecera (RF-009-02)."""
 REASON = "Alternativa de la prueba de las órdenes"
 NO_VERSION_NOTE = "Elija antes la versión activa: Proyecto ▸ Versiones ▸ Versión activa"
 NOT_EDITABLE = "V01 está en estado SUPERADO: cree una versión nueva a partir de ella"
+REQUIRED = ("Esta orden es de una versión: elija la versión activa o cree una (Proyecto ▸ "
+            "Versiones)")
+DATA = ROOT / "tests" / "data" / "core" / "provenance"
+DEMO_COMMAND = "geoblender.core_selftest_pit"
+"""La orden sintética de la demostración de un tipo de versión (``demo.pit``; T20)."""
+DEMO_LABEL = "Synthetic pit design"  # sin traducción: se ve el msgid
+DEMO_ABOUT = "Synthetic order of a version type"
+RECOMPUTE = "geoblender.core_recompute_stale"
+CHOOSE_PANEL = "GEOBLENDER_PT_core_choose_version"
+SET_ACTIVE = "geoblender.core_set_active_version"
+SET_PARAMETER = "geoblender.core_set_parameter"
+PARAMETERS_PANEL = "GEOBLENDER_PT_core_parameters"
+PIT_SETTINGS = {"benches": 3, "berm_m": 25.0, "step_m": 10.0, "top_z": 500.0}
+MAX_TICKS = 2000
 
 
 def ext(name: str) -> Any:
@@ -220,6 +255,120 @@ class VersionsOpsTest(unittest.TestCase):
         layout = draw(getattr(bpy.types, PANEL), bpy.context)
         (found,) = [item for item in layout.items if item.target == key]
         return found
+
+    # --- T20: las órdenes de versión y el ámbito de los parámetros ------------------------------
+
+    def run_checks(self) -> None:
+        """Avanza a mano la comprobación de apertura de la sesión hasta que se retira (en
+        ``blender -b`` no corren los temporizadores)."""
+        session = ext("bl.ops.core_provenance")
+        for _ in range(MAX_TICKS):
+            if session.check_tick() is None:
+                return
+        self.fail("la comprobación no termina")
+
+    def set_active(self, version: Any) -> None:
+        """Hace activa ``version`` (``None``: «Sin versión») con su orden."""
+        self.assertEqual(bpy.ops.geoblender.core_set_active_version(
+            version_uid="" if version is None else version.uid), {"FINISHED"})
+
+    def declare_current(self, project: Any, version: Any) -> None:
+        """Congela la revisión abierta de ``version`` y la declara VIGENTE (la que lo era pasa a
+        SUPERADO), como lo harían sus órdenes; después, las versiones de la sesión."""
+        self.freeze(project, version)
+        self.write(project, lambda conn: self.store.set_status(conn, project, version.uid,
+                                                               "VIGENTE", reason=REASON))
+        project.refresh_header()
+        ext("bl.ui.version_panels").on_project_read(project)
+
+    def declare_command(self, demo: VersionsDemo) -> type:
+        """La orden sintética de la demostración de un tipo de versión (``demo.pit`` sobre el
+        último límite importado, con la altura de banco de la versión): registrada, en el
+        catálogo y entre los ``commands`` de ``demo.pit`` hasta el final de la prueba (antes de
+        quitar la demostración)."""
+        session = ext("bl.ops.core_provenance")
+        contract = ext("core.provenance.contract")
+        ui = ext("bl.ui.provenance")
+
+        class GEOBLENDER_OT_core_selftest_pit(session.ProvenanceAwareOperator,
+                                              bpy.types.Operator):
+            bl_idname = DEMO_COMMAND
+            bl_label = DEMO_LABEL
+            bl_description = DEMO_ABOUT
+            bl_options = {"REGISTER"}
+            provenance_op_type = PIT
+
+            def provenance_inputs(self, context: object) -> tuple[object, ...]:
+                return demo.version_uses(PIT, boundary=demo.boundary_name(
+                    session.SESSION.project))
+
+            def execute(self, context: object) -> set[str]:
+                handle = self.begin(context, settings=PIT_SETTINGS, params=(BENCH_HEIGHT,))
+                if handle is None:
+                    return {"CANCELLED"}
+                demo.run_body(handle)
+                return {"FINISHED"}
+
+        cat = self.commands.catalog()
+        command = dataclasses.replace(
+            cat.commands[RECOMPUTE], key=DEMO_COMMAND, idname=DEMO_COMMAND, label=DEMO_LABEL,
+            label_es=DEMO_LABEL, description=DEMO_ABOUT, description_es=DEMO_ABOUT, home="",
+            aliases=())
+        self.addCleanup(self.commands.clear)  # la disponibilidad, de nuevo al pedirla
+        # Su texto, sin traducción, queda entre los que faltan solo mientras dura la prueba.
+        self.enterContext(mock.patch.object(self.i18n._STATE, "missing",
+                                            set(self.i18n._STATE.missing)))
+        self.enterContext(mock.patch.dict(cat.commands, {DEMO_COMMAND: command}))
+        bpy.utils.register_class(GEOBLENDER_OT_core_selftest_pit)
+        self.addCleanup(bpy.utils.unregister_class, GEOBLENDER_OT_core_selftest_pit)
+        self.addCleanup(ui.sync_version_checks)  # después de devolver demo.pit como estaba
+        original = contract.OPERATIONS[PIT]
+        contract.unregister_operation(PIT)
+        contract.register_operation(dataclasses.replace(original, commands=(DEMO_COMMAND,)))
+
+        def restore() -> None:
+            contract.unregister_operation(PIT)
+            contract.register_operation(original)
+
+        self.addCleanup(restore)
+        return GEOBLENDER_OT_core_selftest_pit
+
+    @staticmethod
+    def drawn(key: str) -> Any:
+        """Cómo dibujan los menús la orden ``key`` (``bl.ui.drawing.draw_command``)."""
+        layout = FakeLayout()
+        ext("bl.ui.drawing").draw_command(layout, key, context=bpy.context)
+        (item,) = layout.items
+        return item
+
+    def parameter_dialog(self, key: str, **given: Any) -> tuple[Any, FakeLayout, Any]:
+        """Abre Cambiar parámetro… de ``key`` (con ``given`` puestas por quien la lanza) y lo
+        dibuja: el ``self``, lo dibujado y el contexto."""
+        values = {"key": key, "value": "", "unit": "", "kind": "ADOPTADO", "source": "",
+                  "source_kind": "DOCUMENT", "decided_by": "", "decided_at": "", "reason": "",
+                  "from_figure_uid": "", "scope": "PROJECT", **given}
+        names = frozenset({"key", *given})
+        cls, fake = self.operator(SET_PARAMETER, properties=SimpleNamespace(
+            is_property_set=lambda name: name in names), **values)
+        context = self.dialog_context()
+        self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+        cls.draw(fake, bpy.context)
+        return fake, fake.layout, context
+
+    def parameters_shown(self, key: str) -> tuple[list[str], str]:
+        """Lo que enseña Parámetros del proyecto de ``key`` (seleccionado): las líneas con el
+        valor de cada ámbito y las marcas de su fila en la lista."""
+        ui = ext("bl.ui.provenance")
+        ui.fill_parameters()
+        view = getattr(bpy.context.window_manager,
+                       ext("bl.props.provenance").WINDOW_MANAGER_PROPERTY)
+        keys = [row.key for row in view.parameters]
+        view.parameter_index = keys.index(key)
+        layout = draw(getattr(bpy.types, PARAMETERS_PANEL), bpy.context)
+        scopes = [text for text in self.labels(layout) if " · proyecto: " in text]
+        line = FakeLayout()
+        ui.draw_parameter_row(line, view.parameters[view.parameter_index])
+        return scopes, self.labels(line)[3]
 
     # --- Pruebas -------------------------------------------------------------------------------
 
@@ -522,6 +671,186 @@ class VersionsOpsTest(unittest.TestCase):
         self.assertEqual(drawn[SET_STATE].text, "Cambiar estado…")
         self.assertFalse(drawn[NEW_REVISION].enabled)
         self.assertNotIn("Disponible en R-07", [item.text for item in menu.of_kind("label")])
+
+    def test_version_commands_need_an_editable_active_version(self) -> None:
+        """RF-009-05, RF-009-04, RF-009-21 (plan A3, A11, §5.5; M3), con la orden sintética de
+        ``demo.pit``: sin versión activa está disponible y, desde la interfaz, abre la ventana
+        que pide elegir una versión (las que se pueden editar) o crear una, sin hacer nada más;
+        desde un guion, el rechazo con su texto y nada escrito. Con V02 activa, registra la
+        operación en su revisión abierta (V02.r1) y sus salidas son de V02. Declarada V02
+        VIGENTE, con V01 (SUPERADO) activa, «Versión no editable»: su ``poll`` dice «V01 está en
+        estado SUPERADO: cree una versión nueva a partir de ella», su descripción lo añade (en
+        inglés, también) y los menús la dibujan desactivada; ejecutarla igualmente lo rechaza
+        sin escribir nada. Con V02 activa, otra vez como siempre."""
+        project = self.project()
+        demo = self.enterContext(VersionsDemo(module_name()).registered())
+        cls = self.declare_command(demo)
+        sources = self.folder / "fuentes"
+        sources.mkdir()
+        source = sources / "Limites.gpkg"
+        shutil.copyfile(DATA / "Limites_v1.gpkg", source)
+        demo.import_boundary(project, source)
+        v01 = self.create(project, "definitiva", "Definitiva")
+        v02 = self.create(project, "sur", "Fase sur")
+        self.declare_current(project, v01)
+        self.run_checks()
+        ext("bl.ui.provenance").refresh(force=True)
+        session = ext("bl.ops.core_provenance")
+
+        # Sin versión activa: disponible; desde la interfaz, la ventana que pide una versión.
+        self.set_active(None)
+        self.assertTrue(cls.poll(bpy.context))
+        self.assertTrue(self.drawn(DEMO_COMMAND).enabled)
+        self.assertEqual(cls.description(bpy.context, None), DEMO_ABOUT)
+        counter = vf.change_counter(project)
+        _cls, fake = self.operator(DEMO_COMMAND)
+        with mock.patch.object(session, "_call_panel", return_value={"FINISHED"}) as panel:
+            self.assertEqual(cls.invoke(fake, self.dialog_context(), None), {"CANCELLED"})
+        panel.assert_called_once_with(CHOOSE_PANEL)
+        layout = draw(getattr(bpy.types, CHOOSE_PANEL), bpy.context)
+        self.assertEqual(" ".join(self.labels(layout)), REQUIRED)
+        self.assertEqual([(item.text, item.properties.version_uid)
+                          for item in layout.of_kind("operator") if item.target == SET_ACTIVE],
+                         [("V01 · Definitiva [VIGENTE] r2", v01.uid),
+                          ("V02 · Fase sur [BORRADOR] r1", v02.uid)])
+        self.assertEqual([item.text for item in layout.of_kind("operator")
+                          if item.target == NEW_VERSION], ["Nueva versión…"])
+        labels = ext("bl.ui.labels")
+        width = labels.dialog_width(getattr(bpy.types, CHOOSE_PANEL).bl_ui_units_x
+                                    * ext("bl.compat").UI_UNIT_PX)
+        for scale in at_scales():
+            assert_fits(self, draw(getattr(bpy.types, CHOOSE_PANEL), bpy.context), width,
+                        scale=scale)
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_selftest_pit()
+        self.assertIn(REQUIRED, str(caught.exception))
+        self.assertEqual(vf.change_counter(project), counter)
+
+        # Con V02 activa: la operación, en su revisión abierta; sus salidas, de V02.
+        self.set_active(v02)
+        with project.read() as conn:
+            opened = self.read.open_revision(conn, v02.uid)
+        self.assertEqual(bpy.ops.geoblender.core_selftest_pit(), {"FINISHED"})
+        with project.read() as conn:
+            done = conn.execute("SELECT scope, revision_uid, status FROM gb_operation "
+                                "WHERE op_type = ?", (PIT,)).fetchall()
+            owners = conn.execute("SELECT DISTINCT version_uid FROM gb_dataset "
+                                  "WHERE version_uid <> ''").fetchall()
+        self.assertEqual(done, [("version", opened.uid, "done")])
+        self.assertEqual(owners, [(v02.uid,)])
+
+        # V02 VIGENTE: V01 pasa a SUPERADO. Con V01 activa, «Versión no editable».
+        self.declare_current(project, v02)
+        self.set_active(v01)
+        with mock.patch.object(cls, "poll_message_set") as message:
+            self.assertFalse(cls.poll(bpy.context))
+        message.assert_called_once_with(NOT_EDITABLE)
+        self.assertFalse(bpy.ops.geoblender.core_selftest_pit.poll())
+        self.assertEqual(cls.description(bpy.context, None), f"{DEMO_ABOUT}\n{NOT_EDITABLE}")
+        self.assertFalse(self.drawn(DEMO_COMMAND).enabled)
+        counter = vf.change_counter(project)
+        self.assertEqual(self.execute(DEMO_COMMAND), ({"CANCELLED"}, [({"ERROR"}, NOT_EDITABLE)]))
+        self.assertEqual(vf.change_counter(project), counter)
+        self.i18n.set_language("en")
+        self.assertEqual(cls.description(bpy.context, None),
+                         f"{DEMO_ABOUT}\nV01 is in state SUPERSEDED: create a new version from it")
+        self.i18n.set_language("es")
+
+        # Con V02, VIGENTE, otra vez como siempre.
+        self.set_active(v02)
+        self.assertTrue(cls.poll(bpy.context))
+        self.assertTrue(self.drawn(DEMO_COMMAND).enabled)
+        self.assertEqual(cls.description(bpy.context, None), DEMO_ABOUT)
+
+    def test_parameter_scope_with_the_active_version(self) -> None:
+        """RF-009-29, RF-009-04, RF-009-21 (plan A3, §5.5; M3, M5): con V02 (VIGENTE) activa,
+        Cambiar parámetro… de ``demo.bench_height`` (de versión) pregunta «¿Para el proyecto o
+        solo para V02?»; «solo V02» crea su valor en V02 y el del proyecto no cambia; «el
+        proyecto» cambia el del proyecto y el de V02 sigue; el diálogo propone después el
+        ámbito de V02 con su valor, y Parámetros del proyecto enseña los dos («V02: 12 m [HIP] ·
+        proyecto: 11 m [HIP]», y «V02» entre las marcas de su fila). Con V01 (SUPERADO) activa,
+        solo el del proyecto, y «Solo V01», desactivada con el texto de RF-009-04 (por un guion,
+        rechazada sin escribir nada). Sin versión activa, o con un parámetro del proyecto, no
+        pregunta (y pedir el ámbito de versión se rechaza con su texto). Sus textos caben a
+        escala 1,0 y 1,25 y se dicen en inglés."""
+        project = self.project()
+        self.enterContext(VersionsDemo(module_name()).registered())
+        v01 = self.create(project, "definitiva", "Definitiva")
+        v02 = self.create(project, "sur", "Fase sur")
+        self.declare_current(project, v01)
+        self.declare_current(project, v02)
+        store = ext("core.params").ParameterStore(project)
+        self.write(project, lambda conn: [store.ensure_default(conn, key,
+                                                               geoblender_version="0.0.0")
+                                          for key in (BENCH_HEIGHT, PRODUCTION)])
+        question = "¿Para el proyecto o solo para V02?"
+
+        # Con V02 activa: pregunta el ámbito (sin valor propio en V02, propone el proyecto).
+        self.set_active(v02)
+        fake, layout, context = self.parameter_dialog(BENCH_HEIGHT)
+        self.assertEqual(fake.scope, "PROJECT")
+        self.assertIn(question, self.labels(layout))
+        self.assertEqual([(item.text, item.enabled) for item in layout.of_kind("prop_enum")],
+                         [("El proyecto", True), ("Solo V02", True)])
+        width = ext("bl.ui.labels").dialog_width(
+            context.window_manager.invoke_props_dialog.call_args.kwargs["width"])
+        for scale in at_scales():
+            assert_fits(self, layout, width, scale=scale, props=True)
+        self.assertEqual(bpy.ops.geoblender.core_set_parameter(
+            key=BENCH_HEIGHT, scope="VERSION", value="12", source="Estudio de la prueba",
+            decided_by="Proyectista de la prueba", reason="Banco de 12 m en V02"), {"FINISHED"})
+        self.assertEqual((store.get(BENCH_HEIGHT).value,
+                          store.get(BENCH_HEIGHT, version="V02").value), (10.0, 12.0))
+        self.assertIsNone(store.get(BENCH_HEIGHT, version="V01"))
+        self.assertEqual(bpy.ops.geoblender.core_set_parameter(
+            key=BENCH_HEIGHT, scope="PROJECT", value="11", source="Norma de la prueba",
+            decided_by="Dirección de la prueba", reason="Banco de 11 m"), {"FINISHED"})
+        self.assertEqual((store.get(BENCH_HEIGHT).value,
+                          store.get(BENCH_HEIGHT, version="V02").value), (11.0, 12.0))
+        fake, layout, _context = self.parameter_dialog(BENCH_HEIGHT)
+        self.assertEqual((fake.scope, fake.value), ("VERSION", "12"))
+        self.assertEqual(self.parameters_shown(BENCH_HEIGHT),
+                         (["V02: 12 m [HIP] · proyecto: 11 m [HIP]"], "V02"))
+
+        # Con V01 (SUPERADO) activa: solo el del proyecto; «Solo V01», desactivada.
+        self.set_active(v01)
+        self.assertEqual(self.parameters_shown(BENCH_HEIGHT), ([], ""))
+        fake, layout, _context = self.parameter_dialog(BENCH_HEIGHT)
+        self.assertEqual((fake.scope, fake.value), ("PROJECT", "11"))
+        self.assertEqual([(item.text, item.enabled) for item in layout.of_kind("prop_enum")],
+                         [("El proyecto", True), ("Solo V01", False)])
+        self.assertIn(NOT_EDITABLE, self.labels(layout))
+        counter = vf.change_counter(project)
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_set_parameter(
+                key=BENCH_HEIGHT, scope="VERSION", value="13", source="Estudio de la prueba",
+                decided_by="Proyectista de la prueba", reason="Banco de 13 m en V01")
+        self.assertIn(NOT_EDITABLE, str(caught.exception))
+
+        # Sin versión activa, o con un parámetro del proyecto: no pregunta.
+        self.set_active(None)
+        _fake, layout, _context = self.parameter_dialog(BENCH_HEIGHT)
+        self.assertEqual(layout.of_kind("prop_enum"), [])
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_set_parameter(key=BENCH_HEIGHT, scope="VERSION",
+                                                  value="13", reason="Sin versión")
+        self.assertIn(NO_VERSION_NOTE, str(caught.exception))
+        self.set_active(v02)
+        _fake, layout, _context = self.parameter_dialog(PRODUCTION)
+        self.assertEqual(layout.of_kind("prop_enum"), [])
+        self.assertNotIn(question, self.labels(layout))
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_set_parameter(key=PRODUCTION, scope="VERSION",
+                                                  reason="Solo en V02")
+        self.assertIn("es del proyecto: no admite un valor propio en V02", str(caught.exception))
+        self.assertEqual(vf.change_counter(project), counter)
+
+        # En inglés.
+        self.i18n.set_language("en")
+        _fake, layout, _context = self.parameter_dialog(BENCH_HEIGHT)
+        self.assertIn("For the project or only for V02?", self.labels(layout))
+        self.assertEqual([item.text for item in layout.of_kind("prop_enum")],
+                         ["The project", "Only V02"])
 
     def test_catalog_entry(self) -> None:
         """RF-009-01, RF-009-03 (plan 009 D-38): Nueva versión…, Cambiar estado… y el menú

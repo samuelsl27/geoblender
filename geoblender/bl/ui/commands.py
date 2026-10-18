@@ -191,6 +191,11 @@ def unregister_check(idname: str) -> None:
     _CHECKS.pop(idname, None)
 
 
+def check_of(idname: str) -> Check | None:
+    """La comprobación de «no aplicable ahora» de un ``bl_idname``, o ``None`` si no tiene."""
+    return _CHECKS.get(idname)
+
+
 def not_applicable(context: Any, cmd: core_catalog.Command) -> str:
     """"" si el comando se puede ejecutar ahora; si no, el mensaje que nombra el paso
     previo (RF-003-09). Sin comprobación, "" (lo demás lo dice su ``poll``)."""

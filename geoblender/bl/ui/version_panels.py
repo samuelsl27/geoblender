@@ -19,6 +19,10 @@ A11, D-38 y D-42; AR §2 y §6).
   versiones y «Sin versión»; la activa lo dice («· activa»).
 - **La barra de estado** dice «V10.r2 VIGENTE» tras el nombre del proyecto
   (``bl.ui.statusbar``, que abre esta misma ventana).
+- **Elija una versión** (:class:`GEOBLENDER_PT_core_choose_version`, T20; RF-009-05): la ventana
+  que abre una orden de un tipo de versión lanzada sin versión activa
+  (``bl.ops.core_provenance.ProvenanceAwareOperator``): el porqué, las versiones en que se puede
+  trabajar (BORRADOR y VIGENTE), que la hacen activa, y Nueva versión…
 
 Todo se dibuja con lo ya leído (``bl.scene.versions`` y las filas de
 ``WindowManager.geoblender_version_panels``): **nada se lee del proyecto al dibujar**. Se vuelve a
@@ -35,12 +39,13 @@ from typing import TYPE_CHECKING, Any
 
 import bpy
 
-from ...core.i18n import tr
-from ...core.versions.model import VersionStatus
+from ...core.i18n import language, tr
+from ...core.versions.model import EDITABLE, VersionStatus, render
+from .. import compat
 from ..props.versions import WINDOW_MANAGER_PROPERTY
 from ..scene import project_session
 from ..scene import versions as scene_versions
-from . import commands, icons, provenance, quick_access
+from . import commands, icons, labels, provenance, quick_access
 from .commands import TRANSLATION_CONTEXT, catalog
 from .drawing import draw_command, icon_kwargs, native_icon
 
@@ -49,7 +54,10 @@ if TYPE_CHECKING:
 
 PANEL = "GEOBLENDER_PT_core_version"
 MENU = "GEOBLENDER_MT_core_versions"
+CHOOSE_PANEL = "GEOBLENDER_PT_core_choose_version"
+"""La ventana que pide elegir o crear una versión (T20; RF-009-05)."""
 SET_ACTIVE = "geoblender.core_set_active_version"
+NEW_VERSION = "geoblender.core_new_version"
 PANEL_UNITS = 18
 """El ancho de la ventana de la versión activa (unidades de interfaz)."""
 LIST_BLANK = "BLANK1"
@@ -57,7 +65,7 @@ LIST_BLANK = "BLANK1"
 ALTERED_ICON = "ERROR"
 SET_STATE = "geoblender.core_set_version_state"
 COMMANDS: tuple[str, ...] = (
-    "geoblender.core_new_version",
+    NEW_VERSION,
     "geoblender.core_new_revision",
     SET_STATE,
     "geoblender.core_reproduce_version",
@@ -170,6 +178,31 @@ def draw_versions_menu(layout: Any, _context: Any) -> None:
     props.version_uid = ""
 
 
+def draw_choose_version(layout: Any, context: Any) -> None:
+    """La ventana que pide elegir o crear una versión (T20; RF-009-05): la abre una orden de un
+    tipo de versión sin versión activa (``bl.ops.core_provenance.open_version_dialog``). Dice
+    por qué («Esta orden es de una versión: elija la versión activa o cree una»), en líneas
+    que caben, y ofrece las versiones en que se puede trabajar (BORRADOR y VIGENTE, con su
+    estado y su revisión; ``core_set_active_version``) y Nueva versión…"""
+    project = project_session.current()
+    if project is None:
+        _closed_note(layout)
+        return
+    width = labels.dialog_width(PANEL_UNITS * compat.UI_UNIT_PX)
+    labels.draw_wrapped(layout, render("core.version_required", language=language()), width,
+                        icon="INFO")
+    versions, _revisions, _of = _rows(project)
+    editable = [row for row in versions if VersionStatus(row.status) in EDITABLE]
+    if editable:
+        column = layout.column(align=True)
+        for row in editable:
+            props = column.operator(SET_ACTIVE, text=_name(row), translate=False,
+                                    **state_icon(row.status))
+            props.version_uid = row.uid
+    layout.separator()
+    draw_command(layout, NEW_VERSION, context=context)
+
+
 class GEOBLENDER_PT_core_version(bpy.types.Panel):
     """Versions with their state, revisions, new revision, change state and compare"""
 
@@ -193,6 +226,20 @@ class GEOBLENDER_MT_core_versions(bpy.types.Menu):
 
     def draw(self, context: Any) -> None:
         draw_versions_menu(self.layout, context)
+
+
+class GEOBLENDER_PT_core_choose_version(bpy.types.Panel):
+    """Choose or create the active version for a command of a version"""
+
+    bl_idname = CHOOSE_PANEL
+    bl_label = "Choose a version"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = PANEL_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_choose_version(self.layout, context)
 
 
 # Lo que se pone al día ---------------------------------------------------------------------------
@@ -229,4 +276,5 @@ def uninstall() -> None:
 
 
 # En orden de registro.
-classes: tuple[type, ...] = (GEOBLENDER_PT_core_version, GEOBLENDER_MT_core_versions)
+classes: tuple[type, ...] = (GEOBLENDER_PT_core_version, GEOBLENDER_MT_core_versions,
+                             GEOBLENDER_PT_core_choose_version)

@@ -383,6 +383,14 @@ class VersionsDemo(Demo):
 
     # --- Ejecución --------------------------------------------------------------------------
 
+    def run_body(self, handle: Any) -> None:
+        """El cuerpo del tipo de ``handle`` sobre una operación ya empezada por otro (una orden
+        de Blender que la empieza con ``ProvenanceAwareOperator.begin``; spec 009, T20): calcula,
+        escribe sus salidas y la completa, como las órdenes de la demostración."""
+        if not self.active:
+            raise RuntimeError("la demostración no está registrada (register)")
+        self._bodies[handle.op_type](handle)
+
     def _run_version(self, project: Any, op_type: str, version: str | None, *,
                      settings: Mapping[str, Any] | None = None, inputs: Sequence[Any] = (),
                      params: Sequence[str] = ()) -> Any:

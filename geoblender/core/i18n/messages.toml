@@ -4919,3 +4919,37 @@ es = "{revision} cerrada al superarse"
 
 ["Choose the active version first: Project ▸ Versions ▸ Active version"]
 es = "Elija antes la versión activa: Proyecto ▸ Versiones ▸ Versión activa"
+
+# Órdenes de versión, «Versión no editable» y el ámbito en Parámetros (spec 009, T20;
+# RF-009-04, RF-009-05, RF-009-21, RF-009-29; plan 009 A3, A11, §5.5): la ventana que pide una
+# versión, la pregunta del ámbito y el valor de cada ámbito en Parámetros del proyecto.
+
+["Choose a version"]
+es = "Elija una versión"
+
+["Choose or create the active version for a command of a version"]
+es = "Elija o cree la versión activa para una orden de una versión"
+
+["The project"]
+es = "El proyecto"
+
+["Only the active version"]
+es = "Solo la versión activa"
+
+["Whether the change is for the project or only for the active version (a parameter that its module admits by version)"]
+es = "Si el cambio es del proyecto o solo de la versión activa (un parámetro que su módulo admite por versión)"
+
+["For the project or only for {version}?"]
+es = "¿Para el proyecto o solo para {version}?"
+
+["Only {version}"]
+es = "Solo {version}"
+
+["Parameter «{key}» = {value} {kind} in {version}"]
+es = "Parámetro «{key}» = {value} {kind} en {version}"
+
+["{version}: {value} {kind}"]
+es = "{version}: {value} {kind}"
+
+["project: {value} {kind}"]
+es = "proyecto: {value} {kind}"
