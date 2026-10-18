@@ -15,9 +15,10 @@ Blender en español, «Project» del contexto por defecto saldría «Proyectar»
   vuelve a registrar las clases de la interfaz con sus ``bl_label`` y ``bl_description``
   nuevos (``registry.relabel``; cambiar ``bl_label`` sin registrar otra vez no cambia el
   nombre en F3 ni en los atajos, que sobreviven al nuevo registro con el nombre nuevo), la
-  pestaña «Proyecto» de la barra lateral, y pide redibujar. Devuelve lo que tardó, en ms
-  (RNF-003-05: ≤ 500 ms). Lo que se dibuja con ``tr`` cambia en el siguiente dibujo; las
-  descripciones de las propiedades, al reiniciar Blender (II §2.2).
+  pestaña «Proyecto» de la barra lateral (con sus paneles de la spec 010), y pide
+  redibujar. Devuelve lo que tardó, en ms (RNF-003-05: ≤ 500 ms). Lo que se dibuja con
+  ``tr`` cambia en el siguiente dibujo; las descripciones de las propiedades, al reiniciar
+  Blender (II §2.2).
 - :func:`schedule`: lo que hace elegir el idioma en las preferencias (o en Ayuda ▸ Idioma
   de Geoblender): deja el idioma pendiente y lo aplica un temporizador de 0 s
   (:func:`apply_pending`), fuera del dibujo de un menú o de las preferencias. En
@@ -34,7 +35,7 @@ import bpy
 
 from ...core import i18n
 from ..props.ui import LANGUAGES, remember_language
-from . import commands, core_panel, registry
+from . import commands, core_panel, registry, view_panels
 
 
 class _State:
@@ -62,12 +63,18 @@ def install() -> str:
 
 
 def _relabel_core_panel() -> None:
-    """La pestaña y el título de «Proyecto» (spec 002), registrada otra vez si cambian."""
-    for cls in core_panel.classes:
-        before = (cls.bl_category, cls.bl_label)
-        core_panel.localize()
-        if (cls.bl_category, cls.bl_label) == before or not getattr(cls, "is_registered",
-                                                                     False):
+    """La pestaña y el título de «Proyecto» (spec 002) y de los paneles de la vista regenerable
+    que van en ella (spec 010: Elemento activo e Inventario; su lista y la ventana de «Cifras de
+    la selección» no tienen pestaña), registrados otra vez si cambian (si no, tras cambiar el
+    idioma quedarían en otra pestaña)."""
+    panels = [cls for cls in (*core_panel.classes, *view_panels.classes)
+              if issubclass(cls, bpy.types.Panel) and hasattr(cls, "bl_category")]
+    before = {cls: (cls.bl_category, cls.bl_label) for cls in panels}
+    core_panel.localize()
+    view_panels.localize()
+    for cls in panels:
+        if (cls.bl_category, cls.bl_label) == before[cls] or not getattr(cls, "is_registered",
+                                                                         False):
             continue
         bpy.utils.unregister_class(cls)
         bpy.utils.register_class(cls)

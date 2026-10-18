@@ -11,9 +11,10 @@ documentación lo describe; estas pruebas avisan de que se separan:
   documento, igual que en el código salvo los comentarios, los espacios y «IF NOT EXISTS»; §1
   nombra las carpetas ``originals/`` y ``orphans/`` (ADR-0025 §8); el ejemplo de
   ``manifest.json`` (§2) lleva el esquema de esta versión, y §7, el módulo de cada migración;
-- ``docs/arquitectura/modulos/core.md``: lo que nombra de los paquetes de la 008 existe en el
-  código, nombra cada uno de ellos en su API y, en «Datos que posee», cada tabla interna del
-  esquema de esta versión.
+- ``docs/arquitectura/modulos/core.md``: lo que nombra de los paquetes de la 008 y de la 010
+  existe en el código, nombra cada uno de ellos en su API (de ``core.views``, de la 010, cada
+  función y cada clase pública de sus cuatro módulos; spec 010, T19) y, en «Datos que posee»,
+  cada tabla interna del esquema de esta versión.
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``).
 """
@@ -38,7 +39,10 @@ CORE_RELPATH = "docs/arquitectura/modulos/core.md"
 
 # Los paquetes de `core` que crea o amplía la 008 (plan 008 §5.3.1).
 PACKAGES_008 = ("units", "hashing", "content", "params", "inputs", "datasets", "provenance")
-CHECKED_PACKAGES = (*PACKAGES_008, "paths")
+# El paquete de la 010 (plan 010 §5.3.1, D1: se documenta cuando existe) y sus módulos.
+PACKAGES_010 = ("views",)
+VIEWS_MODULES = ("state", "inventory", "card", "locate")
+CHECKED_PACKAGES = (*PACKAGES_008, *PACKAGES_010, "paths")
 
 SQL_FENCE = re.compile(r"^```sql\n(.*?)^```", re.MULTILINE | re.DOTALL)
 COMMENT = re.compile(r"--[^\n]*")
@@ -134,9 +138,10 @@ class CoreModuleDocTest(unittest.TestCase):
 
     def test_named_api_exists(self) -> None:
         """RF-008-01, RF-008-07, RF-008-08, RF-008-17, RF-008-18, RF-008-24, RF-008-29,
-        RF-008-30 (plan 008 §5.3.1): todo lo que la ficha nombra de ``core.units``,
-        ``hashing``, ``content``, ``params``, ``inputs``, ``datasets``, ``provenance`` y
-        ``paths`` existe, y la API nombra cada paquete de la 008."""
+        RF-008-30 (plan 008 §5.3.1; plan 010 §5.3.1): todo lo que la ficha nombra de
+        ``core.units``, ``hashing``, ``content``, ``params``, ``inputs``, ``datasets``,
+        ``provenance``, ``views`` y ``paths`` existe, y la API nombra cada paquete de la 008 y
+        de la 010."""
         api = section(self.text, "## API pública")
         named: set[str] = set()
         for token in backticked(self.text):
@@ -147,11 +152,28 @@ class CoreModuleDocTest(unittest.TestCase):
         self.assertEqual(sorted(name for name in named if not resolves(name)), [])
         api_names = {CORE_NAME.match(token).group(0) for token in backticked(api)
                      if CORE_NAME.match(token)}
-        for package in PACKAGES_008:
+        for package in (*PACKAGES_008, *PACKAGES_010):
             with self.subTest(package=package):
                 self.assertTrue(any(name == f"core.{package}"
                                     or name.startswith(f"core.{package}.")
                                     for name in api_names))
+
+    def test_views_api_named(self) -> None:
+        """RF-010-01, RF-010-02, RF-010-03, RF-010-04, RF-010-05, RF-010-06, RF-010-07,
+        RF-010-08 (plan 010 §5.3.1, D1): la API de la ficha nombra, como
+        ``core.views.<módulo>.<nombre>``, cada función y cada clase pública (las de ``__all__``
+        que no son constantes) de ``core.views.state``, ``inventory``, ``card`` y ``locate``."""
+        api = section(self.text, "## API pública")
+        api_names = {CORE_NAME.match(token).group(0) for token in backticked(api)
+                     if CORE_NAME.match(token)}
+        expected: list[str] = []
+        for module_name in VIEWS_MODULES:
+            module = import_geoblender(f"core.views.{module_name}")
+            public = [name for name in module.__all__ if not name.isupper()]
+            self.assertTrue(public, f"core.views.{module_name} sin API pública")
+            expected.extend(f"core.views.{module_name}.{name}" for name in public)
+        self.assertGreater(len(expected), 30)
+        self.assertEqual(sorted(name for name in expected if name not in api_names), [])
 
     def test_owned_tables(self) -> None:
         """RF-008-01, RF-008-07, RF-008-17, RF-008-18, RF-008-24, RF-008-30, RF-008-62:

@@ -4,7 +4,8 @@
 
 - ``core``: ``Scene.geoblender`` (georreferencia del proyecto en la escena) y el grupo
   ``core`` de las preferencias (spec 002); ``Object.geoblender`` (lo que muestra un objeto de
-  la vista) y las filas del diálogo de «Cargar en la vista…» (spec 006, T27);
+  la vista; spec 010, T07: si está al día, el GeoOrigin con que se cargó y sus cifras en texto)
+  y las filas del diálogo de «Cargar en la vista…» (spec 006, T27);
 - ``ui``: ``WorkSpace.geoblender_mode`` (la marca del modo Geoblender) y el grupo ``ui``
   de las preferencias (spec 003);
 - ``jobs``: el grupo ``jobs`` de las preferencias (spec 004): trabajos a la vez,
@@ -14,6 +15,8 @@
 - ``dh``: ``Scene.geoblender_dh_display`` (la representación de los sondeos) y
   ``WindowManager.geoblender_dh_import`` y ``.geoblender_dh_validation`` (la importación
   pendiente y la validación, una vista; spec 005, T24);
+- ``views``: ``WindowManager.geoblender_view_panels``, las filas de los paneles de la vista
+  regenerable (spec 010; una vista que no se guarda en el ``.blend``);
 - ``preferences``: la única ``GeoblenderPreferences``, con un grupo por módulo.
 
 Antes de registrar las clases, sus propiedades (nombre, descripción y elementos de los
@@ -27,13 +30,13 @@ from __future__ import annotations
 
 from ...core import i18n
 from ..registry import PropertyTranslator, register_classes, unregister_classes
-from . import core, dh, gis, jobs, preferences, provenance, ui
+from . import core, dh, gis, jobs, preferences, provenance, ui, views
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los grupos antes de quien los usa.
 classes: tuple[type, ...] = (
-    *core.classes, *gis.classes, *provenance.classes, *dh.classes, *ui.classes,
-    *jobs.classes, *preferences.classes
+    *core.classes, *gis.classes, *provenance.classes, *dh.classes, *views.classes,
+    *ui.classes, *jobs.classes, *preferences.classes
 )
 
 _PROPERTIES = PropertyTranslator()
@@ -49,9 +52,9 @@ def _localize() -> None:
 
 def register() -> None:
     """Registra ``classes`` en orden y pone ``Scene.geoblender``, ``Object.geoblender``,
-    ``WindowManager.geoblender_provenance``, las de los sondeos (``dh``) y
-    ``WorkSpace.geoblender_mode``; si ya lo están, no hace nada. Si algo falla, deshace lo
-    hecho antes de propagar el error."""
+    ``WindowManager.geoblender_provenance``, las de los sondeos (``dh``),
+    ``WindowManager.geoblender_view_panels`` y ``WorkSpace.geoblender_mode``; si ya lo
+    están, no hace nada. Si algo falla, deshace lo hecho antes de propagar el error."""
     _localize()
     try:
         register_classes(classes)
@@ -62,9 +65,11 @@ def register() -> None:
         core.register()
         provenance.register()
         dh.register()
+        views.register()
         ui.register()
     except BaseException:
         ui.unregister()
+        views.unregister()
         dh.unregister()
         provenance.unregister()
         core.unregister()
@@ -74,10 +79,12 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Quita ``WorkSpace.geoblender_mode``, las de los sondeos,
-    ``WindowManager.geoblender_provenance``, ``Object.geoblender`` y ``Scene.geoblender`` y
-    desregistra ``classes`` en orden inverso; omite lo que no está registrado."""
+    """Quita ``WorkSpace.geoblender_mode``, ``WindowManager.geoblender_view_panels``, las de
+    los sondeos, ``WindowManager.geoblender_provenance``, ``Object.geoblender`` y
+    ``Scene.geoblender`` y desregistra ``classes`` en orden inverso; omite lo que no está
+    registrado."""
     ui.unregister()
+    views.unregister()
     dh.unregister()
     provenance.unregister()
     core.unregister()

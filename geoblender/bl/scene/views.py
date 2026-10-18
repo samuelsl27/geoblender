@@ -41,19 +41,47 @@ las colecciones que quedan vacías; nunca toca el proyecto. Ni cargar ni descarg
 proyecto ni registran una operación (plan §5.6.4): solo la vista, que deshace Ctrl+Z (los
 operadores llevan ``UNDO``).
 
-**Al día sin recargar** (spec 005, T47): :func:`show_state` pone en los objetos ya cargados de
-un dato su estado y si está obsoleto según lo que dice ahora el proyecto, con su nombre
-generado y el de su colección; lo llama el módulo de la vista que sigue los cambios del
-proyecto (los sondeos, ``bl.scene.dh_view.show_stale``; la marca en vivo de los demás es de la
-009).
+**Al día sin recargar** (spec 010, T07; RF-010-01, RF-010-02, RF-010-08; plan 010 §5.3.2, A1 a
+A3, D-9 a D-13 y D-17; generaliza lo de los sondeos, spec 005, T47):
+
+- cada objeto cargado anota además el GeoOrigin con que se cargó (``Object.geoblender.origin``,
+  «X0 Y0 Z0» en metros enteros), «al día» (``view_state``) y las cifras registradas de su dato
+  como texto ya escrito (``figures``: las de la operación que escribió su contenido, sin marcas,
+  ``core.views.card.dataset_figures``; solo para mostrarlas: solo las escribe este módulo y
+  solo las lee ``bl/ui``, D-17), que Refrescar vuelve a poner también en lo que no vuelve a
+  cargar (:func:`show_figures`; spec 010, T16);
+- :func:`loaded_items` agrupa por dato los objetos de Geoblender de la escena (no los del
+  usuario ni los de «99 Trabajo», que no tienen dato) y :func:`loaded_item` dice con qué se
+  cargaron (``core.views.state.LoadedItem``), para ``core.views.state.view_states``;
+- :func:`show_view_state` pone al día, sin volver a cargar nada ni escribir en el proyecto, lo
+  que dice hoy el proyecto de cada dato (``core.views.state.ItemView``): ``view_state``, su
+  estado y si está obsoleto en ``Object.geoblender`` y el nombre generado de sus objetos y de la
+  colección del dato (:func:`view_name`: «MDT mdt_norte [VIGENTE · NO AL DÍA]», «… [SIN
+  RESPALDO]»), con las colecciones buscadas una vez por su clave, ``ID.rename`` y, si se le da,
+  un presupuesto de tiempo por tanda (sustituye a la marca propia de los sondeos de la 005,
+  T47: spec 010, T09);
+- un cargador declara con :func:`extend_loader` lo suyo que se pone al día en vivo
+  (:class:`LiveHook`: lo que lee en la misma instantánea, :func:`live_reads`, y cómo lo aplica)
+  y lo que no se guarda en el ``.blend`` (:class:`SessionParts`; la superposición de los
+  sondeos, ``bl.scene.dh_view``, que la marca en vivo rehace tras abrir el proyecto);
+- :func:`load_steps` vuelve a cargar con Refrescar (F5): en su último paso, además, quita lo
+  sustituido por lo que carga (``replaces``), marca «sin respaldo en el proyecto» sin borrarlos
+  los objetos de los datos ``unbacked`` y, con ``clear_view_stale``, quita la marca de vista
+  desfasada de las escenas (RF-002-29);
+- cargar y descargar piden la marca en vivo (``bl.scene.live.request``; spec 010, T08): lo que
+  no está al día cambia, y con él el control 7; y después, una vez por carga o descarga, llaman
+  a lo apuntado con :func:`add_view_listener` (spec 010, T21: el inventario de N ▸ Proyecto
+  pone al día su columna «En la escena» sin volver a leer el proyecto).
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Generator, Iterable, Sequence
-from dataclasses import dataclass, field
+import sqlite3
+import time
+from collections.abc import Callable, Collection, Generator, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import bpy
@@ -71,6 +99,7 @@ from ...core.georef import (
 )
 from ...core.i18n import language, tr, translate
 from ...core.project.model import Progress
+from ...core.views.state import ItemState, ItemView, LoadedItem, origin_text
 from ..props.core import OBJECT_PROPERTY
 from .mesh import curves_positions_local, mesh_vertices_world
 
@@ -104,6 +133,18 @@ STATUS_TEXT: dict[DatasetStatus, str] = {
     DatasetStatus.BLOCKED: "BLOCKED",
     DatasetStatus.DAMAGED: "DAMAGED",
 }
+_STATUS_OF: dict[str, DatasetStatus] = {text: status for status, text in STATUS_TEXT.items()}
+OUTDATED_TEXT = "NOT UP TO DATE"
+"""El ``msgid`` de «no al día» en el nombre generado (spec 010, D-10)."""
+UNBACKED_TEXT = "UNBACKED"
+"""El ``msgid`` de «sin respaldo en el proyecto» en el nombre generado (spec 010, D-10)."""
+# Object.geoblender.view_state (bl.props.core.VIEW_STATES).
+VIEW_CURRENT = "CURRENT"
+VIEW_OUTDATED = "OUTDATED"
+VIEW_UNBACKED = "UNBACKED"
+_LIVE_HOOKED = frozenset({ItemState.CURRENT, ItemState.RESTATE})
+"""Los estados en que se aplica el :class:`LiveHook` de un cargador: lo que muestra el
+contenido de hoy (lo de otro contenido lo pone al día volver a cargarlo)."""
 _DATA_COLLECTIONS = {"MESH": "meshes", "CURVE": "curves", "CURVES": "hair_curves",
                      "POINTCLOUD": "pointclouds"}
 
@@ -143,15 +184,41 @@ de terminar, borra lo que creó."""
 
 
 @dataclass(frozen=True)
+class LiveHook:
+    """Lo que pone al día en vivo un cargador, además de lo general (spec 010, D-13): ``read``
+    lee del proyecto lo que necesita, en la instantánea de quien lo llama (:func:`live_reads`;
+    los sondeos, los de traza obsoleta), y ``apply`` lo aplica a los objetos de un dato que
+    muestran su contenido de hoy, con lo que dice de él el proyecto (``ItemView``) y lo leído;
+    devuelve si cambió algo. Ninguno escribe en el proyecto."""
+
+    read: Callable[[sqlite3.Connection], Any]
+    apply: Callable[[Sequence[bpy.types.Object], ItemView, Any], bool]
+
+
+@dataclass(frozen=True)
+class SessionParts:
+    """Lo de un cargador que no se guarda en el ``.blend`` (spec 010, RF-010-03, D-13; la
+    superposición de los sondeos): ``missing`` dice si a sus objetos de la escena les falta en
+    esta sesión (con el proyecto abierto) y ``rebuild`` lo rehace en segundo plano (devuelve si
+    lo lanzó)."""
+
+    missing: Callable[[Any, Sequence[bpy.types.Object]], bool]
+    rebuild: Callable[[Any], bool]
+
+
+@dataclass(frozen=True)
 class Loader:
     """Un cargador registrado: el comienzo del nombre de sus datos, el tipo de sus objetos
     (``Object.geoblender.kind``), el ``msgid`` de ese tipo en el nombre generado y la
-    función."""
+    función; y, si los declara (:func:`extend_loader`; spec 010), su marca en vivo y lo que
+    no guarda el ``.blend``."""
 
     prefix: str
     kind: str
     label: str
     load: ViewLoader
+    live: LiveHook | None = None
+    session_parts: SessionParts | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +234,11 @@ class LoadOutcome:
 
 
 _LOADERS: dict[str, Loader] = {}
+
+ViewListener = Callable[[], None]
+"""Lo que se llama tras cargar o descargar algo de la vista (:func:`add_view_listener`; spec
+010, T21)."""
+_VIEW_LISTENERS: list[ViewListener] = []
 
 
 # --- Cargadores ------------------------------------------------------------------------------
@@ -188,8 +260,38 @@ def register_loader(prefix: str, kind: str, label: str, load: ViewLoader) -> Non
 
 
 def unregister_loader(prefix: str) -> None:
-    """Quita el cargador de ``prefix``; si no está, nada."""
+    """Quita el cargador de ``prefix`` con lo que declaró (:func:`extend_loader`); si no está,
+    nada."""
     _LOADERS.pop(prefix, None)
+
+
+def extend_loader(prefix: str, *, live: LiveHook | None = None,
+                  session_parts: SessionParts | None = None) -> None:
+    """Declara lo que el cargador de ``prefix`` pone al día en vivo (``live``) y lo que no se
+    guarda en el ``.blend`` (``session_parts``), en lugar de lo que declarara antes (sin
+    nada: ninguno), sin cambiar su función (spec 010, D-13). :class:`TypeError` si no son un
+    :class:`LiveHook` y un :class:`SessionParts`; ``ValueError`` si no hay cargador para ese
+    comienzo."""
+    if live is not None and not isinstance(live, LiveHook):
+        raise TypeError(f"la marca en vivo de un cargador es un LiveHook, no {live!r}")
+    if session_parts is not None and not isinstance(session_parts, SessionParts):
+        raise TypeError("lo que no se guarda en el .blend es un SessionParts, no "
+                        f"{session_parts!r}")
+    found = _LOADERS.get(prefix)
+    if found is None:
+        raise ValueError(f"no hay ningún cargador para los datos «{prefix}…»")
+    _LOADERS[prefix] = replace(found, live=live, session_parts=session_parts)
+
+
+def live_reads(conn: sqlite3.Connection,
+               prefixes: Collection[str] | None = None) -> dict[str, Any]:
+    """Lo que lee de ``conn`` (en la instantánea de quien llama) el :class:`LiveHook` de cada
+    cargador que lo declara, por su comienzo: lo que :func:`show_view_state` le da a su
+    ``apply``. Con ``prefixes``, solo el de esos cargadores (la marca en vivo pide solo los de
+    lo que está en la escena: un proyecto con sondeos sin su vista no los lee). No
+    escribe."""
+    return {prefix: loader.live.read(conn) for prefix, loader in _LOADERS.items()
+            if loader.live is not None and (prefixes is None or prefix in prefixes)}
 
 
 def loaders() -> dict[str, Loader]:
@@ -211,15 +313,23 @@ def _text(msgid: str) -> str:
     return translate(language(), msgid)
 
 
-def view_name(loader: Loader, record: DatasetRecord, *, stale: bool) -> str:
+def view_name(loader: Loader, record: DatasetRecord, *, stale: bool, outdated: bool = False,
+              unbacked: bool = False) -> str:
     """El nombre generado de lo que muestra ``record`` (RF-006-29): su tipo, su nombre sin el
     comienzo de su familia y su estado, «MDT mdt_norte [VIGENTE]» o «… [VIGENTE · OBSOLETO]»;
-    sin cifras de cálculo."""
+    con ``outdated``, si muestra un contenido anterior, «… [VIGENTE · OBSOLETO · NO AL DÍA]»;
+    con ``unbacked``, si su dato ya no está en el proyecto, «MDT mdt_norte [SIN RESPALDO]»
+    (spec 010, D-10). En el idioma de la interfaz y sin cifras de cálculo."""
     short = record.name[len(loader.prefix):] if record.name.startswith(loader.prefix) else (
         record.name)
+    if unbacked:
+        return " ".join(part for part in (_text(loader.label), short,
+                                          f"[{_text(UNBACKED_TEXT)}]") if part)
     state = _text(STATUS_TEXT.get(record.status, "CURRENT"))
     if stale:
         state = f"{state} · {tr('STALE')}"
+    if outdated:
+        state = f"{state} · {_text(OUTDATED_TEXT)}"
     # Sin nombre corto (el dato es su familia entera: las trazas de los sondeos, dh_trace),
     # «Sondeos [VIGENTE]».
     return " ".join(part for part in (_text(loader.label), short, f"[{state}]") if part)
@@ -311,7 +421,7 @@ def ensure_anchor(project: Any, scene: bpy.types.Scene | None = None) -> bpy.typ
             anchor.pop(f"window_{key}", None)
         else:
             anchor[f"window_{key}"] = repr(float(getattr(window, key)))
-    anchor["geoorigin"] = " ".join(str(value) for value in project.origin.as_tuple())
+    anchor["geoorigin"] = origin_text(project.origin)
     anchor["crs"] = _reference_text(project)
     return anchor
 
@@ -344,7 +454,79 @@ def fit_clip(low: Sequence[float], high: Sequence[float]) -> None:
 # --- Cargar y descargar ----------------------------------------------------------------------
 
 
-def _mark(obj: bpy.types.Object, kind: str, shown: Any, project: Any) -> None:
+@dataclass(frozen=True)
+class FigureText:
+    """Una cifra registrada como la anota cada objeto (``Object.geoblender.figures``; spec 010,
+    D-17): su uid y su clave, su nombre con su ámbito y su valor con su unidad, escritos en el
+    idioma de la interfaz, el código de su unidad y su tipo («CALCULADO»)."""
+
+    uid: str
+    key: str
+    label: str
+    value_text: str
+    unit: str
+    kind: str
+
+    @classmethod
+    def of(cls, figure: Any, shown_language: str) -> FigureText:
+        """La de ``figure`` (``core.provenance.figures.FigureRecord``) en ``shown_language``:
+        lo que escribe ``FigureRecord.text`` («Volumen · fase 2 = 1 563 631 m³»), partido en su
+        nombre y su valor."""
+        text = figure.text(language=shown_language)
+        label, found, value = text.rpartition(" = ")
+        if not found:
+            label, value = text, ""
+        return cls(figure.uid, figure.key, label, value, figure.unit, str(figure.kind))
+
+
+def _put_figures(props: Any, figures: Sequence[FigureText]) -> None:
+    """Las cifras ``figures`` en ``Object.geoblender.figures`` (``props``), en lugar de las que
+    tuviera. Solo este módulo las escribe y solo ``bl/ui`` las lee (spec 010, D-17; lo vigila
+    ``tests/unit/architecture/test_views_figures.py``): son para mostrarlas; ningún cálculo las
+    lee (las cifras se leen del proyecto, con su tipo y su procedencia)."""
+    props.figures.clear()
+    for figure in figures:
+        item = props.figures.add()
+        item.uid = figure.uid
+        item.key = figure.key
+        item.label = figure.label
+        item.value_text = figure.value_text
+        item.unit = figure.unit
+        item.kind = figure.kind
+
+
+def _figure_texts(project: Any, uids: Iterable[str]) -> dict[str, tuple[FigureText, ...]]:
+    """Las cifras registradas de hoy de los datos ``uids`` del proyecto ``project`` (las de la
+    operación que escribió su contenido, sin marcas: ``core.views.card.dataset_figures``),
+    escritas en el idioma de la interfaz, por el uid de cada dato que tiene el proyecto. No
+    escribe en el proyecto."""
+    from ...core.views import card  # al usarlo: no al habilitar
+
+    shown_language = language()
+    return {item.record.uid: tuple(FigureText.of(figure, shown_language)
+                                   for figure in item.figures)
+            for item in card.dataset_figures(project, list(uids), marks=False)}
+
+
+def show_figures(project: Any, groups: Mapping[str, Sequence[bpy.types.Object]]) -> int:
+    """Pone en los objetos de cada dato de ``groups`` (los de :func:`loaded_items`) las cifras
+    registradas de hoy de su dato en el proyecto abierto ``project``, en lugar de las que
+    anotaran (``Object.geoblender.figures``; spec 010, RF-010-08; plan A2, A8, D-17): lo que
+    hace Refrescar con lo que no vuelve a cargar (lo que sí, las pone al cargarlo). Un dato que
+    el proyecto no tiene no se toca. No escribe en el proyecto; devuelve en cuántos datos las
+    puso."""
+    wanted = [uid for uid, objects in groups.items() if objects]
+    if not wanted:
+        return 0
+    found = _figure_texts(project, wanted)
+    for uid, texts in found.items():
+        for obj in groups[uid]:
+            _put_figures(getattr(obj, OBJECT_PROPERTY), texts)
+    return len(found)
+
+
+def _mark(obj: bpy.types.Object, kind: str, shown: Any, project: Any, origin: str,
+          figures: Sequence[FigureText]) -> None:
     props = getattr(obj, OBJECT_PROPERTY)
     record = shown.record
     props.kind = kind
@@ -354,6 +536,9 @@ def _mark(obj: bpy.types.Object, kind: str, shown: Any, project: Any) -> None:
     props.status = STATUS_TEXT.get(record.status, "NONE")
     props.date = shown.date
     props.stale = shown.stale
+    props.view_state = VIEW_CURRENT
+    props.origin = origin
+    _put_figures(props, figures)
 
 
 def _shown_name(obj: bpy.types.Object, collection: bpy.types.Collection | None) -> str | None:
@@ -365,36 +550,171 @@ def _shown_name(obj: bpy.types.Object, collection: bpy.types.Collection | None) 
     return obj.name[:end + 1] if end >= 0 else None
 
 
-def show_state(objects: Sequence[bpy.types.Object], loader: Loader, shown: Any) -> bool:
-    """Pone al día, sin recargar nada, lo que dicen del dato ``shown``
-    (``core.provenance.view.DatasetView``, leído ahora) los objetos ``objects`` de su vista
-    cargada (spec 005, T47; RF-006-29): ``Object.geoblender`` (su estado y si está obsoleto) y,
-    si cambia, el nombre generado de los objetos (lo que sigue al de la carga, como « · Au»,
-    se conserva) y de la colección del dato («Sondeos [VIGENTE · OBSOLETO]»). No escribe en el
-    proyecto. Devuelve si cambió algo."""
-    record = shown.record
-    status = STATUS_TEXT.get(record.status, "NONE")
-    found = [obj for obj in objects
-             if (getattr(obj, OBJECT_PROPERTY).status, getattr(obj, OBJECT_PROPERTY).stale)
-             != (status, bool(shown.stale))]
-    if not found:
-        return False
-    name = view_name(loader, record, stale=bool(shown.stale))
-    key = f"{DATASET_KEY}{record.uid}"
-    collections = {collection for obj in objects for collection in obj.users_collection
-                   if collection.get(KEY_PROPERTY) == key}
-    collection = next(iter(collections), None)
-    for obj in found:
+def _restated(shown: str, state: str) -> str:
+    """El nombre generado ``shown`` («MDT mdt_norte [VIGENTE]») con ``state`` en lugar de su
+    estado: «MDT mdt_norte [SIN RESPALDO]»."""
+    start = shown.rfind(" [")
+    base = shown[:start] if start >= 0 and shown.endswith("]") else shown
+    return f"{base} [{state}]"
+
+
+def loaded_items(project_uid: str | None = None) -> dict[str, tuple[bpy.types.Object, ...]]:
+    """Los objetos de la escena que muestran un dato de un proyecto, por el uid de su dato, en
+    el orden de ``bpy.data.objects`` (spec 010): con ``project_uid``, solo los de ese proyecto;
+    sin él, los de todos (los de otro proyecto están sin respaldo en el abierto, plan A1). No
+    entran el ancla, los objetos del usuario ni los de «99 Trabajo», que no tienen dato."""
+    found: dict[str, list[bpy.types.Object]] = {}
+    for obj in bpy.data.objects:
         props = getattr(obj, OBJECT_PROPERTY)
-        props.status = status
-        props.stale = bool(shown.stale)
-        before = _shown_name(obj, collection)
-        if before is not None and before != name:
-            obj.name = name + obj.name[len(before):]
-    for item in collections:
-        if item.name != name:
-            item.name = name
+        uid = props.dataset_uid
+        if uid and (project_uid is None or props.project_uid == project_uid):
+            found.setdefault(uid, []).append(obj)
+    return {uid: tuple(objects) for uid, objects in found.items()}
+
+
+def loaded_item(uid: str, objects: Sequence[bpy.types.Object]) -> LoadedItem:
+    """Lo que dicen los objetos ``objects`` del dato ``uid`` de con qué se cargaron
+    (``core.views.state.LoadedItem``: su proyecto, sus hashes, sus GeoOrigin, sus estados y si
+    estaban obsoletos), para ``core.views.state.view_states``. ``ValueError`` sin objetos."""
+    if not objects:
+        raise ValueError(f"el dato {uid} no tiene objetos en la escena")
+    marks = [getattr(obj, OBJECT_PROPERTY) for obj in objects]
+    return LoadedItem(uid, marks[0].project_uid, [props.content_sha256 for props in marks],
+                      [props.origin for props in marks], [props.status for props in marks],
+                      [bool(props.stale) for props in marks])
+
+
+def _dataset_collections() -> dict[str, bpy.types.Collection]:
+    """La colección de cada dato de la vista, por su uid (por su clave ``dataset:<uid>``,
+    buscadas de una vez)."""
+    found: dict[str, bpy.types.Collection] = {}
+    for item in bpy.data.collections:
+        key = item.get(KEY_PROPERTY)
+        if isinstance(key, str) and key.startswith(DATASET_KEY):
+            found.setdefault(key[len(DATASET_KEY):], item)
+    return found
+
+
+@dataclass(frozen=True)
+class _Shown:
+    """Lo que tienen que decir los objetos de un dato: «al día» (``view_state``), su estado y
+    si está obsoleto (``None``: lo que ya dicen) y su nombre generado (``name``) o, sin él, el
+    estado que sustituye al de su nombre (``state_text``); sin ninguno, no se renombran."""
+
+    view_state: str
+    status: str | None
+    stale: bool | None
+    name: str | None
+    state_text: str | None = None
+
+
+def _shown(objects: Sequence[bpy.types.Object], view: ItemView, loader: Loader | None) -> _Shown:
+    """Lo que dicen los objetos ``objects`` según lo que dice hoy el proyecto de su dato
+    (``view``; plan 010 A1, D-10, D-11), con el cargador de su dato (``None``: el proyecto no lo
+    tiene o ningún módulo lo carga)."""
+    record = view.record
+    if view.state is ItemState.UNBACKED or record is None:
+        name = None if loader is None or record is None else view_name(
+            loader, record, stale=False, unbacked=True)
+        return _Shown(VIEW_UNBACKED, None, None, name, _text(UNBACKED_TEXT))
+    if view.state is ItemState.REPLACED:
+        # Muestra lo de antes, como se cargó: su estado y su obsoleto, «no al día».
+        first = getattr(objects[0], OBJECT_PROPERTY)
+        loaded = replace(record, status=_STATUS_OF.get(first.status, DatasetStatus.CURRENT))
+        name = None if loader is None else view_name(loader, loaded, stale=bool(first.stale),
+                                                     outdated=True)
+        return _Shown(VIEW_OUTDATED, None, None, name)
+    outdated = view.state is ItemState.OUTDATED
+    stale = bool(view.stale)
+    name = None if loader is None else view_name(loader, record, stale=stale, outdated=outdated)
+    return _Shown(VIEW_OUTDATED if outdated else VIEW_CURRENT,
+                  STATUS_TEXT.get(record.status, "NONE"), stale, name)
+
+
+def _rename(item: bpy.types.ID, name: str) -> bool:
+    """Renombra ``item`` a ``name`` si no se llama así (``ID.rename``, sin quitarle el nombre a
+    otro: si lo tiene otro, Blender le pone un número a este). Devuelve si lo renombró."""
+    if item.name == name:
+        return False
+    item.rename(name, mode="NEVER")
     return True
+
+
+def _show_group(objects: Sequence[bpy.types.Object], view: ItemView, loader: Loader | None,
+                collection: bpy.types.Collection | None, live: Mapping[str, Any]) -> bool:
+    """Pone al día los objetos ``objects`` de un dato y la colección del dato (véase
+    :func:`show_view_state`); devuelve si cambió algo."""
+    wanted = _shown(objects, view, loader)
+    name = wanted.name
+    if name is None and wanted.state_text is not None:
+        shown = collection.name if collection is not None else _shown_name(objects[0], None)
+        name = None if shown is None else _restated(shown, wanted.state_text)
+    changed = False
+    for obj in objects:
+        props = getattr(obj, OBJECT_PROPERTY)
+        if props.view_state != wanted.view_state:
+            props.view_state = wanted.view_state
+            changed = True
+        if wanted.status is not None and props.status != wanted.status:
+            props.status = wanted.status
+            changed = True
+        if wanted.stale is not None and props.stale != wanted.stale:
+            props.stale = wanted.stale
+            changed = True
+        before = None if name is None else _shown_name(obj, collection)
+        if before is not None and before != name:
+            # Lo que sigue al nombre de la carga (« · Au» de los sondeos) se conserva.
+            changed = _rename(obj, name + obj.name[len(before):]) or changed
+    if collection is not None and name is not None:
+        changed = _rename(collection, name) or changed
+    hook = None if loader is None else loader.live
+    if hook is not None and view.state in _LIVE_HOOKED and loader.prefix in live:
+        changed = bool(hook.apply(objects, view, live[loader.prefix])) or changed
+    return changed
+
+
+def show_view_state(groups: Mapping[str, Sequence[bpy.types.Object]],
+                    states: Mapping[str, ItemView], *, budget_s: float | None = None,
+                    live: Mapping[str, Any] | None = None) -> tuple[bool, list[str]]:
+    """Pone al día, sin volver a cargar nada, los objetos de cada dato de ``groups`` (los de
+    :func:`loaded_items`) con lo que dice hoy de él el proyecto (``states``, los de
+    ``core.views.state.view_states``; un dato sin estado no se toca) (spec 010, RF-010-02; plan
+    A3, D-10, D-11):
+
+    - al día o con otro estado u otro obsoleto (``CURRENT``, ``RESTATE``): su estado y si está
+      obsoleto, «al día»; con otro contenido u otro GeoOrigin (``OUTDATED``), además «no al
+      día»; lo sustituido (``REPLACED``), «no al día» con lo que mostraba; lo que falta
+      (``MISSING``), su estado («FALTA»); sin respaldo en el proyecto (``UNBACKED``), «sin
+      respaldo», sin borrar nada;
+    - ``Object.geoblender`` (``view_state``, ``status``, ``stale``) y el nombre generado de los
+      objetos (lo que sigue al de la carga, como « · Au», se conserva; un nombre que no lo
+      lleva, del usuario, no se toca) y de la colección del dato, buscada por su clave;
+    - el :class:`LiveHook` de su cargador, en lo que muestra el contenido de hoy, con lo que leyó
+      (``live``, por su comienzo: :func:`live_reads`).
+
+    Con ``budget_s``, para en cuanto lo pasa (tras uno, como poco) y devuelve los que quedan,
+    para la siguiente tanda (D-12). No escribe en el proyecto. Devuelve si cambió algo y los uid
+    que quedan."""
+    wanted = [uid for uid, objects in groups.items() if uid in states and objects]
+    collections = _dataset_collections() if wanted else {}
+    shared: Mapping[str, Any] = {} if live is None else live
+    started = time.perf_counter()
+    changed = False
+    for index, uid in enumerate(wanted):
+        if budget_s is not None and index and time.perf_counter() - started >= budget_s:
+            return changed, wanted[index:]
+        view = states[uid]
+        loader = None if view.record is None else loader_for(view.record.name)
+        changed = _show_group(groups[uid], view, loader, collections.get(uid), shared) or changed
+    return changed, []
+
+
+def _mark_unbacked(uids: Collection[str]) -> bool:
+    """Marca «sin respaldo en el proyecto», sin borrarlos, los objetos de los datos ``uids``
+    (los de todos los proyectos); devuelve si cambió algo."""
+    groups = {uid: objects for uid, objects in loaded_items().items() if uid in uids}
+    states = {uid: ItemView(uid, ItemState.UNBACKED, None, False, None) for uid in groups}
+    return show_view_state(groups, states)[0]
 
 
 def scene_precision(parts: ViewParts, origin: GeoOrigin) -> PrecisionReport | None:
@@ -467,27 +787,62 @@ def _discard(objects: Iterable[bpy.types.Object]) -> None:
             owner.remove(data)
 
 
-def load_steps(context: Any, project: Any, refs: Iterable[str], *,
-               lod: int = 0) -> Generator[Progress, None, None]:
+def _uid_texts(values: Iterable[str] | str, what: str) -> tuple[str, ...]:
+    if isinstance(values, str):
+        values = (values,)
+    found = tuple(dict.fromkeys(values))
+    for value in found:
+        if not isinstance(value, str) or not value:
+            raise TypeError(f"{what}: cada dato se indica por su uid, no {value!r}")
+    return found
+
+
+def _replacements(
+        replaces: Mapping[str, str | Iterable[str]] | None) -> dict[str, tuple[str, ...]]:
+    """``replaces`` de :func:`load_steps` como sucesor → lo que sustituye (uno o varios)."""
+    if replaces is None:
+        return {}
+    if not isinstance(replaces, Mapping):
+        raise TypeError(f"replaces: sucesor → sustituido, no {replaces!r}")
+    return {key: _uid_texts(replaces[key], "replaces")
+            for key in _uid_texts(tuple(replaces), "replaces")}
+
+
+def load_steps(context: Any, project: Any, refs: Iterable[str], *, lod: int = 0,
+               replaces: Mapping[str, str | Iterable[str]] | None = None,
+               unbacked: Iterable[str] = (),
+               clear_view_stale: bool = False) -> Generator[Progress, None, None]:
     """Los pasos que cargan en la escena de ``context`` los datos ``refs`` (uids o nombres)
     del proyecto abierto ``project`` con su cargador (RF-006-19, RF-006-29; T50: en pasos de
     décimas de segundo como mucho, para la orden desde el temporizador de su ventana, con su
     avance y Esc, RNF-006-09): cada uno da su ``Progress`` (fase :data:`LOAD_PHASE`, hecho de
     :data:`STEPS_TOTAL`, el nombre del dato) y el último, el :class:`LoadOutcome` en
-    ``result``. Primero se preparan todos sin tocar la escena (los objetos, sin enlazar) y en
-    el último paso, de una vez, cada uno pasa a la colección de su dato con
-    ``Object.geoblender`` y su nombre generado, sustituyendo lo que hubiera de él (sin el
-    «.001» que les puso Blender al crearlos mientras estaba, spec 005, T48), con el aviso
-    de RF-002-26 si pasa de 8 km del GeoOrigin (:func:`scene_precision`), y después el ancla y
-    el recorte. Cerrar los pasos antes del último (Esc), o un error que no es para la persona,
-    borra lo preparado: la vista queda como estaba. Un dato que falta se avisa y no se carga;
-    uno que el proyecto no tiene, sin cargador o que su cargador rechaza (``GeoblenderError``:
-    otro CRS, una malla no válida…) es un error y los demás se cargan. No escribe nada en el
-    proyecto."""
+    ``result``. Primero se preparan todos sin tocar la escena (los objetos, sin enlazar) y se
+    leen las cifras registradas de cada dato (``core.views.card.dataset_figures``, sin marcas);
+    en el último paso, de una vez, cada uno pasa a la colección de su dato con
+    ``Object.geoblender`` (también el GeoOrigin del proyecto, «al día» y sus cifras en texto,
+    spec 010) y su nombre generado, sustituyendo lo que hubiera de él (sin el «.001» que les
+    puso Blender al crearlos mientras estaba, spec 005, T48), con el aviso de RF-002-26 si pasa
+    de 8 km del GeoOrigin (:func:`scene_precision`), y después el ancla y el recorte. Cerrar
+    los pasos antes del último (Esc), o un error que no es para la persona, borra lo preparado:
+    la vista queda como estaba. Un dato que falta se avisa y no se carga; uno que el proyecto no
+    tiene, sin cargador o que su cargador rechaza (``GeoblenderError``: otro CRS, una malla no
+    válida…) es un error y los demás se cargan. No escribe nada en el proyecto.
+
+    Para Refrescar (spec 010, RF-010-01; plan A2), en el mismo último paso: ``replaces``
+    (sucesor → el uid del dato sustituido que carga en su lugar, o varios) quita lo de cada
+    sustituido cuyo sucesor se cargó (antes de ponerlo: así toma su nombre); ``unbacked`` marca
+    «sin respaldo en el proyecto», sin borrarlos, los objetos de esos datos; y, con
+    ``clear_view_stale`` y sin errores, se quita la marca de vista desfasada de las escenas
+    (RF-002-29; D-9)."""
     from ...core.provenance.view import dataset_view  # al usarlo: no al habilitar
 
     scene = getattr(context, "scene", None) or bpy.context.scene
     wanted = list(refs)
+    swaps = _replacements(replaces)
+    marked = _uid_texts(unbacked, "unbacked")
+    if not isinstance(clear_view_stale, bool):
+        raise TypeError(f"clear_view_stale es verdadero o falso, no {clear_view_stale!r}")
     built: list[_Built] = []
     errors: list[str] = []
     width = 1.0 / max(1, len(wanted))
@@ -523,12 +878,17 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *,
                 LOGGER.info("No se carga «%s» en la vista: %s", record.name, error)
                 errors.append(str(error))
                 built.remove(entry)
+        placed = [entry.shown.record.uid for entry in built
+                  if entry.parts is not None and entry.loader is not None]
+        figures = _figure_texts(project, placed)
     except BaseException:
         _discard(obj for entry in built if entry.parts is not None
                  for obj in entry.parts.objects)
         raise
+    # El último paso, fuera del try: cerrar los pasos después de él no borra lo puesto.
     yield Progress(LOAD_PHASE, STEPS_TOTAL, STEPS_TOTAL, "",
-                   _place(scene, project, built, errors))
+                   _place(scene, project, built, errors, figures=figures, replaces=swaps,
+                          unbacked=marked, clear_view_stale=clear_view_stale))
 
 
 _SUFFIX = re.compile(r"(.+)\.\d{3,}")
@@ -545,41 +905,106 @@ def _unsuffixed(obj: bpy.types.Object, name: str) -> None:
             item.name = found.group(1)
 
 
-def _place(scene: Any, project: Any, built: Sequence[_Built],
-           errors: Sequence[str]) -> LoadOutcome:
-    """El último paso de :func:`load_steps`: lo preparado, a la escena (véase allí)."""
+def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[str], *,
+           figures: Mapping[str, Sequence[FigureText]],
+           replaces: Mapping[str, Sequence[str]], unbacked: Sequence[str],
+           clear_view_stale: bool) -> LoadOutcome:
+    """El último paso de :func:`load_steps`: lo preparado, a la escena (véase allí). Avisa una
+    sola vez de que cambió la vista (:func:`_view_changed`), al final, también si se para a
+    medias tras quitar o poner algo."""
     loaded: list[str] = []
+    placed: set[str] = set()
     objects: list[bpy.types.Object] = []
     notes: list[str] = []
     lows: list[np.ndarray] = []
     highs: list[np.ndarray] = []
-    for entry in built:
-        notes.extend(entry.notes)
-        parts, loader, shown = entry.parts, entry.loader, entry.shown
-        if parts is None or loader is None:
-            continue
-        record = shown.record
-        unload_datasets([record.uid])  # otro nivel de detalle, o el dato al día
-        collection = ensure_collection(loader.kind, record, name=entry.name, scene=scene)
-        for obj in parts.objects:
-            _unsuffixed(obj, entry.name)
-            collection.objects.link(obj)
-            _mark(obj, loader.kind, shown, project)
-        loaded.append(record.name)
-        objects.extend(parts.objects)
-        notes.extend(parts.notes)
-        far = scene_precision(parts, project.origin)
-        if far is not None and not far.within_limit:
-            notes.append(tr("«{name}» in the view: {warning}", name=record.name,
-                            warning=far.message))
-        if parts.bounds is not None:
-            lows.append(np.asarray(parts.bounds[0], dtype=np.float64))
-            highs.append(np.asarray(parts.bounds[1], dtype=np.float64))
-    if loaded:
-        ensure_anchor(project, scene)
-    if lows:
-        fit_clip(np.min(lows, axis=0), np.max(highs, axis=0))
+    gone: list[str] = []
+    removed = 0
+    origin = origin_text(project.origin)
+    try:
+        for entry in built:
+            notes.extend(entry.notes)
+            parts, loader, shown = entry.parts, entry.loader, entry.shown
+            if parts is None or loader is None:
+                continue
+            record = shown.record
+            # Otro nivel de detalle, el dato al día o lo que sustituye (spec 010): fuera antes
+            # de ponerlo, para que tome su nombre.
+            removed += _unload([record.uid, *replaces.get(record.uid, ())])
+            collection = ensure_collection(loader.kind, record, name=entry.name, scene=scene)
+            texts = figures.get(record.uid, ())
+            for obj in parts.objects:
+                _unsuffixed(obj, entry.name)
+                collection.objects.link(obj)
+                _mark(obj, loader.kind, shown, project, origin, texts)
+            loaded.append(record.name)
+            placed.add(record.uid)
+            objects.extend(parts.objects)
+            notes.extend(parts.notes)
+            far = scene_precision(parts, project.origin)
+            if far is not None and not far.within_limit:
+                notes.append(tr("«{name}» in the view: {warning}", name=record.name,
+                                warning=far.message))
+            if parts.bounds is not None:
+                lows.append(np.asarray(parts.bounds[0], dtype=np.float64))
+                highs.append(np.asarray(parts.bounds[1], dtype=np.float64))
+        if loaded:
+            ensure_anchor(project, scene)
+        if lows:
+            fit_clip(np.min(lows, axis=0), np.max(highs, axis=0))
+        gone = [uid for uid in unbacked if uid not in placed]
+        if gone:
+            _mark_unbacked(gone)
+        if clear_view_stale and not errors:
+            for item in bpy.data.scenes:
+                if item.geoblender.view_stale:
+                    item.geoblender.view_stale = False
+    finally:
+        if loaded or gone or removed:
+            _view_changed()
     return LoadOutcome(tuple(loaded), tuple(objects), tuple(notes), tuple(errors))
+
+
+# --- Lo que escucha la vista (spec 010, T21) -------------------------------------------------
+
+
+def add_view_listener(listener: ViewListener) -> None:
+    """Apunta ``listener`` para que se llame, sin argumentos, cada vez que se carga o se
+    descarga algo de la vista (desde una orden, un menú o un guion: :func:`load_steps`,
+    :func:`load_datasets`, :func:`unload_datasets`), una vez por carga o descarga y justo
+    después de su petición de la marca en vivo (``bl.scene.live.request``: una más en
+    ``live.view_generation``). Es del inventario de N ▸ Proyecto (``bl.ui.view_panels``): su
+    columna «En la escena» se pone al día sin volver a leer el proyecto (RF-010-07). Si ya
+    estaba, nada."""
+    if listener not in _VIEW_LISTENERS:
+        _VIEW_LISTENERS.append(listener)
+
+
+def remove_view_listener(listener: ViewListener) -> None:
+    """Quita ``listener``; si no estaba, nada."""
+    if listener in _VIEW_LISTENERS:
+        _VIEW_LISTENERS.remove(listener)
+
+
+def view_listeners() -> tuple[ViewListener, ...]:
+    """Lo apuntado con :func:`add_view_listener`, por orden."""
+    return tuple(_VIEW_LISTENERS)
+
+
+def _view_changed() -> None:
+    """Lo cargado o descargado cambia lo que no está al día y lo que está en la escena: pide la
+    marca en vivo del proyecto de la sesión (``bl.scene.live.request``, spec 010, T08), que lo
+    cuenta otra vez (control 7) desde su temporizador, y después llama a lo apuntado con
+    :func:`add_view_listener` (spec 010, T21). No lee nada; una escucha que falla va al
+    registro técnico y no para lo demás."""
+    from . import live, project_session  # al usarlo: live importa este módulo
+
+    live.request(project_session.current())
+    for listener in tuple(_VIEW_LISTENERS):
+        try:
+            listener()
+        except Exception:  # noqa: BLE001 - lo cargado o descargado ya está en la escena
+            LOGGER.exception("Falló una escucha de lo cargado en la vista")
 
 
 def load_datasets(context: Any, project: Any, refs: Iterable[str], *,
@@ -622,7 +1047,17 @@ def _remove_empty(collection: bpy.types.Collection) -> None:
 def unload_datasets(uids: Iterable[str]) -> int:
     """Quita de la escena los objetos que muestran los datos ``uids``, sus mallas (si nadie
     más las usa) y las colecciones de la vista que quedan vacías (RF-006-20); devuelve
-    cuántos objetos quitó. No toca el proyecto."""
+    cuántos objetos quitó. No toca el proyecto; si quitó algo, pide la marca en vivo y avisa
+    a lo apuntado con :func:`add_view_listener`."""
+    count = _unload(uids)
+    if count:
+        _view_changed()
+    return count
+
+
+def _unload(uids: Iterable[str]) -> int:
+    """Lo de :func:`unload_datasets` sin avisar de que cambió la vista (lo hace quien lo
+    llama, una vez: :func:`_place`)."""
     wanted = set(uids)
     found = [obj for obj in bpy.data.objects
              if getattr(obj, OBJECT_PROPERTY).dataset_uid in wanted]

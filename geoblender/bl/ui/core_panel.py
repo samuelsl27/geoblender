@@ -8,7 +8,8 @@ la vista), el CRS horizontal y vertical, el GeoOrigin, la ventana de trabajo y e
 rejilla (:func:`project_rows`, coordenadas con espacio fino de miles), el diario de la base
 («clásico»), si la vista está desfasada y los avisos pendientes; y los botones del
 proyecto (en el original, sacar una copia local; en la copia, publicarla). Sin proyecto,
-cómo crear o abrir uno.
+cómo crear o abrir uno y, si el fichero cargado es vista de un proyecto que no está abierto,
+«Abrir el proyecto de esta vista» (spec 010, T12; RF-010-04: ``bl.scene.view_link``).
 
 Todos los textos pasan por ``core.i18n.tr``. La pestaña y el título se traducen al
 registrar (:func:`localize`): ``bl_category`` y ``bl_label`` son textos fijos de la clase.
@@ -25,7 +26,8 @@ from ...core.errors import GeoblenderError
 from ...core.gpkg.header import read_header
 from ...core.i18n import tr
 from ...core.project.model import OpenMode
-from ..scene import project_session
+from ..scene import project_session, view_link
+from . import labels
 
 TRANSLATION_CONTEXT = "Geoblender"
 PANEL_LABEL = "Project"  # msgid de la pestaña y del título
@@ -112,6 +114,7 @@ class GEOBLENDER_PT_core_project(bpy.types.Panel):
         project = project_session.current()
         if project is None:
             layout.label(text=tr("No project is open"), icon="INFO", translate=False)
+            self.draw_view_offer(context, layout)
             column = layout.column(align=True)
             column.operator("geoblender.core_new_project", text=tr("New project…"),
                             icon="FILE_NEW", translate=False)
@@ -162,6 +165,23 @@ class GEOBLENDER_PT_core_project(bpy.types.Panel):
                         icon="FILE_NEW", translate=False)
         column.operator("geoblender.core_close_project", text=tr("Close project"),
                         icon="PANEL_CLOSE", translate=False)
+
+    def draw_view_offer(self, context: Any, layout: Any) -> None:
+        """Sin proyecto, mientras el fichero cargado sea vista de un proyecto que no está
+        abierto (``view_link.current_offer``): de qué proyecto es y «Abrir el proyecto de esta
+        vista», con su diálogo (spec 010, T12; RF-010-04; plan R3: por si el diálogo se cerró
+        sin respuesta o se pulsó «Ahora no»)."""
+        offer = view_link.current_offer()
+        if offer is None:
+            return
+        box = layout.box()
+        labels.draw_wrapped(box, view_link.panel_text(offer), labels.sidebar_width(context),
+                            icon="FILE_BLEND")
+        # Sin icono: así cabe en la barra lateral de por defecto (con él, no).
+        button = box.operator(view_link.OPEN_VIEW_PROJECT,
+                              text=tr("Open the project of this view"), translate=False)
+        for name, value in offer.properties().items():
+            setattr(button, name, value)
 
     def draw_notices(self, layout: Any) -> None:
         """Los últimos avisos pendientes (de los manejadores y del temporizador) y el

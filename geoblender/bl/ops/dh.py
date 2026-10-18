@@ -138,9 +138,11 @@ cambia ningún valor guardado.
 («Representación»). Cambiar la representación de la escena con la vista cargada la recarga por
 la cola de los sondeos (:func:`display_changed`: una sola en espera; si al empezar ya es la de la
 representación, nada), y el radio cambia los tubos en vivo (``bl.props.dh``). Al abrir el
-proyecto con su vista en la escena sin lo que dibuja la superposición (cargada antes de
-desactivar Geoblender o de abrir el fichero), la vista se recarga igual (T48,
-:func:`on_project_changed`, :func:`refresh_view`). Con unos sondeos
+proyecto con su vista al día en la escena sin lo que dibuja la superposición (cargada antes
+de desactivar Geoblender o de abrir el fichero), la superposición se rehace sin volver a
+cargar la vista (T48; spec 010, T20: :func:`start_overlay`), desde la primera marca en vivo
+tras abrirlo (spec 010, T09: ``bl.scene.dh_view.SESSION_PARTS``); una vista que no está al día
+se queda marcada para Refrescar. Con unos sondeos
 activos, la Leyenda genérica de la 003 (:data:`LEGEND_PROVIDER`, registrada para
 ``DRILLHOLES``) ofrece «Litología (esquema)» y cada elemento de ley y los aplica a la
 representación. Las etiquetas, las leyendas y las marcas las dibuja ``bl.draw.dh_overlay``.
@@ -383,10 +385,11 @@ def register() -> None:
     """Registra las definiciones de parámetros, los lectores de contenido, los tipos de trabajo
     y las declaraciones de procedencia (:data:`OPERATION_DEFS`, :data:`IMPORTER_DEFS`) de los
     sondeos que aún no están, (T27) apunta en la sesión :func:`on_project_changed` (la lista
-    de incidencias del proyecto abierto), (T30) pone la Leyenda genérica de los sondeos
-    (:data:`LEGEND_PROVIDER`) si el tipo no tiene otra y (T47) apunta en los indicadores de la
-    procedencia ``bl.scene.dh_view.show_stale`` (la vista, al día de lo obsoleto cuando el
-    proyecto cambia); idempotente."""
+    de incidencias del proyecto abierto) y (T30) pone la Leyenda genérica de los sondeos
+    (:data:`LEGEND_PROVIDER`) si el tipo no tiene otra; idempotente. La vista, al día de lo
+    obsoleto cuando el proyecto cambia (T47) y con su superposición al abrirlo (T48), la pone la
+    marca en vivo de la vista con lo que declara su cargador (spec 010, T09;
+    ``bl.scene.dh_view.LIVE`` y ``SESSION_PARTS``)."""
     missing = tuple(defn for defn in dh_params.DEFINITIONS
                     if defn.key not in core_params.DEFINITIONS)
     if missing:
@@ -418,12 +421,6 @@ def register() -> None:
     if ui_context.kind_legend_provider(dh_view.KIND) is None:
         ui_context.register_legend_provider(dh_view.KIND, LEGEND_PROVIDER)
         _UNDO.append(_unregister_legend)
-    from ..ui import provenance as ui_provenance  # al usarlo (ARQ-08)
-
-    if dh_view.show_stale not in ui_provenance.change_listeners():
-        ui_provenance.add_change_listener(dh_view.show_stale)
-        _UNDO.append(functools.partial(ui_provenance.remove_change_listener,
-                                       dh_view.show_stale))
 
 
 def _unregister_legend() -> None:
@@ -2014,18 +2011,15 @@ def load_issues(project: Any) -> None:
 
 def on_project_changed(project: Any) -> None:
     """Al cambiar el proyecto de la sesión (``bl.scene.project_session.add_listener``): la
-    lista de incidencias es la de la última validación del nuevo (sin ninguno, vacía) y (T48;
-    RF-005-23, RF-005-25) si la vista de sus sondeos está en la escena sin lo que dibuja su
-    superposición (se cargó antes de desactivar Geoblender o de abrir el fichero) o con otra
-    representación, su recarga (:func:`refresh_view`)."""
+    lista de incidencias es la de la última validación del nuevo (sin ninguno, vacía). Lo que
+    dibuja la superposición de la vista de sus sondeos (T48; RF-005-23, RF-005-25) ya no va
+    aquí: lo rehace la primera marca en vivo tras abrir el proyecto (spec 010, T09 y T20;
+    RF-010-03: ``bl.scene.dh_view.SESSION_PARTS``, que llama a :func:`start_overlay`), sin
+    alargar la apertura ni volver a cargar la vista."""
     try:
         load_issues(project)
     except Exception:  # noqa: BLE001 - la sesión sigue: la lista no es imprescindible
         LOGGER.exception("No se pudo poner la lista de la validación de los sondeos")
-    try:
-        refresh_view(project, check=True)
-    except Exception:  # noqa: BLE001 - la sesión sigue: la vista se recarga a mano
-        LOGGER.exception("No se pudo poner la recarga de la vista de los sondeos")
 
 
 def _validated_steps(handle: OperationHandle, result: JobResult) -> Generator[float, None, str]:
@@ -2242,6 +2236,59 @@ def _view_steps(project: Any, refresh: bool = False) -> Generator[float, None, s
         return "failed"
     for text in () if outcome is None else (*outcome.notes, *outcome.errors):
         _say(text)
+    return "done"
+
+
+OVERLAY_QUEUE = "dh.view.overlay"
+"""La superposición de la vista rehecha sin volver a cargarla, en la cola de incorporación
+(spec 010, T20): aparte de :data:`VIEW_QUEUE`, para que una recarga que se pide mientras espera
+(otra representación) no se pierda."""
+OVERLAY_STATUS = "Restoring the overlay of «{name}»… {percent} %"
+"""Lo que dice la barra de estado mientras se rehace la superposición de la vista (spec 010,
+T20; ``msgid`` con ``name`` y ``percent``)."""
+
+
+def start_overlay(project: Any) -> bool:
+    """Con la vista de los sondeos de ``project`` en la escena sin lo que dibuja su
+    superposición en esta sesión (o con la de otra representación), la pone en la cola de los
+    sondeos rehecha **sin volver a cargarla** (spec 010, T20; RF-010-03; RF-005-23, RF-005-25:
+    ``bl.scene.dh_view.overlay_steps``, con su trabajo y su avance), una sola mientras no
+    empieza (ni con una recarga en espera, que la trae). Es el ``rebuild`` del
+    ``SessionParts`` de los sondeos que llama la primera marca en vivo tras abrir el proyecto,
+    solo si muestran el contenido de hoy. Devuelve si la puso."""
+    if project is None or not dh_view.loaded_objects(project):
+        return False
+    if INCORPORATIONS.waiting(VIEW_QUEUE) or INCORPORATIONS.waiting(OVERLAY_QUEUE):
+        return False
+    if dh_view.up_to_date(project, _scene_display(bpy.context)):
+        return False
+    INCORPORATIONS.add(OVERLAY_QUEUE, _text(VIEW_LABEL), _overlay_steps(project),
+                       status=OVERLAY_STATUS)
+    return True
+
+
+def _overlay_steps(project: Any) -> Generator[float, None, str]:
+    """Los pasos de :func:`start_overlay`: si al empezar hay una recarga en espera (la trae) o
+    la vista ya es la de la representación, nada; si sus objetos no son los que daría la carga
+    de hoy (``OVERLAY_DIFFERENT``) y no hay una recarga en espera, lo dice en los avisos de la
+    sesión sin volver a cargarlos; un error, también."""
+    display = _scene_display(bpy.context)
+    if INCORPORATIONS.waiting(VIEW_QUEUE) or dh_view.up_to_date(project, display):
+        return "done"
+    try:
+        found = yield from dh_view.overlay_steps(project, display)
+    except GeneratorExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - la superposición no se rehace: se dice
+        LOGGER.warning("La superposición de la vista de los sondeos no se rehízo", exc_info=True)
+        _say(tr("The overlay of the drillhole view has not been restored: {reason}",
+                reason=error_text(error)))
+        return "failed"
+    if found == dh_view.OVERLAY_DIFFERENT and not INCORPORATIONS.waiting(VIEW_QUEUE):
+        LOGGER.info("La vista de los sondeos no es la de la base y la representación de hoy: "
+                    "su superposición no se rehace")
+        _say(tr("The overlay of the drillhole view has not been restored: its objects are not "
+                "those of today's base and display; load it again (Load into the view…)"))
     return "done"
 
 
@@ -3802,9 +3849,10 @@ mismo)."""
 def refresh_view(project: Any, *, check: bool = False) -> bool:
     """Con la vista de los sondeos de ``project`` en la escena, su recarga en la cola de los
     sondeos, una sola mientras no empieza (al empezar lee la representación de ese momento; si
-    la vista ya es la de la representación, no carga nada; T30); con ``check`` (T48: al abrir
-    el proyecto), solo si ahora no lo es (``bl.scene.dh_view.up_to_date``: sus objetos sin
-    superposición en esta sesión, o de otra representación). Devuelve si puso una."""
+    la vista ya es la de la representación, no carga nada; T30); con ``check``, solo si ahora
+    no lo es (``bl.scene.dh_view.up_to_date``: sus objetos sin superposición en esta sesión, o
+    de otra representación; al abrir el proyecto no se recarga: :func:`start_overlay`, spec
+    010, T20). Devuelve si puso una."""
     if project is None or not dh_view.loaded_objects(project):
         return False
     if INCORPORATIONS.waiting(VIEW_QUEUE):

@@ -18,9 +18,11 @@ filas de ``dh_trace`` (``jobs.trace_rows``) con la huella de la desviación de c
   sustitución de la entrada que reconstruye la base y deja obsoletas (por ``survey_sha256``)
   solo las trazas de los sondeos de esa entrada; sin motivo, sin referencia, con una entrada
   que no tiene azimuts o con la misma referencia no hace nada. «Solo las obsoletas» las vuelve a
-  calcular (las del dominio) y conserva tal cual las demás. T47: la vista de las trazas
-  cargada antes marca esos sondeos y dice «OBSOLETO» en cuanto lee el proyecto el temporizador
-  de los indicadores, sin recalcular nada (``test_dh_view.check_stale_view``).
+  calcular (las del dominio) y conserva tal cual las demás. T47 (con la marca en vivo de la
+  spec 010, T09; RF-010-02): la vista de las trazas cargada antes marca esos sondeos y dice
+  «OBSOLETO» en cuanto lee el proyecto el temporizador de los indicadores y la marca en vivo lo
+  aplica, con una sola lectura del proyecto y sin recalcular nada
+  (``test_dh_view.check_stale_view``).
 - RF-005-26 (plan §5.6.3): la primera importación registra la regla con su valor por defecto,
   «sin confirmar»; ``geoblender.dh_set_detection_limit_policy`` la registra si falta (no otra
   vez) y abre ``geoblender.core_set_parameter`` con su clave; cambiarla queda en su historial.
@@ -126,7 +128,8 @@ class ComputeOpsTest(DrillholeImportCase):
     # --- La prueba -----------------------------------------------------------------------------
 
     def test_traces_azimuth_reference_and_detection_limit_rule(self) -> None:
-        """RF-005-20, RF-005-22, RF-005-26 (plan §5.6.3, §5.6.6 y §5.6.10; D-22): las tres
+        """RF-005-20, RF-005-22, RF-005-26, RF-010-02 (plan §5.6.3, §5.6.6 y §5.6.10; D-22;
+        plan 010 §5.6): las tres
         órdenes están disponibles y solo calcular las trazas lleva ``UNDO``. Sin base, ni las
         trazas ni la referencia del azimut empiezan. La primera importación registra la regla
         bajo el límite «sin confirmar»; la orden de la regla no la registra otra vez y abre el
@@ -137,7 +140,8 @@ class ComputeOpsTest(DrillholeImportCase):
         cambia nada; con el norte geográfico y su motivo sustituye la entrada de las
         desviaciones, la base gira sus azimuts γ y solo las trazas de S-01 a S-04 quedan
         obsoletas, y la vista de las trazas cargada lo dice en cuanto el temporizador de los
-        indicadores lee el proyecto (T47); «solo las obsoletas» las rehace (las del dominio) y
+        indicadores lee el proyecto y la marca en vivo lo aplica, con una sola lectura (T47; 010,
+        T09); «solo las obsoletas» las rehace (las del dominio) y
         conserva tal cual las otras dos."""
         ops = self.dh_ops
         # Tras cada base, sin su validación: no la necesita ninguna de estas órdenes (T27 la

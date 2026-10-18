@@ -15,7 +15,9 @@ campos y la suscripción de ``msgbus`` al cursor 3D, renovada en ``load_post``) 
 «jobs» de la barra de estado (``jobs``, spec 004: los trabajos en segundo plano, en los dos
 modos) → la procedencia (``provenance``, spec 008: sus campos de la barra de estado, el
 número del control 7 y la escucha del proyecto, con su temporizador) → vistas
-(``views``: el manejador ``load_post`` que olvida su estado de sesión) → disposiciones
+(``views``: el manejador ``load_post`` que olvida su estado de sesión) → Elemento activo
+(``view_panels``, spec 010: la suscripción de ``msgbus`` al objeto activo, renovada en
+``load_post``, y las escuchas del proyecto y de sus indicadores) → disposiciones
 (``layouts``: las comprobaciones de Quitar y Restaurar y su manejador ``load_post``; al
 desregistrar, el temporizador de lo pendiente) → proveedores de
 la Leyenda y del Filtro de datos (``context``: al desregistrar, se olvidan) → línea de
@@ -53,17 +55,20 @@ from . import (
     statusbar,
     switcher,
     topbar,
+    view_panels,
     views,
 )
 from . import help as help_pages
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
-# contrato 2): los menús y la pestaña «Proyecto» de core (spec 002), los paneles reales de
+# contrato 2): los menús y la pestaña «Proyecto» de core (spec 002) con los paneles de la
+# vista regenerable que van en ella (spec 010: Elemento activo), los paneles reales de
 # la interfaz (spec 003), la lista de trabajos (spec 004), lo obsoleto (spec 008) y la pestaña
 # «Sondeos» (spec 005).
 classes: tuple[type, ...] = (
     *core_menus.classes,
     *core_panel.classes,
+    *view_panels.classes,
     *quick_access.classes,
     *context.classes,
     *layouts.classes,
@@ -77,6 +82,7 @@ _UNDO: list[Callable[[], None]] = []
 
 def _register_classes() -> None:
     core_panel.localize()
+    view_panels.localize()
     dh_panels.localize()
     register_classes(classes)
 
@@ -106,6 +112,7 @@ def register() -> None:
         (jobs.install, jobs.uninstall),
         (provenance.install, provenance.uninstall),
         (views.register, views.unregister),
+        (view_panels.register, view_panels.unregister),
         (layouts.register, layouts.unregister),
         (lambda: None, context.clear),
         (lambda: None, command_line.clear),

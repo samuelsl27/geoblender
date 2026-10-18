@@ -55,11 +55,18 @@ la memoria del módulo con sus objetos (:func:`remember`, :func:`overlay_of`): n
 representación con que se cargó (:func:`up_to_date`); :func:`apply_radius` cambia en vivo el
 radio de los tubos y :func:`fill_classes`, las clases propias desde la leyenda de la vista.
 
-**Lo obsoleto, en cuanto lo está** (T47; RF-005-22): cuando el proyecto cambia, el temporizador
-de los indicadores de la procedencia (``bl.ui.provenance``, que ``bl.ops.dh`` apunta) llama a
-:func:`show_stale`: sin recargar la vista ni recalcular nada, pone en ella los sondeos de traza
-obsoleta de ahora (:data:`STALE` y las marcas, :func:`with_stale`) y, en su nombre y en
-``Object.geoblender``, si las trazas están obsoletas.
+**Lo obsoleto, en cuanto lo está** (T47; RF-005-22), con el mecanismo general de la vista
+(spec 010, T09; RF-010-02, RF-010-03; plan 010 §5.6, D-13): :func:`register` declara con el
+cargador (``bl.scene.views.extend_loader``) su marca en vivo, :data:`LIVE`, y lo que no se
+guarda en el ``.blend``, :data:`SESSION_PARTS`. Cuando el proyecto cambia, la marca en vivo de
+la vista (``bl.scene.live``) pone en ``Object.geoblender`` y en su nombre si las trazas están
+obsoletas, como en cualquier dato, y lee en la misma instantánea (:func:`read_stale`) y aplica
+(:func:`apply_stale`) en lo que muestra el contenido de hoy los sondeos de traza obsoleta
+(:data:`STALE` y las marcas, :func:`with_stale`), sin recargar la vista ni recalcular nada; la
+primera tras abrir el proyecto rehace la superposición que le falte a una vista al día
+(:func:`overlay_missing`, :func:`rebuild_overlay`; T48), sin volver a cargarla (spec 010, T20;
+:func:`overlay_steps`, por la cola de los sondeos: lo que calcula la carga, solo para su
+superposición, si sus objetos son los que crearía).
 """
 
 from __future__ import annotations
@@ -75,10 +82,12 @@ from typing import Any
 import bpy
 import numpy as np
 
+from ...core.datasets import registry as dataset_registry
 from ...core.errors import GeoblenderError, ValidationError
 from ...core.georef import GeoOrigin, world_to_local
 from ...core.i18n import format_number, language, tr, translate
 from ...core.numbers import parse_decimal
+from ...core.views.state import origin_text
 from ...drillholes import arrays as dh_arrays
 from ...drillholes import jobs, store, validate
 from ...drillholes.model import DrillholeSet, name_key
@@ -346,20 +355,46 @@ def _bounds(objects: list[bpy.types.Object]) -> tuple[np.ndarray, np.ndarray] | 
 # --- El cargador -------------------------------------------------------------------------------
 
 
-def load_traces(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
-    """Las trazas de los sondeos en la vista (``bl.scene.views.ViewLoader``, en pasos; véase
-    el módulo)."""
+@dataclass(frozen=True, eq=False)
+class _Computed:
+    """Lo que calcula la vista de los sondeos con la representación ``display``
+    (:func:`_computed_steps`): lo leído de la base y de la desviación, la validación guardada,
+    los parámetros y los avisos del trabajo, sus arrays (``view``) y sus curvas y barras con las
+    filas de la base (T54)."""
+
+    base: store.ViewBase
+    source: store.TraceView
+    records: Sequence[Mapping[str, Any]]
+    params: dict[str, Any]
+    notes: list[str]
+    view: jobs.ViewArrays
+    curves: Any | None
+    bars: Any | None
+    display: Any
+
+    def overlay(self, origin: GeoOrigin) -> Overlay:
+        """Lo que dibuja su superposición (:func:`build_overlay`) en locales respecto a
+        ``origin``."""
+        return build_overlay(
+            self.base.dset, self.view, origin=origin, stale=self.source.stale,
+            records=self.records, depth_tolerance_m=self.source.params[DEPTH_TOLERANCE],
+            log_set=self.params["log_set"], element=self.params.get("element", ""),
+            display_key=display_key(self.display))
+
+
+def _computed_steps(project: Any, display: Any, name: str) -> Generator[float, None, _Computed]:
+    """Los pasos 1 y 2 de la carga (véase el módulo) con la representación ``display``: lee la
+    base y la desviación, lanza ``dh_view_arrays`` y espera a que acabe (avance 0–0,7); ``name``
+    es el dato, para los errores. Cerrarlos antes de terminar cancela el trabajo."""
     from ..ops import core_provenance  # bl/ops importa bl/scene: al usarlo
     from ..ops import jobs as jobs_ops
 
-    project = request.project
-    display = _display()
     with project.read() as conn:
         source = store.trace_view(conn)
         if source is None:
             raise GeoblenderError(VIEW_FAILED, "el proyecto no tiene las trazas de los "
                                   "sondeos: calcúlelas antes", obj=_OBJ, field="dato",
-                                  value=request.record.name)
+                                  value=name)
         yield 0.0  # en la red, cada lectura en su paso (T53; RNF-005-06)
         base = yield from _span(store.view_steps(
             conn, log_set=_log_set(display), element=display.element.strip() or None),
@@ -384,7 +419,6 @@ def load_traces(request: views.ViewRequest) -> Generator[float, None, views.View
     except RuntimeError as error:
         raise GeoblenderError(VIEW_FAILED, str(error), obj=_OBJ, field="trabajo",
                               value=jobs.VIEW_ARRAYS) from None
-    created: list[Any] = []
     try:
         result = yield from _wait(handle, jobs_ops.MONITOR.tick, 0.3, 0.7)
         try:
@@ -395,38 +429,49 @@ def load_traces(request: views.ViewRequest) -> Generator[float, None, views.View
             view = jobs.read_view(job_outcome(result, result.job_dir).file(jobs.OUT_VIEW.role))
         finally:
             core_provenance.release_job(result.job_uid)
-        yield 0.75
-        wanted = set(source.stale)
+    except BaseException:
+        abandoned.append(True)
+        if handle.result() is None:
+            handle.cancel()
+        raise
+    curves, bars = view.curves, view.bars  # sus filas, las de la base (T54)
+    if curves is not None:
+        curves = replace(curves, row=base.base_rows(validate.TABLE_NAMES["lithology"],
+                                                    curves.row))
+    if bars is not None:
+        bars = replace(bars, row=base.base_rows(validate.TABLE_NAMES["assays"], bars.row))
+    return _Computed(base, source, records, params, notes, view, curves, bars, display)
+
+
+def load_traces(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
+    """Las trazas de los sondeos en la vista (``bl.scene.views.ViewLoader``, en pasos; véase
+    el módulo)."""
+    display = _display()
+    found = yield from _computed_steps(request.project, display, request.record.name)
+    yield 0.75
+    created: list[Any] = []
+    try:
+        dset, view, curves, bars = found.base.dset, found.view, found.curves, found.bars
+        notes = found.notes
+        wanted = set(found.source.stale)
         stale = np.array([name in wanted for name in dset.collars.name.tolist()],
                          dtype=np.bool_)
         objects: list[bpy.types.Object] = []
-        curves, bars = view.curves, view.bars  # sus filas, las de la base (T54)
-        if curves is not None:
-            curves = replace(curves, row=base.base_rows(validate.TABLE_NAMES["lithology"],
-                                                        curves.row))
-        if bars is not None:
-            bars = replace(bars, row=base.base_rows(validate.TABLE_NAMES["assays"], bars.row))
         if curves is not None and len(curves.curve_sizes):
             objects.append((yield from _span(_tubes(request.name, curves, stale,
                                                     float(display.tube_radius),
                                                     request.origin, created), 0.75, 0.88)))
         if bars is not None and len(bars.faces):
-            element = params.get("element", "")
+            element = found.params.get("element", "")
             objects.append((yield from _span(_bars(f"{request.name} · {element}", bars, stale,
                                                    request.origin, created), 0.88, 0.98)))
         if bars is not None and bars.skipped_units:
             notes.append(tr("{count} values of «{element}» are not in «{unit}»: they have no "
                             "bar (DH-W07)", count=format_number(int(bars.skipped_units), 0),
-                            element=params["element"], unit=view.grade_legend.unit))
-        remember(objects, build_overlay(
-            dset, view, origin=request.origin, stale=source.stale, records=records,
-            depth_tolerance_m=source.params[DEPTH_TOLERANCE], log_set=params["log_set"],
-            element=params.get("element", ""), display_key=display_key(display)))
+                            element=found.params["element"], unit=view.grade_legend.unit))
+        remember(objects, found.overlay(request.origin))
         return views.ViewParts(tuple(objects), _bounds(objects), tuple(notes))
     except BaseException:
-        abandoned.append(True)
-        if handle.result() is None:
-            handle.cancel()
         _remove(created)
         raise
 
@@ -664,49 +709,125 @@ def _mark_stale(objects: Sequence[bpy.types.Object], stale: Sequence[str],
     return changed
 
 
-def show_stale(project: Any) -> bool:
-    """Pone al día de lo obsoleto la vista de los sondeos de ``project`` cargada en el fichero,
-    sin recargarla, sin recalcular nada y sin escribir en el proyecto (T47; RF-005-22): lee
-    del proyecto si su dato (``dh_trace``) está obsoleto (``core.provenance.view.dataset_view``)
-    y los sondeos de traza obsoleta (``drillholes.store.stale_holes``) y, en los objetos que
-    enseñan su contenido de ahora, cambia :data:`STALE` de sus curvas y sus barras, las marcas
-    de su superposición (:func:`with_stale`) y su nombre generado y ``Object.geoblender``
-    («Sondeos [VIGENTE · OBSOLETO]»; ``bl.scene.views.show_state``). La de otro contenido (las
-    trazas se acaban de recalcular) la pone al día su recarga. La llama el temporizador de los
-    indicadores de la procedencia cuando el proyecto cambia (``bl.ui.provenance``). Devuelve
-    si cambió algo."""
-    from ...core.provenance.view import dataset_view  # al usarlo: no al habilitar
+def read_stale(conn: sqlite3.Connection) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Lo que lee la marca en vivo de los sondeos (el ``read`` de :data:`LIVE`), en la
+    instantánea de quien llama (``bl.scene.live``): los sondeos de traza obsoleta
+    (``drillholes.store.stale_holes``) y los de la base, por su ``fid``
+    (``drillholes.store.existing_holes``). No escribe."""
+    return store.stale_holes(conn), store.existing_holes(conn)
 
-    objects = loaded_objects(project)
-    loader = views.loaders().get(PREFIX)
-    if not objects or loader is None:
-        return False
-    groups: dict[str, list[bpy.types.Object]] = {}
+
+def apply_stale(objects: Sequence[bpy.types.Object], _view: Any,
+                found: tuple[Sequence[str], Sequence[str]]) -> bool:
+    """Lo que pone la marca en vivo en los objetos ``objects`` de una vista de los sondeos que
+    muestra el contenido de hoy (el ``apply`` de :data:`LIVE`), con lo que leyó
+    :func:`read_stale` (``found``): :data:`STALE` de sus curvas y sus barras y las marcas de su
+    superposición (:func:`with_stale`). Devuelve si cambió algo."""
+    stale, names = found
+    return _mark_stale(objects, stale, names)
+
+
+def overlay_missing(_project: Any, objects: Sequence[bpy.types.Object]) -> bool:
+    """Si a los objetos ``objects`` de una vista de los sondeos les falta lo que no se guarda
+    en el ``.blend`` (el ``missing`` de :data:`SESSION_PARTS`; T48): alguno sin superposición
+    de esta sesión (se cargó antes de desactivar Geoblender o de abrir el fichero) o con la de
+    otra representación."""
+    key = display_key(_display())
+    return any(found is None or found.display_key != key for found in map(overlay_of, objects))
+
+
+OVERLAY_RESTORED = "restored"
+""":func:`overlay_steps`: la superposición, rehecha en los objetos de la vista."""
+OVERLAY_OUTDATED = "outdated"
+""":func:`overlay_steps`: nada que rehacer; ningún objeto de la vista muestra las trazas de hoy
+(lo pone al día Refrescar)."""
+OVERLAY_DIFFERENT = "different"
+""":func:`overlay_steps`: sin rehacer; los objetos de la vista no son los que dan la base y la
+representación de hoy (su superposición no sería la suya)."""
+
+
+def _showing_today(objects: Iterable[bpy.types.Object], record: Any,
+                   origin: GeoOrigin) -> list[bpy.types.Object]:
+    """Los objetos de ``objects`` que muestran el dato ``record`` (las trazas vivas) con su
+    contenido de hoy y cargados con el GeoOrigin ``origin`` (o sin él anotado: los de antes de
+    la spec 010)."""
+    text = origin_text(origin)
+    found: list[bpy.types.Object] = []
     for obj in objects:
-        groups.setdefault(getattr(obj, OBJECT_PROPERTY).dataset_uid, []).append(obj)
-    try:
-        with project.read() as conn:
-            conn.execute("BEGIN")  # todo en la misma instantánea
-            try:
-                shown = {uid: dataset_view(project, uid, conn=conn) for uid in groups}
-                stale = store.stale_holes(conn)
-                names = store.existing_holes(conn)
-            finally:
-                conn.execute("ROLLBACK")
-    except (GeoblenderError, sqlite3.Error, OSError):
-        LOGGER.info("No se pudo leer lo obsoleto de los sondeos para la vista", exc_info=True)
+        marks = getattr(obj, OBJECT_PROPERTY)
+        if (marks.dataset_uid == record.uid and marks.content_sha256 == record.content_sha256
+                and marks.origin in ("", text)):
+            found.append(obj)
+    return found
+
+
+def _same_parts(objects: Sequence[bpy.types.Object], curves: Any, bars: Any) -> bool:
+    """Si ``objects`` son los que crearía la carga con ``curves`` y ``bars``: los tubos si hay
+    curvas y las barras si hay caras, con el mismo sondeo y la misma fila de la base en cada
+    curva y en cada cara (:data:`HOLE`, :data:`ROW`)."""
+    expected: dict[bool, Any] = {}
+    if curves is not None and len(curves.curve_sizes):
+        expected[True] = curves
+    if bars is not None and len(bars.faces):
+        expected[False] = bars
+    if any(obj.data is None for obj in objects):
         return False
-    changed = False
-    for uid, group in groups.items():
-        found = shown[uid]
-        if found is None or any(getattr(obj, OBJECT_PROPERTY).content_sha256
-                                != found.record.content_sha256 for obj in group):
-            continue
-        changed = _mark_stale(group, stale, names) | changed
-        changed = views.show_state(group, loader, found) | changed
-    if changed:
-        _redraw()
-    return changed
+    shown = {isinstance(obj.data, bpy.types.Curves): obj for obj in objects}
+    if len(shown) != len(objects) or shown.keys() != expected.keys():
+        return False
+    for key, arrays in expected.items():
+        for name, values in ((HOLE, arrays.hole), (ROW, arrays.row)):
+            found = attribute_values(shown[key].data, name)
+            if found is None or not np.array_equal(found, np.asarray(values)):
+                return False
+    return True
+
+
+def overlay_steps(project: Any, display: Any | None = None) -> Generator[float, None, str]:
+    """Los pasos que rehacen lo que dibuja la superposición de la vista de los sondeos de
+    ``project`` **sin volver a cargarla** (spec 010, T20; RF-010-03; RF-005-23, RF-005-25): si
+    alguno de sus objetos muestra las trazas de hoy (su dato vivo, su hash de contenido y el
+    GeoOrigin del proyecto), lo que calcula la carga con la representación ``display`` (por
+    defecto, la de la escena; :func:`_computed_steps`, con su trabajo y su avance) y, si esos
+    objetos son los que crearía (:data:`HOLE` y :data:`ROW` de cada curva y de cada cara), su
+    superposición (:func:`remember`), con las vistas 3D redibujadas. Devuelve
+    :data:`OVERLAY_RESTORED`, :data:`OVERLAY_OUTDATED` o :data:`OVERLAY_DIFFERENT`. No crea ni
+    cambia ningún objeto ni escribe en el proyecto."""
+    display = _display() if display is None else display
+    with project.read() as conn:
+        record = dataset_registry.get(conn, PREFIX)
+    if record is None or not record.live \
+            or not _showing_today(loaded_objects(project), record, project.origin):
+        return OVERLAY_OUTDATED
+    found = yield from _computed_steps(project, display, record.name)
+    # Otra vez, tras los pasos: entre dos, Blender pudo cambiarlos (deshacer, borrar).
+    objects = _showing_today(loaded_objects(project), record, project.origin)
+    if not objects:
+        return OVERLAY_OUTDATED
+    if not _same_parts(objects, found.curves, found.bars):
+        return OVERLAY_DIFFERENT
+    remember(objects, found.overlay(project.origin))
+    _redraw()
+    return OVERLAY_RESTORED
+
+
+def rebuild_overlay(project: Any) -> bool:
+    """Rehace lo que dibuja la superposición de la vista de los sondeos de ``project`` (el
+    ``rebuild`` de :data:`SESSION_PARTS`; T48; spec 010, T20): sin volver a cargarla, en la cola
+    de los sondeos, con su trabajo y su avance (``bl.ops.dh.start_overlay``, :func:`overlay_steps`:
+    solo si no es ya la de la representación, y una sola en espera). Devuelve si la puso."""
+    from ..ops import dh as dh_ops  # bl/ops importa bl/scene: al usarlo
+
+    return dh_ops.start_overlay(project)
+
+
+LIVE = views.LiveHook(read=read_stale, apply=apply_stale)
+"""La marca en vivo de los sondeos (spec 010, T09; RF-005-22, RF-010-02): además de lo general
+de ``bl.scene.live`` (estado, obsoleto y nombre), los sondeos de traza obsoleta."""
+SESSION_PARTS = views.SessionParts(missing=overlay_missing, rebuild=rebuild_overlay)
+"""Lo de la vista de los sondeos que no se guarda en el ``.blend`` (spec 010, T09 y T20;
+RF-005-23, RF-005-25, RF-010-03): la superposición, que la primera marca en vivo tras abrir el
+proyecto rehace sin volver a cargar los sondeos, si están al día (``bl.scene.live``)."""
 
 
 def apply_radius(radius_m: float) -> int:
@@ -754,9 +875,13 @@ def fill_classes(display: Any) -> int:
 
 
 def register() -> None:
-    """Registra el cargador de las trazas si no hay otro para su comienzo; idempotente."""
+    """Registra el cargador de las trazas si no hay otro para su comienzo, con su marca en vivo
+    (:data:`LIVE`) y lo que no se guarda en el ``.blend`` (:data:`SESSION_PARTS`; spec 010,
+    T09; ``bl.scene.views.extend_loader``); el de otro no se toca. Idempotente."""
     if PREFIX not in views.loaders():
         views.register_loader(PREFIX, KIND, LABEL, load_traces)
+    if views.loaders()[PREFIX].load is load_traces:
+        views.extend_loader(PREFIX, live=LIVE, session_parts=SESSION_PARTS)
 
 
 def unregister() -> None:
@@ -768,9 +893,11 @@ def unregister() -> None:
         views.unregister_loader(PREFIX)
 
 
-__all__ = ["CLASS", "COLOR", "HOLE", "JOB_LABEL", "KIND", "LABEL", "MARK_EXCLUDED",
-           "MARK_PARTIAL", "MARK_STALE", "NOT_DELIVERED", "PREFIX", "ROW", "STALE",
-           "VIEW_FAILED", "Mark", "Overlay", "ViewLabel", "apply_radius", "build_overlay",
-           "display_key", "fill_classes", "forget_overlays", "grade_legend", "load_traces",
-           "loaded_objects", "overlay_of", "register", "remember", "show_stale", "unregister",
-           "up_to_date", "with_stale"]
+__all__ = ["CLASS", "COLOR", "HOLE", "JOB_LABEL", "KIND", "LABEL", "LIVE", "MARK_EXCLUDED",
+           "MARK_PARTIAL", "MARK_STALE", "NOT_DELIVERED", "OVERLAY_DIFFERENT",
+           "OVERLAY_OUTDATED", "OVERLAY_RESTORED", "PREFIX", "ROW", "SESSION_PARTS", "STALE",
+           "VIEW_FAILED", "Mark", "Overlay", "ViewLabel", "apply_radius", "apply_stale",
+           "build_overlay", "display_key", "fill_classes", "forget_overlays", "grade_legend",
+           "load_traces", "loaded_objects", "overlay_missing", "overlay_of", "overlay_steps",
+           "read_stale", "rebuild_overlay", "register", "remember", "unregister", "up_to_date",
+           "with_stale"]

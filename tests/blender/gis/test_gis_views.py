@@ -87,6 +87,8 @@ CSV_TEXT = """P;X;Y;Z;Código;Línea
 """
 OBJECT_PROPS = ("kind", "dataset_uid", "project_uid", "content_sha256", "stale", "status",
                 "date")
+# Los de la vista regenerable (spec 010, T07; los prueba tests/blender/test_views_state.py).
+VIEW_PROPS = ("view_state", "origin", "figures")
 STATUS = {"current": "CURRENT", "blocked": "BLOCKED", "damaged": "DAMAGED"}
 # La prueba de la superposición inicia la GPU (gpu.init) y, después, abrir un .blend tarda
 # en el mismo Blender unas 25 veces más (0,11 s frente a 0,004 s): este módulo se ejecuta
@@ -799,7 +801,7 @@ class ViewRegistrationTest(unittest.TestCase):
                          ("POINTER", "GEOBLENDER_PG_core_object"))
         group = rna.fixed_type.properties
         own = [key for key in group.keys() if key not in ("rna_type", "name")]
-        self.assertEqual(sorted(own), sorted(OBJECT_PROPS))
+        self.assertEqual(sorted(own), sorted((*OBJECT_PROPS, *VIEW_PROPS)))
         self.assertEqual([key for key in group.keys() if group[key].type == "FLOAT"], [])
         kinds = [item.identifier for item in group["kind"].enum_items]
         self.assertEqual(kinds[:9], ["NONE", "PROJECT_ANCHOR", "DTM", "TIN", "POINTS",

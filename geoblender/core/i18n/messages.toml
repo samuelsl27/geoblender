@@ -1738,6 +1738,343 @@ es = "Seleccione objetos cargados del proyecto"
 ["Unloaded from the view: {count} objects; the data stay in the project"]
 es = "Descargado de la vista: {count} objetos; los datos siguen en el proyecto"
 
+# La vista regenerable: las marcas de los objetos y sus nombres generados (spec 010, T07;
+# RF-010-01, RF-010-02, RF-010-08; plan 010 §5.2 y §5.5, D-10 y D-17). «Figure», «Name»,
+# «Value», «Unit» y «Type» ya están.
+
+["NOT UP TO DATE"]
+es = "NO AL DÍA"
+
+["UNBACKED"]
+es = "SIN RESPALDO"
+
+["In the view"]
+es = "En la vista"
+
+["Whether the object shows what its data has now in the project"]
+es = "Si el objeto muestra lo que tiene ahora su dato en el proyecto"
+
+["Up to date"]
+es = "Al día"
+
+["It shows the content, the status and the GeoOrigin that its data has now in the project"]
+es = "Muestra el contenido, el estado y el GeoOrigin que tiene ahora su dato en el proyecto"
+
+["Not up to date"]
+es = "No al día"
+
+["It shows an earlier content of its data, or it was loaded with another GeoOrigin: Refresh (F5)"]
+es = "Muestra un contenido anterior de su dato, o se cargó con otro GeoOrigin: Refrescar (F5)"
+
+["Unbacked in the project"]
+es = "Sin respaldo en el proyecto"
+
+["Its data is no longer in the project or was discarded: it is not deleted"]
+es = "Su dato ya no está en el proyecto o se descartó: no se borra"
+
+["GeoOrigin"]
+es = "GeoOrigin"
+
+["GeoOrigin with which it was loaded, «X0 Y0 Z0» in whole metres"]
+es = "GeoOrigin con que se cargó, «X0 Y0 Z0» en metros enteros"
+
+["Figures"]
+es = "Cifras"
+
+["Figures recorded for its data when it was loaded or refreshed, as text: only to show them"]
+es = "Cifras registradas de su dato al cargarlo o al refrescar, en texto: solo para mostrarlas"
+
+["Key"]
+es = "Clave"
+
+# La marca en vivo: la descripción de Refrescar (control 7) mientras algo no está al día (spec
+# 010, T08; RF-010-02; plan 010 §5.5).
+
+["1 data item in the view is not up to date"]
+es = "1 dato de la vista no está al día"
+
+["{n} data items in the view are not up to date"]
+es = "{n} datos de la vista no están al día"
+
+# El aviso de la primera lectura tras abrir el proyecto o un .blend con él abierto (spec 010,
+# T10; RF-010-03; plan 010 §5.5, A4).
+
+["1 data item in the view is not up to date: Refresh (F5)"]
+es = "1 dato de la vista no está al día: Refrescar (F5)"
+
+["{n} data items in the view are not up to date: Refresh (F5)"]
+es = "{n} datos de la vista no están al día: Refrescar (F5)"
+
+# Refrescar las vistas desde el proyecto, F5: su avance, su final y su cancelación (spec 010,
+# T11; RF-010-01; plan 010 §5.5).
+
+["Refreshing «{name}» in the view… {percent} % · Esc: cancel"]
+es = "Refrescando «{name}» en la vista… {percent} % · Esc: cancelar"
+
+["Refresh cancelled: the view stays as it was"]
+es = "Refrescar cancelado: la vista queda como estaba"
+
+["The view is up to date"]
+es = "La vista está al día"
+
+["View up to date: {parts}"]
+es = "Vista al día: {parts}"
+
+["1 data item reloaded"]
+es = "1 dato vuelto a cargar"
+
+["{n} data items reloaded"]
+es = "{n} datos vueltos a cargar"
+
+["{n} unbacked in the project"]
+es = "{n} sin respaldo en el proyecto"
+
+["1 missing from the project"]
+es = "1 falta en el proyecto"
+
+["{n} missing from the project"]
+es = "{n} faltan en el proyecto"
+
+["{n} up to date"]
+es = "{n} al día"
+
+["The project was closed while refreshing the view: the view stays as it was"]
+es = "Se cerró el proyecto mientras se refrescaba la vista: la vista queda como estaba"
+
+["Refreshing the view stopped: {error}"]
+es = "Refrescar la vista se ha parado: {error}"
+
+# Abrir el proyecto de una vista cargada sin él: el diálogo, el panel Proyecto y lo que dice al
+# aceptar (spec 010, T12; RF-010-04; plan 010 §5.5, A5, R3).
+
+["Open the project of this view"]
+es = "Abrir el proyecto de esta vista"
+
+["Not now"]
+es = "Ahora no"
+
+["Open the project «{name}» of this view? It is in «{path}» (relative to the view)."]
+es = "¿Abrir el proyecto «{name}» de esta vista? Está en «{path}» (relativa a la vista)."
+
+["Open the project «{name}» of this view? The view does not say where it is: it is looked for among the recent projects of this computer."]
+es = "¿Abrir el proyecto «{name}» de esta vista? La vista no dice dónde está: se busca entre los proyectos recientes de este equipo."
+
+["This view is of the project «{name}», which is not open"]
+es = "Esta vista es del proyecto «{name}», que no está abierto"
+
+["The project «{name}» of this view is already open"]
+es = "El proyecto «{name}» de esta vista ya está abierto"
+
+# El proyecto de la vista no se encuentra y «Localizar el proyecto…» (spec 010, T13; RF-010-05;
+# plan 010 §5.5, A5).
+
+["Locate the project…"]
+es = "Localizar el proyecto…"
+
+["The project «{name}» of the view «{view}» cannot be found: it was expected in «{path}» with the identity {uid}; it is not there nor among the recent projects of this computer. Locate it or open it by hand."]
+es = "No se encuentra el proyecto «{name}» de la vista «{view}»: se esperaba en «{path}» con la identidad {uid}; no está allí ni entre los proyectos recientes de este equipo. Localícelo o ábralo a mano."
+
+["The project «{name}» of the view «{view}» cannot be found: it was expected in «{path}» with the identity {uid}, but there is another project there (identity {other}) and it is not among the recent projects of this computer. Locate it or open it by hand."]
+es = "No se encuentra el proyecto «{name}» de la vista «{view}»: se esperaba en «{path}» con la identidad {uid}, pero allí hay otro proyecto (identidad {other}) y no está entre los proyectos recientes de este equipo. Localícelo o ábralo a mano."
+
+["The project «{name}» of the view «{view}» cannot be found: the view does not say where it is and no recent project of this computer has its identity, {uid}. Locate it or open it by hand."]
+es = "No se encuentra el proyecto «{name}» de la vista «{view}»: la vista no dice dónde está y ningún proyecto reciente de este equipo tiene su identidad, {uid}. Localícelo o ábralo a mano."
+
+["The folder «{folder}» is the project «{other}» (identity {found}), not the one of the view ({uid}): it is not opened"]
+es = "La carpeta «{folder}» es el proyecto «{other}» (identidad {found}), no el de la vista ({uid}): no se abre"
+
+["The folder «{folder}» is not a Geoblender project nor the one of the view ({uid}): it is not opened"]
+es = "La carpeta «{folder}» no es un proyecto de Geoblender ni el de la vista ({uid}): no se abre"
+
+# N ▸ Proyecto ▸ Elemento activo: la ficha del dato del objeto activo (spec 010, T14; RF-010-06;
+# plan 010 §5.5, A6, D-16). «Figures», «No inputs» y los estados («CURRENT», «STALE»…) ya están.
+
+["Active item"]
+es = "Elemento activo"
+
+["The active object does not show data of this project"]
+es = "El objeto activo no muestra un dato de este proyecto"
+
+["Reading the project data of the active object…"]
+es = "Leyendo del proyecto el dato del objeto activo…"
+
+["The project no longer has the data of this object"]
+es = "El proyecto ya no tiene el dato de este objeto"
+
+["Type: {kind}"]
+es = "Tipo: {kind}"
+
+["Status: {status}"]
+es = "Estado: {status}"
+
+["In the view: up to date"]
+es = "En la vista: al día"
+
+["In the view: not up to date: Refresh (F5)"]
+es = "En la vista: no al día: Refrescar (F5)"
+
+["In the view: unbacked in the project"]
+es = "En la vista: sin respaldo en el proyecto"
+
+["Version: {version}"]
+es = "Versión: {version}"
+
+["Operation: {operation}"]
+es = "Operación: {operation}"
+
+["↑ Inputs"]
+es = "↑ Entradas"
+
+["↓ Derived data"]
+es = "↓ Derivados"
+
+["No derived data"]
+es = "Ningún derivado"
+
+["No figures recorded"]
+es = "Sin cifras registradas"
+
+["Provenance"]
+es = "Procedencia"
+
+# N ▸ Proyecto ▸ Inventario: lo registrado en el proyecto, sus filtros (enumerados fijos), la fila
+# elegida y sus órdenes (spec 010, T15; RF-010-07; plan 010 §5.5, A7, D-15). «Type», «Status»,
+# «Version», «Text», «Drillholes», «Input», «Load into the view», «Provenance», los estados
+# («CURRENT», «STALE»…) y «Type: {kind}», «Status: {status}» y «Version: {version}» ya están.
+
+["Inventory"]
+es = "Inventario"
+
+["What is registered in the project, loaded in the view or not"]
+es = "Lo registrado en el proyecto, cargado o no en la vista"
+
+["Chosen row"]
+es = "Fila elegida"
+
+["Row whose orders are shown below the list"]
+es = "Fila cuyas órdenes se muestran bajo la lista"
+
+["Words that the name has to contain, without telling capitals or accents apart"]
+es = "Palabras que tiene que tener el nombre, sin distinguir mayúsculas ni tildes"
+
+["Only the inputs, or the data of this type"]
+es = "Solo las entradas, o los datos de este tipo"
+
+["Only what has this status"]
+es = "Solo lo que tiene este estado"
+
+["Only what has this version"]
+es = "Solo lo que tiene esta versión"
+
+["Only what is loaded in the scene, or only what is not"]
+es = "Solo lo cargado en la escena, o solo lo que no"
+
+["Everything"]
+es = "Todo"
+
+["Inputs"]
+es = "Entradas"
+
+["Grids"]
+es = "Rejillas"
+
+["Meshes"]
+es = "Mallas"
+
+["Vector data"]
+es = "Vectoriales"
+
+["Tables"]
+es = "Tablas"
+
+["Others"]
+es = "Otros"
+
+["Live items"]
+es = "Vivos"
+
+["Current items"]
+es = "Vigentes"
+
+["Stale items"]
+es = "Obsoletos"
+
+["Changed input"]
+es = "Entrada cambiada"
+
+["Unusable items"]
+es = "No se pueden usar"
+
+["Project history"]
+es = "Historia"
+
+["Any status"]
+es = "Todos"
+
+["All versions"]
+es = "Todas"
+
+["Without version"]
+es = "Sin versión"
+
+["In the scene"]
+es = "En la escena"
+
+["Not in the scene"]
+es = "Fuera de la escena"
+
+["Reading the project inventory…"]
+es = "Leyendo el inventario del proyecto…"
+
+["Nothing in the project matches the filter"]
+es = "Nada del proyecto cumple el filtro"
+
+["… and {count} more: refine the filter"]
+es = "… y {count} más: afine el filtro"
+
+["INPUT CHANGED"]
+es = "ENTRADA CAMBIADA"
+
+["Loaded in the scene"]
+es = "Cargado en la escena"
+
+["Not loaded in the scene"]
+es = "No cargado en la escena"
+
+["Unload"]
+es = "Descargar"
+
+["An input is not loaded into the view: the data imported from it are"]
+es = "Una entrada no se carga en la vista: se cargan los datos importados de ella"
+
+["A superseded or discarded dataset is not loaded into the view"]
+es = "Un dato sustituido o descartado no se carga en la vista"
+
+["Its file or its table is missing: it cannot be loaded into the view"]
+es = "Falta su fichero o su tabla: no se puede cargar en la vista"
+
+["No module loads this dataset into the view"]
+es = "Ningún módulo carga este dato en la vista"
+
+["Not loaded in the scene: there is nothing to unload"]
+es = "No está cargado en la escena: no hay nada que descargar"
+
+["An input has no provenance: the data imported from it have it"]
+es = "Una entrada no tiene procedencia: la tienen los datos importados de ella"
+
+# Cifras de la selección (control 29): su ventana, con las cifras registradas de los datos
+# seleccionados, sin medir (spec 010, T16; RF-010-08; plan 010 §5.5, A8). «No figures
+# recorded» y «No project is open» ya están.
+
+["Selection figures"]
+es = "Cifras de la selección"
+
+["No selected object shows data of this project"]
+es = "Ningún objeto seleccionado muestra un dato de este proyecto"
+
+["No figures recorded: no operation of these data recorded figures (the cubature records them, for example)"]
+es = "Sin cifras registradas: ninguna operación de estos datos registró cifras (las registra, por ejemplo, la cubicación)"
+
 # Las órdenes de un MDT (spec 006, T28; RF-006-04 a RF-006-06, RF-006-08, RF-006-09, RF-006-11,
 # RF-006-27; plan 006 §5.3.5, §5.5 y §5.6.4): Importar ▸ MDT ráster… y Rejilla de proyecto
 # desde un MDT…, sus diálogos, sus informes y la decisión de una importación que espera.
@@ -4119,6 +4456,17 @@ es = "Cargando «{name}» en la vista… {percent} %"
 
 ["The drillhole traces have not been loaded into the view: {reason}"]
 es = "Las trazas de los sondeos no se han cargado en la vista: {reason}"
+
+# Su superposición, rehecha al abrir sin volver a cargarla (spec 010, T20; RF-010-03).
+
+["Restoring the overlay of «{name}»… {percent} %"]
+es = "Rehaciendo la superposición de «{name}»… {percent} %"
+
+["The overlay of the drillhole view has not been restored: {reason}"]
+es = "La superposición de la vista de los sondeos no se ha rehecho: {reason}"
+
+["The overlay of the drillhole view has not been restored: its objects are not those of today's base and display; load it again (Load into the view…)"]
+es = "La superposición de la vista de los sondeos no se ha rehecho: sus objetos no son los de la base y la representación de hoy; vuelva a cargarla (Cargar en la vista…)"
 
 ["«{element}» is not an element of the drillhole catalog: it has no grade bars"]
 es = "«{element}» no es un elemento del catálogo de los sondeos: no tiene barras de leyes"

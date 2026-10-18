@@ -15,11 +15,14 @@ largos en segundo plano, con un motor de cálculo opcional (spec 004), registra 
 de los parámetros, las entradas, las operaciones y las cifras del proyecto (spec 008) y tiene
 su primera función minera, la topografía base: MDT, rejilla de cálculo de paso exacto, TIN,
 curvas de nivel y su intercambio con QGIS (spec 006); la segunda, los sondeos: importar tablas y
-bases de RecMin, validarlos, calcular sus trazas y verlos en 3D (spec 005, aún sin integrar en la
-rama principal). Lo de la spec 002 está comprobado también
-con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un solo equipo; falta con dos equipos a
-la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar de la del panel del proyecto, las de
-la interfaz de la spec 003. Lo de la spec 003 está comprobado en una pantalla de 1920 × 1080
+bases de RecMin, validarlos, calcular sus trazas y verlos en 3D (spec 005). Y la vista de Blender
+se pone al día desde el proyecto: marca lo que ya no está al día, lo vuelve a cargar con F5,
+ofrece abrir el proyecto de una vista y enseña la ficha del objeto activo, el inventario del
+proyecto y las cifras de la selección (spec 010, aún sin integrar en la rama principal). Lo de
+la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
+solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
+de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
+comprobado en una pantalla de 1920 × 1080
 con Windows al 125 %, salvo algunas teclas en modo Blender, la lista de F3 en los dos modos, la
 barra T de Blender, la fila 1, el clic derecho, Mayús+Alt+B y la chincheta, la fila 2 en
 edición, dos idiomas de entrada, la plantilla instalada en el Blender de cada uno, la revisión
@@ -43,9 +46,70 @@ dos formatos, con el GDAL de QGIS 4.2 y con QGIS 4.2 (sin su interfaz y, la vist
 y en la pantalla de referencia el 15/10/2026 (la importación, la base de RecMin, la vista y la
 procedencia; lo que salió se corrigió después, con sus pruebas); faltan que un ingeniero de IMGA
 importe la base de ejemplo y la vea en 3D sin ayuda (CE-005-04), la comparación con una base real
-de RecMin (CE-005-05), que se ejecuta a petición, y los puestos de IMGA con el motor de Access.
+de RecMin (CE-005-05), que se ejecuta a petición, y los puestos de IMGA con el motor de Access. Lo
+de la spec 010 está comprobado con Blender 5.2.1 sin su interfaz, con datos sintéticos (también
+con el volumen de un proyecto grande: 20 000 datos en el proyecto y 200 en la vista) y en `Z:`, y
+el recorrido del MDT y los sondeos, con las órdenes reales; falta verlo en la pantalla de
+referencia (el resaltado de Refrescar, abrir una vista con doble clic y los paneles).
 
 ### Añadido
+
+- **Vistas regenerables** (spec 010). Lo que se ve en Blender es una vista del proyecto, nunca
+  su fuente: se pone al día desde el proyecto, sin escribir nada en él (también en solo
+  lectura) y sin borrar ningún objeto.
+  - **La vista marca en vivo lo que no está al día.** En menos de 1 s tras cualquier cambio en
+    el proyecto (un recálculo, un parámetro, una entrada actualizada o descartada, otra sesión
+    que escribe) o un Ctrl+Z que devuelve un objeto a una carga anterior, los objetos y su
+    colección cambian de nombre sin volver a cargarse: «MDT mdt_norte [VIGENTE · NO AL DÍA]»
+    (muestra un contenido anterior), «[VIGENTE · OBSOLETO]», «[SIN RESPALDO]» (su dato ya no
+    está en el proyecto o se descartó) o «[FALTA]». Lo que hacía solo la vista de los sondeos,
+    ahora en todo dato cargado. Mientras haya algo así, el control 7 del acceso rápido
+    («Refrescar») sale resaltado y su descripción dice cuántos («3 datos de la vista no están
+    al día»). Los objetos del usuario y los de «99 Trabajo» no se tocan nunca.
+  - **Refrescar las vistas desde el proyecto** (F5, Proyecto ▸ Refrescar…, el control 7):
+    vuelve a cargar por pasos, con su avance en la barra de estado y Esc, solo lo que no está
+    al día (también lo cargado con otro origen local) y, en lugar de lo importado de una
+    entrada actualizada, lo importado de la nueva; lo demás no se toca (con el MDT y los
+    sondeos en la vista, tras recalcular el MDT, solo el MDT). Cancelado, la vista queda como
+    estaba; al terminar, «Vista al día: 1 dato vuelto a cargar, 2 sin respaldo en el proyecto,
+    197 al día»; Ctrl+Z deshace la recarga. Un dato obsoleto no se recarga (su contenido no
+    cambió): primero Recalcular lo obsoleto. Antes, F5 decía «Disponible en R-07».
+  - **Al abrir el proyecto** (o otra vista suya con él abierto), lo que no está al día se marca
+    sin volver a cargarlo y se dice una vez («3 datos de la vista no están al día: Refrescar
+    (F5)»), y la superposición de los sondeos al día (etiquetas, leyendas y marcas) se rehace
+    en segundo plano, sin volver a cargarlos. Abrir tarda lo mismo con la vista que sin ella.
+  - **Abrir el proyecto de una vista.** Al abrir con doble clic una vista sin su proyecto, además
+    del aviso de siempre, un diálogo ofrece «Abrir el proyecto de esta vista»: lo busca donde lo
+    guardó la vista y, si no está, entre los proyectos recientes del equipo por su identidad, y
+    lo abre con sus reglas de siempre (cerrojo, solo lectura, migración). «Ahora no» no abre
+    nada, y el panel Proyecto mantiene el botón. Si no lo encuentra, dice dónde se esperaba y
+    con qué identidad, y «Localizar el proyecto…» solo acepta ese proyecto. No se ofrece en un
+    guion sin interfaz, al recuperar una sesión o un autoguardado, ni en una vista dentro de una
+    copia de respaldo del proyecto (`.anterior`, `.respaldo-esquema-N`, `.publicando`).
+  - **N ▸ Proyecto ▸ Elemento activo**: del dato del objeto activo, leído del proyecto, su tipo,
+    su estado, si está al día en la vista, su versión («—» hasta que lleguen las versiones), la
+    operación que escribió su contenido (con su fecha y la versión de Geoblender), sus entradas
+    con su hash, sus derivados con «obsoleto» y sus cifras con su unidad y su tipo; Procedencia
+    abre su cadena entera.
+  - **N ▸ Proyecto ▸ Inventario**: lo registrado en el proyecto, cargado o no (entradas y
+    datos), con su estado, sus marcas (obsoleto, entrada cambiada) y si está en la escena;
+    filtros por tipo, estado (los vivos, por defecto), versión, presencia en la escena y texto
+    (sin distinguir mayúsculas ni tildes), como mucho 500 filas a la vez («… y 19 500 más: afine
+    el filtro»), y Cargar en la vista, Descargar y Procedencia de la fila elegida (desactivadas
+    con su motivo si no se puede). Al cargar o descargar (desde el inventario, el menú o un
+    guion), sus filas se ponen al día sin volver a leer el proyecto.
+  - **Cifras de la selección** (control 29; Herramientas ▸ Consulta): las cifras registradas de
+    los datos de los objetos seleccionados, con su insignia de tipo, su unidad y sus marcas
+    («depende de una hipótesis», «obsoleta»). No mide nada; hasta que la cubicación registre las
+    primeras, dice «Sin cifras registradas». Cada objeto guarda además, en texto de solo
+    lectura, las cifras de su dato, puestas al día al cargarlo y en cada Refrescar; ningún
+    cálculo las lee.
+  - Medido con Blender 5.2.1 en el PC de referencia: Refrescar una vista con 200 datos de los
+    que cambiaron 10 (uno, una malla de 1 millón de vértices), 1,3 s (≤ 5 s), con el avance cada
+    0,13 s como mucho y Esc en 0,12 s; el inventario de un proyecto de 20 000 datos se abre y se
+    filtra en 0,08 s como mucho (≤ 0,5 s; en `Z:`, 0,07 s); la marca de 200 datos que quedan
+    obsoletos a la vez, al día en 0,63 s (≤ 1 s), sin que ningún paso pase de 20 ms; en `Z:` se
+    midió sin cambios y con 10 de 200 no al día: ningún paso pasa de 20 ms (15,3 ms el más largo).
 
 - **Sondeos** (spec 005). La rama geológica empieza: bocas, desviaciones, litología y análisis en
   el proyecto, validados, con su traza 3D y visibles en Blender y en QGIS, sin tocar nunca las
@@ -713,7 +777,7 @@ de RecMin (CE-005-05), que se ejecuta a petición, y los puestos de IMGA con el 
   publicación pide siempre (spec 004, versión 0.4), y el resumen lo dice. Tarda unos 34 s
   (con `--completo`, unos 97 s). Las pruebas que copiaban entradas a la carpeta de un
   trabajo ya no dejan una carpeta en `%TEMP%` cada vez (las entradas son de solo lectura y
-  no se borraban).
+  no se borraban). Con las pruebas de las vistas regenerables (spec 010), unos 38 s.
 - Solo un `tools/check.py` a la vez en el equipo (spec 006): si hay otro en marcha (de la
   misma carpeta, de un *worktree* o de otra sesión), el nuevo dice a cuál espera (su pid y su
   carpeta) y empieza cuando termina; su tiempo se cuenta desde entonces. Antes los dos se

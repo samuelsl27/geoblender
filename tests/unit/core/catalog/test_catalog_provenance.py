@@ -4,7 +4,8 @@ ADR-0011).
 
 - La entrada ``008`` tiene su título en inglés y en español y entrega sus comandos: los de
   Proyecto ▸ Control y el panel de lo obsoleto del control 7 pasan de ``R-07`` a ``008``;
-  lo de la 009 (versiones, refrescar, decisiones, reproducir) sigue en ``R-07``.
+  lo de la 009 (versiones, decisiones, reproducir) sigue en ``R-07``; Refrescar pasa a la
+  ``010`` (spec 010, T11).
 - Las nueve órdenes internas nuevas del plan §5.3.2 están en ``common.toml`` como
   ``internal``, de ``core`` y sin casa en un menú; toda orden que declara una operación de
   ``core`` (``OperationDef.commands``) existe en el catálogo.
@@ -47,9 +48,9 @@ INTERNAL = (
     "geoblender.core_resolve_unregistered",
     "geoblender.core_cancel_checks",
 )
-# Lo de la 009 (versiones, revisiones y vistas): sigue «Disponible en R-07».
+# Lo de la 009 (versiones, revisiones y vistas): sigue «Disponible en R-07». Refrescar ya no:
+# es de la 010 (T11; plan 010 D-18).
 LATER = (
-    "geoblender.core_refresh",
     "GEOBLENDER_MT_core_versions",
     "geoblender.core_set_active_version",
     "geoblender.core_new_version",
