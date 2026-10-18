@@ -1,0 +1,724 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""La copia de una instantánea por pasos (spec 009, T12; RF-009-07; plan 009 A6, §5.2.5, D-11,
+D-28, D-29, D-30, D-41; ADR-0026).
+
+``core.versions.copy.copy_steps`` copia lo que dice el plan de una congelación
+(``core.versions.freeze.freeze_plan``) a la carpeta temporal de la instantánea
+(``snapshots/V01.r1.congelando-<8 hex>/``), sobre el proyecto de la demostración de versiones
+(``tests/support/versions_fixtures.py``):
+
+1. cada rejilla y cada malla, con su huella, ``fsync`` cada 32 MiB y al final, y el hash de
+   contenido de la copia (con el lector y el normalizador de su dato) igual al registrado;
+2. las tablas y capas, en un GeoPackage 1.4 armado en la caché (las de un selector, solo sus
+   filas), sin disparadores, en diario clásico, con el CRS del proyecto y el hash de cada una
+   igual al registrado (también una capa con geometría);
+3. el manifiesto de §5.2.5, compacto y sin rutas absolutas; ningún Parquet (ADR-0026);
+4. lo ya copiado en otra revisión, referenciado y no copiado; una revisión vacía, solo su
+   manifiesto (D-41);
+5. cancelar en cada fase, un dato que cambia mientras se copia (otra conexión, como QGIS), una
+   copia que no tiene el contenido registrado y la falta de espacio: no queda nada (la temporal,
+   borrada) y nada se escribe en la base; el progreso de cada paso; renombrar la temporal sin
+   sustituir los restos de otra congelación.
+
+La confirmación (la revisión congelada y la siguiente abierta, A7) es de la T13. Datos solo
+sintéticos.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import types
+import unittest
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+from tests.support import provenance_demo as demo_support
+from tests.support import versions_demo as vdemo
+from tests.support import versions_fixtures as fixtures
+from tests.support.package import import_geoblender
+
+copy_mod = import_geoblender("core.versions.copy")
+freeze = import_geoblender("core.versions.freeze")
+model = import_geoblender("core.versions.model")
+readers = import_geoblender("core.content.readers")
+builtin = import_geoblender("core.content.builtin")
+dataset_model = import_geoblender("core.datasets.model")
+gpkg_base = import_geoblender("core.gpkg.base")
+hashing = import_geoblender("core.hashing")
+
+ItemKind = model.ItemKind
+ItemPart = model.ItemPart
+TINY = 1e-9
+"""Un presupuesto por paso tan pequeño que cada paso de dentro da su ``Progress``."""
+TABLES = (vdemo.PIT_BENCHES, vdemo.PIT_STOCKPILES_TABLE, vdemo.SKETCH_LAYER)
+"""Las tablas y capas de V01 que copia la instantánea, además de las de aguas arriba."""
+UPSTREAM_TABLES = (demo_support.STOCKPILES_TABLE, demo_support.CANDIDATES_TABLE,
+                   demo_support.YEARS_TABLE, demo_support.BENCHES_TABLE,
+                   demo_support.MARKS_TABLE)
+"""Lo derivado o editable del proyecto aguas arriba de ``demo.pit_stockpiles``."""
+_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _strings(value: Any) -> Iterator[str]:
+    """Todos los textos de un JSON (claves y valores)."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+class FreezeCopyCase(fixtures.VersionsProjectCase):
+    """Ayudas para las pruebas de la copia de una instantánea."""
+
+    def plan(self, version: str = "V01") -> Any:
+        return freeze.freeze_plan(self.project, version)
+
+    def cache(self) -> Path:
+        return Path(self.project.cache_dir())
+
+    def steps(self, plan: Any, **kw: Any) -> tuple[Iterator[Any], Path]:
+        """Los pasos de la copia de ``plan`` (un ``Progress`` por paso, salvo otro presupuesto)
+        y su carpeta temporal."""
+        temporary = copy_mod.temporary_path(self.root, plan.label)
+        kw.setdefault("budget_s", TINY)
+        return copy_mod.copy_steps(self.project, plan, temporary, self.cache(), **kw), temporary
+
+    def copy(self, plan: Any, *, stop: Callable[[Any], bool] | None = None,
+             **kw: Any) -> tuple[list[Any], Path]:
+        """La copia hasta el final o, con ``stop``, hasta el paso en que dé verdadero (allí se
+        cierra: Esc); los ``Progress`` vistos y la carpeta temporal."""
+        steps, temporary = self.steps(plan, **kw)
+        seen: list[Any] = []
+        try:
+            for step in steps:
+                seen.append(step)
+                if stop is not None and stop(step):
+                    break
+        finally:
+            steps.close()  # type: ignore[attr-defined]
+        return seen, temporary
+
+    def finished(self, plan: Any, **kw: Any) -> tuple[Any, list[Any], Path]:
+        """La copia entera: su resultado (``SnapshotCopy``), sus pasos y la temporal."""
+        seen, temporary = self.copy(plan, **kw)
+        self.assertIsNotNone(seen[-1].result)
+        self.assertEqual([step.result is not None for step in seen].count(True), 1)
+        return seen[-1].result, seen, temporary
+
+    def content(self, record: Any, path: Path, layer: str | None = None) -> str:
+        """El hash de contenido de ``path`` (y su capa) con el lector y el normalizador de
+        ``record``, sin declaraciones (el de un dato)."""
+        declarations = dataset_model.DATASET_DECLARATIONS
+        if layer is not None:
+            request = builtin.GPKG_LAYER.request(record.kind, declarations, {"main": path},
+                                                 {"layer": layer},
+                                                 normalizer=record.normalizer)
+            return readers.read_content(builtin.GPKG_LAYER, request).content_sha256
+        found = readers.reader(record.reader)
+        request = found.request(record.kind, declarations, {"main": path},
+                                normalizer=record.normalizer)
+        return readers.read_content(found, request).content_sha256
+
+    def snapshots(self) -> list[str]:
+        """Lo que hay en ``snapshots/`` (la carpeta es del proyecto: está desde que se crea)."""
+        return sorted(path.name for path in (self.root / "snapshots").iterdir())
+
+    def state(self) -> tuple[Any, ...]:
+        """Lo que no puede cambiar al copiar: los ficheros del proyecto (sin ``snapshots/`` ni
+        la caché), el contador de cambios de la base, lo que hay en la caché y en
+        ``snapshots/``."""
+        cache = self.cache()
+        cached = sorted(path.name for path in cache.iterdir()) if cache.is_dir() else None
+        return (self.files(skip_dirs=("snapshots", "cache")), self.change_counter(), cached,
+                self.snapshots())
+
+    def assertNothingLeft(self, before: tuple[Any, ...], temporary: Path) -> None:  # noqa: N802
+        """Ni la temporal (``snapshots/`` como estaba), ni el GeoPackage de la caché, ni nada
+        escrito en el proyecto."""
+        self.assertFalse(temporary.exists())
+        self.assertEqual(self.state(), before)
+
+    def assertRefused(self, code: str, work: Callable[[], Any]) -> Any:  # noqa: N802
+        with self.assertRaises(model.VersionError) as caught:
+            work()
+        self.assertEqual(caught.exception.code, code)
+        self.assertTrue(str(caught.exception))
+        return caught.exception
+
+
+class CopyTest(FreezeCopyCase):
+    def test_files_tables_and_manifest(self) -> None:
+        """RF-009-07, D-28, D-30, ADR-0026 (plan A6 (1) a (3), §5.2.5): con el hueco, su
+        volumen, los acopios y las rampas en V01, la copia deja en
+        ``snapshots/V01.r1.congelando-<8 hex>/`` la rejilla y la malla (los mismos bytes y la
+        misma fecha que en el proyecto, su huella y su hash de contenido = el registrado), el
+        GeoPackage de la instantánea con las 8 tablas y capas copiadas (GeoPackage 1.4, diario
+        clásico, sin disparadores ni índice espacial, las mismas columnas y filas, la capa de
+        rampas con el CRS del proyecto y el hash de cada una = el registrado) y el manifiesto de
+        §5.2.5 (compacto, con su huella, sin rutas absolutas); ningún Parquet. ``fsync`` cada
+        ``SYNC_BYTES`` y al final de cada fichero. Lo congelado lleva la huella y el tamaño de
+        su fichero. El progreso de cada paso; nada escrito en el proyecto ni en la caché; y la
+        temporal se renombra a ``snapshots/V01.r1``."""
+        self.demo.pit(self.project, "V01")
+        self.demo.pit_volume(self.project, "V01")
+        self.demo.pit_stockpiles(self.project, "V01")
+        self.demo.sketch(self.project, "V01")
+        original = {"path": f"originals/{self.record(self.boundary).input_uid}/Limites_v1.gpkg",
+                    "size": 12345, "sha256": "e" * 64}  # el original guardado (RF-008-53)
+        self.write(lambda conn: conn.execute(
+            "UPDATE gb_input_file SET original_path = ?, original_size = ?, original_sha256 = ? "
+            "WHERE input_uid = ? AND ord = (SELECT min(ord) FROM gb_input_file "
+            "WHERE input_uid = ?)", (original["path"], original["size"], original["sha256"],
+                                     self.record(self.boundary).input_uid,
+                                     self.record(self.boundary).input_uid)))
+        plan = self.plan()
+        before = self.state()
+        synced: list[tuple[int, int]] = []
+        real_fsync = os.fsync
+
+        def spy(fd: int) -> None:
+            stat = os.fstat(fd)
+            synced.append((stat.st_ino, stat.st_size))
+            real_fsync(fd)
+
+        chunk = 4096
+        with mock.patch.object(copy_mod, "CHUNK_BYTES", chunk), \
+                mock.patch.object(copy_mod, "SYNC_BYTES", 3 * chunk), \
+                mock.patch.object(copy_mod.os, "fsync", spy):
+            result, progress, temporary = self.finished(plan)
+
+        self.assertRegex(temporary.name, r"^V01\.r1\.congelando-[0-9a-f]{8}$")
+        self.assertEqual(temporary.parent, self.root / "snapshots")
+        self.assertEqual((result.temporary, result.label), (temporary, "V01.r1"))
+        files = [copy for copy in plan.to_copy if str(copy.record.store) != "gpkg"]
+        tables = [copy for copy in plan.to_copy if str(copy.record.store) == "gpkg"]
+        self.assertEqual({copy.record.name for copy in files}, {vdemo.PIT_GRID, vdemo.PIT_MESH})
+        self.assertEqual({copy.record.name for copy in tables}, {*TABLES, *UPSTREAM_TABLES})
+        listed = sorted(path.relative_to(temporary).as_posix()
+                        for path in temporary.rglob("*") if path.is_file())
+        self.assertEqual(listed, sorted([*(copy.record.locator for copy in files),
+                                         "V01.r1.gpkg", "manifest.json"]))
+        self.assertFalse([path for path in temporary.rglob("*") if path.suffix == ".parquet"])
+        self.assertFalse((self.root / "snapshots" / "V01.r1").exists())
+
+        # Rejilla y malla: los mismos bytes y fecha, su huella, fsync y su hash de contenido.
+        own = {item.path: item for item in result.files}
+        for copy in files:
+            path = temporary / copy.record.locator
+            source = self.root / copy.record.locator
+            with self.subTest(dataset=copy.record.name):
+                self.assertEqual(_sha256(path), _sha256(source))
+                self.assertEqual(path.stat().st_mtime_ns, source.stat().st_mtime_ns)
+                self.assertEqual(own[copy.record.locator],
+                                 copy_mod.SnapshotFile(copy.record.locator, path.stat().st_size,
+                                                       _sha256(path)))
+                self.assertEqual(self.content(copy.record, path), copy.record.content_sha256)
+                size = path.stat().st_size
+                sizes = [done for ino, done in synced if ino == path.stat().st_ino]
+                sync = 3 * chunk
+                self.assertEqual(sizes, [k * sync for k in range(1, size // sync + 1)] + [size])
+        mesh = next(copy for copy in files if copy.record.name == vdemo.PIT_MESH)
+        self.assertGreater((temporary / mesh.record.locator).stat().st_size, 3 * 3 * chunk)
+
+        # El GeoPackage de la instantánea.
+        gpkg = temporary / "V01.r1.gpkg"
+        self.assertEqual(own["V01.r1.gpkg"],
+                         copy_mod.SnapshotFile("V01.r1.gpkg", gpkg.stat().st_size, _sha256(gpkg)))
+        snapshot = sqlite3.connect(f"{gpkg.as_uri()}?mode=ro", uri=True)
+        self.addCleanup(snapshot.close)
+        self.assertEqual(snapshot.execute("PRAGMA application_id").fetchone()[0],
+                         gpkg_base.APPLICATION_ID)
+        self.assertEqual(snapshot.execute("PRAGMA user_version").fetchone()[0],
+                         gpkg_base.USER_VERSION)
+        self.assertEqual(snapshot.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+        self.assertEqual(snapshot.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' "
+            "OR name LIKE 'rtree%'").fetchone()[0], 0)
+        contents = {str(name): (str(kind), srs) for name, kind, srs in snapshot.execute(
+            "SELECT table_name, data_type, srs_id FROM gpkg_contents")}
+        self.assertEqual(set(contents), {copy.snapshot_layer for copy in tables})
+        epsg = int(self.project.record.crs_epsg)
+        with self.project.read() as source:
+            for copy in tables:
+                layer = str(copy.snapshot_layer)
+                record = copy.record
+                with self.subTest(table=record.name):
+                    self.assertEqual(layer, record.locator)
+                    self.assertEqual(self.content(record, gpkg, layer), record.content_sha256)
+                    self.assertEqual(
+                        snapshot.execute(f'PRAGMA table_info("{layer}")').fetchall(),
+                        source.execute(f'PRAGMA table_info("{record.locator}")').fetchall())
+                    self.assertEqual(
+                        snapshot.execute(f'SELECT * FROM "{layer}" ORDER BY fid').fetchall(),
+                        source.execute(f'SELECT * FROM "{record.locator}" ORDER BY fid')
+                        .fetchall())
+                    kind, srs = contents[layer]
+                    if record.kind == "vector":
+                        self.assertEqual((kind, srs), ("features", epsg))
+                        self.assertEqual(
+                            snapshot.execute("SELECT column_name, geometry_type_name, srs_id, "
+                                             "z, m FROM gpkg_geometry_columns WHERE "
+                                             "table_name = ?", (layer,)).fetchall(),
+                            source.execute("SELECT column_name, geometry_type_name, srs_id, "
+                                           "z, m FROM gpkg_geometry_columns WHERE "
+                                           "table_name = ?", (record.locator,)).fetchall())
+                    else:
+                        self.assertEqual((kind, srs), ("attributes", None))
+            self.assertTrue(any(copy.record.kind == "vector" for copy in tables))
+            srs_sql = ("SELECT srs_name, srs_id, organization, organization_coordsys_id, "
+                       "definition FROM gpkg_spatial_ref_sys WHERE srs_id = ?")
+            self.assertEqual(snapshot.execute(srs_sql, (epsg,)).fetchall(),
+                             source.execute(srs_sql, (epsg,)).fetchall())
+
+            # El manifiesto.
+            raw = (temporary / copy_mod.MANIFEST_NAME).read_bytes()
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), result.manifest_sha256)
+            self.assertEqual(len(raw), result.manifest_size)
+            body = json.loads(raw)
+            self.assertEqual(raw, hashing.canonical_json(body))
+            self.assertNotIn(b"\n", raw)
+            self.assertEqual(
+                {key: body[key] for key in ("format", "schema", "project_uid", "revision",
+                                            "revision_uid", "version_uid", "frozen_at",
+                                            "frozen_by", "geoblender_version", "accepted")},
+                {"format": "geoblender-snapshot", "schema": 1, "project_uid": self.project.uid,
+                 "revision": "V01.r1", "revision_uid": plan.revision.uid,
+                 "version_uid": self.v1.uid, "frozen_at": result.frozen_at,
+                 "frozen_by": fixtures.USER, "geoblender_version": result.geoblender_version,
+                 "accepted": None})
+            self.assertEqual(body["files"], [{"path": item.path, "size": item.size,
+                                              "sha256": item.sha256} for item in result.files])
+            self.assertEqual(sorted(item["path"] for item in body["files"]),
+                             sorted(name for name in listed if name != "manifest.json"))
+            self.assertEqual(result.copied_bytes, sum(item.size for item in result.files))
+            datasets = {entry["uid"]: entry for entry in body["datasets"]}
+            dataset_items = [item for item in plan.items if item.item_kind is ItemKind.DATASET]
+            self.assertEqual(list(datasets), [item.item_uid for item in dataset_items])
+            for item in dataset_items:
+                entry = datasets[item.item_uid]
+                record = self.record(item.item_uid)
+                with self.subTest(manifest=record.name):
+                    self.assertEqual(
+                        {key: entry[key] for key in ("name", "kind", "reader", "normalizer",
+                                                     "content_sha256", "part", "state")},
+                        {"name": record.name, "kind": record.kind, "reader": record.reader,
+                         "normalizer": record.normalizer, "content_sha256": item.content_sha256,
+                         "part": str(item.part), "state": str(item.state)})
+                    if item.part is ItemPart.IMMUTABLE:
+                        self.assertEqual((entry["location"], entry["layer"]),
+                                         ("project", record.locator))
+                    elif str(record.store) == "gpkg":
+                        self.assertEqual((entry["location"], entry["path"], entry["layer"]),
+                                         ("own", "V01.r1.gpkg", record.locator))
+                    else:
+                        self.assertEqual((entry["location"], entry["path"], entry["layer"]),
+                                         ("own", record.locator, None))
+            (input_uid,) = [item.item_uid for item in plan.items
+                            if item.item_kind is ItemKind.INPUT]
+            originals = [{"path": path, "size": size, "sha256": sha}
+                         for path, size, sha in source.execute(
+                             "SELECT original_path, original_size, original_sha256 FROM "
+                             "gb_input_file WHERE input_uid = ? AND original_path IS NOT NULL "
+                             "ORDER BY ord", (input_uid,))]
+            (content,) = source.execute("SELECT content_sha256 FROM gb_input WHERE uid = ?",
+                                        (input_uid,)).fetchone()
+            self.assertEqual([{key: entry[key] for key in ("uid", "content_sha256", "originals")}
+                              for entry in body["inputs"]],
+                             [{"uid": input_uid, "content_sha256": content,
+                               "originals": originals}])
+            self.assertEqual(originals, [original])
+            parameters = {entry["uid"]: entry for entry in body["parameters"]}
+            for item in plan.items:
+                if item.item_kind is not ItemKind.PARAMETER:
+                    continue
+                key, scope, scope_uid = source.execute(
+                    "SELECT key, scope, scope_uid FROM gb_parameter WHERE uid = ?",
+                    (item.item_uid,)).fetchone()
+                self.assertEqual(parameters.pop(item.item_uid), {
+                    "uid": item.item_uid, "key": key, "scope": scope, "scope_uid": scope_uid,
+                    "rev": item.item_rev, "value_sha256": item.content_sha256,
+                    "part": str(item.part), "state": str(item.state)})
+            self.assertEqual(parameters, {})
+            operations = {entry["uid"]: entry for entry in body["operations"]}
+            self.assertEqual(set(operations), {item.item_uid for item in plan.items
+                                               if item.item_kind is ItemKind.OPERATION})
+            for uid, entry in operations.items():
+                op_type, op_version = source.execute(
+                    "SELECT op_type, op_version FROM gb_operation WHERE uid = ?",
+                    (uid,)).fetchone()
+                self.assertEqual((entry["op_type"], entry["op_version"]), (op_type, op_version))
+                self.assertEqual(entry["reproducible"], op_type in (
+                    vdemo.PIT, vdemo.PIT_VOLUME, vdemo.PIT_STOCKPILES), op_type)
+            (figure,) = body["figures"]
+            key, value, unit, kind = source.execute(
+                "SELECT key, value, unit, kind FROM gb_figure WHERE uid = ?",
+                (figure["uid"],)).fetchone()
+            self.assertEqual(
+                {name: figure[name] for name in ("key", "value", "unit", "kind", "scope")},
+                {"key": key, "value": value, "unit": unit, "kind": kind, "scope": {}})
+        for text in _strings(body):
+            self.assertFalse(os.path.isabs(text) or _DRIVE.match(text) or text.startswith("\\")
+                             or str(self.folder) in text, text)
+
+        # Lo congelado, con la huella y el tamaño de su fichero; lo demás, como en el plan.
+        found = {(item.item_kind, item.item_uid): item for item in result.items}
+        self.assertEqual(list(found), [(item.item_kind, item.item_uid) for item in plan.items])
+        for item in plan.items:
+            copied = found[(item.item_kind, item.item_uid)]
+            if item.copied:
+                rel = str(item.snapshot_path).removeprefix("snapshots/V01.r1/")
+                self.assertEqual((copied.file_sha256, copied.file_size),
+                                 (own[rel].sha256, own[rel].size))
+                self.assertEqual(dataclasses.replace(copied, file_sha256=None, file_size=None),
+                                 item)
+            else:
+                self.assertEqual(copied, item)
+
+        # El progreso de cada paso.
+        phases = [step.phase for step in progress]
+        self.assertEqual(list(dict.fromkeys(phases)), list(copy_mod.PHASES))
+        self.assertEqual({step.total for step in progress}, {progress[0].total})
+        done = [step.done for step in progress]
+        self.assertEqual(done, sorted(done))
+        self.assertEqual((done[0], done[-1]), (0, progress[-1].total))
+        self.assertTrue(all(step.message for step in progress))
+        grid = Path(next(copy.record.locator for copy in files
+                         if copy.record.name == vdemo.PIT_GRID)).name
+        for phase, name in (("copia", grid), ("comprobación", grid),
+                            ("tablas", tables[0].record.locator)):
+            self.assertTrue(any(step.phase == phase and f"«{name}»" in step.message
+                                for step in progress), (phase, name))
+
+        # Nada escrito en el proyecto ni en la caché; la temporal, a su nombre.
+        self.assertEqual(self.state()[:3], before[:3])
+        snapshot.close()  # en Windows, una carpeta con un fichero abierto no se renombra
+        final = copy_mod.rename_snapshot(temporary, self.root / "snapshots" / "V01.r1")
+        self.assertEqual(final, self.root / "snapshots" / "V01.r1")
+        self.assertFalse(temporary.exists())
+        self.assertEqual(sorted(path.relative_to(final).as_posix()
+                                for path in final.rglob("*") if path.is_file()), listed)
+        self.assertEqual(_sha256(final / copy_mod.MANIFEST_NAME), result.manifest_sha256)
+
+
+class SelectorTest(FreezeCopyCase):
+    def test_only_the_rows_of_its_selector(self) -> None:
+        """D-29, RF-009-07, RF-009-08 (plan A6 (2), §5.2.5): dos datos con selector sobre la
+        misma tabla del proyecto (``{"column": "grp", "equals": …}``) se copian a dos tablas
+        de la instantánea (la segunda, con otro nombre), cada una solo con sus filas y sin
+        selector, con el hash de contenido registrado; lo aceptado (la cadena obsoleta por el
+        banco cambiado) va al manifiesto con su motivo."""
+        self.demo.pit(self.project, "V01")
+        benches = self.record(vdemo.PIT_BENCHES, "V01")
+        shared = "demo_shared"
+
+        def create(conn: sqlite3.Connection) -> None:
+            gpkg_base.create_attribute_table(
+                conn, shared, [gpkg_base.ColumnDef("grp", "TEXT"),
+                               gpkg_base.ColumnDef("value", "DOUBLE")],
+                "Compartida (prueba)", "Tabla sintética con selector")
+            conn.executemany(f'INSERT INTO "{shared}" (grp, value) VALUES (?, ?)',
+                             [("a", 1.5), ("b", 2.0), ("a", 3.25), ("b", 4.0), ("b", 5.5)])
+
+        self.write(create)
+
+        def selected(group: str, uid: str) -> Any:
+            selector = {"column": "grp", "equals": group}
+            request = builtin.GPKG_LAYER.request(
+                "table", dataset_model.DATASET_DECLARATIONS, {"main": self.project.database_path},
+                {"layer": shared, "selector": selector})
+            with self.project.read() as conn:
+                for _done in builtin.layer_steps(conn, request):
+                    pass
+            return dataclasses.replace(
+                benches, uid=uid, name=f"{shared}_{group}", locator=shared, selector=selector,
+                selector_json=hashing.canonical_json(selector).decode(),
+                content_sha256=request.hasher.digest().content_sha256)
+
+        first = selected("a", "5e1ec700-0000-4000-8000-00000000000a")
+        second = selected("b", "5e1ec700-0000-4000-8000-00000000000b")
+        self.bench(12.0)
+        plan = self.plan()
+        self.assertTrue(plan.accept)
+        gpkg_path = f"{plan.snapshot_dir}/{plan.label}.gpkg"
+        extra = [freeze.CopyItem(first, ItemPart.UPSTREAM, gpkg_path, shared, 4096),
+                 freeze.CopyItem(second, ItemPart.UPSTREAM, gpkg_path,
+                                 f"{shared}_{second.uid[:8]}", 4096)]
+        plan = dataclasses.replace(
+            plan, to_copy=(*plan.to_copy, *extra),
+            items=(*plan.items, *(model.RevisionItem(
+                plan.revision.uid, ItemKind.DATASET, copy.record.uid, ItemPart.UPSTREAM, None,
+                copy.record.content_sha256, True, gpkg_path, copy.snapshot_layer, None, None,
+                model.ItemState.CURRENT) for copy in extra)))
+        accepted = copy_mod.acceptance(plan, reason="Se entrega con el banco anterior")
+        result, _progress, temporary = self.finished(plan, accepted=accepted)
+
+        snapshot = sqlite3.connect(f"{(temporary / 'V01.r1.gpkg').as_uri()}?mode=ro", uri=True)
+        self.addCleanup(snapshot.close)
+        for copy, group in ((extra[0], "a"), (extra[1], "b")):
+            layer = str(copy.snapshot_layer)
+            with self.subTest(layer=layer):
+                rows = snapshot.execute(f'SELECT fid, grp, value FROM "{layer}" ORDER BY fid')
+                expected = self.query(f'SELECT fid, grp, value FROM "{shared}" WHERE grp = ? '
+                                      "ORDER BY fid", (group,))
+                self.assertEqual(rows.fetchall(), expected)
+                self.assertEqual(self.content(copy.record, temporary / "V01.r1.gpkg", layer),
+                                 copy.record.content_sha256)
+        (identifiers,) = snapshot.execute(
+            "SELECT count(DISTINCT identifier) = count(*) FROM gpkg_contents").fetchone()
+        self.assertEqual(identifiers, 1)
+        body = json.loads((temporary / copy_mod.MANIFEST_NAME).read_bytes())
+        self.assertEqual(body["accepted"], accepted)
+        self.assertEqual(accepted["reason"], "Se entrega con el banco anterior")
+        self.assertEqual([(entry["item_kind"], entry["item_uid"], entry["state"])
+                          for entry in accepted["items"]],
+                         [(str(entry.item_kind), entry.item_uid, str(entry.state))
+                          for entry in plan.accept])
+        entries = {entry["uid"]: entry for entry in body["datasets"]}
+        self.assertEqual(entries[second.uid]["layer"], f"{shared}_{second.uid[:8]}")
+        self.assertEqual(entries[first.uid]["selector"], {"column": "grp", "equals": "a"})
+        self.assertIsNone(copy_mod.acceptance(dataclasses.replace(plan, accept=()),
+                                              reason="Nada"))
+        snapshot.close()
+        copy_mod.discard(temporary)
+        self.assertEqual(self.snapshots(), [])
+        self.assertIsNotNone(result)
+
+    def bench(self, value: float) -> None:
+        self.tick()
+        self.write(lambda conn: self.store.change(
+            conn, vdemo.BENCH_HEIGHT, value=value, source="Plan de labores (prueba)",
+            decided_by="Samuel (IMGA)", reason="Banco de la prueba", version="V01"))
+
+
+class ReferencedTest(FreezeCopyCase):
+    def test_already_copied_is_referenced_and_empty_revision(self) -> None:
+        """RF-009-07, D-28, D-41, RNF-009-06 (plan A6, §5.2.5): tras copiar V01.r1 (y
+        anotarla congelada), la copia de V02 copia solo lo suyo (rejilla, malla y sus dos
+        tablas) y referencia en el manifiesto los 5 datos del proyecto ya copiados en V01.r1,
+        sin copiarlos; y V01.r2, que no cambia nada, se congela con su manifiesto solo: ningún
+        GeoPackage ni fichero de datos, todo referenciado a V01.r1."""
+        self.demo.pit(self.project, "V01")
+        self.demo.pit_stockpiles(self.project, "V01")
+        first = self.plan()
+        result, _progress, temporary = self.finished(first)
+        copy_mod.rename_snapshot(temporary, self.root / "snapshots" / "V01.r1")
+        self.freeze(self.v1, [
+            (self.record(item.item_uid), str(item.part), item.snapshot_path, item.snapshot_layer)
+            for item in result.items
+            if item.item_kind is ItemKind.DATASET and item.snapshot_path is not None])
+
+        self.tick()
+        self.write(lambda conn: self.store.change(
+            conn, vdemo.BENCH_HEIGHT, value=12.0, source="Plan de labores (prueba)",
+            decided_by="Samuel (IMGA)", reason="Banco de V02", version="V02"))
+        self.demo.pit(self.project, "V02")
+        self.demo.pit_stockpiles(self.project, "V02")
+        second = self.plan("V02")
+        upstream = {self.record(name).uid for name in UPSTREAM_TABLES}
+        self.assertEqual({item.item_uid for item in second.referenced}, upstream)
+        result, _progress, temporary = self.finished(second)
+        listed = sorted(path.relative_to(temporary).as_posix()
+                        for path in temporary.rglob("*") if path.is_file())
+        own = sorted(copy.record.locator for copy in second.to_copy
+                     if str(copy.record.store) != "gpkg")
+        self.assertEqual(listed, sorted([*own, "V02.r1.gpkg", "manifest.json"]))
+        snapshot = sqlite3.connect(f"{(temporary / 'V02.r1.gpkg').as_uri()}?mode=ro", uri=True)
+        self.addCleanup(snapshot.close)
+        self.assertEqual({str(name) for (name,) in snapshot.execute(
+            "SELECT table_name FROM gpkg_contents")},
+            {self.record(name, "V02").locator
+             for name in (vdemo.PIT_BENCHES, vdemo.PIT_STOCKPILES_TABLE)})
+        body = json.loads((temporary / copy_mod.MANIFEST_NAME).read_bytes())
+        entries = {entry["uid"]: entry for entry in body["datasets"]}
+        for uid in upstream:
+            self.assertEqual((entries[uid]["location"], entries[uid]["path"],
+                              entries[uid]["layer"]),
+                             ("other", "snapshots/V01.r1/V01.r1.gpkg", self.record(uid).locator))
+        snapshot.close()
+        copy_mod.discard(temporary)
+        self.assertEqual(self.snapshots(), ["V01.r1"])
+
+        empty = self.plan()
+        self.assertEqual((empty.label, empty.to_copy), ("V01.r2", ()))
+        before = self.state()
+        result, progress, temporary = self.finished(empty)
+        self.assertEqual([path.name for path in temporary.iterdir()], [copy_mod.MANIFEST_NAME])
+        self.assertEqual((result.files, result.copied_bytes), ((), 0))
+        body = json.loads((temporary / copy_mod.MANIFEST_NAME).read_bytes())
+        self.assertEqual(body["files"], [])
+        self.assertEqual({entry["location"] for entry in body["datasets"]
+                          if entry["part"] != "immutable"}, {"other"})
+        self.assertNotIn("tablas", {step.phase for step in progress})
+        self.assertEqual(self.state()[:3], before[:3])
+
+
+class CancelTest(FreezeCopyCase):
+    def test_esc_in_each_phase(self) -> None:
+        """RF-009-07, D-11, RNF-009-02 (plan A6 (5)): cerrar los pasos (Esc) en cada fase
+        (comprobando el espacio, a mitad de un fichero, comprobando su contenido, a mitad de
+        las filas de una tabla y antes del manifiesto) borra la temporal, el GeoPackage de la
+        caché y la caché que creó: nada queda, nada escrito en la base. Tras el último
+        paso (el del resultado) la temporal es de quien llama, que la renombra o la descarta."""
+        self.demo.pit(self.project, "V01")
+        self.demo.pit_stockpiles(self.project, "V01")
+        plan = self.plan()
+        before = self.state()
+        stops = (("espacio", 1), ("copia", 1), ("copia", 3), ("comprobación", 1),
+                 ("tablas", 1), ("tablas", 4), ("manifiesto", 1))
+        with mock.patch.object(copy_mod, "CHUNK_BYTES", 4096), \
+                mock.patch.object(copy_mod, "ROWS_PER_STEP", 1):
+            for phase, nth in stops:
+                seen: list[str] = []
+
+                def stop(step: Any, phase: str = phase, nth: int = nth,
+                         seen: list[str] = seen) -> bool:
+                    seen.append(step.phase)
+                    return seen.count(phase) == nth
+
+                with self.subTest(phase=phase, nth=nth):
+                    progress, temporary = self.copy(plan, stop=stop)
+                    self.assertEqual((progress[-1].phase, seen.count(phase)), (phase, nth))
+                    self.assertIsNone(progress[-1].result)
+                    self.assertNothingLeft(before, temporary)
+        result, _progress, temporary = self.finished(plan)
+        self.assertTrue((temporary / copy_mod.MANIFEST_NAME).is_file())
+        copy_mod.discard(temporary)
+        self.assertNothingLeft(before, temporary)
+
+
+class ChangedTest(FreezeCopyCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.demo.pit(self.project, "V01")
+        self.plan_v01 = self.plan()
+        self.before = self.state()
+
+    def test_table_changed_by_another_connection(self) -> None:
+        """RF-009-07 (plan A6 (2) y (5)): otra conexión (como QGIS) cambia la tabla de bancos
+        mientras se copian sus filas: «cambió mientras se congelaba», la temporal y el
+        GeoPackage de la caché, borrados; Geoblender no escribe nada (solo cambió lo de la otra
+        conexión)."""
+        benches = self.record(vdemo.PIT_BENCHES, "V01")
+
+        def stop(step: Any) -> bool:
+            if (step.phase == "tablas" and f"«{benches.locator}»" in step.message
+                    and not stop.done):  # type: ignore[attr-defined]
+                other = sqlite3.connect(str(self.project.database_path))
+                try:
+                    other.execute(f'UPDATE "{benches.locator}" SET area_m2 = area_m2 + 1 '
+                                  "WHERE bench = 3")
+                    other.commit()
+                finally:
+                    other.close()
+                stop.done = True  # type: ignore[attr-defined]
+            return False
+
+        stop.done = False  # type: ignore[attr-defined]
+        with mock.patch.object(copy_mod, "ROWS_PER_STEP", 1):
+            error = self.assertRefused("core.version_freeze_changed",
+                                       lambda: self.copy(self.plan_v01, stop=stop))
+        self.assertTrue(stop.done)  # type: ignore[attr-defined]
+        self.assertEqual(error.values["dataset"], vdemo.PIT_BENCHES)
+        self.assertEqual(error.values["revision"], "V01.r1")
+        files, counter, cached, snapshots = self.state()
+        self.assertEqual((files, cached, snapshots), (self.before[0], *self.before[2:]))
+        self.assertEqual(counter, self.before[1] + 1)
+        self.assertEqual(self.query("SELECT count(*) FROM gb_revision_item"), [(0,)])
+
+    def test_file_rewritten_while_copying(self) -> None:
+        """RF-009-07 (plan A6 (1) y (5)): la rejilla cambia (otro tamaño y otra fecha)
+        mientras se copia: «cambió mientras se congelaba»; no queda nada."""
+        grid = self.record(vdemo.PIT_GRID, "V01")
+        source = self.root / grid.locator
+
+        def stop(step: Any) -> bool:
+            if step.phase == "copia" and not stop.done:  # type: ignore[attr-defined]
+                with source.open("ab") as stream:
+                    stream.write(b"\0")
+                stop.done = True  # type: ignore[attr-defined]
+            return False
+
+        stop.done = False  # type: ignore[attr-defined]
+        with mock.patch.object(copy_mod, "CHUNK_BYTES", 1024):
+            error = self.assertRefused("core.version_freeze_changed",
+                                       lambda: self.copy(self.plan_v01, stop=stop))
+        self.assertEqual(error.values["dataset"], vdemo.PIT_GRID)
+        self.assertEqual(self.state()[1:], self.before[1:])
+
+    def test_copy_without_its_registered_content(self) -> None:
+        """RF-009-07, D-30 (plan A6 (1)): si el hash de contenido de la copia no es el
+        registrado, se cancela todo («no tiene su contenido registrado») sin dejar nada."""
+        changed = tuple(
+            dataclasses.replace(copy, record=dataclasses.replace(
+                copy.record, content_sha256="0" * 64))
+            if copy.record.name == vdemo.PIT_MESH else copy
+            for copy in self.plan_v01.to_copy)
+        plan = dataclasses.replace(self.plan_v01, to_copy=changed)
+        error = self.assertRefused("core.version_freeze_mismatch", lambda: self.copy(plan))
+        self.assertEqual(error.values["dataset"], vdemo.PIT_MESH)
+        self.assertEqual(self.state(), self.before)
+
+
+class SpaceAndLeftoversTest(FreezeCopyCase):
+    def test_no_space_and_leftovers(self) -> None:
+        """RF-009-07 (plan A5 (5), A6 (4)): sin espacio para lo que se copia más un 10 % (en
+        ``snapshots/`` y, para el GeoPackage, en la caché; en el mismo disco, las dos cosas), no
+        se crea nada y se dice cuánto hace falta y cuánto queda; con justo eso, se copia. Al
+        renombrar, unos restos de otra congelación con el nombre de la revisión no se
+        sustituyen: «Hay restos de una congelación anterior en «snapshots/V01.r1»…»; la
+        temporal se descarta después."""
+        self.demo.pit(self.project, "V01")
+        plan = self.plan()
+        self.assertGreater(plan.cache_needed, 0)
+        before = self.state()
+        needed = plan.space_needed + plan.cache_needed
+
+        def disk(free: int) -> Callable[[Path], Any]:
+            return lambda _path: types.SimpleNamespace(free=free)
+
+        error = self.assertRefused("core.version_freeze_no_space",
+                                   lambda: self.copy(plan, disk_usage=disk(needed - 1)))
+        self.assertIn("quedan", str(error))
+        self.assertEqual(self.state(), before)
+        result, _progress, temporary = self.finished(plan, disk_usage=disk(needed))
+
+        leftover = self.root / "snapshots" / "V01.r1"
+        leftover.mkdir()  # unos restos con el nombre de la revisión
+        (leftover / "manifest.json").write_bytes(b"{}")
+        error = self.assertRefused(
+            "core.version_freeze_leftover",
+            lambda: copy_mod.rename_snapshot(temporary, leftover))
+        self.assertIn("snapshots/V01.r1", str(error))
+        self.assertTrue((temporary / copy_mod.MANIFEST_NAME).is_file())
+        self.assertEqual([path.name for path in leftover.iterdir()], ["manifest.json"])
+        copy_mod.discard(temporary)
+        self.assertEqual(self.snapshots(), ["V01.r1"])
+        self.assertIsNotNone(result)
+
+        # Una carpeta que ya tiene el nombre de la temporal no es suya: no la toca.
+        taken = copy_mod.temporary_path(self.root, plan.label)
+        taken.mkdir()
+        (taken / "ajeno.txt").write_bytes(b"x")
+        steps = copy_mod.copy_steps(self.project, plan, taken, self.cache(), budget_s=TINY)
+        self.assertRefused("core.version_freeze_failed", lambda: list(steps))
+        self.assertEqual([path.name for path in taken.iterdir()], ["ajeno.txt"])
+
+
+if __name__ == "__main__":
+    unittest.main()

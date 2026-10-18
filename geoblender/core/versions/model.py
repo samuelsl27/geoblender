@@ -326,6 +326,27 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
         "Inputs upstream of {revision} changed and are not decided yet ({names}): update them "
         "or keep the copy before freezing it"
     ),
+    # La copia de una instantánea (RF-009-07; plan A5 (5) y A6).
+    "core.version_freeze_no_space": (
+        "There is no space to freeze {revision}: {needed} are needed in «{folder}» and {free} "
+        "are left"
+    ),
+    "core.version_freeze_changed": (
+        "«{dataset}» changed while {revision} was being frozen: nothing has been left "
+        "half-done; freeze it again"
+    ),
+    "core.version_freeze_mismatch": (
+        "The copy of «{dataset}» does not have its registered content: {revision} has not been "
+        "frozen and nothing has been left half-done; check the disk and try again"
+    ),
+    "core.version_freeze_failed": (
+        "{revision} could not be frozen ({reason}): nothing has been left half-done; check the "
+        "free space, the permissions and that no program has «{file}» open"
+    ),
+    "core.version_freeze_leftover": (
+        "There are leftovers of an earlier freeze in «{folder}»: open the project again to set "
+        "them aside"
+    ),
 })
 """Código → ``msgid`` (en inglés; su español, en ``core/i18n/messages.toml``)."""
 

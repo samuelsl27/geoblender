@@ -4608,3 +4608,20 @@ es = "{revision} tiene operaciones en curso ({names}): espere a que terminen par
 
 ["Inputs upstream of {revision} changed and are not decided yet ({names}): update them or keep the copy before freezing it"]
 es = "Hay entradas aguas arriba de {revision} cambiadas sin decidir ({names}): actualícelas o mantenga la copia antes de congelarla"
+
+# La copia de una instantánea (spec 009, T12; RF-009-07; plan 009 A5 (5) y A6).
+
+["There is no space to freeze {revision}: {needed} are needed in «{folder}» and {free} are left"]
+es = "No hay espacio para congelar {revision}: hacen falta {needed} en «{folder}» y quedan {free}"
+
+["«{dataset}» changed while {revision} was being frozen: nothing has been left half-done; freeze it again"]
+es = "«{dataset}» cambió mientras se congelaba {revision}: no ha quedado nada a medias; vuelva a congelarla"
+
+["The copy of «{dataset}» does not have its registered content: {revision} has not been frozen and nothing has been left half-done; check the disk and try again"]
+es = "La copia de «{dataset}» no tiene su contenido registrado: no se ha congelado {revision} ni ha quedado nada a medias; compruebe el disco y vuelva a intentarlo"
+
+["{revision} could not be frozen ({reason}): nothing has been left half-done; check the free space, the permissions and that no program has «{file}» open"]
+es = "No se ha podido congelar {revision} ({reason}): no ha quedado nada a medias; compruebe el espacio libre, los permisos y que ningún programa tenga abierto «{file}»"
+
+["There are leftovers of an earlier freeze in «{folder}»: open the project again to set them aside"]
+es = "Hay restos de una congelación anterior en «{folder}»: abra otra vez el proyecto para apartarlos"
