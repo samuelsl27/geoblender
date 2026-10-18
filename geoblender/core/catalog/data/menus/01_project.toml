@@ -219,7 +219,7 @@ label.en = "New version…"
 label.es = "Nueva versión…"
 description.en = "Feature, parent, assignment and reason of the new version"
 description.es = "Rasgo, padre, encargo y motivo de la versión nueva"
-entry = "R-07"
+entry = "009"
 action = "D"
 frequency = 2
 
@@ -239,7 +239,7 @@ label.en = "Change state…"
 label.es = "Cambiar estado…"
 description.en = "Draft, current, superseded or discarded; the state is an attribute and no path changes"
 description.es = "Borrador, vigente, superado o descartado; el estado es un atributo y ninguna ruta cambia"
-entry = "R-07"
+entry = "009"
 action = "D"
 frequency = 2
 

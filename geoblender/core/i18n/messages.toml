@@ -4841,3 +4841,81 @@ es = "Una versión sustituida por otra: se conserva como registro"
 
 ["A discarded version: kept as a record"]
 es = "Una versión descartada: se conserva como registro"
+
+# Nueva versión… y Cambiar estado… (spec 009, T19; RF-009-01, RF-009-02, RF-009-03, RF-009-25;
+# plan 009 §5.5, A1, A2, D-3): el diálogo, lo que dice al crear y al cambiar y lo que avisa.
+
+["Feature"]
+es = "Rasgo"
+
+["What sets the version apart from the others"]
+es = "Lo que distingue a la versión de las demás"
+
+["Title"]
+es = "Título"
+
+["Title of the version, shown with its code"]
+es = "Título de la versión, que se muestra con su código"
+
+["Why the version is created (recorded with it)"]
+es = "Por qué se crea la versión (queda registrado con ella)"
+
+["Starts from"]
+es = "Parte de"
+
+["Version it starts from: it inherits its version parameters and what is frozen in its last frozen revision, never its results or figures"]
+es = "Versión de la que parte: hereda sus parámetros de versión y lo congelado en su última revisión congelada, nunca sus resultados ni sus cifras"
+
+["No parent"]
+es = "Ninguna"
+
+["Assignment"]
+es = "Encargo"
+
+["Assignment (optional)"]
+es = "Encargo (opcional)"
+
+["The assignment of the owner that gives rise to the version (free text)"]
+es = "El encargo de la propiedad que da lugar a la versión (texto libre)"
+
+["{version} created in {state}, with its revision r1 open"]
+es = "{version} creada en {state}, con su revisión r1 abierta"
+
+["; inherits 1 parameter from {parent} ({revision})"]
+es = "; hereda 1 parámetro de {parent} ({revision})"
+
+["; inherits {n} parameters from {parent} ({revision})"]
+es = "; hereda {n} parámetros de {parent} ({revision})"
+
+["; starts from {parent}"]
+es = "; parte de {parent}"
+
+["Identity or code of the version whose state changes (empty: the one of the command, the active one)"]
+es = "Identidad o código de la versión cuyo estado cambia (vacía: la de la orden, la activa)"
+
+["New state"]
+es = "Estado nuevo"
+
+["The state the version goes to: CURRENT (the previous current one becomes SUPERSEDED) or DISCARDED (with a reason)"]
+es = "El estado al que pasa la versión: VIGENTE (la vigente anterior pasa a SUPERADO) o DESCARTADO (con motivo)"
+
+["Why the state changes (required to discard the version)"]
+es = "Por qué cambia el estado (obligatorio para descartar la versión)"
+
+["{version} will become {state}"]
+es = "{version} pasará a {state}"
+
+["The project is left without a current version"]
+es = "El proyecto queda sin versión vigente"
+
+["{version} goes from {old} to {new}"]
+es = "{version} pasa de {old} a {new}"
+
+["{version} becomes {state}"]
+es = "{version} pasa a {state}"
+
+["{revision} closed on superseding"]
+es = "{revision} cerrada al superarse"
+
+["Choose the active version first: Project ▸ Versions ▸ Active version"]
+es = "Elija antes la versión activa: Proyecto ▸ Versiones ▸ Versión activa"

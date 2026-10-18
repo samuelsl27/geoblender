@@ -89,7 +89,10 @@ LIST_BLANK = "BLANK1"  # «Sin versión» en la lista, alineada con las versione
 FUTURE = ("geoblender.core_new_version", "geoblender.core_new_revision",
           "geoblender.core_set_version_state", "geoblender.core_reproduce_version",
           "geoblender.res_compare_versions")
-"""Las órdenes de la ventana que llegan después (T19, T21, T23; Comparar es de R-62)."""
+"""Las órdenes de la ventana: Nueva versión… y Cambiar estado… ya llegaron (T19); las demás,
+después (T21, T23; Comparar es de R-62)."""
+ARRIVED = ("geoblender.core_new_version", "geoblender.core_set_version_state")
+"""Las órdenes de la ventana que ya tienen su clase real (T19, ``test_versions_ops``)."""
 
 
 def ext(name: str) -> Any:
@@ -290,7 +293,8 @@ class VersionsSessionTest(unittest.TestCase):
     def test_changed_from_the_control_and_the_menu_without_writing_the_project(self) -> None:
         """RF-009-10 (D-8, D-42): la ventana del control 8 lista las versiones con su estado y su
         revisión, el icono de su estado y la activa hundida, y «Sin versión»; las revisiones de la
-        activa; y las órdenes que llegan después, desactivadas. Elegir desde ella y desde
+        activa; Nueva versión… y Cambiar estado… (T19) y las órdenes que llegan después,
+        desactivadas. Elegir desde ella y desde
         Proyecto ▸ Versiones ▸ Versión activa cambia la versión activa en todas las escenas del
         proyecto y en los datos de usuario, sin escribir nada en el proyecto (contador de cambios
         y ficheros), también en solo lectura y con una SUPERADO o DESCARTADO; una que no existe
@@ -318,7 +322,8 @@ class VersionsSessionTest(unittest.TestCase):
         self.assertEqual(labels, ["Revisiones de V03", "congelada: V03.r1", "en curso (V03.r2)"])
         later = {item.target: item for item in panel.items if item.target in FUTURE}
         self.assertEqual(set(later), set(FUTURE))
-        self.assertFalse([target for target, item in later.items() if item.enabled])
+        self.assertEqual({target for target, item in later.items() if item.enabled},
+                         set(ARRIVED))
 
         # Desde el control: V01.
         self.assertEqual(self.click(buttons[0]), {"FINISHED"})
@@ -526,7 +531,7 @@ class VersionsSessionTest(unittest.TestCase):
                 self.assertTrue(commands.is_available(key))
                 self.assertNotIn("Disponible en", cls.bl_description)
         for key in FUTURE[:-1]:  # las demás órdenes de la 009, aún en R-07 hasta su tarea
-            self.assertEqual(cat.commands[key].entry, "R-07")
+            self.assertEqual(cat.commands[key].entry, ENTRY if key in ARRIVED else "R-07")
         self.assertEqual(getattr(bpy.types, PANEL).bl_label, "Versión activa")
         scene_property = ext("bl.props.core").SCENE_PROPERTY
         props = bpy.types.Scene.bl_rna.properties[scene_property].fixed_type.properties

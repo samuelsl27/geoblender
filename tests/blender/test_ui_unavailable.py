@@ -165,8 +165,9 @@ class UnavailableNoteTest(unittest.TestCase):
                     self.assertEqual(first.text, note)
                     self.assertFalse(first.enabled and first.active)
             # Los de las entradas aún no entregadas (desde la 005/T25, sin los de Sondeos; desde
-            # la 009/T18, sin Versión activa ▸, que ya es real).
-            self.assertGreaterEqual(checked, 18, language)
+            # la 009/T18, sin Versión activa ▸, que ya es real; desde la 009/T19, sin el
+            # contextual «Versión ▾», con Cambiar estado…).
+            self.assertGreaterEqual(checked, 17, language)
 
     def drawn_menus(self, hide: bool) -> dict[str, list]:
         """Lo que dibuja cada menú generado (salvo los circulares) con «Ocultar lo no

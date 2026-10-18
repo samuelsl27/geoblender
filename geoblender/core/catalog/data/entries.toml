@@ -41,8 +41,8 @@ delivered = true
 
 # La spec 009 es el bloque B de R-07 (plan 009 D-38) y entrega sus órdenes tarea a tarea: cada
 # una pasa de R-07 a la 009 cuando llega su clase real. T18: la versión activa (el control 8, su
-# ventana, Proyecto ▸ Versiones ▸ Versión activa y Fijar la versión activa); lo demás sigue en
-# R-07 hasta su tarea.
+# ventana, Proyecto ▸ Versiones ▸ Versión activa y Fijar la versión activa); T19: Nueva versión…,
+# Cambiar estado… y el menú contextual «Versión ▾»; lo demás sigue en R-07 hasta su tarea.
 ["009"]
 title.en = "Versions, revisions and snapshots"
 title.es = "Versiones, revisiones e instantáneas"
