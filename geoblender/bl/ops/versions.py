@@ -27,51 +27,86 @@
   escriben la base, su diario y la cabecera (RF-009-02). Sin versión, la ventana del control 8 y
   los menús la dibujan desactivada (``bl.ui.version_panels``, :func:`no_version_check`) y su
   descripción dice que se elija antes.
+- ``geoblender.core_new_revision`` (T21; RF-009-06, RF-009-07, RF-009-08, RF-009-21; plan A5 a
+  A7, D-40): «Nueva revisión…» de la versión de la orden (:func:`target_version`), un diálogo
+  «Congelar V10.r2 y abrir V10.r3» con el motivo (obligatorio) que lee antes el plan de la
+  congelación (``core.versions.freeze.freeze_plan``, :func:`revision_dialog`, sin escribir): si
+  hay algo que aceptar (resultados obsoletos, operaciones que esperan revisión a mano, entradas no
+  localizables), lo dice con la lista y «Aceptar y congelar» (lo aceptado, en ``accept``); si algo
+  lo impide (una entrada cambiada sin decidir, una operación de la versión en curso, la
+  comprobación de apertura…), una ventana sin aceptar que lo dice. Aceptado desde la interfaz,
+  ``core.versions.freeze.freeze_steps`` en un modal de pasos (``_StepsModal`` de
+  ``bl.ops.core``: un evento del temporizador cada 0,05 s y 0,05 s de pasos en cada uno), con su
+  avance en la barra de estado («Congelando V10.r2: copiando «des_final_v10.tif»… 40 % · Esc:
+  cancelar», :func:`freeze_status_text`) y Esc, que no deja nada a medias; desde un guion o sin
+  ventana, de una vez. Al terminar, «V10.r2 congelada (1,2 GB copiados; 3 contenidos ya
+  congelados, referenciados); V10.r3 abierta» (:func:`frozen_text`) y los avisos (la cabecera que
+  no se pudo escribir, los del proyecto) con ``bl.ops.jobs.report_later``. Sin versión, o con
+  ella SUPERADO o DESCARTADO («Versión no editable», RF-009-04), los menús y la ventana del
+  control 8 la dibujan desactivada (:func:`new_revision_check`) y su descripción y su ``poll``
+  dicen por qué.
 
-Las dos que escriben, con ``bl_options = {'REGISTER'}`` (sin paso de deshacer, como las de la
-008: Ctrl+Z no deshace la base) y ``poll`` con el motivo (sin proyecto o en solo lectura). Tras
+Las que escriben, con ``bl_options = {'REGISTER'}`` (sin paso de deshacer, como las de la 008:
+Ctrl+Z no deshace la base) y ``poll`` con el motivo (sin proyecto o en solo lectura). Tras
 escribir, la cabecera (:func:`_after_writing`), los indicadores de la procedencia y las versiones
 de la sesión (el control 8, su ventana y la barra de estado). Los rechazos, con el texto de
 ``core.versions`` en el idioma de Geoblender, sin escribir nada.
 
-Las demás órdenes de la 009 (Nueva revisión…, Reproducir…, decisiones) llegan en sus tareas
-(T21 a T24) y, hasta entonces, son provisionales de R-07.
+Las demás órdenes de la 009 (Reproducir…, decisiones) llegan en sus tareas (T23, T24) y, hasta
+entonces, son provisionales de R-07.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from ...core import i18n
 from ...core.errors import GeoblenderError
 from ...core.i18n import language, tr, translate
 from ...core.project.events import EventKind, read_events
+from ...core.project.model import Progress
 from ...core.versions import read as versions_read
 from ...core.versions import store as versions_store
-from ...core.versions.model import REQUESTED, VersionError, VersionStatus, render
+from ...core.versions.model import (
+    EDITABLE,
+    REQUESTED,
+    ItemState,
+    VersionError,
+    VersionStatus,
+    render,
+    revision_label,
+)
 from ..props.versions import COLLECTION_PROPERTY
 from ..scene import project_session
 from ..scene import versions as scene_versions
+from ..ui import labels
 from ..ui.commands import catalog, text, with_note
-from .core import TRANSLATION_CONTEXT, _poll_project
-from .core_provenance import error_text, write_unavailable
+from . import jobs as jobs_ops
+from .core import TRANSLATION_CONTEXT, _poll_project, _StepsModal
+from .core_provenance import SESSION, error_text, write_unavailable
 
 if TYPE_CHECKING:
     from ...core.project.session import Project
+    from ...core.provenance.gate import CheckState
+    from ...core.versions.freeze import AcceptItem, Blocker, FreezeOutcome
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 
 SET_ACTIVE = "geoblender.core_set_active_version"
 NEW_VERSION = "geoblender.core_new_version"
 SET_STATE = "geoblender.core_set_version_state"
+NEW_REVISION = "geoblender.core_new_revision"
 DIALOG_WIDTH = 520
-"""El ancho de los diálogos de Nueva versión… y Cambiar estado… (px, a escala 1,0)."""
+"""El ancho de los diálogos de Nueva versión…, Cambiar estado… y Nueva revisión… (px, a escala
+1,0)."""
 NO_PARENT = "NONE"
 """«Ninguna» en «Parte de» de Nueva versión…: una versión que no parte de otra."""
 TARGETS: tuple[VersionStatus, ...] = (VersionStatus.VIGENTE, VersionStatus.DESCARTADO)
@@ -110,14 +145,16 @@ def _state_name(status: VersionStatus | str) -> str:
     return translate(language(), VersionStatus(status).msgid)
 
 
-def _after_writing(project: Project) -> list[str]:
+def _after_writing(project: Project, *, header: bool = True) -> list[str]:
     """Tras confirmar un cambio de las versiones: la cabecera (la primera versión sube
-    ``min_reader_schema``, D-24), los avisos del proyecto, los indicadores de la procedencia (lo
-    de una versión que se cierra sale de la cascada) y las versiones de la sesión. Devuelve los
-    avisos (la cabecera que no se pudo escribir: se regenera al cerrar)."""
+    ``min_reader_schema``, D-24; ``header=False`` si ya la escribió quien llama, como
+    ``freeze_steps``), los avisos del proyecto, los indicadores de la procedencia (lo de una
+    versión que se cierra sale de la cascada) y las versiones de la sesión. Devuelve los avisos
+    (la cabecera que no se pudo escribir: se regenera al cerrar)."""
     warnings: list[str] = []
     try:
-        project.refresh_header()
+        if header:
+            project.refresh_header()
     except GeoblenderError as exc:
         LOGGER.warning("No se pudo regenerar la cabecera del proyecto: %s", exc)
         warnings.append(exc.message)
@@ -551,9 +588,428 @@ class GEOBLENDER_OT_core_set_version_state(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Nueva revisión… (T21) ----------------------------------------------------------------------
+
+_ACCEPT_SEPARATOR = ","
+_KIND_SEPARATOR = ":"
+_QUOTED = re.compile(r"«(.+?)»")
+"""El nombre entre comillas angulares del avance de la copia («Copiando «x.tif»…»)."""
+
+
+def _shown_version(version: str) -> scene_versions.ShownVersion | None:
+    """La versión ``version`` (uid o código) entre las ya leídas de la sesión, o ``None``."""
+    return next((item for item in scene_versions.versions() if version in (item.uid, item.code)),
+                None)
+
+
+def not_editable_note(context: Any, version: str | None = None) -> str | None:
+    """«Versión no editable» (RF-009-04, RF-009-21) de la versión ``version`` (si no, la de la
+    orden, :func:`target_version`) si es SUPERADO o DESCARTADO, en el idioma de Geoblender; si
+    no (o sin versión), ``None``. Con lo ya leído: no lee el proyecto."""
+    shown = _shown_version(version or target_version(context) or "")
+    if shown is None or shown.status in EDITABLE:
+        return None
+    return render("core.version_not_editable", language=language(), version=shown.code,
+                  state=shown.status)
+
+
+def new_revision_check(context: Any, _cmd: Any) -> str:
+    """«No aplicable ahora» de Nueva revisión… (``bl.ui.commands.register_check``; BS §7.3): sin
+    versión de la orden, que se elija; con ella SUPERADO o DESCARTADO, el texto de RF-009-04; si
+    no, ""."""
+    if not target_version(context):
+        return no_version_text()
+    return not_editable_note(context) or ""
+
+
+def accept_token(items: Iterable[AcceptItem]) -> str:
+    """Lo que se acepta (``accept`` de Nueva revisión…): «clase:uid» de cada elemento, separados
+    por comas (``dataset:…,operation:…,input:…``)."""
+    return _ACCEPT_SEPARATOR.join(f"{item.item_kind}{_KIND_SEPARATOR}{item.item_uid}"
+                                  for item in items)
+
+
+def _acceptance(token: str) -> Any:
+    """La ``core.versions.freeze.Acceptance`` de ``token`` (:func:`accept_token`); ``None`` si
+    no acepta nada."""
+    pairs = frozenset(tuple(part.strip().split(_KIND_SEPARATOR, 1))
+                      for part in token.split(_ACCEPT_SEPARATOR)
+                      if _KIND_SEPARATOR in part)
+    if not pairs:
+        return None
+    from ...core.versions.freeze import Acceptance  # al usarlo (plan §2.1)
+
+    return Acceptance(pairs)  # type: ignore[arg-type]
+
+
+def _pending(project: Project) -> CheckState | None:
+    """Lo que la comprobación de apertura aún no ha comprobado (la congelación espera a que
+    termine, D-40), si es la del proyecto ``project``; si no, ``None``."""
+    return SESSION.pending if SESSION.project is project else None
+
+
+_STATE_TEXTS = {
+    ItemState.STALE: "stale result",
+    ItemState.REVIEW: "waiting for manual review",
+    ItemState.UNLOCATABLE: "cannot be located",
+}
+"""El estado de un elemento que hay que aceptar, en la lista del diálogo (``msgid``)."""
+
+
+def _joined(parts: list[str]) -> str:
+    """«a, b y c» en el idioma de Geoblender."""
+    if len(parts) < 2:
+        return "".join(parts)
+    return tr("{items} and {last}", items=", ".join(parts[:-1]), last=parts[-1])
+
+
+@dataclass(frozen=True)
+class RevisionDialog:
+    """Lo que enseña Nueva revisión… de una versión (del plan de la congelación, sin escribir):
+    su uid y su código, la revisión que se congela («V10.r2») y la que se abrirá («V10.r3»), lo
+    que hay que aceptar y lo que lo impide."""
+
+    uid: str
+    code: str
+    label: str
+    following: str
+    accept: tuple[AcceptItem, ...]
+    blockers: tuple[Blocker, ...]
+
+    @property
+    def title(self) -> str:
+        """«Congelar V10.r2 y abrir V10.r3»."""
+        return tr("Freeze {revision} and open {following}", revision=self.label,
+                  following=self.following)
+
+    @property
+    def confirm_text(self) -> str:
+        """El botón de aceptar: «Aceptar y congelar» si hay algo que aceptar; si no,
+        «Congelar»."""
+        return tr("Accept and freeze") if self.accept else tr("Freeze")
+
+    @property
+    def accepted(self) -> str:
+        """Todo lo que hay que aceptar, como lo lleva ``accept`` (:func:`accept_token`)."""
+        return accept_token(self.accept)
+
+    def accept_text(self) -> str:
+        """«Hay 3 resultados obsoletos, 1 operación que espera revisión a mano y 1 entrada no
+        localizable: si congela, quedarán anotados» (plan §5.5); "" sin nada que aceptar."""
+        if not self.accept:
+            return ""
+        states = [item.state for item in self.accept]
+        parts = []
+        stale = states.count(ItemState.STALE)
+        if stale:
+            parts.append(tr("1 stale result") if stale == 1
+                         else tr("{n} stale results", n=stale))
+        review = states.count(ItemState.REVIEW)
+        if review:
+            parts.append(tr("1 operation waiting for manual review") if review == 1
+                         else tr("{n} operations waiting for manual review", n=review))
+        missing = states.count(ItemState.UNLOCATABLE)
+        if missing:
+            parts.append(tr("1 input that cannot be located") if missing == 1
+                         else tr("{n} inputs that cannot be located", n=missing))
+        if len(self.accept) == 1:
+            return tr("There is {items}: if you freeze, it will be recorded as it is",
+                      items=_joined(parts))
+        return tr("There are {items}: if you freeze, they will be recorded as they are",
+                  items=_joined(parts))
+
+    def accept_lines(self) -> list[str]:
+        """Cada elemento que hay que aceptar, con su nombre y su estado: «des_final_v10»:
+        resultado obsoleto."""
+        return [tr("«{name}»: {state}", name=item.name,
+                   state=translate(language(), _STATE_TEXTS.get(item.state, str(item.state))))
+                for item in self.accept]
+
+    def blocker_texts(self) -> list[str]:
+        """Lo que lo impide, en el idioma de Geoblender («Hay entradas aguas arriba de V10.r2
+        cambiadas sin decidir («Limites_v1»): …»)."""
+        return [render(blocker.code, language=language(), version=self.code,
+                       revision=self.label,
+                       names=", ".join(f"«{name}»" for name in blocker.names))
+                for blocker in self.blockers]
+
+
+def revision_dialog(project: Project, version: str) -> RevisionDialog:
+    """Lee de ``project`` lo que enseña Nueva revisión… de la versión ``version`` (uid o código):
+    el plan de congelar su revisión abierta (``core.versions.freeze.freeze_plan``), sin escribir
+    nada. ``VersionError`` si no existe (``core.version_unknown``) o no es editable
+    (``core.version_not_editable``)."""
+    from ...core.versions.freeze import freeze_plan  # al usarlo (plan §2.1)
+
+    plan = freeze_plan(project, version, pending=_pending(project))
+    code = plan.version.code
+    return RevisionDialog(uid=plan.version.uid, code=code, label=plan.label,
+                          following=revision_label(code, plan.revision.number + 1),
+                          accept=plan.accept, blockers=plan.blockers)
+
+
+def size_text(size: int) -> str:
+    """Un tamaño como lo lee una persona, en el idioma de Geoblender (unidades decimales; coma
+    decimal en español: «1,2 GB»)."""
+    for unit, factor in (("GB", 10**9), ("MB", 10**6), ("kB", 10**3)):
+        if size >= factor:
+            shown = f"{size / factor:.1f} {unit}"
+            return shown.replace(".", ",") if language() == "es" else shown
+    return f"{size} B"
+
+
+def frozen_text(outcome: FreezeOutcome) -> str:
+    """Lo que dice Nueva revisión… al terminar (plan §5.5), en el idioma de Geoblender: «V10.r2
+    congelada (1,2 GB copiados; 3 contenidos ya congelados, referenciados); V10.r3 abierta»."""
+    code = outcome.label.partition(".")[0]
+    following = outcome.opened.label(code) if outcome.opened is not None else ""
+    size = size_text(outcome.copied_bytes)
+    referenced = len(outcome.referenced)
+    if referenced == 1:
+        return tr("{revision} frozen ({size} copied; 1 content already frozen, referenced); "
+                  "{following} open", revision=outcome.label, size=size, following=following)
+    if referenced:
+        return tr("{revision} frozen ({size} copied; {n} contents already frozen, referenced); "
+                  "{following} open", revision=outcome.label, size=size, n=referenced,
+                  following=following)
+    return tr("{revision} frozen ({size} copied); {following} open", revision=outcome.label,
+              size=size, following=following)
+
+
+def freeze_status_text(label: str, step: Progress) -> str:
+    """El avance de Nueva revisión… en la barra de estado (plan §5.5), en el idioma de
+    Geoblender, del paso ``step`` de congelar la revisión ``label``: «Congelando V10.r2:
+    copiando «des_final_v10.tif»… 40 % · Esc: cancelar» (las fases de
+    ``core.versions.copy.PHASES`` y la confirmación)."""
+    from ...core.versions.copy import PHASES  # al usarlo (plan §2.1)
+
+    percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+    found = _QUOTED.search(step.message or "")
+    name = found.group(1) if found else ""
+    space, copying, checking, tables, manifest = PHASES
+    if step.phase in (copying, tables) and name:
+        return tr("Freezing {revision}: copying «{name}»… {percent} % · Esc: cancel",
+                  revision=label, name=name, percent=percent)
+    if step.phase == checking and name:
+        return tr("Freezing {revision}: checking «{name}»… {percent} % · Esc: cancel",
+                  revision=label, name=name, percent=percent)
+    if step.phase == space:
+        return tr("Freezing {revision}: checking the free space… {percent} % · Esc: cancel",
+                  revision=label, percent=percent)
+    if step.phase == manifest:
+        return tr("Freezing {revision}: writing the manifest… {percent} % · Esc: cancel",
+                  revision=label, percent=percent)
+    return tr("Freezing {revision}: confirming… {percent} % · Esc: cancel", revision=label,
+              percent=percent)
+
+
+def _open_label(project: Project, version: str) -> str:
+    """«V10.r2», la revisión abierta de la versión ``version`` (uid o código); ``version`` si
+    no tiene (la congelación lo rechaza con su texto)."""
+    with project.read() as conn:
+        found = versions_read.version(conn, version)
+        revision = None if found is None else versions_read.open_revision(conn, found.uid)
+    return version if found is None or revision is None else revision.label(found.code)
+
+
+class GEOBLENDER_OT_core_new_revision(_StepsModal, bpy.types.Operator):
+    """New revision of the active version (the reason is required)"""
+
+    bl_idname = NEW_REVISION
+    bl_label = "New revision…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    # Como Refrescar y Cargar en la vista (plan §5.3.5): cada evento del temporizador avanza
+    # pasos durante, como mucho, este tiempo (ninguna llamada de más de 0,2 s).
+    STEP_BUDGET_S = 0.05
+
+    version_uid: StringProperty(  # type: ignore[valid-type]
+        name="Version",
+        description="Identity or code of the version whose open revision is frozen (empty: "
+                    "the one of the command, the active one)",
+        options=_HIDDEN,
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason",
+        description="Why the next revision is opened (required; recorded with it)",
+        options=_FIELD,
+    )
+    # Lo aceptado en el diálogo (:func:`accept_token`): lo pone ``invoke`` con lo que lista.
+    accept: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
+    # En pasos desde el temporizador de la ventana, con el avance y Esc: lo pone ``invoke``;
+    # desde un guion, sin él, de una vez.
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        if not _write_poll(cls):
+            return False
+        note = not_editable_note(context)
+        if note is not None:
+            cls.poll_message_set(note)
+            return False
+        return True
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        """Su descripción emergente y, sin versión de la orden o con ella no editable, por qué
+        no se puede (BS §7.3)."""
+        about = getattr(cls, "bl_description", "")
+        version = getattr(properties, "version_uid", "") or target_version(context)
+        if not version:
+            return with_note(about, no_version_text())
+        return with_note(about, not_editable_note(context, version) or "")
+
+    def _version(self, context: Any) -> str | None:
+        return self.version_uid or target_version(context)
+
+    def invoke(self, context: bpy.types.Context, event: Any) -> set[str]:
+        """Lee el plan de la congelación y abre el diálogo con el motivo y lo que hay que
+        aceptar o, si algo lo impide, una ventana con el porqué; nada cambia hasta aceptarlo."""
+        project = project_session.current()
+        uid = self._version(context)
+        if project is None or not uid:
+            self.report({"ERROR"}, tr("No project is open") if project is None
+                        else no_version_text())
+            return {"CANCELLED"}
+        try:
+            dialog = revision_dialog(project, uid)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.version_uid = dialog.uid
+        self.accept = dialog.accepted
+        self.in_steps = getattr(context, "window", None) is not None
+        self._dialog = dialog
+        if dialog.blockers:
+            return context.window_manager.invoke_popup(self, width=DIALOG_WIDTH)
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=dialog.title,
+            confirm_text=dialog.confirm_text)
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        dialog = getattr(self, "_dialog", None)
+        if dialog is None:  # sin invoke (no debería pasar): lo lee ahora
+            project = project_session.current()
+            try:
+                dialog = None if project is None else revision_dialog(project, self.version_uid)
+            except (GeoblenderError, sqlite3.Error, OSError) as exc:
+                layout.label(text=error_text(exc), icon="ERROR", translate=False)
+                return
+            if dialog is None:
+                layout.label(text=tr("No project is open"), translate=False)
+                return
+        width = labels.dialog_width(DIALOG_WIDTH)
+        if dialog.blockers:
+            labels.draw_wrapped(layout, dialog.title, width)
+            for shown in dialog.blocker_texts():
+                column = layout.column()
+                column.alert = True
+                labels.draw_wrapped(column, shown, width, icon="ERROR")
+            return
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+        header = dialog.accept_text()
+        if not header:
+            return
+        column = layout.column()
+        column.alert = True
+        labels.draw_wrapped(column, header, width, icon="ERROR")
+        for shown in dialog.accept_lines():
+            labels.draw_wrapped(layout, shown, width, icon="DOT")
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        blocked = write_unavailable()
+        project = project_session.current()
+        if blocked is not None or project is None:
+            self.report({"ERROR"}, blocked or tr("No project is open"))
+            return {"CANCELLED"}
+        uid = self._version(context)
+        if not uid:
+            self.report({"ERROR"}, no_version_text())
+            return {"CANCELLED"}
+        from ...core.versions.freeze import freeze_steps  # al usarlo (plan §2.1)
+
+        try:
+            label = _open_label(project, uid)
+            steps = freeze_steps(project, uid, reason=self.reason,
+                                 accepted=_acceptance(self.accept), pending=_pending(project))
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._project = project
+        self._label = label
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        outcome = None
+        try:
+            for step in steps:
+                if step.result is not None:
+                    outcome = step.result
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self._report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if outcome is None:  # pragma: no cover - freeze_steps acaba siempre con su final
+            self._report({"ERROR"}, tr("The operation did not finish with its result"))
+            return {"CANCELLED"}
+        return self._finish(outcome)
+
+    def _finish(self, outcome: FreezeOutcome) -> set[str]:
+        """Lo que dice la orden al terminar: congelada y abierta (o cancelada) y los avisos (la
+        cabecera que no se pudo escribir, los del proyecto) con ``report_later``; tras
+        congelar, los indicadores y las versiones de la sesión (el control 8)."""
+        if outcome.cancelled:
+            self._report({"INFO"}, self._cancelled_text())
+            self.outcome = "CANCELLED"
+            return {"CANCELLED"}
+        warnings = [*outcome.warnings, *_after_writing(self._project, header=False)]
+        self._report({"INFO"}, frozen_text(outcome))
+        for message in warnings:
+            jobs_ops.report_later("WARNING", message)
+        self.outcome = "FINISHED"
+        return {"FINISHED"}
+
+    # En pasos ------------------------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        return freeze_status_text(getattr(self, "_label", ""), step)
+
+    def _cancelled_text(self) -> str:
+        return tr("Freezing cancelled: nothing has been left half-done")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return error_text(exc)
+
+    def _result(self, context: bpy.types.Context, step: Progress) -> set[str] | None:
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr("The project was closed while {revision} was "
+                                              "being frozen: nothing has been left half-done",
+                                              revision=getattr(self, "_label", "")))
+            return None
+        self._done(context)
+        return self._finish(step.result)
+
+    def modal(self, context: bpy.types.Context, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except (sqlite3.Error, OSError) as exc:
+            LOGGER.error("«Nueva revisión…» se ha parado", exc_info=exc)
+            return self._fail(context, error_text(exc))
+        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
+            LOGGER.error("«Nueva revisión…» se ha parado", exc_info=exc)
+            return self._fail(context, tr("Freezing {revision} stopped: {error}",
+                                          revision=getattr(self, "_label", ""),
+                                          error=str(exc)))
+
+
 # En orden de registro.
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_set_active_version,
     GEOBLENDER_OT_core_new_version,
     GEOBLENDER_OT_core_set_version_state,
+    GEOBLENDER_OT_core_new_revision,
 )

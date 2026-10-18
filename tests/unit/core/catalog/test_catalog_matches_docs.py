@@ -41,7 +41,8 @@ PENDING_REFS: frozenset[str] = frozenset()
 # la 009; lo de la 009 sigue en R-07). Las de la 010 (plan 010 D-18: Refrescar y Cifras de la
 # selección, de R-07 a 010) ya las dice BS desde la T19 de la 010. Plan 009 D-38 (T18): la
 # versión activa (Proyecto ▸ Versiones ▸ Versión activa y su orden) pasa de R-07 a 009, y Nueva
-# versión… y Cambiar estado… (T19); BS lo dirá en la T31 de la 009. identificador → entrada.
+# versión… y Cambiar estado… (T19) y Nueva revisión… (T21); BS lo dirá en la T31 de la 009.
+# identificador → entrada.
 APPROVED_ENTRIES: dict[str, str] = {
     "core_show_parameters": "008",
     "core_show_inputs": "008",
@@ -52,6 +53,7 @@ APPROVED_ENTRIES: dict[str, str] = {
     "core_set_active_version": "009",
     "core_new_version": "009",
     "core_set_version_state": "009",
+    "core_new_revision": "009",
 }
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,

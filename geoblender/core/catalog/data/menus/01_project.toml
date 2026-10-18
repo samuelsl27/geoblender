@@ -229,7 +229,7 @@ label.en = "New revision…"
 label.es = "Nueva revisión…"
 description.en = "New revision of the active version (the reason is required)"
 description.es = "Revisión nueva de la versión activa (con motivo obligatorio)"
-entry = "R-07"
+entry = "009"
 action = "D"
 frequency = 3
 

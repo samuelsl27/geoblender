@@ -4953,3 +4953,93 @@ es = "{version}: {value} {kind}"
 
 ["project: {value} {kind}"]
 es = "proyecto: {value} {kind}"
+
+# Nueva revisión… (spec 009, T21; RF-009-06, RF-009-07, RF-009-08, RF-009-21; plan 009 §5.5, A5
+# a A7, D-40): el diálogo, lo que hay que aceptar, el avance, el final y la cancelación.
+
+["Identity or code of the version whose open revision is frozen (empty: the one of the command, the active one)"]
+es = "Identidad o código de la versión cuya revisión abierta se congela (vacía: la de la orden, la activa)"
+
+["Why the next revision is opened (required; recorded with it)"]
+es = "Por qué se abre la revisión siguiente (obligatorio; queda anotado con ella)"
+
+["Freeze {revision} and open {following}"]
+es = "Congelar {revision} y abrir {following}"
+
+["Freeze"]
+es = "Congelar"
+
+["Accept and freeze"]
+es = "Aceptar y congelar"
+
+["1 stale result"]
+es = "1 resultado obsoleto"
+
+["{n} stale results"]
+es = "{n} resultados obsoletos"
+
+["1 operation waiting for manual review"]
+es = "1 operación que espera revisión a mano"
+
+["{n} operations waiting for manual review"]
+es = "{n} operaciones que esperan revisión a mano"
+
+["1 input that cannot be located"]
+es = "1 entrada no localizable"
+
+["{n} inputs that cannot be located"]
+es = "{n} entradas no localizables"
+
+["{items} and {last}"]
+es = "{items} y {last}"
+
+["There is {items}: if you freeze, it will be recorded as it is"]
+es = "Hay {items}: si congela, quedará anotado"
+
+["There are {items}: if you freeze, they will be recorded as they are"]
+es = "Hay {items}: si congela, quedarán anotados"
+
+["«{name}»: {state}"]
+es = "«{name}»: {state}"
+
+["stale result"]
+es = "resultado obsoleto"
+
+["waiting for manual review"]
+es = "espera revisión a mano"
+
+["cannot be located"]
+es = "no localizable"
+
+["Freezing {revision}: copying «{name}»… {percent} % · Esc: cancel"]
+es = "Congelando {revision}: copiando «{name}»… {percent} % · Esc: cancelar"
+
+["Freezing {revision}: checking «{name}»… {percent} % · Esc: cancel"]
+es = "Congelando {revision}: comprobando «{name}»… {percent} % · Esc: cancelar"
+
+["Freezing {revision}: checking the free space… {percent} % · Esc: cancel"]
+es = "Congelando {revision}: comprobando el espacio libre… {percent} % · Esc: cancelar"
+
+["Freezing {revision}: writing the manifest… {percent} % · Esc: cancel"]
+es = "Congelando {revision}: escribiendo el manifiesto… {percent} % · Esc: cancelar"
+
+["Freezing {revision}: confirming… {percent} % · Esc: cancel"]
+es = "Congelando {revision}: confirmando… {percent} % · Esc: cancelar"
+
+["{revision} frozen ({size} copied); {following} open"]
+es = "{revision} congelada ({size} copiados); {following} abierta"
+
+["{revision} frozen ({size} copied; 1 content already frozen, referenced); {following} open"]
+es = "{revision} congelada ({size} copiados; 1 contenido ya congelado, referenciado); {following} abierta"
+
+["{revision} frozen ({size} copied; {n} contents already frozen, referenced); {following} open"]
+es = "{revision} congelada ({size} copiados; {n} contenidos ya congelados, referenciados); {following} abierta"
+
+["Freezing cancelled: nothing has been left half-done"]
+es = "Congelación cancelada: no ha quedado nada a medias"
+
+["The project was closed while {revision} was being frozen: nothing has been left half-done"]
+es = "El proyecto se cerró mientras se congelaba {revision}: no ha quedado nada a medias"
+
+["Freezing {revision} stopped: {error}"]
+es = "La congelación de {revision} se ha parado: {error}"

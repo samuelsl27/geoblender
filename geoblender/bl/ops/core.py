@@ -1236,6 +1236,10 @@ class _StepsModal:
     def _after_stop(self, context: bpy.types.Context) -> None:
         """Tras cancelar o fallar (por defecto, nada)."""
 
+    def _error_text(self, exc: GeoblenderError) -> str:
+        """El texto de un error de los pasos para el usuario (por defecto, su mensaje)."""
+        return exc.message
+
     def _show(self, context: bpy.types.Context, step: Progress) -> None:
         self.progress_log.append(
             (time.perf_counter(), step.phase, step.done, step.total, step.message)
@@ -1294,7 +1298,7 @@ class _StepsModal:
                 if time.perf_counter() - started >= self.STEP_BUDGET_S:
                     return {"RUNNING_MODAL"}
         except GeoblenderError as exc:
-            return self._fail(context, exc.message)
+            return self._fail(context, self._error_text(exc))
         except StopIteration:
             return self._fail(context, tr("The operation did not finish with its result"))
 

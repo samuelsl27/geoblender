@@ -227,6 +227,12 @@ class Blocker:
     names: tuple[str, ...]
     text: str
 
+    @property
+    def code(self) -> str:
+        """El código de su mensaje (``core.version_freeze_…``), para decirlo en otro idioma
+        con ``model.render`` (marcadores ``revision`` y ``names``)."""
+        return _BLOCK_MESSAGES[self.reason]
+
 
 @dataclass(frozen=True, slots=True)
 class AcceptItem:

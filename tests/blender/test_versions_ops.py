@@ -46,12 +46,32 @@ la demostración declara entre sus ``commands`` y el catálogo enseña mientras 
   desactivada con el texto de RF-009-04; sin versión activa o con un parámetro del proyecto, no
   pregunta.
 
+T21 (HU-009-1; RF-009-06, RF-009-07, RF-009-08; RNF-009-02; plan 009 A5 a A7, §5.3.5 y §5.5), con
+el hueco de la demostración (``demo.pit``) calculado en V02:
+
+- **Nueva revisión…** (``geoblender.core_new_revision``): el diálogo «Congelar V02.r1 y abrir
+  V02.r2» con el motivo; desde la interfaz, el modal de pasos (``_StepsModal``, un evento del
+  temporizador cada vez), con su avance «Congelando V02.r1: …» en la barra de estado: deja V02.r1
+  congelada (su instantánea) y V02.r2 abierta con el motivo dado y dice «V02.r1 congelada (…
+  copiados); V02.r2 abierta»; ninguna llamada del modal pasa de 0,2 s; desde un guion, de una
+  vez. Esc a mitad (dos eventos): «Congelación cancelada: no ha quedado nada a medias» y nada
+  queda (ficheros, base y revisión abierta).
+- **Lo que hay que aceptar y lo que lo impide** (RF-009-08): con obsoletos, el diálogo los lista
+  («Hay 3 resultados obsoletos: …») con «Aceptar y congelar»; sin aceptarlos no congela; con una
+  entrada aguas arriba cambiada sin decidir, una ventana sin aceptar que lo dice, y la orden se
+  rechaza; los avisos de la congelación, con ``report_later``.
+- **«Versión no editable»** (RF-009-21): sin versión, desactivada con el motivo; con la activa
+  SUPERADO, su ``poll``, su descripción y los menús lo dicen y se rechaza sin escribir.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
 import dataclasses
 import hashlib
+import json
+import re
 import shutil
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,6 +118,13 @@ SET_PARAMETER = "geoblender.core_set_parameter"
 PARAMETERS_PANEL = "GEOBLENDER_PT_core_parameters"
 PIT_SETTINGS = {"benches": 3, "berm_m": 25.0, "step_m": 10.0, "top_z": 500.0}
 MAX_TICKS = 2000
+MAX_EVENTS = 500
+TIMER = SimpleNamespace(type="TIMER", value="NOTHING")
+ESC = SimpleNamespace(type="ESC", value="PRESS")
+CALL_LIMIT_S = 0.2
+"""Lo más que dura una llamada del modal de Nueva revisión… con la demostración (T21)."""
+FROZEN_TEXT = re.compile(r"V02\.r1 congelada \(\d+(,\d)? [kM]?B copiados\); V02\.r2 abierta")
+CANCELLED_FREEZE = "Congelación cancelada: no ha quedado nada a medias"
 
 
 def ext(name: str) -> Any:
@@ -370,6 +397,69 @@ class VersionsOpsTest(unittest.TestCase):
         ui.draw_parameter_row(line, view.parameters[view.parameter_index])
         return scopes, self.labels(line)[3]
 
+    # --- T21: Nueva revisión… ------------------------------------------------------------------
+
+    def pit_project(self) -> tuple[Any, Any, Any, Any]:
+        """Un proyecto con el límite importado, V01 y V02 (BORRADOR) y el hueco de la
+        demostración calculado en V02 (rejilla, malla y tabla de bancos), con la comprobación de
+        apertura terminada y V02 activa: el proyecto, la demostración, V01 y V02."""
+        project = self.project()
+        demo = self.enterContext(VersionsDemo(module_name()).registered())
+        sources = self.folder / "fuentes"
+        sources.mkdir()
+        source = sources / "Limites.gpkg"
+        shutil.copyfile(DATA / "Limites_v1.gpkg", source)
+        demo.import_boundary(project, source)
+        v01 = self.create(project, "definitiva", "Definitiva")
+        v02 = self.create(project, "sur", "Fase sur")
+        demo.pit(project, "V02")
+        self.run_checks()
+        ext("bl.ui.version_panels").on_project_read(project)
+        self.set_active(v02)
+        return project, demo, v01, v02
+
+    def revision_dialog(self, context: Any = None, **values: Any
+                        ) -> tuple[set[str], Any, SimpleNamespace, FakeLayout]:
+        """Abre Nueva revisión… (de la versión de ``context``) y lo dibuja: lo que devuelve
+        ``invoke``, el ``self``, el contexto y lo dibujado."""
+        context = self.dialog_context() if context is None else context
+        cls, fake = self.operator(NEW_REVISION, version_uid=values.pop("version_uid", ""),
+                                  reason=values.pop("reason", ""), accept="", in_steps=False,
+                                  **values)
+        result = cls.invoke(fake, context, None)
+        if result == {"RUNNING_MODAL"}:
+            cls.draw(fake, bpy.context)
+        return result, fake, context, fake.layout
+
+    def running_revision(self) -> Any:
+        """La orden Nueva revisión… que está en marcha como modal (la que aún tiene pasos)."""
+        cls = getattr(bpy.types, "GEOBLENDER_OT_core_new_revision")
+        found = [op for op in bpy.context.window.modal_operators
+                 if isinstance(op, cls) and getattr(op, "_steps", None) is not None]
+        self.assertEqual(len(found), 1, "Nueva revisión… no está en marcha como modal")
+        return found[0]
+
+    def drive(self, operator: Any) -> tuple[set[str], list[float]]:
+        """Un evento del temporizador cada vez hasta que el modal acaba: su final y lo que duró
+        cada llamada (s)."""
+        calls: list[float] = []
+        for _ in range(MAX_EVENTS):
+            started = time.perf_counter()
+            state = operator.modal(bpy.context, TIMER)
+            calls.append(time.perf_counter() - started)
+            if state != {"RUNNING_MODAL"}:
+                return state, calls
+        self.fail("Nueva revisión… no acaba")
+
+    def snapshots(self, project: Any) -> list[str]:
+        return sorted(path.name for path in (project.root / "snapshots").iterdir())
+
+    def outside_snapshot(self, project: Any, label: str) -> dict[str, object]:
+        """:func:`files` del proyecto sin la carpeta de la instantánea ``label``."""
+        prefix = f"snapshots/{label}"
+        return {rel: value for rel, value in files(project.root).items()
+                if rel != prefix and not rel.startswith(f"{prefix}/")}
+
     # --- Pruebas -------------------------------------------------------------------------------
 
     def test_new_version_with_and_without_parent(self) -> None:
@@ -625,11 +715,11 @@ class VersionsOpsTest(unittest.TestCase):
         self.assertEqual(str(self.version(project, "V03").status), "DESCARTADO")
 
     def test_the_version_of_the_command(self) -> None:
-        """RF-009-03 (plan §5.3.5; PC §3.13): sin versión activa, Cambiar estado… se dibuja
-        desactivado, su descripción dice que se elija antes la versión y no hace nada; desde el
-        menú contextual «Versión ▾» de la colección de una versión en el Outliner, la de la
-        colección (aunque haya otra activa), con Cambiar estado… disponible y Nueva revisión…
-        aún no; fuera del Outliner, la activa."""
+        """RF-009-03, RF-009-06 (plan §5.3.5; PC §3.13): sin versión activa, Cambiar estado… y
+        Nueva revisión… se dibujan desactivados, su descripción dice que se elija antes la
+        versión y no hacen nada; desde el menú contextual «Versión ▾» de la colección de una
+        versión en el Outliner, la de la colección (aunque haya otra activa), con Cambiar
+        estado… y Nueva revisión… (T21) disponibles; fuera del Outliner, la activa."""
         project = self.project()
         v01 = self.create(project, "definitiva", "Definitiva")
         v02 = self.create(project, "sur", "Fase sur")
@@ -645,6 +735,16 @@ class VersionsOpsTest(unittest.TestCase):
         result, reports = self.execute(SET_STATE, version_uid="", target="DESCARTADO",
                                        reason="x")
         self.assertEqual((result, reports), ({"CANCELLED"}, [({"ERROR"}, NO_VERSION_NOTE)]))
+        revision = self.commands.registered_class(NEW_REVISION)
+        self.assertFalse(self.panel_item(NEW_REVISION).enabled)
+        self.assertIn(NO_VERSION_NOTE, revision.description(bpy.context, None))
+        counter = vf.change_counter(project)
+        result, fake, _context, _layout = self.revision_dialog()
+        self.assertEqual((result, fake.reports), ({"CANCELLED"}, [({"ERROR"}, NO_VERSION_NOTE)]))
+        self.assertEqual(self.execute(NEW_REVISION, version_uid="", reason="x", accept="",
+                                      in_steps=False),
+                         ({"CANCELLED"}, [({"ERROR"}, NO_VERSION_NOTE)]))
+        self.assertEqual(vf.change_counter(project), counter)
 
         # La colección de V01 en el Outliner, con V02 activa.
         bpy.ops.geoblender.core_set_active_version(version_uid=v02.uid)
@@ -662,15 +762,21 @@ class VersionsOpsTest(unittest.TestCase):
         view3d.collection = collection
         self.assertEqual(self.ops.target_version(view3d), v02.uid)
 
-        # El menú contextual de la versión: disponible, con Cambiar estado… y sin Nueva
-        # revisión… (R-07) todavía.
+        # El menú contextual de la versión: disponible, con Cambiar estado… y Nueva revisión…
+        # (T21), de la versión de la colección.
         self.assertTrue(self.commands.is_available(CONTEXT_MENU))
         menu = draw(getattr(bpy.types, CONTEXT_MENU), outliner)
         drawn = {item.target: item for item in menu.of_kind("operator")}
         self.assertTrue(drawn[SET_STATE].enabled)
         self.assertEqual(drawn[SET_STATE].text, "Cambiar estado…")
-        self.assertFalse(drawn[NEW_REVISION].enabled)
+        self.assertTrue(drawn[NEW_REVISION].enabled)
+        self.assertEqual(drawn[NEW_REVISION].text, "Nueva revisión…")
         self.assertNotIn("Disponible en R-07", [item.text for item in menu.of_kind("label")])
+        self.run_checks()  # congelar espera a la comprobación de apertura (D-40)
+        result, fake, context, _layout = self.revision_dialog(context=outliner)
+        self.assertEqual((result, fake.version_uid), ({"RUNNING_MODAL"}, v01.uid))
+        self.assertEqual(context.window_manager.invoke_props_dialog.call_args.kwargs["title"],
+                         "Congelar V01.r1 y abrir V01.r2")
 
     def test_version_commands_need_an_editable_active_version(self) -> None:
         """RF-009-05, RF-009-04, RF-009-21 (plan A3, A11, §5.5; M3), con la orden sintética de
@@ -852,13 +958,218 @@ class VersionsOpsTest(unittest.TestCase):
         self.assertEqual([item.text for item in layout.of_kind("prop_enum")],
                          ["The project", "Only V02"])
 
+    def test_new_revision_freezes_in_steps(self) -> None:
+        """RF-009-06, RF-009-07, RNF-009-02, RF-009-21 (plan A5 a A7, §5.3.5, §5.5): Nueva
+        revisión… con V02 activa abre «Congelar V02.r1 y abrir V02.r2» con el motivo (y
+        «Congelar»); aceptado desde la interfaz, el modal de pasos avanza con «Congelando V02.r1:
+        …» (del espacio libre a la confirmación, sin retroceder) y deja V02.r1 congelada con su
+        instantánea y V02.r2 abierta con el motivo dado, «V02.r1 congelada (… copiados); V02.r2
+        abierta», el control 8 en «V02.r2» y nada más cambiado fuera de la instantánea; ninguna
+        llamada del modal pasa de 0,2 s. En inglés, el diálogo y el avance. Con la activa
+        SUPERADO, «Versión no editable»: su ``poll``, su descripción y los menús lo dicen y se
+        rechaza sin escribir nada."""
+        project, _demo, v01, v02 = self.pit_project()
+        result, fake, context, layout = self.revision_dialog()
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        dialog = context.window_manager.invoke_props_dialog
+        dialog.assert_called_once()
+        context.window_manager.invoke_popup.assert_not_called()
+        self.assertEqual((dialog.call_args.kwargs["title"], dialog.call_args.kwargs["confirm_text"]),
+                         ("Congelar V02.r1 y abrir V02.r2", "Congelar"))
+        self.assertEqual((fake.version_uid, fake.accept), (v02.uid, ""))
+        self.assertEqual([(item.target, item.text) for item in layout.of_kind("prop")],
+                         [("reason", "Motivo")])
+        self.assertEqual(self.labels(layout), [])
+
+        # Desde la interfaz: el modal de pasos, un evento del temporizador cada vez.
+        before, counter = files(project.root), vf.change_counter(project)
+        self.assertEqual(self.snapshots(project), [])
+        self.assertEqual(bpy.ops.geoblender.core_new_revision(
+            "EXEC_DEFAULT", reason="Entrega de la fase sur", in_steps=True), {"RUNNING_MODAL"})
+        operator = self.running_revision()
+        state, calls = self.drive(operator)
+        self.assertEqual(state, {"FINISHED"})
+        self.assertLessEqual(max(calls), CALL_LIMIT_S, [round(call, 3) for call in calls])
+        (shown,) = operator.report_log
+        self.assertRegex(shown, FROZEN_TEXT)
+        self.assertEqual(self.revisions(project, "V02"), [("V02.r1", "frozen"),
+                                                          ("V02.r2", "open")])
+        with project.read() as conn:
+            opened = self.read.open_revision(conn, v02.uid)
+        self.assertEqual(opened.reason, "Entrega de la fase sur")
+        self.assertEqual(self.snapshots(project), ["V02.r1"])
+        self.assertTrue((project.root / "snapshots" / "V02.r1" / "manifest.json").is_file())
+        self.assertEqual(self.outside_snapshot(project, "V02.r1"), before)
+        self.assertGreater(vf.change_counter(project), counter)
+        self.assertEqual(self.control(), "V02.r2")
+        progress = ext("core.project.model").Progress
+        status = [self.ops.freeze_status_text("V02.r1", progress(*entry[1:]))
+                  for entry in operator.progress_log]
+        self.assertEqual(status[0], "Congelando V02.r1: comprobando el espacio libre… 0 % · "
+                                    "Esc: cancelar")
+        self.assertEqual(status[-1], "Congelando V02.r1: confirmando… 100 % · Esc: cancelar")
+        done = [entry[2] for entry in operator.progress_log]
+        self.assertEqual(done, sorted(done))
+        self.assertEqual(self.ops.freeze_status_text(
+            "V02.r1", progress("copia", 40, 100, "Copiando «demo_pit_grid_v02.tif»…")),
+            "Congelando V02.r1: copiando «demo_pit_grid_v02.tif»… 40 % · Esc: cancelar")
+
+        # En inglés.
+        self.i18n.set_language("en")
+        _result, _fake, context, _layout = self.revision_dialog()
+        self.assertEqual(context.window_manager.invoke_props_dialog.call_args.kwargs["title"],
+                         "Freeze V02.r2 and open V02.r3")
+        self.assertEqual(self.ops.freeze_status_text(
+            "V02.r2", progress("comprobación", 1, 4, "Comprobando «demo_pit_mesh_v02.npz»…")),
+            "Freezing V02.r2: checking «demo_pit_mesh_v02.npz»… 25 % · Esc: cancel")
+        self.i18n.set_language("es")
+
+        # Con la activa SUPERADO (V01 VIGENTE y después V02), «Versión no editable».
+        self.declare_current(project, v01)
+        self.write(project, lambda conn: self.store.set_status(conn, project, v02.uid,
+                                                               "VIGENTE", reason=REASON))
+        project.refresh_header()
+        ext("bl.ui.version_panels").on_project_read(project)
+        self.set_active(v01)
+        cls = self.commands.registered_class(NEW_REVISION)
+        with mock.patch.object(cls, "poll_message_set") as message:
+            self.assertFalse(cls.poll(bpy.context))
+        message.assert_called_once_with(NOT_EDITABLE)
+        self.assertEqual(cls.description(bpy.context, None),
+                         f"{getattr(cls, 'bl_description')}\n{NOT_EDITABLE}")
+        self.assertFalse(self.panel_item(NEW_REVISION).enabled)
+        counter = vf.change_counter(project)
+        self.assertEqual(self.execute(NEW_REVISION, version_uid="", reason="Otra", accept="",
+                                      in_steps=False),
+                         ({"CANCELLED"}, [({"ERROR"}, NOT_EDITABLE)]))
+        self.assertEqual(vf.change_counter(project), counter)
+
+    def test_what_must_be_accepted_and_what_prevents_freezing(self) -> None:
+        """RF-009-08, RF-009-06 (plan A5, D-40, §5.5): con la altura de banco de V02 cambiada
+        tras calcular el hueco, el diálogo dice «Hay 3 resultados obsoletos: si congela,
+        quedarán anotados», los lista y ofrece «Aceptar y congelar»; sin aceptarlos se rechaza
+        sin escribir nada; aceptados (desde un guion, de una vez), V02.r1 congelada con lo
+        aceptado anotado y los avisos de la congelación con ``report_later``. Con la entrada del
+        límite cambiada sin decidir, una ventana sin aceptar dice que no se puede congelar V02.r2
+        y la orden se rechaza sin escribir nada."""
+        project, _demo, _v01, v02 = self.pit_project()
+        store = ext("core.params").ParameterStore(project)
+        self.write(project, lambda conn: store.change(
+            conn, BENCH_HEIGHT, version="V02", value=12.0, kind="HIPÓTESIS",
+            source="Estudio de la prueba", decided_by="Proyectista de la prueba",
+            reason="Banco de 12 m en V02"))
+        stale = [f"«{name}»: resultado obsoleto"
+                 for name in ("demo_pit_benches", "demo_pit_grid", "demo_pit_mesh")]
+        result, fake, context, layout = self.revision_dialog()
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        dialog = context.window_manager.invoke_props_dialog
+        self.assertEqual(dialog.call_args.kwargs["confirm_text"], "Aceptar y congelar")
+        shown = self.labels(layout)
+        self.assertEqual(" ".join(shown[:-3]),
+                         "Hay 3 resultados obsoletos: si congela, quedarán anotados")
+        self.assertEqual(sorted(shown[-3:]), stale)
+        with project.read() as conn:
+            uids = {conn.execute("SELECT uid FROM gb_dataset WHERE name = ? AND version_uid = ?",
+                                 (name, v02.uid)).fetchone()[0]
+                    for name in ("demo_pit_grid", "demo_pit_mesh", "demo_pit_benches")}
+        self.assertEqual(set(fake.accept.split(",")), {f"dataset:{uid}" for uid in uids})
+        labels = ext("bl.ui.labels")
+        for scale in at_scales():
+            _result, _fake, _context, drawn = self.revision_dialog()
+            assert_fits(self, drawn, labels.dialog_width(self.ops.DIALOG_WIDTH), scale=scale,
+                        props=True)
+
+        # Sin aceptar, no congela.
+        before, counter = files(project.root), vf.change_counter(project)
+        names = "«demo_pit_grid», «demo_pit_mesh», «demo_pit_benches»"
+        refused = ("Para congelar V02.r1, acepte antes lo que quedará anotado tal como está "
+                   f"({names})")
+        result, reports = self.execute(NEW_REVISION, version_uid="", reason="Con obsoletos",
+                                       accept="", in_steps=False)
+        self.assertEqual(result, {"CANCELLED"})
+        (kind, text), = reports
+        self.assertEqual(kind, {"ERROR"})
+        self.assertEqual(sorted(re.findall("«[^»]+»", text)), sorted(names.split(", ")))
+        self.assertTrue(text.startswith(refused.partition("(")[0]), text)
+        self.assertEqual((files(project.root), vf.change_counter(project)), (before, counter))
+
+        # Aceptados, desde un guion (de una vez); la cabecera que no se escribe, un aviso.
+        jobs = ext("bl.ops.jobs")
+        with mock.patch.object(project, "refresh_header", side_effect=OSError("disco de prueba")):
+            result, reports = self.execute(NEW_REVISION, version_uid="", reason="Con obsoletos",
+                                           accept=fake.accept, in_steps=False)
+        project.refresh_header()
+        self.assertEqual(result, {"FINISHED"})
+        self.assertEqual(len(reports), 1)
+        self.assertRegex(reports[0][1], FROZEN_TEXT)
+        warning = jobs.sent_reports()[-1]
+        self.assertEqual(warning[0], "WARNING")
+        self.assertIn("V02.r1 está congelada, pero no se ha podido actualizar la cabecera",
+                      warning[1])
+        with project.read() as conn:
+            frozen = self.read.last_frozen(conn, v02.uid)
+            states = {row[0] for row in conn.execute(
+                "SELECT state FROM gb_revision_item WHERE revision_uid = ? AND item_uid IN "
+                f"({', '.join('?' for _ in uids)})", (frozen.uid, *sorted(uids)))}
+        self.assertEqual(frozen.label("V02"), "V02.r1")
+        self.assertEqual(states, {"stale"})
+        accepted = json.loads(frozen.accepted)
+        self.assertEqual({entry["item_uid"] for entry in accepted["items"]}, uids)
+        self.assertEqual(accepted["reason"], "Con obsoletos")
+
+        # La entrada del límite, cambiada sin decidir: no se puede congelar V02.r2.
+        with project.read() as conn:
+            input_uid, input_name = conn.execute("SELECT uid, name FROM gb_input").fetchone()
+        now = ext("core.timeutil").format_utc(project.clock.now())
+        self.write(project, lambda conn: conn.execute(
+            "UPDATE gb_input SET status = 'changed', status_at = ?, status_by = ?, "
+            "seen_sha256 = ? WHERE uid = ?", (now, project.session.user_host, "d" * 64,
+                                              input_uid)))
+        before, counter = files(project.root), vf.change_counter(project)
+        blocked = (f"Hay entradas aguas arriba de V02.r2 cambiadas sin decidir («{input_name}»): "
+                   "actualícelas o mantenga la copia antes de congelarla")
+        result, fake, context, layout = self.revision_dialog()
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        context.window_manager.invoke_props_dialog.assert_not_called()
+        context.window_manager.invoke_popup.assert_called_once()
+        self.assertEqual(layout.of_kind("prop"), [])
+        shown = " ".join(self.labels(layout))
+        self.assertTrue(shown.startswith("Congelar V02.r2 y abrir V02.r3"), shown)
+        self.assertIn(blocked, shown)
+        self.assertEqual(self.execute(NEW_REVISION, version_uid="", reason="Otra",
+                                      accept=fake.accept, in_steps=False),
+                         ({"CANCELLED"}, [({"ERROR"}, blocked)]))
+        self.assertEqual((files(project.root), vf.change_counter(project)), (before, counter))
+
+    def test_esc_halfway_leaves_nothing(self) -> None:
+        """RF-009-07 (plan A6 (5), §5.5): Esc a mitad de Nueva revisión… (dos eventos del
+        temporizador, un paso cada uno, con la carpeta temporal de la instantánea ya creada)
+        cancela con «Congelación cancelada: no ha quedado nada a medias»: ni la temporal, ni la
+        instantánea, ni nada en la caché; la base sin cambios y V02.r1 abierta."""
+        project, _demo, _v01, _v02 = self.pit_project()
+        before, counter = files(project.root), vf.change_counter(project)
+        self.assertEqual(bpy.ops.geoblender.core_new_revision(
+            "EXEC_DEFAULT", reason="Entrega", in_steps=True), {"RUNNING_MODAL"})
+        operator = self.running_revision()
+        with mock.patch.object(type(operator), "STEP_BUDGET_S", 0.0):  # un paso por evento
+            for _ in range(2):
+                self.assertEqual(operator.modal(bpy.context, TIMER), {"RUNNING_MODAL"})
+        self.assertEqual([name.partition(".congelando-")[0] for name in self.snapshots(project)],
+                         ["V02.r1"])
+        self.assertEqual(operator.modal(bpy.context, ESC), {"CANCELLED"})
+        self.assertEqual(operator.report_log[-1], CANCELLED_FREEZE)
+        self.assertEqual(self.snapshots(project), [])
+        self.assertEqual((files(project.root), vf.change_counter(project)), (before, counter))
+        self.assertEqual(self.revisions(project, "V02"), [("V02.r1", "open")])
+        self.assertEqual(self.control(), "V02.r1")
+
     def test_catalog_entry(self) -> None:
-        """RF-009-01, RF-009-03 (plan 009 D-38): Nueva versión…, Cambiar estado… y el menú
-        contextual de la versión son de la entrada «009», entregada: sus clases reales, ni
-        provisionales ni «Disponible en R-07», con su etiqueta del catálogo; Nueva revisión… y
-        Reproducir… siguen en R-07 hasta su tarea."""
+        """RF-009-01, RF-009-03, RF-009-06 (plan 009 D-38): Nueva versión…, Cambiar estado…,
+        Nueva revisión… (T21) y el menú contextual de la versión son de la entrada «009»,
+        entregada: sus clases reales, ni provisionales ni «Disponible en R-07», con su etiqueta
+        del catálogo; Reproducir… sigue en R-07 hasta su tarea."""
         cat = self.commands.catalog()
-        for key in (NEW_VERSION, SET_STATE, CONTEXT_MENU):
+        for key in (NEW_VERSION, SET_STATE, NEW_REVISION, CONTEXT_MENU):
             with self.subTest(key=key):
                 self.assertEqual(cat.commands[key].entry, ENTRY)
                 cls = self.commands.registered_class(key)
@@ -870,10 +1181,10 @@ class VersionsOpsTest(unittest.TestCase):
                          "Nueva versión…")
         self.assertEqual(getattr(bpy.types, "GEOBLENDER_OT_core_set_version_state").bl_label,
                          "Cambiar estado…")
-        for key in (NEW_REVISION, REPRODUCE):
-            with self.subTest(key=key):
-                self.assertEqual(cat.commands[key].entry, "R-07")
-                self.assertFalse(self.commands.is_available(key))
+        self.assertEqual(getattr(bpy.types, "GEOBLENDER_OT_core_new_revision").bl_label,
+                         "Nueva revisión…")
+        self.assertEqual(cat.commands[REPRODUCE].entry, "R-07")
+        self.assertFalse(self.commands.is_available(REPRODUCE))
 
 
 if __name__ == "__main__":

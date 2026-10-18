@@ -13,8 +13,10 @@ A11, D-38 y D-42; AR §2 y §6).
   ``geoblender.core_set_active_version``, que la hace activa; las revisiones de la activa
   (congeladas, la abierta «en curso», cerradas, «(alterada)»); y Nueva versión… y Cambiar
   estado… (T19; sin versión activa, Cambiar estado… desactivada con el motivo:
-  ``bl.ops.versions.no_version_check``), Nueva revisión…, Reproducir… y Comparar versiones…,
-  que llegan en sus tareas (hasta entonces, desactivadas con su «Disponible en …»).
+  ``bl.ops.versions.no_version_check``), Nueva revisión… (T21; sin versión activa o con ella
+  SUPERADO o DESCARTADO, desactivada con el motivo: ``bl.ops.versions.new_revision_check``),
+  Reproducir… y Comparar versiones…, que llegan en sus tareas (hasta entonces, desactivadas con
+  su «Disponible en …»).
 - **Proyecto ▸ Versiones ▸ Versión activa** (:class:`GEOBLENDER_MT_core_versions`): las mismas
   versiones y «Sin versión»; la activa lo dice («· activa»).
 - **La barra de estado** dice «V10.r2 VIGENTE» tras el nombre del proyecto
@@ -64,15 +66,16 @@ LIST_BLANK = "BLANK1"
 """El hueco de «Sin versión» en la lista, alineada con las versiones (que llevan su icono)."""
 ALTERED_ICON = "ERROR"
 SET_STATE = "geoblender.core_set_version_state"
+NEW_REVISION = "geoblender.core_new_revision"
 COMMANDS: tuple[str, ...] = (
     NEW_VERSION,
-    "geoblender.core_new_revision",
+    NEW_REVISION,
     SET_STATE,
     "geoblender.core_reproduce_version",
     "geoblender.res_compare_versions",
 )
-"""Las órdenes de la ventana (plan §5.3.5): Nueva versión… y Cambiar estado… (T19); Nueva
-revisión… y Reproducir… llegan en la T21 y la T23; Comparar, en R-62."""
+"""Las órdenes de la ventana (plan §5.3.5): Nueva versión… y Cambiar estado… (T19), Nueva
+revisión… (T21); Reproducir… llega en la T23; Comparar, en R-62."""
 
 
 def state_icon(status: str) -> dict[str, Any]:
@@ -258,17 +261,21 @@ def redraw() -> None:
 
 def install() -> None:
     """Pone el texto del control 8, la escucha de las versiones y la de los indicadores (una
-    sola vez) y la comprobación de Cambiar estado… sin versión (``commands.register_check``)."""
-    from ..ops.versions import no_version_check  # al usarlo: bl/ops importa bl/ui (ARQ-08)
+    sola vez) y las comprobaciones de Cambiar estado… sin versión y de Nueva revisión… sin
+    versión o con ella no editable (``commands.register_check``)."""
+    # Al usarlo: bl/ops importa bl/ui (ARQ-08).
+    from ..ops.versions import new_revision_check, no_version_check
 
     quick_access.set_label_provider(PANEL, control_label)
     scene_versions.add_listener(redraw)
     provenance.add_change_listener(on_project_read)
     commands.register_check(SET_STATE, no_version_check)
+    commands.register_check(NEW_REVISION, new_revision_check)
 
 
 def uninstall() -> None:
     """Quita lo que puso :func:`install`."""
+    commands.unregister_check(NEW_REVISION)
     commands.unregister_check(SET_STATE)
     provenance.remove_change_listener(on_project_read)
     scene_versions.remove_listener(redraw)
