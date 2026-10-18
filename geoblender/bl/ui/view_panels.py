@@ -50,9 +50,13 @@ se deshizo…), pero no se lee nada hasta que el panel se dibuja: entonces pide 
 de un disparo (:func:`inventory_tick`) que vuelve a leer si cambió el contador (si no, solo
 vuelve a filtrar con lo que está ahora en la escena, ``views.loaded_items``). Así no se lee si
 el panel no está a la vista. Mientras esta sesión escribe o el proyecto está en WAL, espera. En
-solo lectura, igual. La lectura se guarda como tuplas de textos y booleanos (el GC no las sigue,
-``docs/trampas.md`` §2); las filas, con los valores del proyecto, que el dibujo presenta.
-``core.views.inventory`` se importa al usarlo, como ``core.views.card``.
+solo lectura, igual. Cargar o descargar algo de la vista, desde el inventario, un menú o un
+guion (``bl.scene.views.add_view_listener``, :func:`on_view_changed`; T21), pone al día ya la
+columna «En la escena» y lo de la fila elegida, volviendo a filtrar lo leído, sin leer el
+proyecto: la presencia en la escena es de la escena. La lectura se guarda como tuplas de textos
+y booleanos (el GC no las sigue, ``docs/trampas.md`` §2); las filas, con los valores del
+proyecto, que el dibujo presenta. ``core.views.inventory`` se importa al usarlo, como
+``core.views.card``.
 
 **Cifras de la selección** (la ventana emergente :class:`GEOBLENDER_PT_core_selection_figures`;
 T16, RF-010-08; plan A8, D-17), que abre la orden ``geoblender.core_show_selection_figures``
@@ -65,11 +69,12 @@ tiene: hasta que la cubicación, R-38, registre las primeras). **No mide nada**:
 volúmenes de la geometría; y las cifras que anota cada objeto (``Object.geoblender.figures``,
 solo para mostrarlas) no son su fuente.
 
-:func:`register` suscribe y apunta el manejador ``@persistent`` y las escuchas; :func:`unregister`
-lo quita todo (también el temporizador del inventario). Los paneles (con la pestaña y el título
-traducidos por :func:`localize` antes de registrar, y registrados otra vez al cambiar el idioma,
-``bl.ui.i18n``) van tras el panel Proyecto (``bl_order``): Elemento activo y, después,
-Inventario; la ventana de las cifras no tiene pestaña.
+:func:`register` suscribe y apunta el manejador ``@persistent`` y las escuchas (también la de lo
+cargado y descargado de la vista); :func:`unregister` lo quita todo (también el temporizador del
+inventario). Los paneles (con la pestaña y el título traducidos por :func:`localize` antes de
+registrar, y registrados otra vez al cambiar el idioma, ``bl.ui.i18n``) van tras el panel
+Proyecto (``bl_order``): Elemento activo y, después, Inventario; la ventana de las cifras no
+tiene pestaña.
 """
 
 from __future__ import annotations
@@ -739,6 +744,31 @@ def inventory_filtered() -> None:
         LOGGER.exception("Falló el filtro del inventario del proyecto")
 
 
+def on_view_changed() -> None:
+    """Lo que se apunta en ``bl.scene.views.add_view_listener`` (T21): se cargó o descargó algo
+    de la vista (desde el inventario, un menú o un guion). La columna «En la escena» y lo de la
+    fila elegida se ponen al día ya, volviendo a filtrar lo leído con lo que está ahora en la
+    escena, sin leer el proyecto (la presencia en la escena es de la escena; con el filtro «En
+    la escena», la fila entra o sale), y se redibuja la barra lateral. Si lo leído estaba al día
+    antes de esta carga (la petición de la marca que la acompaña es la única desde el último
+    filtro), sigue al día: el dibujo no vuelve a pedir su lectura. Sin inventario leído de este
+    proyecto, nada."""
+    try:
+        view = _view(bpy.context)
+        project = project_session.current()
+        snapshot = _INVENTORY.snapshot
+        if view is None or project is None or snapshot is None or \
+                _INVENTORY.project is not project:
+            return
+        fresh = _INVENTORY.generation == live.view_generation() - 1
+        _fill_inventory(view, project.uid, snapshot)
+        if fresh:
+            _INVENTORY.generation = live.view_generation()
+        _redraw()
+    except Exception:  # noqa: BLE001 - lo cargado o descargado ya está en la escena
+        LOGGER.exception("Falló la puesta al día del inventario tras cargar o descargar")
+
+
 def _row_icon(row: Any) -> str:
     """El icono de una fila: el de una entrada o el del tipo de un dato."""
     if row.category == INPUT_CATEGORY:
@@ -1062,17 +1092,20 @@ classes: tuple[type, ...] = (GEOBLENDER_PT_core_active_item,
 
 def register() -> None:
     """Se suscribe al objeto activo y apunta el manejador de ``load_post`` y las escuchas del
-    proyecto de la sesión y de los indicadores; idempotente."""
+    proyecto de la sesión, de los indicadores y de lo cargado y descargado de la vista;
+    idempotente."""
     _subscribe()
     if on_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(on_load_post)
     project_session.add_listener(on_project_changed)
     provenance.add_change_listener(on_project_read)
+    views.add_view_listener(on_view_changed)
 
 
 def unregister() -> None:
     """Quita las escuchas, el manejador (todas sus apariciones), la suscripción y el
     temporizador del inventario, y olvida la ficha y el inventario; idempotente."""
+    views.remove_view_listener(on_view_changed)
     provenance.remove_change_listener(on_project_read)
     project_session.remove_listener(on_project_changed)
     while on_load_post in bpy.app.handlers.load_post:

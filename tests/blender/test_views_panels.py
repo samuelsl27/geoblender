@@ -37,7 +37,8 @@ D-15), con el mismo proyecto:
 - **las órdenes de la fila elegida**: «Cargar en la vista» (``geoblender.core_load_into_view``
   con su dato) lo carga, «Descargar» (``geoblender.core_unload_from_view``) lo quita y
   «Procedencia» abre la de la 008 con ese dato; una entrada no se carga ni tiene procedencia
-  (botones desactivados, con el motivo); «en la escena», al día tras cargar y descargar;
+  (botones desactivados, con el motivo); «en la escena» se pone al día al cargar y al
+  descargar (desde el inventario, un guion o el menú), sin volver a leer el proyecto (T21);
 - **cuándo se lee**: un cambio en el proyecto deja vieja la lectura, pero no se lee nada hasta
   que el panel se dibuja, que pide un temporizador de un disparo (en ``-b`` no corre: la prueba
   llama a su función); en **solo lectura**, igual; nada escrito en el proyecto;
@@ -506,8 +507,10 @@ class ActiveItemTest(unittest.TestCase):
         """RF-010-07 (HU-010-3; plan A7, D-15): el inventario da lo registrado, cargado o no
         (la entrada del MDT, lo importado de ella y la rejilla, que está en la escena), sin
         leer nada hasta que el panel se dibuja; el texto encuentra el dato no cargado sin leer
-        el proyecto; «Cargar en la vista» lo carga, «Descargar» lo quita (y «en la escena»
-        está al día tras cada uno) y «Procedencia» abre la de la 008 con él; una entrada no se
+        el proyecto; «Cargar en la vista» lo carga, «Descargar» lo quita (y «en la escena», en
+        la fila y en lo de la fila elegida, se pone al día al cargar o descargar, desde el
+        inventario, un guion o el menú, sin volver a leer el proyecto: T21) y «Procedencia»
+        abre la de la 008 con él; una entrada no se
         carga ni tiene procedencia (botones desactivados, con el motivo). El panel, en el modo
         Geoblender; los textos caben a escala 1,0 y 1,25; nada escrito en el proyecto."""
         data = self.data
@@ -557,29 +560,48 @@ class ActiveItemTest(unittest.TestCase):
                              "Estado: VIGENTE", "Versión: —", "No cargado en la escena"):
                 self.assertIn(expected, texts)
 
-            # «Cargar en la vista» lo carga; «en la escena», al día al dibujarlo otra vez.
+            # «Cargar en la vista» lo carga y «en la escena» se pone al día al cargar (T21, M4):
+            # la fila y lo de la fila elegida, sin volver a leer el proyecto ni pedir la lectura
+            # al dibujarlo (la presencia en la escena es de la escena).
             self.assertEqual(bpy.ops.geoblender.core_load_into_view(
                 "EXEC_DEFAULT", datasets=load.properties.datasets), {"FINISHED"})
             self.assertEqual(len(vf.objects_of(bpy.data, mdt.uid)), 1)
-            self.assertFalse(row.in_scene)  # hasta que el panel se dibuje
-            self.inventory_drawn()
-            self.read_inventory()
             row = view.inventory[view.inventory_index]
             self.assertEqual((row.name, row.in_scene), (mdt.name, True))  # sigue elegida
-            layout = self.inventory_drawn()
+            with mock.patch.object(data.project, "read", wraps=data.project.read) as opens:
+                layout = self.inventory_drawn()
+            self.assertEqual(opens.call_count, 0)
+            self.assertFalse(bpy.app.timers.is_registered(tick))  # al día: no lo pide
             self.assertTrue(self.button(layout, UNLOAD).enabled)
             self.assertIn("Cargado en la escena", self.label_texts(layout))
             self.assertIn("HIDE_OFF", [item.icon for item in self.row_drawn(row).items])
 
-            # «Descargar» lo quita.
+            # «Descargar» lo quita, y «en la escena», al día al descargar.
             self.assertEqual(bpy.ops.geoblender.core_unload_from_view(
                 "EXEC_DEFAULT", datasets=unload.properties.datasets), {"FINISHED"})
             self.assertEqual(vf.objects_of(bpy.data, mdt.uid), [])
-            self.inventory_drawn()
-            self.read_inventory()
             self.assertEqual(self.shown()[mdt.name], ("DATASET", False, False))
+            layout = self.inventory_drawn()
+            self.assertFalse(bpy.app.timers.is_registered(tick))
+            self.assertFalse(self.button(layout, UNLOAD).enabled)
+            self.assertIn("No cargado en la escena", self.label_texts(layout))
             self.assertNotIn("HIDE_OFF", [item.icon for item in self.row_drawn(
                 view.inventory[view.inventory_index]).items])
+
+            # Igual desde un guion y desde el menú (Descargar los seleccionados); con el filtro
+            # «En la escena», la fila entra al cargar y sale al descargar.
+            view.inventory_presence = "IN"
+            self.assertEqual(self.shown(), {})
+            data.load(bpy.context, mdt.uid)
+            self.assertEqual(self.shown(), {mdt.name: ("DATASET", True, False)})
+            for obj in bpy.context.view_layer.objects:
+                obj.select_set(obj.geoblender.dataset_uid == mdt.uid)
+            self.assertEqual(bpy.ops.geoblender.core_unload_from_view("EXEC_DEFAULT"),
+                             {"FINISHED"})
+            self.assertEqual(self.shown(), {})
+            view.inventory_presence = "ALL"
+            self.assertEqual(self.shown()[mdt.name], ("DATASET", False, False))
+            self.assertFalse(bpy.app.timers.is_registered(tick))
         self.assertEqual(reads.call_count, 0)  # cargar y descargar no cambian el proyecto
 
         # «Procedencia» abre la de la 008 con ese dato (su ventana, con wm.call_panel sustituido:
@@ -864,8 +886,9 @@ class ActiveItemRegistrationTest(unittest.TestCase):
         el panel en la pestaña «Proyecto» tras el panel Proyecto y, tras él, el del inventario
         con su lista (también tras cambiar el idioma), la ventana emergente de «Cifras de la
         selección» con su orden real (T16), suscribe la ficha al objeto activo y apunta su
-        manejador ``@persistent`` de ``load_post``, su escucha del proyecto de la sesión y la
-        de cada lectura de los indicadores; deshabilitar lo quita todo (la suscripción, también
+        manejador ``@persistent`` de ``load_post``, su escucha del proyecto de la sesión, la
+        de cada lectura de los indicadores y la de lo cargado y descargado de la vista (T21);
+        deshabilitar lo quita todo (la suscripción, también
         en Blender; el temporizador del inventario) y deja la huella de Blender como al
         principio de la sesión de pruebas."""
         blender_ext.enable()
@@ -910,12 +933,15 @@ class ActiveItemRegistrationTest(unittest.TestCase):
         self.assertTrue(hasattr(panels.on_load_post, "_bpy_persistent"))
         self.assertIn(panels.on_project_changed, ps.listeners())
         self.assertIn(panels.on_project_read, ui.change_listeners())
+        views = vf.extension("bl.scene.views")
+        self.assertEqual(views.view_listeners(), (panels.on_view_changed,))  # T21
 
         blender_ext.disable()
         self.assertFalse(panels.is_subscribed())
         self.assertNotIn(panels.on_load_post, bpy.app.handlers.load_post)
         self.assertNotIn(panels.on_project_changed, ps.listeners())
         self.assertNotIn(panels.on_project_read, ui.change_listeners())
+        self.assertEqual(views.view_listeners(), ())
         self.assertFalse(hasattr(bpy.types, PANEL))
         self.assertFalse(hasattr(bpy.types, INVENTORY_PANEL))
         self.assertFalse(hasattr(bpy.types, INVENTORY_LIST))

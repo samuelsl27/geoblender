@@ -69,7 +69,9 @@ A3, D-9 a D-13 y D-17; generaliza lo de los sondeos, spec 005, T47):
   los objetos de los datos ``unbacked`` y, con ``clear_view_stale``, quita la marca de vista
   desfasada de las escenas (RF-002-29);
 - cargar y descargar piden la marca en vivo (``bl.scene.live.request``; spec 010, T08): lo que
-  no está al día cambia, y con él el control 7.
+  no está al día cambia, y con él el control 7; y después, una vez por carga o descarga, llaman
+  a lo apuntado con :func:`add_view_listener` (spec 010, T21: el inventario de N ▸ Proyecto
+  pone al día su columna «En la escena» sin volver a leer el proyecto).
 """
 
 from __future__ import annotations
@@ -232,6 +234,11 @@ class LoadOutcome:
 
 
 _LOADERS: dict[str, Loader] = {}
+
+ViewListener = Callable[[], None]
+"""Lo que se llama tras cargar o descargar algo de la vista (:func:`add_view_listener`; spec
+010, T21)."""
+_VIEW_LISTENERS: list[ViewListener] = []
 
 
 # --- Cargadores ------------------------------------------------------------------------------
@@ -902,63 +909,102 @@ def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[s
            figures: Mapping[str, Sequence[FigureText]],
            replaces: Mapping[str, Sequence[str]], unbacked: Sequence[str],
            clear_view_stale: bool) -> LoadOutcome:
-    """El último paso de :func:`load_steps`: lo preparado, a la escena (véase allí)."""
+    """El último paso de :func:`load_steps`: lo preparado, a la escena (véase allí). Avisa una
+    sola vez de que cambió la vista (:func:`_view_changed`), al final, también si se para a
+    medias tras quitar o poner algo."""
     loaded: list[str] = []
     placed: set[str] = set()
     objects: list[bpy.types.Object] = []
     notes: list[str] = []
     lows: list[np.ndarray] = []
     highs: list[np.ndarray] = []
+    gone: list[str] = []
+    removed = 0
     origin = origin_text(project.origin)
-    for entry in built:
-        notes.extend(entry.notes)
-        parts, loader, shown = entry.parts, entry.loader, entry.shown
-        if parts is None or loader is None:
-            continue
-        record = shown.record
-        # Otro nivel de detalle, el dato al día o lo que sustituye (spec 010): fuera antes de
-        # ponerlo, para que tome su nombre.
-        unload_datasets([record.uid, *replaces.get(record.uid, ())])
-        collection = ensure_collection(loader.kind, record, name=entry.name, scene=scene)
-        texts = figures.get(record.uid, ())
-        for obj in parts.objects:
-            _unsuffixed(obj, entry.name)
-            collection.objects.link(obj)
-            _mark(obj, loader.kind, shown, project, origin, texts)
-        loaded.append(record.name)
-        placed.add(record.uid)
-        objects.extend(parts.objects)
-        notes.extend(parts.notes)
-        far = scene_precision(parts, project.origin)
-        if far is not None and not far.within_limit:
-            notes.append(tr("«{name}» in the view: {warning}", name=record.name,
-                            warning=far.message))
-        if parts.bounds is not None:
-            lows.append(np.asarray(parts.bounds[0], dtype=np.float64))
-            highs.append(np.asarray(parts.bounds[1], dtype=np.float64))
-    if loaded:
-        ensure_anchor(project, scene)
-    if lows:
-        fit_clip(np.min(lows, axis=0), np.max(highs, axis=0))
-    gone = [uid for uid in unbacked if uid not in placed]
-    if gone:
-        _mark_unbacked(gone)
-    if clear_view_stale and not errors:
-        for item in bpy.data.scenes:
-            if item.geoblender.view_stale:
-                item.geoblender.view_stale = False
-    if loaded or gone:
-        _view_changed()
+    try:
+        for entry in built:
+            notes.extend(entry.notes)
+            parts, loader, shown = entry.parts, entry.loader, entry.shown
+            if parts is None or loader is None:
+                continue
+            record = shown.record
+            # Otro nivel de detalle, el dato al día o lo que sustituye (spec 010): fuera antes
+            # de ponerlo, para que tome su nombre.
+            removed += _unload([record.uid, *replaces.get(record.uid, ())])
+            collection = ensure_collection(loader.kind, record, name=entry.name, scene=scene)
+            texts = figures.get(record.uid, ())
+            for obj in parts.objects:
+                _unsuffixed(obj, entry.name)
+                collection.objects.link(obj)
+                _mark(obj, loader.kind, shown, project, origin, texts)
+            loaded.append(record.name)
+            placed.add(record.uid)
+            objects.extend(parts.objects)
+            notes.extend(parts.notes)
+            far = scene_precision(parts, project.origin)
+            if far is not None and not far.within_limit:
+                notes.append(tr("«{name}» in the view: {warning}", name=record.name,
+                                warning=far.message))
+            if parts.bounds is not None:
+                lows.append(np.asarray(parts.bounds[0], dtype=np.float64))
+                highs.append(np.asarray(parts.bounds[1], dtype=np.float64))
+        if loaded:
+            ensure_anchor(project, scene)
+        if lows:
+            fit_clip(np.min(lows, axis=0), np.max(highs, axis=0))
+        gone = [uid for uid in unbacked if uid not in placed]
+        if gone:
+            _mark_unbacked(gone)
+        if clear_view_stale and not errors:
+            for item in bpy.data.scenes:
+                if item.geoblender.view_stale:
+                    item.geoblender.view_stale = False
+    finally:
+        if loaded or gone or removed:
+            _view_changed()
     return LoadOutcome(tuple(loaded), tuple(objects), tuple(notes), tuple(errors))
 
 
+# --- Lo que escucha la vista (spec 010, T21) -------------------------------------------------
+
+
+def add_view_listener(listener: ViewListener) -> None:
+    """Apunta ``listener`` para que se llame, sin argumentos, cada vez que se carga o se
+    descarga algo de la vista (desde una orden, un menú o un guion: :func:`load_steps`,
+    :func:`load_datasets`, :func:`unload_datasets`), una vez por carga o descarga y justo
+    después de su petición de la marca en vivo (``bl.scene.live.request``: una más en
+    ``live.view_generation``). Es del inventario de N ▸ Proyecto (``bl.ui.view_panels``): su
+    columna «En la escena» se pone al día sin volver a leer el proyecto (RF-010-07). Si ya
+    estaba, nada."""
+    if listener not in _VIEW_LISTENERS:
+        _VIEW_LISTENERS.append(listener)
+
+
+def remove_view_listener(listener: ViewListener) -> None:
+    """Quita ``listener``; si no estaba, nada."""
+    if listener in _VIEW_LISTENERS:
+        _VIEW_LISTENERS.remove(listener)
+
+
+def view_listeners() -> tuple[ViewListener, ...]:
+    """Lo apuntado con :func:`add_view_listener`, por orden."""
+    return tuple(_VIEW_LISTENERS)
+
+
 def _view_changed() -> None:
-    """Lo cargado o descargado cambia lo que no está al día: pide la marca en vivo del proyecto
-    de la sesión (``bl.scene.live.request``, spec 010, T08), que lo cuenta otra vez (control 7)
-    desde su temporizador. No lee nada."""
+    """Lo cargado o descargado cambia lo que no está al día y lo que está en la escena: pide la
+    marca en vivo del proyecto de la sesión (``bl.scene.live.request``, spec 010, T08), que lo
+    cuenta otra vez (control 7) desde su temporizador, y después llama a lo apuntado con
+    :func:`add_view_listener` (spec 010, T21). No lee nada; una escucha que falla va al
+    registro técnico y no para lo demás."""
     from . import live, project_session  # al usarlo: live importa este módulo
 
     live.request(project_session.current())
+    for listener in tuple(_VIEW_LISTENERS):
+        try:
+            listener()
+        except Exception:  # noqa: BLE001 - lo cargado o descargado ya está en la escena
+            LOGGER.exception("Falló una escucha de lo cargado en la vista")
 
 
 def load_datasets(context: Any, project: Any, refs: Iterable[str], *,
@@ -1001,7 +1047,17 @@ def _remove_empty(collection: bpy.types.Collection) -> None:
 def unload_datasets(uids: Iterable[str]) -> int:
     """Quita de la escena los objetos que muestran los datos ``uids``, sus mallas (si nadie
     más las usa) y las colecciones de la vista que quedan vacías (RF-006-20); devuelve
-    cuántos objetos quitó. No toca el proyecto; si quitó algo, pide la marca en vivo."""
+    cuántos objetos quitó. No toca el proyecto; si quitó algo, pide la marca en vivo y avisa
+    a lo apuntado con :func:`add_view_listener`."""
+    count = _unload(uids)
+    if count:
+        _view_changed()
+    return count
+
+
+def _unload(uids: Iterable[str]) -> int:
+    """Lo de :func:`unload_datasets` sin avisar de que cambió la vista (lo hace quien lo
+    llama, una vez: :func:`_place`)."""
     wanted = set(uids)
     found = [obj for obj in bpy.data.objects
              if getattr(obj, OBJECT_PROPERTY).dataset_uid in wanted]
@@ -1016,6 +1072,4 @@ def unload_datasets(uids: Iterable[str]) -> int:
             owner.remove(data)
     for collection in collections:
         _remove_empty(collection)
-    if found:
-        _view_changed()
     return len(found)
