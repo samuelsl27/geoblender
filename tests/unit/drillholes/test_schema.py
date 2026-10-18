@@ -54,6 +54,7 @@ errors = import_geoblender("core.errors")
 create = import_geoblender("core.project.create")
 open_mod = import_geoblender("core.project.open")
 migrations = import_geoblender("core.project.migrations")
+project_schema = import_geoblender("core.project.schema")
 userdata_mod = import_geoblender("core.userdata")
 builtin = import_geoblender("core.content.builtin")
 readers = import_geoblender("core.content.readers")
@@ -522,7 +523,8 @@ class NoTablesUntilWrittenTest(unittest.TestCase):
     def test_no_table_when_creating_opening_or_migrating(self) -> None:
         """RF-005-01, RF-008-62 (plan §5.6.1: sin paso de esquema): crear un proyecto, abrirlo y
         migrar uno del esquema 1 no crea ninguna tabla de los sondeos (se crean al escribirlas)
-        ni cambia el esquema."""
+        ni cambia el esquema: queda en el de esta versión (el 3 desde la spec 009), que la 005
+        no sube."""
         with project_tmp() as tmp:
             userdata = userdata_mod.UserData(tmp / "datos")
             (tmp / "p").mkdir()
@@ -540,7 +542,7 @@ class NoTablesUntilWrittenTest(unittest.TestCase):
                 conn = db.connection
                 self.assertEqual(_objects(conn, "dh_*"), [])
                 self.assertEqual(conn.execute("SELECT schema_version FROM gb_project")
-                                 .fetchone()[0], 2)
+                                 .fetchone()[0], project_schema.SCHEMA_VERSION)
 
 
 if __name__ == "__main__":

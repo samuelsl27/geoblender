@@ -177,9 +177,10 @@ class CoreModuleDocTest(unittest.TestCase):
 
     def test_owned_tables(self) -> None:
         """RF-008-01, RF-008-07, RF-008-17, RF-008-18, RF-008-24, RF-008-30, RF-008-62:
-        «Datos que posee» nombra cada tabla interna del esquema de esta versión."""
+        «Datos que posee» nombra cada tabla interna del esquema de esta versión (desde la
+        spec 009, las cinco de las versiones)."""
         owned = set(backticked(section(self.text, "## Datos que posee")))
-        self.assertEqual(len(project_schema.INTERNAL_TABLES), 15)
+        self.assertEqual(len(project_schema.INTERNAL_TABLES), 20)
         self.assertEqual(sorted(set(project_schema.INTERNAL_TABLES) - owned), [])
 
 

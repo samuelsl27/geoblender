@@ -24,7 +24,9 @@ GeoOrigin, en metros enteros.
    pasa del límite de rutas de Windows (259 caracteres; Blender 5.2.1 no admite más:
    ``core.path_too_long`` con la ruta y el límite, T45). Todo se hace en ``<Nombre>.gbproj.creando-<8 cifras hexadecimales>``
    junto al destino (subcarpetas, ``project.gpkg`` con
-   el esquema 1, la fila de ``gb_project`` y el evento ``create`` en una transacción,
+   el esquema de esta versión —el 3: el 2 y después ``core.versions.schema.apply_schema_3``,
+   lo mismo que hace migrar uno del 2 (spec 009)—, la fila de ``gb_project`` y el evento
+   ``create`` en una transacción,
    ``manifest.json`` y ``.lock`` de la sesión) y se renombra al final; ante cualquier
    error se borra la temporal y se informa del motivo con la ruta: nunca queda un
    proyecto a medias. El proyecto queda con el cerrojo de la sesión (en modo ``network``

@@ -62,6 +62,7 @@ model = import_geoblender("core.project.model")
 errors = import_geoblender("core.errors")
 userdata_mod = import_geoblender("core.userdata")
 schema = import_geoblender("core.provenance.schema")
+versions_schema = import_geoblender("core.versions.schema")
 hashing = import_geoblender("core.hashing")
 params = import_geoblender("core.params")
 content = import_geoblender("core.content")
@@ -521,8 +522,9 @@ def _changed(column: str) -> str:
 
 
 def _build(path: Path) -> None:
-    """La plantilla: el esquema 2 (que ya trae las tablas de la procedencia) y una fila en
-    cada tabla (el parámetro con sus dos filas de historial)."""
+    """La plantilla: el esquema de esta versión (desde el 2 trae las tablas de la procedencia;
+    el 3, de la spec 009, las de las versiones) y una fila en cada tabla de la procedencia (el
+    parámetro con sus dos filas de historial)."""
     with gpkg.GpkgConnection.open_write(path, create=True) as db:
         with db.transaction() as conn:
             base.create_base(conn, CRS)
@@ -613,10 +615,12 @@ class _DbCase(unittest.TestCase):
         ]
 
 
-# Los índices que no salen de las restricciones: tabla, único, parcial y columnas.
+# Los índices que no salen de las restricciones: tabla, único, parcial y columnas (en la
+# plantilla, del esquema de esta versión: el de nombres vivos de los datos es por versión desde
+# el 3, spec 009).
 EXPECTED_INDEXES: dict[str, tuple[str, int, int, list[str]]] = {
     "gb_input_name_active": ("gb_input", 1, 1, ["name"]),
-    "gb_dataset_name_active": ("gb_dataset", 1, 1, ["name"]),
+    "gb_dataset_name_active": ("gb_dataset", 1, 1, ["version_uid", "name"]),
     "gb_dataset_location": ("gb_dataset", 1, 0, ["store", "locator", "selector"]),
     "gb_operation_io_item": ("gb_operation_io", 0, 0, ["item_kind", "item_uid", "direction"]),
     "gb_operation_io_version": (
@@ -678,7 +682,8 @@ class StructureTest(unittest.TestCase):
             "WHERE status IN ('current','missing','blocked','damaged')",
             partial_sql["gb_dataset_name_active"],
         )
-        self.assertEqual(triggers, set(schema.TRIGGERS))
+        # Con los del esquema 3 (spec 009) en estas tablas: los mismos nombres más tres nuevos.
+        self.assertEqual(triggers, set(schema.TRIGGERS) | set(versions_schema.PROVENANCE_TRIGGERS))
         with tempfile.TemporaryDirectory(prefix="gb-t08-", ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "falta.gpkg"
             shutil.copyfile(_template(), path)
@@ -727,7 +732,7 @@ class StructureTest(unittest.TestCase):
                     "SELECT table_name, count(*) FROM gpkg_extensions WHERE table_name LIKE "
                     "'gb_%' GROUP BY table_name"
                 ).fetchall()
-        self.assertEqual(len(counts), len(SCHEMA_1_TABLES) + len(TABLES))
+        self.assertEqual(len(counts), len(project_schema.INTERNAL_TABLES))
         self.assertTrue(all(count == 1 for _, count in counts), counts)
         stored = [sql for *_, sql in master if sql is not None]
         self.assertFalse([sql for sql in stored if "IF NOT EXISTS" in sql.upper()])
@@ -970,7 +975,14 @@ class ParameterTest(_DbCase):
             sql, args = _insert_sql("gb_parameter", row)
             cases.append((f"{column}={value!r}", sql, args, CHECK))
         self.assertRejected(cases)
-        self.accept(*(_insert_sql("gb_parameter", row) for row in accepted))
+        # Desde el esquema 3 (spec 009), un parámetro de versión es de una versión viva.
+        version = (
+            "INSERT INTO gb_version (uid, code, feature, title, reason_created, created_at, "
+            "created_by, status_changed_at, status_changed_by, modified_at) "
+            "VALUES (?, 'V01', 'prueba', 'Prueba', 'Prueba', ?, ?, ?, ?, ?)",
+            (_uid(0x777), NOW, USER, NOW, USER, NOW),
+        )
+        self.accept(version, *(_insert_sql("gb_parameter", row) for row in accepted))
         self.assertEqual(self.scalar("SELECT count(*) FROM gb_parameter"), 1 + len(accepted))
         stored = {
             kind for (kind,) in self.db.connection.execute("SELECT DISTINCT kind FROM gb_parameter")
@@ -2052,14 +2064,16 @@ class ProjectSchemaTest(unittest.TestCase):
             pid_alive=FakePids({session.pid}),
         )
 
-    def test_new_project_has_schema_2(self) -> None:
+    def test_new_project_has_the_current_schema(self) -> None:
         """RF-008-17, RF-008-30 (RF-002-14, RF-002-22; plan §5.2): un proyecto nuevo tiene
-        el esquema 2 con ``min_reader_schema`` 1 (un Geoblender de la 002 lo abre en solo
-        lectura), en su base y en su cabecera; sus tablas internas son las tres de la 002 y
-        las doce de la procedencia, vacías y declaradas en ``gpkg_extensions`` con una
+        el esquema de esta versión (el 2 de la 008 y, desde la spec 009, el 3) con
+        ``min_reader_schema`` 1 (un Geoblender de la 002 lo abre en solo lectura), en su base y
+        en su cabecera; sus tablas internas son las tres de la 002, las doce de la procedencia
+        y las cinco de las versiones, vacías y declaradas en ``gpkg_extensions`` con una
         definición sin número de esquema, y ``missing_objects`` no echa nada en falta."""
-        self.assertEqual((project_schema.SCHEMA_VERSION, project_schema.MIN_READER_SCHEMA), (2, 1))
-        self.assertEqual(project_schema.INTERNAL_TABLES, SCHEMA_1_TABLES + TABLES)
+        self.assertEqual((project_schema.SCHEMA_VERSION, project_schema.MIN_READER_SCHEMA), (3, 1))
+        self.assertEqual(project_schema.INTERNAL_TABLES,
+                         SCHEMA_1_TABLES + TABLES + versions_schema.INTERNAL_TABLES)
         self.assertNotIn("esquema", base.EXTENSION_DEFINITION)
         with project_tmp("gb-t08-") as tmp:
             created = self._create(tmp)
@@ -2069,25 +2083,25 @@ class ProjectSchemaTest(unittest.TestCase):
                 versions = conn.execute(
                     "SELECT schema_version, min_reader_schema FROM gb_project"
                 ).fetchone()
-                missing = project_schema.missing_objects(conn, 2)
+                missing = project_schema.missing_objects(conn, 3)
                 counts = {
                     table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-                    for table in TABLES
+                    for table in TABLES + versions_schema.INTERNAL_TABLES
                 }
                 declared = conn.execute(
                     "SELECT table_name, definition, scope FROM gpkg_extensions "
                     "WHERE extension_name = 'imga_geoblender' ORDER BY table_name"
                 ).fetchall()
-        self.assertEqual(tuple(versions), (2, 1))
-        self.assertEqual((created.record.schema_version, created.record.min_reader_schema), (2, 1))
-        self.assertEqual((header.schema_version, header.min_reader_schema), (2, 1))
+        self.assertEqual(tuple(versions), (3, 1))
+        self.assertEqual((created.record.schema_version, created.record.min_reader_schema), (3, 1))
+        self.assertEqual((header.schema_version, header.min_reader_schema), (3, 1))
         self.assertEqual(missing, [])
-        self.assertEqual(counts, dict.fromkeys(TABLES, 0))
+        self.assertEqual(counts, dict.fromkeys(TABLES + versions_schema.INTERNAL_TABLES, 0))
         self.assertEqual(
             declared,
             [
                 (table, base.EXTENSION_DEFINITION, "write-only")
-                for table in sorted(SCHEMA_1_TABLES + TABLES)
+                for table in sorted(project_schema.INTERNAL_TABLES)
             ],
         )
 

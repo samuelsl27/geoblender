@@ -4,9 +4,10 @@ RF-002-20, RF-002-22; plan 008 §5.2.4 y §5.4.12).
 
 Los proyectos del esquema 1 son sintéticos y fieles a lo que dejaba la spec 002
 (``core_fixtures.make_schema_1``: sin las tablas de la procedencia y con la definición
-antigua de la extensión). Se migran con la migración real del registro (``m0002``) y el
+antigua de la extensión). Se migran con las migraciones reales del registro (``m0002`` y, desde
+la spec 009, ``m0003``: la cadena hasta el esquema de esta versión, :data:`CHAIN`) y el
 ``migrate_steps`` de la 002, sin cambios: copia previa con sus huellas, una transacción,
-fila en ``gb_schema_migration``, evento ``migration`` y cabecera regenerada.
+una fila en ``gb_schema_migration`` y un evento ``migration`` por paso, y cabecera regenerada.
 
 Las bases que escribe «otro programa» en estas pruebas son conexiones de ``sqlite3`` sin
 ``gb_writer()``, como QGIS.
@@ -50,6 +51,8 @@ SESSION_B = make_session(
     pid=777, geoblender_version="0.3.0",
 )
 EXCLUDE = ("cache", ".lock")
+CHAIN = tuple((version, version + 1) for version in range(1, schema.SCHEMA_VERSION))
+"""Los pasos del esquema 1 al de esta versión: 1 → 2 (``m0002``) y los siguientes."""
 BACKUP_NAME = "Cantera Prueba.gbproj.respaldo-esquema-1"
 PROVENANCE = tuple(provenance_schema.TABLES)
 # Lo que deja QGIS en un proyecto: una capa suya y la declaración de otra extensión, aquí
@@ -141,8 +144,8 @@ class RegistryTest(unittest.TestCase):
     def test_the_step_1_to_2_is_registered(self) -> None:
         """RF-002-20 (plan 008 §5.2.4): el registro tiene la migración 1 → 2 de la
         procedencia, que no cambia el esquema mínimo de lectura (sigue en 1, RF-002-22), y
-        es la cadena del esquema 1 al de esta versión."""
-        self.assertEqual(schema.SCHEMA_VERSION, 2)
+        es la cadena del esquema 1 al 2 y el primer paso de la del 1 al de esta versión."""
+        self.assertGreaterEqual(schema.SCHEMA_VERSION, 2)
         migration = m0002.MIGRATION
         self.assertIn(migration, migrations.REGISTRY)
         self.assertEqual(
@@ -151,7 +154,10 @@ class RegistryTest(unittest.TestCase):
         )
         self.assertIsNone(migration.min_reader_schema)
         self.assertIs(migration.apply, m0002.apply)
-        self.assertEqual(migrations.plan_migrations(1, schema.SCHEMA_VERSION), (migration,))
+        self.assertEqual(migrations.plan_migrations(1, 2), (migration,))
+        chain = migrations.plan_migrations(1, schema.SCHEMA_VERSION)
+        self.assertEqual(chain[0], migration)
+        self.assertEqual(tuple((m.from_version, m.to_version) for m in chain), CHAIN)
 
 
 class MigrateTest(unittest.TestCase):
@@ -193,11 +199,11 @@ class MigrateTest(unittest.TestCase):
     def test_migrates_with_a_backup_and_opens_without_provenance(self) -> None:
         """Spec 008 §8, último caso; RF-002-20: migrar un proyecto del esquema 1 con la
         migración real hace antes la copia previa ``…respaldo-esquema-1`` junto al original
-        con sus huellas (y del esquema 1), registra la fila 1 → 2 en
-        ``gb_schema_migration`` y el evento ``migration``, deja la base y la cabecera en el
-        esquema 2 con ``min_reader_schema`` 1, y el proyecto abre en escritura sin que le
-        falte nada, sin avisos y sin parámetros, entradas ni operaciones (las 12 tablas de
-        la procedencia, vacías)."""
+        con sus huellas (y del esquema 1), registra la fila 1 → 2 (y las de los pasos
+        siguientes, :data:`CHAIN`) en ``gb_schema_migration`` y sus eventos ``migration``, deja
+        la base y la cabecera en el esquema de esta versión con ``min_reader_schema`` 1, y el
+        proyecto abre en escritura sin que le falte nada, sin avisos y sin parámetros, entradas
+        ni operaciones (las 12 tablas de la procedencia, vacías)."""
         with project_tmp() as tmp:
             env = Env(tmp)
             before = env.prints()
@@ -205,8 +211,9 @@ class MigrateTest(unittest.TestCase):
             result = steps[-1].result
             backup = env.parent / BACKUP_NAME
             self.assertIsInstance(result, migrations.MigrationResult)
-            self.assertEqual((result.from_version, result.to_version), (1, 2))
-            self.assertEqual(result.applied, ((1, 2),))
+            self.assertEqual((result.from_version, result.to_version),
+                             (1, schema.SCHEMA_VERSION))
+            self.assertEqual(result.applied, CHAIN)
             self.assertEqual(result.backup, backup)
             self.assertEqual(result.warnings, ())
             self.assertEqual(env.prints(backup), before)
@@ -222,26 +229,27 @@ class MigrateTest(unittest.TestCase):
                     "SELECT from_version, to_version, applied_with, backup_dir, user_host "
                     "FROM gb_schema_migration"
                 ),
-                [(1, 2, "0.3.0", BACKUP_NAME, SESSION_B.user_host)],
+                [(*step, "0.3.0", BACKUP_NAME, SESSION_B.user_host) for step in CHAIN],
             )
             with gpkg.GpkgConnection.open_read(env.db) as db:
                 migrated = events_mod.read_events(db.connection, events_mod.EventKind.MIGRATION)
             self.assertEqual(
                 [(item.data["from"], item.data["to"], item.data["backup_dir"]) for item in migrated],
-                [(1, 2, BACKUP_NAME)],
+                [(*step, BACKUP_NAME) for step in CHAIN],
             )
             self.assertIn("procedencia (spec 008)", migrated[0].message)
             self.assertEqual(
                 env.read("SELECT schema_version, min_reader_schema, last_written_with FROM gb_project"),
-                [(2, 1, "0.3.0")],
+                [(schema.SCHEMA_VERSION, 1, "0.3.0")],
             )
             header = manifest_mod.read_manifest(env.root)
-            self.assertEqual((header.schema_version, header.min_reader_schema), (2, 1))
+            self.assertEqual((header.schema_version, header.min_reader_schema),
+                             (schema.SCHEMA_VERSION, 1))
             with gpkg.GpkgConnection.open_read(env.db) as db:
                 record = schema.read_project(db.connection)
                 registered = schema.read_migrations(db.connection)
-                self.assertEqual(schema.missing_objects(db.connection, 2), [])
-            self.assertEqual(registered, ((1, 2),))
+                self.assertEqual(schema.missing_objects(db.connection, schema.SCHEMA_VERSION), [])
+            self.assertEqual(registered, CHAIN)
             self.assertEqual(
                 manifest_mod.compare(header, record, registered).status,
                 manifest_mod.ManifestStatus.CONSISTENT,
@@ -251,7 +259,7 @@ class MigrateTest(unittest.TestCase):
             try:
                 project = opened.project
                 self.assertEqual(project.mode, model.OpenMode.WRITE_LOCAL)
-                self.assertEqual(project.schema_version, 2)
+                self.assertEqual(project.schema_version, schema.SCHEMA_VERSION)
                 self.assertEqual(opened.warnings, ())
                 with project.read() as conn:
                     counts = {
@@ -265,8 +273,8 @@ class MigrateTest(unittest.TestCase):
                 self.assertIn(table, counts)
 
     def test_created_and_migrated_have_the_same_structure(self) -> None:
-        """RF-002-20 (plan 008 §5.2.4): crear un proyecto de cero (ya en el esquema 2) y
-        migrar uno del esquema 1 dan el mismo ``sqlite_master`` (tablas, índices y disparadores con su
+        """RF-002-20 (plan 008 §5.2.4): crear un proyecto de cero (ya en el esquema de esta
+        versión) y migrar uno del esquema 1 dan el mismo ``sqlite_master`` (tablas, índices y disparadores con su
         SQL) y las mismas filas de ``gpkg_extensions`` (la definición sin número de esquema
         también en las tres tablas del 1)."""
         with project_tmp() as tmp:
@@ -295,7 +303,8 @@ class MigrateTest(unittest.TestCase):
             before = _snapshot(env.parent)
             result = env.migrate()[-1].result
             self.assertEqual((result.applied, result.backup), ((), None))
-            self.assertEqual((result.from_version, result.to_version), (2, 2))
+            self.assertEqual((result.from_version, result.to_version),
+                             (schema.SCHEMA_VERSION, schema.SCHEMA_VERSION))
             self.assertEqual(_snapshot(env.parent), before)
             fresh = env.create("Cantera Nueva") / "project.gpkg"
             for database in (env.db, fresh):
@@ -341,8 +350,8 @@ class MigrateTest(unittest.TestCase):
     def test_a_reader_of_schema_1_opens_the_migrated_read_only(self) -> None:
         """RF-002-22 (spec 008 §11; plan 008 §5.4.12): con ``SCHEMA_VERSION = 1`` simulado
         (un Geoblender de la 002), el proyecto migrado abre en solo lectura con el aviso de
-        «versión más moderna» (esquema 2), lee su base sin echar nada en falta, y abrir y
-        cerrar no cambian ningún fichero."""
+        «versión más moderna» (el esquema de esta versión), lee su base sin echar nada en
+        falta, y abrir y cerrar no cambian ningún fichero."""
         with project_tmp() as tmp:
             env = Env(tmp)
             env.migrate()
@@ -359,10 +368,11 @@ class MigrateTest(unittest.TestCase):
                 self.assertEqual(project.read_only_reason, model.ReadOnlyCode.SCHEMA_NEWER)
                 self.assertFalse(project.header_only)
                 message = result.status.message
-                for text in ("más moderna", "esquema 2", "0.3.0"):
+                for text in ("más moderna", f"esquema {schema.SCHEMA_VERSION}", "0.3.0"):
                     self.assertIn(text, message)
                 with project.read() as conn:
-                    self.assertEqual(schema.read_project(conn).schema_version, 2)
+                    self.assertEqual(schema.read_project(conn).schema_version,
+                                     schema.SCHEMA_VERSION)
             finally:
                 project.close()
             self.assertEqual(_snapshot(env.parent), before)

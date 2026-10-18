@@ -44,6 +44,15 @@ declaradas en ``gpkg_extensions`` (``imga_geoblender``, ``write-only``) y fuera 
   dato (almacén, tabla o ruta y selector) no se reutiliza nunca (``gb_dataset_location`` y
   ``gb_dataset_location_ins``; D21).
 
+**El esquema 3** (spec 009, plan 009 §5.2.2) añade a ``gb_dataset`` y ``gb_operation`` las
+columnas de :data:`SCHEMA_3_COLUMNS` (la versión y el título de un dato, la revisión de una
+operación) con ``ALTER TABLE … ADD COLUMN``, cambia el índice de nombres vivos por versión y
+rehace los disparadores que las nombran (:data:`SCHEMA_3_INDEXES`, :data:`SCHEMA_3_TRIGGERS`):
+lo aplica ``core.versions.schema.apply_schema_3``. :data:`TABLES`, :data:`INDEXES` y
+:data:`TRIGGERS` siguen siendo los del esquema 2, que crea :func:`create_tables` (para la
+migración 1 → 2 y como primer paso de crear un proyecto) y que no cambia nunca; las reglas de
+columnas (:data:`FIXED_COLUMNS`, :data:`MUTABLE_COLUMNS`) son las del esquema de esta versión.
+
 ``gb_writer()`` no es seguridad: evita que otro programa altere por error lo que solo
 gestiona Geoblender. Los ``CHECK`` del plan rechazan un parámetro con un tipo fuera de los
 cuatro (``HIPÓTESIS`` con tilde, como ``core.params.ParamKind``), uno CALCULADO sin operación
@@ -372,6 +381,7 @@ FIXED_COLUMNS: dict[str, tuple[str, ...]] = {
         "input_uid",
         "immutable",
         "created_at",
+        "version_uid",
     ),
     "gb_operation": (
         "fid",
@@ -391,14 +401,15 @@ FIXED_COLUMNS: dict[str, tuple[str, ...]] = {
         "host",
         "session_uid",
         "started_at",
+        "revision_uid",
     ),
     "gb_stale": ("item_kind", "item_uid", "cause_kind", "subject_uid"),
     "gb_ignored": ("fid", "kind", "name"),
 }
 """Las columnas que no cambian nunca en las tablas que no son de solo inserción. De un dato,
 además de lo que dice el plan, su entrada y si es inmutable: si no, bastaría con quitarle la
-marca para cambiar lo importado (RF-008-52). De una operación, lo que se fija al empezarla
-(RF-008-51)."""
+marca para cambiar lo importado (RF-008-52); desde el esquema 3, su versión. De una operación,
+lo que se fija al empezarla (RF-008-51); desde el esquema 3, su revisión (plan 009 §5.2.2)."""
 
 MUTABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     "gb_parameter": (
@@ -453,6 +464,7 @@ MUTABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "checked_at",
         "description",
         "modified_at",
+        "title",
     ),
     "gb_operation": (
         "status",
@@ -469,7 +481,19 @@ MUTABLE_COLUMNS: dict[str, tuple[str, ...]] = {
 }
 """Las columnas que sí cambian (lo demás de cada tabla es fijo o de una sola escritura). Las
 de una operación, solo mientras está «en curso» (``gb_operation_finished``): son las que se
-completan al terminarla (RF-008-18, RF-008-19)."""
+completan al terminarla (RF-008-18, RF-008-19). Desde el esquema 3, el título de un dato
+(RF-009-22: el renombrado desde el Outliner)."""
+
+SCHEMA_3_COLUMNS: dict[str, dict[str, str]] = {
+    "gb_dataset": {"version_uid": "TEXT NOT NULL DEFAULT ''", "title": "TEXT"},
+    "gb_operation": {"revision_uid": "TEXT NOT NULL DEFAULT ''"},
+}
+"""Las columnas que el esquema 3 añade a estas tablas, con su definición (plan 009 §5.2.2): la
+versión de un dato (fija; ``''``, del proyecto) y su título (cambiable, RF-009-22), y la
+revisión abierta en que se registró una operación de versión (fija; ``''``, de proyecto,
+RF-009-05). No están en :data:`TABLES` ni en los disparadores de :data:`TRIGGERS` (el esquema
+2): las añade ``core.versions.schema.apply_schema_3`` con ``ALTER TABLE … ADD COLUMN``, que no
+copia ni mueve filas, y SQLite las pone tras la última columna y antes de las restricciones."""
 
 WRITE_ONCE_COLUMNS: dict[str, tuple[str, ...]] = {
     "gb_input_file": ("original_path", "original_sha256", "original_size"),
@@ -577,7 +601,18 @@ def _row_exists(table: str, key: tuple[str, ...]) -> str:
     return f"EXISTS (SELECT 1 FROM {table} WHERE {match})"
 
 
-def _triggers() -> dict[str, str]:
+def _rules(rules: dict[str, tuple[str, ...]], table: str, schema: int) -> tuple[str, ...]:
+    """Las columnas de ``rules[table]`` que existen en el esquema ``schema`` (en el 2, sin
+    las de :data:`SCHEMA_3_COLUMNS`)."""
+    columns = rules[table]
+    if schema >= 3:
+        return columns
+    added = SCHEMA_3_COLUMNS.get(table, {})
+    return tuple(column for column in columns if column not in added)
+
+
+def _triggers(schema: int) -> dict[str, str]:
+    """Los disparadores de estas tablas en el esquema ``schema`` (2 o 3)."""
     writer = "gb_writer() IS NOT 1"
     triggers: dict[str, str] = {}
 
@@ -602,7 +637,7 @@ def _triggers() -> dict[str, str]:
             add(table, "w_del", "BEFORE DELETE", writer, MSG_WRITER_ONLY)
         else:
             add(table, "no_del", "BEFORE DELETE", None, MSG_NO_DELETE)
-        fixed = FIXED_COLUMNS[table]
+        fixed = _rules(FIXED_COLUMNS, table, schema)
         add(table, "fixed", f"BEFORE UPDATE OF {', '.join(fixed)}", _any_changed(fixed),
             MSG_FIXED[table])
         once = WRITE_ONCE_COLUMNS.get(table, ())
@@ -625,11 +660,13 @@ def _triggers() -> dict[str, str]:
         MSG_ACTIVE_NAME)
     live = ", ".join(f"'{status}'" for status in LIVE_DATASET_STATUSES)
     live_new = f"NEW.status IN ({live})"
-    other_live = f"name = NEW.name AND status IN ({live})"
+    # Desde el esquema 3, un nombre vivo por versión (y uno en el proyecto, version_uid = '').
+    same_version = " AND version_uid = NEW.version_uid" if schema >= 3 else ""
+    other_live = f"name = NEW.name{same_version} AND status IN ({live})"
     add("gb_dataset", "name_ins", "BEFORE INSERT",
         f"{live_new} AND EXISTS (SELECT 1 FROM gb_dataset WHERE {other_live})",
         MSG_LIVE_DATASET)
-    add("gb_dataset", "name_upd", "BEFORE UPDATE OF status",  # el nombre es fijo
+    add("gb_dataset", "name_upd", "BEFORE UPDATE OF status",  # el nombre y la versión son fijos
         f"{live_new} AND EXISTS (SELECT 1 FROM gb_dataset WHERE {other_live} "
         "AND fid <> OLD.fid)",
         MSG_LIVE_DATASET)
@@ -639,15 +676,41 @@ def _triggers() -> dict[str, str]:
         f"BEFORE UPDATE OF {', '.join(IMMUTABLE_CONTENT_COLUMNS)}",
         f"OLD.immutable AND ({_any_changed(IMMUTABLE_CONTENT_COLUMNS)})",
         MSG_IMMUTABLE)
-    completed = MUTABLE_COLUMNS["gb_operation"]
+    completed = _rules(MUTABLE_COLUMNS, "gb_operation", schema)
     add("gb_operation", "finished", f"BEFORE UPDATE OF {', '.join(completed)}",
         f"OLD.status IS NOT '{RUNNING}' AND ({_any_changed(completed)})",
         MSG_FINISHED)
     return triggers
 
 
-TRIGGERS: dict[str, str] = _triggers()
-"""El SQL de cada disparador, por nombre (``<tabla>_<regla>``)."""
+TRIGGERS: dict[str, str] = _triggers(2)
+"""El SQL de cada disparador del esquema 2, por nombre (``<tabla>_<regla>``): los que crea
+:func:`create_tables`."""
+
+SCHEMA_3_TRIGGERS: dict[str, str] = {
+    name: sql for name, sql in _triggers(3).items() if sql != TRIGGERS[name]
+}
+"""Los disparadores de :data:`TRIGGERS` que el esquema 3 rehace porque nombran sus columnas
+nuevas (plan 009 §5.2.2): las columnas fijas de un dato (con su versión) y de una operación
+(con su revisión), y el nombre vivo de un dato, por versión (``gb_dataset_fixed``,
+``gb_operation_fixed``, ``gb_dataset_name_ins`` y ``gb_dataset_name_upd``)."""
+
+SCHEMA_3_INDEXES: dict[str, str] = {
+    "gb_dataset_name_active": (  # un nombre, un dato vivo en cada versión y en el proyecto
+        "CREATE UNIQUE INDEX gb_dataset_name_active ON gb_dataset(version_uid, name) "
+        "WHERE status IN ('current','missing','blocked','damaged')"
+    ),
+    "gb_dataset_version": (  # los datos de una versión, sin recorrer la tabla
+        "CREATE INDEX gb_dataset_version ON gb_dataset(version_uid) WHERE version_uid <> ''"
+    ),
+    "gb_operation_revision": (  # las operaciones (y las cifras) de una revisión
+        "CREATE INDEX gb_operation_revision ON gb_operation(revision_uid) "
+        "WHERE revision_uid <> ''"
+    ),
+}
+"""Los índices del esquema 3 en estas tablas, como los guarda ``sqlite_master`` (plan 009
+§5.2.2): el de nombres vivos sustituye al de :data:`INDEXES`; los otros dos son parciales, así
+que una consulta los usa si repite su condición (``AND version_uid <> ''``)."""
 
 
 def _declared(conn: sqlite3.Connection, table: str) -> bool:
@@ -659,14 +722,16 @@ def _declared(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
-def create_tables(conn: sqlite3.Connection) -> None:
-    """Crea las tablas, los índices y los disparadores que falten y declara en
-    ``gpkg_extensions`` las tablas que no lo estén, en la transacción de ``conn`` (tras
-    ``core.gpkg.base.create_base``). Volver a llamarla no cambia nada."""
+def create_tables(conn: sqlite3.Connection, *, tables_only: bool = False) -> None:
+    """Crea las tablas, los índices y los disparadores que falten (con ``tables_only``, solo
+    las tablas) y declara en ``gpkg_extensions`` las tablas que no lo estén, en la transacción
+    de ``conn`` (tras ``core.gpkg.base.create_base``). Volver a llamarla no cambia nada."""
     for table, ddl in TABLES.items():
         conn.execute(ddl)
         if not _declared(conn, table):
             register_internal_table(conn, table)
+    if tables_only:
+        return
     for ddl in INDEXES.values():
         conn.execute(ddl)
     for ddl in TRIGGERS.values():
