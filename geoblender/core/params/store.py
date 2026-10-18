@@ -108,7 +108,7 @@ from ..ids import new_uid
 from ..timeutil import Clock, format_utc, parse_utc
 from ..units import DIMENSIONLESS, UNITS, UnitError, convert, symbol
 from ..versions import read as versions_read
-from ..versions.model import EDITABLE, Version, VersionError
+from ..versions.model import EDITABLE, Version, VersionError, ensure_editable
 from .model import (
     DEFINITIONS,
     MESSAGES,
@@ -695,17 +695,6 @@ def _find_version(conn: sqlite3.Connection, version: object) -> Version:
     return found
 
 
-def _ensure_editable(version: Version) -> Version:
-    """``version`` si es BORRADOR o VIGENTE; si no, el rechazo de RF-009-04 («V09 está en
-    estado SUPERADO: cree una versión nueva a partir de ella»; como
-    ``core.versions.store.require_editable``, que importa este módulo)."""
-    if not version.editable:
-        raise VersionError("core.version_not_editable", field="estado",
-                           value=version.status.value, version=version.code,
-                           state=version.status)
-    return version
-
-
 def _definition(key: str) -> ParamDef:
     """La definición registrada de ``key``; sin ella no se puede comprobar el valor."""
     defn = DEFINITIONS.get(key)
@@ -724,7 +713,7 @@ def _writable_version(conn: sqlite3.Connection, key: str, version: object, *,
     found = _find_version(conn, version)
     if defined and _definition(key).scope != VERSION_SCOPE:
         raise ParamError("core.param_project_only", key=key, version=found.code)
-    return _ensure_editable(found)
+    return ensure_editable(found)
 
 
 def _admits_version(key: str) -> bool:

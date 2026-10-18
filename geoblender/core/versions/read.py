@@ -9,19 +9,23 @@ operaciones de versión y la cascada) ni nada que la importe: solo :mod:`.model`
 
 - :func:`versions`, :func:`version`: las versiones, por número de código, y una, por su uid o
   su código.
-- :func:`revisions`, :func:`open_revision`, :func:`last_frozen`: las revisiones de una
-  versión, por número; la abierta, y la última congelada.
+- :func:`revision`, :func:`revisions`, :func:`open_revision`, :func:`last_frozen`: una
+  revisión por su uid; las de una versión, por número; la abierta, y la última congelada.
 - :func:`current_version`: la VIGENTE (solo puede haber una, D-3); :func:`default_active`: la
   versión activa por defecto (D-25), la VIGENTE o, si no hay, el BORRADOR más reciente.
+- :func:`dataset_versions`: la versión de cada dato (``''``, del proyecto; RF-009-05).
 """
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from .model import Revision, RevisionState, Version, VersionStatus
+
+_CHUNK = 500
+"""Uids por consulta (``IN (…)``)."""
 
 _VERSION_COLUMNS = (
     "uid, code, feature, title, status, parent_uid, parent_revision_uid, request, "
@@ -63,6 +67,13 @@ def version(conn: sqlite3.Connection, uid_or_code: str) -> Version | None:
     return None if row is None else _version(row)
 
 
+def revision(conn: sqlite3.Connection, uid: str) -> Revision | None:
+    """La revisión de uid ``uid``; ``None`` si no hay ninguna."""
+    row = conn.execute(f"SELECT {_REVISION_COLUMNS} FROM gb_revision WHERE uid = ?",
+                       (uid,)).fetchone()
+    return None if row is None else _revision(row)
+
+
 def revisions(conn: sqlite3.Connection, version_uid: str) -> tuple[Revision, ...]:
     """Las revisiones de la versión ``version_uid``, por número (r1, r2…)."""
     rows = conn.execute(
@@ -99,6 +110,21 @@ def current_version(conn: sqlite3.Connection) -> Version | None:
         (VersionStatus.VIGENTE.value,),
     ).fetchone()
     return None if row is None else _version(row)
+
+
+def dataset_versions(conn: sqlite3.Connection, uids: Iterable[str]) -> dict[str, str]:
+    """La versión de cada dato de ``uids`` (su uid; ``''``, del proyecto); los que el proyecto
+    no tiene no salen (RF-009-05)."""
+    wanted = list(dict.fromkeys(uids))
+    found: dict[str, str] = {}
+    for start in range(0, len(wanted), _CHUNK):
+        part = wanted[start:start + _CHUNK]
+        marks = ", ".join("?" for _ in part)
+        found.update(
+            (str(uid), str(version_uid)) for uid, version_uid in conn.execute(
+                f"SELECT uid, version_uid FROM gb_dataset WHERE uid IN ({marks})", part)
+        )
+    return found
 
 
 def default_active(conn: sqlite3.Connection) -> Version | None:

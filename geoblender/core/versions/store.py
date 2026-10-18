@@ -56,6 +56,7 @@ from .model import (
     Version,
     VersionError,
     VersionStatus,
+    ensure_editable,
     version_code,
 )
 
@@ -127,14 +128,6 @@ def _require(conn: sqlite3.Connection, uid_or_code: str, field: str) -> Version:
     return found
 
 
-def _ensure_editable(version: Version) -> Version:
-    if not version.editable:
-        raise VersionError("core.version_not_editable", field="estado",
-                           value=version.status.value, version=version.code,
-                           state=version.status)
-    return version
-
-
 def _status(target: object) -> VersionStatus:
     if isinstance(target, str) and target in VersionStatus:
         return VersionStatus(target)
@@ -149,7 +142,7 @@ def require_editable(conn: sqlite3.Connection, version_uid: str) -> Version:
     """La versión de uid (o código) ``version_uid`` si es BORRADOR o VIGENTE. Si es SUPERADO o
     DESCARTADO, :class:`~.model.VersionError` ``core.version_not_editable`` con el texto de
     RF-009-04; si no existe, ``core.version_unknown``. Solo lee."""
-    return _ensure_editable(_require(conn, version_uid, "versión"))
+    return ensure_editable(_require(conn, version_uid, "versión"))
 
 
 # --- Crear ----------------------------------------------------------------------------------
@@ -325,7 +318,7 @@ def set_status(
     ruta absoluta (``core.version_text_path``)."""
     version = _require(conn, version_uid, "versión")
     wanted = _status(target)
-    _ensure_editable(version)
+    ensure_editable(version)
     if wanted is version.status:
         raise VersionError("core.version_same_state", field="estado", value=wanted.value,
                            version=version.code, state=version.status)
@@ -386,7 +379,7 @@ def set_title(
     if version_uid is not None:
         version = _require(conn, version_uid, "versión")
         text = _required(title, "core.version_title_required", "título")
-        _ensure_editable(version)
+        ensure_editable(version)
         if text == version.title:
             return text
         conn.execute("UPDATE gb_version SET title = ?, modified_at = ? WHERE uid = ?",
@@ -405,7 +398,7 @@ def set_title(
                            dataset=dataset_uid)
     name, old, owner_uid = row
     text = _required(title, "core.version_dataset_title_required", "título", dataset=name)
-    owner = _ensure_editable(_require(conn, owner_uid, "versión")) if owner_uid else None
+    owner = ensure_editable(_require(conn, owner_uid, "versión")) if owner_uid else None
     if text == old:
         return text
     conn.execute("UPDATE gb_dataset SET title = ?, modified_at = ? WHERE uid = ?",

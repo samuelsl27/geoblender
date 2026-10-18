@@ -4568,3 +4568,26 @@ es = "No hay ningún dato {dataset} en el proyecto"
 
 ["State the title of dataset «{dataset}»"]
 es = "Indique el título del dato «{dataset}»"
+
+# Operaciones de versión (spec 009, T07; RF-009-05, RF-009-01; plan 009 A3, D-14, D-27).
+
+["This command belongs to a version: choose the active version or create one (Project ▸ Versions)"]
+es = "Esta orden es de una versión: elija la versión activa o cree una (Proyecto ▸ Versiones)"
+
+["The project operation «{op_type}» cannot use «{dataset}» of {version}: register it as a project input"]
+es = "La operación de proyecto «{op_type}» no puede usar «{dataset}» de {version}: regístrelo como entrada del proyecto"
+
+["Operation «{op_type}» of {version} cannot use «{dataset}» of {owner}: from another version only what is frozen in the revision it starts from can be used"]
+es = "La operación «{op_type}» de {version} no puede usar «{dataset}» de {owner}: de otra versión solo se usa lo congelado en la revisión de la que parte"
+
+["{version} can only take what is frozen in the revision it starts from ({parent_revision}), not «{dataset}» of {revision}"]
+es = "{version} solo puede tomar lo congelado en la revisión de la que parte ({parent_revision}), no «{dataset}» de {revision}"
+
+["Revision {revision} is altered: what is frozen in it is not used («{dataset}»)"]
+es = "La revisión {revision} está alterada: no se usa lo congelado en ella («{dataset}»)"
+
+["«{dataset}» is not frozen in {revision}"]
+es = "«{dataset}» no está congelado en {revision}"
+
+["«{dataset}» belongs to the project: its current content is used, not the one frozen in {revision}"]
+es = "«{dataset}» es del proyecto: se usa su contenido vigente, no el congelado en {revision}"

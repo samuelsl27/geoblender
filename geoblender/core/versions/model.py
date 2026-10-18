@@ -10,10 +10,13 @@ ADR-0013).
   solo al declarar VIGENTE otra).
 - :class:`RevisionState`: abierta, congelada o cerrada («cerrada al superarse», RF-009-25).
 - :class:`Version` y :class:`Revision`: una fila de ``gb_version`` y de ``gb_revision``.
-- :func:`version_code` (1 → «V01») y :func:`revision_label` («V10.r2»).
+- :func:`version_code` (1 → «V01») y :func:`revision_label` («V10.r2»);
+  :func:`version_locator`, la ubicación de un dato de una versión con su código
+  («des_final_v10.tif», D-34).
 - :class:`VersionError`: el rechazo para el usuario, con un código ``core.version_*`` del
   catálogo :data:`MESSAGES` (``msgid`` en inglés, con su español en
-  ``core/i18n/messages.toml``) y :func:`render`, el texto en los dos idiomas.
+  ``core/i18n/messages.toml``) y :func:`render`, el texto en los dos idiomas;
+  :func:`ensure_editable`, el de RF-009-04 para una versión SUPERADO o DESCARTADO.
 
 Python puro; solo importa ``core.errors`` y ``core.i18n`` (``core.provenance`` lo usará sin
 ciclos, ARQ-08).
@@ -21,6 +24,7 @@ ciclos, ARQ-08).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -102,6 +106,31 @@ def version_code(number: int) -> str:
 def revision_label(code: str, number: int) -> str:
     """La etiqueta de la revisión ``number`` de la versión ``code`` («V10.r2»)."""
     return f"{code}.r{number}"
+
+
+_CODE = re.compile(r"V[0-9]{2,}")
+
+
+def version_locator(locator: str, code: str) -> str:
+    """La ubicación de un dato de la versión ``code`` (D-34): ``locator`` con el código en
+    minúsculas tras su nombre y antes de su extensión («rasters/des_final.tif» y «V10» →
+    «rasters/des_final_v10.tif»; «des_string» → «des_string_v10»), porque una ubicación no se
+    reutiliza nunca (``gb_dataset_location``) y dos versiones pueden tener un dato con el mismo
+    nombre. :class:`TypeError` si no son textos; :class:`ValueError` con un código que no es el
+    de una versión («V01», «V100») o sin nombre de fichero o de tabla."""
+    if not isinstance(locator, str) or not isinstance(code, str):
+        raise TypeError(f"la ubicación y el código de la versión son textos, no {locator!r} y "
+                        f"{code!r}")
+    if _CODE.fullmatch(code) is None:
+        raise ValueError(f"el código de una versión es «V01», «V10» o «V100», no {code!r}")
+    folder, slash, name = locator.rpartition("/")
+    if not name or name != name.strip() or locator != locator.strip():
+        raise ValueError(f"la ubicación de un dato termina en el nombre de su fichero o de su "
+                         f"tabla, sin espacios a los lados: {locator!r}")
+    stem, dot, extension = name.rpartition(".")
+    if not stem:  # sin extensión (una tabla) o un nombre que empieza por «.»
+        stem, dot, extension = name, "", ""
+    return f"{folder}{slash}{stem}_{code.lower()}{dot}{extension}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +225,31 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
     "core.version_text_path": "«{text}» cannot contain an absolute path: the project stores none",
     "core.version_dataset_unknown": "There is no dataset {dataset} in the project",
     "core.version_dataset_title_required": "State the title of dataset «{dataset}»",
+    # Operaciones de versión (RF-009-05, RF-009-01; plan A3, D-14, D-27).
+    "core.version_required": (
+        "This command belongs to a version: choose the active version or create one "
+        "(Project ▸ Versions)"
+    ),
+    "core.version_data_in_project": (
+        "The project operation «{op_type}» cannot use «{dataset}» of {version}: register it "
+        "as a project input"
+    ),
+    "core.version_data_other": (
+        "Operation «{op_type}» of {version} cannot use «{dataset}» of {owner}: from another "
+        "version only what is frozen in the revision it starts from can be used"
+    ),
+    "core.version_frozen_not_parent": (
+        "{version} can only take what is frozen in the revision it starts from "
+        "({parent_revision}), not «{dataset}» of {revision}"
+    ),
+    "core.version_frozen_altered": (
+        "Revision {revision} is altered: what is frozen in it is not used («{dataset}»)"
+    ),
+    "core.version_frozen_missing": "«{dataset}» is not frozen in {revision}",
+    "core.version_frozen_project": (
+        "«{dataset}» belongs to the project: its current content is used, not the one frozen "
+        "in {revision}"
+    ),
 })
 """Código → ``msgid`` (en inglés; su español, en ``core/i18n/messages.toml``)."""
 
@@ -259,3 +313,14 @@ class VersionError(GeoblenderError):
         super().__init__(code, self.text, obj=obj, field=field, value=value,
                          context=self.values)
         self.args = (self.text,)
+
+
+def ensure_editable(version: Version) -> Version:
+    """``version`` si es BORRADOR o VIGENTE; si no, :class:`VersionError`
+    ``core.version_not_editable`` con el texto de RF-009-04 («V09 está en estado SUPERADO: cree
+    una versión nueva a partir de ella»)."""
+    if not version.editable:
+        raise VersionError("core.version_not_editable", field="estado",
+                           value=version.status.value, version=version.code,
+                           state=version.status)
+    return version

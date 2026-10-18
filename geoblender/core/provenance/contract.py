@@ -11,8 +11,9 @@ los módulos (ADR-0004).
   versión ``M.m`` de su algoritmo (sube cuando un cambio puede mover una cifra), su módulo, su
   nombre visible (``msgid``), si se puede repetir sola (y entonces su función de recálculo),
   su grupo de operaciones acopladas, su ámbito (``project``; ``version`` con la 009), las
-  órdenes (``bl_idname``) que la lanzan, las bibliotecas que influyen en sus cifras y los
-  ajustes de su orden que enseña su procedencia (:class:`SettingDef`; spec 006, T58).
+  órdenes (``bl_idname``) que la lanzan, las bibliotecas que influyen en sus cifras, los
+  ajustes de su orden que enseña su procedencia (:class:`SettingDef`; spec 006, T58) y, con la
+  009, cómo se reproduce y con qué tolerancia de sus cifras (:class:`Tolerance`).
 - :class:`SettingDef`: un ajuste de una operación (``gb_operation.settings``) que importa a
   quien revisa el resultado, con su nombre visible y su unidad (un número) o sus elecciones;
   ni las rutas ni lo interno (nombres, uids…) se declaran, así que no se enseñan.
@@ -43,6 +44,8 @@ puro (ADR-0004).
 
 from __future__ import annotations
 
+import math
+import numbers
 import re
 import threading
 from collections.abc import Callable, Iterable, Mapping
@@ -63,6 +66,11 @@ type RecomputeFunction = Callable[[Any], Any]
 """``recompute(request) -> handle``: vuelve a ejecutar una operación con las entradas y los
 parámetros vigentes (``recompute.RecomputeRequest``) y devuelve la operación nueva, que la
 sustituye (``recompute.RecomputeHandle``: su ``OperationHandle``)."""
+type ReproduceFunction = Callable[[Any], Any]
+"""``reproduce(request) -> Iterator[Progress]``: vuelve a ejecutar, fuera del proyecto, una
+operación congelada con sus entradas y sus parámetros congelados (``ReproduceRequest``, spec 009,
+RF-009-11; plan 009 §5.3.3); su último paso lleva el resultado (``ReproducedResult``). No recibe
+el proyecto ni escribe en él."""
 type ReimportFunction = Callable[[Any], Any]
 """``reimport(request) -> result``: vuelve a importar una entrada con sus ajustes registrados
 (:class:`ReimportRequest`) como una entrada nueva que la sustituye, y devuelve el resultado de
@@ -224,6 +232,29 @@ def _settings(value: object, owner: str) -> tuple[SettingDef, ...]:
 
 
 @dataclass(frozen=True, slots=True)
+class Tolerance:
+    """Cuánto puede diferir una cifra reproducida de la congelada (spec 009, RF-009-11; plan
+    009 §5.3.3): ``relative`` (fracción del valor congelado) y ``absolute`` (en la unidad de la
+    cifra), números reales finitos y ≥ 0, guardados como ``float``; por defecto, ninguna
+    (exactas). :class:`TypeError` si no son números (``True`` no lo es) y :class:`ValueError` si
+    son negativos, NaN o infinitos."""
+
+    relative: float = 0.0
+    absolute: float = 0.0
+
+    def __post_init__(self) -> None:
+        for name in ("relative", "absolute"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, numbers.Real):
+                raise TypeError(f"la tolerancia {name} de una cifra es un número, no {value!r}")
+            number = float(value)
+            if not math.isfinite(number) or number < 0:
+                raise ValueError(f"la tolerancia {name} de una cifra es un número finito y no "
+                                 f"negativo, no {value!r}")
+            object.__setattr__(self, name, number)
+
+
+@dataclass(frozen=True, slots=True)
 class OperationDef:
     """Un tipo de operación, comprobado al crearlo:
 
@@ -247,7 +278,12 @@ class OperationDef:
       todo lo vigente que consume (como la base de los sondeos, con todo lo importado vigente):
       lo que consumió y después se descartó sin sucesor sale de su recálculo en vez de
       impedirlo (``core.recompute_no_successor``, RF-008-55); solo en una que se repite sola.
-      Por defecto, no.
+      Por defecto, no;
+    - ``reproduce`` (spec 009, RF-009-11; plan 009 §5.3.3): la función que la vuelve a
+      ejecutar fuera del proyecto con lo congelado (:data:`ReproduceFunction`); sin ella (una
+      importación, una edición a mano), al reproducir se toma lo congelado. Por defecto, ninguna;
+    - ``figure_tolerance``: la :class:`Tolerance` de sus cifras al reproducirla, si no salen bit
+      a bit; solo la declara una que se reproduce. Por defecto, ninguna (exactas).
     """
 
     op_type: str
@@ -263,6 +299,8 @@ class OperationDef:
     recompute: RecomputeFunction | None = None
     settings: tuple[SettingDef, ...] = ()
     drops_discarded: bool = False
+    reproduce: ReproduceFunction | None = None
+    figure_tolerance: Tolerance | None = None
 
     def __post_init__(self) -> None:
         op_type = self.op_type
@@ -315,6 +353,22 @@ class OperationDef:
             raise ValueError(
                 f"«scope» de «{op_type}» es {' o '.join(SCOPES)}, no {self.scope!r}"
             )
+        if self.reproduce is not None and not callable(self.reproduce):
+            raise TypeError(
+                f"«reproduce» de «{op_type}» es una función o None, no "
+                f"{type(self.reproduce).__name__}"
+            )
+        if self.figure_tolerance is not None:
+            if not isinstance(self.figure_tolerance, Tolerance):
+                raise TypeError(
+                    f"«figure_tolerance» de «{op_type}» es una Tolerance o None, no "
+                    f"{self.figure_tolerance!r}"
+                )
+            if self.reproduce is None:
+                raise ValueError(
+                    f"la operación «{op_type}» no se reproduce («reproduce»): la tolerancia de "
+                    "sus cifras al reproducirla («figure_tolerance») no se usaría"
+                )
         object.__setattr__(self, "commands", _names(self.commands, "commands", op_type,
                                                     IDNAME_RE))
         object.__setattr__(self, "libraries", _names(self.libraries, "libraries", op_type,

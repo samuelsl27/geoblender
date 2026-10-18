@@ -14,7 +14,9 @@ escribió su contenido actual: sin ella no se registra (RF-008-17, D-2). Lo llam
   detalle del módulo y su salida. Lo importado (``immutable``) no admite contenido nuevo
   (RF-008-52).
 - :func:`get`, :func:`successor`, :func:`supersede` y :func:`set_status`: buscar un dato por
-  su uid o por el nombre de su dato vivo, el sucesor vivo de uno sustituido, sustituirlo y
+  su uid o por el nombre de su dato vivo en su ámbito (el proyecto o, con la spec 009, una
+  versión: :func:`register_dataset` anota la de un dato de versión), el sucesor vivo de uno
+  sustituido, sustituirlo y
   cambiar su estado. Las dos últimas ponen al día en la misma transacción la caché de la
   obsolescencia por región de lo que lo consumió (``core.provenance.stale``, RF-008-24).
 - :func:`content_digest` y :func:`spec_of`: el hash del contenido que tiene ahora un dato
@@ -128,17 +130,31 @@ def _load(conn: sqlite3.Connection, uid: str) -> DatasetRecord | None:
     return None if row is None else DatasetRecord.from_row(row)
 
 
-def get(conn: sqlite3.Connection, key: str) -> DatasetRecord | None:
-    """El dato con el uid ``key`` o, si no lo hay, el dato vivo con ese nombre; ``None`` si
-    no hay ninguno."""
+def get(conn: sqlite3.Connection, key: str, *, version_uid: str = "") -> DatasetRecord | None:
+    """El dato con el uid ``key`` (de cualquier ámbito) o, si no lo hay, el dato vivo con ese
+    nombre en su ámbito: el del proyecto o, con ``version_uid``, el de esa versión (spec 009:
+    dos versiones, y una versión y el proyecto, pueden tener un dato con el mismo nombre);
+    ``None`` si no hay ninguno. En un proyecto del esquema 2 sin migrar (en solo lectura), todo
+    es del proyecto."""
     if not isinstance(key, str):
         raise TypeError(f"un dato se busca por su uid o su nombre, no {key!r}")
+    if not isinstance(version_uid, str):
+        raise TypeError(f"la versión de un dato es su uid ('' del proyecto), no {version_uid!r}")
     record = _load(conn, key)
     if record is not None:
         return record
-    row = conn.execute(
-        f"SELECT {_COLUMNS} FROM gb_dataset WHERE name = ? AND status IN ({_LIVE})", (key,)
-    ).fetchone()
+    try:
+        row = conn.execute(
+            f"SELECT {_COLUMNS} FROM gb_dataset WHERE version_uid = ? AND name = ? "
+            f"AND status IN ({_LIVE})",
+            (version_uid, key),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:  # el esquema 2: sin versiones
+        if version_uid or "version_uid" not in str(exc):
+            raise
+        row = conn.execute(
+            f"SELECT {_COLUMNS} FROM gb_dataset WHERE name = ? AND status IN ({_LIVE})", (key,)
+        ).fetchone()
     return None if row is None else DatasetRecord.from_row(row)
 
 
@@ -249,11 +265,13 @@ def _check_operation(conn: sqlite3.Connection, name: str, operation_uid: object)
     return operation_uid
 
 
-def _check_new(conn: sqlite3.Connection, spec: DatasetSpec, operation_uid: str) -> str | None:
+def _check_new(conn: sqlite3.Connection, spec: DatasetSpec, operation_uid: str,
+               version_uid: str) -> str | None:
     """Lo que se comprueba de un dato nuevo antes de escribir; devuelve el nombre de su
     entrada si es lo importado (para su protección)."""
     if conn.execute(
-        f"SELECT 1 FROM gb_dataset WHERE name = ? AND status IN ({_LIVE})", (spec.name,)
+        f"SELECT 1 FROM gb_dataset WHERE version_uid = ? AND name = ? AND status IN ({_LIVE})",
+        (version_uid, spec.name),
     ).fetchone():
         raise _error("core.dataset_name_taken", spec.name,
                      "ya hay otro dato vivo (ni sustituido ni descartado) con ese nombre",
@@ -447,20 +465,23 @@ def _record_change(conn: sqlite3.Connection, uid: str, before: str | None, after
 
 
 def register_dataset(conn: sqlite3.Connection, project: DatasetProject, spec: DatasetSpec, *,
-                     operation_uid: str | None) -> DatasetRecord:
+                     operation_uid: str | None, version_uid: str = "") -> DatasetRecord:
     """Registra el dato nuevo ``spec`` que acaba de escribir la operación en curso
     ``operation_uid`` (RF-008-17): su hash con el lector de ``spec`` y el normalizador de su
     hash (o el vigente), su primer cambio, su salida con su papel y su seguimiento; si es lo
-    importado, la protección de su tabla (RF-008-52).
+    importado, la protección de su tabla (RF-008-52). ``version_uid``: la versión de la que es
+    (la salida de una operación de versión, spec 009, RF-009-05); ``''``, del proyecto.
 
     ``ValidationError`` (``core.dataset_*``, ``core.content_*``, ``core.reader_unregistered``)
     sin escribir nada si falta la operación o no está en curso, si su nombre ya es de un
-    dato vivo, si su ubicación ya es de otro dato, si su entrada no existe, si su tabla no es
-    de datos o si su hash no se puede calcular o no es el de un dato."""
+    dato vivo de su ámbito, si su ubicación ya es de otro dato, si su entrada no existe, si su
+    tabla no es de datos o si su hash no se puede calcular o no es el de un dato."""
     if not isinstance(spec, DatasetSpec):
         raise TypeError(f"se registra un DatasetSpec, no {type(spec).__name__}")
+    if not isinstance(version_uid, str):
+        raise TypeError(f"la versión de un dato es su uid ('' del proyecto), no {version_uid!r}")
     operation = _check_operation(conn, spec.name, operation_uid)
-    input_name = _check_new(conn, spec, operation)
+    input_name = _check_new(conn, spec, operation, version_uid)
     normalizer = NORMALIZER if spec.content is None else spec.content.normalizer
     _check_normalizer(spec.name, normalizer)
     _track(conn, spec)
@@ -492,6 +513,8 @@ def register_dataset(conn: sqlite3.Connection, project: DatasetProject, spec: Da
         "modified_at": now,
         **_tracking(conn, project, spec),
     }
+    if version_uid:
+        row["version_uid"] = version_uid
     conn.execute(
         f"INSERT INTO gb_dataset ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
         tuple(row.values()),

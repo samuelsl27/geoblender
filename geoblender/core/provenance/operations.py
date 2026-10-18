@@ -27,6 +27,17 @@ tablas ``gb_*``, llaman a esta API:
    sustituye a otra (un recálculo, una reimportación), la anota en ella (``superseded_by``),
    una vez.
 
+**Ámbito** (spec 009, RF-009-05, RF-009-04, RF-009-24, RF-009-01; plan 009 A3, D-14, D-19,
+D-27). Una operación de un tipo de **versión** (``OperationDef.scope``) se registra con la
+versión activa (``version=``; sin ella, ``core.version_required``), que tiene que ser BORRADOR o
+VIGENTE (``core.version_not_editable``), en su revisión abierta (``gb_operation.revision_uid``),
+y sus salidas son datos de esa versión (``gb_dataset.version_uid``); consume datos del proyecto,
+datos vivos de su versión (por nombre, antes el suyo) y lo congelado en la revisión de la que
+parte su versión (:attr:`Use.frozen`, con el hash congelado), y lee sus parámetros versión →
+proyecto. Una de **proyecto** no usa la versión activa y no consume ningún dato de una versión
+(``core.version_data_in_project``). Un dato de otra versión sin lo congelado se rechaza
+nombrando el dato y su versión (``core.version_data_other``, ``core.version_frozen_*``).
+
 Mientras tanto, :meth:`OperationHandle.claim_paths` reclama los ficheros del proyecto que
 escribe (temporales y finales), para que el barrido de restos no los aparte: constan en
 :func:`claimed_paths` mientras la operación está «en curso» en el proyecto (ADR-0025 §3). En el
@@ -90,15 +101,17 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from ..content.readers import ReadCancelled
 from ..datasets import registry as dataset_registry
-from ..datasets.model import DatasetRecord, DatasetSpec, Store
+from ..datasets.model import LIVE_STATUSES, DatasetRecord, DatasetSpec, Store
 from ..datasets.tracking import table_states
 from ..errors import GeoblenderError
 from ..hashing import HashCancelled, canonical_json, sha256_bytes, sha256_file
 from ..i18n import LANGUAGES
 from ..ids import new_uid
-from ..params.store import ParameterStore, ResolvedParam
+from ..params.store import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, ResolvedParam
 from ..paths import ABSOLUTE_PATH, find_absolute_paths
 from ..timeutil import Clock, format_utc
+from ..versions import read as versions_read
+from ..versions.model import Revision, RevisionState, Version, VersionError, ensure_editable
 from .contract import OperationDef, operation_def
 from .figures import FigureSpec, prepare_figures, write_figures
 from .graph import Cause
@@ -162,6 +175,9 @@ INTERRUPTED_REASON = (
 de su sesión."""
 MAX_REASON_CHARS = 500
 """Largo máximo del motivo que se guarda (el resto se corta con «…»)."""
+NO_REVISION = "—"
+"""Lo que se ve en lugar de la revisión de la que parte una versión que no parte de ninguna
+congelada (``core.version_frozen_not_parent``)."""
 
 CANCELLATIONS: tuple[type[BaseException], ...] = (ReadCancelled, HashCancelled)
 """Los errores con los que se para una lectura o una huella a petición de la persona (entre
@@ -215,13 +231,17 @@ class OperationProject(Protocol):
 class Use:
     """Un dato o una entrada que consume una operación, con su papel (``"terrain"``,
     ``"boundary"``…; ``gb_operation_io.role``). ``item`` es su uid o su nombre: el de un dato
-    vivo o el nombre lógico de una entrada activa. ``kind``: :attr:`ItemKind.DATASET` (por
-    defecto) o :attr:`ItemKind.INPUT`."""
+    vivo (en el ámbito de la operación: el proyecto o su versión) o el nombre lógico de una
+    entrada activa. ``kind``: :attr:`ItemKind.DATASET` (por defecto) o :attr:`ItemKind.INPUT`.
+    ``frozen`` (spec 009, RF-009-01, D-27): el uid de la revisión congelada de la que una
+    operación de versión toma el **dato** (la de la que parte su versión), con su contenido
+    congelado; ``None``, lo vivo."""
 
     item: str
     role: str
     _: KW_ONLY
     kind: ItemKind = ItemKind.DATASET
+    frozen: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.item, str):
@@ -238,18 +258,31 @@ class Use:
             raise ValueError(f"una operación consume un dato o una entrada "
                              f"({', '.join(ItemKind)}), no {self.kind!r}") from None
         object.__setattr__(self, "kind", kind)
+        if self.frozen is not None:
+            if not isinstance(self.frozen, str):
+                raise TypeError(f"lo congelado se toma de una revisión, por su uid, no "
+                                f"{self.frozen!r}")
+            if not self.frozen.strip():
+                raise ValueError("la revisión de la que se toma lo congelado no puede quedar "
+                                 "vacía")
+            if kind is not ItemKind.DATASET:
+                raise ValueError(f"de una revisión congelada se toma un dato, no una entrada "
+                                 f"(«{self.item}» es del proyecto)")
 
 
 @dataclass(frozen=True, slots=True)
 class Consumed:
     """Lo que anotó una operación al empezar de cada cosa que consume: su clase, su uid, su
-    nombre, su hash de contenido y su papel (``gb_operation_io``, ``direction = 'in'``)."""
+    nombre, su hash de contenido y su papel (``gb_operation_io``, ``direction = 'in'``) y, si
+    se tomó de una revisión congelada (:attr:`Use.frozen`), su uid; entonces el hash es el
+    congelado."""
 
     kind: ItemKind
     uid: str
     name: str
     content_sha256: str
     role: str
+    frozen: str | None = None
 
 
 # --- Comprobaciones -----------------------------------------------------------------------
@@ -445,14 +478,163 @@ def _check_supersedes(conn: sqlite3.Connection, definition: OperationDef,
         raise ProvenanceError("core.operation_already_superseded", **values)
 
 
-def _resolve_use(conn: sqlite3.Connection, definition: OperationDef, use: Use) -> Consumed:
+@dataclass(frozen=True, slots=True)
+class _Scope:
+    """El ámbito en que se registra una operación (spec 009, plan A3): el proyecto
+    (``version`` ``None``) o una versión editable, con su revisión abierta."""
+
+    version: Version | None = None
+    revision_uid: str = ""
+
+    @property
+    def version_uid(self) -> str:
+        """El uid de su versión; ``''`` del proyecto."""
+        return "" if self.version is None else self.version.uid
+
+
+_PROJECT = _Scope()
+"""El ámbito de una operación de proyecto."""
+
+
+def _version_arg(version: object) -> str | None:
+    """La versión activa que se pasa (uid o código); ``None`` si no hay (vacía o en blanco)."""
+    if version is None:
+        return None
+    if not isinstance(version, str):
+        raise TypeError(f"la versión activa se indica por su uid o su código, no {version!r}")
+    return version.strip() or None
+
+
+def _scope_of(conn: sqlite3.Connection, definition: OperationDef,
+              version: str | None) -> _Scope:
+    """El ámbito de una operación de tipo ``definition`` (plan A3): una de proyecto, el
+    proyecto (la versión activa no cuenta); una de versión, ``version`` (ya comprobado que se
+    pasa), que tiene que existir (``core.version_unknown``) y ser editable
+    (``core.version_not_editable``, RF-009-04), con su revisión abierta."""
+    if definition.scope != VERSION_SCOPE or version is None:
+        return _PROJECT
+    found = versions_read.version(conn, version)
+    if found is None:
+        raise VersionError("core.version_unknown", field="versión activa", value=version,
+                           version=version)
+    ensure_editable(found)
+    revision = versions_read.open_revision(conn, found.uid)
+    if revision is None:  # inalcanzable: una BORRADOR o VIGENTE tiene su revisión abierta
+        raise RuntimeError(f"la versión {found.code} ({found.status}) no tiene revisión abierta")
+    return _Scope(found, revision.uid)
+
+
+def _code(conn: sqlite3.Connection, version_uid: str) -> str:
+    """El código de la versión ``version_uid`` (su uid si no está)."""
+    found = versions_read.version(conn, version_uid)
+    return version_uid if found is None else found.code
+
+
+def _label(conn: sqlite3.Connection, revision: Revision) -> str:
+    """«V01.r1»."""
+    return revision.label(_code(conn, revision.version_uid))
+
+
+def _in_versions(conn: sqlite3.Connection, name: str) -> str | None:
+    """El uid de la versión (la de menor número) con un dato vivo de nombre ``name``; ``None``
+    si ninguna lo tiene. Solo se lee al rechazar; recorre las versiones (pocas) y busca cada
+    una en el índice de nombres vivos, sin recorrer los datos."""
+    marks = ", ".join(f"'{status}'" for status in LIVE_STATUSES)
+    row = conn.execute(
+        "SELECT v.uid FROM gb_version AS v WHERE EXISTS (SELECT 1 FROM gb_dataset AS d "
+        f"WHERE d.version_uid = v.uid AND d.name = ? AND d.status IN ({marks})) "
+        "ORDER BY CAST(substr(v.code, 2) AS INTEGER) LIMIT 1",
+        (name,),
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _foreign(conn: sqlite3.Connection, definition: OperationDef, scope: _Scope, name: str,
+             owner: str) -> VersionError:
+    """El rechazo de un dato de la versión ``owner`` que no es de su ámbito (plan A3): en una
+    operación de proyecto, ``core.version_data_in_project`` (D-14); en una de versión, de otra
+    versión sin lo congelado, ``core.version_data_other``."""
+    code = _code(conn, owner)
+    if scope.version is None:
+        return VersionError("core.version_data_in_project", field="entradas", value=name,
+                            op_type=definition.op_type, dataset=name, version=code)
+    return VersionError("core.version_data_other", field="entradas", value=name,
+                        op_type=definition.op_type, version=scope.version.code, dataset=name,
+                        owner=code)
+
+
+def _frozen_dataset(conn: sqlite3.Connection, revision_uid: str,
+                    item: str) -> tuple[str, str, str, str] | None:
+    """El dato ``item`` (uid o nombre) que congeló la revisión ``revision_uid``: su uid, su
+    nombre, su versión y su hash congelado (por el uid antes que por el nombre, y uno de
+    versión antes que uno del proyecto); ``None`` si no lo congeló."""
+    row = conn.execute(
+        "SELECT d.uid, d.name, d.version_uid, i.content_sha256 FROM gb_revision_item AS i "
+        "JOIN gb_dataset AS d ON d.uid = i.item_uid WHERE i.revision_uid = ? "
+        "AND i.item_kind = 'dataset' AND i.content_sha256 IS NOT NULL "
+        "AND (d.uid = ? OR d.name = ?) ORDER BY d.uid = ? DESC, d.version_uid = '' LIMIT 1",
+        (revision_uid, item, item, item),
+    ).fetchone()
+    return None if row is None else (str(row[0]), str(row[1]), str(row[2]), str(row[3]))
+
+
+def _frozen_use(conn: sqlite3.Connection, definition: OperationDef, use: Use,
+                scope: _Scope) -> Consumed:
+    """Lo congelado que toma una operación de versión (RF-009-01, D-27): solo de la revisión de
+    la que parte su versión (``parent_revision_uid``), no alterada, un dato de una versión que
+    esa revisión congeló, con su hash congelado. Una operación de proyecto no toma nada
+    congelado de una versión (D-14)."""
+    frozen = str(use.frozen)
+    revision = versions_read.revision(conn, frozen)
+    if scope.version is None:
+        owner = frozen if revision is None else revision.version_uid
+        raise _foreign(conn, definition, scope, use.item, owner)
+    version = scope.version
+    values = {"field": "entradas", "value": use.item, "version": version.code,
+              "dataset": use.item}
+    parent = (None if version.parent_revision_uid is None
+              else versions_read.revision(conn, version.parent_revision_uid))
+    if (revision is None or parent is None or revision.uid != parent.uid
+            or revision.state is not RevisionState.FROZEN):
+        raise VersionError("core.version_frozen_not_parent",
+                           revision=frozen if revision is None else _label(conn, revision),
+                           parent_revision=NO_REVISION if parent is None
+                           else _label(conn, parent), **values)
+    label = _label(conn, revision)
+    if revision.altered:
+        raise VersionError("core.version_frozen_altered", revision=label, **values)
+    found = _frozen_dataset(conn, revision.uid, use.item)
+    if found is None:
+        raise VersionError("core.version_frozen_missing", revision=label, **values)
+    uid, name, owner, content = found
+    if not owner:
+        raise VersionError("core.version_frozen_project", revision=label,
+                           **{**values, "dataset": name})
+    return Consumed(ItemKind.DATASET, uid, name, content, use.role, frozen=revision.uid)
+
+
+def _resolve_use(conn: sqlite3.Connection, definition: OperationDef, use: Use,
+                 scope: _Scope = _PROJECT) -> Consumed:
     """Lo que consume ``use`` con su hash de contenido actual. Lo sustituido o descartado
-    queda como historia y no se consume (su sucesor, sí)."""
+    queda como historia y no se consume (su sucesor, sí). Un dato, en el ámbito de la
+    operación (spec 009, plan A3): uno del proyecto y, en una de versión, los de su versión
+    (por nombre, antes el suyo) y lo congelado de la que parte (:attr:`Use.frozen`); uno de
+    otra versión se rechaza nombrando el dato y su versión."""
     values = {"op_type": definition.op_type, "item": use.item}
     if use.kind is ItemKind.DATASET:
-        record = dataset_registry.get(conn, use.item)
+        if use.frozen is not None:
+            return _frozen_use(conn, definition, use, scope)
+        record = dataset_registry.get(conn, use.item, version_uid=scope.version_uid)
+        if record is None and scope.version is not None:
+            record = dataset_registry.get(conn, use.item)
         if record is None:
+            owner = _in_versions(conn, use.item)
+            if owner is not None:
+                raise _foreign(conn, definition, scope, use.item, owner)
             raise ProvenanceError("core.operation_dataset_unknown", **values)
+        owner = versions_read.dataset_versions(conn, [record.uid]).get(record.uid, "")
+        if owner and owner != scope.version_uid:
+            raise _foreign(conn, definition, scope, record.name, owner)
         if not record.live:
             raise ProvenanceError("core.operation_dataset_not_live", **values)
         return Consumed(ItemKind.DATASET, record.uid, record.name, record.content_sha256,
@@ -626,7 +808,9 @@ def operation_state(project: OperationProject, uid: str, *,
 class OperationHandle:
     """Una operación registrada «en curso» por :func:`begin_operation`: su uid, su tipo
     (:attr:`definition`), lo que anotó al empezar (:attr:`inputs`, :attr:`params`,
-    :attr:`settings`…), las rutas que reclama y :meth:`complete`."""
+    :attr:`settings`…), su versión y su revisión abierta (:attr:`version_uid`,
+    :attr:`revision_uid`; ``''`` en una de proyecto), las rutas que reclama y
+    :meth:`complete`."""
 
     def __init__(
         self,
@@ -642,6 +826,8 @@ class OperationHandle:
         started_at: str,
         inputs: tuple[Consumed, ...],
         params: tuple[ResolvedParam, ...],
+        version_uid: str = "",
+        revision_uid: str = "",
     ) -> None:
         self.project = project
         self.project_uid = project.uid
@@ -656,6 +842,8 @@ class OperationHandle:
         self.started_at = started_at
         self.inputs = inputs
         self.params = params
+        self.version_uid = version_uid
+        self.revision_uid = revision_uid
         self._claims: set[Path] = set()
         self._closed = False
 
@@ -703,7 +891,9 @@ class OperationHandle:
         (RF-008-18):
 
         - cada salida de ``outputs`` (``DatasetSpec``) ya guardada en el proyecto, como dato
-          nuevo o como contenido nuevo del dato vivo con su nombre, con su hash y su papel;
+          nuevo o como contenido nuevo del dato vivo con su nombre, con su hash y su papel; las
+          de una operación de versión son datos de su versión (spec 009, RF-009-05): su nombre
+          se busca entre los de su versión, no entre los del proyecto;
         - cada cifra de ``figures`` (``FigureSpec``), con su tipo, su unidad y su ámbito
           (RF-008-30; :func:`~.figures.record_figure`): las que calculan un parámetro dejan
           su aviso si difieren de él (:func:`~.figures.divergences`), y ningún parámetro
@@ -747,13 +937,14 @@ class OperationHandle:
         _check_saved(conn, self.project, self.op_type, specs)
         records: list[DatasetRecord] = []
         for spec in specs:
-            existing = dataset_registry.get(conn, spec.name)
+            existing = dataset_registry.get(conn, spec.name, version_uid=self.version_uid)
             if existing is not None and existing.live and existing.name == spec.name:
                 record = dataset_registry.set_content(conn, self.project, existing.uid, spec,
                                                       operation_uid=self.uid)
             else:
                 record = dataset_registry.register_dataset(conn, self.project, spec,
-                                                           operation_uid=self.uid)
+                                                           operation_uid=self.uid,
+                                                           version_uid=self.version_uid)
             records.append(record)
         write_figures(conn, self, prepared)
         finished = format_utc(self.project.clock.now())
@@ -887,28 +1078,41 @@ def begin_operation(
     job_uid: str | None = None,
     group_uid: str | None = None,
     supersedes: str | None = None,
+    version: str | None = None,
 ) -> OperationHandle:
     """Registra «en curso» una operación de tipo ``op_type`` antes de ejecutarla, en su
     propia transacción (RF-008-51), y devuelve su :class:`OperationHandle`:
 
     - ``settings``: los ajustes de la orden (JSON, sin rutas absolutas);
-    - ``inputs``: lo que consume (:class:`Use`), anotado con su hash de contenido actual;
+    - ``inputs``: lo que consume (:class:`Use`), anotado con su hash de contenido actual (o el
+      congelado, con :attr:`Use.frozen`);
     - ``params``: las claves de los parámetros que lee; los que el proyecto aún no tiene se
       registran antes con su valor por defecto «sin confirmar» (RF-008-04) y todos se anotan
       resueltos por su ámbito, con la revisión de su historial (RF-008-05);
     - ``executor`` (:class:`Executor`) y ``job_uid`` (un trabajo puede recibirlo al
       completar); ``group_uid``: la ejecución de su grupo acoplado (si la operación es de uno
       y no se da, se abre otra: :attr:`OperationHandle.group_uid`); ``supersedes``: la
-      operación hecha a la que sustituye (un recálculo, una reimportación).
+      operación hecha a la que sustituye (un recálculo, una reimportación);
+    - ``version`` (spec 009, RF-009-05, plan A3): la versión activa de la sesión (uid o
+      código; ``None`` o vacía, ninguna). Una operación de un tipo de **versión** se registra
+      en su revisión abierta (``revision_uid``) y sus salidas serán de ella; consume datos del
+      proyecto, datos vivos de su versión y lo congelado de la revisión de la que parte
+      (:attr:`Use.frozen`), y lee sus parámetros con el valor de la versión si su módulo los
+      admite por versión y si no con el del proyecto (RF-009-24, D-19). Una de **proyecto** no
+      usa la versión activa: no consume ningún dato de una versión y lee los del proyecto.
 
     Rechazos, sin escribir nada: ``ProvenanceError`` (``core.operation_unregistered``,
     ``core.read_only``, ``core.operation_dataset_unknown``/``_not_live``,
     ``core.operation_input_unknown``/``_not_live``, ``core.operation_supersedes_unknown``/
     ``_not_done``, ``core.operation_already_superseded``), ``ParamError``
-    (``core.param_undefined``) y ``ValueError``/``TypeError`` con un argumento mal formado."""
+    (``core.param_undefined``), ``VersionError`` (``core.version_required`` sin versión
+    activa; ``core.version_unknown``; ``core.version_not_editable``, RF-009-04;
+    ``core.version_data_in_project``, D-14; ``core.version_data_other`` y
+    ``core.version_frozen_*``, D-27) y ``ValueError``/``TypeError`` con un argumento mal
+    formado."""
     start = _Start.of(project, op_type, settings=settings, inputs=inputs, params=params,
                       executor=executor, job_uid=job_uid, group_uid=group_uid,
-                      supersedes=supersedes)
+                      supersedes=supersedes, version=version)
     with project.write_transaction() as conn:
         _prune(project, conn)
         handle = start.insert(conn, project)
@@ -926,22 +1130,23 @@ def begin_operations(
     params: Sequence[str] = (),
     executor: Executor | str,
     group_uid: str | None = None,
+    version: str | None = None,
 ) -> list[OperationHandle]:
     """Registra «en curso» varias operaciones de tipo ``op_type``, una por cada uno de los
     ``settings`` y en su orden, en **una sola** transacción (spec 005, T55; RNF-005-06: una
     orden que lee varios ficheros, cada uno con su operación; en ``Z:``, una transacción por
     operación tardaba ≈ 0,035 s cada una) y devuelve sus :class:`OperationHandle` en ese
     orden. Cada una queda como con :func:`begin_operation` con sus ajustes y los mismos
-    ``inputs``, ``params``, ``executor`` y ``group_uid`` (los parámetros que faltaban se
-    registran por defecto una vez). Sin ajustes, ninguna, sin escribir nada. Los mismos
-    rechazos que :func:`begin_operation`, sin escribir nada: si una no se puede empezar,
-    ninguna; :class:`TypeError` si ``settings`` no es una secuencia de ajustes."""
+    ``inputs``, ``params``, ``executor``, ``group_uid`` y ``version`` (los parámetros que
+    faltaban se registran por defecto una vez). Sin ajustes, ninguna, sin escribir nada. Los
+    mismos rechazos que :func:`begin_operation`, sin escribir nada: si una no se puede
+    empezar, ninguna; :class:`TypeError` si ``settings`` no es una secuencia de ajustes."""
     if isinstance(settings, Mapping | str | bytes) or not isinstance(settings, Sequence):
         raise TypeError(f"los ajustes de varias operaciones son una secuencia (una por "
                         f"operación), no {settings!r}")
     starts = [_Start.of(project, op_type, settings=item, inputs=inputs, params=params,
                         executor=executor, job_uid=None, group_uid=group_uid,
-                        supersedes=None) for item in settings]
+                        supersedes=None, version=version) for item in settings]
     if not starts:
         return []
     with project.write_transaction() as conn:
@@ -965,6 +1170,7 @@ def begin_in_transaction(
     job_uid: str | None = None,
     group_uid: str | None = None,
     supersedes: str | None = None,
+    version: str | None = None,
 ) -> OperationHandle:
     """Lo mismo que :func:`begin_operation`, pero en la transacción de escritura ``conn`` de
     quien llama, para una operación que empieza y se completa en ella (``core.accept_review``,
@@ -974,7 +1180,7 @@ def begin_in_transaction(
     _in_transaction(conn, "begin_in_transaction")
     start = _Start.of(project, op_type, settings=settings, inputs=inputs, params=params,
                       executor=executor, job_uid=job_uid, group_uid=group_uid,
-                      supersedes=supersedes)
+                      supersedes=supersedes, version=version)
     return start.insert(conn, project)
 
 
@@ -991,34 +1197,46 @@ class _Start:
     uses: tuple[Use, ...]
     keys: tuple[str, ...]
     supersedes: str | None
+    version: str | None = None
 
     @classmethod
     def of(cls, project: OperationProject, op_type: str, *, settings: Mapping[str, Any],
            inputs: Sequence[Use], params: Sequence[str], executor: Executor | str,
-           job_uid: str | None, group_uid: str | None, supersedes: str | None) -> _Start:
+           job_uid: str | None, group_uid: str | None, supersedes: str | None,
+           version: str | None = None) -> _Start:
         definition = operation_def(op_type)
         _require_writable(project)
+        active = _version_arg(version)
+        if definition.scope == VERSION_SCOPE and active is None:
+            raise VersionError("core.version_required", field="versión activa", value=version,
+                               op_type=definition.op_type)
         settings_json = _settings(settings)
         chosen = _executor(executor)
         job = _optional_text(job_uid, "job_uid")
         _check_job(chosen, job, required=False)
         return cls(definition, settings_json, chosen, job, _group_uid(definition, group_uid),
                    _uses(inputs), _keys(params),
-                   _optional_text(supersedes, "la operación sustituida (supersedes)"))
+                   _optional_text(supersedes, "la operación sustituida (supersedes)"),
+                   active if definition.scope == VERSION_SCOPE else None)
 
     def insert(self, conn: sqlite3.Connection, project: OperationProject) -> OperationHandle:
         """La deja «en curso» en la transacción ``conn`` (véase :func:`begin_operation`)."""
         definition, previous = self.definition, self.supersedes
         session = project.session
         store = ParameterStore(project)
+        scope = _scope_of(conn, definition, self.version)
         if previous is not None:
             _check_supersedes(conn, definition, previous)
-        consumed = tuple(_resolve_use(conn, definition, use) for use in self.uses)
+        consumed = tuple(_resolve_use(conn, definition, use, scope) for use in self.uses)
         _check_repeated(consumed)
         resolved: list[ResolvedParam] = []
         for key in self.keys:
             store.ensure_default(conn, key, geoblender_version=session.geoblender_version)
-            resolved.append(store.resolve(conn, key))
+            if scope.version is None:
+                resolved.append(store.resolve(conn, key))
+            else:  # versión → proyecto (RF-009-24, D-19)
+                resolved.append(store.resolve(conn, key, (VERSION_SCOPE, PROJECT_SCOPE),
+                                              version=scope.version.uid))
         uid = new_uid()
         started = format_utc(project.clock.now())
         row: dict[str, object] = {
@@ -1043,6 +1261,8 @@ class _Start:
             "session_uid": session.session_uid,
             "started_at": started,
         }
+        if scope.revision_uid:  # la revisión abierta de su versión (RF-009-05)
+            row["revision_uid"] = scope.revision_uid
         conn.execute(
             f"INSERT INTO gb_operation ({', '.join(row)}) "
             f"VALUES ({', '.join('?' for _ in row)})",
@@ -1066,6 +1286,7 @@ class _Start:
             project, definition, uid, settings=self.settings_json, group_uid=self.group_uid,
             supersedes=previous, executor=self.executor, job_uid=self.job_uid,
             started_at=started, inputs=consumed, params=tuple(resolved),
+            version_uid=scope.version_uid, revision_uid=scope.revision_uid,
         )
 
 
