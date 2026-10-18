@@ -37,9 +37,13 @@ salidas son datos de esa versión, con el código de la versión en la ubicació
   (``demo_pit_benches``) y escribe ``demo_pit_stockpiles`` (marca, volumen esponjado en m³ y
   cota). Es lo que tiene, aguas arriba, datos derivados del proyecto (plan A5).
 
-**Reproducir.** La función de reproducir de estos tipos (``OperationDef.reproduce``) solo
-declara que se reproducen: la escribe la T15 con ``core.versions.reproduce``; mientras tanto,
-llamarla es un ``NotImplementedError``.
+**Reproducir** (spec 009, T15; ``core.versions.reproduce``). La función de reproducir de los
+tipos que se repiten (``OperationDef.reproduce``) hace lo mismo que su cuerpo, con las entradas
+y los parámetros congelados que recibe (``ReproduceRequest``) y sin el proyecto: lee cada
+entrada de su fichero (la rejilla de la instantánea, la tabla de su GeoPackage, lo importado
+copiado a ``entradas.gpkg``), escribe en su carpeta de trabajo (la rejilla, la malla y cada
+tabla en un GeoPackage propio) y da sus salidas, con su papel, y sus cifras
+(``ReproducedResult``). ``demo.sketch`` no la tiene: se toma lo congelado.
 
 **Lo que registra además.** El lector de GeoTIFF de ``gis`` (``gis.geotiff@1``, el de las
 rejillas de ``rasters/``) si no está registrado (lo registra ``bl/ops/gis.py``), y lo quita al
@@ -55,6 +59,7 @@ import math
 import os
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -106,17 +111,21 @@ MODULES: tuple[str, ...] = (
     "core.content.readers",
     "core.datasets.model",
     "core.datasets.registry",
+    "core.georef.crs",
     "core.gpkg",
     "core.gpkg.base",
+    "core.gpkg.connection",
     "core.gpkg.wkb",
     "core.i18n",
     "core.params",
+    "core.project.model",
     "core.provenance.contract",
     "core.provenance.figures",
     "core.provenance.operations",
     "core.units",
     "core.versions.model",
     "core.versions.read",
+    "core.versions.reproduce",
     "gis.content",
     "gis.geotiff.reader",
     "gis.geotiff.writer",
@@ -221,6 +230,12 @@ class VersionsDemo(Demo):
             DESIGN_FROM_PARENT: self._design,
             PIT_STOCKPILES: self._pit_stockpiles,
         }
+        self._again: Mapping[str, Callable[[Any], Any]] = {
+            PIT: self._pit_again,
+            PIT_VOLUME: self._pit_volume_again,
+            DESIGN_FROM_PARENT: self._design_again,
+            PIT_STOCKPILES: self._pit_stockpiles_again,
+        }
 
     def __repr__(self) -> str:
         return (f"<VersionsDemo {self.package} "
@@ -289,10 +304,12 @@ class VersionsDemo(Demo):
         self._undo.append(restore)
 
     def _reproduce(self, request: Any) -> Iterator[Any]:
-        """La función de reproducir de los tipos de versión: la escribe la T15
-        (``core.versions.reproduce``); hasta entonces solo declara que se reproducen."""
-        raise NotImplementedError("la reproducción de la demostración llega con "
-                                  "core.versions.reproduce (spec 009, T15)")
+        """La función de reproducir de los tipos de versión (véase el módulo): lo mismo que su
+        cuerpo con lo congelado de ``request`` (``ReproduceRequest``); un paso, con el
+        ``ReproducedResult``."""
+        result = self._again[request.op_type](request)
+        yield self.module("core.project.model").Progress(
+            "reproducción", 1, 1, f"«{request.op_type}» vuelta a ejecutar", result)
 
     # --- Órdenes de versión -----------------------------------------------------------------
 
@@ -429,17 +446,23 @@ class VersionsDemo(Demo):
                 crs_epsg: int) -> tuple[float, float, float, float]:
         """La extensión (xmin, ymin, xmax, ymax) de los polígonos del límite ``record``, que
         tiene que estar en el CRS del proyecto (``crs_epsg``; nunca se supone)."""
-        if record.crs_epsg != crs_epsg:
-            raise ValueError(f"«{record.name}» está en EPSG:{record.crs_epsg}, no en el CRS del "
+        return self._extent_of(conn, record.locator, record.name, record.crs_epsg, crs_epsg)
+
+    def _extent_of(self, conn: sqlite3.Connection, layer: str, name: str,
+                   layer_epsg: int | None, crs_epsg: int) -> tuple[float, float, float, float]:
+        """La extensión de los polígonos de la capa ``layer`` (del dato ``name``, en
+        ``layer_epsg``) de la base ``conn``: la del proyecto o una copia congelada."""
+        if layer_epsg != crs_epsg:
+            raise ValueError(f"«{name}» está en EPSG:{layer_epsg}, no en el CRS del "
                              f"proyecto (EPSG:{crs_epsg}): el hueco se calcula en este")
         wkb = self.module("core.gpkg.wkb")
         row = conn.execute("SELECT column_name FROM gpkg_geometry_columns WHERE table_name = ?",
-                           (record.locator,)).fetchone()
+                           (layer,)).fetchone()
         if row is None:
-            raise ValueError(f"«{record.name}» no es una capa de entidades")
+            raise ValueError(f"«{name}» no es una capa de entidades")
         xs: list[float] = []
         ys: list[float] = []
-        for (blob,) in conn.execute(f'SELECT "{row[0]}" FROM "{record.locator}" '
+        for (blob,) in conn.execute(f'SELECT "{row[0]}" FROM "{layer}" '
                                     f'WHERE "{row[0]}" IS NOT NULL'):
             geometry = wkb.decode_geometry(blob)
             if geometry.geometry_type == "POLYGON":
@@ -447,13 +470,13 @@ class VersionsDemo(Demo):
             elif geometry.geometry_type == "MULTIPOLYGON":
                 polygons = list(geometry.coords)
             else:
-                raise ValueError(f"«{record.name}» tiene una geometría "
+                raise ValueError(f"«{name}» tiene una geometría "
                                  f"{geometry.geometry_type}: el límite es de polígonos")
             for exterior, *_holes in polygons:
                 xs.extend(float(point[0]) for point in exterior)
                 ys.extend(float(point[1]) for point in exterior)
         if not xs:
-            raise ValueError(f"«{record.name}» no tiene ningún polígono")
+            raise ValueError(f"«{name}» no tiene ningún polígono")
         return min(xs), min(ys), max(xs), max(ys)
 
     def _place(self, handle: Any, locator: str) -> tuple[Path, Path]:
@@ -475,6 +498,29 @@ class VersionsDemo(Demo):
         with project.read() as conn:
             code = self._code(conn, handle)
             extent = self._extent(conn, self._record(conn, handle, "boundary"), crs.epsg)
+        locate = self.module("core.versions.model").version_locator
+        grid_path, _ = self._place(handle, locate(GRID_LOCATOR, code))
+        mesh_path, mesh_temporary = self._place(handle, locate(MESH_LOCATOR, code))
+        rows = self._write_pit(extent, settings, bench_m, crs, vertical, grid_path, mesh_path,
+                               mesh_temporary)
+        reader = self.module("gis.content").GEOTIFF.id
+        mesh_reader = self.module("core.content.builtin").NPZ_MESH.id
+        table = locate(PIT_BENCHES, code)
+        with project.write_transaction() as conn:
+            self._write_rows(conn, PIT_BENCHES, table, code, rows)
+            handle.complete(conn, outputs=[
+                self._version_spec(PIT_GRID, "raster", "rasters", locate(GRID_LOCATOR, code),
+                                   "pit_grid", reader=reader, crs_epsg=crs.epsg),
+                self._version_spec(PIT_MESH, "mesh", "meshes", locate(MESH_LOCATOR, code),
+                                   "pit_mesh", reader=mesh_reader, crs_epsg=crs.epsg),
+                self._table_spec(PIT_BENCHES, table, "pit"),
+            ])
+
+    def _write_pit(self, extent: tuple[float, float, float, float], settings: Mapping[str, Any],
+                   bench_m: float, crs: Any, vertical: Any, grid_path: Path, mesh_path: Path,
+                   mesh_temporary: Path) -> list[tuple[int, float, float, float]]:
+        """Escribe la rejilla y la malla del hueco sobre ``extent`` con los ajustes de
+        ``demo.pit`` y bancos de ``bench_m`` m, y devuelve las filas de su tabla de bancos."""
         step = float(settings["step_m"])
         xx, yy, down = pit_depths(extent, benches=int(settings["benches"]),
                                   berm_m=float(settings["berm_m"]), step_m=step)
@@ -483,9 +529,6 @@ class VersionsDemo(Demo):
         grid = self.module("gis.grid").Grid(extent[0], extent[3], step, step, z.shape[1],
                                             z.shape[0])
         raster = self.module("gis.raster").Raster(grid, z, crs, vertical)
-        locate = self.module("core.versions.model").version_locator
-        grid_path, _ = self._place(handle, locate(GRID_LOCATOR, code))
-        mesh_path, mesh_temporary = self._place(handle, locate(MESH_LOCATOR, code))
         writer = self.module("gis.geotiff.writer")
         writer.write_geotiff(raster, grid_path, profile="project",
                              temporary=writer.temporary_path(grid_path))
@@ -501,30 +544,22 @@ class VersionsDemo(Demo):
         for level in range(1, int(settings["benches"]) + 1):
             area = float(np.count_nonzero(down >= level)) * cell
             rows.append((level, top - level * bench_m, area, bench_m * area))
-        reader = self.module("gis.content").GEOTIFF.id
-        mesh_reader = self.module("core.content.builtin").NPZ_MESH.id
-        table = locate(PIT_BENCHES, code)
-        with project.write_transaction() as conn:
-            self._write_rows(conn, PIT_BENCHES, table, code, rows)
-            handle.complete(conn, outputs=[
-                self._version_spec(PIT_GRID, "raster", "rasters", locate(GRID_LOCATOR, code),
-                                   "pit_grid", reader=reader, crs_epsg=crs.epsg),
-                self._version_spec(PIT_MESH, "mesh", "meshes", locate(MESH_LOCATOR, code),
-                                   "pit_mesh", reader=mesh_reader, crs_epsg=crs.epsg),
-                self._table_spec(PIT_BENCHES, table, "pit"),
-            ])
+        return rows
 
-    def _pit_volume(self, handle: Any) -> None:
-        figures = self.module("core.provenance.figures")
+    def _volume(self, path: Path) -> float:
+        """El volumen (m³) excavado bajo el borde (la cota más alta) de la rejilla ``path``."""
         reader = self.module("gis.geotiff.reader")
-        project = handle.project
-        with project.read() as conn:
-            record = self._record(conn, handle, "pit_grid")
-        path = Path(project.root, *record.locator.split("/"))
         source = reader.read_geotiff(path, max_cells=source_cells(path, reader))
         values = source.values[np.isfinite(source.values)]
         rim = float(values.max())
-        volume = math.fsum((rim - values).tolist()) * source.grid.cell_area
+        return math.fsum((rim - values).tolist()) * source.grid.cell_area
+
+    def _pit_volume(self, handle: Any) -> None:
+        figures = self.module("core.provenance.figures")
+        project = handle.project
+        with project.read() as conn:
+            record = self._record(conn, handle, "pit_grid")
+        volume = self._volume(Path(project.root, *record.locator.split("/")))
         with project.write_transaction() as conn:
             handle.complete(conn, figures=[figures.FigureSpec(PIT_VOLUME_FIGURE, volume, "m3")])
 
@@ -613,6 +648,103 @@ class VersionsDemo(Demo):
                              rows)
             handle.complete(conn, outputs=[self._table_spec(PIT_STOCKPILES_TABLE, table,
                                                             "pit_stockpiles")])
+
+    # --- Reproducir (spec 009, T15) ---------------------------------------------------------
+
+    @staticmethod
+    @contextmanager
+    def _frozen(item: Any) -> Iterator[sqlite3.Connection]:
+        """Una conexión de solo lectura (no crea nada) al GeoPackage de la entrada congelada
+        ``item`` (``FrozenInput``); se cierra al salir (si no, su carpeta no se podría borrar)."""
+        conn = sqlite3.connect(f"{Path(item.files['main']).as_uri()}?mode=ro", uri=True)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def _rows(self, item: Any, columns: Sequence[str]) -> list[tuple[Any, ...]]:
+        """Las filas de ``columns`` de la tabla de la entrada congelada ``item``, por su
+        ``fid``."""
+        with self._frozen(item) as conn:
+            return conn.execute(f'SELECT {", ".join(columns)} FROM "{item.settings["layer"]}" '
+                                "ORDER BY fid").fetchall()
+
+    def _reproduced_table(self, request: Any, name: str, role: str,
+                          columns: Sequence[tuple[str, str]],
+                          rows: Sequence[Sequence[Any]]) -> Any:
+        """La tabla ``name`` con ``rows`` en un GeoPackage propio de la carpeta de trabajo de
+        ``request``, como salida reproducida con el papel ``role``."""
+        base = self.module("core.gpkg.base")
+        connection = self.module("core.gpkg.connection")
+        reproduce = self.module("core.versions.reproduce")
+        crs, _vertical = request.references()
+        path = Path(request.workdir) / f"{role}.gpkg"
+        with connection.GpkgConnection.open_write(path, create=True) as gpkg:
+            with gpkg.transaction() as conn:
+                base.create_base(conn, crs)
+                base.create_attribute_table(
+                    conn, name, [base.ColumnDef(column, kind) for column, kind in columns],
+                    _TITLES[name], "Tabla reproducida de la demostración de versiones (spec 009)")
+                names = ", ".join(column for column, _kind in columns)
+                marks = ", ".join("?" for _ in columns)
+                conn.executemany(f'INSERT INTO "{name}" ({names}) VALUES ({marks})',
+                                 [tuple(row) for row in rows])
+        return reproduce.ReproducedOutput(role, self.module("core.content.builtin").GPKG_LAYER.id,
+                                          {"main": path}, {"layer": name})
+
+    def _pit_again(self, request: Any) -> Any:
+        """``demo.pit`` con el límite y la altura de banco congelados."""
+        reproduce = self.module("core.versions.reproduce")
+        units = self.module("core.units")
+        crs, vertical = request.references()
+        boundary = request.input("boundary")
+        with self._frozen(boundary) as conn:
+            extent = self._extent_of(conn, boundary.settings["layer"], boundary.name,
+                                     boundary.crs_epsg, crs.epsg)
+        value, unit = request.params[BENCH_HEIGHT]
+        bench_m = float(units.convert(value, unit, "m"))
+        work = Path(request.workdir)
+        grid_path, mesh_path = work / "pit_grid.tif", work / "pit_mesh.npz"
+        rows = self._write_pit(extent, request.settings, bench_m, crs, vertical, grid_path,
+                               mesh_path, work / "pit_mesh.npz.tmp")
+        return reproduce.ReproducedResult(outputs=(
+            reproduce.ReproducedOutput("pit_grid", self.module("gis.content").GEOTIFF.id,
+                                       {"main": grid_path}),
+            reproduce.ReproducedOutput("pit_mesh",
+                                       self.module("core.content.builtin").NPZ_MESH.id,
+                                       {"main": mesh_path}),
+            self._reproduced_table(request, PIT_BENCHES, "pit", _BENCH_COLUMNS, rows),
+        ))
+
+    def _pit_volume_again(self, request: Any) -> Any:
+        """``demo.pit_volume`` con la rejilla congelada."""
+        reproduce = self.module("core.versions.reproduce")
+        figures = self.module("core.provenance.figures")
+        volume = self._volume(Path(request.input("pit_grid").files["main"]))
+        return reproduce.ReproducedResult(
+            figures=(figures.FigureSpec(PIT_VOLUME_FIGURE, volume, "m3"),))
+
+    def _design_again(self, request: Any) -> Any:
+        """``demo.design_from_parent`` con la tabla de bancos congelada en la padre."""
+        reproduce = self.module("core.versions.reproduce")
+        widening = float(request.settings["widening"])
+        rows = [(bench, floor, area * widening, volume * widening)
+                for bench, floor, area, volume in self._rows(
+                    request.input("parent_pit"), [column for column, _kind in _BENCH_COLUMNS])]
+        return reproduce.ReproducedResult(outputs=(
+            self._reproduced_table(request, DESIGN_TABLE, "design", _BENCH_COLUMNS, rows),))
+
+    def _pit_stockpiles_again(self, request: Any) -> Any:
+        """``demo.pit_stockpiles`` con los acopios y los bancos congelados."""
+        reproduce = self.module("core.versions.reproduce")
+        benches = request.input("pit")
+        with self._frozen(benches) as conn:
+            (floor,) = conn.execute(f'SELECT floor_z FROM "{benches.settings["layer"]}" '
+                                    "ORDER BY bench LIMIT 1").fetchone()
+        rows = [(str(mark), float(loose), float(floor))
+                for mark, loose in self._rows(request.input("stockpiles"), ("mark", "loose_m3"))]
+        return reproduce.ReproducedResult(outputs=(self._reproduced_table(
+            request, PIT_STOCKPILES_TABLE, "pit_stockpiles", _STOCKPILE_COLUMNS, rows),))
 
 
 def source_cells(path: Path, reader: Any) -> int:

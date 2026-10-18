@@ -382,6 +382,47 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
     "core.version_mismatch_sha256": "{path}: different fingerprint",
     "core.version_mismatch_imported_missing": "imported «{path}»: missing",
     "core.version_mismatch_imported_damaged": "imported «{path}»: damaged",
+    # Reproducir una revisión: los rechazos, el avance, el informe y las causas (RF-009-11;
+    # plan A9, D-32).
+    "core.version_reproduce_unknown": "There is no revision {revision} in the project",
+    "core.version_reproduce_not_frozen": (
+        "{revision} is not frozen: only a frozen revision is reproduced"
+    ),
+    "core.version_reproduce_altered": (
+        "Revision {revision} is altered ({what}): it is not reproduced"
+    ),
+    "core.version_reproduce_no_space": (
+        "There is no space to reproduce {revision}: {needed} are needed in «{folder}» and "
+        "{free} are left"
+    ),
+    "core.version_reproduce_failed": (
+        "{revision} could not be reproduced ({reason}): nothing has been left half-done"
+    ),
+    "core.version_reproduce_progress": (
+        "Reproducing {revision}: «{op_type}» ({index} of {count})…"
+    ),
+    "core.version_reproduce_summary": (
+        "{revision} reproduced: {outputs} of {outputs_total} outputs and {figures} of "
+        "{figures_total} figures match"
+    ),
+    "core.version_reproduce_differs": "«{name}» does not match: {cause}",
+    "core.version_reproduce_taken": "{count} operations taken from what was frozen ({names})",
+    "core.version_reproduce_taken_one": "1 operation taken from what was frozen ({names})",
+    "core.version_reproduce_not_reproducible": "{count} operations not reproducible ({names})",
+    "core.version_reproduce_not_reproducible_one": "1 operation not reproducible ({names})",
+    "core.version_reproduce_cancelled": "Reproduction cancelled: nothing has been left half-done",
+    "core.version_reproduce_why_import": "{op_type}, import",
+    "core.version_reproduce_why_manual": "{op_type}, manual edit",
+    "core.version_reproduce_why_type": "{op_type}, its type is not reproduced",
+    "core.version_reproduce_why_module": "{op_type}, its module is not installed",
+    "core.version_reproduce_why_unfrozen": "{op_type}: it used a content that was not frozen",
+    "core.version_reproduce_why_failed": "{op_type} failed: {reason}",
+    "core.version_cause_algorithm": "{op_type} {installed} installed, frozen with {frozen}",
+    "core.version_cause_geoblender": "Geoblender {installed} installed, frozen with {frozen}",
+    "core.version_cause_library": "{library} {installed} installed, frozen with {frozen}",
+    "core.version_cause_unknown": "no known cause",
+    "core.version_cause_missing": "{op_type} did not give it again",
+    "core.version_cause_unreadable": "it cannot be read ({reason})",
 })
 """Código → ``msgid`` (en inglés; su español, en ``core/i18n/messages.toml``)."""
 

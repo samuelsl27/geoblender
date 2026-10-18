@@ -4663,3 +4663,81 @@ es = "lo importado «{path}»: falta"
 
 ["imported «{path}»: damaged"]
 es = "lo importado «{path}»: dañado"
+
+# Reproducir una revisión: los rechazos, el avance, el informe y las causas (spec 009, T15;
+# RF-009-11; plan 009 A9, D-32).
+
+["There is no revision {revision} in the project"]
+es = "No hay ninguna revisión {revision} en el proyecto"
+
+["{revision} is not frozen: only a frozen revision is reproduced"]
+es = "{revision} no está congelada: solo se reproduce una revisión congelada"
+
+["Revision {revision} is altered ({what}): it is not reproduced"]
+es = "La revisión {revision} está alterada ({what}): no se reproduce"
+
+["There is no space to reproduce {revision}: {needed} are needed in «{folder}» and {free} are left"]
+es = "No hay espacio para reproducir {revision}: hacen falta {needed} en «{folder}» y quedan {free}"
+
+["{revision} could not be reproduced ({reason}): nothing has been left half-done"]
+es = "No se ha podido reproducir {revision} ({reason}): no ha quedado nada a medias"
+
+["Reproducing {revision}: «{op_type}» ({index} of {count})…"]
+es = "Reproduciendo {revision}: «{op_type}» ({index} de {count})…"
+
+["{revision} reproduced: {outputs} of {outputs_total} outputs and {figures} of {figures_total} figures match"]
+es = "{revision} reproducida: coinciden {outputs} de {outputs_total} salidas y {figures} de {figures_total} cifras"
+
+["«{name}» does not match: {cause}"]
+es = "«{name}» no coincide: {cause}"
+
+["{count} operations taken from what was frozen ({names})"]
+es = "{count} operaciones tomadas de lo congelado ({names})"
+
+["1 operation taken from what was frozen ({names})"]
+es = "1 operación tomada de lo congelado ({names})"
+
+["{count} operations not reproducible ({names})"]
+es = "{count} operaciones no reproducibles ({names})"
+
+["1 operation not reproducible ({names})"]
+es = "1 operación no reproducible ({names})"
+
+["Reproduction cancelled: nothing has been left half-done"]
+es = "Reproducción cancelada: no ha quedado nada a medias"
+
+["{op_type}, import"]
+es = "{op_type}, importación"
+
+["{op_type}, manual edit"]
+es = "{op_type}, edición a mano"
+
+["{op_type}, its type is not reproduced"]
+es = "{op_type}, su tipo no se reproduce"
+
+["{op_type}, its module is not installed"]
+es = "{op_type}, su módulo no está instalado"
+
+["{op_type}: it used a content that was not frozen"]
+es = "{op_type}: consumió un contenido que no se congeló"
+
+["{op_type} failed: {reason}"]
+es = "{op_type} ha fallado: {reason}"
+
+["{op_type} {installed} installed, frozen with {frozen}"]
+es = "{op_type} {installed} instalada, congelada con {frozen}"
+
+["Geoblender {installed} installed, frozen with {frozen}"]
+es = "Geoblender {installed} instalado, congelada con {frozen}"
+
+["{library} {installed} installed, frozen with {frozen}"]
+es = "{library} {installed} instalada, congelada con {frozen}"
+
+["no known cause"]
+es = "sin causa conocida"
+
+["{op_type} did not give it again"]
+es = "{op_type} no la ha vuelto a dar"
+
+["it cannot be read ({reason})"]
+es = "no se puede leer ({reason})"
