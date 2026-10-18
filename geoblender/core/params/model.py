@@ -279,6 +279,13 @@ _CATALOG: tuple[Message, ...] = (
         "{key}: el valor registrado, {shown}, no está en la unidad o el tipo de valor de su "
         "definición actual ({expected}): cámbielo en lugar de confirmarlo.",
     ),
+    # El ámbito de versión (store.py; spec 009, RF-009-24, RF-009-29; D-19).
+    Message(
+        "core.param_project_only",
+        "Parameter «{key}» belongs to the project: it does not take a value of its own in "
+        "{version}.",
+        "El parámetro «{key}» es del proyecto: no admite un valor propio en {version}.",
+    ),
     Message(
         "core.param_figure_unknown",
         "Figure «{figure}» is not in the project: it cannot be adopted as the value of "

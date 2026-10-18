@@ -621,8 +621,8 @@ class ResolveTest(StoreCase):
 
     def test_resolve_rejections(self) -> None:
         """RF-008-05: un parámetro que el proyecto no tiene no se resuelve (antes,
-        ``ensure_default``); en esta spec solo hay ámbito de proyecto (la versión, con la
-        009)."""
+        ``ensure_default``); el ámbito de versión necesita la versión (spec 009,
+        ``test_params_versions``) y el sector no existe aún (R-32)."""
         with self.project.read() as conn:
             with self.assertRaises(params.ParamError) as caught:
                 self.store.resolve(conn, KEY)
