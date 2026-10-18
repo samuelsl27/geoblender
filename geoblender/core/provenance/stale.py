@@ -17,7 +17,11 @@ cambio; la que ya no está se borra) en la **misma transacción** de cada camino
   sus datos (:func:`.graph.deduce_region`). La llaman ``ParameterStore.change`` y ``confirm``,
   ``OperationHandle.complete`` (también la edición externa, ``core.external_edit``), el estado
   de un dato (``core.datasets.set_status`` y ``supersede``: falta, bloqueado, dañado, vigente,
-  descartado, sustituido) y ``core.inputs.supersede``, ``discard`` y ``keep_copy``;
+  descartado, sustituido) y ``core.inputs.supersede``, ``discard`` y ``keep_copy``; con
+  versiones (spec 009, plan A4), también la fila nueva propia de una versión de un parámetro
+  (``ParameterStore.create`` y ``change`` con ``version``), el paso de una versión a SUPERADO
+  o DESCARTADO (``core.versions.store.set_status``: lo suyo sale de la cascada) y una
+  revisión que pasa a alterada o deja de estarlo (``revisions``);
 - :func:`refresh_all`, la completa (tras cambiar la versión instalada de un algoritmo o si
   alguien alteró la caché), en la transacción de quien la llama. La comprobación de apertura
   la hace **por pasos y sin escribir** (T65; RNF-008-12): :func:`full_difference_steps` mira
@@ -66,6 +70,10 @@ from .graph import (
     PAGE_ROWS,
     PARAM_USE_COLUMNS,
     PARAMETER_COLUMNS,
+    REVISION_NODES,
+    VERSION_SCOPE,
+    VERSIONED_DATASET_COLUMNS,
+    VERSIONED_OPERATION_COLUMNS,
     Cause,
     CauseKind,
     CauseScan,
@@ -75,6 +83,7 @@ from .graph import (
     OperationNode,
     ParamUse,
     ProvenanceGraph,
+    RevisionNode,
     Staleness,
     Version,
     changes_while_running,
@@ -87,9 +96,11 @@ from .graph import (
     operation_node,
     param_use_of,
     parameter_node,
+    revision_node,
     root_causes,
     stale_text,
     version_of,
+    versioned,
 )
 from .schema import LIVE_DATASET_STATUSES
 
@@ -154,6 +165,33 @@ _USES = (
 _DATASETS = f"SELECT {DATASET_COLUMNS} FROM gb_dataset WHERE uid IN ({{marks}})"
 _INPUTS = f"SELECT {INPUT_NODE_COLUMNS} FROM gb_input WHERE uid IN ({{marks}})"
 _PARAMETERS = f"SELECT {PARAMETER_COLUMNS} FROM gb_parameter WHERE uid IN ({{marks}})"
+# Con versiones (spec 009, plan A4): las operaciones con su revisión y los datos con su
+# versión; las filas propias de las versiones de unas claves (por el índice único de
+# gb_parameter); lo que congeló una revisión (los datos que tomó de ella una operación de
+# versión); y las operaciones de una versión que leyeron otra fila de un parámetro del que
+# ahora tiene la suya (A4 (4)): de la fila a sus revisiones, a sus operaciones y a lo que
+# leyeron, por sus índices.
+_VERSIONED_OPERATIONS = (
+    f"SELECT {VERSIONED_OPERATION_COLUMNS} FROM gb_operation WHERE status = 'done' "
+    "AND uid IN ({marks})"
+)
+_VERSIONED_DATASETS = f"SELECT {VERSIONED_DATASET_COLUMNS} FROM gb_dataset WHERE uid IN ({{marks}})"
+_OWN_ROWS = (
+    f"SELECT {PARAMETER_COLUMNS} FROM gb_parameter WHERE scope = '{VERSION_SCOPE}' "
+    "AND key IN ({marks})"
+)
+_FROZEN_DATA = (
+    "SELECT item_uid FROM gb_revision_item WHERE revision_uid IN ({marks}) "
+    "AND item_kind = 'dataset'"
+)
+_OWN_ROW_CONSUMERS = (
+    "SELECT DISTINCT op.uid FROM gb_parameter AS v "
+    "CROSS JOIN gb_revision AS r ON r.version_uid = v.scope_uid "
+    "CROSS JOIN gb_operation AS op ON op.revision_uid = r.uid AND op.revision_uid <> '' "
+    "CROSS JOIN gb_operation_param AS p ON p.operation_uid = op.uid AND p.key = v.key "
+    f"WHERE v.uid IN ({{marks}}) AND v.scope = '{VERSION_SCOPE}' AND {_DONE} "
+    "AND p.parameter_uid <> v.uid"
+)
 _CACHED = (
     "SELECT item_kind, item_uid, cause_kind, subject_uid FROM gb_stale "
     "WHERE item_kind = ? AND item_uid IN ({marks})"
@@ -209,10 +247,13 @@ _STALE_OPERATIONS = (
 _FIGURE_KEYS = "SELECT DISTINCT key, scope_key FROM gb_figure WHERE operation_uid IN ({marks})"
 _FIGURES_OF_KEY = (
     "SELECT f.operation_uid, EXISTS (SELECT 1 FROM gb_stale AS s "
-    f"WHERE s.item_kind = '{OPERATION}' AND s.item_uid = f.operation_uid) "
+    f"WHERE s.item_kind = '{OPERATION}' AND s.item_uid = f.operation_uid){{version}} "
     "FROM gb_figure AS f JOIN gb_operation AS op ON op.uid = f.operation_uid "
     f"WHERE {_DONE} AND op.superseded_by IS NULL AND f.key = ? AND f.scope_key = ? "
     "ORDER BY f.fid"
+)
+_OPERATION_VERSION = (  # la versión de la operación de la cifra ('' de proyecto; spec 009)
+    ", coalesce((SELECT r.version_uid FROM gb_revision AS r WHERE r.uid = op.revision_uid), '')"
 )
 
 
@@ -427,18 +468,25 @@ def _check_now(now: object) -> str:
 
 
 def _region(conn: sqlite3.Connection, operations: frozenset[str], datasets: frozenset[str],
-            parameters: frozenset[str],
-            inputs: frozenset[str]) -> tuple[frozenset[str], frozenset[str]]:
+            parameters: frozenset[str], inputs: frozenset[str],
+            revisions: frozenset[str] = frozenset(), *,
+            with_versions: bool = False) -> tuple[frozenset[str], frozenset[str]]:
     """La región de lo cambiado (operaciones hechas) y los datos cambiados (con lo importado
-    de las entradas): lo que consumió algo cambiado y, hasta cerrarla, lo que consume
-    cualquier versión de lo que producen sus operaciones y su ejecución de grupo."""
+    de las entradas y, con versiones, lo que congelaron las revisiones ``revisions``): lo que
+    consumió algo cambiado (y, de un parámetro, con versiones, las operaciones de su versión
+    que leyeron otra fila, A4 (4)) y, hasta cerrarla, lo que consume cualquier versión de lo
+    que producen sus operaciones y su ejecución de grupo."""
     changed = set(datasets)
     if inputs:
         changed |= _column(conn, _INPUT_DATASETS, inputs)
+    if with_versions and revisions:
+        changed |= _column(conn, _FROZEN_DATA, revisions)
     seeds = _column(conn, _DONE_OPERATIONS, operations)
     seeds |= _column(conn, _CONSUMERS, changed, (DATASET,))
     seeds |= _column(conn, _CONSUMERS, inputs, ("input",))
     seeds |= _column(conn, _PARAMETER_CONSUMERS, parameters)
+    if with_versions:
+        seeds |= _column(conn, _OWN_ROW_CONSUMERS, parameters)
     region: set[str] = set()
     followed = set(changed)  # datos cuyos consumidores ya están en la región
     groups: set[str] = set()
@@ -456,9 +504,9 @@ def _region(conn: sqlite3.Connection, operations: frozenset[str], datasets: froz
 
 
 def _operations(conn: sqlite3.Connection, uids: Collection[str], *,
-                full: bool) -> list[OperationNode]:
+                full: bool, with_versions: bool = False) -> list[OperationNode]:
     """Las operaciones hechas ``uids``: con lo que consumen, producen y leen (``full``) o
-    solo con lo que producen (quién escribió cada versión)."""
+    solo con lo que producen (quién escribió cada versión); con versiones, con su revisión."""
     consumed: dict[str, list[Version]] = defaultdict(list)
     produced: dict[str, list[Version]] = defaultdict(list)
     used: dict[str, list[ParamUse]] = defaultdict(list)
@@ -469,9 +517,10 @@ def _operations(conn: sqlite3.Connection, uids: Collection[str], *,
         for row in _select(conn, _USES, uids):
             op_uid, use = param_use_of(row)
             used[op_uid].append(use)
+    sql = _VERSIONED_OPERATIONS if with_versions else _OPERATIONS
     return [operation_node(row, consumed[str(row[1])], produced[str(row[1])],
                            used[str(row[1])])
-            for row in _select(conn, _OPERATIONS, uids)]
+            for row in _select(conn, sql, uids)]
 
 
 def _cached_causes(conn: sqlite3.Connection,
@@ -492,14 +541,18 @@ def refresh_region(
     datasets: Iterable[str] = (),
     parameters: Iterable[str] = (),
     inputs: Iterable[str] = (),
+    revisions: Iterable[str] = (),
     versions: Mapping[str, str] | None = None,
 ) -> CacheUpdate:
     """Pone al día la caché por región (véase el módulo), en la transacción de escritura
     ``conn`` del camino que cambió el proyecto (no la confirma), con lo que acaba de cambiar:
-    ``operations`` (las que terminó; las que no están hechas no cuentan), ``datasets`` (con
-    otro contenido o estado), ``parameters`` (con otro valor o unidad) e ``inputs``
-    (sustituidas, descartadas o mantenidas; con lo importado de ellas). Las filas nuevas
-    llevan la fecha ``now`` (texto UTC). ``versions``, como en :func:`.graph.deduce`.
+    ``operations`` (las que terminó; las que no están hechas no cuentan; también las de una
+    versión que pasa a SUPERADO o DESCARTADO, que salen de la cascada), ``datasets`` (con
+    otro contenido o estado), ``parameters`` (con otro valor o unidad, o la fila nueva propia
+    de una versión: spec 009, A4 (4)), ``inputs`` (sustituidas, descartadas o mantenidas; con
+    lo importado de ellas) y ``revisions`` (las congeladas que pasan a alteradas o dejan de
+    estarlo, con lo que consumieron de ellas las operaciones de versión: A4 (3)). Las filas
+    nuevas llevan la fecha ``now`` (texto UTC). ``versions``, como en :func:`.graph.deduce`.
 
     Exige que la caché de lo de fuera de la región esté al día (la mantienen todos los
     caminos que escriben y la completa de la apertura). Sin ``versions``, las de
@@ -514,9 +567,11 @@ def refresh_region(
     changed_datasets = _uids(datasets, "datasets")
     changed_parameters = _uids(parameters, "parameters")
     changed_inputs = _uids(inputs, "inputs")
+    changed_revisions = _uids(revisions, "revisions")
+    with_versions = versioned(conn)
     region, changed = _region(conn, changed_operations, changed_datasets, changed_parameters,
-                              changed_inputs)
-    nodes = _operations(conn, region, full=True)
+                              changed_inputs, changed_revisions, with_versions=with_versions)
+    nodes = _operations(conn, region, full=True, with_versions=with_versions)
     consumed = {version.uid for node in nodes for version in node.consumed
                 if version.item_kind == DATASET}
     entries = {version.uid for node in nodes for version in node.consumed
@@ -524,12 +579,21 @@ def refresh_region(
     produced = {version.uid for node in nodes for version in node.produced
                 if version.item_kind == DATASET}
     writers = _column(conn, _WRITERS, consumed) - region
+    used = [parameter_node(row) for row in _select(
+        conn, _PARAMETERS, {use.parameter_uid for node in nodes for use in node.params})]
+    revision_rows: list[RevisionNode] = []
+    if with_versions:  # las filas propias de sus versiones y las revisiones (A4)
+        keys = {use.key for node in nodes if node.revision_uid for use in node.params}
+        used.extend(parameter_node(row) for row in _select(conn, _OWN_ROWS, keys))
+        revision_rows = [revision_node(row[1:]) for row in conn.execute(REVISION_NODES)]
     graph = ProvenanceGraph(
-        [*nodes, *_operations(conn, writers, full=False)],
-        [dataset_node(row) for row in _select(conn, _DATASETS, consumed | produced | changed)],
+        [*nodes, *_operations(conn, writers, full=False, with_versions=with_versions)],
+        [dataset_node(row) for row in _select(
+            conn, _VERSIONED_DATASETS if with_versions else _DATASETS,
+            consumed | produced | changed)],
         [input_node(row) for row in _select(conn, _INPUTS, entries)],
-        [parameter_node(row) for row in _select(
-            conn, _PARAMETERS, {use.parameter_uid for node in nodes for use in node.params})],
+        used,
+        revisions=revision_rows,
     )
     refreshed = set(changed) | {uid for uid in produced if uid in graph.datasets
                                 and graph.datasets[uid].operation_uid in region}
@@ -741,17 +805,24 @@ def _current_writers(conn: sqlite3.Connection,
                      candidates: set[str]) -> tuple[set[str], set[str]]:
     """De las operaciones ``candidates``: las que escribieron el contenido actual de un dato
     vivo y, de las demás, las que escribieron la cifra vigente de su clave y su ámbito (la
-    más reciente de una operación al día o, si todas están obsoletas, la más reciente)."""
+    más reciente de una operación al día o, si todas están obsoletas, la más reciente), entre
+    las del proyecto o entre las de su versión (spec 009, A4 (5))."""
     data = _column(conn, _LIVE_WRITERS, candidates)
     rest = candidates - data
     figures: set[str] = set()
-    for key, scope_key in sorted({tuple(row) for row in _select(conn, _FIGURE_KEYS, rest)}):
-        found = [(str(op_uid), bool(stale)) for op_uid, stale in conn.execute(
-            _FIGURES_OF_KEY, (key, scope_key))]
-        fresh = [op_uid for op_uid, stale in found if not stale]
-        current = (fresh or [op_uid for op_uid, _stale in found])[-1]
-        if current in rest:
-            figures.add(current)
+    pairs = sorted({tuple(row) for row in _select(conn, _FIGURE_KEYS, rest)})
+    if not pairs:
+        return data, figures
+    sql = _FIGURES_OF_KEY.format(version=_OPERATION_VERSION if versioned(conn) else "")
+    for key, scope_key in pairs:
+        by_version: dict[str, list[tuple[str, bool]]] = defaultdict(list)
+        for op_uid, stale, *version in conn.execute(sql, (key, scope_key)):
+            by_version[str(version[0]) if version else ""].append((str(op_uid), bool(stale)))
+        for found in by_version.values():
+            fresh = [op_uid for op_uid, stale in found if not stale]
+            current = (fresh or [op_uid for op_uid, _stale in found])[-1]
+            if current in rest:
+                figures.add(current)
     return data, figures
 
 

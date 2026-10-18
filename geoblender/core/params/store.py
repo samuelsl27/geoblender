@@ -1472,7 +1472,9 @@ class ParameterStore:
                 review: Any = None) -> ParameterRecord:
         """La fila nueva de ``defn`` en el proyecto (``scope_uid = ''``) o en una versión,
         rev 1, con su fila ``action`` del historial. Por defecto, con el tipo de valor y la
-        definición de ``defn`` y sin «revisar»."""
+        definición de ``defn`` y sin «revisar». La de una versión deja obsoletas, en la misma
+        transacción, las operaciones de esa versión que leyeron la del proyecto (spec 009,
+        plan A4 (4); RF-008-24)."""
         uid = new_uid()
         conn.execute(
             f"INSERT INTO gb_parameter ({_PARAMETER_COLUMNS}) "
@@ -1488,6 +1490,11 @@ class ParameterStore:
             ),
         )
         self._history(conn, uid, 1, action, state, changed_by=changed_by, at=now)
+        if scope_uid:
+            # Aquí: core.provenance importa core.params (ARQ-08).
+            from ..provenance.stale import refresh_region
+
+            refresh_region(conn, now=now, parameters=[uid])
         return _load_uid(conn, uid)
 
     def _update(self, conn: sqlite3.Connection, record: ParameterRecord, state: _State,

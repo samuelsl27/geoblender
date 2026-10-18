@@ -57,6 +57,12 @@ con progreso y cancelación):
 - cancelar (``cancelled``) para al acabar la unidad en curso: lo ya recalculado queda (cada
   operación es completa) y lo demás sigue obsoleto (:class:`RecomputeOutcome`).
 
+**Con versiones** (spec 009, plan A4 (6)): lo de una versión SUPERADO o DESCARTADO nunca está
+obsoleto, así que no se recalcula; una operación de versión se repite en la revisión abierta de
+**su** versión (:attr:`RecomputeRequest.version`), no en la activa de la sesión, y lo que tomó
+congelado de la versión de la que parte se vuelve a tomar congelado, sin esperar a nada ni
+comprobar el dato de hoy.
+
 **Recalcular un dato bloqueado o que falta** (:func:`recompute_dataset_steps`, T54; RF-008-56,
 RF-008-57): quien lo escribió no está obsoleto, así que no entra en el plan; se repite la última
 operación de Geoblender que lo escribió (con su ejecución de grupo) igual que una unidad del
@@ -262,12 +268,14 @@ def _targets(graph: ProvenanceGraph, scope: object) -> set[str] | None:
 def needs(graph: ProvenanceGraph, uid: str) -> set[str]:
     """Las operaciones que necesita antes la operación ``uid`` para recalcularse: quien
     escribió las versiones de dato que consumió y quien escribió el contenido actual de esos
-    datos (sin ella misma)."""
+    datos (sin ella misma). Lo que consumió congelado de la versión de la que parte su versión
+    no necesita nada: se vuelve a tomar congelado (spec 009, A4 (3))."""
     node = graph.operations[uid]
     found = set(graph.upstream(uid))
     for version in node.consumed:
         dataset = graph.datasets.get(version.uid) if version.item_kind == DATASET else None
-        if dataset is not None and dataset.operation_uid in graph.operations:
+        if (dataset is not None and dataset.operation_uid in graph.operations
+                and not graph.frozen_use(node, version.uid)):
             found.add(dataset.operation_uid)
     found.discard(uid)
     return found
@@ -299,7 +307,7 @@ class _Planner:
         self.stale: Mapping[str, frozenset[Cause]] = state.operations
         figures = {figure.uid: figure.operation_uid for figure in graph.figures}
         writers = {dataset.operation_uid for dataset in graph.datasets.values() if dataset.live}
-        writers |= {figures[uid] for uid in state.current_figures.values()}
+        writers |= {figures[uid] for uid in state.current_figure_uids}
         self.relevant = frozenset(uid for uid in self.stale if uid in writers)
         members: dict[str, list[OperationNode]] = defaultdict(list)
         for uid in self.stale:
@@ -570,7 +578,11 @@ class RecomputeRequest:
     - ``params``: las claves de los parámetros que leyó (al empezar se resuelven los
       vigentes);
     - ``group_uid``: la ejecución nueva de su grupo acoplado, la misma para toda la unidad
-      (``None`` si no es de un grupo).
+      (``None`` si no es de un grupo);
+    - ``version``: la versión (uid) de una operación de versión (spec 009, plan A4 (6)): la
+      nueva se registra en la revisión abierta de **su** versión, no en la activa de la sesión
+      (``None`` de proyecto). Lo que consumió congelado de la versión de la que parte va en
+      ``inputs`` otra vez congelado (``Use.frozen``).
 
     La función empieza la operación nueva con :meth:`begin` o :meth:`operation` (que la
     anotan como sustituta de la antigua), la ejecuta, la completa y la devuelve
@@ -583,12 +595,14 @@ class RecomputeRequest:
     inputs: tuple[Use, ...]
     params: tuple[str, ...]
     group_uid: str | None = None
+    version: str | None = None
 
     def arguments(self) -> dict[str, Any]:
         """Los argumentos de :func:`~.operations.begin_operation` (sin el ejecutor) de la
-        operación nueva, que sustituye a la antigua."""
+        operación nueva, que sustituye a la antigua (en su versión, si es de versión)."""
         return {"settings": dict(self.settings), "inputs": self.inputs, "params": self.params,
-                "group_uid": self.group_uid, "supersedes": self.operation_uid}
+                "group_uid": self.group_uid, "supersedes": self.operation_uid,
+                "version": self.version}
 
     def begin(self, *, executor: Executor | str = Executor.BLENDER,
               job_uid: str | None = None) -> OperationHandle:
@@ -794,9 +808,15 @@ def _request(conn: sqlite3.Connection, project: OperationProject, graph: Provena
     drops = definition is not None and definition.drops_discarded
     uses: list[Use] = []
     dropped: str | None = None
+    source = graph.frozen_source(node)
     for version in node.consumed:
         known: Any
-        if version.item_kind == DATASET:
+        if version.item_kind == DATASET and graph.frozen_use(node, version.uid):
+            # Lo congelado de la versión de la que parte, otra vez congelado (spec 009, D-27).
+            use = Use(version.uid, version.role,
+                      frozen=None if source is None else source.uid)
+            known = graph.datasets.get(version.uid)
+        elif version.item_kind == DATASET:
             record = dataset_registry.successor(conn, version.uid)
             use = None if record is None else Use(record.uid, version.role)
             known = graph.datasets.get(version.uid)
@@ -813,6 +833,7 @@ def _request(conn: sqlite3.Connection, project: OperationProject, graph: Provena
     request = RecomputeRequest(
         project, uid, node.op_type, MappingProxyType(json.loads(settings)), tuple(uses),
         tuple(dict.fromkeys(param.key for param in node.params)), group_uid,
+        graph.version_of(uid) or None,
     )
     return request, dropped
 
@@ -821,7 +842,7 @@ def _changed_upstream(graph: ProvenanceGraph, uses: Iterable[Use]) -> str | None
     """El nombre de la primera entrada cambiada sin decidir aguas arriba de ``uses`` (las
     que consume y las de lo que escribió el contenido vigente de lo que consume, hasta sus
     importaciones); ``None`` si no hay."""
-    chosen = tuple(uses)
+    chosen = tuple(use for use in uses if use.frozen is None)  # lo congelado no cambia
     datasets = [use.item for use in chosen if use.kind is ItemKind.DATASET]
     found = [use.item for use in chosen if use.kind is ItemKind.INPUT]
     seen: set[str] = set()
@@ -857,7 +878,8 @@ def _refusal(graph: ProvenanceGraph, unit: RecomputeUnit,
                               MappingProxyType({"name": dropped}))
     for request, _dropped in built:
         for use in request.inputs:
-            node = graph.datasets.get(use.item) if use.kind is ItemKind.DATASET else None
+            live = use.kind is ItemKind.DATASET and use.frozen is None  # no lo congelado
+            node = graph.datasets.get(use.item) if live else None
             if node is not None and node.status in DATASET_STATUS_CAUSES:
                 return UnitResult(unit, UnitStatus.REFUSED, (),
                                   "core.recompute_dataset_unusable",
@@ -1045,7 +1067,7 @@ def _accepted_figures(conn: sqlite3.Connection, state: Staleness,
     """Las cifras vigentes de la operación ``node``, que vuelve a dar la que la da por buena
     (las demás quedan como historia)."""
     graph = state.graph
-    current = set(state.current_figures.values())
+    current = state.current_figure_uids
     uids = [figure.uid for figure in graph.figures
             if figure.operation_uid == node.uid and figure.uid in current]
     if not uids:

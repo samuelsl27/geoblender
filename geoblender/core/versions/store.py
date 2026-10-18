@@ -21,8 +21,9 @@ los textos de la spec, nunca una restricción de SQLite (los disparadores de
   DESCARTADO (con motivo); toda versión que pasa a SUPERADO o DESCARTADO cierra su revisión
   abierta, sin instantánea («cerrada al superarse», RF-009-25). Cada estado, en **una**
   sentencia con su motivo, quién y cuándo (después, la base no deja cambiar nada de una versión
-  cerrada). Solo escribe filas de ``gb_version``, ``gb_revision`` y ``gb_event``: ningún
-  fichero (RF-009-02).
+  cerrada). Solo escribe filas de ``gb_version``, ``gb_revision`` y ``gb_event`` y, si la que
+  se cierra tiene operaciones, la caché de la obsolescencia (``gb_stale``: lo suyo sale de la
+  cascada, plan A4 (1)): ningún fichero (RF-009-02).
 - :func:`set_title` (RF-009-22): el título de una versión o de un dato, nunca su código ni su
   nombre.
 - :func:`require_editable`: la versión, si es BORRADOR o VIGENTE; si no, el rechazo de
@@ -31,7 +32,7 @@ los textos de la spec, nunca una restricción de SQLite (los disparadores de
 Cada cambio deja su evento (``version_created``, ``status_change``, ``revision_closed`` y
 ``title_changed``). Ninguna función borra nada (RF-009-12): descartar una versión la marca y la
 conserva entera. Ningún texto guardado lleva una ruta absoluta. Python puro; no importa
-``core.provenance`` (ARQ-08).
+``core.provenance`` al cargarse (ARQ-08): solo su caché, dentro de :func:`set_status`.
 """
 
 from __future__ import annotations
@@ -297,6 +298,27 @@ def _write_status(conn: sqlite3.Connection, project: VersionProject, version: Ve
     )
 
 
+_VERSION_OPERATIONS = (  # de sus revisiones a sus operaciones, por sus índices
+    "SELECT op.uid FROM gb_revision AS r CROSS JOIN gb_operation AS op "
+    "ON op.revision_uid = r.uid AND op.revision_uid <> '' "
+    "WHERE r.version_uid = ? AND op.status = 'done'"
+)
+
+
+def _leave_cascade(conn: sqlite3.Connection, version_uids: list[str], now: str) -> None:
+    """Lo de las versiones ``version_uids``, que acaban de pasar a SUPERADO o DESCARTADO, sale
+    de la cascada (spec 009, plan A4 (1); RF-009-19): la caché de la obsolescencia suelta sus
+    operaciones y sus datos (y lo que dependía de ellos se deduce otra vez) en la misma
+    transacción."""
+    operations = [str(uid) for version_uid in version_uids
+                  for (uid,) in conn.execute(_VERSION_OPERATIONS, (version_uid,))]
+    if operations:
+        # Aquí: core.provenance importa core.versions (ARQ-08).
+        from ..provenance.stale import refresh_region
+
+        refresh_region(conn, now=now, operations=operations)
+
+
 def set_status(
     conn: sqlite3.Connection,
     project: VersionProject,
@@ -348,6 +370,10 @@ def set_status(
     _write_status(conn, project, version, wanted, reason=reason_text,
                   reason_closed=reason_text if wanted is VersionStatus.DESCARTADO else None,
                   now=now)
+    leaving = [version.uid] if wanted is VersionStatus.DESCARTADO else []
+    if superseded is not None:
+        leaving.append(superseded.uid)
+    _leave_cascade(conn, leaving, now)
     changed = read.version(conn, version.uid)
     if changed is None:  # inalcanzable: nada se borra
         raise RuntimeError(f"la versión {version.code} no se ha podido leer tras cambiarla")

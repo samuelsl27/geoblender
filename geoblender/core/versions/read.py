@@ -4,8 +4,9 @@ RF-009-03, RF-009-10; plan 009 §5.3.1 y D-25).
 
 Cada función recibe una conexión cualquiera a la base del proyecto (de lectura, o la de una
 transacción de escritura, en la que ve lo aún sin confirmar) y solo hace ``SELECT``: no mueve el
-contador de cambios de la base. No importa ``core.provenance`` (que la usará para las
-operaciones de versión y la cascada) ni nada que la importe: solo :mod:`.model` (ARQ-08).
+contador de cambios de la base. Al cargarse no importa ``core.provenance`` (que la usa para las
+operaciones de versión y la cascada) ni nada que la importe: solo :mod:`.model` (ARQ-08);
+:func:`version_figures` lo importa al llamarla.
 
 - :func:`versions`, :func:`version`: las versiones, por número de código, y una, por su uid o
   su código.
@@ -14,15 +15,20 @@ operaciones de versión y la cascada) ni nada que la importe: solo :mod:`.model`
 - :func:`current_version`: la VIGENTE (solo puede haber una, D-3); :func:`default_active`: la
   versión activa por defecto (D-25), la VIGENTE o, si no hay, el BORRADOR más reciente.
 - :func:`dataset_versions`: la versión de cada dato (``''``, del proyecto; RF-009-05).
+- :func:`version_figures`: las cifras vigentes de una versión, las de su última revisión
+  congelada (D-9), o las «en curso» (RF-009-20).
 """
 
 from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .model import Revision, RevisionState, Version, VersionStatus
+
+if TYPE_CHECKING:
+    from ..provenance.figures import FigureRecord
 
 _CHUNK = 500
 """Uids por consulta (``IN (…)``)."""
@@ -125,6 +131,42 @@ def dataset_versions(conn: sqlite3.Connection, uids: Iterable[str]) -> dict[str,
                 f"SELECT uid, version_uid FROM gb_dataset WHERE uid IN ({marks})", part)
         )
     return found
+
+
+_FROZEN_FIGURES = (  # por el índice único de gb_revision_item y el uid de gb_figure
+    "SELECT {columns} FROM gb_figure WHERE uid IN (SELECT item_uid FROM gb_revision_item "
+    "WHERE revision_uid = ? AND item_kind = 'figure' AND part = 'produced') ORDER BY fid"
+)
+
+
+def version_figures(conn: sqlite3.Connection, version_uid: str, *,
+                    frozen: bool = True) -> tuple[FigureRecord, ...]:
+    """Las cifras de la versión ``version_uid`` (uid o código; ninguna si no está), en el orden
+    en que se registraron (RF-009-20, D-9; plan A4 (5)):
+
+    - ``frozen`` (por defecto): las **vigentes**, las de su última revisión congelada, tal como
+      quedaron anotadas al congelarla (``gb_revision_item``, ``figure``, ``produced``);
+      ninguna si no tiene ninguna congelada. Las de una VIGENTE con una revisión abierta son
+      estas, no las «en curso»;
+    - si no, las **«en curso»**: la vigente hoy de cada clave y ámbito entre las de sus
+      operaciones (``core.provenance.lineage.figures_in``), también si se registraron en una
+      revisión ya congelada y nada las ha rehecho.
+
+    Nunca las de otra versión, ni las de la versión de la que parte (D-10; error 32)."""
+    # Aquí, no al cargar: core.provenance importa este módulo (ARQ-08).
+    from ..provenance import figures as records
+    from ..provenance.lineage import figures_in
+
+    found = version(conn, version_uid)
+    if found is None:
+        return ()
+    if not frozen:
+        return figures_in(conn, found.uid)
+    revision = last_frozen(conn, found.uid)
+    if revision is None:
+        return ()
+    rows = conn.execute(_FROZEN_FIGURES.format(columns=records.RECORD_COLUMNS), (revision.uid,))
+    return tuple(records.FigureRecord.from_row(row) for row in rows)
 
 
 def default_active(conn: sqlite3.Connection) -> Version | None:

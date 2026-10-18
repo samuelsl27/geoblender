@@ -506,6 +506,10 @@ _CATALOG: tuple[Message, ...] = (
             "«{name}» está bloqueado por una edición externa"),
     Message("core.cause_dataset_damaged", "«{name}» is damaged: it can only be reimported",
             "«{name}» está dañado: solo se puede reimportar"),
+    # … y la misma clase sobre lo que una operación de versión tomó congelado de la versión de
+    # la que parte, en una revisión alterada (spec 009, T09; plan 009 A4 (3)).
+    Message("core.cause_frozen_altered", "what was frozen of «{name}» is altered",
+            "lo congelado de «{name}» está alterado"),
     Message(
         "core.cause_algorithm",
         "Geoblender changes the algorithm of {op_type} ({registered} → {installed})",

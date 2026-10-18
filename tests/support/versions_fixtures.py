@@ -349,14 +349,16 @@ class VersionsProjectCase(unittest.TestCase):
                                                                  reason=reason))
 
     def freeze(self, version: Any, items: Sequence[tuple[Any, ...]] | None = None, *,
-               reason: str = "Siguiente") -> str:
+               reason: str = "Siguiente", figures: Sequence[str] | None = None) -> str:
         """Congela **por SQL** la revisión abierta de ``version`` (``Version``, uid o código)
         y abre la siguiente con ``reason``; devuelve el uid de la congelada. Lo congelado
         (``gb_revision_item``): cada elemento de ``items`` es ``(registro, parte)`` o
         ``(registro, parte, snapshot_path, snapshot_layer)``; por defecto, cada dato vivo de la
         versión como ``produced``. Lo de una parte distinta de ``upstream`` queda copiado: una
         tabla, en el GeoPackage de la instantánea (``snapshots/V01.r1/V01.r1.gpkg``) con su
-        nombre; un fichero, en la carpeta de la instantánea con su ruta. No escribe ningún
+        nombre; un fichero, en la carpeta de la instantánea con su ruta. Y las cifras
+        ``figures`` (uid; por defecto, las de las operaciones hechas y sin sustituir de la
+        versión), como ``produced`` (T09: las vigentes de la versión, D-9). No escribe ningún
         fichero (eso lo hará la T13): solo las filas."""
         target = version if hasattr(version, "uid") else self.version(version)
         self.tick()
@@ -396,6 +398,18 @@ class VersionsProjectCase(unittest.TestCase):
                     "content_sha256, copied, snapshot_path, snapshot_layer) "
                     "VALUES (?, 'dataset', ?, ?, ?, ?, ?, ?)",
                     (uid, record.uid, part, record.content_sha256, int(copied), path, layer))
+            chosen_figures = figures
+            if chosen_figures is None:
+                chosen_figures = [str(row[0]) for row in conn.execute(
+                    "SELECT f.uid FROM gb_revision AS r CROSS JOIN gb_operation AS op "
+                    "ON op.revision_uid = r.uid AND op.revision_uid <> '' "
+                    "CROSS JOIN gb_figure AS f ON f.operation_uid = op.uid "
+                    "WHERE r.version_uid = ? AND op.status = 'done' "
+                    "AND op.superseded_by IS NULL ORDER BY f.fid", (target.uid,))]
+            conn.executemany(
+                "INSERT INTO gb_revision_item (revision_uid, item_kind, item_uid, part) "
+                "VALUES (?, 'figure', ?, 'produced')",
+                [(uid, figure) for figure in chosen_figures])
             conn.execute(
                 "INSERT INTO gb_revision (uid, version_uid, number, state, reason, created_at, "
                 "created_by) VALUES (?, ?, ?, 'open', ?, ?, ?)",
