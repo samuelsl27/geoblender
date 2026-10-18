@@ -388,8 +388,8 @@ es = "Disponible en {entry}"
 ["First {step} ({path})"]
 es = "Primero {step} ({path})"
 
-["{version} is in state {state}: create a revision or a new version"]
-es = "{version} está en estado {state}: cree una revisión o una versión nueva"
+["{version} is in state {state}: create a new version from it"]
+es = "{version} está en estado {state}: cree una versión nueva a partir de ella"
 
 ["Input {name} changed since {revision}"]
 es = "La entrada {name} ha cambiado desde {revision}"
@@ -4528,3 +4528,43 @@ es = "La diferencia de cada boca con el MDT, dentro de la tolerancia"
 
 ["Collar elevation minus the DTM elevation: {count} collars compared, from {low} m to {high} m"]
 es = "Cota de las bocas menos la del MDT: {count} bocas comparadas, de {low} m a {high} m"
+
+# Versiones y revisiones: los rechazos de core.versions (spec 009, T05; RF-009-01, RF-009-03,
+# RF-009-04, RF-009-22; core.versions.model.MESSAGES). El de «Versión no editable» («{version}
+# is in state {state}: …») está con los estados de un comando (BS §7.3).
+
+["There is no version {version} in the project"]
+es = "No hay ninguna versión {version} en el proyecto"
+
+["«{target}» is not a state of a version: DRAFT, CURRENT, SUPERSEDED or DISCARDED"]
+es = "«{target}» no es un estado de una versión: BORRADOR, VIGENTE, SUPERADO o DESCARTADO"
+
+["{version} is already in state {state}"]
+es = "{version} ya está en estado {state}"
+
+["{version} cannot go from {state} to {target}: a DRAFT version becomes CURRENT or DISCARDED, and a CURRENT one DISCARDED (it becomes SUPERSEDED when another version is declared CURRENT)"]
+es = "{version} no puede pasar de {state} a {target}: una versión BORRADOR pasa a VIGENTE o DESCARTADO, y una VIGENTE, a DESCARTADO (pasa a SUPERADO al declarar VIGENTE otra versión)"
+
+["Freeze a revision of {version} first"]
+es = "Congele antes una revisión de {version}"
+
+["State the reason for discarding {version}"]
+es = "Indique el motivo para descartar {version}"
+
+["State the feature of the new version (what sets it apart)"]
+es = "Indique el rasgo de la versión nueva (lo que la distingue)"
+
+["State the title of the version"]
+es = "Indique el título de la versión"
+
+["State the reason for the new version"]
+es = "Indique el motivo de la versión nueva"
+
+["«{text}» cannot contain an absolute path: the project stores none"]
+es = "«{text}» no puede llevar una ruta absoluta: el proyecto no guarda ninguna"
+
+["There is no dataset {dataset} in the project"]
+es = "No hay ningún dato {dataset} en el proyecto"
+
+["State the title of dataset «{dataset}»"]
+es = "Indique el título del dato «{dataset}»"

@@ -60,7 +60,9 @@ Geoblender, que solo deshace la transacción), nunca una restricción de SQLite 
 el proyecto en solo lectura). Python puro: biblioteca estándar y ``core`` (ADR-0004).
 
 Ámbito: en esta spec, solo el proyecto (``scope = 'project'``, ``scope_uid = ''``); la
-versión llega con la spec 009 y el sector con R-32.
+versión llega con la spec 009 y el sector con R-32. De la 009 está ya
+:meth:`ParameterStore.inherit`: crear una versión que parte de otra le copia sus parámetros de
+versión con la fila de historial «Heredado de V10.r2» (plan 009 A1, D-26).
 """
 
 from __future__ import annotations
@@ -101,6 +103,9 @@ if TYPE_CHECKING:
 
 PROJECT_SCOPE = "project"
 """El único ámbito de esta spec (``gb_parameter.scope``)."""
+VERSION_SCOPE = "version"
+"""El ámbito de los parámetros de una versión (spec 009; ``scope_uid`` = uid de la versión):
+por ahora solo los copia :meth:`ParameterStore.inherit`."""
 
 DEFAULT_DECIDER = "Geoblender (valor por defecto)"
 """El decisor (y quien escribe la fila del historial) de un valor por defecto (RF-008-04)."""
@@ -1098,6 +1103,45 @@ class ParameterStore:
             value_type=value_type,
             def_sha256=None if checked_with is None else definition_sha256(checked_with),
         )
+
+    def inherit(self, conn: sqlite3.Connection, parent_version: str, child_version: str, *,
+                label: str) -> int:
+        """Copia a la versión ``child_version`` los parámetros de versión de
+        ``parent_version`` (spec 009, RF-009-01; plan 009 A1 y D-26) y devuelve cuántos: cada
+        uno, una fila nueva de ``gb_parameter`` con el ámbito de la versión nueva y el mismo
+        valor, unidad, tipo, origen, decisor y fecha de la decisión (y su marca «sin confirmar»,
+        su «revisar» y la definición con la que se registró), con el motivo «Heredado de
+        <label>» (la revisión de la padre en que ese es hoy su valor: «V10.r2»), y su fila
+        ``create`` del historial, de quien escribe. Los de la padre no cambian; nada más se
+        copia. :class:`ValueError` si falta una versión o la etiqueta, o si son la misma."""
+        for name, value in (("parent_version", parent_version),
+                            ("child_version", child_version), ("label", label)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} no es un texto con contenido: {value!r}")
+        if parent_version == child_version:
+            raise ValueError("una versión no hereda de sí misma")
+        rows = conn.execute(
+            f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter "
+            "WHERE scope = ? AND scope_uid = ? ORDER BY key",
+            (VERSION_SCOPE, parent_version),
+        ).fetchall()
+        now = self._now()
+        reason = f"Heredado de {label.strip()}"
+        names = [name.strip() for name in _PARAMETER_COLUMNS.split(",")]
+        for row in rows:
+            uid = new_uid()
+            fields = dict(zip(names, row, strict=True))
+            fields.update(uid=uid, scope_uid=child_version, reason=reason, rev=1,
+                          created_at=now, modified_at=now)
+            conn.execute(
+                f"INSERT INTO gb_parameter ({_PARAMETER_COLUMNS}) "
+                f"VALUES ({_marks(_PARAMETER_COLUMNS)})",
+                tuple(fields[name] for name in names),
+            )
+            state = replace(_State.of(_record(row)), reason=reason)
+            self._history(conn, uid, 1, HistoryAction.CREATE, state,
+                          changed_by=self.project.session.user_host, at=now)
+        return len(rows)
 
     def confirm(self, conn: sqlite3.Connection, key: str, *,
                 reason: str | None = None) -> ParameterRecord:
