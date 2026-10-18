@@ -477,8 +477,8 @@ class PageTest(unittest.TestCase):
             inventory.page(self.snapshot, {"status": "LIVE"}, ())
         with self.assertRaises(ValueError):
             inventory.InventorySnapshot((("DATASET", "d1"),), 0)
-        with self.assertRaises(ValueError):
-            item("VERSION", "v1", "v1")
+        with self.assertRaises(ValueError):  # la 009 añade VERSION y REVISION
+            item("PARAMETER", "p1", "p1")
         with self.assertRaises(TypeError):
             inventory.read_inventory(object(), loadable="todo")
 

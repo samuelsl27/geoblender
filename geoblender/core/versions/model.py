@@ -480,6 +480,13 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
     ),
     "core.version_decision_parameter_unknown": "There is no parameter «{key}» in the project",
     "core.version_decision_decider": "Owner: {who} · {date}",
+    # La revisión de un dato en su ficha (spec 009, T17; RF-009-20, D-9; plan A11):
+    # «en curso (r2) · vigente: r1», «cerrada (r2) · congelada: r1 (alterada)».
+    "core.version_revision_in_progress": "in progress ({revision})",
+    "core.version_revision_current": "current: {revision}",
+    "core.version_revision_frozen": "frozen: {revision}",
+    "core.version_revision_closed": "closed ({revision})",
+    "core.version_revision_altered": "{revision} (altered)",
 })
 """Código → ``msgid`` (en inglés; su español, en ``core/i18n/messages.toml``)."""
 

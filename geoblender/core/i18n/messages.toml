@@ -4770,3 +4770,20 @@ es = "No hay ningún parámetro «{key}» en el proyecto"
 
 ["Owner: {who} · {date}"]
 es = "Propiedad: {who} · {date}"
+
+# La revisión de un dato en su ficha (spec 009, T17; RF-009-20, D-9; plan 009 A11).
+
+["in progress ({revision})"]
+es = "en curso ({revision})"
+
+["current: {revision}"]
+es = "vigente: {revision}"
+
+["frozen: {revision}"]
+es = "congelada: {revision}"
+
+["closed ({revision})"]
+es = "cerrada ({revision})"
+
+["{revision} (altered)"]
+es = "{revision} (alterada)"
