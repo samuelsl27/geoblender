@@ -366,6 +366,22 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
         "«{op_type}» was registered in {version} while {revision} was being frozen: nothing "
         "has been left half-done; freeze it again"
     ),
+    # Comprobar las instantáneas: una revisión alterada y lo que no coincide (RF-009-09; plan
+    # A8, D-5, D-31).
+    "core.version_snapshot_altered": (
+        "Revision {revision} is altered: {count} files do not match what was frozen ({what}). "
+        "It will not be used or reproduced"
+    ),
+    "core.version_snapshot_altered_one": (
+        "Revision {revision} is altered: 1 file does not match what was frozen ({what}). It "
+        "will not be used or reproduced"
+    ),
+    "core.version_snapshot_restored": "Revision {revision} matches what was frozen again",
+    "core.version_mismatch_missing": "{path}: missing",
+    "core.version_mismatch_size": "{path}: different size",
+    "core.version_mismatch_sha256": "{path}: different fingerprint",
+    "core.version_mismatch_imported_missing": "imported «{path}»: missing",
+    "core.version_mismatch_imported_damaged": "imported «{path}»: damaged",
 })
 """Código → ``msgid`` (en inglés; su español, en ``core/i18n/messages.toml``)."""
 

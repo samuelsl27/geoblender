@@ -899,9 +899,14 @@ class ConfirmTest(FreezeStepsCase):
         figures = self.read(lambda conn: versions_read.version_figures(conn, "V01"))
         self.assertEqual([figure.key for figure in figures], [vdemo.PIT_VOLUME_FIGURE])
 
-        phases = list(dict.fromkeys(step.phase for step in progress))
+        phases = [step.phase for step in progress]
         every = [*copy_mod.PHASES, freeze.CONFIRM_PHASE]
-        self.assertEqual(phases, [phase for phase in every if phase in phases])
+        # Con el presupuesto por defecto, qué fases dan un paso depende del tiempo; y la
+        # comprobación es la de cada fichero, tras su copia, y la de las tablas, tras «tablas»
+        # (009/T14: con la máquina cargada salió «tablas» antes que la primera comprobación).
+        ranks = [every.index(phase) for phase in phases if phase != "comprobación"]
+        self.assertEqual(ranks, sorted(ranks))
+        self.assertLessEqual(set(phases), set(every))
         self.assertEqual((phases[0], phases[-1]), (every[0], every[-1]))
         done = [step.done for step in progress]
         self.assertEqual(done, sorted(done))

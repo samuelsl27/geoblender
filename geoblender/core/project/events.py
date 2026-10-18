@@ -109,6 +109,10 @@ class EventKind(Enum):
     # siguiente, abierta con su motivo.
     REVISION_FROZEN = "revision_frozen"
     REVISION_OPENED = "revision_opened"
+    # Una revisión congelada cuya instantánea no coincide con lo anotado, «alterada» (con lo que
+    # no coincide), y una alterada que vuelve a coincidir (RF-009-09; D-31).
+    REVISION_ALTERED = "revision_altered"
+    REVISION_RESTORED = "revision_restored"
 
 
 @dataclass(frozen=True)

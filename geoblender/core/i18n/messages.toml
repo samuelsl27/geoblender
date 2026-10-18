@@ -4637,3 +4637,29 @@ es = "Para congelar {revision}, acepte antes lo que quedará anotado tal como es
 
 ["«{op_type}» was registered in {version} while {revision} was being frozen: nothing has been left half-done; freeze it again"]
 es = "«{op_type}» se registró en {version} mientras se congelaba {revision}: no ha quedado nada a medias; vuelva a congelarla"
+
+# Comprobar las instantáneas: una revisión alterada y lo que no coincide (spec 009, T14;
+# RF-009-09; plan 009 A8, D-5, D-31).
+["Revision {revision} is altered: {count} files do not match what was frozen ({what}). It will not be used or reproduced"]
+es = "La revisión {revision} está alterada: {count} ficheros no coinciden con lo congelado ({what}). No se usará ni se reproducirá"
+
+["Revision {revision} is altered: 1 file does not match what was frozen ({what}). It will not be used or reproduced"]
+es = "La revisión {revision} está alterada: 1 fichero no coincide con lo congelado ({what}). No se usará ni se reproducirá"
+
+["Revision {revision} matches what was frozen again"]
+es = "La revisión {revision} vuelve a coincidir con lo congelado"
+
+["{path}: missing"]
+es = "{path}: falta"
+
+["{path}: different size"]
+es = "{path}: otro tamaño"
+
+["{path}: different fingerprint"]
+es = "{path}: otra huella"
+
+["imported «{path}»: missing"]
+es = "lo importado «{path}»: falta"
+
+["imported «{path}»: damaged"]
+es = "lo importado «{path}»: dañado"
