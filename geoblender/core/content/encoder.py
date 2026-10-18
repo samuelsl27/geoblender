@@ -56,7 +56,8 @@ hash siempre va en sus 32 bytes (no en hexadecimal). Por tipo:
   interpretados y convertidos al tipo de su columna): en orden si ``ordered`` es verdadero y,
   si el importador declara que el orden no importa, ordenados. Un lote grande se codifica
   por columnas (spec 005, T52), con los mismos bytes.
-- **Malla** (:meth:`ContentHasher.mesh`): sección ``MESH`` con ``{"arrays", "meta"}``
+- **Malla** (:meth:`ContentHasher.mesh`; por pasos, :class:`MeshEncoder`, spec 009, T11):
+  sección ``MESH`` con ``{"arrays", "meta"}``
   —``[nombre, clase, forma]`` de cada array, ordenados por nombre, y de ``meta`` solo las
   claves que son contenido (:data:`MESH_META_KEYS`; la que falta, ``null``)— y sección
   ``VALS`` con los valores de cada array en ese orden y en orden C: flotantes en float64
@@ -778,39 +779,103 @@ class PointEncoder:
         return columns
 
 
+class MeshEncoder:
+    """El hash de datos de una malla (ver :meth:`ContentHasher.mesh`), de una vez
+    (:meth:`finish`) o por pasos (:meth:`finish_steps`; spec 009, T11, D-30: una malla de
+    millones de vértices se comprueba en el hilo de Blender sin pasar de 0,2 s por llamada).
+
+    Al crearlo se comprueban el diccionario de arrays, sus nombres y el ``meta``; al cerrar,
+    cada array por nombre (su clase y, si hace falta, sus celdas, por trozos de
+    :data:`GRID_CHUNK_CELLS`) antes del siguiente y antes de hashear nada: los mismos errores,
+    con el mismo texto y en el mismo orden, de una vez o por pasos. Los arrays no se copian ni
+    se modifican; el diccionario sí se copia (lo que se añada después no cuenta)."""
+
+    def __init__(
+        self,
+        arrays: Mapping[str, object],
+        meta: Mapping[str, Any],
+        *,
+        on_finish: Callable[[str], None] | None = None,
+    ) -> None:
+        if not isinstance(arrays, Mapping):
+            raise TypeError(
+                f"los arrays de una malla son un diccionario {{nombre: array}}, no "
+                f"{type(arrays).__name__}"
+            )
+        if not arrays:
+            raise ValueError("una malla necesita al menos un array")
+        for name in arrays:
+            if not isinstance(name, str) or not name:
+                raise ValueError(
+                    f"el nombre de un array de la malla ({name!r}) tiene que ser un texto"
+                )
+        self.meta: dict[str, Any] = _mesh_meta(meta)
+        self._arrays: dict[str, object] = dict(arrays)
+        self._on_finish = on_finish
+        self._finished = False
+
+    def finish(self) -> str:
+        """El hash de datos de la malla, de una vez."""
+        return _drain(self.finish_steps(GRID_CHUNK_CELLS))
+
+    def finish_steps(self, step: int = GRID_CHUNK_CELLS) -> Generator[float, None, str]:
+        """El hash de datos de la malla por pasos: cierra la malla y devuelve un generador que
+        da el avance (0–1, sin llegar a 1) y, al acabar, entrega el hash (``on_finish``) y lo
+        devuelve (``StopIteration.value``). Cada paso convierte y hashea ``step`` celdas como
+        mucho (los arrays pequeños, juntos; uno grande, en trozos de filas de ``step`` celdas
+        como mucho, y nunca más de :data:`GRID_CHUNK_CELLS`, 8 MiB en float64, salvo una fila
+        más larga); comprobar las celdas de un array de enteros sin signo de 8 bytes avanza 0
+        (no hay nada hasheado aún). Cada paso es un punto de cancelación: dejarlo a medias no
+        entrega nada. El mismo hash que :meth:`finish`."""
+        size = _step(step)
+        if self._finished:
+            raise RuntimeError("la malla ya está terminada")
+        self._finished = True
+        arrays, self._arrays = self._arrays, {}
+        return self._steps(arrays, size)
+
+    def _steps(self, arrays: dict[str, object], step: int) -> Generator[float, None, str]:
+        listed: list[list[object]] = []
+        blocks: list[tuple[np.ndarray, _Cells]] = []
+        since = 0
+        for name in sorted(arrays):
+            array = np.asarray(arrays[name])
+            value_class = _array_class(array.dtype, name)
+            check, convert = _converter(value_class, array.dtype)
+            rows = _as_rows(array)
+            if check is not None:  # todo el array, antes del siguiente y de hashear nada
+                for top, count in _chunks(rows):
+                    check(rows[top:top + count])
+                    since += count * rows.shape[1]
+                    if since >= step:
+                        since = 0
+                        yield 0.0
+            listed.append([name, value_class, list(array.shape)])
+            blocks.append((rows, convert))
+        header = {"arrays": listed, "meta": self.meta}
+        stream = hashlib.sha256(_section(LABEL_MESH, canonical_json(header)))
+        total = sum(rows.size for rows, _ in blocks)
+        stream.update(LABEL_VALUES + _SIZE.pack(total * _CELL_BYTES))
+        piece = min(step, GRID_CHUNK_CELLS)
+        done = since = 0
+        for rows, convert in blocks:
+            for top, count in _chunks(rows, piece):
+                cells = count * rows.shape[1]
+                if since and since + cells > step:  # cada paso, ≤ step celdas (o un trozo)
+                    since = 0
+                    yield done / total
+                stream.update(convert(rows[top:top + count]))
+                done += cells
+                since += cells
+        data = stream.hexdigest()
+        if self._on_finish is not None:
+            self._on_finish(data)
+        return data
+
+
 def mesh_sha256(arrays: Mapping[str, object], meta: Mapping[str, Any]) -> str:
     """El hash de datos de una malla (ver :meth:`ContentHasher.mesh`)."""
-    if not isinstance(arrays, Mapping):
-        raise TypeError(
-            f"los arrays de una malla son un diccionario {{nombre: array}}, no "
-            f"{type(arrays).__name__}"
-        )
-    if not arrays:
-        raise ValueError("una malla necesita al menos un array")
-    for name in arrays:
-        if not isinstance(name, str) or not name:
-            raise ValueError(f"el nombre de un array de la malla ({name!r}) tiene que ser un texto")
-    content_meta = _mesh_meta(meta)
-    listed: list[list[object]] = []
-    blocks: list[tuple[np.ndarray, _Cells]] = []
-    for name in sorted(arrays):
-        array = np.asarray(arrays[name])
-        value_class = _array_class(array.dtype, name)
-        check, convert = _converter(value_class, array.dtype)
-        rows = _as_rows(array)
-        if check is not None:  # todos los arrays, antes de hashear nada
-            for top, size in _chunks(rows):
-                check(rows[top:top + size])
-        listed.append([name, value_class, list(array.shape)])
-        blocks.append((rows, convert))
-    header = {"arrays": listed, "meta": content_meta}
-    stream = hashlib.sha256(_section(LABEL_MESH, canonical_json(header)))
-    total = sum(rows.size for rows, _ in blocks) * _CELL_BYTES
-    stream.update(LABEL_VALUES + _SIZE.pack(total))
-    for rows, convert in blocks:
-        for top, size in _chunks(rows):
-            stream.update(convert(rows[top:top + size]))
-    return stream.hexdigest()
+    return MeshEncoder(arrays, meta).finish()
 
 
 class ContentHasher:
@@ -849,7 +914,13 @@ class ContentHasher:
         self._decl = _declarations(declarations)
         self._data: str | None = None
         self._open: (
-            GridEncoder | DocumentEncoder | FeatureEncoder | RowEncoder | PointEncoder | None
+            GridEncoder
+            | DocumentEncoder
+            | FeatureEncoder
+            | RowEncoder
+            | MeshEncoder
+            | PointEncoder
+            | None
         ) = None
 
     # --- Rejillas ------------------------------------------------------------------------
@@ -949,11 +1020,20 @@ class ContentHasher:
 
     # --- Mallas ---------------------------------------------------------------------------
 
+    def begin_mesh(self, arrays: Mapping[str, object], meta: Mapping[str, Any]) -> MeshEncoder:
+        """Empieza una malla para hashearla por pasos (spec 009, T11): su ``finish()`` o su
+        ``finish_steps()`` entrega el hash de datos, el mismo que :meth:`mesh`."""
+        self._check_empty()
+        feed = MeshEncoder(arrays, meta, on_finish=self._accept)
+        self._open = feed
+        return feed
+
     def mesh(self, arrays: Mapping[str, object], meta: Mapping[str, Any]) -> ContentHasher:
         """Una malla: sus arrays por nombre (``vertices``, ``faces``…; flotantes, enteros o
-        booleanos) y su ``meta``, de la que solo cuentan :data:`MESH_META_KEYS`."""
+        booleanos) y su ``meta``, de la que solo cuentan :data:`MESH_META_KEYS`. Por pasos,
+        :meth:`begin_mesh`."""
         self._check_empty()
-        self._accept(mesh_sha256(arrays, meta))
+        self._accept(MeshEncoder(arrays, meta).finish())
         return self
 
     # --- Nubes de puntos ------------------------------------------------------------------
@@ -1375,12 +1455,13 @@ def _as_rows(array: np.ndarray) -> np.ndarray:
     return array.reshape(array.shape[0], -1)
 
 
-def _chunks(rows: np.ndarray) -> Iterable[tuple[int, int]]:
-    """``(primera fila, filas)`` de cada trozo de :data:`GRID_CHUNK_CELLS` celdas como mucho."""
+def _chunks(rows: np.ndarray, cells: int = GRID_CHUNK_CELLS) -> Iterable[tuple[int, int]]:
+    """``(primera fila, filas)`` de cada trozo de ``cells`` celdas como mucho (como poco, una
+    fila)."""
     count = rows.shape[0]
     if not rows.size:
         return
-    step = max(1, GRID_CHUNK_CELLS // max(1, rows.shape[1]))
+    step = max(1, cells // max(1, rows.shape[1]))
     for top in range(0, count, step):
         yield top, min(step, count - top)
 
