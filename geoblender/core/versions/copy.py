@@ -26,9 +26,10 @@ a la comprobación de apertura, D-40: nadie la aparta mientras dura), en este or
    mientras tanto (su ``last_change`` o su SQL), «cambió mientras se congelaba». Después el
    GeoPackage se copia como un fichero (1) y el hash de contenido de cada tabla **en la copia**,
    sin selector, tiene que ser el registrado.
-3. **El manifiesto** (§5.2.5; :func:`write_manifest`): JSON canónico, compacto, con ``fsync``,
-   sin rutas absolutas; su huella. Una revisión sin nada que copiar tiene solo su manifiesto
-   (D-41). Ningún Parquet (ADR-0026).
+3. **El manifiesto** (§5.2.5; :func:`write_manifest`): JSON canónico sin sangría, con
+   ``fsync``, sin rutas absolutas y en el formato compacto (sin lo que vale lo de por defecto y
+   cada fichero de otra instantánea una vez: ``model.compact_manifest``, T33); su huella. Una
+   revisión sin nada que copiar tiene solo su manifiesto (D-41). Ningún Parquet (ADR-0026).
 
 El último ``Progress`` lleva el :class:`SnapshotCopy` (los ficheros con su huella, lo congelado
 con la huella y el tamaño del fichero de su copia y el manifiesto con la suya): desde entonces
@@ -76,7 +77,14 @@ from ..provenance.contract import OPERATIONS
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..version import geoblender_version
 from .freeze import FREEZING_MARK, GPKG_BASE_BYTES, SNAPSHOTS_DIR, CopyItem, FreezePlan
-from .model import SNAPSHOT_MANIFEST, ItemKind, ItemPart, RevisionItem, VersionError
+from .model import (
+    SNAPSHOT_MANIFEST,
+    ItemKind,
+    ItemPart,
+    RevisionItem,
+    VersionError,
+    compact_manifest,
+)
 
 if TYPE_CHECKING:
     from ..project.model import ProjectRecord
@@ -741,9 +749,12 @@ def acceptance(plan: FreezePlan, *, reason: str) -> dict[str, Any] | None:
 
 
 def write_manifest(temporary: Path, body: Mapping[str, Any]) -> str:
-    """Escribe ``body`` como ``manifest.json`` de la carpeta ``temporary`` (JSON canónico,
-    compacto, UTF-8; con ``fsync``) y devuelve su huella (``gb_revision.snapshot_sha256``)."""
-    data = canonical_json(body)
+    """Escribe ``body`` (el manifiesto entero de §5.2.5) como ``manifest.json`` de la carpeta
+    ``temporary``, en el formato compacto (``model.compact_manifest``: sin lo que vale lo de
+    por defecto y cada fichero de otra instantánea una vez; T33, RNF-009-06), en JSON canónico
+    sin sangría y UTF-8, con ``fsync``; devuelve su huella (``gb_revision.snapshot_sha256``).
+    Quien lo lee, entero (``model.expand_manifest``)."""
+    data = canonical_json(compact_manifest(body))
     with (Path(temporary) / MANIFEST_NAME).open("xb") as stream:
         stream.write(data)
         stream.flush()

@@ -1226,19 +1226,18 @@ def _item_row(item: RevisionItem) -> tuple[Any, ...]:
 def _record(conn: sqlite3.Connection, project: FreezeProject, plan: FreezePlan,
             snapshot: SnapshotCopy, version: Version, following: str, *, reason: str,
             now: str) -> None:
-    """Los eventos ``revision_frozen`` (con lo copiado y lo referenciado) y
+    """Los eventos ``revision_frozen`` (con lo copiado; lo referenciado, cuántos en su texto:
+    cada uno, con su ruta y su capa, ya está en ``gb_revision_item``, T33) y
     ``revision_opened`` (con su motivo), sin rutas absolutas."""
     from .copy import _size_text
 
     user = project.session.user_host
-    referenced = [{"uid": item.item_uid, "path": item.snapshot_path,
-                   "layer": item.snapshot_layer}
-                  for item in snapshot.items
-                  if item.item_kind is ItemKind.DATASET and not item.copied
-                  and item.snapshot_path is not None and item.part is not ItemPart.INHERITED]
+    referenced = sum(1 for item in snapshot.items
+                     if item.item_kind is ItemKind.DATASET and not item.copied
+                     and item.snapshot_path is not None and item.part is not ItemPart.INHERITED)
     accepted = 0 if snapshot.accepted is None else len(snapshot.accepted.get("items", ()))
     message = (f"Revisión {plan.label} congelada por {user}: {len(snapshot.files)} fichero(s) "
-               f"copiado(s) ({_size_text(snapshot.copied_bytes)}), {len(referenced)} "
+               f"copiado(s) ({_size_text(snapshot.copied_bytes)}), {referenced} "
                f"contenido(s) ya congelado(s), referenciado(s), y {len(snapshot.items)} "
                "elemento(s) anotado(s)")
     if accepted:
@@ -1253,7 +1252,7 @@ def _record(conn: sqlite3.Connection, project: FreezeProject, plan: FreezePlan,
                      "items": len(snapshot.items),
                      "copied": [{"path": item.path, "size": item.size}
                                 for item in snapshot.files],
-                     "referenced": referenced, "accepted": accepted,
+                     "accepted": accepted,
                  })
     label = f"{version.code}.r{plan.revision.number + 1}"
     record_event(conn, EventKind.REVISION_OPENED,

@@ -18,6 +18,8 @@ fichero. Lo que no coincide deja **alterada** esa revisión y la que comparte el
 con un aviso grave, la marca y su evento; si vuelve a coincidir, se quita (D-31). Las fechas no
 se miran. En solo lectura, solo el aviso. Sacar una copia local, publicarla y migrar el
 esquema no cambian un byte de las instantáneas, y la 002 borra sus copias sin error (D-11).
+El manifiesto compacto de la T33 (RNF-009-06) se comprueba igual que el entero que escribía la
+T13 (``tests.support.versions_manifests``).
 
 Datos solo sintéticos.
 """
@@ -43,6 +45,7 @@ from tests.support import provenance_data as data
 from tests.support import schema2_project
 from tests.support import versions_demo as vdemo
 from tests.support import versions_fixtures as fixtures
+from tests.support import versions_manifests
 from tests.support.core_fixtures import FakeClock, project_tmp
 from tests.support.package import import_geoblender
 from tests.support.timing import MAX_ATTEMPTS
@@ -655,3 +658,57 @@ class KeptTest(SnapshotCheckCase):
         self.assertEqual((_prints(self.root), _prints(migrated.backup)), (before, before))
         copytree.remove_tree(migrated.backup)
         self.assertFalse(migrated.backup.exists())
+
+
+class FormatTest(SnapshotCheckCase):
+    def survey(self) -> tuple[Any, Any]:
+        """Lo que encuentran, sin escribir nada, la comprobación rápida y la entera de las
+        revisiones congeladas."""
+        return (_drain(versions_check.check_steps(self.project, full=False)),
+                _drain(versions_check.check_steps(self.project, full=True)))
+
+    def test_compact_and_full_manifests_check_the_same(self) -> None:
+        """RF-009-09, RNF-009-06 (plan A8, §5.2.5, D-39; T33): las revisiones congeladas con
+        el manifiesto compacto (el de V01.r2, todo referenciado a V01.r1, con ``referenced``)
+        se comprueban igual que con el manifiesto entero que escribía la T13 (reescrito, con su
+        huella en la base): sin cambios, ninguna alterada y lo importado que referencian V01.r1
+        y V01.r2 (el límite); sin la malla de V01.r1 y con el original del límite de otro
+        tamaño, lo mismo que no coincide en cada una, en la comprobación rápida y en la
+        entera."""
+        compact = json.loads((self.folder_of("V01.r2") / "manifest.json").read_bytes())
+        self.assertIn("referenced", compact)
+        self.assertNotIn("referenced", versions_manifests.vmodel.expand_manifest(compact))
+        mesh = self.folder_of("V01.r1") / MESH
+        aside = self.folder / "malla_apartada.npz"
+        original = Path(self.root, *self.original.split("/"))
+        kept = original.read_bytes()
+
+        def altered() -> tuple[Any, Any]:
+            os.replace(mesh, aside)
+            original.write_bytes(kept + b"otra version")
+            try:
+                return self.survey()
+            finally:
+                os.replace(aside, mesh)
+                original.write_bytes(kept)
+
+        found = {"compacto": (self.survey(), altered())}
+        written = versions_manifests.rewrite_full(self.project)
+        self.assertEqual(set(written), set(self.revisions.values()))
+        full = json.loads((self.folder_of("V01.r2") / "manifest.json").read_bytes())
+        self.assertEqual(full, versions_manifests.vmodel.expand_manifest(compact))
+        found["entero"] = (self.survey(), altered())
+
+        self.assertEqual(found["entero"], found["compacto"])
+        (quick, whole), (quick_altered, whole_altered) = found["compacto"]
+        for findings in (quick, whole):
+            self.assertEqual([item.label for item in findings], list(LABELS))
+            self.assertFalse(any(item.altered or item.changed for item in findings))
+            self.assertEqual(self.by_label(findings)["V01.r2"].imported,
+                             ((self.record(self.boundary).uid, self.boundary),))
+        for findings in (quick_altered, whole_altered):
+            marked = {item.label: set(item.what) for item in findings if item.altered}
+            self.assertEqual(marked, {
+                "V01.r1": {Mismatch(MESH, Problem.MISSING), Mismatch(self.original, Problem.SIZE)},
+                "V01.r2": {Mismatch(f"snapshots/V01.r1/{MESH}", Problem.MISSING),
+                           Mismatch(self.original, Problem.SIZE)}})

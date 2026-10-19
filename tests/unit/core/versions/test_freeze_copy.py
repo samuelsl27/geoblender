@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La copia de una instantánea por pasos y su confirmación (spec 009, T12 y T13; RF-009-06,
-RF-009-07; plan 009 A6, A7, §5.2.4, §5.2.5, D-11, D-28, D-29, D-30, D-40, D-41; ADR-0026).
+"""La copia de una instantánea por pasos y su confirmación (spec 009, T12, T13 y T33; RF-009-06,
+RF-009-07, RNF-009-06; plan 009 A6, A7, §5.2.4, §5.2.5, D-11, D-28, D-29, D-30, D-39, D-40,
+D-41; ADR-0026).
 
 ``core.versions.copy.copy_steps`` copia lo que dice el plan de una congelación
 (``core.versions.freeze.freeze_plan``) a la carpeta temporal de la instantánea
@@ -26,7 +27,11 @@ RF-009-07; plan 009 A6, A7, §5.2.4, §5.2.5, D-11, D-28, D-29, D-30, D-40, D-41
    una revisión vacía; lo que hay que aceptar y lo que lo impide; una operación terminada
    entretanto que cambió algo congelado cancela (D-40); un cierre a medias va a ``orphans/`` al
    abrir sin borrar nada, y la temporal de esta sesión no se aparta; lo que crece el proyecto
-   (RNF-009-06, preliminar).
+   (RNF-009-06, preliminar);
+7. el formato compacto (T33, RNF-009-06): el evento ``revision_frozen`` sin la lista de lo
+   referenciado (está en ``gb_revision_item``) y el manifiesto sin lo que vale lo de por
+   defecto y con cada fichero de otra instantánea una vez, leído entero como el de la T13
+   (``model.expand_manifest``).
 
 Datos solo sintéticos.
 """
@@ -313,6 +318,7 @@ class CopyTest(FreezeCopyCase):
             body = json.loads(raw)
             self.assertEqual(raw, hashing.canonical_json(body))
             self.assertNotIn(b"\n", raw)
+            body = model.expand_manifest(body)  # compacto (T33): leído entero
             self.assertEqual(
                 {key: body[key] for key in ("format", "schema", "project_uid", "revision",
                                             "revision_uid", "version_uid", "frozen_at",
@@ -564,7 +570,7 @@ class ReferencedTest(FreezeCopyCase):
             "SELECT table_name FROM gpkg_contents")},
             {self.record(name, "V02").locator
              for name in (vdemo.PIT_BENCHES, vdemo.PIT_STOCKPILES_TABLE)})
-        body = json.loads((temporary / copy_mod.MANIFEST_NAME).read_bytes())
+        body = model.expand_manifest(json.loads((temporary / copy_mod.MANIFEST_NAME).read_bytes()))
         entries = {entry["uid"]: entry for entry in body["datasets"]}
         for uid in upstream:
             self.assertEqual((entries[uid]["location"], entries[uid]["path"],
@@ -580,7 +586,7 @@ class ReferencedTest(FreezeCopyCase):
         result, progress, temporary = self.finished(empty)
         self.assertEqual([path.name for path in temporary.iterdir()], [copy_mod.MANIFEST_NAME])
         self.assertEqual((result.files, result.copied_bytes), ((), 0))
-        body = json.loads((temporary / copy_mod.MANIFEST_NAME).read_bytes())
+        body = model.expand_manifest(json.loads((temporary / copy_mod.MANIFEST_NAME).read_bytes()))
         self.assertEqual(body["files"], [])
         self.assertEqual({entry["location"] for entry in body["datasets"]
                           if entry["part"] != "immutable"}, {"other"})
@@ -978,6 +984,89 @@ class AcceptTest(FreezeStepsCase):
         self.project.set_read_only(project_model.ReadOnlyCode.REQUESTED, "a petición (prueba)")
         self.assertRefused("core.version_freeze_read_only", lambda: freeze.freeze_steps(
             self.project, "V01", reason="Otra"))
+
+
+def _scalars(value: Any) -> Iterator[Any]:
+    """Todos los valores de un JSON que no son listas ni objetos."""
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _scalars(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _scalars(item)
+    else:
+        yield value
+
+
+class CompactTest(FreezeStepsCase):
+    def test_unchanged_revision_event_and_manifest(self) -> None:
+        """RNF-009-06, RF-009-07, D-28 (plan §5.2.5, §5.2.6, D-39; T33): congelada V01.r1 (el
+        hueco y los acopios, con la cadena de la 008 aguas arriba), V01.r2 sin cambios lo
+        referencia todo. Su evento ``revision_frozen`` no repite la lista de lo referenciado
+        (está en ``gb_revision_item``, con su ruta y su capa): cuántos, en su texto. Su
+        manifiesto, compacto: ningún nulo ni nada de lo que vale lo de por defecto (el estado
+        «al día», lo producido, el selector, el lector y el normalizador de una capa del
+        GeoPackage, ``location`` «other», lo aceptado), la ruta de cada fichero de V01.r1 una
+        sola vez (``referenced``) y cada dato con su índice; entero (``expand_manifest``),
+        cada dato dice lo que anota ``gb_revision_item`` (la ruta y la capa en V01.r1, o lo
+        inmutable en el proyecto), y vuelve a dar el mismo compacto."""
+        self.demo.pit(self.project, "V01")
+        self.demo.pit_stockpiles(self.project, "V01")
+        first, _progress = self.freeze_steps("V01", "Entrega")
+        again, _progress = self.freeze_steps("V01", "Sin cambios")
+        self.assertEqual(again.copied_bytes, 0)
+        rows = {row[2]: row for row in self.items(again.frozen.uid) if row[1] == "dataset"}
+        referenced = {uid: row for uid, row in rows.items() if row[7] is not None}
+        self.assertEqual(set(referenced), {item.item_uid for item in again.referenced})
+        self.assertTrue(referenced and set(referenced) < set(rows))
+
+        events = self.events(EVENT.REVISION_FROZEN)
+        self.assertEqual([event.entity_uid for event in events],
+                         [first.frozen.uid, again.frozen.uid])
+        for event in events:
+            self.assertEqual(set(event.data), {
+                "version", "revision", "snapshot_dir", "snapshot_sha256", "snapshot_bytes",
+                "geoblender_version", "items", "copied", "accepted"})
+        self.assertEqual((events[1].data["items"], events[1].data["copied"]),
+                         (len(self.items(again.frozen.uid)), []))
+        self.assertIn(f", {len(referenced)} contenido(s) ya congelado(s), referenciado(s),",
+                      events[1].message)
+
+        raw = (self.root / "snapshots" / "V01.r2" / copy_mod.MANIFEST_NAME).read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), again.frozen.snapshot_sha256)
+        body = json.loads(raw)
+        self.assertEqual(raw, hashing.canonical_json(body))
+        self.assertNotIn(None, list(_scalars(body)))
+        for text in (b'"state":"current"', b'"part":"produced"', b'"selector"',
+                     b'"reader":"core.gpkg_layer@1"', b'"normalizer":"gbch/1"', b'"store":"gpkg"',
+                     b'"location":"other"', b'"accepted"', b'"files"', b'"originals":[]'):
+            self.assertNotIn(text, raw)
+        paths = sorted({str(row[7]) for row in referenced.values()})
+        self.assertEqual(sorted(body["referenced"]), paths)
+        for path in paths:
+            self.assertEqual(raw.count(f'"{path}"'.encode()), 1, path)
+
+        expanded = model.expand_manifest(body)
+        self.assertEqual(model.compact_manifest(expanded), body)
+        self.assertLess(len(raw), len(hashing.canonical_json(expanded)))
+        self.assertEqual([entry["uid"] for entry in expanded["datasets"]], list(rows))
+        for entry in expanded["datasets"]:
+            row = rows[entry["uid"]]
+            record = self.record(entry["uid"])
+            with self.subTest(dataset=record.name):
+                self.assertEqual(
+                    {key: entry[key] for key in ("name", "kind", "store", "reader", "normalizer",
+                                                 "selector", "content_sha256", "part", "state")},
+                    {"name": record.name, "kind": record.kind, "store": str(record.store),
+                     "reader": record.reader, "normalizer": record.normalizer,
+                     "selector": record.selector, "content_sha256": row[5], "part": row[3],
+                     "state": row[11]})
+                if row[7] is None:
+                    self.assertEqual((entry["part"], entry["location"], entry["layer"]),
+                                     ("immutable", "project", record.locator))
+                else:
+                    self.assertEqual((entry["location"], entry["path"], entry["layer"]),
+                                     ("other", row[7], row[8]))
 
 
 class EmptyAndHeaderTest(FreezeStepsCase):

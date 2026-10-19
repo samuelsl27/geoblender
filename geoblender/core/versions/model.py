@@ -15,7 +15,11 @@ ADR-0013).
   versión, lo de aguas arriba, lo inmutable del proyecto o lo heredado de la padre),
   :class:`ItemState` (el estado que tenía al congelarse) y :class:`RevisionItem`, una fila.
 - Dónde van las instantáneas: :data:`SNAPSHOTS_DIR`, :data:`FREEZING_MARK` (la carpeta
-  temporal de una congelación en curso) y :data:`SNAPSHOT_MANIFEST`.
+  temporal de una congelación en curso) y :data:`SNAPSHOT_MANIFEST`; el manifiesto, compacto
+  al escribirlo (:func:`compact_manifest`: sin lo que vale lo de por defecto,
+  :data:`MANIFEST_ENTRY_DEFAULTS` y :data:`MANIFEST_DEFAULTS`, y cada fichero de otra
+  instantánea una vez, :data:`MANIFEST_REFERENCED` y :data:`MANIFEST_REF`; T33, RNF-009-06) y
+  entero al leerlo (:func:`expand_manifest`, igual que lo escribía la T13).
 - :func:`version_code` (1 → «V01») y :func:`revision_label` («V10.r2»);
   :func:`version_locator`, la ubicación de un dato de una versión con su código
   («des_final_v10.tif», D-34).
@@ -37,11 +41,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
+from typing import Any
 
 from ..errors import GeoblenderError
 from ..i18n import LANGUAGES, translate
 
 type JsonScalar = str | int | float | bool | None
+type JsonDefault = JsonScalar | tuple[()] | Mapping[str, object]
+"""Lo de por defecto de una clave del manifiesto de una instantánea (``()``: una lista vacía;
+un ``Mapping`` vacío: un objeto vacío)."""
 
 
 class VersionStatus(StrEnum):
@@ -271,6 +279,166 @@ class RevisionItem:
     file_sha256: str | None
     file_size: int | None
     state: ItemState
+
+
+# --- El manifiesto de una instantánea, compacto (009/T33) ------------------------------------
+
+MANIFEST_REFERENCED = "referenced"
+"""En la raíz del manifiesto compacto, la lista de los ficheros de **otras** instantáneas que
+referencia la revisión (rutas relativas al proyecto, «snapshots/V01.r1/V01.r1.gpkg»), cada uno
+una sola vez y en el orden en que aparecen sus datos (T33; RNF-009-06)."""
+MANIFEST_REF = "ref"
+"""En un dato del manifiesto compacto, el índice de su fichero en :data:`MANIFEST_REFERENCED`:
+el dato está en otra instantánea (``location`` «other») y su ``path`` es ese."""
+
+MANIFEST_ENTRY_DEFAULTS: Mapping[str, Mapping[str, JsonDefault]] = MappingProxyType({
+    "datasets": MappingProxyType({
+        "name": None, "kind": None, "store": "gpkg", "reader": "core.gpkg_layer@1",
+        "normalizer": "gbch/1", "selector": None, "content_sha256": None, "part": "produced",
+        "state": "current", "location": None, "path": None, "layer": None,
+    }),
+    "inputs": MappingProxyType({
+        "name": None, "content_sha256": None, "part": "immutable", "state": "current",
+        "originals": (),
+    }),
+    "parameters": MappingProxyType({
+        "key": None, "scope": "project", "scope_uid": "", "rev": None, "value_sha256": None,
+        "part": "produced", "state": "current",
+    }),
+    "operations": MappingProxyType({
+        "op_type": None, "op_version": None, "module": None, "reproducible": None,
+        "part": "produced", "state": "current",
+    }),
+    "figures": MappingProxyType({
+        "key": None, "value": None, "unit": None, "kind": "CALCULADO",
+        "scope": MappingProxyType({}), "operation_uid": None, "part": "produced",
+        "state": "current",
+    }),
+})
+"""Lo que vale en el manifiesto de una instantánea cada clave de un elemento que no se escribe
+(plan §5.2.5; T33): lo nulo, el estado «al día», la parte de siempre (lo producido por la
+versión; lo inmutable, en una entrada), un dato de una tabla o capa del GeoPackage leída con
+``core.gpkg_layer@1`` y normalizada con ``gbch/1``, el ámbito del proyecto, ningún original, una
+cifra CALCULADO (la de una operación, 008) y sin ámbito. Son del formato (``schema`` 1), no del
+código: no cambian aunque cambie el lector de un dato; una lista vacía va como ``()`` y un
+objeto vacío como un ``MappingProxyType`` vacío (al leer, ``[]`` y ``{}`` nuevos)."""
+MANIFEST_DEFAULTS: Mapping[str, JsonDefault] = MappingProxyType({
+    "files": (), "datasets": (), "inputs": (), "parameters": (), "operations": (),
+    "figures": (), "accepted": None,
+})
+"""Lo que vale cada sección de la raíz del manifiesto que no se escribe: ninguna, y nada
+aceptado."""
+
+
+def compact_manifest(body: Mapping[str, Any]) -> dict[str, Any]:
+    """El manifiesto entero de una instantánea (``body``, el de §5.2.5 con todas sus claves)
+    como se escribe desde la T33 (RNF-009-06): sin las claves de cada elemento que valen lo de
+    por defecto (:data:`MANIFEST_ENTRY_DEFAULTS`; un nulo donde lo de por defecto no es nulo se
+    escribe), sin las secciones vacías ni lo aceptado nulo (:data:`MANIFEST_DEFAULTS`) y con la
+    ruta de cada fichero de otra instantánea **una sola vez**, en :data:`MANIFEST_REFERENCED`,
+    y su índice en cada dato (:data:`MANIFEST_REF`, en lugar de ``location`` y ``path``). No
+    cambia ``body``; :func:`expand_manifest` lo deshace."""
+    found: dict[str, Any] = {}
+    referenced: list[str] = []
+    places: dict[str, int] = {}
+    for key, value in body.items():
+        if key in MANIFEST_DEFAULTS and _is_default(value, MANIFEST_DEFAULTS[key]):
+            continue
+        defaults = MANIFEST_ENTRY_DEFAULTS.get(key)
+        if defaults is None or not isinstance(value, list):
+            found[key] = _json_copy(value)
+            continue
+        found[key] = [
+            _compact_entry(entry, defaults, (referenced, places) if key == "datasets" else None)
+            if isinstance(entry, dict) else _json_copy(entry)
+            for entry in value
+        ]
+    if referenced:
+        found[MANIFEST_REFERENCED] = referenced
+    return found
+
+
+def expand_manifest(body: Mapping[str, Any]) -> dict[str, Any]:
+    """El manifiesto de una instantánea con todas sus claves, como lo escribía la T13: de uno
+    compacto (:func:`compact_manifest`) pone lo que vale lo de por defecto y la ruta de cada
+    dato de otra instantánea (``location`` «other» y ``path``; un índice que no está en
+    :data:`MANIFEST_REFERENCED`, sin ruta); de uno ya entero devuelve lo mismo. Quien lee un
+    manifiesto (comprobar, y reproducir al comprobar antes) lo lee así. Lo que no es una
+    entrada se deja como está. No cambia ``body``: todo lo que devuelve es nuevo."""
+    found = {key: _json_copy(value) for key, value in body.items()}
+    listed = found.pop(MANIFEST_REFERENCED, None)
+    referenced = listed if isinstance(listed, list) else []
+    for key, default in MANIFEST_DEFAULTS.items():
+        if key not in found:
+            found[key] = _fresh(default)
+    for key, defaults in MANIFEST_ENTRY_DEFAULTS.items():
+        entries = found[key]
+        if isinstance(entries, list):
+            found[key] = [
+                _expand_entry(entry, defaults, referenced if key == "datasets" else None)
+                if isinstance(entry, dict) else entry
+                for entry in entries
+            ]
+    return found
+
+
+def _compact_entry(entry: Mapping[str, Any], defaults: Mapping[str, JsonDefault],
+                   references: tuple[list[str], dict[str, int]] | None) -> dict[str, Any]:
+    found = {key: _json_copy(value) for key, value in entry.items()
+             if key not in defaults or not _is_default(value, defaults[key])}
+    path = found.get("path")
+    if references is not None and found.get("location") == "other" and isinstance(path, str):
+        referenced, places = references
+        index = places.get(path)
+        if index is None:
+            index = places[path] = len(referenced)
+            referenced.append(path)
+        del found["location"], found["path"]
+        found[MANIFEST_REF] = index
+    return found
+
+
+def _expand_entry(entry: dict[str, Any], defaults: Mapping[str, JsonDefault],
+                  referenced: list[Any] | None) -> dict[str, Any]:
+    found = {key: _fresh(default) for key, default in defaults.items() if key not in entry}
+    found.update(entry)
+    if referenced is not None and MANIFEST_REF in found:
+        index = found.pop(MANIFEST_REF)
+        path = (referenced[index] if isinstance(index, int) and not isinstance(index, bool)
+                and 0 <= index < len(referenced) else None)
+        found["location"] = "other"
+        found["path"] = path if isinstance(path, str) else None
+    return found
+
+
+def _is_default(value: object, default: JsonDefault) -> bool:
+    """Si ``value`` (de un JSON) es lo de por defecto: el mismo tipo y valor (``0`` no es
+    ``False``), una lista vacía o un objeto vacío."""
+    if isinstance(default, tuple):
+        return isinstance(value, list) and not value
+    if isinstance(default, Mapping):
+        return isinstance(value, dict) and not value
+    if default is None:
+        return value is None
+    return type(value) is type(default) and value == default
+
+
+def _fresh(default: JsonDefault) -> Any:
+    """Lo de por defecto como se lee: ``[]`` y ``{}`` nuevos cada vez."""
+    if isinstance(default, tuple):
+        return []
+    if isinstance(default, Mapping):
+        return {}
+    return default
+
+
+def _json_copy(value: Any) -> Any:
+    """Una copia de un valor de un JSON con sus listas y sus objetos nuevos."""
+    if isinstance(value, dict):
+        return {key: _json_copy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_copy(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True, slots=True)

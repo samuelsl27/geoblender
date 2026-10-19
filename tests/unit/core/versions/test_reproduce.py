@@ -21,7 +21,8 @@ reproducible». El informe dice qué salidas (hash de contenido, con el lector y
 de su dato) y qué cifras (exactas, salvo la tolerancia que declara su tipo) coinciden y, si no,
 la causa probable (otra versión del algoritmo, de Geoblender o de una biblioteca; si no, «sin
 causa conocida»), y se guarda en JSON en esa carpeta. **El proyecto no cambia**: ni un fichero
-fuera de ``cache/``, ni la base (su contador de cambios), ni un evento.
+fuera de ``cache/``, ni la base (su contador de cambios), ni un evento. Con el manifiesto
+compacto de la T33 (RNF-009-06) se reproduce igual que con el entero que escribía la T13.
 
 Datos solo sintéticos.
 """
@@ -42,6 +43,7 @@ from unittest import mock
 from tests.support import provenance_data as data
 from tests.support import versions_demo as vdemo
 from tests.support import versions_fixtures as fixtures
+from tests.support import versions_manifests
 from tests.support.core_fixtures import FakeClock
 from tests.support.package import import_geoblender
 
@@ -513,3 +515,46 @@ class ReproduceTest(ReproduceCase):
         self.assertEqual(steps[-1].message, "Reproducción cancelada: no ha quedado nada a medias")
         self.assertEqual(report.text("es"), steps[-1].message)
         self.assertEqual((self.state(), self.cache_listing()), (before, listing))
+
+    def test_compact_and_full_manifests_reproduce_the_same(self) -> None:
+        """RF-009-11, RF-009-09, RNF-009-06 (plan A9, §5.2.5, D-39; T33): V03.r1 (diseña con
+        lo congelado en V01.r1) y V02.r1 (referencia lo de aguas arriba copiado en V01.r1),
+        congeladas con el manifiesto compacto, se reproducen igual que con el manifiesto entero
+        que escribía la T13 (reescrito, con su huella en la base): el mismo informe (salidas,
+        cifras, lo tomado de lo congelado, lo no reproducible y su texto); y con el GeoPackage de
+        V01.r1 con otra huella, las dos se rechazan igual antes de reproducir nada."""
+        gpkg = self.root / "snapshots" / "V01.r1" / "V01.r1.gpkg"
+
+        def run() -> tuple[Any, ...]:
+            reports = []
+            for label in ("V03.r1", "V02.r1"):
+                report, _steps = self.run_steps(label)
+                reports.append({key: value for key, value in report.as_json().items()
+                                if key not in ("started_at", "finished_at")})
+            undo = fixtures.alter_file(gpkg)
+            refused = []
+            try:
+                for label in ("V03.r1", "V02.r1"):
+                    with self.assertRaises(model.VersionError) as caught:
+                        list(reproduce.reproduce_steps(self.project, label))
+                    refused.append((caught.exception.code, str(caught.exception)))
+            finally:
+                undo()
+            return tuple(reports), tuple(refused)
+
+        compact = json.loads((self.root / "snapshots" / "V03.r1" / model.SNAPSHOT_MANIFEST)
+                             .read_bytes())
+        self.assertIn("referenced", compact)
+        found = run()
+        versions_manifests.rewrite_full(self.project)
+        self.assertEqual(run(), found)
+        reports, refused = found
+        self.assertEqual([report["revision"] for report in reports], ["V03.r1", "V02.r1"])
+        self.assertTrue(reports[0]["matches"])
+        self.assertEqual(refused, (
+            ("core.version_reproduce_altered",
+             "La revisión V03.r1 está alterada (snapshots/V01.r1/V01.r1.gpkg: otra huella): "
+             "no se reproduce"),
+            ("core.version_reproduce_altered",
+             "La revisión V02.r1 está alterada (snapshots/V01.r1/V01.r1.gpkg: otra huella): "
+             "no se reproduce")))

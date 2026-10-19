@@ -60,7 +60,7 @@ from ..datasets.model import DatasetStatus
 from ..hashing import canonical_json
 from ..project.events import EventKind, record_event
 from ..project.model import Progress
-from .model import SNAPSHOT_MANIFEST, render, revision_label
+from .model import SNAPSHOT_MANIFEST, expand_manifest, render, revision_label
 
 if TYPE_CHECKING:
     from ..sysinfo import SessionInfo
@@ -469,7 +469,8 @@ def _entries(value: object) -> list[dict[str, Any]]:
 def _manifest(root: Path, folder: str | None, row: _Row,
               item: _Revision) -> dict[str, Any] | None:
     """El manifiesto de la revisión si tiene la huella anotada (su contenido, entonces, es el
-    congelado); si falta o no la tiene, lo anota en ``item`` y ``None``."""
+    congelado), entero (``expand_manifest``: igual el compacto de la T33 que el de la T13); si
+    falta o no la tiene, lo anota en ``item`` y ``None``."""
     if folder is None:
         item.add(Mismatch(SNAPSHOT_MANIFEST, Problem.MISSING))
         return None
@@ -489,7 +490,7 @@ def _manifest(root: Path, folder: str | None, row: _Row,
     except ValueError:  # pragma: no cover - con su huella, es el que se escribió
         item.add(Mismatch(SNAPSHOT_MANIFEST, Problem.SHA256))
         return None
-    return body if isinstance(body, dict) else None
+    return expand_manifest(body) if isinstance(body, dict) else None
 
 
 def _file(item: _Revision, listings: _Listings, rel: str | None, shown: str, size: object,
