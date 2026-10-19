@@ -46,7 +46,7 @@ la confirmación (A7, al final de este docstring).
 :func:`freeze_steps` (A5 → A6 → A7) hace el plan al llamarla y se niega, sin escribir nada, si
 algo lo impide o si hay algo que aceptar que el usuario no aceptó (:class:`Acceptance`); después
 copia la instantánea por pasos a su carpeta temporal, ``snapshots/V10.r2.congelando-<8 hex>``
-(:func:`freezing_paths`: el barrido de restos de la apertura no aparta la de esta sesión), y la
+(``core.versions.freezing``: el barrido de restos de la apertura no aparta la de esta sesión), y la
 **confirma en una transacción corta**: comprueba que lo congelado sigue siendo lo vigente (el
 hash de contenido de cada dato y ninguna operación nueva de la versión desde el plan, D-40: si
 no, se cancela y no queda nada), escribe lo congelado (``gb_revision_item``, en sentencias de 500
@@ -68,7 +68,6 @@ from __future__ import annotations
 import math
 import os
 import sqlite3
-import threading
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
@@ -94,6 +93,7 @@ from ..provenance import messages as provenance_messages
 from ..provenance import stale
 from ..provenance.lineage import figures_in
 from ..timeutil import format_utc
+from . import freezing as freezing_registry
 from . import read
 from .model import (
     FREEZING_MARK,
@@ -962,26 +962,6 @@ class FreezeProject(PlanProject, Protocol):
     def refresh_header(self) -> bool: ...
 
 
-_FREEZING_LOCK = threading.Lock()
-_FREEZING: dict[Path, tuple[str, str]] = {}
-"""Las carpetas temporales de las congelaciones en curso de este proceso → la raíz de su
-proyecto (normalizada) y su sesión."""
-
-
-def _owner(project: Any) -> tuple[str, str]:
-    return (os.path.normcase(os.path.normpath(os.fspath(project.root))),
-            str(project.session.session_uid))
-
-
-def freezing_paths(project: Any) -> frozenset[Path]:
-    """Las carpetas temporales de las congelaciones en curso de esta sesión en ``project``
-    (su raíz y su sesión): el barrido de restos no las aparta (``core.datasets.orphans``;
-    plan A6, RF-008-22)."""
-    owner = _owner(project)
-    with _FREEZING_LOCK:
-        return frozenset(path for path, who in _FREEZING.items() if who == owner)
-
-
 def _budget(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError(f"el presupuesto de un paso es un número de segundos, no {value!r}")
@@ -1076,8 +1056,7 @@ def _freeze(project: FreezeProject, plan: FreezePlan, stamp: frozenset[tuple[str
     final = root.joinpath(*plan.snapshot_dir.split("/"))
     copied: SnapshotCopy | None = None
     renamed = False
-    with _FREEZING_LOCK:
-        _FREEZING[temporary] = _owner(project)
+    freezing_registry.register(project, temporary)
     try:
         steps = copy_steps(project, plan, temporary, project.cache_dir(), budget_s=budget,
                            accepted=acceptance(plan, reason=reason))
@@ -1123,8 +1102,7 @@ def _freeze(project: FreezeProject, plan: FreezePlan, stamp: frozenset[tuple[str
             yield Progress(CONFIRM_PHASE, total, total, attempt.message)
         frozen, opened = attempt.value
     finally:
-        with _FREEZING_LOCK:
-            _FREEZING.pop(temporary, None)
+        freezing_registry.unregister(temporary)
         if copied is not None and not renamed:
             discard(temporary, clock=project.clock)
     warnings: list[str] = []

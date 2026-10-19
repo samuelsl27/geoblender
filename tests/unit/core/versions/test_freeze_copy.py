@@ -59,6 +59,7 @@ from tests.support.package import import_geoblender
 
 copy_mod = import_geoblender("core.versions.copy")
 freeze = import_geoblender("core.versions.freeze")
+freezing = import_geoblender("core.versions.freezing")
 model = import_geoblender("core.versions.model")
 readers = import_geoblender("core.content.readers")
 builtin = import_geoblender("core.content.builtin")
@@ -848,7 +849,7 @@ class ConfirmTest(FreezeStepsCase):
 
         self.assertEqual(self.change_counter(), counter + 1)
         self.assertEqual(self.snapshots(), ["V01.r1"])
-        self.assertEqual(freeze.freezing_paths(self.project), frozenset())
+        self.assertEqual(freezing.freezing_paths(self.project), frozenset())
         if self.cache().is_dir():
             self.assertEqual([path.name for path in self.cache().iterdir()
                               if freeze.FREEZING_MARK in path.name], [])
@@ -1132,7 +1133,7 @@ class ConcurrentTest(FreezeStepsCase):
                 self.assertEqual(self.query("SELECT state FROM gb_revision WHERE uid = ?",
                                             (open_uid,)), [("open",)])
                 self.assertEqual(self.query("SELECT count(*) FROM gb_revision_item"), [(0,)])
-                self.assertEqual(freeze.freezing_paths(self.project), frozenset())
+                self.assertEqual(freezing.freezing_paths(self.project), frozenset())
         plan = self.plan()  # los bancos cambiados dejan obsoleto lo de aguas arriba
         outcome, _progress = self.freeze_steps(
             "V01", "Entrega", accepted=freeze.Acceptance.of(plan),
@@ -1212,7 +1213,7 @@ class LeftoversTest(FreezeStepsCase):
             for step in steps:
                 if step.phase == "comprobación":
                     break
-            (temporary,) = freeze.freezing_paths(self.project)
+            (temporary,) = freezing.freezing_paths(self.project)
             self.assertRegex(temporary.name, r"^V01\.r1\.congelando-[0-9a-f]{8}$")
             self.assertTrue(temporary.is_dir())
             self.assertEqual(self.sweep(started_at=later).orphans, ())
@@ -1220,7 +1221,7 @@ class LeftoversTest(FreezeStepsCase):
         finally:
             steps.close()  # Esc
         self.assertFalse(temporary.exists())
-        self.assertEqual(freeze.freezing_paths(self.project), frozenset())
+        self.assertEqual(freezing.freezing_paths(self.project), frozenset())
         self.assertEqual(self.state(), before)
 
         stopped, _progress = self.freeze_steps("V01", "Entrega", cancelled=lambda: True)

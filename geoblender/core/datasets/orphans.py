@@ -25,7 +25,7 @@ con la lista. **Nunca borra nada** (un destino que ya existe no se sustituye: se
   temporal de una congelación que no terminó (``V10.r2.congelando-<8 hex>``) o una ya
   renombrada sin su fila (``V10.r2``), que se aparta entera, como la de un original. La
   temporal de la congelación en curso de esta sesión
-  (``core.versions.freeze.freezing_paths``) no se aparta nunca, y lo que no lleva nombre de
+  (``core.versions.freezing.freezing_paths``) no se aparta nunca, y lo que no lleva nombre de
   instantánea no se mira. Un proyecto sin revisiones (un esquema anterior al 3, en solo
   lectura) no tiene restos en ``snapshots/``.
 
@@ -69,7 +69,9 @@ en el aviso «se reintentará»; nada se anota: se vuelve a encontrar al abrir l
 se mueve nada, no se crea ``orphans/`` ni se escribe en la base (tampoco el evento de lo ajeno).
 
 Python puro (ADR-0004): al importarse no importa ``core.provenance`` ni ``core.project`` (que
-pasan por este paquete), que se cargan al usarse.
+pasan por este paquete), que se cargan al usarse; de ``core.versions``, solo lo ligero (``model``
+y el registro de las congelaciones en curso, ``freezing``): un paso no carga
+``core.versions.freeze`` (RNF-008-12: ≤ 20 ms por tic; T39).
 """
 
 from __future__ import annotations
@@ -94,6 +96,7 @@ from ..content.builtin import LAYER_KINDS
 from ..ids import SHORT_UID_CHARS
 from ..paths import MAX_FILE_PATH_CHARS, MAX_FOLDER_PATH_CHARS
 from ..timeutil import format_utc
+from ..versions.freezing import freezing_paths
 from ..versions.model import FREEZING_MARK, SNAPSHOTS_DIR
 from .external import _budget, _Pacer, _reason
 from .model import FILE_STORES, Store
@@ -501,7 +504,6 @@ def _protection(project: OrphanProject, root: Path, extra: frozenset[str],
     instantáneas) más lo reclamado ahora por esta sesión (también la temporal de su
     congelación en curso) y ``extra``."""
     from ..provenance.operations import claimed_paths
-    from ..versions.freeze import freezing_paths
 
     reading = nullcontext(conn) if conn is not None else project.read()
     with reading as opened:
