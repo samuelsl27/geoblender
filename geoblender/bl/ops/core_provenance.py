@@ -1827,6 +1827,9 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
             layout.label(text=tr("For the project or only for {version}?",
                                  version=choice.code), translate=False)
             row = layout.row(align=True)
+            # Sin separar etiqueta y valor: con ella, Blender lleva el texto de ``prop_enum`` a
+            # una etiqueta a la izquierda y deja el botón vacío (T36, hallazgo de la H3).
+            row.use_property_split = False
             row.prop_enum(self, "scope", "PROJECT", text=tr("The project"), translate=False)
             only = row.row(align=True)
             only.enabled = choice.refusal is None  # «Versión no editable» (RF-009-21)

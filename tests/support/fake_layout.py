@@ -21,7 +21,13 @@ amplía la 003.
 Spec 004 (T40): cada elemento guarda también el ``operator_context`` con que se dibujó; como
 en Blender, es uno por *layout* raíz (``uiLayoutRoot``): ponerlo en una fila vale para lo que
 se dibuje después en todo el *layout* (p. ej. ``EXEC_DEFAULT`` antes de los botones
-``template_popup_confirm`` de un diálogo). Python puro: no importa ``bpy``.
+``template_popup_confirm`` de un diálogo).
+
+Spec 009 (T36): cada elemento guarda también si su *layout* separaba etiqueta y valor
+(``use_property_split``) al dibujarlo. Como en Blender (``ui_litem_init_from_parent``), una
+fila, columna o caja nueva hereda la de su madre al crearla; con ella, Blender lleva el texto
+de ``prop`` y ``prop_enum`` a una columna de etiqueta a la izquierda y deja el botón sin texto.
+Python puro: no importa ``bpy``.
 """
 
 from __future__ import annotations
@@ -50,6 +56,7 @@ class Item:
     active: bool = True  # ídem con ``active`` (gris, pero se puede pulsar)
     units_x: float = 0.0  # ``ui_units_x`` de su *layout* (0: el ancho natural; spec 003)
     operator_context: str = "INVOKE_DEFAULT"  # el del *layout* raíz al dibujarlo (spec 004)
+    property_split: bool = False  # su *layout* separaba etiqueta y valor (spec 009, T36)
 
 
 class FakeLayout:
@@ -95,6 +102,7 @@ class FakeLayout:
         item.active = self._effective("active")
         item.units_x = float(self.ui_units_x)
         item.operator_context = self.operator_context
+        item.property_split = bool(self.use_property_split)
         self.items.append(item)
         return item
 
@@ -121,7 +129,11 @@ class FakeLayout:
         self._add(Item("separator", options=options))
 
     def _child(self, **_options: Any) -> FakeLayout:
-        return FakeLayout(self.items, parent=self)
+        child = FakeLayout(self.items, parent=self)
+        # Como en Blender, hereda al crearse la separación de etiqueta y valor de su madre.
+        child.use_property_split = self.use_property_split
+        child.use_property_decorate = self.use_property_decorate
+        return child
 
     column = row = box = split = grid_flow = column_flow = menu_pie = _child
 

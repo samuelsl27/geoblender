@@ -102,6 +102,11 @@ y V02.r1 congelada:
 - **A petición**: «Comprobar cambios en las entradas» mira también las huellas de las
   instantáneas y encuentra un fichero con otra huella y el mismo tamaño.
 
+T36 (HU-009-4; RF-009-29; hallazgo de la H3): en Cambiar parámetro…, los botones del ámbito
+llevan su texto («El proyecto», «Solo V02»): su fila no separa etiqueta y valor
+(``use_property_split``), que llevaría el texto a una etiqueta a la izquierda y dejaría el botón
+vacío; el resto del diálogo, sí.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
@@ -1223,6 +1228,30 @@ class VersionsOpsTest(unittest.TestCase):
         self.assertIn("For the project or only for V02?", self.labels(layout))
         self.assertEqual([item.text for item in layout.of_kind("prop_enum")],
                          ["The project", "Only V02"])
+
+    def test_parameter_scope_buttons_carry_their_text(self) -> None:
+        """RF-009-29 (T36, hallazgo de la H3): con V02 activa, los dos botones del ámbito de
+        Cambiar parámetro… llevan su texto, «El proyecto» y «Solo V02», sin etiqueta aparte a
+        la izquierda: su fila no separa etiqueta y valor (``use_property_split``; con ella,
+        Blender lleva el texto de ``prop_enum`` a esa columna y deja el botón vacío). El resto
+        del diálogo, sí."""
+        project = self.project()
+        self.enterContext(VersionsDemo(module_name()).registered())
+        self.create(project, "definitiva", "Definitiva")
+        v02 = self.create(project, "sur", "Fase sur")
+        store = ext("core.params").ParameterStore(project)
+        self.write(project, lambda conn: store.ensure_default(conn, BENCH_HEIGHT,
+                                                              geoblender_version="0.0.0"))
+        self.set_active(v02)
+        _fake, layout, _context = self.parameter_dialog(BENCH_HEIGHT)
+        self.assertEqual([(item.text, item.property_split, item.enabled)
+                          for item in layout.of_kind("prop_enum")],
+                         [("El proyecto", False, True), ("Solo V02", False, True)])
+        fields = layout.of_kind("prop")
+        self.assertEqual([item.text for item in fields],
+                         ["Valor", "Tipo", "Origen", "Clase de origen", "Decidido por",
+                          "Fecha de la decisión", "Motivo"])
+        self.assertTrue(all(item.property_split for item in fields))
 
     def test_new_revision_freezes_in_steps(self) -> None:
         """RF-009-06, RF-009-07, RNF-009-02, RF-009-21 (plan A5 a A7, §5.3.5, §5.5): Nueva

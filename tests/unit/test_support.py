@@ -339,6 +339,28 @@ class FakeLayoutTest(unittest.TestCase):
         self.assertEqual(layout.operator_context, "EXEC_DEFAULT")
         self.assertEqual(FakeLayout().operator_context, "INVOKE_DEFAULT")
 
+    def test_items_keep_the_property_split(self) -> None:
+        """Spec 009, T36 (RF-009-29): cada elemento anota si su *layout* separaba etiqueta y
+        valor (``use_property_split``) al dibujarlo; como en Blender, una fila o columna nueva
+        hereda la de su madre al crearla, y cambiarla en la fila no cambia la madre, lo
+        dibujado antes ni una fila ya creada."""
+        from tests.support.fake_layout import FakeLayout
+
+        layout = FakeLayout()
+        layout.label(text="Antes")
+        layout.use_property_split = True
+        layout.prop(object(), "value", text="Valor")
+        inherited = layout.column()
+        row = layout.row(align=True)
+        row.use_property_split = False
+        row.prop_enum(object(), "scope", "PROJECT", text="El proyecto")
+        row.row(align=True).prop_enum(object(), "scope", "VERSION", text="Solo V02")
+        inherited.prop(object(), "kind", text="Tipo")
+        layout.prop(object(), "reason", text="Motivo")
+        self.assertEqual([(item.text, item.property_split) for item in layout.items],
+                         [("Antes", False), ("Valor", True), ("El proyecto", False),
+                          ("Solo V02", False), ("Tipo", True), ("Motivo", True)])
+
 
 QGIS_TREE: dict[str, str] = {
     "bin/ogrinfo.exe": "",
