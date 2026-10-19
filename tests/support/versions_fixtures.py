@@ -188,6 +188,66 @@ def create_version(project: Any, *, feature: str, title: str, reason: str = VERS
     return version
 
 
+def freeze_rows(conn: sqlite3.Connection, version: Any, *, now: str,
+                items: Sequence[tuple[Any, ...]] | None = None, reason: str = "Siguiente",
+                figures: Sequence[str] | None = None, user: str = USER) -> str:
+    """Congela **por SQL**, en la transacción ``conn`` y con la fecha ``now``, la revisión
+    abierta de ``version`` (``Version``) y abre la siguiente con ``reason``; devuelve el uid de
+    la congelada. Lo de :meth:`VersionsProjectCase.freeze` (que la usa), fuera de una prueba:
+    el proyecto de D-13 con versiones de ``tests.support.versions_perf``. No escribe ningún
+    fichero: solo las filas."""
+    uid, number = conn.execute(
+        "SELECT uid, number FROM gb_revision WHERE version_uid = ? AND state = 'open'",
+        (version.uid,)).fetchone()
+    label = f"{version.code}.r{number}"
+    folder = f"snapshots/{label}"
+    chosen = items
+    if chosen is None:
+        live = tuple(str(status) for status in dataset_model.LIVE_STATUSES)
+        chosen = [(registry.get(conn, row[0]), "produced") for row in conn.execute(
+            f"SELECT uid FROM gb_dataset WHERE version_uid = ? AND version_uid <> '' "
+            f"AND status IN "
+            f"({', '.join('?' for _ in live)}) ORDER BY fid", (version.uid, *live))]
+    conn.execute(
+        "UPDATE gb_revision SET state = 'frozen', closed_at = ?, closed_by = ?, "
+        "snapshot_dir = ?, snapshot_sha256 = ?, snapshot_bytes = 0, "
+        "geoblender_version = ? WHERE uid = ?",
+        (now, user, folder, SNAPSHOT_SHA256, "0.1.0", uid))
+    for item in chosen:
+        record, part, *where = item
+        copied = part in COPIED_PARTS
+        if where:
+            path, layer = where
+        elif not copied:
+            path, layer = None, None
+        elif str(record.store) == "gpkg":
+            path, layer = f"{folder}/{label}.gpkg", record.locator
+        else:
+            path, layer = f"{folder}/{record.locator}", None
+        conn.execute(
+            "INSERT INTO gb_revision_item (revision_uid, item_kind, item_uid, part, "
+            "content_sha256, copied, snapshot_path, snapshot_layer) "
+            "VALUES (?, 'dataset', ?, ?, ?, ?, ?, ?)",
+            (uid, record.uid, part, record.content_sha256, int(copied), path, layer))
+    chosen_figures = figures
+    if chosen_figures is None:
+        chosen_figures = [str(row[0]) for row in conn.execute(
+            "SELECT f.uid FROM gb_revision AS r CROSS JOIN gb_operation AS op "
+            "ON op.revision_uid = r.uid AND op.revision_uid <> '' "
+            "CROSS JOIN gb_figure AS f ON f.operation_uid = op.uid "
+            "WHERE r.version_uid = ? AND op.status = 'done' "
+            "AND op.superseded_by IS NULL ORDER BY f.fid", (version.uid,))]
+    conn.executemany(
+        "INSERT INTO gb_revision_item (revision_uid, item_kind, item_uid, part) "
+        "VALUES (?, 'figure', ?, 'produced')",
+        [(uid, figure) for figure in chosen_figures])
+    conn.execute(
+        "INSERT INTO gb_revision (uid, version_uid, number, state, reason, created_at, "
+        "created_by) VALUES (?, ?, ?, 'open', ?, ?, ?)",
+        (str(uuid.uuid4()), version.uid, number + 1, reason, now, user))
+    return str(uid)
+
+
 def build(folder: Path, demo: versions_demo.VersionsDemo, *,
           clock: FakeClock | None = None) -> VersionsProject:
     """Crea en ``folder`` el proyecto de la demostración de versiones (véase el módulo) con
@@ -368,60 +428,8 @@ class VersionsProjectCase(unittest.TestCase):
         target = version if hasattr(version, "uid") else self.version(version)
         self.tick()
         now = self.now()
-
-        def work(conn: sqlite3.Connection) -> str:
-            uid, number = conn.execute(
-                "SELECT uid, number FROM gb_revision WHERE version_uid = ? AND state = 'open'",
-                (target.uid,)).fetchone()
-            label = f"{target.code}.r{number}"
-            folder = f"snapshots/{label}"
-            chosen = items
-            if chosen is None:
-                live = tuple(str(status) for status in dataset_model.LIVE_STATUSES)
-                chosen = [(registry.get(conn, row[0]), "produced") for row in conn.execute(
-                    f"SELECT uid FROM gb_dataset WHERE version_uid = ? AND version_uid <> '' "
-                    f"AND status IN "
-                    f"({', '.join('?' for _ in live)}) ORDER BY fid", (target.uid, *live))]
-            conn.execute(
-                "UPDATE gb_revision SET state = 'frozen', closed_at = ?, closed_by = ?, "
-                "snapshot_dir = ?, snapshot_sha256 = ?, snapshot_bytes = 0, "
-                "geoblender_version = ? WHERE uid = ?",
-                (now, USER, folder, SNAPSHOT_SHA256, "0.1.0", uid))
-            for item in chosen:
-                record, part, *where = item
-                copied = part in COPIED_PARTS
-                if where:
-                    path, layer = where
-                elif not copied:
-                    path, layer = None, None
-                elif str(record.store) == "gpkg":
-                    path, layer = f"{folder}/{label}.gpkg", record.locator
-                else:
-                    path, layer = f"{folder}/{record.locator}", None
-                conn.execute(
-                    "INSERT INTO gb_revision_item (revision_uid, item_kind, item_uid, part, "
-                    "content_sha256, copied, snapshot_path, snapshot_layer) "
-                    "VALUES (?, 'dataset', ?, ?, ?, ?, ?, ?)",
-                    (uid, record.uid, part, record.content_sha256, int(copied), path, layer))
-            chosen_figures = figures
-            if chosen_figures is None:
-                chosen_figures = [str(row[0]) for row in conn.execute(
-                    "SELECT f.uid FROM gb_revision AS r CROSS JOIN gb_operation AS op "
-                    "ON op.revision_uid = r.uid AND op.revision_uid <> '' "
-                    "CROSS JOIN gb_figure AS f ON f.operation_uid = op.uid "
-                    "WHERE r.version_uid = ? AND op.status = 'done' "
-                    "AND op.superseded_by IS NULL ORDER BY f.fid", (target.uid,))]
-            conn.executemany(
-                "INSERT INTO gb_revision_item (revision_uid, item_kind, item_uid, part) "
-                "VALUES (?, 'figure', ?, 'produced')",
-                [(uid, figure) for figure in chosen_figures])
-            conn.execute(
-                "INSERT INTO gb_revision (uid, version_uid, number, state, reason, created_at, "
-                "created_by) VALUES (?, ?, ?, 'open', ?, ?, ?)",
-                (str(uuid.uuid4()), target.uid, number + 1, reason, now, USER))
-            return str(uid)
-
-        return self.write(work)
+        return self.write(lambda conn: freeze_rows(conn, target, now=now, items=items,
+                                                   reason=reason, figures=figures))
 
     # --- Comprobar --------------------------------------------------------------------------
 
