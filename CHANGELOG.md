@@ -18,7 +18,9 @@ curvas de nivel y su intercambio con QGIS (spec 006); la segunda, los sondeos: i
 bases de RecMin, validarlos, calcular sus trazas y verlos en 3D (spec 005). Y la vista de Blender
 se pone al día desde el proyecto: marca lo que ya no está al día, lo vuelve a cargar con F5,
 ofrece abrir el proyecto de una vista y enseña la ficha del objeto activo, el inventario del
-proyecto y las cifras de la selección (spec 010, aún sin integrar en la rama principal). Lo de
+proyecto y las cifras de la selección (spec 010). Y el proyecto tiene versiones con su estado y
+sus revisiones, que se congelan en instantáneas que no cambian y se pueden reproducir meses
+después, y las decisiones de la propiedad (spec 009, aún sin integrar en la rama principal). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -49,10 +51,77 @@ importe la base de ejemplo y la vea en 3D sin ayuda (CE-005-04), la comparación
 de RecMin (CE-005-05), que se ejecuta a petición, y los puestos de IMGA con el motor de Access. Lo
 de la spec 010 está comprobado con Blender 5.2.1 sin su interfaz, con datos sintéticos (también
 con el volumen de un proyecto grande: 20 000 datos en el proyecto y 200 en la vista) y en `Z:`, y
-el recorrido del MDT y los sondeos, con las órdenes reales; falta verlo en la pantalla de
-referencia (el resaltado de Refrescar, abrir una vista con doble clic y los paneles).
+el recorrido del MDT y los sondeos, con las órdenes reales, y en la pantalla de referencia el
+18/10/2026 sin ratón; falta, con el ratón, Esc a mitad de F5, «Ahora no», recuperar la última
+sesión y los paneles a 1920 px. Lo de la spec 009 está comprobado con Blender 5.2.1 sin su
+interfaz, con las órdenes reales y un proyecto sintético (sus dos escenarios de principio a fin),
+con QGIS 4.2 sin su interfaz y en `Z:`; falta verlo en la pantalla de referencia (el control de
+la versión activa, el avance de congelar, los colores del Outliner, el renombrado y los
+diálogos).
 
 ### Añadido
+
+- **Versiones, revisiones e instantáneas** (spec 009). El proyecto guarda alternativas de diseño
+  con identidad propia, como la V10 de Silvestre, sin que cambiar de estado rompa nada y sin las
+  carpetas `_previo_N`: lo que pasó con la V10 (211 capas de QGIS rotas al renombrar su carpeta,
+  sus reservas cambiadas tres veces en un día y cuatro estados que restaurar para rehacerla) no se
+  puede repetir. **Hoy ningún módulo tiene operaciones de versión** (la topografía y los sondeos
+  son del proyecto, comunes a todas): las versiones se llenarán con la cubicación y el diseño;
+  hasta entonces se crean, cambian de estado, se anotan las decisiones de la propiedad y sus
+  revisiones se congelan vacías. Guía de uso: `docs/usuario/versiones.md` de la documentación.
+  - **Versiones con su estado** (Proyecto ▸ Versiones, el control 8 del acceso rápido y el menú
+    «Versión ▾» de la colección de una versión): Nueva versión… (rasgo, título, motivo, de cuál
+    parte y el encargo) le da el código siguiente (V01, V02…, que no cambia nunca), en BORRADOR y
+    con su revisión r1 abierta; Cambiar estado… solo ofrece lo que se puede (a VIGENTE, con una
+    revisión congelada, y la VIGENTE anterior pasa a SUPERADO en el mismo paso; a DESCARTADO, con
+    motivo). **Cambiar de estado no toca ningún fichero** salvo la base del proyecto, su diario y
+    la cabecera, y QGIS sigue abriendo todas las capas, también las de las instantáneas (unos
+    0,01 s en disco local y 0,07 s en `Z:`). Una versión SUPERADO o DESCARTADO no cambia: sus
+    órdenes dicen «V09 está en estado SUPERADO: cree una versión nueva a partir de ella». Nada se
+    borra.
+  - **La versión activa** es de cada sesión: el control 8 la dice con el color de su estado
+    («● V10.r2»; VIGENTE verde, BORRADOR ámbar, SUPERADO gris, DESCARTADO marrón) y la barra de
+    estado, «V10.r2 VIGENTE». Cambiarla no escribe en el proyecto (se puede en solo lectura, para
+    consultar); al abrir, la de la vista, la de este equipo o la VIGENTE.
+  - **Partir de otra versión** hereda sus parámetros de versión («Heredado de V10.r2») y lo
+    congelado en su última revisión, como entrada posible; **nunca sus resultados ni sus cifras**.
+  - **Nueva revisión…** congela la revisión abierta y abre la siguiente, con su motivo: copia a
+    una instantánea (`snapshots/V10.r2/`, en GeoPackage, GeoTIFF y npz) lo que la versión produjo
+    y lo derivado o editable a mano de aguas arriba, comprobando cada copia, sin copiar otra vez
+    lo que ya está en otra instantánea (se referencia), y anota sin copiarlo lo inmutable del
+    proyecto (lo importado y los originales, los parámetros, las operaciones y las cifras). No
+    congela con una entrada cambiada sin decidir ni con una operación de la versión en curso; si
+    hay resultados obsoletos, operaciones que esperan revisión a mano o entradas no localizables,
+    los lista y hay que aceptarlos (quedan anotados). Con su avance en la barra de estado y Esc,
+    que no deja nada a medias; tampoco un cierre de Blender (lo copiado se aparta a `orphans/`).
+    Congelar 1 GB en disco local, unos 24 s; **5 GB en `Z:`, unos 3 min**. Una revisión que no
+    cambia nada hace crecer el proyecto menos de 1 MB (con 2 000 elementos).
+  - **Lo vigente** de una versión es lo de su última revisión congelada; lo de la abierta, «en
+    curso». Lo de una versión SUPERADO o DESCARTADO ya no se marca obsoleto ni se cuenta en
+    «! n obsoletos».
+  - **Instantáneas comprobadas**: al abrir el proyecto (dentro de su comprobación, en segundo
+    plano: 200 revisiones en 0,12 s, y en `Z:`, en 2,5–2,9 s) y con «Comprobar cambios en las
+    entradas». Un fichero que falta o que cambió deja **solo esa revisión «alterada»**, con un
+    aviso grave que la nombra a ella y al fichero: no se usa ni se reproduce, y el proyecto sigue
+    en escritura. Las fechas no cuentan: una copia de seguridad restaurada no avisa.
+  - **Reproducir la versión desde sus entradas congeladas**: vuelve a calcular en la caché, sin
+    tocar el proyecto, cada operación de la última revisión congelada con sus entradas y sus
+    parámetros congelados, y dice qué resultados (por su hash de contenido) y qué cifras coinciden
+    y, en los que no, la causa probable (otra versión del algoritmo, de Geoblender o de una
+    biblioteca). Con su avance y Esc.
+  - **Encargos y decisiones de la propiedad** (Proyecto ▸ Control ▸ Procedencia y registro):
+    quién decide, cuándo, qué y su documento o una referencia en texto, enlazada a los parámetros
+    y las versiones que afecta; se ve junto a cada parámetro en Parámetros del proyecto y en el
+    control 8. No se cambian ni se borran.
+  - **Parámetros por versión**: en los que su módulo lo admite, Cambiar parámetro… pregunta «¿Para
+    el proyecto o solo para V11?», y el panel dice los dos valores («V11: 1,25 [HIP] · proyecto:
+    1,23 [ADO]»).
+  - **En la vista**, un dato de una versión va en la colección de su versión, «V10 · Definitiva
+    [VIGENTE] r2», con el color de su estado, que cambia solo al cambiar de estado (una versión
+    SUPERADO no se oculta). **Renombrar en el Outliner** la colección de una versión, o el objeto
+    de cualquier dato del proyecto, guarda el texto como su título y vuelve a generar el nombre
+    con él, sin cambiar ninguna ruta. El inventario y Elemento activo enseñan las versiones, sus
+    revisiones y las cifras vigentes y «en curso» de cada dato de versión.
 
 - **Vistas regenerables** (spec 010). Lo que se ve en Blender es una vista del proyecto, nunca
   su fuente: se pone al día desde el proyecto, sin escribir nada en él (también en solo
@@ -87,7 +156,7 @@ referencia (el resaltado de Refrescar, abrir una vista con doble clic y los pane
     guion sin interfaz, al recuperar una sesión o un autoguardado, ni en una vista dentro de una
     copia de respaldo del proyecto (`.anterior`, `.respaldo-esquema-N`, `.publicando`).
   - **N ▸ Proyecto ▸ Elemento activo**: del dato del objeto activo, leído del proyecto, su tipo,
-    su estado, si está al día en la vista, su versión («—» hasta que lleguen las versiones), la
+    su estado, si está al día en la vista, su versión (spec 009; «—», lo del proyecto), la
     operación que escribió su contenido (con su fecha y la versión de Geoblender), sus entradas
     con su hash, sus derivados con «obsoleto» y sus cifras con su unidad y su tipo; Procedencia
     abre su cadena entera.
@@ -708,9 +777,25 @@ referencia (el resaltado de Refrescar, abrir una vista con doble clic y los pane
   real de RecMin con una lectura directa con el motor de Access de 64 bits (los recuentos por
   tabla, la suma de cada elemento, el hash de contenido y la carpeta intacta), en solo lectura y
   sobre una copia (`tests/banco/recmin/`).
+- `tools/check.py --rendimiento` mide también las versiones (spec 009):
+  `tests/rendimiento/core/test_versions_perf.py` (cambiar de estado con la lista de ficheros y
+  sus huellas, congelar 1 GB con su avance y Esc, comprobar 200 revisiones congeladas y lo que
+  crece el proyecto con 1 000 y 2 000 elementos) y, con `GEOBLENDER_NET_TEST_DIR`, en la red:
+  cambiar de estado, comprobar las 200 revisiones y congelar 5 GB (unos 10 min y 10 GB en la red,
+  que se borran), con las esperas de la red medidas aparte de lo que hace Geoblender en cada
+  llamada (`tests/support/netwaits.py`).
 
 ### Cambiado
 
+- **Formato del proyecto, versión 3** (spec 009): la base del proyecto lleva las tablas de las
+  versiones, las revisiones y las decisiones de la propiedad (QGIS las ve y no las puede cambiar,
+  como las demás internas), y el proyecto, cuando se congela una revisión, la carpeta
+  `snapshots/`. Un proyecto del formato 2 se migra al abrirlo, si se acepta, con una copia
+  completa previa (`<Nombre>.gbproj.respaldo-esquema-2`), sin cambiar ningún dato; sin migrar, se
+  abre en solo lectura. Un Geoblender anterior abre un proyecto migrado en solo lectura, y uno
+  que ya tiene alguna versión, **solo con su cabecera** (nombre, sistemas de referencia, origen y
+  la lista de revisiones congeladas), para que no presente como vigentes las cifras de una versión
+  que no lo es: hay que actualizarlo.
 - **Formato del proyecto, versión 2** (spec 008): la base del proyecto lleva las tablas de la
   procedencia (QGIS las ve y no las puede cambiar, como las demás internas), y el proyecto,
   cuando hacen falta, dos carpetas nuevas: `originals/` (los originales de las entradas) y
@@ -777,7 +862,13 @@ referencia (el resaltado de Refrescar, abrir una vista con doble clic y los pane
   publicación pide siempre (spec 004, versión 0.4), y el resumen lo dice. Tarda unos 34 s
   (con `--completo`, unos 97 s). Las pruebas que copiaban entradas a la carpeta de un
   trabajo ya no dejan una carpeta en `%TEMP%` cada vez (las entradas son de solo lectura y
-  no se borraban). Con las pruebas de las vistas regenerables (spec 010), unos 38 s.
+  no se borraban). Con las pruebas de las vistas regenerables (spec 010), unos 38 s. Con las de
+  las versiones (spec 009), unos 4 s más con el equipo en el mismo estado: ahora las pruebas de
+  referencia, la comprobación de las licencias y la de los iconos se ejecutan a la vez que las de
+  Blender (spec 001, versión 0.8), y el resumen las sigue diciendo en su orden, cada una con su
+  duración; y crear un proyecto escribe una imagen de su base hecha una vez por proceso (de 17,5
+  a 12,7 ms), con el mismo esquema. Pasa aún de los 40 s (unos 46 s con otros programas abiertos
+  en el equipo): lo decide IMGA.
 - Solo un `tools/check.py` a la vez en el equipo (spec 006): si hay otro en marcha (de la
   misma carpeta, de un *worktree* o de otra sesión), el nuevo dice a cuál espera (su pid y su
   carpeta) y empieza cuando termina; su tiempo se cuenta desde entonces. Antes los dos se

@@ -105,8 +105,9 @@ class EventKind(Enum):
     STATUS_CHANGE = "status_change"
     REVISION_CLOSED = "revision_closed"
     TITLE_CHANGED = "title_changed"
-    # Una revisión congelada, con lo copiado y lo referenciado (RF-009-06, RF-009-07), y la
-    # siguiente, abierta con su motivo.
+    # Una revisión congelada, con lo copiado (de lo referenciado, que está en gb_revision_item,
+    # solo cuántos, en su texto: T33) (RF-009-06, RF-009-07), y la siguiente, abierta con su
+    # motivo.
     REVISION_FROZEN = "revision_frozen"
     REVISION_OPENED = "revision_opened"
     # Una revisión congelada cuya instantánea no coincide con lo anotado, «alterada» (con lo que
