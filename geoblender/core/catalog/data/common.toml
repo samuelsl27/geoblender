@@ -286,3 +286,18 @@ description.es = "Elige la carpeta del proyecto de la vista cargada cuando no se
 entry = "010"
 action = "D"
 frequency = 1
+
+# Orden interna de las decisiones de la propiedad (spec 009, plan §5.3.5, D-38): la abre
+# «Registrar decisión…» de la ventana Encargos y decisiones de la propiedad, no un menú de la
+# barra.
+
+[[command]]
+key = "geoblender.core_add_decision"
+kind = "internal"
+label.en = "Register decision…"
+label.es = "Registrar decisión…"
+description.en = "Record a decision of the owner (who decides, when, what and its document or reference) and the parameters and versions it affects"
+description.es = "Registra una decisión de la propiedad (quién decide, cuándo, qué y su documento o referencia) y los parámetros y versiones a los que afecta"
+entry = "009"
+action = "D"
+frequency = 1

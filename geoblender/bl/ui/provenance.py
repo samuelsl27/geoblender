@@ -75,7 +75,10 @@ Geoblender y con el separador de miles de las cifras, como una cifra («500 000 
 Spec 009 (T20; RF-009-29): con una versión activa, un parámetro que tiene en ella valor propio
 lleva su código entre las marcas de su fila y, seleccionado, el valor de cada ámbito
 (:func:`scopes_text`: «V02: 12 m [HIP] · proyecto: 11 m [HIP]»); la lista sigue dando el del
-proyecto.
+proyecto. Spec 009 (T24; RF-009-13; plan A10): el seleccionado enseña, junto a su decisor, su
+decisor de la propiedad (:func:`owner_text`: «Propiedad: D. Juan · 03/10/2026 · «…»»), cada
+decisión de la propiedad enlazada a su clave (``core.versions.decisions.deciders``: vale para
+todos sus ámbitos), leída con la lista.
 
 **Registro de entradas** (:class:`GEOBLENDER_PT_core_inputs`, ventana emergente que abre
 ``geoblender.core_show_inputs``; RF-008-16, RF-008-13; T51): la cabecera de las columnas y la
@@ -179,10 +182,12 @@ from ...core.params.store import shown_value
 from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
+from ...core.versions.model import render as version_render
 from ..props.provenance import FILTER_ALL, WINDOW_MANAGER_PROPERTY
 from ..scene import live, project_session
 from ..scene import versions as scene_versions
-from . import icons, quick_access, statusbar
+from .. import compat
+from . import icons, labels, quick_access, statusbar
 from .commands import (
     CommandState,
     catalog,
@@ -988,6 +993,7 @@ def fill_parameters() -> int:
     project = _project()
     found = [] if project is None else ParameterStore(project).list(_filters(view))
     own = {} if project is None else _version_values(project, found)
+    owners = {} if project is None else _owner_values(project, found)
     chosen = _selected(view)
     key = None if chosen is None else chosen.key
     shown = language()
@@ -1014,6 +1020,7 @@ def fill_parameters() -> int:
                 code, version_record = mine
                 row.own_version = code
                 row.scopes = scopes_text(code, version_record, record)
+            row.owner = owners.get(record.key, "")
         keys = [item.record.key for item in found]
         view.parameter_index = keys.index(key) if key in keys else 0
     finally:
@@ -1044,6 +1051,29 @@ def _version_values(project: Project, found: Sequence[Any]) -> dict[str, tuple[s
             if record is not None:
                 values[key] = (shown.code, record)
     return values
+
+
+def _owner_values(project: Project, found: Sequence[Any]) -> dict[str, str]:
+    """El decisor de la propiedad de cada parámetro de ``found`` que lo tiene (spec 009, T24;
+    RF-009-13): {clave: una línea por decisión enlazada a su clave (:func:`owner_text`), de la
+    más antigua a la última}; las demás claves, fuera."""
+    if not found:
+        return {}
+    from ...core.versions import decisions  # al usarlo: registrar no lo carga
+
+    with project.read() as conn:
+        linked = decisions.deciders(conn, [item.record.key for item in found])
+    return {key: "\n".join(owner_text(item.decided_by, item.day, item.what) for item in items)
+            for key, items in linked.items() if items}
+
+
+def owner_text(decided_by: str, day: str, what: str) -> str:
+    """Una decisión de la propiedad como decisor de un parámetro o de una versión (spec 009, T24;
+    RF-009-13; plan A10), en el idioma de Geoblender: «Propiedad: D. Juan · 03/10/2026 · «K =
+    1,20 para el balance»» (``day``, el día como se muestra)."""
+    decider = version_render("core.version_decision_decider", language=language(),
+                             who=decided_by, date=day)
+    return f"{decider} · «{what}»"
 
 
 def scopes_text(code: str, version_record: Any, project_record: Any) -> str:
@@ -1236,6 +1266,10 @@ def _draw_selected(layout: Any, view: Any, row: Any, blocked: str | None) -> Non
     details.label(text=tr("Source: {source}", source=row.source), translate=False)
     details.label(text=tr("Decided by {who} on {date}", who=row.decided_by,
                           date=row.decided_at), translate=False)
+    owner = getattr(row, "owner", "")  # su decisor de la propiedad (spec 009, RF-009-13)
+    for line in owner.splitlines():
+        labels.draw_wrapped(details, line, labels.dialog_width(
+            PARAMETERS_PANEL_UNITS * compat.UI_UNIT_PX))
     if row.review and row.review_text:
         note = details.row()
         note.alert = True

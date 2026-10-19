@@ -17,6 +17,8 @@ después) y versiones (de cualquier estado: es un registro aparte, que no cambia
   decisiones de la propiedad»; en el control 8, las de una versión).
 - :func:`deciders`: las de cada clave de parámetro (el decisor de la propiedad en Parámetros del
   proyecto, junto al suyo).
+- :func:`documents`: las entradas de tipo documento que puede citar una decisión (el
+  «Documento» del diálogo «Registrar decisión…», T24).
 
 Se leen por el día de la decisión y, en el mismo día, por el orden en que se registraron. Nada
 se cambia ni se borra (RF-009-12): este módulo no lo ofrece y la base lo rechaza (las dos tablas
@@ -35,6 +37,7 @@ from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..ids import new_uid
+from ..inputs.model import ACTIVE_STATUSES
 from ..paths import find_absolute_paths
 from ..project.events import EventKind, record_event
 from ..timeutil import format_utc
@@ -237,10 +240,26 @@ def record_decision(
 # --- Leer -----------------------------------------------------------------------------------
 
 
-def _has_tables(conn: sqlite3.Connection) -> bool:
+def _has_tables(conn: sqlite3.Connection, table: str = "gb_decision") -> bool:
     return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gb_decision'"
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
     ).fetchone() is not None
+
+
+def documents(conn: sqlite3.Connection) -> tuple[tuple[str, str], ...]:
+    """Las entradas de tipo documento que puede citar una decisión de la propiedad (D-33; el
+    «Documento» del diálogo «Registrar decisión…»): las activas (vigentes, cambiadas o con la
+    copia mantenida; no las sustituidas ni las descartadas, que quedan como registro), con su
+    uid y su nombre, por nombre (sin distinguir mayúsculas) y orden de registro. Sin la tabla
+    de las entradas, ninguna. Solo lee."""
+    if not _has_tables(conn, "gb_input"):
+        return ()
+    marks = ", ".join("?" for _ in ACTIVE_STATUSES)
+    return tuple((str(uid), str(name)) for uid, name in conn.execute(
+        f"SELECT uid, name FROM gb_input WHERE kind = ? AND status IN ({marks}) "
+        "ORDER BY name COLLATE NOCASE, fid",
+        (DOCUMENT_KIND, *(str(status) for status in ACTIVE_STATUSES)),
+    ))
 
 
 def _chunks(values: Sequence[str]) -> Iterable[Sequence[str]]:

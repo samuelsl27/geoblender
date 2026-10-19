@@ -5109,3 +5109,69 @@ es = "No reproducible"
 
 ["Report saved in {path}"]
 es = "Informe guardado en {path}"
+
+# Encargos y decisiones de la propiedad (spec 009, T24; RF-009-13; plan 009 A10, §5.3.5 y §5.5):
+# la ventana, el diálogo «Registrar decisión…», el control 8 y Parámetros del proyecto.
+
+["Assignments and decisions of the owner"]
+es = "Encargos y decisiones de la propiedad"
+
+["The decisions of the owner, with their document, and the assignments of the versions"]
+es = "Las decisiones de la propiedad, con su documento, y los encargos de las versiones"
+
+["Owner decisions"]
+es = "Decisiones de la propiedad"
+
+["Owner decisions on {version}"]
+es = "Decisiones de la propiedad sobre {version}"
+
+["No owner decision has been recorded"]
+es = "No hay ninguna decisión de la propiedad registrada"
+
+["Document: {name}"]
+es = "Documento: {name}"
+
+["Reference: {text}"]
+es = "Referencia: {text}"
+
+["Affects: {items}"]
+es = "Afecta a: {items}"
+
+["Assignments of the versions"]
+es = "Encargos de las versiones"
+
+["Who decides"]
+es = "Quién decide"
+
+["Who decides for the owner (a person or a body of the owner)"]
+es = "Quién decide por la propiedad (una persona o un órgano de la propiedad)"
+
+["Day of the decision, DD/MM/YYYY"]
+es = "Día de la decisión, DD/MM/AAAA"
+
+["What is decided"]
+es = "Qué se decide"
+
+["What the owner decides (recorded as it is typed)"]
+es = "Lo que decide la propiedad (se guarda como se escribe)"
+
+["The document of the decision, registered as an input of type document (the minutes, the letter, the capture)"]
+es = "El documento de la decisión, registrado como entrada de tipo documento (el acta, la carta, la captura)"
+
+["Reference"]
+es = "Referencia"
+
+["Reference of the decision when there is no registered document (such as «email of 03/10/2026»)"]
+es = "Referencia de la decisión cuando no hay un documento registrado (como «correo del 03/10/2026»)"
+
+["Parameters"]
+es = "Parámetros"
+
+["Keys of the parameters it affects, separated by commas (in all their scopes)"]
+es = "Claves de los parámetros a los que afecta, separadas por comas (en todos sus ámbitos)"
+
+["Codes of the versions it affects, separated by commas"]
+es = "Códigos de las versiones a las que afecta, separados por comas"
+
+["Owner decision recorded: «{what}» ({who}, {date})"]
+es = "Decisión de la propiedad registrada: «{what}» ({who}, {date})"

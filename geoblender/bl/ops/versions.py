@@ -60,6 +60,17 @@
   (:func:`reproduce_check`) y su descripción y su ``poll`` lo dicen (:func:`reproduce_note`).
   No escribe en el proyecto: también en solo lectura (la caché va entonces a los datos de
   usuario).
+- ``geoblender.core_show_decisions`` (T24; RF-009-13; plan A10, D-33): «Encargos y decisiones de la
+  propiedad…», que lee las decisiones de la propiedad, los documentos que pueden citar y los
+  encargos de las versiones (``bl.ui.version_panels.fill_decisions``) y abre su ventana
+  (``GEOBLENDER_PT_core_decisions``); solo lee: también en solo lectura. Desde un guion, sin
+  ventana, solo las filas.
+- ``geoblender.core_add_decision`` (T24; RF-009-13; interna): «Registrar decisión…», el diálogo
+  con quién decide, el día (DD/MM/AAAA; hoy, por defecto), qué se decide, el documento (una
+  entrada registrada de tipo documento, :func:`document_items`) y una referencia en texto, y
+  los parámetros (sus claves) y las versiones (sus códigos; la activa, por defecto) a los que
+  afecta, separados por comas, que llama a ``core.versions.decisions.record_decision``. Después,
+  la lista, Parámetros del proyecto (su decisor de la propiedad) y el control 8.
 
 Las que escriben, con ``bl_options = {'REGISTER'}`` (sin paso de deshacer, como las de la 008:
 Ctrl+Z no deshace la base) y ``poll`` con el motivo (sin proyecto o en solo lectura). Tras
@@ -67,12 +78,11 @@ escribir, la cabecera (:func:`_after_writing`), los indicadores de la procedenci
 de la sesión (el control 8, su ventana y la barra de estado). Los rechazos, con el texto de
 ``core.versions`` en el idioma de Geoblender, sin escribir nada.
 
-Las decisiones de la propiedad llegan en su tarea (T24) y, hasta entonces, son provisionales de
-R-07.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
 import sqlite3
@@ -124,6 +134,12 @@ NEW_REVISION = "geoblender.core_new_revision"
 REPRODUCE = "geoblender.core_reproduce_version"
 REPORT_PANEL = "GEOBLENDER_PT_core_reproduce_report"
 """La ventana del informe de Reproducir… (``bl.ui.version_panels``, T23)."""
+SHOW_DECISIONS = "geoblender.core_show_decisions"
+ADD_DECISION = "geoblender.core_add_decision"
+DECISIONS_PANEL = "GEOBLENDER_PT_core_decisions"
+"""La ventana de los encargos y las decisiones de la propiedad (``bl.ui.version_panels``, T24)."""
+NO_DOCUMENT = "NONE"
+"""«Ninguno» en «Documento» de Registrar decisión…: una decisión con solo una referencia."""
 DIALOG_WIDTH = 520
 """El ancho de los diálogos de Nueva versión…, Cambiar estado… y Nueva revisión… (px, a escala
 1,0)."""
@@ -1288,6 +1304,224 @@ class GEOBLENDER_OT_core_reproduce_version(_StepsModal, bpy.types.Operator):
                                           error=str(exc)))
 
 
+# Encargos y decisiones de la propiedad (T24) -------------------------------------------------
+
+_LIST = re.compile(r"[,;]")
+"""Lo que separa las claves de parámetro y los códigos de versión de Registrar decisión…"""
+
+
+class _DayText(ValueError):
+    """Un día de la decisión que no es DD/MM/AAAA (ni AAAA-MM-DD, desde un guion)."""
+
+
+def decision_day(typed: str) -> dt.date | str | None:
+    """El día de la decisión tecleado: DD/MM/AAAA (o, desde un guion, AAAA-MM-DD, que comprueba
+    ``record_decision``); vacío, ``None`` (``record_decision`` lo pide). :class:`_DayText` si no
+    es ninguno de los dos."""
+    shown = typed.strip()
+    if not shown:
+        return None
+    try:
+        return dt.datetime.strptime(shown, "%d/%m/%Y").date()
+    except ValueError:
+        pass
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", shown):
+        return shown
+    raise _DayText(shown)
+
+
+def listed(typed: str) -> list[str]:
+    """Las claves o los códigos de un campo de Registrar decisión…, separados por comas (o por
+    punto y coma), sin espacios a los lados y sin los vacíos."""
+    return [part.strip() for part in _LIST.split(typed) if part.strip()]
+
+
+_DOCUMENT_CHOICES: list[tuple[str, str, str]] = []
+"""Lo último que dio :func:`document_items` (Blender necesita que Python guarde los textos de un
+enumerado dinámico mientras los usa)."""
+
+
+def document_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Los elementos de «Documento» (``source_input_uid``): «Ninguno» y cada entrada de tipo
+    documento que puede citar una decisión, con su nombre (lo ya leído,
+    ``bl.ui.version_panels.document_rows``: nada se lee al dibujar)."""
+    from ..ui import version_panels  # al usarlo (ARQ-08)
+
+    choices = [(NO_DOCUMENT, tr("None"), "")]
+    choices += [(uid, name, "") for uid, name in
+                version_panels.document_rows(project_session.current())]
+    _DOCUMENT_CHOICES[:] = choices
+    return _DOCUMENT_CHOICES
+
+
+def _fill_decisions(project: Project) -> list[str]:
+    """Vuelve a leer las filas de la ventana de las decisiones y de los documentos; devuelve el
+    aviso si no se pudo (las de antes siguen)."""
+    from ..ui import version_panels  # al usarlo (ARQ-08)
+
+    try:
+        version_panels.fill_decisions(project)
+    except (GeoblenderError, sqlite3.Error, OSError) as exc:
+        LOGGER.warning("No se pudieron leer las decisiones de la propiedad", exc_info=True)
+        return [error_text(exc)]
+    return []
+
+
+def recorded_text(decision: Any) -> str:
+    """Lo que dice Registrar decisión… al registrarla, en el idioma de Geoblender: «Decisión de la
+    propiedad registrada: «K = 1,20» (D. Juan, 03/10/2026)»."""
+    return tr("Owner decision recorded: «{what}» ({who}, {date})", what=decision.what,
+              who=decision.decided_by, date=decision.day)
+
+
+class GEOBLENDER_OT_core_show_decisions(bpy.types.Operator):
+    """Assignments and decisions of the owner that the design follows"""
+
+    bl_idname = SHOW_DECISIONS
+    bl_label = "Assignments and decisions of the owner…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return _poll_project(cls, context)
+
+    def invoke(self, context: bpy.types.Context, event: Any) -> set[str]:
+        return self.execute(context)
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        """Lee las decisiones, los documentos y los encargos y abre la ventana; solo lee:
+        también en solo lectura. Desde un guion sin ventana, solo las filas."""
+        project = project_session.current()
+        if project is None:
+            self.report({"ERROR"}, tr("No project is open"))
+            return {"CANCELLED"}
+        problems = _fill_decisions(project)
+        if problems:
+            self.report({"ERROR"}, problems[0])
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}  # desde un guion sin ventana: las filas, sin la ventana
+        return set(_call_panel(DECISIONS_PANEL))
+
+
+class GEOBLENDER_OT_core_add_decision(bpy.types.Operator):
+    """Record a decision of the owner and the parameters and versions it affects"""
+
+    bl_idname = ADD_DECISION
+    bl_label = "Register decision…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    decided_by: StringProperty(  # type: ignore[valid-type]
+        name="Who decides",
+        description="Who decides for the owner (a person or a body of the owner)",
+        options=_FIELD,
+    )
+    decided_at: StringProperty(  # type: ignore[valid-type]
+        name="Decision date", description="Day of the decision, DD/MM/YYYY",
+        options=_FIELD,
+    )
+    what: StringProperty(  # type: ignore[valid-type]
+        name="What is decided", description="What the owner decides (recorded as it is typed)",
+        options=_FIELD,
+    )
+    source_input_uid: EnumProperty(  # type: ignore[valid-type]
+        name="Document",
+        description="The document of the decision, registered as an input of type document "
+                    "(the minutes, the letter, the capture)",
+        items=document_items,
+        options=_FIELD,
+    )
+    source_text: StringProperty(  # type: ignore[valid-type]
+        name="Reference",
+        description="Reference of the decision when there is no registered document (such as "
+                    "«email of 03/10/2026»)",
+        options=_FIELD,
+    )
+    parameters: StringProperty(  # type: ignore[valid-type]
+        name="Parameters",
+        description="Keys of the parameters it affects, separated by commas (in all their "
+                    "scopes)",
+        options=_FIELD,
+    )
+    versions: StringProperty(  # type: ignore[valid-type]
+        name="Versions",
+        description="Codes of the versions it affects, separated by commas",
+        options=_FIELD,
+    )
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return _write_poll(cls)
+
+    def invoke(self, context: bpy.types.Context, event: Any) -> set[str]:
+        """Abre el diálogo con el día de hoy y la versión activa (si quien la lanza no dijo
+        otra cosa), con los documentos del proyecto leídos ahora; nada cambia hasta aceptarlo."""
+        project = project_session.current()
+        if project is None:
+            self.report({"ERROR"}, tr("No project is open"))
+            return {"CANCELLED"}
+        _fill_decisions(project)
+        given = self.properties.is_property_set
+        if not given("decided_at"):
+            self.decided_at = project.clock.now().astimezone().strftime("%d/%m/%Y")
+        if not given("versions"):
+            shown = scene_versions.active()
+            self.versions = "" if shown is None else shown.code
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=text(catalog().commands[ADD_DECISION].label))
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "decided_by", text=tr("Who decides"), translate=False)
+        layout.prop(self, "decided_at", text=tr("Decision date"), translate=False)
+        layout.prop(self, "what", text=tr("What is decided"), translate=False)
+        layout.prop(self, "source_input_uid", text=tr("Document"), translate=False)
+        layout.prop(self, "source_text", text=tr("Reference"), translate=False)
+        layout.prop(self, "parameters", text=tr("Parameters"), translate=False)
+        layout.prop(self, "versions", text=tr("Versions"), translate=False)
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        blocked = write_unavailable()
+        project = project_session.current()
+        if blocked is not None or project is None:
+            self.report({"ERROR"}, blocked or tr("No project is open"))
+            return {"CANCELLED"}
+        from ...core.versions.decisions import record_decision  # al usarlo (plan §2.1)
+
+        document = self.source_input_uid
+        try:
+            day = decision_day(self.decided_at)
+            with project.write_transaction() as conn:
+                decision = record_decision(
+                    conn, project, decided_by=self.decided_by, decided_at=day,
+                    what=self.what,
+                    source_input_uid=None if document in ("", NO_DOCUMENT) else document,
+                    source_text=self.source_text, parameters=listed(self.parameters),
+                    versions=listed(self.versions))
+        except _DayText as exc:
+            self.report({"ERROR"}, tr("Decision date «{value}»: write it as DD/MM/YYYY",
+                                      value=str(exc)))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        warnings = [*_after_writing(project, header=False), *_fill_decisions(project)]
+        from ..ui import provenance as ui  # al usarlo (ARQ-08)
+
+        try:  # su decisor de la propiedad, en Parámetros del proyecto
+            ui.fill_parameters()
+        except (GeoblenderError, sqlite3.Error, OSError):
+            LOGGER.warning("No se pudo volver a leer la lista de parámetros", exc_info=True)
+        self.report({"INFO"}, recorded_text(decision))
+        for message in warnings:
+            self.report({"WARNING"}, message)
+        return {"FINISHED"}
+
+
 # En orden de registro.
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_set_active_version,
@@ -1295,4 +1529,6 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_set_version_state,
     GEOBLENDER_OT_core_new_revision,
     GEOBLENDER_OT_core_reproduce_version,
+    GEOBLENDER_OT_core_show_decisions,
+    GEOBLENDER_OT_core_add_decision,
 )

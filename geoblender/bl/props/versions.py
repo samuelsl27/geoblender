@@ -18,7 +18,13 @@
   que se regenera; vive en ``WindowManager``, que no se guarda en el ``.blend`` de ``scenes/``.
   Tiene también las líneas de la ventana del informe de reproducir
   (:class:`GEOBLENDER_PG_core_report_row`, T23; ``GEOBLENDER_PT_core_reproduce_report``), ya
-  presentadas al terminar la reproducción; la T24 añade las de las decisiones.
+  presentadas al terminar la reproducción, y (T24; RF-009-13) las decisiones de la propiedad
+  (:class:`GEOBLENDER_PG_core_decision_row`), los documentos que pueden citar
+  (:class:`GEOBLENDER_PG_core_document_row`) y los encargos de las versiones
+  (:class:`GEOBLENDER_PG_core_request_row`), de qué proyecto son (``decisions_project``): las
+  dibujan la ventana Encargos y decisiones de la propiedad (``GEOBLENDER_PT_core_decisions``) y
+  la del control 8 (las de la versión activa), y el diálogo «Registrar decisión…» ofrece los
+  documentos; las pone al día ``bl.ui.version_panels.fill_decisions``.
 
 La versión activa de la sesión, que sí se guarda con la vista, es
 ``Scene.geoblender.active_version_uid`` (``bl.props.core``). Las propiedades de las filas no tienen
@@ -100,10 +106,44 @@ class GEOBLENDER_PG_core_report_row(bpy.types.PropertyGroup):
     alert: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_core_decision_row(bpy.types.PropertyGroup):
+    """Una decisión de la propiedad (T24; RF-009-13; ``core.versions.model.Decision``): su uid,
+    quién decide, el día de la decisión como se muestra («03/10/2026»), qué se decide, el nombre
+    de su documento y su referencia en texto ("" si no tiene), las claves de parámetro, los uid
+    de las versiones y sus códigos a los que afecta (separados por comas, en su orden)."""
+
+    uid: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    decided_by: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    day: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    what: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    source_name: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    source_text: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    parameters: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    versions: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    version_codes: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_core_document_row(bpy.types.PropertyGroup):
+    """Una entrada de tipo documento que puede citar una decisión (T24): su uid y su nombre."""
+
+    uid: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    label: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_core_request_row(bpy.types.PropertyGroup):
+    """El encargo de la propiedad que dio origen a una versión (T24): su código, su título y el
+    texto del encargo."""
+
+    code: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    title: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    request: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+
+
 class GEOBLENDER_PG_core_version_panels(bpy.types.PropertyGroup):
-    """Lo que dibujan la ventana del control 8 y el menú de la versión activa (spec 009) y la
-    ventana del informe de reproducir (T23: de qué proyecto, de qué revisión y sus líneas): una
-    vista del proyecto, regenerada desde él."""
+    """Lo que dibujan la ventana del control 8 y el menú de la versión activa (spec 009), la
+    ventana del informe de reproducir (T23: de qué proyecto, de qué revisión y sus líneas) y la
+    de los encargos y las decisiones de la propiedad (T24: de qué proyecto, sus decisiones, los
+    documentos y los encargos): una vista del proyecto, regenerada desde él."""
 
     project: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     versions: CollectionProperty(  # type: ignore[valid-type]
@@ -115,12 +155,20 @@ class GEOBLENDER_PG_core_version_panels(bpy.types.PropertyGroup):
     report_revision: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     report: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_report_row, options=_STATIC)
+    decisions_project: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    decisions: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_decision_row, options=_STATIC)
+    documents: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_document_row, options=_STATIC)
+    requests: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_request_row, options=_STATIC)
 
 
 # En orden de registro (las filas, antes del grupo que las usa).
 classes: tuple[type, ...] = (GEOBLENDER_PG_core_collection, GEOBLENDER_PG_core_version_row,
                              GEOBLENDER_PG_core_revision_row, GEOBLENDER_PG_core_report_row,
-                             GEOBLENDER_PG_core_version_panels)
+                             GEOBLENDER_PG_core_decision_row, GEOBLENDER_PG_core_document_row,
+                             GEOBLENDER_PG_core_request_row, GEOBLENDER_PG_core_version_panels)
 
 
 def register() -> None:

@@ -374,15 +374,34 @@ class RejectTest(DecisionsCase):
         self.assertEqual(self.query("SELECT count(*) FROM gb_decision"), [(0,)])
 
 
+class DocumentsTest(DecisionsCase):
+    def test_documents_a_decision_can_cite(self) -> None:
+        """RF-009-13 (D-33; T24: «Documento» del diálogo «Registrar decisión…»): las entradas
+        de tipo documento que puede citar una decisión, con su uid y su nombre, por nombre: las
+        activas; no el límite (es de otro tipo) ni un documento descartado (queda como
+        registro, sin usar). Solo lee."""
+        found = self.read(decisions.documents)
+        self.assertEqual(found, ((self.document, DOCUMENT_NAME),))
+        counter = self.change_counter()
+        self.assertEqual(self.read(decisions.documents), found)
+        self.assertEqual(self.change_counter(), counter)
+        self.tick()
+        self.write(lambda conn: inputs_registry.discard(conn, self.project, self.document,
+                                                        "Acta sustituida por la propiedad"))
+        self.assertEqual(self.read(decisions.documents), ())
+
+
 class ReadTest(unittest.TestCase):
     def test_without_decision_tables(self) -> None:
         """RF-009-13: sin las tablas de las decisiones (un proyecto del esquema 2 abierto en
-        solo lectura), no hay ninguna: las lecturas no fallan."""
+        solo lectura), no hay ninguna: las lecturas no fallan; sin la de las entradas, ningún
+        documento."""
         conn = sqlite3.connect(":memory:")
         self.addCleanup(conn.close)
         self.assertEqual(decisions.decisions(conn), ())
         self.assertEqual(decisions.decisions(conn, parameter_key=SWELL, version_uid="V01"), ())
         self.assertEqual(decisions.deciders(conn, [SWELL]), {SWELL: ()})
+        self.assertEqual(decisions.documents(conn), ())
 
     def test_messages_in_the_language_catalog(self) -> None:
         """RF-009-13 (constitución, principio 10): los textos de las decisiones tienen su

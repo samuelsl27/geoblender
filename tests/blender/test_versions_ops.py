@@ -77,6 +77,20 @@ demostración calculados en V02 y V02.r1 congelada:
   motivo; con un fichero de V02.r1 cambiado, se rechaza con lo que no coincide (sin dejar nada en
   la caché) y, marcada la revisión alterada, la orden queda desactivada con el motivo.
 
+T24 (HU-009-4; RF-009-13; plan 009 A10, D-33, §5.3.5 y §5.5), con el acta de la propiedad (un PDF
+sintético) registrada como entrada de tipo documento y ``demo.swell_factor`` en el proyecto:
+
+- **Encargos y decisiones de la propiedad…** (``geoblender.core_show_decisions``): la ventana
+  ``GEOBLENDER_PT_core_decisions`` con las decisiones (fecha, quién, qué, documento o referencia
+  y a qué afecta), «Registrar decisión…» y los encargos de las versiones; también en solo
+  lectura, sin «Registrar decisión…».
+- **Registrar decisión…** (``geoblender.core_add_decision``, interna): el diálogo con quién
+  decide, el día (hoy, por defecto), qué, el documento (los registrados), la referencia, los
+  parámetros y las versiones (la activa, por defecto); registrada enlazada a
+  ``demo.swell_factor`` y a V02, aparece en la lista, como decisor del parámetro en Parámetros
+  del proyecto («Propiedad: D. Juan Prueba · 03/10/2026 · «…»», junto al suyo) y en el control 8
+  con V02 activa. Los rechazos, con su texto y sin escribir nada.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
@@ -100,7 +114,7 @@ from tests.support import views_fixtures as vf
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
 from tests.support.fake_layout import FakeLayout, draw, operator_self
-from tests.support.provenance_demo import PRODUCTION
+from tests.support.provenance_demo import PRODUCTION, SWELL_FACTOR
 from tests.support.repo import ROOT
 from tests.support.trees import temp_folder
 from tests.support.versions_demo import BENCH_HEIGHT, PIT, VersionsDemo
@@ -146,6 +160,18 @@ CANCELLED_REPRODUCE = "Reproducción cancelada: no ha quedado nada a medias"
 REPRODUCE_STATUS = re.compile(
     r"^Reproduciendo V02\.r1: «(?P<op>demo\.pit(?:_volume)?)» \((?P<index>[12]) de 2\)… "
     r"\d{1,3} % · Esc: cancelar$")
+SHOW_DECISIONS = "geoblender.core_show_decisions"
+ADD_DECISION = "geoblender.core_add_decision"
+DECISIONS_PANEL = "GEOBLENDER_PT_core_decisions"
+WHO = "D. Juan Prueba"
+WHAT = "K = 1,20 para el balance de la fase sur"
+DOCUMENT = "Acta_propiedad"
+REQUEST = "Encargo de la propiedad: dos fases"
+OWNER = f"Propiedad: {WHO} · 03/10/2026 · «{WHAT}»"
+"""El decisor de la propiedad de ``demo.swell_factor``, como lo enseña Parámetros del proyecto."""
+CONTROL_OWNER = f"Propiedad: {WHO} · 03/10/2026 «{WHAT}»"
+"""El de V02 en la ventana del control 8: el decisor y, debajo, lo decidido (sus líneas
+seguidas)."""
 
 
 def ext(name: str) -> Any:
@@ -226,10 +252,10 @@ class VersionsOpsTest(unittest.TestCase):
         with project.write_transaction() as conn:
             return work(conn)
 
-    def create(self, project: Any, feature: str, title: str) -> Any:
-        """Una versión hecha como la haría la orden (sin la sesión)."""
+    def create(self, project: Any, feature: str, title: str, request: str | None = None) -> Any:
+        """Una versión hecha como la haría la orden (sin la sesión), con su encargo."""
         version, _revision = self.write(project, lambda conn: self.store.create_version(
-            conn, project, feature=feature, title=title, reason=REASON))
+            conn, project, feature=feature, title=title, reason=REASON, request=request))
         project.refresh_header()
         return version
 
@@ -532,6 +558,105 @@ class VersionsOpsTest(unittest.TestCase):
     def joined(lines: list[str]) -> str:
         """Las líneas partidas de la ventana, otra vez seguidas."""
         return " ".join(lines)
+
+    # --- T24: Encargos y decisiones de la propiedad ---------------------------------------------
+
+    def register_document(self, project: Any) -> str:
+        """Registra el acta de la propiedad (``fuentes/acta_propiedad.pdf``, el PDF sintético de
+        la procedencia) como entrada de tipo documento, con su importación (un tipo de operación
+        de la prueba, registrado mientras dura); devuelve su uid."""
+        provenance = ext("core.provenance")
+        contract = ext("core.provenance.contract")
+        inputs_model = ext("core.inputs.model")
+        registry = ext("core.inputs.registry")
+        builtin = ext("core.content.builtin")
+        readers = ext("core.content.readers")
+        definition = provenance.OperationDef("res.import_document", "1.0", "res",
+                                             "Test document import", False)
+        contract.register_operation(definition)
+        self.addCleanup(contract.unregister_operation, definition.op_type)
+        pdf = self.folder / "fuentes" / "acta_propiedad.pdf"
+        pdf.parent.mkdir(exist_ok=True)
+        shutil.copyfile(DATA / "informe.pdf", pdf)
+        found = pdf.stat()
+        no_crs = {"not_applicable": True}
+        spec = inputs_model.InputSpec(
+            DOCUMENT, "document", "res", builtin.DOCUMENT.id,
+            files=[registry.locate_source(pdf, project, self.ps.userdata())],
+            file_prints=[inputs_model.SourcePrint(
+                ext("core.hashing").sha256_file(pdf), size=found.st_size,
+                mtime_ns=found.st_mtime_ns)],
+            digest=readers.read_content(builtin.DOCUMENT, builtin.DOCUMENT.request(
+                "document", inputs_model.input_declarations(no_crs, no_crs, {}), {"main": pdf})),
+            crs_h=no_crs, crs_v=no_crs,
+        )
+        handle = ext("core.provenance.operations").begin_operation(
+            project, definition.op_type, settings={}, executor="blender")
+
+        def work(conn: Any) -> str:
+            record = registry.register_input(conn, project, spec, operation_uid=handle.uid)
+            handle.complete(conn)
+            return str(record.uid)
+
+        return self.write(project, work)
+
+    def decisions_project(self) -> tuple[Any, Any, Any, str]:
+        """Un proyecto con V01 (con su encargo) y V02, ``demo.swell_factor`` con su valor por
+        defecto y el acta de la propiedad registrada como entrada de tipo documento, ya leído
+        por la interfaz y con V02 activa: el proyecto, V01, V02 y el uid del acta."""
+        project = self.project()
+        self.enterContext(VersionsDemo(module_name()).registered())
+        v01 = self.create(project, "definitiva", "Definitiva", REQUEST)
+        v02 = self.create(project, "sur", "Fase sur")
+        store = ext("core.params").ParameterStore(project)
+        self.write(project, lambda conn: store.ensure_default(conn, SWELL_FACTOR,
+                                                              geoblender_version="0.0.0"))
+        document = self.register_document(project)
+        ext("bl.ui.version_panels").on_project_read(project)
+        self.set_active(v02)
+        return project, v01, v02, document
+
+    def decision_dialog(self, **given: Any) -> tuple[set[str], Any, SimpleNamespace]:
+        """Abre Registrar decisión… (con ``given`` puestas por quien la lanza) y lo dibuja: lo
+        que devuelve ``invoke``, el ``self`` (con lo dibujado en ``layout``) y el contexto."""
+        values = {"decided_by": "", "decided_at": "", "what": "", "source_input_uid": "NONE",
+                  "source_text": "", "parameters": "", "versions": "", **given}
+        names = frozenset(given)
+        cls, fake = self.operator(ADD_DECISION, properties=SimpleNamespace(
+            is_property_set=lambda name: name in names), **values)
+        context = self.dialog_context()
+        result = cls.invoke(fake, context, None)
+        if result == {"RUNNING_MODAL"}:
+            cls.draw(fake, bpy.context)
+        return result, fake, context
+
+    def show_decisions(self) -> None:
+        """Proyecto ▸ Control ▸ Procedencia y registro ▸ Encargos y decisiones de la
+        propiedad… desde la ventana (``wm.call_panel`` sustituido: en ``blender -b`` cierra
+        Blender): lee las filas y abre su ventana una vez."""
+        window = bpy.context.window_manager.windows[0]
+        with mock.patch.object(self.ops, "_call_panel", return_value={"FINISHED"}) as call:
+            with bpy.context.temp_override(window=window):
+                self.assertEqual(bpy.ops.geoblender.core_show_decisions(), {"FINISHED"})
+        call.assert_called_once_with(DECISIONS_PANEL)
+
+    def decisions_shown(self) -> list[str]:
+        """Lo que dice la ventana de las decisiones (sus etiquetas, en orden)."""
+        return self.labels(draw(getattr(bpy.types, DECISIONS_PANEL), bpy.context))
+
+    def owner_shown(self, key: str) -> list[str]:
+        """Lo que enseña Parámetros del proyecto del parámetro ``key`` seleccionado (sus
+        etiquetas)."""
+        ext("bl.ui.provenance").fill_parameters()
+        view = getattr(bpy.context.window_manager,
+                       ext("bl.props.provenance").WINDOW_MANAGER_PROPERTY)
+        view.parameter_index = [row.key for row in view.parameters].index(key)
+        return self.labels(draw(getattr(bpy.types, PARAMETERS_PANEL), bpy.context))
+
+    def control_shown(self) -> str:
+        """Lo que dice la ventana del control 8: sus etiquetas, seguidas (las partidas, otra vez
+        en una línea)."""
+        return self.joined(self.labels(draw(getattr(bpy.types, PANEL), bpy.context)))
 
     # --- Pruebas -------------------------------------------------------------------------------
 
@@ -1448,13 +1573,170 @@ class VersionsOpsTest(unittest.TestCase):
         self.assertEqual(self.reproductions(project), [])
         self.assertEqual(self.untouched(project), before)
 
+    def test_owner_decision_from_the_dialog(self) -> None:
+        """RF-009-13 (HU-009-4; plan A10, D-33, §5.5; M5; «Hecho cuando» de la T24): Encargos y
+        decisiones de la propiedad… lista las decisiones (ninguna, al principio) y los encargos
+        de las versiones, con «Registrar decisión…»; su diálogo pide quién decide, el día (hoy,
+        por defecto), qué, el documento (los registrados), la referencia, los parámetros y las
+        versiones (la activa, por defecto), y sus textos caben a escala 1,0 y 1,25; abrirlo no
+        escribe nada. Registrada desde él una decisión enlazada a ``demo.swell_factor`` y a V02
+        con el acta: está en el proyecto, aparece en la lista (fecha, quién, qué, documento,
+        afecta a), como decisor de ``demo.swell_factor`` en Parámetros del proyecto, junto al
+        suyo, y en el control 8 con V02 activa (no con V01); ningún fichero cambia salvo la
+        base y su diario. Otra, desde un guion, con una referencia en texto y enlazada a V01:
+        la lista, por el día de la decisión. En inglés, «Owner: …»."""
+        project, v01, v02, document = self.decisions_project()
+        before = files(project.root)
+        counter = vf.change_counter(project)
+
+        # La ventana, sin decisiones: los encargos y «Registrar decisión…».
+        self.show_decisions()
+        shown = self.decisions_shown()
+        self.assertIn("No hay ninguna decisión de la propiedad registrada", shown)
+        self.assertIn(f"V01 · Definitiva: «{REQUEST}»", shown)
+        layout = draw(getattr(bpy.types, DECISIONS_PANEL), bpy.context)
+        (button,) = [item for item in layout.of_kind("operator") if item.target == ADD_DECISION]
+        self.assertEqual((button.text, button.enabled), ("Registrar decisión…", True))
+
+        # El diálogo: el día de hoy y la versión activa, el acta entre los documentos.
+        result, fake, context = self.decision_dialog()
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        dialog = context.window_manager.invoke_props_dialog
+        self.assertEqual(dialog.call_args.kwargs["title"], "Registrar decisión…")
+        self.assertRegex(fake.decided_at, r"^\d\d/\d\d/\d{4}$")
+        self.assertEqual((fake.versions, fake.parameters, fake.source_input_uid),
+                         ("V02", "", "NONE"))
+        self.assertEqual([(item.target, item.text) for item in fake.layout.of_kind("prop")],
+                         [("decided_by", "Quién decide"), ("decided_at", "Fecha de la decisión"),
+                          ("what", "Qué se decide"), ("source_input_uid", "Documento"),
+                          ("source_text", "Referencia"), ("parameters", "Parámetros"),
+                          ("versions", "Versiones")])
+        items = self.ops.document_items(None, bpy.context)
+        self.assertEqual([(identifier, name) for identifier, name, _about in items],
+                         [("NONE", "Ninguno"), (document, DOCUMENT)])
+        labels = ext("bl.ui.labels")
+        width = labels.dialog_width(dialog.call_args.kwargs["width"])
+        for scale in at_scales():
+            assert_fits(self, fake.layout, width, scale=scale, props=True)
+        self.assertEqual(vf.change_counter(project), counter)
+
+        # Registrada desde el diálogo: en el proyecto, en la lista, en Parámetros y en el
+        # control 8 con V02.
+        result, reports = self.execute(
+            ADD_DECISION, decided_by=WHO, decided_at="03/10/2026", what=WHAT,
+            source_input_uid=document, source_text="", parameters=SWELL_FACTOR, versions="V02")
+        self.assertEqual(result, {"FINISHED"})
+        self.assertEqual(reports, [({"INFO"}, f"Decisión de la propiedad registrada: «{WHAT}» "
+                                              f"({WHO}, 03/10/2026)")])
+        decisions = ext("core.versions.decisions")
+        with project.read() as conn:
+            (decision,) = decisions.decisions(conn)
+        self.assertEqual((decision.decided_by, decision.decided_at, decision.what,
+                          decision.source_input_uid, decision.source_text, decision.parameters,
+                          decision.version_codes),
+                         (WHO, "2026-10-03", WHAT, document, None, (SWELL_FACTOR,), ("V02",)))
+        shown = self.decisions_shown()
+        for line in ("03/10/2026 · D. Juan Prueba", WHAT, f"Documento: {DOCUMENT}",
+                     f"Afecta a: {SWELL_FACTOR}, V02"):
+            self.assertIn(line, shown)
+        self.assertNotIn("No hay ninguna decisión de la propiedad registrada", shown)
+        owner = self.owner_shown(SWELL_FACTOR)
+        self.assertIn(OWNER, owner)
+        own = [line for line in owner if line.startswith("Decidido por ")]
+        self.assertEqual(owner.index(OWNER), owner.index(own[0]) + 1)  # junto al suyo
+        self.assertEqual(ext("core.params").ParameterStore(project).get(SWELL_FACTOR)
+                         .decided_by, "Geoblender (valor por defecto)")
+        self.assertIn("Decisiones de la propiedad sobre V02", self.control_shown())
+        self.assertIn(CONTROL_OWNER, self.control_shown())
+        self.set_active(v01)
+        self.assertNotIn(CONTROL_OWNER, self.control_shown())
+        self.assertEqual(files(project.root), before)
+
+        # Desde un guion: una referencia en texto, enlazada a V01 y de un día anterior.
+        self.assertEqual(bpy.ops.geoblender.core_add_decision(
+            decided_by="Dirección de la propiedad", decided_at="2026-09-15",
+            what="Dos fases de explotación", source_text="Correo del 15/09/2026",
+            versions="V01"), {"FINISHED"})
+        shown = self.decisions_shown()
+        self.assertLess(shown.index("15/09/2026 · Dirección de la propiedad"),
+                        shown.index("03/10/2026 · D. Juan Prueba"))
+        self.assertIn("Referencia: Correo del 15/09/2026", shown)
+        self.assertIn("Afecta a: V01", shown)
+        second = "Propiedad: Dirección de la propiedad · 15/09/2026 «Dos fases de explotación»"
+        self.assertIn(second, self.control_shown())
+        self.set_active(v02)
+        self.assertNotIn(second, self.control_shown())
+        self.assertEqual(self.owner_shown(SWELL_FACTOR).count(OWNER), 1)
+
+        # En inglés.
+        self.i18n.set_language("en")
+        self.assertIn(f"Owner: {WHO} · 03/10/2026 «{WHAT}»", self.control_shown())
+        self.assertIn("Owner decisions on V02", self.control_shown())
+        self.assertEqual(files(project.root), before)
+
+    def test_owner_decision_rejections_and_read_only(self) -> None:
+        """RF-009-13 (plan A10, §5.5): Registrar decisión… sin quién decide, sin documento ni
+        referencia, con un día que no es DD/MM/AAAA, con un parámetro o una versión que el
+        proyecto no tiene, se rechaza con su texto (en los dos idiomas) y sin escribir nada. En
+        solo lectura, Encargos y decisiones de la propiedad… sigue abriéndose (solo lee), pero
+        «Registrar decisión…» está desactivada con el motivo y la orden no está disponible."""
+        project, _v01, _v02, document = self.decisions_project()
+        counter = vf.change_counter(project)
+        given = {"decided_by": WHO, "decided_at": "03/10/2026", "what": WHAT,
+                 "source_input_uid": document, "source_text": "", "parameters": SWELL_FACTOR,
+                 "versions": "V02"}
+        for values, text in (
+            ({"decided_by": " "}, "Indique quién decide"),
+            ({"what": ""}, "Indique qué se decide"),
+            ({"decided_at": ""}, "Indique cuándo se decidió"),
+            ({"source_input_uid": "NONE"},
+             "Indique el documento o la referencia de la decisión (un documento registrado como "
+             "entrada o un texto, como «correo del 03/10/2026»)"),
+            ({"decided_at": "3 de octubre"},
+             "Fecha de la decisión «3 de octubre»: escríbala como DD/MM/AAAA"),
+            ({"parameters": f"{SWELL_FACTOR}, demo.nada"},
+             "No hay ningún parámetro «demo.nada» en el proyecto"),
+            ({"versions": "V02; V09"}, "No hay ninguna versión V09 en el proyecto"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.execute(ADD_DECISION, **{**given, **values}),
+                                 ({"CANCELLED"}, [({"ERROR"}, text)]))
+        self.i18n.set_language("en")
+        self.assertEqual(self.execute(ADD_DECISION, **{**given, "decided_by": ""}),
+                         ({"CANCELLED"}, [({"ERROR"}, "State who decides")]))
+        self.i18n.set_language("es")
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.core_add_decision(decided_by=WHO, decided_at="03/10/2026",
+                                                 what=WHAT)
+        self.assertIn("Indique el documento o la referencia de la decisión", str(caught.exception))
+        self.assertEqual(vf.change_counter(project), counter)
+        with project.read() as conn:
+            self.assertEqual(ext("core.versions.decisions").decisions(conn), ())
+
+        # En solo lectura: se consulta, no se registra.
+        project.set_read_only(ext("core.project").ReadOnlyCode.REQUESTED, "prueba")
+        self.assertTrue(bpy.ops.geoblender.core_show_decisions.poll())
+        self.assertFalse(bpy.ops.geoblender.core_add_decision.poll())
+        self.show_decisions()
+        layout = draw(getattr(bpy.types, DECISIONS_PANEL), bpy.context)
+        (button,) = [item for item in layout.of_kind("operator") if item.target == ADD_DECISION]
+        self.assertFalse(button.enabled)
+        self.assertTrue([line for line in self.labels(layout)
+                         if line.startswith("Proyecto en solo lectura: ")], self.labels(layout))
+        self.assertEqual(vf.change_counter(project), counter)
+
     def test_catalog_entry(self) -> None:
-        """RF-009-01, RF-009-03, RF-009-06, RF-009-11 (plan 009 D-38): Nueva versión…, Cambiar
-        estado…, Nueva revisión… (T21), Reproducir… (T23) y el menú contextual de la versión son
-        de la entrada «009», entregada: sus clases reales, ni provisionales ni «Disponible en
-        R-07», con su etiqueta del catálogo."""
+        """RF-009-01, RF-009-03, RF-009-06, RF-009-11, RF-009-13 (plan 009 D-38): Nueva
+        versión…, Cambiar estado…, Nueva revisión… (T21), Reproducir… (T23), Encargos y
+        decisiones de la propiedad… (T24) y el menú contextual de la versión son de la entrada
+        «009», entregada: sus clases reales, ni provisionales ni «Disponible en R-07», con su
+        etiqueta del catálogo; Registrar decisión…, su orden interna."""
         cat = self.commands.catalog()
-        for key in (NEW_VERSION, SET_STATE, NEW_REVISION, REPRODUCE, CONTEXT_MENU):
+        internal = cat.commands[ADD_DECISION]
+        self.assertEqual((internal.kind, internal.entry, internal.label_es),
+                         ("internal", ENTRY, "Registrar decisión…"))
+        for key in (NEW_VERSION, SET_STATE, NEW_REVISION, REPRODUCE, SHOW_DECISIONS,
+                    ADD_DECISION, CONTEXT_MENU):
             with self.subTest(key=key):
                 self.assertEqual(cat.commands[key].entry, ENTRY)
                 cls = self.commands.registered_class(key)
@@ -1470,7 +1752,12 @@ class VersionsOpsTest(unittest.TestCase):
                          "Nueva revisión…")
         self.assertEqual(getattr(bpy.types, "GEOBLENDER_OT_core_reproduce_version").bl_label,
                          REPRODUCE_LABEL)
+        self.assertEqual(getattr(bpy.types, "GEOBLENDER_OT_core_show_decisions").bl_label,
+                         "Encargos y decisiones de la propiedad…")
+        self.assertEqual(getattr(bpy.types, "GEOBLENDER_OT_core_add_decision").bl_label,
+                         "Registrar decisión…")
         self.assertTrue(hasattr(bpy.types, REPORT_PANEL))
+        self.assertTrue(hasattr(bpy.types, DECISIONS_PANEL))
 
 
 if __name__ == "__main__":

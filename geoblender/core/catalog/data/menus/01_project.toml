@@ -356,7 +356,7 @@ label.en = "Assignments and decisions of the owner…"
 label.es = "Encargos y decisiones de la propiedad…"
 description.en = "Assignments and decisions of the owner that the design follows"
 description.es = "Encargos y decisiones de la propiedad que sigue el diseño"
-entry = "R-07"
+entry = "009"
 action = "P"
 frequency = 2
 

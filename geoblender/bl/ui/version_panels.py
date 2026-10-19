@@ -17,7 +17,9 @@ A11, D-38 y D-42; AR §2 y §6).
   SUPERADO o DESCARTADO, desactivada con el motivo: ``bl.ops.versions.new_revision_check``),
   Reproducir… (T23; sin versión activa, sin revisión congelada o con la última alterada,
   desactivada con el motivo: ``bl.ops.versions.reproduce_check``) y Comparar versiones…, que
-  llega en R-62 (hasta entonces, desactivada con su «Disponible en …»).
+  llega en R-62 (hasta entonces, desactivada con su «Disponible en …»). Si la activa tiene
+  decisiones de la propiedad enlazadas (T24; RF-009-13), «Decisiones de la propiedad sobre V02»
+  y cada una con su decisor («Propiedad: D. Juan · 03/10/2026 · «…»»).
 - **Proyecto ▸ Versiones ▸ Versión activa** (:class:`GEOBLENDER_MT_core_versions`): las mismas
   versiones y «Sin versión»; la activa lo dice («· activa»).
 - **La barra de estado** dice «V10.r2 VIGENTE» tras el nombre del proyecto
@@ -32,6 +34,13 @@ A11, D-38 y D-42; AR §2 y §6).
   coincide y, si no, su causa (en alerta), lo tomado de lo congelado, lo no reproducible y dónde
   quedó el informe en JSON. Sus líneas las pone :func:`fill_report` al terminar, ya en el idioma
   de Geoblender (:func:`report_lines`).
+- **Encargos y decisiones de la propiedad** (:class:`GEOBLENDER_PT_core_decisions`, T24;
+  RF-009-13; plan A10, §5.5): la ventana que abre ``geoblender.core_show_decisions``: las
+  decisiones de la propiedad por el día de la decisión (fecha y quién, qué, el documento o la
+  referencia y a qué afecta), «Registrar decisión…» (``geoblender.core_add_decision``; en solo
+  lectura, desactivada con el motivo) y los encargos de las versiones. Sus filas, con las de los
+  documentos que puede citar una decisión, las lee :func:`fill_decisions` (al abrirla, tras
+  registrar una y tras cada lectura de los indicadores).
 
 Todo se dibuja con lo ya leído (``bl.scene.versions`` y las filas de
 ``WindowManager.geoblender_version_panels``): **nada se lee del proyecto al dibujar**. Se vuelve a
@@ -44,26 +53,33 @@ redibuja la barra superior y la de estado (:func:`redraw`, apuntada en ``bl.scen
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import bpy
 
+from ...core.errors import GeoblenderError
 from ...core.i18n import language, tr
 from ...core.params.store import shown_value
+from ...core.versions import decisions as versions_decisions
+from ...core.versions import read as versions_read
 from ...core.versions.model import EDITABLE, VersionStatus, render
 from .. import compat
 from ..props.versions import WINDOW_MANAGER_PROPERTY
 from ..scene import project_session
 from ..scene import versions as scene_versions
 from . import commands, icons, labels, provenance, quick_access
-from .commands import TRANSLATION_CONTEXT, catalog
+from .commands import TRANSLATION_CONTEXT, catalog, text
 from .drawing import draw_command, icon_kwargs, native_icon
 
 if TYPE_CHECKING:
     from ...core.project.session import Project
     from ...core.versions.reproduce import ReproduceReport
+
+LOGGER = logging.getLogger("geoblender.bl.ui")
 
 PANEL = "GEOBLENDER_PT_core_version"
 MENU = "GEOBLENDER_MT_core_versions"
@@ -97,6 +113,13 @@ REPORT_SUMMARY, REPORT_HEADING, REPORT_ITEM, REPORT_NOTE = "SUMMARY", "HEADING",
 """Las clases de línea del informe: el resumen, el título de una parte, una salida, una cifra o
 una operación, y una nota (los valores de una cifra que no coincide, dónde quedó el informe)."""
 MATCH_ICON, DIFFER_ICON, TAKEN_ICON, FILE_ICON = "CHECKMARK", "ERROR", "FREEZE", "FILE"
+DECISIONS_PANEL = "GEOBLENDER_PT_core_decisions"
+"""La ventana de los encargos y las decisiones de la propiedad (T24; RF-009-13)."""
+ADD_DECISION = "geoblender.core_add_decision"
+DECISIONS_UNITS = 30
+"""El ancho de la ventana de las decisiones (unidades de interfaz: 600 px a escala 1,0)."""
+LIST_SEPARATOR = ","
+"""El separador de las claves, los uid y los códigos de una fila de decisión."""
 
 
 def state_icon(status: str) -> dict[str, Any]:
@@ -173,6 +196,17 @@ def draw_version_panel(layout: Any, context: Any) -> None:
             line.alert = bool(revision.altered)
             line.label(text=shown, translate=False,
                        icon=ALTERED_ICON if revision.altered else "NONE")
+    decided = _decisions_of(project, active)
+    if decided:
+        layout.separator()
+        code = next((row.code for row in versions if row.uid == active), "")
+        layout.label(text=tr("Owner decisions on {version}", version=code), translate=False)
+        width = labels.dialog_width(PANEL_UNITS * compat.UI_UNIT_PX)
+        for row in decided:  # el decisor y, debajo, lo que decidió (la ventana es estrecha)
+            labels.draw_wrapped(layout, render("core.version_decision_decider",
+                                               language=language(), who=row.decided_by,
+                                               date=row.day), width, icon="USER")
+            labels.draw_wrapped(layout, f"«{row.what}»", width, icon="BLANK1")
     layout.separator()
     for key in COMMANDS:
         draw_command(layout, key, context=context)
@@ -396,13 +430,160 @@ class GEOBLENDER_PT_core_reproduce_report(bpy.types.Panel):
         draw_reproduce_report(self.layout, context)
 
 
+# Encargos y decisiones de la propiedad (T24) -----------------------------------------------------
+
+
+def _split(text: str) -> list[str]:
+    return [part for part in text.split(LIST_SEPARATOR) if part]
+
+
+def _decision_rows(project: Project) -> list[Any]:
+    """Las filas de las decisiones de ``project`` ya leídas (ninguna si son de otro)."""
+    view = _view()
+    if view is None or view.decisions_project != project.uid:
+        return []
+    return list(view.decisions)
+
+
+def _decisions_of(project: Project, version_uid: str | None) -> list[Any]:
+    """Las decisiones ya leídas de ``project`` enlazadas a la versión ``version_uid``."""
+    if not version_uid:
+        return []
+    return [row for row in _decision_rows(project) if version_uid in _split(row.versions)]
+
+
+def fill_decisions(project: Project) -> int:
+    """Lee de ``project`` (una lectura, sin escribir) sus decisiones de la propiedad
+    (``core.versions.decisions.decisions``), los documentos que puede citar una
+    (``documents``) y los encargos de sus versiones, y los pone en las filas de
+    ``WindowManager.geoblender_version_panels`` (los de antes, fuera). Devuelve cuántas
+    decisiones hay. Un error al leer sigue (quien llama lo dice)."""
+    with project.read() as conn:
+        found = versions_decisions.decisions(conn)
+        documents = versions_decisions.documents(conn)
+        versions = (versions_read.versions(conn) if versions_read.has_versions(conn)
+                    else ())
+    view = _view()
+    if view is None:
+        return len(found)
+    view.decisions_project = project.uid
+    view.decisions.clear()
+    for decision in found:
+        row = view.decisions.add()
+        row.uid, row.decided_by, row.day = decision.uid, decision.decided_by, decision.day
+        row.what = decision.what
+        row.source_name = decision.source_name or ""
+        row.source_text = decision.source_text or ""
+        row.parameters = LIST_SEPARATOR.join(decision.parameters)
+        row.versions = LIST_SEPARATOR.join(decision.versions)
+        row.version_codes = LIST_SEPARATOR.join(decision.version_codes)
+    view.documents.clear()
+    for uid, name in documents:
+        row = view.documents.add()
+        row.uid, row.label = uid, name
+    view.requests.clear()
+    for version in versions:
+        if version.request:
+            row = view.requests.add()
+            row.code, row.title, row.request = version.code, version.title, version.request
+    return len(found)
+
+
+def document_rows(project: Project | None) -> list[tuple[str, str]]:
+    """Los documentos ya leídos de ``project`` que puede citar una decisión: (uid, nombre)."""
+    view = _view()
+    if project is None or view is None or view.decisions_project != project.uid:
+        return []
+    return [(row.uid, row.label) for row in view.documents]
+
+
+def decision_lines(row: Any) -> list[tuple[str, str]]:
+    """Las líneas de una decisión en la ventana, en el idioma de Geoblender (plan §5.5), con su
+    icono: «03/10/2026 · D. Juan», qué se decide, «Documento: …» y «Referencia: …» (lo que
+    tenga) y «Afecta a: res.swell_factor, V02» (si afecta a algo)."""
+    lines = [(f"{row.day} · {row.decided_by}", "TIME"), (row.what, "BLANK1")]
+    if row.source_name:
+        lines.append((tr("Document: {name}", name=row.source_name), "FILE"))
+    if row.source_text:
+        lines.append((tr("Reference: {text}", text=row.source_text), "TEXT"))
+    linked = [*_split(row.parameters), *_split(row.version_codes)]
+    if linked:
+        lines.append((tr("Affects: {items}", items=", ".join(linked)), "LINKED"))
+    return lines
+
+
+def _requests(project: Project) -> list[Any]:
+    """Los encargos ya leídos de las versiones de ``project``."""
+    view = _view()
+    if view is None or view.decisions_project != project.uid:
+        return []
+    return list(view.requests)
+
+
+def draw_decisions(layout: Any, _context: Any) -> None:
+    """La ventana de los encargos y las decisiones de la propiedad (T24; RF-009-13): las
+    decisiones ya leídas (:func:`fill_decisions`; «No hay ninguna decisión de la propiedad
+    registrada»), «Registrar decisión…» (en solo lectura, desactivada con el motivo) y los
+    encargos de las versiones, en líneas que caben. No lee el proyecto."""
+    project = project_session.current()
+    if project is None:
+        _closed_note(layout)
+        return
+    from ..ops.core_provenance import write_unavailable  # al usarlo: bl/ops importa bl/ui
+
+    width = labels.dialog_width(DECISIONS_UNITS * compat.UI_UNIT_PX)
+    rows = _decision_rows(project)
+    layout.label(text=tr("Owner decisions"), translate=False)
+    if not rows:
+        line = layout.row()
+        line.enabled = False
+        line.label(text=tr("No owner decision has been recorded"), translate=False)
+    for row in rows:
+        box = layout.box()
+        for shown, icon in decision_lines(row):
+            labels.draw_wrapped(box, shown, width, icon=icon)
+    blocked = write_unavailable()
+    button = layout.row()
+    button.enabled = blocked is None and commands.is_available(ADD_DECISION)
+    button.operator(ADD_DECISION, text=text(catalog().commands[ADD_DECISION].label),
+                    translate=False, icon="ADD")
+    if blocked is not None:
+        labels.draw_wrapped(layout, blocked, width, icon="LOCKED")
+    requests = _requests(project)
+    if requests:
+        layout.separator()
+        layout.label(text=tr("Assignments of the versions"), translate=False)
+        for row in requests:
+            head = f"{row.code} · {row.title}" if row.title else row.code
+            labels.draw_wrapped(layout, f"{head}: «{row.request}»", width, icon="DOT")
+
+
+class GEOBLENDER_PT_core_decisions(bpy.types.Panel):
+    """The decisions of the owner, with their document, and the assignments of the versions"""
+
+    bl_idname = DECISIONS_PANEL
+    bl_label = "Assignments and decisions of the owner"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = DECISIONS_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_decisions(self.layout, context)
+
+
 # Lo que se pone al día ---------------------------------------------------------------------------
 
 
 def on_project_read(project: Project) -> None:
     """Tras cada lectura de los indicadores de la procedencia (el proyecto cambió): vuelve a leer
-    las versiones (``bl.scene.versions.refresh``)."""
+    las versiones (``bl.scene.versions.refresh``) y las decisiones de la propiedad
+    (:func:`fill_decisions`; un error al leerlas, al registro técnico)."""
     scene_versions.refresh(project)
+    try:
+        fill_decisions(project)
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.warning("No se pudieron leer las decisiones de la propiedad", exc_info=True)
 
 
 def redraw() -> None:
@@ -439,4 +620,4 @@ def uninstall() -> None:
 # En orden de registro.
 classes: tuple[type, ...] = (GEOBLENDER_PT_core_version, GEOBLENDER_MT_core_versions,
                              GEOBLENDER_PT_core_choose_version,
-                             GEOBLENDER_PT_core_reproduce_report)
+                             GEOBLENDER_PT_core_reproduce_report, GEOBLENDER_PT_core_decisions)
