@@ -5,7 +5,8 @@ formato-proyecto §3.1; plan 002 §5.2 y §6).
 - :func:`create_base`: ``application_id`` (``GPKG``) y ``user_version`` (10400), las
   tablas obligatorias del estándar (``gpkg_spatial_ref_sys``, ``gpkg_contents``,
   ``gpkg_geometry_columns``) y ``gpkg_extensions``, con las filas −1, 0 y 4326 del
-  estándar y la del CRS horizontal del proyecto con su WKT1 del catálogo. El CRS vertical
+  estándar (:func:`create_structure`) y la del CRS horizontal del proyecto con su WKT1 del
+  catálogo (:func:`insert_srs`). El CRS vertical
   es un dato del proyecto (``gb_project``): las capas usan el EPSG horizontal, lo más
   compatible con QGIS, DXF y otros (plan 002 §6).
 - :func:`register_internal_table`: una tabla interna ``gb_*`` se declara en
@@ -224,17 +225,35 @@ def _check_columns(columns: Sequence[ColumnDef]) -> list[str]:
     return [column.sql() for column in columns]
 
 
+_INSERT_SRS = (
+    "INSERT INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, "
+    "organization_coordsys_id, definition, description) VALUES (?, ?, ?, ?, ?, ?)"
+)
+
+
 def create_base(conn: sqlite3.Connection, crs: CrsRef) -> None:
-    """Crea la estructura GeoPackage 1.4 con el CRS horizontal del proyecto."""
+    """Crea la estructura GeoPackage 1.4 con el CRS horizontal del proyecto
+    (:func:`create_structure` e :func:`insert_srs`)."""
+    create_structure(conn)
+    insert_srs(conn, crs)
+
+
+def create_structure(conn: sqlite3.Connection) -> None:
+    """La estructura GeoPackage 1.4 sin el CRS del proyecto: ``application_id``,
+    ``user_version``, las tablas del estándar y sus filas −1, 0 y 4326 (la base de un
+    proyecto nuevo la hace una vez por proceso: ``core.project.schema.base_image``; tarea
+    009/T34)."""
     conn.execute(f"PRAGMA application_id = {APPLICATION_ID}")
     conn.execute(f"PRAGMA user_version = {USER_VERSION}")
     for statement in _DDL:
         conn.execute(statement)
-    conn.executemany(
-        "INSERT INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, "
-        "organization_coordsys_id, definition, description) VALUES (?, ?, ?, ?, ?, ?)",
-        [*_STANDARD_SRS, (crs.name, crs.epsg, "EPSG", crs.epsg, crs.wkt1, crs.area or None)],
-    )
+    conn.executemany(_INSERT_SRS, _STANDARD_SRS)
+
+
+def insert_srs(conn: sqlite3.Connection, crs: CrsRef) -> None:
+    """La fila del CRS horizontal ``crs`` en ``gpkg_spatial_ref_sys``, con su WKT1 del
+    catálogo (tras :func:`create_structure`)."""
+    conn.execute(_INSERT_SRS, (crs.name, crs.epsg, "EPSG", crs.epsg, crs.wkt1, crs.area or None))
 
 
 def register_internal_table(conn: sqlite3.Connection, table_name: str) -> None:

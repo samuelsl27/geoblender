@@ -457,11 +457,14 @@ class RejectTest(unittest.TestCase):
 
     def test_failure_inside_database_leaves_nothing(self) -> None:
         """RF-002-02: un fallo a mitad de la base de datos (con el ``project.gpkg`` ya
-        empezado) tampoco deja nada."""
+        empezado: escrita la imagen de su base, en la transacción de sus filas; tarea
+        009/T34) tampoco deja nada."""
         with project_tmp() as tmp:
-            with mock.patch.object(create, "create_schema", side_effect=sqlite3.OperationalError("disk I/O error")):
+            failure = sqlite3.OperationalError("disk I/O error")
+            with mock.patch.object(create, "insert_project", side_effect=failure) as broken:
                 with self.assertRaises(errors.ProjectError):
                     _make(tmp)
+            broken.assert_called_once()
             self.assertEqual(list((tmp / "proyectos").iterdir()), [])
 
 

@@ -51,9 +51,10 @@ cualquier programa. Un esquema publicado no cambia nunca: cualquier cambio sube
 
 from __future__ import annotations
 
+import functools
 import sqlite3
 
-from ..gpkg.base import register_internal_table
+from ..gpkg.base import create_structure, register_internal_table
 from ..provenance import schema as provenance_schema
 from ..versions import schema as versions_schema
 from .model import ProjectRecord
@@ -198,6 +199,30 @@ def create_schema(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
     provenance_schema.create_tables(conn)
     versions_schema.apply_schema_3(conn)
+
+
+@functools.cache
+def base_image() -> bytes:
+    """La base de un proyecto nuevo sin sus filas propias, como imagen de un fichero SQLite
+    (tarea 009/T34; RNF-001-01): la estructura GeoPackage con las filas del estándar
+    (``core.gpkg.base.create_structure``) y el esquema de esta versión (:func:`create_schema`),
+    hechos una vez por proceso en una base en memoria (``sqlite3.Connection.serialize``).
+
+    Crear un proyecto escribe la imagen y añade, en una transacción, el CRS del proyecto, su
+    fila de ``gb_project`` y su evento (``core.project.create``): el mismo ``sqlite_master``
+    (tipo, nombre, tabla y SQL, en su orden) y las mismas filas que hacerlo todo en la base,
+    en ≈ 3 ms en vez de ≈ 9 ms (sus ≈ 140 objetos, con los 106 disparadores, cuestan a SQLite
+    ≈ 5,5 ms; las pruebas crean miles de proyectos). Solo cambian las páginas en que SQLite
+    guarda cada tabla. La imagen es inmutable (``bytes``) y no está en WAL (formato 1)."""
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    try:
+        conn.execute("BEGIN")
+        create_structure(conn)
+        create_schema(conn)
+        conn.execute("COMMIT")
+        return conn.serialize()
+    finally:
+        conn.close()
 
 
 def missing_objects(conn: sqlite3.Connection, version: int) -> list[str]:
