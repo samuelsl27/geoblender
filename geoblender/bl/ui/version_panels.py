@@ -15,8 +15,9 @@ A11, D-38 y D-42; AR §2 y §6).
   estado… (T19; sin versión activa, Cambiar estado… desactivada con el motivo:
   ``bl.ops.versions.no_version_check``), Nueva revisión… (T21; sin versión activa o con ella
   SUPERADO o DESCARTADO, desactivada con el motivo: ``bl.ops.versions.new_revision_check``),
-  Reproducir… y Comparar versiones…, que llegan en sus tareas (hasta entonces, desactivadas con
-  su «Disponible en …»).
+  Reproducir… (T23; sin versión activa, sin revisión congelada o con la última alterada,
+  desactivada con el motivo: ``bl.ops.versions.reproduce_check``) y Comparar versiones…, que
+  llega en R-62 (hasta entonces, desactivada con su «Disponible en …»).
 - **Proyecto ▸ Versiones ▸ Versión activa** (:class:`GEOBLENDER_MT_core_versions`): las mismas
   versiones y «Sin versión»; la activa lo dice («· activa»).
 - **La barra de estado** dice «V10.r2 VIGENTE» tras el nombre del proyecto
@@ -25,6 +26,12 @@ A11, D-38 y D-42; AR §2 y §6).
   que abre una orden de un tipo de versión lanzada sin versión activa
   (``bl.ops.core_provenance.ProvenanceAwareOperator``): el porqué, las versiones en que se puede
   trabajar (BORRADOR y VIGENTE), que la hacen activa, y Nueva versión…
+- **El informe de reproducir** (:class:`GEOBLENDER_PT_core_reproduce_report`, T23; RF-009-11): la
+  ventana que abre Reproducir… al terminar (``bl.ops.versions``): el resumen («V10.r2
+  reproducida: coinciden 5 de 5 salidas y 12 de 12 cifras»), cada salida y cada cifra con si
+  coincide y, si no, su causa (en alerta), lo tomado de lo congelado, lo no reproducible y dónde
+  quedó el informe en JSON. Sus líneas las pone :func:`fill_report` al terminar, ya en el idioma
+  de Geoblender (:func:`report_lines`).
 
 Todo se dibuja con lo ya leído (``bl.scene.versions`` y las filas de
 ``WindowManager.geoblender_version_panels``): **nada se lee del proyecto al dibujar**. Se vuelve a
@@ -37,11 +44,14 @@ redibuja la barra superior y la de estado (:func:`redraw`, apuntada en ``bl.scen
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import bpy
 
 from ...core.i18n import language, tr
+from ...core.params.store import shown_value
 from ...core.versions.model import EDITABLE, VersionStatus, render
 from .. import compat
 from ..props.versions import WINDOW_MANAGER_PROPERTY
@@ -53,6 +63,7 @@ from .drawing import draw_command, icon_kwargs, native_icon
 
 if TYPE_CHECKING:
     from ...core.project.session import Project
+    from ...core.versions.reproduce import ReproduceReport
 
 PANEL = "GEOBLENDER_PT_core_version"
 MENU = "GEOBLENDER_MT_core_versions"
@@ -67,15 +78,25 @@ LIST_BLANK = "BLANK1"
 ALTERED_ICON = "ERROR"
 SET_STATE = "geoblender.core_set_version_state"
 NEW_REVISION = "geoblender.core_new_revision"
+REPRODUCE = "geoblender.core_reproduce_version"
 COMMANDS: tuple[str, ...] = (
     NEW_VERSION,
     NEW_REVISION,
     SET_STATE,
-    "geoblender.core_reproduce_version",
+    REPRODUCE,
     "geoblender.res_compare_versions",
 )
 """Las órdenes de la ventana (plan §5.3.5): Nueva versión… y Cambiar estado… (T19), Nueva
-revisión… (T21); Reproducir… llega en la T23; Comparar, en R-62."""
+revisión… (T21), Reproducir… (T23); Comparar, en R-62."""
+REPORT_PANEL = "GEOBLENDER_PT_core_reproduce_report"
+"""La ventana del informe de reproducir (T23; RF-009-11)."""
+REPORT_UNITS = 28
+"""El ancho de la ventana del informe (unidades de interfaz: 560 px a escala 1,0, como la de las
+cifras de la selección): sus causas son largas."""
+REPORT_SUMMARY, REPORT_HEADING, REPORT_ITEM, REPORT_NOTE = "SUMMARY", "HEADING", "ITEM", "NOTE"
+"""Las clases de línea del informe: el resumen, el título de una parte, una salida, una cifra o
+una operación, y una nota (los valores de una cifra que no coincide, dónde quedó el informe)."""
+MATCH_ICON, DIFFER_ICON, TAKEN_ICON, FILE_ICON = "CHECKMARK", "ERROR", "FREEZE", "FILE"
 
 
 def state_icon(status: str) -> dict[str, Any]:
@@ -245,6 +266,136 @@ class GEOBLENDER_PT_core_choose_version(bpy.types.Panel):
         draw_choose_version(self.layout, context)
 
 
+# El informe de reproducir (T23) ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReportLine:
+    """Una línea de la ventana del informe antes de ponerla en
+    ``WindowManager.geoblender_version_panels`` (``GEOBLENDER_PG_core_report_row``)."""
+
+    kind: str
+    text: str
+    icon: str = "NONE"
+    alert: bool = False
+
+
+def _report_path(report: ReproduceReport, root: Path) -> str:
+    """Dónde quedó el informe en JSON: relativo al proyecto si está en su caché (con «/»); si
+    no (la caché en los datos de usuario, en red o en solo lectura), entero."""
+    from ...core.versions.reproduce import REPORT_NAME  # al usarlo (plan §2.1)
+
+    path = Path(report.folder or "") / REPORT_NAME
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def report_lines(report: ReproduceReport, root: Path) -> list[ReportLine]:
+    """Las líneas de la ventana del informe de ``report`` (del proyecto de raíz ``root``), en el
+    idioma de Geoblender (plan §5.5): el resumen (en alerta si algo no coincide o no se pudo
+    reproducir); cada salida y cada cifra, que coincide o no coincide con su causa (en alerta;
+    de una cifra, también sus dos valores); lo tomado de lo congelado; lo no reproducible (en
+    alerta) y dónde quedó el informe en JSON."""
+    shown = language()
+    lines = [ReportLine(REPORT_SUMMARY, render(
+        "core.version_reproduce_summary", language=shown, revision=report.revision,
+        outputs=sum(item.same for item in report.outputs), outputs_total=len(report.outputs),
+        figures=sum(item.same for item in report.figures), figures_total=len(report.figures)),
+        MATCH_ICON if report.matches else DIFFER_ICON, not report.matches)]
+
+    def differs(name: str, cause: Any) -> ReportLine:
+        return ReportLine(REPORT_ITEM, render(
+            "core.version_reproduce_differs", language=shown, name=name,
+            cause=None if cause is None else cause.text(shown)), DIFFER_ICON, True)
+
+    if report.outputs:
+        lines.append(ReportLine(REPORT_HEADING, tr("Outputs")))
+    for output in report.outputs:
+        if output.same:
+            lines.append(ReportLine(REPORT_ITEM, tr("«{name}» matches", name=output.name),
+                                    MATCH_ICON))
+        else:
+            lines.append(differs(output.name, output.cause))
+    if report.figures:
+        lines.append(ReportLine(REPORT_HEADING, tr("Figures")))
+    for figure in report.figures:
+        frozen = shown_value(figure.frozen, figure.unit, shown)
+        if figure.same:
+            lines.append(ReportLine(REPORT_ITEM, tr("«{name}» matches: {value}",
+                                                    name=figure.name, value=frozen),
+                                    MATCH_ICON))
+            continue
+        lines.append(differs(figure.name, figure.cause))
+        lines.append(ReportLine(REPORT_NOTE, tr(
+            "Frozen: {frozen} · reproduced: {reproduced}", frozen=frozen,
+            reproduced=shown_value(figure.reproduced, figure.unit, shown)), "BLANK1", True))
+    if report.taken_frozen:
+        lines.append(ReportLine(REPORT_HEADING, tr("Taken from what was frozen")))
+        lines += [ReportLine(REPORT_ITEM, note.text(shown), TAKEN_ICON)
+                  for note in report.taken_frozen]
+    if report.not_reproducible:
+        lines.append(ReportLine(REPORT_HEADING, tr("Not reproducible")))
+        lines += [ReportLine(REPORT_ITEM, note.text(shown), DIFFER_ICON, True)
+                  for note in report.not_reproducible]
+    if report.folder is not None:
+        lines.append(ReportLine(REPORT_NOTE, tr("Report saved in {path}",
+                                                path=_report_path(report, root)), FILE_ICON))
+    return lines
+
+
+def fill_report(project: Project, report: ReproduceReport) -> None:
+    """Pone en ``WindowManager.geoblender_version_panels`` las líneas del informe de ``report``
+    del proyecto ``project`` (:func:`report_lines`), las que dibuja su ventana; las de antes,
+    fuera. No lee ni escribe el proyecto."""
+    view = _view()
+    if view is None:
+        return
+    view.report_project = project.uid
+    view.report_revision = report.revision
+    view.report.clear()
+    for line in report_lines(report, Path(project.root)):
+        row = view.report.add()
+        row.kind, row.text, row.icon, row.alert = line.kind, line.text, line.icon, line.alert
+
+
+def draw_reproduce_report(layout: Any, _context: Any) -> None:
+    """La ventana del informe de reproducir (T23; RF-009-11): «Reproducción de V10.r2» y las
+    líneas ya puestas (:func:`fill_report`), partidas al ancho de la ventana. No lee el
+    proyecto; sin informe de este proyecto, nada más que el título."""
+    project = project_session.current()
+    if project is None:
+        _closed_note(layout)
+        return
+    view = _view()
+    if view is None or view.report_project != project.uid or not view.report_revision:
+        return
+    layout.label(text=tr("Reproduction of {revision}", revision=view.report_revision),
+                 translate=False)
+    width = labels.dialog_width(REPORT_UNITS * compat.UI_UNIT_PX)
+    for row in view.report:
+        if row.kind == REPORT_HEADING:
+            layout.separator()
+        column = layout.column()
+        column.alert = row.alert
+        labels.draw_wrapped(column, row.text, width, icon=row.icon or "NONE")
+
+
+class GEOBLENDER_PT_core_reproduce_report(bpy.types.Panel):
+    """What matches the frozen revision when it is reproduced, and why what does not"""
+
+    bl_idname = REPORT_PANEL
+    bl_label = "Reproduction report"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = REPORT_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_reproduce_report(self.layout, context)
+
+
 # Lo que se pone al día ---------------------------------------------------------------------------
 
 
@@ -261,20 +412,23 @@ def redraw() -> None:
 
 def install() -> None:
     """Pone el texto del control 8, la escucha de las versiones y la de los indicadores (una
-    sola vez) y las comprobaciones de Cambiar estado… sin versión y de Nueva revisión… sin
-    versión o con ella no editable (``commands.register_check``)."""
+    sola vez) y las comprobaciones de Cambiar estado… sin versión, de Nueva revisión… sin
+    versión o con ella no editable y de Reproducir… sin versión, sin revisión congelada o con
+    la última alterada (``commands.register_check``)."""
     # Al usarlo: bl/ops importa bl/ui (ARQ-08).
-    from ..ops.versions import new_revision_check, no_version_check
+    from ..ops.versions import new_revision_check, no_version_check, reproduce_check
 
     quick_access.set_label_provider(PANEL, control_label)
     scene_versions.add_listener(redraw)
     provenance.add_change_listener(on_project_read)
     commands.register_check(SET_STATE, no_version_check)
     commands.register_check(NEW_REVISION, new_revision_check)
+    commands.register_check(REPRODUCE, reproduce_check)
 
 
 def uninstall() -> None:
     """Quita lo que puso :func:`install`."""
+    commands.unregister_check(REPRODUCE)
     commands.unregister_check(NEW_REVISION)
     commands.unregister_check(SET_STATE)
     provenance.remove_change_listener(on_project_read)
@@ -284,4 +438,5 @@ def uninstall() -> None:
 
 # En orden de registro.
 classes: tuple[type, ...] = (GEOBLENDER_PT_core_version, GEOBLENDER_MT_core_versions,
-                             GEOBLENDER_PT_core_choose_version)
+                             GEOBLENDER_PT_core_choose_version,
+                             GEOBLENDER_PT_core_reproduce_report)

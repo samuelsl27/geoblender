@@ -5052,3 +5052,60 @@ es = "Versiones"
 
 ["The name «{text}» was not kept: {reason}"]
 es = "No se ha guardado el nombre «{text}»: {reason}"
+
+# Reproducir… (spec 009, T23; RF-009-11, RF-009-09; plan 009 A9, §5.5): la orden, su avance en
+# la barra de estado y la ventana del informe.
+
+["Revision"]
+es = "Revisión"
+
+["Identity or label of the frozen revision that is reproduced (empty: the last frozen one of the version of the command, the active one)"]
+es = "Identidad o etiqueta de la revisión congelada que se reproduce (vacía: la última congelada de la versión de la orden, la activa)"
+
+["Reproducing {revision}: checking the fingerprints… {percent} % · Esc: cancel"]
+es = "Reproduciendo {revision}: comprobando las huellas… {percent} % · Esc: cancelar"
+
+["Reproducing {revision}: «{op_type}» ({index} of {count})… {percent} % · Esc: cancel"]
+es = "Reproduciendo {revision}: «{op_type}» ({index} de {count})… {percent} % · Esc: cancelar"
+
+["Reproducing {revision}: writing the report… {percent} % · Esc: cancel"]
+es = "Reproduciendo {revision}: escribiendo el informe… {percent} % · Esc: cancelar"
+
+["Reproducing {revision}… {percent} % · Esc: cancel"]
+es = "Reproduciendo {revision}… {percent} % · Esc: cancelar"
+
+["The project was closed while {revision} was being reproduced: nothing has been left half-done"]
+es = "El proyecto se cerró mientras se reproducía {revision}: no ha quedado nada a medias"
+
+["Reproducing {revision} stopped: {error}"]
+es = "La reproducción de {revision} se ha parado: {error}"
+
+["Reproduction report"]
+es = "Informe de la reproducción"
+
+["What matches the frozen revision when it is reproduced, and why what does not"]
+es = "Lo que coincide con la revisión congelada al reproducirla y por qué no lo demás"
+
+["Reproduction of {revision}"]
+es = "Reproducción de {revision}"
+
+["Outputs"]
+es = "Salidas"
+
+["«{name}» matches"]
+es = "«{name}» coincide"
+
+["«{name}» matches: {value}"]
+es = "«{name}» coincide: {value}"
+
+["Frozen: {frozen} · reproduced: {reproduced}"]
+es = "Congelada: {frozen} · reproducida: {reproduced}"
+
+["Taken from what was frozen"]
+es = "Tomado de lo congelado"
+
+["Not reproducible"]
+es = "No reproducible"
+
+["Report saved in {path}"]
+es = "Informe guardado en {path}"

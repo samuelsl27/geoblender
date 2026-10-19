@@ -40,8 +40,8 @@ CONTROL = {
     "GEOBLENDER_MT_core_provenance": ("geoblender.core_show_lineage",),
 }
 # Refrescar ya no (spec 010, T11: su orden real, de la entrada «010»), ni Nueva versión… (spec
-# 009, T19: de la entrada «009»).
-LATER = ("geoblender.core_show_decisions", "geoblender.core_reproduce_version")
+# 009, T19: de la entrada «009»), ni Reproducir… (spec 009, T23).
+LATER = ("geoblender.core_show_decisions",)
 INTERNAL = ("core_set_parameter", "core_confirm_parameter", "core_resolve_input",
             "core_discard_input", "core_edit_input", "core_resolve_dataset",
             "core_accept_review", "core_resolve_unregistered", "core_cancel_checks")

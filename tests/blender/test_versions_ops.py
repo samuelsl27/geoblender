@@ -63,6 +63,20 @@ el hueco de la demostración (``demo.pit``) calculado en V02:
 - **«Versión no editable»** (RF-009-21): sin versión, desactivada con el motivo; con la activa
   SUPERADO, su ``poll``, su descripción y los menús lo dicen y se rechaza sin escribir.
 
+T23 (HU-009-2; RF-009-11, RF-009-09; plan 009 A9, §5.3.5 y §5.5), con el hueco y su volumen de la
+demostración calculados en V02 y V02.r1 congelada:
+
+- **Reproducir…** (``geoblender.core_reproduce_version``): desde la interfaz, el modal de pasos
+  con su avance «Reproduciendo V02.r1: «demo.pit» (1 de 2)…» y Esc; reproduce la última revisión
+  congelada de la versión activa y dice «V02.r1 reproducida: coinciden 3 de 3 salidas y 1 de 1
+  cifras…», con la ventana del informe (``GEOBLENDER_PT_core_reproduce_report``) y su JSON en
+  la caché. Con el algoritmo de ``demo.pit`` subido a 1.1, el informe dice qué no coincide y su
+  causa («demo.pit 1.1 instalada, congelada con 1.0»), en los dos idiomas. El proyecto no cambia
+  (ni un fichero fuera de la caché, ni la base).
+- **Cuándo no se puede**: sin versión activa, o sin revisión congelada, desactivada con el
+  motivo; con un fichero de V02.r1 cambiado, se rechaza con lo que no coincide (sin dejar nada en
+  la caché) y, marcada la revisión alterada, la orden queda desactivada con el motivo.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
@@ -125,6 +139,13 @@ CALL_LIMIT_S = 0.2
 """Lo más que dura una llamada del modal de Nueva revisión… con la demostración (T21)."""
 FROZEN_TEXT = re.compile(r"V02\.r1 congelada \(\d+(,\d)? [kM]?B copiados\); V02\.r2 abierta")
 CANCELLED_FREEZE = "Congelación cancelada: no ha quedado nada a medias"
+REPORT_PANEL = "GEOBLENDER_PT_core_reproduce_report"
+REPRODUCE_LABEL = "Reproducir la versión desde sus entradas congeladas"
+REPRODUCED = "V02.r1 reproducida: coinciden 3 de 3 salidas y 1 de 1 cifras"
+CANCELLED_REPRODUCE = "Reproducción cancelada: no ha quedado nada a medias"
+REPRODUCE_STATUS = re.compile(
+    r"^Reproduciendo V02\.r1: «(?P<op>demo\.pit(?:_volume)?)» \((?P<index>[12]) de 2\)… "
+    r"\d{1,3} % · Esc: cancelar$")
 
 
 def ext(name: str) -> Any:
@@ -459,6 +480,58 @@ class VersionsOpsTest(unittest.TestCase):
         prefix = f"snapshots/{label}"
         return {rel: value for rel, value in files(project.root).items()
                 if rel != prefix and not rel.startswith(f"{prefix}/")}
+
+    # --- T23: Reproducir… ------------------------------------------------------------------------
+
+    def reproduce_project(self) -> tuple[Any, Any, Any, Any]:
+        """:meth:`pit_project` con el volumen del hueco también calculado en V02 y V02.r1
+        congelada (V02.r2 abierta), V02 activa: el proyecto, la demostración, V01 y V02."""
+        project, demo, v01, v02 = self.pit_project()
+        demo.pit_volume(project, "V02")
+        self.freeze(project, v02)
+        ext("bl.ui.version_panels").on_project_read(project)
+        return project, demo, v01, v02
+
+    @staticmethod
+    def untouched(project: Any) -> tuple[dict[str, object], int]:
+        """Lo que no puede cambiar al reproducir: cada fichero y cada carpeta del proyecto fuera
+        de su caché (la base y la cabecera incluidas) con su tamaño, su huella y su fecha, y el
+        contador de cambios de la base."""
+        found: dict[str, object] = {}
+        for path in sorted(project.root.rglob("*")):
+            rel = path.relative_to(project.root).as_posix()
+            if rel == "cache" or rel.startswith("cache/"):
+                continue
+            if path.is_dir():
+                found[rel] = "carpeta"
+                continue
+            stat = path.stat()
+            found[rel] = (stat.st_size, hashlib.sha256(path.read_bytes()).hexdigest(),
+                          stat.st_mtime_ns)
+        return found, vf.change_counter(project)
+
+    @staticmethod
+    def reproductions(project: Any) -> list[str]:
+        """Las carpetas de las reproducciones en la caché del proyecto."""
+        folder = project.cache_dir() / "reproducir"
+        return sorted(path.name for path in folder.iterdir()) if folder.is_dir() else []
+
+    def running_reproduction(self) -> Any:
+        """La orden Reproducir… que está en marcha como modal (la que aún tiene pasos)."""
+        cls = getattr(bpy.types, "GEOBLENDER_OT_core_reproduce_version")
+        found = [op for op in bpy.context.window.modal_operators
+                 if isinstance(op, cls) and getattr(op, "_steps", None) is not None]
+        self.assertEqual(len(found), 1, "Reproducir… no está en marcha como modal")
+        return found[0]
+
+    def report_lines(self) -> list[str]:
+        """Lo que dice la ventana del informe, línea a línea (las etiquetas que dibuja)."""
+        return self.labels(draw(getattr(bpy.types, REPORT_PANEL), bpy.context))
+
+    @staticmethod
+    def joined(lines: list[str]) -> str:
+        """Las líneas partidas de la ventana, otra vez seguidas."""
+        return " ".join(lines)
 
     # --- Pruebas -------------------------------------------------------------------------------
 
@@ -1163,13 +1236,225 @@ class VersionsOpsTest(unittest.TestCase):
         self.assertEqual(self.revisions(project, "V02"), [("V02.r1", "open")])
         self.assertEqual(self.control(), "V02.r1")
 
+    def test_reproduce_from_the_command(self) -> None:
+        """RF-009-11, RF-009-09 (plan A9, §5.3.5, §5.5; M5): con V02 activa y V02.r1 congelada,
+        Reproducir… está disponible en la ventana del control 8 y, desde la interfaz, es un modal
+        de pasos con su avance en la barra de estado («Reproduciendo V02.r1: comprobando las
+        huellas…», «Reproduciendo V02.r1: «demo.pit» (1 de 2)…»), ninguna llamada de más de
+        0,2 s. Esc a mitad (con la carpeta de trabajo ya en la caché): «Reproducción cancelada:
+        no ha quedado nada a medias» y nada queda en la caché. Hasta el final: «V02.r1
+        reproducida: coinciden 3 de 3 salidas y 1 de 1 cifras; 1 operación tomada de lo
+        congelado (…, importación)», la ventana del informe (cada salida y la cifra, que
+        coinciden, lo tomado de lo congelado y dónde quedó el informe; sus líneas caben a escala
+        1,0 y 1,25) y su ``informe.json`` en ``cache/reproducir/V02.r1-<8 hex>/``. RF-009-11
+        (plan A9 (3), D-32): con la versión del algoritmo de ``demo.pit`` subida a 1.1, desde un
+        guion (de una vez, sin abrir la ventana), dice que no coinciden su rejilla, su malla y su
+        tabla de bancos, con su causa («demo.pit 1.1 instalada, congelada con 1.0»), como aviso
+        que llega al registro de Blender (``report_later``) y en la ventana del informe, en
+        alerta; el volumen, que se reproduce con la rejilla congelada, coincide; en inglés, en
+        inglés. El proyecto no cambia: ni un fichero fuera de la caché ni la base."""
+        project, demo, _v01, _v02 = self.reproduce_project()
+        item = self.panel_item(REPRODUCE)
+        self.assertTrue(item.enabled)
+        self.assertEqual(item.text, REPRODUCE_LABEL)
+        before = self.untouched(project)
+
+        # Esc a mitad, con la carpeta de trabajo ya creada.
+        self.assertEqual(bpy.ops.geoblender.core_reproduce_version(
+            "EXEC_DEFAULT", in_steps=True), {"RUNNING_MODAL"})
+        operator = self.running_reproduction()
+        with mock.patch.object(type(operator), "STEP_BUDGET_S", 0.0):  # un paso por evento
+            for _ in range(MAX_EVENTS):
+                self.assertEqual(operator.modal(bpy.context, TIMER), {"RUNNING_MODAL"})
+                if self.reproductions(project):
+                    break
+        self.assertEqual(len(self.reproductions(project)), 1)
+        self.assertEqual(operator.modal(bpy.context, ESC), {"CANCELLED"})
+        self.assertEqual(operator.report_log[-1], CANCELLED_REPRODUCE)
+        self.assertEqual(self.reproductions(project), [])
+        self.assertEqual(self.untouched(project), before)
+
+        # Hasta el final: el informe «coinciden» y su ventana.
+        with mock.patch.object(self.ops, "_call_panel", return_value={"FINISHED"}) as panel:
+            self.assertEqual(bpy.ops.geoblender.core_reproduce_version(
+                "EXEC_DEFAULT", in_steps=True), {"RUNNING_MODAL"})
+            operator = self.running_reproduction()
+            state, calls = self.drive(operator)
+        self.assertEqual(state, {"FINISHED"})
+        panel.assert_called_once_with(REPORT_PANEL)
+        self.assertLessEqual(max(calls), CALL_LIMIT_S, [round(call, 3) for call in calls])
+        (shown,) = operator.report_log
+        self.assertTrue(shown.startswith(f"{REPRODUCED}; 1 operación tomada de lo congelado ("),
+                        shown)
+        self.assertTrue(shown.endswith(", importación)"), shown)
+        self.assertNotIn("no coincide", shown)
+        progress = ext("core.project.model").Progress
+        status = self.ops.ReproduceStatus("V02.r1")
+        texts = [status.text(progress(*entry[1:])) for entry in operator.progress_log]
+        self.assertRegex(texts[0], r"^Reproduciendo V02\.r1: comprobando las huellas… \d{1,3} % "
+                                   r"· Esc: cancelar$")
+        operations = [found.group("op", "index") for found in map(REPRODUCE_STATUS.match, texts)
+                      if found]
+        self.assertEqual(list(dict.fromkeys(operations)),
+                         [("demo.pit", "1"), ("demo.pit_volume", "2")])
+        done = [entry[2] for entry in operator.progress_log]
+        self.assertEqual(done, sorted(done))
+
+        # La ventana del informe.
+        (folder,) = self.reproductions(project)
+        self.assertRegex(folder, r"^V02\.r1-[0-9a-f]{8}$")
+        stored = json.loads((project.cache_dir() / "reproducir" / folder / "informe.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual((stored["revision"], stored["matches"]), ("V02.r1", True))
+        lines = self.report_lines()
+        self.assertEqual(lines[0], "Reproducción de V02.r1")
+        text = self.joined(lines)
+        volume = ext("core.params.store").shown_value(3182000.0, "m3", "es")
+        for expected in (REPRODUCED, "Salidas", "«demo_pit_grid» coincide",
+                         "«demo_pit_mesh» coincide", "«demo_pit_benches» coincide", "Cifras",
+                         f"«demo.pit_volume» coincide: {volume}", "Tomado de lo congelado",
+                         ", importación",
+                         f"Informe guardado en cache/reproducir/{folder}/informe.json"):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, text)
+        self.assertNotIn("No reproducible", text)
+        width = ext("bl.ui.labels").dialog_width(getattr(bpy.types, REPORT_PANEL).bl_ui_units_x
+                                                 * ext("bl.compat").UI_UNIT_PX)
+        for scale in at_scales():
+            assert_fits(self, draw(getattr(bpy.types, REPORT_PANEL), bpy.context), width,
+                        scale=scale)
+        self.assertEqual(self.untouched(project), before)
+
+        # Con el algoritmo de demo.pit subido a 1.1 (simulado: el borde un metro más alto),
+        # desde un guion (de una vez, sin ventana): lo que no coincide y su causa, como aviso.
+        contract = ext("core.provenance.contract")
+        original = contract.OPERATIONS[PIT]
+
+        def higher(request: Any) -> Any:
+            settings = {**request.settings, "top_z": request.settings["top_z"] + 1.0}
+            return demo._reproduce(dataclasses.replace(request, settings=settings))
+
+        contract.unregister_operation(PIT)
+        contract.register_operation(dataclasses.replace(original, version="1.1",
+                                                        reproduce=higher))
+
+        def restore() -> None:
+            contract.unregister_operation(PIT)
+            contract.register_operation(original)
+
+        self.addCleanup(restore)
+        jobs = ext("bl.ops.jobs")
+        cause = "demo.pit 1.1 instalada, congelada con 1.0"
+        with mock.patch.object(self.ops, "_call_panel", return_value={"FINISHED"}) as panel:
+            result, reports = self.execute(REPRODUCE, revision_uid="", in_steps=False)
+        panel.assert_not_called()
+        self.assertEqual(result, {"FINISHED"})
+        ((kind, shown),) = reports
+        self.assertEqual(kind, {"WARNING"})
+        self.assertTrue(shown.startswith("V02.r1 reproducida: coinciden 0 de 3 salidas y 1 de 1 "
+                                         f"cifras; «demo_pit_grid» no coincide: {cause}; "
+                                         f"«demo_pit_mesh» no coincide: {cause}; "
+                                         f"«demo_pit_benches» no coincide: {cause}"), shown)
+        self.assertEqual(jobs.sent_reports()[-1], ("WARNING", shown))
+        rows = getattr(bpy.context.window_manager,
+                       ext("bl.props.versions").WINDOW_MANAGER_PROPERTY).report
+        alerts = [(row.text, row.icon) for row in rows if row.alert]
+        for name in ("demo_pit_grid", "demo_pit_mesh", "demo_pit_benches"):
+            with self.subTest(name=name):
+                self.assertIn((f"«{name}» no coincide: {cause}", "ERROR"), alerts)
+        text = self.joined(self.report_lines())
+        for name in ("demo_pit_grid", "demo_pit_mesh", "demo_pit_benches"):
+            self.assertIn(f"«{name}» no coincide: {cause}", text)
+        self.assertIn("«demo.pit_volume» coincide", text)
+
+        self.i18n.set_language("en")
+        result, reports = self.execute(REPRODUCE, revision_uid="V02.r1", in_steps=False)
+        self.assertEqual(result, {"FINISHED"})
+        self.assertIn("«demo_pit_grid» does not match: demo.pit 1.1 installed, frozen with 1.0",
+                      reports[0][1])
+        self.assertIn("«demo_pit_grid» does not match: demo.pit 1.1 installed, frozen with 1.0",
+                      self.joined(self.report_lines()))
+        self.assertEqual(self.report_lines()[0], "Reproduction of V02.r1")
+        self.assertEqual(len(self.reproductions(project)), 3)
+        self.assertEqual(self.untouched(project), before)
+
+    def test_reproduce_unavailable(self) -> None:
+        """RF-009-11, RF-009-09 (plan A8, A9, §5.5; M6): sin versión activa, Reproducir… se
+        dibuja desactivada y su descripción dice que se elija antes la versión; con V01 activa,
+        que no tiene ninguna congelada, «Congele antes una revisión de V01» (su ``poll``, su
+        descripción y los menús), y se rechaza igual. Con un byte de más en un fichero de V02.r1
+        aún sin marcar, la orden comprueba las huellas antes de reproducir y se rechaza con lo
+        que no coincide («La revisión V02.r1 está alterada (…: otro tamaño): no se reproduce»),
+        sin dejar nada en la caché; marcada alterada (la comprobación entera), la orden queda
+        desactivada con ese motivo y se rechaza sin escribir nada."""
+        project, _demo, v01, v02 = self.reproduce_project()
+        cls = self.commands.registered_class(REPRODUCE)
+        about = getattr(cls, "bl_description")
+
+        # Sin versión activa.
+        self.set_active(None)
+        self.assertFalse(self.panel_item(REPRODUCE).enabled)
+        self.assertEqual(cls.description(bpy.context, SimpleNamespace(revision_uid="")),
+                         f"{about}\n{NO_VERSION_NOTE}")
+        self.assertEqual(self.execute(REPRODUCE, revision_uid="", in_steps=False),
+                         ({"CANCELLED"}, [({"ERROR"}, NO_VERSION_NOTE)]))
+
+        # V01, sin ninguna congelada.
+        self.set_active(v01)
+        freeze_first = "Congele antes una revisión de V01"
+        self.assertFalse(self.panel_item(REPRODUCE).enabled)
+        self.assertFalse(self.drawn(REPRODUCE).enabled)
+        with mock.patch.object(cls, "poll_message_set") as message:
+            self.assertFalse(cls.poll(bpy.context))
+        message.assert_called_once_with(freeze_first)
+        self.assertEqual(cls.description(bpy.context, SimpleNamespace(revision_uid="")),
+                         f"{about}\n{freeze_first}")
+        self.assertEqual(self.execute(REPRODUCE, revision_uid="", in_steps=False),
+                         ({"CANCELLED"}, [({"ERROR"}, freeze_first)]))
+
+        # V02.r1 con un fichero cambiado, aún sin marcar: se rechaza al comprobar las huellas.
+        self.set_active(v02)
+        self.assertTrue(cls.poll(bpy.context))
+        (changed,) = (project.root / "snapshots" / "V02.r1").rglob("*.tif")
+        with changed.open("ab") as stream:
+            stream.write(b"\0")
+        rel = changed.relative_to(project.root / "snapshots" / "V02.r1").as_posix()
+        refused = f"La revisión V02.r1 está alterada ({rel}: otro tamaño): no se reproduce"
+        before = self.untouched(project)
+        self.assertEqual(self.execute(REPRODUCE, revision_uid="", in_steps=False),
+                         ({"CANCELLED"}, [({"ERROR"}, refused)]))
+        self.assertEqual(self.reproductions(project), [])
+        self.assertEqual(self.untouched(project), before)
+
+        # Marcada alterada: desactivada con el motivo.
+        check = ext("core.versions.check")
+        with project.read() as conn:
+            frozen = self.read.last_frozen(conn, v02.uid)
+        findings = drain(check.full_steps(project, [frozen.uid]))
+        now = ext("core.timeutil").format_utc(project.clock.now())
+        self.write(project, lambda conn: check.record_findings(conn, project, findings, now=now))
+        ext("bl.ui.version_panels").on_project_read(project)
+        self.assertFalse(self.panel_item(REPRODUCE).enabled)
+        self.assertFalse(self.drawn(REPRODUCE).enabled)
+        with mock.patch.object(cls, "poll_message_set") as message:
+            self.assertFalse(cls.poll(bpy.context))
+        message.assert_called_once_with(refused)
+        self.assertFalse(bpy.ops.geoblender.core_reproduce_version.poll())
+        self.assertEqual(cls.description(bpy.context, SimpleNamespace(revision_uid="")),
+                         f"{about}\n{refused}")
+        before = self.untouched(project)
+        self.assertEqual(self.execute(REPRODUCE, revision_uid="", in_steps=False),
+                         ({"CANCELLED"}, [({"ERROR"}, refused)]))
+        self.assertEqual(self.reproductions(project), [])
+        self.assertEqual(self.untouched(project), before)
+
     def test_catalog_entry(self) -> None:
-        """RF-009-01, RF-009-03, RF-009-06 (plan 009 D-38): Nueva versión…, Cambiar estado…,
-        Nueva revisión… (T21) y el menú contextual de la versión son de la entrada «009»,
-        entregada: sus clases reales, ni provisionales ni «Disponible en R-07», con su etiqueta
-        del catálogo; Reproducir… sigue en R-07 hasta su tarea."""
+        """RF-009-01, RF-009-03, RF-009-06, RF-009-11 (plan 009 D-38): Nueva versión…, Cambiar
+        estado…, Nueva revisión… (T21), Reproducir… (T23) y el menú contextual de la versión son
+        de la entrada «009», entregada: sus clases reales, ni provisionales ni «Disponible en
+        R-07», con su etiqueta del catálogo."""
         cat = self.commands.catalog()
-        for key in (NEW_VERSION, SET_STATE, NEW_REVISION, CONTEXT_MENU):
+        for key in (NEW_VERSION, SET_STATE, NEW_REVISION, REPRODUCE, CONTEXT_MENU):
             with self.subTest(key=key):
                 self.assertEqual(cat.commands[key].entry, ENTRY)
                 cls = self.commands.registered_class(key)
@@ -1183,8 +1468,9 @@ class VersionsOpsTest(unittest.TestCase):
                          "Cambiar estado…")
         self.assertEqual(getattr(bpy.types, "GEOBLENDER_OT_core_new_revision").bl_label,
                          "Nueva revisión…")
-        self.assertEqual(cat.commands[REPRODUCE].entry, "R-07")
-        self.assertFalse(self.commands.is_available(REPRODUCE))
+        self.assertEqual(getattr(bpy.types, "GEOBLENDER_OT_core_reproduce_version").bl_label,
+                         REPRODUCE_LABEL)
+        self.assertTrue(hasattr(bpy.types, REPORT_PANEL))
 
 
 if __name__ == "__main__":

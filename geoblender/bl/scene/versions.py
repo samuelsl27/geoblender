@@ -167,13 +167,15 @@ class ShownVersion:
 
 @dataclass(frozen=True)
 class ShownRevision:
-    """Una revisión de la versión activa como se enseña: su uid, «V10.r2», su estado y si está
-    alterada."""
+    """Una revisión de la versión activa como se enseña: su uid, «V10.r2», su estado, si está
+    alterada y, si lo está, lo que no coincide (``altered_detail``, en JSON: el motivo de que no
+    se reproduzca, T23)."""
 
     uid: str
     label: str
     state: RevisionState
     altered: bool = False
+    detail: str | None = None
 
     def text(self) -> str:
         """«en curso (V10.r3)»… (:func:`revision_text`)."""
@@ -287,7 +289,8 @@ def read_versions(project: Project, active_uid: str | None = None
                if active_uid is not None and active_uid in codes else ())
     shown = tuple(_shown(version, latest.get(version.uid)) for version in found)
     code = codes.get(active_uid or "", "")
-    return shown, tuple(ShownRevision(item.uid, item.label(code), item.state, item.altered)
+    return shown, tuple(ShownRevision(item.uid, item.label(code), item.state, item.altered,
+                                      item.altered_detail)
                         for item in own)
 
 

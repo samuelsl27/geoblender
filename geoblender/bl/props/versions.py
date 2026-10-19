@@ -16,7 +16,9 @@
   las de la 008 y la 010). Las ponen al día ``bl.scene.versions`` al abrir el proyecto, al cambiar
   la versión activa, al cargar la vista y tras cada lectura de los indicadores. Es una **vista**
   que se regenera; vive en ``WindowManager``, que no se guarda en el ``.blend`` de ``scenes/``.
-  Las siguientes tareas de la 009 añaden las filas del informe de reproducir y de las decisiones.
+  Tiene también las líneas de la ventana del informe de reproducir
+  (:class:`GEOBLENDER_PG_core_report_row`, T23; ``GEOBLENDER_PT_core_reproduce_report``), ya
+  presentadas al terminar la reproducción; la T24 añade las de las decisiones.
 
 La versión activa de la sesión, que sí se guarda con la vista, es
 ``Scene.geoblender.active_version_uid`` (``bl.props.core``). Las propiedades de las filas no tienen
@@ -87,8 +89,20 @@ class GEOBLENDER_PG_core_revision_row(bpy.types.PropertyGroup):
     altered: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_core_report_row(bpy.types.PropertyGroup):
+    """Una línea de la ventana del informe de reproducir (T23; RF-009-11), con su texto ya
+    presentado en el idioma de Geoblender: de qué clase es (el resumen, un título, una salida o
+    una cifra, una nota), su texto, su icono nativo y si va en alerta (lo que no coincide)."""
+
+    kind: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    text: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    icon: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    alert: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+
+
 class GEOBLENDER_PG_core_version_panels(bpy.types.PropertyGroup):
-    """Lo que dibujan la ventana del control 8 y el menú de la versión activa (spec 009): una
+    """Lo que dibujan la ventana del control 8 y el menú de la versión activa (spec 009) y la
+    ventana del informe de reproducir (T23: de qué proyecto, de qué revisión y sus líneas): una
     vista del proyecto, regenerada desde él."""
 
     project: StringProperty(options=_STATIC)  # type: ignore[valid-type]
@@ -97,11 +111,16 @@ class GEOBLENDER_PG_core_version_panels(bpy.types.PropertyGroup):
     revisions: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_revision_row, options=_STATIC)
     revisions_of: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    report_project: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    report_revision: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    report: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_report_row, options=_STATIC)
 
 
 # En orden de registro (las filas, antes del grupo que las usa).
 classes: tuple[type, ...] = (GEOBLENDER_PG_core_collection, GEOBLENDER_PG_core_version_row,
-                             GEOBLENDER_PG_core_revision_row, GEOBLENDER_PG_core_version_panels)
+                             GEOBLENDER_PG_core_revision_row, GEOBLENDER_PG_core_report_row,
+                             GEOBLENDER_PG_core_version_panels)
 
 
 def register() -> None:

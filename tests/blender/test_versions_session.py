@@ -89,11 +89,11 @@ LIST_BLANK = "BLANK1"  # «Sin versión» en la lista, alineada con las versione
 FUTURE = ("geoblender.core_new_version", "geoblender.core_new_revision",
           "geoblender.core_set_version_state", "geoblender.core_reproduce_version",
           "geoblender.res_compare_versions")
-"""Las órdenes de la ventana: Nueva versión… y Cambiar estado… ya llegaron (T19), y Nueva
-revisión… (T21); Reproducir…, después (T23; Comparar es de R-62)."""
+"""Las órdenes de la ventana: Nueva versión… y Cambiar estado… ya llegaron (T19), Nueva
+revisión… (T21) y Reproducir… (T23); Comparar es de R-62."""
 ARRIVED = ("geoblender.core_new_version", "geoblender.core_new_revision",
-           "geoblender.core_set_version_state")
-"""Las órdenes de la ventana que ya tienen su clase real (T19, T21; ``test_versions_ops``)."""
+           "geoblender.core_set_version_state", "geoblender.core_reproduce_version")
+"""Las órdenes de la ventana que ya tienen su clase real (T19, T21, T23; ``test_versions_ops``)."""
 
 
 def ext(name: str) -> Any:

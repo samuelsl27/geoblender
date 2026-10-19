@@ -574,8 +574,10 @@ def _select(conn: sqlite3.Connection, sql: str, values: Iterable[str]) -> list[t
     return found
 
 
-def _detail_text(detail: str | None, language: str = "es") -> str:
-    """Lo que no coincide de una marca ``altered_detail`` guardada, como texto."""
+def detail_text(detail: str | None, language: str = "es") -> str:
+    """Lo que no coincide de una marca ``altered_detail`` guardada, como texto en ``language``
+    («rasters/des_final_v10.tif: otro tamaño; V10.r2.gpkg: falta»; «?» si no se puede leer):
+    el ``what`` del rechazo ``core.version_reproduce_altered``, también para la interfaz (T23)."""
     try:
         entries = json.loads(detail) if detail else []
     except ValueError:
@@ -610,7 +612,7 @@ def _find(conn: sqlite3.Connection, ref: str) -> tuple[Any, ...]:
                            version=str(code), revision=label)
     if altered_at is not None:
         raise VersionError("core.version_reproduce_altered", field="revisión", value=label,
-                           version=str(code), revision=label, what=_detail_text(detail))
+                           version=str(code), revision=label, what=detail_text(detail))
     return str(uid), label
 
 

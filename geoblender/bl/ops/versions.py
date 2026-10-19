@@ -45,6 +45,21 @@
   ella SUPERADO o DESCARTADO («Versión no editable», RF-009-04), los menús y la ventana del
   control 8 la dibujan desactivada (:func:`new_revision_check`) y su descripción y su ``poll``
   dicen por qué.
+- ``geoblender.core_reproduce_version`` (T23; RF-009-11, RF-009-09; plan A9, D-4, D-32): «Reproducir
+  la versión desde sus entradas congeladas», de la revisión ``revision_uid`` o, sin ella, de la
+  última congelada de la versión de la orden (:func:`target_version`). Llama a
+  ``core.versions.reproduce.reproduce_steps``, que comprueba antes todas sus huellas y el espacio
+  y vuelve a ejecutar, en la caché y sin cambiar nada del proyecto, sus operaciones con lo
+  congelado: desde la interfaz, en el modal de pasos (``_StepsModal``, 0,05 s por evento) con su
+  avance en la barra de estado («Reproduciendo V10.r2: «des.pit» (2 de 5)… 40 % · Esc:
+  cancelar», :class:`ReproduceStatus`) y Esc, que no deja nada; desde un guion, de una vez. Al
+  terminar, el resumen («V10.r2 reproducida: coinciden …»; con lo que no coincide y su causa, un
+  aviso) y, desde la interfaz, la ventana del informe (``GEOBLENDER_PT_core_reproduce_report``,
+  ``bl.ui.version_panels.fill_report``). Sin versión, sin revisión congelada o con la última
+  alterada, los menús y la ventana del control 8 la dibujan desactivada con el motivo
+  (:func:`reproduce_check`) y su descripción y su ``poll`` lo dicen (:func:`reproduce_note`).
+  No escribe en el proyecto: también en solo lectura (la caché va entonces a los datos de
+  usuario).
 
 Las que escriben, con ``bl_options = {'REGISTER'}`` (sin paso de deshacer, como las de la 008:
 Ctrl+Z no deshace la base) y ``poll`` con el motivo (sin proyecto o en solo lectura). Tras
@@ -52,8 +67,8 @@ escribir, la cabecera (:func:`_after_writing`), los indicadores de la procedenci
 de la sesión (el control 8, su ventana y la barra de estado). Los rechazos, con el texto de
 ``core.versions`` en el idioma de Geoblender, sin escribir nada.
 
-Las demás órdenes de la 009 (Reproducir…, decisiones) llegan en sus tareas (T23, T24) y, hasta
-entonces, son provisionales de R-07.
+Las decisiones de la propiedad llegan en su tarea (T24) y, hasta entonces, son provisionales de
+R-07.
 """
 
 from __future__ import annotations
@@ -79,6 +94,7 @@ from ...core.versions.model import (
     EDITABLE,
     REQUESTED,
     ItemState,
+    RevisionState,
     VersionError,
     VersionStatus,
     render,
@@ -97,6 +113,7 @@ if TYPE_CHECKING:
     from ...core.project.session import Project
     from ...core.provenance.gate import CheckState
     from ...core.versions.freeze import AcceptItem, Blocker, FreezeOutcome
+    from ...core.versions.reproduce import ReproduceReport
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 
@@ -104,6 +121,9 @@ SET_ACTIVE = "geoblender.core_set_active_version"
 NEW_VERSION = "geoblender.core_new_version"
 SET_STATE = "geoblender.core_set_version_state"
 NEW_REVISION = "geoblender.core_new_revision"
+REPRODUCE = "geoblender.core_reproduce_version"
+REPORT_PANEL = "GEOBLENDER_PT_core_reproduce_report"
+"""La ventana del informe de Reproducir… (``bl.ui.version_panels``, T23)."""
 DIALOG_WIDTH = 520
 """El ancho de los diálogos de Nueva versión…, Cambiar estado… y Nueva revisión… (px, a escala
 1,0)."""
@@ -1006,10 +1026,273 @@ class GEOBLENDER_OT_core_new_revision(_StepsModal, bpy.types.Operator):
                                           error=str(exc)))
 
 
+# Reproducir… (T23) ---------------------------------------------------------------------------
+
+_OPERATION = re.compile(r"«(?P<op>[^»]+)» \((?P<index>\d+) \w+ (?P<count>\d+)\)")
+"""La operación del paso que empieza a reproducirla («Reproduciendo V10.r2: «des.pit» (2 de
+5)…», ``core.version_reproduce_progress``)."""
+
+
+def _call_panel(name: str) -> set[str]:
+    """Abre la ventana emergente ``name`` con ``wm.call_panel``; sigue abierta aunque el ratón
+    salga de ella (``keep_open``), hasta pulsar fuera o Esc (como las de la 008 y la 010)."""
+    return bpy.ops.wm.call_panel(name=name, keep_open=True)
+
+
+def altered_text(label: str, detail: str | None) -> str:
+    """Por qué no se reproduce la revisión ``label`` alterada, con lo que no coincide (su
+    ``altered_detail``), en el idioma de Geoblender: «La revisión V10.r2 está alterada
+    (rasters/des_final_v10.tif: otro tamaño): no se reproduce»."""
+    from ...core.versions.reproduce import detail_text  # al usarlo (plan §2.1)
+
+    shown = language()
+    return render("core.version_reproduce_altered", language=shown, revision=label,
+                  what=detail_text(detail, shown))
+
+
+def reproduce_note(context: Any, version: str | None = None) -> str | None:
+    """Por qué no se puede reproducir ahora la última revisión congelada de la versión
+    ``version`` (si no, la de la orden, :func:`target_version`), en el idioma de Geoblender: sin
+    versión, que se elija; sin ninguna congelada, «Congele antes una revisión de V11»; con la
+    última alterada, :func:`altered_text`. ``None`` si se puede o si no se sabe sin leer el
+    proyecto (una versión que no es la activa: lo dice la orden al pedirla). Con lo ya leído
+    (``bl.scene.versions``)."""
+    uid = version or target_version(context)
+    if not uid:
+        return no_version_text()
+    shown = _shown_version(uid)
+    if shown is None or shown.uid != scene_versions.active_version():
+        return None
+    frozen = [item for item in scene_versions.revisions() if item.state == RevisionState.FROZEN]
+    if not frozen:
+        return render("core.version_freeze_first", language=language(), version=shown.code)
+    last = frozen[-1]
+    return altered_text(last.label, last.detail) if last.altered else None
+
+
+def reproduce_check(context: Any, _cmd: Any) -> str:
+    """«No aplicable ahora» de Reproducir… (``bl.ui.commands.register_check``; BS §7.3): el
+    motivo de :func:`reproduce_note`, o ""."""
+    return reproduce_note(context) or ""
+
+
+def reproduce_target(project: Project, revision: str, version: str | None) -> tuple[str, str]:
+    """La revisión que se reproduce y su etiqueta («V10.r2»): ``revision`` (uid o etiqueta) si
+    se da o, si no, la última congelada de ``version`` (uid o código). Solo lee. ``VersionError``
+    sin versiones en el proyecto (``core.version_reproduce_unknown``), con una versión que no
+    existe (``core.version_unknown``) o sin ninguna congelada (``core.version_freeze_first``);
+    una revisión dada que no está, la rechaza la reproducción con su texto."""
+    asked = revision or version or ""
+    with project.read() as conn:
+        if not versions_read.has_versions(conn):
+            raise VersionError("core.version_reproduce_unknown", field="revisión", value=asked,
+                               revision=asked)
+        if revision:
+            found = versions_read.revision(conn, revision)
+            owner = None if found is None else versions_read.version(conn, found.version_uid)
+            if found is None or owner is None:
+                return revision, revision
+            return found.uid, found.label(owner.code)
+        chosen = versions_read.version(conn, asked)
+        if chosen is None:
+            raise VersionError("core.version_unknown", field="versión", value=asked,
+                               version=asked)
+        last = versions_read.last_frozen(conn, chosen.uid)
+    if last is None:
+        raise VersionError("core.version_freeze_first", field="versión", value=chosen.code,
+                           version=chosen.code)
+    return last.uid, last.label(chosen.code)
+
+
+class ReproduceStatus:
+    """El avance de Reproducir… en la barra de estado (plan §5.5), en el idioma de Geoblender,
+    de la revisión ``label``: «Reproduciendo V10.r2: comprobando las huellas… 10 % · Esc:
+    cancelar» y, desde que empieza cada operación (sus entradas, su reproducción y la
+    comparación), «Reproduciendo V10.r2: «des.pit» (2 de 5)… 40 % · Esc: cancelar». Recuerda la
+    operación en curso de un paso al siguiente."""
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.operation: tuple[str, int, int] | None = None
+
+    def text(self, step: Progress) -> str:
+        """El texto del paso ``step`` de ``core.versions.reproduce.reproduce_steps``."""
+        from ...core.versions.reproduce import CHECK_PHASE, PHASES  # al usarlo (plan §2.1)
+
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        found = _OPERATION.search(step.message or "") if step.phase == PHASES[2] else None
+        if found is not None:
+            self.operation = (found["op"], int(found["index"]), int(found["count"]))
+        if step.phase == CHECK_PHASE:
+            return tr("Reproducing {revision}: checking the fingerprints… {percent} % · Esc: "
+                      "cancel", revision=self.label, percent=percent)
+        if step.phase == PHASES[-1]:
+            return tr("Reproducing {revision}: writing the report… {percent} % · Esc: cancel",
+                      revision=self.label, percent=percent)
+        if self.operation is None:  # pragma: no cover - cada operación empieza con su paso
+            return tr("Reproducing {revision}… {percent} % · Esc: cancel", revision=self.label,
+                      percent=percent)
+        name, index, count = self.operation
+        return tr("Reproducing {revision}: «{op_type}» ({index} of {count})… {percent} % · Esc: "
+                  "cancel", revision=self.label, op_type=name, index=index, count=count,
+                  percent=percent)
+
+
+class GEOBLENDER_OT_core_reproduce_version(_StepsModal, bpy.types.Operator):
+    """Recompute the version from its frozen inputs and compare the figures"""
+
+    bl_idname = REPRODUCE
+    bl_label = "Reproduce the version from its frozen inputs"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    # Como Nueva revisión… (plan §5.3.5): cada evento del temporizador avanza pasos durante,
+    # como mucho, este tiempo (ninguna llamada de más de 0,2 s).
+    STEP_BUDGET_S = 0.05
+
+    revision_uid: StringProperty(  # type: ignore[valid-type]
+        name="Revision",
+        description="Identity or label of the frozen revision that is reproduced (empty: the "
+                    "last frozen one of the version of the command, the active one)",
+        options=_HIDDEN,
+    )
+    # En pasos desde el temporizador de la ventana, con el avance y Esc: lo pone ``invoke``;
+    # desde un guion, sin él, de una vez.
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        """Con el proyecto abierto (también en solo lectura: no escribe en él); con la versión
+        de la orden sin ninguna revisión congelada o con la última alterada, no, con el
+        motivo. Sin versión, sí: un guion puede decir qué revisión (la orden lo rechaza si
+        no)."""
+        if not _poll_project(cls, context):
+            return False
+        if not target_version(context):
+            return True
+        note = reproduce_note(context)
+        if note is not None:
+            cls.poll_message_set(note)
+            return False
+        return True
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        """Su descripción emergente y, sin versión, sin revisión congelada o con la última
+        alterada, por qué no se puede (BS §7.3)."""
+        about = getattr(cls, "bl_description", "")
+        if getattr(properties, "revision_uid", ""):
+            return about
+        return with_note(about, reproduce_note(context) or "")
+
+    def invoke(self, context: bpy.types.Context, event: Any) -> set[str]:
+        """Desde la interfaz: en pasos, con el avance y Esc (sin diálogo: no pide nada)."""
+        self.in_steps = getattr(context, "window", None) is not None
+        return self.execute(context)
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        project = project_session.current()
+        if project is None:
+            self.report({"ERROR"}, tr("No project is open"))
+            return {"CANCELLED"}
+        version = None if self.revision_uid else target_version(context)
+        if not self.revision_uid and not version:
+            self.report({"ERROR"}, no_version_text())
+            return {"CANCELLED"}
+        from ...core.versions.reproduce import reproduce_steps  # al usarlo (plan §2.1)
+
+        try:
+            revision, label = reproduce_target(project, self.revision_uid, version)
+            steps = reproduce_steps(project, revision)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._project = project
+        self._label = label
+        self._status = ReproduceStatus(label)
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        report = None
+        try:
+            for step in steps:
+                if step.result is not None:
+                    report = step.result
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self._report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if report is None:  # pragma: no cover - reproduce_steps acaba siempre con su informe
+            self._report({"ERROR"}, tr("The operation did not finish with its result"))
+            return {"CANCELLED"}
+        finished = self._finish(report)
+        if not report.cancelled and not report.matches:
+            # Desde un guion, lo que informa la orden no llega a Info (docs/trampas.md §3).
+            jobs_ops.report_later("WARNING", report.text(language()))
+        return finished
+
+    def _finish(self, report: ReproduceReport) -> set[str]:
+        """Lo que dice la orden al terminar: el resumen del informe (con lo que no coincide y su
+        causa, como aviso) y sus líneas en la ventana del informe (``fill_report``)."""
+        if report.cancelled:
+            self._report({"INFO"}, self._cancelled_text())
+            self.outcome = "CANCELLED"
+            return {"CANCELLED"}
+        from ..ui import version_panels  # al usarlo (ARQ-08)
+
+        version_panels.fill_report(self._project, report)
+        self._report({"INFO"} if report.matches else {"WARNING"}, report.text(language()))
+        self.outcome = "FINISHED"
+        return {"FINISHED"}
+
+    # En pasos ------------------------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        status = getattr(self, "_status", None)
+        if status is None:  # pragma: no cover - lo pone execute antes de empezar
+            status = self._status = ReproduceStatus(getattr(self, "_label", ""))
+        return status.text(step)
+
+    def _cancelled_text(self) -> str:
+        return render("core.version_reproduce_cancelled", language=language())
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return error_text(exc)
+
+    def _result(self, context: bpy.types.Context, step: Progress) -> set[str] | None:
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr("The project was closed while {revision} was "
+                                              "being reproduced: nothing has been left "
+                                              "half-done", revision=getattr(self, "_label", "")))
+            return None
+        self._done(context)
+        finished = self._finish(step.result)
+        if finished == {"FINISHED"}:
+            try:  # la ventana del informe, desde el evento de la ventana
+                _call_panel(REPORT_PANEL)
+            except RuntimeError:
+                LOGGER.warning("No se pudo abrir la ventana del informe", exc_info=True)
+        return finished
+
+    def modal(self, context: bpy.types.Context, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except (sqlite3.Error, OSError) as exc:
+            LOGGER.error("«Reproducir…» se ha parado", exc_info=exc)
+            return self._fail(context, error_text(exc))
+        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
+            LOGGER.error("«Reproducir…» se ha parado", exc_info=exc)
+            return self._fail(context, tr("Reproducing {revision} stopped: {error}",
+                                          revision=getattr(self, "_label", ""),
+                                          error=str(exc)))
+
+
 # En orden de registro.
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_set_active_version,
     GEOBLENDER_OT_core_new_version,
     GEOBLENDER_OT_core_set_version_state,
     GEOBLENDER_OT_core_new_revision,
+    GEOBLENDER_OT_core_reproduce_version,
 )
