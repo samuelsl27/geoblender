@@ -23,7 +23,10 @@ con ``osgeo`` y el ``validate_gpkg.py`` de ``osgeo_utils``.
 Lo que solo sabe QGIS (spec 006, T55: si carga el estilo por defecto de una capa) se pregunta
 a PyQGIS sin interfaz con :func:`run_pyqgis`: un proceso del Python de QGIS con su paquete
 ``qgis``, la plataforma ``offscreen`` de Qt y un perfil de QGIS temporal (nunca el del
-usuario ni su QGIS abierto); tarda alrededor de 1 s.
+usuario ni su QGIS abierto); tarda alrededor de 1 s. Con él, :func:`reopen_layers` (spec 009,
+T27) lista y abre como QGIS las capas de unos ficheros en dos copias de un proyecto, la de
+antes y la de después de un cambio, y abre en la de después un proyecto de QGIS guardado en la
+de antes.
 """
 
 from __future__ import annotations
@@ -210,22 +213,77 @@ def pyqgis_env(install: QgisInstall, profile: Path) -> dict[str, str]:
     return env
 
 
+def _pyqgis(code: str) -> tuple[QgisInstall, str]:
+    """La instalación con PyQGIS y el guion que ejecuta ``code`` en una ``QgsApplication``
+    ya iniciada. :class:`RuntimeError` si no tiene PyQGIS."""
+    install = _install()
+    if not (install.root / "apps" / "qgis" / "python" / "qgis").is_dir():
+        raise RuntimeError(f"la instalación de QGIS de {ENV_QGIS_DIR} no tiene PyQGIS "
+                           "(apps\\qgis\\python\\qgis)")
+    return install, _PYQGIS_START + textwrap.indent(textwrap.dedent(code), "    ") + _PYQGIS_END
+
+
 def run_pyqgis(code: str, *args: str) -> subprocess.CompletedProcess[str]:
     """Ejecuta ``code`` con PyQGIS sin interfaz (``-c``, con ``args`` en ``sys.argv[1:]``)
     dentro de una ``QgsApplication`` ya iniciada con un perfil de QGIS temporal, que se borra
     al terminar: no se toca el QGIS del usuario ni su perfil. :class:`RuntimeError` si la
     instalación no tiene PyQGIS (``apps\\qgis\\python\\qgis``)."""
-    install = _install()
-    if not (install.root / "apps" / "qgis" / "python" / "qgis").is_dir():
-        raise RuntimeError(f"la instalación de QGIS de {ENV_QGIS_DIR} no tiene PyQGIS "
-                           "(apps\\qgis\\python\\qgis)")
+    install, script = _pyqgis(code)
     profile = Path(tempfile.mkdtemp(prefix="gb-pyqgis-"))
     try:
-        script = _PYQGIS_START + textwrap.indent(textwrap.dedent(code), "    ") + _PYQGIS_END
         return blender.run([str(install.python), "-B", "-s", "-c", script, *args],
                            env=pyqgis_env(install, profile), timeout=RUN_TIMEOUT_S)
     finally:
         shutil.rmtree(profile, ignore_errors=True)
+
+
+_ARGS_FROM_STDIN = ("import json as _gb_json, sys as _gb_sys\n"
+                    "_gb_sys.argv[1:] = _gb_json.loads(_gb_sys.stdin.readline())\n")
+
+
+class PyqgisProcess:
+    """``code`` con PyQGIS sin interfaz, como :func:`run_pyqgis`, pero lanzado **antes** de
+    tener sus argumentos (spec 009, T27): QGIS arranca (≈ 1 s) mientras la prueba prepara lo
+    que va a abrir, y :meth:`finish` le pasa los argumentos (``sys.argv[1:]``) por la entrada
+    estándar, en una línea JSON, y espera a que termine. :meth:`close` (también al salir de
+    ``with``) lo termina si no ha terminado y borra su perfil temporal."""
+
+    def __init__(self, code: str) -> None:
+        install, script = _pyqgis(_ARGS_FROM_STDIN + textwrap.dedent(code))
+        self._profile = Path(tempfile.mkdtemp(prefix="gb-pyqgis-"))
+        try:
+            self._process = subprocess.Popen(
+                [str(install.python), "-B", "-s", "-c", script],
+                env=pyqgis_env(install, self._profile), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                errors="replace")
+        except BaseException:
+            shutil.rmtree(self._profile, ignore_errors=True)
+            raise
+
+    def finish(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """Le pasa ``args`` y devuelve su código y su salida, como :func:`run_pyqgis`;
+        ``subprocess.TimeoutExpired`` si no termina en :data:`RUN_TIMEOUT_S`."""
+        try:
+            stdout, stderr = self._process.communicate(json.dumps(list(args)) + "\n",
+                                                       timeout=RUN_TIMEOUT_S)
+        finally:
+            self.close()
+        return subprocess.CompletedProcess(self._process.args, self._process.returncode,
+                                           stdout, stderr)
+
+    def close(self) -> None:
+        """Lo termina si sigue en marcha y borra su perfil."""
+        if self._process.poll() is None:
+            self._process.kill()
+            self._process.communicate()
+        shutil.rmtree(self._profile, ignore_errors=True)
+
+    def __enter__(self) -> PyqgisProcess:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
 
 def validate_gpkg_script() -> str:
@@ -379,3 +437,200 @@ def edit_gpkg(*edits: Mapping[str, Any]) -> EditOutcome:
     found = json.loads(result.stdout.strip().splitlines()[-1])
     return EditOutcome(found["gdal"], tuple(EditResult(ok, error)
                                             for ok, error in found["results"]))
+
+
+# --- Capas abiertas con QGIS antes y después de un cambio (spec 009, T27) --------------------
+
+QGZ_NAME = "geoblender-capas.qgz"
+"""El proyecto de QGIS de :func:`reopen_layers`: se guarda en la carpeta de antes y se abre
+copiado en la de después."""
+INTERNAL_PREFIX = "gb_"
+"""El prefijo de las tablas internas de Geoblender en ``project.gpkg``. No están en
+``gpkg_contents``: QGIS 4.2 las lista, pero no las abre (la capa no es válida: su GDAL no abre
+una tabla sin registrar sin ``LIST_ALL_TABLES=YES``), así que :func:`reopen_layers` solo las
+lista."""
+
+REOPEN_SCRIPT = r"""
+import json
+import shutil
+import sys
+from pathlib import Path
+
+from qgis.core import (Qgis, QgsProject, QgsProviderRegistry, QgsProviderSublayerDetails,
+                       QgsWkbTypes)
+
+before, after = Path(sys.argv[1]), Path(sys.argv[2])
+files = json.loads(sys.argv[3])
+qgz, internal = sys.argv[4], sys.argv[5]
+registry = QgsProviderRegistry.instance()
+project = QgsProject.instance()
+options = QgsProviderSublayerDetails.LayerOptions(project.transformContext())
+
+
+def where(provider, uri, root):
+    parts = registry.decodeUri(provider, uri)
+    path = Path(parts.get("path") or "")
+    try:
+        found = path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        found = path.as_posix()
+    return {"path": found, "layer": parts.get("layerName") or ""}
+
+
+def kind_of(layer_type):
+    if layer_type == Qgis.LayerType.Raster:
+        return "raster"
+    if layer_type == Qgis.LayerType.Vector:
+        return "vector"
+    return str(layer_type)
+
+
+def geometry_of(kind, wkb_type):
+    if kind != "vector" or QgsWkbTypes.geometryType(wkb_type) in (Qgis.GeometryType.Null,
+                                                                  Qgis.GeometryType.Unknown):
+        return ""
+    return QgsWkbTypes.displayString(wkb_type)
+
+
+def listed(root):
+    found = []
+    for name in files:
+        for details in registry.querySublayers(str(root / name)):
+            kind = kind_of(details.type())
+            found.append((details, {**where(details.providerKey(), details.uri(), root),
+                                    "provider": details.providerKey(), "kind": kind,
+                                    "geometry": geometry_of(kind, details.wkbType())}))
+    return found
+
+
+def describe(layer, root):
+    kind = kind_of(layer.type())
+    if kind == "raster":
+        geometry, size = "", [layer.width(), layer.height(), layer.bandCount()]
+    elif kind == "vector":
+        geometry, size = geometry_of(kind, layer.wkbType()), [layer.featureCount()]
+    else:
+        geometry, size = "", []
+    return {**where(layer.providerType(), layer.source(), root),
+            "provider": layer.providerType(), "kind": kind, "geometry": geometry,
+            "valid": layer.isValid(), "size": size}
+
+
+found = {"qgis": Qgis.version()}
+sublayers = listed(before)
+found["listed_before"] = [item for _details, item in sublayers]
+layers = [details.toLayer(options) for details, item in sublayers
+          if not item["layer"].startswith(internal)]
+found["before"] = [describe(layer, before) for layer in layers]
+project.addMapLayers(layers)
+project.setFilePathStorage(Qgis.FilePathType.Relative)
+found["written"] = project.write(str(before / qgz))
+project.clear()
+shutil.copyfile(before / qgz, after / qgz)
+found["listed_after"] = [item for _details, item in listed(after)]
+found["read"] = project.read(str(after / qgz))
+found["reopened"] = [describe(node.layer(), after)
+                     for node in project.layerTreeRoot().findLayers()]
+project.clear()
+print(json.dumps(found))
+"""
+"""El guion de :func:`reopen_layers` (PyQGIS): las carpetas de antes y de después, la lista JSON
+de ficheros, el nombre del proyecto de QGIS y :data:`INTERNAL_PREFIX`; en la salida, la versión
+de QGIS, las capas listadas antes, las abiertas antes, si se escribió y se leyó el proyecto,
+las listadas después y las que abrió el proyecto."""
+
+
+@dataclass(frozen=True)
+class QgisSublayer:
+    """Una capa como la lista QGIS en un fichero: su fichero (ruta relativa a la carpeta del
+    proyecto, con «/»), su nombre en él (``""`` en un GeoTIFF), el proveedor (``ogr``,
+    ``gdal``), el tipo (``vector``, ``raster``) y la geometría (``LineString``…; ``""`` en una
+    tabla o un ráster)."""
+
+    path: str
+    layer: str
+    provider: str
+    kind: str
+    geometry: str
+
+    @property
+    def key(self) -> tuple[str, str]:
+        """El fichero y el nombre de la capa en él."""
+        return (self.path, self.layer)
+
+    @property
+    def internal(self) -> bool:
+        """Si es una tabla interna de Geoblender (:data:`INTERNAL_PREFIX`)."""
+        return self.layer.startswith(INTERNAL_PREFIX)
+
+
+@dataclass(frozen=True)
+class QgisLayer(QgisSublayer):
+    """Una capa abierta con QGIS: lo de :class:`QgisSublayer`, si QGIS la da por válida y su
+    tamaño (las entidades; o el ancho, el alto y las bandas)."""
+
+    valid: bool
+    size: tuple[int, ...]
+
+    @property
+    def listing(self) -> QgisSublayer:
+        """La capa como se lista (sin lo que se sabe al abrirla)."""
+        return QgisSublayer(self.path, self.layer, self.provider, self.kind, self.geometry)
+
+
+@dataclass(frozen=True)
+class ReopenOutcome:
+    """Lo que vio QGIS en :func:`reopen_layers`: su versión; las capas listadas en los
+    ficheros de la carpeta de antes y las de los mismos ficheros en la de después; las que abrió
+    en la de antes (todas menos las internas) y las que abrió en la de después el proyecto de
+    QGIS guardado antes con ellas. Cada lista, ordenada por fichero y capa."""
+
+    version: str
+    listed_before: tuple[QgisSublayer, ...]
+    listed_after: tuple[QgisSublayer, ...]
+    before: tuple[QgisLayer, ...]
+    reopened: tuple[QgisLayer, ...]
+
+
+def _sorted(layers: list[Any]) -> tuple[Any, ...]:
+    return tuple(sorted(layers, key=lambda layer: layer.key))
+
+
+def _sublayers(found: list[dict[str, Any]]) -> tuple[QgisSublayer, ...]:
+    return _sorted([QgisSublayer(**item) for item in found])
+
+
+def _layers(found: list[dict[str, Any]]) -> tuple[QgisLayer, ...]:
+    return _sorted([QgisLayer(**{**item, "size": tuple(item["size"])}) for item in found])
+
+
+def start_reopen() -> PyqgisProcess:
+    """El proceso de :func:`reopen_layers`, lanzado ya (QGIS tarda ≈ 1 s en arrancar) para
+    pasárselo después con ``started``; con ``with``, se termina si no se llegó a usar."""
+    return PyqgisProcess(REOPEN_SCRIPT)
+
+
+def reopen_layers(before: Path, after: Path, files: list[str], *,
+                  started: PyqgisProcess | None = None) -> ReopenOutcome:
+    """Con PyQGIS sin interfaz (:func:`run_pyqgis`, o ``started``, de :func:`start_reopen`),
+    en un solo proceso: lista las capas de cada fichero ``files`` (rutas relativas con «/») de
+    la carpeta ``before`` y abre todas menos las tablas internas (:data:`INTERNAL_PREFIX`); las
+    guarda en un proyecto de QGIS con rutas relativas (``before/`` :data:`QGZ_NAME`), que copia
+    a ``after``; lista las capas de los mismos ficheros en ``after`` y abre allí el proyecto
+    copiado. ``before`` y ``after`` son copias de un proyecto (QGIS puede escribir en lo que
+    abre: ``docs/trampas.md`` §6), y ``after`` aún no tiene el proyecto de QGIS.
+    :class:`RuntimeError` si el proceso no termina bien o no se escribe o no se lee el proyecto
+    de QGIS."""
+    if (Path(after) / QGZ_NAME).exists():
+        raise ValueError(f"«{after}» ya tiene un {QGZ_NAME}")
+    args = (str(before), str(after), json.dumps(list(files)), QGZ_NAME, INTERNAL_PREFIX)
+    result = (run_pyqgis(REOPEN_SCRIPT, *args) if started is None
+              else started.finish(*args))
+    if result.returncode != 0:
+        raise RuntimeError(f"PyQGIS no abrió las capas: {output_of(result)}")
+    found = json.loads(result.stdout.strip().splitlines()[-1])
+    if not (found["written"] and found["read"]):
+        raise RuntimeError(f"PyQGIS no escribió o no leyó {QGZ_NAME}: {output_of(result)}")
+    return ReopenOutcome(found["qgis"], _sublayers(found["listed_before"]),
+                         _sublayers(found["listed_after"]), _layers(found["before"]),
+                         _layers(found["reopened"]))
