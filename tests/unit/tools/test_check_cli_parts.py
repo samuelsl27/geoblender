@@ -5,8 +5,9 @@ cada paso, el paso «motor» y el reparto por tiempo.
 - RNF-007-01, RF-001-06 (spec 003, T40): las pruebas unitarias y las de Blender se
   reparten en varias partes (``tools/unittest_part.py`` y ``run_blender_tests.py
   --parte``) que se ejecutan a la vez dentro de su paso, cada parte de Blender con su
-  propio perfil temporal; los pasos siguen uno tras otro y en su orden, con la misma
-  línea, el mismo resumen y el mismo código. Un fichero cargado en cualquier parte
+  propio perfil temporal; los pasos siguen uno tras otro y en su orden (salvo los que van a
+  la vez que «blender»: ``test_check_cli_together``), con la misma línea, el mismo resumen
+  y el mismo código. Un fichero cargado en cualquier parte
   cuenta como cargado; si las partes no suman las pruebas que dicen haber descubierto,
   el paso falla («reparto incompleto»); y con Ctrl+C se paran las partes en marcha y se
   borra la carpeta temporal.
@@ -18,7 +19,8 @@ cada paso, el paso «motor» y el reparto por tiempo.
   ``tools/make_runtime.py``: «VERDE CON OMISIONES»; sin ``--completo``, no se ejecuta
   (``test_check_cli_options.CompleteStepTest``). Salvo en esas pruebas, el motor de las
   demás es uno simulado (``find_runtime``), y el paso «motor» no cuenta en el orden de los
-  pasos (``FakeRunner.steps``): va a la vez que «blender».
+  pasos (``FakeRunner.steps``): va a la vez que «blender», como «referencia», «licencias» e
+  «iconos» (spec 001 0.8), que ese orden da en el lugar de «blender».
 - RNF-001-01, RNF-007-01 (spec 004, T39): las partes de «unitarias», «blender» y «motor»
   se reparten por la duración medida de cada módulo, guardada fuera del repositorio (un
   almacén en la carpeta temporal del sistema, uno por raíz): sin medidas, como siempre;
@@ -44,6 +46,7 @@ from unittest import mock
 from tests.support.check_cli import (
     Call,
     DOMAIN_FOLDERS,
+    EXECUTED,
     FAKE_SITE,
     FakeRunner,
     HARNESS,
@@ -54,6 +57,7 @@ from tests.support.check_cli import (
     RUNTIME,
     Result,
     SPDX,
+    WITH_BLENDER,
     _manifest_root,
     _python_env,
     _resources_file,
@@ -137,7 +141,7 @@ class PartsTest(unittest.TestCase):
         blenders = runner.calls_of("blender")
         expected = [(i, check.BLENDER_PARTS) for i in range(1, check.BLENDER_PARTS + 1)]
         self.assertEqual([call.part for call in blenders], expected)
-        self.assertEqual(runner.steps(), MANDATORY)
+        self.assertEqual(runner.steps(), EXECUTED)
         for step, count in (("unitarias", 217), ("blender", 12)):
             with self.subTest(paso=step):
                 self.assertRegex(
@@ -177,7 +181,7 @@ class PartsTest(unittest.TestCase):
                     self.assertEqual(call.env[key], python_env[key])
         self.assertRegex(_step_line(result.out, "referencia"),
                          r"^  correcto  referencia\s+\d+,\d s  \(2 pruebas\)$")
-        self.assertEqual(result.runner.steps(), MANDATORY)
+        self.assertEqual(result.runner.steps(), EXECUTED)
 
     def test_shared_copy_for_the_blender_parts(self) -> None:
         """RNF-001-01, RNF-007-01 (spec 006, T48): la copia de pruebas de la extensión se
@@ -332,25 +336,27 @@ class PartsTest(unittest.TestCase):
     def test_steps_one_after_another(self) -> None:
         """RF-001-06: los pasos, también los opcionales, siguen uno tras otro y en el
         orden de la tabla: ninguna orden de un paso empieza antes de que terminen todas
-        las del anterior, y el resumen da sus líneas en ese orden. La excepción es
-        «motor» (spec 004, RF-004-28), que va a la vez que «blender»: empieza después de
-        «manifiesto» y el paso siguiente («arnés») espera a que termine."""
+        las del anterior, y el resumen da sus líneas en ese orden. La excepción son
+        «referencia», «licencias» e «iconos» (spec 001 0.8, tarea 009/T34) y «motor» (spec
+        004, RF-004-28), que van a la vez que «blender»: empiezan después de «manifiesto», el
+        paso siguiente («arnés») espera a que terminen todos, y sus líneas van en su lugar
+        de la tabla (``test_check_cli_together``)."""
         with many_cpus():
             result = run_check("--completo", "--rendimiento", "--banco")
         self.assertEqual(result.code, 0, result.out)
         runner = result.runner
         order = runner.steps()
-        self.assertEqual(order, [*MANDATORY, HARNESS, *OPTIONAL])
-        groups = [[c for c in runner.calls if c.step == step] for step in order]
+        self.assertEqual(order, [*EXECUTED, HARNESS, *OPTIONAL])
+        together = {*WITH_BLENDER, "blender", RUNTIME}
+        sequence = ["unitarias", "manifiesto", "blender", HARNESS, *OPTIONAL]
+        groups = [
+            [c for c in runner.calls if (c.step in together if step == "blender" else c.step == step)]
+            for step in sequence
+        ]
+        self.assertEqual({c.step for c in groups[2]}, together)
         for before, after in zip(groups, groups[1:]):
             with self.subTest(paso=after[0].step):
                 self.assertLessEqual(max(c.ended for c in before), min(c.started for c in after))
-        motor = runner.calls_of(RUNTIME)
-        self.assertTrue(motor)
-        manifest_end = max(c.ended for c in runner.calls_of("manifiesto"))
-        self.assertLessEqual(manifest_end, min(c.started for c in motor))
-        self.assertLessEqual(max(c.ended for c in motor),
-                             min(c.started for c in runner.calls_of(HARNESS)))
         names = [*MANDATORY, RUNTIME, HARNESS, "rendimiento", "banco"]
         positions = [result.out.index(_step_line(result.out, name)) for name in names]
         self.assertEqual(positions, sorted(positions))
@@ -366,7 +372,7 @@ class PartsTest(unittest.TestCase):
         with many_cpus():
             result = run_check(runner=runner)
         self.assertEqual(result.code, 1, result.out)
-        self.assertEqual(runner.steps(), MANDATORY)
+        self.assertEqual(runner.steps(), EXECUTED)
         for step, text in (("unitarias", "FAIL: test_roja"), ("blender", "RuntimeError: rota")):
             with self.subTest(paso=step):
                 line = _step_line(result.out, step)
@@ -627,7 +633,7 @@ class RuntimeStepTest(unittest.TestCase):
         self.assertEqual(result.code, 0, result.out)
         self.assertFalse(together.broken)
         runner = result.runner
-        self.assertEqual(runner.steps(), [*MANDATORY, HARNESS])
+        self.assertEqual(runner.steps(), [*EXECUTED, HARNESS])
         calls = runner.calls_of(RUNTIME)
         expected = [runtime_part_cmd(folder, i, count)
                     for folder, count in counts.items() for i in range(1, count + 1)]
@@ -676,7 +682,7 @@ class RuntimeStepTest(unittest.TestCase):
                                    environ={variable: str(missing)})
             self.assertEqual(result.code, 0, result.out)
             self.assertEqual([call.part for call in result.runner.calls_of(RUNTIME)], [])
-            self.assertEqual(result.runner.steps(), [*MANDATORY, HARNESS])
+            self.assertEqual(result.runner.steps(), [*EXECUTED, HARNESS])
             line = _step_line(result.out, RUNTIME)
             self.assertTrue(line.lstrip().startswith("omitido"), line)
             self.assertIn(variable, line)

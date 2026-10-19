@@ -29,6 +29,7 @@ from unittest import mock
 
 from tests.support.check_cli import (
     DOCS_STEP,
+    EXECUTED,
     FAKE_SITE,
     FakeRunner,
     HARNESS,
@@ -67,7 +68,7 @@ class OptionalStepsTest(unittest.TestCase):
         ni el banco se ejecutan."""
         result = run_check()
         self.assertEqual(result.code, 0)
-        self.assertEqual(result.runner.steps(), MANDATORY)
+        self.assertEqual(result.runner.steps(), EXECUTED)
         self.assertNotIn("rendimiento", result.out)
         self.assertNotIn("banco", result.out)
 
@@ -80,7 +81,7 @@ class OptionalStepsTest(unittest.TestCase):
         result = run_check("--rendimiento")
         self.assertEqual(result.code, 0, result.out)
         runner = result.runner
-        self.assertEqual(runner.steps(), [*MANDATORY, "rendimiento", "rendimiento-blender"])
+        self.assertEqual(runner.steps(), [*EXECUTED, "rendimiento", "rendimiento-blender"])
         self.assertEqual(
             runner.call("rendimiento").cmd,
             blender.python_cmd(
@@ -149,7 +150,7 @@ class OptionalStepsTest(unittest.TestCase):
         fallo (código 0, «VERDE CON OMISIONES (1)»); 0 es correcto y 1, fallo."""
         result = run_check("--banco")
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(result.runner.steps(), [*MANDATORY, "banco"])
+        self.assertEqual(result.runner.steps(), [*EXECUTED, "banco"])
         call = result.runner.call("banco")
         self.assertEqual(call.cmd, blender.python_cmd(INSTALL, "tools/bench_silvestre.py"))
         self.assertEqual(call.cwd, ROOT)
@@ -184,7 +185,7 @@ class OptionalStepsTest(unittest.TestCase):
             with self.subTest(opciones=args):
                 result = run_check(*args)
                 self.assertEqual(result.code, 0, result.out)
-                self.assertEqual(result.runner.steps(), [*MANDATORY, *OPTIONAL])
+                self.assertEqual(result.runner.steps(), [*EXECUTED, *OPTIONAL])
 
     def test_optional_step_order_in_table(self) -> None:
         """RF-001-10: en la tabla, los pasos opcionales llevan su opción y van tras los
@@ -201,7 +202,7 @@ class OptionalStepsTest(unittest.TestCase):
         runner = FakeRunner({"iconos": (0, "", "")})
         result = run_check("--rendimiento", "--banco", runner=runner, steps=steps)
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(runner.steps(), [*MANDATORY, "iconos", *OPTIONAL])
+        self.assertEqual(runner.steps(), [*EXECUTED, "iconos", *OPTIONAL])
 
 
 class CompleteStepTest(unittest.TestCase):
@@ -230,7 +231,7 @@ class CompleteStepTest(unittest.TestCase):
 
         result = run_check(find_runtime=find_runtime)
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(result.runner.steps(), MANDATORY)
+        self.assertEqual(result.runner.steps(), EXECUTED)
         self.assertEqual([call.part for call in result.runner.calls_of(RUNTIME)], [])
         self.assertEqual(searched, [])
         for step in (HARNESS, RUNTIME):
@@ -262,7 +263,7 @@ class CompleteStepTest(unittest.TestCase):
         result = run_check("--completo")
         self.assertEqual(result.code, 0, result.out)
         runner = result.runner
-        self.assertEqual(runner.steps(), [*MANDATORY, HARNESS])
+        self.assertEqual(runner.steps(), [*EXECUTED, HARNESS])
         self.assertTrue(runner.calls_of(RUNTIME))
         names = ["blender", RUNTIME, HARNESS]
         positions = [result.out.index(_step_line(result.out, name)) for name in names]
@@ -294,7 +295,7 @@ class CompleteStepTest(unittest.TestCase):
 
         result = run_check("--rendimiento", "--completo", "--banco")
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(result.runner.steps(), [*MANDATORY, HARNESS, *OPTIONAL])
+        self.assertEqual(result.runner.steps(), [*EXECUTED, HARNESS, *OPTIONAL])
 
         options = {step.name: step.option for step in check.STEPS}
         self.assertEqual(options[HARNESS], "--completo")
@@ -372,7 +373,7 @@ class DocsStepTest(unittest.TestCase):
             result = run_check("--documentacion", root=root, environ={})
             self.assertEqual(result.code, 0, result.out + result.err)
             runner = result.runner
-            self.assertEqual(runner.steps(), [*MANDATORY, DOCS_STEP])
+            self.assertEqual(runner.steps(), [*EXECUTED, DOCS_STEP])
             call = runner.call(DOCS_STEP)
             self.assertEqual(
                 call.cmd,
@@ -389,7 +390,7 @@ class DocsStepTest(unittest.TestCase):
                 "--banco", "--documentacion", "--rendimiento", root=root, environ={}
             )
             self.assertEqual(every.code, 0, every.out)
-            self.assertEqual(every.runner.steps(), [*MANDATORY, *OPTIONAL, DOCS_STEP])
+            self.assertEqual(every.runner.steps(), [*EXECUTED, *OPTIONAL, DOCS_STEP])
 
             wrong = (
                 1,
@@ -439,7 +440,7 @@ class DocsStepTest(unittest.TestCase):
                 with self.subTest(entorno=environ):
                     result = run_check("--documentacion", root=root, environ=environ)
                     self.assertEqual(result.code, 0, result.out + result.err)
-                    self.assertEqual(result.runner.steps(), MANDATORY)
+                    self.assertEqual(result.runner.steps(), EXECUTED)
                     line = _step_line(result.out, DOCS_STEP)
                     self.assertRegex(line, r"^  omitido   documentación\s")
                     self.assertIn(reason, line)
@@ -456,7 +457,7 @@ class DocsStepTest(unittest.TestCase):
         with _project_root() as tmp:
             result = run_check(root=tmp / CODE_DIR_IN_DOCS, environ={})
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(result.runner.steps(), MANDATORY)
+        self.assertEqual(result.runner.steps(), EXECUTED)
         self.assertNotIn(DOCS_STEP, result.out)
 
 
