@@ -249,9 +249,11 @@ def freeze_rows(conn: sqlite3.Connection, version: Any, *, now: str,
 
 
 def build(folder: Path, demo: versions_demo.VersionsDemo, *,
-          clock: FakeClock | None = None) -> VersionsProject:
+          clock: FakeClock | None = None, userdata: Path | None = None) -> VersionsProject:
     """Crea en ``folder`` el proyecto de la demostración de versiones (véase el módulo) con
-    ``demo`` ya registrada; lo deja abierto en escritura."""
+    ``demo`` ya registrada; lo deja abierto en escritura. ``userdata``: la carpeta de los
+    datos de usuario (por defecto, ``folder/u``; con el proyecto en la red, una de disco local,
+    como en un puesto: allí está su caché)."""
     folder = Path(folder)
     parent = folder / "proyectos"
     parent.mkdir()
@@ -260,8 +262,8 @@ def build(folder: Path, demo: versions_demo.VersionsDemo, *,
     source = sources / data.BOUNDARY_V1
     shutil.copyfile(data.DATA_DIR / data.BOUNDARY_V1, source)
     clock = FakeClock() if clock is None else clock
-    userdata = userdata_mod.UserData(folder / "u")
-    project = create.create_project(parent, make_settings(), SESSION, userdata,
+    user = userdata_mod.UserData(folder / "u" if userdata is None else Path(userdata))
+    project = create.create_project(parent, make_settings(), SESSION, user,
                                     clock=clock).project
     try:
         chain: dict[str, str] = {}
@@ -287,7 +289,7 @@ def build(folder: Path, demo: versions_demo.VersionsDemo, *,
     except BaseException:
         project.close()
         raise
-    return VersionsProject(project, folder, source, userdata, clock, boundary.dataset.name,
+    return VersionsProject(project, folder, source, user, clock, boundary.dataset.name,
                            chain, *made)
 
 

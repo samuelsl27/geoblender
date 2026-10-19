@@ -7,8 +7,11 @@ borra quien las crea.
   temporizador del modal; la primera llamada es la que los crea (la orden hace el plan en
   ``execute``). Da el total, cada llamada, el mayor hueco entre dos avances, lo que suma cada
   fase y, con ``cancel_at``, lo que tarda cerrar los pasos (Esc) con el avance en esa fracción.
-- **El GB de RNF-009-02** (y los 5 GB de RNF-009-05, la T29, con otro :class:`BigData` y la
-  carpeta en ``Z:``): :func:`big_project` crea el proyecto de la demostración de versiones
+  Con ``waits`` (``tests.support.netwaits.NetworkWaits``, el proyecto en la red), también las
+  esperas de la red de cada llamada y lo propio, sin ellas (RNF-009-05, T29).
+- **El GB de RNF-009-02** (y los 5 GB de RNF-009-05, la T29: :data:`FIVE_GIGABYTES` con el
+  proyecto en la carpeta de la red y los datos de usuario en disco local, ``userdata``):
+  :func:`big_project` crea el proyecto de la demostración de versiones
   (``tests.support.versions_fixtures.build``) y escribe en V01, con el tipo de prueba
   :data:`BIG_OP`, ``rasters`` rejillas de ``side`` × ``side`` celdas Float64 de 1 m (GeoTIFF del
   perfil ``project`` de la 006: DEFLATE y predictor 3) con el terreno de ``gis_perf`` (la
@@ -154,6 +157,9 @@ class Driven:
     cancelled_s: float | None = None
     cancelled_at: float | None = None
     called: list[str] = field(default_factory=list)  # la fase de cada llamada
+    # Con ``waits``: las esperas de la red de cada llamada y las de cerrar los pasos (Esc).
+    waits: list[dict[str, float]] = field(default_factory=list)
+    cancel_waits: dict[str, float] = field(default_factory=dict)
 
     @property
     def longest_s(self) -> float:
@@ -169,36 +175,75 @@ class Driven:
     def steps(self) -> int:
         return len(self.calls)
 
+    @property
+    def own(self) -> list[float]:
+        """Lo que hace Geoblender en cada llamada: su duración sin sus esperas de la red (sin
+        ``waits``, toda)."""
+        if not self.waits:
+            return list(self.calls)
+        return [call - sum(waits.values()) for call, waits in zip(self.calls, self.waits,
+                                                                  strict=True)]
+
+    @property
+    def worst_own(self) -> int:
+        """La llamada con más trabajo propio (su índice)."""
+        own = self.own
+        return own.index(max(own))
+
+    @property
+    def cancel_own_s(self) -> float:
+        """Lo propio de cerrar los pasos (Esc), sin sus esperas de la red; 0 sin cerrarlos."""
+        if self.cancelled_s is None:
+            return 0.0
+        return self.cancelled_s - sum(self.cancel_waits.values())
+
 
 START_PHASE = "plan"
 """La fase de la primera llamada, la que crea los pasos (el plan de la congelación)."""
 
 
-def drive(start: Callable[[], Iterator[Any]], *, cancel_at: float | None = None) -> Driven:
+def drive(start: Callable[[], Iterator[Any]], *, cancel_at: float | None = None,
+          waits: Any = None) -> Driven:
     """Llama a ``start()`` y recorre los pasos que da como el temporizador de su orden: mide cada
     llamada, el hueco entre dos avances (desde que se pulsa) y lo de cada fase. Con
     ``cancel_at``, los cierra (Esc) en cuanto el avance (``done / total``) llega a esa fracción
-    y mide lo que tarda cerrarlos."""
+    y mide lo que tarda cerrarlos. Con ``waits`` (una ``netwaits.NetworkWaits`` activa), también
+    las esperas de la red de cada llamada (``Driven.waits``) y de cerrarlos."""
     calls: list[float] = []
     called: list[str] = []
+    waited: list[dict[str, float]] = []
     phases: dict[str, float] = {}
     result: Any = None
+
+    def begin() -> None:
+        if waits is not None:
+            waits.begin()
+
+    def took() -> None:
+        if waits is not None:
+            waited.append(waits.take())
+
+    begin()
     began = time.perf_counter()
     steps = start()
     last = time.perf_counter()
+    took()
     calls.append(last - began)
     called.append(START_PHASE)
     phases[START_PHASE] = last - began
     gap = last - began
     while True:
+        begin()
         before = time.perf_counter()
         try:
             step = next(steps)
         except StopIteration:
             calls.append(time.perf_counter() - before)
+            took()
             called.append(called[-1])
             break
         now = time.perf_counter()
+        took()
         calls.append(now - before)
         called.append(step.phase)
         phases[step.phase] = phases.get(step.phase, 0.0) + now - before
@@ -208,11 +253,15 @@ def drive(start: Callable[[], Iterator[Any]], *, cancel_at: float | None = None)
             result = step.result
         fraction = step.done / step.total if step.total else 0.0
         if cancel_at is not None and step.result is None and fraction >= cancel_at:
+            begin()
             closing = time.perf_counter()
             steps.close()
             closed = time.perf_counter() - closing
-            return Driven(now - began, calls, gap, phases, None, closed, fraction, called)
-    return Driven(time.perf_counter() - began, calls, gap, phases, result, called=called)
+            closed_waits = waits.take() if waits is not None else {}
+            return Driven(now - began, calls, gap, phases, None, closed, fraction, called,
+                          waited, closed_waits)
+    return Driven(time.perf_counter() - began, calls, gap, phases, result, called=called,
+                  waits=waited)
 
 
 # --- RNF-009-02 (y la T29): datos grandes en una versión ----------------------------------------
@@ -249,6 +298,9 @@ class BigData:
 
 GIGABYTE = BigData()
 """El GB de §2.2 del plan (RNF-009-02)."""
+FIVE_GIGABYTES = BigData(rasters=55, nominal_bytes=5_000_000_000)
+"""Los 5 GB de RNF-009-05 (T29): las rejillas de :data:`GIGABYTE` (unos 90 MB cada una) hasta
+pasar de 5 GB, con la misma malla y la misma tabla."""
 
 _TERRAIN: dict[int, np.ndarray] = {}
 
@@ -368,13 +420,15 @@ class BigProject:
 
 
 @contextmanager
-def big_project(folder: Path, data: BigData = GIGABYTE) -> Iterator[BigProject]:
+def big_project(folder: Path, data: BigData = GIGABYTE, *,
+                userdata: Path | None = None) -> Iterator[BigProject]:
     """El proyecto de la demostración de versiones en ``folder`` con ``data`` en V01 (véase el
     módulo), abierto en escritura con la demostración y :data:`BIG_OP` registradas; al salir lo
-    cierra (la carpeta es de quien la dio)."""
+    cierra (la carpeta es de quien la dio). ``userdata``: la carpeta de los datos de usuario
+    (con el proyecto en la red, la de su caché), si no es la de ``folder``."""
     clock = FakeClock()
     with vdemo.VersionsDemo().registered() as demo, big_data_type():
-        built = fixtures.build(Path(folder), demo, clock=clock)
+        built = fixtures.build(Path(folder), demo, clock=clock, userdata=userdata)
         try:
             clock.advance(minutes=1)
             started = time.perf_counter()

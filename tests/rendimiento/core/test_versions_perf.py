@@ -27,11 +27,20 @@ su presupuesto, sin relajarlo. Datos sintéticos, generados aquí y borrados al 
   elementos (operaciones, sus tablas, sus cifras y los parámetros que leen; todo ya copiado en la
   anterior): el proyecto sin ``cache/`` crece ≤ lo copiado + 1 MB.
 
-En la red (:class:`NetworkTest`; recurso «red»: la carpeta de pruebas de
-``GEOBLENDER_NET_TEST_DIR``, nunca la de los expedientes ni la del espejo; sin ella, se omiten),
-cada una en una subcarpeta temporal que se borra: RNF-009-01 con el proyecto de D-13 en la red
-(≤ 1 s) y RNF-009-04, las 200 revisiones copiadas a la red (≤ 5 s). RNF-009-05 (5 GB en ``Z:``)
-es la T29, a mano, con el arnés de :class:`FreezeTest`.
+En la red (:class:`NetworkTest` y :class:`NetworkFreezeTest`; recurso «red»: la carpeta de
+pruebas de ``GEOBLENDER_NET_TEST_DIR``, nunca la de los expedientes ni la del espejo; sin ella,
+se omiten), cada una en una subcarpeta temporal que se borra: RNF-009-01 con el proyecto de D-13
+en la red (≤ 1 s) y RNF-009-04, las 200 revisiones copiadas a la red (≤ 5 s).
+
+- RNF-009-05 (:class:`NetworkFreezeTest`, T29): con el arnés de :class:`FreezeTest`, congelar
+  en V01 5 GB (:data:`~tests.support.versions_perf.FIVE_GIGABYTES`: 55 rejillas, la malla y la
+  tabla) con el proyecto en la red y los datos de usuario (la caché, donde se arma el
+  GeoPackage) en disco local, como en un puesto: ≤ 5 min, ningún hueco del avance de más de
+  1 s, Esc con el avance a la mitad en ≤ 2 s, y lo que hace Geoblender en cada llamada (sin sus
+  esperas de la red, ``tests.support.netwaits``) ≤ 0,2 s; las esperas de la red, medidas y
+  anotadas aparte, sin presupuesto (como RNF-005-06). Escribe unos 10 GB en la red (los datos y
+  su instantánea; los borra al terminar) y tarda unos minutos: solo se ejecuta a mano o con
+  ``--rendimiento`` y la carpeta de pruebas de la red.
 """
 
 from __future__ import annotations
@@ -43,7 +52,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
-from tests.support import network
+from tests.support import netwaits, network
 from tests.support import provenance_fixtures as d13
 from tests.support import versions_fixtures as fixtures
 from tests.support import versions_perf as perf
@@ -65,6 +74,9 @@ NET_CHECK_BUDGET_S = 5.0  # RNF-009-04, en Z:
 CHECK_STEP_BUDGET_S = 0.020  # plan §7.3: cada paso de la comprobación de apertura (RNF-008-12)
 GROWTH_MARGIN_BYTES = 1_000_000  # RNF-009-06: lo copiado + 1 MB
 GROWTH_ELEMENTS = (1_000, 2_000)  # plan §7.3 y D-39
+NET_FREEZE_BUDGET_S = 300.0  # RNF-009-05: ≤ 5 min en Z:
+OWN_CALL_BUDGET_S = 0.2  # RNF-009-05: lo propio de cada llamada, sin sus esperas de la red
+NET_SPACE_FACTOR = 2.2  # en la red: los datos, su instantánea y un 10 % (plan A5 (5))
 RUNS = 5  # medianas de 5
 
 
@@ -348,6 +360,119 @@ class NetworkTest(unittest.TestCase):
             for part in ("proyectos", "fuentes"):
                 shutil.copytree(made.folder / part, remote / part)
             _snapshot_checks(self, made, remote, "en la red", NET_CHECK_BUDGET_S)
+
+
+# --- En la red: RNF-009-05 --------------------------------------------------------------------
+
+
+def _waits_text(waits: dict[str, float]) -> str:
+    """Las esperas de la red de una llamada («leer 120,3 ms, forzar 51,0 ms»)."""
+    found = [f"{kind} {_ms(seconds)} ms" for kind, seconds in waits.items() if seconds > 0]
+    return ", ".join(found) if found else "sin esperas de la red"
+
+
+def _call_text(run: perf.Driven, index: int) -> str:
+    """La llamada ``index`` de ``run``: su duración, su fase, lo propio y sus esperas."""
+    return (f"{_ms(run.calls[index])} ms ({run.called[index]}; propio "
+            f"{_ms(run.own[index])} ms; {_waits_text(run.waits[index])})")
+
+
+def _own_text(run: perf.Driven) -> str:
+    """Lo propio de la llamada de ``run`` con más trabajo propio, y esa llamada."""
+    index = run.worst_own
+    return f"{_ms(run.own[index])} ms, en la llamada de {_call_text(run, index)}"
+
+
+def _totals_text(waits: netwaits.NetworkWaits) -> str:
+    """Las esperas de la red de una congelación, por clase: cuántas y cuánto en total."""
+    parts = [f"{kind} {perf.count(waits.counts[kind])} ({_seconds(waits.totals[kind], 2)} s)"
+             for kind in netwaits.KINDS if waits.counts[kind]]
+    kind, seconds = waits.longest
+    return f"{', '.join(parts)}; la más larga, {kind} {_ms(seconds)} ms"
+
+
+class NetworkFreezeTest(unittest.TestCase):
+    """RNF-009-05 (T29): los 5 GB en V01 del proyecto de la demostración de versiones, con el
+    proyecto en la carpeta de pruebas de la red y los datos de usuario en disco local."""
+
+    @requires(network.NET, network.NET_HINT)
+    def test_freeze_five_gigabytes_on_the_network(self) -> None:
+        """RNF-009-05: con el proyecto en la red, congelar en V01 una revisión que copia 5 GB
+        sintéticos (55 rejillas, la malla y la tabla) con los pasos de su orden tarda ≤ 5 min
+        con un avance cada ≤ 1 s, y lo que hace Geoblender en cada llamada, sin sus esperas de
+        la red (abrir, leer, escribir, forzar a disco y cerrar los ficheros de la red, sus
+        metadatos y el COMMIT), no pasa de 0,2 s; las esperas se anotan aparte. Esc con el
+        avance a la mitad no deja nada (ni la carpeta temporal en la red ni el GeoPackage de la
+        caché, en disco local; la revisión sigue abierta) en ≤ 2 s."""
+        data = perf.FIVE_GIGABYTES
+        with ExitStack() as stack:
+            local = stack.enter_context(project_tmp("gb-009-nf-"))
+            remote = stack.enter_context(network.net_tmp("gb-009-nf-"))
+            needed = int(NET_SPACE_FACTOR * data.nominal_bytes)
+            self.assertGreaterEqual(
+                shutil.disk_usage(remote).free, needed,
+                f"la carpeta de pruebas de la red necesita {perf.number(needed / 1e9, 1)} GB "
+                "libres")
+            made = stack.enter_context(perf.big_project(remote, data, userdata=local / "u"))
+            project = made.project
+            self.assertTrue(project.is_network)
+            self.assertTrue(Path(project.cache_dir()).is_relative_to(local))
+            plan = freeze.freeze_plan(project, "V01")
+            self.assertGreaterEqual(plan.bytes_to_copy, data.min_bytes)
+            accepted = freeze.Acceptance.of(plan)
+
+            def start() -> Any:
+                return freeze.freeze_steps(project, "V01", reason="Entrega", accepted=accepted)
+
+            before = perf.listing(made.root, hashes=False, skip_dirs=("cache",))
+            with netwaits.NetworkWaits(remote, projects=(project,)) as waits:
+                stopped = perf.drive(start, cancel_at=0.5, waits=waits)
+            self.assertIsNotNone(stopped.cancelled_s, "la congelación terminó antes de la mitad")
+            self.assertEqual(perf.listing(made.root, hashes=False, skip_dirs=("cache",)), before)
+            self.assertEqual(perf.cache_leftovers(project), [])
+            with project.read() as conn:
+                self.assertEqual(vread.open_revision(conn, made.version_uid).number, 1)
+            cancel = stopped.longest_s + stopped.cancelled_s
+            made.clock.advance(minutes=1)
+            with netwaits.NetworkWaits(remote, projects=(project,)) as waits:
+                found = perf.drive(start, waits=waits)
+            outcome = found.result
+            self.assertIsNotNone(outcome.frozen)
+            self.assertGreaterEqual(outcome.copied_bytes, data.min_bytes)
+            own = found.own + stopped.own + [stopped.cancel_own_s]
+            top = sorted(range(found.steps), key=found.calls.__getitem__, reverse=True)[:5]
+            phases = ", ".join(f"{phase} {_seconds(seconds, 1)} s"
+                               for phase, seconds in found.phases.items())
+            perf.report(
+                f"RNF-009-05: congelar {outcome.label} con el proyecto en la red y "
+                f"{data.label} ({perf.number(outcome.copied_bytes / 1e9, 3)} GB copiados en "
+                f"{len(outcome.files)} ficheros; los datos de usuario, con la caché en que se "
+                f"arma el GeoPackage, en disco local: como mucho "
+                f"{perf.number(plan.cache_needed / 1e6, 1)} MB): {_seconds(found.total_s, 1)} s "
+                f"en {found.steps} llamadas ({phases}), el mayor hueco del avance "
+                f"{_ms(found.gap_s)} ms; la llamada más larga "
+                f"{_call_text(found, found.calls.index(found.longest_s))}; lo propio de cada "
+                f"llamada (sin sus esperas de la red), el peor {_own_text(found)}; las cinco "
+                f"más largas: {'; '.join(_call_text(found, index) for index in top)}; las "
+                f"esperas de la red, aparte: {_totals_text(waits)}; Esc con el avance al "
+                f"{stopped.cancelled_at * 100:.0f} % (a los {_seconds(stopped.total_s, 1)} s, "
+                f"{stopped.steps} llamadas, el mayor hueco del avance {_ms(stopped.gap_s)} ms, "
+                f"la llamada más larga "
+                f"{_call_text(stopped, stopped.calls.index(stopped.longest_s))} y lo propio, "
+                f"el peor {_own_text(stopped)}): cerrar los pasos y borrar lo copiado "
+                f"{_ms(stopped.cancelled_s)} ms (propio {_ms(stopped.cancel_own_s)} ms; "
+                f"{_waits_text(stopped.cancel_waits)}), con la llamada más larga "
+                f"{_ms(cancel)} ms, sin nada en snapshots/ ni en la caché; crear los datos en "
+                f"la red {_seconds(made.produce_s, 1)} s (presupuestos "
+                f"{_seconds(NET_FREEZE_BUDGET_S, 0)} s, {_seconds(PROGRESS_GAP_S, 0)} s, "
+                f"{_seconds(CANCEL_BUDGET_S, 0)} s y {_seconds(OWN_CALL_BUDGET_S, 1)} s por "
+                f"llamada; {perf.free_space(remote)}; {perf.free_space(local)})"
+            )
+            self.assertLessEqual(found.total_s, NET_FREEZE_BUDGET_S)
+            self.assertLessEqual(found.gap_s, PROGRESS_GAP_S)
+            self.assertLessEqual(stopped.gap_s, PROGRESS_GAP_S)
+            self.assertLessEqual(cancel, CANCEL_BUDGET_S)
+            self.assertLessEqual(max(own), OWN_CALL_BUDGET_S)
 
 
 if __name__ == "__main__":
