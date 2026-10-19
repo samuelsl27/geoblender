@@ -91,6 +91,17 @@ sintético) registrada como entrada de tipo documento y ``demo.swell_factor`` en
   del proyecto («Propiedad: D. Juan Prueba · 03/10/2026 · «…»», junto al suyo) y en el control 8
   con V02 activa. Los rechazos, con su texto y sin escribir nada.
 
+T26 (HU-009-1; RF-009-09; plan 009 A8, §5.5; M6), con el hueco de la demostración calculado en V02
+y V02.r1 congelada:
+
+- **Una revisión alterada al abrir**: con un fichero de V02.r1 cambiado mientras el proyecto
+  estaba cerrado, la comprobación de apertura da el aviso grave con la revisión y el fichero como
+  error en el registro de Blender (``report_later``) y en los avisos del proyecto; en solo
+  lectura, sin escribir nada; en escritura, la revisión queda marcada «alterada» en el proyecto y
+  en la ventana del control 8, Reproducir… desactivada y el resto del proyecto sigue en escritura.
+- **A petición**: «Comprobar cambios en las entradas» mira también las huellas de las
+  instantáneas y encuentra un fichero con otra huella y el mismo tamaño.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
@@ -657,6 +668,27 @@ class VersionsOpsTest(unittest.TestCase):
         """Lo que dice la ventana del control 8: sus etiquetas, seguidas (las partidas, otra vez
         en una línea)."""
         return self.joined(self.labels(draw(getattr(bpy.types, PANEL), bpy.context)))
+
+    # --- T26: una revisión alterada --------------------------------------------------------------
+
+    @staticmethod
+    def reported() -> Any:
+        """Anota lo que se lleva al registro de Blender (``bl.ops.jobs.report_later``), sin
+        dejar de llevarlo."""
+        jobs = ext("bl.ops.jobs")
+        return mock.patch.object(jobs, "report_later", wraps=jobs.report_later)
+
+    @staticmethod
+    def errors(later: mock.Mock) -> list[str]:
+        """Los textos que se llevaron como error al registro de Blender."""
+        return [call.args[1] for call in later.call_args_list if call.args[0] == "ERROR"]
+
+    def revision_of(self, project: Any, version: Any, number: int) -> Any:
+        """La revisión ``number`` de ``version``, como está en el proyecto."""
+        with project.read() as conn:
+            (found,) = [item for item in self.read.revisions(conn, version.uid)
+                        if item.number == number]
+        return found
 
     # --- Pruebas -------------------------------------------------------------------------------
 
@@ -1572,6 +1604,97 @@ class VersionsOpsTest(unittest.TestCase):
                          ({"CANCELLED"}, [({"ERROR"}, refused)]))
         self.assertEqual(self.reproductions(project), [])
         self.assertEqual(self.untouched(project), before)
+
+    def test_altered_revision_on_opening_and_on_request(self) -> None:
+        """RF-009-09 (plan A8, §5.5; M6): con un byte de más en el GeoTIFF de V02.r1, cambiado
+        con el proyecto cerrado, abrirlo en solo lectura (otra sesión tiene el cerrojo) da, al
+        terminar la comprobación de apertura, el aviso grave con la revisión y el fichero («La
+        revisión V02.r1 está alterada: 1 fichero no coincide con lo congelado (…: otro tamaño).
+        No se usará ni se reproducirá») como error en el registro de Blender (``report_later``) y
+        en los avisos del proyecto, sin escribir nada (ni un fichero ni la base: la revisión,
+        sin marcar). Abierto en escritura: el mismo aviso; la revisión, marcada «alterada» en el
+        proyecto y en la ventana del control 8 («congelada: V02.r1 (alterada)», en alerta, con
+        V02 activa), Reproducir… desactivada con el motivo, y el proyecto sigue en escritura (se
+        crea V03). Con el fichero otra vez de su tamaño pero otro contenido, «Comprobar cambios
+        en las entradas», que dice que mira las huellas de las instantáneas, lo encuentra («…:
+        otra huella»), en inglés en inglés."""
+        project, _demo, _v01, v02 = self.pit_project()
+        self.freeze(project, v02)
+        root = project.root
+        folder = root / "snapshots" / "V02.r1"
+        (changed,) = folder.rglob("*.tif")
+        rel = changed.relative_to(folder).as_posix()
+        original = changed.read_bytes()
+        altered = ("La revisión V02.r1 está alterada: 1 fichero no coincide con lo congelado "
+                   f"({rel}: otro tamaño). No se usará ni se reproducirá")
+        core_project = ext("core.project")
+        self.ps.close()
+        changed.write_bytes(original + b"\0")
+
+        # En solo lectura (otra sesión tiene el cerrojo): el aviso, sin escribir nada.
+        other_session = dataclasses.replace(self.ps.session(),
+                                            session_uid=ext("core.ids").new_uid())
+        other = core_project.open_project(root, other_session, self.ps.userdata()).project
+        self.addCleanup(other.close)
+        reader = core_project.open_project(root, self.ps.session(), self.ps.userdata()).project
+        self.addCleanup(reader.close)
+        self.assertFalse(reader.writable)
+        before = self.untouched(reader)
+        self.ps.take_notices()
+        with self.reported() as later:
+            self.ps.attach(reader)
+            self.run_checks()
+        self.assertEqual(self.errors(later), [altered])
+        self.assertIn(altered, self.ps.take_notices())
+        self.assertEqual(self.untouched(reader), before)
+        self.assertFalse(self.revision_of(reader, v02, 1).altered)
+        self.ps.close()
+        other.close()
+
+        # En escritura: el aviso, la marca en el proyecto y en el control 8; sigue en escritura.
+        writer = core_project.open_project(root, self.ps.session(), self.ps.userdata()).project
+        self.addCleanup(writer.close)
+        self.assertTrue(writer.writable)
+        with self.reported() as later:
+            self.ps.attach(writer)
+            self.run_checks()
+        self.assertEqual(self.errors(later), [altered])
+        self.assertIn(altered, self.ps.take_notices())
+        marked = self.revision_of(writer, v02, 1)
+        self.assertTrue(marked.altered)
+        self.assertEqual(json.loads(marked.altered_detail), [{"path": rel, "problem": "size"}])
+        ext("bl.ui.provenance").indicator_tick()  # lee el proyecto cambiado
+        self.assertEqual(self.control(), "V02.r2")
+        layout = draw(getattr(bpy.types, PANEL), bpy.context)
+        (line,) = [item for item in layout.of_kind("label") if "V02.r1" in item.text]
+        self.assertEqual((line.text, line.icon, line.alert),
+                         ("congelada: V02.r1 (alterada)", "ERROR", True))
+        refused = f"La revisión V02.r1 está alterada ({rel}: otro tamaño): no se reproduce"
+        cls = self.commands.registered_class(REPRODUCE)
+        self.assertFalse(self.panel_item(REPRODUCE).enabled)
+        with mock.patch.object(cls, "poll_message_set") as message:
+            self.assertFalse(cls.poll(bpy.context))
+        message.assert_called_once_with(refused)
+        self.assertTrue(writer.writable)
+        self.assertEqual(self.create(writer, "norte", "Fase norte").code, "V03")
+
+        # Del mismo tamaño y otro contenido: lo encuentra «Comprobar cambios en las entradas».
+        check_inputs = self.commands.catalog().commands["geoblender.core_check_inputs"]
+        self.assertIn("las huellas de las instantáneas", check_inputs.description_es)
+        self.assertIn("the snapshot fingerprints", check_inputs.description)
+        flipped = bytearray(original)
+        flipped[len(flipped) // 2] ^= 0xFF
+        changed.write_bytes(bytes(flipped))
+        self.i18n.set_language("en")
+        other_print = ("Revision V02.r1 is altered: 1 file does not match what was frozen "
+                       f"({rel}: different fingerprint). It will not be used or reproduced")
+        with self.reported() as later:
+            self.assertEqual(bpy.ops.geoblender.core_check_inputs(), {"FINISHED"})
+            self.run_checks()
+        self.assertEqual(self.errors(later), [other_print])
+        self.assertIn(other_print, self.ps.take_notices())
+        marked = self.revision_of(writer, v02, 1)
+        self.assertEqual(json.loads(marked.altered_detail), [{"path": rel, "problem": "sha256"}])
 
     def test_owner_decision_from_the_dialog(self) -> None:
         """RF-009-13 (HU-009-4; plan A10, D-33, §5.5; M5; «Hecho cuando» de la T24): Encargos y

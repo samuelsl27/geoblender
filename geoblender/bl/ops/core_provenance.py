@@ -35,7 +35,9 @@ ADR-0025).
   por tic, de :data:`STEP_BUDGET_S` s como mucho, con su progreso para la barra de estado
   («Comprobando el proyecto… 42 %»). Al terminar queda su informe
   (:attr:`ProvenanceSession.report`, el de la sesión en solo lectura) y sus avisos en los de la
-  sesión; si la puerta pidió hashes que no entraron, se hacen después
+  sesión; el de una revisión congelada alterada (spec 009, T26; RF-009-09), además, como aviso
+  grave en el registro de Blender (:func:`altered_texts`, ``bl.ops.jobs.report_later`` como
+  error), también en solo lectura; si la puerta pidió hashes que no entraron, se hacen después
   (``hash_requests_steps``), igual que los que pida más tarde
   (:meth:`ProvenanceSession.request_hashes`). Un proyecto sin la procedencia (esquema 1 sin
   migrar, o uno posterior del que solo se lee la cabecera) no arranca nada:
@@ -102,8 +104,9 @@ ADR-0025).
   ``geoblender.core_show_inputs`` lee la lista (``bl.ui.provenance.fill_inputs``) y abre
   ``GEOBLENDER_PT_core_inputs``, también en solo lectura; ``geoblender.core_check_inputs``
   («Comprobar cambios en las entradas») pide a la sesión
-  (:meth:`ProvenanceSession.check_inputs`) el hash de todas las entradas activas y la
-  comprobación de los datos del proyecto (``core.provenance.checks.full_check_steps``), en
+  (:meth:`ProvenanceSession.check_inputs`) el hash de todas las entradas activas, la
+  comprobación de los datos del proyecto y la huella de cada fichero de las instantáneas
+  (spec 009, T14 y T26; ``core.provenance.checks.full_check_steps``), en
   segundo plano con el temporizador de la comprobación (tras la que esté en marcha), y no está
   disponible en solo lectura. Lo que no se guarda de una entrada (plan D7) lo sabe la sesión
   (:meth:`ProvenanceSession.input_state`): «comprobando» mientras una comprobación la tiene
@@ -252,6 +255,10 @@ STEP_BUDGET_S = 0.020
 
 PROVENANCE_SCHEMA = m0002.MIGRATION.to_version
 """El primer esquema del proyecto con la procedencia: el de la migración 1 → 2."""
+
+ALTERED_REPORT = "ERROR"
+"""Cómo va al registro de Blender el aviso grave de una revisión alterada (spec 009, T26;
+RF-009-09: «aviso grave»): como error, que Blender enseña además en una ventana emergente."""
 
 _OPEN = "open"  # la comprobación de apertura (los ocho pasos)
 _REQUESTS = "requests"  # los hashes que pidió la puerta (pasos 7 y 8)
@@ -469,8 +476,9 @@ class ProvenanceSession:
 
     def check_inputs(self) -> bool:
         """«Comprobar cambios en las entradas» (RF-008-09, RF-008-21; plan §5.3.2 y §5.4.2):
-        el hash de todas las entradas activas y el prefiltro y el hash de lo que salte en los
-        datos del proyecto (``core.provenance.checks.full_check_steps``), en segundo plano: un
+        el hash de todas las entradas activas, el prefiltro y el hash de lo que salte en los
+        datos del proyecto y la huella de cada fichero de las instantáneas (spec 009)
+        (``core.provenance.checks.full_check_steps``), en segundo plano: un
         paso por tic, con las fuentes externas grandes en los trabajos de hash. Empieza en el
         próximo tic o, con otra comprobación en marcha, al terminarla; pedirla otra vez antes
         no la repite. Dice si se hará (falso sin proyecto, sin la procedencia o en solo
@@ -569,8 +577,11 @@ class ProvenanceSession:
         if kind == _OPEN:
             self._report = outcome
         self._remember(outcome)
-        for text in outcome.texts(i18n.language()):
+        chosen = i18n.language()
+        for text in outcome.texts(chosen):
             project_session.notify(text)
+        for text in altered_texts(outcome, chosen):  # el aviso grave (spec 009, T26)
+            jobs_ops.report_later(ALTERED_REPORT, text)
         if kind == _FULL:
             project_session.notify(tr(
                 "Check finished: {inputs} inputs and {datasets} datasets checked",
@@ -624,6 +635,17 @@ def _prepare_checks(project: Project) -> None:
 
     if checks.holds_many_objects(project):
         gc.collect()
+
+
+def altered_texts(outcome: OpenCheckOutcome, language: str) -> list[str]:
+    """Los avisos graves de una comprobación en ``language`` (spec 009, T26; RF-009-09; plan A8,
+    §5.5): el de cada revisión congelada que encontró alterada, con lo que no coincide («La
+    revisión V10.r2 está alterada: 2 ficheros no coinciden con lo congelado (…). No se usará ni
+    se reproducirá»), si pasa a alterada o cambia lo que no coincide
+    (``core.versions.check.SnapshotFinding.text``): en escritura, la vez que se registra; en
+    solo lectura, que no la registra, cada vez que se abre. La que vuelve a coincidir no es
+    grave: va solo a los avisos del proyecto."""
+    return [text for item in outcome.snapshots if item.altered and (text := item.text(language))]
 
 
 def _outcome_of(step: Progress) -> object | None:
@@ -1969,7 +1991,8 @@ class GEOBLENDER_OT_core_show_inputs(bpy.types.Operator):
 
 
 class GEOBLENDER_OT_core_check_inputs(bpy.types.Operator):
-    """Compare the content hash of every input and check the project data too"""
+    """Compare the content hash of every input and check the project data and the snapshot
+    fingerprints too"""
 
     bl_idname = CHECK_INPUTS
     bl_label = "Check changes in the inputs"
