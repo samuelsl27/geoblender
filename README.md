@@ -107,8 +107,8 @@ Desde la raíz de este repositorio, en PowerShell y siempre con el Python de Ble
 
 ```powershell
 $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe"
-& $PY -B tools/check.py          # la definición de «verde» (unos 35 s, sin el paso «motor»)
-& $PY -B tools/check.py --completo  # además, el paso «motor» y las del arnés (unos 97 s)
+& $PY -B tools/check.py          # la definición de «verde» (≤ 45 s, sin el paso «motor»)
+& $PY -B tools/check.py --completo  # además, el paso «motor» y las del arnés (unos 130 s)
 & $PY -B tools/check_docs.py     # comprobación de la documentación
 & $PY -B tools/dev_install.py    # instala la extensión en un perfil de Blender aislado
 & $PY -B tools/build.py          # valida el manifiesto y genera el zip en dist/
@@ -142,7 +142,7 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en unos 35 s; con `--completo`, unos 97 s)
+Sin `--completo` (la comprobación de cada tarea, en ≤ 45 s; con `--completo`, unos 130 s)
 no ejecuta las pruebas del propio arnés que lanzan Blender entero ni el paso «motor», y lo
 dice antes del resultado. Solo se ejecuta un
 `tools/check.py` a la vez en el equipo, sea de la carpeta que sea (de este repositorio o de

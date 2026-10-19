@@ -34,7 +34,7 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    OMISIONES») y, justo después, «arnés» (``tests/arnes`` como «unitarias»: las pruebas
    del propio arnés que lanzan Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de
    la spec 002). Sin la opción no se ejecutan (ni se busca el motor), y el resumen lo dice
-   antes de ``RESULTADO``: la comprobación de cada tarea va sin ella (RNF-001-01, ≤ 40 s;
+   antes de ``RESULTADO``: la comprobación de cada tarea va sin ella (RNF-001-01, ≤ 45 s;
    «motor» solo con ella desde la spec 004 0.4 y la 001 0.7, tarea 005/T50) y
    ``tools/publish.py`` la pide siempre. Solo si se piden, y después de los obligatorios:
    «rendimiento» (``--rendimiento``: ``tests/rendimiento`` con el Python de Blender y
@@ -56,7 +56,7 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    «referencia» a «blender» salen cuando han terminado todos. Dentro de un paso,
    «unitarias», «referencia» (spec 006, T59) y «blender» reparten sus pruebas en partes que
    se ejecutan a la vez (spec 003,
-   T40; RNF-007-01: ≤ 40 s sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
+   T40; RNF-007-01: ≤ 45 s, ≤ 40 s hasta la spec 007 0.6, sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
    ``REFERENCE_PARTS`` procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender
    con ``run_blender_tests.py --parte i/n``, sin pasar del número de módulos de prueba en
    disco ni del de procesadores (con uno, la orden de siempre). Cada parte descubre
@@ -212,7 +212,7 @@ COPY_THREAD = "check-copia"
 # variable con que lo reciben y el hilo que lo refresca.
 ENV_BYTECODE = pyc_cache.ENV_PREFIX
 BYTECODE_THREAD = "check-pyc"
-STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 40 s (RNF-001-01)
+STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 45 s (RNF-001-01)
 LAUNCHER_RELPATH = "tools/run_blender_tests.py"
 PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T40)
 # Partes de «unitarias» y de «blender» (spec 003, T40; RNF-007-01): a la vez, sin pasar
@@ -966,7 +966,7 @@ def _docs_omit(ctx: Context) -> str | None:
 # «referencia» a «blender» en el código de partida. Los opcionales se ejecutan siempre
 # después de los obligatorios (RF-001-10), en el orden de la tabla: los de --completo los
 # primeros, tras «blender»: «motor» (a la vez que él; spec 004 0.4, RF-004-28: con la CPU
-# llena, la comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01;
+# llena, la comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01, hoy ≤ 45 s;
 # spec 005, T50) y «arnés» (spec 001 0.6); «documentación» (spec 007, RF-007-14), el último.
 STEPS: tuple[Step, ...] = (
     Step("unitarias", _unit),

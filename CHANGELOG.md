@@ -867,8 +867,9 @@ diálogos).
   referencia, la comprobación de las licencias y la de los iconos se ejecutan a la vez que las de
   Blender (spec 001, versión 0.8), y el resumen las sigue diciendo en su orden, cada una con su
   duración; y crear un proyecto escribe una imagen de su base hecha una vez por proceso (de 17,5
-  a 12,7 ms), con el mismo esquema. Pasa aún de los 40 s (unos 46 s con otros programas abiertos
-  en el equipo): lo decide IMGA.
+  a 12,7 ms), con el mismo esquema. IMGA sube su límite de 40 a 45 s (spec 001, versión 0.9, y
+  spec 007, versión 0.6): unos 41 s en reposo y unos 47 s con otros programas abiertos en el
+  equipo.
 - Solo un `tools/check.py` a la vez en el equipo (spec 006): si hay otro en marcha (de la
   misma carpeta, de un *worktree* o de otra sesión), el nuevo dice a cuál espera (su pid y su
   carpeta) y empieza cuando termina; su tiempo se cuenta desde entonces. Antes los dos se
