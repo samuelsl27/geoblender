@@ -26,8 +26,9 @@ o DESCARTADO, que se consulta y no se edita (D-42; lo de editar dirá «Versión
   del control 8 y el menú: **nada se lee del proyecto al dibujar**. :func:`control_text` y
   :func:`status_text` son los textos del control y de la barra de estado;
   :func:`not_editable_text`, el de «Versión no editable» (T20) con una SUPERADO o DESCARTADO.
-- Cada cambio de lo que se ve avisa a lo apuntado con :func:`add_listener` (la interfaz, que
-  redibuja la barra superior y la de estado).
+- Cada cambio de lo que se ve pide redibujar la barra superior y la de estado de cada ventana
+  (:func:`request_redraw`, T35: un solo sitio, también si la orden se lanzó fuera de la barra
+  superior) y avisa a lo apuntado con :func:`add_listener`.
 - Manejadores ``@persistent``: ``load_post`` (:func:`on_load_post`: elige otra vez con la vista
   cargada) y ``save_pre`` (:func:`on_save_pre`: las escenas del proyecto llevan la versión activa
   de la sesión, también una escena nueva o una que Ctrl+Z devolvió a antes del cambio).
@@ -757,7 +758,33 @@ def listeners() -> tuple[Listener, ...]:
     return tuple(_STATE.listeners)
 
 
+def request_redraw() -> None:
+    """Pide redibujar lo que enseña la versión activa en cada ventana (T35; RF-009-10): la barra
+    superior (el control 8) y la de estado. Es el único sitio que lo pide; lo llama cada cambio
+    de lo que enseñan (:func:`_notify`: abrir y cerrar el proyecto, cargar la vista, cambiar la
+    versión activa y cada lectura que cambia las versiones o las revisiones: crear una versión,
+    cambiar su estado, congelar). Las dos barras son áreas globales de la ventana, fuera de
+    ``screen.areas`` (``docs/trampas.md`` §5): ``Area.tag_redraw`` no llega a ellas. La de
+    estado, con ``bl.ui.statusbar.redraw`` (``status_text_set``, salvo en las ventanas con un
+    operador modal); la superior, asignando ``WindowManager.geoblender_version_panels.shown`` (lo
+    que dice la barra de estado), que tiene función ``update``
+    (``bl.props.versions.redraw_all_windows``): con ella Blender avisa a todas las regiones de
+    todas las ventanas. Un fallo va al registro técnico: la versión activa no depende de quien la
+    enseña."""
+    try:
+        from ..ui import statusbar  # al usarlo: bl.ui importa bl.scene
+
+        statusbar.redraw()
+        manager = getattr(bpy.context, "window_manager", None)
+        panels = getattr(manager, WINDOW_MANAGER_PROPERTY, None)
+        if panels is not None:
+            panels.shown = status_text()
+    except Exception:  # noqa: BLE001 - la versión activa no depende de quien la enseña
+        LOGGER.exception("No se pudo pedir que se redibujen las barras de las ventanas")
+
+
 def _notify() -> None:
+    request_redraw()
     for listener in list(_STATE.listeners):
         try:
             listener()

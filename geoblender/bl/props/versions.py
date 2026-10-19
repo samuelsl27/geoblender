@@ -26,6 +26,10 @@
   la del control 8 (las de la versión activa), y el diálogo «Registrar decisión…» ofrece los
   documentos; las pone al día ``bl.ui.version_panels.fill_decisions``.
 
+  El grupo tiene además ``shown`` (T35; RF-009-10): lo que dice la barra de estado de la versión
+  activa, que ``bl.scene.versions.request_redraw`` asigna en cada cambio de lo que enseñan el
+  control 8 y la barra de estado para que se redibujen (:func:`redraw_all_windows`).
+
 La versión activa de la sesión, que sí se guarda con la vista, es
 ``Scene.geoblender.active_version_uid`` (``bl.props.core``). Las propiedades de las filas no tienen
 nombre ni descripción: no se dibujan con los suyos. Ninguna se anima.
@@ -33,8 +37,13 @@ nombre ni descripción: no se dibujan con los suyos. Ninguna se anima.
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, PointerProperty, StringProperty
+
+LOGGER = logging.getLogger("geoblender.bl.props")
 
 # Nombres de las propiedades (API pública de los guiones).
 COLLECTION_PROPERTY = "geoblender"  # Collection.geoblender
@@ -139,6 +148,19 @@ class GEOBLENDER_PG_core_request_row(bpy.types.PropertyGroup):
     request: StringProperty(options=_STATIC)  # type: ignore[valid-type]
 
 
+def redraw_all_windows(panels: Any, _context: Any) -> None:
+    """La función ``update`` de ``WindowManager.geoblender_version_panels.shown`` (T35;
+    RF-009-10). Solo deja una línea en el registro técnico: lo que importa es que exista. Asignar
+    desde Python una propiedad de ``bpy.props`` **sin** ``update`` no avisa a nada (ni redibuja ni
+    marca el grafo de dependencias); **con** ``update``, Blender la ejecuta y avisa después a todas
+    las regiones de todas las ventanas (``NC_WINDOW``), también a la barra superior y a la de
+    estado, que son áreas globales de la ventana, fuera de ``screen.areas``, a las que
+    ``Area.tag_redraw`` no llega (``docs/trampas.md`` §5). Así se redibuja el control 8 cuando
+    cambia la versión activa con una orden lanzada fuera de la barra superior (hallazgo del H3).
+    Vale también con el mismo valor."""
+    LOGGER.debug("Se pide redibujar todas las ventanas: %s", panels.shown)
+
+
 class GEOBLENDER_PG_core_version_panels(bpy.types.PropertyGroup):
     """Lo que dibujan la ventana del control 8 y el menú de la versión activa (spec 009), la
     ventana del informe de reproducir (T23: de qué proyecto, de qué revisión y sus líneas) y la
@@ -162,6 +184,8 @@ class GEOBLENDER_PG_core_version_panels(bpy.types.PropertyGroup):
         type=GEOBLENDER_PG_core_document_row, options=_STATIC)
     requests: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_request_row, options=_STATIC)
+    shown: StringProperty(  # type: ignore[valid-type]
+        options=_STATIC, update=redraw_all_windows)
 
 
 # En orden de registro (las filas, antes del grupo que las usa).

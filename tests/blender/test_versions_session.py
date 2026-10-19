@@ -424,6 +424,76 @@ class VersionsSessionTest(unittest.TestCase):
         self.assertEqual(self.control().text, "Versión activa")
         self.assertEqual([item for item in self.statusbar().items if item.target == PANEL], [])
 
+    def test_every_change_asks_to_redraw_the_top_and_status_bars(self) -> None:
+        """RF-009-10 (T35, hallazgo del H3): cada cambio de lo que enseñan el control 8 y la barra
+        de estado pide redibujar las dos barras de cada ventana desde un solo sitio
+        (``bl.scene.versions.request_redraw``): abrir el proyecto, cambiar la versión activa con
+        ``geoblender.core_set_active_version`` lanzada fuera de la barra superior (desde una
+        Vista 3D, como F3, un guion o el canal), congelar una revisión, crear una versión,
+        cambiar su estado y cerrar el proyecto. La barra de estado, con ``bl.ui.statusbar.redraw``;
+        la superior, un área global de la ventana que no está en ``screen.areas``
+        (``Area.tag_redraw`` no la alcanza: en el H3 seguía con «V02.r1»), asignando
+        ``WindowManager.geoblender_version_panels.shown`` (lo que dice la barra de estado), que
+        tiene función ``update``: Blender la ejecuta al asignarla (se ve en el registro técnico)
+        y avisa entonces a todas las regiones de todas las ventanas. Nada de eso escribe en el
+        proyecto."""
+        project = self.project()
+        statusbar = ext("bl.ui.statusbar")
+        props = ext("bl.props.versions")
+        manager = bpy.context.window_manager
+        view = getattr(manager, props.WINDOW_MANAGER_PROPERTY)
+        request = self.enterContext(mock.patch.object(self.sv, "request_redraw",
+                                                      wraps=self.sv.request_redraw))
+        bars = self.enterContext(mock.patch.object(statusbar, "redraw", wraps=statusbar.redraw))
+        window = manager.windows[0]
+        (area,) = [item for item in window.screen.areas if item.type == "VIEW_3D"]
+        (region,) = [item for item in area.regions if item.type == "WINDOW"]
+
+        def asked(step: str, shown: str) -> None:
+            with self.subTest(step=step):
+                self.assertGreaterEqual(request.call_count, 1)
+                self.assertEqual((self.sv.status_text(), view.shown), (shown, shown))
+            request.reset_mock()
+
+        self.ps.attach(project)
+        asked("abrir", STATUS["V03"])
+        checks = ext("bl.ops.core_provenance")  # en -b no corren los temporizadores
+        for _ in range(2000):  # la comprobación de apertura, hasta que se retira
+            if checks.check_tick() is None:
+                break
+        else:
+            self.fail("la comprobación de apertura no termina")
+        request.reset_mock()
+        with bpy.context.temp_override(window=window, area=area, region=region):
+            self.assertEqual(bpy.ops.geoblender.core_set_active_version(
+                version_uid=self.uid("V01")), {"FINISHED"})
+        asked("cambiar la activa desde una Vista 3D", STATUS["V01"])
+        self.assertEqual(bpy.ops.geoblender.core_new_revision("EXEC_DEFAULT", reason="Entrega"),
+                         {"FINISHED"})
+        asked("congelar", "V01.r2 BORRADOR")
+        self.assertEqual(bpy.ops.geoblender.core_new_version(
+            "EXEC_DEFAULT", feature="oeste", title="Oeste", reason=REASON), {"FINISHED"})
+        asked("crear una versión", "V05.r1 BORRADOR")
+        self.assertEqual(bpy.ops.geoblender.core_set_version_state(
+            "EXEC_DEFAULT", target="DESCARTADO", reason="No sigue"), {"FINISHED"})
+        asked("cambiar su estado", "V05.r1 DESCARTADO")
+
+        # Lo que hace la petición: la barra de estado y la superior, con la ``update`` de shown.
+        bars.reset_mock()
+        view.shown = ""
+        with self.assertLogs("geoblender.bl.props", level="DEBUG") as logged:
+            self.sv.request_redraw()
+        request.reset_mock()
+        bars.assert_called_once_with()
+        self.assertEqual(view.shown, "V05.r1 DESCARTADO")
+        self.assertEqual(logged.output, ["DEBUG:geoblender.bl.props:Se pide redibujar todas las "
+                                         "ventanas: V05.r1 DESCARTADO"])
+        self.assertIs(type(view).__annotations__["shown"].keywords["update"],
+                      props.redraw_all_windows)
+
+        self.ps.close()
+        asked("cerrar", "")
+
     def test_texts_fit_at_1920_px(self) -> None:
         """RF-009-10 (M1; plan §5.5): a 1920 px con escala 1,0 y 1,25, el texto del control 8
         (cada versión y «Sin versión», en español y en inglés) no pasa del ancho de «Versión
@@ -555,7 +625,7 @@ class VersionsSessionTest(unittest.TestCase):
         self.assertIn(self.panels.on_project_read, provenance.change_listeners())
         quick = ext("bl.ui.quick_access")
         self.assertIs(quick.label_provider(PANEL), self.panels.control_label)
-        self.assertIn(self.panels.redraw, self.sv.listeners())
+        self.assertEqual(self.sv.listeners(), ())  # el redibujo lo pide request_redraw (T35)
 
         blender_ext.disable()
         self.assertNotIn(self.sv.on_load_post, bpy.app.handlers.load_post)

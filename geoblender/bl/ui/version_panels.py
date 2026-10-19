@@ -46,9 +46,9 @@ Todo se dibuja con lo ya leído (``bl.scene.versions`` y las filas de
 ``WindowManager.geoblender_version_panels``): **nada se lee del proyecto al dibujar**. Se vuelve a
 leer tras cada lectura de los indicadores de la procedencia, cuando el proyecto ha cambiado
 (:func:`on_project_read`, ``bl.ui.provenance.add_change_listener``), y cada cambio de lo que se ve
-redibuja la barra superior y la de estado (:func:`redraw`, apuntada en ``bl.scene.versions``).
-:func:`install` pone el texto del control, la escucha de los indicadores y la de las versiones;
-:func:`uninstall` lo quita.
+pide redibujar la barra superior y la de estado de cada ventana
+(``bl.scene.versions.request_redraw``, T35). :func:`install` pone el texto del control, la escucha
+de los indicadores y las comprobaciones; :func:`uninstall` lo quita.
 """
 
 from __future__ import annotations
@@ -586,21 +586,16 @@ def on_project_read(project: Project) -> None:
         LOGGER.warning("No se pudieron leer las decisiones de la propiedad", exc_info=True)
 
 
-def redraw() -> None:
-    """Redibuja la barra superior (el control 8) y la barra de estado de todas las ventanas."""
-    provenance.redraw()
-
-
 def install() -> None:
-    """Pone el texto del control 8, la escucha de las versiones y la de los indicadores (una
-    sola vez) y las comprobaciones de Cambiar estado… sin versión, de Nueva revisión… sin
-    versión o con ella no editable y de Reproducir… sin versión, sin revisión congelada o con
-    la última alterada (``commands.register_check``)."""
+    """Pone el texto del control 8 y la escucha de los indicadores (una sola vez) y las
+    comprobaciones de Cambiar estado… sin versión, de Nueva revisión… sin versión o con ella no
+    editable y de Reproducir… sin versión, sin revisión congelada o con la última alterada
+    (``commands.register_check``). Redibujar la barra superior y la de estado al cambiar lo que
+    enseñan lo pide ``bl.scene.versions`` (``request_redraw``, T35)."""
     # Al usarlo: bl/ops importa bl/ui (ARQ-08).
     from ..ops.versions import new_revision_check, no_version_check, reproduce_check
 
     quick_access.set_label_provider(PANEL, control_label)
-    scene_versions.add_listener(redraw)
     provenance.add_change_listener(on_project_read)
     commands.register_check(SET_STATE, no_version_check)
     commands.register_check(NEW_REVISION, new_revision_check)
@@ -613,7 +608,6 @@ def uninstall() -> None:
     commands.unregister_check(NEW_REVISION)
     commands.unregister_check(SET_STATE)
     provenance.remove_change_listener(on_project_read)
-    scene_versions.remove_listener(redraw)
     quick_access.set_label_provider(PANEL, None)
 
 
