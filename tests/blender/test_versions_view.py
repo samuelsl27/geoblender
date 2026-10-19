@@ -29,6 +29,21 @@ vista. En ``blender -b`` no corren los temporizadores ni avisa ``bpy.msgbus`` (`
 - **Registro y desregistro sin rastro**: la suscripción al nombre de ``Object`` y ``Collection``
   (otra vez tras cargar un ``.blend``, ``load_post``); deshabilitada, ninguna.
 
+N ▸ Proyecto ▸ **Inventario** y **Elemento activo** con versiones (spec 009, T25; HU-009-1;
+RF-009-20, RF-009-30, RF-009-09; spec §7; plan A11), dibujados con un *layout* simulado:
+
+- **el inventario** enseña una fila por versión («V01 · Definitiva», con el icono y el nombre de
+  su estado) y por revisión («V01.r2 · en curso», «V02.r1 · congelada» con la marca «alterada»
+  en alerta), cada dato con el código de su versión, y se filtra por versión (un enumerado con
+  las versiones ya leídas: «Todas», «Sin versión» y cada una); una versión o una
+  revisión no se carga ni tiene procedencia (con el motivo); al cambiar de proyecto, el filtro
+  vuelve a «Todas»;
+- **la ficha** de un dato de V01 VIGENTE con r2 abierta dice «Versión: V01 · Definitiva — en
+  curso (r2) · vigente: r1», sus cifras «en curso (r2)» y las cifras vigentes de V01 (las de
+  r1, D-9); la de V02, sin congelar, «en curso (r1)» y que aún no hay ninguna congelada; una
+  superada, «cerrada (r2) · congelada: r1» y sus cifras congeladas; un dato del proyecto, como
+  en la 010.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
@@ -38,17 +53,20 @@ import shutil
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import bpy
 
+from tests.blender.test_dh_import_tabular import assert_fits, at_scales
 from tests.support import blender_ext
 from tests.support import views_fixtures as vf
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
+from tests.support.fake_layout import FakeLayout, Item, draw
 from tests.support.provenance_demo import BENCHES_TABLE
 from tests.support.repo import ROOT
 from tests.support.trees import temp_folder
-from tests.support.versions_demo import PIT_GRID, VersionsDemo
+from tests.support.versions_demo import PIT_BENCHES, PIT_GRID, PIT_MESH, VersionsDemo
 
 DATA = ROOT / "tests" / "data" / "core" / "provenance"
 WRITTEN = ("project.gpkg", "project.gpkg-journal", "manifest.json")
@@ -69,6 +87,21 @@ NOT_KEPT = "No se ha guardado el nombre «{text}»: {reason}"
 READ_ONLY = "Proyecto en solo lectura: "
 NOT_EDITABLE = "V01 está en estado SUPERADO: cree una versión nueva a partir de ella"
 MAX_TICKS = 400
+# Inventario y Elemento activo (T25).
+INVENTORY_PANEL = "GEOBLENDER_PT_core_project_inventory"
+ACTIVE_ITEM_PANEL = "GEOBLENDER_PT_core_active_item"
+LOAD = "geoblender.core_load_into_view"
+UNLOAD = "geoblender.core_unload_from_view"
+SHOW_LINEAGE = "geoblender.core_show_lineage"
+WIDE_PX = 5000.0  # una barra lateral en la que nada se parte (para leer cada línea entera)
+VERSION_NOT_LOADED = ("Una versión o una revisión no se carga en la vista: se cargan sus "
+                      "datos")
+VERSION_NO_LINEAGE = "Una versión o una revisión no tiene procedencia: la tienen sus datos"
+NOT_LOADED = "No está cargado en la escena: no hay nada que descargar"
+VOLUME_10 = 3_182_000.0
+"""``demo.pit_volume`` con los bancos de 10 m por defecto sobre ``Limites_v1`` (T08)."""
+PIT_DATA = (PIT_BENCHES, PIT_GRID, PIT_MESH)
+"""Lo que escribe ``demo.pit`` en su versión, por nombre."""
 
 
 def ext(name: str) -> Any:
@@ -303,6 +336,106 @@ class VersionsViewTest(unittest.TestCase):
         return [text for kind, text in self.jobs_ops.sent_reports()[since:]
                 if kind == "WARNING"]
 
+    # --- Inventario y Elemento activo (T25) ----------------------------------------------------
+
+    def freeze(self, project: Any, version: Any) -> None:
+        """Congela la revisión abierta de ``version`` y abre la siguiente, como Nueva revisión…
+        (sin la sesión)."""
+        outcome = drain(ext("core.versions.freeze").freeze_steps(project, version.uid,
+                                                                 reason="Entrega"))
+        self.assertFalse(outcome.cancelled)
+        project.refresh_header()
+
+    def alter(self, project: Any, version: Any) -> str:
+        """Un byte de más en el GeoTIFF de la última revisión congelada de ``version`` y la
+        comprobación entera de sus huellas, que la marca «alterada»; devuelve su etiqueta
+        («V02.r1»)."""
+        with project.read() as conn:
+            frozen = self.read.last_frozen(conn, version.uid)
+        label = frozen.label(version.code)
+        (changed,) = (project.root / "snapshots" / label).rglob("*.tif")
+        with changed.open("ab") as stream:
+            stream.write(b"\0")
+        check = ext("core.versions.check")
+        findings = drain(check.full_steps(project, [frozen.uid]))
+        self.assertTrue(findings)
+        now = ext("core.timeutil").format_utc(project.clock.now())
+        self.write(project, lambda conn: check.record_findings(conn, project, findings,
+                                                               now=now))
+        return label
+
+    @staticmethod
+    def view() -> Any:
+        """``WindowManager.geoblender_view_panels`` (leída otra vez: docs/trampas.md §4)."""
+        name = ext("bl.props.views").WINDOW_MANAGER_PROPERTY
+        return getattr(bpy.context.window_manager, name)
+
+    @staticmethod
+    def drawn(panel: str, *, width_px: float = WIDE_PX) -> FakeLayout:
+        """El panel ``panel`` de N ▸ Proyecto dibujado (con ``width_px`` de barra lateral)."""
+        with mock.patch.object(ext("bl.ui.labels"), "sidebar_width", return_value=width_px):
+            return draw(getattr(bpy.types, panel), bpy.context)
+
+    @staticmethod
+    def texts(layout: FakeLayout) -> list[str]:
+        return [item.text for item in layout.of_kind("label") if item.text]
+
+    def read_inventory(self) -> None:
+        """Dibuja el inventario (que pide su lectura) y hace lo que haría el temporizador de un
+        disparo (en ``-b`` no corre): se retira y se llama a su función."""
+        tick = ext("bl.ui.view_panels").inventory_tick
+        self.drawn(INVENTORY_PANEL)
+        self.assertTrue(bpy.app.timers.is_registered(tick), "el dibujo no pidió la lectura")
+        bpy.app.timers.unregister(tick)
+        self.assertIsNone(tick())
+
+    def inventory(self) -> dict[tuple[str, str], tuple[Any, ...]]:
+        """Las filas del inventario por nombre y versión: su categoría, su estado como lo guarda
+        el proyecto, si está alterada, si está en curso y si está en la escena."""
+        return {(row.name, row.version): (row.category, row.status, row.altered,
+                                          row.in_progress, row.in_scene)
+                for row in self.view().inventory}
+
+    def choose(self, name: str) -> Any:
+        """Elige la fila de ``name`` (como un clic en la lista)."""
+        view = self.view()
+        view.inventory_index = [row.name for row in view.inventory].index(name)
+        return view.inventory[view.inventory_index]
+
+    @staticmethod
+    def row_drawn(row: Any) -> FakeLayout:
+        """Una fila de la lista (``draw_item`` de su ``UIList``) dibujada."""
+        layout = FakeLayout()
+        ext("bl.ui.view_panels").draw_inventory_row(layout, row)
+        return layout
+
+    @staticmethod
+    def icon_of(item: Item) -> object:
+        """El icono de un elemento dibujado: el propio (``icon_value``) o el nativo."""
+        return item.options.get("icon_value") or item.icon
+
+    @staticmethod
+    def state_icon(status: str) -> object:
+        """El icono del estado ``status`` como lo dibuja la ventana del control 8."""
+        (value,) = ext("bl.ui.version_panels").state_icon(status).values()
+        return value
+
+    @staticmethod
+    def button(layout: FakeLayout, target: str) -> Item:
+        (found,) = [item for item in layout.of_kind("operator") if item.target == target]
+        return found
+
+    def card(self, obj: bpy.types.Object) -> list[str]:
+        """``obj`` activo y lo que hace ``msgbus`` al cambiarlo (en ``-b`` no avisa): la ficha
+        leída y dibujada, una línea por etiqueta."""
+        bpy.context.view_layer.objects.active = obj
+        ext("bl.ui.view_panels").on_active_changed()
+        return self.texts(self.drawn(ACTIVE_ITEM_PANEL))
+
+    def figure_line(self, figure: Any, language: str = "es") -> str:
+        """Una cifra como la da la ficha: su insignia de tipo, su nombre y su valor."""
+        return f"{ext('bl.ui.provenance').badge(figure.kind)} {figure.text(language=language)}"
+
     # --- Pruebas -------------------------------------------------------------------------------
 
     def test_collection_of_a_version_follows_its_state(self) -> None:
@@ -529,6 +662,241 @@ class VersionsViewTest(unittest.TestCase):
         with writer.read() as conn:
             self.assertEqual(self.read.dataset_titles(conn, [grids[0].uid]),
                              {grids[0].uid: (v01.uid, "")})
+
+    def test_inventory_with_versions_and_revisions(self) -> None:
+        """RF-009-30, RF-009-20, RF-009-09 (spec §7; plan A11; «Hecho cuando» de la T25): con V01
+        VIGENTE (r1 congelada, r2 abierta), V02 BORRADOR (r1 congelada y alterada, r2 abierta)
+        y el hueco de cada una, el inventario tiene una fila por versión, con el icono y el
+        nombre de su estado («V01 · Definitiva · VIGENTE · V01»), y por revisión, con el suyo
+        («V01.r2 · en curso»; «V02.r1 · congelada» con la marca «alterada» en alerta), cada
+        versión antes de sus revisiones, y cada dato con el código de su versión. El filtro de
+        versión ofrece «Todas», «Sin versión» y las versiones leídas («V01 ·
+        Definitiva», «V02 · Ampliación»): una da sus datos, su fila y sus revisiones; «Sin
+        versión», lo del proyecto; filtrar no lee el proyecto. Una versión o una revisión no se
+        carga en la vista ni tiene procedencia (desactivadas, con el motivo); lo de la fila
+        elegida dice su tipo, su estado con sus marcas (en alerta) y su versión, y cabe a escala
+        1,0 y 1,25. En inglés, «CURRENT», «in progress», «frozen · ALTERED». Al cambiar de
+        proyecto, el filtro vuelve a «Todas». Nada se escribe en el proyecto."""
+        project = self.project()
+        self.demo.digitize(project)
+        v01 = self.create(project, "definitiva", "Definitiva")
+        self.demo.pit(project, "V01")
+        self.run_checks()
+        self.declare_current(project, v01)  # r1 congelada y VIGENTE; r2 abierta
+        v02 = self.create(project, "ampliacion", "Ampliación")
+        # Otra berma: su rejilla no es la de V01, y V02.r1 la copia (no la referencia).
+        self.demo.pit(project, "V02", berm_m=20.0)
+        self.freeze(project, v02)  # r1 congelada; r2 abierta
+        self.assertEqual(self.alter(project, v02), "V02.r1")
+        grid = self.record(project, PIT_GRID, v01)
+        self.load(project, grid)
+        counter = self.counter(project)
+        view = self.view()
+        panels = ext("bl.ui.view_panels")
+
+        self.read_inventory()
+        rows = self.inventory()
+        expected = {
+            ("V01 · Definitiva", "V01"): ("VERSION", "VIGENTE", False, False, False),
+            ("V01.r1", "V01"): ("REVISION", "frozen", False, False, False),
+            ("V01.r2", "V01"): ("REVISION", "open", False, True, False),
+            ("V02 · Ampliación", "V02"): ("VERSION", "BORRADOR", False, False, False),
+            ("V02.r1", "V02"): ("REVISION", "frozen", True, False, False),
+            ("V02.r2", "V02"): ("REVISION", "open", False, True, False),
+            **{(name, code): ("DATASET", "current", False, False, (name, code) == (PIT_GRID,
+                                                                                   "V01"))
+               for code in ("V01", "V02") for name in PIT_DATA},
+        }
+        self.assertEqual({key: found for key, found in rows.items() if key[1]}, expected)
+        self.assertIn((BENCHES_TABLE, ""), rows)  # lo del proyecto, sin versión («—»)
+        self.assertEqual([row.name for row in view.inventory
+                          if row.category in ("VERSION", "REVISION")],
+                         ["V01 · Definitiva", "V01.r1", "V01.r2", "V02 · Ampliación", "V02.r1",
+                          "V02.r2"])
+
+        # Cada fila: el icono de su estado, su nombre, su estado, su versión y sus marcas.
+        def drawn_row(name: str) -> tuple[list[str], list[Item]]:
+            labels = self.row_drawn(self.choose(name)).of_kind("label")
+            return [item.text for item in labels if item.text], labels
+
+        for name, status, code in (("V01 · Definitiva", "VIGENTE", "V01"),
+                                   ("V02 · Ampliación", "BORRADOR", "V02")):
+            texts, labels = drawn_row(name)
+            self.assertEqual(texts, [name, status, code])
+            self.assertEqual(self.icon_of(labels[0]), self.state_icon(status))
+        for name, shown, code, altered in (("V01.r1", "congelada", "V01", False),
+                                           ("V01.r2", "en curso", "V01", False),
+                                           ("V02.r1", "congelada", "V02", True),
+                                           ("V02.r2", "en curso", "V02", False)):
+            texts, labels = drawn_row(name)
+            self.assertEqual(texts, [name, shown, code])
+            marks = [item.alert for item in labels if item.icon == "ERROR"]
+            self.assertEqual(marks, [True] if altered else [], name)
+        texts, _labels = drawn_row(PIT_GRID)
+        self.assertEqual(texts, [PIT_GRID, "VIGENTE", "V01"])
+
+        # El filtro de versión: las versiones leídas; filtrar no lee el proyecto.
+        items = panels.version_filter_items(view, bpy.context)
+        self.assertEqual([item[:2] for item in items],
+                         [("ALL", "Todas"), ("NONE", "Sin versión"),
+                          (v01.uid, "V01 · Definitiva"), (v02.uid, "V02 · Ampliación")])
+        self.assertEqual(view.inventory_version, "ALL")
+        inventory = ext("core.views.inventory")
+        with mock.patch.object(inventory, "read_inventory",
+                               wraps=inventory.read_inventory) as reads, \
+                mock.patch.object(project, "read", wraps=project.read) as opens:
+            view.inventory_version = v01.uid
+            self.assertEqual([row.name for row in view.inventory],
+                             [*PIT_DATA, "V01 · Definitiva", "V01.r1", "V01.r2"])
+            view.inventory_version = "NONE"
+            self.assertEqual({row.version for row in view.inventory}, {""})
+            self.assertIn(BENCHES_TABLE, [row.name for row in view.inventory])
+            view.inventory_version = v02.uid
+            self.assertEqual([row.name for row in view.inventory],
+                             [*PIT_DATA, "V02 · Ampliación", "V02.r1", "V02.r2"])
+            self.assertEqual(view.inventory_version, v02.uid)
+        self.assertEqual((reads.call_count, opens.call_count), (0, 0))
+
+        # Lo de la fila elegida: una versión o una revisión no se carga ni tiene procedencia.
+        self.choose("V02 · Ampliación")
+        layout = self.drawn(INVENTORY_PANEL)
+        texts = self.texts(layout)
+        for line in ("V02 · Ampliación", "Tipo: Versión", "Estado: BORRADOR", "Versión: V02",
+                     "No cargado en la escena", VERSION_NOT_LOADED, NOT_LOADED,
+                     VERSION_NO_LINEAGE):
+            self.assertIn(line, texts)
+        for target in (LOAD, UNLOAD, SHOW_LINEAGE):
+            self.assertFalse(self.button(layout, target).enabled, target)
+        for name, status, alert in (("V02.r1", "Estado: congelada · ALTERADA", True),
+                                    ("V02.r2", "Estado: en curso", False)):
+            self.choose(name)
+            layout = self.drawn(INVENTORY_PANEL)
+            (found,) = [item for item in layout.of_kind("label")
+                        if item.text.startswith("Estado:")]
+            self.assertEqual((found.text, found.alert), (status, alert))
+            self.assertIn("Tipo: Revisión", self.texts(layout))
+            self.assertFalse(self.button(layout, LOAD).enabled)
+            self.assertIn(VERSION_NOT_LOADED, self.texts(layout))
+
+        # Cabe en la barra lateral a escala 1,0 y 1,25; los iconos son de Blender 5.2.
+        sidebar = ext("bl.ui.labels").sidebar_width(bpy.context)
+        icons = set(bpy.types.UILayout.bl_rna.functions["label"].parameters["icon"]
+                    .enum_items.keys())
+        for name in ("V02 · Ampliación", "V02.r1"):
+            self.choose(name)
+            for scale in at_scales():
+                layout = self.drawn(INVENTORY_PANEL, width_px=sidebar)
+                assert_fits(self, layout, sidebar, scale=scale)
+            drawn = [*layout.items, *(item for row in view.inventory
+                                      for item in self.row_drawn(row).items)]
+            self.assertLessEqual({item.icon for item in drawn}, icons)
+
+        # En inglés.
+        self.i18n.set_language("en")
+        view.inventory_version = "ALL"
+        self.assertEqual(drawn_row("V01 · Definitiva")[0], ["V01 · Definitiva", "CURRENT", "V01"])
+        self.assertEqual(drawn_row("V01.r2")[0], ["V01.r2", "in progress", "V01"])
+        self.choose("V02.r1")
+        self.assertIn("Status: frozen · ALTERED", self.texts(self.drawn(INVENTORY_PANEL)))
+        self.assertEqual([item[1] for item in panels.version_filter_items(view, bpy.context)],
+                         ["All versions", "Without version", "V01 · Definitiva",
+                          "V02 · Ampliación"])
+        self.i18n.set_language("es")
+
+        # Al cambiar de proyecto, el filtro vuelve a «Todas».
+        view.inventory_version = v01.uid
+        panels.on_project_changed(project)
+        self.assertEqual((view.inventory_version, len(view.inventory)), ("ALL", 0))
+        self.assertEqual(self.counter(project), counter)
+
+    def test_card_of_a_dataset_of_a_version(self) -> None:
+        """RF-009-20, D-9, RF-009-30 (plan A11; «Hecho cuando» de la T25): con V01 VIGENTE (r1
+        congelada con el hueco y su volumen, 3 182 000 m³; r2 abierta), la ficha de su rejilla
+        dice «Versión: V01 · Definitiva — en curso (r2) · vigente: r1», sus cifras «en curso
+        (r2)» (las de su operación: ninguna) y las vigentes de V01, las de r1 («Cifras vigentes
+        de V01.r1», con su insignia y su valor); la de V02, sin congelar, «en curso (r1)» y
+        «Aún no hay ninguna revisión congelada de V02»; la de un dato del proyecto, como en la
+        010 («Versión: —», «Cifras»). Cabe a escala 1,0 y 1,25. Declarada VIGENTE V02, tras la
+        lectura de los indicadores, la de V01 (SUPERADO, r2 cerrada) dice «cerrada (r2) ·
+        congelada: r1» y «Cifras congeladas de V01.r1»; con r1 alterada, «(alterada)» y sus
+        cifras en alerta; en inglés, «closed (r2) · frozen: r1 (altered)» y «Frozen figures of
+        V01.r1». Leer la ficha no escribe en el proyecto."""
+        project = self.project()
+        self.demo.digitize(project)
+        v01 = self.create(project, "definitiva", "Definitiva")
+        self.demo.pit(project, "V01")
+        self.demo.pit_volume(project, "V01")
+        self.run_checks()
+        self.declare_current(project, v01)  # r1 congelada con el volumen; r2 abierta
+        v02 = self.create(project, "ampliacion", "Ampliación")
+        self.demo.pit(project, "V02")
+        grids = [self.record(project, PIT_GRID, version) for version in (v01, v02)]
+        benches = self.record(project, BENCHES_TABLE)
+        self.load(project, *grids, benches)
+        with project.read() as conn:
+            (volume,) = self.read.version_figures(conn, v01.uid)
+        self.assertAlmostEqual(volume.value, VOLUME_10, delta=1e-9 * VOLUME_10)
+        counter = self.counter(project)
+
+        lines = self.card(self.only(grids[0]))
+        self.assertEqual(lines[0], PIT_GRID)
+        self.assertIn("Versión: V01 · Definitiva — en curso (r2) · vigente: r1", lines)
+        start = lines.index("Cifras en curso (r2)")
+        self.assertEqual(lines[start:], ["Cifras en curso (r2)", "Sin cifras registradas",
+                                         "Cifras vigentes de V01.r1", self.figure_line(volume)])
+        self.assertTrue(self.figure_line(volume).startswith(
+            "[CAL] Volumen del hueco (demostración) = "))
+        self.assertNotIn("Cifras", lines[:start])
+
+        lines = self.card(self.only(grids[1]))
+        self.assertIn("Versión: V02 · Ampliación — en curso (r1)", lines)
+        start = lines.index("Cifras en curso (r1)")
+        self.assertEqual(lines[start:], ["Cifras en curso (r1)", "Sin cifras registradas",
+                                         "Cifras vigentes de V02",
+                                         "Aún no hay ninguna revisión congelada de V02"])
+
+        lines = self.card(self.only(benches))
+        self.assertIn("Versión: —", lines)
+        self.assertIn("Cifras", lines)
+        self.assertEqual([line for line in lines if line.startswith("Cifras ")], [])
+
+        # Cabe en la barra lateral a escala 1,0 y 1,25.
+        self.card(self.only(grids[0]))
+        sidebar = ext("bl.ui.labels").sidebar_width(bpy.context)
+        for scale in at_scales():
+            layout = self.drawn(ACTIVE_ITEM_PANEL, width_px=sidebar)
+            assert_fits(self, layout, sidebar, scale=scale)
+        self.assertEqual(self.counter(project), counter)
+
+        # V02 VIGENTE: V01 pasa a SUPERADO y su r2 se cierra; la lectura de los indicadores
+        # vuelve a leer la ficha.
+        self.declare_current(project, v02)
+        self.tick(project)
+        lines = self.texts(self.drawn(ACTIVE_ITEM_PANEL))
+        self.assertIn("Versión: V01 · Definitiva — cerrada (r2) · congelada: r1", lines)
+        start = lines.index("Cifras")
+        self.assertEqual(lines[start:], ["Cifras", "Sin cifras registradas",
+                                         "Cifras congeladas de V01.r1",
+                                         self.figure_line(volume)])
+
+        # Con r1 alterada, dicho y sus cifras en alerta; en inglés.
+        self.assertEqual(self.alter(project, v01), "V01.r1")
+        self.tick(project)
+        layout = self.drawn(ACTIVE_ITEM_PANEL)
+        self.assertIn("Versión: V01 · Definitiva — cerrada (r2) · congelada: r1 (alterada)",
+                      self.texts(layout))
+        (heading,) = [item for item in layout.of_kind("label")
+                      if item.text == "Cifras congeladas de V01.r1"]
+        self.assertTrue(heading.alert)
+        self.i18n.set_language("en")
+        lines = self.card(self.only(grids[0]))
+        self.assertIn("Version: V01 · Definitiva — closed (r2) · frozen: r1 (altered)", lines)
+        self.assertEqual(lines[-2:], ["Frozen figures of V01.r1",
+                                      self.figure_line(volume, "en")])
+        lines = self.card(self.only(grids[1]))
+        self.assertIn("Version: V02 · Ampliación — in progress (r2) · current: r1", lines)
+        self.assertIn("Figures in progress (r2)", lines)
+        self.assertIn("Current figures of V02.r1", lines)
 
     def test_register_and_unregister_leave_no_trace(self) -> None:
         """RF-009-22 (plan §2.1, D-36), principio 8: habilitada, la extensión está suscrita al

@@ -23,13 +23,21 @@ Spec 010, T15 (RF-010-07; plan A7, D-15): el inventario (``inventory``, filas
 el idioma de Geoblender), la fila elegida (``inventory_index``), de qué proyecto son
 (``inventory_project``), cuántas cumplen el filtro y cuántas no caben («… y n más»), y sus
 filtros, enumerados fijos (los identificadores son los de ``core.views.inventory``; el tipo
-«Entradas» es la categoría): cambiar uno vuelve a filtrar lo ya leído, sin leer el proyecto
-(``bl.ui.view_panels.inventory_filtered``); el texto, a cada tecla.
+«Entradas» es la categoría; el de versión, dinámico desde la 009): cambiar uno vuelve a filtrar
+lo ya leído, sin leer el proyecto (``bl.ui.view_panels.inventory_filtered``); el texto, a cada
+tecla.
 
 Spec 010, T16 (RF-010-08; plan A8, D-17): las filas de la ventana de «Cifras de la selección»
 (``selection``, como las de la ficha: el nombre de cada dato, cada cifra con su insignia y sus
 marcas, o que no tiene), leídas del proyecto al pedir la orden, y de qué proyecto son
 (``selection_project``).
+
+Spec 009, T25 (RF-009-20, RF-009-30, RF-009-09; plan 009 A11): las filas del inventario son
+también de versiones y de revisiones, con sus marcas («alterada» y «en curso»), y el filtro de
+versión es un enumerado **dinámico** (``bl.ui.view_panels.version_filter_items``): «Todas»,
+«Sin versión» y las versiones del inventario ya leído (su uid; nada se lee al abrirlo), cada
+una con el número de su código para que lo elegido siga siendo la misma versión al leer otra
+vez (una versión no se borra nunca, RF-009-12).
 """
 
 from __future__ import annotations
@@ -70,10 +78,8 @@ INVENTORY_STATUS_ITEMS = [
     ("HISTORY", "Project history", ""),
     ("ALL", "Any status", ""),
 ]
-INVENTORY_VERSION_ITEMS = [
-    ("ALL", "All versions", ""),
-    ("NONE", "Without version", ""),
-]
+INVENTORY_VERSION_ALL = "ALL"
+"""El filtro de versión que no filtra (el primero del enumerado dinámico, su número 0)."""
 INVENTORY_PRESENCE_ITEMS = [
     ("ALL", "Everything", ""),
     ("IN", "In the scene", ""),
@@ -86,6 +92,14 @@ def _inventory_filtered(_view: object, _context: object) -> None:
     from ..ui import view_panels  # al usarlo: bl/ui importa bl/props
 
     view_panels.inventory_filtered()
+
+
+def _version_items(view: object, context: object) -> list[tuple[str, str, str, int]]:
+    """Los elementos del filtro de versión (spec 009, T25): los de
+    ``bl.ui.view_panels.version_filter_items``, con lo ya leído del inventario."""
+    from ..ui import view_panels  # al usarlo: bl/ui importa bl/props
+
+    return view_panels.version_filter_items(view, context)
 
 
 class GEOBLENDER_PG_core_card_row(bpy.types.PropertyGroup):
@@ -105,10 +119,12 @@ class GEOBLENDER_PG_core_card_row(bpy.types.PropertyGroup):
 
 class GEOBLENDER_PG_core_inventory_row(bpy.types.PropertyGroup):
     """Una fila del inventario (spec 010, RF-010-07; ``core.views.inventory.InventoryItem``):
-    su nombre (``name``, el de todo grupo), su categoría («INPUT» o «DATASET»), su uid, su
-    módulo, su tipo, su estado como lo guarda el proyecto («current»…), su versión (vacía:
-    «—», hasta la spec 009), si está en la escena, si está obsoleto, si depende de una entrada
-    cambiada y si se puede cargar en la vista."""
+    su nombre (``name``, el de todo grupo), su categoría («INPUT», «DATASET» y, con la spec
+    009, «VERSION» o «REVISION»), su uid, su módulo, su tipo, su estado como lo guarda el
+    proyecto («current»…; el de una versión, «VIGENTE»…; el de una revisión, «open»…), su
+    versión (su código; vacía, «—»: lo del proyecto), si está en la escena, si está obsoleto,
+    si depende de una entrada cambiada, si se puede cargar en la vista y, de una revisión,
+    si está alterada (RF-009-09) y si está en curso, la abierta (RF-009-20)."""
 
     category: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     uid: StringProperty(options=_STATIC)  # type: ignore[valid-type]
@@ -120,6 +136,8 @@ class GEOBLENDER_PG_core_inventory_row(bpy.types.PropertyGroup):
     stale: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
     input_changed: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
     loadable: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+    altered: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+    in_progress: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
 
 
 class GEOBLENDER_PG_core_view_panels(bpy.types.PropertyGroup):
@@ -160,7 +178,7 @@ class GEOBLENDER_PG_core_view_panels(bpy.types.PropertyGroup):
         update=_inventory_filtered, name="Status", description="Only what has this status",
     )
     inventory_version: EnumProperty(  # type: ignore[valid-type]
-        items=INVENTORY_VERSION_ITEMS, default="ALL", options=_STATIC,
+        items=_version_items, default=0, options=_STATIC,
         update=_inventory_filtered, name="Version", description="Only what has this version",
     )
     inventory_presence: EnumProperty(  # type: ignore[valid-type]

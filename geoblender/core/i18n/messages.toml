@@ -5175,3 +5175,38 @@ es = "Códigos de las versiones a las que afecta, separados por comas"
 
 ["Owner decision recorded: «{what}» ({who}, {date})"]
 es = "Decisión de la propiedad registrada: «{what}» ({who}, {date})"
+
+# Inventario y Elemento activo con versiones (spec 009, T25; RF-009-20, RF-009-30, RF-009-09;
+# plan 009 A11): el estado de una revisión y su marca en el inventario, lo que no se hace con una
+# versión o una revisión, y las cifras «en curso» y vigentes de un dato de versión en su ficha.
+# «Version», «Revision», «All versions» y «Without version» ya están.
+
+["in progress"]
+es = "en curso"
+
+["frozen"]
+es = "congelada"
+
+["closed"]
+es = "cerrada"
+
+["ALTERED"]
+es = "ALTERADA"
+
+["A version or a revision is not loaded into the view: its data are"]
+es = "Una versión o una revisión no se carga en la vista: se cargan sus datos"
+
+["A version or a revision has no provenance: its data have it"]
+es = "Una versión o una revisión no tiene procedencia: la tienen sus datos"
+
+["Figures in progress ({revision})"]
+es = "Cifras en curso ({revision})"
+
+["Current figures of {revision}"]
+es = "Cifras vigentes de {revision}"
+
+["Frozen figures of {revision}"]
+es = "Cifras congeladas de {revision}"
+
+["No revision of {version} has been frozen yet"]
+es = "Aún no hay ninguna revisión congelada de {version}"

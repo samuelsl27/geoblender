@@ -69,6 +69,23 @@ tiene: hasta que la cubicación, R-38, registre las primeras). **No mide nada**:
 volúmenes de la geometría; y las cifras que anota cada objeto (``Object.geoblender.figures``,
 solo para mostrarlas) no son su fuente.
 
+**Con las versiones** (spec 009, T25; RF-009-20, RF-009-30, RF-009-09; plan 009 A11 y D-9):
+
+- el **inventario** tiene una fila por versión («V01 · Definitiva», con el icono de su estado,
+  ``bl.ui.version_panels.state_icon``, y su estado, «VIGENTE»…) y por revisión («V01.r2», con su
+  estado: «en curso», la abierta, «congelada» o «cerrada», y la marca «alterada» en alerta), y
+  cada dato con el código de su versión; el filtro de versión es un enumerado dinámico
+  (:func:`version_filter_items`) con «Todas», «Sin versión» y las versiones de lo ya leído (nada
+  se lee para él); al cambiar el proyecto de la sesión, vuelve a «Todas». Una versión o una
+  revisión no se carga en la vista ni tiene procedencia: la tienen sus datos;
+- la **ficha** de un dato de versión dice su versión con sus revisiones («V01 · Definitiva — en
+  curso (r2) · vigente: r1», ``core.views.card.RevisionMark``; con «(alterada)» en alerta), las
+  cifras de su operación como las «en curso» de la revisión abierta («Cifras en curso (r2)»,
+  RF-009-20) y, aparte, las vigentes de su versión, las de su última revisión congelada (D-9:
+  «Cifras vigentes de V01.r1»; de una versión SUPERADO o DESCARTADO, «Cifras congeladas de
+  V01.r1»; sin ninguna congelada, «Aún no hay ninguna revisión congelada de V02»). Un dato del
+  proyecto, como en la 010.
+
 :func:`register` suscribe y apunta el manejador ``@persistent`` y las escuchas (también la de lo
 cargado y descargado de la vista); :func:`unregister` lo quita todo (también el temporizador del
 inventario). Los paneles (con la pestaña y el título traducidos por :func:`localize` antes de
@@ -95,17 +112,19 @@ from ...core.i18n import format_number, language, tr, translate
 from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
+from ...core.versions.model import EDITABLE, RevisionState, VersionStatus, revision_label
 from .. import compat
 from ..props.core import OBJECT_PROPERTY
-from ..props.views import INVENTORY_INPUT, WINDOW_MANAGER_PROPERTY
+from ..props.views import INVENTORY_INPUT, INVENTORY_VERSION_ALL, WINDOW_MANAGER_PROPERTY
 from ..scene import live, project_session, views
-from . import core_panel, gate, labels, provenance
+from . import core_panel, gate, labels, provenance, version_panels
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ...core.project.session import Project
-    from ...core.views.card import DatasetFigures, ItemCard, Link
+    from ...core.provenance.figures import FigureRecord
+    from ...core.views.card import DatasetFigures, ItemCard, Link, RevisionMark
     from ...core.views.inventory import InventoryFilter, InventorySnapshot
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
@@ -182,6 +201,27 @@ LOAD_ICON = "ADD"
 UNLOAD_ICON = "REMOVE"
 _HISTORY = frozenset({str(DatasetStatus.SUPERSEDED), str(DatasetStatus.DISCARDED)})
 _MISSING = str(DatasetStatus.MISSING)
+
+# Las versiones en el inventario (spec 009, T25).
+VERSION_CATEGORY = "VERSION"  # core.views.inventory.Category.VERSION
+REVISION_CATEGORY = "REVISION"  # core.views.inventory.Category.REVISION
+_NUMBERED = frozenset({VERSION_CATEGORY, REVISION_CATEGORY})
+VERSION_NONE = "NONE"  # core.views.inventory.VERSION_NONE: lo que no tiene versión («—»)
+REVISION_ICONS: dict[str, str] = {
+    str(RevisionState.OPEN): "TIME",
+    str(RevisionState.FROZEN): "FREEZE",
+    str(RevisionState.CLOSED): "LOCKED",
+}
+"""El icono de una revisión por su estado: la abierta (en curso), la congelada y la cerrada."""
+ALTERED_ICON = version_panels.ALTERED_ICON
+ALTERED_MSGID = "ALTERED"
+FIRST_VERSION_ITEM = 1
+"""El número del filtro de versión de V01 es su número más este (0 es «Todas», 1 «Sin
+versión»): lo elegido sigue siendo la misma versión aunque se lean otras."""
+_UNNUMBERED_ITEMS = 1_000_000
+"""El número del filtro de una versión cuyo código no lleva número (no debería pasar)."""
+_VERSION_CHOICES: list[tuple[str, str, str, int]] = []
+"""Los elementos del filtro de versión (Blender necesita que Python guarde sus textos)."""
 
 # Cifras de la selección (T16).
 SELECTION_FIGURES_PANEL = "GEOBLENDER_PT_core_selection_figures"
@@ -305,6 +345,40 @@ def operation_text(found: ItemCard) -> str:
     return " · ".join(part for part in parts if part)
 
 
+def _figure_line(figure: FigureRecord, *, alert: bool = False) -> CardLine:
+    """Una cifra de la ficha: su insignia de tipo, su nombre y su valor con su unidad."""
+    return CardLine(ROW_FIGURE, f"{provenance.badge(figure.kind)} "
+                                f"{figure.text(language=language())}",
+                    alert=alert, uid=figure.uid)
+
+
+def figures_heading(mark: RevisionMark | None) -> str:
+    """El título de las cifras de la operación del dato: de un dato de versión vivo, las «en
+    curso» de su revisión abierta («Cifras en curso (r2)», RF-009-20); si no, «Cifras»."""
+    if mark is None or mark.in_progress is None:
+        return tr("Figures")
+    return tr("Figures in progress ({revision})", revision=f"r{mark.in_progress}")
+
+
+def frozen_figure_lines(mark: RevisionMark, figures: Sequence[FigureRecord]) -> list[CardLine]:
+    """Las cifras vigentes de la versión de un dato (D-9; spec 009, T25): las de su última
+    revisión congelada, «Cifras vigentes de V01.r1» (de una versión SUPERADO o DESCARTADO,
+    «Cifras congeladas de V01.r1»), en alerta si está alterada; sin ninguna congelada, «Aún no
+    hay ninguna revisión congelada de V02»."""
+    if mark.current is None:
+        return [CardLine(ROW_HEADING, tr("Current figures of {revision}", revision=mark.code)),
+                CardLine(ROW_NONE, tr("No revision of {version} has been frozen yet",
+                                      version=mark.code))]
+    label = revision_label(mark.code, mark.current)
+    heading = (tr("Current figures of {revision}", revision=label) if mark.status in EDITABLE
+               else tr("Frozen figures of {revision}", revision=label))
+    altered = mark.current_altered
+    lines = [CardLine(ROW_HEADING, heading, alert=altered)]
+    lines += [_figure_line(figure, alert=altered) for figure in figures] or [
+        CardLine(ROW_NONE, tr("No figures recorded"))]
+    return lines
+
+
 def card_lines(found: ItemCard) -> list[CardLine]:
     """Las líneas de la ficha de ``found`` (``core.views.card.ItemCard``), en el idioma de
     Geoblender (véase el módulo)."""
@@ -317,13 +391,16 @@ def card_lines(found: ItemCard) -> list[CardLine]:
     status = status_text(record.status)
     if found.stale:
         status = f"{status} · {translate(language(), STALE_MSGID)}"
+    mark = found.revision  # de un dato de versión: su versión y sus revisiones (spec 009)
+    version = (found.version or NO_VALUE) if mark is None else mark.heading(language())
     lines = [
         CardLine(ROW_NAME, record.name, KIND_ICONS.get(record.kind, OTHER_ICON), uid=record.uid),
         CardLine(ROW_FIELD, tr("Type: {kind}", kind=" · ".join(part for part in kind if part))),
         CardLine(ROW_FIELD, tr("Status: {status}", status=status),
                  alert=found.stale or not record.live),
         CardLine(ROW_VIEW),
-        CardLine(ROW_FIELD, tr("Version: {version}", version=found.version or NO_VALUE)),
+        CardLine(ROW_FIELD, tr("Version: {version}", version=version),
+                 alert=mark is not None and mark.current_altered),
         CardLine(ROW_FIELD, tr("Operation: {operation}", operation=operation_text(found))),
         CardLine(ROW_HEADING, tr("↑ Inputs")),
     ]
@@ -335,11 +412,11 @@ def card_lines(found: ItemCard) -> list[CardLine]:
     lines += [CardLine(ROW_ITEM, link_text(link, with_hash=False), DATASET_ICON,
                        alert=link.stale, uid=link.uid) for link in found.downstream] or [
         CardLine(ROW_NONE, tr("No derived data"))]
-    lines.append(CardLine(ROW_HEADING, tr("Figures")))
-    lines += [CardLine(ROW_FIGURE,
-                       f"{provenance.badge(figure.kind)} {figure.text(language=language())}",
-                       uid=figure.uid) for figure in found.figures] or [
+    lines.append(CardLine(ROW_HEADING, figures_heading(mark)))
+    lines += [_figure_line(figure) for figure in found.figures] or [
         CardLine(ROW_NONE, tr("No figures recorded"))]
+    if mark is not None:
+        lines += frozen_figure_lines(mark, found.frozen_figures)
     return lines
 
 
@@ -474,10 +551,12 @@ def on_project_read(_project: Project) -> None:
 
 def on_project_changed(_project: Project | None) -> None:
     """Lo que se apunta en ``project_session``: olvida la ficha y el inventario del proyecto
-    anterior (con uno nuevo, la ficha la lee el primer tic de sus indicadores y el inventario,
-    el primer dibujo de su panel: al abrir no se lee nada, RNF-002-02)."""
+    anterior y su filtro de versión vuelve a «Todas» (con uno nuevo, la ficha la lee el primer
+    tic de sus indicadores y el inventario, el primer dibujo de su panel: al abrir no se lee
+    nada, RNF-002-02)."""
     view = _view(bpy.context)
     forgot = _forget_inventory(view)
+    _all_versions(view)
     if (view is not None and _clear(view)) or forgot:
         _redraw()
 
@@ -512,13 +591,17 @@ def on_load_post(*_args: Any) -> None:
 
 
 def _draw_lines(layout: Any, text: str, width: float, *, icon: str = "NONE",
-                alert: bool = False) -> None:
+                alert: bool = False, icon_value: int = 0) -> None:
     """``text`` en las líneas que caben en ``width`` (``bl.ui.labels.wrapped``), en una columna
-    (en alerta, si ``alert``), la primera con ``icon`` y las demás con su hueco."""
-    with_icon = icon not in ("", "NONE")
+    (en alerta, si ``alert``), la primera con ``icon`` (o con el icono propio ``icon_value``) y
+    las demás con su hueco."""
+    with_icon = bool(icon_value) or icon not in ("", "NONE")
     column = layout.column(align=True)
     column.alert = alert
     for index, line in enumerate(labels.wrapped(text, width, icon=with_icon)):
+        if index == 0 and icon_value:
+            column.label(text=line, icon_value=icon_value, translate=False)
+            continue
         shown = (icon if index == 0 else "BLANK1") if with_icon else "NONE"
         column.label(text=line, icon=shown, translate=False)
 
@@ -611,9 +694,44 @@ def _forget_inventory(view: Any) -> bool:
     return had
 
 
+def _version_number(code: str | None, position: int) -> int:
+    """El número del elemento de la versión ``code`` en el filtro de versión: el de su código
+    (V01 → 1) más :data:`FIRST_VERSION_ITEM`."""
+    digits = (code or "")[1:]
+    if digits.isdigit():
+        return int(digits) + FIRST_VERSION_ITEM
+    return _UNNUMBERED_ITEMS + position
+
+
+def version_filter_items(_view: Any, _context: Any) -> list[tuple[str, str, str, int]]:
+    """Los elementos del filtro de versión del inventario (``inventory_version``, un enumerado
+    dinámico; spec 009, T25): «Todas», «Sin versión» y cada versión del inventario ya leído del
+    proyecto de la sesión, por su número («V01 · Definitiva», con su uid). No lee el proyecto:
+    sin inventario leído, solo los dos primeros. Cada versión lleva el número de su código
+    (:func:`_version_number`), y lo elegido sigue siendo la misma al leer otra vez."""
+    choices = [(INVENTORY_VERSION_ALL, tr("All versions"), "", 0),
+               (VERSION_NONE, tr("Without version"), "", 1)]
+    snapshot = _INVENTORY.snapshot
+    project = project_session.current()
+    if snapshot is not None and project is not None and _INVENTORY.project is project:
+        choices += [(item.uid, item.name, "", _version_number(item.version, position))
+                    for position, item in enumerate(snapshot.versions)]
+    _VERSION_CHOICES[:] = choices
+    return _VERSION_CHOICES
+
+
+def _all_versions(view: Any) -> None:
+    """El filtro de versión, otra vez «Todas» (lo elegido era de otro proyecto), sin leerlo:
+    olvidado el inventario, una versión elegida ya no está entre sus elementos y leerlo
+    avisaría en la consola."""
+    if view is not None:
+        view.property_unset("inventory_version")
+
+
 def inventory_filter(view: Any) -> InventoryFilter:
     """Lo que piden los filtros del panel (``core.views.inventory.InventoryFilter``): el tipo
-    «Entradas» es la categoría de las entradas; los demás tipos, los de los datos."""
+    «Entradas» es la categoría de las entradas; los demás tipos, los de los datos; la versión,
+    su uid («Todas» si lo elegido ya no está entre lo leído)."""
     from ...core.views import inventory  # al usarlo, como card
 
     kind = str(view.inventory_kind)
@@ -623,7 +741,7 @@ def inventory_filter(view: Any) -> InventoryFilter:
         category = inventory.ALL if kind == inventory.ALL else DATASET_CATEGORY
     return inventory.InventoryFilter(category=category, kind=kind,
                                      status=str(view.inventory_status),
-                                     version=str(view.inventory_version),
+                                     version=str(view.inventory_version) or inventory.ALL,
                                      presence=str(view.inventory_presence),
                                      text=str(view.inventory_text))
 
@@ -653,6 +771,8 @@ def _fill_inventory(view: Any, project_uid: str, snapshot: InventorySnapshot) ->
         row.stale = item.stale
         row.input_changed = item.input_changed
         row.loadable = item.loadable
+        row.altered = item.altered
+        row.in_progress = item.in_progress
         if item.uid == chosen:
             selected = position
     view.inventory_index = selected
@@ -769,37 +889,67 @@ def on_view_changed() -> None:
         LOGGER.exception("Falló la puesta al día del inventario tras cargar o descargar")
 
 
-def _row_icon(row: Any) -> str:
-    """El icono de una fila: el de una entrada o el del tipo de un dato."""
+def row_icon(row: Any) -> dict[str, Any]:
+    """Los argumentos del icono de una fila: el de una entrada, el del tipo de un dato, el del
+    estado de una versión (el propio, ``{"icon_value": n}``, o su reserva nativa; spec 009) o
+    el del estado de una revisión."""
+    if row.category == VERSION_CATEGORY:
+        return version_panels.state_icon(row.status)
+    if row.category == REVISION_CATEGORY:
+        return {"icon": REVISION_ICONS.get(row.status, OTHER_ICON)}
     if row.category == INPUT_CATEGORY:
-        return INPUT_ICON
-    return KIND_ICONS.get(row.kind, OTHER_ICON)
+        return {"icon": INPUT_ICON}
+    return {"icon": KIND_ICONS.get(row.kind, OTHER_ICON)}
+
+
+def revision_state_text(state: str) -> str:
+    """El estado de una revisión como se lee: «en curso» (la abierta, RF-009-20), «congelada» o
+    «cerrada»."""
+    if state == RevisionState.OPEN:
+        return tr("in progress")
+    if state == RevisionState.FROZEN:
+        return tr("frozen")
+    if state == RevisionState.CLOSED:
+        return tr("closed")
+    return state
 
 
 def _row_status(row: Any) -> str:
-    """El estado de una fila como se lee: el de una entrada («vigente», «cambiada»…) o el de un
-    dato como en su nombre generado («VIGENTE»)."""
+    """El estado de una fila como se lee: el de una entrada («vigente», «cambiada»…), el de un
+    dato como en su nombre generado («VIGENTE»), el de una versión («VIGENTE», «BORRADOR»…) o
+    el de una revisión («en curso», «congelada», «cerrada»)."""
     if row.category == INPUT_CATEGORY:
         try:
             return render(f"core.input_status_{row.status}", language=language())
         except ValueError:
             return row.status
+    if row.category == VERSION_CATEGORY:
+        return translate(language(), VersionStatus(row.status).msgid)
+    if row.category == REVISION_CATEGORY:
+        return revision_state_text(row.status)
     return status_text(row.status)
 
 
 def inventory_status_text(row: Any) -> str:
-    """El estado de una fila con sus marcas: «VIGENTE · OBSOLETO · ENTRADA CAMBIADA»."""
+    """El estado de una fila con sus marcas: «VIGENTE · OBSOLETO · ENTRADA CAMBIADA»; de una
+    revisión, «congelada · ALTERADA»."""
     parts = [_row_status(row)]
     if row.stale:
         parts.append(translate(language(), STALE_MSGID))
     if row.input_changed:
         parts.append(translate(language(), INPUT_CHANGED_MSGID))
+    if row.altered:
+        parts.append(translate(language(), ALTERED_MSGID))
     return " · ".join(part for part in parts if part)
 
 
 def inventory_kind_text(row: Any) -> str:
     """El tipo de una fila: «Entrada · ráster · gis» o, de un dato, su nombre de cargador, su
-    tipo y su módulo («MDT de origen · ráster · gis»)."""
+    tipo y su módulo («MDT de origen · ráster · gis»); «Versión» o «Revisión»."""
+    if row.category == VERSION_CATEGORY:
+        return tr("Version")
+    if row.category == REVISION_CATEGORY:
+        return tr("Revision")
     if row.category == INPUT_CATEGORY:
         first = tr("Input")
     else:
@@ -813,6 +963,8 @@ def load_refusal(row: Any) -> str:
     """Por qué no se puede cargar en la vista el elemento de una fila ("" si se puede)."""
     if row.category == INPUT_CATEGORY:
         return tr("An input is not loaded into the view: the data imported from it are")
+    if row.category in _NUMBERED:
+        return tr("A version or a revision is not loaded into the view: its data are")
     if row.loadable:
         return ""
     if row.status in _HISTORY:
@@ -831,15 +983,18 @@ def lineage_refusal(row: Any) -> str:
     """Por qué no tiene procedencia ("" si la tiene: un dato)."""
     if row.category == INPUT_CATEGORY:
         return tr("An input has no provenance: the data imported from it have it")
+    if row.category in _NUMBERED:
+        return tr("A version or a revision has no provenance: its data have it")
     return ""
 
 
 def draw_inventory_row(layout: Any, row: Any) -> None:
     """Una fila de la lista (``draw_item`` de :class:`GEOBLENDER_UL_core_project_inventory`): el
-    icono de su tipo y su nombre; a la derecha, su estado, su versión («—»), si está en la
-    escena (un ojo) y sus marcas, en alerta (obsoleto; entrada cambiada)."""
+    icono de su tipo (de una versión o una revisión, el de su estado) y su nombre; a la derecha,
+    su estado, su versión («—»), si está en la escena (un ojo) y sus marcas, en alerta
+    (obsoleto; entrada cambiada; revisión alterada)."""
     line = layout.split(factor=INVENTORY_NAME_FACTOR, align=True)
-    line.label(text=row.name, icon=_row_icon(row), translate=False)
+    line.label(text=row.name, translate=False, **row_icon(row))
     right = line.row(align=True)
     right.alignment = "RIGHT"
     right.label(text=_row_status(row), translate=False)
@@ -851,6 +1006,8 @@ def draw_inventory_row(layout: Any, row: Any) -> None:
         marks.label(text="", icon=STALE_ICON)
     if row.input_changed:
         marks.label(text="", icon=INPUT_CHANGED_ICON)
+    if row.altered:
+        marks.label(text="", icon=ALTERED_ICON)
 
 
 def _chosen(view: Any) -> Any:
@@ -877,10 +1034,10 @@ def draw_chosen(layout: Any, row: Any, width: float) -> None:
     """Lo de la fila elegida: su nombre, su tipo, su estado con sus marcas (en alerta), su
     versión, si está en la escena, y Cargar en la vista, Descargar y Procedencia."""
     column = layout.column(align=True)
-    _draw_lines(column, row.name, width, icon=_row_icon(row))
+    _draw_lines(column, row.name, width, **row_icon(row))
     _draw_lines(column, tr("Type: {kind}", kind=inventory_kind_text(row)), width)
     _draw_lines(column, tr("Status: {status}", status=inventory_status_text(row)), width,
-                alert=row.stale or row.input_changed)
+                alert=row.stale or row.input_changed or row.altered)
     _draw_lines(column, tr("Version: {version}", version=row.version or NO_VALUE), width)
     _draw_lines(column, tr("Loaded in the scene") if row.in_scene else
                 tr("Not loaded in the scene"), width)
