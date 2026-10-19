@@ -17,7 +17,8 @@
    lo sustituido sin sucesor vivo, lo que el proyecto no tiene y lo de otro proyecto
    (``unbacked``); pone al día, sin volver a cargarlos, el estado y la marca de obsoleto de lo
    demás (``RESTATE``) y «FALTA» en lo que falta, que no se puede volver a cargar (D-11)
-   (``bl.scene.views.show_view_state``, con lo leído por los cargadores); pone en lo que
+   (``bl.scene.views.show_view_state``, con lo leído por los cargadores y el título de cada
+   dato; y el nombre y el color de las colecciones de las versiones, spec 009, T22); pone en lo que
    muestra el contenido de hoy de su dato, sin volver a cargarlo, sus cifras registradas de hoy
    (``Object.geoblender.figures``, ``bl.scene.views.show_figures``; spec 010, T16, RF-010-08:
    lo que se vuelve a cargar ya las trae); y quita la marca de vista desfasada de las escenas
@@ -45,6 +46,7 @@ from ...core.i18n import tr
 from ...core.project.model import Progress
 from ...core.views.state import ItemState, ItemView, refresh_plan
 from . import live, views
+from . import versions as scene_versions
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
 
@@ -103,7 +105,7 @@ def refresh_steps(context: Any, project: Any) -> Generator[Progress, None, None]
     ``bl.scene.views.load_steps``, con el nombre de cada dato) y el último, el
     :class:`RefreshOutcome` en ``result``. Cerrarlos antes del último deja la escena como
     estaba. No escribe en el proyecto."""
-    _groups, states, read = live.read_view(project)
+    _groups, states, read, versions_read = live.read_view(project)
     plan = refresh_plan(states)
     shown = {uid for uid, view in states.items() if view.state in _SHOWN}
     targets = [uid for uid in plan.targets if uid not in shown]
@@ -130,7 +132,9 @@ def refresh_steps(context: Any, project: Any) -> Generator[Progress, None, None]
         views.unload_datasets(dropped)
     rest = {uid: objects for uid, objects in views.loaded_items().items()
             if uid in states and uid not in placed}
-    views.show_view_state(rest, states, live=read)
+    views.show_view_state(rest, states, live=read, titles=versions_read.titles,
+                          versions=versions_read.codes)
+    scene_versions.show_versions(versions_read.versions, versions_read.revisions)
     # Las cifras registradas de hoy en lo que muestra su contenido de hoy (lo vuelto a cargar
     # ya las tiene): RF-010-08, «al cargar y al refrescar». Son solo para mostrarlas: si no se
     # pueden leer, quedan las que había y Refrescar sigue (lo demás ya está en la escena).

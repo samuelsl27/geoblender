@@ -14,7 +14,8 @@ operaciones de versión y la cascada) ni nada que la importe: solo :mod:`.model`
   revisión por su uid; las de una versión, por número; la abierta, y la última congelada.
 - :func:`current_version`: la VIGENTE (solo puede haber una, D-3); :func:`default_active`: la
   versión activa por defecto (D-25), la VIGENTE o, si no hay, el BORRADOR más reciente.
-- :func:`dataset_versions`: la versión de cada dato (``''``, del proyecto; RF-009-05).
+- :func:`dataset_versions`: la versión de cada dato (``''``, del proyecto; RF-009-05);
+  :func:`dataset_titles`, también su título, para la vista (T22; RF-009-30, RF-009-22).
 - :func:`version_figures`: las cifras vigentes de una versión, las de su última revisión
   congelada (D-9), o las «en curso» (RF-009-20).
 - :func:`snapshot_index`: el inventario de lo congelado para la cabecera (``manifest.json``).
@@ -141,6 +142,25 @@ def dataset_versions(conn: sqlite3.Connection, uids: Iterable[str]) -> dict[str,
             (str(uid), str(version_uid)) for uid, version_uid in conn.execute(
                 f"SELECT uid, version_uid FROM gb_dataset WHERE uid IN ({marks})", part)
         )
+    return found
+
+
+def dataset_titles(conn: sqlite3.Connection, uids: Iterable[str]) -> dict[str, tuple[str, str]]:
+    """La versión (su uid; ``''``, del proyecto) y el título (``''`` sin título) de cada dato de
+    ``uids``, lo que necesita la vista (spec 009, T22; RF-009-30, RF-009-22; plan A11, D-36): la
+    colección de su versión y el título en su nombre generado. Los que el proyecto no tiene no
+    salen; en una base sin versiones (un proyecto del esquema 2 abierto en solo lectura),
+    ninguno."""
+    wanted = list(dict.fromkeys(uids))
+    found: dict[str, tuple[str, str]] = {}
+    if not wanted or not has_versions(conn):
+        return found
+    for start in range(0, len(wanted), _CHUNK):
+        part = wanted[start:start + _CHUNK]
+        marks = ", ".join("?" for _ in part)
+        rows = conn.execute(
+            f"SELECT uid, version_uid, title FROM gb_dataset WHERE uid IN ({marks})", part)
+        found.update((str(uid), (str(owner), title or "")) for uid, owner, title in rows)
     return found
 
 

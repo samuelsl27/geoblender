@@ -30,7 +30,9 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
 - ``versions``: la versión activa de la sesión (spec 009, T18; RF-009-10): se elige al abrir el
   proyecto (la escucha de ``project_session``) y al cargar la vista (``load_post``), se guarda con
   la vista (``save_pre``) y en los datos de usuario; después de ``georef``, cuyos manejadores
-  corren antes.
+  corren antes. Y (T22; RF-009-30, RF-009-22) las colecciones de las versiones, que ``views`` y
+  ``live`` crean y ponen al día, y el renombrado desde el Outliner (la suscripción de
+  ``bpy.msgbus`` al nombre de ``Object`` y ``Collection``, renovada en ``load_post``).
 """
 
 from __future__ import annotations

@@ -5043,3 +5043,12 @@ es = "El proyecto se cerró mientras se congelaba {revision}: no ha quedado nada
 
 ["Freezing {revision} stopped: {error}"]
 es = "La congelación de {revision} se ha parado: {error}"
+
+# Las colecciones de las versiones y el renombrado desde el Outliner (spec 009, T22; RF-009-30,
+# RF-009-22; plan 009 A11, D-35, D-36).
+
+["Versions"]
+es = "Versiones"
+
+["The name «{text}» was not kept: {reason}"]
+es = "No se ha guardado el nombre «{text}»: {reason}"

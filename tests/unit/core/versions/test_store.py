@@ -716,6 +716,45 @@ class SessionReadTest(StoreCase):
             finally:
                 conn.close()
 
+    def test_version_and_title_of_each_dataset_for_the_view(self) -> None:
+        """RF-009-30, RF-009-22 (T22; plan A11, D-36): ``dataset_titles`` da, de cada dato pedido
+        que el proyecto tiene, su versión (``''``, del proyecto) y su título (``''`` sin
+        título), lo que necesita la vista para poner el dato en la colección de su versión y
+        su título en el nombre; uno que no está, no sale; un proyecto del esquema 2 (sin
+        versiones), ninguno. No escribe nada."""
+        v1, r1 = self.create(title="Definitiva")
+        (benches,) = self.query("SELECT uid FROM gb_dataset WHERE name = 'demo_benches'")[0]
+        (marks,) = self.query("SELECT uid FROM gb_dataset WHERE name = 'demo_marks'")[0]
+        own = _uid()
+
+        def add_dataset(conn: sqlite3.Connection) -> None:
+            operation = _uid()
+            _insert(conn, "gb_operation", _copy_row(
+                conn, "gb_operation", "op_type = 'demo.area'", uid=operation, scope="version",
+                revision_uid=r1.uid, supersedes_uid=None, superseded_by=None))
+            _insert(conn, "gb_dataset", _copy_row(
+                conn, "gb_dataset", "name = 'demo_benches'", uid=own, name="des_final",
+                locator="des_final_v01", selector="", version_uid=v1.uid, input_uid=None,
+                immutable=0, superseded_by=None, operation_uid=operation, title=None))
+
+        self.write(add_dataset)
+        self.write(lambda conn: store.set_title(conn, self.project, dataset_uid=benches,
+                                                title="Bancos de la corta"))
+        counter, files = self.counter(), self.files()
+        with self.project.read() as conn:
+            found = read.dataset_titles(conn, [benches, own, marks, _uid(), own])
+            self.assertEqual(read.dataset_titles(conn, []), {})
+        self.assertEqual(found, {benches: ("", "Bancos de la corta"), own: (v1.uid, ""),
+                                 marks: ("", "")})
+        self.assertEqual((self.counter(), self.files()), (counter, files))
+        with project_tmp("gb-v5t-") as tmp:
+            old = fixture.extract(tmp)  # el proyecto del esquema 2, sin migrar
+            conn = sqlite3.connect(f"file:{(old / DATABASE).as_posix()}?mode=ro", uri=True)
+            try:
+                self.assertEqual(read.dataset_titles(conn, [benches]), {})
+            finally:
+                conn.close()
+
 
 class NoDeleteTest(StoreCase):
     def test_no_api_deletes_and_reads_do_not_write(self) -> None:

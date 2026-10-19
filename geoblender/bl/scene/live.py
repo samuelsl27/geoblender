@@ -68,6 +68,7 @@ from ...core.gpkg.header import read_header
 from ...core.i18n import language, tr
 from ...core.views import state
 from . import project_session, views
+from . import versions as scene_versions
 
 if TYPE_CHECKING:
     from ...core.project.session import Project
@@ -100,6 +101,8 @@ class _State:
         self.project: Project | None = None  # el proyecto de la última lectura
         self.states: dict[str, state.ItemView] = {}  # lo leído, por uid de dato
         self.live: dict[str, Any] = {}  # lo que leyeron los cargadores, por su comienzo
+        self.titles: dict[str, str] = {}  # el título de los datos que lo tienen (spec 009)
+        self.codes: dict[str, str] = {}  # la versión de los datos de una versión (spec 009)
         self.remaining: list[str] = []  # los datos que quedan por aplicar, en orden
         self.pending = 0  # cuántos no están al día (control 7)
         self.notes: dict[tuple[int, str], CommandState] = {}
@@ -201,14 +204,14 @@ def _mark() -> float | None:
         if _forget():
             _redraw()
         return None
-    counted = False
+    counted = dressed = False
     if _STATE.requested or _STATE.project is not project:
         if getattr(project, "writing", False) or _in_wal(project):
             _STATE.requested = True
             return MARK_RETRY_S
         _STATE.requested = False
         try:
-            groups, states, live = read_view(project)
+            groups, states, live, shown = read_view(project)
         except (GeoblenderError, sqlite3.Error, OSError):
             LOGGER.info("No se pudo leer el proyecto para la marca en vivo de la vista; se "
                         "pide otra vez con el próximo cambio", exc_info=True)
@@ -220,10 +223,14 @@ def _mark() -> float | None:
         _STATE.project = project
         _STATE.states = states
         _STATE.live = live
+        _STATE.titles = dict(shown.titles)
+        _STATE.codes = dict(shown.codes)
         _STATE.remaining = list(states)
         count = state.pending(states)
         counted = count != _STATE.pending
         _STATE.pending = count
+        # Las colecciones de las versiones, en la misma tanda (spec 009, RF-009-30).
+        dressed = scene_versions.show_versions(shown.versions, shown.revisions) > 0
         if first:
             _announce(count)
             _rebuild(project, groups, states)
@@ -232,9 +239,10 @@ def _mark() -> float | None:
     budget = max(0.0, MARK_BUDGET_S - (time.perf_counter() - started))
     wanted = {uid: groups[uid] for uid in _STATE.remaining if uid in groups}
     changed, rest = views.show_view_state(wanted, _STATE.states, budget_s=budget,
-                                          live=_STATE.live)
+                                          live=_STATE.live, titles=_STATE.titles,
+                                          versions=_STATE.codes)
     _STATE.remaining = rest
-    if changed or counted:
+    if changed or counted or dressed:
         _redraw()
     return MARK_TICK_S if rest or _STATE.requested else None
 
@@ -249,15 +257,19 @@ def _in_wal(project: Project) -> bool:
 
 
 def read_view(project: Project) -> tuple[dict[str, tuple[bpy.types.Object, ...]],
-                                         dict[str, state.ItemView], dict[str, Any]]:
+                                         dict[str, state.ItemView], dict[str, Any],
+                                         scene_versions.VersionsRead]:
     """Los objetos de la escena por dato (``views.loaded_items``, los de todos los proyectos)
-    y, en una instantánea del proyecto, lo que dice de cada dato (``view_states``) y lo que
+    y, en una instantánea del proyecto, lo que dice de cada dato (``view_states``), lo que
     leen los cargadores con marca en vivo de lo que la muestra hoy (``live_reads``: solo los
-    de esos cargadores). Sin datos cargados, no abre el proyecto. No escribe. Lo usan la marca
-    y Refrescar (``bl.scene.refresh``, spec 010, T11)."""
+    de esos cargadores) y lo de las versiones (spec 009, T22; RF-009-30, RF-009-22): las
+    versiones con la revisión que se enseña con cada una y el título de los datos cargados
+    (``bl.scene.versions.read_for_view``). Sin datos cargados, no abre el proyecto. No escribe.
+    Lo usan la marca, Refrescar (``bl.scene.refresh``, spec 010, T11) y el renombrado
+    (:func:`show_now`)."""
     groups = views.loaded_items()
     if not groups:
-        return groups, {}, {}
+        return groups, {}, {}, scene_versions.VersionsRead()
     items = [views.loaded_item(uid, objects) for uid, objects in groups.items()]
     view_stale = any(scene.geoblender.view_stale for scene in bpy.data.scenes)
     with project.read() as conn:
@@ -266,9 +278,26 @@ def read_view(project: Project) -> tuple[dict[str, tuple[bpy.types.Object, ...]]
             states = state.view_states(project, items, project_uid=project.uid,
                                        origin=project.origin, view_stale=view_stale, conn=conn)
             live = views.live_reads(conn, _hooked(states))
+            shown = scene_versions.read_for_view(conn, groups)
         finally:
             conn.execute("ROLLBACK")
-    return groups, states, live
+    return groups, states, live, shown
+
+
+def show_now(project: Project) -> bool:
+    """Pone al día ahora, de una vez y sin presupuesto, lo que hace la marca: lee el proyecto
+    (:func:`read_view`) y aplica lo que dice de cada dato cargado (con su título) y de cada
+    versión a sus objetos y sus colecciones, sin volver a cargar nada ni escribir en el
+    proyecto. Lo usa el renombrado desde el Outliner (``bl.scene.versions``; spec 009,
+    RF-009-22): el nombre se vuelve a generar con el título nuevo sin esperar al tic. Devuelve
+    si cambió algo (y entonces redibuja)."""
+    groups, states, live, shown = read_view(project)
+    changed = views.show_view_state(groups, states, live=live, titles=shown.titles,
+                                    versions=shown.codes)[0]
+    changed = scene_versions.show_versions(shown.versions, shown.revisions) > 0 or changed
+    if changed:
+        _redraw()
+    return changed
 
 
 _SHOWS_TODAY = frozenset({state.ItemState.CURRENT, state.ItemState.RESTATE})
@@ -339,6 +368,8 @@ def _forget() -> bool:
     _STATE.project = None
     _STATE.states = {}
     _STATE.live = {}
+    _STATE.titles = {}
+    _STATE.codes = {}
     _STATE.remaining = []
     _STATE.pending = 0
     return had

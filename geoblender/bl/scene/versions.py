@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La versión activa de la sesión (spec 009, T18; HU-009-1; RF-009-10; plan 009 §5.3.4, A11, D-8,
-D-25 y D-42).
+D-25 y D-42), las colecciones de las versiones y el renombrado desde el Outliner (T22;
+RF-009-30, RF-009-22; D-35, D-36).
 
 La versión activa es **de la sesión** (D-8), nunca del proyecto: la usan las operaciones de
 versión (las abre en su revisión) y la muestran el control 8 («● V10.r2» con el icono de su estado),
@@ -34,13 +35,33 @@ o DESCARTADO, que se consulta y no se edita (D-42; lo de editar dirá «Versión
 Una versión no se borra nunca (RF-009-12): lo que una escena o el equipo recuerdan solo deja de
 valer si es de otro proyecto. En un proyecto del esquema 2 abierto en solo lectura no hay
 versiones: «Sin versión».
+
+**Las colecciones de las versiones** (T22; RF-009-30; plan A11, D-35): un dato de una versión
+se carga en la colección de su versión, bajo «Versiones» (:func:`ensure_version_collection`, que
+usa ``bl.scene.views.ensure_collection``), con su nombre generado («V10 · Definitiva [VIGENTE]
+r2»: la revisión abierta o, si ya no tiene, la última), el color de su estado
+(:data:`COLOR_TAGS`) y ``Collection.geoblender``; la marca en vivo (``bl.scene.live``) lee las
+versiones en la misma instantánea (:func:`read_for_view`) y pone al día nombres y colores al
+cambiar de estado o de revisión (:func:`show_versions`), sin volver a cargar ni mover nada. Una
+SUPERADO queda sin color y sin excluir.
+
+**El renombrado desde el Outliner** (T22; RF-009-22, D-36): suscrito con ``bpy.msgbus`` al nombre
+de ``Object`` y ``Collection`` en :func:`register` y otra vez en ``load_post`` (Blender borra
+las suscripciones al cargar un ``.blend``), :func:`on_name_changed` compara el nombre de las
+colecciones de las versiones y de los objetos y colecciones de los datos del proyecto con el que
+les puso Geoblender (``bl.scene.views.NAME_PROPERTY``): lo renombrado vuelve a su nombre
+generado y su texto pasa a título en el proyecto, que vuelve a generar el nombre con él
+(:func:`rename_from_outliner`); en solo lectura o con la versión no editable, solo vuelve el
+nombre generado y un aviso dice por qué.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
-from collections.abc import Callable
+import weakref
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -52,18 +73,19 @@ from ...core.i18n import language, tr, translate
 from ...core.versions import read as versions_read
 from ...core.versions.model import (
     EDITABLE,
+    Revision,
     RevisionState,
     Version,
     VersionError,
     VersionStatus,
     render,
 )
-from ..props.versions import WINDOW_MANAGER_PROPERTY
-from . import project_session
+from ..props.core import OBJECT_PROPERTY
+from ..props.versions import COLLECTION_PROPERTY, WINDOW_MANAGER_PROPERTY
+from . import project_session, views
 
 if TYPE_CHECKING:
     from ...core.project.session import Project
-    from ...core.versions.model import Revision
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
 SCENE_PROPERTY = "active_version_uid"
@@ -76,6 +98,21 @@ STATE_ICONS: dict[VersionStatus, str] = {
 }
 """El icono propio de cada estado (el punto del control 8: VIGENTE verde, BORRADOR ámbar,
 SUPERADO gris, DESCARTADO marrón; AR §2)."""
+VERSIONS_KEY = "versions"
+"""La clave (``bl.scene.views.KEY_PROPERTY``) de la colección «Versiones» (T22; RF-009-30)."""
+VERSIONS_LABEL = "Versions"
+"""El ``msgid`` del nombre de la colección «Versiones»."""
+VERSION_KEY = "version:"
+"""El comienzo de la clave de la colección de una versión (``version:<uid>``)."""
+COLOR_TAGS: dict[VersionStatus, str] = {
+    VersionStatus.BORRADOR: "COLOR_03",
+    VersionStatus.VIGENTE: "COLOR_04",
+    VersionStatus.SUPERADO: "NONE",
+    VersionStatus.DESCARTADO: "COLOR_08",
+}
+"""El color de la colección de una versión por su estado (``paneles-contextuales.md`` §5.3):
+VIGENTE verde, BORRADOR amarillo, DESCARTADO marrón; SUPERADO sin color y sin excluirla (D-35:
+excluirla la descargaría y una vista dejaría de enseñar lo que estaba mirando)."""
 
 type Listener = Callable[[], object]
 """Lo que se avisa cuando cambia lo que se ve de las versiones (la activa o lo leído)."""
@@ -376,6 +413,326 @@ def refresh(project: Project | None = None) -> bool:
     return True
 
 
+# Las colecciones de las versiones (T22) -------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VersionsRead:
+    """Lo que la vista lee de las versiones en la instantánea de la marca en vivo (T22;
+    RF-009-30, RF-009-22): las versiones del proyecto, la revisión que se enseña con cada una
+    (por su uid), el título de cada dato cargado que lo tiene y el código de la versión de cada
+    dato cargado de una versión (por el uid del dato)."""
+
+    versions: tuple[Version, ...] = ()
+    revisions: Mapping[str, Revision] = field(default_factory=dict)
+    titles: Mapping[str, str] = field(default_factory=dict)
+    codes: Mapping[str, str] = field(default_factory=dict)
+
+
+def read_for_view(conn: sqlite3.Connection, dataset_uids: Iterable[str]) -> VersionsRead:
+    """Lo que necesita la vista de las versiones y de los datos ``dataset_uids`` (los cargados),
+    leído con ``conn`` (en la instantánea de quien llama: ``bl.scene.live.read_view``). Sin
+    versiones (un proyecto del esquema 2 en solo lectura), nada. No escribe."""
+    if not versions_read.has_versions(conn):
+        return VersionsRead()
+    found = versions_read.versions(conn)
+    code_of = {version.uid: version.code for version in found}
+    marks = versions_read.dataset_titles(conn, dataset_uids)
+    return VersionsRead(
+        found, versions_read.latest_revisions(conn),
+        {uid: title for uid, (_owner, title) in marks.items() if title},
+        {uid: code_of[owner] for uid, (owner, _title) in marks.items() if owner in code_of})
+
+
+def _dress(collection: bpy.types.Collection, shown: ShownVersion) -> bool:
+    """Pone en la colección de una versión su nombre generado (anotado:
+    ``bl.scene.views.named``), el color de su estado y ``Collection.geoblender`` (su uid y su
+    estado); nunca la excluye ni la oculta (D-35). Devuelve si cambió algo."""
+    changed = views.named(collection, shown.name())
+    color = COLOR_TAGS[shown.status]
+    if collection.color_tag != color:
+        collection.color_tag = color
+        changed = True
+    props = getattr(collection, COLLECTION_PROPERTY)
+    if props.version_id != shown.uid:
+        props.version_id = shown.uid
+        changed = True
+    if props.status != str(shown.status):
+        props.status = str(shown.status)
+        changed = True
+    return changed
+
+
+def ensure_version_collection(version: Version, revision: Revision | None, *,
+                              scene: bpy.types.Scene | None = None) -> bpy.types.Collection:
+    """La colección de ``version`` en ``scene`` (por defecto, la de la ventana), bajo
+    «Versiones» (RF-009-30; plan A11): la que ya está (enlazada donde falte) o una nueva, con su
+    clave (``version:<uid>``), su nombre generado con su código, su título, su estado y
+    ``revision`` (la revisión que se enseña con ella: la abierta o, si ya no tiene, la última),
+    «V10 · Definitiva [VIGENTE] r2», y el color de su estado. Dentro va la colección de cada dato
+    de la versión (``bl.scene.views.ensure_collection``). No escribe en el proyecto."""
+    chosen = bpy.context.scene if scene is None else scene
+    root = views.child_collection(chosen.collection, VERSIONS_KEY,
+                                  translate(language(), VERSIONS_LABEL))
+    shown = _shown(version, revision)
+    found = views.child_collection(root, f"{VERSION_KEY}{version.uid}", shown.name())
+    _dress(found, shown)
+    return found
+
+
+def version_collections() -> dict[str, bpy.types.Collection]:
+    """La colección de cada versión de la vista, por el uid de su versión (por su clave)."""
+    found: dict[str, bpy.types.Collection] = {}
+    for item in bpy.data.collections:
+        key = item.get(views.KEY_PROPERTY)
+        if isinstance(key, str) and key.startswith(VERSION_KEY):
+            found.setdefault(key[len(VERSION_KEY):], item)
+    return found
+
+
+def show_versions(found: Iterable[Version], latest: Mapping[str, Revision]) -> int:
+    """Pone al día, sin volver a cargar ni mover nada, el nombre y el color de la colección de
+    cada versión de ``found`` que está en la vista, con su estado y su revisión de hoy
+    (``latest``, la que se enseña con cada una; RF-009-30): lo que hace la marca en vivo en la
+    misma tanda que lee el proyecto (``bl.scene.live``). Una colección de una versión que no está
+    en ``found`` (de otro proyecto) no se toca. Devuelve cuántas cambiaron."""
+    collections = version_collections()
+    changed = 0
+    for version in found:
+        collection = collections.get(version.uid)
+        if collection is not None and _dress(collection, _shown(version, latest.get(version.uid))):
+            changed += 1
+    return changed
+
+
+# El renombrado desde el Outliner (T22; RF-009-22, D-36) ----------------------------------------
+
+_VERSION_SUFFIX = re.compile(r"\s*\[[^\[\]]*\](?:\s*r\d+)?\s*$")
+"""El estado y la revisión que deja la persona al final del nombre de una versión."""
+_DATASET_SUFFIX = re.compile(r"\s*\[[^\[\]]*\][^\[\]]*$")
+"""El estado que deja la persona al final del nombre de un dato (y lo que lo sigue, « · Au»)."""
+VERSION_ITEM = "version"
+DATASET_ITEM = "dataset"
+
+
+@dataclass(frozen=True)
+class _Renamed:
+    """Un objeto o una colección de la vista que la persona ha renombrado: lo que es
+    (:data:`VERSION_ITEM` o :data:`DATASET_ITEM`), el uid de su versión o de su dato, el texto que
+    escribió y el nombre que le había puesto Geoblender."""
+
+    item: bpy.types.ID
+    kind: str
+    uid: str
+    typed: str
+    generated: str
+
+
+class _Token:
+    """Lo que lleva consigo la suscripción de ``msgbus``: vive mientras Blender la guarda."""
+
+
+class _Bus:
+    """La suscripción al nombre de ``Object`` y ``Collection`` (no se guarda en el ``.blend``)."""
+
+    def __init__(self) -> None:
+        self.owner = object()  # dueño de las suscripciones de msgbus
+        self.token: weakref.ref[_Token] | None = None
+        self.busy = False
+
+
+_BUS = _Bus()
+
+
+def version_title(typed: str, code: str) -> str:
+    """El título que escribió la persona al renombrar la colección de la versión ``code``: el
+    texto sin el código (``V02 · ``) ni el estado y la revisión (`` [BORRADOR] r1``) si los
+    dejó."""
+    text = typed.strip()
+    prefix = re.match(rf"{re.escape(code)}\s*·\s*", text)
+    if prefix is not None:
+        text = text[prefix.end():]
+    return _VERSION_SUFFIX.sub("", text).strip()
+
+
+def dataset_title(typed: str, label: str, code: str = "") -> str:
+    """El título que escribió la persona al renombrar el objeto o la colección de un dato: el
+    texto sin el estado (`` [VIGENTE]``, con lo que lo sigue) y, si lo dejó, sin el tipo del dato
+    (``label``, «MDT») ni el código de su versión (``code``, `` · V10``)."""
+    text = typed.strip()
+    bare = _DATASET_SUFFIX.sub("", text)
+    if bare != text:
+        if code:
+            bare = re.sub(rf"\s*·\s*{re.escape(code)}$", "", bare)
+        if label and bare.startswith(f"{label} "):
+            bare = bare[len(label) + 1:]
+    return bare.strip()
+
+
+def _check(item: bpy.types.ID, kind: str, uid: str, found: list[_Renamed]) -> None:
+    generated = item.get(views.NAME_PROPERTY)
+    if not isinstance(generated, str):
+        views.remember(item)  # sin nombre anotado (una vista anterior): el de hoy
+    elif generated != item.name:
+        found.append(_Renamed(item, kind, uid, item.name, generated))
+
+
+def _renamed(project_uid: str) -> list[_Renamed]:
+    """Las colecciones de las versiones y los objetos y las colecciones de los datos del
+    proyecto ``project_uid`` cuyo nombre ya no es el que les puso Geoblender (lo del usuario no
+    tiene dato ni clave: no entra)."""
+    found: list[_Renamed] = []
+    for collection in bpy.data.collections:
+        key = collection.get(views.KEY_PROPERTY)
+        if not isinstance(key, str):
+            continue
+        if key.startswith(VERSION_KEY):
+            _check(collection, VERSION_ITEM, key[len(VERSION_KEY):], found)
+        elif key.startswith(views.DATASET_KEY) and any(
+                getattr(obj, OBJECT_PROPERTY).project_uid == project_uid
+                for obj in collection.objects):
+            _check(collection, DATASET_ITEM, key[len(views.DATASET_KEY):], found)
+    for obj in bpy.data.objects:
+        props = getattr(obj, OBJECT_PROPERTY)
+        if props.dataset_uid and props.project_uid == project_uid:
+            _check(obj, DATASET_ITEM, props.dataset_uid, found)
+    return found
+
+
+def _not_kept(typed: str, reason: str) -> str:
+    return tr("The name «{text}» was not kept: {reason}", text=typed, reason=reason)
+
+
+def _write_title(project: Project, renamed: _Renamed, title: str) -> str | None:
+    """Guarda ``title`` como título de lo renombrado (``core.versions.store.set_title``, evento
+    ``title_changed``); si no se puede, por qué, en el idioma de Geoblender."""
+    from ...core.versions import store  # al usarlo: no al habilitar
+
+    target = ({"version_uid": renamed.uid} if renamed.kind == VERSION_ITEM
+              else {"dataset_uid": renamed.uid})
+    try:
+        with project.write_transaction() as conn:
+            store.set_title(conn, project, title=title, **target)
+    except VersionError as exc:
+        return render(exc.code, language=language(), **exc.values)
+    except (GeoblenderError, sqlite3.Error, OSError) as exc:
+        LOGGER.warning("No se pudo guardar el título de «%s»", renamed.typed, exc_info=True)
+        return str(exc)
+    return None
+
+
+def _titles_of(project: Project, renamed: list[_Renamed]
+               ) -> dict[tuple[str, str], tuple[str, str, str]]:
+    """Lo que hace falta de lo renombrado, en una lectura: de cada versión, su código y su
+    título; de cada dato, el tipo de su cargador en el idioma de Geoblender, su título (el de
+    hoy, o su nombre) y el código de su versión ('' del proyecto). Lo que el proyecto no tiene
+    no sale."""
+    from ...core.datasets import registry  # al usarlo: no al habilitar
+
+    wanted = {item.uid for item in renamed if item.kind == DATASET_ITEM}
+    found: dict[tuple[str, str], tuple[str, str, str]] = {}
+    with project.read() as conn:
+        if not versions_read.has_versions(conn):
+            return found
+        code_of: dict[str, str] = {}
+        for version in versions_read.versions(conn):
+            code_of[version.uid] = version.code
+            found[(VERSION_ITEM, version.uid)] = (version.code, version.title, "")
+        titles = versions_read.dataset_titles(conn, wanted)
+        for uid in wanted:
+            record = registry.get(conn, uid)
+            if record is None or uid not in titles:
+                continue
+            owner, title = titles[uid]
+            loader = views.loader_for(record.name)
+            label = "" if loader is None else translate(language(), loader.label)
+            found[(DATASET_ITEM, uid)] = (label, title or record.name, code_of.get(owner, ""))
+    return found
+
+
+def rename_from_outliner(project: Project) -> tuple[list[str], list[str]]:
+    """Lo que hace :func:`on_name_changed` con el proyecto de la sesión ``project`` (RF-009-22,
+    D-36): cada colección de una versión y cada objeto o colección de un dato del proyecto que la
+    persona ha renombrado vuelve a su nombre generado; su texto (sin el código, el tipo ni el
+    estado si los dejó: :func:`version_title`, :func:`dataset_title`) pasa a ser su título en el
+    proyecto (``set_title``, evento ``title_changed``), sin cambiar su código, su identidad, su
+    nombre en el proyecto ni ninguna ruta, y el nombre se vuelve a generar con él (la marca en
+    vivo, ``bl.scene.live.show_now``). En solo lectura o con la versión no editable, solo vuelve
+    el nombre generado. Devuelve los uid cuyo título cambió y los avisos (por qué no se guardó
+    un nombre), en el idioma de Geoblender. Lo de otro proyecto queda como lo dejó la persona."""
+    renamed = _renamed(project.uid)
+    if not renamed:
+        return [], []
+    known = _titles_of(project, renamed)
+    refusal = None
+    if not project.writable:
+        from ..ops.core_provenance import read_only_text  # al usarlo: bl.ops importa bl.scene
+
+        refusal = read_only_text(project)
+    written: list[str] = []
+    warnings: list[str] = []
+    for item in renamed:
+        found = known.get((item.kind, item.uid))
+        if found is None:  # no es de este proyecto: el nombre de la persona
+            views.remember(item.item)
+            continue
+        views.named(item.item, item.generated)  # el generado vuelve
+        prefix, current, code = found
+        title = (version_title(item.typed, prefix) if item.kind == VERSION_ITEM
+                 else dataset_title(item.typed, prefix, code))
+        if title == current:
+            continue
+        reason = refusal if refusal is not None else _write_title(project, item, title)
+        if reason is not None:
+            warnings.append(_not_kept(item.typed, reason))
+        elif item.uid not in written:
+            written.append(item.uid)
+    if written:
+        from . import live  # al usarlo: live importa este módulo
+
+        refresh(project)
+        live.show_now(project)
+    return written, warnings
+
+
+def on_name_changed(*_args: object) -> None:
+    """Lo que avisa ``bpy.msgbus`` al cambiar el nombre de un objeto o una colección (D-36): con
+    un proyecto en la sesión, :func:`rename_from_outliner`; sus avisos van al registro de Blender
+    (``bl.ops.jobs.report_later``). Lo que ella misma renombra no vuelve a contar (su nombre
+    queda anotado). Un fallo va al registro técnico: Blender sigue."""
+    project = project_session.current()
+    if project is None or _BUS.busy:
+        return
+    _BUS.busy = True
+    try:
+        _written, warnings = rename_from_outliner(project)
+        if warnings:
+            from ..ops import jobs as jobs_ops  # al usarlo: bl.ops importa bl.scene
+
+            for text in warnings:
+                jobs_ops.report_later("WARNING", text)
+    except Exception:  # noqa: BLE001 - una suscripción que falla no tumba Blender
+        LOGGER.exception("Falló el renombrado desde el Outliner")
+    finally:
+        _BUS.busy = False
+
+
+def _subscribe() -> None:
+    """Se suscribe al nombre de ``Object`` y ``Collection`` (las suscripciones de ahora)."""
+    bpy.msgbus.clear_by_owner(_BUS.owner)
+    token = _Token()
+    for owner_type in (bpy.types.Object, bpy.types.Collection):
+        bpy.msgbus.subscribe_rna(key=(owner_type, "name"), owner=_BUS.owner, args=(token,),
+                                 notify=on_name_changed)
+    _BUS.token = weakref.ref(token)
+
+
+def is_subscribed() -> bool:
+    """Si Blender guarda la suscripción al nombre (lo que lleva consigo sigue vivo: Blender la
+    suelta al cargar un fichero o al quitarla)."""
+    return _BUS.token is not None and _BUS.token() is not None
+
+
 # Avisos ----------------------------------------------------------------------------------------
 
 
@@ -436,8 +793,13 @@ def on_project_changed(project: Project | None) -> None:
 @persistent
 def on_load_post(*_args: object) -> None:
     """Tras cargar un ``.blend`` (después de ``bl.scene.georef``, que cierra el proyecto si la
-    vista es de otro): con el proyecto aún abierto, elige otra vez su versión activa, la de la
-    vista cargada si la trae (D-25)."""
+    vista es de otro): Blender ha borrado las suscripciones de ``msgbus`` y se renueva la del
+    nombre (T22; ``docs/trampas.md`` §3); con el proyecto aún abierto, elige otra vez su versión
+    activa, la de la vista cargada si la trae (D-25)."""
+    try:
+        _subscribe()
+    except Exception:  # noqa: BLE001 - un manejador que falla no tumba Blender
+        LOGGER.exception("No se pudo renovar la suscripción al nombre de la vista")
     project = project_session.current()
     if project is None:
         on_project_changed(None)
@@ -462,17 +824,23 @@ HANDLERS: tuple[tuple[str, Callable[..., None]], ...] = (
 
 
 def register() -> None:
-    """Apunta la escucha del proyecto de la sesión y los manejadores (sin leer nada)."""
+    """Apunta la escucha del proyecto de la sesión y los manejadores y se suscribe al nombre de
+    ``Object`` y ``Collection`` (sin leer nada)."""
     _STATE.forget()
     project_session.add_listener(on_project_changed)
     for name, function in HANDLERS:
         handlers = getattr(bpy.app.handlers, name)
         if function not in handlers:
             handlers.append(function)
+    _subscribe()
 
 
 def unregister() -> None:
-    """Quita los manejadores y la escucha y olvida lo de la sesión y lo apuntado."""
+    """Quita la suscripción, los manejadores y la escucha y olvida lo de la sesión y lo
+    apuntado."""
+    bpy.msgbus.clear_by_owner(_BUS.owner)
+    _BUS.token = None
+    _BUS.busy = False
     for name, function in HANDLERS:
         handlers = getattr(bpy.app.handlers, name)
         while function in handlers:
