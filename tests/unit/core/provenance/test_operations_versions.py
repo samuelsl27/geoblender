@@ -27,6 +27,10 @@ Además, el contrato de un tipo de operación gana ``reproduce`` y ``figure_tole
 da la ubicación de un dato de versión con el código de su versión (``version_locator``, D-34),
 y ``core.datasets.registry.get`` busca un nombre en su ámbito (el proyecto, o una versión).
 
+La puerta antes de operar (``core.provenance.gate.can_run(…, version=)``; T32, regresión del H2)
+resuelve lo que consume una operación en la versión de la orden, como ``begin_operation``, y
+rechaza lo mismo; lo vivo de otra versión detrás de lo congelado no lo sigue ni lo juzga.
+
 Cada prueba crea su proyecto sintético (esquema 3) con un reloj simulado, los tipos de prueba
 de ``res`` (dos de proyecto y dos de versión), un parámetro de versión y otro del proyecto, el
 dato del proyecto ``res_base`` y las versiones V01 y V02 en BORRADOR; las revisiones se congelan
@@ -40,6 +44,7 @@ import sqlite3
 import unittest
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
+from unittest import mock
 
 from tests.support.core_fixtures import FakeClock, make_session, make_settings, project_tmp
 from tests.support.package import import_geoblender
@@ -53,6 +58,7 @@ store_mod = import_geoblender("core.params.store")
 provenance = import_geoblender("core.provenance")
 contract = import_geoblender("core.provenance.contract")
 operations = import_geoblender("core.provenance.operations")
+gate = import_geoblender("core.provenance.gate")
 provenance_schema = import_geoblender("core.provenance.schema")
 datasets = import_geoblender("core.datasets")
 registry = import_geoblender("core.datasets.registry")
@@ -665,6 +671,141 @@ class FrozenTest(VersionOperationsCase):
                               or step.split()[1] in ("d", "i"))],
                         plan,
                     )
+
+
+class GateTest(VersionOperationsCase):
+    """La puerta antes de operar (``core.provenance.gate.can_run``) con la versión de la orden
+    (T32, regresión del H2): V01 y V02 tienen cada una su ``res_pit``; V01.r1 congeló el de V01,
+    que V01 cambió después en r2; V03 parte de V01.r1 y no tiene ninguno."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.pit,) = self.run_op("res.pit", "V01", [("res_pit", "res_pit_v01")], (1.0,))
+        self.r1 = self.freeze(self.v1, [(self.pit, "produced"), (self.base, "upstream")])
+        (self.changed,) = self.run_op("res.pit", "V01", [("res_pit", "res_pit_v01")], (9.0,))
+        (self.pit2,) = self.run_op("res.pit", "V02", [("res_pit", "res_pit_v02")], (2.0,))
+        self.v3 = self.new_version("desde_v01", "Desde V01", parent=self.v1.uid)
+        self.state = gate.CheckState()
+
+    def can_run(self, op_type: str, *uses: Any, version: str | None = None
+                ) -> tuple[Any, list[tuple[str, str, str | None]]]:
+        """Lo que responde la puerta y lo que resolvió que se consume (uid, hash y revisión
+        congelada de cada cosa), sin nada pendiente de la comprobación de apertura."""
+        with mock.patch.object(gate, "_Gate", wraps=gate._Gate) as spy:
+            result = gate.can_run(self.project, op_type, list(uses), pending=self.state,
+                                  version=version)
+        (call,) = spy.call_args_list
+        return result, [(item.uid, item.content_sha256, item.frozen) for item in call.args[2]]
+
+    def assertGateRejected(self, *cases: tuple[str, str | None, Callable[[], Any]]) -> None:
+        """Cada caso (código, texto o ``None``, llamada a la puerta) se rechaza con su código y
+        su texto, y la puerta no escribe nada."""
+        before = self.dump()
+        for code, text, call in cases:
+            with self.subTest(code=code, text=text):
+                with self.assertRaises(versions_model.VersionError) as caught:
+                    call()
+                self.assertEqual(caught.exception.code, code, str(caught.exception))
+                if text is not None:
+                    self.assertEqual(str(caught.exception), text)
+        self.assertEqual(self.dump(), before)
+
+    def test_version_operation_reads_the_data_of_its_version(self) -> None:
+        """RF-009-05 (plan A3): la puerta resuelve lo que consume una operación de versión en
+        la versión de la orden, como ``begin_operation``: con V02, el ``res_pit`` de V02 (aunque
+        V01 tenga otro con el mismo nombre); con V01 (por código o por uid), el de V01 con su
+        contenido de ahora; los datos del proyecto, como siempre. Se puede ejecutar, no escribe
+        nada y lo que resuelve es lo mismo que registra después la operación."""
+        before = self.dump()
+        cases = (("V02", self.pit2), ("V01", self.changed), (self.v1.uid, self.changed))
+        for version, record in cases:
+            with self.subTest(version=version):
+                result, consumed = self.can_run(
+                    "res.design", operations.Use("res_pit", "pit"),
+                    operations.Use("res_base", "base"), version=version)
+                self.assertIsInstance(result, gate.Ready, result)
+                self.assertEqual(result.stale, ())
+                self.assertEqual(consumed, [
+                    (record.uid, record.content_sha256, None),
+                    (self.base.uid, self.base.content_sha256, None),
+                ])
+        self.assertEqual(self.dump(), before)
+        handle = self.begin("res.design", "V02", inputs=[operations.Use("res_pit", "pit"),
+                                                         operations.Use("res_base", "base")])
+        self.assertEqual(self.consumed(handle.uid), [
+            ("dataset", self.pit2.uid, self.pit2.content_sha256, "pit"),
+            ("dataset", self.base.uid, self.base.content_sha256, "base"),
+        ])
+
+    def test_still_rejected_as_by_begin_operation(self) -> None:
+        """RF-009-05, RF-009-04, D-14 (plan A3): la puerta rechaza lo mismo que
+        ``begin_operation``, con su texto y sin escribir nada: una operación de versión sin
+        versión («Esta orden es de una versión…», no un rechazo de lo que consume como si fuera
+        del proyecto), con una que no existe, o con un dato de otra versión sin congelar (V03 no
+        tiene ``res_pit``; V01 no usa el de V02, ni por su uid); una operación de proyecto, con un
+        dato de una versión, aunque se le pase la versión activa."""
+        other = ("La operación «res.design» de {version} no puede usar «res_pit» de {owner}: de "
+                 "otra versión solo se usa lo congelado en la revisión de la que parte")
+        use = operations.Use("res_pit", "pit")
+        self.assertGateRejected(
+            ("core.version_required", REQUIRED,
+             lambda: gate.can_run(self.project, "res.design", [use], pending=self.state)),
+            ("core.version_required", REQUIRED,
+             lambda: gate.can_run(self.project, "res.design", [use], pending=self.state,
+                                  version="  ")),
+            ("core.version_unknown", "No hay ninguna versión V09 en el proyecto",
+             lambda: gate.can_run(self.project, "res.design", [use], pending=self.state,
+                                  version="V09")),
+            ("core.version_data_other", other.format(version="V03", owner="V01"),
+             lambda: gate.can_run(self.project, "res.design", [use], pending=self.state,
+                                  version="V03")),
+            ("core.version_data_other", other.format(version="V01", owner="V02"),
+             lambda: gate.can_run(self.project, "res.design",
+                                  [operations.Use(self.pit2.uid, "pit")], pending=self.state,
+                                  version="V01")),
+            ("core.version_data_in_project", IN_PROJECT,
+             lambda: gate.can_run(self.project, "res.report", [use], pending=self.state,
+                                  version="V02")),
+        )
+        result, consumed = self.can_run("res.report", operations.Use("res_base", "base"),
+                                        version="V02")
+        self.assertIsInstance(result, gate.Ready, result)
+        self.assertEqual(consumed, [(self.base.uid, self.base.content_sha256, None)])
+
+    def test_frozen_from_the_parent_revision(self) -> None:
+        """RF-009-01, RF-009-05, D-27 (plan A3): una operación de V03 que toma lo congelado en
+        V01.r1 (la revisión de la que parte) pasa la puerta con el hash congelado, no con el de
+        ahora en V01; de otra revisión, se rechaza. Lo vivo de V01 detrás de lo congelado no se
+        sigue ni se juzga (como en el grafo, T09): sin la tabla de ``res_pit`` de V01, V03 sigue
+        pudiendo tomar lo congelado sin que la puerta escriba nada, mientras que una operación de
+        V01, que consume lo vivo, se niega porque falta."""
+        frozen = operations.Use("res_pit", "pit", frozen=self.r1)
+        base = operations.Use("res_base", "base")
+        expected = [(self.pit.uid, self.pit.content_sha256, self.r1),
+                    (self.base.uid, self.base.content_sha256, None)]
+        self.assertNotEqual(self.changed.content_sha256, self.pit.content_sha256)
+        result, consumed = self.can_run("res.design", frozen, base, version="V03")
+        self.assertIsInstance(result, gate.Ready, result)
+        self.assertEqual(consumed, expected)
+        self.assertGateRejected(
+            ("core.version_frozen_not_parent",
+             "V02 solo puede tomar lo congelado en la revisión de la que parte (—), no "
+             "«res_pit» de V01.r1",
+             lambda: gate.can_run(self.project, "res.design", [frozen], pending=self.state,
+                                  version="V02")),
+        )
+
+        self.write(lambda conn: conn.execute('DROP TABLE "res_pit_v01"'))
+        before = self.dump()
+        result, consumed = self.can_run("res.design", frozen, base, version="V03")
+        self.assertIsInstance(result, gate.Ready, result)
+        self.assertEqual((consumed, result.notices), (expected, ()))
+        self.assertEqual(self.dump(), before)
+        result, _consumed = self.can_run("res.design", operations.Use("res_pit", "pit"),
+                                         version="V01")
+        self.assertIsInstance(result, gate.Blocked, result)
+        self.assertEqual([(reason.kind, reason.uid) for reason in result.reasons],
+                         [(gate.BlockKind.DATASET_MISSING, self.pit.uid)])
 
 
 if __name__ == "__main__":

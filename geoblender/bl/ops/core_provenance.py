@@ -902,13 +902,16 @@ def open_version_dialog() -> set[str]:
 
 
 def ensure_ready(op_type: str, inputs: Sequence[Any] = (), *, report: Report | None = None,
-                 dialog: bool = False) -> Ready | None:
+                 dialog: bool = False, version: str | None = None) -> Ready | None:
     """La puerta antes de empezar una operación de tipo ``op_type`` que consume ``inputs``
     (``core.provenance.operations.Use``) en el proyecto de la sesión, con lo que su
     comprobación de apertura aún no ha comprobado (RF-008-10, RF-008-21, RF-008-56 a 58; plan
-    §5.3.4 «Calcular» y §5.4.5). Devuelve el ``Ready`` de la puerta (sus avisos ya dichos, y
-    lo que consume que está obsoleto) si se puede ejecutar; si no, dice por qué con
-    ``report`` (``Operator.report``; sin él, en los avisos de la sesión) y devuelve ``None``:
+    §5.3.4 «Calcular» y §5.4.5), y la versión activa ``version`` (uid; spec 009, RF-009-05,
+    plan A3: lo que consume una de un tipo de versión, en el ámbito de su versión, como lo
+    registrará ``begin_operation``; :meth:`ProvenanceAwareOperator.begin` pasa la de la
+    sesión). Devuelve el ``Ready`` de la puerta (sus avisos ya dichos, y lo que consume que
+    está obsoleto) si se puede ejecutar; si no, dice por qué con ``report``
+    (``Operator.report``; sin él, en los avisos de la sesión) y devuelve ``None``:
 
     - sin proyecto, sin la procedencia o en solo lectura: su motivo;
     - con algo aún sin comprobar o un hash largo pedido: «Comprobando el proyecto…: espere a
@@ -926,7 +929,8 @@ def ensure_ready(op_type: str, inputs: Sequence[Any] = (), *, report: Report | N
 
     language = i18n.language()
     try:
-        result = gate.can_run(SESSION.project, op_type, inputs, pending=SESSION.pending)
+        result = gate.can_run(SESSION.project, op_type, inputs, pending=SESSION.pending,
+                              version=version)
     except GeoblenderError as exc:
         say({"ERROR"}, error_text(exc))
         return None
@@ -1365,7 +1369,8 @@ class ProvenanceAwareOperator:
       incorporarla), antes del paso de deshacer de Blender;
     - la versión activa (spec 009, T20; RF-009-05, RF-009-04, RF-009-21; plan A3, A11): una orden
       de un tipo de **versión** se registra en la revisión abierta de la versión activa de la
-      sesión (:meth:`begin` la pasa a ``begin_operation``; a uno de proyecto no le cambia nada).
+      sesión (:meth:`begin` la pasa a la puerta y a ``begin_operation``, T32; a uno de proyecto
+      no le cambia nada).
       Sin versión activa, lanzada desde la interfaz abre la ventana que pide elegir o crear una
       (:func:`open_version_dialog`) y no hace nada más; desde un guion, se niega con su texto.
       Con la activa SUPERADO o DESCARTADO, «Versión no editable»: su ``poll`` y su descripción
@@ -1452,9 +1457,10 @@ class ProvenanceAwareOperator:
             self.report({"ERROR"}, refusal)  # type: ignore[attr-defined]
             return None
         inputs = tuple(self.provenance_inputs(context))
+        version = scene_versions.active_version()
         ready = ensure_ready(self.provenance_op_type, inputs,
                              report=self.report,  # type: ignore[attr-defined]
-                             dialog=self.provenance_dialog)
+                             dialog=self.provenance_dialog, version=version)
         if ready is None:
             return None
         from ...core.provenance.operations import begin_operation
@@ -1464,7 +1470,7 @@ class ProvenanceAwareOperator:
                                      settings=dict(settings or {}), inputs=list(inputs),
                                      params=list(params), executor=executor,
                                      group_uid=group_uid, supersedes=supersedes,
-                                     version=scene_versions.active_version())
+                                     version=version)
         except GeoblenderError as exc:
             self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
             return None
@@ -1485,9 +1491,10 @@ class ProvenanceAwareOperator:
             self.report({"ERROR"}, refusal)  # type: ignore[attr-defined]
             return None
         inputs = tuple(self.provenance_inputs(context))
+        version = scene_versions.active_version()
         ready = ensure_ready(self.provenance_op_type, inputs,
                              report=self.report,  # type: ignore[attr-defined]
-                             dialog=self.provenance_dialog)
+                             dialog=self.provenance_dialog, version=version)
         if ready is None:
             return None
         from ...core.provenance.operations import begin_operations
@@ -1497,7 +1504,7 @@ class ProvenanceAwareOperator:
                                        settings=[dict(item) for item in settings],
                                        inputs=list(inputs), params=list(params),
                                        executor=executor, group_uid=group_uid,
-                                       version=scene_versions.active_version())
+                                       version=version)
         except GeoblenderError as exc:
             self.report({"ERROR"}, error_text(exc))  # type: ignore[attr-defined]
             return None

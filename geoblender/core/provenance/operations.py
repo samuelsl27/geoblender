@@ -505,6 +505,19 @@ def _version_arg(version: object) -> str | None:
     return version.strip() or None
 
 
+def _require_version(definition: OperationDef, version: object) -> str | None:
+    """La versión activa que cuenta para una operación de tipo ``definition`` (plan A3): una de
+    versión la necesita (``core.version_required``, RF-009-05); a una de proyecto no le cuenta
+    (``None``). :class:`TypeError` si ``version`` no es un texto (con cualquier tipo)."""
+    active = _version_arg(version)
+    if definition.scope != VERSION_SCOPE:
+        return None
+    if active is None:
+        raise VersionError("core.version_required", field="versión activa", value=version,
+                           op_type=definition.op_type)
+    return active
+
+
 def _scope_of(conn: sqlite3.Connection, definition: OperationDef,
               version: str | None) -> _Scope:
     """El ámbito de una operación de tipo ``definition`` (plan A3): una de proyecto, el
@@ -1206,18 +1219,14 @@ class _Start:
            version: str | None = None) -> _Start:
         definition = operation_def(op_type)
         _require_writable(project)
-        active = _version_arg(version)
-        if definition.scope == VERSION_SCOPE and active is None:
-            raise VersionError("core.version_required", field="versión activa", value=version,
-                               op_type=definition.op_type)
+        active = _require_version(definition, version)
         settings_json = _settings(settings)
         chosen = _executor(executor)
         job = _optional_text(job_uid, "job_uid")
         _check_job(chosen, job, required=False)
         return cls(definition, settings_json, chosen, job, _group_uid(definition, group_uid),
                    _uses(inputs), _keys(params),
-                   _optional_text(supersedes, "la operación sustituida (supersedes)"),
-                   active if definition.scope == VERSION_SCOPE else None)
+                   _optional_text(supersedes, "la operación sustituida (supersedes)"), active)
 
     def insert(self, conn: sqlite3.Connection, project: OperationProject) -> OperationHandle:
         """La deja «en curso» en la transacción ``conn`` (véase :func:`begin_operation`)."""

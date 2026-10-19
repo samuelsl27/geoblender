@@ -75,8 +75,10 @@ from .operations import (
     Consumed,
     ItemKind,
     _clean,
+    _require_version,
     _require_writable,
     _resolve_use,
+    _scope_of,
     _uses,
 )
 
@@ -383,16 +385,27 @@ def _uids(chosen: Iterable[str]) -> list[str]:
 
 
 def can_run(project: GateProject, op_type: str, inputs: Sequence[Any], *,
-            pending: CheckState) -> GateResult:
+            pending: CheckState, version: str | None = None) -> GateResult:
     """La puerta antes de ejecutar una operación de tipo ``op_type`` que consume ``inputs``
     (``Use``, como ``begin_operation``) con lo que la comprobación de apertura aún no ha
     comprobado (``pending``); véase el módulo.
+
+    ``version`` es la versión activa (uid o código), como en ``begin_operation`` (spec 009,
+    RF-009-05; plan A3): lo que consume una operación de un tipo de versión se resuelve en el
+    ámbito de esa versión (los datos del proyecto, los suyos por nombre antes que nada y lo
+    congelado de la revisión de la que parte) y se rechaza lo mismo que ``begin_operation``
+    rechaza (``VersionError``: sin versión, ``core.version_required``; una que no existe o no
+    se puede editar; un dato de otra versión sin congelar). A una operación de proyecto no le
+    cuenta. Lo congelado (``Use.frozen``) se toma de la instantánea, como en el grafo: la puerta
+    no sigue ni juzga lo vivo de la otra versión que hay detrás (su cadena, si falta, está
+    dañado u obsoleto); que la revisión no esté alterada ya lo comprueba ``begin_operation``.
 
     Registra en el proyecto, cada cosa en su transacción, lo que encuentra (entradas
     cambiadas, ediciones externas, lo que falta y lo dañado); en solo lectura no escribe nada.
     ``ProvenanceError`` como ``begin_operation`` si el tipo no está registrado, si lo que
     consume no está (o no está vivo) o si el proyecto está cerrado; :class:`TypeError` si
-    ``inputs`` no son ``Use`` o ``pending`` no es un :class:`CheckState`."""
+    ``inputs`` no son ``Use``, ``pending`` no es un :class:`CheckState` o ``version`` no es un
+    texto."""
     if not isinstance(pending, CheckState):
         raise TypeError(f"la puerta recibe lo pendiente de la comprobación de apertura "
                         f"(CheckState), no {pending!r}")
@@ -400,8 +413,10 @@ def can_run(project: GateProject, op_type: str, inputs: Sequence[Any], *,
     uses = _uses(inputs)
     if project.closed:
         _require_writable(project)
+    active = _require_version(definition, version)
     with project.read() as conn:
-        consumed = tuple(_resolve_use(conn, definition, use) for use in uses)
+        scope = _scope_of(conn, definition, active)
+        consumed = tuple(_resolve_use(conn, definition, use, scope) for use in uses)
     return _Gate(project, pending, consumed).run()
 
 
@@ -455,7 +470,8 @@ class _Gate:
         del módulo), en el orden en que se encuentran: de cada dato, la operación que escribió
         su contenido actual, y de cada versión que consumió una operación, las que la
         escribieron (una edición externa consume el mismo dato: por su versión anterior se
-        sigue hasta lo que la calculó)."""
+        sigue hasta lo que la calculó). Lo congelado de otra versión no se sigue
+        (:func:`can_run`)."""
         found_inputs = [item.uid for item in self.consumed if item.kind is ItemKind.INPUT]
         operations: deque[str] = deque()
         visited: set[str] = set()
@@ -477,7 +493,7 @@ class _Gate:
             operations.append(record.operation_uid)
 
         for item in self.consumed:
-            if item.kind is ItemKind.DATASET:
+            if item.kind is ItemKind.DATASET and item.frozen is None:  # lo congelado, no
                 add_dataset(item.uid)
         while operations:
             operation_uid = operations.popleft()
@@ -685,7 +701,7 @@ class _Gate:
                                   .removeprefix(READ_ONLY_PREFIX)}),
             ))
         consumed = list(dict.fromkeys(item.uid for item in self.consumed
-                                      if item.kind is ItemKind.DATASET))
+                                      if item.kind is ItemKind.DATASET and item.frozen is None))
         with self.project.read() as conn:
             for uid in self.inputs:
                 entry = input_registry.get(conn, uid)

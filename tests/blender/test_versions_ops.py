@@ -128,7 +128,7 @@ from tests.support.fake_layout import FakeLayout, draw, operator_self
 from tests.support.provenance_demo import PRODUCTION, SWELL_FACTOR
 from tests.support.repo import ROOT
 from tests.support.trees import temp_folder
-from tests.support.versions_demo import BENCH_HEIGHT, PIT, VersionsDemo
+from tests.support.versions_demo import BENCH_HEIGHT, PIT, PIT_GRID, PIT_VOLUME, VersionsDemo
 
 NEW_VERSION = "geoblender.core_new_version"
 SET_STATE = "geoblender.core_set_version_state"
@@ -150,6 +150,9 @@ DEMO_COMMAND = "geoblender.core_selftest_pit"
 """La orden sintética de la demostración de un tipo de versión (``demo.pit``; T20)."""
 DEMO_LABEL = "Synthetic pit design"  # sin traducción: se ve el msgid
 DEMO_ABOUT = "Synthetic order of a version type"
+VOLUME_COMMAND = "geoblender.core_selftest_volume"
+"""La orden sintética de ``demo.pit_volume``, que lee «demo_pit_grid» de su versión (T32)."""
+VOLUME_LABEL = "Synthetic pit volume"
 RECOMPUTE = "geoblender.core_recompute_stale"
 CHOOSE_PANEL = "GEOBLENDER_PT_core_choose_version"
 SET_ACTIVE = "geoblender.core_set_active_version"
@@ -366,57 +369,60 @@ class VersionsOpsTest(unittest.TestCase):
         project.refresh_header()
         ext("bl.ui.version_panels").on_project_read(project)
 
-    def declare_command(self, demo: VersionsDemo) -> type:
-        """La orden sintética de la demostración de un tipo de versión (``demo.pit`` sobre el
-        último límite importado, con la altura de banco de la versión): registrada, en el
-        catálogo y entre los ``commands`` de ``demo.pit`` hasta el final de la prueba (antes de
+    def declare_command(self, demo: VersionsDemo, op_type: str = PIT,
+                        idname: str = DEMO_COMMAND, label: str = DEMO_LABEL) -> type:
+        """La orden sintética ``idname`` de la demostración de un tipo de versión ``op_type``
+        (``demo.pit`` sobre el último límite importado, con la altura de banco de la versión;
+        ``demo.pit_volume``, con la rejilla del hueco de su versión): registrada, en el
+        catálogo y entre los ``commands`` de su tipo hasta el final de la prueba (antes de
         quitar la demostración)."""
         session = ext("bl.ops.core_provenance")
         contract = ext("core.provenance.contract")
         ui = ext("bl.ui.provenance")
+        settings, params = (PIT_SETTINGS, (BENCH_HEIGHT,)) if op_type == PIT else ({}, ())
 
-        class GEOBLENDER_OT_core_selftest_pit(session.ProvenanceAwareOperator,
-                                              bpy.types.Operator):
-            bl_idname = DEMO_COMMAND
-            bl_label = DEMO_LABEL
-            bl_description = DEMO_ABOUT
-            bl_options = {"REGISTER"}
-            provenance_op_type = PIT
-
-            def provenance_inputs(self, context: object) -> tuple[object, ...]:
+        # Sin argumentos por defecto en sus métodos: Blender los cuenta al registrarla.
+        def provenance_inputs(operator: Any, context: object) -> tuple[object, ...]:
+            if op_type == PIT:
                 return demo.version_uses(PIT, boundary=demo.boundary_name(
                     session.SESSION.project))
+            return demo.version_uses(op_type)
 
-            def execute(self, context: object) -> set[str]:
-                handle = self.begin(context, settings=PIT_SETTINGS, params=(BENCH_HEIGHT,))
-                if handle is None:
-                    return {"CANCELLED"}
-                demo.run_body(handle)
-                return {"FINISHED"}
+        def execute(operator: Any, context: object) -> set[str]:
+            handle = operator.begin(context, settings=settings, params=params)
+            if handle is None:
+                return {"CANCELLED"}
+            demo.run_body(handle)
+            return {"FINISHED"}
 
+        operator_class = type(
+            f"GEOBLENDER_OT_{idname.split('.')[1]}",
+            (session.ProvenanceAwareOperator, bpy.types.Operator),
+            {"bl_idname": idname, "bl_label": label, "bl_description": DEMO_ABOUT,
+             "bl_options": {"REGISTER"}, "provenance_op_type": op_type,
+             "provenance_inputs": provenance_inputs, "execute": execute})
         cat = self.commands.catalog()
         command = dataclasses.replace(
-            cat.commands[RECOMPUTE], key=DEMO_COMMAND, idname=DEMO_COMMAND, label=DEMO_LABEL,
-            label_es=DEMO_LABEL, description=DEMO_ABOUT, description_es=DEMO_ABOUT, home="",
-            aliases=())
+            cat.commands[RECOMPUTE], key=idname, idname=idname, label=label, label_es=label,
+            description=DEMO_ABOUT, description_es=DEMO_ABOUT, home="", aliases=())
         self.addCleanup(self.commands.clear)  # la disponibilidad, de nuevo al pedirla
         # Su texto, sin traducción, queda entre los que faltan solo mientras dura la prueba.
         self.enterContext(mock.patch.object(self.i18n._STATE, "missing",
                                             set(self.i18n._STATE.missing)))
-        self.enterContext(mock.patch.dict(cat.commands, {DEMO_COMMAND: command}))
-        bpy.utils.register_class(GEOBLENDER_OT_core_selftest_pit)
-        self.addCleanup(bpy.utils.unregister_class, GEOBLENDER_OT_core_selftest_pit)
-        self.addCleanup(ui.sync_version_checks)  # después de devolver demo.pit como estaba
-        original = contract.OPERATIONS[PIT]
-        contract.unregister_operation(PIT)
-        contract.register_operation(dataclasses.replace(original, commands=(DEMO_COMMAND,)))
+        self.enterContext(mock.patch.dict(cat.commands, {idname: command}))
+        bpy.utils.register_class(operator_class)
+        self.addCleanup(bpy.utils.unregister_class, operator_class)
+        self.addCleanup(ui.sync_version_checks)  # después de devolver su tipo como estaba
+        original = contract.OPERATIONS[op_type]
+        contract.unregister_operation(op_type)
+        contract.register_operation(dataclasses.replace(original, commands=(idname,)))
 
         def restore() -> None:
-            contract.unregister_operation(PIT)
+            contract.unregister_operation(op_type)
             contract.register_operation(original)
 
         self.addCleanup(restore)
-        return GEOBLENDER_OT_core_selftest_pit
+        return operator_class
 
     @staticmethod
     def drawn(key: str) -> Any:
@@ -1097,6 +1103,36 @@ class VersionsOpsTest(unittest.TestCase):
         self.assertTrue(cls.poll(bpy.context))
         self.assertTrue(self.drawn(DEMO_COMMAND).enabled)
         self.assertEqual(cls.description(bpy.context, None), DEMO_ABOUT)
+
+    def test_version_command_reads_the_data_of_its_version(self) -> None:
+        """RF-009-05 (plan A3; regresión del H2, T32): con el hueco calculado en V01 y en V02 y
+        V02 activa, la orden sintética de ``demo.pit_volume``, que lee «demo_pit_grid» de su
+        versión, pasa la puerta (``ensure_ready``, con la versión activa) y se registra en V02.r1
+        con la rejilla de V02, no con la de V01 del mismo nombre; con V01 activa, en V01.r1 con
+        la de V01. Antes, la puerta resolvía lo consumido en el ámbito del proyecto y la negaba:
+        «La operación de proyecto «demo.pit_volume» no puede usar «demo_pit_grid» de V01:
+        regístrelo como entrada del proyecto» (también con V02 activa)."""
+        project, demo, v01, v02 = self.pit_project()
+        demo.pit(project, "V01")
+        self.declare_command(demo, PIT_VOLUME, VOLUME_COMMAND, VOLUME_LABEL)
+        registry = ext("core.datasets.registry")
+        with project.read() as conn:
+            grids = {version.uid: registry.get(conn, PIT_GRID, version_uid=version.uid).uid
+                     for version in (v01, v02)}
+        self.assertEqual(len(set(grids.values())), 2)
+        for version in (v02, v01):
+            with self.subTest(version=version.code):
+                self.set_active(version)
+                with project.read() as conn:
+                    opened = self.read.open_revision(conn, version.uid)
+                self.assertEqual(bpy.ops.geoblender.core_selftest_volume(), {"FINISHED"})
+                with project.read() as conn:
+                    done = conn.execute(
+                        "SELECT o.scope, o.revision_uid, o.status, io.item_uid FROM gb_operation "
+                        "AS o JOIN gb_operation_io AS io ON io.operation_uid = o.uid AND "
+                        "io.direction = 'in' WHERE o.op_type = ? ORDER BY o.fid DESC LIMIT 1",
+                        (PIT_VOLUME,)).fetchone()
+                self.assertEqual(done, ("version", opened.uid, "done", grids[version.uid]))
 
     def test_parameter_scope_with_the_active_version(self) -> None:
         """RF-009-29, RF-009-04, RF-009-21 (plan A3, §5.5; M3, M5): con V02 (VIGENTE) activa,

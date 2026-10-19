@@ -1667,7 +1667,7 @@ class GEOBLENDER_OT_core_load_into_view(_StepsModal, bpy.types.Operator):
             self.outcome = "CANCELLED"
             return {"CANCELLED"}
         self._report({"INFO"}, tr("Loaded into the view: {names}",
-                                  names=", ".join(outcome.loaded)))
+                                  names=", ".join(outcome.labels or outcome.loaded)))
         self.outcome = "FINISHED"
         return {"FINISHED"}
 

@@ -234,12 +234,15 @@ class Loader:
 class LoadOutcome:
     """Lo que hizo :func:`load_datasets`: los datos cargados (por nombre), sus objetos, los
     avisos (un dato que falta, un nivel de detalle que no hace falta) y los errores de lo que
-    no se cargó, en el idioma de la interfaz."""
+    no se cargó, en el idioma de la interfaz; ``labels``, lo cargado como lo nombra el informe
+    de la orden: el nombre y, el de una versión, con su código («des_final · V10»; spec 009,
+    T32), en el orden de ``loaded`` (vacío: los nombres)."""
 
     loaded: tuple[str, ...]
     objects: tuple[bpy.types.Object, ...]
     notes: tuple[str, ...]
     errors: tuple[str, ...]
+    labels: tuple[str, ...] = ()
 
 
 _LOADERS: dict[str, Loader] = {}
@@ -993,6 +996,7 @@ def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[s
     algo."""
     owners: Mapping[str, tuple[Any, Any]] = {} if versions is None else versions
     loaded: list[str] = []
+    labels: list[str] = []
     placed: set[str] = set()
     objects: list[bpy.types.Object] = []
     notes: list[str] = []
@@ -1020,6 +1024,8 @@ def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[s
                 _mark(obj, loader.kind, shown, project, origin, texts)
                 remember(obj)
             loaded.append(record.name)
+            owner = owners.get(entry.version_uid)
+            labels.append(record.name if owner is None else f"{record.name} · {owner[0].code}")
             placed.add(record.uid)
             objects.extend(parts.objects)
             notes.extend(parts.notes)
@@ -1044,7 +1050,8 @@ def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[s
     finally:
         if loaded or gone or removed:
             _view_changed()
-    return LoadOutcome(tuple(loaded), tuple(objects), tuple(notes), tuple(errors))
+    return LoadOutcome(tuple(loaded), tuple(objects), tuple(notes), tuple(errors),
+                       tuple(labels))
 
 
 # --- Lo que escucha la vista (spec 010, T21) -------------------------------------------------

@@ -19,7 +19,8 @@ vista. En ``blender -b`` no corren los temporizadores ni avisa ``bpy.msgbus`` (`
   VIGENTE, tras el tic de la marca, «[VIGENTE] r2» y ``COLOR_04``; superada, «[SUPERADO] r2», sin
   color y sin excluirla (D-35); sin volver a cargar ni mover nada (los mismos objetos y las mismas
   colecciones) ni escribir en el proyecto. También cuando el cambio lo hace otra sesión y Blender
-  tiene el proyecto en solo lectura.
+  tiene el proyecto en solo lectura. El informe de Cargar en la vista… nombra lo de una versión
+  con el código de su versión («demo_pit_grid · V01, demo_pit_grid · V02»; T32, del H2).
 - **Renombrar desde el Outliner** (RF-009-22, D-36): la colección de V02 y el objeto o la colección
   de un dato del proyecto guardan el texto como su título (``title_changed``; sin el código ni el
   estado si se dejaron) y vuelve el nombre generado con él, sin cambiar su código, su identidad,
@@ -62,7 +63,7 @@ from tests.support import blender_ext
 from tests.support import views_fixtures as vf
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
-from tests.support.fake_layout import FakeLayout, Item, draw
+from tests.support.fake_layout import FakeLayout, Item, draw, operator_self
 from tests.support.provenance_demo import BENCHES_TABLE
 from tests.support.repo import ROOT
 from tests.support.trees import temp_folder
@@ -495,6 +496,32 @@ class VersionsViewTest(unittest.TestCase):
         self.live.request(project)
         self.tick(project)
         self.assertEqual(self.shown(v01)[:2], ("V01 · Definitiva [SUPERSEDED] r2", "NONE"))
+
+    def test_load_report_names_the_version(self) -> None:
+        """RF-009-30 (plan A11; observación del H2, T32): Cargar en la vista… de la rejilla del
+        hueco de V01, la de V02 y un dato del proyecto dice «Cargado en la vista: demo_pit_grid ·
+        V01, demo_pit_grid · V02, demo_benches»: lo de una versión, con el código de su versión
+        (como su nombre en la vista), y no dos veces el mismo nombre."""
+        project = self.project()
+        self.demo.digitize(project)
+        v01 = self.create(project, "definitiva", "Definitiva")
+        v02 = self.create(project, "sur", "Fase sur")
+        self.demo.pit(project, "V01")
+        self.demo.pit(project, "V02")
+        records = (self.record(project, PIT_GRID, v01), self.record(project, PIT_GRID, v02),
+                   self.record(project, BENCHES_TABLE))
+        self.run_checks()
+        cls = ext("bl.ui.commands").registered_class(LOAD)
+        reports: list[tuple[set[str], str]] = []
+        fake = operator_self(cls, report=lambda kind, text: reports.append((set(kind), text)),
+                             datasets=",".join(item.uid for item in records), lod="FULL",
+                             in_steps=False)
+        self.assertEqual(cls.execute(fake, bpy.context), {"FINISHED"})
+        self.assertEqual([text for kind, text in reports if kind == {"INFO"}],
+                         [f"Cargado en la vista: {PIT_GRID} · V01, {PIT_GRID} · V02, "
+                          f"{BENCHES_TABLE}"])
+        self.assertEqual([path[-1] for path in map(self.path, records)],
+                         [GRID.format(code="V01"), GRID.format(code="V02"), BENCHES])
 
     def test_renaming_in_the_outliner_keeps_the_title(self) -> None:
         """RF-009-22 (plan A11, D-36): renombrar la colección de V02 («V02 · Fase norte
