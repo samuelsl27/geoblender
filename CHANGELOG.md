@@ -783,7 +783,9 @@ diálogos).
   crece el proyecto con 1 000 y 2 000 elementos) y, con `GEOBLENDER_NET_TEST_DIR`, en la red:
   cambiar de estado, comprobar las 200 revisiones y congelar 5 GB (unos 10 min y 10 GB en la red,
   que se borran), con las esperas de la red medidas aparte de lo que hace Geoblender en cada
-  llamada (`tests/support/netwaits.py`).
+  llamada (`tests/support/netwaits.py`). Con la red, sus pruebas de Python tardan unos 37 min:
+  cada orden de `--rendimiento` y de `--banco` tiene ahora 2 h para terminar (las demás, 30 min
+  como antes); antes se paraba a los 30 min sin dar ninguna medida.
 
 ### Cambiado
 

@@ -5,6 +5,8 @@ opcionales y la orden que descarga las ruedas que faltan.
 - RF-001-10, RF-001-11: sin opciones no se ejecutan ni el rendimiento ni el banco; con
   ``--rendimiento`` y ``--banco``, después de los obligatorios; el banco omitido (código 3
   de ``tools/bench_silvestre.py``) no es un fallo.
+- RF-001-06, RF-001-07 (tarea 009/T38): cada orden de «rendimiento» y de «banco» tiene un
+  plazo propio, mayor que el de los demás pasos; la que no termina en él, falla su paso.
 - RF-001-06, RF-001-07 (spec 001 0.6; spec 002, D-9 y T48): con ``--completo``, tras
   «blender», el paso «arnés» (``unittest`` de ``tests/arnes``, las pruebas del arnés que
   lanzan Blender entero), en el que «sin pruebas» o un fichero sin cargar son un fallo;
@@ -22,6 +24,7 @@ Las ayudas (el ejecutor simulado y ``run_check``), en ``tests/support/check_cli.
 """
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -203,6 +206,48 @@ class OptionalStepsTest(unittest.TestCase):
         result = run_check("--rendimiento", "--banco", runner=runner, steps=steps)
         self.assertEqual(result.code, 0, result.out)
         self.assertEqual(runner.steps(), [*EXECUTED, "iconos", *OPTIONAL])
+
+    def test_slow_steps_have_their_own_timeout(self) -> None:
+        """RF-001-06, RF-001-07 (tarea 009/T38, hallazgo F-3 de la verificación de la 009):
+        «rendimiento» y «banco» tienen su propio plazo por orden, mayor (2 h: con la carpeta
+        de la red, el ``unittest`` de ``tests/rendimiento`` tarda unos 37 min y se paraba a
+        los 30, sin ninguna medida), sin partir el paso; cada orden de los demás pasos, el de
+        siempre (30 min). Una orden que no termina en el plazo de su paso es un fallo de ese
+        paso, que dice ese plazo, y los demás pasos se ejecutan."""
+        long_steps = ("rendimiento", "banco")
+        self.assertGreaterEqual(check.LONG_STEP_TIMEOUT_S, 2 * 3600)
+        self.assertGreater(check.LONG_STEP_TIMEOUT_S, check.STEP_TIMEOUT_S)
+        timeouts = {step.name: step.timeout_s for step in check.STEPS}
+        for name, seconds in timeouts.items():
+            with self.subTest(paso=name):
+                expected = (check.LONG_STEP_TIMEOUT_S if name in long_steps
+                            else check.STEP_TIMEOUT_S)
+                self.assertEqual(seconds, expected)
+
+        result = run_check("--completo", "--rendimiento", "--banco")
+        self.assertEqual(result.code, 0, result.out)
+        ran = {call.step for call in result.runner.calls}
+        self.assertTrue({*MANDATORY, RUNTIME, HARNESS, *OPTIONAL} <= ran, ran)
+        for call in result.runner.calls:
+            with self.subTest(orden=call.step, parte=call.part):
+                expected = (check.LONG_STEP_TIMEOUT_S if call.step in OPTIONAL
+                            else check.STEP_TIMEOUT_S)
+                self.assertEqual(call.timeout, expected)
+
+        for step, seconds in (("rendimiento", check.LONG_STEP_TIMEOUT_S),
+                              ("rendimiento-blender", check.LONG_STEP_TIMEOUT_S),
+                              ("referencia", check.STEP_TIMEOUT_S)):
+            with self.subTest(agotado=step):
+                expired = subprocess.TimeoutExpired(["python"], seconds)
+                runner = FakeRunner({step: expired})
+                result = run_check("--rendimiento", runner=runner)
+                self.assertEqual(result.code, 1)
+                name = "rendimiento" if step.startswith("rendimiento") else step
+                line = _step_line(result.out, name)
+                self.assertTrue(line.lstrip().startswith("fallo"), line)
+                self.assertIn("tiempo agotado", line)
+                self.assertIn(f"no terminó en {seconds:.0f} s", result.out)
+                self.assertEqual(runner.steps(), [*EXECUTED, *OPTIONAL[:2]])
 
 
 class CompleteStepTest(unittest.TestCase):

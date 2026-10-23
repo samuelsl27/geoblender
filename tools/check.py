@@ -213,6 +213,11 @@ COPY_THREAD = "check-copia"
 ENV_BYTECODE = pyc_cache.ENV_PREFIX
 BYTECODE_THREAD = "check-pyc"
 STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 45 s (RNF-001-01)
+# El plazo de cada orden de «rendimiento» y de «banco» (Step.timeout_s; tarea 009/T38, F-3 de
+# su verificación): con GEOBLENDER_NET_TEST_DIR, el unittest de tests/rendimiento tardaba unos
+# 2 200 s (test_versions_perf, ≈ 1 091 s, crea 5 GB en la red y los congela dos veces) y se
+# paraba a los 1 800 s sin dar ninguna medida. El paso no se parte: su orden tiene más plazo.
+LONG_STEP_TIMEOUT_S = 7200.0
 LAUNCHER_RELPATH = "tools/run_blender_tests.py"
 PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T40)
 # Partes de «unitarias» y de «blender» (spec 003, T40; RNF-007-01): a la vez, sin pasar
@@ -764,7 +769,8 @@ class Step:
     ``empty``. Con ``alongside``, el paso se ejecuta a la vez que ese otro paso de la tabla,
     si también se ejecuta y va solo (:func:`run_steps`): cuando le toca a él, aunque el paso
     esté antes en la tabla (spec 004, T30; spec 001 0.8, tarea 009/T34), y su línea va en su
-    lugar."""
+    lugar. ``timeout_s`` es el plazo de cada una de sus órdenes: la que no termina en él es un
+    fallo del paso (tarea 009/T38: «rendimiento» y «banco», ``LONG_STEP_TIMEOUT_S``)."""
 
     name: str
     runs: Callable[[Context], Sequence[Run]]
@@ -774,6 +780,7 @@ class Step:
     resource: str | None = None
     alongside: str | None = None
     empty: str | None = None
+    timeout_s: float = STEP_TIMEOUT_S
 
 
 @dataclass(frozen=True)
@@ -985,8 +992,9 @@ STEPS: tuple[Step, ...] = (
         empty=NO_CASES,
     ),
     Step(HARNESS_STEP, _harness, option=OPTION_COMPLETE),
-    Step("rendimiento", _performance, option=OPTION_PERFORMANCE),
-    Step("banco", _bank, option=OPTION_BANK),
+    Step("rendimiento", _performance, option=OPTION_PERFORMANCE,
+         timeout_s=LONG_STEP_TIMEOUT_S),
+    Step("banco", _bank, option=OPTION_BANK, timeout_s=LONG_STEP_TIMEOUT_S),
     Step(DOCS_STEP, _docs, option=OPTION_DOCS, omit=_docs_omit),
 )
 
@@ -1180,13 +1188,15 @@ def part_count(limit: int, modules: int, cpus: int | None = None) -> int:
 _Launched = subprocess.CompletedProcess[str] | _RunOutcome
 
 
-def _launch(run: Run, root: Path, runner: blender.Runner) -> _Launched:
-    """Ejecuta la orden de ``run``; si no se puede lanzar o no termina a tiempo, el
-    fallo ya interpretado."""
+def _launch(
+    run: Run, root: Path, runner: blender.Runner, timeout_s: float = STEP_TIMEOUT_S
+) -> _Launched:
+    """Ejecuta la orden de ``run`` con el plazo ``timeout_s`` (el de su paso); si no se
+    puede lanzar o no termina a tiempo, el fallo ya interpretado."""
     try:
-        return runner(run.command, env=run.env, cwd=root, timeout=STEP_TIMEOUT_S)
+        return runner(run.command, env=run.env, cwd=root, timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        message = f"no terminó en {STEP_TIMEOUT_S:.0f} s: {' '.join(run.command)}"
+        message = f"no terminó en {timeout_s:.0f} s: {' '.join(run.command)}"
         return _RunOutcome(STATUS_FAIL, None, "tiempo agotado", [], message, "")
     except OSError as exc:
         message = f"no se pudo ejecutar «{' '.join(run.command)}»: {exc}"
@@ -1199,23 +1209,24 @@ def _launch_together(
     root: Path,
     runner: blender.Runner,
     results: list[_Launched | None],
+    timeout_s: float = STEP_TIMEOUT_S,
 ) -> None:
     """Ejecuta a la vez, cada una en su hilo, las órdenes ``runs[i]`` de ``indices``
-    (las partes de unas pruebas) y deja su resultado en ``results[i]``. Si la espera se
-    interrumpe (Ctrl+C), como ``subprocess.run``: espera ``SIGINT_WAIT_S`` a que las
-    órdenes terminen solas, para las que sigan (``blender.stop_all``), espera a los
-    hilos y deja pasar la interrupción. Una excepción de una orden (que no sea de
-    lanzarla o de tiempo, ya interpretadas) se lanza aquí, como sin hilos. Límite: una
-    orden parada así no limpia lo suyo (la copia de la extensión de un Blender queda en
-    ``%TEMP%``), igual que con una sola orden."""
+    (las partes de unas pruebas), cada una con el plazo ``timeout_s``, y deja su resultado
+    en ``results[i]``. Si la espera se interrumpe (Ctrl+C), como ``subprocess.run``: espera
+    ``SIGINT_WAIT_S`` a que las órdenes terminen solas, para las que sigan
+    (``blender.stop_all``), espera a los hilos y deja pasar la interrupción. Una excepción
+    de una orden (que no sea de lanzarla o de tiempo, ya interpretadas) se lanza aquí, como
+    sin hilos. Límite: una orden parada así no limpia lo suyo (la copia de la extensión de
+    un Blender queda en ``%TEMP%``), igual que con una sola orden."""
     if len(indices) == 1:
-        results[indices[0]] = _launch(runs[indices[0]], root, runner)
+        results[indices[0]] = _launch(runs[indices[0]], root, runner, timeout_s)
         return
     errors: dict[int, BaseException] = {}
 
     def work(index: int) -> None:
         try:
-            results[index] = _launch(runs[index], root, runner)
+            results[index] = _launch(runs[index], root, runner, timeout_s)
         except BaseException as exc:  # noqa: BLE001 - se lanza en el hilo principal
             errors[index] = exc
 
@@ -1250,9 +1261,15 @@ def _launch_together(
             raise errors[index]
 
 
-def _launch_all(runs: Sequence[Run], root: Path, runner: blender.Runner) -> list[_Launched]:
+def _launch_all(
+    runs: Sequence[Run],
+    root: Path,
+    runner: blender.Runner,
+    timeout_s: float = STEP_TIMEOUT_S,
+) -> list[_Launched]:
     """Ejecuta las órdenes de un paso en su orden, una tras otra, salvo las partes
-    seguidas de unas pruebas (``Run.part``), que van a la vez (T40)."""
+    seguidas de unas pruebas (``Run.part``), que van a la vez (T40); cada una, con el
+    plazo del paso, ``timeout_s`` (tarea 009/T38)."""
     results: list[_Launched | None] = [None] * len(runs)
     batch: list[int] = []
     for index, run in enumerate(runs):
@@ -1260,11 +1277,11 @@ def _launch_all(runs: Sequence[Run], root: Path, runner: blender.Runner) -> list
             batch.append(index)
             continue
         if batch:
-            _launch_together(batch, runs, root, runner, results)
+            _launch_together(batch, runs, root, runner, results, timeout_s)
             batch = []
-        results[index] = _launch(run, root, runner)
+        results[index] = _launch(run, root, runner, timeout_s)
     if batch:
-        _launch_together(batch, runs, root, runner, results)
+        _launch_together(batch, runs, root, runner, results, timeout_s)
     done: list[_Launched] = []
     for result in results:
         if result is None:  # no ocurre: _launch_together deja todos o lanza
@@ -1587,7 +1604,8 @@ def execute_step(step: Step, ctx: Context, runner: blender.Runner) -> StepResult
         return StepResult(
             step.name, STATUS_OK, time.perf_counter() - start, detail=[step.empty]
         )
-    outcomes = _interpret_all(runs, _launch_all(runs, ctx.root, runner), ctx.root, resources)
+    launched = _launch_all(runs, ctx.root, runner, step.timeout_s)
+    outcomes = _interpret_all(runs, launched, ctx.root, resources)
     seconds = time.perf_counter() - start
     if any(outcome.status == STATUS_FAIL for outcome in outcomes):
         status = STATUS_FAIL
