@@ -430,20 +430,21 @@ class VersionsSessionTest(unittest.TestCase):
         (``bl.scene.versions.request_redraw``): abrir el proyecto, cambiar la versión activa con
         ``geoblender.core_set_active_version`` lanzada fuera de la barra superior (desde una
         Vista 3D, como F3, un guion o el canal), congelar una revisión, crear una versión,
-        cambiar su estado y cerrar el proyecto. La barra de estado, con ``bl.ui.statusbar.redraw``;
-        la superior, un área global de la ventana que no está en ``screen.areas``
-        (``Area.tag_redraw`` no la alcanza: en el H3 seguía con «V02.r1»), asignando
-        ``WindowManager.geoblender_version_panels.shown`` (lo que dice la barra de estado), que
-        tiene función ``update``: Blender la ejecuta al asignarla (se ve en el registro técnico)
-        y avisa entonces a todas las regiones de todas las ventanas. Nada de eso escribe en el
-        proyecto."""
+        cambiar su estado y cerrar el proyecto. Lo pide el mecanismo común de las barras
+        (``bl.ui.bars.redraw``, T41, el mismo de los controles 7): la barra de estado, con
+        ``bl.ui.statusbar.redraw``; la superior, un área global de la ventana que no está en
+        ``screen.areas`` (``Area.tag_redraw`` no la alcanza: en el H3 seguía con «V02.r1»),
+        cambiando ``WindowManager.geoblender_redraw``, que tiene función ``update``: Blender la
+        ejecuta al asignarla (se ve en el registro técnico) y avisa entonces a todas las regiones
+        de todas las ventanas. Nada de eso escribe en el proyecto."""
         project = self.project()
         statusbar = ext("bl.ui.statusbar")
-        props = ext("bl.props.versions")
+        common = ext("bl.ui.bars")
+        props = ext("bl.props.ui")
         manager = bpy.context.window_manager
-        view = getattr(manager, props.WINDOW_MANAGER_PROPERTY)
         request = self.enterContext(mock.patch.object(self.sv, "request_redraw",
                                                       wraps=self.sv.request_redraw))
+        both = self.enterContext(mock.patch.object(common, "redraw", wraps=common.redraw))
         bars = self.enterContext(mock.patch.object(statusbar, "redraw", wraps=statusbar.redraw))
         window = manager.windows[0]
         (area,) = [item for item in window.screen.areas if item.type == "VIEW_3D"]
@@ -452,8 +453,10 @@ class VersionsSessionTest(unittest.TestCase):
         def asked(step: str, shown: str) -> None:
             with self.subTest(step=step):
                 self.assertGreaterEqual(request.call_count, 1)
-                self.assertEqual((self.sv.status_text(), view.shown), (shown, shown))
+                self.assertGreaterEqual(both.call_count, request.call_count)
+                self.assertEqual(self.sv.status_text(), shown)
             request.reset_mock()
+            both.reset_mock()
 
         self.ps.attach(project)
         asked("abrir", STATUS["V03"])
@@ -478,18 +481,19 @@ class VersionsSessionTest(unittest.TestCase):
             "EXEC_DEFAULT", target="DESCARTADO", reason="No sigue"), {"FINISHED"})
         asked("cambiar su estado", "V05.r1 DESCARTADO")
 
-        # Lo que hace la petición: la barra de estado y la superior, con la ``update`` de shown.
+        # Lo que hace la petición: la barra de estado y la superior, cambiando la propiedad con
+        # ``update`` (otro valor en cada petición, para no asignar nunca el mismo).
         bars.reset_mock()
-        view.shown = ""
+        before = getattr(manager, props.REDRAW_PROPERTY)
         with self.assertLogs("geoblender.bl.props", level="DEBUG") as logged:
             self.sv.request_redraw()
         request.reset_mock()
+        both.assert_called_once_with()
+        both.reset_mock()
         bars.assert_called_once_with()
-        self.assertEqual(view.shown, "V05.r1 DESCARTADO")
+        self.assertEqual(getattr(manager, props.REDRAW_PROPERTY), not before)
         self.assertEqual(logged.output, ["DEBUG:geoblender.bl.props:Se pide redibujar todas las "
-                                         "ventanas: V05.r1 DESCARTADO"])
-        self.assertIs(type(view).__annotations__["shown"].keywords["update"],
-                      props.redraw_all_windows)
+                                         "ventanas"])
 
         self.ps.close()
         asked("cerrar", "")

@@ -15,7 +15,8 @@ que acaba):
   estaba;
 - **Refrescar (control 7) resaltado** mientras algo no está al día, con cuántos en su
   descripción («1 dato de la vista no está al día»), y no después (volver a cargar o descargar
-  lo que no lo estaba también pide la marca); al cerrar el proyecto, nada;
+  lo que no lo estaba también pide la marca); al cerrar el proyecto, nada; y, cuando cambia,
+  la marca pide redibujar la barra superior por el mecanismo común de la T35 (spec 009, T41);
 - **Ctrl+Z** (con ``ed.undo_push``, ``docs/trampas.md`` §4) hasta antes de una recarga la deja
   «NO AL DÍA» y rehacer, al día; **abrir un ``.blend``** del proyecto abierto, lo mismo;
 - **por tandas**: con presupuesto, un dato por tic y lo que queda en el siguiente; una petición
@@ -68,6 +69,8 @@ OPEN_SLACK_S = 0.05
 """Lo que puede tardar de más abrir con la vista que sin ella (la mediana de 5): nada que medir
 en un PC tranquilo (abrir no lee la vista); con la máquina ocupada, se mide otra vez."""
 OPENINGS = 5
+PROPS_LOGGER = "geoblender.bl.props"  # el de la función update que redibuja (spec 009, T41)
+REDRAW_LOG = f"DEBUG:{PROPS_LOGGER}:Se pide redibujar todas las ventanas"
 ONE_OUTDATED = "1 dato de la vista no está al día: Refrescar (F5)"
 NOT_RESTORED = ("La superposición de la vista de los sondeos no se ha rehecho: sus objetos no "
                 "son los de la base y la representación de hoy; vuelva a cargarla (Cargar en la "
@@ -319,6 +322,35 @@ class ViewsLiveTest(unittest.TestCase):
                          ("MDT rejilla_02 [VIGENTE]", "CURRENT", recomputed.content_sha256))
         self.assertPending(0, "")
         self.assertEqual(data.change_counter(), counter)
+
+    def test_refresh_highlight_redraws_the_top_bar(self) -> None:
+        """RF-010-02, RF-008-28, RNF-008-06 (spec 009, T41; hallazgo de la T35): cuando la marca
+        cambia cuántos datos no están al día (Refrescar, el control 7, resaltado o no), pide
+        redibujar la barra superior por el mecanismo común de la T35: asignar una propiedad de
+        Geoblender con función ``update``, que Blender ejecuta (se ve en el registro técnico) y
+        tras la que avisa a todas las regiones de todas las ventanas. La barra superior es un
+        área global de la ventana, fuera de ``screen.areas``: ``Area.tag_redraw`` no llega a
+        ella. Lo pide al quedar una rejilla recalculada «NO AL DÍA» y al volver a cargarla."""
+        data = self.data
+        data.load(bpy.context)
+        grid = data.record(data.names[1])
+        self.tick()
+        self.assertPending(0, "")
+        window = bpy.context.window_manager.windows[0]
+        self.assertNotIn("TOPBAR", [area.type for area in window.screen.areas])
+
+        data.recompute(grid.uid)
+        self.indicators()
+        with self.assertLogs(PROPS_LOGGER, level="DEBUG") as logged:
+            self.run_marks()
+        self.assertPending(1, "1 dato de la vista no está al día")
+        self.assertIn(REDRAW_LOG, logged.output)
+
+        data.load(bpy.context, grid.uid)
+        with self.assertLogs(PROPS_LOGGER, level="DEBUG") as logged:
+            self.run_marks()
+        self.assertPending(0, "")
+        self.assertIn(REDRAW_LOG, logged.output)
 
     def test_opening_a_view_of_the_open_project(self) -> None:
         """RF-010-02 (T08; plan A3): abrir un ``.blend`` del proyecto abierto pide la marca

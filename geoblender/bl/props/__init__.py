@@ -7,7 +7,8 @@
   la vista; spec 010, T07: si está al día, el GeoOrigin con que se cargó y sus cifras en texto)
   y las filas del diálogo de «Cargar en la vista…» (spec 006, T27);
 - ``ui``: ``WorkSpace.geoblender_mode`` (la marca del modo Geoblender) y el grupo ``ui``
-  de las preferencias (spec 003);
+  de las preferencias (spec 003); ``WindowManager.geoblender_redraw``, la petición de
+  redibujar todas las ventanas, también sus barras globales (spec 009, T35 y T41);
 - ``jobs``: el grupo ``jobs`` de las preferencias (spec 004): trabajos a la vez,
   retención, origen del motor de cálculo, almacén de ruedas e intérprete externo;
 - ``provenance``: ``WindowManager.geoblender_provenance``, las filas de los paneles de la
@@ -57,8 +58,9 @@ def register() -> None:
     """Registra ``classes`` en orden y pone ``Scene.geoblender``, ``Object.geoblender``,
     ``WindowManager.geoblender_provenance``, las de los sondeos (``dh``),
     ``WindowManager.geoblender_view_panels``, ``Collection.geoblender``,
-    ``WindowManager.geoblender_version_panels`` y ``WorkSpace.geoblender_mode``; si ya lo
-    están, no hace nada. Si algo falla, deshace lo hecho antes de propagar el error."""
+    ``WindowManager.geoblender_version_panels``, ``WorkSpace.geoblender_mode`` y
+    ``WindowManager.geoblender_redraw``; si ya lo están, no hace nada. Si algo falla, deshace
+    lo hecho antes de propagar el error."""
     _localize()
     try:
         register_classes(classes)
@@ -85,7 +87,8 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Quita ``WorkSpace.geoblender_mode``, ``WindowManager.geoblender_version_panels``,
+    """Quita ``WindowManager.geoblender_redraw``, ``WorkSpace.geoblender_mode``,
+    ``WindowManager.geoblender_version_panels``,
     ``Collection.geoblender``, ``WindowManager.geoblender_view_panels``, las de los sondeos,
     ``WindowManager.geoblender_provenance``, ``Object.geoblender`` y ``Scene.geoblender`` y
     desregistra ``classes`` en orden inverso; omite lo que no está registrado."""

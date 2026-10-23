@@ -15,8 +15,8 @@ campos y la suscripción de ``msgbus`` al cursor 3D, renovada en ``load_post``) 
 «jobs» de la barra de estado (``jobs``, spec 004: los trabajos en segundo plano, en los dos
 modos) → la procedencia (``provenance``, spec 008: sus campos de la barra de estado, el
 número del control 7 y la escucha del proyecto, con su temporizador) → la versión activa
-(``version_panels``, spec 009: el texto del control 8 y las escuchas de las versiones y de los
-indicadores) → vistas
+(``version_panels``, spec 009: el texto del control 8, la escucha de los indicadores y las
+comprobaciones de sus órdenes; redibujar las barras lo pide ``bars``, T35 y T41) → vistas
 (``views``: el manejador ``load_post`` que olvida su estado de sesión) → Elemento activo
 (``view_panels``, spec 010: la suscripción de ``msgbus`` al objeto activo, renovada en
 ``load_post``, y las escuchas del proyecto y de sus indicadores) → disposiciones

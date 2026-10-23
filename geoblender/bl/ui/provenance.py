@@ -187,7 +187,7 @@ from ..props.provenance import FILTER_ALL, WINDOW_MANAGER_PROPERTY
 from ..scene import live, project_session
 from ..scene import versions as scene_versions
 from .. import compat
-from . import icons, labels, quick_access, statusbar
+from . import bars, icons, labels, quick_access, statusbar
 from .commands import (
     CommandState,
     catalog,
@@ -638,14 +638,11 @@ def _retire(function: Callable[[], float | None]) -> None:
 
 
 def redraw() -> None:
-    """Redibuja la barra de estado y la barra superior (el control 7) de todas las
-    ventanas."""
-    statusbar.redraw()
-    manager = getattr(bpy.context, "window_manager", None)
-    for window in getattr(manager, "windows", ()):
-        for area in getattr(window.screen, "areas", ()):
-            if area.type == "TOPBAR":
-                area.tag_redraw()
+    """Redibuja la barra de estado («⚠ n entradas», «! n obsoletos») y la barra superior (el
+    control 7) de todas las ventanas, con ``bl.ui.bars.redraw`` (spec 009, T41): las dos son
+    áreas globales de la ventana, fuera de ``screen.areas``, y ``Area.tag_redraw`` no llega a
+    ellas (``docs/trampas.md`` §5)."""
+    bars.redraw()
 
 
 def stale_count(_context: Any = None) -> int | None:

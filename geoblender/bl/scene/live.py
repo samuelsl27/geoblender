@@ -27,10 +27,11 @@ declara su marca en vivo (``views.live_reads``), y guarda cuántos no están al 
 :data:`MARK_BUDGET_S` s por llamada contando la lectura (D-12: 200 datos que cambian a la vez no
 caben en una), y lo que queda, en el siguiente tic, con los objetos agrupados otra vez (no
 guarda objetos de Blender entre tics: deshacer o abrir otro fichero los invalida). Una petición
-nueva a mitad vuelve a leer. Si cambió algo, redibuja la barra superior, los esquemas y las
-vistas 3D. Mientras esta sesión escribe en el proyecto (``Project.writing``) o el proyecto está
-en WAL (QGIS: leerlo haría una copia privada), espera :data:`MARK_RETRY_S` s; si no se puede
-leer (otro programa lo bloquea), deja la petición: el siguiente cambio la vuelve a pedir.
+nueva a mitad vuelve a leer. Si cambió algo, redibuja la barra superior (``bl.ui.bars``), los
+esquemas y las vistas 3D. Mientras esta sesión escribe en el proyecto (``Project.writing``) o
+el proyecto está en WAL (QGIS: leerlo haría una copia privada), espera :data:`MARK_RETRY_S` s;
+si no se puede leer (otro programa lo bloquea), deja la petición: el siguiente cambio la vuelve
+a pedir.
 
 **Lo de cada cargador** (spec 010, T09; plan §5.6, D-13): lo que declara con
 ``views.extend_loader``. Su ``LiveHook`` (los sondeos: sus sondeos de traza obsoleta) se lee en
@@ -381,12 +382,17 @@ def _retire() -> None:
 
 
 def _redraw() -> None:
-    """Redibuja la barra superior (el control 7), los esquemas y las vistas 3D."""
+    """Redibuja la barra superior (el control 7: Refrescar resaltado), con
+    ``bl.ui.bars.redraw`` (spec 009, T41: es un área global de la ventana, fuera de
+    ``screen.areas``, y ``Area.tag_redraw`` no llega a ella), y los esquemas y las vistas 3D."""
+    from ..ui import bars  # al usarlo: bl.ui importa bl.scene
+
+    bars.redraw()
     manager = getattr(bpy.context, "window_manager", None)
     for window in list(getattr(manager, "windows", ()) or ()):
         screen = getattr(window, "screen", None)
         for area in getattr(screen, "areas", ()) or ():
-            if area.type in ("TOPBAR", "OUTLINER", "VIEW_3D"):
+            if area.type in ("OUTLINER", "VIEW_3D"):
                 area.tag_redraw()
 
 

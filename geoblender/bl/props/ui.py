@@ -18,6 +18,11 @@ RF-003-11, RF-003-21, RF-003-28; plan 003 §5.2; ADR-0012).
   texto o iconos; BS §3), fila de acceso rápido de la vista, «Ocultar lo no disponible»
   (BS §7.3) y barra de estado minera (AR §6).
 
+- ``WindowManager.geoblender_redraw`` (:data:`REDRAW_PROPERTY`, spec 009, T35 y T41): la
+  petición de redibujar todas las ventanas, también la barra superior y la de estado, que son
+  áreas globales fuera de ``screen.areas``. No guarda nada que se lea: la cambia
+  ``bl.ui.bars.redraw`` y lo que importa es su función ``update`` (:func:`redraw_all_windows`).
+
 - :func:`remembered_language` y :func:`remember_language` (spec 003, T37; RF-003-20; II
   §2.2): el idioma de Geoblender de la última sesión, en un fichero de la carpeta de datos
   de la extensión (``ui/language``). Las preferencias no se pueden leer hasta que se
@@ -30,7 +35,9 @@ Nada es animable (``options=set()``).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from typing import Any
 
 import bpy
 from bpy.props import (
@@ -44,12 +51,16 @@ from bpy.props import (
 
 from .. import ADDON_PACKAGE
 
+LOGGER = logging.getLogger("geoblender.bl.props")
+
 LANGUAGE_FILE = ("ui", "language")  # carpeta y fichero en los datos de la extensión
 
 # Nombre de la marca del modo en WorkSpace (API pública: la leen la plantilla y los scripts).
 WORKSPACE_PROPERTY = "geoblender_mode"
 # Vistas guardadas de la escena (API pública: la leen los scripts).
 VIEWS_PROPERTY = "geoblender_views"
+# La petición de redibujar todas las ventanas (spec 009, T35 y T41; la cambia bl.ui.bars).
+REDRAW_PROPERTY = "geoblender_redraw"
 SAVED_VIEW_SLOTS = 4
 PERSPECTIVE_ITEMS = [
     ("PERSP", "Perspective", "Perspective projection"),
@@ -106,6 +117,17 @@ def _language_changed(group: object, context: object) -> None:
     from ..ui import i18n  # diferido: bl/ui importa bl/props
 
     i18n.on_preference_changed(group, context)
+
+
+def redraw_all_windows(_manager: Any, _context: Any) -> None:
+    """La función ``update`` de ``WindowManager.geoblender_redraw`` (spec 009, T35 y T41;
+    RF-009-10, RF-008-28). Solo deja una línea en el registro técnico: lo que importa es que
+    exista. Asignar desde Python una propiedad de ``bpy.props`` **sin** ``update`` no avisa a
+    nada (ni redibuja ni marca el grafo de dependencias); **con** ``update``, Blender la ejecuta
+    y avisa después a todas las regiones de todas las ventanas (``NC_WINDOW``), también a la
+    barra superior y a la de estado, que son áreas globales de la ventana, fuera de
+    ``screen.areas``, a las que ``Area.tag_redraw`` no llega (``docs/trampas.md`` §5)."""
+    LOGGER.debug("Se pide redibujar todas las ventanas")
 
 
 class GEOBLENDER_PG_ui_preferences(bpy.types.PropertyGroup):
@@ -174,8 +196,8 @@ classes: tuple[type, ...] = (GEOBLENDER_PG_ui_preferences, GEOBLENDER_PG_ui_save
 
 
 def register() -> None:
-    """Pone ``WorkSpace.geoblender_mode`` y ``Scene.geoblender_views`` (las clases ya
-    están registradas)."""
+    """Pone ``WorkSpace.geoblender_mode``, ``Scene.geoblender_views`` (las clases ya están
+    registradas) y ``WindowManager.geoblender_redraw``."""
     setattr(
         bpy.types.WorkSpace,
         WORKSPACE_PROPERTY,
@@ -191,11 +213,18 @@ def register() -> None:
         VIEWS_PROPERTY,
         CollectionProperty(type=GEOBLENDER_PG_ui_saved_view, options=_STATIC),
     )
+    setattr(
+        bpy.types.WindowManager,
+        REDRAW_PROPERTY,
+        BoolProperty(options=_STATIC, update=redraw_all_windows),
+    )
 
 
 def unregister() -> None:
-    """Quita ``Scene.geoblender_views`` y ``WorkSpace.geoblender_mode``; sin ellas,
-    nada."""
+    """Quita ``WindowManager.geoblender_redraw``, ``Scene.geoblender_views`` y
+    ``WorkSpace.geoblender_mode``; sin ellas, nada."""
+    if hasattr(bpy.types.WindowManager, REDRAW_PROPERTY):
+        delattr(bpy.types.WindowManager, REDRAW_PROPERTY)
     if hasattr(bpy.types.Scene, VIEWS_PROPERTY):
         delattr(bpy.types.Scene, VIEWS_PROPERTY)
     if hasattr(bpy.types.WorkSpace, WORKSPACE_PROPERTY):
