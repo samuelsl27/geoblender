@@ -42,7 +42,10 @@ congelado, ``reserves.surfaces.surface_source``, cubica por pasos y guarda), :fu
 leyó al empezar, D-16) y :func:`save_materials` (``res.edit_materials``). Repetir el nombre de
 una cubicación de la versión la sustituye (D-30): :func:`previous_operation` da la operación a
 la que sustituye la nueva (``begin_operation(…, supersedes=…)``), que escribe contenido nuevo
-de los mismos datos. Python puro (nivel 9).
+de los mismos datos. **Recalcular** (A12, T15): :func:`recompute_run` empieza la operación que
+sustituye a una obsoleta (en la revisión abierta de su versión, con la columna vigente y sus
+parámetros resueltos de nuevo) y da sus pasos, que avanza la cola de ``res`` en ``bl``. Python
+puro (nivel 9).
 """
 
 from __future__ import annotations
@@ -77,11 +80,14 @@ from ..core.provenance.figures import FigureSpec
 from ..core.provenance.operations import (
     CANCEL_REASON_PREFIX,
     NOT_COMPLETED_REASON,
+    Executor,
     OperationHandle,
     OperationStatus,
+    begin_operation,
     cancel_reason,
     failure_reason,
 )
+from ..core.provenance.recompute import RecomputeRequest
 from ..core.units import convert
 from ..core.versions import read as versions_read
 from ..core.versions.model import VersionError
@@ -115,14 +121,17 @@ __all__ = [
     "CANCELLATIONS",
     "CANCELLED_REASON",
     "DIGEST_TABLE",
+    "RECOMPUTED",
     "SAVE_STEPS",
     "TABLE_COLUMNS",
     "ResultWriter",
     "StoredTonnage",
     "StoredVolume",
+    "difference_figures",
     "materials_digest",
     "previous_operation",
     "project_sources",
+    "recompute_run",
     "save_materials",
     "table_digest",
     "tonnage_run",
@@ -644,9 +653,9 @@ def _with_params(request: VolumeRequest, handle: OperationHandle) -> VolumeReque
                    presence_m=presence)
 
 
-def _difference_figures(result: VolumeResult) -> tuple[FigureSpec, ...]:
+def difference_figures(result: VolumeResult) -> tuple[FigureSpec, ...]:
     """Las seis cifras de los totales de ``result`` con el ámbito de la diferencia
-    (``{"difference": nombre}``; RF-011-23)."""
+    (``{"difference": nombre}``; RF-011-23): las de ``res.difference``."""
     whole = {"cubication": result.name}
     return tuple(replace(spec, scope={"difference": result.name}) for spec in result.figures
                  if spec.key in declared.DIFFERENCE_FIGURES and dict(spec.scope) == whole)
@@ -710,7 +719,7 @@ def _volume_run(project: StoreProject, handle: OperationHandle, request: VolumeR
         if handle.op_type == declared.VOLUME:
             out.table(declared.VOLUMES, request.name, result.rows)
         else:
-            figures = _difference_figures(result)
+            figures = difference_figures(result)
         yield Progress("save", total - 1, total, f"Guardando «{request.name}»…")
         records = out.commit(figures=figures, message=last.message)
     yield Progress("save", total, total, last.message, result=StoredVolume(result, records))
@@ -812,3 +821,69 @@ def previous_operation(project: StoreProject, op_type: str, name: str, *,
     if row is None or row[0] != op_type or row[1] != OperationStatus.DONE or row[2] is not None:
         return None
     return record.operation_uid
+
+
+# --- Recalcular (A12) -------------------------------------------------------------------------
+
+RECOMPUTED: tuple[str, ...] = (declared.VOLUME, declared.TONNAGE, declared.DIFFERENCE)
+"""Los tipos que repite :func:`recompute_run` (``res.stages``, con su cálculo)."""
+
+
+def _current_column(project: StoreProject) -> MaterialColumn:
+    """La columna de materiales vigente del proyecto (la que leerá la operación nueva);
+    ``res.materials_missing`` si no hay ninguna."""
+    with project.read() as conn:
+        record = dataset_registry.get(conn, declared.MATERIALS)
+        column = None if record is None else read_column(conn, record.locator)
+    if column is None:
+        raise ResError("res.materials_missing", obj="Columna de materiales", field="units",
+                       value=0)
+    return column
+
+
+def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
+                  band_rows: int = BAND_ROWS) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite la operación de ``res`` de ``request`` (``RecomputeRequest`` de «Recalcular lo
+    obsoleto», RF-008-26; RF-011-20, RF-011-21; plan A12, D-19): empieza la operación nueva,
+    que sustituye a la anterior en la revisión abierta de **su** versión, con sus mismos
+    ajustes y con lo que lee hoy —la columna de materiales vigente y, de ella, sus entradas
+    (las bases y los espesores de cada unidad) y sus parámetros, resueltos de nuevo al empezar:
+    un K cambiado solo en V01 se lee de V01— y devuelve su ``OperationHandle`` «en curso» y sus
+    pasos (:func:`volume_run` o :func:`tonnage_run`), que avanza quien la llama (en Blender, la
+    cola de ``res``; la operación sigue «en curso» hasta el último).
+
+    Al llamar, sin empezar nada: ``ValueError`` si el tipo no es de :data:`RECOMPUTED` o sus
+    ajustes no son los de su tipo; ``res.materials_missing`` si reparte por unidades y no hay
+    columna; los rechazos de ``begin_operation``."""
+    if not isinstance(request, RecomputeRequest):
+        raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
+    if request.op_type not in RECOMPUTED:
+        raise ValueError(f"recompute_run repite {', '.join(RECOMPUTED)}, no "
+                         f"«{request.op_type}»")
+    project: StoreProject = request.project  # type: ignore[assignment]
+    settings = request.settings
+    volume: VolumeRequest | None = None
+    if request.op_type == declared.TONNAGE:
+        name = settings.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("los ajustes de res.tonnage llevan el nombre de su cubicación")
+        inputs = declared.tonnage_inputs(name)
+        params = declared.tonnage_params(_current_column(project))
+    else:
+        column = _current_column(project) if settings.get("units") else None
+        volume = declared.volume_request(settings, column=column)
+        frozen = next((use.frozen for use in request.inputs if use.frozen is not None), None)
+        inputs = declared.volume_inputs(volume, scope=settings.get("scope"), frozen=frozen)
+        params = declared.volume_params(volume)
+    handle = begin_operation(project, request.op_type, executor=Executor.BLENDER,
+                             settings=dict(settings), inputs=inputs, params=params,
+                             group_uid=request.group_uid, supersedes=request.operation_uid,
+                             version=request.version)
+    try:
+        if volume is None:
+            return handle, tonnage_run(project, handle)
+        return handle, volume_run(project, handle, volume, budget_s=budget_s,
+                                  band_rows=band_rows)
+    except BaseException as error:
+        handle.fail(failure_reason(error))
+        raise

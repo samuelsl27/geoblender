@@ -44,7 +44,11 @@ revisión de la que parte la versión; el ámbito ``scope``; los dominios ``doma
 espesor mínimo y, con unidades, el umbral de presencia: del proyecto, RF-011-21) y
 :func:`volume_settings` (lo que la vuelve a pedir igual); :func:`tonnage_inputs` y
 :func:`tonnage_params` (la densidad, el K y los porcentajes de cada elemento de la columna,
-resueltos versión → proyecto, RF-011-21). Python puro (nivel 9).
+resueltos versión → proyecto, RF-011-21). :func:`volume_request` es lo contrario de
+:func:`volume_settings`: la cubicación que repiten sus ajustes al recalcularla
+(``reserves.store.recompute_run``) y al reproducirla (``reserves.reproduce``; A12). Las
+funciones de reproducir de los tipos que se repiten son las de ``reserves.reproduce.REPRODUCE``
+(la de ``res.stages``, con su cálculo). Python puro (nivel 9).
 """
 
 from __future__ import annotations
@@ -72,6 +76,7 @@ from ..gis.provenance import dataset_slug
 from .materials import TABLE as MATERIALS_TABLE
 from .materials import Kind, MaterialColumn
 from .params import ANTHROPIC_PRESENCE, MIN_THICKNESS, density_key, percent_key, swell_key
+from .slices import Slices
 from .surfaces import SurfaceRef
 from .volumes import FINAL, START, VolumeRequest, base_role, thickness_role
 
@@ -114,6 +119,7 @@ __all__ = [
     "tonnage_settings",
     "volume_inputs",
     "volume_params",
+    "volume_request",
     "volume_settings",
 ]
 
@@ -469,6 +475,59 @@ def volume_settings(request: VolumeRequest, *, scope: str | None = None) -> dict
         "difference_grid": request.difference_grid,
         "point_scale": request.point_scale,
     }
+
+
+def _surface_ref(value: object, role: str) -> SurfaceRef:
+    """La superficie ``role`` de los ajustes de una cubicación (:func:`_surface_setting`)."""
+    if not isinstance(value, Mapping) or len(value) != 1:
+        raise ValueError(f"los ajustes de la superficie «{role}» son el dato, lo congelado o la "
+                         f"cota constante (uno), no {value!r}")
+    ((kind, given),) = value.items()
+    if kind == "dataset":
+        return SurfaceRef(dataset=given)
+    if kind == "frozen":
+        return SurfaceRef(frozen=given)
+    if kind == "elevation_m":
+        return SurfaceRef(elevation=given)
+    raise ValueError(f"los ajustes de la superficie «{role}» no dicen «{kind}»")
+
+
+def _slices(settings: Mapping[str, Any]) -> Slices | None:
+    """Las rodajas de los ajustes de una cubicación (o ninguna)."""
+    height, anchor = settings.get("bench_height_m"), settings.get("bench_anchor_m")
+    levels = settings.get("bench_levels_m")
+    if height is None and anchor is None and levels is None:
+        return None
+    return Slices(height, anchor, None if levels is None else tuple(levels))
+
+
+def volume_request(settings: Mapping[str, Any], *,
+                   column: MaterialColumn | None = None) -> VolumeRequest:
+    """La cubicación que repiten los ajustes ``settings`` de una operación ``res.volume`` o
+    ``res.difference`` (los de :func:`volume_settings`), con la columna ``column`` que consume
+    si reparte por unidades: lo que la vuelve a pedir igual al recalcularla y al reproducirla
+    (A12). El espesor mínimo y el umbral de presencia no son ajustes: los de la operación
+    (``reserves.store.volume_run``) o los congelados (``reserves.reproduce``).
+
+    ``ValueError`` si los ajustes no son los de una cubicación, si la columna sobra o falta, o
+    si tiene ámbito o dominios: sus capas (D-32) aún no se leen para repetirla."""
+    if not isinstance(settings, Mapping):
+        raise TypeError(f"los ajustes de una cubicación son un diccionario, no {settings!r}")
+    name = settings.get("name")
+    if not isinstance(name, str):
+        raise ValueError(f"los ajustes de una cubicación llevan su nombre, no {name!r}")
+    if settings.get("scope") is not None or settings.get("domains_field") is not None:
+        raise ValueError(f"la cubicación «{name}» tiene ámbito o dominios: sus capas aún no se "
+                         "leen para repetirla")
+    units = settings.get("units", False)
+    if not isinstance(units, bool) or units != (column is not None):
+        raise ValueError(f"la cubicación «{name}» {'' if units else 'no '}reparte por unidades: "
+                         f"{'falta' if units else 'sobra'} la columna de materiales")
+    grid = settings.get("difference_grid", False)
+    return VolumeRequest(name, _surface_ref(settings.get(START), START),
+                         _surface_ref(settings.get(FINAL), FINAL), slices=_slices(settings),
+                         column=column, difference_grid=grid,
+                         point_scale=settings.get("point_scale"))
 
 
 def tonnage_inputs(name: str) -> tuple[Use, ...]:

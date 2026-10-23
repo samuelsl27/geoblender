@@ -52,9 +52,11 @@ con ``gis.store.ResultWriter`` en una operación ``gis.resample``, como
 ``tests/support/views_fixtures.py``: :data:`PROJECT_GRIDS`) y las versiones **V01** y **V02** en
 BORRADOR; :class:`ResProjectCase` lo copia y lo abre **una vez por clase**, con las
 declaraciones de ``res`` registradas a mano (:func:`res_registered`: parámetros, familias, tipos
-de operación con funciones de prueba y cifras; como ``tests/support/versions_demo.py``).
-:func:`project_column` es la columna con esas rejillas como bases y espesores. Solo fuera de
-Blender.
+de operación con las funciones de reproducir de ``reserves.reproduce`` y de recálculo de prueba,
+y cifras; como ``tests/support/versions_demo.py``) y los lectores de contenido con que se
+congela y se reproduce (:func:`content_readers`). :func:`project_column` es la columna con esas
+rejillas como bases y espesores; :func:`write_grids` vuelve a escribir una rejilla del proyecto
+(otra superficie, T15). Solo fuera de Blender.
 """
 
 from __future__ import annotations
@@ -64,8 +66,8 @@ import math
 import shutil
 import tempfile
 import unittest
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -664,19 +666,24 @@ def _recompute(request: Any) -> Any:
 
 
 def _reproduce(request: Any) -> Iterator[Any]:
-    raise AssertionError("las pruebas de res no reproducen con la función de bl")
+    raise AssertionError("las pruebas de res no reproducen este tipo")
 
 
 @contextmanager
-def res_registered() -> Iterator[None]:
+def res_registered(recompute: Mapping[str, Any] | None = None) -> Iterator[None]:
     """Registra a mano lo que declara ``res`` (lo hará ``bl/ops/res.py``, T19): sus parámetros
-    y sus familias (``reserves.params``), sus tipos de operación con funciones de prueba y sus
-    cifras (``reserves.provenance``); al salir, lo quita."""
+    y sus familias (``reserves.params``), sus tipos de operación y sus cifras
+    (``reserves.provenance``); al salir, lo quita. Cada tipo, con su función de reproducir de
+    ``reserves.reproduce.REPRODUCE`` y la de recálculo de ``recompute`` (por tipo); las que no
+    están, de prueba, fallan si se llaman (el recálculo de verdad es de ``bl``)."""
     params = import_geoblender("core.params")
     res_params = import_geoblender("reserves.params")
     provenance = import_geoblender("reserves.provenance")
-    functions = {op_type: _recompute for op_type in provenance.REPRODUCIBLE}
-    again = {op_type: _reproduce for op_type in provenance.REPRODUCIBLE}
+    reproduce = import_geoblender("reserves.reproduce")
+    given = {} if recompute is None else dict(recompute)
+    functions = {op_type: given.get(op_type, _recompute) for op_type in provenance.REPRODUCIBLE}
+    again = {op_type: reproduce.REPRODUCE.get(op_type, _reproduce)
+             for op_type in provenance.REPRODUCIBLE}
     params.register_definitions(res_params.DEFINITIONS)
     try:
         params.register_families(res_params.FAMILIES)
@@ -689,6 +696,49 @@ def res_registered() -> Iterator[None]:
         params.unregister_definitions("res")
 
 
+@contextmanager
+def content_readers() -> Iterator[None]:
+    """Registra los lectores de contenido de ``core`` (``core.content.builtin``) y el de las
+    rejillas (``gis.geotiff@1``) que aún no lo estén (los registra ``bl``): congelar y reproducir
+    leen con ellos. Al salir, quita los que registró."""
+    readers = import_geoblender("core.content.readers")
+    builtin = import_geoblender("core.content.builtin")
+    gis_content = import_geoblender("gis.content")
+    with ExitStack() as stack:
+        for reader in (*builtin.CONTENT_READERS, gis_content.GEOTIFF):
+            if reader.id not in readers.READERS:
+                readers.register_reader(reader)
+                stack.callback(readers.unregister_reader, reader.id)
+        yield
+
+
+def write_grids(project: Any, grids: Sequence[tuple[str, gis.Raster]], *, message: str) -> None:
+    """Escribe ``grids`` (nombre de la orden, rejilla) como rejillas del proyecto
+    (``gis_dtm_<nombre>``; la que ya está, con contenido nuevo del mismo dato) en una operación
+    ``gis.resample`` del proyecto, con el tipo registrado solo mientras tanto (su recálculo
+    falla si se llama)."""
+    operations = import_geoblender("core.provenance.operations")
+    gis_provenance = import_geoblender("gis.provenance")
+    gis_store = import_geoblender("gis.store")
+    resample = gis_provenance.operation_defs({gis_provenance.RESAMPLE: _recompute},
+                                             op_types=[gis_provenance.RESAMPLE])
+    with registered(*resample):
+        handle = operations.begin_operation(project, gis_provenance.RESAMPLE,
+                                            settings={"nombre": message}, executor="blender")
+        with gis_store.ResultWriter(project, handle) as out:
+            for label, raster in grids:
+                out.raster(label, raster)
+            out.commit(software={"pyproj": "prueba"}, message=message)
+
+
+def moved_grid(label: str, offset_m: float, case: MaterialColumnCase | None = None
+               ) -> tuple[str, gis.Raster]:
+    """La rejilla del proyecto de la orden ``label`` de :func:`project_grids` con sus cotas
+    ``offset_m`` m más arriba: otra superficie con el mismo nombre (para :func:`write_grids`)."""
+    found = dict(project_grids(case))[label]
+    return label, _raster(found.grid, found.values + offset_m)
+
+
 SESSION = make_session()
 """La sesión sintética del proyecto de la cubicación."""
 _VERSIONS = (("definitiva", "Definitiva"), ("ampliacion", "Ampliación"))
@@ -699,9 +749,6 @@ def _build(folder: Path) -> dict[str, Any]:
     """Crea el proyecto de :func:`project_template` en ``folder/proyectos`` y lo cierra."""
     create = import_geoblender("core.project.create")
     userdata = import_geoblender("core.userdata")
-    operations = import_geoblender("core.provenance.operations")
-    gis_provenance = import_geoblender("gis.provenance")
-    gis_store = import_geoblender("gis.store")
     versions_store = import_geoblender("core.versions.store")
     (folder / "proyectos").mkdir()
     clock = FakeClock()
@@ -710,16 +757,7 @@ def _build(folder: Path) -> dict[str, Any]:
     project = create.create_project(folder / "proyectos", settings, SESSION,
                                     userdata.UserData(folder / "u"), clock=clock).project
     try:
-        resample = gis_provenance.operation_defs({gis_provenance.RESAMPLE: _recompute},
-                                                 op_types=[gis_provenance.RESAMPLE])
-        with registered(*resample):
-            handle = operations.begin_operation(
-                project, gis_provenance.RESAMPLE, settings={"nombre": "columna de prueba"},
-                executor="blender")
-            with gis_store.ResultWriter(project, handle) as out:
-                for label, raster in project_grids():
-                    out.raster(label, raster)
-                out.commit(software={"pyproj": "prueba"}, message="Rejillas de la columna")
+        write_grids(project, project_grids(), message="Rejillas de la columna")
         versions = []
         for feature, title in _VERSIONS:
             clock.advance(minutes=1)
@@ -750,14 +788,17 @@ def project_template() -> Mapping[str, Any]:
 class ResProjectCase(unittest.TestCase):
     """Una copia por clase del proyecto de :func:`project_template`, abierta en escritura
     (``cls.project``, en ``cls.root``) con las declaraciones de ``res`` registradas
-    (:func:`res_registered`), su reloj (``cls.clock``) y V01 y V02 (``cls.v1``, ``cls.v2``:
-    ``Version``). Las pruebas de una clase comparten el proyecto: cada una usa sus nombres."""
+    (:func:`res_registered`, con las funciones de recálculo de ``cls.recompute``, por tipo) y
+    los lectores de contenido (:func:`content_readers`), su reloj (``cls.clock``) y V01 y V02
+    (``cls.v1``, ``cls.v2``: ``Version``). Las pruebas de una clase comparten el proyecto: cada
+    una usa sus nombres."""
 
     project: ClassVar[Any]
     root: ClassVar[Path]
     clock: ClassVar[FakeClock]
     v1: ClassVar[Any]
     v2: ClassVar[Any]
+    recompute: ClassVar[Mapping[str, Any] | None] = None
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -765,7 +806,8 @@ class ResProjectCase(unittest.TestCase):
         open_mod = import_geoblender("core.project.open")
         userdata = import_geoblender("core.userdata")
         versions_read = import_geoblender("core.versions.read")
-        cls.enterClassContext(res_registered())
+        cls.enterClassContext(content_readers())
+        cls.enterClassContext(res_registered(cls.recompute))
         folder = cls.enterClassContext(project_tmp("gb-rs-"))
         shutil.copytree(made["folder"] / "proyectos", folder / "proyectos")
         cls.clock = FakeClock(made["now"])
