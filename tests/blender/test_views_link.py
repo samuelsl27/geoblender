@@ -40,7 +40,11 @@ lleva); y «Abrir proyecto…» de la 002, que lanza aceptar, con eventos ``TIME
   (``geoblender.core_locate_project``, con el explorador de carpetas), que no abre otro proyecto
   ni una carpeta sin proyecto (los dos sin cambios) y abre el movido; mientras, sin proyecto
   abierto ni georreferencia (la vista no es fuente de nada, RF-002-29);
-- **las órdenes** son internas, de la entrada «010», reales y con su ``bl_idname``.
+- **las órdenes** son internas, de la entrada «010», reales y con su ``bl_idname``;
+- **abrir el proyecto la deja al día** (009/T42; RF-010-03, RF-010-04): con la orden de la
+  oferta o con «Abrir proyecto…», si la georreferencia de la vista es la del proyecto, se quitan
+  la marca de vista desfasada y el aviso de «no está abierto»; con otra, o con otro proyecto,
+  siguen (RF-002-29).
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -73,6 +77,7 @@ LOCATE = "Localizar el proyecto…"
 NOT_NOW = "Ahora no"
 NAME = "Cantera Prueba"  # el de los proyectos sintéticos (core_fixtures)
 ONE_OUTDATED = "1 dato de la vista no está al día: Refrescar (F5)"
+VIEW_STALE = "La vista está desfasada: vuelva a cargar sus datos"  # el panel Proyecto
 TIMER = SimpleNamespace(type="TIMER", value="NOTHING")
 MAX_EVENTS = 10_000
 MAX_TICKS = 400
@@ -376,7 +381,8 @@ class ViewLinkTest(unittest.TestCase):
         guardarla) no lleva ruta relativa. Cargarla con otro proyecto abierto lo cierra (sin
         cerrojo), avisa con los dos y ofrece el de la vista; el diálogo dice que se busca entre
         los recientes; aceptar lo encuentra por su identidad entre los recientes del equipo y
-        lo abre."""
+        lo abre, y la vista, con su georreferencia, deja de estar desfasada (009/T42;
+        RF-010-03)."""
         data, ps, link = self.data, self.ps, self.link
         paths = vf.extension("core.paths")
         outside = self.folder / "fuera" / "vista.blend"
@@ -413,6 +419,9 @@ class ViewLinkTest(unittest.TestCase):
         opener = self.accept(offer)
         self.assertTrue(_same(opener.call_args.args[0], data.root))
         self.assertTrue(_same(self.finish_opening().root, data.root))
+        # Con la georreferencia de la vista: deja de estar desfasada (009/T42).
+        self.assertEqual([scene.geoblender.view_stale for scene in bpy.data.scenes],
+                         [False] * len(bpy.data.scenes))
 
     def test_moved_project_not_found_and_located(self) -> None:
         """RF-010-05, RF-010-04, RF-002-29, HU-010-2 (T13; plan A5, §5.3.3, §5.5): una vista
@@ -679,6 +688,107 @@ class ViewLinkTest(unittest.TestCase):
                 with self.subTest(copia=copy.parent.parent.name):
                     self.assertFalse(link.offer_after_load(str(copy), georefs))
                     self.assertNotOffered()
+
+    def test_opening_its_project_brings_the_view_up_to_date(self) -> None:
+        """RF-010-03, RF-010-04, RF-002-29, HU-010-2 (009/T42; regresión de la vuelta en
+        pantalla del 23/10): una vista cargada sin su proyecto abierto queda desfasada con el
+        aviso de «no está abierto» (RF-002-29). Abrir después su proyecto con la georreferencia
+        que guardan sus escenas (la misma identidad, el mismo CRS y el mismo GeoOrigin), con la
+        orden de la oferta y con «Abrir proyecto…» de la 002, quita la marca de vista desfasada
+        y ese aviso: el panel Proyecto ya no dice «La vista está desfasada…» ni lo enseña; los
+        demás avisos siguen. Con otro GeoOrigin en la vista, o abriendo otro proyecto con la
+        misma ventana, la marca y su aviso siguen (RF-002-29). Una vista que ya estaba
+        desfasada al guardarse lo sigue al abrir su proyecto (por otro motivo: lo cargado antes
+        de la 010 no anota su GeoOrigin, RF-010-01); su aviso de «no está abierto», no."""
+        data, ps = self.data, self.ps
+        panel = vf.extension("bl.ui.core_panel").GEOBLENDER_PT_core_project
+        not_open = "que no está abierto"
+        other = "Otro aviso de la sesión"
+        data.close()
+        ps.take_notices()
+        ps.notify(other)
+
+        def stale() -> list[bool]:
+            return [scene.geoblender.view_stale for scene in bpy.data.scenes]
+
+        def loaded(path: Path) -> str:
+            """Carga ``path`` sin proyecto abierto (``blender -b``): la vista desfasada y su
+            aviso de «no está abierto»."""
+            ps.close()
+            blender_ext.load_file(path)
+            notice = ps.notices()[-1]
+            self.assertIn(not_open, notice)
+            self.assertTrue(all(stale()))
+            return notice
+
+        def reopened() -> Any:
+            """El proyecto de la vista abierto como lo deja «Abrir proyecto…» (``attach``)."""
+            opened = self.core.open_project(data.root, ps.session(), ps.userdata()).project
+            ps.attach(opened)
+            return opened
+
+        # La orden de la oferta.
+        offer = self.offered(self.view)
+        self.assertIn(not_open, offer.notice)
+        self.assertEqual(ps.notices(), (other, offer.notice))
+        self.assertTrue(all(stale()))
+        self.accept(offer)
+        self.assertEqual(self.finish_opening().uid, self.uid)
+        self.assertEqual(stale(), [False] * len(bpy.data.scenes))
+        self.assertEqual(ps.notices(), (other,))
+        shown = _text(draw(panel, bpy.context))
+        self.assertNotIn(VIEW_STALE, shown)
+        self.assertNotIn(not_open, shown)
+
+        # «Abrir proyecto…» (002) con el mismo proyecto.
+        loaded(self.view)
+        self.assertEqual(bpy.ops.geoblender.core_open_project(
+            "EXEC_DEFAULT", directory=str(data.root)), {"RUNNING_MODAL"})
+        self.assertEqual(self.finish_opening().uid, self.uid)
+        self.assertEqual(stale(), [False] * len(bpy.data.scenes))
+        self.assertEqual(ps.notices(), (other,))
+
+        # Otro GeoOrigin en la vista: siguen.
+        ps.close()
+        for scene in bpy.data.scenes:
+            scene.geoblender.origin_x += 100
+            scene.geoblender.view_stale = False
+        moved = self.view.with_name("otro_origen.blend")
+        self.save(moved)
+        notice = loaded(moved)
+        reopened()
+        self.assertTrue(all(stale()))
+        self.assertEqual(ps.notices(), (other, notice))
+        shown = _text(draw(panel, bpy.context))
+        self.assertIn(VIEW_STALE, shown)
+        self.assertIn(_flat(notice), shown)
+        ps.take_notices()
+        ps.notify(other)
+
+        # Otro proyecto (la misma ventana, otra identidad): siguen.
+        notice = loaded(self.view)
+        parent = self.folder / "otros"
+        parent.mkdir()
+        settings = self.core.ProjectSettings(**settings_values(name="Cantera Otra",
+                                                               window=vf.WINDOW))
+        another = self.core.create_project(parent, settings, ps.session(),
+                                           ps.userdata()).project
+        ps.attach(another)
+        self.assertTrue(all(stale()))
+        self.assertEqual(ps.notices(), (other, notice))
+        ps.take_notices()
+        ps.notify(other)
+
+        # Ya desfasada al guardarla (sin proyecto, se guarda con la marca): la marca sigue.
+        loaded(self.view)
+        saved_stale = self.view.with_name("desfasada.blend")
+        self.save(saved_stale)
+        ps.take_notices()
+        ps.notify(other)
+        loaded(saved_stale)
+        reopened()
+        self.assertTrue(all(stale()))
+        self.assertEqual(ps.notices(), (other,))
 
 
 if __name__ == "__main__":

@@ -21,7 +21,10 @@ retirados en :func:`unregister`:
   casos queda un aviso con las dos georreferencias y la vista, desfasada
   (``view_stale``). Sin proyecto, o tras cerrar el de otro, se ofrece abrir el de la vista
   (spec 010, T12; RF-010-04: ``bl.scene.view_link``). Comprueba además que el temporizador
-  de la marca del cerrojo sigue registrado.
+  de la marca del cerrojo sigue registrado. En esos dos casos (el proyecto de la vista no
+  está abierto) se apunta su aviso: si después se abre ese proyecto con la georreferencia de
+  la vista, la marca y el aviso se quitan (:func:`clear_unopened_view`, desde
+  ``project_session.attach``; 009/T42, RF-010-03).
 - ``undo_post`` y ``redo_post``: deshacer puede devolver una escena a antes de abrir el
   proyecto, o a antes de un cambio de la ventana de trabajo; se vuelven a sincronizar
   todas (ninguna operación de la spec 002 entra en la pila de deshacer) y, si alguna
@@ -102,12 +105,28 @@ class SceneGeoref:
         )
 
 
-def project_georeference() -> SceneGeoref | None:
-    """La georreferencia del proyecto abierto, la única que usan los comandos; ``None``
-    sin proyecto, aunque las escenas traigan una (RF-002-29)."""
-    project = project_session.current()
-    if project is None:
-        return None
+@dataclass(frozen=True)
+class UnopenedView:
+    """El ``.blend`` cargado sin su proyecto abierto (RF-002-29; 009/T42): el aviso de «no está
+    abierto» que se dio al cargarlo y si ya estaba desfasado antes (entonces lo está por otro
+    motivo, p. ej. otro GeoOrigin desde que se cargaron sus datos, y lo sigue al abrir su
+    proyecto)."""
+
+    notice: str
+    was_stale: bool
+
+
+class _State:
+    """Lo de la sesión (no se guarda en el ``.blend``)."""
+
+    def __init__(self) -> None:
+        self.unopened: UnopenedView | None = None
+
+
+_STATE = _State()
+
+
+def _project_georef(project: Project) -> SceneGeoref:
     values = _georeference(project, None)
     return SceneGeoref(
         values["project_uid"],
@@ -116,6 +135,15 @@ def project_georeference() -> SceneGeoref | None:
         values["vcrs_epsg"],
         (values["origin_x"], values["origin_y"], values["origin_z"]),
     )
+
+
+def project_georeference() -> SceneGeoref | None:
+    """La georreferencia del proyecto abierto, la única que usan los comandos; ``None``
+    sin proyecto, aunque las escenas traigan una (RF-002-29)."""
+    project = project_session.current()
+    if project is None:
+        return None
+    return _project_georef(project)
 
 
 def scene_georeference(scene: bpy.types.Scene) -> SceneGeoref | None:
@@ -138,6 +166,43 @@ def mark_stale() -> None:
     for scene in bpy.data.scenes:
         if not scene.geoblender.view_stale:
             scene.geoblender.view_stale = True
+
+
+def _view_is_stale() -> bool:
+    return any(scene.geoblender.view_stale for scene in bpy.data.scenes)
+
+
+def _mark_unopened(notice: str) -> None:
+    """La vista cargada, desfasada porque su proyecto no está abierto, con su aviso
+    (``notice``, ya dado): :func:`clear_unopened_view` lo quita al abrirlo."""
+    was_stale = _view_is_stale()
+    mark_stale()
+    _STATE.unopened = UnopenedView(notice, was_stale)
+
+
+def clear_unopened_view(project: Project) -> bool:
+    """Al abrir ``project`` (``project_session.attach``, antes de sincronizar las escenas;
+    009/T42, RF-010-03, RF-010-04): si el ``.blend`` cargado quedó desfasado al cargarlo porque
+    su proyecto no estaba abierto (RF-002-29) y todas sus escenas traen la georreferencia de
+    ``project`` (la misma identidad, el mismo CRS y el mismo GeoOrigin), quita la marca de vista
+    desfasada (salvo si ya lo estaba antes de cargarlo: lo está por otro motivo) y el aviso de
+    «no está abierto» (``project_session.withdraw_notice``); verdadero si lo hizo. Con otra
+    georreferencia u otro proyecto, la marca y el aviso siguen (RF-002-29). Lo apuntado al
+    cargar se olvida en cualquier caso: solo cuenta el primer proyecto que se abre después."""
+    unopened, _STATE.unopened = _STATE.unopened, None
+    if unopened is None:
+        return False
+    expected = _project_georef(project)
+    found = file_georeferences()
+    if not found or any(item.uid != expected.uid or item.key != expected.key
+                        for item in found):
+        return False
+    if not unopened.was_stale:
+        for scene in bpy.data.scenes:
+            if scene.geoblender.view_stale:
+                scene.geoblender.view_stale = False
+    project_session.withdraw_notice(unopened.notice)
+    return True
 
 
 def _georeference(project: Project, blend_file: str | Path | None) -> dict[str, Any]:
@@ -210,15 +275,17 @@ def check_loaded_file(filepath: object = None) -> None:
     es del abierto y avisar (con la vista desfasada) si su georreferencia no es la del
     proyecto abierto o no hay ninguno abierto. Sin proyecto, o tras cerrar el de otro,
     ofrece además abrir el de la vista (spec 010, RF-010-04: ``view_link.offer_after_load``,
-    con ``filepath``, el fichero que se leyó); la oferta del fichero anterior se olvida."""
+    con ``filepath``, el fichero que se leyó); la oferta del fichero anterior se olvida. En
+    esos dos casos, abrir después el proyecto de la vista con su misma georreferencia quita la
+    marca y el aviso (:func:`clear_unopened_view`; 009/T42)."""
     view = _view_name(filepath)
     found = file_georeferences()
     project = project_session.current()
     loaded = filepath if isinstance(filepath, str) else None
     view_link.withdraw()  # la oferta del fichero anterior, si la había
+    _STATE.unopened = None  # y lo apuntado de él
     if project is None:
         if found:
-            mark_stale()
             notice = tr(
                 "The view «{view}» belongs to project {projects}, which is not open: "
                 "Geoblender does not use its georeference and marks it out of date; open "
@@ -226,6 +293,7 @@ def check_loaded_file(filepath: object = None) -> None:
                 view=view,
                 projects=_listed(found),
             )
+            _mark_unopened(notice)
             project_session.notify(notice)
             view_link.offer_after_load(loaded, found, notice=notice)
         return
@@ -235,7 +303,6 @@ def check_loaded_file(filepath: object = None) -> None:
     others = [item for item in found if item.uid != project.uid]
     if others:
         project_session.close()
-        mark_stale()
         notice = tr(
             "The view «{view}» belongs to another project ({projects}), not to the open "
             "one («{name}», {georef}): «{name}» has been closed and the view is out of "
@@ -245,6 +312,7 @@ def check_loaded_file(filepath: object = None) -> None:
             name=expected.name,
             georef=expected.describe(),
         )
+        _mark_unopened(notice)
         project_session.notify(notice)
         view_link.offer_after_load(loaded, found, notice=notice)
         return
@@ -485,6 +553,7 @@ HANDLERS: tuple[tuple[str, Any], ...] = (
 
 def register() -> None:
     """Añade los manejadores (sin repetirlos)."""
+    _STATE.unopened = None
     for name, function in HANDLERS:
         handlers = getattr(bpy.app.handlers, name)
         if function not in handlers:
@@ -492,8 +561,10 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Quita los manejadores (todas sus apariciones)."""
+    """Quita los manejadores (todas sus apariciones) y olvida la vista cargada sin su
+    proyecto."""
     for name, function in reversed(HANDLERS):
         handlers = getattr(bpy.app.handlers, name)
         while function in handlers:
             handlers.remove(function)
+    _STATE.unopened = None
