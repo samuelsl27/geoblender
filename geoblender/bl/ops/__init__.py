@@ -61,6 +61,13 @@ def register() -> None:
         raise
 
 
+def cancel_running() -> tuple[str, ...]:
+    """Cancela como Esc los modales de pasos en curso (``bl.ops.core.cancel_running``; spec
+    009, T40): lo llama ``bl.unregister`` antes de quitar ninguna clase. Devuelve los
+    ``bl_idname`` de los cancelados."""
+    return core.cancel_running()
+
+
 def unregister() -> None:
     """Deshace lo propio de ``dh``, de ``gis``, de ``jobs`` y de ``core_provenance`` y
     desregistra ``classes`` en orden inverso; omite lo que no está registrado."""

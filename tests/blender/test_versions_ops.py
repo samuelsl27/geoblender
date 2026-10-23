@@ -107,6 +107,13 @@ llevan su texto («El proyecto», «Solo V02»): su fila no separa etiqueta y va
 (``use_property_split``), que llevaría el texto a una etiqueta a la izquierda y dejaría el botón
 vacío; el resto del diálogo, sí.
 
+T40 (RF-001-05; plan 009 §2.1; O-2 de la verificación): desactivar Geoblender con Nueva
+revisión… y Cargar en la vista… a mitad los cancela como Esc antes de quitar las clases
+(``bl.ops.core.cancel_running``): Blender, al quitar la clase de un modal en curso, lo libera sin
+llamar a su ``cancel``. En ``blender -b`` no hay bucle de eventos: el manejador que Blender
+libera al quitar la clase sigue en ``window.modal_operators`` como ``None`` hasta el siguiente
+evento (con interfaz, enseguida); la prueba comprueba que ninguna orden de Geoblender sigue viva.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
@@ -125,15 +132,24 @@ from unittest import mock
 import bpy
 
 from tests.blender.test_dh_import_tabular import assert_fits, at_scales
+from tests.blender.test_versions_view import LOADER_LABEL, LOADER_PREFIX, load_empty
 from tests.support import blender_ext
 from tests.support import views_fixtures as vf
-from tests.support.blender_ext import module_name
+from tests.support.blender_ext import fingerprint_diff, module_name
 from tests.support.core_fixtures import settings_values
 from tests.support.fake_layout import FakeLayout, draw, operator_self
 from tests.support.provenance_demo import PRODUCTION, SWELL_FACTOR
 from tests.support.repo import ROOT
 from tests.support.trees import temp_folder
-from tests.support.versions_demo import BENCH_HEIGHT, PIT, PIT_GRID, PIT_VOLUME, VersionsDemo
+from tests.support.versions_demo import (
+    BENCH_HEIGHT,
+    PIT,
+    PIT_BENCHES,
+    PIT_GRID,
+    PIT_MESH,
+    PIT_VOLUME,
+    VersionsDemo,
+)
 
 NEW_VERSION = "geoblender.core_new_version"
 SET_STATE = "geoblender.core_set_version_state"
@@ -172,6 +188,8 @@ CALL_LIMIT_S = 0.2
 """Lo más que dura una llamada del modal de Nueva revisión… con la demostración (T21)."""
 FROZEN_TEXT = re.compile(r"V02\.r1 congelada \(\d+(,\d)? [kM]?B copiados\); V02\.r2 abierta")
 CANCELLED_FREEZE = "Congelación cancelada: no ha quedado nada a medias"
+LOAD_INTO_VIEW = "GEOBLENDER_OT_core_load_into_view"
+CANCELLED_LOAD = "Carga en la vista cancelada: no se ha cargado nada"
 REPORT_PANEL = "GEOBLENDER_PT_core_reproduce_report"
 REPRODUCE_LABEL = "Reproducir la versión desde sus entradas congeladas"
 REPRODUCED = "V02.r1 reproducida: coinciden 3 de 3 salidas y 1 de 1 cifras"
@@ -1457,6 +1475,65 @@ class VersionsOpsTest(unittest.TestCase):
         self.assertEqual((files(project.root), vf.change_counter(project)), (before, counter))
         self.assertEqual(self.revisions(project, "V02"), [("V02.r1", "open")])
         self.assertEqual(self.control(), "V02.r1")
+
+    def test_disabling_halfway_cancels_the_step_modals(self) -> None:
+        """RF-001-05, RF-009-07 (plan 009 §2.1; T40, O-2 de la verificación de la 009):
+        desactivar Geoblender con Nueva revisión… a mitad (la carpeta temporal de la instantánea
+        ya creada) y Cargar en la vista… a mitad (un modal de pasos de otro módulo, con un objeto
+        ya preparado y sin enlazar) los cancela como Esc antes de quitar las clases: «Congelación
+        cancelada: no ha quedado nada a medias» y «Carga en la vista cancelada: no se ha cargado
+        nada»; ni la temporal ni la instantánea, ninguna congelación en curso anotada (al
+        reactivar no queda nada que apartar), la base y los ficheros sin cambios (salvo el
+        cerrojo, que ya no está), ni el objeto preparado; ningún operador de Geoblender vivo en
+        las ventanas y la huella de Blender como al principio de la sesión. La prueba guarda las
+        dos órdenes: cancelar no depende de que Python las libere."""
+        project, _demo, _v01, v02 = self.pit_project()
+        views = ext("bl.scene.views")
+        views.register_loader(LOADER_PREFIX, "POINTS", LOADER_LABEL, load_empty)
+        self.addCleanup(views.unregister_loader, LOADER_PREFIX)
+        registry = ext("core.datasets.registry")
+        with project.read() as conn:
+            uids = [registry.get(conn, name, version_uid=v02.uid).uid
+                    for name in (PIT_GRID, PIT_MESH, PIT_BENCHES)]
+        freezing_registry = ext("core.versions.freezing")
+        before = files(project.root)
+        objects, meshes = len(bpy.data.objects), len(bpy.data.meshes)
+
+        self.assertEqual(bpy.ops.geoblender.core_new_revision(
+            "EXEC_DEFAULT", reason="Entrega", in_steps=True), {"RUNNING_MODAL"})
+        freezing = self.running_revision()
+        self.assertEqual(bpy.ops.geoblender.core_load_into_view(
+            "EXEC_DEFAULT", datasets=",".join(uids), in_steps=True), {"RUNNING_MODAL"})
+        (loading,) = [op for op in bpy.context.window.modal_operators
+                      if type(op).__name__ == LOAD_INTO_VIEW
+                      and getattr(op, "_steps", None) is not None]
+        for operator in (freezing, loading):
+            with mock.patch.object(type(operator), "STEP_BUDGET_S", 0.0):  # un paso por evento
+                for _ in range(2):
+                    self.assertEqual(operator.modal(bpy.context, TIMER), {"RUNNING_MODAL"})
+        self.assertEqual([name.partition(".congelando-")[0] for name in self.snapshots(project)],
+                         ["V02.r1"])
+        self.assertEqual(len(freezing_registry.freezing_paths(project)), 1)
+        self.assertEqual(len(bpy.data.objects), objects + 1)  # preparado, sin enlazar
+        logs = (freezing.report_log, loading.report_log)
+        self.assertEqual(logs, ([], []))
+
+        blender_ext.disable()
+        self.assertEqual(logs, ([CANCELLED_FREEZE], [CANCELLED_LOAD]))
+        self.assertEqual(self.snapshots(project), [])
+        self.assertEqual(freezing_registry.freezing_paths(project), frozenset())
+        self.assertFalse((project.root / ".lock").exists())
+        unlocked = {rel: value for rel, value in before.items() if rel != ".lock"}
+        self.assertEqual(files(project.root), unlocked)
+        self.assertEqual(self.revisions(project, "V02"), [("V02.r1", "open")])
+        self.assertEqual((len(bpy.data.objects), len(bpy.data.meshes)), (objects, meshes))
+        alive = [type(op).__name__ for window in bpy.context.window_manager.windows
+                 for op in window.modal_operators if op is not None]
+        self.assertEqual([name for name in alive if name.startswith("GEOBLENDER_")], [])
+        after, baseline = blender_ext.state_fingerprint(), blender_ext.session_baseline()
+        if after != baseline:
+            self.fail("la huella del estado de Blender cambió:\n"
+                      + "\n".join(fingerprint_diff(baseline, after)))
 
     def test_reproduce_from_the_command(self) -> None:
         """RF-009-11, RF-009-09 (plan A9, §5.3.5, §5.5; M5): con V02 activa y V02.r1 congelada,

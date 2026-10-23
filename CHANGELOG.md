@@ -94,6 +94,9 @@ diálogos).
     hay resultados obsoletos, operaciones que esperan revisión a mano o entradas no localizables,
     los lista y hay que aceptarlos (quedan anotados). Con su avance en la barra de estado y Esc,
     que no deja nada a medias; tampoco un cierre de Blender (lo copiado se aparta a `orphans/`).
+    **Desactivar Geoblender a mitad** la cancela como Esc, igual que Reproducir…, Cargar en la
+    vista, Refrescar, la copia local y la publicación: sin nada a medias, sin el avance en la
+    barra de estado y sin nada que apartar al volver a activarlo.
     Congelar 1 GB en disco local, unos 24 s; **5 GB en `Z:`, unos 3 min**. Una revisión que no
     cambia nada hace crecer el proyecto menos de 1 MB (con 2 000 elementos).
   - **Lo vigente** de una versión es lo de su última revisión congelada; lo de la abierta, «en

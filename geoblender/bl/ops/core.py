@@ -84,6 +84,7 @@ import json
 import logging
 import re
 import time
+import weakref
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -1197,13 +1198,21 @@ class GEOBLENDER_OT_core_transform_coordinates(bpy.types.Operator):
 # Copia local y publicación -------------------------------------------------------------
 
 
+_RUNNING: list[weakref.ref[Any]] = []
+"""Los modales de pasos en curso (:class:`_StepsModal`), en el orden en que empezaron: al
+desactivar Geoblender, :func:`cancel_running` los cancela antes de quitar las clases (spec 009,
+T40). Referencias débiles: mientras corre, el modal lo retiene Blender."""
+
+
 class _StepsModal:
     """Lo común de los modales que avanzan un generador de pasos de ``core`` (copia local
     y publicación): cada evento del temporizador (cada 0,05 s) avanza pasos durante, como
     mucho, 0,1 s y actualiza el progreso; cada paso es un trozo de 8 MiB, así que el
     progreso se mueve en mucho menos de 1 s también en red; Esc cierra el generador, que
     cancela (RNF-002-06). ``progress_log`` guarda (hora, fase, hecho, total, mensaje) de
-    cada paso y ``report_log``, lo que se informó."""
+    cada paso y ``report_log``, lo que se informó. Mientras corre está entre los modales en
+    curso (:func:`running_step_modals`), que se cancelan como con Esc al desactivar
+    Geoblender (:func:`cancel_running`; spec 009, T40)."""
 
     STEP_BUDGET_S = 0.1
     TIMER_INTERVAL_S = 0.05
@@ -1217,6 +1226,10 @@ class _StepsModal:
         self._timer = manager.event_timer_add(self.TIMER_INTERVAL_S, window=context.window)
         manager.modal_handler_add(self)
         manager.progress_begin(0, 100)
+        # Su ventana, por su dirección (no se guarda la ventana: se puede cerrar).
+        window = getattr(context, "window", None)
+        self._window_key = 0 if window is None else window.as_pointer()
+        _RUNNING.append(weakref.ref(self))
 
     def _report(self, level: set[str], text: str) -> None:
         self.report(level, text)  # type: ignore[attr-defined]
@@ -1250,6 +1263,7 @@ class _StepsModal:
             context.workspace.status_text_set(self._status_text(step))
 
     def _cleanup(self, context: bpy.types.Context) -> None:
+        _forget(self)
         steps = getattr(self, "_steps", None)
         self._steps = None
         if steps is not None:
@@ -1262,6 +1276,17 @@ class _StepsModal:
             manager.progress_end()
         if context.workspace is not None:
             context.workspace.status_text_set(None)
+
+    def _stop(self, context: bpy.types.Context, *, after: bool = True) -> set[str]:
+        """Cancela como Esc: cierra los pasos (``core`` no deja nada a medias), quita el
+        temporizador, el avance y el texto de la barra de estado y dice que se canceló; con
+        ``after``, lo de después de parar (:meth:`_after_stop`)."""
+        self._cleanup(context)
+        self._report({"INFO"}, self._cancelled_text())
+        self.outcome = "CANCELLED"
+        if after:
+            self._after_stop(context)
+        return {"CANCELLED"}
 
     def _done(self, context: bpy.types.Context) -> set[str]:
         self._steps = None  # terminado: nada que cancelar
@@ -1280,11 +1305,7 @@ class _StepsModal:
         if getattr(self, "_steps", None) is None:
             return {"CANCELLED"}
         if event.type == "ESC":
-            self._cleanup(context)
-            self._report({"INFO"}, self._cancelled_text())
-            self.outcome = "CANCELLED"
-            self._after_stop(context)
-            return {"CANCELLED"}
+            return self._stop(context)
         if event.type != "TIMER":
             return {"PASS_THROUGH"}
         started = time.perf_counter()
@@ -1305,6 +1326,61 @@ class _StepsModal:
     def cancel(self, context: bpy.types.Context) -> None:
         if getattr(self, "_steps", None) is not None:
             self._cleanup(context)
+
+
+def _forget(operator: object) -> None:
+    """Quita ``operator`` (y los ya liberados) de los modales de pasos en curso."""
+    _RUNNING[:] = [ref for ref in _RUNNING if ref() is not None and ref() is not operator]
+
+
+def running_step_modals() -> tuple[Any, ...]:
+    """Los modales de pasos en curso (:class:`_StepsModal`), en el orden en que empezaron."""
+    return tuple(found for ref in _RUNNING if (found := ref()) is not None)
+
+
+def _own_window(operator: Any) -> Any:
+    """La ventana en la que corre ``operator`` (la de su ``_start``), o ``None`` si ya no
+    está."""
+    key = getattr(operator, "_window_key", 0)
+    manager = bpy.context.window_manager
+    if not key or manager is None:
+        return None
+    for window in manager.windows:
+        if window.as_pointer() == key:
+            return window
+    return None
+
+
+def cancel_running() -> tuple[str, ...]:
+    """Cancela como Esc los modales de pasos en curso (spec 009, T40; RF-001-05): lo llama
+    ``bl.unregister`` al desactivar Geoblender, antes de quitar ninguna clase. Blender, al
+    quitar la clase de un modal en curso, lo libera sin llamar a su ``cancel``: quedarían su
+    temporizador, el avance y el texto de la barra de estado y, mientras Python no cerrara sus
+    pasos, lo de a medias (la carpeta temporal de una congelación, los objetos preparados de una
+    carga). Cada uno se cancela en el contexto de su ventana y sin lo de después de parar
+    (volver a abrir el original de una copia local: al desactivar se cierra el proyecto); lo
+    dice en su informe y en el registro, y un fallo de uno no impide los demás. Devuelve los
+    ``bl_idname`` de los cancelados."""
+    cancelled: list[str] = []
+    for operator in running_step_modals():
+        idname = getattr(type(operator), "bl_idname", type(operator).__name__)
+        try:
+            window = _own_window(operator)
+            if window is None:
+                operator._stop(bpy.context, after=False)
+            else:
+                with bpy.context.temp_override(window=window):
+                    operator._stop(bpy.context, after=False)
+        except ReferenceError:  # Blender ya lo había liberado: nada que cancelar
+            continue
+        except Exception:  # noqa: BLE001 - desactivar sigue con los demás y con el resto
+            LOGGER.exception("No se pudo cancelar «%s» al desactivar Geoblender", idname)
+            continue
+        cancelled.append(idname)
+        LOGGER.info("Al desactivar Geoblender se canceló «%s»: %s", idname,
+                    operator._cancelled_text())
+    _RUNNING.clear()
+    return tuple(cancelled)
 
 
 class GEOBLENDER_OT_core_checkout_project(_StepsModal, bpy.types.Operator):
