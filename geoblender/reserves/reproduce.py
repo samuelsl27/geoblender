@@ -18,12 +18,15 @@ mismo que la orden** sin recibir el proyecto ni escribir en él:
   propio, con sus títulos) y la rejilla de diferencias, cada una con el papel con que la anotó la
   operación, y sus cifras (las de ``res.difference``, con el ámbito de la diferencia);
 - ``res.tonnage`` (:func:`reproduce_tonnage`): de la tabla de volúmenes y la columna congeladas,
-  con los parámetros congelados (D-16), la tabla ``res_ton_`` y sus cifras.
+  con los parámetros congelados (D-16), la tabla ``res_ton_`` y sus cifras;
+- ``res.stages`` (:func:`reproduce_stages`): de las tablas de volúmenes congeladas de sus
+  momentos y de la directa, con la tolerancia congelada (A13), la tabla ``res_stg_`` y sus
+  cifras (sus avisos no son salidas: no se reproducen).
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con
-otros, ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹, D-38). La
-de ``res.stages`` llega con su cálculo. Cerrar los pasos antes del final o un fallo dejan lo
-escrito en la carpeta de trabajo, que borra quien la creó. Python puro con numpy (nivel 9).
+otros, ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹, D-38).
+Cerrar los pasos antes del final o un fallo dejan lo escrito en la carpeta de trabajo, que borra
+quien la creó. Python puro con numpy (nivel 9).
 """
 
 from __future__ import annotations
@@ -55,10 +58,19 @@ from ..gis.store import insert_rows
 from . import provenance as declared
 from .materials import MaterialColumn, read_column
 from .messages import ResError
-from .params import ANTHROPIC_PRESENCE, MIN_THICKNESS
-from .store import TABLE_COLUMNS, difference_figures
+from .params import ANTHROPIC_PRESENCE, MIN_THICKNESS, STAGES_TOLERANCE
+from .stages import StageTable, stages
+from .store import STAGE_TABLE_COLUMNS, TABLE_COLUMNS, difference_figures
 from .surfaces import BAND_ROWS, SurfaceRef, SurfaceSource, constant_source, grid_source
-from .table import COLUMN_NAMES, TITLES, Row, read_rows
+from .table import (
+    COLUMN_NAMES,
+    STAGE_COLUMN_NAMES,
+    STAGE_TITLES,
+    TITLES,
+    Row,
+    StageRow,
+    read_rows,
+)
 from .volumes import (
     FINAL,
     START,
@@ -74,6 +86,7 @@ from .volumes import (
 __all__ = [
     "GRID_FILE",
     "REPRODUCE",
+    "reproduce_stages",
     "reproduce_tonnage",
     "reproduce_volume",
 ]
@@ -101,12 +114,17 @@ def _name(request: ReproduceRequest) -> str:
     return name
 
 
-def _param_m(request: ReproduceRequest, key: str) -> float:
-    """El parámetro congelado ``key`` (m), como lo usó la operación."""
-    value, unit = request.params.get(key, (None, ""))
+def _param(request: ReproduceRequest, key: str, unit: str) -> float:
+    """El parámetro congelado ``key`` (en ``unit``), como lo usó la operación."""
+    value, frozen_unit = request.params.get(key, (None, ""))
     if value is None:
         raise ValueError(f"«{request.op_type}» no tiene «{key}» entre sus parámetros congelados")
-    return convert(float(value), unit, "m")  # type: ignore[arg-type]
+    return convert(float(value), frozen_unit, unit)  # type: ignore[arg-type]
+
+
+def _param_m(request: ReproduceRequest, key: str) -> float:
+    """El parámetro congelado ``key`` (m), como lo usó la operación."""
+    return _param(request, key, "m")
 
 
 def _read(item: FrozenInput, read: Callable[[Any, str], _T]) -> _T:
@@ -150,20 +168,24 @@ def _sources(request: ReproduceRequest, volume: VolumeRequest, crs: CrsRef,
     return found
 
 
-def _table(request: ReproduceRequest, family: str, name: str, rows: Sequence[Row],
-           crs: CrsRef) -> ReproducedOutput:
+def _table(request: ReproduceRequest, family: str, name: str,
+           rows: Sequence[Row] | Sequence[StageRow], crs: CrsRef) -> ReproducedOutput:
     """La tabla ``family`` de la cubicación ``name`` con ``rows`` en un GeoPackage propio de la
-    carpeta de trabajo, como salida reproducida con el papel de su familia."""
+    carpeta de trabajo, como salida reproducida con el papel de su familia (la de los momentos,
+    con su columna ``stage``)."""
     found = declared.FAMILIES_BY_CODE[family]
     table = declared.dataset_name(family, name)
+    columns, names, titles = ((STAGE_TABLE_COLUMNS, STAGE_COLUMN_NAMES, STAGE_TITLES)
+                              if family == declared.STAGE_TABLE
+                              else (TABLE_COLUMNS, COLUMN_NAMES, TITLES))
     path = Path(request.workdir) / f"{found.role}.gpkg"
     check_path_length(path, obj=_OBJ)
     with GpkgConnection.open_write(path, create=True) as gpkg, gpkg.transaction() as conn:
         create_base(conn, crs)
-        create_attribute_table(conn, table, TABLE_COLUMNS, f"{found.label} «{name}»",
+        create_attribute_table(conn, table, columns, f"{found.label} «{name}»",
                                f"{found.label} «{name}», reproducida por Geoblender")
-        set_column_titles(conn, table, TITLES)
-        insert_rows(conn, table, COLUMN_NAMES, [row.values() for row in rows])
+        set_column_titles(conn, table, titles)
+        insert_rows(conn, table, names, [row.values() for row in rows])
     return ReproducedOutput(found.role, GPKG_LAYER.id, {"main": path}, {"layer": table})
 
 
@@ -239,10 +261,38 @@ def _tonnage_steps(request: ReproduceRequest) -> Iterator[Progress]:
                    result=ReproducedResult((table,), outputs.figures))
 
 
+def reproduce_stages(request: ReproduceRequest) -> Iterator[Progress]:
+    """Reproduce ``res.stages`` (véase el módulo): un paso al leer las tablas congeladas y el
+    último, con su ``ReproducedResult``. ``TypeError`` o ``ValueError`` al llamar si ``request``
+    no es de ese tipo."""
+    return _stages_steps(_check(request, (declared.STAGES,)))
+
+
+def _stages_steps(request: ReproduceRequest) -> Iterator[Progress]:
+    total = 2
+    name = _name(request)
+    moments, direct = request.settings.get("moments"), request.settings.get("direct")
+    if not isinstance(moments, Sequence) or isinstance(moments, str) \
+            or not isinstance(direct, str):
+        raise ValueError(f"los ajustes de «{request.op_type}» llevan sus momentos y su directa")
+    crs, _vertical = request.references()
+    roles = [(declared.stage_role(position), moment)
+             for position, moment in enumerate(moments, start=1)]
+    tables = [StageTable(cubication, _read(request.input(role), read_rows))
+              for role, cubication in (*roles, (declared.DIRECT_ROLE, direct))]
+    yield Progress("read", 1, total, f"Comparando «{name}»: las tablas de volúmenes leídas…")
+    result = stages(tables[:-1], tables[-1], name=name,
+                    tolerance_pct=_param(request, STAGES_TOLERANCE, "%"))
+    table = _table(request, declared.STAGE_TABLE, name, result.rows, crs)
+    yield Progress("result", total, total, f"«{name}» reproducida",
+                   result=ReproducedResult((table,), result.figures))
+
+
 REPRODUCE: Mapping[str, ReproduceFunction] = MappingProxyType({
     declared.VOLUME: reproduce_volume,
     declared.TONNAGE: reproduce_tonnage,
     declared.DIFFERENCE: reproduce_volume,
+    declared.STAGES: reproduce_stages,
 })
-"""La función de reproducir de cada tipo de ``res`` que se repite (la de ``res.stages``, con su
-cálculo): las que registra ``bl/ops/res.py`` con ``reserves.provenance.operation_defs``."""
+"""La función de reproducir de cada tipo de ``res`` que se repite: las que registra
+``bl/ops/res.py`` con ``reserves.provenance.operation_defs``."""

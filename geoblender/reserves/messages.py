@@ -307,6 +307,10 @@ CATALOG: tuple[Message, ...] = (
         "comparables.",
         "warning",
     ),
+    Message("res.note_stages_no_direct", "no volume in the direct computation",
+            "sin volumen en la cubicación directa", "note"),
+    Message("res.note_stages_over_tolerance", "above the tolerance", "más que la tolerancia",
+            "note"),
     # Factor combinado (A14; D-4 de la spec, D-34) ------------------------------------------
     Message(
         "res.note_no_scale_factor",

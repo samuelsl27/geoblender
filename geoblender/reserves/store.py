@@ -39,7 +39,9 @@ paradas) o «fallida», con su motivo; ni cifra, ni tabla, ni rejilla.
 :func:`volume_run` (``res.volume`` y ``res.difference``: lee las superficies del proyecto o lo
 congelado, ``reserves.surfaces.surface_source``, cubica por pasos y guarda), :func:`tonnage_run`
 (``res.tonnage``: de la tabla de volúmenes y la columna que consumió, con los parámetros que
-leyó al empezar, D-16) y :func:`save_materials` (``res.edit_materials``). Repetir el nombre de
+leyó al empezar, D-16), :func:`stages_run` (``res.stages``: de las tablas de volúmenes de sus
+momentos y de la directa, con la tolerancia que leyó, A13) y :func:`save_materials`
+(``res.edit_materials``). Repetir el nombre de
 una cubicación de la versión la sustituye (D-30): :func:`previous_operation` da la operación a
 la que sustituye la nueva (``begin_operation(…, supersedes=…)``), que escribe contenido nuevo
 de los mismos datos. **Recalcular** (A12, T15): :func:`recompute_run` empieza la operación que
@@ -100,9 +102,20 @@ from .materials import CREATE_TABLE as MATERIALS_DDL
 from .materials import TABLE as MATERIALS_TABLE
 from .materials import MaterialColumn, column_rows, read_column
 from .messages import ResError
-from .params import ANTHROPIC_PRESENCE, MIN_THICKNESS
+from .params import ANTHROPIC_PRESENCE, MIN_THICKNESS, STAGES_TOLERANCE
+from .stages import StagesResult, StageTable, stages
 from .surfaces import BAND_ROWS, SurfaceSource, surface_source
-from .table import COLUMN_NAMES, COLUMNS, TITLES, Row, read_rows
+from .table import (
+    COLUMN_NAMES,
+    COLUMNS,
+    STAGE_COLUMN_NAMES,
+    STAGE_COLUMNS,
+    STAGE_TITLES,
+    TITLES,
+    Row,
+    StageRow,
+    read_rows,
+)
 from .volumes import (
     FINAL,
     START,
@@ -123,8 +136,10 @@ __all__ = [
     "DIGEST_TABLE",
     "RECOMPUTED",
     "SAVE_STEPS",
+    "STAGE_TABLE_COLUMNS",
     "TABLE_COLUMNS",
     "ResultWriter",
+    "StoredStages",
     "StoredTonnage",
     "StoredVolume",
     "difference_figures",
@@ -133,6 +148,8 @@ __all__ = [
     "project_sources",
     "recompute_run",
     "save_materials",
+    "stages_digest",
+    "stages_run",
     "table_digest",
     "tonnage_run",
     "volume_run",
@@ -158,6 +175,9 @@ TABLE_COLUMNS: tuple[ColumnDef, ...] = tuple(_column_def(column.sql, column.name
                                              for column in COLUMNS)
 """Las columnas tipadas de una tabla ``report`` de ``res`` (``reserves.table.COLUMNS``) como las
 crea ``core.gpkg.base.create_attribute_table``."""
+STAGE_TABLE_COLUMNS: tuple[ColumnDef, ...] = tuple(_column_def(column.sql, column.name)
+                                                   for column in STAGE_COLUMNS)
+"""Las de la tabla de los momentos (``res_stg_``: ``reserves.table.STAGE_COLUMNS``)."""
 
 _OBJ = "Cubicación"
 _FIELD = "ubicación"
@@ -171,6 +191,13 @@ def _create_report(conn: sqlite3.Connection, name: str, identifier: str,
                    description: str) -> None:
     """Crea la tabla ``report`` ``name`` y la registra en ``gpkg_contents`` (``attributes``)."""
     create_attribute_table(conn, name, TABLE_COLUMNS, identifier, description)
+
+
+def _create_stages(conn: sqlite3.Connection, name: str, identifier: str,
+                   description: str) -> None:
+    """Crea la tabla de los momentos ``name`` (con su columna ``stage``) y la registra en
+    ``gpkg_contents`` (``attributes``)."""
+    create_attribute_table(conn, name, STAGE_TABLE_COLUMNS, identifier, description)
 
 
 def _create_materials(conn: sqlite3.Connection, name: str, identifier: str,
@@ -214,6 +241,13 @@ def table_digest(rows: Sequence[Row]) -> ContentDigest:
     """El hash de contenido que da la tabla ``report`` de ``res`` con las filas ``rows`` al
     escribirla en el proyecto (R4: se calcula antes de la transacción)."""
     return _digest(_create_report, DIGEST_TABLE, COLUMN_NAMES, [row.values() for row in rows])
+
+
+def stages_digest(rows: Sequence[StageRow]) -> ContentDigest:
+    """El hash de contenido que da la tabla de los momentos (``res_stg_``) con las filas
+    ``rows`` al escribirla en el proyecto."""
+    return _digest(_create_stages, DIGEST_TABLE, STAGE_COLUMN_NAMES,
+                   [row.values() for row in rows])
 
 
 def materials_digest(column: MaterialColumn) -> ContentDigest:
@@ -440,22 +474,27 @@ class ResultWriter:
         self._specs.append(entry.spec)
         return entry.spec
 
-    def table(self, family: str, name: str, rows: Sequence[Row]) -> DatasetSpec:
+    def table(self, family: str, name: str, rows: Sequence[Row] | Sequence[StageRow]
+              ) -> DatasetSpec:
         """Prepara la tabla ``report`` de la familia ``family`` (``vol``, ``ton`` o ``stg``) de
-        la cubicación ``name`` con las filas ``rows`` (``reserves.table.Row``) y su hash, que se
-        calcula aquí, fuera de la transacción (R4). Devuelve su ``DatasetSpec``. ``GisError`` si
-        su sitio es de otro."""
+        la cubicación ``name`` con las filas ``rows`` (``reserves.table.Row``; en la de los
+        momentos, ``StageRow``) y su hash, que se calcula aquí, fuera de la transacción (R4).
+        Devuelve su ``DatasetSpec``. ``GisError`` si su sitio es de otro."""
         self._check_open()
         if family not in _REPORTS:
             raise ValueError(f"«{family}» no es una tabla de la cubicación: es una de "
                              f"{', '.join(_REPORTS)}")
         self._produces(family)
         chosen = tuple(rows)
+        staged = family == declared.STAGE_TABLE
+        kind: type = StageRow if staged else Row
         for row in chosen:
-            if not isinstance(row, Row):
-                raise TypeError(f"una fila de una tabla de res es una Row, no {row!r}")
-        spec = declared.dataset_spec(family, name, self.version_code,
-                                     content=table_digest(chosen))
+            if not isinstance(row, kind):
+                raise TypeError(f"una fila de una tabla «{family}» de res es una "
+                                f"{kind.__name__}, no {row!r}")
+        digest = (stages_digest(chosen) if staged  # type: ignore[arg-type]
+                  else table_digest(chosen))  # type: ignore[arg-type]
+        spec =declared.dataset_spec(family, name, self.version_code, content=digest)
         if any(other.name == spec.name for other in self._specs):
             raise ValueError(f"una operación escribe cada dato una vez: «{spec.name}» se repite")
         with self.project.read() as conn:
@@ -463,10 +502,12 @@ class ResultWriter:
         label = declared.FAMILIES_BY_CODE[family].label
         identifier = f"{label} «{name}» {self.version_code}"
         description = (f"{label} «{name}» de la versión {self.version_code}, de Geoblender: una "
-                       "fila por valor (dominio, rodaja, unidad, componente, dato, valor, unidad "
-                       "de medida y nota)")
-        self._tables.append(_Table(spec, identifier, description, _create_report, COLUMN_NAMES,
-                                   tuple(row.values() for row in chosen), TITLES))
+                       f"fila por valor ({'momento, ' if staged else ''}dominio, rodaja, unidad, "
+                       "componente, dato, valor, unidad de medida y nota)")
+        create, names, titles = ((_create_stages, STAGE_COLUMN_NAMES, STAGE_TITLES) if staged
+                                 else (_create_report, COLUMN_NAMES, TITLES))
+        self._tables.append(_Table(spec, identifier, description, create, names,
+                                   tuple(row.values() for row in chosen), titles))
         self._specs.append(spec)
         return spec
 
@@ -636,11 +677,7 @@ def project_sources(project: StoreProject, request: VolumeRequest, *,
 
 def _param_m(handle: OperationHandle, key: str) -> float:
     """El parámetro ``key`` (m) que leyó la operación al empezar."""
-    found = next((param for param in handle.params if param.key == key), None)
-    if found is None or found.value is None:
-        raise ValueError(f"la operación «{handle.op_type}» no leyó «{key}» al empezar "
-                         "(begin_operation(params=…))")
-    return convert(float(found.value), found.unit, "m")  # type: ignore[arg-type]
+    return _param(handle, key, "m")
 
 
 def _with_params(request: VolumeRequest, handle: OperationHandle) -> VolumeRequest:
@@ -784,6 +821,87 @@ def _tonnage_run(project: StoreProject, handle: OperationHandle,
     yield Progress("save", total, total, message, result=StoredTonnage(outputs, records))
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class StoredStages:
+    """Una cubicación por momentos guardada: su comparación (tabla, cifras y avisos) y sus
+    salidas registradas."""
+
+    result: StagesResult
+    records: tuple[DatasetRecord, ...]
+
+
+def _param(handle: OperationHandle, key: str, unit: str) -> float:
+    """El parámetro ``key`` (en ``unit``) que leyó la operación al empezar."""
+    found = next((param for param in handle.params if param.key == key), None)
+    if found is None or found.value is None:
+        raise ValueError(f"la operación «{handle.op_type}» no leyó «{key}» al empezar "
+                         "(begin_operation(params=…))")
+    return convert(float(found.value), found.unit, unit)  # type: ignore[arg-type]
+
+
+def _materials_sha(conn: sqlite3.Connection, record: DatasetRecord) -> str | None:
+    """El hash de la columna de materiales que consumió la operación que escribió la tabla de
+    volúmenes ``record`` (``None``: sin unidades)."""
+    found = conn.execute(
+        "SELECT content_sha256 FROM gb_operation_io WHERE operation_uid = ? AND "
+        "direction = 'in' AND role = ?", (record.operation_uid, declared.MATERIALS_ROLE),
+    ).fetchone()
+    return None if found is None else str(found[0])
+
+
+def _stages_names(settings: Mapping[str, Any]) -> tuple[str, list[str], str]:
+    """El nombre, los momentos y la directa de los ajustes de ``res.stages``."""
+    name, moments, direct = (settings.get(key) for key in ("name", "moments", "direct"))
+    if not isinstance(name, str) or not name.strip() or not isinstance(moments, list) \
+            or not isinstance(direct, str):
+        raise ValueError("los ajustes de res.stages llevan su nombre, sus momentos y su "
+                         f"directa, no {dict(settings)!r}")
+    return name, moments, direct
+
+
+def stages_run(project: StoreProject, handle: OperationHandle) -> Iterator[Progress]:
+    """Los pasos de ``res.stages`` (``handle``, «en curso», con los ajustes de
+    ``reserves.provenance.stages_settings``) en ``project`` (A13, D-33): las tablas de
+    volúmenes que consumió (sus momentos, ``stage_1``…, y la directa, ``direct``; sin releer las
+    superficies) con la columna de materiales con que se cubicó cada una, la tolerancia que leyó
+    al empezar y la tabla ``res_stg_`` con sus cifras, confirmadas en una transacción. El último
+    ``Progress`` lleva el :class:`StoredStages` (con sus avisos). Un fallo o cerrar los pasos
+    antes no dejan nada (RF-011-25)."""
+    if not isinstance(handle, OperationHandle):
+        raise TypeError(f"los momentos son de un OperationHandle, no {handle!r}")
+    if handle.op_type != declared.STAGES:
+        raise ValueError(f"stages_run es de {declared.STAGES}, no de «{handle.op_type}»")
+    return _stages_run(project, handle, *_stages_names(handle.settings))
+
+
+def _stages_run(project: StoreProject, handle: OperationHandle, name: str,
+                moments: list[str], direct: str) -> Iterator[Progress]:
+    total = 3
+    with ResultWriter(project, handle) as out:
+        roles = [(declared.stage_role(position), moment)
+                 for position, moment in enumerate(moments, start=1)]
+        tables: list[StageTable] = []
+        with project.read() as conn:
+            for role, cubication in (*roles, (declared.DIRECT_ROLE, direct)):
+                record = _input(conn, handle, role)
+                tables.append(StageTable(cubication, read_rows(conn, record.locator),
+                                         _materials_sha(conn, record)))
+            column = read_column(conn)
+        yield Progress("read", 1, total, f"Comparando «{name}»: las tablas de volúmenes leídas…")
+        names = {} if column is None else {unit.code: unit.name for unit in column.units}
+        result = stages(tables[:-1], tables[-1], name=name,
+                        tolerance_pct=_param(handle, STAGES_TOLERANCE, "%"), unit_names=names)
+        out.table(declared.STAGE_TABLE, name, result.rows)
+        yield Progress("save", 2, total, f"Guardando «{name}»…")
+        cut = result.comparison()
+        shown = "—" if cut.diff_pct is None else f"{format_number(cut.diff_pct, 2)} %"
+        message = (f"«{name}»: suma de los momentos {format_number(cut.sum_m3, 1)} m³, directa "
+                   f"{format_number(cut.direct_m3, 1)} m³, diferencia "
+                   f"{format_number(cut.diff_m3, 1)} m³ ({shown})")
+        records = out.commit(figures=result.figures, message=message)
+    yield Progress("save", total, total, message, result=StoredStages(result, records))
+
+
 def save_materials(project: StoreProject, handle: OperationHandle,
                    column: MaterialColumn) -> tuple[DatasetRecord, ...]:
     """``res.edit_materials`` (``handle``, «en curso», del proyecto): guarda la columna
@@ -825,8 +943,9 @@ def previous_operation(project: StoreProject, op_type: str, name: str, *,
 
 # --- Recalcular (A12) -------------------------------------------------------------------------
 
-RECOMPUTED: tuple[str, ...] = (declared.VOLUME, declared.TONNAGE, declared.DIFFERENCE)
-"""Los tipos que repite :func:`recompute_run` (``res.stages``, con su cálculo)."""
+RECOMPUTED: tuple[str, ...] = (declared.VOLUME, declared.TONNAGE, declared.DIFFERENCE,
+                               declared.STAGES)
+"""Los tipos que repite :func:`recompute_run` (los de versión)."""
 
 
 def _current_column(project: StoreProject) -> MaterialColumn:
@@ -849,8 +968,9 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
     ajustes y con lo que lee hoy —la columna de materiales vigente y, de ella, sus entradas
     (las bases y los espesores de cada unidad) y sus parámetros, resueltos de nuevo al empezar:
     un K cambiado solo en V01 se lee de V01— y devuelve su ``OperationHandle`` «en curso» y sus
-    pasos (:func:`volume_run` o :func:`tonnage_run`), que avanza quien la llama (en Blender, la
-    cola de ``res``; la operación sigue «en curso» hasta el último).
+    pasos (:func:`volume_run`, :func:`tonnage_run` o :func:`stages_run`, que relee las tablas
+    vigentes de sus momentos), que avanza quien la llama (en Blender, la cola de ``res``; la
+    operación sigue «en curso» hasta el último).
 
     Al llamar, sin empezar nada: ``ValueError`` si el tipo no es de :data:`RECOMPUTED` o sus
     ajustes no son los de su tipo; ``res.materials_missing`` si reparte por unidades y no hay
@@ -863,7 +983,11 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
     project: StoreProject = request.project  # type: ignore[assignment]
     settings = request.settings
     volume: VolumeRequest | None = None
-    if request.op_type == declared.TONNAGE:
+    if request.op_type == declared.STAGES:
+        _name, moments, direct = _stages_names(settings)
+        inputs = declared.stages_inputs(moments, direct)
+        params = declared.stages_params()
+    elif request.op_type == declared.TONNAGE:
         name = settings.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("los ajustes de res.tonnage llevan el nombre de su cubicación")
@@ -880,6 +1004,8 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
                              group_uid=request.group_uid, supersedes=request.operation_uid,
                              version=request.version)
     try:
+        if request.op_type == declared.STAGES:
+            return handle, stages_run(project, handle)
         if volume is None:
             return handle, tonnage_run(project, handle)
         return handle, volume_run(project, handle, volume, budget_s=budget_s,

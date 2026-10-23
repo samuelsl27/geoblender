@@ -17,6 +17,9 @@ Así la tabla no cambia de columnas con los repartos, solo de filas.
 - :func:`read_rows`, :func:`filter_rows` y :func:`choices`: leerla y filtrarla para el panel.
 - :func:`unit_volumes`: los m³ por unidad de la tabla de volúmenes, lo que lee ``res.tonnage``
   (D-16: sin releer las superficies); :func:`tonnage_rows`, la tabla de las toneladas.
+- :class:`StageRow`, :data:`STAGE_COLUMNS` y :func:`read_stage_rows`: la tabla de los momentos
+  de extracción (``res_stg_``; plan §5.2.1, A13), con las mismas columnas y una más, ``stage``
+  (el nombre del momento; ``NULL`` en las filas que comparan su suma con la directa).
 
 Python puro (nivel 9).
 """
@@ -44,16 +47,21 @@ __all__ = [
     "NOTE_SEPARATOR",
     "OUTSIDE_DOMAINS",
     "QUANTITIES",
+    "STAGE_COLUMNS",
+    "STAGE_COLUMN_NAMES",
+    "STAGE_TITLES",
     "TITLES",
     "Choices",
     "Column",
     "Quantity",
     "Row",
+    "StageRow",
     "choices",
     "create_table",
     "filter_rows",
     "insert_sql",
     "read_rows",
+    "read_stage_rows",
     "row",
     "tonnage_rows",
     "unit_volumes",
@@ -95,6 +103,13 @@ COLUMN_NAMES: tuple[str, ...] = tuple(column.name for column in COLUMNS)
 TITLES: Mapping[str, str] = MappingProxyType({column.name: column.title for column in COLUMNS})
 """Columna → título, para ``core.gpkg.base.set_column_titles``."""
 
+STAGE_COLUMNS: tuple[Column, ...] = (Column("stage", "TEXT", "Momento"), *COLUMNS)
+"""Las columnas de la tabla de los momentos (``res_stg_``): ``stage`` y las de :data:`COLUMNS`."""
+STAGE_COLUMN_NAMES: tuple[str, ...] = tuple(column.name for column in STAGE_COLUMNS)
+STAGE_TITLES: Mapping[str, str] = MappingProxyType(
+    {column.name: column.title for column in STAGE_COLUMNS})
+"""Columna → título de la tabla de los momentos."""
+
 
 @dataclass(frozen=True, slots=True)
 class Quantity:
@@ -135,6 +150,16 @@ QUANTITIES: Mapping[str, Quantity] = MappingProxyType({item.name: item for item 
     Quantity("waste_ratio_t", "t/t", "res.waste_ratio_t"),
     Quantity("intrinsic_ratio_m3", "m3/m3", "res.intrinsic_ratio_m3"),
     Quantity("intrinsic_ratio_t", "t/t", "res.intrinsic_ratio_t"),
+    # res_stg_ (RF-011-19): la suma de los momentos, la directa y su diferencia, del desmonte
+    # (con unidad: el de esa unidad) y del terraplén (D-33)
+    Quantity("stages_sum_m3", "m3", "res.stages_sum_m3"),
+    Quantity("stages_direct_m3", "m3"),
+    Quantity("stages_diff_m3", "m3", "res.stages_diff_m3"),
+    Quantity("stages_diff_pct", "%", "res.stages_diff_pct"),
+    Quantity("stages_fill_sum_m3", "m3", "res.stages_sum_m3"),
+    Quantity("stages_fill_direct_m3", "m3"),
+    Quantity("stages_fill_diff_m3", "m3", "res.stages_diff_m3"),
+    Quantity("stages_fill_diff_pct", "%", "res.stages_diff_pct"),
 )})
 """Los datos de las tablas de ``res`` por nombre."""
 
@@ -208,6 +233,31 @@ class Row:
         return cls(*values)
 
 
+@dataclass(frozen=True, slots=True)
+class StageRow:
+    """Una fila de la tabla de los momentos (``res_stg_``): el momento (``stage``, el nombre de
+    su cubicación; ``None`` en las filas que comparan la suma de los momentos con la directa) y
+    la fila en formato largo (:class:`Row`)."""
+
+    stage: str | None
+    row: Row
+
+    def __post_init__(self) -> None:
+        if self.stage is not None and (not isinstance(self.stage, str) or not self.stage.strip()):
+            raise ValueError(f"el momento de una fila es un nombre o None, no {self.stage!r}")
+        if not isinstance(self.row, Row):
+            raise TypeError(f"la fila de un momento es una Row, no {self.row!r}")
+
+    def values(self) -> tuple[object, ...]:
+        """Los valores en el orden de :data:`STAGE_COLUMN_NAMES`."""
+        return (self.stage, *self.row.values())
+
+    @classmethod
+    def from_values(cls, values: Sequence[Any]) -> StageRow:
+        """La fila de unos valores en el orden de :data:`STAGE_COLUMN_NAMES`."""
+        return cls(values[0], Row.from_values(values[1:]))
+
+
 def row(quantity: str, value: float | None, *, domain: str = ALL_DOMAINS, bench: Bench = None,
         unit: str | None = None, component: str | None = None,
         notes: Iterable[str] = ()) -> Row:
@@ -247,6 +297,12 @@ def read_rows(conn: sqlite3.Connection, name: str) -> tuple[Row, ...]:
     """Las filas de la tabla ``name``, en su orden (``fid``)."""
     query = f"SELECT {', '.join(COLUMN_NAMES)} FROM {_table_name(name)} ORDER BY fid"
     return tuple(Row.from_values(values) for values in conn.execute(query))
+
+
+def read_stage_rows(conn: sqlite3.Connection, name: str) -> tuple[StageRow, ...]:
+    """Las filas de la tabla de los momentos ``name``, en su orden (``fid``)."""
+    query = f"SELECT {', '.join(STAGE_COLUMN_NAMES)} FROM {_table_name(name)} ORDER BY fid"
+    return tuple(StageRow.from_values(values) for values in conn.execute(query))
 
 
 # --- Filtrar -------------------------------------------------------------------------------

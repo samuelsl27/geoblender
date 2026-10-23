@@ -44,16 +44,18 @@ revisión de la que parte la versión; el ámbito ``scope``; los dominios ``doma
 espesor mínimo y, con unidades, el umbral de presencia: del proyecto, RF-011-21) y
 :func:`volume_settings` (lo que la vuelve a pedir igual); :func:`tonnage_inputs` y
 :func:`tonnage_params` (la densidad, el K y los porcentajes de cada elemento de la columna,
-resueltos versión → proyecto, RF-011-21). :func:`volume_request` es lo contrario de
-:func:`volume_settings`: la cubicación que repiten sus ajustes al recalcularla
-(``reserves.store.recompute_run``) y al reproducirla (``reserves.reproduce``; A12). Las
-funciones de reproducir de los tipos que se repiten son las de ``reserves.reproduce.REPRODUCE``
-(la de ``res.stages``, con su cálculo). Python puro (nivel 9).
+resueltos versión → proyecto, RF-011-21); :func:`stages_inputs`, :func:`stages_params` y
+:func:`stages_settings` (``res.stages``: las tablas de sus momentos con los papeles
+``stage_1``… —:func:`stage_role`— y la de la directa, ``direct``, y la tolerancia del proyecto;
+A13). :func:`volume_request` es lo contrario de :func:`volume_settings`: la cubicación que
+repiten sus ajustes al recalcularla (``reserves.store.recompute_run``) y al reproducirla
+(``reserves.reproduce``; A12). Las funciones de reproducir de los tipos que se repiten son las de
+``reserves.reproduce.REPRODUCE``. Python puro (nivel 9).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
@@ -75,8 +77,16 @@ from ..gis.content import GEOTIFF
 from ..gis.provenance import dataset_slug
 from .materials import TABLE as MATERIALS_TABLE
 from .materials import Kind, MaterialColumn
-from .params import ANTHROPIC_PRESENCE, MIN_THICKNESS, density_key, percent_key, swell_key
+from .params import (
+    ANTHROPIC_PRESENCE,
+    MIN_THICKNESS,
+    STAGES_TOLERANCE,
+    density_key,
+    percent_key,
+    swell_key,
+)
 from .slices import Slices
+from .stages import check_names
 from .surfaces import SurfaceRef
 from .volumes import FINAL, START, VolumeRequest, base_role, thickness_role
 
@@ -84,6 +94,7 @@ __all__ = [
     "DIFFERENCE",
     "DIFFERENCE_FIGURES",
     "DIFFERENCE_GRID",
+    "DIRECT_ROLE",
     "DOMAINS_ROLE",
     "EDIT_MATERIALS",
     "FAMILIES",
@@ -114,6 +125,10 @@ __all__ = [
     "materials_spec",
     "operation_def",
     "operation_defs",
+    "stage_role",
+    "stages_inputs",
+    "stages_params",
+    "stages_settings",
     "tonnage_inputs",
     "tonnage_params",
     "tonnage_settings",
@@ -167,6 +182,17 @@ SCOPE_ROLE = "scope"
 """El papel de la capa del ámbito."""
 DOMAINS_ROLE = "domains"
 """El papel de la capa de dominios."""
+DIRECT_ROLE = "direct"
+"""El papel de la tabla de la cubicación directa en ``res.stages`` (A13)."""
+
+
+def stage_role(position: int) -> str:
+    """El papel de la tabla del momento ``position`` (desde 1) en ``res.stages``:
+    ``stage_1``…"""
+    if isinstance(position, bool) or not isinstance(position, int) or position < 1:
+        raise ValueError(f"los momentos se cuentan desde 1, no {position!r}")
+    return f"stage_{position}"
+
 
 _PREFIX = f"{MODULE}_"
 _YES_NO = ((True, "Yes"), (False, "No"))
@@ -539,6 +565,33 @@ def tonnage_inputs(name: str) -> tuple[Use, ...]:
 def tonnage_settings(name: str) -> dict[str, Any]:
     """Los ajustes de ``res.tonnage`` de la cubicación ``name``: su nombre."""
     return {"name": name}
+
+
+def stages_inputs(moments: Sequence[str], direct: str) -> tuple[Use, ...]:
+    """Lo que consume ``res.stages`` (A13, D-33): la tabla de volúmenes (``res_vol_``, de la
+    versión) de cada momento ``moments`` (sus nombres de cubicación, en su orden; papeles
+    :func:`stage_role`) y la de la directa ``direct`` (:data:`DIRECT_ROLE`). ``ValueError`` si
+    los nombres no valen (``reserves.stages.check_names``) o dos dan el mismo dato."""
+    names, direct = check_names(moments, direct)
+    found = [Use(dataset_name(VOLUMES, name), stage_role(position))
+             for position, name in enumerate(names, start=1)]
+    found.append(Use(dataset_name(VOLUMES, direct), DIRECT_ROLE))
+    if len({use.item for use in found}) != len(found):
+        raise ValueError(f"dos cubicaciones de los momentos son el mismo dato: "
+                         f"{[use.item for use in found]}")
+    return tuple(found)
+
+
+def stages_params() -> tuple[str, ...]:
+    """Los parámetros que lee ``res.stages``: la tolerancia de los momentos (del proyecto)."""
+    return (STAGES_TOLERANCE,)
+
+
+def stages_settings(name: str, moments: Sequence[str], direct: str) -> dict[str, Any]:
+    """Los ajustes de ``res.stages``: su nombre, los momentos (en su orden) y la directa (los
+    nombres de sus cubicaciones)."""
+    names, direct = check_names(moments, direct)
+    return {"name": name, "moments": list(names), "direct": direct}
 
 
 def tonnage_params(column: MaterialColumn) -> tuple[str, ...]:
