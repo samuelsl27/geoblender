@@ -168,6 +168,13 @@ CATALOG: tuple[Message, ...] = (
         "note",
     ),
     Message(
+        "res.domain_hole_outside",
+        "polygon {fid} («{domain}») has a hole outside its outer ring or inside another hole",
+        "el polígono {fid} («{domain}») tiene un hueco fuera de su contorno o dentro de otro "
+        "hueco",
+        "note",
+    ),
+    Message(
         "res.domain_value_empty",
         "polygon {fid} has an empty «{attribute}»",
         "el polígono {fid} tiene vacío el campo «{attribute}»",
