@@ -126,6 +126,27 @@ CATALOG: tuple[Message, ...] = (
         "{label}: «{value}» no es un número de metros; escríbalo con cifras y coma o punto "
         "decimal.",
     ),
+    Message(
+        "res.bench_value_missing",
+        "{label}: the value is missing; write the bench height and the anchor elevation (m), "
+        "or a list of elevations.",
+        "{label}: falta el valor; escriba la altura de banco y la cota de anclaje (m), o una "
+        "lista de cotas.",
+    ),
+    Message(
+        "res.bench_levels_too_few",
+        "List of bench elevations: «{value}» has fewer than two elevations; write at least "
+        "two, separated by «;».",
+        "Lista de cotas de los bancos: «{value}» tiene menos de dos cotas; escriba al menos "
+        "dos, separadas por «;».",
+    ),
+    Message(
+        "res.bench_both_ways",
+        "Benches: write either the bench height and the anchor elevation or a list of "
+        "elevations, not both.",
+        "Bancos: escriba la altura de banco y la cota de anclaje o una lista de cotas, no las "
+        "dos cosas.",
+    ),
     # Dominios (A6; RF-011-07, RF-011-08) ----------------------------------------------------
     Message(
         "res.domains_invalid",
