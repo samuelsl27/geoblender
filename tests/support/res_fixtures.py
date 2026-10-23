@@ -44,17 +44,44 @@ Para el núcleo (T09): :func:`column_layers` da las bases y los espesores de una
 columna como los pide ``reserves.kernel.BandValues`` y :func:`domain_column`, la columna como
 ``reserves.materials.MaterialColumn`` (lo importa al llamarla: los demás datos no dependen de
 ``reserves``).
+
+**El proyecto de la cubicación** (T14; plan §7.1): :func:`project_template` crea **una vez por
+proceso** un proyecto sintético (EPSG:25830 + EPSG:5782, la ventana de la columna con paso de
+2 m) con las superficies de la columna como **rejillas del proyecto** (``gis_dtm_``, escritas
+con ``gis.store.ResultWriter`` en una operación ``gis.resample``, como
+``tests/support/views_fixtures.py``: :data:`PROJECT_GRIDS`) y las versiones **V01** y **V02** en
+BORRADOR; :class:`ResProjectCase` lo copia y lo abre **una vez por clase**, con las
+declaraciones de ``res`` registradas a mano (:func:`res_registered`: parámetros, familias, tipos
+de operación con funciones de prueba y cifras; como ``tests/support/versions_demo.py``).
+:func:`project_column` es la columna con esas rejillas como bases y espesores. Solo fuera de
+Blender.
 """
 
 from __future__ import annotations
 
+import atexit
 import math
+import shutil
+import tempfile
+import unittest
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, ClassVar
 
 import numpy as np
 
 from tests.referencia.gis import test_ref_volume as _ref006
+from tests.support.core_fixtures import (
+    FakeClock,
+    FakePids,
+    make_session,
+    make_settings,
+    project_tmp,
+)
 from tests.support.package import import_geoblender
+from tests.support.provenance_contract import registered
 
 gis = import_geoblender("gis")
 georef = import_geoblender("core.georef")
@@ -549,3 +576,229 @@ def domain_column(case: MaterialColumnCase):
         )
         for unit in case.units
     ))
+
+
+# El proyecto de la cubicación (T14; plan §7.1) -------------------------------------------------
+
+START_GRID = "gis_dtm_partida"
+"""La rejilla del proyecto de la superficie de partida de la columna."""
+FINAL_GRID = "gis_dtm_final"
+"""La de la superficie final."""
+_START_LABEL, _FINAL_LABEL = "Partida", "Final"
+_BASE, _THICKNESS = "Base", "Espesor"
+PARAMS_BY_HAND: Mapping[str, str] = {
+    "source": "Valores sintéticos de prueba", "source_kind": "document",
+    "decided_by": "Samuel (IMGA)",
+}
+"""El origen y el decisor de los parámetros sintéticos de la columna (no son de ningún
+material real: D-8)."""
+
+
+def _grid_name(label: str) -> str:
+    """El dato de la rejilla del proyecto de la orden ``label`` (``gis_dtm_<nombre>``)."""
+    provenance = import_geoblender("gis.provenance")
+    return provenance.dataset_name(provenance.PROJECT_GRID, label)
+
+
+def project_grids(case: MaterialColumnCase | None = None) -> tuple[tuple[str, gis.Raster], ...]:
+    """Las rejillas del proyecto de la columna ``case`` (por defecto, :func:`material_column`):
+    ``(nombre de la orden, rejilla)`` de la partida, la final y la base y el espesor de cada
+    unidad que los tiene («Base acopio» → ``gis_dtm_base_acopio``)."""
+    case = material_column() if case is None else case
+    found = [(_START_LABEL, case.start), (_FINAL_LABEL, case.final)]
+    for unit in case.units:
+        if unit.base is not None:
+            found.append((f"{_BASE} {unit.code}", unit.base))
+        if unit.thickness is not None:
+            found.append((f"{_THICKNESS} {unit.code}", unit.thickness))
+    return tuple(found)
+
+
+PROJECT_GRIDS: tuple[str, ...] = tuple(_grid_name(label) for label, _raster in project_grids())
+"""Los datos de las rejillas del proyecto de :func:`project_template`, en su orden."""
+
+
+def project_column(case: MaterialColumnCase | None = None):
+    """La columna de ``case`` (por defecto, :func:`material_column`) como
+    ``reserves.materials.MaterialColumn`` con las rejillas del proyecto de :func:`project_grids`
+    como bases y espesores (D-24, D-23)."""
+    case = material_column() if case is None else case
+    materials = import_geoblender("reserves.materials")
+    surfaces = import_geoblender("reserves.surfaces")
+
+    def ref(prefix: str, unit: ColumnUnit, raster: gis.Raster | None):
+        if raster is None:
+            return None
+        return surfaces.SurfaceRef(dataset=_grid_name(f"{prefix} {unit.code}"),
+                                   label=f"{prefix} de {unit.name}")
+
+    return materials.MaterialColumn(tuple(
+        materials.Unit(unit.code, unit.name, unit.kind, unit.role, unit.state,
+                       ref(_BASE, unit, unit.base), ref(_THICKNESS, unit, unit.thickness),
+                       tuple(materials.Component(item.code, item.name, item.role)
+                             for item in unit.components))
+        for unit in case.units
+    ))
+
+
+def column_values(case: MaterialColumnCase | None = None) -> dict[str, float]:
+    """Los parámetros sintéticos de la columna ``case`` por clave (``reserves.params``): la
+    densidad y el K de cada unidad y componente y el porcentaje de cada componente."""
+    case = material_column() if case is None else case
+    params = import_geoblender("reserves.params")
+    found: dict[str, float] = {}
+    for unit in case.units:
+        if not unit.components:
+            assert unit.density_t_m3 is not None and unit.swell is not None
+            found[params.density_key(unit.code)] = unit.density_t_m3
+            found[params.swell_key(unit.code)] = unit.swell
+        for item in unit.components:
+            found[params.density_key(unit.code, item.code)] = item.density_t_m3
+            found[params.swell_key(unit.code, item.code)] = item.swell
+            found[params.percent_key(unit.code, item.code)] = item.percent
+    return found
+
+
+def _recompute(request: Any) -> Any:
+    raise AssertionError("las pruebas de res no recalculan con la función de bl")
+
+
+def _reproduce(request: Any) -> Iterator[Any]:
+    raise AssertionError("las pruebas de res no reproducen con la función de bl")
+
+
+@contextmanager
+def res_registered() -> Iterator[None]:
+    """Registra a mano lo que declara ``res`` (lo hará ``bl/ops/res.py``, T19): sus parámetros
+    y sus familias (``reserves.params``), sus tipos de operación con funciones de prueba y sus
+    cifras (``reserves.provenance``); al salir, lo quita."""
+    params = import_geoblender("core.params")
+    res_params = import_geoblender("reserves.params")
+    provenance = import_geoblender("reserves.provenance")
+    functions = {op_type: _recompute for op_type in provenance.REPRODUCIBLE}
+    again = {op_type: _reproduce for op_type in provenance.REPRODUCIBLE}
+    params.register_definitions(res_params.DEFINITIONS)
+    try:
+        params.register_families(res_params.FAMILIES)
+        try:
+            with registered(*provenance.operation_defs(functions, again), *provenance.FIGURES):
+                yield
+        finally:
+            params.unregister_families("res")
+    finally:
+        params.unregister_definitions("res")
+
+
+SESSION = make_session()
+"""La sesión sintética del proyecto de la cubicación."""
+_VERSIONS = (("definitiva", "Definitiva"), ("ampliacion", "Ampliación"))
+_TEMPLATE: dict[str, Any] = {}
+
+
+def _build(folder: Path) -> dict[str, Any]:
+    """Crea el proyecto de :func:`project_template` en ``folder/proyectos`` y lo cierra."""
+    create = import_geoblender("core.project.create")
+    userdata = import_geoblender("core.userdata")
+    operations = import_geoblender("core.provenance.operations")
+    gis_provenance = import_geoblender("gis.provenance")
+    gis_store = import_geoblender("gis.store")
+    versions_store = import_geoblender("core.versions.store")
+    (folder / "proyectos").mkdir()
+    clock = FakeClock()
+    window = (COLUMN_WINDOW.xmin, COLUMN_WINDOW.ymin, COLUMN_WINDOW.xmax, COLUMN_WINDOW.ymax)
+    settings = make_settings(window=window, grid_step_m=COLUMN_STEP)
+    project = create.create_project(folder / "proyectos", settings, SESSION,
+                                    userdata.UserData(folder / "u"), clock=clock).project
+    try:
+        resample = gis_provenance.operation_defs({gis_provenance.RESAMPLE: _recompute},
+                                                 op_types=[gis_provenance.RESAMPLE])
+        with registered(*resample):
+            handle = operations.begin_operation(
+                project, gis_provenance.RESAMPLE, settings={"nombre": "columna de prueba"},
+                executor="blender")
+            with gis_store.ResultWriter(project, handle) as out:
+                for label, raster in project_grids():
+                    out.raster(label, raster)
+                out.commit(software={"pyproj": "prueba"}, message="Rejillas de la columna")
+        versions = []
+        for feature, title in _VERSIONS:
+            clock.advance(minutes=1)
+            with project.write_transaction() as conn:
+                version, _revision = versions_store.create_version(
+                    conn, project, feature=feature, title=title, reason="Prueba de la 011")
+            project.refresh_header()
+            versions.append(version.uid)
+        clock.advance(minutes=1)
+        return {"folder": folder, "name": Path(project.root).name, "now": clock.now(),
+                "versions": tuple(versions)}
+    finally:
+        project.close()
+
+
+def project_template() -> Mapping[str, Any]:
+    """El proyecto de la cubicación (véase el módulo), creado y cerrado la primera vez que se
+    pide en el proceso en una carpeta temporal que se borra al salir: ``folder``, ``name`` (la
+    carpeta del proyecto en ``folder/proyectos``), ``now`` (su reloj) y los uid de V01 y V02
+    (``versions``). No se modifica: cada clase trabaja en su copia."""
+    if not _TEMPLATE:
+        folder = Path(tempfile.mkdtemp(prefix="gb-rt-"))
+        atexit.register(shutil.rmtree, folder, ignore_errors=True)
+        _TEMPLATE.update(_build(folder))
+    return _TEMPLATE
+
+
+class ResProjectCase(unittest.TestCase):
+    """Una copia por clase del proyecto de :func:`project_template`, abierta en escritura
+    (``cls.project``, en ``cls.root``) con las declaraciones de ``res`` registradas
+    (:func:`res_registered`), su reloj (``cls.clock``) y V01 y V02 (``cls.v1``, ``cls.v2``:
+    ``Version``). Las pruebas de una clase comparten el proyecto: cada una usa sus nombres."""
+
+    project: ClassVar[Any]
+    root: ClassVar[Path]
+    clock: ClassVar[FakeClock]
+    v1: ClassVar[Any]
+    v2: ClassVar[Any]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        made = project_template()
+        open_mod = import_geoblender("core.project.open")
+        userdata = import_geoblender("core.userdata")
+        versions_read = import_geoblender("core.versions.read")
+        cls.enterClassContext(res_registered())
+        folder = cls.enterClassContext(project_tmp("gb-rs-"))
+        shutil.copytree(made["folder"] / "proyectos", folder / "proyectos")
+        cls.clock = FakeClock(made["now"])
+        cls.project = open_mod.open_project(
+            folder / "proyectos" / made["name"], SESSION, userdata.UserData(folder / "u"),
+            clock=cls.clock, pid_alive=FakePids({SESSION.pid})).project
+        cls.addClassCleanup(cls.project.close)
+        cls.root = Path(cls.project.root)
+        with cls.project.read() as conn:
+            cls.v1, cls.v2 = (versions_read.version(conn, uid) for uid in made["versions"])
+
+    # --- Ayudas -----------------------------------------------------------------------------
+
+    def query(self, sql: str, *args: Any) -> list[tuple[Any, ...]]:
+        """Las filas de ``sql`` en una conexión de lectura."""
+        with self.project.read() as conn:
+            return conn.execute(sql, args).fetchall()
+
+    def record(self, name: str, version: Any = None) -> Any:
+        """El dato vivo ``name`` (``DatasetRecord``) del proyecto o de ``version``; ``None``."""
+        registry = import_geoblender("core.datasets.registry")
+        with self.project.read() as conn:
+            return registry.get(conn, name, version_uid="" if version is None else version.uid)
+
+    @classmethod
+    def declare(cls, values: Mapping[str, float], *, version: Any = None) -> None:
+        """Da de alta en el proyecto (o como valor propio de ``version``) cada parámetro de
+        ``values`` (clave → valor en su unidad declarada) como HIPÓTESIS, con
+        :data:`PARAMS_BY_HAND`, en una transacción."""
+        store = import_geoblender("core.params").ParameterStore(cls.project)
+        code = None if version is None else version.code
+        cls.clock.advance(minutes=1)
+        with cls.project.write_transaction() as conn:
+            for key, value in values.items():
+                store.create(conn, key, value, kind="HIPÓTESIS", **PARAMS_BY_HAND,
+                             reason="Prueba de la cubicación", version=code)

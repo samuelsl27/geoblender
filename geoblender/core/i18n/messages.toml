@@ -5266,3 +5266,106 @@ es = "Esponjamiento K"
 
 ["Share of the component"]
 es = "Porcentaje del componente"
+
+# Procedencia de la cubicación (spec 011, T14; RF-011-20, RF-011-22; plan 011 §5.2.3): el nombre
+# de cada tipo de operación, de cada cifra y de cada ajuste que enseña su procedencia
+# (reserves/provenance.py).
+
+["Volumetrics between surfaces"]
+es = "Cubicación entre superficies"
+
+["Tonnage of a cubication"]
+es = "Toneladas de una cubicación"
+
+["Difference between surfaces"]
+es = "Diferencia entre superficies"
+
+["Volumetrics by extraction stages"]
+es = "Cubicación por momentos de extracción"
+
+["Edit of the materials column"]
+es = "Edición de la columna de materiales"
+
+["Cut volume"]
+es = "Desmonte"
+
+["Fill volume"]
+es = "Terraplén"
+
+["Net volume"]
+es = "Volumen neto"
+
+["Area with data in both surfaces"]
+es = "Área con dato en las dos superficies"
+
+["Area without data"]
+es = "Área sin dato"
+
+["Area without movement"]
+es = "Área sin movimiento"
+
+["Volume of the unit"]
+es = "Volumen de la unidad"
+
+["Combined scale factor"]
+es = "Factor combinado"
+
+["Effect of the combined scale factor"]
+es = "Efecto del factor combinado"
+
+["Swollen volume of the unit"]
+es = "Volumen esponjado de la unidad"
+
+["Tonnage of the unit"]
+es = "Toneladas de la unidad"
+
+["Total tonnage"]
+es = "Toneladas totales"
+
+["Useful volume in situ"]
+es = "Volumen útil in situ"
+
+["Waste volume in situ"]
+es = "Volumen de estéril in situ"
+
+["Useful tonnage"]
+es = "Toneladas útiles"
+
+["Waste tonnage"]
+es = "Toneladas de estéril"
+
+["Waste to useful ratio by volume"]
+es = "Relación estéril/útil en volumen"
+
+["Waste to useful ratio by mass"]
+es = "Relación estéril/útil en peso"
+
+["Intrinsic ratio by volume"]
+es = "Relación intrínseca en volumen"
+
+["Intrinsic ratio by mass"]
+es = "Relación intrínseca en peso"
+
+["Sum of the extraction stages"]
+es = "Suma de los momentos de extracción"
+
+["Difference between the stages and the direct cubication"]
+es = "Diferencia de los momentos con la cubicación directa"
+
+["Relative difference between the stages and the direct cubication"]
+es = "Diferencia relativa de los momentos con la cubicación directa"
+
+["Constant start elevation"]
+es = "Cota constante de partida"
+
+["Constant final elevation"]
+es = "Cota constante final"
+
+["Bench anchor elevation"]
+es = "Cota de anclaje de los bancos"
+
+["Difference grid"]
+es = "Rejilla de diferencias"
+
+["Projection scale factor"]
+es = "Factor de escala de la proyección"
