@@ -20,7 +20,7 @@ se pone al día desde el proyecto: marca lo que ya no está al día, lo vuelve a
 ofrece abrir el proyecto de una vista y enseña la ficha del objeto activo, el inventario del
 proyecto y las cifras de la selección (spec 010). Y el proyecto tiene versiones con su estado y
 sus revisiones, que se congelan en instantáneas que no cambian y se pueden reproducir meses
-después, y las decisiones de la propiedad (spec 009, aún sin integrar en la rama principal). Lo de
+después, y las decisiones de la propiedad (spec 009). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está

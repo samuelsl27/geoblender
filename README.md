@@ -19,10 +19,12 @@ de minas, para su propio trabajo de proyectos de explotación y restauración.
 > rejilla de cálculo de paso exacto, TIN con líneas de rotura y desde curvas, curvas de nivel
 > con maestras, validar una superficie, verla en Blender sin perder precisión y entregar
 > GeoTIFF y GeoPackage que QGIS abre directamente, todo con su procedencia. La segunda son los
-> **sondeos** (spec 005, aún sin integrar en la rama principal): importar bocas, desviaciones,
+> **sondeos** (spec 005): importar bocas, desviaciones,
 > litología y análisis desde CSV, XLSX o una base de RecMin (en solo lectura), con sus convenios
 > declarados, validarlos, calcular sus trazas y verlos en 3D con litología y leyes, también en
-> QGIS. La 002, la 003, la 004, la 006 y la 005 están comprobadas con Blender 5.2.1 (la
+> QGIS. Además, la vista de Blender se pone al día desde el proyecto (spec 010) y el proyecto
+> tiene versiones con su estado y revisiones congeladas que se pueden reproducir (spec 009).
+> La 002, la 003, la 004, la 006 y la 005 están comprobadas con Blender 5.2.1 (la
 > interfaz, los trabajos, la topografía y los sondeos, en la pantalla de referencia de IMGA), y
 > la 002, la 006 y la 005 también con QGIS 4.2 sin su interfaz (PyQGIS); la 002, en la red con
 > un equipo. Faltan comprobaciones de personas: dos equipos a la vez, que IMGA acepte las de
