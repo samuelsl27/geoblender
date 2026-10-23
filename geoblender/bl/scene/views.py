@@ -106,6 +106,7 @@ from ...core.project.model import Progress
 from ...core.versions import read as versions_read
 from ...core.views.state import ItemState, ItemView, LoadedItem, origin_text
 from ..props.core import OBJECT_PROPERTY
+from . import georef
 from .mesh import curves_positions_local, mesh_vertices_world
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
@@ -1044,9 +1045,7 @@ def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[s
         if gone:
             _mark_unbacked(gone)
         if clear_view_stale and not errors:
-            for item in bpy.data.scenes:
-                if item.geoblender.view_stale:
-                    item.geoblender.view_stale = False
+            georef.clear_stale()  # y pide redibujar: el panel Proyecto (spec 009, T43)
     finally:
         if loaded or gone or removed:
             _view_changed()

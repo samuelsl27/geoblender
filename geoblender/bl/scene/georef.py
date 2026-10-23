@@ -35,6 +35,11 @@ retirados en :func:`unregister`:
   Ctrl+S); las de otro volumen no se pueden expresar así y quedan en un aviso.
 - ``save_post``: con el proyecto en escritura, la cabecera se actualiza desde la base de
   datos (RF-002-07).
+
+La marca de vista desfasada solo la cambian :func:`mark_stale` y :func:`clear_stale` (también
+desde ``bl.ops.core``, ``bl.scene.refresh`` y ``bl.scene.views``): si cambia, piden redibujar
+todas las ventanas con ``bl.ui.bars.redraw``, y el panel Proyecto la enseña al día (spec 009,
+T43; RF-002-29, RF-010-01).
 """
 
 from __future__ import annotations
@@ -161,11 +166,36 @@ def scene_georeference(scene: bpy.types.Scene) -> SceneGeoref | None:
     )
 
 
-def mark_stale() -> None:
-    """Marca como desfasada la vista: todas las escenas del ``.blend``."""
+def _set_view_stale(stale: bool) -> bool:
+    """La marca de vista desfasada ``stale`` en todas las escenas del ``.blend`` (solo en las
+    que no la tienen); si alguna cambió, pide redibujar todas las ventanas con
+    ``bl.ui.bars.redraw`` (spec 009, T43): el panel Proyecto la lee al dibujarse y la barra
+    lateral no se repinta sola si se cambia desde otra área, un temporizador o un manejador
+    (Refrescar, abrir el proyecto, ``load_post``). Verdadero si cambió alguna."""
+    changed = False
     for scene in bpy.data.scenes:
-        if not scene.geoblender.view_stale:
-            scene.geoblender.view_stale = True
+        if scene.geoblender.view_stale != stale:
+            scene.geoblender.view_stale = stale
+            changed = True
+    if changed:
+        from ..ui import bars  # al usarlo: bl.ui importa bl.scene
+
+        bars.redraw()
+    return changed
+
+
+def mark_stale() -> bool:
+    """Marca como desfasada la vista: todas las escenas del ``.blend``. Con
+    :func:`clear_stale`, el único sitio que cambia la marca (spec 009, T43): si cambió, pide
+    redibujar todas las ventanas. Verdadero si alguna escena no la tenía."""
+    return _set_view_stale(True)
+
+
+def clear_stale() -> bool:
+    """Quita la marca de vista desfasada de todas las escenas del ``.blend`` (la vista ya está
+    al día del proyecto abierto) y, si cambió, pide redibujar todas las ventanas (spec 009,
+    T43). Verdadero si alguna escena la tenía."""
+    return _set_view_stale(False)
 
 
 def _view_is_stale() -> bool:
@@ -198,9 +228,7 @@ def clear_unopened_view(project: Project) -> bool:
                         for item in found):
         return False
     if not unopened.was_stale:
-        for scene in bpy.data.scenes:
-            if scene.geoblender.view_stale:
-                scene.geoblender.view_stale = False
+        clear_stale()
     project_session.withdraw_notice(unopened.notice)
     return True
 

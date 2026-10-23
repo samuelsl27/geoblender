@@ -39,13 +39,11 @@ from collections.abc import Generator, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-import bpy
-
 from ...core.errors import GeoblenderError
 from ...core.i18n import tr
 from ...core.project.model import Progress
 from ...core.views.state import ItemState, ItemView, refresh_plan
-from . import live, views
+from . import georef, live, views
 from . import versions as scene_versions
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
@@ -91,12 +89,6 @@ def _names(states: Mapping[str, ItemView]) -> dict[str, str]:
             if record is not None:
                 found[record.uid] = record.name
     return found
-
-
-def _clear_view_stale() -> None:
-    for scene in bpy.data.scenes:
-        if scene.geoblender.view_stale:
-            scene.geoblender.view_stale = False
 
 
 def refresh_steps(context: Any, project: Any) -> Generator[Progress, None, None]:
@@ -145,7 +137,7 @@ def refresh_steps(context: Any, project: Any) -> Generator[Progress, None, None]
         LOGGER.warning("Refrescar no pudo leer las cifras registradas de la vista",
                        exc_info=True)
     if load is None:
-        _clear_view_stale()
+        georef.clear_stale()  # y pide redibujar: el panel Proyecto lo enseña (spec 009, T43)
     live.request(project)
     current = sum(1 for uid in shown if uid not in placed)
     outcome = RefreshOutcome(tuple(uid for uid in targets if uid in placed), plan.unbacked,
