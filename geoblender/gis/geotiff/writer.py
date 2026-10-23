@@ -36,13 +36,19 @@ cada una), el temporal se borra. Si Windows no deja sustituir el destino porque 
 lo tiene abierto (QGIS), ``gis.raster_target_locked``: es el error, sin fichero a medias y con
 el anterior intacto, también en ``rasters/`` (sin ``<nombre>__<hash8>.tif``, D20). Cualquier
 otro fallo del disco es ``gis.raster_write_failed``.
+
+:func:`write_steps` (spec 011, T12; plan 011 T4) es la misma escritura por pasos, una tesela
+por paso, para el hilo de Blender (RNF-011-04): los mismos bytes, el mismo temporal y el mismo
+renombrado; cerrar el generador a mitad borra el temporal. :func:`write_geotiff` recorre esos
+pasos de una vez, con su avance y su cancelación.
 """
 
 from __future__ import annotations
 
 import math
 import os
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -69,6 +75,7 @@ __all__ = [
     "temporary_path",
     "write_failed",
     "write_geotiff",
+    "write_steps",
 ]
 
 TILE_SIZE = 256
@@ -149,7 +156,51 @@ def write_geotiff(
     ``path`` no se toca (lo pone en su sitio quien llama). Devuelve lo escrito: ``path`` o,
     sin ``replace``, el temporal. ``GisError`` si una cota no se puede entregar en float32, si
     el destino está bloqueado o si falla el disco; ``JobCancelled`` si ``cancelled()`` pide
-    parar. ``raster`` no se modifica."""
+    parar (se pregunta antes de cada tesela). ``raster`` no se modifica. Recorre de una vez
+    los pasos de :func:`write_steps`."""
+    steps = write_steps(raster, path, profile=profile, temporary=temporary, replace=replace,
+                        bigtiff_threshold=bigtiff_threshold)
+    name = Path(path).name
+    total = _tile_count(raster, TILE_SIZE)
+    index = 0
+    with closing(steps):  # cancelar o fallar a mitad cierran los pasos: sin temporal
+        while True:
+            if index < total and cancelled is not None and cancelled():
+                raise JobCancelled(
+                    f"Cancelado al escribir «{name}» en la tesela {index + 1} de {total}"
+                )
+            try:
+                fraction = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            index += 1
+            if progress is not None:
+                progress(fraction, f"Escribiendo «{name}»: tesela {index} de {total}")
+
+
+def write_steps(
+    raster: Raster,
+    path: Path | str,
+    *,
+    profile: WriteProfile | str,
+    temporary: Path | str | None = None,
+    replace: bool = True,
+    bigtiff_threshold: int = BIGTIFF_THRESHOLD,
+) -> Generator[float, None, Path]:
+    """:func:`write_geotiff` por pasos (plan 011 T4 y A10; RNF-011-04): **los mismos bytes**,
+    el mismo temporal y el mismo renombrado, con **un paso por tesela**. Cada ``next()``
+    comprime y escribe una tesela en el temporal y da el avance (teselas escritas / total,
+    hasta 1); la llamada que termina el generador escribe el IFD, fuerza a disco, pone el
+    fichero en su sitio (con ``replace``) y devuelve lo escrito en ``StopIteration.value``
+    (``path`` o, sin ``replace``, el temporal): ``escrito = yield from write_steps(...)``.
+
+    Lo que no se puede escribir (otro objeto, otro perfil, el destino como temporal, una cota
+    que no se puede entregar en float32) se rechaza **al llamar**, antes de ningún paso y sin
+    crear nada. Cerrar el generador a mitad (``close()``: Esc) o un fallo en un paso borran el
+    temporal y dejan el destino anterior intacto; el destino bloqueado es
+    ``gis.raster_target_locked`` y un fallo del disco, ``gis.raster_write_failed``, como en
+    :func:`write_geotiff`. El lado de las teselas es el de :data:`TILE_SIZE` al llamar.
+    ``raster`` no se modifica, y no debe cambiar mientras duran los pasos."""
     if not isinstance(raster, Raster):
         raise TypeError(f"se escribe un Raster, no {type(raster).__name__}")
     if not isinstance(replace, bool):
@@ -164,26 +215,7 @@ def write_geotiff(
     if temporary == path:
         raise ValueError(f"el temporal de «{name}» no puede ser el propio destino")
     check_path_length(temporary, obj=name)
-    try:
-        with temporary.open("wb") as stream:
-            _write(stream, raster, chosen, threshold, name, progress, cancelled)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException as error:
-        _discard(temporary)
-        if isinstance(error, OSError):
-            raise write_failed(name, error) from None
-        raise
-    if not replace:
-        return temporary
-    try:
-        os.replace(temporary, path)
-    except OSError as error:
-        _discard(temporary)
-        if isinstance(error, PermissionError):  # Windows: otro programa lo tiene abierto
-            raise target_locked(name) from None
-        raise write_failed(name, error) from None
-    return path
+    return _steps(raster, path, temporary, replace, _Layout(chosen, threshold, TILE_SIZE))
 
 
 def target_locked(name: str) -> GisError:
@@ -250,15 +282,29 @@ def _check_deliverable(values: np.ndarray, name: str) -> None:
 # --- Escritura ------------------------------------------------------------------------------
 
 
-def _tiles(values: np.ndarray, profile: _Profile) -> Iterator[np.ndarray]:
-    """Las teselas de :data:`TILE_SIZE` × :data:`TILE_SIZE` por filas (TIFF 6.0), en el
-    tipo del perfil, con el sin dato del perfil en las celdas sin dato (entregable) y en el
-    relleno del borde."""
+@dataclass(frozen=True, slots=True)
+class _Layout:
+    """Lo que fija los bytes además del ráster: el perfil, el umbral de BigTIFF y el lado de
+    las teselas (el de :data:`TILE_SIZE` al empezar)."""
+
+    profile: _Profile
+    threshold: int
+    tile: int
+
+
+def _tile_count(raster: Raster, size: int) -> int:
+    grid = raster.grid
+    return -(-grid.nrows // size) * -(-grid.ncols // size)
+
+
+def _tiles(values: np.ndarray, profile: _Profile, size: int) -> Iterator[np.ndarray]:
+    """Las teselas de ``size`` × ``size`` por filas (TIFF 6.0), en el tipo del perfil, con el
+    sin dato del perfil en las celdas sin dato (entregable) y en el relleno del borde."""
     rows, cols = values.shape
-    for top in range(0, rows, TILE_SIZE):
-        for left in range(0, cols, TILE_SIZE):
-            part = values[top : top + TILE_SIZE, left : left + TILE_SIZE]
-            tile = np.full((TILE_SIZE, TILE_SIZE), profile.nodata, profile.dtype)
+    for top in range(0, rows, size):
+        for left in range(0, cols, size):
+            part = values[top : top + size, left : left + size]
+            tile = np.full((size, size), profile.nodata, profile.dtype)
             height, width = part.shape
             if profile.dtype == np.float64:
                 tile[:height, :width] = part  # los mismos bits, NaN con su carga incluido
@@ -269,43 +315,61 @@ def _tiles(values: np.ndarray, profile: _Profile) -> Iterator[np.ndarray]:
             yield tile
 
 
-def _write(
-    stream: BinaryIO,
+def _steps(
     raster: Raster,
-    profile: _Profile,
-    threshold: int,
-    name: str,
-    progress: Progress | None,
-    cancelled: Cancelled | None,
-) -> None:
-    grid = raster.grid
-    total = -(-grid.nrows // TILE_SIZE) * -(-grid.ncols // TILE_SIZE)
+    path: Path,
+    temporary: Path,
+    replace: bool,
+    layout: _Layout,
+) -> Generator[float, None, Path]:
+    """Los pasos de :func:`write_steps`, ya comprobado lo que se escribe: el temporal se crea
+    en el primero."""
+    name = path.name
+    try:
+        with temporary.open("wb") as stream:
+            yield from _write(stream, raster, layout)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException as error:  # también GeneratorExit: cerrar los pasos a mitad
+        _discard(temporary)
+        if isinstance(error, OSError):
+            raise write_failed(name, error) from None
+        raise
+    if not replace:
+        return temporary
+    try:
+        os.replace(temporary, path)
+    except OSError as error:
+        _discard(temporary)
+        if isinstance(error, PermissionError):  # Windows: otro programa lo tiene abierto
+            raise target_locked(name) from None
+        raise write_failed(name, error) from None
+    return path
+
+
+def _write(stream: BinaryIO, raster: Raster, layout: _Layout) -> Iterator[float]:
+    """Cabecera reservada, las teselas comprimidas una tras otra (un paso y su avance por
+    tesela) y, tras la última, el IFD con sus valores y la cabecera definitiva."""
+    profile = layout.profile
+    total = _tile_count(raster, layout.tile)
     stream.write(bytes(DATA_OFFSET))
     position = DATA_OFFSET
     offsets: list[int] = []
     counts: list[int] = []
-    tiles = _tiles(raster.values, profile)
-    for index in range(total):
-        if cancelled is not None and cancelled():
-            raise JobCancelled(
-                f"Cancelado al escribir «{name}» en la tesela {index + 1} de {total}"
-            )
-        data = encode_block(next(tiles), predictor=PREDICTOR_FLOATING_POINT)
+    for tile in _tiles(raster.values, profile, layout.tile):
+        data = encode_block(tile, predictor=PREDICTOR_FLOATING_POINT)
         stream.write(data)
         offsets.append(position)
         counts.append(len(data))
         position += len(data)
-        if progress is not None:
-            progress(
-                (index + 1) / total, f"Escribiendo «{name}»: tesela {index + 1} de {total}"
-            )
+        yield len(offsets) / total
     ifd_offset = position + position % 2
     stream.write(bytes(ifd_offset - position))
-    ifd = tiff.encode_ifd(_entries(raster, profile, offsets, counts, False), ifd_offset,
+    ifd = tiff.encode_ifd(_entries(raster, layout, offsets, counts, False), ifd_offset,
                           bigtiff=False)
-    bigtiff = ifd_offset + len(ifd) > threshold
+    bigtiff = ifd_offset + len(ifd) > layout.threshold
     if bigtiff:
-        ifd = tiff.encode_ifd(_entries(raster, profile, offsets, counts, True), ifd_offset,
+        ifd = tiff.encode_ifd(_entries(raster, layout, offsets, counts, True), ifd_offset,
                               bigtiff=True)
     stream.write(ifd)
     stream.seek(0)
@@ -314,12 +378,13 @@ def _write(
 
 def _entries(
     raster: Raster,
-    profile: _Profile,
+    layout: _Layout,
     offsets: list[int],
     counts: list[int],
     bigtiff: bool,
 ) -> list[tiff.IfdEntry]:
     grid = raster.grid
+    profile = layout.profile
     pointer = tiff.LONG8 if bigtiff else tiff.LONG
     return [
         (tiff.IMAGE_WIDTH, tiff.LONG, [grid.ncols]),
@@ -330,8 +395,8 @@ def _entries(
         (tiff.SAMPLES_PER_PIXEL, tiff.SHORT, [1]),
         (tiff.PLANAR_CONFIGURATION, tiff.SHORT, [_PLANAR_CONTIGUOUS]),
         (tiff.PREDICTOR, tiff.SHORT, [PREDICTOR_FLOATING_POINT]),
-        (tiff.TILE_WIDTH, tiff.SHORT, [TILE_SIZE]),
-        (tiff.TILE_LENGTH, tiff.SHORT, [TILE_SIZE]),
+        (tiff.TILE_WIDTH, tiff.SHORT, [layout.tile]),
+        (tiff.TILE_LENGTH, tiff.SHORT, [layout.tile]),
         (tiff.TILE_OFFSETS, pointer, offsets),
         (tiff.TILE_BYTE_COUNTS, pointer, counts),
         (tiff.SAMPLE_FORMAT, tiff.SHORT, [_SAMPLE_FORMAT_FLOAT]),
