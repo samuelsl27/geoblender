@@ -17,7 +17,8 @@ dominios».
   y fuera de los demás huecos, y con el campo lleno; ningún par **solapado** (más de 1 mm²). La
   lista dice el ``fid``, el valor del campo, el problema y, en un solape, su área en m²
   (:class:`Problem`); :func:`validate` la lanza como ``res.domains_invalid``
-  (:class:`DomainsError`).
+  (:class:`DomainsError`), y :func:`problem_steps` la busca por pasos (uno por polígono y por
+  par que recortar: los de una cubicación, A10).
 - :func:`overlaps`: los pares que se solapan, con el área del solape.
 - :func:`clip_to_scope`: las aristas orientadas de ``polígono ∩ ámbito``.
 - :func:`domain_edges` y :func:`scope_edges`: las aristas de cada dominio (los polígonos con el
@@ -48,7 +49,7 @@ tolerancia es una copia de trabajo.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -73,6 +74,7 @@ __all__ = [
     "clip_to_scope",
     "domain_edges",
     "overlaps",
+    "problem_steps",
     "problems",
     "scope_edges",
     "validate",
@@ -201,6 +203,13 @@ def problems(polygons: Sequence[Polygon]) -> tuple[Problem, ...]:
     solapes: el campo vacío, «se corta a sí mismo», «no tiene área», un hueco fuera de su
     contorno o dentro de otro, y cada par que se solapa en más de 1 mm², con su área. Los
     solapes se buscan entre los polígonos de geometría válida."""
+    return _drain(problem_steps(polygons))
+
+
+def problem_steps(polygons: Sequence[Polygon]) -> Generator[None, None, tuple[Problem, ...]]:
+    """:func:`problems` por pasos (plan 011 A10; RNF-011-04): un paso por polígono y otro por
+    cada par de polígonos cuyas cajas se tocan (recortar un par es lo más lento: unos 11 ms con
+    miles de vértices); lo mismo que :func:`problems` en ``StopIteration.value``."""
     origin = _origin(polygons)
     found: list[Problem] = []
     valid: list[tuple[int, list[np.ndarray]]] = []
@@ -214,7 +223,8 @@ def problems(polygons: Sequence[Polygon]) -> tuple[Problem, ...]:
             valid.append((index, rings))
         else:
             found.append(Problem(code, polygon.fid, value))
-    for overlap in _overlaps(valid):
+        yield
+    for overlap in (yield from _overlap_steps(valid)):
         first, second = polygons[overlap.first], polygons[overlap.second]
         found.append(Problem("res.domain_overlap", first.fid, _value(first), second.fid,
                              _value(second), overlap.area_m2))
@@ -241,6 +251,12 @@ def overlaps(polygons: Sequence[Polygon]) -> tuple[Overlap, ...]:
 
 
 def _overlaps(valid: list[tuple[int, list[np.ndarray]]]) -> list[Overlap]:
+    return _drain(_overlap_steps(valid))
+
+
+def _overlap_steps(valid: list[tuple[int, list[np.ndarray]]]
+                   ) -> Generator[None, None, list[Overlap]]:
+    """Los solapes de ``valid``, un paso por par de cajas que se tocan."""
     if len(valid) < 2:
         return []
     boxes = np.array([[*ring.min(axis=0), *ring.max(axis=0)]
@@ -253,7 +269,17 @@ def _overlaps(valid: list[tuple[int, list[np.ndarray]]]) -> list[Overlap]:
         area = _edges_area(_intersection(valid[i][1], valid[j][1]))
         if area > AREA_TOLERANCE_M2:
             found.append(Overlap(valid[i][0], valid[j][0], area))
+        yield
     return found
+
+
+def _drain[T](steps: Generator[None, None, T]) -> T:
+    """Recorre ``steps`` de una vez y da lo que devuelve."""
+    while True:
+        try:
+            next(steps)
+        except StopIteration as stop:
+            return stop.value
 
 
 def _geometry_problem(rings: list[np.ndarray]) -> str | None:
