@@ -18,6 +18,9 @@ Todas las coordenadas de este módulo son **absolutas** (CRS del proyecto, m, fl
 - :func:`volume_between` y :class:`VolumeResult`: el volumen entre dos superficies en la
   misma rejilla, celda a celda con su área exacta, en corte, relleno y neto, con el área
   con y sin dato (RF-006-03; plan §5.4 A2).
+- :func:`geometry_mismatch`: la primera diferencia de rejilla, CRS o referencia vertical entre
+  dos superficies, sin leer sus celdas (la de ``gis.grid_mismatch``; la usa también la
+  cubicación de la 011, RF-011-03).
 
 La ventana (``Window``), la unidad de alineación (``alignment_unit``) y la alineación de una
 ventana (``align_window``) son de ``core.georef`` (spec 002) y no se redefinen aquí: así la
@@ -34,7 +37,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ..core.errors import ValidationError
-from ..core.georef import VerticalRef, Window, align_window, alignment_unit, check_grid_step
+from ..core.georef import (
+    CrsRef,
+    VerticalRef,
+    Window,
+    align_window,
+    alignment_unit,
+    check_grid_step,
+)
 from .messages import GisError, format_value
 
 if TYPE_CHECKING:
@@ -44,6 +54,7 @@ __all__ = [
     "Grid",
     "VolumeResult",
     "aligned_grid",
+    "geometry_mismatch",
     "project_grid",
     "validate_step",
     "volume_between",
@@ -253,23 +264,46 @@ def _vertical_label(vertical: VerticalRef) -> str:
     return f"{vertical.name} ({vertical.note})" if vertical.note else vertical.name
 
 
-def _mismatch(upper: Raster, lower: Raster) -> tuple[str, object, str] | None:
-    """La primera diferencia entre las dos superficies que impide cubicarlas celda a celda
-    (campo, valor de ``lower`` y detalle en español), o ``None`` si están en la misma
-    rejilla (bit a bit), el mismo CRS y la misma referencia vertical."""
-    if not upper.grid.same_geometry(lower.grid):
+def geometry_mismatch(
+    a: Grid,
+    b: Grid,
+    crs_a: CrsRef,
+    crs_b: CrsRef,
+    vertical_a: VerticalRef | None,
+    vertical_b: VerticalRef | None,
+) -> tuple[str, object, str] | None:
+    """La primera diferencia entre dos superficies que impide compararlas celda a celda, sin
+    leer sus celdas (la de ``gis.grid_mismatch``; spec 011, RF-011-03, plan 011 §5.3.2 y A1):
+    el campo (``west``, ``north``, ``dx``, ``dy``, ``ncols``, ``nrows``, ``crs`` o
+    ``vertical``), el valor de la segunda y el detalle en español («paso en X 1 frente a
+    0,5»), o ``None`` si están en la misma rejilla (bit a bit: oeste, norte, pasos, columnas y
+    filas), el mismo CRS y la misma referencia vertical. Con ``vertical_a`` o ``vertical_b``
+    ``None`` no se compara la referencia vertical (una rejilla de espesores, plan 011 R7)."""
+    for grid in (a, b):
+        if not isinstance(grid, Grid):
+            raise TypeError(f"se esperaba una Grid, no {type(grid).__name__}")
+    if not a.same_geometry(b):
         for field, label in _GEOMETRY.items():
-            first, second = getattr(upper.grid, field), getattr(lower.grid, field)
+            first, second = getattr(a, field), getattr(b, field)
             if first != second:
                 detail = f"{label} {format_value(first)} frente a {format_value(second)}"
                 return field, second, detail
-    if upper.crs != lower.crs:
-        detail = f"CRS EPSG:{upper.crs.epsg} frente a EPSG:{lower.crs.epsg}"
-        return "crs", lower.crs.epsg, detail
-    if upper.vertical != lower.vertical:
-        first, second = _vertical_label(upper.vertical), _vertical_label(lower.vertical)
+    if crs_a != crs_b:
+        detail = f"CRS EPSG:{crs_a.epsg} frente a EPSG:{crs_b.epsg}"
+        return "crs", crs_b.epsg, detail
+    if vertical_a is not None and vertical_b is not None and vertical_a != vertical_b:
+        first, second = _vertical_label(vertical_a), _vertical_label(vertical_b)
         return "vertical", second, f"referencia vertical {first} frente a {second}"
     return None
+
+
+def _mismatch(upper: Raster, lower: Raster) -> tuple[str, object, str] | None:
+    """La primera diferencia entre las dos superficies que impide cubicarlas celda a celda
+    (campo, valor de ``lower`` y detalle en español), o ``None`` si están en la misma
+    rejilla (bit a bit), el mismo CRS y la misma referencia vertical
+    (:func:`geometry_mismatch`)."""
+    return geometry_mismatch(upper.grid, lower.grid, upper.crs, lower.crs, upper.vertical,
+                             lower.vertical)
 
 
 def _min_thickness(value: object) -> float:

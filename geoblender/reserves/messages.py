@@ -91,6 +91,13 @@ CATALOG: tuple[Message, ...] = (
         "«{surface}» es un TIN: llévelo antes a la rejilla (Topografía ▸ MDT ⇄ TIN…); una "
         "cubicación no remuestrea ninguna superficie.",
     ),
+    Message(
+        "res.surfaces_no_grid",
+        "«{surface}» and «{other}» are both constant elevations: at least one of the two "
+        "surfaces has to be a grid of the project, whose cells are measured.",
+        "«{surface}» y «{other}» son las dos cotas constantes: al menos una de las dos "
+        "superficies ha de ser una rejilla del proyecto, cuyas celdas se cubican.",
+    ),
     # Una banda: totales (A2; RF-011-01, §8 de la spec) -------------------------------------
     Message(
         "res.same_surface",
