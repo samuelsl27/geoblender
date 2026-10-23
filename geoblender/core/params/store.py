@@ -47,8 +47,9 @@ definición nueva (fuera del rango nuevo, otra unidad…), que es también por q
 confirmar: hay que cambiarlo. :func:`review_text` lo cuenta en español. Confirmar, o cambiar
 el valor (que se comprueba con la definición actual), quita la marca.
 
-Los valores se comprueban con la definición registrada del módulo dueño
-(``core.params.DEFINITIONS``) y se guardan en su unidad declarada: un valor en otra unidad
+Los valores se comprueban con la definición declarada por el módulo dueño
+(``core.params.definition``: la registrada con su clave o la de la familia que casa, con la
+clave concreta; ADR-0027) y se guardan en su unidad declarada: un valor en otra unidad
 convertible se convierte (RF-008-03). ``value`` es el JSON canónico del valor (``NULL`` =
 «sin valor») y ``value_sha256`` el sha256 de ``{value, unit}`` (plan D10): lo que compara la
 cascada, que no cambia con un cambio solo de tipo.
@@ -110,14 +111,16 @@ from ..units import DIMENSIONLESS, UNITS, UnitError, convert, symbol
 from ..versions import read as versions_read
 from ..versions.model import EDITABLE, Version, VersionError, ensure_editable
 from .model import (
-    DEFINITIONS,
     MESSAGES,
     ParamDef,
     ParamError,
+    ParamFamily,
     ParamKind,
     ParamValue,
     SourceKind,
     ValueType,
+    definition,
+    find_definition,
     format_range,
     format_value,
     render,
@@ -536,10 +539,12 @@ def _review_identity(review: Mapping[str, Any] | None) -> str | None:
     return _review_json({**review, "problem": code})
 
 
-def _definition_changes(conn: sqlite3.Connection, declared: Mapping[str, ParamDef]
+def _definition_changes(conn: sqlite3.Connection, declared: Mapping[str, ParamDef],
+                        families: Sequence[ParamFamily] = ()
                         ) -> list[tuple[DefinitionChange, str | None]]:
     """Cada parámetro registrado cuya marca «revisar» cambia con las definiciones
-    ``declared`` (por clave, ámbito y uid de ámbito), con el texto que se guardaría en
+    ``declared`` y las familias ``families`` (la clave concreta de una familia está declarada:
+    ADR-0027) (por clave, ámbito y uid de ámbito), con el texto que se guardaría en
     ``review`` (``None``: se quita). Solo lee. Que cambie cómo se muestran los números del
     problema no es un cambio (:func:`_review_identity`): ni se vuelve a marcar ni se
     reescribe. Los de una versión SUPERADO o DESCARTADO no se miran: ya no cambia nada suyo
@@ -552,7 +557,7 @@ def _definition_changes(conn: sqlite3.Connection, declared: Mapping[str, ParamDe
     for record in records:
         if record.scope == VERSION_SCOPE and record.scope_uid in closed:
             continue
-        review = _review(record, declared.get(record.key))
+        review = _review(record, find_definition(record.key, declared, families))
         if _review_identity(review) == _review_identity(record.review):
             continue
         text = _review_json(review)
@@ -696,8 +701,9 @@ def _find_version(conn: sqlite3.Connection, version: object) -> Version:
 
 
 def _definition(key: str) -> ParamDef:
-    """La definición registrada de ``key``; sin ella no se puede comprobar el valor."""
-    defn = DEFINITIONS.get(key)
+    """La definición declarada de ``key`` (registrada o de su familia, ADR-0027); sin ella no
+    se puede comprobar el valor."""
+    defn = definition(key)
     if defn is None:
         raise ParamError("core.param_undefined", key=key)
     return defn
@@ -719,7 +725,7 @@ def _writable_version(conn: sqlite3.Connection, key: str, version: object, *,
 def _admits_version(key: str) -> bool:
     """Si el eslabón de versión de una cadena vale para ``key``: su módulo lo admite por
     versión o (sin su módulo cargado) no se sabe y vale la fila que haya (D-19)."""
-    defn = DEFINITIONS.get(key)
+    defn = definition(key)
     return defn is None or defn.scope == VERSION_SCOPE
 
 
@@ -900,6 +906,23 @@ def _declared_definitions(defs: object) -> dict[str, ParamDef]:
             raise ValueError(f"la definición de «{defn.key}» está repetida")
         declared[defn.key] = defn
     return declared
+
+
+def _declared_families(families: object) -> tuple[ParamFamily, ...]:
+    """Las familias declaradas (ADR-0027): un ``Mapping`` como ``FAMILIES`` (sus valores) o
+    una secuencia de :class:`~.model.ParamFamily` con patrones distintos."""
+    items = families.values() if isinstance(families, Mapping) else families
+    if isinstance(items, str | bytes) or not isinstance(items, Iterable):
+        raise TypeError(f"las familias son ParamFamily, no {families!r}")
+    found: list[ParamFamily] = []
+    for family in items:
+        if not isinstance(family, ParamFamily):
+            raise TypeError(f"solo se comparan ParamFamily, no {type(family).__name__} "
+                            f"({family!r})")
+        if any(other.pattern == family.pattern for other in found):
+            raise ValueError(f"la familia «{family.pattern}» está repetida")
+        found.append(family)
+    return tuple(found)
 
 
 def _scope_of(scope_uid: str) -> str:
@@ -1378,7 +1401,7 @@ class ParameterStore:
             record = found
         if not record.unconfirmed and record.review is None:
             raise ParamError("core.param_nothing_to_confirm", key=key, value=record.value)
-        defn = DEFINITIONS.get(key)
+        defn = definition(key)
         if defn is None:
             def_sha = undeclared_sha256(key)
         else:
@@ -1391,18 +1414,22 @@ class ParameterStore:
                             value_type=record.value_type, def_sha256=def_sha)
 
     def mark_definition_changes(
-        self, conn: sqlite3.Connection, defs: Mapping[str, ParamDef] | Iterable[ParamDef]
+        self, conn: sqlite3.Connection, defs: Mapping[str, ParamDef] | Iterable[ParamDef], *,
+        families: Mapping[str, ParamFamily] | Iterable[ParamFamily] = (),
     ) -> builtins.list[DefinitionChange]:
         """Marca «revisar», con el cambio, cada parámetro registrado cuya definición en
         ``defs`` (las que declara el Geoblender que abre el proyecto, normalmente
-        ``DEFINITIONS``) no es la registrada o confirmada, o que ya no se declara; quita la
-        marca si se vuelve a declarar la registrada (RF-008-60). Solo escribe ``review`` (y
-        ``modified_at``) de los que cambian: ningún valor, unidad, tipo, marca «sin
-        confirmar», revisión ni fila del historial; un valor fuera del rango nuevo tampoco
-        (no se convierte ni se recorta). Devuelve lo escrito, por clave (vacío si nada
-        cambia: repetirlo no escribe). :class:`TypeError` o :class:`ValueError` si ``defs``
-        no son ``ParamDef`` con claves distintas."""
-        found = _definition_changes(conn, _declared_definitions(defs))
+        ``DEFINITIONS``) o en ``families`` (sus familias, normalmente ``FAMILIES``: la clave
+        concreta de una familia es una definición declarada, ADR-0027) no es la registrada o
+        confirmada, o que ya no se declara; quita la marca si se vuelve a declarar la
+        registrada (RF-008-60). Solo escribe ``review`` (y ``modified_at``) de los que
+        cambian: ningún valor, unidad, tipo, marca «sin confirmar», revisión ni fila del
+        historial; un valor fuera del rango nuevo tampoco (no se convierte ni se recorta).
+        Devuelve lo escrito, por clave (vacío si nada cambia: repetirlo no escribe).
+        :class:`TypeError` o :class:`ValueError` si ``defs`` no son ``ParamDef`` con claves
+        distintas o ``families``, ``ParamFamily`` con patrones distintos."""
+        found = _definition_changes(conn, _declared_definitions(defs),
+                                    _declared_families(families))
         if found:
             now = self._now()
             conn.executemany(
@@ -1413,15 +1440,18 @@ class ParameterStore:
 
     def definition_changes(
         self, defs: Mapping[str, ParamDef] | Iterable[ParamDef], *,
+        families: Mapping[str, ParamFamily] | Iterable[ParamFamily] = (),
         conn: sqlite3.Connection | None = None,
     ) -> builtins.list[DefinitionChange]:
-        """Lo que escribiría :meth:`mark_definition_changes` con ``defs``, en el mismo orden,
-        **sin escribir nada** (RF-008-60): la comprobación de apertura lo encuentra también en
-        solo lectura y lo marca en su transacción final. Solo lee (con ``conn``, en esa
-        conexión). Los mismos errores que :meth:`mark_definition_changes`."""
+        """Lo que escribiría :meth:`mark_definition_changes` con ``defs`` y ``families``, en
+        el mismo orden, **sin escribir nada** (RF-008-60): la comprobación de apertura lo
+        encuentra también en solo lectura y lo marca en su transacción final. Solo lee (con
+        ``conn``, en esa conexión). Los mismos errores que :meth:`mark_definition_changes`."""
         declared = _declared_definitions(defs)
+        declared_families = _declared_families(families)
         with self._reading(conn) as reading:
-            return [change for change, _text in _definition_changes(reading, declared)]
+            return [change for change, _text in _definition_changes(reading, declared,
+                                                                      declared_families)]
 
     # --- Interno ----------------------------------------------------------------------------
 

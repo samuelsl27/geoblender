@@ -47,7 +47,8 @@ from typing import Any, Protocol, runtime_checkable
 from ..hashing import canonical_float, canonical_json, sha256_bytes
 from ..i18n import LANGUAGES, translate
 from ..ids import new_uid
-from ..params.model import DEFINITIONS, ParamError, ParamKind, ParamValue, ValueType, format_value
+from ..params.model import ParamError, ParamKind, ParamValue, ValueType, format_value
+from ..params.model import definition as param_definition
 from ..params.store import ParameterStore, ResolvedParam, decode_value
 from ..paths import find_absolute_paths
 from ..timeutil import format_utc, parse_utc
@@ -465,7 +466,7 @@ def _calculated(conn: sqlite3.Connection, handle: FigureOperation, key: str, uni
         _numeric(key, parameter, record.value_type)
         _comparable(key, unit, parameter, record.unit)
         return _Link(parameter, record.uid, record.rev)
-    defn = DEFINITIONS.get(parameter)
+    defn = param_definition(parameter)  # la registrada o la de su familia (ADR-0027)
     if defn is None:
         raise ParamError("core.param_undefined", key=parameter)
     if defn.scope != "project":

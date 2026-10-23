@@ -170,14 +170,15 @@ from ...core.inputs import (
     list_inputs,
 )
 from ...core.params import (
-    DEFINITIONS,
     VERSION_SCOPE,
     HistoryAction,
     ParameterFilter,
     ParameterStore,
     ParamKind,
     ParamMark,
+    parameter_label,
 )
+from ...core.params import definition as param_definition
 from ...core.params.store import shown_value
 from ...core.provenance import contract
 from ...core.provenance.messages import render
@@ -1035,7 +1036,7 @@ def _version_values(project: Project, found: Sequence[Any]) -> dict[str, tuple[s
         return {}
     keys = []
     for item in found:
-        definition = DEFINITIONS.get(item.record.key)
+        definition = param_definition(item.record.key)  # también la de su familia (ADR-0027)
         if definition is None or definition.scope == VERSION_SCOPE:
             keys.append(item.record.key)
     if not keys:
@@ -1736,13 +1737,9 @@ def _operation_text(node: Any, shown: str) -> str:
 
 
 def _parameter_text(node: Any, shown: str) -> str:
-    """Un parámetro que leyó un eslabón: su nombre, su clave y el valor que leyó con su
-    unidad."""
-    from ...core.params import DEFINITIONS  # al usarlo: las definiciones de los módulos
-
-    definition = DEFINITIONS.get(node.key)
-    label = text(definition.label_msgid) if definition is not None and \
-        definition.label_msgid else ""
+    """Un parámetro que leyó un eslabón: su nombre (con los segmentos variables si es de una
+    familia, ADR-0027), su clave y el valor que leyó con su unidad."""
+    label = parameter_label(node.key, shown)
     name = f"{label} · {node.key}" if label else node.key
     return f"{name} = {node.value_text(language=shown)}"
 

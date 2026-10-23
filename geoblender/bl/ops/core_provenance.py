@@ -1594,7 +1594,7 @@ def scope_choice(key: str) -> ScopeChoice | None:
     """Si Cambiar parámetro… de ``key`` pregunta el ámbito (RF-009-29, D-19): su módulo lo
     admite por versión y hay una versión activa; si no (o el parámetro es de un módulo que no
     está cargado), ``None``: solo el del proyecto. Con lo ya leído: no lee el proyecto."""
-    definition = params.DEFINITIONS.get(key)
+    definition = params.definition(key)  # la registrada o la de su familia (ADR-0027)
     shown = scene_versions.active()
     if definition is None or definition.scope != params.VERSION_SCOPE or shown is None:
         return None
@@ -1865,7 +1865,7 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
         else:
             typed = self.value.strip()
             if given("value") and typed != typed_value(record.value, language):
-                defn = params.DEFINITIONS.get(record.key)
+                defn = params.definition(record.key)
                 if defn is None:
                     raise params.ParamError("core.param_undefined", key=record.key)
                 changes["value"] = params.parse_value(

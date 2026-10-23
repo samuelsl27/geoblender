@@ -89,8 +89,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, TypeVar
 
-from ..i18n import translate
-from ..params.model import DEFINITIONS
+from ..params.model import parameter_label
 from ..versions.model import EDITABLE, revision_label
 from .contract import OPERATIONS, parse_version
 from .messages import render
@@ -1358,12 +1357,12 @@ def stale_text(graph: ProvenanceGraph, versions: Mapping[str, str], causes: Iter
 
 
 def _parameter_name(graph: ProvenanceGraph, uid: str, language: str) -> str:
-    """El nombre visible de un parámetro (su etiqueta, o su clave si no la tiene)."""
+    """El nombre visible de un parámetro (su etiqueta, con los segmentos variables si es de
+    una familia, ADR-0027; o su clave si no la tiene)."""
     node = graph.parameters.get(uid)
     key = uid if node is None else node.key
-    definition = DEFINITIONS.get(key)
-    msgid = None if definition is None else definition.label_msgid
-    return key if msgid is None else translate(language, msgid)
+    label = parameter_label(key, language)
+    return key if label is None else label
 
 
 # --- Por región (plan §5.4.3) ---------------------------------------------------------------

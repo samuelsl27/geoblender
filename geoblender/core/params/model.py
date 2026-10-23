@@ -22,6 +22,12 @@ ADR-0004). Los valores del proyecto y su historial los guarda ``ParameterStore``
   (:data:`MESSAGES`, :data:`CATALOG_ES` y :func:`render`).
 - :data:`DEFINITIONS`, :func:`register_definitions` y :func:`unregister_definitions`: las
   definiciones registradas, por clave.
+- :class:`ParamFamily`, :data:`FAMILIES`, :func:`register_families` y
+  :func:`unregister_families` (ADR-0027; spec 011, T04): las **familias**, un parámetro por
+  elemento de un dato (``res.unit.{u}.density``). :func:`definition` da la definición de una
+  clave, la registrada o la de la familia que casa, con la clave concreta: quien comprueba o
+  describe un parámetro pasa por ella (``DEFINITIONS`` sigue siendo solo lo registrado), y
+  :func:`parameter_label`, su nombre visible.
 
 **Compatibilidad con la 006** (plan §5.3.4, I-1): la spec 006 declaró sus 17 parámetros con
 un ``ParamDef`` provisional en ``gis/params.py`` (commit ``39b28f1``). Este tiene su misma
@@ -36,19 +42,20 @@ la unidad en español («m³»; las de la 006, m, s y %, se escriben igual).
 
 from __future__ import annotations
 
+import functools
 import math
 import numbers
 import re
 import threading
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import KW_ONLY, dataclass
+from dataclasses import KW_ONLY, dataclass, replace
 from enum import StrEnum
 from itertools import pairwise
 from types import MappingProxyType
 
 from ..catalog.schema import MODULE_CODES
 from ..errors import ValidationError
-from ..i18n import LANGUAGES, THIN_SPACE
+from ..i18n import LANGUAGES, THIN_SPACE, translate
 from ..units import DIMENSIONLESS, UNITS, UnitError, convert, parse_quantity, symbol
 
 type ParamValue = float | int | bool | str | tuple[float, ...]
@@ -765,6 +772,14 @@ def register_definitions(defs: Iterable[ParamDef]) -> None:
                 f"clave de parámetro ya registrada o repetida: {listed}. Cada clave se "
                 "registra una sola vez (unregister_definitions antes de volver a registrarla)"
             )
+        of_family = [(key, _family_of(key, _FAMILY_REGISTRY.values())) for key in keys]
+        clashing = [(key, family) for key, family in of_family if family is not None]
+        if clashing:
+            listed = ", ".join(f"«{key}» (de «{family.pattern}»)" for key, family in clashing)
+            raise ValueError(
+                f"clave de parámetro de una familia registrada: {listed}. Una clave concreta "
+                "es de su familia (ADR-0027)"
+            )
         for definition in defs:
             _REGISTRY[definition.key] = definition
 
@@ -778,3 +793,211 @@ def unregister_definitions(module: str) -> int:
         for key in keys:
             del _REGISTRY[key]
     return len(keys)
+
+
+# --- Familias de parámetros (ADR-0027; spec 011, T04) ---------------------------------------
+
+_SEGMENT = r"[a-z][a-z0-9_]*"
+_FIXED = re.compile(_SEGMENT)
+_VARIABLE = re.compile(rf"\{{({_SEGMENT})\}}")
+_LABEL_SEPARATOR = " · "
+
+
+def _pattern_problem(pattern: str) -> str | None:
+    """Lo que hace mal formado un patrón de familia, o ``None``: segmentos separados por
+    «.», el primero el código de un módulo, los demás un nombre en minúsculas o una variable
+    entre llaves (``{u}``), al menos una variable y ninguna repetida."""
+    parts = pattern.split(".")
+    if len(parts) < 2 or parts[0] not in MODULE_CODES:
+        return (f"no tiene la forma <código>.<segmento>[.<más>], con un código de módulo de "
+                f"{', '.join(MODULE_CODES)}")
+    names: list[str] = []
+    for part in parts[1:]:
+        found = _VARIABLE.fullmatch(part)
+        if found is not None:
+            names.append(found[1])
+        elif _FIXED.fullmatch(part) is None:
+            return (f"el segmento «{part}» no es un nombre en minúsculas ([a-z][a-z0-9_]*) ni "
+                    "una variable entre llaves ({u})")
+    if not names:
+        return ("no tiene ningún segmento variable entre llaves: una clave fija se declara con "
+                "un ParamDef")
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        return f"repite la variable {', '.join(f'{{{name}}}' for name in repeated)}"
+    return None
+
+
+@functools.lru_cache(maxsize=256)
+def _pattern_regex(pattern: str) -> re.Pattern[str]:
+    """La expresión de un patrón bien formado: cada variable, un grupo ``[a-z][a-z0-9_]*``."""
+    parts = [f"({_SEGMENT})" if _VARIABLE.fullmatch(part) else re.escape(part)
+             for part in pattern.split(".")]
+    return re.compile(r"\.".join(parts))
+
+
+@dataclass(frozen=True, slots=True)
+class ParamFamily:
+    """Una familia de parámetros (ADR-0027): un parámetro por elemento de un dato, como la
+    densidad de cada unidad de la columna de materiales (spec 011, RF-011-11).
+
+    ``pattern`` es una clave con uno o más segmentos variables entre llaves
+    (``res.unit.{u}.density``, ``res.unit.{u}.{c}.percent``), cada uno de los cuales casa con
+    un código ``[a-z][a-z0-9_]*`` (el código inmutable del elemento, ADR-0027 punto 5); el
+    primer segmento es el código del módulo dueño. ``template`` es un :class:`ParamDef` del
+    mismo módulo con todo lo demás (tipo de valor, unidad, rango, por defecto o
+    ``allow_empty``, tipo por defecto, ámbito, ``msgid`` de su etiqueta), cuya clave casa con el
+    patrón (``res.unit.u.density``). La definición de una clave concreta es la plantilla con esa
+    clave (:meth:`concrete`; :func:`definition`).
+
+    :class:`TypeError` si el patrón no es un texto o la plantilla no es un ``ParamDef``;
+    :class:`ValueError` si el patrón está mal formado, si la plantilla es de otro módulo o si su
+    clave no casa con el patrón."""
+
+    pattern: str
+    template: ParamDef
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.pattern, str):
+            raise TypeError(f"el patrón de una familia es un texto, no {self.pattern!r}")
+        if not isinstance(self.template, ParamDef):
+            raise TypeError(f"la plantilla de la familia «{self.pattern}» es un ParamDef, no "
+                            f"{type(self.template).__name__}")
+        problem = _pattern_problem(self.pattern)
+        if problem is None and self.template.module != self.module:
+            problem = (f"su plantilla «{self.template.key}» es de otro módulo "
+                       f"({self.template.module}, no {self.module})")
+        if problem is None and self.match(self.template.key) is None:
+            problem = f"la clave de su plantilla, «{self.template.key}», no casa con el patrón"
+        if problem is not None:
+            raise ValueError(f"familia de parámetros «{self.pattern}»: {problem}")
+
+    @property
+    def module(self) -> str:
+        """El código del módulo dueño: ``res`` de ``res.unit.{u}.density``."""
+        return self.pattern.partition(".")[0]
+
+    def match(self, key: object) -> tuple[str, ...] | None:
+        """Los segmentos variables de ``key``, en orden (``("capa_util",)``), si casa con el
+        patrón; ``None`` si no (o si no es un texto)."""
+        if not isinstance(key, str):
+            return None
+        found = _pattern_regex(self.pattern).fullmatch(key)
+        return None if found is None else found.groups()
+
+    def concrete(self, key: str) -> ParamDef:
+        """La definición de la clave concreta ``key``: la plantilla con esa clave (la misma
+        para la misma familia y la misma clave). :class:`ValueError` si no casa."""
+        if self.match(key) is None:
+            raise ValueError(f"la clave «{key}» no es de la familia «{self.pattern}»")
+        try:
+            return _concrete(self, key)
+        except TypeError:  # una plantilla que no se puede usar como clave: sin memorizar
+            return replace(self.template, key=key)
+
+    def overlaps(self, other: ParamFamily) -> bool:
+        """Si alguna clave casa a la vez con esta familia y con ``other``: el mismo número de
+        segmentos y, en cada posición, una variable o el mismo nombre."""
+        mine, theirs = self.pattern.split("."), other.pattern.split(".")
+        return len(mine) == len(theirs) and all(
+            a == b or _VARIABLE.fullmatch(a) is not None or _VARIABLE.fullmatch(b) is not None
+            for a, b in zip(mine, theirs, strict=True)
+        )
+
+
+@functools.lru_cache(maxsize=4096)
+def _concrete(family: ParamFamily, key: str) -> ParamDef:
+    return replace(family.template, key=key)
+
+
+_FAMILY_REGISTRY: dict[str, ParamFamily] = {}
+
+FAMILIES: Mapping[str, ParamFamily] = MappingProxyType(_FAMILY_REGISTRY)
+"""Las familias registradas, por patrón (vista de solo lectura, siempre al día)."""
+
+
+def _family_of(key: str, families: Iterable[ParamFamily]) -> ParamFamily | None:
+    """La familia de ``families`` con la que casa ``key`` (como mucho una: no se solapan)."""
+    for family in families:
+        if family.match(key) is not None:
+            return family
+    return None
+
+
+def find_definition(key: object, definitions: Mapping[str, ParamDef],
+                    families: Iterable[ParamFamily] = ()) -> ParamDef | None:
+    """La definición de ``key`` en ``definitions`` (por clave) o, si no está, la de la primera
+    de ``families`` que casa, con la clave concreta (ADR-0027, punto 3); ``None`` si nada la
+    declara. Es :func:`definition` con lo que declara otro Geoblender (la comprobación de
+    apertura, RF-008-60)."""
+    if not isinstance(key, str):
+        return None
+    found = definitions.get(key)
+    if found is not None:
+        return found
+    family = _family_of(key, families)
+    return None if family is None else family.concrete(key)
+
+
+def definition(key: object) -> ParamDef | None:
+    """La definición de ``key``: la registrada con esa clave o, si no la hay, la de la familia
+    registrada que casa, con la clave concreta; ``None`` si ningún módulo cargado la declara.
+    Quien comprueba o describe un parámetro pasa por aquí (ADR-0027, punto 3): una clave
+    concreta de una familia es una definición declarada a todos los efectos."""
+    return find_definition(key, _REGISTRY, tuple(_FAMILY_REGISTRY.values()))
+
+
+def parameter_label(key: object, language: str = "es") -> str | None:
+    """El nombre visible de ``key`` en ``language``: la etiqueta de su definición y, si es de
+    una familia, sus segmentos variables («Densidad in situ · capa_util»; ADR-0027, punto 4);
+    ``None`` si ningún módulo cargado la declara o no tiene etiqueta."""
+    found = definition(key)
+    if found is None or not found.label_msgid:
+        return None
+    label = translate(language, found.label_msgid)
+    family = None if key in _REGISTRY else _family_of(found.key, _FAMILY_REGISTRY.values())
+    segments = () if family is None else family.match(found.key) or ()
+    return _LABEL_SEPARATOR.join((label, *segments))
+
+
+def register_families(families: Iterable[ParamFamily]) -> None:
+    """Registra las familias de un módulo (lo llama ``bl/`` en el ``register()`` de su
+    módulo, como :func:`register_definitions`): todas o ninguna. :class:`ValueError` si un
+    patrón se repite en ``families`` o ya está registrado, o si una solapa con otra familia
+    (registrada o del lote) o casa con una clave registrada (lo registrado se queda);
+    :class:`TypeError` si una no es una :class:`ParamFamily`."""
+    families = tuple(families)
+    for family in families:
+        if not isinstance(family, ParamFamily):
+            raise TypeError(
+                f"solo se registra una ParamFamily, no {type(family).__name__} ({family!r})"
+            )
+    with _LOCK:
+        problems: list[str] = []
+        for position, family in enumerate(families):
+            for other in (*_FAMILY_REGISTRY.values(), *families[:position]):
+                if other.pattern == family.pattern:
+                    problems.append(f"«{family.pattern}» ya está registrada o repetida")
+                elif family.overlaps(other):
+                    problems.append(f"«{family.pattern}» solapa con «{other.pattern}»")
+            problems.extend(f"«{family.pattern}» casa con la clave registrada «{key}»"
+                            for key in _REGISTRY if family.match(key) is not None)
+        if problems:
+            raise ValueError(
+                f"familia de parámetros ya registrada, repetida o que solapa: "
+                f"{'; '.join(problems)}. Cada clave concreta es de una sola definición "
+                "(unregister_families antes de volver a registrarla)"
+            )
+        for family in families:
+            _FAMILY_REGISTRY[family.pattern] = family
+
+
+def unregister_families(module: str) -> int:
+    """Quita las familias del módulo ``module`` (en ``unregister()``) y dice cuántas había.
+    Quitar las de un módulo sin ninguna no hace nada: ``unregister()`` es idempotente."""
+    with _LOCK:
+        patterns = [pattern for pattern, family in _FAMILY_REGISTRY.items()
+                    if family.module == module]
+        for pattern in patterns:
+            del _FAMILY_REGISTRY[pattern]
+    return len(patterns)
