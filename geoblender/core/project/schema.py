@@ -8,8 +8,14 @@ RF-002-05, RF-002-14, RF-002-15, RF-002-20, RF-002-22; ADR-0006; formato-proyect
   (``core.provenance.schema``: parámetros, entradas, datos, operaciones, cifras, la caché de
   obsolescencia y lo ignorado). ``min_reader_schema`` sigue en 1: como las tablas del 1 no
   cambian, un Geoblender de la 002 abre un proyecto del 2 en solo lectura con el aviso de
-  «versión más moderna» (RF-002-22). Un proyecto nuevo se crea directamente en el 2; uno del
-  1 se migra (``core.project.migrations``).
+  «versión más moderna» (RF-002-22).
+- **Esquema 3** (spec 009): el 2 más las versiones, sus revisiones, lo congelado y las
+  decisiones de la propiedad (``core.versions.schema``), con la versión de cada dato, su título
+  y la revisión de cada operación en las tablas de la 008. ``min_reader_schema`` sigue en 1 al
+  migrar: un proyecto sin versiones no tiene nada que un Geoblender del 2 lea mal; lo sube a 3
+  crear la primera versión (plan 009, D-24). Un proyecto nuevo se crea directamente en el 3 (el
+  2 y después ``apply_schema_3``, lo mismo que hace migrar); uno anterior se migra
+  (``core.project.migrations``).
 
 :func:`missing_objects` echa en falta lo de un esquema concreto: al abrir, lo del 1 para leer
 ``gb_project`` y después lo del esquema del proyecto (de uno posterior, lo que conoce esta
@@ -45,17 +51,22 @@ cualquier programa. Un esquema publicado no cambia nunca: cualquier cambio sube
 
 from __future__ import annotations
 
+import functools
 import sqlite3
 
-from ..gpkg.base import register_internal_table
+from ..gpkg.base import create_structure, register_internal_table
 from ..provenance import schema as provenance_schema
+from ..versions import schema as versions_schema
 from .model import ProjectRecord
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MIN_READER_SCHEMA = 1
 SCHEMA_1_TABLES: tuple[str, ...] = ("gb_project", "gb_event", "gb_schema_migration")
-INTERNAL_TABLES: tuple[str, ...] = SCHEMA_1_TABLES + provenance_schema.INTERNAL_TABLES
-"""Las tablas internas del esquema de esta versión: las del 1 y las de la procedencia."""
+INTERNAL_TABLES: tuple[str, ...] = (
+    SCHEMA_1_TABLES + provenance_schema.INTERNAL_TABLES + versions_schema.INTERNAL_TABLES
+)
+"""Las tablas internas del esquema de esta versión: las del 1, las de la procedencia (2) y las
+de las versiones (3)."""
 
 _TABLES: dict[str, str] = {
     "gb_project": """CREATE TABLE gb_project (
@@ -169,24 +180,58 @@ TRIGGERS: dict[str, str] = _triggers()
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
-    """Crea el esquema de esta versión (:data:`SCHEMA_VERSION`, el 2): las tablas internas
-    del 1, sus disparadores y su declaración en ``gpkg_extensions``, y las de la
-    procedencia (``core.provenance.schema.create_tables``), en la transacción de ``conn``
-    (tras ``core.gpkg.base.create_base``)."""
+    """Crea el esquema de esta versión (:data:`SCHEMA_VERSION`, el 3): las tablas internas
+    del 1, sus disparadores y su declaración en ``gpkg_extensions``, las de la procedencia
+    (``core.provenance.schema.create_tables``: el esquema 2) y después lo del 3
+    (``core.versions.schema.apply_schema_3``, lo mismo que hace la migración 2 → 3), en la
+    transacción de ``conn`` (tras ``core.gpkg.base.create_base``).
+
+    Las tablas y las columnas del 3 se crean antes que los índices y los disparadores: cada
+    ``ALTER TABLE … ADD COLUMN`` vuelve a leer el esquema entero, y con los disparadores ya
+    creados crear un proyecto costaría 2 ms más (las pruebas crean cientos). El resultado es
+    el mismo ``sqlite_master`` que migrar (lo comprueba ``test_migration_0003``)."""
     for table, ddl in _TABLES.items():
         conn.execute(ddl)
         register_internal_table(conn, table)
+    provenance_schema.create_tables(conn, tables_only=True)
+    versions_schema.add_columns(conn)
     for ddl in TRIGGERS.values():
         conn.execute(ddl)
     provenance_schema.create_tables(conn)
+    versions_schema.apply_schema_3(conn)
+
+
+@functools.cache
+def base_image() -> bytes:
+    """La base de un proyecto nuevo sin sus filas propias, como imagen de un fichero SQLite
+    (tarea 009/T34; RNF-001-01): la estructura GeoPackage con las filas del estándar
+    (``core.gpkg.base.create_structure``) y el esquema de esta versión (:func:`create_schema`),
+    hechos una vez por proceso en una base en memoria (``sqlite3.Connection.serialize``).
+
+    Crear un proyecto escribe la imagen y añade, en una transacción, el CRS del proyecto, su
+    fila de ``gb_project`` y su evento (``core.project.create``): el mismo ``sqlite_master``
+    (tipo, nombre, tabla y SQL, en su orden) y las mismas filas que hacerlo todo en la base,
+    en ≈ 3 ms en vez de ≈ 9 ms (sus ≈ 140 objetos, con los 106 disparadores, cuestan a SQLite
+    ≈ 5,5 ms; las pruebas crean miles de proyectos). Solo cambian las páginas en que SQLite
+    guarda cada tabla. La imagen es inmutable (``bytes``) y no está en WAL (formato 1)."""
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    try:
+        conn.execute("BEGIN")
+        create_structure(conn)
+        create_schema(conn)
+        conn.execute("COMMIT")
+        return conn.serialize()
+    finally:
+        conn.close()
 
 
 def missing_objects(conn: sqlite3.Connection, version: int) -> list[str]:
     """Lo que le falta a la base para tener el esquema ``version`` (``"table gb_event"``,
-    ``"trigger gb_event_no_upd"``, ``"index gb_figure_key"``…), en orden: lo del 1 y,
-    desde el 2, lo de la procedencia; lista vacía si está completo. De un esquema posterior
-    al de esta versión se echa en falta lo que esta conoce (:data:`SCHEMA_VERSION`): uno
-    posterior que se pueda leer (``min_reader_schema``) lo conserva.
+    ``"trigger gb_event_no_upd"``, ``"index gb_figure_key"``…), en orden: lo del 1;
+    desde el 2, lo de la procedencia, y desde el 3, lo de las versiones
+    (``core.versions.schema.missing_objects``); lista vacía si está completo. De un esquema
+    posterior al de esta versión se echa en falta lo que esta conoce (:data:`SCHEMA_VERSION`):
+    uno posterior que se pueda leer (``min_reader_schema``) lo conserva.
 
     ``TypeError`` si ``version`` no es un entero y ``ValueError`` si es menor que 1."""
     if isinstance(version, bool) or not isinstance(version, int):
@@ -202,6 +247,8 @@ def missing_objects(conn: sqlite3.Connection, version: int) -> list[str]:
     missing = [item for item in expected if (item,) not in present]
     if min(version, SCHEMA_VERSION) >= 2:
         missing += provenance_schema.missing_objects(conn)
+    if min(version, SCHEMA_VERSION) >= 3:
+        missing += versions_schema.missing_objects(conn)
     return missing
 
 

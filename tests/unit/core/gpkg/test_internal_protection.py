@@ -249,10 +249,11 @@ class StructureTest(unittest.TestCase):
     def test_schema_constants_and_registration(self) -> None:
         """RF-002-14, RF-002-15: ``min_reader_schema`` 1 (el esquema es el 2 desde la spec
         008, que añade las tablas de la procedencia: sus pruebas, en
-        ``tests/unit/core/provenance/test_schema.py``); las tres tablas internas, entre las
-        declaradas ``write-only`` y fuera de ``gpkg_contents``; la comprobación de
-        estructura no echa nada en falta y nombra lo que falte."""
-        self.assertEqual((schema.SCHEMA_VERSION, schema.MIN_READER_SCHEMA), (2, 1))
+        ``tests/unit/core/provenance/test_schema.py``; y el 3 desde la 009, que añade las de
+        las versiones: ``tests/unit/core/project/test_migration_0003.py``); las tres tablas
+        internas, entre las declaradas ``write-only`` y fuera de ``gpkg_contents``; la
+        comprobación de estructura no echa nada en falta y nombra lo que falte."""
+        self.assertEqual((schema.SCHEMA_VERSION, schema.MIN_READER_SCHEMA), (3, 1))
         self.assertEqual(schema.INTERNAL_TABLES[: len(INTERNAL)], INTERNAL)
         with project_tmp() as tmp:
             path = tmp / "project.gpkg"

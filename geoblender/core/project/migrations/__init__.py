@@ -11,8 +11,8 @@ acepta, se migra con :func:`migrate_steps` antes de abrirlo en escritura. Reglas
   forman una cadena sin huecos (:func:`plan_migrations`) que se comprueba **antes** de
   tocar nada. Cada una es un módulo ``m<NNNN>.py`` de este paquete (con el tipo de
   ``base``, para no importar el paquete) que se añade a :data:`REGISTRY` (la 1 → 2,
-  ``m0002``, de la spec 008) y, si toca otros almacenes además del GeoPackage, declara
-  cómo se recupera.
+  ``m0002``, de la spec 008; la 2 → 3, ``m0003``, de la 009) y, si toca otros almacenes
+  además del GeoPackage, declara cómo se recupera.
 - No se migra un proyecto que está en una carpeta de solo lectura (las que declaran la
   variable de IMGA y la preferencia, ``read_only``: los expedientes de clientes; spec 008,
   RF-008-15, S-3): la copia previa se haría allí. Se rechaza antes de mirar nada más, sin
@@ -54,6 +54,7 @@ from ...paths import DriveType, ReadOnlyDirs
 from ...sysinfo import SessionInfo, pid_alive
 from ...timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ...userdata import UserData
+from ...versions.read import snapshot_index
 from .. import lock as lockmod
 from ..copytree import DiskUsageFn, copy_steps, remove_tree
 from ..events import EventKind, log_event, record_event
@@ -64,6 +65,7 @@ from ..open import WAL_WARNING, inspect_project
 from ..schema import SCHEMA_VERSION, read_project
 from .base import Migration
 from .m0002 import MIGRATION as _MIGRATION_0002
+from .m0003 import MIGRATION as _MIGRATION_0003
 
 BACKUP_MARK = ".respaldo-esquema-"
 BACKUP_EXCLUDE: tuple[str, ...] = ("cache", ".lock")
@@ -72,9 +74,9 @@ _CHAIN = "Migraciones del esquema del proyecto"
 
 _Event = tuple[EventKind, str, dict[str, object]]
 
-REGISTRY: tuple[Migration, ...] = (_MIGRATION_0002,)
+REGISTRY: tuple[Migration, ...] = (_MIGRATION_0002, _MIGRATION_0003)
 """Las migraciones de esta versión, una por esquema: 1 → 2, la procedencia (``m0002``,
-spec 008)."""
+spec 008); 2 → 3, las versiones y revisiones (``m0003``, spec 009)."""
 
 
 @dataclass(frozen=True)
@@ -277,12 +279,13 @@ def _rewrite_header(
     try:
         with GpkgConnection.open_read(database) as db:
             record = read_project(db.connection)
+            inventory = snapshot_index(db.connection)  # spec 009, plan §5.2.4
         if record is None:
             raise ProjectError(
                 "core.gpkg_project_missing", "falta la fila de gb_project",
                 obj="Base de datos del proyecto", field="gb_project", value=str(database),
             )
-        header = manifest_from_record(record, previous=previous)
+        header = manifest_from_record(record, previous=previous, inventory=inventory)
         write_manifest(root, header, session.session_uid)
     except (GeoblenderError, OSError, sqlite3.Error) as exc:
         message = (

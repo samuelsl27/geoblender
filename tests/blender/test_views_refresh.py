@@ -27,12 +27,18 @@ guion):
 - **con el MDT y los sondeos** (``RefreshDrillholesTest``, con las ayudas de
   ``test_dh_import_tabular``): recalcular el MDT y F5 vuelve a cargar solo el MDT; los objetos
   de los sondeos, los mismos (``session_uid``), con su superposición;
-- **nada escrito en el proyecto** (el contador de cambios de su cabecera).
+- **nada escrito en el proyecto** (el contador de cambios de su cabecera);
+- **la marca de vista desfasada, a la vista** (spec 009, T43): ponerla y quitarla (al cargar una
+  vista sin su proyecto, al abrirlo, con otro GeoOrigin, al Refrescar con y sin nada que volver a
+  cargar) pide después redibujar todas las ventanas, también la barra lateral.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
+import logging
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
@@ -54,10 +60,32 @@ ESC = SimpleNamespace(type="ESC", value="PRESS")
 UP_TO_DATE = "La vista está al día"
 CANCELLED = "Refrescar cancelado: la vista queda como estaba"
 DH_FILES = ("bocas.csv", "desviaciones.csv")  # lo que necesitan las trazas y su vista
+PROPS_LOGGER = "geoblender.bl.props"  # el de la función update que redibuja (spec 009, T41)
+REDRAW_MESSAGE = "Se pide redibujar todas las ventanas"
+REDRAW_LOG = f"DEBUG:{PROPS_LOGGER}:{REDRAW_MESSAGE}"
 
 
 def ops() -> Any:
     return bpy.ops.geoblender
+
+
+def view_marks(value: bool) -> tuple[bool, ...]:
+    """La marca de vista desfasada ``value`` en todas las escenas."""
+    return (value,) * len(bpy.data.scenes)
+
+
+class _MarkAtRedraw(logging.Handler):
+    """La marca de vista desfasada de las escenas en cada petición de redibujar todas las
+    ventanas (la línea DEBUG de la función ``update`` de ``WindowManager.geoblender_redraw``,
+    spec 009, T41): si se pidió después de cambiarla."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.seen: list[tuple[bool, ...]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage() == REDRAW_MESSAGE:
+            self.seen.append(tuple(scene.geoblender.view_stale for scene in bpy.data.scenes))
 
 
 class RefreshCase(unittest.TestCase):
@@ -143,6 +171,21 @@ class RefreshCase(unittest.TestCase):
         """La marca en vivo, tras Refrescar: nada que no esté al día (control 7 apagado)."""
         self.run_marks()
         self.assertEqual(self.live.pending_count(), 0)
+
+    @contextmanager
+    def redraws(self) -> Iterator[list[tuple[bool, ...]]]:
+        """Las peticiones de redibujar todas las ventanas mientras dura (``assertLogs`` del
+        DEBUG de la función ``update`` que las ejecuta, spec 009, T41), cada una con la marca de
+        vista desfasada que tenían las escenas al pedirla."""
+        handler = _MarkAtRedraw()
+        logger = logging.getLogger(PROPS_LOGGER)
+        with self.assertLogs(PROPS_LOGGER, level="DEBUG") as logged:
+            logger.addHandler(handler)
+            try:
+                yield handler.seen
+            finally:
+                logger.removeHandler(handler)
+        self.assertIn(REDRAW_LOG, logged.output)
 
 
 class ViewsRefreshTest(RefreshCase):
@@ -292,6 +335,58 @@ class ViewsRefreshTest(RefreshCase):
         self.assertEqual(self.only(grid.uid).geoblender.content_sha256, recomputed.content_sha256)
         self.assertEqual([scene.geoblender.view_stale for scene in bpy.data.scenes],
                          [False] * len(bpy.data.scenes))
+        self.assertUpToDate()
+
+    def test_the_view_stale_mark_redraws_every_window(self) -> None:
+        """RF-002-29, RF-010-01 (spec 009, T43; regresión de la vuelta en pantalla del 23/10: tras
+        Refrescar sin nada que volver a cargar, la marca de vista desfasada ya estaba quitada y el
+        panel Proyecto seguía diciendo «La vista está desfasada: vuelva a cargar sus datos» hasta
+        cerrar y abrir la barra lateral): poner y quitar la marca pide **después** redibujar todas
+        las regiones de todas las ventanas, también la barra lateral, con ``bl.ui.bars.redraw``
+        (T41: la función ``update`` de ``WindowManager.geoblender_redraw``, que se ve en el
+        registro técnico). Se pone al cargar una vista sin su proyecto abierto, con otro GeoOrigin
+        (``core_set_work_window``) y con ``bl.scene.georef.mark_stale``; se quita al abrir después
+        su proyecto con su georreferencia (``clear_unopened_view``, 009/T42), al Refrescar
+        volviendo a cargarlo todo (el último paso de la carga) y al Refrescar sin nada que volver
+        a cargar. Poner la marca que ya está no pide nada."""
+        data, ps = self.data, self.ps
+        georef = vf.extension("bl.scene.georef")
+        data.load(bpy.context)
+        self.tick()
+        view = self.folder / "vista.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(view))
+        data.close()
+
+        with self.redraws() as seen:  # sin su proyecto: se pone al cargarla
+            blender_ext.load_file(view)
+        self.assertIsNone(ps.current())
+        self.assertIn(view_marks(True), seen)
+        opened = vf.extension("core.project").open_project(data.root, ps.session(),
+                                                           ps.userdata()).project
+        with self.redraws() as seen:  # su proyecto, con su georreferencia: se quita (T42)
+            ps.attach(opened)
+        data.project = opened
+        ps.take_notices()
+        self.assertIn(view_marks(False), seen)
+
+        with self.redraws() as seen:  # otro GeoOrigin: se pone
+            self.assertEqual(ops().core_set_work_window(
+                "EXEC_DEFAULT", xmin=str(vf.WEST), ymin=str(vf.SOUTH),
+                xmax=str(vf.WINDOW[2]), ymax=str(vf.WINDOW[3]), grid_step="1.0", z0=10,
+                reason=vf.REASON), {"FINISHED"})
+        self.assertIn(view_marks(True), seen)
+        with self.redraws() as seen:  # Refrescar lo vuelve a cargar todo: se quita
+            self.assertEqual(ops().core_refresh("EXEC_DEFAULT"), {"FINISHED"})
+        self.assertIn(view_marks(False), seen)
+
+        with self.redraws() as seen:
+            georef.mark_stale()
+        self.assertEqual(seen, [view_marks(True)])
+        with self.assertNoLogs(PROPS_LOGGER, level="DEBUG"):
+            georef.mark_stale()  # ya estaba: nada que redibujar
+        with self.redraws() as seen:  # Refrescar sin nada que volver a cargar: se quita
+            self.assertEqual(ops().core_refresh("EXEC_DEFAULT"), {"CANCELLED"})
+        self.assertIn(view_marks(False), seen)
         self.assertUpToDate()
 
     def test_esc_leaves_the_view_as_it_was(self) -> None:

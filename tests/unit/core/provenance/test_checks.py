@@ -387,8 +387,9 @@ class ChecksCase(ExternalCase):
 
 class StepsTest(ChecksCase):
     def test_steps_in_order_with_progress_without_reading_or_writing(self) -> None:
-        """RF-008-58, RF-008-09, RF-008-21 (plan §5.4.6): sin nada cambiado, los seis pasos
-        corren en orden (foto, interrumpidas, entradas, datos, restos, versiones), con su
+        """RF-008-58, RF-008-09, RF-008-21, RF-009-09 (plan §5.4.6; plan 009 A8): sin nada
+        cambiado, los siete pasos corren en orden (foto, interrumpidas, entradas, datos, restos,
+        instantáneas —sin revisiones congeladas, nada— y versiones), con su
         progreso «Comprobando el proyecto… n %» que no retrocede y acaba en el 100 %; solo el
         último lleva el resultado, que no encuentra nada: «Limites_v1» sin cambios y todos los
         datos seguidos comprobados (también la rejilla de ``rasters/``), sin avisos. No se lee
@@ -403,7 +404,7 @@ class StepsTest(ChecksCase):
         phases = [step.phase for step in found]
         self.assertEqual(list(dict.fromkeys(phases)), list(checks.SURVEY_STEPS))
         self.assertEqual(checks.SURVEY_STEPS, ("foto", "interrumpidas", "entradas", "datos",
-                                                   "restos", "versiones"))
+                                                   "restos", "instantáneas", "versiones"))
         order = [checks.SURVEY_STEPS.index(phase) for phase in phases]
         self.assertEqual(order, sorted(order))
         done = [step.done for step in found]

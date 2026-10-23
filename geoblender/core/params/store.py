@@ -59,8 +59,33 @@ todo **antes** de escribir: un rechazo es un :class:`~.model.ParamError` (un err
 Geoblender, que solo deshace la transacción), nunca una restricción de SQLite (que dejaría
 el proyecto en solo lectura). Python puro: biblioteca estándar y ``core`` (ADR-0004).
 
-Ámbito: en esta spec, solo el proyecto (``scope = 'project'``, ``scope_uid = ''``); la
-versión llega con la spec 009 y el sector con R-32.
+**Ámbitos** (spec 009; RF-009-24, RF-009-29, RF-009-04, RF-009-01; plan 009 A1, A3 y D-19).
+Cada parámetro tiene su valor del proyecto (``scope = 'project'``, ``scope_uid = ''``) y, si su
+módulo lo admite por versión (``ParamDef(scope="version")``), uno propio en cada versión que
+lo prueba (``scope = 'version'``, ``scope_uid`` = el uid de la versión), con su historial. La
+versión se indica con ``version=`` (su uid o su código, «V10»):
+
+- :meth:`ParameterStore.change` con ``version`` crea la fila de la versión la primera vez (a
+  partir del valor que hoy vale en ella, el del proyecto: lo que no se pasa es lo suyo; con su
+  motivo y una fila ``create`` del historial) y después la cambia como cualquier otra; no toca
+  la del proyecto ni la de otra versión. :meth:`~ParameterStore.create`,
+  :meth:`~ParameterStore.confirm`, :meth:`~ParameterStore.get` y
+  :meth:`~ParameterStore.history` admiten también ``version``.
+- :meth:`ParameterStore.resolve` con la cadena ``("version", "project")`` y ``version`` da el de
+  la versión si lo tiene y, si no, el del proyecto (D-19); el eslabón de versión solo vale para
+  un parámetro que su módulo admite por versión (uno del proyecto se resuelve en el proyecto).
+- :meth:`ParameterStore.scopes`: el valor de cada ámbito, el del proyecto y después el de cada
+  versión por número (RF-009-29). :meth:`ParameterStore.list` sigue siendo la del proyecto.
+- :meth:`ParameterStore.inherit`: crear una versión que parte de otra le copia sus parámetros
+  de versión con la fila de historial «Heredado de V10.r2» (plan 009 A1, D-26).
+
+Escribir con ``version`` un parámetro del proyecto (los de la 005 y la 006) se rechaza
+(``core.param_project_only``), y en una versión SUPERADO o DESCARTADO, con el
+``core.version_not_editable`` de RF-009-04 (``core.versions.model.VersionError``), siempre antes
+de escribir; los disparadores ``gb_parameter_version_ins`` y ``_upd`` son la segunda barrera.
+Por eso :meth:`~ParameterStore.mark_definition_changes` no marca «revisar» los de una versión
+cerrada, que ya no cambian. Este módulo solo lee las versiones (``core.versions.read`` y
+``model``; ARQ-08: ``core.versions.store`` lo importa a él). El sector llega con R-32.
 """
 
 from __future__ import annotations
@@ -82,6 +107,8 @@ from ..hashing import canonical_json, sha256_bytes
 from ..ids import new_uid
 from ..timeutil import Clock, format_utc, parse_utc
 from ..units import DIMENSIONLESS, UNITS, UnitError, convert, symbol
+from ..versions import read as versions_read
+from ..versions.model import EDITABLE, Version, VersionError, ensure_editable
 from .model import (
     DEFINITIONS,
     MESSAGES,
@@ -100,7 +127,9 @@ if TYPE_CHECKING:
     from ..sysinfo import SessionInfo
 
 PROJECT_SCOPE = "project"
-"""El único ámbito de esta spec (``gb_parameter.scope``)."""
+"""El ámbito del proyecto (``gb_parameter.scope``; ``scope_uid = ''``)."""
+VERSION_SCOPE = "version"
+"""El ámbito de los parámetros de una versión (spec 009; ``scope_uid`` = uid de la versión)."""
 
 DEFAULT_DECIDER = "Geoblender (valor por defecto)"
 """El decisor (y quien escribe la fila del historial) de un valor por defecto (RF-008-04)."""
@@ -168,7 +197,8 @@ class StoreProject(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ParameterRecord:
-    """Una fila de ``gb_parameter``: el valor vigente de un parámetro del proyecto.
+    """Una fila de ``gb_parameter``: el valor vigente de un parámetro en un ámbito (el
+    proyecto, ``scope_uid = ''``, o una versión, ``scope_uid`` = su uid).
 
     ``value`` normalizado (``float``, ``int``, ``bool``, ``str``, tupla de ``float`` o
     ``None``) y ``value_json``, su JSON canónico tal como se guarda; ``review``, el JSON del
@@ -310,12 +340,14 @@ class ParameterRow:
 class DefinitionChange:
     """Un parámetro cuya marca «revisar» escribió :meth:`ParameterStore.mark_definition_changes`
     (RF-008-60): ``review`` es el cambio (el JSON de ``gb_parameter.review``, ya leído) o
-    ``None`` si se quitó porque se declara otra vez la definición registrada."""
+    ``None`` si se quitó porque se declara otra vez la definición registrada; ``scope_uid``,
+    el uid de la versión de uno de versión (``''`` en el del proyecto)."""
 
     parameter_uid: str
     key: str
     scope: str
     review: dict[str, Any] | None
+    scope_uid: str = ""
 
     @property
     def text(self) -> str:
@@ -510,19 +542,39 @@ def _definition_changes(conn: sqlite3.Connection, declared: Mapping[str, ParamDe
     ``declared`` (por clave, ámbito y uid de ámbito), con el texto que se guardaría en
     ``review`` (``None``: se quita). Solo lee. Que cambie cómo se muestran los números del
     problema no es un cambio (:func:`_review_identity`): ni se vuelve a marcar ni se
-    reescribe."""
-    found: list[tuple[DefinitionChange, str | None]] = []
-    for row in conn.execute(
+    reescribe. Los de una versión SUPERADO o DESCARTADO no se miran: ya no cambia nada suyo
+    (RF-009-04; el disparador ``gb_parameter_version_upd`` abortaría la marca)."""
+    records = [_record(row) for row in conn.execute(
         f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter ORDER BY key, scope, scope_uid"
-    ).fetchall():
-        record = _record(row)
+    ).fetchall()]
+    closed = _closed_versions(conn, records)
+    found: list[tuple[DefinitionChange, str | None]] = []
+    for record in records:
+        if record.scope == VERSION_SCOPE and record.scope_uid in closed:
+            continue
         review = _review(record, declared.get(record.key))
         if _review_identity(review) == _review_identity(record.review):
             continue
         text = _review_json(review)
         found.append((DefinitionChange(record.uid, record.key, record.scope,
-                                       None if text is None else json.loads(text)), text))
+                                       None if text is None else json.loads(text),
+                                       record.scope_uid), text))
     return found
+
+
+def _closed_versions(conn: sqlite3.Connection, records: Iterable[ParameterRecord]
+                     ) -> frozenset[str]:
+    """Los uid de las versiones SUPERADO o DESCARTADO, si alguno de ``records`` es de una
+    versión (si no, no se consulta ``gb_version``, que un proyecto del esquema 2 abierto en
+    solo lectura no tiene)."""
+    if not any(record.scope == VERSION_SCOPE for record in records):
+        return frozenset()
+    editable = sorted(str(status) for status in EDITABLE)
+    rows = conn.execute(
+        f"SELECT uid FROM gb_version WHERE status NOT IN ({', '.join('?' for _ in editable)})",
+        editable,
+    ).fetchall()
+    return frozenset(uid for (uid,) in rows)
 
 
 def _declared_value(value: object) -> ParamValue | None:
@@ -610,11 +662,37 @@ def _check_key(key: object) -> None:
 
 
 def _check_scope(scope: object) -> None:
-    if scope != PROJECT_SCOPE:
+    if scope not in (PROJECT_SCOPE, VERSION_SCOPE):
         raise ValueError(
-            f"ámbito {scope!r}: en esta spec los parámetros son del proyecto ('project'); la "
-            "versión llega con la spec 009 y el sector con R-32"
+            f"ámbito {scope!r}: los parámetros son del proyecto ('project') o de una versión "
+            "('version', spec 009); el sector llega con R-32"
         )
+
+
+def _read_scope(scope: str | None, version: str | None) -> str:
+    """El ámbito de una lectura: ``scope`` (``None``: el de la versión si se indica
+    ``version`` y si no el proyecto), que tiene que casar con ``version``."""
+    if scope is None:
+        return PROJECT_SCOPE if version is None else VERSION_SCOPE
+    _check_scope(scope)
+    if (scope == VERSION_SCOPE) != (version is not None):
+        raise ValueError(
+            f"ámbito {scope!r} con version={version!r}: el ámbito de versión necesita la "
+            "versión (version=) y el del proyecto no la admite"
+        )
+    return scope
+
+
+def _find_version(conn: sqlite3.Connection, version: object) -> Version:
+    """La versión de uid o código ``version``; :class:`VersionError`
+    (``core.version_unknown``) si no está en el proyecto."""
+    if not isinstance(version, str):
+        raise TypeError(f"una versión se indica por su uid o su código, no {version!r}")
+    found = versions_read.version(conn, version)
+    if found is None:
+        raise VersionError("core.version_unknown", field="versión", value=version,
+                           version=version)
+    return found
 
 
 def _definition(key: str) -> ParamDef:
@@ -622,8 +700,27 @@ def _definition(key: str) -> ParamDef:
     defn = DEFINITIONS.get(key)
     if defn is None:
         raise ParamError("core.param_undefined", key=key)
-    _check_scope(defn.scope)
     return defn
+
+
+def _writable_version(conn: sqlite3.Connection, key: str, version: object, *,
+                      defined: bool = True) -> Version:
+    """La versión en la que se escribe el valor propio de ``key``: tiene que existir
+    (``core.version_unknown``); con ``defined``, ``key`` tiene que estar declarado
+    (``core.param_undefined``) y admitir valor por versión (``core.param_project_only``: los
+    de la 005 y la 006 son del proyecto; D-19); y la versión, ser editable (RF-009-04). Solo
+    lee."""
+    found = _find_version(conn, version)
+    if defined and _definition(key).scope != VERSION_SCOPE:
+        raise ParamError("core.param_project_only", key=key, version=found.code)
+    return ensure_editable(found)
+
+
+def _admits_version(key: str) -> bool:
+    """Si el eslabón de versión de una cadena vale para ``key``: su módulo lo admite por
+    versión o (sin su módulo cargado) no se sabe y vale la fila que haya (D-19)."""
+    defn = DEFINITIONS.get(key)
+    return defn is None or defn.scope == VERSION_SCOPE
 
 
 def _kind(key: str, kind: object) -> ParamKind:
@@ -805,13 +902,35 @@ def _declared_definitions(defs: object) -> dict[str, ParamDef]:
     return declared
 
 
-def _load(conn: sqlite3.Connection, key: str) -> ParameterRecord | None:
+def _scope_of(scope_uid: str) -> str:
+    """El ámbito de una fila por su ``scope_uid``: ``''`` es el proyecto y un uid, una
+    versión."""
+    return VERSION_SCOPE if scope_uid else PROJECT_SCOPE
+
+
+def _load(conn: sqlite3.Connection, key: str, scope_uid: str = "") -> ParameterRecord | None:
+    """La fila de ``key`` en el proyecto (``scope_uid = ''``) o en la versión ``scope_uid``."""
     row = conn.execute(
         f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter "
-        "WHERE key = ? AND scope = ? AND scope_uid = ''",
-        (key, PROJECT_SCOPE),
+        "WHERE key = ? AND scope = ? AND scope_uid = ?",
+        (key, _scope_of(scope_uid), scope_uid),
     ).fetchone()
     return None if row is None else _record(row)
+
+
+def _load_uid(conn: sqlite3.Connection, uid: str) -> ParameterRecord:
+    row = conn.execute(f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter WHERE uid = ?",
+                       (uid,)).fetchone()
+    if row is None:  # inalcanzable: nada se borra
+        raise RuntimeError(f"el parámetro {uid} no se ha podido leer tras escribirlo")
+    return _record(row)
+
+
+def _resolved(record: ParameterRecord) -> ResolvedParam:
+    return ResolvedParam(
+        record.uid, record.key, record.scope, record.scope_uid, record.rev, record.value,
+        record.value_json, record.unit, record.kind, record.unconfirmed, record.value_sha256,
+    )
 
 
 def _figure(conn: sqlite3.Connection, key: str, record: ParameterRecord,
@@ -849,28 +968,62 @@ class ParameterStore:
 
     # --- Lectura ----------------------------------------------------------------------------
 
-    def get(self, key: str, scope: str = PROJECT_SCOPE, *,
+    def get(self, key: str, scope: str | None = None, *, version: str | None = None,
             conn: sqlite3.Connection | None = None) -> ParameterRecord | None:
-        """El valor vigente de ``key`` en el proyecto, o ``None`` si no está registrado."""
+        """El valor vigente de ``key`` en el proyecto o, con ``version`` (uid o código), en
+        esa versión (RF-009-29); ``None`` si no está registrado en ese ámbito (una versión
+        sin valor propio no es la del proyecto: eso es :meth:`resolve`). ``scope``
+        (``'project'`` o ``'version'``) es opcional y tiene que casar con ``version``
+        (:class:`ValueError`); :class:`~core.versions.model.VersionError` si la versión no
+        existe."""
         _check_key(key)
-        _check_scope(scope)
+        chosen = _read_scope(scope, version)
         with self._reading(conn) as reading:
-            return _load(reading, key)
+            return _load(reading, key, self._scope_uid(reading, chosen, version))
 
-    def history(self, key: str, scope: str = PROJECT_SCOPE, *,
+    def history(self, key: str, scope: str | None = None, *, version: str | None = None,
                 conn: sqlite3.Connection | None = None) -> list[HistoryEntry]:
-        """El historial de ``key`` por revisión (vacío si no está registrado)."""
+        """El historial de ``key`` por revisión en el proyecto o, con ``version``, en esa
+        versión (vacío si no está registrado en ese ámbito). ``scope`` y ``version``, como en
+        :meth:`get`."""
         _check_key(key)
-        _check_scope(scope)
+        chosen = _read_scope(scope, version)
         columns = ", ".join(f"h.{name.strip()}" for name in _HISTORY_COLUMNS.split(","))
         with self._reading(conn) as reading:
             rows = reading.execute(
                 f"SELECT {columns} FROM gb_parameter_history AS h "
                 "JOIN gb_parameter AS p ON p.uid = h.parameter_uid "
-                "WHERE p.key = ? AND p.scope = ? AND p.scope_uid = '' ORDER BY h.rev",
-                (key, scope),
+                "WHERE p.key = ? AND p.scope = ? AND p.scope_uid = ? ORDER BY h.rev",
+                (key, chosen, self._scope_uid(reading, chosen, version)),
             ).fetchall()
         return [_entry(row) for row in rows]
+
+    def scopes(self, key: str, *,
+               conn: sqlite3.Connection | None = None) -> tuple[ParameterRecord, ...]:
+        """El valor de ``key`` en cada ámbito que lo tiene (RF-009-29: «V11: 1,25 [HIP] ·
+        proyecto: 1,23 [ADO]»): primero el del proyecto y después el de cada versión, por
+        número de versión (V02 antes que V10), de cualquier estado; vacío si no está
+        registrado en ninguno. Solo lee."""
+        _check_key(key)
+        with self._reading(conn) as reading:
+            records = [_record(row) for row in reading.execute(
+                f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter WHERE key = ? "
+                "ORDER BY scope, scope_uid",
+                (key,),
+            ).fetchall()]
+            versioned = [record for record in records if record.scope == VERSION_SCOPE]
+            rank: dict[str, int] = {}
+            if versioned:
+                uids = [record.scope_uid for record in versioned]
+                rows = reading.execute(
+                    f"SELECT uid FROM gb_version WHERE uid IN ({', '.join('?' for _ in uids)}) "
+                    "ORDER BY CAST(substr(code, 2) AS INTEGER), code",
+                    uids,
+                ).fetchall()
+                rank = {uid: position for position, (uid,) in enumerate(rows)}
+        versioned.sort(key=lambda record: (rank.get(record.scope_uid, len(rank)),
+                                           record.scope_uid))
+        return (*(record for record in records if record.scope == PROJECT_SCOPE), *versioned)
 
     def list(self, filters: ParameterFilter | None = None, *,
              conn: sqlite3.Connection | None = None) -> builtins.list[ParameterRow]:
@@ -903,11 +1056,20 @@ class ParameterStore:
         return [_list_row(_record(row)) for row in rows]
 
     def resolve(self, conn: sqlite3.Connection, key: str,
-                scope_chain: Iterable[str] = (PROJECT_SCOPE,)) -> ResolvedParam:
-        """El parámetro ``key`` que lee una operación, resuelto por su ámbito (RF-008-05):
-        el primero de ``scope_chain`` que lo tiene; en esta spec, solo el proyecto.
-        :class:`~.model.ParamError` (``core.param_not_registered``) si el proyecto no lo
-        tiene: antes, :meth:`ensure_default`. :class:`ValueError` con otro ámbito."""
+                scope_chain: Iterable[str] = (PROJECT_SCOPE,), *,
+                version: str | None = None) -> ResolvedParam:
+        """El parámetro ``key`` que lee una operación, resuelto por su ámbito (RF-008-05,
+        RF-009-24): el del primero de ``scope_chain`` que lo tiene. ``("version",
+        "project")`` con ``version`` (uid o código) es el de esa versión si lo tiene y, si
+        no, el del proyecto (D-19); el eslabón de versión solo vale si su módulo lo admite
+        por versión (uno del proyecto se resuelve en el proyecto). Lo devuelto dice el ámbito,
+        su uid y la revisión del historial que se usó.
+
+        :class:`~.model.ParamError` (``core.param_not_registered``) si ningún ámbito de la
+        cadena lo tiene (antes, :meth:`ensure_default`);
+        :class:`~core.versions.model.VersionError` si la versión no existe;
+        :class:`ValueError` con una cadena vacía, repetida o con otro ámbito, con
+        ``"version"`` sin ``version`` o con ``version`` sin ``"version"``."""
         _check_key(key)
         if isinstance(scope_chain, str):
             raise TypeError("scope_chain es una secuencia de ámbitos, no un texto")
@@ -916,14 +1078,24 @@ class ParameterStore:
             raise ValueError("scope_chain no tiene ningún ámbito")
         for scope in chain:
             _check_scope(scope)
-        record = _load(conn, key)
-        if record is None:
-            raise ParamError("core.param_not_registered", key=key)
-        return ResolvedParam(
-            record.uid, record.key, record.scope, record.scope_uid, record.rev, record.value,
-            record.value_json, record.unit, record.kind, record.unconfirmed,
-            record.value_sha256,
-        )
+        if len(set(chain)) != len(chain):
+            raise ValueError(f"scope_chain repite un ámbito: {chain!r}")
+        if (VERSION_SCOPE in chain) != (version is not None):
+            raise ValueError(
+                f"scope_chain {chain!r} con version={version!r}: el ámbito de versión de la "
+                "cadena y la versión (version=) van juntos"
+            )
+        version_uid = "" if version is None else _find_version(conn, version).uid
+        for scope in chain:
+            if scope == VERSION_SCOPE:
+                if not _admits_version(key):
+                    continue
+                record = _load(conn, key, version_uid)
+            else:
+                record = _load(conn, key)
+            if record is not None:
+                return _resolved(record)
+        raise ParamError("core.param_not_registered", key=key)
 
     # --- Escritura --------------------------------------------------------------------------
 
@@ -940,14 +1112,21 @@ class ParameterStore:
         decided_by: str | None = None,
         decided_at: dt.datetime | dt.date | str | None = None,
         reason: str | None = None,
+        version: str | None = None,
     ) -> ParameterRecord:
         """Da de alta ``key`` con el valor que fija una persona (``value`` en ``unit``; sin
         ella, en la declarada), su tipo (MEDIDO, ADOPTADO o HIPÓTESIS), su origen y su clase,
-        quién lo decidió, cuándo (``decided_at``; sin ella, ahora) y por qué (RF-008-01).
-        :class:`~.model.ParamError` si ya está, si ningún módulo cargado lo declara, si le
-        falta algo de eso, si es CALCULADO o si el valor no vale (RF-008-03)."""
+        quién lo decidió, cuándo (``decided_at``; sin ella, ahora) y por qué (RF-008-01); en
+        el proyecto o, con ``version`` (uid o código), como valor propio de esa versión
+        (RF-009-29), lo tenga o no el proyecto.
+        :class:`~.model.ParamError` si ya está en ese ámbito, si ningún módulo cargado lo
+        declara, si le falta algo de eso, si es CALCULADO o si el valor no vale (RF-008-03);
+        con ``version``, también si es del proyecto (``core.param_project_only``), y
+        :class:`~core.versions.model.VersionError` si la versión no existe o no es editable
+        (RF-009-04)."""
         _check_key(key)
-        if _load(conn, key) is not None:
+        scope_uid = "" if version is None else _writable_version(conn, key, version).uid
+        if _load(conn, key, scope_uid) is not None:
             raise ParamError("core.param_exists", key=key, value=value)
         checked_kind = _kind(key, kind)
         if checked_kind is ParamKind.CALCULADO:
@@ -970,7 +1149,8 @@ class ParameterStore:
             raise ParamError("core.param_reason_missing_new", key=key, value=checked,
                              shown=shown_value(checked, defn.unit))
         return self._insert(conn, defn, state, HistoryAction.CREATE,
-                            changed_by=self.project.session.user_host, now=self._now())
+                            changed_by=self.project.session.user_host, now=self._now(),
+                            scope_uid=scope_uid)
 
     def ensure_default(self, conn: sqlite3.Connection, key: str, *,
                        geoblender_version: str) -> ParameterRecord:
@@ -1017,6 +1197,7 @@ class ParameterStore:
         decided_at: dt.datetime | dt.date | str | None = None,
         reason: str | None = None,
         from_figure: str | None = None,
+        version: str | None = None,
     ) -> ParameterRecord:
         """Cambia el valor (en ``unit``; sin ella, en la declarada), el tipo, el origen o el
         decisor de ``key`` (lo que no se pasa no cambia), con la fecha de la decisión
@@ -1029,12 +1210,30 @@ class ParameterStore:
         «cifra «<clave>» de la operación «<tipo>»» de la clase ``operation``. Sin la cifra,
         un parámetro no pasa a CALCULADO ni cambia el valor de uno CALCULADO.
 
-        :class:`~.model.ParamError` si no está registrado, si no cambia nada o si falta o no
-        vale algo; :class:`ValueError` si con la cifra se pasan el valor, la unidad u otro
+        Con ``version`` (uid o código; RF-009-29, D-19), cambia el valor propio de esa
+        versión en un parámetro que su módulo admite por versión. La primera vez crea su fila
+        a partir del valor que hoy vale en ella, el del proyecto (lo que no se pasa es lo
+        suyo), con una fila ``create`` del historial y su motivo, obligatorio aunque deje el
+        mismo valor (fijarlo en la versión es una decisión); después, como cualquier cambio.
+        Ni la fila del proyecto ni la de otra versión cambian.
+
+        :class:`~.model.ParamError` si no está registrado (ni en la versión ni en el
+        proyecto), si no cambia nada o si falta o no vale algo; con ``version``, también si
+        es del proyecto (``core.param_project_only``), y
+        :class:`~core.versions.model.VersionError` si la versión no existe o no es editable
+        (RF-009-04). :class:`ValueError` si con la cifra se pasan el valor, la unidad u otro
         tipo, o una unidad sin valor."""
-        record = self._require(conn, key)
-        old = _State.of(record)
-        value_type = record.value_type
+        scope_uid = ""
+        record: ParameterRecord | None
+        if version is None:
+            record = self._require(conn, key)
+        else:
+            _check_key(key)
+            scope_uid = _writable_version(conn, key, version).uid
+            record = _load(conn, key, scope_uid)
+        base = record if record is not None else self._require(conn, key)
+        old = _State.of(base)
+        value_type = base.value_type
         checked_with: ParamDef | None = None  # la definición con que se comprobó un valor
         if from_figure is not None:
             if value is not UNSET or unit is not None:
@@ -1042,7 +1241,7 @@ class ParameterStore:
             if kind is not UNSET and kind != ParamKind.CALCULADO:
                 raise ValueError(f"una cifra se adopta como CALCULADO, no como {kind!r}")
             defn = checked_with = _definition(key)
-            figure = _figure(conn, key, record, from_figure)
+            figure = _figure(conn, key, base, from_figure)
             new_value = _checked_value(defn, figure.value, figure.unit)
             new_unit, value_type = defn.unit, defn.value_type
             new_kind = ParamKind.CALCULADO
@@ -1084,6 +1283,22 @@ class ParameterStore:
             raise ParamError("core.param_source_missing", key=key, value=new.source)
         if new.decided_by == DEFAULT_DECIDER:
             raise ParamError("core.param_decided_by_missing", key=key, value=new.decided_by)
+        if record is None:  # la primera fila de la versión, a partir de la del proyecto
+            text = _reason(reason)
+            if text is None:
+                raise ParamError("core.param_reason_missing_new", key=key, value=new.value,
+                                 shown=shown_value(new.value, new.unit))
+            # Como en _update: el valor comprobado con la definición actual la deja como la
+            # confirmada; sin valor nuevo, la fila sigue con la definición y el «revisar» de la
+            # del proyecto.
+            return self._insert(
+                conn, _definition(key), replace(new, reason=text), HistoryAction.CREATE,
+                changed_by=self.project.session.user_host, now=self._now(),
+                scope_uid=scope_uid, value_type=value_type,
+                def_sha256=base.def_sha256 if checked_with is None
+                else definition_sha256(checked_with),
+                review=base.review if checked_with is None else None,
+            )
         dated = decided_at is not None
         if _same_decision(old, new, dated=dated):
             raise ParamError("core.param_unchanged", key=key, value=new.value)
@@ -1099,19 +1314,68 @@ class ParameterStore:
             def_sha256=None if checked_with is None else definition_sha256(checked_with),
         )
 
+    def inherit(self, conn: sqlite3.Connection, parent_version: str, child_version: str, *,
+                label: str) -> int:
+        """Copia a la versión ``child_version`` los parámetros de versión de
+        ``parent_version`` (spec 009, RF-009-01; plan 009 A1 y D-26) y devuelve cuántos: cada
+        uno, una fila nueva de ``gb_parameter`` con el ámbito de la versión nueva y el mismo
+        valor, unidad, tipo, origen, decisor y fecha de la decisión (y su marca «sin confirmar»,
+        su «revisar» y la definición con la que se registró), con el motivo «Heredado de
+        <label>» (la revisión de la padre en que ese es hoy su valor: «V10.r2»), y su fila
+        ``create`` del historial, de quien escribe. Los de la padre no cambian; nada más se
+        copia. :class:`ValueError` si falta una versión o la etiqueta, o si son la misma."""
+        for name, value in (("parent_version", parent_version),
+                            ("child_version", child_version), ("label", label)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} no es un texto con contenido: {value!r}")
+        if parent_version == child_version:
+            raise ValueError("una versión no hereda de sí misma")
+        rows = conn.execute(
+            f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter "
+            "WHERE scope = ? AND scope_uid = ? ORDER BY key",
+            (VERSION_SCOPE, parent_version),
+        ).fetchall()
+        now = self._now()
+        reason = f"Heredado de {label.strip()}"
+        names = [name.strip() for name in _PARAMETER_COLUMNS.split(",")]
+        for row in rows:
+            uid = new_uid()
+            fields = dict(zip(names, row, strict=True))
+            fields.update(uid=uid, scope_uid=child_version, reason=reason, rev=1,
+                          created_at=now, modified_at=now)
+            conn.execute(
+                f"INSERT INTO gb_parameter ({_PARAMETER_COLUMNS}) "
+                f"VALUES ({_marks(_PARAMETER_COLUMNS)})",
+                tuple(fields[name] for name in names),
+            )
+            state = replace(_State.of(_record(row)), reason=reason)
+            self._history(conn, uid, 1, HistoryAction.CREATE, state,
+                          changed_by=self.project.session.user_host, at=now)
+        return len(rows)
+
     def confirm(self, conn: sqlite3.Connection, key: str, *,
-                reason: str | None = None) -> ParameterRecord:
+                reason: str | None = None, version: str | None = None) -> ParameterRecord:
         """Confirma ``key`` «sin confirmar» o «revisar» (RF-008-02, RF-008-04, RF-008-60):
         quita las dos marcas, deja la definición declarada ahora como la confirmada
         (``def_sha256``; :func:`undeclared_sha256` si ninguna la declara) y añade una fila
-        con el mismo valor, tipo, origen y decisor; el motivo es opcional.
+        con el mismo valor, tipo, origen y decisor; el motivo es opcional. Con ``version``
+        (uid o código), el valor propio de esa versión (spec 009).
 
-        :class:`~.model.ParamError` si no está registrado, si no tiene ninguna de las dos
-        marcas o si su valor no cumple la definición actual (``core.param_review_mismatch``
-        si está en otra unidad o es de otro tipo de valor; si no, el código de
-        :meth:`~.model.ParamDef.check`, como ``core.param_out_of_range``): ese valor se
-        cambia, no se confirma (no se convierte ni se recorta nunca)."""
-        record = self._require(conn, key)
+        :class:`~.model.ParamError` si no está registrado en ese ámbito, si no tiene ninguna
+        de las dos marcas o si su valor no cumple la definición actual
+        (``core.param_review_mismatch`` si está en otra unidad o es de otro tipo de valor; si
+        no, el código de :meth:`~.model.ParamDef.check`, como ``core.param_out_of_range``):
+        ese valor se cambia, no se confirma (no se convierte ni se recorta nunca).
+        :class:`~core.versions.model.VersionError` si la versión no existe o no es editable
+        (RF-009-04)."""
+        if version is None:
+            record = self._require(conn, key)
+        else:
+            _check_key(key)
+            found = _load(conn, key, _writable_version(conn, key, version, defined=False).uid)
+            if found is None:
+                raise ParamError("core.param_not_registered", key=key)
+            record = found
         if not record.unconfirmed and record.review is None:
             raise ParamError("core.param_nothing_to_confirm", key=key, value=record.value)
         defn = DEFINITIONS.get(key)
@@ -1189,28 +1453,49 @@ class ParameterStore:
         )
 
     def _require(self, conn: sqlite3.Connection, key: str) -> ParameterRecord:
+        """La fila de ``key`` del proyecto; ``core.param_not_registered`` si no la tiene."""
         _check_key(key)
         record = _load(conn, key)
         if record is None:
             raise ParamError("core.param_not_registered", key=key)
         return record
 
+    def _scope_uid(self, conn: sqlite3.Connection, scope: str, version: str | None) -> str:
+        """El ``scope_uid`` de una lectura: ``''`` en el proyecto y el uid de la versión."""
+        if scope == PROJECT_SCOPE:
+            return ""
+        return _find_version(conn, version).uid
+
     def _insert(self, conn: sqlite3.Connection, defn: ParamDef, state: _State,
-                action: HistoryAction, *, changed_by: str, now: str) -> ParameterRecord:
+                action: HistoryAction, *, changed_by: str, now: str, scope_uid: str = "",
+                value_type: ValueType | None = None, def_sha256: str | None = None,
+                review: Any = None) -> ParameterRecord:
+        """La fila nueva de ``defn`` en el proyecto (``scope_uid = ''``) o en una versión,
+        rev 1, con su fila ``action`` del historial. Por defecto, con el tipo de valor y la
+        definición de ``defn`` y sin «revisar». La de una versión deja obsoletas, en la misma
+        transacción, las operaciones de esa versión que leyeron la del proyecto (spec 009,
+        plan A4 (4); RF-008-24)."""
         uid = new_uid()
         conn.execute(
             f"INSERT INTO gb_parameter ({_PARAMETER_COLUMNS}) "
             f"VALUES ({_marks(_PARAMETER_COLUMNS)})",
             (
-                uid, defn.key, PROJECT_SCOPE, "", defn.module, str(defn.value_type),
+                uid, defn.key, _scope_of(scope_uid), scope_uid, defn.module,
+                str(defn.value_type if value_type is None else value_type),
                 state.value_json, state.unit, str(state.kind), state.source,
                 str(state.source_kind), state.decided_by, state.decided_at, state.reason,
-                state.operation_uid, int(state.unconfirmed), None, definition_sha256(defn),
+                state.operation_uid, int(state.unconfirmed), _review_json(review),
+                definition_sha256(defn) if def_sha256 is None else def_sha256,
                 state.value_sha256, 1, now, now,
             ),
         )
         self._history(conn, uid, 1, action, state, changed_by=changed_by, at=now)
-        return self._require(conn, defn.key)
+        if scope_uid:
+            # Aquí: core.provenance importa core.params (ARQ-08).
+            from ..provenance.stale import refresh_region
+
+            refresh_region(conn, now=now, parameters=[uid])
+        return _load_uid(conn, uid)
 
     def _update(self, conn: sqlite3.Connection, record: ParameterRecord, state: _State,
                 action: HistoryAction, *, value_type: ValueType,
@@ -1242,7 +1527,7 @@ class ParameterStore:
             from ..provenance.stale import refresh_region
 
             refresh_region(conn, now=now, parameters=[record.uid])
-        return self._require(conn, record.key)
+        return _load_uid(conn, record.uid)
 
     def _history(self, conn: sqlite3.Connection, parameter_uid: str, rev: int,
                  action: HistoryAction, state: _State, *, changed_by: str, at: str) -> None:

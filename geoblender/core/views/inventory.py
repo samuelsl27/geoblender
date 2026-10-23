@@ -1,19 +1,35 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Inventario del proyecto: lo registrado, cargado o no en la vista, y su página filtrada (spec
-010; RF-010-07; ADR-0025; plan 010 §5.3.1, A7 y D-15).
+010; RF-010-07; ADR-0025; plan 010 §5.3.1, A7 y D-15; con las versiones de la spec 009:
+RF-009-20, RF-009-30, plan 009 §5.3.2 y A11).
 
 :func:`read_inventory` lee de una vez, en una instantánea y sin escribir nada, las entradas
-(``gb_input``) y los datos (``gb_dataset``) en todos sus estados, cada uno con:
+(``gb_input``), los datos (``gb_dataset``) en todos sus estados y, en un proyecto con versiones
+(el esquema 3, spec 009), las versiones (``gb_version``) y sus revisiones (``gb_revision``),
+cada uno con:
 
 - su categoría (:class:`Category`), su uid, su nombre, su módulo, su tipo y su estado como los
-  guarda el proyecto («current», «superseded»…);
-- su versión: ``None`` («—») hasta que la spec 009 dé las versiones;
+  guarda el proyecto («current», «superseded»…; el de una versión, «VIGENTE»…, y el de una
+  revisión, «open», «frozen» o «closed»). Una versión se llama «V01 · Definitiva» (su código y
+  su título) y una revisión «V01.r2»; las dos son del módulo :data:`VERSION_MODULE`, de tipo
+  :data:`VERSION_KIND` y :data:`REVISION_KIND`;
+- su versión: el código de la versión de un dato de versión («V01»), el de una versión y el de
+  la versión de una revisión; ``None`` («—»), lo del proyecto (las entradas, los datos del
+  proyecto y todo en un proyecto del esquema 2 abierto en solo lectura, que no tiene versiones);
 - si está obsoleto: un dato vivo con alguna causa en la caché ``gb_stale`` (como «! n
   obsoletos» de la 008);
 - «entrada cambiada»: una entrada cambiada sin decidir (RF-008-10) y lo que depende de ella
   (``core.inputs.dependents``: lo importado y lo que se calculó a partir de ello);
 - si se puede cargar en la vista: un dato vivo que no falta y que su módulo carga (lo dice
-  ``loadable`` por su nombre); una entrada nunca;
+  ``loadable`` por su nombre); una entrada, una versión o una revisión, nunca;
+- las marcas de una revisión (spec 009): «alterada», si su instantánea no coincide con lo
+  congelado (RF-009-09), y «en curso», la abierta (RF-009-20);
+- de un dato de una revisión congelada (spec 009, T37; RF-009-19, D-23; plan A4 (1)): el estado
+  que tenía al congelarse, si no estaba al día (``gb_revision_item.state``: «stale»,
+  «review»…), cuando el dato no es lo «en curso» de una revisión abierta (su versión es
+  SUPERADO o DESCARTADO, o ya no está vivo) y su contenido de hoy es el que se congeló en la
+  última revisión congelada de su versión. Lo «en curso» lleva el estado de hoy, no ese; y ese
+  no es «obsoleto» (no cuenta en «! n obsoletos» ni en el filtro «Obsoletos»);
 
 con el contador de cambios de la cabecera de ``project.gpkg`` en ese momento
 (:class:`InventorySnapshot`): si ya no es el de hoy, alguien escribió y la instantánea es vieja.
@@ -21,7 +37,12 @@ con el contador de cambios de la cabecera de ``project.gpkg`` en ese momento
 :func:`page` filtra la instantánea en Python (:class:`InventoryFilter`: categoría, tipo, estado
 —«Vivos» por defecto, «Historia»…—, versión, presencia en la escena y texto, palabra a palabra y
 sin distinguir mayúsculas ni tildes) y da como mucho :data:`ROW_LIMIT` filas por nombre, con el
-total y cuántas quedan fuera («… y 19 600 más: afine el filtro», D-7).
+total y cuántas quedan fuera («… y 19 600 más: afine el filtro», D-7). Las versiones y las
+revisiones van por su número (V99 antes que V100; r2 antes que r10), cada versión antes de sus
+revisiones; filtrar por una versión (su código o su uid) da la versión, sus revisiones y sus
+datos. Una versión SUPERADO o DESCARTADO y una revisión cerrada son «Historia»; la VIGENTE,
+«Vigentes»; una revisión alterada, «No se pueden usar» (RF-009-09); ningún filtro de tipo da
+versiones ni revisiones.
 
 La instantánea guarda cada elemento como una tupla de textos, booleanos y ``None``
 (:attr:`InventorySnapshot.rows`), no como :class:`InventoryItem`: entre dos dibujos del panel
@@ -32,11 +53,12 @@ de Blender (``docs/trampas.md`` §2; plan 010 §2.1). Python puro (ADR-0004).
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import unicodedata
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import islice
 from pathlib import Path
@@ -48,12 +70,18 @@ from ..gpkg.header import read_header
 from ..inputs import registry as input_registry
 from ..inputs.check import dependents
 from ..inputs.model import ACTIVE_STATUSES, INACTIVE_STATUSES, InputStatus
+from ..provenance.graph import versioned
+from ..versions import read as versions_read
+from ..versions.model import EDITABLE, RevisionState, VersionStatus, revision_label
 from .state import _snapshot
 
 __all__ = [
     "ALL",
     "NAMED_KINDS",
+    "REVISION_KIND",
     "ROW_LIMIT",
+    "VERSION_KIND",
+    "VERSION_MODULE",
     "VERSION_NONE",
     "Category",
     "InventoryFilter",
@@ -75,14 +103,22 @@ ALL = "ALL"
 """El valor de un filtro que no filtra."""
 VERSION_NONE = "NONE"
 """El filtro de versión «—»: lo que no tiene versión."""
+VERSION_KIND = "version"
+"""El tipo de la fila de una versión (spec 009)."""
+REVISION_KIND = "revision"
+"""El tipo de la fila de una revisión (spec 009)."""
+VERSION_MODULE = "core"
+"""El módulo de las filas de las versiones y de las revisiones."""
 
 
 class Category(StrEnum):
-    """Qué es un elemento del inventario (la spec 009 añadirá versiones, revisiones e
-    instantáneas)."""
+    """Qué es un elemento del inventario: una entrada o un dato (spec 010), una versión o una
+    revisión (spec 009; la instantánea es la de su revisión congelada)."""
 
     INPUT = "INPUT"  # una entrada registrada (gb_input)
     DATASET = "DATASET"  # un dato del proyecto (gb_dataset)
+    VERSION = "VERSION"  # una versión (gb_version), spec 009
+    REVISION = "REVISION"  # una revisión de una versión (gb_revision), spec 009
 
 
 class KindFilter(StrEnum):
@@ -129,24 +165,59 @@ NAMED_KINDS: dict[KindFilter, str] = {
 _NAMED = frozenset(NAMED_KINDS.values())
 _INPUT = str(Category.INPUT)
 _DATASET = str(Category.DATASET)
+_VERSION = str(Category.VERSION)
+_REVISION = str(Category.REVISION)
+_REGISTERED = frozenset({_INPUT, _DATASET})  # lo que tiene un tipo de dato
+_NUMBERED = frozenset({_VERSION, _REVISION})  # lo que va por su número
 _LIVE = {_INPUT: frozenset(str(status) for status in ACTIVE_STATUSES),
-         _DATASET: frozenset(str(status) for status in LIVE_STATUSES)}
+         _DATASET: frozenset(str(status) for status in LIVE_STATUSES),
+         _VERSION: frozenset(str(status) for status in EDITABLE),
+         _REVISION: frozenset({str(RevisionState.OPEN), str(RevisionState.FROZEN)})}
 _HISTORY = {_INPUT: frozenset(str(status) for status in INACTIVE_STATUSES),
-            _DATASET: frozenset(str(status) for status in FINAL_STATUSES)}
+            _DATASET: frozenset(str(status) for status in FINAL_STATUSES),
+            _VERSION: frozenset(str(status) for status in VersionStatus) - _LIVE[_VERSION],
+            _REVISION: frozenset({str(RevisionState.CLOSED)})}
 _UNUSABLE = frozenset(str(status) for status in UNUSABLE_STATUSES)
-_CURRENT = str(DatasetStatus.CURRENT)  # el de las entradas (InputStatus.CURRENT) es el mismo
+# «Vigentes»: las entradas y los datos vigentes (InputStatus.CURRENT es el mismo) y la versión
+# VIGENTE; ninguna revisión.
+_CURRENT = frozenset({str(DatasetStatus.CURRENT), str(VersionStatus.VIGENTE)})
 _MISSING = str(DatasetStatus.MISSING)
 _CHANGED = str(InputStatus.CHANGED)
+_OPEN = str(RevisionState.OPEN)
+_FROZEN = str(RevisionState.FROZEN)
+_REVISION_CHUNK = 500
+"""Revisiones por consulta (``IN (…)``) al leer el estado al congelarse."""
 # Posiciones en cada fila de InventorySnapshot.rows: los campos de InventoryItem, en su orden,
 # y al final el nombre como se compara con el texto (fold).
-CATEGORY, UID, NAME, MODULE, KIND, STATUS, VERSION, STALE, INPUT_CHANGED, LOADABLE, KEY = (
-    range(11))
+(CATEGORY, UID, NAME, MODULE, KIND, STATUS, VERSION, STALE, INPUT_CHANGED, LOADABLE, ALTERED,
+ IN_PROGRESS, FROZEN_STATE, KEY) = range(14)
 _FIELDS = KEY
+_EARLIER: Mapping[int, tuple[Any, ...]] = {
+    ALTERED: (False, False, None),  # como las de la 010, sin las marcas de la 009
+    FROZEN_STATE: (None,),  # como las de la 009 antes de la T37, sin el estado al congelarse
+}
+"""Lo que completa una fila hecha con menos valores, por cuántos tiene."""
+_NUMBER = re.compile(r"[0-9]+")
+_PAD = 9
+"""Las cifras con que se comparan los números de las versiones y de las revisiones."""
 
 _INPUTS = "SELECT uid, name, module, kind, status FROM gb_input ORDER BY fid"
 _FILE = "SELECT file FROM pragma_database_list WHERE name = 'main'"
 _DATASETS = "SELECT uid, name, module, kind, status FROM gb_dataset ORDER BY fid"
+_VERSIONED_DATASETS = (
+    "SELECT uid, name, module, kind, status, version_uid FROM gb_dataset ORDER BY fid"
+)
+_REVISIONS = "SELECT uid, version_uid, number, state, altered_at FROM gb_revision ORDER BY fid"
 _STALE = "SELECT DISTINCT item_uid FROM gb_stale WHERE item_kind = 'dataset'"
+# Los datos de cada revisión de {marks} congelados sin estar al día y cuyo contenido de hoy es
+# el congelado: por el índice único de gb_revision_item (revisión, clase y uid) y el de
+# gb_dataset.uid; el CROSS JOIN fija ese orden (docs/trampas.md §6).
+_FROZEN_STATES = (
+    "SELECT i.item_uid, i.state FROM gb_revision_item AS i "
+    "CROSS JOIN gb_dataset AS d ON d.uid = i.item_uid "
+    "WHERE i.revision_uid IN ({marks}) AND i.item_kind = 'dataset' AND i.part = 'produced' "
+    "AND i.state <> 'current' AND d.content_sha256 = i.content_sha256"
+)
 
 
 def fold(text: str) -> str:
@@ -160,8 +231,12 @@ def fold(text: str) -> str:
 
 @dataclass(frozen=True)
 class InventoryItem:
-    """Un elemento del inventario: véase el módulo. ``status`` es el del proyecto, en
-    minúsculas; ``version``, ``None`` mientras no haya versiones («—», spec 009)."""
+    """Un elemento del inventario: véase el módulo. ``status`` es el del proyecto (el de una
+    entrada o un dato, en minúsculas; el de una versión, «VIGENTE»…); ``version``, el código
+    de su versión o ``None`` («—», lo del proyecto); ``altered`` e ``in_progress``, las marcas
+    de una revisión (spec 009: «alterada» y «en curso»); ``frozen_state``, de un dato de una
+    revisión congelada, el estado que tenía al congelarse si no estaba al día (como lo guarda
+    el proyecto, ``core.versions.model.ItemState``: «stale»…; T37), o ``None``."""
 
     category: Category
     uid: str
@@ -173,6 +248,9 @@ class InventoryItem:
     stale: bool
     input_changed: bool
     loadable: bool
+    altered: bool = False
+    in_progress: bool = False
+    frozen_state: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "category", Category(self.category))
@@ -188,15 +266,22 @@ class InventoryItem:
         return (str(self.category), str(self.uid), str(self.name), str(self.module),
                 str(self.kind), str(self.status),
                 None if self.version is None else str(self.version), bool(self.stale),
-                bool(self.input_changed), bool(self.loadable))
+                bool(self.input_changed), bool(self.loadable), bool(self.altered),
+                bool(self.in_progress),
+                None if self.frozen_state is None else str(self.frozen_state))
 
 
 def _keyed(row: object) -> tuple[Any, ...]:
     """La fila ``row`` (los campos de :class:`InventoryItem` y, si ya la tiene, su clave) con
-    su nombre como se compara al final."""
-    if not isinstance(row, tuple) or len(row) not in (_FIELDS, _FIELDS + 1):
+    su nombre como se compara al final. Una fila como las de la 010 (sus diez valores, sin las
+    marcas de la 009) se completa sin marcas, y una de doce (sin el estado al congelarse, como
+    antes de la T37), sin él."""
+    if not isinstance(row, tuple) or len(row) not in (*_EARLIER, _FIELDS, _FIELDS + 1):
         raise ValueError(f"una fila del inventario es una tupla de {_FIELDS} valores (los de "
-                         f"InventoryItem), no {row!r}")
+                         f"InventoryItem; {ALTERED}, sin las marcas de una revisión, o "
+                         f"{FROZEN_STATE}, sin el estado al congelarse), no {row!r}")
+    if len(row) in _EARLIER:
+        row = (*row, *_EARLIER[len(row)])
     if row[CATEGORY] not in _LIVE:
         raise ValueError(f"categoría desconocida en el inventario: {row[CATEGORY]!r}")
     if not isinstance(row[NAME], str):
@@ -204,23 +289,40 @@ def _keyed(row: object) -> tuple[Any, ...]:
     return (*row[:_FIELDS], fold(row[NAME]))
 
 
+def _natural(text: str) -> str:
+    """``text`` con cada número escrito con :data:`_PAD` cifras («v01.r10» →
+    «v000000001.r000000010»): así se ordenan las versiones y las revisiones por su número."""
+    return _NUMBER.sub(lambda found: found.group().zfill(_PAD), text)
+
+
+def _order(row: tuple[Any, ...]) -> tuple[str, str]:
+    """Cómo se ordena una fila: por su nombre como se compara (el de una versión o una
+    revisión, con sus números de :data:`_PAD` cifras) y, con el mismo, por su nombre."""
+    key = row[KEY]
+    return (_natural(key) if row[CATEGORY] in _NUMBERED else key), row[NAME]
+
+
 @dataclass(frozen=True)
 class InventorySnapshot:
     """Lo registrado en el proyecto en una instantánea: ``rows``, una tupla por elemento con
     los campos de :class:`InventoryItem`, en su orden, y al final su nombre como se compara
     con el texto (:func:`fold`; al crearla se le añade), por nombre sin mayúsculas ni tildes
-    (y, con el mismo nombre, en el orden en que llegaron: el de registro); ``change_counter``,
-    el contador de cambios de la cabecera de ``project.gpkg`` al leerlo."""
+    (y, con el mismo nombre, en el orden en que llegaron: el de registro; las versiones y las
+    revisiones, por su número); ``change_counter``, el contador de cambios de la cabecera de
+    ``project.gpkg`` al leerlo."""
 
     rows: tuple[tuple[Any, ...], ...]
     change_counter: int
+    _version_rows: tuple[tuple[Any, ...], ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.change_counter, bool) or not isinstance(self.change_counter, int):
             raise TypeError(f"el contador de cambios es un entero, no {self.change_counter!r}")
         rows = [_keyed(row) for row in self.rows]
-        rows.sort(key=lambda row: (row[KEY], row[NAME]))  # estable: con el mismo, como llegan
+        rows.sort(key=_order)  # estable: con el mismo, como llegan
         object.__setattr__(self, "rows", tuple(rows))
+        object.__setattr__(self, "_version_rows",
+                           tuple(row for row in rows if row[CATEGORY] == _VERSION))
 
     @classmethod
     def of(cls, items: Iterable[InventoryItem], change_counter: int) -> InventorySnapshot:
@@ -232,6 +334,15 @@ class InventorySnapshot:
         """Todos los elementos, por nombre (se crean al pedirlos: con muchos, mejor
         :func:`page`)."""
         return tuple(InventoryItem.from_row(row) for row in self.rows)
+
+    @property
+    def versions(self) -> tuple[InventoryItem, ...]:
+        """Las versiones, por su número (V01… V99, V100): las del filtro de versión."""
+        return tuple(InventoryItem.from_row(row) for row in self._version_rows)
+
+    def version_codes(self) -> Mapping[str, str]:
+        """El código de cada versión por su uid."""
+        return {row[UID]: row[VERSION] for row in self._version_rows}
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -260,32 +371,84 @@ def _changed_dependents(conn: sqlite3.Connection, changed: Iterable[str]) -> set
     return found
 
 
+@dataclass(frozen=True)
+class _Versions:
+    """Lo que se lee de las versiones (spec 009): las filas de las versiones y de sus
+    revisiones, el código de cada versión por su uid, las versiones cerradas (SUPERADO o
+    DESCARTADO) y el estado al congelarse, si no estaba al día, de cada dato que es hoy lo
+    congelado en la última revisión congelada de su versión."""
+
+    rows: list[tuple[Any, ...]]
+    codes: dict[str, str]
+    closed: frozenset[str]
+    frozen: dict[str, str]
+
+
+def _versions(conn: sqlite3.Connection) -> _Versions:
+    """Las versiones y sus revisiones (:class:`_Versions`)."""
+    found = versions_read.versions(conn)
+    codes = {version.uid: version.code for version in found}
+    rows: list[tuple[Any, ...]] = [
+        (_VERSION, str(version.uid), str(version.label), VERSION_MODULE, VERSION_KIND,
+         str(version.status), str(version.code), False, False, False, False, False, None)
+        for version in found
+    ]
+    last: dict[str, tuple[int, str]] = {}  # la última congelada de cada versión
+    for uid, version_uid, number, state, altered_at in conn.execute(_REVISIONS):
+        code = codes.get(str(version_uid), str(version_uid))
+        rows.append((_REVISION, str(uid), revision_label(code, int(number)), VERSION_MODULE,
+                     REVISION_KIND, str(state), code, False, False, False,
+                     altered_at is not None, state == _OPEN, None))
+        if state == _FROZEN and int(number) > last.get(str(version_uid), (0, ""))[0]:
+            last[str(version_uid)] = (int(number), str(uid))
+    frozen: dict[str, str] = {}
+    revisions = [uid for _number, uid in last.values()]
+    for start in range(0, len(revisions), _REVISION_CHUNK):
+        part = revisions[start:start + _REVISION_CHUNK]
+        sql = _FROZEN_STATES.format(marks=", ".join("?" for _ in part))
+        frozen.update((str(uid), str(state)) for uid, state in conn.execute(sql, part))
+    closed = frozenset(version.uid for version in found if version.status not in EDITABLE)
+    return _Versions(rows, codes, closed, frozen)
+
+
 def read_inventory(project: InventoryProject, *, loadable: Callable[[str], bool],
                    conn: sqlite3.Connection | None = None) -> InventorySnapshot:
     """El inventario del proyecto ``project`` (véase el módulo), leído en una instantánea (la
     de ``conn``, una conexión de lectura de quien llama, o una nueva) sin escribir nada.
     ``loadable(nombre)`` dice si el módulo de un dato lo puede cargar en la vista (en ``bl``,
-    si tiene cargador)."""
+    si tiene cargador). Un proyecto sin versiones (el esquema 2, abierto en solo lectura) se
+    lee como en la 010: sin versiones ni revisiones, y nada con versión."""
     if not callable(loadable):
         raise TypeError(f"loadable es una función del nombre de un dato, no {loadable!r}")
     with _snapshot(project, conn) as reading:
         input_rows = reading.execute(_INPUTS).fetchall()
         counter = _counter(reading)
-        dataset_rows = reading.execute(_DATASETS).fetchall()
+        if versioned(reading):
+            dataset_rows = reading.execute(_VERSIONED_DATASETS).fetchall()
+            found = _versions(reading)
+        else:
+            dataset_rows = [(*row, "") for row in reading.execute(_DATASETS)]
+            found = _Versions([], {}, frozenset(), {})
         stale = {str(uid) for (uid,) in reading.execute(_STALE)}
         changed_inputs = [str(row[0]) for row in input_rows if row[4] == _CHANGED]
         affected = _changed_dependents(reading, changed_inputs)
-    rows: list[tuple[Any, ...]] = [
+    rows, codes, closed, frozen = found.rows, found.codes, found.closed, found.frozen
+    rows += [
         (_INPUT, str(uid), str(name), str(module), str(kind), str(status), None, False,
-         status == _CHANGED, False)
+         status == _CHANGED, False, False, False, None)
         for uid, name, module, kind, status in input_rows
     ]
     live = _LIVE[_DATASET]
-    for uid, name, module, kind, status in dataset_rows:
+    for uid, name, module, kind, status, version_uid in dataset_rows:
         alive = status in live
-        rows.append((_DATASET, str(uid), str(name), str(module), str(kind), str(status), None,
-                     alive and uid in stale, uid in affected,
-                     alive and status != _MISSING and bool(loadable(name))))
+        version = codes.get(str(version_uid), str(version_uid)) if version_uid else None
+        # Lo de una revisión congelada, no lo «en curso» de una abierta (D-23): su estado al
+        # congelarse.
+        state = frozen.get(uid) if version_uid in closed or not alive else None
+        rows.append((_DATASET, str(uid), str(name), str(module), str(kind), str(status),
+                     version, alive and uid in stale, uid in affected,
+                     alive and status != _MISSING and bool(loadable(name)), False, False,
+                     state))
     return InventorySnapshot(tuple(rows), counter)
 
 
@@ -303,13 +466,16 @@ class _CategoryFilter(StrEnum):
     ALL = "ALL"
     INPUT = "INPUT"
     DATASET = "DATASET"
+    VERSION = "VERSION"
+    REVISION = "REVISION"
 
 
 @dataclass(frozen=True)
 class InventoryFilter:
     """Lo que se pide al inventario (véase :func:`page`): ``category`` («ALL» o una
     :class:`Category`), ``kind`` (:class:`KindFilter`), ``status`` (:class:`StatusFilter`;
-    «LIVE» por defecto), ``version`` («ALL», :data:`VERSION_NONE` o una versión),
+    «LIVE» por defecto), ``version`` («ALL», :data:`VERSION_NONE` o una versión, por su código
+    o por su uid),
     ``presence`` (:class:`PresenceFilter`) y ``text`` (palabras que tiene que tener el nombre,
     sin distinguir mayúsculas ni tildes; vacío, todo)."""
 
@@ -353,25 +519,27 @@ def _status_check(status: StatusFilter) -> Check | None:
         case StatusFilter.LIVE:
             return lambda row: row[STATUS] in _LIVE[row[CATEGORY]]
         case StatusFilter.CURRENT:
-            return lambda row: row[STATUS] == _CURRENT
+            return lambda row: row[STATUS] in _CURRENT
         case StatusFilter.STALE:
             return lambda row: row[STALE]
         case StatusFilter.INPUT_CHANGED:
             return lambda row: row[INPUT_CHANGED]
-        case StatusFilter.UNUSABLE:
-            return lambda row: row[CATEGORY] == _DATASET and row[STATUS] in _UNUSABLE
+        case StatusFilter.UNUSABLE:  # también una revisión alterada (RF-009-09: no se usa)
+            return lambda row: (row[CATEGORY] == _DATASET and row[STATUS] in _UNUSABLE
+                                or row[ALTERED])
         case StatusFilter.HISTORY:
             return lambda row: row[STATUS] in _HISTORY[row[CATEGORY]]
     return None
 
 
-def _checks(wanted: InventoryFilter, in_scene: Collection[str]) -> list[Check]:
+def _checks(wanted: InventoryFilter, in_scene: Collection[str],
+            codes: Mapping[str, str]) -> list[Check]:
     checks: list[Check] = []
     if wanted.category != ALL:
         category = str(wanted.category)
         checks.append(lambda row: row[CATEGORY] == category)
-    if wanted.kind is KindFilter.OTHER:
-        checks.append(lambda row: row[KIND] not in _NAMED)
+    if wanted.kind is KindFilter.OTHER:  # de una entrada o un dato: ni versiones ni revisiones
+        checks.append(lambda row: row[CATEGORY] in _REGISTERED and row[KIND] not in _NAMED)
     elif wanted.kind != ALL:
         kind = NAMED_KINDS[wanted.kind]
         checks.append(lambda row: row[KIND] == kind)
@@ -381,7 +549,7 @@ def _checks(wanted: InventoryFilter, in_scene: Collection[str]) -> list[Check]:
     if wanted.version == VERSION_NONE:
         checks.append(lambda row: row[VERSION] is None)
     elif wanted.version != ALL:
-        version = wanted.version
+        version = codes.get(wanted.version, wanted.version)  # su uid o su código
         checks.append(lambda row: row[VERSION] == version)
     if wanted.presence != ALL:
         scene = frozenset(in_scene)
@@ -406,7 +574,7 @@ def page(snapshot: InventorySnapshot, wanted: InventoryFilter, in_scene: Collect
     if limit < 0:
         raise ValueError(f"el límite de filas no puede ser negativo: {limit}")
     found: Iterable[tuple[Any, ...]] = snapshot.rows
-    for check in _checks(wanted, in_scene):
+    for check in _checks(wanted, in_scene, snapshot.version_codes()):
         found = filter(check, found)  # un filtro tras otro, sin un bucle de Python por fila
     for word in fold(wanted.text).split():
         found = filter(lambda row, word=word: word in row[KEY], found)

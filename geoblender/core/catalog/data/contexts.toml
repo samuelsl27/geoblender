@@ -418,7 +418,7 @@ label.en = "Version"
 label.es = "Versión"
 description.en = "Commands for the active version"
 description.es = "Órdenes para la versión activa"
-entry = "R-07"
+entry = "009"
 
 [[context.item]]
 ref = "geoblender.core_new_revision"

@@ -54,14 +54,20 @@ def register() -> None:
 def unregister() -> None:
     """Desregistra los subpaquetes en orden inverso; sin registro previo, no hace nada.
 
-    Si uno falla, sigue con los demás (que se deshaga todo lo posible) y propaga el
-    primer error al final.
+    Antes de quitar nada, cancela como Esc los modales de pasos en curso
+    (``bl.ops.cancel_running``; spec 009, T40): Blender, al quitar la clase de un modal en
+    curso, lo libera sin llamar a su ``cancel``. Si algo falla, sigue con los demás (que se
+    deshaga todo lo posible) y propaga el primer error al final.
     """
     global _registered
     if not _registered:
         return
     _registered = False
     first_error: BaseException | None = None
+    try:
+        _subpackage("ops").cancel_running()
+    except BaseException as exc:  # se sigue deshaciendo el resto
+        first_error = exc
     for name in reversed(SUBPACKAGES):
         try:
             _subpackage(name).unregister()

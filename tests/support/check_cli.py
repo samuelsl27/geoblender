@@ -45,7 +45,15 @@ INSTALL = BlenderInstall(
     python=FAKE_BLENDER / "5.2" / "python" / "bin" / "python.exe",
     version=(5, 2, 1),
 )
+# Los pasos obligatorios en el orden de la tabla, que es el del resumen (RF-001-06).
 MANDATORY = ["unitarias", "referencia", "licencias", "iconos", "manifiesto", "blender"]
+# Los que van a la vez que «blender», tras «manifiesto» (RF-001-06, spec 001 0.8; tarea
+# 009/T34), en el orden de la tabla; con --completo, también «motor».
+WITH_BLENDER = ("referencia", "licencias", "iconos")
+# El orden en que se ejecutan los obligatorios (FakeRunner.steps): los que van a la vez que
+# «blender», en su lugar y, entre ellos, en el orden de la tabla, con «blender» al final.
+EXECUTED = ["unitarias", "manifiesto", *WITH_BLENDER, "blender"]
+_WITH_BLENDER_BLOCK = (*WITH_BLENDER, "blender")
 # El paso de la spec 004 (T30): las pruebas de dominio con el numpy del motor de cálculo de
 # pruebas, a la vez que «blender», con --completo (spec 004 0.4; spec 005, T50). Salvo en
 # RuntimeStepTest, el motor es este, simulado.
@@ -329,17 +337,38 @@ class FakeRunner:
 
     def steps(self) -> list[str]:
         """Los pasos en el orden de sus órdenes; las partes seguidas de un paso, una vez.
-        El paso «motor» no cuenta: va a la vez que «blender» y sus órdenes se mezclan con
-        las de este (se mira aparte, con ``calls_of``)."""
+        Las órdenes de «blender» y de los que van a la vez que él (:data:`WITH_BLENDER`;
+        spec 001 0.8) se mezclan: las seguidas cuentan como un bloque, que da sus pasos en el
+        orden de :data:`EXECUTED` (los que van con él y «blender» al final); el bloque acaba en
+        una orden de otro paso o en una que ya tiene (la misma parte de un paso, o un paso sin
+        partes). El paso «motor» no cuenta: también va a la vez que «blender» (se mira aparte,
+        con ``calls_of``)."""
         found: list[str] = []
+        block: dict[str, set[tuple[int, int] | None]] = {}
+
+        def close() -> None:
+            found.extend(step for step in _WITH_BLENDER_BLOCK if step in block)
+            block.clear()
+
         previous: Call | None = None
         for call in self.calls:
             if call.step == RUNTIME:
                 continue
+            if call.step in _WITH_BLENDER_BLOCK:
+                seen = block.get(call.step)
+                if seen is not None and (call.part is None or call.part in seen):
+                    close()
+                block.setdefault(call.step, set()).add(call.part)
+                previous = call
+                continue
+            if block:
+                close()
             same = previous is not None and previous.step == call.step
             if not (same and call.part is not None and previous.part is not None):
                 found.append(call.step)
             previous = call
+        if block:
+            close()
         return found
 
     def call(self, step: str, part: int | None = None) -> Call:

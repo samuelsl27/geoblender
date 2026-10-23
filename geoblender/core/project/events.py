@@ -29,8 +29,9 @@ LOGGER = logging.getLogger("geoblender.core.project")
 
 
 class EventKind(Enum):
-    """Tipos de evento (``gb_event.kind``): los de la spec 002 y los de la procedencia de la
-    008 (plan 008 §5.2.3), que se añaden con la tarea que los registra."""
+    """Tipos de evento (``gb_event.kind``): los de la spec 002, los de la procedencia de la
+    008 (plan 008 §5.2.3) y los de las versiones de la 009 (plan 009 §5.2.6), que se añaden
+    con la tarea que los registra."""
 
     CREATE = "create"
     OPEN = "open"
@@ -96,6 +97,26 @@ class EventKind(Enum):
     # vigentes (RF-008-24).
     DEFINITION_CHANGED = "definition_changed"
     ALGORITHM_CHANGED = "algorithm_changed"
+    # Spec 009 (plan 009 §5.2.6): una versión creada con su r1 abierta (RF-009-01), el cambio de
+    # estado de una versión, con {from, to, reason} (RF-009-03), la revisión abierta que se
+    # cierra al superarse o descartarse su versión (RF-009-25) y el título de una versión o de
+    # un dato cambiado (RF-009-22).
+    VERSION_CREATED = "version_created"
+    STATUS_CHANGE = "status_change"
+    REVISION_CLOSED = "revision_closed"
+    TITLE_CHANGED = "title_changed"
+    # Una revisión congelada, con lo copiado (de lo referenciado, que está en gb_revision_item,
+    # solo cuántos, en su texto: T33) (RF-009-06, RF-009-07), y la siguiente, abierta con su
+    # motivo.
+    REVISION_FROZEN = "revision_frozen"
+    REVISION_OPENED = "revision_opened"
+    # Una revisión congelada cuya instantánea no coincide con lo anotado, «alterada» (con lo que
+    # no coincide), y una alterada que vuelve a coincidir (RF-009-09; D-31).
+    REVISION_ALTERED = "revision_altered"
+    REVISION_RESTORED = "revision_restored"
+    # Una decisión de la propiedad registrada, con sus enlaces a parámetros y versiones
+    # (RF-009-13).
+    DECISION_RECORDED = "decision_recorded"
 
 
 @dataclass(frozen=True)

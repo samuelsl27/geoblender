@@ -1,17 +1,30 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pruebas de los ayudantes de ``tests/support`` (spec 001)."""
 
+import builtins
+import contextlib
 import io
+import itertools
 import os
 import stat
 import tempfile
+import threading
 import unittest
 import unittest.mock
 from collections.abc import Iterator
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
-from tests.support import network, provenance_checks, qgis, resources, runtime, timing, trees
+from tests.support import (
+    netwaits,
+    network,
+    provenance_checks,
+    qgis,
+    resources,
+    runtime,
+    timing,
+    trees,
+)
 from tests.support.repo import EXTENSION_DIR, ROOT, TOOLS_DIR, tools_on_path
 
 RESOURCE = "recurso-de-prueba"
@@ -325,6 +338,28 @@ class FakeLayoutTest(unittest.TestCase):
                           ("Instalar", "EXEC_DEFAULT")])
         self.assertEqual(layout.operator_context, "EXEC_DEFAULT")
         self.assertEqual(FakeLayout().operator_context, "INVOKE_DEFAULT")
+
+    def test_items_keep_the_property_split(self) -> None:
+        """Spec 009, T36 (RF-009-29): cada elemento anota si su *layout* separaba etiqueta y
+        valor (``use_property_split``) al dibujarlo; como en Blender, una fila o columna nueva
+        hereda la de su madre al crearla, y cambiarla en la fila no cambia la madre, lo
+        dibujado antes ni una fila ya creada."""
+        from tests.support.fake_layout import FakeLayout
+
+        layout = FakeLayout()
+        layout.label(text="Antes")
+        layout.use_property_split = True
+        layout.prop(object(), "value", text="Valor")
+        inherited = layout.column()
+        row = layout.row(align=True)
+        row.use_property_split = False
+        row.prop_enum(object(), "scope", "PROJECT", text="El proyecto")
+        row.row(align=True).prop_enum(object(), "scope", "VERSION", text="Solo V02")
+        inherited.prop(object(), "kind", text="Tipo")
+        layout.prop(object(), "reason", text="Motivo")
+        self.assertEqual([(item.text, item.property_split) for item in layout.items],
+                         [("Antes", False), ("Valor", True), ("El proyecto", False),
+                          ("Solo V02", False), ("Tipo", True), ("Motivo", True)])
 
 
 QGIS_TREE: dict[str, str] = {
@@ -670,6 +705,134 @@ class DriveStepsTest(unittest.TestCase):
         self.assertIs(os.fsync, real)
         self.assertEqual(timer.calls, 1)
         self.assertGreaterEqual(timer.total_s, 0.0)
+
+
+class _Transactions:
+    """Un proyecto de mentira con ``write_transaction``: el COMMIT es salir sin error."""
+
+    def __init__(self) -> None:
+        self.committed = 0
+
+    @contextlib.contextmanager
+    def write_transaction(self) -> Iterator[str]:
+        yield "conexión"
+        self.committed += 1
+
+
+class NetworkWaitsTest(unittest.TestCase):
+    """``netwaits.NetworkWaits``: las esperas de la red de cada llamada, aparte de lo que hace
+    Geoblender en ella (spec 009, T29; RNF-009-05, como RNF-005-06)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        self.remote = base / "red"  # hace de la carpeta de la red
+        self.local = base / "red_local"  # empieza igual, pero no está dentro
+        self.remote.mkdir()
+        self.local.mkdir()
+        ticks = itertools.count()
+        self.clock = lambda: float(next(ticks))  # cada operación medida dura 1 s
+
+    @staticmethod
+    def _work(folder: Path) -> None:
+        """Abrir 3, escribir 2, forzar 1, cerrar 3, leer 3 y metadatos 5 en ``folder``."""
+        target = folder / "dato.bin"
+        with open(target, "wb") as stream:
+            stream.write(b"x" * 10)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if target.read_bytes() != b"x" * 10:
+            raise AssertionError("no se leyó lo escrito")
+        with target.open("rb") as stream:
+            stream.seek(2)
+            if stream.read(3) != b"xxx":
+                raise AssertionError("no se leyó lo escrito")
+        os.stat(target)
+        os.replace(target, folder / "otro.bin")
+        os.mkdir(folder / "sub")
+        os.rmdir(folder / "sub")
+        os.unlink(folder / "otro.bin")
+
+    def test_operations_on_the_folder_are_waits(self) -> None:
+        """RNF-009-05: con el instrumento activo, abrir, leer, escribir, forzar a disco y
+        cerrar un fichero de la carpeta de la red, y los metadatos de sus rutas (``stat``,
+        renombrar, crear y borrar), son esperas de la red de la llamada en curso, cada una en
+        su clase; lo mismo fuera de la carpeta (aunque su nombre empiece igual) no lo es. Se
+        acumulan con su número y la más larga."""
+        waits = netwaits.NetworkWaits(self.remote, clock=self.clock)
+        with waits:
+            waits.begin()
+            self._work(self.remote)
+            found = waits.take()
+            waits.begin()
+            self._work(self.local)
+            outside = waits.take()
+        expected = {netwaits.OPEN: 3.0, netwaits.READ: 3.0, netwaits.WRITE: 2.0,
+                    netwaits.SYNC: 1.0, netwaits.CLOSE: 3.0, netwaits.META: 5.0,
+                    netwaits.COMMIT: 0.0}
+        self.assertEqual(found, expected)
+        self.assertEqual(set(found), set(netwaits.KINDS))
+        self.assertEqual(outside, dict.fromkeys(netwaits.KINDS, 0.0))
+        self.assertEqual(waits.totals, expected)
+        self.assertEqual(waits.counts, {kind: int(value) for kind, value in expected.items()})
+        self.assertEqual(waits.longest[1], 1.0)
+        self.assertIn(waits.longest[0], netwaits.KINDS)
+        self.assertTrue(waits.inside(self.remote / "x" / "y.tif"))
+        self.assertFalse(waits.inside(self.local / "y.tif"))
+        self.assertFalse(waits.inside(3))
+
+    def test_each_call_and_only_the_main_thread(self) -> None:
+        """RNF-009-05: ``take`` da las esperas de la llamada desde ``begin`` (y empieza otra);
+        lo que espera otro hilo cuenta en el total, pero no en la llamada que se mide (la del
+        hilo de Blender)."""
+        waits = netwaits.NetworkWaits(self.remote, clock=self.clock)
+        with waits:
+            waits.begin()
+            os.stat(self.remote)
+            first = waits.take()
+            other = threading.Thread(target=os.stat, args=(self.remote,))
+            other.start()
+            other.join()
+            second = waits.take()
+        self.assertEqual(first[netwaits.META], 1.0)
+        self.assertEqual(second[netwaits.META], 0.0)
+        self.assertEqual(waits.counts[netwaits.META], 2)
+
+    def test_commit_of_a_project_transaction(self) -> None:
+        """RNF-009-05 (como RNF-005-06): salir sin error de ``write_transaction`` de un
+        proyecto dado (confirmar y cerrar) es una espera de la red, «commit»; con un error no
+        se confirma ni cuenta, y el error sigue. Al salir, el proyecto vuelve a tener su
+        ``write_transaction``."""
+        project = _Transactions()
+        waits = netwaits.NetworkWaits(self.remote, projects=(project,), clock=self.clock)
+        with waits:
+            waits.begin()
+            with project.write_transaction() as conn:
+                self.assertEqual(conn, "conexión")
+            with self.assertRaises(ValueError), project.write_transaction():
+                raise ValueError("falló")
+            found = waits.take()
+        self.assertEqual(found[netwaits.COMMIT], 1.0)
+        self.assertEqual(project.committed, 1)
+        self.assertNotIn("write_transaction", vars(project))
+
+    def test_everything_is_restored(self) -> None:
+        """RNF-009-05: al salir, también si algo falla, ``open``, ``io.open``, ``os.fsync`` y
+        las funciones de metadatos vuelven a ser las de antes; lo que queda abierto se sigue
+        pudiendo usar y cerrar."""
+        names = ("fsync", *netwaits.META_FUNCTIONS)
+        before = {name: getattr(os, name) for name in names}
+        opened, real_io = builtins.open, io.open
+        with self.assertRaises(KeyError), netwaits.NetworkWaits(self.remote, clock=self.clock):
+            stream = open(self.remote / "abierto.bin", "wb")
+            raise KeyError("falló")
+        stream.write(b"x")
+        stream.close()
+        self.assertIs(builtins.open, opened)
+        self.assertIs(io.open, real_io)
+        self.assertEqual({name: getattr(os, name) for name in names}, before)
+        self.assertEqual((self.remote / "abierto.bin").read_bytes(), b"x")
 
 
 class NoFiguresInNamesTest(unittest.TestCase):

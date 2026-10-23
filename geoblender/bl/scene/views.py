@@ -24,7 +24,11 @@ mucho); lo demás es de aquí:
 - **colecciones tipadas** (:func:`ensure_collection`; plan §5.5): la de su rama («Datos base /
   Topografía»; el ancla, «Proyecto»; los sondeos, «Sondeos») y una por dato, con su nombre
   generado. Se reconocen por la propiedad de ID ``geoblender_key`` (no por su nombre, que sigue
-  el idioma): se crean cuando tienen contenido y al descargar se quitan las que quedan vacías;
+  el idioma): se crean cuando tienen contenido y al descargar se quitan las que quedan vacías.
+  Un dato de una versión va en la colección de su versión, bajo «Versiones», y lleva en su
+  nombre el código de su versión; un dato con título, su título en lugar de su nombre (spec
+  009, T22; RF-009-30, RF-009-22). Lo que nombra Geoblender queda anotado (:data:`NAME_PROPERTY`)
+  para saber si después lo renombra la persona;
 - **el ancla** del proyecto (:func:`ensure_anchor`): un vacío en el origen local con las
   esquinas absolutas de la ventana de trabajo, el GeoOrigin y el CRS **en texto** (nunca
   coordenadas flotantes, ADR-0005), en «Proyecto»;
@@ -99,8 +103,10 @@ from ...core.georef import (
 )
 from ...core.i18n import language, tr, translate
 from ...core.project.model import Progress
+from ...core.versions import read as versions_read
 from ...core.views.state import ItemState, ItemView, LoadedItem, origin_text
 from ..props.core import OBJECT_PROPERTY
+from . import georef
 from .mesh import curves_positions_local, mesh_vertices_world
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
@@ -109,6 +115,10 @@ KEY_PROPERTY = "geoblender_key"
 """La propiedad de ID con la que se reconoce cada colección de la vista."""
 DATASET_KEY = "dataset:"
 """El comienzo de la clave de la colección de un dato (``dataset:<uid>``)."""
+NAME_PROPERTY = "geoblender_name"
+"""La propiedad de ID con el nombre que le puso Geoblender a un objeto o una colección de la
+vista (el generado, tal como quedó; spec 009, T22): si el de hoy es otro, lo renombró la persona
+(RF-009-22, ``bl.scene.versions.on_name_changed``)."""
 ANCHOR_KIND = "PROJECT_ANCHOR"
 ANCHOR_WINDOW = ("xmin", "ymin", "xmax", "ymax")
 """Las esquinas de la ventana en el ancla: ``window_xmin``…, en texto (``repr`` del float64)."""
@@ -225,12 +235,15 @@ class Loader:
 class LoadOutcome:
     """Lo que hizo :func:`load_datasets`: los datos cargados (por nombre), sus objetos, los
     avisos (un dato que falta, un nivel de detalle que no hace falta) y los errores de lo que
-    no se cargó, en el idioma de la interfaz."""
+    no se cargó, en el idioma de la interfaz; ``labels``, lo cargado como lo nombra el informe
+    de la orden: el nombre y, el de una versión, con su código («des_final · V10»; spec 009,
+    T32), en el orden de ``loaded`` (vacío: los nombres)."""
 
     loaded: tuple[str, ...]
     objects: tuple[bpy.types.Object, ...]
     notes: tuple[str, ...]
     errors: tuple[str, ...]
+    labels: tuple[str, ...] = ()
 
 
 _LOADERS: dict[str, Loader] = {}
@@ -314,14 +327,23 @@ def _text(msgid: str) -> str:
 
 
 def view_name(loader: Loader, record: DatasetRecord, *, stale: bool, outdated: bool = False,
-              unbacked: bool = False) -> str:
+              unbacked: bool = False, title: str | None = None,
+              version: str | None = None) -> str:
     """El nombre generado de lo que muestra ``record`` (RF-006-29): su tipo, su nombre sin el
     comienzo de su familia y su estado, «MDT mdt_norte [VIGENTE]» o «… [VIGENTE · OBSOLETO]»;
     con ``outdated``, si muestra un contenido anterior, «… [VIGENTE · OBSOLETO · NO AL DÍA]»;
     con ``unbacked``, si su dato ya no está en el proyecto, «MDT mdt_norte [SIN RESPALDO]»
-    (spec 010, D-10). En el idioma de la interfaz y sin cifras de cálculo."""
+    (spec 010, D-10). Con ``title``, el título que le dio la persona (spec 009, RF-009-22) en
+    lugar de su nombre: «MDT Fondo de la corta [VIGENTE]»; un dato de una versión lleva su
+    código (``version``): «MDT des_final · V10 [VIGENTE]» (dos versiones pueden tener un dato
+    con el mismo nombre, y Blender no admite dos objetos con el mismo). En el idioma de la
+    interfaz y sin cifras de cálculo."""
     short = record.name[len(loader.prefix):] if record.name.startswith(loader.prefix) else (
         record.name)
+    if title:
+        short = title
+    if version:
+        short = f"{short} · {version}" if short else version
     if unbacked:
         return " ".join(part for part in (_text(loader.label), short,
                                           f"[{_text(UNBACKED_TEXT)}]") if part)
@@ -335,7 +357,7 @@ def view_name(loader: Loader, record: DatasetRecord, *, stale: bool, outdated: b
     return " ".join(part for part in (_text(loader.label), short, f"[{state}]") if part)
 
 
-def _child(parent: bpy.types.Collection, key: str, name: str) -> bpy.types.Collection:
+def child_collection(parent: bpy.types.Collection, key: str, name: str) -> bpy.types.Collection:
     """La colección ``key`` dentro de ``parent``: la que ya está, la que existe en otro sitio
     (enlazada aquí) o una nueva con ``name``."""
     for child in parent.children:
@@ -351,21 +373,28 @@ def _child(parent: bpy.types.Collection, key: str, name: str) -> bpy.types.Colle
 
 
 def ensure_collection(kind: str, dataset: DatasetRecord | None = None, *,
-                      name: str | None = None,
-                      scene: bpy.types.Scene | None = None) -> bpy.types.Collection:
+                      name: str | None = None, scene: bpy.types.Scene | None = None,
+                      version: tuple[Any, Any] | None = None) -> bpy.types.Collection:
     """La colección tipada de ``kind`` en ``scene`` (por defecto, la de la ventana): su rama
     («Datos base / Topografía», «Proyecto», «Sondeos»), creada o enlazada donde falte, y, con
     ``dataset``, la de ese dato dentro de ella, con el nombre ``name`` (por defecto, el del
-    dato). ``KeyError`` si ``kind`` no tiene rama."""
+    dato). Un dato de una versión (``version``: su ``Version`` y la revisión que se enseña con
+    ella, spec 009, RF-009-30) va en la colección de su versión, bajo «Versiones», en lugar de
+    su rama (``bl.scene.versions.ensure_version_collection``). ``KeyError`` si ``kind`` no
+    tiene rama."""
     chosen = bpy.context.scene if scene is None else scene
     parent = chosen.collection
-    for key, label in BRANCHES[kind]:
-        parent = _child(parent, key, _text(label))
+    if version is not None and dataset is not None:
+        from . import versions as scene_versions  # al usarlo: versions importa este módulo
+
+        parent = scene_versions.ensure_version_collection(*version, scene=chosen)
+    else:
+        for key, label in BRANCHES[kind]:
+            parent = child_collection(parent, key, _text(label))
     if dataset is not None:
         wanted = dataset.name if name is None else name
-        parent = _child(parent, f"{DATASET_KEY}{dataset.uid}", wanted)
-        if parent.name != wanted:
-            parent.name = wanted
+        parent = child_collection(parent, f"{DATASET_KEY}{dataset.uid}", wanted)
+        named(parent, wanted)
     return parent
 
 
@@ -608,43 +637,56 @@ class _Shown:
     state_text: str | None = None
 
 
-def _shown(objects: Sequence[bpy.types.Object], view: ItemView, loader: Loader | None) -> _Shown:
+def _shown(objects: Sequence[bpy.types.Object], view: ItemView, loader: Loader | None,
+           title: str | None = None, version: str | None = None) -> _Shown:
     """Lo que dicen los objetos ``objects`` según lo que dice hoy el proyecto de su dato
     (``view``; plan 010 A1, D-10, D-11), con el cargador de su dato (``None``: el proyecto no lo
-    tiene o ningún módulo lo carga)."""
+    tiene o ningún módulo lo carga), su título y el código de su versión (spec 009)."""
     record = view.record
     if view.state is ItemState.UNBACKED or record is None:
         name = None if loader is None or record is None else view_name(
-            loader, record, stale=False, unbacked=True)
+            loader, record, stale=False, unbacked=True, title=title, version=version)
         return _Shown(VIEW_UNBACKED, None, None, name, _text(UNBACKED_TEXT))
     if view.state is ItemState.REPLACED:
         # Muestra lo de antes, como se cargó: su estado y su obsoleto, «no al día».
         first = getattr(objects[0], OBJECT_PROPERTY)
         loaded = replace(record, status=_STATUS_OF.get(first.status, DatasetStatus.CURRENT))
         name = None if loader is None else view_name(loader, loaded, stale=bool(first.stale),
-                                                     outdated=True)
+                                                     outdated=True, title=title,
+                                                     version=version)
         return _Shown(VIEW_OUTDATED, None, None, name)
     outdated = view.state is ItemState.OUTDATED
     stale = bool(view.stale)
-    name = None if loader is None else view_name(loader, record, stale=stale, outdated=outdated)
+    name = None if loader is None else view_name(loader, record, stale=stale, outdated=outdated,
+                                                 title=title, version=version)
     return _Shown(VIEW_OUTDATED if outdated else VIEW_CURRENT,
                   STATUS_TEXT.get(record.status, "NONE"), stale, name)
 
 
-def _rename(item: bpy.types.ID, name: str) -> bool:
+def remember(item: bpy.types.ID) -> None:
+    """Anota en ``item`` (:data:`NAME_PROPERTY`) que su nombre de hoy es el que le puso
+    Geoblender (spec 009, T22): así se sabe si después lo renombra la persona."""
+    if item.get(NAME_PROPERTY) != item.name:
+        item[NAME_PROPERTY] = item.name
+
+
+def named(item: bpy.types.ID, name: str) -> bool:
     """Renombra ``item`` a ``name`` si no se llama así (``ID.rename``, sin quitarle el nombre a
-    otro: si lo tiene otro, Blender le pone un número a este). Devuelve si lo renombró."""
-    if item.name == name:
-        return False
-    item.rename(name, mode="NEVER")
-    return True
+    otro: si lo tiene otro, Blender le pone un número a este) y anota el nombre con que queda
+    (:func:`remember`). Devuelve si lo renombró."""
+    changed = item.name != name
+    if changed:
+        item.rename(name, mode="NEVER")
+    remember(item)
+    return changed
 
 
 def _show_group(objects: Sequence[bpy.types.Object], view: ItemView, loader: Loader | None,
-                collection: bpy.types.Collection | None, live: Mapping[str, Any]) -> bool:
+                collection: bpy.types.Collection | None, live: Mapping[str, Any],
+                title: str | None = None, version: str | None = None) -> bool:
     """Pone al día los objetos ``objects`` de un dato y la colección del dato (véase
     :func:`show_view_state`); devuelve si cambió algo."""
-    wanted = _shown(objects, view, loader)
+    wanted = _shown(objects, view, loader, title, version)
     name = wanted.name
     if name is None and wanted.state_text is not None:
         shown = collection.name if collection is not None else _shown_name(objects[0], None)
@@ -664,9 +706,11 @@ def _show_group(objects: Sequence[bpy.types.Object], view: ItemView, loader: Loa
         before = None if name is None else _shown_name(obj, collection)
         if before is not None and before != name:
             # Lo que sigue al nombre de la carga (« · Au» de los sondeos) se conserva.
-            changed = _rename(obj, name + obj.name[len(before):]) or changed
+            changed = named(obj, name + obj.name[len(before):]) or changed
+        elif before is not None:
+            remember(obj)  # el generado, como estaba (uno sin él, del usuario, no se anota)
     if collection is not None and name is not None:
-        changed = _rename(collection, name) or changed
+        changed = named(collection, name) or changed
     hook = None if loader is None else loader.live
     if hook is not None and view.state in _LIVE_HOOKED and loader.prefix in live:
         changed = bool(hook.apply(objects, view, live[loader.prefix])) or changed
@@ -675,7 +719,9 @@ def _show_group(objects: Sequence[bpy.types.Object], view: ItemView, loader: Loa
 
 def show_view_state(groups: Mapping[str, Sequence[bpy.types.Object]],
                     states: Mapping[str, ItemView], *, budget_s: float | None = None,
-                    live: Mapping[str, Any] | None = None) -> tuple[bool, list[str]]:
+                    live: Mapping[str, Any] | None = None,
+                    titles: Mapping[str, str] | None = None,
+                    versions: Mapping[str, str] | None = None) -> tuple[bool, list[str]]:
     """Pone al día, sin volver a cargar nada, los objetos de cada dato de ``groups`` (los de
     :func:`loaded_items`) con lo que dice hoy de él el proyecto (``states``, los de
     ``core.views.state.view_states``; un dato sin estado no se toca) (spec 010, RF-010-02; plan
@@ -690,7 +736,10 @@ def show_view_state(groups: Mapping[str, Sequence[bpy.types.Object]],
       objetos (lo que sigue al de la carga, como « · Au», se conserva; un nombre que no lo
       lleva, del usuario, no se toca) y de la colección del dato, buscada por su clave;
     - el :class:`LiveHook` de su cargador, en lo que muestra el contenido de hoy, con lo que leyó
-      (``live``, por su comienzo: :func:`live_reads`).
+      (``live``, por su comienzo: :func:`live_reads`);
+    - con ``titles`` (el título de cada dato que lo tiene, por su uid; spec 009, RF-009-22), el
+      título en lugar de su nombre en el nombre generado, y con ``versions`` (el código de la
+      versión de cada dato de una versión, por su uid), su código (:func:`view_name`).
 
     Con ``budget_s``, para en cuanto lo pasa (tras uno, como poco) y devuelve los que quedan,
     para la siguiente tanda (D-12). No escribe en el proyecto. Devuelve si cambió algo y los uid
@@ -698,6 +747,8 @@ def show_view_state(groups: Mapping[str, Sequence[bpy.types.Object]],
     wanted = [uid for uid, objects in groups.items() if uid in states and objects]
     collections = _dataset_collections() if wanted else {}
     shared: Mapping[str, Any] = {} if live is None else live
+    given: Mapping[str, str] = {} if titles is None else titles
+    codes: Mapping[str, str] = {} if versions is None else versions
     started = time.perf_counter()
     changed = False
     for index, uid in enumerate(wanted):
@@ -705,7 +756,8 @@ def show_view_state(groups: Mapping[str, Sequence[bpy.types.Object]],
             return changed, wanted[index:]
         view = states[uid]
         loader = None if view.record is None else loader_for(view.record.name)
-        changed = _show_group(groups[uid], view, loader, collections.get(uid), shared) or changed
+        changed = _show_group(groups[uid], view, loader, collections.get(uid), shared,
+                              given.get(uid) or None, codes.get(uid) or None) or changed
     return changed, []
 
 
@@ -756,6 +808,7 @@ class _Built:
     shown: Any = None
     name: str = ""
     parts: ViewParts | None = None
+    version_uid: str = ""  # la versión del dato ('' del proyecto; spec 009, RF-009-30)
 
 
 def _parts(found: Any, start: float, width: float,
@@ -867,8 +920,10 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *, lod: int = 0,
                 errors.append(tr("«{name}» cannot be shown in the view: no module loads it",
                                  name=record.name))
                 continue
-            name = view_name(loader, record, stale=shown.stale)
-            entry = _Built([], loader, shown, name)
+            owner, code, title = _dataset_label(project, record.uid)
+            name = view_name(loader, record, stale=shown.stale, title=title or None,
+                             version=code or None)
+            entry = _Built([], loader, shown, name, version_uid=owner)
             built.append(entry)
             try:
                 entry.parts = yield from _parts(
@@ -881,6 +936,8 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *, lod: int = 0,
         placed = [entry.shown.record.uid for entry in built
                   if entry.parts is not None and entry.loader is not None]
         figures = _figure_texts(project, placed)
+        owners = _version_rows(project, {entry.version_uid for entry in built
+                                         if entry.parts is not None and entry.version_uid})
     except BaseException:
         _discard(obj for entry in built if entry.parts is not None
                  for obj in entry.parts.objects)
@@ -888,7 +945,7 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *, lod: int = 0,
     # El último paso, fuera del try: cerrar los pasos después de él no borra lo puesto.
     yield Progress(LOAD_PHASE, STEPS_TOTAL, STEPS_TOTAL, "",
                    _place(scene, project, built, errors, figures=figures, replaces=swaps,
-                          unbacked=marked, clear_view_stale=clear_view_stale))
+                          unbacked=marked, clear_view_stale=clear_view_stale, versions=owners))
 
 
 _SUFFIX = re.compile(r"(.+)\.\d{3,}")
@@ -905,14 +962,42 @@ def _unsuffixed(obj: bpy.types.Object, name: str) -> None:
             item.name = found.group(1)
 
 
+def _dataset_label(project: Any, uid: str) -> tuple[str, str, str]:
+    """La versión (su uid y su código; '' del proyecto) y el título ('' sin él) del dato
+    ``uid`` del proyecto abierto ``project`` (spec 009, T22; ``core.versions.read``). No
+    escribe."""
+    with project.read() as conn:
+        owner, title = versions_read.dataset_titles(conn, [uid]).get(uid, ("", ""))
+        version = versions_read.version(conn, owner) if owner else None
+    return owner, "" if version is None else version.code, title
+
+
+def _version_rows(project: Any, uids: Collection[str]) -> dict[str, tuple[Any, Any]]:
+    """De cada versión ``uids`` del proyecto abierto ``project``, su ``Version`` y la revisión
+    que se enseña con ella (la abierta o, si ya no tiene, la última; ``None`` sin ninguna): lo
+    que nombra la colección de su versión (spec 009, RF-009-30). No escribe."""
+    if not uids:
+        return {}
+    with project.read() as conn:
+        found = {version.uid: version for version in versions_read.versions(conn)
+                 if version.uid in uids}
+        latest = versions_read.latest_revisions(conn)
+    return {uid: (version, latest.get(uid)) for uid, version in found.items()}
+
+
 def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[str], *,
            figures: Mapping[str, Sequence[FigureText]],
            replaces: Mapping[str, Sequence[str]], unbacked: Sequence[str],
-           clear_view_stale: bool) -> LoadOutcome:
-    """El último paso de :func:`load_steps`: lo preparado, a la escena (véase allí). Avisa una
-    sola vez de que cambió la vista (:func:`_view_changed`), al final, también si se para a
-    medias tras quitar o poner algo."""
+           clear_view_stale: bool,
+           versions: Mapping[str, tuple[Any, Any]] | None = None) -> LoadOutcome:
+    """El último paso de :func:`load_steps`: lo preparado, a la escena (véase allí); un dato de
+    una versión, en la colección de su versión (``versions``: la ``Version`` y la revisión que
+    se enseña con ella, por su uid; spec 009, RF-009-30). Avisa una sola vez de que cambió la
+    vista (:func:`_view_changed`), al final, también si se para a medias tras quitar o poner
+    algo."""
+    owners: Mapping[str, tuple[Any, Any]] = {} if versions is None else versions
     loaded: list[str] = []
+    labels: list[str] = []
     placed: set[str] = set()
     objects: list[bpy.types.Object] = []
     notes: list[str] = []
@@ -931,13 +1016,17 @@ def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[s
             # Otro nivel de detalle, el dato al día o lo que sustituye (spec 010): fuera antes
             # de ponerlo, para que tome su nombre.
             removed += _unload([record.uid, *replaces.get(record.uid, ())])
-            collection = ensure_collection(loader.kind, record, name=entry.name, scene=scene)
+            collection = ensure_collection(loader.kind, record, name=entry.name, scene=scene,
+                                           version=owners.get(entry.version_uid))
             texts = figures.get(record.uid, ())
             for obj in parts.objects:
                 _unsuffixed(obj, entry.name)
                 collection.objects.link(obj)
                 _mark(obj, loader.kind, shown, project, origin, texts)
+                remember(obj)
             loaded.append(record.name)
+            owner = owners.get(entry.version_uid)
+            labels.append(record.name if owner is None else f"{record.name} · {owner[0].code}")
             placed.add(record.uid)
             objects.extend(parts.objects)
             notes.extend(parts.notes)
@@ -956,13 +1045,12 @@ def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[s
         if gone:
             _mark_unbacked(gone)
         if clear_view_stale and not errors:
-            for item in bpy.data.scenes:
-                if item.geoblender.view_stale:
-                    item.geoblender.view_stale = False
+            georef.clear_stale()  # y pide redibujar: el panel Proyecto (spec 009, T43)
     finally:
         if loaded or gone or removed:
             _view_changed()
-    return LoadOutcome(tuple(loaded), tuple(objects), tuple(notes), tuple(errors))
+    return LoadOutcome(tuple(loaded), tuple(objects), tuple(notes), tuple(errors),
+                       tuple(labels))
 
 
 # --- Lo que escucha la vista (spec 010, T21) -------------------------------------------------

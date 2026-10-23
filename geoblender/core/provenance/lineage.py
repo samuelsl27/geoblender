@@ -32,7 +32,11 @@ transacción de escritura de quien llama, que ve lo aún no confirmado):
   como conjuntos de bits, por componentes fuertemente conexas (plan §5.4.10).
 - :func:`current_figure` (RF-008-30): la cifra **vigente** de una clave y un ámbito, la de la
   operación más reciente (sin sustituir) que no está obsoleta; si todas lo están, la más
-  reciente (que lleva su marca).
+  reciente (que lleva su marca). Con versiones (spec 009, plan A4 (5)), entre las de las
+  operaciones de proyecto o, con ``version``, entre las de esa versión; :func:`current_figures`
+  da las de todas las claves del proyecto o de una versión. Las marcas, la procedencia y la
+  búsqueda eligen la vigente entre las de la versión de cada cifra (la búsqueda, solo las del
+  proyecto).
 - :func:`result_state` (RF-008-23): cómo se presenta lo que se muestra (:class:`ResultStatus`):
   «resultado» si está guardado en el proyecto; «pendiente de incorporar» si es de un trabajo de
   la 004 aún en curso; «no incorporada», con el motivo, si se borró su trabajo; «vista previa,
@@ -66,6 +70,8 @@ from ..inputs.model import InputStatus
 from ..params.model import ParamKind, ParamValue
 from ..params.store import decode_value
 from ..units import DIMENSIONLESS
+from ..versions import read as versions_read
+from ..versions.model import VersionError
 from .contract import FIGURES, OPERATIONS
 from .figures import RECORD_COLUMNS as FIGURE_COLUMNS
 from .figures import FigureRecord, ScopeValue, _local_date, _shown, scope_key
@@ -96,6 +102,7 @@ from .graph import (
     root_causes,
     stale_text,
     version_of,
+    versioned,
 )
 from .messages import ProvenanceError, render
 from .operations import JOB_EXECUTORS, OperationStatus
@@ -528,7 +535,23 @@ _FIGURES_OF_KEY = (
     f"WHERE s.item_kind = '{OPERATION}' AND s.item_uid = f.operation_uid) "
     "FROM gb_figure AS f JOIN gb_operation AS op ON op.uid = f.operation_uid "
     f"WHERE op.status = '{_DONE}' AND op.superseded_by IS NULL AND f.key = ? "
-    "AND f.scope_key = ? ORDER BY f.fid"
+    "AND f.scope_key = ?{only} ORDER BY f.fid"
+)
+# Con versiones (spec 009, plan A4 (5)): la cifra vigente se elige entre las de las operaciones
+# de proyecto o entre las de una versión (por sus revisiones); la versión de la operación de
+# cada cifra; y cada clave y ámbito de las cifras de una versión, por su primer registro.
+_PROJECT_ONLY = " AND op.revision_uid = ''"
+_VERSION_ONLY = (
+    " AND op.revision_uid IN (SELECT r.uid FROM gb_revision AS r WHERE r.version_uid = ?)"
+)
+_OPERATION_VERSIONS = (
+    "SELECT op.uid, coalesce(r.version_uid, '') FROM gb_operation AS op "
+    "LEFT JOIN gb_revision AS r ON r.uid = op.revision_uid WHERE op.uid IN ({marks})"
+)
+_FIGURE_PAIRS_OF = (
+    "SELECT f.key, f.scope_key, MIN(f.fid) AS first FROM gb_figure AS f "
+    "CROSS JOIN gb_operation AS op ON op.uid = f.operation_uid "
+    f"WHERE op.status = '{_DONE}'{{only}} GROUP BY f.key, f.scope_key ORDER BY first"
 )
 # La región aguas arriba (_load_upstream): sus operaciones con todo lo que muestra la
 # procedencia (y su fid), lo que consumen, quién escribió alguna versión de los datos que
@@ -627,16 +650,48 @@ def _cached(conn: sqlite3.Connection, item_kind: str,
     return {uid: frozenset(causes) for uid, causes in found.items()}
 
 
-def _current_of(conn: sqlite3.Connection, key: str, wanted: str) -> str | None:
+def _current_of(conn: sqlite3.Connection, key: str, wanted: str, version_uid: str = "", *,
+                with_versions: bool | None = None) -> str | None:
     """La cifra vigente (uid) de ``key`` en el ámbito ``wanted`` (``scope_key``): la de la
     operación hecha y sin sustituir más reciente que no está obsoleta según la caché; si todas
-    lo están, la más reciente; ``None`` si no hay ninguna."""
-    rows = [(str(uid), bool(stale)) for uid, stale in conn.execute(_FIGURES_OF_KEY,
-                                                                    (key, wanted))]
+    lo están, la más reciente; ``None`` si no hay ninguna. Entre las de las operaciones de
+    proyecto o, con ``version_uid``, entre las de esa versión (spec 009, A4 (5)); en una base
+    sin versiones (``with_versions``; por defecto, se mira), todas son del proyecto."""
+    if with_versions is None:
+        with_versions = versioned(conn)
+    if not with_versions:
+        if version_uid:
+            return None
+        sql, args = _FIGURES_OF_KEY.format(only=""), (key, wanted)
+    elif version_uid:
+        sql, args = _FIGURES_OF_KEY.format(only=_VERSION_ONLY), (key, wanted, version_uid)
+    else:
+        sql, args = _FIGURES_OF_KEY.format(only=_PROJECT_ONLY), (key, wanted)
+    rows = [(str(uid), bool(stale)) for uid, stale in conn.execute(sql, args)]
     if not rows:
         return None
     fresh = [uid for uid, stale in rows if not stale]
     return (fresh or [uid for uid, _stale in rows])[-1]
+
+
+def _operation_versions(conn: sqlite3.Connection,
+                        operations: Collection[str]) -> dict[str, str]:
+    """La versión (uid; ``''`` de proyecto) de cada operación de ``operations``; todas del
+    proyecto en una base sin versiones."""
+    if not versioned(conn):
+        return {uid: "" for uid in operations}
+    return {str(uid): str(version) for uid, version in _select(conn, _OPERATION_VERSIONS,
+                                                               operations)}
+
+
+def _version_uid(conn: sqlite3.Connection, version: str) -> str:
+    """El uid de la versión ``version`` (uid o código); ``VersionError``
+    (``core.version_unknown``) si el proyecto no la tiene (o no tiene versiones)."""
+    found = versions_read.version(conn, version) if versioned(conn) else None
+    if found is None:
+        raise VersionError("core.version_unknown", field="versión", value=version,
+                           version=version)
+    return found.uid
 
 
 def _json_mapping(text: object) -> Mapping[str, Any]:
@@ -991,8 +1046,10 @@ class _Builder:
         else:
             item_causes = causes.get(found.operation_uid, frozenset())
             if found.figure is not None:
-                current = _current_of(conn, found.figure.key,
-                                      found.figure.scope_key) == found.figure.uid
+                owner = _operation_versions(conn, [found.figure.operation_uid]).get(
+                    found.figure.operation_uid, "")
+                current = _current_of(conn, found.figure.key, found.figure.scope_key,
+                                      owner) == found.figure.uid
             else:
                 root = ordered[found.operation_uid]
                 current = root.status == _DONE and root.superseded_by is None
@@ -1154,8 +1211,10 @@ def figure_marks(project: ReadableProject, figure_uids: Iterable[str], *,
         operations = {record.operation_uid for record in records.values()}
         masks = _upstream_params(graph, operations)
         causes = _cached(reading, OPERATION, operations)
+        owners = _operation_versions(reading, operations)
         current = {pair: _current_of(reading, *pair) for pair in {
-            (record.key, record.scope_key) for record in records.values()}}
+            (record.key, record.scope_key, owners.get(record.operation_uid, ""))
+            for record in records.values()}}
     by_bit = list(graph.parameters)
     found: dict[str, FigureMarks] = {}
     for uid in wanted:
@@ -1165,27 +1224,72 @@ def figure_marks(project: ReadableProject, figure_uids: Iterable[str], *,
         hypotheses, unconfirmed = _param_marks(graph, parameters)
         found[uid] = FigureMarks(
             uid, hypotheses, unconfirmed, causes.get(record.operation_uid, frozenset()),
-            current[(record.key, record.scope_key)] == uid,
+            current[(record.key, record.scope_key,
+                     owners.get(record.operation_uid, ""))] == uid,
         )
     return found
 
 
 def current_figure(project: ReadableProject, key: str,
                    scope: Mapping[str, ScopeValue] | None = None, *,
+                   version: str | None = None,
                    conn: sqlite3.Connection | None = None) -> FigureRecord | None:
     """La cifra vigente de ``key`` en ``scope`` (RF-008-30; sin ámbito, toda la operación):
     la de la operación hecha y sin sustituir más reciente que no está obsoleta; si todas lo
-    están, la más reciente; ``None`` si no hay ninguna. :class:`TypeError`/:class:`ValueError`
-    si la clave no es un texto o el ámbito está mal formado."""
+    están, la más reciente; ``None`` si no hay ninguna. Sin ``version``, solo entre las de las
+    operaciones de proyecto; con ella (uid o código), solo entre las de esa versión (spec 009,
+    plan A4 (5); las vigentes de una versión según D-9 son las de su última revisión
+    congelada: ``core.versions.read.version_figures``). :class:`TypeError`/:class:`ValueError`
+    si la clave no es un texto o el ámbito está mal formado;
+    :class:`~core.versions.model.VersionError` (``core.version_unknown``) si la versión no
+    está en el proyecto."""
     if not isinstance(key, str) or not key:
         raise TypeError(f"la clave de una cifra es un texto, no {key!r}")
+    if version is not None and not isinstance(version, str):
+        raise TypeError(f"la versión se indica por su uid o su código, no {version!r}")
     wanted = scope_key({} if scope is None else scope)
     with _reading(project, conn) as reading:
-        uid = _current_of(reading, key, wanted)
+        owner = "" if version is None else _version_uid(reading, version)
+        uid = _current_of(reading, key, wanted, owner)
         if uid is None:
             return None
         row = reading.execute(_FIGURE, (uid,)).fetchone()
     return FigureRecord.from_row(row)
+
+
+def figures_in(conn: sqlite3.Connection, version_uid: str = "") -> tuple[FigureRecord, ...]:
+    """Las cifras vigentes (:func:`current_figure`) de cada clave y ámbito de las operaciones
+    de proyecto o, con ``version_uid``, de las de esa versión, en el orden en que se registró
+    por primera vez cada una, leídas de ``conn`` sin escribir nada (spec 009, A4 (5))."""
+    with_versions = versioned(conn)
+    if not with_versions:
+        if version_uid:
+            return ()
+        sql, args = _FIGURE_PAIRS_OF.format(only=""), ()
+    elif version_uid:
+        sql, args = _FIGURE_PAIRS_OF.format(only=_VERSION_ONLY), (version_uid,)
+    else:
+        sql, args = _FIGURE_PAIRS_OF.format(only=_PROJECT_ONLY), ()
+    found: list[FigureRecord] = []
+    for key, wanted, _first in conn.execute(sql, args).fetchall():
+        uid = _current_of(conn, str(key), str(wanted), version_uid,
+                          with_versions=with_versions)
+        if uid is not None:
+            found.append(FigureRecord.from_row(conn.execute(_FIGURE, (uid,)).fetchone()))
+    return tuple(found)
+
+
+def current_figures(project: ReadableProject, *, version: str | None = None,
+                    conn: sqlite3.Connection | None = None) -> tuple[FigureRecord, ...]:
+    """Las cifras vigentes de cada clave y ámbito del proyecto (sin ``version``) o de la
+    versión ``version`` (uid o código), en una instantánea (:func:`figures_in`).
+    :class:`~core.versions.model.VersionError` (``core.version_unknown``) si la versión no
+    está en el proyecto."""
+    if version is not None and not isinstance(version, str):
+        raise TypeError(f"la versión se indica por su uid o su código, no {version!r}")
+    with _reading(project, conn) as reading:
+        owner = "" if version is None else _version_uid(reading, version)
+        return figures_in(reading, owner)
 
 
 # --- Estado de lo mostrado ------------------------------------------------------------------

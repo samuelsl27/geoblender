@@ -388,8 +388,8 @@ es = "Disponible en {entry}"
 ["First {step} ({path})"]
 es = "Primero {step} ({path})"
 
-["{version} is in state {state}: create a revision or a new version"]
-es = "{version} está en estado {state}: cree una revisión o una versión nueva"
+["{version} is in state {state}: create a new version from it"]
+es = "{version} está en estado {state}: cree una versión nueva a partir de ella"
 
 ["Input {name} changed since {revision}"]
 es = "La entrada {name} ha cambiado desde {revision}"
@@ -4528,3 +4528,712 @@ es = "La diferencia de cada boca con el MDT, dentro de la tolerancia"
 
 ["Collar elevation minus the DTM elevation: {count} collars compared, from {low} m to {high} m"]
 es = "Cota de las bocas menos la del MDT: {count} bocas comparadas, de {low} m a {high} m"
+
+# Versiones y revisiones: los rechazos de core.versions (spec 009, T05; RF-009-01, RF-009-03,
+# RF-009-04, RF-009-22; core.versions.model.MESSAGES). El de «Versión no editable» («{version}
+# is in state {state}: …») está con los estados de un comando (BS §7.3).
+
+["There is no version {version} in the project"]
+es = "No hay ninguna versión {version} en el proyecto"
+
+["«{target}» is not a state of a version: DRAFT, CURRENT, SUPERSEDED or DISCARDED"]
+es = "«{target}» no es un estado de una versión: BORRADOR, VIGENTE, SUPERADO o DESCARTADO"
+
+["{version} is already in state {state}"]
+es = "{version} ya está en estado {state}"
+
+["{version} cannot go from {state} to {target}: a DRAFT version becomes CURRENT or DISCARDED, and a CURRENT one DISCARDED (it becomes SUPERSEDED when another version is declared CURRENT)"]
+es = "{version} no puede pasar de {state} a {target}: una versión BORRADOR pasa a VIGENTE o DESCARTADO, y una VIGENTE, a DESCARTADO (pasa a SUPERADO al declarar VIGENTE otra versión)"
+
+["Freeze a revision of {version} first"]
+es = "Congele antes una revisión de {version}"
+
+["State the reason for discarding {version}"]
+es = "Indique el motivo para descartar {version}"
+
+["State the feature of the new version (what sets it apart)"]
+es = "Indique el rasgo de la versión nueva (lo que la distingue)"
+
+["State the title of the version"]
+es = "Indique el título de la versión"
+
+["State the reason for the new version"]
+es = "Indique el motivo de la versión nueva"
+
+["«{text}» cannot contain an absolute path: the project stores none"]
+es = "«{text}» no puede llevar una ruta absoluta: el proyecto no guarda ninguna"
+
+["There is no dataset {dataset} in the project"]
+es = "No hay ningún dato {dataset} en el proyecto"
+
+["State the title of dataset «{dataset}»"]
+es = "Indique el título del dato «{dataset}»"
+
+# Operaciones de versión (spec 009, T07; RF-009-05, RF-009-01; plan 009 A3, D-14, D-27).
+
+["This command belongs to a version: choose the active version or create one (Project ▸ Versions)"]
+es = "Esta orden es de una versión: elija la versión activa o cree una (Proyecto ▸ Versiones)"
+
+["The project operation «{op_type}» cannot use «{dataset}» of {version}: register it as a project input"]
+es = "La operación de proyecto «{op_type}» no puede usar «{dataset}» de {version}: regístrelo como entrada del proyecto"
+
+["Operation «{op_type}» of {version} cannot use «{dataset}» of {owner}: from another version only what is frozen in the revision it starts from can be used"]
+es = "La operación «{op_type}» de {version} no puede usar «{dataset}» de {owner}: de otra versión solo se usa lo congelado en la revisión de la que parte"
+
+["{version} can only take what is frozen in the revision it starts from ({parent_revision}), not «{dataset}» of {revision}"]
+es = "{version} solo puede tomar lo congelado en la revisión de la que parte ({parent_revision}), no «{dataset}» de {revision}"
+
+["Revision {revision} is altered: what is frozen in it is not used («{dataset}»)"]
+es = "La revisión {revision} está alterada: no se usa lo congelado en ella («{dataset}»)"
+
+["«{dataset}» is not frozen in {revision}"]
+es = "«{dataset}» no está congelado en {revision}"
+
+["«{dataset}» belongs to the project: its current content is used, not the one frozen in {revision}"]
+es = "«{dataset}» es del proyecto: se usa su contenido vigente, no el congelado en {revision}"
+
+# Lo que impide congelar una revisión (spec 009, T10; RF-009-08; plan 009 A5 (1), D-40).
+
+["The project is open read-only: {revision} cannot be frozen"]
+es = "El proyecto está abierto en solo lectura: no se puede congelar {revision}"
+
+["Checking the project…: wait until it finishes to freeze {revision}"]
+es = "Comprobando el proyecto…: espere a que termine para congelar {revision}"
+
+["A revision is already being frozen ({names}): wait until it finishes"]
+es = "Ya se está congelando una revisión ({names}): espere a que termine"
+
+["{revision} has operations in progress ({names}): wait until they finish to freeze it"]
+es = "{revision} tiene operaciones en curso ({names}): espere a que terminen para congelarla"
+
+["Inputs upstream of {revision} changed and are not decided yet ({names}): update them or keep the copy before freezing it"]
+es = "Hay entradas aguas arriba de {revision} cambiadas sin decidir ({names}): actualícelas o mantenga la copia antes de congelarla"
+
+# La copia de una instantánea (spec 009, T12; RF-009-07; plan 009 A5 (5) y A6).
+
+["There is no space to freeze {revision}: {needed} are needed in «{folder}» and {free} are left"]
+es = "No hay espacio para congelar {revision}: hacen falta {needed} en «{folder}» y quedan {free}"
+
+["«{dataset}» changed while {revision} was being frozen: nothing has been left half-done; freeze it again"]
+es = "«{dataset}» cambió mientras se congelaba {revision}: no ha quedado nada a medias; vuelva a congelarla"
+
+["The copy of «{dataset}» does not have its registered content: {revision} has not been frozen and nothing has been left half-done; check the disk and try again"]
+es = "La copia de «{dataset}» no tiene su contenido registrado: no se ha congelado {revision} ni ha quedado nada a medias; compruebe el disco y vuelva a intentarlo"
+
+["{revision} could not be frozen ({reason}): nothing has been left half-done; check the free space, the permissions and that no program has «{file}» open"]
+es = "No se ha podido congelar {revision} ({reason}): no ha quedado nada a medias; compruebe el espacio libre, los permisos y que ningún programa tenga abierto «{file}»"
+
+["There are leftovers of an earlier freeze in «{folder}»: open the project again to set them aside"]
+es = "Hay restos de una congelación anterior en «{folder}»: abra otra vez el proyecto para apartarlos"
+
+# Congelar: el motivo, lo aceptado y la confirmación (spec 009, T13; RF-009-06, RF-009-08;
+# plan 009 A7, D-40).
+
+["State the reason for the new revision"]
+es = "Indique el motivo de la revisión nueva"
+
+["To freeze {revision}, first accept what will be recorded as it is ({names})"]
+es = "Para congelar {revision}, acepte antes lo que quedará anotado tal como está ({names})"
+
+["«{op_type}» was registered in {version} while {revision} was being frozen: nothing has been left half-done; freeze it again"]
+es = "«{op_type}» se registró en {version} mientras se congelaba {revision}: no ha quedado nada a medias; vuelva a congelarla"
+
+# Comprobar las instantáneas: una revisión alterada y lo que no coincide (spec 009, T14;
+# RF-009-09; plan 009 A8, D-5, D-31).
+["Revision {revision} is altered: {count} files do not match what was frozen ({what}). It will not be used or reproduced"]
+es = "La revisión {revision} está alterada: {count} ficheros no coinciden con lo congelado ({what}). No se usará ni se reproducirá"
+
+["Revision {revision} is altered: 1 file does not match what was frozen ({what}). It will not be used or reproduced"]
+es = "La revisión {revision} está alterada: 1 fichero no coincide con lo congelado ({what}). No se usará ni se reproducirá"
+
+["Revision {revision} matches what was frozen again"]
+es = "La revisión {revision} vuelve a coincidir con lo congelado"
+
+["{path}: missing"]
+es = "{path}: falta"
+
+["{path}: different size"]
+es = "{path}: otro tamaño"
+
+["{path}: different fingerprint"]
+es = "{path}: otra huella"
+
+["imported «{path}»: missing"]
+es = "lo importado «{path}»: falta"
+
+["imported «{path}»: damaged"]
+es = "lo importado «{path}»: dañado"
+
+# Reproducir una revisión: los rechazos, el avance, el informe y las causas (spec 009, T15;
+# RF-009-11; plan 009 A9, D-32).
+
+["There is no revision {revision} in the project"]
+es = "No hay ninguna revisión {revision} en el proyecto"
+
+["{revision} is not frozen: only a frozen revision is reproduced"]
+es = "{revision} no está congelada: solo se reproduce una revisión congelada"
+
+["Revision {revision} is altered ({what}): it is not reproduced"]
+es = "La revisión {revision} está alterada ({what}): no se reproduce"
+
+["There is no space to reproduce {revision}: {needed} are needed in «{folder}» and {free} are left"]
+es = "No hay espacio para reproducir {revision}: hacen falta {needed} en «{folder}» y quedan {free}"
+
+["{revision} could not be reproduced ({reason}): nothing has been left half-done"]
+es = "No se ha podido reproducir {revision} ({reason}): no ha quedado nada a medias"
+
+["Reproducing {revision}: «{op_type}» ({index} of {count})…"]
+es = "Reproduciendo {revision}: «{op_type}» ({index} de {count})…"
+
+["{revision} reproduced: {outputs} of {outputs_total} outputs and {figures} of {figures_total} figures match"]
+es = "{revision} reproducida: coinciden {outputs} de {outputs_total} salidas y {figures} de {figures_total} cifras"
+
+["«{name}» does not match: {cause}"]
+es = "«{name}» no coincide: {cause}"
+
+["{count} operations taken from what was frozen ({names})"]
+es = "{count} operaciones tomadas de lo congelado ({names})"
+
+["1 operation taken from what was frozen ({names})"]
+es = "1 operación tomada de lo congelado ({names})"
+
+["{count} operations not reproducible ({names})"]
+es = "{count} operaciones no reproducibles ({names})"
+
+["1 operation not reproducible ({names})"]
+es = "1 operación no reproducible ({names})"
+
+["Reproduction cancelled: nothing has been left half-done"]
+es = "Reproducción cancelada: no ha quedado nada a medias"
+
+["{op_type}, import"]
+es = "{op_type}, importación"
+
+["{op_type}, manual edit"]
+es = "{op_type}, edición a mano"
+
+["{op_type}, its type is not reproduced"]
+es = "{op_type}, su tipo no se reproduce"
+
+["{op_type}, its module is not installed"]
+es = "{op_type}, su módulo no está instalado"
+
+["{op_type}: it used a content that was not frozen"]
+es = "{op_type}: consumió un contenido que no se congeló"
+
+["{op_type} failed: {reason}"]
+es = "{op_type} ha fallado: {reason}"
+
+["{op_type} {installed} installed, frozen with {frozen}"]
+es = "{op_type} {installed} instalada, congelada con {frozen}"
+
+["Geoblender {installed} installed, frozen with {frozen}"]
+es = "Geoblender {installed} instalado, congelada con {frozen}"
+
+["{library} {installed} installed, frozen with {frozen}"]
+es = "{library} {installed} instalada, congelada con {frozen}"
+
+["no known cause"]
+es = "sin causa conocida"
+
+["{op_type} did not give it again"]
+es = "{op_type} no la ha vuelto a dar"
+
+["it cannot be read ({reason})"]
+es = "no se puede leer ({reason})"
+
+# Las decisiones de la propiedad (spec 009, T16; RF-009-13; plan 009 A10, D-33).
+
+["State who decides"]
+es = "Indique quién decide"
+
+["State what is decided"]
+es = "Indique qué se decide"
+
+["State when it was decided"]
+es = "Indique cuándo se decidió"
+
+["The date of the decision is a day («YYYY-MM-DD»), not «{date}»"]
+es = "La fecha de la decisión es un día («AAAA-MM-DD»), no «{date}»"
+
+["State the document or the reference of the decision (a document registered as an input or a text, such as «email of 03/10/2026»)"]
+es = "Indique el documento o la referencia de la decisión (un documento registrado como entrada o un texto, como «correo del 03/10/2026»)"
+
+["There is no input {input} in the project"]
+es = "No hay ninguna entrada {input} en el proyecto"
+
+["Input «{input}» is not a document (it is of type {kind}): an owner decision rests on a registered document or on a text reference"]
+es = "La entrada «{input}» no es un documento (es de tipo {kind}): una decisión de la propiedad se apoya en un documento registrado o en una referencia en texto"
+
+["There is no parameter «{key}» in the project"]
+es = "No hay ningún parámetro «{key}» en el proyecto"
+
+["Owner: {who} · {date}"]
+es = "Propiedad: {who} · {date}"
+
+# La revisión de un dato en su ficha (spec 009, T17; RF-009-20, D-9; plan 009 A11).
+
+["in progress ({revision})"]
+es = "en curso ({revision})"
+
+["current: {revision}"]
+es = "vigente: {revision}"
+
+["frozen: {revision}"]
+es = "congelada: {revision}"
+
+["closed ({revision})"]
+es = "cerrada ({revision})"
+
+["{revision} (altered)"]
+es = "{revision} (alterada)"
+
+# El estado que tenía al congelarse lo de una revisión congelada (spec 009, T37; RF-009-19, D-23):
+# el de un dato, en mayúsculas como su estado; el de una cifra, en minúsculas como sus marcas.
+
+["STALE WHEN FROZEN, ACCEPTED"]
+es = "OBSOLETO AL CONGELARSE, ACEPTADO"
+
+["AWAITING REVIEW BY HAND WHEN FROZEN"]
+es = "A REVISAR A MANO AL CONGELARSE"
+
+["NOT LOCATABLE WHEN FROZEN"]
+es = "NO LOCALIZABLE AL CONGELARSE"
+
+["NOT REPRODUCIBLE"]
+es = "NO REPRODUCIBLE"
+
+["stale when frozen, accepted"]
+es = "obsoleta al congelarse, aceptada"
+
+["awaiting review by hand when frozen"]
+es = "a revisar a mano al congelarse"
+
+["not locatable when frozen"]
+es = "no localizable al congelarse"
+
+["not reproducible"]
+es = "no reproducible"
+
+# La versión activa de la sesión (spec 009, T18; RF-009-10; plan 009 §5.5, A11, D-25): el control
+# 8, su ventana, Proyecto ▸ Versiones ▸ Versión activa y la barra de estado.
+
+["No version"]
+es = "Sin versión"
+
+["Revisions of {version}"]
+es = "Revisiones de {version}"
+
+["{version} · active"]
+es = "{version} · activa"
+
+["Active version: {version}"]
+es = "Versión activa: {version}"
+
+["Choose the version in Project ▸ Versions ▸ Active version: nothing has changed"]
+es = "Elija la versión en Proyecto ▸ Versiones ▸ Versión activa: no ha cambiado nada"
+
+["The active version could not be remembered on this computer: {detail}"]
+es = "No se ha podido recordar la versión activa en este equipo: {detail}"
+
+["The versions of the project could not be read: {detail}"]
+es = "No se han podido leer las versiones del proyecto: {detail}"
+
+["Identity of the version to make active (empty: no version)"]
+es = "Identidad de la versión que se hace activa (vacía: sin versión)"
+
+["Identity of the version that this view works on (empty: no version)"]
+es = "Identidad de la versión con la que trabaja esta vista (vacía: sin versión)"
+
+["Identity of the version whose collection this is (empty: not a version)"]
+es = "Identidad de la versión de la que es esta colección (vacía: no es de una versión)"
+
+["Status of its version when the collection was named"]
+es = "Estado de su versión cuando se nombró la colección"
+
+["Not a version"]
+es = "No es de una versión"
+
+["A collection that is not the one of a version"]
+es = "Una colección que no es la de una versión"
+
+["A version being worked on, not yet delivered"]
+es = "Una versión en la que se trabaja, aún sin entregar"
+
+["The version in force"]
+es = "La versión vigente"
+
+["A version replaced by another one: kept as a record"]
+es = "Una versión sustituida por otra: se conserva como registro"
+
+["A discarded version: kept as a record"]
+es = "Una versión descartada: se conserva como registro"
+
+# Nueva versión… y Cambiar estado… (spec 009, T19; RF-009-01, RF-009-02, RF-009-03, RF-009-25;
+# plan 009 §5.5, A1, A2, D-3): el diálogo, lo que dice al crear y al cambiar y lo que avisa.
+
+["Feature"]
+es = "Rasgo"
+
+["What sets the version apart from the others"]
+es = "Lo que distingue a la versión de las demás"
+
+["Title"]
+es = "Título"
+
+["Title of the version, shown with its code"]
+es = "Título de la versión, que se muestra con su código"
+
+["Why the version is created (recorded with it)"]
+es = "Por qué se crea la versión (queda registrado con ella)"
+
+["Starts from"]
+es = "Parte de"
+
+["Version it starts from: it inherits its version parameters and what is frozen in its last frozen revision, never its results or figures"]
+es = "Versión de la que parte: hereda sus parámetros de versión y lo congelado en su última revisión congelada, nunca sus resultados ni sus cifras"
+
+["No parent"]
+es = "Ninguna"
+
+["Assignment"]
+es = "Encargo"
+
+["Assignment (optional)"]
+es = "Encargo (opcional)"
+
+["The assignment of the owner that gives rise to the version (free text)"]
+es = "El encargo de la propiedad que da lugar a la versión (texto libre)"
+
+["{version} created in {state}, with its revision r1 open"]
+es = "{version} creada en {state}, con su revisión r1 abierta"
+
+["; inherits 1 parameter from {parent} ({revision})"]
+es = "; hereda 1 parámetro de {parent} ({revision})"
+
+["; inherits {n} parameters from {parent} ({revision})"]
+es = "; hereda {n} parámetros de {parent} ({revision})"
+
+["; starts from {parent}"]
+es = "; parte de {parent}"
+
+["Identity or code of the version whose state changes (empty: the one of the command, the active one)"]
+es = "Identidad o código de la versión cuyo estado cambia (vacía: la de la orden, la activa)"
+
+["New state"]
+es = "Estado nuevo"
+
+["The state the version goes to: CURRENT (the previous current one becomes SUPERSEDED) or DISCARDED (with a reason)"]
+es = "El estado al que pasa la versión: VIGENTE (la vigente anterior pasa a SUPERADO) o DESCARTADO (con motivo)"
+
+["Why the state changes (required to discard the version)"]
+es = "Por qué cambia el estado (obligatorio para descartar la versión)"
+
+["{version} will become {state}"]
+es = "{version} pasará a {state}"
+
+["The project is left without a current version"]
+es = "El proyecto queda sin versión vigente"
+
+["{version} goes from {old} to {new}"]
+es = "{version} pasa de {old} a {new}"
+
+["{version} becomes {state}"]
+es = "{version} pasa a {state}"
+
+["{revision} closed on superseding"]
+es = "{revision} cerrada al superarse"
+
+["Choose the active version first: Project ▸ Versions ▸ Active version"]
+es = "Elija antes la versión activa: Proyecto ▸ Versiones ▸ Versión activa"
+
+# Órdenes de versión, «Versión no editable» y el ámbito en Parámetros (spec 009, T20;
+# RF-009-04, RF-009-05, RF-009-21, RF-009-29; plan 009 A3, A11, §5.5): la ventana que pide una
+# versión, la pregunta del ámbito y el valor de cada ámbito en Parámetros del proyecto.
+
+["Choose a version"]
+es = "Elija una versión"
+
+["Choose or create the active version for a command of a version"]
+es = "Elija o cree la versión activa para una orden de una versión"
+
+["The project"]
+es = "El proyecto"
+
+["Only the active version"]
+es = "Solo la versión activa"
+
+["Whether the change is for the project or only for the active version (a parameter that its module admits by version)"]
+es = "Si el cambio es del proyecto o solo de la versión activa (un parámetro que su módulo admite por versión)"
+
+["For the project or only for {version}?"]
+es = "¿Para el proyecto o solo para {version}?"
+
+["Only {version}"]
+es = "Solo {version}"
+
+["Parameter «{key}» = {value} {kind} in {version}"]
+es = "Parámetro «{key}» = {value} {kind} en {version}"
+
+["{version}: {value} {kind}"]
+es = "{version}: {value} {kind}"
+
+["project: {value} {kind}"]
+es = "proyecto: {value} {kind}"
+
+# Nueva revisión… (spec 009, T21; RF-009-06, RF-009-07, RF-009-08, RF-009-21; plan 009 §5.5, A5
+# a A7, D-40): el diálogo, lo que hay que aceptar, el avance, el final y la cancelación.
+
+["Identity or code of the version whose open revision is frozen (empty: the one of the command, the active one)"]
+es = "Identidad o código de la versión cuya revisión abierta se congela (vacía: la de la orden, la activa)"
+
+["Why the next revision is opened (required; recorded with it)"]
+es = "Por qué se abre la revisión siguiente (obligatorio; queda anotado con ella)"
+
+["Freeze {revision} and open {following}"]
+es = "Congelar {revision} y abrir {following}"
+
+["Freeze"]
+es = "Congelar"
+
+["Accept and freeze"]
+es = "Aceptar y congelar"
+
+["1 stale result"]
+es = "1 resultado obsoleto"
+
+["{n} stale results"]
+es = "{n} resultados obsoletos"
+
+["1 operation waiting for manual review"]
+es = "1 operación que espera revisión a mano"
+
+["{n} operations waiting for manual review"]
+es = "{n} operaciones que esperan revisión a mano"
+
+["1 input that cannot be located"]
+es = "1 entrada no localizable"
+
+["{n} inputs that cannot be located"]
+es = "{n} entradas no localizables"
+
+["{items} and {last}"]
+es = "{items} y {last}"
+
+["There is {items}: if you freeze, it will be recorded as it is"]
+es = "Hay {items}: si congela, quedará anotado"
+
+["There are {items}: if you freeze, they will be recorded as they are"]
+es = "Hay {items}: si congela, quedarán anotados"
+
+["«{name}»: {state}"]
+es = "«{name}»: {state}"
+
+["stale result"]
+es = "resultado obsoleto"
+
+["waiting for manual review"]
+es = "espera revisión a mano"
+
+["cannot be located"]
+es = "no localizable"
+
+["Freezing {revision}: copying «{name}»… {percent} % · Esc: cancel"]
+es = "Congelando {revision}: copiando «{name}»… {percent} % · Esc: cancelar"
+
+["Freezing {revision}: checking «{name}»… {percent} % · Esc: cancel"]
+es = "Congelando {revision}: comprobando «{name}»… {percent} % · Esc: cancelar"
+
+["Freezing {revision}: checking the free space… {percent} % · Esc: cancel"]
+es = "Congelando {revision}: comprobando el espacio libre… {percent} % · Esc: cancelar"
+
+["Freezing {revision}: writing the manifest… {percent} % · Esc: cancel"]
+es = "Congelando {revision}: escribiendo el manifiesto… {percent} % · Esc: cancelar"
+
+["Freezing {revision}: confirming… {percent} % · Esc: cancel"]
+es = "Congelando {revision}: confirmando… {percent} % · Esc: cancelar"
+
+["{revision} frozen ({size} copied); {following} open"]
+es = "{revision} congelada ({size} copiados); {following} abierta"
+
+["{revision} frozen ({size} copied; 1 content already frozen, referenced); {following} open"]
+es = "{revision} congelada ({size} copiados; 1 contenido ya congelado, referenciado); {following} abierta"
+
+["{revision} frozen ({size} copied; {n} contents already frozen, referenced); {following} open"]
+es = "{revision} congelada ({size} copiados; {n} contenidos ya congelados, referenciados); {following} abierta"
+
+["Freezing cancelled: nothing has been left half-done"]
+es = "Congelación cancelada: no ha quedado nada a medias"
+
+["The project was closed while {revision} was being frozen: nothing has been left half-done"]
+es = "El proyecto se cerró mientras se congelaba {revision}: no ha quedado nada a medias"
+
+["Freezing {revision} stopped: {error}"]
+es = "La congelación de {revision} se ha parado: {error}"
+
+# Las colecciones de las versiones y el renombrado desde el Outliner (spec 009, T22; RF-009-30,
+# RF-009-22; plan 009 A11, D-35, D-36).
+
+["Versions"]
+es = "Versiones"
+
+["The name «{text}» was not kept: {reason}"]
+es = "No se ha guardado el nombre «{text}»: {reason}"
+
+# Reproducir… (spec 009, T23; RF-009-11, RF-009-09; plan 009 A9, §5.5): la orden, su avance en
+# la barra de estado y la ventana del informe.
+
+["Revision"]
+es = "Revisión"
+
+["Identity or label of the frozen revision that is reproduced (empty: the last frozen one of the version of the command, the active one)"]
+es = "Identidad o etiqueta de la revisión congelada que se reproduce (vacía: la última congelada de la versión de la orden, la activa)"
+
+["Reproducing {revision}: checking the fingerprints… {percent} % · Esc: cancel"]
+es = "Reproduciendo {revision}: comprobando las huellas… {percent} % · Esc: cancelar"
+
+["Reproducing {revision}: «{op_type}» ({index} of {count})… {percent} % · Esc: cancel"]
+es = "Reproduciendo {revision}: «{op_type}» ({index} de {count})… {percent} % · Esc: cancelar"
+
+["Reproducing {revision}: writing the report… {percent} % · Esc: cancel"]
+es = "Reproduciendo {revision}: escribiendo el informe… {percent} % · Esc: cancelar"
+
+["Reproducing {revision}… {percent} % · Esc: cancel"]
+es = "Reproduciendo {revision}… {percent} % · Esc: cancelar"
+
+["The project was closed while {revision} was being reproduced: nothing has been left half-done"]
+es = "El proyecto se cerró mientras se reproducía {revision}: no ha quedado nada a medias"
+
+["Reproducing {revision} stopped: {error}"]
+es = "La reproducción de {revision} se ha parado: {error}"
+
+["Reproduction report"]
+es = "Informe de la reproducción"
+
+["What matches the frozen revision when it is reproduced, and why what does not"]
+es = "Lo que coincide con la revisión congelada al reproducirla y por qué no lo demás"
+
+["Reproduction of {revision}"]
+es = "Reproducción de {revision}"
+
+["Outputs"]
+es = "Salidas"
+
+["«{name}» matches"]
+es = "«{name}» coincide"
+
+["«{name}» matches: {value}"]
+es = "«{name}» coincide: {value}"
+
+["Frozen: {frozen} · reproduced: {reproduced}"]
+es = "Congelada: {frozen} · reproducida: {reproduced}"
+
+["Taken from what was frozen"]
+es = "Tomado de lo congelado"
+
+["Not reproducible"]
+es = "No reproducible"
+
+["Report saved in {path}"]
+es = "Informe guardado en {path}"
+
+# Encargos y decisiones de la propiedad (spec 009, T24; RF-009-13; plan 009 A10, §5.3.5 y §5.5):
+# la ventana, el diálogo «Registrar decisión…», el control 8 y Parámetros del proyecto.
+
+["Assignments and decisions of the owner"]
+es = "Encargos y decisiones de la propiedad"
+
+["The decisions of the owner, with their document, and the assignments of the versions"]
+es = "Las decisiones de la propiedad, con su documento, y los encargos de las versiones"
+
+["Owner decisions"]
+es = "Decisiones de la propiedad"
+
+["Owner decisions on {version}"]
+es = "Decisiones de la propiedad sobre {version}"
+
+["No owner decision has been recorded"]
+es = "No hay ninguna decisión de la propiedad registrada"
+
+["Document: {name}"]
+es = "Documento: {name}"
+
+["Reference: {text}"]
+es = "Referencia: {text}"
+
+["Affects: {items}"]
+es = "Afecta a: {items}"
+
+["Assignments of the versions"]
+es = "Encargos de las versiones"
+
+["Who decides"]
+es = "Quién decide"
+
+["Who decides for the owner (a person or a body of the owner)"]
+es = "Quién decide por la propiedad (una persona o un órgano de la propiedad)"
+
+["Day of the decision, DD/MM/YYYY"]
+es = "Día de la decisión, DD/MM/AAAA"
+
+["What is decided"]
+es = "Qué se decide"
+
+["What the owner decides (recorded as it is typed)"]
+es = "Lo que decide la propiedad (se guarda como se escribe)"
+
+["The document of the decision, registered as an input of type document (the minutes, the letter, the capture)"]
+es = "El documento de la decisión, registrado como entrada de tipo documento (el acta, la carta, la captura)"
+
+["Reference"]
+es = "Referencia"
+
+["Reference of the decision when there is no registered document (such as «email of 03/10/2026»)"]
+es = "Referencia de la decisión cuando no hay un documento registrado (como «correo del 03/10/2026»)"
+
+["Parameters"]
+es = "Parámetros"
+
+["Keys of the parameters it affects, separated by commas (in all their scopes)"]
+es = "Claves de los parámetros a los que afecta, separadas por comas (en todos sus ámbitos)"
+
+["Codes of the versions it affects, separated by commas"]
+es = "Códigos de las versiones a las que afecta, separados por comas"
+
+["Owner decision recorded: «{what}» ({who}, {date})"]
+es = "Decisión de la propiedad registrada: «{what}» ({who}, {date})"
+
+# Inventario y Elemento activo con versiones (spec 009, T25; RF-009-20, RF-009-30, RF-009-09;
+# plan 009 A11): el estado de una revisión y su marca en el inventario, lo que no se hace con una
+# versión o una revisión, y las cifras «en curso» y vigentes de un dato de versión en su ficha.
+# «Version», «Revision», «All versions» y «Without version» ya están.
+
+["in progress"]
+es = "en curso"
+
+["frozen"]
+es = "congelada"
+
+["closed"]
+es = "cerrada"
+
+["ALTERED"]
+es = "ALTERADA"
+
+["A version or a revision is not loaded into the view: its data are"]
+es = "Una versión o una revisión no se carga en la vista: se cargan sus datos"
+
+["A version or a revision has no provenance: its data have it"]
+es = "Una versión o una revisión no tiene procedencia: la tienen sus datos"
+
+["Figures in progress ({revision})"]
+es = "Cifras en curso ({revision})"
+
+["Current figures of {revision}"]
+es = "Cifras vigentes de {revision}"
+
+["Frozen figures of {revision}"]
+es = "Cifras congeladas de {revision}"
+
+["No revision of {version} has been frozen yet"]
+es = "Aún no hay ninguna revisión congelada de {version}"

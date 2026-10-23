@@ -5,7 +5,7 @@
 Las pruebas del arnés que lanzan Blender entero están en
 ``tests/arnes/test_harness_blender.py``, el paso «arnés» de ``tools/check.py
 --completo`` (spec 001 0.6; D-9 de la spec 002, T48); aquí quedan las que caben en la
-comprobación de cada tarea (RNF-001-01, ≤ 40 s):
+comprobación de cada tarea (RNF-001-01, ≤ 45 s):
 
 - RF-001-06: un paso de ``tools/check.py`` con ``unittest`` real (el Python de Blender)
   no da por buena una salida a mitad (``os._exit(0)``), una omisión sin recurso, una

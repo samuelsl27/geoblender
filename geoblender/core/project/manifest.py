@@ -12,7 +12,8 @@ ella (:func:`compare`):
   no abre, se muestran los dos valores y no se corrige ninguno (síntoma de ficheros
   mezclados a mano);
 - si solo difieren las fechas, la versión de Geoblender u otros datos que la base de datos
-  manda (nombre, paso de rejilla…), la base registra una migración que la cabecera no
+  manda (nombre, paso de rejilla…, el inventario de lo congelado: spec 009, plan §5.2.4, que
+  se regenera desde ``gb_revision``), la base registra una migración que la cabecera no
   tiene o el GeoOrigin de la cabecera es el de antes del último cambio de ventana
   registrado (``move_origin``: la cabecera no se pudo reescribir tras confirmarlo):
   **REWRITE**, se regenera desde la base de datos;
@@ -502,11 +503,14 @@ def write_manifest(root: Path, manifest: Manifest, session_uid: str) -> None:
         ) from exc
 
 
-def manifest_from_record(record: ProjectRecord, *, previous: Manifest | None = None) -> Manifest:
-    """La cabecera regenerada desde la fila de ``gb_project`` (la BD manda). De
-    ``previous`` conserva lo que la base de datos no tiene: el inventario de lo congelado,
-    la sección ``checkout``, los demás almacenes y las claves desconocidas, salvo las que
-    llevan una ruta absoluta, que se descartan (D-10 y D-13)."""
+def manifest_from_record(record: ProjectRecord, *, previous: Manifest | None = None,
+                         inventory: Sequence[Any] | None = None) -> Manifest:
+    """La cabecera regenerada desde la fila de ``gb_project`` (la BD manda). El inventario de
+    lo congelado, ``inventory`` (el de la base, ``core.versions.read.snapshot_index``: spec
+    009, plan §5.2.4); sin él (una base sin revisiones que leer), el de ``previous``. De
+    ``previous`` conserva además lo que la base de datos no tiene: la sección ``checkout``, los
+    demás almacenes y las claves desconocidas, salvo las que llevan una ruta absoluta, que se
+    descartan (D-10 y D-13)."""
     stores: dict[str, Any] = dict(previous.stores) if previous is not None else {}
     stores["project"] = {"path": PROJECT_STORE, "gpkg_version": GPKG_VERSION}
     return Manifest(
@@ -527,7 +531,8 @@ def manifest_from_record(record: ProjectRecord, *, previous: Manifest | None = N
         created_at=record.created_at,
         modified_at=record.modified_at,
         stores=stores,
-        inventory=() if previous is None else previous.inventory,
+        inventory=(tuple(_plain(list(inventory))) if inventory is not None
+                   else () if previous is None else previous.inventory),
         checkout=None if previous is None else previous.checkout,
         extra=() if previous is None else tuple(
             item for item in previous.extra if not item.discarded
@@ -655,11 +660,13 @@ def compare(
     record: ProjectRecord,
     migrations: Sequence[tuple[int, int]] = (),
     origin_move: OriginMove | None = None,
+    inventory: Sequence[Any] | None = None,
 ) -> ManifestCheck:
     """Compara la cabecera con la fila de ``gb_project``, las migraciones registradas en
-    ``gb_schema_migration`` ((de, a)) y el último cambio de GeoOrigin registrado en
-    ``gb_event`` (``origin_move``: (de, a), :func:`~.events.last_origin_move`). No corrige
-    nada.
+    ``gb_schema_migration`` ((de, a)), el último cambio de GeoOrigin registrado en
+    ``gb_event`` (``origin_move``: (de, a), :func:`~.events.last_origin_move`) y, si se da, el
+    inventario de lo congelado de la base (``inventory``; spec 009, plan §5.2.4: si difiere, la
+    cabecera se regenera, como el esquema mínimo de lectura). No corrige nada.
 
     Una diferencia de GeoOrigin que ese cambio explica (de = la cabecera, a = la base) se
     regenera desde la base, como una migración: la cabecera se queda con el origen
@@ -687,6 +694,9 @@ def compare(
         header_value, db_value = from_header(manifest), from_db(record)
         if header_value != db_value:
             differences.append(ManifestDifference(name, header_value, db_value, False))
+    if inventory is not None and list(manifest.inventory) != _plain(list(inventory)):
+        differences.append(ManifestDifference("inventory", list(manifest.inventory),
+                                              _plain(list(inventory)), False))
     if not differences:
         status = ManifestStatus.CONSISTENT
     elif any(item.blocking for item in differences):

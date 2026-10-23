@@ -34,7 +34,9 @@ es un punto de cancelación) y ninguno crea, cambia ni borra nada junto a su fue
 - :data:`NPZ_MESH` (``core.npz_mesh@1``): una malla ``npz`` de ``meshes/``
   (``formato-proyecto.md`` §4.3), leída sin ``pickle``: cuentan sus arrays y, de su ``meta``
   (un texto JSON 0-d), solo ``kind``, ``crs_epsg`` y ``closed``; ``operation_uid``,
-  ``volume_m3`` y lo demás no son contenido.
+  ``volume_m3`` y lo demás no son contenido. Cada miembro del zip se lee una sola vez, en
+  trozos de ``chunk_bytes`` (como mucho :data:`NPZ_CHUNK_BYTES`), y la malla se hashea por
+  pasos, con la misma salida que de una vez (spec 009, T11; D-30).
 
 :data:`CONTENT_READERS` los reúne para que los registre ``bl/`` (y la lista estática del
 trabajo de hash): importar este módulo no registra nada. Python puro, ``sqlite3`` y numpy
@@ -119,6 +121,18 @@ PRIVATE_PREFIX = "gb-gp-"
 """Prefijo de la carpeta temporal de la copia privada (corto: rutas de 259 caracteres)."""
 META_ARRAY = "meta"
 """El array de una malla ``npz`` con su ``meta`` en JSON."""
+NPZ_CHUNK_BYTES = 8 << 20
+"""Lo más que ``core.npz_mesh@1`` lee de un miembro del zip entre dos ``yield``, y las celdas
+que hashea (en float64) entre dos, aunque ``request.chunk_bytes`` pida más (8 MiB; spec 009,
+T11, D-30): un array entero de una vez (``np.load``) tardaba 0,64 s con la malla de 1,5 M de
+vértices del plan 009 (§2.2), y RNF-009-05 pide ≤ 0,2 s por llamada al congelar."""
+NPZ_CHUNKED_KINDS = "biufU"
+"""Las clases de dtype (``dtype.kind``) de los arrays ``.npy`` que ``core.npz_mesh@1`` lee por
+trozos: los números de una malla y el texto de su ``meta``. Lo demás (objetos, estructuras,
+bytes, fechas) no es de una malla: se lee de una vez, como antes, y da el mismo error."""
+_NPZ_CHUNKED_VERSIONS = ((1, 0), (2, 0))
+"""Las versiones del formato ``.npy`` que lee por trozos (las que escribe numpy salvo con
+nombres de campos que no son latin-1, la 3.0: esa, de una vez)."""
 
 _SQL_TYPE =re.compile(r"\s*([A-Za-z]+)\s*(\(\s*[0-9]+\s*\))?\s*")
 _KIND_TEXT = {
@@ -600,11 +614,99 @@ def _meta(value: np.ndarray, path: Path) -> dict[str, Any]:
     return meta
 
 
+class _AtOnce(Exception):
+    """Un miembro que no se lee por trozos: se lee de una vez, como antes."""
+
+
+def _member_name(archive: Any, name: str) -> str:
+    """El miembro del zip de ``archive[name]``, como lo busca numpy: el que se llama así o, si
+    no hay ninguno, ``<name>.npy``."""
+    try:
+        archive.zip.getinfo(name)
+    except KeyError:
+        return f"{name}.npy"
+    return name
+
+
+def _member_chunks(archive: Any, name: str, chunk: int) -> Generator[float, None, np.ndarray]:
+    """Un array ``.npy`` del zip leído una sola vez, en trozos de ``chunk`` bytes, con la
+    cabecera y la forma que lee numpy: el avance (0–1) tras cada trozo que no es el último y,
+    al acabar, el array. :class:`_AtOnce` si no es un ``.npy`` 1.0 o 2.0 de
+    :data:`NPZ_CHUNKED_KINDS`, o si los datos acaban antes de tiempo. El zip comprueba el
+    CRC-32 al leer el último byte del miembro."""
+    with archive.zip.open(_member_name(archive, name)) as stream:
+        version = np.lib.format.read_magic(stream)
+        if version not in _NPZ_CHUNKED_VERSIONS:
+            raise _AtOnce(name)
+        if version == (1, 0):
+            shape, fortran, dtype = np.lib.format.read_array_header_1_0(stream)
+        else:
+            shape, fortran, dtype = np.lib.format.read_array_header_2_0(stream)
+        if (
+            dtype.kind not in NPZ_CHUNKED_KINDS
+            or dtype.fields is not None
+            or dtype.subdtype is not None
+            or dtype.itemsize == 0
+        ):
+            raise _AtOnce(name)
+        count = 1 if len(shape) == 0 else np.multiply.reduce(shape, dtype=np.int64)
+        array = np.ndarray(count, dtype=dtype)
+        raw = array.view(np.uint8)
+        total = raw.size
+        done = 0
+        while done < total:
+            data = stream.read(min(chunk, total - done))
+            if not data:
+                raise _AtOnce(name)
+            raw[done:done + len(data)] = np.frombuffer(data, dtype=np.uint8)
+            done += len(data)
+            if done < total:
+                yield done / total
+    if fortran:
+        return array.reshape(shape[::-1]).transpose()
+    return array.reshape(shape)
+
+
+def _member_steps(
+    archive: Any, name: str, path: Path, chunk: int
+) -> Generator[float, None, np.ndarray]:
+    """``archive[name]`` por trozos (:func:`_member_chunks`). Lo que no se lee así, o un error
+    (un miembro dañado, truncado o de otro formato), se lee otra vez de una vez con
+    :func:`_array`, como antes: el mismo valor o el mismo error (sin el de los trozos como
+    contexto), que es lo que se compara."""
+    try:
+        return (yield from _member_chunks(archive, name, chunk))
+    except Exception:  # noqa: BLE001 - el error lo da, el mismo que antes, la lectura de una vez
+        pass
+    return _array(archive, name, path)
+
+
+def _part_steps(
+    steps: Generator[float, None, Any], index: int, parts: int
+) -> Generator[float, None, Any]:
+    """Los avances (0–1) de la parte ``index`` de ``parts`` iguales llevados a
+    ``(index + avance) / parts`` y lo que devuelve al acabar."""
+    try:
+        while True:
+            try:
+                value = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            yield (index + value) / parts
+    finally:
+        steps.close()
+
+
 def read_npz_mesh(request: ReadRequest) -> Iterator[float]:
-    """El generador de ``core.npz_mesh@1``: lee los arrays uno a uno (progreso por array) sin
-    ``pickle``, cierra el fichero y hashea la malla con ``ContentHasher.mesh``."""
+    """El generador de ``core.npz_mesh@1``: lee cada miembro del zip una sola vez, sin
+    ``pickle``, en trozos de ``request.chunk_bytes`` (como mucho :data:`NPZ_CHUNK_BYTES`), cierra
+    el fichero y hashea la malla por pasos (``ContentHasher.begin_mesh``) en trozos de celdas
+    del mismo tamaño (spec 009, T11; D-30). Avance: cada miembro y el hash, una parte igual;
+    tras cada miembro, ``i / (miembros + 1)`` como antes. El mismo hash y los mismos errores que
+    leerlo de una vez: el lector no cambia de versión (ADR-0024 §6)."""
     path = _only_main(request)
     _no_settings(request)
+    chunk = min(request.chunk_bytes, NPZ_CHUNK_BYTES)
     arrays: dict[str, np.ndarray] = {}
     meta: dict[str, Any] = {}
     with open(path, "rb") as stream:
@@ -613,14 +715,19 @@ def read_npz_mesh(request: ReadRequest) -> Iterator[float]:
         stream.seek(0)
         with np.load(stream, allow_pickle=False) as archive:
             names = list(archive.files)
-            for index, name in enumerate(names, start=1):
-                value = _array(archive, name, path)
+            parts = len(names) + 1
+            for index, name in enumerate(names):
+                value = yield from _part_steps(
+                    _member_steps(archive, name, path, chunk), index, parts
+                )
                 if name == META_ARRAY:
                     meta = _meta(value, path)
                 else:
                     arrays[name] = value
-                yield index / (len(names) + 1)
-    request.hasher.mesh(arrays, meta)
+                yield (index + 1) / parts
+    feed = request.hasher.begin_mesh(arrays, meta)
+    cells = max(1, chunk // 8)  # celdas de 8 bytes (float64 o int64) en el hash
+    yield from _part_steps(feed.finish_steps(cells), len(names), parts)
     yield 1.0
 
 

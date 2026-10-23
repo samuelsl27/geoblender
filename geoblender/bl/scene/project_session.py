@@ -19,7 +19,8 @@ Geoblender (:func:`unregister`) y al salir de Blender (:func:`at_exit`, con ``at
   ya no es de esta sesión, o no se pudo renovar, el proyecto pasa a solo lectura (lo hace
   ``core``), el temporizador se detiene y queda un aviso (RF-002-12).
 - **Avisos**: lo que pasa sin un operador que lo cuente (un manejador, el temporizador)
-  queda en :func:`take_notices` para la interfaz y en el registro técnico.
+  queda en :func:`take_notices` para la interfaz y en el registro técnico; el que deja de
+  ser verdad se retira con :func:`withdraw_notice`.
 - **Cambio de proyecto**: lo que otras partes de ``bl`` tienen que rehacer cuando la sesión
   pasa a tener otro proyecto o ninguno (la raíz de los trabajos en segundo plano de la
   spec 004) se apunta con :func:`add_listener`; :func:`attach` y :func:`close` lo llaman
@@ -130,6 +131,18 @@ def take_notices() -> list[str]:
     return found
 
 
+def withdraw_notice(message: str) -> bool:
+    """Quita de los avisos pendientes ``message`` (todas sus apariciones), que ha dejado de
+    ser verdad: el de «no está abierto» de una vista al abrir su proyecto (009/T42,
+    ``georef.clear_unopened_view``); los demás siguen. Verdadero si estaba."""
+    kept = [notice for notice in _STATE.notices if notice != message]
+    if len(kept) == len(_STATE.notices):
+        return False
+    _STATE.notices = kept
+    LOGGER.info("Se retira el aviso, que ya no es verdad: %s", message)
+    return True
+
+
 # Cambio de proyecto -------------------------------------------------------------------
 
 
@@ -178,6 +191,8 @@ def attach(project: Project) -> tuple[str, ...]:
     _STATE.project = project
     from . import georef  # georef usa este módulo: se importa al usarlo
 
+    # La vista cargada sin este proyecto abierto, con su georreferencia: al día (009/T42).
+    georef.clear_unopened_view(project)
     georef.sync_scenes(project)
     ensure_heartbeat()
     _changed(project)

@@ -120,10 +120,13 @@ def draw_command(
     hide_unavailable: bool = False,
     inline: bool = False,
     depress: bool | None = None,
+    icon: dict[str, Any] | None = None,
 ) -> Any:
     """Dibuja el comando de ``key`` en ``layout`` y devuelve las propiedades del
     operador dibujado (o ``None``). ``inline``: en una fila de cabecera (la fila
-    desactivada se alinea); ``label``: otro texto (el número de Refrescar…)."""
+    desactivada se alinea); ``label``: otro texto (el número de Refrescar…); ``icon``: otros
+    argumentos de icono (``{"icon_value": n}`` o ``{"icon": …}``: el del estado de la versión
+    activa en el control 8, spec 009)."""
     cmd = catalog().commands.get(key)
     if cmd is None:
         return None
@@ -138,7 +141,8 @@ def draw_command(
         target, shown = _with_state(layout, shown, command_state(context, cmd.idname), inline)
     else:
         target = _disabled(layout, inline)
-    kwargs: dict[str, Any] = {"text": shown, "translate": False, **icon_kwargs(cmd)}
+    kwargs: dict[str, Any] = {"text": shown, "translate": False,
+                              **(icon_kwargs(cmd) if icon is None else icon)}
     idname = cmd.idname
     if cmd.kind == "panel":
         target.popover(idname, **kwargs)

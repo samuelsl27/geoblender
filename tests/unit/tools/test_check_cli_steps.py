@@ -2,8 +2,10 @@
 """La comprobación completa, ``tools/check.py`` (plan 001 §5.4.7), con un ejecutor simulado:
 los pasos, el entorno, el repositorio, el manifiesto, Blender y las medidas.
 
-- RF-001-06: los pasos se ejecutan en el orden fijado (unitarias, referencia, licencias,
-  manifiesto, blender), todos aunque falle alguno; el resumen da una línea por paso con
+- RF-001-06: los pasos se ejecutan en el orden fijado (unitarias, manifiesto y blender,
+  con referencia, licencias e iconos a la vez que blender desde la spec 001 0.8:
+  ``test_check_cli_together``), todos aunque falle alguno; el resumen da una línea por paso,
+  en el orden de la tabla (unitarias, referencia, licencias, iconos, manifiesto, blender), con
   su resultado, su duración y el número de pruebas; el código es 0 solo si ningún paso
   falla; una prueba omitida por un recurso opcional (``[ENTORNO] <recurso>: <orden>``)
   da «VERDE CON OMISIONES (n)» con el recurso y la orden que lo instala; otra spec
@@ -32,6 +34,7 @@ from unittest import mock
 
 from tests.support import resources
 from tests.support.check_cli import (
+    EXECUTED,
     FakeRunner,
     INSTALL,
     LINE,
@@ -75,7 +78,7 @@ class StepsTest(unittest.TestCase):
             result = run_check()
         self.assertEqual(result.code, 0, result.out + result.err)
         runner = result.runner
-        self.assertEqual(runner.steps(), MANDATORY)
+        self.assertEqual(runner.steps(), EXECUTED)
         for step, command in (("unitarias", unit_part_cmd),
                               ("referencia", reference_part_cmd)):
             calls = runner.calls_of(step)
@@ -112,7 +115,7 @@ class StepsTest(unittest.TestCase):
         runner = FakeRunner({"licencias": (1, failure, "detalle en stderr\n")})
         result = run_check(runner=runner)
         self.assertEqual(result.code, 1)
-        self.assertEqual(runner.steps(), MANDATORY)
+        self.assertEqual(runner.steps(), EXECUTED)
         self.assertTrue(_step_line(result.out, "licencias").lstrip().startswith("fallo"))
         self.assertTrue(_step_line(result.out, "blender").lstrip().startswith("correcto"))
         self.assertIn(failure.strip(), result.out)
@@ -150,7 +153,7 @@ class StepsTest(unittest.TestCase):
                 runner = FakeRunner({"referencia": error})
                 result = run_check(runner=runner)
                 self.assertEqual(result.code, 1)
-                self.assertEqual(runner.steps(), MANDATORY)
+                self.assertEqual(runner.steps(), EXECUTED)
                 line = _step_line(result.out, "referencia")
                 self.assertTrue(line.lstrip().startswith("fallo"), line)
 
@@ -352,7 +355,7 @@ class StepsTest(unittest.TestCase):
         runner = FakeRunner()
         result = run_check(runner=runner)
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(runner.steps(), MANDATORY)
+        self.assertEqual(runner.steps(), EXECUTED)
         self.assertEqual(
             runner.call("iconos").cmd,
             blender.python_cmd(INSTALL, "tools/build_icons.py", "--check"),
@@ -602,7 +605,7 @@ class ManifestStepTest(unittest.TestCase):
         runner = FakeRunner({"manifiesto": (1, "", error)})
         result = run_check(runner=runner)
         self.assertEqual(result.code, 1)
-        self.assertEqual(runner.steps(), MANDATORY)
+        self.assertEqual(runner.steps(), EXECUTED)
         self.assertTrue(_step_line(result.out, "manifiesto").lstrip().startswith("fallo"))
         self.assertIn(error.strip(), result.out)
         self.assertIn("«manifiesto»", result.out.strip().splitlines()[-1])

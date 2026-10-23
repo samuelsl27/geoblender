@@ -621,8 +621,8 @@ class ResolveTest(StoreCase):
 
     def test_resolve_rejections(self) -> None:
         """RF-008-05: un parámetro que el proyecto no tiene no se resuelve (antes,
-        ``ensure_default``); en esta spec solo hay ámbito de proyecto (la versión, con la
-        009)."""
+        ``ensure_default``); el ámbito de versión necesita la versión (spec 009,
+        ``test_params_versions``) y el sector no existe aún (R-32)."""
         with self.project.read() as conn:
             with self.assertRaises(params.ParamError) as caught:
                 self.store.resolve(conn, KEY)
@@ -673,7 +673,15 @@ class ListTest(StoreCase):
             _insert(conn, "gb_operation", operation_row(op_type="res.balance", module="res"))
             for row in self.rows:
                 _insert(conn, "gb_parameter", row)
-            # El de una versión (spec 009) no es de la lista del proyecto.
+            # El de una versión (spec 009) no es de la lista del proyecto; desde el esquema 3,
+            # es de una versión viva (gb_parameter_version_ins).
+            _insert(conn, "gb_version", {
+                "uid": "00000000-0000-4000-8000-0000000009f2", "code": "V01",
+                "feature": "prueba", "title": "Prueba", "reason_created": "Prueba",
+                "created_at": "2026-10-18T10:00:00.000Z", "created_by": USER_HOST,
+                "status_changed_at": "2026-10-18T10:00:00.000Z", "status_changed_by": USER_HOST,
+                "modified_at": "2026-10-18T10:00:00.000Z",
+            })
             _insert(conn, "gb_parameter", parameter_row(
                 uid="00000000-0000-4000-8000-0000000009f1", key="res.p000", scope="version",
                 scope_uid="00000000-0000-4000-8000-0000000009f2",

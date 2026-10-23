@@ -79,6 +79,14 @@ T71 (textos de T58):
   del catálogo; RF-008-06: el motivo de solo lectura, sin repetir «Solo lectura:»; los valores
   de los parámetros con el separador de miles de las cifras («500 000 t/año»).
 
+Spec 009, T41 (hallazgo de la T35: la barra superior es un área global de la ventana, fuera de
+``screen.areas``, y ``Area.tag_redraw`` no llega a ella):
+
+- RF-008-28, RNF-008-06: cambiar el número de lo obsoleto con una orden lanzada fuera de la
+  barra superior (Cambiar un parámetro y Recalcular lo obsoleto, desde una Vista 3D) pide
+  redibujar la barra superior (el control 7) y la de estado por el mecanismo común de la T35,
+  que se ve en el registro técnico.
+
 Se ejecuta con ``tools/run_blender_tests.py``. En ``blender -b`` los temporizadores no corren:
 las pruebas llaman a su función. El proyecto es sintético (la demostración de la 008 y los
 GeoPackage de ``tests/data/core/provenance/``).
@@ -159,6 +167,9 @@ HYPOTHESIS_ICON = "gb_type_assumption"  # [HIP]: «HIP» sobre ámbar (spec 003,
 HYPOTHESIS_FALLBACK = "COLLECTION_COLOR_03"  # su reserva nativa ámbar (la de BORRADOR)
 HYPOTHESIS_AMBER = "#E0A526"  # el ámbar de HIP (II §1.2)
 FAKE_ICON_ID = 4242  # el icon_id de un icono propio cargado, con interfaz
+PROPS_LOGGER = "geoblender.bl.props"  # el de la función update que redibuja (T35, T41)
+REDRAW_LOG = f"DEBUG:{PROPS_LOGGER}:Se pide redibujar todas las ventanas"
+TIMER = SimpleNamespace(type="TIMER", value="NOTHING")  # un evento del modal de Recalcular
 SVG_DIR = ROOT / "assets" / "icons"
 PNG_DIR = EXTENSION_DIR / "resources" / "icons"
 MAX_PNG_BYTES = 8 * 1024  # RNF-003-09
@@ -499,6 +510,58 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertEqual(texts[:2], ["Refrescar · obsoletos (0)", "No hay nada obsoleto"])
         self.assertEqual(self.synthetic_drawn(synthetic), plain)
         self.assertEqual(self.recompute_highlighted(), [[False], [False]])
+
+    def test_control_7_count_redraws_the_top_bar(self) -> None:
+        """RF-008-28, RNF-008-06 (spec 009, T41; hallazgo de la T35): cambiar el número de lo
+        obsoleto con una orden lanzada fuera de la barra superior (desde una Vista 3D, como F3,
+        un guion o el canal) pide redibujar la barra superior, donde está el control 7, y la de
+        estado («! n obsoletos») por el mecanismo común de la T35: asignar una propiedad de
+        Geoblender con función ``update``, que Blender ejecuta (se ve en el registro técnico) y
+        tras la que avisa a todas las regiones de todas las ventanas. La barra superior es un
+        área global de la ventana, fuera de ``screen.areas``: ``Area.tag_redraw`` no llega a
+        ella. Cambiar la producción deja obsoletos los años por banco («! 1 obsoleto», «1» en
+        el control 7) y lo pide al escribir el parámetro; Recalcular lo obsoleto los rehace y lo
+        pide al terminar, con los indicadores al día sin esperar al tic (nada obsoleto, sin
+        número)."""
+        ui = self.ui
+        project = self.create()
+        demo = self.enterContext(Demo(module_name()).registered())
+        demo.digitize(project)
+        demo.bench_years(project)
+        self.ps.attach(project)
+        self.run_checks()
+        self.assertEqual(ui.indicator_tick(), ui.INDICATOR_TICK_S)
+        self.assertEqual(self.both_modes(), [])
+        self.assertIsNone(self.quick.count_of(REFRESH, bpy.context))
+        window = bpy.context.window_manager.windows[0]
+        self.assertNotIn("TOPBAR", [area.type for area in window.screen.areas])
+        (area,) = [item for item in window.screen.areas if item.type == "VIEW_3D"]
+        (region,) = [item for item in area.regions if item.type == "WINDOW"]
+
+        with self.assertLogs(PROPS_LOGGER, level="DEBUG") as logged:
+            with bpy.context.temp_override(window=window, area=area, region=region):
+                self.assertEqual(bpy.ops.geoblender.core_set_parameter(
+                    key=PRODUCTION, value="400000", reason="Plan revisado", **PROPERTY),
+                    {"FINISHED"})
+        self.assertEqual(self.both_modes(), ["! 1 obsoleto"])
+        self.assertEqual(self.quick.count_of(REFRESH, bpy.context), 1)
+        self.assertIn(REDRAW_LOG, logged.output)
+
+        with bpy.context.temp_override(window=window, area=area, region=region):
+            self.assertEqual(bpy.ops.geoblender.core_recompute_stale("EXEC_DEFAULT"),
+                             {"RUNNING_MODAL"})
+        (operator,) = [op for op in window.modal_operators
+                       if isinstance(op, self.session.GEOBLENDER_OT_core_recompute_stale)]
+        self.addCleanup(lambda: operator._steps is None or operator.cancel(bpy.context))
+        with self.assertLogs(PROPS_LOGGER, level="DEBUG") as logged:
+            for _ in range(MAX_TICKS):
+                if operator.modal(bpy.context, TIMER) != {"RUNNING_MODAL"}:
+                    break
+            else:
+                self.fail("el recálculo no termina")
+        self.assertEqual(self.both_modes(), [])
+        self.assertIsNone(self.quick.count_of(REFRESH, bpy.context))
+        self.assertIn(REDRAW_LOG, logged.output)
 
     def test_undo_notice_for_ten_seconds(self) -> None:
         """RF-008-32 (plan §5.5): el aviso de Ctrl+Z se ve en la barra de estado, en los dos

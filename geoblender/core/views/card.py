@@ -1,13 +1,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Ficha de un dato del proyecto y cifras de varios datos (spec 010; RF-010-06, RF-010-08;
-ADR-0025; plan 010 §5.3.1, A6, A8, D-16 y D-17).
+ADR-0025; plan 010 §5.3.1, A6, A8, D-16 y D-17; con las versiones de la spec 009: RF-009-20,
+RF-009-30, D-9, plan 009 §5.3.2 y A11).
 
 :func:`item_card` lee, en una instantánea y sin escribir nada, lo que enseña N ▸ Proyecto ▸
 Elemento activo de un dato (:class:`ItemCard`):
 
 - su registro (nombre, tipo, estado…) y si está obsoleto (la caché ``gb_stale``; solo un dato
   vivo puede estarlo, como «! n obsoletos» de la 008);
-- su versión: ``None`` («—») hasta que la spec 009 dé las versiones;
+- su versión: la de un dato de versión, «V01 · Definitiva» (su código y su título), y su
+  revisión (:class:`RevisionMark`): lo «en curso», la revisión abierta de su versión, si el
+  dato está vivo (D-23: su contenido de hoy es lo de la abierta, también si se calculó en una
+  ya congelada); lo «vigente», su última revisión congelada (D-9), con su marca «alterada»; y,
+  en una versión SUPERADO o DESCARTADO, la revisión cerrada al superarse («en curso (r2) ·
+  vigente: r1», «cerrada (r2) · congelada: r1»). Un dato del proyecto (y todo en un proyecto
+  del esquema 2 abierto en solo lectura, sin versiones), ninguna: ``None`` («—»);
 - la operación que escribió su contenido actual (:class:`OperationSummary`: su tipo, la versión
   de su algoritmo, cuándo terminó, la versión de Geoblender y de sus bibliotecas y dónde se
   ejecutó);
@@ -21,7 +28,15 @@ Elemento activo de un dato (:class:`ItemCard`):
 - la marca de obsoleto de cada uno;
 - sus cifras: las que registró la operación que escribió su contenido, con su unidad y su tipo,
   sin marcas (las marcas leen el grafo entero: D-16). Una cifra de una operación que no escribe
-  datos (el área de un límite) no es de ningún dato.
+  datos (el área de un límite) no es de ningún dato;
+- de un dato de versión, las cifras vigentes de su versión: las de su última revisión congelada,
+  tal como quedaron anotadas al congelarla (``core.versions.read.version_figures``; D-9), no
+  las «en curso» (RF-009-20);
+- el estado que tenía al congelarse lo de esa revisión congelada (spec 009, T37; RF-009-19,
+  D-23; plan A4 (1)), de ``gb_revision_item.state``: el de cada una de esas cifras y, si el dato
+  no es lo «en curso» de una revisión abierta (su versión es SUPERADO o DESCARTADO, o ya no está
+  vivo) y su contenido es el que se congeló en ella, el suyo. Lo «en curso» lleva el estado de
+  hoy (la cascada lo evalúa, D-23), no el que tenía al congelarse.
 
 Es el primer nivel de la procedencia, por consultas directas (2,5 ms con D-13, plan §2.2); la
 cadena entera es la de la 008 (``core.provenance.lineage.lineage``), a un clic.
@@ -44,17 +59,19 @@ import json
 import sqlite3
 from collections.abc import Collection, Iterable, Mapping
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Protocol
 
 from ..datasets.model import DatasetRecord
 from ..provenance.figures import RECORD_COLUMNS as FIGURE_COLUMNS
 from ..provenance.figures import FigureRecord
-from ..provenance.graph import DATASET, INPUT
+from ..provenance.graph import DATASET, INPUT, versioned
 from ..provenance.importer import IMPORTED_ROLE
 from ..provenance.lineage import FigureMarks, figure_marks
 from ..provenance.operations import OperationStatus
+from ..versions import read as versions_read
+from ..versions.model import EDITABLE, ItemState, Revision, RevisionState, VersionStatus, render
 from .state import _chunks, _records, _snapshot, _stale
 
 __all__ = [
@@ -65,6 +82,7 @@ __all__ = [
     "ItemCard",
     "Link",
     "OperationSummary",
+    "RevisionMark",
     "dataset_figures",
     "item_card",
 ]
@@ -91,6 +109,16 @@ _DERIVED = (
     "ORDER BY op.fid, made.fid"
 )
 _FIGURES = f"SELECT {FIGURE_COLUMNS} FROM gb_figure WHERE operation_uid IN ({{marks}}) ORDER BY fid"
+# El estado al congelarse del dato, si su contenido es el que se congeló, y el de las cifras de
+# la revisión (por el índice único de gb_revision_item: revisión, clase y uid).
+_FROZEN_DATASET = (
+    "SELECT state FROM gb_revision_item WHERE revision_uid = ? AND item_kind = 'dataset' "
+    "AND item_uid = ? AND content_sha256 = ?"
+)
+_FROZEN_FIGURE_STATES = (
+    "SELECT item_uid, state FROM gb_revision_item WHERE revision_uid = ? "
+    "AND item_kind = 'figure' AND part = 'produced'"
+)
 
 
 class ReadableProject(Protocol):
@@ -133,11 +161,76 @@ class OperationSummary:
 
 
 @dataclass(frozen=True)
+class RevisionMark:
+    """La versión de un dato de versión y sus revisiones en su ficha (spec 009; RF-009-20, D-9,
+    D-23; plan A11): el uid, el código, el título y el estado de la versión; ``in_progress``,
+    el número de su revisión abierta si el dato está vivo (lo «en curso»); ``current``, el de
+    su última revisión congelada (lo vigente de la versión, D-9) y ``current_altered``, si está
+    marcada «alterada» (RF-009-09); ``closed``, el de la revisión cerrada al superarse o
+    descartarse la versión (RF-009-25). ``None``, si no la hay."""
+
+    version_uid: str
+    code: str
+    title: str
+    status: VersionStatus
+    in_progress: int | None
+    current: int | None
+    current_altered: bool
+    closed: int | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "status", VersionStatus(self.status))
+
+    @property
+    def label(self) -> str:
+        """«V01 · Definitiva»."""
+        return f"{self.code} · {self.title}"
+
+    def text(self, language: str = "es") -> str:
+        """Sus revisiones en ``language`` (``"es"`` o ``"en"``): lo abierto, «en curso (r2)»,
+        o, sin abierta, la cerrada al superarse, «cerrada (r2)»; y lo último congelado,
+        «vigente: r1» en una versión BORRADOR o VIGENTE y «congelada: r1» en una SUPERADO o
+        DESCARTADO, con «(alterada)» si lo está; separados por « · »; sin revisiones, «».
+        :class:`ValueError` con un idioma que no es de Geoblender."""
+        parts: list[str] = []
+        if self.in_progress is not None:
+            parts.append(render("core.version_revision_in_progress", language=language,
+                                revision=f"r{self.in_progress}"))
+        elif self.closed is not None:
+            parts.append(render("core.version_revision_closed", language=language,
+                                revision=f"r{self.closed}"))
+        if self.current is not None:
+            shown = f"r{self.current}"
+            if self.current_altered:
+                shown = render("core.version_revision_altered", language=language,
+                               revision=shown)
+            code = ("core.version_revision_current" if self.status in EDITABLE
+                    else "core.version_revision_frozen")
+            parts.append(render(code, language=language, revision=shown))
+        return " · ".join(parts)
+
+    def heading(self, language: str = "es") -> str:
+        """La versión con sus revisiones: «V01 · Definitiva — en curso (r2) · vigente: r1»
+        (sin revisiones, solo la versión)."""
+        text = self.text(language)
+        return f"{self.label} — {text}" if text else self.label
+
+
+def _no_states() -> Mapping[str, ItemState]:
+    return MappingProxyType({})
+
+
+@dataclass(frozen=True)
 class ItemCard:
     """La ficha de un dato (véase el módulo): su registro, si está obsoleto, su versión
-    (``None`` hasta la spec 009), la operación que escribió su contenido (``None`` si el proyecto
-    no la tiene), sus entradas (``upstream``), sus derivados (``downstream``) y las cifras de su
-    operación, en su orden."""
+    («V01 · Definitiva»; ``None``, del proyecto), la operación que escribió su contenido
+    (``None`` si el proyecto no la tiene), sus entradas (``upstream``), sus derivados
+    (``downstream``) y las cifras de su operación, en su orden; de un dato de versión, su
+    revisión (``revision``: lo «en curso» y lo vigente), las cifras vigentes de su versión
+    (``frozen_figures``, las de su última revisión congelada, D-9) con el estado que tenía cada
+    una al congelarse (``frozen_figure_states``, por uid) y, si el dato es de esa revisión
+    congelada y no lo «en curso» de una abierta, el suyo (``frozen_state``; ``None`` si no lo
+    es; T37, RF-009-19)."""
 
     record: DatasetRecord
     stale: bool
@@ -146,6 +239,10 @@ class ItemCard:
     upstream: tuple[Link, ...]
     downstream: tuple[Link, ...]
     figures: tuple[FigureRecord, ...]
+    revision: RevisionMark | None = None
+    frozen_figures: tuple[FigureRecord, ...] = ()
+    frozen_state: ItemState | None = None
+    frozen_figure_states: Mapping[str, ItemState] = field(default_factory=_no_states)
 
 
 @dataclass(frozen=True)
@@ -228,6 +325,60 @@ def _derived(conn: sqlite3.Connection, uid: str) -> list[tuple[str, str]]:
     return list(found.items())
 
 
+@dataclass(frozen=True)
+class _Frozen:
+    """Lo de la revisión congelada vigente de la versión de un dato en su ficha: su marca, sus
+    cifras, el estado al congelarse de cada una y el del dato (``None``: el dato no es de
+    ella, o es lo «en curso»)."""
+
+    mark: RevisionMark | None = None
+    figures: tuple[FigureRecord, ...] = ()
+    figure_states: Mapping[str, ItemState] = field(default_factory=_no_states)
+    state: ItemState | None = None
+
+
+def _frozen_states(conn: sqlite3.Connection, revision: Revision, record: DatasetRecord, *,
+                   in_progress: bool) -> tuple[Mapping[str, ItemState], ItemState | None]:
+    """El estado que tenía al congelarse en ``revision`` cada una de sus cifras y, si el dato
+    ``record`` no es lo «en curso» de una revisión abierta (``in_progress``) y su contenido de
+    hoy es el que se congeló en ella, el suyo (D-23; plan A4 (1))."""
+    figures = MappingProxyType({str(uid): ItemState(state) for uid, state in conn.execute(
+        _FROZEN_FIGURE_STATES, (revision.uid,))})
+    if in_progress:
+        return figures, None
+    found = conn.execute(_FROZEN_DATASET,
+                         (revision.uid, record.uid, record.content_sha256)).fetchone()
+    return figures, None if found is None else ItemState(found[0])
+
+
+def _version_of(conn: sqlite3.Connection, record: DatasetRecord) -> _Frozen:
+    """La versión del dato ``record`` con sus revisiones, las cifras vigentes de la versión
+    (D-9) y el estado que tenía al congelarse lo de su última revisión congelada (T37); nada,
+    si es del proyecto o el proyecto no tiene versiones."""
+    if not versioned(conn):
+        return _Frozen()
+    version_uid = versions_read.dataset_versions(conn, (record.uid,)).get(record.uid, "")
+    version = versions_read.version(conn, version_uid) if version_uid else None
+    if version is None:
+        return _Frozen()
+    revisions = versions_read.revisions(conn, version.uid)
+    opened = [revision.number for revision in revisions if revision.state is RevisionState.OPEN]
+    closed = [revision.number for revision in revisions
+              if revision.state is RevisionState.CLOSED]
+    frozen = [revision for revision in revisions if revision.state is RevisionState.FROZEN]
+    current = frozen[-1] if frozen else None  # por número: la última
+    mark = RevisionMark(version.uid, version.code, version.title, version.status,
+                        opened[-1] if opened and record.live else None,
+                        None if current is None else current.number,
+                        current is not None and current.altered,
+                        closed[-1] if closed else None)
+    if current is None:
+        return _Frozen(mark)
+    figure_states, state = _frozen_states(conn, current, record,
+                                          in_progress=mark.in_progress is not None)
+    return _Frozen(mark, versions_read.version_figures(conn, version.uid), figure_states, state)
+
+
 def item_card(project: ReadableProject, dataset_uid: str, *,
               conn: sqlite3.Connection | None = None) -> ItemCard | None:
     """La ficha del dato ``dataset_uid`` (véase el módulo), leída en una instantánea (la de
@@ -252,6 +403,7 @@ def item_card(project: ReadableProject, dataset_uid: str, *,
                                          (uid, record)) if found.live}
         stale = _stale(reading, live) if live else frozenset()
         figures = _figures(reading, (record.operation_uid,)).get(record.operation_uid, ())
+        frozen = _version_of(reading, record)
     upstream: list[Link] = []
     for kind, item, content, role in consumed:
         if kind == DATASET:
@@ -266,8 +418,10 @@ def item_card(project: ReadableProject, dataset_uid: str, *,
              item in stale)
         for item, role in derived if (found := downstream_data.get(item)) is not None
     )
-    return ItemCard(record, uid in stale, None, operation, tuple(upstream), downstream,
-                    figures)
+    mark = frozen.mark
+    return ItemCard(record, uid in stale, None if mark is None else mark.label, operation,
+                    tuple(upstream), downstream, figures, mark, frozen.figures, frozen.state,
+                    frozen.figure_states)
 
 
 def dataset_figures(project: ReadableProject, dataset_uids: Iterable[str], *,

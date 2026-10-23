@@ -127,6 +127,13 @@ class GEOBLENDER_PG_core_parameter_row(bpy.types.PropertyGroup):
     source: _text()  # type: ignore[valid-type]
     decided_by: _text()  # type: ignore[valid-type]
     decided_at: _text()  # type: ignore[valid-type]
+    # Spec 009 (T20; RF-009-29): el código de la versión activa si tiene valor propio y el
+    # valor de cada ámbito («V02: 12 m [HIP] · proyecto: 11 m [HIP]»); "" si no.
+    own_version: _text()  # type: ignore[valid-type]
+    scopes: _text()  # type: ignore[valid-type]
+    # Spec 009 (T24; RF-009-13): su decisor de la propiedad, cada decisión enlazada a su clave
+    # en una línea («Propiedad: D. Juan · 03/10/2026 · «…»»), de la más antigua a la última.
+    owner: _text()  # type: ignore[valid-type]
 
 
 class GEOBLENDER_PG_core_parameter_history_row(bpy.types.PropertyGroup):

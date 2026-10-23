@@ -33,7 +33,8 @@ leer y escribir:
   vuelve a escribir, salvo las que llevan una ruta absoluta (RF-002-05 de la spec 0.5;
   D-10 y D-13). La sesión guarda las de la apertura (plan 002 §5.2): una clave que se añada
   a mano con el proyecto abierto en escritura no la conoce, y la regeneración siguiente no
-  la escribe.
+  la escribe. Su inventario de lo congelado sale de la base (``gb_revision``; spec 009, plan
+  §5.2.4), como lo demás.
 - :meth:`Project.set_window`: cambia la ventana de trabajo y con ella el GeoOrigin
   (RF-002-27): nuevo origen en la base y en la cabecera, evento ``move_origin`` con el
   motivo (obligatorio); ninguna coordenada absoluta guardada cambia. Si la cabecera no se
@@ -81,6 +82,7 @@ from ..paths import find_absolute_paths
 from ..sysinfo import SessionInfo, pid_alive
 from ..timeutil import SYSTEM_CLOCK, Clock, format_utc
 from ..userdata import UserData
+from ..versions.read import snapshot_index
 from . import lock
 from .events import EventKind, log_event, record_event
 from .lock import DEFAULT_STALE_MINUTES, LockCheck, PidAlive
@@ -448,6 +450,18 @@ class Project:
             raise TypeError("el proyecto no tiene la fila de gb_project")
         return self.record
 
+    def _reload_header(self) -> tuple[ProjectRecord, tuple[Any, ...] | None]:
+        """Como :meth:`reload`, y en la misma lectura el inventario de lo congelado para la
+        cabecera (spec 009, plan §5.2.4; ``None`` sin revisiones que leer)."""
+        with self.read() as conn:
+            record = read_project(conn)
+            inventory = snapshot_index(conn)
+        if record is not None:
+            self.record = record
+        if self.record is None:  # inalcanzable: read() ya lo ha rechazado
+            raise TypeError("el proyecto no tiene la fila de gb_project")
+        return self.record, inventory
+
     def refresh_header(self) -> bool:
         """Reescribe la cabecera desde la base de datos (al guardar la vista, RF-002-07) y
         devuelve si la reescribió: solo en escritura, con el cerrojo de esta sesión y si
@@ -457,8 +471,8 @@ class Project:
         if not self.writable:
             return False
         self._require_lock()
-        record = self.reload()
-        header = manifest_from_record(record, previous=self.manifest)
+        record, inventory = self._reload_header()
+        header = manifest_from_record(record, previous=self.manifest, inventory=inventory)
         try:
             current = manifest_path(self.root).read_bytes().decode("utf-8")
         except (OSError, UnicodeDecodeError):
@@ -565,6 +579,7 @@ class Project:
                     "grid_step_m": step,
                 },
             )
+            inventory = snapshot_index(conn)
         # Confirmado: la base ya tiene el origen nuevo y manda. La fila de la sesión se
         # actualiza con lo escrito, sin volver a leer la base (en red podría fallar ahora).
         self.record = replace(
@@ -576,7 +591,7 @@ class Project:
         )
         if scope is not None:  # fuera del ámbito del CRS, en su huso extendido (D-12)
             self._notices.append(f"Proyecto «{self.name}»: {scope.message}.")
-        header = manifest_from_record(self.record, previous=self.manifest)
+        header = manifest_from_record(self.record, previous=self.manifest, inventory=inventory)
         try:
             write_manifest(self.root, header, self.session.session_uid)
         except ProjectError as exc:
@@ -643,8 +658,9 @@ class Project:
                     session=self.session,
                     at=format_utc(self.clock.now()),
                 )
-            record = self.reload()
-            self.manifest = manifest_from_record(record, previous=self.manifest)
+            record, inventory = self._reload_header()
+            self.manifest = manifest_from_record(record, previous=self.manifest,
+                                                 inventory=inventory)
             write_manifest(self.root, self.manifest, self.session.session_uid)
         except (GeoblenderError, OSError, sqlite3.Error) as exc:
             message = f"Al cerrar no se ha podido actualizar el proyecto: {exc}"

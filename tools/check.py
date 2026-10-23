@@ -19,12 +19,13 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    tomarlo. Las órdenes de los pasos llevan ``GEOBLENDER_CHECK_LOCK_HELD`` con su pid: un
    ``check.py`` lanzado desde ellas no espera a su padre. Si no se puede usar, un aviso, y
    sigue sin él. ``tools/publish.py``, que lo lanza, espera igual.
-2. Pasos, en este orden y todos aunque falle alguno: «unitarias» (``tests/unit``, que
-   incluye las reglas de arquitectura y del repositorio), «referencia»
-   (``tests/referencia``; sin casos es correcto), «licencias»
-   (``tools/check_licenses.py``), «manifiesto» (``blender --command extension
-   validate``) y «blender» (``tools/run_blender_tests.py`` dentro de Blender, en segundo
-   plano, de fábrica, con ``--python-exit-code 1``). Con ``--completo``, además, «motor»
+2. Pasos, en este orden (el de la tabla ``STEPS``, que es el del resumen) y todos aunque
+   falle alguno: «unitarias» (``tests/unit``, que incluye las reglas de arquitectura y del
+   repositorio), «referencia» (``tests/referencia``; sin casos es correcto), «licencias»
+   (``tools/check_licenses.py``), «iconos» (``tools/build_icons.py --check``; spec 003,
+   T30), «manifiesto» (``blender --command extension validate``) y «blender»
+   (``tools/run_blender_tests.py`` dentro de Blender, en segundo plano, de fábrica, con
+   ``--python-exit-code 1``). Con ``--completo``, además, «motor»
    (spec 004, RF-004-28: ``tests/unit`` de los paquetes de dominio con el numpy del motor
    de cálculo de pruebas, el Python de Blender con ``-S`` y la carpeta ``site`` del motor
    en ``PYTHONPATH``; el motor lo crea ``tools/make_runtime.py`` en
@@ -33,7 +34,7 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    OMISIONES») y, justo después, «arnés» (``tests/arnes`` como «unitarias»: las pruebas
    del propio arnés que lanzan Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de
    la spec 002). Sin la opción no se ejecutan (ni se busca el motor), y el resumen lo dice
-   antes de ``RESULTADO``: la comprobación de cada tarea va sin ella (RNF-001-01, ≤ 40 s;
+   antes de ``RESULTADO``: la comprobación de cada tarea va sin ella (RNF-001-01, ≤ 45 s;
    «motor» solo con ella desde la spec 004 0.4 y la 001 0.7, tarea 005/T50) y
    ``tools/publish.py`` la pide siempre. Solo si se piden, y después de los obligatorios:
    «rendimiento» (``--rendimiento``: ``tests/rendimiento`` con el Python de Blender y
@@ -45,12 +46,17 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    se alcanza, «omitido» con el motivo, que no es un fallo). Los pasos de Blender usan
    un perfil temporal en ``%TEMP%``, que se borra al terminar.
 
-   Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06), salvo «motor», que va a
-   la vez que «blender» (spec 004, T30: después de él no cabría en RNF-001-01; su línea
-   va tras la de «blender» y el paso siguiente espera a los dos; a la vez que «unitarias»
-   no compensa, spec 006, T38). Dentro de un paso, «unitarias», «referencia» (spec 006,
-   T59) y «blender» reparten sus pruebas en partes que se ejecutan a la vez (spec 003,
-   T40; RNF-007-01: ≤ 40 s sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
+   Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06), salvo los que van a la
+   vez que «blender» (``Step.alongside``): «motor» (spec 004, T30: después de él no cabría
+   en RNF-001-01; a la vez que «unitarias» no compensa, spec 006, T38) y, desde la spec
+   001 0.8 (tarea 009/T34; RNF-001-01), «referencia», «licencias» e «iconos», que se
+   ejecutan con él, tras «manifiesto». Empiezan a la vez, cada uno en su hilo y con su
+   duración, el fallo de uno no para a los demás y el paso siguiente espera a todos; sus
+   líneas del resumen van en su lugar de la tabla, aunque acaben en otro orden: las de
+   «referencia» a «blender» salen cuando han terminado todos. Dentro de un paso,
+   «unitarias», «referencia» (spec 006, T59) y «blender» reparten sus pruebas en partes que
+   se ejecutan a la vez (spec 003,
+   T40; RNF-007-01: ≤ 45 s, ≤ 40 s hasta la spec 007 0.6, sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
    ``REFERENCE_PARTS`` procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender
    con ``run_blender_tests.py --parte i/n``, sin pasar del número de módulos de prueba en
    disco ni del de procesadores (con uno, la orden de siempre). Cada parte descubre
@@ -92,8 +98,8 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    fichero se ejecutó en dos, el reparto perdió o repitió pruebas y el paso falla
    («reparto incompleto»; si por eso no se cargó un fichero, es ese el diagnóstico, y no
    el de los ficheros sin cargar; spec 003, T45). Con Ctrl+C mientras
-   se ejecutan, se paran todas (``gbtools.blender.stop_all``) antes de borrar la carpeta
-   temporal.
+   se ejecutan, se paran todas (``gbtools.blender.stop_all``), también las de los pasos
+   que van a la vez, antes de borrar la carpeta temporal.
 3. Resumen: una línea por paso (resultado, duración y pruebas), las pruebas omitidas por
    un recurso opcional (``[ENTORNO] <recurso>: <orden>``) agrupadas con la orden que lo
    instala, la salida entera de cada paso que falla y ``RESULTADO: VERDE``,
@@ -206,7 +212,12 @@ COPY_THREAD = "check-copia"
 # variable con que lo reciben y el hilo que lo refresca.
 ENV_BYTECODE = pyc_cache.ENV_PREFIX
 BYTECODE_THREAD = "check-pyc"
-STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 40 s (RNF-001-01)
+STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 45 s (RNF-001-01)
+# El plazo de cada orden de «rendimiento» y de «banco» (Step.timeout_s; tarea 009/T38, F-3 de
+# su verificación): con GEOBLENDER_NET_TEST_DIR, el unittest de tests/rendimiento tardaba unos
+# 2 200 s (test_versions_perf, ≈ 1 091 s, crea 5 GB en la red y los congela dos veces) y se
+# paraba a los 1 800 s sin dar ninguna medida. El paso no se parte: su orden tiene más plazo.
+LONG_STEP_TIMEOUT_S = 7200.0
 LAUNCHER_RELPATH = "tools/run_blender_tests.py"
 PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T40)
 # Partes de «unitarias» y de «blender» (spec 003, T40; RNF-007-01): a la vez, sin pasar
@@ -255,11 +266,15 @@ PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T
 # que se midió.
 UNIT_PARTS = 18
 BLENDER_PARTS = 7
-# Partes de «referencia» (spec 006, T59; RNF-001-01): el paso va solo, con el equipo casi
+# Partes de «referencia» (spec 006, T59; RNF-001-01): el paso iba solo, con el equipo casi
 # libre, y en una orden tardaba ≈ 2,0 s con sus 28 casos (dos de ellos lanzan el Python de
 # QGIS). En reposo, con 2 partes ≈ 1,36 s, con 3 ≈ 1,14 s, con 4 ≈ 1,0 s y con 5, 6 o 9
-# ≈ 0,87 s: el suelo es su módulo más lento (el de GDAL), con el arranque de la parte.
-REFERENCE_PARTS = 6
+# ≈ 0,87 s: el suelo es su módulo más lento (el de GDAL), con el arranque de la parte. Desde
+# la spec 001 0.8 (tarea 009/T34) va a la vez que «blender», que tarda ≈ 19 s: con 6, 3 o 2
+# partes tarda ≈ 2,3 s (su suelo, el caso de QGIS de la 009, ≈ 2 s), y «blender» y la
+# comprobación, lo mismo dentro del ruido (con el equipo cargado: medianas de 3, 45,1, 43,9 y
+# 45,0 s); con 3, la mitad de procesos que con 6 le quitan procesador a «blender».
+REFERENCE_PARTS = 3
 THREAD_PREFIX = "check-parte-"  # los hilos que esperan a cada parte
 JOIN_POLL_S = 0.1  # se espera a los hilos a ratos: así Ctrl+C llega enseguida
 SIGINT_WAIT_S = 0.25  # tras Ctrl+C, lo que espera subprocess antes de parar la orden
@@ -751,8 +766,11 @@ class Step:
     devuelve el motivo, o ``None``): un paso omitido no es un fallo, y el resumen lo
     cuenta como omisión con su motivo, por el recurso ``resource`` (si no se da, el
     nombre del paso). Sin órdenes que ejecutar, el paso es correcto con el detalle
-    ``empty``. Con ``alongside``, el paso se ejecuta a la vez que ese otro paso anterior
-    de la tabla, si también se ejecuta (spec 004, T30), y su línea va en su lugar."""
+    ``empty``. Con ``alongside``, el paso se ejecuta a la vez que ese otro paso de la tabla,
+    si también se ejecuta y va solo (:func:`run_steps`): cuando le toca a él, aunque el paso
+    esté antes en la tabla (spec 004, T30; spec 001 0.8, tarea 009/T34), y su línea va en su
+    lugar. ``timeout_s`` es el plazo de cada una de sus órdenes: la que no termina en él es un
+    fallo del paso (tarea 009/T38: «rendimiento» y «banco», ``LONG_STEP_TIMEOUT_S``)."""
 
     name: str
     runs: Callable[[Context], Sequence[Run]]
@@ -762,6 +780,7 @@ class Step:
     resource: str | None = None
     alongside: str | None = None
     empty: str | None = None
+    timeout_s: float = STEP_TIMEOUT_S
 
 
 @dataclass(frozen=True)
@@ -945,16 +964,22 @@ def _docs_omit(ctx: Context) -> str | None:
 
 # Tabla de pasos (plan 001 §5.4.7). Las specs siguientes añaden el suyo en su lugar:
 # «iconos» (003, T30) tras «licencias» y «motor» (004) tras «blender», a la vez que él
-# (T30: después no cabe en RNF-001-01). Los opcionales se ejecutan siempre después de los
-# obligatorios (RF-001-10), en el orden de la tabla: los de --completo los primeros, tras
-# «blender»: «motor» (a la vez que él; spec 004 0.4, RF-004-28: con la CPU llena, la
-# comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01; spec 005,
-# T50) y «arnés» (spec 001 0.6); «documentación» (spec 007, RF-007-14), el último.
+# (T30: después no cabe en RNF-001-01). Desde la spec 001 0.8 (tarea 009/T34; RNF-001-01),
+# «referencia», «licencias» e «iconos» también van a la vez que «blender», tras «manifiesto»,
+# con sus líneas en su lugar: con las pruebas de la 009, solos, uno tras otro, sumaban
+# ≈ 2,7 s (la referencia, ≈ 2,4 s, con su caso de QGIS como suelo) a una comprobación de
+# ≈ 42–43 s; a la vez que «blender», la comprobación tarda ≈ 2,2 s menos (009/T30), y
+# «manifiesto» y «blender» juntos, con ellos, ≈ 20 s con el equipo cargado: lo que tardaban de
+# «referencia» a «blender» en el código de partida. Los opcionales se ejecutan siempre
+# después de los obligatorios (RF-001-10), en el orden de la tabla: los de --completo los
+# primeros, tras «blender»: «motor» (a la vez que él; spec 004 0.4, RF-004-28: con la CPU
+# llena, la comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01, hoy ≤ 45 s;
+# spec 005, T50) y «arnés» (spec 001 0.6); «documentación» (spec 007, RF-007-14), el último.
 STEPS: tuple[Step, ...] = (
     Step("unitarias", _unit),
-    Step("referencia", _reference),
-    Step("licencias", _licenses, advice=_licenses_advice),
-    Step("iconos", _icons),
+    Step("referencia", _reference, alongside="blender"),
+    Step("licencias", _licenses, advice=_licenses_advice, alongside="blender"),
+    Step("iconos", _icons, alongside="blender"),
     Step("manifiesto", _manifest),
     Step("blender", _blender),
     Step(
@@ -967,8 +992,9 @@ STEPS: tuple[Step, ...] = (
         empty=NO_CASES,
     ),
     Step(HARNESS_STEP, _harness, option=OPTION_COMPLETE),
-    Step("rendimiento", _performance, option=OPTION_PERFORMANCE),
-    Step("banco", _bank, option=OPTION_BANK),
+    Step("rendimiento", _performance, option=OPTION_PERFORMANCE,
+         timeout_s=LONG_STEP_TIMEOUT_S),
+    Step("banco", _bank, option=OPTION_BANK, timeout_s=LONG_STEP_TIMEOUT_S),
     Step(DOCS_STEP, _docs, option=OPTION_DOCS, omit=_docs_omit),
 )
 
@@ -1162,13 +1188,15 @@ def part_count(limit: int, modules: int, cpus: int | None = None) -> int:
 _Launched = subprocess.CompletedProcess[str] | _RunOutcome
 
 
-def _launch(run: Run, root: Path, runner: blender.Runner) -> _Launched:
-    """Ejecuta la orden de ``run``; si no se puede lanzar o no termina a tiempo, el
-    fallo ya interpretado."""
+def _launch(
+    run: Run, root: Path, runner: blender.Runner, timeout_s: float = STEP_TIMEOUT_S
+) -> _Launched:
+    """Ejecuta la orden de ``run`` con el plazo ``timeout_s`` (el de su paso); si no se
+    puede lanzar o no termina a tiempo, el fallo ya interpretado."""
     try:
-        return runner(run.command, env=run.env, cwd=root, timeout=STEP_TIMEOUT_S)
+        return runner(run.command, env=run.env, cwd=root, timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        message = f"no terminó en {STEP_TIMEOUT_S:.0f} s: {' '.join(run.command)}"
+        message = f"no terminó en {timeout_s:.0f} s: {' '.join(run.command)}"
         return _RunOutcome(STATUS_FAIL, None, "tiempo agotado", [], message, "")
     except OSError as exc:
         message = f"no se pudo ejecutar «{' '.join(run.command)}»: {exc}"
@@ -1181,23 +1209,24 @@ def _launch_together(
     root: Path,
     runner: blender.Runner,
     results: list[_Launched | None],
+    timeout_s: float = STEP_TIMEOUT_S,
 ) -> None:
     """Ejecuta a la vez, cada una en su hilo, las órdenes ``runs[i]`` de ``indices``
-    (las partes de unas pruebas) y deja su resultado en ``results[i]``. Si la espera se
-    interrumpe (Ctrl+C), como ``subprocess.run``: espera ``SIGINT_WAIT_S`` a que las
-    órdenes terminen solas, para las que sigan (``blender.stop_all``), espera a los
-    hilos y deja pasar la interrupción. Una excepción de una orden (que no sea de
-    lanzarla o de tiempo, ya interpretadas) se lanza aquí, como sin hilos. Límite: una
-    orden parada así no limpia lo suyo (la copia de la extensión de un Blender queda en
-    ``%TEMP%``), igual que con una sola orden."""
+    (las partes de unas pruebas), cada una con el plazo ``timeout_s``, y deja su resultado
+    en ``results[i]``. Si la espera se interrumpe (Ctrl+C), como ``subprocess.run``: espera
+    ``SIGINT_WAIT_S`` a que las órdenes terminen solas, para las que sigan
+    (``blender.stop_all``), espera a los hilos y deja pasar la interrupción. Una excepción
+    de una orden (que no sea de lanzarla o de tiempo, ya interpretadas) se lanza aquí, como
+    sin hilos. Límite: una orden parada así no limpia lo suyo (la copia de la extensión de
+    un Blender queda en ``%TEMP%``), igual que con una sola orden."""
     if len(indices) == 1:
-        results[indices[0]] = _launch(runs[indices[0]], root, runner)
+        results[indices[0]] = _launch(runs[indices[0]], root, runner, timeout_s)
         return
     errors: dict[int, BaseException] = {}
 
     def work(index: int) -> None:
         try:
-            results[index] = _launch(runs[index], root, runner)
+            results[index] = _launch(runs[index], root, runner, timeout_s)
         except BaseException as exc:  # noqa: BLE001 - se lanza en el hilo principal
             errors[index] = exc
 
@@ -1232,9 +1261,15 @@ def _launch_together(
             raise errors[index]
 
 
-def _launch_all(runs: Sequence[Run], root: Path, runner: blender.Runner) -> list[_Launched]:
+def _launch_all(
+    runs: Sequence[Run],
+    root: Path,
+    runner: blender.Runner,
+    timeout_s: float = STEP_TIMEOUT_S,
+) -> list[_Launched]:
     """Ejecuta las órdenes de un paso en su orden, una tras otra, salvo las partes
-    seguidas de unas pruebas (``Run.part``), que van a la vez (T40)."""
+    seguidas de unas pruebas (``Run.part``), que van a la vez (T40); cada una, con el
+    plazo del paso, ``timeout_s`` (tarea 009/T38)."""
     results: list[_Launched | None] = [None] * len(runs)
     batch: list[int] = []
     for index, run in enumerate(runs):
@@ -1242,11 +1277,11 @@ def _launch_all(runs: Sequence[Run], root: Path, runner: blender.Runner) -> list
             batch.append(index)
             continue
         if batch:
-            _launch_together(batch, runs, root, runner, results)
+            _launch_together(batch, runs, root, runner, results, timeout_s)
             batch = []
-        results[index] = _launch(run, root, runner)
+        results[index] = _launch(run, root, runner, timeout_s)
     if batch:
-        _launch_together(batch, runs, root, runner, results)
+        _launch_together(batch, runs, root, runner, results, timeout_s)
     done: list[_Launched] = []
     for result in results:
         if result is None:  # no ocurre: _launch_together deja todos o lanza
@@ -1569,7 +1604,8 @@ def execute_step(step: Step, ctx: Context, runner: blender.Runner) -> StepResult
         return StepResult(
             step.name, STATUS_OK, time.perf_counter() - start, detail=[step.empty]
         )
-    outcomes = _interpret_all(runs, _launch_all(runs, ctx.root, runner), ctx.root, resources)
+    launched = _launch_all(runs, ctx.root, runner, step.timeout_s)
+    outcomes = _interpret_all(runs, launched, ctx.root, resources)
     seconds = time.perf_counter() - start
     if any(outcome.status == STATUS_FAIL for outcome in outcomes):
         status = STATUS_FAIL
@@ -1604,59 +1640,82 @@ def execute_together(
     step: Step, partners: Sequence[Step], ctx: Context, runner: blender.Runner
 ) -> tuple[StepResult, list[StepResult]]:
     """Ejecuta ``step`` en este hilo y, a la vez, cada paso de ``partners`` en el suyo
-    (``Step.alongside``; spec 004, T30), y devuelve sus resultados cuando han terminado
-    todos. Cada paso mide su propia duración. Si llega Ctrl+C, para todas las órdenes en
-    marcha (``blender.stop_all``), espera a los hilos y deja pasar la interrupción; una
-    excepción de un paso compañero se lanza aquí."""
-    found: dict[str, StepResult] = {}
+    (``Step.alongside``; spec 004, T30; spec 001 0.8), y devuelve sus resultados cuando han
+    terminado todos. Cada paso mide su propia duración, y el fallo de uno no para a los
+    demás. Si llega Ctrl+C, para todas las órdenes en marcha (``blender.stop_all``), también
+    las que un paso compañero lance después (:func:`_stop_threads`), espera a los hilos y
+    deja pasar la interrupción; una excepción de un paso compañero se lanza aquí."""
+    found: dict[int, StepResult] = {}
     errors: list[BaseException] = []
 
-    def work(partner: Step) -> None:
+    def work(index: int, partner: Step) -> None:
         try:
-            found[partner.name] = execute_step(partner, ctx, runner)
+            found[index] = execute_step(partner, ctx, runner)
         except BaseException as exc:  # noqa: BLE001 - se lanza en el hilo principal
             errors.append(exc)
 
     threads = [
-        threading.Thread(target=work, args=(partner,), name=THREAD_PREFIX + partner.name,
-                         daemon=True)
-        for partner in partners
+        threading.Thread(target=work, args=(index, partner),
+                         name=THREAD_PREFIX + partner.name, daemon=True)
+        for index, partner in enumerate(partners)
     ]
-    for thread in threads:
-        thread.start()
     try:
+        for thread in threads:
+            thread.start()
         result = execute_step(step, ctx, runner)
         for thread in threads:
             while thread.is_alive():
                 thread.join(JOIN_POLL_S)
     except BaseException:
-        blender.stop_all()
-        for thread in threads:
-            thread.join(STOP_WAIT_S)
+        _stop_threads([thread for thread in threads if thread.ident is not None])
         raise
     if errors:
         raise errors[0]
-    return result, [found[partner.name] for partner in partners]
+    return result, [found[index] for index in range(len(partners))]
+
+
+def _stop_threads(threads: Sequence[threading.Thread]) -> None:
+    """Tras Ctrl+C, para las órdenes en marcha (``blender.stop_all``) hasta que terminan los
+    hilos de ``threads``, ``STOP_WAIT_S`` como mucho: un paso compañero que aún preparaba
+    sus órdenes, o que pasa a la siguiente, las lanza después de la primera parada, y
+    también se paran (spec 001 0.8, tarea 009/T34)."""
+    deadline = time.monotonic() + STOP_WAIT_S
+    blender.stop_all()
+    for thread in threads:
+        while thread.is_alive() and time.monotonic() < deadline:
+            thread.join(JOIN_POLL_S)
+            blender.stop_all()
 
 
 def run_steps(
     selected: Sequence[Step], ctx: Context, runner: blender.Runner
 ) -> Iterator[StepResult]:
-    """Los resultados de los pasos ``selected``, en su orden, según terminan: uno tras
-    otro (RF-001-06), salvo los que van a la vez que otro (``Step.alongside``), que se
-    ejecutan con él y dan su resultado en su lugar."""
-    ready: dict[str, StepResult] = {}
-    for step in selected:
-        if step.name in ready:
-            yield ready.pop(step.name)
+    """Los resultados de los pasos ``selected``, en su orden (el de la tabla: RF-001-06).
+    Se ejecutan uno tras otro, salvo los que van a la vez que otro (``Step.alongside``),
+    que se ejecutan con él cuando le toca a él, aunque estén antes en la tabla (spec 001
+    0.8: «referencia», «licencias» e «iconos», con «blender», tras «manifiesto»); un
+    paso solo va a la vez que otro que se ejecuta y va solo, y si no, va solo, en su lugar.
+    Cada resultado sale cuando han salido los de los pasos anteriores: el de un paso que
+    va con otro posterior, y los que hay entre ellos, cuando ha terminado ese otro."""
+    names = {step.name for step in selected}
+    alone = {step.name for step in selected if step.alongside not in names}
+    leads = [step.alongside if step.alongside in alone else None for step in selected]
+    ready: dict[int, StepResult] = {}
+    following = 0
+    for index, step in enumerate(selected):
+        if leads[index] is not None:
             continue
-        partners = [other for other in selected if other.alongside == step.name]
-        if not partners:
-            yield execute_step(step, ctx, runner)
-            continue
-        result, others = execute_together(step, partners, ctx, runner)
-        ready.update((other.name, outcome) for other, outcome in zip(partners, others))
-        yield result
+        partners = [i for i, lead in enumerate(leads) if lead == step.name]
+        if partners:
+            result, others = execute_together(step, [selected[i] for i in partners], ctx,
+                                              runner)
+            ready.update(zip(partners, others))
+        else:
+            result = execute_step(step, ctx, runner)
+        ready[index] = result
+        while following in ready:
+            yield ready.pop(following)
+            following += 1
 
 
 def format_step(result: StepResult) -> str:

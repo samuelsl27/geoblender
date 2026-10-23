@@ -17,7 +17,8 @@
    lo sustituido sin sucesor vivo, lo que el proyecto no tiene y lo de otro proyecto
    (``unbacked``); pone al día, sin volver a cargarlos, el estado y la marca de obsoleto de lo
    demás (``RESTATE``) y «FALTA» en lo que falta, que no se puede volver a cargar (D-11)
-   (``bl.scene.views.show_view_state``, con lo leído por los cargadores); pone en lo que
+   (``bl.scene.views.show_view_state``, con lo leído por los cargadores y el título de cada
+   dato; y el nombre y el color de las colecciones de las versiones, spec 009, T22); pone en lo que
    muestra el contenido de hoy de su dato, sin volver a cargarlo, sus cifras registradas de hoy
    (``Object.geoblender.figures``, ``bl.scene.views.show_figures``; spec 010, T16, RF-010-08:
    lo que se vuelve a cargar ya las trae); y quita la marca de vista desfasada de las escenas
@@ -38,13 +39,12 @@ from collections.abc import Generator, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-import bpy
-
 from ...core.errors import GeoblenderError
 from ...core.i18n import tr
 from ...core.project.model import Progress
 from ...core.views.state import ItemState, ItemView, refresh_plan
-from . import live, views
+from . import georef, live, views
+from . import versions as scene_versions
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
 
@@ -91,19 +91,13 @@ def _names(states: Mapping[str, ItemView]) -> dict[str, str]:
     return found
 
 
-def _clear_view_stale() -> None:
-    for scene in bpy.data.scenes:
-        if scene.geoblender.view_stale:
-            scene.geoblender.view_stale = False
-
-
 def refresh_steps(context: Any, project: Any) -> Generator[Progress, None, None]:
     """Los pasos que ponen al día con el proyecto abierto ``project`` la vista de la escena de
     ``context`` (véase el módulo): cada uno da su ``Progress`` (los de
     ``bl.scene.views.load_steps``, con el nombre de cada dato) y el último, el
     :class:`RefreshOutcome` en ``result``. Cerrarlos antes del último deja la escena como
     estaba. No escribe en el proyecto."""
-    _groups, states, read = live.read_view(project)
+    _groups, states, read, versions_read = live.read_view(project)
     plan = refresh_plan(states)
     shown = {uid for uid, view in states.items() if view.state in _SHOWN}
     targets = [uid for uid in plan.targets if uid not in shown]
@@ -130,7 +124,9 @@ def refresh_steps(context: Any, project: Any) -> Generator[Progress, None, None]
         views.unload_datasets(dropped)
     rest = {uid: objects for uid, objects in views.loaded_items().items()
             if uid in states and uid not in placed}
-    views.show_view_state(rest, states, live=read)
+    views.show_view_state(rest, states, live=read, titles=versions_read.titles,
+                          versions=versions_read.codes)
+    scene_versions.show_versions(versions_read.versions, versions_read.revisions)
     # Las cifras registradas de hoy en lo que muestra su contenido de hoy (lo vuelto a cargar
     # ya las tiene): RF-010-08, «al cargar y al refrescar». Son solo para mostrarlas: si no se
     # pueden leer, quedan las que había y Refrescar sigue (lo demás ya está en la escena).
@@ -141,7 +137,7 @@ def refresh_steps(context: Any, project: Any) -> Generator[Progress, None, None]
         LOGGER.warning("Refrescar no pudo leer las cifras registradas de la vista",
                        exc_info=True)
     if load is None:
-        _clear_view_stale()
+        georef.clear_stale()  # y pide redibujar: el panel Proyecto lo enseña (spec 009, T43)
     live.request(project)
     current = sum(1 for uid in shown if uid not in placed)
     outcome = RefreshOutcome(tuple(uid for uid in targets if uid in placed), plan.unbacked,

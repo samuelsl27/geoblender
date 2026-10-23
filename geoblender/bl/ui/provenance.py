@@ -72,6 +72,13 @@ llaman la orden que abre el panel, Cambiar y Confirmar al escribir, y los filtro
 selección al cambiar. Las filas viven en ``WindowManager.geoblender_provenance`` (D16), como
 texto ya presentado: ningún valor pasa por una propiedad flotante. Los valores, en el idioma de
 Geoblender y con el separador de miles de las cifras, como una cifra («500 000 t/año»; T71).
+Spec 009 (T20; RF-009-29): con una versión activa, un parámetro que tiene en ella valor propio
+lleva su código entre las marcas de su fila y, seleccionado, el valor de cada ámbito
+(:func:`scopes_text`: «V02: 12 m [HIP] · proyecto: 11 m [HIP]»); la lista sigue dando el del
+proyecto. Spec 009 (T24; RF-009-13; plan A10): el seleccionado enseña, junto a su decisor, su
+decisor de la propiedad (:func:`owner_text`: «Propiedad: D. Juan · 03/10/2026 · «…»»), cada
+decisión de la propiedad enlazada a su clave (``core.versions.decisions.deciders``: vale para
+todos sus ámbitos), leída con la lista.
 
 **Registro de entradas** (:class:`GEOBLENDER_PT_core_inputs`, ventana emergente que abre
 ``geoblender.core_show_inputs``; RF-008-16, RF-008-13; T51): la cabecera de las columnas y la
@@ -126,6 +133,13 @@ obsoleto» se dibuja resaltado en el menú y en los contextuales. Se calcula con
 (``bl.scene.live.refresh_state``; spec 010, RF-010-02): resaltado, con cuántos datos no están
 al día, mientras haya alguno; lo calcula la marca, y el dibujo solo lo busca.
 
+**«Versión no editable»** (spec 009, T20; RF-009-21; BS §7.3): las órdenes que declaran los
+tipos de operación de versión (sus ``commands``) llevan la comprobación :func:`version_check`
+(``commands.register_check``; :func:`sync_version_checks` la pone al instalar y en cada
+lectura de :func:`refresh`): con la versión activa SUPERADO o DESCARTADO, los menús las dibujan
+desactivadas con el texto de RF-009-04 (su ``poll`` y su descripción lo dicen también:
+``bl.ops.core_provenance.ProvenanceAwareOperator``).
+
 :func:`install` registra los campos, el número del control 7, el proveedor de estado de las
 órdenes, la marca en vivo tras cada lectura y la escucha del proyecto de la sesión;
 :func:`uninstall` lo quita todo, con los temporizadores.
@@ -155,22 +169,36 @@ from ...core.inputs import (
     dependents,
     list_inputs,
 )
-from ...core.params import HistoryAction, ParameterFilter, ParameterStore, ParamKind, ParamMark
+from ...core.params import (
+    DEFINITIONS,
+    VERSION_SCOPE,
+    HistoryAction,
+    ParameterFilter,
+    ParameterStore,
+    ParamKind,
+    ParamMark,
+)
 from ...core.params.store import shown_value
 from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
+from ...core.versions.model import render as version_render
 from ..props.provenance import FILTER_ALL, WINDOW_MANAGER_PROPERTY
 from ..scene import live, project_session
-from . import icons, quick_access, statusbar
+from ..scene import versions as scene_versions
+from .. import compat
+from . import bars, icons, labels, quick_access, statusbar
 from .commands import (
     CommandState,
     catalog,
+    check_of,
     is_available,
+    register_check,
     registered_class,
     set_state_provider,
     state_provider,
     text,
+    unregister_check,
 )
 from .drawing import draw_command, native_icon
 
@@ -278,6 +306,7 @@ class _State:
         self.filling = False  # se están regenerando las filas de los parámetros
         self.searching = False  # se está poniendo la búsqueda de la procedencia
         self.command_states: dict[str, CommandState] = {}  # bl_idname → estado (T56)
+        self.version_checks: set[str] = set()  # órdenes con «Versión no editable» (009, T20)
 
 
 _STATE = _State()
@@ -342,6 +371,7 @@ def refresh(*, force: bool = False) -> bool:
         return changed
     _STATE.signature = signature
     _STATE.command_states = states
+    sync_version_checks()
     _fill_rows(report.items)
     _fill_unusable(blocked, shown)
     _refill_inputs()
@@ -533,6 +563,42 @@ def _command_states(project: Project, report: StaleReport,
     return states
 
 
+# «Versión no editable» (spec 009, T20) ----------------------------------------------------------
+
+
+def version_check(_context: Any, _cmd: Any) -> str:
+    """«No aplicable ahora» de una orden de un tipo de versión (``commands.register_check``; BS
+    §7.3; RF-009-21): con la versión activa SUPERADO o DESCARTADO, el texto de RF-009-04 («V01
+    está en estado SUPERADO: cree una versión nueva a partir de ella»); si no, "". Sin versión
+    activa la orden sigue disponible: al lanzarla pide elegir o crear una (RF-009-05)."""
+    return scene_versions.not_editable_text() or ""
+
+
+def sync_version_checks() -> None:
+    """Pone :func:`version_check` a las órdenes de los tipos de operación de versión
+    (``OperationDef.scope == "version"``, sus ``commands``) y se la quita a las que ya no lo son
+    (un módulo que se quitó). No toca una orden que ya tenía otra comprobación (la suya ha de
+    contar también con la versión). Lo llaman :func:`install` y cada lectura de :func:`refresh`."""
+    wanted = {idname for definition in contract.OPERATIONS.values()
+              if definition.scope == VERSION_SCOPE for idname in definition.commands}
+    for idname in sorted(_STATE.version_checks - wanted):
+        if check_of(idname) is version_check:
+            unregister_check(idname)
+        _STATE.version_checks.discard(idname)
+    for idname in sorted(wanted - _STATE.version_checks):
+        if check_of(idname) is None:
+            register_check(idname, version_check)
+            _STATE.version_checks.add(idname)
+
+
+def _forget_version_checks() -> None:
+    """Quita :func:`version_check` de todas las órdenes que la tenían (al desinstalar)."""
+    for idname in sorted(_STATE.version_checks):
+        if check_of(idname) is version_check:
+            unregister_check(idname)
+    _STATE.version_checks.clear()
+
+
 def indicator_tick() -> float | None:
     """La función del temporizador de los indicadores: :func:`refresh` y, si cambió lo que se
     ve, redibuja la barra de estado y la barra superior. Sigue cada :data:`INDICATOR_TICK_S` s
@@ -572,14 +638,11 @@ def _retire(function: Callable[[], float | None]) -> None:
 
 
 def redraw() -> None:
-    """Redibuja la barra de estado y la barra superior (el control 7) de todas las
-    ventanas."""
-    statusbar.redraw()
-    manager = getattr(bpy.context, "window_manager", None)
-    for window in getattr(manager, "windows", ()):
-        for area in getattr(window.screen, "areas", ()):
-            if area.type == "TOPBAR":
-                area.tag_redraw()
+    """Redibuja la barra de estado («⚠ n entradas», «! n obsoletos») y la barra superior (el
+    control 7) de todas las ventanas, con ``bl.ui.bars.redraw`` (spec 009, T41): las dos son
+    áreas globales de la ventana, fuera de ``screen.areas``, y ``Area.tag_redraw`` no llega a
+    ellas (``docs/trampas.md`` §5)."""
+    bars.redraw()
 
 
 def stale_count(_context: Any = None) -> int | None:
@@ -926,6 +989,8 @@ def fill_parameters() -> int:
         return 0
     project = _project()
     found = [] if project is None else ParameterStore(project).list(_filters(view))
+    own = {} if project is None else _version_values(project, found)
+    owners = {} if project is None else _owner_values(project, found)
     chosen = _selected(view)
     key = None if chosen is None else chosen.key
     shown = language()
@@ -947,12 +1012,78 @@ def fill_parameters() -> int:
             row.source = record.source
             row.decided_by = record.decided_by
             row.decided_at = _local(record.decided_at)
+            mine = own.get(record.key)
+            if mine is not None:
+                code, version_record = mine
+                row.own_version = code
+                row.scopes = scopes_text(code, version_record, record)
+            row.owner = owners.get(record.key, "")
         keys = [item.record.key for item in found]
         view.parameter_index = keys.index(key) if key in keys else 0
     finally:
         _STATE.filling = False
     fill_history()
     return len(found)
+
+
+def _version_values(project: Project, found: Sequence[Any]) -> dict[str, tuple[str, Any]]:
+    """El valor propio en la versión activa (spec 009, T20; RF-009-29) de cada parámetro de
+    ``found`` que su módulo admite por versión (o cuyo módulo no está cargado): {clave: (código
+    de la versión, su ``ParameterRecord``)}; sin versión activa, o sin valor propio, nada."""
+    shown = scene_versions.active()
+    if shown is None:
+        return {}
+    keys = []
+    for item in found:
+        definition = DEFINITIONS.get(item.record.key)
+        if definition is None or definition.scope == VERSION_SCOPE:
+            keys.append(item.record.key)
+    if not keys:
+        return {}
+    store = ParameterStore(project)
+    values: dict[str, tuple[str, Any]] = {}
+    with project.read() as conn:
+        for key in keys:
+            record = store.get(key, version=shown.uid, conn=conn)
+            if record is not None:
+                values[key] = (shown.code, record)
+    return values
+
+
+def _owner_values(project: Project, found: Sequence[Any]) -> dict[str, str]:
+    """El decisor de la propiedad de cada parámetro de ``found`` que lo tiene (spec 009, T24;
+    RF-009-13): {clave: una línea por decisión enlazada a su clave (:func:`owner_text`), de la
+    más antigua a la última}; las demás claves, fuera."""
+    if not found:
+        return {}
+    from ...core.versions import decisions  # al usarlo: registrar no lo carga
+
+    with project.read() as conn:
+        linked = decisions.deciders(conn, [item.record.key for item in found])
+    return {key: "\n".join(owner_text(item.decided_by, item.day, item.what) for item in items)
+            for key, items in linked.items() if items}
+
+
+def owner_text(decided_by: str, day: str, what: str) -> str:
+    """Una decisión de la propiedad como decisor de un parámetro o de una versión (spec 009, T24;
+    RF-009-13; plan A10), en el idioma de Geoblender: «Propiedad: D. Juan · 03/10/2026 · «K =
+    1,20 para el balance»» (``day``, el día como se muestra)."""
+    decider = version_render("core.version_decision_decider", language=language(),
+                             who=decided_by, date=day)
+    return f"{decider} · «{what}»"
+
+
+def scopes_text(code: str, version_record: Any, project_record: Any) -> str:
+    """El valor de un parámetro en cada ámbito, en el idioma de Geoblender (spec 009, T20;
+    RF-009-29): «V02: 12 m [HIP] · proyecto: 11 m [HIP]»."""
+    shown = language()
+    version = tr("{version}: {value} {kind}", version=code,
+                 value=shown_value(version_record.value, version_record.unit, shown),
+                 kind=badge(version_record.kind))
+    project = tr("project: {value} {kind}",
+                 value=shown_value(project_record.value, project_record.unit, shown),
+                 kind=badge(project_record.kind))
+    return f"{version} · {project}"
 
 
 def fill_history() -> None:
@@ -1076,8 +1207,10 @@ def _cell(layout: Any, shown: str, units: float, *, alert: bool = False) -> None
     cell.label(text=shown, translate=False)
 
 
-def _marks_text(unconfirmed: bool, review: bool = False) -> str:
-    marks = []
+def _marks_text(unconfirmed: bool, review: bool = False, version: str = "") -> str:
+    """Las marcas de una fila: el código de la versión activa si tiene en ella valor propio
+    (spec 009, T20), «sin confirmar» y «revisar»."""
+    marks = [version] if version else []
     if unconfirmed:
         marks.append(tr("unconfirmed"))
     if review:
@@ -1086,14 +1219,16 @@ def _marks_text(unconfirmed: bool, review: bool = False) -> str:
 
 
 def draw_parameter_row(layout: Any, row: Any) -> None:
-    """Una fila de la lista de parámetros (RF-008-06): clave, valor con su unidad, insignia de
-    tipo ([HIP] con su icono ámbar), marcas, origen, decisor y fecha."""
+    """Una fila de la lista de parámetros (RF-008-06): clave, valor del proyecto con su unidad,
+    insignia de tipo ([HIP] con su icono ámbar), marcas (la primera, la versión activa si tiene
+    en ella valor propio: spec 009, RF-009-29), origen, decisor y fecha."""
     line = layout.row(align=True)
     key, value, kind, marks, source, decided_by, decided_at = PARAMETER_COLUMNS
     _cell(line, row.key, key)
     _cell(line, row.value, value)
     _badge_cell(line, row.kind, kind)
-    _cell(line, _marks_text(row.unconfirmed, row.review), marks, alert=row.review)
+    own = getattr(row, "own_version", "")  # una fila hecha a mano (pruebas de la 008), sin él
+    _cell(line, _marks_text(row.unconfirmed, row.review, own), marks, alert=row.review)
     _cell(line, row.source, source)
     _cell(line, row.decided_by, decided_by)
     _cell(line, row.decided_at, decided_at)
@@ -1122,9 +1257,16 @@ def _draw_selected(layout: Any, view: Any, row: Any, blocked: str | None) -> Non
     divergencia, su historial y Cambiar y Confirmar (desactivados con ``blocked``)."""
     details = layout.column(align=True)
     details.label(text=row.key, translate=False)
+    scopes = getattr(row, "scopes", "")  # el valor de cada ámbito (spec 009, RF-009-29)
+    if scopes:
+        details.label(text=scopes, translate=False)
     details.label(text=tr("Source: {source}", source=row.source), translate=False)
     details.label(text=tr("Decided by {who} on {date}", who=row.decided_by,
                           date=row.decided_at), translate=False)
+    owner = getattr(row, "owner", "")  # su decisor de la propiedad (spec 009, RF-009-13)
+    for line in owner.splitlines():
+        labels.draw_wrapped(details, line, labels.dialog_width(
+            PARAMETERS_PANEL_UNITS * compat.UI_UNIT_PX))
     if row.review and row.review_text:
         note = details.row()
         note.alert = True
@@ -1786,10 +1928,11 @@ classes: tuple[type, ...] = (
 
 def install() -> None:
     """Registra los campos de la barra de estado (después de ``statusbar.install``), el número
-    del control 7, el proveedor de estado de las órdenes, la marca en vivo de la vista tras
-    cada lectura (``bl.scene.live.request``; spec 010) y la escucha del proyecto de la
-    sesión; con un proyecto ya abierto, pone el temporizador. Idempotente («Reparar la
-    interfaz» la vuelve a llamar)."""
+    del control 7, el proveedor de estado de las órdenes, «Versión no editable» de las órdenes
+    de versión (:func:`sync_version_checks`; spec 009), la marca en vivo de la vista tras cada
+    lectura (``bl.scene.live.request``; spec 010) y la escucha del proyecto de la sesión; con
+    un proyecto ya abierto, pone el temporizador. Idempotente («Reparar la interfaz» la vuelve
+    a llamar)."""
     for key, order, draw, width in FIELDS:
         statusbar.register_field(key, priority=FIELD_PRIORITY, draw=draw, width_px=width,
                                  modes=FIELD_MODES, order=order,
@@ -1797,6 +1940,7 @@ def install() -> None:
                                  folded_width_px=partial(width, folded=True))
     quick_access.set_count_provider(REFRESH, stale_count)
     set_state_provider(command_state)
+    sync_version_checks()
     add_change_listener(live.request)
     project_session.add_listener(on_project_changed)
     if project_session.current() is not None and not bpy.app.timers.is_registered(
@@ -1806,15 +1950,17 @@ def install() -> None:
 
 
 def uninstall() -> None:
-    """Quita los campos, el número del control 7, el proveedor de estado de las órdenes, la
-    marca en vivo tras cada lectura, la escucha y los temporizadores, y olvida los recuentos,
-    las filas (también las de los parámetros) y el aviso."""
+    """Quita los campos, el número del control 7, el proveedor de estado de las órdenes,
+    «Versión no editable» de las órdenes de versión, la marca en vivo tras cada lectura, la
+    escucha y los temporizadores, y olvida los recuentos, las filas (también las de los
+    parámetros) y el aviso."""
     for key in FIELD_KEYS:
         statusbar.unregister_field(key)
     if quick_access.count_provider(REFRESH) is stale_count:
         quick_access.set_count_provider(REFRESH, None)
     if state_provider() is command_state:
         set_state_provider(None)
+    _forget_version_checks()
     remove_change_listener(live.request)
     project_session.remove_listener(on_project_changed)
     _retire(indicator_tick)

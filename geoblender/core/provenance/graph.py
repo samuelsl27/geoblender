@@ -49,6 +49,26 @@ tabla, en una o varias lecturas, y :func:`deduce_steps` deduce por trozos. Paran
 ``lap`` (el ritmo de quien los lleva, :data:`Lap`); :func:`load_graph` y :func:`deduce` son los
 dos últimos sin parar.
 
+**Con versiones** (spec 009, plan A4; RF-009-19, D-23, D-27; solo en una base que las tiene,
+:func:`versioned`): el grafo lleva la revisión de cada operación de versión, la versión de cada
+dato de versión y las revisiones con el estado de su versión (:class:`RevisionNode`).
+
+1. Las operaciones de una versión SUPERADO o DESCARTADO (:meth:`ProvenanceGraph.closed`) **no
+   entran en la cascada**: no tienen causas, no reciben ni propagan ninguna y no se cuentan.
+2. Las de una versión BORRADOR o VIGENTE se evalúan como siempre, también las registradas en una
+   revisión ya congelada (lo «en curso» de su revisión abierta, D-23): lo congelado es el
+   registro de la revisión (sus elementos, con el estado que tenían al congelarse), que no cambia.
+3. Un dato de otra versión que consumió una operación de versión es lo **congelado** de la
+   revisión de la que parte su versión (``Use.frozen``, D-27; :meth:`ProvenanceGraph.frozen_use`):
+   ni su contenido de hoy ni lo de aguas arriba cuentan (no es aguas arriba suyo en la cascada,
+   :meth:`ProvenanceGraph.upstream`); solo si esa revisión está **alterada**, la causa
+   ``dataset_damaged`` sobre ese dato («lo congelado de «…» está alterado»).
+4. Una operación de versión que leyó un parámetro de otra fila (la del proyecto) cuando su
+   versión tiene ya la suya queda obsoleta: ``parameter_changed`` sobre la fila de la versión.
+5. La cifra vigente de una clave y un ámbito se elige entre las del proyecto
+   (:attr:`Staleness.current_figures`) o entre las de cada versión
+   (:attr:`Staleness.current_version_figures`).
+
 Cada causa (:class:`Cause`) es lo que guarda la caché ``gb_stale`` (clase y sujeto; T27) y se
 presenta con :meth:`Staleness.text` o :func:`stale_text` («Obsoleto: cambió Producción»). Una
 causa directa de una operación que cambió **mientras se calculaba** (entre su principio y su
@@ -71,6 +91,7 @@ from typing import Any, TypeVar
 
 from ..i18n import translate
 from ..params.model import DEFINITIONS
+from ..versions.model import EDITABLE, revision_label
 from .contract import OPERATIONS, parse_version
 from .messages import render
 from .schema import LIVE_DATASET_STATUSES
@@ -169,7 +190,9 @@ class ParamUse:
 
 @dataclass(frozen=True, slots=True)
 class OperationNode:
-    """Una operación hecha con lo que consumió, lo que produjo y los parámetros que leyó."""
+    """Una operación hecha con lo que consumió, lo que produjo y los parámetros que leyó;
+    ``revision_uid``, la revisión en que se registró una operación de versión (spec 009;
+    ``''`` de proyecto, o si no se cargó)."""
 
     fid: int
     uid: str
@@ -186,6 +209,7 @@ class OperationNode:
     consumed: tuple[Version, ...]
     produced: tuple[Version, ...]
     params: tuple[ParamUse, ...]
+    revision_uid: str = ""
 
     @property
     def current(self) -> bool:
@@ -195,7 +219,8 @@ class OperationNode:
 
 @dataclass(frozen=True, slots=True)
 class DatasetNode:
-    """Un dato del proyecto en su estado actual (``gb_dataset``)."""
+    """Un dato del proyecto en su estado actual (``gb_dataset``); ``version_uid``, la versión
+    de un dato de versión (spec 009; ``''`` del proyecto, o si no se cargó)."""
 
     fid: int
     uid: str
@@ -207,6 +232,7 @@ class DatasetNode:
     normalizer: str
     operation_uid: str
     input_uid: str | None
+    version_uid: str = ""
 
     @property
     def live(self) -> bool:
@@ -226,7 +252,8 @@ class InputNode:
 
 @dataclass(frozen=True, slots=True)
 class ParameterNode:
-    """Un parámetro en su estado actual (``gb_parameter``)."""
+    """Un parámetro en su estado actual (``gb_parameter``): una fila de su ámbito (``scope``
+    y ``scope_uid``: ``''`` en el proyecto, el uid de la versión en una de versión)."""
 
     uid: str
     key: str
@@ -234,6 +261,32 @@ class ParameterNode:
     value_sha256: str
     kind: str
     unconfirmed: bool
+    scope_uid: str = ""
+
+
+VERSION_SCOPE = "version"
+"""El ámbito de un parámetro propio de una versión (``gb_parameter.scope``, spec 009)."""
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionNode:
+    """Una revisión de una versión (spec 009; ``gb_revision`` y su ``gb_version``): su versión
+    y su etiqueta («V10.r2»), su estado (``open``, ``frozen`` o ``closed``), si está alterada
+    (RF-009-09), el estado de su versión y la revisión congelada de la que parte su versión
+    (``''`` si no parte de ninguna)."""
+
+    uid: str
+    version_uid: str
+    label: str
+    state: str
+    altered: bool
+    version_status: str
+    parent_revision_uid: str
+
+    @property
+    def closed(self) -> bool:
+        """Si su versión es SUPERADO o DESCARTADO: lo suyo no entra en la cascada (A4 (1))."""
+        return self.version_status not in EDITABLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,7 +305,8 @@ class ProvenanceGraph:
     (:attr:`operations`) y el estado actual de los datos, las entradas, los parámetros y las
     cifras, todo de solo lectura. :attr:`during`: de cada operación, lo que consumió y cambió
     mientras se calculaba (:func:`changes_while_running`; vacío si no se cargó), que solo
-    cambia cómo se presentan sus causas."""
+    cambia cómo se presentan sus causas. :attr:`revisions`: las revisiones de las versiones
+    (spec 009; vacío sin versiones o si no se cargaron)."""
 
     def __init__(
         self,
@@ -263,6 +317,7 @@ class ProvenanceGraph:
         figures: Iterable[FigureNode] = (),
         *,
         during: Mapping[str, Iterable[Cause]] | None = None,
+        revisions: Iterable[RevisionNode] = (),
     ) -> None:
         ops = {node.uid: node for node in sorted(operations, key=lambda node: node.fid)}
         self.operations: Mapping[str, OperationNode] = MappingProxyType(ops)
@@ -275,6 +330,8 @@ class ProvenanceGraph:
         self.figures: tuple[FigureNode, ...] = tuple(sorted(figures, key=lambda node: node.fid))
         self.during: Mapping[str, frozenset[Cause]] = MappingProxyType(
             {uid: frozenset(causes) for uid, causes in (during or {}).items()})
+        self.revisions: Mapping[str, RevisionNode] = MappingProxyType(
+            {node.uid: node for node in revisions})
         writers: dict[tuple[str, str], list[str]] = defaultdict(list)
         groups: dict[str, list[str]] = defaultdict(list)
         for node in sorted(ops.values(), key=lambda node: (node.finished_at, node.fid)):
@@ -286,13 +343,15 @@ class ProvenanceGraph:
                 groups[node.group_uid].append(node.uid)
         self._writers = {version: tuple(found) for version, found in writers.items()}
         self._groups = {group: tuple(found) for group, found in groups.items()}
+        self._own_rows = _own_rows(self.parameters.values())
 
     @classmethod
     def _assembled(cls, operations: dict[str, OperationNode], datasets: dict[str, DatasetNode],
                    inputs: dict[str, InputNode], parameters: dict[str, ParameterNode],
                    figures: tuple[FigureNode, ...], during: Mapping[str, Iterable[Cause]] | None,
                    writers: dict[tuple[str, str], tuple[str, ...]],
-                   groups: dict[str, tuple[str, ...]]) -> ProvenanceGraph:
+                   groups: dict[str, tuple[str, ...]],
+                   revisions: dict[str, RevisionNode] | None = None) -> ProvenanceGraph:
         """El grafo con lo que ya armó :class:`GraphPages` (las operaciones en orden de ``fid``,
         las cifras también, y quién escribió cada versión y los miembros de cada grupo en el
         orden de :meth:`__init__`), sin volver a recorrerlo."""
@@ -304,9 +363,57 @@ class ProvenanceGraph:
         graph.figures = figures
         graph.during = MappingProxyType(
             {uid: frozenset(causes) for uid, causes in (during or {}).items()})
+        graph.revisions = MappingProxyType(revisions or {})
         graph._writers = writers
         graph._groups = groups
+        graph._own_rows = _own_rows(parameters.values())
         return graph
+
+    # --- Versiones (spec 009, A4) ------------------------------------------------------------
+
+    def revision(self, op_uid: str) -> RevisionNode | None:
+        """La revisión en que se registró la operación ``op_uid``; ``None`` si es de proyecto
+        (o no se cargó)."""
+        node = self.operations.get(op_uid)
+        if node is None or not node.revision_uid:
+            return None
+        return self.revisions.get(node.revision_uid)
+
+    def version_of(self, op_uid: str) -> str:
+        """La versión (uid) de la operación ``op_uid``; ``''`` si es de proyecto."""
+        found = self.revision(op_uid)
+        return "" if found is None else found.version_uid
+
+    def closed(self, op_uid: str) -> bool:
+        """Si la operación ``op_uid`` es de una versión SUPERADO o DESCARTADO: no entra en la
+        cascada (A4 (1))."""
+        found = self.revision(op_uid)
+        return found is not None and found.closed
+
+    def frozen_use(self, node: OperationNode, dataset_uid: str) -> bool:
+        """Si la operación ``node`` consumió el dato ``dataset_uid`` **congelado**: es de
+        versión y el dato es de otra versión (lo único que admite ``begin_operation`` así es lo
+        congelado de la revisión de la que parte su versión, ``Use.frozen``; D-27)."""
+        if not node.revision_uid:
+            return False
+        dataset = self.datasets.get(dataset_uid)
+        if dataset is None or not dataset.version_uid:
+            return False
+        own = self.revisions.get(node.revision_uid)
+        return own is not None and dataset.version_uid != own.version_uid
+
+    def frozen_source(self, node: OperationNode) -> RevisionNode | None:
+        """La revisión congelada de la que parte la versión de ``node`` (de la que toma lo
+        congelado); ``None`` si no la hay o no se cargó."""
+        own = self.revisions.get(node.revision_uid) if node.revision_uid else None
+        if own is None or not own.parent_revision_uid:
+            return None
+        return self.revisions.get(own.parent_revision_uid)
+
+    def own_row(self, key: str, version_uid: str) -> str | None:
+        """La fila (uid) del parámetro ``key`` propia de la versión ``version_uid``; ``None``
+        si no la tiene (vale la del proyecto)."""
+        return self._own_rows.get((key, version_uid))
 
     def producer(self, dataset_uid: str, content_sha256: str, *,
                  excluding: str | None = None) -> str | None:
@@ -324,11 +431,12 @@ class ProvenanceGraph:
 
     def upstream(self, op_uid: str) -> tuple[str, ...]:
         """Los productores de las versiones de dato que consumió la operación ``op_uid`` (sin
-        ella misma), sin repetir y en el orden de lo consumido."""
+        ella misma), sin repetir y en el orden de lo consumido; sin lo que consumió congelado
+        (:meth:`frozen_use`: por ahí no le llega nada, A4 (3))."""
         node = self.operations[op_uid]
         found: list[str] = []
         for version in node.consumed:
-            if version.item_kind != DATASET:
+            if version.item_kind != DATASET or self.frozen_use(node, version.uid):
                 continue
             producer = self.producer(version.uid, version.content_sha256, excluding=op_uid)
             if producer is not None and producer not in found:
@@ -357,8 +465,40 @@ DATASET_COLUMNS = (
 """Las columnas de ``gb_dataset`` de un :class:`DatasetNode`, en su orden."""
 INPUT_NODE_COLUMNS = "uid, name, status, operation_uid"
 """Las columnas de ``gb_input`` de un :class:`InputNode`, en su orden."""
-PARAMETER_COLUMNS = "uid, key, scope, value_sha256, kind, unconfirmed"
+PARAMETER_COLUMNS = "uid, key, scope, value_sha256, kind, unconfirmed, scope_uid"
 """Las columnas de ``gb_parameter`` de un :class:`ParameterNode`, en su orden."""
+VERSIONED_OPERATION_COLUMNS = f"{OPERATION_COLUMNS}, revision_uid"
+"""… las de un :class:`OperationNode` con su revisión (solo en una base con versiones)."""
+VERSIONED_DATASET_COLUMNS = f"{DATASET_COLUMNS}, version_uid"
+"""… las de un :class:`DatasetNode` con su versión (solo en una base con versiones)."""
+REVISION_NODES = (
+    "SELECT r.fid, r.uid, r.version_uid, v.code, r.number, r.state, r.altered_at IS NOT NULL, "
+    "v.status, coalesce(v.parent_revision_uid, '') FROM gb_revision AS r "
+    "CROSS JOIN gb_version AS v ON v.uid = r.version_uid"
+)
+"""Las revisiones con su versión (:func:`revision_node`, sin su ``fid``): pocas (20 versiones
+con 10 revisiones, spec §7), por el ``fid`` de ``gb_revision`` y el uid de su versión."""
+
+
+def versioned(conn: sqlite3.Connection) -> bool:
+    """Si la base de ``conn`` tiene versiones (el esquema 3 o posterior, spec 009): un proyecto
+    del esquema 2 abierto en solo lectura no las tiene, y el grafo se lee como antes."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gb_version'"
+    ).fetchone() is not None
+
+
+def revision_node(row: tuple[Any, ...]) -> RevisionNode:
+    """Una :class:`RevisionNode` de una fila de :data:`REVISION_NODES` sin su ``fid``."""
+    uid, version_uid, code, number, state, altered, status, parent = row
+    return RevisionNode(str(uid), str(version_uid), revision_label(str(code), int(number)),
+                        str(state), bool(altered), str(status), str(parent))
+
+
+def _own_rows(parameters: Iterable[ParameterNode]) -> dict[tuple[str, str], str]:
+    """La fila propia de cada versión de cada parámetro: (clave, versión) → uid."""
+    return {(node.key, node.scope_uid): node.uid for node in parameters
+            if node.scope == VERSION_SCOPE and node.scope_uid}
 
 
 def version_of(row: tuple[Any, ...]) -> tuple[str, bool, Version]:
@@ -377,22 +517,25 @@ def param_use_of(row: tuple[Any, ...]) -> tuple[str, ParamUse]:
 def operation_node(row: tuple[Any, ...], consumed: Iterable[Version] = (),
                    produced: Iterable[Version] = (),
                    params: Iterable[ParamUse] = ()) -> OperationNode:
-    """Un :class:`OperationNode` de una fila de :data:`OPERATION_COLUMNS` y lo que consumió,
-    produjo y leyó."""
+    """Un :class:`OperationNode` de una fila de :data:`OPERATION_COLUMNS` (o de
+    :data:`VERSIONED_OPERATION_COLUMNS`, con su revisión) y lo que consumió, produjo y leyó."""
     (fid, uid, op_type, op_version, module, repeatable, group_name, group_uid, supersedes_uid,
-     superseded_by, started_at, finished_at) = row
+     superseded_by, started_at, finished_at, *revision) = row
     return OperationNode(
         int(fid), str(uid), str(op_type), str(op_version), str(module), bool(repeatable),
         group_name, group_uid, supersedes_uid, superseded_by, str(started_at), str(finished_at),
         tuple(consumed), tuple(produced), tuple(params),
+        str(revision[0]) if revision else "",
     )
 
 
 def dataset_node(row: tuple[Any, ...]) -> DatasetNode:
-    """Un :class:`DatasetNode` de una fila de :data:`DATASET_COLUMNS`."""
-    fid, uid, name, module, kind, status, sha, normalizer, operation_uid, input_uid = row
+    """Un :class:`DatasetNode` de una fila de :data:`DATASET_COLUMNS` (o de
+    :data:`VERSIONED_DATASET_COLUMNS`, con su versión)."""
+    fid, uid, name, module, kind, status, sha, normalizer, operation_uid, input_uid, *version = row
     return DatasetNode(int(fid), str(uid), str(name), str(module), str(kind), str(status),
-                       str(sha), str(normalizer), str(operation_uid), input_uid)
+                       str(sha), str(normalizer), str(operation_uid), input_uid,
+                       str(version[0]) if version else "")
 
 
 def input_node(row: tuple[Any, ...]) -> InputNode:
@@ -402,9 +545,9 @@ def input_node(row: tuple[Any, ...]) -> InputNode:
 
 def parameter_node(row: tuple[Any, ...]) -> ParameterNode:
     """Un :class:`ParameterNode` de una fila de :data:`PARAMETER_COLUMNS`."""
-    uid, key, scope, value_sha256, kind, unconfirmed = row
+    uid, key, scope, value_sha256, kind, unconfirmed, scope_uid = row
     return ParameterNode(str(uid), str(key), str(scope), str(value_sha256), str(kind),
-                         bool(unconfirmed))
+                         bool(unconfirmed), str(scope_uid))
 
 
 def load_graph(conn: sqlite3.Connection, *, during: bool = False) -> ProvenanceGraph:
@@ -524,6 +667,15 @@ _PAGES: tuple[str, ...] = (
     _page(f"fid, {PARAMETER_COLUMNS}", "gb_parameter"),
     _page("fid, uid, key, scope_key, operation_uid", "gb_figure"),
 )
+# … y con versiones (spec 009): las operaciones con su revisión, los datos con su versión y,
+# al final, las revisiones con su versión.
+_VERSIONED_PAGES: tuple[str, ...] = (
+    *_PAGES[:2],
+    _page(VERSIONED_OPERATION_COLUMNS, "gb_operation", f"status = '{DONE}' AND "),
+    _page(VERSIONED_DATASET_COLUMNS, "gb_dataset"),
+    *_PAGES[4:],
+    f"{REVISION_NODES} WHERE r.fid > ? ORDER BY r.fid LIMIT ?",
+)
 
 
 class GraphPages:
@@ -543,6 +695,7 @@ class GraphPages:
     def __init__(self) -> None:
         self._table = 0
         self._last = 0
+        self._pages: tuple[str, ...] | None = None  # las de la base, al empezar a leer
         self._consumed: dict[str, list[Version]] = defaultdict(list)
         self._produced: dict[str, list[Version]] = defaultdict(list)
         self._used: dict[str, list[ParamUse]] = defaultdict(list)
@@ -554,24 +707,32 @@ class GraphPages:
         self._inputs: dict[str, InputNode] = {}
         self._parameters: dict[str, ParameterNode] = {}
         self._figures: list[FigureNode] = []
+        self._revisions: dict[str, RevisionNode] = {}
 
     @property
     def finished(self) -> bool:
         """Si ya se leyó todo."""
-        return self._table >= len(_PAGES)
+        return self._pages is not None and self._table >= len(self._pages)
 
     @property
     def fraction(self) -> float:
         """Lo leído, aproximado: la parte de las tablas ya terminadas."""
-        return min(self._table / len(_PAGES), 1.0)
+        if self._pages is None:
+            return 0.0
+        return min(self._table / len(self._pages), 1.0)
 
     def read(self, conn: sqlite3.Connection, *, rows: int | None = PAGE_ROWS,
              lap: Lap | None = None) -> None:
         """Sigue leyendo de ``conn`` páginas de ``rows`` filas (``None``: cada tabla de una
-        vez) hasta terminar o hasta que ``lap`` pida parar (tras cada página)."""
+        vez) hasta terminar o hasta que ``lap`` pida parar (tras cada página). Con versiones
+        (:func:`versioned`, mirado al empezar), también las revisiones de las operaciones y las
+        versiones de los datos y, al final, las revisiones."""
         limit = -1 if rows is None else rows
-        while self._table < len(_PAGES):
-            found = conn.execute(_PAGES[self._table], (self._last, limit)).fetchall()
+        if self._pages is None:
+            self._pages = _VERSIONED_PAGES if versioned(conn) else _PAGES
+        pages = self._pages
+        while self._table < len(pages):
+            found = conn.execute(pages[self._table], (self._last, limit)).fetchall()
             if found:
                 self._TAKE[self._table](self, found)
                 self._last = int(found[-1][0])
@@ -590,6 +751,7 @@ class GraphPages:
             self._operations, self._datasets, self._inputs, self._parameters,
             tuple(self._figures), during, self._writers,
             {group: tuple(members) for group, members in self._groups.items()},
+            self._revisions,
         )
 
     def release(self, lap: Lap | None = None) -> Generator[None, None, None]:
@@ -599,7 +761,7 @@ class GraphPages:
         found: dict[Any, Any]
         for found in (self._written, self._writers, self._operations, self._datasets,
                       self._consumed, self._produced, self._used, self._inputs,
-                      self._parameters, self._groups):
+                      self._parameters, self._groups, self._revisions):
             count = 0
             while found:
                 found.popitem()
@@ -662,9 +824,14 @@ class GraphPages:
             FigureNode(int(fid), str(uid), str(key), str(scope_key), str(operation_uid))
             for fid, uid, key, scope_key, operation_uid in rows)
 
+    def _take_revisions(self, rows: list[tuple[Any, ...]]) -> None:
+        for row in rows:
+            node = revision_node(row[1:])
+            self._revisions[node.uid] = node
+
     _TAKE: tuple[Callable[[GraphPages, list[tuple[Any, ...]]], None], ...] = (
         _take_io, _take_params, _take_operations, _take_datasets, _take_inputs,
-        _take_parameters, _take_figures,
+        _take_parameters, _take_figures, _take_revisions,
     )
 
 
@@ -698,11 +865,22 @@ def _dataset_causes(graph: ProvenanceGraph, version: Version,
 def direct_causes(graph: ProvenanceGraph, node: OperationNode,
                   installed: Mapping[str, tuple[int, int]]) -> set[Cause]:
     """Las causas directas de la operación ``node`` (véase el módulo), con ``installed``,
-    la versión instalada ``(M, m)`` de cada tipo de operación."""
+    la versión instalada ``(M, m)`` de cada tipo de operación. Ninguna si es de una versión
+    SUPERADO o DESCARTADO (A4 (1)); de lo que consumió congelado, solo que su revisión esté
+    alterada (A4 (3)); y la fila propia de su versión de un parámetro que leyó de otra (A4
+    (4))."""
     found: set[Cause] = set()
+    revision = graph.revision(node.uid)
+    if revision is not None and revision.closed:
+        return found
     written = {version.uid for version in node.produced if version.item_kind == DATASET}
     for version in node.consumed:
         if version.item_kind == DATASET:
+            if graph.frozen_use(node, version.uid):
+                source = graph.frozen_source(node)
+                if source is not None and source.altered:
+                    found.add(Cause(CauseKind.DATASET_DAMAGED, version.uid))
+                continue
             found.update(_dataset_causes(graph, version, written))
         elif version.item_kind == INPUT:
             entry = graph.inputs.get(version.uid)
@@ -713,6 +891,9 @@ def direct_causes(graph: ProvenanceGraph, node: OperationNode,
         current = graph.parameters.get(use.parameter_uid)
         if current is not None and current.value_sha256 != use.value_sha256:
             found.add(Cause(CauseKind.PARAMETER_CHANGED, use.parameter_uid))
+        own = None if revision is None else graph.own_row(use.key, revision.version_uid)
+        if own is not None and own != use.parameter_uid:
+            found.add(Cause(CauseKind.PARAMETER_CHANGED, own))
     target = installed.get(node.op_type)
     if target is not None:
         try:
@@ -760,6 +941,22 @@ _DONE_PAGE = (
     "AND fid > ? ORDER BY fid LIMIT ?"
 )
 _DATASET_PAGE = "SELECT fid, uid FROM gb_dataset WHERE fid > ? ORDER BY fid LIMIT ?"
+_EDITABLE = ", ".join(f"'{status}'" for status in sorted(EDITABLE))
+# Con versiones (spec 009, A4 (3) y (4)), lo que da una causa directa sin pasar por lo de
+# arriba: una revisión alterada (de más: basta con que haya una, y hay pocas) y la fila propia
+# de una versión viva de un parámetro que una operación suya leyó de otra fila. De los
+# parámetros de versión (pocos) a su versión y sus revisiones, y de ahí a sus operaciones y a lo
+# que leyeron, por sus índices.
+_ALTERED_REVISION = "SELECT 1 FROM gb_revision WHERE altered_at IS NOT NULL LIMIT 1"
+_OWN_ROW_CAUSE = (
+    "SELECT 1 FROM gb_parameter AS v "
+    "CROSS JOIN gb_version AS ver ON ver.uid = v.scope_uid "
+    "CROSS JOIN gb_revision AS r ON r.version_uid = ver.uid "
+    "CROSS JOIN gb_operation AS op ON op.revision_uid = r.uid AND op.revision_uid <> '' "
+    "CROSS JOIN gb_operation_param AS p ON p.operation_uid = op.uid AND p.key = v.key "
+    f"WHERE v.scope = '{VERSION_SCOPE}' AND ver.status IN ({_EDITABLE}) "
+    f"AND op.status = '{DONE}' AND p.parameter_uid <> v.uid LIMIT 1"
+)
 
 
 class CauseScan:
@@ -771,9 +968,14 @@ class CauseScan:
     la instalada, ``versions`` como en :func:`deduce`), lo que leyeron por tramos de ``fid``
     de ``gb_operation_io`` y ``gb_operation_param`` y los uid de los datos; para en cuanto
     encuentra una causa (:attr:`caused`). Sin causas, :attr:`operations` y :attr:`datasets`
-    tienen los uid de todas las operaciones hechas y de todos los datos, en su orden."""
+    tienen los uid de todas las operaciones hechas y de todos los datos, en su orden. Con
+    versiones, al final, lo que da una causa sin pasar por lo anterior (una revisión alterada,
+    de más; la fila propia de una versión viva de un parámetro que una operación suya leyó de
+    otra fila). Puede decir que hay causas que :func:`deduce` no encuentra (las de una versión
+    cerrada, que no entra en la cascada; una revisión alterada sin nadie que tome lo suyo):
+    entonces se carga el grafo, que da lo mismo; nunca al revés."""
 
-    _PHASES = 4  # las operaciones, lo leído (datos y entradas), los parámetros y los datos
+    _PHASES = 5  # las operaciones, lo leído, los parámetros, los datos y las versiones
 
     def __init__(self, versions: Mapping[str, str] | None = None) -> None:
         _chosen, self._installed = _installed(versions)
@@ -805,6 +1007,8 @@ class CauseScan:
                 done = self._page(conn, _DONE_PAGE, limit, self._take_operations)
             elif self._phase == 3:
                 done = self._page(conn, _DATASET_PAGE, limit, self._take_datasets)
+            elif self._phase == 4:
+                done = self._versions(conn)
             else:
                 done = self._span(conn, rows)
             if done:
@@ -835,6 +1039,14 @@ class CauseScan:
                 return True
         self._last = upper
         return upper >= self._end
+
+    def _versions(self, conn: sqlite3.Connection) -> bool:
+        if versioned(conn):
+            for sql in (_ALTERED_REVISION, _OWN_ROW_CAUSE):
+                if conn.execute(sql).fetchone() is not None:
+                    self.caused = True
+                    break
+        return True
 
     def _take_operations(self, rows: list[tuple[Any, ...]]) -> None:
         for _fid, uid, op_type, op_version in rows:
@@ -876,7 +1088,8 @@ def _roots(graph: ProvenanceGraph, members: Iterable[str],
     upstream: dict[str, tuple[str, ...]] = {}
     for uid in members:
         roots[uid] = direct_causes(graph, graph.operations[uid], installed)
-        upstream[uid] = graph.upstream(uid)
+        # Lo de una versión cerrada no recibe nada de aguas arriba (A4 (1)).
+        upstream[uid] = () if graph.closed(uid) else graph.upstream(uid)
         if lap is not None and lap():
             yield
     if known:
@@ -911,7 +1124,7 @@ def _propagate(graph: ProvenanceGraph, roots: dict[str, set[Cause]],
         siblings = graph.group(group_uid) if group_uid is not None else ()
         for target in (*downstream.get(uid, ()), *siblings):
             mine = roots[target]
-            if target == uid or found <= mine:
+            if target == uid or found <= mine or graph.closed(target):
                 continue
             mine |= found
             if target not in queued:
@@ -921,18 +1134,26 @@ def _propagate(graph: ProvenanceGraph, roots: dict[str, set[Cause]],
             yield
 
 
-def _current_figures(graph: ProvenanceGraph,
-                     causes: Mapping[str, frozenset[Cause]]) -> dict[tuple[str, str], str]:
-    by_key: dict[tuple[str, str], list[FigureNode]] = defaultdict(list)
+def _current_figures(graph: ProvenanceGraph, causes: Mapping[str, frozenset[Cause]]
+                     ) -> tuple[dict[tuple[str, str], str], dict[tuple[str, str, str], str]]:
+    """La cifra vigente de cada clave y ámbito entre las de las operaciones de proyecto y entre
+    las de cada versión (A4 (5)): la de la operación más reciente sin sustituir que no está
+    obsoleta; si todas lo están, la más reciente."""
+    by_key: dict[tuple[str, str, str], list[FigureNode]] = defaultdict(list)
     for figure in graph.figures:
         node = graph.operations.get(figure.operation_uid)
         if node is not None and node.current:
-            by_key[(figure.key, figure.scope_key)].append(figure)
-    current: dict[tuple[str, str], str] = {}
-    for key, found in by_key.items():
+            by_key[(graph.version_of(node.uid), figure.key, figure.scope_key)].append(figure)
+    project: dict[tuple[str, str], str] = {}
+    versions: dict[tuple[str, str, str], str] = {}
+    for (version_uid, key, scope_key), found in by_key.items():
         fresh = [figure for figure in found if figure.operation_uid not in causes]
-        current[key] = (fresh or found)[-1].uid
-    return current
+        uid = (fresh or found)[-1].uid
+        if version_uid:
+            versions[(version_uid, key, scope_key)] = uid
+        else:
+            project[(key, scope_key)] = uid
+    return project, versions
 
 
 def _with_group(graph: ProvenanceGraph, roots: Mapping[str, set[Cause]],
@@ -977,9 +1198,10 @@ def deduce_steps(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None =
                 data[dataset.uid] = frozenset(found)
         if lap is not None and lap():
             yield
-    current_figures = _current_figures(graph, causes)
+    current_figures, version_figures = _current_figures(graph, causes)
     figure_operations = {figure.uid: figure.operation_uid for figure in graph.figures}
-    figure_writers = {figure_operations[uid] for uid in current_figures.values()}
+    figure_writers = {figure_operations[uid]
+                      for uid in (*current_figures.values(), *version_figures.values())}
     operations: dict[str, frozenset[Cause]] = {}
     review: set[str] = set()
     figure_only: set[str] = set()
@@ -1002,6 +1224,7 @@ def deduce_steps(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None =
         review=frozenset(review),
         figure_only=frozenset(figure_only),
         current_figures=MappingProxyType(current_figures),
+        current_version_figures=MappingProxyType(version_figures),
     )
 
 
@@ -1025,7 +1248,9 @@ class Staleness:
       sin sustituir, que se repiten solas, que no escribieron el contenido actual de ningún
       dato vivo y sí la cifra vigente de una clave y un ámbito (la que no se repite sola espera
       revisión a mano);
-    - ``current_figures``: la cifra vigente (uid) de cada clave y ámbito (``scope_key``);
+    - ``current_figures``: la cifra vigente (uid) de cada clave y ámbito (``scope_key``) de
+      las operaciones de proyecto; ``current_version_figures``, la de cada versión (su uid,
+      la clave y el ámbito; spec 009, A4 (5));
     - ``versions``: las versiones instaladas de los algoritmos con que se dedujo.
     """
 
@@ -1037,6 +1262,13 @@ class Staleness:
     review: frozenset[str]
     figure_only: frozenset[str]
     current_figures: Mapping[tuple[str, str], str]
+    current_version_figures: Mapping[tuple[str, str, str], str] = MappingProxyType({})
+
+    @property
+    def current_figure_uids(self) -> frozenset[str]:
+        """Las cifras vigentes (uid) del proyecto y de cada versión."""
+        return frozenset((*self.current_figures.values(),
+                          *self.current_version_figures.values()))
 
     def of(self, uid: str) -> frozenset[Cause]:
         """Las causas de la operación o del dato ``uid`` (vacío si no está obsoleto)."""
@@ -1103,6 +1335,11 @@ def _cause_text(graph: ProvenanceGraph, versions: Mapping[str, str], cause: Caus
     else:
         dataset = graph.datasets.get(subject)
         values["name"] = subject if dataset is None else dataset.name
+        if (kind is CauseKind.DATASET_DAMAGED and dataset is not None
+                and dataset.status != "damaged"):
+            # No es el dato el dañado: es lo congelado de él que tomó la operación, en una
+            # revisión alterada (spec 009, A4 (3)).
+            return render("core.cause_frozen_altered", language=language, **values)
     return render(f"core.cause_{kind}", language=language, **values)
 
 

@@ -5,6 +5,8 @@ opcionales y la orden que descarga las ruedas que faltan.
 - RF-001-10, RF-001-11: sin opciones no se ejecutan ni el rendimiento ni el banco; con
   ``--rendimiento`` y ``--banco``, después de los obligatorios; el banco omitido (código 3
   de ``tools/bench_silvestre.py``) no es un fallo.
+- RF-001-06, RF-001-07 (tarea 009/T38): cada orden de «rendimiento» y de «banco» tiene un
+  plazo propio, mayor que el de los demás pasos; la que no termina en él, falla su paso.
 - RF-001-06, RF-001-07 (spec 001 0.6; spec 002, D-9 y T48): con ``--completo``, tras
   «blender», el paso «arnés» (``unittest`` de ``tests/arnes``, las pruebas del arnés que
   lanzan Blender entero), en el que «sin pruebas» o un fichero sin cargar son un fallo;
@@ -22,6 +24,7 @@ Las ayudas (el ejecutor simulado y ``run_check``), en ``tests/support/check_cli.
 """
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +32,7 @@ from unittest import mock
 
 from tests.support.check_cli import (
     DOCS_STEP,
+    EXECUTED,
     FAKE_SITE,
     FakeRunner,
     HARNESS,
@@ -67,7 +71,7 @@ class OptionalStepsTest(unittest.TestCase):
         ni el banco se ejecutan."""
         result = run_check()
         self.assertEqual(result.code, 0)
-        self.assertEqual(result.runner.steps(), MANDATORY)
+        self.assertEqual(result.runner.steps(), EXECUTED)
         self.assertNotIn("rendimiento", result.out)
         self.assertNotIn("banco", result.out)
 
@@ -80,7 +84,7 @@ class OptionalStepsTest(unittest.TestCase):
         result = run_check("--rendimiento")
         self.assertEqual(result.code, 0, result.out)
         runner = result.runner
-        self.assertEqual(runner.steps(), [*MANDATORY, "rendimiento", "rendimiento-blender"])
+        self.assertEqual(runner.steps(), [*EXECUTED, "rendimiento", "rendimiento-blender"])
         self.assertEqual(
             runner.call("rendimiento").cmd,
             blender.python_cmd(
@@ -149,7 +153,7 @@ class OptionalStepsTest(unittest.TestCase):
         fallo (código 0, «VERDE CON OMISIONES (1)»); 0 es correcto y 1, fallo."""
         result = run_check("--banco")
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(result.runner.steps(), [*MANDATORY, "banco"])
+        self.assertEqual(result.runner.steps(), [*EXECUTED, "banco"])
         call = result.runner.call("banco")
         self.assertEqual(call.cmd, blender.python_cmd(INSTALL, "tools/bench_silvestre.py"))
         self.assertEqual(call.cwd, ROOT)
@@ -184,7 +188,7 @@ class OptionalStepsTest(unittest.TestCase):
             with self.subTest(opciones=args):
                 result = run_check(*args)
                 self.assertEqual(result.code, 0, result.out)
-                self.assertEqual(result.runner.steps(), [*MANDATORY, *OPTIONAL])
+                self.assertEqual(result.runner.steps(), [*EXECUTED, *OPTIONAL])
 
     def test_optional_step_order_in_table(self) -> None:
         """RF-001-10: en la tabla, los pasos opcionales llevan su opción y van tras los
@@ -201,7 +205,49 @@ class OptionalStepsTest(unittest.TestCase):
         runner = FakeRunner({"iconos": (0, "", "")})
         result = run_check("--rendimiento", "--banco", runner=runner, steps=steps)
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(runner.steps(), [*MANDATORY, "iconos", *OPTIONAL])
+        self.assertEqual(runner.steps(), [*EXECUTED, "iconos", *OPTIONAL])
+
+    def test_slow_steps_have_their_own_timeout(self) -> None:
+        """RF-001-06, RF-001-07 (tarea 009/T38, hallazgo F-3 de la verificación de la 009):
+        «rendimiento» y «banco» tienen su propio plazo por orden, mayor (2 h: con la carpeta
+        de la red, el ``unittest`` de ``tests/rendimiento`` tarda unos 37 min y se paraba a
+        los 30, sin ninguna medida), sin partir el paso; cada orden de los demás pasos, el de
+        siempre (30 min). Una orden que no termina en el plazo de su paso es un fallo de ese
+        paso, que dice ese plazo, y los demás pasos se ejecutan."""
+        long_steps = ("rendimiento", "banco")
+        self.assertGreaterEqual(check.LONG_STEP_TIMEOUT_S, 2 * 3600)
+        self.assertGreater(check.LONG_STEP_TIMEOUT_S, check.STEP_TIMEOUT_S)
+        timeouts = {step.name: step.timeout_s for step in check.STEPS}
+        for name, seconds in timeouts.items():
+            with self.subTest(paso=name):
+                expected = (check.LONG_STEP_TIMEOUT_S if name in long_steps
+                            else check.STEP_TIMEOUT_S)
+                self.assertEqual(seconds, expected)
+
+        result = run_check("--completo", "--rendimiento", "--banco")
+        self.assertEqual(result.code, 0, result.out)
+        ran = {call.step for call in result.runner.calls}
+        self.assertTrue({*MANDATORY, RUNTIME, HARNESS, *OPTIONAL} <= ran, ran)
+        for call in result.runner.calls:
+            with self.subTest(orden=call.step, parte=call.part):
+                expected = (check.LONG_STEP_TIMEOUT_S if call.step in OPTIONAL
+                            else check.STEP_TIMEOUT_S)
+                self.assertEqual(call.timeout, expected)
+
+        for step, seconds in (("rendimiento", check.LONG_STEP_TIMEOUT_S),
+                              ("rendimiento-blender", check.LONG_STEP_TIMEOUT_S),
+                              ("referencia", check.STEP_TIMEOUT_S)):
+            with self.subTest(agotado=step):
+                expired = subprocess.TimeoutExpired(["python"], seconds)
+                runner = FakeRunner({step: expired})
+                result = run_check("--rendimiento", runner=runner)
+                self.assertEqual(result.code, 1)
+                name = "rendimiento" if step.startswith("rendimiento") else step
+                line = _step_line(result.out, name)
+                self.assertTrue(line.lstrip().startswith("fallo"), line)
+                self.assertIn("tiempo agotado", line)
+                self.assertIn(f"no terminó en {seconds:.0f} s", result.out)
+                self.assertEqual(runner.steps(), [*EXECUTED, *OPTIONAL[:2]])
 
 
 class CompleteStepTest(unittest.TestCase):
@@ -230,7 +276,7 @@ class CompleteStepTest(unittest.TestCase):
 
         result = run_check(find_runtime=find_runtime)
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(result.runner.steps(), MANDATORY)
+        self.assertEqual(result.runner.steps(), EXECUTED)
         self.assertEqual([call.part for call in result.runner.calls_of(RUNTIME)], [])
         self.assertEqual(searched, [])
         for step in (HARNESS, RUNTIME):
@@ -262,7 +308,7 @@ class CompleteStepTest(unittest.TestCase):
         result = run_check("--completo")
         self.assertEqual(result.code, 0, result.out)
         runner = result.runner
-        self.assertEqual(runner.steps(), [*MANDATORY, HARNESS])
+        self.assertEqual(runner.steps(), [*EXECUTED, HARNESS])
         self.assertTrue(runner.calls_of(RUNTIME))
         names = ["blender", RUNTIME, HARNESS]
         positions = [result.out.index(_step_line(result.out, name)) for name in names]
@@ -294,7 +340,7 @@ class CompleteStepTest(unittest.TestCase):
 
         result = run_check("--rendimiento", "--completo", "--banco")
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(result.runner.steps(), [*MANDATORY, HARNESS, *OPTIONAL])
+        self.assertEqual(result.runner.steps(), [*EXECUTED, HARNESS, *OPTIONAL])
 
         options = {step.name: step.option for step in check.STEPS}
         self.assertEqual(options[HARNESS], "--completo")
@@ -372,7 +418,7 @@ class DocsStepTest(unittest.TestCase):
             result = run_check("--documentacion", root=root, environ={})
             self.assertEqual(result.code, 0, result.out + result.err)
             runner = result.runner
-            self.assertEqual(runner.steps(), [*MANDATORY, DOCS_STEP])
+            self.assertEqual(runner.steps(), [*EXECUTED, DOCS_STEP])
             call = runner.call(DOCS_STEP)
             self.assertEqual(
                 call.cmd,
@@ -389,7 +435,7 @@ class DocsStepTest(unittest.TestCase):
                 "--banco", "--documentacion", "--rendimiento", root=root, environ={}
             )
             self.assertEqual(every.code, 0, every.out)
-            self.assertEqual(every.runner.steps(), [*MANDATORY, *OPTIONAL, DOCS_STEP])
+            self.assertEqual(every.runner.steps(), [*EXECUTED, *OPTIONAL, DOCS_STEP])
 
             wrong = (
                 1,
@@ -439,7 +485,7 @@ class DocsStepTest(unittest.TestCase):
                 with self.subTest(entorno=environ):
                     result = run_check("--documentacion", root=root, environ=environ)
                     self.assertEqual(result.code, 0, result.out + result.err)
-                    self.assertEqual(result.runner.steps(), MANDATORY)
+                    self.assertEqual(result.runner.steps(), EXECUTED)
                     line = _step_line(result.out, DOCS_STEP)
                     self.assertRegex(line, r"^  omitido   documentación\s")
                     self.assertIn(reason, line)
@@ -456,7 +502,7 @@ class DocsStepTest(unittest.TestCase):
         with _project_root() as tmp:
             result = run_check(root=tmp / CODE_DIR_IN_DOCS, environ={})
         self.assertEqual(result.code, 0, result.out)
-        self.assertEqual(result.runner.steps(), MANDATORY)
+        self.assertEqual(result.runner.steps(), EXECUTED)
         self.assertNotIn(DOCS_STEP, result.out)
 
 

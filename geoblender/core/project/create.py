@@ -24,7 +24,9 @@ GeoOrigin, en metros enteros.
    pasa del límite de rutas de Windows (259 caracteres; Blender 5.2.1 no admite más:
    ``core.path_too_long`` con la ruta y el límite, T45). Todo se hace en ``<Nombre>.gbproj.creando-<8 cifras hexadecimales>``
    junto al destino (subcarpetas, ``project.gpkg`` con
-   el esquema 1, la fila de ``gb_project`` y el evento ``create`` en una transacción,
+   el esquema de esta versión —el 3: el 2 y después ``core.versions.schema.apply_schema_3``,
+   lo mismo que hace migrar uno del 2 (spec 009)—, la fila de ``gb_project`` y el evento
+   ``create`` en una transacción,
    ``manifest.json`` y ``.lock`` de la sesión) y se renombra al final; ante cualquier
    error se borra la temporal y se informa del motivo con la ruta: nunca queda un
    proyecto a medias. El proyecto queda con el cerrojo de la sesión (en modo ``network``
@@ -48,7 +50,7 @@ from ..georef.crs import CrsCatalog, CrsRef, VerticalRef, load_catalog
 from ..georef.origin import GeoOrigin, Window, align_window, check_grid_step, choose_origin
 from ..georef.tm import tm_inverse, tm_scale
 from ..georef.transform import PrecisionReport, precision_report
-from ..gpkg.base import create_base
+from ..gpkg.base import insert_srs
 from ..gpkg.connection import GpkgConnection
 from ..ids import SHORT_UID_CHARS, new_uid, short_uid
 from ..paths import (
@@ -77,7 +79,7 @@ from .model import (
     read_only_folder,
     read_only_phrase,
 )
-from .schema import MIN_READER_SCHEMA, SCHEMA_VERSION, create_schema, insert_project
+from .schema import MIN_READER_SCHEMA, SCHEMA_VERSION, base_image, insert_project
 from .session import Project, write_status
 
 PROJECT_SUFFIX = ".gbproj"
@@ -455,11 +457,18 @@ def _create_database(
     session: SessionInfo,
     network: bool,
 ) -> None:
+    """``project.gpkg``: la imagen de la base sin sus filas propias (``schema.base_image``:
+    la estructura GeoPackage y el esquema, hechos una vez por proceso; tarea 009/T34) y, en
+    una transacción, el CRS del proyecto, su fila y su evento de creación. Lo mismo que
+    hacerlo todo en la base (``create_base``, ``create_schema``, la fila y el evento), en un
+    tercio del tiempo (lo comprueba ``tests/unit/core/project/test_base_image.py``)."""
     message, data = _create_event(record, network)
-    with GpkgConnection.open_write(folder / PROJECT_STORE, create=True) as db:
+    database = folder / PROJECT_STORE
+    with open(database, "xb") as stream:  # la carpeta temporal es nueva: nada que sustituir
+        stream.write(base_image())
+    with GpkgConnection.open_write(database) as db:
         with db.transaction() as conn:
-            create_base(conn, crs)
-            create_schema(conn)
+            insert_srs(conn, crs)
             insert_project(conn, record)
             record_event(
                 conn, EventKind.CREATE, message, session=session, at=record.created_at, data=data
