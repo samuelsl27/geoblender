@@ -24,6 +24,12 @@ cada uno con:
   ``loadable`` por su nombre); una entrada, una versión o una revisión, nunca;
 - las marcas de una revisión (spec 009): «alterada», si su instantánea no coincide con lo
   congelado (RF-009-09), y «en curso», la abierta (RF-009-20);
+- de un dato de una revisión congelada (spec 009, T37; RF-009-19, D-23; plan A4 (1)): el estado
+  que tenía al congelarse, si no estaba al día (``gb_revision_item.state``: «stale»,
+  «review»…), cuando el dato no es lo «en curso» de una revisión abierta (su versión es
+  SUPERADO o DESCARTADO, o ya no está vivo) y su contenido de hoy es el que se congeló en la
+  última revisión congelada de su versión. Lo «en curso» lleva el estado de hoy, no ese; y ese
+  no es «obsoleto» (no cuenta en «! n obsoletos» ni en el filtro «Obsoletos»);
 
 con el contador de cambios de la cabecera de ``project.gpkg`` en ese momento
 (:class:`InventorySnapshot`): si ya no es el de hoy, alguien escribió y la instantánea es vieja.
@@ -178,14 +184,19 @@ _CURRENT = frozenset({str(DatasetStatus.CURRENT), str(VersionStatus.VIGENTE)})
 _MISSING = str(DatasetStatus.MISSING)
 _CHANGED = str(InputStatus.CHANGED)
 _OPEN = str(RevisionState.OPEN)
+_FROZEN = str(RevisionState.FROZEN)
+_REVISION_CHUNK = 500
+"""Revisiones por consulta (``IN (…)``) al leer el estado al congelarse."""
 # Posiciones en cada fila de InventorySnapshot.rows: los campos de InventoryItem, en su orden,
 # y al final el nombre como se compara con el texto (fold).
 (CATEGORY, UID, NAME, MODULE, KIND, STATUS, VERSION, STALE, INPUT_CHANGED, LOADABLE, ALTERED,
- IN_PROGRESS, KEY) = range(13)
+ IN_PROGRESS, FROZEN_STATE, KEY) = range(14)
 _FIELDS = KEY
-_FIELDS_010 = ALTERED
-"""Los valores de una fila como las de la 010, sin las marcas de la 009 (se completa sin
-ellas)."""
+_EARLIER: Mapping[int, tuple[Any, ...]] = {
+    ALTERED: (False, False, None),  # como las de la 010, sin las marcas de la 009
+    FROZEN_STATE: (None,),  # como las de la 009 antes de la T37, sin el estado al congelarse
+}
+"""Lo que completa una fila hecha con menos valores, por cuántos tiene."""
 _NUMBER = re.compile(r"[0-9]+")
 _PAD = 9
 """Las cifras con que se comparan los números de las versiones y de las revisiones."""
@@ -198,6 +209,15 @@ _VERSIONED_DATASETS = (
 )
 _REVISIONS = "SELECT uid, version_uid, number, state, altered_at FROM gb_revision ORDER BY fid"
 _STALE = "SELECT DISTINCT item_uid FROM gb_stale WHERE item_kind = 'dataset'"
+# Los datos de cada revisión de {marks} congelados sin estar al día y cuyo contenido de hoy es
+# el congelado: por el índice único de gb_revision_item (revisión, clase y uid) y el de
+# gb_dataset.uid; el CROSS JOIN fija ese orden (docs/trampas.md §6).
+_FROZEN_STATES = (
+    "SELECT i.item_uid, i.state FROM gb_revision_item AS i "
+    "CROSS JOIN gb_dataset AS d ON d.uid = i.item_uid "
+    "WHERE i.revision_uid IN ({marks}) AND i.item_kind = 'dataset' AND i.part = 'produced' "
+    "AND i.state <> 'current' AND d.content_sha256 = i.content_sha256"
+)
 
 
 def fold(text: str) -> str:
@@ -214,7 +234,9 @@ class InventoryItem:
     """Un elemento del inventario: véase el módulo. ``status`` es el del proyecto (el de una
     entrada o un dato, en minúsculas; el de una versión, «VIGENTE»…); ``version``, el código
     de su versión o ``None`` («—», lo del proyecto); ``altered`` e ``in_progress``, las marcas
-    de una revisión (spec 009: «alterada» y «en curso»)."""
+    de una revisión (spec 009: «alterada» y «en curso»); ``frozen_state``, de un dato de una
+    revisión congelada, el estado que tenía al congelarse si no estaba al día (como lo guarda
+    el proyecto, ``core.versions.model.ItemState``: «stale»…; T37), o ``None``."""
 
     category: Category
     uid: str
@@ -228,6 +250,7 @@ class InventoryItem:
     loadable: bool
     altered: bool = False
     in_progress: bool = False
+    frozen_state: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "category", Category(self.category))
@@ -244,19 +267,21 @@ class InventoryItem:
                 str(self.kind), str(self.status),
                 None if self.version is None else str(self.version), bool(self.stale),
                 bool(self.input_changed), bool(self.loadable), bool(self.altered),
-                bool(self.in_progress))
+                bool(self.in_progress),
+                None if self.frozen_state is None else str(self.frozen_state))
 
 
 def _keyed(row: object) -> tuple[Any, ...]:
     """La fila ``row`` (los campos de :class:`InventoryItem` y, si ya la tiene, su clave) con
     su nombre como se compara al final. Una fila como las de la 010 (sus diez valores, sin las
-    marcas de la 009) se completa sin marcas."""
-    if not isinstance(row, tuple) or len(row) not in (_FIELDS_010, _FIELDS, _FIELDS + 1):
+    marcas de la 009) se completa sin marcas, y una de doce (sin el estado al congelarse, como
+    antes de la T37), sin él."""
+    if not isinstance(row, tuple) or len(row) not in (*_EARLIER, _FIELDS, _FIELDS + 1):
         raise ValueError(f"una fila del inventario es una tupla de {_FIELDS} valores (los de "
-                         f"InventoryItem; {_FIELDS_010}, sin las marcas de una revisión), no "
-                         f"{row!r}")
-    if len(row) == _FIELDS_010:
-        row = (*row, False, False)
+                         f"InventoryItem; {ALTERED}, sin las marcas de una revisión, o "
+                         f"{FROZEN_STATE}, sin el estado al congelarse), no {row!r}")
+    if len(row) in _EARLIER:
+        row = (*row, *_EARLIER[len(row)])
     if row[CATEGORY] not in _LIVE:
         raise ValueError(f"categoría desconocida en el inventario: {row[CATEGORY]!r}")
     if not isinstance(row[NAME], str):
@@ -346,22 +371,44 @@ def _changed_dependents(conn: sqlite3.Connection, changed: Iterable[str]) -> set
     return found
 
 
-def _versions(conn: sqlite3.Connection) -> tuple[list[tuple[Any, ...]], dict[str, str]]:
-    """Las filas de las versiones y de sus revisiones (spec 009) y el código de cada versión
-    por su uid."""
+@dataclass(frozen=True)
+class _Versions:
+    """Lo que se lee de las versiones (spec 009): las filas de las versiones y de sus
+    revisiones, el código de cada versión por su uid, las versiones cerradas (SUPERADO o
+    DESCARTADO) y el estado al congelarse, si no estaba al día, de cada dato que es hoy lo
+    congelado en la última revisión congelada de su versión."""
+
+    rows: list[tuple[Any, ...]]
+    codes: dict[str, str]
+    closed: frozenset[str]
+    frozen: dict[str, str]
+
+
+def _versions(conn: sqlite3.Connection) -> _Versions:
+    """Las versiones y sus revisiones (:class:`_Versions`)."""
     found = versions_read.versions(conn)
     codes = {version.uid: version.code for version in found}
     rows: list[tuple[Any, ...]] = [
         (_VERSION, str(version.uid), str(version.label), VERSION_MODULE, VERSION_KIND,
-         str(version.status), str(version.code), False, False, False, False, False)
+         str(version.status), str(version.code), False, False, False, False, False, None)
         for version in found
     ]
+    last: dict[str, tuple[int, str]] = {}  # la última congelada de cada versión
     for uid, version_uid, number, state, altered_at in conn.execute(_REVISIONS):
         code = codes.get(str(version_uid), str(version_uid))
         rows.append((_REVISION, str(uid), revision_label(code, int(number)), VERSION_MODULE,
                      REVISION_KIND, str(state), code, False, False, False,
-                     altered_at is not None, state == _OPEN))
-    return rows, codes
+                     altered_at is not None, state == _OPEN, None))
+        if state == _FROZEN and int(number) > last.get(str(version_uid), (0, ""))[0]:
+            last[str(version_uid)] = (int(number), str(uid))
+    frozen: dict[str, str] = {}
+    revisions = [uid for _number, uid in last.values()]
+    for start in range(0, len(revisions), _REVISION_CHUNK):
+        part = revisions[start:start + _REVISION_CHUNK]
+        sql = _FROZEN_STATES.format(marks=", ".join("?" for _ in part))
+        frozen.update((str(uid), str(state)) for uid, state in conn.execute(sql, part))
+    closed = frozenset(version.uid for version in found if version.status not in EDITABLE)
+    return _Versions(rows, codes, closed, frozen)
 
 
 def read_inventory(project: InventoryProject, *, loadable: Callable[[str], bool],
@@ -378,25 +425,30 @@ def read_inventory(project: InventoryProject, *, loadable: Callable[[str], bool]
         counter = _counter(reading)
         if versioned(reading):
             dataset_rows = reading.execute(_VERSIONED_DATASETS).fetchall()
-            rows, codes = _versions(reading)
+            found = _versions(reading)
         else:
             dataset_rows = [(*row, "") for row in reading.execute(_DATASETS)]
-            rows, codes = [], {}
+            found = _Versions([], {}, frozenset(), {})
         stale = {str(uid) for (uid,) in reading.execute(_STALE)}
         changed_inputs = [str(row[0]) for row in input_rows if row[4] == _CHANGED]
         affected = _changed_dependents(reading, changed_inputs)
+    rows, codes, closed, frozen = found.rows, found.codes, found.closed, found.frozen
     rows += [
         (_INPUT, str(uid), str(name), str(module), str(kind), str(status), None, False,
-         status == _CHANGED, False, False, False)
+         status == _CHANGED, False, False, False, None)
         for uid, name, module, kind, status in input_rows
     ]
     live = _LIVE[_DATASET]
     for uid, name, module, kind, status, version_uid in dataset_rows:
         alive = status in live
         version = codes.get(str(version_uid), str(version_uid)) if version_uid else None
+        # Lo de una revisión congelada, no lo «en curso» de una abierta (D-23): su estado al
+        # congelarse.
+        state = frozen.get(uid) if version_uid in closed or not alive else None
         rows.append((_DATASET, str(uid), str(name), str(module), str(kind), str(status),
                      version, alive and uid in stale, uid in affected,
-                     alive and status != _MISSING and bool(loadable(name)), False, False))
+                     alive and status != _MISSING and bool(loadable(name)), False, False,
+                     state))
     return InventorySnapshot(tuple(rows), counter)
 
 

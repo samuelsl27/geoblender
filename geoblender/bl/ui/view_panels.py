@@ -84,7 +84,15 @@ solo para mostrarlas) no son su fuente.
   RF-009-20) y, aparte, las vigentes de su versión, las de su última revisión congelada (D-9:
   «Cifras vigentes de V01.r1»; de una versión SUPERADO o DESCARTADO, «Cifras congeladas de
   V01.r1»; sin ninguna congelada, «Aún no hay ninguna revisión congelada de V02»). Un dato del
-  proyecto, como en la 010.
+  proyecto, como en la 010;
+- **el estado que tenía al congelarse** lo de una revisión congelada (T37; RF-009-19, D-23; plan
+  A4 (1); ``core.versions.model.ItemState.text``), en alerta si no estaba al día: bajo cada
+  cifra vigente o congelada de la ficha («obsoleta al congelarse, aceptada», «a revisar a mano
+  al congelarse», «no reproducible»), y en el estado de un dato que es de esa revisión y no lo
+  «en curso» de una abierta (de una versión SUPERADO o DESCARTADO, con el contenido congelado):
+  «Estado: VIGENTE · OBSOLETO AL CONGELARSE, ACEPTADO», en la ficha y en lo de su fila elegida
+  del inventario, y en su fila, la marca :data:`FROZEN_STATE_ICON`. Lo «en curso» lleva el
+  estado de hoy.
 
 :func:`register` suscribe y apunta el manejador ``@persistent`` y las escuchas (también la de lo
 cargado y descargado de la vista); :func:`unregister` lo quita todo (también el temporizador del
@@ -112,7 +120,13 @@ from ...core.i18n import format_number, language, tr, translate
 from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
-from ...core.versions.model import EDITABLE, RevisionState, VersionStatus, revision_label
+from ...core.versions.model import (
+    EDITABLE,
+    ItemState,
+    RevisionState,
+    VersionStatus,
+    revision_label,
+)
 from .. import compat
 from ..props.core import OBJECT_PROPERTY
 from ..props.views import INVENTORY_INPUT, INVENTORY_VERSION_ALL, WINDOW_MANAGER_PROPERTY
@@ -120,7 +134,7 @@ from ..scene import live, project_session, views
 from . import core_panel, gate, labels, provenance, version_panels
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from ...core.project.session import Project
     from ...core.provenance.figures import FigureRecord
@@ -215,6 +229,8 @@ REVISION_ICONS: dict[str, str] = {
 """El icono de una revisión por su estado: la abierta (en curso), la congelada y la cerrada."""
 ALTERED_ICON = version_panels.ALTERED_ICON
 ALTERED_MSGID = "ALTERED"
+FROZEN_STATE_ICON = "FREEZE"
+"""La marca de la fila de un dato que no estaba al día al congelarse (T37, RF-009-19)."""
 FIRST_VERSION_ITEM = 1
 """El número del filtro de versión de V01 es su número más este (0 es «Todas», 1 «Sin
 versión»): lo elegido sigue siendo la misma versión aunque se lean otras."""
@@ -297,6 +313,19 @@ def status_text(status: str) -> str:
     return translate(language(), msgid) if msgid else str(status)
 
 
+def frozen_state_text(state: str | None, *, figure: bool = False) -> str:
+    """El estado que tenía al congelarse lo de una revisión congelada (T37, RF-009-19;
+    ``core.versions.model.ItemState``), en el idioma de Geoblender: el de un dato, «OBSOLETO AL
+    CONGELARSE, ACEPTADO»…; con ``figure``, el de una cifra, «obsoleta al congelarse,
+    aceptada»…; al día o sin él, «»; uno que no se conoce, tal como está."""
+    if not state:
+        return ""
+    try:
+        return ItemState(str(state)).text(language(), figure=figure)
+    except ValueError:
+        return str(state)
+
+
 def _link_status(link: Link) -> str:
     """El estado de hoy de una entrada («vigente», «cambiada»…) o de un dato («vigente»,
     «falta»…), y «obsoleto» si lo está."""
@@ -360,11 +389,14 @@ def figures_heading(mark: RevisionMark | None) -> str:
     return tr("Figures in progress ({revision})", revision=f"r{mark.in_progress}")
 
 
-def frozen_figure_lines(mark: RevisionMark, figures: Sequence[FigureRecord]) -> list[CardLine]:
+def frozen_figure_lines(mark: RevisionMark, figures: Sequence[FigureRecord],
+                        states: Mapping[str, str] | None = None) -> list[CardLine]:
     """Las cifras vigentes de la versión de un dato (D-9; spec 009, T25): las de su última
     revisión congelada, «Cifras vigentes de V01.r1» (de una versión SUPERADO o DESCARTADO,
-    «Cifras congeladas de V01.r1»), en alerta si está alterada; sin ninguna congelada, «Aún no
-    hay ninguna revisión congelada de V02»."""
+    «Cifras congeladas de V01.r1»), en alerta si está alterada, cada una con el estado que
+    tenía al congelarse debajo si no estaba al día (``states``, por uid; «obsoleta al
+    congelarse, aceptada», en alerta; T37, RF-009-19); sin ninguna congelada, «Aún no hay
+    ninguna revisión congelada de V02»."""
     if mark.current is None:
         return [CardLine(ROW_HEADING, tr("Current figures of {revision}", revision=mark.code)),
                 CardLine(ROW_NONE, tr("No revision of {version} has been frozen yet",
@@ -374,8 +406,13 @@ def frozen_figure_lines(mark: RevisionMark, figures: Sequence[FigureRecord]) -> 
                else tr("Frozen figures of {revision}", revision=label))
     altered = mark.current_altered
     lines = [CardLine(ROW_HEADING, heading, alert=altered)]
-    lines += [_figure_line(figure, alert=altered) for figure in figures] or [
-        CardLine(ROW_NONE, tr("No figures recorded"))]
+    for figure in figures:
+        lines.append(_figure_line(figure, alert=altered))
+        state = frozen_state_text((states or {}).get(figure.uid), figure=True)
+        if state:
+            lines.append(CardLine(ROW_MARKS, state, alert=True, uid=figure.uid))
+    if not figures:
+        lines.append(CardLine(ROW_NONE, tr("No figures recorded")))
     return lines
 
 
@@ -391,13 +428,17 @@ def card_lines(found: ItemCard) -> list[CardLine]:
     status = status_text(record.status)
     if found.stale:
         status = f"{status} · {translate(language(), STALE_MSGID)}"
+    # De una revisión congelada, no lo «en curso»: el estado que tenía al congelarse (T37).
+    frozen = frozen_state_text(found.frozen_state)
+    if frozen:
+        status = f"{status} · {frozen}"
     mark = found.revision  # de un dato de versión: su versión y sus revisiones (spec 009)
     version = (found.version or NO_VALUE) if mark is None else mark.heading(language())
     lines = [
         CardLine(ROW_NAME, record.name, KIND_ICONS.get(record.kind, OTHER_ICON), uid=record.uid),
         CardLine(ROW_FIELD, tr("Type: {kind}", kind=" · ".join(part for part in kind if part))),
         CardLine(ROW_FIELD, tr("Status: {status}", status=status),
-                 alert=found.stale or not record.live),
+                 alert=found.stale or bool(frozen) or not record.live),
         CardLine(ROW_VIEW),
         CardLine(ROW_FIELD, tr("Version: {version}", version=version),
                  alert=mark is not None and mark.current_altered),
@@ -416,7 +457,7 @@ def card_lines(found: ItemCard) -> list[CardLine]:
     lines += [_figure_line(figure) for figure in found.figures] or [
         CardLine(ROW_NONE, tr("No figures recorded"))]
     if mark is not None:
-        lines += frozen_figure_lines(mark, found.frozen_figures)
+        lines += frozen_figure_lines(mark, found.frozen_figures, found.frozen_figure_states)
     return lines
 
 
@@ -773,6 +814,7 @@ def _fill_inventory(view: Any, project_uid: str, snapshot: InventorySnapshot) ->
         row.loadable = item.loadable
         row.altered = item.altered
         row.in_progress = item.in_progress
+        row.frozen_state = item.frozen_state or ""
         if item.uid == chosen:
             selected = position
     view.inventory_index = selected
@@ -932,7 +974,8 @@ def _row_status(row: Any) -> str:
 
 def inventory_status_text(row: Any) -> str:
     """El estado de una fila con sus marcas: «VIGENTE · OBSOLETO · ENTRADA CAMBIADA»; de una
-    revisión, «congelada · ALTERADA»."""
+    revisión, «congelada · ALTERADA»; de un dato de una revisión congelada, el estado que
+    tenía al congelarse, «VIGENTE · OBSOLETO AL CONGELARSE, ACEPTADO» (T37)."""
     parts = [_row_status(row)]
     if row.stale:
         parts.append(translate(language(), STALE_MSGID))
@@ -940,6 +983,7 @@ def inventory_status_text(row: Any) -> str:
         parts.append(translate(language(), INPUT_CHANGED_MSGID))
     if row.altered:
         parts.append(translate(language(), ALTERED_MSGID))
+    parts.append(frozen_state_text(getattr(row, "frozen_state", "")))
     return " · ".join(part for part in parts if part)
 
 
@@ -992,7 +1036,8 @@ def draw_inventory_row(layout: Any, row: Any) -> None:
     """Una fila de la lista (``draw_item`` de :class:`GEOBLENDER_UL_core_project_inventory`): el
     icono de su tipo (de una versión o una revisión, el de su estado) y su nombre; a la derecha,
     su estado, su versión («—»), si está en la escena (un ojo) y sus marcas, en alerta
-    (obsoleto; entrada cambiada; revisión alterada)."""
+    (obsoleto; entrada cambiada; revisión alterada; un dato que no estaba al día al
+    congelarse, :data:`FROZEN_STATE_ICON`)."""
     line = layout.split(factor=INVENTORY_NAME_FACTOR, align=True)
     line.label(text=row.name, translate=False, **row_icon(row))
     right = line.row(align=True)
@@ -1008,6 +1053,8 @@ def draw_inventory_row(layout: Any, row: Any) -> None:
         marks.label(text="", icon=INPUT_CHANGED_ICON)
     if row.altered:
         marks.label(text="", icon=ALTERED_ICON)
+    if getattr(row, "frozen_state", ""):
+        marks.label(text="", icon=FROZEN_STATE_ICON)
 
 
 def _chosen(view: Any) -> Any:
@@ -1037,7 +1084,8 @@ def draw_chosen(layout: Any, row: Any, width: float) -> None:
     _draw_lines(column, row.name, width, **row_icon(row))
     _draw_lines(column, tr("Type: {kind}", kind=inventory_kind_text(row)), width)
     _draw_lines(column, tr("Status: {status}", status=inventory_status_text(row)), width,
-                alert=row.stale or row.input_changed or row.altered)
+                alert=row.stale or row.input_changed or row.altered
+                or bool(getattr(row, "frozen_state", "")))
     _draw_lines(column, tr("Version: {version}", version=row.version or NO_VALUE), width)
     _draw_lines(column, tr("Loaded in the scene") if row.in_scene else
                 tr("Not loaded in the scene"), width)

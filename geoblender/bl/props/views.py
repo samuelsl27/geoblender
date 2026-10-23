@@ -33,7 +33,8 @@ marcas, o que no tiene), leídas del proyecto al pedir la orden, y de qué proye
 (``selection_project``).
 
 Spec 009, T25 (RF-009-20, RF-009-30, RF-009-09; plan 009 A11): las filas del inventario son
-también de versiones y de revisiones, con sus marcas («alterada» y «en curso»), y el filtro de
+también de versiones y de revisiones, con sus marcas («alterada» y «en curso»; y, desde la T37,
+el estado que tenía al congelarse un dato de una revisión congelada, RF-009-19), y el filtro de
 versión es un enumerado **dinámico** (``bl.ui.view_panels.version_filter_items``): «Todas»,
 «Sin versión» y las versiones del inventario ya leído (su uid; nada se lee al abrirlo), cada
 una con el número de su código para que lo elegido siga siendo la misma versión al leer otra
@@ -123,8 +124,10 @@ class GEOBLENDER_PG_core_inventory_row(bpy.types.PropertyGroup):
     009, «VERSION» o «REVISION»), su uid, su módulo, su tipo, su estado como lo guarda el
     proyecto («current»…; el de una versión, «VIGENTE»…; el de una revisión, «open»…), su
     versión (su código; vacía, «—»: lo del proyecto), si está en la escena, si está obsoleto,
-    si depende de una entrada cambiada, si se puede cargar en la vista y, de una revisión,
-    si está alterada (RF-009-09) y si está en curso, la abierta (RF-009-20)."""
+    si depende de una entrada cambiada, si se puede cargar en la vista; de una revisión,
+    si está alterada (RF-009-09) y si está en curso, la abierta (RF-009-20), y de un dato de
+    una revisión congelada, el estado que tenía al congelarse si no estaba al día (como lo
+    guarda el proyecto, «stale»…; vacío, ninguno; T37, RF-009-19)."""
 
     category: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     uid: StringProperty(options=_STATIC)  # type: ignore[valid-type]
@@ -138,6 +141,7 @@ class GEOBLENDER_PG_core_inventory_row(bpy.types.PropertyGroup):
     loadable: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
     altered: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
     in_progress: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+    frozen_state: StringProperty(options=_STATIC)  # type: ignore[valid-type]
 
 
 class GEOBLENDER_PG_core_view_panels(bpy.types.PropertyGroup):

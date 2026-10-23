@@ -17,16 +17,23 @@ nada:
   su revisión (``RevisionMark``: «en curso (r2) · vigente: r1» en una VIGENTE con r2 abierta,
   D-9; «cerrada (r2) · congelada: r1» en una SUPERADO; «(alterada)» si lo vigente lo está) y
   da las cifras vigentes de su versión, las de su última revisión congelada (D-9), no las «en
-  curso»; un dato del proyecto, ninguna de las tres.
+  curso»; un dato del proyecto, ninguna de las tres;
+- **el estado que tenía al congelarse** (spec 009, T37; RF-009-19, D-23; F-1 de la
+  verificación): lo de una revisión congelada (el dato de una versión SUPERADO o DESCARTADO cuyo
+  contenido es el congelado, y las cifras congeladas de su ficha) dice el estado que tenía al
+  congelarse (``gb_revision_item.state``: «OBSOLETO AL CONGELARSE, ACEPTADO»…; nada si estaba
+  al día), en la ficha y en el inventario; lo de la revisión abierta, el de hoy.
 
 Sobre el proyecto de la demostración de versiones (``tests/support/versions_fixtures.py``,
-congelado por SQL) y, sin versiones, el proyecto del esquema 2 abierto en solo lectura
-(``tests/support/schema2_project.py``). Datos solo sintéticos.
+congelado por SQL o con ``core.versions.freeze``) y, sin versiones, el proyecto del esquema 2
+abierto en solo lectura (``tests/support/schema2_project.py``). Datos solo sintéticos.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import gc
+import re
 import sqlite3
 import unittest
 from typing import Any
@@ -43,10 +50,13 @@ datasets = import_geoblender("core.datasets")
 lineage = import_geoblender("core.provenance.lineage")
 recompute = import_geoblender("core.provenance.recompute")
 versions_read = import_geoblender("core.versions.read")
+versions_model = import_geoblender("core.versions.model")
+freeze = import_geoblender("core.versions.freeze")
 open_mod = import_geoblender("core.project.open")
 userdata_mod = import_geoblender("core.userdata")
 
 Category = inventory.Category
+ItemState = versions_model.ItemState
 Filter = inventory.InventoryFilter
 INPUT = Category.INPUT
 DATASET = Category.DATASET
@@ -62,6 +72,8 @@ VOLUME_12 = 3_818_400.0
 PIT_DATA = (vdemo.PIT_BENCHES, vdemo.PIT_GRID, vdemo.PIT_MESH)
 """Lo que escribe ``demo.pit`` en su versión, por nombre."""
 ALTERED_DETAIL = '{"files": [{"path": "V02.r1.gpkg", "problem": "sha256"}]}'
+SCANNED = re.compile(r"\bSCAN (gb_revision_item|gb_dataset|i|d)\b")
+"""Un recorrido entero de ``gb_revision_item`` o de ``gb_dataset`` en un plan de SQLite."""
 
 
 def everything(_name: str) -> bool:
@@ -71,11 +83,11 @@ def everything(_name: str) -> bool:
 
 def item(category: str, uid: str, name: str, *, kind: str = "table", status: str = "current",
          module: str = "core", version: str | None = None, altered: bool = False,
-         in_progress: bool = False) -> Any:
+         in_progress: bool = False, frozen_state: str | None = None) -> Any:
     """Un elemento del inventario hecho a mano (sin las marcas de la 010)."""
     return inventory.InventoryItem(Category(category), uid, name, module, kind, status, version,
                                    False, False, category == "DATASET", altered=altered,
-                                   in_progress=in_progress)
+                                   in_progress=in_progress, frozen_state=frozen_state)
 
 
 class ViewsVersionsCase(fixtures.VersionsProjectCase):
@@ -386,6 +398,115 @@ class CardVersionsTest(ViewsVersionsCase):
         self.assertEqual(discarded.frozen_figures, frozen_v2)
 
 
+class FrozenStateTest(ViewsVersionsCase):
+    """El estado que tenía al congelarse lo de una revisión congelada (T37)."""
+
+    def freeze_accepting(self, code: str, reason: str) -> tuple[Any, Any]:
+        """Congela de verdad (``core.versions.freeze``) la revisión abierta de la versión
+        ``code``, un minuto después, aceptando todo lo que hay que aceptar; su
+        ``FreezeOutcome`` y el plan."""
+        plan = freeze.freeze_plan(self.project, code)
+        self.tick()
+        steps = list(freeze.freeze_steps(self.project, code, reason=reason,
+                                         accepted=freeze.Acceptance.of(plan)))
+        outcome = steps[-1].result
+        self.assertFalse(outcome.cancelled)
+        return outcome, plan
+
+    @staticmethod
+    def frozen_states(snapshot: Any) -> dict[tuple[str, str], str | None]:
+        """El estado al congelarse de cada dato de versión del inventario (por su nombre y el
+        código de su versión)."""
+        return {(row.name, row.version): row.frozen_state for row in snapshot.items
+                if row.category is DATASET and row.version is not None}
+
+    def test_card_and_inventory_show_the_state_when_frozen(self) -> None:
+        """RF-009-19, D-23 (plan A4 (1) y (2); F-1 de la verificación): V01 con el hueco y su
+        volumen, obsoletos por su banco de 12 m, se congela aceptándolos (r1: los datos y la
+        cifra, «stale»). Declarada VIGENTE (r2 abierta), lo suyo es lo «en curso» de r2: la
+        ficha y el inventario dan el estado de hoy (obsoleto, D-23) y ningún estado al
+        congelarse; las cifras vigentes de su ficha, las de r1, el de r1 (``stale``). Declarada
+        VIGENTE V02 (congelada con un estado de cada clase), V01 pasa a SUPERADO: su rejilla ya
+        no está obsoleta (lo de una versión cerrada no tiene causas, RF-009-19), pero su ficha y
+        el inventario dicen el estado que tenía al congelarse (``stale``) y sus cifras
+        congeladas, el suyo; lo de V02, VIGENTE, nada. Descartada V02, sus datos dicen el suyo
+        (``review``, ``not_reproducible``), salvo uno cuyo contenido ya no es el congelado. Ni
+        la ficha ni el inventario escriben, y sus consultas nuevas van por los índices."""
+        self.pit("V01")
+        self.bench(12.0, version="V01")
+        outcome, plan = self.freeze_accepting("V01", "Entrega con el banco anterior")
+        self.assertTrue(plan.accept)
+        r1 = outcome.frozen.uid
+        grid = self.record(vdemo.PIT_GRID, "V01")
+        (volume,) = self.read(lambda conn: versions_read.version_figures(conn, "V01"))
+        frozen = dict(self.query(
+            "SELECT item_uid, state FROM gb_revision_item WHERE revision_uid = ? "
+            "AND item_kind IN ('dataset', 'figure') AND part = 'produced'", (r1,)))
+        self.assertEqual({frozen[self.record(name, "V01").uid] for name in PIT_DATA}, {"stale"})
+        self.assertEqual(frozen[volume.uid], "stale")
+        self.set_status(self.v1, "VIGENTE")
+
+        # V01 VIGENTE, r2 abierta: lo «en curso», con el estado de hoy; sus cifras vigentes,
+        # las de r1, con el suyo.
+        found = self.card_of(vdemo.PIT_GRID, "V01")
+        self.assertEqual((found.stale, found.frozen_state, found.revision.in_progress),
+                         (True, None, 2))
+        self.assertEqual(found.frozen_figures, (volume,))
+        self.assertEqual(dict(found.frozen_figure_states), {volume.uid: ItemState.STALE})
+        snapshot = self.snapshot()
+        self.assertEqual(set(self.frozen_states(snapshot).values()), {None})
+        self.assertTrue(next(row for row in snapshot.items if row.uid == grid.uid).stale)
+
+        # V02 (el hueco con el banco del proyecto, 10 m) congelada por SQL con un estado de cada
+        # clase (sus bancos, anotados con otro contenido que el de hoy) y declarada VIGENTE.
+        self.pit("V02", volume=False)
+        grid2, mesh2, benches2 = (self.record(name, "V02") for name in
+                                  (vdemo.PIT_GRID, vdemo.PIT_MESH, vdemo.PIT_BENCHES))
+        other = dataclasses.replace(benches2, content_sha256="0" * 64)
+        self.freeze(self.v2, [(grid2, "produced"), (mesh2, "produced"), (other, "produced")],
+                    states={grid2.uid: "review", mesh2.uid: "not_reproducible",
+                            benches2.uid: "stale"})
+        self.set_status(self.v2, "VIGENTE", "Segunda entrega")
+        self.assertEqual(str(self.version("V01").status), "SUPERADO")
+
+        old = self.card_of(vdemo.PIT_GRID, "V01")
+        self.assertEqual((old.stale, old.frozen_state, old.revision.in_progress,
+                          old.revision.closed), (False, ItemState.STALE, None, 2))
+        self.assertEqual(old.frozen_figures, (volume,))
+        self.assertEqual(dict(old.frozen_figure_states), {volume.uid: ItemState.STALE})
+        self.assertIsNone(self.card_of(vdemo.PIT_GRID, "V02").frozen_state)
+        snapshot = self.snapshot()
+        self.assertEqual(self.frozen_states(snapshot),
+                         {**{(name, "V01"): "stale" for name in PIT_DATA},
+                          **{(name, "V02"): None for name in PIT_DATA}})
+        self.assertEqual(self.shown(snapshot, Filter(status="STALE", version="V01")), [])
+
+        # V02 DESCARTADO: lo suyo, el estado de V02.r1, salvo los bancos (otro contenido).
+        self.set_status(self.v2, "DESCARTADO", "No sigue")
+        self.assertEqual({name: self.card_of(name, "V02").frozen_state for name in PIT_DATA},
+                         {vdemo.PIT_GRID: ItemState.REVIEW,
+                          vdemo.PIT_MESH: ItemState.NOT_REPRODUCIBLE,
+                          vdemo.PIT_BENCHES: None})
+        self.assertEqual({key: state for key, state in self.frozen_states(self.snapshot()).items()
+                          if key[1] == "V02"},
+                         {(vdemo.PIT_GRID, "V02"): "review",
+                          (vdemo.PIT_MESH, "V02"): "not_reproducible",
+                          (vdemo.PIT_BENCHES, "V02"): None})
+
+        # Las consultas nuevas (las que leen el estado de gb_revision_item), por sus índices.
+        with self.project.read() as conn:
+            executed: list[str] = []
+            conn.set_trace_callback(executed.append)
+            inventory.read_inventory(self.project, loadable=everything, conn=conn)
+            card.item_card(self.project, grid.uid, conn=conn)
+            conn.set_trace_callback(None)
+            plans = [" | ".join(str(row[3]) for row in conn.execute(f"EXPLAIN QUERY PLAN {sql}"))
+                     for sql in executed if "gb_revision_item" in sql and "state" in sql]
+        self.assertGreaterEqual(len(plans), 3)
+        for found_plan in plans:
+            self.assertIsNone(SCANNED.search(found_plan), found_plan)
+
+
 class OrderAndRowsTest(unittest.TestCase):
     """Una instantánea hecha a mano, sin proyecto."""
 
@@ -495,6 +616,46 @@ class OrderAndRowsTest(unittest.TestCase):
                          "V05 · Quinta — in progress (r1)")
         with self.assertRaises(ValueError):
             mark("BORRADOR", 1, None).text("fr")
+
+    def test_frozen_state_texts_and_rows(self) -> None:
+        """RF-009-19, D-23 (T37): el estado que tenía al congelarse, en los dos idiomas: el de
+        un dato, en mayúsculas como su estado («OBSOLETO AL CONGELARSE, ACEPTADO», «A REVISAR A
+        MANO AL CONGELARSE», «NO REPRODUCIBLE»); el de una cifra, en minúsculas como sus marcas
+        («obsoleta al congelarse, aceptada»…); al día, nada. Una fila del inventario lo guarda
+        como texto (el GC no la sigue); una de doce valores (sin él, como en la T17) no lo
+        tiene."""
+        cases = {
+            ItemState.CURRENT: ("", "", "", ""),
+            ItemState.STALE: ("OBSOLETO AL CONGELARSE, ACEPTADO", "STALE WHEN FROZEN, ACCEPTED",
+                              "obsoleta al congelarse, aceptada", "stale when frozen, accepted"),
+            ItemState.REVIEW: ("A REVISAR A MANO AL CONGELARSE",
+                               "AWAITING REVIEW BY HAND WHEN FROZEN",
+                               "a revisar a mano al congelarse",
+                               "awaiting review by hand when frozen"),
+            ItemState.NOT_REPRODUCIBLE: ("NO REPRODUCIBLE", "NOT REPRODUCIBLE", "no reproducible",
+                                         "not reproducible"),
+            ItemState.UNLOCATABLE: ("NO LOCALIZABLE AL CONGELARSE", "NOT LOCATABLE WHEN FROZEN",
+                                    "no localizable al congelarse", "not locatable when frozen"),
+        }
+        for state, (spanish, english, spanish_figure, english_figure) in cases.items():
+            with self.subTest(state=state):
+                self.assertEqual(state.text(), spanish)
+                self.assertEqual(state.text("en"), english)
+                self.assertEqual(state.text(figure=True), spanish_figure)
+                self.assertEqual(state.text("en", figure=True), english_figure)
+        with self.assertRaises(ValueError):
+            ItemState.STALE.text("fr")
+
+        made = item("DATASET", "d7", "demo_pit_grid", kind="raster", version="V01",
+                    frozen_state="stale")
+        snapshot = inventory.InventorySnapshot.of([made], change_counter=0)
+        (found,) = snapshot.items
+        self.assertEqual(found, made)
+        self.assertEqual(found.frozen_state, "stale")
+        gc.collect()
+        self.assertFalse(any(gc.is_tracked(row) for row in snapshot.rows))
+        (before,) = inventory.InventorySnapshot((made.row()[:12],), 0).items
+        self.assertEqual((before.uid, before.frozen_state), ("d7", None))
 
 
 class Schema2Test(unittest.TestCase):

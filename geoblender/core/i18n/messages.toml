@@ -4788,6 +4788,33 @@ es = "cerrada ({revision})"
 ["{revision} (altered)"]
 es = "{revision} (alterada)"
 
+# El estado que tenía al congelarse lo de una revisión congelada (spec 009, T37; RF-009-19, D-23):
+# el de un dato, en mayúsculas como su estado; el de una cifra, en minúsculas como sus marcas.
+
+["STALE WHEN FROZEN, ACCEPTED"]
+es = "OBSOLETO AL CONGELARSE, ACEPTADO"
+
+["AWAITING REVIEW BY HAND WHEN FROZEN"]
+es = "A REVISAR A MANO AL CONGELARSE"
+
+["NOT LOCATABLE WHEN FROZEN"]
+es = "NO LOCALIZABLE AL CONGELARSE"
+
+["NOT REPRODUCIBLE"]
+es = "NO REPRODUCIBLE"
+
+["stale when frozen, accepted"]
+es = "obsoleta al congelarse, aceptada"
+
+["awaiting review by hand when frozen"]
+es = "a revisar a mano al congelarse"
+
+["not locatable when frozen"]
+es = "no localizable al congelarse"
+
+["not reproducible"]
+es = "no reproducible"
+
 # La versión activa de la sesión (spec 009, T18; RF-009-10; plan 009 §5.5, A11, D-25): el control
 # 8, su ventana, Proyecto ▸ Versiones ▸ Versión activa y la barra de estado.
 

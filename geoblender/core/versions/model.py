@@ -13,7 +13,8 @@ ADR-0013).
 - Lo congelado de una revisión (``gb_revision_item``, RF-009-07, RF-009-19): :class:`ItemKind`
   (dato, entrada, parámetro, operación o cifra), :class:`ItemPart` (lo producido por la
   versión, lo de aguas arriba, lo inmutable del proyecto o lo heredado de la padre),
-  :class:`ItemState` (el estado que tenía al congelarse) y :class:`RevisionItem`, una fila.
+  :class:`ItemState` (el estado que tenía al congelarse y cómo se lee, ``ItemState.text``,
+  T37) y :class:`RevisionItem`, una fila.
 - Dónde van las instantáneas: :data:`SNAPSHOTS_DIR`, :data:`FREEZING_MARK` (la carpeta
   temporal de una congelación en curso) y :data:`SNAPSHOT_MANIFEST`; el manifiesto, compacto
   al escribirlo (:func:`compact_manifest`: sin lo que vale lo de por defecto,
@@ -254,6 +255,21 @@ class ItemState(StrEnum):
     REVIEW = "review"
     UNLOCATABLE = "unlocatable"
     NOT_REPRODUCIBLE = "not_reproducible"
+
+    def text(self, language: str = "es", *, figure: bool = False) -> str:
+        """Cómo se lee lo de una revisión congelada con este estado (RF-009-19, D-23; spec
+        009, T37), en ``language`` (``"es"`` o ``"en"``): el de un dato (o una entrada), en
+        mayúsculas como su estado («OBSOLETO AL CONGELARSE, ACEPTADO», «A REVISAR A MANO AL
+        CONGELARSE», «NO LOCALIZABLE AL CONGELARSE», «NO REPRODUCIBLE»); con ``figure``, el de
+        una cifra, en minúsculas como sus marcas («obsoleta al congelarse, aceptada»…); al día,
+        «» (nada). :class:`ValueError` con un idioma que no es de Geoblender."""
+        if language not in LANGUAGES:
+            raise ValueError(f"el idioma «{language}» no es de Geoblender: "
+                             f"{', '.join(LANGUAGES)}")
+        if self is ItemState.CURRENT:
+            return ""
+        suffix = "_figure" if figure else ""
+        return render(f"core.version_frozen_{self.value}{suffix}", language=language)
 
 
 @dataclass(frozen=True, slots=True)
@@ -655,6 +671,18 @@ MESSAGES: Mapping[str, str] = MappingProxyType({
     "core.version_revision_frozen": "frozen: {revision}",
     "core.version_revision_closed": "closed ({revision})",
     "core.version_revision_altered": "{revision} (altered)",
+    # El estado que tenía al congelarse lo de una revisión congelada (spec 009, T37;
+    # RF-009-19, D-23; ``ItemState.text``): el de un dato, en mayúsculas como su estado
+    # («OBSOLETO»); el de una cifra, en minúsculas como sus marcas («obsoleta»): en español
+    # cambia el género, y por eso son otros msgid.
+    "core.version_frozen_stale": "STALE WHEN FROZEN, ACCEPTED",
+    "core.version_frozen_review": "AWAITING REVIEW BY HAND WHEN FROZEN",
+    "core.version_frozen_unlocatable": "NOT LOCATABLE WHEN FROZEN",
+    "core.version_frozen_not_reproducible": "NOT REPRODUCIBLE",
+    "core.version_frozen_stale_figure": "stale when frozen, accepted",
+    "core.version_frozen_review_figure": "awaiting review by hand when frozen",
+    "core.version_frozen_unlocatable_figure": "not locatable when frozen",
+    "core.version_frozen_not_reproducible_figure": "not reproducible",
 })
 """Código → ``msgid`` (en inglés; su español, en ``core/i18n/messages.toml``)."""
 

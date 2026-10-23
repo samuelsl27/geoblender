@@ -190,12 +190,15 @@ def create_version(project: Any, *, feature: str, title: str, reason: str = VERS
 
 def freeze_rows(conn: sqlite3.Connection, version: Any, *, now: str,
                 items: Sequence[tuple[Any, ...]] | None = None, reason: str = "Siguiente",
-                figures: Sequence[str] | None = None, user: str = USER) -> str:
+                figures: Sequence[str] | None = None, user: str = USER,
+                states: Mapping[str, str] | None = None) -> str:
     """Congela **por SQL**, en la transacción ``conn`` y con la fecha ``now``, la revisión
     abierta de ``version`` (``Version``) y abre la siguiente con ``reason``; devuelve el uid de
     la congelada. Lo de :meth:`VersionsProjectCase.freeze` (que la usa), fuera de una prueba:
-    el proyecto de D-13 con versiones de ``tests.support.versions_perf``. No escribe ningún
-    fichero: solo las filas."""
+    el proyecto de D-13 con versiones de ``tests.support.versions_perf``. ``states``: el estado
+    al congelarse de cada dato o cifra por su uid (``gb_revision_item.state``; por defecto,
+    «current»). No escribe ningún fichero: solo las filas."""
+    shown = {} if states is None else dict(states)
     uid, number = conn.execute(
         "SELECT uid, number FROM gb_revision WHERE version_uid = ? AND state = 'open'",
         (version.uid,)).fetchone()
@@ -226,9 +229,10 @@ def freeze_rows(conn: sqlite3.Connection, version: Any, *, now: str,
             path, layer = f"{folder}/{record.locator}", None
         conn.execute(
             "INSERT INTO gb_revision_item (revision_uid, item_kind, item_uid, part, "
-            "content_sha256, copied, snapshot_path, snapshot_layer) "
-            "VALUES (?, 'dataset', ?, ?, ?, ?, ?, ?)",
-            (uid, record.uid, part, record.content_sha256, int(copied), path, layer))
+            "content_sha256, copied, snapshot_path, snapshot_layer, state) "
+            "VALUES (?, 'dataset', ?, ?, ?, ?, ?, ?, ?)",
+            (uid, record.uid, part, record.content_sha256, int(copied), path, layer,
+             shown.get(record.uid, "current")))
     chosen_figures = figures
     if chosen_figures is None:
         chosen_figures = [str(row[0]) for row in conn.execute(
@@ -238,9 +242,9 @@ def freeze_rows(conn: sqlite3.Connection, version: Any, *, now: str,
             "WHERE r.version_uid = ? AND op.status = 'done' "
             "AND op.superseded_by IS NULL ORDER BY f.fid", (version.uid,))]
     conn.executemany(
-        "INSERT INTO gb_revision_item (revision_uid, item_kind, item_uid, part) "
-        "VALUES (?, 'figure', ?, 'produced')",
-        [(uid, figure) for figure in chosen_figures])
+        "INSERT INTO gb_revision_item (revision_uid, item_kind, item_uid, part, state) "
+        "VALUES (?, 'figure', ?, 'produced', ?)",
+        [(uid, figure, shown.get(figure, "current")) for figure in chosen_figures])
     conn.execute(
         "INSERT INTO gb_revision (uid, version_uid, number, state, reason, created_at, "
         "created_by) VALUES (?, ?, ?, 'open', ?, ?, ?)",
@@ -415,7 +419,8 @@ class VersionsProjectCase(unittest.TestCase):
                                                                  reason=reason))
 
     def freeze(self, version: Any, items: Sequence[tuple[Any, ...]] | None = None, *,
-               reason: str = "Siguiente", figures: Sequence[str] | None = None) -> str:
+               reason: str = "Siguiente", figures: Sequence[str] | None = None,
+               states: Mapping[str, str] | None = None) -> str:
         """Congela **por SQL** la revisión abierta de ``version`` (``Version``, uid o código)
         y abre la siguiente con ``reason``; devuelve el uid de la congelada. Lo congelado
         (``gb_revision_item``): cada elemento de ``items`` es ``(registro, parte)`` o
@@ -425,13 +430,15 @@ class VersionsProjectCase(unittest.TestCase):
         (``snapshots/V01.r1/V01.r1.gpkg``) con su nombre; un fichero, en la carpeta de la
         instantánea con su ruta; lo inmutable y lo heredado, sin copia. Y las cifras
         ``figures`` (uid; por defecto, las de las operaciones hechas y sin sustituir de la
-        versión), como ``produced`` (T09: las vigentes de la versión, D-9). No escribe ningún
-        fichero (eso lo hará la T13): solo las filas."""
+        versión), como ``produced`` (T09: las vigentes de la versión, D-9). ``states``: el
+        estado al congelarse de un dato o una cifra por su uid (por defecto, «current»). No
+        escribe ningún fichero (eso lo hará la T13): solo las filas."""
         target = version if hasattr(version, "uid") else self.version(version)
         self.tick()
         now = self.now()
         return self.write(lambda conn: freeze_rows(conn, target, now=now, items=items,
-                                                   reason=reason, figures=figures))
+                                                   reason=reason, figures=figures,
+                                                   states=states))
 
     # --- Comprobar --------------------------------------------------------------------------
 

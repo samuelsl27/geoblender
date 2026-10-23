@@ -43,7 +43,11 @@ RF-009-20, RF-009-30, RF-009-09; spec §7; plan A11), dibujados con un *layout* 
   curso (r2) · vigente: r1», sus cifras «en curso (r2)» y las cifras vigentes de V01 (las de
   r1, D-9); la de V02, sin congelar, «en curso (r1)» y que aún no hay ninguna congelada; una
   superada, «cerrada (r2) · congelada: r1» y sus cifras congeladas; un dato del proyecto, como
-  en la 010.
+  en la 010;
+- **el estado que tenía al congelarse** (T37; RF-009-19, D-23): lo de una versión superada
+  congelado obsoleto y aceptado lo dice en la ficha («Estado: VIGENTE · OBSOLETO AL
+  CONGELARSE, ACEPTADO») y en el inventario, y sus cifras congeladas, «obsoleta al congelarse,
+  aceptada»; lo «en curso» de una revisión abierta, el estado de hoy.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -67,7 +71,13 @@ from tests.support.fake_layout import FakeLayout, Item, draw, operator_self
 from tests.support.provenance_demo import BENCHES_TABLE
 from tests.support.repo import ROOT
 from tests.support.trees import temp_folder
-from tests.support.versions_demo import PIT_BENCHES, PIT_GRID, PIT_MESH, VersionsDemo
+from tests.support.versions_demo import (
+    BENCH_HEIGHT,
+    PIT_BENCHES,
+    PIT_GRID,
+    PIT_MESH,
+    VersionsDemo,
+)
 
 DATA = ROOT / "tests" / "data" / "core" / "provenance"
 WRITTEN = ("project.gpkg", "project.gpkg-journal", "manifest.json")
@@ -208,12 +218,11 @@ class VersionsViewTest(unittest.TestCase):
         project.refresh_header()
         return version
 
-    def declare_current(self, project: Any, version: Any) -> None:
-        """Congela la revisión abierta de ``version`` y la declara VIGENTE (la que lo era pasa
-        a SUPERADO), como lo harían sus órdenes, sin la sesión."""
-        outcome = drain(ext("core.versions.freeze").freeze_steps(project, version.uid,
-                                                                 reason="Entrega"))
-        self.assertFalse(outcome.cancelled)
+    def declare_current(self, project: Any, version: Any, *, accept: bool = False) -> None:
+        """Congela la revisión abierta de ``version`` (con ``accept``, aceptando lo que haya
+        que aceptar) y la declara VIGENTE (la que lo era pasa a SUPERADO), como lo harían sus
+        órdenes, sin la sesión."""
+        self.freeze(project, version, accept=accept)
         self.write(project, lambda conn: self.store.set_status(conn, project, version.uid,
                                                                "VIGENTE", reason=REASON))
         project.refresh_header()
@@ -339,13 +348,24 @@ class VersionsViewTest(unittest.TestCase):
 
     # --- Inventario y Elemento activo (T25) ----------------------------------------------------
 
-    def freeze(self, project: Any, version: Any) -> None:
+    def freeze(self, project: Any, version: Any, *, accept: bool = False) -> None:
         """Congela la revisión abierta de ``version`` y abre la siguiente, como Nueva revisión…
-        (sin la sesión)."""
-        outcome = drain(ext("core.versions.freeze").freeze_steps(project, version.uid,
-                                                                 reason="Entrega"))
+        (sin la sesión); con ``accept``, aceptando todo lo que hay que aceptar (lo obsoleto)."""
+        freeze = ext("core.versions.freeze")
+        accepted = freeze.Acceptance.of(freeze.freeze_plan(project, version.uid)) if accept \
+            else None
+        outcome = drain(freeze.freeze_steps(project, version.uid, reason="Entrega",
+                                            accepted=accepted))
         self.assertFalse(outcome.cancelled)
         project.refresh_header()
+
+    def bench(self, project: Any, value: float, version: Any) -> None:
+        """Cambia ``demo.bench_height`` propio de ``version`` (lo de su hueco queda
+        obsoleto)."""
+        store = ext("core.params").ParameterStore(project)
+        self.write(project, lambda conn: store.change(
+            conn, BENCH_HEIGHT, value=value, source="Plan de labores (prueba)",
+            decided_by="Samuel (IMGA)", reason="Banco de la prueba", version=version.uid))
 
     def alter(self, project: Any, version: Any) -> str:
         """Un byte de más en el GeoTIFF de la última revisión congelada de ``version`` y la
@@ -924,6 +944,102 @@ class VersionsViewTest(unittest.TestCase):
         self.assertIn("Version: V02 · Ampliación — in progress (r2) · current: r1", lines)
         self.assertIn("Figures in progress (r2)", lines)
         self.assertIn("Current figures of V02.r1", lines)
+
+    def test_card_and_inventory_show_the_state_when_frozen(self) -> None:
+        """RF-009-19, D-23 (plan A4 (1); F-1 de la verificación): V01 con el hueco y su volumen,
+        obsoletos por su banco propio de 12 m, congelada aceptándolos y declarada VIGENTE (r2
+        abierta): la ficha de su rejilla da el estado de hoy («Estado: VIGENTE · OBSOLETO»: es
+        lo «en curso» de r2, D-23) y, bajo su cifra vigente de V01.r1, el que tenía al
+        congelarse («obsoleta al congelarse, aceptada», en alerta). Declarada VIGENTE V02, V01
+        pasa a SUPERADO: la ficha dice «Estado: VIGENTE · OBSOLETO AL CONGELARSE, ACEPTADO» (en
+        alerta) y lo mismo bajo su cifra congelada; en el inventario, su fila lleva la marca
+        (en alerta, un icono de Blender) y lo de la fila elegida, ese estado; la rejilla de V02
+        (VIGENTE, al día), ni la marca ni el estado. En inglés, «Status: CURRENT · STALE WHEN
+        FROZEN, ACCEPTED» y «stale when frozen, accepted». Cabe a escala 1,0 y 1,25. Leer y
+        dibujar no escriben en el proyecto."""
+        project = self.project()
+        v01 = self.create(project, "definitiva", "Definitiva")
+        self.demo.pit(project, "V01")
+        self.demo.pit_volume(project, "V01")
+        self.run_checks()
+        self.bench(project, 12.0, v01)
+        self.declare_current(project, v01, accept=True)  # r1: lo obsoleto, aceptado
+        grid = self.record(project, PIT_GRID, v01)
+        self.load(project, grid)
+        with project.read() as conn:
+            (volume,) = self.read.version_figures(conn, v01.uid)
+        mark = "obsoleta al congelarse, aceptada"
+
+        def alerts(layout: FakeLayout) -> dict[str, bool]:
+            return {item.text: item.alert for item in layout.of_kind("label") if item.text}
+
+        # V01 VIGENTE: lo «en curso» de r2, con el estado de hoy; su cifra de r1, con el suyo.
+        lines = self.card(self.only(grid))
+        self.assertIn("Estado: VIGENTE · OBSOLETO", lines)
+        start = lines.index("Cifras vigentes de V01.r1")
+        self.assertEqual(lines[start:], ["Cifras vigentes de V01.r1", self.figure_line(volume),
+                                         mark])
+        self.assertTrue(alerts(self.drawn(ACTIVE_ITEM_PANEL))[mark])
+
+        # V02 VIGENTE: V01, SUPERADO (r2 cerrada); la ficha se lee otra vez con los indicadores.
+        v02 = self.create(project, "ampliacion", "Ampliación")
+        self.demo.pit(project, "V02", berm_m=20.0)
+        self.declare_current(project, v02)
+        self.tick(project)
+        counter = self.counter(project)
+        status = "Estado: VIGENTE · OBSOLETO AL CONGELARSE, ACEPTADO"
+        layout = self.drawn(ACTIVE_ITEM_PANEL)
+        lines = self.texts(layout)
+        self.assertIn("Versión: V01 · Definitiva — cerrada (r2) · congelada: r1", lines)
+        self.assertIn(status, lines)
+        start = lines.index("Cifras congeladas de V01.r1")
+        self.assertEqual(lines[start:], ["Cifras congeladas de V01.r1",
+                                         self.figure_line(volume), mark])
+        self.assertTrue(alerts(layout)[status])
+        self.assertTrue(alerts(layout)[mark])
+
+        # El inventario: la fila de la rejilla de V01, con la marca; la de V02, sin ella.
+        panels = ext("bl.ui.view_panels")
+        self.read_inventory()
+        view = self.view()
+        uids = [row.uid for row in view.inventory]
+        grid2 = self.record(project, PIT_GRID, v02)
+
+        def marks(uid: str) -> list[bool]:
+            drawn = self.row_drawn(view.inventory[uids.index(uid)])
+            return [item.alert for item in drawn.of_kind("label")
+                    if item.icon == panels.FROZEN_STATE_ICON]
+
+        def chosen(uid: str) -> tuple[str, bool]:
+            view.inventory_index = uids.index(uid)
+            (found,) = [item for item in self.drawn(INVENTORY_PANEL).of_kind("label")
+                        if item.text.startswith("Estado:")]
+            return found.text, found.alert
+
+        self.assertEqual(marks(grid.uid), [True])
+        self.assertEqual(marks(grid2.uid), [])
+        self.assertEqual(chosen(grid.uid), (status, True))
+        self.assertEqual(chosen(grid2.uid), ("Estado: VIGENTE", False))
+        icons = set(bpy.types.UILayout.bl_rna.functions["label"].parameters["icon"]
+                    .enum_items.keys())
+        self.assertIn(panels.FROZEN_STATE_ICON, icons)
+
+        # Cabe en la barra lateral a escala 1,0 y 1,25.
+        sidebar = ext("bl.ui.labels").sidebar_width(bpy.context)
+        view.inventory_index = uids.index(grid.uid)
+        for panel in (ACTIVE_ITEM_PANEL, INVENTORY_PANEL):
+            for scale in at_scales():
+                assert_fits(self, self.drawn(panel, width_px=sidebar), sidebar, scale=scale)
+
+        # En inglés.
+        self.i18n.set_language("en")
+        lines = self.card(self.only(grid))
+        self.assertIn("Status: CURRENT · STALE WHEN FROZEN, ACCEPTED", lines)
+        self.assertEqual(lines[-3:], ["Frozen figures of V01.r1",
+                                      self.figure_line(volume, "en"),
+                                      "stale when frozen, accepted"])
+        self.i18n.set_language("es")
+        self.assertEqual(self.counter(project), counter)
 
     def test_register_and_unregister_leave_no_trace(self) -> None:
         """RF-009-22 (plan §2.1, D-36), principio 8: habilitada, la extensión está suscrita al

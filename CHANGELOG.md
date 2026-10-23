@@ -98,7 +98,10 @@ diálogos).
     cambia nada hace crecer el proyecto menos de 1 MB (con 2 000 elementos).
   - **Lo vigente** de una versión es lo de su última revisión congelada; lo de la abierta, «en
     curso». Lo de una versión SUPERADO o DESCARTADO ya no se marca obsoleto ni se cuenta en
-    «! n obsoletos».
+    «! n obsoletos», pero **dice el estado que tenía al congelarse** en Elemento activo y en el
+    inventario («VIGENTE · OBSOLETO AL CONGELARSE, ACEPTADO», «A REVISAR A MANO AL CONGELARSE»,
+    «NO REPRODUCIBLE»), y cada cifra vigente o congelada de la ficha, el suyo debajo («obsoleta
+    al congelarse, aceptada»); lo «en curso», el estado de hoy.
   - **Instantáneas comprobadas**: al abrir el proyecto (dentro de su comprobación, en segundo
     plano: 200 revisiones en 0,12 s, y en `Z:`, en 2,5–2,9 s) y con «Comprobar cambios en las
     entradas». Un fichero que falta o que cambió deja **solo esa revisión «alterada»**, con un

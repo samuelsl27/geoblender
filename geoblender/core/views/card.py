@@ -31,7 +31,12 @@ Elemento activo de un dato (:class:`ItemCard`):
   datos (el área de un límite) no es de ningún dato;
 - de un dato de versión, las cifras vigentes de su versión: las de su última revisión congelada,
   tal como quedaron anotadas al congelarla (``core.versions.read.version_figures``; D-9), no
-  las «en curso» (RF-009-20).
+  las «en curso» (RF-009-20);
+- el estado que tenía al congelarse lo de esa revisión congelada (spec 009, T37; RF-009-19,
+  D-23; plan A4 (1)), de ``gb_revision_item.state``: el de cada una de esas cifras y, si el dato
+  no es lo «en curso» de una revisión abierta (su versión es SUPERADO o DESCARTADO, o ya no está
+  vivo) y su contenido es el que se congeló en ella, el suyo. Lo «en curso» lleva el estado de
+  hoy (la cascada lo evalúa, D-23), no el que tenía al congelarse.
 
 Es el primer nivel de la procedencia, por consultas directas (2,5 ms con D-13, plan §2.2); la
 cadena entera es la de la 008 (``core.provenance.lineage.lineage``), a un clic.
@@ -54,7 +59,7 @@ import json
 import sqlite3
 from collections.abc import Collection, Iterable, Mapping
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -66,7 +71,7 @@ from ..provenance.importer import IMPORTED_ROLE
 from ..provenance.lineage import FigureMarks, figure_marks
 from ..provenance.operations import OperationStatus
 from ..versions import read as versions_read
-from ..versions.model import EDITABLE, RevisionState, VersionStatus, render
+from ..versions.model import EDITABLE, ItemState, Revision, RevisionState, VersionStatus, render
 from .state import _chunks, _records, _snapshot, _stale
 
 __all__ = [
@@ -104,6 +109,16 @@ _DERIVED = (
     "ORDER BY op.fid, made.fid"
 )
 _FIGURES = f"SELECT {FIGURE_COLUMNS} FROM gb_figure WHERE operation_uid IN ({{marks}}) ORDER BY fid"
+# El estado al congelarse del dato, si su contenido es el que se congeló, y el de las cifras de
+# la revisión (por el índice único de gb_revision_item: revisión, clase y uid).
+_FROZEN_DATASET = (
+    "SELECT state FROM gb_revision_item WHERE revision_uid = ? AND item_kind = 'dataset' "
+    "AND item_uid = ? AND content_sha256 = ?"
+)
+_FROZEN_FIGURE_STATES = (
+    "SELECT item_uid, state FROM gb_revision_item WHERE revision_uid = ? "
+    "AND item_kind = 'figure' AND part = 'produced'"
+)
 
 
 class ReadableProject(Protocol):
@@ -201,14 +216,21 @@ class RevisionMark:
         return f"{self.label} — {text}" if text else self.label
 
 
+def _no_states() -> Mapping[str, ItemState]:
+    return MappingProxyType({})
+
+
 @dataclass(frozen=True)
 class ItemCard:
     """La ficha de un dato (véase el módulo): su registro, si está obsoleto, su versión
     («V01 · Definitiva»; ``None``, del proyecto), la operación que escribió su contenido
     (``None`` si el proyecto no la tiene), sus entradas (``upstream``), sus derivados
     (``downstream``) y las cifras de su operación, en su orden; de un dato de versión, su
-    revisión (``revision``: lo «en curso» y lo vigente) y las cifras vigentes de su versión
-    (``frozen_figures``, las de su última revisión congelada, D-9)."""
+    revisión (``revision``: lo «en curso» y lo vigente), las cifras vigentes de su versión
+    (``frozen_figures``, las de su última revisión congelada, D-9) con el estado que tenía cada
+    una al congelarse (``frozen_figure_states``, por uid) y, si el dato es de esa revisión
+    congelada y no lo «en curso» de una abierta, el suyo (``frozen_state``; ``None`` si no lo
+    es; T37, RF-009-19)."""
 
     record: DatasetRecord
     stale: bool
@@ -219,6 +241,8 @@ class ItemCard:
     figures: tuple[FigureRecord, ...]
     revision: RevisionMark | None = None
     frozen_figures: tuple[FigureRecord, ...] = ()
+    frozen_state: ItemState | None = None
+    frozen_figure_states: Mapping[str, ItemState] = field(default_factory=_no_states)
 
 
 @dataclass(frozen=True)
@@ -301,16 +325,42 @@ def _derived(conn: sqlite3.Connection, uid: str) -> list[tuple[str, str]]:
     return list(found.items())
 
 
-def _version_of(conn: sqlite3.Connection, record: DatasetRecord
-                ) -> tuple[RevisionMark | None, tuple[FigureRecord, ...]]:
-    """La versión del dato ``record`` con sus revisiones y las cifras vigentes de la versión
-    (D-9); ``None`` y ninguna, si es del proyecto o el proyecto no tiene versiones."""
+@dataclass(frozen=True)
+class _Frozen:
+    """Lo de la revisión congelada vigente de la versión de un dato en su ficha: su marca, sus
+    cifras, el estado al congelarse de cada una y el del dato (``None``: el dato no es de
+    ella, o es lo «en curso»)."""
+
+    mark: RevisionMark | None = None
+    figures: tuple[FigureRecord, ...] = ()
+    figure_states: Mapping[str, ItemState] = field(default_factory=_no_states)
+    state: ItemState | None = None
+
+
+def _frozen_states(conn: sqlite3.Connection, revision: Revision, record: DatasetRecord, *,
+                   in_progress: bool) -> tuple[Mapping[str, ItemState], ItemState | None]:
+    """El estado que tenía al congelarse en ``revision`` cada una de sus cifras y, si el dato
+    ``record`` no es lo «en curso» de una revisión abierta (``in_progress``) y su contenido de
+    hoy es el que se congeló en ella, el suyo (D-23; plan A4 (1))."""
+    figures = MappingProxyType({str(uid): ItemState(state) for uid, state in conn.execute(
+        _FROZEN_FIGURE_STATES, (revision.uid,))})
+    if in_progress:
+        return figures, None
+    found = conn.execute(_FROZEN_DATASET,
+                         (revision.uid, record.uid, record.content_sha256)).fetchone()
+    return figures, None if found is None else ItemState(found[0])
+
+
+def _version_of(conn: sqlite3.Connection, record: DatasetRecord) -> _Frozen:
+    """La versión del dato ``record`` con sus revisiones, las cifras vigentes de la versión
+    (D-9) y el estado que tenía al congelarse lo de su última revisión congelada (T37); nada,
+    si es del proyecto o el proyecto no tiene versiones."""
     if not versioned(conn):
-        return None, ()
+        return _Frozen()
     version_uid = versions_read.dataset_versions(conn, (record.uid,)).get(record.uid, "")
     version = versions_read.version(conn, version_uid) if version_uid else None
     if version is None:
-        return None, ()
+        return _Frozen()
     revisions = versions_read.revisions(conn, version.uid)
     opened = [revision.number for revision in revisions if revision.state is RevisionState.OPEN]
     closed = [revision.number for revision in revisions
@@ -323,8 +373,10 @@ def _version_of(conn: sqlite3.Connection, record: DatasetRecord
                         current is not None and current.altered,
                         closed[-1] if closed else None)
     if current is None:
-        return mark, ()
-    return mark, versions_read.version_figures(conn, version.uid)
+        return _Frozen(mark)
+    figure_states, state = _frozen_states(conn, current, record,
+                                          in_progress=mark.in_progress is not None)
+    return _Frozen(mark, versions_read.version_figures(conn, version.uid), figure_states, state)
 
 
 def item_card(project: ReadableProject, dataset_uid: str, *,
@@ -351,7 +403,7 @@ def item_card(project: ReadableProject, dataset_uid: str, *,
                                          (uid, record)) if found.live}
         stale = _stale(reading, live) if live else frozenset()
         figures = _figures(reading, (record.operation_uid,)).get(record.operation_uid, ())
-        mark, frozen_figures = _version_of(reading, record)
+        frozen = _version_of(reading, record)
     upstream: list[Link] = []
     for kind, item, content, role in consumed:
         if kind == DATASET:
@@ -366,8 +418,10 @@ def item_card(project: ReadableProject, dataset_uid: str, *,
              item in stale)
         for item, role in derived if (found := downstream_data.get(item)) is not None
     )
+    mark = frozen.mark
     return ItemCard(record, uid in stale, None if mark is None else mark.label, operation,
-                    tuple(upstream), downstream, figures, mark, frozen_figures)
+                    tuple(upstream), downstream, figures, mark, frozen.figures, frozen.state,
+                    frozen.figure_states)
 
 
 def dataset_figures(project: ReadableProject, dataset_uids: Iterable[str], *,
