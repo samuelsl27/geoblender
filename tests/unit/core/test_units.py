@@ -6,7 +6,8 @@ Cada parámetro y cada cifra lleva una unidad **del catálogo**: un código ASCI
 (``m2``, ``t/m3``, ``-``) que es lo que se guarda, y un símbolo en español para leerla
 (m², t/m³, —). Un valor tecleado con una unidad convertible a la declarada (% y fracción,
 t y kt) se convierte exactamente; entre magnitudes distintas no hay conversión. NaN e
-infinito tecleados nunca son un valor.
+infinito tecleados nunca son un valor. La spec 011 (T03; RF-011-18) añade las relaciones
+estéril/útil en m³/m³ y en t/t, que no se convierten entre sí ni con «%».
 """
 
 import math
@@ -285,6 +286,41 @@ class ConvertTest(unittest.TestCase):
             units.convert(1.0, "t", "m3")
         self.assertIn("masa", str(caught.exception))
         self.assertIn("volumen", str(caught.exception))
+
+    def test_volume_and_mass_ratios(self) -> None:
+        """RF-011-18 (spec 011, T03; plan 011 §5.6): la relación estéril/útil en m³/m³ (in
+        situ) y en t/t son unidades del catálogo (``m3/m3``, «m³/m³», una relación entre
+        volúmenes; ``t/t``, «t/t», una relación entre masas); cada una solo se convierte a sí
+        misma: ni entre ellas ni con ``%`` o ``-`` (una relación de 2,5 m³/m³ no es un 250 %
+        ni 2,5 t/t), y el rechazo nombra las dos unidades y lo que mide cada una."""
+        expected = {"m3/m3": ("m³/m³", "volúmenes"), "t/t": ("t/t", "masas")}
+        for code, (shown, measured) in expected.items():
+            with self.subTest(unidad=code):
+                unit = units.get_unit(code)
+                self.assertEqual((unit.code, unit.symbol_es, unit.factor),
+                                 (code, shown, Fraction(1)))
+                self.assertEqual(units.symbol(code), shown)
+                self.assertEqual(units.convert(2.5, code, code), 2.5)
+                self.assertEqual(units.parse_quantity(f"2,5 {shown}"), (2.5, code))
+                self.assertEqual(units.parse_quantity(f"2,5 {code}"), (2.5, code))
+                others = [other for other in units.UNITS if other != code]
+                self.assertEqual([other for other in others
+                                  if units.UNITS[other].dimension == unit.dimension], [])
+                with self.assertRaises(ValueError) as caught:
+                    units.convert(2.5, code, "-")
+                self.assertIn(measured, str(caught.exception))
+        self.assertNotEqual(units.UNITS["m3/m3"].dimension, units.UNITS["t/t"].dimension)
+        for source, target in (("m3/m3", "t/t"), ("t/t", "m3/m3"), ("m3/m3", "%"),
+                               ("%", "m3/m3"), ("t/t", "%"), ("%", "t/t"), ("t/t", "-"),
+                               ("-", "m3/m3"), ("m3/m3", "m3"), ("t/t", "t")):
+            with self.subTest(de=source, a=target):
+                with self.assertRaises(ValueError) as caught:
+                    units.convert(1.0, source, target)
+                error = caught.exception
+                self.assertEqual(error.code, "core.unit_not_convertible")
+                self.assertEqual((error.from_unit, error.to_unit), (source, target))
+                self.assertIn(f"«{units.symbol(source)}»", str(error))
+                self.assertIn(f"«{units.symbol(target)}»", str(error))
 
     def test_unknown_unit_and_non_finite_value(self) -> None:
         """RF-008-03, RF-008-30: una unidad fuera del catálogo o un valor NaN o infinito no

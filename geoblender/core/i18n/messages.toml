@@ -5237,3 +5237,19 @@ es = "Cifras congeladas de {revision}"
 
 ["No revision of {version} has been frozen yet"]
 es = "Aún no hay ninguna revisión congelada de {version}"
+
+# Parámetros de la cubicación (spec 011, T03; RF-011-04, RF-011-09, RF-011-14, RF-011-19; plan
+# 011 §5.2.2): la etiqueta (label_msgid) de cada definición de reserves/params.py en el panel de
+# parámetros y en los ajustes de una cubicación (la altura de banco).
+
+["Minimum thickness of cut and fill"]
+es = "Espesor mínimo de desmonte y terraplén"
+
+["Presence threshold of anthropic units"]
+es = "Umbral de presencia de las unidades antrópicas"
+
+["Tolerance of the extraction stages"]
+es = "Tolerancia de los momentos de extracción"
+
+["Bench height"]
+es = "Altura de banco"
