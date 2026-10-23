@@ -16,9 +16,13 @@ parámetros del proyecto de la tabla del plan §5.2.2, todos ADOPTADO de origen 
 
 Y, **sin registrar**, el de la altura de banco (``res.bench_height_m``, (0; 100] m, sin valor
 por defecto): las rodajas son ajustes de cada cubicación, no parámetros del proyecto, y su
-``ParamDef`` solo comprueba el rango (RF-008-03; plan §5.2.2). Las familias de la densidad,
-el K y los porcentajes (ADR-0027) llegan con la T04 y la T09. Importar el módulo no registra
-nada.
+``ParamDef`` solo comprueba el rango (RF-008-03; plan §5.2.2).
+
+Las **familias** (ADR-0027; T09): la densidad in situ y el K de cada unidad y de cada componente
+y el porcentaje de cada componente (``res.unit.{u}.density``, ``res.unit.{u}.{c}.percent``…),
+con el código inmutable de la unidad y del componente (D-18), **sin valor por defecto** (D-8) y
+HIPÓTESIS; la densidad, del proyecto, y el K y los porcentajes, de versión (D-11). Importar el
+módulo no registra nada.
 """
 
 from __future__ import annotations
@@ -182,6 +186,100 @@ class DefinitionsTest(unittest.TestCase):
         first = params.DEFINITIONS[0]
         with self.assertRaisesRegex(ValueError, first.key):
             params.index_definitions((first, first))
+
+
+# Plan 011 §5.2.2: patrón → (unidad, mínimo, máximo, mínimo excluido, ámbito, RF).
+FAMILIES: dict[str, tuple[str, float, float, bool, str, tuple[str, ...]]] = {
+    "res.unit.{u}.density": ("t/m3", 0.0, 10.0, True, "project",
+                             ("RF-011-11", "RF-011-16", "RF-011-17")),
+    "res.unit.{u}.swell": ("-", 1.0, 3.0, False, "version",
+                           ("RF-011-11", "RF-011-16", "RF-011-17", "RF-011-21")),
+    "res.unit.{u}.{c}.density": ("t/m3", 0.0, 10.0, True, "project",
+                                 ("RF-011-15", "RF-011-16", "RF-011-17")),
+    "res.unit.{u}.{c}.swell": ("-", 1.0, 3.0, False, "version",
+                               ("RF-011-15", "RF-011-16", "RF-011-17", "RF-011-21")),
+    "res.unit.{u}.{c}.percent": ("%", 0.0, 100.0, False, "version", ("RF-011-15", "RF-011-21")),
+}
+
+
+class FamiliesTest(unittest.TestCase):
+    def test_density_swell_and_percent_without_default(self) -> None:
+        """RF-011-11, RF-011-15, RF-011-21 (ADR-0027, D-8, D-11): la densidad in situ (t/m³,
+        (0; 10]) y el K (—, [1; 3]) de cada unidad y de cada componente y el porcentaje de cada
+        componente (%, [0; 100]) son familias de ``res`` **sin valor por defecto** («sin
+        valor» admitido, HIPÓTESIS hasta que una persona los declara); la densidad es del
+        proyecto, y el K y los porcentajes, de versión."""
+        self.assertEqual([family.pattern for family in params.FAMILIES], list(FAMILIES))
+        for family in params.FAMILIES:
+            unit, low, high, low_excluded, scope, rfs = FAMILIES[family.pattern]
+            template = family.template
+            with self.subTest(pattern=family.pattern):
+                self.assertIsInstance(family, core_params.ParamFamily)
+                self.assertEqual(family.module, "res")
+                self.assertEqual((template.value_type, template.unit), ("float", unit))
+                self.assertIsNone(template.default)
+                self.assertTrue(template.allow_empty)
+                self.assertIsNone(template.check(None))
+                self.assertEqual(template.kind, "HIPÓTESIS")
+                self.assertEqual((template.minimum, template.maximum), (low, high))
+                self.assertIs(template.min_exclusive, low_excluded)
+                self.assertEqual(template.scope, scope)
+                self.assertEqual(template.requirements, rfs)
+                self.assertTrue(template.source.strip())
+        for one in params.FAMILIES:
+            for other in params.FAMILIES:
+                if one is not other:
+                    self.assertFalse(one.overlaps(other), (one.pattern, other.pattern))
+
+    def test_keys_of_a_unit_and_of_a_component(self) -> None:
+        """RF-011-11 (D-18): la clave de cada parámetro lleva el código de su unidad (y el de
+        su componente), casa con su familia y con ninguna otra; un código que no es
+        ``[a-z][a-z0-9_]*`` es un error del programa."""
+        keys = {
+            params.density_key("capa_util"): "res.unit.{u}.density",
+            params.swell_key("acopio"): "res.unit.{u}.swell",
+            params.density_key("capa_util", "caliza"): "res.unit.{u}.{c}.density",
+            params.swell_key("capa_util", "caliza"): "res.unit.{u}.{c}.swell",
+            params.percent_key("capa_util", "arcilla"): "res.unit.{u}.{c}.percent",
+        }
+        self.assertEqual(list(keys), [
+            "res.unit.capa_util.density", "res.unit.acopio.swell",
+            "res.unit.capa_util.caliza.density", "res.unit.capa_util.caliza.swell",
+            "res.unit.capa_util.arcilla.percent"])
+        for key, pattern in keys.items():
+            with self.subTest(key=key):
+                matching = [family.pattern for family in params.FAMILIES
+                            if family.match(key) is not None]
+                self.assertEqual(matching, [pattern])
+        for wrong in ("Capa", "1capa", "", "capa útil"):
+            with self.subTest(code=wrong), self.assertRaises(ValueError):
+                params.density_key(wrong)
+        with self.assertRaises(ValueError):
+            params.percent_key("capa_util", "Caliza")
+
+    def test_labels_and_registration(self) -> None:
+        """RF-008-06, RF-011-11 (ADR-0027): cada familia lleva su etiqueta, con su español en
+        ``messages.toml``; ``bl`` las registra y las quita con ``unregister_families("res")``
+        sin dejar rastro; registrada, ``definition`` da la de una clave concreta, sin valor por
+        defecto, y su nombre visible lleva los códigos («Densidad in situ · capa_util»)."""
+        table = i18n.load_messages()
+        for family in params.FAMILIES:
+            label = family.template.label_msgid
+            with self.subTest(pattern=family.pattern):
+                self.assertEqual(set(label) & SPANISH_LETTERS, set(), "msgid en inglés")
+                self.assertIn(label, table)
+                self.assertNotEqual(table[label], label)
+        before = dict(core_params.FAMILIES)
+        self.addCleanup(core_params.unregister_families, "res")
+        core_params.register_families(params.FAMILIES)
+        key = params.density_key("capa_util")
+        found = core_params.definition(key)
+        self.assertEqual(found.key, key)
+        self.assertIsNone(found.default)
+        self.assertEqual(core_params.parameter_label(key), "Densidad in situ · capa_util")
+        self.assertEqual(core_params.unregister_families("res"), len(FAMILIES))
+        self.assertEqual(dict(core_params.FAMILIES), before)
+        self.assertIsNone(core_params.definition(key))
 
 
 class RegistrationTest(unittest.TestCase):

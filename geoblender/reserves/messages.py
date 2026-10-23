@@ -187,6 +187,66 @@ CATALOG: tuple[Message, ...] = (
         "{area} m²",
         "note",
     ),
+    # La columna de materiales (RF-011-11; D-18, D-23, D-24) ----------------------------------
+    Message(
+        "res.materials_invalid",
+        "The material column is not valid: {problems}. Correct it in "
+        f"{_MATERIALS_EN}.",
+        f"La columna de materiales no es válida: {{problems}}. Corríjala en {_MATERIALS_ES}.",
+    ),
+    Message("res.materials_empty", "the column has no unit",
+            "la columna no tiene ninguna unidad", "note"),
+    Message("res.unit_name_empty", "«{unit}» has no name", "«{unit}» no tiene nombre", "note"),
+    Message(
+        "res.unit_code_invalid",
+        "«{unit}» has the code «{code}», which is not valid (lower-case letters without "
+        "accents, digits and «_», starting with a letter)",
+        "«{unit}» tiene el código «{code}», que no vale (minúsculas sin tilde, cifras y «_», "
+        "empezando por una letra)",
+        "note",
+    ),
+    Message(
+        "res.unit_code_repeated",
+        "«{unit}» repeats the code «{code}» of another element of the column",
+        "«{unit}» repite el código «{code}» de otro elemento de la columna",
+        "note",
+    ),
+    Message(
+        "res.unit_base_missing",
+        "«{unit}» has no base surface: only the last unit has none",
+        "«{unit}» no tiene superficie de base: solo la última unidad va sin base",
+        "note",
+    ),
+    Message(
+        "res.unit_last_with_base",
+        "«{unit}» is the last unit and has no base: it reaches down to the final surface",
+        "«{unit}» es la última unidad y va sin base: llega hasta la superficie final",
+        "note",
+    ),
+    Message(
+        "res.unit_last_anthropic",
+        "«{unit}» is anthropic and cannot be the last unit, which has no base",
+        "«{unit}» es antrópica y no puede ser la última unidad, que va sin base",
+        "note",
+    ),
+    Message(
+        "res.unit_thickness_missing",
+        "«{unit}» is anthropic and has no thickness grid",
+        "«{unit}» es antrópica y no tiene rejilla de espesores",
+        "note",
+    ),
+    Message(
+        "res.unit_components_missing",
+        "«{unit}» is compound and has no components",
+        "«{unit}» es compuesta y no tiene componentes",
+        "note",
+    ),
+    Message(
+        "res.unit_role_missing",
+        "«{unit}» is neither useful nor waste: choose its role",
+        "«{unit}» no es útil ni estéril: elija su papel",
+        "note",
+    ),
     # Unidades de la columna de materiales (A7; RF-011-12 a RF-011-14) -----------------------
     Message(
         "res.thickness_negative",

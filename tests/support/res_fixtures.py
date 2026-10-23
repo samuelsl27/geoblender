@@ -39,6 +39,11 @@ analíticos, m³) o la columna de materiales (:class:`MaterialColumnCase`). No u
 Las densidades, los K y los porcentajes de la columna son **valores sintéticos de prueba**, de
 ningún material ni proyecto real (la 011 no da ninguno por defecto, D-8): están para que las
 pruebas de las toneladas (CE-011-03: un acopio de V m³ pesa V·ρ/K) tengan de dónde leer.
+
+Para el núcleo (T09): :func:`column_layers` da las bases y los espesores de una banda de la
+columna como los pide ``reserves.kernel.BandValues`` y :func:`domain_column`, la columna como
+``reserves.materials.MaterialColumn`` (lo importa al llamarla: los demás datos no dependen de
+``reserves``).
 """
 
 from __future__ import annotations
@@ -508,3 +513,39 @@ def material_column(*, debris: bool = True) -> MaterialColumnCase:
         cut_m3=_column_cut(),
         fill_m3=_area(_FILL) * _FILL_M,
     )
+
+
+def column_layers(case: MaterialColumnCase, rows: slice | None = None
+                  ) -> tuple[tuple[np.ndarray | None, ...], tuple[np.ndarray | None, ...]]:
+    """Las bases y los espesores de las unidades de ``case``, de arriba abajo, en las filas
+    ``rows`` (todas, sin ellas), como los pide ``reserves.kernel.BandValues``: la base de la
+    última unidad y el espesor de las que no son antrópicas, ``None``."""
+    rows = slice(None) if rows is None else rows
+    bases = tuple(None if unit.base is None else unit.base.values[rows] for unit in case.units)
+    thicknesses = tuple(None if unit.thickness is None else unit.thickness.values[rows]
+                        for unit in case.units)
+    return bases, thicknesses
+
+
+def domain_column(case: MaterialColumnCase):
+    """La columna de ``case`` como ``reserves.materials.MaterialColumn``: la base de cada unidad,
+    el dato del proyecto ``base_<código>`` (D-24), y el espesor de una antrópica,
+    ``espesor_<código>`` (D-23)."""
+    materials = import_geoblender("reserves.materials")
+    surfaces = import_geoblender("reserves.surfaces")
+
+    def ref(prefix: str, unit: ColumnUnit, raster: gis.Raster | None):
+        if raster is None:
+            return None
+        return surfaces.SurfaceRef(dataset=f"{prefix}_{unit.code}",
+                                   label=f"{prefix.capitalize()} de {unit.name}")
+
+    return materials.MaterialColumn(tuple(
+        materials.Unit(
+            unit.code, unit.name, unit.kind, unit.role, unit.state,
+            ref("base", unit, unit.base), ref("espesor", unit, unit.thickness),
+            tuple(materials.Component(item.code, item.name, item.role)
+                  for item in unit.components),
+        )
+        for unit in case.units
+    ))

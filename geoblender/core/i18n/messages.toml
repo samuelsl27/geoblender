@@ -5253,3 +5253,16 @@ es = "Tolerancia de los momentos de extracción"
 
 ["Bench height"]
 es = "Altura de banco"
+
+# Familias de parámetros de la columna de materiales (spec 011, T09; RF-011-11, RF-011-15; plan
+# 011 §5.2.2; ADR-0027): la etiqueta de cada familia de reserves/params.py; el nombre visible de
+# una clave concreta le añade los códigos de su unidad y de su componente.
+
+["In-situ density"]
+es = "Densidad in situ"
+
+["Swell factor"]
+es = "Esponjamiento K"
+
+["Share of the component"]
+es = "Porcentaje del componente"

@@ -22,9 +22,19 @@ proyecto** (RF-011-21: el espesor mínimo y el umbral de presencia no cambian po
 La altura de banco (``res.bench_height_m``, :data:`BENCH_HEIGHT`) **no** es un parámetro del
 proyecto: las rodajas, el anclaje y la cota constante son ajustes de cada cubicación
 (``gb_operation.settings``). Su :data:`BENCH_HEIGHT_DEF`, sin registrar y sin valor por
-defecto, solo comprueba el rango, (0; 100] m (RF-008-03; plan §5.2.2 y A4). La densidad, el K y
-los porcentajes de cada unidad son familias de parámetros (ADR-0027; T04 y T09), sin valor por
-defecto (D-8).
+defecto, solo comprueba el rango, (0; 100] m (RF-008-03; plan §5.2.2 y A4).
+
+La densidad in situ, el K y los porcentajes son **familias** de parámetros (:data:`FAMILIES`;
+ADR-0027, D-17): una clave por unidad y por componente de la columna de materiales, con su
+código inmutable (D-18), **sin valor por defecto** (D-8: una densidad supuesta acabaría en un
+informe) y HIPÓTESIS hasta que una persona los declara (MEDIDO del ensayo, ADOPTADO o
+HIPÓTESIS). La densidad es del proyecto; el K y los porcentajes, de versión (D-11, RF-011-21).
+
+- ``res.unit.{u}.density`` y ``res.unit.{u}.{c}.density``: t/m³ en (0; 10] (una unidad que no
+  es compuesta y cada componente; :func:`density_key`).
+- ``res.unit.{u}.swell`` y ``res.unit.{u}.{c}.swell``: K (—) en [1; 3] (:func:`swell_key`).
+- ``res.unit.{u}.{c}.percent``: el porcentaje de un componente en su unidad compuesta, % en
+  [0; 100] (:func:`percent_key`; que sumen 100 lo comprueban las toneladas, RF-011-15).
 
 - :data:`DEFINITIONS`, las del plan §5.2.2 en su orden, cada una con su etiqueta
   (``label_msgid``, con su español en ``core/i18n/messages.toml``) para el panel de parámetros
@@ -32,16 +42,18 @@ defecto (D-8).
 - :func:`param` y :func:`default`: la definición y el valor por defecto de una clave (también
   de la altura de banco).
 
-``bl`` registra :data:`DEFINITIONS` en ``core.params`` (``register_definitions``) y las quita
-con ``unregister_definitions("res")``. Python puro (nivel 9: ``core`` y ``gis``); importarlo no
-registra nada.
+``bl`` registra :data:`DEFINITIONS` y :data:`FAMILIES` en ``core.params``
+(``register_definitions``, ``register_families``) y las quita con
+``unregister_definitions("res")`` y ``unregister_families("res")``. Python puro (nivel 9:
+``core`` y ``gis``); importarlo no registra nada.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 
-from ..core.params import ParamDef, ParamValue
+from ..core.params import ParamDef, ParamFamily, ParamValue
 from ..gis.params import index_definitions
 
 __all__ = [
@@ -49,14 +61,18 @@ __all__ = [
     "BENCH_HEIGHT",
     "BENCH_HEIGHT_DEF",
     "DEFINITIONS",
+    "FAMILIES",
     "MIN_THICKNESS",
     "PARAMS",
     "ParamDef",
     "ParamValue",
     "STAGES_TOLERANCE",
     "default",
+    "density_key",
     "index_definitions",
     "param",
+    "percent_key",
+    "swell_key",
 ]
 
 MIN_THICKNESS = "res.min_thickness_m"
@@ -91,6 +107,68 @@ BENCH_HEIGHT_DEF = ParamDef(BENCH_HEIGHT, "float", "m", None, 0.0, 100.0, ("RF-0
 
 PARAMS: Mapping[str, ParamDef] = index_definitions(DEFINITIONS)
 """Las definiciones del proyecto por clave (solo lectura)."""
+
+_D8 = ("Spec 011, D-8: sin valor por defecto; lo declara una persona con su tipo (MEDIDO del "
+       "ensayo, ADOPTADO o HIPÓTESIS) (Samuel, IMGA, 23/10/2026)")
+_DENSITY_LABEL = "In-situ density"
+_SWELL_LABEL = "Swell factor"
+_PERCENT_LABEL = "Share of the component"
+_UNIT_RFS = ("RF-011-11", "RF-011-16", "RF-011-17")
+_COMPONENT_RFS = ("RF-011-15", "RF-011-16", "RF-011-17")
+_VERSION_RF = ("RF-011-21",)
+
+
+def _family(pattern: str, unit: str, minimum: float, maximum: float, rfs: tuple[str, ...],
+            label: str, *, scope: str, min_exclusive: bool = False) -> ParamFamily:
+    """Una familia sin valor por defecto (D-8), HIPÓTESIS, cuya plantilla tiene la clave del
+    patrón con cada variable por su nombre (``res.unit.u.density``)."""
+    template = ParamDef(pattern.replace("{", "").replace("}", ""), "float", unit, None, minimum,
+                        maximum, rfs, _D8, min_exclusive=min_exclusive, allow_empty=True,
+                        kind="HIPÓTESIS", source_kind="person", scope=scope,
+                        label_msgid=label)
+    return ParamFamily(pattern, template)
+
+
+FAMILIES: tuple[ParamFamily, ...] = (
+    _family("res.unit.{u}.density", "t/m3", 0.0, 10.0, _UNIT_RFS, _DENSITY_LABEL,
+            scope="project", min_exclusive=True),
+    _family("res.unit.{u}.swell", "-", 1.0, 3.0, _UNIT_RFS + _VERSION_RF, _SWELL_LABEL,
+            scope="version"),
+    _family("res.unit.{u}.{c}.density", "t/m3", 0.0, 10.0, _COMPONENT_RFS, _DENSITY_LABEL,
+            scope="project", min_exclusive=True),
+    _family("res.unit.{u}.{c}.swell", "-", 1.0, 3.0, _COMPONENT_RFS + _VERSION_RF, _SWELL_LABEL,
+            scope="version"),
+    _family("res.unit.{u}.{c}.percent", "%", 0.0, 100.0, ("RF-011-15", *_VERSION_RF),
+            _PERCENT_LABEL, scope="version"),
+)
+"""Las familias de la columna de materiales (plan §5.2.2; ADR-0027), sin valor por defecto."""
+
+_CODE = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def _element(unit: str, component: str | None) -> str:
+    """``res.unit.<unidad>[.<componente>]``; :class:`ValueError` si un código no vale."""
+    codes = (unit,) if component is None else (unit, component)
+    for code in codes:
+        if not isinstance(code, str) or _CODE.fullmatch(code) is None:
+            raise ValueError(f"el código {code!r} no es [a-z][a-z0-9_]* (D-18)")
+    return "res.unit." + ".".join(codes)
+
+
+def density_key(unit: str, component: str | None = None) -> str:
+    """La clave de la densidad in situ de la unidad ``unit`` o de su componente
+    ``component`` (por sus códigos): ``res.unit.capa_util.caliza.density``."""
+    return _element(unit, component) + ".density"
+
+
+def swell_key(unit: str, component: str | None = None) -> str:
+    """La clave del K de la unidad ``unit`` o de su componente ``component``."""
+    return _element(unit, component) + ".swell"
+
+
+def percent_key(unit: str, component: str) -> str:
+    """La clave del porcentaje del componente ``component`` en su unidad compuesta ``unit``."""
+    return _element(unit, component) + ".percent"
 
 _ALL: Mapping[str, ParamDef] = index_definitions((*DEFINITIONS, BENCH_HEIGHT_DEF))
 
