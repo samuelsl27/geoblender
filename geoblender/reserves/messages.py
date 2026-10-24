@@ -170,6 +170,13 @@ CATALOG: tuple[Message, ...] = (
         "impórtela en el CRS del proyecto; no se ha cubicado nada.",
     ),
     Message(
+        "res.domains_references_mismatch",
+        "The domain layer «{layer}» is in {value}, not in the CRS of the project ({expected}): "
+        "import it in the CRS of the project; nothing has been computed.",
+        "La capa de dominios «{layer}» está en {value}, no en el CRS del proyecto "
+        "({expected}): impórtela en el CRS del proyecto; no se ha cubicado nada.",
+    ),
+    Message(
         "res.domain_self_intersecting",
         "polygon {fid} («{domain}») intersects itself",
         "el polígono {fid} («{domain}») se corta a sí mismo",

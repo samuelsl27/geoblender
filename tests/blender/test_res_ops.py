@@ -22,6 +22,16 @@ RF-011-04, RF-011-06, RF-011-20, RF-011-25, RF-011-26):
 - RF-011-20, RF-011-26: sin versión activa, la ventana de elegir o crear una; con la activa
   SUPERADO o el proyecto en solo lectura, desactivada con su motivo.
 
+**Por unidad, fase y banco…** (T23; HU-011-2, HU-011-3; RF-011-07 a RF-011-10, RF-011-12 a
+RF-011-18; plan §5.3.4, D-16, D-35, D-37):
+
+- el diálogo ofrece las capas de dominios con sus campos, los bancos, «Por unidades» y la rejilla
+  (no) y, sin columna de materiales, el aviso que lleva a definirla (desde un guion, el rechazo);
+- con la capa «Fases», bancos anclados y la columna, ``res.volume`` y, encadenada, ``res.tonnage``:
+  la tabla fase × banco × unidad (m³; m³ esponjados y t) y sus cifras; sin una densidad, su aviso
+  y ningún total de toneladas;
+- una capa con solapes o sin valor, el rechazo con la lista de sus polígonos (RF-011-08).
+
 Un proyecto para toda la clase (V01 activa y V02), rejillas de 8 × 8 celdas de 1 m y la extensión
 sin importar otra vez (``blender_ext.release``; RNF-001-01). Se ejecuta con
 ``tools/run_blender_tests.py``.
@@ -76,6 +86,26 @@ SCOPE_RING = np.array([(vf.WEST + 1.5, vf.SOUTH - 1.0), (vf.WEST + 6.0, vf.SOUTH
 """El ámbito de la prueba: de la mitad de la columna 1 al final de la 5, de norte a sur."""
 SCOPE_WEIGHTS = np.array([0.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0])
 """La fracción de cada columna dentro de :data:`SCOPE_RING`."""
+BREAKDOWN = "geoblender.res_compute_volume_breakdown"
+BREAKDOWN_DIALOG = {**DIALOG, "difference_grid": False, "domains_layer": "NONE",
+                    "domains_field": "NONE", "bench_height": "", "bench_anchor": "",
+                    "bench_levels": "", "by_units": False}
+"""Los valores por defecto del diálogo de «Por unidad, fase y banco…» abierto a mano."""
+PHASES = (("Fase 1", vf.WEST - 1.0, vf.WEST + 4.0), ("Fase 2", vf.WEST + 4.0, vf.WEST + 6.5))
+"""La capa «Fases» (campo «Fase»): dos franjas de norte a sur; la segunda acaba a mitad de la
+columna 6 (lo de su este, «Fuera de los dominios»)."""
+OVERLAPS = ((1, "A", vf.WEST - 1.0, vf.WEST + 5.0), (2, "B", vf.WEST + 4.0, vf.WEST + 9.0),
+            (3, "", vf.WEST + 10.0, vf.WEST + 12.0))
+"""La capa «Solapes» (campo «zona»): A y B se solapan en una franja de 1 m × 10 m; la 3, sin
+valor."""
+BASE_M = 101.0
+"""La base (cota constante) de la montera, sobre la capa útil."""
+BENCH_M, ANCHOR_M = 1.0, 100.5
+"""Los bancos: 1 m anclados a 100,5 m (la escala de las rejillas de la prueba)."""
+DENSITY = {"montera": 1.8, "capa_util": 2.0}
+SWELL = 1.5
+"""La densidad (t/m³) y el K de la capa útil (valores sintéticos de prueba, HIPÓTESIS)."""
+MISSING_DENSITY = "«Montera» tiene volumen y le falta el parámetro «res.unit.montera.density»"
 
 
 def _module(name: str) -> ModuleType:
@@ -108,6 +138,36 @@ def _expected(start: np.ndarray, final: np.ndarray | float,
             "res.area_m2": float((weight * known).sum()),
             "res.nodata_area_m2": float((weight * ~known).sum()),
             "res.still_area_m2": float((weight * (known & (moved == 0))).sum())}
+
+
+def _strip(west: float, east: float) -> np.ndarray:
+    """La fracción de cada columna de la rejilla entre las x ``west`` y ``east``."""
+    columns = vf.WEST + np.arange(CELLS, dtype=np.float64)
+    return np.clip(np.minimum(columns + 1.0, east) - np.maximum(columns, west), 0.0, 1.0)
+
+
+def _breakdown_expected() -> dict[tuple[str, float, str], float]:
+    """El desmonte de cada fase (``''``: fuera de ellas; ``'*'``: todas), banco (su cota de
+    abajo) y unidad (la montera sobre :data:`BASE_M`; la capa útil, debajo), sumado aquí celda a
+    celda: lo que de ``[final, partida]`` cae en el banco y en la unidad, por la fracción de la
+    columna dentro de la fase."""
+    start, final = _start_values(), _final_values()
+    weights = {name: _strip(west, east) for name, west, east in PHASES}
+    weights[""] = 1.0 - sum(weights.values())
+    weights["*"] = np.ones(CELLS)
+    units = {"montera": (BASE_M, np.inf), "capa_util": (-np.inf, BASE_M)}
+    found: dict[tuple[str, float, str], float] = {}
+    for domain, weight in weights.items():
+        for low in (ANCHOR_M - BENCH_M, ANCHOR_M, ANCHOR_M + BENCH_M):
+            for code, (base, roof) in units.items():
+                total = 0.0
+                for (row, column), top in np.ndenumerate(start):
+                    bottom = final[row, column]
+                    if np.isfinite(bottom) and top > bottom:
+                        thick = min(top, roof, low + BENCH_M) - max(bottom, base, low)
+                        total += float(weight[column]) * max(0.0, thick)
+                found[(domain, low, code)] = total
+    return found
 
 
 def _files(root: Path) -> list[str]:
@@ -155,7 +215,19 @@ class ResBetweenSurfacesTest(unittest.TestCase):
                                                       title="Fase sur", reason=REASON)
         cls.project.refresh_header()
         cls.uids = cls.write_grids()
-        cls.scope = cls.import_boundary(folder / "fuentes")
+        sources = folder / "fuentes"
+        sources.mkdir()
+        cls.scope = cls.import_layer(sources, "ambito", "Ámbito", [(1, None, [SCOPE_RING])],
+                                     role="boundary")
+        cls.phases = cls.import_layer(
+            sources, "fases", "Fases",
+            [(fid, name, [cls.strip_ring(west, east)])
+             for fid, (name, west, east) in enumerate(PHASES, start=1)],
+            role="domains", field="Fase")
+        cls.overlaps = cls.import_layer(
+            sources, "solapes", "Solapes",
+            [(fid, value, [cls.strip_ring(west, east)]) for fid, value, west, east in OVERLAPS],
+            role="domains", field="zona")
         cls.ps.attach(cls.project)
         cls.addClassCleanup(cls.ps.close)
         for _ in range(2000):  # la comprobación de apertura (sin temporizadores en blender -b)
@@ -186,33 +258,48 @@ class ResBetweenSurfacesTest(unittest.TestCase):
             records = out.commit(software={library: library_version}, message=REASON)
         return {record.name: record.uid for record in records}
 
+    @staticmethod
+    def strip_ring(west: float, east: float) -> np.ndarray:
+        """Una franja de norte a sur entre ``west`` y ``east`` que pasa 1 m de la rejilla."""
+        south, north = vf.SOUTH - 1.0, vf.SOUTH + CELLS + 1.0
+        return np.array([(west, south), (east, south), (east, north), (west, north),
+                         (west, south)], dtype=np.float64)
+
     @classmethod
-    def import_boundary(cls, folder: Path) -> str:
+    def import_layer(cls, folder: Path, layer: str, name: str,
+                     features: list[tuple[int, str | None, list[np.ndarray]]], *, role: str,
+                     field: str | None = None) -> str:
         """«Capas vectoriales…» de la 006 sin su trabajo (como ``res_fixtures.import_layer``):
-        el contorno :data:`SCOPE_RING` de un GeoPackage fuera del proyecto, importado con el
-        papel «contorno»; el nombre de su dato (``gis_bnd_``)."""
+        la capa ``layer`` de un GeoPackage fuera del proyecto (cada entidad, ``(fid, valor del
+        campo de texto field, anillos)``), importada con el papel ``role`` («boundary» o
+        «domains»); el nombre de su dato (``gis_bnd_`` o ``gis_dom_``)."""
         crs, vertical = _module("gis.store").project_references(cls.project)
-        folder.mkdir()
-        path = folder / "Ambito.gpkg"
+        path = folder / f"{layer}.gpkg"
         conn = sqlite3.connect(path)
         try:
             _module("core.gpkg.base").create_base(conn, crs)
-            conn.execute("CREATE TABLE ambito (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, "
-                         "geom GEOMETRY)")
+            extra = "" if field is None else f', "{field}" TEXT'
+            conn.execute(f'CREATE TABLE "{layer}" (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT '
+                         f"NULL, geom GEOMETRY{extra})")
             conn.execute("INSERT INTO gpkg_contents (table_name, data_type, identifier, "
-                         "description, srs_id) VALUES ('ambito', 'features', 'ambito', '', ?)",
-                         (crs.epsg,))
-            conn.execute("INSERT INTO gpkg_geometry_columns VALUES ('ambito', 'geom', 'POLYGON', "
-                         "?, 0, 0)", (crs.epsg,))
-            conn.execute("INSERT INTO ambito VALUES (1, ?)", (_module("core.gpkg.wkb")
-                         .encode_geometry("POLYGON", [SCOPE_RING], crs.epsg, False),))
+                         "description, srs_id) VALUES (?, 'features', ?, '', ?)",
+                         (layer, layer, crs.epsg))
+            conn.execute("INSERT INTO gpkg_geometry_columns VALUES (?, 'geom', 'POLYGON', ?, 0, "
+                         "0)", (layer, crs.epsg))
+            encode = _module("core.gpkg.wkb").encode_geometry
+            for fid, value, rings in features:
+                blob = encode("POLYGON", rings, crs.epsg, False)
+                if field is None:
+                    conn.execute(f'INSERT INTO "{layer}" VALUES (?, ?)', (fid, blob))
+                else:
+                    conn.execute(f'INSERT INTO "{layer}" VALUES (?, ?, ?)', (fid, blob, value))
             conn.commit()
         finally:
             conn.close()
         inputs, gis_store, vector = (_module("core.inputs"), _module("gis.store"),
                                      _module("gis.vector"))
         reader = _module("gis.content").GPKG_LAYER
-        settings = {"layer": "ambito", "role": "boundary"}
+        settings = {"layer": layer, "role": role}
         anchors = [inputs.locate_source(path, cls.project, cls.ps.userdata(), role="main")]
         prints = [_module("core.inputs.model").SourcePrint(
             _module("core.hashing").sha256_file(path), size=path.stat().st_size,
@@ -221,18 +308,21 @@ class ResBetweenSurfacesTest(unittest.TestCase):
             reader.kinds[0], gis_store.source_declarations(reader.id, crs, vertical, settings),
             dict(zip(inputs.reader_roles(anchors), [path], strict=True)), settings)
         spec = gis_store.source_input(
-            reader.id, "Ámbito", files=anchors, file_prints=prints,
+            reader.id, name, files=anchors, file_prints=prints,
             digest=_module("core.content.readers").read_content(reader, request), crs=crs,
             vertical=vertical, settings=settings)
-        copies = folder / "copia"
+        copies = folder / f"copia_{layer}"
         copies.mkdir()
-        features = vector.read_layer(vector.copy_source(path, copies), "ambito")
+        read = vector.read_layer(vector.copy_source(path, copies), layer)
         handle = _module("core.provenance.operations").begin_operation(
-            cls.project, _module("gis.provenance").IMPORT_VECTOR, settings={"nombre": "Ámbito"},
+            cls.project, _module("gis.provenance").IMPORT_VECTOR, settings={"nombre": name},
             executor="blender")
         with gis_store.ResultWriter(cls.project, handle) as out:
             out.declare_input(spec)
-            out.boundary("Ámbito", features.geometries)
+            if role == "domains":
+                out.domains(name, vector.domains_from_features(read)[0])
+            else:
+                out.boundary(name, read.geometries)
             (record,) = out.commit(message=REASON)
         return record.name
 
@@ -260,48 +350,62 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         with self.project.read() as conn:
             return conn.execute(sql, args).fetchall()
 
-    def figures(self, op_uid: str, name: str) -> dict[str, float]:
-        scope = _module("core.provenance.figures").scope_json({"cubication": name})
+    def figures(self, op_uid: str, name: str, **scope: Any) -> dict[str, float]:
+        """Las cifras de la operación ``op_uid`` con el ámbito de la cubicación ``name`` (y lo
+        que añade ``scope``: ``domain``, ``unit``…)."""
+        found = _module("core.provenance.figures").scope_json({"cubication": name, **scope})
         return dict(self.rows("SELECT key, value FROM gb_figure WHERE operation_uid = ? AND "
-                              "scope = ?", op_uid, scope))
+                              "scope = ?", op_uid, found))
 
-    def operations(self, name: str) -> list[tuple[str, str, str | None, str | None]]:
-        """Las ``res.volume`` de la cubicación ``name``: uid, estado, lo que sustituye y quien
-        la sustituye, por orden."""
+    def operations(self, name: str, op_type: str = "res.volume"
+                   ) -> list[tuple[str, str, str | None, str | None]]:
+        """Las ``op_type`` de la cubicación ``name``: uid, estado, lo que sustituye y quien la
+        sustituye, por orden."""
         return [(uid, status, supersedes, superseded)
                 for uid, status, supersedes, superseded, settings in self.rows(
                     "SELECT uid, status, supersedes_uid, superseded_by, settings FROM "
-                    "gb_operation WHERE op_type = 'res.volume' ORDER BY started_at, uid")
+                    "gb_operation WHERE op_type = ? ORDER BY started_at, uid", op_type)
                 if json.loads(settings)["name"] == name]
 
     def datasets(self, name: str) -> list[str]:
         slug = _module("gis.provenance").dataset_slug(name)
         return [found for (found,) in self.rows(
-            "SELECT name FROM gb_dataset WHERE name IN (?, ?) AND status = 'current'",
-            f"res_vol_{slug}", f"res_dif_{slug}")]
+            "SELECT name FROM gb_dataset WHERE name IN (?, ?, ?) AND status = 'current'",
+            f"res_vol_{slug}", f"res_dif_{slug}", f"res_ton_{slug}")]
 
-    def dialog(self, context: Any = None, **given: Any) -> tuple[Any, Any, Any]:
-        """Abre el diálogo a mano (``invoke`` con un ``window_manager`` simulado) y lo dibuja:
-        el ``self``, lo dibujado y el diálogo pedido."""
+    def table(self, name: str) -> list[Any]:
+        """Las filas de la tabla viva ``name`` (``res_vol_…`` o ``res_ton_…``)."""
+        ((locator,),) = self.rows("SELECT locator FROM gb_dataset WHERE name = ? AND status = "
+                                  "'current'", name)
+        with self.project.read() as conn:
+            return list(_module("reserves.table").read_rows(conn, locator))
+
+    def dialog(self, context: Any = None, *, command: str = BETWEEN,
+               **given: Any) -> tuple[Any, Any, Any]:
+        """Abre el diálogo de ``command`` a mano (``invoke`` con un ``window_manager``
+        simulado) y lo dibuja: el ``self``, lo dibujado y el diálogo pedido."""
         names = frozenset(given)
-        fake = operator_self(self.cls, report=lambda kind, text: None,
+        cls = self.commands.registered_class(command)
+        defaults = BREAKDOWN_DIALOG if command == BREAKDOWN else DIALOG
+        fake = operator_self(cls, report=lambda kind, text: None,
                              properties=SimpleNamespace(is_property_set=names.__contains__),
-                             **{**DIALOG, **given})
+                             **{**defaults, **given})
         manager = SimpleNamespace(invoke_props_dialog=mock.Mock(return_value={"RUNNING_MODAL"}),
                                   invoke_confirm=mock.Mock(return_value={"RUNNING_MODAL"}))
         if context is None:
             context = SimpleNamespace(window_manager=manager, window=None, selected_objects=[])
         else:
             context.window_manager = manager
-        self.assertEqual(self.cls.invoke(fake, context, None), {"RUNNING_MODAL"})
-        self.cls.draw(fake, bpy.context)
+        self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+        cls.draw(fake, bpy.context)
         return fake, fake.layout, manager
 
-    def running(self) -> Any:
-        """La orden que está en marcha como modal (la que aún tiene pasos)."""
+    def running(self, command: str = BETWEEN) -> Any:
+        """La orden ``command`` que está en marcha como modal (la que aún tiene pasos)."""
+        cls = self.commands.registered_class(command)
         found = [op for op in bpy.context.window.modal_operators
-                 if isinstance(op, self.cls) and getattr(op, "_steps", None) is not None]
-        self.assertEqual(len(found), 1, "Entre dos superficies… no está en marcha")
+                 if isinstance(op, cls) and getattr(op, "_steps", None) is not None]
+        self.assertEqual(len(found), 1, f"{command} no está en marcha")
         return found[0]
 
     def drive(self, operator: Any) -> tuple[set[str], list[float]]:
@@ -316,13 +420,44 @@ class ResBetweenSurfacesTest(unittest.TestCase):
                 return state, calls
         self.fail("Entre dos superficies… no acaba")
 
-    def refused(self, **values: Any) -> str:
-        """El error de la orden desde un guion (``RuntimeError``) sin que cambie el proyecto."""
+    def refused(self, *, command: str = BETWEEN, **values: Any) -> str:
+        """El error de la orden ``command`` desde un guion (``RuntimeError``) sin que cambie el
+        proyecto."""
         counter = vf.change_counter(self.project)
         with self.assertRaises(RuntimeError) as caught:
-            bpy.ops.geoblender.res_compute_volume_between_surfaces(**values)
+            getattr(bpy.ops.geoblender, command.split(".")[1])(**values)
         self.assertEqual(vf.change_counter(self.project), counter)
         return str(caught.exception)
+
+    def save_column(self) -> None:
+        """La columna de la prueba en el proyecto (``res.edit_materials``): la montera (estéril,
+        in situ, con su base a :data:`BASE_M`) sobre la capa útil (útil, in situ, sin base), y
+        la densidad y el K de la capa útil (HIPÓTESIS); la montera, sin densidad ni K."""
+        materials, store = _module("reserves.materials"), _module("reserves.store")
+        surface = _module("reserves.surfaces").SurfaceRef
+        column = materials.MaterialColumn((
+            materials.Unit("montera", "Montera", "natural", "waste", "in_situ",
+                           base=surface(elevation=BASE_M)),
+            materials.Unit("capa_util", "Capa útil", "natural", "useful", "in_situ")))
+        handle = _module("core.provenance.operations").begin_operation(
+            self.project, self.provenance.EDIT_MATERIALS, settings={"units": 2},
+            executor="blender")
+        store.save_materials(self.project, handle, column)
+        self.declare({"res.unit.capa_util.density": DENSITY["capa_util"],
+                      "res.unit.capa_util.swell": SWELL})
+
+    def declare(self, values: dict[str, float]) -> None:
+        """Declara en el proyecto cada parámetro de ``values`` como HIPÓTESIS (lo da de alta o,
+        si ya está, sin valor «sin confirmar», lo cambia)."""
+        store = _module("core.params").ParameterStore(self.project)
+        given = {"kind": "HIPÓTESIS", "source": "Valores sintéticos de prueba",
+                 "source_kind": "document", "decided_by": "Samuel (IMGA)", "reason": REASON}
+        with self.project.write_transaction() as conn:
+            for key, value in values.items():
+                if store.get(key, conn=conn) is None:
+                    store.create(conn, key, value, **given)
+                else:
+                    store.change(conn, key, value=value, **given)
 
     # --- Pruebas ------------------------------------------------------------------------------
 
@@ -373,7 +508,7 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         self.assertEqual([item[0] for item in self.panels.surface_items(None, None)],
                          [FINAL, OTHER, START, ELEVATION])
         self.assertEqual([item[0] for item in self.panels.scope_items(None, None)],
-                         ["NONE", self.scope])
+                         ["NONE", self.scope, self.phases, self.overlaps])
         self.assertEqual([item.target for item in layout.of_kind("prop")],
                          ["name", "start", "invert", "final", "scope_layer", "difference_grid"])
         labels = [item.text for item in layout.of_kind("label")]
@@ -585,6 +720,142 @@ class ResBetweenSurfacesTest(unittest.TestCase):
             replace=True, **values), {"FINISHED"})
         ((old, _s1, _o1, replaced), (new, status, supersedes, _n2)) = self.operations(name)
         self.assertEqual((old, replaced, status, supersedes), (first, new, "done", first))
+
+    # --- Por unidad, fase y banco… (T23) ------------------------------------------------------
+
+    def test_breakdown_by_phase_bench_and_unit(self) -> None:
+        """RF-011-07, RF-011-09, RF-011-10, RF-011-12, RF-011-16, RF-011-17, RF-011-18,
+        RF-011-20, RF-011-25 (D-16, D-30, D-36; RNF-011-04): «Por unidad, fase y banco…» es la
+        orden real de la entrada «011»; su diálogo ofrece las capas de dominios con sus campos,
+        los bancos, «Por unidades» y la rejilla y, sin columna de materiales, el aviso que lleva
+        a definirla (desde un guion, el rechazo, sin escribir nada). Con la columna (la montera
+        sobre la capa útil), la capa «Fases» por su campo «Fase» y bancos de 1 m anclados a
+        100,5 m, por pasos (ninguna llamada de más de 0,2 s): ``res.volume`` y, encadenada,
+        ``res.tonnage`` en V01.r1; la tabla fase × banco × unidad (m³ in situ; m³ esponjados y
+        t) igual a la sumada en la prueba y sus cifras; sin la densidad de la montera, su aviso
+        y ningún total de toneladas. Repetida desde un guion con esa densidad (sustituir), las
+        dos operaciones nuevas sustituyen a las anteriores y sale el total."""
+        self.assertEqual(self.commands.catalog().commands[BREAKDOWN].entry, ENTRY)
+        cls = self.commands.registered_class(BREAKDOWN)
+        self.assertFalse(self.commands.is_provisional(cls))
+        self.assertIn(cls, self.res_ops.classes)
+        self.assertTrue(issubclass(cls, _module("bl.ops.core")._StepsModal))
+        self.assertEqual((cls.provenance_op_type, cls.bl_options),
+                         (self.provenance.VOLUME, {"REGISTER"}))
+        fake, layout, manager = self.dialog(command=BREAKDOWN, domains_layer=self.phases)
+        self.assertEqual(manager.invoke_props_dialog.call_args.kwargs["title"],
+                         "Por unidad, fase y banco…")
+        self.assertEqual([item[0] for item in self.panels.domain_items(None, None)],
+                         ["NONE", self.phases, self.overlaps])
+        self.assertEqual([item[:2] for item in self.panels.field_items(fake, None)],
+                         [("fase", "Fase")])
+        self.assertEqual([item.target for item in layout.of_kind("prop")],
+                         ["name", "start", "invert", "final", "scope_layer", "domains_layer",
+                          "domains_field", "bench_height", "bench_anchor", "bench_levels",
+                          "by_units", "difference_grid"])
+        labels = [item.text for item in layout.of_kind("label")]
+        hint = "defina antes los materiales (Cubicación ▸ Materiales y densidades…)"
+        self.assertTrue(any(hint in label for label in labels), labels)
+        name = "Por fases"
+        values = {"name": name, "start": START, "final": FINAL, "domains_layer": self.phases,
+                  "domains_field": "fase", "bench_height": "1", "bench_anchor": "100,5",
+                  "by_units": True}
+        self.assertIn(hint, self.refused(command=BREAKDOWN, **values))
+
+        self.save_column()
+        self.assertEqual(bpy.ops.geoblender.res_compute_volume_breakdown(
+            "EXEC_DEFAULT", in_steps=True, **values), {"RUNNING_MODAL"})
+        operator = self.running(BREAKDOWN)
+        state, calls = self.drive(operator)
+        self.assertEqual(state, {"FINISHED"})
+        self.assertLessEqual(max(calls), CALL_LIMIT_S, calls)
+        self.assertIn("read", {phase for _at, phase, *_rest in operator.progress_log})  # pesar
+        ((volume, status, _old, _new),) = self.operations(name)
+        ((tonnage, weighed, _o, _n),) = self.operations(name, "res.tonnage")
+        self.assertEqual((status, weighed), ("done", "done"))
+        roles = {uid: sorted(role for (role,) in self.rows(
+            "SELECT role FROM gb_operation_io WHERE operation_uid = ? AND direction = 'in'", uid))
+            for uid in (volume, tonnage)}
+        self.assertEqual(roles, {volume: ["domains", "final", "materials", "start"],
+                                 tonnage: ["materials", "volumes"]})
+        ((revision,),) = self.rows("SELECT DISTINCT revision_uid FROM gb_operation WHERE uid IN "
+                                   "(?, ?)", volume, tonnage)
+        self.assertEqual(self.rows("SELECT version_uid FROM gb_revision WHERE uid = ?",
+                                   revision), [(self.v01.uid,)])
+        self.assertEqual(sorted(self.datasets(name)), ["res_ton_por_fases", "res_vol_por_fases"])
+
+        expected = _breakdown_expected()
+        found = {(row.domain, row.bench_z0, row.unit): row.value
+                 for row in self.table("res_vol_por_fases")
+                 if row.quantity == "volume_m3" and row.unit is not None
+                 and row.bench_z0 is not None}
+        self.assertEqual(sorted(found), sorted(expected))
+        weighed_rows = self.table("res_ton_por_fases")
+        by_key = {(row.quantity, row.domain, row.bench_z0, row.unit): row for row in weighed_rows
+                  if row.bench_z0 is not None and row.component is None}
+        for key, value in expected.items():
+            with self.subTest(fase=key[0], banco=key[1], unidad=key[2]):
+                self.assertAlmostEqual(found[key], value, delta=1e-9)
+                mass = by_key[("mass_t", *key)]
+                if key[2] == "capa_util":
+                    self.assertAlmostEqual(mass.value, DENSITY["capa_util"] * value, delta=1e-9)
+                    self.assertAlmostEqual(by_key[("swell_m3", *key)].value, SWELL * value,
+                                           delta=1e-9)
+                elif value > 0.0:  # RF-011-17: la montera, sin densidad
+                    self.assertIsNone(mass.value)
+                    self.assertIn("res.note_no_density", mass.note)
+        (total,) = [row for row in weighed_rows if row.quantity == "total_t"
+                    and row.domain == "*" and row.bench_z0 is None and row.bench_z1 is None]
+        self.assertIsNone(total.value)
+        self.assertAlmostEqual(self.figures(volume, name, domain="Fase 2")["res.cut_m3"],
+                               sum(value for key, value in expected.items()
+                                   if key[0] == "Fase 2"), delta=1e-9)
+        useful = sum(value for key, value in expected.items()
+                     if key[0] == "*" and key[2] == "capa_util")
+        self.assertGreater(useful, 0.0)
+        self.assertAlmostEqual(self.figures(tonnage, name, unit="capa_util")["res.unit_t"],
+                               DENSITY["capa_util"] * useful, delta=1e-9)
+        self.assertNotIn("res.total_t", self.figures(tonnage, name))
+        self.assertTrue(any(MISSING_DENSITY in text for text in operator.report_log),
+                        operator.report_log)
+        self.assertIn(f"Toneladas de «{name}» (V01.r1, en curso): sin total de toneladas",
+                      operator.report_log)
+        self.panel.assert_called_with(PANEL)
+
+        self.declare({"res.unit.montera.density": DENSITY["montera"]})
+        self.assertEqual(bpy.ops.geoblender.res_compute_volume_breakdown(replace=True, **values),
+                         {"FINISHED"})
+        for op_type, first in (("res.volume", volume), ("res.tonnage", tonnage)):
+            ((old, _s1, _o1, replaced), (new, status, supersedes, _n2)) = self.operations(
+                name, op_type)
+            self.assertEqual((old, replaced, status, supersedes), (first, new, "done", first))
+        self.assertAlmostEqual(self.figures(new, name)["res.total_t"],
+                               sum(DENSITY[key[2]] * value for key, value in expected.items()
+                                   if key[0] == "*"), delta=1e-9)
+
+    def test_breakdown_refuses_an_invalid_domain_layer(self) -> None:
+        """RF-011-08, RF-011-09, RF-011-25 (A6): con la capa «Solapes» (dos polígonos que se
+        solapan en 10 m² y uno con el campo vacío), desde un guion, el rechazo lista cada
+        polígono con su número y su valor, su problema y el área del solape; la operación queda
+        fallida sin cifras, tablas ni rejillas. Unos bancos escritos de las dos maneras se
+        rechazan con su texto sin escribir nada."""
+        name = "Con solapes"
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.res_compute_volume_breakdown(
+                name=name, start=START, final=FINAL, domains_layer=self.overlaps,
+                domains_field="zona")
+        text = str(caught.exception)
+        self.assertIn(f"La capa de dominios «{self.overlaps}» no sirve para repartir por "
+                      "«zona»", text)
+        self.assertIn("los polígonos 1 («A») y 2 («B») se solapan en 10,00 m²", text)
+        self.assertIn("el polígono 3 tiene vacío el campo «zona»", text)
+        ((uid, status, _old, _new),) = self.operations(name)
+        self.assertEqual(status, "failed")
+        self.assertEqual(self.figures(uid, name), {})
+        self.assertEqual(self.datasets(name), [])
+        text = self.refused(command=BREAKDOWN, name="Dos maneras", start=START, final=FINAL,
+                            bench_height="10", bench_anchor="0", bench_levels="100; 110")
+        self.assertIn("no las dos cosas", text)
 
 
 if __name__ == "__main__":

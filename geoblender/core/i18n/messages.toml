@@ -5744,3 +5744,77 @@ es = "Exportación cancelada: no se ha escrito nada"
 
 ["Difference grid exported to «{file}»"]
 es = "Rejilla de diferencias exportada a «{file}»"
+
+# Por unidad, fase y banco… (spec 011, T23; RF-011-07 a RF-011-10, RF-011-12 a RF-011-18; plan 011
+# §5.5, D-16): la capa de dominios y su campo, los bancos, «Por unidades» y las toneladas
+# encadenadas («Field», «Bench height», «Scope», «Difference grid» y sus descripciones ya están
+# arriba).
+
+["No domains"]
+es = "Sin dominios"
+
+["Do not split the cubication by domains"]
+es = "No repartir la cubicación por dominios"
+
+["Choose a domain layer first"]
+es = "Elija antes una capa de dominios"
+
+["Field «{field}» of the layer"]
+es = "Campo «{field}» de la capa"
+
+["Domain layer"]
+es = "Capa de dominios"
+
+["Layer of polygons imported with the role «domains» that splits the cubication into phases, zones or sectors (none: no split)"]
+es = "Capa de polígonos importada con el papel «dominios» que reparte la cubicación en fases, zonas o sectores (ninguna: sin repartir)"
+
+["Field of the domain layer that names each domain"]
+es = "Campo de la capa de dominios que nombra cada dominio"
+
+["Height of the benches, m, with the anchor elevation (empty: no benches)"]
+es = "Altura de los bancos, m, con la cota de anclaje (vacía: sin bancos)"
+
+["Anchor elevation"]
+es = "Cota de anclaje"
+
+["An absolute elevation where a bench starts, m"]
+es = "Una cota absoluta donde empieza un banco, m"
+
+["List of elevations"]
+es = "Lista de cotas"
+
+["Or an increasing list of bench elevations, m, separated by «;»"]
+es = "O una lista creciente de cotas de los bancos, m, separadas por «;»"
+
+["By units"]
+es = "Por unidades"
+
+["Split the cut by the units of the materials column of the project and weigh it (its tonnage, a second operation)"]
+es = "Repartir el desmonte por las unidades de la columna de materiales del proyecto y pesarlo (sus toneladas, una segunda operación)"
+
+["Benches: height and anchor elevation, or a list of elevations"]
+es = "Bancos: altura y cota de anclaje, o una lista de cotas"
+
+["Bench height (m)"]
+es = "Altura de banco (m)"
+
+["Anchor elevation (m)"]
+es = "Cota de anclaje (m)"
+
+["List of elevations (m)"]
+es = "Lista de cotas (m)"
+
+["Choose the field that names each domain of «{layer}»"]
+es = "Elija el campo que nombra cada dominio de «{layer}»"
+
+["Computing «{name}»: weighing… {percent} % · Esc: cancel"]
+es = "Cubicando «{name}»: pesando… {percent} % · Esc: cancelar"
+
+["Tonnage of «{name}» ({revision}, in progress): {total} t"]
+es = "Toneladas de «{name}» ({revision}, en curso): {total} t"
+
+["Tonnage of «{name}» ({revision}, in progress): no total tonnage"]
+es = "Toneladas de «{name}» ({revision}, en curso): sin total de toneladas"
+
+["Tonnage of «{name}» cancelled: its volumes are already saved; nothing has been left half-done"]
+es = "Toneladas de «{name}» canceladas: sus volúmenes ya están guardados; no ha quedado nada a medias"

@@ -55,7 +55,7 @@ label.en = "By unit, phase and bench…"
 label.es = "Por unidad, fase y banco…"
 description.en = "Volume and tonnage broken down by unit, phase and bench"
 description.es = "Volumen y tonelaje desglosados por unidad, fase y banco"
-entry = "R-38"
+entry = "011"
 action = "D"
 frequency = 3
 

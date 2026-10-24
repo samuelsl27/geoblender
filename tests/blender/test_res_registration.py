@@ -66,7 +66,8 @@ STATUS = "Recalculando «{name}»… {percent} %"
 DROPPED = "cancelada durante la operación: se desactivó Geoblender antes de empezar"
 DELIVERED = frozenset({"geoblender.res_edit_materials",  # T20
                        "geoblender.res_compute_volume_between_surfaces",  # T21
-                       "geoblender.res_compute_surface_difference"})  # T22
+                       "geoblender.res_compute_surface_difference",  # T22
+                       "geoblender.res_compute_volume_breakdown"})  # T23
 """Las órdenes de Cubicación que ya tienen su clase real (de la entrada «011»)."""
 
 
@@ -344,19 +345,21 @@ class ResRegisteredTest(unittest.TestCase):
 
         entry = self.cat.entries[ENTRY]
         self.assertEqual((entry.title, entry.title_es, entry.delivered), (*ENTRY_TITLE, True))
-        launched = {idname: defn.op_type for defn in res_ops.OPERATION_DEFS
-                    for idname in defn.commands}
+        launched: dict[str, list[str]] = {}  # «Por unidad, fase y banco…» lanza dos (D-16)
+        for defn in res_ops.OPERATION_DEFS:
+            for idname in defn.commands:
+                launched.setdefault(idname, []).append(defn.op_type)
         self.assertEqual(len(launched), 5)
         self.assertLessEqual(DELIVERED, set(launched))
         aware = session.ProvenanceAwareOperator
-        for idname, op_type in sorted(launched.items()):
+        for idname, op_types in sorted(launched.items()):
             with self.subTest(orden=idname):
                 cls = self.m.commands.registered_class(idname)
                 if idname in DELIVERED:
                     self.assertEqual(self.cat.commands[idname].entry, ENTRY)
                     self.assertIn(cls, res_ops.classes)
                     self.assertTrue(issubclass(cls, aware))
-                    self.assertEqual(cls.provenance_op_type, op_type)
+                    self.assertEqual(cls.provenance_op_type, op_types[0])
                     continue
                 # T21 a T25 las pasan a la 011 con su clase real
                 self.assertEqual(self.cat.commands[idname].entry, "R-38")

@@ -1445,20 +1445,24 @@ class ProvenanceAwareOperator:
     def begin(self, context: Any, *, settings: Mapping[str, Any] | None = None,
               params: Sequence[str] = (), executor: str = "blender",
               group_uid: str | None = None,
-              supersedes: str | None = None) -> OperationHandle | None:
+              supersedes: str | None = None, op_type: str | None = None,
+              inputs: Sequence[Any] | None = None) -> OperationHandle | None:
         """La puerta (:func:`ensure_ready`, con el diálogo si se lanzó desde la interfaz) y, si
         se puede, la operación «en curso» (``begin_operation`` con ``settings``, lo de
         :meth:`provenance_inputs`, los parámetros ``params`` y ``executor``: ``blender``, o
         ``job_thread``/``job_process`` para un trabajo, que al incorporarla dice dónde corrió
         de verdad), con la versión activa de la sesión (spec 009: una de un tipo de versión,
-        en su revisión abierta). ``None`` si no se puede (ya dicho)."""
+        en su revisión abierta). Con ``op_type`` (y lo que consume, ``inputs``), una operación
+        de otro tipo que la orden encadena a la suya (spec 011, D-16: las toneladas tras la
+        cubicación). ``None`` si no se puede (ya dicho)."""
         refusal = self._version_refusal()
         if refusal is not None:
             self.report({"ERROR"}, refusal)  # type: ignore[attr-defined]
             return None
-        inputs = tuple(self.provenance_inputs(context))
+        op_type = self.provenance_op_type if op_type is None else op_type
+        inputs = tuple(self.provenance_inputs(context) if inputs is None else inputs)
         version = scene_versions.active_version()
-        ready = ensure_ready(self.provenance_op_type, inputs,
+        ready = ensure_ready(op_type, inputs,
                              report=self.report,  # type: ignore[attr-defined]
                              dialog=self.provenance_dialog, version=version)
         if ready is None:
@@ -1466,7 +1470,7 @@ class ProvenanceAwareOperator:
         from ...core.provenance.operations import begin_operation
 
         try:
-            handle = begin_operation(SESSION.project, self.provenance_op_type,
+            handle = begin_operation(SESSION.project, op_type,
                                      settings=dict(settings or {}), inputs=list(inputs),
                                      params=list(params), executor=executor,
                                      group_uid=group_uid, supersedes=supersedes,

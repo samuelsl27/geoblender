@@ -82,6 +82,17 @@ hasta que llega la clase real de cada una (T20 a T25), que la pasa a la entrada 
   rejilla); ``geoblender.res_export_difference`` («Exportar a GeoTIFF…» del menú «Diferencia
   ▾»; no es una operación) la escribe como GeoTIFF entregable desde lo registrado, por pasos,
   también de una versión no editable y, fuera del proyecto, en solo lectura.
+- **Por unidad, fase y banco…** (T23; RF-011-07 a RF-011-10, RF-011-12 a RF-011-18,
+  RF-011-20, RF-011-25; plan §5.3.4, §5.5, D-16, D-25):
+  :class:`GEOBLENDER_OT_res_compute_volume_breakdown`, el mismo diálogo y los mismos pasos con
+  los repartos: la capa de dominios (``gis_dom_``, en
+  el CRS del proyecto) y su campo (de las listas de ``bl.ui.res_panels``), los bancos (altura y
+  anclaje, o una lista de cotas), «Por unidades» (la columna de materiales del proyecto; sin
+  ella, el aviso que lleva a definirla) y la rejilla de diferencias (no, por defecto). Una
+  sola ``res.volume`` da todos los repartos (RF-011-10; los polígonos se validan en sus pasos,
+  RF-011-08) y, por unidades, la orden encadena ``res.tonnage`` de su tabla de volúmenes
+  (D-16: ``ProvenanceAwareOperator.begin`` con su tipo) en el mismo modal, con sus avisos de lo
+  que falta (RF-011-17); desde un guion, las dos de una vez.
 """
 
 from __future__ import annotations
@@ -121,6 +132,7 @@ from ...reserves import params as res_params
 from ...reserves import provenance
 from ...reserves import scale as res_scale
 from ...reserves.messages import ResError
+from ...reserves.slices import slices_from_text
 from ...reserves.surfaces import SurfaceRef, check_pair, propose_order, surface_source
 from ...reserves.tonnage import PERCENT_TOLERANCE
 from ...reserves.volumes import FINAL, START, VolumeRequest
@@ -1128,6 +1140,17 @@ def _point_scale(project: Any, grid: Any, scope: Any) -> float | None:
     return value if math.isfinite(value) and value > 0.0 else None
 
 
+def _in_project_crs(project: Any, identifier: str, code: str) -> None:
+    """La capa ``identifier`` está en el CRS del proyecto (la cubicación no transforma
+    coordenadas); si no, ``ResError`` ``code`` con los dos."""
+    found = gis_store.dataset_references(project, identifier)
+    expected = gis_store.project_references(project)
+    if found[0] != expected[0]:
+        raise ResError(code, obj=f"Capa «{identifier}»", field="CRS",
+                       value=reference_label(*found), layer=identifier,
+                       expected=reference_label(*expected))
+
+
 def _scope(project: Any, identifier: str) -> tuple[str | None, Any]:
     """La capa del ámbito elegida (su nombre y sus polígonos; ``None`` sin ámbito), en el CRS del
     proyecto (``res.scope_references_mismatch`` si no lo está)."""
@@ -1136,13 +1159,25 @@ def _scope(project: Any, identifier: str) -> tuple[str | None, Any]:
     from ...reserves import store  # al usarlo: habilitar no lo carga
 
     polygons = store.load_scope(project, identifier)
-    found = gis_store.dataset_references(project, identifier)
-    expected = gis_store.project_references(project)
-    if found[0] != expected[0]:
-        raise ResError("res.scope_references_mismatch", obj=f"Capa «{identifier}»",
-                       field="CRS", value=reference_label(*found), layer=identifier,
-                       expected=reference_label(*expected))
+    _in_project_crs(project, identifier, "res.scope_references_mismatch")
     return identifier, polygons
+
+
+def _domain_layer(project: Any, identifier: str, field: str) -> Any:
+    """La capa de dominios elegida para repartir por su campo ``field`` (T23; RF-011-07:
+    ``reserves.store.load_domain_layer``; ``None`` sin ella), en el CRS del proyecto
+    (``res.domains_references_mismatch`` si no lo está). Sin campo, ``ValueError`` con el texto
+    para la persona. Sus polígonos se validan en los pasos de la cubicación (RF-011-08, A6)."""
+    if not identifier or identifier == res_panels.NO_DOMAINS:
+        return None
+    if not field or field == res_panels.NO_FIELD:
+        raise ValueError(tr("Choose the field that names each domain of «{layer}»",
+                            layer=identifier))
+    from ...reserves import store  # al usarlo: habilitar no lo carga
+
+    layer = store.load_domain_layer(project, identifier, field)
+    _in_project_crs(project, identifier, "res.domains_references_mismatch")
+    return layer
 
 
 @dataclass(eq=False)
@@ -1345,6 +1380,7 @@ class _SurfacesCommand:
             res_panels.refresh_choices(project, scene_versions.active_version())
             self._propose(context, project)
             self._thickness = thickness_text(project)
+            self._read_dialog(project)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
@@ -1401,6 +1437,9 @@ class _SurfacesCommand:
         if thickness:
             layout.label(text=thickness, translate=False)
 
+    def _read_dialog(self, project: Any) -> None:
+        """Lo que lee del proyecto cada orden para su diálogo al abrirlo (por defecto, nada)."""
+
     def _draw_options(self, layout: Any) -> None:
         """Lo que dibuja el diálogo de cada orden tras las superficies (por defecto, nada)."""
 
@@ -1411,6 +1450,11 @@ class _SurfacesCommand:
     def _wants_grid(self) -> bool:
         """Si escribe la rejilla de diferencias (por defecto, sí)."""
         return True
+
+    def _breakdown(self, project: Any) -> dict[str, Any]:
+        """Los repartos pedidos (``domains``, ``slices`` y ``column`` de la ``VolumeRequest``),
+        comprobados antes de escribir nada (por defecto, ninguno)."""
+        return {}
 
     def _confirm(self, context: Any, event: Any) -> set[str]:
         """La confirmación de sustituir la cubicación del mismo nombre (D-30): si se acepta,
@@ -1428,8 +1472,9 @@ class _SurfacesCommand:
 
     def _plan(self, project: Any, version_uid: str) -> _Plan:
         """Lo que se cubica, comprobado antes de escribir nada: las dos superficies (A1:
-        ``res.surfaces_mismatch``, sin leer celdas), el ámbito, el nombre y la cubicación a la
-        que sustituiría (D-30)."""
+        ``res.surfaces_mismatch``, sin leer celdas), el ámbito, los repartos (con la columna,
+        también las superficies de sus unidades), el nombre y la cubicación a la que
+        sustituiría (D-30)."""
         from ...reserves import store  # al usarlo: habilitar no lo carga
 
         start, start_choice = _surface_ref(self.start, self.start_elevation,
@@ -1445,7 +1490,11 @@ class _SurfacesCommand:
         grid = sources[START].grid if sources[START].grid is not None else sources[FINAL].grid
         request = VolumeRequest(name, start, final, scope=scope,
                                 difference_grid=self._wants_grid(),
-                                point_scale=_point_scale(project, grid, scope))
+                                point_scale=_point_scale(project, grid, scope),
+                                **self._breakdown(project))
+        if request.column is not None:  # las bases y los espesores de sus unidades (D-39)
+            sources = {**store.project_sources(project, request, version_uid=version_uid),
+                       **sources}
         frozen = next((choice.revision_uid for choice in (start_choice, final_choice)
                        if choice is not None and choice.revision_uid is not None), None)
         if request.difference_grid:
@@ -1518,34 +1567,93 @@ class _SurfacesCommand:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
         self._project, self._name, self._loading = project, request.name, False
+        self._request, self._weighing = request, False
         if self.in_steps and getattr(context, "window", None) is not None:
             self._start(context, steps)
             return {"RUNNING_MODAL"}
         return self._run_all(context, steps)
 
     def _run_all(self, context: Any, steps: Iterator[Progress]) -> set[str]:
-        """Los pasos de una vez (desde un guion)."""
+        """Los pasos de una vez (desde un guion), con las toneladas encadenadas si las hay."""
         self.report_log: list[str] = []
-        stored = None
-        try:
-            for step in steps:
-                if step.result is not None:
-                    stored = step.result
-        except GeoblenderError as exc:
-            self._report({"ERROR"}, error_text(exc))
-            return {"CANCELLED"}
-        except (sqlite3.Error, OSError, ValueError) as exc:
-            LOGGER.error("«%s» se ha parado", self._name, exc_info=exc)
-            self._report({"ERROR"}, error_text(exc))
-            return {"CANCELLED"}
-        if stored is None:  # pragma: no cover - volume_run acaba siempre con su resultado
-            self._report({"ERROR"}, tr("The operation did not finish with its result"))
+        stored = self._drain(steps)
+        if stored is None:
             return {"CANCELLED"}
         self._report_result(stored)
+        weighing = self._follow_up(context, stored)
+        if weighing is not None:
+            weighed = self._drain(weighing)
+            if weighed is None:
+                return {"CANCELLED"}
+            self._report_tonnage(weighed)
         record = _difference_record(stored)
         if record is not None and views.loader_for(record.name) is not None:
             self._loaded(views.load_datasets(context, self._project, [record.uid]))
         return {"FINISHED"}
+
+    def _drain(self, steps: Iterator[Progress]) -> Any:
+        """Unos pasos de una vez: el resultado del último o, si fallan, ``None`` (ya dicho; sus
+        pasos no dejan nada a medias)."""
+        found = None
+        try:
+            for step in steps:
+                if step.result is not None:
+                    found = step.result
+        except GeoblenderError as exc:
+            self._report({"ERROR"}, error_text(exc))
+            return None
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            LOGGER.error("«%s» se ha parado", self._name, exc_info=exc)
+            self._report({"ERROR"}, error_text(exc))
+            return None
+        if found is None:  # pragma: no cover - los pasos acaban siempre con su resultado
+            self._report({"ERROR"}, tr("The operation did not finish with its result"))
+        return found
+
+    def _follow_up(self, context: Any, stored: Any) -> Iterator[Progress] | None:
+        """Las toneladas encadenadas a una cubicación por unidades (D-16; RF-011-15 a
+        RF-011-18, RF-011-20): ``res.tonnage`` de su tabla de volúmenes (ya confirmada) con la
+        columna que repartió, por la puerta de la procedencia, en la revisión abierta de la
+        versión activa (sustituye a las toneladas anteriores del mismo nombre, D-30); sus pasos,
+        o ``None`` sin unidades o si no se pueden empezar (ya dicho: la cubicación ya está)."""
+        request = getattr(self, "_request", None)
+        if request is None or request.column is None:
+            return None
+        from ...reserves import store  # al usarlo: habilitar no lo carga
+
+        project = self._project
+        try:
+            previous = store.previous_operation(project, provenance.TONNAGE, request.name,
+                                                version=scene_versions.active_version() or "")
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self._report({"ERROR"}, error_text(exc))
+            return None
+        handle = self.begin(context, settings=provenance.tonnage_settings(request.name),
+                            params=provenance.tonnage_params(request.column),
+                            supersedes=previous, op_type=provenance.TONNAGE,
+                            inputs=provenance.tonnage_inputs(request.name))
+        if handle is None:
+            return None
+        return _Guarded(handle, store.tonnage_run(project, handle, budget_s=self.STEP_BUDGET_S))
+
+    def _report_tonnage(self, stored: Any) -> None:
+        """Lo que dice la orden al pesar (RF-011-17): «Toneladas de «Proyecto» (V03.r1, en
+        curso): 12 345,6 t» o «… sin total de toneladas», y el aviso de cada parámetro que
+        falta a una unidad con volumen."""
+        outputs = stored.outputs
+        total = next((group.total_t for group in outputs.result.groups
+                      if group.domain == "*" and group.bench is None), None)
+        version = scene_versions.active()
+        revision = "" if version is None else version.revision
+        if total is None:
+            self._report({"INFO"}, tr("Tonnage of «{name}» ({revision}, in progress): no total "
+                                      "tonnage", name=self._name, revision=revision))
+        else:
+            self._report({"INFO"}, tr("Tonnage of «{name}» ({revision}, in progress): {total} t",
+                                      name=self._name, revision=revision,
+                                      total=format_number(total, 1)))
+        for notice in outputs.warnings:
+            self._report({"WARNING"}, notice.text(i18n.language()))
 
     def _report_result(self, stored: Any) -> None:
         """Lo que dice la orden al terminar (plan §5.5): «Mensual octubre (V03.r1, en curso):
@@ -1590,6 +1698,9 @@ class _SurfacesCommand:
         if step.phase == "grid":
             return tr("Computing «{name}»: writing the difference grid… {percent} % · Esc: "
                       "cancel", name=name, percent=percent)
+        if step.phase in ("read", "weigh", "hash"):  # las toneladas (reserves.store)
+            return tr("Computing «{name}»: weighing… {percent} % · Esc: cancel", name=name,
+                      percent=percent)
         if step.phase in ("result", "save"):
             return tr("Computing «{name}»: saving… {percent} % · Esc: cancel", name=name,
                       percent=percent)
@@ -1600,6 +1711,9 @@ class _SurfacesCommand:
         if getattr(self, "_loading", False):
             return tr("«{name}» has been computed; its difference grid has not been loaded into "
                       "the view", name=getattr(self, "_name", ""))
+        if getattr(self, "_weighing", False):
+            return tr("Tonnage of «{name}» cancelled: its volumes are already saved; nothing has "
+                      "been left half-done", name=getattr(self, "_name", ""))
         return tr("Volumetrics cancelled: nothing has been left half-done")
 
     def _error_text(self, exc: GeoblenderError) -> str:
@@ -1615,16 +1729,29 @@ class _SurfacesCommand:
         if self._loading:
             self._loaded(step.result)
             return self._finish(context)
-        self._report_result(step.result)
-        record = _difference_record(step.result)
+        if self._weighing:
+            self._report_tonnage(step.result)
+            stored = self._volume
+        else:
+            self._report_result(step.result)
+            stored = step.result
+            weighing = self._follow_up(context, stored)
+            if weighing is not None:  # las toneladas, en el mismo modal (D-16)
+                self._volume, self._weighing = stored, True
+                self._swap(weighing)
+                return None
+        record = _difference_record(stored)
         if record is None or views.loader_for(record.name) is None:
             return self._finish(context)
-        finished, self._steps = self._steps, views.load_steps(context, self._project,
-                                                              [record.uid])
+        self._swap(views.load_steps(context, self._project, [record.uid]))
         self._loading = True
+        return None
+
+    def _swap(self, steps: Iterator[Any]) -> None:
+        """Sigue con los pasos ``steps`` y cierra los que acabaron."""
+        finished, self._steps = self._steps, steps
         if finished is not None:
             finished.close()
-        return None
 
     def _finish(self, context: Any) -> set[str]:
         self._done(context)
@@ -1678,6 +1805,125 @@ class GEOBLENDER_OT_res_compute_volume_between_surfaces(_SurfacesCommand, Proven
     def _values(self, name: str) -> dict[str, Any]:
         # Sin super(): las pruebas llaman a los métodos con un self simulado.
         return {**_SurfacesCommand._values(self, name), "scope_layer": self.scope_layer,
+                "difference_grid": bool(self.difference_grid)}
+
+
+# --- Por unidad, fase y banco… (T23; RF-011-07 a 10, RF-011-12 a 18, RF-011-20, RF-011-25) -----
+
+BREAKDOWN = "geoblender.res_compute_volume_breakdown"
+_COLUMN_OBJ = "Columna de materiales"
+
+
+def _units_column(project: Any) -> materials.MaterialColumn:
+    """La columna de materiales guardada en el proyecto, válida (RF-011-11 a RF-011-15:
+    ``res.materials_invalid``); sin ella, ``res.materials_missing``, que lleva a definirla
+    (Cubicación ▸ Materiales y densidades…)."""
+    column = _saved_column(project)
+    if column is None:
+        raise ResError("res.materials_missing", obj=_COLUMN_OBJ, field="units", value=0)
+    column.validate()
+    return column
+
+
+class GEOBLENDER_OT_res_compute_volume_breakdown(_SurfacesCommand, ProvenanceAwareOperator,
+                                                 _StepsModal, bpy.types.Operator):
+    """Volume and tonnage broken down by unit, phase and bench"""
+
+    bl_idname = BREAKDOWN
+    bl_label = "By unit, phase and bench…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.VOLUME  # y, por unidades, res.tonnage encadenada (D-16)
+    execute = _SurfacesCommand.execute
+    modal = _SurfacesCommand.modal
+
+    scope_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Scope",
+        description="Polygons outside which nothing is measured: a boundary layer or the union "
+                    "of a domain layer (none: the whole grid)",
+        items=res_panels.scope_items, options=_FIELD,
+    )
+    # La capa antes que su campo: Blender pone las propiedades de un guion en este orden, y las
+    # opciones del campo son las de la capa ya puesta.
+    domains_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Domain layer",
+        description="Layer of polygons imported with the role «domains» that splits the "
+                    "cubication into phases, zones or sectors (none: no split)",
+        items=res_panels.domain_items, options=_FIELD,
+    )
+    domains_field: EnumProperty(  # type: ignore[valid-type]
+        name="Field", description="Field of the domain layer that names each domain",
+        items=res_panels.field_items, options=_FIELD,
+    )
+    bench_height: StringProperty(  # type: ignore[valid-type]
+        name="Bench height",
+        description="Height of the benches, m, with the anchor elevation (empty: no benches)",
+        options=_FIELD,
+    )
+    bench_anchor: StringProperty(  # type: ignore[valid-type]
+        name="Anchor elevation",
+        description="An absolute elevation where a bench starts, m", options=_FIELD,
+    )
+    bench_levels: StringProperty(  # type: ignore[valid-type]
+        name="List of elevations",
+        description="Or an increasing list of bench elevations, m, separated by «;»",
+        options=_FIELD,
+    )
+    by_units: BoolProperty(  # type: ignore[valid-type]
+        name="By units",
+        description="Split the cut by the units of the materials column of the project and "
+                    "weigh it (its tonnage, a second operation)",
+        default=False, options=_FIELD,
+    )
+    difference_grid: BoolProperty(  # type: ignore[valid-type]
+        name="Difference grid",
+        description="Write the grid of differences (final − start, m) as data of the version "
+                    "and load it into the view",
+        default=False, options=_FIELD,
+    )
+
+    def _read_dialog(self, project: Any) -> None:
+        """Sin columna de materiales, el aviso que lleva a definirla (plan §5.5)."""
+        self._units_hint = "" if _saved_column(project) is not None else res_messages.render(
+            "res.materials_missing", language=i18n.language())
+
+    def _draw_options(self, layout: Any) -> None:
+        layout.prop(self, "scope_layer", text=tr("Scope (optional)"), translate=False)
+        layout.prop(self, "domains_layer", text=tr("Domain layer"), translate=False)
+        if self.domains_layer != res_panels.NO_DOMAINS:
+            layout.prop(self, "domains_field", text=tr("Field"), translate=False)
+        layout.label(text=tr("Benches: height and anchor elevation, or a list of elevations"),
+                     translate=False)
+        layout.prop(self, "bench_height", text=tr("Bench height (m)"), translate=False)
+        layout.prop(self, "bench_anchor", text=tr("Anchor elevation (m)"), translate=False)
+        layout.prop(self, "bench_levels", text=tr("List of elevations (m)"), translate=False)
+        layout.prop(self, "by_units", text=tr("By units"), translate=False)
+        hint = getattr(self, "_units_hint", "")
+        if hint:
+            layout.label(text=hint, icon="INFO", translate=False)
+        layout.prop(self, "difference_grid", text=tr("Difference grid"), translate=False)
+
+    def _scope_layer(self) -> str:
+        return str(self.scope_layer)
+
+    def _wants_grid(self) -> bool:
+        return bool(self.difference_grid)
+
+    def _breakdown(self, project: Any) -> dict[str, Any]:
+        """Los bancos (``reserves.slices.slices_from_text``: sus rechazos con lo tecleado), la
+        capa de dominios por su campo y, por unidades, la columna del proyecto."""
+        return {"slices": slices_from_text(self.bench_height, self.bench_anchor,
+                                           self.bench_levels),
+                "domains": _domain_layer(project, str(self.domains_layer),
+                                         str(self.domains_field)),
+                "column": _units_column(project) if self.by_units else None}
+
+    def _values(self, name: str) -> dict[str, Any]:
+        # Sin super(): las pruebas llaman a los métodos con un self simulado.
+        return {**_SurfacesCommand._values(self, name), "scope_layer": self.scope_layer,
+                "domains_layer": self.domains_layer, "domains_field": self.domains_field,
+                "bench_height": self.bench_height, "bench_anchor": self.bench_anchor,
+                "bench_levels": self.bench_levels, "by_units": bool(self.by_units),
                 "difference_grid": bool(self.difference_grid)}
 
 
@@ -1897,5 +2143,6 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_res_compute_volume_between_surfaces,
     GEOBLENDER_OT_res_compute_surface_difference,
     GEOBLENDER_OT_res_export_difference,
+    GEOBLENDER_OT_res_compute_volume_breakdown,
 )
 """Las órdenes reales de la cubicación (las demás llegan de la T23 a la T25)."""

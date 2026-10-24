@@ -131,7 +131,13 @@ from ..core.datasets.model import (
 )
 from ..core.errors import GeoblenderError
 from ..core.georef import CrsCatalog, CrsRef, VerticalRef, load_catalog
-from ..core.gpkg.base import ColumnDef, create_base, create_feature_table, set_column_titles
+from ..core.gpkg.base import (
+    DATA_COLUMNS_TABLE,
+    ColumnDef,
+    create_base,
+    create_feature_table,
+    set_column_titles,
+)
 from ..core.gpkg.wkb import (
     MAGIC,
     VERSION,
@@ -245,6 +251,7 @@ __all__ = [
     "dataset_references",
     "declared_crs",
     "declared_vertical",
+    "domain_fields",
     "domain_rows",
     "export_layer",
     "list_gis_datasets",
@@ -257,6 +264,7 @@ __all__ = [
     "load_tin",
     "point_rows",
     "project_references",
+    "read_domain_fields",
     "read_domains",
     "read_regions",
     "require_project_references",
@@ -2202,6 +2210,32 @@ def read_domains(conn: sqlite3.Connection, table: str) -> tuple[DomainFeature, .
                                                                        strict=True))),
                                    polygons))
     return tuple(found)
+
+
+def domain_fields(project: StoreProject,
+                  ref: DatasetRecord | str) -> tuple[tuple[str, str], ...]:
+    """Los campos del dato ``ref`` (su registro, su uid o su nombre: ``gis_dom_``) que pueden
+    nombrar los dominios de una cubicación (spec 011, RF-011-07; T23: el «Campo» de su diálogo):
+    cada columna de atributos de su tabla, en su orden, con su título (el nombre del campo en la
+    capa importada, el de ``gpkg_data_columns``; sin él, la columna). Solo lee. Los mismos
+    errores que :func:`load_domains`."""
+    record = _resolve(project, ref, (DOMAINS,))
+    with project.read() as conn:
+        _require_table(conn, record)
+        return read_domain_fields(conn, record.locator)
+
+
+def read_domain_fields(conn: sqlite3.Connection, table: str) -> tuple[tuple[str, str], ...]:
+    """Lo que da :func:`domain_fields` de la tabla de dominios ``table`` de ``conn``: (columna,
+    título) de cada columna que no es ``fid`` ni la geometría. Solo lee."""
+    names = [str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')
+             if str(row[1]).lower() not in ("fid", _GEOMETRY_COLUMN)]
+    titles: dict[str, str] = {}
+    if _table_exists(conn, DATA_COLUMNS_TABLE):
+        titles = {str(column): str(title) for column, title in conn.execute(
+            f"SELECT column_name, name FROM {DATA_COLUMNS_TABLE} WHERE table_name = ?",
+            (table,)) if title}
+    return tuple((name, titles.get(name, name)) for name in names)
 
 
 def dataset_references(project: StoreProject,

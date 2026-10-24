@@ -236,6 +236,9 @@ class DomainLayerTest(ImportCase):
             self.assertEqual(len(item.rings), sum(len(p) for p in _polygons(item.fid)))
         self.assertEqual([item.fid for item in store.load_domains(self.project, record)],
                          list(DOMAIN_FIDS))
+        # T23 (RF-011-07): los campos que pueden nombrar los dominios, con su título.
+        self.assertEqual(store.domain_fields(self.project, "gis_dom_fases"),
+                         (("fase", "Fase"), ("orden", "orden"), ("superficie", "superficie")))
         with self.assertRaises(messages.GisError) as caught:
             store.load_domains(self.project, "gis_dom_otra")
         self.assertEqual(caught.exception.code, "gis.dataset_unknown")

@@ -30,8 +30,10 @@ cambiar un parámetro: :func:`on_project_read` escucha los indicadores de la pro
 
 **Las listas de los diálogos de la cubicación** (T21; plan §2.1, §5.3.4): las superficies que se
 pueden cubicar (:func:`surface_items`: las de ``reserves.surfaces.surface_choices`` y «Cota
-constante») y las capas que pueden ser su ámbito (:func:`scope_items`: «Sin ámbito», contornos
-y dominios), en listas vivas del módulo (Blender guarda punteros a sus cadenas), del proyecto de
+constante»), las capas que pueden ser su ámbito (:func:`scope_items`: «Sin ámbito», contornos
+y dominios) y, para «Por unidad, fase y banco…» (T23), las capas de dominios
+(:func:`domain_items`) y los campos de la elegida (:func:`field_items`, con su título), en
+listas vivas del módulo (Blender guarda punteros a sus cadenas), del proyecto de
 la sesión, su versión activa y el idioma de Geoblender: la orden las vuelve a leer al abrir su
 diálogo (:func:`refresh_choices`) y la escucha de los indicadores, cuando cambia el proyecto.
 """
@@ -266,6 +268,10 @@ FROZEN = "frozen:"
 versión activa (``frozen:<nombre del dato>``); el de una viva es el nombre de su dato."""
 NO_SCOPE = "NONE"
 """El elemento «Sin ámbito» de la lista de capas del ámbito."""
+NO_DOMAINS = "NONE"
+"""El elemento «Sin dominios» de la lista de capas de dominios (T23)."""
+NO_FIELD = "NONE"
+"""El elemento de la lista de campos sin capa de dominios (o de una capa sin campos)."""
 VOLUMETRICS_PANEL = "GEOBLENDER_PT_res_volumetrics"
 """La ventana de la cubicación (T25): la abre la orden al terminar."""
 
@@ -274,11 +280,14 @@ VOLUMETRICS_PANEL = "GEOBLENDER_PT_res_volumetrics"
 class _Choices:
     """Las listas vivas de los diálogos (plan §2.1: Blender guarda punteros a sus cadenas): de
     qué proyecto, versión activa e idioma son, las superficies (``EnumProperty``), las capas del
-    ámbito y cada superficie por su identificador."""
+    ámbito, las de dominios y los campos de cada una (T23), y cada superficie por su
+    identificador."""
 
     key: tuple[str, str, str] | None = None
     surfaces: list[tuple[str, str, str]] = field(default_factory=list)
     layers: list[tuple[str, str, str]] = field(default_factory=list)
+    domains: list[tuple[str, str, str]] = field(default_factory=list)
+    fields: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)
     by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
 
 
@@ -296,16 +305,28 @@ def _fixed_items() -> tuple[tuple[str, str, str], tuple[str, str, str]]:
             (NO_SCOPE, tr("No scope"), tr("The whole grid of the surfaces")))
 
 
+def _no_domains() -> tuple[tuple[str, str, str], tuple[str, str, str]]:
+    return ((NO_DOMAINS, tr("No domains"), tr("Do not split the cubication by domains")),
+            (NO_FIELD, NOT_SHOWN, tr("Choose a domain layer first")))
+
+
 def refresh_choices(project: Any, version_uid: str | None) -> None:
     """Vuelve a leer de ``project``, con la versión activa ``version_uid``, las superficies que
     ofrece la orden (``reserves.surfaces.surface_choices``: las rejillas del proyecto y de la
-    versión activa y las congeladas en la revisión de la que parte) y las capas que pueden ser
-    su ámbito (contornos y dominios, D-32), en el idioma de Geoblender. Si no se puede leer, el
-    error sigue y las listas quedan como estaban."""
+    versión activa y las congeladas en la revisión de la que parte), las capas que pueden ser
+    su ámbito (contornos y dominios, D-32) y las de dominios con sus campos (T23,
+    ``gis.store.domain_fields``), en el idioma de Geoblender. Si no se puede leer, el error
+    sigue y las listas quedan como estaban."""
     found = res_surfaces.surface_choices(project, version_uid=version_uid or "")
     layers = gis_store.list_gis_datasets(project, families=(gis_provenance.BOUNDARY,
                                                             gis_provenance.DOMAINS))
+    domains = [record for record in layers if record.name.startswith(
+        gis_provenance.FAMILIES_BY_CODE[gis_provenance.DOMAINS].prefix)]
+    fields = {record.name: [(column, title, tr("Field «{field}» of the layer", field=title))
+                            for column, title in gis_store.domain_fields(project, record)]
+              for record in domains}
     elevation, no_scope = _fixed_items()
+    no_domains, no_field = _no_domains()
     surfaces: list[tuple[str, str, str]] = []
     for choice in found:
         if choice.revision is not None:
@@ -322,8 +343,20 @@ def refresh_choices(project: Any, version_uid: str | None) -> None:
                                     tr("Boundary layer") if record.name.startswith(boundary)
                                     else tr("Domain layer (their union)"))
                                    for record in layers)]
+    _CHOICES.domains = [no_domains, *((record.name, record.name, tr("Domain layer"))
+                                      for record in domains)]
+    _CHOICES.fields = {name: items or [no_field] for name, items in fields.items()}
+    _CHOICES.fields[NO_DOMAINS] = [no_field]
     _CHOICES.by_id = {surface_id(choice): choice for choice in found}
     _CHOICES.key = (project.uid, version_uid or "", language())
+
+
+def _only_fixed() -> None:
+    """Las listas sin nada del proyecto: la cota constante, sin ámbito y sin dominios."""
+    elevation, no_scope = _fixed_items()
+    no_domains, no_field = _no_domains()
+    _CHOICES.surfaces, _CHOICES.layers, _CHOICES.by_id = [elevation], [no_scope], {}
+    _CHOICES.domains, _CHOICES.fields = [no_domains], {NO_DOMAINS: [no_field]}
 
 
 def _ensure_choices() -> None:
@@ -332,8 +365,7 @@ def _ensure_choices() -> None:
     project = project_session.current()
     if project is None:
         if not _CHOICES.surfaces:
-            elevation, no_scope = _fixed_items()
-            _CHOICES.surfaces, _CHOICES.layers = [elevation], [no_scope]
+            _only_fixed()
         return
     key = (project.uid, scene_versions.active_version() or "", language())
     if key == _CHOICES.key:
@@ -342,8 +374,7 @@ def _ensure_choices() -> None:
         refresh_choices(project, key[1])
     except (GeoblenderError, sqlite3.Error, OSError, ValueError):
         LOGGER.warning("No se pudieron leer las superficies de la cubicación", exc_info=True)
-        elevation, no_scope = _fixed_items()
-        _CHOICES.surfaces, _CHOICES.layers, _CHOICES.by_id = [elevation], [no_scope], {}
+        _only_fixed()
         _CHOICES.key = key  # sin volver a intentarlo en cada dibujo: invoke lo relee
 
 
@@ -359,6 +390,24 @@ def scope_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
     dominios del proyecto (una lista viva del módulo)."""
     _ensure_choices()
     return _CHOICES.layers
+
+
+def domain_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las opciones de la lista de capas de dominios de «Por unidad, fase y banco…» (T23):
+    «Sin dominios» y las capas de dominios del proyecto (una lista viva del módulo)."""
+    _ensure_choices()
+    return _CHOICES.domains
+
+
+def field_items(owner: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las opciones de la lista de campos (T23; RF-011-07): los de la capa de dominios elegida
+    en ``owner`` (su ``domains_layer``), con su título; sin capa, «—» (listas vivas del
+    módulo)."""
+    _ensure_choices()
+    layer = str(getattr(owner, "domains_layer", NO_DOMAINS) or NO_DOMAINS)
+    found = _CHOICES.fields.get(layer)
+    return found if found is not None else _CHOICES.fields.setdefault(
+        NO_DOMAINS, [_no_domains()[1]])
 
 
 def surface_choice(identifier: str) -> res_surfaces.SurfaceChoice | None:
