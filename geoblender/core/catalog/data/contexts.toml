@@ -411,6 +411,32 @@ ref = "geoblender.res_compute_phase_volumes"
 [[context.icon]]
 ref = "geoblender.res_report_phase_vertices"
 
+# La rejilla de diferencias de una cubicación (spec 011, T22; plan 011 §5.3.4, A15, D-29): el
+# objeto VOLUME_DIFFERENCE que carga la vista sobre la superficie final.
+[[context]]
+kind = "VOLUME_DIFFERENCE"
+id = "GEOBLENDER_MT_res_context_difference"
+label.en = "Difference"
+label.es = "Diferencia"
+description.en = "Commands for the active difference grid"
+description.es = "Órdenes para la rejilla de diferencias activa"
+entry = "011"
+
+[[context.item]]
+ref = "geoblender.res_export_difference"
+
+[[context.item]]
+ref = "geoblender.core_show_selection_figures"
+
+[[context.item]]
+ref = "geoblender.core_show_lineage"
+
+[[context.icon]]
+ref = "geoblender.res_export_difference"
+
+[[context.icon]]
+ref = "geoblender.core_show_selection_figures"
+
 [[context]]
 kind = "VERSION"
 id = "GEOBLENDER_MT_core_context_version"

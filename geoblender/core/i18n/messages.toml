@@ -5715,3 +5715,32 @@ es = "Escribe la rejilla de diferencias (final − partida, m) como dato de la v
 
 ["Replace the cubication of the same name of the active version"]
 es = "Sustituye la cubicación del mismo nombre de la versión activa"
+
+# Diferencia entre superficies… y la vista de su rejilla (spec 011, T22; RF-011-05, RF-011-23;
+# plan 011 A15, D-25, D-29): el tipo VOLUME_DIFFERENCE de Object.geoblender, su rama «Cubicación»,
+# el nombre que comparten una cubicación y una diferencia y Exportar a GeoTIFF… («Difference
+# grid», «File», «Replace» y su descripción ya están arriba).
+
+["Volumetrics"]
+es = "Cubicación"
+
+["The grid of differences between two surfaces of a cubication, drawn on the final one"]
+es = "La rejilla de diferencias entre dos superficies de una cubicación, dibujada sobre la final"
+
+["There is already a difference grid «{name}» in {version}, of «{other}»: give this one another name"]
+es = "Ya hay una rejilla de diferencias «{name}» en {version}, de «{other}»: dé otro nombre a esta"
+
+["Uid or name of the difference grid (empty: the active one in the view)"]
+es = "Uid o nombre de la rejilla de diferencias (vacío: la activa en la vista)"
+
+["Choose the difference grid: select it in the view"]
+es = "Elija la rejilla de diferencias: selecciónela en la vista"
+
+["Exporting «{file}»… {percent} % · Esc: cancel"]
+es = "Exportando «{file}»… {percent} % · Esc: cancelar"
+
+["Export cancelled: nothing has been written"]
+es = "Exportación cancelada: no se ha escrito nada"
+
+["Difference grid exported to «{file}»"]
+es = "Rejilla de diferencias exportada a «{file}»"

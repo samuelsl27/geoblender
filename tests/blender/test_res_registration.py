@@ -12,16 +12,17 @@
   versión no editable desactiva sus órdenes), sus órdenes en el catálogo y, si se repite solo, su
   recálculo, su reproducción (la de ``reserves.reproduce``) y la tolerancia de sus cifras; sus
   textos, en español. La entrada «011» del catálogo (D-36), con las órdenes que ya tienen su clase
-  real (T20: Materiales y densidades…; T21: Cubicar entre dos superficies…); las demás, aún las
-  provisionales de R-38 hasta que llegue la de cada una (T22 a T25).
+  real (T20: Materiales y densidades…; T21: Cubicar entre dos superficies…; T22: Diferencia
+  entre superficies…); las demás, aún las provisionales de R-38 hasta que llegue la de cada una
+  (T23 a T25).
 - D-19 (RF-011-20, RF-008-26): «Recalcular lo obsoleto» de una cubicación obsoleta por un
   parámetro empieza la operación nueva y deja sus pasos en la cola de ``res``, que avanza su
   temporizador (``res_tick``, a mano: en ``blender -b`` no corren los temporizadores) mientras
   ``recompute_steps`` espera; la cola dice su avance en la barra de estado, deja «fallida» la
   operación de unos pasos que fallan, lleva sus avisos al registro de Blender y, al
   desregistrar, cierra lo que espera (como Esc: nada a medias).
-- Principio 8: deshabilitar no deja clases, propiedades, temporizadores ni nada de ``res`` en
-  los registros.
+- Principio 8: deshabilitar no deja clases, propiedades, temporizadores, el cargador de la vista
+  de ``res_dif_`` (T22) ni nada de ``res`` en los registros.
 
 Rejillas mínimas y un solo proyecto por prueba que lo necesita (RNF-001-01). Se ejecuta con
 ``tools/run_blender_tests.py``.
@@ -64,7 +65,8 @@ STATUS_MSGID = "Recomputing «{name}»… {percent} %"
 STATUS = "Recalculando «{name}»… {percent} %"
 DROPPED = "cancelada durante la operación: se desactivó Geoblender antes de empezar"
 DELIVERED = frozenset({"geoblender.res_edit_materials",  # T20
-                       "geoblender.res_compute_volume_between_surfaces"})  # T21
+                       "geoblender.res_compute_volume_between_surfaces",  # T21
+                       "geoblender.res_compute_surface_difference"})  # T22
 """Las órdenes de Cubicación que ya tienen su clase real (de la entrada «011»)."""
 
 
@@ -505,9 +507,12 @@ class ResRegisteredTest(unittest.TestCase):
                                   fail=lambda reason: None, cancel=cancelled.append)
         res_ops.queue_steps(waiting, steps())
         self.assertTrue(bpy.app.timers.is_registered(res_ops.res_tick))
+        views = _module("bl.scene.views")
+        self.assertEqual(views.loader_for("res_dif_x").kind, "VOLUME_DIFFERENCE")  # T22
 
         self.addCleanup(blender_ext.enable)  # las demás pruebas de la clase, habilitada
         blender_ext.disable()
+        self.assertIsNone(views.loader_for("res_dif_x"))  # desactivar no deja el cargador
         self.assertEqual([cls.__name__ for cls in props.classes if cls.is_registered], [])
         self.assertEqual([name for name in dir(bpy.types)
                           if name.startswith("GEOBLENDER_") and "_res_" in name], [])

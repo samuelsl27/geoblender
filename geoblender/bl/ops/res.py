@@ -73,7 +73,15 @@ hasta que llega la clase real de cada una (T20 a T25), que la pasa a la entrada 
   interfaz, por pasos en su modal (``bl.ops.core._StepsModal``, con el avance en la barra de
   estado y Esc, que no deja nada a medias, RF-011-25); desde un guion, de una vez. Al terminar
   dice sus totales, carga la rejilla de diferencias en la vista (con el cargador de
-  ``res_dif_``, si lo hay: T22) y abre la ventana de la cubicación (T25).
+  ``res_dif_``, ``bl.scene.res_views``) y abre la ventana de la cubicación (T25).
+- **Diferencia entre superficies…** (T22; RF-011-05, RF-011-20, RF-011-23; plan §5.3.4, A15,
+  D-25, D-29): :class:`GEOBLENDER_OT_res_compute_surface_difference`, el mismo diálogo y los
+  mismos pasos que la anterior (lo común, en ``_SurfacesCommand``) sin ámbito y siempre con la
+  rejilla: ``res.difference`` la escribe como dato de la versión activa con sus seis cifras y
+  la carga en la vista, coloreada (una cubicación y una diferencia no comparten el nombre de su
+  rejilla); ``geoblender.res_export_difference`` («Exportar a GeoTIFF…» del menú «Diferencia
+  ▾»; no es una operación) la escribe como GeoTIFF entregable desde lo registrado, por pasos,
+  también de una versión no editable y, fuera del proyecto, en solo lectura.
 """
 
 from __future__ import annotations
@@ -84,6 +92,7 @@ import math
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -117,7 +126,7 @@ from ...reserves.tonnage import PERCENT_TOLERANCE
 from ...reserves.volumes import FINAL, START, VolumeRequest
 from ..props import res as res_props
 from ..props.core import OBJECT_PROPERTY
-from ..scene import project_session, undo_watch, views
+from ..scene import project_session, res_views, undo_watch, views
 from ..scene import versions as scene_versions
 from ..ui import gate, res_panels
 from ..ui import provenance as ui_provenance
@@ -132,6 +141,7 @@ from .core_provenance import (
     SOURCE_KIND_ITEMS,
     ProvenanceAwareOperator,
     error_text,
+    read_only_dirs,
     scope_choice,
     typed_value,
     write_unavailable,
@@ -1203,6 +1213,23 @@ def thickness_text(project: Any) -> str:
               path=path_text(catalog(), PARAMETERS, i18n.language()))
 
 
+def _grid_free(project: Any, name: str, version_uid: str, op_type: str) -> None:
+    """La rejilla de diferencias de la cubicación ``name`` no es de una operación de otro tipo
+    (una cubicación y una diferencia con el mismo nombre la compartirían): si lo es,
+    ``ValueError`` con el texto para la persona, sin escribir nada."""
+    from ...reserves import store  # al usarlo: habilitar no lo carga
+
+    found = store.grid_writer(project, name, version=version_uid)
+    if found is None or found == op_type:
+        return
+    other = provenance.OPERATION_TYPES_BY_NAME.get(found)
+    version = scene_versions.active()
+    raise ValueError(tr(
+        "There is already a difference grid «{name}» in {version}, of «{other}»: give this one "
+        "another name", name=name, version="" if version is None else version.code,
+        other=found if other is None else i18n.translate(i18n.language(), other.label_msgid)))
+
+
 def _difference_record(stored: Any) -> Any:
     """La rejilla de diferencias que guardó una cubicación (``res_dif_``), o ``None``."""
     prefix = provenance.FAMILIES_BY_CODE[provenance.DIFFERENCE_GRID].prefix
@@ -1210,37 +1237,38 @@ def _difference_record(stored: Any) -> Any:
                  if record.name.startswith(prefix)), None)
 
 
-def _confirm_later(values: Mapping[str, Any]) -> None:
-    """Pide confirmar que se sustituye la cubicación del mismo nombre (D-30): la misma orden
-    con ``confirm`` (su confirmación) en cuanto acaba esta; sin ventana, nada (lo dice el
-    aviso)."""
+def _confirm_later(values: Mapping[str, Any], idname: str = BETWEEN) -> None:
+    """Pide confirmar que se sustituye la cubicación del mismo nombre (D-30) o el fichero que ya
+    existe (D-29): la misma orden ``idname`` con ``confirm`` (su confirmación) en cuanto acaba
+    esta; sin ventana, nada (lo dice el aviso)."""
     manager = getattr(bpy.context, "window_manager", None)
     windows = list(getattr(manager, "windows", ()) or ())
     if not windows:
         return
+    group, name = idname.split(".")
 
     def call() -> None:
         try:
             with bpy.context.temp_override(window=windows[0]):
-                bpy.ops.geoblender.res_compute_volume_between_surfaces(
-                    "INVOKE_DEFAULT", confirm=True, **values)
+                getattr(getattr(bpy.ops, group), name)("INVOKE_DEFAULT", confirm=True, **values)
         except (RuntimeError, TypeError, AttributeError, ReferenceError):
-            LOGGER.warning("No se pudo pedir confirmación para sustituir la cubicación",
-                           exc_info=True)
+            LOGGER.warning("No se pudo pedir confirmación en %s", idname, exc_info=True)
 
     bpy.app.timers.register(call, first_interval=0.0)
 
 
-class GEOBLENDER_OT_res_compute_volume_between_surfaces(ProvenanceAwareOperator, _StepsModal,
-                                                         bpy.types.Operator):
-    """Volume and tonnage between a base surface and a top surface, with their type and
-    provenance"""
+class _SurfacesCommand:
+    """Lo común de «Cubicar entre dos superficies…» y «Diferencia entre superficies…» (sin base:
+    NOM-01; sus propiedades, las de las dos órdenes, que la ponen delante de
+    ``ProvenanceAwareOperator`` y ``_StepsModal``): el diálogo con las dos superficies (o una
+    cota constante) e «Invertir», la comprobación de lo pedido sin escribir nada, la operación
+    de :attr:`provenance_op_type` por pasos en el modal (con el avance y Esc) o de una vez desde
+    un guion, y, al terminar, la rejilla de diferencias en la vista. Cada orden pone en su clase
+    su ``execute`` y su ``modal`` (los de aquí): así ``ProvenanceAwareOperator`` los envuelve
+    para el diario de Ctrl+Z."""
 
-    bl_idname = BETWEEN
-    bl_label = "Volume between two surfaces…"
-    bl_translation_context = TRANSLATION_CONTEXT
-    bl_options = {"REGISTER"}
-    provenance_op_type = provenance.VOLUME
+    OPENS_WINDOW = True
+    """Si al terminar abre la ventana de la cubicación (T25)."""
 
     # Como Nueva revisión… (009): cada evento del temporizador avanza pasos durante, como mucho,
     # este tiempo (cada paso, ≤ 0,05 s: ninguna llamada de más de 0,2 s, RNF-011-04).
@@ -1276,18 +1304,6 @@ class GEOBLENDER_OT_res_compute_volume_between_surfaces(ProvenanceAwareOperator,
     invert: BoolProperty(  # type: ignore[valid-type]
         name="Invert", description="Swap the start and the final surfaces", default=False,
         options=_FIELD, update=invert_surfaces,
-    )
-    scope_layer: EnumProperty(  # type: ignore[valid-type]
-        name="Scope",
-        description="Polygons outside which nothing is measured: a boundary layer or the union "
-                    "of a domain layer (none: the whole grid)",
-        items=res_panels.scope_items, options=_FIELD,
-    )
-    difference_grid: BoolProperty(  # type: ignore[valid-type]
-        name="Difference grid",
-        description="Write the grid of differences (final − start, m) as data of the version "
-                    "and load it into the view",
-        default=True, options=_FIELD,
     )
     replace: BoolProperty(  # type: ignore[valid-type]
         name="Replace",
@@ -1335,7 +1351,8 @@ class GEOBLENDER_OT_res_compute_volume_between_surfaces(ProvenanceAwareOperator,
         self.in_steps = getattr(context, "window", None) is not None
         return context.window_manager.invoke_props_dialog(
             self, width=DIALOG_WIDTH, translate=False,
-            title=text(catalog().commands[BETWEEN].label), confirm_text=tr("Compute"))
+            title=text(catalog().commands[self.bl_idname].label),  # type: ignore[attr-defined]
+            confirm_text=tr("Compute"))
 
     def _propose(self, context: Any, project: Any) -> None:
         """Las superficies del diálogo: las dos seleccionadas en la vista, en el orden de D-31
@@ -1379,11 +1396,21 @@ class GEOBLENDER_OT_res_compute_volume_between_surfaces(ProvenanceAwareOperator,
         layout.prop(self, "final", text=tr("Final surface"), translate=False)
         if self.final == res_panels.ELEVATION:
             layout.prop(self, "final_elevation", text=tr("Final elevation (m)"), translate=False)
-        layout.prop(self, "scope_layer", text=tr("Scope (optional)"), translate=False)
-        layout.prop(self, "difference_grid", text=tr("Difference grid"), translate=False)
+        self._draw_options(layout)
         thickness = getattr(self, "_thickness", "")
         if thickness:
             layout.label(text=thickness, translate=False)
+
+    def _draw_options(self, layout: Any) -> None:
+        """Lo que dibuja el diálogo de cada orden tras las superficies (por defecto, nada)."""
+
+    def _scope_layer(self) -> str:
+        """La capa del ámbito elegida (por defecto, ninguna)."""
+        return res_panels.NO_SCOPE
+
+    def _wants_grid(self) -> bool:
+        """Si escribe la rejilla de diferencias (por defecto, sí)."""
+        return True
 
     def _confirm(self, context: Any, event: Any) -> set[str]:
         """La confirmación de sustituir la cubicación del mismo nombre (D-30): si se acepta,
@@ -1411,17 +1438,19 @@ class GEOBLENDER_OT_res_compute_volume_between_surfaces(ProvenanceAwareOperator,
                                            field="final", label=tr("Final elevation"))
         name = self.name.strip() or default_name(self)
         gis_provenance.dataset_slug(name)  # un nombre sin letras ni cifras no vale
-        scope_name, scope = _scope(project, self.scope_layer)
+        scope_name, scope = _scope(project, self._scope_layer())
         sources = {START: surface_source(project, start, version_uid=version_uid),
                    FINAL: surface_source(project, final, version_uid=version_uid)}
         check_pair(sources[START], sources[FINAL])
         grid = sources[START].grid if sources[START].grid is not None else sources[FINAL].grid
         request = VolumeRequest(name, start, final, scope=scope,
-                                difference_grid=bool(self.difference_grid),
+                                difference_grid=self._wants_grid(),
                                 point_scale=_point_scale(project, grid, scope))
         frozen = next((choice.revision_uid for choice in (start_choice, final_choice)
                        if choice is not None and choice.revision_uid is not None), None)
-        previous = store.previous_operation(project, provenance.VOLUME, name,
+        if request.difference_grid:
+            _grid_free(project, name, version_uid, self.provenance_op_type)
+        previous = store.previous_operation(project, self.provenance_op_type, name,
                                             version=version_uid)
         version = scene_versions.active()
         return _Plan(request, sources, scope_name, frozen, previous,
@@ -1431,8 +1460,7 @@ class GEOBLENDER_OT_res_compute_volume_between_surfaces(ProvenanceAwareOperator,
         """Lo pedido, para volver a lanzarla (la confirmación de D-30)."""
         return {"name": name, "start": self.start, "final": self.final,
                 "start_elevation": self.start_elevation,
-                "final_elevation": self.final_elevation, "scope_layer": self.scope_layer,
-                "difference_grid": bool(self.difference_grid)}
+                "final_elevation": self.final_elevation}
 
     def _ask_replace(self, plan: _Plan) -> set[str]:
         """La cubicación ya está en la versión activa (D-30): desde la interfaz, pregunta si se
@@ -1441,7 +1469,7 @@ class GEOBLENDER_OT_res_compute_volume_between_surfaces(ProvenanceAwareOperator,
         if self.provenance_dialog:
             self._report({"WARNING"}, tr("There is already a cubication «{name}» in {version}",
                                          name=name, version=plan.version))
-            _confirm_later(self._values(name))
+            _confirm_later(self._values(name), idname=self.bl_idname)  # type: ignore[attr-defined]
         else:
             self._report({"ERROR"}, tr(
                 "There is already a cubication «{name}» in {version}: to replace it, repeat the "
@@ -1539,7 +1567,8 @@ class GEOBLENDER_OT_res_compute_volume_between_surfaces(ProvenanceAwareOperator,
 
     def _show_window(self, context: Any) -> None:
         """La ventana de la cubicación, desde la interfaz (``_call_panel``; T25)."""
-        if not self.in_steps or getattr(context, "window", None) is None:
+        if (not self.OPENS_WINDOW or not self.in_steps
+                or getattr(context, "window", None) is None):
             return
         try:
             _call_panel(res_panels.VOLUMETRICS_PANEL)
@@ -1610,6 +1639,255 @@ class GEOBLENDER_OT_res_compute_volume_between_surfaces(ProvenanceAwareOperator,
             return self._fail(context, error_text(exc))
 
 
+class GEOBLENDER_OT_res_compute_volume_between_surfaces(_SurfacesCommand, ProvenanceAwareOperator,
+                                                         _StepsModal, bpy.types.Operator):
+    """Volume and tonnage between a base surface and a top surface, with their type and
+    provenance"""
+
+    bl_idname = BETWEEN
+    bl_label = "Volume between two surfaces…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.VOLUME
+    execute = _SurfacesCommand.execute
+    modal = _SurfacesCommand.modal
+
+    scope_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Scope",
+        description="Polygons outside which nothing is measured: a boundary layer or the union "
+                    "of a domain layer (none: the whole grid)",
+        items=res_panels.scope_items, options=_FIELD,
+    )
+    difference_grid: BoolProperty(  # type: ignore[valid-type]
+        name="Difference grid",
+        description="Write the grid of differences (final − start, m) as data of the version "
+                    "and load it into the view",
+        default=True, options=_FIELD,
+    )
+
+    def _draw_options(self, layout: Any) -> None:
+        layout.prop(self, "scope_layer", text=tr("Scope (optional)"), translate=False)
+        layout.prop(self, "difference_grid", text=tr("Difference grid"), translate=False)
+
+    def _scope_layer(self) -> str:
+        return str(self.scope_layer)
+
+    def _wants_grid(self) -> bool:
+        return bool(self.difference_grid)
+
+    def _values(self, name: str) -> dict[str, Any]:
+        # Sin super(): las pruebas llaman a los métodos con un self simulado.
+        return {**_SurfacesCommand._values(self, name), "scope_layer": self.scope_layer,
+                "difference_grid": bool(self.difference_grid)}
+
+
+# --- Diferencia entre superficies… y su rejilla (T22; RF-011-05, RF-011-20, RF-011-23) ---------
+
+DIFFERENCE_COMMAND = "geoblender.res_compute_surface_difference"
+EXPORT_DIFFERENCE = "geoblender.res_export_difference"
+EXPORT_TICKS = 1000
+"""El total de los pasos de la exportación (``Progress.total``): su avance, en milésimas."""
+GEOTIFF_SUFFIX = ".tif"
+
+
+class GEOBLENDER_OT_res_compute_surface_difference(_SurfacesCommand, ProvenanceAwareOperator,
+                                                   _StepsModal, bpy.types.Operator):
+    """Cut and fill between two surfaces"""
+
+    bl_idname = DIFFERENCE_COMMAND
+    bl_label = "Difference between surfaces…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.DIFFERENCE
+    OPENS_WINDOW = False  # sin tabla: sus cifras, en «Elemento activo» de su rejilla (RF-011-23)
+    execute = _SurfacesCommand.execute
+    modal = _SurfacesCommand.modal
+
+
+def _active_difference(context: Any) -> str:
+    """El uid del dato que muestra el objeto activo de la vista si es una rejilla de
+    diferencias; si no, vacío."""
+    obj = getattr(context, "active_object", None)
+    marks = getattr(obj, OBJECT_PROPERTY, None) if obj is not None else None
+    if marks is None or marks.kind != res_views.KIND:
+        return ""
+    return str(marks.dataset_uid)
+
+
+def _export_progress(steps: Iterator[float], name: str) -> Iterator[Progress]:
+    """Los pasos de ``reserves.export.export_difference_steps`` (su avance, 0–1) como
+    ``Progress`` (fase ``export``, en milésimas); el último lleva el fichero escrito. Cerrarlos
+    cierra los de la exportación, que no dejan nada a medias."""
+    try:
+        while True:
+            try:
+                done = next(steps)
+            except StopIteration as stop:
+                yield Progress("export", EXPORT_TICKS, EXPORT_TICKS, name, result=stop.value)
+                return
+            yield Progress("export", int(EXPORT_TICKS * min(max(float(done), 0.0), 1.0)),
+                           EXPORT_TICKS, name)
+    finally:
+        close = getattr(steps, "close", None)
+        if callable(close):
+            close()
+
+
+class GEOBLENDER_OT_res_export_difference(_StepsModal, bpy.types.Operator):
+    """Write the registered difference grid as a deliverable GeoTIFF (it is not an operation:
+    also from a superseded version and, outside the project, in read-only)"""
+
+    bl_idname = EXPORT_DIFFERENCE
+    bl_label = "Export to GeoTIFF…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    STEP_BUDGET_S = 0.05
+
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Difference grid",
+        description="Uid or name of the difference grid (empty: the active one in the view)",
+        options=_FIELD,
+    )
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="File", subtype="FILE_PATH", options={"SKIP_SAVE"},
+    )
+    filter_glob: StringProperty(  # type: ignore[valid-type]
+        default="*.tif;*.tiff", options={"HIDDEN"},
+    )
+    check_existing: BoolProperty(  # type: ignore[valid-type]
+        default=True, options={"HIDDEN", "SKIP_SAVE"},
+    )
+    overwrite: BoolProperty(  # type: ignore[valid-type]
+        name="Replace", description="Replace the file if it already exists", options=_FIELD,
+    )
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        """Con un proyecto abierto (D-29: no es una operación; en solo lectura, fuera de él)."""
+        reason = SESSION.unavailable()
+        if reason is not None:
+            cls.poll_message_set(reason)
+            return False
+        return True
+
+    def _stored(self, context: Any) -> Any:
+        """La rejilla de diferencias que se exporta (``reserves.store.StoredDifference``): la de
+        :attr:`source` o la activa en la vista; ``ValueError`` sin ninguna."""
+        from ...reserves import store  # al usarlo: habilitar no lo carga
+
+        source = self.source.strip() or _active_difference(context)
+        if not source:
+            raise ValueError(tr("Choose the difference grid: select it in the view"))
+        return store.stored_difference(SESSION.project, source)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """El diálogo de fichero, con el destino que propone (``exports/<cubicación>_<V01.r1>``
+        del proyecto); con ``confirm``, la confirmación de sustituir el que ya existe."""
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            self.overwrite = True
+            return context.window_manager.invoke_confirm(
+                self, event, title=tr("Replace the file"),
+                message=tr("«{file}» already exists: replace it?",
+                           file=Path(self.filepath).name),
+                confirm_text=tr("Replace"), translate=False)
+        try:
+            stored = self._stored(context)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.source = stored.record.uid
+        if not self.filepath:
+            stem = gis_provenance.dataset_slug(stored.name)
+            if stored.revision:
+                stem = f"{stem}_{stored.revision}"
+            self.filepath = str(Path(SESSION.project.root, gis_provenance.EXPORTS_FOLDER,
+                                     f"{stem}{GEOTIFF_SUFFIX}"))
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context: Any) -> set[str]:
+        """Escribe el entregable desde lo registrado (``reserves.export``): desde la interfaz,
+        por pasos con el avance y Esc; desde un guion, de una vez. Sobre un fichero que ya
+        existe, solo con ``overwrite`` (desde la interfaz, lo pregunta)."""
+        from ...reserves import export  # al usarlo: habilitar no lo carga
+
+        blocked = SESSION.unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            stored = self._stored(context)
+            shown = self.filepath.strip()
+            if not shown:
+                raise ValueError(tr("Choose the file to export to"))
+            target = Path(bpy.path.abspath(shown))
+            steps = export.export_difference_steps(
+                project, stored.name, target, version=stored.version_uid,
+                read_only=read_only_dirs(), overwrite=bool(self.overwrite))
+        except GisError as exc:
+            interactive = self.in_steps and getattr(context, "window", None) is not None
+            if exc.code == "gis.export_target_exists" and interactive:
+                self.report({"WARNING"}, error_text(exc))
+                _confirm_later({"source": self.source, "filepath": shown},
+                               idname=EXPORT_DIFFERENCE)
+            else:
+                self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._file = target.name
+        progress = _export_progress(steps, target.name)
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, progress)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        try:
+            for step in progress:
+                if step.result is not None:
+                    return self._exported()
+        except (GeoblenderError, OSError) as exc:
+            self._report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        return {"CANCELLED"}  # pragma: no cover - los pasos acaban siempre con el fichero
+
+    def _exported(self) -> set[str]:
+        self._report({"INFO"}, tr("Difference grid exported to «{file}»",
+                                  file=getattr(self, "_file", "")))
+        return {"FINISHED"}
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Exporting «{file}»… {percent} % · Esc: cancel",
+                  file=getattr(self, "_file", ""), percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Export cancelled: nothing has been written")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            return None
+        self._done(context)
+        return self._exported()
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except OSError as exc:  # los pasos cerrados no dejan nada a medias
+            LOGGER.error("La exportación de «%s» se ha parado", getattr(self, "_file", ""),
+                         exc_info=exc)
+            return self._fail(context, error_text(exc))
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_res_edit_materials,
     GEOBLENDER_OT_res_edit_column,
@@ -1617,5 +1895,7 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_res_apply_swell,
     GEOBLENDER_OT_res_set_percentages,
     GEOBLENDER_OT_res_compute_volume_between_surfaces,
+    GEOBLENDER_OT_res_compute_surface_difference,
+    GEOBLENDER_OT_res_export_difference,
 )
-"""Las órdenes reales de la cubicación (las demás llegan de la T22 a la T25)."""
+"""Las órdenes reales de la cubicación (las demás llegan de la T23 a la T25)."""

@@ -303,7 +303,8 @@ action = "D"
 frequency = 1
 
 # Órdenes internas de la cubicación (spec 011, plan §5.3.4, D-36): las abre la ventana de
-# Materiales y densidades… (T20), no un menú de la barra.
+# Materiales y densidades… (T20) y el menú «Diferencia ▾» de una rejilla de diferencias
+# (T22: Exportar a GeoTIFF…), no un menú de la barra.
 
 [[command]]
 key = "geoblender.res_edit_column"
@@ -348,3 +349,14 @@ description.es = "Porcentajes de los componentes de una unidad compuesta, declar
 entry = "011"
 action = "D"
 frequency = 1
+
+[[command]]
+key = "geoblender.res_export_difference"
+kind = "internal"
+label.en = "Export to GeoTIFF…"
+label.es = "Exportar a GeoTIFF…"
+description.en = "Write the registered difference grid as a deliverable GeoTIFF (it is not an operation: also from a superseded version and, outside the project, in read-only)"
+description.es = "Escribe la rejilla de diferencias registrada como GeoTIFF entregable (no es una operación: también de una versión superada y, fuera del proyecto, en solo lectura)"
+entry = "011"
+action = "D"
+frequency = 2

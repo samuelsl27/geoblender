@@ -29,6 +29,7 @@ sin importar otra vez (``blender_ext.release``; RNF-001-01). Se ejecuta con
 
 import importlib
 import json
+import re
 import sqlite3
 import tempfile
 import time
@@ -120,13 +121,6 @@ def _surface(uid: str) -> SimpleNamespace:
     return SimpleNamespace(geoblender=SimpleNamespace(kind="DTM", dataset_uid=uid))
 
 
-def _load_empty(request: Any) -> Any:
-    """El cargador de la prueba de las rejillas de diferencias (el real es de la T22): un
-    objeto vacío."""
-    return _module("bl.scene.views").ViewParts((bpy.data.objects.new(request.name, None),),
-                                               None)
-
-
 class ResBetweenSurfacesTest(unittest.TestCase):
     """La extensión habilitada una vez y un proyecto con V01 activa en la sesión, para toda la
     clase (cada prueba cubica con su propio nombre)."""
@@ -167,9 +161,6 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         for _ in range(2000):  # la comprobación de apertura (sin temporizadores en blender -b)
             if cls.session.check_tick() is None:
                 break
-        if cls.views.loader_for("res_dif_x") is None:  # hasta la T22, el de la prueba
-            cls.views.register_loader("res_dif_", "DTM", "DTM", _load_empty)
-            cls.addClassCleanup(cls.views.unregister_loader, "res_dif_")
         cls.set_active(cls.v01)
 
     @classmethod
@@ -451,9 +442,10 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         self.assertLessEqual(max(calls), CALL_LIMIT_S, calls)
         self.assertTrue(shown)
         for text in shown:
-            self.assertTrue(text.startswith((f"Cubicando «{name}»: ", f"Cargando «{name}» "))
-                            and text.endswith((" % · Esc: cancelar", " en la vista… 100 %",
-                                               " en la vista… 0 %")), text)
+            self.assertTrue(text.startswith(f"Cubicando «{name}»: ")
+                            and text.endswith(" % · Esc: cancelar")
+                            or re.fullmatch(f"Cargando «{name}» en la vista… \\d+ %", text),
+                            text)
         expected = _expected(_start_values(), _final_values())
         (*_cancelled, (uid, status, _old, _new)) = self.operations(name)
         self.assertEqual(status, "done")

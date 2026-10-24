@@ -127,6 +127,7 @@ __all__ = [
     "materials_spec",
     "operation_def",
     "operation_defs",
+    "settings_surface",
     "stage_role",
     "stages_inputs",
     "stages_params",
@@ -518,6 +519,13 @@ def _surface_ref(value: object, role: str) -> SurfaceRef:
     if kind == "elevation_m":
         return SurfaceRef(elevation=given)
     raise ValueError(f"los ajustes de la superficie «{role}» no dicen «{kind}»")
+
+
+def settings_surface(settings: Mapping[str, Any], role: str) -> SurfaceRef:
+    """La superficie ``role`` (:data:`START` o :data:`FINAL`) de los ajustes ``settings`` de una
+    cubicación (:func:`volume_settings`): el dato, lo congelado o la cota constante (lo que
+    dibuja la vista de su rejilla de diferencias, A15). ``ValueError`` si no la dicen."""
+    return _surface_ref(settings.get(role), role)
 
 
 def _slices(settings: Mapping[str, Any]) -> Slices | None:

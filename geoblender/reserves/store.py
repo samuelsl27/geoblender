@@ -47,7 +47,11 @@ Repetir el nombre de una cubicación de la versión la sustituye (D-30):
 (``begin_operation(…, supersedes=…)``), que escribe contenido nuevo de los mismos datos. **Las capas** de una cubicación (D-32, T32): el ámbito
 (:func:`load_scope`, :func:`read_scope`: una capa de contornos o la unión de una de dominios) y
 los dominios (:func:`load_domain_layer`, :func:`read_domain_layer`), del proyecto o de una tabla
-en una conexión (su copia congelada, al reproducir). **Recalcular** (A12, T15):
+en una conexión (su copia congelada, al reproducir). **La rejilla de diferencias registrada**
+(T22; A15, D-29): :func:`stored_difference` dice de qué cubicación, versión y revisión es, su
+superficie final y el espesor mínimo que leyó su operación, y :func:`difference_sources` da
+lo que lee su vista; :func:`grid_writer`, de qué tipo es la operación que la escribió (una
+cubicación y una diferencia no comparten una rejilla). **Recalcular** (A12, T15):
 :func:`recompute_run` empieza la operación que sustituye a una obsoleta (en la revisión abierta
 de su versión, con la columna vigente, las capas que consumió y sus parámetros resueltos de
 nuevo) y da sus pasos, que avanza la cola de ``res`` en ``bl``. Python puro (nivel 9).
@@ -55,6 +59,7 @@ nuevo) y da sus pasos, que avanza la cola de ``res`` en ``bl``. Python puro (niv
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
@@ -123,7 +128,7 @@ from .messages import ResError
 from .params import ANTHROPIC_PRESENCE, MIN_THICKNESS, STAGES_TOLERANCE
 from .polygons import Polygon, domain_polygons
 from .stages import StagesResult, StageTable, stages
-from .surfaces import BAND_ROWS, SurfaceSource, surface_source
+from .surfaces import BAND_ROWS, SurfaceRef, SurfaceSource, grid_source, surface_source
 from .table import (
     COLUMN_NAMES,
     COLUMNS,
@@ -164,10 +169,13 @@ __all__ = [
     "TONNAGE_PHASES",
     "TONNAGE_TICKS",
     "ResultWriter",
+    "StoredDifference",
     "StoredStages",
     "StoredTonnage",
     "StoredVolume",
     "difference_figures",
+    "difference_sources",
+    "grid_writer",
     "load_domain_layer",
     "load_scope",
     "materials_digest",
@@ -179,6 +187,7 @@ __all__ = [
     "save_materials",
     "stages_digest",
     "stages_run",
+    "stored_difference",
     "table_digest",
     "tonnage_run",
     "volume_run",
@@ -832,6 +841,82 @@ def load_domain_layer(project: StoreProject, ref: str, field: str) -> DomainLaye
                        domain_polygons(load_domains(project, record), field))
 
 
+# --- La rejilla de diferencias registrada (T22; RF-011-05, A15, D-29) --------------------------
+
+_DIFFERENCE_OBJ = "Rejilla de diferencias"
+_NO_VERSION = "—"
+_PRODUCER = "SELECT settings, revision_uid FROM gb_operation WHERE uid = ?"
+_THRESHOLD = ("SELECT value, unit FROM gb_operation_param WHERE operation_uid = ? AND key = ? "
+              "ORDER BY fid LIMIT 1")
+
+
+@dataclass(frozen=True, slots=True)
+class StoredDifference:
+    """Una rejilla de diferencias registrada (``res_dif_``) y lo que dice de ella la operación
+    que la escribió (``res.volume`` o ``res.difference``): su registro, el nombre de su
+    cubicación, su versión (uid; '' del proyecto), su revisión («V01.r1»; '' sin ella), su
+    superficie final (el dato, lo congelado o la cota constante de sus ajustes) y el espesor
+    mínimo que leyó (m: la diferencia que no pasa de él no es movimiento, RF-011-04)."""
+
+    record: DatasetRecord
+    name: str
+    version_uid: str
+    revision: str
+    final: SurfaceRef
+    threshold_m: float
+
+
+def stored_difference(project: StoreProject, ref: str) -> StoredDifference:
+    """La rejilla de diferencias ``ref`` del proyecto (su uid o su nombre) con lo que dice de
+    ella su operación (:class:`StoredDifference`): lo que necesitan su vista (A15) y su
+    exportación (D-29), también en una versión SUPERADO. ``ResError``
+    ``res.difference_unknown`` si no es una rejilla de diferencias viva del proyecto. No
+    escribe nada."""
+    if not isinstance(ref, str) or not ref:
+        raise TypeError(f"una rejilla de diferencias se indica por su uid o su nombre, no {ref!r}")
+    prefix = declared.FAMILIES_BY_CODE[declared.DIFFERENCE_GRID].prefix
+    with project.read() as conn:
+        record = dataset_registry.get(conn, ref)
+        if (record is None or not record.live or record.module != declared.MODULE
+                or not record.name.startswith(prefix)):
+            raise ResError("res.difference_unknown", obj=_DIFFERENCE_OBJ, field="rejilla",
+                           value=ref, version=_NO_VERSION)
+        row = conn.execute(_PRODUCER, (record.operation_uid,)).fetchone()
+        used = conn.execute(_THRESHOLD, (record.operation_uid, MIN_THICKNESS)).fetchone()
+        version_uid = versions_read.dataset_versions(conn, [record.uid]).get(record.uid, "")
+        revision = (versions_read.revision(conn, str(row[1]))
+                    if row is not None and row[1] else None)
+        version = (None if revision is None
+                   else versions_read.version(conn, revision.version_uid))
+    if row is None:  # inalcanzable: el dato lo escribió una operación del proyecto
+        raise ValueError(f"«{record.name}» no tiene la operación que lo escribió")
+    settings = json.loads(row[0] or "{}")
+    threshold = 0.0 if used is None or used[0] is None else convert(
+        float(json.loads(used[0])), str(used[1] or "m"), "m")
+    return StoredDifference(
+        record, str(settings.get("name") or record.name), version_uid,
+        "" if revision is None or version is None else revision.label(version.code),
+        declared.settings_surface(settings, FINAL), float(threshold))
+
+
+def difference_sources(project: StoreProject,
+                       stored: StoredDifference) -> tuple[SurfaceSource, SurfaceSource]:
+    """Lo que se lee para ver ``stored`` (A15): su superficie final (la de sus ajustes,
+    ``reserves.surfaces.surface_source`` en su versión: un dato, lo congelado en la revisión de
+    la que parte o la cota constante) y la propia rejilla (su GeoTIFF, en las referencias del
+    proyecto si no las declara). Los errores de ``surface_source`` (la superficie ya no está);
+    ``gis.dataset_file_missing`` si falta el fichero de la rejilla."""
+    final = surface_source(project, stored.final, version_uid=stored.version_uid)
+    record = stored.record
+    path = Path(project.root, *record.locator.split("/"))
+    if not path.is_file():
+        raise GisError("gis.dataset_file_missing", obj=f"{_DIFFERENCE_OBJ}: «{record.name}»",
+                       field="ubicación", value=record.locator, file=path.name,
+                       name=record.name)
+    crs, vertical = project_references(project)
+    return final, grid_source(path, name=record.name, crs=crs, vertical=vertical)
+
+
 def _param_m(handle: OperationHandle, key: str) -> float:
     """El parámetro ``key`` (m) que leyó la operación al empezar."""
     return _param(handle, key, "m")
@@ -1137,6 +1222,26 @@ def previous_operation(project: StoreProject, op_type: str, name: str, *,
     if row is None or row[0] != op_type or row[1] != OperationStatus.DONE or row[2] is not None:
         return None
     return record.operation_uid
+
+
+def grid_writer(project: StoreProject, name: str, *, version: str) -> str | None:
+    """El tipo de la operación (``res.volume`` o ``res.difference``) que escribió la rejilla de
+    diferencias viva de la cubicación ``name`` en la versión ``version`` (uid o código), o
+    ``None`` si no hay ninguna: dos tipos no comparten una rejilla (una «Diferencia entre
+    superficies…» con el nombre de una cubicación que la escribió). ``VersionError`` si la
+    versión no existe."""
+    dataset = declared.dataset_name(declared.DIFFERENCE_GRID, name)
+    with project.read() as conn:
+        found = versions_read.version(conn, version)
+        if found is None:
+            raise VersionError("core.version_unknown", field="versión", value=version,
+                               version=version)
+        record = dataset_registry.get(conn, dataset, version_uid=found.uid)
+        if record is None or record.name != dataset:
+            return None
+        row = conn.execute("SELECT op_type FROM gb_operation WHERE uid = ?",
+                           (record.operation_uid,)).fetchone()
+    return None if row is None else str(row[0])
 
 
 # --- Recalcular (A12) -------------------------------------------------------------------------

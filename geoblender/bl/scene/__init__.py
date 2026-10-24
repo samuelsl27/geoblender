@@ -18,6 +18,8 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
   que :func:`register` registra en ``views``;
 - ``dh_view``: el cargador de las trazas de los sondeos (spec 005, T24; T29: sus tubos y sus
   barras de leyes, en pasos, con el trabajo ``dh_view_arrays``), después;
+- ``res_views``: el cargador de las rejillas de diferencias de la cubicación (spec 011, T22:
+  la superficie final coloreada por desmonte, terraplén y sin movimiento), después;
 - ``live``: la marca en vivo de la vista (spec 010, T08): lo cargado, al día de lo que dice el
   proyecto sin volver a cargarlo, tras cada lectura de los indicadores de la procedencia y tras
   deshacer, rehacer, abrir un ``.blend``, cargar o descargar (``undo_post``, ``redo_post``,
@@ -44,6 +46,7 @@ from . import (
     gis_views,
     live,
     project_session,
+    res_views,
     undo_watch,
     versions,
     view_link,
@@ -65,11 +68,13 @@ def register() -> None:
         undo_watch.register()
         gis_views.register()
         dh_view.register()
+        res_views.register()
         live.register()
         versions.register()
     except BaseException:
         versions.unregister()
         live.unregister()
+        res_views.unregister()
         dh_view.unregister()
         gis_views.unregister()
         undo_watch.unregister()
@@ -87,6 +92,7 @@ def unregister() -> None:
     try:
         versions.unregister()
         live.unregister()
+        res_views.unregister()
         dh_view.unregister()
         gis_views.unregister()
         undo_watch.unregister()

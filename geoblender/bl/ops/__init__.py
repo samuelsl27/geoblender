@@ -23,7 +23,7 @@ las de ``core_provenance``.
 ``res`` (spec 011, T19): lo que la cubicación declara a las specs 008 y 009 (sus parámetros, sus
 familias, sus tipos de operación con su recálculo y su reproducción, y sus cifras) y la cola de
 los pasos de su recálculo, después de lo de ``dh``; sus órdenes, en ``classes``, después de las
-de ``dh`` (aún ninguna: llegan de la T20 a la T25).
+de ``dh`` (llegan de la T20 a la T25).
 """
 
 from __future__ import annotations
